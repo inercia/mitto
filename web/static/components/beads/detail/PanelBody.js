@@ -149,11 +149,11 @@ export function BeadsDetailPanelBody({
                 `
               : html`
                   <div
-                    class="p-4 text-center text-mitto-text-500"
+                    class="h-full flex flex-col items-center justify-center gap-2 text-mitto-text-500"
                     data-testid="beads-issue-loading"
                   >
                     <span
-                      class="loading loading-spinner w-5 h-5 mb-2 text-mitto-border-3"
+                      class="loading loading-spinner w-5 h-5 text-mitto-border-3"
                     ></span>
                     <p class="text-sm">Loading issue…</p>
                   </div>
