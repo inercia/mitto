@@ -858,13 +858,40 @@ func (p promptDispatcher) applyModelPreference(d promptDeps, meta PromptMeta) {
 	}
 
 	if models == nil {
+		// mitto-ishl: when the agent never advertises a model catalog (e.g.
+		// every Auggie session today) a declared preferredModels used to be
+		// silently dropped, taking the ⚡ model_override pill with it. Try to
+		// resolve the preference against a synthetic state built from the
+		// caller's global model profiles so the pill still fires — we cannot
+		// issue set_model (no ACP model to switch to), but the pill is a
+		// display-only signal of which tier the prompt intended.
+		if len(preferredModels) > 0 {
+			synth := SynthesizeModelStateFromProfiles(d.pdModelProfiles())
+			if synth != nil {
+				if resolved := SelectPreferredModel(preferredModels, d.pdModelProfiles(), synth); resolved != "" {
+					baseline := d.pdReadBaselineModel()
+					d.pdRecordSessionChange(
+						ConfigOptionCategoryModelOverride,
+						ModelDisplayName(synth, resolved),
+						baseline,
+					)
+					d.pdWriteOverrideActive(true)
+					if l := d.pdLogger(); l != nil {
+						l.Info("apply_model_preference",
+							"session_id", d.pdSessionID(),
+							"prompt_name", meta.PromptName,
+							"preferred_models", preferredModels,
+							"resolved", resolved,
+							"decision", "synth_profile_pill")
+					}
+					return
+				}
+			}
+		}
 		if l := d.pdLogger(); l != nil {
-			// mitto-ishl: when the agent never advertises a model catalog (e.g.
-			// every Auggie session today) a declared preferredModels is silently
-			// dropped. Split the two cases so tier-switching failures are loud:
-			// a genuine no-preference no-op stays at DEBUG; a dropped tier switch
-			// escalates to WARN with a distinct decision code that operators can
-			// grep for.
+			// Preference declared but no profile resolves (or none configured):
+			// keep the WARN escalation so tier-switching failures are loud.
+			// A genuine no-preference no-op stays at DEBUG.
 			if len(preferredModels) > 0 {
 				l.Warn("apply_model_preference",
 					"session_id", d.pdSessionID(),

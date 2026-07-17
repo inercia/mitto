@@ -2,6 +2,8 @@ package conversation
 
 import (
 	acp "github.com/coder/acp-go-sdk"
+
+	"github.com/inercia/mitto/internal/config"
 )
 
 // SessionModelState is a Mitto-owned view of an agent's available models and the
@@ -72,4 +74,33 @@ func ModelStateFromConfigOptions(opts []acp.SessionConfigOption) (*SessionModelS
 		return state, sel.Id
 	}
 	return nil, ""
+}
+
+// SynthesizeModelStateFromProfiles builds a synthetic SessionModelState from the
+// caller's model profiles for agents that never advertise a model catalog via ACP
+// ConfigOptions (mitto-ishl). One ModelInfo per profile is emitted with both
+// ModelId and Name set to profile.Name — profile.Criteria (e.g. contains "Opus")
+// matches the display Name, so downstream resolvers (SelectPreferredModel via
+// ResolveProfileModel / MatchConstraintOption) resolve preferredModels against
+// this synthetic state identically to a genuine agent-advertised catalog.
+//
+// CurrentModelId is left empty because the agent does not report a current model;
+// callers must therefore treat any resolved id as an intended tier tag for
+// display-only (session_change pill) — not as a target for a set_model RPC.
+// Returns nil when profiles is empty so the caller can distinguish "no data to
+// synthesize" from "synthesised state with zero available models".
+func SynthesizeModelStateFromProfiles(profiles []config.ModelProfile) *SessionModelState {
+	if len(profiles) == 0 {
+		return nil
+	}
+	state := &SessionModelState{
+		AvailableModels: make([]ModelInfo, 0, len(profiles)),
+	}
+	for _, p := range profiles {
+		state.AvailableModels = append(state.AvailableModels, ModelInfo{
+			ModelId: p.Name,
+			Name:    p.Name,
+		})
+	}
+	return state
 }

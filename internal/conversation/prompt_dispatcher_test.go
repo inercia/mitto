@@ -1651,6 +1651,54 @@ func TestPromptDispatcher_ApplyModelPreference_PreferenceButNoAgentModels_Observ
 	}
 }
 
+// TestPromptDispatcher_ApplyModelPreference_NoAgentModels_SynthesizesPillFromProfiles
+// verifies the mitto-ishl fix: when agentModels is nil (e.g. Auggie sessions,
+// which never advertise a model catalog via ACP ConfigOptions) but the prompt
+// declares a preferredModels tag AND the configured model profiles carry a
+// matching entry, applyModelPreference records a model_override session_change
+// pill so the ⚡ timeline pill fires without requiring a set_model RPC.
+func TestPromptDispatcher_ApplyModelPreference_NoAgentModels_SynthesizesPillFromProfiles(t *testing.T) {
+	p := promptDispatcher{}
+	d := newFakePromptDeps()
+	d.agentModels = nil  // Auggie-shaped agent: no advertised catalog
+	d.baselineModel = "" // no advertised current model either
+	// A single profile carrying the "Reasoning" tag that matches its own display name.
+	d.modelProfiles = []config.ModelProfile{
+		{
+			Name:     "Claude Opus",
+			Criteria: &config.ACPServerConstraint{MatchMode: "contains", Pattern: "Opus"},
+			Tags:     []string{"Reasoning"},
+		},
+	}
+	var buf bytes.Buffer
+	d.logger = slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	p.applyModelPreference(d, PromptMeta{
+		PromptName:      "Bug fix investigate phase",
+		PreferredModels: []config.PromptPreferredModel{{ModelTag: "Reasoning"}},
+	})
+
+	if len(d.setActiveModelCalls) != 0 {
+		t.Fatalf("expected no setActiveModel call when agentModels=nil (agent has no models to switch), got %v", d.setActiveModelCalls)
+	}
+	if len(d.recordedSessionChanges) != 1 {
+		t.Fatalf("expected 1 model_override pill from synthesized profile, got %d (log=%q)", len(d.recordedSessionChanges), buf.String())
+	}
+	sc := d.recordedSessionChanges[0]
+	if sc.Kind != ConfigOptionCategoryModelOverride {
+		t.Fatalf("expected kind=%q, got %q", ConfigOptionCategoryModelOverride, sc.Kind)
+	}
+	if sc.Value != "Claude Opus" {
+		t.Fatalf("expected pill value=%q (profile Name), got %q", "Claude Opus", sc.Value)
+	}
+	if !d.overrideActive {
+		t.Fatal("expected overrideActive=true after synthesizing the pill from profiles")
+	}
+	if !strings.Contains(buf.String(), "decision=synth_profile_pill") {
+		t.Fatalf("expected decision=synth_profile_pill in log, got: %q", buf.String())
+	}
+}
+
 func TestPromptDispatcher_ApplyModelPreference_NoPreference_DesiredIsBaseline_NoSwitch(t *testing.T) {
 	p := promptDispatcher{}
 	d := newFakePromptDeps()
