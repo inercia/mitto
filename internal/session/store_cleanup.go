@@ -61,16 +61,17 @@ func (s *Store) CleanupArchivedSessions(retentionPeriod string) (int, error) {
 			continue
 		}
 
-		// Check if archived_at is older than retention period
-		if meta.ArchivedAt.IsZero() {
-			// Archived but no timestamp - use updated_at as fallback
-			if now.Sub(meta.UpdatedAt) <= maxAge {
-				continue
-			}
-		} else {
-			if now.Sub(meta.ArchivedAt) <= maxAge {
-				continue
-			}
+		// Check if archived_at is older than retention period. When
+		// ArchivedAt is missing (older sessions predating the field) fall
+		// back to UpdatedAt so the same timestamp drives both the deletion
+		// decision and the log — otherwise the "age" field logs
+		// now.Sub(zero time) ≈ two millennia and misleads operators.
+		effectiveArchiveTime := meta.ArchivedAt
+		if effectiveArchiveTime.IsZero() {
+			effectiveArchiveTime = meta.UpdatedAt
+		}
+		if now.Sub(effectiveArchiveTime) <= maxAge {
+			continue
 		}
 
 		// Delete the session
@@ -83,8 +84,8 @@ func (s *Store) CleanupArchivedSessions(retentionPeriod string) (int, error) {
 		totalDeleted++
 		log.Info("deleted archived session",
 			"session_id", sessionID,
-			"archived_at", meta.ArchivedAt,
-			"age", now.Sub(meta.ArchivedAt))
+			"archived_at", effectiveArchiveTime,
+			"age", now.Sub(effectiveArchiveTime))
 	}
 
 	if totalDeleted > 0 {
