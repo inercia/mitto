@@ -4,10 +4,7 @@ package conversation
 
 import (
 	"context"
-	"log/slog"
-	"os"
 	"os/exec"
-	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -17,6 +14,7 @@ import (
 	"github.com/coder/acp-go-sdk"
 
 	mittoAcp "github.com/inercia/mitto/internal/acp"
+	"github.com/inercia/mitto/internal/acpproc/procstart"
 	"github.com/inercia/mitto/internal/coldstart"
 	"github.com/inercia/mitto/internal/logging"
 	"github.com/inercia/mitto/internal/runner"
@@ -323,377 +321,10 @@ func (bs *BackgroundSession) startACPProcess(acpCommand, acpCwd, workingDir, acp
 	return lastErr
 }
 
-// doStartACPProcess performs a single attempt to start the ACP process.
-// StderrCollector collects stderr output from the ACP process for error reporting.
-// It stores the last N bytes of stderr output that can be retrieved when errors occur.
-type StderrCollector struct {
-	mu       sync.Mutex
-	buffer   []byte
-	maxSize  int
-	logger   *slog.Logger
-	isClosed bool
-	// ignorePatterns, if non-nil, causes matching writes to be suppressed from
-	// the debug-level "agent stderr" log line. Crash detection is unaffected —
-	// crash matching happens in StartStderrMonitor, not here (mitto-k6h).
-	ignorePatterns []*regexp.Regexp
-}
-
-// NewStderrCollector creates a new stderr collector with the given max buffer size.
-func NewStderrCollector(maxSize int, logger *slog.Logger) *StderrCollector {
-	return &StderrCollector{
-		buffer:  make([]byte, 0, maxSize),
-		maxSize: maxSize,
-		logger:  logger,
-	}
-}
-
-// SetIgnorePatterns replaces the collector's debug-log suppression patterns
-// (mitto-k6h). Safe to call before the monitor goroutine is started. Passing
-// nil clears the patterns.
-func (c *StderrCollector) SetIgnorePatterns(patterns []*regexp.Regexp) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.ignorePatterns = patterns
-}
-
-// Write implements io.Writer to collect stderr output.
-func (c *StderrCollector) Write(p []byte) (n int, err error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if c.isClosed {
-		return len(p), nil
-	}
-
-	// Log at debug level as it comes in, suppressing harmless protocol noise.
-	// The acp-go-sdk sends $/cancel_request (JSON-RPC LSP-style) which ACP agents
-	// don't support; their "Method not found" rejection written to stderr is expected
-	// and can be safely ignored. The SDK-level error log for this is already suppressed
-	// in logging.go; this suppresses the agent-side stderr counterpart.
-	//
-	// Per-agent ignore patterns (mitto-k6h) additionally suppress the debug log for
-	// any write matching one of the compiled regexes. Buffer capture is unaffected —
-	// error diagnostics still see the full tail.
-	if c.logger != nil && len(p) > 0 {
-		output := string(p)
-		if !strings.Contains(output, "$/cancel_request") && !matchAnyRegex(c.ignorePatterns, output) {
-			c.logger.Debug("agent stderr", "output", output)
-		}
-	}
-
-	// Append to buffer, keeping only the last maxSize bytes
-	c.buffer = append(c.buffer, p...)
-	if len(c.buffer) > c.maxSize {
-		c.buffer = c.buffer[len(c.buffer)-c.maxSize:]
-	}
-
-	return len(p), nil
-}
-
-// GetOutput returns the collected stderr output.
-func (c *StderrCollector) GetOutput() string {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return string(c.buffer)
-}
-
-// Close marks the collector as closed and logs any remaining output at warn level if non-empty.
-func (c *StderrCollector) Close() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.isClosed = true
-}
-
-// stderrCrashPatterns are substrings in ACP process stderr output that indicate
-// the inner CLI subprocess has crashed. When detected, we proactively signal
-// process death via onCrashDetected callback rather than waiting for the SDK's
-// 60-second control request timeout (DEFAULT_CONTROL_REQUEST_TIMEOUT).
-//
-// Fix C: These patterns come from the claude-code-agent-sdk Rust layer which logs
-// to stderr when the CLI subprocess dies unexpectedly.
-//
-// These are the hardcoded baseline. Per-agent metadata.yaml `stderrPatterns.crash`
-// entries are unioned with this list at process-start time (mitto-k6h).
-var stderrCrashPatterns = []string{
-	"stream ended unexpectedly",
-	"EOF received from CLI stdout",
-	"background reader: stream ended",
-	"connection reset by peer",
-	"broken pipe",
-	// From acp-go-sdk's JSONRPC parser when receiving malformed messages from a dying process
-	"received message with neither id nor method",
-	// From acp-go-sdk's notification queue overflow handler (triggers when process is overwhelmed)
-	"failed to queue notification; closing connection",
-	// Node/V8 fatal error when the agent subprocess exhausts its JS heap (mitto-5q8).
-	// Detecting this immediately speeds proactive recycle instead of waiting for the
-	// dead process to be discovered on the next RPC attempt.
-	"JavaScript heap out of memory",
-	"Reached heap limit",
-}
-
-// StderrPatternsSpec is the pure-data (schema) form of per-agent stderr patterns.
-// It intentionally mirrors internal/agents.StderrPatterns as plain string slices
-// so the conversation package can compile them without importing internal/agents
-// (internal/acpproc must not depend on internal/agents; mitto-k6h).
-type StderrPatternsSpec struct {
-	Crash    []string
-	Ignore   []string
-	Degraded []string
-}
-
-// CompiledStderrPatterns holds regex patterns compiled once from a
-// StderrPatternsSpec. All three fields are separately populated so callers can
-// wire each action class independently (mitto-k6h).
-//
-// Action-class semantics:
-//   - Crash: OR'd with the hardcoded stderrCrashPatterns baseline; a match
-//     triggers onCrashDetected (SDK-timeout bypass).
-//   - Ignore: applied by StderrCollector.Write to suppress the debug-level
-//     "agent stderr" log for matching writes. Buffer capture is unaffected.
-//   - Degraded: fires onDegraded when a stderr chunk matches. onDegraded on the
-//     shared process feeds a fail-side sample into the mitto-5eq rolling-window
-//     saturation counter — frequent degraded output (alone or combined with real
-//     RPC timeouts/bails) can promote the process to saturated and let GC
-//     Tier 5/6 recycle it. NOT latched: a degraded line can recur and each
-//     matching chunk fires once (mitto-k6h).
-type CompiledStderrPatterns struct {
-	Crash    []*regexp.Regexp
-	Ignore   []*regexp.Regexp
-	Degraded []*regexp.Regexp
-}
-
-// CompileStderrPatterns compiles the plain-string patterns in spec into a
-// CompiledStderrPatterns. Invalid regexes are SKIPPED (logged as warnings via
-// logger when non-nil) rather than causing a fatal error — a single malformed
-// per-agent pattern must not prevent process start. Returns nil when spec is
-// empty (no patterns of any class) so hot paths can cheaply short-circuit
-// (mitto-k6h).
-func CompileStderrPatterns(spec StderrPatternsSpec, logger *slog.Logger) *CompiledStderrPatterns {
-	if len(spec.Crash) == 0 && len(spec.Ignore) == 0 && len(spec.Degraded) == 0 {
-		return nil
-	}
-	out := &CompiledStderrPatterns{}
-	out.Crash = compileRegexList(spec.Crash, "crash", logger)
-	out.Ignore = compileRegexList(spec.Ignore, "ignore", logger)
-	out.Degraded = compileRegexList(spec.Degraded, "degraded", logger)
-	return out
-}
-
-// compileRegexList compiles each pattern; invalid ones are skipped with a warn
-// log (never fatal). Empty input returns nil.
-func compileRegexList(patterns []string, class string, logger *slog.Logger) []*regexp.Regexp {
-	if len(patterns) == 0 {
-		return nil
-	}
-	compiled := make([]*regexp.Regexp, 0, len(patterns))
-	for _, raw := range patterns {
-		if raw == "" {
-			continue
-		}
-		re, err := regexp.Compile(raw)
-		if err != nil {
-			if logger != nil {
-				logger.Warn("skipping invalid stderr pattern",
-					"class", class,
-					"pattern", raw,
-					"error", err)
-			}
-			continue
-		}
-		compiled = append(compiled, re)
-	}
-	if len(compiled) == 0 {
-		return nil
-	}
-	return compiled
-}
-
-// matchAnyRegex returns true if any regex in patterns matches s. Nil/empty
-// slice always returns false.
-func matchAnyRegex(patterns []*regexp.Regexp, s string) bool {
-	for _, re := range patterns {
-		if re != nil && re.MatchString(s) {
-			return true
-		}
-	}
-	return false
-}
-
-// mcpInitProgressPattern detects the "Waiting for N MCP server(s) to initialize"
-// line the agent writes to stderr while it is blocking on MCP handshake. It is
-// intentionally count-agnostic and case-insensitive so it survives minor phrasing
-// variations across agent versions (mitto-8ul.1).
-var mcpInitProgressPattern = regexp.MustCompile(`(?i)waiting for .* mcp server`)
-
-// StartStderrMonitor starts a goroutine that reads from stderr and writes to the collector.
-// If onCrashDetected is non-nil, it is called (at most once) when crash patterns are
-// detected in the stderr output, enabling early process death signaling.
-// If onFirstActivity is non-nil, it is called (at most once) the first time any bytes
-// are observed on stderr — used by the startup watchdog to detect "live" processes.
-// If onMCPInitProgress is non-nil, it is called on each chunk reporting the agent is
-// waiting for MCP servers (re-fires per handshake episode; callers must dedup if
-// needed — mitto-29q). If onMCPInitTimeout is non-nil, it is called (at most once)
-// when the agent reports its MCP-init wait has timed out — callers use this to abort
-// the pending session/new promptly with an actionable error (mitto-8ul.1). Neither
-// MCP signal contributes to crash detection.
-//
-// If onDegraded is non-nil, it is called every time a stderr chunk matches a
-// per-agent Degraded regex (mitto-k6h). Unlike onCrashDetected, onDegraded is
-// NOT latched — a degraded line can recur and each matching chunk fires once.
-// Callers on the shared process feed this into the mitto-5eq rolling-window
-// saturation counter so stderr-observed degradation contributes to Tier 5/6
-// recycle decisions alongside real RPC timeouts/bails.
-//
-// perAgent, when non-nil, contributes per-agent regex patterns on top of the
-// hardcoded baseline (mitto-k6h):
-//   - Crash regexes are OR'd with stderrCrashPatterns when matching for onCrashDetected.
-//   - Ignore regexes are already applied by the collector (installed by the caller
-//     via StderrCollector.SetIgnorePatterns before this monitor is started).
-//   - Degraded regexes fire onDegraded (see above) — they feed the shared-process
-//     saturation signal, not crash detection.
-func StartStderrMonitor(
-	stderr runner.ReadCloser,
-	collector *StderrCollector,
-	onCrashDetected func(),
-	onFirstActivity func(),
-	onMCPInitProgress func(),
-	onMCPInitTimeout func(),
-	onDegraded func(),
-	perAgent *CompiledStderrPatterns,
-) {
-	go func() {
-		crashSignaled := false
-		activitySignaled := false
-		mcpTimeoutSignaled := false
-		buf := make([]byte, 4096)
-		for {
-			n, readErr := stderr.Read(buf)
-			if n > 0 {
-				collector.Write(buf[:n])
-
-				if !activitySignaled && onFirstActivity != nil {
-					activitySignaled = true
-					onFirstActivity()
-				}
-
-				chunkStr := ""
-
-				// Fix C: Check for crash patterns in stderr output.
-				// This detects inner CLI subprocess death immediately from SDK
-				// stderr messages, bypassing the 60s control request timeout.
-				//
-				// Per-agent crash regexes (mitto-k6h) are OR'd with the baseline —
-				// either source firing counts as a crash.
-				if !crashSignaled && onCrashDetected != nil {
-					chunkStr = string(buf[:n])
-					for _, pattern := range stderrCrashPatterns {
-						if strings.Contains(chunkStr, pattern) {
-							crashSignaled = true
-							onCrashDetected()
-							break
-						}
-					}
-					if !crashSignaled && perAgent != nil && matchAnyRegex(perAgent.Crash, chunkStr) {
-						crashSignaled = true
-						onCrashDetected()
-					}
-				}
-
-				// Degraded regexes: fire onDegraded on each matching chunk (mitto-k6h).
-				// Unlike crash detection, there is NO one-shot latch — a degraded
-				// line can recur and each match should contribute another sample
-				// to the shared-process rolling-window saturation counter.
-				if onDegraded != nil && perAgent != nil && len(perAgent.Degraded) > 0 {
-					if chunkStr == "" {
-						chunkStr = string(buf[:n])
-					}
-					if matchAnyRegex(perAgent.Degraded, chunkStr) {
-						onDegraded()
-					}
-				}
-
-				// MCP-init lifecycle signals (mitto-8ul.1): tolerant regex matches
-				// so the exact phrasing/count in the agent's log line is not load-bearing.
-				//
-				// MCP-init progress fires on EVERY matching chunk (mitto-29q): agents
-				// like Auggie re-run the MCP handshake on every session/new, so a
-				// one-shot latch would only widen the budget for the first-ever
-				// handshake. Duplicate logs/broadcasts are suppressed by the
-				// CompareAndSwap edge-detection inside the onMCPInitProgress callback.
-				// The hard-timeout signal remains one-shot.
-				if onMCPInitProgress != nil || (onMCPInitTimeout != nil && !mcpTimeoutSignaled) {
-					if chunkStr == "" {
-						chunkStr = string(buf[:n])
-					}
-					if onMCPInitProgress != nil && mcpInitProgressPattern.MatchString(chunkStr) {
-						onMCPInitProgress()
-					}
-					if !mcpTimeoutSignaled && onMCPInitTimeout != nil && mittoAcp.MCPInitTimeoutPattern.MatchString(chunkStr) {
-						mcpTimeoutSignaled = true
-						onMCPInitTimeout()
-					}
-				}
-			}
-			if readErr != nil {
-				break
-			}
-		}
-		collector.Close()
-	}()
-}
-
-// acpStartupWatchdogWarnDelay is the delay before the startup watchdog emits a WARN log
-// when no stderr activity has been observed and the ACP Initialize handshake has not completed.
-// Exposed as a var so tests can override it.
-var acpStartupWatchdogWarnDelay = 10 * time.Second
-
-// acpStartupWatchdogErrorDelay is the delay before the startup watchdog emits an ERROR log
-// when the process is still unresponsive.
-var acpStartupWatchdogErrorDelay = 30 * time.Second
-
-// StartACPStartupWatchdog runs a background goroutine that emits a WARN log if no stderr
-// activity is observed within acpStartupWatchdogWarnDelay, and an ERROR log if the process
-// is still unresponsive after acpStartupWatchdogErrorDelay. The returned signalActivity
-// callback should be wired to stderr first-activity AND called when the Initialize
-// handshake completes (success or failure); callers should also defer-cancel ctx so the
-// watchdog is torn down when startup finishes. Returns a no-op if logger is nil.
-func StartACPStartupWatchdog(ctx context.Context, logger *slog.Logger, command, acpServer string, pid int) func() {
-	if logger == nil {
-		return func() {}
-	}
-	activityCh := make(chan struct{})
-	var once sync.Once
-	signalActivity := func() { once.Do(func() { close(activityCh) }) }
-
-	go func() {
-		warnTimer := time.NewTimer(acpStartupWatchdogWarnDelay)
-		errTimer := time.NewTimer(acpStartupWatchdogErrorDelay)
-		defer warnTimer.Stop()
-		defer errTimer.Stop()
-
-		baseAttrs := []any{"command", command, "acp_server", acpServer}
-		if pid > 0 {
-			baseAttrs = append(baseAttrs, "pid", pid)
-		}
-
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-activityCh:
-				return
-			case <-warnTimer.C:
-				logger.Warn("ACP process appears unresponsive — no stderr output and no handshake observed in startup window",
-					append(baseAttrs, "elapsed", acpStartupWatchdogWarnDelay.String())...)
-			case <-errTimer.C:
-				logger.Error("ACP process still unresponsive after extended startup window — handshake has not completed",
-					append(baseAttrs, "elapsed", acpStartupWatchdogErrorDelay.String())...)
-			}
-		}
-	}()
-
-	return signalActivity
-}
+// The stderr collector, per-agent pattern types/compiler, stderr monitor, and
+// startup watchdog live in the leaf subpackage internal/acpproc/procstart so
+// both internal/conversation and internal/acpproc can consume them without an
+// import cycle (mitto-iuw2).
 
 // promptInactivityWatchdogWarnDelay is the idle duration (no streamed agent activity)
 // after which the prompt inactivity watchdog emits a WARN log. Non-destructive.
@@ -945,26 +576,6 @@ func (bs *BackgroundSession) startAgentWorkingHeartbeat(ctx context.Context) {
 	}()
 }
 
-// BuildACPProcessEnv constructs the environment slice for an ACP subprocess.
-// Keys are replaced in-place via mittoAcp.MergeEnv; precedence is:
-//
-//  1. os.Environ() — inherited from the Mitto process (lowest).
-//  2. serverEnv — server-specific env from settings.json (acp_servers[].env).
-//  3. mittoEnv — MITTO_* vars set by Mitto (highest precedence).
-//
-// This is shared between the direct-exec and restricted-runner branches so that
-// the runner branch sees the same env as the non-runner branch.
-func BuildACPProcessEnv(serverEnv map[string]string, mittoEnv map[string]string) []string {
-	combined := make(map[string]string, len(serverEnv)+len(mittoEnv))
-	for k, v := range serverEnv {
-		combined[k] = v
-	}
-	for k, v := range mittoEnv {
-		combined[k] = v // MITTO_* vars keep highest precedence
-	}
-	return mittoAcp.MergeEnv(os.Environ(), combined)
-}
-
 // doStartACPProcess performs a single attempt to start the ACP process.
 // Returns the error and any captured stderr output for error classification.
 func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, acpSessionID string) (string, error) {
@@ -1016,11 +627,11 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 
 	// Create stderr collector to capture output for error reporting
 	// Keep last 8KB of stderr output
-	StderrCollector := NewStderrCollector(8192, bs.logger)
+	stderrCollector := procstart.NewStderrCollector(8192, bs.logger)
 	// Install per-agent ignore patterns (mitto-k6h) so matching writes are
 	// suppressed from the debug-level stderr log. Nil is a safe no-op.
 	if bs.stderrPatterns != nil {
-		StderrCollector.SetIgnorePatterns(bs.stderrPatterns.Ignore)
+		stderrCollector.SetIgnorePatterns(bs.stderrPatterns.Ignore)
 	}
 
 	// Pre-create the process death detection channel so the stderr monitor
@@ -1065,13 +676,13 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 		}
 		// Pass the same env layering used by the direct-exec branch so server-specific
 		// vars reach the runner-spawned process.
-		runnerEnv := BuildACPProcessEnv(bs.serverEnv, mittoEnv)
+		runnerEnv := procstart.BuildACPProcessEnv(bs.serverEnv, mittoEnv)
 		stdin, stdout, stderr, wait, err = bs.runner.RunWithPipes(bs.ctx, args[0], args[1:], runnerEnv)
 		if err != nil {
 			return "", &sessionError{"failed to start with runner: " + err.Error()}
 		}
 
-		signalStartupActivity = StartACPStartupWatchdog(watchdogCtx, bs.logger, acpCommand, "", -1)
+		signalStartupActivity = procstart.StartACPStartupWatchdog(watchdogCtx, bs.logger, acpCommand, "", -1)
 
 		// Monitor stderr in background (with crash detection for Fix C and watchdog wake-up).
 		// BackgroundSession's own ACP process (non-shared path) does not multiplex sessions,
@@ -1081,7 +692,7 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 		// so onDegraded is nil — degraded stderr chunks are captured in the buffer
 		// but do not feed a rolling-window signal (there is no shared process to
 		// promote/recycle here).
-		StartStderrMonitor(stderr, StderrCollector, onCrashDetected, signalStartupActivity, nil, nil, nil, bs.stderrPatterns)
+		procstart.StartStderrMonitor(stderr, stderrCollector, onCrashDetected, signalStartupActivity, nil, nil, nil, bs.stderrPatterns)
 
 		// Store wait function for cleanup
 		// We'll call it in Close() method
@@ -1119,7 +730,7 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 
 		// Set environment variables for the ACP subprocess: server-specific env from
 		// settings.json layered with MITTO_* vars (same layering as the runner branch).
-		cmd.Env = BuildACPProcessEnv(bs.serverEnv, mittoEnv)
+		cmd.Env = procstart.BuildACPProcessEnv(bs.serverEnv, mittoEnv)
 
 		if err := cmd.Start(); err != nil {
 			return "", &sessionError{"failed to start ACP server: " + err.Error()}
@@ -1129,14 +740,14 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 		if cmd.Process != nil {
 			pid = cmd.Process.Pid
 		}
-		signalStartupActivity = StartACPStartupWatchdog(watchdogCtx, bs.logger, acpCommand, "", pid)
+		signalStartupActivity = procstart.StartACPStartupWatchdog(watchdogCtx, bs.logger, acpCommand, "", pid)
 
 		// Monitor stderr in background (same as runner case, with crash detection for Fix C
 		// and watchdog wake-up on first stderr activity). MCP-init callbacks are unused on
 		// the non-shared BackgroundSession path (mitto-8ul.1).
 		// See rationale at the sibling StartStderrMonitor callsite in the shared
 		// process fallback above: onDegraded is nil on the non-shared path.
-		StartStderrMonitor(stderrPipe, StderrCollector, onCrashDetected, signalStartupActivity, nil, nil, nil, bs.stderrPatterns)
+		procstart.StartStderrMonitor(stderrPipe, stderrCollector, onCrashDetected, signalStartupActivity, nil, nil, nil, bs.stderrPatterns)
 
 		bs.acpCmd = cmd
 
@@ -1311,7 +922,7 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 		time.Sleep(100 * time.Millisecond)
 
 		// Log the failure with command and stderr output
-		stderrOutput := strings.TrimSpace(StderrCollector.GetOutput())
+		stderrOutput := strings.TrimSpace(stderrCollector.GetOutput())
 		if bs.logger != nil {
 			logAttrs := []any{
 				"command", acpCommand,
@@ -1450,7 +1061,7 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 		time.Sleep(100 * time.Millisecond)
 
 		// Log the failure with command and stderr output
-		stderrOutput := strings.TrimSpace(StderrCollector.GetOutput())
+		stderrOutput := strings.TrimSpace(stderrCollector.GetOutput())
 		if bs.logger != nil {
 			logAttrs := []any{
 				"command", acpCommand,

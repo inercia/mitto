@@ -3,7 +3,7 @@ package web
 import (
 	"sync"
 
-	"github.com/inercia/mitto/internal/conversation"
+	"github.com/inercia/mitto/internal/acpproc/procstart"
 )
 
 // stderrPatternsCache is a simple concurrent cache keyed by ACP server name that
@@ -18,7 +18,7 @@ import (
 // discovery-time lifecycle for AgentDefaults.
 type stderrPatternsCache struct {
 	mu      sync.RWMutex
-	entries map[string]*conversation.CompiledStderrPatterns
+	entries map[string]*procstart.CompiledStderrPatterns
 	// present tracks negative lookups so callers can distinguish "not cached"
 	// from "cached-as-nil" (the latter is a valid, terminal result).
 	present map[string]bool
@@ -26,12 +26,12 @@ type stderrPatternsCache struct {
 
 func newStderrPatternsCache() *stderrPatternsCache {
 	return &stderrPatternsCache{
-		entries: make(map[string]*conversation.CompiledStderrPatterns),
+		entries: make(map[string]*procstart.CompiledStderrPatterns),
 		present: make(map[string]bool),
 	}
 }
 
-func (c *stderrPatternsCache) get(key string) (*conversation.CompiledStderrPatterns, bool) {
+func (c *stderrPatternsCache) get(key string) (*procstart.CompiledStderrPatterns, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	if !c.present[key] {
@@ -40,7 +40,7 @@ func (c *stderrPatternsCache) get(key string) (*conversation.CompiledStderrPatte
 	return c.entries[key], true
 }
 
-func (c *stderrPatternsCache) put(key string, val *conversation.CompiledStderrPatterns) {
+func (c *stderrPatternsCache) put(key string, val *procstart.CompiledStderrPatterns) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.entries[key] = val

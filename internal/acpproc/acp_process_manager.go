@@ -12,6 +12,7 @@ import (
 	"github.com/coder/acp-go-sdk"
 
 	mittoAcp "github.com/inercia/mitto/internal/acp"
+	"github.com/inercia/mitto/internal/acpproc/procstart"
 	"github.com/inercia/mitto/internal/auxiliary"
 	"github.com/inercia/mitto/internal/coldstart"
 	"github.com/inercia/mitto/internal/config"
@@ -66,7 +67,7 @@ type ACPProcessManager struct {
 	// the ACP server → agent metadata → StderrPatterns → CompileStderrPatterns.
 	// May be nil (all processes then use only the hardcoded baseline). Nil result
 	// from the resolver is also valid (agent has no per-agent patterns).
-	StderrPatternsResolver func(acpServer string) *conversation.CompiledStderrPatterns
+	StderrPatternsResolver func(acpServer string) *procstart.CompiledStderrPatterns
 
 	// Auxiliary session tracking
 	auxMu       sync.Mutex
@@ -666,7 +667,7 @@ func (m *ACPProcessManager) GetOrCreateProcess(workspace *config.WorkspaceSettin
 
 	// Resolve per-agent stderr patterns for this ACP server (mitto-k6h). Nil is
 	// a safe no-op — the process falls back to the hardcoded baseline.
-	var stderrPatterns *conversation.CompiledStderrPatterns
+	var stderrPatterns *procstart.CompiledStderrPatterns
 	if m.StderrPatternsResolver != nil {
 		stderrPatterns = m.StderrPatternsResolver(workspace.ACPServer)
 	}

@@ -16,6 +16,7 @@ import (
 	"github.com/coder/acp-go-sdk"
 
 	mittoAcp "github.com/inercia/mitto/internal/acp"
+	"github.com/inercia/mitto/internal/acpproc/procstart"
 	"github.com/inercia/mitto/internal/coldstart"
 	"github.com/inercia/mitto/internal/conversation"
 	"github.com/inercia/mitto/internal/logging"
@@ -274,9 +275,10 @@ type SharedACPProcessConfig struct {
 	// StderrPatterns holds per-agent compiled stderr regex patterns (mitto-k6h).
 	// Nil means only the hardcoded baseline crash patterns apply. Compiled once
 	// by the caller from the agent's metadata.yaml. Kept as a pointer to
-	// CompiledStderrPatterns (defined in internal/conversation) so acpproc does
-	// NOT depend on internal/agents.
-	StderrPatterns *conversation.CompiledStderrPatterns
+	// procstart.CompiledStderrPatterns (leaf subpackage) so acpproc does NOT
+	// depend on internal/agents and internal/conversation can consume the same
+	// type without an import cycle (mitto-iuw2).
+	StderrPatterns *procstart.CompiledStderrPatterns
 }
 
 // Compile-time assertion: *SharedACPProcess must satisfy the conversation.SharedProcess interface.
@@ -548,7 +550,7 @@ func (p *SharedACPProcess) doStartProcess() (string, error) {
 	var wait func() error
 	var cmd *exec.Cmd
 
-	stderrCollector := conversation.NewStderrCollector(8192, p.logger)
+	stderrCollector := procstart.NewStderrCollector(8192, p.logger)
 	// Install per-agent ignore patterns (mitto-k6h) so matching writes are
 	// suppressed from the debug-level stderr log. Nil is a safe no-op.
 	if p.config.StderrPatterns != nil {
@@ -652,7 +654,7 @@ func (p *SharedACPProcess) doStartProcess() (string, error) {
 		// Build env using the same layering as the direct-exec branch below so that
 		// server-specific vars (from settings.json acp_servers[].env) AND MITTO_* vars
 		// are propagated to the restricted-runner-spawned process.
-		runnerEnv := conversation.BuildACPProcessEnv(p.config.Env, mittoEnv)
+		runnerEnv := procstart.BuildACPProcessEnv(p.config.Env, mittoEnv)
 		stdin, stdout, stderr, wait, err = p.config.Runner.RunWithPipes(runCtx, args[0], args[1:], runnerEnv)
 		if err != nil {
 			runCancel()
@@ -670,9 +672,9 @@ func (p *SharedACPProcess) doStartProcess() (string, error) {
 				"acp_server", p.config.ACPServer)
 		}
 
-		signalStartupActivity = conversation.StartACPStartupWatchdog(watchdogCtx, p.logger, acpCommand, p.config.ACPServer, -1)
+		signalStartupActivity = procstart.StartACPStartupWatchdog(watchdogCtx, p.logger, acpCommand, p.config.ACPServer, -1)
 
-		conversation.StartStderrMonitor(stderr, stderrCollector, onCrashDetected, signalStartupActivity, onMCPInitProgress, onMCPInitTimeout, onDegraded, p.config.StderrPatterns)
+		procstart.StartStderrMonitor(stderr, stderrCollector, onCrashDetected, signalStartupActivity, onMCPInitProgress, onMCPInitTimeout, onDegraded, p.config.StderrPatterns)
 	} else {
 		cmd = exec.CommandContext(p.ctx, args[0], args[1:]...)
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -701,7 +703,7 @@ func (p *SharedACPProcess) doStartProcess() (string, error) {
 
 		// Set environment variables for the ACP subprocess. Same layering as the
 		// runner branch (os.Environ + server-specific Env + MITTO_*).
-		cmd.Env = conversation.BuildACPProcessEnv(p.config.Env, mittoEnv)
+		cmd.Env = procstart.BuildACPProcessEnv(p.config.Env, mittoEnv)
 
 		if p.logger != nil && len(p.config.Env) > 0 {
 			envKeys := make([]string, 0, len(p.config.Env))
@@ -731,9 +733,9 @@ func (p *SharedACPProcess) doStartProcess() (string, error) {
 		if cmd.Process != nil {
 			pid = cmd.Process.Pid
 		}
-		signalStartupActivity = conversation.StartACPStartupWatchdog(watchdogCtx, p.logger, acpCommand, p.config.ACPServer, pid)
+		signalStartupActivity = procstart.StartACPStartupWatchdog(watchdogCtx, p.logger, acpCommand, p.config.ACPServer, pid)
 
-		conversation.StartStderrMonitor(stderrPipe, stderrCollector, onCrashDetected, signalStartupActivity, onMCPInitProgress, onMCPInitTimeout, onDegraded, p.config.StderrPatterns)
+		procstart.StartStderrMonitor(stderrPipe, stderrCollector, onCrashDetected, signalStartupActivity, onMCPInitProgress, onMCPInitTimeout, onDegraded, p.config.StderrPatterns)
 
 		wait = func() error {
 			return cmd.Wait()

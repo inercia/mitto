@@ -17,6 +17,7 @@ import (
 	builtinConfig "github.com/inercia/mitto/config"
 	mittoAcp "github.com/inercia/mitto/internal/acp"
 	"github.com/inercia/mitto/internal/acpproc"
+	"github.com/inercia/mitto/internal/acpproc/procstart"
 	"github.com/inercia/mitto/internal/agents"
 	"github.com/inercia/mitto/internal/appdir"
 	"github.com/inercia/mitto/internal/auxiliary"
@@ -659,7 +660,7 @@ func NewServer(config Config) (*Server, error) {
 		// hardcoded stderrCrashPatterns baseline in internal/conversation still
 		// applies unconditionally — this only adds per-agent extensions.
 		stderrCache := newStderrPatternsCache()
-		compileFor := func(acpServer string) *conversation.CompiledStderrPatterns {
+		compileFor := func(acpServer string) *procstart.CompiledStderrPatterns {
 			if acpServer == "" {
 				return nil
 			}
@@ -678,12 +679,12 @@ func NewServer(config Config) (*Server, error) {
 				stderrCache.put(acpServer, nil)
 				return nil
 			}
-			spec := conversation.StderrPatternsSpec{
+			spec := procstart.StderrPatternsSpec{
 				Crash:    agent.Metadata.StderrPatterns.Crash,
 				Ignore:   agent.Metadata.StderrPatterns.Ignore,
 				Degraded: agent.Metadata.StderrPatterns.Degraded,
 			}
-			compiled := conversation.CompileStderrPatterns(spec, logger)
+			compiled := procstart.CompileStderrPatterns(spec, logger)
 			stderrCache.put(acpServer, compiled)
 			return compiled
 		}

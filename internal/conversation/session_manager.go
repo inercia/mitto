@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 
 	mittoAcp "github.com/inercia/mitto/internal/acp"
+	"github.com/inercia/mitto/internal/acpproc/procstart"
 	"github.com/inercia/mitto/internal/appdir"
 	"github.com/inercia/mitto/internal/auxiliary"
 	"github.com/inercia/mitto/internal/coldstart"
@@ -172,7 +173,7 @@ type SessionManager struct {
 	// BackgroundSessionConfig on creation/resume so legacy per-session ACP
 	// processes see the same per-agent patterns as shared processes. Nil means
 	// only the hardcoded baseline applies.
-	stderrPatternsResolver func(acpServer string) *CompiledStderrPatterns
+	stderrPatternsResolver func(acpServer string) *procstart.CompiledStderrPatterns
 
 	// onConversationIdle is invoked when a session's agent stops and the session is
 	// idle. Wired to the loop runner to drive event-driven on-completion firing.
@@ -874,7 +875,7 @@ func (sm *SessionManager) SetPreferredModelsResolver(resolver func(name, working
 // SetStderrPatternsResolver sets the function used to resolve per-agent compiled
 // stderr regex patterns for a given ACP server name (mitto-k6h). The resolver is
 // passed to every new and resumed BackgroundSession via BackgroundSessionConfig.
-func (sm *SessionManager) SetStderrPatternsResolver(resolver func(acpServer string) *CompiledStderrPatterns) {
+func (sm *SessionManager) SetStderrPatternsResolver(resolver func(acpServer string) *procstart.CompiledStderrPatterns) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 	sm.stderrPatternsResolver = resolver
@@ -883,7 +884,7 @@ func (sm *SessionManager) SetStderrPatternsResolver(resolver func(acpServer stri
 // resolveStderrPatterns looks up compiled per-agent stderr regex patterns for
 // the given ACP server name (mitto-k6h). Returns nil if no resolver is set or
 // the resolver returned nil (baseline patterns only).
-func (sm *SessionManager) resolveStderrPatterns(acpServer string) *CompiledStderrPatterns {
+func (sm *SessionManager) resolveStderrPatterns(acpServer string) *procstart.CompiledStderrPatterns {
 	sm.mu.RLock()
 	r := sm.stderrPatternsResolver
 	sm.mu.RUnlock()

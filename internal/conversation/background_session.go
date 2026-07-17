@@ -13,6 +13,7 @@ import (
 	"github.com/coder/acp-go-sdk"
 
 	mittoAcp "github.com/inercia/mitto/internal/acp"
+	"github.com/inercia/mitto/internal/acpproc/procstart"
 	"github.com/inercia/mitto/internal/auxiliary"
 	"github.com/inercia/mitto/internal/coldstart"
 	"github.com/inercia/mitto/internal/config"
@@ -210,7 +211,7 @@ type BackgroundSession struct {
 	acpCommand           string                                 // Command used to start ACP process (for restart)
 	acpCwd               string                                 // Working directory for ACP process (for restart)
 	serverEnv            map[string]string                      // Server-specific env vars from settings.json (for restart)
-	stderrPatterns       *CompiledStderrPatterns                // Per-agent stderr regex patterns (mitto-k6h); nil = baseline only
+	stderrPatterns       *procstart.CompiledStderrPatterns      // Per-agent stderr regex patterns (mitto-k6h); nil = baseline only
 	acpServerConstraints map[string]*config.ACPServerConstraint // Auto-selection constraints from the ACP server config
 	mittoConfig          *config.Config                         // Full Mitto config; used for model-tag resolution (config.ResolveModelTags)
 	// initialModelPreference is the per-workspace initial-model preference
@@ -469,7 +470,7 @@ type BackgroundSessionConfig struct {
 	// StderrPatterns holds per-agent compiled stderr patterns (crash / ignore /
 	// degraded classes; mitto-k6h). Nil means only the hardcoded baseline
 	// applies. Compiled once by the web layer from agent metadata.yaml.
-	StderrPatterns *CompiledStderrPatterns
+	StderrPatterns *procstart.CompiledStderrPatterns
 
 	// PruneConfig is the pruning configuration for the session recorder.
 	// When set, the recorder automatically prunes old events after each recording
