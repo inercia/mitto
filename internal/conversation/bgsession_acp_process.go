@@ -595,6 +595,7 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 		return "", &sessionError{err.Error()}
 	}
 	mittoEnv := mittoAcp.BuildMittoEnv(bs.persistedID, workingDir, "", "")
+	agentHintEnv := mittoAcp.BuildAgentHintEnv("")
 	expandedArgs := mittoAcp.ExpandArgs(args, mittoEnv)
 	if bs.logger != nil {
 		changedIndices := make([]int, 0)
@@ -675,8 +676,9 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 				"command", acpCommand)
 		}
 		// Pass the same env layering used by the direct-exec branch so server-specific
-		// vars reach the runner-spawned process.
-		runnerEnv := procstart.BuildACPProcessEnv(bs.serverEnv, mittoEnv)
+		// vars reach the runner-spawned process. agentHintEnv (AGENT_MODE=1) sits
+		// below serverEnv so per-server settings can override it.
+		runnerEnv := procstart.BuildACPProcessEnv(bs.serverEnv, mittoEnv, agentHintEnv)
 		stdin, stdout, stderr, wait, err = bs.runner.RunWithPipes(bs.ctx, args[0], args[1:], runnerEnv)
 		if err != nil {
 			return "", &sessionError{"failed to start with runner: " + err.Error()}
@@ -728,9 +730,9 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 			return "", &sessionError{"failed to create stderr pipe: " + err.Error()}
 		}
 
-		// Set environment variables for the ACP subprocess: server-specific env from
-		// settings.json layered with MITTO_* vars (same layering as the runner branch).
-		cmd.Env = procstart.BuildACPProcessEnv(bs.serverEnv, mittoEnv)
+		// Set environment variables for the ACP subprocess: agent hints + server-specific
+		// env from settings.json + MITTO_* vars (same layering as the runner branch).
+		cmd.Env = procstart.BuildACPProcessEnv(bs.serverEnv, mittoEnv, agentHintEnv)
 
 		if err := cmd.Start(); err != nil {
 			return "", &sessionError{"failed to start ACP server: " + err.Error()}

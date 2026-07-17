@@ -520,6 +520,7 @@ func (p *SharedACPProcess) doStartProcess() (string, error) {
 		return "", fmt.Errorf("parse command: %w", err)
 	}
 	mittoEnv := mittoAcp.BuildMittoEnv("", p.config.WorkingDir, p.config.ACPServer, "")
+	agentHintEnv := mittoAcp.BuildAgentHintEnv(p.config.ACPServer)
 	expandedArgs := mittoAcp.ExpandArgs(args, mittoEnv)
 	if p.logger != nil {
 		changedIndices := make([]int, 0)
@@ -653,8 +654,9 @@ func (p *SharedACPProcess) doStartProcess() (string, error) {
 
 		// Build env using the same layering as the direct-exec branch below so that
 		// server-specific vars (from settings.json acp_servers[].env) AND MITTO_* vars
-		// are propagated to the restricted-runner-spawned process.
-		runnerEnv := procstart.BuildACPProcessEnv(p.config.Env, mittoEnv)
+		// are propagated to the restricted-runner-spawned process. agentHintEnv
+		// (e.g. AGENT_MODE=1) sits below serverEnv so per-server settings can override.
+		runnerEnv := procstart.BuildACPProcessEnv(p.config.Env, mittoEnv, agentHintEnv)
 		stdin, stdout, stderr, wait, err = p.config.Runner.RunWithPipes(runCtx, args[0], args[1:], runnerEnv)
 		if err != nil {
 			runCancel()
@@ -702,8 +704,8 @@ func (p *SharedACPProcess) doStartProcess() (string, error) {
 		}
 
 		// Set environment variables for the ACP subprocess. Same layering as the
-		// runner branch (os.Environ + server-specific Env + MITTO_*).
-		cmd.Env = procstart.BuildACPProcessEnv(p.config.Env, mittoEnv)
+		// runner branch (os.Environ + agent hints + server-specific Env + MITTO_*).
+		cmd.Env = procstart.BuildACPProcessEnv(p.config.Env, mittoEnv, agentHintEnv)
 
 		if p.logger != nil && len(p.config.Env) > 0 {
 			envKeys := make([]string, 0, len(p.config.Env))

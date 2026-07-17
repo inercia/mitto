@@ -6,19 +6,19 @@ import (
 )
 
 // TestBuildACPProcessEnv verifies env-layering for ACP subprocess startup.
-// Layering: os.Environ() < server-specific Env < MITTO_* vars.
+// Layering: os.Environ() < agentHintEnv < server-specific Env < MITTO_* vars.
 func TestBuildACPProcessEnv(t *testing.T) {
 	t.Setenv("MITTO_TEST_BASE_ENV", "from-base")
 
 	t.Run("includes os.Environ", func(t *testing.T) {
-		env := BuildACPProcessEnv(nil, nil)
+		env := BuildACPProcessEnv(nil, nil, nil)
 		if !envContainsKV(env, "MITTO_TEST_BASE_ENV", "from-base") {
 			t.Errorf("expected MITTO_TEST_BASE_ENV=from-base in env, got %v entries", len(env))
 		}
 	})
 
 	t.Run("appends server-specific env", func(t *testing.T) {
-		env := BuildACPProcessEnv(map[string]string{"FOO": "bar", "BAZ": "qux"}, nil)
+		env := BuildACPProcessEnv(map[string]string{"FOO": "bar", "BAZ": "qux"}, nil, nil)
 		if !envContainsKV(env, "FOO", "bar") {
 			t.Error("expected FOO=bar in env")
 		}
@@ -32,6 +32,7 @@ func TestBuildACPProcessEnv(t *testing.T) {
 		env := BuildACPProcessEnv(
 			map[string]string{"OVERLAP": "from-server"},
 			map[string]string{"OVERLAP": "from-mitto", "MITTO_SESSION_ID": "abc"},
+			nil,
 		)
 		// Find the LAST occurrence of OVERLAP=...
 		lastOverlap := ""
@@ -66,7 +67,7 @@ func TestBuildACPProcessEnv_ReplacesExistingKey(t *testing.T) {
 	serverEnv := map[string]string{
 		"NODE_OPTIONS": "--max-old-space-size=6144",
 	}
-	result := BuildACPProcessEnv(serverEnv, nil)
+	result := BuildACPProcessEnv(serverEnv, nil, nil)
 
 	var found []string
 	for _, kv := range result {
@@ -89,7 +90,7 @@ func TestBuildACPProcessEnv_MittoEnvOverridesServerEnv(t *testing.T) {
 	mittoEnv := map[string]string{
 		"MITTO_TEST_VAR": "from-mitto",
 	}
-	result := BuildACPProcessEnv(serverEnv, mittoEnv)
+	result := BuildACPProcessEnv(serverEnv, mittoEnv, nil)
 
 	var found []string
 	for _, kv := range result {
