@@ -596,6 +596,10 @@ func FormatChildren(children []ChildInfo) string {
 //   - GitFileModified(path) — true iff the tracked file has pending (staged/unstaged) changes.
 //   - GitDirModified(path?) — true iff the directory (default: workspace root) has any pending
 //     changes, including untracked files.
+//   - GitStatusFiles(path?) — []string of raw `git status --porcelain` lines
+//     ("XY path", e.g. " M file", "?? new", "A  staged") for the workspace
+//     (or the given pathspec). Empty slice on a clean tree; nil outside a repo
+//     or when git is unavailable. Template-only (no CEL binding).
 //   - GitFileTracked(path) — true iff path is tracked by git (present in the index).
 //   - GitFileDeleted(path) — true iff the tracked file has been deleted (staged or unstaged).
 //   - BeadsCount(labels, statuses) — count of beads matching ALL comma-separated labels
@@ -687,6 +691,17 @@ func BuildTemplateFuncMap(ctx *PromptEnabledContext) template.FuncMap {
 				p = path[0]
 			}
 			return gitDirModified(folder, p)
+		},
+		"GitStatusFiles": func(path ...string) []string {
+			p := ""
+			if len(path) > 0 {
+				p = path[0]
+			}
+			lines, ok := gitStatusPorcelain(folder, p)
+			if !ok {
+				return nil
+			}
+			return lines
 		},
 		"GitFileTracked": func(path string) bool { return gitFileTracked(folder, path) },
 		"GitFileDeleted": func(path string) bool { return gitFileDeleted(folder, path) },

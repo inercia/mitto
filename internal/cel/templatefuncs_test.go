@@ -308,6 +308,61 @@ func TestBuildTemplateFuncMap_GitFuncsRenderSmoke(t *testing.T) {
 	}
 }
 
+// TestBuildTemplateFuncMap_GitStatusFilesRenderSmoke verifies GitStatusFiles
+// returns porcelain lines that render correctly through RenderPromptTemplate,
+// and that it yields an empty slice on a clean repo / nil outside a repo.
+func TestBuildTemplateFuncMap_GitStatusFilesRenderSmoke(t *testing.T) {
+	dir := newGitRepo(t)
+
+	// Clean tree: expect empty range output.
+	cleanCtx := &PromptEnabledContext{Workspace: WorkspaceContext{Folder: dir}}
+	cleanFM := BuildTemplateFuncMap(cleanCtx)
+	got, err := RenderPromptTemplate("test", `[{{ range GitStatusFiles }}{{ . }}|{{ end }}]`, cleanCtx, cleanFM)
+	if err != nil {
+		t.Fatalf("render error (clean): %v", err)
+	}
+	if got != "[]" {
+		t.Errorf("GitStatusFiles on clean repo = %q, want %q", got, "[]")
+	}
+
+	// Dirty tree: modify tracked file and add an untracked one.
+	if err := os.WriteFile(filepath.Join(dir, "tracked.txt"), []byte("changed\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "new.txt"), []byte("new\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	dirtyCtx := &PromptEnabledContext{Workspace: WorkspaceContext{Folder: dir}}
+	dirtyFM := BuildTemplateFuncMap(dirtyCtx)
+	got, err = RenderPromptTemplate("test", `{{ range GitStatusFiles }}{{ . }}
+{{ end }}`, dirtyCtx, dirtyFM)
+	if err != nil {
+		t.Fatalf("render error (dirty): %v", err)
+	}
+	if !strings.Contains(got, "tracked.txt") {
+		t.Errorf("GitStatusFiles output missing 'tracked.txt': %q", got)
+	}
+	if !strings.Contains(got, "new.txt") {
+		t.Errorf("GitStatusFiles output missing 'new.txt': %q", got)
+	}
+	if !strings.Contains(got, "??") {
+		t.Errorf("GitStatusFiles output missing '??' status code for untracked file: %q", got)
+	}
+
+	// Non-repo: expect nil slice → empty range output.
+	plain := t.TempDir()
+	plainCtx := &PromptEnabledContext{Workspace: WorkspaceContext{Folder: plain}}
+	plainFM := BuildTemplateFuncMap(plainCtx)
+	got, err = RenderPromptTemplate("test", `[{{ range GitStatusFiles }}{{ . }}|{{ end }}]`, plainCtx, plainFM)
+	if err != nil {
+		t.Fatalf("render error (non-repo): %v", err)
+	}
+	if got != "[]" {
+		t.Errorf("GitStatusFiles on non-repo = %q, want %q", got, "[]")
+	}
+}
+
 func TestParity_HasPattern(t *testing.T) {
 	e := newTestEvaluator(t)
 	reachable := NewReachableToolsContext([]string{"github_pr", "jira_create", "slack_post"}).Servers
@@ -699,7 +754,7 @@ func TestBuildTemplateFuncMap_AllKeysPresent(t *testing.T) {
 	expected := []string{
 		"Arg", "Default", "UserData",
 		"FileExists", "DirExists", "CommandExists", "HasPattern", "Model",
-		"GitFileModified", "GitDirModified", "GitFileTracked", "GitFileDeleted",
+		"GitFileModified", "GitDirModified", "GitStatusFiles", "GitFileTracked", "GitFileDeleted",
 		"BeadsCount", "HasBeads",
 		"PromptText",
 		"Trim", "Lower", "Upper", "Contains", "HasPrefix", "HasSuffix", "Join",
