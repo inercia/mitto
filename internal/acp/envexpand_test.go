@@ -1,6 +1,7 @@
 package acp
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -51,6 +52,35 @@ func TestBuildMittoEnv(t *testing.T) {
 		}
 		if env["MITTO_LOGS_DIR"] == "" {
 			t.Error("MITTO_LOGS_DIR is empty, expected non-empty path from appdir.LogsDir()")
+		}
+	})
+}
+
+// TestBuildAgentHintEnv covers mitto-g7ye AC #1: the env builder that feeds ACP
+// subprocess startup emits AGENT_MODE=1 so shells later spawned by the agent
+// (Bash tool, run_command, hooks, ...) can skip heavy interactive rc setup.
+// The MITTO_* identity vars stay in BuildMittoEnv; the agent-hint layer lives
+// here as its own map so BuildACPProcessEnv can place it below serverEnv and
+// keep it user-overridable per-server (AC #3, exercised in the procstart tests).
+func TestBuildAgentHintEnv(t *testing.T) {
+	t.Run("emits AGENT_MODE=1 regardless of acpServer", func(t *testing.T) {
+		for _, srv := range []string{"", "auggie", "claude-code", "unknown-agent"} {
+			env := BuildAgentHintEnv(srv)
+			if got := env["AGENT_MODE"]; got != "1" {
+				t.Errorf("BuildAgentHintEnv(%q)[AGENT_MODE] = %q, want %q", srv, got, "1")
+			}
+		}
+	})
+
+	t.Run("does not leak MITTO_* identity keys", func(t *testing.T) {
+		// The agent-hint layer must stay disjoint from BuildMittoEnv: the two
+		// are layered separately by BuildACPProcessEnv so identity vars can
+		// keep highest precedence while hints stay user-overridable.
+		env := BuildAgentHintEnv("auggie")
+		for k := range env {
+			if strings.HasPrefix(k, "MITTO_") {
+				t.Errorf("agent-hint env unexpectedly contains identity key %q", k)
+			}
 		}
 	})
 }

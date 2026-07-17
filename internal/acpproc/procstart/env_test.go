@@ -105,3 +105,88 @@ func TestBuildACPProcessEnv_MittoEnvOverridesServerEnv(t *testing.T) {
 		t.Errorf("expected MITTO_TEST_VAR=from-mitto, got %s", found[0])
 	}
 }
+
+// lastValueFor returns the value of the last occurrence of key in an env
+// slice, or ("", false) if the key is not present. Matches exec semantics
+// where a duplicated key resolves to the last-appearing entry.
+func lastValueFor(env []string, key string) (string, bool) {
+	prefix := key + "="
+	found := false
+	last := ""
+	for _, kv := range env {
+		if strings.HasPrefix(kv, prefix) {
+			last = kv[len(prefix):]
+			found = true
+		}
+	}
+	return last, found
+}
+
+// TestBuildACPProcessEnv_AgentHintLayer covers mitto-g7ye:
+//   - AC #2: an ACP subprocess spawned via this env builder (used by both the
+//     direct-exec and restricted-runner branches in shared_acp_process.go and
+//     bgsession_acp_process.go) sees AGENT_MODE=1 in its env.
+//   - AC #3: settings.json acp_servers[].env (modelled here as serverEnv) can
+//     override AGENT_MODE — either to a custom value or to empty (disable) —
+//     because the agent-hint layer sits below serverEnv.
+//
+// The two ACP-start call sites both delegate to BuildACPProcessEnv, so
+// exercising the builder covers both branches (verified by inspection of
+// internal/acpproc/shared_acp_process.go and
+// internal/conversation/bgsession_acp_process.go).
+func TestBuildACPProcessEnv_AgentHintLayer(t *testing.T) {
+	agentHint := map[string]string{"AGENT_MODE": "1"}
+
+	t.Run("agent hint reaches subprocess env by default", func(t *testing.T) {
+		env := BuildACPProcessEnv(nil, nil, agentHint)
+		got, ok := lastValueFor(env, "AGENT_MODE")
+		if !ok {
+			t.Fatalf("expected AGENT_MODE to be present in env")
+		}
+		if got != "1" {
+			t.Errorf("AGENT_MODE = %q, want %q", got, "1")
+		}
+	})
+
+	t.Run("serverEnv overrides agent hint with a custom value", func(t *testing.T) {
+		serverEnv := map[string]string{"AGENT_MODE": "verbose"}
+		env := BuildACPProcessEnv(serverEnv, nil, agentHint)
+		got, ok := lastValueFor(env, "AGENT_MODE")
+		if !ok {
+			t.Fatalf("expected AGENT_MODE to be present in env")
+		}
+		if got != "verbose" {
+			t.Errorf("AGENT_MODE = %q, want %q (serverEnv must win over agent hint)", got, "verbose")
+		}
+	})
+
+	t.Run("serverEnv can disable agent hint by setting it to empty", func(t *testing.T) {
+		// AC #3 explicitly calls out: "user can set AGENT_MODE=empty in
+		// settings.json to disable it". The final value must be the empty
+		// serverEnv override, not the hint's "1".
+		serverEnv := map[string]string{"AGENT_MODE": ""}
+		env := BuildACPProcessEnv(serverEnv, nil, agentHint)
+		got, ok := lastValueFor(env, "AGENT_MODE")
+		if !ok {
+			t.Fatalf("expected AGENT_MODE to be present in env (with empty value), got absent")
+		}
+		if got != "" {
+			t.Errorf("AGENT_MODE = %q, want empty (serverEnv override disables hint)", got)
+		}
+	})
+
+	t.Run("mitto identity vars still outrank agent hint on collision", func(t *testing.T) {
+		// Belt-and-braces: agent-hint layer must never displace MITTO_* identity
+		// vars. If both maps set the same key, MITTO wins (highest precedence).
+		hint := map[string]string{"MITTO_COLLISION": "from-hint"}
+		mittoEnv := map[string]string{"MITTO_COLLISION": "from-mitto"}
+		env := BuildACPProcessEnv(nil, mittoEnv, hint)
+		got, ok := lastValueFor(env, "MITTO_COLLISION")
+		if !ok {
+			t.Fatalf("expected MITTO_COLLISION to be present")
+		}
+		if got != "from-mitto" {
+			t.Errorf("MITTO_COLLISION = %q, want %q (mitto identity must win)", got, "from-mitto")
+		}
+	})
+}
