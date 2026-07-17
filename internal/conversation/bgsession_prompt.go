@@ -13,6 +13,7 @@ import (
 
 	"github.com/coder/acp-go-sdk"
 
+	mittoAcp "github.com/inercia/mitto/internal/acp"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/processors"
 	"github.com/inercia/mitto/internal/session"
@@ -352,11 +353,11 @@ retryAfterRestart:
 				})
 
 				// Attempt to restart the ACP process
-				if err := bs.restartACPProcess(RestartReasonCrashDuringPrompt); err != nil {
+				if err := bs.restartACPProcess(mittoAcp.RestartReasonCrashDuringPrompt); err != nil {
 					// Provide specific guidance for permanent errors
 					errMsg := "Failed to restart the AI agent: " + err.Error() + ". Please switch to another conversation and back to retry."
-					if classified, ok := err.(*ACPClassifiedError); ok && !classified.IsRetryable() {
-						errMsg = formatClassifiedError(classified)
+					if classified, ok := err.(*mittoAcp.ACPClassifiedError); ok && !classified.IsRetryable() {
+						errMsg = mittoAcp.FormatClassifiedError(classified)
 					}
 					bs.notifyObservers(func(o SessionObserver) {
 						o.OnError(errMsg)
@@ -1095,7 +1096,7 @@ func (bs *BackgroundSession) pdGetRestartInfo() string {
 }
 
 func (bs *BackgroundSession) pdRestartACPProcess() error {
-	return bs.restartACPProcess(RestartReasonCrashDuringStream)
+	return bs.restartACPProcess(mittoAcp.RestartReasonCrashDuringStream)
 }
 
 func (bs *BackgroundSession) pdReacquirePromptingState() {

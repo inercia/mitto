@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	mittoAcp "github.com/inercia/mitto/internal/acp"
 	"github.com/inercia/mitto/internal/beads"
 	"github.com/inercia/mitto/internal/beads/watcher"
 	"github.com/inercia/mitto/internal/config"
@@ -1543,7 +1544,7 @@ func (r *LoopRunner) handleContextWindowFailure(sessionID, sessionName string, l
 //     schedule" runs (resetTimer=false) or forced one-shots must not push out
 //     the regular schedule.
 func (r *LoopRunner) handleDeliveryFailure(sessionID, sessionName string, loop *session.LoopPrompt, loopStore *session.LoopStore, err error, resetTimer, forced bool) {
-	if IsContextTooLargeError(err) {
+	if mittoAcp.IsContextTooLargeError(err) {
 		if r.handleContextWindowFailure(sessionID, sessionName, loopStore) {
 			if r.onLoopUpdated != nil {
 				if updated, gErr := loopStore.Get(); gErr == nil && updated != nil {

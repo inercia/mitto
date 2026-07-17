@@ -11,6 +11,7 @@ import (
 
 	"github.com/coder/acp-go-sdk"
 
+	mittoAcp "github.com/inercia/mitto/internal/acp"
 	"github.com/inercia/mitto/internal/auxiliary"
 	"github.com/inercia/mitto/internal/coldstart"
 	"github.com/inercia/mitto/internal/config"
@@ -927,7 +928,7 @@ func (m *ACPProcessManager) PromptAuxiliary(ctx context.Context, workspaceUUID, 
 		// Always release the lock before returning or retrying.
 		auxState.mu.Unlock()
 
-		if !conversation.IsACPConnectionError(err) {
+		if !mittoAcp.IsACPConnectionError(err) {
 			return "", fmt.Errorf("auxiliary prompt failed: %w", err)
 		}
 

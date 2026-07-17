@@ -1,4 +1,4 @@
-package conversation
+package acp
 
 import (
 	"fmt"
@@ -240,9 +240,9 @@ func ClassifyACPError(err error, stderr string) *ACPClassifiedError {
 	}
 }
 
-// formatClassifiedError returns a user-friendly string combining the message and guidance.
+// FormatClassifiedError returns a user-friendly string combining the message and guidance.
 // Used for observer notifications.
-func formatClassifiedError(classified *ACPClassifiedError) string {
+func FormatClassifiedError(classified *ACPClassifiedError) string {
 	if classified == nil {
 		return ""
 	}
@@ -251,6 +251,11 @@ func formatClassifiedError(classified *ACPClassifiedError) string {
 	}
 	return classified.UserMessage
 }
+
+// MCPInitTimeoutPattern detects the agent's "MCP initialization timed out after Ns"
+// line, emitted when its internal MCP wait budget elapses without all servers being
+// ready. Matched tolerantly so we don't couple to the exact suffix (mitto-8ul.1).
+var MCPInitTimeoutPattern = regexp.MustCompile(`(?i)mcp initialization timed out`)
 
 // IsMCPInitTimeout reports whether err (possibly wrapped in *ACPClassifiedError)
 // carries the agent's "MCP initialization timed out" signal. This is TRANSIENT
@@ -268,7 +273,7 @@ func IsMCPInitTimeout(err error) bool {
 	if err == nil {
 		return false
 	}
-	return mcpInitTimeoutPattern.MatchString(err.Error())
+	return MCPInitTimeoutPattern.MatchString(err.Error())
 }
 
 // IsACPConnectionError reports whether err is a recoverable ACP pipe/connection
@@ -324,7 +329,7 @@ var httpStatusRegex = regexp.MustCompile(`(?:HTTP error:\s*|"httpStatus"\s*:\s*|
 // The ACP server forwards HTTP 413 responses as JSON-RPC -32603 "Internal error"
 // messages, so the numeric status code or the model-specific phrase may appear
 // anywhere in the error string.  We keep the list of patterns here (rather than
-// inlining them in formatACPError) so that the prompt dispatcher's queue-advancement
+// inlining them in FormatACPError) so that the prompt dispatcher's queue-advancement
 // logic and the loop runner's auto-pause guard (via internal/web) can reuse the
 // same predicate without duplicating strings.
 func IsContextTooLargeError(err error) bool {
@@ -346,7 +351,7 @@ func IsContextTooLargeError(err error) bool {
 // isAgentBusyError reports whether err is a saturated/overloaded shared ACP
 // process fail-fast error (mitto-13ck.2). These errors wrap context.DeadlineExceeded
 // but represent a BUSY agent, not a cancellation, so they must be classified
-// before the generic context-cancelled branch in formatACPError.
+// before the generic context-cancelled branch in FormatACPError.
 func isAgentBusyError(err error) bool {
 	if err == nil {
 		return false
@@ -354,9 +359,9 @@ func isAgentBusyError(err error) bool {
 	return strings.Contains(strings.ToLower(err.Error()), "saturated")
 }
 
-// isRateLimitError returns true if the error indicates the upstream API is
+// IsRateLimitError returns true if the error indicates the upstream API is
 // rate-limiting the session.
-func isRateLimitError(err error) bool {
+func IsRateLimitError(err error) bool {
 	if err == nil {
 		return false
 	}
@@ -364,9 +369,9 @@ func isRateLimitError(err error) bool {
 	return strings.Contains(errMsgLower, "rate limit") || strings.Contains(errMsgLower, "too many requests")
 }
 
-// formatACPError transforms ACP errors into user-friendly messages.
+// FormatACPError transforms ACP errors into user-friendly messages.
 // It detects common error patterns and provides actionable guidance.
-func formatACPError(err error) string {
+func FormatACPError(err error) string {
 	if err == nil {
 		return ""
 	}
@@ -418,7 +423,7 @@ func formatACPError(err error) string {
 	}
 
 	// Rate limiting
-	if isRateLimitError(err) {
+	if IsRateLimitError(err) {
 		return "Rate limit reached. Please wait a moment before sending another message."
 	}
 

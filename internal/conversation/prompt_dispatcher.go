@@ -719,7 +719,7 @@ func (p promptDispatcher) completeHandshakeOrAbort(d promptDeps) bool {
 	if errors.Is(handshakeErr, errHandshakeWatchdogFired) {
 		friendlyMsg = "The agent is still starting up — please resend your message."
 	} else {
-		friendlyMsg = "Could not start the agent session: " + formatACPError(handshakeErr) + " Please resend your message."
+		friendlyMsg = "Could not start the agent session: " + mittoAcp.FormatACPError(handshakeErr) + " Please resend your message."
 	}
 	if d.pdHasRecorder() {
 		seq := d.pdGetNextSeq()
@@ -1194,8 +1194,8 @@ func (p promptDispatcher) handlePromptError(
 			// Provide specific guidance for permanent errors.
 			errMsg := "Failed to restart the AI agent: " + restartErr.Error() +
 				". Please switch to another conversation and back to retry."
-			if classified, ok := restartErr.(*ACPClassifiedError); ok && !classified.IsRetryable() {
-				errMsg = formatClassifiedError(classified)
+			if classified, ok := restartErr.(*mittoAcp.ACPClassifiedError); ok && !classified.IsRetryable() {
+				errMsg = mittoAcp.FormatClassifiedError(classified)
 			}
 			d.pdNotifyObservers(func(o SessionObserver) {
 				o.OnError(errMsg)
@@ -1225,7 +1225,7 @@ func (p promptDispatcher) handlePromptError(
 	}
 
 	// Transient error: ACP process is still alive.
-	userFriendlyErr := formatACPError(err)
+	userFriendlyErr := mittoAcp.FormatACPError(err)
 	d.pdNotifyObservers(func(o SessionObserver) {
 		o.OnError(userFriendlyErr)
 	})
@@ -1239,7 +1239,7 @@ func (p promptDispatcher) handlePromptError(
 	//   conversation — stop the queue.
 	// Rate-limit: the API will reject the next message too — stop the queue;
 	//   the keepalive-driven TryProcessQueuedMessage will retry once the session is idle.
-	if !IsContextTooLargeError(err) && !isRateLimitError(err) {
+	if !mittoAcp.IsContextTooLargeError(err) && !mittoAcp.IsRateLimitError(err) {
 		// Apply any config changes deferred during this turn before
 		// dispatching the next queued message.
 		d.pdFlushPendingConfig()

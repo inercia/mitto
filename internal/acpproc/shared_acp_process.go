@@ -192,8 +192,8 @@ const (
 
 	// Note: Runtime restart constants (maxProcessRestarts, processRestartWindow,
 	// processRestartBaseDelay, processRestartMaxDelay) are now defined in
-	// acp_error_classification.go as shared constants (conversation.MaxACPRestarts, conversation.ACPRestartWindow,
-	// conversation.ACPRestartBaseDelay, conversation.ACPRestartMaxDelay) to ensure consistent behavior between
+	// internal/acp/errors.go as shared constants (mittoAcp.MaxACPRestarts, mittoAcp.ACPRestartWindow,
+	// mittoAcp.ACPRestartBaseDelay, mittoAcp.ACPRestartMaxDelay) to ensure consistent behavior between
 	// SharedACPProcess and conversation.BackgroundSession.
 )
 
@@ -429,15 +429,15 @@ func NewSharedACPProcess(ctx context.Context, config SharedACPProcessConfig) (*S
 
 // startProcess starts the ACP process and performs the Initialize handshake.
 // Must be called with appropriate synchronization (only from constructor or restart).
-// Returns an *conversation.ACPClassifiedError when the error has been classified, allowing
+// Returns an *mittoAcp.ACPClassifiedError when the error has been classified, allowing
 // callers to distinguish permanent from transient failures.
 func (p *SharedACPProcess) startProcess() error {
 	var lastErr error
-	var lastClassified *conversation.ACPClassifiedError
+	var lastClassified *mittoAcp.ACPClassifiedError
 
 	for attempt := 0; attempt < maxProcessStartRetries; attempt++ {
 		if attempt > 0 {
-			delay := conversation.BackoffDelay(attempt-1, processStartRetryBaseDelay, processStartRetryMaxDelay, processStartRetryJitterRatio)
+			delay := mittoAcp.BackoffDelay(attempt-1, processStartRetryBaseDelay, processStartRetryMaxDelay, processStartRetryJitterRatio)
 			if p.logger != nil {
 				p.logger.Info("Retrying ACP process start",
 					"attempt", attempt+1,
@@ -462,7 +462,7 @@ func (p *SharedACPProcess) startProcess() error {
 		lastErr = processErr
 
 		// Classify the error to determine if retrying is worthwhile.
-		lastClassified = conversation.ClassifyACPError(processErr, stderr)
+		lastClassified = mittoAcp.ClassifyACPError(processErr, stderr)
 
 		if p.logger != nil {
 			p.logger.Warn("ACP process start failed",
@@ -2398,7 +2398,7 @@ func (p *SharedACPProcess) canRestart() bool {
 	defer p.restartMu.Unlock()
 
 	now := time.Now()
-	cutoff := now.Add(-conversation.ACPRestartWindow)
+	cutoff := now.Add(-mittoAcp.ACPRestartWindow)
 
 	// Remove old restart timestamps
 	valid := p.restartTimes[:0]
@@ -2409,7 +2409,7 @@ func (p *SharedACPProcess) canRestart() bool {
 	}
 	p.restartTimes = valid
 
-	return len(p.restartTimes) < conversation.MaxACPRestarts
+	return len(p.restartTimes) < mittoAcp.MaxACPRestarts
 }
 
 // recordRestart records a restart attempt.
@@ -2422,10 +2422,10 @@ func (p *SharedACPProcess) recordRestart() {
 
 // Restart kills the old process and starts a new one.
 // All sessions must re-register their callbacks and LoadSession after restart.
-// Returns nil on success. Returns an *conversation.ACPClassifiedError for permanent failures.
+// Returns nil on success. Returns an *mittoAcp.ACPClassifiedError for permanent failures.
 func (p *SharedACPProcess) Restart() error {
 	if !p.canRestart() {
-		return fmt.Errorf("restart limit exceeded (%d restarts in %v)", conversation.MaxACPRestarts, conversation.ACPRestartWindow)
+		return fmt.Errorf("restart limit exceeded (%d restarts in %v)", mittoAcp.MaxACPRestarts, mittoAcp.ACPRestartWindow)
 	}
 
 	// Check global (cross-workspace) restart rate limiter before proceeding.
@@ -2439,7 +2439,7 @@ func (p *SharedACPProcess) Restart() error {
 	p.restartMu.Unlock()
 
 	if recentCount > 0 {
-		delay := conversation.BackoffDelay(recentCount-1, conversation.ACPRestartBaseDelay, conversation.ACPRestartMaxDelay, processStartRetryJitterRatio)
+		delay := mittoAcp.BackoffDelay(recentCount-1, mittoAcp.ACPRestartBaseDelay, mittoAcp.ACPRestartMaxDelay, processStartRetryJitterRatio)
 		if p.logger != nil {
 			p.logger.Info("Waiting before restart",
 				"delay", delay.String(),
@@ -2477,7 +2477,7 @@ func (p *SharedACPProcess) Restart() error {
 	if err := p.startProcess(); err != nil {
 		if p.logger != nil {
 			logAttrs := []any{"error", err}
-			if classified, ok := err.(*conversation.ACPClassifiedError); ok {
+			if classified, ok := err.(*mittoAcp.ACPClassifiedError); ok {
 				logAttrs = append(logAttrs,
 					"error_class", classified.Class.String(),
 					"user_message", classified.UserMessage,

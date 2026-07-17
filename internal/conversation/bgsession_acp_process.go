@@ -92,7 +92,7 @@ func (bs *BackgroundSession) canRestartACP() bool {
 
 // recordRestart records a restart attempt for rate limiting and telemetry.
 // This method is thread-safe.
-func (bs *BackgroundSession) recordRestart(reason RestartReason) {
+func (bs *BackgroundSession) recordRestart(reason mittoAcp.RestartReason) {
 	bs.procCtl.recordRestart(reason, bs.logger, bs.persistedID)
 }
 
@@ -114,13 +114,13 @@ func (bs *BackgroundSession) GetRestartStats() RestartStats {
 // The new process will attempt to resume the ACP session if the agent supports it.
 // The reason parameter is used for telemetry and diagnostics.
 // Returns nil on success, or an error if restart fails.
-// Returns an *ACPClassifiedError for permanent failures.
-func (bs *BackgroundSession) restartACPProcess(reason RestartReason) error {
+// Returns an *mittoAcp.ACPClassifiedError for permanent failures.
+func (bs *BackgroundSession) restartACPProcess(reason mittoAcp.RestartReason) error {
 	// Apply backoff based on how many recent restarts have occurred.
 	recentCount := bs.procCtl.recentRestartCount()
 
 	if recentCount > 0 {
-		delay := BackoffDelay(recentCount-1, ACPRestartBaseDelay, ACPRestartMaxDelay, acpStartRetryJitterRatio)
+		delay := mittoAcp.BackoffDelay(recentCount-1, mittoAcp.ACPRestartBaseDelay, mittoAcp.ACPRestartMaxDelay, acpStartRetryJitterRatio)
 		if bs.logger != nil {
 			bs.logger.Info("Waiting before ACP restart",
 				"delay", delay.String(),
@@ -207,7 +207,7 @@ func (bs *BackgroundSession) restartACPProcess(reason RestartReason) error {
 		// breaker so canRestartACP() returns false immediately on all future calls.
 		// This prevents the sliding-window timer from resetting and allowing further
 		// futile retry cycles (e.g. "write |1: file already closed" pipe errors).
-		if classified, ok := err.(*ACPClassifiedError); ok && !classified.IsRetryable() {
+		if classified, ok := err.(*mittoAcp.ACPClassifiedError); ok && !classified.IsRetryable() {
 			bs.procCtl.markPermanentlyFailed()
 			if bs.logger != nil {
 				bs.logger.Warn("ACP restart returned permanent error, circuit breaker opened",
@@ -221,7 +221,7 @@ func (bs *BackgroundSession) restartACPProcess(reason RestartReason) error {
 				"session_id", bs.persistedID,
 				"error", err,
 			}
-			if classified, ok := err.(*ACPClassifiedError); ok {
+			if classified, ok := err.(*mittoAcp.ACPClassifiedError); ok {
 				logAttrs = append(logAttrs,
 					"error_class", classified.Class.String(),
 					"user_message", classified.UserMessage,
@@ -257,14 +257,14 @@ func (bs *BackgroundSession) restartACPProcess(reason RestartReason) error {
 // The acpCwd parameter sets the working directory for the ACP process itself.
 // This method includes retry logic with exponential backoff for transient failures.
 // Permanent errors (missing module, command not found, etc.) skip retries.
-// Returns an *ACPClassifiedError when the error has been classified.
+// Returns an *mittoAcp.ACPClassifiedError when the error has been classified.
 func (bs *BackgroundSession) startACPProcess(acpCommand, acpCwd, workingDir, acpSessionID string) error {
 	var lastErr error
-	var lastClassified *ACPClassifiedError
+	var lastClassified *mittoAcp.ACPClassifiedError
 
 	for attempt := 0; attempt < maxACPStartRetries; attempt++ {
 		if attempt > 0 {
-			delay := BackoffDelay(attempt-1, acpStartRetryBaseDelay, acpStartRetryMaxDelay, acpStartRetryJitterRatio)
+			delay := mittoAcp.BackoffDelay(attempt-1, acpStartRetryBaseDelay, acpStartRetryMaxDelay, acpStartRetryJitterRatio)
 			if bs.logger != nil {
 				bs.logger.Info("Retrying ACP process start",
 					"attempt", attempt+1,
@@ -290,7 +290,7 @@ func (bs *BackgroundSession) startACPProcess(acpCommand, acpCwd, workingDir, acp
 		lastErr = processErr
 
 		// Classify the error to determine if retrying is worthwhile.
-		lastClassified = ClassifyACPError(processErr, stderr)
+		lastClassified = mittoAcp.ClassifyACPError(processErr, stderr)
 
 		if bs.logger != nil {
 			bs.logger.Warn("ACP process start failed",
@@ -525,11 +525,6 @@ func matchAnyRegex(patterns []*regexp.Regexp, s string) bool {
 // variations across agent versions (mitto-8ul.1).
 var mcpInitProgressPattern = regexp.MustCompile(`(?i)waiting for .* mcp server`)
 
-// mcpInitTimeoutPattern detects the agent's "MCP initialization timed out after Ns"
-// line, emitted when its internal MCP wait budget elapses without all servers being
-// ready. Matched tolerantly so we don't couple to the exact suffix (mitto-8ul.1).
-var mcpInitTimeoutPattern = regexp.MustCompile(`(?i)mcp initialization timed out`)
-
 // StartStderrMonitor starts a goroutine that reads from stderr and writes to the collector.
 // If onCrashDetected is non-nil, it is called (at most once) when crash patterns are
 // detected in the stderr output, enabling early process death signaling.
@@ -633,7 +628,7 @@ func StartStderrMonitor(
 					if onMCPInitProgress != nil && mcpInitProgressPattern.MatchString(chunkStr) {
 						onMCPInitProgress()
 					}
-					if !mcpTimeoutSignaled && onMCPInitTimeout != nil && mcpInitTimeoutPattern.MatchString(chunkStr) {
+					if !mcpTimeoutSignaled && onMCPInitTimeout != nil && mittoAcp.MCPInitTimeoutPattern.MatchString(chunkStr) {
 						mcpTimeoutSignaled = true
 						onMCPInitTimeout()
 					}

@@ -12,6 +12,7 @@ import (
 
 	"github.com/coder/acp-go-sdk"
 
+	mittoAcp "github.com/inercia/mitto/internal/acp"
 	"github.com/inercia/mitto/internal/auxiliary"
 	"github.com/inercia/mitto/internal/coldstart"
 	"github.com/inercia/mitto/internal/config"
@@ -1000,13 +1001,13 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 			// with "broken pipe" or "file already closed".
 			// We detect this, restart the shared OS process, and retry once — matching the
 			// same auto-recovery pattern used by PromptWithMeta and the streaming loop.
-			if IsACPConnectionError(err) && bs.canRestartACP() {
+			if mittoAcp.IsACPConnectionError(err) && bs.canRestartACP() {
 				if bs.logger != nil {
 					bs.logger.Info("Shared ACP process appears dead on resume, restarting",
 						"session_id", bs.persistedID,
 						"error", err)
 				}
-				bs.recordRestart(RestartReasonResumeFailure)
+				bs.recordRestart(mittoAcp.RestartReasonResumeFailure)
 
 				// Restart the shared OS process. SharedACPProcess.Restart() is rate-limited
 				// and idempotent — if another session already triggered a restart, this

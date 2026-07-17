@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/coder/acp-go-sdk"
+
+	mittoAcp "github.com/inercia/mitto/internal/acp"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/session"
 )
@@ -3084,17 +3086,17 @@ func TestFormatACPError(t *testing.T) {
 				err = &testError{msg: tt.errMsg}
 			}
 
-			result := formatACPError(err)
+			result := mittoAcp.FormatACPError(err)
 
 			if tt.contains == "" {
 				if result != "" {
-					t.Errorf("formatACPError() = %q, want empty string", result)
+					t.Errorf("FormatACPError() = %q, want empty string", result)
 				}
 				return
 			}
 
 			if !containsIgnoreCase(result, tt.contains) {
-				t.Errorf("formatACPError() = %q, want to contain %q", result, tt.contains)
+				t.Errorf("FormatACPError() = %q, want to contain %q", result, tt.contains)
 			}
 		})
 	}
@@ -3139,7 +3141,7 @@ func TestIsContextTooLargeError(t *testing.T) {
 			if tt.errMsg != "" {
 				err = &testError{msg: tt.errMsg}
 			}
-			got := IsContextTooLargeError(err)
+			got := mittoAcp.IsContextTooLargeError(err)
 			if got != tt.wantTrue {
 				t.Errorf("IsContextTooLargeError(%q) = %v, want %v", tt.errMsg, got, tt.wantTrue)
 			}
@@ -3166,9 +3168,9 @@ func TestIsRateLimitError(t *testing.T) {
 			if tt.errMsg != "" {
 				err = &testError{msg: tt.errMsg}
 			}
-			got := isRateLimitError(err)
+			got := mittoAcp.IsRateLimitError(err)
 			if got != tt.wantTrue {
-				t.Errorf("isRateLimitError(%q) = %v, want %v", tt.errMsg, got, tt.wantTrue)
+				t.Errorf("IsRateLimitError(%q) = %v, want %v", tt.errMsg, got, tt.wantTrue)
 			}
 		})
 	}
@@ -4242,7 +4244,7 @@ func TestRestartACPProcess_SharedProcess_PreservesReference(t *testing.T) {
 	}
 
 	// restartACPProcess should fail (shared process has no real connection)
-	err := bs.restartACPProcess(RestartReasonCrashDuringStream)
+	err := bs.restartACPProcess(mittoAcp.RestartReasonCrashDuringStream)
 	if err == nil {
 		t.Fatal("Expected restartACPProcess to fail on a process with no connection")
 	}

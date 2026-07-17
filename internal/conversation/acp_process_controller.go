@@ -10,22 +10,24 @@ import (
 	"log/slog"
 	"sync"
 	"time"
+
+	mittoAcp "github.com/inercia/mitto/internal/acp"
 )
 
 // RestartStats contains statistics about ACP process restarts.
 type RestartStats struct {
-	TotalRestarts   int                   // Total number of restarts in session lifetime
-	RecentRestarts  int                   // Number of restarts in the current window
-	ReasonCounts    map[RestartReason]int // Count of restarts by reason
-	LastRestartTime time.Time             // Timestamp of most recent restart
-	LastReason      RestartReason         // Reason for most recent restart
+	TotalRestarts   int                            // Total number of restarts in session lifetime
+	RecentRestarts  int                            // Number of restarts in the current window
+	ReasonCounts    map[mittoAcp.RestartReason]int // Count of restarts by reason
+	LastRestartTime time.Time                      // Timestamp of most recent restart
+	LastReason      mittoAcp.RestartReason         // Reason for most recent restart
 }
 
 type acpProcessController struct {
 	mu                sync.Mutex
 	restartCount      int
 	restartTimes      []time.Time
-	restartReasons    []RestartReason
+	restartReasons    []mittoAcp.RestartReason
 	permanentlyFailed bool
 }
 
@@ -50,23 +52,23 @@ func (c *acpProcessController) canRestart(logger *slog.Logger, sessionID string)
 	// Lifetime cap: even for transient errors, don't restart more than MaxACPTotalRestarts
 	// times in total. This prevents infinite retry cycles where the sliding window keeps
 	// resetting every ACPRestartWindow (e.g. dead pipe, repeatedly failing cold-start).
-	if c.restartCount >= MaxACPTotalRestarts {
+	if c.restartCount >= mittoAcp.MaxACPTotalRestarts {
 		c.permanentlyFailed = true
 		if logger != nil {
 			logger.Warn("canRestartACP: lifetime restart cap reached, circuit breaker opened",
 				"session_id", sessionID,
 				"total_restarts", c.restartCount,
-				"max_total_restarts", MaxACPTotalRestarts)
+				"max_total_restarts", mittoAcp.MaxACPTotalRestarts)
 		}
 		return false
 	}
 
 	now := time.Now()
-	cutoff := now.Add(-ACPRestartWindow)
+	cutoff := now.Add(-mittoAcp.ACPRestartWindow)
 
 	// Filter out old restart times and corresponding reasons (keep indices in sync)
 	var recentRestarts []time.Time
-	var recentReasons []RestartReason
+	var recentReasons []mittoAcp.RestartReason
 	for i, t := range c.restartTimes {
 		if t.After(cutoff) {
 			recentRestarts = append(recentRestarts, t)
@@ -79,12 +81,12 @@ func (c *acpProcessController) canRestart(logger *slog.Logger, sessionID string)
 	c.restartTimes = recentRestarts
 	c.restartReasons = recentReasons
 
-	return len(recentRestarts) < MaxACPRestarts
+	return len(recentRestarts) < mittoAcp.MaxACPRestarts
 }
 
 // recordRestart records a restart attempt for rate limiting and telemetry.
 // This method is thread-safe.
-func (c *acpProcessController) recordRestart(reason RestartReason, logger *slog.Logger, sessionID string) {
+func (c *acpProcessController) recordRestart(reason mittoAcp.RestartReason, logger *slog.Logger, sessionID string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -111,7 +113,7 @@ func (c *acpProcessController) getRestartInfo() string {
 	defer c.mu.Unlock()
 
 	now := time.Now()
-	cutoff := now.Add(-ACPRestartWindow)
+	cutoff := now.Add(-mittoAcp.ACPRestartWindow)
 	count := 0
 	for _, t := range c.restartTimes {
 		if t.After(cutoff) {
@@ -119,7 +121,7 @@ func (c *acpProcessController) getRestartInfo() string {
 		}
 	}
 	// count is the number of recent restarts already done; the next one will be count+1
-	return fmt.Sprintf("(attempt %d of %d)", count+1, MaxACPRestarts)
+	return fmt.Sprintf("(attempt %d of %d)", count+1, mittoAcp.MaxACPRestarts)
 }
 
 // stats returns statistics about ACP process restarts for telemetry.
@@ -130,12 +132,12 @@ func (c *acpProcessController) stats() RestartStats {
 
 	s := RestartStats{
 		TotalRestarts: c.restartCount,
-		ReasonCounts:  make(map[RestartReason]int),
+		ReasonCounts:  make(map[mittoAcp.RestartReason]int),
 	}
 
 	// Count recent restarts and reasons
 	now := time.Now()
-	cutoff := now.Add(-ACPRestartWindow)
+	cutoff := now.Add(-mittoAcp.ACPRestartWindow)
 	for i, t := range c.restartTimes {
 		if t.After(cutoff) {
 			s.RecentRestarts++

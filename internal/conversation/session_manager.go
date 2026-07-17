@@ -12,6 +12,7 @@ import (
 
 	"path/filepath"
 
+	mittoAcp "github.com/inercia/mitto/internal/acp"
 	"github.com/inercia/mitto/internal/appdir"
 	"github.com/inercia/mitto/internal/auxiliary"
 	"github.com/inercia/mitto/internal/coldstart"
@@ -2367,7 +2368,7 @@ func (sm *SessionManager) resumeSessionWithConstraint(sessionID, sessionName, wo
 		// or MCP auto-resume) will succeed. Genuine permanent failures (missing
 		// binary, broken MCP server on a WARM process, etc.) still fall through
 		// to the counter/archive logic below.
-		if IsMCPInitTimeout(err) {
+		if mittoAcp.IsMCPInitTimeout(err) {
 			if sm.logger != nil {
 				sm.logger.Warn("Resume hit transient cold-start MCP-init timeout; not counting as hard failure (will retry when warm)",
 					"session_id", sessionID,
