@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
+	mittoAcp "github.com/inercia/mitto/internal/acp"
 	"github.com/inercia/mitto/internal/client"
-	"github.com/inercia/mitto/internal/conversation"
 )
 
 // safeErrorCollector is a thread-safe error message collector for tests.
@@ -342,12 +342,12 @@ func TestACPRestart_ReasonTracking(t *testing.T) {
 	// Verify reason was tracked.
 	// The mock sends an AgentMessageChunk before crashing, so the crash is detected
 	// during streaming, resulting in CrashDuringStream (not CrashDuringPrompt).
-	if stats.LastReason != conversation.RestartReasonCrashDuringStream {
-		t.Errorf("LastReason = %q, want %q", stats.LastReason, conversation.RestartReasonCrashDuringStream)
+	if stats.LastReason != mittoAcp.RestartReasonCrashDuringStream {
+		t.Errorf("LastReason = %q, want %q", stats.LastReason, mittoAcp.RestartReasonCrashDuringStream)
 	}
 
 	// Verify reason count
-	if count := stats.ReasonCounts[conversation.RestartReasonCrashDuringStream]; count != 1 {
+	if count := stats.ReasonCounts[mittoAcp.RestartReasonCrashDuringStream]; count != 1 {
 		t.Errorf("ReasonCounts[CrashDuringStream] = %d, want 1", count)
 	}
 }
