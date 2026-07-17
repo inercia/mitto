@@ -4315,7 +4315,6 @@ export function useWebSocket({
       }
       staggeredBackgroundTimersRef.current = {};
     };
-    // eslint-disable-next-line preact/hooks/exhaustive-deps
   }, []);
 
   // forceReconnectActiveSession lives in useWSConnection (C1) — mitto-90f.6.2.
