@@ -41,6 +41,49 @@ func TestStderrCollector_IgnorePatternsSuppressDebugLog(t *testing.T) {
 	}
 }
 
+// TestStderrCollector_CloseSuppressesSubsequentWrites verifies that after
+// Close(), further Write() calls are no-ops: the return value still reports
+// full-length consumed (io.Writer contract) but neither the buffer nor the
+// debug log is mutated. This locks down the newly-exported Close() surface
+// (mitto-iuw2) so a future change cannot silently regress the drop-on-close
+// semantics.
+func TestStderrCollector_CloseSuppressesSubsequentWrites(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	collector := NewStderrCollector(8192, logger)
+
+	if _, err := collector.Write([]byte("before-close\n")); err != nil {
+		t.Fatalf("pre-close write failed: %v", err)
+	}
+	collector.Close()
+
+	preLen := len(collector.GetOutput())
+	preLogLen := buf.Len()
+
+	// Post-close write must report the full length consumed but not append
+	// to the buffer or emit a debug log line.
+	payload := []byte("after-close-should-be-dropped\n")
+	n, err := collector.Write(payload)
+	if err != nil {
+		t.Fatalf("post-close write returned error: %v", err)
+	}
+	if n != len(payload) {
+		t.Errorf("post-close write returned n=%d, want %d (io.Writer contract)", n, len(payload))
+	}
+
+	got := collector.GetOutput()
+	if len(got) != preLen {
+		t.Errorf("post-close write mutated buffer: pre-len=%d post-len=%d content=%q", preLen, len(got), got)
+	}
+	if strings.Contains(got, "after-close") {
+		t.Errorf("post-close payload leaked into buffer: %q", got)
+	}
+	if buf.Len() != preLogLen {
+		t.Errorf("post-close write emitted debug log; pre-len=%d post-len=%d", preLogLen, buf.Len())
+	}
+}
+
 // TestStartStderrMonitor_DegradedPatternFiresOnDegradedCallback verifies the
 // mitto-k6h increment-2 wiring: a per-agent Degraded regex fires onDegraded
 // (feeding the shared-process saturation signal) and does NOT trigger the
