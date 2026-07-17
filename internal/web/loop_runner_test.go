@@ -4016,7 +4016,9 @@ func TestLoopRunner_WorkspaceKey(t *testing.T) {
 		t.Error("keys should differ when WorkingDir differs")
 	}
 	// Same WorkingDir + ACPServer → same key.
-	if workspaceKey("/w", "a") != workspaceKey("/w", "a") {
+	k1 := workspaceKey("/w", "a")
+	k2 := workspaceKey("/w", "a")
+	if k1 != k2 {
 		t.Error("keys should match for the same pair")
 	}
 	// NUL separator is present.

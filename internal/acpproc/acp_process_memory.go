@@ -44,13 +44,6 @@ func processTreeRSSDetailed(pid int) (parent uint64, descendants uint64, descend
 	return parent, descendants, descendantCount, nil
 }
 
-// descendantsRSS recursively sums the RSS of all descendants of p. Per-process
-// errors are skipped so a child exiting mid-walk does not fail the whole sum.
-func descendantsRSS(p *process.Process) uint64 {
-	total, _ := descendantsRSSDetailed(p)
-	return total
-}
-
 // descendantsRSSDetailed recursively sums the RSS of all descendants of p and
 // counts them. Per-process errors are skipped so a child exiting mid-walk does
 // not fail the whole sum.
