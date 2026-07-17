@@ -1,4 +1,4 @@
-package config
+package workspaces
 
 import (
 	"encoding/json"

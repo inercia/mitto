@@ -1,4 +1,4 @@
-package config
+package workspaces
 
 import (
 	"encoding/json"
@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/inercia/mitto/internal/appdir"
+	"github.com/inercia/mitto/internal/prompts"
 )
 
 // ---- WorkspaceSettings AuxiliaryModelSelection tests ----
@@ -112,7 +113,7 @@ func TestWorkspaceSettings_GetInitialModelPreference(t *testing.T) {
 	tests := []struct {
 		name    string
 		ws      *WorkspaceSettings
-		want    []PromptPreferredModel
+		want    []prompts.PromptPreferredModel
 		wantNil bool
 	}{
 		{
@@ -128,12 +129,12 @@ func TestWorkspaceSettings_GetInitialModelPreference(t *testing.T) {
 		{
 			name: "profile only",
 			ws:   &WorkspaceSettings{InitialModelProfile: "Claude Opus"},
-			want: []PromptPreferredModel{{ModelName: "Claude Opus"}},
+			want: []prompts.PromptPreferredModel{{ModelName: "Claude Opus"}},
 		},
 		{
 			name: "tag only",
 			ws:   &WorkspaceSettings{InitialModelTag: "Coding"},
-			want: []PromptPreferredModel{{ModelTag: "Coding"}},
+			want: []prompts.PromptPreferredModel{{ModelTag: "Coding"}},
 		},
 		{
 			name: "profile wins over tag when both set",
@@ -141,7 +142,7 @@ func TestWorkspaceSettings_GetInitialModelPreference(t *testing.T) {
 				InitialModelProfile: "Claude Opus",
 				InitialModelTag:     "Cheap",
 			},
-			want: []PromptPreferredModel{{ModelName: "Claude Opus"}},
+			want: []prompts.PromptPreferredModel{{ModelName: "Claude Opus"}},
 		},
 	}
 	for _, tt := range tests {

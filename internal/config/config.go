@@ -6,23 +6,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"sort"
 	"strings"
 
 	"gopkg.in/yaml.v3"
 )
-
-// ACPServerConstraint defines a pattern-matching rule for auto-selecting config option values.
-// Used by the constraints system to automatically configure sessions on startup.
-type ACPServerConstraint struct {
-	// MatchMode determines how Pattern is matched against option names.
-	// Valid values: "contains", "exact", "startsWith", "regex", "lookAlike"
-	MatchMode string `json:"matchMode"`
-	// Pattern is the text to match against option names (e.g., "Opus 4.6").
-	Pattern string `json:"pattern"`
-}
 
 // ModelProfile is a named model profile pairing a selection criteria with tags.
 // Profiles let users tag models by capability (e.g. "Smart", "Cheap") independently
@@ -119,42 +108,6 @@ func (c *Config) EffectiveModelProfiles() []ModelProfile {
 		out = append(out, d)
 	}
 	return out
-}
-
-// ConstraintMatchesName reports whether name matches the constraint's Pattern under
-// its MatchMode. It is the single-string core of the constraint match engine, shared by
-// MatchConstraintOption (which applies it across a list of option names) and by model-tag
-// resolution, so the contains/exact/startsWith/regex/lookAlike semantics never drift.
-// Matching is case-insensitive (regex uses the (?i) flag). A nil constraint never matches.
-func ConstraintMatchesName(c *ACPServerConstraint, name string) bool {
-	if c == nil {
-		return false
-	}
-	patternLower := strings.ToLower(c.Pattern)
-	nameLower := strings.ToLower(name)
-	switch c.MatchMode {
-	case "contains":
-		return strings.Contains(nameLower, patternLower)
-	case "exact":
-		return nameLower == patternLower
-	case "startsWith":
-		return strings.HasPrefix(nameLower, patternLower)
-	case "regex":
-		matched, _ := regexp.MatchString("(?i)"+c.Pattern, name)
-		return matched
-	case "lookAlike":
-		words := strings.Fields(patternLower)
-		if len(words) == 0 {
-			return false
-		}
-		for _, word := range words {
-			if !strings.Contains(nameLower, word) {
-				return false
-			}
-		}
-		return true
-	}
-	return false
 }
 
 // ACPServer represents a single ACP server configuration.
@@ -1162,63 +1115,6 @@ func MergeProcessors(global, workspace *ConversationsConfig) []MessageProcessor 
 	}
 
 	return result
-}
-
-// ============================================================================
-// Restricted Runner Types
-//
-// Restricted runners provide sandboxed execution for ACP agents.
-// By default, agents run with no restrictions (exec runner).
-// Users can opt-in to sandboxing by configuring restricted_runners settings.
-//
-// Configuration is per-runner-type using WorkspaceRunnerConfig.
-// See docs/config/restricted.md for user documentation.
-// ============================================================================
-
-// RunnerRestrictions defines the restrictions for a runner.
-type RunnerRestrictions struct {
-	// AllowNetworking controls network access.
-	// WARNING: Setting to false will break network-based MCP servers.
-	AllowNetworking *bool `json:"allow_networking,omitempty" yaml:"allow_networking,omitempty"`
-
-	// AllowReadFolders lists folders that can be read (supports variables like $MITTO_WORKING_DIR, $HOME).
-	AllowReadFolders []string `json:"allow_read_folders,omitempty" yaml:"allow_read_folders,omitempty"`
-
-	// AllowWriteFolders lists folders that can be written (supports variables).
-	AllowWriteFolders []string `json:"allow_write_folders,omitempty" yaml:"allow_write_folders,omitempty"`
-
-	// MergeWithDefaults controls whether to merge with default restrictions.
-	MergeWithDefaults *bool `json:"merge_with_defaults,omitempty" yaml:"merge_with_defaults,omitempty"`
-
-	// Docker contains Docker-specific options.
-	Docker *DockerRestrictions `json:"docker,omitempty" yaml:"docker,omitempty"`
-}
-
-// DockerRestrictions defines Docker-specific restrictions.
-type DockerRestrictions struct {
-	// Image is the Docker image to use (required for docker runner).
-	// The image must contain the agent executable and any MCP servers.
-	Image string `json:"image,omitempty" yaml:"image,omitempty"`
-
-	// MemoryLimit is the maximum memory the container can use (e.g., "2g").
-	MemoryLimit string `json:"memory_limit,omitempty" yaml:"memory_limit,omitempty"`
-
-	// CPULimit is the maximum CPU cores the container can use (e.g., "2.0").
-	CPULimit string `json:"cpu_limit,omitempty" yaml:"cpu_limit,omitempty"`
-}
-
-// WorkspaceRunnerConfig represents per-runner-type configuration for restricted runners.
-// This type is used at all levels: global, per-agent, and per-workspace.
-type WorkspaceRunnerConfig struct {
-	// Type overrides the runner type for this workspace.
-	Type string `json:"type,omitempty" yaml:"type,omitempty"`
-
-	// Restrictions are workspace-specific restrictions.
-	Restrictions *RunnerRestrictions `json:"restrictions,omitempty" yaml:"restrictions,omitempty"`
-
-	// MergeStrategy controls how to merge with agent/global config.
-	// Options: "extend" (default) - merge with parent config, "replace" - ignore parent config
-	MergeStrategy string `json:"merge_strategy,omitempty" yaml:"merge_strategy,omitempty"`
 }
 
 // PermissionsConfig configures how permission requests from agents are handled.
