@@ -1,4 +1,4 @@
-package config
+package prompts
 
 import (
 	"bytes"
@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"text/template"
+
+	"github.com/inercia/mitto/internal/cel"
 )
 
 // migratableMittoVars maps deprecated @mitto:<token> names (without the prefix)
@@ -133,7 +135,7 @@ func PrecompileTemplateConds(name, body string) error {
 	// condStub compiles the expression string only (no evaluation).
 	// Returns (false, err) on compile failure so template execution stops immediately.
 	condStub := func(expr string) (bool, error) {
-		ev := GetCELEvaluator()
+		ev := cel.GetCELEvaluator()
 		if ev == nil {
 			return false, nil // evaluator unavailable; skip validation
 		}
@@ -143,7 +145,7 @@ func PrecompileTemplateConds(name, body string) error {
 		return false, nil
 	}
 	// Start with the full FuncMap so parse succeeds for templates that use other funcs.
-	fm := BuildTemplateFuncMap(&PromptEnabledContext{})
+	fm := cel.BuildTemplateFuncMap(&cel.PromptEnabledContext{})
 	fm["Cond"] = condStub
 	fm["When"] = condStub
 
@@ -152,7 +154,7 @@ func PrecompileTemplateConds(name, body string) error {
 		return fmt.Errorf("prompt template %q: parse error: %w", name, err)
 	}
 	var buf bytes.Buffer
-	if err := t.Execute(&buf, &PromptEnabledContext{}); err != nil {
+	if err := t.Execute(&buf, &cel.PromptEnabledContext{}); err != nil {
 		return fmt.Errorf("prompt template %q: cond precompile: %w", name, err)
 	}
 	return nil
@@ -175,7 +177,7 @@ func ValidatePromptTemplateSyntax(name, body string) error {
 	if name == "" {
 		name = "prompt"
 	}
-	fm := BuildTemplateFuncMap(&PromptEnabledContext{})
+	fm := cel.BuildTemplateFuncMap(&cel.PromptEnabledContext{})
 	if _, err := template.New(name).Option("missingkey=zero").Funcs(fm).Parse(body); err != nil {
 		return fmt.Errorf("prompt template %q: parse error: %w", name, err)
 	}

@@ -1,4 +1,4 @@
-package config
+package prompts
 
 import (
 	"encoding/json"
@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/inercia/mitto/internal/cel"
 )
 
 func TestParsePromptFile_WithFrontMatter(t *testing.T) {
@@ -1518,34 +1520,6 @@ func TestParsePromptFile_ChildSessionId(t *testing.T) {
 	}
 }
 
-func TestWorkspaceRC_SkipsInvalidChildSessionIdPrompt(t *testing.T) {
-	yaml := `
-prompts:
-  - name: "Valid Prompt"
-    prompt: "do something"
-    menus: conversation
-    parameters:
-      - name: child
-        type: childSessionId
-  - name: "Invalid Prompt"
-    prompt: "do something else"
-    menus: beadsList
-    parameters:
-      - name: child
-        type: childSessionId
-`
-	rc, err := parseWorkspaceRC([]byte(yaml))
-	if err != nil {
-		t.Fatalf("parseWorkspaceRC failed: %v", err)
-	}
-	if len(rc.Prompts) != 1 {
-		t.Errorf("Prompts count = %d, want 1 (invalid prompt should be skipped)", len(rc.Prompts))
-	}
-	if len(rc.Prompts) > 0 && rc.Prompts[0].Name != "Valid Prompt" {
-		t.Errorf("Prompts[0].Name = %q, want %q", rc.Prompts[0].Name, "Valid Prompt")
-	}
-}
-
 func TestMigrateMarkdownPromptsInDir(t *testing.T) {
 	dir := t.TempDir()
 
@@ -2113,7 +2087,7 @@ func TestBuiltinPrompts_EnabledWhenCompiles(t *testing.T) {
 	if err != nil {
 		t.Skipf("builtin prompts dir not found at %s: %v", builtinDir, err)
 	}
-	e, err := NewCELEvaluator()
+	e, err := cel.NewCELEvaluator()
 	if err != nil {
 		t.Fatalf("NewCELEvaluator: %v", err)
 	}

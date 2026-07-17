@@ -1,6 +1,10 @@
-// Package config provides prompt file parsing for global prompts.
-// Prompt files are YAML files stored in MITTO_DIR/prompts/.
-package config
+// Package prompts contains the workspace/settings/file prompts model, the
+// on-disk .prompt.yaml loader, the prompts cache and file-system watcher, the
+// legacy .md migration helper, the Go text/template renderer used at dispatch
+// time, and the WebPrompt DTO with merge/filter helpers. Split out of
+// internal/config to shrink that package and let downstream code depend on
+// only what it needs (mitto-b8k.3).
+package prompts
 
 import (
 	"fmt"
@@ -13,6 +17,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/inercia/mitto/internal/cel"
 )
 
 // PromptLoop declares that selecting this prompt should start a loop
@@ -365,7 +371,7 @@ func ParsePromptFile(path string, data []byte, modTime time.Time) (*PromptFile, 
 	// how the runtime seam is wired via session.ConditionValidator). Applies to
 	// any loop block that declares a Condition; only meaningful for trigger: onTasks.
 	if prompt.Loop != nil && prompt.Loop.Condition != "" {
-		if err := ValidateCondition(prompt.Loop.Condition); err != nil {
+		if err := cel.ValidateCondition(prompt.Loop.Condition); err != nil {
 			return nil, fmt.Errorf("prompt file %s: loop.condition: %w", path, err)
 		}
 	}

@@ -1,8 +1,8 @@
-// Package config: migration of legacy markdown prompt files to the new
+// Package prompts: migration of legacy markdown prompt files to the new
 // .prompt.yaml format. Legacy files use YAML front-matter delimited by "---"
 // followed by a markdown body that becomes the prompt content. The new format
 // is a single YAML document with the body stored under the "prompt" key.
-package config
+package prompts
 
 import (
 	"fmt"
