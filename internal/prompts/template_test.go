@@ -1,4 +1,4 @@
-package config
+package prompts
 
 import (
 	"fmt"
@@ -8,6 +8,8 @@ import (
 	"testing"
 	"text/template"
 	"time"
+
+	"github.com/inercia/mitto/internal/cel"
 )
 
 // TestHasTemplateSyntax verifies the fast-path predicate.
@@ -201,14 +203,14 @@ func TestRenderPromptTemplate(t *testing.T) {
 
 // TestRenderPromptTemplate_TriggerOnTasksChanges verifies that the new
 // {{ .Trigger.OnTasks.Changes.* }} template namespace (mitto-xkn) renders
-// against a populated PromptEnabledContext and that the {{ with .Trigger.OnTasks }}
+// against a populated cel.PromptEnabledContext and that the {{ with .Trigger.OnTasks }}
 // guard correctly suppresses the block when the trigger context is nil
 // (scheduled / onCompletion / manual "Run Now" / non-loop dispatches).
 func TestRenderPromptTemplate_TriggerOnTasksChanges(t *testing.T) {
-	populated := PromptEnabledContext{
-		Trigger: &TriggerContext{
-			OnTasks: &TriggerOnTasksContext{
-				Changes: TasksChangesView{
+	populated := cel.PromptEnabledContext{
+		Trigger: &cel.TriggerContext{
+			OnTasks: &cel.TriggerOnTasksContext{
+				Changes: cel.TasksChangesView{
 					Added: []map[string]any{
 						{"id": "mitto-a", "title": "New A"},
 					},
@@ -227,7 +229,7 @@ func TestRenderPromptTemplate_TriggerOnTasksChanges(t *testing.T) {
 			},
 		},
 	}
-	empty := PromptEnabledContext{} // Trigger nil → guard must skip block
+	empty := cel.PromptEnabledContext{} // Trigger nil → guard must skip block
 
 	tests := []struct {
 		name string
@@ -245,7 +247,7 @@ func TestRenderPromptTemplate_TriggerOnTasksChanges(t *testing.T) {
 		// (2) `with .Trigger` guard suppresses entire block when Trigger is nil.
 		// Note: templates must guard on .Trigger first (nil pointer to a struct
 		// short-circuits `with`); {{ with .Trigger.OnTasks }} alone would panic
-		// on the nil *TriggerContext.
+		// on the nil *cel.TriggerContext.
 		{
 			name: "with-guard-suppresses-when-nil",
 			body: `head{{ with .Trigger }}{{ with .OnTasks }}[{{ len .Changes.Touched }}]{{ end }}{{ end }}tail`,
@@ -477,7 +479,7 @@ func TestMigratableMittoVars_ContainsGraduatedTokens(t *testing.T) {
 //
 // The test loads the file from the real builtin directory so it always exercises
 // the current on-disk content. It is in the config package to avoid an import
-// cycle (config ← processors ← config) and to reuse BuildTemplateFuncMap directly.
+// cycle (config ← processors ← config) and to reuse cel.BuildTemplateFuncMap directly.
 func TestIterateUntilComplete_TargetResolution(t *testing.T) {
 	builtinDir := "../../config/prompts/builtin"
 	path := filepath.Join(builtinDir, "beads-issue-iterate-until-complete.prompt.yaml")
@@ -491,8 +493,8 @@ func TestIterateUntilComplete_TargetResolution(t *testing.T) {
 	}
 	body := prompt.Content
 
-	render := func(ctx *PromptEnabledContext) string {
-		funcs := BuildTemplateFuncMap(ctx)
+	render := func(ctx *cel.PromptEnabledContext) string {
+		funcs := cel.BuildTemplateFuncMap(ctx)
 		out, rerr := RenderPromptTemplate("beads-issue-iterate-until-complete", body, ctx, funcs)
 		if rerr != nil {
 			t.Fatalf("RenderPromptTemplate: %v", rerr)
@@ -501,8 +503,8 @@ func TestIterateUntilComplete_TargetResolution(t *testing.T) {
 	}
 
 	// (a) BeadsIssue set — preferred source.
-	ctxA := &PromptEnabledContext{
-		Session: SessionContext{
+	ctxA := &cel.PromptEnabledContext{
+		Session: cel.SessionContext{
 			BeadsIssue:    "mitto-abc",
 			HasBeadsIssue: true,
 		},
@@ -519,7 +521,7 @@ func TestIterateUntilComplete_TargetResolution(t *testing.T) {
 	}
 
 	// (b) Only Args.IssueID set.
-	ctxB := &PromptEnabledContext{
+	ctxB := &cel.PromptEnabledContext{
 		Args: map[string]string{"IssueID": "mitto-xyz"},
 	}
 	outB := render(ctxB)
@@ -534,7 +536,7 @@ func TestIterateUntilComplete_TargetResolution(t *testing.T) {
 	}
 
 	// (c) Neither BeadsIssue nor Args.IssueID set — inference instruction.
-	ctxC := &PromptEnabledContext{}
+	ctxC := &cel.PromptEnabledContext{}
 	outC := render(ctxC)
 	if !strings.Contains(outC, "not explicitly specified") {
 		t.Errorf("branch (c): expected inference text 'not explicitly specified' in output; got:\n%s", outC)
@@ -588,8 +590,8 @@ func TestRefineImplementation_LoopAndModes(t *testing.T) {
 	}
 
 	body := prompt.Content
-	render := func(ctx *PromptEnabledContext) string {
-		funcs := BuildTemplateFuncMap(ctx)
+	render := func(ctx *cel.PromptEnabledContext) string {
+		funcs := cel.BuildTemplateFuncMap(ctx)
 		out, rerr := RenderPromptTemplate("beads-refine-implementation", body, ctx, funcs)
 		if rerr != nil {
 			t.Fatalf("RenderPromptTemplate: %v", rerr)
@@ -598,7 +600,7 @@ func TestRefineImplementation_LoopAndModes(t *testing.T) {
 	}
 
 	// (c) Silent: a scheduled (non-forced) loop run.
-	outSilent := render(&PromptEnabledContext{Session: SessionContext{IsLoop: true, IsLoopForced: false}})
+	outSilent := render(&cel.PromptEnabledContext{Session: cel.SessionContext{IsLoop: true, IsLoopForced: false}})
 	if !strings.Contains(outSilent, "Silent mode") {
 		t.Errorf("silent loop run: expected 'Silent mode' branch; got:\n%s", outSilent)
 	}
@@ -607,13 +609,13 @@ func TestRefineImplementation_LoopAndModes(t *testing.T) {
 	}
 
 	// (c) Interactive: a forced loop run (user present).
-	outForced := render(&PromptEnabledContext{Session: SessionContext{IsLoop: true, IsLoopForced: true}})
+	outForced := render(&cel.PromptEnabledContext{Session: cel.SessionContext{IsLoop: true, IsLoopForced: true}})
 	if !strings.Contains(outForced, "Interactive mode") {
 		t.Errorf("forced run: expected 'Interactive mode' branch; got:\n%s", outForced)
 	}
 
 	// (c) Interactive: a first / normal send (no loop context at all).
-	outFirst := render(&PromptEnabledContext{})
+	outFirst := render(&cel.PromptEnabledContext{})
 	if !strings.Contains(outFirst, "Interactive mode") {
 		t.Errorf("first send: expected 'Interactive mode' branch; got:\n%s", outFirst)
 	}
@@ -668,8 +670,8 @@ func TestInvestigate_ThreeModeTargetResolution(t *testing.T) {
 		t.Errorf("IssueID parameter: expected Required == false; got true")
 	}
 
-	render := func(ctx *PromptEnabledContext) string {
-		funcs := BuildTemplateFuncMap(ctx)
+	render := func(ctx *cel.PromptEnabledContext) string {
+		funcs := cel.BuildTemplateFuncMap(ctx)
 		out, rerr := RenderPromptTemplate("beads-issue-investigate", body, ctx, funcs)
 		if rerr != nil {
 			t.Fatalf("RenderPromptTemplate: %v", rerr)
@@ -678,8 +680,8 @@ func TestInvestigate_ThreeModeTargetResolution(t *testing.T) {
 	}
 
 	// (a) Linked-issue mode: Session.BeadsIssue set.
-	ctxA := &PromptEnabledContext{
-		Session: SessionContext{
+	ctxA := &cel.PromptEnabledContext{
+		Session: cel.SessionContext{
 			BeadsIssue:    "mitto-abc",
 			HasBeadsIssue: true,
 		},
@@ -696,7 +698,7 @@ func TestInvestigate_ThreeModeTargetResolution(t *testing.T) {
 	}
 
 	// (b) Arg mode: only Args.IssueID set.
-	ctxB := &PromptEnabledContext{
+	ctxB := &cel.PromptEnabledContext{
 		Args: map[string]string{"IssueID": "mitto-xyz"},
 	}
 	outB := render(ctxB)
@@ -711,7 +713,7 @@ func TestInvestigate_ThreeModeTargetResolution(t *testing.T) {
 	}
 
 	// (c) Current-problem mode: neither BeadsIssue nor Args.IssueID set.
-	ctxC := &PromptEnabledContext{}
+	ctxC := &cel.PromptEnabledContext{}
 	outC := render(ctxC)
 	if !strings.Contains(outC, "no linked bead") {
 		t.Errorf("branch (c): expected 'no linked bead' prose in output; got:\n%s", outC)
@@ -774,8 +776,8 @@ func TestDiscuss_ThreeModeTargetResolution(t *testing.T) {
 		t.Errorf("IssueID parameter: expected Required == false; got true")
 	}
 
-	render := func(ctx *PromptEnabledContext) string {
-		funcs := BuildTemplateFuncMap(ctx)
+	render := func(ctx *cel.PromptEnabledContext) string {
+		funcs := cel.BuildTemplateFuncMap(ctx)
 		out, rerr := RenderPromptTemplate("beads-issue-assess", body, ctx, funcs)
 		if rerr != nil {
 			t.Fatalf("RenderPromptTemplate: %v", rerr)
@@ -784,8 +786,8 @@ func TestDiscuss_ThreeModeTargetResolution(t *testing.T) {
 	}
 
 	// (a) Linked-issue mode: Session.BeadsIssue set.
-	ctxA := &PromptEnabledContext{
-		Session: SessionContext{
+	ctxA := &cel.PromptEnabledContext{
+		Session: cel.SessionContext{
 			BeadsIssue:    "mitto-abc",
 			HasBeadsIssue: true,
 		},
@@ -802,7 +804,7 @@ func TestDiscuss_ThreeModeTargetResolution(t *testing.T) {
 	}
 
 	// (b) Arg mode: only Args.IssueID set.
-	ctxB := &PromptEnabledContext{
+	ctxB := &cel.PromptEnabledContext{
 		Args: map[string]string{"IssueID": "mitto-xyz"},
 	}
 	outB := render(ctxB)
@@ -817,7 +819,7 @@ func TestDiscuss_ThreeModeTargetResolution(t *testing.T) {
 	}
 
 	// (c) Current-problem mode: neither BeadsIssue nor Args.IssueID set.
-	ctxC := &PromptEnabledContext{}
+	ctxC := &cel.PromptEnabledContext{}
 	outC := render(ctxC)
 	if !strings.Contains(outC, "no linked bead") {
 		t.Errorf("branch (c): expected 'no linked bead' prose in output; got:\n%s", outC)
@@ -839,7 +841,7 @@ func TestDiscuss_ThreeModeTargetResolution(t *testing.T) {
 // option and is not covered here.
 //
 // Each prompt is loaded from the real builtin directory and rendered with
-// BuildTemplateFuncMap so the test always exercises the current on-disk content.
+// cel.BuildTemplateFuncMap so the test always exercises the current on-disk content.
 func TestIteratePrompts_CommitOption(t *testing.T) {
 	builtinDir := "../../config/prompts/builtin"
 
@@ -873,8 +875,8 @@ func TestIteratePrompts_CommitOption(t *testing.T) {
 			body := prompt.Content
 
 			render := func(args map[string]string) string {
-				ctx := &PromptEnabledContext{Args: args}
-				funcs := BuildTemplateFuncMap(ctx)
+				ctx := &cel.PromptEnabledContext{Args: args}
+				funcs := cel.BuildTemplateFuncMap(ctx)
 				out, rerr := RenderPromptTemplate(tc.name, body, ctx, funcs)
 				if rerr != nil {
 					t.Fatalf("RenderPromptTemplate(%s): %v", tc.name, rerr)
@@ -955,8 +957,8 @@ func TestBuiltinPrompts_AllRenderWithoutError(t *testing.T) {
 		t.Skip("no builtin prompts found")
 	}
 
-	ctx := &PromptEnabledContext{
-		Session: SessionContext{
+	ctx := &cel.PromptEnabledContext{
+		Session: cel.SessionContext{
 			ID:            "test-session",
 			Name:          "Test Conversation",
 			BeadsIssue:    "mitto-test",
@@ -969,7 +971,7 @@ func TestBuiltinPrompts_AllRenderWithoutError(t *testing.T) {
 
 	var failures []string
 	for _, p := range prompts {
-		funcs := BuildTemplateFuncMap(ctx)
+		funcs := cel.BuildTemplateFuncMap(ctx)
 		if _, rerr := RenderPromptTemplate(p.Name, p.Content, ctx, funcs); rerr != nil {
 			failures = append(failures, p.Name+": "+rerr.Error())
 		}
@@ -1028,8 +1030,8 @@ func TestStatus_ThreeModeTargetResolution(t *testing.T) {
 		t.Errorf("IssueID parameter: expected Required == false; got true")
 	}
 
-	render := func(ctx *PromptEnabledContext) string {
-		funcs := BuildTemplateFuncMap(ctx)
+	render := func(ctx *cel.PromptEnabledContext) string {
+		funcs := cel.BuildTemplateFuncMap(ctx)
 		out, rerr := RenderPromptTemplate("beads-issue-status", body, ctx, funcs)
 		if rerr != nil {
 			t.Fatalf("RenderPromptTemplate: %v", rerr)
@@ -1038,8 +1040,8 @@ func TestStatus_ThreeModeTargetResolution(t *testing.T) {
 	}
 
 	// (a) Linked-issue mode: Session.BeadsIssue set.
-	ctxA := &PromptEnabledContext{
-		Session: SessionContext{
+	ctxA := &cel.PromptEnabledContext{
+		Session: cel.SessionContext{
 			BeadsIssue:    "mitto-abc",
 			HasBeadsIssue: true,
 		},
@@ -1053,7 +1055,7 @@ func TestStatus_ThreeModeTargetResolution(t *testing.T) {
 	}
 
 	// (b) Arg mode: only Args.IssueID set.
-	ctxB := &PromptEnabledContext{
+	ctxB := &cel.PromptEnabledContext{
 		Args: map[string]string{"IssueID": "mitto-xyz"},
 	}
 	outB := render(ctxB)
@@ -1065,7 +1067,7 @@ func TestStatus_ThreeModeTargetResolution(t *testing.T) {
 	}
 
 	// (c) Current-problem mode: neither BeadsIssue nor Args.IssueID set.
-	ctxC := &PromptEnabledContext{}
+	ctxC := &cel.PromptEnabledContext{}
 	outC := render(ctxC)
 	if !strings.Contains(outC, "no linked bead") {
 		t.Errorf("branch (c): expected 'no linked bead' prose in output; got:\n%s", outC)
@@ -1127,8 +1129,8 @@ func TestResolved_ThreeModeTargetResolution(t *testing.T) {
 		t.Errorf("IssueID parameter: expected Required == false; got true")
 	}
 
-	render := func(ctx *PromptEnabledContext) string {
-		funcs := BuildTemplateFuncMap(ctx)
+	render := func(ctx *cel.PromptEnabledContext) string {
+		funcs := cel.BuildTemplateFuncMap(ctx)
 		out, rerr := RenderPromptTemplate("beads-issue-resolved", body, ctx, funcs)
 		if rerr != nil {
 			t.Fatalf("RenderPromptTemplate: %v", rerr)
@@ -1137,8 +1139,8 @@ func TestResolved_ThreeModeTargetResolution(t *testing.T) {
 	}
 
 	// (a) Linked-issue mode: Session.BeadsIssue set.
-	ctxA := &PromptEnabledContext{
-		Session: SessionContext{
+	ctxA := &cel.PromptEnabledContext{
+		Session: cel.SessionContext{
 			BeadsIssue:    "mitto-abc",
 			HasBeadsIssue: true,
 		},
@@ -1152,7 +1154,7 @@ func TestResolved_ThreeModeTargetResolution(t *testing.T) {
 	}
 
 	// (b) Arg mode: only Args.IssueID set.
-	ctxB := &PromptEnabledContext{
+	ctxB := &cel.PromptEnabledContext{
 		Args: map[string]string{"IssueID": "mitto-xyz"},
 	}
 	outB := render(ctxB)
@@ -1164,7 +1166,7 @@ func TestResolved_ThreeModeTargetResolution(t *testing.T) {
 	}
 
 	// (c) Current-problem mode: neither BeadsIssue nor Args.IssueID set.
-	ctxC := &PromptEnabledContext{}
+	ctxC := &cel.PromptEnabledContext{}
 	outC := render(ctxC)
 	if !strings.Contains(outC, "no linked bead") {
 		t.Errorf("branch (c): expected 'no linked bead' prose in output; got:\n%s", outC)
@@ -1226,8 +1228,8 @@ func TestWork_ThreeModeTargetResolution(t *testing.T) {
 		t.Errorf("IssueID parameter: expected Required == false; got true")
 	}
 
-	render := func(ctx *PromptEnabledContext) string {
-		funcs := BuildTemplateFuncMap(ctx)
+	render := func(ctx *cel.PromptEnabledContext) string {
+		funcs := cel.BuildTemplateFuncMap(ctx)
 		out, rerr := RenderPromptTemplate("beads-issue-work", body, ctx, funcs)
 		if rerr != nil {
 			t.Fatalf("RenderPromptTemplate: %v", rerr)
@@ -1236,8 +1238,8 @@ func TestWork_ThreeModeTargetResolution(t *testing.T) {
 	}
 
 	// (a) Linked-issue mode: Session.BeadsIssue set.
-	ctxA := &PromptEnabledContext{
-		Session: SessionContext{
+	ctxA := &cel.PromptEnabledContext{
+		Session: cel.SessionContext{
 			BeadsIssue:    "mitto-abc",
 			HasBeadsIssue: true,
 		},
@@ -1251,7 +1253,7 @@ func TestWork_ThreeModeTargetResolution(t *testing.T) {
 	}
 
 	// (b) Arg mode: only Args.IssueID set.
-	ctxB := &PromptEnabledContext{
+	ctxB := &cel.PromptEnabledContext{
 		Args: map[string]string{"IssueID": "mitto-xyz"},
 	}
 	outB := render(ctxB)
@@ -1263,7 +1265,7 @@ func TestWork_ThreeModeTargetResolution(t *testing.T) {
 	}
 
 	// (c) Current-problem mode: neither BeadsIssue nor Args.IssueID set.
-	ctxC := &PromptEnabledContext{}
+	ctxC := &cel.PromptEnabledContext{}
 	outC := render(ctxC)
 	if !strings.Contains(outC, "no linked bead") {
 		t.Errorf("branch (c): expected 'no linked bead' prose in output; got:\n%s", outC)
@@ -1329,8 +1331,8 @@ func TestFollowupWork_ThreeModeTargetResolution(t *testing.T) {
 		t.Errorf("IssueID parameter: expected Required == false; got true")
 	}
 
-	render := func(ctx *PromptEnabledContext) string {
-		funcs := BuildTemplateFuncMap(ctx)
+	render := func(ctx *cel.PromptEnabledContext) string {
+		funcs := cel.BuildTemplateFuncMap(ctx)
 		out, rerr := RenderPromptTemplate("beads-followup-work", body, ctx, funcs)
 		if rerr != nil {
 			t.Fatalf("RenderPromptTemplate: %v", rerr)
@@ -1339,8 +1341,8 @@ func TestFollowupWork_ThreeModeTargetResolution(t *testing.T) {
 	}
 
 	// (a) Target-bead mode: Session.BeadsIssue set.
-	ctxA := &PromptEnabledContext{
-		Session: SessionContext{
+	ctxA := &cel.PromptEnabledContext{
+		Session: cel.SessionContext{
 			BeadsIssue:    "mitto-abc",
 			HasBeadsIssue: true,
 		},
@@ -1360,7 +1362,7 @@ func TestFollowupWork_ThreeModeTargetResolution(t *testing.T) {
 	}
 
 	// (b) Target-bead mode via arg: only Args.IssueID set.
-	ctxB := &PromptEnabledContext{
+	ctxB := &cel.PromptEnabledContext{
 		Args: map[string]string{"IssueID": "mitto-xyz"},
 	}
 	outB := render(ctxB)
@@ -1375,7 +1377,7 @@ func TestFollowupWork_ThreeModeTargetResolution(t *testing.T) {
 	}
 
 	// (c) Conversation mode: neither BeadsIssue nor Args.IssueID set.
-	ctxC := &PromptEnabledContext{}
+	ctxC := &cel.PromptEnabledContext{}
 	outC := render(ctxC)
 	if !strings.Contains(outC, "comb back through") {
 		t.Errorf("branch (c): expected conversation-mining intro in conversation mode; got:\n%s", outC)
@@ -1476,13 +1478,13 @@ func TestInteractionMode_ConditionalRendering(t *testing.T) {
 			body := prompt.Content
 
 			render := func(loop, forced bool) string {
-				ctx := &PromptEnabledContext{
-					Session: SessionContext{
+				ctx := &cel.PromptEnabledContext{
+					Session: cel.SessionContext{
 						IsLoop:       loop,
 						IsLoopForced: forced,
 					},
 				}
-				out, rerr := RenderPromptTemplate(tc.name, body, ctx, BuildTemplateFuncMap(ctx))
+				out, rerr := RenderPromptTemplate(tc.name, body, ctx, cel.BuildTemplateFuncMap(ctx))
 				if rerr != nil {
 					t.Fatalf("RenderPromptTemplate(%s) loop=%v forced=%v: %v", tc.name, loop, forced, rerr)
 				}
@@ -1529,8 +1531,8 @@ func TestRenderPromptTemplate_Iteration(t *testing.T) {
 	body := `{{ if .Iteration.IsFirst }}first run{{ else }}run {{ .Iteration.Number }} of {{ .Iteration.Max }}{{ end }}`
 
 	// Number=0, Max=3 → "first run"
-	ctxFirst := &PromptEnabledContext{
-		Iteration: IterationContext{
+	ctxFirst := &cel.PromptEnabledContext{
+		Iteration: cel.IterationContext{
 			Number:  0,
 			Max:     3,
 			IsLoop:  true,
@@ -1547,8 +1549,8 @@ func TestRenderPromptTemplate_Iteration(t *testing.T) {
 	}
 
 	// Number=2, Max=3 → "run 2 of 3"
-	ctxLast := &PromptEnabledContext{
-		Iteration: IterationContext{
+	ctxLast := &cel.PromptEnabledContext{
+		Iteration: cel.IterationContext{
 			Number:  2,
 			Max:     3,
 			IsLoop:  true,
@@ -1571,8 +1573,8 @@ func TestRenderPromptTemplate_Iteration(t *testing.T) {
 	// IsUninterrupted=true → compact branch; IsUninterrupted=false → verbose branch (mitto-5xjn).
 	bodyU := `{{ if .Iteration.IsUninterrupted }}continue{{ else }}verbose{{ end }}`
 
-	ctxContinue := &PromptEnabledContext{
-		Iteration: IterationContext{
+	ctxContinue := &cel.PromptEnabledContext{
+		Iteration: cel.IterationContext{
 			IsLoop:          true,
 			IsUninterrupted: true,
 		},
@@ -1585,8 +1587,8 @@ func TestRenderPromptTemplate_Iteration(t *testing.T) {
 		t.Errorf("IsUninterrupted=true: got %q, want %q", gotContinue, "continue")
 	}
 
-	ctxVerbose := &PromptEnabledContext{
-		Iteration: IterationContext{
+	ctxVerbose := &cel.PromptEnabledContext{
+		Iteration: cel.IterationContext{
 			IsLoop:          true,
 			IsUninterrupted: false,
 		},
@@ -1633,8 +1635,8 @@ func TestIterateFixingBug_RendersForRepresentativeContexts(t *testing.T) {
 	}
 	body := prompt.Content
 
-	render := func(ctx *PromptEnabledContext) string {
-		funcs := BuildTemplateFuncMap(ctx)
+	render := func(ctx *cel.PromptEnabledContext) string {
+		funcs := cel.BuildTemplateFuncMap(ctx)
 		out, rerr := RenderPromptTemplate("beads-issue-iterate-fixing-bug", body, ctx, funcs)
 		if rerr != nil {
 			t.Fatalf("RenderPromptTemplate: %v", rerr)
@@ -1643,12 +1645,12 @@ func TestIterateFixingBug_RendersForRepresentativeContexts(t *testing.T) {
 	}
 
 	// (a) Linked-issue context, first interactive run.
-	ctxA := &PromptEnabledContext{
-		Session: SessionContext{
+	ctxA := &cel.PromptEnabledContext{
+		Session: cel.SessionContext{
 			BeadsIssue:    "mitto-abc",
 			HasBeadsIssue: true,
 		},
-		Iteration: IterationContext{IsFirst: true},
+		Iteration: cel.IterationContext{IsFirst: true},
 	}
 	outA := render(ctxA)
 	if !strings.Contains(outA, "mitto-abc") {
@@ -1696,9 +1698,9 @@ func TestIterateFixingBug_RendersForRepresentativeContexts(t *testing.T) {
 	}
 
 	// (b) Arg-only context, uninterrupted silent continuation run, with Commit=true.
-	ctxB := &PromptEnabledContext{
+	ctxB := &cel.PromptEnabledContext{
 		Args:      map[string]string{"IssueID": "mitto-xyz", "Commit": "true"},
-		Iteration: IterationContext{IsLoop: true, IsUninterrupted: true},
+		Iteration: cel.IterationContext{IsLoop: true, IsUninterrupted: true},
 	}
 	outB := render(ctxB)
 	if !strings.Contains(outB, "mitto-xyz") {
@@ -1726,7 +1728,7 @@ func TestIterateFixingBug_RendersForRepresentativeContexts(t *testing.T) {
 	// Blocked → Defer + Handoff step (Step 4) still renders, using the
 	// "<target-bug>" placeholder rather than an empty/broken argument, since it
 	// is the documented escape hatch for this exact situation.
-	ctxC := &PromptEnabledContext{}
+	ctxC := &cel.PromptEnabledContext{}
 	outC := render(ctxC)
 	if !strings.Contains(outC, "not explicitly specified") {
 		t.Errorf("branch (c): expected 'not explicitly specified' guidance; got:\n%s", outC)
@@ -1789,8 +1791,8 @@ func TestIterateFixingBugs_RendersForRepresentativeContexts(t *testing.T) {
 
 	body := prompt.Content
 
-	render := func(ctx *PromptEnabledContext) string {
-		funcs := BuildTemplateFuncMap(ctx)
+	render := func(ctx *cel.PromptEnabledContext) string {
+		funcs := cel.BuildTemplateFuncMap(ctx)
 		out, rerr := RenderPromptTemplate("beads-issue-iterate-fixing-bugs", body, ctx, funcs)
 		if rerr != nil {
 			t.Fatalf("RenderPromptTemplate: %v", rerr)
@@ -1799,7 +1801,7 @@ func TestIterateFixingBugs_RendersForRepresentativeContexts(t *testing.T) {
 	}
 
 	// (a) Default context — Commit absent → default to "true" in child args.
-	outA := render(&PromptEnabledContext{})
+	outA := render(&cel.PromptEnabledContext{})
 
 	// The orchestrator dispatches to the per-bug driver by name.
 	if !strings.Contains(outA, "Iterate fixing bug") {
@@ -1847,7 +1849,7 @@ func TestIterateFixingBugs_RendersForRepresentativeContexts(t *testing.T) {
 	}
 
 	// (b) Commit="false" → the child arguments literal flips to "false".
-	outB := render(&PromptEnabledContext{Args: map[string]string{"Commit": "false"}})
+	outB := render(&cel.PromptEnabledContext{Args: map[string]string{"Commit": "false"}})
 	if !strings.Contains(outB, `"Commit": "false"`) {
 		t.Errorf("branch (b): expected Commit=\"false\" in child arguments when Commit arg is \"false\"; got:\n%s", outB)
 	}
@@ -1902,8 +1904,8 @@ func TestIterateImplementingFeatures_RendersForRepresentativeContexts(t *testing
 
 	body := prompt.Content
 
-	render := func(ctx *PromptEnabledContext) string {
-		funcs := BuildTemplateFuncMap(ctx)
+	render := func(ctx *cel.PromptEnabledContext) string {
+		funcs := cel.BuildTemplateFuncMap(ctx)
 		out, rerr := RenderPromptTemplate("beads-issue-iterate-implementing-features", body, ctx, funcs)
 		if rerr != nil {
 			t.Fatalf("RenderPromptTemplate: %v", rerr)
@@ -1912,7 +1914,7 @@ func TestIterateImplementingFeatures_RendersForRepresentativeContexts(t *testing
 	}
 
 	// (a) Default context — Commit absent → default to "true" in child args.
-	outA := render(&PromptEnabledContext{})
+	outA := render(&cel.PromptEnabledContext{})
 
 	// The orchestrator dispatches to the per-feature driver by name.
 	if !strings.Contains(outA, "Iterate implementing feature") {
@@ -1964,7 +1966,7 @@ func TestIterateImplementingFeatures_RendersForRepresentativeContexts(t *testing
 	}
 
 	// (b) Commit="false" → the child arguments literal flips to "false".
-	outB := render(&PromptEnabledContext{Args: map[string]string{"Commit": "false"}})
+	outB := render(&cel.PromptEnabledContext{Args: map[string]string{"Commit": "false"}})
 	if !strings.Contains(outB, `"Commit": "false"`) {
 		t.Errorf("branch (b): expected Commit=\"false\" in child arguments when Commit arg is \"false\"; got:\n%s", outB)
 	}
@@ -2064,8 +2066,8 @@ func TestBugFixPhasePrompts_RenderForRepresentativeContexts(t *testing.T) {
 			}
 			body := p.Content
 
-			render := func(ctx *PromptEnabledContext) string {
-				funcs := BuildTemplateFuncMap(ctx)
+			render := func(ctx *cel.PromptEnabledContext) string {
+				funcs := cel.BuildTemplateFuncMap(ctx)
 				out, rerr := RenderPromptTemplate(p.Name, body, ctx, funcs)
 				if rerr != nil {
 					t.Fatalf("%s: RenderPromptTemplate: %v", file, rerr)
@@ -2074,8 +2076,8 @@ func TestBugFixPhasePrompts_RenderForRepresentativeContexts(t *testing.T) {
 			}
 
 			// (a) Linked-issue context.
-			outA := render(&PromptEnabledContext{
-				Session: SessionContext{BeadsIssue: "mitto-abc", HasBeadsIssue: true},
+			outA := render(&cel.PromptEnabledContext{
+				Session: cel.SessionContext{BeadsIssue: "mitto-abc", HasBeadsIssue: true},
 			})
 			if !strings.Contains(outA, "mitto-abc") {
 				t.Errorf("%s branch (a): expected bead ID 'mitto-abc' in output", file)
@@ -2090,7 +2092,7 @@ func TestBugFixPhasePrompts_RenderForRepresentativeContexts(t *testing.T) {
 			if file == "beads-issue-fix-phase-fix.prompt.yaml" {
 				args["Commit"] = "true"
 			}
-			outB := render(&PromptEnabledContext{Args: args})
+			outB := render(&cel.PromptEnabledContext{Args: args})
 			if !strings.Contains(outB, "mitto-xyz") {
 				t.Errorf("%s branch (b): expected bead ID 'mitto-xyz' in output", file)
 			}
@@ -2108,7 +2110,7 @@ func TestBugFixPhasePrompts_RenderForRepresentativeContexts(t *testing.T) {
 			// (c) No target resolvable — the phase prompt must not run any
 			// `bd` command (no broken empty invocations) and must render its
 			// missing-target guidance.
-			outC := render(&PromptEnabledContext{})
+			outC := render(&cel.PromptEnabledContext{})
 			if strings.Contains(outC, "bd show  ") || strings.Contains(outC, "bd show \n") {
 				t.Errorf("%s branch (c): found broken empty 'bd show ' command in output", file)
 			}
@@ -2159,8 +2161,8 @@ func TestIterateImplementingFeature_RendersForRepresentativeContexts(t *testing.
 	}
 	body := prompt.Content
 
-	render := func(ctx *PromptEnabledContext) string {
-		funcs := BuildTemplateFuncMap(ctx)
+	render := func(ctx *cel.PromptEnabledContext) string {
+		funcs := cel.BuildTemplateFuncMap(ctx)
 		out, rerr := RenderPromptTemplate("beads-issue-iterate-implementing-feature", body, ctx, funcs)
 		if rerr != nil {
 			t.Fatalf("RenderPromptTemplate: %v", rerr)
@@ -2169,12 +2171,12 @@ func TestIterateImplementingFeature_RendersForRepresentativeContexts(t *testing.
 	}
 
 	// (a) Linked-issue context, first interactive run.
-	ctxA := &PromptEnabledContext{
-		Session: SessionContext{
+	ctxA := &cel.PromptEnabledContext{
+		Session: cel.SessionContext{
 			BeadsIssue:    "mitto-abc",
 			HasBeadsIssue: true,
 		},
-		Iteration: IterationContext{IsFirst: true},
+		Iteration: cel.IterationContext{IsFirst: true},
 	}
 	outA := render(ctxA)
 	if !strings.Contains(outA, "mitto-abc") {
@@ -2224,9 +2226,9 @@ func TestIterateImplementingFeature_RendersForRepresentativeContexts(t *testing.
 	}
 
 	// (b) Arg-only context, uninterrupted silent continuation run, with Commit=true.
-	ctxB := &PromptEnabledContext{
+	ctxB := &cel.PromptEnabledContext{
 		Args:      map[string]string{"IssueID": "mitto-xyz", "Commit": "true"},
-		Iteration: IterationContext{IsLoop: true, IsUninterrupted: true},
+		Iteration: cel.IterationContext{IsLoop: true, IsUninterrupted: true},
 	}
 	outB := render(ctxB)
 	if !strings.Contains(outB, "mitto-xyz") {
@@ -2254,7 +2256,7 @@ func TestIterateImplementingFeature_RendersForRepresentativeContexts(t *testing.
 	// Blocked → Defer + Handoff step (Step 4) still renders, using the
 	// "<target-feature>" placeholder rather than an empty/broken argument, since
 	// it is the documented escape hatch for this exact situation.
-	ctxC := &PromptEnabledContext{}
+	ctxC := &cel.PromptEnabledContext{}
 	outC := render(ctxC)
 	if !strings.Contains(outC, "not explicitly specified") {
 		t.Errorf("branch (c): expected 'not explicitly specified' guidance; got:\n%s", outC)
@@ -2368,8 +2370,8 @@ func TestFeaturePhasePrompts_RenderForRepresentativeContexts(t *testing.T) {
 			}
 			body := p.Content
 
-			render := func(ctx *PromptEnabledContext) string {
-				funcs := BuildTemplateFuncMap(ctx)
+			render := func(ctx *cel.PromptEnabledContext) string {
+				funcs := cel.BuildTemplateFuncMap(ctx)
 				out, rerr := RenderPromptTemplate(p.Name, body, ctx, funcs)
 				if rerr != nil {
 					t.Fatalf("%s: RenderPromptTemplate: %v", file, rerr)
@@ -2378,8 +2380,8 @@ func TestFeaturePhasePrompts_RenderForRepresentativeContexts(t *testing.T) {
 			}
 
 			// (a) Linked-issue context.
-			outA := render(&PromptEnabledContext{
-				Session: SessionContext{BeadsIssue: "mitto-abc", HasBeadsIssue: true},
+			outA := render(&cel.PromptEnabledContext{
+				Session: cel.SessionContext{BeadsIssue: "mitto-abc", HasBeadsIssue: true},
 			})
 			if !strings.Contains(outA, "mitto-abc") {
 				t.Errorf("%s branch (a): expected bead ID 'mitto-abc' in output", file)
@@ -2394,7 +2396,7 @@ func TestFeaturePhasePrompts_RenderForRepresentativeContexts(t *testing.T) {
 			if file != "beads-issue-feature-phase-plan.prompt.yaml" {
 				args["Commit"] = "true"
 			}
-			outB := render(&PromptEnabledContext{Args: args})
+			outB := render(&cel.PromptEnabledContext{Args: args})
 			if !strings.Contains(outB, "mitto-xyz") {
 				t.Errorf("%s branch (b): expected bead ID 'mitto-xyz' in output", file)
 			}
@@ -2413,7 +2415,7 @@ func TestFeaturePhasePrompts_RenderForRepresentativeContexts(t *testing.T) {
 			// (c) No target resolvable — the phase prompt must not run any
 			// `bd` command (no broken empty invocations) and must render its
 			// missing-target guidance.
-			outC := render(&PromptEnabledContext{})
+			outC := render(&cel.PromptEnabledContext{})
 			if strings.Contains(outC, "bd show  ") || strings.Contains(outC, "bd show \n") {
 				t.Errorf("%s branch (c): found broken empty 'bd show ' command in output", file)
 			}
@@ -2470,8 +2472,8 @@ func TestPhasePrompts_TierCheckRendersForModelTags(t *testing.T) {
 			}
 			body := p.Content
 
-			render := func(ctx *PromptEnabledContext) string {
-				funcs := BuildTemplateFuncMap(ctx)
+			render := func(ctx *cel.PromptEnabledContext) string {
+				funcs := cel.BuildTemplateFuncMap(ctx)
 				out, rerr := RenderPromptTemplate(p.Name, body, ctx, funcs)
 				if rerr != nil {
 					t.Fatalf("%s: RenderPromptTemplate: %v", tc.file, rerr)
@@ -2490,9 +2492,9 @@ func TestPhasePrompts_TierCheckRendersForModelTags(t *testing.T) {
 			}
 
 			// (1) Confirmed tier: session model carries the declared tier tag.
-			outOK := render(&PromptEnabledContext{
+			outOK := render(&cel.PromptEnabledContext{
 				Args: args,
-				Session: SessionContext{
+				Session: cel.SessionContext{
 					ModelName: "TestModel",
 					ModelTags: []string{tc.tier},
 				},
@@ -2516,9 +2518,9 @@ func TestPhasePrompts_TierCheckRendersForModelTags(t *testing.T) {
 			if tc.tier == "Coding" {
 				otherTier = "Reasoning"
 			}
-			outDeg := render(&PromptEnabledContext{
+			outDeg := render(&cel.PromptEnabledContext{
 				Args: args,
-				Session: SessionContext{
+				Session: cel.SessionContext{
 					ModelName: "WrongTierModel",
 					ModelTags: []string{otherTier},
 				},
@@ -2543,9 +2545,9 @@ func TestPhasePrompts_TierCheckRendersForModelTags(t *testing.T) {
 			// (3) Unknown model (cold start / no profiles match): ModelName empty,
 			// ModelTags nil. Must render the degraded branch with "<unknown>" +
 			// "none" tags — no template errors, no crash.
-			outUnknown := render(&PromptEnabledContext{
+			outUnknown := render(&cel.PromptEnabledContext{
 				Args:    args,
-				Session: SessionContext{},
+				Session: cel.SessionContext{},
 			})
 			if !strings.Contains(outUnknown, "⚠ **Tier-degraded run.**") {
 				t.Errorf("%s: expected tier-degraded warning when model unknown; got:\n%s", tc.file, outUnknown)
@@ -2600,8 +2602,8 @@ func TestPhasePrompts_TierTaggedCommentPrefix(t *testing.T) {
 				tc.file == "beads-issue-feature-phase-review.prompt.yaml" {
 				args["Commit"] = "false"
 			}
-			ctx := &PromptEnabledContext{Args: args}
-			funcs := BuildTemplateFuncMap(ctx)
+			ctx := &cel.PromptEnabledContext{Args: args}
+			funcs := cel.BuildTemplateFuncMap(ctx)
 			out, err := RenderPromptTemplate(p.Name, p.Content, ctx, funcs)
 			if err != nil {
 				t.Fatalf("RenderPromptTemplate: %v", err)
@@ -2764,8 +2766,8 @@ func TestMentionDriver_RendersForRepresentativeContexts(t *testing.T) {
 	}
 	body := prompt.Content
 
-	render := func(ctx *PromptEnabledContext) string {
-		funcs := BuildTemplateFuncMap(ctx)
+	render := func(ctx *cel.PromptEnabledContext) string {
+		funcs := cel.BuildTemplateFuncMap(ctx)
 		out, rerr := RenderPromptTemplate("beads-issue-mention-driver", body, ctx, funcs)
 		if rerr != nil {
 			t.Fatalf("RenderPromptTemplate: %v", rerr)
@@ -2774,8 +2776,8 @@ func TestMentionDriver_RendersForRepresentativeContexts(t *testing.T) {
 	}
 
 	// (a) Linked-issue context with Commit=true.
-	ctxA := &PromptEnabledContext{
-		Session: SessionContext{
+	ctxA := &cel.PromptEnabledContext{
+		Session: cel.SessionContext{
 			BeadsIssue:    "mitto-abc",
 			HasBeadsIssue: true,
 		},
@@ -2785,7 +2787,7 @@ func TestMentionDriver_RendersForRepresentativeContexts(t *testing.T) {
 			"MentionBody": "please fix the crash",
 			"Commit":      "true",
 		},
-		Iteration: IterationContext{IsFirst: true},
+		Iteration: cel.IterationContext{IsFirst: true},
 	}
 	outA := render(ctxA)
 	if !strings.Contains(outA, "mitto-abc") {
@@ -2842,14 +2844,14 @@ func TestMentionDriver_RendersForRepresentativeContexts(t *testing.T) {
 	}
 
 	// (b) Arg-only context, Commit=false.
-	ctxB := &PromptEnabledContext{
+	ctxB := &cel.PromptEnabledContext{
 		Args: map[string]string{
 			"IssueID":     "mitto-xyz",
 			"MentionTS":   "2026-07-16T11:00:00Z",
 			"MentionBody": "how do I run tests?",
 			"Commit":      "false",
 		},
-		Iteration: IterationContext{IsLoop: true},
+		Iteration: cel.IterationContext{IsLoop: true},
 	}
 	outB := render(ctxB)
 	if !strings.Contains(outB, "mitto-xyz") {
@@ -2866,7 +2868,7 @@ func TestMentionDriver_RendersForRepresentativeContexts(t *testing.T) {
 	}
 
 	// (c) No target resolvable — neither BeadsIssue nor Args.IssueID set.
-	ctxC := &PromptEnabledContext{}
+	ctxC := &cel.PromptEnabledContext{}
 	outC := render(ctxC)
 	if !strings.Contains(outC, "No target bead is resolvable") {
 		t.Errorf("branch (c): expected 'No target bead is resolvable' guidance; got:\n%s", outC)
@@ -2915,15 +2917,15 @@ func TestLoopProcessingSpawns_MirrorArgumentsIntoLoopArguments(t *testing.T) {
 	}
 	body := prompt.Content
 
-	ctx := &PromptEnabledContext{
-		Session: SessionContext{
+	ctx := &cel.PromptEnabledContext{
+		Session: cel.SessionContext{
 			ID:            "orch-1",
 			BeadsIssue:    "",
 			HasBeadsIssue: false,
 		},
 		Args: map[string]string{"Commit": "true"},
 	}
-	funcs := BuildTemplateFuncMap(ctx)
+	funcs := cel.BuildTemplateFuncMap(ctx)
 	out, rerr := RenderPromptTemplate("beads-issue-loop-processing", body, ctx, funcs)
 	if rerr != nil {
 		t.Fatalf("RenderPromptTemplate: %v", rerr)
