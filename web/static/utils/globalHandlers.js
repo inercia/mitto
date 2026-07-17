@@ -64,8 +64,12 @@ document.addEventListener("click", (e) => {
         if (wsPath) {
           const absolute =
             wsPath.replace(/\/$/, "") + "/" + filePath.replace(/^\//, "");
+          // Percent-encode each path segment so spaces and other characters
+          // that need URL escaping produce a valid file:// URL for the
+          // native opener.
+          const encoded = absolute.split("/").map(encodeURIComponent).join("/");
           console.log("[Mitto] Non-viewable file — opening in system app:", absolute);
-          openFileURL("file://" + absolute);
+          openFileURL("file://" + encoded);
           return;
         }
         if (workspaceUUID && filePath) {
