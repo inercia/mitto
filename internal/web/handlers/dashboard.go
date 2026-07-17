@@ -262,12 +262,6 @@ func itemStatus(item map[string]any) string {
 	return s
 }
 
-// itemType returns the "issue_type" field of an issue map as a string.
-func itemType(item map[string]any) string {
-	s, _ := item["issue_type"].(string)
-	return s
-}
-
 // itemUpdatedAt returns the "updated_at" field of an issue map as a string.
 // bd emits RFC 3339 timestamps so lexicographic comparison matches chronology.
 func itemUpdatedAt(item map[string]any) string {
