@@ -6,7 +6,7 @@
 //
 // Item kinds (each entry in `items`):
 //   { kind: "button",    testId, icon, tip, ariaLabel, active, disabled, danger, onClick, className }
-//   { kind: "dropdown",  testId, icon, tip, ariaLabel, active, caret, align, open, onToggle, menu }
+//   { kind: "dropdown",  testId, icon, tip, ariaLabel, active, caret, align, open, onToggle, menu, className }
 //   { kind: "overflow",  testId, tip, ariaLabel, align, open, onToggle, items: [{ testId, icon, label, active, disabled, onClick }] }
 //   { kind: "separator" }
 //   { kind: "spacer" }
@@ -84,7 +84,7 @@ function ToolbarButton({ item, size }) {
 function ToolbarDropdown({ item, size }) {
   return html`
     <details
-      class="dropdown ${item.align === "end" ? "dropdown-end" : ""}"
+      class="dropdown ${item.align === "end" ? "dropdown-end" : ""} ${item.className || ""}"
       open=${!!item.open}
       onToggle=${(e) => {
         const open = e.currentTarget.open;

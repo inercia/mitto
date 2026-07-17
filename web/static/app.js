@@ -2434,6 +2434,20 @@ function App() {
       allSessions.some((s) => s.parent_session_id === activeSessionId),
     [allSessions, activeSessionId],
   );
+  // Children of the active conversation, in the same order they appear in
+  // allSessions (which the sidebar already renders sorted). Feeds the header
+  // "children dropdown" (mitto-7vpp) so users can jump between generations of
+  // a spawned tree without navigating the sidebar. Archived children are
+  // omitted — they are not part of the active tree the user cares about.
+  const activeChildren = useMemo(
+    () =>
+      activeSessionId
+        ? allSessions.filter(
+            (s) => s.parent_session_id === activeSessionId && !s.archived,
+          )
+        : [],
+    [allSessions, activeSessionId],
+  );
   const headerIsArchived = activeSession?.archived || false;
   const headerIsLoop = activeSession?.loop_configured || false;
   const headerIsSpawned =
@@ -2900,6 +2914,51 @@ function App() {
     // associated issue. Disabled when there is no linked issue; a status badge
     // dot appears once the (possibly slow) status fetch resolves. Sits just to
     // the left of the Session-details toggle.
+    // Children dropdown (mitto-7vpp): quick jump to any child conversation of
+    // the active session. Hidden entirely on mobile (< md) and when the active
+    // conversation has no children — keeps the header uncluttered. Live-updates
+    // via allSessions (WebSocket push) without any extra subscription.
+    ...(activeSessionId && activeChildren.length > 0
+      ? [
+          {
+            kind: "dropdown",
+            testId: "header-children-dropdown",
+            icon: html`<${LayersIcon} className="w-4 h-4" />`,
+            tip: `Children (${activeChildren.length})`,
+            ariaLabel: `Children of this conversation (${activeChildren.length})`,
+            align: "end",
+            className: "hidden md:block",
+            menu: html`
+              <ul
+                class="dropdown-content menu bg-mitto-surface-2 rounded-box shadow border border-mitto-border-1 z-10 mt-1 w-64 max-h-96 overflow-y-auto p-1"
+                data-testid="header-children-dropdown-menu"
+              >
+                ${activeChildren.map(
+                  (child) => html`
+                    <li key=${child.session_id}>
+                      <button
+                        type="button"
+                        class="flex items-center gap-2 text-left"
+                        data-testid=${`header-children-item-${child.session_id}`}
+                        onClick=${() => focusSession(child.session_id)}
+                      >
+                        ${child.loop_configured
+                          ? html`<${LoopFilledIcon}
+                              className="w-3 h-3 opacity-70 shrink-0"
+                            />`
+                          : null}
+                        <span class="truncate">
+                          ${child.name || child.description || "Untitled"}
+                        </span>
+                      </button>
+                    </li>
+                  `,
+                )}
+              </ul>
+            `,
+          },
+        ]
+      : []),
     ...(activeSessionId
       ? [
           {
