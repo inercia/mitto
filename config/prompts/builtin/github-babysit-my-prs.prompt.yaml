@@ -100,16 +100,27 @@ prompt: |
 
   If `gh` is not authenticated (`gh auth status` fails), inform the user and stop.
 
-  Identify the current GitHub user:
+  Identify **all** GitHub users you may act as. `gh auth status` can list
+  multiple `github.com` accounts (e.g. a work account and a personal one), but
+  `--author @me` and `gh api user -q '.login'` only ever resolve to the single
+  currently-active account — which means PRs authored by any of your other
+  logged-in accounts are silently invisible.
+
+  Enumerate every `github.com` account (active or not) from `gh auth status`:
 
   ```bash
-  gh api user -q '.login'
+  gh auth status 2>&1 \
+    | awk '
+        /^[^ ]/            { host=$1; next }
+        /Logged in to/     { if (host=="github.com") { for (i=1;i<=NF;i++) if ($i=="account") print $(i+1) } }
+      ' \
+    | sort -u
   ```
 
-  Store this login — you will use it to verify PR ownership throughout this
-  prompt. **Only act on PRs where `author.login` matches this value.** The
-  `--author @me` flag in Step 2 should handle this, but always double-check the
-  author before taking any action (rebase, merge, spawn fix conversations).
+  Store this as the **owned-logins set** — every login in this set counts as
+  "you" for the rest of the prompt. Only act on PRs where `author.login` is a
+  member of this set (rebase, merge, spawn fix conversations). If the set is
+  empty for some reason, fall back to `gh api user -q '.login'`.
 
   Once you have the `nameWithOwner` (e.g., `some-org/some-repo`), rename this
   conversation so it's easy to identify — but only if the current name
@@ -123,20 +134,32 @@ prompt: |
 
   ## Step 2 — List my open PRs
 
-  Only process PRs authored by the current user (`--author @me`). Do **not**
-  rebase, merge, or spawn fix conversations for other people's PRs.
+  Only process PRs authored by one of the logins in the owned-logins set from
+  Step 1. Do **not** rebase, merge, or spawn fix conversations for other
+  people's PRs.
+
+  `--author @me` resolves to the single active `gh` account, so it misses PRs
+  authored by any other logged-in account. Instead, run one `gh pr list` per
+  login and merge the results, deduplicating by PR number:
 
   ```bash
-  gh pr list{{ $repoFlag }} --state open --author @me --json number,title,headRefName,baseRefName,statusCheckRollup,mergeable,updatedAt,isDraft,reviewDecision,author,reviewRequests,labels --limit 50
+  # For each LOGIN in the owned-logins set from Step 1:
+  gh pr list{{ $repoFlag }} --state open --author "$LOGIN" \
+    --json number,title,headRefName,baseRefName,statusCheckRollup,mergeable,updatedAt,isDraft,reviewDecision,author,reviewRequests,labels \
+    --limit 50
   ```
+
+  Concatenate the JSON arrays and deduplicate by `.number` (a PR only ever has
+  one author, so no PR should appear in more than one list, but dedupe anyway
+  as a safety net).
 
   If no open PRs, skip to the Summary (Step 4).
 
   ## Step 3 — Process each of my PRs
 
   For each of your open PRs (order doesn't matter), perform all applicable checks
-  below. **Before acting on any PR, verify that `author.login` matches your GitHub
-  username** (obtained in Step 1). If it doesn't, skip the PR entirely.
+  below. **Before acting on any PR, verify that `author.login` is a member of the
+  owned-logins set** (obtained in Step 1). If it isn't, skip the PR entirely.
 
   ### 3a. Merge/rebase check
 
@@ -265,6 +288,15 @@ prompt: |
 
   3. **If `mitto_conversation_new` is available:**
 
+     First compute the same working-copy decision documented in Step 3d (is the
+     local checkout on `<headRefName>`, at `<PR_HEAD>`, and completely clean?):
+     `WORKING_MODE` is `local` or `worktree`, `WORKING_PATH` is the path to use.
+
+     **Dedup guard**: skip spawning if an existing child titled `Fix CI for
+     PR #<number>` is still running or was updated after the failing run
+     completed. Prefer sending a follow-up prompt to that existing child (via
+     `mitto_conversation_send_prompt`) over spawning a duplicate.
+
      **In interactive mode**, ask the user whether to spawn a fix conversation:
      ```
      mitto_ui_options(self_id: "{{ .Session.ID }}",
@@ -279,13 +311,37 @@ prompt: |
      ```
      mitto_conversation_new(self_id: "{{ .Session.ID }}",
        title: "Fix CI for PR #<number>: <title>",
-       initial_prompt: "PR #<number> (<title>) has failing CI checks on branch <headRefName>.
+       initial_prompt: "PR #<number> (<title>) in <owner/repo> has failing CI checks on branch <headRefName>.
          Failing checks: <check names>
          Error summary: <brief failure details from logs>
 
-         Please check out branch <headRefName>, diagnose and fix the CI failures,
-         then push the fixes.
-         The repo is at: <repo path>",
+         Working-copy mode: <WORKING_MODE>  ('local' = reuse repo path as-is;
+                                               'worktree' = create a fresh worktree, do NOT touch the main checkout)
+         Repo path:         <WORKING_PATH>
+         PR branch:         <headRefName>   (head commit <PR_HEAD>)
+         Base branch:       <baseRefName>
+
+         Working-copy rules:
+           - If 'local': operate directly in the given repo path. If anything
+             is dirty at start, abort and re-plan in a worktree instead.
+           - If 'worktree': create a fresh worktree with
+               git -C <WORKING_PATH> fetch origin <headRefName>
+               TMPDIR=\$(mktemp -d) && git -C <WORKING_PATH> worktree add \"\$TMPDIR\" origin/<headRefName>
+             Do all edits inside \$TMPDIR. Never modify files under
+             <WORKING_PATH> itself; the user may be working there.
+
+         Please diagnose and fix the CI failures. Run the project's full local
+         gate before pushing (format → lint → unit → integration — whatever
+         the repo's Makefile or docs specify). Only push once every gate step
+         passes. Force-push with --force-with-lease.
+
+         If a failure is NOT caused by this PR (i.e. it also fails on the
+         base branch's latest commit), do not push a spurious fix; instead
+         report back with the diagnosis and file a beads issue for the
+         pre-existing failure, so the babysit parent can surface it.
+
+         When done, report back a per-check summary: which CI checks passed
+         after your push and which remain failing (with root cause).",
        acp_server: <prefer "coding" or "fast" tagged server>)
      ```
 
@@ -318,11 +374,43 @@ prompt: |
 
   ### 3d. Unresolved review comments
 
-  Check for unresolved review threads:
+  `gh pr view --json reviewThreads` is **not supported** by the `gh` CLI — the
+  field only exists via GraphQL. Use `gh api graphql` to fetch the unresolved
+  threads:
 
   ```bash
-  gh pr view <number>{{ $repoFlag }} --json reviewThreads --jq '[.reviewThreads[] | select(.isResolved == false)] | length'
+  # Fetches every unresolved (and not-outdated) review thread with the first
+  # comment of each thread (author, path, line, body, thread id).
+  {{- if .Args.Repository }}
+  REPO_OWNER=$(echo "{{ .Args.Repository }}" | cut -d/ -f1)
+  REPO_NAME=$(echo "{{ .Args.Repository }}" | cut -d/ -f2)
+  {{- else }}
+  REPO_OWNER=$(gh repo view --json owner -q .owner.login)
+  REPO_NAME=$(gh repo view --json name  -q .name)
+  {{- end }}
+  gh api graphql -f query='
+  query($owner:String!,$name:String!,$number:Int!) {
+    repository(owner:$owner, name:$name) {
+      pullRequest(number:$number) {
+        reviewThreads(first:100) { nodes {
+          id isResolved isOutdated
+          comments(first:1) { nodes {
+            author { login } path line originalLine body
+          } }
+        } }
+      }
+    }
+  }' -F owner="$REPO_OWNER" -F name="$REPO_NAME" -F number=<number> \
+    --jq '[.data.repository.pullRequest.reviewThreads.nodes[]
+           | select(.isResolved == false and .isOutdated == false)
+           | {id, path: .comments.nodes[0].path,
+              line: (.comments.nodes[0].line // .comments.nodes[0].originalLine),
+              author: .comments.nodes[0].author.login,
+              body: .comments.nodes[0].body}]'
   ```
+
+  Save the JSON array as `THREADS_JSON`. Its length is the unresolved count.
+  If the count is 0, this substep is done — skip to 3e.
 
   **If there are unresolved threads:**
 
@@ -331,6 +419,36 @@ prompt: |
     title: "💬 PR #<number> has unresolved comments",
     message: "<title> — <count> unresolved review threads need attention",
     style: "warning")
+  ```
+
+  **Dedup guard**: check the Existing children list at the top of this prompt.
+  If a child titled `Address review comments on PR #<number>` (or containing
+  that exact substring) already exists **and is still running or was updated
+  after the newest thread's `createdAt`**, skip spawning — the previous run
+  already handled it. Otherwise proceed to spawn (or in interactive mode, ask).
+
+  **Working-copy decision** (which the spawned child will honour):
+
+  Compute in this parent, then pass the decision explicitly in the child's
+  initial prompt — do **not** let the child guess.
+
+  ```bash
+  # Are we sitting on the PR branch, clean, and at the PR's head commit?
+  CUR_BRANCH=$(git -C "<repo path>" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+  CUR_HEAD=$(git -C "<repo path>" rev-parse HEAD 2>/dev/null || echo "")
+  PR_HEAD=$(gh pr view <number>{{ $repoFlag }} --json headRefOid -q .headRefOid)
+  DIRTY=$(git -C "<repo path>" status --porcelain 2>/dev/null | head -c 1)
+  # STAGED includes staged-only-not-committed changes
+  STAGED=$(git -C "<repo path>" diff --cached --name-only 2>/dev/null | head -c 1)
+
+  if [ "$CUR_BRANCH" = "<headRefName>" ] && [ "$CUR_HEAD" = "$PR_HEAD" ] \
+     && [ -z "$DIRTY" ] && [ -z "$STAGED" ]; then
+    WORKING_MODE="local"
+    WORKING_PATH="<repo path>"
+  else
+    WORKING_MODE="worktree"
+    WORKING_PATH="(child will create a fresh worktree via 'git worktree add')"
+  fi
   ```
 
   **If `mitto_conversation_new` is available:**
@@ -345,15 +463,56 @@ prompt: |
     ])
   ```
 
-  **In scheduled mode**, spawn automatically:
+  **In scheduled mode**, spawn automatically. Pass the full `THREADS_JSON`
+  payload plus the working-copy decision so the child can address each comment
+  individually (either fix + reply, or reply-explaining-why-not — but **never**
+  silently ignore):
+
   ```
   mitto_conversation_new(self_id: "{{ .Session.ID }}",
     title: "Address review comments on PR #<number>: <title>",
-    initial_prompt: "PR #<number> (<title>) has <count> unresolved review threads.
-      Please check out branch <headRefName>, read the review comments with
-      `gh pr view <number> --json reviewThreads`, address each comment with
-      code changes and replies, then push the fixes.
-      The repo is at: <repo path>",
+    initial_prompt: "PR #<number> (<title>) in <owner/repo> has <count> unresolved review threads.
+
+      Working-copy mode: <WORKING_MODE>  ('local' = reuse repo path as-is;
+                                            'worktree' = create a fresh worktree, do NOT touch the main checkout)
+      Repo path:         <WORKING_PATH>
+      PR branch:         <headRefName>   (head commit <PR_HEAD>)
+      Base branch:       <baseRefName>
+
+      Unresolved threads (JSON, one object per thread — id / path / line / author / body):
+      <THREADS_JSON>
+
+      For EACH thread you MUST do exactly one of:
+        (a) Apply a code fix that addresses the comment, then reply to the
+            thread on the PR referencing the commit that fixed it.
+        (b) Reply to the thread with a concrete reason it will not be fixed
+            (e.g., 'out of scope for this PR — filed as beads mitto-XXX',
+            'disagree with reviewer because <reason>', 'already addressed in
+            commit abc123', etc.).
+      Never silently skip a thread. Never mark a thread resolved without either
+      a code fix or a substantive reply.
+
+      Working-copy rules:
+        - If 'local': operate directly in the given repo path. Never leave
+          uncommitted files behind; if anything is dirty at start, abort and
+          switch to worktree mode.
+        - If 'worktree': create a fresh worktree with
+            git -C <WORKING_PATH> fetch origin <headRefName>
+            TMPDIR=\$(mktemp -d) && git -C <WORKING_PATH> worktree add \"\$TMPDIR\" origin/<headRefName>
+          Do all edits inside \$TMPDIR. Never modify files under
+          <WORKING_PATH> itself; the user may be working there.
+
+      To post a reply on a review thread, use the GraphQL addPullRequestReviewThreadReply mutation
+      (or 'gh api /repos/{owner}/{repo}/pulls/{number}/comments' with in_reply_to=<thread's first comment id>).
+      To mark it resolved, use the resolveReviewThread mutation with the thread id from the JSON.
+
+      Local gate before pushing: run the project's format → lint → unit → integration
+      steps (whatever the repo's Makefile or docs specify) and only push once
+      they all pass. Force-push with --force-with-lease.
+
+      When done, either mark all threads resolved (if fixed) or leave them
+      unresolved with your reply comment (if pushed back). Report back with a
+      per-thread summary: which threads got fixed vs replied-only.",
     acp_server: <prefer "coding" or "fast" tagged server>)
   ```
 
@@ -409,9 +568,30 @@ prompt: |
   {{- else }}
     no repository was supplied; operate on the repository of the current folder.
   {{- end }}
-  - **Never modify the local checkout** — the user may have uncommitted work there.
-    Always use temporary worktrees for rebase operations.
+  - **Working-copy rule for spawned children** (CI-fix and review-comment
+    children): the parent (this prompt) decides `WORKING_MODE` before spawning.
+    Reuse the local checkout only when it is on the PR branch, at the PR's head
+    commit, and completely clean (no unstaged AND no staged changes); otherwise
+    the child must operate in a fresh `git worktree add` and never touch the
+    main checkout. This is a hard rule — the user may be working in that
+    checkout, so silently overwriting it is unacceptable.
+  - **Rebase step (3a) always uses a temporary worktree** regardless of the
+    above — rebases are destructive and rebasing the user's live checkout is
+    never safe.
   - Use `--force-with-lease` when force-pushing (never `--force`).
+  - **Review comments must be addressed, never ignored** (Step 3d):
+    every unresolved review thread either gets a code fix + reply referencing
+    the fix commit, OR a substantive reply explaining why it will not be
+    fixed (out of scope, disagree with reviewer, already addressed elsewhere,
+    etc.). Silently skipping a thread is not an option. The spawned
+    `Address review comments on PR #<n>` child must report a per-thread
+    outcome (fixed vs replied-only) back to this parent.
+  - **CI failures must be fixed, not ignored** (Step 3b): failing lint or
+    tests are surfaced with a fix child. If a failure is not caused by this
+    PR (also fails on the base branch's latest commit), the child must file
+    a beads issue for the pre-existing failure instead of pretending it's
+    fine — the babysit parent then reports "CI blocked by pre-existing
+    issue mitto-XXX" in its Summary rather than a green "passing" status.
   - If `gh` authentication fails, stop immediately and inform the user.
   - **Interaction mode** (see "Interaction Mode" section above):
   {{- if and .Session.IsLoop (not .Session.IsLoopForced) }}
@@ -438,5 +618,8 @@ prompt: |
   - In **scheduled mode**: do not merge PRs automatically — only notify.
     In **interactive mode**: offer to merge with user confirmation.
   - If a PR has draft status, still check CI and staleness but skip merge-readiness.
-  - **Only act on your own PRs** (`--author @me`). Do not rebase, merge, spawn
-    fix conversations, or take any modifying action on PRs authored by others.
+  - **Only act on your own PRs** — i.e. PRs whose `author.login` is in the
+    owned-logins set enumerated from `gh auth status` in Step 1 (not just the
+    single currently-active `gh` account, which is what `--author @me` resolves
+    to). Do not rebase, merge, spawn fix conversations, or take any modifying
+    action on PRs authored by others.
