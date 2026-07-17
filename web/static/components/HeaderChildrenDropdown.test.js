@@ -38,19 +38,39 @@ function buildChildrenDropdownItems(activeSessionId, activeChildren, deps) {
     {
       kind: "dropdown",
       testId: "header-children-dropdown",
+      // Count badge is rendered as a daisyUI `indicator` over the LayersIcon.
+      // We surface the count and its testId here so the shape can be pinned
+      // without pulling in preact/htm.
+      indicator: {
+        count: activeChildren.length,
+        testId: "header-children-count",
+      },
       tip: `Children (${activeChildren.length})`,
       ariaLabel: `Children of this conversation (${activeChildren.length})`,
       align: "end",
       className: "hidden md:block",
-      // Concrete row descriptors (title + click handler) — exercised by tests
-      // below instead of shipping the raw htm template, which would require
-      // preact globals to render.
+      // Controlled-open + outside-click dismissal (mitto follow-up): the
+      // dropdown's open state lives in the parent so clicks outside the pill
+      // (or an Escape keypress) can close it via the Toolbar helper.
+      open: deps.childrenMenuOpen,
+      onToggle: deps.setChildrenMenuOpen,
+      closeOnOutsideClick: true,
+      // Concrete row descriptors (title + click handler + status flags) —
+      // exercised by tests below instead of shipping the raw htm template,
+      // which would require preact globals to render.
       rows: activeChildren.map((child) => ({
         key: child.session_id,
         testId: `header-children-item-${child.session_id}`,
         title: child.name || child.description || "Untitled",
         loop: !!child.loop_configured,
-        onClick: () => deps.focusSession(child.session_id),
+        streaming: !child.archived && !!child.isStreaming,
+        origin: child.child_origin || null,
+        waitingForChildren: !!child.isWaitingForChildren,
+        waitingForUserInput: !!child.isWaitingForUserInput,
+        onClick: () => {
+          deps.setChildrenMenuOpen(false);
+          deps.focusSession(child.session_id);
+        },
       })),
     },
   ];
@@ -129,8 +149,16 @@ function makeSpy() {
 }
 
 describe("buildChildrenDropdownItems (mitto-7vpp toolbar shape)", () => {
-  const deps = { focusSession: makeSpy() };
-  beforeEach(() => deps.focusSession.reset());
+  const deps = {
+    focusSession: makeSpy(),
+    setChildrenMenuOpen: makeSpy(),
+    childrenMenuOpen: false,
+  };
+  beforeEach(() => {
+    deps.focusSession.reset();
+    deps.setChildrenMenuOpen.reset();
+    deps.childrenMenuOpen = false;
+  });
 
   test("returns [] when no active session (empty-state hide)", () => {
     expect(buildChildrenDropdownItems(null, [], deps)).toEqual([]);
@@ -216,16 +244,115 @@ describe("buildChildrenDropdownItems (mitto-7vpp toolbar shape)", () => {
     expect(item.rows.map((r) => r.loop)).toEqual([true, false, false]);
   });
 
-  test("row onClick delegates to focusSession(child.session_id)", () => {
+  test("row onClick closes the menu and then delegates to focusSession", () => {
     // Acceptance: "Clicking a child entry switches the main view to that child."
+    // Follow-up: the dropdown also closes before switching, so the menu does
+    // not remain visible over the newly focused conversation.
     const kids = [
       { session_id: "c1", name: "One" },
       { session_id: "c2", name: "Two" },
     ];
     const [item] = buildChildrenDropdownItems("p1", kids, deps);
     item.rows[1].onClick();
+    expect(deps.setChildrenMenuOpen.callCount()).toBe(1);
+    expect(deps.setChildrenMenuOpen.lastCall()).toEqual([false]);
     expect(deps.focusSession.callCount()).toBe(1);
     expect(deps.focusSession.lastCall()).toEqual(["c2"]);
+  });
+
+  test("exposes an indicator badge carrying the child count", () => {
+    // Acceptance (follow-up 2): "A daisyUI indicator badge shows the number of
+    // children on the toolbar icon."
+    const kids = [
+      { session_id: "c1", name: "One" },
+      { session_id: "c2", name: "Two" },
+      { session_id: "c3", name: "Three" },
+    ];
+    const [item] = buildChildrenDropdownItems("p1", kids, deps);
+    expect(item.indicator).toEqual({
+      count: 3,
+      testId: "header-children-count",
+    });
+  });
+
+  test("wires controlled open state + closeOnOutsideClick", () => {
+    // Acceptance (follow-up 1): "Clicking outside the dropdown (or pressing
+    // Escape) closes it." Delegated to the Toolbar via closeOnOutsideClick;
+    // requires a controlled open/onToggle pair to actually close the DOM.
+    deps.childrenMenuOpen = true;
+    const [item] = buildChildrenDropdownItems(
+      "p1",
+      [{ session_id: "c1", name: "x" }],
+      deps,
+    );
+    expect(item.closeOnOutsideClick).toBe(true);
+    expect(item.open).toBe(true);
+    expect(item.onToggle).toBe(deps.setChildrenMenuOpen);
+  });
+
+  test("row carries streaming / origin / waiting status flags", () => {
+    // Acceptance (follow-up 3): "Each menu item shows a small status icon
+    // matching the sidebar's visual language." The renderer picks the icon;
+    // the row shape just needs the raw flags in the same slots the sidebar
+    // reads them from.
+    const kids = [
+      {
+        session_id: "c1",
+        name: "streaming",
+        isStreaming: true,
+        child_origin: "auto",
+      },
+      {
+        session_id: "c2",
+        name: "waiting-children",
+        child_origin: "mcp",
+        isWaitingForChildren: true,
+      },
+      {
+        session_id: "c3",
+        name: "waiting-user",
+        child_origin: "human",
+        isWaitingForUserInput: true,
+      },
+      { session_id: "c4", name: "plain" },
+      // Streaming flag on an archived child must NOT surface — mirrors the
+      // sidebar (SessionItem: `isStreaming = !isArchived && ...`).
+      {
+        session_id: "c5",
+        name: "archived-streaming",
+        isStreaming: true,
+        archived: true,
+      },
+    ];
+    const [item] = buildChildrenDropdownItems("p1", kids, deps);
+    expect(item.rows.map((r) => r.streaming)).toEqual([
+      true,
+      false,
+      false,
+      false,
+      false,
+    ]);
+    expect(item.rows.map((r) => r.origin)).toEqual([
+      "auto",
+      "mcp",
+      "human",
+      null,
+      null,
+    ]);
+    expect(item.rows.map((r) => r.waitingForChildren)).toEqual([
+      false,
+      true,
+      false,
+      false,
+      false,
+    ]);
+    expect(item.rows.map((r) => r.waitingForUserInput)).toEqual([
+      false,
+      false,
+      true,
+      false,
+      false,
+    ]);
   });
 });
 

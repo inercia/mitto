@@ -6,7 +6,7 @@
 //
 // Item kinds (each entry in `items`):
 //   { kind: "button",    testId, icon, tip, ariaLabel, active, disabled, danger, onClick, className }
-//   { kind: "dropdown",  testId, icon, tip, ariaLabel, active, caret, align, open, onToggle, menu, className }
+//   { kind: "dropdown",  testId, icon, tip, ariaLabel, active, caret, align, open, onToggle, menu, className, closeOnOutsideClick }
 //   { kind: "overflow",  testId, tip, ariaLabel, align, open, onToggle, items: [{ testId, icon, label, active, disabled, onClick }] }
 //   { kind: "separator" }
 //   { kind: "spacer" }
@@ -29,7 +29,7 @@
 //   testId    - data-testid for the container.
 //   className - extra classes on the container.
 
-const { html, Fragment } = window.preact;
+const { html, Fragment, useEffect, useRef } = window.preact;
 
 import { ChevronDownIcon, EllipsisIcon } from "./Icons.js";
 
@@ -82,8 +82,41 @@ function ToolbarButton({ item, size }) {
 }
 
 function ToolbarDropdown({ item, size }) {
+  // Optional outside-click / Escape dismissal. Opt-in per item so existing
+  // dropdowns (which rely on native <details> toggle-on-summary-click) keep
+  // their behaviour. Requires the caller to drive `item.open` + `item.onToggle`
+  // so the parent's state and the DOM stay in sync when we close from here.
+  const detailsRef = useRef(null);
+  const onToggle = item.onToggle;
+  const isOpen = !!item.open;
+  const closeOnOutsideClick = !!item.closeOnOutsideClick;
+  useEffect(() => {
+    if (!closeOnOutsideClick || !isOpen) return undefined;
+    const close = () => {
+      if (detailsRef.current && detailsRef.current.open) {
+        detailsRef.current.open = false;
+      }
+      if (onToggle) onToggle(false);
+    };
+    const onDocMouseDown = (e) => {
+      const el = detailsRef.current;
+      if (!el) return;
+      if (e.target && el.contains(e.target)) return;
+      close();
+    };
+    const onKeyDown = (e) => {
+      if (e.key === "Escape") close();
+    };
+    document.addEventListener("mousedown", onDocMouseDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onDocMouseDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [closeOnOutsideClick, isOpen, onToggle]);
   return html`
     <details
+      ref=${detailsRef}
       class="dropdown ${item.align === "end" ? "dropdown-end" : ""} ${item.className || ""}"
       open=${!!item.open}
       onToggle=${(e) => {
@@ -97,10 +130,12 @@ function ToolbarDropdown({ item, size }) {
         class="${triggerClasses(size, {
           active: item.active,
           square: !item.caret,
-          tip: item.tip,
+          // Suppress the tooltip while the dropdown is open — otherwise daisyUI
+          // keeps the ::before/::after bubble visible on top of the expanded menu.
+          tip: isOpen ? null : item.tip,
           extra: `list-none ${item.caret ? "gap-1 px-2" : ""}`,
         })}"
-        data-tip=${item.tip || null}
+        data-tip=${isOpen ? null : item.tip || null}
       >
         ${item.icon}
         ${item.caret

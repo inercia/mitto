@@ -110,6 +110,7 @@ import {
 import { SessionItem } from "./components/SessionItem.js";
 import { SessionList } from "./components/SessionList.js";
 import { Toolbar } from "./components/Toolbar.js";
+import { HeaderChildRow } from "./components/HeaderChildRow.js";
 import { MessageList } from "./components/MessageList.js";
 import { Message } from "./components/Message.js";
 import { ChatInput } from "./components/ChatInput.js";
@@ -345,6 +346,11 @@ function App() {
 
   const [showSidebar, setShowSidebar] = useState(false);
   const [showSidePanel, setShowSidePanel] = useState(false);
+  // Controlled-open state for the header "children dropdown" (mitto-7vpp). Kept
+  // controlled so the Toolbar's closeOnOutsideClick machinery can dismiss it
+  // when the user clicks outside or presses Escape, and so clicking a child
+  // entry closes the menu before switching sessions.
+  const [childrenMenuOpen, setChildrenMenuOpen] = useState(false);
 
   // Close the mobile left sidebar when the user clicks outside of it (e.g. on the
   // conversation peek to its right). Below the md breakpoint the sidebar's
@@ -2923,36 +2929,38 @@ function App() {
           {
             kind: "dropdown",
             testId: "header-children-dropdown",
-            icon: html`<${LayersIcon} className="w-4 h-4" />`,
+            // Wrap the icon in a daisyUI `indicator` so the child count sits as
+            // a small badge on the top-right corner of the LayersIcon — same
+            // visual language as unread/count badges elsewhere in the app.
+            icon: html`<span class="indicator">
+              <span
+                class="indicator-item badge badge-xs badge-primary tabular-nums"
+                data-testid="header-children-count"
+                >${activeChildren.length}</span
+              >
+              <${LayersIcon} className="w-4 h-4" />
+            </span>`,
             tip: `Children (${activeChildren.length})`,
             ariaLabel: `Children of this conversation (${activeChildren.length})`,
             align: "end",
             className: "hidden md:block",
+            open: childrenMenuOpen,
+            onToggle: setChildrenMenuOpen,
+            closeOnOutsideClick: true,
             menu: html`
               <ul
                 class="dropdown-content menu bg-mitto-surface-2 rounded-box shadow border border-mitto-border-1 z-10 mt-1 w-64 max-h-96 overflow-y-auto p-1"
                 data-testid="header-children-dropdown-menu"
               >
                 ${activeChildren.map(
-                  (child) => html`
-                    <li key=${child.session_id}>
-                      <button
-                        type="button"
-                        class="flex items-center gap-2 text-left"
-                        data-testid=${`header-children-item-${child.session_id}`}
-                        onClick=${() => focusSession(child.session_id)}
-                      >
-                        ${child.loop_configured
-                          ? html`<${LoopFilledIcon}
-                              className="w-3 h-3 opacity-70 shrink-0"
-                            />`
-                          : null}
-                        <span class="truncate">
-                          ${child.name || child.description || "Untitled"}
-                        </span>
-                      </button>
-                    </li>
-                  `,
+                  (child) => html`<${HeaderChildRow}
+                    key=${child.session_id}
+                    child=${child}
+                    onSelect=${(sid) => {
+                      setChildrenMenuOpen(false);
+                      focusSession(sid);
+                    }}
+                  />`,
                 )}
               </ul>
             `,
