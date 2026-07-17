@@ -239,6 +239,14 @@ type LoopPrompt struct {
 	// changes that landed during the busy window are not lost. Only meaningful
 	// when Trigger is onTasks.
 	CoalesceDuringBusy *bool `json:"coalesce_during_busy,omitempty"`
+	// NoProgressLimit overrides the onTasks Layer 3 circuit-breaker threshold —
+	// the number of consecutive no-progress fires (fires that touch no issue
+	// beyond what the previous fire already touched) that auto-pause the loop.
+	// Nil/absent = default 3 (existing behaviour). *0 = unlimited (opt-out;
+	// intended for supervisor-style loops whose steady-state legitimately
+	// includes empty/at-cap fires). *N (N > 0) = custom threshold. Only
+	// meaningful when Trigger is onTasks.
+	NoProgressLimit *int `json:"no_progress_limit,omitempty"`
 }
 
 // ShouldCoalesceDuringBusy reports whether the onTasks trigger should silently
@@ -249,6 +257,17 @@ func (p *LoopPrompt) ShouldCoalesceDuringBusy() bool {
 		return true
 	}
 	return *p.CoalesceDuringBusy
+}
+
+// EffectiveNoProgressLimit returns the effective onTasks Layer 3 circuit-breaker
+// threshold for this loop. Nil/unset returns 3 (default). *0 returns 0
+// (unlimited — opt-out). *N returns N. Runner callers must treat 0 as "never
+// trip the breaker".
+func (p *LoopPrompt) EffectiveNoProgressLimit() int {
+	if p.NoProgressLimit == nil {
+		return 3
+	}
+	return *p.NoProgressLimit
 }
 
 // ReachedMaxIterations returns true if the prompt has been delivered the maximum number of scheduled times.

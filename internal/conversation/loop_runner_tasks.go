@@ -617,11 +617,14 @@ func (r *LoopRunner) BootstrapTasksBaseline(sessionID string) {
 
 // recordTasksFireOutcome implements the Layer 3 circuit breaker: it tracks,
 // per session, the set of issue IDs touched by consecutive onTasks fires. When
-// tasksNoProgressLimit consecutive fires touch no issue beyond what the
-// previous fire already touched (e.g. a steady-state-true condition with no
-// genuine forward progress), it auto-pauses the trigger via MarkStopped,
-// mirroring the existing failure-pause patterns (handlePromptResolveFailure,
-// autoStopIfMaxDurationReached).
+// the per-loop no-progress limit (LoopPrompt.EffectiveNoProgressLimit,
+// defaulting to tasksNoProgressLimit) consecutive fires touch no issue beyond
+// what the previous fire already touched (e.g. a steady-state-true condition
+// with no genuine forward progress), it auto-pauses the trigger via
+// MarkStopped, mirroring the existing failure-pause patterns
+// (handlePromptResolveFailure, autoStopIfMaxDurationReached). A configured
+// limit of 0 opts out of the breaker entirely (mitto-ckaa), for supervisor-
+// style loops whose steady state legitimately includes empty/at-cap fires.
 func (r *LoopRunner) recordTasksFireOutcome(sessionID string, loopStore *session.LoopStore, delta *config.TasksDelta) {
 	curr := tasksTouchedIDs(delta)
 
@@ -637,7 +640,17 @@ func (r *LoopRunner) recordTasksFireOutcome(sessionID string, loopStore *session
 	r.tasksLastTouchedIDs[sessionID] = curr
 	r.tasksNoProgressMu.Unlock()
 
-	if count < tasksNoProgressLimit {
+	// Consult the per-loop opt-out / override. A read failure or missing loop
+	// falls back to the historical default so the breaker never silently
+	// disables itself on transient store errors.
+	limit := tasksNoProgressLimit
+	if loop, err := loopStore.Get(); err == nil && loop != nil {
+		limit = loop.EffectiveNoProgressLimit()
+	}
+	if limit <= 0 {
+		return // opt-out: breaker disabled for this loop.
+	}
+	if count < limit {
 		return
 	}
 
