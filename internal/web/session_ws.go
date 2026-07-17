@@ -15,6 +15,7 @@ import (
 
 	acp "github.com/coder/acp-go-sdk"
 
+	mittoAcp "github.com/inercia/mitto/internal/acp"
 	"github.com/inercia/mitto/internal/auxiliary"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/conversation"
@@ -401,7 +402,7 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 						// succeed. Skip the misleading permanent-error toast and the hard
 						// start-failed broadcast; a subsequent reconnect/ensure_resumed
 						// will retry against a warm process.
-						if conversation.IsMCPInitTimeout(err) {
+						if mittoAcp.IsMCPInitTimeout(err) {
 							if clientLogger != nil {
 								clientLogger.Warn("Async resume hit transient cold-start MCP-init timeout; skipping start-failed broadcast, will retry on reconnect/ensure_resumed",
 									"error", err)

@@ -1,10 +1,16 @@
-package conversation
+package acp
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
+
+// containsIgnoreCase reports whether substr appears in s, case-insensitively.
+func containsIgnoreCase(s, substr string) bool {
+	return strings.Contains(strings.ToLower(s), strings.ToLower(substr))
+}
 
 func TestClassifyACPError(t *testing.T) {
 	tests := []struct {
@@ -252,7 +258,7 @@ func TestACPErrorClass_String(t *testing.T) {
 
 func TestFormatClassifiedError(t *testing.T) {
 	t.Run("nil returns empty", func(t *testing.T) {
-		if got := formatClassifiedError(nil); got != "" {
+		if got := FormatClassifiedError(nil); got != "" {
 			t.Errorf("got %q, want empty", got)
 		}
 	})
@@ -262,7 +268,7 @@ func TestFormatClassifiedError(t *testing.T) {
 			UserMessage:  "Something broke",
 			UserGuidance: "Fix it this way",
 		}
-		got := formatClassifiedError(e)
+		got := FormatClassifiedError(e)
 		if got != "Something broke. Fix it this way" {
 			t.Errorf("got %q", got)
 		}
@@ -272,7 +278,7 @@ func TestFormatClassifiedError(t *testing.T) {
 		e := &ACPClassifiedError{
 			UserMessage: "Something broke",
 		}
-		got := formatClassifiedError(e)
+		got := FormatClassifiedError(e)
 		if got != "Something broke" {
 			t.Errorf("got %q", got)
 		}

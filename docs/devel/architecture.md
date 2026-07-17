@@ -120,6 +120,9 @@ Implements the ACP client protocol for communicating with AI agents.
   - Permission requests
   - File read/write operations
   - Plan updates
+- **Error taxonomy & restart policy** (`errors.go`): `ACPClassifiedError`, `ClassifyACPError`, `FormatACPError`, `FormatClassifiedError`, `IsACPConnectionError`, `IsMCPInitTimeout`, `IsContextTooLargeError`, `IsRateLimitError`, `BackoffDelay`; per-session (`MaxACPRestarts`, `ACPRestartWindow`, `ACPRestartBaseDelay`, `ACPRestartMaxDelay`, `MaxACPTotalRestarts`) and cross-workspace (`MaxGlobalRestarts`, `GlobalRestartWindow`, `GlobalCooldownDuration`) restart constants, plus `RestartReason` and `MCPInitTimeoutPattern`. This is the single source of truth used by both `internal/acpproc` (shared-process restarts) and `internal/conversation` (per-session restarts).
+
+**Dependency rule:** `internal/acp` MUST NEVER import `internal/acpproc`, `internal/conversation`, or `internal/web`. All arrows point up into `internal/acp`, never down out of it. When callers alias the package, use `mittoAcp "github.com/inercia/mitto/internal/acp"` to avoid colliding with the external `github.com/coder/acp-go-sdk` (typically aliased as `acp`).
 
 ### `internal/session` - Session Recording & Playback
 
@@ -161,7 +164,7 @@ Dependency rule: `internal/web` depends on `internal/conversation`; `internal/co
 - **Streaming buffers**: `StreamBuffer`, `MarkdownBuffer`, `ThoughtBuffer` — buffer and transform ACP streaming events.
 - **Domain interfaces** (`interfaces.go`): `SharedProcess`, `ProcessManager`, `EventsBroadcaster`, `PromptResolver` — abstractions that let the domain interact with infrastructure remaining in `internal/web` (implemented there via small adapter types), so the domain never imports web.
 - **Observer pattern** (`observer.go`): `SessionObserver` interface for broadcasting events to transports.
-- **Supporting types**: action buttons, ACP error classification, title generation, model-state mapping, constraints, available commands, `SessionInfo`, WebSocket event type constants.
+- **Supporting types**: action buttons, title generation, model-state mapping, constraints, available commands, `SessionInfo`, WebSocket event type constants. (ACP error classification and restart constants live in `internal/acp`, not here.)
 
 ### `internal/web` - Web Interface Server
 
@@ -243,6 +246,22 @@ The `internal/acp` package is independent of the CLI presentation layer:
 - CLI provides its own output function (`fmt.Print`)
 - Future web interface can provide different output handling
 - Enables testing without terminal dependencies
+
+#### ACP Ownership Boundary
+
+ACP-related code is split across three packages with a strict, one-way dependency order:
+
+```
+internal/conversation  →  internal/acpproc  →  internal/acp
+```
+
+- **`internal/acp`** owns the wire/transport (client, connection, terminal, permission, filesystem, jsonline filter, command parsing) **and** the ACP failure taxonomy: `ACPClassifiedError`, `ClassifyACPError`, `FormatACPError`, `FormatClassifiedError`, `IsACPConnectionError`, `IsMCPInitTimeout`, `IsContextTooLargeError`, `IsRateLimitError`, `BackoffDelay`, and every restart constant (`MaxACPRestarts`, `ACPRestartWindow`, `ACPRestartBaseDelay`, `ACPRestartMaxDelay`, `MaxACPTotalRestarts`, `MaxGlobalRestarts`, `GlobalRestartWindow`, `GlobalCooldownDuration`) plus `RestartReason` and `MCPInitTimeoutPattern`. It MUST NOT import `internal/acpproc` or `internal/conversation`.
+- **`internal/acpproc`** manages the shared OS process and its restart lifecycle, MCP-tools cache, and stderr pattern matching. It imports `internal/acp` for the taxonomy and constants above.
+- **`internal/conversation`** owns per-session policy (retry accounting via `acpProcessController`, permanent-failure circuit breaker, error surfacing to observers). It imports `internal/acp` for the taxonomy and reads shared-process state via `internal/acpproc`.
+
+**Rule:** the taxonomy and restart constants live in `internal/acp`. Never re-declare `ACPClassifiedError`, `RestartReason*`, or any restart constant in `internal/acpproc` or `internal/conversation`; add new ones to `internal/acp/errors.go` and reference them via the `mittoAcp` alias. This keeps the low-level process code free of upward dependencies on the high-level domain.
+
+**Decision — `internal/conversation/bgsession_acp_process.go` (1,501 LOC) stays in `internal/conversation`.** Despite its size and "ACP process" name, the file is almost entirely methods on `*BackgroundSession` that mutate live session state (`bs.sharedProcess`, `bs.acpCmd`, `bs.observers`, `bs.recorder`, `bs.acpID`). Moving them to `internal/acpproc` would either invert the dependency (acpproc importing conversation for `BackgroundSession`) or require an intrusive callback-interface split for marginal clarity gain. The stateless helpers currently defined in the same file (`BuildACPProcessEnv`, `StderrCollector`/`StartStderrMonitor`, `CompiledStderrPatterns`, `StartACPStartupWatchdog`) are candidates for a follow-up extraction into `internal/acpproc` or a new `internal/acp/stderr` — tracked as a separate bead. Similarly, `acp_callback_sink.go` (bridges ACP events to the `SessionObserver` conversation-domain interface) and `acp_process_controller.go` (session-scoped restart policy on `*BackgroundSession`) legitimately live in `internal/conversation`.
 
 ### 5. Configuration File Strategy
 

@@ -9,6 +9,7 @@ import (
 	"math/rand"
 	"time"
 
+	mittoAcp "github.com/inercia/mitto/internal/acp"
 	"github.com/inercia/mitto/internal/config"
 )
 
@@ -273,7 +274,7 @@ func (c configManager) applyConfigOptionWithOpts(d configDeps, ctx context.Conte
 		previousModel := d.cmGetCurrentModelID()
 		if err := d.cmSetSessionModel(ctx, value); err != nil {
 			if l := d.cmLogger(); l != nil {
-				if IsACPConnectionError(err) {
+				if mittoAcp.IsACPConnectionError(err) {
 					// Dead/restarting process (e.g. agent heap-OOM crash, mitto-5q8): this is a
 					// transient restart-gap condition, not a genuine model-selection failure.
 					l.Warn("Skipping model change; agent process is restarting", "config_id", configID, "value", value, "error", err)

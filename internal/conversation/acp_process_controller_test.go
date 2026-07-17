@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	mittoAcp "github.com/inercia/mitto/internal/acp"
 )
 
 // discardLogger returns an slog.Logger that discards all output.
@@ -34,12 +36,12 @@ func TestACPProcessController_CanRestart_LifetimeCap(t *testing.T) {
 	c := acpProcessController{}
 	logger := discardLogger()
 	// Record MaxACPTotalRestarts restarts
-	for i := 0; i < MaxACPTotalRestarts; i++ {
-		c.recordRestart(RestartReasonCrashDuringPrompt, logger, testSessionID)
+	for i := 0; i < mittoAcp.MaxACPTotalRestarts; i++ {
+		c.recordRestart(mittoAcp.RestartReasonCrashDuringPrompt, logger, testSessionID)
 	}
 	// The next canRestart should hit the cap and return false
 	if c.canRestart(logger, testSessionID) {
-		t.Errorf("expected canRestart to return false after %d total restarts", MaxACPTotalRestarts)
+		t.Errorf("expected canRestart to return false after %d total restarts", mittoAcp.MaxACPTotalRestarts)
 	}
 	// permanentlyFailed should now be set
 	c.mu.Lock()
@@ -54,8 +56,8 @@ func TestACPProcessController_RecordRestart_IncrementsCounts(t *testing.T) {
 	c := acpProcessController{}
 	logger := discardLogger()
 
-	c.recordRestart(RestartReasonCrashDuringPrompt, logger, testSessionID)
-	c.recordRestart(RestartReasonUnexpectedExit, logger, testSessionID)
+	c.recordRestart(mittoAcp.RestartReasonCrashDuringPrompt, logger, testSessionID)
+	c.recordRestart(mittoAcp.RestartReasonUnexpectedExit, logger, testSessionID)
 
 	if c.totalRestarts() != 2 {
 		t.Errorf("expected totalRestarts=2, got %d", c.totalRestarts())
@@ -69,21 +71,21 @@ func TestACPProcessController_Stats_ReasonCounts(t *testing.T) {
 	c := acpProcessController{}
 	logger := discardLogger()
 
-	c.recordRestart(RestartReasonCrashDuringPrompt, logger, testSessionID)
-	c.recordRestart(RestartReasonCrashDuringPrompt, logger, testSessionID)
-	c.recordRestart(RestartReasonUnexpectedExit, logger, testSessionID)
+	c.recordRestart(mittoAcp.RestartReasonCrashDuringPrompt, logger, testSessionID)
+	c.recordRestart(mittoAcp.RestartReasonCrashDuringPrompt, logger, testSessionID)
+	c.recordRestart(mittoAcp.RestartReasonUnexpectedExit, logger, testSessionID)
 
 	s := c.stats()
 	if s.TotalRestarts != 3 {
 		t.Errorf("expected TotalRestarts=3, got %d", s.TotalRestarts)
 	}
-	if s.ReasonCounts[RestartReasonCrashDuringPrompt] != 2 {
-		t.Errorf("expected CrashDuringPrompt count=2, got %d", s.ReasonCounts[RestartReasonCrashDuringPrompt])
+	if s.ReasonCounts[mittoAcp.RestartReasonCrashDuringPrompt] != 2 {
+		t.Errorf("expected CrashDuringPrompt count=2, got %d", s.ReasonCounts[mittoAcp.RestartReasonCrashDuringPrompt])
 	}
-	if s.ReasonCounts[RestartReasonUnexpectedExit] != 1 {
-		t.Errorf("expected UnexpectedExit count=1, got %d", s.ReasonCounts[RestartReasonUnexpectedExit])
+	if s.ReasonCounts[mittoAcp.RestartReasonUnexpectedExit] != 1 {
+		t.Errorf("expected UnexpectedExit count=1, got %d", s.ReasonCounts[mittoAcp.RestartReasonUnexpectedExit])
 	}
-	if s.LastReason != RestartReasonUnexpectedExit {
+	if s.LastReason != mittoAcp.RestartReasonUnexpectedExit {
 		t.Errorf("expected LastReason=UnexpectedExit, got %v", s.LastReason)
 	}
 	if s.LastRestartTime.IsZero() {
@@ -102,7 +104,7 @@ func TestACPProcessController_GetRestartInfo_Format(t *testing.T) {
 		t.Errorf("expected %q, got %q", expected, info)
 	}
 
-	c.recordRestart(RestartReasonCrashDuringPrompt, logger, testSessionID)
+	c.recordRestart(mittoAcp.RestartReasonCrashDuringPrompt, logger, testSessionID)
 	info = c.getRestartInfo()
 	expected = "(attempt 2 of 3)"
 	if info != expected {
@@ -114,10 +116,10 @@ func TestACPProcessController_SlidingWindow(t *testing.T) {
 	c := acpProcessController{}
 
 	// Inject old restarts directly (outside the window)
-	oldTime := time.Now().Add(-(ACPRestartWindow + time.Minute))
+	oldTime := time.Now().Add(-(mittoAcp.ACPRestartWindow + time.Minute))
 	c.mu.Lock()
 	c.restartTimes = []time.Time{oldTime, oldTime}
-	c.restartReasons = []RestartReason{RestartReasonCrashDuringPrompt, RestartReasonCrashDuringPrompt}
+	c.restartReasons = []mittoAcp.RestartReason{mittoAcp.RestartReasonCrashDuringPrompt, mittoAcp.RestartReasonCrashDuringPrompt}
 	c.restartCount = 2
 	c.mu.Unlock()
 
@@ -142,7 +144,7 @@ func TestACPProcessController_RecentRestartCount_AfterRecords(t *testing.T) {
 	logger := discardLogger()
 
 	for i := 0; i < 3; i++ {
-		c.recordRestart(RestartReasonCrashDuringStream, logger, testSessionID)
+		c.recordRestart(mittoAcp.RestartReasonCrashDuringStream, logger, testSessionID)
 	}
 
 	if got := c.recentRestartCount(); got != 3 {

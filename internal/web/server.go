@@ -15,6 +15,7 @@ import (
 	"time"
 
 	builtinConfig "github.com/inercia/mitto/config"
+	mittoAcp "github.com/inercia/mitto/internal/acp"
 	"github.com/inercia/mitto/internal/acpproc"
 	"github.com/inercia/mitto/internal/agents"
 	"github.com/inercia/mitto/internal/appdir"
@@ -1785,7 +1786,7 @@ const acpLifecycleWindow = 2 * time.Second
 const acpStartFailWindow = 5 * time.Second
 
 // BroadcastACPStartFailed notifies all connected clients that an ACP connection failed to start.
-// If err is an *conversation.ACPClassifiedError with a permanent classification, a more detailed
+// If err is an *mittoAcp.ACPClassifiedError with a permanent classification, a more detailed
 // "acp_error_permanent" message is broadcast with actionable user guidance.
 // Duplicate calls for the same session within acpStartFailWindow are suppressed so that
 // coalesced resume waiters do not each emit an error toast.
@@ -1824,7 +1825,7 @@ func (s *Server) BroadcastACPStartFailed(sessionID, sessionName string, err erro
 	}
 
 	// Check if this is a classified permanent error — broadcast with extra context.
-	if classified, ok := err.(*conversation.ACPClassifiedError); ok && !classified.IsRetryable() {
+	if classified, ok := err.(*mittoAcp.ACPClassifiedError); ok && !classified.IsRetryable() {
 		data["error_class"] = classified.Class.String()
 		data["user_message"] = classified.UserMessage
 		data["user_guidance"] = classified.UserGuidance
@@ -2189,10 +2190,10 @@ func (a *sessionManagerAdapter) InvalidateWorkspaceRC(workingDir string) {
 }
 
 // IsMCPInitTimeout reports whether err carries the transient cold-start
-// "MCP initialization timed out" signal. Delegates to conversation.IsMCPInitTimeout
+// "MCP initialization timed out" signal. Delegates to mittoAcp.IsMCPInitTimeout
 // so the MCP server's auto-resume path can defer to a bounded retry (mitto-54k.6).
 func (a *sessionManagerAdapter) IsMCPInitTimeout(err error) bool {
-	return conversation.IsMCPInitTimeout(err)
+	return mittoAcp.IsMCPInitTimeout(err)
 }
 
 // =============================================================================
