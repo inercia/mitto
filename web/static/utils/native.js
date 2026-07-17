@@ -34,12 +34,14 @@ export const NON_VIEWABLE_EXTENSIONS = new Set([
  */
 export function isNonViewableExtension(path) {
   if (!path || typeof path !== "string") return false;
-  const dot = path.lastIndexOf(".");
-  if (dot < 0 || dot === path.length - 1) return false;
-  const ext = path.slice(dot + 1).toLowerCase();
-  // Strip any query/fragment that leaked into the extension
-  const clean = ext.split(/[?#]/, 1)[0];
-  return NON_VIEWABLE_EXTENSIONS.has(clean);
+  // Strip query/fragment BEFORE locating the extension so a dot inside a
+  // query string (e.g. "report.xlsx?cache=v1.2") does not mask the real
+  // extension.
+  const clean = path.split(/[?#]/, 1)[0];
+  const dot = clean.lastIndexOf(".");
+  if (dot < 0 || dot === clean.length - 1) return false;
+  const ext = clean.slice(dot + 1).toLowerCase();
+  return NON_VIEWABLE_EXTENSIONS.has(ext);
 }
 
 // =============================================================================

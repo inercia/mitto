@@ -43,6 +43,12 @@ describe("isNonViewableExtension", () => {
     expect(isNonViewableExtension("report.xlsx#sheet1")).toBe(true);
   });
 
+  test("handles dots inside the query string", () => {
+    // The dot in "v1.2" must not be mistaken for the extension delimiter.
+    expect(isNonViewableExtension("report.xlsx?cache=v1.2")).toBe(true);
+    expect(isNonViewableExtension("notes.txt?v=1.2")).toBe(false);
+  });
+
   // =============================================================================
   // Viewable / plain-text extensions
   // =============================================================================
