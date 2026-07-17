@@ -1,4 +1,4 @@
-package config
+package workspaces
 
 import (
 	"encoding/json"
@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/inercia/mitto/internal/appdir"
 	"github.com/inercia/mitto/internal/fileutil"
+	"github.com/inercia/mitto/internal/prompts"
 	"gopkg.in/yaml.v3"
 )
 
@@ -181,20 +182,20 @@ func (w *WorkspaceSettings) GetAutoApprove() *bool {
 }
 
 // GetInitialModelPreference returns the workspace's initial-model preference as
-// an ordered list of PromptPreferredModel entries suitable for
+// an ordered list of prompts.PromptPreferredModel entries suitable for
 // conversation.SelectPreferredModel. Returns nil when neither
 // InitialModelProfile nor InitialModelTag is set. InitialModelProfile takes
 // precedence over InitialModelTag when both are set. Safe to call on a nil
 // receiver.
-func (w *WorkspaceSettings) GetInitialModelPreference() []PromptPreferredModel {
+func (w *WorkspaceSettings) GetInitialModelPreference() []prompts.PromptPreferredModel {
 	if w == nil {
 		return nil
 	}
 	if w.InitialModelProfile != "" {
-		return []PromptPreferredModel{{ModelName: w.InitialModelProfile}}
+		return []prompts.PromptPreferredModel{{ModelName: w.InitialModelProfile}}
 	}
 	if w.InitialModelTag != "" {
-		return []PromptPreferredModel{{ModelTag: w.InitialModelTag}}
+		return []prompts.PromptPreferredModel{{ModelTag: w.InitialModelTag}}
 	}
 	return nil
 }
