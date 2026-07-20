@@ -74,6 +74,13 @@ func applyPromptLoopDefaultsToStartInput(input *ConversationStartInput, pl *conf
 		v := *pl.CoalesceDuringBusy
 		input.LoopCoalesceDuringBusy = &v
 	}
+
+	// onTasks Layer 3 circuit-breaker override (mitto-erpb). Same rules as
+	// CoalesceDuringBusy: 0 is a meaningful frontmatter value (opt-out).
+	if input.LoopNoProgressLimit == nil && pl.NoProgressLimit != nil {
+		v := *pl.NoProgressLimit
+		input.LoopNoProgressLimit = &v
+	}
 }
 
 // applyPromptLoopDefaultsToUpdateInput is the update-tool equivalent. Because
@@ -132,5 +139,11 @@ func applyPromptLoopDefaultsToUpdateInput(input *ConversationUpdateInput, pl *co
 	if input.LoopCoalesceDuringBusy == nil && pl.CoalesceDuringBusy != nil {
 		v := *pl.CoalesceDuringBusy
 		input.LoopCoalesceDuringBusy = &v
+	}
+
+	// onTasks Layer 3 circuit-breaker override (mitto-erpb).
+	if input.LoopNoProgressLimit == nil && pl.NoProgressLimit != nil {
+		v := *pl.NoProgressLimit
+		input.LoopNoProgressLimit = &v
 	}
 }

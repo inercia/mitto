@@ -760,7 +760,7 @@ func TestLoopRunner_ConfigCapAutoStop(t *testing.T) {
 	})
 
 	disabled := false
-	if err := loopStore.Update(nil, nil, nil, &disabled, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
+	if err := loopStore.Update(nil, nil, nil, &disabled, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
 		t.Fatalf("loopStore.Update(disable) error = %v", err)
 	}
 
@@ -3177,7 +3177,7 @@ func TestLoopRunner_EvaluateAccumulatedDelta_MaterialChange_Fires(t *testing.T) 
 	ps := newOnTasksSession(t, store, "s1", "/proj", "")
 	// Opt out of during-busy coalesce.
 	fa := false
-	if err := ps.Update(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, &fa); err != nil {
+	if err := ps.Update(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, &fa, nil); err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}
 	loop, _ := ps.Get()
@@ -3416,7 +3416,7 @@ func TestLoopRunner_OnBeadsChanged_RoutingAndCaching(t *testing.T) {
 	newOnTasksSession(t, store, "s2", "/proj-a", "")
 	newOnTasksSession(t, store, "s3", "/proj-b", "")
 	newOnTasksSession(t, store, "s4", "/proj-a", "")
-	if err := store.Loop("s4").Update(nil, nil, nil, boolPtr(false), nil, nil, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
+	if err := store.Loop("s4").Update(nil, nil, nil, boolPtr(false), nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
 		t.Fatalf("Update(disable s4) error = %v", err)
 	}
 

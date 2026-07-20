@@ -453,7 +453,7 @@ func (ps *LoopStore) Set(p *LoopPrompt) error {
 // Update applies a partial update to the loop prompt.
 // Only non-nil fields in the update are applied.
 // IterationCount is never modified by Update — it is managed exclusively by RecordSent.
-func (ps *LoopStore) Update(prompt *string, promptName *string, frequency *Frequency, enabled *bool, freshContext *bool, maxIterations *int, trigger *LoopTrigger, delaySeconds *int, maxDurationSeconds *int, arguments *map[string]string, condition *string, conditionPreset *string, cooldownSeconds *int, coalesceDuringBusy *bool) error {
+func (ps *LoopStore) Update(prompt *string, promptName *string, frequency *Frequency, enabled *bool, freshContext *bool, maxIterations *int, trigger *LoopTrigger, delaySeconds *int, maxDurationSeconds *int, arguments *map[string]string, condition *string, conditionPreset *string, cooldownSeconds *int, coalesceDuringBusy *bool, noProgressLimit *int) error {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
 
@@ -509,6 +509,10 @@ func (ps *LoopStore) Update(prompt *string, promptName *string, frequency *Frequ
 	if coalesceDuringBusy != nil {
 		v := *coalesceDuringBusy
 		existing.CoalesceDuringBusy = &v
+	}
+	if noProgressLimit != nil {
+		v := *noProgressLimit
+		existing.NoProgressLimit = &v
 	}
 
 	if err := existing.Validate(); err != nil {

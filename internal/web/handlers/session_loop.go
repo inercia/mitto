@@ -39,6 +39,11 @@ type LoopPromptRequest struct {
 	// that arrive while the loop's subtree is busy. Nil or true = silently absorb
 	// (default). False = fire once more with the accumulated delta after quiescence.
 	CoalesceDuringBusy *bool `json:"coalesce_during_busy,omitempty"`
+	// NoProgressLimit overrides the onTasks Layer 3 circuit-breaker threshold —
+	// the number of consecutive no-progress fires that auto-pause the loop. Nil =
+	// default 3. 0 = unlimited (opt-out; supervisor loops). N > 0 = custom
+	// threshold. Only meaningful when Trigger is "onTasks" (mitto-erpb).
+	NoProgressLimit *int `json:"no_progress_limit,omitempty"`
 }
 
 // LoopPromptPatchRequest is the request body for partial updates.
@@ -56,11 +61,12 @@ type LoopPromptPatchRequest struct {
 	// Arguments is a partial update for the substitution arguments map.
 	// nil = leave unchanged; non-nil = replace the entire map (including empty map to clear it).
 	Arguments *map[string]string `json:"arguments,omitempty"`
-	// Condition, ConditionPreset, CooldownSeconds, CoalesceDuringBusy are partial updates for the onTasks fields.
+	// Condition, ConditionPreset, CooldownSeconds, CoalesceDuringBusy, NoProgressLimit are partial updates for the onTasks fields.
 	Condition          *string `json:"condition,omitempty"`
 	ConditionPreset    *string `json:"condition_preset,omitempty"`
 	CooldownSeconds    *int    `json:"cooldown_seconds,omitempty"`
 	CoalesceDuringBusy *bool   `json:"coalesce_during_busy,omitempty"`
+	NoProgressLimit    *int    `json:"no_progress_limit,omitempty"`
 	// ResetCounters, when true, resets IterationCount=0, FirstRunAt=nil, and
 	// LastSentAt=nil so the elapsed iterations and elapsed time start from zero and
 	// the loop looks never-sent. Used when restoring a conversation that auto-stopped

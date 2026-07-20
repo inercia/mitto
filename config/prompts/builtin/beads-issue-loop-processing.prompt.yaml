@@ -29,6 +29,13 @@ loop:
   # external change. Layer 0 (cooldown), the condition, and the busy-guard
   # still bound the re-fire rate.
   coalesceDuringBusy: false
+  # Opt out of the Layer 3 no-progress circuit breaker (mitto-erpb): this
+  # supervisor's steady-state legitimately includes fires that touch no new
+  # beads (all eligible items filtered out by Step 2 gates, or all classes
+  # already at the one-worker-per-class concurrency cap). The default limit of
+  # 3 consecutive such fires would auto-pause the loop during ordinary
+  # supervision. 0 = unlimited (never trip the breaker).
+  noProgressLimit: 0
 prompt: |
   ## Session Context
 

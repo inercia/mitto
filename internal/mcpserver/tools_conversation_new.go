@@ -63,6 +63,12 @@ type ConversationStartInput struct {
 	// that arrive while the loop's subtree is busy. Nil or true = silently absorb
 	// (default). False = fire once more with the accumulated delta after quiescence.
 	LoopCoalesceDuringBusy *bool `json:"loop_coalesce_during_busy,omitempty"`
+	// LoopNoProgressLimit overrides the onTasks Layer 3 circuit-breaker threshold —
+	// the number of consecutive no-progress fires that auto-pause the loop. Nil =
+	// default 3. 0 = unlimited (opt-out; supervisor loops whose steady-state
+	// includes empty/at-cap fires). N > 0 = custom threshold. Only meaningful for
+	// loop_trigger="onTasks" (mitto-erpb).
+	LoopNoProgressLimit *int `json:"loop_no_progress_limit,omitempty"`
 	// LoopApplyPromptDefaults controls the mitto-r7y auto-apply of a seeded
 	// prompt's loop: frontmatter block. When prompt_name resolves to a prompt
 	// carrying a loop: block, its fields fill any loop_* fields the caller did
@@ -549,6 +555,10 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 		if input.LoopCoalesceDuringBusy != nil {
 			v := *input.LoopCoalesceDuringBusy
 			loop.CoalesceDuringBusy = &v
+		}
+		if input.LoopNoProgressLimit != nil {
+			v := *input.LoopNoProgressLimit
+			loop.NoProgressLimit = &v
 		}
 		// Clamp the on-completion delay to the global floor (no-op for schedule).
 		loop.ClampDelay(s.loopDelayFloor())
