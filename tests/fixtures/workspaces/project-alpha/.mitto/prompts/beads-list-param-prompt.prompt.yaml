@@ -1,0 +1,12 @@
+name: Beads List Param Test
+description: A beadsList prompt with a required text param (E2E shortcut dialog testing)
+menus: beadsList
+group: ListParam
+parameters:
+  - name: FOCUS
+    type: text
+    multiLine: true
+    description: What to focus the list review on
+    required: true
+prompt: |
+  Review the beads list with focus on: ${FOCUS}.
