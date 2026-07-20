@@ -141,6 +141,10 @@ Per-agent `mcp-list.sh` config paths/keys are **not** interchangeable across age
 
 **Persistence symmetry (LoopStore, `internal/session/loop.go`)**: un-loop calls `Detach()` (saves settings to a slot, clears active config); re-loop/restore reads it back via `GetSaved()`. A **fresh** loop create must call `ClearSaved()` right after `Set()` so a stale saved slot doesn't leak into a later un-loop — done identically in REST (`session_loop_write.go` `handleSetLoop`) and MCP (`mcpserver/server.go` create-loop path) to keep both interfaces symmetric.
 
+**Spawning loop children — `arguments` vs `loop_arguments`**: `mitto_conversation_new`'s `arguments:` fills `.Args` only on the initial prompt; `loop_arguments:` fills `.Args` on every re-fire. When the spawned child is itself a loop, MIRROR the same map into both — otherwise re-fires render with empty `.Args` and positive-match gates (`{{ if eq .Args.Commit "true" }}`) silently resolve false (bug `mitto-rtdr`, fixed 25ed20d9; pinned by `TestLoopProcessingSpawns_MirrorArgumentsIntoLoopArguments`). Prefer default-on gates (`{{ if ne .Args.X "false" }}`) since parameter defaults are NOT auto-merged into `.Args` at render time.
+
+**`coalesceDuringBusy` silent-swallow**: when an `onTasks` subtree is busy, fs-watcher fires do NOT dispatch — they arm a quiescence rebase timer that silently updates the baseline on quiescence (`onTasks: baseline rebased after idle+quiescence`). Intentional coalescing, but supervisor loops can silently miss user-driven state changes for minutes until an external event re-fires the watcher.
+
 ## Tokensave Rule (Mandatory)
 
 **NEVER use Explore agents for code research when tokensave is available.** Use `tokensave_context`, `tokensave_search`, `tokensave_callees`, `tokensave_callers`, `tokensave_impact`, `tokensave_node`, `tokensave_files`, or `tokensave_affected` first. See CLAUDE.md in project root for full details.

@@ -199,9 +199,9 @@ func waitOnTasksSessionIdle(t *testing.T, ts *TestServer, sessionID string) {
 }
 
 // TestLoopOnTasksE2E verifies the onTasks loop trigger end-to-end
-// against the mock ACP server: CEL-gated firing, the 4-layer loop-prevention
-// system (busy guard, quiescence rebase, cooldown floor, no-progress circuit
-// breaker), and MaxIterations/MaxDuration auto-stop.
+// against the mock ACP server: CEL-gated firing, the 3-layer loop-prevention
+// system (busy guard, quiescence rebase, cooldown floor), and
+// MaxIterations/MaxDuration auto-stop.
 //
 // The `.beads/` filesystem watcher itself is out of scope here (unit-tested
 // separately in internal/config); this test drives the same entry point the
@@ -482,58 +482,7 @@ func TestLoopOnTasksE2E(t *testing.T) {
 	})
 
 	// -------------------------------------------------------------------------
-	// Subtest 6: Layer 3 (no-progress circuit breaker) auto-pauses a
-	// steady-state-true condition that keeps firing without ever touching a
-	// genuinely new issue relative to the previous fire.
-	// -------------------------------------------------------------------------
-	t.Run("no_progress_circuit_breaker_auto_pauses", func(t *testing.T) {
-		dir := filepath.Join(ts.TempDir, "workspace", "ontasks-noprogress")
-		sess := createOnTasksSession(t, ts, dir, "ontasks-noprogress", "")
-		defer ts.Client.DeleteSession(sess.SessionID)
-
-		fake.setRaw(dir, marshalOnTasksIssues(t))
-		runner.OnBeadsChanged(onTasksChangeEvent(dir))
-		assertOnTasksIterationCount(t, ts, sess.SessionID, 0)
-
-		// Fire 1 seeds the "last touched" set; it never counts as no-progress itself.
-		fake.setRaw(dir, marshalOnTasksIssues(t,
-			onTasksIssue("mitto-np-1", "bug", "open", 1, nil, "2026-07-01T00:00:00Z")))
-		runner.OnBeadsChanged(onTasksChangeEvent(dir))
-		waitOnTasksIterationCount(t, ts, sess.SessionID, 1)
-		waitOnTasksSessionIdle(t, ts, sess.SessionID)
-
-		// Fires 2 and 3: the SAME issue touched again (only updated_at changes) —
-		// no genuine new progress. tasksNoProgressLimit (see
-		// internal/web/loop_runner_tasks.go) is 3, so these bring the
-		// consecutive no-progress count to 1 and 2; the breaker must not trip yet.
-		for i, at := range []string{"2026-07-01T00:01:00Z", "2026-07-01T00:02:00Z"} {
-			fake.setRaw(dir, marshalOnTasksIssues(t,
-				onTasksIssue("mitto-np-1", "bug", "open", 1, nil, at)))
-			runner.OnBeadsChanged(onTasksChangeEvent(dir))
-			waitOnTasksIterationCount(t, ts, sess.SessionID, 2+i)
-			waitOnTasksSessionIdle(t, ts, sess.SessionID)
-
-			if !getOnTasksLoop(t, ts, sess.SessionID).Enabled {
-				t.Fatalf("loop should still be enabled before the no-progress limit is reached (fire %d)", i+2)
-			}
-		}
-
-		// Fire 4: the 3rd CONSECUTIVE no-progress fire trips the circuit breaker.
-		fake.setRaw(dir, marshalOnTasksIssues(t,
-			onTasksIssue("mitto-np-1", "bug", "open", 1, nil, "2026-07-01T00:03:00Z")))
-		runner.OnBeadsChanged(onTasksChangeEvent(dir))
-
-		waitFor(t, 10*time.Second, func() bool {
-			return !getOnTasksLoop(t, ts, sess.SessionID).Enabled
-		}, "onTasks circuit breaker to auto-pause after repeated no-progress fires")
-
-		if got := getOnTasksLoop(t, ts, sess.SessionID).StoppedReason; got != "noProgress" {
-			t.Errorf("StoppedReason = %q, want %q", got, "noProgress")
-		}
-	})
-
-	// -------------------------------------------------------------------------
-	// Subtest 7: MaxIterations auto-stop, mirroring the onCompletion trigger's
+	// Subtest 6: MaxIterations auto-stop, mirroring the onCompletion trigger's
 	// hard backstop (Layer 0).
 	// -------------------------------------------------------------------------
 	t.Run("max_iterations_auto_stop", func(t *testing.T) {

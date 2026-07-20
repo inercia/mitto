@@ -90,14 +90,6 @@ type PromptLoop struct {
 	// .Trigger.OnTasks.*, gated by Layer 0 and the CEL condition (mitto-dmb).
 	// Only meaningful for trigger: onTasks.
 	CoalesceDuringBusy *bool `yaml:"coalesceDuringBusy,omitempty" json:"coalesceDuringBusy,omitempty"`
-	// NoProgressLimit overrides the onTasks Layer 3 circuit-breaker threshold —
-	// the number of consecutive no-progress fires (fires that touch no issue
-	// beyond what the previous fire already touched) that auto-pause the loop.
-	// Nil/absent = default 3 (existing behaviour). 0 = unlimited (opt-out;
-	// intended for supervisor-style loops whose steady-state legitimately
-	// includes empty/at-cap fires). N (N > 0) = custom threshold. Only
-	// meaningful for trigger: onTasks (mitto-erpb).
-	NoProgressLimit *int `yaml:"noProgressLimit,omitempty" json:"noProgressLimit,omitempty"`
 	// Mode selects whether loop is mandatory or user-toggleable: "always"
 	// (default when empty/absent) or "optional". Validated by ValidatePromptLoop.
 	Mode string `yaml:"mode,omitempty" json:"mode,omitempty"`

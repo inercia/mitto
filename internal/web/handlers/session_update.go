@@ -242,7 +242,7 @@ func (h *Handlers) RestoreLoopOnUnarchive(sessionID string) {
 
 	if archiveRelated && !loop.Enabled {
 		enabled := true
-		if err := loopStore.Update(nil, nil, nil, &enabled, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
+		if err := loopStore.Update(nil, nil, nil, &enabled, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
 			if h.deps.Logger != nil {
 				h.deps.Logger.Warn("Failed to re-enable loop on unarchive",
 					"session_id", sessionID, "error", err)

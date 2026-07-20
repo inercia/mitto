@@ -227,7 +227,7 @@ Changes.Added.exists(i, i.type == "bug" && i.priority <= 1)
 
 Each `onTasks` conversation keeps its **own** baseline file (`tasks_baseline.json`, alongside `loop.json`) holding the raw `bd list` JSON at the time it was last considered "current" for that conversation. The baseline is **per-conversation, not per-working-directory** — several `onTasks` conversations watching the same directory each diff against their own baseline, which is what makes Layer 2 loop prevention (below) possible without any actor/attribution support from `bd`.
 
-### Loop prevention (4 layers)
+### Loop prevention (3 layers)
 
 An `onTasks` conversation (or a child it delegates to) will usually _edit_ beads itself as part of doing its work — without safeguards this would re-trigger itself indefinitely, since its own edits show up as a fresh delta against the baseline.
 
@@ -257,7 +257,6 @@ sequenceDiagram
                 alt condition true
                     PR->>Agent: TriggerNow (fires the run)
                     PR->>Baseline: Set(curr) — baseline advances immediately
-                    PR->>PR: Layer 3 — recordTasksFireOutcome(delta)
                 else condition false/error
                     PR->>PR: skip (fail-closed on error)
                 end
@@ -274,7 +273,6 @@ sequenceDiagram
 - **Layer 0 — hard backstops.** A per-conversation `CooldownSeconds` (clamped up to the global floor `SetMinLoopTasksCooldownSeconds`, default 30s) rate-limits fires regardless of the condition. `MaxIterations` and `MaxDurationSeconds` are the same caps used by every trigger; `MaxDurationSeconds` is checked (and auto-stops, mirroring `onCompletion`) before the cooldown check.
 - **Layer 1 — busy guard (temporal).** While the conversation's turn is active — **or any delegated child conversation is still running or blocked on `mitto_children_tasks_wait`** (`isTasksSubtreeBusy`) — incoming events are deferred (`armTasksRebase`), not evaluated. This is the guard against the run's OWN in-flight edits.
 - **Layer 2 — quiescence rebase (the real fix).** Once the conversation's entire delegated-child subtree goes idle, a short quiescence timer (`SetTasksQuiescenceWindow`, default 30s) fires and **rebases the baseline to the current beads snapshot**, absorbing the run's own edits into the new "current" state before the next real event is evaluated. Trade-off: an external change that lands _during_ the busy window is also absorbed and won't trigger a follow-up fire — the fired conversation can re-check state at its own startup if that matters. **Opt-in re-fire (`CoalesceDuringBusy=false`, mitto-dmb):** loops that need event-driven fidelity (e.g. "every time an issue is filed with label X, spawn a triage child") can set `coalesce_during_busy: false` on the loop config. When set, the quiescence rebase first diffs the pre-run baseline against the current snapshot and — if a material delta remains, Layer 0 (cooldown, `MaxDuration`, `MaxIterations`) allows, and the CEL `condition` evaluates true — fires **once more** via the normal firing path with the accumulated delta available as `.Trigger.OnTasks.Changes.*`, then rebases. Only one pending accumulated-delta slot is kept per session (bounded by construction). Default (`true` / unset) preserves the silent-absorb behaviour.
-- **Layer 3 — no-progress circuit breaker.** `recordTasksFireOutcome` tracks, per conversation, the set of issue IDs touched (`Changes.Touched`) by consecutive fires. When `tasksNoProgressLimit` (3) consecutive fires touch **no issue beyond** what the previous fire already touched, the trigger auto-pauses (`loopStore.MarkStopped(session.StoppedReasonNoProgress)`) — this catches a condition that is steady-state-true (e.g. a threshold that baseline-rebase alone cannot silence) before it can hot-loop.
 
 **Out of scope:** actor-based delta filtering (skipping only _other actors'_ edits) was investigated and explicitly deferred — `internal/beads/cli.go` does not stamp a per-change actor, and `bd list --json` exposes only `created_by`/`owner`, not a last-touched actor. The baseline-rebase approach (Layer 2) makes this unnecessary for correctness today.
 
@@ -322,7 +320,7 @@ Each entry exposes the same canonical keys the CEL condition sees: `id`, `type`,
 | `ConditionPreset` | `condition_preset` | Optional UI preset id that was compiled into `Condition`                                                          |
 | `CooldownSeconds` | `cooldown_seconds` | Per-conversation cooldown floor; `0` = use the global floor                                                       |
 | `CoalesceDuringBusy` | `coalesce_during_busy` | Opt-in re-fire (mitto-dmb). Nil/`true` (default) = silent absorption during busy. `false` = fire once more at quiescence with the accumulated pre-run→current delta, gated by Layer 0 and the CEL `condition`. |
-| `StoppedReason`   | `stopped_reason`   | `"noProgress"` when Layer 3 auto-paused the loop (also `maxIterations`/`maxDuration`, shared with other triggers) |
+| `StoppedReason`   | `stopped_reason`   | `"maxIterations"` / `"maxDuration"` when the loop auto-stopped after hitting a cap; shared with other triggers.   |
 
 ### Opting in from a prompt file (`loop:` frontmatter)
 
@@ -343,7 +341,7 @@ Two builtin prompts adopt this (mitto-f9q): `beads-refine-implementation.prompt.
 
 ### Testing
 
-`internal/config/tasks_condition_test.go` unit-tests snapshot parsing, diffing, and CEL evaluation (including the fail-closed cases). `internal/web/loop_runner_test.go` unit-tests the guard/decision logic (`evaluateTasksChange`) and each loop-prevention layer in isolation. `tests/integration/inprocess/loop_ontasks_e2e_test.go` drives the full stack end-to-end against the mock ACP server — CEL-gated firing, the busy-guard + quiescence-rebase interaction, the cooldown floor, the no-progress circuit breaker, and `MaxIterations`/`MaxDurationSeconds` auto-stop — by calling `LoopRunner.OnBeadsChanged` directly with a fake `beads.Client` standing in for `bd list` (the `BeadsWatcher` itself is out of scope for that test and is unit-tested separately).
+`internal/config/tasks_condition_test.go` unit-tests snapshot parsing, diffing, and CEL evaluation (including the fail-closed cases). `internal/web/loop_runner_test.go` unit-tests the guard/decision logic (`evaluateTasksChange`) and each loop-prevention layer in isolation. `tests/integration/inprocess/loop_ontasks_e2e_test.go` drives the full stack end-to-end against the mock ACP server — CEL-gated firing, the busy-guard + quiescence-rebase interaction, the cooldown floor, and `MaxIterations`/`MaxDurationSeconds` auto-stop — by calling `LoopRunner.OnBeadsChanged` directly with a fake `beads.Client` standing in for `bd list` (the `BeadsWatcher` itself is out of scope for that test and is unit-tested separately).
 
 ## Title Generation
 

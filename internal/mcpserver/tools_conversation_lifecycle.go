@@ -650,7 +650,7 @@ func (s *Server) handleConversationUpdate(ctx context.Context, req *mcp.CallTool
 	if input.LoopPrompt != nil || input.LoopPromptName != nil || input.LoopArguments != nil ||
 		input.LoopFrequencyValue != nil || input.LoopFrequencyUnit != nil || input.LoopEnabled != nil || input.LoopFreshContext != nil || input.LoopMaxIterations != nil ||
 		input.LoopTrigger != nil || input.LoopCompletionDelaySeconds != nil || input.LoopMaxDurationSeconds != nil ||
-		input.LoopCondition != nil || input.LoopConditionPreset != nil || input.LoopCoalesceDuringBusy != nil || input.LoopNoProgressLimit != nil {
+		input.LoopCondition != nil || input.LoopConditionPreset != nil || input.LoopCoalesceDuringBusy != nil {
 		loopStore := store.Loop(input.ConversationID)
 
 		// Mutual exclusion + name resolution for a named loop prompt. Callers may set
@@ -832,10 +832,6 @@ func (s *Server) handleConversationUpdate(ctx context.Context, req *mcp.CallTool
 				v := *input.LoopCoalesceDuringBusy
 				loop.CoalesceDuringBusy = &v
 			}
-			if input.LoopNoProgressLimit != nil {
-				v := *input.LoopNoProgressLimit
-				loop.NoProgressLimit = &v
-			}
 			// Clamp the on-completion delay to the global floor (no-op for schedule).
 			loop.ClampDelay(s.loopDelayFloor())
 
@@ -942,7 +938,7 @@ func (s *Server) handleConversationUpdate(ctx context.Context, req *mcp.CallTool
 				a := input.LoopArguments
 				argsPtr = &a
 			}
-			if err := loopStore.Update(prompt, promptName, freq, enabled, input.LoopFreshContext, input.LoopMaxIterations, trigger, delaySeconds, input.LoopMaxDurationSeconds, argsPtr, input.LoopCondition, input.LoopConditionPreset, nil, input.LoopCoalesceDuringBusy, input.LoopNoProgressLimit); err != nil {
+			if err := loopStore.Update(prompt, promptName, freq, enabled, input.LoopFreshContext, input.LoopMaxIterations, trigger, delaySeconds, input.LoopMaxDurationSeconds, argsPtr, input.LoopCondition, input.LoopConditionPreset, nil, input.LoopCoalesceDuringBusy); err != nil {
 				return nil, ConversationUpdateOutput{
 					Success: false,
 					Error:   fmt.Sprintf("failed to update loop: %v", err),
@@ -1066,10 +1062,6 @@ func (s *Server) handleConversationUpdate(ctx context.Context, req *mcp.CallTool
 		if p.CoalesceDuringBusy != nil {
 			v := *p.CoalesceDuringBusy
 			output.LoopCoalesceDuringBusy = &v
-		}
-		if p.NoProgressLimit != nil {
-			v := *p.NoProgressLimit
-			output.LoopNoProgressLimit = &v
 		}
 		if p.NextScheduledAt != nil {
 			output.LoopNextRun = p.NextScheduledAt.Format("2006-01-02T15:04:05Z07:00")

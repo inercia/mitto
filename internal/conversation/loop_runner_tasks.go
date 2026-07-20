@@ -24,11 +24,6 @@ const tasksDefaultQuiescenceWindow = 30 * time.Second
 // fetching a beads snapshot for onTasks condition evaluation.
 const tasksListTimeout = 30 * time.Second
 
-// tasksNoProgressLimit is the number of consecutive onTasks fires that touch no
-// issue beyond what the previous fire already touched before the circuit
-// breaker (Layer 3) auto-pauses the trigger.
-const tasksNoProgressLimit = 3
-
 // Compile-time assertion: *LoopRunner implements watcher.BeadsSubscriber.
 var _ watcher.BeadsSubscriber = (*LoopRunner)(nil)
 
@@ -318,7 +313,6 @@ func (r *LoopRunner) processTasksChange(meta session.Metadata, loop *session.Loo
 			r.logger.Warn("onTasks: failed to persist baseline after fire",
 				"session_id", sessionID, "error", err)
 		}
-		r.recordTasksFireOutcome(sessionID, loopStore, decision.delta)
 
 	case tasksActionSkip:
 		// Nothing to do.
@@ -542,12 +536,11 @@ func (r *LoopRunner) evaluateAccumulatedDelta(sessionID string, loop *session.Lo
 }
 
 // maybeFireAccumulatedDelta wires evaluateAccumulatedDelta to the firing side
-// effects: on a positive decision it fires via triggerNowWithTasksDelta,
-// persists the new baseline, and records the outcome for the Layer 3 circuit
-// breaker. Returns true only when the fire was dispatched (so the caller can
-// skip the fallback plain rebase); every "no fire" outcome — including
-// TriggerNow failing — returns false so the caller falls back to a plain
-// rebase.
+// effects: on a positive decision it fires via triggerNowWithTasksDelta and
+// persists the new baseline. Returns true only when the fire was dispatched
+// (so the caller can skip the fallback plain rebase); every "no fire" outcome
+// — including TriggerNow failing — returns false so the caller falls back to
+// a plain rebase.
 func (r *LoopRunner) maybeFireAccumulatedDelta(sessionID string, loop *session.LoopPrompt, loopStore *session.LoopStore, baselineStore *TasksBaselineStore, raw []byte) bool {
 	delta, shouldFire := r.evaluateAccumulatedDelta(sessionID, loop, loopStore, baselineStore, raw)
 	if !shouldFire {
@@ -564,7 +557,6 @@ func (r *LoopRunner) maybeFireAccumulatedDelta(sessionID string, loop *session.L
 		r.logger.Warn("onTasks: failed to persist baseline after re-fire",
 			"session_id", sessionID, "error", err)
 	}
-	r.recordTasksFireOutcome(sessionID, loopStore, delta)
 	if r.logger != nil {
 		r.logger.Debug("onTasks: re-fired after idle+quiescence with accumulated delta",
 			"session_id", sessionID,
@@ -613,93 +605,4 @@ func (r *LoopRunner) BootstrapTasksBaseline(sessionID string) {
 	if err := baselineStore.Set(raw); err != nil && r.logger != nil {
 		r.logger.Warn("onTasks: failed to persist bootstrap baseline", "session_id", sessionID, "error", err)
 	}
-}
-
-// recordTasksFireOutcome implements the Layer 3 circuit breaker: it tracks,
-// per session, the set of issue IDs touched by consecutive onTasks fires. When
-// the per-loop no-progress limit (LoopPrompt.EffectiveNoProgressLimit,
-// defaulting to tasksNoProgressLimit) consecutive fires touch no issue beyond
-// what the previous fire already touched (e.g. a steady-state-true condition
-// with no genuine forward progress), it auto-pauses the trigger via
-// MarkStopped, mirroring the existing failure-pause patterns
-// (handlePromptResolveFailure, autoStopIfMaxDurationReached). A configured
-// limit of 0 opts out of the breaker entirely (mitto-ckaa), for supervisor-
-// style loops whose steady state legitimately includes empty/at-cap fires.
-func (r *LoopRunner) recordTasksFireOutcome(sessionID string, loopStore *session.LoopStore, delta *config.TasksDelta) {
-	curr := tasksTouchedIDs(delta)
-
-	r.tasksNoProgressMu.Lock()
-	prev := r.tasksLastTouchedIDs[sessionID]
-	noProgress := tasksIsSubsetOf(curr, prev)
-	if noProgress {
-		r.tasksNoProgressCount[sessionID]++
-	} else {
-		r.tasksNoProgressCount[sessionID] = 0
-	}
-	count := r.tasksNoProgressCount[sessionID]
-	r.tasksLastTouchedIDs[sessionID] = curr
-	r.tasksNoProgressMu.Unlock()
-
-	// Consult the per-loop opt-out / override. A read failure or missing loop
-	// falls back to the historical default so the breaker never silently
-	// disables itself on transient store errors.
-	limit := tasksNoProgressLimit
-	if loop, err := loopStore.Get(); err == nil && loop != nil {
-		limit = loop.EffectiveNoProgressLimit()
-	}
-	if limit <= 0 {
-		return // opt-out: breaker disabled for this loop.
-	}
-	if count < limit {
-		return
-	}
-
-	if err := loopStore.MarkStopped(session.StoppedReasonNoProgress); err != nil {
-		if r.logger != nil {
-			r.logger.Warn("onTasks: failed to auto-pause after no-progress fires",
-				"session_id", sessionID, "error", err)
-		}
-		return
-	}
-
-	r.tasksNoProgressMu.Lock()
-	delete(r.tasksNoProgressCount, sessionID)
-	delete(r.tasksLastTouchedIDs, sessionID)
-	r.tasksNoProgressMu.Unlock()
-
-	if r.onLoopAutoStopped != nil {
-		if final, err := loopStore.Get(); err == nil {
-			r.onLoopAutoStopped(sessionID, final)
-		}
-	}
-	if r.logger != nil {
-		r.logger.Warn("onTasks: auto-paused after repeated no-progress fires (circuit breaker)",
-			"session_id", sessionID, "consecutive_no_progress", count)
-	}
-}
-
-// tasksTouchedIDs extracts the set of issue IDs from delta.Touched.
-func tasksTouchedIDs(delta *config.TasksDelta) map[string]struct{} {
-	ids := make(map[string]struct{})
-	if delta == nil {
-		return ids
-	}
-	for _, issue := range delta.Touched {
-		if id, ok := issue["id"].(string); ok && id != "" {
-			ids[id] = struct{}{}
-		}
-	}
-	return ids
-}
-
-// tasksIsSubsetOf reports whether every id in curr is also present in prev,
-// meaning curr touched nothing genuinely new relative to the previous fire.
-// An empty curr is trivially a subset (no progress signal at all).
-func tasksIsSubsetOf(curr, prev map[string]struct{}) bool {
-	for id := range curr {
-		if _, ok := prev[id]; !ok {
-			return false
-		}
-	}
-	return true
 }

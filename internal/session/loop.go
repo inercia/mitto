@@ -62,12 +62,6 @@ const (
 	// StoppedReasonArchived is set when the conversation is archived (manual or auto),
 	// which authoritatively stops the loop.
 	StoppedReasonArchived StoppedReason = "archived"
-
-	// StoppedReasonNoProgress is set when the onTasks trigger's circuit breaker fires
-	// repeatedly with no newly-touched issue relative to the previous fire (e.g. a
-	// steady-state-true condition with no genuine forward progress), auto-pausing the
-	// loop to stop the hot-fire storm. Re-enabling clears it.
-	StoppedReasonNoProgress StoppedReason = "noProgress"
 )
 
 var (
@@ -239,14 +233,6 @@ type LoopPrompt struct {
 	// changes that landed during the busy window are not lost. Only meaningful
 	// when Trigger is onTasks.
 	CoalesceDuringBusy *bool `json:"coalesce_during_busy,omitempty"`
-	// NoProgressLimit overrides the onTasks Layer 3 circuit-breaker threshold —
-	// the number of consecutive no-progress fires (fires that touch no issue
-	// beyond what the previous fire already touched) that auto-pause the loop.
-	// Nil/absent = default 3 (existing behaviour). *0 = unlimited (opt-out;
-	// intended for supervisor-style loops whose steady-state legitimately
-	// includes empty/at-cap fires). *N (N > 0) = custom threshold. Only
-	// meaningful when Trigger is onTasks.
-	NoProgressLimit *int `json:"no_progress_limit,omitempty"`
 }
 
 // ShouldCoalesceDuringBusy reports whether the onTasks trigger should silently
@@ -257,17 +243,6 @@ func (p *LoopPrompt) ShouldCoalesceDuringBusy() bool {
 		return true
 	}
 	return *p.CoalesceDuringBusy
-}
-
-// EffectiveNoProgressLimit returns the effective onTasks Layer 3 circuit-breaker
-// threshold for this loop. Nil/unset returns 3 (default). *0 returns 0
-// (unlimited — opt-out). *N returns N. Runner callers must treat 0 as "never
-// trip the breaker".
-func (p *LoopPrompt) EffectiveNoProgressLimit() int {
-	if p.NoProgressLimit == nil {
-		return 3
-	}
-	return *p.NoProgressLimit
 }
 
 // ReachedMaxIterations returns true if the prompt has been delivered the maximum number of scheduled times.
@@ -453,7 +428,7 @@ func (ps *LoopStore) Set(p *LoopPrompt) error {
 // Update applies a partial update to the loop prompt.
 // Only non-nil fields in the update are applied.
 // IterationCount is never modified by Update — it is managed exclusively by RecordSent.
-func (ps *LoopStore) Update(prompt *string, promptName *string, frequency *Frequency, enabled *bool, freshContext *bool, maxIterations *int, trigger *LoopTrigger, delaySeconds *int, maxDurationSeconds *int, arguments *map[string]string, condition *string, conditionPreset *string, cooldownSeconds *int, coalesceDuringBusy *bool, noProgressLimit *int) error {
+func (ps *LoopStore) Update(prompt *string, promptName *string, frequency *Frequency, enabled *bool, freshContext *bool, maxIterations *int, trigger *LoopTrigger, delaySeconds *int, maxDurationSeconds *int, arguments *map[string]string, condition *string, conditionPreset *string, cooldownSeconds *int, coalesceDuringBusy *bool) error {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
 
@@ -509,10 +484,6 @@ func (ps *LoopStore) Update(prompt *string, promptName *string, frequency *Frequ
 	if coalesceDuringBusy != nil {
 		v := *coalesceDuringBusy
 		existing.CoalesceDuringBusy = &v
-	}
-	if noProgressLimit != nil {
-		v := *noProgressLimit
-		existing.NoProgressLimit = &v
 	}
 
 	if err := existing.Validate(); err != nil {

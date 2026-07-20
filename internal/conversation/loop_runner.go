@@ -247,14 +247,6 @@ type LoopRunner struct {
 	tasksRebaseTimers   map[string]*time.Timer
 	tasksRebaseTimersMu sync.Mutex
 
-	// tasksNoProgressCount and tasksLastTouchedIDs track, per session, the
-	// consecutive-no-progress circuit breaker (Layer 3): tasksLastTouchedIDs
-	// holds the set of issue IDs touched by the previous fire so the next fire
-	// can detect whether it touched anything genuinely new.
-	tasksNoProgressCount map[string]int
-	tasksLastTouchedIDs  map[string]map[string]struct{}
-	tasksNoProgressMu    sync.Mutex
-
 	// loopWorkspaceConcurrency caps how many loop prompts may be in flight for a
 	// single WorkingDir + ACPServer pair. 0 disables the cap. Default is set by
 	// config (see DefaultLoopWorkspaceConcurrency). Manual "Run Now" (forced)
@@ -303,8 +295,6 @@ func NewLoopRunner(store *session.Store, sm *SessionManager, logger *slog.Logger
 		minTasksCooldownSeconds:    DefaultMinLoopTasksCooldownSeconds,
 		tasksQuiescenceWindow:      tasksDefaultQuiescenceWindow,
 		tasksRebaseTimers:          make(map[string]*time.Timer),
-		tasksNoProgressCount:       make(map[string]int),
-		tasksLastTouchedIDs:        make(map[string]map[string]struct{}),
 		autoUnarchiveEnabled:       true,
 		autoUnarchiveRetryInterval: DefaultAutoUnarchiveRetryInterval,
 		autoUnarchiveStagger:       DefaultAutoUnarchiveStaggerInterval,

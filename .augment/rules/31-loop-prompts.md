@@ -66,52 +66,53 @@ If found and still idle, RE-PROMPT it instead of spawning a duplicate.
 
 ## Gate Testing Before External Actions
 
-When a loop prompt identifies CI failures and spawns a fixer conversation, instruct the fixer to **run the full local gate suite BEFORE pushing**:
-
-```yaml
-Before pushing, run ALL gates in order:
-1. make fmt-check
-2. make lint
-3. make test (unit tests)
-4. make build-mock-acp && make test-integration
-
-Push only after ALL gates pass locally.
-```
-
-**Why**: Loop automation that reveals CI failures incrementally (fix one, reveal the next) creates unnecessary re-runs. Full local validation before push breaks this cycle.
-
-**Common gates in mitto**:
-- `make fmt-check` — Go format check (gofmt)
-- `make lint` — Linting (golangci-lint)
-- `make test` — Unit tests
-- `make build-mock-acp` — Build mock ACP test server
-- `make test-integration` — Integration tests (requires mock-acp)
+When a loop prompt spawns a fixer for CI failures, instruct it to run the full local gate suite BEFORE pushing:
+`make fmt-check` → `make lint` → `make test` → `make build-mock-acp && make test-integration`. Full local validation breaks the incremental fix-one-reveal-next cycle that wastes CI runs.
 
 ## Notification Pattern
 
-In silent mode, communicate via `mitto_ui_notify_mitto`:
-
-```go
-mitto_ui_notify_mitto(
-  self_id: "session-id",
-  title: "⚠️ PR #66 — Lint Failed",
-  message: "gofmt needed in prompt_dispatcher.go. Re-prompted fixer.",
-  style: "warning"
-)
-```
-
-**Never use** interactive tools in silent mode:
-- ❌ `mitto_ui_options_mitto`
-- ❌ `mitto_ui_form_mitto`
-- ❌ `mitto_ui_textbox_mitto`
+In silent mode, communicate via `mitto_ui_notify_mitto` (non-blocking). NEVER use interactive tools (`mitto_ui_options_mitto`, `mitto_ui_form_mitto`, `mitto_ui_textbox_mitto`) — they block on user input the loop will never receive.
 
 ## State Persistence
 
 For long-running loop prompts that track external state (CI status, branch status, etc.):
-- Store state in a **file in the workspace** (`.mitto/state/` convention)
-- Reference state file path in compact continuation messages
+- Store state in a workspace file (`.mitto/state/` convention)
 - Use `.Iteration.IsUninterrupted` to detect continuation vs restart
+- Compact continuation messages by referencing the state file path
 
-Example: "Continue: PR #66 lint fix. State: `.mitto/state/pr66-ci.json`."
+## Spawning Children From a Loop: `arguments` vs `loop_arguments`
 
-This enables compacting history while preserving state across long loops.
+`mitto_conversation_new` (and the equivalent MCP call in a loop-body prompt) takes two DIFFERENT argument maps:
+
+- `arguments:` — fills `.Args` **only on the initial prompt** dispatched at spawn time.
+- `loop_arguments:` — fills `.Args` on **every subsequent loop re-fire** of the child.
+
+**Anti-pattern**: passing only `arguments:` when the spawned child is itself a loop. The initial turn sees `.Args.Commit=true`, but every re-fire renders with `.Args.Commit=""` — positive-match gates (`{{ if eq .Args.Commit "true" }}`) silently resolve false and the argument is lost across the loop's lifetime (bug `mitto-rtdr`, fixed 25ed20d9; pinned by `TestLoopProcessingSpawns_MirrorArgumentsIntoLoopArguments`).
+
+**Fix**: when the child is a loop, MIRROR the same map into both:
+
+```yaml
+mitto_conversation_new(
+  arguments:      { Commit: "true", ... }
+  loop_arguments: { Commit: "true", ... }   # required for re-fires
+)
+```
+
+Related: parameter defaults are NOT auto-merged into `.Args` at render time; either pass the value explicitly or write templates as `{{ if ne .Args.Commit "false" }}` (default-on) instead of positive-match `{{ if eq .Args.Commit "true" }}`.
+
+## `coalesceDuringBusy` Silent-Swallow During Quiescence Rebase
+
+When an `onTasks` loop is busy (child driver still running), fs-watcher fires do NOT dispatch — they arm a **quiescence rebase** timer. When the subtree quiesces, the baseline is silently rebased to include all intervening changes with **no fire, no dispatch**. A user action (e.g. changing a bead's type via the web UI) can be absorbed into the new baseline and never trigger the loop until an external event re-fires the watcher (`onTasks: baseline rebased after idle+quiescence` in logs). This is intentional coalescing (feature `coalesceDuringBusy`), not a bug — but it means supervisor loops can silently miss user-driven state changes for minutes.
+
+## Schema-Extension Pattern for New Loop Fields
+
+Canonical reference for adding an optional field to `LoopPrompt`: `CoalesceDuringBusy` (beads `mitto-dmb` / `mitto-f9q`). The plumbing touches, in order:
+
+1. `internal/session/loop.go` — add `*bool` (or typed field) to `LoopPrompt`.
+2. `internal/config/prompts/prompts.go` — parse from prompt frontmatter.
+3. MCP types (`internal/mcpserver/`) — mirror as `Loop<Field>` on `ConversationStartInput` / `ConversationUpdateInput`.
+4. REST DTOs (`internal/web/handlers/session_loop_*.go`) — expose over HTTP.
+5. `applyPromptLoopDefaults` — merge prompt-declared default when caller did not pass one.
+6. Runtime consumer (e.g. `loop_runner_tasks.go`) — honor the field.
+
+Follow this pattern verbatim; skipping any layer breaks either the prompt-frontmatter path, the MCP path, or the REST path.

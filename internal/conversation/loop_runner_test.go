@@ -760,7 +760,7 @@ func TestLoopRunner_ConfigCapAutoStop(t *testing.T) {
 	})
 
 	disabled := false
-	if err := loopStore.Update(nil, nil, nil, &disabled, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
+	if err := loopStore.Update(nil, nil, nil, &disabled, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
 		t.Fatalf("loopStore.Update(disable) error = %v", err)
 	}
 
@@ -2667,32 +2667,6 @@ func TestTasksDeltaIsMaterial(t *testing.T) {
 	}
 }
 
-func TestTasksTouchedIDsAndSubset(t *testing.T) {
-	delta := &config.TasksDelta{Touched: []map[string]any{{"id": "a"}, {"id": "b"}, {"not-id": "x"}}}
-	ids := tasksTouchedIDs(delta)
-	if len(ids) != 2 {
-		t.Fatalf("tasksTouchedIDs() = %v, want 2 entries", ids)
-	}
-	if _, ok := ids["a"]; !ok {
-		t.Error("expected id 'a' in touched set")
-	}
-
-	// curr is a subset of prev => no progress.
-	prev := map[string]struct{}{"a": {}, "b": {}, "c": {}}
-	if !tasksIsSubsetOf(ids, prev) {
-		t.Error("curr should be a subset of prev")
-	}
-	// curr has something new => progress.
-	curr2 := map[string]struct{}{"a": {}, "new-id": {}}
-	if tasksIsSubsetOf(curr2, prev) {
-		t.Error("curr2 contains a new id, should not be a subset of prev")
-	}
-	// empty curr is trivially a subset.
-	if !tasksIsSubsetOf(map[string]struct{}{}, prev) {
-		t.Error("empty curr should be a trivial subset")
-	}
-}
-
 func TestLoopRunner_TasksCooldownActive(t *testing.T) {
 	store, err := session.NewStore(t.TempDir())
 	if err != nil {
@@ -3177,7 +3151,7 @@ func TestLoopRunner_EvaluateAccumulatedDelta_MaterialChange_Fires(t *testing.T) 
 	ps := newOnTasksSession(t, store, "s1", "/proj", "")
 	// Opt out of during-busy coalesce.
 	fa := false
-	if err := ps.Update(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, &fa, nil); err != nil {
+	if err := ps.Update(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, &fa); err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}
 	loop, _ := ps.Get()
@@ -3341,13 +3315,6 @@ func TestLoopRunner_FireTasksRebase_CoalesceTrue_AbsorbsSilently(t *testing.T) {
 	if !jsonBytesEqual(t, baseline.RawSnapshot, rawNow) {
 		t.Errorf("baseline.RawSnapshot = %s, want %s (silent absorption)", baseline.RawSnapshot, rawNow)
 	}
-	// The default silent-absorb path must never record a fire outcome.
-	runner.tasksNoProgressMu.Lock()
-	_, seenTouched := runner.tasksLastTouchedIDs["s1"]
-	runner.tasksNoProgressMu.Unlock()
-	if seenTouched {
-		t.Error("tasksLastTouchedIDs['s1'] should be empty — no re-fire should have been dispatched under coalesce=true")
-	}
 }
 
 func TestLoopRunner_BootstrapTasksBaseline_CreatesWhenMissing(t *testing.T) {
@@ -3416,7 +3383,7 @@ func TestLoopRunner_OnBeadsChanged_RoutingAndCaching(t *testing.T) {
 	newOnTasksSession(t, store, "s2", "/proj-a", "")
 	newOnTasksSession(t, store, "s3", "/proj-b", "")
 	newOnTasksSession(t, store, "s4", "/proj-a", "")
-	if err := store.Loop("s4").Update(nil, nil, nil, boolPtr(false), nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
+	if err := store.Loop("s4").Update(nil, nil, nil, boolPtr(false), nil, nil, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
 		t.Fatalf("Update(disable s4) error = %v", err)
 	}
 
@@ -3498,80 +3465,6 @@ func TestLoopRunner_OnBeadsChanged_AfterStopDoesNotTouchClosedStore(t *testing.T
 
 	if got := buf.String(); strings.Contains(got, "onTasks: failed to list sessions") {
 		t.Fatalf("OnBeadsChanged after Stop() touched the closed store and logged the failing symptom (mitto-cbx). Log output:\n%s", got)
-	}
-}
-
-func TestLoopRunner_RecordTasksFireOutcome_CircuitBreakerPausesNoProgress(t *testing.T) {
-	store, err := session.NewStore(t.TempDir())
-	if err != nil {
-		t.Fatalf("NewStore() error = %v", err)
-	}
-	defer store.Close()
-
-	ps := newOnTasksSession(t, store, "s1", "/proj", "")
-	runner := NewLoopRunner(store, nil, nil)
-
-	// Same issue id touched repeatedly — no genuine new progress across fires.
-	// The very first fire seeds tasksLastTouchedIDs (nothing to compare against
-	// yet, so it never counts as "no progress" on its own); the breaker needs
-	// tasksNoProgressLimit CONSECUTIVE no-progress fires after that seed.
-	delta := &config.TasksDelta{Touched: []map[string]any{{"id": "mitto-1"}}}
-	runner.recordTasksFireOutcome("s1", ps, delta) // seed
-	for i := 0; i < tasksNoProgressLimit-1; i++ {
-		runner.recordTasksFireOutcome("s1", ps, delta)
-		got, err := ps.Get()
-		if err != nil {
-			t.Fatalf("Get() error = %v", err)
-		}
-		if !got.Enabled {
-			t.Fatalf("loop should remain enabled before reaching the no-progress limit (iteration %d)", i)
-		}
-	}
-
-	// The Nth consecutive no-progress fire trips the breaker.
-	runner.recordTasksFireOutcome("s1", ps, delta)
-	got, err := ps.Get()
-	if err != nil {
-		t.Fatalf("Get() error = %v", err)
-	}
-	if got.Enabled {
-		t.Error("loop should be auto-paused after tasksNoProgressLimit consecutive no-progress fires")
-	}
-	if got.StoppedReason != session.StoppedReasonNoProgress {
-		t.Errorf("StoppedReason = %q, want %q", got.StoppedReason, session.StoppedReasonNoProgress)
-	}
-}
-
-func TestLoopRunner_RecordTasksFireOutcome_ResetsOnGenuineProgress(t *testing.T) {
-	store, err := session.NewStore(t.TempDir())
-	if err != nil {
-		t.Fatalf("NewStore() error = %v", err)
-	}
-	defer store.Close()
-
-	ps := newOnTasksSession(t, store, "s1", "/proj", "")
-	runner := NewLoopRunner(store, nil, nil)
-
-	sameDelta := &config.TasksDelta{Touched: []map[string]any{{"id": "mitto-1"}}}
-	for i := 0; i < tasksNoProgressLimit-1; i++ {
-		runner.recordTasksFireOutcome("s1", ps, sameDelta)
-	}
-
-	// A fire that touches a genuinely new issue resets the counter.
-	newDelta := &config.TasksDelta{Touched: []map[string]any{{"id": "mitto-2"}}}
-	runner.recordTasksFireOutcome("s1", ps, newDelta)
-
-	// Even after tasksNoProgressLimit-1 more repeats of the *new* id alone, the
-	// breaker should not have tripped yet because the counter was reset.
-	for i := 0; i < tasksNoProgressLimit-1; i++ {
-		runner.recordTasksFireOutcome("s1", ps, newDelta)
-	}
-	got, err := ps.Get()
-	if err != nil {
-		t.Fatalf("Get() error = %v", err)
-	}
-	if !got.Enabled {
-		t.Error("loop should still be enabled — the counter was reset by genuine progress")
 	}
 }
 

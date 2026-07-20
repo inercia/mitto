@@ -414,12 +414,6 @@ type ConversationUpdateInput struct {
 	// that arrive while the loop's subtree is busy. Nil or true = silently absorb
 	// (default). False = fire once more with the accumulated delta after quiescence.
 	LoopCoalesceDuringBusy *bool `json:"loop_coalesce_during_busy,omitempty"`
-	// LoopNoProgressLimit overrides the onTasks Layer 3 circuit-breaker threshold —
-	// the number of consecutive no-progress fires that auto-pause the loop. Nil =
-	// default 3. 0 = unlimited (opt-out; supervisor loops whose steady-state
-	// includes empty/at-cap fires). N > 0 = custom threshold. Only meaningful for
-	// loop_trigger="onTasks" (mitto-erpb).
-	LoopNoProgressLimit *int `json:"loop_no_progress_limit,omitempty"`
 	// LoopApplyPromptDefaults controls the mitto-r7y auto-apply of a seeded
 	// prompt's loop: frontmatter block. When loop_prompt_name resolves to a
 	// prompt carrying a loop: block, its fields fill any loop_* fields the
@@ -467,11 +461,8 @@ type ConversationUpdateOutput struct {
 	// LoopCoalesceDuringBusy reflects the stored opt-in flag. Nil when unset
 	// (default coalesce behaviour); non-nil when the caller explicitly opted in
 	// or out.
-	LoopCoalesceDuringBusy *bool `json:"loop_coalesce_during_busy,omitempty"`
-	// LoopNoProgressLimit reflects the stored onTasks Layer 3 override. Nil when
-	// unset (default 3 fires); non-nil when the caller opted in or out (mitto-erpb).
-	LoopNoProgressLimit *int   `json:"loop_no_progress_limit,omitempty"`
-	Error               string `json:"error,omitempty"`
+	LoopCoalesceDuringBusy *bool  `json:"loop_coalesce_during_busy,omitempty"`
+	Error                  string `json:"error,omitempty"`
 }
 
 // UITextboxInput is the input for the mitto_ui_textbox tool.
