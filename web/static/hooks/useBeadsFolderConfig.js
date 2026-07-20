@@ -38,12 +38,16 @@ function beadsErrorMessage(data) {
  * @param {Object} params
  * @param {string|null} params.selectedFolder — the currently selected folder display name
  * @param {string} params.activeTab — the currently active folder tab id
+ * @param {boolean} [params.isOpen] — whether the enclosing dialog is open; observed
+ *   by the load effect so reopening the dialog on the same folder re-issues the
+ *   config/upstream fetches (mitto-xdqx)
  * @param {() => string|null} params.getSelectedFolderDir — resolver for the folder's working_dir
  * @returns {{ beads: Object, beadsSetters: Object, beadsHandlers: Object }}
  */
 export function useBeadsFolderConfig({
   selectedFolder,
   activeTab,
+  isOpen,
   getSelectedFolderDir,
 }) {
   // Folder beads config state (for the Beads Config tab) — UI wrapper over `bd config`.
@@ -337,14 +341,19 @@ export function useBeadsFolderConfig({
   };
 
   // Lazily load beads config + upstream when the Beads folder tab is opened.
+  // isOpen is in the deps so reopening the dialog on the same folder with
+  // activeTab already === "beads" re-issues the fetch — WorkspacesDialog only
+  // renders null while closed (no unmount), so without this the load effect
+  // would be a no-op on reopen and any latched loading flag would stay stuck
+  // (mitto-xdqx).
   useEffect(() => {
-    if (activeTab !== "beads" || !selectedFolder) return;
+    if (!isOpen || activeTab !== "beads" || !selectedFolder) return;
     const workingDir = getSelectedFolderDir();
     if (workingDir) {
       reloadBeadsConfig(workingDir);
       reloadBeadsUpstream(workingDir);
     }
-  }, [activeTab, selectedFolder]);
+  }, [isOpen, activeTab, selectedFolder]);
 
   // Load argument-free folder prompts when the Beads tab is active and upstream is "prompts".
   useEffect(() => {
@@ -354,7 +363,10 @@ export function useBeadsFolderConfig({
     if (workingDir) loadBeadsUpstreamPrompts(workingDir);
   }, [activeTab, selectedFolder, beadsUpstream]);
 
-  // Reset beads config state when switching folders.
+  // Reset beads config state when switching folders. Also clears the four
+  // loading/saving flags so an in-flight fetch from the previous folder whose
+  // finally() has not yet run cannot leave the Tasks tab latched on
+  // "Loading…" (mitto-xdqx).
   useEffect(() => {
     setBeadsConfig(null);
     setBeadsConfigError("");
@@ -368,6 +380,10 @@ export function useBeadsFolderConfig({
     setBeadsPushPromptArgs({});
     setBeadsSyncPromptArgs({});
     setBeadsUpstreamPrompts([]);
+    setBeadsConfigLoading(false);
+    setBeadsConfigSaving(false);
+    setBeadsUpstreamPromptsLoading(false);
+    setBeadsUpstreamSaving(false);
   }, [selectedFolder]);
 
   const beads = {

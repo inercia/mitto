@@ -248,6 +248,7 @@ export function WorkspacesDialog({
   const { beads, beadsSetters, beadsHandlers } = useBeadsFolderConfig({
     selectedFolder,
     activeTab,
+    isOpen,
     getSelectedFolderDir: () => {
       const folderGroup = groupedWorkspaces.find(
         (g) => g.displayName === selectedFolder,
