@@ -26,9 +26,14 @@ const __dirname = path.dirname(__filename);
  * duplicate that coverage against a different entry point.
  *
  * Fixtures (project-alpha workspace):
- *   context-menu-param-prompt.prompt.yaml ("Convo Param Test", menus: conversation, TASK required)
- *   beads-list-prompt.prompt.yaml         ("List Prompt Test", menus: beadsList, no params)
- *   loop-param-prompt.prompt.yaml         ("Loop Param Test", menus: promptsLoop, TASK optional)
+ *   context-menu-param-prompt.prompt.yaml   ("Convo Param Test", menus: conversation, TASK required text)
+ *   beads-list-param-prompt.prompt.yaml     ("Beads List Param Test", menus: beadsList, DRY_RUN boolean)
+ *
+ * The beadsList fixture intentionally uses a boolean (interactive-picker) param
+ * rather than a text param because MENU_PARAM_TYPES.beadsList === [] causes any
+ * required non-picker param to fail menuSatisfies() → the prompt is filtered
+ * out of the shortcut resolver map and the button renders as "not found".
+ * See web/static/utils/prompts.js: menuSatisfies / isInteractivePickerParam.
  */
 
 const projectRoot = path.resolve(__dirname, "../../..");
@@ -197,6 +202,32 @@ async function clickBeadsButton(page, timeouts) {
 }
 
 testWithCleanup.describe("Tasks-view shortcut button — prompt arguments", () => {
+  // Prompt object the frontend cache expects: `name` matches the shortcut's
+  // `prompt` field, and `parameters` describes the interactive-picker (boolean)
+  // field so PromptParameterDialog renders a checkbox.
+  //
+  // Why boolean and not text? The tasksList menu can auto-supply NO parameter
+  // types (MENU_PARAM_TYPES.beadsList === []), so any `text: required` param
+  // would fail menuSatisfies() and the prompt would be filtered out of the
+  // shortcut resolver map entirely (button greyed as "not found"). Interactive
+  // picker params (boolean, prompts) bypass that gate — see
+  // web/static/utils/prompts.js: isInteractivePickerParam.
+  const LIST_PARAM_PROMPT_OBJ = {
+    name: LIST_PARAM_PROMPT,
+    description:
+      "A beadsList prompt with an interactive-picker (boolean) param for E2E shortcut dialog testing.",
+    menus: "beadsList",
+    enabled: true,
+    parameters: [
+      {
+        name: "DRY_RUN",
+        type: "boolean",
+        description: "Perform a dry run instead of executing the review.",
+        required: false,
+      },
+    ],
+  };
+
   testWithCleanup.beforeEach(async ({ page, request, apiUrl, helpers }) => {
     await page.route(/\/api\/issues(\?|$)/, async (route) => {
       await route.fulfill({
@@ -228,6 +259,20 @@ testWithCleanup.describe("Tasks-view shortcut button — prompt arguments", () =
       });
     });
 
+    // Deterministically resolve the shortcut's linked prompt via the prompt
+    // cache. Without this mock the button renders as disabled with tooltip
+    // 'Prompt "…" not found' when the workspace-prompts fetch races the
+    // tasks-view mount (backend sees the fixture on disk, but the cache
+    // isn't populated by the time the button renders).
+    await page.route(/\/api\/workspace-prompts(\?|$)/, async (route) => {
+      if (route.request().method() !== "GET") return route.fallback();
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ prompts: [LIST_PARAM_PROMPT_OBJ] }),
+      });
+    });
+
     await request.post(apiUrl("/api/workspaces"), {
       data: { acp_server: AGENT_NAME, working_dir: WORKSPACE_ALPHA },
     });
@@ -240,7 +285,7 @@ testWithCleanup.describe("Tasks-view shortcut button — prompt arguments", () =
   });
 
   testWithCleanup(
-    "tasksList shortcut with a required param opens the dialog and dispatches with the entered argument (mitto-cwf5)",
+    "tasksList shortcut with an interactive-picker param opens the dialog and dispatches with the entered argument (mitto-cwf5)",
     async ({ page, timeouts }) => {
       await clickBeadsButton(page, timeouts);
       await expect(page.getByText("Alpha issue").first()).toBeVisible({
@@ -257,11 +302,14 @@ testWithCleanup.describe("Tasks-view shortcut button — prompt arguments", () =
       await expect(page.locator(DIALOG)).toBeVisible({ timeout: timeouts.shortAction });
       await expect(page.locator(DIALOG)).toContainText(LIST_PARAM_PROMPT);
 
-      // Only the missing FOCUS field is rendered.
+      // Only the interactive-picker DRY_RUN field is rendered.
       const fieldsets = page.locator(`${DIALOG} fieldset`);
       await expect(fieldsets).toHaveCount(1);
 
-      await page.locator(`${DIALOG} textarea`).first().fill("high priority tasks");
+      // Check the DRY_RUN checkbox so the submitted argument is "true"; leaving
+      // it unchecked would still submit "false" (booleans always emit a value),
+      // but toggling gives us a definite non-default assertion.
+      await page.locator(`${DIALOG} input[type="checkbox"]`).first().check();
 
       // tasksList shortcuts spawn a NEW root conversation via
       // startConversationWithPrompt → POST /api/sessions with { arguments }.
@@ -274,7 +322,7 @@ testWithCleanup.describe("Tasks-view shortcut button — prompt arguments", () =
       ]);
 
       const body = JSON.parse(sessionRequest.postData() || "{}");
-      expect(body.arguments?.FOCUS).toBe("high priority tasks");
+      expect(body.arguments?.DRY_RUN).toBe("true");
 
       await expect(page.locator(DIALOG)).not.toBeVisible({
         timeout: timeouts.shortAction,

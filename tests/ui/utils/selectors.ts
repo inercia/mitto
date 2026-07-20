@@ -52,9 +52,11 @@ export const selectors = {
   messagesContainer: ".messages-container-reverse",
 
   // Sessions/Conversations sidebar
-  // Note: The UI uses "Conversations" as the heading text
-  conversationsHeader: 'h2:has-text("Conversations")',
-  sessionsHeader: 'h2:has-text("Conversations")', // Alias for backwards compatibility
+  // Note: The sidebar heading was renamed to "Mitto" in the daisyUI 5 upgrade
+  // (see beads.spec.ts:148). The old "Conversations" text is gone from the DOM,
+  // so waitForAppReady's OR-check must target the current heading.
+  conversationsHeader: 'h2:has-text("Mitto")',
+  sessionsHeader: 'h2:has-text("Mitto")', // Alias for backwards compatibility
   // Session items are in containers with class "session-item-container"
   sessionsList: '.session-item-container',
   newSessionButton: 'button[data-testid="new-conversation-btn"]',
