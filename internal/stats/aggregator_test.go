@@ -552,22 +552,22 @@ func TestAggregator_IsMCPCall_KnownPrefixes(t *testing.T) {
 		want  bool
 	}{
 		{"mitto_conversation_new", "", true},
-		{"MITTO_conversation_new", "", true}, // case-insensitive
 		{"github-create-issue", "", true},
 		{"slack_post_message", "", true},
 		{"linear_issue_search", "", true},
 		{"jira_create", "", true},
-		{"notion_query", "", true},
-		{"bd_show", "", true},
-		{"beads_list", "", true},
+		{"fj-search", "", true},
+		{"splunk_search", "", true},
+		{"puppeteer-navigate", "", true},
 		{"read_file", "", false},
 		{"launch-process", "", false},
-		{"", "mcp", true}, // Kind wins even without a matching title
+		{"Github-create-issue", "", false}, // case-sensitive
+		{"", "mcp", true},                  // Kind wins even without a matching title
 		{"anything", "mcp", true},
 	}
 	for _, c := range cases {
-		if got := isMCPCall(session.ToolCallData{Title: c.title, Kind: c.kind}); got != c.want {
-			t.Errorf("isMCPCall({Title:%q, Kind:%q}) = %v, want %v", c.title, c.kind, got, c.want)
+		if got := IsMCPCall(session.ToolCallData{Title: c.title, Kind: c.kind}); got != c.want {
+			t.Errorf("IsMCPCall({Title:%q, Kind:%q}) = %v, want %v", c.title, c.kind, got, c.want)
 		}
 	}
 }

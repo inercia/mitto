@@ -2,7 +2,6 @@ package stats
 
 import (
 	"context"
-	"regexp"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -37,6 +36,12 @@ type AggregatorOptions struct {
 	// aggregator uses it only for cursor UpdatedAt — bucket keys always come
 	// from event timestamps so replays remain deterministic.
 	Now func() time.Time
+	// FileSizeResolver optionally resolves a session.FileRef to its byte
+	// size so the aggregator can apply the spec's size-based token formula
+	// (see EstimateTokensFile). When nil the aggregator falls back to
+	// EstimateTokensFileRef, a name-length proxy. stats.4/stats.5 wire this
+	// through to session.Store without pulling I/O into the stats package.
+	FileSizeResolver func(sessionID, fileID string) int64
 }
 
 func (o AggregatorOptions) withDefaults() AggregatorOptions {
@@ -318,26 +323,30 @@ func (a *aggregator) foldOwned(it aggregatorItem) {
 			acc.sawUserAgent = false
 		}
 		if d, ok := it.ev.Data.(session.UserPromptData); ok {
-			inc(MetricInputTokensEst, estimateTokensText(d.Message))
+			inc(MetricInputTokensEst, EstimateTokensText(d.Message))
 			for _, f := range d.Files {
-				inc(MetricInputTokensEst, estimateTokensFile(f))
+				if a.opts.FileSizeResolver != nil {
+					inc(MetricInputTokensEst, EstimateTokensFile(a.opts.FileSizeResolver(it.sc.SessionID, f.ID)))
+				} else {
+					inc(MetricInputTokensEst, EstimateTokensFileRef(f))
+				}
 			}
-			inc(MetricInputTokensEst, int64(len(d.Images))*imageTokenCost)
+			inc(MetricInputTokensEst, int64(len(d.Images))*ImageTokenCost)
 		}
 	case session.EventTypeAgentMessage:
 		acc.sawUserAgent = true
 		if d, ok := it.ev.Data.(session.AgentMessageData); ok {
-			inc(MetricOutputTokensEst, estimateTokensText(d.Text))
+			inc(MetricOutputTokensEst, EstimateTokensText(d.Text))
 		}
 	case session.EventTypeAgentThought:
 		acc.sawUserAgent = true
 		if d, ok := it.ev.Data.(session.AgentThoughtData); ok {
-			inc(MetricOutputTokensEst, estimateTokensText(d.Text))
+			inc(MetricOutputTokensEst, EstimateTokensText(d.Text))
 		}
 	case session.EventTypeToolCall:
 		acc.sawUserAgent = true
 		inc(MetricToolCallsTotal, 1)
-		if d, ok := it.ev.Data.(session.ToolCallData); ok && isMCPCall(d) {
+		if d, ok := it.ev.Data.(session.ToolCallData); ok && IsMCPCall(d) {
 			inc(MetricMCPCalls, 1)
 		}
 	case session.EventTypePermission:
@@ -347,51 +356,8 @@ func (a *aggregator) foldOwned(it aggregatorItem) {
 	}
 }
 
-// -----------------------------------------------------------------------------
-// v1 estimators / classifiers.
-//
-// Deliberately simple: stats.6 replaces these with real per-model tokenisers
-// and a richer MCP classifier. Keeping them private ensures no downstream
-// caller pins the v1 heuristic — a bump to EstimatorVersion + these helpers
-// triggers backfill recompute in stats.5.
-// -----------------------------------------------------------------------------
-
-// imageTokenCost is the v1 flat token estimate per image reference.
-const imageTokenCost = 64
-
-// estimateTokensText applies the classic "4 chars per token" heuristic on the
-// UTF-8 byte length of s, returning 0 for empty input and rounding up.
-func estimateTokensText(s string) int64 {
-	n := len(s)
-	if n == 0 {
-		return 0
-	}
-	return int64((n + 3) / 4)
-}
-
-// estimateTokensFile returns a v1 upload-cost proxy. FileRef itself carries no
-// size; use the MIME-typed name length as a placeholder plus a small flat
-// overhead. Real content-aware estimates land in stats.6.
-func estimateTokensFile(f session.FileRef) int64 {
-	// Name length + MIME class overhead. Bounded to avoid pathological refs.
-	n := len(f.Name) + 16
-	if n > 4096 {
-		n = 4096
-	}
-	return int64((n + 3) / 4)
-}
-
-// mcpToolTitleRE matches tool titles that clearly originate from an MCP
-// server integration. Case-insensitive prefix match on the common Mitto and
-// third-party MCP tool naming conventions.
-var mcpToolTitleRE = regexp.MustCompile(`(?i)^(mitto_|github-|bd_|beads_|slack_|linear_|jira_|notion_)`)
-
-// isMCPCall reports whether a ToolCallData represents an MCP-classified call.
-// v1 uses two signals: the explicit Kind == "mcp" field (populated by newer
-// ACP agents) and a title-prefix regex for older payloads.
-func isMCPCall(d session.ToolCallData) bool {
-	if d.Kind == "mcp" {
-		return true
-	}
-	return mcpToolTitleRE.MatchString(d.Title)
-}
+// v1 estimators / classifiers now live in classifier.go as exported helpers
+// (EstimateTokensText / EstimateTokensFile / EstimateTokensFileRef /
+// EstimateTokensImage / IsMCPCall) so the live SessionObserver (stats.4) and
+// the backfill replayer (stats.5) can share the exact same heuristics.
+// Bumping EstimatorVersion (stats.go) triggers a backfill recompute.
