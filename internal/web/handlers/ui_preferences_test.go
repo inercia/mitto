@@ -246,6 +246,206 @@ func TestHandleUIPreferences_PUT_EmptyBody(t *testing.T) {
 	}
 }
 
+func TestHandleUIPreferences_PUT_InvalidFontSize(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv(appdir.MittoDirEnv, tmpDir)
+	appdir.ResetCache()
+	t.Cleanup(appdir.ResetCache)
+
+	h := New(Deps{})
+
+	body := `{"font_size":"huge"}`
+	req := httptest.NewRequest(http.MethodPut, "/api/ui-preferences", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	h.handleSaveUIPreferences(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("Status = %d, want %d", w.Code, http.StatusBadRequest)
+	}
+
+	var env struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil {
+		t.Fatalf("Failed to unmarshal error envelope: %v (body=%q)", err, w.Body.String())
+	}
+	const wantMsg = "Invalid font_size: must be 'small' or 'large'"
+	if env.Error.Message != wantMsg {
+		t.Errorf("error.message = %q, want %q", env.Error.Message, wantMsg)
+	}
+}
+
+func TestHandleUIPreferences_FontSize_RoundTrip(t *testing.T) {
+	for _, size := range []string{"small", "large", ""} {
+		t.Run("size_"+size, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			t.Setenv(appdir.MittoDirEnv, tmpDir)
+			appdir.ResetCache()
+			t.Cleanup(appdir.ResetCache)
+
+			h := New(Deps{})
+
+			saveBody := `{"font_size":"` + size + `"}`
+			saveReq := httptest.NewRequest(http.MethodPut, "/api/ui-preferences", strings.NewReader(saveBody))
+			saveReq.Header.Set("Content-Type", "application/json")
+			saveW := httptest.NewRecorder()
+			h.handleSaveUIPreferences(saveW, saveReq)
+			if saveW.Code != http.StatusOK {
+				t.Fatalf("Save failed for %q: Status = %d, Body: %s", size, saveW.Code, saveW.Body.String())
+			}
+
+			loadReq := httptest.NewRequest(http.MethodGet, "/api/ui-preferences", nil)
+			loadW := httptest.NewRecorder()
+			h.handleGetUIPreferences(loadW, loadReq)
+			if loadW.Code != http.StatusOK {
+				t.Fatalf("Load failed for %q: Status = %d", size, loadW.Code)
+			}
+
+			var prefs UIPreferences
+			if err := json.NewDecoder(loadW.Body).Decode(&prefs); err != nil {
+				t.Fatalf("Failed to decode response: %v", err)
+			}
+			if prefs.FontSize != size {
+				t.Errorf("FontSize = %q, want %q", prefs.FontSize, size)
+			}
+		})
+	}
+}
+
+func TestHandleUIPreferences_PUT_InvalidTheme(t *testing.T) {
+	cases := []struct {
+		name    string
+		body    string
+		wantMsg string
+	}{
+		{"bad_theme", `{"theme":"twilight"}`, "Invalid theme: must be 'light' or 'dark'"},
+		{"bad_theme_light", `{"theme_light":"has space"}`, "Invalid theme_light: must be a short alphanumeric name"},
+		{"bad_theme_light_symbols", `{"theme_light":"one$two"}`, "Invalid theme_light: must be a short alphanumeric name"},
+		{"bad_theme_dark", `{"theme_dark":"weird/name"}`, "Invalid theme_dark: must be a short alphanumeric name"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			t.Setenv(appdir.MittoDirEnv, tmpDir)
+			appdir.ResetCache()
+			t.Cleanup(appdir.ResetCache)
+
+			h := New(Deps{})
+
+			req := httptest.NewRequest(http.MethodPut, "/api/ui-preferences", strings.NewReader(tc.body))
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+			h.handleSaveUIPreferences(w, req)
+
+			if w.Code != http.StatusBadRequest {
+				t.Errorf("Status = %d, want %d (body=%q)", w.Code, http.StatusBadRequest, w.Body.String())
+			}
+			var env struct {
+				Error struct {
+					Code    string `json:"code"`
+					Message string `json:"message"`
+				} `json:"error"`
+			}
+			if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil {
+				t.Fatalf("Failed to unmarshal error envelope: %v (body=%q)", err, w.Body.String())
+			}
+			if env.Error.Message != tc.wantMsg {
+				t.Errorf("error.message = %q, want %q", env.Error.Message, tc.wantMsg)
+			}
+		})
+	}
+}
+
+func TestHandleUIPreferences_ThemeCluster_RoundTrip(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv(appdir.MittoDirEnv, tmpDir)
+	appdir.ResetCache()
+	t.Cleanup(appdir.ResetCache)
+
+	h := New(Deps{})
+
+	// Explicit false for the two bool pointers so we exercise the *bool
+	// serialization (nil vs false vs true) end-to-end.
+	saveBody := `{
+		"theme":"dark",
+		"theme_light":"cupcake",
+		"theme_dark":"synthwave",
+		"follow_system_theme":false,
+		"follow_system_reduced_motion":true,
+		"reduce_animations":false,
+		"font_size":"large"
+	}`
+	saveReq := httptest.NewRequest(http.MethodPut, "/api/ui-preferences", strings.NewReader(saveBody))
+	saveReq.Header.Set("Content-Type", "application/json")
+	saveW := httptest.NewRecorder()
+	h.handleSaveUIPreferences(saveW, saveReq)
+	if saveW.Code != http.StatusOK {
+		t.Fatalf("Save failed: Status = %d, Body: %s", saveW.Code, saveW.Body.String())
+	}
+
+	loadReq := httptest.NewRequest(http.MethodGet, "/api/ui-preferences", nil)
+	loadW := httptest.NewRecorder()
+	h.handleGetUIPreferences(loadW, loadReq)
+	if loadW.Code != http.StatusOK {
+		t.Fatalf("Load failed: Status = %d", loadW.Code)
+	}
+
+	var prefs UIPreferences
+	if err := json.NewDecoder(loadW.Body).Decode(&prefs); err != nil {
+		t.Fatalf("Failed to decode response: %v", err)
+	}
+	if prefs.Theme != "dark" {
+		t.Errorf("Theme = %q, want %q", prefs.Theme, "dark")
+	}
+	if prefs.ThemeLight != "cupcake" {
+		t.Errorf("ThemeLight = %q, want %q", prefs.ThemeLight, "cupcake")
+	}
+	if prefs.ThemeDark != "synthwave" {
+		t.Errorf("ThemeDark = %q, want %q", prefs.ThemeDark, "synthwave")
+	}
+	if prefs.FollowSystemTheme == nil || *prefs.FollowSystemTheme != false {
+		t.Errorf("FollowSystemTheme = %v, want *false", prefs.FollowSystemTheme)
+	}
+	if prefs.FollowSystemReducedMotion == nil || *prefs.FollowSystemReducedMotion != true {
+		t.Errorf("FollowSystemReducedMotion = %v, want *true", prefs.FollowSystemReducedMotion)
+	}
+	if prefs.ReduceAnimations == nil || *prefs.ReduceAnimations != false {
+		t.Errorf("ReduceAnimations = %v, want *false", prefs.ReduceAnimations)
+	}
+	if prefs.FontSize != "large" {
+		t.Errorf("FontSize = %q, want %q", prefs.FontSize, "large")
+	}
+}
+
+func TestHandleUIPreferences_PUT_ValidThemeNames(t *testing.T) {
+	// Accepted character-set: letters, digits, dashes; up to 32 chars.
+	validNames := []string{"mitto", "light", "dark", "cupcake", "cyberpunk", "silk", "abyss", "a1-b2"}
+	for _, name := range validNames {
+		t.Run("name_"+name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			t.Setenv(appdir.MittoDirEnv, tmpDir)
+			appdir.ResetCache()
+			t.Cleanup(appdir.ResetCache)
+
+			h := New(Deps{})
+
+			body := `{"theme_light":"` + name + `","theme_dark":"` + name + `"}`
+			req := httptest.NewRequest(http.MethodPut, "/api/ui-preferences", strings.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+			h.handleSaveUIPreferences(w, req)
+			if w.Code != http.StatusOK {
+				t.Errorf("Status = %d, want %d for name %q; body=%s", w.Code, http.StatusOK, name, w.Body.String())
+			}
+		})
+	}
+}
+
 func TestHandleUIPreferences_DispatchesByMethod(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv(appdir.MittoDirEnv, tmpDir)

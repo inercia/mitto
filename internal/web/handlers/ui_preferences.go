@@ -27,6 +27,66 @@ type UIPreferences struct {
 	// Default is "alphabetical" (sort by name within groups)
 	// "color" sorts by color hue, then by name
 	PromptSortMode string `json:"prompt_sort_mode,omitempty"`
+
+	// FontSize is the UI font size class: "small" (default) or "large".
+	// Persisted server-side because the macOS app uses random ports, so
+	// localStorage — which is per-origin (scheme+host+port) — is reset on
+	// every launch and the previously-chosen size would otherwise be lost.
+	FontSize string `json:"font_size,omitempty"`
+
+	// Theme is the explicit light/dark choice: "light" or "dark".
+	// (Same server-side rationale as FontSize; see the FontSize comment
+	// above — every field below shares it.)
+	Theme string `json:"theme,omitempty"`
+
+	// ThemeLight is the daisyUI theme name used in the light slot
+	// (e.g. "mitto", "cupcake"). Only names from NAMED_THEMES are valid;
+	// the frontend enforces the same allow-list, so the server rejects
+	// values that are not letters/digits/dashes to avoid persisting junk.
+	ThemeLight string `json:"theme_light,omitempty"`
+
+	// ThemeDark is the daisyUI theme name used in the dark slot
+	// (same value space as ThemeLight).
+	ThemeDark string `json:"theme_dark,omitempty"`
+
+	// FollowSystemTheme mirrors the "follow system theme" toggle.
+	// Nullable so that "unset" (default: true) is distinguishable from
+	// "explicitly false".
+	FollowSystemTheme *bool `json:"follow_system_theme,omitempty"`
+
+	// FollowSystemReducedMotion mirrors the "follow system reduced motion"
+	// toggle. Nullable for the same reason as FollowSystemTheme.
+	FollowSystemReducedMotion *bool `json:"follow_system_reduced_motion,omitempty"`
+
+	// ReduceAnimations is the explicit "reduce animations" choice.
+	// Nullable so we don't clobber the OS-driven default when the user
+	// has never touched the toggle.
+	ReduceAnimations *bool `json:"reduce_animations,omitempty"`
+}
+
+// isValidThemeName reports whether s is an acceptable daisyUI theme name.
+// The frontend's NAMED_THEMES enforces the real allow-list; the server just
+// gates the character set so a rogue client can't stuff arbitrary bytes
+// into the persisted preferences file. Letters, digits, and dashes only;
+// bounded length keeps the check O(1).
+func isValidThemeName(s string) bool {
+	if s == "" {
+		return true
+	}
+	if len(s) > 32 {
+		return false
+	}
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case r >= '0' && r <= '9':
+		case r == '-':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // HandleUIPreferences handles GET and PUT /api/ui-preferences.
@@ -84,6 +144,33 @@ func (h *Handlers) handleSaveUIPreferences(w http.ResponseWriter, r *http.Reques
 		prefs.PromptSortMode != "alphabetical" &&
 		prefs.PromptSortMode != "color" {
 		writeErrorJSON(w, http.StatusBadRequest, "", "Invalid prompt_sort_mode: must be 'alphabetical' or 'color'")
+		return
+	}
+
+	// Validate font size
+	if prefs.FontSize != "" &&
+		prefs.FontSize != "small" &&
+		prefs.FontSize != "large" {
+		writeErrorJSON(w, http.StatusBadRequest, "", "Invalid font_size: must be 'small' or 'large'")
+		return
+	}
+
+	// Validate explicit theme mode
+	if prefs.Theme != "" &&
+		prefs.Theme != "light" &&
+		prefs.Theme != "dark" {
+		writeErrorJSON(w, http.StatusBadRequest, "", "Invalid theme: must be 'light' or 'dark'")
+		return
+	}
+
+	// Validate daisyUI theme slot names (character-set gate only; the
+	// authoritative allow-list lives in the frontend NAMED_THEMES).
+	if !isValidThemeName(prefs.ThemeLight) {
+		writeErrorJSON(w, http.StatusBadRequest, "", "Invalid theme_light: must be a short alphanumeric name")
+		return
+	}
+	if !isValidThemeName(prefs.ThemeDark) {
+		writeErrorJSON(w, http.StatusBadRequest, "", "Invalid theme_dark: must be a short alphanumeric name")
 		return
 	}
 

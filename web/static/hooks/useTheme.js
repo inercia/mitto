@@ -4,7 +4,44 @@
 // clusters: their localStorage persistence, OS-preference syncing, document class
 // application, and the SettingsDialog window-event bridges. Returns only the values
 // the App render consumes; the follow-system and reduced-motion state stays internal.
+import {
+  getFontSize,
+  setFontSize as persistFontSize,
+  getTheme,
+  setTheme as persistTheme,
+  getThemeLight,
+  setThemeLight as persistThemeLight,
+  getThemeDark,
+  setThemeDark as persistThemeDark,
+  getFollowSystemTheme,
+  setFollowSystemTheme as persistFollowSystemTheme,
+  getFollowSystemReducedMotion,
+  setFollowSystemReducedMotion as persistFollowSystemReducedMotion,
+  getReduceAnimations,
+  setReduceAnimations as persistReduceAnimations,
+  onUIPreferencesLoaded,
+} from "../utils/storage.js";
 const { useState, useEffect, useCallback } = window.preact;
+
+// Derive the initial "effective" light/dark theme when nothing is persisted:
+// respect the OS preference when available so the first paint doesn't flip.
+function osPrefersDark() {
+  if (typeof window !== "undefined" && window.matchMedia) {
+    return window.matchMedia("(prefers-color-scheme: dark)").matches;
+  }
+  return false;
+}
+
+// Auto-enable reduced motion on mobile/tablet where backdrop-filter blur
+// causes sustained GPU compositing (iPad reports as Macintosh with touch).
+function isMobileLikeDevice() {
+  if (typeof navigator === "undefined") return false;
+  const ua = navigator.userAgent || "";
+  return (
+    /iPad|iPhone|iPod|Android/i.test(ua) ||
+    (navigator.maxTouchPoints > 1 && /Macintosh/i.test(ua))
+  );
+}
 
 // Named daisyUI themes offered by the theme picker (l6a). "mitto" is the
 // default passthrough — the legacy --mitto-* light/dark system stays in
@@ -65,41 +102,23 @@ export const NAMED_THEMES = {
  * <html> is whichever slot matches the current effectiveBucket.
  */
 export function useTheme() {
-  // Follow system theme state - persisted to localStorage
+  // Follow-system-theme state. Prefer the server-synced value (via
+  // getFollowSystemTheme); default to true (follow system) when unset.
   const [followSystemTheme, setFollowSystemTheme] = useState(() => {
-    if (typeof localStorage !== "undefined") {
-      const saved = localStorage.getItem("mitto-follow-system-theme");
-      // Default to true for new users (follow system theme by default)
-      return saved === null ? true : saved === "true";
-    }
-    return true;
+    const saved = getFollowSystemTheme();
+    return saved === null ? true : saved;
   });
 
-  // Theme state - respects OS preference when followSystemTheme is enabled
+  // Explicit light/dark theme. When following system, honour the OS
+  // preference; otherwise adopt the persisted value.
   const [theme, setTheme] = useState(() => {
-    if (typeof localStorage !== "undefined") {
-      const followSystem = localStorage.getItem("mitto-follow-system-theme");
-      // If following system theme (default for new users)
-      if (followSystem === null || followSystem === "true") {
-        if (typeof window !== "undefined" && window.matchMedia) {
-          const prefersDark = window.matchMedia(
-            "(prefers-color-scheme: dark)",
-          ).matches;
-          return prefersDark ? "dark" : "light";
-        }
-      }
-      // Otherwise use saved theme preference
-      const saved = localStorage.getItem("mitto-theme");
-      if (saved) return saved;
+    const savedFollow = getFollowSystemTheme();
+    if (savedFollow === null || savedFollow === true) {
+      return osPrefersDark() ? "dark" : "light";
     }
-    // Check OS preference for dark/light mode
-    if (typeof window !== "undefined" && window.matchMedia) {
-      const prefersDark = window.matchMedia(
-        "(prefers-color-scheme: dark)",
-      ).matches;
-      return prefersDark ? "dark" : "light";
-    }
-    return "dark";
+    const saved = getTheme();
+    if (saved) return saved;
+    return osPrefersDark() ? "dark" : "light";
   });
 
   // Two-slot theme state (l6a): one daisyUI theme per light/dark slot.
@@ -107,40 +126,38 @@ export function useTheme() {
   // One-pass migration: if the old mitto-theme-name key exists, seed the
   // matching slot from it and ignore the old key going forward.
   const [lightThemeName, setLightThemeName] = useState(() => {
+    const saved = getThemeLight();
+    if (saved && Object.prototype.hasOwnProperty.call(NAMED_THEMES, saved)) {
+      return saved;
+    }
     if (typeof localStorage !== "undefined") {
-      const saved = localStorage.getItem("mitto-theme-light");
-      if (saved && Object.prototype.hasOwnProperty.call(NAMED_THEMES, saved)) {
-        return saved;
-      }
       // Migration: seed from old single-slot key if it was a light-bucket theme
       const legacy = localStorage.getItem("mitto-theme-name");
       if (
         legacy &&
-        Object.prototype.hasOwnProperty.call(NAMED_THEMES, legacy)
+        Object.prototype.hasOwnProperty.call(NAMED_THEMES, legacy) &&
+        (NAMED_THEMES[legacy] === "light" || legacy === "mitto")
       ) {
-        if (NAMED_THEMES[legacy] === "light" || legacy === "mitto") {
-          return legacy;
-        }
+        return legacy;
       }
     }
     return "mitto";
   });
 
   const [darkThemeName, setDarkThemeName] = useState(() => {
+    const saved = getThemeDark();
+    if (saved && Object.prototype.hasOwnProperty.call(NAMED_THEMES, saved)) {
+      return saved;
+    }
     if (typeof localStorage !== "undefined") {
-      const saved = localStorage.getItem("mitto-theme-dark");
-      if (saved && Object.prototype.hasOwnProperty.call(NAMED_THEMES, saved)) {
-        return saved;
-      }
       // Migration: seed from old single-slot key if it was a dark-bucket theme
       const legacy = localStorage.getItem("mitto-theme-name");
       if (
         legacy &&
-        Object.prototype.hasOwnProperty.call(NAMED_THEMES, legacy)
+        Object.prototype.hasOwnProperty.call(NAMED_THEMES, legacy) &&
+        NAMED_THEMES[legacy] === "dark"
       ) {
-        if (NAMED_THEMES[legacy] === "dark") {
-          return legacy;
-        }
+        return legacy;
       }
     }
     return "mitto";
@@ -166,12 +183,10 @@ export function useTheme() {
     return () => mediaQuery.removeEventListener("change", handleChange);
   }, [followSystemTheme]);
 
-  // Persist followSystemTheme to localStorage
+  // Persist followSystemTheme to localStorage + server (see FONT_SIZE_KEY
+  // comment in storage.js for why the server-side copy is required).
   useEffect(() => {
-    localStorage.setItem(
-      "mitto-follow-system-theme",
-      String(followSystemTheme),
-    );
+    persistFollowSystemTheme(followSystemTheme);
   }, [followSystemTheme]);
 
   // Apply theme class to document and active data-theme (two-slot model, l6a).
@@ -204,20 +219,20 @@ export function useTheme() {
     root.setAttribute("data-theme", activeTheme);
     // Persist the explicit light/dark choice (not the effective bucket) so it
     // is restored when switching back to the "mitto" passthrough theme.
-    localStorage.setItem("mitto-theme", theme);
+    persistTheme(theme);
     // Update Mermaid.js theme for new diagrams to match the effective bucket.
     if (typeof window.updateMermaidTheme === "function") {
       window.updateMermaidTheme(effective);
     }
   }, [theme, lightThemeName, darkThemeName]);
 
-  // Persist slot theme names to their own localStorage keys.
+  // Persist slot theme names to localStorage + server.
   useEffect(() => {
-    localStorage.setItem("mitto-theme-light", lightThemeName);
+    persistThemeLight(lightThemeName);
   }, [lightThemeName]);
 
   useEffect(() => {
-    localStorage.setItem("mitto-theme-dark", darkThemeName);
+    persistThemeDark(darkThemeName);
   }, [darkThemeName]);
 
   // Listen for per-slot theme changes dispatched by SettingsDialog (l6a).
@@ -284,65 +299,40 @@ export function useTheme() {
       );
   }, [handleSetFollowSystemTheme]);
 
-  // Follow system reduced motion state - persisted to localStorage
+  // Follow-system-reduced-motion state. Default true when unset.
   const [followSystemReducedMotion, setFollowSystemReducedMotion] = useState(
     () => {
-      if (typeof localStorage !== "undefined") {
-        const saved = localStorage.getItem(
-          "mitto-follow-system-reduced-motion",
-        );
-        // Default to true for new users (respect OS preference by default)
-        return saved === null ? true : saved === "true";
-      }
-      return true;
+      const saved = getFollowSystemReducedMotion();
+      return saved === null ? true : saved;
     },
   );
 
-  // Reduce animations state - respects OS preference when followSystemReducedMotion is enabled
+  // Reduce-animations state. When following system, honour OS preference
+  // (falling back to mobile-device auto-enable so battery-sensitive iPads
+  // get reduced animation by default); otherwise adopt the persisted value.
   const [reduceAnimations, setReduceAnimations] = useState(() => {
-    if (typeof localStorage !== "undefined") {
-      const followSystem = localStorage.getItem(
-        "mitto-follow-system-reduced-motion",
-      );
-      // If following system preference (default for new users)
-      if (followSystem === null || followSystem === "true") {
-        if (typeof window !== "undefined" && window.matchMedia) {
-          if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
-            return true;
-          }
-        }
-        // Auto-enable on mobile/tablet (iPad reports as Macintosh with touch support)
-        if (typeof navigator !== "undefined") {
-          const ua = navigator.userAgent || "";
-          if (
-            /iPad|iPhone|iPod|Android/i.test(ua) ||
-            (navigator.maxTouchPoints > 1 && /Macintosh/i.test(ua))
-          ) {
-            return true;
-          }
-        }
-      }
-      // Otherwise use saved explicit preference
-      const saved = localStorage.getItem("mitto-reduce-animations");
-      if (saved !== null) return saved === "true";
-    }
-    // Fallback: check OS preference
-    if (typeof window !== "undefined" && window.matchMedia) {
-      return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    }
-    // Auto-enable on mobile/tablet devices to save battery —
-    // backdrop-filter blur causes sustained GPU compositing work
-    // even when idle, draining battery on iPad and similar devices.
-    if (typeof navigator !== "undefined") {
-      const ua = navigator.userAgent || "";
+    const savedFollow = getFollowSystemReducedMotion();
+    if (savedFollow === null || savedFollow === true) {
       if (
-        /iPad|iPhone|iPod|Android/i.test(ua) ||
-        (navigator.maxTouchPoints > 1 && /Macintosh/i.test(ua))
+        typeof window !== "undefined" &&
+        window.matchMedia &&
+        window.matchMedia("(prefers-reduced-motion: reduce)").matches
       ) {
         return true;
       }
+      if (isMobileLikeDevice()) return true;
     }
-    return false;
+    const saved = getReduceAnimations();
+    if (saved !== null) return saved;
+    // Fallback: no persisted value at all — check OS + mobile heuristics.
+    if (
+      typeof window !== "undefined" &&
+      window.matchMedia &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches
+    ) {
+      return true;
+    }
+    return isMobileLikeDevice();
   });
 
   // Listen for OS reduced motion changes when followSystemReducedMotion is enabled
@@ -364,15 +354,13 @@ export function useTheme() {
     return () => mediaQuery.removeEventListener("change", handleChange);
   }, [followSystemReducedMotion]);
 
-  // Persist followSystemReducedMotion to localStorage
+  // Persist followSystemReducedMotion to localStorage + server.
   useEffect(() => {
-    localStorage.setItem(
-      "mitto-follow-system-reduced-motion",
-      String(followSystemReducedMotion),
-    );
+    persistFollowSystemReducedMotion(followSystemReducedMotion);
   }, [followSystemReducedMotion]);
 
-  // Apply reduce-animations class to document
+  // Apply reduce-animations class to document and persist to localStorage +
+  // server (see FONT_SIZE_KEY comment in storage.js for the rationale).
   useEffect(() => {
     const root = document.documentElement;
     if (reduceAnimations) {
@@ -380,7 +368,7 @@ export function useTheme() {
     } else {
       root.classList.remove("reduce-animations");
     }
-    localStorage.setItem("mitto-reduce-animations", String(reduceAnimations));
+    persistReduceAnimations(reduceAnimations);
   }, [reduceAnimations]);
 
   const handleSetFollowSystemReducedMotion = useCallback((value) => {
@@ -415,16 +403,15 @@ export function useTheme() {
       );
   }, [handleSetFollowSystemReducedMotion]);
 
-  // Font size state - persisted to localStorage
-  const [fontSize, setFontSize] = useState(() => {
-    if (typeof localStorage !== "undefined") {
-      const saved = localStorage.getItem("mitto-font-size");
-      if (saved === "small" || saved === "large") return saved;
-    }
-    return "small"; // Default to small
-  });
+  // Font size state — persisted to both localStorage (fast path) and the
+  // server via /api/ui-preferences. Server-side persistence is required
+  // for the macOS app: it binds a fresh random localhost port on every
+  // launch, and localStorage is per-origin (scheme+host+port), so without
+  // the server copy the previously-chosen size would reset each restart.
+  const [fontSize, setFontSize] = useState(getFontSize);
 
-  // Apply font size class to document
+  // Apply font size class to document and mirror the choice to storage
+  // (localStorage + debounced server sync via persistFontSize).
   useEffect(() => {
     const root = document.documentElement;
     if (fontSize === "large") {
@@ -434,8 +421,71 @@ export function useTheme() {
       root.classList.add("font-small");
       root.classList.remove("font-large");
     }
-    localStorage.setItem("mitto-font-size", fontSize);
+    persistFontSize(fontSize);
   }, [fontSize]);
+
+  // When the server-side UI preferences finish loading, adopt the persisted
+  // values if they differ from what we booted with. localStorage was empty
+  // on this launch because of the port-scoped origin (see comment above),
+  // so React state was seeded from defaults + OS preferences; this effect
+  // brings it in line with what the user actually chose on a prior launch.
+  useEffect(() => {
+    const unsubscribe = onUIPreferencesLoaded(() => {
+      const savedFontSize = getFontSize();
+      setFontSize((prev) => (prev === savedFontSize ? prev : savedFontSize));
+
+      const savedFollowTheme = getFollowSystemTheme();
+      if (savedFollowTheme !== null) {
+        setFollowSystemTheme((prev) =>
+          prev === savedFollowTheme ? prev : savedFollowTheme,
+        );
+      }
+      // Only adopt an explicit theme when we're NOT following the system,
+      // otherwise the OS listener remains the source of truth.
+      const effectiveFollow =
+        savedFollowTheme === null ? followSystemTheme : savedFollowTheme;
+      if (!effectiveFollow) {
+        const savedTheme = getTheme();
+        if (savedTheme) {
+          setTheme((prev) => (prev === savedTheme ? prev : savedTheme));
+        }
+      }
+
+      const savedLight = getThemeLight();
+      if (
+        savedLight &&
+        Object.prototype.hasOwnProperty.call(NAMED_THEMES, savedLight)
+      ) {
+        setLightThemeName((prev) => (prev === savedLight ? prev : savedLight));
+      }
+      const savedDark = getThemeDark();
+      if (
+        savedDark &&
+        Object.prototype.hasOwnProperty.call(NAMED_THEMES, savedDark)
+      ) {
+        setDarkThemeName((prev) => (prev === savedDark ? prev : savedDark));
+      }
+
+      const savedFollowRM = getFollowSystemReducedMotion();
+      if (savedFollowRM !== null) {
+        setFollowSystemReducedMotion((prev) =>
+          prev === savedFollowRM ? prev : savedFollowRM,
+        );
+      }
+      const effectiveFollowRM =
+        savedFollowRM === null ? followSystemReducedMotion : savedFollowRM;
+      if (!effectiveFollowRM) {
+        const savedReduce = getReduceAnimations();
+        if (savedReduce !== null) {
+          setReduceAnimations((prev) =>
+            prev === savedReduce ? prev : savedReduce,
+          );
+        }
+      }
+    });
+    return unsubscribe;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const toggleFontSize = useCallback(() => {
     setFontSize((prev) => (prev === "small" ? "large" : "small"));

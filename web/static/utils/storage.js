@@ -82,6 +82,38 @@ export async function initUIPreferences() {
         if (prefs.prompt_sort_mode) {
           localStorage.setItem(PROMPT_SORT_MODE_KEY, prefs.prompt_sort_mode);
         }
+        if (prefs.font_size) {
+          localStorage.setItem(FONT_SIZE_KEY, prefs.font_size);
+        }
+        // Theme cluster — persisted server-side for the same macOS-app,
+        // per-launch random-port reason FontSize is (see FONT_SIZE_KEY).
+        if (prefs.theme) {
+          localStorage.setItem(THEME_KEY, prefs.theme);
+        }
+        if (prefs.theme_light) {
+          localStorage.setItem(THEME_LIGHT_KEY, prefs.theme_light);
+        }
+        if (prefs.theme_dark) {
+          localStorage.setItem(THEME_DARK_KEY, prefs.theme_dark);
+        }
+        if (typeof prefs.follow_system_theme === "boolean") {
+          localStorage.setItem(
+            FOLLOW_SYSTEM_THEME_KEY,
+            String(prefs.follow_system_theme),
+          );
+        }
+        if (typeof prefs.follow_system_reduced_motion === "boolean") {
+          localStorage.setItem(
+            FOLLOW_SYSTEM_REDUCED_MOTION_KEY,
+            String(prefs.follow_system_reduced_motion),
+          );
+        }
+        if (typeof prefs.reduce_animations === "boolean") {
+          localStorage.setItem(
+            REDUCE_ANIMATIONS_KEY,
+            String(prefs.reduce_animations),
+          );
+        }
 
         console.debug(
           "[Mitto] UI preferences loaded from server:",
@@ -147,6 +179,13 @@ function getCurrentUIPreferences() {
     grouping_mode: getGroupingMode(),
     expanded_groups: getExpandedGroups(),
     prompt_sort_mode: getPromptSortMode(),
+    font_size: getFontSize(),
+    theme: getTheme(),
+    theme_light: getThemeLight(),
+    theme_dark: getThemeDark(),
+    follow_system_theme: getFollowSystemTheme(),
+    follow_system_reduced_motion: getFollowSystemReducedMotion(),
+    reduce_animations: getReduceAnimations(),
   };
 }
 
@@ -637,6 +676,21 @@ const GROUPING_MODE_KEY = "mitto_conversation_grouping_mode";
 const EXPANDED_GROUPS_KEY = "mitto_conversation_expanded_groups";
 // Prompt sorting mode: "alphabetical" (default) or "color"
 const PROMPT_SORT_MODE_KEY = "mitto_prompt_sort_mode";
+// UI font size: "small" (default) or "large" — matches the key useTheme.js
+// already writes to on user toggle. Persisted to the server via
+// /api/ui-preferences so it survives the macOS app's per-launch port
+// changes (localStorage is per-origin and resets when the port changes).
+const FONT_SIZE_KEY = "mitto-font-size";
+// Theme cluster keys — mirror the keys useTheme.js has always written to,
+// so an in-place upgrade of the macOS app keeps the previously-chosen
+// values from the pre-server-sync era. Each of these is also persisted
+// server-side for the same random-port reason as FONT_SIZE_KEY above.
+const THEME_KEY = "mitto-theme";
+const THEME_LIGHT_KEY = "mitto-theme-light";
+const THEME_DARK_KEY = "mitto-theme-dark";
+const FOLLOW_SYSTEM_THEME_KEY = "mitto-follow-system-theme";
+const FOLLOW_SYSTEM_REDUCED_MOTION_KEY = "mitto-follow-system-reduced-motion";
+const REDUCE_ANIMATIONS_KEY = "mitto-reduce-animations";
 
 // Accordion mode: when enabled, only one group can be expanded at a time
 // This is configured via settings (ui.web.single_expanded_group)
@@ -927,6 +981,212 @@ export function setPromptSortMode(mode) {
     );
   } catch (e) {
     console.warn("[Mitto] Failed to set prompt sort mode:", e);
+  }
+}
+
+/**
+ * Get the UI font size from localStorage.
+ * @returns {'small' | 'large'} - The font size (default: 'small')
+ */
+export function getFontSize() {
+  try {
+    const value = localStorage.getItem(FONT_SIZE_KEY);
+    if (value === "small" || value === "large") return value;
+  } catch (e) {
+    console.warn("[Mitto] Failed to get font size:", e);
+  }
+  return "small";
+}
+
+/**
+ * Save the UI font size to localStorage and server. The server-side copy
+ * lets the macOS app restore the previously-chosen size after a restart
+ * (its random localhost port resets localStorage on every launch).
+ * @param {'small' | 'large'} size - The font size to save
+ */
+export function setFontSize(size) {
+  try {
+    if (size === "small" || size === "large") {
+      localStorage.setItem(FONT_SIZE_KEY, size);
+    } else {
+      localStorage.removeItem(FONT_SIZE_KEY);
+    }
+    saveUIPreferencesToServer(getCurrentUIPreferences());
+  } catch (e) {
+    console.warn("[Mitto] Failed to set font size:", e);
+  }
+}
+
+// -----------------------------------------------------------------------------
+// Theme cluster (theme mode, per-slot theme name, follow-system toggles,
+// reduce-animations). Each pair uses the same shape as getFontSize/setFontSize:
+// the getter returns null (or a validated default) when the key is missing,
+// and the setter mirrors to localStorage AND the server via the debounced
+// saveUIPreferencesToServer path. See FONT_SIZE_KEY comment for why the
+// server-side copy is required (macOS app random-port + per-origin
+// localStorage isolation).
+// -----------------------------------------------------------------------------
+
+/**
+ * Get the explicit light/dark theme choice.
+ * @returns {'light' | 'dark' | null} - null when never set (caller falls back
+ *   to OS preference or follow-system default).
+ */
+export function getTheme() {
+  try {
+    const value = localStorage.getItem(THEME_KEY);
+    if (value === "light" || value === "dark") return value;
+  } catch (e) {
+    console.warn("[Mitto] Failed to get theme:", e);
+  }
+  return null;
+}
+
+/** Save the explicit light/dark theme choice. */
+export function setTheme(theme) {
+  try {
+    if (theme === "light" || theme === "dark") {
+      localStorage.setItem(THEME_KEY, theme);
+    } else {
+      localStorage.removeItem(THEME_KEY);
+    }
+    saveUIPreferencesToServer(getCurrentUIPreferences());
+  } catch (e) {
+    console.warn("[Mitto] Failed to set theme:", e);
+  }
+}
+
+/**
+ * Get the daisyUI theme name for the light slot.
+ * @returns {string | null} - null when never set (caller uses "mitto" default).
+ */
+export function getThemeLight() {
+  try {
+    const value = localStorage.getItem(THEME_LIGHT_KEY);
+    if (value) return value;
+  } catch (e) {
+    console.warn("[Mitto] Failed to get theme_light:", e);
+  }
+  return null;
+}
+
+/** Save the daisyUI theme name for the light slot. */
+export function setThemeLight(name) {
+  try {
+    if (name) {
+      localStorage.setItem(THEME_LIGHT_KEY, name);
+    } else {
+      localStorage.removeItem(THEME_LIGHT_KEY);
+    }
+    saveUIPreferencesToServer(getCurrentUIPreferences());
+  } catch (e) {
+    console.warn("[Mitto] Failed to set theme_light:", e);
+  }
+}
+
+/**
+ * Get the daisyUI theme name for the dark slot.
+ * @returns {string | null}
+ */
+export function getThemeDark() {
+  try {
+    const value = localStorage.getItem(THEME_DARK_KEY);
+    if (value) return value;
+  } catch (e) {
+    console.warn("[Mitto] Failed to get theme_dark:", e);
+  }
+  return null;
+}
+
+/** Save the daisyUI theme name for the dark slot. */
+export function setThemeDark(name) {
+  try {
+    if (name) {
+      localStorage.setItem(THEME_DARK_KEY, name);
+    } else {
+      localStorage.removeItem(THEME_DARK_KEY);
+    }
+    saveUIPreferencesToServer(getCurrentUIPreferences());
+  } catch (e) {
+    console.warn("[Mitto] Failed to set theme_dark:", e);
+  }
+}
+
+/**
+ * Get the "follow system theme" toggle.
+ * @returns {boolean | null} - null when never set (caller defaults to true).
+ */
+export function getFollowSystemTheme() {
+  try {
+    const value = localStorage.getItem(FOLLOW_SYSTEM_THEME_KEY);
+    if (value === "true") return true;
+    if (value === "false") return false;
+  } catch (e) {
+    console.warn("[Mitto] Failed to get follow_system_theme:", e);
+  }
+  return null;
+}
+
+/** Save the "follow system theme" toggle. */
+export function setFollowSystemTheme(value) {
+  try {
+    localStorage.setItem(FOLLOW_SYSTEM_THEME_KEY, String(Boolean(value)));
+    saveUIPreferencesToServer(getCurrentUIPreferences());
+  } catch (e) {
+    console.warn("[Mitto] Failed to set follow_system_theme:", e);
+  }
+}
+
+/**
+ * Get the "follow system reduced motion" toggle.
+ * @returns {boolean | null}
+ */
+export function getFollowSystemReducedMotion() {
+  try {
+    const value = localStorage.getItem(FOLLOW_SYSTEM_REDUCED_MOTION_KEY);
+    if (value === "true") return true;
+    if (value === "false") return false;
+  } catch (e) {
+    console.warn("[Mitto] Failed to get follow_system_reduced_motion:", e);
+  }
+  return null;
+}
+
+/** Save the "follow system reduced motion" toggle. */
+export function setFollowSystemReducedMotion(value) {
+  try {
+    localStorage.setItem(
+      FOLLOW_SYSTEM_REDUCED_MOTION_KEY,
+      String(Boolean(value)),
+    );
+    saveUIPreferencesToServer(getCurrentUIPreferences());
+  } catch (e) {
+    console.warn("[Mitto] Failed to set follow_system_reduced_motion:", e);
+  }
+}
+
+/**
+ * Get the explicit "reduce animations" choice.
+ * @returns {boolean | null}
+ */
+export function getReduceAnimations() {
+  try {
+    const value = localStorage.getItem(REDUCE_ANIMATIONS_KEY);
+    if (value === "true") return true;
+    if (value === "false") return false;
+  } catch (e) {
+    console.warn("[Mitto] Failed to get reduce_animations:", e);
+  }
+  return null;
+}
+
+/** Save the explicit "reduce animations" choice. */
+export function setReduceAnimations(value) {
+  try {
+    localStorage.setItem(REDUCE_ANIMATIONS_KEY, String(Boolean(value)));
+    saveUIPreferencesToServer(getCurrentUIPreferences());
+  } catch (e) {
+    console.warn("[Mitto] Failed to set reduce_animations:", e);
   }
 }
 
