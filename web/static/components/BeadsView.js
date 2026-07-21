@@ -188,6 +188,14 @@ export function BeadsDetailPanel({
   loadingIssueId,
   loadError,
   onRetry,
+  // In-viewer navigation history (mitto-qluh.2). Threaded through from
+  // BeadsIssueView so the panel's bottom bar can render visible Back/Forward
+  // buttons wired to the viewer's history stack. Undefined in the main
+  // BeadsView call site (no history stack there).
+  canGoBack,
+  canGoForward,
+  onGoBack,
+  onGoForward,
 }) {
   const h = useBeadsDetailPanel({
     issue,
@@ -211,6 +219,10 @@ export function BeadsDetailPanel({
     loadingIssueId,
     loadError,
     onRetry,
+    canGoBack,
+    canGoForward,
+    onGoBack,
+    onGoForward,
   });
 
   if (!h.shouldRender) return null;
@@ -252,11 +264,40 @@ export function BeadsDetailPanel({
       comments=${h.comments}
       handlers=${h.handlers}
       chrome=${h.chrome}
+      canGoBack=${h.canGoBack}
+      canGoForward=${h.canGoForward}
+      onGoBack=${h.onGoBack}
+      onGoForward=${h.onGoForward}
     />
   `;
 }
 
 // ---- Standalone single-issue viewer -----------------------------------------
+
+/**
+ * Pure decision function for the browser popstate handler (mitto-qluh.3).
+ * Given the new history state, our anchor key, the current in-viewer position
+ * and the length of the in-viewer history stack, returns what the handler
+ * should do:
+ *   - `{ kind: "close" }`     — foreign / null state (popped past our anchor)
+ *   - `{ kind: "noop" }`      — same position (no state change)
+ *   - `{ kind: "setPos", pos, delta }` — set React `pos` to `pos`
+ *
+ * Extracted for direct unit-testing: the surrounding component reads
+ * `window.preact` at module load and cannot be imported under jsdom.
+ */
+export function computePopstateAction(newState, ourKey, currentPos, historyLen) {
+  if (!newState || newState.__mittoBeadsKey !== ourKey) {
+    return { kind: "close" };
+  }
+  const raw = newState.__mittoBeadsPos;
+  const numeric = typeof raw === "number" && Number.isFinite(raw) ? raw : currentPos;
+  const upper = historyLen > 0 ? historyLen - 1 : 0;
+  const clamped = Math.max(0, Math.min(upper, numeric));
+  const delta = clamped - currentPos;
+  if (delta === 0) return { kind: "noop" };
+  return { kind: "setPos", pos: clamped, delta };
+}
 
 /**
  * BeadsIssueView renders a single beads issue as a docked side panel overlaid
@@ -305,12 +346,138 @@ export function BeadsIssueView({
   // in the Tasks list view (which passes its already-loaded list as allIssues).
   const [listIssues, setListIssues] = useState([]);
 
+  // Browser History API integration (mitto-qluh.3). While this component is
+  // mounted, each `handleSelectIssue` push also calls `window.history.pushState`
+  // with a sentinel-tagged state; the mouse back/forward side buttons (and the
+  // browser's Back/Forward controls) fire `popstate`, which is the sole updater
+  // of `pos` under this path. The visible Back/Forward buttons in the bottom
+  // bar go through `window.history.back()`/`.forward()` so both surfaces share
+  // the same code path. Popping past our anchor (state without our key) closes
+  // the overlay via `onReturnToConversation`.
+  const ourKeyRef = useRef(null);
+  const pushedCountRef = useRef(0);
+  const suppressPopstateRef = useRef(0);
+  const posRef = useRef(pos);
+  const historyLenRef = useRef(history.length);
+  const onReturnRef = useRef(onReturnToConversation);
+
+  // Keep refs mirroring the latest values so the stable popstate handler
+  // (empty-deps effect) can read them without re-subscribing on every render.
+  useEffect(() => {
+    posRef.current = pos;
+  }, [pos]);
+  useEffect(() => {
+    historyLenRef.current = history.length;
+  }, [history.length]);
+  useEffect(() => {
+    onReturnRef.current = onReturnToConversation;
+  }, [onReturnToConversation]);
+
+  // Anchor the current browser history entry once on mount, and on unmount
+  // roll back any entries we pushed so the browser stack returns to the state
+  // the surrounding app expected. jsdom / privacy modes may throw on
+  // history.go — treat as best-effort.
+  useEffect(() => {
+    if (typeof window === "undefined") return undefined;
+    ourKeyRef.current =
+      Math.random().toString(36).slice(2) + Date.now().toString(36);
+    try {
+      window.history.replaceState(
+        {
+          ...(window.history.state || {}),
+          __mittoBeadsKey: ourKeyRef.current,
+          __mittoBeadsPos: 0,
+        },
+        "",
+      );
+    } catch (_e) {
+      /* ignore */
+    }
+    pushedCountRef.current = 0;
+    return () => {
+      if (pushedCountRef.current > 0) {
+        suppressPopstateRef.current += pushedCountRef.current;
+        try {
+          window.history.go(-pushedCountRef.current);
+        } catch (_e) {
+          /* ignore */
+        }
+        pushedCountRef.current = 0;
+      }
+    };
+  }, []);
+
+  // popstate listener: the browser's Back/Forward controls (including mouse
+  // side buttons) route through here. The pure decision helper
+  // (computePopstateAction) determines whether to update `pos`, no-op, or
+  // close the overlay when the user pops past our anchor.
+  useEffect(() => {
+    if (typeof window === "undefined") return undefined;
+    const onPop = (event) => {
+      if (suppressPopstateRef.current > 0) {
+        suppressPopstateRef.current -= 1;
+        return;
+      }
+      const action = computePopstateAction(
+        event.state,
+        ourKeyRef.current,
+        posRef.current,
+        historyLenRef.current,
+      );
+      if (action.kind === "close") {
+        // Popped past our anchor: the browser removed one of our entries.
+        pushedCountRef.current = Math.max(0, pushedCountRef.current - 1);
+        const cb = onReturnRef.current;
+        if (typeof cb === "function") cb();
+        return;
+      }
+      if (action.kind === "noop") return;
+      // action.kind === "setPos"
+      setPos(action.pos);
+      pushedCountRef.current = Math.max(
+        0,
+        pushedCountRef.current + action.delta,
+      );
+    };
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
+
   // Reset the in-viewer history when the externally-requested issue changes:
   // re-opening the overlay from a new link starts fresh with a single-entry
   // stack rather than continuing the previous session's back/forward chain.
+  // Also collapses any browser history entries we pushed for the previous
+  // issue chain and re-anchors the current entry.
   useEffect(() => {
     setHistory([issueId]);
     setPos(0);
+    if (typeof window === "undefined") return;
+    if (pushedCountRef.current > 0) {
+      suppressPopstateRef.current += pushedCountRef.current;
+      try {
+        window.history.go(-pushedCountRef.current);
+      } catch (_e) {
+        /* ignore */
+      }
+      pushedCountRef.current = 0;
+    }
+    // Re-tag the (now-current) entry as our new anchor. On the very first
+    // render ourKeyRef.current is still null — the mount effect handles that
+    // case; guard so we don't overwrite state with a null key.
+    if (ourKeyRef.current) {
+      try {
+        window.history.replaceState(
+          {
+            ...(window.history.state || {}),
+            __mittoBeadsKey: ourKeyRef.current,
+            __mittoBeadsPos: 0,
+          },
+          "",
+        );
+      } catch (_e) {
+        /* ignore */
+      }
+    }
   }, [issueId, selectNonce]);
 
   // Fetch the current issue from /api/issues/{id}.
@@ -380,25 +547,51 @@ export function BeadsIssueView({
   // In-viewer navigation: clicking a related id truncates any forward entries
   // (browser-style — pending forward history is discarded when a new branch is
   // taken), pushes the new id, and advances `pos`. A click on the same id as
-  // the current entry is a no-op so it does not add a duplicate step.
+  // the current entry is a no-op so it does not add a duplicate step. Also
+  // pushes a matching entry to the browser history so mouse side-buttons and
+  // browser Back/Forward retrace the same chain (mitto-qluh.3).
   const handleSelectIssue = useCallback(
     (depObj) => {
       const id = depObj?.id;
       if (!id) return;
       if (id === history[pos]) return;
+      const newPos = pos + 1;
       setHistory((h) => [...h.slice(0, pos + 1), id]);
-      setPos((p) => p + 1);
+      setPos(newPos);
+      if (typeof window !== "undefined" && ourKeyRef.current) {
+        try {
+          window.history.pushState(
+            {
+              ...(window.history.state || {}),
+              __mittoBeadsKey: ourKeyRef.current,
+              __mittoBeadsPos: newPos,
+            },
+            "",
+          );
+          // pushState implicitly truncates the browser's forward stack, so
+          // after this call we own exactly `newPos` entries on top of anchor.
+          pushedCountRef.current = newPos;
+        } catch (_e) {
+          /* jsdom / privacy modes may throw — silently ignore */
+        }
+      }
     },
     [history, pos],
   );
 
+  // Both bottom-bar Back/Forward buttons defer to the browser: calling
+  // history.back()/forward() fires popstate, whose handler is the sole updater
+  // of React `pos`. Ref-guards use `posRef`/`historyLenRef` so these callbacks
+  // stay stable-referenced across renders.
   const goBack = useCallback(() => {
-    setPos((p) => (p > 0 ? p - 1 : p));
+    if (posRef.current <= 0) return;
+    if (typeof window !== "undefined") window.history.back();
   }, []);
 
   const goForward = useCallback(() => {
-    setPos((p) => (p < history.length - 1 ? p + 1 : p));
-  }, [history.length]);
+    if (posRef.current >= historyLenRef.current - 1) return;
+    if (typeof window !== "undefined") window.history.forward();
+  }, []);
 
   const handleToggleStatus = useCallback(
     async (iss) => {
@@ -549,6 +742,10 @@ export function BeadsIssueView({
         loadingIssueId=${currentIssueId}
         loadError=${loadError}
         onRetry=${refresh}
+        canGoBack=${canGoBack}
+        canGoForward=${canGoForward}
+        onGoBack=${goBack}
+        onGoForward=${goForward}
       />
       <${ConfirmDialog}
         isOpen=${!!deleteTarget}

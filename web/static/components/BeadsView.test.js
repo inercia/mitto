@@ -744,6 +744,12 @@ function currentId(state) {
   return state.history[state.pos];
 }
 
+// mitto-qluh.2 — the visible Back/Forward buttons in PanelBody's bottom bar
+// are pure JSX derived from the state exercised above (canGoBack/canGoForward
+// and the goBack/goForward callbacks). No reducer-level assertion is added
+// here; button rendering / click wiring will be covered by Playwright in a
+// follow-up bead.
+
 describe("BeadsIssueView history stack — initial state", () => {
   test("seeds a single-entry stack with pos=0", () => {
     const s = makeInitialHistory("mitto-aaa");
@@ -942,6 +948,121 @@ describe("BeadsIssueView history stack — external prop reset", () => {
     s = makeInitialHistory("mitto-aaa");
     expect(s.history).toEqual(["mitto-aaa"]);
     expect(s.pos).toBe(0);
+  });
+});
+
+
+// =============================================================================
+// mitto-qluh.3 — computePopstateAction (browser History API integration)
+// =============================================================================
+//
+// Mirrors the pure decision helper exported from BeadsView.js:
+//   export function computePopstateAction(newState, ourKey, currentPos, historyLen)
+// BeadsView.js cannot be imported under jsdom (it reads `window.preact` at
+// module load, see the "Duplicated helpers" convention in this file), so the
+// helper's logic is duplicated verbatim below and exercised directly. If the
+// implementation in BeadsView.js changes, this copy must be updated.
+function computePopstateAction(newState, ourKey, currentPos, historyLen) {
+  if (!newState || newState.__mittoBeadsKey !== ourKey) {
+    return { kind: "close" };
+  }
+  const raw = newState.__mittoBeadsPos;
+  const numeric =
+    typeof raw === "number" && Number.isFinite(raw) ? raw : currentPos;
+  const upper = historyLen > 0 ? historyLen - 1 : 0;
+  const clamped = Math.max(0, Math.min(upper, numeric));
+  const delta = clamped - currentPos;
+  if (delta === 0) return { kind: "noop" };
+  return { kind: "setPos", pos: clamped, delta };
+}
+
+describe("computePopstateAction — direction & clamping", () => {
+  const KEY = "test-key-abc";
+
+  test("forward navigation returns setPos with the target pos", () => {
+    const state = { __mittoBeadsKey: KEY, __mittoBeadsPos: 2 };
+    const action = computePopstateAction(state, KEY, 0, 3);
+    expect(action.kind).toBe("setPos");
+    expect(action.pos).toBe(2);
+    expect(action.delta).toBe(2);
+  });
+
+  test("back navigation returns setPos with the target pos", () => {
+    const state = { __mittoBeadsKey: KEY, __mittoBeadsPos: 0 };
+    const action = computePopstateAction(state, KEY, 1, 2);
+    expect(action.kind).toBe("setPos");
+    expect(action.pos).toBe(0);
+    expect(action.delta).toBe(-1);
+  });
+
+  test("same pos is a no-op", () => {
+    const state = { __mittoBeadsKey: KEY, __mittoBeadsPos: 1 };
+    const action = computePopstateAction(state, KEY, 1, 3);
+    expect(action.kind).toBe("noop");
+  });
+
+  test("null state closes the overlay (popped past our anchor)", () => {
+    const action = computePopstateAction(null, KEY, 0, 1);
+    expect(action.kind).toBe("close");
+  });
+
+  test("undefined state closes the overlay", () => {
+    const action = computePopstateAction(undefined, KEY, 0, 1);
+    expect(action.kind).toBe("close");
+  });
+
+  test("mismatched key closes the overlay (foreign popstate)", () => {
+    const state = { __mittoBeadsKey: "other-key", __mittoBeadsPos: 1 };
+    const action = computePopstateAction(state, KEY, 0, 2);
+    expect(action.kind).toBe("close");
+  });
+
+  test("missing key on state closes the overlay", () => {
+    const state = { __mittoBeadsPos: 1 };
+    const action = computePopstateAction(state, KEY, 0, 2);
+    expect(action.kind).toBe("close");
+  });
+
+  test("pos > historyLen-1 is clamped to historyLen-1", () => {
+    const state = { __mittoBeadsKey: KEY, __mittoBeadsPos: 99 };
+    const action = computePopstateAction(state, KEY, 0, 3);
+    expect(action.kind).toBe("setPos");
+    expect(action.pos).toBe(2);
+    expect(action.delta).toBe(2);
+  });
+
+  test("negative pos is clamped to 0", () => {
+    const state = { __mittoBeadsKey: KEY, __mittoBeadsPos: -5 };
+    const action = computePopstateAction(state, KEY, 2, 3);
+    expect(action.kind).toBe("setPos");
+    expect(action.pos).toBe(0);
+    expect(action.delta).toBe(-2);
+  });
+
+  test("non-numeric pos falls back to currentPos (yields noop)", () => {
+    const state = { __mittoBeadsKey: KEY, __mittoBeadsPos: "banana" };
+    const action = computePopstateAction(state, KEY, 1, 3);
+    expect(action.kind).toBe("noop");
+  });
+
+  test("empty history (historyLen=0) clamps upper bound to 0", () => {
+    const state = { __mittoBeadsKey: KEY, __mittoBeadsPos: 4 };
+    const action = computePopstateAction(state, KEY, 0, 0);
+    expect(action.kind).toBe("noop");
+  });
+
+  test("preserves extra state fields (spread-first invariant is caller-side)", () => {
+    // The helper does not read/emit unrelated fields; it only branches on
+    // __mittoBeadsKey and __mittoBeadsPos. Confirm foreign fields do not
+    // affect the decision.
+    const state = {
+      unrelated: "value",
+      __mittoBeadsKey: KEY,
+      __mittoBeadsPos: 1,
+    };
+    const action = computePopstateAction(state, KEY, 0, 2);
+    expect(action.kind).toBe("setPos");
+    expect(action.pos).toBe(1);
   });
 });
 

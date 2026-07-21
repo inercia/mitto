@@ -1128,6 +1128,28 @@ export function ChevronRightIcon({ className = "w-4 h-4" }) {
   `;
 }
 
+/**
+ * Chevron left icon (mirror of ChevronRightIcon)
+ * @param {string} className - CSS classes (default: 'w-4 h-4')
+ */
+export function ChevronLeftIcon({ className = "w-4 h-4" }) {
+  return html`
+    <svg
+      class="${className}"
+      fill="none"
+      stroke="currentColor"
+      viewBox="0 0 24 24"
+    >
+      <path
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        stroke-width="2"
+        d="M15 19l-7-7 7-7"
+      />
+    </svg>
+  `;
+}
+
 // Lock icon (closed padlock) - for locked loop prompt state
 export function LockIcon({ className = "w-5 h-5" }) {
   return html`

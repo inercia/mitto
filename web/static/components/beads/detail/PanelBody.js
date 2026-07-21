@@ -82,6 +82,13 @@ export function BeadsDetailPanelBody({
   comments,
   handlers,
   chrome,
+  // In-viewer navigation history (mitto-qluh.2). Only wired when the panel
+  // is rendered inside BeadsIssueView; the main BeadsView call site leaves
+  // onGoBack/onGoForward undefined so the bottom nav bar is skipped.
+  canGoBack,
+  canGoForward,
+  onGoBack,
+  onGoForward,
 }) {
   // Loading skeleton path (mitto-zbfq): render the same Drawer shell as the
   // loaded body so opening a beads issue from a conversation link shows a
@@ -647,6 +654,10 @@ export function BeadsDetailPanelBody({
         description=${description}
         viewDirty=${viewDirty}
         savingView=${savingView}
+        canGoBack=${canGoBack}
+        canGoForward=${canGoForward}
+        onGoBack=${onGoBack}
+        onGoForward=${onGoForward}
       />
       <//>
       ${

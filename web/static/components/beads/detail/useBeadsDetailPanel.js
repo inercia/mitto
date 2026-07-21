@@ -53,6 +53,14 @@ export function useBeadsDetailPanel({
   loadingIssueId,
   loadError,
   onRetry,
+  // In-viewer navigation history (mitto-qluh.2). Threaded through from
+  // BeadsIssueView so PanelBody can render Back/Forward buttons wired to
+  // the viewer's history stack. Undefined when the panel is used outside
+  // the single-issue viewer.
+  canGoBack,
+  canGoForward,
+  onGoBack,
+  onGoForward,
 }) {
   const isOpen = isCreating || !!issue || !!isLoading;
   const lastIssueRef = useRef(issue);
@@ -323,6 +331,12 @@ export function useBeadsDetailPanel({
     subtasks,
     onSelectIssue,
     showToast,
+    // In-viewer navigation history (mitto-qluh.2) — passed through verbatim
+    // to PanelBody so the bottom bar can wire Back/Forward buttons.
+    canGoBack,
+    canGoForward,
+    onGoBack,
+    onGoForward,
     // Bundles (7)
     create,
     view: {
