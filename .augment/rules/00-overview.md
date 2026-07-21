@@ -42,6 +42,7 @@ internal/processors/  → Command processors (pre/post processing via external c
 internal/runner/      → Restricted runner, sandbox execution (go-restricted-runner)
 internal/secrets/     → Secure credential storage (Keychain on macOS)
 internal/session/     → Session persistence (Store/Recorder/Player/Lock/Queue/Flags)
+internal/stats/       → Dashboard time-series stats skeleton (interfaces + NoopStore, filled in by stats.2–stats.10); no internal/web / internal/conversation imports
 internal/conversation/→ Runtime conversation domain: BackgroundSession, SessionManager, QueueTitleWorker, streaming buffers, domain interfaces (never imports internal/web)
 internal/web/         → HTTP/WebSocket delivery + infrastructure layer; wires and serves the conversation domain (depends on internal/conversation)
 web/static/           → Frontend (Preact/HTM)
