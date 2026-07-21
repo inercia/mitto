@@ -19,6 +19,12 @@ loop:
   delay: 30
   maxIterations: 30
   maxDuration: "8h"
+  # Phase state (planned / implemented / tested / verified) is authoritative on
+  # the bead itself (labels + Plan:/Implementation:/Verification: comments);
+  # every re-fire already re-reads it in the phase-detection preamble. Start
+  # clean so 30 iterations don't accumulate stale reasoning, tool-call
+  # transcripts, and file reads across turns.
+  freshContext: true
 prompt: |
   ## Session Context
 

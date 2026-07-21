@@ -19,6 +19,12 @@ loop:
   delay: 30
   maxIterations: 20
   maxDuration: "4h"
+  # Phase state (researched / reproduced / fixed) is authoritative on the bead
+  # itself (labels + Investigation:/Reproduction:/Fix: comments); every re-fire
+  # already re-reads it in the phase-detection preamble. Start clean so 20
+  # iterations don't accumulate stale reasoning, tool-call transcripts, and
+  # file reads across turns.
+  freshContext: true
 prompt: |
   ## Session Context
 

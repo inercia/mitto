@@ -90,6 +90,13 @@ type PromptLoop struct {
 	// .Trigger.OnTasks.*, gated by Layer 0 and the CEL condition (mitto-dmb).
 	// Only meaningful for trigger: onTasks.
 	CoalesceDuringBusy *bool `yaml:"coalesceDuringBusy,omitempty" json:"coalesceDuringBusy,omitempty"`
+	// FreshContext, when true, starts each scheduled/re-fired run with a clean
+	// agent context: no history injection on resumed sessions, and a fresh ACP
+	// session is created per run (see createFreshContextSession). Nil/absent =
+	// default false (persistent context). Meaningful for any trigger; primarily
+	// used by stateless supervisor loops that re-hydrate from external state on
+	// every fire.
+	FreshContext *bool `yaml:"freshContext,omitempty" json:"freshContext,omitempty"`
 	// Mode selects whether loop is mandatory or user-toggleable: "always"
 	// (default when empty/absent) or "optional". Validated by ValidatePromptLoop.
 	Mode string `yaml:"mode,omitempty" json:"mode,omitempty"`

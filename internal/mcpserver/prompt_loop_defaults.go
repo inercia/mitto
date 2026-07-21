@@ -74,6 +74,12 @@ func applyPromptLoopDefaultsToStartInput(input *ConversationStartInput, pl *conf
 		v := *pl.CoalesceDuringBusy
 		input.LoopCoalesceDuringBusy = &v
 	}
+
+	// Fresh-context per run. Same pointer-presence semantics as CoalesceDuringBusy.
+	if input.LoopFreshContext == nil && pl.FreshContext != nil {
+		v := *pl.FreshContext
+		input.LoopFreshContext = &v
+	}
 }
 
 // applyPromptLoopDefaultsToUpdateInput is the update-tool equivalent. Because
@@ -132,5 +138,11 @@ func applyPromptLoopDefaultsToUpdateInput(input *ConversationUpdateInput, pl *co
 	if input.LoopCoalesceDuringBusy == nil && pl.CoalesceDuringBusy != nil {
 		v := *pl.CoalesceDuringBusy
 		input.LoopCoalesceDuringBusy = &v
+	}
+
+	// Fresh-context per run. Same rules as the start-input helper.
+	if input.LoopFreshContext == nil && pl.FreshContext != nil {
+		v := *pl.FreshContext
+		input.LoopFreshContext = &v
 	}
 }

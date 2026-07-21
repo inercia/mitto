@@ -26,6 +26,11 @@ loop:
   delay: 30
   maxIterations: 8
   maxDuration: "1h"
+  # Per-mention phase state is authoritative on the bead (labels + phase
+  # comments); the router re-reads it every turn. Start clean so the 8-turn
+  # walk doesn't carry over transcripts from the classify/investigate/plan
+  # phases into implement or the final router turn.
+  freshContext: true
 prompt: |
   ## Session Context
 

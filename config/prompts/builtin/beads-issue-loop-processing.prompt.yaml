@@ -29,6 +29,14 @@ loop:
   # external change. Layer 0 (cooldown), the condition, and the busy-guard
   # still bound the re-fire rate.
   coalesceDuringBusy: false
+  # Each pass is a stateless dispatcher: Steps 2P/2Z/2A/2B/2C re-enumerate
+  # beads live from `bd list` / `bd comments` and the seed re-renders
+  # `.Children.MCPText` and `.Trigger.OnTasks.*` from scratch. Cross-pass ACP
+  # memory only accumulates stale bead JSON, biases the model toward repeating
+  # prior "at cap / skip" reasoning (feeding the tasksNoProgressLimit=3 false
+  # positive), and inflates token cost. Start each fire with a clean agent
+  # context; the per-pass session/new cost is negligible against 1 MCP server.
+  freshContext: true
 prompt: |
   ## Session Context
 

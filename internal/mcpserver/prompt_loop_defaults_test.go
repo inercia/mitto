@@ -103,3 +103,100 @@ func TestApplyPromptLoopDefaultsToUpdateInput_CoalesceDuringBusy(t *testing.T) {
 		}
 	})
 }
+
+// TestApplyPromptLoopDefaultsToStartInput_FreshContext mirrors the
+// CoalesceDuringBusy tests for the freshContext frontmatter field: when the
+// seeded prompt sets it and the caller did not, the value flows through to
+// ConversationStartInput; explicit caller wins; and the global opt-out skips
+// the merge entirely.
+func TestApplyPromptLoopDefaultsToStartInput_FreshContext(t *testing.T) {
+	t.Run("frontmatter fills unset caller", func(t *testing.T) {
+		input := &ConversationStartInput{}
+		pl := &config.PromptLoop{
+			Trigger:      "onTasks",
+			FreshContext: boolPtr(true),
+		}
+		applyPromptLoopDefaultsToStartInput(input, pl, "seed-prompt")
+		if input.LoopFreshContext == nil {
+			t.Fatal("LoopFreshContext should have been filled from frontmatter")
+		}
+		if *input.LoopFreshContext != true {
+			t.Errorf("LoopFreshContext = %v, want true", *input.LoopFreshContext)
+		}
+	})
+
+	t.Run("explicit caller wins over frontmatter", func(t *testing.T) {
+		callerVal := false
+		input := &ConversationStartInput{LoopFreshContext: &callerVal}
+		pl := &config.PromptLoop{
+			Trigger:      "onTasks",
+			FreshContext: boolPtr(true),
+		}
+		applyPromptLoopDefaultsToStartInput(input, pl, "seed-prompt")
+		if input.LoopFreshContext == nil || *input.LoopFreshContext != false {
+			t.Errorf("caller's explicit false should have been preserved, got %v", input.LoopFreshContext)
+		}
+	})
+
+	t.Run("nil frontmatter leaves caller nil", func(t *testing.T) {
+		input := &ConversationStartInput{}
+		pl := &config.PromptLoop{Trigger: "onTasks"} // FreshContext unset
+		applyPromptLoopDefaultsToStartInput(input, pl, "seed-prompt")
+		if input.LoopFreshContext != nil {
+			t.Errorf("LoopFreshContext should remain nil when frontmatter is silent, got %v", *input.LoopFreshContext)
+		}
+	})
+
+	t.Run("opt-out disables the whole merge", func(t *testing.T) {
+		input := &ConversationStartInput{LoopApplyPromptDefaults: boolPtr(false)}
+		pl := &config.PromptLoop{
+			Trigger:      "onTasks",
+			FreshContext: boolPtr(true),
+		}
+		applyPromptLoopDefaultsToStartInput(input, pl, "seed-prompt")
+		if input.LoopFreshContext != nil {
+			t.Errorf("opt-out should have skipped the merge, got %v", *input.LoopFreshContext)
+		}
+	})
+}
+
+// TestApplyPromptLoopDefaultsToUpdateInput_FreshContext is the update-tool
+// equivalent; the semantics mirror the start-input helper.
+func TestApplyPromptLoopDefaultsToUpdateInput_FreshContext(t *testing.T) {
+	t.Run("frontmatter fills unset caller", func(t *testing.T) {
+		input := &ConversationUpdateInput{}
+		pl := &config.PromptLoop{
+			Trigger:      "onTasks",
+			FreshContext: boolPtr(true),
+		}
+		applyPromptLoopDefaultsToUpdateInput(input, pl)
+		if input.LoopFreshContext == nil || *input.LoopFreshContext != true {
+			t.Errorf("LoopFreshContext should have been filled with true, got %v", input.LoopFreshContext)
+		}
+	})
+
+	t.Run("explicit caller wins over frontmatter", func(t *testing.T) {
+		callerVal := false
+		input := &ConversationUpdateInput{LoopFreshContext: &callerVal}
+		pl := &config.PromptLoop{
+			Trigger:      "onTasks",
+			FreshContext: boolPtr(true),
+		}
+		applyPromptLoopDefaultsToUpdateInput(input, pl)
+		if input.LoopFreshContext == nil || *input.LoopFreshContext != false {
+			t.Errorf("caller's explicit false should have been preserved, got %v", input.LoopFreshContext)
+		}
+	})
+
+	t.Run("opt-out disables the whole merge", func(t *testing.T) {
+		input := &ConversationUpdateInput{LoopApplyPromptDefaults: boolPtr(false)}
+		pl := &config.PromptLoop{
+			Trigger:      "onTasks",
+			FreshContext: boolPtr(true),
+		}
+		applyPromptLoopDefaultsToUpdateInput(input, pl)
+		if input.LoopFreshContext != nil {
+			t.Errorf("opt-out should have skipped the merge, got %v", *input.LoopFreshContext)
+		}
+	})
+}
