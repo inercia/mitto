@@ -134,9 +134,10 @@ async function openDashboard(page, timeouts) {
   const btn = page.locator(DASHBOARD_BUTTON);
   await expect(btn).toBeVisible({ timeout: timeouts.appReady });
   await btn.click();
-  // Wait for stats header to prove the Dashboard component mounted.
+  // Wait for the Dashboard heading to prove the component mounted. The stats
+  // row uses plain divs (not .stat-title) — see Dashboard.js L250,L263.
   await expect(
-    page.locator(".stat-title", { hasText: "Issues in progress" }),
+    page.locator("span.font-semibold", { hasText: "Dashboard" }).first(),
   ).toBeVisible({ timeout: timeouts.shortAction });
 }
 
