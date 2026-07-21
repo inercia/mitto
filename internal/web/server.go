@@ -1518,10 +1518,10 @@ func (s *Server) Shutdown() error {
 		s.store.Close()
 	}
 
-	// Close stats subsystem in aggregator→backfiller→store order so the
-	// aggregator flushes any pending deltas before the store is closed, and
-	// the backfiller has already stopped its periodic loop before the store
-	// disappears out from under a Run pass.
+	// Close stats subsystem in backfiller→aggregator→store order so the
+	// backfiller has stopped its periodic loop (no more agg.Ingest) before
+	// the aggregator flushes any pending deltas, and the store stays alive
+	// until after that final flush so no deltas are lost.
 	if s.statsBackfiller != nil {
 		_ = s.statsBackfiller.Close()
 	}
