@@ -104,6 +104,15 @@ type Server struct {
 	// Collectors persist for the lifetime of the parent session (cleaned up in UnregisterSession).
 	childReportCollectorsMu sync.Mutex
 	childReportCollectors   map[string]*childReportCollector
+
+	// reuseIssueLocksMu guards reuseIssueLocks (lazily-created keyed mutexes).
+	reuseIssueLocksMu sync.Mutex
+	// reuseIssueLocks holds one mutex per "workingDir\x00beadsIssue" key. It
+	// serializes the reuseIssue find-or-route scan+create/seed sequence in
+	// handleConversationStart so two concurrent MCP calls for the same key
+	// cannot both miss the scan and create duplicate conversations. Mirrors
+	// the HTTP handler's reuseIssueLocks (mitto-bx40). See lockReuseIssue.
+	reuseIssueLocks map[string]*sync.Mutex
 }
 
 // registeredSession holds information about a registered session.
@@ -325,6 +334,27 @@ func NewServer(cfg Config, deps Dependencies) (*Server, error) {
 
 	s.mcpServer = mcpSrv
 	return s, nil
+}
+
+// lockReuseIssue locks (lazily creating if needed) the mutex for key and
+// returns a function that unlocks it. Callers should `defer unlock()`.
+// Key format is "workingDir\x00beadsIssue" — see handleConversationStart.
+// Mirrors (*Handlers).lockReuseIssue in internal/web/handlers so MCP and
+// HTTP paths serialize reuseIssue find-or-route with the same discipline.
+func (s *Server) lockReuseIssue(key string) func() {
+	s.reuseIssueLocksMu.Lock()
+	if s.reuseIssueLocks == nil {
+		s.reuseIssueLocks = make(map[string]*sync.Mutex)
+	}
+	mu, ok := s.reuseIssueLocks[key]
+	if !ok {
+		mu = &sync.Mutex{}
+		s.reuseIssueLocks[key] = mu
+	}
+	s.reuseIssueLocksMu.Unlock()
+
+	mu.Lock()
+	return mu.Unlock
 }
 
 // Start starts the MCP server.

@@ -172,11 +172,13 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 	// mitto_prompt_get) and used as the initial prompt. Optional 'arguments' are
 	// applied to Go-template .Args placeholders when the prompt is sent.
 	initialPromptText := input.InitialPrompt
-	// originPromptName / promptIsSingleton drive singleton find-or-route below
-	// (mitto-4mb.8). They are only set when the conversation originates from a
-	// named prompt, matching the web path's OriginPromptName tracking.
+	// originPromptName / promptIsSingleton / promptReuseIssue drive the
+	// find-or-route blocks below (mitto-4mb.8, mitto-bx40). They are only set
+	// when the conversation originates from a named prompt, matching the web
+	// path's OriginPromptName tracking.
 	originPromptName := ""
 	promptIsSingleton := false
+	promptReuseIssue := false
 	if input.PromptName != "" {
 		// mitto-kt6: prompt_name wins when both are supplied. Agents forced by
 		// strict JSON schemas often fill 'initial_prompt' with a placeholder to
@@ -201,6 +203,9 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 		initialPromptText = p.Prompt
 		originPromptName = input.PromptName
 		promptIsSingleton = p.Singleton
+		if p.Target != nil {
+			promptReuseIssue = p.Target.ReuseIssue
+		}
 
 		// Auto-apply the seeded prompt's loop: frontmatter block (mitto-r7y):
 		// when the resolved prompt carries a loop: block, its fields fill any
@@ -363,11 +368,52 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 		}
 	}
 
+	// reuseIssue find-or-route (mitto-bx40): mirror the web path
+	// (internal/web/handlers/session_create.go). When the call carries
+	// beads_issue AND the originating prompt declares target.reuseIssue, the
+	// per-issue reuse decision is authoritative: funnel into an existing
+	// non-archived conversation with the same beads_issue in the same
+	// working_dir instead of creating a duplicate. If it misses, the singleton
+	// fallback is SKIPPED for this call — otherwise two distinct beads issues
+	// driven by the same singleton prompt would collapse into one conversation.
+	// The per-(workingDir, beadsIssue) lock is held until this handler returns
+	// so the scan + create/persist is atomic relative to concurrent creates for
+	// the same issue.
+	reuseIssueEvaluated := false
+	if promptReuseIssue && originPromptName != "" && input.BeadsIssue != "" {
+		reuseIssueEvaluated = true
+		key := targetWorkingDir + "\x00" + input.BeadsIssue
+		unlock := s.lockReuseIssue(key)
+		defer unlock()
+
+		if metas, listErr := store.List(); listErr == nil {
+			if existingID, ok := session.FindConversationByBeadsIssue(metas, targetWorkingDir, input.BeadsIssue); ok {
+				out, rerr := s.reuseSingletonConversation(store, existingID, initialPromptText, realSessionID, input.Arguments)
+				if rerr != nil {
+					return nil, ConversationStartOutput{}, rerr
+				}
+				s.logger.Info("Routed mitto_conversation_new to existing conversation by beads_issue",
+					"existing_session_id", existingID,
+					"origin_prompt_name", originPromptName,
+					"beads_issue", input.BeadsIssue,
+					"working_dir", targetWorkingDir)
+				return nil, out, nil
+			}
+		}
+		// No candidate — fall through to normal creation. Lock stays held via
+		// defer so the BeadsIssue+OriginPromptName persistence below completes
+		// before another concurrent waiter's scan runs and misses this new one.
+	}
+
 	// Singleton find-or-route (mitto-4mb.8): mirror the web path
 	// (internal/web/handlers/session_create.go) — when the originating prompt is
 	// declared singleton, route to an existing non-archived conversation in the
 	// same working dir instead of creating a duplicate.
-	if promptIsSingleton && originPromptName != "" {
+	//
+	// Skipped when reuseIssue already evaluated (and missed) for this call:
+	// singleton would incorrectly collapse two distinct beads issues into one
+	// conversation.
+	if !reuseIssueEvaluated && promptIsSingleton && originPromptName != "" {
 		if metas, listErr := store.List(); listErr == nil {
 			if existingID, ok := session.FindSingletonCandidate(metas, targetWorkingDir, originPromptName); ok {
 				out, rerr := s.reuseSingletonConversation(store, existingID, initialPromptText, realSessionID, input.Arguments)
