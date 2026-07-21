@@ -12,7 +12,7 @@
 // pure with respect to non-beads shell state — it takes selectedFolder,
 // activeTab, getSelectedFolderDir, and setError as arguments.
 
-const { useState, useEffect } = window.preact;
+const { useState, useEffect, useRef } = window.preact;
 
 import { authFetch, secureFetch, endpoints } from "../utils/index.js";
 
@@ -76,8 +76,19 @@ export function useBeadsFolderConfig({
   const [beadsUpstreamPromptsLoading, setBeadsUpstreamPromptsLoading] =
     useState(false);
 
+  // Nonce/token tracking for in-flight fetches. Each async loader captures the
+  // current token; when it resolves, it only touches state if the token still
+  // matches. Bumping the token (on folder change / dialog close / new fetch)
+  // invalidates every prior in-flight response — preventing the finally block
+  // of an orphaned/never-resolving fetch from re-latching loading=true after
+  // the reset effect cleared it (mitto-xdqx).
+  const configLoadTokenRef = useRef(0);
+  const upstreamLoadTokenRef = useRef(0);
+  const upstreamPromptsLoadTokenRef = useRef(0);
+
   // Load (reload) beads config for the selected folder via GET /api/issues/config.
   const reloadBeadsConfig = async (workingDir) => {
+    const token = ++configLoadTokenRef.current;
     setBeadsConfigLoading(true);
     setBeadsConfigError("");
     try {
@@ -85,6 +96,7 @@ export function useBeadsFolderConfig({
         endpoints.issues.config({ working_dir: workingDir }),
       );
       const data = await res.json();
+      if (token !== configLoadTokenRef.current) return;
       const errMsg = beadsErrorMessage(data);
       if (errMsg) {
         // bd missing or not initialized in this folder, or a validation error.
@@ -94,10 +106,13 @@ export function useBeadsFolderConfig({
         setBeadsConfig(data || {});
       }
     } catch (err) {
+      if (token !== configLoadTokenRef.current) return;
       setBeadsConfig(null);
       setBeadsConfigError(err.message || "Failed to load beads config");
     } finally {
-      setBeadsConfigLoading(false);
+      if (token === configLoadTokenRef.current) {
+        setBeadsConfigLoading(false);
+      }
     }
   };
 
@@ -155,11 +170,13 @@ export function useBeadsFolderConfig({
 
   // Load the folder's upstream task system via GET /api/issues/upstream.
   const reloadBeadsUpstream = async (workingDir) => {
+    const token = ++upstreamLoadTokenRef.current;
     try {
       const res = await authFetch(
         endpoints.issues.upstream({ working_dir: workingDir }),
       );
       const data = await res.json().catch(() => ({}));
+      if (token !== upstreamLoadTokenRef.current) return;
       setBeadsUpstream((data && data.upstream) || "none");
       setBeadsPullPrompt((data && data.pull_prompt) || "");
       setBeadsPushPrompt((data && data.push_prompt) || "");
@@ -168,6 +185,7 @@ export function useBeadsFolderConfig({
       setBeadsPushPromptArgs((data && data.push_prompt_args) || {});
       setBeadsSyncPromptArgs((data && data.sync_prompt_args) || {});
     } catch (_err) {
+      if (token !== upstreamLoadTokenRef.current) return;
       setBeadsUpstream("none");
     }
   };
@@ -177,6 +195,7 @@ export function useBeadsFolderConfig({
   // the sliders button next to each row.
   const loadBeadsUpstreamPrompts = async (workingDir) => {
     if (!workingDir) return;
+    const token = ++upstreamPromptsLoadTokenRef.current;
     setBeadsUpstreamPromptsLoading(true);
     try {
       const res = await authFetch(
@@ -186,12 +205,16 @@ export function useBeadsFolderConfig({
         }),
       );
       const data = await res.json().catch(() => ({}));
+      if (token !== upstreamPromptsLoadTokenRef.current) return;
       const all = (data && data.prompts) || [];
       setBeadsUpstreamPrompts(all.filter((p) => p.enabled !== false));
     } catch (_err) {
+      if (token !== upstreamPromptsLoadTokenRef.current) return;
       setBeadsUpstreamPrompts([]);
     } finally {
-      setBeadsUpstreamPromptsLoading(false);
+      if (token === upstreamPromptsLoadTokenRef.current) {
+        setBeadsUpstreamPromptsLoading(false);
+      }
     }
   };
 
@@ -366,8 +389,12 @@ export function useBeadsFolderConfig({
   // Reset beads config state when switching folders. Also clears the four
   // loading/saving flags so an in-flight fetch from the previous folder whose
   // finally() has not yet run cannot leave the Tasks tab latched on
-  // "Loading…" (mitto-xdqx).
+  // "Loading…" (mitto-xdqx). Bumping the load tokens invalidates any orphaned
+  // in-flight response so its late finally() cannot re-latch loading=true.
   useEffect(() => {
+    configLoadTokenRef.current++;
+    upstreamLoadTokenRef.current++;
+    upstreamPromptsLoadTokenRef.current++;
     setBeadsConfig(null);
     setBeadsConfigError("");
     setNewBeadsKey("");
@@ -385,6 +412,21 @@ export function useBeadsFolderConfig({
     setBeadsUpstreamPromptsLoading(false);
     setBeadsUpstreamSaving(false);
   }, [selectedFolder]);
+
+  // Extra safety net: when the dialog closes, force-clear the loading flags
+  // and bump the load tokens so any orphaned in-flight fetch (e.g. the user
+  // closed the dialog mid-request) cannot leave the spinner latched on the
+  // next reopen (mitto-xdqx).
+  useEffect(() => {
+    if (isOpen) return;
+    configLoadTokenRef.current++;
+    upstreamLoadTokenRef.current++;
+    upstreamPromptsLoadTokenRef.current++;
+    setBeadsConfigLoading(false);
+    setBeadsConfigSaving(false);
+    setBeadsUpstreamPromptsLoading(false);
+    setBeadsUpstreamSaving(false);
+  }, [isOpen]);
 
   const beads = {
     beadsConfig,

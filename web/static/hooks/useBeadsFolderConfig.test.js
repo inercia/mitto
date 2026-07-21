@@ -66,6 +66,7 @@ const IDX = {
 // and `useEffect` functions push into mutable buckets we reset per test.
 let currentSetters = [];
 let currentEffects = [];
+let currentRefs = [];
 window.preact = {
   useState: (initial) => {
     const setter = jest.fn();
@@ -75,16 +76,23 @@ window.preact = {
   useEffect: (cb, deps) => {
     currentEffects.push({ cb, deps });
   },
+  useRef: (initial) => {
+    const ref = { current: initial };
+    currentRefs.push(ref);
+    return ref;
+  },
 };
 
 async function loadHook() {
   currentSetters = [];
   currentEffects = [];
+  currentRefs = [];
   const mod = await import("./useBeadsFolderConfig.js");
   return {
     useBeadsFolderConfig: mod.useBeadsFolderConfig,
     setters: currentSetters,
     effects: currentEffects,
+    refs: currentRefs,
   };
 }
 
@@ -143,5 +151,83 @@ describe("mitto-xdqx — Workspaces dialog Tasks tab stuck on 'Loading…'", () 
     // not re-issue the fetch. This assertion fails until isOpen is threaded
     // through the hook and added to the deps array.
     expect(loadEffect.deps).toContain(isOpenSentinel);
+  });
+
+  test("Bug 3: dialog-close effect force-clears loading flags on isOpen=false", async () => {
+    // When the user closes the dialog mid-fetch, the load token bumps and the
+    // spinner flags reset, so reopening the dialog never shows a stale
+    // "Loading…" (mitto-xdqx follow-up).
+    const { useBeadsFolderConfig, setters, effects } = await loadHook();
+    useBeadsFolderConfig({
+      selectedFolder: "agentgateway",
+      activeTab: "beads",
+      isOpen: false,
+      getSelectedFolderDir: () => null,
+    });
+
+    // The dialog-close effect is the one with deps === [false] (single-entry
+    // dep array whose only value is the isOpen boolean).
+    const closeEffect = effects.find(
+      (e) =>
+        Array.isArray(e.deps) && e.deps.length === 1 && e.deps[0] === false,
+    );
+    expect(closeEffect).toBeDefined();
+
+    closeEffect.cb();
+
+    expect(setters[IDX.setBeadsConfigLoading]).toHaveBeenCalledWith(false);
+    expect(setters[IDX.setBeadsConfigSaving]).toHaveBeenCalledWith(false);
+    expect(setters[IDX.setBeadsUpstreamPromptsLoading]).toHaveBeenCalledWith(
+      false,
+    );
+    expect(setters[IDX.setBeadsUpstreamSaving]).toHaveBeenCalledWith(false);
+  });
+
+  test("Bug 3: dialog-close effect is a no-op while dialog is open", async () => {
+    const { useBeadsFolderConfig, setters, effects } = await loadHook();
+    useBeadsFolderConfig({
+      selectedFolder: "agentgateway",
+      activeTab: "beads",
+      isOpen: true,
+      getSelectedFolderDir: () => null,
+    });
+
+    const closeEffect = effects.find(
+      (e) => Array.isArray(e.deps) && e.deps.length === 1 && e.deps[0] === true,
+    );
+    expect(closeEffect).toBeDefined();
+
+    // Reset the call counts recorded during hook initialization so we can
+    // isolate what the close-effect body itself does (nothing, since isOpen=true).
+    setters.forEach((s) => s.mockClear());
+    closeEffect.cb();
+    expect(setters[IDX.setBeadsConfigLoading]).not.toHaveBeenCalled();
+    expect(setters[IDX.setBeadsConfigSaving]).not.toHaveBeenCalled();
+    expect(setters[IDX.setBeadsUpstreamPromptsLoading]).not.toHaveBeenCalled();
+    expect(setters[IDX.setBeadsUpstreamSaving]).not.toHaveBeenCalled();
+  });
+
+  test("Bug 3: folder-reset effect bumps load tokens to invalidate orphaned fetches", async () => {
+    const { useBeadsFolderConfig, effects, refs } = await loadHook();
+    useBeadsFolderConfig({
+      selectedFolder: "agentgateway",
+      activeTab: "beads",
+      isOpen: true,
+      getSelectedFolderDir: () => null,
+    });
+
+    // Three refs are declared in the hook (in order): configLoadTokenRef,
+    // upstreamLoadTokenRef, upstreamPromptsLoadTokenRef. All start at 0.
+    expect(refs.length).toBeGreaterThanOrEqual(3);
+    const before = refs.slice(0, 3).map((r) => r.current);
+
+    const resetEffect = effects.find((e) => e.deps && e.deps.length === 1);
+    resetEffect.cb();
+
+    // Each token should have been bumped by exactly one so any late-resolving
+    // fetch captured under the previous token is now stale and its finally()
+    // will not re-latch the loading spinner.
+    const after = refs.slice(0, 3).map((r) => r.current);
+    expect(after).toEqual(before.map((v) => v + 1));
   });
 });
