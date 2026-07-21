@@ -1,6 +1,7 @@
 package prompts
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -2073,6 +2074,45 @@ func TestBuiltinPromptsParseClean(t *testing.T) {
 				t.Errorf("%s: parameter name %q is SCREAMING_SNAKE_CASE — use PascalCase instead", e.Name(), p.Name)
 			}
 		}
+	}
+}
+
+// TestBuiltinPrompt_GithubReviewPR_ParameterIsPascalCase pins the mitto-maxn
+// regression: commit 5b92b4cf added a `PR` parameter to github-review-pr.prompt.yaml,
+// which trips the SCREAMING_SNAKE_CASE guard in TestBuiltinPromptsParseClean and
+// blocks `make check`. The fix is a targeted rename PR → Pr (parameter name and its
+// three .Args.PR template call-sites). This test asserts the renamed shape directly,
+// so an accidental revert on this specific file is caught even if the generic linter
+// is later relaxed.
+func TestBuiltinPrompt_GithubReviewPR_ParameterIsPascalCase(t *testing.T) {
+	path := filepath.Join("..", "..", "config", "prompts", "builtin", "github-review-pr.prompt.yaml")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile(%s): %v", path, err)
+	}
+	prompt, err := ParsePromptFile("github-review-pr.prompt.yaml", data, time.Now())
+	if err != nil {
+		t.Fatalf("ParsePromptFile: %v", err)
+	}
+	var names []string
+	for _, p := range prompt.Parameters {
+		names = append(names, p.Name)
+		if p.Name == "PR" {
+			t.Errorf("github-review-pr.prompt.yaml: parameter is still declared as %q; expected PascalCase %q (mitto-maxn)", p.Name, "Pr")
+		}
+	}
+	hasPr := false
+	for _, n := range names {
+		if n == "Pr" {
+			hasPr = true
+			break
+		}
+	}
+	if !hasPr {
+		t.Errorf("github-review-pr.prompt.yaml: expected a parameter named %q; got %v (mitto-maxn)", "Pr", names)
+	}
+	if bytes.Contains(data, []byte(".Args.PR")) {
+		t.Errorf("github-review-pr.prompt.yaml: template still references .Args.PR; expected .Args.Pr (mitto-maxn)")
 	}
 }
 

@@ -2,7 +2,7 @@ icon: search
 name: 'GitHub: review a Pull Request'
 menus: prompts
 parameters:
-  - name: PR
+  - name: Pr
     type: text
     required: false
     description: 'Optional PR to review — a number (e.g. "123"), a full URL, or a branch name. If omitted, lists open PRs where your review has been requested and lets you pick one.'
@@ -38,14 +38,14 @@ prompt: |
 
   Confirm `gh` is authenticated; if `gh auth status` fails, tell the user and stop.
 
-  {{ if .Args.PR -}}
-  The user specified PR `{{ .Args.PR }}` — resolve it directly (the value may be
+  {{ if .Args.Pr -}}
+  The user specified PR `{{ .Args.Pr }}` — resolve it directly (the value may be
   a number, a full URL, or a branch name); do **not** present a picker.
 
   ```bash
   git rev-parse --show-toplevel
   gh repo view --json nameWithOwner -q .nameWithOwner
-  gh pr view {{ .Args.PR }} --json number,title,author,headRefName,baseRefName,url
+  gh pr view {{ .Args.Pr }} --json number,title,author,headRefName,baseRefName,url
   ```
 
   If `gh pr view` fails (invalid identifier, wrong repository, PR not found, etc.),
