@@ -73,6 +73,15 @@ prompt: |
   Comments first (small, human-driven); bugs before features (defects block). Multiple
   pending increments are safe: each worker's `bd` mutation triggers a fresh `onTasks` pass.
 
+  **Epics are containers, not work items.** An `epic` bead is never dispatched to a driver
+  on its own; instead, Step 2 **expands every open epic into its open children** and merges
+  those children into the eligible sets by their own `issue_type`: `bug` children flow into
+  §B, and every other non-epic child type (`feature`, `task`, `story`, `chore`, etc.) flows
+  into §C via the `Loop implementing feature` driver. The epic itself stays open until all
+  its children reach a terminal state — Step 2P's "Close terminal-label beads" sweep closes
+  the individual children as their drivers finish; the human owns closing the epic once all
+  its members are done.
+
   ### Concurrency budget — keep the fleet small
 
   This supervisor spawns AT MOST **one worker per pass** (Step 3), but the §B/§C
@@ -282,7 +291,17 @@ prompt: |
   bd ready --json          # prefer ready set; filter type=="bug"
   # or fallback:
   bd list --type bug --status open --json
+
+  # Epic expansion — pull in bug-typed children of every open epic so bugs
+  # scoped under an epic are not silently ignored. (bd list --type bug already
+  # returns children by default; this is a defensive safety net that also
+  # confirms the parent epic is still open.)
+  for epic_id in $(bd list --type epic --status open --json | jq -r '.[].id'); do
+    bd children "$epic_id" --json | jq '.[] | select(.status == "open" and .issue_type == "bug")'
+  done
   ```
+
+  Merge both result sets and de-duplicate by `id` before applying the exclusions below.
 
   **Exclude** any bug that:
 
@@ -310,9 +329,31 @@ prompt: |
   entirely — treat 2C as empty (count = 0) in Steps 3 and 6. Do NOT enumerate or
   dispatch features.
   {{- else -}}
-  Same shape as 2B with `type == "feature"`, terminal label `verified`, same exclusions
+  Same shape as 2B with terminal label `verified` and the same exclusions
   (`in_progress`, `needs-human`, existing child match, parent-child recently-closed
-  parent). Same ordering.
+  parent), but the enumeration is broader — §C is the catch-all lane for every
+  non-bug work item, including epic members typed as `task` / `story` / `chore`:
+
+  ```bash
+  # Direct feature enumeration.
+  bd ready --json          # prefer ready set; filter type=="feature"
+  # or fallback:
+  bd list --type feature --status open --json
+
+  # Epic expansion — pull in every open non-bug, non-epic child of every open
+  # epic and route them through the feature driver. Task / story / chore children
+  # of an epic represent forward work and are treated as feature-like for the
+  # purposes of dispatch (the `Loop implementing feature` driver's
+  # planned → implemented → tested → verified state machine applies unchanged).
+  for epic_id in $(bd list --type epic --status open --json | jq -r '.[].id'); do
+    bd children "$epic_id" --json \
+      | jq '.[] | select(.status == "open" and .issue_type != "bug" and .issue_type != "epic")'
+  done
+  ```
+
+  Merge both result sets and de-duplicate by `id`, then apply the exclusions and
+  ordering. Ordering is the same as 2B (priority `critical → high → medium → low`,
+  then bead ID ascending).
   {{- end }}
 
   ## Step 3 — Pick the class for this pass
@@ -500,6 +541,14 @@ prompt: |
   Same rationale as §B; feature budget mirrors the per-feature driver's `delay: 30`,
   `maxIterations: 30`, `maxDuration: "8h"` (28800s). On create failure, jump to Step 7.
 
+  The `<id>` here may be a top-level feature OR a non-bug child of an open epic
+  (`feature` / `task` / `story` / `chore`) surfaced by 2C's epic-expansion query.
+  The `Loop implementing feature` driver's state machine is agnostic to the child's
+  declared type — it plans, implements, tests, and verifies the ticket the same way.
+  When the ticket is an epic member, keep the title informative — e.g.
+  `Implement <id> (child of <epic-id>): <slug>` — so the operator can see the epic
+  context at a glance in the conversation list.
+
   ### §C wait, log, archive
 
   Identical shape to §B (same 1h timeout, same completion note, same degrade
@@ -605,6 +654,16 @@ prompt: |
     no comment, no dispatch. §A (unaddressed `@mitto` mentions) is ALWAYS on and
     is not gated by either flag, so the operator can still reach the loop via
     comments even when both `FixBugs=false` and `WorkOnFeatures=false`.
+  - **Do not ignore epics; expand them.** An `epic`-typed bead is a container and
+    is never spawned to a driver on its own. Instead, 2B and 2C explicitly walk
+    every open epic's open children and merge them into the eligible sets by the
+    child's own `issue_type`: `bug` children → §B, every other non-epic child type
+    (`feature` / `task` / `story` / `chore`) → §C via `Loop implementing feature`.
+    The `Loop implementing feature` state machine (planned → implemented → tested
+    → verified) applies uniformly regardless of the child's declared type. The
+    epic itself is left open — Step 2P closes each child as its driver reaches
+    the class-terminal label; the human owns closing the epic once all members
+    are done.
   {{ if or (ne .Args.FixBugs "false") (ne .Args.WorkOnFeatures "false") -}}
   - **Close terminal-label beads.** When Step 2P's reap loop finds an open bead with
     the class-terminal label ({{ if ne .Args.FixBugs "false" }}`fixed` for bugs{{ if ne .Args.WorkOnFeatures "false" }}, {{ end }}{{ end }}{{ if ne .Args.WorkOnFeatures "false" }}`verified` for features{{ end }}), the
