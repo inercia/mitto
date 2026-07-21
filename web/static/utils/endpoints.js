@@ -185,5 +185,7 @@ export const endpoints = {
     checkFileExists: (params) => apiUrl("/api/check-file-exists") + qs(params),
     saveFileToPath: () => apiUrl("/api/save-file-to-path"),
     dashboard: (params) => apiUrl("/api/dashboard") + qs(params),
+    dashboardTimeseries: (params) =>
+      apiUrl("/api/dashboard/timeseries") + qs(params),
   },
 };

@@ -26,6 +26,8 @@ export const VERSIONS = {
   dompurify: "3.0.8",
   // Mermaid is loaded on-demand, not bundled locally
   mermaid: "11",
+  // uPlot is loaded on-demand for the dashboard timeseries charts, not bundled locally
+  uplot: "1.6.31",
 };
 
 // =============================================================================
@@ -46,6 +48,8 @@ export const CDN_URLS = {
   marked: `${CDN_BASE}/marked@${VERSIONS.marked}/lib/marked.esm.js`,
   dompurify: `${CDN_BASE}/dompurify@${VERSIONS.dompurify}/dist/purify.es.mjs`,
   mermaid: `${CDN_BASE}/mermaid@${VERSIONS.mermaid}/dist/mermaid.min.js`,
+  uplot: `${CDN_BASE}/uplot@${VERSIONS.uplot}/dist/uPlot.iife.min.js`,
+  uplotCss: `${CDN_BASE}/uplot@${VERSIONS.uplot}/dist/uPlot.min.css`,
 };
 
 // =============================================================================

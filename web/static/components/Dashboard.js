@@ -11,6 +11,7 @@ import { authFetch } from "../utils/csrf.js";
 import { endpoints } from "../utils/endpoints.js";
 import { getBasename } from "../lib.js";
 import { FolderIcon, MenuIcon } from "./Icons.js";
+import { StatsCharts } from "./dashboard/StatsCharts.js";
 
 const REFRESH_INTERVAL_MS = 15_000;
 const MAX_LIST_ITEMS = 5;
@@ -296,6 +297,11 @@ export function Dashboard({
           </div>
         </div>
       </div>
+
+      <!-- Timeseries charts (mitto-a86b.8): tokens, tool calls, prompts vs
+           agent turns. Rendered between the stats row and the lists grid so
+           the dashboard's vertical rhythm goes overview → activity → lists. -->
+      <${StatsCharts} showToast=${showToast} />
 
       <!-- Responsive grid of all four lists (mitto-aqo.5). No carousel:
            every list is always visible. Column count is driven by the
