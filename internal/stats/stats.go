@@ -174,6 +174,29 @@ type Store interface {
 	// number of rows removed. Retention is enforced by the stats.9 job.
 	Prune(ctx context.Context, olderThan time.Time) (rows int64, err error)
 
+	// GetMeta returns the value stored under key in stats_meta. When the key
+	// does not exist the returned string is empty and err is ErrNotFound.
+	// Used by the stats.5 backfiller to persist small operational scalars
+	// like last_full_backfill_at without inventing a whole new table.
+	GetMeta(ctx context.Context, key string) (string, error)
+
+	// SetMeta upserts key=value in stats_meta. Callers stringify their own
+	// values (timestamps in RFC3339, ints via strconv, etc.); the store makes
+	// no interpretive claim on the payload.
+	SetMeta(ctx context.Context, key, value string) error
+
+	// ResetForEstimatorBump clears every row this store persists and reseeds
+	// stats_meta.estimator_version to the current package-level
+	// EstimatorVersion constant. Called by the stats.5 backfiller when it
+	// detects the persisted estimator_version is behind the code's version;
+	// after ResetForEstimatorBump returns, the backfill pass replays every
+	// session from scratch to rebuild deltas under the new estimator.
+	//
+	// schema_version, last_full_backfill_at, and any future non-cursor meta
+	// rows are preserved. Callers must hold no concurrent flush in flight —
+	// backfillers arrange this via the InProgress guard before calling.
+	ResetForEstimatorBump(ctx context.Context) error
+
 	// Close releases the underlying storage. Subsequent calls must return
 	// ErrClosed.
 	Close() error
@@ -239,4 +262,14 @@ type Backfiller interface {
 	// /api/dashboard/timeseries handler exposes this so the frontend can show
 	// a `backfill_in_progress: true` badge on partial data.
 	InProgress() bool
+
+	// Start launches the periodic background loop: a delayed first Run after
+	// startup, then every configured Interval. Callers may still invoke Run
+	// directly; Start is optional wiring for the server's happy path.
+	Start(ctx context.Context)
+
+	// Close signals the periodic loop to stop and blocks until it has
+	// returned. Idempotent. A Run in progress at Close time completes before
+	// Close returns.
+	Close() error
 }

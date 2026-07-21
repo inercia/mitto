@@ -70,6 +70,31 @@ func (n *NoopStore) Prune(ctx context.Context, olderThan time.Time) (int64, erro
 	return 0, nil
 }
 
+// GetMeta always returns an empty value and ErrNotFound. Matches the "no
+// state persisted" invariant that every other read on NoopStore observes.
+func (n *NoopStore) GetMeta(ctx context.Context, key string) (string, error) {
+	if n.closed.Load() {
+		return "", ErrClosed
+	}
+	return "", ErrNotFound
+}
+
+// SetMeta silently discards the write, mirroring UpsertDeltas / SetCursor.
+func (n *NoopStore) SetMeta(ctx context.Context, key, value string) error {
+	if n.closed.Load() {
+		return ErrClosed
+	}
+	return nil
+}
+
+// ResetForEstimatorBump is a no-op — NoopStore holds no state to reset.
+func (n *NoopStore) ResetForEstimatorBump(ctx context.Context) error {
+	if n.closed.Load() {
+		return ErrClosed
+	}
+	return nil
+}
+
 // Close marks the store as closed. Subsequent method calls return ErrClosed.
 func (n *NoopStore) Close() error {
 	n.closed.Store(true)

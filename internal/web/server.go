@@ -32,6 +32,7 @@ import (
 	"github.com/inercia/mitto/internal/mcpserver"
 	"github.com/inercia/mitto/internal/processors"
 	"github.com/inercia/mitto/internal/session"
+	"github.com/inercia/mitto/internal/stats"
 	"github.com/inercia/mitto/internal/web/handlers"
 	"github.com/inercia/mitto/internal/web/middleware"
 	mittoWeb "github.com/inercia/mitto/web"
@@ -275,6 +276,17 @@ type Server struct {
 	// apiHandlers holds the REST handlers extracted into the internal/web/handlers
 	// sub-package. Routing stays in server.go; the actual handler logic lives there.
 	apiHandlers *handlers.Handlers
+
+	// Dashboard time-series stats subsystem (mitto-a86b). statsStore is the
+	// underlying persistence (SQLite in production, Noop when disabled or
+	// when Open fails during startup); statsAggregator batches live events
+	// via the SessionManager observer wiring; statsBackfiller replays
+	// events.jsonl on startup and every 6h to repair drift and rebuild
+	// stats on estimator-version bumps. All three are nil when the
+	// subsystem was not wired (test / CLI paths).
+	statsStore      stats.Store
+	statsAggregator stats.Aggregator
+	statsBackfiller stats.Backfiller
 }
 
 // APIPrefix returns the URL prefix for all API and WebSocket endpoints.
@@ -944,6 +956,54 @@ func NewServer(config Config) (*Server, error) {
 		})
 	}
 
+	// Dashboard time-series stats subsystem (mitto-a86b): SQLite-backed Store
+	// + Aggregator + Backfiller. Open uses appdir.StatsDir() so the on-disk
+	// layout matches the sessions dir. When Open fails (unwritable disk,
+	// corrupt db, MITTO_DIR unresolvable), fall back to a NoopStore so the
+	// rest of the server keeps working — stats are a diagnostic, not
+	// load-bearing. The Aggregator is attached to the SessionManager so every
+	// session (fresh + resume) gets a statsObserver at registration time.
+	if statsDir, err := appdir.StatsDir(); err != nil {
+		logger.Warn("stats: cannot resolve stats dir; using noop store", "error", err)
+		s.statsStore = &stats.NoopStore{}
+	} else if err := os.MkdirAll(statsDir, 0o755); err != nil {
+		logger.Warn("stats: cannot create stats dir; using noop store", "dir", statsDir, "error", err)
+		s.statsStore = &stats.NoopStore{}
+	} else {
+		dbPath := filepath.Join(statsDir, "stats.db")
+		if st, err := stats.Open(context.Background(), dbPath); err != nil {
+			logger.Warn("stats: cannot open stats db; using noop store", "path", dbPath, "error", err)
+			s.statsStore = &stats.NoopStore{}
+		} else {
+			s.statsStore = st
+			logger.Info("stats: opened dashboard stats db", "path", dbPath)
+		}
+	}
+	s.statsAggregator = stats.NewAggregator(s.statsStore, stats.AggregatorOptions{})
+	sessionMgr.SetStatsAggregator(s.statsAggregator)
+	// Backfiller: reuse the sessionMgr's workspace registry to resolve each
+	// persisted session's workspace UUID from its working_dir + acp_server.
+	// The manager owns the registry; we consult it here without holding any
+	// SessionManager lock (GetWorkspaceByDirAndACP / GetWorkspace take their
+	// own RLock).
+	resolver := func(m session.Metadata) stats.SessionContext {
+		sc := stats.SessionContext{
+			SessionID:  m.SessionID,
+			WorkingDir: m.WorkingDir,
+			ACPServer:  m.ACPServer,
+		}
+		if ws := sessionMgr.GetWorkspaceByDirAndACP(m.WorkingDir, m.ACPServer); ws != nil {
+			sc.Workspace = ws.UUID
+		} else if ws := sessionMgr.GetWorkspace(m.WorkingDir); ws != nil {
+			sc.Workspace = ws.UUID
+		}
+		return sc
+	}
+	s.statsBackfiller = stats.NewBackfiller(s.statsStore, s.statsAggregator, store, resolver, stats.BackfillerOptions{
+		Logger: logger,
+	})
+	s.statsBackfiller.Start(context.Background())
+
 	// Wire the onTasks CEL condition compile-validator into the session package's
 	// injected seam. session must stay independent of config/acp/web, so it exposes
 	// session.ConditionValidator as a package-level func var that config supplies.
@@ -1456,6 +1516,20 @@ func (s *Server) Shutdown() error {
 	// Close session store
 	if s.store != nil {
 		s.store.Close()
+	}
+
+	// Close stats subsystem in aggregator→backfiller→store order so the
+	// aggregator flushes any pending deltas before the store is closed, and
+	// the backfiller has already stopped its periodic loop before the store
+	// disappears out from under a Run pass.
+	if s.statsBackfiller != nil {
+		_ = s.statsBackfiller.Close()
+	}
+	if s.statsAggregator != nil {
+		_ = s.statsAggregator.Close()
+	}
+	if s.statsStore != nil {
+		_ = s.statsStore.Close()
 	}
 
 	// Close queue title worker

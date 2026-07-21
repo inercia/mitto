@@ -386,6 +386,70 @@ func (s *SQLiteStore) Prune(ctx context.Context, olderThan time.Time) (int64, er
 	return res.RowsAffected()
 }
 
+// GetMeta returns the value of stats_meta[key]. When the row is absent the
+// returned string is empty and err is ErrNotFound (matching NoopStore).
+func (s *SQLiteStore) GetMeta(ctx context.Context, key string) (string, error) {
+	if s.closed.Load() {
+		return "", ErrClosed
+	}
+	var v string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT value FROM stats_meta WHERE key = ?`, key).Scan(&v)
+	if err == sql.ErrNoRows {
+		return "", ErrNotFound
+	}
+	if err != nil {
+		return "", fmt.Errorf("stats: GetMeta: %w", err)
+	}
+	return v, nil
+}
+
+// SetMeta upserts stats_meta[key] = value. Preserves other rows.
+func (s *SQLiteStore) SetMeta(ctx context.Context, key, value string) error {
+	if s.closed.Load() {
+		return ErrClosed
+	}
+	if _, err := s.db.ExecContext(ctx,
+		`INSERT INTO stats_meta(key, value) VALUES (?, ?)
+		 ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+		key, value,
+	); err != nil {
+		return fmt.Errorf("stats: SetMeta: %w", err)
+	}
+	return nil
+}
+
+// ResetForEstimatorBump clears every stats_events and stats_cursors row and
+// updates stats_meta.estimator_version to the current EstimatorVersion. The
+// schema_version row and any other meta rows (e.g. last_full_backfill_at)
+// are preserved. Runs in a single transaction so a crash mid-reset cannot
+// leave the store in a half-cleared state.
+func (s *SQLiteStore) ResetForEstimatorBump(ctx context.Context) error {
+	if s.closed.Load() {
+		return ErrClosed
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx, `DELETE FROM stats_events`); err != nil {
+		return fmt.Errorf("stats: ResetForEstimatorBump events: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM stats_cursors`); err != nil {
+		return fmt.Errorf("stats: ResetForEstimatorBump cursors: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO stats_meta(key, value) VALUES ('estimator_version', ?)
+		 ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+		fmt.Sprintf("%d", EstimatorVersion),
+	); err != nil {
+		return fmt.Errorf("stats: ResetForEstimatorBump meta: %w", err)
+	}
+	return tx.Commit()
+}
+
 // joinAnd is a tiny helper (avoids pulling in strings just for one Join).
 func joinAnd(parts []string) string {
 	out := ""
