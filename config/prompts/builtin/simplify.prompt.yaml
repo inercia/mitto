@@ -5,10 +5,27 @@ description: Simplify implementation while preserving functionality
 group: Code Quality
 backgroundColor: '#C8E6C9'
 prompt: |
-  Read the current implementation thoroughly. Understand what it does and why.
-  Check callers and dependents to ensure changes preserve external behavior.
+  {{- if .Session.HasMessages }}
+  Simplify the current implementation while preserving functionality. Read the
+  implementation thoroughly first and understand what it does and why. Check
+  callers and dependents so changes preserve external behavior.
+  {{- else }}
+  This is the first message in this conversation, so there is no "current
+  implementation" already in context. Figure out what to simplify by
+  inspecting the current repository state:
 
-  Simplify the current implementation while preserving functionality.
+  1. Run `git status` and `git diff` to see uncommitted changes — those are
+     the most likely simplification target.
+  2. If there are no uncommitted changes, run `git log --oneline -20` and
+     inspect the most recent commits (`git show <sha>`) to find recent work
+     that could be simplified.
+  3. If it is still unclear, ask the user which file or function they want
+     simplified before continuing.
+
+  Once the target is clear, read the implementation thoroughly, understand
+  what it does and why, and check callers and dependents so changes preserve
+  external behavior.
+  {{- end }}
 
   ### 1. Look for Simplification Opportunities
 

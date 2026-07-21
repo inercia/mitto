@@ -7,9 +7,26 @@ backgroundColor: '#FFE0B2'
 preferredModels:
   - modelTag: Coding
 prompt: |
-  Read the modified code and existing test files to understand testing conventions.
+  {{- if .Session.HasMessages }}
+  Write comprehensive tests for the code we created or modified in this
+  conversation. Read the modified code and the existing test files first so
+  the new tests match the project's testing conventions.
+  {{- else }}
+  This is the first message in this conversation, so there is no "code we
+  created or modified" already in context. Figure out what code needs tests
+  by inspecting the current repository state:
 
-  Write comprehensive tests for the code we created or modified.
+  1. Run `git status` and `git diff` to see uncommitted changes — those are
+     the most likely test target.
+  2. If there are no uncommitted changes, run `git log --oneline -20` and
+     inspect the most recent commits (`git show <sha>`) to find recent code
+     worth testing.
+  3. If it is still unclear, ask the user which file or function they want
+     tested before continuing.
+
+  Read the target code and the existing test files first so the new tests
+  match the project's testing conventions.
+  {{- end }}
 
   Test code that was actually changed. Verify real behavior, not implementation
   details. Use general assertions, not hard-coded values.

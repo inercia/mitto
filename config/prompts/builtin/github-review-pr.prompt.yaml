@@ -1,6 +1,11 @@
 icon: search
 name: 'GitHub: review a Pull Request'
 menus: prompts
+parameters:
+  - name: PR
+    type: text
+    required: false
+    description: 'Optional PR to review — a number (e.g. "123"), a full URL, or a branch name. If omitted, lists open PRs where your review has been requested and lets you pick one.'
 description: Review a pull request you were asked to review, from the local checkout — inspect the PR safely, follow repo conventions, and produce editable, approvable comments
 group: GitHub
 backgroundColor: '#BBDEFB'
@@ -33,7 +38,20 @@ prompt: |
 
   Confirm `gh` is authenticated; if `gh auth status` fails, tell the user and stop.
 
-  Identify the repository and the PR to review:
+  {{ if .Args.PR -}}
+  The user specified PR `{{ .Args.PR }}` — resolve it directly (the value may be
+  a number, a full URL, or a branch name); do **not** present a picker.
+
+  ```bash
+  git rev-parse --show-toplevel
+  gh repo view --json nameWithOwner -q .nameWithOwner
+  gh pr view {{ .Args.PR }} --json number,title,author,headRefName,baseRefName,url
+  ```
+
+  If `gh pr view` fails (invalid identifier, wrong repository, PR not found, etc.),
+  tell the user what went wrong and stop.
+  {{- else -}}
+  Identify the repository and list PRs where your review has been requested:
 
   ```bash
   git rev-parse --show-toplevel
@@ -43,7 +61,8 @@ prompt: |
     --json number,title,author,headRefName,baseRefName,updatedAt --limit 30
   ```
 
-  - If the user already named a PR (number, URL, or branch), use it.
+  - If the user already named a PR in the conversation (number, URL, or branch),
+    use it.
   - If several reviews are pending, let the user pick:
     ```
     mitto_ui_options(self_id: "{{ .Session.ID }}",
@@ -52,6 +71,7 @@ prompt: |
       allow_free_text: true)
     ```
   - If none match and the user didn't specify, ask for the PR number or URL.
+  {{- end }}
 
   Capture `<number>`, `<headRefName>`, `<baseRefName>`, the author, and `nameWithOwner`.
 

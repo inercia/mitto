@@ -18,17 +18,20 @@ prompt: |
 
   ## Step 1 — Establish the requirements baseline
 
-  Figure out what the change was *supposed* to deliver:
+  Figure out what the change was *supposed* to deliver.
+  {{- if .Session.HasMessages }}
 
-  - If this conversation is already tied to a specific ticket/issue (e.g. a linked beads
-    issue, a PR, or a task you have been working on), use that — you already know the
-    context, so use it directly. For a beads issue:
+  Prefer signals already present in this conversation:
+
+  - If this conversation is tied to a linked beads issue, a PR, or a task you have
+    been working on, use that — you already have the context. For a beads issue:
 
     ```bash
     bd show <issue-id> --long --json    # description, acceptance criteria, design
     ```
 
-  - Otherwise, ask the user which requirements to review against:
+  - Only when the conversation does not clearly indicate the target (no linked issue,
+    no obvious task), fall back to asking:
 
     ```
     mitto_ui_options(self_id: "{{ .Session.ID }}",
@@ -40,6 +43,24 @@ prompt: |
       ],
       allow_free_text: true)
     ```
+  {{- else }}
+
+  This is the first message in this conversation, so there is no prior task or
+  ticket context to lean on. Ask the user which requirements to review against
+  before touching the diff:
+
+    ```
+    mitto_ui_options(self_id: "{{ .Session.ID }}",
+      question: "What should I review these changes against?",
+      options: [
+        {label: "A beads/ticket issue", description: "I'll look up its acceptance criteria"},
+        {label: "Just review correctness & scope", description: "No formal requirements to check"}
+      ],
+      allow_free_text: true)
+    ```
+
+  If the user picks a beads issue, load it with `bd show <issue-id> --long --json`.
+  {{- end }}
 
   Distill an explicit, checkable list of requirements / acceptance criteria. If none are
   written down, infer them from the issue description or the conversation.
@@ -75,12 +96,26 @@ prompt: |
 
   ### B. Correctness & no new bugs
 
-  - Edge cases: null/empty/boundary inputs, error paths (not just the happy path).
-  - Regressions: does the change break existing behaviour or callers? Check downstream
-    call sites of any changed signature/API.
-  - Logic bugs: off-by-one, race conditions, incorrect state transitions, swallowed errors.
-  - Tests & build: do relevant tests exist and pass? Does it build/lint? Run the cheap,
-    relevant checks (e.g. `make test-go`, `make test-js`, `make lint`) when feasible.
+  Evaluate the diff across five aspects. Keep findings tied to file:line evidence.
+
+  - **Correctness** — edge cases (null/empty/boundary), error paths (not just the
+    happy path), regressions in callers of changed signatures, off-by-one, race
+    conditions, incorrect state transitions, swallowed errors.
+  - **Readability** — descriptive names consistent with project conventions,
+    straightforward control flow (no deep nesting, no clever tricks), dead code
+    removed (unused vars, backwards-compat shims, `// removed` comments).
+  - **Architecture** — follows existing patterns (or justifies a new one), clean
+    module boundaries, no duplication that should be shared, dependencies flow
+    without cycles, abstraction level appropriate.
+  - **Security** — user input validated at boundaries, no secrets in code / logs /
+    VCS, auth checks where needed, queries parameterized, outputs encoded,
+    external data treated as untrusted.
+  - **Performance** — no N+1 patterns, no unbounded loops or data fetching, sync
+    operations that should be async, missing pagination on list endpoints, large
+    objects in hot paths.
+
+  Do relevant cheap checks when feasible (`make test-go`, `make test-js`, `make
+  lint`). A required behaviour without a test is ⚠️ Partial at best in section A.
 
   ### C. Tight scope (no over-engineering)
 
