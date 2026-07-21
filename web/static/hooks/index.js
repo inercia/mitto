@@ -13,7 +13,10 @@ export { useScrollManagement } from "./useScrollManagement.js";
 export { useQueueActions } from "./useQueueActions.js";
 export { useAgentPlan } from "./useAgentPlan.js";
 export { useWorkspacePrompts } from "./useWorkspacePrompts.js";
-export { useBeadsIntegration } from "./useBeadsIntegration.js";
+export {
+  useBeadsIntegration,
+  buildBeadsPromptToast,
+} from "./useBeadsIntegration.js";
 export { useSessionNavigation } from "./useSessionNavigation.js";
 export { useConversationMenu } from "./useConversationMenu.js";
 export {

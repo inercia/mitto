@@ -98,6 +98,7 @@ import {
   useAgentPlan,
   useWorkspacePrompts,
   useBeadsIntegration,
+  buildBeadsPromptToast,
   useBeadsKnownIds,
   useSessionNavigation,
   useConversationMenu,
@@ -554,6 +555,7 @@ function App() {
     setShowSidebar,
     setShowSidePanel,
     setSidePanelTab,
+    activeSessionId,
     onOpenLoopDialog: (prompt, onSchedule) =>
       setLoopScheduleDialog({ prompt, onSchedule }),
     onOpenPromptParamDialog: (prompt, parameters, onSubmit) =>
@@ -600,15 +602,21 @@ function App() {
         return;
       }
       setMainView("conversation");
-      showToast({
-        style: "success",
-        title: result.reused
-          ? `Reusing existing "${promptName}" conversation`
-          : `Started "${promptName}"`,
-        duration: 3000,
-      });
+      showToast(
+        buildBeadsPromptToast({
+          result,
+          promptName,
+          activeSessionId,
+        }),
+      );
     },
-    [startConversationWithPrompt, beadsWorkingDir, showToast, setMainView],
+    [
+      startConversationWithPrompt,
+      beadsWorkingDir,
+      showToast,
+      setMainView,
+      activeSessionId,
+    ],
   );
 
   // Fetch and cache known beads issue IDs for the active session's workspace.

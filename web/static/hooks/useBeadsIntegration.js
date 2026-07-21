@@ -4,7 +4,11 @@
 // beadsIssueSessionMap derived value, prompt fetching helpers, and the
 // handlers for opening the beads panel, running per-issue / list prompts,
 // and navigating from a conversation's linked-issue link into the beads view.
-const { useState, useCallback, useMemo, useRef } = window.preact;
+//
+// Preact hooks are accessed lazily inside useBeadsIntegration (not destructured
+// at module top-level) so pure helpers exported from this file — notably
+// buildBeadsPromptToast — remain importable by Jest tests that do not have a
+// preact-populated window.
 
 import { authFetch, endpoints } from "../utils/index.js";
 import {
@@ -15,6 +19,56 @@ import {
   promptResolveAsLoop,
 } from "../utils/prompts.js";
 import { useConversationSeeding } from "./useConversationSeeding.js";
+
+/**
+ * Build the showToast payload for a successful beads-prompt dispatch.
+ * Pure helper (exported for unit testing) — no hook state, no side effects.
+ *
+ * Discriminates three cases:
+ *   1. reused && sessionId === activeSessionId
+ *        → "Prompt enqueued into current conversation" (info)
+ *   2. reused (into a different existing conversation)
+ *        → "Continued in existing conversation for {issueId}" (info),
+ *          or "Continued in existing \"{promptName}\" conversation" when no issueId
+ *   3. not reused (a new conversation was created)
+ *        → "Started \"{promptName}\" for {issueId}" (success),
+ *          or "Started \"{promptName}\"" when no issueId
+ *
+ * @param {Object} args
+ * @param {Object} args.result           - startConversationWithPrompt result ({sessionId, reused}).
+ * @param {string} args.promptName       - Prompt display name.
+ * @param {string} [args.issueId]        - Bead ID when running a per-issue prompt.
+ * @param {string} [args.activeSessionId] - The session currently on screen (for the no-op branch).
+ * @returns {{style: string, title: string, duration: number}}
+ */
+export function buildBeadsPromptToast({
+  result,
+  promptName,
+  issueId,
+  activeSessionId,
+}) {
+  const reused = !!result?.reused;
+  const sameSession =
+    reused && !!activeSessionId && result?.sessionId === activeSessionId;
+
+  let title;
+  let style;
+  if (sameSession) {
+    title = "Prompt enqueued into current conversation";
+    style = "info";
+  } else if (reused) {
+    title = issueId
+      ? `Continued in existing conversation for ${issueId}`
+      : `Continued in existing "${promptName}" conversation`;
+    style = "info";
+  } else {
+    title = issueId
+      ? `Started "${promptName}" for ${issueId}`
+      : `Started "${promptName}"`;
+    style = "success";
+  }
+  return { style, title, duration: 3000 };
+}
 
 /**
  * Beads-view integration hook.
@@ -29,6 +83,8 @@ import { useConversationSeeding } from "./useConversationSeeding.js";
  * @param {Function} deps.setShowSidebar        - Closes sidebar overlay (mobile).
  * @param {Function} deps.setShowSidePanel      - Closes/opens the side panel (used in handleOpenBeadsIssue / return).
  * @param {Function} deps.setSidePanelTab       - Selects the side panel tab (used when returning to a conversation).
+ * @param {string}   [deps.activeSessionId]     - The conversation currently on screen; used to render a
+ *   "Prompt enqueued into current conversation" toast when a reused session matches it.
  * @param {Function} [deps.onOpenLoopDialog] - Opens the loop schedule dialog.
  *   Signature: (prompt, onSchedule: ({ value, unit, at? }) => void) => void.
  *   When absent, loop prompts fall back to the one-time named-prompt path.
@@ -47,9 +103,11 @@ export function useBeadsIntegration({
   setShowSidebar,
   setShowSidePanel,
   setSidePanelTab,
+  activeSessionId,
   onOpenLoopDialog,
   onOpenPromptParamDialog,
 }) {
+  const { useState, useCallback, useMemo, useRef } = window.preact;
   const { startConversationWithPrompt } = useConversationSeeding({
     newSession,
   });
@@ -179,34 +237,31 @@ export function useBeadsIntegration({
   // wrong (mitto-kvot). enabled_context=workspace tells the server to evaluate
   // the full enabledWhen gates against session-less workspace defaults
   // (Session.IsChild=false, Permissions.CanStartConversation=true).
-  const fetchBeadsListPromptsForWorkspace = useCallback(
-    async (workingDir) => {
-      if (!workingDir) return [];
-      try {
-        const res = await authFetch(
-          endpoints.workspacePrompts.list({
-            working_dir: workingDir,
-            enabled_context: "workspace",
-          }),
-        );
-        if (!res.ok) return [];
-        const data = await res.json();
-        const all = data?.prompts || [];
-        return all
-          .filter(
-            (p) =>
-              p &&
-              promptMenuIncludes(p, "beadsList") &&
-              menuSatisfies(p, "beadsList"),
-          )
-          .sort((a, b) => (a.name || "").localeCompare(b.name || ""));
-      } catch (err) {
-        console.error("Failed to fetch beads list prompts for workspace:", err);
-        return [];
-      }
-    },
-    [],
-  );
+  const fetchBeadsListPromptsForWorkspace = useCallback(async (workingDir) => {
+    if (!workingDir) return [];
+    try {
+      const res = await authFetch(
+        endpoints.workspacePrompts.list({
+          working_dir: workingDir,
+          enabled_context: "workspace",
+        }),
+      );
+      if (!res.ok) return [];
+      const data = await res.json();
+      const all = data?.prompts || [];
+      return all
+        .filter(
+          (p) =>
+            p &&
+            promptMenuIncludes(p, "beadsList") &&
+            menuSatisfies(p, "beadsList"),
+        )
+        .sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+    } catch (err) {
+      console.error("Failed to fetch beads list prompts for workspace:", err);
+      return [];
+    }
+  }, []);
 
   // Close the standalone issue overlay (BeadsIssueView) if it is open. Called
   // after a beads prompt successfully starts a new conversation so the overlay
@@ -325,13 +380,14 @@ export function useBeadsIntegration({
           }
           setMainView("conversation");
           dismissBeadsIssueOverlay();
-          showToast({
-            style: "success",
-            title: result.reused
-              ? `Reusing existing "${prompt.name}" conversation`
-              : `Started "${prompt.name}" for ${issue.id}`,
-            duration: 3000,
-          });
+          showToast(
+            buildBeadsPromptToast({
+              result,
+              promptName: prompt.name,
+              issueId: issue.id,
+              activeSessionId,
+            }),
+          );
         });
         return;
       }
@@ -360,13 +416,14 @@ export function useBeadsIntegration({
       // linger on top of the newly-activated conversation.
       setMainView("conversation");
       dismissBeadsIssueOverlay();
-      showToast({
-        style: "success",
-        title: result.reused
-          ? `Reusing existing "${prompt.name}" conversation`
-          : `Started "${prompt.name}" for ${issue.id}`,
-        duration: 3000,
-      });
+      showToast(
+        buildBeadsPromptToast({
+          result,
+          promptName: prompt.name,
+          issueId: issue.id,
+          activeSessionId,
+        }),
+      );
     },
     [
       beadsWorkingDir,
@@ -376,6 +433,7 @@ export function useBeadsIntegration({
       onOpenLoopDialog,
       onOpenPromptParamDialog,
       dismissBeadsIssueOverlay,
+      activeSessionId,
     ],
   );
 
@@ -466,13 +524,13 @@ export function useBeadsIntegration({
           }
           setMainView("conversation");
           dismissBeadsIssueOverlay();
-          showToast({
-            style: "success",
-            title: result.reused
-              ? `Reusing existing "${prompt.name}" conversation`
-              : `Started "${prompt.name}"`,
-            duration: 3000,
-          });
+          showToast(
+            buildBeadsPromptToast({
+              result,
+              promptName: prompt.name,
+              activeSessionId,
+            }),
+          );
         });
         return;
       }
@@ -498,13 +556,13 @@ export function useBeadsIntegration({
       // linger on top of the newly-activated conversation.
       setMainView("conversation");
       dismissBeadsIssueOverlay();
-      showToast({
-        style: "success",
-        title: result.reused
-          ? `Reusing existing "${prompt.name}" conversation`
-          : `Started "${prompt.name}"`,
-        duration: 3000,
-      });
+      showToast(
+        buildBeadsPromptToast({
+          result,
+          promptName: prompt.name,
+          activeSessionId,
+        }),
+      );
     },
     [
       beadsWorkingDir,
@@ -514,6 +572,7 @@ export function useBeadsIntegration({
       onOpenLoopDialog,
       onOpenPromptParamDialog,
       dismissBeadsIssueOverlay,
+      activeSessionId,
     ],
   );
 
