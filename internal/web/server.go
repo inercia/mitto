@@ -287,6 +287,9 @@ type Server struct {
 	statsStore      stats.Store
 	statsAggregator stats.Aggregator
 	statsBackfiller stats.Backfiller
+	// statsRetention (mitto-a86b.9) runs the nightly prune + weekly Sunday
+	// VACUUM against statsStore. Nil when the subsystem was not wired.
+	statsRetention *stats.RetentionWorker
 }
 
 // APIPrefix returns the URL prefix for all API and WebSocket endpoints.
@@ -1004,6 +1007,22 @@ func NewServer(config Config) (*Server, error) {
 	})
 	s.statsBackfiller.Start(context.Background())
 
+	// Retention worker (mitto-a86b.9): nightly prune of hourly rows past the
+	// configured retention window (default 90d) + weekly Sunday VACUUM.
+	// Reads retention nil-safe from MittoConfig.Stats so unconfigured
+	// installs get the default; explicit 0 disables pruning.
+	var statsRetention time.Duration
+	if config.MittoConfig != nil {
+		statsRetention = config.MittoConfig.Stats.GetRetention()
+	} else {
+		statsRetention = (&configPkg.StatsConfig{}).GetRetention()
+	}
+	s.statsRetention = stats.NewRetentionWorker(s.statsStore, stats.RetentionWorkerOptions{
+		Retention: statsRetention,
+		Logger:    logger,
+	})
+	s.statsRetention.Start(context.Background())
+
 	// Wire the onTasks CEL condition compile-validator into the session package's
 	// injected seam. session must stay independent of config/acp/web, so it exposes
 	// session.ConditionValidator as a package-level func var that config supplies.
@@ -1525,10 +1544,14 @@ func (s *Server) Shutdown() error {
 		s.store.Close()
 	}
 
-	// Close stats subsystem in backfiller→aggregator→store order so the
-	// backfiller has stopped its periodic loop (no more agg.Ingest) before
-	// the aggregator flushes any pending deltas, and the store stays alive
-	// until after that final flush so no deltas are lost.
+	// Close stats subsystem in retention→backfiller→aggregator→store order:
+	// stop the retention worker first so a mid-run VACUUM cannot observe a
+	// closed DB; then stop the backfiller (no more agg.Ingest) before the
+	// aggregator flushes any pending deltas, and the store stays alive until
+	// after that final flush so no deltas are lost.
+	if s.statsRetention != nil {
+		_ = s.statsRetention.Close()
+	}
 	if s.statsBackfiller != nil {
 		_ = s.statsBackfiller.Close()
 	}

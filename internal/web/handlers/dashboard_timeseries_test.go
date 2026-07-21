@@ -42,6 +42,7 @@ func (f *fakeStatsStore) Query(_ context.Context, q stats.Query) ([]stats.Point,
 	return f.points, nil
 }
 func (f *fakeStatsStore) Prune(context.Context, time.Time) (int64, error) { return 0, nil }
+func (f *fakeStatsStore) Vacuum(context.Context) error                    { return nil }
 func (f *fakeStatsStore) GetMeta(context.Context, string) (string, error) {
 	return "", stats.ErrNotFound
 }

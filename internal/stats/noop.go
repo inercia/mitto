@@ -70,6 +70,14 @@ func (n *NoopStore) Prune(ctx context.Context, olderThan time.Time) (int64, erro
 	return 0, nil
 }
 
+// Vacuum is a no-op — NoopStore holds no storage to reclaim.
+func (n *NoopStore) Vacuum(ctx context.Context) error {
+	if n.closed.Load() {
+		return ErrClosed
+	}
+	return nil
+}
+
 // GetMeta always returns an empty value and ErrNotFound. Matches the "no
 // state persisted" invariant that every other read on NoopStore observes.
 func (n *NoopStore) GetMeta(ctx context.Context, key string) (string, error) {

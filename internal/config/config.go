@@ -1188,6 +1188,8 @@ type Config struct {
 	UI UIConfig
 	// Session contains session storage limits configuration (not exposed in Settings dialog)
 	Session *SessionConfig
+	// Stats contains dashboard time-series stats configuration (mitto-a86b).
+	Stats *StatsConfig
 	// Prewarm contains adaptive ACP/MCP pre-warming thresholds (mitto-mw0)
 	Prewarm *PrewarmConfig
 	// Conversations contains global conversation processing configuration
@@ -1244,6 +1246,7 @@ type rawACPServerConfig struct {
 		Parameters      []PromptParameter `yaml:"parameters"`
 		Tags            []string          `yaml:"tags"`
 		Singleton       bool              `yaml:"singleton"`
+		Target          *PromptTarget     `yaml:"target,omitempty"`
 	} `yaml:"prompts"`
 	RestrictedRunners   map[string]*WorkspaceRunnerConfig `yaml:"restricted_runners"`
 	ContextFlushCommand string                            `yaml:"contextFlushCommand"`
@@ -1269,6 +1272,7 @@ type rawConfig struct {
 		Parameters      []PromptParameter `yaml:"parameters"`
 		Tags            []string          `yaml:"tags"`
 		Singleton       bool              `yaml:"singleton"`
+		Target          *PromptTarget     `yaml:"target,omitempty"`
 	} `yaml:"prompts"`
 	// PromptsDirs is a list of additional directories to search for prompt files
 	PromptsDirs []string `yaml:"prompts_dirs"`
@@ -1400,6 +1404,10 @@ type rawConfig struct {
 		AgentInactivityTimeout   string `yaml:"agent_inactivity_timeout"`
 		McpInitTimeout           string `yaml:"mcp_init_timeout"`
 	} `yaml:"session"`
+	// Stats is the dashboard time-series stats configuration (mitto-a86b.9)
+	Stats *struct {
+		RetentionHours *int `yaml:"retention_hours"`
+	} `yaml:"stats"`
 	// Prewarm is the adaptive pre-warming thresholds (mitto-mw0)
 	Prewarm *struct {
 		SessionNewFast       string `yaml:"session_new_fast"`
@@ -1497,6 +1505,7 @@ func Parse(data []byte) (*Config, error) {
 					Group:           p.Group,
 					Menus:           p.Menus,
 					Singleton:       p.Singleton,
+					Target:          p.Target,
 					Tags:            p.Tags,
 					EnabledWhen:     p.EnabledWhen,
 					Loop:            p.Loop,
@@ -1550,6 +1559,7 @@ func Parse(data []byte) (*Config, error) {
 			Group:           p.Group,
 			Menus:           p.Menus,
 			Singleton:       p.Singleton,
+			Target:          p.Target,
 			Tags:            p.Tags,
 			EnabledWhen:     p.EnabledWhen,
 			Enabled:         p.Enabled,
@@ -1785,6 +1795,13 @@ func Parse(data []byte) (*Config, error) {
 			MemoryRecycleThreshold:   raw.Session.MemoryRecycleThreshold,
 			AgentInactivityTimeout:   raw.Session.AgentInactivityTimeout,
 			McpInitTimeout:           raw.Session.McpInitTimeout,
+		}
+	}
+
+	// Parse stats config (mitto-a86b.9)
+	if raw.Stats != nil {
+		cfg.Stats = &StatsConfig{
+			RetentionHours: raw.Stats.RetentionHours,
 		}
 	}
 

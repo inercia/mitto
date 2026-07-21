@@ -386,6 +386,19 @@ func (s *SQLiteStore) Prune(ctx context.Context, olderThan time.Time) (int64, er
 	return res.RowsAffected()
 }
 
+// Vacuum runs SQLite's VACUUM to reclaim free pages left by Prune. Must run
+// outside any active transaction; the single-connection pool + WAL mode
+// already serialises writers so no external mutex is needed.
+func (s *SQLiteStore) Vacuum(ctx context.Context) error {
+	if s.closed.Load() {
+		return ErrClosed
+	}
+	if _, err := s.db.ExecContext(ctx, `VACUUM`); err != nil {
+		return fmt.Errorf("stats: Vacuum: %w", err)
+	}
+	return nil
+}
+
 // GetMeta returns the value of stats_meta[key]. When the row is absent the
 // returned string is empty and err is ErrNotFound (matching NoopStore).
 func (s *SQLiteStore) GetMeta(ctx context.Context, key string) (string, error) {

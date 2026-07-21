@@ -174,6 +174,12 @@ type Store interface {
 	// number of rows removed. Retention is enforced by the stats.9 job.
 	Prune(ctx context.Context, olderThan time.Time) (rows int64, err error)
 
+	// Vacuum reclaims free pages from the underlying storage after a Prune
+	// removed a significant fraction of rows. Called weekly by the stats.9
+	// retention job on Sundays. Best-effort: implementations that cannot
+	// meaningfully vacuum (NoopStore) return nil.
+	Vacuum(ctx context.Context) error
+
 	// GetMeta returns the value stored under key in stats_meta. When the key
 	// does not exist the returned string is empty and err is ErrNotFound.
 	// Used by the stats.5 backfiller to persist small operational scalars

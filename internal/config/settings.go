@@ -63,6 +63,8 @@ type Settings struct {
 	UI UIConfig `json:"ui,omitempty"`
 	// Session contains session storage limits configuration
 	Session *SessionConfig `json:"session,omitempty"`
+	// Stats contains dashboard time-series stats configuration (mitto-a86b).
+	Stats *StatsConfig `json:"stats,omitempty"`
 	// Prewarm contains adaptive ACP/MCP pre-warming thresholds (mitto-mw0)
 	Prewarm *PrewarmConfig `json:"prewarm,omitempty"`
 	// Conversations contains global conversation processing configuration
@@ -96,6 +98,40 @@ const DefaultStartupLoopDelay = 15 * time.Second
 // starve the agent's inbound MCP handshake on :5757/mcp) when many sessions
 // reconnect at once (mitto-54k.1).
 const DefaultStartupResumeConcurrency = 3
+
+// DefaultStatsRetentionHours is the default retention window for hourly stats
+// rows (mitto-a86b.9). 2160 hours = 90 days. Old rows are pruned nightly by
+// the stats.9 retention worker; the underlying store is VACUUMed weekly.
+const DefaultStatsRetentionHours = 2160
+
+// StatsConfig configures the dashboard time-series stats subsystem
+// (mitto-a86b). All fields are optional; zero values fall back to defaults.
+type StatsConfig struct {
+	// RetentionHours is the retention window (in hours) for hourly stats
+	// rows. When nil (unset), DefaultStatsRetentionHours (90 days) applies.
+	// An explicit 0 disables pruning entirely (rows accumulate forever).
+	// Negative values are treated as 0 (disabled).
+	RetentionHours *int `json:"retention_hours,omitempty"`
+}
+
+// GetRetentionHours returns the retention window in hours: the explicit value
+// when set, else DefaultStatsRetentionHours. A negative value is clamped to 0
+// (disabled).
+func (c *StatsConfig) GetRetentionHours() int {
+	if c == nil || c.RetentionHours == nil {
+		return DefaultStatsRetentionHours
+	}
+	if *c.RetentionHours < 0 {
+		return 0
+	}
+	return *c.RetentionHours
+}
+
+// GetRetention returns the retention window as a Duration. Returns 0 when
+// pruning is disabled (explicit RetentionHours=0 or negative).
+func (c *StatsConfig) GetRetention() time.Duration {
+	return time.Duration(c.GetRetentionHours()) * time.Hour
+}
 
 // DefaultLoopWorkspaceConcurrency caps how many scheduled loop prompts may be
 // in flight simultaneously per WorkingDir + ACPServer pair. Because shared
@@ -774,6 +810,7 @@ func (s *Settings) ToConfig() *Config {
 		Web:               s.Web,
 		UI:                s.UI,
 		Session:           s.Session,
+		Stats:             s.Stats,
 		Prewarm:           s.Prewarm,
 		Conversations:     s.Conversations,
 		Permissions:       s.Permissions,
@@ -797,6 +834,7 @@ func ConfigToSettings(cfg *Config) *Settings {
 		Web:               cfg.Web,
 		UI:                cfg.UI,
 		Session:           cfg.Session,
+		Stats:             cfg.Stats,
 		Prewarm:           cfg.Prewarm,
 		Conversations:     cfg.Conversations,
 		Permissions:       cfg.Permissions,
