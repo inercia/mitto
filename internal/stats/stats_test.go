@@ -2,7 +2,11 @@ package stats
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"os/exec"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -119,5 +123,98 @@ func TestConstants(t *testing.T) {
 	}
 	if EstimatorVersion != 1 {
 		t.Errorf("EstimatorVersion = %d, want 1", EstimatorVersion)
+	}
+}
+
+// TestNoopStore_ConcurrentAccess exercises the atomic closed flag under
+// contention. The package doc claims NoopStore is safe for concurrent use, so
+// interleaving reads/writes with Close must never race (verified with -race)
+// and post-Close callers must all observe ErrClosed.
+func TestNoopStore_ConcurrentAccess(t *testing.T) {
+	store := &NoopStore{}
+	const writers = 8
+	const iterations = 200
+
+	var wg sync.WaitGroup
+	wg.Add(writers)
+	for i := 0; i < writers; i++ {
+		go func() {
+			defer wg.Done()
+			ctx := context.Background()
+			for j := 0; j < iterations; j++ {
+				_ = store.UpsertDeltas(ctx, []Delta{{Metric: MetricPrompts, Value: 1}})
+				_, _ = store.GetCursor(ctx, "sess")
+				_ = store.SetCursor(ctx, Cursor{SessionID: "sess"})
+				_, _ = store.Query(ctx, Query{Bucket: BucketHour})
+			}
+		}()
+	}
+
+	// Close concurrently with the writers. All writers must terminate cleanly
+	// (either seeing no error or ErrClosed once the flag flips).
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close() error = %v, want nil", err)
+	}
+	wg.Wait()
+
+	// After all writers finished, every method must consistently report ErrClosed.
+	if err := store.UpsertDeltas(context.Background(), nil); !errors.Is(err, ErrClosed) {
+		t.Errorf("post-concurrent UpsertDeltas: error = %v, want ErrClosed", err)
+	}
+}
+
+// TestPackageDependencies_NoWebOrConversation enforces the acceptance-criteria
+// invariant that internal/stats has no dependency on internal/web or
+// internal/conversation. Uses `go list -deps -json` so the check catches
+// transitive imports, not just direct ones.
+//
+// Skipped under `-short` (the test shells out to the Go toolchain and takes a
+// couple hundred milliseconds).
+func TestPackageDependencies_NoWebOrConversation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping dependency scan in short mode")
+	}
+
+	cmd := exec.Command("go", "list", "-deps", "-json", ".")
+	out, err := cmd.Output()
+	if err != nil {
+		if ee, ok := err.(*exec.ExitError); ok {
+			t.Fatalf("go list failed: %v\nstderr: %s", err, ee.Stderr)
+		}
+		t.Fatalf("go list failed: %v", err)
+	}
+
+	// `go list -deps -json` emits a stream of JSON objects (not a JSON array),
+	// so decode iteratively.
+	dec := json.NewDecoder(strings.NewReader(string(out)))
+	forbidden := []string{
+		"github.com/inercia/mitto/internal/web",
+		"github.com/inercia/mitto/internal/conversation",
+	}
+	sawSelf := false
+	for dec.More() {
+		var pkg struct {
+			ImportPath string
+			Imports    []string
+		}
+		if err := dec.Decode(&pkg); err != nil {
+			t.Fatalf("decoding go list output: %v", err)
+		}
+		if pkg.ImportPath == "github.com/inercia/mitto/internal/stats" {
+			sawSelf = true
+		}
+		for _, bad := range forbidden {
+			if pkg.ImportPath == bad || strings.HasPrefix(pkg.ImportPath, bad+"/") {
+				t.Errorf("internal/stats transitively depends on %s (via %s); the package must remain independent of the web/conversation layers", bad, pkg.ImportPath)
+			}
+			for _, imp := range pkg.Imports {
+				if imp == bad || strings.HasPrefix(imp, bad+"/") {
+					t.Errorf("package %s imports %s; internal/stats must not reach it transitively", pkg.ImportPath, imp)
+				}
+			}
+		}
+	}
+	if !sawSelf {
+		t.Fatalf("go list -deps did not include internal/stats itself in its output")
 	}
 }
