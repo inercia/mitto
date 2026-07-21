@@ -2943,3 +2943,93 @@ func TestBuiltinPrompts_ModelTagsAreCanonical(t *testing.T) {
 			strings.Join(unknown, "\n  "))
 	}
 }
+
+// -----------------------------------------------------------------------------
+// StatsConfig YAML wiring (mitto-a86b.9)
+// -----------------------------------------------------------------------------
+
+func TestLoad_StatsRetentionHours_YAML(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, ".mittorc")
+
+	// Overrides stats.retention_hours = 24 → the acceptance-criterion #2
+	// wiring for the retention worker. Explicit 0 must survive as
+	// "disable pruning" (distinct from unset → default 90 d).
+	yaml := `
+acp:
+  - test:
+      command: "test-cmd"
+stats:
+  retention_hours: 24
+`
+	if err := os.WriteFile(path, []byte(yaml), 0644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Stats == nil {
+		t.Fatal("cfg.Stats is nil, want populated StatsConfig")
+	}
+	if cfg.Stats.GetRetentionHours() != 24 {
+		t.Errorf("GetRetentionHours() = %d, want 24 (from stats.retention_hours override)",
+			cfg.Stats.GetRetentionHours())
+	}
+	if got := cfg.Stats.GetRetention(); got != 24*time.Hour {
+		t.Errorf("GetRetention() = %v, want %v", got, 24*time.Hour)
+	}
+}
+
+func TestLoad_StatsRetentionHours_UnsetGivesDefault(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, ".mittorc")
+
+	yaml := `
+acp:
+  - test:
+      command: "test-cmd"
+`
+	if err := os.WriteFile(path, []byte(yaml), 0644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	// cfg.Stats may be nil when the yaml omits the section entirely; the
+	// nil-safe getter still returns the default (90 d).
+	if got := cfg.Stats.GetRetentionHours(); got != DefaultStatsRetentionHours {
+		t.Errorf("unset stats.GetRetentionHours() = %d, want %d",
+			got, DefaultStatsRetentionHours)
+	}
+}
+
+func TestLoad_StatsRetentionHours_ExplicitZeroDisables(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, ".mittorc")
+
+	yaml := `
+acp:
+  - test:
+      command: "test-cmd"
+stats:
+  retention_hours: 0
+`
+	if err := os.WriteFile(path, []byte(yaml), 0644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Stats == nil || cfg.Stats.RetentionHours == nil {
+		t.Fatal("explicit stats.retention_hours=0 was not preserved (must be distinct from unset)")
+	}
+	if got := cfg.Stats.GetRetentionHours(); got != 0 {
+		t.Errorf("explicit 0 got %d, want 0 (disable pruning)", got)
+	}
+	if got := cfg.Stats.GetRetention(); got != 0 {
+		t.Errorf("explicit 0 GetRetention() = %v, want 0", got)
+	}
+}
