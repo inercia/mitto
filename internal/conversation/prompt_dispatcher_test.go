@@ -1484,6 +1484,9 @@ func TestPromptDispatcher_CreateFreshContextSession_FreshContextFalse_ReturnsEmp
 	if id != "" {
 		t.Fatalf("expected empty id when FreshContext=false, got %q", id)
 	}
+	if len(d.recordedSessionChanges) != 0 {
+		t.Fatalf("expected no session change when FreshContext=false, got %v", d.recordedSessionChanges)
+	}
 }
 
 func TestPromptDispatcher_CreateFreshContextSession_NoACPConn_ReturnsEmpty(t *testing.T) {
@@ -1494,6 +1497,9 @@ func TestPromptDispatcher_CreateFreshContextSession_NoACPConn_ReturnsEmpty(t *te
 	id := p.createFreshContextSession(d, PromptMeta{FreshContext: true})
 	if id != "" {
 		t.Fatalf("expected empty id when no ACP conn, got %q", id)
+	}
+	if len(d.recordedSessionChanges) != 0 {
+		t.Fatalf("expected no session change when no ACP conn, got %v", d.recordedSessionChanges)
 	}
 }
 
@@ -1507,6 +1513,14 @@ func TestPromptDispatcher_CreateFreshContextSession_Success_ReturnsID(t *testing
 	if id != "fresh-session-123" {
 		t.Fatalf("expected 'fresh-session-123', got %q", id)
 	}
+	// mitto-so19: successful NewSession must record a context_cleared pill.
+	if len(d.recordedSessionChanges) != 1 {
+		t.Fatalf("expected 1 context_cleared pill on NewSession success, got %d: %v", len(d.recordedSessionChanges), d.recordedSessionChanges)
+	}
+	sc := d.recordedSessionChanges[0]
+	if sc.Kind != "context_cleared" || sc.Value != "new_session" || sc.PreviousValue != "" {
+		t.Fatalf("unexpected pill: %+v", sc)
+	}
 }
 
 func TestPromptDispatcher_CreateFreshContextSession_ACPError_ReturnsEmpty(t *testing.T) {
@@ -1518,6 +1532,10 @@ func TestPromptDispatcher_CreateFreshContextSession_ACPError_ReturnsEmpty(t *tes
 	id := p.createFreshContextSession(d, PromptMeta{FreshContext: true})
 	if id != "" {
 		t.Fatalf("expected empty id on error, got %q", id)
+	}
+	// mitto-so19: no pill should be recorded when NewSession fails.
+	if len(d.recordedSessionChanges) != 0 {
+		t.Fatalf("expected no session change on NewSession error, got %v", d.recordedSessionChanges)
 	}
 }
 
@@ -1543,6 +1561,14 @@ func TestPromptDispatcher_CreateFreshContextSession_PrefersInPlaceFlush_WhenCmdC
 	// (acpNewSessionCalled would increment nextSeq; verify it wasn't via the fake)
 	// We check by asserting flushContextCalled AND that acpNewSessionID is unused:
 	// if NewSession had been called and succeeded the return would be non-empty.
+	// mitto-so19: successful in-place flush must record a context_cleared pill.
+	if len(d.recordedSessionChanges) != 1 {
+		t.Fatalf("expected 1 context_cleared pill on flush success, got %d: %v", len(d.recordedSessionChanges), d.recordedSessionChanges)
+	}
+	sc := d.recordedSessionChanges[0]
+	if sc.Kind != "context_cleared" || sc.Value != "flush" || sc.PreviousValue != "" {
+		t.Fatalf("unexpected pill: %+v", sc)
+	}
 }
 
 func TestPromptDispatcher_CreateFreshContextSession_FlushErrorDoesNotAbort(t *testing.T) {
@@ -1560,6 +1586,10 @@ func TestPromptDispatcher_CreateFreshContextSession_FlushErrorDoesNotAbort(t *te
 	if !d.flushContextCalled {
 		t.Fatal("expected pdFlushContextInPlace to be called")
 	}
+	// mitto-so19: no pill should be recorded when the flush command failed.
+	if len(d.recordedSessionChanges) != 0 {
+		t.Fatalf("expected no session change on flush error, got %v", d.recordedSessionChanges)
+	}
 }
 
 func TestPromptDispatcher_CreateFreshContextSession_FallsBackToNewSession_WhenNoCmd(t *testing.T) {
@@ -1576,6 +1606,14 @@ func TestPromptDispatcher_CreateFreshContextSession_FallsBackToNewSession_WhenNo
 	}
 	if d.flushContextCalled {
 		t.Fatal("expected pdFlushContextInPlace NOT to be called when no flush command")
+	}
+	// mitto-so19: NewSession fallback success must record a context_cleared pill.
+	if len(d.recordedSessionChanges) != 1 {
+		t.Fatalf("expected 1 context_cleared pill on NewSession fallback, got %d: %v", len(d.recordedSessionChanges), d.recordedSessionChanges)
+	}
+	sc := d.recordedSessionChanges[0]
+	if sc.Kind != "context_cleared" || sc.Value != "new_session" || sc.PreviousValue != "" {
+		t.Fatalf("unexpected pill: %+v", sc)
 	}
 }
 
