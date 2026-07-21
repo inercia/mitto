@@ -143,6 +143,8 @@ func (s *Server) apiRoutes(authMgr *middleware.AuthManager, csrfMgr *middleware.
 	// Global dashboard aggregation (epic mitto-aqo).
 	routes = append(routes,
 		apiRoute{method: "GET", pattern: "/api/dashboard", handler: http.HandlerFunc(s.apiHandlers.HandleDashboard)},
+		// Dashboard time-series (epic mitto-a86b, ticket stats.7).
+		apiRoute{method: "GET", pattern: "/api/dashboard/timeseries", handler: http.HandlerFunc(s.apiHandlers.HandleDashboardTimeseries)},
 	)
 
 	// UI preferences.

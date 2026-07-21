@@ -22,6 +22,7 @@ import (
 	configPkg "github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/conversation"
 	"github.com/inercia/mitto/internal/session"
+	"github.com/inercia/mitto/internal/stats"
 )
 
 // Deps holds the dependencies that REST handlers need from the web server.
@@ -201,6 +202,11 @@ type Deps struct {
 	// nil; callers must nil-guard (treat nil as "not singleton").
 	ResolvePromptSingleton func(promptName, workingDir string) bool
 
+	// ResolvePromptReuseIssue reports whether the named prompt (resolved for the
+	// given working dir via the full merge pipeline) has target.reuseIssue set.
+	// May be nil; callers must nil-guard (treat nil as "not reuseIssue").
+	ResolvePromptReuseIssue func(promptName, workingDir string) bool
+
 	// DefaultACPServer mirrors Server.config.ACPServer: the default ACP server
 	// name used in the create-session response when the resolved workspace does
 	// not specify one.
@@ -338,6 +344,16 @@ type Deps struct {
 	// server has no auxiliary manager; the improve-prompt handler treats a nil
 	// value as "service unavailable" (503), matching the original behavior.
 	ImprovePrompt func(ctx context.Context, workspaceUUID, prompt string) (string, error)
+
+	// StatsStore mirrors Server.statsStore: the dashboard time-series stats
+	// store used by HandleDashboardTimeseries. May be nil; the handler then
+	// serves an empty (zero-filled) response.
+	StatsStore stats.Store
+
+	// StatsBackfillerInProgress mirrors Server.statsBackfiller.InProgress:
+	// reports whether a stats backfill pass is currently running so the
+	// timeseries response can flag partial data. May be nil; treated as false.
+	StatsBackfillerInProgress func() bool
 }
 
 // Handlers groups the REST API handler methods extracted from the web server.
@@ -347,6 +363,12 @@ type Handlers struct {
 	beadsCleanupMu     sync.Mutex
 	beadsCleanupActive map[string]bool
 
+	// tsCache is the 30s in-process response cache for
+	// HandleDashboardTimeseries. Lazily initialized on first use so New(Deps{})
+	// stays unchanged.
+	tsCacheOnce sync.Once
+	tsCache     *timeseriesCache
+
 	// singletonLocksMu guards singletonLocks (lazily-created keyed mutexes).
 	singletonLocksMu sync.Mutex
 	// singletonLocks holds one mutex per "workingDir\x00promptName" key. It
@@ -354,6 +376,14 @@ type Handlers struct {
 	// HandleCreateSession so two concurrent requests for the same key cannot
 	// both miss the scan and create duplicate conversations. See lockSingleton.
 	singletonLocks map[string]*sync.Mutex
+
+	// reuseIssueLocksMu guards reuseIssueLocks (lazily-created keyed mutexes).
+	reuseIssueLocksMu sync.Mutex
+	// reuseIssueLocks holds one mutex per "workingDir\x00beadsIssue" key. It
+	// serializes the reuseIssue find-or-route scan+create/seed sequence in
+	// HandleCreateSession so two concurrent requests for the same key cannot
+	// both miss the scan and create duplicate conversations. See lockReuseIssue.
+	reuseIssueLocks map[string]*sync.Mutex
 }
 
 // New creates a new Handlers with the given dependencies.
@@ -374,6 +404,25 @@ func (h *Handlers) lockSingleton(key string) func() {
 		h.singletonLocks[key] = mu
 	}
 	h.singletonLocksMu.Unlock()
+
+	mu.Lock()
+	return mu.Unlock
+}
+
+// lockReuseIssue locks (lazily creating if needed) the mutex for key and
+// returns a function that unlocks it. Callers should `defer unlock()`.
+// Key format is "workingDir\x00beadsIssue" — see HandleCreateSession.
+func (h *Handlers) lockReuseIssue(key string) func() {
+	h.reuseIssueLocksMu.Lock()
+	if h.reuseIssueLocks == nil {
+		h.reuseIssueLocks = make(map[string]*sync.Mutex)
+	}
+	mu, ok := h.reuseIssueLocks[key]
+	if !ok {
+		mu = &sync.Mutex{}
+		h.reuseIssueLocks[key] = mu
+	}
+	h.reuseIssueLocksMu.Unlock()
 
 	mu.Lock()
 	return mu.Unlock
