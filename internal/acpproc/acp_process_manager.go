@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
-	"strings"
 	"sync"
 	"time"
 
@@ -1132,38 +1131,19 @@ func (m *ACPProcessManager) getOrCreateAuxiliarySession(ctx context.Context, wor
 	// spawn a whole second Mitto app (webview + up-hook / cloudflared) instead
 	// of the intended stdio proxy. resolveMittoCLIBinary rewrites to the
 	// sibling `mitto` binary in that case.
-	mcpServers := []acp.McpServer{} // Must be empty array, not nil — ACP validates this
-	if strings.HasPrefix(purpose, auxiliary.PurposeProcessorPrefix) && m.MCPServerURL != "" {
-		caps := process.Capabilities()
-		if caps != nil && caps.McpCapabilities.Http {
-			mcpServers = []acp.McpServer{{
-				Http: &acp.McpServerHttpInline{
-					Type:    "http",
-					Name:    "mitto",
-					Url:     m.MCPServerURL,
-					Headers: []acp.HttpHeader{}, // Must be empty array, not nil — ACP validates this
-				},
-			}}
-			if m.logger != nil {
-				m.logger.Debug("Auxiliary processor session will use MCP HTTP",
-					"purpose", purpose,
-					"mcp_url", m.MCPServerURL)
-			}
-		} else if exe, err := resolveMittoCLIBinary(); err == nil {
-			mcpServers = []acp.McpServer{{
-				Stdio: &acp.McpServerStdio{
-					Name:    "mitto",
-					Command: exe,
-					Args:    []string{"mcp", "--proxy-to", m.MCPServerURL},
-					Env:     []acp.EnvVariable{}, // Must be empty array, not nil — ACP validates this
-				},
-			}}
-			if m.logger != nil {
-				m.logger.Debug("Auxiliary processor session will use MCP proxy",
-					"purpose", purpose,
-					"mcp_url", m.MCPServerURL,
-					"proxy_command", exe)
-			}
+	mcpServers, transportChoice, chosenExe := buildAuxProcessorMCPServers(
+		purpose, m.MCPServerURL, process.Capabilities(), resolveMittoCLIBinary)
+	if m.logger != nil {
+		switch transportChoice {
+		case auxMCPTransportHTTP:
+			m.logger.Debug("Auxiliary processor session will use MCP HTTP",
+				"purpose", purpose,
+				"mcp_url", m.MCPServerURL)
+		case auxMCPTransportStdio:
+			m.logger.Debug("Auxiliary processor session will use MCP proxy",
+				"purpose", purpose,
+				"mcp_url", m.MCPServerURL,
+				"proxy_command", chosenExe)
 		}
 	}
 
