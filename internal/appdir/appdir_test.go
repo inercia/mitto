@@ -162,6 +162,28 @@ func TestSessionsDir(t *testing.T) {
 	}
 }
 
+func TestStatsDir(t *testing.T) {
+	customDir := t.TempDir()
+	t.Setenv(MittoDirEnv, customDir)
+	ResetCache()
+	t.Cleanup(ResetCache)
+
+	statsDir, err := StatsDir()
+	if err != nil {
+		t.Fatalf("StatsDir() failed: %v", err)
+	}
+
+	expected := filepath.Join(customDir, StatsDirName)
+	if statsDir != expected {
+		t.Errorf("StatsDir() = %q, want %q", statsDir, expected)
+	}
+
+	// StatsDir must return the path only; it must not create the directory.
+	if _, err := os.Stat(expected); !os.IsNotExist(err) {
+		t.Errorf("StatsDir() unexpectedly created %q (err=%v); it should return path only", expected, err)
+	}
+}
+
 func TestWorkspacesPath(t *testing.T) {
 	customDir := t.TempDir()
 	t.Setenv(MittoDirEnv, customDir)

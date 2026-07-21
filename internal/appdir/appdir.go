@@ -69,6 +69,11 @@ const (
 	// MCPToolsCacheDirName is the name of the subdirectory holding per-workspace
 	// persisted real-MCP tools snapshots (one JSON file per workspace UUID).
 	MCPToolsCacheDirName = "mcp-tools-cache"
+
+	// StatsDirName is the name of the subdirectory holding the dashboard
+	// time-series stats SQLite database (created by the first writer under
+	// internal/stats).
+	StatsDirName = "stats"
 )
 
 var (
@@ -413,6 +418,18 @@ func MCPToolsCacheDir() (string, error) {
 		return "", err
 	}
 	return filepath.Join(dir, MCPToolsCacheDirName), nil
+}
+
+// StatsDir returns the directory holding the dashboard time-series stats
+// database ($MITTO_DIR/stats). The directory is not created here; the first
+// writer (internal/stats) creates it via os.MkdirAll before opening the
+// SQLite file. Mirrors the MCPToolsCacheDir pattern.
+func StatsDir() (string, error) {
+	dir, err := Dir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, StatsDirName), nil
 }
 
 // ResetCache clears the cached directory path.
