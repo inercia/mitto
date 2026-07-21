@@ -22,6 +22,7 @@ import (
 	"github.com/inercia/mitto/internal/processors"
 	"github.com/inercia/mitto/internal/runner"
 	"github.com/inercia/mitto/internal/session"
+	"github.com/inercia/mitto/internal/stats"
 )
 
 // MaxSessions is the maximum number of concurrent sessions allowed.
@@ -199,6 +200,11 @@ type SessionManager struct {
 	// rate-limiter never contends with the manager's main lock (mitto-7o2).
 	resumeStormLogMu   sync.Mutex
 	lastResumeStormLog time.Time
+
+	// statsAggregator receives per-session events via a lightweight observer
+	// attached at session registration time. Nil disables live stats wiring
+	// entirely (test/CLI paths that don't want a stats sink).
+	statsAggregator stats.Aggregator
 }
 
 // resumeStormLogInterval is the minimum wall-clock gap between successive
@@ -309,6 +315,43 @@ func (sm *SessionManager) SetProcessorManager(pm *processors.Manager) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 	sm.processorManager = pm
+}
+
+// SetStatsAggregator sets the stats aggregator used by the live path
+// (mitto-a86b.4). When non-nil, a stateless observer is attached to every
+// session at registration time (both fresh creation and resume) and forwards
+// user_prompt / agent_message / agent_thought / tool_call events into the
+// aggregator's non-blocking Ingest. When nil, live stats wiring is disabled
+// and the observer is never constructed — safe for --no-stats builds and
+// existing tests.
+func (sm *SessionManager) SetStatsAggregator(agg stats.Aggregator) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.statsAggregator = agg
+}
+
+// attachStatsObserver attaches a live-path statsObserver to bs when a stats
+// aggregator is configured. Must be called AFTER bs has been registered in
+// sm.sessions so ObserverCount reflects the wiring. Reads sm.statsAggregator
+// under sm.mu but attaches without holding sm.mu (AddObserver takes its own
+// lock; keeping locks disjoint avoids deadlocks against observer callbacks).
+func (sm *SessionManager) attachStatsObserver(bs *BackgroundSession) {
+	sm.mu.RLock()
+	agg := sm.statsAggregator
+	sm.mu.RUnlock()
+	if agg == nil || bs == nil {
+		return
+	}
+	obs := newStatsObserver(agg, stats.SessionContext{
+		SessionID:  bs.GetSessionID(),
+		Workspace:  bs.GetWorkspaceUUID(),
+		WorkingDir: bs.GetWorkingDir(),
+		ACPServer:  bs.GetACPServer(),
+	})
+	if obs == nil {
+		return
+	}
+	bs.AddObserver(obs)
 }
 
 // SetAPIPrefix sets the API prefix for HTTP file links.
@@ -1767,6 +1810,10 @@ func (sm *SessionManager) CreateSessionWithWorkspace(ctx context.Context, name, 
 	sm.sessions[bs.GetSessionID()] = bs
 	sm.mu.Unlock()
 
+	// Live stats path (mitto-a86b.4): attach a stateless observer that
+	// forwards events into the aggregator. No-op when statsAggregator is nil.
+	sm.attachStatsObserver(bs)
+
 	newBsDuration := time.Since(newBsStart)
 
 	if sm.logger != nil {
@@ -2456,6 +2503,10 @@ func (sm *SessionManager) resumeSessionWithConstraint(sessionID, sessionName, wo
 	}
 	sm.sessions[bs.GetSessionID()] = bs
 	sm.mu.Unlock()
+
+	// Live stats path (mitto-a86b.4): attach observer for the resumed session
+	// on the same terms as fresh creation.
+	sm.attachStatsObserver(bs)
 
 	// Signal completion immediately after registration — this clears the pendingResumes
 	// entry so concurrent callers unblock and find the session via GetSession.

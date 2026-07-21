@@ -164,6 +164,7 @@ type BackgroundSession struct {
 	fileLinksConfig *config.FileLinksConfig // Configuration for file path linking
 	apiPrefix       string                  // URL prefix for API endpoints (for HTTP file links)
 	workspaceUUID   string                  // Workspace UUID for secure file links
+	acpServer       string                  // ACP server name (informational; propagated to observers/stats)
 
 	// Restricted runner for sandboxed execution
 	runner *runner.Runner // Optional runner for restricted execution (nil = direct execution)
@@ -624,6 +625,7 @@ func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, erro
 		fileLinksConfig:                cfg.FileLinksConfig,
 		apiPrefix:                      cfg.APIPrefix,
 		workspaceUUID:                  cfg.WorkspaceUUID,
+		acpServer:                      cfg.ACPServer,
 		runner:                         cfg.Runner,
 		onStreamingStateChanged:        cfg.OnStreamingStateChanged,
 		onUIPromptStateChanged:         cfg.OnUIPromptStateChanged,
@@ -868,6 +870,7 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 		fileLinksConfig:                config.FileLinksConfig,
 		apiPrefix:                      config.APIPrefix,
 		workspaceUUID:                  config.WorkspaceUUID,
+		acpServer:                      config.ACPServer,
 		runner:                         config.Runner,
 		onStreamingStateChanged:        config.OnStreamingStateChanged,
 		onUIPromptStateChanged:         config.OnUIPromptStateChanged,
@@ -1693,6 +1696,13 @@ func (e *sessionError) Error() string {
 // GetWorkspaceUUID returns the workspace UUID associated with this session.
 func (bs *BackgroundSession) GetWorkspaceUUID() string {
 	return bs.workspaceUUID
+}
+
+// GetACPServer returns the ACP server name this session was created against
+// (e.g. "Auggie (Opus)"). Informational; used to label session-scoped stats
+// deltas (stats.4).
+func (bs *BackgroundSession) GetACPServer() string {
+	return bs.acpServer
 }
 
 // FreshCachedArgNames returns the parameter names with fresh (non-expired) cached
