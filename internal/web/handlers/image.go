@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"errors"
 	"io"
 	"net/http"
 	"os"
@@ -86,9 +87,13 @@ func (h *Handlers) handleUploadImage(w http.ResponseWriter, r *http.Request, sto
 
 	// Parse multipart form
 	if err := r.ParseMultipartForm(maxUploadSize); err != nil {
-		if strings.Contains(err.Error(), "request body too large") {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) || strings.Contains(err.Error(), "request body too large") {
 			writeErrorJSON(w, http.StatusRequestEntityTooLarge, "image_too_large", "Image exceeds 10MB limit")
 			return
+		}
+		if h.deps.Logger != nil {
+			h.deps.Logger.Warn("Failed to parse image upload form", "error", err, "session_id", sessionID)
 		}
 		writeErrorJSON(w, http.StatusBadRequest, "", "Failed to parse form")
 		return

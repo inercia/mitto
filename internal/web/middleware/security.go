@@ -97,7 +97,13 @@ func RequestSizeLimitMiddleware(maxBytes int64) func(http.Handler) http.Handler 
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Only limit POST, PUT, PATCH requests
 			if r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodPatch {
-				r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
+				// Multipart uploads (images, files, save-file) enforce their own
+				// per-endpoint MaxBytesReader; the generic cap would silently
+				// clamp legitimate uploads well below what handlers advertise.
+				ct := r.Header.Get("Content-Type")
+				if !strings.HasPrefix(strings.ToLower(ct), "multipart/") {
+					r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
+				}
 			}
 			next.ServeHTTP(w, r)
 		})

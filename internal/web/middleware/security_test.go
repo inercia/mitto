@@ -1,6 +1,8 @@
 package middleware
 
 import (
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -95,6 +97,66 @@ func TestRequestSizeLimitMiddleware(t *testing.T) {
 
 	// The handler should have received a limited body
 	// (actual behavior depends on how the handler reads the body)
+}
+
+func TestRequestSizeLimitMiddleware_MultipartExempt(t *testing.T) {
+	// Middleware cap intentionally small: multipart requests must bypass it
+	// so per-endpoint MaxBytesReader (e.g. image.go's 10 MB) governs instead.
+	const cap = 1 * 1024 * 1024
+	const bodySize = 2 * 1024 * 1024
+
+	var (
+		gotBytes int
+		readErr  error
+	)
+	handler := RequestSizeLimitMiddleware(cap)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, err := io.ReadAll(r.Body)
+		gotBytes = len(b)
+		readErr = err
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	body := strings.Repeat("x", bodySize)
+	req := httptest.NewRequest("POST", "/", strings.NewReader(body))
+	req.Header.Set("Content-Type", "multipart/form-data; boundary=xxx")
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	var maxErr *http.MaxBytesError
+	if errors.As(readErr, &maxErr) {
+		t.Fatalf("multipart body was clamped by middleware: %v", readErr)
+	}
+	if readErr != nil {
+		t.Fatalf("unexpected read error: %v", readErr)
+	}
+	if gotBytes != bodySize {
+		t.Errorf("read %d bytes, want %d (middleware truncated multipart body)", gotBytes, bodySize)
+	}
+}
+
+func TestRequestSizeLimitMiddleware_JSONStillLimited(t *testing.T) {
+	// Non-multipart POSTs (JSON/text) must still be capped for DoS protection.
+	const cap = 1 * 1024 * 1024
+	const bodySize = 2 * 1024 * 1024
+
+	var readErr error
+	handler := RequestSizeLimitMiddleware(cap)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, readErr = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	body := strings.Repeat("x", bodySize)
+	req := httptest.NewRequest("POST", "/", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	var maxErr *http.MaxBytesError
+	if !errors.As(readErr, &maxErr) {
+		t.Fatalf("expected *http.MaxBytesError for oversized JSON body, got %v", readErr)
+	}
 }
 
 func TestHideServerInfoMiddleware(t *testing.T) {
