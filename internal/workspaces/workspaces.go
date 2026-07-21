@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/inercia/mitto/internal/appdir"
@@ -143,6 +144,10 @@ type WorkspaceSettings struct {
 	// controls whether the folder is shown in the sidebar even when it has no
 	// conversations.
 	Pinned bool `json:"pinned,omitempty" yaml:"pinned,omitempty"`
+	// LastOpenedAt is a folder-derived, read-only projection of
+	// FolderSettings.LastOpenedAt populated by ApplyFolderDefaults on load and
+	// stripped on save. Consumed by the frontend's "Add folder" dialog for MRU sort.
+	LastOpenedAt time.Time `json:"last_opened_at,omitempty" yaml:"last_opened_at,omitempty"`
 }
 
 // WorkspaceID returns a unique identifier for this workspace.

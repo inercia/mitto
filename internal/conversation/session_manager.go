@@ -1800,6 +1800,17 @@ func (sm *SessionManager) CreateSessionWithWorkspace(ctx context.Context, name, 
 	// Trigger early MCP tools fetch to warm the cache before the first message.
 	sm.ensureMCPToolsFetch(workspaceUUID)
 
+	// Stamp folder MRU timestamp fire-and-forget so the "Add folder" dialog can
+	// rank hidden folders by most-recently-used first.
+	if workingDir != "" {
+		go func(wd string) {
+			if err := config.SetFolderLastOpenedAt(wd, time.Now()); err != nil && sm.logger != nil {
+				sm.logger.Warn("failed to stamp folder last_opened_at on session create",
+					"working_dir", wd, "error", err)
+			}
+		}(workingDir)
+	}
+
 	return bs, nil
 }
 

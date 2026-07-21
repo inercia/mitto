@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -64,6 +65,11 @@ type FolderSettings struct {
 	// counterpart and preserved across workspace-driven saves by
 	// preserveFolderNativeFields.
 	Pinned bool `json:"pinned,omitempty" yaml:"pinned,omitempty"`
+	// LastOpenedAt records when the folder was most recently opened/pinned or
+	// received a new session, used by the "Add folder" dialog to sort hidden
+	// workspaces MRU-first. Folder-native: no per-workspace counterpart; preserved
+	// across workspace-driven saves by preserveFolderNativeFields.
+	LastOpenedAt time.Time `json:"last_opened_at,omitempty" yaml:"last_opened_at,omitempty"`
 }
 
 // BeadsFolderSettings holds folder-native beads integration settings.
@@ -193,6 +199,7 @@ func ApplyFolderDefaults(workspaces []WorkspaceSettings, folders map[string]Fold
 			workspaces[i].AutoChildren = append([]AutoChild(nil), fs.AutoChildren...)
 		}
 		workspaces[i].Pinned = fs.Pinned
+		workspaces[i].LastOpenedAt = fs.LastOpenedAt
 	}
 }
 
@@ -264,6 +271,7 @@ func extractFolderSettings(workspaces []WorkspaceSettings) ([]WorkspaceSettings,
 			cleaned[i].Group = ""
 			cleaned[i].AutoChildren = nil
 			cleaned[i].Pinned = false
+			cleaned[i].LastOpenedAt = time.Time{}
 		}
 
 		if any {
@@ -326,6 +334,9 @@ func foldersEqual(a, b map[string]FolderSettings) bool {
 		if av.Pinned != bv.Pinned {
 			return false
 		}
+		if !av.LastOpenedAt.Equal(bv.LastOpenedAt) {
+			return false
+		}
 		if !autoChildrenEqual(av.AutoChildren, bv.AutoChildren) {
 			return false
 		}
@@ -369,6 +380,9 @@ func folderSettingsEmpty(fs FolderSettings) bool {
 	if fs.Pinned {
 		return false
 	}
+	if !fs.LastOpenedAt.IsZero() {
+		return false
+	}
 	for _, buttons := range fs.Shortcuts {
 		if len(buttons) > 0 {
 			return false
@@ -410,7 +424,8 @@ func preserveFolderNativeFields(workspaces []WorkspaceSettings, folders map[stri
 			}
 		}
 		hasPinned := ex.Pinned
-		if !hasBeads && !hasShortcuts && !hasPinned {
+		hasLastOpenedAt := !ex.LastOpenedAt.IsZero()
+		if !hasBeads && !hasShortcuts && !hasPinned && !hasLastOpenedAt {
 			continue
 		}
 		if out == nil {
@@ -425,6 +440,9 @@ func preserveFolderNativeFields(workspaces []WorkspaceSettings, folders map[stri
 		}
 		if hasPinned {
 			fs.Pinned = true
+		}
+		if hasLastOpenedAt {
+			fs.LastOpenedAt = ex.LastOpenedAt
 		}
 		out[wd] = fs
 	}
@@ -610,4 +628,39 @@ func FolderPinned(workingDir string) bool {
 		return false
 	}
 	return fs.Pinned
+}
+
+// SetFolderLastOpenedAt stamps the folder's last-opened timestamp in
+// folders.json. Callers use this to record folder activity (pinning or a new
+// session) so the "Add folder" dialog can rank hidden folders MRU-first.
+func SetFolderLastOpenedAt(workingDir string, t time.Time) error {
+	folders, err := LoadFolders()
+	if err != nil {
+		return err
+	}
+	if folders == nil {
+		folders = map[string]FolderSettings{}
+	}
+	fs := folders[workingDir]
+	fs.LastOpenedAt = t
+	if folderSettingsEmpty(fs) {
+		delete(folders, workingDir)
+	} else {
+		folders[workingDir] = fs
+	}
+	return SaveFolders(folders)
+}
+
+// FolderLastOpenedAt returns the folder's last-opened timestamp, or the zero
+// time if unset or on read error.
+func FolderLastOpenedAt(workingDir string) time.Time {
+	folders, err := LoadFolders()
+	if err != nil {
+		return time.Time{}
+	}
+	fs, ok := folders[workingDir]
+	if !ok {
+		return time.Time{}
+	}
+	return fs.LastOpenedAt
 }

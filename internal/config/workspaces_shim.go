@@ -56,6 +56,8 @@ var (
 	SetFolderShortcuts           = workspaces.SetFolderShortcuts
 	SetFolderPinned              = workspaces.SetFolderPinned
 	FolderPinned                 = workspaces.FolderPinned
+	SetFolderLastOpenedAt        = workspaces.SetFolderLastOpenedAt
+	FolderLastOpenedAt           = workspaces.FolderLastOpenedAt
 
 	ConstraintMatchesName = workspaces.ConstraintMatchesName
 )

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/inercia/mitto/internal/appdir"
 )
@@ -843,5 +844,51 @@ func TestSetFolderPinned_ReprojectsOntoFreshWorkspaces(t *testing.T) {
 
 	if !workspaces[0].Pinned {
 		t.Errorf("workspaces[0].Pinned = false after SetFolderPinned+ApplyFolderDefaults, want true")
+	}
+}
+
+func TestSetFolderLastOpenedAt(t *testing.T) {
+	setupFoldersTestDir(t)
+
+	want := time.Now().UTC().Truncate(time.Second)
+	if err := SetFolderLastOpenedAt("/tmp/foo", want); err != nil {
+		t.Fatalf("SetFolderLastOpenedAt: %v", err)
+	}
+
+	folders, err := LoadFolders()
+	if err != nil {
+		t.Fatalf("LoadFolders: %v", err)
+	}
+	fs, ok := folders["/tmp/foo"]
+	if !ok {
+		t.Fatalf("folder /tmp/foo missing after SetFolderLastOpenedAt (folderSettingsEmpty pruned it?)")
+	}
+	if diff := fs.LastOpenedAt.Sub(want); diff < -time.Second || diff > time.Second {
+		t.Errorf("round-tripped LastOpenedAt = %v, want ~%v (diff=%v)", fs.LastOpenedAt, want, diff)
+	}
+
+	got := FolderLastOpenedAt("/tmp/foo")
+	if diff := got.Sub(want); diff < -time.Second || diff > time.Second {
+		t.Errorf("FolderLastOpenedAt = %v, want ~%v (diff=%v)", got, want, diff)
+	}
+
+	// A folder with ONLY a LastOpenedAt must be considered non-empty so it
+	// survives a save/load cycle.
+	if folderSettingsEmpty(FolderSettings{LastOpenedAt: want}) {
+		t.Errorf("folderSettingsEmpty({LastOpenedAt}) = true, want false")
+	}
+}
+
+func TestApplyFolderDefaults_ProjectsLastOpenedAt(t *testing.T) {
+	want := time.Now().UTC().Truncate(time.Second)
+	folders := map[string]FolderSettings{
+		"/proj": {LastOpenedAt: want},
+	}
+	ws := []WorkspaceSettings{
+		{ACPServer: "auggie", WorkingDir: "/proj"},
+	}
+	ApplyFolderDefaults(ws, folders)
+	if !ws[0].LastOpenedAt.Equal(want) {
+		t.Errorf("workspace LastOpenedAt = %v, want %v", ws[0].LastOpenedAt, want)
 	}
 }
