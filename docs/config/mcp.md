@@ -216,6 +216,62 @@ If you see "requires flag to be enabled":
 2. The conversation must be open in the Mitto UI
 3. Check browser console for WebSocket connection errors
 
+## Cold-Start Hygiene
+
+MCP server configuration has a direct effect on how long the **first prompt** in a
+cold Mitto workspace takes to produce its first token. When first-token latency
+in a workspace is consistently poor (tens of seconds to multiple minutes on a
+freshly-started ACP process), apply the following per-workspace checks in order.
+None of these are code changes — they are operational settings that live in the
+workspace's MCP configuration.
+
+1. **Trim MCP servers to what the workspace actually uses.** For agents that
+   `initialize` every configured MCP server before emitting the first token
+   (Auggie today), each configured-but-unused server is pure cold-init tax on
+   every session. Open **Workspaces → \<workspace\> → MCP** and remove servers
+   the running agent does not need. The Mitto UI shows the effective server set
+   per workspace.
+2. **Pre-install `uvx`-launched servers as `uv` tools.** Servers whose command
+   is `uvx <package>` (e.g. `uvx mcp-atlassian`) pay a cold `uv` resolve on
+   every fresh spawn — roughly 11.5 s on an empty cache, multiplied across the
+   ~6 duplicate spawns of an agent's cold-init fork burst. Installing the
+   server as a `uv` tool up front eliminates that cost:
+
+   ```bash
+   uv tool install mcp-atlassian
+   ```
+
+   Then change the MCP config to launch the installed tool directly instead of
+   through `uvx`. The equivalent applies to any other package manager with a
+   heavy cold resolve (`npx` vs. globally-installed `npm` binaries, etc.).
+3. **Do not run one `working_dir` under multiple concurrent workspace UUIDs.**
+   When several Mitto workspaces (e.g. one per ACP server or model tier) share
+   the same `working_dir` and are all active at once, their `session/new` calls
+   fire concurrently on the same cold shared ACP process and starve each
+   other's MCP-init budget. This is the single most deterministic trigger of
+   cold-start wedges in production traces. Prefer one active workspace per
+   `working_dir` at a time, or split the folder into per-agent working
+   directories.
+4. **Verify `working_dir` matches the git root when using Auggie.** `auggie mcp
+   list` resolves its workspace argument to the **git top-level**, not to the
+   literal path Mitto passes it. If your Mitto `working_dir` is a subdirectory
+   of a larger git repository, the Auggie process will load
+   `<git-root>/.augment/settings.local.json` — not the `.augment/` directory
+   inside your `working_dir`. The MCP tab in the Mitto UI can then show servers
+   the running agent never actually loads (see the git-root divergence gotcha
+   in the developer notes). Either point `working_dir` at the git root, move
+   the server registration up to the git-root config, or register at user
+   scope (`auggie mcp add` without `--local`).
+5. **Stale persisted ACP session IDs are auto-cleared.** No manual cleanup is
+   normally needed: when a `session/load` fails, Mitto automatically clears the
+   persisted `acp_session_id` and falls back to a fresh `session/new`
+   (`mitto-y1g`). If a workspace still shows cold-start wedges after applying
+   steps 1–4, inspect its cold-start trace via the developer notes rather than
+   manually deleting session files.
+
+For the Mitto-side history of the cold-start wedge and the developer-facing
+root-cause records, see [`.augment/rules/42-mcpserver-development.md`](../../.augment/rules/42-mcpserver-development.md#cold-start-mcp-wedge-mitto-54k--mitto-6hr--mitto-side-sse-stall-fixed).
+
 ## Related Documentation
 
 - [Developer MCP Documentation](../devel/mcp.md) - Full technical details

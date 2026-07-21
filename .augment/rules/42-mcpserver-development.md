@@ -34,6 +34,8 @@ Earlier diagnosis ("agent-side, unfixable in Mitto" — auggie hard-gating on MC
 
 **Fix (`mitto-6hr`, P1, epic `mitto-54k`, APPLIED)**: `startSSE()` now passes `&mcp.StreamableHTTPOptions{JSONResponse: true}` to `NewStreamableHTTPHandler` so POST responses resolve inline, independent of the SSE GET. **Not** `Stateless: true` — rejects server→client *requests*, breaking `UIPrompter` (mitto_ui_options/form). Still-valid secondary mitigations (reduce concurrency, don't fix the stall): `mitto-clc` (disable proactive keep-warm), `mitto-cgc` (stagger aux-session creation).
 
+**Operator-facing hygiene** (residual first-token gate under Auggie, epic `mitto-ammz`, bead `mitto-agt`): see [`docs/config/mcp.md` → Cold-Start Hygiene](../../docs/config/mcp.md#cold-start-hygiene) for the operator recipe (trim unused MCP servers, `uv tool install` for `uvx`-launched servers, avoid concurrent workspace UUIDs sharing one `working_dir`, verify `working_dir` matches the git root). The upstream Auggie feature-request draft (lazy / bounded MCP init) lives at [`docs/devel/upstream/auggie-lazy-mcp-init.md`](../../docs/devel/upstream/auggie-lazy-mcp-init.md).
+
 ## Adding New Tools
 
 Handler signature (3-arg form — SDK unmarshals input automatically):

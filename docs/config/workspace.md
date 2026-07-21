@@ -38,7 +38,7 @@ The right panel provides these tabs:
 | **Processors** | ![](screenshots/04-workspace-processors.png) | Message processors (enable/disable per workspace) |
 | **Children** | ![](screenshots/04-workspace-children.png) | Auto-spawn child conversations |
 | **Runner** | — | Restricted execution sandbox settings |
-| **MCP** | — | MCP server configuration and installation |
+| **MCP** | — | MCP server configuration and installation (see also [Cold-Start Hygiene](mcp.md#cold-start-hygiene) — trim unused servers, avoid concurrent workspace UUIDs sharing one `working_dir`) |
 
 ---
 
