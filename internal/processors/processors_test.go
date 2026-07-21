@@ -105,6 +105,22 @@ func TestBuildCELContext_NewFields(t *testing.T) {
 	}
 }
 
+// TestBuildCELContext_HasMessages asserts that BuildCELContext copies
+// input.HasMessages onto ctx.Session.HasMessages (feeds the .Session.HasMessages
+// Go-template branch and CEL enabledWhen expressions), and that the zero value
+// yields false.
+func TestBuildCELContext_HasMessages(t *testing.T) {
+	ctx := BuildCELContext(&ProcessorInput{SessionID: "s", HasMessages: true})
+	if !ctx.Session.HasMessages {
+		t.Error("expected ctx.Session.HasMessages=true when input.HasMessages=true")
+	}
+
+	emptyCtx := BuildCELContext(&ProcessorInput{SessionID: "s"})
+	if emptyCtx.Session.HasMessages {
+		t.Error("expected ctx.Session.HasMessages=false by default")
+	}
+}
+
 // TestBuildCELContext_ModelTags asserts that BuildCELContext copies the resolved model
 // tags and name onto the Session context (mitto-i5sr), and that an unset input yields
 // empty values (safe for Model(tag)/HasModelTag to treat as no tags).

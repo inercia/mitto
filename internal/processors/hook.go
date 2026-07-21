@@ -188,6 +188,7 @@ func BuildCELContext(input *ProcessorInput) *config.PromptEnabledContext {
 	ctx.Session.IsLoop = input.IsLoop
 	ctx.Session.IsLoopForced = input.IsLoopForced
 	ctx.Session.BeadsIssue = input.BeadsIssue
+	ctx.Session.HasMessages = input.HasMessages
 
 	// Iteration context for the {{ .Iteration.* }} template namespace.
 	ctx.Iteration.Number = input.IterationNumber

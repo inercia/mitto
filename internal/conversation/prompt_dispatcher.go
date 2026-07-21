@@ -445,6 +445,7 @@ func (p promptDispatcher) buildProcessorInput(d promptDeps, message string, isFi
 	var sessionName, acpServer, parentSessionID, parentSessionName, beadsIssue string
 	var childSessions []processors.ChildSession
 	var advancedSettings map[string]bool
+	var hasMessages bool
 
 	if d.pdHasStore() {
 		if sessionMeta, err := d.pdGetSessionMetadata(); err == nil {
@@ -453,6 +454,7 @@ func (p promptDispatcher) buildProcessorInput(d promptDeps, message string, isFi
 			parentSessionID = sessionMeta.ParentSessionID
 			advancedSettings = sessionMeta.AdvancedSettings
 			beadsIssue = sessionMeta.BeadsIssue
+			hasMessages = !sessionMeta.LastUserMessageAt.IsZero()
 		}
 		if parentSessionID != "" {
 			if parentMeta, err := d.pdGetMetadataForID(parentSessionID); err == nil {
@@ -532,6 +534,7 @@ func (p promptDispatcher) buildProcessorInput(d promptDeps, message string, isFi
 	return &processors.ProcessorInput{
 		Message:                message,
 		IsFirstMessage:         isFirst,
+		HasMessages:            hasMessages,
 		SessionID:              d.pdSessionID(),
 		WorkingDir:             workingDir,
 		ParentSessionID:        parentSessionID,

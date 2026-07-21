@@ -16,6 +16,11 @@ type ProcessorInput struct {
 	Message string `json:"message"`
 	// IsFirstMessage indicates if this is the first message in the conversation.
 	IsFirstMessage bool `json:"is_first_message"`
+	// HasMessages indicates whether the conversation has recorded at least one
+	// prior user prompt (derived from meta.LastUserMessageAt being non-zero).
+	// Populates Session.HasMessages in BuildCELContext for the
+	// Go-template branch and CEL enabledWhen expressions. Excluded from JSON (json:"-").
+	HasMessages bool `json:"-"`
 	// SessionID is the current session identifier.
 	SessionID string `json:"session_id"`
 	// WorkingDir is the session's working directory.
