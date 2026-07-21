@@ -480,6 +480,12 @@ function sessionChangeText(m) {
       return `Mode changed to ${value}`;
     case "prompt_arguments":
       return `Prompt arguments: ${items.join(", ")}`;
+    case "context_cleared":
+      return value === "flush"
+        ? "🧹 Context cleared for fresh loop iteration"
+        : value === "new_session"
+          ? "🧹 New agent session started for fresh loop iteration"
+          : "🧹 Context cleared";
     default: {
       const what = m.label || m.kind || "Session";
       if (value) return `${what} changed to ${value}`;
@@ -528,5 +534,23 @@ describe("sessionChangeText", () => {
     expect(
       sessionChangeText({ kind: "model_override", value: "Sonnet 4.5" }),
     ).toBe("⚡ Running this prompt on Sonnet 4.5");
+  });
+
+  test("context_cleared with value 'flush' renders the in-place-flush pill (mitto-so19)", () => {
+    expect(
+      sessionChangeText({ kind: "context_cleared", value: "flush" }),
+    ).toBe("🧹 Context cleared for fresh loop iteration");
+  });
+
+  test("context_cleared with value 'new_session' renders the fresh-session pill (mitto-so19)", () => {
+    expect(
+      sessionChangeText({ kind: "context_cleared", value: "new_session" }),
+    ).toBe("🧹 New agent session started for fresh loop iteration");
+  });
+
+  test("context_cleared without value falls back to the generic 'Context cleared' pill (mitto-so19)", () => {
+    expect(sessionChangeText({ kind: "context_cleared" })).toBe(
+      "🧹 Context cleared",
+    );
   });
 });

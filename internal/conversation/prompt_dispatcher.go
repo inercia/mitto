@@ -796,6 +796,8 @@ func (p promptDispatcher) createFreshContextSession(d promptDeps, meta PromptMet
 				l.Info("In-place context flush succeeded for loop FreshContext run",
 					"session_id", d.pdSessionID())
 			}
+			// Surface the context clear in the conversation timeline (mitto-so19).
+			d.pdRecordSessionChange("context_cleared", "flush", "")
 		} else {
 			if l := d.pdLogger(); l != nil {
 				l.Warn("In-place context flush failed, continuing with main prompt",
@@ -824,6 +826,8 @@ func (p promptDispatcher) createFreshContextSession(d promptDeps, meta PromptMet
 				"fresh_session_id", sessID,
 				"session_id", d.pdSessionID())
 		}
+		// Surface the context clear in the conversation timeline (mitto-so19).
+		d.pdRecordSessionChange("context_cleared", "new_session", "")
 		return sessID
 	}
 	if l := d.pdLogger(); l != nil {

@@ -44,6 +44,12 @@ function sessionChangeText(m) {
       return `Mode changed to ${value}`;
     case "prompt_arguments":
       return `Prompt arguments: ${items.join(", ")}`;
+    case "context_cleared":
+      return value === "flush"
+        ? "🧹 Context cleared for fresh loop iteration"
+        : value === "new_session"
+          ? "🧹 New agent session started for fresh loop iteration"
+          : "🧹 Context cleared";
     default: {
       // Generic fallback so future/unknown kinds still render with no code change.
       const what = m.label || m.kind || "Session";
