@@ -41,7 +41,6 @@ import {
   FolderOpenIcon,
   SpinnerIcon,
   PlusIcon,
-  MittoPlusIcon,
   CloseIcon,
   ArchiveIcon,
   SunIcon,
@@ -1597,9 +1596,9 @@ export function SessionList({
                     icon: html`<${FolderOpenIcon} className="w-4 h-4" />`,
                     submenu: enabledTargets.map((t) => ({
                       label: t.label || t.id,
-                      icon: html`<${resolveOpenIcon(
-                        t.icon || t.id,
-                      )} className="w-4 h-4" />`,
+                      icon: html`<${resolveOpenIcon(t.icon || t.id)}
+                        className="w-4 h-4"
+                      />`,
                       onClick: () =>
                         onOpenTarget &&
                         onOpenTarget(groupContextMenu.workingDir, t.id),
@@ -1839,23 +1838,22 @@ export function SessionList({
         }
       </div>
       <!-- Side panel toolbar: panel-wide actions, sitting right above the
-           conversation tree. Holds, in order: new-conversation, workspaces,
-           category-filter, density, search, and settings. Workspaces and
-           settings were moved up from the footer; they are disabled (greyed)
-           rather than hidden when the configuration is read-only. -->
+           conversation tree. Holds, in order: open-folder, category-filter,
+           density, search, workspaces, and settings. Workspaces and settings
+           were moved up from the footer; they are disabled (greyed) rather
+           than hidden when the configuration is read-only. -->
       <div
         ref=${toolbarRef}
         class="px-3 pb-8"
         data-testid="sidebar-toolbar"
       >
         <!-- Actions rendered via the portable Toolbar component
-             (components/Toolbar.js) as a segmented "pill". Order: new
-             conversation, workspaces, category filter, density, search,
-             settings — evenly spaced, no separators. All six data-testids are
-             preserved so existing selectors/specs keep working. Filter/Density
-             keep their controlled open state (openToolbarMenu) and custom menu
-             content; Workspaces/Settings are disabled (greyed) when the
-             configuration is read-only. -->
+             (components/Toolbar.js) as a segmented "pill". Order: open folder,
+             category filter, density, search, workspaces, settings — evenly
+             spaced, no separators. Filter/Density keep their controlled open
+             state (openToolbarMenu) and custom menu content;
+             Workspaces/Settings are disabled (greyed) when the configuration
+             is read-only. -->
         <${Toolbar}
           variant="block"
           surface="bg-mitto-surface-3"
@@ -1863,30 +1861,14 @@ export function SessionList({
           items=${[
             {
               kind: "button",
-              testId: "new-conversation-btn",
-              icon: isCreatingSession
-                ? html`<${SpinnerIcon} className="w-4 h-4 animate-spin" />`
-                : html`<${MittoPlusIcon} className="w-4 h-4" />`,
-              tip: isCreatingSession
-                ? "Creating conversation\u2026"
-                : "New Conversation",
-              ariaLabel: isCreatingSession
-                ? "Creating conversation\u2026"
-                : "New Conversation",
-              disabled: isCreatingSession,
-              onClick: () => !isCreatingSession && onNewSession(null, null),
-            },
-            {
-              kind: "button",
               testId: "add-folder-btn",
               icon: html`<${FolderPlusIcon} className="w-4 h-4" />`,
               tip: configReadonly
                 ? "Add folder (read-only configuration)"
-                : "Add folder to sidebar",
-              ariaLabel: "Add folder to sidebar",
+                : "Add folder",
+              ariaLabel: "Add folder",
               disabled: configReadonly,
-              onClick: () =>
-                !configReadonly && onAddFolder && onAddFolder(),
+              onClick: () => !configReadonly && onAddFolder && onAddFolder(),
             },
             {
               kind: "dropdown",
@@ -2072,17 +2054,19 @@ export function SessionList({
                shortcuts dialog is meaningless and the button (with its
                hover-only tooltip) would just add clutter. Gated on the same
                (hover: hover) probe used elsewhere in this file. -->
-          ${SIDEBAR_SUPPORTS_HOVER &&
-          html`<button
-            onClick=${onShowKeyboardShortcuts}
-            class="btn btn-ghost btn-square btn-sm group tooltip tooltip-top"
-            data-tip="Keyboard Shortcuts"
-            aria-label="Keyboard Shortcuts"
-          >
-            <${KeyboardIcon}
-              className="w-4 h-4 text-mitto-text-muted group-hover:text-mitto-text-strong"
-            />
-          </button>`}
+          ${
+            SIDEBAR_SUPPORTS_HOVER &&
+            html`<button
+              onClick=${onShowKeyboardShortcuts}
+              class="btn btn-ghost btn-square btn-sm group tooltip tooltip-top"
+              data-tip="Keyboard Shortcuts"
+              aria-label="Keyboard Shortcuts"
+            >
+              <${KeyboardIcon}
+                className="w-4 h-4 text-mitto-text-muted group-hover:text-mitto-text-strong"
+              />
+            </button>`
+          }
         </div>
       </div>
     </div>
