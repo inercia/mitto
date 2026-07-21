@@ -467,6 +467,112 @@ func TestAggregator_Ingest_NonBlocking_DropsOnFullBuffer(t *testing.T) {
 }
 
 // -----------------------------------------------------------------------------
+// foldOwned gates: events with empty SessionID or zero-value data are dropped
+// -----------------------------------------------------------------------------
+
+func TestAggregator_EmptySessionID_Dropped(t *testing.T) {
+	fs := &fakeStore{}
+	a := NewAggregator(fs, AggregatorOptions{FlushInterval: time.Hour, MaxBatch: 1_000_000})
+	defer a.Close()
+
+	ts := hour(t, "2026-01-01T00:00:00Z")
+	// SessionContext.SessionID = "" → foldOwned short-circuits, no bucket/cursor produced.
+	a.Ingest(sc("", "w1"), evAt(1, ts, session.EventTypeUserPrompt, session.UserPromptData{Message: "x"}))
+	mustFlush(t, a)
+
+	if calls := fs.snapshot(); len(calls) != 0 {
+		t.Errorf("empty-session Ingest produced %d store calls, want 0", len(calls))
+	}
+}
+
+// -----------------------------------------------------------------------------
+// Cursor semantics: EstimatorVersion + max(Seq, Timestamp) per session
+// -----------------------------------------------------------------------------
+
+func TestAggregator_Cursor_MonotonicSeqAndEstimatorVersion(t *testing.T) {
+	fs := &fakeStore{}
+	a := NewAggregator(fs, AggregatorOptions{FlushInterval: time.Hour, MaxBatch: 1_000_000})
+	defer a.Close()
+
+	ts0 := hour(t, "2026-01-01T00:00:00Z")
+	// Ingest events out of order — cursor must capture the max Seq / Timestamp.
+	a.Ingest(sc("s1", "w1"), evAt(5, ts0.Add(2*time.Minute), session.EventTypeUserPrompt, session.UserPromptData{Message: "x"}))
+	a.Ingest(sc("s1", "w1"), evAt(3, ts0, session.EventTypeUserPrompt, session.UserPromptData{Message: "y"}))
+	a.Ingest(sc("s1", "w1"), evAt(4, ts0.Add(time.Minute), session.EventTypeUserPrompt, session.UserPromptData{Message: "z"}))
+	mustFlush(t, a)
+
+	var last Cursor
+	for _, c := range fs.snapshot() {
+		if c.cursor.SessionID == "s1" {
+			last = c.cursor
+		}
+	}
+	if last.SessionID == "" {
+		t.Fatalf("no cursor recorded for s1; calls=%+v", fs.snapshot())
+	}
+	if last.LastEventSeq != 5 {
+		t.Errorf("cursor.LastEventSeq = %d, want 5 (max of 3,4,5)", last.LastEventSeq)
+	}
+	if !last.LastEventAt.Equal(ts0.Add(2 * time.Minute)) {
+		t.Errorf("cursor.LastEventAt = %v, want %v (max timestamp)", last.LastEventAt, ts0.Add(2*time.Minute))
+	}
+	if last.EstimatorVersion != EstimatorVersion {
+		t.Errorf("cursor.EstimatorVersion = %d, want %d", last.EstimatorVersion, EstimatorVersion)
+	}
+}
+
+// -----------------------------------------------------------------------------
+// Dropped: zero baseline; increments only under real drops
+// -----------------------------------------------------------------------------
+
+func TestAggregator_Dropped_ZeroWhenBufferSufficient(t *testing.T) {
+	fs := &fakeStore{}
+	a := NewAggregator(fs, AggregatorOptions{FlushInterval: time.Hour, MaxBatch: 1_000_000, BufferSize: 4096})
+	defer a.Close()
+
+	ts := hour(t, "2026-01-01T00:00:00Z")
+	for i := 0; i < 50; i++ {
+		a.Ingest(sc("s1", "w1"), evAt(int64(i+1), ts, session.EventTypeUserPrompt, session.UserPromptData{Message: "x"}))
+	}
+	mustFlush(t, a)
+
+	if got := a.Dropped(); got != 0 {
+		t.Errorf("Dropped() = %d, want 0 (buffer had plenty of room)", got)
+	}
+}
+
+// -----------------------------------------------------------------------------
+// MCP classifier regex coverage: known prefixes + negatives
+// -----------------------------------------------------------------------------
+
+func TestAggregator_IsMCPCall_KnownPrefixes(t *testing.T) {
+	cases := []struct {
+		title string
+		kind  string
+		want  bool
+	}{
+		{"mitto_conversation_new", "", true},
+		{"MITTO_conversation_new", "", true}, // case-insensitive
+		{"github-create-issue", "", true},
+		{"slack_post_message", "", true},
+		{"linear_issue_search", "", true},
+		{"jira_create", "", true},
+		{"notion_query", "", true},
+		{"bd_show", "", true},
+		{"beads_list", "", true},
+		{"read_file", "", false},
+		{"launch-process", "", false},
+		{"", "mcp", true}, // Kind wins even without a matching title
+		{"anything", "mcp", true},
+	}
+	for _, c := range cases {
+		if got := isMCPCall(session.ToolCallData{Title: c.title, Kind: c.kind}); got != c.want {
+			t.Errorf("isMCPCall({Title:%q, Kind:%q}) = %v, want %v", c.title, c.kind, got, c.want)
+		}
+	}
+}
+
+// -----------------------------------------------------------------------------
 // Close: idempotent + final flush
 // -----------------------------------------------------------------------------
 
