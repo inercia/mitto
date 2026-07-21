@@ -202,6 +202,51 @@ func TestConversationStart_ReuseIssue_NotDeclared_CreatesDuplicate(t *testing.T)
 	}
 }
 
+// TestConversationStart_ReuseIssue_CrossWorkspaceIgnored verifies that a
+// conversation with the matching beads_issue but in a DIFFERENT working_dir
+// is NOT reused — the reuseIssue scan is scoped by target working_dir so two
+// workspaces with the same bead ID stay isolated. Mirrors the HTTP behavior
+// via session.FindConversationByBeadsIssue, which filters on WorkingDir.
+func TestConversationStart_ReuseIssue_CrossWorkspaceIgnored(t *testing.T) {
+	store, srv, parentID := setupConversationStartServerWithPrompts(t, []config.WebPrompt{
+		{
+			Name:   "Work on issue",
+			Prompt: "do work",
+			Target: &prompts.PromptTarget{ReuseIssue: true},
+		},
+	})
+
+	// Pre-create a matching session in a DIFFERENT working_dir. The parent
+	// session (from the fixture) has WorkingDir="/test/dir", so the target
+	// working_dir the handler will scope its scan by is "/test/dir".
+	otherMeta := session.Metadata{
+		SessionID:  session.GenerateSessionID(),
+		Name:       "In another workspace",
+		ACPServer:  "test-server",
+		WorkingDir: "/other/dir",
+		BeadsIssue: "mitto-abc",
+	}
+	if err := store.Create(otherMeta); err != nil {
+		t.Fatalf("store.Create(otherMeta) error: %v", err)
+	}
+
+	ctx := context.Background()
+	_, out, err := srv.handleConversationStart(ctx, nil, ConversationStartInput{
+		SelfID:     parentID,
+		PromptName: "Work on issue",
+		BeadsIssue: "mitto-abc",
+	})
+	if err != nil {
+		t.Fatalf("handleConversationStart: unexpected error: %v", err)
+	}
+	if out.Reused {
+		t.Error("expected reused=false when the matching conversation lives in a different working_dir")
+	}
+	if out.SessionID == otherMeta.SessionID {
+		t.Errorf("expected a distinct session ID; got the cross-workspace candidate %q", otherMeta.SessionID)
+	}
+}
+
 // TestConversationStart_ReuseIssue_ArchivedIgnored verifies that an archived
 // conversation with the matching beads_issue is NOT reused — a new
 // conversation must be created. Mirrors the HTTP behavior via
