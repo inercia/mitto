@@ -96,6 +96,8 @@ type rawWorkspaceRC struct {
 		Menus           string            `yaml:"menus"`
 		Enabled         *bool             `yaml:"enabled"`
 		EnabledWhen     string            `yaml:"enabledWhen"`
+		Singleton       bool              `yaml:"singleton"`
+		Target          *PromptTarget     `yaml:"target,omitempty"`
 		Parameters      []PromptParameter `yaml:"parameters"`
 	} `yaml:"prompts"`
 	// PromptsDirs is a list of additional directories to search for prompt files
@@ -810,6 +812,8 @@ func parseWorkspaceRC(data []byte) (*WorkspaceRC, error) {
 			Menus:           p.Menus,
 			EnabledWhen:     p.EnabledWhen,
 			Enabled:         p.Enabled,
+			Singleton:       p.Singleton,
+			Target:          p.Target,
 			Parameters:      p.Parameters,
 		}
 		rc.Prompts = append(rc.Prompts, wp)
