@@ -18,18 +18,32 @@ version-agnostic, and their tags **union** across overlapping matches:
 | Profile | Pattern | Tags |
 |---------|---------|------|
 | Claude | `Claude` | `Anthropic` |
-| Claude Opus | `Opus` | `Smartest`, `Reasoning`, `Expensive` |
+| Claude Mythos | `Mythos` | `Smartest`, `Reasoning`, `Thinking`, `Deep`, `Slow`, `Expensive` |
+| Claude Opus | `Opus` | `Smartest`, `Reasoning`, `Thinking`, `Deep`, `Slow`, `Expensive` |
 | Claude Sonnet 5 | `Sonnet 5` | `Smart`, `Coding` |
 | Claude Sonnet 4 | `Sonnet 4` | `Smart`, `Coding` |
 | Claude Haiku | `Haiku` | `Fast`, `Cheap` |
-| GPT-5 | `GPT-5` | `Smart`, `Reasoning`, `Coding` |
+| GPT-5 | `GPT-5` | `Smart`, `Reasoning`, `Thinking`, `Deep`, `Coding` |
 | GPT-4 | `GPT-4` | `Smart`, `Coding` |
+| OpenAI GPT | `GPT` | `OpenAI` |
 | Gemini | `Gemini` | `Smart`, `LongContext` |
+| GLM | `GLM` | `Smart`, `Coding`, `OpenWeight`, `SelfHostable` |
+| DeepSeek | `DeepSeek` | `Smart`, `Coding`, `OpenWeight`, `SelfHostable` |
 
 Because matching is additive, a name like `Claude Opus 4.x` resolves to the union of
 the vendor-level `Claude` profile and the `Claude Opus` profile
-(`Anthropic`, `Smartest`, `Reasoning`, `Expensive`). Edit or remove these in your
-`settings.json` (or the Models settings tab) to suit the models you use.
+(`Anthropic`, `Smartest`, `Reasoning`, `Thinking`, `Deep`, `Slow`, `Expensive`). Edit
+or remove these in your `settings.json` (or the Models settings tab) to suit the
+models you use.
+
+The `Claude Mythos` entry mirrors `Claude Opus`'s tags but is listed first, so
+`modelTag: Smartest` (and the other shared tags) resolves to Mythos when a
+Mythos-branded model is available, falling back to Opus otherwise. The `OpenAI GPT`
+entry is a vendor-level catch-all with only the `OpenAI` tag; it deliberately carries
+no capability tags so it never outranks `GPT-5` / `GPT-4` for `Coding` / `Smart`
+routing but still tags any future `GPT-*` variant (e.g. `GPT-5.6`, `GPT-6`) as
+`OpenAI`. `GLM` and `DeepSeek` seed tags for the common open-weight / self-hostable
+model families.
 
 ## YAML Configuration
 

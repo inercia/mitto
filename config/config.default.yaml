@@ -50,6 +50,11 @@ models:
       matchMode: contains
       pattern: Claude
     tags: [Anthropic]
+  - name: Claude Mythos
+    criteria:
+      matchMode: contains
+      pattern: Mythos
+    tags: [Smartest, Reasoning, Thinking, Deep, Slow, Expensive]
   - name: Claude Opus
     criteria:
       matchMode: contains
@@ -80,11 +85,29 @@ models:
       matchMode: contains
       pattern: GPT-4
     tags: [Smart, Coding]
+  # Vendor-level fallback: catches any GPT-* variant (e.g. future GPT-5.6, GPT-6);
+  # carries only the vendor tag so it never outranks GPT-5/GPT-4 for capability tags.
+  - name: OpenAI GPT
+    criteria:
+      matchMode: contains
+      pattern: GPT
+    tags: [OpenAI]
   - name: Gemini
     criteria:
       matchMode: contains
       pattern: Gemini
     tags: [Smart, LongContext]
+  # Open-weight / self-hostable families.
+  - name: GLM
+    criteria:
+      matchMode: contains
+      pattern: GLM
+    tags: [Smart, Coding, OpenWeight, SelfHostable]
+  - name: DeepSeek
+    criteria:
+      matchMode: contains
+      pattern: DeepSeek
+    tags: [Smart, Coding, OpenWeight, SelfHostable]
 
 # Global shortcut buttons
 # Quick-action buttons shown across the UI, keyed by the section they appear in:

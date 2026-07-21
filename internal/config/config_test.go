@@ -2719,13 +2719,17 @@ func TestParse_EmbeddedDefaultModelProfiles(t *testing.T) {
 
 	wantProfiles := map[string][]string{
 		"Claude":          {"Anthropic"},
+		"Claude Mythos":   {"Smartest", "Reasoning", "Thinking", "Deep", "Slow", "Expensive"},
 		"Claude Opus":     {"Smartest", "Reasoning", "Thinking", "Deep", "Slow", "Expensive"},
 		"Claude Sonnet 5": {"Smart", "Coding"},
 		"Claude Sonnet 4": {"Smart", "Coding"},
 		"Claude Haiku":    {"Fast", "Cheap"},
 		"GPT-5":           {"Smart", "Reasoning", "Thinking", "Deep", "Coding"},
 		"GPT-4":           {"Smart", "Coding"},
+		"OpenAI GPT":      {"OpenAI"},
 		"Gemini":          {"Smart", "LongContext"},
+		"GLM":             {"Smart", "Coding", "OpenWeight", "SelfHostable"},
+		"DeepSeek":        {"Smart", "Coding", "OpenWeight", "SelfHostable"},
 	}
 
 	if len(cfg.Models) != len(wantProfiles) {
@@ -2840,7 +2844,7 @@ func TestDefaultModelProfiles_MatchesEmbeddedYAML(t *testing.T) {
 // TestCanonicalModelTags pins the canonical capability-tag set (sorted, de-duplicated)
 // derived from DefaultModelProfiles.
 func TestCanonicalModelTags(t *testing.T) {
-	want := []string{"Anthropic", "Cheap", "Coding", "Deep", "Expensive", "Fast", "LongContext", "Reasoning", "Slow", "Smart", "Smartest", "Thinking"}
+	want := []string{"Anthropic", "Cheap", "Coding", "Deep", "Expensive", "Fast", "LongContext", "OpenAI", "OpenWeight", "Reasoning", "SelfHostable", "Slow", "Smart", "Smartest", "Thinking"}
 	got := CanonicalModelTags()
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("CanonicalModelTags() = %v, want %v", got, want)
