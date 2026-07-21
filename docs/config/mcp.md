@@ -244,6 +244,7 @@ workspace's MCP configuration.
    Then change the MCP config to launch the installed tool directly instead of
    through `uvx`. The equivalent applies to any other package manager with a
    heavy cold resolve (`npx` vs. globally-installed `npm` binaries, etc.).
+
 3. **Do not run one `working_dir` under multiple concurrent workspace UUIDs.**
    When several Mitto workspaces (e.g. one per ACP server or model tier) share
    the same `working_dir` and are all active at once, their `session/new` calls
@@ -252,9 +253,10 @@ workspace's MCP configuration.
    cold-start wedges in production traces. Prefer one active workspace per
    `working_dir` at a time, or split the folder into per-agent working
    directories.
-4. **Verify `working_dir` matches the git root when using Auggie.** `auggie mcp
-   list` resolves its workspace argument to the **git top-level**, not to the
-   literal path Mitto passes it. If your Mitto `working_dir` is a subdirectory
+4. **Verify `working_dir` matches the git root when using Auggie.** The
+   `auggie mcp list` command resolves its workspace argument to the **git
+   top-level**, not to the literal path Mitto passes it. If your Mitto
+   `working_dir` is a subdirectory
    of a larger git repository, the Auggie process will load
    `<git-root>/.augment/settings.local.json` — not the `.augment/` directory
    inside your `working_dir`. The MCP tab in the Mitto UI can then show servers
