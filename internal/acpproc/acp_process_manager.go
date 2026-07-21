@@ -1118,16 +1118,38 @@ func (m *ACPProcessManager) getOrCreateAuxiliarySession(ctx context.Context, wor
 		auxCwd = "."
 	}
 
-	// Build MCP servers list. Processor auxiliary sessions get a stdio MCP proxy
-	// so the agent can call Mitto tools (e.g., mitto_ui_notify for notifications).
-	// The command MUST be the mitto CLI binary, not mitto-app: on the macOS app
-	// os.Executable() points at Mitto.app/Contents/MacOS/mitto-app, which is not
-	// a cobra CLI and would spawn a whole second Mitto app (webview + up-hook /
-	// cloudflared) instead of the intended stdio proxy. resolveMittoCLIBinary
-	// rewrites to the sibling `mitto` binary in that case.
+	// Build MCP servers list. Processor auxiliary sessions need a way for the
+	// agent to call Mitto tools (e.g., mitto_ui_notify for notifications).
+	// Transport selection (mitto-8ip): if the agent advertises
+	// mcp_capabilities.http (e.g. Auggie), use a native HTTP McpServer entry
+	// pointing at the same MCP endpoint user sessions already use — no
+	// subprocess, no stdio hop. Otherwise fall back to the stdio proxy, which
+	// is the ACP-spec mandatory transport all agents MUST support.
+	//
+	// For the stdio fallback the command MUST be the mitto CLI binary, not
+	// mitto-app: on the macOS app os.Executable() points at
+	// Mitto.app/Contents/MacOS/mitto-app, which is not a cobra CLI and would
+	// spawn a whole second Mitto app (webview + up-hook / cloudflared) instead
+	// of the intended stdio proxy. resolveMittoCLIBinary rewrites to the
+	// sibling `mitto` binary in that case.
 	mcpServers := []acp.McpServer{} // Must be empty array, not nil — ACP validates this
 	if strings.HasPrefix(purpose, auxiliary.PurposeProcessorPrefix) && m.MCPServerURL != "" {
-		if exe, err := resolveMittoCLIBinary(); err == nil {
+		caps := process.Capabilities()
+		if caps != nil && caps.McpCapabilities.Http {
+			mcpServers = []acp.McpServer{{
+				Http: &acp.McpServerHttpInline{
+					Type:    "http",
+					Name:    "mitto",
+					Url:     m.MCPServerURL,
+					Headers: []acp.HttpHeader{}, // Must be empty array, not nil — ACP validates this
+				},
+			}}
+			if m.logger != nil {
+				m.logger.Debug("Auxiliary processor session will use MCP HTTP",
+					"purpose", purpose,
+					"mcp_url", m.MCPServerURL)
+			}
+		} else if exe, err := resolveMittoCLIBinary(); err == nil {
 			mcpServers = []acp.McpServer{{
 				Stdio: &acp.McpServerStdio{
 					Name:    "mitto",
