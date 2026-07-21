@@ -1,7 +1,9 @@
 package handlers
 
 import (
+	"bytes"
 	"encoding/json"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -161,6 +163,51 @@ func TestHandleUploadImage_InvalidForm(t *testing.T) {
 	}
 	if env3.Error.Message != "Failed to parse form" {
 		t.Errorf("message = %q, want %q", env3.Error.Message, "Failed to parse form")
+	}
+}
+
+// TestHandleUploadImage_ZeroByte reproduces mitto-e1bv: dropping a zero-byte
+// image (preview thumbnail from another tab, Slack, Google Images, .webloc)
+// produces a header-only multipart part; without the header.Size==0 guard the
+// handler misclassifies it as unsupported_format instead of image_empty.
+func TestHandleUploadImage_ZeroByte(t *testing.T) {
+	store, h := setupImageTestHandlers(t, "test-session-zero")
+
+	// Build a valid multipart body whose only "image" part is 0 bytes.
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	part, err := mw.CreateFormFile("image", "empty.png")
+	if err != nil {
+		t.Fatalf("CreateFormFile: %v", err)
+	}
+	_ = part // no bytes written -> header-only part
+	if err := mw.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/test-session-zero/images", &buf)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	w := httptest.NewRecorder()
+
+	h.handleUploadImage(w, req, store, "test-session-zero")
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("Status = %d, want %d", w.Code, http.StatusBadRequest)
+	}
+	var env struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&env); err != nil {
+		t.Fatalf("decode envelope: %v", err)
+	}
+	if env.Error.Code != "image_empty" {
+		t.Errorf("code = %q, want %q", env.Error.Code, "image_empty")
+	}
+	if env.Error.Message != "Uploaded image is empty (0 bytes)" {
+		t.Errorf("message = %q, want %q", env.Error.Message, "Uploaded image is empty (0 bytes)")
 	}
 }
 

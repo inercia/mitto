@@ -107,6 +107,14 @@ func (h *Handlers) handleUploadImage(w http.ResponseWriter, r *http.Request, sto
 	}
 	defer file.Close()
 
+	// Reject zero-byte uploads: browsers can produce header-only multipart
+	// parts when the user drops a preview shortcut (Slack, Google Images,
+	// .webloc) whose backing File has size==0.
+	if header.Size == 0 {
+		writeErrorJSON(w, http.StatusBadRequest, "image_empty", "Uploaded image is empty (0 bytes)")
+		return
+	}
+
 	// Read file content
 	data, err := io.ReadAll(file)
 	if err != nil {

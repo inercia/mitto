@@ -103,6 +103,13 @@ func (h *Handlers) handleUploadFile(w http.ResponseWriter, r *http.Request, stor
 	}
 	defer file.Close()
 
+	// Reject zero-byte uploads: header-only multipart parts otherwise reach
+	// SaveFile as empty attachments (mirrors the image handler guard).
+	if header.Size == 0 {
+		writeErrorJSON(w, http.StatusBadRequest, "file_empty", "Uploaded file is empty (0 bytes)")
+		return
+	}
+
 	// Read file content
 	data, err := io.ReadAll(file)
 	if err != nil {

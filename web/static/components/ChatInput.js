@@ -1524,6 +1524,17 @@ export function ChatInput({
       return null;
     }
 
+    // Zero-byte files (e.g. previews dragged from other browser tabs, Slack,
+    // Google Images, .webloc shortcuts) produce a header-only multipart part
+    // that the Go multipart parser rejects with "NextPart: EOF".
+    if (!file.size || file.size === 0) {
+      setUploadError(
+        "Cannot upload zero-byte image — did you drop a preview from another window?",
+      );
+      setTimeout(() => setUploadError(null), 6000);
+      return null;
+    }
+
     const tempId = `temp_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     const previewUrl = URL.createObjectURL(file);
     const tempImage = {
@@ -1640,6 +1651,15 @@ export function ChatInput({
 
   // Upload a single file (non-image)
   const uploadFile = async (file) => {
+    // Zero-byte files produce a header-only multipart part that the Go
+    // multipart parser rejects with "NextPart: EOF" (same class as
+    // uploadImage above).
+    if (!file.size || file.size === 0) {
+      setUploadError("Cannot upload zero-byte file.");
+      setTimeout(() => setUploadError(null), 6000);
+      return null;
+    }
+
     const tempId = `temp_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     const tempFile = {
       id: tempId,
@@ -1898,6 +1918,12 @@ export function ChatInput({
     }
 
     const files = Array.from(e.dataTransfer.files);
+    if (window.console?.debug) {
+      console.debug(
+        "[ChatInput] drop items:",
+        files.map((f) => ({ name: f.name, type: f.type, size: f.size })),
+      );
+    }
     const imageFiles = files.filter((f) => f.type.startsWith("image/"));
     const otherFiles = files.filter((f) => !f.type.startsWith("image/"));
 
@@ -1929,6 +1955,12 @@ export function ChatInput({
     if (isFullyDisabled || isReadOnly || !sessionId) return;
 
     const items = Array.from(e.clipboardData.items);
+    if (window.console?.debug) {
+      console.debug(
+        "[ChatInput] paste items:",
+        items.map((it) => ({ kind: it.kind, type: it.type })),
+      );
+    }
     const imageItems = items.filter((item) => item.type.startsWith("image/"));
 
     if (imageItems.length > 0) {
