@@ -30,6 +30,14 @@ func (n *NoopStore) UpsertDeltas(ctx context.Context, deltas []Delta) error {
 	return nil
 }
 
+// UpsertDeltasWithCursor silently discards deltas and the cursor advance.
+func (n *NoopStore) UpsertDeltasWithCursor(ctx context.Context, deltas []Delta, cur Cursor) error {
+	if n.closed.Load() {
+		return ErrClosed
+	}
+	return nil
+}
+
 // GetCursor returns a zero Cursor (with SessionID set) and ErrNotFound.
 func (n *NoopStore) GetCursor(ctx context.Context, sessionID string) (Cursor, error) {
 	if n.closed.Load() {

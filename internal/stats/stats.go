@@ -28,6 +28,8 @@ import (
 	"context"
 	"errors"
 	"time"
+
+	"github.com/inercia/mitto/internal/session"
 )
 
 // EstimatorVersion is the current token-estimator version. Bumping it forces
@@ -147,6 +149,16 @@ type Store interface {
 	// silently skipped.
 	UpsertDeltas(ctx context.Context, deltas []Delta) error
 
+	// UpsertDeltasWithCursor atomically applies deltas and advances the given
+	// session's cursor in a single transaction. Used by the Aggregator's
+	// per-session flush to guarantee exactly-once semantics: after a
+	// successful call, either both the deltas and the cursor advance are
+	// durable, or neither is.
+	//
+	// deltas may be empty (cursor-only advance is legal). cur.SessionID must
+	// be non-empty. Cursor monotonicity rules match SetCursor.
+	UpsertDeltasWithCursor(ctx context.Context, deltas []Delta, cur Cursor) error
+
 	// GetCursor returns the ingest cursor for a session. If no cursor has been
 	// persisted yet the returned Cursor has SessionID set to sessionID and
 	// zero values for all other fields, with err == ErrNotFound.
@@ -167,19 +179,49 @@ type Store interface {
 	Close() error
 }
 
+// SessionContext carries the constant, session-scoped labels the aggregator
+// needs to key deltas correctly. Callers (stats.4 SessionObserver adapter,
+// stats.5 backfiller) construct it once per session and pass it in on every
+// Ingest call, so the aggregator itself never has to reach into the session
+// store or the web layer to look up workspace / working-dir / ACP-server for
+// the source session.
+type SessionContext struct {
+	// SessionID identifies the source session.
+	SessionID string
+	// Workspace is the workspace UUID (empty for workspace-less sessions).
+	Workspace string
+	// WorkingDir is the session's working directory (informational; v1 stores
+	// empty strings in the working_dir column but the schema reserves it).
+	WorkingDir string
+	// ACPServer is the ACP server name for the session (same informational
+	// note as WorkingDir).
+	ACPServer string
+}
+
 // Aggregator turns a stream of session events (from the live SessionObserver
 // adapter or the backfill replayer) into batched Deltas, buffered by (session,
-// workspace, bucket). The real implementation is added in stats.3.
-//
-// The Observe(...) signature depends on the event-payload shape decided in
-// stats.3/stats.6, so it is intentionally not part of this skeleton — pinning
-// it now would force a churn later.
+// workspace, bucket) and persisted atomically with a per-session Cursor
+// advance. The concrete implementation lives in aggregator.go.
 type Aggregator interface {
+	// Ingest queues one event for aggregation. Non-blocking: if the internal
+	// buffer is full the event is dropped and the drop counter is incremented
+	// (see Dropped). Callers must never block the observer path on stats.
+	//
+	// sc carries the constant session-scoped labels (workspace, working dir,
+	// ACP server); ev is the raw session event to classify.
+	Ingest(sc SessionContext, ev session.Event)
+
 	// Flush drains all buffered deltas to the underlying Store. Called on the
 	// 10s / 500-event boundary and at shutdown.
 	Flush(ctx context.Context) error
 
-	// Close flushes any pending work and releases resources.
+	// Dropped returns the total number of events dropped due to a full ingest
+	// buffer since the aggregator was created. Exposed for the stats.9
+	// operational surface and for tests.
+	Dropped() uint64
+
+	// Close flushes any pending work and releases resources. Safe to call
+	// more than once.
 	Close() error
 }
 

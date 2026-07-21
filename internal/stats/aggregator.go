@@ -1,0 +1,397 @@
+package stats
+
+import (
+	"context"
+	"regexp"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/inercia/mitto/internal/session"
+)
+
+// aggregatorItem carries a single event through the ingest channel together
+// with the session-scoped labels needed to key its deltas.
+type aggregatorItem struct {
+	sc SessionContext
+	ev session.Event
+}
+
+// AggregatorOptions configures a NewAggregator call. Zero-valued fields fall
+// back to the defaults documented on each field.
+type AggregatorOptions struct {
+	// FlushInterval is the timer-based flush period. Default: 10s.
+	FlushInterval time.Duration
+	// MaxBatch is the count-based flush threshold: once this many events are
+	// buffered internally the aggregator flushes immediately, without waiting
+	// for the timer. Default: 500.
+	MaxBatch int
+	// BufferSize is the capacity of the ingest channel between the observer
+	// path and the background goroutine. Events are dropped (and counted)
+	// when the channel is full. Default: 4096.
+	BufferSize int
+	// FlushTimeout bounds a single Store.UpsertDeltasWithCursor call.
+	// Default: 5s.
+	FlushTimeout time.Duration
+	// Now returns the current wall-clock time; overridable for tests. The
+	// aggregator uses it only for cursor UpdatedAt — bucket keys always come
+	// from event timestamps so replays remain deterministic.
+	Now func() time.Time
+}
+
+func (o AggregatorOptions) withDefaults() AggregatorOptions {
+	if o.FlushInterval <= 0 {
+		o.FlushInterval = 10 * time.Second
+	}
+	if o.MaxBatch <= 0 {
+		o.MaxBatch = 500
+	}
+	if o.BufferSize <= 0 {
+		o.BufferSize = 4096
+	}
+	if o.FlushTimeout <= 0 {
+		o.FlushTimeout = 5 * time.Second
+	}
+	if o.Now == nil {
+		o.Now = time.Now
+	}
+	return o
+}
+
+// bucketKey identifies the tuple (session, workspace, bucket, metric) inside
+// the aggregator's in-memory buffer.
+type bucketKey struct {
+	sessionID string
+	workspace string
+	bucket    int64 // UTC unix seconds at the top of the hour
+	metric    string
+}
+
+// sessionAccum tracks the per-session cursor advance that must be committed
+// atomically with the deltas for that session.
+type sessionAccum struct {
+	sc           SessionContext
+	lastSeq      int64
+	lastAt       time.Time
+	sawUserAgent bool // was there any agent activity since the last user prompt (turn heuristic)
+}
+
+// flushReq is a synchronous flush request from an external caller. The
+// background goroutine performs the flush and closes reply to unblock the
+// caller. Keeping flush ownership single-goroutine avoids any interleaving
+// between fold (from the channel) and flush (from Flush/Close).
+type flushReq struct {
+	ctx   context.Context
+	reply chan error
+}
+
+// aggregator implements the Aggregator interface. It owns a single background
+// goroutine that drains the ingest channel, folds events into bucket counters,
+// and calls Store.UpsertDeltasWithCursor on the flush cadence.
+//
+// Ownership discipline: every mutation of buckets/sessions/events happens on
+// the background goroutine only. External callers (Flush, Close) submit a
+// request over flushCh and wait for a reply; the goroutine handles it inline
+// between channel receives, so there is no shared-map contention and no lock.
+type aggregator struct {
+	store Store
+	opts  AggregatorOptions
+
+	in      chan aggregatorItem
+	flushCh chan *flushReq
+	dropped atomic.Uint64
+
+	// Owned exclusively by the background goroutine.
+	buckets  map[bucketKey]int64
+	sessions map[string]*sessionAccum
+	events   int // total buffered events since last flush
+
+	// Lifecycle.
+	closeOnce sync.Once
+	closed    chan struct{}
+	done      chan struct{}
+}
+
+// NewAggregator creates and starts an aggregator draining into store. The
+// caller must invoke Close on shutdown to flush pending work.
+//
+// The returned aggregator's Ingest is non-blocking: if the internal channel
+// is full, the event is dropped and Dropped() is incremented. This is the
+// only place in the stats pipeline where losing an event is acceptable —
+// the stats.5 backfiller re-reads events.jsonl from the persisted cursor
+// and will recover any drops on its next pass.
+func NewAggregator(store Store, opts AggregatorOptions) Aggregator {
+	opts = opts.withDefaults()
+	a := &aggregator{
+		store:    store,
+		opts:     opts,
+		in:       make(chan aggregatorItem, opts.BufferSize),
+		flushCh:  make(chan *flushReq),
+		buckets:  make(map[bucketKey]int64),
+		sessions: make(map[string]*sessionAccum),
+		closed:   make(chan struct{}),
+		done:     make(chan struct{}),
+	}
+	go a.run()
+	return a
+}
+
+// Ingest enqueues one event for aggregation. Non-blocking.
+func (a *aggregator) Ingest(sc SessionContext, ev session.Event) {
+	select {
+	case <-a.closed:
+		return
+	default:
+	}
+	select {
+	case a.in <- aggregatorItem{sc: sc, ev: ev}:
+	default:
+		a.dropped.Add(1)
+	}
+}
+
+// Dropped returns the running count of events dropped due to a full buffer.
+func (a *aggregator) Dropped() uint64 { return a.dropped.Load() }
+
+// Flush drains any pending buffered work to the Store synchronously. Delegates
+// to the background goroutine so buffer mutations remain single-owner.
+func (a *aggregator) Flush(ctx context.Context) error {
+	req := &flushReq{ctx: ctx, reply: make(chan error, 1)}
+	select {
+	case a.flushCh <- req:
+	case <-a.closed:
+		return nil
+	}
+	select {
+	case err := <-req.reply:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// Close stops the background goroutine and performs a final flush. Idempotent.
+func (a *aggregator) Close() error {
+	var err error
+	a.closeOnce.Do(func() {
+		close(a.closed)
+		<-a.done
+		// The goroutine drained + flushed on its way out.
+		err = nil
+	})
+	return err
+}
+
+// run is the background goroutine's main loop. All buffer mutations happen
+// here so there is no shared-state race with Flush / Close callers.
+func (a *aggregator) run() {
+	defer close(a.done)
+	ticker := time.NewTicker(a.opts.FlushInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-a.closed:
+			// Final drain: pull everything remaining in the ingest channel
+			// (no more writers can race because Ingest short-circuits on the
+			// closed channel first), then one last flush.
+			a.drainChannelOwned()
+			_ = a.flushOwned(context.Background())
+			return
+		case req := <-a.flushCh:
+			a.drainChannelOwned()
+			req.reply <- a.flushOwned(req.ctx)
+		case <-ticker.C:
+			_ = a.flushOwned(context.Background())
+		case it := <-a.in:
+			a.foldOwned(it)
+			if a.events >= a.opts.MaxBatch {
+				_ = a.flushOwned(context.Background())
+			}
+		}
+	}
+}
+
+// drainChannelOwned pulls every currently-available item off the ingest
+// channel without blocking, folding each one. Only called from run() so
+// buffer mutation stays single-owner.
+func (a *aggregator) drainChannelOwned() {
+	for {
+		select {
+		case it := <-a.in:
+			a.foldOwned(it)
+		default:
+			return
+		}
+	}
+}
+
+// flushOwned snapshots the current buffer maps, resets them, and pushes each
+// session's deltas + cursor to the Store atomically. Errors are returned but
+// do NOT resurrect the flushed state — the stats.5 backfiller will recover
+// missed events by re-reading events.jsonl past the last successful cursor.
+// Only called from run().
+func (a *aggregator) flushOwned(ctx context.Context) error {
+	if len(a.buckets) == 0 && len(a.sessions) == 0 {
+		return nil
+	}
+
+	// Group deltas by session so each Store call is one atomic tx.
+	perSession := make(map[string][]Delta, len(a.sessions))
+	for k, v := range a.buckets {
+		perSession[k.sessionID] = append(perSession[k.sessionID], Delta{
+			TSBucket:  time.Unix(k.bucket, 0).UTC(),
+			Metric:    k.metric,
+			SessionID: k.sessionID,
+			Workspace: k.workspace,
+			Value:     v,
+		})
+	}
+
+	now := a.opts.Now().UTC()
+	var firstErr error
+	for sid, acc := range a.sessions {
+		cur := Cursor{
+			SessionID:        sid,
+			LastEventSeq:     acc.lastSeq,
+			LastEventAt:      acc.lastAt,
+			EstimatorVersion: EstimatorVersion,
+			UpdatedAt:        now,
+		}
+		fctx, cancel := context.WithTimeout(ctx, a.opts.FlushTimeout)
+		err := a.store.UpsertDeltasWithCursor(fctx, perSession[sid], cur)
+		cancel()
+		if err != nil && firstErr == nil {
+			firstErr = err
+		}
+		delete(perSession, sid)
+	}
+	// Any deltas whose session never registered an accumulator (should not
+	// happen — fold registers one) are dropped here; they cannot be flushed
+	// without a cursor.
+
+	a.buckets = make(map[bucketKey]int64)
+	a.sessions = make(map[string]*sessionAccum)
+	a.events = 0
+	return firstErr
+}
+
+// foldOwned classifies one event and updates the in-memory buffer. Only
+// called from run() so the maps stay single-owner.
+func (a *aggregator) foldOwned(it aggregatorItem) {
+	if it.sc.SessionID == "" {
+		return
+	}
+	bucket := it.ev.Timestamp.UTC().Truncate(time.Hour).Unix()
+	acc := a.sessions[it.sc.SessionID]
+	if acc == nil {
+		acc = &sessionAccum{sc: it.sc}
+		a.sessions[it.sc.SessionID] = acc
+	}
+	if it.ev.Seq > acc.lastSeq {
+		acc.lastSeq = it.ev.Seq
+	}
+	if it.ev.Timestamp.After(acc.lastAt) {
+		acc.lastAt = it.ev.Timestamp
+	}
+	a.events++
+
+	inc := func(metric string, n int64) {
+		if n <= 0 {
+			return
+		}
+		k := bucketKey{
+			sessionID: it.sc.SessionID,
+			workspace: it.sc.Workspace,
+			bucket:    bucket,
+			metric:    metric,
+		}
+		a.buckets[k] += n
+	}
+
+	switch it.ev.Type {
+	case session.EventTypeUserPrompt:
+		inc(MetricPrompts, 1)
+		// A user_prompt that follows any agent activity closes the prior turn.
+		if acc.sawUserAgent {
+			inc(MetricAgentTurnsCompleted, 1)
+			acc.sawUserAgent = false
+		}
+		if d, ok := it.ev.Data.(session.UserPromptData); ok {
+			inc(MetricInputTokensEst, estimateTokensText(d.Message))
+			for _, f := range d.Files {
+				inc(MetricInputTokensEst, estimateTokensFile(f))
+			}
+			inc(MetricInputTokensEst, int64(len(d.Images))*imageTokenCost)
+		}
+	case session.EventTypeAgentMessage:
+		acc.sawUserAgent = true
+		if d, ok := it.ev.Data.(session.AgentMessageData); ok {
+			inc(MetricOutputTokensEst, estimateTokensText(d.Text))
+		}
+	case session.EventTypeAgentThought:
+		acc.sawUserAgent = true
+		if d, ok := it.ev.Data.(session.AgentThoughtData); ok {
+			inc(MetricOutputTokensEst, estimateTokensText(d.Text))
+		}
+	case session.EventTypeToolCall:
+		acc.sawUserAgent = true
+		inc(MetricToolCallsTotal, 1)
+		if d, ok := it.ev.Data.(session.ToolCallData); ok && isMCPCall(d) {
+			inc(MetricMCPCalls, 1)
+		}
+	case session.EventTypePermission:
+		inc(MetricPermissionsPrompted, 1)
+	case session.EventTypeError:
+		inc(MetricErrors, 1)
+	}
+}
+
+// -----------------------------------------------------------------------------
+// v1 estimators / classifiers.
+//
+// Deliberately simple: stats.6 replaces these with real per-model tokenisers
+// and a richer MCP classifier. Keeping them private ensures no downstream
+// caller pins the v1 heuristic — a bump to EstimatorVersion + these helpers
+// triggers backfill recompute in stats.5.
+// -----------------------------------------------------------------------------
+
+// imageTokenCost is the v1 flat token estimate per image reference.
+const imageTokenCost = 64
+
+// estimateTokensText applies the classic "4 chars per token" heuristic on the
+// UTF-8 byte length of s, returning 0 for empty input and rounding up.
+func estimateTokensText(s string) int64 {
+	n := len(s)
+	if n == 0 {
+		return 0
+	}
+	return int64((n + 3) / 4)
+}
+
+// estimateTokensFile returns a v1 upload-cost proxy. FileRef itself carries no
+// size; use the MIME-typed name length as a placeholder plus a small flat
+// overhead. Real content-aware estimates land in stats.6.
+func estimateTokensFile(f session.FileRef) int64 {
+	// Name length + MIME class overhead. Bounded to avoid pathological refs.
+	n := len(f.Name) + 16
+	if n > 4096 {
+		n = 4096
+	}
+	return int64((n + 3) / 4)
+}
+
+// mcpToolTitleRE matches tool titles that clearly originate from an MCP
+// server integration. Case-insensitive prefix match on the common Mitto and
+// third-party MCP tool naming conventions.
+var mcpToolTitleRE = regexp.MustCompile(`(?i)^(mitto_|github-|bd_|beads_|slack_|linear_|jira_|notion_)`)
+
+// isMCPCall reports whether a ToolCallData represents an MCP-classified call.
+// v1 uses two signals: the explicit Kind == "mcp" field (populated by newer
+// ACP agents) and a title-prefix regex for older payloads.
+func isMCPCall(d session.ToolCallData) bool {
+	if d.Kind == "mcp" {
+		return true
+	}
+	return mcpToolTitleRE.MatchString(d.Title)
+}

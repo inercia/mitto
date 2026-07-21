@@ -149,6 +149,95 @@ func (s *SQLiteStore) UpsertDeltas(ctx context.Context, deltas []Delta) error {
 	return tx.Commit()
 }
 
+// UpsertDeltasWithCursor atomically applies deltas and advances cur in a
+// single transaction. Semantics match UpsertDeltas + SetCursor called
+// back-to-back, but the tx boundary guarantees exactly-once: if the commit
+// fails, neither the deltas nor the cursor advance persist, so the next
+// backfill pass will replay the same events safely.
+//
+// deltas may be empty (cursor-only advance is legal); cur.SessionID must be
+// non-empty. Duplicate-key deltas within the batch are collapsed
+// last-write-wins on Value, mirroring UpsertDeltas.
+func (s *SQLiteStore) UpsertDeltasWithCursor(ctx context.Context, deltas []Delta, cur Cursor) error {
+	if s.closed.Load() {
+		return ErrClosed
+	}
+	if cur.SessionID == "" {
+		return errors.New("stats: UpsertDeltasWithCursor: SessionID is empty")
+	}
+
+	// Same in-batch dedup as UpsertDeltas.
+	type key struct {
+		ts        int64
+		metric    string
+		sessionID string
+		workspace string
+	}
+	dedup := make(map[key]Delta, len(deltas))
+	for _, d := range deltas {
+		if d.Value == 0 {
+			continue
+		}
+		k := key{d.TSBucket.UTC().Unix(), d.Metric, d.SessionID, d.Workspace}
+		dedup[k] = d
+	}
+
+	lastTS := int64(0)
+	if !cur.LastEventAt.IsZero() {
+		lastTS = cur.LastEventAt.UTC().Unix()
+	}
+	updatedAt := int64(0)
+	if !cur.UpdatedAt.IsZero() {
+		updatedAt = cur.UpdatedAt.UTC().Unix()
+	}
+	estVer := cur.EstimatorVersion
+	if estVer == 0 {
+		estVer = EstimatorVersion
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if len(dedup) > 0 {
+		const q = `INSERT INTO stats_events
+			(ts_bucket, metric, session_id, workspace, working_dir, acp_server, value)
+			VALUES (?, ?, ?, ?, '', '', ?)
+			ON CONFLICT(ts_bucket, metric, session_id, workspace) DO UPDATE SET
+				value = excluded.value`
+		stmt, err := tx.PrepareContext(ctx, q)
+		if err != nil {
+			return err
+		}
+		for k, d := range dedup {
+			if _, err := stmt.ExecContext(ctx,
+				k.ts, k.metric, k.sessionID, k.workspace, d.Value,
+			); err != nil {
+				_ = stmt.Close()
+				return fmt.Errorf("stats: upsert delta: %w", err)
+			}
+		}
+		_ = stmt.Close()
+	}
+
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO stats_cursors (session_id, last_seq, last_ts, estimator_version, updated_at)
+		 VALUES (?, ?, ?, ?, ?)
+		 ON CONFLICT(session_id) DO UPDATE SET
+			last_seq          = MAX(last_seq,          excluded.last_seq),
+			last_ts           = MAX(last_ts,           excluded.last_ts),
+			estimator_version = excluded.estimator_version,
+			updated_at        = excluded.updated_at`,
+		cur.SessionID, cur.LastEventSeq, lastTS, estVer, updatedAt,
+	); err != nil {
+		return fmt.Errorf("stats: UpsertDeltasWithCursor cursor: %w", err)
+	}
+
+	return tx.Commit()
+}
+
 // GetCursor returns the persisted cursor for sessionID. When no cursor row
 // exists, the returned Cursor has SessionID set and every other field zero,
 // with err == ErrNotFound (mirrors NoopStore's contract).
