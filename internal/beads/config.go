@@ -25,8 +25,18 @@ var configEditableSources = map[string]bool{
 	"config.yaml": true,
 }
 
+// configHiddenKeyPrefixes lists key prefixes that share provenance with
+// editable config (typically "database") but are internal beads namespaces —
+// not user-editable settings. In particular "kv.*" is where `bd remember`
+// stores persistent knowledge blobs (up to several KB each); surfacing those
+// as <input> rows in the Tasks tab caused a UI freeze (mitto-xdqx).
+var configHiddenKeyPrefixes = []string{
+	"kv.",
+}
+
 // ConfigShow runs "bd config show --json" and returns a flat {key: value} map
-// of user-set configuration (filtering to editable sources).
+// of user-set configuration (filtering to editable sources and dropping
+// internal namespaces like kv.*).
 func (c *cliClient) ConfigShow(ctx context.Context, dir string) (map[string]string, error) {
 	out, err := c.runJSON(ctx, dir, "config", "show", "--json")
 	if err != nil {
@@ -40,11 +50,26 @@ func (c *cliClient) ConfigShow(ctx context.Context, dir string) (map[string]stri
 
 	result := make(map[string]string, len(entries))
 	for _, e := range entries {
-		if configEditableSources[e.Source] {
-			result[e.Key] = e.Value
+		if !configEditableSources[e.Source] {
+			continue
 		}
+		if isHiddenConfigKey(e.Key) {
+			continue
+		}
+		result[e.Key] = e.Value
 	}
 	return result, nil
+}
+
+// isHiddenConfigKey reports whether key belongs to an internal beads namespace
+// (e.g. kv.memory.*) that should not be surfaced in the editable config UI.
+func isHiddenConfigKey(key string) bool {
+	for _, prefix := range configHiddenKeyPrefixes {
+		if strings.HasPrefix(key, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // ConfigSet auto-initializes the workspace if needed, then runs

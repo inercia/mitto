@@ -681,6 +681,34 @@ func TestClient_ConfigShow_FiltersToEditableSources(t *testing.T) {
 	}
 }
 
+// TestClient_ConfigShow_HidesKVNamespace pins the mitto-xdqx fix: kv.* keys
+// (populated by `bd remember`, sometimes several KB each) share provenance
+// with editable database config but are internal beads state and must not be
+// surfaced in the editable-config UI, where rendering them as <input> rows
+// froze the Tasks tab.
+func TestClient_ConfigShow_HidesKVNamespace(t *testing.T) {
+	jsonResp := `[
+		{"key":"issue_prefix","value":"PROJ","source":"database"},
+		{"key":"kv.memory.some-note","value":"a very long blob","source":"database"},
+		{"key":"kv.other.thing","value":"x","source":"database"}
+	]`
+	r := &recordingRunner{responses: []runnerResp{{stdout: []byte(jsonResp)}}}
+	c := newClient(r)
+	result, err := c.ConfigShow(context.Background(), "/dir")
+	if err != nil {
+		t.Fatalf("ConfigShow() error: %v", err)
+	}
+	if result["issue_prefix"] != "PROJ" {
+		t.Errorf("issue_prefix missing or wrong: %v", result)
+	}
+	if _, ok := result["kv.memory.some-note"]; ok {
+		t.Errorf("kv.memory.* key should be excluded: %v", result)
+	}
+	if _, ok := result["kv.other.thing"]; ok {
+		t.Errorf("kv.* key should be excluded: %v", result)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // syncArgs (via Sync)
 // ---------------------------------------------------------------------------
