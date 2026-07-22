@@ -355,19 +355,23 @@ target:
   reuseIssue: true          # requires the request to carry beads_issue
   title: "Weekly triage"    # canonical conversation Name
   reuseTitle: true          # requires title above; funnels by Name match
+  reuseCoalesce: true       # skip dispatch when an identical prompt is already in flight/queued
 ```
 
 ### Fields
 
-| Field         | Type   | Description                                                                                                          |
-| ------------- | ------ | -------------------------------------------------------------------------------------------------------------------- |
-| `reuseIssue`  | bool   | When true and the request carries a `beads_issue`, funnel into an existing non-archived conversation with the same `beads_issue` in the same `working_dir`. |
-| `title`       | string | Canonical name for the conversation. When `reuseTitle` is true, also the lookup key. When the caller omits an explicit name and this prompt originates a new conversation, the created conversation's Name is set to this value. |
-| `reuseTitle`  | bool   | When true (requires non-empty `title`), funnel into an existing non-archived conversation in the same `working_dir` whose `Name` equals `title` (byte-for-byte, case-sensitive). On miss, create with `Name = title` so a subsequent scan matches. |
+| Field           | Type   | Description                                                                                                          |
+| --------------- | ------ | -------------------------------------------------------------------------------------------------------------------- |
+| `reuseIssue`    | bool   | When true and the request carries a `beads_issue`, funnel into an existing non-archived conversation with the same `beads_issue` in the same `working_dir`. |
+| `title`         | string | Canonical name for the conversation. When `reuseTitle` is true, also the lookup key. When the caller omits an explicit name and this prompt originates a new conversation, the created conversation's Name is set to this value. |
+| `reuseTitle`    | bool   | When true (requires non-empty `title`), funnel into an existing non-archived conversation in the same `working_dir` whose `Name` equals `title` (byte-for-byte, case-sensitive). On miss, create with `Name = title` so a subsequent scan matches. |
+| `reuseCoalesce` | \*bool | When true, suppresses a dispatch to the reused conversation when an identical prompt (same `PromptName` and `Arguments`, deep-equal treating nil and empty maps as equivalent) is already queued or currently in flight on that conversation. The second dispatch becomes a no-op — the caller still gets `{"session_id": existingID, "reused": true, "coalesced": true}` so it can focus the target, but no duplicate work is enqueued. Free-text (empty `PromptName`) dispatches never coalesce. Requires at least one reuse mode (`reuseIssue`, `reuseTitle`, or top-level `singleton: true`). Defaults to nil (behavior unchanged: every dispatch is delivered). |
 
 `ValidatePromptTarget` (`internal/prompts/prompts.go`) is run by
 `ParsePromptFile` at load time and rejects prompts that set
-`reuseTitle: true` without a `title` — a title-keyed lookup with no key.
+`reuseTitle: true` without a `title` (a title-keyed lookup with no key),
+or `reuseCoalesce: true` without any reuse mode (no target conversation
+to coalesce against).
 
 ### Find-or-route ladder
 
@@ -395,6 +399,15 @@ cannot both miss the scan and create duplicates. The MCP and REST paths
 maintain independent lock maps — MCP-only vs HTTP-only bursts stay
 serialized within their own path, and cross-path duplicates are prevented
 by the atomic scan+create window plus the store's session-list snapshot.
+
+When a candidate is found and `target.reuseCoalesce: true` is set, the
+handler consults `conversation.PromptMatchesActiveOrQueued` **inside the
+same per-key lock** before falling through to the normal reuse-and-enqueue
+path. If the target conversation is currently executing an identical
+dispatch (same `PromptName` + `Arguments`) or has one already queued, the
+handler short-circuits with `{"session_id": existingID, "reused": true,
+"coalesced": true}` and enqueues nothing. The check is atomic against
+concurrent duplicate dispatches on the same key.
 
 ## See Also
 
