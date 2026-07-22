@@ -23,12 +23,16 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 CLEAN=(
+  ./web/static/lib.test.js
   ./web/static/components/BeadsView.test.js
   ./web/static/components/HeaderChildrenDropdown.test.js
   ./web/static/components/Message.test.js
   ./web/static/components/PromptParameterDialog.test.js
   ./web/static/components/SettingsDialog.test.js
   ./web/static/components/SlashCommandPicker.test.js
+  ./web/static/utils/api.test.js
+  ./web/static/utils/beadsLinkify.test.js
+  ./web/static/utils/endpoints.test.js
   ./web/static/utils/native.test.js
   ./web/static/utils/phaseState.test.js
   ./web/static/utils/prompts.test.js
