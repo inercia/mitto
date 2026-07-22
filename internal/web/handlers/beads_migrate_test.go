@@ -120,6 +120,23 @@ func TestHandleBeadsMigrate_KillSwitch_Forbidden(t *testing.T) {
 	if !strings.Contains(w.Body.String(), "allow_migrate_from_ui") {
 		t.Errorf("response body missing config-flag hint: %s", w.Body.String())
 	}
+	// Parse the error envelope and assert the machine-readable code is
+	// `migrate_from_ui_disabled` (NOT the generic `forbidden`). Without this
+	// mapping the SchemaSkewDialog kill-switch branch — which gates on
+	// `data.code === "migrate_from_ui_disabled"` — is dead code. See mitto-erry.
+	var env struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil {
+		t.Fatalf("unmarshal error envelope: %v (body=%s)", err, w.Body.String())
+	}
+	if env.Error.Code != "migrate_from_ui_disabled" {
+		t.Errorf("error.code = %q, want %q (frontend SchemaSkewDialog gates its kill-switch copy on this code)",
+			env.Error.Code, "migrate_from_ui_disabled")
+	}
 }
 
 // TestHandleBeadsMigrate_DefaultOn_Allowed verifies the mitto-erry default:

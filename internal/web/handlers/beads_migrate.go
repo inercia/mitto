@@ -52,7 +52,11 @@ func (h *Handlers) HandleBeadsMigrate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !h.beadsMigrationAllowed() {
-		writeErrorJSON(w, http.StatusForbidden, errCodeForbidden,
+		// Emit code=migrate_from_ui_disabled (not the generic errCodeForbidden)
+		// so the SchemaSkewDialog can render the tailored kill-switch copy
+		// (BeadsView.js handleConfirm branches on this exact code). See
+		// mitto-erry — the kill-switch UX is dead-code without this mapping.
+		writeErrorJSON(w, http.StatusForbidden, "migrate_from_ui_disabled",
 			"Beads migration from the UI has been disabled by the administrator (web.beads.allow_migrate_from_ui=false). Run the migration from a terminal on the designated clone.")
 		return
 	}
