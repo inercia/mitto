@@ -87,6 +87,10 @@ function renderFolderEditor({
   // Shortcuts tab (grouped state/handlers from useFolderShortcutsConfig)
   shortcuts,
   shortcutsHandlers,
+  // Prompt parameter dialog opener (drilled through to WorkspaceFolderBeadsTab
+  // so the Prompt Actions sliders button can collect args for parametrized
+  // Pull/Push/Sync prompts).
+  onOpenPromptParamDialog,
 }) {
   const { editName, editCode, editColor, editGroup, editAutoChildren } = edits;
   const {
@@ -504,6 +508,7 @@ function renderFolderEditor({
                         beads=${beads}
                         beadsSetters=${beadsSetters}
                         beadsHandlers=${beadsHandlers}
+                        onOpenPromptParamDialog=${onOpenPromptParamDialog}
                       />`
                     }
 

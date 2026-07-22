@@ -2005,7 +2005,7 @@ function App() {
     // Sort MRU-first by last_opened_at (ISO-8601 timestamp from folders.json,
     // projected onto workspace records). Zero/absent timestamps sort last;
     // ties fall back to alphabetical by display name, then working_dir.
-    return filtered.slice().sort((a, b) => {
+    const sorted = filtered.slice().sort((a, b) => {
       const ta = a.last_opened_at ? Date.parse(a.last_opened_at) : 0;
       const tb = b.last_opened_at ? Date.parse(b.last_opened_at) : 0;
       if (ta !== tb) return tb - ta;
@@ -2013,6 +2013,18 @@ function App() {
       const nb = (b.name || b.working_dir || "").toLowerCase();
       return na.localeCompare(nb);
     });
+    // Collapse duplicate working_dir entries (e.g. two workspace UUIDs sharing
+    // one folder — an interactive workspace + a loop-babysit workspace). The
+    // picker pins by working_dir, so extra rows are indistinguishable to the
+    // user. Post-sort dedup keeps the MRU-highest occurrence of each path.
+    const seen = new Set();
+    const deduped = [];
+    for (const ws of sorted) {
+      if (seen.has(ws.working_dir)) continue;
+      seen.add(ws.working_dir);
+      deduped.push(ws);
+    }
+    return deduped;
   }, [workspaces, activeSessions, storedSessions]);
 
   const handleAddFolderOpen = useCallback(

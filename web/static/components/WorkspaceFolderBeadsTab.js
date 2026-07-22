@@ -8,7 +8,7 @@ const { html } = window.preact;
 
 import { openExternalURL } from "../utils/index.js";
 import { promptParameters } from "../utils/prompts.js";
-import { SpinnerIcon } from "./Icons.js";
+import { PlusIcon, SlidersIcon, SpinnerIcon, TrashIcon } from "./Icons.js";
 
 // Descriptors used by the Beads Config tab to render the label + config-key
 // help table for each supported upstream task system.
@@ -289,6 +289,7 @@ export function WorkspaceFolderBeadsTab({
       `}
       ${beadsConfigLoading
         ? html`<div
+            data-testid="beads-loading"
             class="flex items-center gap-2 text-sm text-mitto-text-muted"
           >
             <${SpinnerIcon} className="w-4 h-4 animate-spin" />

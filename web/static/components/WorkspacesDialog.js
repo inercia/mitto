@@ -356,6 +356,16 @@ export function WorkspacesDialog({
     });
   }, []);
 
+  // Idempotent expand — used when clicking a folder header so it always ends
+  // expanded (unlike toggleFolder, which the chevron uses to flip state).
+  const expandFolder = useCallback((displayName) => {
+    setExpandedFolders((prev) => {
+      if (prev[displayName] !== false && displayName in prev) return prev;
+      setEditorFolderExpansion(displayName, true);
+      return { ...prev, [displayName]: true };
+    });
+  }, []);
+
   const expandAllFolders = useCallback(() => {
     const next = {};
     groupedWorkspaces.forEach(({ displayName }) => {
@@ -732,6 +742,7 @@ export function WorkspacesDialog({
           setSelectedWorkspaceKey=${setSelectedWorkspaceKey}
           guardNewFolder=${guardNewFolder}
           toggleFolder=${toggleFolder}
+          expandFolder=${expandFolder}
           getWorkspaceKey=${getWorkspaceKey}
           addWorkspace=${addWorkspace}
           removeWorkspace=${removeWorkspace}
@@ -778,6 +789,7 @@ export function WorkspacesDialog({
                 processorsHandlers=${processorsHandlers}
                 shortcuts=${shortcuts}
                 shortcutsHandlers=${shortcutsHandlers}
+                onOpenPromptParamDialog=${onOpenPromptParamDialog}
               />`
             : !selectedWorkspace
               ? html`<div
