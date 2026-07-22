@@ -2,7 +2,7 @@
  * Unit tests for prompt menu utility functions
  */
 
-import { jest } from "@jest/globals";
+import { mockFn } from "./testing/mockFn.js";
 import {
   promptMenus,
   promptMenuExcludes,
@@ -788,7 +788,7 @@ describe("effectiveMissingParams", () => {
 
 describe("fetchCachedParamNames", () => {
   test("returns Set with cached names on ok response", async () => {
-    const fetchImpl = jest.fn().mockResolvedValue({
+    const fetchImpl = mockFn().mockResolvedValue({
       ok: true,
       json: async () => ({ cached: ["A", "B"] }),
     });
@@ -799,7 +799,7 @@ describe("fetchCachedParamNames", () => {
   });
 
   test("passes URL containing /prompt-arg-cache and prompt= to fetchImpl", async () => {
-    const fetchImpl = jest.fn().mockResolvedValue({
+    const fetchImpl = mockFn().mockResolvedValue({
       ok: true,
       json: async () => ({ cached: [] }),
     });
@@ -811,7 +811,7 @@ describe("fetchCachedParamNames", () => {
   });
 
   test("returns empty Set on non-ok response", async () => {
-    const fetchImpl = jest.fn().mockResolvedValue({ ok: false });
+    const fetchImpl = mockFn().mockResolvedValue({ ok: false });
     const result = await fetchCachedParamNames("sess-1", "my-prompt", {
       fetchImpl,
     });
@@ -819,7 +819,7 @@ describe("fetchCachedParamNames", () => {
   });
 
   test("returns empty Set and does not throw when fetchImpl throws", async () => {
-    const fetchImpl = jest.fn().mockRejectedValue(new Error("network error"));
+    const fetchImpl = mockFn().mockRejectedValue(new Error("network error"));
     const result = await fetchCachedParamNames("sess-1", "my-prompt", {
       fetchImpl,
     });
@@ -827,21 +827,21 @@ describe("fetchCachedParamNames", () => {
   });
 
   test("returns empty Set and does NOT call fetchImpl when sessionId is missing", async () => {
-    const fetchImpl = jest.fn();
+    const fetchImpl = mockFn();
     const result = await fetchCachedParamNames("", "my-prompt", { fetchImpl });
     expect(result).toEqual(new Set());
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   test("returns empty Set and does NOT call fetchImpl when promptName is missing", async () => {
-    const fetchImpl = jest.fn();
+    const fetchImpl = mockFn();
     const result = await fetchCachedParamNames("sess-1", "", { fetchImpl });
     expect(result).toEqual(new Set());
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   test("returns empty Set when response json has no cached array", async () => {
-    const fetchImpl = jest.fn().mockResolvedValue({
+    const fetchImpl = mockFn().mockResolvedValue({
       ok: true,
       json: async () => ({ prompt: "x" }),
     });
@@ -1434,7 +1434,7 @@ describe("buildPromptGroupMenuItems", () => {
   });
 
   test("calling item.onClick({ asLoop: true }) invokes onRun with (prompt, { asLoop: true })", () => {
-    const onRun = jest.fn();
+    const onRun = mockFn();
     const items = buildPromptGroupMenuItems(prompts, onRun, null);
     const sub = findSub(items, "Maybe Loop");
     sub.onClick({ asLoop: true });
@@ -1445,7 +1445,7 @@ describe("buildPromptGroupMenuItems", () => {
   });
 
   test("calling item.onClick({ asLoop: false }) forwards false", () => {
-    const onRun = jest.fn();
+    const onRun = mockFn();
     const items = buildPromptGroupMenuItems(prompts, onRun, null);
     const sub = findSub(items, "Maybe Loop");
     sub.onClick({ asLoop: false });
