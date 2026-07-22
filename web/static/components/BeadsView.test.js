@@ -1593,3 +1593,68 @@ describe("mitto-n5mw: write handlers must not swallow beads_schema_skew (409)", 
     });
   });
 });
+
+
+// =============================================================================
+// mitto-erry: SchemaSkewDialog copy consolidation + kill-switch UX
+// =============================================================================
+//
+// The bead flipped `web.beads.allow_migrate_from_ui` from opt-in to default-on
+// kill-switch and consolidated the risk copy directly into the ack-checkbox
+// label (previously a stand-alone amber banner duplicated the same warning).
+// These source-scanning assertions parallel the mitto-zbfq / mitto-n5mw pattern
+// established above.
+
+describe("mitto-erry: SchemaSkewDialog copy consolidation + kill-switch UX", () => {
+  const source = readFileSync(BEADS_VIEW_PATH, "utf8");
+
+  // Slice the SchemaSkewDialog function body so the assertions are scoped to
+  // it rather than the whole 3400-line component.
+  function extractSchemaSkewDialogSource() {
+    const startMarker = "function SchemaSkewDialog(";
+    const startIdx = source.indexOf(startMarker);
+    expect(startIdx).toBeGreaterThan(-1);
+    const afterStart = source.indexOf("\nfunction ", startIdx + startMarker.length);
+    const endIdx = afterStart === -1 ? source.length : afterStart;
+    return source.slice(startIdx, endIdx);
+  }
+
+  test("ack-checkbox label carries the 'designated migrator' + '#4259' consolidated copy", () => {
+    const body = extractSchemaSkewDialogSource();
+    // Locate the ack-checkbox and slice the enclosing <label> so we assert the
+    // copy lives next to the checkbox itself, not somewhere else in the dialog.
+    const checkboxIdx = body.indexOf('data-testid="schema-skew-ack-checkbox"');
+    expect(checkboxIdx).toBeGreaterThan(-1);
+    const labelStart = body.lastIndexOf("<label", checkboxIdx);
+    expect(labelStart).toBeGreaterThan(-1);
+    const labelEnd = body.indexOf("</label>", checkboxIdx);
+    expect(labelEnd).toBeGreaterThan(-1);
+    const labelBlock = body.slice(labelStart, labelEnd);
+    expect(labelBlock).toMatch(/designated migrator/i);
+    expect(labelBlock).toMatch(/#4259/);
+  });
+
+  test("stand-alone amber warning banner is gone (copy lives in the ack label only)", () => {
+    const body = extractSchemaSkewDialogSource();
+    // A stand-alone banner would repeat the "designated migrator clone" copy
+    // outside the ack-checkbox <label>. The kill-switch error text uses a
+    // different phrasing ("designated clone") so the JSX-rendered risk copy
+    // must appear exactly once — inside the ack label — and never outside it.
+    const jsxHits = body.match(/designated migrator clone/gi) || [];
+    expect(jsxHits.length).toBe(1);
+    // And the sole hit must be scoped to the ack-checkbox <label>.
+    const checkboxIdx = body.indexOf('data-testid="schema-skew-ack-checkbox"');
+    const labelStart = body.lastIndexOf("<label", checkboxIdx);
+    const labelEnd = body.indexOf("</label>", checkboxIdx);
+    const labelBlock = body.slice(labelStart, labelEnd);
+    expect(labelBlock).toMatch(/designated migrator clone/i);
+  });
+
+  test("migrate_from_ui_disabled branch copy names the kill-switch flag", () => {
+    // Whole-file scan is fine here — the branch lives inside SchemaSkewDialog's
+    // handleConfirm error handler and cites the flag by name so admins can find
+    // it in their config.
+    expect(source).toMatch(/migrate_from_ui_disabled/);
+    expect(source).toMatch(/web\.beads\.allow_migrate_from_ui/);
+  });
+});
