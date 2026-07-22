@@ -29,16 +29,22 @@ import {
 // useBeadsIntegration reads useState/useCallback/useMemo/useRef from
 // window.preact lazily inside its body (see the file's header comment), so
 // pass-through stubs are enough for these tests.
+//
+// Per-field top-up (not `window.preact = window.preact || {...}`) so a partial
+// stub left by an earlier test file under Bun's shared-process runner does not
+// short-circuit the guard and leave hooks undefined (mitto-txpp.6).
 global.window = global.window || {};
-window.preact = window.preact || {
-  useState: (initial) => [
+window.preact = window.preact || {};
+window.preact.useState =
+  window.preact.useState ||
+  ((initial) => [
     typeof initial === "function" ? initial() : initial,
     () => {},
-  ],
-  useCallback: (fn) => fn,
-  useMemo: (fn) => fn(),
-  useRef: (initial) => ({ current: initial }),
-};
+  ]);
+window.preact.useCallback = window.preact.useCallback || ((fn) => fn);
+window.preact.useMemo = window.preact.useMemo || ((fn) => fn());
+window.preact.useRef =
+  window.preact.useRef || ((initial) => ({ current: initial }));
 window.mittoApiPrefix = "";
 
 if (typeof document === "undefined") {

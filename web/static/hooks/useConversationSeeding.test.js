@@ -21,8 +21,11 @@ import {
 import { promptResolveAsLoop } from "../utils/prompts.js";
 
 // Provide a minimal window.preact stub so the module-level destructure doesn't throw.
+// Merge into any pre-existing window.preact rather than hard-assigning, so this file
+// does not wipe hooks stubbed by earlier test files under Bun's shared-process runner
+// (bun does not isolate globals across files the way Jest+jsdom does per-file).
 global.window = global.window || {};
-window.preact = { useCallback: (fn) => fn };
+window.preact = { ...(window.preact || {}), useCallback: (fn) => fn };
 window.mittoApiPrefix = "";
 
 // Minimal document.cookie stub for csrf.js

@@ -40,6 +40,7 @@ CLEAN=(
   ./web/static/components/WorkspacesDialog.test.js
   ./web/static/components/dashboard/StatsCharts.test.js
   ./web/static/hooks/useBeadsFolderConfig.test.js
+  ./web/static/hooks/useBeadsIntegration.test.js
   ./web/static/hooks/useConversationSeeding.test.js
   ./web/static/utils/api.test.js
   ./web/static/utils/beadsLinkify.test.js
