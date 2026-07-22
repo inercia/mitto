@@ -1,6 +1,10 @@
 icon: search
 name: 'GitHub: review a Pull Request'
 menus: prompts
+target:
+  title: "PR #{{ .Args.Pr }} review"
+  reuseTitle: true
+  reuseCoalesce: true
 parameters:
   - name: Pr
     type: text

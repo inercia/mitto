@@ -7,6 +7,10 @@ menus: prompts
 enabledWhen: 'Tools.HasAnyPattern(["slack_*", "*_slack"])'
 tags:
 - support
+target:
+  title: "Support: continue {{ .Args.SlackChannelID }}"
+  reuseTitle: true
+  reuseCoalesce: true
 parameters:
   - name: SlackChannelID
     type: text

@@ -7,6 +7,15 @@ backgroundColor: '#B2DFDB'
 tags:
 - loop
 - github
+target:
+  title: "PR #{{ .Args.Pr }} address comments"
+  reuseTitle: true
+  reuseCoalesce: true
+parameters:
+  - name: Pr
+    type: text
+    required: false
+    description: 'Optional PR to address — a number, URL, or branch name. If omitted, uses the current branch.'
 enabledWhen: FileExists(".git/config") && (Tools.HasPattern("github_*") || CommandExists("gh") || CommandExists("glab"))
 prompt: |
   Address all review comments on the current pull request with thoughtful responses and code changes.

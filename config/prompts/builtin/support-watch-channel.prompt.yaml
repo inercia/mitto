@@ -7,6 +7,10 @@ group: Support
 tags:
 - loop
 - support
+target:
+  title: "Support: watch {{ .Args.SlackChannelID }}"
+  reuseTitle: true
+  reuseCoalesce: true
 parameters:
   - name: SlackChannelID
     type: text

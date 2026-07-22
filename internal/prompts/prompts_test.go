@@ -2656,6 +2656,69 @@ func TestBuiltinPrompts_TodayTierRoutingAdoption(t *testing.T) {
 	}
 }
 
+// TestBuiltinPrompts_NeedsTemplatedTitleAdoption pins mitto-5x21.3: the four
+// needs-5qbo-tier per-external-ID builtin prompts must declare templated
+// target.title routing (Go-template `{{ .Args.X }}` inside target.title, unlocked
+// by mitto-5qbo) so repeat dispatches for the same external ID (Slack channel or
+// PR) funnel back into the right existing conversation instead of spawning
+// parallels, while different IDs still create distinct buckets. Modelled on
+// TestBuiltinPrompts_TodayTierRoutingAdoption (mitto-5x21.2) and
+// TestBuiltinPrompts_SupportRoutingAdoption (mitto-5x21.1).
+//
+// Single bucket (perExternalIDWithCoalesce): templated target.title +
+// reuseTitle: true + reuseCoalesce: true, reuseIssue: false. The literal title
+// string carried in Target.Title is the un-rendered template (rendering happens
+// at dispatch); asserting on the exact template literal pins both the field
+// name (e.g. SlackChannelID vs slack_channel_id) and the surrounding text
+// (e.g. "Support: continue " vs "Support: watch ").
+//
+// Guards against silent regressions like: (a) somebody removing a target block
+// from one of these files, (b) reuseCoalesce being flipped off, (c) the
+// templated title drifting to a different arg name or literal shape, (d)
+// reuseIssue being flipped on (which would silently override the templated
+// per-ID bucket with per-bead routing).
+func TestBuiltinPrompts_NeedsTemplatedTitleAdoption(t *testing.T) {
+	builtinDir := filepath.Join("..", "..", "config", "prompts", "builtin")
+	type spec struct {
+		file      string
+		wantTitle string // exact templated literal expected in Target.Title
+	}
+	specs := []spec{
+		{file: "support-continue-conversation.prompt.yaml", wantTitle: "Support: continue {{ .Args.SlackChannelID }}"},
+		{file: "support-watch-channel.prompt.yaml", wantTitle: "Support: watch {{ .Args.SlackChannelID }}"},
+		{file: "github-review-pr.prompt.yaml", wantTitle: "PR #{{ .Args.Pr }} review"},
+		{file: "address-pr-comments.prompt.yaml", wantTitle: "PR #{{ .Args.Pr }} address comments"},
+	}
+	for _, s := range specs {
+		t.Run(s.file, func(t *testing.T) {
+			path := filepath.Join(builtinDir, s.file)
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Skipf("prompt file not found at %s: %v", path, err)
+			}
+			prompt, err := ParsePromptFile(s.file, data, time.Now())
+			if err != nil {
+				t.Fatalf("ParsePromptFile(%s): %v", s.file, err)
+			}
+			if prompt.Target == nil {
+				t.Fatalf("%s: Target = nil, want non-nil target/reuse routing (mitto-5x21.3)", s.file)
+			}
+			if !prompt.Target.ReuseTitle {
+				t.Errorf("%s: Target.ReuseTitle = false, want true (per-external-ID templated title)", s.file)
+			}
+			if prompt.Target.ReuseIssue {
+				t.Errorf("%s: Target.ReuseIssue = true, want false (per-external-ID routes by templated title, not beads issue)", s.file)
+			}
+			if prompt.Target.Title != s.wantTitle {
+				t.Errorf("%s: Target.Title = %q, want %q (templated per-external-ID title)", s.file, prompt.Target.Title, s.wantTitle)
+			}
+			if prompt.Target.ReuseCoalesce == nil || !*prompt.Target.ReuseCoalesce {
+				t.Errorf("%s: Target.ReuseCoalesce = %v, want true (concurrent dispatches must join, not race)", s.file, prompt.Target.ReuseCoalesce)
+			}
+		})
+	}
+}
+
 // TestBuiltinPrompts_EnabledWhenCompiles CEL-compiles every non-empty enabledWhen
 // on the shipped builtin prompts. TestBuiltinPromptsParseClean only YAML-parses
 // them, so an undeclared identifier/function in a builtin's enabledWhen would slip
