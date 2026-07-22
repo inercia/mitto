@@ -128,6 +128,17 @@ type PromptTarget struct {
 	// through to normal create when no candidate is found; the created
 	// conversation is named Title so a subsequent scan matches it.
 	ReuseTitle bool `yaml:"reuseTitle,omitempty" json:"reuseTitle,omitempty"`
+	// ReuseCoalesce, when non-nil and true, suppresses a dispatch to a
+	// reused conversation when an identical prompt (same PromptName and
+	// Arguments, deep-equal treating nil and empty maps as equivalent) is
+	// already queued or currently in flight on that conversation. The
+	// second dispatch becomes a no-op — the caller still gets a
+	// {"session_id": existingID, "reused": true} response so it can focus
+	// the target, but no duplicate work is enqueued. Only meaningful when
+	// combined with a reuse mode (ReuseIssue, ReuseTitle, or a singleton
+	// prompt); enforced by ValidatePromptTarget at prompt-load time.
+	// Defaults to nil (behavior unchanged: every dispatch is delivered).
+	ReuseCoalesce *bool `yaml:"reuseCoalesce,omitempty" json:"reuseCoalesce,omitempty"`
 }
 
 // PromptLoopModeAlways means the prompt is always loop; not user-toggleable.
@@ -179,12 +190,21 @@ func ValidatePromptLoop(promptName string, p *PromptLoop) error {
 // Returns an error when ReuseTitle is true but Title is empty, since a
 // reuse-by-title dispatch has no lookup key in that case. A nil target or
 // an empty target block is always valid.
-func ValidatePromptTarget(promptName string, t *PromptTarget) error {
+//
+// promptSingleton reports whether the containing PromptFile declares the
+// top-level singleton flag; it is consulted only to authorize ReuseCoalesce
+// (which requires at least one reuse mode: ReuseIssue, ReuseTitle, or the
+// top-level singleton). Callers that do not need the ReuseCoalesce check may
+// pass false.
+func ValidatePromptTarget(promptName string, t *PromptTarget, promptSingleton bool) error {
 	if t == nil {
 		return nil
 	}
 	if t.ReuseTitle && strings.TrimSpace(t.Title) == "" {
 		return fmt.Errorf("prompt %q: target.reuseTitle is true but target.title is empty (a title is required to key the lookup)", promptName)
+	}
+	if t.ReuseCoalesce != nil && *t.ReuseCoalesce && !t.ReuseIssue && !t.ReuseTitle && !promptSingleton {
+		return fmt.Errorf("prompt %q: target.reuseCoalesce requires at least one reuse mode (target.reuseIssue, target.reuseTitle, or top-level singleton: true)", promptName)
 	}
 	return nil
 }
@@ -420,8 +440,9 @@ func ParsePromptFile(path string, data []byte, modTime time.Time) (*PromptFile, 
 		return nil, fmt.Errorf("prompt file %s: %w", path, err)
 	}
 
-	// Validate target block (reuseTitle requires a non-empty title).
-	if err := ValidatePromptTarget(prompt.Name, prompt.Target); err != nil {
+	// Validate target block (reuseTitle requires a non-empty title;
+	// reuseCoalesce requires a reuse mode).
+	if err := ValidatePromptTarget(prompt.Name, prompt.Target, prompt.Singleton); err != nil {
 		return nil, fmt.Errorf("prompt file %s: %w", path, err)
 	}
 

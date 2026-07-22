@@ -278,6 +278,13 @@ type BackgroundSession interface {
 	// available model, or the underlying SetConfigOption call fails. Used by the
 	// mitto_conversation_new / _update model_tag path.
 	ApplyModelTag(ctx context.Context, tag string) (string, error)
+	// ActivePromptDispatch returns the workspace-prompt name and Arguments of
+	// the dispatch currently in flight (isPrompting == true). Consumed by the
+	// target.reuseCoalesce check so a duplicate identical dispatch onto a busy
+	// conversation can be a no-op (mitto-djs1). Returns ok=false when the
+	// session is idle. When ok=true and name is empty, the in-flight dispatch
+	// is a free-text prompt.
+	ActivePromptDispatch() (name string, args map[string]string, ok bool)
 }
 
 // Config holds the configuration for the MCP server.

@@ -143,6 +143,9 @@ func (h *Handlers) HandleCreateSession(w http.ResponseWriter, r *http.Request) {
 		if h.deps.Store != nil {
 			metas, _ := h.deps.Store.List()
 			if existingID, found := session.FindConversationByBeadsIssue(metas, req.WorkingDir, req.BeadsIssue); found {
+				if h.maybeCoalesce(w, existingID, promptName, req.WorkingDir, req.Arguments) {
+					return
+				}
 				h.reuseSingletonSession(w, existingID, promptName, req.Arguments)
 				return
 			}
@@ -180,6 +183,9 @@ func (h *Handlers) HandleCreateSession(w http.ResponseWriter, r *http.Request) {
 			if h.deps.Store != nil {
 				metas, _ := h.deps.Store.List()
 				if existingID, found := session.FindConversationByTitle(metas, req.WorkingDir, title); found {
+					if h.maybeCoalesce(w, existingID, promptName, req.WorkingDir, req.Arguments) {
+						return
+					}
 					h.reuseSingletonSession(w, existingID, promptName, req.Arguments)
 					return
 				}
@@ -214,6 +220,9 @@ func (h *Handlers) HandleCreateSession(w http.ResponseWriter, r *http.Request) {
 		if h.deps.Store != nil {
 			metas, _ := h.deps.Store.List()
 			if existingID, found := session.FindSingletonCandidate(metas, req.WorkingDir, promptName); found {
+				if h.maybeCoalesce(w, existingID, promptName, req.WorkingDir, req.Arguments) {
+					return
+				}
 				h.reuseSingletonSession(w, existingID, promptName, req.Arguments)
 				return
 			}
@@ -350,6 +359,46 @@ func (h *Handlers) seedQueueWithNamedPrompt(bs *conversation.BackgroundSession, 
 	}
 	// Dispatch immediately if the agent is idle — same path as the queue API.
 	go bs.TryProcessQueuedMessage()
+}
+
+// maybeCoalesce returns true (and writes a 200 coalesced response) when the
+// prompt declares target.reuseCoalesce AND an identical dispatch is already
+// in flight or queued on the target conversation. Callers MUST invoke this
+// INSIDE the per-key reuse lock (lockReuseIssue / lockReuseTitle /
+// lockSingleton) so the check-then-skip is atomic against concurrent dupes.
+// Returns false when reuseCoalesce is off or no match is found — callers
+// then fall through to reuseSingletonSession as before (mitto-djs1).
+func (h *Handlers) maybeCoalesce(w http.ResponseWriter, existingID, promptName, workingDir string, arguments map[string]string) bool {
+	if promptName == "" || h.deps.ResolvePromptReuseCoalesce == nil {
+		return false
+	}
+	if !h.deps.ResolvePromptReuseCoalesce(promptName, workingDir) {
+		return false
+	}
+	store := h.deps.Store
+	if store == nil {
+		return false
+	}
+	var bs *conversation.BackgroundSession
+	if h.deps.SessionManager != nil {
+		bs = h.deps.SessionManager.GetSession(existingID)
+	}
+	queue := store.Queue(existingID)
+	if !conversation.PromptMatchesActiveOrQueued(bs, queue, promptName, arguments) {
+		return false
+	}
+	if h.deps.Logger != nil {
+		h.deps.Logger.Info("Coalesced duplicate prompt dispatch",
+			"session_id", existingID,
+			"prompt_name", promptName,
+			"working_dir", workingDir)
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"session_id": existingID,
+		"reused":     true,
+		"coalesced":  true,
+	})
+	return true
 }
 
 // reuseSingletonSession routes a singleton-prompt create request to an

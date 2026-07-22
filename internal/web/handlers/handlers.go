@@ -213,6 +213,15 @@ type Deps struct {
 	// or has no target block. May be nil; callers must nil-guard.
 	ResolvePromptTargetTitle func(promptName, workingDir string) (title string, reuseTitle bool)
 
+	// ResolvePromptReuseCoalesce reports whether the named prompt (resolved for
+	// the given working dir via the full merge pipeline) has target.reuseCoalesce
+	// enabled (nullable *bool dereferenced to true). Consulted after a reuse
+	// mode (reuseIssue / reuseTitle / singleton) resolves to an existing
+	// conversation so an identical in-flight or queued dispatch becomes a
+	// no-op instead of enqueuing a duplicate (mitto-djs1). May be nil;
+	// callers must nil-guard (treat nil as "not reuseCoalesce").
+	ResolvePromptReuseCoalesce func(promptName, workingDir string) bool
+
 	// DefaultACPServer mirrors Server.config.ACPServer: the default ACP server
 	// name used in the create-session response when the resolved workspace does
 	// not specify one.

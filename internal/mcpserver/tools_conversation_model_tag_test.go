@@ -71,6 +71,9 @@ func (m *mockBackgroundSessionForModelTag) RecordChildWait(time.Duration) {}
 func (m *mockBackgroundSessionForModelTag) WaitForResponseComplete(time.Duration) bool {
 	return true
 }
+func (m *mockBackgroundSessionForModelTag) ActivePromptDispatch() (string, map[string]string, bool) {
+	return "", nil, false
+}
 
 // mockSessionManagerForModelTag is a SessionManager stub whose GetSession and
 // ResumeSession return a caller-provided *mockBackgroundSessionForModelTag. Any

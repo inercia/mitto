@@ -101,6 +101,19 @@ type BackgroundSession struct {
 	lastResponseComplete     time.Time // When the agent last completed a response (for queue delay)
 	queuedDeliveryInProgress bool      // true while a popped message is sleeping through delay
 
+	// activePromptName / activePromptArgs record the workspace-prompt name and
+	// argument map of the dispatch that is currently in flight (isPrompting ==
+	// true). Both fields are guarded by promptMu and set alongside isPrompting
+	// = true at the point of no return in PromptWithMeta; they are cleared
+	// alongside every isPrompting = false transition via clearActiveDispatchLocked.
+	// Empty activePromptName means the in-flight dispatch is a free-text prompt
+	// (no PromptName). Read via ActivePromptDispatch (returns a shallow copy of
+	// the argument map so callers cannot mutate the live state). Consumed by
+	// the target.reuseCoalesce check in session_create / mcpserver so a
+	// duplicate identical dispatch onto a busy conversation can be a no-op.
+	activePromptName string
+	activePromptArgs map[string]string
+
 	// lastAgentActivityAt records the time (Unix nanos) of the most recent streamed
 	// update received from the agent during a prompt. It is reset when a prompt starts
 	// and updated on every ACP SessionUpdate. The prompt inactivity watchdog reads it
@@ -565,6 +578,7 @@ func NewTestBackgroundSessionPromptingWithCtx(sessionID string, prompting bool, 
 func (bs *BackgroundSession) SimulatePromptComplete() {
 	bs.promptMu.Lock()
 	bs.isPrompting = false
+	bs.clearActiveDispatchLocked()
 	if bs.promptCond != nil {
 		bs.promptCond.Broadcast()
 	}
@@ -1156,6 +1170,38 @@ func (bs *BackgroundSession) IsPrompting() bool {
 	bs.promptMu.Lock()
 	defer bs.promptMu.Unlock()
 	return bs.isPrompting
+}
+
+// ActivePromptDispatch returns the PromptName and Arguments of the dispatch
+// currently in flight together with a prompting flag. When ok is false, no
+// prompt is in flight and (name, args) are zero. When ok is true and name is
+// empty, the in-flight dispatch is a free-text prompt (no workspace prompt
+// name). The returned args map is a shallow copy so callers may inspect it
+// without holding promptMu; keys and values are strings (immutable).
+// Consumed by target.reuseCoalesce coalescing (mitto-djs1).
+func (bs *BackgroundSession) ActivePromptDispatch() (name string, args map[string]string, ok bool) {
+	bs.promptMu.Lock()
+	defer bs.promptMu.Unlock()
+	if !bs.isPrompting {
+		return "", nil, false
+	}
+	name = bs.activePromptName
+	if len(bs.activePromptArgs) > 0 {
+		args = make(map[string]string, len(bs.activePromptArgs))
+		for k, v := range bs.activePromptArgs {
+			args[k] = v
+		}
+	}
+	return name, args, true
+}
+
+// clearActiveDispatchLocked clears activePromptName/activePromptArgs. Callers
+// MUST hold promptMu. Kept next to the field declarations so every
+// isPrompting=false transition can defensively invoke it and stay in sync
+// (mitto-djs1). Cheap when already zero.
+func (bs *BackgroundSession) clearActiveDispatchLocked() {
+	bs.activePromptName = ""
+	bs.activePromptArgs = nil
 }
 
 // GetPromptCount returns the number of prompts sent in this session.

@@ -340,6 +340,7 @@ retryAfterRestart:
 					"elapsed", elapsed)
 			}
 			bs.isPrompting = false
+			bs.clearActiveDispatchLocked()
 			bs.lastResponseComplete = time.Now()
 			bs.promptMu.Unlock()
 
@@ -395,6 +396,19 @@ retryAfterRestart:
 	bs.isPrompting = true
 	bs.promptStartTime = time.Now()
 	bs.promptCount++
+	// Record the in-flight dispatch identity so a duplicate identical
+	// dispatch via target.reuseCoalesce can be a no-op (mitto-djs1).
+	// A shallow copy of Arguments keeps callers isolated from later
+	// mutation (map is passed by reference through the queue path).
+	bs.activePromptName = meta.PromptName
+	if len(meta.Arguments) > 0 {
+		bs.activePromptArgs = make(map[string]string, len(meta.Arguments))
+		for k, v := range meta.Arguments {
+			bs.activePromptArgs[k] = v
+		}
+	} else {
+		bs.activePromptArgs = nil
+	}
 	bs.TouchActivity()
 
 	// Check if we need to inject conversation history (first prompt of resumed session).
@@ -635,6 +649,7 @@ func (bs *BackgroundSession) Cancel() error {
 	bs.promptMu.Lock()
 	wasPrompting := bs.isPrompting
 	bs.isPrompting = false
+	bs.clearActiveDispatchLocked()
 	bs.promptStartTime = time.Time{}
 	bs.lastResponseComplete = time.Now()
 	bs.promptCond.Broadcast() // Signal any waiters that prompt is complete
@@ -672,6 +687,7 @@ func (bs *BackgroundSession) ForceReset() {
 	bs.promptMu.Lock()
 	wasPrompting := bs.isPrompting
 	bs.isPrompting = false
+	bs.clearActiveDispatchLocked()
 	bs.promptStartTime = time.Time{}
 	bs.lastResponseComplete = time.Now()
 	bs.promptCond.Broadcast() // Signal any waiters that prompt is complete
@@ -860,6 +876,7 @@ func (bs *BackgroundSession) pdRecordErrorEvent(seq int64, msg string) error {
 func (bs *BackgroundSession) pdResetPromptingStateForAbort() {
 	bs.promptMu.Lock()
 	bs.isPrompting = false
+	bs.clearActiveDispatchLocked()
 	bs.promptStartTime = time.Time{}
 	bs.promptCond.Broadcast()
 	bs.promptMu.Unlock()
@@ -984,6 +1001,7 @@ func (bs *BackgroundSession) pdReadLastAgentMessage() string {
 func (bs *BackgroundSession) pdMarkPromptComplete() {
 	bs.promptMu.Lock()
 	bs.isPrompting = false
+	bs.clearActiveDispatchLocked()
 	bs.promptStartTime = time.Time{}
 	bs.lastResponseComplete = time.Now()
 	bs.promptCond.Broadcast() // Signal any waiters that prompt is complete

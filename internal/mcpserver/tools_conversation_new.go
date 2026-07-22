@@ -81,6 +81,7 @@ type ConversationStartOutput struct {
 	LoopConfigured      bool   `json:"loop_configured,omitempty"` // Whether loop was configured
 	LoopNextRun         string `json:"loop_next_run,omitempty"`   // Next scheduled run (RFC3339)
 	Reused              bool   `json:"reused,omitempty"`          // True when routed to an existing singleton conversation instead of creating a new one
+	Coalesced           bool   `json:"coalesced,omitempty"`       // True when target.reuseCoalesce suppressed a duplicate in-flight/queued dispatch (mitto-djs1)
 	Error               string `json:"error,omitempty"`
 }
 
@@ -181,6 +182,10 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 	promptReuseIssue := false
 	promptReuseTitle := false
 	promptTargetTitle := ""
+	// promptReuseCoalesce: when true, a duplicate (same PromptName + Arguments)
+	// dispatch onto an already-in-flight or queued conversation is a no-op
+	// (mitto-djs1). Only consulted after a reuse hit resolves to existingID.
+	promptReuseCoalesce := false
 	if input.PromptName != "" {
 		// mitto-kt6: prompt_name wins when both are supplied. Agents forced by
 		// strict JSON schemas often fill 'initial_prompt' with a placeholder to
@@ -209,6 +214,9 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 			promptReuseIssue = p.Target.ReuseIssue
 			promptReuseTitle = p.Target.ReuseTitle
 			promptTargetTitle = p.Target.Title
+			if p.Target.ReuseCoalesce != nil {
+				promptReuseCoalesce = *p.Target.ReuseCoalesce
+			}
 		}
 		// reuseTitle adopts target.title as the conversation's Name so a
 		// subsequent scan matches it. When the caller supplied a different
@@ -409,6 +417,14 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 
 		if metas, listErr := store.List(); listErr == nil {
 			if existingID, ok := session.FindConversationByBeadsIssue(metas, targetWorkingDir, input.BeadsIssue); ok {
+				if out, coalesced := s.maybeCoalesceMCP(store, existingID, originPromptName, promptReuseCoalesce, input.Arguments); coalesced {
+					s.logger.Info("Coalesced mitto_conversation_new duplicate dispatch by beads_issue",
+						"existing_session_id", existingID,
+						"origin_prompt_name", originPromptName,
+						"beads_issue", input.BeadsIssue,
+						"working_dir", targetWorkingDir)
+					return nil, out, nil
+				}
 				out, rerr := s.reuseSingletonConversation(store, existingID, initialPromptText, realSessionID, input.Arguments)
 				if rerr != nil {
 					return nil, ConversationStartOutput{}, rerr
@@ -445,6 +461,14 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 
 		if metas, listErr := store.List(); listErr == nil {
 			if existingID, ok := session.FindConversationByTitle(metas, targetWorkingDir, promptTargetTitle); ok {
+				if out, coalesced := s.maybeCoalesceMCP(store, existingID, originPromptName, promptReuseCoalesce, input.Arguments); coalesced {
+					s.logger.Info("Coalesced mitto_conversation_new duplicate dispatch by title",
+						"existing_session_id", existingID,
+						"origin_prompt_name", originPromptName,
+						"target_title", promptTargetTitle,
+						"working_dir", targetWorkingDir)
+					return nil, out, nil
+				}
 				out, rerr := s.reuseSingletonConversation(store, existingID, initialPromptText, realSessionID, input.Arguments)
 				if rerr != nil {
 					return nil, ConversationStartOutput{}, rerr
@@ -473,6 +497,13 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 	if !reuseIssueEvaluated && !reuseTitleEvaluated && promptIsSingleton && originPromptName != "" {
 		if metas, listErr := store.List(); listErr == nil {
 			if existingID, ok := session.FindSingletonCandidate(metas, targetWorkingDir, originPromptName); ok {
+				if out, coalesced := s.maybeCoalesceMCP(store, existingID, originPromptName, promptReuseCoalesce, input.Arguments); coalesced {
+					s.logger.Info("Coalesced mitto_conversation_new duplicate singleton dispatch",
+						"existing_session_id", existingID,
+						"origin_prompt_name", originPromptName,
+						"working_dir", targetWorkingDir)
+					return nil, out, nil
+				}
 				out, rerr := s.reuseSingletonConversation(store, existingID, initialPromptText, realSessionID, input.Arguments)
 				if rerr != nil {
 					return nil, ConversationStartOutput{}, rerr
@@ -776,6 +807,89 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 // existing conversation is idle (not prompting and an empty queue) the prompt is
 // re-seeded so re-invoking a menu prompt re-runs it; when busy it is left
 // untouched (focus-only). The returned output carries reused=true.
+// maybeCoalesceMCP returns a coalesced output when reuseCoalesce is enabled
+// and an identical dispatch (same PromptName + Arguments) is already in flight
+// or queued on the target. Callers MUST invoke this INSIDE the per-key reuse
+// lock (lockReuseIssue / lockReuseTitle) so the check-then-skip is atomic
+// against concurrent dupes. Returns (out, false) with a zero-value out when
+// no coalesce fires — callers then fall through to reuseSingletonConversation
+// as before (mitto-djs1). Mirrors handlers.maybeCoalesce in the REST path.
+func (s *Server) maybeCoalesceMCP(store *session.Store, existingID, promptName string, reuseCoalesce bool, arguments map[string]string) (ConversationStartOutput, bool) {
+	if !reuseCoalesce || promptName == "" {
+		return ConversationStartOutput{}, false
+	}
+	var bs BackgroundSession
+	if s.sessionManager != nil {
+		bs = s.sessionManager.GetSession(existingID)
+	}
+	queue := store.Queue(existingID)
+	if !promptMatchesActiveOrQueuedMCP(bs, queue, promptName, arguments) {
+		return ConversationStartOutput{}, false
+	}
+	meta, err := store.GetMetadata(existingID)
+	if err != nil {
+		// Metadata read failed; abort the coalesce and fall through to the
+		// normal reuse path so the caller sees a real error there instead of
+		// a silent no-op with an empty ConversationDetails.
+		s.logger.Warn("Coalesce metadata read failed; falling through", "session_id", existingID, "error", err)
+		return ConversationStartOutput{}, false
+	}
+	return ConversationStartOutput{
+		ConversationDetails: s.buildConversationDetails(meta, store.SessionDir(existingID)),
+		Reused:              true,
+		Coalesced:           true,
+	}, true
+}
+
+// promptMatchesActiveOrQueuedMCP is the mcpserver-local mirror of
+// conversation.PromptMatchesActiveOrQueued. Duplicated to keep mcpserver
+// free of any internal/conversation import (see the local BackgroundSession
+// interface). Same match semantics: name + Arguments deep-equal, nil map ==
+// empty map, free-text (empty promptName) never coalesces.
+func promptMatchesActiveOrQueuedMCP(bs BackgroundSession, q *session.Queue, promptName string, arguments map[string]string) bool {
+	if promptName == "" {
+		return false
+	}
+	if bs != nil {
+		if activeName, activeArgs, ok := bs.ActivePromptDispatch(); ok {
+			if activeName == promptName && argsDeepEqualMCP(activeArgs, arguments) {
+				return true
+			}
+		}
+	}
+	if q != nil {
+		msgs, err := q.List()
+		if err != nil {
+			return false
+		}
+		for i := range msgs {
+			if msgs[i].PromptName == "" {
+				continue
+			}
+			if msgs[i].PromptName == promptName && argsDeepEqualMCP(msgs[i].Arguments, arguments) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// argsDeepEqualMCP compares two argument maps for equality treating nil and
+// empty maps as equivalent. Kept package-private (mirrors the conversation
+// package's argsDeepEqual).
+func argsDeepEqualMCP(a, b map[string]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, va := range a {
+		vb, ok := b[k]
+		if !ok || vb != va {
+			return false
+		}
+	}
+	return true
+}
+
 func (s *Server) reuseSingletonConversation(store *session.Store, existingID, initialPromptText, clientID string, arguments map[string]string) (ConversationStartOutput, error) {
 	meta, err := store.GetMetadata(existingID)
 	if err != nil {

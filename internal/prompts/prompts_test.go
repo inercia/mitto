@@ -1210,31 +1210,31 @@ func TestValidatePromptLoop(t *testing.T) {
 
 func TestValidatePromptTarget(t *testing.T) {
 	t.Run("nil target is valid", func(t *testing.T) {
-		if err := ValidatePromptTarget("p", nil); err != nil {
+		if err := ValidatePromptTarget("p", nil, false); err != nil {
 			t.Errorf("unexpected error: %v", err)
 		}
 	})
 
 	t.Run("empty target is valid", func(t *testing.T) {
-		if err := ValidatePromptTarget("p", &PromptTarget{}); err != nil {
+		if err := ValidatePromptTarget("p", &PromptTarget{}, false); err != nil {
 			t.Errorf("unexpected error: %v", err)
 		}
 	})
 
 	t.Run("title without reuseTitle is valid", func(t *testing.T) {
-		if err := ValidatePromptTarget("p", &PromptTarget{Title: "Weekly triage"}); err != nil {
+		if err := ValidatePromptTarget("p", &PromptTarget{Title: "Weekly triage"}, false); err != nil {
 			t.Errorf("unexpected error: %v", err)
 		}
 	})
 
 	t.Run("reuseTitle with title is valid", func(t *testing.T) {
-		if err := ValidatePromptTarget("p", &PromptTarget{ReuseTitle: true, Title: "Weekly triage"}); err != nil {
+		if err := ValidatePromptTarget("p", &PromptTarget{ReuseTitle: true, Title: "Weekly triage"}, false); err != nil {
 			t.Errorf("unexpected error: %v", err)
 		}
 	})
 
 	t.Run("reuseTitle without title errors", func(t *testing.T) {
-		err := ValidatePromptTarget("My Prompt", &PromptTarget{ReuseTitle: true})
+		err := ValidatePromptTarget("My Prompt", &PromptTarget{ReuseTitle: true}, false)
 		if err == nil {
 			t.Fatal("expected error, got nil")
 		}
@@ -1245,14 +1245,14 @@ func TestValidatePromptTarget(t *testing.T) {
 	})
 
 	t.Run("reuseTitle with whitespace-only title errors", func(t *testing.T) {
-		err := ValidatePromptTarget("p", &PromptTarget{ReuseTitle: true, Title: "   "})
+		err := ValidatePromptTarget("p", &PromptTarget{ReuseTitle: true, Title: "   "}, false)
 		if err == nil {
 			t.Fatal("expected error, got nil")
 		}
 	})
 
 	t.Run("reuseIssue with title and no reuseTitle is valid", func(t *testing.T) {
-		if err := ValidatePromptTarget("p", &PromptTarget{ReuseIssue: true, Title: "x"}); err != nil {
+		if err := ValidatePromptTarget("p", &PromptTarget{ReuseIssue: true, Title: "x"}, false); err != nil {
 			t.Errorf("unexpected error: %v", err)
 		}
 	})

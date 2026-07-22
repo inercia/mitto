@@ -3943,6 +3943,9 @@ func (m *mockBackgroundSessionForWait) WaitForResponseComplete(timeout time.Dura
 func (m *mockBackgroundSessionForWait) ApplyModelTag(context.Context, string) (string, error) {
 	return "", nil
 }
+func (m *mockBackgroundSessionForWait) ActivePromptDispatch() (string, map[string]string, bool) {
+	return "", nil, false
+}
 
 // mockSessionManagerForWait implements SessionManager for testing the wait tool.
 type mockSessionManagerForWait struct {
@@ -5788,6 +5791,9 @@ func (m *mockBackgroundSessionForAutoResume) TryProcessQueuedMessage() bool {
 }
 func (m *mockBackgroundSessionForAutoResume) ApplyModelTag(context.Context, string) (string, error) {
 	return "", nil
+}
+func (m *mockBackgroundSessionForAutoResume) ActivePromptDispatch() (string, map[string]string, bool) {
+	return "", nil, false
 }
 
 // mockSessionManagerForAutoResume implements SessionManager where GetSession returns nil
