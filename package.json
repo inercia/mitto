@@ -8,6 +8,8 @@
     "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js",
     "test:watch": "node --experimental-vm-modules node_modules/jest/bin/jest.js --watch",
     "test:coverage": "node --experimental-vm-modules node_modules/jest/bin/jest.js --coverage",
+    "test:bun": "bash scripts/test-bun.sh",
+    "test:bun:watch": "bash scripts/test-bun.sh --watch",
     "test:ui": "npx playwright test --config=tests/ui/playwright.config.ts",
     "test:ui:headed": "npx playwright test --config=tests/ui/playwright.config.ts --headed",
     "test:ui:debug": "npx playwright test --config=tests/ui/playwright.config.ts --debug",
