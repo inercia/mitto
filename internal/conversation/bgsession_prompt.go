@@ -131,6 +131,12 @@ type PromptMeta struct {
 	FileIDs      []string        // IDs of files attached to the prompt
 	OnComplete   func(err error) // Called when the async prompt goroutine finishes (nil = success)
 	IsLoopForced bool            // True when this loop prompt was triggered manually via "run now"
+	// IsLoopRunOnStart is true when this loop prompt was fired by the boot-pulse
+	// (mitto-ystk). Mirrors ProcessorInput.IsLoopRunOnStart, the CEL
+	// Session.IsLoopRunOnStart variable, and the @mitto:loop_run_on_start
+	// placeholder. Set only on the initial startup pulse; false on all
+	// subsequent scheduled/onCompletion/onTasks/forced deliveries.
+	IsLoopRunOnStart bool
 	// QueueOrigin carries session.QueueOrigin* for queue dispatches: "agent" for
 	// cross-session/MCP sends (fail-closed on template errors), "user"/empty for
 	// human-typed messages that were queued (fail-open, delivered verbatim);

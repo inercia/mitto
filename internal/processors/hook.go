@@ -187,6 +187,7 @@ func BuildCELContext(input *ProcessorInput) *config.PromptEnabledContext {
 	ctx.Session.ParentID = input.ParentSessionID
 	ctx.Session.IsLoop = input.IsLoop
 	ctx.Session.IsLoopForced = input.IsLoopForced
+	ctx.Session.IsLoopRunOnStart = input.IsLoopRunOnStart
 	ctx.Session.BeadsIssue = input.BeadsIssue
 	ctx.Session.HasMessages = input.HasMessages
 

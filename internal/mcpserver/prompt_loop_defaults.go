@@ -80,6 +80,12 @@ func applyPromptLoopDefaultsToStartInput(input *ConversationStartInput, pl *conf
 		v := *pl.FreshContext
 		input.LoopFreshContext = &v
 	}
+
+	// Boot pulse (mitto-ystk). Same pointer-presence semantics as CoalesceDuringBusy.
+	if input.LoopRunOnStart == nil && pl.RunOnStart != nil {
+		v := *pl.RunOnStart
+		input.LoopRunOnStart = &v
+	}
 }
 
 // applyPromptLoopDefaultsToUpdateInput is the update-tool equivalent. Because
@@ -144,5 +150,11 @@ func applyPromptLoopDefaultsToUpdateInput(input *ConversationUpdateInput, pl *co
 	if input.LoopFreshContext == nil && pl.FreshContext != nil {
 		v := *pl.FreshContext
 		input.LoopFreshContext = &v
+	}
+
+	// Boot pulse (mitto-ystk). Same rules as the start-input helper.
+	if input.LoopRunOnStart == nil && pl.RunOnStart != nil {
+		v := *pl.RunOnStart
+		input.LoopRunOnStart = &v
 	}
 }

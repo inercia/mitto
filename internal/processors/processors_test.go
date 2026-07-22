@@ -43,6 +43,25 @@ func TestBuildCELContext_ArgsAndLoopForced(t *testing.T) {
 	}
 }
 
+// TestBuildCELContext_IsLoopRunOnStart verifies that BuildCELContext propagates
+// the boot-pulse signal (mitto-ystk) from ProcessorInput into
+// ctx.Session.IsLoopRunOnStart so prompts can gate on {{ .Session.IsLoopRunOnStart }}.
+func TestBuildCELContext_IsLoopRunOnStart(t *testing.T) {
+	input := &ProcessorInput{
+		SessionID:        "sess-1",
+		IsLoopRunOnStart: true,
+	}
+	ctx := BuildCELContext(input)
+	if !ctx.Session.IsLoopRunOnStart {
+		t.Error("expected ctx.Session.IsLoopRunOnStart=true")
+	}
+
+	empty := BuildCELContext(&ProcessorInput{SessionID: "sess-2"})
+	if empty.Session.IsLoopRunOnStart {
+		t.Error("expected IsLoopRunOnStart=false by default")
+	}
+}
+
 // TestBuildCELContext_NewFields asserts that BuildCELContext populates the new
 // fields added in mitto-jkpn: ACP.Available, Children.All, Children.MCP,
 // Session.UserDataJSON, and Workspace.UserDataSchemaJSON.

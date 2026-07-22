@@ -59,6 +59,11 @@ type ProcessorInput struct {
 	// via "run now" (as opposed to the normal scheduled delivery).
 	// Used for @mitto:loop_forced variable substitution.
 	IsLoopForced bool `json:"is_loop_forced,omitempty"`
+	// IsLoopRunOnStart indicates whether this loop prompt was fired by the
+	// boot-pulse (mitto-ystk): the once-per-startup dispatch triggered by
+	// LoopRunner.fireOnStartPulses. Used for @mitto:loop_run_on_start variable
+	// substitution and the CEL Session.IsLoopRunOnStart signal.
+	IsLoopRunOnStart bool `json:"is_loop_run_on_start,omitempty"`
 	// IterationNumber is the 0-based index of the current loop run.
 	// Used for the {{ .Iteration.* }} template namespace. Excluded from JSON
 	// (json:"-") so raw iteration values are never sent to external command processors.

@@ -760,7 +760,7 @@ func TestLoopRunner_ConfigCapAutoStop(t *testing.T) {
 	})
 
 	disabled := false
-	if err := loopStore.Update(nil, nil, nil, &disabled, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
+	if err := loopStore.Update(nil, nil, nil, &disabled, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
 		t.Fatalf("loopStore.Update(disable) error = %v", err)
 	}
 
@@ -2152,7 +2152,7 @@ func TestLoopRunner_DeliverPrompt_ArgumentsForwardedAndSubstituted(t *testing.T)
 	defer cancel()
 	bs := NewTestBackgroundSessionWithCtx("arg-dispatch", ctx, cancel)
 
-	deliverErr := runner.deliverPrompt(bs, meta, loop, loopStore, false, false, nil)
+	deliverErr := runner.deliverPrompt(bs, meta, loop, loopStore, false, false, nil, false)
 	// The resolver must have been called even though PromptWithMeta failed.
 	if !resolverCalled {
 		t.Error("promptResolver was not called; loop.PromptName not forwarded to deliverPrompt")
@@ -3151,7 +3151,7 @@ func TestLoopRunner_EvaluateAccumulatedDelta_MaterialChange_Fires(t *testing.T) 
 	ps := newOnTasksSession(t, store, "s1", "/proj", "")
 	// Opt out of during-busy coalesce.
 	fa := false
-	if err := ps.Update(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, &fa); err != nil {
+	if err := ps.Update(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, &fa, nil); err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}
 	loop, _ := ps.Get()
@@ -3383,7 +3383,7 @@ func TestLoopRunner_OnBeadsChanged_RoutingAndCaching(t *testing.T) {
 	newOnTasksSession(t, store, "s2", "/proj-a", "")
 	newOnTasksSession(t, store, "s3", "/proj-b", "")
 	newOnTasksSession(t, store, "s4", "/proj-a", "")
-	if err := store.Loop("s4").Update(nil, nil, nil, boolPtr(false), nil, nil, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
+	if err := store.Loop("s4").Update(nil, nil, nil, boolPtr(false), nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
 		t.Fatalf("Update(disable s4) error = %v", err)
 	}
 
@@ -4650,5 +4650,219 @@ func TestLoopRunner_RecordSentFailure_LoopFileMissing_DoesNotWarn(t *testing.T) 
 	if warns := handler2.warnOrHigher(); len(warns) != 1 {
 		t.Errorf("logLoopRecordSentFailure warn count for unrelated error = %d, want 1 "+
 			"(non-teardown errors must still surface as WARN)", len(warns))
+	}
+}
+
+// newRunOnStartSession creates a session with a loop configured for RunOnStart=true
+// and returns its LoopStore. trigger selects the underlying trigger (schedule/
+// onCompletion/onTasks); the runOnStart flag is orthogonal.
+func newRunOnStartSession(t *testing.T, store *session.Store, sessionID string, trigger session.LoopTrigger) *session.LoopStore {
+	t.Helper()
+	meta := session.Metadata{SessionID: sessionID, ACPServer: "test", WorkingDir: "/tmp"}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("store.Create() error = %v", err)
+	}
+	tr := true
+	p := &session.LoopPrompt{
+		Prompt:     "iterate",
+		Enabled:    true,
+		Trigger:    trigger,
+		RunOnStart: &tr,
+	}
+	if trigger == session.TriggerSchedule || trigger == "" {
+		p.Frequency = session.Frequency{Value: 1, Unit: session.FrequencyHours}
+	}
+	if err := store.Loop(sessionID).Set(p); err != nil {
+		t.Fatalf("loopStore.Set() error = %v", err)
+	}
+	return store.Loop(sessionID)
+}
+
+// TestLoopRunner_FireOnStartPulses_NilStore verifies fireOnStartPulses is a
+// no-op when the runner has no session store (must not panic).
+func TestLoopRunner_FireOnStartPulses_NilStore(t *testing.T) {
+	runner := NewLoopRunner(nil, nil, nil)
+	runner.fireOnStartPulses()
+}
+
+// TestLoopRunner_FireOnStartPulses_MarksSessionAsFired verifies that
+// fireOnStartPulses tries to deliver the pulse for a session configured with
+// RunOnStart=true and records the session in runOnStartFired even though the
+// delivery itself fails (nil session manager). This documents the
+// once-per-process guard behaviour: a subsequent invocation must NOT re-fire.
+func TestLoopRunner_FireOnStartPulses_MarksSessionAsFired(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	newRunOnStartSession(t, store, "s1", session.TriggerOnTasks)
+
+	runner := NewLoopRunner(store, nil, nil) // nil SM → triggerNowFull returns ErrSessionManagerNotAvailable
+	runner.fireOnStartPulses()
+
+	runner.runOnStartFiredMu.Lock()
+	fired := runner.runOnStartFired["s1"]
+	runner.runOnStartFiredMu.Unlock()
+	if !fired {
+		t.Error("runOnStartFired[s1] = false after fireOnStartPulses(), want true")
+	}
+}
+
+// TestLoopRunner_FireOnStartPulses_OncePerProcess verifies that a second
+// invocation of fireOnStartPulses is a no-op for a session already flagged in
+// runOnStartFired — protecting against duplicate deliveries.
+func TestLoopRunner_FireOnStartPulses_OncePerProcess(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	newRunOnStartSession(t, store, "s1", session.TriggerSchedule)
+
+	runner := NewLoopRunner(store, nil, nil)
+
+	// Pre-flag the session as already fired.
+	runner.runOnStartFiredMu.Lock()
+	runner.runOnStartFired["s1"] = true
+	runner.runOnStartFiredMu.Unlock()
+
+	// Must be a no-op (no panic, no state mutation).
+	runner.fireOnStartPulses()
+
+	// The pre-set flag must remain set.
+	runner.runOnStartFiredMu.Lock()
+	fired := runner.runOnStartFired["s1"]
+	runner.runOnStartFiredMu.Unlock()
+	if !fired {
+		t.Error("runOnStartFired[s1] cleared unexpectedly")
+	}
+}
+
+// TestLoopRunner_FireOnStartPulses_AntiFlap verifies that a loop whose
+// LastSentAt falls inside the anti-flap window is skipped (not fired, not
+// flagged in runOnStartFired).
+func TestLoopRunner_FireOnStartPulses_AntiFlap(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	ps := newRunOnStartSession(t, store, "s1", session.TriggerOnTasks)
+
+	// Simulate a recent successful run to arm the anti-flap guard.
+	if err := ps.RecordSent(); err != nil {
+		t.Fatalf("RecordSent() error = %v", err)
+	}
+
+	runner := NewLoopRunner(store, nil, nil)
+	// Explicit large window so the recorded fire is guaranteed inside it.
+	runner.SetRunOnStartAntiFlapSeconds(3600)
+
+	runner.fireOnStartPulses()
+
+	runner.runOnStartFiredMu.Lock()
+	fired := runner.runOnStartFired["s1"]
+	runner.runOnStartFiredMu.Unlock()
+	if fired {
+		t.Error("runOnStartFired[s1] = true, want false (anti-flap should have suppressed the pulse)")
+	}
+}
+
+// TestLoopRunner_FireOnStartPulses_RunOnStartNotSet verifies that a loop
+// without RunOnStart=true is skipped even when it is enabled.
+func TestLoopRunner_FireOnStartPulses_RunOnStartNotSet(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	meta := session.Metadata{SessionID: "s1", ACPServer: "test", WorkingDir: "/tmp"}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("store.Create() error = %v", err)
+	}
+	// Loop with RunOnStart unset (default: nil / false).
+	if err := store.Loop("s1").Set(&session.LoopPrompt{
+		Prompt:    "iterate",
+		Enabled:   true,
+		Trigger:   session.TriggerOnTasks,
+		Frequency: session.Frequency{Value: 1, Unit: session.FrequencyHours},
+	}); err != nil {
+		t.Fatalf("loopStore.Set() error = %v", err)
+	}
+
+	runner := NewLoopRunner(store, nil, nil)
+	runner.fireOnStartPulses()
+
+	runner.runOnStartFiredMu.Lock()
+	fired := runner.runOnStartFired["s1"]
+	runner.runOnStartFiredMu.Unlock()
+	if fired {
+		t.Error("runOnStartFired[s1] = true for a loop with RunOnStart unset, want false")
+	}
+}
+
+// TestLoopRunner_FireOnStartPulses_DisabledLoopSkipped verifies that a
+// disabled loop with RunOnStart=true is skipped.
+func TestLoopRunner_FireOnStartPulses_DisabledLoopSkipped(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	meta := session.Metadata{SessionID: "s1", ACPServer: "test", WorkingDir: "/tmp"}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("store.Create() error = %v", err)
+	}
+	tr := true
+	if err := store.Loop("s1").Set(&session.LoopPrompt{
+		Prompt:     "iterate",
+		Enabled:    false, // disabled
+		Trigger:    session.TriggerOnTasks,
+		RunOnStart: &tr,
+	}); err != nil {
+		t.Fatalf("loopStore.Set() error = %v", err)
+	}
+
+	runner := NewLoopRunner(store, nil, nil)
+	runner.fireOnStartPulses()
+
+	runner.runOnStartFiredMu.Lock()
+	fired := runner.runOnStartFired["s1"]
+	runner.runOnStartFiredMu.Unlock()
+	if fired {
+		t.Error("runOnStartFired[s1] = true for a disabled loop, want false")
+	}
+}
+
+// TestLoopRunner_FireOnStartPulses_ArchivedSkipped verifies that an archived
+// session with a RunOnStart=true loop is skipped.
+func TestLoopRunner_FireOnStartPulses_ArchivedSkipped(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	newRunOnStartSession(t, store, "s1", session.TriggerOnTasks)
+	if err := store.UpdateMetadata("s1", func(m *session.Metadata) {
+		m.Archived = true
+	}); err != nil {
+		t.Fatalf("UpdateMetadata() error = %v", err)
+	}
+
+	runner := NewLoopRunner(store, nil, nil)
+	runner.fireOnStartPulses()
+
+	runner.runOnStartFiredMu.Lock()
+	fired := runner.runOnStartFired["s1"]
+	runner.runOnStartFiredMu.Unlock()
+	if fired {
+		t.Error("runOnStartFired[s1] = true for an archived session, want false")
 	}
 }

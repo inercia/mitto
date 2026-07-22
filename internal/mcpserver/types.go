@@ -414,6 +414,10 @@ type ConversationUpdateInput struct {
 	// that arrive while the loop's subtree is busy. Nil or true = silently absorb
 	// (default). False = fire once more with the accumulated delta after quiescence.
 	LoopCoalesceDuringBusy *bool `json:"loop_coalesce_during_busy,omitempty"`
+	// LoopRunOnStart, when *true, causes the loop to fire exactly once shortly
+	// after Mitto boots (with an anti-flap window guarding against a recent
+	// run). Nil or false = do not fire on start (default).
+	LoopRunOnStart *bool `json:"loop_run_on_start,omitempty"`
 	// LoopApplyPromptDefaults controls the mitto-r7y auto-apply of a seeded
 	// prompt's loop: frontmatter block. When loop_prompt_name resolves to a
 	// prompt carrying a loop: block, its fields fill any loop_* fields the
@@ -461,8 +465,11 @@ type ConversationUpdateOutput struct {
 	// LoopCoalesceDuringBusy reflects the stored opt-in flag. Nil when unset
 	// (default coalesce behaviour); non-nil when the caller explicitly opted in
 	// or out.
-	LoopCoalesceDuringBusy *bool  `json:"loop_coalesce_during_busy,omitempty"`
-	Error                  string `json:"error,omitempty"`
+	LoopCoalesceDuringBusy *bool `json:"loop_coalesce_during_busy,omitempty"`
+	// LoopRunOnStart reflects the stored boot-pulse flag. Nil when unset
+	// (default: do not fire on start).
+	LoopRunOnStart *bool  `json:"loop_run_on_start,omitempty"`
+	Error          string `json:"error,omitempty"`
 }
 
 // UITextboxInput is the input for the mitto_ui_textbox tool.

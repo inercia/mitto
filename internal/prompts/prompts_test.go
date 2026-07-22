@@ -222,6 +222,67 @@ prompt: |
 	}
 }
 
+// TestParsePromptFile_WithLoop_RunOnStart verifies that the loop.runOnStart
+// frontmatter field is parsed into PromptLoop.RunOnStart (mitto-ystk).
+func TestParsePromptFile_WithLoop_RunOnStart(t *testing.T) {
+	data := []byte(`name: "Boot Pulse"
+loop:
+  trigger: onTasks
+  runOnStart: true
+prompt: |
+  Boot pulse loop.
+`)
+
+	prompt, err := ParsePromptFile("boot-pulse.prompt.yaml", data, time.Now())
+	if err != nil {
+		t.Fatalf("ParsePromptFile failed: %v", err)
+	}
+
+	if prompt.Loop == nil {
+		t.Fatal("Loop = nil, want non-nil")
+	}
+	if prompt.Loop.RunOnStart == nil {
+		t.Fatal("Loop.RunOnStart = nil, want *true")
+	}
+	if *prompt.Loop.RunOnStart != true {
+		t.Errorf("Loop.RunOnStart = %v, want *true", *prompt.Loop.RunOnStart)
+	}
+
+	// Explicit false must round-trip as *false, distinct from unset/nil.
+	dataFalse := []byte(`name: "No Boot Pulse"
+loop:
+  trigger: onTasks
+  runOnStart: false
+prompt: |
+  No boot pulse.
+`)
+	promptFalse, err := ParsePromptFile("no-boot-pulse.prompt.yaml", dataFalse, time.Now())
+	if err != nil {
+		t.Fatalf("ParsePromptFile(false) failed: %v", err)
+	}
+	if promptFalse.Loop.RunOnStart == nil {
+		t.Fatal("Loop.RunOnStart = nil after explicit false, want *false")
+	}
+	if *promptFalse.Loop.RunOnStart != false {
+		t.Errorf("Loop.RunOnStart = %v, want *false", *promptFalse.Loop.RunOnStart)
+	}
+
+	// Absent runOnStart must remain nil (default).
+	dataAbsent := []byte(`name: "Default"
+loop:
+  trigger: onTasks
+prompt: |
+  Default.
+`)
+	promptAbsent, err := ParsePromptFile("default.prompt.yaml", dataAbsent, time.Now())
+	if err != nil {
+		t.Fatalf("ParsePromptFile(absent) failed: %v", err)
+	}
+	if promptAbsent.Loop.RunOnStart != nil {
+		t.Errorf("Loop.RunOnStart = %v, want nil (unset)", *promptAbsent.Loop.RunOnStart)
+	}
+}
+
 func TestParsePromptFile_WithLoop_NoAt(t *testing.T) {
 	data := []byte(`name: "Hourly Check"
 loop:

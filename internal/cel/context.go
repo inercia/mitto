@@ -191,6 +191,11 @@ type SessionContext struct {
 	// "run now" (as opposed to the normal scheduled delivery). Mirrors
 	// ProcessorInput.IsLoopForced and the @mitto:loop_forced placeholder.
 	IsLoopForced bool
+	// IsLoopRunOnStart indicates whether a loop prompt was fired by the boot
+	// pulse (mitto-ystk): the once-per-startup dispatch triggered by
+	// LoopRunner.fireOnStartPulses shortly after Mitto boots. Mirrors
+	// ProcessorInput.IsLoopRunOnStart and the @mitto:loop_run_on_start placeholder.
+	IsLoopRunOnStart bool
 	// IsLoopConversation indicates whether the conversation is configured as a
 	// loop conversation (it has a loop prompt configuration). Unlike
 	// IsLoop, this reflects the conversation TYPE, not whether the current run

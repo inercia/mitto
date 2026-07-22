@@ -39,6 +39,11 @@ type LoopPromptRequest struct {
 	// that arrive while the loop's subtree is busy. Nil or true = silently absorb
 	// (default). False = fire once more with the accumulated delta after quiescence.
 	CoalesceDuringBusy *bool `json:"coalesce_during_busy,omitempty"`
+	// RunOnStart, when *true, causes the loop to fire exactly once shortly after
+	// Mitto boots (after the interactive-resume startup delay, with an anti-flap
+	// window suppressing the pulse when the loop already ran very recently).
+	// Nil or false = do not fire on start (default).
+	RunOnStart *bool `json:"run_on_start,omitempty"`
 }
 
 // LoopPromptPatchRequest is the request body for partial updates.
@@ -61,6 +66,8 @@ type LoopPromptPatchRequest struct {
 	ConditionPreset    *string `json:"condition_preset,omitempty"`
 	CooldownSeconds    *int    `json:"cooldown_seconds,omitempty"`
 	CoalesceDuringBusy *bool   `json:"coalesce_during_busy,omitempty"`
+	// RunOnStart is a partial update for the boot-pulse toggle. Nil = unchanged.
+	RunOnStart *bool `json:"run_on_start,omitempty"`
 	// ResetCounters, when true, resets IterationCount=0, FirstRunAt=nil, and
 	// LastSentAt=nil so the elapsed iterations and elapsed time start from zero and
 	// the loop looks never-sent. Used when restoring a conversation that auto-stopped

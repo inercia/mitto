@@ -233,6 +233,14 @@ type LoopPrompt struct {
 	// changes that landed during the busy window are not lost. Only meaningful
 	// when Trigger is onTasks.
 	CoalesceDuringBusy *bool `json:"coalesce_during_busy,omitempty"`
+	// RunOnStart, when *true, causes the LoopRunner to fire this loop exactly
+	// once shortly after Mitto boots (after the interactive-resume startup delay,
+	// with a small anti-flap window suppressing the pulse when the loop already
+	// ran very recently). Complements onTasks loops that would otherwise only
+	// fire on a beads change, and lets scheduled/onCompletion loops kick off
+	// immediately at startup without waiting for the next scheduled tick. Defaults
+	// to false (unset) — a fresh Mitto restart does not re-fire arbitrary loops.
+	RunOnStart *bool `json:"run_on_start,omitempty"`
 }
 
 // ShouldCoalesceDuringBusy reports whether the onTasks trigger should silently
@@ -243,6 +251,15 @@ func (p *LoopPrompt) ShouldCoalesceDuringBusy() bool {
 		return true
 	}
 	return *p.CoalesceDuringBusy
+}
+
+// ShouldRunOnStart reports whether this loop should fire exactly once when
+// Mitto boots. Defaults to false when the field is unset.
+func (p *LoopPrompt) ShouldRunOnStart() bool {
+	if p.RunOnStart == nil {
+		return false
+	}
+	return *p.RunOnStart
 }
 
 // ReachedMaxIterations returns true if the prompt has been delivered the maximum number of scheduled times.
@@ -428,7 +445,7 @@ func (ps *LoopStore) Set(p *LoopPrompt) error {
 // Update applies a partial update to the loop prompt.
 // Only non-nil fields in the update are applied.
 // IterationCount is never modified by Update — it is managed exclusively by RecordSent.
-func (ps *LoopStore) Update(prompt *string, promptName *string, frequency *Frequency, enabled *bool, freshContext *bool, maxIterations *int, trigger *LoopTrigger, delaySeconds *int, maxDurationSeconds *int, arguments *map[string]string, condition *string, conditionPreset *string, cooldownSeconds *int, coalesceDuringBusy *bool) error {
+func (ps *LoopStore) Update(prompt *string, promptName *string, frequency *Frequency, enabled *bool, freshContext *bool, maxIterations *int, trigger *LoopTrigger, delaySeconds *int, maxDurationSeconds *int, arguments *map[string]string, condition *string, conditionPreset *string, cooldownSeconds *int, coalesceDuringBusy *bool, runOnStart *bool) error {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
 
@@ -484,6 +501,10 @@ func (ps *LoopStore) Update(prompt *string, promptName *string, frequency *Frequ
 	if coalesceDuringBusy != nil {
 		v := *coalesceDuringBusy
 		existing.CoalesceDuringBusy = &v
+	}
+	if runOnStart != nil {
+		v := *runOnStart
+		existing.RunOnStart = &v
 	}
 
 	if err := existing.Validate(); err != nil {

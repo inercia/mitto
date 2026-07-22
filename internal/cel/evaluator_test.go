@@ -598,6 +598,26 @@ func TestCELEvaluator_SessionIsLoopForced(t *testing.T) {
 	}
 }
 
+// TestCELEvaluator_SessionIsLoopRunOnStart validates the Session.IsLoopRunOnStart variable.
+func TestCELEvaluator_SessionIsLoopRunOnStart(t *testing.T) {
+	e := newTestEvaluator(t)
+	ce := compile(t, e, "Session.IsLoopRunOnStart")
+
+	trueCtx := &PromptEnabledContext{
+		Session: SessionContext{IsLoopRunOnStart: true},
+	}
+	if got := evaluate(t, e, ce, trueCtx); !got {
+		t.Error("expected true when IsLoopRunOnStart=true")
+	}
+
+	falseCtx := &PromptEnabledContext{
+		Session: SessionContext{IsLoopRunOnStart: false},
+	}
+	if got := evaluate(t, e, ce, falseCtx); got {
+		t.Error("expected false when IsLoopRunOnStart=false")
+	}
+}
+
 // TestCELEvaluator_ReferencesItem validates static detection of the item.* namespace.
 // List endpoints use this to keep single-pass behavior for prompts that don't depend
 // on per-row item data.

@@ -1035,6 +1035,12 @@ const DefaultMaxLoopIterations = 100
 // on-completion loop delay to prevent hot loops.
 const DefaultMinLoopCompletionDelaySeconds = 5
 
+// DefaultRunOnStartAntiFlapSeconds is the anti-flap window (seconds) applied to
+// the loop boot pulse (mitto-ystk). When a loop with RunOnStart=true was last
+// delivered within this window, the boot pulse is suppressed to prevent a
+// Mitto restart from re-firing a loop that just ran.
+const DefaultRunOnStartAntiFlapSeconds = 60
+
 // GlobalMaxLoopIterations is the hardcoded absolute backstop on scheduled runs
 // for any loop conversation. It can never be exceeded by config.
 const GlobalMaxLoopIterations = 1000

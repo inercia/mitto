@@ -279,6 +279,19 @@ type LoopRunner struct {
 	// deliveries bypass the cap unconditionally. See mitto-61z.
 	loopWorkspaceConcurrency int
 
+	// runOnStartAntiFlapSeconds is the anti-flap window (seconds) applied to the
+	// boot pulse (mitto-ystk). When a loop with RunOnStart=true was last
+	// delivered within this window (loop.LastSentAt), the boot pulse is
+	// suppressed. 0 disables the guard (always fire on start).
+	runOnStartAntiFlapSeconds int
+
+	// runOnStartFired tracks session IDs that already received their once-per-
+	// process boot pulse, so a subsequent Start() (only used in tests) or a
+	// spurious re-invocation of fireOnStartPulses does not re-fire. Guarded by
+	// runOnStartFiredMu.
+	runOnStartFired   map[string]bool
+	runOnStartFiredMu sync.Mutex
+
 	// workspaceInFlight counts in-flight loop prompts per workspace key
 	// (WorkingDir + "\x00" + ACPServer). Guarded by workspaceInFlightMu.
 	workspaceInFlight   map[string]int
@@ -326,6 +339,8 @@ func NewLoopRunner(store *session.Store, sm *SessionManager, logger *slog.Logger
 		autoUnarchiveStagger:       DefaultAutoUnarchiveStaggerInterval,
 		loopWorkspaceConcurrency:   config.DefaultLoopWorkspaceConcurrency,
 		workspaceInFlight:          make(map[string]int),
+		runOnStartAntiFlapSeconds:  config.DefaultRunOnStartAntiFlapSeconds,
+		runOnStartFired:            make(map[string]bool),
 	}
 }
 
@@ -498,9 +513,42 @@ func (r *LoopRunner) MinLoopCompletionDelaySeconds() int {
 	return r.minCompletionDelaySeconds
 }
 
+// SetRunOnStartAntiFlapSeconds sets the anti-flap window (seconds) applied to
+// the loop boot pulse (mitto-ystk). A loop configured with RunOnStart=true is
+// skipped by fireOnStartPulses when its LastSentAt falls within this window.
+// A value < 0 is treated as 0 (guard disabled). Test-only knob; production
+// runners get the default from config.
+func (r *LoopRunner) SetRunOnStartAntiFlapSeconds(n int) {
+	if n < 0 {
+		n = 0
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.runOnStartAntiFlapSeconds = n
+}
+
 // SetPromptResolver sets the function used to resolve prompt names to their text at execution time.
 func (r *LoopRunner) SetPromptResolver(resolver PromptResolver) {
 	r.promptResolver = resolver
+}
+
+// FireOnStartPulses is a test-only wrapper around fireOnStartPulses that lets
+// integration tests invoke the boot-pulse pass on demand instead of waiting
+// out the (production-default 15 s) startup delay in pollLoop. It mirrors the
+// exact code path executed once at boot, including the once-per-process guard
+// (runOnStartFired) and the anti-flap window.
+func (r *LoopRunner) FireOnStartPulses() {
+	r.fireOnStartPulses()
+}
+
+// HasFiredRunOnStart reports whether the runner has already dispatched a
+// boot-pulse (mitto-ystk) for the given session ID in this process lifetime.
+// Test-only inspection helper used by integration tests to assert once-per-
+// process idempotence of fireOnStartPulses.
+func (r *LoopRunner) HasFiredRunOnStart(sessionID string) bool {
+	r.runOnStartFiredMu.Lock()
+	defer r.runOnStartFiredMu.Unlock()
+	return r.runOnStartFired[sessionID]
 }
 
 // Start begins the loop polling loop in a background goroutine.
@@ -588,7 +636,7 @@ func (r *LoopRunner) IsRunning() bool {
 //
 // Returns an error if the delivery fails or the session is not configured for loop prompts.
 func (r *LoopRunner) TriggerNow(sessionID string, resetTimer bool) error {
-	return r.triggerNowWithTasksDelta(sessionID, resetTimer, nil)
+	return r.triggerNowFull(sessionID, resetTimer, nil, false)
 }
 
 // triggerNowWithTasksDelta is the internal variant of TriggerNow that
@@ -598,6 +646,17 @@ func (r *LoopRunner) TriggerNow(sessionID string, resetTimer bool) error {
 // onTasks fires; all other paths (manual "Run Now", onCompletion, delayed
 // retries) pass a nil delta via the public TriggerNow.
 func (r *LoopRunner) triggerNowWithTasksDelta(sessionID string, resetTimer bool, tasksDelta *config.TasksDelta) error {
+	return r.triggerNowFull(sessionID, resetTimer, tasksDelta, false)
+}
+
+// triggerNowFull is the unified internal entry point behind TriggerNow and its
+// specialized variants. It additionally threads the boot-pulse flag
+// (mitto-ystk): when isRunOnStart is true the delivered PromptMeta carries
+// IsLoopRunOnStart=true so the prompt body can gate on
+// {{ .Session.IsLoopRunOnStart }}. All existing behaviour (auto-resume of a
+// stopped session, IsPrompting guard, workspace concurrency cap bypass because
+// this dispatch is a forced/manual-equivalent) is preserved.
+func (r *LoopRunner) triggerNowFull(sessionID string, resetTimer bool, tasksDelta *config.TasksDelta, isRunOnStart bool) error {
 	if r.store == nil {
 		return ErrSessionStoreNotAvailable
 	}
@@ -660,7 +719,7 @@ func (r *LoopRunner) triggerNowWithTasksDelta(sessionID string, resetTimer bool,
 	}
 
 	// Deliver the prompt
-	return r.deliverPrompt(bs, meta, loop, loopStore, resetTimer, true, tasksDelta)
+	return r.deliverPrompt(bs, meta, loop, loopStore, resetTimer, true, tasksDelta, isRunOnStart)
 }
 
 // OnConversationIdle is invoked when a session's agent has stopped and the session
@@ -836,6 +895,122 @@ func (r *LoopRunner) BootstrapOnCompletion(sessionID string) {
 	}
 }
 
+// fireOnStartPulses walks every session with a loop configured for
+// RunOnStart=true and fires each one exactly once shortly after Mitto boots
+// (mitto-ystk). Called by pollLoop after the interactive-resume startup delay,
+// so live WebSocket sessions have already reclaimed their ACP connections.
+//
+// Skipped when:
+//   - the session store is not available;
+//   - the session is archived;
+//   - the loop is disabled or RunOnStart is not *true;
+//   - a previous delivery falls within the anti-flap window
+//     (runOnStartAntiFlapSeconds); this catches a fast restart of a healthy
+//     loop and prevents a redundant re-fire immediately after the last run;
+//   - the runner already fired the pulse in this process lifetime (guarded by
+//     runOnStartFired).
+//
+// For onTasks loops the baseline is bootstrapped before firing so the delivered
+// prompt has a sane {{ .Trigger.OnTasks.* }} rendering context on future
+// beads-driven runs; the boot pulse itself does not carry a tasks delta.
+//
+// All deliveries go through triggerNowFull with isRunOnStart=true so the
+// PromptMeta carries IsLoopRunOnStart=true (surfaced as the CEL
+// Session.IsLoopRunOnStart variable, the Go-template
+// {{ .Session.IsLoopRunOnStart }} accessor, and the @mitto:loop_run_on_start
+// placeholder). Errors are logged but not propagated — the boot pulse is
+// best-effort.
+func (r *LoopRunner) fireOnStartPulses() {
+	if r.store == nil {
+		return
+	}
+
+	sessions, err := r.store.List()
+	if err != nil {
+		if r.logger != nil {
+			r.logger.Warn("fireOnStartPulses: failed to list sessions", "error", err)
+		}
+		return
+	}
+
+	r.mu.Lock()
+	antiFlap := r.runOnStartAntiFlapSeconds
+	r.mu.Unlock()
+
+	now := time.Now().UTC()
+
+	for _, meta := range sessions {
+		if meta.Archived {
+			continue
+		}
+
+		loopStore := r.store.Loop(meta.SessionID)
+		loop, err := loopStore.Get()
+		if err != nil || loop == nil {
+			continue
+		}
+		if !loop.Enabled || !loop.ShouldRunOnStart() {
+			continue
+		}
+
+		// Anti-flap: a loop that ran seconds ago (across a fast restart) should
+		// not immediately re-fire on boot.
+		if antiFlap > 0 && loop.LastSentAt != nil {
+			since := now.Sub(loop.LastSentAt.UTC())
+			if since < time.Duration(antiFlap)*time.Second {
+				if r.logger != nil {
+					r.logger.Debug("Boot pulse suppressed by anti-flap window",
+						"session_id", meta.SessionID,
+						"since_last_run", since,
+						"anti_flap_seconds", antiFlap)
+				}
+				continue
+			}
+		}
+
+		// Once-per-process guard.
+		r.runOnStartFiredMu.Lock()
+		alreadyFired := r.runOnStartFired[meta.SessionID]
+		if !alreadyFired {
+			r.runOnStartFired[meta.SessionID] = true
+		}
+		r.runOnStartFiredMu.Unlock()
+		if alreadyFired {
+			continue
+		}
+
+		// For onTasks loops, ensure the baseline exists before the boot pulse
+		// so subsequent beads-driven runs have a well-defined delta anchor.
+		if loop.IsOnTasks() {
+			r.BootstrapTasksBaseline(meta.SessionID)
+		}
+
+		if r.logger != nil {
+			r.logger.Info("Firing loop boot pulse",
+				"session_id", meta.SessionID,
+				"session_name", meta.Name,
+				"trigger", string(loop.EffectiveTrigger()))
+		}
+
+		if err := r.triggerNowFull(meta.SessionID, true, nil, true); err != nil {
+			if r.logger == nil {
+				continue
+			}
+			if errors.Is(err, ErrSessionBusy) {
+				r.logger.Debug("Boot pulse skipped, session busy",
+					"session_id", meta.SessionID)
+			} else if errors.Is(err, ErrWorkspaceBusy) {
+				r.logger.Debug("Boot pulse skipped, workspace concurrency cap reached",
+					"session_id", meta.SessionID)
+			} else {
+				r.logger.Warn("Boot pulse delivery failed",
+					"session_id", meta.SessionID,
+					"error", err)
+			}
+		}
+	}
+}
+
 // recoverStalledOnCompletion is the poll-loop self-healing fallback for an
 // onCompletion loop that missed its end-of-turn re-arm and would
 // otherwise stall forever (see mitto-5dn).
@@ -975,6 +1150,12 @@ func (r *LoopRunner) pollLoop() {
 		case <-time.After(r.startupDelay):
 		}
 	}
+
+	// Fire once-per-boot pulses for loops configured with RunOnStart=true
+	// (mitto-ystk). Runs after the startup delay so interactive sessions
+	// have resumed, and before RunOnce so a due scheduled fire does not race
+	// with the boot pulse and win first.
+	r.fireOnStartPulses()
 
 	// Run after delay to handle any prompts that were due
 	r.RunOnce()
@@ -1364,7 +1545,7 @@ func (r *LoopRunner) checkSession(meta session.Metadata, now time.Time) (deliver
 	// Deliver the prompt — normal scheduled runs always reset the timer. No
 	// onTasks delta on the scheduled path (that path only fires on time; onTasks
 	// fires go through triggerNowWithTasksDelta — mitto-xkn).
-	if err := r.deliverPrompt(bs, meta, loop, loopStore, true, false, nil); err != nil {
+	if err := r.deliverPrompt(bs, meta, loop, loopStore, true, false, nil, false); err != nil {
 		if errors.Is(err, ErrWorkspaceBusy) {
 			// A sibling loop in the same workspace is in flight. Skip this
 			// session for this poll cycle — do not advance NextScheduledAt
@@ -1627,7 +1808,12 @@ func (r *LoopRunner) handleDeliveryFailure(sessionID, sessionName string, loop *
 // it is threaded into PromptMeta.Trigger so the loop prompt body can render
 // {{ .Trigger.OnTasks.Changes.* }} (mitto-xkn). Nil for scheduled, onCompletion,
 // manual "Run Now", and any other dispatch path.
-func (r *LoopRunner) deliverPrompt(bs *BackgroundSession, sessionMeta session.Metadata, loop *session.LoopPrompt, loopStore *session.LoopStore, resetTimer bool, forced bool, tasksDelta *config.TasksDelta) error {
+//
+// isRunOnStart is true only for the boot pulse (mitto-ystk) fired once by
+// fireOnStartPulses shortly after Mitto boots. It flags the delivered PromptMeta
+// so the prompt body can gate on {{ .Session.IsLoopRunOnStart }} (and the
+// @mitto:loop_run_on_start placeholder).
+func (r *LoopRunner) deliverPrompt(bs *BackgroundSession, sessionMeta session.Metadata, loop *session.LoopPrompt, loopStore *session.LoopStore, resetTimer bool, forced bool, tasksDelta *config.TasksDelta, isRunOnStart bool) error {
 	sessionID := bs.GetSessionID()
 	sessionName := sessionMeta.Name
 
@@ -1702,16 +1888,17 @@ func (r *LoopRunner) deliverPrompt(bs *BackgroundSession, sessionMeta session.Me
 		}
 	}
 	meta := PromptMeta{
-		SenderID:        "loop-runner",
-		PromptID:        "",              // No client to confirm delivery to
-		PromptName:      loop.PromptName, // Pass prompt name so UI can render a badge instead of full text
-		Arguments:       loop.Arguments,  // User-supplied values for Go-template .Args placeholders in the resolved text
-		IsLoopForced:    forced,
-		LoopKind:        loopKind,
-		IterationNumber: loop.IterationCount,
-		MaxIterations:   loop.MaxIterations,
-		FreshContext:    loop.FreshContext,
-		Trigger:         triggerCtx,
+		SenderID:         "loop-runner",
+		PromptID:         "",              // No client to confirm delivery to
+		PromptName:       loop.PromptName, // Pass prompt name so UI can render a badge instead of full text
+		Arguments:        loop.Arguments,  // User-supplied values for Go-template .Args placeholders in the resolved text
+		IsLoopForced:     forced,
+		IsLoopRunOnStart: isRunOnStart,
+		LoopKind:         loopKind,
+		IterationNumber:  loop.IterationCount,
+		MaxIterations:    loop.MaxIterations,
+		FreshContext:     loop.FreshContext,
+		Trigger:          triggerCtx,
 		OnComplete: func(err error) {
 			// Always release the workspace slot when the prompt terminates,
 			// regardless of success or failure (mitto-61z).

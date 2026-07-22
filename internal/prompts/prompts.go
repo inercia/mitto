@@ -97,6 +97,12 @@ type PromptLoop struct {
 	// used by stateless supervisor loops that re-hydrate from external state on
 	// every fire.
 	FreshContext *bool `yaml:"freshContext,omitempty" json:"freshContext,omitempty"`
+	// RunOnStart, when true, causes the LoopRunner to fire this loop exactly
+	// once shortly after Mitto boots (with an anti-flap window guarding against
+	// a recent run). Complements onTasks loops (which otherwise only fire on
+	// task changes) and lets scheduled/onCompletion loops kick off at startup
+	// instead of waiting for the next tick. Nil/absent = default false.
+	RunOnStart *bool `yaml:"runOnStart,omitempty" json:"runOnStart,omitempty"`
 	// Mode selects whether loop is mandatory or user-toggleable: "always"
 	// (default when empty/absent) or "optional". Validated by ValidatePromptLoop.
 	Mode string `yaml:"mode,omitempty" json:"mode,omitempty"`

@@ -64,6 +64,10 @@ type ConversationStartInput struct {
 	// that arrive while the loop's subtree is busy. Nil or true = silently absorb
 	// (default). False = fire once more with the accumulated delta after quiescence.
 	LoopCoalesceDuringBusy *bool `json:"loop_coalesce_during_busy,omitempty"`
+	// LoopRunOnStart, when *true, causes the loop to fire exactly once shortly
+	// after Mitto boots (with an anti-flap window guarding against a recent
+	// run). Nil or false = do not fire on start (default).
+	LoopRunOnStart *bool `json:"loop_run_on_start,omitempty"`
 	// LoopApplyPromptDefaults controls the mitto-r7y auto-apply of a seeded
 	// prompt's loop: frontmatter block. When prompt_name resolves to a prompt
 	// carrying a loop: block, its fields fill any loop_* fields the caller did
@@ -698,6 +702,10 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 		if input.LoopCoalesceDuringBusy != nil {
 			v := *input.LoopCoalesceDuringBusy
 			loop.CoalesceDuringBusy = &v
+		}
+		if input.LoopRunOnStart != nil {
+			v := *input.LoopRunOnStart
+			loop.RunOnStart = &v
 		}
 		// Clamp the on-completion delay to the global floor (no-op for schedule).
 		loop.ClampDelay(s.loopDelayFloor())

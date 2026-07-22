@@ -530,3 +530,42 @@ func TestSubstituteVariables_LoopForced(t *testing.T) {
 		})
 	}
 }
+
+// TestSubstituteVariables_LoopRunOnStart verifies the @mitto:loop_run_on_start
+// placeholder wired for the boot pulse (mitto-ystk).
+func TestSubstituteVariables_LoopRunOnStart(t *testing.T) {
+	tests := []struct {
+		name     string
+		message  string
+		input    *ProcessorInput
+		expected string
+	}{
+		{
+			name:     "loop_run_on_start true",
+			message:  "boot: @mitto:loop_run_on_start",
+			input:    &ProcessorInput{IsLoopRunOnStart: true},
+			expected: "boot: true",
+		},
+		{
+			name:     "loop_run_on_start false",
+			message:  "boot: @mitto:loop_run_on_start",
+			input:    &ProcessorInput{IsLoopRunOnStart: false},
+			expected: "boot: false",
+		},
+		{
+			name:     "loop_run_on_start default (false)",
+			message:  "boot: @mitto:loop_run_on_start",
+			input:    &ProcessorInput{},
+			expected: "boot: false",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := SubstituteVariables(tt.message, tt.input)
+			if got != tt.expected {
+				t.Errorf("SubstituteVariables() = %q, want %q", got, tt.expected)
+			}
+		})
+	}
+}
