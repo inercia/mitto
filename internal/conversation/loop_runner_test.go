@@ -4527,3 +4527,128 @@ func TestLoopRunner_OnTasks_PromptResolveFailure_AutoPauses(t *testing.T) {
 			"(onTasks auto-pause must broadcast — mitto-uhnc)", autoStopCalls)
 	}
 }
+
+// recordingSlogHandler is a minimal slog.Handler that records every log record
+// emitted at or above minLevel. Used to assert log-level classification
+// (see TestLoopRunner_RecordSentFailure_LoopFileMissing_DoesNotWarn — mitto-rz9j).
+type recordingSlogHandler struct {
+	mu       sync.Mutex
+	minLevel slog.Level
+	records  []slog.Record
+}
+
+func (h *recordingSlogHandler) Enabled(_ context.Context, level slog.Level) bool {
+	return level >= h.minLevel
+}
+
+func (h *recordingSlogHandler) Handle(_ context.Context, r slog.Record) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.records = append(h.records, r.Clone())
+	return nil
+}
+
+func (h *recordingSlogHandler) WithAttrs(_ []slog.Attr) slog.Handler { return h }
+func (h *recordingSlogHandler) WithGroup(_ string) slog.Handler      { return h }
+
+func (h *recordingSlogHandler) warnOrHigher() []slog.Record {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	out := make([]slog.Record, 0, len(h.records))
+	for _, r := range h.records {
+		if r.Level >= slog.LevelWarn {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// TestLoopRunner_RecordSentFailure_LoopFileMissing_DoesNotWarn reproduces the
+// teardown-order race described in mitto-rz9j: the loop-runner's OnComplete
+// callback calls loopStore.RecordSent() to persist last_sent_at after a
+// successful prompt delivery, but the loop.json file can have been removed
+// between the loop fire and the callback — because either (a) the parent
+// invoked mitto_conversation_delete, which cascades through
+// SessionManager.deleteSessionAndChildren -> store.Delete(sessionID), wiping
+// the session dir including loop.json; (b) LoopStore.Detach() moved loop.json
+// into the saved slot; or (c) LoopStore.Delete() removed it. In every case
+// RecordSent returns session.ErrLoopNotFound ("loop prompt not found") and
+// the caller currently emits a WARN — noisy and misleading because the loop
+// is being torn down on purpose.
+//
+// This test drives the race deterministically at the exact level the WARN is
+// emitted (logLoopRecordSentFailure, extracted from deliverPrompt's OnComplete
+// specifically to make this classification testable) and asserts that no
+// WARN-or-higher record is produced when the returned error is
+// session.ErrLoopNotFound. It also confirms that unrelated RecordSent errors
+// still surface as WARN so the fix does not swallow real failures.
+func TestLoopRunner_RecordSentFailure_LoopFileMissing_DoesNotWarn(t *testing.T) {
+	// Set up a session + enabled loop config so RecordSent has something real
+	// to try to update — mirrors the state right after a successful loop
+	// delivery, before the teardown race triggers.
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	meta := session.Metadata{
+		SessionID:  "rz9j-teardown-race",
+		ACPServer:  "test",
+		WorkingDir: "/tmp",
+	}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("store.Create() error = %v", err)
+	}
+
+	loopStore := store.Loop(meta.SessionID)
+	if err := loopStore.Set(&session.LoopPrompt{
+		Prompt:    "Test prompt",
+		Frequency: session.Frequency{Value: 1, Unit: session.FrequencyHours},
+		Enabled:   true,
+	}); err != nil {
+		t.Fatalf("loopStore.Set() error = %v", err)
+	}
+
+	// Simulate the teardown that happens between the loop fire and the
+	// OnComplete callback — e.g. parent's mitto_conversation_delete cascade
+	// wiping the session dir. LoopStore.Delete() removes loop.json outright.
+	if err := loopStore.Delete(); err != nil {
+		t.Fatalf("loopStore.Delete() (simulating teardown race) error = %v", err)
+	}
+
+	// Now the exact call the OnComplete callback makes: RecordSent on the
+	// (now-missing) loop file. Must surface as ErrLoopNotFound — this is the
+	// error whose logging classification is under test.
+	err = loopStore.RecordSent()
+	if !errors.Is(err, session.ErrLoopNotFound) {
+		t.Fatalf("loopStore.RecordSent() error = %v, want session.ErrLoopNotFound", err)
+	}
+
+	// Feed that error through the exact log-classification helper the
+	// OnComplete callback uses. Capture WARN-or-higher records.
+	handler := &recordingSlogHandler{minLevel: slog.LevelDebug}
+	logger := slog.New(handler)
+
+	logLoopRecordSentFailure(logger, meta.SessionID, err)
+
+	if warns := handler.warnOrHigher(); len(warns) > 0 {
+		msgs := make([]string, 0, len(warns))
+		for _, r := range warns {
+			msgs = append(msgs, fmt.Sprintf("level=%s msg=%q", r.Level, r.Message))
+		}
+		t.Errorf("logLoopRecordSentFailure emitted WARN-or-higher for session.ErrLoopNotFound "+
+			"(mitto-rz9j: teardown-race noise); expected DEBUG downgrade. records: %s",
+			strings.Join(msgs, "; "))
+	}
+
+	// Sanity: an UNRELATED error (not ErrLoopNotFound) must still WARN, so
+	// the fix does not swallow real failures.
+	handler2 := &recordingSlogHandler{minLevel: slog.LevelDebug}
+	logger2 := slog.New(handler2)
+	logLoopRecordSentFailure(logger2, meta.SessionID, errors.New("some other io failure"))
+	if warns := handler2.warnOrHigher(); len(warns) != 1 {
+		t.Errorf("logLoopRecordSentFailure warn count for unrelated error = %d, want 1 "+
+			"(non-teardown errors must still surface as WARN)", len(warns))
+	}
+}

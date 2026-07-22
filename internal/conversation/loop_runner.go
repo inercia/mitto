@@ -75,6 +75,32 @@ func loopScheduleBackoff(failures int) time.Duration {
 	return delay
 }
 
+// logLoopRecordSentFailure logs a failure to persist the loop's last_sent_at
+// timestamp after a successful prompt delivery. It exists so the classification
+// of RecordSent errors (in particular the teardown-order race that surfaces
+// as session.ErrLoopNotFound when the loop file is removed between the loop
+// fire and the OnComplete callback — see mitto-rz9j) can be unit-tested
+// without driving PromptWithMeta end-to-end. Logger may be nil.
+func logLoopRecordSentFailure(logger *slog.Logger, sessionID string, err error) {
+	if logger == nil {
+		return
+	}
+	// Teardown-order race (mitto-rz9j): loop.json can be removed between the
+	// loop fire and this OnComplete callback (parent MCP delete cascade,
+	// LoopStore.Detach, or LoopStore.Delete). RecordSent then returns
+	// session.ErrLoopNotFound — expected during teardown, not a real failure,
+	// so log at Debug to avoid noisy WARNs.
+	if errors.Is(err, session.ErrLoopNotFound) {
+		logger.Debug("Skipped loop last_sent_at update: loop already removed",
+			"session_id", sessionID,
+			"error", err)
+		return
+	}
+	logger.Warn("Failed to update loop last_sent_at",
+		"session_id", sessionID,
+		"error", err)
+}
+
 // Errors for loop runner operations.
 var (
 	ErrSessionStoreNotAvailable   = errors.New("session store not available")
@@ -1717,11 +1743,7 @@ func (r *LoopRunner) deliverPrompt(bs *BackgroundSession, sessionMeta session.Me
 
 			// Prompt completed successfully — now update the schedule
 			if err := loopStore.RecordSent(); err != nil {
-				if r.logger != nil {
-					r.logger.Warn("Failed to update loop last_sent_at",
-						"session_id", sessionID,
-						"error", err)
-				}
+				logLoopRecordSentFailure(r.logger, sessionID, err)
 			} else {
 				updated, getErr := loopStore.Get()
 				if getErr == nil && updated != nil {
