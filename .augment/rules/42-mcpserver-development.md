@@ -110,7 +110,7 @@ Some dependencies (e.g. `LoopRunner`) are wired in via setter methods (`s.mcpSer
 
 ## Processor Auxiliary Session MCP Access
 
-Processor auxiliary sessions (purpose prefix `"processor:"`) get a stdio MCP proxy so the agent can call Mitto tools. Configured in `internal/web/acp_process_manager.go` via `ACPProcessManager.MCPServerURL`. Non-processor auxiliary sessions (title-gen, follow-up, etc.) do NOT get MCP access. See `docs/devel/mcp.md` for detailed documentation.
+Processor auxiliary sessions (purpose prefix `"processor:"`) get a Mitto MCP entry in their `session/new` `McpServers` list so the agent can call Mitto tools. Configured in `internal/acpproc/acp_process_manager.go` via `ACPProcessManager.MCPServerURL`. Transport is capability-gated by `buildAuxProcessorMCPServers` (`internal/acpproc/aux_mcp_transport.go`, mitto-8ip): if `process.Capabilities().McpCapabilities.Http` is true, a native `McpServerHttpInline` targets the same URL user sessions already use (no subprocess, no stdio hop); otherwise the stdio `mitto mcp --proxy-to <url>` bridge is emitted as the ACP-spec mandatory-transport fallback. Never delete `--proxy-to` / `runMCPProxy` / `runMCPProxyIO` — still required for agents without `mcp_capabilities.http`. Non-processor auxiliary sessions (title-gen, follow-up, etc.) do NOT get MCP access. See `docs/devel/mcp.md` for detailed documentation.
 
 ## Input Validation in Tools
 

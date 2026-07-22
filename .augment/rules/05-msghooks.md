@@ -27,7 +27,7 @@ Prompt-mode processors are collected in a `pendingPrompts` slice during the pipe
 - **Single processor**: dispatched directly with its own name (fire-and-forget goroutine)
 - **Multiple processors**: combined into one prompt with a "We would like to fulfill the following requirements:" header, dispatched as a single batched request — only ONE auxiliary session is created
 
-Prompt-mode processor auxiliary sessions have access to Mitto's MCP tools (e.g., `mitto_ui_notify`) via a stdio MCP proxy, when `ACPProcessManager.MCPServerURL` is set. See `42-mcpserver-development.md` for the wiring pattern.
+Prompt-mode processor auxiliary sessions have access to Mitto's MCP tools (e.g., `mitto_ui_notify`) when `ACPProcessManager.MCPServerURL` is set. Transport is capability-gated (mitto-8ip): if the agent advertised `mcp_capabilities.http` at init, a native `McpServerHttpInline` pointing at the same `MCPServerURL` user sessions use is emitted (no subprocess); otherwise the stdio `mitto mcp --proxy-to <url>` bridge is emitted as the ACP-spec mandatory-transport fallback. See `42-mcpserver-development.md` for the wiring pattern.
 
 ## Key YAML Fields
 
