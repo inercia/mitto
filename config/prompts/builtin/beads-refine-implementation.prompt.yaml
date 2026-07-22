@@ -4,7 +4,9 @@ menus: prompts, beadsList
 description: Analyze open beads that have not yet been refined, fill in enough implementation detail for a faster model to implement them, label the refined ones, and defer the ones that cannot be refined. Runs on a smart model as an onTasks loop that fires whenever beads change.
 backgroundColor: '#C5CAE9'
 group: Tasks
-singleton: true
+target:
+  title: "Refine issue implementation details"
+  reuseTitle: true
 enabledWhen: CommandExists("bd") && DirExists(".beads")
 preferredModels:
   - modelTag: Smart

@@ -4,7 +4,9 @@ menus: prompts, beadsList
 description: Find stale, obsolete, or duplicate beads and close them after confirmation
 backgroundColor: '#BCAAA4'
 group: Tasks
-singleton: true
+target:
+  title: "Cleanup stale issues"
+  reuseTitle: true
 enabledWhen: CommandExists("bd") && DirExists(".beads")
 preferredModels:
   - modelTag: Coding

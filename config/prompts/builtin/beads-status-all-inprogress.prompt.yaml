@@ -4,7 +4,9 @@ menus: prompts, beadsList
 description: Fact-check implementation status for all in-progress beads in this repo
 backgroundColor: '#FFCCBC'
 group: Tasks
-singleton: true
+target:
+  title: "Status ALL in-progress"
+  reuseTitle: true
 enabledWhen: CommandExists("bd") && DirExists(".beads")
 preferredModels:
   - modelTag: Coding
