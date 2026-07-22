@@ -1256,6 +1256,60 @@ func TestValidatePromptTarget(t *testing.T) {
 			t.Errorf("unexpected error: %v", err)
 		}
 	})
+
+	// --- ReuseCoalesce validation (mitto-djs1). ReuseCoalesce is a modifier
+	// that requires at least one reuse mode (ReuseIssue, ReuseTitle, or the
+	// containing prompt's top-level singleton flag). Nil / *false is always
+	// accepted since coalescing is opt-in and off by default. ---
+
+	t.Run("reuseCoalesce nil is valid without any reuse mode", func(t *testing.T) {
+		if err := ValidatePromptTarget("p", &PromptTarget{}, false); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("reuseCoalesce false is valid without any reuse mode", func(t *testing.T) {
+		off := false
+		if err := ValidatePromptTarget("p", &PromptTarget{ReuseCoalesce: &off}, false); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("reuseCoalesce true without any reuse mode errors", func(t *testing.T) {
+		on := true
+		err := ValidatePromptTarget("My Prompt", &PromptTarget{ReuseCoalesce: &on}, false)
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		msg := err.Error()
+		if !strings.Contains(msg, "My Prompt") || !strings.Contains(msg, "reuseCoalesce") {
+			t.Errorf("error should mention prompt name and reuseCoalesce: %v", err)
+		}
+	})
+
+	t.Run("reuseCoalesce true with reuseTitle+title is valid", func(t *testing.T) {
+		on := true
+		tgt := &PromptTarget{ReuseTitle: true, Title: "Weekly triage", ReuseCoalesce: &on}
+		if err := ValidatePromptTarget("p", tgt, false); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("reuseCoalesce true with reuseIssue is valid", func(t *testing.T) {
+		on := true
+		tgt := &PromptTarget{ReuseIssue: true, ReuseCoalesce: &on}
+		if err := ValidatePromptTarget("p", tgt, false); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("reuseCoalesce true with promptSingleton is valid", func(t *testing.T) {
+		on := true
+		tgt := &PromptTarget{ReuseCoalesce: &on}
+		if err := ValidatePromptTarget("p", tgt, true); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
 }
 
 // ---- PromptParameter / Parameters field tests ----
