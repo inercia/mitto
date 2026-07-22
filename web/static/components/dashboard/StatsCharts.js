@@ -27,7 +27,7 @@ const REQUESTED_METRICS = [
 
 // Chart height in px (fixed so narrow viewports do not collapse). Kept as a
 // number so uPlot can size its canvas directly.
-const CHART_HEIGHT = 220;
+const CHART_HEIGHT = 140;
 
 // --- Pure helpers (exported for testing) -----------------------------------
 
@@ -121,18 +121,58 @@ function loadUplot() {
 // which are supplied by the component). Keeping the specs declarative keeps
 // the render loop below uniform and makes future chart additions cheap.
 function buildChartSpecs(u) {
-  const timeFmt = { space: 60 };
+  // Compact axis sizes (uPlot defaults are 50/50 which eats ~70% of a 140px
+  // chart, leaving the plot area a stubby band at the bottom of the card).
+  // xAxis: 24px is enough for a single row of HH:MM tick labels; yAxis: 44px
+  // fits 5-digit numbers like "20,000" without truncation.
+  const xAxis = { space: 60, size: 24 };
+  const yAxis = { size: 44 };
   const stroke = (v) => v;
+  // Chart is compact: kill the uPlot legend (the card title already names the
+  // chart), and use tight padding so the plot area fills the container top-to-
+  // bottom instead of leaving a large empty gutter above the y-axis labels.
+  // padding is [top, right, bottom, left] in px.
+  const commonOpts = (w, h) => ({
+    width: w,
+    height: h,
+    legend: { show: false },
+    padding: [6, 8, 0, 0],
+  });
+  // yScale computes a dynamic y-axis range from the actual data so a single
+  // spike on an otherwise-zero series doesn't glue the line to the bottom of
+  // the plot area. uPlot passes us (dataMin, dataMax) as fallbacks; we widen
+  // by ~8% headroom top and (when there's a positive floor) a small pad below.
+  // Kept as a bare object so uPlot's own range fn receives it and re-evaluates
+  // on every setData / dataset change — no hardcoded ceilings.
+  const yScale = {
+    range: (_up, dataMin, dataMax) => {
+      if (!isFinite(dataMin) || !isFinite(dataMax)) return [0, 1];
+      if (dataMin === dataMax) {
+        // Flat series: center it with 1-unit padding (or 10% if large).
+        const pad = Math.max(1, Math.abs(dataMax) * 0.1);
+        return [dataMin - pad, dataMax + pad];
+      }
+      const span = dataMax - dataMin;
+      const topPad = span * 0.08;
+      // Anchor at 0 when data is non-negative and min is already near zero
+      // (typical for counter series like tokens/tool-calls); otherwise zoom to
+      // [dataMin - small pad, dataMax + top pad] so the line uses the full
+      // vertical band.
+      if (dataMin >= 0 && dataMin <= span * 0.05) {
+        return [0, dataMax + topPad];
+      }
+      const bottomPad = span * 0.05;
+      return [dataMin - bottomPad, dataMax + topPad];
+    },
+  };
   return [
     {
       title: "Tokens (input + output)",
       metrics: ["input_tokens_est", "output_tokens_est"],
       opts: (w, h) => ({
-        width: w,
-        height: h,
-        legend: { show: true },
-        scales: { x: { time: true } },
-        axes: [{ ...timeFmt }, {}],
+        ...commonOpts(w, h),
+        scales: { x: { time: true }, y: yScale },
+        axes: [xAxis, yAxis],
         series: [
           { label: "time" },
           { label: "input", stroke: stroke("#38bdf8"), fill: "rgba(56,189,248,0.15)" },
@@ -144,11 +184,9 @@ function buildChartSpecs(u) {
       title: "Tool calls",
       metrics: ["tool_calls_total", "mcp_calls"],
       opts: (w, h) => ({
-        width: w,
-        height: h,
-        legend: { show: true },
-        scales: { x: { time: true } },
-        axes: [{ ...timeFmt }, {}],
+        ...commonOpts(w, h),
+        scales: { x: { time: true }, y: yScale },
+        axes: [xAxis, yAxis],
         series: [
           { label: "time" },
           {
@@ -164,11 +202,9 @@ function buildChartSpecs(u) {
       title: "Prompts vs agent turns",
       metrics: ["prompts", "agent_turns_completed"],
       opts: (w, h) => ({
-        width: w,
-        height: h,
-        legend: { show: true },
-        scales: { x: { time: true } },
-        axes: [{ ...timeFmt }, {}],
+        ...commonOpts(w, h),
+        scales: { x: { time: true }, y: yScale },
+        axes: [xAxis, yAxis],
         series: [
           { label: "time" },
           {
@@ -199,6 +235,12 @@ function ChartCard({ title, metrics, optsFor, data, uplot, empty }) {
   // series-shape change (never in the current metric set) would need recreate.
   useEffect(() => {
     if (!uplot || !containerRef.current) return undefined;
+    // When the series is empty we render the "No activity" message inside the
+    // container instead of a chart. Instantiating uPlot here anyway appends a
+    // `.u-wrap` after the flow-sized empty div, and uPlot's absolutely-
+    // positioned canvas then draws ~CHART_HEIGHT px BELOW the card — landing
+    // on top of the lists section (visible bug: charts appear under lists).
+    if (empty) return undefined;
     const el = containerRef.current;
     const width = Math.max(120, el.clientWidth || 300);
     const rows = toUplotData(data, metrics);
@@ -228,15 +270,30 @@ function ChartCard({ title, metrics, optsFor, data, uplot, empty }) {
         chartRef.current = null;
       }
     };
-  }, [uplot, data, metrics, optsFor]);
+  }, [uplot, data, metrics, optsFor, empty]);
 
   return html`
-    <div class="rounded-lg shadow bg-mitto-surface-2 p-3 flex flex-col gap-2 min-w-0">
+    <!-- Carousel item: fixed basis so cards keep a readable width while the
+         parent .stats-carousel handles horizontal overflow. width:min(...)
+         keeps cards from getting too wide on desktops (multiple cards fit
+         side-by-side) while still filling the viewport on narrow screens. -->
+    <div
+      class="rounded-lg shadow bg-mitto-surface-2 p-3 flex flex-col gap-2"
+      style="width: min(360px, 100%); flex: 0 0 auto;"
+    >
       <div class="text-xs text-mitto-text-muted truncate">${title}</div>
+      <!-- shrink-0 + min-height belt-and-braces: the ChartCard is nested inside
+           the dashboard's outer 'flex flex-col overflow-y-auto' container which
+           default-shrinks its children (flex-shrink:1). Without this, the
+           container collapses below CHART_HEIGHT in the layout, the lists grid
+           rides UP into the same vertical band, and uPlot's absolutely-
+           positioned canvas (sized to CHART_HEIGHT) then draws THROUGH/behind
+           the lists. Also position:relative so overflow:hidden reliably clips
+           uPlot's .u-wrap children in every browser. -->
       <div
         ref=${containerRef}
-        class="w-full"
-        style=${`height: ${CHART_HEIGHT}px;`}
+        class="w-full overflow-hidden shrink-0 relative"
+        style=${`height: ${CHART_HEIGHT}px; min-height: ${CHART_HEIGHT}px;`}
       >
         ${empty
           ? html`<div class="w-full h-full flex items-center justify-center text-xs text-mitto-text-muted">
@@ -341,7 +398,7 @@ export function StatsCharts({ showToast }) {
   }));
 
   return html`
-    <div class="flex flex-col gap-2 w-full">
+    <div class="flex flex-col gap-2 w-full shrink-0">
       <div class="flex items-center gap-2">
         <span class="text-sm font-medium text-mitto-text-strong">Activity</span>
         ${backfill
@@ -356,10 +413,13 @@ export function StatsCharts({ showToast }) {
           testId="stats-range-toolbar"
         />
       </div>
-      <div
-        class="grid gap-3 w-full"
-        style="grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));"
-      >
+      <!-- Horizontal carousel of chart cards (mitto-a86b.8 UX iteration).
+           Cards scroll horizontally when they overflow; a thin native
+           scrollbar fades in only on hover / focus / active scrolling (see
+           .mitto-carousel in styles.css). Each card carries its own min-width
+           so multiple cards still fit side-by-side on wide viewports and
+           only overflow on narrow ones (phone, split panes). -->
+      <div class="mitto-carousel shrink-0 gap-3 w-full">
         ${specs.map(
           (s) => html`<${ChartCard}
             key=${s.title}

@@ -2518,3 +2518,57 @@ mitto-action {
   outline: none;
   box-shadow: none;
 }
+
+/* =============================================================================
+   Generic Mitto carousel (used by the Dashboard's StatsCharts strip and its
+   lists strip). Unlike daisyUI's .carousel (which permanently hides the
+   scrollbar), we render a slim scrollbar that stays invisible while the strip
+   is idle and fades in on hover / focus-within / active scrolling. On
+   macOS/iOS the native overlay scrollbar already behaves this way; the
+   explicit rules cover Firefox and Chrome/Edge on Win/Linux.
+   ============================================================================= */
+.mitto-carousel {
+  display: flex;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scroll-snap-type: x proximity;
+  /* Firefox — hide the thumb by default, reveal on hover/focus-within below */
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+  transition: scrollbar-color 150ms ease;
+  /* Momentum scrolling on iOS */
+  -webkit-overflow-scrolling: touch;
+}
+.mitto-carousel:hover,
+.mitto-carousel:focus-within {
+  scrollbar-color: var(--mitto-border-3, rgba(128, 128, 128, 0.4)) transparent;
+}
+.mitto-carousel > * {
+  scroll-snap-align: start;
+  flex: 0 0 auto;
+}
+/* WebKit (Chrome/Safari) — slim overlay-style scrollbar, thumb fades in on
+   hover/focus-within. The track stays transparent so no groove is drawn when
+   idle; the reserved scrollbar gutter is preserved either way (overflow:auto). */
+.mitto-carousel::-webkit-scrollbar {
+  height: 6px;
+  background: transparent;
+}
+.mitto-carousel::-webkit-scrollbar-track {
+  background: transparent;
+}
+.mitto-carousel::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 3px;
+  transition: background-color 150ms ease;
+}
+.mitto-carousel:hover::-webkit-scrollbar-thumb,
+.mitto-carousel:focus-within::-webkit-scrollbar-thumb,
+.mitto-carousel:active::-webkit-scrollbar-thumb {
+  background: var(--mitto-border-3, rgba(128, 128, 128, 0.4));
+}
+.mitto-carousel::-webkit-scrollbar-thumb:hover {
+  background: var(--mitto-border-2, rgba(128, 128, 128, 0.6));
+}
+

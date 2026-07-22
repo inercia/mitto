@@ -1,9 +1,10 @@
 // Mitto Web Interface - Global Dashboard view (mitto-aqo).
-// Stats header (mitto-aqo.4) + responsive grid of all four lists (mitto-aqo.5)
-// + click handlers routing to conversation focus / beads issue viewer
-// (mitto-aqo.6). No pagination — every list is always visible; column count
-// scales 1/2/3/4 with viewport width so phones stack, tablets pair, and wide
-// desktops show the whole set in one row.
+// Stats header (mitto-aqo.4) + horizontal carousel of all four lists
+// (mitto-aqo.5) + click handlers routing to conversation focus / beads issue
+// viewer (mitto-aqo.6). No pagination — every list is always visible; the
+// carousel uses the shared .mitto-carousel pattern (see styles.css) so panels
+// scroll horizontally when they overflow, matching the StatsCharts strip
+// above.
 const { html, useState, useEffect, useMemo, useRef, useCallback } =
   window.preact;
 
@@ -15,36 +16,6 @@ import { StatsCharts } from "./dashboard/StatsCharts.js";
 
 const REFRESH_INTERVAL_MS = 15_000;
 const MAX_LIST_ITEMS = 5;
-// Responsive column count for the lists grid. Thresholds tuned so each column
-// stays wide enough to read task titles + priority pill without truncating on
-// common device widths — in particular iPad portrait (768px) and iPad landscape
-// (1024px) both fell into a "2 narrow columns" bucket with earlier Tailwind-sm
-// (640px) mirror, which the user reported as too narrow. New buckets:
-//   <900px  → 1 column (iPhone, iPad portrait, narrow browser windows)
-//   900-1279 → 2 columns (iPad landscape, small laptop)
-//   1280-1535 → 3 columns (typical desktop)
-//   ≥1536   → 4 columns (wide desktop)
-// The grid template is applied via inline style because the precompiled
-// tailwind.css does NOT include any responsive-prefixed grid-cols utilities
-// (only base .grid-cols-1/2/3) — see tailwind-precompiled-jit-class-gotcha.
-const COLUMN_BREAKPOINTS = [
-  { minWidth: 1536, columns: 4 },
-  { minWidth: 1280, columns: 3 },
-  { minWidth: 900, columns: 2 },
-];
-const DEFAULT_COLUMNS = 1;
-
-function pickColumns() {
-  if (typeof window === "undefined" || !window.matchMedia) {
-    return COLUMN_BREAKPOINTS[0].columns;
-  }
-  for (const bp of COLUMN_BREAKPOINTS) {
-    if (window.matchMedia(`(min-width: ${bp.minWidth}px)`).matches) {
-      return bp.columns;
-    }
-  }
-  return DEFAULT_COLUMNS;
-}
 
 // Mirror BeadsView priority vocabulary so pills look identical across views.
 // bd priorities: 0 = Critical, 1 = High, 2 = Medium, 3 = Low.
@@ -66,11 +37,47 @@ function priorityPill(p) {
 // Ordered list definitions. `id` is kept for stable keys; pagination is now
 // index-driven rather than anchor-driven.
 const SLIDES = [
-  { id: "dash-slide-prompting", label: "Prompting conversations" },
+  { id: "dash-slide-prompting", label: "Recent conversations" },
   { id: "dash-slide-in-progress", label: "In-progress tasks" },
   { id: "dash-slide-ready", label: "Ready tasks" },
   { id: "dash-slide-recent", label: "Recently modified" },
 ];
+
+// Build the "Recent conversations" panel list: X currently-prompting sessions
+// first (isStreaming), then Y most-recently-active non-prompting sessions
+// sorted by updated_at desc, with X + Y capped at `max`. Both groups are
+// sorted individually by updated_at desc (ISO 8601 lexicographic). Null /
+// undefined entries and sessions without a session_id are skipped so the
+// panel never renders half-baked rows.
+//
+// Auto-created children (`child_origin === "auto"`, e.g. the "Coder"
+// sub-agents spawned via auto_children config) are excluded from BOTH groups
+// so the panel focuses on user-visible top-level conversations; MCP- and
+// human-spawned children are still included (they are intentional user
+// actions). Exported (see bottom of file) so the unit test suite can exercise
+// the mixing logic without booting Preact.
+function selectRecentConversations(allSessions, max) {
+  const list = Array.isArray(allSessions) ? allSessions : [];
+  const isEligible = (s) => s && s.child_origin !== "auto";
+  const byUpdatedDesc = (a, b) => {
+    const au = a.updated_at || "";
+    const bu = b.updated_at || "";
+    if (au === bu) return 0;
+    return au < bu ? 1 : -1;
+  };
+  const prompting = list
+    .filter((s) => isEligible(s) && s.isStreaming)
+    .slice()
+    .sort(byUpdatedDesc);
+  if (prompting.length >= max) return prompting.slice(0, max);
+  const remaining = max - prompting.length;
+  const recent = list
+    .filter((s) => isEligible(s) && !s.isStreaming)
+    .slice()
+    .sort(byUpdatedDesc)
+    .slice(0, remaining);
+  return prompting.concat(recent);
+}
 
 /**
  * Dashboard component - global cross-workspace overview.
@@ -79,7 +86,7 @@ const SLIDES = [
  *   or a loop toggles, without waiting for the next 15s poll.
  * @param {Function} showToast - Toast dispatcher; called on fetch error.
  * @param {Function} onFocusConversation - `(sessionId) => void`. Fired when a
- *   prompting-conversation row is activated (click or Enter/Space).
+ *   recent-conversation row is activated (click or Enter/Space).
  * @param {Function} onOpenTask - `(issueId, workingDir) => void`. Fired when a
  *   task row (in-progress / ready / epic) is activated. Callers bind the
  *   originating session id themselves.
@@ -94,23 +101,7 @@ export function Dashboard({
   onShowSidebar,
 }) {
   const [data, setData] = useState(null); // null = first load in-flight
-  // Number of grid columns for the lists row, driven by viewport width.
-  // Initialised synchronously from matchMedia so the first render already
-  // uses the correct column count; kept in sync via listeners below.
-  const [columns, setColumns] = useState(pickColumns);
   const mountedRef = useRef(true);
-
-  useEffect(() => {
-    if (typeof window === "undefined" || !window.matchMedia) return;
-    const mqs = COLUMN_BREAKPOINTS.map((bp) =>
-      window.matchMedia(`(min-width: ${bp.minWidth}px)`),
-    );
-    const onChange = () => setColumns(pickColumns());
-    for (const mq of mqs) mq.addEventListener("change", onChange);
-    return () => {
-      for (const mq of mqs) mq.removeEventListener("change", onChange);
-    };
-  }, []);
 
   // Lifted out of the interval effect so the WS-driven refresh below can reuse
   // it. mountedRef gates late resolutions after unmount; the fetch itself has
@@ -206,21 +197,15 @@ export function Dashboard({
     class="loading loading-spinner loading-md text-mitto-text-muted"
   ></span>`;
 
-  // Top-5 prompting conversations, most recently updated first. Session
-  // `updated_at` is an ISO 8601 string; localeCompare / lexicographic ordering
-  // works for that format. Filter by `isStreaming` — the client-side field
-  // populated from the WebSocket `is_prompting` flag; see the count block above.
-  const promptingList = useMemo(() => {
-    return (allSessions || [])
-      .filter((s) => s && s.isStreaming)
-      .slice()
-      .sort((a, b) => {
-        const au = a.updated_at || "";
-        const bu = b.updated_at || "";
-        if (au === bu) return 0;
-        return au < bu ? 1 : -1;
-      })
-      .slice(0, MAX_LIST_ITEMS);
+  // Top-MAX_LIST_ITEMS conversations for the "Recent conversations" panel:
+  // currently-prompting sessions first (X), then the most-recently-active
+  // non-prompting ones (Y), with X + Y <= MAX_LIST_ITEMS. Within each group
+  // sort by `updated_at` desc; ISO 8601 strings sort correctly lexicographically.
+  // `isStreaming` is the client-side field populated from the WebSocket
+  // `is_prompting` flag (see computeAllSessions in lib.js). If X already meets
+  // or exceeds MAX_LIST_ITEMS, only prompting rows are shown (Y = 0).
+  const recentConversationsList = useMemo(() => {
+    return selectRecentConversations(allSessions, MAX_LIST_ITEMS);
   }, [allSessions]);
 
   // Server-side lists are already capped at 5 by /api/dashboard, but slice
@@ -232,12 +217,15 @@ export function Dashboard({
 
   return html`
     <div
-      class="flex-1 flex flex-col min-w-0 overflow-y-auto bg-mitto-bg p-6 gap-6"
+      class="flex-1 flex flex-col min-w-0 overflow-hidden bg-mitto-bg p-6 gap-6"
     >
       <!-- Mobile header: hamburger + title. Mirrors the conversation and
            beads-view headers so the left side panel is reachable from the
            dashboard on phones. The hamburger is hidden on md+ where the
-           sidebar is always visible; the title stays on all breakpoints. -->
+           sidebar is always visible; the title stays on all breakpoints.
+           Kept OUTSIDE the scrollable content wrapper below (alongside the
+           stats row) so the title stays pinned at the top as the user scrolls
+           through the charts and lists. -->
       <div class="flex items-center gap-2 shrink-0">
         <button
           onClick=${() => onShowSidebar && onShowSidebar()}
@@ -254,9 +242,12 @@ export function Dashboard({
            tailwind.css and the default .stats layout renders empty on narrow
            viewports — see tailwind-precompiled-jit-class-gotcha. The inline
            grid-template-columns mirrors the lists grid below (which uses the
-           same technique for the same reason). -->
+           same technique for the same reason).
+           Kept OUTSIDE the scrollable content wrapper below (alongside the
+           title) so the top-of-page counters stay pinned as the user scrolls
+           through the charts and lists. -->
       <div
-        class="grid gap-2 w-full rounded-lg shadow bg-mitto-surface-2 p-4"
+        class="grid gap-2 w-full rounded-lg shadow bg-mitto-surface-2 p-4 shrink-0"
         style="grid-template-columns: repeat(3, minmax(0, 1fr));"
       >
         <div class="flex flex-col gap-1 min-w-0">
@@ -298,22 +289,33 @@ export function Dashboard({
         </div>
       </div>
 
+      <!-- Scrollable content wrapper: only the charts and lists scroll; the
+           title and stats row above stay fixed. flex-1 + min-h-0 lets it own
+           the remaining vertical space inside the flex column; its own gap-6
+           reproduces the spacing the outer gap-6 provided when the charts and
+           lists were siblings of the header. pb-6 gives the last list panel
+           breathing room so its bottom row is never flush against the
+           viewport edge (and, together with shrink-0 on each carousel below,
+           keeps the outer container scrollable when the total content is
+           taller than the viewport instead of silently squeezing the strips
+           and hiding their last rows). -->
+      <div class="flex-1 min-h-0 overflow-y-auto flex flex-col gap-6 pb-6">
       <!-- Timeseries charts (mitto-a86b.8): tokens, tool calls, prompts vs
            agent turns. Rendered between the stats row and the lists grid so
            the dashboard's vertical rhythm goes overview → activity → lists. -->
       <${StatsCharts} showToast=${showToast} />
 
-      <!-- Responsive grid of all four lists (mitto-aqo.5). No carousel:
-           every list is always visible. Column count is driven by the
-           columns state (1/2/3/4) which reacts to viewport width via
-           matchMedia. The grid template is applied via inline style rather
-           than Tailwind's responsive prefixes because the precompiled
-           tailwind.css does not include prefixed grid-cols utilities. Each
-           panel pads up to MAX_LIST_ITEMS invisible rows so every list in
-           the same row shares the same height regardless of content. -->
+      <!-- Horizontal carousel of all four lists (mitto-aqo.5). Every list is
+           always visible; panels scroll horizontally when the viewport is too
+           narrow to show them all side-by-side. Uses the shared
+           .mitto-carousel pattern (see styles.css) so the scrollbar fades in
+           only on hover / focus / active scrolling, matching the StatsCharts
+           strip above. Each panel pads up to MAX_LIST_ITEMS invisible rows
+           so every visible list shares the same height regardless of
+           content. -->
       ${(() => {
         const rendered = [
-          renderConversationRows(promptingList, onFocusConversation),
+          renderConversationRows(recentConversationsList, onFocusConversation),
           renderTaskRows(inProgressList, onOpenTask),
           renderTaskRows(readyList, onOpenTask),
           renderTaskRows(recentList, onOpenTask),
@@ -322,15 +324,15 @@ export function Dashboard({
           slide,
           rows: rendered[i] || [],
         }));
-        const gridStyle = `grid-template-columns: repeat(${columns}, minmax(0, 1fr));`;
         return html`
-          <div class="grid gap-4 w-full" style=${gridStyle}>
+          <div class="mitto-carousel shrink-0 gap-4 w-full">
             ${panels.map((p) =>
               renderListPanel(p.slide, p.rows, MAX_LIST_ITEMS),
             )}
           </div>
         `;
       })()}
+      </div>
     </div>
   `;
 }
@@ -338,8 +340,10 @@ export function Dashboard({
 // A single list panel: label above a daisyUI list. `rows` is the real rows
 // (unpadded); `padTo` is the row count to pad up to with invisible spacers so
 // every list occupies the same vertical space regardless of content. Callers
-// pass MAX_LIST_ITEMS so all panels in the responsive grid share the same
-// height whether they are stacked on a phone or aligned in a wide-desktop row.
+// pass MAX_LIST_ITEMS so all panels in the carousel share the same height
+// regardless of content. width:min(...) mirrors the chart-card sizing so
+// the two strips visually align: panels keep a readable width and the
+// parent .mitto-carousel handles horizontal overflow.
 function renderListPanel(slide, rows, padTo) {
   const realRows = Array.isArray(rows) ? rows : [];
   const target = Math.max(padTo || 0, realRows.length);
@@ -348,7 +352,11 @@ function renderListPanel(slide, rows, padTo) {
     spacers.push(spacerRow(`__spacer-${slide.id}-${i}`));
   }
   return html`
-    <div id=${slide.id} class="flex flex-col gap-2 min-w-0">
+    <div
+      id=${slide.id}
+      class="flex flex-col gap-2"
+      style="width: min(360px, 100%); flex: 0 0 auto;"
+    >
       <div class="text-sm font-semibold text-mitto-text-strong">
         ${slide.label}
       </div>
@@ -462,6 +470,10 @@ function renderConversationRows(sessions, onClick) {
     const sid = s.session_id;
     const clickable = !!(onClick && sid);
     const activate = clickable ? () => onClick(sid) : undefined;
+    // Mirror the sidebar's prompting indicator (SessionItem.js: showLoadingRing):
+    // a daisyUI accent-colored loading-ring shown next to the title while the
+    // agent is actively responding. Purely visual; row remains fully clickable.
+    const streaming = !!s.isStreaming;
     return html`
       <li
         class="list-row ${clickable ? ROW_INTERACTIVE_CLASSES : ""}"
@@ -479,8 +491,20 @@ function renderConversationRows(sessions, onClick) {
             </span>
             ${agentBadge(s.acp_server)}
           </div>
-          <div class="truncate text-sm text-mitto-text-strong" title="${title}">
-            ${title}
+          <div class="flex items-center gap-2 min-w-0">
+            ${streaming
+              ? html`<span
+                  class="loading loading-ring loading-xs shrink-0 text-mitto-accent"
+                  title="Receiving response..."
+                  aria-label="Receiving response..."
+                ></span>`
+              : null}
+            <div
+              class="truncate text-sm text-mitto-text-strong"
+              title="${title}"
+            >
+              ${title}
+            </div>
           </div>
         </div>
       </li>

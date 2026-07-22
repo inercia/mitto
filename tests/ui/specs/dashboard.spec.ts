@@ -191,7 +191,7 @@ testWithCleanup.describe("Global Dashboard", () => {
       // rendered simultaneously; there is no pagination. Assert every label
       // is visible without any navigation.
       await expect(
-        page.getByText("Prompting conversations", { exact: true }),
+        page.getByText("Recent conversations", { exact: true }),
       ).toBeVisible();
       await expect(
         page.getByText("In-progress tasks", { exact: true }),

@@ -37,19 +37,32 @@ function deriveCounts(allSessions) {
 }
 
 // Duplicated from Dashboard.js for testing (component imports window.preact
-// globals). Keep in sync. Mirrors the useMemo body at Dashboard.js ~L149-158.
-// Same `isStreaming`-vs-`is_prompting` note as deriveCounts above.
-function topPrompting(allSessions, max) {
-  return (allSessions || [])
-    .filter((s) => s && s.isStreaming)
+// globals). Keep in sync. Mirrors selectRecentConversations in Dashboard.js.
+// Builds the "Recent conversations" panel list: currently-prompting sessions
+// first (isStreaming), then most-recently-active non-prompting sessions
+// sorted by updated_at desc, with X + Y capped at `max`. Auto-created
+// children (child_origin === "auto") are excluded from both groups.
+function selectRecentConversations(allSessions, max) {
+  const list = Array.isArray(allSessions) ? allSessions : [];
+  const isEligible = (s) => s && s.child_origin !== "auto";
+  const byUpdatedDesc = (a, b) => {
+    const au = a.updated_at || "";
+    const bu = b.updated_at || "";
+    if (au === bu) return 0;
+    return au < bu ? 1 : -1;
+  };
+  const prompting = list
+    .filter((s) => isEligible(s) && s.isStreaming)
     .slice()
-    .sort((a, b) => {
-      const au = a.updated_at || "";
-      const bu = b.updated_at || "";
-      if (au === bu) return 0;
-      return au < bu ? 1 : -1;
-    })
-    .slice(0, max);
+    .sort(byUpdatedDesc);
+  if (prompting.length >= max) return prompting.slice(0, max);
+  const remaining = max - prompting.length;
+  const recent = list
+    .filter((s) => isEligible(s) && !s.isStreaming)
+    .slice()
+    .sort(byUpdatedDesc)
+    .slice(0, remaining);
+  return prompting.concat(recent);
 }
 
 // Duplicated from Dashboard.js for testing (component imports window.preact
@@ -149,22 +162,26 @@ describe("deriveCounts", () => {
 });
 
 
-describe("topPrompting", () => {
+describe("selectRecentConversations", () => {
   test("empty in → empty out", () => {
-    expect(topPrompting([], 5)).toEqual([]);
+    expect(selectRecentConversations([], 5)).toEqual([]);
   });
 
-  test("filters out non-prompting sessions", () => {
-    const sessions = [
-      S({ session_id: "a", isStreaming: true }),
-      S({ session_id: "b", isStreaming: false }),
-      S({ session_id: "c", isStreaming: true }),
-    ];
-    const out = topPrompting(sessions, 5);
-    expect(out.map((s) => s.session_id).sort()).toEqual(["a", "c"]);
+  test("null / undefined input treated as empty", () => {
+    expect(selectRecentConversations(null, 5)).toEqual([]);
+    expect(selectRecentConversations(undefined, 5)).toEqual([]);
   });
 
-  test("caps at max", () => {
+  test("null/undefined session entries are skipped", () => {
+    const sessions = [null, S({ session_id: "a", isStreaming: true }), undefined];
+    expect(
+      selectRecentConversations(sessions, 5).map((s) => s.session_id),
+    ).toEqual(["a"]);
+  });
+
+  // ---- prompting-only cases (X only) --------------------------------------
+
+  test("all prompting: caps at max and sorts by updated_at desc", () => {
     const sessions = Array.from({ length: 8 }, (_, i) =>
       S({
         session_id: `s${i}`,
@@ -172,50 +189,147 @@ describe("topPrompting", () => {
         updated_at: `2026-07-12T10:0${i}:00Z`,
       }),
     );
-    expect(topPrompting(sessions, 5)).toHaveLength(5);
+    const out = selectRecentConversations(sessions, 5);
+    expect(out).toHaveLength(5);
+    // Most recent first: s7, s6, s5, s4, s3.
+    expect(out.map((s) => s.session_id)).toEqual(["s7", "s6", "s5", "s4", "s3"]);
   });
 
-  test("sorts by updated_at descending", () => {
+  test("prompting count == max: only prompting shown (Y = 0)", () => {
     const sessions = [
-      S({ session_id: "old", isStreaming: true, updated_at: "2026-07-10T00:00:00Z" }),
-      S({ session_id: "new", isStreaming: true, updated_at: "2026-07-12T00:00:00Z" }),
-      S({ session_id: "mid", isStreaming: true, updated_at: "2026-07-11T00:00:00Z" }),
+      S({ session_id: "p1", isStreaming: true, updated_at: "2026-07-12T10:05:00Z" }),
+      S({ session_id: "p2", isStreaming: true, updated_at: "2026-07-12T10:04:00Z" }),
+      S({ session_id: "p3", isStreaming: true, updated_at: "2026-07-12T10:03:00Z" }),
+      S({ session_id: "p4", isStreaming: true, updated_at: "2026-07-12T10:02:00Z" }),
+      S({ session_id: "p5", isStreaming: true, updated_at: "2026-07-12T10:01:00Z" }),
+      // Very-recent non-prompting: must NOT appear because X already fills the panel.
+      S({ session_id: "r1", isStreaming: false, updated_at: "2026-07-12T99:59:59Z" }),
     ];
-    expect(topPrompting(sessions, 5).map((s) => s.session_id)).toEqual([
-      "new",
-      "mid",
-      "old",
+    const out = selectRecentConversations(sessions, 5);
+    expect(out.map((s) => s.session_id)).toEqual(["p1", "p2", "p3", "p4", "p5"]);
+  });
+
+  test("prompting count > max: caps at max, non-prompting ignored", () => {
+    const sessions = Array.from({ length: 7 }, (_, i) =>
+      S({
+        session_id: `p${i}`,
+        isStreaming: true,
+        updated_at: `2026-07-12T10:0${i}:00Z`,
+      }),
+    ).concat([S({ session_id: "r1", isStreaming: false, updated_at: "2026-07-12T99:00:00Z" })]);
+    const out = selectRecentConversations(sessions, 5);
+    expect(out).toHaveLength(5);
+    expect(out.every((s) => s.isStreaming)).toBe(true);
+  });
+
+  // ---- recent-only cases (Y only) -----------------------------------------
+
+  test("no prompting: fills entirely with most-recent non-prompting", () => {
+    const sessions = [
+      S({ session_id: "old", updated_at: "2026-07-10T00:00:00Z" }),
+      S({ session_id: "new", updated_at: "2026-07-12T00:00:00Z" }),
+      S({ session_id: "mid", updated_at: "2026-07-11T00:00:00Z" }),
+    ];
+    expect(
+      selectRecentConversations(sessions, 5).map((s) => s.session_id),
+    ).toEqual(["new", "mid", "old"]);
+  });
+
+  // ---- mixed cases (X + Y) ------------------------------------------------
+
+  test("mixed: prompting appear first, then recent, X + Y = max", () => {
+    const sessions = [
+      // 2 prompting (X = 2)
+      S({ session_id: "p1", isStreaming: true, updated_at: "2026-07-12T10:05:00Z" }),
+      S({ session_id: "p2", isStreaming: true, updated_at: "2026-07-12T10:06:00Z" }),
+      // 5 non-prompting; only the 3 most recent (Y = 3) should appear.
+      S({ session_id: "r1", updated_at: "2026-07-12T09:05:00Z" }),
+      S({ session_id: "r2", updated_at: "2026-07-12T09:06:00Z" }),
+      S({ session_id: "r3", updated_at: "2026-07-12T09:07:00Z" }),
+      S({ session_id: "r-old-1", updated_at: "2026-07-10T00:00:00Z" }),
+      S({ session_id: "r-old-2", updated_at: "2026-07-09T00:00:00Z" }),
+    ];
+    const out = selectRecentConversations(sessions, 5);
+    expect(out).toHaveLength(5);
+    // Prompting first (sorted desc within group), then recent (sorted desc).
+    expect(out.map((s) => s.session_id)).toEqual([
+      "p2",
+      "p1",
+      "r3",
+      "r2",
+      "r1",
     ]);
   });
 
-  test("equal timestamps: both present in output", () => {
+  test("mixed: even a very-recent non-prompting stays below a stale prompting one", () => {
     const sessions = [
-      S({ session_id: "a", isStreaming: true, updated_at: "2026-07-12T10:00:00Z" }),
-      S({ session_id: "b", isStreaming: true, updated_at: "2026-07-12T10:00:00Z" }),
+      S({ session_id: "stale-prompt", isStreaming: true, updated_at: "2020-01-01T00:00:00Z" }),
+      S({ session_id: "fresh-idle", updated_at: "2026-12-31T23:59:59Z" }),
     ];
-    const ids = topPrompting(sessions, 5).map((s) => s.session_id).sort();
-    expect(ids).toEqual(["a", "b"]);
+    const out = selectRecentConversations(sessions, 5);
+    expect(out.map((s) => s.session_id)).toEqual(["stale-prompt", "fresh-idle"]);
   });
 
-  test("missing updated_at sorts last", () => {
+  test("mixed: fewer sessions than max returns everything", () => {
+    const sessions = [
+      S({ session_id: "p1", isStreaming: true }),
+      S({ session_id: "r1" }),
+    ];
+    const out = selectRecentConversations(sessions, 5);
+    expect(out).toHaveLength(2);
+    expect(out.map((s) => s.session_id)).toEqual(["p1", "r1"]);
+  });
+
+  test("missing updated_at sorts last within its group", () => {
     const sessions = [
       S({ session_id: "no-ts", isStreaming: true, updated_at: undefined }),
       S({ session_id: "with-ts", isStreaming: true, updated_at: "2026-07-12T10:00:00Z" }),
     ];
-    expect(topPrompting(sessions, 5).map((s) => s.session_id)).toEqual([
-      "with-ts",
-      "no-ts",
-    ]);
+    expect(
+      selectRecentConversations(sessions, 5).map((s) => s.session_id),
+    ).toEqual(["with-ts", "no-ts"]);
   });
 
-  test("null/undefined session entries are skipped", () => {
-    const sessions = [null, S({ session_id: "a", isStreaming: true }), undefined];
-    expect(topPrompting(sessions, 5).map((s) => s.session_id)).toEqual(["a"]);
+  // ---- auto-child filtering (child_origin === "auto") ---------------------
+
+  test("auto-child sessions are excluded from both groups", () => {
+    const sessions = [
+      // Auto-child that is prompting — must be dropped.
+      S({ session_id: "coder-1", isStreaming: true, child_origin: "auto", updated_at: "2026-07-12T10:10:00Z" }),
+      // Auto-child that is idle-recent — must be dropped.
+      S({ session_id: "coder-2", child_origin: "auto", updated_at: "2026-07-12T10:09:00Z" }),
+      // Regular top-level (no child_origin) — must appear.
+      S({ session_id: "top", isStreaming: true, updated_at: "2026-07-12T10:05:00Z" }),
+      // Recent idle top-level — must appear.
+      S({ session_id: "idle", updated_at: "2026-07-12T10:04:00Z" }),
+    ];
+    const out = selectRecentConversations(sessions, 5);
+    expect(out.map((s) => s.session_id)).toEqual(["top", "idle"]);
   });
 
-  test("null input treated as empty", () => {
-    expect(topPrompting(null, 5)).toEqual([]);
-    expect(topPrompting(undefined, 5)).toEqual([]);
+  test("mcp- and human-spawned children are kept (not filtered)", () => {
+    const sessions = [
+      S({ session_id: "mcp-child", child_origin: "mcp", updated_at: "2026-07-12T10:03:00Z" }),
+      S({ session_id: "human-child", child_origin: "human", updated_at: "2026-07-12T10:02:00Z" }),
+      S({ session_id: "auto-child", child_origin: "auto", updated_at: "2026-07-12T10:01:00Z" }),
+    ];
+    expect(
+      selectRecentConversations(sessions, 5).map((s) => s.session_id),
+    ).toEqual(["mcp-child", "human-child"]);
+  });
+
+  test("auto-child does not consume a slot when prompting exceeds max", () => {
+    // 5 real prompting + 1 auto-child prompting → panel shows only the 5 real ones.
+    const sessions = [
+      S({ session_id: "auto", isStreaming: true, child_origin: "auto", updated_at: "2026-07-12T10:99:00Z" }),
+      S({ session_id: "p1", isStreaming: true, updated_at: "2026-07-12T10:05:00Z" }),
+      S({ session_id: "p2", isStreaming: true, updated_at: "2026-07-12T10:04:00Z" }),
+      S({ session_id: "p3", isStreaming: true, updated_at: "2026-07-12T10:03:00Z" }),
+      S({ session_id: "p4", isStreaming: true, updated_at: "2026-07-12T10:02:00Z" }),
+      S({ session_id: "p5", isStreaming: true, updated_at: "2026-07-12T10:01:00Z" }),
+    ];
+    const out = selectRecentConversations(sessions, 5);
+    expect(out.map((s) => s.session_id)).toEqual(["p1", "p2", "p3", "p4", "p5"]);
   });
 });
 
