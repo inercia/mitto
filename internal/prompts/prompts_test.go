@@ -2210,6 +2210,99 @@ func TestBuiltinPrompt_GithubReviewPR_ParameterIsPascalCase(t *testing.T) {
 	}
 }
 
+// TestBuiltinPrompts_SingletonMigratedToTargetReuseTitle pins mitto-y0l2:
+// the six builtin beads-* prompts that historically declared `singleton: true`
+// must now declare `target: { title: "<name>", reuseTitle: true }` and must NOT
+// declare `singleton: true` any longer. The target.title must equal the prompt's
+// current `name:` verbatim so any pre-existing singleton conversation (whose
+// title is the prompt name today, per FindSingletonCandidate) continues to be
+// funneled by FindConversationByTitle after the migration — no duplicate spawn.
+//
+// Guards against silent regressions like: (a) somebody re-adding singleton to
+// one of these files, (b) target.title drifting away from name, (c) reuseTitle
+// being flipped off. Machinery for the target block itself is exercised by
+// TestValidatePromptTarget and the reuse tests under internal/session and
+// internal/web/handlers.
+func TestBuiltinPrompts_SingletonMigratedToTargetReuseTitle(t *testing.T) {
+	builtinDir := filepath.Join("..", "..", "config", "prompts", "builtin")
+	migrated := []string{
+		"beads-cleanup-stale.prompt.yaml",
+		"beads-group-epics.prompt.yaml",
+		"beads-overview.prompt.yaml",
+		"beads-reevaluate.prompt.yaml",
+		"beads-refine-implementation.prompt.yaml",
+		"beads-status-all-inprogress.prompt.yaml",
+	}
+	for _, file := range migrated {
+		t.Run(file, func(t *testing.T) {
+			path := filepath.Join(builtinDir, file)
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Skipf("prompt file not found at %s: %v", path, err)
+			}
+			// Raw-bytes check: the legacy `singleton: true` line must be gone.
+			// Match `\nsingleton:` (with newline) to avoid catching the string
+			// mentioned in a comment or prose block.
+			if bytes.Contains(data, []byte("\nsingleton:")) {
+				t.Errorf("%s: still declares `singleton:` at top-level; mitto-y0l2 requires migration to target.reuseTitle", file)
+			}
+			prompt, err := ParsePromptFile(file, data, time.Now())
+			if err != nil {
+				t.Fatalf("ParsePromptFile(%s): %v", file, err)
+			}
+			if prompt.Singleton {
+				t.Errorf("%s: Singleton = true, want false after mitto-y0l2 migration", file)
+			}
+			if prompt.Target == nil {
+				t.Fatalf("%s: Target = nil, want non-nil {Title, ReuseTitle: true}", file)
+			}
+			if !prompt.Target.ReuseTitle {
+				t.Errorf("%s: Target.ReuseTitle = false, want true", file)
+			}
+			if prompt.Target.Title == "" {
+				t.Fatalf("%s: Target.Title = empty, want prompt name %q", file, prompt.Name)
+			}
+			if prompt.Target.Title != prompt.Name {
+				t.Errorf("%s: Target.Title = %q, want %q (must equal name so pre-existing singleton conversations continue to match)", file, prompt.Target.Title, prompt.Name)
+			}
+		})
+	}
+}
+
+// TestBuiltinPrompts_NoSingletonRemains complements the mitto-y0l2 migration
+// pin above: since all shipped builtins are expected to have moved off the
+// legacy `singleton: true` field, no builtin under config/prompts/builtin/
+// should declare it. If a new builtin needs single-conversation reuse it must
+// use `target: { title, reuseTitle: true }` instead.
+func TestBuiltinPrompts_NoSingletonRemains(t *testing.T) {
+	builtinDir := filepath.Join("..", "..", "config", "prompts", "builtin")
+	entries, err := os.ReadDir(builtinDir)
+	if err != nil {
+		t.Skipf("builtin prompts dir not found at %s: %v", builtinDir, err)
+	}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".prompt.yaml") {
+			continue
+		}
+		path := filepath.Join(builtinDir, e.Name())
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Errorf("ReadFile(%s): %v", e.Name(), err)
+			continue
+		}
+		if bytes.Contains(data, []byte("\nsingleton:")) {
+			t.Errorf("%s: declares legacy `singleton:` — use target.reuseTitle instead (mitto-y0l2)", e.Name())
+		}
+		prompt, err := ParsePromptFile(e.Name(), data, time.Now())
+		if err != nil {
+			continue // parse errors already reported by TestBuiltinPromptsParseClean
+		}
+		if prompt.Singleton {
+			t.Errorf("%s: parsed Singleton = true — use target.reuseTitle instead (mitto-y0l2)", e.Name())
+		}
+	}
+}
+
 // TestBuiltinPrompts_EnabledWhenCompiles CEL-compiles every non-empty enabledWhen
 // on the shipped builtin prompts. TestBuiltinPromptsParseClean only YAML-parses
 // them, so an undeclared identifier/function in a builtin's enabledWhen would slip
