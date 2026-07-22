@@ -9,8 +9,14 @@
  */
 
 // Jest is not injected as a global under --experimental-vm-modules (ESM); we
-// must import it explicitly. Matches WorkspacesDialog.test.js.
-import { jest } from "@jest/globals";
+// must import it explicitly. testGlobals.js re-exports the lifecycle globals
+// and `jest` from whichever runner is active (Jest or bun:test).
+import {
+  describe,
+  test,
+  expect,
+  jest,
+} from "../utils/testing/testGlobals.js";
 
 // =============================================================================
 // Duplicated helpers — keep in sync with web/static/components/Dashboard.js

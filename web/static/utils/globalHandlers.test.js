@@ -14,8 +14,17 @@
  */
 
 // In ESM mode (--experimental-vm-modules), `jest` is not auto-injected as a
-// global — it must be imported explicitly from @jest/globals.
-import { jest } from "@jest/globals";
+// global — it must be imported explicitly. testGlobals.js re-exports the
+// lifecycle globals and `jest` from whichever runner is active (Jest or
+// bun:test), so a single import works under both.
+import {
+  describe,
+  test,
+  expect,
+  beforeEach,
+  afterEach,
+  jest,
+} from "./testing/testGlobals.js";
 import "./globalHandlers.js";
 
 describe("globalHandlers viewer.html click handler — missing ws_path fallback (mitto-tac5)", () => {

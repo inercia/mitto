@@ -2,7 +2,13 @@
  * Tests for useConversationSeeding.js
  */
 
-import { jest } from "@jest/globals";
+import {
+  describe,
+  test,
+  expect,
+  afterEach,
+  jest,
+} from "../utils/testing/testGlobals.js";
 import {
   buildSeedQueueBody,
   seedConversationWithPrompt,

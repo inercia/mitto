@@ -29,7 +29,12 @@
  * assertions currently fail — that is the reproduction.
  */
 
-import { jest } from "@jest/globals";
+import {
+  describe,
+  test,
+  expect,
+  jest,
+} from "../utils/testing/testGlobals.js";
 
 // Minimal environment for the module and the transitive utils barrel it pulls in.
 global.window = global.window || {};

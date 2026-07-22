@@ -7,7 +7,12 @@
  * include only non-empty fields, with `env` included only when it has keys.
  */
 
-import { jest } from "@jest/globals";
+import {
+  describe,
+  test,
+  expect,
+  jest,
+} from "../utils/testing/testGlobals.js";
 
 /**
  * Duplicated from WorkspacesDialog.js for testing (the component imports
