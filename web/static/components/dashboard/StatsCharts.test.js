@@ -14,7 +14,16 @@
  * covered by Playwright in mitto-a86b.10.
  */
 
-import { jest } from "@jest/globals";
+// testGlobals.js re-exports the lifecycle globals and `jest` from whichever
+// runner is active (Jest under Node ESM, bun:test under Bun), so a single
+// import works under both runners.
+import {
+  describe,
+  test,
+  expect,
+  beforeEach,
+  jest,
+} from "../../utils/testing/testGlobals.js";
 import { endpoints } from "../../utils/endpoints.js";
 import { CDN_URLS, VERSIONS } from "../../vendor/config.js";
 

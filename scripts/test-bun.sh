@@ -18,6 +18,12 @@
 #
 # Passing extra args (e.g. `-t <name-pattern>`, `--watch`) is supported —
 # they are forwarded verbatim to `bun test`.
+#
+# CI note: `.github/workflows/tests.yml` runs this script via `bun run test:bun`
+# for the `bun-tests` job. The CLEAN[] array is the authoritative Phase 2
+# fast-path — bare `bun test` from repo root would sweep playwright-adjacent
+# tests under `tests/ui/*.test.js` (which have their own CI job) and any file
+# whose bun-runner semantics diverge from Jest, so the enumeration is required.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -32,6 +38,7 @@ CLEAN=(
   ./web/static/components/SettingsDialog.test.js
   ./web/static/components/SlashCommandPicker.test.js
   ./web/static/components/WorkspacesDialog.test.js
+  ./web/static/components/dashboard/StatsCharts.test.js
   ./web/static/hooks/useBeadsFolderConfig.test.js
   ./web/static/hooks/useConversationSeeding.test.js
   ./web/static/utils/api.test.js
@@ -44,6 +51,8 @@ CLEAN=(
   ./web/static/utils/prompts.test.js
   ./web/static/utils/sessionGrouping.test.js
   ./web/static/utils/sessionTree.test.js
+  ./web/static/utils/storage.test.js
+  ./web/static/utils/websocket.test.js
 )
 
 exec bun test "${CLEAN[@]}" "$@"
