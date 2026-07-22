@@ -7,6 +7,9 @@ menus: beadsIssues, conversation, prompts
 enabledWhen: 'CommandExists("bd") && DirExists(".beads") && ((Item.Status != "closed" && "support-question" in Item.Labels && "state:drafting" in Item.Labels) || (Session.HasBeadsIssue && BeadHasLabels(Session.BeadsIssue, "support-question,state:drafting")))'
 tags:
 - support
+target:
+  reuseIssue: true
+  reuseCoalesce: true
 parameters:
   - name: IssueID
     description: 'The beads issue ID to act on (auto-filled from the Beads issue menu)'

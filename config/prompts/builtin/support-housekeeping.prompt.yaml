@@ -7,6 +7,10 @@ menus: beadsList
 enabledWhen: '!Session.IsChild && CommandExists("bd") && DirExists(".beads") && HasBeads("support-question", "open,in_progress")'
 tags:
 - support
+target:
+  title: "Support: housekeeping"
+  reuseTitle: true
+  reuseCoalesce: true
 prompt: |-
   # Support — Housekeeping
 
