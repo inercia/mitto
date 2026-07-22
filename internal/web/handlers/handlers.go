@@ -207,11 +207,15 @@ type Deps struct {
 	// May be nil; callers must nil-guard (treat nil as "not reuseIssue").
 	ResolvePromptReuseIssue func(promptName, workingDir string) bool
 
-	// ResolvePromptTargetTitle returns the named prompt's target.title and
-	// target.reuseTitle fields (resolved for the given working dir via the
-	// full merge pipeline). Returns ("", false) when the prompt is not found
-	// or has no target block. May be nil; callers must nil-guard.
-	ResolvePromptTargetTitle func(promptName, workingDir string) (title string, reuseTitle bool)
+	// ResolvePromptTargetTitle returns the named prompt's target.title
+	// (rendered as a Go text/template against args + beadsIssue + workingDir,
+	// mitto-5qbo) and target.reuseTitle fields (resolved for the given working
+	// dir via the full merge pipeline). Returns ("", false, nil) when the
+	// prompt is not found or has no target block. Returns a non-nil err on
+	// template parse/exec failure or an empty rendered title, so the caller
+	// can reject the create with a 4xx (invalid prompt frontmatter). May be
+	// nil; callers must nil-guard.
+	ResolvePromptTargetTitle func(promptName, workingDir string, args map[string]string, beadsIssue string) (title string, reuseTitle bool, err error)
 
 	// ResolvePromptReuseCoalesce reports whether the named prompt (resolved for
 	// the given working dir via the full merge pipeline) has target.reuseCoalesce

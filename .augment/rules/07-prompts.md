@@ -135,6 +135,10 @@ A prompt with `singleton: true` must not have more than one non-archived convers
 
 `PromptLoop` (YAML `loop:`): `value`/`unit`/`at` (schedule period), `maxIterations`, plus the on-completion fields `trigger` (`schedule` default | `onCompletion`), `delay` (int seconds for onCompletion; clamped to the global floor), and `maxDuration` (duration string e.g. `4h`; wall-clock cap from the first run). `MaxIterations` caps scheduled runs; effective cap = min(prompt maxIterations, config default 100, hardcoded 1000). Backend auto-disables (not archives) when either the iteration cap or `maxDuration` is hit.
 
+### `target.title` templating (mitto-5qbo)
+
+Both prompt bodies AND `target.title` are Go text/templates rendered at dispatch time. `target.title` uses a **reduced context** (`prompts.PromptTargetContext`: only `.Args`, `.Session.BeadsIssue`, `.Workspace.Folder`) and a **stripped FuncMap** (`Arg`, `Default`, `Trim`, `Lower`, `Upper`, `Contains`, `HasPrefix`, `HasSuffix` — no `Cond`/`When`/`Model`/`HasBeads`, which require a full `PromptEnabledContext` not in scope at either dispatch entry point). Literal titles (no `{{`) hit a byte-for-byte fast path — every existing literal `target.title` is unaffected. Empty (or whitespace-only) renders are rejected pre-create so that templated titles like `"{{ .Args.IssueID }}: work"` can be combined with `reuseTitle: true` to funnel per-argument buckets (same `IssueID` → same conversation; different `IssueID` → distinct). See `docs/devel/prompt-templates.md §11a`.
+
 ## Merging & Caching
 
 `MergePrompts()` filters disabled; `MergePromptsKeepDisabled()` keeps `enabled:false` for dialogs. PromptsCache auto-refreshes `MITTO_DIR/prompts/` on changes.

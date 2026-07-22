@@ -168,7 +168,11 @@ func (h *Handlers) HandleCreateSession(w http.ResponseWriter, r *http.Request) {
 	// lookup key.
 	reuseTitleEvaluated := false
 	if !reuseIssueEvaluated && promptName != "" && h.deps.ResolvePromptTargetTitle != nil {
-		title, reuseTitle := h.deps.ResolvePromptTargetTitle(promptName, req.WorkingDir)
+		title, reuseTitle, terr := h.deps.ResolvePromptTargetTitle(promptName, req.WorkingDir, req.Arguments, req.BeadsIssue)
+		if terr != nil {
+			writeErrorJSON(w, http.StatusBadRequest, "invalid_prompt_target_title", terr.Error())
+			return
+		}
 		if reuseTitle && title != "" {
 			reuseTitleEvaluated = true
 			if req.Name != "" && req.Name != title && h.deps.Logger != nil {

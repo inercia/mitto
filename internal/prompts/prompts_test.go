@@ -1310,6 +1310,36 @@ func TestValidatePromptTarget(t *testing.T) {
 			t.Errorf("unexpected error: %v", err)
 		}
 	})
+
+	// mitto-5qbo: target.title supports Go text/template syntax.
+	// ValidatePromptTarget must parse-check templated titles at load time so
+	// broken frontmatter is rejected up-front (mirrors the body precompile).
+	t.Run("title with valid template syntax is accepted", func(t *testing.T) {
+		tgt := &PromptTarget{Title: "{{ .Args.IssueID }}: work", ReuseTitle: true}
+		if err := ValidatePromptTarget("p", tgt, false); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("title with invalid template syntax is rejected", func(t *testing.T) {
+		tgt := &PromptTarget{Title: "{{ .Args.X ", ReuseTitle: true}
+		err := ValidatePromptTarget("p", tgt, false)
+		if err == nil {
+			t.Fatal("expected parse error for unbalanced action, got nil")
+		}
+		if !strings.Contains(err.Error(), "p.target.title") {
+			t.Errorf("error should reference \"p.target.title\"; got %q", err.Error())
+		}
+	})
+
+	t.Run("literal title (no template syntax) skips template validation", func(t *testing.T) {
+		// A literal title that contains characters that would break as a
+		// template is fine because the fast-path skips parsing.
+		tgt := &PromptTarget{Title: "Weekly triage — Q3", ReuseTitle: true}
+		if err := ValidatePromptTarget("p", tgt, false); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
 }
 
 // ---- PromptParameter / Parameters field tests ----

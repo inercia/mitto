@@ -362,6 +362,80 @@ loop-runner handling is needed.
 
 ---
 
+## 11a. `target.title` templates (dispatch-time)
+
+`PromptTarget.Title` in prompt frontmatter is rendered as a Go text/template
+at dispatch time (mitto-5qbo). This lets one prompt define per-target
+conversation names — the canonical use case is a per-bead work
+conversation:
+
+```yaml
+target:
+  title: "{{ .Args.IssueID }}: work"
+  reuseTitle: true
+```
+
+Two dispatches with different `IssueID` open (or reuse) distinct
+conversations named `<id>: work`; a second dispatch with the same
+`IssueID` funnels into the first.
+
+### Reduced context
+
+Unlike prompt bodies, `target.title` receives a small dedicated context
+(`prompts.PromptTargetContext`) whose fields are all in scope at both
+dispatch entry points (MCP `mitto_conversation_new` and the web
+`POST /api/sessions` handler) — no cross-package plumbing:
+
+| Field | Source (MCP → web) | Purpose |
+|---|---|---|
+| `.Args` | `input.Arguments` → `req.Arguments` | Caller-supplied prompt arguments. Primary lever. |
+| `.Session.BeadsIssue` | `input.BeadsIssue` → `req.BeadsIssue` | Top-level linked bead ID for the new conversation. |
+| `.Workspace.Folder` | resolved working dir | Workspace disambiguation. |
+
+The full `PromptEnabledContext` (`.Session.ID`, `.ACP.*`, `.Children.*`,
+etc.) is **not** available here — those fields describe the caller/parent,
+not the new conversation, so they are usually the wrong answer for
+`target.title`.
+
+### Reduced FuncMap
+
+Only pure, side-effect-free helpers are registered: `Arg`, `Default`,
+`Trim`, `Lower`, `Upper`, `Contains`, `HasPrefix`, `HasSuffix`. Helpers
+that require a full `PromptEnabledContext` (`Cond`/`When`, `Session.*`,
+`Model`, `HasBeads`, etc.) are deliberately omitted — they would either
+silently render `""` on the reduced context or fail-close on missing
+dependencies.
+
+### Fast path & validation
+
+- **Fast path.** Titles without `{{` are returned byte-for-byte (no
+  parse, no allocation) — every existing literal `target.title` is
+  unaffected.
+- **Load-time.** `ValidatePromptTarget` (`internal/prompts/prompts.go`)
+  parse-checks templated titles when the prompt file is loaded, so a
+  broken template is rejected up-front and error-attributed to
+  `<prompt>.target.title`.
+- **Dispatch-time.** Parse/execution errors and empty (or whitespace-
+  only) renders are fail-closed rejections at both dispatch sites — no
+  session is created. An empty rendered title would otherwise silently
+  collide across callers when combined with `reuseTitle`.
+
+### Interaction with `reuseTitle`
+
+When `reuseTitle: true`, the **rendered** string becomes the lookup key
+in `session.FindConversationByTitle`. This is a semantics upgrade, not a
+break: literal titles funnel to one conversation as before; templated
+titles funnel per rendered value.
+
+### Out of scope (follow-ups)
+
+- `.Item.*` (per-row list-menu context — populated for `enabledWhen` but
+  not currently threaded to either dispatch site). Tracked separately.
+- `target.reuseIssue` message templates (not applicable — reuseIssue keys
+  on the bead ID directly).
+
+---
+
 ## 12. Impacted files / child-issue map
 
 | Bead | Scope | Key files |

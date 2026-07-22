@@ -12,6 +12,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/inercia/mitto/internal/config"
+	"github.com/inercia/mitto/internal/prompts"
 	"github.com/inercia/mitto/internal/session"
 )
 
@@ -216,6 +217,20 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 			promptTargetTitle = p.Target.Title
 			if p.Target.ReuseCoalesce != nil {
 				promptReuseCoalesce = *p.Target.ReuseCoalesce
+			}
+			// Render target.title as a Go text/template (mitto-5qbo). Fast-path
+			// passthrough for literal titles (no "{{"). Fail-closed on render or
+			// empty-output error — boundary rejection before the session is
+			// created, same shape as the prompt-not-found rejection above.
+			if promptTargetTitle != "" {
+				ctx := prompts.PromptTargetContext{Args: input.Arguments}
+				ctx.Session.BeadsIssue = input.BeadsIssue
+				ctx.Workspace.Folder = promptWorkingDir
+				rendered, rerr := prompts.RenderPromptTargetTitle(p.Name, promptTargetTitle, ctx)
+				if rerr != nil {
+					return nil, ConversationStartOutput{}, rerr
+				}
+				promptTargetTitle = rendered
 			}
 		}
 		// reuseTitle adopts target.title as the conversation's Name so a

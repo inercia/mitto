@@ -357,11 +357,11 @@ func TestTargetTitleE2E_WithoutReuseTitle_AdoptedAsDefaultName(t *testing.T) {
 	}
 	h.deps.ResolvePromptReuseIssue = func(string, string) bool { return false }
 	h.deps.ResolvePromptSingleton = func(string, string) bool { return false }
-	h.deps.ResolvePromptTargetTitle = func(promptName, wd string) (string, bool) {
+	h.deps.ResolvePromptTargetTitle = func(promptName, wd string, _ map[string]string, _ string) (string, bool, error) {
 		if promptName == "weekly-triage" && wd == workingDir {
-			return "Weekly triage", false // plain: title set, reuseTitle=false
+			return "Weekly triage", false, nil // plain: title set, reuseTitle=false
 		}
-		return "", false
+		return "", false, nil
 	}
 
 	w := postSession(t, h, SessionCreateRequest{
@@ -394,8 +394,8 @@ func TestTargetTitleE2E_WithoutReuseTitle_CallerNameWins(t *testing.T) {
 	}
 	h.deps.ResolvePromptReuseIssue = func(string, string) bool { return false }
 	h.deps.ResolvePromptSingleton = func(string, string) bool { return false }
-	h.deps.ResolvePromptTargetTitle = func(string, string) (string, bool) {
-		return "Weekly triage", false // plain
+	h.deps.ResolvePromptTargetTitle = func(string, string, map[string]string, string) (string, bool, error) {
+		return "Weekly triage", false, nil // plain
 	}
 
 	w := postSession(t, h, SessionCreateRequest{
@@ -409,3 +409,82 @@ func TestTargetTitleE2E_WithoutReuseTitle_CallerNameWins(t *testing.T) {
 		t.Errorf("effective req.Name at create = %q, want %q (caller-supplied Name must win over plain target.title default)", observedName, "caller wins")
 	}
 }
+
+// TestTargetTitleE2E_TemplateRendered_PassesArgsThrough pins mitto-5qbo on the
+// REST path: the resolver receives req.Arguments and req.BeadsIssue so it can
+// render a templated target.title before the reuseTitle lookup fires. This
+// test simulates a render outcome by observing the resolver inputs and
+// asserting the returned rendered title flows into the effective req.Name.
+func TestTargetTitleE2E_TemplateRendered_PassesArgsThrough(t *testing.T) {
+	const workingDir = "/work-templated-title"
+	_, h := newReuseE2EHandlers(t, workingDir)
+
+	var observedName string
+	h.deps.BroadcastACPStartFailed = func(_ string, name string, _ error, _ string) {
+		observedName = name
+	}
+	h.deps.ResolvePromptReuseIssue = func(string, string) bool { return false }
+	h.deps.ResolvePromptSingleton = func(string, string) bool { return false }
+
+	var gotArgs map[string]string
+	var gotBeadsIssue string
+	h.deps.ResolvePromptTargetTitle = func(promptName, wd string, args map[string]string, beadsIssue string) (string, bool, error) {
+		gotArgs = args
+		gotBeadsIssue = beadsIssue
+		// Simulate what the real resolver does after rendering
+		// "{{ .Args.IssueID }}: work" against the caller's arguments.
+		return args["IssueID"] + ": work", true, nil
+	}
+
+	w := postSession(t, h, SessionCreateRequest{
+		WorkingDir:       workingDir,
+		OriginPromptName: "bead-work",
+		Arguments:        map[string]string{"IssueID": "mitto-abc"},
+		BeadsIssue:       "mitto-abc",
+	})
+	assertNotReusedTo(t, decodeSessionResponse(t, w), "")
+
+	if gotArgs["IssueID"] != "mitto-abc" {
+		t.Errorf("resolver received args[IssueID]=%q, want %q", gotArgs["IssueID"], "mitto-abc")
+	}
+	if gotBeadsIssue != "mitto-abc" {
+		t.Errorf("resolver received beadsIssue=%q, want %q", gotBeadsIssue, "mitto-abc")
+	}
+	if observedName != "mitto-abc: work" {
+		t.Errorf("effective req.Name = %q, want %q (rendered target.title must flow into Name)", observedName, "mitto-abc: work")
+	}
+}
+
+// TestTargetTitleE2E_TemplateError_Rejects400 verifies that a resolver error
+// (broken template, empty render) surfaces as an HTTP 400 with a stable
+// error code, and NO session is created.
+func TestTargetTitleE2E_TemplateError_Rejects400(t *testing.T) {
+	const workingDir = "/work-templated-title-broken"
+	store, h := newReuseE2EHandlers(t, workingDir)
+
+	h.deps.ResolvePromptReuseIssue = func(string, string) bool { return false }
+	h.deps.ResolvePromptSingleton = func(string, string) bool { return false }
+	h.deps.ResolvePromptTargetTitle = func(string, string, map[string]string, string) (string, bool, error) {
+		return "", false, errFake{"target.title render error"}
+	}
+
+	before, _ := store.List()
+
+	w := postSession(t, h, SessionCreateRequest{
+		WorkingDir:       workingDir,
+		OriginPromptName: "bead-work",
+	})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected HTTP 400, got %d (body=%s)", w.Code, w.Body.String())
+	}
+	after, _ := store.List()
+	if len(after) != len(before) {
+		t.Errorf("expected no session created on resolver error; before=%d after=%d", len(before), len(after))
+	}
+}
+
+// errFake is a minimal error type for the resolver-error test above; using a
+// struct rather than errors.New keeps the imports small.
+type errFake struct{ s string }
+
+func (e errFake) Error() string { return e.s }

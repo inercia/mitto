@@ -453,3 +453,106 @@ func TestConversationStart_TargetTitle_WithoutReuseTitle_CallerTitleWins(t *test
 		t.Errorf("Created conversation Name = %q, want %q (caller Title must win over plain target.title default)", meta.Name, "caller wins")
 	}
 }
+
+// TestConversationStart_TargetTitle_TemplateRendered verifies mitto-5qbo: a
+// prompt whose target.title is a Go text/template renders against the
+// caller-supplied Arguments before it becomes the conversation Name and (with
+// reuseTitle: true) the FindConversationByTitle lookup key. Two dispatches
+// with different .Args.IssueID must open two distinct conversations named
+// "<id>: work"; a second dispatch with the same IssueID must funnel back.
+func TestConversationStart_TargetTitle_TemplateRendered(t *testing.T) {
+	store, srv, parentID := setupConversationStartServerWithPrompts(t, []config.WebPrompt{
+		{
+			Name:   "bead-work",
+			Prompt: "work on {{ .Args.IssueID }}",
+			Target: &prompts.PromptTarget{Title: "{{ .Args.IssueID }}: work", ReuseTitle: true},
+		},
+	})
+
+	ctx := context.Background()
+
+	// First: IssueID=abc → new conversation named "abc: work".
+	_, first, err := srv.handleConversationStart(ctx, nil, ConversationStartInput{
+		SelfID:     parentID,
+		PromptName: "bead-work",
+		Arguments:  map[string]string{"IssueID": "abc"},
+	})
+	if err != nil {
+		t.Fatalf("First call: unexpected error: %v", err)
+	}
+	if first.Reused {
+		t.Error("First call: expected reused=false")
+	}
+	meta1, err := store.GetMetadata(first.SessionID)
+	if err != nil {
+		t.Fatalf("GetMetadata(%q) error: %v", first.SessionID, err)
+	}
+	if meta1.Name != "abc: work" {
+		t.Errorf("First conversation Name = %q, want %q", meta1.Name, "abc: work")
+	}
+
+	// Second: IssueID=xyz → distinct new conversation named "xyz: work".
+	_, second, err := srv.handleConversationStart(ctx, nil, ConversationStartInput{
+		SelfID:     parentID,
+		PromptName: "bead-work",
+		Arguments:  map[string]string{"IssueID": "xyz"},
+	})
+	if err != nil {
+		t.Fatalf("Second call: unexpected error: %v", err)
+	}
+	if second.Reused {
+		t.Error("Second call: expected reused=false for a distinct IssueID")
+	}
+	if second.SessionID == first.SessionID {
+		t.Error("Second call: expected a distinct session ID for a different IssueID")
+	}
+
+	// Third: IssueID=abc again → must funnel back to the first conversation.
+	_, third, err := srv.handleConversationStart(ctx, nil, ConversationStartInput{
+		SelfID:     parentID,
+		PromptName: "bead-work",
+		Arguments:  map[string]string{"IssueID": "abc"},
+	})
+	if err != nil {
+		t.Fatalf("Third call: unexpected error: %v", err)
+	}
+	if !third.Reused {
+		t.Error("Third call: expected reused=true when IssueID matches the first dispatch")
+	}
+	if third.SessionID != first.SessionID {
+		t.Errorf("Third call: expected reuse of %q, got %q", first.SessionID, third.SessionID)
+	}
+}
+
+// TestConversationStart_TargetTitle_EmptyRenderRejected verifies mitto-5qbo:
+// when a templated target.title renders to empty (missing key), the dispatch
+// is rejected pre-create — no session is left behind and the caller gets a
+// clear error naming the prompt.
+func TestConversationStart_TargetTitle_EmptyRenderRejected(t *testing.T) {
+	store, srv, parentID := setupConversationStartServerWithPrompts(t, []config.WebPrompt{
+		{
+			Name:   "bead-work",
+			Prompt: "work",
+			Target: &prompts.PromptTarget{Title: "{{ .Args.MISSING }}", ReuseTitle: true},
+		},
+	})
+
+	before, _ := store.List()
+	ctx := context.Background()
+
+	_, _, err := srv.handleConversationStart(ctx, nil, ConversationStartInput{
+		SelfID:     parentID,
+		PromptName: "bead-work",
+		// No Arguments → .Args.MISSING renders to "" → rejection.
+	})
+	if err == nil {
+		t.Fatal("expected error for empty target.title render, got nil")
+	}
+	if !strings.Contains(err.Error(), "bead-work") {
+		t.Errorf("error should reference prompt name; got %q", err.Error())
+	}
+	after, _ := store.List()
+	if len(after) != len(before) {
+		t.Errorf("expected no session created on empty-render rejection; before=%d after=%d", len(before), len(after))
+	}
+}

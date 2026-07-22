@@ -206,6 +206,15 @@ func ValidatePromptTarget(promptName string, t *PromptTarget, promptSingleton bo
 	if t.ReuseCoalesce != nil && *t.ReuseCoalesce && !t.ReuseIssue && !t.ReuseTitle && !promptSingleton {
 		return fmt.Errorf("prompt %q: target.reuseCoalesce requires at least one reuse mode (target.reuseIssue, target.reuseTitle, or top-level singleton: true)", promptName)
 	}
+	// Validate target.title Go-template syntax at load time (mitto-5qbo).
+	// Fast-path no-op for literal titles (no "{{"); catches unbalanced actions
+	// or unknown funcs so a broken frontmatter is rejected at ParsePromptFile
+	// time rather than at dispatch. Mirrors the body precompile pass below.
+	if strings.TrimSpace(t.Title) != "" {
+		if err := ValidatePromptTemplateSyntax(promptName+".target.title", t.Title); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

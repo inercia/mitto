@@ -31,6 +31,7 @@ import (
 	"github.com/inercia/mitto/internal/mcpdiscovery"
 	"github.com/inercia/mitto/internal/mcpserver"
 	"github.com/inercia/mitto/internal/processors"
+	"github.com/inercia/mitto/internal/prompts"
 	"github.com/inercia/mitto/internal/session"
 	"github.com/inercia/mitto/internal/stats"
 	"github.com/inercia/mitto/internal/web/handlers"
@@ -1168,8 +1169,8 @@ func NewServer(config Config) (*Server, error) {
 		ResolvePromptReuseIssue: func(promptName, workingDir string) bool {
 			return s.resolveReuseIssueByPromptName(promptName, workingDir)
 		},
-		ResolvePromptTargetTitle: func(promptName, workingDir string) (string, bool) {
-			return s.resolvePromptTargetTitleByPromptName(promptName, workingDir)
+		ResolvePromptTargetTitle: func(promptName, workingDir string, args map[string]string, beadsIssue string) (string, bool, error) {
+			return s.resolvePromptTargetTitleByPromptName(promptName, workingDir, args, beadsIssue)
 		},
 		ResolvePromptReuseCoalesce: func(promptName, workingDir string) bool {
 			return s.resolveReuseCoalesceByPromptName(promptName, workingDir)
@@ -2820,10 +2821,13 @@ func (s *Server) resolveReuseIssueByPromptName(promptName, workingDir string) bo
 }
 
 // resolvePromptTargetTitleByPromptName resolves a prompt name to its
-// target.title and target.reuseTitle fields. Uses the same resolution
-// pipeline as resolveSingletonByPromptName / resolveReuseIssueByPromptName.
-// Returns ("", false) when the prompt is not found or has no target block.
-func (s *Server) resolvePromptTargetTitleByPromptName(promptName, workingDir string) (string, bool) {
+// target.title (rendered as a Go text/template against args + beadsIssue +
+// workingDir, mitto-5qbo) and target.reuseTitle fields. Uses the same
+// resolution pipeline as resolveSingletonByPromptName /
+// resolveReuseIssueByPromptName. Returns ("", false, nil) when the prompt
+// is not found or has no target block. Returns ("", false, err) on template
+// render or empty-output error so the HTTP handler can reject the create.
+func (s *Server) resolvePromptTargetTitleByPromptName(promptName, workingDir string, args map[string]string, beadsIssue string) (string, bool, error) {
 	// 1. Global file prompts
 	var globalFilePrompts []configPkg.WebPrompt
 	if s.config.PromptsCache != nil {
@@ -2898,12 +2902,23 @@ func (s *Server) resolvePromptTargetTitleByPromptName(promptName, workingDir str
 	for _, p := range merged {
 		if strings.EqualFold(p.Name, promptName) {
 			if p.Target == nil {
-				return "", false
+				return "", false, nil
 			}
-			return p.Target.Title, p.Target.ReuseTitle
+			title := p.Target.Title
+			if title != "" {
+				ctx := prompts.PromptTargetContext{Args: args}
+				ctx.Session.BeadsIssue = beadsIssue
+				ctx.Workspace.Folder = workingDir
+				rendered, err := prompts.RenderPromptTargetTitle(p.Name, title, ctx)
+				if err != nil {
+					return "", false, err
+				}
+				title = rendered
+			}
+			return title, p.Target.ReuseTitle, nil
 		}
 	}
-	return "", false
+	return "", false, nil
 }
 
 // resolveReuseCoalesceByPromptName resolves a prompt name to whether its
