@@ -2448,6 +2448,74 @@ func TestBuiltinPrompts_NoSingletonRemains(t *testing.T) {
 	}
 }
 
+// TestBuiltinPrompts_SupportRoutingAdoption pins mitto-5x21.1: the five
+// today-tier support-* builtin prompts must declare target/reuse routing so
+// repeat dispatches funnel back into the right existing conversation instead
+// of spawning parallels. Four per-ticket prompts route by beads issue
+// (target.reuseIssue: true), and the workspace-wide housekeeping prompt
+// routes by literal title (target.title: "Support: housekeeping" +
+// target.reuseTitle: true). All five must set target.reuseCoalesce: true so
+// concurrent dispatches join instead of racing.
+//
+// Guards against silent regressions like: (a) somebody removing a target
+// block from one of these files, (b) reuseCoalesce being flipped off, (c)
+// the housekeeping literal title drifting away from the fixed workspace-wide
+// value. Machinery for the target block itself is exercised by
+// TestValidatePromptTarget and the reuse tests under internal/session and
+// internal/web/handlers.
+func TestBuiltinPrompts_SupportRoutingAdoption(t *testing.T) {
+	builtinDir := filepath.Join("..", "..", "config", "prompts", "builtin")
+	type spec struct {
+		file          string
+		wantReuseByID bool   // target.reuseIssue: true
+		wantTitle     string // literal target.title (only when reuseByID is false)
+	}
+	specs := []spec{
+		{file: "support-check-status.prompt.yaml", wantReuseByID: true},
+		{file: "support-gather-info.prompt.yaml", wantReuseByID: true},
+		{file: "support-investigate.prompt.yaml", wantReuseByID: true},
+		{file: "support-reply-to-user.prompt.yaml", wantReuseByID: true},
+		{file: "support-housekeeping.prompt.yaml", wantTitle: "Support: housekeeping"},
+	}
+	for _, s := range specs {
+		t.Run(s.file, func(t *testing.T) {
+			path := filepath.Join(builtinDir, s.file)
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Skipf("prompt file not found at %s: %v", path, err)
+			}
+			prompt, err := ParsePromptFile(s.file, data, time.Now())
+			if err != nil {
+				t.Fatalf("ParsePromptFile(%s): %v", s.file, err)
+			}
+			if prompt.Target == nil {
+				t.Fatalf("%s: Target = nil, want non-nil target/reuse routing (mitto-5x21.1)", s.file)
+			}
+			if prompt.Target.ReuseCoalesce == nil || !*prompt.Target.ReuseCoalesce {
+				t.Errorf("%s: Target.ReuseCoalesce = %v, want true (concurrent dispatches must join, not race)", s.file, prompt.Target.ReuseCoalesce)
+			}
+			if s.wantReuseByID {
+				if !prompt.Target.ReuseIssue {
+					t.Errorf("%s: Target.ReuseIssue = false, want true (per-ticket support prompt)", s.file)
+				}
+				if prompt.Target.ReuseTitle {
+					t.Errorf("%s: Target.ReuseTitle = true, want false (per-ticket routes by beads issue, not title)", s.file)
+				}
+			} else {
+				if !prompt.Target.ReuseTitle {
+					t.Errorf("%s: Target.ReuseTitle = false, want true (workspace-wide singleton routes by title)", s.file)
+				}
+				if prompt.Target.ReuseIssue {
+					t.Errorf("%s: Target.ReuseIssue = true, want false (workspace-wide singleton routes by title, not per-issue)", s.file)
+				}
+				if prompt.Target.Title != s.wantTitle {
+					t.Errorf("%s: Target.Title = %q, want %q (literal workspace-wide title)", s.file, prompt.Target.Title, s.wantTitle)
+				}
+			}
+		})
+	}
+}
+
 // TestBuiltinPrompts_EnabledWhenCompiles CEL-compiles every non-empty enabledWhen
 // on the shipped builtin prompts. TestBuiltinPromptsParseClean only YAML-parses
 // them, so an undeclared identifier/function in a builtin's enabledWhen would slip
