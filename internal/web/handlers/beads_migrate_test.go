@@ -54,14 +54,17 @@ func (c *migrateStubClient) Bootstrap(_ context.Context, dir string) ([]byte, er
 	return out, nil
 }
 
-// newBeadsMigrateHandlers wires a Handlers with an opt-in MittoConfig
-// (allow_migrate_from_ui=true unless disabled), the standard test workspace,
-// and the given migrateStubClient.
+// newBeadsMigrateHandlers wires a Handlers with a tri-state MittoConfig
+// governing the beads-migration kill-switch. The migration path is enabled
+// by default (mitto-erry): pass allow=true for the default-on path (no
+// beads config block), or false to install an explicit kill-switch
+// (Web.Beads.AllowMigrateFromUI == &false).
 func newBeadsMigrateHandlers(t *testing.T, c beads.Client, allow bool) *Handlers {
 	t.Helper()
 	cfg := &config.Config{}
-	if allow {
-		cfg.Web.Beads = &config.WebBeadsConfig{AllowMigrateFromUI: true}
+	if !allow {
+		f := false
+		cfg.Web.Beads = &config.WebBeadsConfig{AllowMigrateFromUI: &f}
 	}
 	return New(Deps{
 		SessionManager: newBeadsTestSM(),
@@ -94,7 +97,12 @@ func TestHandleBeadsMigrate_MethodNotAllowed(t *testing.T) {
 	}
 }
 
-func TestHandleBeadsMigrate_FlagOff_Forbidden(t *testing.T) {
+// TestHandleBeadsMigrate_KillSwitch_Forbidden verifies that explicitly
+// setting web.beads.allow_migrate_from_ui to false honours the admin
+// kill-switch: bd is not invoked and the response cites the flag by name so
+// the frontend can render the disabled-by-admin banner. Post-mitto-erry the
+// default is on, so this test covers the explicit-off path.
+func TestHandleBeadsMigrate_KillSwitch_Forbidden(t *testing.T) {
 	stub := &migrateStubClient{}
 	h := newBeadsMigrateHandlers(t, stub, false)
 	req := postJSON(t, "/api/beads/migrate", map[string]string{
@@ -107,10 +115,60 @@ func TestHandleBeadsMigrate_FlagOff_Forbidden(t *testing.T) {
 		t.Errorf("status = %d, want %d", w.Code, http.StatusForbidden)
 	}
 	if stub.migrateCalls.Load() != 0 {
-		t.Errorf("MigrateRemote called %d times, want 0 (flag off must gate bd)", stub.migrateCalls.Load())
+		t.Errorf("MigrateRemote called %d times, want 0 (kill-switch must gate bd)", stub.migrateCalls.Load())
 	}
 	if !strings.Contains(w.Body.String(), "allow_migrate_from_ui") {
 		t.Errorf("response body missing config-flag hint: %s", w.Body.String())
+	}
+}
+
+// TestHandleBeadsMigrate_DefaultOn_Allowed verifies the mitto-erry default:
+// with no MittoConfig set (or with a MittoConfig whose Web.Beads block is
+// unset), the migration endpoint is reachable without any opt-in flag. The
+// SchemaSkewDialog collects the consent; the flag is a kill-switch only.
+func TestHandleBeadsMigrate_DefaultOn_Allowed(t *testing.T) {
+	stub := &migrateStubClient{}
+	// allow=true here installs no beads config block, exercising the
+	// "unset → default on" path (nil MittoConfig.Web.Beads).
+	h := newBeadsMigrateHandlers(t, stub, true)
+	req := postJSON(t, "/api/beads/migrate", map[string]string{
+		"working_dir": "/test/workspace",
+		"mode":        "migrate",
+	})
+	w := httptest.NewRecorder()
+	h.HandleBeadsMigrate(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body: %s)", w.Code, http.StatusOK, w.Body.String())
+	}
+	if stub.migrateCalls.Load() != 1 {
+		t.Errorf("MigrateRemote called %d times, want 1 (default-on must reach bd)", stub.migrateCalls.Load())
+	}
+}
+
+// TestHandleBeadsMigrate_ExplicitTrue_Allowed verifies parity between the
+// nil (default-on) and *true (explicit-on) config states — an admin who
+// spells out the flag as true gets the same behaviour as leaving it unset.
+func TestHandleBeadsMigrate_ExplicitTrue_Allowed(t *testing.T) {
+	stub := &migrateStubClient{}
+	cfg := &config.Config{}
+	tr := true
+	cfg.Web.Beads = &config.WebBeadsConfig{AllowMigrateFromUI: &tr}
+	h := New(Deps{
+		SessionManager: newBeadsTestSM(),
+		BeadsClient:    stub,
+		MittoConfig:    cfg,
+	})
+	req := postJSON(t, "/api/beads/migrate", map[string]string{
+		"working_dir": "/test/workspace",
+		"mode":        "migrate",
+	})
+	w := httptest.NewRecorder()
+	h.HandleBeadsMigrate(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body: %s)", w.Code, http.StatusOK, w.Body.String())
+	}
+	if stub.migrateCalls.Load() != 1 {
+		t.Errorf("MigrateRemote called %d times, want 1 (explicit-true must reach bd)", stub.migrateCalls.Load())
 	}
 }
 

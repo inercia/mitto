@@ -990,7 +990,7 @@ function SchemaSkewDialog({
     setIsRunning(true);
     setErrorMsg("");
     try {
-      const res = await authFetch(endpoints.beads.migrate(), {
+      const res = await secureFetch(endpoints.beads.migrate(), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ working_dir: workingDir, mode }),
@@ -999,7 +999,7 @@ function SchemaSkewDialog({
       if (!res.ok || data.error) {
         if (data.code === "migrate_from_ui_disabled") {
           setErrorMsg(
-            "Running migrations from the UI is disabled in this instance's settings. Ask an administrator to enable `web.beads.allow_migrate_from_ui`, or run the migration from a terminal on the designated clone.",
+            "UI-initiated beads migrations have been disabled by the administrator on this Mitto instance (web.beads.allow_migrate_from_ui: false). Run the migration from a terminal on the designated clone.",
           );
         } else {
           setErrorMsg(
@@ -1073,16 +1073,11 @@ function SchemaSkewDialog({
             )}
           </div>
         `}
-        <div
-          class="text-xs text-amber-400 border border-amber-500 bg-amber-500/10 rounded p-2"
-        >
-          For remote-backed databases the migration must be run on exactly one
-          designated clone. Independent migrations on separate clones fork the
-          schema (upstream bug #4259).
-        </div>
         ${mode === "migrate" &&
         html`
-          <label class="flex items-start gap-3 cursor-pointer select-none">
+          <label
+            class="flex items-start gap-3 cursor-pointer select-none text-amber-400 border border-amber-500 bg-amber-500/10 rounded p-2"
+          >
             <input
               type="checkbox"
               checked=${ackChecked}
@@ -1091,8 +1086,10 @@ function SchemaSkewDialog({
               class="checkbox checkbox-sm mt-0.5"
               data-testid="schema-skew-ack-checkbox"
             />
-            <span class="text-sm text-mitto-text-secondary">
-              I understand this is the designated migrator clone.
+            <span class="text-xs">
+              I understand this is the designated migrator clone for this
+              remote-backed database. Running migrate on any other clone will
+              fork the schema (upstream bug #4259).
             </span>
           </label>
         `}

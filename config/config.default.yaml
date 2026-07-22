@@ -205,13 +205,16 @@ web:
 
   # Beads (issue tracker) endpoint configuration
   # beads:
-  #   # Opt in to the POST /api/beads/migrate endpoint that runs
+  #   # Admin kill-switch for the POST /api/beads/migrate endpoint that runs
   #   # `BD_ALLOW_REMOTE_MIGRATE=1 bd migrate schema && bd dolt push` (or
   #   # `bd bootstrap`) from the Beads panel when a schema-skew is detected.
-  #   # Default: false. Enable only on the designated migrator clone of a
-  #   # remote-backed beads database — running migrate on a non-designated
-  #   # clone forks the schema. See mitto-ukl.
-  #   allow_migrate_from_ui: false
+  #   # Default: true (enabled). The SchemaSkewDialog collects informed
+  #   # consent (mode radio + ack checkbox) before invoking the endpoint, so
+  #   # the common case just works. Set to false to hard-disable UI-driven
+  #   # migrations for multi-user deployments against a shared remote-backed
+  #   # clone where forking the schema is unacceptable. See mitto-ukl,
+  #   # mitto-erry.
+  #   allow_migrate_from_ui: true
 
   # Scanner Defense (only applies to external listener)
   # Automatically blocks IPs that exhibit scanner-like behavior:

@@ -339,11 +339,44 @@ func TestHandleBeadsList_SchemaSkew(t *testing.T) {
 	if got, want := env.Error.Details["db_path"], "/Users/test/.beads-planning"; got != want {
 		t.Errorf("error.details.db_path = %v, want %q", got, want)
 	}
-	// allow_migrate_from_ui is false by default (no MittoConfig set on the
-	// vanilla test server), so the frontend should render the informational
-	// banner without offering the confirm-and-run migration button.
-	if got, ok := env.Error.Details["allow_migrate_from_ui"].(bool); !ok || got {
-		t.Errorf("details.allow_migrate_from_ui = %v (ok=%v), want false", got, ok)
+	// allow_migrate_from_ui is true by default post-mitto-erry (no MittoConfig
+	// set on the vanilla test server → tri-state default-on), so the frontend
+	// can offer the confirm-and-run migration button.
+	if got, ok := env.Error.Details["allow_migrate_from_ui"].(bool); !ok || !got {
+		t.Errorf("details.allow_migrate_from_ui = %v (ok=%v), want true (default-on)", got, ok)
+	}
+}
+
+// TestHandleBeadsList_SchemaSkew_KillSwitch covers the admin kill-switch
+// (mitto-erry): with web.beads.allow_migrate_from_ui explicitly false, the
+// capabilities envelope surfaces the disabled state so the frontend can
+// render the "disabled by administrator" branch instead of the confirm-and-
+// run button.
+func TestHandleBeadsList_SchemaSkew_KillSwitch(t *testing.T) {
+	deps := Deps{SessionManager: newBeadsTestSM(), BeadsClient: &schemaSkewClient{}}
+	deps.MittoConfig = &config.Config{}
+	f := false
+	deps.MittoConfig.Web.Beads = &config.WebBeadsConfig{AllowMigrateFromUI: &f}
+	s := New(deps)
+
+	req := localhostRequest("/api/issues?working_dir=/test/workspace")
+	w := httptest.NewRecorder()
+	s.handleBeadsList(w, req)
+
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusConflict)
+	}
+	var env struct {
+		Error struct {
+			Code    string         `json:"code"`
+			Details map[string]any `json:"details"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&env); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	if allow, ok := env.Error.Details["allow_migrate_from_ui"].(bool); !ok || allow {
+		t.Errorf("details.allow_migrate_from_ui = %v (ok=%v), want false when kill-switch is set", allow, ok)
 	}
 }
 
@@ -353,7 +386,8 @@ func TestHandleBeadsList_SchemaSkew(t *testing.T) {
 func TestHandleBeadsList_SchemaSkew_JSONBlob(t *testing.T) {
 	deps := Deps{SessionManager: newBeadsTestSM(), BeadsClient: &schemaSkewJSONClient{}}
 	deps.MittoConfig = &config.Config{}
-	deps.MittoConfig.Web.Beads = &config.WebBeadsConfig{AllowMigrateFromUI: true}
+	tr := true
+	deps.MittoConfig.Web.Beads = &config.WebBeadsConfig{AllowMigrateFromUI: &tr}
 	s := New(deps)
 
 	req := localhostRequest("/api/issues?working_dir=/test/workspace")

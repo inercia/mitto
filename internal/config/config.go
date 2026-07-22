@@ -614,16 +614,17 @@ type WebConfig struct {
 
 // WebBeadsConfig gates optional behaviour on the beads (issues) endpoints.
 // Kept as a nested pointer so unset config leaves every flag at its safe
-// default (false) without ambiguity between "not configured" and "explicitly
-// disabled".
+// default without ambiguity between "not configured" and "explicitly set".
 type WebBeadsConfig struct {
-	// AllowMigrateFromUI opts in to the POST /api/beads/migrate endpoint
-	// that can trigger `bd migrate schema` + `bd dolt push` (or `bd bootstrap`)
-	// from the Beads panel when a schema-skew error is detected. Defaults to
-	// false because running migrate on the wrong clone of a remote-backed
-	// database forks the schema — the safe default is to require the user
-	// to opt in explicitly in settings.
-	AllowMigrateFromUI bool `json:"allow_migrate_from_ui,omitempty" yaml:"allow_migrate_from_ui,omitempty"`
+	// AllowMigrateFromUI controls the POST /api/beads/migrate endpoint that
+	// can trigger `bd migrate schema` + `bd dolt push` (or `bd bootstrap`)
+	// from the Beads panel when a schema-skew error is detected. Tri-state:
+	// nil == default (allowed); *true == allowed (explicit); *false ==
+	// admin kill-switch (disabled). The dialog itself already requires an
+	// ack checkbox before running, so the default is on; admins deploying
+	// Mitto against a shared remote-backed clone can set this to false to
+	// forbid UI-initiated migrations entirely. See mitto-erry.
+	AllowMigrateFromUI *bool `json:"allow_migrate_from_ui,omitempty" yaml:"allow_migrate_from_ui,omitempty"`
 }
 
 // AccessLogConfig represents access log configuration.
@@ -1323,7 +1324,7 @@ type rawConfig struct {
 			MaxWSMessageSize int64    `yaml:"max_ws_message_size"`
 		} `yaml:"security"`
 		Beads *struct {
-			AllowMigrateFromUI bool `yaml:"allow_migrate_from_ui"`
+			AllowMigrateFromUI *bool `yaml:"allow_migrate_from_ui"`
 		} `yaml:"beads"`
 	} `yaml:"web"`
 	UI *struct {

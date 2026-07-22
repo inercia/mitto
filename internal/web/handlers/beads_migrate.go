@@ -40,9 +40,11 @@ type migrateResponse struct {
 // HandleBeadsMigrate handles POST /api/beads/migrate. It runs a bd schema
 // migration or bootstrap on behalf of the user when the Beads panel surfaces
 // a beads_schema_skew error, so the user does not have to leave Mitto for
-// the fix. Guarded by the web.beads.allow_migrate_from_ui config flag (off
-// by default) — running migrate on the wrong clone of a remote-backed DB
-// forks the schema, so opting in is intentionally explicit.
+// the fix. Enabled by default; the SchemaSkewDialog collects informed
+// consent (mode radio + ack checkbox) before this endpoint is called. Admins
+// can set web.beads.allow_migrate_from_ui: false as a kill-switch to
+// forbid UI-initiated migrations (e.g. shared clones of a remote-backed DB
+// where forking the schema is unacceptable). See mitto-erry.
 func (h *Handlers) HandleBeadsMigrate(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		methodNotAllowed(w)
@@ -51,7 +53,7 @@ func (h *Handlers) HandleBeadsMigrate(w http.ResponseWriter, r *http.Request) {
 
 	if !h.beadsMigrationAllowed() {
 		writeErrorJSON(w, http.StatusForbidden, errCodeForbidden,
-			"Beads migration from the UI is disabled. Enable web.beads.allow_migrate_from_ui in settings to opt in.")
+			"Beads migration from the UI has been disabled by the administrator (web.beads.allow_migrate_from_ui=false). Run the migration from a terminal on the designated clone.")
 		return
 	}
 
@@ -131,14 +133,18 @@ func (h *Handlers) HandleBeadsMigrate(w http.ResponseWriter, r *http.Request) {
 }
 
 // beadsMigrationAllowed reports whether the UI-initiated migration path is
-// enabled via config. Nil-guards every step so a partially-configured Mitto
-// (no MittoConfig, no Web.Beads block) safely reports "disabled".
+// enabled via config. Tri-state: nil MittoConfig / nil Web.Beads / nil
+// AllowMigrateFromUI all mean "allowed" (default on); only an explicit
+// *false acts as an admin kill-switch. See mitto-erry.
 func (h *Handlers) beadsMigrationAllowed() bool {
 	if h.deps.MittoConfig == nil {
-		return false
+		return true
 	}
 	if h.deps.MittoConfig.Web.Beads == nil {
-		return false
+		return true
 	}
-	return h.deps.MittoConfig.Web.Beads.AllowMigrateFromUI
+	if h.deps.MittoConfig.Web.Beads.AllowMigrateFromUI == nil {
+		return true
+	}
+	return *h.deps.MittoConfig.Web.Beads.AllowMigrateFromUI
 }
