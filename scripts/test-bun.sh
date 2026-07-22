@@ -31,6 +31,7 @@ CLEAN=(
   ./web/static/components/SlashCommandPicker.test.js
   ./web/static/utils/native.test.js
   ./web/static/utils/phaseState.test.js
+  ./web/static/utils/prompts.test.js
   ./web/static/utils/sessionGrouping.test.js
   ./web/static/utils/sessionTree.test.js
 )
