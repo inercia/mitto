@@ -336,6 +336,12 @@ prompt: |-
 
   ### 4. Gather info + draft — proactively, in parallel children (only if the playbook exists)
 
+  > ⚠️ **This step is ACTION, not description.** A `triaged` (or `awaiting-us`) bead that reaches
+  > Step 5 with no investigation spawned, no existing child covering it, and no explicit "over the
+  > 3-cap — deferred" note is a **bug in this run**, not a "next action" for the human. Never write a
+  > summary that reports investigable beads as pending work; the whole point of Step 4 is to have
+  > **already acted** on them by the time you print Step 5.
+
   Do **not** investigate every bead inline this run — that serialises the work and can blow the
   run's time budget. Instead, **delegate each investigable bead to its own child conversation** so
   they run **in parallel**, each executing the canonical **"Support: investigate"** prompt (which
@@ -346,14 +352,23 @@ prompt: |-
     `awaiting-customer` / `resolved` / `stale`), it has a usable `slack_channel` + `slack_thread_ts`,
     and there is no open child already working it (see dedup below). Skip anything already
     `state:gathering-info` or `state:drafting` — it is in progress or waiting on you.
+  - **Enumerate first, then act.** Before spawning anything, build (mentally or in a scratch note)
+    the **explicit list of investigable beads** for this run — every open bead in `state:triaged` or
+    `state:awaiting-us` from Step 3, sorted highest-priority / oldest first. This list is the input
+    to the spawn loop below; Step 5's what's-next table must be able to account for **every** bead on
+    it with a concrete disposition (`spawned`, `already covered by <child-id>`, or `deferred: over
+    3-cap`). If the list is empty, say so explicitly — do not silently skip.
   {{- if .Permissions.CanStartConversation }}
 
-  - **Spawn one child per investigable bead (parallel).** Cap at **3 spawns per run** (highest
-    priority / oldest first). Before spawning, **dedup against `{{ .Children.MCPText }}`**: skip any
-    bead whose ID already appears in an existing child's title — never spawn a second investigation
-    for the same bead. For each selected bead `<id>` spawn (do **not** pre-set the state here — the
-    child's own Step 2 owns the `state:gathering-info` transition, so setting it now would produce a
-    redundant no-op `gathering-info → gathering-info` swap in the child):
+  - **Spawn one child per investigable bead (parallel) — MANDATORY.** Cap at **3 spawns per run**
+    (highest priority / oldest first). Before spawning, **dedup against `{{ .Children.MCPText }}`**:
+    skip any bead whose ID already appears in an existing child's title — never spawn a second
+    investigation for the same bead. For **every remaining** investigable bead up to the cap, you
+    **MUST** issue the spawn call **this run** — do not defer it to the next iteration, do not
+    describe it as "ready for investigation", do not list it under "next actions". For each selected
+    bead `<id>` spawn (do **not** pre-set the state here — the child's own Step 2 owns the
+    `state:gathering-info` transition, so setting it now would produce a redundant no-op
+    `gathering-info → gathering-info` swap in the child):
     ```
     mitto_conversation_new(
       self_id: "{{ .Session.ID }}",
@@ -369,9 +384,21 @@ prompt: |-
     they report their own results on the bead and via their own notifications. This run continues to
     its summary while investigations proceed in the background; the next iteration's Step 3 reconcile
     will pick up their `state:drafting` / `need-info` outcomes.
-  - **Beyond the cap / already in flight.** Investigable beads not spawned this run (over the 3-cap,
-    or already covered by an existing child) are left as-is for the next iteration — do **not**
-    investigate them inline.
+  - **Beyond the cap / already in flight.** Investigable beads not spawned this run — **only**
+    because they are over the 3-cap, or already covered by an existing child — are left as-is for the
+    next iteration; do **not** investigate them inline. Record each such bead with its explicit
+    reason (`deferred: over 3-cap (rank #4)` or `already covered by <child-id>`) so Step 5 can tag it
+    correctly.
+  - **Pre-Step-5 disposition gate — check before writing the summary.** For **every** bead on your
+    investigable list, you must be able to state one of exactly these outcomes for **this run**:
+    - `spawned <child-id>` — a fresh `mitto_conversation_new` call landed this run, or
+    - `already covered by <child-id>` — an open, non-idle child from `{{ .Children.MCPText }}` is
+      already investigating this bead, or
+    - `deferred: over 3-cap` — the bead ranked below the top 3 by priority/age (record its rank).
+
+    If **any** investigable bead has none of these dispositions, you have **not** executed Step 4 —
+    go back and spawn now (respecting the cap). Only once every investigable bead carries one of the
+    three tags may you move to Step 5.
   {{- else }}
 
   - **Child spawning is unavailable** (the *Can start conversation* permission is off), so fall back
@@ -380,9 +407,9 @@ prompt: |-
     **`.mitto/slack-support-{{ $channel }}.md`** to gather the answer, record a **proposed reply** as
     an `[OUTBOUND]`-style *draft* comment (clearly marked "DRAFT — not yet posted", the reply text
     **enclosed in the `--- BEGIN REPLY ---` / `--- END REPLY ---` block** — see the Beads tracking
-    model) and set `state:drafting`. Leave the rest for subsequent iterations. If you learn a reusable
-    pattern,
-    append it to the playbook (see the channel playbook gate).
+    model) and set `state:drafting`. Leave the rest for subsequent iterations, tagging each as
+    `deferred: no-spawn-permission` for Step 5. If you learn a reusable pattern, append it to the
+    playbook (see the channel playbook gate).
   {{- end }}
 
   - If a bead genuinely cannot be answered without more detail from the customer, set `state:need-info`
@@ -421,17 +448,37 @@ prompt: |-
     from its `slack_thread_ts` (`{{ $ws }}/archives/{{ $channel }}/p<ts_without_dot>`). Only fall back
     to plain text if neither is available.
 
-    Render it as (note the **full** IDs with the project prefix and the linked what's-next cell):
+    **`triaged` rows must carry their Step-4 disposition** so "Needs investigation" is never printed
+    as a bare "someone should look at this". Append the disposition tag from the Step-4 gate — in
+    parentheses, after the link — using this exact vocabulary:
+    - `(— investigating: spawned <child-id>)` — a fresh child was spawned **this run**;
+    - `(— being investigated by <child-id>)` — an existing child is already working it;
+    - `(— queued: over 3-cap, rank #<n>)` — deferred to next iteration by the priority cap;
+    - `(— queued: no-spawn-permission)` — only when `Can start conversation` is off and this bead
+      wasn't the single inline pick.
+
+    If a `triaged` row has none of these dispositions, Step 4 was not executed for that bead — go
+    back to Step 4 and act before printing the summary.
+
+    Render it as (note the **full** IDs, the linked what's-next cell, and the `triaged` disposition
+    tags):
     ```markdown
     | Bead | State | What's next |
     |------|-------|-------------|
     | mitto-u2i | drafting | [Ready to reply to user](https://acme.slack.com/archives/C02JYLD3FFU/p1770802214391359) |
     | mitto-9e3 | need-info | [Needs more info from user](https://acme.slack.com/archives/C02JYLD3FFU/p1770891133552019) |
+    | mitto-5ce | triaged | [Needs investigation](https://acme.slack.com/archives/C02JYLD3FFU/p1770912223441201) (— investigating: spawned 20260721-…-abcd) |
+    | mitto-v22 | triaged | [Needs investigation](https://acme.slack.com/archives/C02JYLD3FFU/p1770913001772440) (— queued: over 3-cap, rank #4) |
     ```
   - Then send a `mitto_ui_notify` summarizing the run: new questions triaged, beads updated, how many
     **investigations were spawned** (and for which beads), and how many beads are `drafting` (ready
     for your review) vs `need-info` vs `awaiting-customer`. On silent runs keep the notify concise but
     **still print the what's-next table** in the run output.
+  - **Never list an investigable bead under a "next actions" / "recommendations" section as work
+    still to do** — by the time you write Step 5 you have either spawned it, confirmed an existing
+    child is on it, or deferred it over the 3-cap (all captured inline on the bead's row). The only
+    genuine human next actions in this summary are: (a) reviewing beads now in `drafting`, and
+    (b) responding to beads in `awaiting-us`.
 
   ## Notes
 

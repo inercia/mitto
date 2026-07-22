@@ -20,23 +20,18 @@ group: Tasks
 enabledWhen: '!Session.IsChild && CommandExists("bd") && DirExists(".beads") && Permissions.CanStartConversation'
 loop:
   trigger: onTasks
-  condition: ""            # Any beads change wakes us; Step 2 filters to what is actually actionable
-  # Opt in to per-event re-fire (mitto-dmb): if beads change during a pass
-  # (either from our own worker's writes or from the human editing beads
-  # alongside us), fire once more at quiescence with the accumulated delta
-  # exposed as .Trigger.OnTasks.* so priority-A comments and freshly-arrived
-  # bugs/features get picked up promptly instead of waiting for another
-  # external change. Layer 0 (cooldown), the condition, and the busy-guard
-  # still bound the re-fire rate.
-  coalesceDuringBusy: false
-  # Each pass is a stateless dispatcher: Steps 2P/2Z/2A/2B/2C re-enumerate
-  # beads live from `bd list` / `bd comments` and the seed re-renders
-  # `.Children.MCPText` and `.Trigger.OnTasks.*` from scratch. Cross-pass ACP
-  # memory only accumulates stale bead JSON, biases the model toward repeating
-  # prior "at cap / skip" reasoning (feeding the tasksNoProgressLimit=3 false
-  # positive), and inflates token cost. Start each fire with a clean agent
-  # context; the per-pass session/new cost is negligible against 1 MCP server.
-  freshContext: true
+  # This is a standing supervisor — it must never stop on its own. maxIterations: 0
+  # disables the per-prompt iteration cap; maxDuration: 0 disables the wall-clock cap.
+  # Termination is only appropriate on real degrade paths (Step 7: flags missing / spawn
+  # errors), where the runner explicitly stops with reason=needs-human — NOT on hitting
+  # an arbitrary iteration count.
+  maxIterations: 0
+  maxDuration: 0
+  # onTasks only fires on beads changes, so a Mitto restart would leave the supervisor
+  # dormant until the next external task change. runOnStart fires the loop exactly once
+  # shortly after Mitto boots (with a 60s anti-flap window guarding against a fast
+  # restart of a healthy loop) so the supervisor picks up work immediately.
+  runOnStart: true
 prompt: |
   ## Session Context
 
@@ -699,4 +694,3 @@ prompt: |
     (spawn, timeout, completion+archive, fallback back-reference, defer, undefer).
   - **No `Item.*`.** `beadsList` prompt — all targeting comes from Step 2's live
     enumeration.
-

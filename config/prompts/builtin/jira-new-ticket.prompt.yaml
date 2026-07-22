@@ -39,13 +39,34 @@ prompt: |
 
   ## Step 1 — Determine ticket source
 
-  First, check the conversation history for meaningful prior work context (investigation, debugging, feature discussion, research findings, etc.).
+  {{- if .Session.HasMessages }}
+  This conversation has prior context — the user has been working on something
+  (investigation, debugging, feature discussion, research findings, etc.). By
+  default the new ticket should be **about that prior work**; confirm with the
+  user so they can override if the new ticket is actually unrelated.
 
-  - If the conversation contains **prior work context**: use `mitto_ui_options(self_id: "{{ .Session.ID }}")` to ask: "What should the new ticket be about?" with the following options:
-    - "Based on what we've been working on" (with a short description of the detected topic, e.g., "Based on what we've been working on — the auth timeout bug in the login flow")
-    - "Something entirely new — I'll describe it"
+  Use `mitto_ui_options(self_id: "{{ .Session.ID }}")` to ask "What should the
+  new ticket be about?" with these options (default = the first one):
 
-  - If the conversation contains **no meaningful prior context** (fresh session, only greetings, etc.): skip this question and proceed directly as if the user chose "something new".
+  - "Based on what we've been working on" (add a short description of the
+    detected topic, e.g., "— the auth timeout bug in the login flow")
+  - "Something entirely new — I'll describe it"
+
+  If the user picks the first option, proceed to **"Analyse conversation
+  context"** below and mine the history for problem, root cause, repro,
+  proposed solution, affected components and priority signals. If they pick
+  "something entirely new", **skip** the "Analyse conversation context" step
+  and jump straight to **"Gather project metadata and current assignments
+  from JIRA"** — the user will fill in all ticket details manually via the
+  form and description editor.
+  {{- else }}
+  This is the first message in this conversation, so there is no prior work
+  to mine. **Skip** the "Analyse conversation context" step entirely and go
+  straight to **"Gather project metadata and current assignments from JIRA"**
+  — the user will fill in all ticket details manually via the form and
+  description editor. Do **not** ask the "based on prior work vs. something
+  new" question; there is no prior work.
+  {{- end }}
 
   ## Step 2 — Analyse conversation context (if applicable)
 
