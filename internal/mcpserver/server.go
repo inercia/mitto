@@ -113,6 +113,15 @@ type Server struct {
 	// cannot both miss the scan and create duplicate conversations. Mirrors
 	// the HTTP handler's reuseIssueLocks (mitto-bx40). See lockReuseIssue.
 	reuseIssueLocks map[string]*sync.Mutex
+
+	// reuseTitleLocksMu guards reuseTitleLocks (lazily-created keyed mutexes).
+	reuseTitleLocksMu sync.Mutex
+	// reuseTitleLocks holds one mutex per "workingDir\x00title" key. It
+	// serializes the reuseTitle find-or-route scan+create/seed sequence in
+	// handleConversationStart so two concurrent MCP calls for the same key
+	// cannot both miss the scan and create duplicate conversations. Mirrors
+	// the HTTP handler's reuseTitleLocks. See lockReuseTitle.
+	reuseTitleLocks map[string]*sync.Mutex
 }
 
 // registeredSession holds information about a registered session.
@@ -352,6 +361,27 @@ func (s *Server) lockReuseIssue(key string) func() {
 		s.reuseIssueLocks[key] = mu
 	}
 	s.reuseIssueLocksMu.Unlock()
+
+	mu.Lock()
+	return mu.Unlock
+}
+
+// lockReuseTitle locks (lazily creating if needed) the mutex for key and
+// returns a function that unlocks it. Callers should `defer unlock()`.
+// Key format is "workingDir\x00title" — see handleConversationStart.
+// Mirrors (*Handlers).lockReuseTitle in internal/web/handlers so MCP and
+// HTTP paths serialize reuseTitle find-or-route with the same discipline.
+func (s *Server) lockReuseTitle(key string) func() {
+	s.reuseTitleLocksMu.Lock()
+	if s.reuseTitleLocks == nil {
+		s.reuseTitleLocks = make(map[string]*sync.Mutex)
+	}
+	mu, ok := s.reuseTitleLocks[key]
+	if !ok {
+		mu = &sync.Mutex{}
+		s.reuseTitleLocks[key] = mu
+	}
+	s.reuseTitleLocksMu.Unlock()
 
 	mu.Lock()
 	return mu.Unlock

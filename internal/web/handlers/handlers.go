@@ -207,6 +207,12 @@ type Deps struct {
 	// May be nil; callers must nil-guard (treat nil as "not reuseIssue").
 	ResolvePromptReuseIssue func(promptName, workingDir string) bool
 
+	// ResolvePromptTargetTitle returns the named prompt's target.title and
+	// target.reuseTitle fields (resolved for the given working dir via the
+	// full merge pipeline). Returns ("", false) when the prompt is not found
+	// or has no target block. May be nil; callers must nil-guard.
+	ResolvePromptTargetTitle func(promptName, workingDir string) (title string, reuseTitle bool)
+
 	// DefaultACPServer mirrors Server.config.ACPServer: the default ACP server
 	// name used in the create-session response when the resolved workspace does
 	// not specify one.
@@ -384,6 +390,14 @@ type Handlers struct {
 	// HandleCreateSession so two concurrent requests for the same key cannot
 	// both miss the scan and create duplicate conversations. See lockReuseIssue.
 	reuseIssueLocks map[string]*sync.Mutex
+
+	// reuseTitleLocksMu guards reuseTitleLocks (lazily-created keyed mutexes).
+	reuseTitleLocksMu sync.Mutex
+	// reuseTitleLocks holds one mutex per "workingDir\x00title" key. It
+	// serializes the reuseTitle find-or-route scan+create/seed sequence in
+	// HandleCreateSession so two concurrent requests for the same key cannot
+	// both miss the scan and create duplicate conversations. See lockReuseTitle.
+	reuseTitleLocks map[string]*sync.Mutex
 }
 
 // New creates a new Handlers with the given dependencies.
@@ -423,6 +437,25 @@ func (h *Handlers) lockReuseIssue(key string) func() {
 		h.reuseIssueLocks[key] = mu
 	}
 	h.reuseIssueLocksMu.Unlock()
+
+	mu.Lock()
+	return mu.Unlock
+}
+
+// lockReuseTitle locks (lazily creating if needed) the mutex for key and
+// returns a function that unlocks it. Callers should `defer unlock()`.
+// Key format is "workingDir\x00title" — see HandleCreateSession.
+func (h *Handlers) lockReuseTitle(key string) func() {
+	h.reuseTitleLocksMu.Lock()
+	if h.reuseTitleLocks == nil {
+		h.reuseTitleLocks = make(map[string]*sync.Mutex)
+	}
+	mu, ok := h.reuseTitleLocks[key]
+	if !ok {
+		mu = &sync.Mutex{}
+		h.reuseTitleLocks[key] = mu
+	}
+	h.reuseTitleLocksMu.Unlock()
 
 	mu.Lock()
 	return mu.Unlock

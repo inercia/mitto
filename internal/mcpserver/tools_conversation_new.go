@@ -179,6 +179,8 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 	originPromptName := ""
 	promptIsSingleton := false
 	promptReuseIssue := false
+	promptReuseTitle := false
+	promptTargetTitle := ""
 	if input.PromptName != "" {
 		// mitto-kt6: prompt_name wins when both are supplied. Agents forced by
 		// strict JSON schemas often fill 'initial_prompt' with a placeholder to
@@ -205,6 +207,18 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 		promptIsSingleton = p.Singleton
 		if p.Target != nil {
 			promptReuseIssue = p.Target.ReuseIssue
+			promptReuseTitle = p.Target.ReuseTitle
+			promptTargetTitle = p.Target.Title
+		}
+		// reuseTitle adopts target.title as the conversation's Name so a
+		// subsequent scan matches it. When the caller supplied a different
+		// Title, log the override (target.title is the canonical lookup key).
+		if promptReuseTitle && promptTargetTitle != "" {
+			if input.Title != "" && input.Title != promptTargetTitle {
+				s.logger.Debug("overriding mitto_conversation_new title with target.title from prompt frontmatter",
+					"prompt", input.PromptName, "request_title", input.Title, "target_title", promptTargetTitle)
+			}
+			input.Title = promptTargetTitle
 		}
 
 		// Auto-apply the seeded prompt's loop: frontmatter block (mitto-r7y):
@@ -292,8 +306,10 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 		}
 	}
 
-	// Check for duplicate title if title is provided
-	if input.Title != "" {
+	// Check for duplicate title if title is provided.
+	// Skipped when reuseTitle is active: that ladder step below handles
+	// reuse (funnel into the existing conversation) instead of rejecting.
+	if input.Title != "" && !promptReuseTitle {
 		allSessions, err := store.List()
 		if err != nil {
 			return nil, ConversationStartOutput{}, fmt.Errorf("failed to check for duplicate titles: %v", err)
@@ -405,15 +421,51 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 		// before another concurrent waiter's scan runs and misses this new one.
 	}
 
+	// reuseTitle find-or-route: mirror the web path
+	// (internal/web/handlers/session_create.go). When the originating prompt
+	// declares target.reuseTitle (with a non-empty target.title, enforced at
+	// load time by ValidatePromptTarget), funnel dispatches into an existing
+	// non-archived conversation in the same working_dir whose Name matches
+	// the declared title. If no candidate exists, fall through to normal
+	// creation; input.Title has already been set to target.title above so
+	// the created conversation will match a subsequent scan. Skip singleton
+	// fallback on both hit and miss — title reuse is authoritative for
+	// this prompt.
+	reuseTitleEvaluated := false
+	if !reuseIssueEvaluated && promptReuseTitle && promptTargetTitle != "" {
+		reuseTitleEvaluated = true
+		key := targetWorkingDir + "\x00" + promptTargetTitle
+		unlock := s.lockReuseTitle(key)
+		defer unlock()
+
+		if metas, listErr := store.List(); listErr == nil {
+			if existingID, ok := session.FindConversationByTitle(metas, targetWorkingDir, promptTargetTitle); ok {
+				out, rerr := s.reuseSingletonConversation(store, existingID, initialPromptText, realSessionID, input.Arguments)
+				if rerr != nil {
+					return nil, ConversationStartOutput{}, rerr
+				}
+				s.logger.Info("Routed mitto_conversation_new to existing conversation by title",
+					"existing_session_id", existingID,
+					"origin_prompt_name", originPromptName,
+					"target_title", promptTargetTitle,
+					"working_dir", targetWorkingDir)
+				return nil, out, nil
+			}
+		}
+		// No candidate — fall through to normal creation. Lock stays held via
+		// defer so the create/persist below completes before another concurrent
+		// waiter's scan runs and misses this new one.
+	}
+
 	// Singleton find-or-route (mitto-4mb.8): mirror the web path
 	// (internal/web/handlers/session_create.go) — when the originating prompt is
 	// declared singleton, route to an existing non-archived conversation in the
 	// same working dir instead of creating a duplicate.
 	//
-	// Skipped when reuseIssue already evaluated (and missed) for this call:
-	// singleton would incorrectly collapse two distinct beads issues into one
-	// conversation.
-	if !reuseIssueEvaluated && promptIsSingleton && originPromptName != "" {
+	// Skipped when reuseIssue or reuseTitle already evaluated (and missed) for
+	// this call: singleton would incorrectly collapse distinct instances into
+	// one conversation.
+	if !reuseIssueEvaluated && !reuseTitleEvaluated && promptIsSingleton && originPromptName != "" {
 		if metas, listErr := store.List(); listErr == nil {
 			if existingID, ok := session.FindSingletonCandidate(metas, targetWorkingDir, originPromptName); ok {
 				out, rerr := s.reuseSingletonConversation(store, existingID, initialPromptText, realSessionID, input.Arguments)

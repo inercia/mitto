@@ -105,6 +105,31 @@ type PromptLoop struct {
 	Default *bool `yaml:"default,omitempty" json:"default,omitempty"`
 }
 
+// PromptTarget groups routing/dispatch behaviors for a prompt when it is
+// used to create a new conversation. Future keys can extend routing modes
+// without introducing new top-level prompt-frontmatter fields.
+type PromptTarget struct {
+	// ReuseIssue, when true, causes a dispatch that carries a beads_issue to
+	// find an existing non-archived conversation in the same working_dir
+	// that is already linked to that beads issue and enqueue the prompt into
+	// it, instead of creating a new conversation. Falls through to normal
+	// create when no candidate is found or when no beads_issue is provided.
+	ReuseIssue bool `yaml:"reuseIssue,omitempty" json:"reuseIssue,omitempty"`
+	// Title, when set, is adopted as the new conversation's Name when the
+	// caller does not supply one. When ReuseTitle is true, Title is also the
+	// lookup key used to funnel dispatches into an existing conversation
+	// whose Name matches (see ReuseTitle).
+	Title string `yaml:"title,omitempty" json:"title,omitempty"`
+	// ReuseTitle, when true, causes a dispatch to find an existing non-
+	// archived conversation in the same working_dir whose Name matches
+	// Title (byte-for-byte) and enqueue the prompt into it, instead of
+	// creating a new conversation. Requires Title to be non-empty
+	// (enforced by ValidatePromptTarget at prompt-load time). Falls
+	// through to normal create when no candidate is found; the created
+	// conversation is named Title so a subsequent scan matches it.
+	ReuseTitle bool `yaml:"reuseTitle,omitempty" json:"reuseTitle,omitempty"`
+}
+
 // PromptLoopModeAlways means the prompt is always loop; not user-toggleable.
 // Also the implied mode when PromptLoop.Mode is empty.
 const PromptLoopModeAlways = "always"
@@ -146,6 +171,20 @@ func ValidatePromptLoop(promptName string, p *PromptLoop) error {
 	if p.Default != nil && p.Mode != PromptLoopModeOptional {
 		slog.Warn("prompt loop.default is ignored unless loop.mode is \"optional\"",
 			"prompt", promptName, "mode", p.Mode)
+	}
+	return nil
+}
+
+// ValidatePromptTarget validates the target block's field combination.
+// Returns an error when ReuseTitle is true but Title is empty, since a
+// reuse-by-title dispatch has no lookup key in that case. A nil target or
+// an empty target block is always valid.
+func ValidatePromptTarget(promptName string, t *PromptTarget) error {
+	if t == nil {
+		return nil
+	}
+	if t.ReuseTitle && strings.TrimSpace(t.Title) == "" {
+		return fmt.Errorf("prompt %q: target.reuseTitle is true but target.title is empty (a title is required to key the lookup)", promptName)
 	}
 	return nil
 }
@@ -243,6 +282,12 @@ type PromptFile struct {
 	// concurrent conversation instances (subject to find-or-route logic).
 	Singleton bool `yaml:"singleton,omitempty" json:"singleton,omitempty"`
 
+	// Target groups routing/dispatch behaviors for this prompt when it is
+	// used to create a new conversation. Currently only ReuseIssue is defined;
+	// future keys can extend routing modes without introducing new top-level
+	// prompt-frontmatter fields.
+	Target *PromptTarget `yaml:"target,omitempty" json:"target,omitempty"`
+
 	// Enabled controls whether the prompt is active. Defaults to true if not specified.
 	Enabled *bool `yaml:"enabled,omitempty" json:"-"`
 
@@ -318,6 +363,7 @@ func (p *PromptFile) ToWebPrompt() WebPrompt {
 		Group:           p.Group,
 		Menus:           p.Menus,
 		Singleton:       p.Singleton,
+		Target:          p.Target,
 		Source:          PromptSourceFile,
 		EnabledWhen:     p.EnabledWhen,
 		Enabled:         p.Enabled,
@@ -371,6 +417,11 @@ func ParsePromptFile(path string, data []byte, modTime time.Time) (*PromptFile, 
 
 	// Validate loop block (mode/default combination).
 	if err := ValidatePromptLoop(prompt.Name, prompt.Loop); err != nil {
+		return nil, fmt.Errorf("prompt file %s: %w", path, err)
+	}
+
+	// Validate target block (reuseTitle requires a non-empty title).
+	if err := ValidatePromptTarget(prompt.Name, prompt.Target); err != nil {
 		return nil, fmt.Errorf("prompt file %s: %w", path, err)
 	}
 

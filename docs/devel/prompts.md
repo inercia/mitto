@@ -340,6 +340,62 @@ Loop conversations can only be **top-level** (not children). The `at` field
 | Builtin  | `config/prompts/builtin/beads-issue-*.prompt.yaml` | Five context-adaptive exemplar prompts (three-mode pattern)          |
 | Test     | `internal/config/prompt_template_test.go`          | `*ThreeModeTargetResolution` render tests + `TestBuiltinPrompts_NoDeprecatedMittoVars` guard |
 
+## Prompt `target:` block — find-or-route dispatch
+
+Prompts can declare a `target:` frontmatter block to control what happens when
+the prompt is used to **create a new conversation** (via `beadsIssues` /
+`beadsList` menus, `POST /api/sessions`, or `mitto_conversation_new`). The
+block groups routing/dispatch keys that funnel dispatches into an *existing*
+conversation instead of creating a duplicate. When no candidate matches, the
+handler falls through to normal creation. Both REST and MCP paths mirror the
+same ladder.
+
+```yaml
+target:
+  reuseIssue: true          # requires the request to carry beads_issue
+  title: "Weekly triage"    # canonical conversation Name
+  reuseTitle: true          # requires title above; funnels by Name match
+```
+
+### Fields
+
+| Field         | Type   | Description                                                                                                          |
+| ------------- | ------ | -------------------------------------------------------------------------------------------------------------------- |
+| `reuseIssue`  | bool   | When true and the request carries a `beads_issue`, funnel into an existing non-archived conversation with the same `beads_issue` in the same `working_dir`. |
+| `title`       | string | Canonical name for the conversation. When `reuseTitle` is true, also the lookup key. When the caller omits an explicit name and this prompt originates a new conversation, the created conversation's Name is set to this value. |
+| `reuseTitle`  | bool   | When true (requires non-empty `title`), funnel into an existing non-archived conversation in the same `working_dir` whose `Name` equals `title` (byte-for-byte, case-sensitive). On miss, create with `Name = title` so a subsequent scan matches. |
+
+`ValidatePromptTarget` (`internal/prompts/prompts.go`) is run by
+`ParsePromptFile` at load time and rejects prompts that set
+`reuseTitle: true` without a `title` — a title-keyed lookup with no key.
+
+### Find-or-route ladder
+
+Both `HandleCreateSession` (REST, `internal/web/handlers/session_create.go`)
+and `handleConversationStart` (MCP, `internal/mcpserver/tools_conversation_new.go`)
+evaluate three routing modes in this fixed order:
+
+1. **`reuseIssue`** — requires `beads_issue` + `target.reuseIssue: true` on
+   the originating prompt. Scans via `session.FindConversationByBeadsIssue`.
+2. **`reuseTitle`** — requires `target.reuseTitle: true` + non-empty
+   `target.title`. Scans via `session.FindConversationByTitle`. On a caller-
+   supplied title that differs from `target.title`, the request title is
+   overridden (debug-logged) since `target.title` is the canonical lookup key.
+3. **`singleton`** — prompt-level `singleton: true`. Scans via
+   `session.FindSingletonCandidate` (keyed on `WorkingDir` + `OriginPromptName`).
+
+The steps are **mutually exclusive per request**: once step 1 or step 2
+is *evaluated* (regardless of hit/miss), later fallbacks are skipped. This
+prevents different beads issues or different titles from silently collapsing
+into a shared singleton conversation.
+
+Each step holds a per-key mutex (`workingDir + "\x00" + <key>`) across the
+scan + create/persist window, so two concurrent requests for the same key
+cannot both miss the scan and create duplicates. The MCP and REST paths
+maintain independent lock maps — MCP-only vs HTTP-only bursts stay
+serialized within their own path, and cross-path duplicates are prevented
+by the atomic scan+create window plus the store's session-list snapshot.
+
 ## See Also
 
 - [docs/config/prompts.md](../config/prompts.md) — user-facing front-matter

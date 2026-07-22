@@ -1168,6 +1168,9 @@ func NewServer(config Config) (*Server, error) {
 		ResolvePromptReuseIssue: func(promptName, workingDir string) bool {
 			return s.resolveReuseIssueByPromptName(promptName, workingDir)
 		},
+		ResolvePromptTargetTitle: func(promptName, workingDir string) (string, bool) {
+			return s.resolvePromptTargetTitleByPromptName(promptName, workingDir)
+		},
 		RemoveNegativeCache: func(sessionID string) {
 			if s.negativeSessionCache != nil {
 				s.negativeSessionCache.Remove(sessionID)
@@ -2811,6 +2814,93 @@ func (s *Server) resolveReuseIssueByPromptName(promptName, workingDir string) bo
 		}
 	}
 	return false
+}
+
+// resolvePromptTargetTitleByPromptName resolves a prompt name to its
+// target.title and target.reuseTitle fields. Uses the same resolution
+// pipeline as resolveSingletonByPromptName / resolveReuseIssueByPromptName.
+// Returns ("", false) when the prompt is not found or has no target block.
+func (s *Server) resolvePromptTargetTitleByPromptName(promptName, workingDir string) (string, bool) {
+	// 1. Global file prompts
+	var globalFilePrompts []configPkg.WebPrompt
+	if s.config.PromptsCache != nil {
+		gfp, err := s.config.PromptsCache.GetWebPrompts()
+		if err != nil && s.logger != nil {
+			s.logger.Warn("Failed to load global file prompts for reuseTitle resolution", "error", err)
+		}
+		globalFilePrompts = gfp
+	}
+
+	// 2. Settings file prompts
+	var settingsPrompts []configPkg.WebPrompt
+	if s.config.MittoConfig != nil {
+		settingsPrompts = s.config.MittoConfig.Prompts
+	}
+
+	// 3. ACP server-specific prompts
+	var acpServerName, acpServerType string
+	if s.sessionManager != nil {
+		if ws := s.sessionManager.GetWorkspace(workingDir); ws != nil {
+			acpServerName = ws.ACPServer
+		}
+	}
+	if acpServerName != "" && s.config.MittoConfig != nil {
+		acpServerType = s.config.MittoConfig.GetServerType(acpServerName)
+	}
+	if acpServerType == "" {
+		acpServerType = acpServerName
+	}
+
+	var serverPrompts []configPkg.WebPrompt
+	if acpServerType != "" && s.config.PromptsCache != nil {
+		sp, err := s.config.PromptsCache.GetWebPromptsSpecificToACP(acpServerType)
+		if err != nil && s.logger != nil {
+			s.logger.Warn("Failed to load ACP-specific prompts for reuseTitle resolution", "error", err)
+		}
+		serverPrompts = sp
+	}
+	if acpServerName != "" && s.config.MittoConfig != nil {
+		for _, srv := range s.config.MittoConfig.ACPServers {
+			if srv.Name == acpServerName {
+				serverPrompts = append(serverPrompts, srv.Prompts...)
+				break
+			}
+		}
+	}
+
+	// 4. Workspace directory prompts
+	var workspacePromptsDirs []string
+	workspacePromptsDirs = append(workspacePromptsDirs, appdir.WorkspacePromptsDir(workingDir))
+	if s.sessionManager != nil {
+		workspacePromptsDirs = append(workspacePromptsDirs, s.sessionManager.GetWorkspacePromptsDirs(workingDir)...)
+	}
+	dirPrompts := s.loadPromptsFromDirs(workingDir, workspacePromptsDirs)
+
+	// 5. Workspace inline prompts (.mittorc)
+	var inlinePrompts []configPkg.WebPrompt
+	if s.sessionManager != nil {
+		inlinePrompts = s.sessionManager.GetWorkspacePrompts(workingDir)
+	}
+
+	merged := configPkg.MergePrompts(
+		configPkg.MergePrompts(
+			configPkg.MergePrompts(globalFilePrompts, settingsPrompts, serverPrompts),
+			nil,
+			dirPrompts,
+		),
+		nil,
+		inlinePrompts,
+	)
+
+	for _, p := range merged {
+		if strings.EqualFold(p.Name, promptName) {
+			if p.Target == nil {
+				return "", false
+			}
+			return p.Target.Title, p.Target.ReuseTitle
+		}
+	}
+	return "", false
 }
 
 // resolvePromptParametersByPromptName resolves a prompt name to its declared parameter list.

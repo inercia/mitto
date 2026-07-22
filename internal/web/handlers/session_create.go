@@ -115,6 +115,81 @@ func (h *Handlers) HandleCreateSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Resolve the effective prompt name for find-or-route lookups. Both the
+	// reuseIssue and singleton blocks below use the same fallback (initial ->
+	// origin) so a caller that only sets initial_prompt_name still routes.
+	promptName := req.InitialPromptName
+	if promptName == "" {
+		promptName = req.OriginPromptName
+	}
+
+	// reuseIssue find-or-route: when a request carries beads_issue AND the
+	// originating prompt declares target.reuseIssue, the per-issue reuse
+	// decision is authoritative. If a matching non-archived conversation
+	// exists in the same working_dir, funnel the dispatch into it instead of
+	// creating a duplicate. If it doesn't match, the singleton fallback is
+	// SKIPPED for this request — otherwise two distinct beads issues driven
+	// by the same singleton prompt would collapse into one conversation.
+	// The per-(workingDir, beadsIssue) lock is held for the rest of this
+	// function so scan+create is atomic relative to concurrent creates for
+	// the same issue.
+	reuseIssueEvaluated := false
+	if req.BeadsIssue != "" && promptName != "" && h.deps.ResolvePromptReuseIssue != nil && h.deps.ResolvePromptReuseIssue(promptName, req.WorkingDir) {
+		reuseIssueEvaluated = true
+		key := req.WorkingDir + "\x00" + req.BeadsIssue
+		unlock := h.lockReuseIssue(key)
+		defer unlock()
+
+		if h.deps.Store != nil {
+			metas, _ := h.deps.Store.List()
+			if existingID, found := session.FindConversationByBeadsIssue(metas, req.WorkingDir, req.BeadsIssue); found {
+				h.reuseSingletonSession(w, existingID, promptName, req.Arguments)
+				return
+			}
+		}
+		// No candidate — fall through to normal creation. Lock stays held via
+		// defer so the BeadsIssue+OriginPromptName persistence below completes
+		// before another concurrent waiter's scan runs and misses this new one.
+	}
+
+	// reuseTitle find-or-route: when the originating prompt declares
+	// target.reuseTitle (with a non-empty target.title, enforced at load
+	// time by ValidatePromptTarget), route dispatches to an existing
+	// non-archived conversation in the same working_dir whose Name matches
+	// the declared title. If no candidate exists, fall through to normal
+	// creation with req.Name defaulted to the target title so a subsequent
+	// scan matches it. Skip the singleton fallback on both hit and miss —
+	// title reuse is authoritative for this prompt. When the caller
+	// supplied a non-empty req.Name that differs from the target title,
+	// override it (with a debug log) since target.title is the canonical
+	// lookup key.
+	reuseTitleEvaluated := false
+	if !reuseIssueEvaluated && promptName != "" && h.deps.ResolvePromptTargetTitle != nil {
+		title, reuseTitle := h.deps.ResolvePromptTargetTitle(promptName, req.WorkingDir)
+		if reuseTitle && title != "" {
+			reuseTitleEvaluated = true
+			if req.Name != "" && req.Name != title && h.deps.Logger != nil {
+				h.deps.Logger.Debug("overriding request name with target.title from prompt frontmatter",
+					"prompt", promptName, "request_name", req.Name, "target_title", title)
+			}
+			req.Name = title
+			key := req.WorkingDir + "\x00" + title
+			unlock := h.lockReuseTitle(key)
+			defer unlock()
+
+			if h.deps.Store != nil {
+				metas, _ := h.deps.Store.List()
+				if existingID, found := session.FindConversationByTitle(metas, req.WorkingDir, title); found {
+					h.reuseSingletonSession(w, existingID, promptName, req.Arguments)
+					return
+				}
+			}
+			// No candidate — fall through to normal creation with req.Name
+			// set to title. Lock stays held via defer so the create below
+			// completes before another concurrent waiter's scan runs.
+		}
+	}
+
 	// Singleton find-or-route (mitto-4mb.3): when the prompt that originates this
 	// conversation is declared singleton, route to an existing non-archived
 	// conversation in the same working dir instead of creating a duplicate. The
@@ -122,11 +197,11 @@ func (h *Handlers) HandleCreateSession(w http.ResponseWriter, r *http.Request) {
 	// function so the scan + create/seed sequence is atomic relative to other
 	// concurrent creates for the same key — two rapid clicks cannot both miss
 	// the scan and create duplicates.
-	promptName := req.InitialPromptName
-	if promptName == "" {
-		promptName = req.OriginPromptName
-	}
-	if promptName != "" && h.deps.ResolvePromptSingleton != nil && h.deps.ResolvePromptSingleton(promptName, req.WorkingDir) {
+	//
+	// Skipped when reuseIssue or reuseTitle already evaluated (and missed) for
+	// this request: singleton would incorrectly collapse distinct instances
+	// into one conversation.
+	if !reuseIssueEvaluated && !reuseTitleEvaluated && promptName != "" && h.deps.ResolvePromptSingleton != nil && h.deps.ResolvePromptSingleton(promptName, req.WorkingDir) {
 		key := req.WorkingDir + "\x00" + promptName
 		unlock := h.lockSingleton(key)
 		defer unlock()

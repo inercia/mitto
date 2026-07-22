@@ -40,6 +40,11 @@ type WebPrompt struct {
 	// Singleton, when true, declares that this prompt must not have multiple
 	// concurrent conversation instances (subject to find-or-route logic).
 	Singleton bool `json:"singleton,omitempty"`
+	// Target groups routing/dispatch behaviors for this prompt when it is
+	// used to create a new conversation. Carried through the merge pipeline
+	// alongside Singleton so HTTP handlers can resolve routing modes without
+	// re-parsing the prompt file.
+	Target *PromptTarget `json:"target,omitempty"`
 	// Tags is an optional list of categorization tags for this prompt.
 	Tags []string `json:"tags,omitempty"`
 	// Source indicates where this prompt originated from (file, settings, workspace).

@@ -15,6 +15,7 @@ type PromptSource = prompts.PromptSource
 
 // --- Types (prompts.go) ---
 type PromptLoop = prompts.PromptLoop
+type PromptTarget = prompts.PromptTarget
 type PromptParameterCache = prompts.PromptParameterCache
 type PromptParameter = prompts.PromptParameter
 type PromptPreferredModel = prompts.PromptPreferredModel
@@ -61,6 +62,7 @@ var (
 	ValidatePromptTemplateSyntax              = prompts.ValidatePromptTemplateSyntax
 	RenderPromptTemplate                      = prompts.RenderPromptTemplate
 	ValidatePromptLoop                        = prompts.ValidatePromptLoop
+	ValidatePromptTarget                      = prompts.ValidatePromptTarget
 	ParsePromptFile                           = prompts.ParsePromptFile
 	LoadPromptFile                            = prompts.LoadPromptFile
 	LoadPromptsFromDir                        = prompts.LoadPromptsFromDir

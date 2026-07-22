@@ -386,6 +386,48 @@ prompt: |
 	}
 }
 
+func TestParsePromptFile_WithTargetReuseIssue(t *testing.T) {
+	data := []byte(`name: "test"
+target:
+  reuseIssue: true
+prompt: hi
+`)
+
+	prompt, err := ParsePromptFile("reuse.prompt.yaml", data, time.Now())
+	if err != nil {
+		t.Fatalf("ParsePromptFile failed: %v", err)
+	}
+	if prompt.Target == nil {
+		t.Fatal("Target = nil, want non-nil")
+	}
+	if !prompt.Target.ReuseIssue {
+		t.Errorf("Target.ReuseIssue = false, want true")
+	}
+
+	// Round-trips through ToWebPrompt.
+	wp := prompt.ToWebPrompt()
+	if wp.Target == nil {
+		t.Fatal("WebPrompt.Target = nil, want non-nil")
+	}
+	if !wp.Target.ReuseIssue {
+		t.Errorf("WebPrompt.Target.ReuseIssue = false, want true")
+	}
+}
+
+func TestParsePromptFile_WithoutTarget(t *testing.T) {
+	data := []byte(`name: "plain"
+prompt: hi
+`)
+
+	prompt, err := ParsePromptFile("plain-target.prompt.yaml", data, time.Now())
+	if err != nil {
+		t.Fatalf("ParsePromptFile failed: %v", err)
+	}
+	if prompt.Target != nil {
+		t.Errorf("Target = %+v, want nil (absent should decode to nil)", prompt.Target)
+	}
+}
+
 func TestParsePromptFile_WithoutSingleton(t *testing.T) {
 	data := []byte(`name: "Plain Prompt"
 prompt: |
@@ -1159,6 +1201,58 @@ func TestValidatePromptLoop(t *testing.T) {
 	t.Run("default set with mode=optional does not error and does not warn", func(t *testing.T) {
 		f := false
 		if err := ValidatePromptLoop("p", &PromptLoop{Mode: "optional", Default: &f}); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+}
+
+// ---- ValidatePromptTarget ----
+
+func TestValidatePromptTarget(t *testing.T) {
+	t.Run("nil target is valid", func(t *testing.T) {
+		if err := ValidatePromptTarget("p", nil); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("empty target is valid", func(t *testing.T) {
+		if err := ValidatePromptTarget("p", &PromptTarget{}); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("title without reuseTitle is valid", func(t *testing.T) {
+		if err := ValidatePromptTarget("p", &PromptTarget{Title: "Weekly triage"}); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("reuseTitle with title is valid", func(t *testing.T) {
+		if err := ValidatePromptTarget("p", &PromptTarget{ReuseTitle: true, Title: "Weekly triage"}); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("reuseTitle without title errors", func(t *testing.T) {
+		err := ValidatePromptTarget("My Prompt", &PromptTarget{ReuseTitle: true})
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		msg := err.Error()
+		if !strings.Contains(msg, "My Prompt") || !strings.Contains(msg, "reuseTitle") {
+			t.Errorf("error should mention prompt name and reuseTitle: %v", err)
+		}
+	})
+
+	t.Run("reuseTitle with whitespace-only title errors", func(t *testing.T) {
+		err := ValidatePromptTarget("p", &PromptTarget{ReuseTitle: true, Title: "   "})
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+	})
+
+	t.Run("reuseIssue with title and no reuseTitle is valid", func(t *testing.T) {
+		if err := ValidatePromptTarget("p", &PromptTarget{ReuseIssue: true, Title: "x"}); err != nil {
 			t.Errorf("unexpected error: %v", err)
 		}
 	})
