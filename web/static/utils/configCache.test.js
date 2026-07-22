@@ -264,6 +264,14 @@ describe("error handling", () => {
     const p2 = fetchConfig();
     expect(global.fetch).toHaveBeenCalledTimes(1); // still deduplicated
 
+    // Attach a silent handler to both promises BEFORE settling the deferred.
+    // Under bun's test runner, settling a rejected shared promise flags the
+    // second awaiter as an unhandled rejection during the microtask between
+    // settling p1 and attaching p2's assertion; observing them here keeps
+    // both cross-runner portable. Jest is tolerant of the sequential form.
+    p1.catch(() => {});
+    p2.catch(() => {});
+
     settle(null, new Error("server down"));
 
     await expect(p1).rejects.toThrow("server down");

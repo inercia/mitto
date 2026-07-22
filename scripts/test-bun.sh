@@ -36,6 +36,7 @@ CLEAN=(
   ./web/static/hooks/useConversationSeeding.test.js
   ./web/static/utils/api.test.js
   ./web/static/utils/beadsLinkify.test.js
+  ./web/static/utils/configCache.test.js
   ./web/static/utils/endpoints.test.js
   ./web/static/utils/globalHandlers.test.js
   ./web/static/utils/native.test.js
