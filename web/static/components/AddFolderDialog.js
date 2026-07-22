@@ -27,37 +27,50 @@ export function AddFolderDialog({
   // Portal so it escapes the modal's overflow-hidden / overflow-y-auto clip
   // boundaries and truly floats over the modal, with our own compact sizing
   // (narrower + shorter than ContextMenu's defaults).
-  const [moreMenu, setMoreMenu] = useState(null);
+  const [moreMenu, _setMoreMenu] = useState(null);
   const moreBtnRef = useRef(null);
   const menuRef = useRef(null);
+  // Ref mirror of moreMenu so the mount-once listeners below see fresh state
+  // without needing to re-attach on every open/close (which was racy with
+  // synthesized Escape presses from Playwright and, in principle, fast users).
+  // Updated EAGERLY (in the same call path as setState) so document listeners
+  // fired on the very next event tick always observe the latest value —
+  // effect-based sync would run asynchronously after commit and can miss a
+  // synthesized Escape that follows the opening click immediately.
+  const moreMenuRef = useRef(null);
+  const setMoreMenu = (v) => {
+    moreMenuRef.current = v;
+    _setMoreMenu(v);
+  };
 
-  // Close the more-menu on Escape or outside click.
+  // Close the more-menu on Escape or outside click. Registered ONCE on mount
+  // and no-op when the dropdown is closed — this avoids the effect-attach race
+  // that previously required a setTimeout guard for the opening click.
   useEffect(() => {
-    if (!moreMenu) return undefined;
     const onKey = (e) => {
+      if (!moreMenuRef.current) return;
       if (e.key === "Escape") {
         e.stopPropagation();
         setMoreMenu(null);
       }
     };
     const onDown = (e) => {
+      if (!moreMenuRef.current) return;
+      // Ignore clicks on the toggle button itself — it owns opening the menu
+      // and would otherwise be treated as an outside click on the same tick.
+      if (moreBtnRef.current && moreBtnRef.current.contains(e.target)) return;
       if (menuRef.current && !menuRef.current.contains(e.target)) {
         setMoreMenu(null);
       }
     };
-    // Delay outside-click so the opening click on the toggle doesn't dismiss.
-    const t = setTimeout(
-      () => document.addEventListener("mousedown", onDown),
-      10,
-    );
     // Capture so we run before the Modal's own Escape handler (window-level).
     document.addEventListener("keydown", onKey, true);
+    document.addEventListener("mousedown", onDown);
     return () => {
-      clearTimeout(t);
-      document.removeEventListener("mousedown", onDown);
       document.removeEventListener("keydown", onKey, true);
+      document.removeEventListener("mousedown", onDown);
     };
-  }, [moreMenu]);
+  }, []); // eslint-disable-line
 
   const handlePickExisting = async (workingDir) => {
     if (!workingDir || !onPinExisting) return;
@@ -68,12 +81,45 @@ export function AddFolderDialog({
     }
   };
 
-  const openMoreMenu = () => {
+  // Compute a viewport-aware menu box: prefer opening below the button, but
+  // flip above when there's substantially more room up-top. Clamp maxHeight so
+  // the menu never spills past the window edge — required because the Portal
+  // renders at document root, outside any modal scroll container.
+  const computeMoreMenuBox = () => {
     const btn = moreBtnRef.current;
-    if (!btn) return;
+    if (!btn) return null;
     const rect = btn.getBoundingClientRect();
-    setMoreMenu({ left: rect.left, top: rect.bottom + 4, width: rect.width });
+    const gap = 4;
+    const margin = 8; // keep the menu off the very edge of the viewport
+    const vh = window.innerHeight || document.documentElement.clientHeight;
+    const spaceBelow = Math.max(0, vh - rect.bottom - gap - margin);
+    const spaceAbove = Math.max(0, rect.top - gap - margin);
+    const openUp = spaceBelow < 200 && spaceAbove > spaceBelow;
+    const maxHeight = Math.max(120, Math.min(384, openUp ? spaceAbove : spaceBelow));
+    const top = openUp ? Math.max(margin, rect.top - gap - maxHeight) : rect.bottom + gap;
+    return { left: rect.left, top, width: rect.width, maxHeight };
   };
+
+  const openMoreMenu = () => {
+    const box = computeMoreMenuBox();
+    if (box) setMoreMenu(box);
+  };
+
+  // Recompute on resize / scroll while the menu is open so it stays inside the
+  // viewport when the window changes size or the modal body scrolls.
+  useEffect(() => {
+    if (!moreMenu) return;
+    const recompute = () => {
+      const box = computeMoreMenuBox();
+      if (box) setMoreMenu(box);
+    };
+    window.addEventListener("resize", recompute);
+    window.addEventListener("scroll", recompute, true);
+    return () => {
+      window.removeEventListener("resize", recompute);
+      window.removeEventListener("scroll", recompute, true);
+    };
+  }, [moreMenu !== null]); // eslint-disable-line
 
   const footer = html`
     <button
@@ -87,7 +133,16 @@ export function AddFolderDialog({
   `;
 
   const topEntries = hasHidden ? hiddenWorkspaces.slice(0, 3) : [];
-  const moreEntries = hasHidden ? hiddenWorkspaces.slice(3) : [];
+  // Dropdown entries are sorted alphabetically by working_dir so the "long
+  // tail" is easy to scan — the top-3 block above stays in the upstream
+  // (MRU-preserving) order handed to the component by app.js.
+  const moreEntries = hasHidden
+    ? hiddenWorkspaces.slice(3).slice().sort((a, b) => {
+        const av = String(a.working_dir || "").toLowerCase();
+        const bv = String(b.working_dir || "").toLowerCase();
+        return av < bv ? -1 : av > bv ? 1 : 0;
+      })
+    : [];
 
   const renderItem = (ws) => html`
     <li key=${ws.working_dir}>
@@ -165,8 +220,8 @@ export function AddFolderDialog({
           <${Portal}>
             <ul
               ref=${menuRef}
-              class="menu menu-sm bg-base-200 rounded-box shadow-xl fixed max-h-80 overflow-y-auto flex-nowrap p-1"
-              style="left: ${moreMenu.left}px; top: ${moreMenu.top}px; width: ${moreMenu.width}px; z-index: 9999;"
+              class="menu menu-sm bg-base-200 rounded-box shadow-xl fixed overflow-y-auto p-1"
+              style="left: ${moreMenu.left}px; top: ${moreMenu.top}px; width: ${moreMenu.width}px; max-height: ${moreMenu.maxHeight}px; z-index: 9999; flex-flow: column nowrap;"
               data-testid="add-folder-more-list"
             >
               ${moreEntries.map(
@@ -174,7 +229,8 @@ export function AddFolderDialog({
                   <li key=${ws.working_dir}>
                     <button
                       type="button"
-                      class="truncate w-full text-left"
+                      class="w-full text-left break-all py-1"
+                      style="white-space: normal; line-height: 1.35;"
                       onClick=${() => {
                         setMoreMenu(null);
                         handlePickExisting(ws.working_dir);
@@ -182,7 +238,7 @@ export function AddFolderDialog({
                       data-testid=${`add-folder-pick-${ws.working_dir}`}
                       title=${ws.working_dir}
                     >
-                      <span class="truncate">${ws.name || ws.working_dir}</span>
+                      <span class="break-all">${ws.working_dir}</span>
                     </button>
                   </li>
                 `,
