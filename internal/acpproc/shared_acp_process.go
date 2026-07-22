@@ -2,10 +2,12 @@ package acpproc
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"math/rand"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -22,6 +24,33 @@ import (
 	"github.com/inercia/mitto/internal/logging"
 	"github.com/inercia/mitto/internal/runner"
 )
+
+// traceSessionResponse dumps the full session/new|session/load|session/resume
+// response as JSON at INFO level when MITTO_ACP_TRACE_SESSION_RESP=1. Opt-in
+// only: this is a wire-level diagnostic for cases where the parsed struct is
+// suspiciously empty (e.g. ConfigOptions=[]) and we need to confirm the agent
+// actually sent that vs an SDK deserialization gap. No-op when unset or when
+// logger is nil. The env is read on every call so it can be flipped without
+// restart. Response payloads may contain _meta which is opaque — do not enable
+// this in shared/production environments.
+func traceSessionResponse(logger *slog.Logger, source string, resp any) {
+	if logger == nil {
+		return
+	}
+	if os.Getenv("MITTO_ACP_TRACE_SESSION_RESP") != "1" {
+		return
+	}
+	buf, err := json.Marshal(resp)
+	if err != nil {
+		logger.Info("ACP session response trace (marshal failed)",
+			"source", source, "error", err)
+		return
+	}
+	logger.Info("ACP session response trace",
+		"source", source,
+		"payload_bytes", len(buf),
+		"payload_json", string(buf))
+}
 
 const (
 	// maxProcessStartRetries is the maximum number of times to retry starting the ACP process.
@@ -1669,6 +1698,8 @@ func (p *SharedACPProcess) NewSession(ctx context.Context, cwd string, mcpServer
 			p.recordRPCSuccess()
 			p.markMCPInitDone()
 			p.mcpInitInProgress.Store(false) // close the MCP-init window (mitto-29q)
+			traceSessionResponse(p.logger, "new", sessResp)
+			conversation.LogSessionConfigOptions(p.logger, "new", sessResp.ConfigOptions)
 			models, modelCfgId := conversation.ModelStateFromConfigOptions(sessResp.ConfigOptions)
 			handle := &conversation.SessionHandle{
 				SessionID:     string(sessResp.SessionId),
@@ -1908,6 +1939,8 @@ func (p *SharedACPProcess) LoadSession(ctx context.Context, acpSessionID, cwd st
 	p.recordRPCSuccess()
 	p.markMCPInitDone()
 	p.mcpInitInProgress.Store(false) // close the MCP-init window (mitto-29q)
+	traceSessionResponse(p.logger, "load", loadResp)
+	conversation.LogSessionConfigOptions(p.logger, "load", loadResp.ConfigOptions)
 	loadModels, loadModelCfgId := conversation.ModelStateFromConfigOptions(loadResp.ConfigOptions)
 	handle := &conversation.SessionHandle{
 		SessionID:     acpSessionID,
@@ -1985,6 +2018,8 @@ func (p *SharedACPProcess) ResumeSession(ctx context.Context, acpSessionID, cwd 
 		return nil, fmt.Errorf("failed to resume session: %w", err)
 	}
 
+	traceSessionResponse(p.logger, "resume", resumeResp)
+	conversation.LogSessionConfigOptions(p.logger, "resume", resumeResp.ConfigOptions)
 	resumeModels, resumeModelCfgId := conversation.ModelStateFromConfigOptions(resumeResp.ConfigOptions)
 	handle := &conversation.SessionHandle{
 		SessionID:     acpSessionID,

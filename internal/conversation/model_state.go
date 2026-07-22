@@ -1,10 +1,69 @@
 package conversation
 
 import (
+	"log/slog"
+	"strconv"
+
 	acp "github.com/coder/acp-go-sdk"
 
 	"github.com/inercia/mitto/internal/config"
 )
+
+// LogSessionConfigOptions logs a per-response summary of the ConfigOptions
+// slice returned by session/new, session/load, or session/resume. Emitted at
+// INFO level unconditionally (even when opts is empty) so an agent-side model-
+// catalog regression is diagnosable without enabling DEBUG or a raw-payload
+// trace: prior to this, ModelStateFromConfigOptions returning nil was silent
+// and the only visible symptom was "decision=skip_no_agent_models" much later
+// at prompt time. Only non-secret structural metadata is logged (id/category
+// /type + Select current value and option counts) — never a user-supplied
+// _meta payload. No-op when logger is nil.
+func LogSessionConfigOptions(logger *slog.Logger, source string, opts []acp.SessionConfigOption) {
+	if logger == nil {
+		return
+	}
+	hasModel := false
+	summaries := make([]string, 0, len(opts))
+	for _, opt := range opts {
+		switch {
+		case opt.Select != nil:
+			sel := opt.Select
+			cat := ""
+			if sel.Category != nil {
+				cat = string(*sel.Category)
+				if cat == string(acp.SessionConfigOptionCategoryModel) {
+					hasModel = true
+				}
+			}
+			optCount := 0
+			switch {
+			case sel.Options.Ungrouped != nil:
+				optCount = len(*sel.Options.Ungrouped)
+			case sel.Options.Grouped != nil:
+				for _, g := range *sel.Options.Grouped {
+					optCount += len(g.Options)
+				}
+			}
+			summaries = append(summaries, string(sel.Id)+"[select,cat="+cat+
+				",current="+string(sel.CurrentValue)+
+				",n="+strconv.Itoa(optCount)+"]")
+		case opt.Boolean != nil:
+			b := opt.Boolean
+			cat := ""
+			if b.Category != nil {
+				cat = string(*b.Category)
+			}
+			summaries = append(summaries, string(b.Id)+"[boolean,cat="+cat+"]")
+		default:
+			summaries = append(summaries, "?[unknown-variant]")
+		}
+	}
+	logger.Info("ACP session config options",
+		"source", source,
+		"config_option_count", len(opts),
+		"has_model_option", hasModel,
+		"config_options", summaries)
+}
 
 // SessionModelState is a Mitto-owned view of an agent's available models and the
 // currently selected one. It replaces the ACP SDK's removed UnstableSessionModelState

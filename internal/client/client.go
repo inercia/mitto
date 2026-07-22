@@ -541,6 +541,9 @@ type SetLoopRequest struct {
 	Condition       string `json:"condition,omitempty"`        // CEL expression; empty = fire on ANY beads change
 	ConditionPreset string `json:"condition_preset,omitempty"` // optional UI preset id that compiled to Condition
 	CooldownSeconds int    `json:"cooldown_seconds,omitempty"` // per-conversation cooldown floor; 0 = use global floor
+	// RunOnStart, when *true, causes the loop to fire exactly once shortly after
+	// Mitto boots (mitto-ystk). Nil or false = do not fire on start (default).
+	RunOnStart *bool `json:"run_on_start,omitempty"`
 }
 
 // LoopConfig represents the loop configuration for a session.
@@ -562,6 +565,8 @@ type LoopConfig struct {
 	ConditionPreset string `json:"condition_preset,omitempty"`
 	CooldownSeconds int    `json:"cooldown_seconds,omitempty"`
 	StoppedReason   string `json:"stopped_reason,omitempty"`
+	// RunOnStart mirrors the schema field (mitto-ystk). Nil = unset/default.
+	RunOnStart *bool `json:"run_on_start,omitempty"`
 }
 
 // SetLoop configures a loop schedule on a session via PUT.

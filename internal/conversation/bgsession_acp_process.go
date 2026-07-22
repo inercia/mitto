@@ -972,6 +972,7 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 				bs.acpID = acpSessionID
 				bs.resumeMethod = "resume"
 				bs.setSessionModes(resumeResp.Modes)
+				bs.logSessionConfigOptions("resume", resumeResp.ConfigOptions)
 				models, cfgId := ModelStateFromConfigOptions(resumeResp.ConfigOptions)
 				bs.setAgentModels(models)
 				if cfgId != "" {
@@ -1021,6 +1022,7 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 				bs.resumeMethod = "load"
 				// Store available modes from session load
 				bs.setSessionModes(loadResp.Modes)
+				bs.logSessionConfigOptions("load", loadResp.ConfigOptions)
 				models, cfgId := ModelStateFromConfigOptions(loadResp.ConfigOptions)
 				bs.setAgentModels(models)
 				if cfgId != "" {
@@ -1085,6 +1087,7 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 
 	// Store available modes from session setup
 	bs.setSessionModes(sessResp.Modes)
+	bs.logSessionConfigOptions("new", sessResp.ConfigOptions)
 	models, cfgId := ModelStateFromConfigOptions(sessResp.ConfigOptions)
 	bs.setAgentModels(models)
 	if cfgId != "" {

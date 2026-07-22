@@ -237,6 +237,14 @@ func (bs *BackgroundSession) logSessionModes(modes *acp.SessionModeState) {
 	}
 }
 
+// logSessionConfigOptions is a thin BackgroundSession wrapper around
+// LogSessionConfigOptions (see model_state.go). The shared-process path in
+// internal/acpproc calls the free function directly since it does not have a
+// *BackgroundSession in scope.
+func (bs *BackgroundSession) logSessionConfigOptions(source string, opts []acp.SessionConfigOption) {
+	LogSessionConfigOptions(bs.logger, source, opts)
+}
+
 // logAgentInfo logs the agent information and capabilities from the Initialize response at DEBUG level.
 // This helps with debugging which agent is being used and what features it supports.
 func (bs *BackgroundSession) logAgentInfo(resp acp.InitializeResponse) {

@@ -548,6 +548,7 @@ func (p promptDispatcher) buildProcessorInput(d promptDeps, message string, isFi
 		MCPToolNames:           mcpToolNames,
 		IsLoop:                 meta.SenderID == senderIDLoop,
 		IsLoopForced:           meta.IsLoopForced,
+		IsLoopRunOnStart:       meta.IsLoopRunOnStart,
 		IterationNumber:        meta.IterationNumber,
 		MaxIterations:          meta.MaxIterations,
 		IterationUninterrupted: meta.IterationUninterrupted,

@@ -1060,6 +1060,22 @@ func TestPromptDispatcher_BuildProcessorInput_IsLoopForced(t *testing.T) {
 	}
 }
 
+// TestPromptDispatcher_BuildProcessorInput_IsLoopRunOnStart verifies that the
+// boot-pulse flag (mitto-ystk) propagates from PromptMeta into ProcessorInput,
+// which is what wires the signal into the @mitto:loop_run_on_start placeholder
+// and the CEL Session.IsLoopRunOnStart variable.
+func TestPromptDispatcher_BuildProcessorInput_IsLoopRunOnStart(t *testing.T) {
+	p := promptDispatcher{}
+	d := newFakePromptDeps()
+	d.hasStore = false
+
+	meta := PromptMeta{IsLoopRunOnStart: true}
+	input := p.buildProcessorInput(d, "msg", false, meta)
+	if !input.IsLoopRunOnStart {
+		t.Fatal("expected IsLoopRunOnStart=true")
+	}
+}
+
 func TestPromptDispatcher_BuildProcessorInput_Arguments(t *testing.T) {
 	p := promptDispatcher{}
 	d := newFakePromptDeps()
