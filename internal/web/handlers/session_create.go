@@ -187,6 +187,11 @@ func (h *Handlers) HandleCreateSession(w http.ResponseWriter, r *http.Request) {
 			// No candidate — fall through to normal creation with req.Name
 			// set to title. Lock stays held via defer so the create below
 			// completes before another concurrent waiter's scan runs.
+		} else if !reuseTitle && title != "" && req.Name == "" {
+			// Plain target.title (no reuseTitle): adopt as default Name only
+			// when the caller did not supply one. Caller override wins;
+			// find-or-route is NOT invoked (reuseTitle is opt-in).
+			req.Name = title
 		}
 	}
 

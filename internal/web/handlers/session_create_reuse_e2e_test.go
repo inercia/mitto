@@ -337,3 +337,75 @@ func TestReuseIssueE2E_DifferentWorkingDirCreatesNew(t *testing.T) {
 	})
 	assertNotReusedTo(t, decodeSessionResponse(t, w), sessionA)
 }
+
+// TestTargetTitleE2E_WithoutReuseTitle_AdoptedAsDefaultName pins the bead's
+// acceptance criterion on the REST path: when the originating prompt declares
+// a plain target.title (no target.reuseTitle) and the request omits req.Name,
+// req.Name must be defaulted to target.title before CreateSessionWithWorkspace
+// is invoked. Find-or-route is NOT invoked (reuseTitle is opt-in).
+//
+// The E2E harness cannot bring up a real ACP server, so create fails downstream.
+// We observe the effective req.Name via the BroadcastACPStartFailed spy, which
+// the failure branch calls with req.Name after all pre-create mutations.
+func TestTargetTitleE2E_WithoutReuseTitle_AdoptedAsDefaultName(t *testing.T) {
+	const workingDir = "/work-plain-title"
+	_, h := newReuseE2EHandlers(t, workingDir)
+
+	var observedName string
+	h.deps.BroadcastACPStartFailed = func(_ string, name string, _ error, _ string) {
+		observedName = name
+	}
+	h.deps.ResolvePromptReuseIssue = func(string, string) bool { return false }
+	h.deps.ResolvePromptSingleton = func(string, string) bool { return false }
+	h.deps.ResolvePromptTargetTitle = func(promptName, wd string) (string, bool) {
+		if promptName == "weekly-triage" && wd == workingDir {
+			return "Weekly triage", false // plain: title set, reuseTitle=false
+		}
+		return "", false
+	}
+
+	w := postSession(t, h, SessionCreateRequest{
+		WorkingDir:       workingDir,
+		OriginPromptName: "weekly-triage",
+		// Name intentionally omitted → target.title must be adopted.
+	})
+
+	// Response must NOT be {reused:true}. A 200 (successful create) or 500
+	// (create failed downstream) are both acceptable here — we only assert
+	// that the plain-title branch did NOT collapse into an existing session.
+	assertNotReusedTo(t, decodeSessionResponse(t, w), "")
+
+	if observedName != "Weekly triage" {
+		t.Errorf("effective req.Name at create = %q, want %q (target.title must be adopted as default Name)", observedName, "Weekly triage")
+	}
+}
+
+// TestTargetTitleE2E_WithoutReuseTitle_CallerNameWins is the complementary
+// invariant: when the caller supplies a non-empty req.Name, it must win over
+// the plain (non-reuse) target.title default. This distinguishes the plain-
+// title path (default-only) from the reuseTitle path (canonical override).
+func TestTargetTitleE2E_WithoutReuseTitle_CallerNameWins(t *testing.T) {
+	const workingDir = "/work-plain-title-override"
+	_, h := newReuseE2EHandlers(t, workingDir)
+
+	var observedName string
+	h.deps.BroadcastACPStartFailed = func(_ string, name string, _ error, _ string) {
+		observedName = name
+	}
+	h.deps.ResolvePromptReuseIssue = func(string, string) bool { return false }
+	h.deps.ResolvePromptSingleton = func(string, string) bool { return false }
+	h.deps.ResolvePromptTargetTitle = func(string, string) (string, bool) {
+		return "Weekly triage", false // plain
+	}
+
+	w := postSession(t, h, SessionCreateRequest{
+		Name:             "caller wins",
+		WorkingDir:       workingDir,
+		OriginPromptName: "weekly-triage",
+	})
+	assertNotReusedTo(t, decodeSessionResponse(t, w), "")
+
+	if observedName != "caller wins" {
+		t.Errorf("effective req.Name at create = %q, want %q (caller-supplied Name must win over plain target.title default)", observedName, "caller wins")
+	}
+}

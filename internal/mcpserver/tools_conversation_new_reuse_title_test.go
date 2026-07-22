@@ -384,3 +384,72 @@ func TestConversationStart_ReuseTitle_TakesPrecedenceOverSingleton(t *testing.T)
 		t.Errorf("Expected 2 sessions (parent + 1 child), got %d", len(metas))
 	}
 }
+
+// TestConversationStart_TargetTitle_WithoutReuseTitle_AdoptedAsDefaultName
+// pins the bead's acceptance criterion for the plain (non-reuse) target.title
+// path: when the prompt declares target.title but NOT target.reuseTitle, the
+// created conversation's Name must default to target.title when the caller
+// did not supply an input.Title. Caller-supplied Title wins.
+func TestConversationStart_TargetTitle_WithoutReuseTitle_AdoptedAsDefaultName(t *testing.T) {
+	store, srv, parentID := setupConversationStartServerWithPrompts(t, []config.WebPrompt{
+		{
+			Name:   "Weekly triage",
+			Prompt: "triage",
+			// title-only: no ReuseTitle.
+			Target: &prompts.PromptTarget{Title: "Weekly triage"},
+		},
+	})
+
+	ctx := context.Background()
+
+	// Caller omits Title entirely → plain target.title is adopted as Name.
+	_, out, err := srv.handleConversationStart(ctx, nil, ConversationStartInput{
+		SelfID:     parentID,
+		PromptName: "Weekly triage",
+	})
+	if err != nil {
+		t.Fatalf("handleConversationStart: unexpected error: %v", err)
+	}
+	if out.Reused {
+		t.Error("expected reused=false (plain target.title does NOT trigger find-or-route)")
+	}
+	meta, err := store.GetMetadata(out.SessionID)
+	if err != nil {
+		t.Fatalf("GetMetadata(%q) error: %v", out.SessionID, err)
+	}
+	if meta.Name != "Weekly triage" {
+		t.Errorf("Created conversation Name = %q, want %q (target.title must be adopted as default Name)", meta.Name, "Weekly triage")
+	}
+}
+
+// TestConversationStart_TargetTitle_WithoutReuseTitle_CallerTitleWins pins the
+// complementary invariant: caller-supplied input.Title always wins over the
+// plain (non-reuse) target.title default. This distinguishes the plain-title
+// path (default-only, caller override wins) from the reuseTitle path
+// (canonical, overrides caller).
+func TestConversationStart_TargetTitle_WithoutReuseTitle_CallerTitleWins(t *testing.T) {
+	store, srv, parentID := setupConversationStartServerWithPrompts(t, []config.WebPrompt{
+		{
+			Name:   "Weekly triage",
+			Prompt: "triage",
+			Target: &prompts.PromptTarget{Title: "Weekly triage"},
+		},
+	})
+
+	ctx := context.Background()
+	_, out, err := srv.handleConversationStart(ctx, nil, ConversationStartInput{
+		SelfID:     parentID,
+		PromptName: "Weekly triage",
+		Title:      "caller wins",
+	})
+	if err != nil {
+		t.Fatalf("handleConversationStart: unexpected error: %v", err)
+	}
+	meta, err := store.GetMetadata(out.SessionID)
+	if err != nil {
+		t.Fatalf("GetMetadata(%q) error: %v", out.SessionID, err)
+	}
+	if meta.Name != "caller wins" {
+		t.Errorf("Created conversation Name = %q, want %q (caller Title must win over plain target.title default)", meta.Name, "caller wins")
+	}
+}

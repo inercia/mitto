@@ -219,6 +219,11 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 					"prompt", input.PromptName, "request_title", input.Title, "target_title", promptTargetTitle)
 			}
 			input.Title = promptTargetTitle
+		} else if !promptReuseTitle && promptTargetTitle != "" && input.Title == "" {
+			// Plain target.title (no reuseTitle): adopt as default Title
+			// only when the caller did not supply one. Caller override
+			// wins; find-or-route is NOT invoked (reuseTitle is opt-in).
+			input.Title = promptTargetTitle
 		}
 
 		// Auto-apply the seeded prompt's loop: frontmatter block (mitto-r7y):
