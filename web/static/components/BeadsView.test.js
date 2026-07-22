@@ -16,6 +16,11 @@ import {
   matchesSearch,
   CLEANUP_PROGRESS_TOAST_INTERVAL_MS,
 } from "../utils/beads.js";
+// Namespaced import so a missing named export (e.g. isBeadsSchemaSkew before the
+// mitto-n5mw fix lands) does NOT cause a module-load SyntaxError that would
+// take the whole test file down — the missing helpers just show up as
+// `undefined` on the namespace object.
+import * as beadsUtils from "../utils/beads.js";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
@@ -953,6 +958,273 @@ describe("BeadsIssueView history stack — external prop reset", () => {
 
 
 // =============================================================================
+// BeadsView (main tasks-list flavor) in-panel navigation history stack
+// =============================================================================
+//
+// The main BeadsView owns a simpler in-panel navigation stack than
+// BeadsIssueView: no browser-history integration, and the "closed" state is
+// modeled with `pos = -1` and an empty `history`. Mutators mirrored below:
+//   - listClickReducer(state, issue)   — a click on a list row (selectIssue).
+//   - panelSelectReducer(state, depObj) — a dep/subtask/parent click inside
+//                                         the panel (handlePanelSelectIssue).
+//   - goBackReducer(state) / goForwardReducer(state) — bottom-bar chevrons.
+//
+// Same jsdom limitation as above (BeadsView.js reads window.preact at module
+// load) means we exercise these as pure reducer helpers rather than driving
+// the real component. If the stack logic in BeadsView.js changes, these
+// helpers must be updated to match.
+// =============================================================================
+
+/** Initial state when the panel is closed: empty history, pos=-1. */
+function makeClosedPanel() {
+  return { history: [], pos: -1 };
+}
+
+/**
+ * Mirrors selectIssue in BeadsView.js: a list-row click either opens the
+ * clicked issue (resetting the stack to a single root entry) or toggles the
+ * panel closed if the same issue is already showing.
+ */
+function listClickReducer(state, issue) {
+  const currentId = state.pos >= 0 ? state.history[state.pos] : null;
+  if (currentId && currentId === issue.id) {
+    return makeClosedPanel();
+  }
+  return { history: [issue.id], pos: 0 };
+}
+
+/**
+ * Mirrors handlePanelSelectIssue in BeadsView.js: an in-panel dep/subtask
+ * click truncates any forward entries, pushes the new id, and advances pos.
+ * A click matching the current id is a no-op. A falsy id is ignored.
+ */
+function panelSelectReducer(state, depObj) {
+  const id = depObj && depObj.id;
+  if (!id) return state;
+  if (state.pos >= 0 && state.history[state.pos] === id) return state;
+  const newHistory = [...state.history.slice(0, state.pos + 1), id];
+  return { history: newHistory, pos: newHistory.length - 1 };
+}
+
+/** Mirrors goBack in BeadsView.js (clamped at 0; no-op when pos<=0). */
+function goBackReducer(state) {
+  if (state.pos <= 0) return state;
+  return { ...state, pos: state.pos - 1 };
+}
+
+/** Mirrors goForward in BeadsView.js (clamped at history.length-1). */
+function goForwardReducer(state) {
+  if (state.pos < 0 || state.pos >= state.history.length - 1) return state;
+  return { ...state, pos: state.pos + 1 };
+}
+
+/** Derived flags exposed to the panel. */
+function panelCanGoBack(state) {
+  return state.pos > 0;
+}
+function panelCanGoForward(state) {
+  return state.pos >= 0 && state.pos < state.history.length - 1;
+}
+function panelCurrentId(state) {
+  return state.pos >= 0 ? state.history[state.pos] : null;
+}
+
+describe("BeadsView panel history — initial state", () => {
+  test("closed panel has empty history and pos=-1", () => {
+    const s = makeClosedPanel();
+    expect(s.history).toEqual([]);
+    expect(s.pos).toBe(-1);
+    expect(panelCurrentId(s)).toBeNull();
+    expect(panelCanGoBack(s)).toBe(false);
+    expect(panelCanGoForward(s)).toBe(false);
+  });
+});
+
+describe("BeadsView panel history — list-row click", () => {
+  test("opening from the list resets history to [id]/pos=0", () => {
+    const s = listClickReducer(makeClosedPanel(), { id: "mitto-aaa" });
+    expect(s.history).toEqual(["mitto-aaa"]);
+    expect(s.pos).toBe(0);
+    expect(panelCurrentId(s)).toBe("mitto-aaa");
+    expect(panelCanGoBack(s)).toBe(false);
+    expect(panelCanGoForward(s)).toBe(false);
+  });
+
+  test("opening a different issue from the list resets the stack", () => {
+    // User has clicked into aaa, drilled into bbb via a dep, then clicks
+    // ccc in the list — the panel should reset to a fresh [ccc]/pos=0 stack.
+    let s = listClickReducer(makeClosedPanel(), { id: "mitto-aaa" });
+    s = panelSelectReducer(s, { id: "mitto-bbb" });
+    expect(s.history).toEqual(["mitto-aaa", "mitto-bbb"]);
+    s = listClickReducer(s, { id: "mitto-ccc" });
+    expect(s.history).toEqual(["mitto-ccc"]);
+    expect(s.pos).toBe(0);
+    expect(panelCanGoBack(s)).toBe(false);
+    expect(panelCanGoForward(s)).toBe(false);
+  });
+
+  test("clicking the same list issue again toggles the panel closed", () => {
+    let s = listClickReducer(makeClosedPanel(), { id: "mitto-aaa" });
+    s = listClickReducer(s, { id: "mitto-aaa" });
+    expect(s.history).toEqual([]);
+    expect(s.pos).toBe(-1);
+    expect(panelCurrentId(s)).toBeNull();
+  });
+
+  test("toggle-close ignores prior in-panel navigation state", () => {
+    // Even with a multi-entry stack, re-clicking whatever is CURRENTLY shown
+    // in the list closes the panel entirely.
+    let s = listClickReducer(makeClosedPanel(), { id: "mitto-aaa" });
+    s = panelSelectReducer(s, { id: "mitto-bbb" });
+    // The panel currently shows bbb (pos=1). Re-clicking bbb in the list
+    // toggles closed because the list-row check compares to currentId.
+    s = listClickReducer(s, { id: "mitto-bbb" });
+    expect(s.history).toEqual([]);
+    expect(s.pos).toBe(-1);
+  });
+});
+
+describe("BeadsView panel history — in-panel dep click", () => {
+  test("dep click pushes and advances pos", () => {
+    let s = listClickReducer(makeClosedPanel(), { id: "mitto-aaa" });
+    s = panelSelectReducer(s, { id: "mitto-bbb" });
+    expect(s.history).toEqual(["mitto-aaa", "mitto-bbb"]);
+    expect(s.pos).toBe(1);
+    expect(panelCurrentId(s)).toBe("mitto-bbb");
+    expect(panelCanGoBack(s)).toBe(true);
+    expect(panelCanGoForward(s)).toBe(false);
+  });
+
+  test("several sequential dep clicks extend the stack", () => {
+    let s = listClickReducer(makeClosedPanel(), { id: "mitto-aaa" });
+    s = panelSelectReducer(s, { id: "mitto-bbb" });
+    s = panelSelectReducer(s, { id: "mitto-ccc" });
+    s = panelSelectReducer(s, { id: "mitto-ddd" });
+    expect(s.history).toEqual([
+      "mitto-aaa",
+      "mitto-bbb",
+      "mitto-ccc",
+      "mitto-ddd",
+    ]);
+    expect(s.pos).toBe(3);
+    expect(panelCurrentId(s)).toBe("mitto-ddd");
+  });
+
+  test("dep click matching the current id is a no-op", () => {
+    let s = listClickReducer(makeClosedPanel(), { id: "mitto-aaa" });
+    s = panelSelectReducer(s, { id: "mitto-bbb" });
+    const before = s;
+    s = panelSelectReducer(s, { id: "mitto-bbb" });
+    expect(s).toBe(before);
+    expect(s.history).toEqual(["mitto-aaa", "mitto-bbb"]);
+    expect(s.pos).toBe(1);
+  });
+
+  test("dep click after goBack truncates the forward chain", () => {
+    let s = listClickReducer(makeClosedPanel(), { id: "mitto-aaa" });
+    s = panelSelectReducer(s, { id: "mitto-bbb" });
+    s = panelSelectReducer(s, { id: "mitto-ccc" });
+    s = panelSelectReducer(s, { id: "mitto-ddd" });
+    // history: [aaa, bbb, ccc, ddd], pos=3
+    s = goBackReducer(s); // pos=2 (ccc)
+    s = goBackReducer(s); // pos=1 (bbb)
+    // Branch at bbb: discards [ccc, ddd] and pushes eee.
+    s = panelSelectReducer(s, { id: "mitto-eee" });
+    expect(s.history).toEqual(["mitto-aaa", "mitto-bbb", "mitto-eee"]);
+    expect(s.pos).toBe(2);
+    expect(panelCurrentId(s)).toBe("mitto-eee");
+    expect(panelCanGoForward(s)).toBe(false);
+    expect(panelCanGoBack(s)).toBe(true);
+  });
+
+  test("dep click with missing/empty/falsy id is ignored", () => {
+    const s = listClickReducer(makeClosedPanel(), { id: "mitto-aaa" });
+    expect(panelSelectReducer(s, {})).toBe(s);
+    expect(panelSelectReducer(s, { id: "" })).toBe(s);
+    expect(panelSelectReducer(s, { id: null })).toBe(s);
+    expect(panelSelectReducer(s, null)).toBe(s);
+    expect(panelSelectReducer(s, undefined)).toBe(s);
+  });
+});
+
+describe("BeadsView panel history — goBack / goForward", () => {
+  test("goBack decrements pos and updates canGo* flags", () => {
+    let s = listClickReducer(makeClosedPanel(), { id: "mitto-aaa" });
+    s = panelSelectReducer(s, { id: "mitto-bbb" });
+    s = panelSelectReducer(s, { id: "mitto-ccc" });
+    // pos=2 (ccc)
+    s = goBackReducer(s);
+    expect(panelCurrentId(s)).toBe("mitto-bbb");
+    expect(s.pos).toBe(1);
+    expect(panelCanGoBack(s)).toBe(true);
+    expect(panelCanGoForward(s)).toBe(true);
+  });
+
+  test("goBack at pos=0 is a no-op (does not go negative)", () => {
+    const s0 = listClickReducer(makeClosedPanel(), { id: "mitto-aaa" });
+    const s1 = goBackReducer(s0);
+    expect(s1).toBe(s0);
+    expect(s1.pos).toBe(0);
+    expect(panelCurrentId(s1)).toBe("mitto-aaa");
+  });
+
+  test("goForward increments pos and retraces the forward chain", () => {
+    let s = listClickReducer(makeClosedPanel(), { id: "mitto-aaa" });
+    s = panelSelectReducer(s, { id: "mitto-bbb" });
+    s = panelSelectReducer(s, { id: "mitto-ccc" });
+    s = goBackReducer(s); // pos=1 (bbb)
+    s = goForwardReducer(s);
+    expect(panelCurrentId(s)).toBe("mitto-ccc");
+    expect(s.pos).toBe(2);
+    expect(panelCanGoBack(s)).toBe(true);
+    expect(panelCanGoForward(s)).toBe(false);
+  });
+
+  test("goForward at the end of history is a no-op (clamped)", () => {
+    let s = listClickReducer(makeClosedPanel(), { id: "mitto-aaa" });
+    s = panelSelectReducer(s, { id: "mitto-bbb" });
+    const before = s;
+    s = goForwardReducer(s);
+    expect(s).toBe(before);
+    expect(s.pos).toBe(1);
+    expect(panelCanGoForward(s)).toBe(false);
+  });
+
+  test("goBack/goForward on a closed panel are no-ops", () => {
+    const closed = makeClosedPanel();
+    expect(goBackReducer(closed)).toBe(closed);
+    expect(goForwardReducer(closed)).toBe(closed);
+    expect(panelCanGoBack(closed)).toBe(false);
+    expect(panelCanGoForward(closed)).toBe(false);
+  });
+});
+
+describe("BeadsView panel history — canGoBack / canGoForward derivations", () => {
+  test("root entry: both false", () => {
+    const s = listClickReducer(makeClosedPanel(), { id: "mitto-aaa" });
+    expect(panelCanGoBack(s)).toBe(false);
+    expect(panelCanGoForward(s)).toBe(false);
+  });
+
+  test("middle of a stack after goBack: both true", () => {
+    let s = listClickReducer(makeClosedPanel(), { id: "mitto-aaa" });
+    s = panelSelectReducer(s, { id: "mitto-bbb" });
+    s = panelSelectReducer(s, { id: "mitto-ccc" });
+    s = goBackReducer(s);
+    expect(panelCanGoBack(s)).toBe(true);
+    expect(panelCanGoForward(s)).toBe(true);
+  });
+
+  test("tail of a stack: only back is true", () => {
+    let s = listClickReducer(makeClosedPanel(), { id: "mitto-aaa" });
+    s = panelSelectReducer(s, { id: "mitto-bbb" });
+    expect(panelCanGoBack(s)).toBe(true);
+    expect(panelCanGoForward(s)).toBe(false);
+  });
+});
+
+
+// =============================================================================
 // mitto-qluh.3 — computePopstateAction (browser History API integration)
 // =============================================================================
 //
@@ -1144,5 +1416,180 @@ describe("mitto-zbfq: BeadsIssueView single Drawer mount across load", () => {
     // hide it from the assertion.
     const collapsed = body.replace(/\s+/g, " ");
     expect(collapsed).not.toMatch(/if\s*\(\s*!\s*h\.creating\s*&&\s*!\s*h\.data\s*\)\s*return\s+null/);
+  });
+});
+
+// =============================================================================
+// mitto-n5mw: write handlers must not swallow beads_schema_skew (409)
+// =============================================================================
+//
+// Only fetchList routes `data.code === "beads_schema_skew"` into
+// setSchemaSkew(...) — every other write handler in BeadsView.js falls through
+// to a plain error toast whose title carries the migration message but offers
+// no path to SchemaSkewDialog. This reproduction has two layers:
+//
+//   1. Contract: utils/beads.js must export isBeadsSchemaSkew() and
+//      toSchemaSkewState() so every write handler can share one branch.
+//   2. Wiring:   each write handler in BeadsView.js must call the helper on
+//      its error branch (source-inspection assertion, matching the existing
+//      mitto-zbfq test pattern — a full DOM/render test is impractical here
+//      because BeadsView imports window.preact globals at module load time).
+//
+// Both layers fail today and must pass once the fix lands.
+
+describe("mitto-n5mw: write handlers must not swallow beads_schema_skew (409)", () => {
+  const source = readFileSync(BEADS_VIEW_PATH, "utf8");
+
+  // Slice a named handler body from the file so the assertions are scoped to
+  // its error branch instead of the whole 3303-line component.
+  function extractHandlerBody(marker) {
+    const startIdx = source.indexOf(marker);
+    expect(startIdx).toBeGreaterThan(-1);
+    // Handler bodies are ~30–110 lines; slice a generous window and stop at
+    // the next top-level `const handle` / `function ` declaration so we do
+    // not bleed into the next handler.
+    const afterStart = source.indexOf("\n  const handle", startIdx + marker.length);
+    const afterFn = source.indexOf("\nfunction ", startIdx + marker.length);
+    const candidates = [afterStart, afterFn].filter((i) => i > startIdx);
+    const endIdx = candidates.length ? Math.min(...candidates) : source.length;
+    return source.slice(startIdx, endIdx);
+  }
+
+  describe("utils/beads.js exports the shared schema-skew helpers", () => {
+    test("isBeadsSchemaSkew is exported", () => {
+      expect(typeof beadsUtils.isBeadsSchemaSkew).toBe("function");
+    });
+
+    test("toSchemaSkewState is exported", () => {
+      expect(typeof beadsUtils.toSchemaSkewState).toBe("function");
+    });
+
+    test("isBeadsSchemaSkew detects the canonical 409 code", () => {
+      const data = {
+        error: "The beads database needs migration",
+        code: "beads_schema_skew",
+        details: { db_path: "/x/.beads", hint: "run bd migrate", options: [] },
+      };
+      expect(beadsUtils.isBeadsSchemaSkew(data)).toBe(true);
+    });
+
+    test("isBeadsSchemaSkew returns false for unrelated errors", () => {
+      expect(beadsUtils.isBeadsSchemaSkew({ error: "boom", code: "bd_failed" })).toBe(false);
+      expect(beadsUtils.isBeadsSchemaSkew({ error: "boom" })).toBe(false);
+      expect(beadsUtils.isBeadsSchemaSkew(null)).toBe(false);
+      expect(beadsUtils.isBeadsSchemaSkew(undefined)).toBe(false);
+    });
+
+    test("toSchemaSkewState maps the flattened envelope into SchemaSkewDialog state", () => {
+      const data = {
+        error: "The beads database at /x/.beads needs migration",
+        code: "beads_schema_skew",
+        details: {
+          db_path: "/x/.beads",
+          hint: "run bd migrate",
+          options: ["allow_migrate_from_ui"],
+        },
+      };
+      expect(beadsUtils.toSchemaSkewState(data)).toEqual({
+        message: "The beads database at /x/.beads needs migration",
+        dbPath: "/x/.beads",
+        hint: "run bd migrate",
+        options: ["allow_migrate_from_ui"],
+      });
+    });
+
+    test("toSchemaSkewState tolerates missing details", () => {
+      const state = beadsUtils.toSchemaSkewState({ error: "msg", code: "beads_schema_skew" });
+      expect(state.message).toBe("msg");
+      expect(state.dbPath).toBe("");
+      expect(state.hint).toBe("");
+      expect(state.options).toEqual([]);
+    });
+  });
+
+  describe("BeadsDetailPanelWrapper write handlers route schema_skew to onSchemaSkew", () => {
+    // The wrapper cannot reach setSchemaSkew directly (it lives in the parent
+    // BeadsView), so the fix threads a callback prop (e.g. onSchemaSkew(data))
+    // through to it. Every error branch must gate on isBeadsSchemaSkew and
+    // call that callback before falling back to the plain toast.
+
+    test("handleToggleStatus (wrapper) branches on isBeadsSchemaSkew", () => {
+      // The wrapper's handleToggleStatus lives before the main-view one; its
+      // body appears first in the file. We slice just that first occurrence.
+      const idx = source.indexOf("const handleToggleStatus = useCallback");
+      expect(idx).toBeGreaterThan(-1);
+      const nextIdx = source.indexOf("\n  const handle", idx + 30);
+      const body = source.slice(idx, nextIdx > idx ? nextIdx : idx + 4000);
+      expect(body).toMatch(/isBeadsSchemaSkew\s*\(/);
+    });
+
+    test("handleToggleDefer (wrapper) branches on isBeadsSchemaSkew", () => {
+      const idx = source.indexOf("const handleToggleDefer = useCallback");
+      expect(idx).toBeGreaterThan(-1);
+      const nextIdx = source.indexOf("\n  const ", idx + 30);
+      const body = source.slice(idx, nextIdx > idx ? nextIdx : idx + 4000);
+      expect(body).toMatch(/isBeadsSchemaSkew\s*\(/);
+    });
+
+    test("confirmDeleteIssue (wrapper) branches on isBeadsSchemaSkew", () => {
+      // Two confirmDeleteIssue definitions exist (wrapper + main view). The
+      // wrapper's is the FIRST occurrence.
+      const idx = source.indexOf("const confirmDeleteIssue = useCallback");
+      expect(idx).toBeGreaterThan(-1);
+      const nextIdx = source.indexOf("\n  const ", idx + 30);
+      const body = source.slice(idx, nextIdx > idx ? nextIdx : idx + 4000);
+      expect(body).toMatch(/isBeadsSchemaSkew\s*\(/);
+    });
+  });
+
+  describe("Main BeadsView write handlers route schema_skew to setSchemaSkew", () => {
+    // These handlers all live inside the main BeadsView function and have
+    // setSchemaSkew / setShowMigrateDialog in scope, so they can populate the
+    // dialog directly.
+
+    test("handleCleanup branches on isBeadsSchemaSkew", () => {
+      const body = extractHandlerBody("const handleCleanup = useCallback");
+      expect(body).toMatch(/isBeadsSchemaSkew\s*\(/);
+    });
+
+    test("main-view confirmDeleteIssue branches on isBeadsSchemaSkew (and does not just accumulate closeFailed / childDeleteFailed on 409)", () => {
+      // The second occurrence of confirmDeleteIssue is the main-view one.
+      const first = source.indexOf("const confirmDeleteIssue = useCallback");
+      expect(first).toBeGreaterThan(-1);
+      const second = source.indexOf("const confirmDeleteIssue = useCallback", first + 1);
+      expect(second).toBeGreaterThan(-1);
+      const nextIdx = source.indexOf("\n  const ", second + 30);
+      const body = source.slice(second, nextIdx > second ? nextIdx : second + 8000);
+      // Guard on the parent delete branch.
+      expect(body).toMatch(/isBeadsSchemaSkew\s*\(/);
+      // Child loops must also honour schema_skew — either by bailing early or
+      // by calling the helper. Look for at least two mentions inside the body
+      // (parent branch + at least one child loop bail).
+      const hits = body.match(/isBeadsSchemaSkew\s*\(/g) || [];
+      expect(hits.length).toBeGreaterThanOrEqual(2);
+    });
+
+    test("main-view handleToggleStatus branches on isBeadsSchemaSkew", () => {
+      const first = source.indexOf("const handleToggleStatus = useCallback");
+      const second = source.indexOf("const handleToggleStatus = useCallback", first + 1);
+      expect(second).toBeGreaterThan(-1);
+      const nextIdx = source.indexOf("\n  const ", second + 30);
+      const body = source.slice(second, nextIdx > second ? nextIdx : second + 4000);
+      expect(body).toMatch(/isBeadsSchemaSkew\s*\(/);
+    });
+
+    test("main-view handleToggleDefer branches on isBeadsSchemaSkew", () => {
+      const first = source.indexOf("const handleToggleDefer = useCallback");
+      const second = source.indexOf("const handleToggleDefer = useCallback", first + 1);
+      expect(second).toBeGreaterThan(-1);
+      const nextIdx = source.indexOf("\n  const ", second + 30);
+      const body = source.slice(second, nextIdx > second ? nextIdx : second + 4000);
+      expect(body).toMatch(/isBeadsSchemaSkew\s*\(/);
+    });
+
+    test("handleAddDependencyEdge branches on isBeadsSchemaSkew", () => {
+      const body = extractHandlerBody("const handleAddDependencyEdge = useCallback");
+      expect(body).toMatch(/isBeadsSchemaSkew\s*\(/);
+    });
   });
 });

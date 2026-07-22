@@ -111,6 +111,30 @@ export async function readBeadsResponse(res) {
   };
 }
 
+// isBeadsSchemaSkew returns true when a flattened beads response (as produced
+// by readBeadsResponse) carries the canonical `beads_schema_skew` error code.
+// The backend returns HTTP 409 with this code whenever the .beads database is
+// behind the bd binary's schema and is remote-backed; every write handler must
+// route this branch into SchemaSkewDialog instead of a generic error toast.
+export function isBeadsSchemaSkew(data) {
+  return !!(data && data.code === "beads_schema_skew");
+}
+
+// toSchemaSkewState maps a flattened beads response into the shape the
+// SchemaSkewDialog state (`schemaSkew`) expects: { message, dbPath, hint,
+// options }. Tolerates missing details by falling back to empty strings and
+// an empty options array so the dialog can still render (with the message
+// alone) if the backend omitted details.
+export function toSchemaSkewState(data) {
+  const details = (data && data.details) || {};
+  return {
+    message: (data && data.error) || "",
+    dbPath: details.db_path || "",
+    hint: details.hint || "",
+    options: Array.isArray(details.options) ? details.options : [],
+  };
+}
+
 // matchesSearch returns true when `issue` matches the user's search query.
 // The query is whitespace-tokenized (case-insensitive) and every token must
 // appear as a substring of one of the searchable fields: id, title, owner,

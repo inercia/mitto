@@ -29,6 +29,8 @@ import {
   ISSUE_TYPES,
   BEADS_SUPPORTS_HOVER,
   BEADS_TOOLTIP_DELAY_MS,
+  isBeadsSchemaSkew,
+  toSchemaSkewState,
 } from "../utils/beads.js";
 // Re-export STATUS_COLORS at its original location so any external consumer
 // that had `import { STATUS_COLORS } from ".../BeadsView.js"` keeps working
@@ -188,10 +190,9 @@ export function BeadsDetailPanel({
   loadingIssueId,
   loadError,
   onRetry,
-  // In-viewer navigation history (mitto-qluh.2). Threaded through from
-  // BeadsIssueView so the panel's bottom bar can render visible Back/Forward
-  // buttons wired to the viewer's history stack. Undefined in the main
-  // BeadsView call site (no history stack there).
+  // In-viewer navigation history (mitto-qluh.2). Threaded through from the
+  // caller so the panel's bottom bar can render visible Back/Forward buttons
+  // wired to whichever in-component history stack the caller owns.
   canGoBack,
   canGoForward,
   onGoBack,
@@ -345,6 +346,13 @@ export function BeadsIssueView({
   // the list the Subtasks section would never render here even though it does
   // in the Tasks list view (which passes its already-loaded list as allIssues).
   const [listIssues, setListIssues] = useState([]);
+  // mitto-n5mw: local SchemaSkewDialog state. The wrapper is a standalone
+  // overlay (rendered by app.js, not by BeadsView), so it cannot reach the
+  // main-view setSchemaSkew setter — it mounts its own copy of the dialog and
+  // populates it directly when any write handler receives HTTP 409 with the
+  // canonical `beads_schema_skew` code.
+  const [schemaSkew, setSchemaSkew] = useState(null);
+  const [showMigrateDialog, setShowMigrateDialog] = useState(false);
 
   // Browser History API integration (mitto-qluh.3). While this component is
   // mounted, each `handleSelectIssue` push also calls `window.history.pushState`
@@ -544,6 +552,16 @@ export function BeadsIssueView({
 
   const refresh = useCallback(() => setRefreshNonce((n) => n + 1), []);
 
+  // mitto-n5mw: on write-triggered HTTP 409 `beads_schema_skew`, populate the
+  // local SchemaSkewDialog state and open the dialog directly. All write
+  // handlers call this from their error branch (via isBeadsSchemaSkew) so a
+  // schema-behind clone surfaces the actionable dialog instead of a truncated
+  // "nothing happened" toast.
+  const onSchemaSkew = useCallback((data) => {
+    setSchemaSkew(toSchemaSkewState(data));
+    setShowMigrateDialog(true);
+  }, []);
+
   // In-viewer navigation: clicking a related id truncates any forward entries
   // (browser-style — pending forward history is discarded when a new branch is
   // taken), pushes the new id, and advances `pos`. A click on the same id as
@@ -609,6 +627,13 @@ export function BeadsIssueView({
         );
         const data = await readBeadsResponse(res);
         if (!res.ok || data.error) {
+          // mitto-n5mw: HTTP 409 beads_schema_skew must open the
+          // SchemaSkewDialog instead of a generic error toast — otherwise the
+          // user sees "nothing happened" on a schema-behind clone.
+          if (isBeadsSchemaSkew(data)) {
+            onSchemaSkew(data);
+            return;
+          }
           showToast &&
             showToast({
               style: "error",
@@ -633,7 +658,7 @@ export function BeadsIssueView({
         setStatusBusy(false);
       }
     },
-    [workingDir, showToast, refresh],
+    [workingDir, showToast, refresh, onSchemaSkew],
   );
 
   const handleToggleDefer = useCallback(
@@ -652,6 +677,11 @@ export function BeadsIssueView({
         );
         const data = await readBeadsResponse(res);
         if (!res.ok || data.error) {
+          // mitto-n5mw: schema-skew branch (see handleToggleStatus above).
+          if (isBeadsSchemaSkew(data)) {
+            onSchemaSkew(data);
+            return;
+          }
           showToast &&
             showToast({
               style: "error",
@@ -678,7 +708,7 @@ export function BeadsIssueView({
         setStatusBusy(false);
       }
     },
-    [workingDir, showToast, refresh],
+    [workingDir, showToast, refresh, onSchemaSkew],
   );
 
   const confirmDeleteIssue = useCallback(async () => {
@@ -694,6 +724,11 @@ export function BeadsIssueView({
       );
       const data = await readBeadsResponse(res);
       if (!res.ok || data.error) {
+        // mitto-n5mw: schema-skew branch (see handleToggleStatus above).
+        if (isBeadsSchemaSkew(data)) {
+          onSchemaSkew(data);
+          return;
+        }
         showToast &&
           showToast({
             style: "error",
@@ -713,7 +748,13 @@ export function BeadsIssueView({
       setDeletingIssue(false);
       setDeleteTarget(null);
     }
-  }, [deleteTarget, workingDir, showToast, onReturnToConversation]);
+  }, [
+    deleteTarget,
+    workingDir,
+    showToast,
+    onReturnToConversation,
+    onSchemaSkew,
+  ]);
 
   // mitto-zbfq: a single stable BeadsDetailPanel spans the whole load
   // lifecycle. While `issue` is null, the panel renders its own loading /
@@ -757,6 +798,21 @@ export function BeadsIssueView({
         isLoading=${deletingIssue}
         onConfirm=${confirmDeleteIssue}
         onCancel=${() => setDeleteTarget(null)}
+      />
+      <${SchemaSkewDialog}
+        isOpen=${showMigrateDialog && !!schemaSkew}
+        dbPath=${schemaSkew ? schemaSkew.dbPath : ""}
+        hint=${schemaSkew ? schemaSkew.hint : ""}
+        options=${schemaSkew ? schemaSkew.options : []}
+        workingDir=${workingDir}
+        showToast=${showToast}
+        onSuccess=${() => {
+          showToast && showToast("Migration completed", "success");
+          setShowMigrateDialog(false);
+          setSchemaSkew(null);
+          refresh();
+        }}
+        onCancel=${() => setShowMigrateDialog(false)}
       />
     </${Fragment}>
   `;
@@ -1093,6 +1149,16 @@ export function BeadsView({
   // When the create panel is opened via an epic's "+" button, this holds the
   // epic's id so the new issue is created as that epic's child (parent).
   const [createParent, setCreateParent] = useState(null);
+
+  // In-panel navigation stack (mitto-qluh.2, tasks-list flavor). Mirrors the
+  // BeadsIssueView stack pattern but without browser-history integration —
+  // this stack is purely in-component so users can retrace a chain of
+  // dep/subtask/parent clicks while the panel is open. `panelPos = -1` means
+  // the panel is closed or in create mode.
+  const [panelHistory, setPanelHistory] = useState([]);
+  const [panelPos, setPanelPos] = useState(-1);
+  const canGoBack = panelPos > 0;
+  const canGoForward = panelPos >= 0 && panelPos < panelHistory.length - 1;
 
   // The type and search filters are initialized from localStorage so that the
   // user's applied criteria are restored when they navigate away from the Beads
@@ -1500,9 +1566,21 @@ export function BeadsView({
   // The list rows already carry all rich fields (description, parent, dates,
   // assignee, owner), so the detail panel is populated directly from the row —
   // no extra /show request needed. Clicking the open row again toggles it shut.
+  // Opening from the list always resets the in-panel history stack to a single
+  // root entry; toggling closed clears it.
   const selectIssue = useCallback((issue) => {
     setIsCreating(false);
-    setSelectedIssue((prev) => (prev && prev.id === issue.id ? null : issue));
+    setSelectedIssue((prev) => {
+      const closing = prev && prev.id === issue.id;
+      if (closing) {
+        setPanelHistory([]);
+        setPanelPos(-1);
+        return null;
+      }
+      setPanelHistory([issue.id]);
+      setPanelPos(0);
+      return issue;
+    });
   }, []);
 
   // Open the side panel in "create" mode for a brand-new issue.
@@ -1510,6 +1588,8 @@ export function BeadsView({
     setCreateParent(null);
     setSelectedIssue(null);
     setIsCreating(true);
+    setPanelHistory([]);
+    setPanelPos(-1);
   }, []);
 
   // Open the create panel pre-seeded to create a child of the given epic.
@@ -1517,6 +1597,8 @@ export function BeadsView({
     setCreateParent(epicId);
     setSelectedIssue(null);
     setIsCreating(true);
+    setPanelHistory([]);
+    setPanelPos(-1);
   }, []);
 
   // Open the create panel when asked to from outside (e.g. the global "new
@@ -1558,7 +1640,48 @@ export function BeadsView({
     setSelectedIssue(null);
     setIsCreating(false);
     setCreateParent(null);
+    setPanelHistory([]);
+    setPanelPos(-1);
   }, []);
+
+  // In-panel navigation (dep/subtask/parent click): browser-style
+  // truncate-then-push, matching BeadsIssueView.handleSelectIssue. `depObj`
+  // carries at least {id} — prefer the row from the loaded list so the panel
+  // gets rich fields immediately; fall back to the stub (the panel body's
+  // useIssueDependencies effect will fetch full details from /api/issues/{id}
+  // when data.id changes).
+  const handlePanelSelectIssue = useCallback(
+    (depObj) => {
+      const id = depObj && depObj.id;
+      if (!id) return;
+      if (panelPos >= 0 && panelHistory[panelPos] === id) return;
+      setIsCreating(false);
+      const newHistory = [...panelHistory.slice(0, panelPos + 1), id];
+      setPanelHistory(newHistory);
+      setPanelPos(newHistory.length - 1);
+      const full = (issues || []).find((i) => i.id === id) || depObj;
+      setSelectedIssue(full);
+    },
+    [panelHistory, panelPos, issues],
+  );
+
+  const goBack = useCallback(() => {
+    if (panelPos <= 0) return;
+    const newPos = panelPos - 1;
+    const id = panelHistory[newPos];
+    setPanelPos(newPos);
+    const full = (issues || []).find((i) => i.id === id) || { id };
+    setSelectedIssue(full);
+  }, [panelHistory, panelPos, issues]);
+
+  const goForward = useCallback(() => {
+    if (panelPos < 0 || panelPos >= panelHistory.length - 1) return;
+    const newPos = panelPos + 1;
+    const id = panelHistory[newPos];
+    setPanelPos(newPos);
+    const full = (issues || []).find((i) => i.id === id) || { id };
+    setSelectedIssue(full);
+  }, [panelHistory, panelPos, issues]);
 
   // Open the per-issue context menu at the cursor and load the `menus: beadsIssues`
   // prompts for this workspace so the "Prompts" submenu reflects them.
@@ -1823,6 +1946,14 @@ export function BeadsView({
       );
       const data = await readBeadsResponse(res);
       if (!res.ok || data.error) {
+        // mitto-n5mw: HTTP 409 beads_schema_skew must open the
+        // SchemaSkewDialog instead of a generic error toast.
+        if (isBeadsSchemaSkew(data)) {
+          setSchemaSkew(toSchemaSkewState(data));
+          setShowMigrateDialog(true);
+          setCleaningUp(false);
+          return;
+        }
         showToast &&
           showToast({
             style: "error",
@@ -1946,6 +2077,11 @@ export function BeadsView({
       let childDeletedCount = 0;
       let childDeleteFailed = 0;
 
+      // mitto-n5mw: schema-skew flag propagated out of the child loops so the
+      // parent branch below opens the SchemaSkewDialog instead of continuing
+      // with a partial-success toast on a schema-behind clone.
+      let schemaSkewData = null;
+
       if (childAction === "close") {
         for (const { issue: child } of deleteTargetOpenDescendants) {
           try {
@@ -1958,8 +2094,15 @@ export function BeadsView({
               },
             );
             const cdata = await readBeadsResponse(cres);
-            if (!cres.ok || cdata.error) closeFailed++;
-            else closedCount++;
+            if (!cres.ok || cdata.error) {
+              // mitto-n5mw: bail out of the loop on schema-skew so a long epic
+              // does not fire N identical 409s before surfacing the dialog.
+              if (isBeadsSchemaSkew(cdata)) {
+                schemaSkewData = cdata;
+                break;
+              }
+              closeFailed++;
+            } else closedCount++;
           } catch (err) {
             closeFailed++;
           }
@@ -1978,12 +2121,26 @@ export function BeadsView({
               },
             );
             const cdata = await readBeadsResponse(cres);
-            if (!cres.ok || cdata.error) childDeleteFailed++;
-            else childDeletedCount++;
+            if (!cres.ok || cdata.error) {
+              // mitto-n5mw: bail out of the loop on schema-skew (see above).
+              if (isBeadsSchemaSkew(cdata)) {
+                schemaSkewData = cdata;
+                break;
+              }
+              childDeleteFailed++;
+            } else childDeletedCount++;
           } catch (err) {
             childDeleteFailed++;
           }
         }
+      }
+
+      // mitto-n5mw: any child loop that tripped schema-skew short-circuits the
+      // parent delete and opens the dialog directly.
+      if (schemaSkewData) {
+        setSchemaSkew(toSchemaSkewState(schemaSkewData));
+        setShowMigrateDialog(true);
+        return;
       }
 
       const res = await secureFetch(
@@ -1994,6 +2151,12 @@ export function BeadsView({
       );
       const data = await readBeadsResponse(res);
       if (!res.ok || data.error) {
+        // mitto-n5mw: schema-skew on the parent delete opens the dialog.
+        if (isBeadsSchemaSkew(data)) {
+          setSchemaSkew(toSchemaSkewState(data));
+          setShowMigrateDialog(true);
+          return;
+        }
         showToast &&
           showToast({
             style: "error",
@@ -2057,6 +2220,13 @@ export function BeadsView({
         );
         const data = await readBeadsResponse(res);
         if (!res.ok || data.error) {
+          // mitto-n5mw: schema-skew opens the SchemaSkewDialog directly
+          // (main-view has setSchemaSkew / setShowMigrateDialog in scope).
+          if (isBeadsSchemaSkew(data)) {
+            setSchemaSkew(toSchemaSkewState(data));
+            setShowMigrateDialog(true);
+            return;
+          }
           showToast &&
             showToast({
               style: "error",
@@ -2105,6 +2275,12 @@ export function BeadsView({
         );
         const data = await readBeadsResponse(res);
         if (!res.ok || data.error) {
+          // mitto-n5mw: schema-skew branch (see handleToggleStatus above).
+          if (isBeadsSchemaSkew(data)) {
+            setSchemaSkew(toSchemaSkewState(data));
+            setShowMigrateDialog(true);
+            return;
+          }
           showToast &&
             showToast({
               style: "error",
@@ -2159,6 +2335,12 @@ export function BeadsView({
         );
         const data = await readBeadsResponse(res);
         if (!res.ok || data.error) {
+          // mitto-n5mw: schema-skew branch (see handleToggleStatus above).
+          if (isBeadsSchemaSkew(data)) {
+            setSchemaSkew(toSchemaSkewState(data));
+            setShowMigrateDialog(true);
+            return;
+          }
           showToast &&
             showToast({
               style: "error",
@@ -3099,8 +3281,12 @@ export function BeadsView({
       onToggleStatus=${handleToggleStatus}
       onToggleDefer=${handleToggleDefer}
       statusBusy=${statusBusy}
-      onSelectIssue=${selectIssue}
+      onSelectIssue=${handlePanelSelectIssue}
       createParentId=${createParent}
+      canGoBack=${canGoBack}
+      canGoForward=${canGoForward}
+      onGoBack=${goBack}
+      onGoForward=${goForward}
     />
     </div>
 
