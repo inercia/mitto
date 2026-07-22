@@ -227,6 +227,57 @@ func TestGeneralRateLimiter_Cleanup(t *testing.T) {
 	}
 }
 
+// TestGeneralRateLimiter_LocalhostExemptFromBurst reproduces mitto-jgz4:
+// a burst of API requests from 127.0.0.1 (loopback) currently trips the
+// GeneralRateLimiter and returns HTTP 429, which throttles the local UI
+// during frontend polling storms (e.g. mitto:beads_changed fan-out).
+//
+// Localhost is trustworthy by construction — it's the local user's own
+// browser talking to their own mitto server — so it should be exempt
+// from the shared per-IP burst budget.
+//
+// This test simulates the exact burst pattern observed in access.log
+// (BurstSize+ requests from 127.0.0.1 in rapid succession) and asserts
+// none of them are rate-limited. It fails today because the middleware
+// treats 127.0.0.1 like any other IP.
+func TestGeneralRateLimiter_LocalhostExemptFromBurst(t *testing.T) {
+	config := RateLimitConfig{
+		RequestsPerSecond: 1,
+		BurstSize:         2,
+		CleanupInterval:   time.Hour,
+		EntryTTL:          time.Hour,
+	}
+	rl := NewGeneralRateLimiter(config)
+	defer rl.Close()
+
+	handler := rl.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	// Loopback client addresses seen in the bug's access.log: 127.0.0.1 and ::1.
+	localhostAddrs := []string{
+		"127.0.0.1:54321",
+		"[::1]:54322",
+	}
+
+	for _, addr := range localhostAddrs {
+		// Fire well past the burst budget (BurstSize=2, so 5 is 3 over the limit).
+		// If localhost were exempt, every one of these would return 200.
+		const bursts = 5
+		for i := 0; i < bursts; i++ {
+			req := httptest.NewRequest("GET", "/api/beads/mitto-jgz4", nil)
+			req.RemoteAddr = addr
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			if rec.Code == http.StatusTooManyRequests {
+				t.Errorf("localhost %s request %d/%d was rate-limited (429) — "+
+					"loopback traffic should be exempt from the shared per-IP burst budget "+
+					"(mitto-jgz4)", addr, i+1, bursts)
+			}
+		}
+	}
+}
+
 func TestGeneralRateLimiter_AuthHTMLIsRateLimited(t *testing.T) {
 	config := RateLimitConfig{
 		RequestsPerSecond: 1,
