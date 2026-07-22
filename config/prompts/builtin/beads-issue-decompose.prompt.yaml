@@ -9,6 +9,9 @@ description: Break this bead into child beads with dependencies and create them 
 backgroundColor: '#D1C4E9'
 group: Tasks
 enabledWhen: '!Session.IsChild && CommandExists("bd") && DirExists(".beads") && Item.Status != "closed" && Item.Type != "epic"'
+target:
+  reuseIssue: true
+  reuseCoalesce: true
 prompt: |
   ## Session Context
 

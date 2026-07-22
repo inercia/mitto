@@ -5,6 +5,10 @@ description: Break a JIRA ticket into sub-tickets and create them automatically
 backgroundColor: '#E1BEE7'
 group: JIRA
 enabledWhen: '!Session.IsChild && (Tools.HasPattern("jira_*") || CommandExists("jira"))'
+target:
+  title: 'JIRA: decompose'
+  reuseTitle: true
+  reuseCoalesce: true
 prompt: |
   ## Session Context
 

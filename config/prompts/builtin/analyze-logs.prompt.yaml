@@ -20,6 +20,10 @@ loop:
   default: false
   trigger: onCompletion
   delay: 60
+target:
+  title: 'Analyze logs'
+  reuseTitle: true
+  reuseCoalesce: true
 prompt: |
   ## Session Context
 

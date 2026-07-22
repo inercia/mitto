@@ -9,6 +9,9 @@ description: 'Map and wire this bead''s relationships: what blocks it, what it b
 backgroundColor: '#FFCCBC'
 group: Tasks
 enabledWhen: CommandExists("bd") && DirExists(".beads") && Item.Status != "closed"
+target:
+  reuseIssue: true
+  reuseCoalesce: true
 prompt: |
   ## Session Context
 

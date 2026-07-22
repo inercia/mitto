@@ -32,6 +32,10 @@ loop:
   # shortly after Mitto boots (with a 60s anti-flap window guarding against a fast
   # restart of a healthy loop) so the supervisor picks up work immediately.
   runOnStart: true
+target:
+  title: 'Loop processing tasks'
+  reuseTitle: true
+  reuseCoalesce: true
 prompt: |
   ## Session Context
 

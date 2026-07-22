@@ -25,6 +25,8 @@ loop:
   # iterations don't accumulate stale reasoning, tool-call transcripts, and
   # file reads across turns.
   freshContext: true
+target:
+  reuseIssue: true
 prompt: |
   ## Session Context
 

@@ -6,6 +6,10 @@ group: Submission of changes
 backgroundColor: '#B2DFDB'
 preferredModels:
   - modelTag: Coding
+target:
+  title: 'Submit changes'
+  reuseTitle: true
+  reuseCoalesce: true
 prompt: |
   Submit current work by preparing, committing (if needed), and pushing changes to a pull request.
 

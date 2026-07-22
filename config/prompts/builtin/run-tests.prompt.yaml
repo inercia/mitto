@@ -11,6 +11,10 @@ loop:
   default: false
   trigger: onCompletion
   delay: 60
+target:
+  title: 'Run tests'
+  reuseTitle: true
+  reuseCoalesce: true
 prompt: |
   Run the project's test suite and report results.
 

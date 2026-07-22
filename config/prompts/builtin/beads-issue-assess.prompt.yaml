@@ -10,6 +10,9 @@ description: 'Discuss and refine a bead: resolve pending decisions, assess its q
 backgroundColor: '#F8BBD0'
 group: Tasks
 enabledWhen: CommandExists("bd") && DirExists(".beads") && Item.Status != "closed"
+target:
+  reuseIssue: true
+  reuseCoalesce: true
 prompt: |
   ## Session Context
 

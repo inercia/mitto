@@ -6,6 +6,10 @@ group: Submission of changes
 backgroundColor: '#B2DFDB'
 preferredModels:
   - modelTag: Coding
+target:
+  title: 'Rebase changes'
+  reuseTitle: true
+  reuseCoalesce: true
 prompt: |
   Rebase the current branch onto the target branch, resolving conflicts and pushing the result.
 

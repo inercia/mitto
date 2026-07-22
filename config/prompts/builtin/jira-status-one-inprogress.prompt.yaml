@@ -12,6 +12,10 @@ loop:
   default: false
   trigger: onCompletion
   delay: 60
+target:
+  title: 'JIRA: status ONE in-progress'
+  reuseTitle: true
+  reuseCoalesce: true
 prompt: |
   # JIRA: Status Check — One In-Progress Ticket
 

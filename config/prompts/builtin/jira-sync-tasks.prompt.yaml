@@ -33,6 +33,10 @@ loop:
   value: 1
   unit: days
   at: "09:00"
+target:
+  title: 'JIRA: sync tasks'
+  reuseTitle: true
+  reuseCoalesce: true
 prompt: |
   Sync JIRA tickets matching this project's saved query with local beads issues.
   By default this runs **both directions** — Pull (JIRA → beads) and Push

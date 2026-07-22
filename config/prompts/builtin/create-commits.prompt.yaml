@@ -6,6 +6,10 @@ group: Submission of changes
 backgroundColor: '#B2DFDB'
 preferredModels:
   - modelTag: Coding
+target:
+  title: 'Commit changes'
+  reuseTitle: true
+  reuseCoalesce: true
 prompt: |
   Create Git commits for changes in this repository with proper organization and messages.
 

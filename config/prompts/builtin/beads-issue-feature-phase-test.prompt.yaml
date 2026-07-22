@@ -15,6 +15,9 @@ group: Tasks
 backgroundColor: '#FFE0B2'
 preferredModels:
   - modelTag: Coding
+target:
+  reuseIssue: true
+  reuseCoalesce: true
 prompt: |
   ## Session Context
 

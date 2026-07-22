@@ -15,6 +15,9 @@ description: 'Raise a topic on a bead â€” a question, idea, concern, or change â
 backgroundColor: '#F8BBD0'
 group: Tasks
 enabledWhen: CommandExists("bd") && DirExists(".beads") && Item.Status != "closed"
+target:
+  reuseIssue: true
+  reuseCoalesce: true
 prompt: |
   ## Session Context
 

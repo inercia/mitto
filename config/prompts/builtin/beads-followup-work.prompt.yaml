@@ -10,6 +10,10 @@ description: Review for incomplete work, follow-up items, and edge cases — for
 backgroundColor: '#DCEDC8'
 group: Tasks
 enabledWhen: CommandExists("bd") && DirExists(".beads") && (Session.HasMessages || Session.HasBeadsIssue || Item.Id != "")
+target:
+  title: 'Identify follow-up issues'
+  reuseTitle: true
+  reuseCoalesce: true
 prompt: |
   ## Session Context
 

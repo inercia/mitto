@@ -19,6 +19,9 @@ group: Tasks
 backgroundColor: '#B3E5FC'
 preferredModels:
   - modelTag: Reasoning
+target:
+  reuseIssue: true
+  reuseCoalesce: true
 prompt: |
   ## Session Context
 

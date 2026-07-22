@@ -10,6 +10,10 @@ loop:
   default: false
   trigger: onCompletion
   delay: 60
+target:
+  title: 'JIRA: start work'
+  reuseTitle: true
+  reuseCoalesce: true
 prompt: |
   ## Session Context
 

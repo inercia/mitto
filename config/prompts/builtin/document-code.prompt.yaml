@@ -6,6 +6,10 @@ group: Documentation
 backgroundColor: '#B39DDB'
 preferredModels:
   - modelTag: Coding
+target:
+  title: 'Document Code'
+  reuseTitle: true
+  reuseCoalesce: true
 prompt: |
   Before adding documentation, read the code we wrote to understand its behavior,
   edge cases, and non-obvious design decisions. Also check the project's existing

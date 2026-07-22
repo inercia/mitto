@@ -10,6 +10,9 @@ description: 'Deep-dive a bead: gather context, clarify unclear details, enrich 
 backgroundColor: '#B3E5FC'
 group: Tasks
 enabledWhen: CommandExists("bd") && DirExists(".beads") && Item.Status != "closed"
+target:
+  reuseIssue: true
+  reuseCoalesce: true
 prompt: |
   ## Session Context
 

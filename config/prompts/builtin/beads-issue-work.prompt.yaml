@@ -10,6 +10,9 @@ description: Plan this bead and spawn parallel Mitto conversations to implement 
 backgroundColor: '#B2DFDB'
 group: Tasks
 enabledWhen: '!Session.IsChild && CommandExists("bd") && DirExists(".beads") && Permissions.CanStartConversation && Item.Status != "closed"'
+target:
+  reuseIssue: true
+  reuseCoalesce: true
 prompt: |
   ## Session Context
 

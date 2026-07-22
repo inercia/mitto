@@ -19,6 +19,8 @@ loop:
   delay: 30
   maxIterations: 20
   maxDuration: "4h"
+target:
+  reuseIssue: true
 prompt: |
   ## Session Context
 

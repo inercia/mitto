@@ -7,6 +7,10 @@ group: Tasks
 enabledWhen: CommandExists("bd") && DirExists(".beads")
 preferredModels:
   - modelTag: Coding
+target:
+  title: 'Status ONE in-progress'
+  reuseTitle: true
+  reuseCoalesce: true
 prompt: |
   # Beads: Status Check — One In-Progress Bead
 

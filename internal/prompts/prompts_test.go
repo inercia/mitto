@@ -2516,6 +2516,146 @@ func TestBuiltinPrompts_SupportRoutingAdoption(t *testing.T) {
 	}
 }
 
+// TestBuiltinPrompts_TodayTierRoutingAdoption pins mitto-5x21.2: the 51
+// today-tier beads-* / workspace-wide builtin prompts must declare target/reuse
+// routing so repeat dispatches funnel back into the right existing conversation
+// instead of spawning parallels. Modelled on TestBuiltinPrompts_SupportRoutingAdoption
+// (mitto-5x21.1) for the parallel support-* sweep.
+//
+// Four buckets:
+//   - 2a — per-bead work prompts: reuseIssue + reuseCoalesce.
+//   - 2b — per-bead phase prompts (feature/fix/mention): reuseIssue + reuseCoalesce.
+//   - 2c — per-bead loop prompts: reuseIssue only (concurrent dispatch must NOT
+//     merge into a live loop turn — no reuseCoalesce).
+//   - 2d — workspace-wide singleton loops/sweeps: literal title + reuseTitle +
+//     reuseCoalesce.
+//
+// Guards against silent regressions like: (a) somebody removing a target block
+// from one of these files, (b) reuseCoalesce being flipped off on 2a/2b/2d, (c)
+// reuseCoalesce being flipped ON for 2c, (d) a 2d literal title drifting.
+func TestBuiltinPrompts_TodayTierRoutingAdoption(t *testing.T) {
+	builtinDir := filepath.Join("..", "..", "config", "prompts", "builtin")
+	type bucket int
+	const (
+		perBeadWithCoalesce   bucket = iota // 2a + 2b
+		perBeadLoopNoCoalesce               // 2c
+		workspaceTitle                      // 2d
+	)
+	type spec struct {
+		file      string
+		bucket    bucket
+		wantTitle string // only for workspaceTitle
+	}
+	specs := []spec{
+		// 2a — per-bead work prompts.
+		{file: "beads-issue-work.prompt.yaml", bucket: perBeadWithCoalesce},
+		{file: "beads-issue-assess.prompt.yaml", bucket: perBeadWithCoalesce},
+		{file: "beads-issue-decompose.prompt.yaml", bucket: perBeadWithCoalesce},
+		{file: "beads-issue-dependencies.prompt.yaml", bucket: perBeadWithCoalesce},
+		{file: "beads-issue-discuss.prompt.yaml", bucket: perBeadWithCoalesce},
+		{file: "beads-issue-investigate.prompt.yaml", bucket: perBeadWithCoalesce},
+		{file: "beads-issue-status.prompt.yaml", bucket: perBeadWithCoalesce},
+		{file: "beads-issue-resolved.prompt.yaml", bucket: perBeadWithCoalesce},
+		{file: "beads-publish-post.prompt.yaml", bucket: perBeadWithCoalesce},
+		// 2b — per-bead phase prompts.
+		{file: "beads-issue-feature-phase-plan.prompt.yaml", bucket: perBeadWithCoalesce},
+		{file: "beads-issue-feature-phase-implement.prompt.yaml", bucket: perBeadWithCoalesce},
+		{file: "beads-issue-feature-phase-test.prompt.yaml", bucket: perBeadWithCoalesce},
+		{file: "beads-issue-feature-phase-review.prompt.yaml", bucket: perBeadWithCoalesce},
+		{file: "beads-issue-fix-phase-investigate.prompt.yaml", bucket: perBeadWithCoalesce},
+		{file: "beads-issue-fix-phase-reproduce.prompt.yaml", bucket: perBeadWithCoalesce},
+		{file: "beads-issue-fix-phase-fix.prompt.yaml", bucket: perBeadWithCoalesce},
+		{file: "beads-issue-mention-phase-answer.prompt.yaml", bucket: perBeadWithCoalesce},
+		{file: "beads-issue-mention-phase-implement.prompt.yaml", bucket: perBeadWithCoalesce},
+		{file: "beads-issue-mention-phase-investigate.prompt.yaml", bucket: perBeadWithCoalesce},
+		{file: "beads-issue-mention-phase-plan.prompt.yaml", bucket: perBeadWithCoalesce},
+		{file: "beads-issue-mention-driver.prompt.yaml", bucket: perBeadWithCoalesce},
+		// 2c — per-bead loop prompts (no coalesce).
+		{file: "beads-issue-loop-fixing-bug.prompt.yaml", bucket: perBeadLoopNoCoalesce},
+		{file: "beads-issue-loop-implementing-feature.prompt.yaml", bucket: perBeadLoopNoCoalesce},
+		{file: "beads-issue-loop-until-complete.prompt.yaml", bucket: perBeadLoopNoCoalesce},
+		// 2d — workspace-wide singleton loops/sweeps (title + reuseTitle).
+		{file: "beads-issue-loop-processing.prompt.yaml", bucket: workspaceTitle, wantTitle: "Loop processing tasks"},
+		{file: "beads-work.prompt.yaml", bucket: workspaceTitle, wantTitle: "Start working on ready"},
+		{file: "beads-followup-work.prompt.yaml", bucket: workspaceTitle, wantTitle: "Identify follow-up issues"},
+		{file: "beads-triage-bugs.prompt.yaml", bucket: workspaceTitle, wantTitle: "Triage untriaged bugs"},
+		{file: "beads-status-one-inprogress.prompt.yaml", bucket: workspaceTitle, wantTitle: "Status ONE in-progress"},
+		{file: "github-babysit-my-prs.prompt.yaml", bucket: workspaceTitle, wantTitle: "GitHub: babysit my PRs"},
+		{file: "github-babysit-contributions.prompt.yaml", bucket: workspaceTitle, wantTitle: "GitHub: babysit contributions"},
+		{file: "github-iterate-babysit-new-prs.prompt.yaml", bucket: workspaceTitle, wantTitle: "GitHub: iterate babysitting new PRs"},
+		{file: "github-post-merge-cleanup.prompt.yaml", bucket: workspaceTitle, wantTitle: "GitHub: post-merge cleanup"},
+		{file: "github-review-slack-prs.prompt.yaml", bucket: workspaceTitle, wantTitle: "GitHub: review PRs requests in slack"},
+		{file: "github-sync-tasks.prompt.yaml", bucket: workspaceTitle, wantTitle: "GitHub: sync tasks"},
+		{file: "jira-status-all-inprogress.prompt.yaml", bucket: workspaceTitle, wantTitle: "JIRA: status ALL in-progress"},
+		{file: "jira-status-one-inprogress.prompt.yaml", bucket: workspaceTitle, wantTitle: "JIRA: status ONE in-progress"},
+		{file: "jira-sync-tasks.prompt.yaml", bucket: workspaceTitle, wantTitle: "JIRA: sync tasks"},
+		{file: "jira-decompose.prompt.yaml", bucket: workspaceTitle, wantTitle: "JIRA: decompose"},
+		{file: "jira-work.prompt.yaml", bucket: workspaceTitle, wantTitle: "JIRA: start work"},
+		{file: "check-ci.prompt.yaml", bucket: workspaceTitle, wantTitle: "Check CI"},
+		{file: "fix-ci.prompt.yaml", bucket: workspaceTitle, wantTitle: "Fix CI"},
+		{file: "create-commits.prompt.yaml", bucket: workspaceTitle, wantTitle: "Commit changes"},
+		{file: "rebase-changes.prompt.yaml", bucket: workspaceTitle, wantTitle: "Rebase changes"},
+		{file: "submit-changes.prompt.yaml", bucket: workspaceTitle, wantTitle: "Submit changes"},
+		{file: "run-tests.prompt.yaml", bucket: workspaceTitle, wantTitle: "Run tests"},
+		{file: "analyze-logs.prompt.yaml", bucket: workspaceTitle, wantTitle: "Analyze logs"},
+		{file: "architectural-analysis.prompt.yaml", bucket: workspaceTitle, wantTitle: "Architectural Analysis"},
+		{file: "document-arch.prompt.yaml", bucket: workspaceTitle, wantTitle: "Document Architecture"},
+		{file: "document-code.prompt.yaml", bucket: workspaceTitle, wantTitle: "Document Code"},
+		{file: "generate-agents-md.prompt.yaml", bucket: workspaceTitle, wantTitle: "Generate AGENTS.md"},
+	}
+	for _, s := range specs {
+		t.Run(s.file, func(t *testing.T) {
+			path := filepath.Join(builtinDir, s.file)
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Skipf("prompt file not found at %s: %v", path, err)
+			}
+			prompt, err := ParsePromptFile(s.file, data, time.Now())
+			if err != nil {
+				t.Fatalf("ParsePromptFile(%s): %v", s.file, err)
+			}
+			if prompt.Target == nil {
+				t.Fatalf("%s: Target = nil, want non-nil target/reuse routing (mitto-5x21.2)", s.file)
+			}
+			switch s.bucket {
+			case perBeadWithCoalesce:
+				if !prompt.Target.ReuseIssue {
+					t.Errorf("%s: Target.ReuseIssue = false, want true (per-bead prompt)", s.file)
+				}
+				if prompt.Target.ReuseTitle {
+					t.Errorf("%s: Target.ReuseTitle = true, want false (per-bead routes by issue, not title)", s.file)
+				}
+				if prompt.Target.ReuseCoalesce == nil || !*prompt.Target.ReuseCoalesce {
+					t.Errorf("%s: Target.ReuseCoalesce = %v, want true (concurrent dispatches must join, not race)", s.file, prompt.Target.ReuseCoalesce)
+				}
+			case perBeadLoopNoCoalesce:
+				if !prompt.Target.ReuseIssue {
+					t.Errorf("%s: Target.ReuseIssue = false, want true (per-bead loop prompt)", s.file)
+				}
+				if prompt.Target.ReuseTitle {
+					t.Errorf("%s: Target.ReuseTitle = true, want false (per-bead loop routes by issue, not title)", s.file)
+				}
+				if prompt.Target.ReuseCoalesce != nil && *prompt.Target.ReuseCoalesce {
+					t.Errorf("%s: Target.ReuseCoalesce = true, want unset/false (a concurrent dispatch must not merge into a live loop turn)", s.file)
+				}
+			case workspaceTitle:
+				if !prompt.Target.ReuseTitle {
+					t.Errorf("%s: Target.ReuseTitle = false, want true (workspace-wide singleton routes by title)", s.file)
+				}
+				if prompt.Target.ReuseIssue {
+					t.Errorf("%s: Target.ReuseIssue = true, want false (workspace-wide singleton routes by title, not per-issue)", s.file)
+				}
+				if prompt.Target.Title != s.wantTitle {
+					t.Errorf("%s: Target.Title = %q, want %q (literal workspace-wide title)", s.file, prompt.Target.Title, s.wantTitle)
+				}
+				if prompt.Target.ReuseCoalesce == nil || !*prompt.Target.ReuseCoalesce {
+					t.Errorf("%s: Target.ReuseCoalesce = %v, want true (concurrent dispatches must join, not race)", s.file, prompt.Target.ReuseCoalesce)
+				}
+			}
+		})
+	}
+}
+
 // TestBuiltinPrompts_EnabledWhenCompiles CEL-compiles every non-empty enabledWhen
 // on the shipped builtin prompts. TestBuiltinPromptsParseClean only YAML-parses
 // them, so an undeclared identifier/function in a builtin's enabledWhen would slip

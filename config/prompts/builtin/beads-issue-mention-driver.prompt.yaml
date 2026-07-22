@@ -31,6 +31,9 @@ loop:
   # walk doesn't carry over transcripts from the classify/investigate/plan
   # phases into implement or the final router turn.
   freshContext: true
+target:
+  reuseIssue: true
+  reuseCoalesce: true
 prompt: |
   ## Session Context
 

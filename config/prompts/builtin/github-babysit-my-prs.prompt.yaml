@@ -19,6 +19,10 @@ loop:
   trigger: onCompletion
   delay: 3600
   maxIterations: 30
+target:
+  title: 'GitHub: babysit my PRs'
+  reuseTitle: true
+  reuseCoalesce: true
 prompt: |
   {{- $repoFlag := "" -}}
   {{- if .Args.Repository }}{{ $repoFlag = printf " --repo %s" .Args.Repository }}{{ end -}}

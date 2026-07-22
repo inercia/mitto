@@ -21,6 +21,10 @@ loop:
   default: false
   trigger: onCompletion
   delay: 60
+target:
+  title: 'GitHub: review PRs requests in slack'
+  reuseTitle: true
+  reuseCoalesce: true
 prompt: |
   Scan a Slack channel for **requests to review pull requests**, map each request
   to the matching **local checkout** under a given checkouts root, and review each

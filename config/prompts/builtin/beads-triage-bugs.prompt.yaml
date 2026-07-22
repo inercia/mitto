@@ -11,6 +11,10 @@ loop:
   delay: 30
   maxIterations: 5
   maxDuration: "1h"
+target:
+  title: 'Triage untriaged bugs'
+  reuseTitle: true
+  reuseCoalesce: true
 prompt: |
   ## Session Context
 

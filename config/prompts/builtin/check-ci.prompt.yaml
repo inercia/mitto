@@ -12,6 +12,10 @@ loop:
   default: false
   trigger: onCompletion
   delay: 60
+target:
+  title: 'Check CI'
+  reuseTitle: true
+  reuseCoalesce: true
 prompt: |
   Check CI pipeline status for the current branch and report.
 

@@ -10,6 +10,9 @@ description: Check if this bead is done, obsolete, or a duplicate, then close it
 backgroundColor: '#C5E1A5'
 group: Tasks
 enabledWhen: CommandExists("bd") && DirExists(".beads") && Item.Status != "closed"
+target:
+  reuseIssue: true
+  reuseCoalesce: true
 prompt: |
   ## Session Context
 
