@@ -2719,6 +2719,134 @@ func TestBuiltinPrompts_NeedsTemplatedTitleAdoption(t *testing.T) {
 	}
 }
 
+// TestBuiltinPrompts_NeedsTemplatedTitleRenders_PerIDBuckets exercises the
+// mitto-5x21.3 acceptance criterion "Two dispatches with the same SlackChannelID
+// (or Pr) reuse a single conversation; different values create distinct ones" at
+// the render layer — the exact helper (RenderPromptTargetTitle, mitto-5qbo) that
+// the dispatch path invokes to produce the reuseTitle lookup key.
+//
+// TestBuiltinPrompts_NeedsTemplatedTitleAdoption (above) pins the un-rendered
+// template literal in Target.Title so drift is caught structurally; this test
+// pins the *rendered* behavior so a silently-broken template (e.g. accidentally
+// switching to a fixed literal, or renaming the arg without updating the
+// template) is caught even when the frontmatter still parses.
+//
+// For each of the four needs-5qbo prompts, render Target.Title twice with the
+// same arg value (must match byte-for-byte → same reuseTitle bucket) and twice
+// with different arg values (must differ → distinct buckets). Also renders the
+// missing/empty-arg case for github-*/address-* (Pr is optional) to document
+// the "single fallback bucket" behavior called out in the plan comment.
+func TestBuiltinPrompts_NeedsTemplatedTitleRenders_PerIDBuckets(t *testing.T) {
+	builtinDir := filepath.Join("..", "..", "config", "prompts", "builtin")
+	type spec struct {
+		file         string
+		argName      string // key inside PromptTargetContext.Args
+		sameValue    string // rendered twice, must match
+		otherValue   string // rendered once, must differ from sameValue's render
+		wantSame     string // expected rendered title for sameValue
+		wantOther    string // expected rendered title for otherValue
+		wantMissing  string // expected rendered title when arg is absent ("" = expect error)
+		missingIsErr bool   // when true, missing-arg render must fail (SlackChannelID: whole title collapses to empty)
+	}
+	specs := []spec{
+		{
+			file: "support-continue-conversation.prompt.yaml", argName: "SlackChannelID",
+			sameValue: "C0AAA", otherValue: "C0BBB",
+			wantSame: "Support: continue C0AAA", wantOther: "Support: continue C0BBB",
+			missingIsErr: false, // literal "Support: continue " is non-empty → allowed but coalesces
+			wantMissing:  "Support: continue ",
+		},
+		{
+			file: "support-watch-channel.prompt.yaml", argName: "SlackChannelID",
+			sameValue: "C0AAA", otherValue: "C0BBB",
+			wantSame: "Support: watch C0AAA", wantOther: "Support: watch C0BBB",
+			missingIsErr: false,
+			wantMissing:  "Support: watch ",
+		},
+		{
+			file: "github-review-pr.prompt.yaml", argName: "Pr",
+			sameValue: "123", otherValue: "456",
+			wantSame: "PR #123 review", wantOther: "PR #456 review",
+			missingIsErr: false,
+			wantMissing:  "PR # review",
+		},
+		{
+			file: "address-pr-comments.prompt.yaml", argName: "Pr",
+			sameValue: "123", otherValue: "456",
+			wantSame: "PR #123 address comments", wantOther: "PR #456 address comments",
+			missingIsErr: false,
+			wantMissing:  "PR # address comments",
+		},
+	}
+	for _, s := range specs {
+		t.Run(s.file, func(t *testing.T) {
+			path := filepath.Join(builtinDir, s.file)
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Skipf("prompt file not found at %s: %v", path, err)
+			}
+			prompt, err := ParsePromptFile(s.file, data, time.Now())
+			if err != nil {
+				t.Fatalf("ParsePromptFile(%s): %v", s.file, err)
+			}
+			if prompt.Target == nil || prompt.Target.Title == "" {
+				t.Fatalf("%s: Target.Title missing, cannot exercise render", s.file)
+			}
+			tpl := prompt.Target.Title
+
+			// Two dispatches with the SAME arg value must render to the SAME title.
+			ctxA := PromptTargetContext{Args: map[string]string{s.argName: s.sameValue}}
+			gotA1, err := RenderPromptTargetTitle(prompt.Name, tpl, ctxA)
+			if err != nil {
+				t.Fatalf("%s: render #1 with %s=%q failed: %v", s.file, s.argName, s.sameValue, err)
+			}
+			gotA2, err := RenderPromptTargetTitle(prompt.Name, tpl, ctxA)
+			if err != nil {
+				t.Fatalf("%s: render #2 with %s=%q failed: %v", s.file, s.argName, s.sameValue, err)
+			}
+			if gotA1 != gotA2 {
+				t.Errorf("%s: same %s=%q rendered differently: %q vs %q (would break reuseTitle bucketing)", s.file, s.argName, s.sameValue, gotA1, gotA2)
+			}
+			if gotA1 != s.wantSame {
+				t.Errorf("%s: render(%s=%q) = %q, want %q", s.file, s.argName, s.sameValue, gotA1, s.wantSame)
+			}
+
+			// A dispatch with a DIFFERENT arg value must render to a DIFFERENT title.
+			ctxB := PromptTargetContext{Args: map[string]string{s.argName: s.otherValue}}
+			gotB, err := RenderPromptTargetTitle(prompt.Name, tpl, ctxB)
+			if err != nil {
+				t.Fatalf("%s: render with %s=%q failed: %v", s.file, s.argName, s.otherValue, err)
+			}
+			if gotB == gotA1 {
+				t.Errorf("%s: different %s values (%q vs %q) collapsed to the same rendered title %q (would silently share reuseTitle bucket)", s.file, s.argName, s.sameValue, s.otherValue, gotB)
+			}
+			if gotB != s.wantOther {
+				t.Errorf("%s: render(%s=%q) = %q, want %q", s.file, s.argName, s.otherValue, gotB, s.wantOther)
+			}
+
+			// Missing-arg render: documents the "single fallback bucket" behavior
+			// (Pr optional on github-*/address-*) or fail-closed (SlackChannelID
+			// required — but literal prefix keeps whole render non-empty). Either
+			// way, pin the observed behavior so a future template change does not
+			// silently flip it.
+			ctxMissing := PromptTargetContext{Args: map[string]string{}}
+			gotMissing, err := RenderPromptTargetTitle(prompt.Name, tpl, ctxMissing)
+			if s.missingIsErr {
+				if err == nil {
+					t.Errorf("%s: expected empty-render error with %s absent, got %q", s.file, s.argName, gotMissing)
+				}
+			} else {
+				if err != nil {
+					t.Errorf("%s: expected non-error fallback render with %s absent, got err %v", s.file, s.argName, err)
+				}
+				if gotMissing != s.wantMissing {
+					t.Errorf("%s: render(%s absent) = %q, want %q (documented single-fallback-bucket behavior)", s.file, s.argName, gotMissing, s.wantMissing)
+				}
+			}
+		})
+	}
+}
+
 // TestBuiltinPrompts_EnabledWhenCompiles CEL-compiles every non-empty enabledWhen
 // on the shipped builtin prompts. TestBuiltinPromptsParseClean only YAML-parses
 // them, so an undeclared identifier/function in a builtin's enabledWhen would slip
