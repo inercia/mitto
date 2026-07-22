@@ -35,6 +35,7 @@ async function fetchIssue(workingDir, issueId) {
   return {
     issue_type: issueObj.issue_type,
     labels: Array.isArray(issueObj.labels) ? issueObj.labels : [],
+    status: issueObj.status,
   };
 }
 
@@ -93,7 +94,7 @@ export function useLinkedBeadPhase(issueId, workingDir) {
         setState(null);
         return;
       }
-      setState(derivePhaseState(val.issue_type, val.labels));
+      setState(derivePhaseState(val.issue_type, val.labels, val.status));
     });
 
     // Refresh on the workspace-wide beads_changed broadcast. The event fires
@@ -108,7 +109,7 @@ export function useLinkedBeadPhase(issueId, workingDir) {
           setState(null);
           return;
         }
-        setState(derivePhaseState(val.issue_type, val.labels));
+        setState(derivePhaseState(val.issue_type, val.labels, val.status));
       });
     }
     window.addEventListener("mitto:beads_changed", onBeadsChanged);

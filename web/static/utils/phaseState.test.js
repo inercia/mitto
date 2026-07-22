@@ -134,6 +134,47 @@ describe("derivePhaseState — bug", () => {
   });
 });
 
+describe("derivePhaseState — closed status forces terminal", () => {
+  test("bug closed with only 'researched' label: all phases done", () => {
+    const s = derivePhaseState("bug", ["researched"], "closed");
+    expect(s.isTerminal).toBe(true);
+    expect(s.currentLabel).toBe("done");
+    expect(s.currentDisplayName).toBe("Done");
+    expect(s.currentTier).toBe("terminal");
+    expect(s.currentIndex).toBe(3);
+    expect(s.phases.every((p) => p.status === "done")).toBe(true);
+    expect(s.phases.every((p) => p.tier === "terminal")).toBe(true);
+  });
+
+  test("bug closed with no phase labels at all: all phases done", () => {
+    const s = derivePhaseState("bug", [], "closed");
+    expect(s.isTerminal).toBe(true);
+    expect(s.currentLabel).toBe("done");
+    expect(s.phases.every((p) => p.status === "done")).toBe(true);
+  });
+
+  test("feature closed mid-flight: all four phases done", () => {
+    const s = derivePhaseState("feature", ["planned"], "closed");
+    expect(s.isTerminal).toBe(true);
+    expect(s.currentLabel).toBe("done");
+    expect(s.currentIndex).toBe(4);
+    expect(s.phases.every((p) => p.status === "done")).toBe(true);
+    expect(s.phases.every((p) => p.tier === "terminal")).toBe(true);
+  });
+
+  test("open status leaves phase progression untouched", () => {
+    const s = derivePhaseState("bug", ["researched"], "open");
+    expect(s.isTerminal).toBe(false);
+    expect(s.currentLabel).toBe("reproduce");
+  });
+
+  test("undefined status behaves like the pre-status API", () => {
+    const s = derivePhaseState("bug", ["researched"]);
+    expect(s.isTerminal).toBe(false);
+    expect(s.currentLabel).toBe("reproduce");
+  });
+});
+
 describe("derivePhaseState — tier class hints", () => {
   test("each phase carries tierClasses matching PHASE_TIER_CLASSES", () => {
     const s = derivePhaseState("feature", ["planned"]);

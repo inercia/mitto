@@ -370,6 +370,7 @@ export function BeadsDetailPanelBody({
                 <${PhaseTimeline}
                   issueType=${data.issue_type}
                   labels=${labels.labels}
+                  status=${data.status}
                 />
 
                 <div class="grid grid-cols-2 gap-3">

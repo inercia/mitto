@@ -24,15 +24,15 @@ function pillClasses(status, tier) {
   }
   if (status === "current") {
     if (tier === "reasoning") {
-      return "bg-purple-500/25 border-purple-500/50 text-purple-200 font-semibold";
+      return "bg-purple-500/25 border-purple-500/50 text-purple-800 dark:text-purple-200 font-semibold";
     }
     return "bg-mitto-accent/25 border-mitto-accent/50 text-mitto-accent font-semibold";
   }
   return "bg-mitto-surface-3/40 border-mitto-border/40 text-mitto-text-muted";
 }
 
-export function PhaseTimeline({ issueType, labels }) {
-  const state = derivePhaseState(issueType, labels);
+export function PhaseTimeline({ issueType, labels, status }) {
+  const state = derivePhaseState(issueType, labels, status);
   if (!state) return null;
 
   return html`
