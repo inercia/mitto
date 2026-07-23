@@ -116,6 +116,18 @@ function loadUplot() {
 
 // --- Chart specs -----------------------------------------------------------
 
+// Read a CSS custom property from :root, with a fallback. uPlot draws on a
+// canvas so it cannot inherit CSS colors — we must resolve theme vars to
+// concrete strings and re-read them on theme flips (see MutationObserver
+// in ChartCard). Function-form so uPlot re-invokes on every redraw.
+function cssVar(name, fallback) {
+  if (typeof document === "undefined") return fallback;
+  const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  return v || fallback;
+}
+const axisStroke = () => cssVar("--mitto-text-muted", "#71717a");
+const gridStroke = () => cssVar("--mitto-border-1", "#e4e4e7");
+
 // Each spec describes one card: title, the tsResponse metric keys it consumes
 // in order, and a factory that returns the uPlot opts (excluding width/height,
 // which are supplied by the component). Keeping the specs declarative keeps
@@ -123,10 +135,25 @@ function loadUplot() {
 function buildChartSpecs(u) {
   // Compact axis sizes (uPlot defaults are 50/50 which eats ~70% of a 140px
   // chart, leaving the plot area a stubby band at the bottom of the card).
-  // xAxis: 24px is enough for a single row of HH:MM tick labels; yAxis: 44px
-  // fits 5-digit numbers like "20,000" without truncation.
-  const xAxis = { space: 60, size: 24 };
-  const yAxis = { size: 44 };
+  // xAxis: 32px accommodates the tick line + gap + label baseline for the
+  // HH:MM tick labels (24px was cropping the bottom of glyphs like "12pm"
+  // against the card's overflow:hidden edge). yAxis: 44px fits 5-digit
+  // numbers like "20,000" without truncation. stroke/grid/ticks are set to
+  // function-form theme colors so the labels ("12am", "20,000") stay legible
+  // against both light and dark surfaces (was defaulting to uPlot's #000).
+  const xAxis = {
+    space: 60,
+    size: 32,
+    stroke: axisStroke,
+    grid: { stroke: gridStroke, width: 1 },
+    ticks: { stroke: gridStroke, width: 1, size: 5 },
+  };
+  const yAxis = {
+    size: 44,
+    stroke: axisStroke,
+    grid: { stroke: gridStroke, width: 1 },
+    ticks: { stroke: gridStroke, width: 1, size: 5 },
+  };
   const stroke = (v) => v;
   // Chart is compact: kill the uPlot legend (the card title already names the
   // chart), and use tight padding so the plot area fills the container top-to-
@@ -250,6 +277,17 @@ function ChartCard({ title, metrics, optsFor, data, uplot, empty }) {
       return () => {};
     }
     chartRef.current = new uplot(opts, rows, el);
+    // Theme flips (light/dark, or a data-theme change) mutate <html>'s class
+    // and data-theme attributes. uPlot draws on a canvas that cannot inherit
+    // CSS, so watch those attributes and call redraw() — the function-form
+    // stroke/grid colors above re-read the CSS vars on each draw.
+    const themeObserver = new MutationObserver(() => {
+      if (chartRef.current) chartRef.current.redraw();
+    });
+    themeObserver.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["class", "data-theme"],
+    });
     if (typeof ResizeObserver !== "undefined") {
       const ro = new ResizeObserver(() => {
         if (chartRef.current) {
@@ -261,6 +299,7 @@ function ChartCard({ title, metrics, optsFor, data, uplot, empty }) {
       roRef.current = ro;
     }
     return () => {
+      themeObserver.disconnect();
       if (roRef.current) {
         roRef.current.disconnect();
         roRef.current = null;
