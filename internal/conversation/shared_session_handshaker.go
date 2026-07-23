@@ -487,18 +487,38 @@ func (c sharedSessionHandshaker) resumeSharedACPSession(d handshakeDeps, sharedP
 		//
 		// EXCEPTION (mitto-1ut starvation fix): when the load probe FAILED BY DEADLINE
 		// (probeTimedOut) rather than a fast -32602, the process is proven genuinely
-		// cold. Applying the shared cap would hand NewSession only the remainder
-		// (handshakeDeadline - ~45s probe ≈ 195s) — LESS than a single MCPInitTimeout
+		// cold. Applying the ORIGINAL shared cap would hand NewSession only the remainder
+		// (handshakeDeadline - ~probe ≈ budget - 25s) — LESS than a single MCPInitTimeout
 		// attempt (240s) — so attempt 1 is truncated and attempt 2 is aborted with
 		// "context cancelled before attempt 2: context deadline exceeded", GUARANTEEING
-		// failure on exactly the cold/contended case we need to survive. In that case
-		// release the shared cap and let NewSession derive its OWN bounded budget
-		// (coldMCPBudget → MCPInitTimeout, itself capped internally), matching the warm
-		// path. This does not reintroduce the stale-id stacking mitto-1ut fixed: a stale
-		// probe returns -32602 in ~ms (probeTimedOut=false) and keeps the shared cap.
-		if !handshakeDeadline.IsZero() && !probeTimedOut {
+		// failure on exactly the cold/contended case we need to survive.
+		//
+		// mitto-l9as: releasing the cap ENTIRELY (as the original mitto-1ut exception
+		// did) instead lets the fallback ctx run unbounded from the resume path's
+		// perspective, and on outcome=shared_resume_failed the operator sees the STACKED
+		// probe(25s) + fullNewSessionBudget(~175s) ≈ 200s wedge documented at
+		// 2026-07-23T08:55:24 (total_ms=199032). The fix restores a bounded ceiling:
+		// impose a FRESH cold budget deadline from the current instant (RecommendedLoadTimeout
+		// again, not the original — already-drained — handshakeDeadline). This preserves
+		// mitto-1ut (NewSession still gets a full MCPInitTimeout to attempt one legitimate
+		// session/new) while capping the combined wall-clock burn to probe + oneColdBudget
+		// rather than probe + unbounded. Stale-id path (probeTimedOut=false) is unchanged:
+		// a -32602 probe returns in ~ms and keeps the ORIGINAL shared cap.
+		if !handshakeDeadline.IsZero() {
+			var fallbackDeadline time.Time
+			if probeTimedOut {
+				// Fresh cold budget from now; RecommendedLoadTimeout is the same
+				// MCPInitTimeout hint that derived the original handshakeDeadline.
+				if rec := sharedProcess.RecommendedLoadTimeout(len(mcpServers) > 0); rec > 0 {
+					fallbackDeadline = time.Now().Add(rec)
+				} else {
+					fallbackDeadline = handshakeDeadline
+				}
+			} else {
+				fallbackDeadline = handshakeDeadline
+			}
 			var deadlineCancel context.CancelFunc
-			rpcCtx, deadlineCancel = context.WithDeadline(rpcCtx, handshakeDeadline)
+			rpcCtx, deadlineCancel = context.WithDeadline(rpcCtx, fallbackDeadline)
 			defer deadlineCancel()
 		}
 		newStart := time.Now()

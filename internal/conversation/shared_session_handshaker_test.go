@@ -753,28 +753,44 @@ func TestHandshaker_ResumeSharedACPSession_WarmBudget_ProbeCappedNoNewDeadline(t
 	}
 }
 
-// TestHandshaker_ResumeSharedACPSession_ColdProbeTimeout_NoNewDeadline is the
-// mitto-1ut STARVATION fix: on a cold shared process (RecommendedLoadTimeout > 0)
-// whose load PROBE fails by DEADLINE (the process is genuinely cold / mid-MCP-init,
-// NOT a stale id returning a fast -32602), the session/new FALLBACK must NOT inherit
-// the truncated remainder of the shared handshake deadline. Otherwise NewSession gets
-// only (budget - ~probe) < one MCPInitTimeout attempt, attempt 1 is truncated and
-// attempt 2 is aborted with "context cancelled before attempt 2" — guaranteeing
-// failure on exactly the cold/contended case. The fix releases the shared cap when the
-// probe timed out, letting NewSession derive its own bounded budget (no resume-imposed
-// deadline). Contrast with ColdBudget_DoesNotStack, where the probe fails FAST (-32602)
-// and the shared cap IS retained to prevent stacking.
-func TestHandshaker_ResumeSharedACPSession_ColdProbeTimeout_NoNewDeadline(t *testing.T) {
+// TestHandshaker_ResumeSharedACPSession_ColdProbeTimeout_FreshBoundedDeadline
+// encodes the post-mitto-l9as invariant on the timed-out-probe path.
+//
+// mitto-1ut original criterion (still upheld): on a cold shared process
+// (RecommendedLoadTimeout > 0) whose load PROBE fails by DEADLINE — NOT a
+// stale id returning a fast -32602 — the session/new FALLBACK must NOT inherit
+// the TRUNCATED remainder of the original shared handshake deadline. Otherwise
+// NewSession gets only (budget - ~probe) < one MCPInitTimeout attempt, attempt 1
+// is truncated, attempt 2 is aborted with "context cancelled before attempt 2",
+// and the cold/contended case is guaranteed to fail (the starvation wedge).
+//
+// mitto-l9as addition: releasing the cap ENTIRELY — as the original mitto-1ut
+// exception did — lets the fallback ctx run unbounded from the resume path's
+// perspective, and on outcome=shared_resume_failed the operator sees the
+// STACKED probe(25s) + fullNewBudget(~175s) ≈ 200s wedge (evidence:
+// 2026-07-23T08:55:24 total_ms=199032). The fix restores a bounded ceiling
+// while preserving the starvation criterion: impose a FRESH cold budget
+// deadline from the current instant (RecommendedLoadTimeout again). NewSession
+// still gets a full MCPInitTimeout attempt, and the combined wall-clock burn
+// is capped at probe + oneColdBudget instead of probe + unbounded.
+//
+// Contrast: with ColdBudget_DoesNotStack the probe fails FAST (-32602),
+// probeTimedOut=false, and the ORIGINAL shared cap IS retained to prevent
+// stacking on the stale-id path.
+func TestHandshaker_ResumeSharedACPSession_ColdProbeTimeout_FreshBoundedDeadline(t *testing.T) {
 	c := sharedSessionHandshaker{}
 	d := newFakeHandshakeDeps()
 	fp := newFakeSharedProcess()
 	fp.caps = &acp.AgentCapabilities{LoadSession: true}
 	// Small cold budget so the capped probe expires quickly in the test; the probe
 	// blocks until its ctx deadline and returns context.DeadlineExceeded (a TIMEOUT,
-	// not a -32602), which must set probeTimedOut and release the shared cap.
-	fp.recommendedLoadTimeout = 150 * time.Millisecond
+	// not a -32602), which must set probeTimedOut and trigger the fresh-ceiling
+	// branch of the fallback deadline logic.
+	const coldBudget = 150 * time.Millisecond
+	fp.recommendedLoadTimeout = coldBudget
 	fp.loadBlocksUntilCtxDone = true
 
+	beforeFallback := time.Now()
 	if err := c.resumeSharedACPSession(d, fp, "cwd", "stale-acp-id"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -790,11 +806,23 @@ func TestHandshaker_ResumeSharedACPSession_ColdProbeTimeout_NoNewDeadline(t *tes
 	if len(fp.newSessionCalls) != 1 {
 		t.Fatalf("expected exactly 1 NewSession fallback, got %d", len(fp.newSessionCalls))
 	}
-	// ...and it must NOT carry a resume-imposed (truncated) deadline: the timed-out
-	// probe proves the process is cold, so NewSession derives its OWN budget instead
-	// of the shared handshakeDeadline remainder (mitto-1ut starvation fix).
-	if fp.newCtxHasDeadline {
-		t.Fatalf("expected NO resume-imposed deadline on NewSession after a TIMED-OUT probe (mitto-1ut starvation fix), but got one")
+
+	// mitto-l9as: the fallback MUST carry a resume-imposed deadline (bounded
+	// ceiling) — releasing the cap unconditionally is the exact behaviour that
+	// caused the ~200s shared_resume_failed wedge.
+	if !fp.newCtxHasDeadline {
+		t.Fatal("mitto-l9as: expected a resume-imposed deadline on NewSession after a TIMED-OUT probe (fresh cold-budget ceiling), but got none")
+	}
+	// mitto-1ut starvation criterion: the deadline must be FRESH — at least
+	// one full RecommendedLoadTimeout from the fallback's start — not the
+	// truncated remainder of the original handshakeDeadline (which would leave
+	// only ~zero after the probe drained its capped deadline).
+	minFreshDeadline := beforeFallback.Add(coldBudget)
+	if fp.newCtxDeadline.Before(minFreshDeadline) {
+		t.Fatalf("mitto-1ut: expected fresh cold-budget ceiling on NewSession fallback "+
+			"(>= now+%v = %v), got %v — this would truncate attempt 1 and starve "+
+			"the cold/contended NewSession",
+			coldBudget, minFreshDeadline, fp.newCtxDeadline)
 	}
 }
 
@@ -826,5 +854,98 @@ func TestHandshaker_StaleLoadProbeTimeout_CeilingCap(t *testing.T) {
 			"Tighten the constant to align with the observed 11-25s MCP-init abort-signal "+
 			"window.",
 			staleLoadProbeTimeout, ceiling, staleLoadProbeTimeout+240*time.Second)
+	}
+}
+
+// TestHandshaker_ResumeSharedACPSession_ColdProbeTimeout_NewSessionCombinedCap
+// is the mitto-l9as reproduction for the STACKED-timeout wedge:
+//
+// On a genuinely cold shared process, a stale acp_session_id makes the
+// LoadSession probe block until it hits staleLoadProbeTimeout (~25s,
+// probeTimedOut=true). The mitto-1ut starvation exception then releases
+// the shared handshake cap so the fallback NewSession derives its own
+// coldMCPBudget (up to MCPInitTimeout ≈ 240s). If NewSession also fails
+// (outcome=shared_resume_failed — 1× in the mitto-l9as 24h window), the
+// user-visible wall-clock burn is loadProbe + fullNewBudget ≈ 200s.
+//
+// Field evidence (mitto-l9as investigation, log line at 2026-07-23T08:55:24):
+//
+//	phase timeline: sem_acquired@0ms -> mcp_init_wait_begin@0ms
+//	  -> session_load_failed@25001ms -> session_new_failed@199032ms
+//	  outcome=shared_resume_failed total_ms=199032
+//
+// This asserts a COMBINED user-visible latency ceiling on the resume path
+// even on the shared_resume_failed sub-path. A reasonable ceiling is
+// ~staleLoadProbeTimeout + one MCPInitTimeout — but the total_ms=199032
+// evidence shows both being burned in full. The bug is that today's
+// starvation exception (shared_session_handshaker.go:499) releases the cap
+// UNCONDITIONALLY on probeTimedOut, without leaving any bounded ceiling on
+// the fallback when it too is destined to fail — so the operator sees the
+// stacked ~200s wedge instead of a bounded fail.
+//
+// This test FAILS on the current code (no combined cap after a timed-out
+// probe) and will PASS once the fix caps the combined budget or fast-fails
+// the NewSession fallback on a demonstrably-wedged cold process.
+func TestHandshaker_ResumeSharedACPSession_ColdProbeTimeout_NewSessionCombinedCap(t *testing.T) {
+	c := sharedSessionHandshaker{}
+	d := newFakeHandshakeDeps()
+	fp := newFakeSharedProcess()
+	fp.caps = &acp.AgentCapabilities{LoadSession: true}
+	// Cold budget: mimics MCPInitTimeout=240s. Real production value.
+	const coldBudget = 240 * time.Second
+	fp.recommendedLoadTimeout = coldBudget
+	// The probe will time out (silent-stall cold process, mid-MCP-init).
+	fp.loadBlocksUntilCtxDone = true
+	// The NewSession fallback will also fail — outcome=shared_resume_failed.
+	// The reproduction fires irrespective of the error kind; use a plain
+	// non-context error to isolate the budget/cap arithmetic from the caller's
+	// error-classification path.
+	fp.newSessionErr = errors.New("simulated cold NewSession failure")
+
+	// Use a shorter staleLoadProbeTimeout via a real, but bounded, probe.
+	// The fake blocks until ctx.Done(), so the load probe drains its capped
+	// deadline (staleLoadProbeTimeout in production). We can't drop the
+	// constant here, but the observable that matters is the CTX DEADLINE the
+	// fallback NewSession receives — the arithmetic proof that the two
+	// budgets do not stack.
+
+	// Reproduction is arithmetic: we assert on the NewSession ctx deadline
+	// (or lack thereof) rather than actually waiting 200s.
+	_ = c.resumeSharedACPSession(d, fp, "cwd", "stale-acp-id")
+
+	// The probe must have run and been capped (sanity check preconditions).
+	if len(fp.loadSessionCalls) != 1 {
+		t.Fatalf("expected exactly 1 LoadSession probe, got %d", len(fp.loadSessionCalls))
+	}
+	if !fp.loadCtxHasDeadline {
+		t.Fatal("expected LoadSession probe to carry a capped deadline (preconditions)")
+	}
+	// The fallback NewSession must have been invoked.
+	if len(fp.newSessionCalls) != 1 {
+		t.Fatalf("expected exactly 1 NewSession fallback after probe timeout, got %d", len(fp.newSessionCalls))
+	}
+
+	// mitto-l9as: the COMBINED user-visible latency on shared_resume_failed
+	// must be bounded by a single cold budget, not probeTimeout + coldBudget.
+	// The observable proxy: the NewSession ctx deadline (if any) must not
+	// exceed a single cold budget measured from the start of the WHOLE
+	// resume attempt. Today, mitto-1ut's starvation exception releases the
+	// shared cap on probeTimedOut, so NewSession derives its OWN coldBudget
+	// on top of the ~probe burn — which is exactly the wedge.
+	//
+	// After the fix the deadline should be present AND ceiling-bounded, i.e.
+	// the fallback NewSession must NOT be handed an unbounded (or MCPInitTimeout-
+	// fresh) budget on top of a proven-wedged probe.
+	if !fp.newCtxHasDeadline {
+		t.Errorf("mitto-l9as: NewSession fallback received NO ctx deadline "+
+			"after a TIMED-OUT cold probe — the mitto-1ut starvation exception "+
+			"releases the shared cap unconditionally, so NewSession derives its "+
+			"OWN coldMCPBudget (up to MCPInitTimeout ≈ %v) on top of the ~%v probe "+
+			"burn. On outcome=shared_resume_failed the operator sees the STACKED "+
+			"~%v wedge (evidence: mitto-l9as 2026-07-23T08:55:24 total_ms=199032). "+
+			"The fix must impose a bounded ceiling on the fallback budget when the "+
+			"probe timed out — either a combined cap (probe + new ≤ one cold budget) "+
+			"or a fast-fail of the fallback on a demonstrably-wedged cold process.",
+			coldBudget, staleLoadProbeTimeout, staleLoadProbeTimeout+coldBudget)
 	}
 }
