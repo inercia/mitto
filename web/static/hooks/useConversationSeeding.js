@@ -48,8 +48,7 @@ export function parseDurationToSeconds(input) {
  */
 export function decideLoopAction(session) {
   if (!session || !session.session_id) return "new-loop";
-  if (session.loop_enabled || session.loop_configured)
-    return "one-shot";
+  if (session.loop_enabled || session.loop_configured) return "one-shot";
   if (session.parent_session_id) return "one-shot";
   return "make-loop";
 }
@@ -97,6 +96,15 @@ export async function makeLoopNow(
   // conditionPreset is intentionally NOT threaded here (mitto-pei).
   const condition = p.condition ?? "";
 
+  // Frontmatter-driven booleans forwarded verbatim (mitto-le4.3). Only sent
+  // when the source is a real boolean — undefined/null are omitted so we do
+  // not serialize accidental `null`s. Precedence has a single source here
+  // (prompt.loop), unlike configureLoopSchedule which also honours a dialog
+  // override.
+  const freshContext = p.freshContext;
+  const runOnStart = p.runOnStart;
+  const coalesceDuringBusy = p.coalesceDuringBusy;
+
   const fetch_ = fetchImpl || secureFetch;
 
   // Step 1: configure loop
@@ -113,6 +121,15 @@ export async function makeLoopNow(
         delay_seconds: delaySeconds,
         max_duration_seconds: maxDurationSeconds,
         ...(trigger === "onTasks" ? { condition } : {}),
+        ...(typeof freshContext === "boolean"
+          ? { fresh_context: freshContext }
+          : {}),
+        ...(typeof runOnStart === "boolean"
+          ? { run_on_start: runOnStart }
+          : {}),
+        ...(typeof coalesceDuringBusy === "boolean"
+          ? { coalesce_during_busy: coalesceDuringBusy }
+          : {}),
         ...(args && typeof args === "object" && Object.keys(args).length > 0
           ? { arguments: args }
           : {}),
@@ -270,6 +287,16 @@ export async function configureLoopSchedule(
   // here (mitto-pei).
   const condition = loop.condition ?? prompt?.loop?.condition ?? "";
 
+  // Frontmatter-driven booleans forwarded verbatim (mitto-le4.3). Precedence:
+  // dialog result → prompt.loop default → omit from body. `??` correctly keeps
+  // an explicit `false` from the dialog rather than falling through to the
+  // prompt default. Only real booleans reach the wire — undefined/null are
+  // omitted so we do not serialize accidental `null`s.
+  const freshContext = loop.freshContext ?? prompt?.loop?.freshContext;
+  const runOnStart = loop.runOnStart ?? prompt?.loop?.runOnStart;
+  const coalesceDuringBusy =
+    loop.coalesceDuringBusy ?? prompt?.loop?.coalesceDuringBusy;
+
   const fetch_ = fetchImpl || secureFetch;
   try {
     const resp = await fetch_(endpoints.sessions.loop(sessionId), {
@@ -284,6 +311,15 @@ export async function configureLoopSchedule(
         delay_seconds: delaySeconds,
         max_duration_seconds: maxDurationSeconds,
         ...(trigger === "onTasks" ? { condition } : {}),
+        ...(typeof freshContext === "boolean"
+          ? { fresh_context: freshContext }
+          : {}),
+        ...(typeof runOnStart === "boolean"
+          ? { run_on_start: runOnStart }
+          : {}),
+        ...(typeof coalesceDuringBusy === "boolean"
+          ? { coalesce_during_busy: coalesceDuringBusy }
+          : {}),
         ...(args && typeof args === "object" && Object.keys(args).length > 0
           ? { arguments: args }
           : {}),

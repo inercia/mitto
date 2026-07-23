@@ -412,9 +412,7 @@ describe("useConversationSeeding — startConversationWithPrompt loop path", () 
   }
 
   test("loop: does NOT pass initialPromptName to newSession", async () => {
-    const newSession = jest
-      .fn()
-      .mockResolvedValue({ sessionId: "sess-loop" });
+    const newSession = jest.fn().mockResolvedValue({ sessionId: "sess-loop" });
     const fetchImpl = makeFetch(200, {});
     const { startConversationWithPrompt } = useConversationSeeding({
       newSession,
@@ -433,9 +431,7 @@ describe("useConversationSeeding — startConversationWithPrompt loop path", () 
   });
 
   test("loop: PUTs loop config after session creation", async () => {
-    const newSession = jest
-      .fn()
-      .mockResolvedValue({ sessionId: "sess-loop" });
+    const newSession = jest.fn().mockResolvedValue({ sessionId: "sess-loop" });
     const fetchImpl = makeFetch(200, {});
     const { startConversationWithPrompt } = useConversationSeeding({
       newSession,
@@ -520,15 +516,15 @@ describe("decideLoopAction", () => {
   });
 
   test("returns one-shot when session is loop_enabled", () => {
-    expect(
-      decideLoopAction({ session_id: "s1", loop_enabled: true }),
-    ).toBe("one-shot");
+    expect(decideLoopAction({ session_id: "s1", loop_enabled: true })).toBe(
+      "one-shot",
+    );
   });
 
   test("returns one-shot when session is loop_configured (but not enabled)", () => {
-    expect(
-      decideLoopAction({ session_id: "s1", loop_configured: true }),
-    ).toBe("one-shot");
+    expect(decideLoopAction({ session_id: "s1", loop_configured: true })).toBe(
+      "one-shot",
+    );
   });
 
   test("returns one-shot when session has parent_session_id (child conversation)", () => {
@@ -542,9 +538,9 @@ describe("decideLoopAction", () => {
   });
 
   test("returns make-loop even when loop_enabled is false/undefined", () => {
-    expect(
-      decideLoopAction({ session_id: "s1", loop_enabled: false }),
-    ).toBe("make-loop");
+    expect(decideLoopAction({ session_id: "s1", loop_enabled: false })).toBe(
+      "make-loop",
+    );
   });
 });
 
@@ -1380,5 +1376,126 @@ describe("useConversationSeeding — startConversationWithPrompt loop path — a
 
     const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
     expect(body).not.toHaveProperty("arguments");
+  });
+});
+
+// =============================================================================
+// configureLoopSchedule / makeLoopNow — freshContext, runOnStart,
+// coalesceDuringBusy forwarding (mitto-le4.3)
+// =============================================================================
+
+describe("configureLoopSchedule — freshContext / runOnStart / coalesceDuringBusy", () => {
+  function makeFetch(status) {
+    return jest.fn(() =>
+      Promise.resolve({
+        ok: status >= 200 && status < 300,
+        status,
+        json: () => Promise.resolve({}),
+      }),
+    );
+  }
+
+  test("T1: prompt.loop.freshContext=true with no dialog override → body has fresh_context:true", async () => {
+    const fetchImpl = makeFetch(200);
+    await configureLoopSchedule(
+      "s1",
+      { name: "p", loop: { freshContext: true } },
+      { value: 1, unit: "hours" },
+      { fetchImpl },
+    );
+    const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
+    expect(body).toMatchObject({ fresh_context: true });
+  });
+
+  test("T2: dialog loop.freshContext=false overrides prompt default true (explicit wins, false preserved)", async () => {
+    const fetchImpl = makeFetch(200);
+    await configureLoopSchedule(
+      "s1",
+      { name: "p", loop: { freshContext: true } },
+      { value: 1, unit: "hours", freshContext: false },
+      { fetchImpl },
+    );
+    const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
+    expect(body).toMatchObject({ fresh_context: false });
+  });
+
+  test("T3: neither source sets freshContext → body has NO fresh_context key", async () => {
+    const fetchImpl = makeFetch(200);
+    await configureLoopSchedule(
+      "s1",
+      { name: "p" },
+      { value: 1, unit: "hours" },
+      { fetchImpl },
+    );
+    const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
+    expect(body).not.toHaveProperty("fresh_context");
+    expect(body).not.toHaveProperty("run_on_start");
+    expect(body).not.toHaveProperty("coalesce_during_busy");
+  });
+
+  test("T4: prompt.loop.runOnStart=true and coalesceDuringBusy=false → body has both keys with correct values", async () => {
+    const fetchImpl = makeFetch(200);
+    await configureLoopSchedule(
+      "s1",
+      { name: "p", loop: { runOnStart: true, coalesceDuringBusy: false } },
+      { value: 1, unit: "hours" },
+      { fetchImpl },
+    );
+    const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
+    expect(body).toEqual(
+      expect.objectContaining({
+        run_on_start: true,
+        coalesce_during_busy: false,
+      }),
+    );
+  });
+});
+
+describe("makeLoopNow — freshContext / runOnStart / coalesceDuringBusy", () => {
+  function makeFetchSequence(...responses) {
+    let i = 0;
+    return jest.fn(() => {
+      const r = responses[i++] || responses[responses.length - 1];
+      return Promise.resolve(r);
+    });
+  }
+
+  function makeResp(status, data = {}) {
+    return {
+      ok: status >= 200 && status < 300,
+      status,
+      json: () => Promise.resolve(data),
+    };
+  }
+
+  test("T5: prompt.loop.freshContext=true and runOnStart=true → PUT body has both fresh_context and run_on_start", async () => {
+    const prompt = {
+      name: "p",
+      loop: { value: 1, unit: "hours", freshContext: true, runOnStart: true },
+    };
+    const fetchImpl = makeFetchSequence(makeResp(200), makeResp(200));
+    await makeLoopNow("sess-1", prompt, { fetchImpl });
+
+    const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
+    expect(body).toEqual(
+      expect.objectContaining({
+        fresh_context: true,
+        run_on_start: true,
+      }),
+    );
+  });
+
+  test("T6: prompt.loop with no freshContext/runOnStart → body omits both keys", async () => {
+    const prompt = {
+      name: "p",
+      loop: { value: 1, unit: "hours" },
+    };
+    const fetchImpl = makeFetchSequence(makeResp(200), makeResp(200));
+    await makeLoopNow("sess-1", prompt, { fetchImpl });
+
+    const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
+    expect(body).not.toHaveProperty("fresh_context");
+    expect(body).not.toHaveProperty("run_on_start");
+    expect(body).not.toHaveProperty("coalesce_during_busy");
   });
 });
