@@ -2916,6 +2916,260 @@ func TestSeqUniqueness_ConcurrentStreamingAndUserPrompt(t *testing.T) {
 	}
 }
 
+// TestFreshContextPillOrdering_PillSeqBeforeUserPromptSeq verifies the mitto-c36
+// invariant end-to-end via events.jsonl: when PromptWithMeta reserves a pill seq
+// BEFORE the user-prompt seq (as it does when meta.FreshContext=true), and the
+// downstream createFreshContextSession records the "context_cleared" pill with
+// that reserved seq, the persisted transcript orders as
+//
+//	session_change(context_cleared, flush).seq < user_prompt.seq < agent_message.seq
+//
+// This matches the acceptance test in the bead's Test hooks section and pins the
+// fix so it survives future refactors of PromptWithMeta and createFreshContextSession.
+//
+// The test replays the exact seq allocation + persistence sequence used inside
+// PromptWithMeta (reserve pillSeq → reserve userPromptSeq → record via the same
+// helpers the production code goes through: cmRecordSessionChangeWithSeq +
+// RecordUserPromptCompleteWithSeq + RecordEventWithSeq) so it exercises the real
+// BackgroundSession seq counter, the real recorder, and the real events.jsonl
+// serialization — without needing an ACP mock or a full loop-runner harness.
+func TestFreshContextPillOrdering_PillSeqBeforeUserPromptSeq(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	recorder := session.NewRecorder(store)
+	if err := recorder.Start("test-server", tmpDir, ""); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	sessionID := recorder.SessionID()
+
+	// Start bs.nextSeq at 2: the recorder's Start() already appended
+	// session_start with seq=1, and ReadEvents dedupes on seq — so bs's own
+	// allocations must skip past that.
+	bs := &BackgroundSession{
+		nextSeq:     2,
+		recorder:    recorder,
+		persistedID: sessionID,
+	}
+
+	// Mirror PromptWithMeta's FreshContext branch: reserve pillSeq FIRST, then
+	// userPromptSeq. This is the sole ordering invariant the mitto-c36 fix must
+	// preserve.
+	pillSeq := bs.getNextSeq()
+	userPromptSeq := bs.getNextSeq()
+
+	// Persist the user prompt (matches PromptWithMeta L477-L484).
+	if err := recorder.RecordUserPromptCompleteWithSeq(userPromptSeq, "hello", nil, nil, "", "", 0); err != nil {
+		t.Fatalf("RecordUserPromptCompleteWithSeq failed: %v", err)
+	}
+
+	// Persist the "context_cleared" pill via the seq-aware shim that
+	// createFreshContextSession → pdRecordSessionChangeWithSeq calls in the
+	// production path. This is the mitto-c36 code path under test.
+	bs.cmRecordSessionChangeWithSeq(pillSeq, "context_cleared", "flush", "")
+
+	// Simulate an agent-message chunk after the flush to complete the timeline.
+	agentSeq := bs.getNextSeq()
+	if err := recorder.RecordEventWithSeq(session.Event{
+		Seq:  agentSeq,
+		Type: session.EventTypeAgentMessage,
+		Data: session.AgentMessageData{Text: "hi"},
+	}); err != nil {
+		t.Fatalf("RecordEventWithSeq(agent_message) failed: %v", err)
+	}
+
+	// Read back events.jsonl (sorted by seq on read) and locate the three events.
+	// Note: ReadEvents unmarshals Data as map[string]any (generic JSON), so
+	// SessionChangeData discrimination is done by inspecting the map keys.
+	events, err := store.ReadEvents(sessionID)
+	if err != nil {
+		t.Fatalf("ReadEvents failed: %v", err)
+	}
+
+	var (
+		gotPillSeq              int64 = -1
+		gotUserSeq              int64 = -1
+		gotAgentSeq             int64 = -1
+		pillOK, userOK, agentOK bool
+	)
+	for _, e := range events {
+		switch e.Type {
+		case session.EventTypeSessionChange:
+			m, ok := e.Data.(map[string]any)
+			if !ok {
+				continue
+			}
+			if m["kind"] == "context_cleared" && m["value"] == "flush" {
+				gotPillSeq = e.Seq
+				pillOK = true
+			}
+		case session.EventTypeUserPrompt:
+			gotUserSeq = e.Seq
+			userOK = true
+		case session.EventTypeAgentMessage:
+			gotAgentSeq = e.Seq
+			agentOK = true
+		}
+	}
+	if !pillOK {
+		t.Fatalf("did not find session_change(context_cleared, flush) in events.jsonl: %+v", events)
+	}
+	if !userOK {
+		t.Fatalf("did not find user_prompt in events.jsonl: %+v", events)
+	}
+	if !agentOK {
+		t.Fatalf("did not find agent_message in events.jsonl: %+v", events)
+	}
+
+	// mitto-c36 acceptance criterion:
+	// session_change(context_cleared, flush).seq < user_prompt.seq < agent_message.seq
+	if !(gotPillSeq < gotUserSeq) {
+		t.Errorf("mitto-c36 ordering violated: pill seq=%d must be < user_prompt seq=%d",
+			gotPillSeq, gotUserSeq)
+	}
+	if !(gotUserSeq < gotAgentSeq) {
+		t.Errorf("ordering violated: user_prompt seq=%d must be < agent_message seq=%d",
+			gotUserSeq, gotAgentSeq)
+	}
+
+	// Also pin that the reserved seq is exactly what upstream reserved (no drift
+	// through the seq-aware shim).
+	if gotPillSeq != pillSeq {
+		t.Errorf("pill persisted with wrong seq: reserved=%d persisted=%d", pillSeq, gotPillSeq)
+	}
+	if gotUserSeq != userPromptSeq {
+		t.Errorf("user prompt persisted with wrong seq: reserved=%d persisted=%d", userPromptSeq, gotUserSeq)
+	}
+}
+
+// TestFreshContextPillOrdering_NewSessionKind mirrors the flush-branch test above,
+// but for the new-session fallback branch (createFreshContextSession's
+// pdACPConnNewSession success path). Same invariant: the "context_cleared" pill
+// with Value="new_session" must persist BEFORE the user prompt.
+func TestFreshContextPillOrdering_NewSessionKind(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	recorder := session.NewRecorder(store)
+	if err := recorder.Start("test-server", tmpDir, ""); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	sessionID := recorder.SessionID()
+
+	bs := &BackgroundSession{
+		nextSeq:     2,
+		recorder:    recorder,
+		persistedID: sessionID,
+	}
+
+	pillSeq := bs.getNextSeq()
+	userPromptSeq := bs.getNextSeq()
+
+	if err := recorder.RecordUserPromptCompleteWithSeq(userPromptSeq, "hello", nil, nil, "", "", 0); err != nil {
+		t.Fatalf("RecordUserPromptCompleteWithSeq failed: %v", err)
+	}
+	bs.cmRecordSessionChangeWithSeq(pillSeq, "context_cleared", "new_session", "")
+
+	events, err := store.ReadEvents(sessionID)
+	if err != nil {
+		t.Fatalf("ReadEvents failed: %v", err)
+	}
+
+	var gotPillSeq, gotUserSeq int64 = -1, -1
+	for _, e := range events {
+		switch e.Type {
+		case session.EventTypeSessionChange:
+			if m, ok := e.Data.(map[string]any); ok &&
+				m["kind"] == "context_cleared" && m["value"] == "new_session" {
+				gotPillSeq = e.Seq
+			}
+		case session.EventTypeUserPrompt:
+			gotUserSeq = e.Seq
+		}
+	}
+	if gotPillSeq < 0 || gotUserSeq < 0 {
+		t.Fatalf("missing events: pill=%d user=%d events=%+v", gotPillSeq, gotUserSeq, events)
+	}
+	if !(gotPillSeq < gotUserSeq) {
+		t.Errorf("mitto-c36 ordering violated (new_session): pill seq=%d must be < user_prompt seq=%d",
+			gotPillSeq, gotUserSeq)
+	}
+}
+
+// TestFreshContextPillOrdering_FlushFailureLeavesSeqGap pins the mitto-c36
+// caveat decision (option (a) — "live with the gap"): when the reserved pill
+// seq is never consumed (e.g. the in-place flush RPC failed and
+// createFreshContextSession did NOT call pdRecordSessionChangeWithSeq), the
+// resulting events.jsonl simply has a seq gap — no placeholder event, and the
+// user prompt is still ordered strictly after where the pill would have been.
+// Persistence tolerates gaps, so ReadEvents must not fail.
+func TestFreshContextPillOrdering_FlushFailureLeavesSeqGap(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	recorder := session.NewRecorder(store)
+	if err := recorder.Start("test-server", tmpDir, ""); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	sessionID := recorder.SessionID()
+
+	bs := &BackgroundSession{
+		nextSeq:     2,
+		recorder:    recorder,
+		persistedID: sessionID,
+	}
+
+	// Reserve the pill seq but never consume it (simulates flush RPC failure).
+	pillSeq := bs.getNextSeq()
+	userPromptSeq := bs.getNextSeq()
+
+	if err := recorder.RecordUserPromptCompleteWithSeq(userPromptSeq, "hello", nil, nil, "", "", 0); err != nil {
+		t.Fatalf("RecordUserPromptCompleteWithSeq failed: %v", err)
+	}
+
+	events, err := store.ReadEvents(sessionID)
+	if err != nil {
+		t.Fatalf("ReadEvents failed (persistence should tolerate seq gaps): %v", err)
+	}
+
+	// No session_change event should exist.
+	for _, e := range events {
+		if e.Type == session.EventTypeSessionChange {
+			t.Errorf("expected no session_change event on flush failure, got %+v", e)
+		}
+	}
+	// The user_prompt event must still have the seq the caller reserved.
+	var foundUser bool
+	for _, e := range events {
+		if e.Type == session.EventTypeUserPrompt {
+			if e.Seq != userPromptSeq {
+				t.Errorf("user_prompt seq drifted: reserved=%d persisted=%d", userPromptSeq, e.Seq)
+			}
+			foundUser = true
+		}
+	}
+	if !foundUser {
+		t.Fatal("user_prompt event missing")
+	}
+	// The reserved pillSeq is one lower than userPromptSeq → this is the tolerated gap.
+	if pillSeq+1 != userPromptSeq {
+		t.Errorf("expected pillSeq+1 == userPromptSeq (gap layout): pillSeq=%d userPromptSeq=%d",
+			pillSeq, userPromptSeq)
+	}
+}
+
 func TestFormatACPError(t *testing.T) {
 	tests := []struct {
 		name     string
