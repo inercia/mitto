@@ -1134,15 +1134,17 @@ func (p promptDispatcher) handlePromptSuccess(
 	// dispatched is true when another queued turn was started (the session is
 	// not yet idle); it gates agentIdle after-phase processors below.
 	dispatched := d.pdProcessNextQueuedMessage()
-	sessionIdle = !dispatched
 
 	// Retry title generation if session still has no title.
 	d.pdRetryTitleGenerationIfNeeded(message)
 
+	// Read the last agent message once and reuse for both follow-up analysis
+	// and the sessionIdle gate below (mitto-vn3). Cheap when store is nil.
+	agentMessage := d.pdReadLastAgentMessageFromStore()
+
 	// Async follow-up analysis (non-blocking).
 	isEndTurn := promptResp.StopReason == acp.StopReasonEndTurn
 	if d.pdActionButtonsEnabled() && isEndTurn {
-		agentMessage := d.pdReadLastAgentMessageFromStore()
 		if agentMessage != "" {
 			if d.pdHasImmediateQueuedMessages() {
 				if l := d.pdLogger(); l != nil {
@@ -1155,9 +1157,18 @@ func (p promptDispatcher) handlePromptSuccess(
 	}
 
 	// Apply after-phase processors (agentResponded + agentIdle pipeline).
+	// The agentIdle flag here is queue-drain only; it is intentionally NOT
+	// gated on turn semantics so the after-processors pipeline keeps firing
+	// for every terminal turn (including cancels / max_turn_requests).
 	d.pdApplyAfterProcessors(d.pdSessionCtx(), message, meta.SenderID,
 		string(promptResp.StopReason), promptStartedAt, promptEndedAt, promptResp, !dispatched)
 
+	// sessionIdle gates the on-completion loop hook (pdOnTurnIdle → LoopRunner
+	// armCompletionTimer). It must be true only when the turn actually reached
+	// a semantic end (endTurn) AND the agent produced some assistant text —
+	// otherwise a tool-only or degenerate endTurn-with-no-text turn silently
+	// re-arms the loop and drives a runaway (mitto-vn3).
+	sessionIdle = !dispatched && isEndTurn && agentMessage != ""
 	return sessionIdle
 }
 

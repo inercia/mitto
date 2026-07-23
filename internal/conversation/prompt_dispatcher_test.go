@@ -2187,11 +2187,15 @@ func TestPromptDispatcher_HandlePromptSuccess_NotDispatched_SessionIdle(t *testi
 	p := promptDispatcher{}
 	d := newFakePromptDeps()
 	d.processNextResult = false // no queued message dispatched
+	// mitto-vn3: sessionIdle now also requires a completed turn (endTurn)
+	// AND a non-empty agent_message on the session.
+	d.lastAgentMessage = "agent said something"
+	resp := acp.PromptResponse{StopReason: acp.StopReasonEndTurn}
 
-	sessionIdle := p.handlePromptSuccess(d, 3, 2, acp.PromptResponse{}, "msg", PromptMeta{}, time.Now(), time.Now())
+	sessionIdle := p.handlePromptSuccess(d, 3, 2, resp, "msg", PromptMeta{}, time.Now(), time.Now())
 
 	if !sessionIdle {
-		t.Fatal("expected sessionIdle=true when no queued message dispatched")
+		t.Fatal("expected sessionIdle=true when no queued message dispatched and turn completed with an agent_message")
 	}
 	if d.flushConfigCount != 1 {
 		t.Fatalf("expected 1 flushPendingConfig call, got %d", d.flushConfigCount)
@@ -2205,8 +2209,12 @@ func TestPromptDispatcher_HandlePromptSuccess_Dispatched_NotSessionIdle(t *testi
 	p := promptDispatcher{}
 	d := newFakePromptDeps()
 	d.processNextResult = true // queued message dispatched
+	// Even a fully completed turn must NOT be sessionIdle when a queued
+	// message was dispatched (session is not actually idle).
+	d.lastAgentMessage = "agent said something"
+	resp := acp.PromptResponse{StopReason: acp.StopReasonEndTurn}
 
-	sessionIdle := p.handlePromptSuccess(d, 1, 1, acp.PromptResponse{}, "msg", PromptMeta{}, time.Now(), time.Now())
+	sessionIdle := p.handlePromptSuccess(d, 1, 1, resp, "msg", PromptMeta{}, time.Now(), time.Now())
 
 	if sessionIdle {
 		t.Fatal("expected sessionIdle=false when queued message was dispatched")
@@ -2713,5 +2721,72 @@ func TestResolveAndSubstitute_Cache_RequiredPtrNotInterferingWithCache(t *testin
 	}
 	if v, ok := d.argCache.Get("greet", "NAME"); !ok || v != "Alice" {
 		t.Fatalf("expected cache populated, got (%q, %v)", v, ok)
+	}
+}
+
+// --- Reproduction for mitto-vn3 ---
+// onCompletion loop trigger fires while the agent is still processing the
+// initial prompt (runaway). Root cause per investigation on mitto-vn3:
+// handlePromptSuccess/finalizeTurn advance sessionIdle → pdOnTurnIdle purely
+// from queue-drain state, without gating on stopReason or on whether the agent
+// actually emitted any agent_message on this turn. A session/prompt that
+// returns after tool-call-only activity therefore fires pdOnTurnIdle →
+// LoopRunner.OnConversationIdle → armCompletionTimer, and the onCompletion
+// loop re-fires while the agent has produced zero assistant text.
+//
+// The following two tests express the expected (post-fix) behaviour and
+// currently FAIL against the buggy code — they are the reproduction pinned to
+// the bead.
+
+// TestPromptDispatcher_FinalizeTurn_ToolOnlyTurn_DoesNotFireTurnIdle_MittoVN3
+// asserts that when the turn ended without any agent_message (a tool-call-only
+// turn: lastAgentMessage == "", stopReason != endTurn), the on-turn-idle hook
+// MUST NOT be invoked so the onCompletion loop cannot re-arm mid-turn.
+//
+// Bug reference: mitto-vn3.
+func TestPromptDispatcher_FinalizeTurn_ToolOnlyTurn_DoesNotFireTurnIdle_MittoVN3(t *testing.T) {
+	p := promptDispatcher{}
+	d := newFakePromptDeps()
+	// Tool-call-only turn: agent emitted no assistant text this turn.
+	d.lastAgentMessage = ""
+	// No queued message dispatched (drives sessionIdle=true today).
+	d.processNextResult = false
+
+	// Simulate a session/prompt that returned without a proper endTurn (matches
+	// the mitto-vn3 timeline where the agent emitted only tool calls before the
+	// RPC returned).
+	resp := acp.PromptResponse{StopReason: acp.StopReasonMaxTurnRequests}
+	sessionIdle := p.handlePromptSuccess(d, 2 /*tool_call events*/, 1, resp,
+		"user prompt", PromptMeta{}, time.Now(), time.Now())
+	p.finalizeTurn(d, nil, PromptMeta{}, sessionIdle)
+
+	if d.turnIdleCalls != 0 {
+		t.Fatalf("mitto-vn3: pdOnTurnIdle must NOT fire on a tool-only turn "+
+			"(stopReason=%v, no agent_message), got %d calls",
+			resp.StopReason, d.turnIdleCalls)
+	}
+}
+
+// TestPromptDispatcher_FinalizeTurn_EndTurnWithoutAgentMessage_DoesNotFireTurnIdle_MittoVN3
+// covers the degenerate endTurn case: the ACP session returned stopReason=endTurn
+// but produced zero agent_message events on this turn. The onCompletion loop must
+// not re-arm since the agent said nothing — otherwise a runaway is possible where
+// every re-fire itself ends the same way (see mitto-vn3 timeline seq 4/5 → seq 9).
+//
+// Bug reference: mitto-vn3.
+func TestPromptDispatcher_FinalizeTurn_EndTurnWithoutAgentMessage_DoesNotFireTurnIdle_MittoVN3(t *testing.T) {
+	p := promptDispatcher{}
+	d := newFakePromptDeps()
+	d.lastAgentMessage = "" // zero assistant text produced this turn
+	d.processNextResult = false
+
+	resp := acp.PromptResponse{StopReason: acp.StopReasonEndTurn}
+	sessionIdle := p.handlePromptSuccess(d, 2, 1, resp,
+		"user prompt", PromptMeta{}, time.Now(), time.Now())
+	p.finalizeTurn(d, nil, PromptMeta{}, sessionIdle)
+
+	if d.turnIdleCalls != 0 {
+		t.Fatalf("mitto-vn3: pdOnTurnIdle must NOT fire on endTurn with zero "+
+			"agent_message events, got %d calls", d.turnIdleCalls)
 	}
 }
