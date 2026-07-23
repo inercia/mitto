@@ -13,11 +13,9 @@ import (
 
 // migrateRequestTimeout bounds the whole POST /api/beads/migrate request.
 // It sits ABOVE the individual bd migrate/bootstrap subprocess timeouts (see
-// beads/migrate.go) so the handler can surface a clean 503 before the outer
-// http.TimeoutHandler emits its opaque one. Keep it below the 60s middleware
-// cap only if bd migrate is quick enough on typical DBs; we intentionally
-// let it exceed that cap here because migrate can legitimately take minutes
-// and we want the user's explicit "yes, run it" click to see it through.
+// beads/migrate.go) so the handler can surface a clean 503. This endpoint is
+// exempted from the default request-timeout middleware via a server.go
+// allowlist, so this constant is the only budget governing the request.
 var migrateRequestTimeout = 6 * time.Minute
 
 // migrateRequest is the POST /api/beads/migrate body. Mode selects which

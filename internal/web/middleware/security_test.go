@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestSecurityHeadersMiddleware(t *testing.T) {
@@ -255,4 +256,49 @@ func TestRequestTimeoutMiddleware_WebSocketExcluded(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Errorf("Status = %d, want %d", w.Code, http.StatusOK)
 	}
+}
+
+func TestRequestTimeoutMiddleware_ExemptPathBypassesTimeout(t *testing.T) {
+	const timeout = 100 * time.Millisecond
+	const sleep = 300 * time.Millisecond
+
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(sleep)
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("done"))
+	})
+	handler := RequestTimeoutMiddleware(timeout, "/api/beads/migrate")(inner)
+
+	// Exempt path: the inner sleep exceeds the middleware timeout, but the
+	// exemption must let the handler run to completion.
+	t.Run("ExemptPath", func(t *testing.T) {
+		req := httptest.NewRequest("POST", "/api/beads/migrate", nil)
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Errorf("Status = %d, want %d", w.Code, http.StatusOK)
+		}
+		if body := w.Body.String(); body != "done" {
+			t.Errorf("Body = %q, want %q", body, "done")
+		}
+		if strings.Contains(w.Body.String(), "Request timeout") {
+			t.Errorf("Body should not contain 'Request timeout', got %q", w.Body.String())
+		}
+	})
+
+	// Baseline: a non-exempt path with the same slow handler must still be
+	// preempted by TimeoutHandler (503 + "Request timeout" body).
+	t.Run("NonExemptPath", func(t *testing.T) {
+		req := httptest.NewRequest("POST", "/api/some-other-path", nil)
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+
+		if w.Code != http.StatusServiceUnavailable {
+			t.Errorf("Status = %d, want %d", w.Code, http.StatusServiceUnavailable)
+		}
+		if !strings.Contains(w.Body.String(), "Request timeout") {
+			t.Errorf("Body = %q, want it to contain 'Request timeout'", w.Body.String())
+		}
+	})
 }

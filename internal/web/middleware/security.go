@@ -179,6 +179,11 @@ const DefaultRequestTimeout = 60 * time.Second
 
 // RequestTimeoutMiddleware adds a timeout to HTTP requests.
 // WebSocket upgrade requests are excluded from the timeout.
+// Callers may also pass exemptPaths (exact-match on r.URL.Path) to opt
+// specific handlers out of both the timeout and the TimeoutHandler panic
+// recovery. Intended for handlers that run long subprocesses with their own
+// timeout budget, e.g. bd migrate — where the outer 60s cap would otherwise
+// preempt the handler's minutes-long budget with an opaque "Request timeout".
 // This middleware includes panic recovery to handle the known issue where
 // http.TimeoutHandler can cause nil pointer dereferences when the underlying
 // handler writes to the ResponseWriter after a timeout has occurred.
@@ -192,7 +197,12 @@ const DefaultRequestTimeout = 60 * time.Second
 // on client cancellation, the 503 is rewritten to 499 (nginx's
 // StatusClientClosedRequest) so real server timeouts remain distinguishable
 // from client aborts in the access log.
-func RequestTimeoutMiddleware(timeout time.Duration) func(http.Handler) http.Handler {
+func RequestTimeoutMiddleware(timeout time.Duration, exemptPaths ...string) func(http.Handler) http.Handler {
+	// Build the exempt set once at middleware construction, not per-request.
+	exempt := make(map[string]struct{}, len(exemptPaths))
+	for _, p := range exemptPaths {
+		exempt[p] = struct{}{}
+	}
 	return func(next http.Handler) http.Handler {
 		// Create the timeout handler once during middleware setup, not per-request.
 		// This avoids potential race conditions and is more efficient.
@@ -201,6 +211,13 @@ func RequestTimeoutMiddleware(timeout time.Duration) func(http.Handler) http.Han
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Skip timeout for WebSocket upgrade requests
 			if r.Header.Get("Upgrade") == "websocket" {
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			// Skip timeout and the TimeoutHandler panic-recovery wrapper for
+			// exempted paths; those handlers own their timeout budget.
+			if _, ok := exempt[r.URL.Path]; ok {
 				next.ServeHTTP(w, r)
 				return
 			}

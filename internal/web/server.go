@@ -1440,7 +1440,12 @@ func NewServer(config Config) (*Server, error) {
 	handler = rateLimiter.Middleware(handler)
 
 	// 3. Request timeout (excludes WebSocket connections)
-	handler = middleware.RequestTimeoutMiddleware(middleware.DefaultRequestTimeout)(handler)
+	// POST /api/beads/migrate is exempted because `bd migrate schema` can
+	// legitimately take minutes; the handler owns its own 6-minute budget.
+	handler = middleware.RequestTimeoutMiddleware(
+		middleware.DefaultRequestTimeout,
+		apiPrefix+"/api/beads/migrate",
+	)(handler)
 
 	// 4. Security headers (non-CSP headers)
 	headerSecurityConfig := middleware.DefaultSecurityConfig()
