@@ -29,13 +29,20 @@ cd "$REPO_ROOT"
 MITTO_BIN="$REPO_ROOT/mitto"
 MOCK_ACP="$REPO_ROOT/tests/mocks/acp-server/mock-acp-server"
 
-SCRATCH_DIR="$(mktemp -d -t mitto-runner-smoke.XXXXXX)"
+# Scratch dir: caller may pre-set SMOKE_SCRATCH_DIR (e.g. CI, so the stderr log
+# survives the job for artifact upload); otherwise we mktemp our own and clean up
+# on exit. When the caller provided the dir, it owns cleanup.
+if [ -n "${SMOKE_SCRATCH_DIR:-}" ]; then
+    mkdir -p "$SMOKE_SCRATCH_DIR"
+    SCRATCH_DIR="$SMOKE_SCRATCH_DIR"
+else
+    SCRATCH_DIR="$(mktemp -d -t mitto-runner-smoke.XXXXXX)"
+    cleanup() {
+        rm -rf "$SCRATCH_DIR"
+    }
+    trap cleanup EXIT
+fi
 LOG_FILE="$SCRATCH_DIR/prompt.stderr.log"
-
-cleanup() {
-    rm -rf "$SCRATCH_DIR"
-}
-trap cleanup EXIT
 
 fail() {
     echo -e "${RED}❌ $1${NC}" >&2

@@ -181,3 +181,43 @@ jobs:
           name: smoke-test-results
           path: tests/ui/test-results/
           retention-days: 7
+
+  # Runs the restricted-runner smoke script on Linux with firejail installed so
+  # the `Linux → firejail` branch of tests/manual/restricted-runner-smoke.sh is
+  # actually exercised (mitto-6yi.4). The script's assert_runner_log_line
+  # already hard-fails on Linux if firejail was requested but the runner fell
+  # back to exec, so no assertion changes are needed here.
+  runner-smoke-linux:
+    name: Restricted-Runner Smoke (Linux/firejail)
+    runs-on: ubuntu-latest
+    needs: [lint, unit-tests]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: Install firejail
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y firejail
+
+      - name: Prepare scratch dir for smoke logs
+        run: |
+          echo "SMOKE_SCRATCH_DIR=$GITHUB_WORKSPACE/smoke-scratch" >> "$GITHUB_ENV"
+          mkdir -p "$GITHUB_WORKSPACE/smoke-scratch"
+
+      - name: Run restricted-runner smoke test
+        run: make test-runner-smoke
+
+      - name: Upload smoke logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: runner-smoke-linux-logs
+          path: ${{ github.workspace }}/smoke-scratch/
+          if-no-files-found: warn
+          retention-days: 7
