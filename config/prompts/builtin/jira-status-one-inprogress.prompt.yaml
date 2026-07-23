@@ -4,7 +4,7 @@ menus: prompts
 description: Pick one in-progress ticket relevant to this repo and fact-check its implementation status
 backgroundColor: '#FFF9C4'
 group: JIRA
-enabledWhen: 'Tools.HasPattern("jira_*") || CommandExists("jira")'
+enabledWhen: 'Tools.Names.exists(n, n.matches("(?i)jira")) || CommandExists("jira")'
 preferredModels:
   - modelTag: Coding
 loop:
@@ -23,7 +23,7 @@ prompt: |
 
   Your session ID is `{{ .Session.ID }}` — use this as `self_id` for all `mitto_*` MCP tool calls.
 
-  {{ if HasPattern "jira_*" }}
+  {{ if Cond "Tools.Names.exists(n, n.matches('(?i)jira'))" }}
   **Access method — JIRA MCP tools.** Every JIRA-fetch step below names a `jira_*` MCP tool; call each one directly as written.
   {{- else }}
   **Access method — the `jira` CLI** (ankitpokhrel/jira-cli). You do **not** have JIRA MCP tools, but the `jira` command is on PATH. Run the CLI equivalent below wherever a step names a `jira_*` operation. This prompt is **read-only** either way — never mutate JIRA.

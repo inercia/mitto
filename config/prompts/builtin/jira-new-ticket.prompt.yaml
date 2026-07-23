@@ -4,7 +4,7 @@ menus: prompts, !promptsLoop
 description: Create a JIRA ticket — from the current conversation context or from scratch
 backgroundColor: '#C8E6C9'
 group: JIRA
-enabledWhen: 'Tools.HasPattern("jira_*") || CommandExists("jira")'
+enabledWhen: 'Tools.Names.exists(n, n.matches("(?i)jira")) || CommandExists("jira")'
 preferredModels:
   - modelTag: Coding
 prompt: |
@@ -14,7 +14,7 @@ prompt: |
 
   # JIRA: Create a New Ticket
 
-  {{ if HasPattern "jira_*" }}
+  {{ if Cond "Tools.Names.exists(n, n.matches('(?i)jira'))" }}
   **Access method — JIRA MCP tools.** Every step below names a `jira_*` MCP tool; call each one directly as written.
   {{- else }}
   **Access method — the `jira` CLI** (ankitpokhrel/jira-cli). You do **not** have JIRA MCP tools, but the `jira` command is on PATH. Each step names a `jira_*` operation as the canonical action — run the CLI equivalent below instead. The `mitto_ui_*` form/textbox/options steps are unchanged; only the JIRA operations differ.

@@ -4,7 +4,7 @@ menus: prompts
 description: Fact-check implementation status for all in-progress sprint tickets relevant to this repo
 backgroundColor: '#FFE0B2'
 group: JIRA
-enabledWhen: 'Tools.HasPattern("jira_*") || CommandExists("jira")'
+enabledWhen: 'Tools.Names.exists(n, n.matches("(?i)jira")) || CommandExists("jira")'
 preferredModels:
   - modelTag: Coding
 loop:
@@ -19,7 +19,7 @@ target:
 prompt: |
   # JIRA: Status Check — All In-Progress Tickets
 
-  {{ if HasPattern "jira_*" }}
+  {{ if Cond "Tools.Names.exists(n, n.matches('(?i)jira'))" }}
   **Access method — JIRA MCP tools.** Every JIRA-fetch step below names a `jira_*` MCP tool; call each one directly as written.
   {{- else }}
   **Access method — the `jira` CLI** (ankitpokhrel/jira-cli). You do **not** have JIRA MCP tools, but the `jira` command is on PATH. Run the CLI equivalent below wherever a step names a `jira_*` operation. This prompt is **read-only** either way — never mutate JIRA.

@@ -4,7 +4,7 @@ menus: prompts, !promptsLoop
 description: Break a JIRA ticket into sub-tickets and create them automatically
 backgroundColor: '#E1BEE7'
 group: JIRA
-enabledWhen: '!Session.IsChild && (Tools.HasPattern("jira_*") || CommandExists("jira"))'
+enabledWhen: '!Session.IsChild && (Tools.Names.exists(n, n.matches("(?i)jira")) || CommandExists("jira"))'
 target:
   title: 'JIRA: decompose'
   reuseTitle: true
@@ -16,7 +16,7 @@ prompt: |
 
   # JIRA: Decompose a Ticket into Sub-Tickets
 
-  {{ if HasPattern "jira_*" }}
+  {{ if Cond "Tools.Names.exists(n, n.matches('(?i)jira'))" }}
   **Access method — JIRA MCP tools.** Every step below names a `jira_*` MCP tool; call each one directly as written.
   {{- else }}
   **Access method — the `jira` CLI** (ankitpokhrel/jira-cli). You do **not** have JIRA MCP tools, but the `jira` command is on PATH. Each step names a `jira_*` operation — run the CLI equivalent below instead. The `mitto_ui_*` steps and the decomposition reasoning are unchanged.
