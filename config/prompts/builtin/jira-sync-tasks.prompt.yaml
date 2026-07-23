@@ -17,15 +17,14 @@ parameters:
     type: boolean
     required: false
     default: "true"
-    description: 'When true (default), pull changes from JIRA into beads: create/update beads for matching tickets, mirror JIRA comments as `[jira]`-prefixed beads comments, wire blocking dependencies, close beads whose JIRA ticket is Done, and surface stale beads for removal. Set to false to skip all JIRA → beads writes for this run.'
+    description: 'When true (default), pull changes from JIRA into beads: create/update beads for matching tickets, mirror JIRA comments as `[jira]`-prefixed beads comments, wire blocking dependencies, close beads whose JIRA ticket is Done, and reconcile stale beads (delete if already closed locally; close but keep otherwise, so local history survives a ticket being moved out of the query). Set to false to skip all JIRA → beads writes for this run.'
   - name: Push
     type: boolean
     required: false
     default: "true"
     description: 'When true (default), push local changes back to JIRA: transition the JIRA ticket to a Done status when the mirrored bead is closed locally, and mirror local beads comments (those without a `[jira]` prefix) back to JIRA as new comments tagged with `[mitto]`. Idempotency is tracked in bead metadata (`jira_pushed_comments`). Set to false for a pull-only run.'
-enabledWhen: '(Tools.HasPattern("jira_*") || CommandExists("jira")) && CommandExists("bd")'
+enabledWhen: '(Tools.Names.exists(n, n.matches("(?i)jira")) || CommandExists("jira")) && CommandExists("bd")'
 preferredModels:
-  - modelTag: Cheap
   - modelTag: Coding
 loop:
   mode: optional
@@ -74,12 +73,30 @@ prompt: |
   {{- end }}
 
   ## Access Method
-  {{- if HasPattern "jira_*" }}
 
-  **JIRA MCP tools.** Step 3 fetches tickets with `jira_search_jira` — call it directly.
+  This prompt talks to JIRA in one of two ways: **JIRA MCP tools** (e.g.
+  `jira_search_jira`, `jira_get_filter`, `jira_get_transitions`,
+  `jira_transition_issue`, `jira_add_comment`) or the **`jira` CLI**
+  (ankitpokhrel/jira-cli). **Prefer MCP tools whenever they are available** —
+  they return structured JSON, avoid a subprocess round-trip, and do not depend
+  on the user's local `jira` config. Fall back to the CLI only when the
+  matching MCP tool is not present.
+  {{- if Cond "Tools.Names.exists(n, n.matches('(?i)jira'))" }}
+
+  **This run has JIRA MCP tools available** (a tool whose name contains
+  `jira` — e.g. `jira_search_jira` or `mcp__corp-jira__search` — is
+  reachable). Every JIRA read/write below should go through the MCP tool
+  named in the step (e.g. the JIRA search tool in Step 3, the transitions /
+  transition-issue tools in Step 8A, the add-comment tool in Step 8B).
+  Names may be namespaced by the client (`mcp__<server>__<op>`); prefer
+  whichever exact name is exposed to you. Use the CLI only for a specific
+  operation whose MCP counterpart genuinely is not exposed by this
+  workspace's server; do not mix the two for the same call.
   {{- else }}
 
-  **The `jira` CLI** (ankitpokhrel/jira-cli). You do **not** have JIRA MCP tools, but the `jira` command is on PATH. Wherever a step calls `jira_search_jira`, run the CLI instead:
+  **This run has no JIRA MCP tools** (no tool name contains `jira`) but
+  the `jira` command is on PATH — use it as the fallback. Wherever a step
+  names an MCP tool, run the CLI equivalent instead. For the search in Step 3:
 
   ```bash
   jira issue list -q "<the saved JQL>" --raw --paginate 500
@@ -89,6 +106,8 @@ prompt: |
   - `--raw` returns JSON with most fields (key, summary, status, priority, issue type, labels, assignee, `updated`, `issuelinks`). Use `--plain --no-headers` if you only need columns.
   - Comment bodies may be omitted from list `--raw`; fetch them per ticket with `jira issue view <KEY> --comments <N>` (set `PAGER=cat`), then feed each raw body through the Step 5.0 converter.
   - Raise the result cap with `--paginate <N>` (the `from` offset is unsupported on Jira Cloud v3, so narrow the JQL rather than paging by offset).
+  - For transitions (Step 8A): `jira issue transitions <KEY>` to list, then `jira issue move <KEY> "<name>"` to apply.
+  - For comments (Step 5C mirror-out / Step 8B): `jira issue comment add <KEY> --body-file <path>`.
   - Everything else — the Step 5.0 wiki→Markdown converter, beads create/update, comment mirroring, dependency wiring — is unchanged.
   {{- end }}
 
@@ -171,8 +190,26 @@ prompt: |
   - If it does **not** exist: in interactive mode, run `bd init --non-interactive`; in loop mode, notify and **stop** (do not initialise unattended).
 
   ## Step 3 — Fetch matching JIRA tickets
+  {{- if Cond "Tools.Names.exists(n, n.matches('(?i)jira'))" }}
 
-  Run the saved JQL with `jira_search_jira`, requesting `fields="*all"` and `expand="renderedFields"`. Page through all results (use `startAt`/`maxResults`) — do not truncate. For each ticket capture: key, summary, status (the **status name**, so you can spot a *Blocked* status), priority, issue type, labels, assignee, the `updated` timestamp, the **issue links** (`fields.issuelinks` — for each, the link type name plus the inward/outward issue key, used for blocking relationships), and every comment (id, author, created, body).
+  Run the saved JQL with **`jira_search_jira`** (preferred — MCP tools are
+  available in this run), requesting `fields="*all"` and
+  `expand="renderedFields"`. Page through all results (use
+  `startAt`/`maxResults`) — do not truncate.
+  {{- else }}
+
+  Run the saved JQL with the **`jira` CLI** (MCP tools are not available):
+
+  ```bash
+  jira issue list -q "<the saved JQL>" --raw --paginate 500
+  ```
+
+  Comment bodies may be omitted from list `--raw`; fetch them per ticket with
+  `PAGER=cat jira issue view <KEY> --comments <N>` and feed each raw body
+  through the Step 5.0 converter.
+  {{- end }}
+
+  For each ticket capture: key, summary, status (the **status name**, so you can spot a *Blocked* status), priority, issue type, labels, assignee, the `updated` timestamp, the **issue links** (`fields.issuelinks` — for each, the link type name plus the inward/outward issue key, used for blocking relationships), and every comment (id, author, created, body).
 
   For the **description** and each **comment body**, capture the **raw** field value (e.g. `fields.description`, `comment.body`) — on JIRA Server/Data Center this is **JIRA wiki markup** (headers like `h1.`, code blocks like `{code}`, etc.), which Step 5 converts to Markdown. Keep the `renderedFields` HTML only as a fallback for content the converter does not handle.
 
@@ -334,19 +371,29 @@ prompt: |
 
   **Idempotent and current.** Before adding, read existing dependencies with `bd dep list <id> --json` and add only missing ones. If a dependency you previously mirrored **no longer** exists in JIRA (the ticket was unblocked), remove it with `bd dep remove <blocked-bead-id> <blocker-bead-id>`, and drop a now-stale label with `bd update <id> --remove-label blocked` once nothing blocks it anymore. After bulk wiring, run `bd dep cycles` to confirm no cycle was introduced.
 
-  ## Step 7 — Remove beads that no longer match the query
+  ## Step 7 — Reconcile beads that no longer match the query
 
-  Build the **live set** of JIRA keys returned in Step 3. Any synced bead from Step 4 whose JIRA key is **not** in the live set is **stale** — its ticket no longer matches the JQL (resolved-and-filtered-out, relabelled, moved, or deleted in JIRA). Ignore beads that are already closed.
+  Build the **live set** of JIRA keys returned in Step 3. Any synced bead from Step 4 whose JIRA key is **not** in the live set is **stale** — its ticket no longer matches the JQL (resolved-and-filtered-out, relabelled, moved to another project, moved to a future sprint, or deleted in JIRA). Split stale beads into two lanes:
 
-  - **Interactive mode**: list the stale beads (bead ID, JIRA key, title) and ask with `mitto_ui_options` whether to delete them, with **deletion as the default/recommended choice**. Suggested options: *"Delete all stale beads (recommended)"*, *"Keep them all"*, and (with `allow_free_text: true`) let the user name specific keys to keep. Delete the confirmed ones in one batch:
+  - **A. Bead is already `closed` locally** — the local work is complete; the bead is dead weight. **Delete** it:
 
     ```bash
     bd delete <id> [<id> ...] --force
     ```
 
-    If a stale bead has local-only comments/notes (comments without the `[jira]` prefix), call that out in the list so the user does not discard local work unknowingly.
+  - **B. Bead is still open** — do **not** delete: the ticket may just have been moved to a future sprint, relabelled, or otherwise pushed out of the current JQL, and any local body edits / local comments would be lost. **Close** the bead instead, so local history survives and it drops out of `bd ready`:
 
-  - **Silent mode** (scheduled loop): **never delete unattended.** If there are stale beads, send a single `mitto_ui_notify` listing them so the user can review and remove them on the next interactive run; otherwise stay silent.
+    ```bash
+    bd close <id> --comment "[jira] no longer matches sync query on $(date -u +%Y-%m-%dT%H:%M:%SZ) — closing (bead preserved)"
+    ```
+
+    Do **not** transition the JIRA ticket for this case — the ticket state is genuinely unknown from this run's perspective (JQL dropped it, we did not observe a Done transition). Push (Step 8A) only ever fires on beads that are BOTH in the live set AND closed locally in the same run, so this local close will not round-trip back to JIRA.
+
+  Interactive-vs-silent behaviour:
+
+  - **Interactive mode**: list both lanes (bead ID, JIRA key, title, lane A/B) and confirm with `mitto_ui_options`, with **"Reconcile all stale beads (recommended)"** as the default. Suggested options: *"Reconcile all (recommended: delete A, close B)"*, *"Only close open ones (skip deletes)"*, *"Keep them all"*, and (with `allow_free_text: true`) let the user name specific keys to keep. If a lane-A bead has local-only comments/notes (comments without the `[jira]` prefix), call that out — those will be lost on delete; offer to move it to lane B instead.
+
+  - **Silent mode** (scheduled loop): **never delete unattended.** Lane B (close only, no delete, no data loss) is safe to apply automatically. Lane A (delete) is deferred — send a single `mitto_ui_notify` listing the delete candidates for a human to confirm on the next interactive run.
   {{- end }}
   {{ if $push -}}
   ## Step 8 — Push local changes to JIRA
@@ -363,23 +410,29 @@ prompt: |
   status. JIRA workflows vary per project, so look up the available transitions
   for each ticket and pick the first one whose target status category is `done`
   (or whose name matches `Done`/`Closed`/`Resolved`, case-insensitive).
+  {{- if Cond "Tools.Names.exists(n, n.matches('(?i)jira'))" }}
 
-  With **JIRA MCP tools** — use whichever transition tool is available (e.g.
-  `jira_get_transitions` + `jira_transition_issue`). With the **`jira` CLI**:
+  Use **JIRA MCP tools** (preferred — available in this run): `jira_get_transitions`
+  to list the workflow's transitions for `<KEY>`, then `jira_transition_issue`
+  to apply the chosen one.
+  {{- else }}
+
+  Use the **`jira` CLI** (MCP tools are not available):
 
   ```bash
+  jira issue transitions <KEY>                                        # list available transitions
   jira issue move <KEY> "Done" --resolution "Done" --comment "Closed in beads (<bead-id>)"
   # (name of the target status may differ per workflow — fall back to whatever
   # 'jira issue transitions <KEY>' lists as the done-category transition)
   ```
+  {{- end }}
 
   If **no** done-category transition is available (workflow restriction,
   permission denied), do **not** force it — instead add a `[mitto]` comment
-  saying the bead was closed locally, so a human can transition manually:
-
-  ```bash
-  jira issue comment add <KEY> --body-file /tmp/jira-<key>.mitto.close.md   # body starts with "[mitto] Closed in beads: <reason>"
-  ```
+  saying the bead was closed locally, so a human can transition manually
+  ({{- if Cond "Tools.Names.exists(n, n.matches('(?i)jira'))" }} via `jira_add_comment`{{- else }} via
+  `jira issue comment add <KEY> --body-file /tmp/jira-<key>.mitto.close.md`
+  {{- end }}). The comment body starts with `[mitto] Closed in beads: <reason>`.
 
   Record what was done on the bead so re-runs are idempotent:
 
@@ -403,16 +456,20 @@ prompt: |
     side can recognise the round-trip and does not need to distinguish it from
     other JIRA comments (it will still come back on the next pull as `[jira]
     <author> @ <time>: [mitto] <body>` and be tracked by `jira_synced_comments`
-    without duplication):
+    without duplication). Compose the body as `[mitto] <bd-author> @ <bd-created>: <body>`.
+    {{- if Cond "Tools.Names.exists(n, n.matches('(?i)jira'))" }}
+
+    Use **`jira_add_comment`** (preferred — MCP tools available). Capture the
+    resulting JIRA comment id if the tool returns it.
+    {{- else }}
+
+    Use the **`jira` CLI** (MCP tools are not available):
 
     ```bash
-    # Write "[mitto] <bd-author> @ <bd-created>: <body>" to a temp file, then:
+    # write the composed body to a temp file, then:
     jira issue comment add <KEY> --body-file /tmp/jira-<key>.push-<comment-id>.md
     ```
-
-    With **JIRA MCP tools**, use whichever add-comment tool is available
-    (e.g. `jira_add_comment`). Capture the resulting JIRA comment id if the
-    tool returns it.
+    {{- end }}
 
   After all comments for a bead are pushed, extend the metadata list:
 
@@ -447,5 +504,5 @@ prompt: |
   - Always `--body-file` for descriptions and `--file`/inline text for comments to avoid shell-quoting issues.
   - **Good-enough conversion**: JIRA wiki markup is converted to Markdown on a best-effort basis (Step 5.0) — headers and code blocks are the priority; perfect fidelity is not a goal.
   - **Preserve local information**: local body edits (below the `jira-sync:end` marker) and local comments/notes (those without a `[jira]` prefix) must survive every sync. When unsure, keep the content rather than overwrite it.
-  - **Stale beads**: tickets that drop out of the query are surfaced for deletion (default = delete) in interactive mode, and only reported — never deleted — in silent mode.
+  - **Stale beads**: tickets that drop out of the query are reconciled based on the bead's local state — already-closed beads are **deleted** (dead weight), still-open beads are **closed but preserved** (JIRA ticket may have moved to a future sprint / been relabelled; local body edits and comments are kept). Interactive mode confirms both lanes with delete as the default for the closed lane; silent mode auto-applies the close-but-keep lane and defers deletes to the next interactive run.
   - **Blocking**: JIRA "Blocks" links become beads dependencies (`bd dep`), so blocked issues drop out of `bd ready` until their blocker closes; a blocker outside the sync set (or a bare *Blocked* status with no named blocker) is marked with a `blocked` label instead. Dependencies are re-evaluated each run — added when newly blocked, removed when unblocked.
