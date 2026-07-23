@@ -601,9 +601,17 @@ func TestSandboxExec_SandboxOnlyDenyReadDownloads(t *testing.T) {
 		strings.Contains(stderrLower, "not permitted")
 	stdoutEmpty := len(stdoutBytes) == 0
 
-	if waitErr == nil && !(stdoutEmpty && permissionDenied) && !stdoutEmpty {
+	// The sandbox is proven to deny the read when either wait() failed or
+	// stderr shows a permission signal, AND no payload leaked to stdout.
+	// The command succeeding with empty stdout is treated as a benign
+	// no-op (cat of an empty file), not a leak.
+	if waitErr == nil && !stdoutEmpty {
 		t.Errorf("expected sandbox to deny read of %q, but got stdout=%q stderr=%q err=nil",
 			seedPath, string(stdoutBytes), string(stderrBytes))
+	}
+	if waitErr != nil && !permissionDenied && !stdoutEmpty {
+		t.Errorf("sandbox denied read of %q but stderr lacks a permission signal: stderr=%q err=%v",
+			seedPath, string(stderrBytes), waitErr)
 	}
 }
 
