@@ -273,6 +273,16 @@ type LoopRunner struct {
 	tasksRebaseTimers   map[string]*time.Timer
 	tasksRebaseTimersMu sync.Mutex
 
+	// tasksRefirePending is a sticky per-session boolean, set when a fs-watcher
+	// delta arrives during a busy window (tasksActionDeferBusy branch) and
+	// consumed by fireTasksRebase at quiescence to trigger exactly one re-fire
+	// regardless of loop.ShouldCoalesceDuringBusy() (mitto-cwg.1). The flag is
+	// "mark, don't stack": any number of fs events during a busy window collapses
+	// to a single re-fire after quiescence, subject to Layer 0 guards. Guarded by
+	// tasksRebaseTimersMu (same lock as the timer map, since every access sits on
+	// the same code paths).
+	tasksRefirePending map[string]bool
+
 	// loopWorkspaceConcurrency caps how many loop prompts may be in flight for a
 	// single WorkingDir + ACPServer pair. 0 disables the cap. Default is set by
 	// config (see DefaultLoopWorkspaceConcurrency). Manual "Run Now" (forced)
@@ -334,6 +344,7 @@ func NewLoopRunner(store *session.Store, sm *SessionManager, logger *slog.Logger
 		minTasksCooldownSeconds:    DefaultMinLoopTasksCooldownSeconds,
 		tasksQuiescenceWindow:      tasksDefaultQuiescenceWindow,
 		tasksRebaseTimers:          make(map[string]*time.Timer),
+		tasksRefirePending:         make(map[string]bool),
 		autoUnarchiveEnabled:       true,
 		autoUnarchiveRetryInterval: DefaultAutoUnarchiveRetryInterval,
 		autoUnarchiveStagger:       DefaultAutoUnarchiveStaggerInterval,
@@ -606,10 +617,16 @@ func (r *LoopRunner) Stop() {
 	r.completionTimersMu.Unlock()
 
 	// Cancel any pending onTasks baseline-rebase timers so they don't fire after shutdown.
+	// Also drop any sticky re-fire flags — a re-fire scheduled by an armed timer
+	// cannot land after Stop(), so leaving the flag set would only leak the entry
+	// across a subsequent Start() in tests (mitto-cwg.1).
 	r.tasksRebaseTimersMu.Lock()
 	for id, t := range r.tasksRebaseTimers {
 		t.Stop()
 		delete(r.tasksRebaseTimers, id)
+	}
+	for id := range r.tasksRefirePending {
+		delete(r.tasksRefirePending, id)
 	}
 	r.tasksRebaseTimersMu.Unlock()
 
@@ -791,6 +808,17 @@ func (r *LoopRunner) StopLoopForArchive(sessionID string, reason session.Stopped
 	}
 	// Cancel any pending on-completion timer regardless of config state.
 	r.cancelCompletionTimer(sessionID)
+
+	// Cancel any pending onTasks baseline-rebase timer and drop the sticky
+	// re-fire flag — an archived session must not re-fire on quiescence
+	// (mitto-cwg.1).
+	r.tasksRebaseTimersMu.Lock()
+	if existing, ok := r.tasksRebaseTimers[sessionID]; ok {
+		existing.Stop()
+		delete(r.tasksRebaseTimers, sessionID)
+	}
+	delete(r.tasksRefirePending, sessionID)
+	r.tasksRebaseTimersMu.Unlock()
 
 	loopStore := r.store.Loop(sessionID)
 	loop, err := loopStore.Get()

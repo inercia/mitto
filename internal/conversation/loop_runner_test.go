@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -3314,6 +3315,90 @@ func TestLoopRunner_FireTasksRebase_CoalesceTrue_AbsorbsSilently(t *testing.T) {
 	}
 	if !jsonBytesEqual(t, baseline.RawSnapshot, rawNow) {
 		t.Errorf("baseline.RawSnapshot = %s, want %s (silent absorption)", baseline.RawSnapshot, rawNow)
+	}
+}
+
+// TestLoopRunner_FireTasksRebase_CoalesceTrue_FsDeltaDuringBusy_ShouldReFireOnce
+// is the reproduction of mitto-cwg.1: with the default coalesceDuringBusy=true,
+// fs-watcher deltas arriving during a busy window are silently absorbed at
+// quiescence instead of triggering exactly one re-fire.
+//
+// Per the bead spec: user prompt-sends stay coalesced, but fs-watcher deltas
+// must set a sticky "re-fire pending" flag; fireTasksRebase must honour that
+// flag and dispatch one follow-up run (subject to Layer 0 guards) regardless
+// of ShouldCoalesceDuringBusy(). Sibling test above documents the current
+// (buggy) silent-absorption behaviour; this test asserts the desired behaviour
+// and therefore FAILS on unfixed code.
+//
+// Observable: a loop configured with PromptName + a spy promptResolver — the
+// resolver is called synchronously inside deliverPrompt before PromptWithMeta,
+// so its invocation is a direct proxy for "the re-fire path was taken."
+func TestLoopRunner_FireTasksRebase_CoalesceTrue_FsDeltaDuringBusy_ShouldReFireOnce(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	ps := newOnTasksSession(t, store, "s1", "/proj", "")
+	// Switch to a PromptName-backed loop so the spy resolver can observe the
+	// fire attempt. Default (nil) coalesceDuringBusy stays as-is (= true).
+	promptName := "supervisor"
+	if err := ps.Update(nil, &promptName, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+
+	// Pre-run baseline: only mitto-1 exists.
+	rawBefore := mustMarshalRows(t, beadsRow("mitto-1", "open", "2026-01-01T00:00:00Z"))
+	if err := NewTasksBaselineStore(store.SessionDir("s1")).Set(rawBefore); err != nil {
+		t.Fatalf("Set() baseline error = %v", err)
+	}
+
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{})
+	// Session is currently busy — fs-watcher deltas arriving in this window
+	// must be marked "re-fire pending" (per the bead's design), not silently
+	// dropped at quiescence.
+	sm.AddSessionForTest(NewMinimalBackgroundSessionPrompting("s1", true))
+
+	runner := NewLoopRunner(store, sm, nil)
+	var resolverCalls int32
+	runner.SetPromptResolver(func(name, dir string) (string, error) {
+		atomic.AddInt32(&resolverCalls, 1)
+		return "iterate", nil
+	})
+
+	// Current snapshot has a NEW issue (mitto-2) added — a material fs-watcher
+	// delta relative to the baseline.
+	rawNow := mustMarshalRows(t,
+		beadsRow("mitto-1", "open", "2026-01-01T00:00:00Z"),
+		beadsRow("mitto-2", "open", "2026-01-02T00:00:00Z"),
+	)
+	fake := &fakeTasksBeadsClient{listFn: func(string) ([]byte, error) { return rawNow, nil }}
+	runner.SetBeadsClient(fake)
+
+	// Simulate the fs-watcher path: processTasksChange evaluates the busy
+	// session and takes the deferBusy branch (arms rebase timer). Per the bead
+	// design, this path must ALSO set the sticky tasksRefirePending flag.
+	meta, err := store.GetMetadata("s1")
+	if err != nil {
+		t.Fatalf("GetMetadata() error = %v", err)
+	}
+	loop, err := ps.Get()
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	runner.processTasksChange(meta, loop, ps, rawNow)
+
+	// Session becomes idle (busy window closed). Swap the entry.
+	sm.AddSessionForTest(NewMinimalBackgroundSessionPrompting("s1", false))
+
+	// Quiescence fires. With the fix, the sticky flag must cause the accumulated
+	// delta to be re-fired exactly once via the promptResolver + deliverPrompt
+	// path; without the fix, the plain rebase silently absorbs the delta.
+	runner.fireTasksRebase("s1", ps)
+
+	if got := atomic.LoadInt32(&resolverCalls); got != 1 {
+		t.Errorf("promptResolver call count = %d, want 1 (fs-watcher delta during busy must trigger exactly one re-fire on quiescence)", got)
 	}
 }
 

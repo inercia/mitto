@@ -280,6 +280,15 @@ func (r *LoopRunner) processTasksChange(meta session.Metadata, loop *session.Loo
 
 	switch decision.action {
 	case tasksActionDeferBusy:
+		// A fs-watcher delta arrived during a busy window. Set the sticky
+		// re-fire flag (mitto-cwg.1) so fireTasksRebase, at quiescence,
+		// triggers exactly one follow-up run regardless of
+		// ShouldCoalesceDuringBusy(). The flag is "mark, don't stack": any
+		// number of fs events during the busy window collapses to a single
+		// pending re-fire. User-driven prompt sends are unaffected — they go
+		// through a different path and remain coalesced per the current
+		// coalesceDuringBusy semantics.
+		r.markTasksRefirePending(sessionID)
 		r.armTasksRebase(sessionID, loopStore)
 
 	case tasksActionInitBaseline:
@@ -289,6 +298,10 @@ func (r *LoopRunner) processTasksChange(meta session.Metadata, loop *session.Loo
 		}
 
 	case tasksActionFire:
+		// A normal fire consumes any pending re-fire flag — the accumulated
+		// delta is being delivered as this run's payload, so a follow-up
+		// re-fire on quiescence would be redundant (mitto-cwg.1).
+		r.clearTasksRefirePending(sessionID)
 		// Thread the computed delta through so the loop prompt body can render
 		// {{ .Trigger.OnTasks.Changes.* }} (mitto-xkn). All other TriggerNow
 		// call sites pass nil via the public TriggerNow shim.
@@ -381,6 +394,27 @@ func (r *LoopRunner) isSessionBusy(sessionID string) bool {
 	return r.sessionManager.IsWaitingForChildren(sessionID)
 }
 
+// markTasksRefirePending sets the sticky per-session flag consumed by
+// fireTasksRebase at quiescence (mitto-cwg.1). Called by processTasksChange
+// on the tasksActionDeferBusy branch — i.e. exactly when a fs-watcher delta
+// arrives during a busy window and would otherwise be silently absorbed by
+// the plain rebase under the default coalesceDuringBusy=true.
+func (r *LoopRunner) markTasksRefirePending(sessionID string) {
+	r.tasksRebaseTimersMu.Lock()
+	defer r.tasksRebaseTimersMu.Unlock()
+	r.tasksRefirePending[sessionID] = true
+}
+
+// clearTasksRefirePending drops any pending re-fire flag for sessionID. Called
+// on a normal fire (tasksActionFire) because that fire already delivers the
+// accumulated delta as its payload, and on session archival/shutdown so no
+// stale entries linger.
+func (r *LoopRunner) clearTasksRefirePending(sessionID string) {
+	r.tasksRebaseTimersMu.Lock()
+	defer r.tasksRebaseTimersMu.Unlock()
+	delete(r.tasksRefirePending, sessionID)
+}
+
 // armTasksRebase schedules a baseline rebase for sessionID after the
 // quiescence window, replacing (and stopping) any timer already pending so at
 // most one rebase is queued per session.
@@ -404,14 +438,31 @@ func (r *LoopRunner) armTasksRebase(sessionID string, loopStore *session.LoopSto
 // edits the conversation (or a delegated child) made to beads during its run.
 // If still busy, it re-arms itself for another quiescence window.
 //
-// When loop.ShouldCoalesceDuringBusy() is false (mitto-dmb), a material delta
-// between the pre-run baseline and the current snapshot causes exactly one
-// follow-up fire (subject to Layer 0 cooldown/maxDuration and the CEL
-// condition) before the baseline is rebased. The default (true) preserves the
-// original silent-absorption behaviour.
+// Two paths lead to a follow-up fire instead of a plain baseline rebase:
+//
+//   - loop.ShouldCoalesceDuringBusy() is false (mitto-dmb) — the loop is
+//     explicitly opted out of during-busy coalescing.
+//   - the sticky tasksRefirePending flag is set for this session (mitto-cwg.1)
+//     — a fs-watcher delta arrived during the busy window. This takes effect
+//     regardless of ShouldCoalesceDuringBusy(), which continues to gate only
+//     user prompt-send coalescing.
+//
+// In either case a material delta between the pre-run baseline and the current
+// snapshot causes exactly one follow-up fire (subject to Layer 0
+// cooldown/maxDuration and the CEL condition) before the baseline is rebased.
+// If both paths are inactive and no re-fire is pending, the default plain
+// baseline rebase runs.
 func (r *LoopRunner) fireTasksRebase(sessionID string, loopStore *session.LoopStore) {
 	r.tasksRebaseTimersMu.Lock()
 	delete(r.tasksRebaseTimers, sessionID)
+	// Read+clear the sticky re-fire flag atomically with timer cleanup so a
+	// concurrent processTasksChange that re-sets the flag after this point
+	// arms a fresh timer and its own follow-up (mitto-cwg.1). The flag is
+	// consumed here whether or not the re-fire actually goes through — if a
+	// Layer 0 guard blocks the fire, the delta is absorbed by the plain rebase
+	// same as any other "condition-filtered" change.
+	refirePending := r.tasksRefirePending[sessionID]
+	delete(r.tasksRefirePending, sessionID)
 	r.tasksRebaseTimersMu.Unlock()
 
 	if r.store == nil {
@@ -446,10 +497,15 @@ func (r *LoopRunner) fireTasksRebase(sessionID string, loopStore *session.LoopSt
 
 	baselineStore := NewTasksBaselineStore(r.store.SessionDir(sessionID))
 
-	// Opt-in re-fire path (mitto-dmb): when the loop is configured NOT to
-	// coalesce during busy, evaluate the accumulated delta between the pre-run
-	// baseline and the current snapshot and fire once more if the guards allow.
-	if !loop.ShouldCoalesceDuringBusy() {
+	// Re-fire path: taken when either the loop is explicitly opted out of
+	// during-busy coalescing (mitto-dmb — user prompt-sends and fs-watcher
+	// deltas both flow through here) OR the sticky refirePending flag is set
+	// for this session (mitto-cwg.1 — fs-watcher delta arrived during busy;
+	// the coalesceDuringBusy default of true no longer gates fs deltas).
+	// evaluateAccumulatedDelta computes the delta between the pre-run baseline
+	// and the current snapshot and applies the Layer 0 guards (cooldown,
+	// maxDuration, CEL condition); if it clears them, fire once more.
+	if !loop.ShouldCoalesceDuringBusy() || refirePending {
 		if r.maybeFireAccumulatedDelta(sessionID, loop, loopStore, baselineStore, raw) {
 			// Fire path persisted its own baseline; nothing more to do.
 			return
