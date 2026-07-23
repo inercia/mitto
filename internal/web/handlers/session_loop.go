@@ -44,6 +44,11 @@ type LoopPromptRequest struct {
 	// window suppressing the pulse when the loop already ran very recently).
 	// Nil or false = do not fire on start (default).
 	RunOnStart *bool `json:"run_on_start,omitempty"`
+	// LoopApplyPromptDefaults, when non-nil and *false, disables auto-merging of
+	// the resolved prompt's loop: frontmatter defaults into empty request fields.
+	// Defaults to enabled (nil or *true). Mirrors the MCP tool argument of the
+	// same name (see mcpserver.applyPromptLoopDefaultsToStartInput).
+	LoopApplyPromptDefaults *bool `json:"loop_apply_prompt_defaults,omitempty"`
 }
 
 // LoopPromptPatchRequest is the request body for partial updates.

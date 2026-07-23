@@ -52,6 +52,23 @@ func (h *Handlers) handleSetLoop(w http.ResponseWriter, r *http.Request, session
 		v := *req.RunOnStart
 		p.RunOnStart = &v
 	}
+
+	// Auto-apply the seeded prompt's loop: frontmatter block (mitto-le4.1). When
+	// req.PromptName resolves to a workspace prompt that carries a loop: block,
+	// its fields fill any empty fields on p. Explicit request values win. The
+	// merge is disabled when req.LoopApplyPromptDefaults is *false, mirroring the
+	// MCP tool argument of the same name.
+	if req.PromptName != "" && h.deps.GetWorkspacePromptsAll != nil && h.deps.Store != nil {
+		if meta, err := h.deps.Store.GetMetadata(sessionID); err == nil && meta.WorkingDir != "" {
+			for _, wp := range h.deps.GetWorkspacePromptsAll(meta.WorkingDir) {
+				if strings.EqualFold(wp.Name, req.PromptName) && wp.Loop != nil {
+					applyPromptLoopDefaultsToLoopPrompt(p, wp.Loop, req.LoopApplyPromptDefaults)
+					break
+				}
+			}
+		}
+	}
+
 	// Clamp the on-completion delay to the global floor on write (no-op for schedule trigger).
 	p.ClampDelay(h.loopDelayFloor())
 

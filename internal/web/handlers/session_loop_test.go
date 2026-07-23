@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	configPkg "github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/conversation"
 	"github.com/inercia/mitto/internal/session"
 )
@@ -1012,5 +1013,218 @@ func TestHandleSessionLoop_PATCH_ArgumentsPersisted(t *testing.T) {
 	stored, _ := store.Loop(sid).Get()
 	if stored.Arguments["KEY"] != "patched" {
 		t.Errorf("nil PATCH should not clear Arguments; KEY = %q", stored.Arguments["KEY"])
+	}
+}
+
+// newLoopStoreWithPrompts is a variant of newLoopStore that also wires a
+// GetWorkspacePromptsAll stub so the mitto-le4.1 frontmatter merge path can be
+// exercised. Passing a nil returnPrompts function leaves the dep unset (nil),
+// so the merge is skipped entirely.
+func newLoopStoreWithPrompts(t *testing.T, returnPrompts func(workingDir string) []configPkg.WebPrompt) (*session.Store, *Handlers) {
+	t.Helper()
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+	deps := Deps{Store: store}
+	if returnPrompts != nil {
+		deps.GetWorkspacePromptsAll = returnPrompts
+	}
+	h := New(deps)
+	return store, h
+}
+
+// TestHandleSessionLoop_PUT_MergesPromptDefaults_Baseline (T1) verifies that
+// a PUT with only PromptName + Enabled fills empty fields from the resolved
+// prompt's loop: frontmatter block.
+func TestHandleSessionLoop_PUT_MergesPromptDefaults_Baseline(t *testing.T) {
+	tr, fa := true, false
+	promptStub := func(string) []configPkg.WebPrompt {
+		return []configPkg.WebPrompt{{
+			Name: "test-prompt",
+			Loop: &configPkg.PromptLoop{
+				Trigger:            "onTasks",
+				FreshContext:       &tr,
+				RunOnStart:         &tr,
+				CoalesceDuringBusy: &fa,
+			},
+		}}
+	}
+
+	store, h := newLoopStoreWithPrompts(t, promptStub)
+	sid := "put-merge-baseline"
+	if err := store.Create(session.Metadata{SessionID: sid, ACPServer: "t", WorkingDir: t.TempDir()}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	got := putLoopForTest(t, h, sid, LoopPromptRequest{
+		PromptName: "test-prompt",
+		Enabled:    true,
+	})
+
+	if got.Trigger != session.TriggerOnTasks {
+		t.Errorf("Trigger = %q, want %q", got.Trigger, session.TriggerOnTasks)
+	}
+	if !got.FreshContext {
+		t.Errorf("FreshContext = false, want true (filled from frontmatter)")
+	}
+	if got.RunOnStart == nil || !*got.RunOnStart {
+		t.Errorf("RunOnStart = %v, want non-nil *true", got.RunOnStart)
+	}
+	if got.CoalesceDuringBusy == nil || *got.CoalesceDuringBusy {
+		t.Errorf("CoalesceDuringBusy = %v, want non-nil *false", got.CoalesceDuringBusy)
+	}
+}
+
+// TestHandleSessionLoop_PUT_MergesPromptDefaults_ExplicitWins (T2) verifies
+// that an explicit non-zero request field wins over the frontmatter default.
+// FreshContext is intentionally omitted here — LoopPrompt.FreshContext is a
+// plain bool so "explicit false" is indistinguishable from "unset"; the
+// value-type quirk is documented in the helper's comment.
+func TestHandleSessionLoop_PUT_MergesPromptDefaults_ExplicitWins(t *testing.T) {
+	tr := true
+	promptStub := func(string) []configPkg.WebPrompt {
+		return []configPkg.WebPrompt{{
+			Name: "test-prompt",
+			Loop: &configPkg.PromptLoop{
+				Trigger:       "onTasks",
+				MaxIterations: 42,
+				RunOnStart:    &tr,
+			},
+		}}
+	}
+
+	store, h := newLoopStoreWithPrompts(t, promptStub)
+	sid := "put-merge-explicit"
+	if err := store.Create(session.Metadata{SessionID: sid, ACPServer: "t", WorkingDir: t.TempDir()}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	fa := false
+	got := putLoopForTest(t, h, sid, LoopPromptRequest{
+		PromptName:    "test-prompt",
+		Enabled:       true,
+		Trigger:       session.TriggerOnCompletion, // explicit, must win
+		DelaySeconds:  30,
+		MaxIterations: 7,   // explicit, must win over frontmatter's 42
+		RunOnStart:    &fa, // explicit *false must win over frontmatter *true
+	})
+
+	if got.Trigger != session.TriggerOnCompletion {
+		t.Errorf("Trigger = %q, want %q (explicit request wins)", got.Trigger, session.TriggerOnCompletion)
+	}
+	if got.MaxIterations != 7 {
+		t.Errorf("MaxIterations = %d, want 7 (explicit request wins)", got.MaxIterations)
+	}
+	if got.RunOnStart == nil || *got.RunOnStart {
+		t.Errorf("RunOnStart = %v, want non-nil *false (explicit request wins)", got.RunOnStart)
+	}
+}
+
+// TestHandleSessionLoop_PUT_MergesPromptDefaults_OptOut (T3) verifies that
+// LoopApplyPromptDefaults: &false disables the merge entirely, so no
+// frontmatter field leaks into the persisted loop.
+func TestHandleSessionLoop_PUT_MergesPromptDefaults_OptOut(t *testing.T) {
+	tr := true
+	promptStub := func(string) []configPkg.WebPrompt {
+		return []configPkg.WebPrompt{{
+			Name: "test-prompt",
+			Loop: &configPkg.PromptLoop{
+				Trigger:       "onTasks",
+				FreshContext:  &tr,
+				RunOnStart:    &tr,
+				MaxIterations: 42,
+			},
+		}}
+	}
+
+	store, h := newLoopStoreWithPrompts(t, promptStub)
+	sid := "put-merge-optout"
+	if err := store.Create(session.Metadata{SessionID: sid, ACPServer: "t", WorkingDir: t.TempDir()}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	fa := false
+	got := putLoopForTest(t, h, sid, LoopPromptRequest{
+		PromptName:              "test-prompt",
+		Enabled:                 true,
+		Trigger:                 session.TriggerOnCompletion, // required non-schedule so no Frequency needed
+		DelaySeconds:            30,
+		LoopApplyPromptDefaults: &fa,
+	})
+
+	if got.Trigger != session.TriggerOnCompletion {
+		t.Errorf("Trigger = %q, want %q", got.Trigger, session.TriggerOnCompletion)
+	}
+	if got.FreshContext {
+		t.Errorf("FreshContext = true, want false (merge opt-out honored)")
+	}
+	if got.RunOnStart != nil {
+		t.Errorf("RunOnStart = %v, want nil (merge opt-out honored)", got.RunOnStart)
+	}
+	if got.MaxIterations != 0 {
+		t.Errorf("MaxIterations = %d, want 0 (merge opt-out honored)", got.MaxIterations)
+	}
+}
+
+// TestHandleSessionLoop_PUT_MergesPromptDefaults_NoPromptName (T4) verifies
+// that a free-text prompt (no PromptName) does NOT trigger any prompt lookup;
+// the stub panics if invoked.
+func TestHandleSessionLoop_PUT_MergesPromptDefaults_NoPromptName(t *testing.T) {
+	promptStub := func(string) []configPkg.WebPrompt {
+		t.Fatalf("GetWorkspacePromptsAll must not be called when PromptName is empty")
+		return nil
+	}
+
+	store, h := newLoopStoreWithPrompts(t, promptStub)
+	sid := "put-merge-nopromptname"
+	if err := store.Create(session.Metadata{SessionID: sid, ACPServer: "t", WorkingDir: t.TempDir()}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	got := putLoopForTest(t, h, sid, LoopPromptRequest{
+		Prompt:    "free-text body",
+		Enabled:   true,
+		Frequency: session.Frequency{Value: 1, Unit: session.FrequencyHours},
+	})
+
+	if got.Prompt != "free-text body" {
+		t.Errorf("Prompt = %q, want %q", got.Prompt, "free-text body")
+	}
+	if got.Trigger != "" {
+		t.Errorf("Trigger = %q, want empty (no merge)", got.Trigger)
+	}
+}
+
+// TestHandleSessionLoop_PUT_MergesPromptDefaults_UnknownPromptName (T5)
+// verifies that a PromptName that does not resolve to any prompt is a
+// graceful no-op — the request persists as-is (matches the MCP path when
+// .Loop == nil).
+func TestHandleSessionLoop_PUT_MergesPromptDefaults_UnknownPromptName(t *testing.T) {
+	promptStub := func(string) []configPkg.WebPrompt {
+		return nil // empty prompt list
+	}
+
+	store, h := newLoopStoreWithPrompts(t, promptStub)
+	sid := "put-merge-unknown"
+	if err := store.Create(session.Metadata{SessionID: sid, ACPServer: "t", WorkingDir: t.TempDir()}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	got := putLoopForTest(t, h, sid, LoopPromptRequest{
+		PromptName: "does-not-exist",
+		Enabled:    true,
+		Frequency:  session.Frequency{Value: 1, Unit: session.FrequencyHours},
+	})
+
+	if got.PromptName != "does-not-exist" {
+		t.Errorf("PromptName = %q, want %q", got.PromptName, "does-not-exist")
+	}
+	if got.Trigger != "" {
+		t.Errorf("Trigger = %q, want empty (unknown prompt is graceful fallback)", got.Trigger)
+	}
+	if got.FreshContext {
+		t.Errorf("FreshContext = true, want false (unknown prompt is graceful fallback)")
 	}
 }
