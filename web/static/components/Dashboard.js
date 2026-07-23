@@ -390,8 +390,8 @@ function spacerRow(key) {
       key=${key}
     >
       <div class="list-col-grow min-w-0 flex flex-col gap-1">
-        <div class="text-xs">&nbsp;</div>
-        <div class="truncate text-sm">&nbsp;</div>
+        <div class="text-xs">${"\u00A0"}</div>
+        <div class="truncate text-sm">${"\u00A0"}</div>
       </div>
     </li>
   `;
@@ -400,11 +400,14 @@ function spacerRow(key) {
 // Empty-state row: keeps the same two-line shape as spacer/real rows so it
 // lines up cleanly with any spacer rows the panel renderer may add below it
 // to bottom-align with a sibling on the same page.
+// NB: htm renders text content literally, so an HTML entity like &nbsp; would
+// show as the raw string "&nbsp;". Use the actual U+00A0 non-breaking space
+// character instead to reserve the first line's height.
 function emptyRow() {
   return html`
     <li class="list-row" style="${COMPACT_ROW_STYLE}" key="__empty">
       <div class="list-col-grow min-w-0 flex flex-col gap-1">
-        <div class="text-xs">&nbsp;</div>
+        <div class="text-xs">${"\u00A0"}</div>
         <div class="text-center text-sm text-mitto-text-muted">No items</div>
       </div>
     </li>
