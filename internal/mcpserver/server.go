@@ -526,6 +526,14 @@ const maxMCPBodyPeek = 8 * 1024
 // The JSON-RPC method and id are peeked from the request body without consuming
 // it — the body is buffered (bounded by maxMCPBodyPeek) and replaced so the
 // downstream streamable handler sees the full, unmodified stream.
+//
+// Log level routing: real JSON-RPC calls (initialize, tools/list, tools/call,
+// notifications/*) log at INFO because they are the ones that matter for
+// cold-start diagnosis. Idle SSE keepalive GET streams (empty body,
+// http_method=GET, ~300s duration when they close) and `ping` heartbeats log
+// at DEBUG — they are high-volume, low-signal, and would otherwise dominate
+// console output. They still appear in the file log when file level is debug
+// (the macOS app's default; CLI users can opt in via --debug / --log-level=debug).
 func (s *Server) mcpRequestLoggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		reqID := uuid.NewString()[:8]
@@ -551,7 +559,12 @@ func (s *Server) mcpRequestLoggingMiddleware(next http.Handler) http.Handler {
 			rpcMethod, rpcID = parseJSONRPCEnvelope(peeked)
 		}
 
-		s.logger.Info("MCP request received",
+		level := slog.LevelInfo
+		if r.Method == http.MethodGet || rpcMethod == "ping" {
+			level = slog.LevelDebug
+		}
+
+		s.logger.Log(r.Context(), level, "MCP request received",
 			"mcp_req_id", reqID,
 			"http_method", r.Method,
 			"path", r.URL.Path,
@@ -569,7 +582,7 @@ func (s *Server) mcpRequestLoggingMiddleware(next http.Handler) http.Handler {
 			rec.status = http.StatusOK
 		}
 
-		s.logger.Info("MCP request completed",
+		s.logger.Log(r.Context(), level, "MCP request completed",
 			"mcp_req_id", reqID,
 			"rpc_method", rpcMethod,
 			"rpc_id", rpcID,
