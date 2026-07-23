@@ -1658,3 +1658,54 @@ describe("mitto-erry: SchemaSkewDialog copy consolidation + kill-switch UX", () 
     expect(source).toMatch(/web\.beads\.allow_migrate_from_ui/);
   });
 });
+
+
+// =============================================================================
+// mitto-vc2m: SchemaSkewDialog.handleConfirm must use secureFetch (CSRF header)
+// =============================================================================
+//
+// The original bug: SchemaSkewDialog.handleConfirm called
+//   authFetch(endpoints.beads.migrate(), { method: "POST", ... })
+// which drops the X-CSRF-Token header, so the middleware rejects the request
+// with 403 (has_header=false has_cookie=true). Symptom on mobile: "Run
+// migration" dies with a 403 toast and never reaches the backend.
+//
+// authFetch (utils/csrf.js:193) is intentionally CSRF-less — it exists for
+// GET / auth-only paths. Only secureFetch (utils/csrf.js:126) injects the
+// X-CSRF-Token header on POST/PUT/PATCH/DELETE. The two helpers are
+// look-alikes, which invited the mistake; this source-scan assertion pins the
+// migrate call to secureFetch so a future re-swap cannot silently drop the
+// CSRF header again.
+//
+// Source-scan style parallels the mitto-erry / mitto-n5mw / mitto-zbfq blocks
+// above — a full DOM render test is impractical because BeadsView imports
+// window.preact globals at module load time.
+
+describe("mitto-vc2m: SchemaSkewDialog migrate call must use secureFetch (CSRF)", () => {
+  const source = readFileSync(BEADS_VIEW_PATH, "utf8");
+
+  function extractSchemaSkewDialogSource() {
+    const startMarker = "function SchemaSkewDialog(";
+    const startIdx = source.indexOf(startMarker);
+    expect(startIdx).toBeGreaterThan(-1);
+    const afterStart = source.indexOf("\nfunction ", startIdx + startMarker.length);
+    const endIdx = afterStart === -1 ? source.length : afterStart;
+    return source.slice(startIdx, endIdx);
+  }
+
+  test("handleConfirm calls endpoints.beads.migrate() via secureFetch, never authFetch", () => {
+    const body = extractSchemaSkewDialogSource();
+    // Locate the migrate call site. Collapse whitespace so line breaks between
+    // the fetcher name, "(", and the endpoint helper do not hide it.
+    const collapsed = body.replace(/\s+/g, " ");
+
+    // Positive: the migrate POST must go through secureFetch.
+    expect(collapsed).toMatch(/secureFetch\s*\(\s*endpoints\.beads\.migrate\s*\(\s*\)/);
+
+    // Negative: authFetch must NEVER be paired with endpoints.beads.migrate().
+    // authFetch omits X-CSRF-Token, so this pairing is the exact 403 shape
+    // reported in mitto-vc2m.
+    expect(collapsed).not.toMatch(/authFetch\s*\(\s*endpoints\.beads\.migrate\s*\(\s*\)/);
+  });
+});
+
