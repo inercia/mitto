@@ -125,10 +125,16 @@ if grep -qE "created restricted runner.*type=$EXPECTED_TYPE.*fallback=false" "$L
     exit 0
 fi
 
-# Fallback branch: if runner unavailable and fell back, that's still a valid
-# code-path exercise on this host — surface it explicitly, do not silently pass.
+# Fallback branch: if runner unavailable and fell back, that's a valid
+# code-path exercise on macOS (sandbox-exec may be blocked by policy) but
+# on Linux, if we asked for firejail and got exec, the requested isolation
+# was not enforced — fail hard rather than silently accept an unconfined
+# process. Non-firejail Linux requests (e.g. exec-only) still soft-pass.
 if grep -qE "created restricted runner.*fallback=true" "$LOG_FILE"; then
     MATCH="$(grep -E 'created restricted runner' "$LOG_FILE" | head -1)"
+    if [ "$OS" = "Linux" ] && [ "$EXPECTED_TYPE" = "firejail" ]; then
+        fail "requested firejail on Linux but runner fell back to exec (isolation NOT enforced): $MATCH"
+    fi
     echo -e "${YELLOW}⚠ Runner requested $EXPECTED_TYPE but fell back to exec:${NC}"
     echo "   $MATCH"
     echo -e "${YELLOW}   (Fallback path exercised; not a hard failure on this host.)${NC}"
