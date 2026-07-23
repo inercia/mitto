@@ -3021,3 +3021,50 @@ func TestLoopProcessingSpawns_MirrorArgumentsIntoLoopArguments(t *testing.T) {
 		}
 	}
 }
+
+// TestIssueLoopProcessing_CoalesceDuringBusyIsFalse reproduces mitto-cwg.
+//
+// beads-issue-loop-processing.prompt.yaml is an onTasks supervisor: it fires on
+// beads changes and spawns worker children that themselves mutate .beads/
+// (add labels, close). At quiescence, LoopRunner.fireTasksRebase (in
+// internal/conversation/loop_runner_tasks.go) branches on
+// loop.ShouldCoalesceDuringBusy(): the default (CoalesceDuringBusy *bool == nil
+// → true, see internal/session/loop.go) overwrites the pre-run baseline with
+// the post-mutation snapshot silently, so the supervisor never sees the
+// terminal-label / close events its own children produced. The opt-in re-fire
+// path (maybeFireAccumulatedDelta) only runs when CoalesceDuringBusy is *false.
+//
+// The sibling builtin beads-refine-implementation.prompt.yaml already declares
+// `coalesceDuringBusy: false` in its loop block for exactly this reason
+// (mitto-dmb). This test pins that same convention onto the L1 supervisor
+// prompt. It fails until the loop frontmatter adds `coalesceDuringBusy: false`;
+// after the fix, the parser resolves CoalesceDuringBusy to *false and the
+// assertion passes.
+func TestIssueLoopProcessing_CoalesceDuringBusyIsFalse(t *testing.T) {
+	builtinDir := "../../config/prompts/builtin"
+	name := "beads-issue-loop-processing.prompt.yaml"
+	path := filepath.Join(builtinDir, name)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Skipf("prompt file not found at %s: %v", path, err)
+	}
+	prompt, err := ParsePromptFile(name, data, time.Now())
+	if err != nil {
+		t.Fatalf("ParsePromptFile: %v", err)
+	}
+	if prompt.Loop == nil {
+		t.Fatalf("expected a loop block; got nil")
+	}
+	// Guard: coalesceDuringBusy is only meaningful for trigger: onTasks. If this
+	// ever regresses, the rest of the assertion is moot — fail loudly.
+	if prompt.Loop.Trigger != "onTasks" {
+		t.Fatalf("loop.trigger = %q, want %q (mitto-cwg guard)",
+			prompt.Loop.Trigger, "onTasks")
+	}
+	if prompt.Loop.CoalesceDuringBusy == nil {
+		t.Fatalf("loop.coalesceDuringBusy is unset; the deployed supervisor takes the silent-swallow branch at fireTasksRebase (mitto-cwg). Declare `coalesceDuringBusy: false` in the loop: frontmatter of %s, mirroring beads-refine-implementation.prompt.yaml", name)
+	}
+	if *prompt.Loop.CoalesceDuringBusy {
+		t.Errorf("loop.coalesceDuringBusy = true, want false (mitto-cwg): supervisor must react to its own subtree's beads mutations, not silently absorb them into a baseline rebase")
+	}
+}

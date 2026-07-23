@@ -32,10 +32,33 @@ loop:
   # shortly after Mitto boots (with a 60s anti-flap window guarding against a fast
   # restart of a healthy loop) so the supervisor picks up work immediately.
   runOnStart: true
+  # Every fire starts from a clean ACP session — no history injection from prior passes.
+  # This orchestrator does pure procedural work (enumerate → decide → dispatch → yield)
+  # and any real reasoning is delegated to §A/§B/§C driver children. Fresh context per
+  # fire prevents stale reasoning from prior passes bleeding into a new decision (e.g.
+  # re-applying an old exclusion after the prompt rules changed) and keeps token spend
+  # bounded regardless of how long the supervisor stays resident.
+  freshContext: true
+  # Opt in to per-event re-fire (mitto-cwg): the supervisor's own §A/§B/§C children
+  # mutate .beads/ (add labels, close beads) while the supervisor is still busy. The
+  # default (true) would silently absorb those self-caused deltas into the quiescence
+  # baseline rebase and the loop would never observe the terminal state its own
+  # children produced. Setting this to false routes the accumulated delta through
+  # maybeFireAccumulatedDelta so the next pass sees the change and can act on it
+  # (close terminal-label beads, reap children, dispatch the next class).
+  coalesceDuringBusy: false
 target:
   title: 'Loop processing tasks'
   reuseTitle: true
   reuseCoalesce: true
+# The orchestrator's work is procedural tool-orchestration — no code authorship, no deep
+# reasoning. Enumerate `bd list` output, apply strict-priority A→B→C, emit the candidates
+# table, call mitto_conversation_new/_delete/_archive. Coding tier is the right fit; any
+# actual investigation happens in §B/§C driver children, which switch tier per phase via
+# their own preferredModels. Pinning here prevents inheriting whatever model the seeding
+# conversation happened to be on (often Reasoning-tier for the seed turn).
+preferredModels:
+  - modelTag: Coding
 prompt: |
   ## Session Context
 
@@ -288,6 +311,15 @@ prompt: |
   is already working on that bead, so this pass leaves the mention alone; it will
   re-surface on a future pass once the active conversation is done or archived.
 
+  **Formal-match only — no title inference.** The "already working on it"
+  exclusion fires ONLY when a non-archived conversation's `beads_issue` field
+  **literally equals `<id>`**. Do NOT exclude based on similarity between the
+  bead title and a session title (e.g. a user session titled "Dashboard" does
+  NOT exclude beads whose scope words happen to overlap with "dashboard"). If
+  a human wants a session to reserve a bead, they set `beads_issue` on that
+  session — an empty `beads_issue` means "no claim". This rule applies
+  identically to 2A / 2B / 2C.
+
   ### 2B — Eligible open bugs
 
   {{ if eq .Args.FixBugs "false" -}}
@@ -328,9 +360,11 @@ prompt: |
     not re-dispatch), OR
   - is `in_progress` elsewhere, OR
   - carries `needs-human` (previously deferred), OR
-  - matches any non-archived conversation's `beads_issue` in `{{ .Children.MCPText }}`
-    — an active child (or user-driven session) is already working on it; do not
-    double-spawn or step on a human's parallel work, OR
+  - **formally** matches any non-archived conversation's `beads_issue` in
+    `{{ .Children.MCPText }}` (literal `beads_issue == <id>` — NOT a fuzzy title
+    match; see 2A's "Formal-match only" note) — an active child (or user-driven
+    session) is already working on it; do not double-spawn or step on a human's
+    parallel work, OR
   - **appears to have been fixed outside the beads workflow** (see "Already-landed
     fix detection" below), OR
   - has a `dependency_type: parent-child` dependency whose parent bead was **closed
@@ -428,6 +462,49 @@ prompt: |
   ordering. Ordering is the same as 2B (priority `critical → high → medium → low`,
   then bead ID ascending).
   {{- end }}
+
+  ## Step 2T — Emit the candidates table
+
+  After 2A/2B/2C are built (and before Step 3 picks the class), print ONE
+  Markdown table summarising every enumerated candidate and the disposition
+  the orchestrator will apply to it this pass. This makes the yield decision
+  auditable in one glance and is the ONE place per pass where per-bead reasoning
+  is exposed — do NOT emit per-bead prose commentary outside this table.
+
+  **Row per candidate** across all three sets (2A tuples, 2B bugs, 2C features).
+  Order rows by class (A → B → C), then by the class's own ordering (2A: `ts`
+  ascending; 2B/2C: priority then bead ID). Include EVERY candidate that entered
+  enumeration, including those excluded — the excluded rows are the whole point.
+
+  Columns and semantics — keep it terse (one short phrase per Reason cell):
+
+  - **Class** — `A` / `B` / `C`.
+  - **Issue** — bead ID (for 2A, append ` [<ts>]`).
+  - **Status** — a single emoji:
+    - 🟢 `spawnable` — passed all exclusions; will be considered in Step 3.
+    - 🔴 `excluded` — failed at least one exclusion (see Reason).
+    - 🟡 `blocked` — has unmet `bd` dependencies (`bd ready` did not surface it).
+  - **Reason** — for 🟢 leave blank or write `ready`; for 🔴/🟡 name the ONE
+    dominant exclusion (`beads_issue match: <session-id>`, `label: needs-human`,
+    `label: fixed (terminal)`, `already-landed fix (commit <hash>)`,
+    `recently-closed parent <id>`, `blocked-by <id>`, `scope disabled`, etc.).
+    When excluding due to a session's `beads_issue`, always include the
+    literal session ID so the reader can verify the formal match.
+
+  Format exactly:
+
+  ```
+  Candidates (A=<count> B=<count> C=<count>):
+
+  | Class | Issue | Status | Reason |
+  |-------|-------|--------|--------|
+  | A | <id> [<ts>] | 🟢 spawnable | ready |
+  | B | <id> | 🔴 excluded | beads_issue match: <session-id> |
+  | C | <id> | 🟡 blocked | blocked-by <id> |
+  ```
+
+  If ALL three sets are empty (nothing even entered enumeration), print
+  `Candidates: none (A=0 B=0 C=0).` and skip the table.
 
   ## Step 3 — Pick the class for this pass
 
