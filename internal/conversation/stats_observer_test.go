@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/inercia/mitto/internal/session"
 	"github.com/inercia/mitto/internal/stats"
 )
 
@@ -223,5 +224,54 @@ func TestSessionManager_NoAggregator_AttachIsNoop(t *testing.T) {
 
 	if got := bs.ObserverCount(); got != 0 {
 		t.Errorf("ObserverCount with no aggregator = %d, want 0", got)
+	}
+}
+
+// TestStatsObserver_OnSessionChange_ForwardsModel verifies that a
+// session_change(kind=model) event routed through the observer reaches the
+// aggregator and retags subsequent token deltas — the live-path equivalent of
+// the backfiller's model-fold on persisted events.
+func TestStatsObserver_OnSessionChange_ForwardsModel(t *testing.T) {
+	store := &captureStore{}
+	agg := newTestAggregator(store)
+	defer func() { _ = agg.Close() }()
+
+	sc := stats.SessionContext{SessionID: "s-model", Workspace: "w1", BaselineModel: "modelA"}
+	obs := newStatsObserver(agg, sc)
+	if obs == nil {
+		t.Fatalf("newStatsObserver returned nil")
+	}
+
+	// Under baseline modelA.
+	obs.OnUserPrompt(1, "sender", "pid", "abcd", nil, nil, "", 0)
+	obs.OnAgentMessage(2, "hello agent")
+	// Switch to modelB.
+	obs.OnSessionChange(3, session.SessionChangeData{Kind: "model", Value: "modelB", PreviousValue: "modelA"})
+	// Under modelB.
+	obs.OnUserPrompt(4, "sender", "pid", "efgh", nil, nil, "", 0)
+	obs.OnAgentMessage(5, "reply under B")
+
+	if err := agg.Flush(context.Background()); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+
+	for _, metric := range []string{stats.MetricInputTokensEst, stats.MetricOutputTokensEst} {
+		byModel := map[string]int64{}
+		store.mu.Lock()
+		for _, d := range store.deltas {
+			if d.Metric == metric && d.SessionID == sc.SessionID {
+				byModel[d.Model] += d.Value
+			}
+		}
+		store.mu.Unlock()
+		if byModel["modelA"] == 0 {
+			t.Errorf("%s: no rows for modelA (byModel=%v)", metric, byModel)
+		}
+		if byModel["modelB"] == 0 {
+			t.Errorf("%s: no rows for modelB — session_change did not propagate (byModel=%v)", metric, byModel)
+		}
+		if byModel[""] != 0 {
+			t.Errorf("%s: unexpected empty-model rows (byModel=%v)", metric, byModel)
+		}
 	}
 }

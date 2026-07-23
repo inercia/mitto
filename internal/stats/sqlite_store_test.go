@@ -634,3 +634,80 @@ func TestSQLiteStore_UpsertDeltas_ConcurrentWriters(t *testing.T) {
 		}
 	}
 }
+
+// -----------------------------------------------------------------------------
+// Model dimension (mitto-1pv / parent epic mitto-5r5 phase 1)
+// -----------------------------------------------------------------------------
+
+// countAtModel returns the value stored at a specific bucket-key including
+// the trailing model column so tests can assert distinct rows per model.
+func countAtModel(t *testing.T, s *SQLiteStore, ts time.Time, metric, sess, ws, model string) int64 {
+	t.Helper()
+	var v int64
+	err := s.db.QueryRowContext(context.Background(),
+		`SELECT value FROM stats_events
+		 WHERE ts_bucket=? AND metric=? AND session_id=? AND workspace=? AND model=?`,
+		ts.UTC().Unix(), metric, sess, ws, model,
+	).Scan(&v)
+	if err != nil {
+		return 0
+	}
+	return v
+}
+
+// TestSQLiteStore_UpsertDeltasWithModel_DistinctRows verifies that two deltas
+// with identical (bucket, metric, session, workspace) but different Model
+// values produce two independent rows — i.e. model is a first-class primary
+// key dimension, not silently coalesced.
+func TestSQLiteStore_UpsertDeltasWithModel_DistinctRows(t *testing.T) {
+	s, _ := openTestStore(t)
+	ctx := context.Background()
+	ts := hourBucket(t, "2026-01-01T00:00:00Z")
+
+	deltas := []Delta{
+		{TSBucket: ts, Metric: MetricInputTokensEst, SessionID: "s", Workspace: "w", Model: "modelA", Value: 3},
+		{TSBucket: ts, Metric: MetricInputTokensEst, SessionID: "s", Workspace: "w", Model: "modelB", Value: 5},
+		{TSBucket: ts, Metric: MetricInputTokensEst, SessionID: "s", Workspace: "w", Model: "", Value: 7},
+	}
+	if err := s.UpsertDeltas(ctx, deltas); err != nil {
+		t.Fatalf("UpsertDeltas: %v", err)
+	}
+
+	if got := countAtModel(t, s, ts, MetricInputTokensEst, "s", "w", "modelA"); got != 3 {
+		t.Errorf("row model=modelA value = %d, want 3", got)
+	}
+	if got := countAtModel(t, s, ts, MetricInputTokensEst, "s", "w", "modelB"); got != 5 {
+		t.Errorf("row model=modelB value = %d, want 5", got)
+	}
+	if got := countAtModel(t, s, ts, MetricInputTokensEst, "s", "w", ""); got != 7 {
+		t.Errorf("row model='' value = %d, want 7 (unknown-model bucket kept distinct)", got)
+	}
+
+	// Row count for this (bucket, metric, session, workspace) must be 3.
+	var n int
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM stats_events
+		 WHERE ts_bucket=? AND metric=? AND session_id=? AND workspace=?`,
+		ts.UTC().Unix(), MetricInputTokensEst, "s", "w",
+	).Scan(&n); err != nil {
+		t.Fatalf("COUNT(*): %v", err)
+	}
+	if n != 3 {
+		t.Errorf("row count for shared (bucket,metric,session,workspace) = %d, want 3 (one per model)", n)
+	}
+
+	// Re-upsert the modelA row with a new value — must last-write-wins that
+	// row only, not clobber the modelB or '' rows.
+	if err := s.UpsertDeltas(ctx, []Delta{{TSBucket: ts, Metric: MetricInputTokensEst, SessionID: "s", Workspace: "w", Model: "modelA", Value: 9}}); err != nil {
+		t.Fatalf("re-upsert modelA: %v", err)
+	}
+	if got := countAtModel(t, s, ts, MetricInputTokensEst, "s", "w", "modelA"); got != 9 {
+		t.Errorf("modelA after re-upsert = %d, want 9", got)
+	}
+	if got := countAtModel(t, s, ts, MetricInputTokensEst, "s", "w", "modelB"); got != 5 {
+		t.Errorf("modelB after modelA re-upsert = %d, want 5 (untouched)", got)
+	}
+	if got := countAtModel(t, s, ts, MetricInputTokensEst, "s", "w", ""); got != 7 {
+		t.Errorf("model='' after modelA re-upsert = %d, want 7 (untouched)", got)
+	}
+}

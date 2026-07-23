@@ -595,3 +595,149 @@ func TestAggregator_Close_FlushesPending(t *testing.T) {
 	// Post-close Ingest must be silently dropped, not panic.
 	a.Ingest(sc("s1", "w1"), evAt(2, ts, session.EventTypeUserPrompt, session.UserPromptData{Message: "y"}))
 }
+
+// -----------------------------------------------------------------------------
+// Model dimension (mitto-1pv / parent epic mitto-5r5 phase 1)
+// -----------------------------------------------------------------------------
+
+// scWithModel is a SessionContext factory that also seeds a baseline model.
+func scWithModel(sessionID, workspace, baseline string) SessionContext {
+	return SessionContext{SessionID: sessionID, Workspace: workspace, BaselineModel: baseline}
+}
+
+// deltasBy filters recorded deltas to the given (metric, sessionID) pair and
+// returns them in stable order for readable assertions. Order across flushes
+// is deterministic here because tests use a single-hour bucket and MaxBatch
+// large enough that everything lands in one flush.
+func deltasBy(f *fakeStore, metric, sessionID string) []Delta {
+	var out []Delta
+	for _, c := range f.snapshot() {
+		for _, d := range c.deltas {
+			if d.Metric == metric && d.SessionID == sessionID {
+				out = append(out, d)
+			}
+		}
+	}
+	return out
+}
+
+// TestAggregator_TagsTokensWithCurrentModel verifies the acceptance criterion
+// for model attribution: token deltas ride the currently-active model, and a
+// mid-session session_change(kind=model) event retags every subsequent token
+// delta without disturbing prior rows. Non-token metrics stay untagged.
+func TestAggregator_TagsTokensWithCurrentModel(t *testing.T) {
+	fs := &fakeStore{}
+	a := NewAggregator(fs, AggregatorOptions{FlushInterval: time.Hour, MaxBatch: 1_000_000})
+	defer a.Close()
+
+	ts := hour(t, "2026-01-01T00:00:00Z")
+	scA := scWithModel("s1", "w1", "modelA")
+
+	// Session under baseline model A: prompt → agent message.
+	a.Ingest(scA, evAt(1, ts, session.EventTypeUserPrompt, session.UserPromptData{Message: "abcd"}))   // 4 chars → 1 input token
+	a.Ingest(scA, evAt(2, ts, session.EventTypeAgentMessage, session.AgentMessageData{Text: "abcde"})) // 5 chars → 2 output tokens
+
+	// Model switch to B (state-only; no delta of its own).
+	a.Ingest(scA, evAt(3, ts, session.EventTypeSessionChange, session.SessionChangeData{
+		Kind: sessionChangeKindModel, Value: "modelB", PreviousValue: "modelA",
+	}))
+
+	// Under model B: another prompt → agent message.
+	a.Ingest(scA, evAt(4, ts, session.EventTypeUserPrompt, session.UserPromptData{Message: "efgh"}))      // 4 chars → 1 input token
+	a.Ingest(scA, evAt(5, ts, session.EventTypeAgentMessage, session.AgentMessageData{Text: "ijklmnop"})) // 8 chars → 2 output tokens
+	// Non-token metric on B — must remain untagged (Model="").
+	a.Ingest(scA, evAt(6, ts, session.EventTypeToolCall, session.ToolCallData{Title: "read_file"}))
+	mustFlush(t, a)
+
+	// Two input-token rows, one per model.
+	inputs := deltasBy(fs, MetricInputTokensEst, "s1")
+	byModel := map[string]int64{}
+	for _, d := range inputs {
+		byModel[d.Model] += d.Value
+	}
+	if len(byModel) != 2 || byModel["modelA"] == 0 || byModel["modelB"] == 0 {
+		t.Errorf("input_tokens_est per model = %v, want two non-zero rows for modelA and modelB", byModel)
+	}
+	// Two output-token rows, one per model.
+	outputs := deltasBy(fs, MetricOutputTokensEst, "s1")
+	byModel = map[string]int64{}
+	for _, d := range outputs {
+		byModel[d.Model] += d.Value
+	}
+	if len(byModel) != 2 || byModel["modelA"] == 0 || byModel["modelB"] == 0 {
+		t.Errorf("output_tokens_est per model = %v, want two non-zero rows for modelA and modelB", byModel)
+	}
+
+	// Non-token metrics stay untagged.
+	toolCalls := deltasBy(fs, MetricToolCallsTotal, "s1")
+	if len(toolCalls) != 1 {
+		t.Fatalf("tool_calls_total rows = %d, want 1", len(toolCalls))
+	}
+	if toolCalls[0].Model != "" {
+		t.Errorf("tool_calls_total.Model = %q, want empty (non-model-attributable)", toolCalls[0].Model)
+	}
+	prompts := deltasBy(fs, MetricPrompts, "s1")
+	for _, d := range prompts {
+		if d.Model != "" {
+			t.Errorf("prompts.Model = %q, want empty (non-model-attributable)", d.Model)
+		}
+	}
+}
+
+// TestAggregator_UnknownModelWhenNoBaseline verifies that when no baseline
+// model is provided and no session_change event fires, every token delta is
+// attributed to the empty-string "unknown provenance" bucket rather than being
+// dropped.
+func TestAggregator_UnknownModelWhenNoBaseline(t *testing.T) {
+	fs := &fakeStore{}
+	a := NewAggregator(fs, AggregatorOptions{FlushInterval: time.Hour, MaxBatch: 1_000_000})
+	defer a.Close()
+
+	ts := hour(t, "2026-01-01T00:00:00Z")
+	// sc() does not set BaselineModel.
+	a.Ingest(sc("s1", "w1"), evAt(1, ts, session.EventTypeUserPrompt, session.UserPromptData{Message: "abcd"}))
+	a.Ingest(sc("s1", "w1"), evAt(2, ts, session.EventTypeAgentMessage, session.AgentMessageData{Text: "efgh"}))
+	a.Ingest(sc("s1", "w1"), evAt(3, ts, session.EventTypeAgentThought, session.AgentThoughtData{Text: "hidden"}))
+	mustFlush(t, a)
+
+	for _, metric := range []string{MetricInputTokensEst, MetricOutputTokensEst} {
+		rows := deltasBy(fs, metric, "s1")
+		if len(rows) == 0 {
+			t.Errorf("%s: no rows recorded", metric)
+			continue
+		}
+		for _, d := range rows {
+			if d.Model != "" {
+				t.Errorf("%s row has Model=%q, want empty (no baseline, no session_change)", metric, d.Model)
+			}
+		}
+	}
+}
+
+// TestAggregator_SessionChange_NonModelKind_IsIgnored verifies that session
+// changes with a Kind other than "model" leave currentModel untouched so
+// unrelated timeline events (mode switches, prompt-argument tweaks) never
+// retag token deltas.
+func TestAggregator_SessionChange_NonModelKind_IsIgnored(t *testing.T) {
+	fs := &fakeStore{}
+	a := NewAggregator(fs, AggregatorOptions{FlushInterval: time.Hour, MaxBatch: 1_000_000})
+	defer a.Close()
+
+	ts := hour(t, "2026-01-01T00:00:00Z")
+	scA := scWithModel("s1", "w1", "modelA")
+
+	a.Ingest(scA, evAt(1, ts, session.EventTypeUserPrompt, session.UserPromptData{Message: "abcd"}))
+	// Non-model kind — must NOT change currentModel.
+	a.Ingest(scA, evAt(2, ts, session.EventTypeSessionChange, session.SessionChangeData{
+		Kind: "mode", Value: "code", PreviousValue: "ask",
+	}))
+	a.Ingest(scA, evAt(3, ts, session.EventTypeUserPrompt, session.UserPromptData{Message: "efgh"}))
+	mustFlush(t, a)
+
+	rows := deltasBy(fs, MetricInputTokensEst, "s1")
+	for _, d := range rows {
+		if d.Model != "modelA" {
+			t.Errorf("input_tokens_est.Model = %q, want %q (kind=mode must not retag)", d.Model, "modelA")
+		}
+	}
+}
