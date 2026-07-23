@@ -269,6 +269,8 @@ prompt: |
 | `enabled`         | No       | bool     | Set to `false` to disable the prompt. Default: `true`                                        |
 | `enabledWhen`     | No       | string   | CEL expression for conditional enablement. See [below](#enabledwhen-conditional-enablement). |
 | `loop`        | No       | mapping  | Opt-in loop mode — presence makes the prompt behave **context-sensitively** when selected (start a new recurring conversation, convert an existing one to loop, or send a single one-shot run). See [below](#loop-prompts). |
+| `target`          | No       | mapping  | Routing block for dispatches that would create a new conversation — funnels into an existing one by beads issue, canonical title, or singleton scope. See [below](#target-find-or-route-dispatch). |
+| `preferredModels` | No       | list     | Ordered references to global model profiles (`modelName` or `modelTag` per entry) applied at dispatch. First entry that resolves to an available model wins; kept if the current model already satisfies. See [below](#preferredmodels-model-selection). |
 | `prompt`          | Yes\*\*  | string   | The prompt body text, written as a YAML literal block scalar (`\|`). |
 
 \*If `name` is not specified, it's derived from the filename (e.g., `code-review.prompt.yaml` →
@@ -621,30 +623,36 @@ convert an existing conversation to loop, or send a single one-shot run (see
 
 ```yaml
 loop:
-  value: 1           # number of time units between runs (integer ≥ 1); used by trigger: schedule
-  unit: hours        # minutes | hours | days; used by trigger: schedule
-  at: "09:00"        # optional — time of day in HH:MM (local time in the UI, stored as UTC); only valid for unit: days
-  maxIterations: 10  # optional; 0/absent = unlimited scheduled runs
-  trigger: schedule  # optional — schedule (default) | onCompletion | onTasks
-  delay: 30          # optional — seconds to wait after the agent stops, before the next onCompletion run
-  maxDuration: "4h"  # optional — wall-clock cap (e.g. 30m, 4h, 1d); 0/absent = unlimited
-  condition: ''      # optional — CEL expression gating which beads/task changes fire the run; only meaningful for trigger: onTasks
-  mode: always       # optional — always (default) | optional
-  default: true      # optional — only meaningful for mode: optional; nil/absent = true
+  value: 1                 # number of time units between runs (integer ≥ 1); used by trigger: schedule
+  unit: hours              # minutes | hours | days; used by trigger: schedule
+  at: "09:00"              # optional — time of day in HH:MM (local time in the UI, stored as UTC); only valid for unit: days
+  maxIterations: 10        # optional; 0/absent = unlimited scheduled runs
+  trigger: schedule        # optional — schedule (default) | onCompletion | onTasks
+  delay: 30                # optional — seconds to wait after the agent stops, before the next onCompletion run
+  maxDuration: "4h"        # optional — wall-clock cap (e.g. 30m, 4h, 1d); 0/absent = unlimited
+  condition: ''            # optional — CEL expression gating which beads/task changes fire the run; only meaningful for trigger: onTasks
+  coalesceDuringBusy: true # optional — nil/true (default) absorbs busy-window changes silently; false fires once at quiescence with the accumulated delta
+  freshContext: false      # optional — nil/false (default) preserves context across runs; true starts each run with a clean ACP session
+  runOnStart: false        # optional — nil/false (default) does not re-fire on Mitto boot; true fires once shortly after boot (anti-flap guarded)
+  mode: always             # optional — always (default) | optional
+  default: true            # optional — only meaningful for mode: optional; nil/absent = true
 ```
 
-| Field           | Required | Description |
-| --------------- | -------- | ----------- |
-| `value`         | Yes¹     | Number of time units between runs (integer ≥ 1, max 999) |
-| `unit`          | Yes¹     | `minutes`, `hours`, or `days` |
-| `at`            | No       | Time of day (`HH:MM`) for daily schedules only. Ignored for other units. |
-| `maxIterations` | No       | Cap on the number of scheduled runs (integer ≥ 0). `0` or absent means unlimited at the prompt level. See [Max iterations and auto-stop](#max-iterations-and-auto-stop). |
-| `trigger`       | No       | How runs fire: `schedule` (default — frequency-based), `onCompletion` (fire after the agent stops responding), or `onTasks` (fire when beads/tasks in the workspace change). See [Triggers](#triggers-schedule-vs-on-completion). |
-| `delay`         | No       | For `trigger: onCompletion` only — seconds to wait after the agent finishes before the next run. Clamped up to the global floor (`min_loop_completion_delay_seconds`, default 5). Ignored for `schedule`. |
-| `maxDuration`   | No       | Wall-clock cap as a duration string (`30m`, `4h`, `1d`). Once it elapses (measured from the first run), the conversation auto-stops. `0`/absent = unlimited. |
-| `condition`     | No       | For `trigger: onTasks` only — a CEL expression gating which beads/task changes fire the run. Empty/absent = fire on any change. Validated at parse time; a syntactically invalid or unknown-identifier expression fails prompt load. |
-| `mode`          | No       | `always` (default — not user-toggleable) or `optional` (user-choosable per send). Unknown values are rejected at load time. See [Always / optional / never](#always--optional--never). |
-| `default`       | No       | Initial per-send toggle state when `mode: optional`. `true`/absent = on, `false` = off. Ignored (with a load-time warning) when `mode` is `always` or absent. |
+| Field                | Required | Description |
+| -------------------- | -------- | ----------- |
+| `value`              | Yes¹     | Number of time units between runs (integer ≥ 1, max 999) |
+| `unit`               | Yes¹     | `minutes`, `hours`, or `days` |
+| `at`                 | No       | Time of day (`HH:MM`) for daily schedules only. Ignored for other units. |
+| `maxIterations`      | No       | Cap on the number of scheduled runs (integer ≥ 0). `0` or absent means unlimited at the prompt level. See [Max iterations and auto-stop](#max-iterations-and-auto-stop). |
+| `trigger`            | No       | How runs fire: `schedule` (default — frequency-based), `onCompletion` (fire after the agent stops responding), or `onTasks` (fire when beads/tasks in the workspace change). See [Triggers](#triggers-schedule-vs-on-completion). |
+| `delay`              | No       | For `trigger: onCompletion` only — seconds to wait after the agent finishes before the next run. Clamped up to the global floor (`min_loop_completion_delay_seconds`, default 5). Ignored for `schedule`. |
+| `maxDuration`        | No       | Wall-clock cap as a duration string (`30m`, `4h`, `1d`). Once it elapses (measured from the first run), the conversation auto-stops. `0`/absent = unlimited. |
+| `condition`          | No       | For `trigger: onTasks` only — a CEL expression gating which beads/task changes fire the run. Empty/absent = fire on any change. Validated at parse time; a syntactically invalid or unknown-identifier expression fails prompt load. |
+| `coalesceDuringBusy` | No       | For `trigger: onTasks` only. Nil/absent or `true` (default) silently absorbs beads changes that arrive while the loop's subtree is busy — they are folded into the next quiescence rebase. `false` fires exactly once more at quiescence with the accumulated pre-run→current delta available as `{{ .Trigger.OnTasks.Changes.* }}`. |
+| `freshContext`       | No       | When `true`, every re-fire starts the agent with a clean context: no history injection and a new ACP session per run. Meaningful for any trigger; primarily used by stateless supervisor loops that re-hydrate from external state on every fire. Nil/absent = `false` (persistent context). |
+| `runOnStart`         | No       | When `true`, the LoopRunner fires this loop exactly once shortly after Mitto boots (after the interactive-resume startup delay, with an anti-flap window suppressing the pulse when the loop already ran very recently). Complements `onTasks` loops (which otherwise only fire on task changes) and lets `schedule` / `onCompletion` loops kick off at boot without waiting for the next tick. Nil/absent = `false`. |
+| `mode`               | No       | `always` (default — not user-toggleable) or `optional` (user-choosable per send). Unknown values are rejected at load time. See [Always / optional / never](#always--optional--never). |
+| `default`            | No       | Initial per-send toggle state when `mode: optional`. `true`/absent = on, `false` = off. Ignored (with a load-time warning) when `mode` is `always` or absent. |
 
 ¹ Required for `trigger: schedule` (the default). Ignored for `trigger: onCompletion` and `trigger: onTasks`, which fire off events rather than a fixed period.
 
@@ -785,6 +793,76 @@ it back into a regular conversation. It is the automated sibling of the interact
 For the general design pattern behind this kind of self-driving, self-terminating
 loop — encoding workflow progress as `bd` labels — see
 [Label-as-state-machine pattern for loop beads prompts](../devel/prompt-templates.md#13-label-as-state-machine-pattern-for-loop-beads-prompts).
+
+## `target:` (find-or-route dispatch)
+
+When a prompt is used to **create a new conversation** — via the `beadsIssues` /
+`beadsList` menus, `POST /api/sessions`, or the `mitto_conversation_new` MCP
+tool — an optional `target:` block funnels the dispatch into an *existing*
+conversation instead of creating a duplicate. When no candidate matches, the
+handler falls through to normal creation. Both the REST and MCP paths mirror
+the same ladder.
+
+```yaml
+target:
+  reuseIssue: true                     # requires the request to carry beads_issue
+  title: "{{ .Args.IssueID }}: work"   # canonical conversation Name (Go template rendered at dispatch)
+  reuseTitle: true                     # requires title above; funnels by Name match
+  reuseCoalesce: true                  # skip dispatch when an identical prompt is already in flight/queued
+```
+
+### Fields
+
+| Field           | Type   | Description |
+| --------------- | ------ | ----------- |
+| `reuseIssue`    | bool   | When `true` and the request carries a `beads_issue`, funnel into an existing non-archived conversation with the same `beads_issue` in the same `working_dir`. |
+| `title`         | string | Canonical name for the conversation. Rendered as a Go text/template at dispatch (context: `.Args`, `.Session.BeadsIssue`, `.Workspace.Folder`). When `reuseTitle` is `true`, the **rendered** string is also the lookup key. When the caller omits an explicit name and this prompt originates a new conversation, the created conversation's Name is set to the rendered title. Empty or whitespace-only renders are rejected at dispatch. |
+| `reuseTitle`    | bool   | When `true` (requires non-empty `title`), funnel into an existing non-archived conversation in the same `working_dir` whose `Name` equals the rendered `title` (byte-for-byte, case-sensitive). On miss, create with `Name = title` so a subsequent scan matches. |
+| `reuseCoalesce` | bool   | When `true`, suppresses a dispatch to the reused conversation when an identical prompt (same `prompt_name` and `arguments`) is already queued or currently in flight. The caller still gets a `{"reused": true, "coalesced": true}` response so it can focus the target, but no duplicate work is enqueued. Requires at least one reuse mode (`reuseIssue`, `reuseTitle`, or top-level `singleton: true`). Nil/absent = behavior unchanged (every dispatch is delivered). |
+
+### Order of evaluation
+
+The three reuse modes are evaluated in this fixed order, mutually exclusive
+per request:
+
+1. **`reuseIssue`** — requires `beads_issue` + `target.reuseIssue: true`.
+2. **`reuseTitle`** — requires `target.reuseTitle: true` + non-empty rendered
+   `target.title`.
+3. **`singleton`** — top-level `singleton: true` (keyed on working dir +
+   origin prompt name).
+
+Once step 1 or 2 is *evaluated* (regardless of hit/miss), later fallbacks are
+skipped, so different beads issues or titles cannot silently collapse into a
+shared singleton.
+
+See [devel/prompts.md § `target:` block](../devel/prompts.md#prompt-target-block--find-or-route-dispatch)
+for the internal ladder, per-key mutex, and REST↔MCP symmetry.
+
+## `preferredModels:` (model selection)
+
+A prompt can steer model selection at dispatch time by declaring an ordered
+list of **structured references** to global model profiles. Each entry is
+exactly one of `modelName` or `modelTag`:
+
+```yaml
+preferredModels:
+  - modelTag: Reasoning        # first available profile carrying this tag
+  - modelName: Claude Sonnet 4 # fallback by exact profile name (case-insensitive)
+```
+
+Resolution is **first-match-wins**: the backend tries each entry in order and
+stops at the first that resolves to a profile whose criteria match a model
+available on the session's ACP server. If the current model already satisfies
+the resolved profile, it is **kept** — no needless model switch.
+
+The preference is applied per-dispatch as a silent override: the conversation's
+baseline model is not changed, no `session_change` event is recorded, and the
+baseline is restored after the prompt completes. Manual model selection in the
+UI, by contrast, updates the baseline persistently.
+
+See [Models — Referenced by prompts (`preferredModels`)](models.md#referenced-by-prompts-preferredmodels)
+for the profile schema, tag-resolution semantics, and priority-by-list-order
+rules.
 
 ## Prompt Arguments
 
@@ -1027,6 +1105,17 @@ The following fields are available at send time. They are the **same fields used
 | `{{ .Iteration.IsLoop }}` | `true` when triggered by the loop runner |
 | `{{ .Iteration.IsFirst }}` | `true` when `Number == 0` |
 | `{{ .Iteration.IsLast }}` | `true` when `Max > 0 && Number == Max-1` |
+| `{{ .Iteration.IsUninterrupted }}` | `true` only on a scheduled, non-forced loop run that directly follows another such run — no user interjection, no forced "run now", no `freshContext`, same process lifetime. Prompt bodies branch on it to render a compact "continue" form on machine-driven continuation runs and the verbose form otherwise. |
+| `{{ .Trigger.OnTasks.Changes.Added }}` | `trigger: onTasks` only — beads/issues that appeared since the previous snapshot. `range`-able list of maps with canonical keys (`id`, `type`, `status`, `priority`, `labels`, `title`, `assignee`, `updated_at`). Nil-safe: guard the outer `.Trigger` pointer with `{{ with .Trigger }}{{ with .OnTasks }} ... {{ end }}{{ end }}`. |
+| `{{ .Trigger.OnTasks.Changes.Updated }}` | Beads whose fields changed. Same shape as `Added`. |
+| `{{ .Trigger.OnTasks.Changes.Removed }}` | Beads that disappeared. Same shape. |
+| `{{ .Trigger.OnTasks.Changes.Closed }}` | Beads whose status transitioned to closed. Same shape. |
+| `{{ .Trigger.OnTasks.Changes.Reopened }}` | Beads whose status transitioned from closed back to open. Same shape. |
+| `{{ .Trigger.OnTasks.Changes.LabelAdded }}` | Beads that gained one or more labels. Same shape. |
+| `{{ .Trigger.OnTasks.Changes.Touched }}` | `Added ∪ Updated` convenience union. Same shape. |
+
+`.Trigger` is nil for scheduled, `onCompletion`, manual "run now", and non-loop
+dispatches. Always guard both levels (nested `with`) before ranging.
 
 ### Functions
 

@@ -136,6 +136,13 @@ CEL expression always read the same field from the same struct.
 | `{{ .Iteration.IsFirst }}` | — | `Iteration.IsFirst` — `true` when `Number == 0` |
 | `{{ .Iteration.IsLast }}` | — | `Iteration.IsLast` — `true` when `Max > 0 && Number == Max-1` |
 | `{{ .Iteration.IsUninterrupted }}` | — | `Iteration.IsUninterrupted` — `true` only on a scheduled, non-forced loop run directly following another such run (no user interjection / forced run / FreshContext; same process lifetime) |
+| `{{ .Trigger.OnTasks.Changes.Added }}` | — | `Trigger.OnTasks.Changes.Added` — `[]map[string]any` of beads that appeared since the previous baseline (canonical keys `id`, `type`, `status`, `priority`, `labels`, `title`, `assignee`, `updated_at`). Nil-safe via nested `with`. |
+| `{{ .Trigger.OnTasks.Changes.Updated }}` | — | `Trigger.OnTasks.Changes.Updated` — beads whose fields changed. Same shape as `Added`. |
+| `{{ .Trigger.OnTasks.Changes.Removed }}` | — | `Trigger.OnTasks.Changes.Removed` — beads that disappeared. Same shape. |
+| `{{ .Trigger.OnTasks.Changes.Closed }}` | — | `Trigger.OnTasks.Changes.Closed` — beads that transitioned to closed. Same shape. |
+| `{{ .Trigger.OnTasks.Changes.Reopened }}` | — | `Trigger.OnTasks.Changes.Reopened` — beads that transitioned from closed back to open. Same shape. |
+| `{{ .Trigger.OnTasks.Changes.LabelAdded }}` | — | `Trigger.OnTasks.Changes.LabelAdded` — beads that gained one or more labels. Same shape. |
+| `{{ .Trigger.OnTasks.Changes.Touched }}` | — | `Trigger.OnTasks.Changes.Touched` — `Added ∪ Updated` convenience union. Same shape. |
 
 `Args` is populated from `meta.Arguments` at send time. At menu time (`enabledWhen`
 evaluation), `Args` is `nil`. Template rendering runs at **send time only**, so `Args` is
@@ -148,6 +155,17 @@ always the real argument map (possibly empty).
 **Model tags (mitto-i5sr):** `Session.ModelTags` exposes the **current** model's capability tags, resolved from the `models:` profiles (see [models.md](../config/models.md)) via `config.ResolveModelTags(modelName)` — the same `contains/exact/startsWith/regex/lookAlike` engine (`config.ConstraintMatchesName`) used by ACP-server model constraints. It is wired like `UserData`: a `cel.Variable("Session.ModelTags", cel.ListType(cel.StringType))`, the `Session.HasModelTag(tag)` receiver macro (mirroring `Tools.HasPattern`), the `Model(tag)` template func, and the `"tag" in Session.ModelTags` operator. Populated at **both** menu time (`buildPromptEnabledContext`, from `BackgroundSession.CurrentModelName()`) and send time (`buildProcessorInput`, from `pdGetAgentModels()`), so menu and send agree. Tags reflect the session's **baseline/active** model at render time, **not** a prompt's `preferredModels` (which apply after render). Membership is case-insensitive and degrades to an empty set (`Model("x") == false`, never an error) when the model is unknown (cold start / suspended session) or no profile matches.
 
 **Prompt `preferredModels` field:** A prompt may declare a `preferredModels:` list of **structured references** to global model profiles — each entry is exactly one of `modelName: <profile name>` or `modelTag: <tag>`. Entries are ordered first-match-wins; a `modelTag` resolves deterministically by profile order in the `models:` list. Resolution keeps the current model if it already satisfies the preference (no needless switch). This replaces the previous glob-pattern list (`- "*sonnet*"`). Full spec: [models.md § Referenced by prompts (`preferredModels`)](../config/models.md#referenced-by-prompts-preferredmodels).
+
+**Trigger context (mitto-xkn):** `.Trigger` is a pointer that is populated only when the current run was fired by a trigger that carries structured data. Today that means `.Trigger.OnTasks` — non-nil on `onTasks` re-fires, whose `.Changes` field mirrors the CEL `Changes.*` activation (`Added`, `Updated`, `Removed`, `Closed`, `Reopened`, `LabelAdded`, `Touched`) so template and CEL views stay consistent. Nil for scheduled, `onCompletion`, manual "Run Now", and non-loop dispatches. **Template-only** — not declared on the CEL env (`enabledWhen` runs pre-dispatch, when no trigger data exists yet). Prompt bodies must guard both pointer levels — nested `with` short-circuits on the outer nil:
+
+```
+{{ with .Trigger }}{{ with .OnTasks }}
+  {{ range .Changes.Added }} - Added: {{ .id }} ({{ .title }})
+  {{ end }}
+{{ end }}{{ end }}
+```
+
+Threaded in by the `LoopRunner` for `onTasks` runs (`internal/conversation/loop_runner.go` → `PromptTriggerContext`) and mapped into `PromptEnabledContext.Trigger` by the dispatcher (`internal/conversation/prompt_dispatcher.go`). See `internal/cel/context.go` `TriggerContext` / `TriggerOnTasksContext` / `TasksChangesView` for the source-of-truth field layout.
 
 ---
 
