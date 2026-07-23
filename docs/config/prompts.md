@@ -794,6 +794,21 @@ For the general design pattern behind this kind of self-driving, self-terminatin
 loop — encoding workflow progress as `bd` labels — see
 [Label-as-state-machine pattern for loop beads prompts](../devel/prompt-templates.md#13-label-as-state-machine-pattern-for-loop-beads-prompts).
 
+### MCP dispatch: `arguments` vs `loop_arguments`
+
+When spawning a loop child via `mitto_conversation_new`, the caller passes two
+distinct maps that both fill `{{ .Args.* }}` in the prompt body:
+
+- `arguments:` — applied only to the **initial** prompt send.
+- `loop_arguments:` — applied to **every re-fire** of the loop.
+
+When the spawned child is itself a loop, **mirror the same map into both** —
+otherwise re-fires render with an empty `.Args` and positive-match gates like
+`{{ if eq .Args.Commit "true" }}` silently resolve `false`. Parameter defaults
+declared in `parameters:` are **not** auto-merged into `.Args` at render time,
+so prefer default-on gates (`{{ if ne .Args.X "false" }}`) over
+default-off ones when the loop should keep working with an unset arg.
+
 ## `target:` (find-or-route dispatch)
 
 When a prompt is used to **create a new conversation** — via the `beadsIssues` /
