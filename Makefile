@@ -1,4 +1,4 @@
-.PHONY: build install test test-go test-js check-model-tags check-stderr-patterns test-integration test-integration-go test-integration-cli test-integration-api test-integration-client test-ui test-ui-headed test-ui-debug test-ui-report test-all test-ci test-setup test-clean clean run fmt fmt-check fmt-docs fmt-docs-check lint lint-go lint-frontend deps-go deps-js deps tailwind vendor-codemirror build-mac-app clean-mac-app test-webviewlog build-mock-acp ci install-hooks homebrew-generate homebrew-test homebrew-test-style homebrew-test-install homebrew-test-cask homebrew-tap-setup homebrew-clean smoke-build smoke-test-cli smoke-test smoke-clean
+.PHONY: build install test test-go test-js check-model-tags check-stderr-patterns test-integration test-integration-go test-integration-cli test-integration-api test-integration-client test-integration-runner test-runner-smoke test-ui test-ui-headed test-ui-debug test-ui-report test-all test-ci test-setup test-clean clean run fmt fmt-check fmt-docs fmt-docs-check lint lint-go lint-frontend deps-go deps-js deps tailwind vendor-codemirror build-mac-app clean-mac-app test-webviewlog build-mock-acp ci install-hooks homebrew-generate homebrew-test homebrew-test-style homebrew-test-install homebrew-test-cask homebrew-tap-setup homebrew-clean smoke-build smoke-test-cli smoke-test smoke-clean
 
 # Binary name
 BINARY_NAME=mitto
@@ -101,6 +101,11 @@ test-integration-client: build build-mock-acp
 test-integration-runner: build
 	@echo "Running runner integration tests..."
 	$(GOTEST) -v ./internal/runner/... -run TestRunnerFallback
+
+# Run the restricted-runner end-to-end smoke test (mitto prompt + mock ACP)
+test-runner-smoke: build build-mock-acp
+	@echo "Running restricted-runner smoke test..."
+	./tests/manual/restricted-runner-smoke.sh
 
 # Run all integration tests (Go-based, uses mock ACP)
 test-integration: test-integration-go
