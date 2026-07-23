@@ -2340,6 +2340,49 @@ func TestFeaturePhasePrompts_ParseAndDeclarePreferredModels(t *testing.T) {
 	}
 }
 
+// TestHighConfidenceBuiltinPrompts_DeclarePairedFallback pins the three
+// high-confidence builtin prompts scoped by mitto-42t to the paired
+// `[Cheap, Coding]` preferredModels fallback (matching the existing convention
+// on beads-overview, github-sync-tasks, jira-sync-tasks, report-to-parent,
+// child-cleanup, check-ci). Regression guard: silently dropping the tag on any
+// of these three would revert them to the session baseline and lose the
+// deliberate cost-tier decision recorded on the bead.
+func TestHighConfidenceBuiltinPrompts_DeclarePairedFallback(t *testing.T) {
+	builtinDir := "../../config/prompts/builtin"
+
+	wantTags := []string{"Cheap", "Coding"}
+
+	files := []string{
+		"beads-issue-dependencies.prompt.yaml",
+		"support-check-status.prompt.yaml",
+		"beads-triage-bugs.prompt.yaml",
+	}
+
+	for _, file := range files {
+		t.Run(file, func(t *testing.T) {
+			path := filepath.Join(builtinDir, file)
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("read %s: %v", path, err)
+			}
+			p, err := ParsePromptFile(file, data, time.Now())
+			if err != nil {
+				t.Fatalf("ParsePromptFile(%s): %v", file, err)
+			}
+			if len(p.PreferredModels) != len(wantTags) {
+				t.Fatalf("%s: len(PreferredModels) = %d, want %d ([%s])",
+					file, len(p.PreferredModels), len(wantTags), strings.Join(wantTags, ", "))
+			}
+			for i, want := range wantTags {
+				if got := p.PreferredModels[i].ModelTag; got != want {
+					t.Errorf("%s: PreferredModels[%d].ModelTag = %q, want %q",
+						file, i, got, want)
+				}
+			}
+		})
+	}
+}
+
 // TestFeaturePhasePrompts_RenderForRepresentativeContexts renders each of the
 // four phase-tier prompts with (a) a linked-issue context, (b) an arg-only
 // context, and (c) a no-target context, and asserts each render succeeds and
