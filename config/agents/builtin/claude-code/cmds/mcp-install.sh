@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Install an MCP server for Claude Code
-# Input: {"name": "...", "command": "...", "args": [...], "url": "...", "path": "..."}
+# Input: {"name": "...", "command": "...", "args": [...], "url": "...", "path": "...", "env": {...}, "headers": {...}}
 # Output: {"success": bool, "message": "...", "name": "..."}
 
 INPUT=$(cat)
@@ -59,17 +59,26 @@ name = input_data.get('name', '')
 command = input_data.get('command', '')
 url = input_data.get('url', '')
 args = input_data.get('args', [])
+env = input_data.get('env') or {}
+headers = input_data.get('headers') or {}
 
 with open('$CONFIG_FILE') as f:
     config = json.load(f)
 
 config.setdefault('mcpServers', {})
 if url:
-    config['mcpServers'][name] = {'url': url}
+    entry = {'url': url}
+    if headers:
+        entry['headers'] = headers
+    if env:
+        entry['env'] = env
+    config['mcpServers'][name] = entry
 elif command:
     entry = {'command': command}
     if args:
         entry['args'] = args
+    if env:
+        entry['env'] = env
     config['mcpServers'][name] = entry
 
 with open('$CONFIG_FILE', 'w') as f:

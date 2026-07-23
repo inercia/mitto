@@ -346,6 +346,89 @@ echo "{\"success\": true, \"message\": \"Installed $NAME\", \"name\": \"$NAME\"}
 	}
 }
 
+// TestMCPInstallInput_EnvHeadersRoundTrip verifies that MCPInstallInput's Env and
+// Headers fields JSON-serialize correctly and reach mcp-install.sh on stdin.
+// Regression coverage for mitto-o2s (env/headers silently dropped from install pipeline).
+func TestMCPInstallInput_EnvHeadersRoundTrip(t *testing.T) {
+	// JSON tag sanity check: both fields must marshal under the expected keys so
+	// scripts can read them via `input_data.get('env')` / `.get('headers')`.
+	marshaled, err := json.Marshal(&MCPInstallInput{
+		Name:    "srv",
+		Command: "/bin/true",
+		Env:     map[string]string{"API_KEY": "secret"},
+		Headers: map[string]string{"Authorization": "Bearer tok"},
+	})
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	var back map[string]interface{}
+	if err := json.Unmarshal(marshaled, &back); err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+	if _, ok := back["env"]; !ok {
+		t.Errorf("expected 'env' key in marshaled JSON, got: %s", string(marshaled))
+	}
+	if _, ok := back["headers"]; !ok {
+		t.Errorf("expected 'headers' key in marshaled JSON, got: %s", string(marshaled))
+	}
+
+	// End-to-end: install script echoes stdin JSON back so we can assert Env and
+	// Headers actually reached it.
+	agentsDir := t.TempDir()
+	agentDir := filepath.Join(agentsDir, "builtin", "envhdr-agent")
+	cmdsDir := filepath.Join(agentDir, "cmds")
+	if err := os.MkdirAll(cmdsDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(agentDir, "metadata.yaml"), []byte(`name: "Env/Header Agent"
+displayName: "Env/Header Agent"
+acpId: "envhdr"
+description: "Roundtrip test"
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// Script emits a valid MCPInstallOutput envelope where `message` is the
+	// stdin payload verbatim, so we can decode env/headers back out.
+	script := `#!/bin/bash
+INPUT=$(cat)
+echo "$INPUT" | python3 -c "
+import sys, json
+data = json.loads(sys.stdin.read())
+print(json.dumps({'success': True, 'name': data.get('name',''), 'message': json.dumps(data)}))
+"
+`
+	if err := os.WriteFile(filepath.Join(cmdsDir, "mcp-install.sh"), []byte(script), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	m := NewManager(agentsDir, nil)
+	out, err := m.InstallMCPServer(context.Background(), "envhdr-agent", &MCPInstallInput{
+		Name:    "srv",
+		URL:     "https://example.test/mcp",
+		Env:     map[string]string{"API_KEY": "secret"},
+		Headers: map[string]string{"Authorization": "Bearer tok", "X-Trace": "abc"},
+	})
+	if err != nil {
+		t.Fatalf("InstallMCPServer failed: %v", err)
+	}
+	if !out.Success {
+		t.Fatalf("expected success=true, got: %+v", out)
+	}
+	var payload struct {
+		Env     map[string]string `json:"env"`
+		Headers map[string]string `json:"headers"`
+	}
+	if err := json.Unmarshal([]byte(out.Message), &payload); err != nil {
+		t.Fatalf("failed to decode echoed payload: %v (message: %s)", err, out.Message)
+	}
+	if payload.Env["API_KEY"] != "secret" {
+		t.Errorf("env not propagated to script; got: %+v", payload.Env)
+	}
+	if payload.Headers["Authorization"] != "Bearer tok" || payload.Headers["X-Trace"] != "abc" {
+		t.Errorf("headers not propagated to script; got: %+v", payload.Headers)
+	}
+}
+
 // TestAgentMetadataDefaults_Parse verifies that a metadata.yaml with a `defaults` block
 // is parsed correctly into AgentMetadata.Defaults.
 func TestAgentMetadataDefaults_Parse(t *testing.T) {

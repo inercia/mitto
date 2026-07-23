@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Install an MCP server for Augment
-# Input: {"name": "...", "command": "...", "args": [...], "url": "...", "path": "..."}
+# Input: {"name": "...", "command": "...", "args": [...], "url": "...", "path": "...", "env": {...}, "headers": {...}}
 # Output: {"success": bool, "message": "...", "name": "..."}
 
 INPUT=$(cat)
@@ -43,15 +43,41 @@ case "$SCOPE" in
     # "user" or empty = default (no flag needed)
 esac
 
+# Read env pairs as NUL-delimited "KEY=VAL" strings and build repeated -e flags.
+# Values may legitimately contain commas, equals signs, or colons, so we can't
+# use naive IFS splitting.
+ENV_FLAGS=()
+while IFS= read -r -d '' kv; do
+    ENV_FLAGS+=(-e "$kv")
+done < <(echo "$INPUT" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+env = data.get('env') or {}
+for k, v in env.items():
+    sys.stdout.write(f'{k}={v}\0')
+" 2>/dev/null)
+
+# Same pattern for headers with -H and "KEY: VAL".
+HEADER_FLAGS=()
+while IFS= read -r -d '' kv; do
+    HEADER_FLAGS+=(-H "$kv")
+done < <(echo "$INPUT" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+headers = data.get('headers') or {}
+for k, v in headers.items():
+    sys.stdout.write(f'{k}: {v}\0')
+" 2>/dev/null)
+
 # Build and run the mcp add command (suppress auggie text output from stdout)
 if [ -n "$URL" ]; then
-    auggie "${AUGGIE_ARGS[@]}" mcp add "${SCOPE_ARGS[@]}" "$NAME" --transport http --url "$URL" --replace >/dev/null 2>&1
+    auggie "${AUGGIE_ARGS[@]}" mcp add "${SCOPE_ARGS[@]}" "$NAME" --transport http --url "$URL" "${HEADER_FLAGS[@]}" "${ENV_FLAGS[@]}" --replace >/dev/null 2>&1
 elif [ -n "$COMMAND" ]; then
     ARGS=$(echo "$INPUT" | python3 -c "import sys,json; args=json.load(sys.stdin).get('args',[]); print(' '.join(args))" 2>/dev/null)
     if [ -n "$ARGS" ]; then
-        auggie "${AUGGIE_ARGS[@]}" mcp add "${SCOPE_ARGS[@]}" "$NAME" --command "$COMMAND" --args "$ARGS" --replace >/dev/null 2>&1
+        auggie "${AUGGIE_ARGS[@]}" mcp add "${SCOPE_ARGS[@]}" "$NAME" --command "$COMMAND" --args "$ARGS" "${ENV_FLAGS[@]}" --replace >/dev/null 2>&1
     else
-        auggie "${AUGGIE_ARGS[@]}" mcp add "${SCOPE_ARGS[@]}" "$NAME" --command "$COMMAND" --replace >/dev/null 2>&1
+        auggie "${AUGGIE_ARGS[@]}" mcp add "${SCOPE_ARGS[@]}" "$NAME" --command "$COMMAND" "${ENV_FLAGS[@]}" --replace >/dev/null 2>&1
     fi
 fi
 
