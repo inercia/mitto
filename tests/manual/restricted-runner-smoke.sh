@@ -117,28 +117,41 @@ if ! MITTO_DIR="$SCRATCH_DIR" "$MITTO_BIN" prompt \
 fi
 
 # Assert on the runner log line --------------------------------------------
-EXPECTED_TYPE="$RUNNER_TYPE"
-if grep -qE "created restricted runner.*type=$EXPECTED_TYPE.*fallback=false" "$LOG_FILE"; then
-    MATCH="$(grep -E 'created restricted runner' "$LOG_FILE" | head -1)"
-    echo -e "${GREEN}✅ Found expected runner log line:${NC}"
-    echo "   $MATCH"
-    exit 0
-fi
-
-# Fallback branch: if runner unavailable and fell back, that's a valid
-# code-path exercise on macOS (sandbox-exec may be blocked by policy) but
-# on Linux, if we asked for firejail and got exec, the requested isolation
-# was not enforced — fail hard rather than silently accept an unconfined
-# process. Non-firejail Linux requests (e.g. exec-only) still soft-pass.
-if grep -qE "created restricted runner.*fallback=true" "$LOG_FILE"; then
-    MATCH="$(grep -E 'created restricted runner' "$LOG_FILE" | head -1)"
-    if [ "$OS" = "Linux" ] && [ "$EXPECTED_TYPE" = "firejail" ]; then
-        fail "requested firejail on Linux but runner fell back to exec (isolation NOT enforced): $MATCH"
+# assert_runner_log_line — inspect $LOG_FILE for the runner init line and
+# decide the exit disposition. Extracted as a function so the smoke test's
+# assertion contract can be exercised in isolation from a unit test
+# (tests/manual/test-restricted-runner-smoke-assert.sh) with a synthetic
+# log file, without spinning up mitto/mock-acp.
+#
+# Inputs: $OS, $EXPECTED_TYPE, $LOG_FILE, $GREEN/$YELLOW/$NC (colors).
+# Exits: 0 on positive match or soft-fallback; via fail() on hard failure.
+assert_runner_log_line() {
+    if grep -qE "created restricted runner.*type=$EXPECTED_TYPE.*fallback=false" "$LOG_FILE"; then
+        MATCH="$(grep -E 'created restricted runner' "$LOG_FILE" | head -1)"
+        echo -e "${GREEN}✅ Found expected runner log line:${NC}"
+        echo "   $MATCH"
+        exit 0
     fi
-    echo -e "${YELLOW}⚠ Runner requested $EXPECTED_TYPE but fell back to exec:${NC}"
-    echo "   $MATCH"
-    echo -e "${YELLOW}   (Fallback path exercised; not a hard failure on this host.)${NC}"
-    exit 0
-fi
 
-fail "expected log line matching 'created restricted runner type=$EXPECTED_TYPE fallback=false' not found in stderr"
+    # Fallback branch: if runner unavailable and fell back, that's a valid
+    # code-path exercise on macOS (sandbox-exec may be blocked by policy)
+    # but on Linux, if we asked for firejail and got exec, the requested
+    # isolation was not enforced — fail hard rather than silently accept
+    # an unconfined process. Non-firejail Linux requests (e.g. exec-only)
+    # still soft-pass.
+    if grep -qE "created restricted runner.*fallback=true" "$LOG_FILE"; then
+        MATCH="$(grep -E 'created restricted runner' "$LOG_FILE" | head -1)"
+        if [ "$OS" = "Linux" ] && [ "$EXPECTED_TYPE" = "firejail" ]; then
+            fail "requested firejail on Linux but runner fell back to exec (isolation NOT enforced): $MATCH"
+        fi
+        echo -e "${YELLOW}⚠ Runner requested $EXPECTED_TYPE but fell back to exec:${NC}"
+        echo "   $MATCH"
+        echo -e "${YELLOW}   (Fallback path exercised; not a hard failure on this host.)${NC}"
+        exit 0
+    fi
+
+    fail "expected log line matching 'created restricted runner type=$EXPECTED_TYPE fallback=false' not found in stderr"
+}
+
+EXPECTED_TYPE="$RUNNER_TYPE"
+assert_runner_log_line
