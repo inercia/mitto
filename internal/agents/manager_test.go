@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -426,6 +427,93 @@ print(json.dumps({'success': True, 'name': data.get('name',''), 'message': json.
 	}
 	if payload.Headers["Authorization"] != "Bearer tok" || payload.Headers["X-Trace"] != "abc" {
 		t.Errorf("headers not propagated to script; got: %+v", payload.Headers)
+	}
+}
+
+// TestClaudeCode_MCPInstall_UsesClaudeMcpAdd verifies that the real
+// config/agents/builtin/claude-code/cmds/mcp-install.sh script invokes
+// `claude mcp add` (which persists to ~/.claude.json, the file Claude Code
+// actually reads for mcpServers) rather than hand-editing
+// ~/.claude/settings.json (which Claude Code silently ignores for mcpServers).
+// Regression coverage for mitto-45b: the UI has been reporting success while
+// nothing actually reached the file Claude Code loads.
+func TestClaudeCode_MCPInstall_UsesClaudeMcpAdd(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("bash-script test not supported on Windows")
+	}
+
+	// Point the manager at the REAL builtin agents dir so we exercise the
+	// production script, not a fixture.
+	builtinDir := builtinAgentsDirForTest(t)
+	agentsDir := filepath.Dir(builtinDir)
+	scriptPath := filepath.Join(builtinDir, "claude-code", "cmds", "mcp-install.sh")
+	if _, err := os.Stat(scriptPath); err != nil {
+		t.Fatalf("real claude-code mcp-install.sh not found: %v", err)
+	}
+
+	// Shim `claude` on PATH so the script's `claude mcp add ...` invocation
+	// (once mitto-45b is fixed) is captured to a file we can assert against.
+	// Append argv NUL-delimited so we can round-trip values containing spaces
+	// (`Authorization: Bearer tok`), colons, equals, or commas.
+	binDir := t.TempDir()
+	argvFile := filepath.Join(t.TempDir(), "claude-argv")
+	shellSingleQuote := func(s string) string {
+		return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+	}
+	shim := "#!/bin/bash\nfor a in \"$@\"; do printf '%s\\0' \"$a\"; done >> " +
+		shellSingleQuote(argvFile) + "\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(binDir, "claude"), []byte(shim), 0755); err != nil {
+		t.Fatalf("failed to write claude shim: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	// Isolate HOME so the current (buggy) script — which writes
+	// ~/.claude/settings.json — does NOT touch the developer's real Claude Code
+	// config file when this test runs against unfixed code.
+	t.Setenv("HOME", t.TempDir())
+
+	m := NewManager(agentsDir, nil)
+	if _, err := m.InstallMCPServer(context.Background(), "claude-code", &MCPInstallInput{
+		Name:    "srv",
+		URL:     "https://example.test/mcp",
+		Env:     map[string]string{"API_KEY": "secret"},
+		Headers: map[string]string{"Authorization": "Bearer tok"},
+	}); err != nil {
+		t.Fatalf("InstallMCPServer failed: %v", err)
+	}
+
+	// mitto-45b: today the script writes JSON to ~/.claude/settings.json and
+	// NEVER invokes `claude`, so the argv file is missing. Once the script is
+	// rewritten to `claude mcp add`, the shim captures its argv.
+	data, err := os.ReadFile(argvFile)
+	if err != nil {
+		t.Fatalf("mitto-45b: expected mcp-install.sh to invoke `claude mcp add` and populate %s, but the `claude` shim was never called: %v", argvFile, err)
+	}
+	argv := strings.Split(strings.TrimRight(string(data), "\x00"), "\x00")
+	if len(argv) == 0 || (len(argv) == 1 && argv[0] == "") {
+		t.Fatalf("mitto-45b: claude shim invoked but captured no argv (raw=%q)", string(data))
+	}
+
+	// The rewritten script must produce a `mcp add ...` invocation carrying
+	// the server name, URL, env, and headers we passed in.
+	contains := func(needle string) bool {
+		for _, a := range argv {
+			if a == needle {
+				return true
+			}
+		}
+		return false
+	}
+	for _, want := range []string{
+		"mcp", "add",
+		"srv",
+		"https://example.test/mcp",
+		"API_KEY=secret",
+		"Authorization: Bearer tok",
+	} {
+		if !contains(want) {
+			t.Errorf("mitto-45b: argv missing expected token %q; got: %v", want, argv)
+		}
 	}
 }
 
