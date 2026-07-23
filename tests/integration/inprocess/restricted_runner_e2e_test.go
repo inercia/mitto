@@ -32,6 +32,18 @@ func expectedRunnerType() string {
 	return "exec"
 }
 
+// unavailableRunnerType returns a platform-native runner type that is guaranteed
+// NOT to be available on the current OS, so runner.NewRunner takes the WARN
+// fallback branch ("restricted runner creation failed / not available, falling
+// back to exec"). Both grrunner.New and CheckImplicitRequirements are consulted
+// there, so an OS-mismatched native runner reliably triggers the fallback.
+func unavailableRunnerType() string {
+	if runtime.GOOS == "darwin" {
+		return "firejail"
+	}
+	return "sandbox-exec"
+}
+
 // findRecord scans the captured records for an entry at the given level whose
 // message contains msgSubstr. Returns the record and true on the first match.
 func findRecord(h *capturingHandler, level slog.Level, msgSubstr string) (slog.Record, bool) {
@@ -74,12 +86,14 @@ func TestRestrictedRunner_SessionManager_CreatesRunner(t *testing.T) {
 
 		// Pin a restricted runner on the mock-acp agent config. SessionManager.createRunner
 		// walks global → agent → workspace; setting the agent-level entry is enough to
-		// trigger runner.NewRunner and thus the target log line.
+		// trigger runner.NewRunner and thus the target log line. resolveConfig starts
+		// with runnerType="exec" as the lookup key, so the ENTRY key must be "exec" and
+		// the entry's Type field is the desired override (e.g. "sandbox-exec" on darwin).
 		if cfg.MittoConfig != nil {
 			for i := range cfg.MittoConfig.ACPServers {
 				if cfg.MittoConfig.ACPServers[i].Name == "mock-acp" {
 					cfg.MittoConfig.ACPServers[i].RestrictedRunners = map[string]*config.WorkspaceRunnerConfig{
-						runnerType: {Type: runnerType},
+						"exec": {Type: runnerType},
 					}
 				}
 			}
@@ -155,15 +169,80 @@ func TestRestrictedRunner_SessionManager_CreatesRunner(t *testing.T) {
 	// (platform unavailable / implicit requirements not met), resolved.Type is
 	// rewritten to "exec" before this log line, and a WARN with "falling back to
 	// exec" is also emitted — either state satisfies the bead acceptance.
-	if rec, ok := findRecord(cap, slog.LevelInfo, "created restricted runner"); ok {
-		gotType := attrValue(rec, "type")
-		if gotType != runnerType && gotType != "exec" {
-			t.Fatalf("created restricted runner: got type=%q, want %q or fallback %q", gotType, runnerType, "exec")
+	rec, ok := findRecord(cap, slog.LevelInfo, "created restricted runner")
+	if !ok {
+		t.Fatalf("expected an INFO \"created restricted runner\" record; got none")
+	}
+	gotType := attrValue(rec, "type")
+	if gotType != runnerType && gotType != "exec" {
+		t.Fatalf("created restricted runner: got type=%q, want %q or fallback %q", gotType, runnerType, "exec")
+	}
+	// If the resolved type is not the requested one, the fallback WARN must be
+	// present as well — otherwise the runner silently downgraded, which would
+	// mask a real regression.
+	if gotType != runnerType {
+		if _, ok := findRecord(cap, slog.LevelWarn, "falling back to exec"); !ok {
+			t.Fatalf("resolved type=%q differs from requested %q but no fallback WARN was recorded", gotType, runnerType)
 		}
-		return
 	}
-	if _, ok := findRecord(cap, slog.LevelWarn, "falling back to exec"); ok {
-		return
+}
+
+// TestRestrictedRunner_SessionManager_FallsBackOnUnavailableType asks the
+// SessionManager for a platform-native runner that cannot exist on this OS
+// (firejail on darwin, sandbox-exec on linux) and asserts the WARN fallback
+// branch inside runner.NewRunner fires and downgrades to exec — covering the
+// FallbackInfo path called out in the mitto-6yi.2 plan.
+func TestRestrictedRunner_SessionManager_FallsBackOnUnavailableType(t *testing.T) {
+	requested := unavailableRunnerType()
+	cap := &capturingHandler{}
+	logger := slog.New(cap)
+
+	ts := SetupTestServer(t, func(cfg *web.Config) {
+		cfg.Logger = logger
+		if cfg.MittoConfig != nil {
+			for i := range cfg.MittoConfig.ACPServers {
+				if cfg.MittoConfig.ACPServers[i].Name == "mock-acp" {
+					cfg.MittoConfig.ACPServers[i].RestrictedRunners = map[string]*config.WorkspaceRunnerConfig{
+						"exec": {Type: requested},
+					}
+				}
+			}
+		}
+	})
+
+	sess, err := ts.Client.CreateSession(client.CreateSessionRequest{})
+	if err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
 	}
-	t.Fatalf("expected an INFO \"created restricted runner\" record or a WARN \"falling back to exec\" record; got neither")
+	t.Cleanup(func() { _ = ts.Client.DeleteSession(sess.SessionID) })
+
+	// Wait for either the WARN fallback record or the INFO record — the fallback
+	// WARN is emitted before the INFO, so if the WARN is present we can stop
+	// waiting immediately.
+	waitFor(t, 10*time.Second, func() bool {
+		if _, ok := findRecord(cap, slog.LevelWarn, "falling back to exec"); ok {
+			return true
+		}
+		_, ok := findRecord(cap, slog.LevelInfo, "created restricted runner")
+		return ok
+	}, "runner.NewRunner WARN/INFO record")
+
+	warn, ok := findRecord(cap, slog.LevelWarn, "falling back to exec")
+	if !ok {
+		t.Fatalf("expected a WARN fallback record for requested type=%q, got none", requested)
+	}
+	if gotReq := attrValue(warn, "requested_type"); gotReq != requested {
+		t.Fatalf("fallback WARN: requested_type=%q, want %q", gotReq, requested)
+	}
+
+	rec, ok := findRecord(cap, slog.LevelInfo, "created restricted runner")
+	if !ok {
+		t.Fatalf("expected an INFO \"created restricted runner\" record after fallback; got none")
+	}
+	if gotType := attrValue(rec, "type"); gotType != "exec" {
+		t.Fatalf("post-fallback INFO: type=%q, want %q", gotType, "exec")
+	}
+	if gotFallback := attrValue(rec, "fallback"); gotFallback != "true" {
+		t.Fatalf("post-fallback INFO: fallback=%q, want %q", gotFallback, "true")
+	}
 }
