@@ -31,7 +31,9 @@ function priorityPill(p) {
   const n = typeof p === "number" ? p : 3;
   const label = PRIORITY_LABELS[n] ?? String(p);
   const color = PRIORITY_COLORS[n] ?? PRIORITY_COLORS[3];
-  return html`<span class="badge badge-xs font-medium ${color}">${label}</span>`;
+  return html`<span class="badge badge-xs font-medium ${color}"
+    >${label}</span
+  >`;
 }
 
 // Ordered list definitions. `id` is kept for stable keys; pagination is now
@@ -177,20 +179,12 @@ export function Dashboard({
     allSessions.length > 0
       ? prompting
       : stats
-      ? stats.conversations_prompting
-      : null;
+        ? stats.conversations_prompting
+        : null;
   const loopsActiveCount =
-    allSessions.length > 0
-      ? loopsActive
-      : stats
-      ? stats.loops_active
-      : null;
+    allSessions.length > 0 ? loopsActive : stats ? stats.loops_active : null;
   const loopsStoppedCount =
-    allSessions.length > 0
-      ? loopsStopped
-      : stats
-      ? stats.loops_stopped
-      : null;
+    allSessions.length > 0 ? loopsStopped : stats ? stats.loops_stopped : null;
 
   const isFirstLoad = data === null;
   const spinner = html`<span
@@ -255,7 +249,7 @@ export function Dashboard({
             Issues in progress
           </div>
           <div class="text-2xl font-bold text-mitto-text-strong">
-            ${isFirstLoad ? spinner : issuesInProgress ?? "—"}
+            ${isFirstLoad ? spinner : (issuesInProgress ?? "—")}
           </div>
           <div class="text-xs text-mitto-text-muted truncate">
             across all workspaces
@@ -300,12 +294,12 @@ export function Dashboard({
            taller than the viewport instead of silently squeezing the strips
            and hiding their last rows). -->
       <div class="flex-1 min-h-0 overflow-y-auto flex flex-col gap-6 pb-6">
-      <!-- Timeseries charts (mitto-a86b.8): tokens, tool calls, prompts vs
+        <!-- Timeseries charts (mitto-a86b.8): tokens, tool calls, prompts vs
            agent turns. Rendered between the stats row and the lists grid so
            the dashboard's vertical rhythm goes overview → activity → lists. -->
-      <${StatsCharts} showToast=${showToast} />
+        <${StatsCharts} showToast=${showToast} />
 
-      <!-- Horizontal carousel of all four lists (mitto-aqo.5). Every list is
+        <!-- Horizontal carousel of all four lists (mitto-aqo.5). Every list is
            always visible; panels scroll horizontally when the viewport is too
            narrow to show them all side-by-side. Uses the shared
            .mitto-carousel pattern (see styles.css) so the scrollbar fades in
@@ -313,25 +307,35 @@ export function Dashboard({
            strip above. Each panel pads up to MAX_LIST_ITEMS invisible rows
            so every visible list shares the same height regardless of
            content. -->
-      ${(() => {
-        const rendered = [
-          renderConversationRows(recentConversationsList, onFocusConversation),
-          renderTaskRows(inProgressList, onOpenTask),
-          renderTaskRows(readyList, onOpenTask),
-          renderTaskRows(recentList, onOpenTask),
-        ];
-        const panels = SLIDES.map((slide, i) => ({
-          slide,
-          rows: rendered[i] || [],
-        }));
-        return html`
-          <div class="mitto-carousel shrink-0 gap-4 w-full">
-            ${panels.map((p) =>
-              renderListPanel(p.slide, p.rows, MAX_LIST_ITEMS),
-            )}
-          </div>
-        `;
-      })()}
+        ${(() => {
+          // Loading gate (mitto-eml): the three bd-driven panels are populated
+          // only from /api/dashboard, so `isFirstLoad` is the right signal.
+          // "Recent conversations" is client-derived from `allSessions` and can
+          // already be populated before /api/dashboard resolves, so its gate
+          // additionally requires `allSessions.length === 0` — same combined
+          // gate the loops-stats block above uses.
+          const rendered = [
+            renderConversationRows(
+              recentConversationsList,
+              onFocusConversation,
+              isFirstLoad && allSessions.length === 0,
+            ),
+            renderTaskRows(inProgressList, onOpenTask, isFirstLoad),
+            renderTaskRows(readyList, onOpenTask, isFirstLoad),
+            renderTaskRows(recentList, onOpenTask, isFirstLoad),
+          ];
+          const panels = SLIDES.map((slide, i) => ({
+            slide,
+            rows: rendered[i] || [],
+          }));
+          return html`
+            <div class="mitto-carousel shrink-0 gap-4 w-full">
+              ${panels.map((p) =>
+                renderListPanel(p.slide, p.rows, MAX_LIST_ITEMS),
+              )}
+            </div>
+          `;
+        })()}
       </div>
     </div>
   `;
@@ -414,6 +418,31 @@ function emptyRow() {
   `;
 }
 
+// Loading-state row: same two-line shape as emptyRow so the panel does not
+// jump height when the first /api/dashboard fetch resolves and swaps this
+// row out. Rendered instead of the "No items" copy while data === null, so
+// the user does not misread a still-in-flight fetch as "server confirmed
+// nothing here" (mitto-eml). Mirrors the daisyUI spinner already used for
+// the stats-row placeholders above (Dashboard.js loopsActive/stopped cell).
+function loadingRow() {
+  return html`
+    <li class="list-row" style="${COMPACT_ROW_STYLE}" key="__loading">
+      <div class="list-col-grow min-w-0 flex flex-col gap-1">
+        <div class="text-xs">${"\u00A0"}</div>
+        <div
+          class="flex items-center justify-center gap-2 text-sm text-mitto-text-muted"
+        >
+          <span
+            class="loading loading-spinner loading-xs text-mitto-text-muted"
+            aria-hidden="true"
+          ></span>
+          <span>Loading…</span>
+        </div>
+      </div>
+    </li>
+  `;
+}
+
 function agentBadge(acp) {
   if (!acp) return null;
   return html`<span
@@ -459,7 +488,13 @@ function activateOnKey(fn) {
 //   Line 1: workspace basename + agent badge
 //   Line 2: title (grows/truncates full width)
 // Interactive when `onClick` is provided AND the session has a `session_id`.
-function renderConversationRows(sessions, onClick) {
+// `isLoading` gates the empty-vs-loading branch (mitto-eml): callers pass true
+// while the first /api/dashboard fetch is in flight so the panel shows a
+// spinner instead of the misleading "No items" copy.
+function renderConversationRows(sessions, onClick, isLoading) {
+  // Loading takes precedence over empty so the panel does not lie about the
+  // server state while the first fetch is still in flight.
+  if ((!sessions || sessions.length === 0) && isLoading) return [loadingRow()];
   // Empty list → one visible "No items" row. Bottom-alignment padding across
   // sibling panels is now handled by renderListPanel(padTo) so this helper
   // returns only the real content and never over-pads a lone panel.
@@ -521,7 +556,13 @@ function renderConversationRows(sessions, onClick) {
 //   Line 2: title (grows/truncates full width)
 // Interactive only when the item has both an `id` and a `working_dir` (both
 // are required to open the correct workspace's beads viewer).
-function renderTaskRows(items, onClick) {
+// `isLoading` gates the empty-vs-loading branch (mitto-eml): callers pass true
+// while the first /api/dashboard fetch is in flight so the panel shows a
+// spinner instead of the misleading "No items" copy.
+function renderTaskRows(items, onClick, isLoading) {
+  // Loading takes precedence over empty so the panel does not lie about the
+  // server state while the first fetch is still in flight.
+  if ((!items || items.length === 0) && isLoading) return [loadingRow()];
   // See renderConversationRows: real rows only, bottom-alignment is handled
   // page-scoped by renderListPanel(padTo).
   if (!items || items.length === 0) return [emptyRow()];
