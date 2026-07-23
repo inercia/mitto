@@ -77,6 +77,7 @@ When requested runner unavailable (Docker not installed, etc.), falls back to `e
 
 - Runners must preserve stdin/stdout for ACP JSON-RPC.
 - Restricted runners can break MCP server access; prefer `exec` when MCP is used.
+- `sandbox-exec` `allow_*_folders` are additive permits over a permissive base, not whitelists — see `docs/config/restricted.md#semantics-additive-permits-vs-whitelist`.
 
 ---
 
