@@ -221,3 +221,37 @@ jobs:
           path: ${{ github.workspace }}/smoke-scratch/
           if-no-files-found: warn
           retention-days: 7
+
+  # Runs the restricted-runner smoke script on macOS so the `Darwin → sandbox-exec`
+  # branch of tests/manual/restricted-runner-smoke.sh is actually exercised on CI
+  # (mitto-6yi.5). Mirrors runner-smoke-linux minus the firejail install step
+  # (sandbox-exec is built into macOS).
+  runner-smoke-macos:
+    name: Restricted-Runner Smoke (macOS/sandbox-exec)
+    runs-on: macos-latest
+    needs: [lint, unit-tests]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: Prepare scratch dir for smoke logs
+        run: |
+          echo "SMOKE_SCRATCH_DIR=$GITHUB_WORKSPACE/smoke-scratch" >> "$GITHUB_ENV"
+          mkdir -p "$GITHUB_WORKSPACE/smoke-scratch"
+
+      - name: Run restricted-runner smoke test
+        run: make test-runner-smoke
+
+      - name: Upload smoke logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: runner-smoke-macos-logs
+          path: ${{ github.workspace }}/smoke-scratch/
+          if-no-files-found: warn
+          retention-days: 7
