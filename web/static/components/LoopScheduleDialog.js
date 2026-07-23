@@ -97,12 +97,7 @@ function localToUtcTime(localTime) {
  * @param {Function} props.onConfirm - Called with { value, unit, at? } on confirm
  * @param {Function} props.onCancel - Called on cancel / close
  */
-export function LoopScheduleDialog({
-  isOpen,
-  prompt,
-  onConfirm,
-  onCancel,
-}) {
+export function LoopScheduleDialog({ isOpen, prompt, onConfirm, onCancel }) {
   const defaults = prompt?.loop || {};
   const [value, setValue] = useState(defaults.value || 1);
   const [unit, setUnit] = useState(defaults.unit || "hours");
@@ -116,6 +111,8 @@ export function LoopScheduleDialog({
   const [trigger, setTrigger] = useState(defaults.trigger || "schedule");
   // On-completion delay in seconds (min 5)
   const [delay, setDelay] = useState(defaults.delay ?? 5);
+  // On-tasks CEL condition (optional). Empty string = fire on any task change.
+  const [condition, setCondition] = useState(defaults.condition || "");
   // Max duration: stored as value+unit for display, converted on confirm
   const [maxDurValue, setMaxDurValue] = useState(
     () =>
@@ -134,6 +131,7 @@ export function LoopScheduleDialog({
     setMaxIterations(d.maxIterations ?? 0);
     setTrigger(d.trigger || "schedule");
     setDelay(d.delay ?? 5);
+    setCondition(d.condition || "");
     const mdSecs = parseDurationToSeconds(d.maxDuration);
     const { value: mdv, unit: mdu } = secondsToValueUnit(mdSecs);
     setMaxDurValue(mdv);
@@ -157,6 +155,9 @@ export function LoopScheduleDialog({
     schedule.trigger = trigger;
     schedule.delaySeconds = Math.max(0, delay || 0);
     schedule.maxDurationSeconds = valueUnitToSeconds(maxDurValue, maxDurUnit);
+    if (trigger === "onTasks") {
+      schedule.condition = condition;
+    }
     onConfirm?.(schedule);
   }, [
     value,
@@ -165,6 +166,7 @@ export function LoopScheduleDialog({
     maxIterations,
     trigger,
     delay,
+    condition,
     maxDurValue,
     maxDurUnit,
     onConfirm,
@@ -209,7 +211,7 @@ export function LoopScheduleDialog({
           `
         }
 
-        <!-- Trigger tabs: Schedule | On completion -->
+        <!-- Trigger tabs: Schedule | On completion | On tasks -->
         <div class="tabs tabs-border">
           <input
             type="radio"
@@ -231,9 +233,19 @@ export function LoopScheduleDialog({
             onChange=${() => setTrigger("onCompletion")}
             data-testid="loop-schedule-trigger-tab-oncompletion"
           />
+          <input
+            type="radio"
+            name="loop-schedule-trigger"
+            role="tab"
+            aria-label="On tasks"
+            class="tab"
+            checked=${trigger === "onTasks"}
+            onChange=${() => setTrigger("onTasks")}
+            data-testid="loop-schedule-trigger-tab-ontasks"
+          />
         </div>
 
-        <!-- State-driven content: schedule row or on-completion delay -->
+        <!-- State-driven content: schedule row, on-completion delay, or on-tasks condition -->
         ${
           trigger === "schedule"
             ? html`<div class="flex flex-wrap items-center gap-3">
@@ -276,26 +288,50 @@ export function LoopScheduleDialog({
                   />
                 `}
               </div>`
-            : html`<div class="flex flex-wrap items-center gap-3">
-                <span
-                  class="text-mitto-text-muted dark:text-mitto-text-300 shrink-0"
-                  >Wait</span
-                >
-                <input
-                  type="number"
-                  min="5"
-                  value=${delay}
-                  onInput=${(e) =>
-                    setDelay(Math.max(5, parseInt(e.target.value, 10) || 5))}
-                  class="input input-sm w-20 text-center shrink-0"
-                  data-testid="loop-schedule-delay"
-                />
-                <span
-                  class="text-xs text-mitto-text-muted dark:text-mitto-text-300 shrink-0"
-                >
-                  seconds after the agent finishes (min 5s)
-                </span>
-              </div>`
+            : trigger === "onCompletion"
+              ? html`<div class="flex flex-wrap items-center gap-3">
+                  <span
+                    class="text-mitto-text-muted dark:text-mitto-text-300 shrink-0"
+                    >Wait</span
+                  >
+                  <input
+                    type="number"
+                    min="5"
+                    value=${delay}
+                    onInput=${(e) =>
+                      setDelay(Math.max(5, parseInt(e.target.value, 10) || 5))}
+                    class="input input-sm w-20 text-center shrink-0"
+                    data-testid="loop-schedule-delay"
+                  />
+                  <span
+                    class="text-xs text-mitto-text-muted dark:text-mitto-text-300 shrink-0"
+                  >
+                    seconds after the agent finishes (min 5s)
+                  </span>
+                </div>`
+              : html`<div class="flex flex-col gap-2">
+                  <p class="text-mitto-text-muted dark:text-mitto-text-300">
+                    The loop re-fires whenever tasks in .beads/ change matching
+                    the condition below.
+                  </p>
+                  <label
+                    class="text-mitto-text-muted dark:text-mitto-text-300 shrink-0"
+                  >
+                    Condition (optional CEL expression)
+                  </label>
+                  <input
+                    type="text"
+                    value=${condition}
+                    onInput=${(e) => setCondition(e.target.value)}
+                    class="input input-sm w-full"
+                    data-testid="loop-schedule-condition"
+                  />
+                  <span
+                    class="text-xs text-mitto-text-muted dark:text-mitto-text-300"
+                  >
+                    Leave empty to fire on any task change.
+                  </span>
+                </div>`
         }
 
         <div class="flex flex-wrap items-center gap-3">
