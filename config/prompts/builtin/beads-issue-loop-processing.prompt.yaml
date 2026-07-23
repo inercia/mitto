@@ -294,16 +294,27 @@ prompt: |
   **Bug processing is disabled** (`FixBugs=false`). Skip this section entirely —
   treat 2B as empty (count = 0) in Steps 3 and 6. Do NOT enumerate or dispatch bugs.
   {{- else -}}
+  **Eligibility rule — read this before enumerating.** A bug's eligibility is
+  determined by its **own** `status` (must be `open`) and its **own** labels /
+  in-progress / needs-human state. The status of any parent epic is
+  **irrelevant** — process open children of **closed** epics exactly the same
+  as open children of open epics, or top-level bugs with no epic parent at all.
+  The "recently-closed parent" exclusion below is narrowly scoped to parents
+  this outer run has **just closed in Step 2P** (mitto-fko: avoid rushing into
+  `.n` subtasks before human re-triage of the delivered fix); it does NOT mean
+  "any bug with a closed parent" — it means "parents this pass closed moments
+  ago". Everything else is fair game.
+
   ```bash
   bd ready --json          # prefer ready set; filter type=="bug"
   # or fallback:
   bd list --type bug --status open --json
 
-  # Epic expansion — pull in bug-typed children of every open epic so bugs
-  # scoped under an epic are not silently ignored. (bd list --type bug already
-  # returns children by default; this is a defensive safety net that also
-  # confirms the parent epic is still open.)
-  for epic_id in $(bd list --type epic --status open --json | jq -r '.[].id'); do
+  # Epic expansion — pull in bug-typed children of every epic (open OR closed)
+  # so bugs scoped under an epic are not silently ignored. bd list --type bug
+  # already returns them, but this defensive union confirms the enumeration
+  # is symmetric across epic status.
+  for epic_id in $(bd list --type epic --all --json | jq -r '.[].id'); do
     bd children "$epic_id" --json | jq '.[] | select(.status == "open" and .issue_type == "bug")'
   done
   ```
@@ -321,9 +332,11 @@ prompt: |
     — an active child (or user-driven session) is already working on it; do not
     double-spawn or step on a human's parallel work, OR
   - has a `dependency_type: parent-child` dependency whose parent bead was **closed
-    within this outer run** (recently-closed parent — mitto-fko). Track the set of bead
-    IDs this pass has closed so far and drop any candidate whose parent-child parent
-    is in that recently-closed set (consult `dependencies` via `bd show <id> --json`).
+    by THIS outer run's Step 2P** (recently-closed parent — mitto-fko). Track the
+    set of bead IDs this pass has closed so far and drop any candidate whose
+    parent-child parent is in **that pass-local set**. Parents closed in earlier
+    runs or by anyone else do NOT trigger this exclusion; only parents this pass
+    just closed do (consult `dependencies` via `bd show <id> --json`).
 
   Order survivors by declared priority (`critical → high → medium → low`), then by
   bead ID ascending.
@@ -338,8 +351,13 @@ prompt: |
   {{- else -}}
   Same shape as 2B with terminal label `verified` and the same exclusions
   (`in_progress`, `needs-human`, existing child match, parent-child recently-closed
-  parent), but the enumeration is broader — §C is the catch-all lane for every
-  non-bug work item, including epic members typed as `task` / `story` / `chore`:
+  parent). The §2B **eligibility rule applies identically here**: a bead's
+  own `status` and labels decide eligibility; the parent epic's status is
+  **irrelevant** (process open children of closed epics normally); the
+  "recently-closed parent" exclusion is narrowly scoped to parents THIS
+  outer run just closed in Step 2P (mitto-fko), NOT all closed parents.
+  §C is the catch-all lane for every non-bug work item, including epic
+  members typed as `task` / `story` / `chore`:
 
   ```bash
   # Direct feature enumeration.
@@ -347,12 +365,15 @@ prompt: |
   # or fallback:
   bd list --type feature --status open --json
 
-  # Epic expansion — pull in every open non-bug, non-epic child of every open
-  # epic and route them through the feature driver. Task / story / chore children
-  # of an epic represent forward work and are treated as feature-like for the
-  # purposes of dispatch (the `Loop implementing feature` driver's
-  # planned → implemented → tested → verified state machine applies unchanged).
-  for epic_id in $(bd list --type epic --status open --json | jq -r '.[].id'); do
+  # Epic expansion — pull in every open non-bug, non-epic child of every
+  # epic (open OR closed) and route them through the feature driver. Task /
+  # story / chore children of an epic represent forward work and are treated
+  # as feature-like for the purposes of dispatch (the `Loop implementing
+  # feature` driver's planned → implemented → tested → verified state
+  # machine applies unchanged). Closed-epic children are enumerated the
+  # same as open-epic children — the parent's status has no bearing on
+  # the child's eligibility.
+  for epic_id in $(bd list --type epic --all --json | jq -r '.[].id'); do
     bd children "$epic_id" --json \
       | jq '.[] | select(.status == "open" and .issue_type != "bug" and .issue_type != "epic")'
   done
@@ -621,6 +642,26 @@ prompt: |
     (wait errors, Step 7), and on wait-timeout milestones. Never per-target.
   - **Live state every pass.** Always re-run 2P/2Z/2A/2B/2C fresh; never cache across
     passes. The sets go stale by design.
+  - **Uncommitted changes are NEVER a reason to skip a pass.** A dirty working tree
+    (`git status` showing modified/untracked files, or any inferred "human is editing
+    right now" signal) is informational only — it MUST NOT cause the orchestrator to
+    yield §A/§B/§C entirely, disable the loop, or refuse to spawn drivers on beads
+    whose likely file surface overlaps the dirty paths. Each per-bead driver already
+    protects unrelated in-flight work at its own layer: drivers stage only the
+    specific paths they edited (`git add <file> ...` — never `git add -A` / `git add .`
+    / `git commit -a`), so unrelated uncommitted changes in the working tree are
+    left strictly untouched (see `Loop fixing bug` and `Loop implementing feature`).
+    The orchestrator's job is to enumerate and dispatch — not to second-guess the
+    drivers' path-scoped-add discipline. The general CLAUDE.md guidance about
+    "concurrent loop conversations stashing the working directory" describes a hazard
+    the drivers already avoid by construction; it is NOT a license for this
+    orchestrator to stop. If you find yourself reasoning "the human is editing files
+    that overlap with bead X, so I'll yield" — that reasoning is wrong here.
+    Dispatch as normal; if a genuine edit collision arises inside a driver, the
+    driver itself will surface it (via `bd comment` + `needs-human` defer). The ONLY
+    legitimate pass-level yields are: (a) sets genuinely empty after 2A/2B/2C,
+    (b) concurrency cap reached (Step 3), (c) Step 7 deferral of a specific target,
+    (d) preflight failure (missing flag, `Session.IsChild`).
   {{ if or (ne .Args.FixBugs "false") (ne .Args.WorkOnFeatures "false") -}}
   - **Cap the fleet at 1 active driver.** {{ if and (ne .Args.FixBugs "false") (ne .Args.WorkOnFeatures "false") }}§B and §C share a global concurrency
     budget{{ else }}{{ if ne .Args.FixBugs "false" }}§B has a concurrency budget{{ else }}§C has a concurrency budget{{ end }}{{ end }} of 1 persistent `onCompletion` child — serial execution prevents two
