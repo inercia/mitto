@@ -224,13 +224,17 @@ export function WorkspaceFolderBeadsTab({
                           class="select select-sm flex-1 disabled:opacity-50"
                         >
                           <option value="">— none —</option>
-                          ${beadsUpstreamPrompts.map(
-                            (p) => html`
-                              <option key=${p.name} value=${p.name}>
-                                ${p.name}
-                              </option>
-                            `,
-                          )}
+                          ${[...beadsUpstreamPrompts]
+                            .sort((a, b) =>
+                              (a.name || "").localeCompare(b.name || ""),
+                            )
+                            .map(
+                              (p) => html`
+                                <option key=${p.name} value=${p.name}>
+                                  ${p.name}
+                                </option>
+                              `,
+                            )}
                         </select>
                         <button
                           type="button"
