@@ -4,6 +4,7 @@ package runner
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -519,4 +520,192 @@ func TestRunner_FallbackWhenRunnerUnavailable(t *testing.T) {
 		t.Error("fallback runner should not be restricted")
 	}
 	t.Logf("fallback reason: %s", r.FallbackInfo.Reason)
+}
+
+// TestSandboxExec_SandboxOnlyDenyReadDownloads verifies that sandbox-exec
+// blocks reads from ~/Downloads, a path whose deny is enforced by the
+// sandbox profile alone (macOS only).
+//
+// This test isolates sandbox-exec enforcement from OS/TCC permissions.
+// ~/Downloads is writable by the running user (unlike /etc, which is
+// OS-perm-denied) and, on standard installs, is not TCC-gated (unlike
+// ~/Documents on some hosts). So if the sandboxed read fails while the
+// out-of-sandbox seed write succeeded, sandbox-exec is the sole enforcer.
+//
+// The go-restricted-runner sandbox_profile.tpl denies file-read* on the
+// regex /Users/*/(Documents|Desktop|Downloads|Pictures|Movies|Music) on
+// top of an `(allow default)` base; AllowReadFolders is additive over
+// that base, so leaving Downloads off the allowlist leaves its deny in
+// force. See mitto-6yi.1 and sandbox_profile.tpl.
+func TestSandboxExec_SandboxOnlyDenyReadDownloads(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("sandbox-exec is only available on macOS")
+	}
+	if _, err := exec.LookPath("sandbox-exec"); err != nil {
+		t.Skip("sandbox-exec not found in PATH")
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("os.UserHomeDir: %v", err)
+	}
+	dl := filepath.Join(home, "Downloads")
+	if _, err := os.Stat(dl); err != nil {
+		t.Skipf("~/Downloads not accessible for outside-sandbox setup (%v); cannot verify sandbox-only read-deny", err)
+	}
+	seedPath := filepath.Join(dl, fmt.Sprintf("mitto-sandbox-only-read-%d.txt", os.Getpid()))
+	if err := os.WriteFile(seedPath, []byte("secret-payload\n"), 0o644); err != nil {
+		t.Skipf("cannot seed file in ~/Downloads (likely TCC-restricted for this test host): %v", err)
+	}
+	defer os.Remove(seedPath)
+
+	allowNetworking := true
+	runnerConfigs := map[string]*config.WorkspaceRunnerConfig{
+		"exec": {
+			Type: "sandbox-exec",
+			Restrictions: &config.RunnerRestrictions{
+				AllowNetworking:  &allowNetworking,
+				AllowReadFolders: []string{"/tmp"},
+			},
+		},
+	}
+
+	r, err := NewRunner(nil, nil, runnerConfigs, "/tmp", nil)
+	if err != nil {
+		t.Fatalf("NewRunner failed: %v", err)
+	}
+	if r.Type() != "sandbox-exec" {
+		t.Fatalf("expected sandbox-exec, got %q", r.Type())
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	stdin, stdout, stderr, wait, err := r.RunWithPipes(ctx, "cat", []string{seedPath}, nil)
+	if err != nil {
+		t.Fatalf("RunWithPipes failed: %v", err)
+	}
+	stdin.Close()
+
+	stdoutBytes, _ := io.ReadAll(stdout)
+	stderrBytes, _ := io.ReadAll(stderr)
+	waitErr := wait()
+
+	t.Logf("target: %s", seedPath)
+	t.Logf("stdout: %q", string(stdoutBytes))
+	t.Logf("stderr: %q", string(stderrBytes))
+	t.Logf("wait err: %v", waitErr)
+
+	stderrLower := strings.ToLower(string(stderrBytes))
+	permissionDenied := strings.Contains(stderrLower, "permission denied") ||
+		strings.Contains(stderrLower, "operation not permitted") ||
+		strings.Contains(stderrLower, "not permitted")
+	stdoutEmpty := len(stdoutBytes) == 0
+
+	if waitErr == nil && !(stdoutEmpty && permissionDenied) && !stdoutEmpty {
+		t.Errorf("expected sandbox to deny read of %q, but got stdout=%q stderr=%q err=nil",
+			seedPath, string(stdoutBytes), string(stderrBytes))
+	}
+}
+
+// TestSandboxExec_SandboxOnlyDenyWriteDownloads verifies that sandbox-exec
+// blocks writes to ~/Downloads, a path whose deny is enforced by the
+// sandbox profile alone (macOS only).
+//
+// This test isolates sandbox-exec enforcement from OS/TCC permissions.
+// The pre-check writes and removes a probe file in ~/Downloads outside
+// the sandbox: if that probe succeeds, the OS is proven to permit the
+// write. After the sandboxed write attempt, the target file must not
+// exist on disk — since the OS would allow it, its absence can only be
+// attributed to sandbox-exec. This is strictly stronger than the /etc
+// write test (which only proves the runner propagates the pipe error).
+//
+// See sandbox_profile.tpl's deny regex for
+// /Users/*/(Documents|Desktop|Downloads|Pictures|Movies|Music) and
+// mitto-6yi.1 for the rationale.
+func TestSandboxExec_SandboxOnlyDenyWriteDownloads(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("sandbox-exec is only available on macOS")
+	}
+	if _, err := exec.LookPath("sandbox-exec"); err != nil {
+		t.Skip("sandbox-exec not found in PATH")
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("os.UserHomeDir: %v", err)
+	}
+	dl := filepath.Join(home, "Downloads")
+	if _, err := os.Stat(dl); err != nil {
+		t.Skipf("~/Downloads not accessible for outside-sandbox setup (%v); cannot verify sandbox-only write-deny", err)
+	}
+
+	probePath := filepath.Join(dl, fmt.Sprintf("mitto-sandbox-only-write-probe-%d.txt", os.Getpid()))
+	if err := os.WriteFile(probePath, []byte("probe\n"), 0o644); err != nil {
+		t.Skipf("cannot write probe file in ~/Downloads (likely TCC-restricted for this test host): %v", err)
+	}
+	os.Remove(probePath)
+
+	writeTarget := filepath.Join(dl, fmt.Sprintf("mitto-sandbox-only-write-%d.txt", os.Getpid()))
+	os.Remove(writeTarget)
+	defer os.Remove(writeTarget)
+
+	allowNetworking := true
+	runnerConfigs := map[string]*config.WorkspaceRunnerConfig{
+		"exec": {
+			Type: "sandbox-exec",
+			Restrictions: &config.RunnerRestrictions{
+				AllowNetworking:   &allowNetworking,
+				AllowReadFolders:  []string{"/tmp"},
+				AllowWriteFolders: []string{"/tmp"},
+			},
+		},
+	}
+
+	r, err := NewRunner(nil, nil, runnerConfigs, "/tmp", nil)
+	if err != nil {
+		t.Fatalf("NewRunner failed: %v", err)
+	}
+	if r.Type() != "sandbox-exec" {
+		t.Fatalf("expected sandbox-exec, got %q", r.Type())
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	cmdStr := fmt.Sprintf("echo hello > %s", writeTarget)
+	stdin, stdout, stderr, wait, err := r.RunWithPipes(ctx, "sh", []string{"-c", cmdStr}, nil)
+	if err != nil {
+		t.Fatalf("RunWithPipes failed: %v", err)
+	}
+	stdin.Close()
+
+	stdoutBytes, _ := io.ReadAll(stdout)
+	stderrBytes, _ := io.ReadAll(stderr)
+	waitErr := wait()
+
+	t.Logf("target: %s", writeTarget)
+	t.Logf("stdout: %q", string(stdoutBytes))
+	t.Logf("stderr: %q", string(stderrBytes))
+	t.Logf("wait err: %v", waitErr)
+
+	stderrLower := strings.ToLower(string(stderrBytes))
+	permissionSignal := strings.Contains(stderrLower, "permission denied") ||
+		strings.Contains(stderrLower, "operation not permitted") ||
+		strings.Contains(stderrLower, "not permitted")
+
+	_, statErr := os.Stat(writeTarget)
+	fileExists := statErr == nil
+	fileMissing := errors.Is(statErr, os.ErrNotExist)
+
+	if waitErr == nil && !permissionSignal {
+		t.Errorf("expected sandbox write of %q to fail (waitErr != nil OR permission signal in stderr), got stderr=%q err=nil",
+			writeTarget, string(stderrBytes))
+	}
+	if fileExists {
+		t.Errorf("expected sandbox to prevent creation of %q outside the sandbox, but the file exists", writeTarget)
+	}
+	if !fileMissing && !fileExists {
+		t.Logf("stat(%q) returned unexpected error: %v", writeTarget, statErr)
+	}
 }
