@@ -221,8 +221,9 @@ describe("mitto-xdqx — Workspaces dialog Tasks tab stuck on 'Loading…'", () 
       getSelectedFolderDir: () => null,
     });
 
-    // Three refs are declared in the hook (in order): configLoadTokenRef,
-    // upstreamLoadTokenRef, upstreamPromptsLoadTokenRef. All start at 0.
+    // Three token refs are declared first in the hook (in order):
+    // configLoadTokenRef, upstreamLoadTokenRef, upstreamPromptsLoadTokenRef.
+    // All start at 0. Six additional refs mirror the upstream-prompt values.
     expect(refs.length).toBeGreaterThanOrEqual(3);
     const before = refs.slice(0, 3).map((r) => r.current);
 
@@ -234,5 +235,166 @@ describe("mitto-xdqx — Workspaces dialog Tasks tab stuck on 'Loading…'", () 
     // will not re-latch the loading spinner.
     const after = refs.slice(0, 3).map((r) => r.current);
     expect(after).toEqual(before.map((v) => v + 1));
+  });
+});
+
+// -----------------------------------------------------------------------------
+// Regression tests for the disabled-buttons-after-save bug: user modifies the
+// Tasks-tab prompt selection in the Workspaces dialog and the BeadsView
+// pull/push/sync buttons render disabled because their `pullPromptName` /
+// `pushPromptName` / `syncPromptName` state is empty. Root cause: the three
+// save handlers (saveBeadsPromptName, saveBeadsUpstream, saveBeadsPromptArgs)
+// used to PUT the FULL upstream body reading the untouched fields from a
+// render-time closure — so when the user changed a select before the initial
+// reloadBeadsUpstream GET had resolved, the closure held "" for the other two
+// prompt names and the backend persisted a wiped Beads block. The fix routes
+// every save through refs mirroring the six upstream-prompt values.
+// -----------------------------------------------------------------------------
+describe("saveBeadsPromptName / saveBeadsUpstream / saveBeadsPromptArgs read from refs, not closure", () => {
+  async function primeHookWithLoadedPrompts({ isOpen = true } = {}) {
+    const { useBeadsFolderConfig, refs, setters } = await loadHook();
+    const result = useBeadsFolderConfig({
+      selectedFolder: "myfolder",
+      activeTab: "beads",
+      isOpen,
+      getSelectedFolderDir: () => "/tmp/myfolder",
+    });
+    // Ref layout: [0..2] = load tokens, [3..8] = prompt/args mirrors, in the
+    // order: pull, push, sync, pullArgs, pushArgs, syncArgs. Simulate a
+    // completed reloadBeadsUpstream by populating the mirror refs directly —
+    // this is what the GET response handler now writes into.
+    refs[3].current = "PullOne";
+    refs[4].current = "PushOne";
+    refs[5].current = "SyncOne";
+    refs[6].current = { A: "1" };
+    refs[7].current = { B: "2" };
+    refs[8].current = { C: "3" };
+    return { result, refs, setters };
+  }
+
+  test("saveBeadsPromptName sends the OTHER two prompt names from refs, not empty closure state", async () => {
+    global.document.cookie = "mitto_csrf=test-token";
+    const putCalls = [];
+    global.fetch = jest.fn((url, opts) => {
+      const method = (opts && opts.method) || "GET";
+      if (method === "PUT") {
+        putCalls.push({ url, body: opts && opts.body });
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: async () => ({ upstream: "prompts" }),
+        });
+      }
+      // Never-resolving GET simulates the pre-fix race where the initial
+      // reloadBeadsUpstream has not yet populated state at the time of PUT.
+      return new Promise(() => {});
+    });
+
+    const { result } = await primeHookWithLoadedPrompts();
+    await result.beadsHandlers.saveBeadsPromptName("push_prompt", "PushTwo");
+
+    expect(putCalls).toHaveLength(1);
+    const body = JSON.parse(putCalls[0].body);
+    expect(body.upstream).toBe("prompts");
+    expect(body.push_prompt).toBe("PushTwo");
+    // These two assertions are the regression: the closure would have read
+    // "" from render-1 state, but refs preserve the LATEST committed values.
+    expect(body.pull_prompt).toBe("PullOne");
+    expect(body.sync_prompt).toBe("SyncOne");
+    expect(body.pull_prompt_args).toEqual({ A: "1" });
+    expect(body.push_prompt_args).toEqual({ B: "2" });
+    expect(body.sync_prompt_args).toEqual({ C: "3" });
+  });
+
+  test("saveBeadsUpstream(prompts) preserves prompt names + args from refs", async () => {
+    global.document.cookie = "mitto_csrf=test-token";
+    const putCalls = [];
+    global.fetch = jest.fn((url, opts) => {
+      if (opts && opts.method === "PUT") {
+        putCalls.push({ url, body: opts.body });
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: async () => ({
+            upstream: "prompts",
+            pull_prompt: "PullOne",
+            push_prompt: "PushOne",
+            sync_prompt: "SyncOne",
+          }),
+        });
+      }
+      return new Promise(() => {});
+    });
+
+    const { result } = await primeHookWithLoadedPrompts();
+    await result.beadsHandlers.saveBeadsUpstream("prompts");
+
+    expect(putCalls).toHaveLength(1);
+    const body = JSON.parse(putCalls[0].body);
+    expect(body.upstream).toBe("prompts");
+    expect(body.pull_prompt).toBe("PullOne");
+    expect(body.push_prompt).toBe("PushOne");
+    expect(body.sync_prompt).toBe("SyncOne");
+  });
+
+  test("saveBeadsPromptArgs sends the OTHER prompt names + arg maps from refs", async () => {
+    global.document.cookie = "mitto_csrf=test-token";
+    const putCalls = [];
+    global.fetch = jest.fn((url, opts) => {
+      if (opts && opts.method === "PUT") {
+        putCalls.push({ url, body: opts.body });
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: async () => ({ upstream: "prompts" }),
+        });
+      }
+      return new Promise(() => {});
+    });
+
+    const { result } = await primeHookWithLoadedPrompts();
+    await result.beadsHandlers.saveBeadsPromptArgs("push_prompt", {
+      NEW: "yes",
+    });
+
+    expect(putCalls).toHaveLength(1);
+    const body = JSON.parse(putCalls[0].body);
+    expect(body.upstream).toBe("prompts");
+    expect(body.push_prompt_args).toEqual({ NEW: "yes" });
+    expect(body.pull_prompt).toBe("PullOne");
+    expect(body.push_prompt).toBe("PushOne");
+    expect(body.sync_prompt).toBe("SyncOne");
+    expect(body.pull_prompt_args).toEqual({ A: "1" });
+    expect(body.sync_prompt_args).toEqual({ C: "3" });
+  });
+
+  test("saveBeadsPromptName updates its own ref so a subsequent save reads the latest value", async () => {
+    global.document.cookie = "mitto_csrf=test-token";
+    const putCalls = [];
+    global.fetch = jest.fn((url, opts) => {
+      if (opts && opts.method === "PUT") {
+        putCalls.push({ url, body: opts.body });
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: async () => ({ upstream: "prompts" }),
+        });
+      }
+      return new Promise(() => {});
+    });
+
+    const { result, refs } = await primeHookWithLoadedPrompts();
+
+    await result.beadsHandlers.saveBeadsPromptName("pull_prompt", "PullTwo");
+    // Ref for pull is updated so a subsequent save for push does not
+    // reintroduce the previous pull value.
+    expect(refs[3].current).toBe("PullTwo");
+
+    await result.beadsHandlers.saveBeadsPromptName("push_prompt", "PushTwo");
+    expect(putCalls).toHaveLength(2);
+    const body2 = JSON.parse(putCalls[1].body);
+    expect(body2.pull_prompt).toBe("PullTwo");
+    expect(body2.push_prompt).toBe("PushTwo");
+    expect(body2.sync_prompt).toBe("SyncOne");
   });
 });

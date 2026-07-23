@@ -86,6 +86,21 @@ export function useBeadsFolderConfig({
   const upstreamLoadTokenRef = useRef(0);
   const upstreamPromptsLoadTokenRef = useRef(0);
 
+  // Refs mirroring the six upstream-prompt values (three names + three arg
+  // maps). The save handlers below PUT the FULL upstream body — the field being
+  // changed plus the OTHER five values — so they must read the LATEST values,
+  // not a render-time closure. Without these refs, changing one prompt select
+  // before the initial `reloadBeadsUpstream` GET has resolved would ship "" for
+  // the untouched fields and wipe them on the backend; that in turn empties
+  // BeadsView's pullPromptName / pushPromptName / syncPromptName state on its
+  // next fetch, disabling the pull/push/sync toolbar buttons.
+  const beadsPullPromptRef = useRef("");
+  const beadsPushPromptRef = useRef("");
+  const beadsSyncPromptRef = useRef("");
+  const beadsPullPromptArgsRef = useRef({});
+  const beadsPushPromptArgsRef = useRef({});
+  const beadsSyncPromptArgsRef = useRef({});
+
   // Load (reload) beads config for the selected folder via GET /api/issues/config.
   const reloadBeadsConfig = async (workingDir) => {
     const token = ++configLoadTokenRef.current;
@@ -177,13 +192,25 @@ export function useBeadsFolderConfig({
       );
       const data = await res.json().catch(() => ({}));
       if (token !== upstreamLoadTokenRef.current) return;
+      const pull = (data && data.pull_prompt) || "";
+      const push = (data && data.push_prompt) || "";
+      const sync = (data && data.sync_prompt) || "";
+      const pullArgs = (data && data.pull_prompt_args) || {};
+      const pushArgs = (data && data.push_prompt_args) || {};
+      const syncArgs = (data && data.sync_prompt_args) || {};
       setBeadsUpstream((data && data.upstream) || "none");
-      setBeadsPullPrompt((data && data.pull_prompt) || "");
-      setBeadsPushPrompt((data && data.push_prompt) || "");
-      setBeadsSyncPrompt((data && data.sync_prompt) || "");
-      setBeadsPullPromptArgs((data && data.pull_prompt_args) || {});
-      setBeadsPushPromptArgs((data && data.push_prompt_args) || {});
-      setBeadsSyncPromptArgs((data && data.sync_prompt_args) || {});
+      setBeadsPullPrompt(pull);
+      setBeadsPushPrompt(push);
+      setBeadsSyncPrompt(sync);
+      setBeadsPullPromptArgs(pullArgs);
+      setBeadsPushPromptArgs(pushArgs);
+      setBeadsSyncPromptArgs(syncArgs);
+      beadsPullPromptRef.current = pull;
+      beadsPushPromptRef.current = push;
+      beadsSyncPromptRef.current = sync;
+      beadsPullPromptArgsRef.current = pullArgs;
+      beadsPushPromptArgsRef.current = pushArgs;
+      beadsSyncPromptArgsRef.current = syncArgs;
     } catch (_err) {
       if (token !== upstreamLoadTokenRef.current) return;
       setBeadsUpstream("none");
@@ -228,12 +255,15 @@ export function useBeadsFolderConfig({
     try {
       const body = { upstream };
       if (upstream === "prompts") {
-        body.pull_prompt = beadsPullPrompt;
-        body.push_prompt = beadsPushPrompt;
-        body.sync_prompt = beadsSyncPrompt;
-        body.pull_prompt_args = beadsPullPromptArgs;
-        body.push_prompt_args = beadsPushPromptArgs;
-        body.sync_prompt_args = beadsSyncPromptArgs;
+        // Read from refs, not closure — the PUT is a full-replace and the other
+        // five fields must reflect the LATEST committed values, not what this
+        // render captured. See ref declarations above for the wipe scenario.
+        body.pull_prompt = beadsPullPromptRef.current;
+        body.push_prompt = beadsPushPromptRef.current;
+        body.sync_prompt = beadsSyncPromptRef.current;
+        body.pull_prompt_args = beadsPullPromptArgsRef.current;
+        body.push_prompt_args = beadsPushPromptArgsRef.current;
+        body.sync_prompt_args = beadsSyncPromptArgsRef.current;
       }
       const res = await secureFetch(
         endpoints.issues.upstream({ working_dir: workingDir }),
@@ -247,13 +277,25 @@ export function useBeadsFolderConfig({
       if (!res.ok)
         throw new Error(beadsErrorMessage(data) || "Failed to set upstream");
       if (data && data.error) throw new Error(beadsErrorMessage(data));
+      const rPull = (data && data.pull_prompt) || "";
+      const rPush = (data && data.push_prompt) || "";
+      const rSync = (data && data.sync_prompt) || "";
+      const rPullArgs = (data && data.pull_prompt_args) || {};
+      const rPushArgs = (data && data.push_prompt_args) || {};
+      const rSyncArgs = (data && data.sync_prompt_args) || {};
       setBeadsUpstream((data && data.upstream) || upstream);
-      setBeadsPullPrompt((data && data.pull_prompt) || "");
-      setBeadsPushPrompt((data && data.push_prompt) || "");
-      setBeadsSyncPrompt((data && data.sync_prompt) || "");
-      setBeadsPullPromptArgs((data && data.pull_prompt_args) || {});
-      setBeadsPushPromptArgs((data && data.push_prompt_args) || {});
-      setBeadsSyncPromptArgs((data && data.sync_prompt_args) || {});
+      setBeadsPullPrompt(rPull);
+      setBeadsPushPrompt(rPush);
+      setBeadsSyncPrompt(rSync);
+      setBeadsPullPromptArgs(rPullArgs);
+      setBeadsPushPromptArgs(rPushArgs);
+      setBeadsSyncPromptArgs(rSyncArgs);
+      beadsPullPromptRef.current = rPull;
+      beadsPushPromptRef.current = rPush;
+      beadsSyncPromptRef.current = rSync;
+      beadsPullPromptArgsRef.current = rPullArgs;
+      beadsPushPromptArgsRef.current = rPushArgs;
+      beadsSyncPromptArgsRef.current = rSyncArgs;
     } catch (err) {
       setBeadsUpstream(prev); // revert on failure
       setBeadsConfigError(err.message || "Failed to set upstream");
@@ -271,15 +313,17 @@ export function useBeadsFolderConfig({
       push_prompt: setBeadsPushPrompt,
       sync_prompt: setBeadsSyncPrompt,
     };
-    const prevMap = {
-      pull_prompt: beadsPullPrompt,
-      push_prompt: beadsPushPrompt,
-      sync_prompt: beadsSyncPrompt,
+    const refMap = {
+      pull_prompt: beadsPullPromptRef,
+      push_prompt: beadsPushPromptRef,
+      sync_prompt: beadsSyncPromptRef,
     };
     const setter = setterMap[field];
-    const prev = prevMap[field];
-    if (!setter) return;
+    const ref = refMap[field];
+    if (!setter || !ref) return;
+    const prev = ref.current;
     setter(value); // optimistic
+    ref.current = value; // keep refs in sync with optimistic state
     setBeadsUpstreamSaving(true);
     try {
       const res = await secureFetch(
@@ -289,12 +333,14 @@ export function useBeadsFolderConfig({
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             upstream: "prompts",
-            pull_prompt: field === "pull_prompt" ? value : beadsPullPrompt,
-            push_prompt: field === "push_prompt" ? value : beadsPushPrompt,
-            sync_prompt: field === "sync_prompt" ? value : beadsSyncPrompt,
-            pull_prompt_args: beadsPullPromptArgs,
-            push_prompt_args: beadsPushPromptArgs,
-            sync_prompt_args: beadsSyncPromptArgs,
+            // Read from refs, not closure — see ref declarations for the
+            // race that leaves the untouched fields as "" and wipes them.
+            pull_prompt: beadsPullPromptRef.current,
+            push_prompt: beadsPushPromptRef.current,
+            sync_prompt: beadsSyncPromptRef.current,
+            pull_prompt_args: beadsPullPromptArgsRef.current,
+            push_prompt_args: beadsPushPromptArgsRef.current,
+            sync_prompt_args: beadsSyncPromptArgsRef.current,
           }),
         },
       );
@@ -304,6 +350,7 @@ export function useBeadsFolderConfig({
       if (data && data.error) throw new Error(beadsErrorMessage(data));
     } catch (err) {
       setter(prev); // revert on failure
+      ref.current = prev;
       setBeadsConfigError(err.message || "Failed to save prompt");
     } finally {
       setBeadsUpstreamSaving(false);
@@ -321,15 +368,17 @@ export function useBeadsFolderConfig({
       push_prompt: setBeadsPushPromptArgs,
       sync_prompt: setBeadsSyncPromptArgs,
     };
-    const prevMap = {
-      pull_prompt: beadsPullPromptArgs,
-      push_prompt: beadsPushPromptArgs,
-      sync_prompt: beadsSyncPromptArgs,
+    const refMap = {
+      pull_prompt: beadsPullPromptArgsRef,
+      push_prompt: beadsPushPromptArgsRef,
+      sync_prompt: beadsSyncPromptArgsRef,
     };
     const setter = setterMap[field];
-    const prev = prevMap[field];
-    if (!setter) return;
+    const ref = refMap[field];
+    if (!setter || !ref) return;
+    const prev = ref.current;
     setter(args); // optimistic
+    ref.current = args; // keep refs in sync with optimistic state
     setBeadsUpstreamSaving(true);
     try {
       const res = await secureFetch(
@@ -339,15 +388,13 @@ export function useBeadsFolderConfig({
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             upstream: "prompts",
-            pull_prompt: beadsPullPrompt,
-            push_prompt: beadsPushPrompt,
-            sync_prompt: beadsSyncPrompt,
-            pull_prompt_args:
-              field === "pull_prompt" ? args : beadsPullPromptArgs,
-            push_prompt_args:
-              field === "push_prompt" ? args : beadsPushPromptArgs,
-            sync_prompt_args:
-              field === "sync_prompt" ? args : beadsSyncPromptArgs,
+            // Read from refs, not closure — same rationale as saveBeadsPromptName.
+            pull_prompt: beadsPullPromptRef.current,
+            push_prompt: beadsPushPromptRef.current,
+            sync_prompt: beadsSyncPromptRef.current,
+            pull_prompt_args: beadsPullPromptArgsRef.current,
+            push_prompt_args: beadsPushPromptArgsRef.current,
+            sync_prompt_args: beadsSyncPromptArgsRef.current,
           }),
         },
       );
@@ -357,6 +404,7 @@ export function useBeadsFolderConfig({
       if (data && data.error) throw new Error(beadsErrorMessage(data));
     } catch (err) {
       setter(prev); // revert on failure
+      ref.current = prev;
       setBeadsConfigError(err.message || "Failed to save arguments");
     } finally {
       setBeadsUpstreamSaving(false);
@@ -406,6 +454,12 @@ export function useBeadsFolderConfig({
     setBeadsPullPromptArgs({});
     setBeadsPushPromptArgs({});
     setBeadsSyncPromptArgs({});
+    beadsPullPromptRef.current = "";
+    beadsPushPromptRef.current = "";
+    beadsSyncPromptRef.current = "";
+    beadsPullPromptArgsRef.current = {};
+    beadsPushPromptArgsRef.current = {};
+    beadsSyncPromptArgsRef.current = {};
     setBeadsUpstreamPrompts([]);
     setBeadsConfigLoading(false);
     setBeadsConfigSaving(false);
