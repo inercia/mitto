@@ -658,6 +658,20 @@ a:hover {
   }
 }
 
+/* Streaming row: tint the whole row background when a linked conversation is
+   actively prompting on this bead. Blue rhymes with the in_progress pulse and
+   stays out of the Mitto red reserved for hover/selection/delete. Selection
+   accent border (borderTone) remains visible for selected+streaming rows so
+   the two signals combine legibly. Hover-red still wins on non-selected
+   streaming rows via the higher-specificity `.light .hover\:bg-red-600:hover`
+   rule defined earlier in this file. */
+.light .beads-row-streaming {
+  background: rgba(59, 130, 246, 0.12) !important;  /* blue-500 @ 12% */
+}
+.dark .beads-row-streaming {
+  background: rgba(59, 130, 246, 0.15) !important;  /* blue-500 @ 15% */
+}
+
 .light .bg-yellow-400,
 .dark .bg-yellow-400 {
   background: #facc15 !important;

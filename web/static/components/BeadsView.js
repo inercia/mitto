@@ -2499,8 +2499,12 @@ export function BeadsView({
     const isEpic = issue.issue_type === "epic" || childCount > 0;
     const showChevron = epicExpanded !== null;
     const bgTone = isSelected
-      ? "bg-mitto-surface-3/30"
-      : "bg-mitto-surface-3/20 hover:bg-red-600";
+      ? isStreamingIssue
+        ? "bg-mitto-surface-3/30 beads-row-streaming"
+        : "bg-mitto-surface-3/30"
+      : isStreamingIssue
+        ? "beads-row-streaming hover:bg-red-600"
+        : "bg-mitto-surface-3/20 hover:bg-red-600";
     // Each issue renders as a self-contained card with a delicate border,
     // matching the ACP Servers / Runners lists. The base border is applied
     // here as Tailwind utilities (not in CSS) so the two distinctive Mitto
