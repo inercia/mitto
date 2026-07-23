@@ -109,10 +109,13 @@ func TestACPRestart_SingleCrash(t *testing.T) {
 		return errorCollector.contains("Restarting") && errorCollector.contains("attempt 1 of 3")
 	}, "restart notification")
 
-	// Verify we got the restart message
-	if !errorCollector.contains("AI agent restarted") {
-		t.Error("Expected 'AI agent restarted' message")
-	}
+	// Wait for the second observer callback ("AI agent restarted. Retrying your
+	// message automatically...") which is dispatched only after restartACPProcess
+	// completes. A bare contains() here races against that callback on a busy
+	// scheduler (mitto-8yz).
+	waitFor(t, 10*time.Second, func() bool {
+		return errorCollector.contains("AI agent restarted")
+	}, "restart completion notification")
 }
 
 // TestACPRestart_RateLimiting tests that restarts are rate-limited to MaxACPRestarts per window.
