@@ -842,11 +842,16 @@ describe("initialValues seeding", () => {
 // =============================================================================
 
 /**
- * Mirrors the `text` branch of ParamField: a single-line input by default, a
- * resizable textarea when multiLine is true.
- *   { kind: "input" | "textarea" }
+ * Mirrors the `text` branch of ParamField: a dropdown when options is a
+ * non-empty array, otherwise a single-line input by default or a resizable
+ * textarea when multiLine is true. options wins over multiLine when both are
+ * set (defensive — backend validation rejects that combination).
+ *   { kind: "input" | "textarea" | "select", options?: string[] }
  */
-function renderTextControl({ multiLine }) {
+function renderTextControl({ multiLine, options }) {
+  if (Array.isArray(options) && options.length > 0) {
+    return { kind: "select", options };
+  }
   return multiLine ? { kind: "textarea" } : { kind: "input" };
 }
 
@@ -861,6 +866,35 @@ describe("text render branch (multiLine)", () => {
 
   test("renders a textarea when multiLine is true", () => {
     expect(renderTextControl({ multiLine: true }).kind).toBe("textarea");
+  });
+});
+
+describe("text render branch (options dropdown)", () => {
+  test("renders a select when options is a non-empty array", () => {
+    const result = renderTextControl({ options: ["Simplification", "Cleanup"] });
+    expect(result.kind).toBe("select");
+    expect(result.options).toEqual(["Simplification", "Cleanup"]);
+  });
+
+  test("falls back to input when options is an empty array", () => {
+    expect(renderTextControl({ options: [] }).kind).toBe("input");
+  });
+
+  test("falls back to input when options is absent", () => {
+    expect(renderTextControl({}).kind).toBe("input");
+  });
+
+  test("falls back to input when options is not an array", () => {
+    expect(renderTextControl({ options: "a,b" }).kind).toBe("input");
+    expect(renderTextControl({ options: null }).kind).toBe("input");
+  });
+
+  test("select wins over multiLine when both are set", () => {
+    const result = renderTextControl({
+      multiLine: true,
+      options: ["a", "b"],
+    });
+    expect(result.kind).toBe("select");
   });
 });
 

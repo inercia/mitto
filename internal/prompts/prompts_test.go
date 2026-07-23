@@ -1696,6 +1696,92 @@ func TestValidatePromptParameters(t *testing.T) {
 			t.Errorf("error = %q, want it to contain 'text'", err.Error())
 		}
 	})
+
+	t.Run("options on a text param is OK", func(t *testing.T) {
+		err := ValidatePromptParameters("", []PromptParameter{{Name: "Kind", Type: "text", Options: []string{"Simplification", "Cleanup"}}})
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("options with a matching default is OK", func(t *testing.T) {
+		err := ValidatePromptParameters("", []PromptParameter{{Name: "Kind", Type: "text", Options: []string{"a", "b"}, Default: "a"}})
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("options on a non-text param returns error mentioning options and text", func(t *testing.T) {
+		err := ValidatePromptParameters("", []PromptParameter{{Name: "Issue", Type: "beadsId", Options: []string{"a", "b"}}})
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "options") {
+			t.Errorf("error = %q, want it to contain 'options'", err.Error())
+		}
+		if !strings.Contains(err.Error(), "text") {
+			t.Errorf("error = %q, want it to contain 'text'", err.Error())
+		}
+	})
+
+	t.Run("options combined with multiLine returns error mentioning both", func(t *testing.T) {
+		err := ValidatePromptParameters("", []PromptParameter{{Name: "Kind", Type: "text", Options: []string{"a", "b"}, MultiLine: true}})
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "options") {
+			t.Errorf("error = %q, want it to contain 'options'", err.Error())
+		}
+		if !strings.Contains(err.Error(), "multiLine") {
+			t.Errorf("error = %q, want it to contain 'multiLine'", err.Error())
+		}
+	})
+
+	t.Run("options containing an empty string returns error naming the parameter", func(t *testing.T) {
+		err := ValidatePromptParameters("", []PromptParameter{{Name: "Kind", Type: "text", Options: []string{"a", ""}}})
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "Kind") {
+			t.Errorf("error = %q, want it to contain 'Kind'", err.Error())
+		}
+		if !strings.Contains(err.Error(), "empty") {
+			t.Errorf("error = %q, want it to contain 'empty'", err.Error())
+		}
+	})
+
+	t.Run("options containing duplicates returns error naming the duplicate", func(t *testing.T) {
+		err := ValidatePromptParameters("", []PromptParameter{{Name: "Kind", Type: "text", Options: []string{"a", "b", "a"}}})
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "duplicate") {
+			t.Errorf("error = %q, want it to contain 'duplicate'", err.Error())
+		}
+		if !strings.Contains(err.Error(), `"a"`) {
+			t.Errorf("error = %q, want it to contain the duplicate value \"a\"", err.Error())
+		}
+	})
+
+	t.Run("default outside options returns error mentioning default and the parameter", func(t *testing.T) {
+		err := ValidatePromptParameters("", []PromptParameter{{Name: "Kind", Type: "text", Options: []string{"a", "b"}, Default: "c"}})
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "default") {
+			t.Errorf("error = %q, want it to contain 'default'", err.Error())
+		}
+		if !strings.Contains(err.Error(), "Kind") {
+			t.Errorf("error = %q, want it to contain 'Kind'", err.Error())
+		}
+	})
+
+	t.Run("empty options behaves as if absent (regression guard)", func(t *testing.T) {
+		err := ValidatePromptParameters("", []PromptParameter{{Name: "Kind", Type: "text", Options: []string{}}})
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
 }
 
 func TestParsePromptFile_WithMultiLineParameter(t *testing.T) {
@@ -1722,6 +1808,71 @@ prompt: |
 	}
 	if prompt.Parameters[1].MultiLine {
 		t.Errorf("Parameters[1].MultiLine = true, want false (absent)")
+	}
+}
+
+func TestParsePromptFile_WithOptionsParameter(t *testing.T) {
+	data := []byte(`name: "Options Prompt"
+parameters:
+  - name: Kind
+    type: text
+    options:
+      - Simplification
+      - Cleanup
+  - name: Free
+    type: text
+prompt: |
+  {{ .Args.Kind }} for {{ .Args.Free }}.
+`)
+
+	prompt, err := ParsePromptFile("opt.prompt.yaml", data, time.Now())
+	if err != nil {
+		t.Fatalf("ParsePromptFile failed: %v", err)
+	}
+	if len(prompt.Parameters) != 2 {
+		t.Fatalf("len(Parameters) = %d, want 2", len(prompt.Parameters))
+	}
+	got := prompt.Parameters[0].Options
+	want := []string{"Simplification", "Cleanup"}
+	if len(got) != len(want) {
+		t.Fatalf("Parameters[0].Options = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("Parameters[0].Options[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+	if len(prompt.Parameters[1].Options) != 0 {
+		t.Errorf("Parameters[1].Options = %v, want empty (absent)", prompt.Parameters[1].Options)
+	}
+}
+
+func TestPromptParameter_OptionsJSONRoundTrip(t *testing.T) {
+	// Guards the wire path: Options must survive JSON marshaling through
+	// WebPrompt / MCP DTOs. `omitempty` must drop the field when empty.
+	p := PromptParameter{Name: "Kind", Type: "text", Options: []string{"a", "b"}}
+	buf, err := json.Marshal(p)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(buf), `"options":["a","b"]`) {
+		t.Errorf("json = %s, want it to contain the options array", string(buf))
+	}
+	var round PromptParameter
+	if err := json.Unmarshal(buf, &round); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(round.Options) != 2 || round.Options[0] != "a" || round.Options[1] != "b" {
+		t.Errorf("round-tripped Options = %v, want [a b]", round.Options)
+	}
+
+	empty := PromptParameter{Name: "Free", Type: "text"}
+	buf, err = json.Marshal(empty)
+	if err != nil {
+		t.Fatalf("marshal empty: %v", err)
+	}
+	if strings.Contains(string(buf), "options") {
+		t.Errorf("json = %s, want no 'options' key when Options is empty", string(buf))
 	}
 }
 
