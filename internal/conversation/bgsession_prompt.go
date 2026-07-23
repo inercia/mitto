@@ -455,6 +455,18 @@ retryAfterRestart:
 		bs.onPlanStateChanged(bs.persistedID, nil)
 	}
 
+	// FreshContext seq reservation (mitto-c36): when the loop turn will flush the
+	// context (either via in-place flush command or a new ACP session), reserve the
+	// "context_cleared" pill seq BEFORE the user-prompt seq so the persisted transcript
+	// orders as pill(N) → user_prompt(N+1) → agent_stream(N+2..). The reserved seq is
+	// consumed inside createFreshContextSession on the async goroutine below. If the
+	// flush/new-session ultimately does not fire (e.g. flush RPC error), the seq
+	// becomes a persistence-tolerated gap.
+	var freshContextPillSeq int64
+	if meta.FreshContext && bs.recorder != nil {
+		freshContextPillSeq = bs.getNextSeq()
+	}
+
 	// Persist user prompt with image/file references and prompt ID.
 	// Seq is pre-assigned from the shared getNextSeq() counter so that the user-prompt
 	// event is ordered atomically with respect to any concurrent streaming events.
@@ -514,7 +526,7 @@ retryAfterRestart:
 		if !bs.promptDisp.completeHandshakeOrAbort(bs) {
 			return
 		}
-		freshContextSessionID := bs.promptDisp.createFreshContextSession(bs, meta)
+		freshContextSessionID := bs.promptDisp.createFreshContextSession(bs, meta, freshContextPillSeq)
 		bs.promptDisp.applyModelPreference(bs, meta)
 
 		// Declare all variables that are live across the retryPrompt goto target
@@ -966,6 +978,15 @@ func (bs *BackgroundSession) pdSetActiveModelOnly(ctx context.Context, modelID s
 
 func (bs *BackgroundSession) pdRecordSessionChange(kind, value, previousValue string) {
 	bs.cmRecordSessionChange(kind, value, previousValue)
+}
+
+// pdRecordSessionChangeWithSeq (mitto-c36) is the seq-aware sibling of
+// pdRecordSessionChange used by createFreshContextSession to emit the
+// "context_cleared" pill with a caller-reserved seq allocated in PromptWithMeta
+// before the user-prompt seq. Passing a zero seq is a caller bug — the
+// dispatcher falls back to the plain seq-allocating variant in that case.
+func (bs *BackgroundSession) pdRecordSessionChangeWithSeq(seq int64, kind, value, previousValue string) {
+	bs.cmRecordSessionChangeWithSeq(seq, kind, value, previousValue)
 }
 
 // === New in 2.5-d ===

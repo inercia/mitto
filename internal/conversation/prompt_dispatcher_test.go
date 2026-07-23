@@ -90,6 +90,10 @@ type fakePromptDeps struct {
 	setActiveModelErr      error
 	setActiveModelGate     chan struct{} // if non-nil, block in pdSetActiveModelOnly until closed (simulates a slow/cold set_model)
 	recordedSessionChanges []session.SessionChangeData
+	// recordedSessionChangeSeqs (mitto-c36) mirrors recordedSessionChanges 1:1
+	// and captures the seq passed via pdRecordSessionChangeWithSeq (or 0 when
+	// the seq-less pdRecordSessionChange was used).
+	recordedSessionChangeSeqs []int64
 
 	// === New in 2.5-d ===
 	lastUsageSet          *acp.Usage
@@ -301,6 +305,20 @@ func (f *fakePromptDeps) pdRecordSessionChange(kind, value, previousValue string
 	f.recordedSessionChanges = append(f.recordedSessionChanges, session.SessionChangeData{
 		Kind: kind, Value: value, PreviousValue: previousValue,
 	})
+	f.recordedSessionChangeSeqs = append(f.recordedSessionChangeSeqs, 0)
+}
+
+// pdRecordSessionChangeWithSeq (mitto-c36): captures the caller-reserved seq
+// alongside the change so tests can assert the pill seq. Kind/value/previous are
+// appended to recordedSessionChanges (same slice as the seq-less variant) so
+// existing assertions on pill content continue to work.
+func (f *fakePromptDeps) pdRecordSessionChangeWithSeq(seq int64, kind, value, previousValue string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.recordedSessionChanges = append(f.recordedSessionChanges, session.SessionChangeData{
+		Kind: kind, Value: value, PreviousValue: previousValue,
+	})
+	f.recordedSessionChangeSeqs = append(f.recordedSessionChangeSeqs, seq)
 }
 
 // === mitto-pchx.3: prompt-arg cache ===
@@ -1496,7 +1514,7 @@ func TestPromptDispatcher_CreateFreshContextSession_FreshContextFalse_ReturnsEmp
 	d := newFakePromptDeps()
 	d.hasACPConn = true
 
-	id := p.createFreshContextSession(d, PromptMeta{FreshContext: false})
+	id := p.createFreshContextSession(d, PromptMeta{FreshContext: false}, 0)
 	if id != "" {
 		t.Fatalf("expected empty id when FreshContext=false, got %q", id)
 	}
@@ -1510,7 +1528,7 @@ func TestPromptDispatcher_CreateFreshContextSession_NoACPConn_ReturnsEmpty(t *te
 	d := newFakePromptDeps()
 	d.hasACPConn = false
 
-	id := p.createFreshContextSession(d, PromptMeta{FreshContext: true})
+	id := p.createFreshContextSession(d, PromptMeta{FreshContext: true}, 0)
 	if id != "" {
 		t.Fatalf("expected empty id when no ACP conn, got %q", id)
 	}
@@ -1525,7 +1543,7 @@ func TestPromptDispatcher_CreateFreshContextSession_Success_ReturnsID(t *testing
 	d.hasACPConn = true
 	d.acpNewSessionID = "fresh-session-123"
 
-	id := p.createFreshContextSession(d, PromptMeta{FreshContext: true})
+	id := p.createFreshContextSession(d, PromptMeta{FreshContext: true}, 0)
 	if id != "fresh-session-123" {
 		t.Fatalf("expected 'fresh-session-123', got %q", id)
 	}
@@ -1545,7 +1563,7 @@ func TestPromptDispatcher_CreateFreshContextSession_ACPError_ReturnsEmpty(t *tes
 	d.hasACPConn = true
 	d.acpNewSessionErr = errors.New("new session failed")
 
-	id := p.createFreshContextSession(d, PromptMeta{FreshContext: true})
+	id := p.createFreshContextSession(d, PromptMeta{FreshContext: true}, 0)
 	if id != "" {
 		t.Fatalf("expected empty id on error, got %q", id)
 	}
@@ -1565,7 +1583,7 @@ func TestPromptDispatcher_CreateFreshContextSession_PrefersInPlaceFlush_WhenCmdC
 	d.hasACPConn = false
 	d.acpNewSessionID = "should-not-be-used"
 
-	id := p.createFreshContextSession(d, PromptMeta{FreshContext: true})
+	id := p.createFreshContextSession(d, PromptMeta{FreshContext: true}, 0)
 
 	if id != "" {
 		t.Fatalf("expected empty id (in-place path), got %q", id)
@@ -1593,7 +1611,7 @@ func TestPromptDispatcher_CreateFreshContextSession_FlushErrorDoesNotAbort(t *te
 	d.contextFlushCommand = "/clear"
 	d.flushContextInPlaceErr = errors.New("flush failed")
 
-	id := p.createFreshContextSession(d, PromptMeta{FreshContext: true})
+	id := p.createFreshContextSession(d, PromptMeta{FreshContext: true}, 0)
 
 	// Must still return "" (continue on existing session) even on flush error.
 	if id != "" {
@@ -1615,7 +1633,7 @@ func TestPromptDispatcher_CreateFreshContextSession_FallsBackToNewSession_WhenNo
 	d.hasACPConn = true
 	d.acpNewSessionID = "new-sess-42"
 
-	id := p.createFreshContextSession(d, PromptMeta{FreshContext: true})
+	id := p.createFreshContextSession(d, PromptMeta{FreshContext: true}, 0)
 
 	if id != "new-sess-42" {
 		t.Fatalf("expected fallback NewSession id, got %q", id)
@@ -1630,6 +1648,69 @@ func TestPromptDispatcher_CreateFreshContextSession_FallsBackToNewSession_WhenNo
 	sc := d.recordedSessionChanges[0]
 	if sc.Kind != "context_cleared" || sc.Value != "new_session" || sc.PreviousValue != "" {
 		t.Fatalf("unexpected pill: %+v", sc)
+	}
+}
+
+// mitto-c36: when PromptWithMeta reserves a pillSeq upstream (before the
+// user-prompt seq), createFreshContextSession must forward it to the seq-aware
+// recorder so the "context_cleared" pill orders BEFORE the user prompt.
+func TestPromptDispatcher_CreateFreshContextSession_UsesReservedPillSeq_Flush(t *testing.T) {
+	p := promptDispatcher{}
+	d := newFakePromptDeps()
+	d.contextFlushCommand = "/clear"
+
+	id := p.createFreshContextSession(d, PromptMeta{FreshContext: true}, 42)
+
+	if id != "" {
+		t.Fatalf("expected empty id (in-place path), got %q", id)
+	}
+	if len(d.recordedSessionChanges) != 1 {
+		t.Fatalf("expected 1 pill, got %d", len(d.recordedSessionChanges))
+	}
+	if got := d.recordedSessionChangeSeqs[0]; got != 42 {
+		t.Fatalf("expected pill seq=42 (reserved upstream), got %d", got)
+	}
+	if sc := d.recordedSessionChanges[0]; sc.Kind != "context_cleared" || sc.Value != "flush" {
+		t.Fatalf("unexpected pill: %+v", sc)
+	}
+}
+
+func TestPromptDispatcher_CreateFreshContextSession_UsesReservedPillSeq_NewSession(t *testing.T) {
+	p := promptDispatcher{}
+	d := newFakePromptDeps()
+	d.hasACPConn = true
+	d.acpNewSessionID = "fresh-99"
+
+	id := p.createFreshContextSession(d, PromptMeta{FreshContext: true}, 99)
+
+	if id != "fresh-99" {
+		t.Fatalf("expected 'fresh-99', got %q", id)
+	}
+	if len(d.recordedSessionChanges) != 1 {
+		t.Fatalf("expected 1 pill, got %d", len(d.recordedSessionChanges))
+	}
+	if got := d.recordedSessionChangeSeqs[0]; got != 99 {
+		t.Fatalf("expected pill seq=99 (reserved upstream), got %d", got)
+	}
+	if sc := d.recordedSessionChanges[0]; sc.Kind != "context_cleared" || sc.Value != "new_session" {
+		t.Fatalf("unexpected pill: %+v", sc)
+	}
+}
+
+// mitto-c36: when pillSeq==0 (test callers not exercising seq ordering), the
+// seq-less pdRecordSessionChange path is used and seq is captured as 0 in the fake.
+func TestPromptDispatcher_CreateFreshContextSession_ZeroPillSeq_FallsBackToSeqless(t *testing.T) {
+	p := promptDispatcher{}
+	d := newFakePromptDeps()
+	d.contextFlushCommand = "/clear"
+
+	_ = p.createFreshContextSession(d, PromptMeta{FreshContext: true}, 0)
+
+	if len(d.recordedSessionChanges) != 1 {
+		t.Fatalf("expected 1 pill, got %d", len(d.recordedSessionChanges))
+	}
+	if got := d.recordedSessionChangeSeqs[0]; got != 0 {
+		t.Fatalf("expected pill seq=0 (seq-less fallback), got %d", got)
 	}
 }
 

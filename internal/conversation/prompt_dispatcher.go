@@ -111,6 +111,11 @@ type promptDeps interface {
 	// pdRecordSessionChange assigns a seq, persists a session-change timeline
 	// event via the recorder, and notifies observers. Used for the model-override pill.
 	pdRecordSessionChange(kind, value, previousValue string)
+	// pdRecordSessionChangeWithSeq (mitto-c36) is the seq-aware sibling used to
+	// emit the "context_cleared" pill with a seq reserved upstream in PromptWithMeta
+	// BEFORE the user-prompt seq, so the pill orders before the user prompt in the
+	// persisted transcript.
+	pdRecordSessionChangeWithSeq(seq int64, kind, value, previousValue string)
 
 	// Per-conversation prompt-argument cache (mitto-pchx.3): resolver returns the prompt's
 	// declared parameter list (with optional Cache config); Get/Set bridge to the in-memory store.
@@ -782,9 +787,23 @@ func runHandshakeWithWatchdog(d promptDeps, deadline time.Duration) error {
 // When no flush command is configured, falls back to the original NewSession path
 // (direct-conn only, gated by pdHasACPConn). Returns the new session ID on success,
 // or "" on failure or when FreshContext is not requested.
-func (p promptDispatcher) createFreshContextSession(d promptDeps, meta PromptMeta) string {
+//
+// pillSeq (mitto-c36) is a seq reserved upstream in PromptWithMeta BEFORE the
+// user-prompt seq is allocated. When > 0, the "context_cleared" pill is recorded
+// with this reserved seq so it orders before the user prompt in the persisted
+// transcript. When 0 (never in the production path, only in tests that don't care),
+// falls back to the plain pdRecordSessionChange which allocates its own seq.
+func (p promptDispatcher) createFreshContextSession(d promptDeps, meta PromptMeta, pillSeq int64) string {
 	if !meta.FreshContext {
 		return ""
+	}
+
+	recordPill := func(value string) {
+		if pillSeq > 0 {
+			d.pdRecordSessionChangeWithSeq(pillSeq, "context_cleared", value, "")
+			return
+		}
+		d.pdRecordSessionChange("context_cleared", value, "")
 	}
 
 	// Prefer in-place flush when the ACP server has a flush command configured.
@@ -798,7 +817,7 @@ func (p promptDispatcher) createFreshContextSession(d promptDeps, meta PromptMet
 					"session_id", d.pdSessionID())
 			}
 			// Surface the context clear in the conversation timeline (mitto-so19).
-			d.pdRecordSessionChange("context_cleared", "flush", "")
+			recordPill("flush")
 		} else {
 			if l := d.pdLogger(); l != nil {
 				l.Warn("In-place context flush failed, continuing with main prompt",
@@ -828,7 +847,7 @@ func (p promptDispatcher) createFreshContextSession(d promptDeps, meta PromptMet
 				"session_id", d.pdSessionID())
 		}
 		// Surface the context clear in the conversation timeline (mitto-so19).
-		d.pdRecordSessionChange("context_cleared", "new_session", "")
+		recordPill("new_session")
 		return sessID
 	}
 	if l := d.pdLogger(); l != nil {

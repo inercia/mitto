@@ -280,7 +280,18 @@ func (bs *BackgroundSession) cmRecordSessionChange(kind, value, previousValue st
 	if bs.recorder == nil {
 		return
 	}
-	seq := bs.getNextSeq()
+	bs.cmRecordSessionChangeWithSeq(bs.getNextSeq(), kind, value, previousValue)
+}
+
+// cmRecordSessionChangeWithSeq is the seq-aware variant of cmRecordSessionChange
+// (mitto-c36). It persists a session-change timeline event using the caller-supplied
+// seq (obtained from getNextSeq() upstream) and notifies observers with the same seq.
+// Used to pre-reserve a "context_cleared" pill seq BEFORE the user-prompt seq so the
+// flush pill orders before the user prompt in the persisted transcript.
+func (bs *BackgroundSession) cmRecordSessionChangeWithSeq(seq int64, kind, value, previousValue string) {
+	if bs.recorder == nil {
+		return
+	}
 	data := session.SessionChangeData{Kind: kind, Value: value, PreviousValue: previousValue}
 	if err := bs.recorder.RecordSessionChangeWithSeq(seq, data); err != nil {
 		if bs.logger != nil {
