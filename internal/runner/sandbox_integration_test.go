@@ -4,7 +4,6 @@ package runner
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -608,104 +607,14 @@ func TestSandboxExec_SandboxOnlyDenyReadDownloads(t *testing.T) {
 	}
 }
 
-// TestSandboxExec_SandboxOnlyDenyWriteDownloads verifies that sandbox-exec
-// blocks writes to ~/Downloads, a path whose deny is enforced by the
-// sandbox profile alone (macOS only).
-//
-// This test isolates sandbox-exec enforcement from OS/TCC permissions.
-// The pre-check writes and removes a probe file in ~/Downloads outside
-// the sandbox: if that probe succeeds, the OS is proven to permit the
-// write. After the sandboxed write attempt, the target file must not
-// exist on disk — since the OS would allow it, its absence can only be
-// attributed to sandbox-exec. This is strictly stronger than the /etc
-// write test (which only proves the runner propagates the pipe error).
-//
-// See sandbox_profile.tpl's deny regex for
-// /Users/*/(Documents|Desktop|Downloads|Pictures|Movies|Music) and
-// mitto-6yi.1 for the rationale.
-func TestSandboxExec_SandboxOnlyDenyWriteDownloads(t *testing.T) {
-	if runtime.GOOS != "darwin" {
-		t.Skip("sandbox-exec is only available on macOS")
-	}
-	if _, err := exec.LookPath("sandbox-exec"); err != nil {
-		t.Skip("sandbox-exec not found in PATH")
-	}
-
-	home, err := os.UserHomeDir()
-	if err != nil {
-		t.Fatalf("os.UserHomeDir: %v", err)
-	}
-	dl := filepath.Join(home, "Downloads")
-	if _, err := os.Stat(dl); err != nil {
-		t.Skipf("~/Downloads not accessible for outside-sandbox setup (%v); cannot verify sandbox-only write-deny", err)
-	}
-
-	probePath := filepath.Join(dl, fmt.Sprintf("mitto-sandbox-only-write-probe-%d.txt", os.Getpid()))
-	if err := os.WriteFile(probePath, []byte("probe\n"), 0o644); err != nil {
-		t.Skipf("cannot write probe file in ~/Downloads (likely TCC-restricted for this test host): %v", err)
-	}
-	os.Remove(probePath)
-
-	writeTarget := filepath.Join(dl, fmt.Sprintf("mitto-sandbox-only-write-%d.txt", os.Getpid()))
-	os.Remove(writeTarget)
-	defer os.Remove(writeTarget)
-
-	allowNetworking := true
-	runnerConfigs := map[string]*config.WorkspaceRunnerConfig{
-		"exec": {
-			Type: "sandbox-exec",
-			Restrictions: &config.RunnerRestrictions{
-				AllowNetworking:   &allowNetworking,
-				AllowReadFolders:  []string{"/tmp"},
-				AllowWriteFolders: []string{"/tmp"},
-			},
-		},
-	}
-
-	r, err := NewRunner(nil, nil, runnerConfigs, "/tmp", nil)
-	if err != nil {
-		t.Fatalf("NewRunner failed: %v", err)
-	}
-	if r.Type() != "sandbox-exec" {
-		t.Fatalf("expected sandbox-exec, got %q", r.Type())
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	cmdStr := fmt.Sprintf("echo hello > %s", writeTarget)
-	stdin, stdout, stderr, wait, err := r.RunWithPipes(ctx, "sh", []string{"-c", cmdStr}, nil)
-	if err != nil {
-		t.Fatalf("RunWithPipes failed: %v", err)
-	}
-	stdin.Close()
-
-	stdoutBytes, _ := io.ReadAll(stdout)
-	stderrBytes, _ := io.ReadAll(stderr)
-	waitErr := wait()
-
-	t.Logf("target: %s", writeTarget)
-	t.Logf("stdout: %q", string(stdoutBytes))
-	t.Logf("stderr: %q", string(stderrBytes))
-	t.Logf("wait err: %v", waitErr)
-
-	stderrLower := strings.ToLower(string(stderrBytes))
-	permissionSignal := strings.Contains(stderrLower, "permission denied") ||
-		strings.Contains(stderrLower, "operation not permitted") ||
-		strings.Contains(stderrLower, "not permitted")
-
-	_, statErr := os.Stat(writeTarget)
-	fileExists := statErr == nil
-	fileMissing := errors.Is(statErr, os.ErrNotExist)
-
-	if waitErr == nil && !permissionSignal {
-		t.Errorf("expected sandbox write of %q to fail (waitErr != nil OR permission signal in stderr), got stderr=%q err=nil",
-			writeTarget, string(stderrBytes))
-	}
-	if fileExists {
-		t.Errorf("expected sandbox to prevent creation of %q outside the sandbox, but the file exists", writeTarget)
-	}
-	if !fileMissing && !fileExists {
-		t.Logf("stat(%q) returned unexpected error: %v", writeTarget, statErr)
-	}
-}
+// NOTE: A symmetric TestSandboxExec_SandboxOnlyDenyWriteDownloads was
+// intentionally NOT added. The go-restricted-runner v0.2.0 default profile
+// only denies file-read-data on the /Users/*/(Documents|Desktop|Downloads
+// |Pictures|Movies|Music) regex; there is no matching file-write* deny for
+// user folders. Under (allow default), sandboxed writes to ~/Downloads
+// actually succeed on disk, so a "sandbox is the sole write-enforcer" test
+// cannot be constructed against ~/Downloads with the current profile — the
+// only sandbox write-denies target system paths (/etc, /bin, /Library,
+// etc.) which are ALSO OS-perm-denied for regular users, so they cannot
+// isolate sandbox enforcement either. See sandbox_profile.tpl and
+// mitto-6yi.1 comments for the plan-time analysis and this correction.
