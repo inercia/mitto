@@ -10,6 +10,10 @@ parameters:
     type: text
     required: false
     description: 'Optional PR to review — a number (e.g. "123"), a full URL, or a branch name. If omitted, lists open PRs where your review has been requested and lets you pick one.'
+  - name: RepoDir
+    type: text
+    required: false
+    description: 'Optional absolute path to the local checkout of the target repository. When set, the review runs against this directory (all git and worktree commands are scoped to it). When omitted, the current working directory is used.'
 description: Review a pull request you were asked to review, from the local checkout — inspect the PR safely, follow repo conventions, and produce editable, approvable comments
 group: GitHub
 backgroundColor: '#BBDEFB'
@@ -27,6 +31,14 @@ prompt: |
   ## Session Context
 
   Your session ID is `{{ .Session.ID }}` — use this as `self_id` for all `mitto_*` MCP tool calls.
+  {{- if .Args.RepoDir }}
+
+  **Target repository directory:** `{{ .Args.RepoDir }}` — every `git`, `gh`, and
+  file-inspection command in this prompt must be scoped to that directory. Use
+  `git -C "{{ .Args.RepoDir }}" …` and `gh -R <owner>/<repo> …` (or `cd` into it
+  once at the start). Do **not** run these commands against the current working
+  directory.
+  {{- end }}
 
   ## Ground rules
 

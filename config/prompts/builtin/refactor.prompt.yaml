@@ -5,8 +5,27 @@ description: Propose refactoring improvements for better code quality
 group: Code Quality
 backgroundColor: '#C8E6C9'
 prompt: |
-  Read the code thoroughly: current structure, callers, dependents. Read multiple
-  files in parallel. Do not speculate about code you haven't opened.
+  {{- if .Session.HasMessages }}
+  Focus on the code we have been discussing or modifying in this conversation.
+  Read it thoroughly — current structure, callers, dependents — reading
+  multiple files in parallel. Do not speculate about code you haven't opened.
+  {{- else }}
+  This is the first message in this conversation, so there is no "code we
+  discussed" already in context. Figure out what to refactor by inspecting
+  the current repository state:
+
+  1. Run `git status` and `git diff` to see uncommitted changes — those are
+     the most likely refactor target.
+  2. If there are no uncommitted changes, run `git log --oneline -20` and
+     inspect the most recent commits (`git show <sha>`) to find recent code
+     worth refactoring.
+  3. If it is still unclear, ask the user which file, module, or area they
+     want refactored before continuing.
+
+  Read the target code thoroughly — current structure, callers, dependents —
+  reading multiple files in parallel. Do not speculate about code you haven't
+  opened.
+  {{- end }}
 
   Analyze and propose a prioritized list of refactoring improvements.
   Propose a plan and wait for approval.

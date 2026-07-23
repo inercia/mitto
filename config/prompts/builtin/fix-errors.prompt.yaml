@@ -7,10 +7,23 @@ backgroundColor: '#FFE0B2'
 tags:
 - loop
 prompt: |
-  Read relevant source files to understand code context around each error.
-  Do not speculate about code you haven't opened.
+  {{- if .Session.HasMessages }}
+  Analyze this conversation so far and think about the errors we have been
+  finding. Look for patterns: recurring failure modes, a shared root cause
+  across multiple errors, or a fix that regressed something we already
+  addressed. Read relevant source files to confirm the current state of the
+  code — do not speculate about code you haven't opened.
 
-  Analyze and fix the errors shown.
+  Then fix the outstanding errors identified from the conversation history.
+  {{- else }}
+  This is the first message in this conversation, so there is no error
+  output already in context. Run the project's tests (and/or build) to
+  surface the current errors, then read the relevant source files to
+  understand code context around each error. Do not speculate about code
+  you haven't opened.
+
+  Then analyze and fix the errors that showed up.
+  {{- end }}
 
   Your session ID is `{{ .Session.ID }}` — use as `self_id` for all `mitto_*` MCP tool calls.
 

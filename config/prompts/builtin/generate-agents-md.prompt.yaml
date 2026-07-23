@@ -4,7 +4,7 @@ menus: prompts, !promptsLoop
 description: Analyze project and generate an AGENTS.md file for AI coding agents
 group: Agents & Mitto
 backgroundColor: '#B3E5FC'
-enabledWhen: '!Session.IsLoopConversation'
+enabledWhen: '!Session.IsLoopConversation && !FileExists("AGENTS.md")'
 preferredModels:
   - modelTag: Coding
 target:

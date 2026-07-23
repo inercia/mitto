@@ -331,12 +331,53 @@ prompt: |
   - matches any non-archived conversation's `beads_issue` in `{{ .Children.MCPText }}`
     — an active child (or user-driven session) is already working on it; do not
     double-spawn or step on a human's parallel work, OR
+  - **appears to have been fixed outside the beads workflow** (see "Already-landed
+    fix detection" below), OR
   - has a `dependency_type: parent-child` dependency whose parent bead was **closed
     by THIS outer run's Step 2P** (recently-closed parent — mitto-fko). Track the
     set of bead IDs this pass has closed so far and drop any candidate whose
     parent-child parent is in **that pass-local set**. Parents closed in earlier
     runs or by anyone else do NOT trigger this exclusion; only parents this pass
     just closed do (consult `dependencies` via `bd show <id> --json`).
+
+  **Already-landed fix detection.** Before adding a bead to the eligible set, do a
+  fast local commit scan to avoid spawning a driver on work that a human already
+  landed outside the beads workflow (typical when the human noticed and fixed the
+  bug directly, forgetting the `(refs <id>)` trace footer). For each candidate bug,
+  run one grep against commits made since the bead's `created_at`:
+
+  ```bash
+  # Fast path: bd-linked commits (present when the human remembered the footer).
+  bd show <id> --json | jq -r '.[0].commits[]?.hash' | head -3
+  # Fallback: subject-line similarity on recent unlinked commits.
+  git log --since=<bead.created_at> --oneline --format='%h %s' \
+    | grep -iE '<2-4 distinctive keywords from bead title, joined by |>' | head -5
+  ```
+
+  If either query returns any commit whose diff plausibly resolves the bead
+  (matches the file surface named in the bead description, or the subject-line
+  keywords are distinctive enough to be unambiguous — e.g. `beads/migrate`,
+  `TimeoutHandler`, `503 after 60s` for a bead titled "POST /api/beads/migrate
+  503 after 60s — outer TimeoutHandler ..."), **exclude the bead from this pass
+  AND post a one-shot repair comment**:
+
+  ```bash
+  bd comment <id> "Orchestrator: fix appears to have landed at <hash> ('<subject>')
+  outside the beads workflow (commit lacks '(refs <id>)' footer, so bd auto-link
+  did not fire). Adding \`researched\`, \`reproduced\`, \`fixed\` labels so the
+  next pass's Step 2P close-terminal sweep closes the bead. If this is incorrect
+  (wrong commit, or the fix is incomplete), remove the labels and comment to
+  re-open the workflow."
+  bd update <id> --add-label researched --add-label reproduced --add-label fixed
+  ```
+
+  This is a self-healing branch: the same pass's Step 2P (or the next pass's,
+  depending on ordering) will observe the terminal `fixed` label and close the
+  bead — no driver spawn needed. If the fix commit was NOT actually correct, the
+  human undoes the labels and the next pass re-enumerates normally. Keep the
+  keyword-similarity check **narrow** — better to over-spawn a driver (which will
+  self-verify and terminate quickly if the fix is already in place) than to
+  incorrectly close a bead whose "similar" commit was actually unrelated.
 
   Order survivors by declared priority (`critical → high → medium → low`), then by
   bead ID ascending.
@@ -350,8 +391,12 @@ prompt: |
   dispatch features.
   {{- else -}}
   Same shape as 2B with terminal label `verified` and the same exclusions
-  (`in_progress`, `needs-human`, existing child match, parent-child recently-closed
-  parent). The §2B **eligibility rule applies identically here**: a bead's
+  (`in_progress`, `needs-human`, existing child match, already-landed fix
+  detection, parent-child recently-closed parent). For the "already-landed fix
+  detection" branch, use the same commit-scan procedure documented in 2B, and
+  when the terminal-labels self-heal fires here, add `planned`, `implemented`,
+  `tested`, `verified` (the §C terminal chain) instead of the §B chain.
+  The §2B **eligibility rule applies identically here**: a bead's
   own `status` and labels decide eligibility; the parent epic's status is
   **irrelevant** (process open children of closed epics normally); the
   "recently-closed parent" exclusion is narrowly scoped to parents THIS
