@@ -3674,6 +3674,10 @@ function App() {
                       modelProfiles=${modelProfiles}
                       contextUsage=${sessionInfo?.context_usage ?? null}
                       tokenUsage=${sessionInfo?.usage ?? null}
+                      flushCommand=${sessionInfo?.context_flush_command || ""}
+                      onFlushContext=${activeSessionId
+                        ? () => handleFlushContext(activeSession)
+                        : undefined}
                     />
                   </div>
                 </div>

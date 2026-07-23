@@ -27,7 +27,7 @@ import { useResizeHandle } from "../hooks/useResizeHandle.js";
 import { SlashCommandPicker } from "./SlashCommandPicker.js";
 import { LoopFrequencyPanel } from "./LoopFrequencyPanel.js";
 import { SavePromptDialog } from "./SavePromptDialog.js";
-import { GripIcon, SettingsIcon } from "./Icons.js";
+import { BroomIcon, GripIcon, SettingsIcon } from "./Icons.js";
 import { ConfigOptionSelect } from "./ConfigOptionSelect.js";
 import { PromptsMenu } from "./PromptsMenu.js";
 import {
@@ -211,6 +211,12 @@ export function ChatInput({
   // Whether the active workspace has beads (`.beads` + `bd`). Gates the "On
   // tasks" loop trigger tab in LoopFrequencyPanel (mitto-oja.4).
   hasBeadsWorkspace = false,
+  // Per-ACP "Flush context" command (e.g. "/clear"). When non-empty AND
+  // onFlushContext is provided, the composer toolbar renders a first-class
+  // broom button next to Clear-message; hidden otherwise so ACPs without a
+  // flush command keep an unchanged composer layout (mitto-c23).
+  flushCommand = "",
+  onFlushContext,
 }) {
   // Use the draft from parent state instead of local state
   const text = draft;
@@ -3101,6 +3107,31 @@ ${activeUIPrompt.text || ""}</textarea
                     />
                   </svg>
                 </button>
+
+                <!-- Flush Context Button (mitto-c23): first-class surface for
+                     the per-ACP context-flush command. Same code path as the
+                     "..." menu's Flush item (kept as fallback) and the header
+                     toolbar's Flush button. Hidden entirely when the ACP does
+                     not advertise a flush command, matching
+                     useConversationMenu.js so the composer layout stays
+                     unchanged on ACPs without one. Not gated on isStreaming
+                     (matches the menu item) or on text.trim (flushing the
+                     agent's context is independent of composer content). -->
+                ${flushCommand &&
+                onFlushContext &&
+                html`
+                  <button
+                    type="button"
+                    onClick=${() => onFlushContext()}
+                    onMouseDown=${(e) => e.preventDefault()}
+                    disabled=${isFullyDisabled || isReadOnly || !acpReady}
+                    class="chat-input-action tooltip tooltip-top"
+                    data-tip=${`Clear the agent's context (${flushCommand})`}
+                    aria-label="Clear the agent's context"
+                  >
+                    <${BroomIcon} className="w-4 h-4" />
+                  </button>
+                `}
               </div>
 
               <!-- Center: Config selectors and context usage (shown when either is available) -->
