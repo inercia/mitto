@@ -109,13 +109,14 @@ func (s *SQLiteStore) UpsertDeltas(ctx context.Context, deltas []Delta) error {
 		metric    string
 		sessionID string
 		workspace string
+		model     string
 	}
 	dedup := make(map[key]Delta, len(deltas))
 	for _, d := range deltas {
 		if d.Value == 0 {
 			continue
 		}
-		k := key{d.TSBucket.UTC().Unix(), d.Metric, d.SessionID, d.Workspace}
+		k := key{d.TSBucket.UTC().Unix(), d.Metric, d.SessionID, d.Workspace, d.Model}
 		dedup[k] = d
 	}
 	if len(dedup) == 0 {
@@ -129,9 +130,9 @@ func (s *SQLiteStore) UpsertDeltas(ctx context.Context, deltas []Delta) error {
 	defer func() { _ = tx.Rollback() }()
 
 	const q = `INSERT INTO stats_events
-		(ts_bucket, metric, session_id, workspace, working_dir, acp_server, value)
-		VALUES (?, ?, ?, ?, '', '', ?)
-		ON CONFLICT(ts_bucket, metric, session_id, workspace) DO UPDATE SET
+		(ts_bucket, metric, session_id, workspace, working_dir, acp_server, value, model)
+		VALUES (?, ?, ?, ?, '', '', ?, ?)
+		ON CONFLICT(ts_bucket, metric, session_id, workspace, model) DO UPDATE SET
 			value = excluded.value`
 	stmt, err := tx.PrepareContext(ctx, q)
 	if err != nil {
@@ -141,7 +142,7 @@ func (s *SQLiteStore) UpsertDeltas(ctx context.Context, deltas []Delta) error {
 
 	for k, d := range dedup {
 		if _, err := stmt.ExecContext(ctx,
-			k.ts, k.metric, k.sessionID, k.workspace, d.Value,
+			k.ts, k.metric, k.sessionID, k.workspace, d.Value, k.model,
 		); err != nil {
 			return fmt.Errorf("stats: upsert delta: %w", err)
 		}
@@ -172,13 +173,14 @@ func (s *SQLiteStore) UpsertDeltasWithCursor(ctx context.Context, deltas []Delta
 		metric    string
 		sessionID string
 		workspace string
+		model     string
 	}
 	dedup := make(map[key]Delta, len(deltas))
 	for _, d := range deltas {
 		if d.Value == 0 {
 			continue
 		}
-		k := key{d.TSBucket.UTC().Unix(), d.Metric, d.SessionID, d.Workspace}
+		k := key{d.TSBucket.UTC().Unix(), d.Metric, d.SessionID, d.Workspace, d.Model}
 		dedup[k] = d
 	}
 
@@ -203,9 +205,9 @@ func (s *SQLiteStore) UpsertDeltasWithCursor(ctx context.Context, deltas []Delta
 
 	if len(dedup) > 0 {
 		const q = `INSERT INTO stats_events
-			(ts_bucket, metric, session_id, workspace, working_dir, acp_server, value)
-			VALUES (?, ?, ?, ?, '', '', ?)
-			ON CONFLICT(ts_bucket, metric, session_id, workspace) DO UPDATE SET
+			(ts_bucket, metric, session_id, workspace, working_dir, acp_server, value, model)
+			VALUES (?, ?, ?, ?, '', '', ?, ?)
+			ON CONFLICT(ts_bucket, metric, session_id, workspace, model) DO UPDATE SET
 				value = excluded.value`
 		stmt, err := tx.PrepareContext(ctx, q)
 		if err != nil {
@@ -213,7 +215,7 @@ func (s *SQLiteStore) UpsertDeltasWithCursor(ctx context.Context, deltas []Delta
 		}
 		for k, d := range dedup {
 			if _, err := stmt.ExecContext(ctx,
-				k.ts, k.metric, k.sessionID, k.workspace, d.Value,
+				k.ts, k.metric, k.sessionID, k.workspace, d.Value, k.model,
 			); err != nil {
 				_ = stmt.Close()
 				return fmt.Errorf("stats: upsert delta: %w", err)

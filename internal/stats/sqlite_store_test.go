@@ -104,8 +104,8 @@ func TestSQLiteStore_Migrations_SeedsMetaOnFirstOpen(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if got["schema_version"] != "1" {
-		t.Errorf("schema_version = %q, want %q", got["schema_version"], "1")
+	if got["schema_version"] != "2" {
+		t.Errorf("schema_version = %q, want %q", got["schema_version"], "2")
 	}
 	if got["estimator_version"] != strconv.Itoa(EstimatorVersion) {
 		t.Errorf("estimator_version = %q, want %q", got["estimator_version"], strconv.Itoa(EstimatorVersion))

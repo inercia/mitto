@@ -63,13 +63,15 @@ func (o AggregatorOptions) withDefaults() AggregatorOptions {
 	return o
 }
 
-// bucketKey identifies the tuple (session, workspace, bucket, metric) inside
-// the aggregator's in-memory buffer.
+// bucketKey identifies the tuple (session, workspace, bucket, metric, model)
+// inside the aggregator's in-memory buffer. Model is empty for metrics that
+// are not model-attributable so those buckets remain merged across models.
 type bucketKey struct {
 	sessionID string
 	workspace string
 	bucket    int64 // UTC unix seconds at the top of the hour
 	metric    string
+	model     string
 }
 
 // sessionAccum tracks the per-session cursor advance that must be committed
@@ -78,8 +80,15 @@ type sessionAccum struct {
 	sc           SessionContext
 	lastSeq      int64
 	lastAt       time.Time
-	sawUserAgent bool // was there any agent activity since the last user prompt (turn heuristic)
+	sawUserAgent bool   // was there any agent activity since the last user prompt (turn heuristic)
+	currentModel string // active model attribution for token deltas
 }
+
+// sessionChangeKindModel is the SessionChangeData.Kind value that signals a
+// model switch. Canonical source: internal/conversation.ConfigOptionCategoryModel
+// ("model"). Duplicated here as a string literal to avoid a reverse import
+// from the stats package into conversation.
+const sessionChangeKindModel = "model"
 
 // flushReq is a synchronous flush request from an external caller. The
 // background goroutine performs the flush and closes reply to unblock the
@@ -249,6 +258,7 @@ func (a *aggregator) flushOwned(ctx context.Context) error {
 			Metric:    k.metric,
 			SessionID: k.sessionID,
 			Workspace: k.workspace,
+			Model:     k.model,
 			Value:     v,
 		})
 	}
@@ -290,7 +300,11 @@ func (a *aggregator) foldOwned(it aggregatorItem) {
 	bucket := it.ev.Timestamp.UTC().Truncate(time.Hour).Unix()
 	acc := a.sessions[it.sc.SessionID]
 	if acc == nil {
-		acc = &sessionAccum{sc: it.sc}
+		// Seed currentModel from the session's baseline so token deltas that
+		// arrive before any session_change event are still attributed. A live
+		// session_change(kind=model) — either from disk during backfill or
+		// from the live SessionChangeObserver — overrides this at any time.
+		acc = &sessionAccum{sc: it.sc, currentModel: it.sc.BaselineModel}
 		a.sessions[it.sc.SessionID] = acc
 	}
 	if it.ev.Seq > acc.lastSeq {
@@ -301,6 +315,8 @@ func (a *aggregator) foldOwned(it aggregatorItem) {
 	}
 	a.events++
 
+	// inc increments a metric that is NOT model-attributable — bucketKey.model
+	// stays empty so rows for these metrics collapse across models.
 	inc := func(metric string, n int64) {
 		if n <= 0 {
 			return
@@ -314,6 +330,23 @@ func (a *aggregator) foldOwned(it aggregatorItem) {
 		a.buckets[k] += n
 	}
 
+	// incModel increments a model-attributable metric using the accumulator's
+	// currentModel. Empty currentModel is fine — it maps to the "unknown"
+	// bucket rather than being dropped.
+	incModel := func(metric string, n int64) {
+		if n <= 0 {
+			return
+		}
+		k := bucketKey{
+			sessionID: it.sc.SessionID,
+			workspace: it.sc.Workspace,
+			bucket:    bucket,
+			metric:    metric,
+			model:     acc.currentModel,
+		}
+		a.buckets[k] += n
+	}
+
 	switch it.ev.Type {
 	case session.EventTypeUserPrompt:
 		inc(MetricPrompts, 1)
@@ -323,25 +356,25 @@ func (a *aggregator) foldOwned(it aggregatorItem) {
 			acc.sawUserAgent = false
 		}
 		if d, ok := it.ev.Data.(session.UserPromptData); ok {
-			inc(MetricInputTokensEst, EstimateTokensText(d.Message))
+			incModel(MetricInputTokensEst, EstimateTokensText(d.Message))
 			for _, f := range d.Files {
 				if a.opts.FileSizeResolver != nil {
-					inc(MetricInputTokensEst, EstimateTokensFile(a.opts.FileSizeResolver(it.sc.SessionID, f.ID)))
+					incModel(MetricInputTokensEst, EstimateTokensFile(a.opts.FileSizeResolver(it.sc.SessionID, f.ID)))
 				} else {
-					inc(MetricInputTokensEst, EstimateTokensFileRef(f))
+					incModel(MetricInputTokensEst, EstimateTokensFileRef(f))
 				}
 			}
-			inc(MetricInputTokensEst, int64(len(d.Images))*ImageTokenCost)
+			incModel(MetricInputTokensEst, int64(len(d.Images))*ImageTokenCost)
 		}
 	case session.EventTypeAgentMessage:
 		acc.sawUserAgent = true
 		if d, ok := it.ev.Data.(session.AgentMessageData); ok {
-			inc(MetricOutputTokensEst, EstimateTokensText(d.Text))
+			incModel(MetricOutputTokensEst, EstimateTokensText(d.Text))
 		}
 	case session.EventTypeAgentThought:
 		acc.sawUserAgent = true
 		if d, ok := it.ev.Data.(session.AgentThoughtData); ok {
-			inc(MetricOutputTokensEst, EstimateTokensText(d.Text))
+			incModel(MetricOutputTokensEst, EstimateTokensText(d.Text))
 		}
 	case session.EventTypeToolCall:
 		acc.sawUserAgent = true
@@ -353,6 +386,13 @@ func (a *aggregator) foldOwned(it aggregatorItem) {
 		inc(MetricPermissionsPrompted, 1)
 	case session.EventTypeError:
 		inc(MetricErrors, 1)
+	case session.EventTypeSessionChange:
+		// State-only: adjust currentModel so future token deltas land in the
+		// new model's bucket. No delta is emitted here — session_change is a
+		// timeline marker, not a counter event.
+		if d, ok := it.ev.Data.(session.SessionChangeData); ok && d.Kind == sessionChangeKindModel {
+			acc.currentModel = d.Value
+		}
 	}
 }
 

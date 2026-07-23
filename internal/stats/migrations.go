@@ -64,6 +64,45 @@ var migrations = []migration{
 			`INSERT OR IGNORE INTO stats_meta(key, value) VALUES ('last_full_backfill_at', '')`,
 		},
 	},
+	{
+		// v2: add a model dimension to stats_events so token deltas can be
+		// attributed to the ACP model active when the source event was
+		// recorded (parent epic mitto-5r5 phase 1). SQLite cannot ALTER TABLE
+		// ... ADD COLUMN into an existing PRIMARY KEY, so use the standard
+		// rebuild-and-rename dance. Pre-migration rows land with model=''
+		// which reads back as the "unknown provenance" bucket — no data loss.
+		version: 2,
+		stmts: []string{
+			`CREATE TABLE stats_events_new (
+				ts_bucket   INTEGER NOT NULL,
+				metric      TEXT NOT NULL,
+				session_id  TEXT NOT NULL,
+				workspace   TEXT NOT NULL,
+				working_dir TEXT NOT NULL DEFAULT '',
+				acp_server  TEXT NOT NULL DEFAULT '',
+				value       INTEGER NOT NULL DEFAULT 0,
+				model       TEXT NOT NULL DEFAULT '',
+				PRIMARY KEY (ts_bucket, metric, session_id, workspace, model)
+			) WITHOUT ROWID`,
+
+			`INSERT INTO stats_events_new
+				(ts_bucket, metric, session_id, workspace, working_dir, acp_server, value, model)
+			 SELECT ts_bucket, metric, session_id, workspace, working_dir, acp_server, value, ''
+			 FROM stats_events`,
+
+			// Old indexes are attached to the old table; drop before rename so
+			// the new indexes below take their canonical names.
+			`DROP INDEX IF EXISTS idx_stats_events_ts`,
+			`DROP INDEX IF EXISTS idx_stats_events_ws_ts`,
+
+			`DROP TABLE stats_events`,
+			`ALTER TABLE stats_events_new RENAME TO stats_events`,
+
+			// Recreate the two range-scan indexes on the renamed table.
+			`CREATE INDEX IF NOT EXISTS idx_stats_events_ts    ON stats_events(ts_bucket)`,
+			`CREATE INDEX IF NOT EXISTS idx_stats_events_ws_ts ON stats_events(workspace, ts_bucket)`,
+		},
+	},
 }
 
 // currentSchemaVersion reads the stats_meta.schema_version row. Returns 0 when

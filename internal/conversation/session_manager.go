@@ -343,10 +343,11 @@ func (sm *SessionManager) attachStatsObserver(bs *BackgroundSession) {
 		return
 	}
 	obs := newStatsObserver(agg, stats.SessionContext{
-		SessionID:  bs.GetSessionID(),
-		Workspace:  bs.GetWorkspaceUUID(),
-		WorkingDir: bs.GetWorkingDir(),
-		ACPServer:  bs.GetACPServer(),
+		SessionID:     bs.GetSessionID(),
+		Workspace:     bs.GetWorkspaceUUID(),
+		WorkingDir:    bs.GetWorkingDir(),
+		ACPServer:     bs.GetACPServer(),
+		BaselineModel: bs.GetBaselineModel(),
 	})
 	if obs == nil {
 		return

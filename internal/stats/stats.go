@@ -81,8 +81,9 @@ var (
 )
 
 // Delta is a single batched, per-bucket metric increment ready to be persisted
-// by Store.UpsertDeltas. The (TSBucket, Metric, SessionID, Workspace) tuple is
-// the row key; concurrent Deltas for the same key are summed on upsert.
+// by Store.UpsertDeltas. The (TSBucket, Metric, SessionID, Workspace, Model)
+// tuple is the row key; concurrent Deltas for the same key are summed on
+// upsert.
 type Delta struct {
 	// TSBucket is the start of the hourly bucket the delta belongs to (UTC).
 	TSBucket time.Time
@@ -92,6 +93,11 @@ type Delta struct {
 	SessionID string
 	// Workspace is the workspace UUID (empty for workspace-less sessions).
 	Workspace string
+	// Model is the ACP model attribution for this delta. Empty for metrics
+	// that are not model-attributable (prompts, tool_calls_total, mcp_calls,
+	// permissions_prompted, errors, agent_turns_completed), for pre-v2 rows,
+	// and for sessions without an advertised model.
+	Model string
 	// Value is the counter increment. Always non-negative in v1.
 	Value int64
 }
@@ -225,6 +231,12 @@ type SessionContext struct {
 	// ACPServer is the ACP server name for the session (same informational
 	// note as WorkingDir).
 	ACPServer string
+	// BaselineModel is the user's intended model for this session (untouched
+	// by per-prompt overrides). The aggregator seeds its per-session
+	// currentModel from this value; subsequent session_change(kind=model)
+	// events update it. Empty when no baseline has been set — token deltas
+	// then land with Model="" until an explicit model change fires.
+	BaselineModel string
 }
 
 // Aggregator turns a stream of session events (from the live SessionObserver

@@ -110,6 +110,14 @@ func (o *statsObserver) OnUserPrompt(seq int64, senderID, promptID, message stri
 // permission_prompted and error events are picked up by the stats.5 backfill
 // path from events.jsonl.
 
+// OnSessionChange forwards live session-change timeline events (currently
+// used for model switches) into the aggregator so its per-session accumulator
+// can retag subsequent token deltas to the new model. Mirrors what the
+// backfill path sees from events.jsonl.
+func (o *statsObserver) OnSessionChange(seq int64, data session.SessionChangeData) {
+	o.ingest(seq, session.EventTypeSessionChange, data)
+}
+
 func (o *statsObserver) OnToolUpdate(seq int64, id string, status *string)               {}
 func (o *statsObserver) OnPlan(seq int64, entries []PlanEntry)                           {}
 func (o *statsObserver) OnFileWrite(seq int64, path string, size int)                    {}
@@ -133,3 +141,9 @@ func (o *statsObserver) OnContextUsageUpdate(size, used int)                    
 // contract. Any drift in the interface will fail the build here rather than at
 // registration time.
 var _ SessionObserver = (*statsObserver)(nil)
+
+// Compile-time assertion that statsObserver also satisfies the optional
+// SessionChangeObserver sibling. cmRecordSessionChangeWithSeq type-asserts to
+// this interface at notify time, so drift here would silently skip live model
+// updates.
+var _ SessionChangeObserver = (*statsObserver)(nil)

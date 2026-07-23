@@ -992,9 +992,10 @@ func NewServer(config Config) (*Server, error) {
 	// own RLock).
 	resolver := func(m session.Metadata) stats.SessionContext {
 		sc := stats.SessionContext{
-			SessionID:  m.SessionID,
-			WorkingDir: m.WorkingDir,
-			ACPServer:  m.ACPServer,
+			SessionID:     m.SessionID,
+			WorkingDir:    m.WorkingDir,
+			ACPServer:     m.ACPServer,
+			BaselineModel: m.BaselineModel,
 		}
 		if ws := sessionMgr.GetWorkspaceByDirAndACP(m.WorkingDir, m.ACPServer); ws != nil {
 			sc.Workspace = ws.UUID

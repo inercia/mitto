@@ -218,6 +218,15 @@ func (bs *BackgroundSession) cmSetBaselineAndClearOverride(baseline string) {
 	bs.modelMu.Unlock()
 }
 
+// GetBaselineModel returns the user's intended model for this session
+// (untouched by per-prompt overrides). Empty when no baseline has been set.
+// Safe to call concurrently; snapshots the field under modelMu.
+func (bs *BackgroundSession) GetBaselineModel() string {
+	bs.modelMu.Lock()
+	defer bs.modelMu.Unlock()
+	return bs.baselineModel
+}
+
 func (bs *BackgroundSession) cmTakeBaselineIfOverride() (string, bool) {
 	bs.modelMu.Lock()
 	defer bs.modelMu.Unlock()
