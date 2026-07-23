@@ -24,10 +24,18 @@ prompt: |
   bug it describes and capture that reproduction as an **automated failing test**, then
   record your findings back on the bead. The goal is reproduction and evidence — **not**
   fixing the bug.
-  {{- else -}}
-  Reliably **reproduce** the bug under discussion and capture that reproduction as an
-  **automated failing test**, so the failure is provable now and, later, verifiably fixed.
+  {{- else if .Session.HasMessages -}}
+  Reliably **reproduce** the bug we have been discussing in this conversation and capture
+  that reproduction as an **automated failing test**, so the failure is provable now and,
+  later, verifiably fixed. Lean on what has already been established here — the symptoms,
+  the failing inputs, any suspected code paths — instead of re-deriving them from scratch.
   The goal is reproduction and evidence — **not** fixing the bug.
+  {{- else -}}
+  Reliably **reproduce** a bug and capture that reproduction as an **automated failing
+  test**, so the failure is provable now and, later, verifiably fixed. This is the first
+  message in this conversation, so there is no bug under discussion yet — Step 1 will
+  identify which bug to reproduce. The goal is reproduction and evidence — **not** fixing
+  the bug.
   {{- end }}
 
   ## Step 1 — Pin down the bug
@@ -44,14 +52,26 @@ prompt: |
 
   Extract from the bead (and any linked discussion) what was expected, what actually
   happens, and any steps, inputs, or environment already noted.
-  {{- else -}}
-  Determine exactly which bug to reproduce. **Default to the current conversation** — we
-  have most likely already been discussing a specific bug; re-read the relevant messages
-  and take that as the target.
+  {{- else if .Session.HasMessages -}}
+  Determine exactly which bug to reproduce from what has already been said in this
+  conversation. Re-read the relevant messages and take the bug under discussion as the
+  target — the symptoms, failing inputs, error messages, and any code paths already
+  named are your starting point; do not re-derive them.
 
-  If the bug is genuinely ambiguous or you cannot tell which one is meant, **ask** via
-  `mitto_ui_options(self_id: "{{ .Session.ID }}", allow_free_text: true)` rather
-  than guessing.
+  If the conversation has surfaced more than one candidate bug, or the intent is genuinely
+  ambiguous, **ask** via `mitto_ui_options(self_id: "{{ .Session.ID }}", allow_free_text: true)`
+  rather than guessing.
+  {{- else -}}
+  Determine which bug to reproduce. There is no prior conversation context, so pick up
+  the target from the repository or from the user:
+
+  1. If the user's message names a specific bug, symptom, error message, or file, use it.
+  2. Otherwise inspect the working state for a likely target: `git status`, `git diff`,
+     recent commits (`git log --oneline -20`), and any obvious failing tests / recent bug
+     reports in the tree.
+  3. If it is still unclear, **ask** via
+     `mitto_ui_options(self_id: "{{ .Session.ID }}", allow_free_text: true)` — do not
+     guess.
   {{- end }}
 
   State, in one or two lines:
