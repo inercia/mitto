@@ -1179,7 +1179,17 @@ func (bs *BackgroundSession) IsPrompting() bool {
 // name). The returned args map is a shallow copy so callers may inspect it
 // without holding promptMu; keys and values are strings (immutable).
 // Consumed by target.reuseCoalesce coalescing (mitto-djs1).
+//
+// Nil-receiver safe (mitto-djz): callers route this method through an interface
+// (bgSessionLike / mcpserver.BackgroundSession) after calling
+// SessionManager.GetSession, which returns a typed-nil *BackgroundSession for
+// a not-yet-loaded target. The Go interface-nil trap makes the wrapped
+// {type=*BackgroundSession, value=nil} pass `!= nil` guards at every caller,
+// so the guard must live at the method boundary itself.
 func (bs *BackgroundSession) ActivePromptDispatch() (name string, args map[string]string, ok bool) {
+	if bs == nil {
+		return "", nil, false
+	}
 	bs.promptMu.Lock()
 	defer bs.promptMu.Unlock()
 	if !bs.isPrompting {

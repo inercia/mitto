@@ -89,6 +89,29 @@ func TestPromptMatchesActiveOrQueued_NilInputs(t *testing.T) {
 	}
 }
 
+// TestPromptMatchesActiveOrQueued_TypedNilBackgroundSession pins the mitto-djz
+// nil-pointer panic. In production, HandleCreateSession.maybeCoalesce calls
+// SessionManager.GetSession(existingID) which returns a typed-nil
+// *BackgroundSession when the target conversation's metadata is in Store.List()
+// but its live BackgroundSession is not registered (cold-start /
+// archive-then-unarchive race). That typed-nil is passed to
+// PromptMatchesActiveOrQueued as its bgSessionLike parameter — the Go
+// interface-nil trap means the wrapped value {type=*BackgroundSession, value=nil}
+// is NOT == nil, so the `if bs != nil` guard at coalesce.go:52 passes and
+// bs.ActivePromptDispatch() runs on a nil receiver, derefing bs.promptMu.Lock()
+// at background_session.go:1183 → nil-pointer panic bubbling up as the
+// net/http.(*timeoutHandler) 500 seen in ~/Library/Logs/Mitto/mitto.log
+// (2026-07-23 18:21:19 / 18:23:43 / 18:23:47). This test must not panic and
+// must report no coalesce match for a not-yet-loaded target session.
+func TestPromptMatchesActiveOrQueued_TypedNilBackgroundSession(t *testing.T) {
+	q := session.NewQueue(t.TempDir())
+	var bs *BackgroundSession // typed-nil concrete pointer — interface wrap ≠ untyped nil
+	got := PromptMatchesActiveOrQueued(bs, q, "JIRA: sync tasks", nil)
+	if got {
+		t.Errorf("typed-nil *BackgroundSession must not coalesce; got true")
+	}
+}
+
 func TestPromptMatchesActiveOrQueued_ActiveDispatch(t *testing.T) {
 	q := session.NewQueue(t.TempDir())
 
