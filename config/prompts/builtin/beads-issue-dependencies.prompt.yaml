@@ -12,6 +12,9 @@ enabledWhen: CommandExists("bd") && DirExists(".beads") && Item.Status != "close
 target:
   reuseIssue: true
   reuseCoalesce: true
+preferredModels:
+  - modelTag: Cheap
+  - modelTag: Coding
 prompt: |
   ## Session Context
 

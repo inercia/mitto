@@ -15,6 +15,9 @@ target:
   title: 'Triage untriaged bugs'
   reuseTitle: true
   reuseCoalesce: true
+preferredModels:
+  - modelTag: Cheap
+  - modelTag: Coding
 prompt: |
   ## Session Context
 
