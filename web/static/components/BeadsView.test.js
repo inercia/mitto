@@ -1709,3 +1709,173 @@ describe("mitto-vc2m: SchemaSkewDialog migrate call must use secureFetch (CSRF)"
   });
 });
 
+
+
+// =============================================================================
+// mitto-vqf — renderIssueRow bgTone: tint whole row when a linked conversation
+// is prompting on the bead.
+// =============================================================================
+//
+// Mirrors the `bgTone` ternary inside renderIssueRow (BeadsView.js ~L2501–2507):
+// a 4-way branch over (isSelected × isStreamingIssue). BeadsView.js cannot be
+// imported under jsdom (reads window.preact at module load — same limitation
+// documented above), so this file mirrors the pure computation as a small
+// helper and additionally reads the JS/CSS source to guard against silent
+// drift between the mirror and the real code.
+//
+// If the branch structure in BeadsView.js changes, `computeBgTone` below and
+// the source-guard regexes must be updated to match.
+
+/**
+ * Mirrors the `bgTone` expression in renderIssueRow. Returns the same class
+ * string the component composes for the `list-row` element background.
+ */
+function computeBgTone(isSelected, isStreamingIssue) {
+  return isSelected
+    ? isStreamingIssue
+      ? "bg-mitto-surface-3/30 beads-row-streaming"
+      : "bg-mitto-surface-3/30"
+    : isStreamingIssue
+      ? "beads-row-streaming hover:bg-red-600"
+      : "bg-mitto-surface-3/20 hover:bg-red-600";
+}
+
+describe("renderIssueRow bgTone — 4-way branch over (isSelected × isStreamingIssue)", () => {
+  test("not-selected, not-streaming: base surface tint + hover-red", () => {
+    const tone = computeBgTone(false, false);
+    expect(tone).toBe("bg-mitto-surface-3/20 hover:bg-red-600");
+    expect(tone).not.toContain("beads-row-streaming");
+  });
+
+  test("not-selected, streaming: streaming class + hover-red (hover still reachable)", () => {
+    const tone = computeBgTone(false, true);
+    expect(tone).toContain("beads-row-streaming");
+    expect(tone).toContain("hover:bg-red-600");
+    // Base surface utility is intentionally dropped on streaming rows so the
+    // .beads-row-streaming CSS rule owns the background without competing
+    // with `bg-mitto-surface-3/20`.
+    expect(tone).not.toContain("bg-mitto-surface-3/20");
+  });
+
+  test("selected, not-streaming: selection surface, no streaming class, no hover-red", () => {
+    const tone = computeBgTone(true, false);
+    expect(tone).toBe("bg-mitto-surface-3/30");
+    expect(tone).not.toContain("beads-row-streaming");
+    expect(tone).not.toContain("hover:bg-red-600");
+  });
+
+  test("selected + streaming: selection surface AND streaming class combine", () => {
+    // Per plan: selected+streaming keeps the selection tint AND the blue
+    // streaming class so the two signals combine legibly (the selection
+    // accent border is applied separately via borderTone, not part of bgTone).
+    const tone = computeBgTone(true, true);
+    expect(tone).toContain("bg-mitto-surface-3/30");
+    expect(tone).toContain("beads-row-streaming");
+    // Selected rows never take hover-red (matches non-streaming selected).
+    expect(tone).not.toContain("hover:bg-red-600");
+  });
+
+  test("truthy isSelected values (object) behave like true (mirrors `selectedIssue && …`)", () => {
+    // In BeadsView.js, `isSelected` is `selectedIssue && selectedIssue.id === issue.id`
+    // — falsy when no selection, truthy (boolean true) when matched. Guard the
+    // helper against a truthy-but-non-boolean caller passing the raw expression.
+    const tone = computeBgTone({ id: "mitto-aaa" }, true);
+    expect(tone).toContain("bg-mitto-surface-3/30");
+    expect(tone).toContain("beads-row-streaming");
+  });
+
+  test("streaming class is present iff isStreamingIssue is true (both selected states)", () => {
+    for (const sel of [true, false]) {
+      expect(computeBgTone(sel, true)).toContain("beads-row-streaming");
+      expect(computeBgTone(sel, false)).not.toContain("beads-row-streaming");
+    }
+  });
+});
+
+describe("renderIssueRow bgTone — source guard (mitto-vqf)", () => {
+  // Read the real BeadsView.js/styles-v2.css from disk and assert the
+  // implementation still matches the mirror + spec, so a future refactor
+  // that drops the streaming branch or renames the class trips a test.
+  const here = dirname(fileURLToPath(import.meta.url));
+  const beadsViewSource = readFileSync(
+    resolve(here, "BeadsView.js"),
+    "utf8",
+  );
+  const stylesSource = readFileSync(
+    resolve(here, "..", "styles-v2.css"),
+    "utf8",
+  );
+
+  test("BeadsView.js still branches bgTone on isStreamingIssue", () => {
+    // The bgTone expression must still be a 4-way branch that includes the
+    // streaming class on both selected and non-selected paths.
+    expect(beadsViewSource).toMatch(/const bgTone = isSelected/);
+    // Both branches (selected+streaming and non-selected+streaming) must
+    // apply the shared semantic class.
+    const streamingBranchCount = (
+      beadsViewSource.match(/beads-row-streaming/g) || []
+    ).length;
+    expect(streamingBranchCount).toBeGreaterThanOrEqual(2);
+    // Non-selected streaming path keeps hover-red reachable.
+    expect(beadsViewSource).toContain(
+      '"beads-row-streaming hover:bg-red-600"',
+    );
+    // Selected+streaming path combines surface tint with the streaming class.
+    expect(beadsViewSource).toContain(
+      '"bg-mitto-surface-3/30 beads-row-streaming"',
+    );
+  });
+
+  test("styles-v2.css defines .beads-row-streaming in BOTH light and dark themes", () => {
+    // Per-theme rules are required so the tint reads correctly in both
+    // modes (spec: "must look good and stay readable in BOTH light and
+    // dark modes"). Use flexible whitespace so a future reformat does not
+    // trip these guards.
+    expect(stylesSource).toMatch(
+      /\.light\s+\.beads-row-streaming\s*\{[^}]*background:[^;}]+;?[^}]*\}/,
+    );
+    expect(stylesSource).toMatch(
+      /\.dark\s+\.beads-row-streaming\s*\{[^}]*background:[^;}]+;?[^}]*\}/,
+    );
+  });
+
+  test("streaming tint uses the in-progress blue family, not a new hue", () => {
+    // Spec: "Use a color from Mitto's existing palette … Do NOT introduce a
+    // new hue." The rule must reference blue-500 (rgb 59,130,246 — same
+    // family as the beadsInProgressPulse keyframe) rather than any other
+    // color name/token.
+    const lightMatch = stylesSource.match(
+      /\.light\s+\.beads-row-streaming\s*\{[^}]+\}/,
+    );
+    const darkMatch = stylesSource.match(
+      /\.dark\s+\.beads-row-streaming\s*\{[^}]+\}/,
+    );
+    expect(lightMatch).not.toBeNull();
+    expect(darkMatch).not.toBeNull();
+    expect(lightMatch[0]).toMatch(/rgba\(\s*59\s*,\s*130\s*,\s*246\s*,/);
+    expect(darkMatch[0]).toMatch(/rgba\(\s*59\s*,\s*130\s*,\s*246\s*,/);
+  });
+
+  test("hover-red rule is still defined earlier in the file with !important, so hover wins on streaming rows", () => {
+    // Spec regression guard: on a non-selected streaming row, hover-red
+    // must still be reachable. The hover-red rule sits earlier in the file
+    // and carries !important; higher specificity + !important beats the
+    // single-class .beads-row-streaming.
+    const hoverIdx = stylesSource.indexOf(".hover\\:bg-red-600:hover");
+    const streamingIdx = stylesSource.indexOf(".beads-row-streaming");
+    expect(hoverIdx).toBeGreaterThan(-1);
+    expect(streamingIdx).toBeGreaterThan(-1);
+    // Hover rule must be defined before the streaming rule (source order
+    // matters when specificity ties — but here specificity already favors
+    // the compound hover selector; this guard also protects the
+    // documented placement in the file).
+    expect(hoverIdx).toBeLessThan(streamingIdx);
+    // Both light and dark hover-red rules use !important.
+    expect(stylesSource).toMatch(
+      /\.light\s+\.hover\\:bg-red-600:hover[\s\S]*?!important/,
+    );
+    expect(stylesSource).toMatch(
+      /\.dark\s+\.hover\\:bg-red-600:hover[\s\S]*?!important/,
+    );
+  });
+});
