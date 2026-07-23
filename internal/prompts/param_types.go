@@ -101,6 +101,33 @@ func ValidatePromptParameters(menus string, params []PromptParameter) error {
 		if param.MultiLine && param.Type != "text" {
 			return fmt.Errorf("parameter %q: multiLine is only valid for type \"text\", not %q", param.Name, param.Type)
 		}
+		// options constrains a "text" parameter to a fixed enumeration rendered
+		// as a dropdown. It is only meaningful on type "text", mutually exclusive
+		// with multiLine, and must contain non-empty, unique values. When a
+		// default is declared it must be one of the listed options.
+		if len(param.Options) > 0 {
+			if param.Type != "text" {
+				return fmt.Errorf("parameter %q: options is only valid for type \"text\", not %q", param.Name, param.Type)
+			}
+			if param.MultiLine {
+				return fmt.Errorf("parameter %q: options and multiLine are mutually exclusive (dropdown vs. textarea)", param.Name)
+			}
+			seen := make(map[string]struct{}, len(param.Options))
+			for _, opt := range param.Options {
+				if opt == "" {
+					return fmt.Errorf("parameter %q: options must not contain empty strings", param.Name)
+				}
+				if _, dup := seen[opt]; dup {
+					return fmt.Errorf("parameter %q: options must not contain duplicate values (%q)", param.Name, opt)
+				}
+				seen[opt] = struct{}{}
+			}
+			if param.Default != "" {
+				if _, ok := seen[param.Default]; !ok {
+					return fmt.Errorf("parameter %q: default %q is not one of the declared options", param.Name, param.Default)
+				}
+			}
+		}
 		// Validate the optional cache block.
 		if param.Cache != nil {
 			if !KnownPromptCacheDestinations[param.Cache.Destination] {

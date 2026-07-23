@@ -183,9 +183,12 @@ export function isInteractivePickerParam(p) {
 
 /**
  * Returns the structured parameters array for a prompt, or [] if absent/empty.
- * Each entry is { name, type, description?, required?, multiLine? }. multiLine is
- * only meaningful for type "text": when true the dialog renders a resizable
- * multi-line textarea instead of a single-line input (see PromptParameterDialog).
+ * Each entry is { name, type, description?, required?, multiLine?, options? }.
+ * multiLine is only meaningful for type "text": when true the dialog renders a
+ * resizable multi-line textarea instead of a single-line input. options is also
+ * only meaningful for type "text": when non-empty the dialog renders a dropdown
+ * of those values instead of a free-text input (mutually exclusive with
+ * multiLine — see PromptParameterDialog).
  */
 export function promptParameters(prompt) {
   const params = prompt?.parameters;

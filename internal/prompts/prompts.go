@@ -257,6 +257,13 @@ type PromptParameter struct {
 	// instead of a single-line field. Only meaningful for the "text" type (see
 	// ValidatePromptParameters); ignored when collected outside the UI.
 	MultiLine bool `yaml:"multiLine,omitempty" json:"multiLine,omitempty"`
+	// Options, when non-empty, constrains a "text" parameter to a fixed enumeration.
+	// The parameter dialog renders a dropdown of these values instead of a free-text
+	// input. The bound value remains a plain string so template consumers are
+	// unchanged. Only valid on type "text"; mutually exclusive with MultiLine.
+	// Empty strings and duplicate values are rejected at validation; when Default
+	// is non-empty it must be one of the listed options.
+	Options []string `yaml:"options,omitempty" json:"options,omitempty"`
 	// Required, when explicitly set to true, signals that the parameter must be
 	// supplied before the prompt is dispatched. Defaults to unset (caller decides).
 	// Declarative defaults are handled by the Arg helper in the template body, not here.

@@ -12,7 +12,7 @@ import { Modal } from "./Modal.js";
 
 /**
  * Render one parameter field based on its type.
- * @param {Object} param     - { name, type, description?, required?, multiLine? }
+ * @param {Object} param     - { name, type, description?, required?, multiLine?, options? }
  * @param {string} value     - current field value
  * @param {Function} onChange - (name, value) => void
  * @param {Array} beadsIssues - loaded beads issues (may be [])
@@ -43,7 +43,8 @@ function ParamField({
   promptsList,
   loadingPrompts,
 }) {
-  const { name, type, description, required, multiLine } = param;
+  const { name, type, description, required, multiLine, options } = param;
+  const hasOptions = Array.isArray(options) && options.length > 0;
 
   let control;
   if (type === "beadsId") {
@@ -281,25 +282,45 @@ function ParamField({
       `;
     }
   } else if (type === "text") {
-    // Default: single-line input. multiLine renders a resizable textarea for
-    // naturally multi-line values (e.g. instructions).
-    control = multiLine
-      ? html`
-          <textarea
-            class="textarea textarea-sm w-full resize-y"
-            rows="3"
-            value=${value}
-            onInput=${(e) => onChange(name, e.target.value)}
-          ></textarea>
-        `
-      : html`
-          <input
-            type="text"
-            class="input input-sm w-full"
-            value=${value}
-            onInput=${(e) => onChange(name, e.target.value)}
-          />
-        `;
+    // options (dropdown) wins over multiLine when both are set — this mirrors
+    // the backend validation which rejects that combination, so this branch
+    // order is defensive rather than user-visible.
+    if (hasOptions) {
+      const current = value || param.default || "";
+      control = html`
+        <select
+          class="select select-sm select-bordered w-full"
+          value=${current}
+          onChange=${(e) => onChange(name, e.target.value)}
+        >
+          ${!required &&
+          html`<option value="">${"— select —"}</option>`}
+          ${options.map(
+            (opt) => html`<option value=${opt}>${opt}</option>`,
+          )}
+        </select>
+      `;
+    } else {
+      // Default: single-line input. multiLine renders a resizable textarea for
+      // naturally multi-line values (e.g. instructions).
+      control = multiLine
+        ? html`
+            <textarea
+              class="textarea textarea-sm w-full resize-y"
+              rows="3"
+              value=${value}
+              onInput=${(e) => onChange(name, e.target.value)}
+            ></textarea>
+          `
+        : html`
+            <input
+              type="text"
+              class="input input-sm w-full"
+              value=${value}
+              onInput=${(e) => onChange(name, e.target.value)}
+            />
+          `;
+    }
   } else {
     // beadsTitle, unknown → plain text input
     control = html`
@@ -351,7 +372,7 @@ function ParamField({
  * @param {boolean}  isOpen         - controls visibility
  * @param {Function} onClose        - called on dismiss (no onSubmit)
  * @param {Function} onSubmit       - called with { [paramName]: string } on Save
- * @param {Array}    parameters     - params: [{ name, type, description?, required?, multiLine? }]
+ * @param {Array}    parameters     - params: [{ name, type, description?, required?, multiLine?, options? }]
  * @param {string}   workingDir     - workspace directory (needed for beadsId selector)
  * @param {string}   [title]        - dialog title; defaults to "Prompt parameters"
  * @param {Object}   [initialValues] - pre-seeded values keyed by parameter name
