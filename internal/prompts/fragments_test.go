@@ -420,3 +420,79 @@ func TestFragmentLoadError_ErrorAndUnwrap(t *testing.T) {
 		t.Error("errors.Is(FragmentLoadError, underlying) = false")
 	}
 }
+
+// TestBuiltinFragments walks the embedded builtin prompt tree via the
+// on-disk loader and asserts every .tmpl file loads cleanly (no walk
+// error, no per-file FragmentLoadError, no duplicate names, every name
+// segment survives validateFragmentName). The current builtin corpus may
+// contain zero fragments; the test remains meaningful as a future-proof
+// regression gate (mitto-g61.6 test #1).
+func TestBuiltinFragments(t *testing.T) {
+	builtinDir := filepath.Join("..", "..", "config", "prompts", "builtin")
+	if _, err := os.Stat(builtinDir); err != nil {
+		t.Skipf("builtin prompts dir not found at %s: %v", builtinDir, err)
+	}
+
+	reg, loadErrs, err := LoadFragmentsFromDir(builtinDir)
+	if err != nil {
+		t.Fatalf("LoadFragmentsFromDir(builtin) returned walk-level error: %v", err)
+	}
+	if len(loadErrs) != 0 {
+		t.Fatalf("LoadFragmentsFromDir(builtin) per-file errors: %+v", loadErrs)
+	}
+
+	names := reg.Names()
+	seen := make(map[string]struct{}, len(names))
+	for _, n := range names {
+		if _, dup := seen[n]; dup {
+			t.Errorf("duplicate builtin fragment name %q", n)
+		}
+		seen[n] = struct{}{}
+		if err := validateFragmentName(n); err != nil {
+			t.Errorf("validateFragmentName(%q) = %v, want nil", n, err)
+		}
+	}
+	t.Logf("loaded %d builtin fragments cleanly", reg.Len())
+}
+
+// TestFragmentsHiddenFromPromptLoader is the CRITICAL co-location
+// acceptance test (mitto-g61.6 test #3): given the exact four-file matrix
+// specified on the bead, the prompt loader returns only .prompt.yaml
+// entries and the fragment loader returns only .tmpl entries. Neither
+// crosses over.
+func TestFragmentsHiddenFromPromptLoader(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "visible.prompt.yaml"), `name: "Visible"
+prompt: |
+  I am a prompt.
+`)
+	writeFile(t, filepath.Join(dir, "hidden.tmpl"), "hidden body")
+	writeFile(t, filepath.Join(dir, "topic", "nested.prompt.yaml"), `name: "Nested"
+prompt: |
+  I am nested.
+`)
+	writeFile(t, filepath.Join(dir, "topic", "helper.tmpl"), "helper body")
+
+	prompts, err := LoadPromptsFromDir(dir)
+	if err != nil {
+		t.Fatalf("LoadPromptsFromDir failed: %v", err)
+	}
+	promptNames := make(map[string]struct{}, len(prompts))
+	for _, p := range prompts {
+		promptNames[p.Name] = struct{}{}
+	}
+	wantPromptNames := map[string]struct{}{"Visible": {}, "Nested": {}}
+	if !reflect.DeepEqual(promptNames, wantPromptNames) {
+		t.Errorf("LoadPromptsFromDir names = %v, want %v", promptNames, wantPromptNames)
+	}
+
+	reg, loadErrs, err := LoadFragmentsFromDir(dir)
+	if err != nil || len(loadErrs) != 0 {
+		t.Fatalf("LoadFragmentsFromDir failed: err=%v, loadErrs=%v", err, loadErrs)
+	}
+	got := reg.Names()
+	want := []string{"hidden", "topic/helper"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("LoadFragmentsFromDir Names = %v, want %v", got, want)
+	}
+}

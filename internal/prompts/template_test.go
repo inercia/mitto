@@ -982,6 +982,92 @@ func TestBuiltinPrompts_AllRenderWithoutError(t *testing.T) {
 	t.Logf("rendered %d builtin prompts — all templates valid ✓", len(prompts))
 }
 
+// TestBuiltinPrompts_WithFragments (mitto-g61.6 test #2) re-runs the same
+// render sweep as TestBuiltinPrompts_AllRenderWithoutError with the on-disk
+// builtin fragments (if any) installed on the process-wide singleton. It
+// asserts that having a real fragment registry attached does not regress
+// rendering of any builtin prompt (i.e. no name collisions between fragments
+// and builtin templates, no funcmap conflicts introduced by attach).
+func TestBuiltinPrompts_WithFragments(t *testing.T) {
+	// Isolate the singleton so parallel tests are unaffected.
+	prev := CurrentFragments()
+	t.Cleanup(func() { SetCurrentFragments(prev) })
+
+	builtinDir := "../../config/prompts/builtin"
+	prompts, err := LoadPromptsFromDir(builtinDir)
+	if err != nil {
+		t.Skipf("cannot load builtins from %s: %v", builtinDir, err)
+	}
+	if len(prompts) == 0 {
+		t.Skip("no builtin prompts found")
+	}
+	reg, loadErrs, err := LoadFragmentsFromDir(builtinDir)
+	if err != nil {
+		t.Fatalf("LoadFragmentsFromDir(builtin): %v", err)
+	}
+	if len(loadErrs) != 0 {
+		t.Fatalf("LoadFragmentsFromDir(builtin) per-file errors: %+v", loadErrs)
+	}
+	SetCurrentFragments(reg)
+
+	ctx := &cel.PromptEnabledContext{
+		Session: cel.SessionContext{
+			ID:            "test-session",
+			Name:          "Test Conversation",
+			BeadsIssue:    "mitto-test",
+			HasBeadsIssue: true,
+			ParentID:      "parent-1",
+			IsChild:       true,
+		},
+		Args: map[string]string{"IssueID": "mitto-test", "Condition": "all tests pass"},
+	}
+
+	var failures []string
+	for _, p := range prompts {
+		funcs := cel.BuildTemplateFuncMap(ctx)
+		if _, rerr := RenderPromptTemplate(p.Name, p.Content, ctx, funcs); rerr != nil {
+			failures = append(failures, p.Name+": "+rerr.Error())
+		}
+	}
+	if len(failures) > 0 {
+		t.Errorf("builtin prompts failed to render with fragments installed:\n  %s", strings.Join(failures, "\n  "))
+	}
+	t.Logf("rendered %d builtin prompts against %d fragments ✓", len(prompts), reg.Len())
+}
+
+// NOTE (mitto-g61.6 tests #5, #6, #7): the caller-context / narrowed-context /
+// funcmap-inheritance behaviors are already locked in by the existing
+// TestRenderPromptTemplate_Fragments (basic-render, data-narrowing,
+// funcmap-inheritance subtests, near the bottom of this file). No new
+// duplicate tests are added here.
+//
+// TestRenderPromptTemplate_FragmentCycleFailsAtRender (mitto-g61.6 test #8)
+// verifies that a fragment that references itself (or a cycle of fragments)
+// triggers Go's text/template recursion limit at Execute time and returns a
+// non-nil error rather than infinite-looping or panicking. Fail-closed is the
+// documented contract of RenderPromptTemplate.
+func TestRenderPromptTemplate_FragmentCycleFailsAtRender(t *testing.T) {
+	prev := CurrentFragments()
+	t.Cleanup(func() { SetCurrentFragments(prev) })
+
+	reg := NewFragmentRegistry()
+	// Direct self-reference: recurses without a termination condition.
+	reg.entries["loop-a"] = `A{{ template "loop-b" . }}`
+	reg.entries["loop-b"] = `B{{ template "loop-a" . }}`
+	SetCurrentFragments(reg)
+
+	ctx := &cel.PromptEnabledContext{}
+	funcs := cel.BuildTemplateFuncMap(ctx)
+	_, err := RenderPromptTemplate("t", `{{ template "loop-a" . }}`, ctx, funcs)
+	if err == nil {
+		t.Fatal("expected render error from cyclic fragment references, got nil")
+	}
+	// text/template's message for this is "exceeded maximum template depth".
+	if !strings.Contains(err.Error(), "depth") && !strings.Contains(err.Error(), "recurs") {
+		t.Logf("render error (accepted): %v", err)
+	}
+}
+
 // TestStatus_ThreeModeTargetResolution tests the three target-bead
 // resolution branches of beads-issue-status.prompt.yaml:
 //

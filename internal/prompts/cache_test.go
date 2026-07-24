@@ -3,6 +3,7 @@ package prompts
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -585,5 +586,152 @@ prompt: |
 	}
 	if loadErrors[0].Err == nil {
 		t.Error("LoadErrors()[0].Err = nil, want non-nil")
+	}
+}
+
+// TestFragmentsNotInWebPromptDTO (mitto-g61.6 test #4) verifies the UI-facing
+// contract: fragments co-located with prompts never appear in the WebPrompt
+// list returned to the frontend, nor do they inflate the cache load-error
+// count. This is the structural-isolation guarantee at the DTO boundary.
+func TestFragmentsNotInWebPromptDTO(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv(appdir.MittoDirEnv, tmpDir)
+	appdir.ResetCache()
+	t.Cleanup(appdir.ResetCache)
+
+	promptsDir := filepath.Join(tmpDir, appdir.PromptsDirName)
+	if err := os.MkdirAll(promptsDir, 0755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	// One real prompt.
+	if err := os.WriteFile(filepath.Join(promptsDir, "visible.prompt.yaml"),
+		[]byte("name: Visible\nprompt: |\n  body\n"), 0644); err != nil {
+		t.Fatalf("write visible.prompt.yaml: %v", err)
+	}
+	// Two co-located fragments (one at root, one nested).
+	if err := os.WriteFile(filepath.Join(promptsDir, "hidden.tmpl"),
+		[]byte("hidden body"), 0644); err != nil {
+		t.Fatalf("write hidden.tmpl: %v", err)
+	}
+	nestedDir := filepath.Join(promptsDir, "topic")
+	if err := os.MkdirAll(nestedDir, 0755); err != nil {
+		t.Fatalf("MkdirAll nested: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(nestedDir, "helper.tmpl"),
+		[]byte("helper body"), 0644); err != nil {
+		t.Fatalf("write helper.tmpl: %v", err)
+	}
+
+	cache := NewPromptsCache()
+
+	// PromptFile-level: only the .prompt.yaml is visible.
+	prompts, err := cache.Get()
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if len(prompts) != 1 || prompts[0].Name != "Visible" {
+		t.Errorf("prompts = %+v, want exactly one 'Visible'", prompts)
+	}
+
+	// WebPrompt DTO: fragment names must not leak into the UI-facing slice.
+	webPrompts, err := cache.GetWebPrompts()
+	if err != nil {
+		t.Fatalf("GetWebPrompts: %v", err)
+	}
+	if len(webPrompts) != 1 || webPrompts[0].Name != "Visible" {
+		t.Errorf("webPrompts = %+v, want exactly one 'Visible'", webPrompts)
+	}
+	for _, wp := range webPrompts {
+		if strings.HasSuffix(wp.Name, ".tmpl") ||
+			wp.Name == "hidden" || wp.Name == "topic/helper" {
+			t.Errorf("fragment leaked into WebPrompt DTO: %q", wp.Name)
+		}
+	}
+
+	// Load errors: fragments must not inflate PromptLoadError count.
+	if lerrs := cache.LoadErrors(); len(lerrs) != 0 {
+		t.Errorf("LoadErrors = %+v, want none (fragments must not inflate)", lerrs)
+	}
+}
+
+// TestPromptsCache_TmplFilesDoNotInflateCache (mitto-g61.6 sanity check)
+// locks the loader isolation at the cache boundary against the fragment-file
+// class: mixing .prompt.yaml and .tmpl files under an additional dir must
+// yield exactly one PromptFile entry (the prompt), with fragments invisible
+// to Count().
+func TestPromptsCache_TmplFilesDoNotInflateCache(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv(appdir.MittoDirEnv, tmpDir)
+	appdir.ResetCache()
+	t.Cleanup(appdir.ResetCache)
+
+	additionalDir := filepath.Join(tmpDir, "extra")
+	if err := os.MkdirAll(filepath.Join(additionalDir, "sub"), 0755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(additionalDir, "p.prompt.yaml"),
+		[]byte("name: P\nprompt: |\n  body\n"), 0644); err != nil {
+		t.Fatalf("write p.prompt.yaml: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(additionalDir, "f1.tmpl"),
+		[]byte("frag1"), 0644); err != nil {
+		t.Fatalf("write f1.tmpl: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(additionalDir, "sub", "f2.tmpl"),
+		[]byte("frag2"), 0644); err != nil {
+		t.Fatalf("write sub/f2.tmpl: %v", err)
+	}
+
+	cache := NewPromptsCache()
+	cache.SetAdditionalDirs([]string{additionalDir})
+	if _, err := cache.Get(); err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got := cache.Count(); got != 1 {
+		t.Errorf("Count() = %d, want 1 (fragments must not inflate PromptFile count)", got)
+	}
+}
+
+// TestPromptsCache_ReloadOnFragmentEdit_UnaffectedByTmpl (mitto-g61.6 sanity
+// check) confirms that editing only .tmpl files does not add spurious
+// PromptFile entries to the cache. The fragment/cache invalidation split is
+// handled separately by the fs-watcher (see watcher_test.go); this asserts
+// the PromptsCache-side invariant only.
+func TestPromptsCache_ReloadOnFragmentEdit_UnaffectedByTmpl(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv(appdir.MittoDirEnv, tmpDir)
+	appdir.ResetCache()
+	t.Cleanup(appdir.ResetCache)
+
+	additionalDir := filepath.Join(tmpDir, "extra")
+	if err := os.MkdirAll(additionalDir, 0755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	tmplPath := filepath.Join(additionalDir, "only.tmpl")
+	if err := os.WriteFile(tmplPath, []byte("v1"), 0644); err != nil {
+		t.Fatalf("write only.tmpl: %v", err)
+	}
+
+	cache := NewPromptsCache()
+	cache.SetAdditionalDirs([]string{additionalDir})
+	prompts, err := cache.Get()
+	if err != nil {
+		t.Fatalf("Get (initial): %v", err)
+	}
+	if len(prompts) != 0 {
+		t.Errorf("initial Get: len = %d, want 0 (fragment-only dir)", len(prompts))
+	}
+
+	// Bump mtime by editing the .tmpl.
+	time.Sleep(10 * time.Millisecond)
+	if err := os.WriteFile(tmplPath, []byte("v2-edited"), 0644); err != nil {
+		t.Fatalf("write only.tmpl edit: %v", err)
+	}
+	prompts2, err := cache.Get()
+	if err != nil {
+		t.Fatalf("Get (after edit): %v", err)
+	}
+	if len(prompts2) != 0 {
+		t.Errorf("post-edit Get: len = %d, want 0 (fragment edits must not add PromptFiles)", len(prompts2))
 	}
 }

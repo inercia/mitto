@@ -155,3 +155,58 @@ func TestReloadFragmentsAfterEdit_RenderReflectsChange(t *testing.T) {
 		t.Errorf("re-render after edit = %q, want %q", out2, "hello v2")
 	}
 }
+
+// TestFragmentRegistry_Reload (mitto-g61.6 test #10) is the minimal Get()
+// -oriented sibling of TestReloadFragmentsAfterEdit_RenderReflectsChange: it
+// locks the semantic contract of FragmentRegistry.Get() after a reload,
+// independent of the render pipeline. Complements the render-flavored test
+// so a regression in the pure loader/registry path is caught even if the
+// render integration is temporarily disabled.
+func TestFragmentRegistry_Reload(t *testing.T) {
+	dir := t.TempDir()
+	fragPath := filepath.Join(dir, "k.tmpl")
+	if err := os.WriteFile(fragPath, []byte("v1"), 0644); err != nil {
+		t.Fatalf("write initial fragment: %v", err)
+	}
+
+	reg1, loadErrs, err := LoadFragmentsFromDir(dir)
+	if err != nil {
+		t.Fatalf("LoadFragmentsFromDir (initial): %v", err)
+	}
+	if len(loadErrs) != 0 {
+		t.Fatalf("loadErrs (initial) = %v, want none", loadErrs)
+	}
+	got, ok := reg1.Get("k")
+	if !ok {
+		t.Fatal("initial: k missing from registry")
+	}
+	if got != "v1" {
+		t.Errorf("initial Get(k) = %q, want %q", got, "v1")
+	}
+
+	// Simulate an on-disk edit landing later than the mtime resolution.
+	time.Sleep(10 * time.Millisecond)
+	if err := os.WriteFile(fragPath, []byte("v2"), 0644); err != nil {
+		t.Fatalf("write updated fragment: %v", err)
+	}
+
+	reg2, loadErrs2, err := LoadFragmentsFromDir(dir)
+	if err != nil {
+		t.Fatalf("LoadFragmentsFromDir (reload): %v", err)
+	}
+	if len(loadErrs2) != 0 {
+		t.Fatalf("loadErrs (reload) = %v, want none", loadErrs2)
+	}
+	got2, ok := reg2.Get("k")
+	if !ok {
+		t.Fatal("reload: k missing from registry")
+	}
+	if got2 != "v2" {
+		t.Errorf("reload Get(k) = %q, want %q", got2, "v2")
+	}
+
+	// Original registry (reg1) is unaffected — reload returns a new registry.
+	if v, _ := reg1.Get("k"); v != "v1" {
+		t.Errorf("reg1 Get(k) after reload = %q, want %q (registries are immutable snapshots)", v, "v1")
+	}
+}
