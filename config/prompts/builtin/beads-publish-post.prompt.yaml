@@ -13,6 +13,7 @@ enabledWhen: '!Session.IsChild && CommandExists("bd") && DirExists(".beads") && 
 loop:
   mode: always
   trigger: onCompletion
+  coalesceDuringBusy: true
   delay: 30
   maxIterations: 10
   maxDuration: "2h"

@@ -16,6 +16,7 @@ enabledWhen: '!Session.IsChild && FileExists(".git/config") && (Tools.HasPattern
 loop:
   mode: always
   trigger: onCompletion
+  coalesceDuringBusy: true
   delay: 3600
   maxIterations: 30
   maxDuration: "6h"

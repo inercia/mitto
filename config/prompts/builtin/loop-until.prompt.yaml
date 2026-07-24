@@ -16,6 +16,7 @@ enabledWhen: '!Session.IsChild && !Session.IsLoopConversation'
 loop:
   mode: always
   trigger: onCompletion
+  coalesceDuringBusy: true
   delay: 30
   maxIterations: 20
   maxDuration: "4h"

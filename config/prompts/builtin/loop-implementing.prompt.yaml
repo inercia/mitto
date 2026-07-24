@@ -11,6 +11,7 @@ backgroundColor: '#BBDEFB'
 loop:
   mode: always
   trigger: onCompletion
+  coalesceDuringBusy: true
   delay: 30
   maxIterations: 20
 prompt: |

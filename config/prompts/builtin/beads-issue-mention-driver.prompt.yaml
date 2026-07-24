@@ -23,6 +23,7 @@ group: Tasks
 backgroundColor: '#E1BEE7'
 loop:
   trigger: onCompletion
+  coalesceDuringBusy: true
   delay: 30
   maxIterations: 8
   maxDuration: "1h"

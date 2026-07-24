@@ -3039,3 +3039,56 @@ func TestBuiltinPrompts_EnabledWhenCompiles(t *testing.T) {
 	}
 	t.Logf("compiled enabledWhen for %d builtin prompts", n)
 }
+
+// TestBuiltinPrompts_OnCompletionDeclaresCoalesceDuringBusy pins mitto-nfy:
+// every builtin prompt whose loop: frontmatter declares trigger: onCompletion
+// must ALSO declare coalesceDuringBusy: true in that same block. Rationale:
+// the coalescing semantic is opt-in at the LoopPrompt merge boundary and its
+// runtime default (ShouldCoalesceDuringBusy) may not cover every dispatch
+// surface (MCP spawn / UI seeding / REST PUT go through different helpers).
+// Requiring the author to spell it out makes the intent auditable at the
+// prompt-authoring layer and is defense-in-depth against the companion
+// trigger-side runaway bug where onCompletion re-fires while the agent is
+// still processing an in-flight turn.
+//
+// The list of affected drivers is not enumerated here on purpose: the test
+// walks every builtin file so newly-added onCompletion prompts are caught
+// automatically without needing to update this test.
+func TestBuiltinPrompts_OnCompletionDeclaresCoalesceDuringBusy(t *testing.T) {
+	builtinDir := filepath.Join("..", "..", "config", "prompts", "builtin")
+	entries, err := os.ReadDir(builtinDir)
+	if err != nil {
+		t.Skipf("builtin prompts dir not found at %s: %v", builtinDir, err)
+	}
+	checked := 0
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".prompt.yaml") {
+			continue
+		}
+		path := filepath.Join(builtinDir, e.Name())
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Errorf("ReadFile(%s): %v", e.Name(), err)
+			continue
+		}
+		prompt, err := ParsePromptFile(e.Name(), data, time.Now())
+		if err != nil {
+			continue // parse errors already reported by TestBuiltinPromptsParseClean
+		}
+		if prompt.Loop == nil || prompt.Loop.Trigger != "onCompletion" {
+			continue
+		}
+		checked++
+		if prompt.Loop.CoalesceDuringBusy == nil {
+			t.Errorf("%s: loop.trigger = onCompletion but loop.coalesceDuringBusy is unset — must be explicitly declared as true (mitto-nfy)", e.Name())
+			continue
+		}
+		if !*prompt.Loop.CoalesceDuringBusy {
+			t.Errorf("%s: loop.coalesceDuringBusy = false, want true for trigger: onCompletion (mitto-nfy)", e.Name())
+		}
+	}
+	if checked == 0 {
+		t.Error("no builtin prompts with trigger: onCompletion were checked — the walk found none, which is unexpected")
+	}
+	t.Logf("checked coalesceDuringBusy on %d onCompletion builtin prompts", checked)
+}

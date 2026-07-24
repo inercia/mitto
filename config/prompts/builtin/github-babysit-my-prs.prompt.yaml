@@ -17,6 +17,7 @@ loop:
   mode: optional
   default: true
   trigger: onCompletion
+  coalesceDuringBusy: true
   delay: 3600
   maxIterations: 30
 target:

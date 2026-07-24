@@ -9,6 +9,7 @@ loop:
   mode: optional
   default: false
   trigger: onCompletion
+  coalesceDuringBusy: true
   delay: 60
 target:
   title: 'Start working on ready'
