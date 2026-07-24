@@ -1338,6 +1338,27 @@ func NewServer(config Config) (*Server, error) {
 	// Build callback index from existing sessions
 	s.buildCallbackIndex()
 
+	// Bootstrap the process-wide fragment registry BEFORE the first prompts
+	// cache reload so PrecompileTemplateConds can resolve fragment references
+	// like `{{ template "_shared/session-context" . }}` at load time. Without
+	// this, every prompt that uses a fragment fails precompile and is dropped
+	// from the cache until the fs-watcher fires (mitto: fragments never
+	// installed at startup). Uses getFragmentScanDirs() — which lists the
+	// builtin dir as its own root — so short fragment names ("_shared/…")
+	// resolve correctly.
+	{
+		fragDirs := s.getFragmentScanDirs()
+		if reg, ferrs, err := prompts.ReloadFragmentsFromDirs(fragDirs); err != nil {
+			logger.Warn("Failed to bootstrap fragment registry", "error", err, "dirs", fragDirs)
+		} else {
+			prompts.SetCurrentFragments(reg)
+			logger.Info("Fragment registry bootstrapped", "count", reg.Len(), "dirs", fragDirs, "errors", len(ferrs))
+			for _, fe := range ferrs {
+				logger.Warn("Fragment load error at bootstrap", "path", fe.Path, "error", fe.Err)
+			}
+		}
+	}
+
 	// Initialize prompts watcher for monitoring prompt file changes
 	if promptsWatcher, err := configPkg.NewPromptsWatcher(logger); err != nil {
 		logger.Warn("Failed to create prompts watcher", "error", err)
@@ -2354,7 +2375,7 @@ func (s *Server) OnPromptsChanged(event configPkg.PromptsChangeEvent) {
 	// not blank out working fragments; per-file failures are non-fatal and
 	// surface as error toasts identical to the prompt-load path above.
 	if event.HasFragmentChanges {
-		dirs := s.getPromptsWatchDirs()
+		dirs := s.getFragmentScanDirs()
 		newReg, ferrs, err := prompts.ReloadFragmentsFromDirs(dirs)
 		if err != nil {
 			if s.logger != nil {
@@ -2424,6 +2445,39 @@ func (s *Server) getPromptsWatchDirs() []string {
 	}
 
 	// Add additional directories from global config
+	if s.config.MittoConfig != nil && len(s.config.MittoConfig.PromptsDirs) > 0 {
+		dirs = append(dirs, s.config.MittoConfig.PromptsDirs...)
+	}
+
+	return dirs
+}
+
+// getFragmentScanDirs returns the directories to scan for *.tmpl fragments,
+// in merge order (earlier wins on short-name collisions; later entries can
+// still contribute uniquely-named fragments).
+//
+// Fragment names are formed relative to the SCAN ROOT, so the builtin dir
+// MUST be listed as its own root: scanning the parent MITTO_DIR/prompts/
+// yields names like "builtin/_shared/session-context" that no prompt
+// references, while scanning MITTO_DIR/prompts/builtin/ yields the intended
+// "_shared/session-context" name.
+func (s *Server) getFragmentScanDirs() []string {
+	var dirs []string
+
+	// 1. Builtin prompts root — produces the short names ("_shared/…",
+	//    "github/pr-comments") that embedded prompts reference via
+	//    `{{ template "_shared/session-context" . }}`.
+	if builtinDir, err := appdir.BuiltinPromptsDir(); err == nil {
+		dirs = append(dirs, builtinDir)
+	}
+
+	// 2. User-writable prompts root — for hand-authored fragments dropped
+	//    directly under MITTO_DIR/prompts/ or subdirs (not under builtin/).
+	if promptsDir, err := appdir.PromptsDir(); err == nil {
+		dirs = append(dirs, promptsDir)
+	}
+
+	// 3. Additional directories from global config.
 	if s.config.MittoConfig != nil && len(s.config.MittoConfig.PromptsDirs) > 0 {
 		dirs = append(dirs, s.config.MittoConfig.PromptsDirs...)
 	}
