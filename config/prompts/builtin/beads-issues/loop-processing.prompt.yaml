@@ -90,8 +90,9 @@ prompt: |
   §B, and every other non-epic child type (`feature`, `task`, `story`, `chore`, etc.) flows
   into §C via the `Loop implementing feature` driver. The epic itself stays open until all
   its children reach a terminal state — Step 2P's "Close terminal-label beads" sweep closes
-  the individual children as their drivers finish; the human owns closing the epic once all
-  its members are done.
+  the individual children as their drivers finish, and Step 2P's "Reap epics" sub-step
+  automatically closes the epic in the same pass once its last child is closed (pass-local
+  scope: only epics whose children were closed by this pass are considered).
 
   ### Concurrency, deferral, preflight (summary — enforced in Steps 2P/2Z/§B/§C/7)
 
@@ -156,25 +157,83 @@ prompt: |
   ### Close terminal-label beads
 
   Right after the reap loop, close any open bead carrying the class-terminal label
-  (independent of whether its driver still exists). Track the closed IDs so 2B/2C's
-  "recently-closed parent" exclusion can skip their parent-child dependents this pass.
+  (independent of whether its driver still exists). Track the closed IDs in
+  `closed_this_pass` so 2B/2C's "recently-closed parent" exclusion can skip their
+  parent-child dependents this pass, AND so the epic-reaper below can walk their
+  parent epics.
 
   ```bash
+  closed_this_pass=()
   {{ if ne .Args.FixBugs "false" -}}
   for id in $(bd list --type bug --status open --label fixed --json | jq -r '.[].id'); do
     bd comment "$id" "Orchestrator: terminal label=fixed; closing."
     bd close "$id"
+    closed_this_pass+=("$id")
   done
   {{ end }}
   {{- if ne .Args.WorkOnFeatures "false" }}
   for id in $(bd list --type feature --status open --label verified --json | jq -r '.[].id'); do
     bd comment "$id" "Orchestrator: terminal label=verified; closing."
     bd close "$id"
+    closed_this_pass+=("$id")
   done
   {{- end }}
   ```
 
   Log one-line counts for Step 6: `Closed: <n>`.
+
+  ### Reap epics whose children are all closed
+
+  Right after the terminal-label close loop, walk the parents of `closed_this_pass`
+  to reap any epic whose last open child was just closed. **Pass-local scope**: only
+  epics touched by this pass are considered — never sweep all open epics (that would
+  surprise humans working on unrelated epics whose last child was closed manually).
+  Reaping lives ONLY in this orchestrator (never in per-driver prompts) to avoid
+  parent-close races between concurrent §B/§C drivers touching different children
+  of the same epic.
+
+  ```bash
+  reaped_epics=()
+  # Derive touched epics: union of parent fields on beads closed this pass.
+  declare -A touched_epics_set=()
+  for cid in "${closed_this_pass[@]}"; do
+    pid=$(bd show "$cid" --json 2>/dev/null | jq -r '.[0].parent // empty')
+    if [ -n "$pid" ]; then
+      touched_epics_set["$pid"]=1
+    fi
+  done
+  touched_epics=("${!touched_epics_set[@]}")
+
+  # Hard cap: 20 reaped epics per pass; log-and-skip beyond.
+  reap_cap=20
+  reap_count=0
+  overflow_epics=()
+  for epic_id in "${touched_epics[@]}"; do
+    if [ "$reap_count" -ge "$reap_cap" ]; then
+      overflow_epics+=("$epic_id")
+      continue
+    fi
+    # Confirm it's an open epic (idempotency: a concurrent pass may already have closed it).
+    meta=$(bd show "$epic_id" --json 2>/dev/null | jq -r '.[0] | "\(.issue_type)|\(.status)"')
+    if [ "$meta" != "epic|open" ]; then
+      continue
+    fi
+    # All children closed? A child-epic counts as satisfied only when its own status==closed,
+    # so nested epics reap in dependency order across successive passes.
+    open_children=$(bd children "$epic_id" --json 2>/dev/null | jq '[.[] | select(.status != "closed")] | length')
+    if [ "${open_children:-1}" -eq 0 ]; then
+      bd comment "$epic_id" "Orchestrator: reaping epic $epic_id — all children closed by this pass."
+      bd close "$epic_id" --reason "All children closed by L1 orchestrator pass"
+      reaped_epics+=("$epic_id")
+      reap_count=$((reap_count + 1))
+    fi
+  done
+  if [ "${#overflow_epics[@]}" -gt 0 ]; then
+    echo "Epic reaper cap ($reap_cap) reached; remaining touched epics: ${overflow_epics[*]}"
+  fi
+  ```
+
+  Log one-line count for Step 6: `Reaped epics: <n>`.
   {{- end }}
 
   Log one-line count for Step 6: `Reaped: <n>`.
@@ -385,7 +444,7 @@ prompt: |
   Format exactly:
 
   ```
-  Candidates (A=<count> B=<count> C=<count>):
+  Candidates (A=<count> B=<count> C=<count> Reaped-epics=<count>):
 
   | Class | Issue | Status | Reason |
   |-------|-------|--------|--------|
@@ -395,8 +454,16 @@ prompt: |
   | C | <id> | ⏸️ queued | concurrency cap |
   ```
 
-  If ALL three sets are empty (nothing even entered enumeration), print
-  `Candidates: none (A=0 B=0 C=0).` and skip the table.
+  If Step 2P's epic-reaper closed any epics this pass, append a small bulleted
+  list below the table (one line per reaped epic, `<id> (children=<n>)`) under
+  the header `Reaped epics:` — this satisfies the "reap actions appear in §2T"
+  audit requirement without widening the candidates-table schema (reap is a
+  fundamentally different action from candidate dispatch).
+
+  If ALL three sets are empty (nothing even entered enumeration) AND no epics
+  were reaped, print `Candidates: none (A=0 B=0 C=0 Reaped-epics=0).` and skip
+  the table. If epics were reaped but candidate sets are empty, still print the
+  header line plus the `Reaped epics:` list (skip the empty table body).
 
   ## Step 3 — Pick the class for this pass
 
@@ -663,7 +730,7 @@ prompt: |
   mitto_ui_notify(
     self_id: "{{ .Session.ID }}",
     title: "Loop processing tasks — pass complete",
-    message: "<Class ran (A/B/C) and target processed | 'nothing eligible' if Step 3 fell through | 'at cap' if concurrency gate skipped>. Sets: A=<count> B=<count> C=<count>. Active drivers: <count of running Fix/Implement children after this pass>/1. Reaped: <count from Step 2P, 0 if none>. Closed: <count of terminal-label beads closed this pass, 0 if none>. Undeferred: <count from Step 2Z, 0 if none>. Will re-fire on beads changes.",
+    message: "<Class ran (A/B/C) and target processed | 'nothing eligible' if Step 3 fell through | 'at cap' if concurrency gate skipped>. Sets: A=<count> B=<count> C=<count>. Active drivers: <count of running Fix/Implement children after this pass>/1. Reaped: <count from Step 2P, 0 if none>. Closed: <count of terminal-label beads closed this pass, 0 if none>. Reaped-epics: <count from Step 2P epic-reaper, 0 if none>. Undeferred: <count from Step 2Z, 0 if none>. Will re-fire on beads changes.",
     style: "success"
   )
   ```
@@ -751,8 +818,11 @@ prompt: |
     dispatched itself. 2B and 2C walk each open epic's open children: `bug`
     children → §B, other non-epic types (`feature`/`task`/`story`/`chore`) → §C
     via `Loop implementing feature` (its planned→implemented→tested→verified
-    machine applies to all types). The epic stays open; Step 2P closes each
-    child as its driver terminates; the human owns closing the epic.
+    machine applies to all types). The epic stays open while children run;
+    Step 2P closes each child as its driver terminates, and Step 2P's
+    epic-reaper closes the epic itself in the same pass once its last child is
+    closed (pass-local: only epics whose children were closed by this pass are
+    considered — never sweep all open epics).
   {{ if or (ne .Args.FixBugs "false") (ne .Args.WorkOnFeatures "false") -}}
   - **Close terminal-label beads.** Step 2P closes any open bead carrying the
     class-terminal label ({{ if ne .Args.FixBugs "false" }}`fixed` for bugs{{ if ne .Args.WorkOnFeatures "false" }}, {{ end }}{{ end }}{{ if ne .Args.WorkOnFeatures "false" }}`verified` for features{{ end }}) — the driver
