@@ -14,7 +14,12 @@ import {
   invalidateConfigCache,
   endpoints,
 } from "../utils/index.js";
-import { setPromptSortMode as savePromptSortMode } from "../utils/storage.js";
+import {
+  setPromptSortMode as savePromptSortMode,
+  getDashboardHiddenCharts,
+  setDashboardHiddenCharts,
+} from "../utils/storage.js";
+import { DASHBOARD_CHARTS } from "../utils/dashboardCharts.js";
 
 // Import shared library functions
 import {
@@ -48,6 +53,7 @@ import {
   SearchIcon,
   LayersIcon,
   KeyboardIcon,
+  DashboardIcon,
 } from "./Icons.js";
 import { AgentDiscoveryDialog } from "./AgentDiscoveryDialog.js";
 import { Modal } from "./Modal.js";
@@ -140,13 +146,62 @@ const THEME_LABELS = {
 // and by app.js (folder context-menu submenu — see SessionList.js). Keep the
 // entries in sync with internal/config/config.go DefaultOpenTargets().
 export const DEFAULT_MAC_OPEN_TARGETS = [
-  { id: "finder", label: "Finder", icon: "finder", command: "open ${MITTO_WORKING_DIR}", enabled: true, builtin: true },
-  { id: "terminal", label: "Terminal", icon: "terminal", command: "open -a Terminal ${MITTO_WORKING_DIR}", enabled: true, builtin: true },
-  { id: "iterm", label: "iTerm", icon: "iterm", command: "open -a iTerm ${MITTO_WORKING_DIR}", enabled: false, builtin: true },
-  { id: "vscode", label: "Visual Studio Code", icon: "vscode", command: `open -a "Visual Studio Code" \${MITTO_WORKING_DIR}`, enabled: false, builtin: true },
-  { id: "cursor", label: "Cursor", icon: "cursor", command: "open -a Cursor ${MITTO_WORKING_DIR}", enabled: false, builtin: true },
-  { id: "xcode", label: "Xcode", icon: "xcode", command: "open -a Xcode ${MITTO_WORKING_DIR}", enabled: false, builtin: true },
-  { id: "goland", label: "GoLand", icon: "goland", command: "open -a GoLand ${MITTO_WORKING_DIR}", enabled: false, builtin: true },
+  {
+    id: "finder",
+    label: "Finder",
+    icon: "finder",
+    command: "open ${MITTO_WORKING_DIR}",
+    enabled: true,
+    builtin: true,
+  },
+  {
+    id: "terminal",
+    label: "Terminal",
+    icon: "terminal",
+    command: "open -a Terminal ${MITTO_WORKING_DIR}",
+    enabled: true,
+    builtin: true,
+  },
+  {
+    id: "iterm",
+    label: "iTerm",
+    icon: "iterm",
+    command: "open -a iTerm ${MITTO_WORKING_DIR}",
+    enabled: false,
+    builtin: true,
+  },
+  {
+    id: "vscode",
+    label: "Visual Studio Code",
+    icon: "vscode",
+    command: `open -a "Visual Studio Code" \${MITTO_WORKING_DIR}`,
+    enabled: false,
+    builtin: true,
+  },
+  {
+    id: "cursor",
+    label: "Cursor",
+    icon: "cursor",
+    command: "open -a Cursor ${MITTO_WORKING_DIR}",
+    enabled: false,
+    builtin: true,
+  },
+  {
+    id: "xcode",
+    label: "Xcode",
+    icon: "xcode",
+    command: "open -a Xcode ${MITTO_WORKING_DIR}",
+    enabled: false,
+    builtin: true,
+  },
+  {
+    id: "goland",
+    label: "GoLand",
+    icon: "goland",
+    command: "open -a GoLand ${MITTO_WORKING_DIR}",
+    enabled: false,
+    builtin: true,
+  },
 ];
 
 /**
@@ -856,8 +911,7 @@ function ServerEditForm({
               className="w-full"
               onChange=${(name) => {
                 setModelProfile(name);
-                const cleared =
-                  !name && !modelTag && !!rawModelConstraint;
+                const cleared = !name && !modelTag && !!rawModelConstraint;
                 if (cleared) setModelConstraintCleared(true);
                 const overrides = {
                   modelProfile: name,
@@ -879,8 +933,7 @@ function ServerEditForm({
               className="w-full"
               onChange=${(tag) => {
                 setModelTag(tag);
-                const cleared =
-                  !tag && !modelProfile && !!rawModelConstraint;
+                const cleared = !tag && !modelProfile && !!rawModelConstraint;
                 if (cleared) setModelConstraintCleared(true);
                 const overrides = {
                   modelTag: tag,
@@ -1323,7 +1376,10 @@ function ACPServerDeleteWizard({
     setStep("intro");
     setFolderIndex(0);
     setChoices(
-      (plan?.folders || []).map(() => ({ newServer: null, acknowledged: false })),
+      (plan?.folders || []).map(() => ({
+        newServer: null,
+        acknowledged: false,
+      })),
     );
     setExecError("");
     setExecResult(null);
@@ -1335,7 +1391,10 @@ function ACPServerDeleteWizard({
   const folders = plan.folders || [];
   const folderTotal = (f) =>
     (f?.non_archived_conversations || 0) + (f?.archived_conversations || 0);
-  const totalConversations = folders.reduce((acc, f) => acc + folderTotal(f), 0);
+  const totalConversations = folders.reduce(
+    (acc, f) => acc + folderTotal(f),
+    0,
+  );
 
   const setChoiceFor = (idx, patch) => {
     setChoices((prev) => {
@@ -1348,9 +1407,9 @@ function ACPServerDeleteWizard({
   const currentFolder = folders[folderIndex];
   const currentChoice = choices[folderIndex] || {};
   // replacement_candidates is an array of server-name strings.
-  const currentCandidates = (currentFolder?.replacement_candidates || []).filter(
-    (name) => name && name !== serverName,
-  );
+  const currentCandidates = (
+    currentFolder?.replacement_candidates || []
+  ).filter((name) => name && name !== serverName);
 
   // "Next" enablement for the per-folder step.
   const canAdvanceFolder = () => {
@@ -1402,13 +1461,12 @@ function ACPServerDeleteWizard({
         // 409 arrives as an errorEnvelope: {error: {code, message, details:
         // {active_session_ids: [...]}}}. Surface a refusal list from that.
         const activeIds =
-          res.status === 409 && Array.isArray(data?.error?.details?.active_session_ids)
+          res.status === 409 &&
+          Array.isArray(data?.error?.details?.active_session_ids)
             ? data.error.details.active_session_ids
             : null;
         if (activeIds && activeIds.length > 0) {
-          setActiveRefusal(
-            activeIds.map((sid) => ({ session_id: sid })),
-          );
+          setActiveRefusal(activeIds.map((sid) => ({ session_id: sid })));
           setStep("error");
           return;
         }
@@ -1438,7 +1496,8 @@ function ACPServerDeleteWizard({
   // Recap lines for the confirm step.
   const recapLines = folders.map((f, i) => {
     const choice = choices[i] || {};
-    const label = f.workspace_name || getBasename(f.working_dir) || f.working_dir;
+    const label =
+      f.workspace_name || getBasename(f.working_dir) || f.working_dir;
     const total = folderTotal(f);
     if (choice.newServer) {
       return {
@@ -1533,7 +1592,10 @@ function ACPServerDeleteWizard({
     }
     return html`
       <button class="btn btn-ghost btn-sm" onClick=${onClose}>Cancel</button>
-      <button class="btn btn-primary btn-sm" onClick=${() => setStep("confirm")}>
+      <button
+        class="btn btn-primary btn-sm"
+        onClick=${() => setStep("confirm")}
+      >
         Back to review
       </button>
     `;
@@ -1560,7 +1622,9 @@ function ACPServerDeleteWizard({
             class="rounded border border-mitto-border-2 bg-mitto-surface-2 p-3 space-y-1"
           >
             <div>
-              <span class="font-semibold">Folders referencing this server:</span>
+              <span class="font-semibold"
+                >Folders referencing this server:</span
+              >
               ${" "}${folders.length}
             </div>
             <div>
@@ -1576,7 +1640,6 @@ function ACPServerDeleteWizard({
           `}
         </div>
       `}
-
       ${step === "folder" &&
       currentFolder &&
       html`
@@ -1596,7 +1659,8 @@ function ACPServerDeleteWizard({
             </div>
             <div class="text-xs text-mitto-text-muted mt-1">
               ${currentFolder.non_archived_conversations || 0} active +
-              ${" "}${currentFolder.archived_conversations || 0} archived conversation(s)
+              ${" "}${currentFolder.archived_conversations || 0} archived
+              conversation(s)
             </div>
           </div>
 
@@ -1647,8 +1711,7 @@ function ACPServerDeleteWizard({
                     No other ACP server is configured for this folder.
                     Continuing will
                     <span class="font-semibold">DELETE</span>
-                    ${" "}${folderTotal(currentFolder)}
-                    conversation(s) in
+                    ${" "}${folderTotal(currentFolder)} conversation(s) in
                     <code class="text-xs">${currentFolder.working_dir}</code>.
                   </div>
                 </div>
@@ -1671,7 +1734,6 @@ function ACPServerDeleteWizard({
               `}
         </div>
       `}
-
       ${step === "confirm" &&
       html`
         <div class="space-y-3 text-sm">
@@ -1709,7 +1771,6 @@ function ACPServerDeleteWizard({
           </p>
         </div>
       `}
-
       ${step === "executing" &&
       html`
         <div class="text-center py-8">
@@ -1719,15 +1780,11 @@ function ACPServerDeleteWizard({
           <p class="text-mitto-text-secondary">Applying changes...</p>
         </div>
       `}
-
       ${step === "success" &&
       execResult &&
       html`
         <div class="space-y-2 text-sm">
-          <div
-            role="alert"
-            class="alert alert-success alert-soft text-sm"
-          >
+          <div role="alert" class="alert alert-success alert-soft text-sm">
             <div>
               Deleted ACP server
               <span class="font-semibold">"${serverName}"</span>.
@@ -1745,21 +1802,20 @@ function ACPServerDeleteWizard({
             <li>
               Workspaces reassigned:
               ${" "}${execResult.reassigned_workspace_count ||
-                (Array.isArray(execResult.reassigned_workspaces)
-                  ? execResult.reassigned_workspaces.length
-                  : 0)}
+              (Array.isArray(execResult.reassigned_workspaces)
+                ? execResult.reassigned_workspaces.length
+                : 0)}
             </li>
             <li>
               Workspaces removed:
               ${" "}${execResult.deleted_workspace_count ||
-                (Array.isArray(execResult.deleted_workspaces)
-                  ? execResult.deleted_workspaces.length
-                  : 0)}
+              (Array.isArray(execResult.deleted_workspaces)
+                ? execResult.deleted_workspaces.length
+                : 0)}
             </li>
           </ul>
         </div>
       `}
-
       ${step === "error" &&
       html`
         <div class="space-y-3 text-sm">
@@ -1778,9 +1834,7 @@ function ACPServerDeleteWizard({
                         key=${c.session_id}
                         class="rounded border border-mitto-border-2 bg-mitto-surface-2 p-2"
                       >
-                        <div class="font-medium">
-                          ${c.name || c.session_id}
-                        </div>
+                        <div class="font-medium">${c.name || c.session_id}</div>
                         <div class="text-mitto-text-muted truncate">
                           ${c.working_dir || ""}
                           ${c.is_prompting ? " · prompting" : ""}
@@ -1829,6 +1883,48 @@ export function SettingsDialog({
   const [deleteWizardName, setDeleteWizardName] = useState("");
   const [deleteWizardPlan, setDeleteWizardPlan] = useState(null);
   const [deleteBlockedInfo, setDeleteBlockedInfo] = useState(null);
+
+  // ------ Dashboard tab state (mitto-w6b) -------------------------------------
+  // Local mirror of the hidden-charts list persisted via storage.js. Seeded from
+  // localStorage on mount and kept in sync via the change event so a toggle on
+  // any tab / window updates this tab instantly. `hidingAllError` is a transient
+  // inline message shown when the user tries to hide the last visible chart.
+  const [hiddenCharts, setHiddenCharts] = useState(getDashboardHiddenCharts);
+  const [hidingAllError, setHidingAllError] = useState("");
+
+  useEffect(() => {
+    const onChange = (e) => {
+      const next = Array.isArray(e?.detail?.ids) ? e.detail.ids : [];
+      setHiddenCharts(next);
+    };
+    window.addEventListener("mitto-dashboard-hidden-charts-changed", onChange);
+    return () =>
+      window.removeEventListener(
+        "mitto-dashboard-hidden-charts-changed",
+        onChange,
+      );
+  }, []);
+
+  // Toggle a chart's visibility. Refuses the change if it would hide every
+  // known chart (mirrors the backend's `at_least_one_chart_must_be_visible`
+  // guard). On refusal, surfaces a 3s inline message and does not persist.
+  const toggleChart = (id, wantsVisible) => {
+    const currentHidden = new Set(hiddenCharts);
+    if (wantsVisible) {
+      currentHidden.delete(id);
+    } else {
+      currentHidden.add(id);
+    }
+    const nextHidden = Array.from(currentHidden);
+    if (!wantsVisible && nextHidden.length >= DASHBOARD_CHARTS.length) {
+      setHidingAllError("At least one chart must remain visible.");
+      window.setTimeout(() => setHidingAllError(""), 3000);
+      return;
+    }
+    setHidingAllError("");
+    setHiddenCharts(nextHidden);
+    setDashboardHiddenCharts(nextHidden);
+  };
 
   // ------ Global Shortcuts tab state ------------------------------------------
   // Global shortcut buttons stored in settings.json, keyed by section ID. These
@@ -3163,7 +3259,9 @@ export function SettingsDialog({
     }
     setError("");
     try {
-      const res = await authFetch(endpoints.acpServers.prepareDelete(serverName));
+      const res = await authFetch(
+        endpoints.acpServers.prepareDelete(serverName),
+      );
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         if (res.status === 404) {
@@ -3355,6 +3453,7 @@ export function SettingsDialog({
     { id: "web", label: "Web", icon: GlobeIcon },
     { id: "mcp", label: "MCP", icon: LightningIcon },
     { id: "ui", label: "UI", icon: SlidersIcon },
+    { id: "dashboard", label: "Dashboard", icon: DashboardIcon },
     { id: "shortcuts", label: "Shortcuts", icon: KeyboardIcon },
   ];
 
@@ -5645,9 +5744,7 @@ export function SettingsDialog({
 
                         <!-- Open In Targets -->
                         <div class="p-4 space-y-2">
-                          <div class="font-medium text-sm">
-                            Open In targets
-                          </div>
+                          <div class="font-medium text-sm">Open In targets</div>
                           <div class="text-xs text-mitto-text-muted mb-2">
                             Configure which apps appear in the folder "Open ▸"
                             menu. Toggle rows to enable/disable; click Edit to
@@ -5725,7 +5822,10 @@ export function SettingsDialog({
                                             setOpenInTargets((list) =>
                                               list.map((x) =>
                                                 x.id === t.id
-                                                  ? { ...x, label: e.target.value }
+                                                  ? {
+                                                      ...x,
+                                                      label: e.target.value,
+                                                    }
                                                   : x,
                                               ),
                                             )}
@@ -5740,7 +5840,10 @@ export function SettingsDialog({
                                           setOpenInTargets((list) =>
                                             list.map((x) =>
                                               x.id === t.id
-                                                ? { ...x, command: e.target.value }
+                                                ? {
+                                                    ...x,
+                                                    command: e.target.value,
+                                                  }
                                                 : x,
                                             ),
                                           )}
@@ -5789,6 +5892,54 @@ export function SettingsDialog({
                         </div>
                       </div>
                     `}
+                  </div>
+                `}
+
+                <!-- Dashboard Tab (mitto-w6b) -->
+                ${activeTab === "dashboard" &&
+                html`
+                  <div class="space-y-4">
+                    <p class="text-mitto-text-muted text-sm">
+                      Choose which charts appear on the Dashboard's Activity
+                      strip. At least one chart must remain visible.
+                    </p>
+                    ${hidingAllError &&
+                    html`
+                      <div
+                        class="alert alert-warning alert-sm text-sm"
+                        data-testid="dashboard-hiding-all-error"
+                      >
+                        ${hidingAllError}
+                      </div>
+                    `}
+                    <div
+                      class="rounded border border-mitto-border divide-y divide-mitto-border"
+                    >
+                      ${DASHBOARD_CHARTS.map(
+                        (c) => html`
+                          <div key=${c.id} class="flex items-center gap-3 p-3">
+                            <div class="flex-1 min-w-0">
+                              <div class="font-medium text-sm truncate">
+                                ${c.label}
+                              </div>
+                              <div
+                                class="text-xs text-mitto-text-muted truncate"
+                              >
+                                ${c.id}
+                              </div>
+                            </div>
+                            <input
+                              type="checkbox"
+                              class="checkbox checkbox-sm checkbox-primary"
+                              data-testid=${`dashboard-chart-toggle-${c.id}`}
+                              checked=${!hiddenCharts.includes(c.id)}
+                              onChange=${(e) =>
+                                toggleChart(c.id, e.target.checked)}
+                            />
+                          </div>
+                        `,
+                      )}
+                    </div>
                   </div>
                 `}
 
@@ -6195,8 +6346,7 @@ export function SettingsDialog({
         <div class="space-y-3 text-sm">
           <p>
             There are active conversations using
-            <span class="font-semibold"
-              >"${deleteBlockedInfo.serverName}"</span
+            <span class="font-semibold">"${deleteBlockedInfo.serverName}"</span
             >. Close or archive them first:
           </p>
           <ul class="space-y-1">
@@ -6250,14 +6400,10 @@ export function SettingsDialog({
         if (showToast && result) {
           const parts = [];
           if (result.reassigned_conversation_count) {
-            parts.push(
-              `${result.reassigned_conversation_count} reassigned`,
-            );
+            parts.push(`${result.reassigned_conversation_count} reassigned`);
           }
           if (result.deleted_conversation_count) {
-            parts.push(
-              `${result.deleted_conversation_count} deleted`,
-            );
+            parts.push(`${result.deleted_conversation_count} deleted`);
           }
           const detail = parts.length > 0 ? ` (${parts.join(", ")})` : "";
           showToast(
