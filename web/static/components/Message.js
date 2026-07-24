@@ -22,6 +22,7 @@ import { CopyIcon, CheckIcon } from "./Icons.js";
 import { Tooltip } from "./Tooltip.js";
 import { linkifyBeadsRefs } from "../utils/beadsLinkify.js";
 import { getBeadsKnownIds } from "../utils/beadsKnownIds.js";
+import { preloadBeadsIssues } from "../utils/beadsPreload.js";
 
 /**
  * Compute human-readable text for a session_change system message.
@@ -468,18 +469,26 @@ function MessageImpl({ message, isLast, isStreaming, onRetry }) {
           table.parentNode.insertBefore(wrapper, table);
           wrapper.appendChild(table);
         });
-        const { ids, meta } = getBeadsKnownIds(
-          window.mittoCurrentWorkspace || "",
+        const workingDir = window.mittoCurrentWorkspace || "";
+        const { ids, meta } = getBeadsKnownIds(workingDir);
+        const linkified = linkifyBeadsRefs(
+          userMessageRef.current,
+          ids,
+          meta,
         );
-        linkifyBeadsRefs(userMessageRef.current, ids, meta);
+        preloadBeadsIssues(linkified, workingDir);
       }
 
       const onBeadsUpdated = () => {
         if (userMessageRef.current && useMarkdown) {
-          const { ids, meta } = getBeadsKnownIds(
-            window.mittoCurrentWorkspace || "",
+          const workingDir = window.mittoCurrentWorkspace || "";
+          const { ids, meta } = getBeadsKnownIds(workingDir);
+          const linkified = linkifyBeadsRefs(
+            userMessageRef.current,
+            ids,
+            meta,
           );
-          linkifyBeadsRefs(userMessageRef.current, ids, meta);
+          preloadBeadsIssues(linkified, workingDir);
         }
       };
       window.addEventListener("beads-ids-updated", onBeadsUpdated);
@@ -594,19 +603,27 @@ function MessageImpl({ message, isLast, isStreaming, onRetry }) {
           window.renderMermaidDiagrams(agentMessageRef.current);
         }
 
-        // Linkify beads IDs
-        const { ids, meta } = getBeadsKnownIds(
-          window.mittoCurrentWorkspace || "",
+        // Linkify beads IDs and warm the show:<id> cache slot for each new link.
+        const workingDir = window.mittoCurrentWorkspace || "";
+        const { ids, meta } = getBeadsKnownIds(workingDir);
+        const linkified = linkifyBeadsRefs(
+          agentMessageRef.current,
+          ids,
+          meta,
         );
-        linkifyBeadsRefs(agentMessageRef.current, ids, meta);
+        preloadBeadsIssues(linkified, workingDir);
       }
 
       const onBeadsUpdated = () => {
         if (agentMessageRef.current) {
-          const { ids, meta } = getBeadsKnownIds(
-            window.mittoCurrentWorkspace || "",
+          const workingDir = window.mittoCurrentWorkspace || "";
+          const { ids, meta } = getBeadsKnownIds(workingDir);
+          const linkified = linkifyBeadsRefs(
+            agentMessageRef.current,
+            ids,
+            meta,
           );
-          linkifyBeadsRefs(agentMessageRef.current, ids, meta);
+          preloadBeadsIssues(linkified, workingDir);
         }
       };
       window.addEventListener("beads-ids-updated", onBeadsUpdated);
