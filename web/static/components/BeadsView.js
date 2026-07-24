@@ -524,6 +524,23 @@ export function BeadsIssueView({
     };
   }, [workingDir, currentIssueId, refreshNonce]);
 
+  // Auto-refresh the drawer when the backend fsnotify watcher reports external
+  // changes to .beads (agent bd close/update, sibling Mitto session, bd CLI,
+  // git pull, bd dolt pull). Mirrors the list view's listener at L1502-1511;
+  // scoped by working_dir to avoid a cross-workspace thundering refresh. Bumps
+  // refreshNonce so both the single-issue fetch above and the Subtasks list
+  // fetch below re-fire together.
+  useEffect(() => {
+    const handler = (e) => {
+      const dirs = e?.detail?.working_dirs;
+      if (!dirs || (Array.isArray(dirs) && dirs.includes(workingDir))) {
+        setRefreshNonce((n) => n + 1);
+      }
+    };
+    window.addEventListener("mitto:beads_changed", handler);
+    return () => window.removeEventListener("mitto:beads_changed", handler);
+  }, [workingDir]);
+
   // Fetch the full issue list so BeadsDetailPanel can derive subtasks for the
   // current issue. Re-fetched on refreshNonce so children stay current after a
   // status/defer/delete change. Non-fatal on failure: the single issue still

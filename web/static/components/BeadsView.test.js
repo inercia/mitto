@@ -1879,3 +1879,63 @@ describe("renderIssueRow bgTone — source guard (mitto-vqf)", () => {
     );
   });
 });
+
+// =============================================================================
+// mitto-19j: BeadsIssueView drawer must listen for mitto:beads_changed so the
+// single-issue drawer refreshes when the on-disk bead changes externally
+// (agent `bd close`/`bd update`, sibling Mitto session, `bd` CLI, `git pull`,
+// `bd dolt pull`). The outer list view already wires this at BeadsView.js
+// L1502-1511; the drawer branch was missed and silently ages out.
+//
+// The fix is a single effect in BeadsIssueView that adds a
+// `mitto:beads_changed` window listener scoped by `working_dir` and bumps
+// `refreshNonce` (which already re-fires the /api/issues/{id} fetch at L525
+// and the sibling /api/issues list fetch at L551).
+//
+// Mirrors the source-inspection convention used for mitto-zbfq / mitto-n5mw
+// above: a pure DOM/render test of BeadsView is impractical because
+// BeadsView.js imports window.preact globals at module load time.
+
+describe("mitto-19j: BeadsIssueView listens for mitto:beads_changed", () => {
+  const source = readFileSync(BEADS_VIEW_PATH, "utf8");
+
+  // Isolate the BeadsIssueView function body so the assertion does not
+  // accidentally match the outer BeadsView list-view listener at L1502
+  // (which is not the code under test here).
+  function extractBeadsIssueViewSource() {
+    const startMarker = "function BeadsIssueView(";
+    const startIdx = source.indexOf(startMarker);
+    expect(startIdx).toBeGreaterThan(-1);
+    const afterStart = source.indexOf(
+      "\nfunction ",
+      startIdx + startMarker.length,
+    );
+    const endIdx = afterStart === -1 ? source.length : afterStart;
+    return source.slice(startIdx, endIdx);
+  }
+
+  test("BeadsIssueView registers a mitto:beads_changed window listener", () => {
+    const body = extractBeadsIssueViewSource();
+
+    // The listener must be registered inside BeadsIssueView (not just at the
+    // outer BeadsView list-view). Accept both `addEventListener` and
+    // `window.addEventListener` spellings so the test does not couple to
+    // formatting choices.
+    expect(body).toMatch(
+      /(window\.)?addEventListener\(\s*["']mitto:beads_changed["']/,
+    );
+  });
+
+  test("BeadsIssueView listener is scoped by working_dir (no cross-workspace refetch)", () => {
+    const body = extractBeadsIssueViewSource();
+
+    // Acceptance criterion: cross-workspace events must NOT trigger a
+    // refetch. The listener must therefore consult `working_dirs` from the
+    // event detail and gate on the current `workingDir`.
+    expect(body).toMatch(/working_dirs/);
+    // And it must funnel back into the refresh mechanism the two data-fetch
+    // effects already depend on (refreshNonce).
+    expect(body).toMatch(/setRefreshNonce/);
+  });
+});
+
