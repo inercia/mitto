@@ -63,16 +63,17 @@ prompt: |
   {{ if .Session.BeadsIssue }}{{ $target = .Session.BeadsIssue }}{{ else if .Args.IssueID }}{{ $target = .Args.IssueID }}{{ end -}}
   {{ $ts := .Args.MentionTS -}}
   {{ $commit := eq .Args.Commit "true" -}}
-  {{ if $target -}}
-  The **target bead** for this run is `{{ $target }}`{{ if .Session.BeadsIssue }} (from this conversation's linked beads issue — durable across loop runs){{ else }} (supplied as the `IssueID` argument){{ end }}.
-  {{ if $ts -}}Mention timestamp (dedup key): `{{ $ts }}`.{{- end }}
-  Commit-after-implement is **{{ if $commit }}enabled{{ else }}disabled{{ end }}** (`Commit` argument).
-  {{- else -}}
-  No target bead is resolvable (neither `.Session.BeadsIssue` nor an `IssueID` argument
-  was supplied). Do not guess. Post a `mitto_ui_notify` explaining the missing target,
-  report failure to the parent via `mitto_children_tasks_report`, disable this
-  conversation's loop, and stop.
-  {{- end }}
+  {{ $suffix := "" -}}
+  {{ if $ts }}{{ $suffix = printf "Mention timestamp (dedup key): `%s`." $ts }}{{ end -}}
+  {{ if $commit }}{{ $suffix = printf "%s\nCommit-after-implement is **enabled** (`Commit` argument)." $suffix }}{{ else }}{{ $suffix = printf "%s\nCommit-after-implement is **disabled** (`Commit` argument)." $suffix }}{{ end -}}
+  {{ template "_shared/beads/target-bead-header-strict" (dict
+      "Target"      $target
+      "Scope"       "for this run"
+      "FromLink"    (ne .Session.BeadsIssue "")
+      "LinkNote"    "durable across loop runs"
+      "PhaseSuffix" $suffix
+      "FailStop"    "report failure to the parent via `mitto_children_tasks_report`, disable this conversation's loop, and stop."
+  ) }}
 
   ## Step 0 — Silent mode
 

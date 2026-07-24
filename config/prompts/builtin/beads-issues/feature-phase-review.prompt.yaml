@@ -32,14 +32,14 @@ prompt: |
   {{ $target := "" -}}
   {{ if .Session.BeadsIssue }}{{ $target = .Session.BeadsIssue }}{{ else if .Args.IssueID }}{{ $target = .Args.IssueID }}{{ end -}}
   {{ $commit := eq .Args.Commit "true" -}}
-  {{ if $target -}}
-  The **target feature** for this phase is `{{ $target }}`{{ if .Session.BeadsIssue }} (from this conversation's linked beads issue){{ else }} (supplied as the `IssueID` argument){{ end }}.
-  Commit-after-review is **{{ if $commit }}enabled{{ else }}disabled{{ end }}** (`Commit` argument).
-  {{- else -}}
-  No target feature is resolvable (neither `.Session.BeadsIssue` nor an `IssueID`
-  argument was supplied). Do not guess. Post a `mitto_ui_notify` explaining the missing
-  target, then stop this phase without changing anything.
-  {{- end }}
+  {{ $suffix := "Commit-after-review is **disabled** (`Commit` argument)." -}}
+  {{ if $commit }}{{ $suffix = "Commit-after-review is **enabled** (`Commit` argument)." }}{{ end -}}
+  {{ template "_shared/beads/target-bead-header-strict" (dict
+      "Target"      $target
+      "Noun"        "target feature"
+      "FromLink"    (ne .Session.BeadsIssue "")
+      "PhaseSuffix" $suffix
+  ) }}
 
   {{ if $target -}}
   ## Tier check
