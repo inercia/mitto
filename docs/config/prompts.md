@@ -825,6 +825,7 @@ target:
     issue: true                        # requires the request to carry beads_issue
     title: true                        # requires title above; funnels by Name match
     coalesce: true                     # skip dispatch when an identical prompt is already in flight/queued
+  suppressAutoChildren: true           # skip workspace auto_children for creates originated by this prompt
 ```
 
 ### Fields
@@ -833,12 +834,13 @@ target:
 reuse-mode flags live under `target.reuse`; an absent `reuse:` block is
 equivalent to all three off.
 
-| Field             | Type   | Description |
-| ----------------- | ------ | ----------- |
-| `title`           | string | Canonical name for the conversation. Rendered as a Go text/template at dispatch (context: `.Args`, `.Session.BeadsIssue`, `.Workspace.Folder`). When `reuse.title` is `true`, the **rendered** string is also the lookup key. When the caller omits an explicit name and this prompt originates a new conversation, the created conversation's Name is set to the rendered title. Empty or whitespace-only renders are rejected at dispatch. |
-| `reuse.issue`     | bool   | When `true` and the request carries a `beads_issue`, funnel into an existing non-archived conversation with the same `beads_issue` in the same `working_dir`. |
-| `reuse.title`     | bool   | When `true` (requires non-empty `title`), funnel into an existing non-archived conversation in the same `working_dir` whose `Name` equals the rendered `title` (byte-for-byte, case-sensitive). On miss, create with `Name = title` so a subsequent scan matches. |
-| `reuse.coalesce`  | bool   | When `true`, suppresses a dispatch to the reused conversation when an identical prompt (same `prompt_name` and `arguments`) is already queued or currently in flight. The caller still gets a `{"reused": true, "coalesced": true}` response so it can focus the target, but no duplicate work is enqueued. Requires at least one reuse mode (`reuse.issue`, `reuse.title`, or top-level `singleton: true`). Nil/absent = behavior unchanged (every dispatch is delivered). |
+| Field                  | Type   | Description |
+| ---------------------- | ------ | ----------- |
+| `title`                | string | Canonical name for the conversation. Rendered as a Go text/template at dispatch (context: `.Args`, `.Session.BeadsIssue`, `.Workspace.Folder`). When `reuse.title` is `true`, the **rendered** string is also the lookup key. When the caller omits an explicit name and this prompt originates a new conversation, the created conversation's Name is set to the rendered title. Empty or whitespace-only renders are rejected at dispatch. |
+| `reuse.issue`          | bool   | When `true` and the request carries a `beads_issue`, funnel into an existing non-archived conversation with the same `beads_issue` in the same `working_dir`. |
+| `reuse.title`          | bool   | When `true` (requires non-empty `title`), funnel into an existing non-archived conversation in the same `working_dir` whose `Name` equals the rendered `title` (byte-for-byte, case-sensitive). On miss, create with `Name = title` so a subsequent scan matches. |
+| `reuse.coalesce`       | bool   | When `true`, suppresses a dispatch to the reused conversation when an identical prompt (same `prompt_name` and `arguments`) is already queued or currently in flight. The caller still gets a `{"reused": true, "coalesced": true}` response so it can focus the target, but no duplicate work is enqueued. Requires at least one reuse mode (`reuse.issue`, `reuse.title`, or top-level `singleton: true`). Nil/absent = behavior unchanged (every dispatch is delivered). |
+| `suppressAutoChildren` | bool   | When `true`, a new top-level conversation created via `POST /api/sessions` from this prompt skips the workspace-level [`auto_children`](auto-children.md) spawn. Create-time only; orthogonal to the reuse modes. Defaults to `false` (unchanged behavior: workspace `auto_children` spawn as configured). Use for narrow one-shot prompts — e.g. "review this PR", "answer a question" — where the reviewer/linter pair would add cost and noise without value. |
 
 The legacy flat form (`target.reuseIssue` / `target.reuseTitle` /
 `target.reuseCoalesce`) is no longer accepted (mitto-6b3, no backwards

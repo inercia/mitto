@@ -357,6 +357,7 @@ target:
     issue: true             # requires the request to carry beads_issue
     title: true             # requires title above; funnels by Name match
     coalesce: true          # skip dispatch when an identical prompt is already in flight/queued
+  suppressAutoChildren: true # skip workspace auto_children on top-level creates from this prompt
 ```
 
 ### Fields
@@ -366,12 +367,13 @@ reuse-mode flags live under `target.reuse`; an absent `reuse:` block is
 equivalent to all three off (`issue: false`, `title: false`,
 `coalesce: unset`).
 
-| Field             | Type   | Description                                                                                                          |
-| ----------------- | ------ | -------------------------------------------------------------------------------------------------------------------- |
-| `title`           | string | Canonical name for the conversation. When `reuse.title` is true, also the lookup key. When the caller omits an explicit name and this prompt originates a new conversation, the created conversation's Name is set to this value. |
-| `reuse.issue`     | bool   | When true and the request carries a `beads_issue`, funnel into an existing non-archived conversation with the same `beads_issue` in the same `working_dir`. |
-| `reuse.title`     | bool   | When true (requires non-empty `title`), funnel into an existing non-archived conversation in the same `working_dir` whose `Name` equals `title` (byte-for-byte, case-sensitive). On miss, create with `Name = title` so a subsequent scan matches. |
-| `reuse.coalesce`  | \*bool | When true, suppresses a dispatch to the reused conversation when an identical prompt (same `PromptName` and `Arguments`, deep-equal treating nil and empty maps as equivalent) is already queued or currently in flight on that conversation. The second dispatch becomes a no-op — the caller still gets `{"session_id": existingID, "reused": true, "coalesced": true}` so it can focus the target, but no duplicate work is enqueued. Free-text (empty `PromptName`) dispatches never coalesce. Requires at least one reuse mode (`reuse.issue`, `reuse.title`, or top-level `singleton: true`). Defaults to nil (behavior unchanged: every dispatch is delivered). |
+| Field                  | Type   | Description                                                                                                          |
+| ---------------------- | ------ | -------------------------------------------------------------------------------------------------------------------- |
+| `title`                | string | Canonical name for the conversation. When `reuse.title` is true, also the lookup key. When the caller omits an explicit name and this prompt originates a new conversation, the created conversation's Name is set to this value. |
+| `reuse.issue`          | bool   | When true and the request carries a `beads_issue`, funnel into an existing non-archived conversation with the same `beads_issue` in the same `working_dir`. |
+| `reuse.title`          | bool   | When true (requires non-empty `title`), funnel into an existing non-archived conversation in the same `working_dir` whose `Name` equals `title` (byte-for-byte, case-sensitive). On miss, create with `Name = title` so a subsequent scan matches. |
+| `reuse.coalesce`       | \*bool | When true, suppresses a dispatch to the reused conversation when an identical prompt (same `PromptName` and `Arguments`, deep-equal treating nil and empty maps as equivalent) is already queued or currently in flight on that conversation. The second dispatch becomes a no-op — the caller still gets `{"session_id": existingID, "reused": true, "coalesced": true}` so it can focus the target, but no duplicate work is enqueued. Free-text (empty `PromptName`) dispatches never coalesce. Requires at least one reuse mode (`reuse.issue`, `reuse.title`, or top-level `singleton: true`). Defaults to nil (behavior unchanged: every dispatch is delivered). |
+| `suppressAutoChildren` | bool   | When true, the REST create path (`POST /api/sessions`) skips the workspace-level [`auto_children`](../config/auto-children.md) goroutine for creates originating from this prompt — the `if !opts.SuppressAutoChildren { go sm.createAutoChildren(...) }` guard in `SessionManager.CreateSessionWithWorkspaceAndOptions`. Create-time only; orthogonal to the reuse modes (no `ValidatePromptTarget` cross-field rule). Resolved from the merged prompt list by `Server.resolveSuppressAutoChildrenByPromptName` (`internal/web/server.go`) and plumbed through `CreateSessionOptions`. MCP `mitto_conversation_new` never spawns auto-children (its create path uses `ParentSessionID` + `ResumeSession`, bypassing the spawn goroutine entirely), so the flag has no effect there today; the MCP mirror is a documented future symmetry point (mitto-nlx). Defaults to false. |
 
 `ValidatePromptTarget` (`internal/prompts/prompts.go`) is run by
 `ParsePromptFile` at load time and rejects prompts that set
