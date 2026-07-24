@@ -457,7 +457,7 @@ func TestConversationStart_TargetTitle_WithoutReuseTitle_CallerTitleWins(t *test
 // TestConversationStart_TargetTitle_TemplateRendered verifies mitto-5qbo: a
 // prompt whose target.title is a Go text/template renders against the
 // caller-supplied Arguments before it becomes the conversation Name and (with
-// reuseTitle: true) the FindConversationByTitle lookup key. Two dispatches
+// reuse.title: true) the FindConversationByTitle lookup key. Two dispatches
 // with different .Args.IssueID must open two distinct conversations named
 // "<id>: work"; a second dispatch with the same IssueID must funnel back.
 func TestConversationStart_TargetTitle_TemplateRendered(t *testing.T) {

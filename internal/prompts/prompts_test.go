@@ -502,6 +502,91 @@ prompt: hi
 	}
 }
 
+// TestParsePromptFile_LegacyReuseKeysRejected pins mitto-6b3: the three
+// pre-refactor flat keys under target: — reuseIssue / reuseTitle /
+// reuseCoalesce — must fail ParsePromptFile with a migration error naming the
+// new nested path. If they were merely ignored (the permissive struct
+// unmarshal's default), a migration miss would silently degrade dispatch
+// behavior in every builtin and every user prompt.
+func TestParsePromptFile_LegacyReuseKeysRejected(t *testing.T) {
+	cases := []struct {
+		name    string
+		body    string
+		wantOld string
+		wantNew string
+	}{
+		{
+			name: "reuseIssue",
+			body: `name: "x"
+target:
+  reuseIssue: true
+prompt: hi
+`,
+			wantOld: "target.reuseIssue",
+			wantNew: "target.reuse.issue",
+		},
+		{
+			name: "reuseTitle",
+			body: `name: "x"
+target:
+  title: "x"
+  reuseTitle: true
+prompt: hi
+`,
+			wantOld: "target.reuseTitle",
+			wantNew: "target.reuse.title",
+		},
+		{
+			name: "reuseCoalesce",
+			body: `name: "x"
+target:
+  reuseCoalesce: true
+prompt: hi
+`,
+			wantOld: "target.reuseCoalesce",
+			wantNew: "target.reuse.coalesce",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := ParsePromptFile("legacy.prompt.yaml", []byte(tc.body), time.Now())
+			if err == nil {
+				t.Fatalf("ParsePromptFile: err = nil, want migration error naming %s", tc.wantOld)
+			}
+			msg := err.Error()
+			if !strings.Contains(msg, tc.wantOld) {
+				t.Errorf("error %q does not mention legacy key %q", msg, tc.wantOld)
+			}
+			if !strings.Contains(msg, tc.wantNew) {
+				t.Errorf("error %q does not point at new nested path %q", msg, tc.wantNew)
+			}
+		})
+	}
+}
+
+// TestParsePromptFile_LegacyReuseMentionInBodyIsIgnored pins mitto-6b3: the
+// legacy-key rejection walks the document root's target: mapping only, so a
+// prompt body (or any other scalar) that happens to mention the string
+// "reuseTitle" as prose must NOT trip the check.
+func TestParsePromptFile_LegacyReuseMentionInBodyIsIgnored(t *testing.T) {
+	data := []byte(`name: "prose"
+target:
+  title: "ok"
+  reuse:
+    title: true
+prompt: |
+  Historical note: this prompt used to declare reuseTitle: true at the
+  flat position; it now nests under target.reuse.title.
+`)
+	prompt, err := ParsePromptFile("prose.prompt.yaml", data, time.Now())
+	if err != nil {
+		t.Fatalf("ParsePromptFile: %v (prose mention should not trip legacy-key check)", err)
+	}
+	if prompt.Target == nil || prompt.Target.Reuse == nil || !prompt.Target.Reuse.Title {
+		t.Errorf("Target.Reuse.Title = %+v, want true", prompt.Target)
+	}
+}
+
 func TestParsePromptFile_WithoutTarget(t *testing.T) {
 	data := []byte(`name: "plain"
 prompt: hi
@@ -2536,14 +2621,15 @@ func TestBuiltinPrompt_GithubReviewPR_ParameterIsPascalCase(t *testing.T) {
 
 // TestBuiltinPrompts_SingletonMigratedToTargetReuseTitle pins mitto-y0l2:
 // the six builtin beads-* prompts that historically declared `singleton: true`
-// must now declare `target: { title: "<name>", reuseTitle: true }` and must NOT
-// declare `singleton: true` any longer. The target.title must equal the prompt's
-// current `name:` verbatim so any pre-existing singleton conversation (whose
-// title is the prompt name today, per FindSingletonCandidate) continues to be
-// funneled by FindConversationByTitle after the migration — no duplicate spawn.
+// must now declare `target: { title: "<name>", reuse: { title: true } }` and
+// must NOT declare `singleton: true` any longer. The target.title must equal
+// the prompt's current `name:` verbatim so any pre-existing singleton
+// conversation (whose title is the prompt name today, per
+// FindSingletonCandidate) continues to be funneled by FindConversationByTitle
+// after the migration — no duplicate spawn.
 //
 // Guards against silent regressions like: (a) somebody re-adding singleton to
-// one of these files, (b) target.title drifting away from name, (c) reuseTitle
+// one of these files, (b) target.title drifting away from name, (c) reuse.title
 // being flipped off. Machinery for the target block itself is exercised by
 // TestValidatePromptTarget and the reuse tests under internal/session and
 // internal/web/handlers.
@@ -2597,7 +2683,7 @@ func TestBuiltinPrompts_SingletonMigratedToTargetReuseTitle(t *testing.T) {
 // pin above: since all shipped builtins are expected to have moved off the
 // legacy `singleton: true` field, no builtin under config/prompts/builtin/
 // should declare it. If a new builtin needs single-conversation reuse it must
-// use `target: { title, reuseTitle: true }` instead.
+// use `target: { title, reuse: { title: true } }` instead.
 func TestBuiltinPrompts_NoSingletonRemains(t *testing.T) {
 	builtinDir := filepath.Join("..", "..", "config", "prompts", "builtin")
 	entries, err := os.ReadDir(builtinDir)
@@ -2615,14 +2701,14 @@ func TestBuiltinPrompts_NoSingletonRemains(t *testing.T) {
 			continue
 		}
 		if bytes.Contains(data, []byte("\nsingleton:")) {
-			t.Errorf("%s: declares legacy `singleton:` — use target.reuseTitle instead (mitto-y0l2)", e.Name())
+			t.Errorf("%s: declares legacy `singleton:` — use target.reuse.title instead (mitto-y0l2)", e.Name())
 		}
 		prompt, err := ParsePromptFile(e.Name(), data, time.Now())
 		if err != nil {
 			continue // parse errors already reported by TestBuiltinPromptsParseClean
 		}
 		if prompt.Singleton {
-			t.Errorf("%s: parsed Singleton = true — use target.reuseTitle instead (mitto-y0l2)", e.Name())
+			t.Errorf("%s: parsed Singleton = true — use target.reuse.title instead (mitto-y0l2)", e.Name())
 		}
 	}
 }
@@ -2631,13 +2717,13 @@ func TestBuiltinPrompts_NoSingletonRemains(t *testing.T) {
 // today-tier support-* builtin prompts must declare target/reuse routing so
 // repeat dispatches funnel back into the right existing conversation instead
 // of spawning parallels. Four per-ticket prompts route by beads issue
-// (target.reuseIssue: true), and the workspace-wide housekeeping prompt
+// (target.reuse.issue: true), and the workspace-wide housekeeping prompt
 // routes by literal title (target.title: "Support: housekeeping" +
-// target.reuseTitle: true). All five must set target.reuseCoalesce: true so
+// target.reuse.title: true). All five must set target.reuse.coalesce: true so
 // concurrent dispatches join instead of racing.
 //
 // Guards against silent regressions like: (a) somebody removing a target
-// block from one of these files, (b) reuseCoalesce being flipped off, (c)
+// block from one of these files, (b) reuse.coalesce being flipped off, (c)
 // the housekeeping literal title drifting away from the fixed workspace-wide
 // value. Machinery for the target block itself is exercised by
 // TestValidatePromptTarget and the reuse tests under internal/session and
@@ -2646,7 +2732,7 @@ func TestBuiltinPrompts_SupportRoutingAdoption(t *testing.T) {
 	builtinDir := filepath.Join("..", "..", "config", "prompts", "builtin")
 	type spec struct {
 		file          string
-		wantReuseByID bool   // target.reuseIssue: true
+		wantReuseByID bool   // target.reuse.issue: true
 		wantTitle     string // literal target.title (only when reuseByID is false)
 	}
 	specs := []spec{
@@ -2845,16 +2931,16 @@ func TestBuiltinPrompts_TodayTierRoutingAdoption(t *testing.T) {
 // TestBuiltinPrompts_SupportRoutingAdoption (mitto-5x21.1).
 //
 // Single bucket (perExternalIDWithCoalesce): templated target.title +
-// reuseTitle: true + reuseCoalesce: true, reuseIssue: false. The literal title
-// string carried in Target.Title is the un-rendered template (rendering happens
-// at dispatch); asserting on the exact template literal pins both the field
-// name (e.g. SlackChannelID vs slack_channel_id) and the surrounding text
-// (e.g. "Support: continue " vs "Support: watch ").
+// reuse.title: true + reuse.coalesce: true, reuse.issue: false. The literal
+// title string carried in Target.Title is the un-rendered template (rendering
+// happens at dispatch); asserting on the exact template literal pins both the
+// field name (e.g. SlackChannelID vs slack_channel_id) and the surrounding
+// text (e.g. "Support: continue " vs "Support: watch ").
 //
 // Guards against silent regressions like: (a) somebody removing a target block
-// from one of these files, (b) reuseCoalesce being flipped off, (c) the
+// from one of these files, (b) reuse.coalesce being flipped off, (c) the
 // templated title drifting to a different arg name or literal shape, (d)
-// reuseIssue being flipped on (which would silently override the templated
+// reuse.issue being flipped on (which would silently override the templated
 // per-ID bucket with per-bead routing).
 func TestBuiltinPrompts_NeedsTemplatedTitleAdoption(t *testing.T) {
 	builtinDir := filepath.Join("..", "..", "config", "prompts", "builtin")
