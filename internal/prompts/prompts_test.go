@@ -601,6 +601,101 @@ prompt: hi
 	}
 }
 
+// TestParsePromptFile_WithTargetSuppressAutoChildren pins mitto-nlx: the
+// new target.suppressAutoChildren key parses under target: as a peer of
+// title / reuse, survives the round-trip through ToWebPrompt so HTTP
+// handlers can resolve it without re-parsing the file, and defaults to
+// false when absent (opt-in flag, unchanged behavior).
+func TestParsePromptFile_WithTargetSuppressAutoChildren(t *testing.T) {
+	data := []byte(`name: "no-children"
+target:
+  suppressAutoChildren: true
+prompt: hi
+`)
+
+	prompt, err := ParsePromptFile("suppress.prompt.yaml", data, time.Now())
+	if err != nil {
+		t.Fatalf("ParsePromptFile failed: %v", err)
+	}
+	if prompt.Target == nil {
+		t.Fatal("Target = nil, want non-nil")
+	}
+	if !prompt.Target.SuppressAutoChildren {
+		t.Errorf("Target.SuppressAutoChildren = false, want true")
+	}
+	// Round-trips through ToWebPrompt so the resolver can read it off the
+	// merged WebPrompt list without re-parsing.
+	wp := prompt.ToWebPrompt()
+	if wp.Target == nil {
+		t.Fatal("WebPrompt.Target = nil, want non-nil")
+	}
+	if !wp.Target.SuppressAutoChildren {
+		t.Errorf("WebPrompt.Target.SuppressAutoChildren = false, want true")
+	}
+}
+
+// TestParsePromptFile_TargetSuppressAutoChildrenAbsentDefaultsFalse pins
+// mitto-nlx: absent suppressAutoChildren must decode to the zero value
+// (false), so existing prompts that only declare target.title or
+// target.reuse.* keep unchanged auto-children behavior.
+func TestParsePromptFile_TargetSuppressAutoChildrenAbsentDefaultsFalse(t *testing.T) {
+	data := []byte(`name: "titled"
+target:
+  title: "Only a title"
+prompt: hi
+`)
+
+	prompt, err := ParsePromptFile("titled.prompt.yaml", data, time.Now())
+	if err != nil {
+		t.Fatalf("ParsePromptFile failed: %v", err)
+	}
+	if prompt.Target == nil {
+		t.Fatal("Target = nil, want non-nil")
+	}
+	if prompt.Target.SuppressAutoChildren {
+		t.Errorf("Target.SuppressAutoChildren = true, want false (absent must default to false)")
+	}
+	wp := prompt.ToWebPrompt()
+	if wp.Target == nil || wp.Target.SuppressAutoChildren {
+		t.Errorf("WebPrompt.Target.SuppressAutoChildren = %+v, want false", wp.Target)
+	}
+}
+
+// TestParsePromptFile_TargetSuppressAutoChildrenJSONRoundTrip pins
+// mitto-nlx: the flag survives a JSON round-trip through WebPrompt so
+// callers that receive the merged prompt list (frontend, resolver, MCP
+// tool-list handlers) see it under the "suppressAutoChildren" JSON key.
+func TestParsePromptFile_TargetSuppressAutoChildrenJSONRoundTrip(t *testing.T) {
+	data := []byte(`name: "no-children"
+target:
+  suppressAutoChildren: true
+prompt: hi
+`)
+
+	prompt, err := ParsePromptFile("suppress.prompt.yaml", data, time.Now())
+	if err != nil {
+		t.Fatalf("ParsePromptFile failed: %v", err)
+	}
+	wp := prompt.ToWebPrompt()
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(wp); err != nil {
+		t.Fatalf("json.Encode(WebPrompt): %v", err)
+	}
+	body := buf.String()
+	if !strings.Contains(body, `"suppressAutoChildren":true`) {
+		t.Errorf("JSON body missing suppressAutoChildren:true key; got %s", body)
+	}
+
+	var round WebPrompt
+	if err := json.NewDecoder(bytes.NewReader(buf.Bytes())).Decode(&round); err != nil {
+		t.Fatalf("json.Decode(WebPrompt): %v", err)
+	}
+	if round.Target == nil || !round.Target.SuppressAutoChildren {
+		t.Errorf("round-tripped WebPrompt.Target.SuppressAutoChildren = %+v, want true", round.Target)
+	}
+}
+
 func TestParsePromptFile_WithoutSingleton(t *testing.T) {
 	data := []byte(`name: "Plain Prompt"
 prompt: |
@@ -1511,6 +1606,53 @@ func TestValidatePromptTarget(t *testing.T) {
 		// template is fine because the fast-path skips parsing.
 		tgt := &PromptTarget{Title: "Weekly triage — Q3", Reuse: &PromptTargetReuse{Title: true}}
 		if err := ValidatePromptTarget("p", tgt, false); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	// --- SuppressAutoChildren validation (mitto-nlx). The flag is a
+	// create-time hint orthogonal to the reuse modes and has no cross-field
+	// requirements, so every combination — alone, with title, with reuse
+	// modes, alongside singleton — must be accepted. ---
+
+	t.Run("suppressAutoChildren alone is valid", func(t *testing.T) {
+		tgt := &PromptTarget{SuppressAutoChildren: true}
+		if err := ValidatePromptTarget("p", tgt, false); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("suppressAutoChildren with title is valid", func(t *testing.T) {
+		tgt := &PromptTarget{Title: "Cleanup", SuppressAutoChildren: true}
+		if err := ValidatePromptTarget("p", tgt, false); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("suppressAutoChildren with reuse.issue is valid", func(t *testing.T) {
+		tgt := &PromptTarget{
+			Reuse:                &PromptTargetReuse{Issue: true},
+			SuppressAutoChildren: true,
+		}
+		if err := ValidatePromptTarget("p", tgt, false); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("suppressAutoChildren with reuse.title+title is valid", func(t *testing.T) {
+		tgt := &PromptTarget{
+			Title:                "Weekly triage",
+			Reuse:                &PromptTargetReuse{Title: true},
+			SuppressAutoChildren: true,
+		}
+		if err := ValidatePromptTarget("p", tgt, false); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("suppressAutoChildren with promptSingleton is valid", func(t *testing.T) {
+		tgt := &PromptTarget{SuppressAutoChildren: true}
+		if err := ValidatePromptTarget("p", tgt, true); err != nil {
 			t.Errorf("unexpected error: %v", err)
 		}
 	})
