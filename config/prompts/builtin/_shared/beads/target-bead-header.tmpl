@@ -1,0 +1,52 @@
+{{/*
+  target-bead-header — the visible "target bead" preamble used by every
+  beads-issues prompt that follows the flexible "linked bead OR fallback to
+  the current conversation topic" convention (assess, discuss, investigate,
+  resolved, status, work, mention-phase-*, mention-driver, and future
+  consumers). Complements `_shared/beads/target-bead-header-strict.tmpl`,
+  which is used by phase/driver prompts that REQUIRE a resolved target and
+  bail via `mitto_ui_notify` when one is missing.
+
+  Callers first resolve the target into a local `$target` variable, then
+  invoke this fragment with a dict of parameters:
+
+      {{ $target := "" -}}
+      {{ if .Session.BeadsIssue }}{{ $target = .Session.BeadsIssue }}
+      {{ else if .Args.IssueID }}{{ $target = .Args.IssueID }}{{ end -}}
+
+      {{ template "_shared/beads/target-bead-header" (dict
+          "Target"   $target
+          "Noun"     "target bead"
+          "Role"     "help the user **think through and refine** this bead ..."
+          "NoTarget" "Help the user **think through and refine the current problem** ..."
+      ) }}
+
+  Parameters:
+    Target   — the resolved bead ID (empty string when no bead is linked).
+    Noun     — the noun used to refer to the bead (default: "target bead";
+               callers use "target feature" / "target bug" / "target bead
+               for this phase" depending on their family).
+    Role     — the "Your job is …" clause that follows the "The <noun> is
+               `<id>`." sentence. Optional; when empty the fragment emits
+               just the terse "The <noun> is `<id>`." (matching `status`
+               and `work`, whose per-step guidance follows immediately).
+    NoTarget — the entire fallback paragraph rendered when Target is empty
+               (starts after the required "There is **no linked bead** for
+               this conversation." sentence, which the fragment always
+               emits — pass just your prompt-specific continuation).
+
+  The fragment renders one of two branches:
+    * Target non-empty: "The <noun> is `<id>`.<Role>"
+    * Target empty:     "There is **no linked bead** for this
+                         conversation. <NoTarget>"
+
+  It is self-contained (balanced `{{ if }}/{{ end }}`), so it is safe to
+  invoke wherever a paragraph is expected in the caller.
+*/}}
+{{- $noun := "target bead" -}}
+{{- with .Noun }}{{ $noun = . }}{{ end -}}
+{{- if .Target -}}
+The **{{ $noun }}** is `{{ .Target }}`.{{ with .Role }} {{ . }}{{ end }}
+{{- else -}}
+There is **no linked bead** for this conversation. {{ .NoTarget }}
+{{- end }}

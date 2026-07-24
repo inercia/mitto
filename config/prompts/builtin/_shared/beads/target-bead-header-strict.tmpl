@@ -1,0 +1,89 @@
+{{/*
+  target-bead-header-strict — the visible "target bead" preamble used by
+  every beads-issues **phase** / **loop-driver** prompt that REQUIRES a
+  resolved target and refuses to guess when one is missing. Complements
+  `_shared/beads/target-bead-header.tmpl`, which supports the flexible
+  "linked bead OR fallback to the current conversation topic" convention.
+
+  Consumers: feature-phase-plan / -implement / -test / -review,
+  fix-phase-reproduce / -investigate / -fix (all Pattern B).
+  The loop drivers (loop-fixing-bug, loop-implementing-feature) use a
+  different missing-target fallback (`mitto_ui_options` in Interaction
+  Mode, `mitto_ui_notify` in silent mode) and stay inline.
+
+  Callers first resolve the target into a local `$target` variable, then
+  invoke this fragment:
+
+      {{ $target := "" -}}
+      {{ if .Session.BeadsIssue }}{{ $target = .Session.BeadsIssue }}
+      {{ else if .Args.IssueID }}{{ $target = .Args.IssueID }}{{ end -}}
+      {{ $commit := eq .Args.Commit "true" -}}
+
+      {{ $suffix := "" -}}
+      {{ if $commit }}{{ $suffix = "Commit-after-fix is **enabled** (`Commit` argument)." -}}
+      {{ else }}{{ $suffix = "Commit-after-fix is **disabled** (`Commit` argument)." }}{{ end -}}
+      {{ template "_shared/beads/target-bead-header-strict" (dict
+          "Target"      $target
+          "Noun"        "target bug"
+          "FromLink"    (ne .Session.BeadsIssue "")
+          "PhaseSuffix" $suffix
+      ) }}
+
+  Parameters:
+    Target      — the resolved bead ID (empty string when no bead is linked
+                  and no `IssueID` argument was supplied).
+    Noun        — the noun used to refer to the bead ("target bug" /
+                  "target feature" / "target bead"). Default: "target bead".
+    Scope       — the "for this X" clause after the noun ("for this phase"
+                  by default; mention-driver uses "for this run").
+    FromLink    — bool; true when the bead was resolved from
+                  `.Session.BeadsIssue`, false when supplied via `IssueID`.
+                  Callers typically pass `(ne .Session.BeadsIssue "")`.
+    LinkNote    — optional trailing clarifier inserted inside the "from this
+                  conversation's linked beads issue — <note>" parenthetical
+                  (only rendered when FromLink is true; used by
+                  mention-driver to add "durable across loop runs").
+    PhaseSuffix — an optional trailing sentence appended after the
+                  "The <noun> <scope> is `<id>` …" line, typically used to
+                  surface the Commit-after-X toggle or a MentionTS line.
+                  Omit or pass empty for phases without a suffix.
+    FailStop    — the final clause of the missing-target sentence, starting
+                  after "Post a `mitto_ui_notify` explaining the missing
+                  target, ". Default: "then stop this phase without
+                  changing anything." mention-driver overrides this to
+                  report failure to the parent and disable the loop.
+
+  Branches:
+    * Target non-empty:
+        "The <noun> for this phase is `<id>` (from this conversation's
+         linked beads issue) | (supplied as the `IssueID` argument).
+         <PhaseSuffix>"
+    * Target empty:
+        "No <noun> is resolvable (neither `.Session.BeadsIssue` nor an
+         `IssueID` argument was supplied). Do not guess. Post a
+         `mitto_ui_notify` explaining the missing target, then stop this
+         phase without changing anything."
+
+  The fragment is self-contained (balanced `{{ if }}/{{ end }}`), so it is
+  safe to invoke wherever a paragraph is expected in the caller. It reads
+  `.Session.BeadsIssue` from the OUTER template's dot; because a template
+  call replaces dot with the passed dict, the fragment stashes the caller's
+  dot via `$` (root) — but we simplify by NOT introspecting the source and
+  letting the caller pass a `FromLink` boolean directly.
+*/}}
+{{- $noun := "target bead" -}}
+{{- with .Noun }}{{ $noun = . }}{{ end -}}
+{{- $scope := "for this phase" -}}
+{{- with .Scope }}{{ $scope = . }}{{ end -}}
+{{- $linkNote := "" -}}
+{{- with .LinkNote }}{{ $linkNote = . }}{{ end -}}
+{{- $failStop := "then stop this phase without changing anything." -}}
+{{- with .FailStop }}{{ $failStop = . }}{{ end -}}
+{{- if .Target -}}
+The **{{ $noun }}** {{ $scope }} is `{{ .Target }}`{{ if .FromLink }} (from this conversation's linked beads issue{{ if $linkNote }} — {{ $linkNote }}{{ end }}){{ else }} (supplied as the `IssueID` argument){{ end }}.
+{{- with .PhaseSuffix }}
+{{ . }}
+{{- end }}
+{{- else -}}
+No {{ $noun }} is resolvable (neither `.Session.BeadsIssue` nor an `IssueID` argument was supplied). Do not guess. Post a `mitto_ui_notify` explaining the missing target, {{ $failStop }}
+{{- end }}
