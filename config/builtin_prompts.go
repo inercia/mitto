@@ -11,6 +11,23 @@ import (
 	"strings"
 )
 
+// isBuiltinManagedFile reports whether a file inside the builtin prompt tree is
+// managed by the deployer (deployed, updated, and pruned) as opposed to being
+// left alone. Two extensions are managed today, both by design co-located in the
+// same directory tree (mitto-g61.2):
+//
+//   - `*.prompt.yaml` — full prompt definitions.
+//   - `*.tmpl`        — reusable prompt fragments attached at render time.
+//
+// User-dropped files with unrelated extensions in MITTO_DIR/prompts/builtin/
+// are ignored by both the walk and the prune, so they survive intact. Legacy
+// pre-migration `*.md` files are NOT part of the managed set here — they are
+// handled by the prune step as a one-way stale-cleanup case, since they never
+// appear in the embedded FS.
+func isBuiltinManagedFile(name string) bool {
+	return strings.HasSuffix(name, ".prompt.yaml") || strings.HasSuffix(name, ".tmpl")
+}
+
 // DeployBuiltinPromptsResult contains the result of deploying builtin prompts.
 type DeployBuiltinPromptsResult struct {
 	// Deployed is the list of files that were deployed.
@@ -45,7 +62,7 @@ func DeployBuiltinPrompts(targetDir string, force bool) (*DeployBuiltinPromptsRe
 		if d.IsDir() {
 			return nil
 		}
-		if !strings.HasSuffix(d.Name(), ".prompt.yaml") {
+		if !isBuiltinManagedFile(d.Name()) {
 			return nil
 		}
 
@@ -118,7 +135,7 @@ func EnsureBuiltinPrompts(targetDir string) (bool, error) {
 		if d.IsDir() {
 			return nil
 		}
-		if !strings.HasSuffix(d.Name(), ".prompt.yaml") {
+		if !isBuiltinManagedFile(d.Name()) {
 			return nil
 		}
 
@@ -157,11 +174,12 @@ func EnsureBuiltinPrompts(targetDir string) (bool, error) {
 		return deployed, fmt.Errorf("failed to walk embedded prompts directory: %w", walkErr)
 	}
 
-	// Prune orphaned builtin prompts: the builtin directory is fully managed by
-	// Mitto, so any deployed .prompt.yaml file not present in the embedded set is stale
-	// (e.g. a prompt that was consolidated or removed in a newer build). Legacy
-	// old-format *.md builtin files left over from pre-migration versions are always
-	// stale (the embedded set is *.prompt.yaml only) and are removed as well.
+	// Prune orphaned builtin files: the builtin directory is fully managed by
+	// Mitto, so any deployed managed file (*.prompt.yaml or *.tmpl) not present in
+	// the embedded set is stale (e.g. a prompt/fragment that was consolidated or
+	// removed in a newer build). Legacy old-format *.md builtin files left over
+	// from pre-migration versions are always stale (the embedded set is
+	// *.prompt.yaml / *.tmpl only) and are removed as well.
 	// Walk the target tree recursively so stale nested files are also pruned.
 	pruneErr := filepath.WalkDir(targetDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -171,9 +189,8 @@ func EnsureBuiltinPrompts(targetDir string) (bool, error) {
 			return nil
 		}
 		name := d.Name()
-		isPromptYAML := strings.HasSuffix(name, ".prompt.yaml")
 		isLegacyMD := strings.HasSuffix(name, ".md")
-		if !isPromptYAML && !isLegacyMD {
+		if !isBuiltinManagedFile(name) && !isLegacyMD {
 			return nil
 		}
 		// Compute rel-path (forward slashes) for the embedded lookup. Legacy
@@ -232,6 +249,11 @@ func EnsureBuiltinPrompts(targetDir string) (bool, error) {
 // Rel-paths use forward slashes and are rooted at BuiltinPromptsDir, so a
 // top-level prompt appears as `foo.prompt.yaml` and a nested one as
 // `beads/foo.prompt.yaml`. The list is walked recursively (mitto-j88.1).
+//
+// Scope: prompts only (*.prompt.yaml). Co-located fragments (*.tmpl) are
+// returned by ListEmbeddedFragments — see mitto-g61.2 for the split rationale
+// (menus/PromptsCache callers want prompts only; deploy tests / diagnostics
+// that want the full managed set can union both lists).
 func ListEmbeddedPrompts() ([]string, error) {
 	var filenames []string
 	err := fs.WalkDir(BuiltinPromptsFS, BuiltinPromptsDir, func(path string, d fs.DirEntry, err error) error {
@@ -242,6 +264,36 @@ func ListEmbeddedPrompts() ([]string, error) {
 			return nil
 		}
 		if !strings.HasSuffix(d.Name(), ".prompt.yaml") {
+			return nil
+		}
+		filenames = append(filenames, strings.TrimPrefix(path, BuiltinPromptsDir+"/"))
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to walk embedded prompts directory: %w", err)
+	}
+	return filenames, nil
+}
+
+// ListEmbeddedFragments returns the list of embedded builtin fragment rel-paths
+// (*.tmpl files co-located in the same directory tree as prompts, mitto-g61.2).
+// Rel-paths use forward slashes and are rooted at BuiltinPromptsDir, so a
+// top-level fragment appears as `foo.tmpl` and a nested one as
+// `github/pr-comments.tmpl`. The list is walked recursively.
+//
+// Fragments are structurally hidden from the prompt loader (which filters
+// strictly by `.prompt.yaml`), so they never enter PromptsCache, menus, or
+// action shortcuts — but the deployer manages them alongside prompts.
+func ListEmbeddedFragments() ([]string, error) {
+	var filenames []string
+	err := fs.WalkDir(BuiltinPromptsFS, BuiltinPromptsDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		if !strings.HasSuffix(d.Name(), ".tmpl") {
 			return nil
 		}
 		filenames = append(filenames, strings.TrimPrefix(path, BuiltinPromptsDir+"/"))
