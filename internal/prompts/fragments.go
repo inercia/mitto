@@ -1,6 +1,7 @@
 package prompts
 
 import (
+	"bytes"
 	"fmt"
 	"io/fs"
 	"log/slog"
@@ -179,10 +180,11 @@ func validateFragmentName(name string) error {
 }
 
 // validateFragmentBody parse-checks a fragment body for valid Go text/template
-// syntax WITHOUT executing it. Mirrors ValidatePromptTemplateSyntax but installs
-// the same Cond/When stub used by PrecompileTemplateConds so CEL literals do
-// not need a live evaluator at load time. A fragment body is standalone until
-// attached to a caller, so we only Parse — never Execute.
+// syntax AND compiles any Cond/When CEL literals. Mirrors the
+// PrecompileTemplateConds pattern: install a condStub that compiles (but does
+// not evaluate) each literal, then Parse + Execute against an empty
+// PromptEnabledContext with missingkey=zero so the stub is actually invoked
+// for every Cond/When call site.
 func validateFragmentBody(name, body string) error {
 	if !HasTemplateSyntax(body) {
 		return nil
@@ -201,8 +203,13 @@ func validateFragmentBody(name, body string) error {
 	fm["Cond"] = condStub
 	fm["When"] = condStub
 
-	if _, err := template.New(name).Option("missingkey=zero").Funcs(fm).Parse(body); err != nil {
+	t, err := template.New(name).Option("missingkey=zero").Funcs(fm).Parse(body)
+	if err != nil {
 		return fmt.Errorf("fragment %q: parse error: %w", name, err)
+	}
+	var buf bytes.Buffer
+	if err := t.Execute(&buf, &cel.PromptEnabledContext{}); err != nil {
+		return fmt.Errorf("fragment %q: cond precompile: %w", name, err)
 	}
 	return nil
 }
