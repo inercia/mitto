@@ -1496,6 +1496,20 @@ func TestFollowupWork_ThreeModeTargetResolution(t *testing.T) {
 func TestInteractionMode_ConditionalRendering(t *testing.T) {
 	builtinDir := "../../config/prompts/builtin"
 
+	// Install the on-disk fragment registry so ParsePromptFile can resolve
+	// `{{ template "github/pr-comments" . }}` at parse-time precompile
+	// (mitto-g61.4). Restored on cleanup.
+	prev := CurrentFragments()
+	t.Cleanup(func() { SetCurrentFragments(prev) })
+	reg, loadErrs, err := LoadFragmentsFromDir(builtinDir)
+	if err != nil {
+		t.Fatalf("LoadFragmentsFromDir(builtin): %v", err)
+	}
+	if len(loadErrs) != 0 {
+		t.Fatalf("LoadFragmentsFromDir(builtin) per-file errors: %+v", loadErrs)
+	}
+	SetCurrentFragments(reg)
+
 	// silentMarker/interactiveMarker are substrings that appear ONLY in the
 	// silent / interactive branch of the top "Interaction Mode" block of each
 	// prompt (verified to not occur elsewhere in the file as prose).
@@ -2750,6 +2764,20 @@ func TestPhasePrompts_TierTaggedCommentPrefix(t *testing.T) {
 // block at all.
 func TestBuiltinPromptLoopModes(t *testing.T) {
 	builtinDir := "../../config/prompts/builtin"
+
+	// Install the on-disk fragment registry so ParsePromptFile can resolve
+	// `{{ template "github/pr-comments" . }}` at parse-time precompile
+	// (mitto-g61.4). Restored on cleanup.
+	prev := CurrentFragments()
+	t.Cleanup(func() { SetCurrentFragments(prev) })
+	reg, loadErrs, err := LoadFragmentsFromDir(builtinDir)
+	if err != nil {
+		t.Fatalf("LoadFragmentsFromDir(builtin): %v", err)
+	}
+	if len(loadErrs) != 0 {
+		t.Fatalf("LoadFragmentsFromDir(builtin) per-file errors: %+v", loadErrs)
+	}
+	SetCurrentFragments(reg)
 
 	boolPtr := func(b bool) *bool { return &b }
 

@@ -2676,6 +2676,19 @@ func TestBuiltinPromptsParseClean(t *testing.T) {
 	if _, err := os.Stat(builtinDir); err != nil {
 		t.Skipf("builtin prompts dir not found at %s: %v", builtinDir, err)
 	}
+	// Install the on-disk fragment registry so ParsePromptFile can resolve
+	// `{{ template "name" . }}` refs at parse-time precompile (mitto-g61.4).
+	// Restored on cleanup so nil-baseline tests remain unaffected.
+	prev := CurrentFragments()
+	t.Cleanup(func() { SetCurrentFragments(prev) })
+	reg, loadErrs, ferr := LoadFragmentsFromDir(builtinDir)
+	if ferr != nil {
+		t.Fatalf("LoadFragmentsFromDir(builtin): %v", ferr)
+	}
+	if len(loadErrs) != 0 {
+		t.Fatalf("LoadFragmentsFromDir(builtin) per-file errors: %+v", loadErrs)
+	}
+	SetCurrentFragments(reg)
 	loaded := 0
 	walkErr := filepath.WalkDir(builtinDir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
@@ -2955,6 +2968,20 @@ func TestBuiltinPrompts_SupportRoutingAdoption(t *testing.T) {
 // reuseCoalesce being flipped ON for 2c, (d) a 2d literal title drifting.
 func TestBuiltinPrompts_TodayTierRoutingAdoption(t *testing.T) {
 	builtinDir := filepath.Join("..", "..", "config", "prompts", "builtin")
+	// Install the on-disk fragment registry so ParsePromptFile can resolve
+	// `{{ template "github/pr-comments" . }}` at parse-time precompile
+	// (mitto-g61.4). Restored on cleanup so parallel/subsequent tests that
+	// expect the nil-registry baseline are unaffected.
+	prev := CurrentFragments()
+	t.Cleanup(func() { SetCurrentFragments(prev) })
+	reg, loadErrs, err := LoadFragmentsFromDir(builtinDir)
+	if err != nil {
+		t.Fatalf("LoadFragmentsFromDir(builtin): %v", err)
+	}
+	if len(loadErrs) != 0 {
+		t.Fatalf("LoadFragmentsFromDir(builtin) per-file errors: %+v", loadErrs)
+	}
+	SetCurrentFragments(reg)
 	type bucket int
 	const (
 		perBeadWithCoalesce   bucket = iota // 2a + 2b

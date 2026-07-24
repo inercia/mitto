@@ -475,51 +475,7 @@ prompt: |
   silently ignore):
 
   ```
-  mitto_conversation_new(self_id: "{{ .Session.ID }}",
-    title: "Address review comments on PR #<number>: <title>",
-    initial_prompt: "PR #<number> (<title>) in <owner/repo> has <count> unresolved review threads.
-
-      Working-copy mode: <WORKING_MODE>  ('local' = reuse repo path as-is;
-                                            'worktree' = create a fresh worktree, do NOT touch the main checkout)
-      Repo path:         <WORKING_PATH>
-      PR branch:         <headRefName>   (head commit <PR_HEAD>)
-      Base branch:       <baseRefName>
-
-      Unresolved threads (JSON, one object per thread — id / path / line / author / body):
-      <THREADS_JSON>
-
-      For EACH thread you MUST do exactly one of:
-        (a) Apply a code fix that addresses the comment, then reply to the
-            thread on the PR referencing the commit that fixed it.
-        (b) Reply to the thread with a concrete reason it will not be fixed
-            (e.g., 'out of scope for this PR — filed as beads mitto-XXX',
-            'disagree with reviewer because <reason>', 'already addressed in
-            commit abc123', etc.).
-      Never silently skip a thread. Never mark a thread resolved without either
-      a code fix or a substantive reply.
-
-      Working-copy rules:
-        - If 'local': operate directly in the given repo path. Never leave
-          uncommitted files behind; if anything is dirty at start, abort and
-          switch to worktree mode.
-        - If 'worktree': create a fresh worktree with
-            git -C <WORKING_PATH> fetch origin <headRefName>
-            TMPDIR=\$(mktemp -d) && git -C <WORKING_PATH> worktree add \"\$TMPDIR\" origin/<headRefName>
-          Do all edits inside \$TMPDIR. Never modify files under
-          <WORKING_PATH> itself; the user may be working there.
-
-      To post a reply on a review thread, use the GraphQL addPullRequestReviewThreadReply mutation
-      (or 'gh api /repos/{owner}/{repo}/pulls/{number}/comments' with in_reply_to=<thread's first comment id>).
-      To mark it resolved, use the resolveReviewThread mutation with the thread id from the JSON.
-
-      Local gate before pushing: run the project's format → lint → unit → integration
-      steps (whatever the repo's Makefile or docs specify) and only push once
-      they all pass. Force-push with --force-with-lease.
-
-      When done, either mark all threads resolved (if fixed) or leave them
-      unresolved with your reply comment (if pushed back). Report back with a
-      per-thread summary: which threads got fixed vs replied-only.",
-    acp_server: <prefer "coding" or "fast" tagged server>)
+  {{ template "github/pr-comments" . }}
   ```
 
   ### 3e. Stale PR detection

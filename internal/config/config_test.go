@@ -2907,6 +2907,23 @@ func TestBuiltinPrompts_ModelTagsAreCanonical(t *testing.T) {
 		canonical[strings.ToLower(tag)] = struct{}{}
 	}
 
+	// Install the on-disk fragment registry so ParsePromptFile can resolve
+	// `{{ template "name" . }}` refs at parse-time precompile (mitto-g61.4).
+	// Restored on cleanup so nil-baseline tests remain unaffected.
+	builtinDiskDir := filepath.Join("..", "..", "config", "prompts", "builtin")
+	if _, err := os.Stat(builtinDiskDir); err == nil {
+		prev := CurrentFragments()
+		t.Cleanup(func() { SetCurrentFragments(prev) })
+		reg, loadErrs, ferr := LoadFragmentsFromDir(builtinDiskDir)
+		if ferr != nil {
+			t.Fatalf("LoadFragmentsFromDir(builtin): %v", ferr)
+		}
+		if len(loadErrs) != 0 {
+			t.Fatalf("LoadFragmentsFromDir(builtin) per-file errors: %+v", loadErrs)
+		}
+		SetCurrentFragments(reg)
+	}
+
 	// Walk the embedded builtin prompts recursively so nested subgroups
 	// (Phase B of mitto-j88) are validated too, not just the flat top level.
 	var unknown []string

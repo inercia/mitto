@@ -33,6 +33,10 @@ type PromptsWatcher = prompts.PromptsWatcher
 // --- Types (migrate.go) ---
 type MigratedPrompt = prompts.MigratedPrompt
 
+// --- Types (fragments.go, mitto-g61) ---
+type FragmentRegistry = prompts.FragmentRegistry
+type FragmentLoadError = prompts.FragmentLoadError
+
 // --- Constants ---
 const (
 	PromptSourceFile       = prompts.PromptSourceFile
@@ -79,4 +83,10 @@ var (
 	MigrateMarkdownPromptsInDir               = prompts.MigrateMarkdownPromptsInDir
 	MergePrompts                              = prompts.MergePrompts
 	MergePromptsKeepDisabled                  = prompts.MergePromptsKeepDisabled
+	// --- Fragments (mitto-g61) ---
+	NewFragmentRegistry     = prompts.NewFragmentRegistry
+	LoadFragmentsFromDir    = prompts.LoadFragmentsFromDir
+	ReloadFragmentsFromDirs = prompts.ReloadFragmentsFromDirs
+	CurrentFragments        = prompts.CurrentFragments
+	SetCurrentFragments     = prompts.SetCurrentFragments
 )

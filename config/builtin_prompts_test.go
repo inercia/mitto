@@ -130,13 +130,19 @@ func TestDeployBuiltinPrompts_PreservesSubdirectoryStructure(t *testing.T) {
 		}
 	}
 
-	// Every rel-path Deploy claimed it wrote must match one embedded rel-path.
-	// Deploy's report vocabulary is the same forward-slash rel-path set.
+	// Every prompt rel-path Deploy claimed it wrote must match one embedded
+	// prompt rel-path. Deploy's report vocabulary is a union of the prompt
+	// and fragment sets (mitto-g61.2), so we filter Deployed down to
+	// `.prompt.yaml` entries — fragments (`.tmpl`) are covered separately by
+	// TestDeployBuiltinPrompts_DeploysEmbeddedFragments.
 	embeddedSet := make(map[string]struct{}, len(embedded))
 	for _, r := range embedded {
 		embeddedSet[r] = struct{}{}
 	}
 	for _, rel := range result.Deployed {
+		if !hasSuffix(rel, ".prompt.yaml") {
+			continue
+		}
 		if _, ok := embeddedSet[rel]; !ok {
 			t.Errorf("Deploy reported %q but it is not in the embedded rel-path set", rel)
 		}
