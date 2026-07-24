@@ -192,6 +192,15 @@ func ValidatePromptTemplateSyntax(name, body string) error {
 // missingkey=zero: a missing MAP key renders as "" (like an absent .Args key); struct
 // field typos still produce an error. No HTML escaping (text/template).
 //
+// If a fragment registry is installed via SetCurrentFragments, each fragment is
+// attached to the template set as an associated sub-template before the caller
+// body is parsed, so `{{ template "name" . }}` in the body resolves. A nil
+// registry (default until bootstrap installs one) skips attachment entirely and
+// preserves pre-fragment behavior bytewise. Fragment bodies are validated at
+// load time (LoadFragmentsFromDir) but re-parsed here per render since Go's
+// text/template does not expose a "clone parsed set" primitive that composes
+// cleanly with a per-call FuncMap.
+//
 // name is used only in error messages (use the prompt name when available).
 // data is the render context (later: *PromptEnabledContext). funcs may be nil.
 // Returns the rendered string, or a non-nil error on parse/exec failure
@@ -200,8 +209,15 @@ func RenderPromptTemplate(name, body string, data any, funcs template.FuncMap) (
 	if !HasTemplateSyntax(body) {
 		return body, nil
 	}
-	t, err := template.New(name).Option("missingkey=zero").Funcs(funcs).Parse(body)
-	if err != nil {
+	t := template.New(name).Option("missingkey=zero").Funcs(funcs)
+	if frags := CurrentFragments(); frags != nil {
+		for fragName, fragBody := range frags.All() {
+			if _, err := t.New(fragName).Parse(fragBody); err != nil {
+				return "", fmt.Errorf("prompt template %q: fragment %q parse: %w", name, fragName, err)
+			}
+		}
+	}
+	if _, err := t.Parse(body); err != nil {
 		return "", fmt.Errorf("prompt template %q: parse error: %w", name, err)
 	}
 	var buf bytes.Buffer

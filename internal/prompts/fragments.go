@@ -269,3 +269,34 @@ func (r *FragmentRegistry) Merge(other *FragmentRegistry) {
 		r.entries[k] = v
 	}
 }
+
+// currentFragments is the package-level singleton holding the fragment registry
+// consulted by RenderPromptTemplate at render time. It is intentionally kept
+// nil-safe: callers of CurrentFragments may receive nil, and RenderPromptTemplate
+// treats a nil registry as "no fragments installed" (attach loop skipped, behavior
+// bytewise-identical to pre-fragment renders).
+//
+// The singleton is set once at startup by the bootstrap that loads prompt
+// directories (fs-watcher wiring is mitto-g61.5). Tests install a synthetic
+// registry via SetCurrentFragments and restore via t.Cleanup so isolation is
+// preserved across parallel test runs.
+var (
+	currentFragmentsMu sync.RWMutex
+	currentFragments   *FragmentRegistry
+)
+
+// CurrentFragments returns the currently-installed fragment registry, or nil if
+// no registry has been installed. Callers must nil-check the return value.
+func CurrentFragments() *FragmentRegistry {
+	currentFragmentsMu.RLock()
+	defer currentFragmentsMu.RUnlock()
+	return currentFragments
+}
+
+// SetCurrentFragments installs r as the process-wide fragment registry consulted
+// by RenderPromptTemplate. Pass nil to clear (useful in test teardown).
+func SetCurrentFragments(r *FragmentRegistry) {
+	currentFragmentsMu.Lock()
+	defer currentFragmentsMu.Unlock()
+	currentFragments = r
+}
