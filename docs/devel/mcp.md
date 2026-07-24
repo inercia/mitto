@@ -274,24 +274,40 @@ Send a prompt to another conversation's queue. Requires `can_send_prompt` flag o
 
 #### `mitto_conversation_wait`
 
-Wait until something happens in a conversation. Currently supports `agent_responded` — blocks until the agent finishes responding. Returns immediately if the condition is already met (e.g., agent is not currently responding).
+Wait until something happens in a conversation. Two conditions are supported:
 
-| Parameter         | Type   | Required | Description                                                                                                                                                              |
-| ----------------- | ------ | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `self_id`         | string | Yes      | YOUR session ID (the caller)                                                                                                                                             |
-| `conversation_id` | string | Yes      | Target conversation to wait on                                                                                                                                           |
-| `what`            | string | Yes      | Condition to wait for: `"agent_responded"`                                                                                                                               |
-| `timeout_seconds` | int    | No       | Timeout in seconds (default: 600)                                                                                                                                        |
-| `workspace`       | string | No       | Optional workspace UUID. When provided, validates the target conversation belongs to the specified workspace and triggers user confirmation for cross-workspace access. |
+- `agent_responded` — blocks until the target conversation's ACP agent finishes
+  responding. Returns immediately if the agent is not currently responding.
+- `beads_issues_reached_state` — blocks until one or more beads issues reach a
+  target bd status (e.g. `closed`). Fast-path resolves via a batched `bd list`
+  query; slow-path subscribes to the shared beads watcher and re-evaluates on
+  each debounced filesystem event, with a 30 s poll safety net. Returns
+  immediately if the predicate is already satisfied.
+
+| Parameter            | Type     | Required | Description                                                                                                                                                              |
+| -------------------- | -------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `self_id`            | string   | Yes      | YOUR session ID (the caller)                                                                                                                                             |
+| `conversation_id`    | string   | Yes      | Target conversation to wait on (used for working_dir resolution when `what = "beads_issues_reached_state"`)                                                              |
+| `what`               | string   | Yes      | Condition to wait for: `"agent_responded"` or `"beads_issues_reached_state"`                                                                                             |
+| `timeout_seconds`    | int      | No       | Timeout in seconds (default: 600 for `agent_responded`; default: 14400 / 4 h for `beads_issues_reached_state`)                                                          |
+| `workspace`          | string   | No       | Optional workspace UUID. When provided, validates the target conversation belongs to the specified workspace and triggers user confirmation for cross-workspace access. |
+| `beads_issues`       | string[] | Cond.    | Required when `what = "beads_issues_reached_state"`: the bead IDs to observe.                                                                                            |
+| `beads_target_state` | string   | Cond.    | Required when `what = "beads_issues_reached_state"`: the bd status to wait for (e.g. `"closed"`, `"in_progress"`). Case-insensitive.                                     |
+| `beads_match`        | string   | No       | Aggregation for `beads_issues_reached_state`: `"all"` (default) completes only when every listed bead reaches `beads_target_state`; `"any"` completes as soon as one does. |
 
 Returns:
 
-| Field       | Description                                            |
-| ----------- | ------------------------------------------------------ |
-| `success`   | Whether the wait completed successfully                |
-| `what`      | The condition that was waited on                       |
-| `timed_out` | true if the condition was not met within the timeout   |
-| `error`     | Error message if the operation failed                  |
+| Field            | Description                                                                                                          |
+| ---------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `success`        | Whether the wait completed successfully                                                                              |
+| `what`           | The condition that was waited on                                                                                     |
+| `timed_out`      | true if the condition was not met within the timeout                                                                 |
+| `still_prompting`| true if the target agent is still responding at timeout (only meaningful for `agent_responded`)                       |
+| `message`        | Human-readable description of the wait outcome                                                                       |
+| `error`          | Error message if the operation failed                                                                                |
+| `reached_issues` | Subset of `beads_issues` that satisfied the predicate (populated when `what = "beads_issues_reached_state"`)          |
+| `pending_issues` | Subset of `beads_issues` that did NOT reach the target state at return time (typically populated on timeout)         |
+| `current_states` | Snapshot of `id -> current bd status` at return time                                                                 |
 
 #### `mitto_ui_options`
 

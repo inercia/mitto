@@ -72,7 +72,7 @@ These tools require the **"Can Send Prompt"** flag or appropriate permissions:
 | --------------------------------- | -------------------------------------------------------------------------------------- |
 | `mitto_conversation_archive`      | Archive or unarchive a conversation                                                    |
 | `mitto_conversation_delete`       | Delete a child conversation (caller must be parent)                                    |
-| `mitto_conversation_wait`         | Wait until an event occurs in a conversation (e.g., agent finishes responding)         |
+| `mitto_conversation_wait`         | Wait until an event occurs in a conversation (agent finishes responding, or beads issues reach a target status) |
 | `mitto_conversation_update`       | Update conversation properties: title, user-defined metadata, and loop prompt configuration. |
 
 ### Parent-Child Task Coordination Tools
