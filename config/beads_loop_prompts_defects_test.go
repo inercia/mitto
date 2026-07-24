@@ -203,3 +203,101 @@ func TestBeadsLoopPrompts_Defects_mitto_i5k_BranchOrder(t *testing.T) {
 		}
 	}
 }
+
+// TestBeadsLoopPrompts_Defects_mitto9mk_WorkspaceScopedConcurrencyGate is the
+// failing reproduction test for mitto-9mk: the L1 orchestrator's "1 active
+// driver" concurrency gate in §B / §C is scoped to the session's OWN children
+// via `{{ .Children.MCPText }}` instead of to the whole workspace. When a user
+// (or a peer script) starts a second "Loop processing tasks" conversation in
+// the same workspace, each instance sees only its own children, so BOTH can
+// spawn a Fix/Implement driver on the same pass — the workspace-wide invariant
+// "at most one active Fix/Implement driver" is silently broken.
+//
+// The structural fix is to phrase the §B and §C concurrency gates in terms of
+// a workspace-scoped call — `mitto_conversation_list(workspace: "{{ .Workspace.UUID }}", ...)`
+// filtered on titles starting with `Fix ` / `Implement ` and non-terminal
+// status — rather than the session-local `.Children.MCPText`. Same rule for
+// the "Skip beads with active conversations" guard later in the file: it must
+// consult the workspace-wide conversation list, not the per-session child list.
+//
+// This test fails on the current YAML (both §B and §C count active drivers via
+// `.Children.MCPText`; the skip-active-beads guard also reads it), and will
+// flip green once the concurrency-gate and active-bead-skip paragraphs are
+// rewritten to use `mitto_conversation_list` with a workspace filter.
+func TestBeadsLoopPrompts_Defects_mitto9mk_WorkspaceScopedConcurrencyGate(t *testing.T) {
+	const mergedOrch = "beads-issue-loop-processing.prompt.yaml"
+
+	body, err := fs.ReadFile(BuiltinPromptsFS, BuiltinPromptsDir+"/"+mergedOrch)
+	if err != nil {
+		t.Fatalf("read embedded prompt %s: %v", mergedOrch, err)
+	}
+	src := string(body)
+
+	// Slice out each concurrency-gate paragraph by its section heading and the
+	// next `## ` heading, so we assert on the specific paragraph rather than
+	// the whole file (which legitimately references `.Children.MCPText` in the
+	// §A dedup and Step 2P reap paragraphs).
+	sliceSection := func(marker string) string {
+		start := strings.Index(src, marker)
+		if start < 0 {
+			t.Fatalf("%s: section marker %q not found — test needs updating to match the current prompt body", mergedOrch, marker)
+		}
+		rest := src[start:]
+		end := strings.Index(rest[len(marker):], "\n  ## ")
+		if end < 0 {
+			return rest
+		}
+		return rest[:len(marker)+end]
+	}
+
+	sectionB := sliceSection("## §B — Fix ONE bug")
+	sectionC := sliceSection("## §C — Implement ONE feature")
+
+	// Gate 1: §B concurrency-gate paragraph must NOT count via `.Children.MCPText`
+	// (per-caller scope defeats the workspace-wide 1-driver invariant).
+	if strings.Contains(sectionB, ".Children.MCPText") {
+		t.Errorf("[mitto-9mk §B concurrency-gate is per-caller] §B still counts active drivers via `.Children.MCPText`; that field only lists children spawned by THIS orchestrator session. Two parallel `Loop processing tasks` sessions in the same workspace both see count=0 and both spawn — violating the workspace-wide `1 active driver` invariant. Rewrite the gate to use `mitto_conversation_list(self_id, workspace: \"{{ .Workspace.UUID }}\", is_running: true, archived: false)` filtered on titles starting with `Fix ` / `Implement `")
+	}
+
+	// Gate 2: §C concurrency-gate paragraph must NOT count via `.Children.MCPText`.
+	if strings.Contains(sectionC, ".Children.MCPText") {
+		t.Errorf("[mitto-9mk §C concurrency-gate is per-caller] §C still counts active drivers via `.Children.MCPText`; same failure mode as §B — two parallel orchestrator sessions both spawn simultaneously. Rewrite the gate to reference `mitto_conversation_list` with a `workspace: \"{{ .Workspace.UUID }}\"` filter so the count is workspace-scoped")
+	}
+
+	// Gate 3: §B / §C concurrency-gate paragraphs MUST call `mitto_conversation_list`
+	// (the only workspace-scoped enumeration primitive), otherwise the "fix" is
+	// still per-session.
+	if !strings.Contains(sectionB, "mitto_conversation_list") {
+		t.Errorf("[mitto-9mk §B concurrency-gate not workspace-scoped] §B does not reference `mitto_conversation_list`; without a workspace-scoped enumeration the gate cannot see peer orchestrator sessions' children. Instruct the orchestrator to call `mitto_conversation_list(self_id: \"{{ .Session.ID }}\", workspace: \"{{ .Workspace.UUID }}\", is_running: true, archived: false)` and count entries whose `title` starts with `Fix ` or `Implement `")
+	}
+	if !strings.Contains(sectionC, "mitto_conversation_list") {
+		t.Errorf("[mitto-9mk §C concurrency-gate not workspace-scoped] §C does not reference `mitto_conversation_list`; same fix as §B — the concurrency gate MUST enumerate via the workspace-scoped API for the `1 active driver` invariant to be enforced across parallel orchestrator sessions")
+	}
+
+	// Gate 4: the "Skip beads with active conversations" guard (later in the
+	// Guidelines section) must also be workspace-scoped, otherwise two
+	// orchestrators can each dispatch the SAME bead to a Fix/Implement driver
+	// on the same pass. Locate the paragraph by its bold header.
+	// After the mitto-9mk fix the bullet is renamed to
+	// "**Skip beads with active conversations (workspace-scoped).**"; accept
+	// either form so this assertion also protects against a regression that
+	// silently reverts the header to the per-caller wording.
+	skipMarker := "**Skip beads with active conversations (workspace-scoped).**"
+	if !strings.Contains(src, skipMarker) {
+		skipMarker = "**Skip beads with active conversations.**"
+	}
+	skipStart := strings.Index(src, skipMarker)
+	if skipStart < 0 {
+		t.Fatalf("%s: skip-active-beads marker %q not found — test needs updating", mergedOrch, skipMarker)
+	}
+	// Paragraph runs until the next blank line + list bullet.
+	skipRest := src[skipStart:]
+	skipEnd := strings.Index(skipRest, "\n  - **")
+	if skipEnd < 0 {
+		skipEnd = len(skipRest)
+	}
+	skipPara := skipRest[:skipEnd]
+	if strings.Contains(skipPara, ".Children.MCPText") {
+		t.Errorf("[mitto-9mk skip-active-beads is per-caller] the `Skip beads with active conversations` guideline still consults `.Children.MCPText`; a peer orchestrator's active child on the same bead is invisible, so both sessions can dispatch the same bead in one pass. Rewrite this guideline to consult `mitto_conversation_list(workspace: \"{{ .Workspace.UUID }}\", archived: false)` for the workspace-wide active-bead set")
+	}
+}
