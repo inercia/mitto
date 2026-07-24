@@ -6,6 +6,7 @@ package mcpserver
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -475,12 +476,16 @@ func (s *Server) handleBeadsIssuesReachedState(
 	// Progress heartbeat keeps the SSE stream alive during long waits.
 	defer s.startProgressHeartbeat(ctx, req)()
 
-	// Subscribe to the watcher when available; fall back to polling.
+	// Subscribe to the watcher when available; fall back to polling. Watch the
+	// workspace's .beads/ subdirectory — the watcher's fsnotify Add is non-
+	// recursive, so subscribing on the workspace root would miss the writes
+	// inside .beads/ that indicate an issue-state change.
 	sub := &beadsWaitSubscriber{wake: make(chan struct{}, 1)}
 	if bw != nil {
-		if err := bw.Subscribe(sub, []string{workingDir}); err != nil {
+		beadsDir := filepath.Join(workingDir, ".beads")
+		if err := bw.Subscribe(sub, []string{beadsDir}); err != nil {
 			s.logger.Warn("Beads wait: failed to subscribe to watcher, falling back to poll",
-				"error", err, "working_dir", workingDir)
+				"error", err, "beads_dir", beadsDir)
 		} else {
 			defer bw.Unsubscribe(sub)
 		}

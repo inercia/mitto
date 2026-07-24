@@ -1,17 +1,24 @@
 // Tests for the "beads_issues_reached_state" branch of mitto_conversation_wait.
-// Verifies: fast path (predicate already satisfied), slow path (predicate
-// satisfied after a subsequent Statuses call), timeout, the "any" match
-// strategy, and input validation errors.
+// Verifies: fast path (predicate already satisfied), deadline-driven slow path
+// (predicate satisfied after a subsequent Statuses call), timeout, the "any"
+// match strategy, input validation errors, and the fs-event slow path — real
+// BeadsWatcher wake-up on a .beads/ change, correct subscribe/unsubscribe
+// lifecycle (no watcher touch on fast path, no leaked subscriber on
+// completion or context cancellation).
 package mcpserver
 
 import (
 	"context"
+	"log/slog"
+	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/inercia/mitto/internal/beads"
+	beadswatcher "github.com/inercia/mitto/internal/beads/watcher"
 	"github.com/inercia/mitto/internal/session"
 )
 
@@ -314,5 +321,223 @@ func TestConversationWait_BeadsNoClient(t *testing.T) {
 	}
 	if output.Error == "" {
 		t.Fatal("expected error when beads client is not wired")
+	}
+}
+
+// setupBeadsWaitWithWatcher wires the wait-branch fake client together with a
+// real BeadsWatcher rooted at a fresh temp workspace whose caller session's
+// WorkingDir points at that workspace's root. The workspace's .beads/ dir is
+// created empty so the watcher can add its fsnotify watch immediately (the
+// parent-fallback path is exercised by its own unit tests in the watcher
+// package). Returns the workspace root so tests can drive fs events by writing
+// into <workspace>/.beads/.
+func setupBeadsWaitWithWatcher(
+	t *testing.T,
+	initial map[string]string,
+) (srv *Server, callerID, workspace string, fake *fakeBeadsClient, bw *beadswatcher.BeadsWatcher) {
+	t.Helper()
+
+	srv, callerID, fake = setupBeadsWait(t, initial)
+
+	// Point the caller session at a real temp workspace so the handler
+	// resolves a valid working directory whose .beads/ dir we can mutate.
+	workspace = t.TempDir()
+	beadsDir := filepath.Join(workspace, ".beads")
+	if err := os.MkdirAll(beadsDir, 0o755); err != nil {
+		t.Fatalf("mkdir .beads: %v", err)
+	}
+	if err := srv.store.UpdateMetadata(callerID, func(m *session.Metadata) {
+		m.WorkingDir = workspace
+	}); err != nil {
+		t.Fatalf("UpdateMetadata: %v", err)
+	}
+
+	// Real watcher with a short debounce so the test does not sit on the
+	// 750 ms production default.
+	var err error
+	bw, err = beadswatcher.NewBeadsWatcher(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	if err != nil {
+		t.Fatalf("NewBeadsWatcher: %v", err)
+	}
+	bw.SetDebounceDelay(20 * time.Millisecond)
+	bw.SetMaxWait(100 * time.Millisecond)
+	bw.Start()
+	t.Cleanup(func() { _ = bw.Close() })
+
+	srv.SetBeadsWatcher(bw)
+	return srv, callerID, workspace, fake, bw
+}
+
+// touchBeadsLastTouched writes <workspace>/.beads/last-touched with the given
+// bytes — the canonical fsnotify trigger used by the beads watcher.
+func touchBeadsLastTouched(t *testing.T, workspace string, payload string) {
+	t.Helper()
+	path := filepath.Join(workspace, ".beads", "last-touched")
+	if err := os.WriteFile(path, []byte(payload), 0o644); err != nil {
+		t.Fatalf("write last-touched: %v", err)
+	}
+}
+
+// TestConversationWait_BeadsSlowPath_WatcherWake verifies the fs-event slow
+// path: the handler subscribes to the BeadsWatcher, flipping the fake client's
+// state and touching .beads/last-touched wakes it up, and it returns success
+// well before either the deadline or the 30 s poll fallback.
+func TestConversationWait_BeadsSlowPath_WatcherWake(t *testing.T) {
+	srv, callerID, workspace, fake, _ := setupBeadsWaitWithWatcher(t, map[string]string{
+		"mitto-1": "open",
+	})
+
+	// Flip status then trigger the watcher shortly after the wait starts.
+	go func() {
+		time.Sleep(75 * time.Millisecond)
+		fake.set("mitto-1", "closed")
+		touchBeadsLastTouched(t, workspace, "1")
+	}()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan ConversationWaitOutput, 1)
+	go func() {
+		_, out, _ := srv.handleConversationWait(ctx, nil, ConversationWaitInput{
+			SelfID:           callerID,
+			ConversationID:   "self",
+			What:             "beads_issues_reached_state",
+			BeadsIssues:      []string{"mitto-1"},
+			BeadsTargetState: "closed",
+			// Longer than the deadline-only slow-path test: if the watcher
+			// wake fires correctly the handler returns immediately; if it
+			// silently misses the event we'll still exit via the deadline
+			// re-evaluation but the assertion on Statuses call count below
+			// will fail (fast-path + one wake-driven eval = 2, poll-only
+			// deadline path would evaluate once at deadline == 1).
+			TimeoutSeconds: 4,
+		})
+		done <- out
+	}()
+
+	select {
+	case out := <-done:
+		if !out.Success || out.TimedOut {
+			t.Fatalf("expected success/no-timeout, got %+v", out)
+		}
+		if len(out.ReachedIssues) != 1 || out.ReachedIssues[0] != "mitto-1" {
+			t.Errorf("expected reached=[mitto-1], got %v", out.ReachedIssues)
+		}
+		// Fast-path (1) + at least one wake-driven re-eval (>=1) = >=2.
+		// The 30 s poll fallback cannot fire in a 4 s wait, so any count
+		// beyond the fast-path evaluation proves the watcher path drove
+		// the wake-up.
+		if got := fake.callCount.Load(); got < 2 {
+			t.Errorf("expected >=2 Statuses calls (fast-path + watcher wake), got %d", got)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("handler did not return within 3s — watcher wake likely missed")
+	}
+}
+
+// TestConversationWait_BeadsWatcher_UnsubscribesOnCompletion asserts that when
+// the fast path returns immediately, no subscriber is left registered on the
+// watcher (defer bw.Unsubscribe runs only when Subscribe succeeded — the fast
+// path returns before Subscribe is called, so this covers the "no leak on
+// fast path" case). It also covers the slow path returning after a watcher
+// wake: subscription must be released before the handler returns.
+func TestConversationWait_BeadsWatcher_UnsubscribesOnCompletion(t *testing.T) {
+	// Case 1: fast-path never subscribes.
+	srv, callerID, _, _, bw := setupBeadsWaitWithWatcher(t, map[string]string{
+		"mitto-1": "closed",
+	})
+	before := bw.SubscriberCount()
+
+	_, out, err := srv.handleConversationWait(context.Background(), nil, ConversationWaitInput{
+		SelfID:           callerID,
+		ConversationID:   "self",
+		What:             "beads_issues_reached_state",
+		BeadsIssues:      []string{"mitto-1"},
+		BeadsTargetState: "closed",
+	})
+	if err != nil || !out.Success {
+		t.Fatalf("fast-path wait: err=%v out=%+v", err, out)
+	}
+	if got := bw.SubscriberCount(); got != before {
+		t.Errorf("fast path must not touch the watcher; subs before=%d after=%d", before, got)
+	}
+
+	// Case 2: slow path subscribes then unsubscribes when the predicate is
+	// satisfied via a watcher wake.
+	srv2, callerID2, workspace2, fake2, bw2 := setupBeadsWaitWithWatcher(t, map[string]string{
+		"mitto-2": "open",
+	})
+	before2 := bw2.SubscriberCount()
+
+	go func() {
+		time.Sleep(75 * time.Millisecond)
+		fake2.set("mitto-2", "closed")
+		touchBeadsLastTouched(t, workspace2, "1")
+	}()
+
+	_, out2, err2 := srv2.handleConversationWait(context.Background(), nil, ConversationWaitInput{
+		SelfID:           callerID2,
+		ConversationID:   "self",
+		What:             "beads_issues_reached_state",
+		BeadsIssues:      []string{"mitto-2"},
+		BeadsTargetState: "closed",
+		TimeoutSeconds:   4,
+	})
+	if err2 != nil || !out2.Success || out2.TimedOut {
+		t.Fatalf("slow-path wait: err=%v out=%+v", err2, out2)
+	}
+	if got := bw2.SubscriberCount(); got != before2 {
+		t.Errorf("slow path leaked subscriber; subs before=%d after=%d", before2, got)
+	}
+}
+
+// TestConversationWait_BeadsSlowPath_ContextCancel drives the slow path and
+// then cancels the caller's context. The handler must exit cleanly with an
+// error output (not a panic, not a leak) and must not report success.
+func TestConversationWait_BeadsSlowPath_ContextCancel(t *testing.T) {
+	srv, callerID, _, _, bw := setupBeadsWaitWithWatcher(t, map[string]string{
+		"mitto-1": "open",
+	})
+	before := bw.SubscriberCount()
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	// Cancel shortly after the handler enters its slow-path select.
+	go func() {
+		time.Sleep(80 * time.Millisecond)
+		cancel()
+	}()
+
+	done := make(chan ConversationWaitOutput, 1)
+	go func() {
+		_, out, _ := srv.handleConversationWait(ctx, nil, ConversationWaitInput{
+			SelfID:           callerID,
+			ConversationID:   "self",
+			What:             "beads_issues_reached_state",
+			BeadsIssues:      []string{"mitto-1"},
+			BeadsTargetState: "closed",
+			TimeoutSeconds:   30,
+		})
+		done <- out
+	}()
+
+	select {
+	case out := <-done:
+		if out.Success {
+			t.Fatalf("expected non-success on ctx cancel, got %+v", out)
+		}
+		if out.Error == "" {
+			t.Fatalf("expected error message on ctx cancel, got %+v", out)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("handler did not return within 2s after ctx cancel")
+	}
+
+	// Give the deferred Unsubscribe time to run (it fires before the return
+	// but SubscriberCount reads a lock the same goroutine has just released).
+	time.Sleep(20 * time.Millisecond)
+	if got := bw.SubscriberCount(); got != before {
+		t.Errorf("ctx-cancel leaked subscriber; subs before=%d after=%d", before, got)
 	}
 }
