@@ -177,19 +177,10 @@ func runPromptsUpdateBuiltin(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Clean existing *.prompt.yaml files in the builtin directory before deploying
-	// This ensures removed prompts don't linger
-	existingFiles, err := filepath.Glob(filepath.Join(builtinDir, "*.prompt.yaml"))
-	if err != nil {
-		return fmt.Errorf("failed to list existing prompts: %w", err)
-	}
-	for _, f := range existingFiles {
-		if err := os.Remove(f); err != nil {
-			return fmt.Errorf("failed to remove old prompt %s: %w", filepath.Base(f), err)
-		}
-	}
-
-	// Deploy with force=true to overwrite existing files
+	// Deploy with force=true to overwrite existing files. Stale-file pruning
+	// is delegated to the next EnsureBuiltinPrompts run at startup (mitto-j88.1),
+	// which is the single source of truth for prune semantics and handles nested
+	// subdirectories correctly.
 	result, err := embeddedconfig.DeployBuiltinPrompts(builtinDir, true)
 	if err != nil {
 		return fmt.Errorf("failed to deploy builtin prompts: %w", err)

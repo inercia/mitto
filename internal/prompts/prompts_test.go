@@ -2531,25 +2531,30 @@ func TestValidatePromptParameters_Cache(t *testing.T) {
 func TestBuiltinPromptsParseClean(t *testing.T) {
 	// Relative to internal/config/ (the package directory during go test)
 	builtinDir := filepath.Join("..", "..", "config", "prompts", "builtin")
-	entries, err := os.ReadDir(builtinDir)
-	if err != nil {
+	if _, err := os.Stat(builtinDir); err != nil {
 		t.Skipf("builtin prompts dir not found at %s: %v", builtinDir, err)
 	}
 	loaded := 0
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".prompt.yaml") {
-			continue
+	walkErr := filepath.WalkDir(builtinDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
 		}
-		path := filepath.Join(builtinDir, e.Name())
+		if d.IsDir() || !strings.HasSuffix(d.Name(), ".prompt.yaml") {
+			return nil
+		}
 		data, err := os.ReadFile(path)
 		if err != nil {
-			t.Errorf("ReadFile(%s): %v", e.Name(), err)
-			continue
+			t.Errorf("ReadFile(%s): %v", d.Name(), err)
+			return nil
 		}
-		if _, err := ParsePromptFile(e.Name(), data, time.Now()); err != nil {
-			t.Errorf("ParsePromptFile(%s): %v", e.Name(), err)
+		if _, err := ParsePromptFile(d.Name(), data, time.Now()); err != nil {
+			t.Errorf("ParsePromptFile(%s): %v", d.Name(), err)
 		}
 		loaded++
+		return nil
+	})
+	if walkErr != nil {
+		t.Fatalf("WalkDir(%s): %v", builtinDir, walkErr)
 	}
 	if loaded == 0 {
 		t.Error("no builtin prompt files found — something is wrong with the path")
@@ -2559,25 +2564,28 @@ func TestBuiltinPromptsParseClean(t *testing.T) {
 	// Verify no builtin prompt declares a SCREAMING_SNAKE_CASE argument name.
 	// All parameter names must use PascalCase (no underscores, not all-uppercase).
 	screamingSnake := regexp.MustCompile(`^[A-Z][A-Z0-9_]*_[A-Z0-9_]*$|^[A-Z0-9_]+$`)
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".prompt.yaml") {
-			continue
+	_ = filepath.WalkDir(builtinDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
 		}
-		path := filepath.Join(builtinDir, e.Name())
+		if d.IsDir() || !strings.HasSuffix(d.Name(), ".prompt.yaml") {
+			return nil
+		}
 		data, err := os.ReadFile(path)
 		if err != nil {
-			continue
+			return nil
 		}
-		prompt, err := ParsePromptFile(e.Name(), data, time.Now())
+		prompt, err := ParsePromptFile(d.Name(), data, time.Now())
 		if err != nil {
-			continue // parse errors already reported above
+			return nil // parse errors already reported above
 		}
 		for _, p := range prompt.Parameters {
 			if strings.Contains(p.Name, "_") || screamingSnake.MatchString(p.Name) {
-				t.Errorf("%s: parameter name %q is SCREAMING_SNAKE_CASE — use PascalCase instead", e.Name(), p.Name)
+				t.Errorf("%s: parameter name %q is SCREAMING_SNAKE_CASE — use PascalCase instead", d.Name(), p.Name)
 			}
 		}
-	}
+		return nil
+	})
 }
 
 // TestBuiltinPrompt_GithubReviewPR_ParameterIsPascalCase pins the mitto-maxn
@@ -2686,30 +2694,35 @@ func TestBuiltinPrompts_SingletonMigratedToTargetReuseTitle(t *testing.T) {
 // use `target: { title, reuse: { title: true } }` instead.
 func TestBuiltinPrompts_NoSingletonRemains(t *testing.T) {
 	builtinDir := filepath.Join("..", "..", "config", "prompts", "builtin")
-	entries, err := os.ReadDir(builtinDir)
-	if err != nil {
+	if _, err := os.Stat(builtinDir); err != nil {
 		t.Skipf("builtin prompts dir not found at %s: %v", builtinDir, err)
 	}
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".prompt.yaml") {
-			continue
+	walkErr := filepath.WalkDir(builtinDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
 		}
-		path := filepath.Join(builtinDir, e.Name())
+		if d.IsDir() || !strings.HasSuffix(d.Name(), ".prompt.yaml") {
+			return nil
+		}
 		data, err := os.ReadFile(path)
 		if err != nil {
-			t.Errorf("ReadFile(%s): %v", e.Name(), err)
-			continue
+			t.Errorf("ReadFile(%s): %v", d.Name(), err)
+			return nil
 		}
 		if bytes.Contains(data, []byte("\nsingleton:")) {
-			t.Errorf("%s: declares legacy `singleton:` — use target.reuse.title instead (mitto-y0l2)", e.Name())
+			t.Errorf("%s: declares legacy `singleton:` — use target.reuse.title instead (mitto-y0l2)", d.Name())
 		}
-		prompt, err := ParsePromptFile(e.Name(), data, time.Now())
+		prompt, err := ParsePromptFile(d.Name(), data, time.Now())
 		if err != nil {
-			continue // parse errors already reported by TestBuiltinPromptsParseClean
+			return nil // parse errors already reported by TestBuiltinPromptsParseClean
 		}
 		if prompt.Singleton {
-			t.Errorf("%s: parsed Singleton = true — use target.reuse.title instead (mitto-y0l2)", e.Name())
+			t.Errorf("%s: parsed Singleton = true — use target.reuse.title instead (mitto-y0l2)", d.Name())
 		}
+		return nil
+	})
+	if walkErr != nil {
+		t.Fatalf("WalkDir(%s): %v", builtinDir, walkErr)
 	}
 }
 
@@ -3119,8 +3132,7 @@ func TestBuiltinPrompts_NeedsTemplatedTitleRenders_PerIDBuckets(t *testing.T) {
 // referenced the then-unregistered BeadIsOpen macro and were silently dropped).
 func TestBuiltinPrompts_EnabledWhenCompiles(t *testing.T) {
 	builtinDir := filepath.Join("..", "..", "config", "prompts", "builtin")
-	entries, err := os.ReadDir(builtinDir)
-	if err != nil {
+	if _, err := os.Stat(builtinDir); err != nil {
 		t.Skipf("builtin prompts dir not found at %s: %v", builtinDir, err)
 	}
 	e, err := cel.NewCELEvaluator()
@@ -3128,28 +3140,34 @@ func TestBuiltinPrompts_EnabledWhenCompiles(t *testing.T) {
 		t.Fatalf("NewCELEvaluator: %v", err)
 	}
 	n := 0
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".prompt.yaml") {
-			continue
+	walkErr := filepath.WalkDir(builtinDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
 		}
-		path := filepath.Join(builtinDir, entry.Name())
+		if d.IsDir() || !strings.HasSuffix(d.Name(), ".prompt.yaml") {
+			return nil
+		}
 		data, err := os.ReadFile(path)
 		if err != nil {
-			t.Errorf("ReadFile(%s): %v", entry.Name(), err)
-			continue
+			t.Errorf("ReadFile(%s): %v", d.Name(), err)
+			return nil
 		}
-		prompt, err := ParsePromptFile(entry.Name(), data, time.Now())
+		prompt, err := ParsePromptFile(d.Name(), data, time.Now())
 		if err != nil {
-			continue // parse errors reported by TestBuiltinPromptsParseClean
+			return nil // parse errors reported by TestBuiltinPromptsParseClean
 		}
 		if prompt.EnabledWhen == "" {
-			continue
+			return nil
 		}
 		if _, err := e.Compile(prompt.EnabledWhen); err != nil {
-			t.Errorf("%s: enabledWhen %q failed to compile: %v", entry.Name(), prompt.EnabledWhen, err)
-			continue
+			t.Errorf("%s: enabledWhen %q failed to compile: %v", d.Name(), prompt.EnabledWhen, err)
+			return nil
 		}
 		n++
+		return nil
+	})
+	if walkErr != nil {
+		t.Fatalf("WalkDir(%s): %v", builtinDir, walkErr)
 	}
 	t.Logf("compiled enabledWhen for %d builtin prompts", n)
 }
@@ -3170,36 +3188,41 @@ func TestBuiltinPrompts_EnabledWhenCompiles(t *testing.T) {
 // automatically without needing to update this test.
 func TestBuiltinPrompts_OnCompletionDeclaresCoalesceDuringBusy(t *testing.T) {
 	builtinDir := filepath.Join("..", "..", "config", "prompts", "builtin")
-	entries, err := os.ReadDir(builtinDir)
-	if err != nil {
+	if _, err := os.Stat(builtinDir); err != nil {
 		t.Skipf("builtin prompts dir not found at %s: %v", builtinDir, err)
 	}
 	checked := 0
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".prompt.yaml") {
-			continue
+	walkErr := filepath.WalkDir(builtinDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
 		}
-		path := filepath.Join(builtinDir, e.Name())
+		if d.IsDir() || !strings.HasSuffix(d.Name(), ".prompt.yaml") {
+			return nil
+		}
 		data, err := os.ReadFile(path)
 		if err != nil {
-			t.Errorf("ReadFile(%s): %v", e.Name(), err)
-			continue
+			t.Errorf("ReadFile(%s): %v", d.Name(), err)
+			return nil
 		}
-		prompt, err := ParsePromptFile(e.Name(), data, time.Now())
+		prompt, err := ParsePromptFile(d.Name(), data, time.Now())
 		if err != nil {
-			continue // parse errors already reported by TestBuiltinPromptsParseClean
+			return nil // parse errors already reported by TestBuiltinPromptsParseClean
 		}
 		if prompt.Loop == nil || prompt.Loop.Trigger != "onCompletion" {
-			continue
+			return nil
 		}
 		checked++
 		if prompt.Loop.CoalesceDuringBusy == nil {
-			t.Errorf("%s: loop.trigger = onCompletion but loop.coalesceDuringBusy is unset — must be explicitly declared as true (mitto-nfy)", e.Name())
-			continue
+			t.Errorf("%s: loop.trigger = onCompletion but loop.coalesceDuringBusy is unset — must be explicitly declared as true (mitto-nfy)", d.Name())
+			return nil
 		}
 		if !*prompt.Loop.CoalesceDuringBusy {
-			t.Errorf("%s: loop.coalesceDuringBusy = false, want true for trigger: onCompletion (mitto-nfy)", e.Name())
+			t.Errorf("%s: loop.coalesceDuringBusy = false, want true for trigger: onCompletion (mitto-nfy)", d.Name())
 		}
+		return nil
+	})
+	if walkErr != nil {
+		t.Fatalf("WalkDir(%s): %v", builtinDir, walkErr)
 	}
 	if checked == 0 {
 		t.Error("no builtin prompts with trigger: onCompletion were checked — the walk found none, which is unexpected")
