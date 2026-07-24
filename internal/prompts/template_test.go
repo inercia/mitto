@@ -3181,3 +3181,158 @@ func TestIssueLoopProcessing_EpicReaperPresent(t *testing.T) {
 		t.Errorf("rendered orchestrator still contains stale language %q — the reaper now closes the epic in the same pass; intro paragraph (Step 2) and Guidelines `Expand epics; don't spawn them` bullet must both be updated (mitto-qxb)", stale)
 	}
 }
+
+// TestRenderPromptTemplate_Fragments verifies the fragment-attach behavior wired
+// into RenderPromptTemplate in mitto-g61.3: when a FragmentRegistry is installed
+// via SetCurrentFragments, every entry is attached to the template set as an
+// associated sub-template before the caller body is parsed, so
+// `{{ template "name" . }}` in the body resolves at render time.
+//
+// Covers the three bead acceptance criteria:
+//
+//	(a) basic render — {{ template "test/hello" . }} against a registry entry
+//	(b) data narrowing — {{ template "test/args-only" .Args }} renders with
+//	    the fragment referencing .Foo (not .Args.Foo)
+//	(c) FuncMap inheritance — the fragment uses {{ Arg "X" "def" }} (a builtin
+//	    from cel.BuildTemplateFuncMap) and resolves against the caller's .Args
+//
+// Also asserts (d) nil-registry passthrough (behavior bytewise-identical to
+// pre-fragment renders) and (e) fail-closed on a fragment parse error.
+func TestRenderPromptTemplate_Fragments(t *testing.T) {
+	// installFragments installs r as the package-wide registry for the test
+	// and clears it on teardown so no other test observes it.
+	installFragments := func(t *testing.T, r *FragmentRegistry) {
+		t.Helper()
+		SetCurrentFragments(r)
+		t.Cleanup(func() { SetCurrentFragments(nil) })
+	}
+
+	// newTestRegistry builds a FragmentRegistry directly from a name→body map.
+	// FragmentRegistry has no public AddOrReplace helper — LoadFragmentsFromDir
+	// is the only supported ingest path — but the entries field is
+	// package-internal so tests inside the prompts package can construct
+	// synthetic registries this way (matches the pattern used by
+	// TestFragmentRegistry_*).
+	newTestRegistry := func(entries map[string]string) *FragmentRegistry {
+		return &FragmentRegistry{entries: entries}
+	}
+
+	t.Run("basic-render", func(t *testing.T) {
+		reg := newTestRegistry(map[string]string{
+			"test/hello": "Hello {{ .Name }}",
+		})
+		installFragments(t, reg)
+
+		body := `intro | {{ template "test/hello" . }} | outro`
+		data := struct{ Name string }{Name: "world"}
+		got, err := RenderPromptTemplate("basic", body, data, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		want := "intro | Hello world | outro"
+		if got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
+
+	t.Run("data-narrowing", func(t *testing.T) {
+		// Fragment references .Foo directly (not .Args.Foo) — proving the body
+		// can pass a narrowed sub-context to the fragment.
+		reg := newTestRegistry(map[string]string{
+			"test/args-only": "foo={{ .Foo }}",
+		})
+		installFragments(t, reg)
+
+		body := `{{ template "test/args-only" .Args }}`
+		data := struct {
+			Args map[string]string
+		}{Args: map[string]string{"Foo": "bar"}}
+		got, err := RenderPromptTemplate("narrowing", body, data, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		want := "foo=bar"
+		if got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
+
+	t.Run("funcmap-inheritance", func(t *testing.T) {
+		// Fragment uses the Arg helper from cel.BuildTemplateFuncMap. It must
+		// resolve inside the fragment because associated sub-templates inherit
+		// the parent's FuncMap.
+		reg := newTestRegistry(map[string]string{
+			"test/arg-helper": `x={{ Arg "X" "def" }}`,
+		})
+		installFragments(t, reg)
+
+		body := `{{ template "test/arg-helper" . }}`
+
+		// (i) With Arg set → helper returns the caller's value.
+		ctxSet := &cel.PromptEnabledContext{Args: map[string]string{"X": "provided"}}
+		got, err := RenderPromptTemplate("funcmap-set", body, ctxSet, cel.BuildTemplateFuncMap(ctxSet))
+		if err != nil {
+			t.Fatalf("unexpected error (X set): %v", err)
+		}
+		if got != "x=provided" {
+			t.Errorf("Arg set: got %q, want %q", got, "x=provided")
+		}
+
+		// (ii) Without Arg set → helper falls back to the fragment's default.
+		ctxAbsent := &cel.PromptEnabledContext{Args: map[string]string{}}
+		got, err = RenderPromptTemplate("funcmap-absent", body, ctxAbsent, cel.BuildTemplateFuncMap(ctxAbsent))
+		if err != nil {
+			t.Fatalf("unexpected error (X absent): %v", err)
+		}
+		if got != "x=def" {
+			t.Errorf("Arg absent: got %q, want %q", got, "x=def")
+		}
+	})
+
+	t.Run("nil-registry-passthrough", func(t *testing.T) {
+		// Explicitly clear any registry a previous parallel subtest might have
+		// installed (defensive — subtests above use t.Cleanup, but this
+		// documents the invariant).
+		SetCurrentFragments(nil)
+		t.Cleanup(func() { SetCurrentFragments(nil) })
+
+		// A body that uses template syntax but no fragments must render
+		// identically to the pre-fragment behavior.
+		body := "Hello {{ .Name }}"
+		data := struct{ Name string }{Name: "world"}
+		got, err := RenderPromptTemplate("nil-reg", body, data, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got != "Hello world" {
+			t.Errorf("got %q, want %q", got, "Hello world")
+		}
+	})
+
+	t.Run("fragment-parse-error-fails-closed", func(t *testing.T) {
+		// LoadFragmentsFromDir validates fragment bodies at load time so a
+		// broken fragment cannot normally reach the registry. But if one is
+		// installed directly (e.g. by a test or a broken bootstrap), the
+		// attach loop in RenderPromptTemplate must fail closed with a
+		// wrapped error that names the offending fragment.
+		reg := newTestRegistry(map[string]string{
+			"test/broken": "{{ if .Flag }}oops", // missing {{ end }}
+		})
+		installFragments(t, reg)
+
+		body := "any {{ .X }} body"
+		got, err := RenderPromptTemplate("fail-closed", body, struct{ X string }{X: "y"}, nil)
+		if err == nil {
+			t.Fatalf("expected error, got nil (output=%q)", got)
+		}
+		if !strings.Contains(err.Error(), "fragment") {
+			t.Errorf("error %q should mention 'fragment'", err.Error())
+		}
+		if !strings.Contains(err.Error(), "test/broken") {
+			t.Errorf("error %q should name the offending fragment %q", err.Error(), "test/broken")
+		}
+		if got != "" {
+			t.Errorf("on error want empty output, got %q", got)
+		}
+	})
+}
