@@ -14,8 +14,9 @@ tags:
 enabledWhen: '!Session.IsChild && FileExists(".git/config") && (Tools.HasPattern("github_*") || CommandExists("gh")) && CommandExists("bd") && DirExists(".beads") && Permissions.CanStartConversation'
 target:
   title: 'GitHub: post-merge cleanup'
-  reuseTitle: true
-  reuseCoalesce: true
+  reuse:
+    title: true
+    coalesce: true
 prompt: |
   **Post-merge cleanup sweeper.** After merges land on the default branch, this run
   sweeps for follow-up work — deprecations, `TODO`/`FIXME`, `// remove after`, stale

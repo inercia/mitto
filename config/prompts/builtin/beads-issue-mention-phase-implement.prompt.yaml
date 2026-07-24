@@ -20,8 +20,9 @@ backgroundColor: '#C8E6C9'
 preferredModels:
   - modelTag: Coding
 target:
-  reuseIssue: true
-  reuseCoalesce: true
+  reuse:
+    issue: true
+    coalesce: true
 prompt: |
   ## Session Context
 

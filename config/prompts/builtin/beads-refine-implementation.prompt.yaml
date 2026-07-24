@@ -6,7 +6,8 @@ backgroundColor: '#C5CAE9'
 group: Tasks
 target:
   title: "Refine issue implementation details"
-  reuseTitle: true
+  reuse:
+    title: true
 enabledWhen: CommandExists("bd") && DirExists(".beads")
 preferredModels:
   - modelTag: Smart

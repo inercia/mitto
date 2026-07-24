@@ -9,8 +9,9 @@ preferredModels:
   - modelTag: Coding
 target:
   title: 'Generate AGENTS.md'
-  reuseTitle: true
-  reuseCoalesce: true
+  reuse:
+    title: true
+    coalesce: true
 prompt: |
   Analyze this project and generate an `AGENTS.md` file that gives AI coding agents
   (Claude Code, Augment, Cursor, etc.) the context they need to work effectively here.

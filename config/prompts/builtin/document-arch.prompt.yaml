@@ -8,8 +8,9 @@ preferredModels:
   - modelTag: Coding
 target:
   title: 'Document Architecture'
-  reuseTitle: true
-  reuseCoalesce: true
+  reuse:
+    title: true
+    coalesce: true
 prompt: |
   Before updating any documentation, read the code changes we made and any existing
   architecture documentation. Understand what changed and how it affects the system's

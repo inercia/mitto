@@ -27,7 +27,8 @@ loop:
   # transcripts, and file reads across turns.
   freshContext: true
 target:
-  reuseIssue: true
+  reuse:
+    issue: true
 prompt: |
   ## Session Context
 

@@ -7,8 +7,9 @@ group: JIRA
 enabledWhen: '!Session.IsChild && (Tools.Names.exists(n, n.matches("(?i)jira")) || CommandExists("jira"))'
 target:
   title: 'JIRA: decompose'
-  reuseTitle: true
-  reuseCoalesce: true
+  reuse:
+    title: true
+    coalesce: true
 prompt: |
   ## Session Context
 

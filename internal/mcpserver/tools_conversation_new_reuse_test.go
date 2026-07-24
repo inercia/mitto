@@ -22,7 +22,7 @@ func TestConversationStart_ReuseIssue_RoutesToExisting(t *testing.T) {
 		{
 			Name:   "Work on issue",
 			Prompt: "do work on {{ .Args.IssueID }}",
-			Target: &prompts.PromptTarget{ReuseIssue: true},
+			Target: &prompts.PromptTarget{Reuse: &prompts.PromptTargetReuse{Issue: true}},
 		},
 	})
 
@@ -83,7 +83,7 @@ func TestConversationStart_ReuseIssue_NoBeadsIssue_CreatesNew(t *testing.T) {
 		{
 			Name:   "Work on issue",
 			Prompt: "do work",
-			Target: &prompts.PromptTarget{ReuseIssue: true},
+			Target: &prompts.PromptTarget{Reuse: &prompts.PromptTargetReuse{Issue: true}},
 		},
 	})
 
@@ -126,7 +126,7 @@ func TestConversationStart_ReuseIssue_DifferentIssue_CreatesNew(t *testing.T) {
 			// if the singleton branch had run, the second call (different
 			// beads_issue but same prompt) would have collapsed.
 			Singleton: true,
-			Target:    &prompts.PromptTarget{ReuseIssue: true},
+			Target:    &prompts.PromptTarget{Reuse: &prompts.PromptTargetReuse{Issue: true}},
 		},
 	})
 
@@ -212,7 +212,7 @@ func TestConversationStart_ReuseIssue_CrossWorkspaceIgnored(t *testing.T) {
 		{
 			Name:   "Work on issue",
 			Prompt: "do work",
-			Target: &prompts.PromptTarget{ReuseIssue: true},
+			Target: &prompts.PromptTarget{Reuse: &prompts.PromptTargetReuse{Issue: true}},
 		},
 	})
 
@@ -256,7 +256,7 @@ func TestConversationStart_ReuseIssue_ArchivedIgnored(t *testing.T) {
 		{
 			Name:   "Work on issue",
 			Prompt: "do work",
-			Target: &prompts.PromptTarget{ReuseIssue: true},
+			Target: &prompts.PromptTarget{Reuse: &prompts.PromptTargetReuse{Issue: true}},
 		},
 	})
 

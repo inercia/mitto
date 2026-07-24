@@ -12,8 +12,9 @@ group: Tasks
 enabledWhen: CommandExists("bd") && DirExists(".beads") && (Session.HasMessages || Session.HasBeadsIssue || Item.Id != "")
 target:
   title: 'Identify follow-up issues'
-  reuseTitle: true
-  reuseCoalesce: true
+  reuse:
+    title: true
+    coalesce: true
 prompt: |
   ## Session Context
 

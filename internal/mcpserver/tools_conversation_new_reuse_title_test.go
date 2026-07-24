@@ -24,7 +24,7 @@ func TestConversationStart_ReuseTitle_RoutesToExisting(t *testing.T) {
 		{
 			Name:   "Weekly triage",
 			Prompt: "triage {{ .Args.When }}",
-			Target: &prompts.PromptTarget{Title: "Weekly triage", ReuseTitle: true},
+			Target: &prompts.PromptTarget{Title: "Weekly triage", Reuse: &prompts.PromptTargetReuse{Title: true}},
 		},
 	})
 
@@ -83,7 +83,7 @@ func TestConversationStart_ReuseTitle_LookupKeyIsTargetTitleNotCallerInput(t *te
 		{
 			Name:   "Weekly triage",
 			Prompt: "triage",
-			Target: &prompts.PromptTarget{Title: "Weekly triage", ReuseTitle: true},
+			Target: &prompts.PromptTarget{Title: "Weekly triage", Reuse: &prompts.PromptTargetReuse{Title: true}},
 		},
 	})
 
@@ -135,7 +135,7 @@ func TestConversationStart_ReuseTitle_BypassesDuplicateTitleRejection(t *testing
 		{
 			Name:   "Weekly triage",
 			Prompt: "triage",
-			Target: &prompts.PromptTarget{Title: "Weekly triage", ReuseTitle: true},
+			Target: &prompts.PromptTarget{Title: "Weekly triage", Reuse: &prompts.PromptTargetReuse{Title: true}},
 		},
 	})
 
@@ -255,7 +255,7 @@ func TestConversationStart_ReuseTitle_CrossWorkspaceIgnored(t *testing.T) {
 		{
 			Name:   "Weekly triage",
 			Prompt: "triage",
-			Target: &prompts.PromptTarget{Title: "Weekly triage", ReuseTitle: true},
+			Target: &prompts.PromptTarget{Title: "Weekly triage", Reuse: &prompts.PromptTargetReuse{Title: true}},
 		},
 	})
 
@@ -296,7 +296,7 @@ func TestConversationStart_ReuseTitle_ArchivedIgnored(t *testing.T) {
 		{
 			Name:   "Weekly triage",
 			Prompt: "triage",
-			Target: &prompts.PromptTarget{Title: "Weekly triage", ReuseTitle: true},
+			Target: &prompts.PromptTarget{Title: "Weekly triage", Reuse: &prompts.PromptTargetReuse{Title: true}},
 		},
 	})
 
@@ -345,7 +345,7 @@ func TestConversationStart_ReuseTitle_TakesPrecedenceOverSingleton(t *testing.T)
 			Prompt:    "triage",
 			Singleton: true, // singleton would collapse everything into one
 			// but reuseTitle is authoritative per-title
-			Target: &prompts.PromptTarget{Title: "Weekly triage", ReuseTitle: true},
+			Target: &prompts.PromptTarget{Title: "Weekly triage", Reuse: &prompts.PromptTargetReuse{Title: true}},
 		},
 	})
 
@@ -465,7 +465,7 @@ func TestConversationStart_TargetTitle_TemplateRendered(t *testing.T) {
 		{
 			Name:   "bead-work",
 			Prompt: "work on {{ .Args.IssueID }}",
-			Target: &prompts.PromptTarget{Title: "{{ .Args.IssueID }}: work", ReuseTitle: true},
+			Target: &prompts.PromptTarget{Title: "{{ .Args.IssueID }}: work", Reuse: &prompts.PromptTargetReuse{Title: true}},
 		},
 	})
 
@@ -533,7 +533,7 @@ func TestConversationStart_TargetTitle_EmptyRenderRejected(t *testing.T) {
 		{
 			Name:   "bead-work",
 			Prompt: "work",
-			Target: &prompts.PromptTarget{Title: "{{ .Args.MISSING }}", ReuseTitle: true},
+			Target: &prompts.PromptTarget{Title: "{{ .Args.MISSING }}", Reuse: &prompts.PromptTargetReuse{Title: true}},
 		},
 	})
 

@@ -352,26 +352,35 @@ same ladder.
 
 ```yaml
 target:
-  reuseIssue: true          # requires the request to carry beads_issue
   title: "Weekly triage"    # canonical conversation Name
-  reuseTitle: true          # requires title above; funnels by Name match
-  reuseCoalesce: true       # skip dispatch when an identical prompt is already in flight/queued
+  reuse:
+    issue: true             # requires the request to carry beads_issue
+    title: true             # requires title above; funnels by Name match
+    coalesce: true          # skip dispatch when an identical prompt is already in flight/queued
 ```
 
 ### Fields
 
-| Field           | Type   | Description                                                                                                          |
-| --------------- | ------ | -------------------------------------------------------------------------------------------------------------------- |
-| `reuseIssue`    | bool   | When true and the request carries a `beads_issue`, funnel into an existing non-archived conversation with the same `beads_issue` in the same `working_dir`. |
-| `title`         | string | Canonical name for the conversation. When `reuseTitle` is true, also the lookup key. When the caller omits an explicit name and this prompt originates a new conversation, the created conversation's Name is set to this value. |
-| `reuseTitle`    | bool   | When true (requires non-empty `title`), funnel into an existing non-archived conversation in the same `working_dir` whose `Name` equals `title` (byte-for-byte, case-sensitive). On miss, create with `Name = title` so a subsequent scan matches. |
-| `reuseCoalesce` | \*bool | When true, suppresses a dispatch to the reused conversation when an identical prompt (same `PromptName` and `Arguments`, deep-equal treating nil and empty maps as equivalent) is already queued or currently in flight on that conversation. The second dispatch becomes a no-op — the caller still gets `{"session_id": existingID, "reused": true, "coalesced": true}` so it can focus the target, but no duplicate work is enqueued. Free-text (empty `PromptName`) dispatches never coalesce. Requires at least one reuse mode (`reuseIssue`, `reuseTitle`, or top-level `singleton: true`). Defaults to nil (behavior unchanged: every dispatch is delivered). |
+`target.title` is a peer of the nested `target.reuse` block. All three
+reuse-mode flags live under `target.reuse`; an absent `reuse:` block is
+equivalent to all three off (`issue: false`, `title: false`,
+`coalesce: unset`).
+
+| Field             | Type   | Description                                                                                                          |
+| ----------------- | ------ | -------------------------------------------------------------------------------------------------------------------- |
+| `title`           | string | Canonical name for the conversation. When `reuse.title` is true, also the lookup key. When the caller omits an explicit name and this prompt originates a new conversation, the created conversation's Name is set to this value. |
+| `reuse.issue`     | bool   | When true and the request carries a `beads_issue`, funnel into an existing non-archived conversation with the same `beads_issue` in the same `working_dir`. |
+| `reuse.title`     | bool   | When true (requires non-empty `title`), funnel into an existing non-archived conversation in the same `working_dir` whose `Name` equals `title` (byte-for-byte, case-sensitive). On miss, create with `Name = title` so a subsequent scan matches. |
+| `reuse.coalesce`  | \*bool | When true, suppresses a dispatch to the reused conversation when an identical prompt (same `PromptName` and `Arguments`, deep-equal treating nil and empty maps as equivalent) is already queued or currently in flight on that conversation. The second dispatch becomes a no-op — the caller still gets `{"session_id": existingID, "reused": true, "coalesced": true}` so it can focus the target, but no duplicate work is enqueued. Free-text (empty `PromptName`) dispatches never coalesce. Requires at least one reuse mode (`reuse.issue`, `reuse.title`, or top-level `singleton: true`). Defaults to nil (behavior unchanged: every dispatch is delivered). |
 
 `ValidatePromptTarget` (`internal/prompts/prompts.go`) is run by
 `ParsePromptFile` at load time and rejects prompts that set
-`reuseTitle: true` without a `title` (a title-keyed lookup with no key),
-or `reuseCoalesce: true` without any reuse mode (no target conversation
-to coalesce against).
+`reuse.title: true` without a `title` (a title-keyed lookup with no key),
+or `reuse.coalesce: true` without any reuse mode (no target conversation
+to coalesce against). `ParsePromptFile` also rejects the legacy flat form
+(`target.reuseIssue` / `target.reuseTitle` / `target.reuseCoalesce`) with
+a migration error pointing at the nested equivalent — the legacy keys
+are no longer accepted (mitto-6b3, no backwards compatibility).
 
 ### Find-or-route ladder
 
@@ -379,9 +388,9 @@ Both `HandleCreateSession` (REST, `internal/web/handlers/session_create.go`)
 and `handleConversationStart` (MCP, `internal/mcpserver/tools_conversation_new.go`)
 evaluate three routing modes in this fixed order:
 
-1. **`reuseIssue`** — requires `beads_issue` + `target.reuseIssue: true` on
+1. **`reuse.issue`** — requires `beads_issue` + `target.reuse.issue: true` on
    the originating prompt. Scans via `session.FindConversationByBeadsIssue`.
-2. **`reuseTitle`** — requires `target.reuseTitle: true` + non-empty
+2. **`reuse.title`** — requires `target.reuse.title: true` + non-empty
    `target.title`. Scans via `session.FindConversationByTitle`. On a caller-
    supplied title that differs from `target.title`, the request title is
    overridden (debug-logged) since `target.title` is the canonical lookup key.
@@ -400,7 +409,7 @@ maintain independent lock maps — MCP-only vs HTTP-only bursts stay
 serialized within their own path, and cross-path duplicates are prevented
 by the atomic scan+create window plus the store's session-list snapshot.
 
-When a candidate is found and `target.reuseCoalesce: true` is set, the
+When a candidate is found and `target.reuse.coalesce: true` is set, the
 handler consults `conversation.PromptMatchesActiveOrQueued` **inside the
 same per-key lock** before falling through to the normal reuse-and-enqueue
 path. If the target conversation is currently executing an identical

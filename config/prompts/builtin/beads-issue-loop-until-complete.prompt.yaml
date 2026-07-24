@@ -21,7 +21,8 @@ loop:
   maxIterations: 20
   maxDuration: "4h"
 target:
-  reuseIssue: true
+  reuse:
+    issue: true
 prompt: |
   ## Session Context
 

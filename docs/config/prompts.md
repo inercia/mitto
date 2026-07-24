@@ -820,29 +820,39 @@ the same ladder.
 
 ```yaml
 target:
-  reuseIssue: true                     # requires the request to carry beads_issue
   title: "{{ .Args.IssueID }}: work"   # canonical conversation Name (Go template rendered at dispatch)
-  reuseTitle: true                     # requires title above; funnels by Name match
-  reuseCoalesce: true                  # skip dispatch when an identical prompt is already in flight/queued
+  reuse:
+    issue: true                        # requires the request to carry beads_issue
+    title: true                        # requires title above; funnels by Name match
+    coalesce: true                     # skip dispatch when an identical prompt is already in flight/queued
 ```
 
 ### Fields
 
-| Field           | Type   | Description |
-| --------------- | ------ | ----------- |
-| `reuseIssue`    | bool   | When `true` and the request carries a `beads_issue`, funnel into an existing non-archived conversation with the same `beads_issue` in the same `working_dir`. |
-| `title`         | string | Canonical name for the conversation. Rendered as a Go text/template at dispatch (context: `.Args`, `.Session.BeadsIssue`, `.Workspace.Folder`). When `reuseTitle` is `true`, the **rendered** string is also the lookup key. When the caller omits an explicit name and this prompt originates a new conversation, the created conversation's Name is set to the rendered title. Empty or whitespace-only renders are rejected at dispatch. |
-| `reuseTitle`    | bool   | When `true` (requires non-empty `title`), funnel into an existing non-archived conversation in the same `working_dir` whose `Name` equals the rendered `title` (byte-for-byte, case-sensitive). On miss, create with `Name = title` so a subsequent scan matches. |
-| `reuseCoalesce` | bool   | When `true`, suppresses a dispatch to the reused conversation when an identical prompt (same `prompt_name` and `arguments`) is already queued or currently in flight. The caller still gets a `{"reused": true, "coalesced": true}` response so it can focus the target, but no duplicate work is enqueued. Requires at least one reuse mode (`reuseIssue`, `reuseTitle`, or top-level `singleton: true`). Nil/absent = behavior unchanged (every dispatch is delivered). |
+`target.title` is a peer of the nested `target.reuse` block. All three
+reuse-mode flags live under `target.reuse`; an absent `reuse:` block is
+equivalent to all three off.
+
+| Field             | Type   | Description |
+| ----------------- | ------ | ----------- |
+| `title`           | string | Canonical name for the conversation. Rendered as a Go text/template at dispatch (context: `.Args`, `.Session.BeadsIssue`, `.Workspace.Folder`). When `reuse.title` is `true`, the **rendered** string is also the lookup key. When the caller omits an explicit name and this prompt originates a new conversation, the created conversation's Name is set to the rendered title. Empty or whitespace-only renders are rejected at dispatch. |
+| `reuse.issue`     | bool   | When `true` and the request carries a `beads_issue`, funnel into an existing non-archived conversation with the same `beads_issue` in the same `working_dir`. |
+| `reuse.title`     | bool   | When `true` (requires non-empty `title`), funnel into an existing non-archived conversation in the same `working_dir` whose `Name` equals the rendered `title` (byte-for-byte, case-sensitive). On miss, create with `Name = title` so a subsequent scan matches. |
+| `reuse.coalesce`  | bool   | When `true`, suppresses a dispatch to the reused conversation when an identical prompt (same `prompt_name` and `arguments`) is already queued or currently in flight. The caller still gets a `{"reused": true, "coalesced": true}` response so it can focus the target, but no duplicate work is enqueued. Requires at least one reuse mode (`reuse.issue`, `reuse.title`, or top-level `singleton: true`). Nil/absent = behavior unchanged (every dispatch is delivered). |
+
+The legacy flat form (`target.reuseIssue` / `target.reuseTitle` /
+`target.reuseCoalesce`) is no longer accepted (mitto-6b3, no backwards
+compatibility): `ParsePromptFile` rejects any file that still uses it
+with a migration error pointing at the nested equivalent.
 
 ### Order of evaluation
 
 The three reuse modes are evaluated in this fixed order, mutually exclusive
 per request:
 
-1. **`reuseIssue`** — requires `beads_issue` + `target.reuseIssue: true`.
-2. **`reuseTitle`** — requires `target.reuseTitle: true` + non-empty rendered
-   `target.title`.
+1. **`reuse.issue`** — requires `beads_issue` + `target.reuse.issue: true`.
+2. **`reuse.title`** — requires `target.reuse.title: true` + non-empty
+   rendered `target.title`.
 3. **`singleton`** — top-level `singleton: true` (keyed on working dir +
    origin prompt name).
 

@@ -13,8 +13,9 @@ loop:
   delay: 60
 target:
   title: 'JIRA: start work'
-  reuseTitle: true
-  reuseCoalesce: true
+  reuse:
+    title: true
+    coalesce: true
 prompt: |
   ## Session Context
 

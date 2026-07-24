@@ -2827,7 +2827,7 @@ func (s *Server) resolveReuseIssueByPromptName(promptName, workingDir string) bo
 
 	for _, p := range merged {
 		if strings.EqualFold(p.Name, promptName) {
-			return p.Target != nil && p.Target.ReuseIssue
+			return p.Target != nil && p.Target.Reuse != nil && p.Target.Reuse.Issue
 		}
 	}
 	return false
@@ -2928,7 +2928,7 @@ func (s *Server) resolvePromptTargetTitleByPromptName(promptName, workingDir str
 				}
 				title = rendered
 			}
-			return title, p.Target.ReuseTitle, nil
+			return title, p.Target.Reuse != nil && p.Target.Reuse.Title, nil
 		}
 	}
 	return "", false, nil
@@ -3013,7 +3013,7 @@ func (s *Server) resolveReuseCoalesceByPromptName(promptName, workingDir string)
 
 	for _, p := range merged {
 		if strings.EqualFold(p.Name, promptName) {
-			return p.Target != nil && p.Target.ReuseCoalesce != nil && *p.Target.ReuseCoalesce
+			return p.Target != nil && p.Target.Reuse != nil && p.Target.Reuse.Coalesce != nil && *p.Target.Reuse.Coalesce
 		}
 	}
 	return false

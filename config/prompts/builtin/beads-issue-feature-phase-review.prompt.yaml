@@ -16,8 +16,9 @@ backgroundColor: '#D1C4E9'
 preferredModels:
   - modelTag: Reasoning
 target:
-  reuseIssue: true
-  reuseCoalesce: true
+  reuse:
+    issue: true
+    coalesce: true
 prompt: |
   ## Session Context
 

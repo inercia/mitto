@@ -9,8 +9,9 @@ tags:
 - github
 target:
   title: "PR #{{ .Args.Pr }} address comments"
-  reuseTitle: true
-  reuseCoalesce: true
+  reuse:
+    title: true
+    coalesce: true
 parameters:
   - name: Pr
     type: text

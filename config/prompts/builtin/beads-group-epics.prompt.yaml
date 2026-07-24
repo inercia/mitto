@@ -6,7 +6,8 @@ backgroundColor: '#B2DFDB'
 group: Tasks
 target:
   title: "Group issues in Epics"
-  reuseTitle: true
+  reuse:
+    title: true
 enabledWhen: CommandExists("bd") && DirExists(".beads")
 prompt: |
   ## Session Context

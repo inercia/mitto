@@ -115,36 +115,49 @@ type PromptLoop struct {
 // used to create a new conversation. Future keys can extend routing modes
 // without introducing new top-level prompt-frontmatter fields.
 type PromptTarget struct {
-	// ReuseIssue, when true, causes a dispatch that carries a beads_issue to
-	// find an existing non-archived conversation in the same working_dir
-	// that is already linked to that beads issue and enqueue the prompt into
-	// it, instead of creating a new conversation. Falls through to normal
-	// create when no candidate is found or when no beads_issue is provided.
-	ReuseIssue bool `yaml:"reuseIssue,omitempty" json:"reuseIssue,omitempty"`
 	// Title, when set, is adopted as the new conversation's Name when the
-	// caller does not supply one. When ReuseTitle is true, Title is also the
-	// lookup key used to funnel dispatches into an existing conversation
-	// whose Name matches (see ReuseTitle).
+	// caller does not supply one. When Reuse.Title is true, Title is also
+	// the lookup key used to funnel dispatches into an existing conversation
+	// whose Name matches (see PromptTargetReuse.Title).
 	Title string `yaml:"title,omitempty" json:"title,omitempty"`
-	// ReuseTitle, when true, causes a dispatch to find an existing non-
-	// archived conversation in the same working_dir whose Name matches
-	// Title (byte-for-byte) and enqueue the prompt into it, instead of
-	// creating a new conversation. Requires Title to be non-empty
-	// (enforced by ValidatePromptTarget at prompt-load time). Falls
-	// through to normal create when no candidate is found; the created
-	// conversation is named Title so a subsequent scan matches it.
-	ReuseTitle bool `yaml:"reuseTitle,omitempty" json:"reuseTitle,omitempty"`
-	// ReuseCoalesce, when non-nil and true, suppresses a dispatch to a
-	// reused conversation when an identical prompt (same PromptName and
-	// Arguments, deep-equal treating nil and empty maps as equivalent) is
-	// already queued or currently in flight on that conversation. The
-	// second dispatch becomes a no-op — the caller still gets a
+
+	// Reuse groups the three "funnel this dispatch into an existing
+	// conversation" routing modes (issue / title / coalesce). All three
+	// default to false / nil (unchanged behavior: every dispatch creates a
+	// new conversation). A nil block is equivalent to all three off.
+	Reuse *PromptTargetReuse `yaml:"reuse,omitempty" json:"reuse,omitempty"`
+}
+
+// PromptTargetReuse groups reuse-mode routing keys under target.reuse. Split
+// out from PromptTarget so related keys nest under a single YAML/JSON block
+// instead of being three flat siblings of target.title.
+type PromptTargetReuse struct {
+	// Issue, when true, causes a dispatch that carries a beads_issue to
+	// find an existing non-archived conversation in the same working_dir
+	// that is already linked to that beads issue and enqueue the prompt
+	// into it, instead of creating a new conversation. Falls through to
+	// normal create when no candidate is found or when no beads_issue is
+	// provided.
+	Issue bool `yaml:"issue,omitempty" json:"issue,omitempty"`
+	// Title, when true, causes a dispatch to find an existing non-archived
+	// conversation in the same working_dir whose Name matches the enclosing
+	// PromptTarget.Title (byte-for-byte) and enqueue the prompt into it,
+	// instead of creating a new conversation. Requires PromptTarget.Title
+	// to be non-empty (enforced by ValidatePromptTarget at prompt-load
+	// time). Falls through to normal create when no candidate is found; the
+	// created conversation is named Title so a subsequent scan matches it.
+	Title bool `yaml:"title,omitempty" json:"title,omitempty"`
+	// Coalesce, when non-nil and true, suppresses a dispatch to a reused
+	// conversation when an identical prompt (same PromptName and Arguments,
+	// deep-equal treating nil and empty maps as equivalent) is already
+	// queued or currently in flight on that conversation. The second
+	// dispatch becomes a no-op — the caller still gets a
 	// {"session_id": existingID, "reused": true} response so it can focus
 	// the target, but no duplicate work is enqueued. Only meaningful when
-	// combined with a reuse mode (ReuseIssue, ReuseTitle, or a singleton
-	// prompt); enforced by ValidatePromptTarget at prompt-load time.
-	// Defaults to nil (behavior unchanged: every dispatch is delivered).
-	ReuseCoalesce *bool `yaml:"reuseCoalesce,omitempty" json:"reuseCoalesce,omitempty"`
+	// combined with a reuse mode (Issue, Title, or a singleton prompt);
+	// enforced by ValidatePromptTarget at prompt-load time. Defaults to nil
+	// (behavior unchanged: every dispatch is delivered).
+	Coalesce *bool `yaml:"coalesce,omitempty" json:"coalesce,omitempty"`
 }
 
 // PromptLoopModeAlways means the prompt is always loop; not user-toggleable.
@@ -193,24 +206,26 @@ func ValidatePromptLoop(promptName string, p *PromptLoop) error {
 }
 
 // ValidatePromptTarget validates the target block's field combination.
-// Returns an error when ReuseTitle is true but Title is empty, since a
+// Returns an error when Reuse.Title is true but Title is empty, since a
 // reuse-by-title dispatch has no lookup key in that case. A nil target or
 // an empty target block is always valid.
 //
 // promptSingleton reports whether the containing PromptFile declares the
-// top-level singleton flag; it is consulted only to authorize ReuseCoalesce
-// (which requires at least one reuse mode: ReuseIssue, ReuseTitle, or the
-// top-level singleton). Callers that do not need the ReuseCoalesce check may
+// top-level singleton flag; it is consulted only to authorize Reuse.Coalesce
+// (which requires at least one reuse mode: Reuse.Issue, Reuse.Title, or the
+// top-level singleton). Callers that do not need the Reuse.Coalesce check may
 // pass false.
 func ValidatePromptTarget(promptName string, t *PromptTarget, promptSingleton bool) error {
 	if t == nil {
 		return nil
 	}
-	if t.ReuseTitle && strings.TrimSpace(t.Title) == "" {
-		return fmt.Errorf("prompt %q: target.reuseTitle is true but target.title is empty (a title is required to key the lookup)", promptName)
-	}
-	if t.ReuseCoalesce != nil && *t.ReuseCoalesce && !t.ReuseIssue && !t.ReuseTitle && !promptSingleton {
-		return fmt.Errorf("prompt %q: target.reuseCoalesce requires at least one reuse mode (target.reuseIssue, target.reuseTitle, or top-level singleton: true)", promptName)
+	if t.Reuse != nil {
+		if t.Reuse.Title && strings.TrimSpace(t.Title) == "" {
+			return fmt.Errorf("prompt %q: target.reuse.title is true but target.title is empty (a title is required to key the lookup)", promptName)
+		}
+		if t.Reuse.Coalesce != nil && *t.Reuse.Coalesce && !t.Reuse.Issue && !t.Reuse.Title && !promptSingleton {
+			return fmt.Errorf("prompt %q: target.reuse.coalesce requires at least one reuse mode (target.reuse.issue, target.reuse.title, or top-level singleton: true)", promptName)
+		}
 	}
 	// Validate target.title Go-template syntax at load time (mitto-5qbo).
 	// Fast-path no-op for literal titles (no "{{"); catches unbalanced actions
@@ -219,6 +234,62 @@ func ValidatePromptTarget(promptName string, t *PromptTarget, promptSingleton bo
 	if strings.TrimSpace(t.Title) != "" {
 		if err := ValidatePromptTemplateSyntax(promptName+".target.title", t.Title); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+// legacyTargetReuseMigration maps each legacy flat key (removed in mitto-6b3)
+// to its new nested path. Order stable for deterministic error messages.
+var legacyTargetReuseMigration = []struct {
+	old, new string
+}{
+	{"reuseIssue", "target.reuse.issue"},
+	{"reuseTitle", "target.reuse.title"},
+	{"reuseCoalesce", "target.reuse.coalesce"},
+}
+
+// rejectLegacyTargetReuseKeys scans the raw YAML for any of the three legacy
+// flat target.reuse* keys and returns a clear migration error. Runs before
+// the permissive yaml.Unmarshal into *PromptFile so an unknown key can be
+// reported at ParsePromptFile time rather than silently dropped.
+//
+// Uses a *yaml.Node walk so it only fires on the ONE mapping at document-root
+// target: — a document.body that happens to mention the string "reuseTitle"
+// somewhere else (prose, sample YAML in comments) does not trip the check.
+func rejectLegacyTargetReuseKeys(path string, data []byte) error {
+	var root yaml.Node
+	if err := yaml.Unmarshal(data, &root); err != nil {
+		// Malformed YAML — let the real Unmarshal below produce the canonical error.
+		return nil
+	}
+	if root.Kind != yaml.DocumentNode || len(root.Content) == 0 {
+		return nil
+	}
+	doc := root.Content[0]
+	if doc.Kind != yaml.MappingNode {
+		return nil
+	}
+	// Find the top-level `target:` mapping.
+	var targetNode *yaml.Node
+	for i := 0; i+1 < len(doc.Content); i += 2 {
+		if doc.Content[i].Kind == yaml.ScalarNode && doc.Content[i].Value == "target" {
+			targetNode = doc.Content[i+1]
+			break
+		}
+	}
+	if targetNode == nil || targetNode.Kind != yaml.MappingNode {
+		return nil
+	}
+	for i := 0; i+1 < len(targetNode.Content); i += 2 {
+		k := targetNode.Content[i]
+		if k.Kind != yaml.ScalarNode {
+			continue
+		}
+		for _, m := range legacyTargetReuseMigration {
+			if k.Value == m.old {
+				return fmt.Errorf("prompt file %s: target.%s is no longer supported — nest under %s instead", path, m.old, m.new)
+			}
 		}
 	}
 	return nil
@@ -325,9 +396,9 @@ type PromptFile struct {
 	Singleton bool `yaml:"singleton,omitempty" json:"singleton,omitempty"`
 
 	// Target groups routing/dispatch behaviors for this prompt when it is
-	// used to create a new conversation. Currently only ReuseIssue is defined;
-	// future keys can extend routing modes without introducing new top-level
-	// prompt-frontmatter fields.
+	// used to create a new conversation. Currently only Title (peer) and
+	// the nested Reuse block are defined; future keys can extend routing
+	// modes without introducing new top-level prompt-frontmatter fields.
 	Target *PromptTarget `yaml:"target,omitempty" json:"target,omitempty"`
 
 	// Enabled controls whether the prompt is active. Defaults to true if not specified.
@@ -435,6 +506,14 @@ func ParsePromptFile(path string, data []byte, modTime time.Time) (*PromptFile, 
 	prompt := &PromptFile{
 		Path:        path,
 		FileModTime: modTime,
+	}
+
+	// Reject the legacy flat form of target.reuse* (mitto-6b3) before the
+	// permissive struct unmarshal silently drops the unknown keys. Fails at
+	// parse time so TestBuiltinPrompts + docs_sync_test catch every missed
+	// migration and every prompt-loading caller surfaces a clear message.
+	if err := rejectLegacyTargetReuseKeys(path, data); err != nil {
+		return nil, err
 	}
 
 	if err := yaml.Unmarshal(data, prompt); err != nil {

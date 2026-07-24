@@ -15,8 +15,9 @@ loop:
   delay: 60
 target:
   title: 'Check CI'
-  reuseTitle: true
-  reuseCoalesce: true
+  reuse:
+    title: true
+    coalesce: true
 prompt: |
   Check CI pipeline status for the current branch and report.
 

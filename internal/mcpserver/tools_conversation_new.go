@@ -216,11 +216,13 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 		originPromptName = input.PromptName
 		promptIsSingleton = p.Singleton
 		if p.Target != nil {
-			promptReuseIssue = p.Target.ReuseIssue
-			promptReuseTitle = p.Target.ReuseTitle
 			promptTargetTitle = p.Target.Title
-			if p.Target.ReuseCoalesce != nil {
-				promptReuseCoalesce = *p.Target.ReuseCoalesce
+			if p.Target.Reuse != nil {
+				promptReuseIssue = p.Target.Reuse.Issue
+				promptReuseTitle = p.Target.Reuse.Title
+				if p.Target.Reuse.Coalesce != nil {
+					promptReuseCoalesce = *p.Target.Reuse.Coalesce
+				}
 			}
 			// Render target.title as a Go text/template (mitto-5qbo). Fast-path
 			// passthrough for literal titles (no "{{"). Fail-closed on render or

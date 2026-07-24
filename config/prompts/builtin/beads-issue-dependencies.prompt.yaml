@@ -10,8 +10,9 @@ backgroundColor: '#FFCCBC'
 group: Tasks
 enabledWhen: CommandExists("bd") && DirExists(".beads") && Item.Status != "closed"
 target:
-  reuseIssue: true
-  reuseCoalesce: true
+  reuse:
+    issue: true
+    coalesce: true
 preferredModels:
   - modelTag: Cheap
   - modelTag: Coding

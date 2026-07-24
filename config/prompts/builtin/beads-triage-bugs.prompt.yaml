@@ -14,8 +14,9 @@ loop:
   maxDuration: "1h"
 target:
   title: 'Triage untriaged bugs'
-  reuseTitle: true
-  reuseCoalesce: true
+  reuse:
+    title: true
+    coalesce: true
 preferredModels:
   - modelTag: Cheap
   - modelTag: Coding

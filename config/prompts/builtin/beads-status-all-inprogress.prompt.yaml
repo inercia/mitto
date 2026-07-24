@@ -6,7 +6,8 @@ backgroundColor: '#FFCCBC'
 group: Tasks
 target:
   title: "Status ALL in-progress"
-  reuseTitle: true
+  reuse:
+    title: true
 enabledWhen: CommandExists("bd") && DirExists(".beads")
 preferredModels:
   - modelTag: Coding

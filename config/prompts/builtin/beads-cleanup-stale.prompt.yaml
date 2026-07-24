@@ -6,7 +6,8 @@ backgroundColor: '#BCAAA4'
 group: Tasks
 target:
   title: "Cleanup stale issues"
-  reuseTitle: true
+  reuse:
+    title: true
 enabledWhen: CommandExists("bd") && DirExists(".beads")
 preferredModels:
   - modelTag: Coding

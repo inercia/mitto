@@ -9,8 +9,9 @@ tags:
 - support
 target:
   title: "Support: housekeeping"
-  reuseTitle: true
-  reuseCoalesce: true
+  reuse:
+    title: true
+    coalesce: true
 prompt: |-
   # Support — Housekeeping
 

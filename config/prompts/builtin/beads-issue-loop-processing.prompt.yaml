@@ -32,8 +32,9 @@ loop:
   coalesceDuringBusy: false
 target:
   title: 'Loop processing tasks'
-  reuseTitle: true
-  reuseCoalesce: true
+  reuse:
+    title: true
+    coalesce: true
 # Pure procedural orchestration (enumerate → decide → dispatch → yield); real
 # reasoning is delegated to §A/§B/§C driver children which switch tier themselves.
 # Coding tier pin prevents inheriting the seeding conversation's model.

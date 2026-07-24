@@ -8,8 +8,9 @@ enabledWhen: 'CommandExists("bd") && DirExists(".beads") && ((Item.Status != "cl
 tags:
 - support
 target:
-  reuseIssue: true
-  reuseCoalesce: true
+  reuse:
+    issue: true
+    coalesce: true
 parameters:
   - name: IssueID
     description: 'The beads issue ID to act on (auto-filled from the Beads issue menu)'

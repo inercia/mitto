@@ -15,8 +15,9 @@ loop:
   delay: 60
 target:
   title: 'Fix CI'
-  reuseTitle: true
-  reuseCoalesce: true
+  reuse:
+    title: true
+    coalesce: true
 prompt: |
   Check CI status and read failure logs before making changes. Do not speculate —
   read the logs and relevant source files.

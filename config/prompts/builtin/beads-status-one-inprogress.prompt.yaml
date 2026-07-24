@@ -9,8 +9,9 @@ preferredModels:
   - modelTag: Coding
 target:
   title: 'Status ONE in-progress'
-  reuseTitle: true
-  reuseCoalesce: true
+  reuse:
+    title: true
+    coalesce: true
 prompt: |
   # Beads: Status Check — One In-Progress Bead
 

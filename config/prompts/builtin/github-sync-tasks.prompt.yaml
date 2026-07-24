@@ -19,8 +19,9 @@ loop:
   at: "09:00"
 target:
   title: 'GitHub: sync tasks'
-  reuseTitle: true
-  reuseCoalesce: true
+  reuse:
+    title: true
+    coalesce: true
 prompt: |
   Pull GitHub issues from this project's repository into local beads issues,
   keeping the beads copy in sync with changes made on GitHub (body, comments,

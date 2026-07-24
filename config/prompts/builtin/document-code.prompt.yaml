@@ -8,8 +8,9 @@ preferredModels:
   - modelTag: Coding
 target:
   title: 'Document Code'
-  reuseTitle: true
-  reuseCoalesce: true
+  reuse:
+    title: true
+    coalesce: true
 prompt: |
   Before adding documentation, read the code we wrote to understand its behavior,
   edge cases, and non-obvious design decisions. Also check the project's existing

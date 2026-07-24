@@ -6,7 +6,9 @@ backgroundColor: '#FFCC80'
 group: Tasks
 target:
   title: "Reevaluate all issues"
-  reuseTitle: true
+  reuse:
+    title: true
+    coalesce: true
 enabledWhen: CommandExists("bd") && DirExists(".beads")
 prompt: |
   ## Session Context

@@ -8,8 +8,9 @@ preferredModels:
   - modelTag: Coding
 target:
   title: 'Submit changes'
-  reuseTitle: true
-  reuseCoalesce: true
+  reuse:
+    title: true
+    coalesce: true
 prompt: |
   Submit current work by preparing, committing (if needed), and pushing changes to a pull request.
 

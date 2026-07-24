@@ -8,8 +8,9 @@ preferredModels:
   - modelTag: Coding
 target:
   title: 'Rebase changes'
-  reuseTitle: true
-  reuseCoalesce: true
+  reuse:
+    title: true
+    coalesce: true
 prompt: |
   Rebase the current branch onto the target branch, resolving conflicts and pushing the result.
 

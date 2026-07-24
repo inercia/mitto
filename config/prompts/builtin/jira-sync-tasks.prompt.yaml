@@ -34,8 +34,9 @@ loop:
   at: "09:00"
 target:
   title: 'JIRA: sync tasks'
-  reuseTitle: true
-  reuseCoalesce: true
+  reuse:
+    title: true
+    coalesce: true
 prompt: |
   Sync JIRA tickets matching this project's saved query with local beads issues.
   By default this runs **both directions** — Pull (JIRA → beads) and Push
@@ -331,7 +332,20 @@ prompt: |
     --set-metadata jira_updated="<ticket.updated>"
   ```
 
-  - **Status reflection**: if the JIRA ticket is Done/Closed and the bead is still open, close it: `bd close <id> --reason "Closed in JIRA (<status>)"`. (In interactive mode you may confirm first.)
+  - **Status reflection** (conservative — see Guidelines "Terminal status"): if the JIRA ticket is in a **terminal** status and the bead is still open, close it: `bd close <id> --reason "Closed in JIRA (<status>)"`. (In interactive mode you may confirm first.)
+
+    A status is **terminal** only when its `name` is one of the following (case-insensitive, exact match):
+
+    - `Done`
+    - `Closed`
+    - `Resolved`
+    - `Cancelled` (or `Canceled`)
+    - `Won't Do` / `Won't Fix` / `Wontfix`
+    - `Duplicate`
+
+    Do **not** close a bead based on `statusCategory == "done"` alone. Many JIRA workflows put deployment-pipeline statuses in the green category — e.g. `Deployed to Stage`, `Deployed`, `Released`, `Ready for Prod`, `In UAT`, `Verified`, `Awaiting Deploy`, `On Prod` — where the ticket has real follow-up work (prod rollout, verification, sign-off) still pending. Treating those as closed would silently lose local work.
+
+    When the status name is not on the allow-list, leave the bead open and simply mirror the status change into the managed block of the bead body (Step 5B update path already does this) so a human sees the current JIRA state without an automated close. If you are unsure whether a workflow-specific name (e.g. `Complete`, `Delivered`, `Fixed`) is really terminal in this project, **leave the bead open** — a human can close it later; a mistakenly-closed bead cannot be un-lost.
 
   **C. Mirror new comments** (both create and update paths):
 
@@ -406,10 +420,18 @@ prompt: |
   ### Step 8A — Close JIRA when the bead is closed locally
 
   If a bead is **closed** locally and its JIRA ticket is **not** already in a
-  Done-like status (Done / Closed / Resolved), transition JIRA to a Done-like
-  status. JIRA workflows vary per project, so look up the available transitions
-  for each ticket and pick the first one whose target status category is `done`
-  (or whose name matches `Done`/`Closed`/`Resolved`, case-insensitive).
+  **terminal** status (see Guidelines "Terminal status" — the same conservative
+  allow-list used by Step 5B), transition JIRA to a terminal status. JIRA
+  workflows vary per project, so look up the available transitions for each
+  ticket and pick a transition whose **target status name** matches the
+  terminal allow-list (`Done` / `Closed` / `Resolved` / `Cancelled` / `Won't Do`
+  / `Won't Fix` / `Duplicate`, case-insensitive, exact). Prefer `Done` when
+  multiple terminal transitions are available.
+
+  Do **not** pick a transition merely because its target `statusCategory` is
+  `done` — deployment-pipeline statuses like `Deployed to Stage`, `Released`,
+  or `Ready for Prod` often live in the green category but are not terminal,
+  and transitioning there would misrepresent the ticket state.
   {{- if Cond "Tools.Names.exists(n, n.matches('(?i)jira'))" }}
 
   Use **JIRA MCP tools** (preferred — available in this run): `jira_get_transitions`
@@ -427,9 +449,11 @@ prompt: |
   ```
   {{- end }}
 
-  If **no** done-category transition is available (workflow restriction,
-  permission denied), do **not** force it — instead add a `[mitto]` comment
-  saying the bead was closed locally, so a human can transition manually
+  If **no** terminal transition is available (workflow restriction,
+  permission denied, or the only reachable done-category transitions are
+  non-terminal names like `Deployed to Stage`), do **not** force it —
+  instead add a `[mitto]` comment saying the bead was closed locally, so a
+  human can transition manually
   ({{- if Cond "Tools.Names.exists(n, n.matches('(?i)jira'))" }} via `jira_add_comment`{{- else }} via
   `jira issue comment add <KEY> --body-file /tmp/jira-<key>.mitto.close.md`
   {{- end }}). The comment body starts with `[mitto] Closed in beads: <reason>`.
@@ -504,5 +528,6 @@ prompt: |
   - Always `--body-file` for descriptions and `--file`/inline text for comments to avoid shell-quoting issues.
   - **Good-enough conversion**: JIRA wiki markup is converted to Markdown on a best-effort basis (Step 5.0) — headers and code blocks are the priority; perfect fidelity is not a goal.
   - **Preserve local information**: local body edits (below the `jira-sync:end` marker) and local comments/notes (those without a `[jira]` prefix) must survive every sync. When unsure, keep the content rather than overwrite it.
+  - **Terminal status (conservative)**: a JIRA ticket is treated as **closed** only when its status `name` is one of a small allow-list — `Done`, `Closed`, `Resolved`, `Cancelled`/`Canceled`, `Won't Do`, `Won't Fix`/`Wontfix`, `Duplicate` (case-insensitive, exact match). **Do not** rely on `statusCategory == "done"`: many workflows place deployment-pipeline statuses (`Deployed to Stage`, `Deployed`, `Released`, `Ready for Prod`, `In UAT`, `Verified`, `Awaiting Deploy`, `On Prod`, etc.) in the green category even though real work remains. When the name is not on the allow-list, leave the bead open, mirror the current status into the managed block of the bead body, and let a human close it — a mistakenly-closed bead can silently drop local work; a mistakenly-open one is harmless and easy to fix. The same allow-list gates Step 8A's Push transitions.
   - **Stale beads**: tickets that drop out of the query are reconciled based on the bead's local state — already-closed beads are **deleted** (dead weight), still-open beads are **closed but preserved** (JIRA ticket may have moved to a future sprint / been relabelled; local body edits and comments are kept). Interactive mode confirms both lanes with delete as the default for the closed lane; silent mode auto-applies the close-but-keep lane and defers deletes to the next interactive run.
   - **Blocking**: JIRA "Blocks" links become beads dependencies (`bd dep`), so blocked issues drop out of `bd ready` until their blocker closes; a blocker outside the sync set (or a bare *Blocked* status with no named blocker) is marked with a `blocked` label instead. Dependencies are re-evaluated each run — added when newly blocked, removed when unblocked.

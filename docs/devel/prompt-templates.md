@@ -390,7 +390,8 @@ conversation:
 ```yaml
 target:
   title: "{{ .Args.IssueID }}: work"
-  reuseTitle: true
+  reuse:
+    title: true
 ```
 
 Two dispatches with different `IssueID` open (or reuse) distinct
@@ -436,11 +437,11 @@ dependencies.
 - **Dispatch-time.** Parse/execution errors and empty (or whitespace-
   only) renders are fail-closed rejections at both dispatch sites — no
   session is created. An empty rendered title would otherwise silently
-  collide across callers when combined with `reuseTitle`.
+  collide across callers when combined with `reuse.title`.
 
-### Interaction with `reuseTitle`
+### Interaction with `reuse.title`
 
-When `reuseTitle: true`, the **rendered** string becomes the lookup key
+When `reuse.title: true`, the **rendered** string becomes the lookup key
 in `session.FindConversationByTitle`. This is a semantics upgrade, not a
 break: literal titles funnel to one conversation as before; templated
 titles funnel per rendered value.
@@ -449,8 +450,8 @@ titles funnel per rendered value.
 
 - `.Item.*` (per-row list-menu context — populated for `enabledWhen` but
   not currently threaded to either dispatch site). Tracked separately.
-- `target.reuseIssue` message templates (not applicable — reuseIssue keys
-  on the bead ID directly).
+- `target.reuse.issue` message templates (not applicable — the
+  `reuse.issue` mode keys on the bead ID directly).
 
 ---
 

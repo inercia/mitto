@@ -23,8 +23,9 @@ loop:
   delay: 60
 target:
   title: 'Analyze logs'
-  reuseTitle: true
-  reuseCoalesce: true
+  reuse:
+    title: true
+    coalesce: true
 prompt: |
   ## Session Context
 

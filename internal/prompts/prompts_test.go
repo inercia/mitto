@@ -13,6 +13,32 @@ import (
 	"github.com/inercia/mitto/internal/cel"
 )
 
+// promptTargetReuseIssue / promptTargetReuseTitle / promptTargetReuseCoalesce
+// are nil-safe accessors for the nested target.reuse block (mitto-6b3). The
+// TestBuiltinPrompts_* sweeps read these three flags from every fixture, and
+// a nil Reuse block is semantically equivalent to all three off — the helpers
+// collapse the two-level nil-check into a single expression at each call site.
+func promptTargetReuseIssue(p *PromptFile) bool {
+	if p == nil || p.Target == nil || p.Target.Reuse == nil {
+		return false
+	}
+	return p.Target.Reuse.Issue
+}
+
+func promptTargetReuseTitle(p *PromptFile) bool {
+	if p == nil || p.Target == nil || p.Target.Reuse == nil {
+		return false
+	}
+	return p.Target.Reuse.Title
+}
+
+func promptTargetReuseCoalesce(p *PromptFile) *bool {
+	if p == nil || p.Target == nil || p.Target.Reuse == nil {
+		return nil
+	}
+	return p.Target.Reuse.Coalesce
+}
+
 func TestParsePromptFile_WithFrontMatter(t *testing.T) {
 	data := []byte(`name: "Test Prompt"
 description: "A test prompt"
@@ -450,7 +476,8 @@ prompt: |
 func TestParsePromptFile_WithTargetReuseIssue(t *testing.T) {
 	data := []byte(`name: "test"
 target:
-  reuseIssue: true
+  reuse:
+    issue: true
 prompt: hi
 `)
 
@@ -461,8 +488,8 @@ prompt: hi
 	if prompt.Target == nil {
 		t.Fatal("Target = nil, want non-nil")
 	}
-	if !prompt.Target.ReuseIssue {
-		t.Errorf("Target.ReuseIssue = false, want true")
+	if prompt.Target.Reuse == nil || !prompt.Target.Reuse.Issue {
+		t.Errorf("Target.Reuse.Issue = %+v, want true", prompt.Target.Reuse)
 	}
 
 	// Round-trips through ToWebPrompt.
@@ -470,8 +497,8 @@ prompt: hi
 	if wp.Target == nil {
 		t.Fatal("WebPrompt.Target = nil, want non-nil")
 	}
-	if !wp.Target.ReuseIssue {
-		t.Errorf("WebPrompt.Target.ReuseIssue = false, want true")
+	if wp.Target.Reuse == nil || !wp.Target.Reuse.Issue {
+		t.Errorf("WebPrompt.Target.Reuse.Issue = %+v, want true", wp.Target.Reuse)
 	}
 }
 
@@ -1288,85 +1315,86 @@ func TestValidatePromptTarget(t *testing.T) {
 		}
 	})
 
-	t.Run("reuseTitle with title is valid", func(t *testing.T) {
-		if err := ValidatePromptTarget("p", &PromptTarget{ReuseTitle: true, Title: "Weekly triage"}, false); err != nil {
+	t.Run("reuse.title with title is valid", func(t *testing.T) {
+		if err := ValidatePromptTarget("p", &PromptTarget{Title: "Weekly triage", Reuse: &PromptTargetReuse{Title: true}}, false); err != nil {
 			t.Errorf("unexpected error: %v", err)
 		}
 	})
 
-	t.Run("reuseTitle without title errors", func(t *testing.T) {
-		err := ValidatePromptTarget("My Prompt", &PromptTarget{ReuseTitle: true}, false)
+	t.Run("reuse.title without title errors", func(t *testing.T) {
+		err := ValidatePromptTarget("My Prompt", &PromptTarget{Reuse: &PromptTargetReuse{Title: true}}, false)
 		if err == nil {
 			t.Fatal("expected error, got nil")
 		}
 		msg := err.Error()
-		if !strings.Contains(msg, "My Prompt") || !strings.Contains(msg, "reuseTitle") {
-			t.Errorf("error should mention prompt name and reuseTitle: %v", err)
+		if !strings.Contains(msg, "My Prompt") || !strings.Contains(msg, "reuse.title") {
+			t.Errorf("error should mention prompt name and reuse.title: %v", err)
 		}
 	})
 
-	t.Run("reuseTitle with whitespace-only title errors", func(t *testing.T) {
-		err := ValidatePromptTarget("p", &PromptTarget{ReuseTitle: true, Title: "   "}, false)
+	t.Run("reuse.title with whitespace-only title errors", func(t *testing.T) {
+		err := ValidatePromptTarget("p", &PromptTarget{Title: "   ", Reuse: &PromptTargetReuse{Title: true}}, false)
 		if err == nil {
 			t.Fatal("expected error, got nil")
 		}
 	})
 
-	t.Run("reuseIssue with title and no reuseTitle is valid", func(t *testing.T) {
-		if err := ValidatePromptTarget("p", &PromptTarget{ReuseIssue: true, Title: "x"}, false); err != nil {
+	t.Run("reuse.issue with title and no reuse.title is valid", func(t *testing.T) {
+		if err := ValidatePromptTarget("p", &PromptTarget{Title: "x", Reuse: &PromptTargetReuse{Issue: true}}, false); err != nil {
 			t.Errorf("unexpected error: %v", err)
 		}
 	})
 
-	// --- ReuseCoalesce validation (mitto-djs1). ReuseCoalesce is a modifier
-	// that requires at least one reuse mode (ReuseIssue, ReuseTitle, or the
-	// containing prompt's top-level singleton flag). Nil / *false is always
-	// accepted since coalescing is opt-in and off by default. ---
+	// --- Reuse.Coalesce validation (mitto-djs1; nested under target.reuse in
+	// mitto-6b3). Coalesce is a modifier that requires at least one reuse
+	// mode (Reuse.Issue, Reuse.Title, or the containing prompt's top-level
+	// singleton flag). Nil / *false is always accepted since coalescing is
+	// opt-in and off by default. ---
 
-	t.Run("reuseCoalesce nil is valid without any reuse mode", func(t *testing.T) {
+	t.Run("reuse.coalesce nil is valid without any reuse mode", func(t *testing.T) {
 		if err := ValidatePromptTarget("p", &PromptTarget{}, false); err != nil {
 			t.Errorf("unexpected error: %v", err)
 		}
 	})
 
-	t.Run("reuseCoalesce false is valid without any reuse mode", func(t *testing.T) {
+	t.Run("reuse.coalesce false is valid without any reuse mode", func(t *testing.T) {
 		off := false
-		if err := ValidatePromptTarget("p", &PromptTarget{ReuseCoalesce: &off}, false); err != nil {
+		if err := ValidatePromptTarget("p", &PromptTarget{Reuse: &PromptTargetReuse{Coalesce: &off}}, false); err != nil {
 			t.Errorf("unexpected error: %v", err)
 		}
 	})
 
-	t.Run("reuseCoalesce true without any reuse mode errors", func(t *testing.T) {
+	t.Run("reuse.coalesce true without any reuse mode errors", func(t *testing.T) {
 		on := true
-		err := ValidatePromptTarget("My Prompt", &PromptTarget{ReuseCoalesce: &on}, false)
+		err := ValidatePromptTarget("My Prompt", &PromptTarget{Reuse: &PromptTargetReuse{Coalesce: &on}}, false)
 		if err == nil {
 			t.Fatal("expected error, got nil")
 		}
 		msg := err.Error()
-		if !strings.Contains(msg, "My Prompt") || !strings.Contains(msg, "reuseCoalesce") {
-			t.Errorf("error should mention prompt name and reuseCoalesce: %v", err)
+		if !strings.Contains(msg, "My Prompt") || !strings.Contains(msg, "reuse.coalesce") {
+			t.Errorf("error should mention prompt name and reuse.coalesce: %v", err)
 		}
 	})
 
-	t.Run("reuseCoalesce true with reuseTitle+title is valid", func(t *testing.T) {
+	t.Run("reuse.coalesce true with reuse.title+title is valid", func(t *testing.T) {
 		on := true
-		tgt := &PromptTarget{ReuseTitle: true, Title: "Weekly triage", ReuseCoalesce: &on}
+		tgt := &PromptTarget{Title: "Weekly triage", Reuse: &PromptTargetReuse{Title: true, Coalesce: &on}}
 		if err := ValidatePromptTarget("p", tgt, false); err != nil {
 			t.Errorf("unexpected error: %v", err)
 		}
 	})
 
-	t.Run("reuseCoalesce true with reuseIssue is valid", func(t *testing.T) {
+	t.Run("reuse.coalesce true with reuse.issue is valid", func(t *testing.T) {
 		on := true
-		tgt := &PromptTarget{ReuseIssue: true, ReuseCoalesce: &on}
+		tgt := &PromptTarget{Reuse: &PromptTargetReuse{Issue: true, Coalesce: &on}}
 		if err := ValidatePromptTarget("p", tgt, false); err != nil {
 			t.Errorf("unexpected error: %v", err)
 		}
 	})
 
-	t.Run("reuseCoalesce true with promptSingleton is valid", func(t *testing.T) {
+	t.Run("reuse.coalesce true with promptSingleton is valid", func(t *testing.T) {
 		on := true
-		tgt := &PromptTarget{ReuseCoalesce: &on}
+		tgt := &PromptTarget{Reuse: &PromptTargetReuse{Coalesce: &on}}
 		if err := ValidatePromptTarget("p", tgt, true); err != nil {
 			t.Errorf("unexpected error: %v", err)
 		}
@@ -1376,14 +1404,14 @@ func TestValidatePromptTarget(t *testing.T) {
 	// ValidatePromptTarget must parse-check templated titles at load time so
 	// broken frontmatter is rejected up-front (mirrors the body precompile).
 	t.Run("title with valid template syntax is accepted", func(t *testing.T) {
-		tgt := &PromptTarget{Title: "{{ .Args.IssueID }}: work", ReuseTitle: true}
+		tgt := &PromptTarget{Title: "{{ .Args.IssueID }}: work", Reuse: &PromptTargetReuse{Title: true}}
 		if err := ValidatePromptTarget("p", tgt, false); err != nil {
 			t.Errorf("unexpected error: %v", err)
 		}
 	})
 
 	t.Run("title with invalid template syntax is rejected", func(t *testing.T) {
-		tgt := &PromptTarget{Title: "{{ .Args.X ", ReuseTitle: true}
+		tgt := &PromptTarget{Title: "{{ .Args.X ", Reuse: &PromptTargetReuse{Title: true}}
 		err := ValidatePromptTarget("p", tgt, false)
 		if err == nil {
 			t.Fatal("expected parse error for unbalanced action, got nil")
@@ -1396,7 +1424,7 @@ func TestValidatePromptTarget(t *testing.T) {
 	t.Run("literal title (no template syntax) skips template validation", func(t *testing.T) {
 		// A literal title that contains characters that would break as a
 		// template is fine because the fast-path skips parsing.
-		tgt := &PromptTarget{Title: "Weekly triage — Q3", ReuseTitle: true}
+		tgt := &PromptTarget{Title: "Weekly triage — Q3", Reuse: &PromptTargetReuse{Title: true}}
 		if err := ValidatePromptTarget("p", tgt, false); err != nil {
 			t.Errorf("unexpected error: %v", err)
 		}
@@ -2552,7 +2580,7 @@ func TestBuiltinPrompts_SingletonMigratedToTargetReuseTitle(t *testing.T) {
 			if prompt.Target == nil {
 				t.Fatalf("%s: Target = nil, want non-nil {Title, ReuseTitle: true}", file)
 			}
-			if !prompt.Target.ReuseTitle {
+			if !promptTargetReuseTitle(prompt) {
 				t.Errorf("%s: Target.ReuseTitle = false, want true", file)
 			}
 			if prompt.Target.Title == "" {
@@ -2642,21 +2670,21 @@ func TestBuiltinPrompts_SupportRoutingAdoption(t *testing.T) {
 			if prompt.Target == nil {
 				t.Fatalf("%s: Target = nil, want non-nil target/reuse routing (mitto-5x21.1)", s.file)
 			}
-			if prompt.Target.ReuseCoalesce == nil || !*prompt.Target.ReuseCoalesce {
-				t.Errorf("%s: Target.ReuseCoalesce = %v, want true (concurrent dispatches must join, not race)", s.file, prompt.Target.ReuseCoalesce)
+			if promptTargetReuseCoalesce(prompt) == nil || !*promptTargetReuseCoalesce(prompt) {
+				t.Errorf("%s: Target.ReuseCoalesce = %v, want true (concurrent dispatches must join, not race)", s.file, promptTargetReuseCoalesce(prompt))
 			}
 			if s.wantReuseByID {
-				if !prompt.Target.ReuseIssue {
+				if !promptTargetReuseIssue(prompt) {
 					t.Errorf("%s: Target.ReuseIssue = false, want true (per-ticket support prompt)", s.file)
 				}
-				if prompt.Target.ReuseTitle {
+				if promptTargetReuseTitle(prompt) {
 					t.Errorf("%s: Target.ReuseTitle = true, want false (per-ticket routes by beads issue, not title)", s.file)
 				}
 			} else {
-				if !prompt.Target.ReuseTitle {
+				if !promptTargetReuseTitle(prompt) {
 					t.Errorf("%s: Target.ReuseTitle = false, want true (workspace-wide singleton routes by title)", s.file)
 				}
-				if prompt.Target.ReuseIssue {
+				if promptTargetReuseIssue(prompt) {
 					t.Errorf("%s: Target.ReuseIssue = true, want false (workspace-wide singleton routes by title, not per-issue)", s.file)
 				}
 				if prompt.Target.Title != s.wantTitle {
@@ -2770,37 +2798,37 @@ func TestBuiltinPrompts_TodayTierRoutingAdoption(t *testing.T) {
 			}
 			switch s.bucket {
 			case perBeadWithCoalesce:
-				if !prompt.Target.ReuseIssue {
+				if !promptTargetReuseIssue(prompt) {
 					t.Errorf("%s: Target.ReuseIssue = false, want true (per-bead prompt)", s.file)
 				}
-				if prompt.Target.ReuseTitle {
+				if promptTargetReuseTitle(prompt) {
 					t.Errorf("%s: Target.ReuseTitle = true, want false (per-bead routes by issue, not title)", s.file)
 				}
-				if prompt.Target.ReuseCoalesce == nil || !*prompt.Target.ReuseCoalesce {
-					t.Errorf("%s: Target.ReuseCoalesce = %v, want true (concurrent dispatches must join, not race)", s.file, prompt.Target.ReuseCoalesce)
+				if promptTargetReuseCoalesce(prompt) == nil || !*promptTargetReuseCoalesce(prompt) {
+					t.Errorf("%s: Target.ReuseCoalesce = %v, want true (concurrent dispatches must join, not race)", s.file, promptTargetReuseCoalesce(prompt))
 				}
 			case perBeadLoopNoCoalesce:
-				if !prompt.Target.ReuseIssue {
+				if !promptTargetReuseIssue(prompt) {
 					t.Errorf("%s: Target.ReuseIssue = false, want true (per-bead loop prompt)", s.file)
 				}
-				if prompt.Target.ReuseTitle {
+				if promptTargetReuseTitle(prompt) {
 					t.Errorf("%s: Target.ReuseTitle = true, want false (per-bead loop routes by issue, not title)", s.file)
 				}
-				if prompt.Target.ReuseCoalesce != nil && *prompt.Target.ReuseCoalesce {
+				if promptTargetReuseCoalesce(prompt) != nil && *promptTargetReuseCoalesce(prompt) {
 					t.Errorf("%s: Target.ReuseCoalesce = true, want unset/false (a concurrent dispatch must not merge into a live loop turn)", s.file)
 				}
 			case workspaceTitle:
-				if !prompt.Target.ReuseTitle {
+				if !promptTargetReuseTitle(prompt) {
 					t.Errorf("%s: Target.ReuseTitle = false, want true (workspace-wide singleton routes by title)", s.file)
 				}
-				if prompt.Target.ReuseIssue {
+				if promptTargetReuseIssue(prompt) {
 					t.Errorf("%s: Target.ReuseIssue = true, want false (workspace-wide singleton routes by title, not per-issue)", s.file)
 				}
 				if prompt.Target.Title != s.wantTitle {
 					t.Errorf("%s: Target.Title = %q, want %q (literal workspace-wide title)", s.file, prompt.Target.Title, s.wantTitle)
 				}
-				if prompt.Target.ReuseCoalesce == nil || !*prompt.Target.ReuseCoalesce {
-					t.Errorf("%s: Target.ReuseCoalesce = %v, want true (concurrent dispatches must join, not race)", s.file, prompt.Target.ReuseCoalesce)
+				if promptTargetReuseCoalesce(prompt) == nil || !*promptTargetReuseCoalesce(prompt) {
+					t.Errorf("%s: Target.ReuseCoalesce = %v, want true (concurrent dispatches must join, not race)", s.file, promptTargetReuseCoalesce(prompt))
 				}
 			}
 		})
@@ -2854,17 +2882,17 @@ func TestBuiltinPrompts_NeedsTemplatedTitleAdoption(t *testing.T) {
 			if prompt.Target == nil {
 				t.Fatalf("%s: Target = nil, want non-nil target/reuse routing (mitto-5x21.3)", s.file)
 			}
-			if !prompt.Target.ReuseTitle {
+			if !promptTargetReuseTitle(prompt) {
 				t.Errorf("%s: Target.ReuseTitle = false, want true (per-external-ID templated title)", s.file)
 			}
-			if prompt.Target.ReuseIssue {
+			if promptTargetReuseIssue(prompt) {
 				t.Errorf("%s: Target.ReuseIssue = true, want false (per-external-ID routes by templated title, not beads issue)", s.file)
 			}
 			if prompt.Target.Title != s.wantTitle {
 				t.Errorf("%s: Target.Title = %q, want %q (templated per-external-ID title)", s.file, prompt.Target.Title, s.wantTitle)
 			}
-			if prompt.Target.ReuseCoalesce == nil || !*prompt.Target.ReuseCoalesce {
-				t.Errorf("%s: Target.ReuseCoalesce = %v, want true (concurrent dispatches must join, not race)", s.file, prompt.Target.ReuseCoalesce)
+			if promptTargetReuseCoalesce(prompt) == nil || !*promptTargetReuseCoalesce(prompt) {
+				t.Errorf("%s: Target.ReuseCoalesce = %v, want true (concurrent dispatches must join, not race)", s.file, promptTargetReuseCoalesce(prompt))
 			}
 		})
 	}
