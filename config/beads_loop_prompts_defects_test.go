@@ -301,3 +301,99 @@ func TestBeadsLoopPrompts_Defects_mitto9mk_WorkspaceScopedConcurrencyGate(t *tes
 		t.Errorf("[mitto-9mk skip-active-beads is per-caller] the `Skip beads with active conversations` guideline still consults `.Children.MCPText`; a peer orchestrator's active child on the same bead is invisible, so both sessions can dispatch the same bead in one pass. Rewrite this guideline to consult `mitto_conversation_list(workspace: \"{{ .Workspace.UUID }}\", archived: false)` for the workspace-wide active-bead set")
 	}
 }
+
+// TestBeadsLoopPrompts_mitto4vr_BeadsStateWait is the regression guard for
+// mitto-4vr: the L1 orchestrator's §B and §C wait blocks must wait on the
+// bead's terminal state (`closed`) via `mitto_conversation_wait(what:
+// "beads_issues_reached_state", ...)` — landed by mitto-7rw — rather than on
+// the child agent's yield via `mitto_children_tasks_wait`. The two are not
+// equivalent ("child agent stopped talking" ≠ "bead closed"): the child may
+// yield mid-turn, hit its context budget, crash, or be archived without a
+// terminal `bd` action, so the bead-state wait is strictly more correct AND
+// activates the orchestrator ~1 per real terminal event instead of ~1 per
+// child turn.
+//
+// §A is deliberately left alone — its success criterion IS "child agent
+// stopped talking" (one-shot mention drivers that don't necessarily touch a
+// bead's status), so it keeps `mitto_children_tasks_wait`. This test also
+// asserts §A did not accidentally get rewritten by a §B/§C-wide edit.
+func TestBeadsLoopPrompts_mitto4vr_BeadsStateWait(t *testing.T) {
+	const mergedOrch = "beads-issue-loop-processing.prompt.yaml"
+
+	body, err := fs.ReadFile(BuiltinPromptsFS, BuiltinPromptsDir+"/"+mergedOrch)
+	if err != nil {
+		t.Fatalf("read embedded prompt %s: %v", mergedOrch, err)
+	}
+	src := string(body)
+
+	// Slice out each wait block by its `### §X wait, log, archive` heading and
+	// the next `### ` / `## ` / `---` boundary so the assertions target only
+	// the wait paragraph. Reuses the same slicing shape as the mitto-9mk test.
+	sliceWait := func(marker string) string {
+		start := strings.Index(src, marker)
+		if start < 0 {
+			t.Fatalf("%s: wait-block marker %q not found — test needs updating", mergedOrch, marker)
+		}
+		rest := src[start:]
+		// Stop at the next section heading or horizontal rule; the wait block
+		// always ends before one of these appears.
+		enders := []string{"\n  ### ", "\n  ## ", "\n  ---"}
+		end := len(rest)
+		for _, e := range enders {
+			if i := strings.Index(rest[len(marker):], e); i >= 0 && len(marker)+i < end {
+				end = len(marker) + i
+			}
+		}
+		return rest[:end]
+	}
+
+	waitA := sliceWait("### §A wait, verify, archive")
+	waitB := sliceWait("### §B wait, log, archive")
+	waitC := sliceWait("### §C wait, log, archive")
+
+	// §B — must use the bead-state wait, not children-tasks wait.
+	for _, want := range []string{
+		`what: "beads_issues_reached_state"`,
+		`beads_target_state: "closed"`,
+		`beads_match: "all"`,
+		`timeout_seconds: 14400`,
+	} {
+		if !strings.Contains(waitB, want) {
+			t.Errorf("[mitto-4vr §B wait not bead-state] §B wait block does not contain %q; expected `mitto_conversation_wait(what: \"beads_issues_reached_state\", beads_target_state: \"closed\", beads_match: \"all\", timeout_seconds: 14400, ...)` per the mitto-7rw backend extension. Waiting on child-agent yield instead of bead closure fires the orchestrator ~N times per child turn and is strictly less correct (yield ≠ closed)", want)
+		}
+	}
+	if strings.Contains(waitB, "mitto_children_tasks_wait") {
+		t.Errorf("[mitto-4vr §B still uses children_tasks_wait] §B wait block still contains `mitto_children_tasks_wait`; the whole point of mitto-4vr is to replace the child-yield wait with a bead-state wait. Remove the `mitto_children_tasks_wait(...)` call and use `mitto_conversation_wait(what: \"beads_issues_reached_state\", ...)` instead")
+	}
+
+	// §C — same requirements. Enforced independently (the previous
+	// "Identical to §B" shorthand allowed §C to silently diverge on any §B
+	// edit; the mitto-4vr fix inlines §C so the two are separately auditable).
+	for _, want := range []string{
+		`what: "beads_issues_reached_state"`,
+		`beads_target_state: "closed"`,
+		`beads_match: "all"`,
+		`timeout_seconds: 14400`,
+	} {
+		if !strings.Contains(waitC, want) {
+			t.Errorf("[mitto-4vr §C wait not bead-state] §C wait block does not contain %q; expected an explicit `mitto_conversation_wait(what: \"beads_issues_reached_state\", beads_target_state: \"closed\", beads_match: \"all\", timeout_seconds: 14400, ...)` block (NOT the previous `Identical to §B` shorthand — inlining makes §C independently testable and prevents silent drift from §B edits)", want)
+		}
+	}
+	if strings.Contains(waitC, "mitto_children_tasks_wait") {
+		t.Errorf("[mitto-4vr §C still uses children_tasks_wait] §C wait block still contains `mitto_children_tasks_wait`; §C must use the bead-state wait in parallel with §B (both share the 1-driver budget and the same activation-reduction motivation)")
+	}
+
+	// §A leave-alone regression — the mention-driver success criterion IS
+	// "child agent stopped talking", so §A must keep `mitto_children_tasks_wait`
+	// with the existing 30-minute timeout. If a future edit sweeps §A into
+	// the §B/§C bead-state rewrite it will silently break the mention flow.
+	if !strings.Contains(waitA, "mitto_children_tasks_wait") {
+		t.Errorf("[mitto-4vr §A leave-alone regression] §A wait block no longer contains `mitto_children_tasks_wait`; §A dispatches one-shot mention drivers whose success criterion is child-agent yield (not bead closure) — keep `mitto_children_tasks_wait(..., timeout_seconds: 1800)` here")
+	}
+	if !strings.Contains(waitA, "timeout_seconds: 1800") {
+		t.Errorf("[mitto-4vr §A leave-alone regression] §A wait block no longer specifies `timeout_seconds: 1800`; the 30-minute cap matches the mention-driver's own budget and must be preserved")
+	}
+	if strings.Contains(waitA, "beads_issues_reached_state") {
+		t.Errorf("[mitto-4vr §A leave-alone regression] §A wait block now references `beads_issues_reached_state`; §A must keep `mitto_children_tasks_wait` — a mention driver may reply/investigate without ever touching a bead's status, so a bead-state wait would hang until timeout on every §A dispatch")
+	}
+}

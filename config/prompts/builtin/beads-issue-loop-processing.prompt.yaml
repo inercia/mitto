@@ -315,7 +315,10 @@ prompt: |
   Keep the similarity check **narrow** — over-spawning a driver (it self-verifies
   and terminates quickly) is safer than mis-closing on a coincidental match.
 
-  Order survivors by priority (`critical → high → medium → low`), then bead ID asc.
+  Order survivors by **priority** (`critical → high → medium → low` — i.e.
+  `bd` numeric `priority` **ascending**: `P0` before `P1` before `P2` before
+  `P3`), then bead ID asc. **Priority is authoritative within §B** — a P0 bug
+  ALWAYS runs before a P3 bug; never demote by "looks small" or "looks urgent".
   {{- end }}
 
   ### 2C — Eligible open features
@@ -327,7 +330,10 @@ prompt: |
   {{- else -}}
   Same shape as 2B — same exclusions, same eligibility rule (bead's own
   `status`/labels decide; parent epic's status is irrelevant; recently-closed
-  parent is pass-local, mitto-fko), same ordering. Differences:
+  parent is pass-local, mitto-fko), and **same ordering**: priority
+  (`critical → high → medium → low`, i.e. `P0` before `P1` before `P2` before
+  `P3`) then bead ID asc. Priority is authoritative within §C — a P0 feature
+  ALWAYS runs before a P3 feature. Differences:
 
   - Terminal label is `verified`.
   - Self-heal chain (already-landed fix) adds `planned`, `implemented`, `tested`,
@@ -357,8 +363,9 @@ prompt: |
   exposed — no per-bead prose outside this table.
 
   One row per candidate across all three sets. Order: class A → B → C, then
-  class-native (2A: `ts` asc; 2B/2C: priority then bead ID). Include EVERY
-  candidate, including excluded — those rows are the whole point.
+  class-native (2A: `ts` asc; 2B/2C: priority `critical → high → medium → low`
+  — i.e. `P0` before `P1` before `P2` before `P3` — then bead ID asc).
+  Include EVERY candidate, including excluded — those rows are the whole point.
 
   - **Class** — `A` / `B` / `C`.
   - **Issue** — bead ID (for 2A, append ` [<ts>]`).
@@ -397,11 +404,13 @@ prompt: |
   1. 2A non-empty → §A on the oldest unaddressed mention.
   {{ if ne .Args.FixBugs "false" -}}
   2. Else 2B non-empty AND Step 1 "Loop fixing bug" preflight succeeded → §B on the
-     highest-priority bug.
+     **highest-priority bug** (2B's first row: lowest numeric priority — `P0`
+     before `P1` before `P2` before `P3` — tie-broken by bead ID asc).
   {{ end -}}
   {{ if ne .Args.WorkOnFeatures "false" -}}
   {{ if ne .Args.FixBugs "false" }}3{{ else }}2{{ end }}. Else 2C non-empty AND Step 1 "Loop implementing feature" preflight
-     succeeded → §C on the highest-priority feature.
+     succeeded → §C on the **highest-priority feature** (2C's first row: same
+     `P0 → P3` rule as §B, tie-broken by bead ID asc).
   {{ end -}}
   {{ if ne .Args.FixBugs "false" }}{{ if ne .Args.WorkOnFeatures "false" }}4{{ else }}3{{ end }}{{ else }}{{ if ne .Args.WorkOnFeatures "false" }}3{{ else }}2{{ end }}{{ end }}. Otherwise → Step 6 with reason "nothing eligible" (include `scope: bugs={{ if ne .Args.FixBugs "false" }}on{{ else }}off{{ end }}
      features={{ if ne .Args.WorkOnFeatures "false" }}on{{ else }}off{{ end }}` so the operator can see whether the empty result is real or
@@ -529,26 +538,39 @@ prompt: |
 
   ### §B wait, log, archive
 
+  Wait on the **bead's terminal state** (`closed`), not on the child agent's
+  yield. This is strictly more correct — "child agent stopped talking" ≠ "bead
+  closed" (the child may yield mid-turn, hit its context budget, crash, or be
+  archived without a terminal `bd` action) — and dramatically reduces
+  orchestrator activations (~1 per real terminal event instead of ~1 per
+  child turn). 4h timeout mirrors the per-bug driver's `maxDuration: "4h"`.
+
   ```
-  mitto_children_tasks_wait(
+  mitto_conversation_wait(
     self_id: "{{ .Session.ID }}",
-    children_list: ["<child-id>"],
-    timeout_seconds: 3600
+    conversation_id: "self",
+    what: "beads_issues_reached_state",
+    beads_issues: ["<id>"],
+    beads_target_state: "closed",
+    beads_match: "all",
+    timeout_seconds: 14400
   )
   ```
 
-  - **Child done** — write one bookkeeping comment then archive (the driver has
-    already logged its own `Investigation:` / `Reproduction:` / `Fix:` comments):
+  - **Bead closed** (happy path) — write one bookkeeping comment then archive
+    the child (the driver has already logged its own `Investigation:` /
+    `Reproduction:` / `Fix:` comments):
 
     ```bash
-    bd comment <id> "Orchestrator: per-bug driver completed; archiving worker conversation."
+    bd comment <id> "Orchestrator: bead reached terminal state (closed); archiving worker conversation <child-id>."
     ```
     ```
     mitto_conversation_archive(self_id: "{{ .Session.ID }}", conversation_id: "<child-id>")
     ```
 
-  - **Timeout** — log and move on, do NOT kill/archive:
-    `bd comment <id> "Orchestrator: 1h wait timed out; leaving child running."`
+  - **Timeout** (4h wall-clock cap) — log and move on, do NOT kill/archive
+    (the child's own `maxDuration` is the authoritative upper bound):
+    `bd comment <id> "Orchestrator: 4h bead-state wait timed out; leaving child running."`
   - **Wait errored** → notify and STOP.
 
   Then Step 6.
@@ -593,7 +615,43 @@ prompt: |
 
   ### §C wait, log, archive
 
-  Identical to §B (1h timeout, completion note, degrade semantics). Then Step 6.
+  Same rule as §B — wait on the **feature bead's terminal state** (`closed`),
+  not on the child agent's yield. Same rationale (correctness + activation
+  reduction) and same 4h timeout mirroring the per-feature driver's
+  `maxDuration: "8h"` (the wait cap is intentionally shorter than the driver's
+  own cap so the orchestrator recovers even if the driver is still going).
+
+  ```
+  mitto_conversation_wait(
+    self_id: "{{ .Session.ID }}",
+    conversation_id: "self",
+    what: "beads_issues_reached_state",
+    beads_issues: ["<id>"],
+    beads_target_state: "closed",
+    beads_match: "all",
+    timeout_seconds: 14400
+  )
+  ```
+
+  - **Bead closed** (happy path) — write one bookkeeping comment then archive
+    the child (the driver has already logged its own per-phase `Plan:` /
+    `Implementation:` / `Testing:` / `Review:` comments):
+
+    ```bash
+    bd comment <id> "Orchestrator: bead reached terminal state (closed); archiving worker conversation <child-id>."
+    ```
+    ```
+    mitto_conversation_archive(self_id: "{{ .Session.ID }}", conversation_id: "<child-id>")
+    ```
+
+  - **Timeout** (4h wall-clock cap) — log and move on, do NOT kill/archive.
+    Epic containers that legitimately stay open after the child finishes will
+    also land here (the child closed the leaf, not the epic; Step 2P will
+    reap the child on the next pass):
+    `bd comment <id> "Orchestrator: 4h bead-state wait timed out; leaving child running."`
+  - **Wait errored** → notify and STOP.
+
+  Then Step 6.
 
   ---
   {{- end }}
@@ -643,7 +701,12 @@ prompt: |
 
   - **One increment per pass.** Exactly one worker, one class. The `onTasks`
     re-fire drives cross-pass progress — never batch.
-  - **Strict priority A{{ if ne .Args.FixBugs "false" }} → B{{ end }}{{ if ne .Args.WorkOnFeatures "false" }} → C{{ end }}.** Never demote by "looks small" / "looks urgent".
+  - **Strict class priority A{{ if ne .Args.FixBugs "false" }} → B{{ end }}{{ if ne .Args.WorkOnFeatures "false" }} → C{{ end }}, then bead priority within class.** Class comes first
+    (bugs always before features), then within the chosen class pick the
+    highest-priority bead (`critical → high → medium → low`, i.e. `P0` before
+    `P1` before `P2` before `P3`), tie-broken by bead ID asc. Never demote by
+    "looks small" / "looks urgent"; never promote a feature over an eligible
+    bug on urgency vibes.
   - **Top-level only.** `Session.IsChild` → notify + STOP; no `bd` writes, no spawns.
   - **Silent unless it matters.** `mitto_ui_notify` only at Step 6, degrade paths
     (Step 7, wait errors), and wait-timeout milestones. Never per-target.
