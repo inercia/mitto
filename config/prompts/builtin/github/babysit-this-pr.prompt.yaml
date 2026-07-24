@@ -1,0 +1,530 @@
+icon: globe
+name: 'GitHub: babysit this PR'
+menus: prompts, conversations
+parameters:
+  - name: PullRequest
+    type: text
+    required: false
+    description: 'Optional PR reference (a number like `123`, or a full URL like `https://github.com/owner/repo/pull/123`). If omitted, the PR created earlier in THIS conversation is auto-detected from the conversation history; if none is found, the loop aborts.'
+description: Auto-loop — keep babysitting the PR that was created in this conversation (rebase, fix CI, address comments, merge when ready), then self-terminate when it is merged or closed
+group: GitHub
+backgroundColor: '#BBDEFB'
+tags:
+- loop
+- github
+enabledWhen: '!Session.IsChild && FileExists(".git/config") && (Tools.HasPattern("github_*") || CommandExists("gh")) && Permissions.CanStartConversation'
+loop:
+  mode: always
+  trigger: onCompletion
+  coalesceDuringBusy: true
+  delay: 3600
+  maxIterations: 30
+  maxDuration: "6h"
+target:
+  title: 'GitHub: babysit this PR'
+  reuse:
+    title: true
+    coalesce: true
+prompt: |
+  Auto-loop sibling of **"GitHub: babysit my PRs"** scoped to **the single pull
+  request that was created earlier in THIS conversation**. On every run this
+  conversation advances that one PR one step toward done — rebasing when
+  stale, fixing CI, addressing review comments, and merging when ready — and
+  self-terminates when the PR is merged or closed (or if no PR can be
+  identified in the conversation).
+
+  Only ever acts on the PR when **you are the author**.
+
+  ## Session Context
+
+  Your session ID is `{{ .Session.ID }}` — use this as `self_id` for all `mitto_*` MCP tool calls.
+
+  Available ACP servers:
+  {{ .ACP.AvailableText }}
+
+  Existing child conversations (spawned by previous runs):
+  {{ .Children.MCPText }}
+
+  When spawning conversations to fix issues, prefer `"coding"` or `"fast"` tagged
+  servers. **Never** configure spawned conversations as loops — they are
+  one-off tasks.
+
+  ## Interaction Mode — READ THIS FIRST
+  {{- if and .Session.IsLoop (not .Session.IsLoopForced) }}
+
+  **Silent mode — scheduled loop run.**
+  - Use **only** `mitto_ui_notify`. Do **NOT** call `mitto_ui_options`,
+    `mitto_ui_form`, or `mitto_ui_textbox` — nobody is watching, never block.
+  - Act autonomously when safe (clean rebases); otherwise just notify.
+  {{- else }}
+
+  **Interactive mode** (e.g. the very first send, or a force-triggered run): a user may be
+  present, so you *may* use the interactive `mitto_ui_*` tools (ask before risky actions
+  like merges/rebases).
+  {{- end }}
+  {{- if .Iteration.IsLast }}
+
+  **Final scheduled run.** This is the last automatic iteration (the `maxIterations`
+  cap is reached after this run, so no further run will fire). If the PR is still
+  open after this run it will **not** be monitored further — post a closing
+  `mitto_ui_notify` summary noting the PR state so the user can re-run this
+  prompt later to keep babysitting it.
+  {{- end }}
+
+  ## Step 1 — Identify the target PR (single PR, this conversation only)
+
+  This loop babysits exactly **one** PR: the PR that was created earlier in
+  **this** conversation. Establish it in the following priority order — the
+  first source that yields a PR wins; do **not** merge sources or babysit more
+  than one PR:
+  {{- if .Args.PullRequest }}
+
+  **Source 0 — explicit `PullRequest` argument (highest priority).** The user
+  supplied `PullRequest = {{ .Args.PullRequest }}`. Parse it:
+  - If it looks like a full URL (`https://github.com/<owner>/<repo>/pull/<n>`),
+    extract `<owner>/<repo>` as the repository and `<n>` as the PR number.
+  - If it is a bare number, use the current folder's repository (see below) and
+    that number as the PR.
+
+  Skip sources 1–3.
+  {{- else }}
+
+  **Source 1 — PR already under babysitting from earlier runs of THIS
+  conversation.** Look for it in these places, in order:
+
+  1. Prior assistant output in this conversation (call
+     `mitto_conversation_history` with `self_id = "{{ .Session.ID }}"`,
+     `conversation_id = "{{ .Session.ID }}"`, `text_contains = "PR #"`)
+     — scan for a "Babysitting PR #<number> in <owner>/<repo>" line printed
+     by an earlier run of this same prompt.
+  2. Child conversation titles in `{{ .Children.MCPText }}` — titles like
+     `Fix CI for PR #<number>: ...` or `Address review comments on PR
+     #<number>: ...` encode the PR number this loop already latched onto.
+
+  If a PR number surfaces here, adopt it and skip source 2.
+
+  **Source 2 — PR created earlier in THIS conversation (first-run path).**
+  Search this conversation's history for a PR-creation event:
+
+  ```
+  mitto_conversation_history(self_id: "{{ .Session.ID }}",
+    conversation_id: "{{ .Session.ID }}",
+    tool_name: "shell",
+    text_contains: "gh pr create")
+  ```
+
+  Also try `text_contains: "https://github.com/"` (any tool) to catch URLs
+  printed by `gh pr create`, `github_create_pull_request`, or other
+  MCP-based PR-creation tools:
+
+  ```
+  mitto_conversation_history(self_id: "{{ .Session.ID }}",
+    conversation_id: "{{ .Session.ID }}",
+    text_contains: "https://github.com/")
+  ```
+
+  From the matches, extract the **most recent** PR URL of the form
+  `https://github.com/<owner>/<repo>/pull/<number>` that was produced by a
+  tool call (`gh pr create`, `github_create_pull_request`, or a comparable
+  MCP tool), not merely mentioned in prose. That is **the** PR this loop
+  will babysit. Note owner/repo/number in your output so future runs
+  recover it via source 1.
+
+  **Source 3 — nothing found.** No PR argument, no prior-run marker, and no
+  PR-creation event in history → this prompt has nothing to do. Go straight
+  to **Step 5 (self-terminate)** and post a `mitto_ui_notify` explaining
+  that no PR could be identified.
+  {{- end }}
+
+  Once you have `<owner>/<repo>` and `<number>`, verify auth:
+
+  ```bash
+  gh auth status
+  gh repo view <owner>/<repo> --json nameWithOwner,defaultBranchRef -q '.nameWithOwner + " (default: " + .defaultBranchRef.name + ")"'
+  ```
+
+  If `gh auth status` fails, stop immediately and inform the user.
+
+  Enumerate every GitHub login you own (a work + a personal account may both
+  be present):
+
+  ```bash
+  gh auth status 2>&1 \
+    | awk '
+        /^[^ ]/            { host=$1; next }
+        /Logged in to/     { if (host=="github.com") { for (i=1;i<=NF;i++) if ($i=="account") print $(i+1) } }
+      ' \
+    | sort -u
+  ```
+
+  Store this as the **owned-logins set**. If empty for any reason, fall back
+  to `gh api user -q '.login'`. Any action below (rebase, merge, spawn fix
+  children) only fires when the PR's `author.login` is a member of this set.
+
+  Rename this conversation so it's easy to identify — but only if the current
+  name (`{{ .Session.Name }}`) doesn't already start with "Babysit PR #":
+
+  ```
+  mitto_conversation_update(self_id: "{{ .Session.ID }}",
+    conversation_id: "{{ .Session.ID }}",
+    name: "Babysit PR #<number> in <owner>/<repo>")
+  ```
+
+  Print one line to standard output so source 1 of future runs recovers the
+  target:
+
+  ```
+  Babysitting PR #<number> in <owner>/<repo> (branch <headRefName> → <baseRefName>).
+  ```
+
+  **Local git operations** (the rebase in Step 3a) need a checkout of
+  `<owner>/<repo>`. If the current folder is already a checkout of that repo,
+  use it; otherwise clone it on demand into a temp dir (`gh repo clone
+  <owner>/<repo> "$(mktemp -d)"`) and run the git commands there.
+
+  ## Step 2 — Verify the PR is still actionable
+
+  Pull the current state of the PR:
+
+  ```bash
+  gh pr view <number> --repo <owner>/<repo> \
+    --json number,title,state,headRefName,baseRefName,statusCheckRollup,mergeable,mergeStateStatus,updatedAt,createdAt,isDraft,reviewDecision,author,reviewThreads,headRefOid
+  ```
+
+  Then decide:
+  - **`author.login` not in the owned-logins set** → not your PR; go to
+    **Step 5 (self-terminate)** with a warning notification (this should not
+    normally happen since you created it, but hard-verify).
+  - **`state` is `MERGED` or `CLOSED`** → the PR is **done**. Go to **Step 5
+    (self-terminate)** with a success notification.
+  - **`state` is `OPEN`** → continue to Step 3.
+
+  ## Step 3 — Babysit the PR
+
+  Perform all applicable checks below on **this one PR**. Track whether each
+  step is **actionable** (something to advance) for the stop decision in
+  Step 4.
+
+  **Never modify the local checkout** — the user may have uncommitted work
+  there. Rebases go through a temporary worktree; force-pushes use
+  `--force-with-lease` (never `--force`).
+
+  **Spawn rules** (used by 3b and 3c): before spawning a child, check
+  `{{ .Children.MCPText }}` and **skip** if a child already exists for the
+  same PR + task (e.g. `Fix CI for PR #<number>` is running or was updated
+  after the failing CI run). Cap spawning at **3 per run**; spawned
+  conversations are one-off and **must never be loops**.
+
+  ### 3a. Rebase if behind base
+
+  ```bash
+  gh pr view <number> --repo <owner>/<repo> --json mergeStateStatus,mergeable,baseRefName,headRefName
+  ```
+
+  If the PR is behind its base and cannot cleanly merge:
+  - Interactive mode: ask before rebasing.
+  - Silent mode: notify (`info`) and proceed.
+
+  Rebase in a temp worktree — inside a checkout of `<owner>/<repo>` (the
+  current folder if it is that repo, otherwise the temp clone from Step 1):
+
+  ```bash
+  git fetch origin <baseRefName> <headRefName>
+  TMPDIR=$(mktemp -d)
+  git worktree add "$TMPDIR" origin/<headRefName> --detach
+  cd "$TMPDIR" && git rebase origin/<baseRefName>
+  ```
+
+  - **On conflicts**: `git rebase --abort`, `git worktree remove "$TMPDIR"
+    --force`, notify (`warning`, `sound: true`, `native: true`) that manual
+    rebase is needed, and — if `mitto_conversation_new` is available and no
+    dedup match exists — spawn a one-off rebase-conflict child:
+
+    ```
+    mitto_conversation_new(self_id: "{{ .Session.ID }}",
+      title: "Rebase PR #<number>: <title>",
+      initial_prompt: "PR #<number> (<title>) in <owner>/<repo> needs rebasing onto <baseRefName> but has conflicts.
+        Check out branch <headRefName>, rebase onto origin/<baseRefName>,
+        resolve the conflicts, and force-push with --force-with-lease.
+        Never touch the main checkout at <repo path> — use a fresh worktree.",
+      acp_server: <prefer "coding" or "fast" tagged server>)
+    ```
+
+  - **On success**:
+
+    ```bash
+    git push --force-with-lease origin HEAD:refs/heads/<headRefName>
+    cd - && git worktree remove "$TMPDIR" --force
+    ```
+
+    Notify (`success`) that the PR was rebased.
+
+  If the PR is already up-to-date, this step is **not actionable**.
+
+  ### 3b. Fix failing CI
+
+  ```bash
+  gh pr checks <number> --repo <owner>/<repo> --json name,state,description,detailsUrl
+  ```
+
+  If any check is failing, this PR is **actionable**. Pull a brief failure
+  summary:
+
+  ```bash
+  gh run list --repo <owner>/<repo> --branch <headRefName> --status failure --limit 1 --json databaseId,name,conclusion
+  gh run view --repo <owner>/<repo> <run-id> --log-failed 2>/dev/null | tail -80
+  ```
+
+  Notify (`error`, `sound: true`, `native: true`) with the failing check
+  names and summary.
+
+  Then, if `mitto_conversation_new` is available and no dedup match exists,
+  compute the working-copy decision and spawn a one-off fix child:
+
+  ```bash
+  # Are we sitting on the PR branch, clean, at the PR's head commit?
+  CUR_BRANCH=$(git -C "<repo path>" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+  CUR_HEAD=$(git -C "<repo path>" rev-parse HEAD 2>/dev/null || echo "")
+  PR_HEAD=$(gh pr view <number> --repo <owner>/<repo> --json headRefOid -q .headRefOid)
+  DIRTY=$(git -C "<repo path>" status --porcelain 2>/dev/null | head -c 1)
+  STAGED=$(git -C "<repo path>" diff --cached --name-only 2>/dev/null | head -c 1)
+  if [ "$CUR_BRANCH" = "<headRefName>" ] && [ "$CUR_HEAD" = "$PR_HEAD" ] \
+     && [ -z "$DIRTY" ] && [ -z "$STAGED" ]; then
+    WORKING_MODE="local"; WORKING_PATH="<repo path>"
+  else
+    WORKING_MODE="worktree"
+    WORKING_PATH="(child will create a fresh worktree via 'git worktree add')"
+  fi
+  ```
+
+  Interactive mode: ask before spawning. Silent mode: spawn automatically.
+
+  ```
+  mitto_conversation_new(self_id: "{{ .Session.ID }}",
+    title: "Fix CI for PR #<number>: <title>",
+    initial_prompt: "PR #<number> (<title>) in <owner>/<repo> has failing CI checks on branch <headRefName>.
+      Failing checks: <check names>
+      Error summary: <brief failure details from logs>
+
+      Working-copy mode: <WORKING_MODE>  ('local' = reuse repo path as-is;
+                                            'worktree' = create a fresh worktree, do NOT touch the main checkout)
+      Repo path:         <WORKING_PATH>
+      PR branch:         <headRefName>   (head commit <PR_HEAD>)
+      Base branch:       <baseRefName>
+
+      Working-copy rules:
+        - If 'local': operate directly in the given repo path. If anything
+          is dirty at start, abort and re-plan in a worktree instead.
+        - If 'worktree': create a fresh worktree with
+            git -C <WORKING_PATH> fetch origin <headRefName>
+            TMPDIR=\$(mktemp -d) && git -C <WORKING_PATH> worktree add \"\$TMPDIR\" origin/<headRefName>
+          Do all edits inside \$TMPDIR. Never modify files under
+          <WORKING_PATH> itself; the user may be working there.
+
+      Please diagnose and fix the CI failures. Run the project's full local
+      gate before pushing (format → lint → unit → integration — whatever
+      the repo's Makefile or docs specify). Only push once every gate step
+      passes. Force-push with --force-with-lease.
+
+      If a failure is NOT caused by this PR (i.e. it also fails on the
+      base branch's latest commit), do not push a spurious fix; instead
+      report back with the diagnosis and file a beads issue for the
+      pre-existing failure, so the babysit parent can surface it.
+
+      When done, report back a per-check summary: which CI checks passed
+      after your push and which remain failing (with root cause).",
+    acp_server: <prefer "coding" or "fast" tagged server>)
+  ```
+
+  If all checks pass, this step is **not actionable**.
+
+  ### 3c. Address unresolved review comments
+
+  `gh pr view --json reviewThreads` is **not supported** by the `gh` CLI —
+  fetch via GraphQL:
+
+  ```bash
+  REPO_OWNER=$(echo "<owner>/<repo>" | cut -d/ -f1)
+  REPO_NAME=$(echo "<owner>/<repo>" | cut -d/ -f2)
+  gh api graphql -f query='
+  query($owner:String!,$name:String!,$number:Int!) {
+    repository(owner:$owner, name:$name) {
+      pullRequest(number:$number) {
+        reviewThreads(first:100) { nodes {
+          id isResolved isOutdated
+          comments(first:1) { nodes {
+            author { login } path line originalLine body
+          } }
+        } }
+      }
+    }
+  }' -F owner="$REPO_OWNER" -F name="$REPO_NAME" -F number=<number> \
+    --jq '[.data.repository.pullRequest.reviewThreads.nodes[]
+           | select(.isResolved == false and .isOutdated == false)
+           | {id, path: .comments.nodes[0].path,
+              line: (.comments.nodes[0].line // .comments.nodes[0].originalLine),
+              author: .comments.nodes[0].author.login,
+              body: .comments.nodes[0].body}]'
+  ```
+
+  Save the JSON array as `THREADS_JSON`; its length is the unresolved count.
+  If 0, this step is **not actionable** — skip to 3d.
+
+  Otherwise this PR is **actionable**. Notify (`warning`) with the count.
+
+  Dedup guard: skip spawning if an existing child titled `Address review
+  comments on PR #<number>` is still running or was updated after the newest
+  thread's `createdAt`. Otherwise, compute the same working-copy decision as
+  in 3b and spawn (interactive: ask first; silent: automatic):
+
+  ```
+  mitto_conversation_new(self_id: "{{ .Session.ID }}",
+    title: "Address review comments on PR #<number>: <title>",
+    initial_prompt: "PR #<number> (<title>) in <owner>/<repo> has <count> unresolved review threads.
+
+      Working-copy mode: <WORKING_MODE>  ('local' = reuse repo path as-is;
+                                            'worktree' = create a fresh worktree, do NOT touch the main checkout)
+      Repo path:         <WORKING_PATH>
+      PR branch:         <headRefName>   (head commit <PR_HEAD>)
+      Base branch:       <baseRefName>
+
+      Unresolved threads (JSON, one object per thread — id / path / line / author / body):
+      <THREADS_JSON>
+
+      For EACH thread you MUST do exactly one of:
+        (a) Apply a code fix that addresses the comment, then reply to the
+            thread on the PR referencing the commit that fixed it.
+        (b) Reply to the thread with a concrete reason it will not be fixed
+            (e.g. 'out of scope for this PR — filed as beads mitto-XXX',
+            'disagree with reviewer because <reason>', 'already addressed
+            in commit abc123', etc.).
+      Never silently skip a thread. Never mark a thread resolved without
+      either a code fix or a substantive reply.
+
+      Working-copy rules:
+        - If 'local': operate directly in the given repo path. If anything
+          is dirty at start, abort and switch to worktree mode.
+        - If 'worktree': create a fresh worktree with
+            git -C <WORKING_PATH> fetch origin <headRefName>
+            TMPDIR=\$(mktemp -d) && git -C <WORKING_PATH> worktree add \"\$TMPDIR\" origin/<headRefName>
+          Do all edits inside \$TMPDIR. Never modify files under
+          <WORKING_PATH> itself; the user may be working there.
+
+      To post a reply on a review thread, use the GraphQL
+      addPullRequestReviewThreadReply mutation (or 'gh api
+      /repos/{owner}/{repo}/pulls/{number}/comments' with
+      in_reply_to=<thread's first comment id>).
+      To mark it resolved, use the resolveReviewThread mutation with the
+      thread id from the JSON.
+
+      Local gate before pushing: run the project's format → lint → unit →
+      integration steps (whatever the repo's Makefile or docs specify) and
+      only push once they all pass. Force-push with --force-with-lease.
+
+      When done, report back a per-thread summary: which threads got a
+      code fix vs which got a reply-only response.",
+    acp_server: <prefer "coding" or "fast" tagged server>)
+  ```
+
+  ### 3d. Merge when ready
+
+  If `reviewDecision == "APPROVED"`, all CI checks are passing, and the PR
+  is not a draft, it is ready to merge.
+  - **Interactive mode**: offer to merge —
+
+    ```
+    mitto_ui_options(self_id: "{{ .Session.ID }}",
+      question: "🚀 PR #<number> (<title>) is approved with passing CI. Merge it?",
+      options: [ { label: "Yes, merge now" }, { label: "No, just notify" } ])
+    ```
+
+    On "Yes": `gh pr merge <number> --repo <owner>/<repo> --squash` (or
+    `--merge`/`--rebase` per repo convention), then notify success. Merging
+    makes the PR **done** → next run's Step 2 sees `MERGED` and stops.
+
+  - **Silent mode**: do **not** auto-merge. Just notify (`success`) that
+    it is ready, and treat it as **actionable** (still waiting on a human).
+
+  ## Step 4 — Summary and stop decision
+
+  Decide whether to keep iterating:
+  - **Interactive mode**: print a brief single-PR summary
+    (PR | Title | Rebase | CI | Review | Notes).
+  - **Silent mode**: stay quiet unless something actionable happened this run.
+
+  The PR is **done** when it is merged or closed. The PR is **steady** when
+  it is fully up to date, has no failing CI, no unresolved threads, and is
+  only waiting on a human to review/merge — nothing **this loop** can
+  advance right now.
+
+  **Keep iterating** (end this run normally; the next fires after `delay`) as
+  long as the PR is still open — whether actionable or steady. A steady PR
+  is **not** a reason to stop: keep watching it until it merges or closes.
+
+  **Otherwise** — the PR is merged or closed — go to **Step 5**.
+
+  ## Step 5 — Stop: self-terminate
+
+  Reached when: no PR could be identified (Step 1 source 3), the PR is not
+  yours (Step 2), the PR is merged or closed (Step 2 or Step 4), or this
+  was the final scheduled iteration.
+
+  Remove this conversation's own loop flag so it becomes a regular
+  conversation:
+
+  ```
+  mitto_conversation_update(self_id: "{{ .Session.ID }}",
+    conversation_id: "self", loop_enabled: false)
+  ```
+
+  Then notify the user (both modes):
+
+  ```
+  mitto_ui_notify(self_id: "{{ .Session.ID }}",
+    title: "Babysit PR — done",
+    message: "<one line describing why iteration stopped: merged / closed / not-yours / no-PR-in-conversation>",
+    style: "success")
+  ```
+
+  After stopping, do nothing further this run.
+
+  ## Guidelines
+
+  - **Single-PR scope**: this loop babysits **exactly one** PR — the one
+    created in this conversation (or the one supplied via the
+    `PullRequest` parameter). Never expand the target set to other PRs on
+    the account; for that, use "GitHub: babysit my PRs" or
+    "GitHub: iterate babysitting new PRs" instead.
+  - **PR identification order**: `PullRequest` argument → prior-run marker
+    in this conversation's history / children → PR-creation event in this
+    conversation's history → self-terminate (nothing to babysit).
+  - **Only act on your own PR** — the PR's `author.login` must be a
+    member of the owned-logins set enumerated from `gh auth status`.
+    Never rebase, merge, or spawn fix children for a PR authored by
+    someone else.
+  - **Never modify the local checkout** — the user may have uncommitted
+    work there. Rebases always go through a temporary worktree; spawned
+    children compute `WORKING_MODE = worktree` unless the local checkout
+    is on the PR branch, at the PR's head commit, and completely clean.
+  - **Force-push** with `--force-with-lease` (never `--force`).
+  {{- if and .Session.IsLoop (not .Session.IsLoopForced) }}
+  - **Interaction mode**: scheduled run — use only `mitto_ui_notify`,
+    never block on interactive UI, and do **not** auto-merge.
+  {{- else }}
+  - **Interaction mode**: force-triggered or non-loop — you may use
+    `mitto_ui_options`/`mitto_ui_form` and offer to merge with
+    confirmation.
+  {{- end }}
+  - **Spawn rules**: check `{{ .Children.MCPText }}` before spawning and
+    skip if a child already exists for the same PR + task; cap at **3
+    spawns per run**, prioritizing rebase conflicts > CI failures >
+    unresolved comments. Spawned conversations are one-off and **must
+    never be loops**.
+  - **Notify only when it matters** on scheduled runs (rebased, CI broke,
+    ready to merge, merged, or final stop). Stay quiet on routine no-op
+    runs.
+  - **Self-terminate** via `loop_enabled: false` when the PR is merged /
+    closed / cannot be identified. Keep iterating while it is open — even
+    if steady (only waiting on a human) — so it stays monitored until it
+    lands. The user can re-run this prompt later to babysit another PR.
+  - If `gh` authentication fails, stop immediately and inform the user.

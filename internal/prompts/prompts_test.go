@@ -2596,12 +2596,12 @@ func TestBuiltinPromptsParseClean(t *testing.T) {
 // so an accidental revert on this specific file is caught even if the generic linter
 // is later relaxed.
 func TestBuiltinPrompt_GithubReviewPR_ParameterIsPascalCase(t *testing.T) {
-	path := filepath.Join("..", "..", "config", "prompts", "builtin", "github-review-pr.prompt.yaml")
+	path := filepath.Join("..", "..", "config", "prompts", "builtin", "github/review-pr.prompt.yaml")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("ReadFile(%s): %v", path, err)
 	}
-	prompt, err := ParsePromptFile("github-review-pr.prompt.yaml", data, time.Now())
+	prompt, err := ParsePromptFile("github/review-pr.prompt.yaml", data, time.Now())
 	if err != nil {
 		t.Fatalf("ParsePromptFile: %v", err)
 	}
@@ -2644,12 +2644,12 @@ func TestBuiltinPrompt_GithubReviewPR_ParameterIsPascalCase(t *testing.T) {
 func TestBuiltinPrompts_SingletonMigratedToTargetReuseTitle(t *testing.T) {
 	builtinDir := filepath.Join("..", "..", "config", "prompts", "builtin")
 	migrated := []string{
-		"beads-cleanup-stale.prompt.yaml",
-		"beads-group-epics.prompt.yaml",
-		"beads-overview.prompt.yaml",
-		"beads-reevaluate.prompt.yaml",
-		"beads-refine-implementation.prompt.yaml",
-		"beads-status-all-inprogress.prompt.yaml",
+		"beads/cleanup-stale.prompt.yaml",
+		"beads/group-epics.prompt.yaml",
+		"beads/overview.prompt.yaml",
+		"beads/reevaluate.prompt.yaml",
+		"beads/refine-implementation.prompt.yaml",
+		"beads/status-all-inprogress.prompt.yaml",
 	}
 	for _, file := range migrated {
 		t.Run(file, func(t *testing.T) {
@@ -2749,11 +2749,11 @@ func TestBuiltinPrompts_SupportRoutingAdoption(t *testing.T) {
 		wantTitle     string // literal target.title (only when reuseByID is false)
 	}
 	specs := []spec{
-		{file: "support-check-status.prompt.yaml", wantReuseByID: true},
-		{file: "support-gather-info.prompt.yaml", wantReuseByID: true},
-		{file: "support-investigate.prompt.yaml", wantReuseByID: true},
-		{file: "support-reply-to-user.prompt.yaml", wantReuseByID: true},
-		{file: "support-housekeeping.prompt.yaml", wantTitle: "Support: housekeeping"},
+		{file: "support/check-status.prompt.yaml", wantReuseByID: true},
+		{file: "support/gather-info.prompt.yaml", wantReuseByID: true},
+		{file: "support/investigate.prompt.yaml", wantReuseByID: true},
+		{file: "support/reply-to-user.prompt.yaml", wantReuseByID: true},
+		{file: "support/housekeeping.prompt.yaml", wantTitle: "Support: housekeeping"},
 	}
 	for _, s := range specs {
 		t.Run(s.file, func(t *testing.T) {
@@ -2826,60 +2826,59 @@ func TestBuiltinPrompts_TodayTierRoutingAdoption(t *testing.T) {
 	}
 	specs := []spec{
 		// 2a — per-bead work prompts.
-		{file: "beads-issue-work.prompt.yaml", bucket: perBeadWithCoalesce},
-		{file: "beads-issue-assess.prompt.yaml", bucket: perBeadWithCoalesce},
-		{file: "beads-issue-decompose.prompt.yaml", bucket: perBeadWithCoalesce},
-		{file: "beads-issue-dependencies.prompt.yaml", bucket: perBeadWithCoalesce},
-		{file: "beads-issue-discuss.prompt.yaml", bucket: perBeadWithCoalesce},
-		{file: "beads-issue-investigate.prompt.yaml", bucket: perBeadWithCoalesce},
-		{file: "beads-issue-status.prompt.yaml", bucket: perBeadWithCoalesce},
-		{file: "beads-issue-resolved.prompt.yaml", bucket: perBeadWithCoalesce},
-		{file: "beads-publish-post.prompt.yaml", bucket: perBeadWithCoalesce},
+		{file: "beads-issues/work.prompt.yaml", bucket: perBeadWithCoalesce},
+		{file: "beads-issues/assess.prompt.yaml", bucket: perBeadWithCoalesce},
+		{file: "beads-issues/decompose.prompt.yaml", bucket: perBeadWithCoalesce},
+		{file: "beads-issues/dependencies.prompt.yaml", bucket: perBeadWithCoalesce},
+		{file: "beads-issues/discuss.prompt.yaml", bucket: perBeadWithCoalesce},
+		{file: "beads-issues/investigate.prompt.yaml", bucket: perBeadWithCoalesce},
+		{file: "beads-issues/status.prompt.yaml", bucket: perBeadWithCoalesce},
+		{file: "beads-issues/resolved.prompt.yaml", bucket: perBeadWithCoalesce},
+		{file: "beads/publish-post.prompt.yaml", bucket: perBeadWithCoalesce},
 		// 2b — per-bead phase prompts.
-		{file: "beads-issue-feature-phase-plan.prompt.yaml", bucket: perBeadWithCoalesce},
-		{file: "beads-issue-feature-phase-implement.prompt.yaml", bucket: perBeadWithCoalesce},
-		{file: "beads-issue-feature-phase-test.prompt.yaml", bucket: perBeadWithCoalesce},
-		{file: "beads-issue-feature-phase-review.prompt.yaml", bucket: perBeadWithCoalesce},
-		{file: "beads-issue-fix-phase-investigate.prompt.yaml", bucket: perBeadWithCoalesce},
-		{file: "beads-issue-fix-phase-reproduce.prompt.yaml", bucket: perBeadWithCoalesce},
-		{file: "beads-issue-fix-phase-fix.prompt.yaml", bucket: perBeadWithCoalesce},
-		{file: "beads-issue-mention-phase-answer.prompt.yaml", bucket: perBeadWithCoalesce},
-		{file: "beads-issue-mention-phase-implement.prompt.yaml", bucket: perBeadWithCoalesce},
-		{file: "beads-issue-mention-phase-investigate.prompt.yaml", bucket: perBeadWithCoalesce},
-		{file: "beads-issue-mention-phase-plan.prompt.yaml", bucket: perBeadWithCoalesce},
-		{file: "beads-issue-mention-driver.prompt.yaml", bucket: perBeadWithCoalesce},
+		{file: "beads-issues/feature-phase-plan.prompt.yaml", bucket: perBeadWithCoalesce},
+		{file: "beads-issues/feature-phase-implement.prompt.yaml", bucket: perBeadWithCoalesce},
+		{file: "beads-issues/feature-phase-test.prompt.yaml", bucket: perBeadWithCoalesce},
+		{file: "beads-issues/feature-phase-review.prompt.yaml", bucket: perBeadWithCoalesce},
+		{file: "beads-issues/fix-phase-investigate.prompt.yaml", bucket: perBeadWithCoalesce},
+		{file: "beads-issues/fix-phase-reproduce.prompt.yaml", bucket: perBeadWithCoalesce},
+		{file: "beads-issues/fix-phase-fix.prompt.yaml", bucket: perBeadWithCoalesce},
+		{file: "beads-issues/mention-phase-answer.prompt.yaml", bucket: perBeadWithCoalesce},
+		{file: "beads-issues/mention-phase-implement.prompt.yaml", bucket: perBeadWithCoalesce},
+		{file: "beads-issues/mention-phase-investigate.prompt.yaml", bucket: perBeadWithCoalesce},
+		{file: "beads-issues/mention-phase-plan.prompt.yaml", bucket: perBeadWithCoalesce},
+		{file: "beads-issues/mention-driver.prompt.yaml", bucket: perBeadWithCoalesce},
 		// 2c — per-bead loop prompts (no coalesce).
-		{file: "beads-issue-loop-fixing-bug.prompt.yaml", bucket: perBeadLoopNoCoalesce},
-		{file: "beads-issue-loop-implementing-feature.prompt.yaml", bucket: perBeadLoopNoCoalesce},
-		{file: "beads-issue-loop-until-complete.prompt.yaml", bucket: perBeadLoopNoCoalesce},
+		{file: "beads-issues/loop-fixing-bug.prompt.yaml", bucket: perBeadLoopNoCoalesce},
+		{file: "beads-issues/loop-implementing-feature.prompt.yaml", bucket: perBeadLoopNoCoalesce},
+		{file: "beads-issues/loop-until-complete.prompt.yaml", bucket: perBeadLoopNoCoalesce},
 		// 2d — workspace-wide singleton loops/sweeps (title + reuseTitle).
-		{file: "beads-issue-loop-processing.prompt.yaml", bucket: workspaceTitle, wantTitle: "Loop processing tasks"},
-		{file: "beads-work.prompt.yaml", bucket: workspaceTitle, wantTitle: "Start working on ready"},
-		{file: "beads-followup-work.prompt.yaml", bucket: workspaceTitle, wantTitle: "Identify follow-up issues"},
-		{file: "beads-triage-bugs.prompt.yaml", bucket: workspaceTitle, wantTitle: "Triage untriaged bugs"},
-		{file: "beads-status-one-inprogress.prompt.yaml", bucket: workspaceTitle, wantTitle: "Status ONE in-progress"},
-		{file: "github-babysit-my-prs.prompt.yaml", bucket: workspaceTitle, wantTitle: "GitHub: babysit my PRs"},
-		{file: "github-babysit-contributions.prompt.yaml", bucket: workspaceTitle, wantTitle: "GitHub: babysit contributions"},
-		{file: "github-iterate-babysit-new-prs.prompt.yaml", bucket: workspaceTitle, wantTitle: "GitHub: iterate babysitting new PRs"},
-		{file: "github-post-merge-cleanup.prompt.yaml", bucket: workspaceTitle, wantTitle: "GitHub: post-merge cleanup"},
-		{file: "github-review-slack-prs.prompt.yaml", bucket: workspaceTitle, wantTitle: "GitHub: review PRs requests in slack"},
-		{file: "github-sync-tasks.prompt.yaml", bucket: workspaceTitle, wantTitle: "GitHub: sync tasks"},
-		{file: "jira-status-all-inprogress.prompt.yaml", bucket: workspaceTitle, wantTitle: "JIRA: status ALL in-progress"},
-		{file: "jira-status-one-inprogress.prompt.yaml", bucket: workspaceTitle, wantTitle: "JIRA: status ONE in-progress"},
-		{file: "jira-sync-tasks.prompt.yaml", bucket: workspaceTitle, wantTitle: "JIRA: sync tasks"},
-		{file: "jira-decompose.prompt.yaml", bucket: workspaceTitle, wantTitle: "JIRA: decompose"},
-		{file: "jira-work.prompt.yaml", bucket: workspaceTitle, wantTitle: "JIRA: start work"},
-		{file: "check-ci.prompt.yaml", bucket: workspaceTitle, wantTitle: "Check CI"},
-		{file: "fix-ci.prompt.yaml", bucket: workspaceTitle, wantTitle: "Fix CI"},
-		{file: "create-commits.prompt.yaml", bucket: workspaceTitle, wantTitle: "Commit changes"},
-		{file: "rebase-changes.prompt.yaml", bucket: workspaceTitle, wantTitle: "Rebase changes"},
-		{file: "submit-changes.prompt.yaml", bucket: workspaceTitle, wantTitle: "Submit changes"},
-		{file: "run-tests.prompt.yaml", bucket: workspaceTitle, wantTitle: "Run tests"},
-		{file: "analyze-logs.prompt.yaml", bucket: workspaceTitle, wantTitle: "Analyze logs"},
-		{file: "architectural-analysis.prompt.yaml", bucket: workspaceTitle, wantTitle: "Architectural Analysis"},
-		{file: "document-arch.prompt.yaml", bucket: workspaceTitle, wantTitle: "Document Architecture"},
-		{file: "document-code.prompt.yaml", bucket: workspaceTitle, wantTitle: "Document Code"},
-		{file: "generate-agents-md.prompt.yaml", bucket: workspaceTitle, wantTitle: "Generate AGENTS.md"},
+		{file: "beads-issues/loop-processing.prompt.yaml", bucket: workspaceTitle, wantTitle: "Loop processing tasks"},
+		{file: "beads/work.prompt.yaml", bucket: workspaceTitle, wantTitle: "Start working on ready"},
+		{file: "beads/followup-work.prompt.yaml", bucket: workspaceTitle, wantTitle: "Identify follow-up issues"},
+		{file: "beads/triage-bugs.prompt.yaml", bucket: workspaceTitle, wantTitle: "Triage untriaged bugs"},
+		{file: "beads/status-one-inprogress.prompt.yaml", bucket: workspaceTitle, wantTitle: "Status ONE in-progress"},
+		{file: "github/babysit-my-prs.prompt.yaml", bucket: workspaceTitle, wantTitle: "GitHub: babysit my PRs"},
+		{file: "github/babysit-contributions.prompt.yaml", bucket: workspaceTitle, wantTitle: "GitHub: babysit contributions"},
+		{file: "github/post-merge-cleanup.prompt.yaml", bucket: workspaceTitle, wantTitle: "GitHub: post-merge cleanup"},
+		{file: "github/review-slack-prs.prompt.yaml", bucket: workspaceTitle, wantTitle: "GitHub: review PRs requests in slack"},
+		{file: "github/sync-tasks.prompt.yaml", bucket: workspaceTitle, wantTitle: "GitHub: sync tasks"},
+		{file: "jira/status-all-inprogress.prompt.yaml", bucket: workspaceTitle, wantTitle: "JIRA: status ALL in-progress"},
+		{file: "jira/status-one-inprogress.prompt.yaml", bucket: workspaceTitle, wantTitle: "JIRA: status ONE in-progress"},
+		{file: "jira/sync-tasks.prompt.yaml", bucket: workspaceTitle, wantTitle: "JIRA: sync tasks"},
+		{file: "jira/decompose.prompt.yaml", bucket: workspaceTitle, wantTitle: "JIRA: decompose"},
+		{file: "jira/work.prompt.yaml", bucket: workspaceTitle, wantTitle: "JIRA: start work"},
+		{file: "ci/check-ci.prompt.yaml", bucket: workspaceTitle, wantTitle: "Check CI"},
+		{file: "ci/fix-ci.prompt.yaml", bucket: workspaceTitle, wantTitle: "Fix CI"},
+		{file: "git/create-commits.prompt.yaml", bucket: workspaceTitle, wantTitle: "Commit changes"},
+		{file: "git/rebase-changes.prompt.yaml", bucket: workspaceTitle, wantTitle: "Rebase changes"},
+		{file: "git/submit-changes.prompt.yaml", bucket: workspaceTitle, wantTitle: "Submit changes"},
+		{file: "ci/run-tests.prompt.yaml", bucket: workspaceTitle, wantTitle: "Run tests"},
+		{file: "ci/analyze-logs.prompt.yaml", bucket: workspaceTitle, wantTitle: "Analyze logs"},
+		{file: "docs/architectural-analysis.prompt.yaml", bucket: workspaceTitle, wantTitle: "Architectural Analysis"},
+		{file: "docs/document-arch.prompt.yaml", bucket: workspaceTitle, wantTitle: "Document Architecture"},
+		{file: "docs/document-code.prompt.yaml", bucket: workspaceTitle, wantTitle: "Document Code"},
+		{file: "docs/generate-agents-md.prompt.yaml", bucket: workspaceTitle, wantTitle: "Generate AGENTS.md"},
 	}
 	for _, s := range specs {
 		t.Run(s.file, func(t *testing.T) {
@@ -2962,10 +2961,10 @@ func TestBuiltinPrompts_NeedsTemplatedTitleAdoption(t *testing.T) {
 		wantTitle string // exact templated literal expected in Target.Title
 	}
 	specs := []spec{
-		{file: "support-continue-conversation.prompt.yaml", wantTitle: "Support: continue {{ .Args.SlackChannelID }}"},
-		{file: "support-watch-channel.prompt.yaml", wantTitle: "Support: watch {{ .Args.SlackChannelID }}"},
-		{file: "github-review-pr.prompt.yaml", wantTitle: "PR #{{ .Args.Pr }} review"},
-		{file: "address-pr-comments.prompt.yaml", wantTitle: "PR #{{ .Args.Pr }} address comments"},
+		{file: "support/continue-conversation.prompt.yaml", wantTitle: "Support: continue {{ .Args.SlackChannelID }}"},
+		{file: "support/watch-channel.prompt.yaml", wantTitle: "Support: watch {{ .Args.SlackChannelID }}"},
+		{file: "github/review-pr.prompt.yaml", wantTitle: "PR #{{ .Args.Pr }} review"},
+		{file: "github/address-pr-comments.prompt.yaml", wantTitle: "PR #{{ .Args.Pr }} address comments"},
 	}
 	for _, s := range specs {
 		t.Run(s.file, func(t *testing.T) {
@@ -3028,28 +3027,28 @@ func TestBuiltinPrompts_NeedsTemplatedTitleRenders_PerIDBuckets(t *testing.T) {
 	}
 	specs := []spec{
 		{
-			file: "support-continue-conversation.prompt.yaml", argName: "SlackChannelID",
+			file: "support/continue-conversation.prompt.yaml", argName: "SlackChannelID",
 			sameValue: "C0AAA", otherValue: "C0BBB",
 			wantSame: "Support: continue C0AAA", wantOther: "Support: continue C0BBB",
 			missingIsErr: false, // literal "Support: continue " is non-empty → allowed but coalesces
 			wantMissing:  "Support: continue ",
 		},
 		{
-			file: "support-watch-channel.prompt.yaml", argName: "SlackChannelID",
+			file: "support/watch-channel.prompt.yaml", argName: "SlackChannelID",
 			sameValue: "C0AAA", otherValue: "C0BBB",
 			wantSame: "Support: watch C0AAA", wantOther: "Support: watch C0BBB",
 			missingIsErr: false,
 			wantMissing:  "Support: watch ",
 		},
 		{
-			file: "github-review-pr.prompt.yaml", argName: "Pr",
+			file: "github/review-pr.prompt.yaml", argName: "Pr",
 			sameValue: "123", otherValue: "456",
 			wantSame: "PR #123 review", wantOther: "PR #456 review",
 			missingIsErr: false,
 			wantMissing:  "PR # review",
 		},
 		{
-			file: "address-pr-comments.prompt.yaml", argName: "Pr",
+			file: "github/address-pr-comments.prompt.yaml", argName: "Pr",
 			sameValue: "123", otherValue: "456",
 			wantSame: "PR #123 address comments", wantOther: "PR #456 address comments",
 			missingIsErr: false,

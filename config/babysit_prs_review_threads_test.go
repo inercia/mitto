@@ -22,7 +22,7 @@ import (
 // `reviewThreads` selection instead of the broken `gh pr view --json
 // reviewThreads` form.
 func TestBabysitPRs_ReviewThreadsQuery_mittoEMCC(t *testing.T) {
-	const promptFile = "github-babysit-my-prs.prompt.yaml"
+	const promptFile = "github/babysit-my-prs.prompt.yaml"
 
 	body, err := fs.ReadFile(BuiltinPromptsFS, BuiltinPromptsDir+"/"+promptFile)
 	if err != nil {

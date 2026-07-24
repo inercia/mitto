@@ -160,7 +160,7 @@ func TestEnsureBuiltinPrompts_PrunesStaleNestedFiles(t *testing.T) {
 	// part of the embedded set. The subdirectory itself must also be new
 	// (i.e. not one of the embedded groups), so the sweep can prove it
 	// removes the now-empty parent.
-	staleDir := filepath.Join(targetDir, "misc")
+	staleDir := filepath.Join(targetDir, "stale-orphan-group")
 	stale := filepath.Join(staleDir, "stale.prompt.yaml")
 	if err := os.MkdirAll(staleDir, 0755); err != nil {
 		t.Fatalf("failed to create stale dir: %v", err)

@@ -564,7 +564,7 @@ func TestIterateUntilComplete_TargetResolution(t *testing.T) {
 // Loaded from the real builtin directory so it exercises the on-disk content.
 func TestRefineImplementation_LoopAndModes(t *testing.T) {
 	builtinDir := "../../config/prompts/builtin"
-	name := "beads-refine-implementation.prompt.yaml"
+	name := "beads/refine-implementation.prompt.yaml"
 	path := filepath.Join(builtinDir, name)
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -635,12 +635,12 @@ func TestRefineImplementation_LoopAndModes(t *testing.T) {
 // and "conversation", and the IssueID parameter is non-required.
 func TestInvestigate_ThreeModeTargetResolution(t *testing.T) {
 	builtinDir := "../../config/prompts/builtin"
-	path := filepath.Join(builtinDir, "beads-issue-investigate.prompt.yaml")
+	path := filepath.Join(builtinDir, "beads-issues/investigate.prompt.yaml")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Skipf("prompt file not found at %s: %v", path, err)
 	}
-	prompt, err := ParsePromptFile("beads-issue-investigate.prompt.yaml", data, time.Now())
+	prompt, err := ParsePromptFile("beads-issues/investigate.prompt.yaml", data, time.Now())
 	if err != nil {
 		t.Fatalf("ParsePromptFile: %v", err)
 	}
@@ -742,12 +742,12 @@ func TestInvestigate_ThreeModeTargetResolution(t *testing.T) {
 // and "conversation", and the IssueID parameter is non-required.
 func TestDiscuss_ThreeModeTargetResolution(t *testing.T) {
 	builtinDir := "../../config/prompts/builtin"
-	path := filepath.Join(builtinDir, "beads-issue-assess.prompt.yaml")
+	path := filepath.Join(builtinDir, "beads-issues/assess.prompt.yaml")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Skipf("prompt file not found at %s: %v", path, err)
 	}
-	prompt, err := ParsePromptFile("beads-issue-assess.prompt.yaml", data, time.Now())
+	prompt, err := ParsePromptFile("beads-issues/assess.prompt.yaml", data, time.Now())
 	if err != nil {
 		t.Fatalf("ParsePromptFile: %v", err)
 	}
@@ -996,12 +996,12 @@ func TestBuiltinPrompts_AllRenderWithoutError(t *testing.T) {
 // and "conversation", and the IssueID parameter is non-required.
 func TestStatus_ThreeModeTargetResolution(t *testing.T) {
 	builtinDir := "../../config/prompts/builtin"
-	path := filepath.Join(builtinDir, "beads-issue-status.prompt.yaml")
+	path := filepath.Join(builtinDir, "beads-issues/status.prompt.yaml")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Skipf("prompt file not found at %s: %v", path, err)
 	}
-	prompt, err := ParsePromptFile("beads-issue-status.prompt.yaml", data, time.Now())
+	prompt, err := ParsePromptFile("beads-issues/status.prompt.yaml", data, time.Now())
 	if err != nil {
 		t.Fatalf("ParsePromptFile: %v", err)
 	}
@@ -1095,12 +1095,12 @@ func TestStatus_ThreeModeTargetResolution(t *testing.T) {
 // and "conversation", and the IssueID parameter is non-required.
 func TestResolved_ThreeModeTargetResolution(t *testing.T) {
 	builtinDir := "../../config/prompts/builtin"
-	path := filepath.Join(builtinDir, "beads-issue-resolved.prompt.yaml")
+	path := filepath.Join(builtinDir, "beads-issues/resolved.prompt.yaml")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Skipf("prompt file not found at %s: %v", path, err)
 	}
-	prompt, err := ParsePromptFile("beads-issue-resolved.prompt.yaml", data, time.Now())
+	prompt, err := ParsePromptFile("beads-issues/resolved.prompt.yaml", data, time.Now())
 	if err != nil {
 		t.Fatalf("ParsePromptFile: %v", err)
 	}
@@ -1194,12 +1194,12 @@ func TestResolved_ThreeModeTargetResolution(t *testing.T) {
 // and "conversation", and the IssueID parameter is non-required.
 func TestWork_ThreeModeTargetResolution(t *testing.T) {
 	builtinDir := "../../config/prompts/builtin"
-	path := filepath.Join(builtinDir, "beads-issue-work.prompt.yaml")
+	path := filepath.Join(builtinDir, "beads-issues/work.prompt.yaml")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Skipf("prompt file not found at %s: %v", path, err)
 	}
-	prompt, err := ParsePromptFile("beads-issue-work.prompt.yaml", data, time.Now())
+	prompt, err := ParsePromptFile("beads-issues/work.prompt.yaml", data, time.Now())
 	if err != nil {
 		t.Fatalf("ParsePromptFile: %v", err)
 	}
@@ -1297,12 +1297,12 @@ func TestWork_ThreeModeTargetResolution(t *testing.T) {
 // and "conversation", and the IssueID parameter is non-required.
 func TestFollowupWork_ThreeModeTargetResolution(t *testing.T) {
 	builtinDir := "../../config/prompts/builtin"
-	path := filepath.Join(builtinDir, "beads-followup-work.prompt.yaml")
+	path := filepath.Join(builtinDir, "beads/followup-work.prompt.yaml")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Skipf("prompt file not found at %s: %v", path, err)
 	}
-	prompt, err := ParsePromptFile("beads-followup-work.prompt.yaml", data, time.Now())
+	prompt, err := ParsePromptFile("beads/followup-work.prompt.yaml", data, time.Now())
 	if err != nil {
 		t.Fatalf("ParsePromptFile: %v", err)
 	}
@@ -1420,31 +1420,31 @@ func TestInteractionMode_ConditionalRendering(t *testing.T) {
 		interactiveMarker string
 	}{
 		{
-			file:              "architectural-analysis.prompt.yaml",
+			file:              "docs/architectural-analysis.prompt.yaml",
 			name:              "architectural-analysis",
 			silentMarker:      "a scheduled loop run; the user is not watching.",
 			interactiveMarker: "a regular conversation or a force-triggered loop run; the user is present.",
 		},
 		{
-			file:              "jira-sync-tasks.prompt.yaml",
+			file:              "jira/sync-tasks.prompt.yaml",
 			name:              "jira-sync-tasks",
 			silentMarker:      "a scheduled loop run; the user is not watching.",
 			interactiveMarker: "a regular conversation or a force-triggered loop run; the user is present.",
 		},
 		{
-			file:              "github-sync-tasks.prompt.yaml",
+			file:              "github/sync-tasks.prompt.yaml",
 			name:              "github-sync-tasks",
 			silentMarker:      "a scheduled loop run; the user is not watching.",
 			interactiveMarker: "a regular conversation or a force-triggered loop run; the user is present.",
 		},
 		{
-			file:              "github-babysit-contributions.prompt.yaml",
+			file:              "github/babysit-contributions.prompt.yaml",
 			name:              "github-babysit-contributions",
 			silentMarker:      "a scheduled loop run; the user is not watching.",
 			interactiveMarker: "a force-triggered run or a non-loop conversation; the user may be present.",
 		},
 		{
-			file:              "github-babysit-my-prs.prompt.yaml",
+			file:              "github/babysit-my-prs.prompt.yaml",
 			name:              "github-babysit-my-prs",
 			silentMarker:      "a scheduled loop run; the user is not watching.",
 			interactiveMarker: "a force-triggered run or a non-loop conversation; the user may be present.",
@@ -1456,7 +1456,6 @@ func TestInteractionMode_ConditionalRendering(t *testing.T) {
 			interactiveMarker: "(e.g. the very first send, or a force-triggered run): a user may be",
 		},
 		{
-			file:              "github-iterate-babysit-new-prs.prompt.yaml",
 			name:              "github-iterate-babysit-new-prs",
 			silentMarker:      "Silent mode — scheduled loop run.",
 			interactiveMarker: "(e.g. the very first send, or a force-triggered run): a user may be",
@@ -1990,17 +1989,17 @@ func TestBugFixPhasePrompts_ParseAndDeclarePreferredModels(t *testing.T) {
 		expectedTier string
 	}{
 		{
-			file:         "beads-issue-fix-phase-investigate.prompt.yaml",
+			file:         "beads-issues/fix-phase-investigate.prompt.yaml",
 			name:         "Bug fix — investigate phase",
 			expectedTier: "Reasoning",
 		},
 		{
-			file:         "beads-issue-fix-phase-reproduce.prompt.yaml",
+			file:         "beads-issues/fix-phase-reproduce.prompt.yaml",
 			name:         "Bug fix — reproduce phase",
 			expectedTier: "Coding",
 		},
 		{
-			file:         "beads-issue-fix-phase-fix.prompt.yaml",
+			file:         "beads-issues/fix-phase-fix.prompt.yaml",
 			name:         "Bug fix — fix phase",
 			expectedTier: "Coding",
 		},
@@ -2048,9 +2047,9 @@ func TestBugFixPhasePrompts_RenderForRepresentativeContexts(t *testing.T) {
 	builtinDir := "../../config/prompts/builtin"
 
 	files := []string{
-		"beads-issue-fix-phase-investigate.prompt.yaml",
-		"beads-issue-fix-phase-reproduce.prompt.yaml",
-		"beads-issue-fix-phase-fix.prompt.yaml",
+		"beads-issues/fix-phase-investigate.prompt.yaml",
+		"beads-issues/fix-phase-reproduce.prompt.yaml",
+		"beads-issues/fix-phase-fix.prompt.yaml",
 	}
 
 	for _, file := range files {
@@ -2089,7 +2088,7 @@ func TestBugFixPhasePrompts_RenderForRepresentativeContexts(t *testing.T) {
 			// (b) Arg-only context — IssueID supplied by the dispatching
 			// driver (which is the primary invocation path for phase prompts).
 			args := map[string]string{"IssueID": "mitto-xyz"}
-			if file == "beads-issue-fix-phase-fix.prompt.yaml" {
+			if file == "beads-issues/fix-phase-fix.prompt.yaml" {
 				args["Commit"] = "true"
 			}
 			outB := render(&cel.PromptEnabledContext{Args: args})
@@ -2101,7 +2100,7 @@ func TestBugFixPhasePrompts_RenderForRepresentativeContexts(t *testing.T) {
 			}
 
 			// Fix phase must render commit-enabled scaffolding when Commit=true.
-			if file == "beads-issue-fix-phase-fix.prompt.yaml" {
+			if file == "beads-issues/fix-phase-fix.prompt.yaml" {
 				if !strings.Contains(outB, "git commit -m") {
 					t.Errorf("%s branch (b): expected 'git commit -m' scaffolding when Commit=true; got:\n%s", file, outB)
 				}
@@ -2288,22 +2287,22 @@ func TestFeaturePhasePrompts_ParseAndDeclarePreferredModels(t *testing.T) {
 		expectedTier string
 	}{
 		{
-			file:         "beads-issue-feature-phase-plan.prompt.yaml",
+			file:         "beads-issues/feature-phase-plan.prompt.yaml",
 			name:         "Feature — plan phase",
 			expectedTier: "Reasoning",
 		},
 		{
-			file:         "beads-issue-feature-phase-implement.prompt.yaml",
+			file:         "beads-issues/feature-phase-implement.prompt.yaml",
 			name:         "Feature — implement phase",
 			expectedTier: "Coding",
 		},
 		{
-			file:         "beads-issue-feature-phase-test.prompt.yaml",
+			file:         "beads-issues/feature-phase-test.prompt.yaml",
 			name:         "Feature — test phase",
 			expectedTier: "Coding",
 		},
 		{
-			file:         "beads-issue-feature-phase-review.prompt.yaml",
+			file:         "beads-issues/feature-phase-review.prompt.yaml",
 			name:         "Feature — review phase",
 			expectedTier: "Reasoning",
 		},
@@ -2353,9 +2352,9 @@ func TestHighConfidenceBuiltinPrompts_DeclarePairedFallback(t *testing.T) {
 	wantTags := []string{"Cheap", "Coding"}
 
 	files := []string{
-		"beads-issue-dependencies.prompt.yaml",
-		"support-check-status.prompt.yaml",
-		"beads-triage-bugs.prompt.yaml",
+		"beads-issues/dependencies.prompt.yaml",
+		"support/check-status.prompt.yaml",
+		"beads/triage-bugs.prompt.yaml",
 	}
 
 	for _, file := range files {
@@ -2394,10 +2393,10 @@ func TestFeaturePhasePrompts_RenderForRepresentativeContexts(t *testing.T) {
 	builtinDir := "../../config/prompts/builtin"
 
 	files := []string{
-		"beads-issue-feature-phase-plan.prompt.yaml",
-		"beads-issue-feature-phase-implement.prompt.yaml",
-		"beads-issue-feature-phase-test.prompt.yaml",
-		"beads-issue-feature-phase-review.prompt.yaml",
+		"beads-issues/feature-phase-plan.prompt.yaml",
+		"beads-issues/feature-phase-implement.prompt.yaml",
+		"beads-issues/feature-phase-test.prompt.yaml",
+		"beads-issues/feature-phase-review.prompt.yaml",
 	}
 
 	for _, file := range files {
@@ -2436,7 +2435,7 @@ func TestFeaturePhasePrompts_RenderForRepresentativeContexts(t *testing.T) {
 			// (b) Arg-only context — IssueID supplied by the dispatching
 			// driver (which is the primary invocation path for phase prompts).
 			args := map[string]string{"IssueID": "mitto-xyz"}
-			if file != "beads-issue-feature-phase-plan.prompt.yaml" {
+			if file != "beads-issues/feature-phase-plan.prompt.yaml" {
 				args["Commit"] = "true"
 			}
 			outB := render(&cel.PromptEnabledContext{Args: args})
@@ -2449,7 +2448,7 @@ func TestFeaturePhasePrompts_RenderForRepresentativeContexts(t *testing.T) {
 
 			// Implement/Test/Review phases must render commit-enabled
 			// scaffolding when Commit=true. The Plan phase has no Commit param.
-			if file != "beads-issue-feature-phase-plan.prompt.yaml" {
+			if file != "beads-issues/feature-phase-plan.prompt.yaml" {
 				if !strings.Contains(outB, "git commit -m") {
 					t.Errorf("%s branch (b): expected 'git commit -m' scaffolding when Commit=true; got:\n%s", file, outB)
 				}
@@ -2493,13 +2492,13 @@ func TestPhasePrompts_TierCheckRendersForModelTags(t *testing.T) {
 		file string
 		tier string // declared tier per the phase's preferredModels
 	}{
-		{"beads-issue-fix-phase-investigate.prompt.yaml", "Reasoning"},
-		{"beads-issue-fix-phase-reproduce.prompt.yaml", "Coding"},
-		{"beads-issue-fix-phase-fix.prompt.yaml", "Coding"},
-		{"beads-issue-feature-phase-plan.prompt.yaml", "Reasoning"},
-		{"beads-issue-feature-phase-implement.prompt.yaml", "Coding"},
-		{"beads-issue-feature-phase-test.prompt.yaml", "Coding"},
-		{"beads-issue-feature-phase-review.prompt.yaml", "Reasoning"},
+		{"beads-issues/fix-phase-investigate.prompt.yaml", "Reasoning"},
+		{"beads-issues/fix-phase-reproduce.prompt.yaml", "Coding"},
+		{"beads-issues/fix-phase-fix.prompt.yaml", "Coding"},
+		{"beads-issues/feature-phase-plan.prompt.yaml", "Reasoning"},
+		{"beads-issues/feature-phase-implement.prompt.yaml", "Coding"},
+		{"beads-issues/feature-phase-test.prompt.yaml", "Coding"},
+		{"beads-issues/feature-phase-review.prompt.yaml", "Reasoning"},
 	}
 
 	for _, tc := range cases {
@@ -2527,10 +2526,10 @@ func TestPhasePrompts_TierCheckRendersForModelTags(t *testing.T) {
 			// Common context: arg-only IssueID so the tier-check block renders
 			// (the block is gated by target-resolved).
 			args := map[string]string{"IssueID": "mitto-xyz"}
-			if tc.file == "beads-issue-fix-phase-fix.prompt.yaml" ||
-				tc.file == "beads-issue-feature-phase-implement.prompt.yaml" ||
-				tc.file == "beads-issue-feature-phase-test.prompt.yaml" ||
-				tc.file == "beads-issue-feature-phase-review.prompt.yaml" {
+			if tc.file == "beads-issues/fix-phase-fix.prompt.yaml" ||
+				tc.file == "beads-issues/feature-phase-implement.prompt.yaml" ||
+				tc.file == "beads-issues/feature-phase-test.prompt.yaml" ||
+				tc.file == "beads-issues/feature-phase-review.prompt.yaml" {
 				args["Commit"] = "false"
 			}
 
@@ -2617,13 +2616,13 @@ func TestPhasePrompts_TierTaggedCommentPrefix(t *testing.T) {
 		file   string
 		prefix string // exact "<Noun> [tier: <Tier>]:" fragment expected in the rendered body
 	}{
-		{"beads-issue-fix-phase-investigate.prompt.yaml", "Investigation [tier: Reasoning]:"},
-		{"beads-issue-fix-phase-reproduce.prompt.yaml", "Reproduction [tier: Coding]:"},
-		{"beads-issue-fix-phase-fix.prompt.yaml", "Fix [tier: Coding]:"},
-		{"beads-issue-feature-phase-plan.prompt.yaml", "Plan [tier: Reasoning]:"},
-		{"beads-issue-feature-phase-implement.prompt.yaml", "Implementation [tier: Coding]:"},
-		{"beads-issue-feature-phase-test.prompt.yaml", "Testing [tier: Coding]:"},
-		{"beads-issue-feature-phase-review.prompt.yaml", "Review [tier: Reasoning]:"},
+		{"beads-issues/fix-phase-investigate.prompt.yaml", "Investigation [tier: Reasoning]:"},
+		{"beads-issues/fix-phase-reproduce.prompt.yaml", "Reproduction [tier: Coding]:"},
+		{"beads-issues/fix-phase-fix.prompt.yaml", "Fix [tier: Coding]:"},
+		{"beads-issues/feature-phase-plan.prompt.yaml", "Plan [tier: Reasoning]:"},
+		{"beads-issues/feature-phase-implement.prompt.yaml", "Implementation [tier: Coding]:"},
+		{"beads-issues/feature-phase-test.prompt.yaml", "Testing [tier: Coding]:"},
+		{"beads-issues/feature-phase-review.prompt.yaml", "Review [tier: Reasoning]:"},
 	}
 
 	for _, tc := range cases {
@@ -2639,10 +2638,10 @@ func TestPhasePrompts_TierTaggedCommentPrefix(t *testing.T) {
 			}
 
 			args := map[string]string{"IssueID": "mitto-xyz"}
-			if tc.file == "beads-issue-fix-phase-fix.prompt.yaml" ||
-				tc.file == "beads-issue-feature-phase-implement.prompt.yaml" ||
-				tc.file == "beads-issue-feature-phase-test.prompt.yaml" ||
-				tc.file == "beads-issue-feature-phase-review.prompt.yaml" {
+			if tc.file == "beads-issues/fix-phase-fix.prompt.yaml" ||
+				tc.file == "beads-issues/feature-phase-implement.prompt.yaml" ||
+				tc.file == "beads-issues/feature-phase-test.prompt.yaml" ||
+				tc.file == "beads-issues/feature-phase-review.prompt.yaml" {
 				args["Commit"] = "false"
 			}
 			ctx := &cel.PromptEnabledContext{Args: args}
@@ -2676,29 +2675,28 @@ func TestBuiltinPromptLoopModes(t *testing.T) {
 	cases := map[string]want{
 		// Group A — always (5).
 		"beads-issue-iterate-until-complete.prompt.yaml": {mode: "always", def: nil},
-		"github-iterate-babysit-new-prs.prompt.yaml":     {mode: "always", def: nil},
 		"iterate-until.prompt.yaml":                      {mode: "always", def: nil},
 		"iterate-fixing.prompt.yaml":                     {mode: "always", def: nil},
 		"iterate-implementing.prompt.yaml":               {mode: "always", def: nil},
 
 		// Group B — optional / default:true (4).
-		"github-babysit-contributions.prompt.yaml": {mode: "optional", def: boolPtr(true)},
-		"github-babysit-my-prs.prompt.yaml":        {mode: "optional", def: boolPtr(true)},
-		"github-sync-tasks.prompt.yaml":            {mode: "optional", def: boolPtr(true)},
-		"jira-sync-tasks.prompt.yaml":              {mode: "optional", def: boolPtr(true)},
+		"github/babysit-contributions.prompt.yaml": {mode: "optional", def: boolPtr(true)},
+		"github/babysit-my-prs.prompt.yaml":        {mode: "optional", def: boolPtr(true)},
+		"github/sync-tasks.prompt.yaml":            {mode: "optional", def: boolPtr(true)},
+		"jira/sync-tasks.prompt.yaml":              {mode: "optional", def: boolPtr(true)},
 
 		// Group C — optional / default:false (11).
-		"check-ci.prompt.yaml":                   {mode: "optional", def: boolPtr(false)},
-		"continue.prompt.yaml":                   {mode: "optional", def: boolPtr(false)},
-		"fix-ci.prompt.yaml":                     {mode: "optional", def: boolPtr(false)},
-		"run-tests.prompt.yaml":                  {mode: "optional", def: boolPtr(false)},
-		"analyze-logs.prompt.yaml":               {mode: "optional", def: boolPtr(false)},
-		"architectural-analysis.prompt.yaml":     {mode: "optional", def: boolPtr(false)},
-		"beads-work.prompt.yaml":                 {mode: "optional", def: boolPtr(false)},
-		"github-review-slack-prs.prompt.yaml":    {mode: "optional", def: boolPtr(false)},
-		"jira-status-all-inprogress.prompt.yaml": {mode: "optional", def: boolPtr(false)},
-		"jira-status-one-inprogress.prompt.yaml": {mode: "optional", def: boolPtr(false)},
-		"jira-work.prompt.yaml":                  {mode: "optional", def: boolPtr(false)},
+		"ci/check-ci.prompt.yaml":                 {mode: "optional", def: boolPtr(false)},
+		"misc/continue.prompt.yaml":               {mode: "optional", def: boolPtr(false)},
+		"ci/fix-ci.prompt.yaml":                   {mode: "optional", def: boolPtr(false)},
+		"ci/run-tests.prompt.yaml":                {mode: "optional", def: boolPtr(false)},
+		"ci/analyze-logs.prompt.yaml":             {mode: "optional", def: boolPtr(false)},
+		"docs/architectural-analysis.prompt.yaml": {mode: "optional", def: boolPtr(false)},
+		"beads/work.prompt.yaml":                  {mode: "optional", def: boolPtr(false)},
+		"github/review-slack-prs.prompt.yaml":     {mode: "optional", def: boolPtr(false)},
+		"jira/status-all-inprogress.prompt.yaml":  {mode: "optional", def: boolPtr(false)},
+		"jira/status-one-inprogress.prompt.yaml":  {mode: "optional", def: boolPtr(false)},
+		"jira/work.prompt.yaml":                   {mode: "optional", def: boolPtr(false)},
 	}
 
 	for file, w := range cases {
@@ -2734,25 +2732,25 @@ func TestBuiltinPromptLoopModes(t *testing.T) {
 
 	// Representative sample of the "never loop" set: no loop block at all.
 	neverFiles := []string{
-		"explain.prompt.yaml",
-		"refactor.prompt.yaml",
+		"code/explain.prompt.yaml",
+		"code/refactor.prompt.yaml",
 		"review.prompt.yaml",
-		"add-tests.prompt.yaml",
-		"whats-next.prompt.yaml",
-		"child-create-minions.prompt.yaml",
-		"github-post-merge-cleanup.prompt.yaml",
-		"beads-issue-decompose.prompt.yaml",
+		"code/add-tests.prompt.yaml",
+		"misc/whats-next.prompt.yaml",
+		"child/create-minions.prompt.yaml",
+		"github/post-merge-cleanup.prompt.yaml",
+		"beads-issues/decompose.prompt.yaml",
 		// Tasks prompts that are one-shot reports, context-bound, or
 		// confirmation-gated — loop re-firing makes no sense for them.
-		"beads-followup-work.prompt.yaml",
-		"beads-cleanup-stale.prompt.yaml",
-		"beads-group-epics.prompt.yaml",
-		"beads-overview.prompt.yaml",
-		"beads-reevaluate.prompt.yaml",
-		"beads-status-all-inprogress.prompt.yaml",
-		"beads-status-one-inprogress.prompt.yaml",
-		"beads-issue-status.prompt.yaml",
-		"beads-issue-work.prompt.yaml",
+		"beads/followup-work.prompt.yaml",
+		"beads/cleanup-stale.prompt.yaml",
+		"beads/group-epics.prompt.yaml",
+		"beads/overview.prompt.yaml",
+		"beads/reevaluate.prompt.yaml",
+		"beads/status-all-inprogress.prompt.yaml",
+		"beads/status-one-inprogress.prompt.yaml",
+		"beads-issues/status.prompt.yaml",
+		"beads-issues/work.prompt.yaml",
 	}
 
 	for _, file := range neverFiles {
@@ -2798,12 +2796,12 @@ func TestBuiltinPromptLoopModes(t *testing.T) {
 // YAML/template parses.
 func TestMentionDriver_RendersForRepresentativeContexts(t *testing.T) {
 	builtinDir := "../../config/prompts/builtin"
-	path := filepath.Join(builtinDir, "beads-issue-mention-driver.prompt.yaml")
+	path := filepath.Join(builtinDir, "beads-issues/mention-driver.prompt.yaml")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Skipf("prompt file not found at %s: %v", path, err)
 	}
-	prompt, err := ParsePromptFile("beads-issue-mention-driver.prompt.yaml", data, time.Now())
+	prompt, err := ParsePromptFile("beads-issues/mention-driver.prompt.yaml", data, time.Now())
 	if err != nil {
 		t.Fatalf("ParsePromptFile: %v", err)
 	}
@@ -2949,12 +2947,12 @@ func TestMentionDriver_RendersForRepresentativeContexts(t *testing.T) {
 // until fix layer 1 lands.
 func TestLoopProcessingSpawns_MirrorArgumentsIntoLoopArguments(t *testing.T) {
 	builtinDir := "../../config/prompts/builtin"
-	path := filepath.Join(builtinDir, "beads-issue-loop-processing.prompt.yaml")
+	path := filepath.Join(builtinDir, "beads-issues/loop-processing.prompt.yaml")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Skipf("prompt file not found at %s: %v", path, err)
 	}
-	prompt, err := ParsePromptFile("beads-issue-loop-processing.prompt.yaml", data, time.Now())
+	prompt, err := ParsePromptFile("beads-issues/loop-processing.prompt.yaml", data, time.Now())
 	if err != nil {
 		t.Fatalf("ParsePromptFile: %v", err)
 	}
@@ -3042,7 +3040,7 @@ func TestLoopProcessingSpawns_MirrorArgumentsIntoLoopArguments(t *testing.T) {
 // assertion passes.
 func TestIssueLoopProcessing_CoalesceDuringBusyIsFalse(t *testing.T) {
 	builtinDir := "../../config/prompts/builtin"
-	name := "beads-issue-loop-processing.prompt.yaml"
+	name := "beads-issues/loop-processing.prompt.yaml"
 	path := filepath.Join(builtinDir, name)
 	data, err := os.ReadFile(path)
 	if err != nil {

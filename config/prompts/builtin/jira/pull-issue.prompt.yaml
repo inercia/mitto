@@ -1,0 +1,225 @@
+icon: tag
+name: 'JIRA: pull issue'
+menus: beadsIssues, conversation
+description: Pull the latest JIRA changes for the current bead — refresh the managed body block, mirror new JIRA comments, and close the bead if the JIRA ticket has reached a terminal status
+backgroundColor: '#D1C4E9'
+group: JIRA
+tags:
+- jira
+parameters:
+  - name: IssueID
+    type: beadsId
+    required: false
+    description: The beads issue ID to fix
+enabledWhen: '(Tools.Names.exists(n, n.matches("(?i)jira")) || CommandExists("jira")) && CommandExists("bd") && DirExists(".beads") && (("jira-sync" in Item.Labels) || (Session.HasBeadsIssue && BeadHasLabels(Session.BeadsIssue, "jira-sync")))'
+preferredModels:
+  - modelTag: Coding
+target:
+  reuse:
+    issue: true
+    coalesce: true
+prompt: |
+  ## Session Context
+
+  Your session ID is `{{ .Session.ID }}` — use this as `self_id` for all `mitto_*` MCP tool calls.
+
+  {{ $target := "" -}}
+  {{ if .Session.BeadsIssue }}{{ $target = .Session.BeadsIssue }}{{ else if .Args.IssueID }}{{ $target = .Args.IssueID }}{{ end -}}
+  {{ if not $target -}}
+  There is **no linked bead** for this conversation and no `IssueID` argument was provided. This prompt only pulls JIRA updates for a specific bead — send one `mitto_ui_notify` explaining that a bead is required, then **stop**.
+  {{- else }}
+
+  The **target bead** is `{{ $target }}`. Pull the latest changes from its linked JIRA ticket into this bead — refresh the managed body block, mirror any new JIRA comments, and reflect a terminal JIRA status by closing the bead. This prompt only ever **reads** from JIRA; it never writes to JIRA (that is what `JIRA: push issue` is for).
+  {{- end }}
+
+  ## Interaction Mode
+  {{- if and .Session.IsLoop (not .Session.IsLoopForced) }}
+
+  **Silent mode** — a scheduled loop run; the user is not watching.
+  - Use **only** `mitto_ui_notify` — non-blocking notifications only.
+  - Do **NOT** use `mitto_ui_options`, `mitto_ui_form`, or `mitto_ui_textbox`.
+  {{- else }}
+
+  **Interactive mode** — a regular conversation or a force-triggered loop run; the user is present.
+  - Use interactive tools (`mitto_ui_options`, `mitto_ui_form`, `mitto_ui_textbox`) as well as `mitto_ui_notify`. This is the default when run on demand.
+  {{- end }}
+
+  ## Access Method
+
+  This prompt talks to JIRA in one of two ways: **JIRA MCP tools** (e.g. `jira_get_issue_jira`, `jira_search_jira`) or the **`jira` CLI** (ankitpokhrel/jira-cli). **Prefer MCP tools whenever they are available** — they return structured JSON, avoid a subprocess round-trip, and do not depend on the user's local `jira` config. Fall back to the CLI only when the matching MCP tool is not present.
+  {{- if Cond "Tools.Names.exists(n, n.matches('(?i)jira'))" }}
+
+  **This run has JIRA MCP tools available** (a tool whose name contains `jira` is reachable). Every JIRA read below should go through the MCP tool named in the step (e.g. `jira_get_issue_jira` in Step 2). Names may be namespaced by the client (`mcp__<server>__<op>`); prefer whichever exact name is exposed to you.
+  {{- else }}
+
+  **This run has no JIRA MCP tools** (no tool name contains `jira`) but the `jira` command is on PATH — use it as the fallback. Wherever a step names an MCP tool, run the CLI equivalent instead. Set `PAGER=cat` before `jira issue view` to bypass the pager.
+  {{- end }}
+
+  ## Step 1 — Load the bead and extract the JIRA key
+
+  ```bash
+  bd show {{ $target }} --json
+  bd comments {{ $target }} --json    # or the equivalent JSON subcommand for this bd version
+  ```
+
+  From the bead capture: `title`, `description` (the full body), `status`, `priority`, `type`, `external_ref`, and `metadata.jira_updated` / `metadata.jira_synced_comments`. Also capture every existing beads comment (id, author, created, body) — needed to know which ids are new and to leave `[jira]`-prefixed comments untouched.
+
+  The JIRA key comes from `external_ref`, which must have the form `jira-<key-lower>` (this is what `JIRA: sync tasks` writes on create). Strip the `jira-` prefix and uppercase the remainder to get the JIRA key used against the API (e.g. `external_ref = "jira-abc-123"` → key `ABC-123`). If `external_ref` is empty or does not start with `jira-`, this bead is not linked to a JIRA ticket even though it carries the `jira-sync` label — send one `mitto_ui_notify` explaining that the label was likely applied manually and there is nothing to pull, then **stop**.
+
+  ## Step 2 — Fetch the JIRA ticket
+  {{- if Cond "Tools.Names.exists(n, n.matches('(?i)jira'))" }}
+
+  Call **`jira_get_issue_jira`** for the key with `fields="*all"` and `expand="renderedFields"`.
+  {{- else }}
+
+  Run:
+
+  ```bash
+  jira issue list -q "key = <KEY>" --raw
+  PAGER=cat jira issue view <KEY> --comments 200
+  ```
+
+  Comment bodies may be omitted from list `--raw`; the `jira issue view --comments` output is what to convert.
+  {{- end }}
+
+  Capture: key, summary, status name, priority, issue type, labels, assignee, the `updated` timestamp, and every comment (id, author, created, body). For the **description** and each **comment body**, capture the **raw** field value — on JIRA Server / Data Center this is JIRA wiki markup, which Step 3 converts to Markdown. Keep the `renderedFields` HTML only as a fallback for content the converter does not handle.
+
+  ## Step 3 — JIRA wiki markup → Markdown helper
+
+  JIRA descriptions and comments often use JIRA wiki markup (`h1.`/`h2.` headers, `{code}`/`{noformat}` blocks, `{{ "{{" }}monospace}}`, `[text|url]` links, `*bold*`, `_italic_`). Run every raw description and comment body through this **good-enough** converter before storing it — it preserves the most important structure (headers and code blocks) and is not meant to be perfect. Write it once to a temp file and reuse it:
+
+  ```python
+  #!/usr/bin/env python3
+  # jira2md.py — good-enough JIRA wiki markup -> Markdown (reads stdin, writes stdout)
+  import re, sys
+
+  def convert(s):
+      if not s:
+          return ""
+      fence = chr(96) * 3
+      s = s.replace("\r\n", "\n")
+      # Headers: h1. .. h6.  ->  #..######
+      s = re.sub(r"(?m)^h([1-6])\.\s*", lambda m: "#" * int(m.group(1)) + " ", s)
+      # Block quotes: bq.
+      s = re.sub(r"(?m)^bq\.\s*", "> ", s)
+      # Code / noformat blocks -> fenced code (toggle open/close)
+      parts = re.split(r"(\{code(?::[^}]*)?\}|\{noformat\})", s)
+      res, in_code = [], False
+      for p in parts:
+          if p == "{noformat}" or re.match(r"\{code(?::[^}]*)?\}$", p):
+              if not in_code:
+                  lang = ""
+                  m = re.match(r"\{code:([^}]*)\}$", p)
+                  if m and "title=" not in m.group(1):
+                      lm = re.search(r"(?:language=)?([A-Za-z0-9+#]+)", m.group(1))
+                      if lm:
+                          lang = lm.group(1)
+                  res.append("\n" + fence + lang + "\n"); in_code = True
+              else:
+                  res.append("\n" + fence + "\n"); in_code = False
+          else:
+              res.append(p)
+      s = "".join(res)
+      if in_code:
+          s += "\n" + fence + "\n"
+      # Inline monospace {{ "{{" }}...}} -> `...`
+      s = re.sub(r"\{\{(.+?)\}\}", lambda m: chr(96) + m.group(1) + chr(96), s)
+      # Links [text|url] -> [text](url)
+      s = re.sub(r"\[([^|\]]+)\|([^\]]+)\]", r"[\1](\2)", s)
+      # Bold *text* -> **text**
+      s = re.sub(r"(?<![\w*])\*([^*\n]+)\*(?![\w*])", r"**\1**", s)
+      # Italic _text_ -> *text*
+      s = re.sub(r"(?<![\w_])_([^_\n]+)_(?![\w_])", r"*\1*", s)
+      # Strip color/panel wrappers, keep inner text
+      s = re.sub(r"\{color[^}]*\}", "", s)
+      s = re.sub(r"\{panel[^}]*\}", "", s)
+      s = s.replace("{quote}", "")
+      return s
+
+  if __name__ == "__main__":
+      sys.stdout.write(convert(sys.stdin.read()))
+  ```
+
+  Use it by piping the raw text through it, e.g. `python3 /tmp/jira2md.py < /tmp/jira-<key>.raw > /tmp/jira-<key>.desc.md`. If `python3` is unavailable, fall back to the `renderedFields` HTML or the raw text unchanged — never block the pull on conversion.
+
+  ## Step 4 — Detect whether anything actually changed
+
+  Compare the fetched ticket against the bead's stored sync state:
+
+  - If `metadata.jira_updated` **equals** the ticket's `updated` timestamp **and** every comment id on the ticket is already listed in `metadata.jira_synced_comments`, there is nothing to do. In interactive mode print a one-line "already up to date" message; in silent mode stay silent. Then **stop** (do not run Steps 5–7).
+  - Otherwise continue to Step 5.
+
+  ## Step 5 — Update the bead body (preserve local edits)
+
+  Compose a canonical bead **body** for this ticket. Run the ticket description through the Step 3 converter first, then wrap the JIRA-managed content between sync markers so local additions can be preserved:
+
+  ```
+  <!-- jira-sync:begin (managed by JIRA sync — content here is overwritten on each run) -->
+  **JIRA:** <KEY> — <status> · <issue type> · assignee: <assignee>
+  **Link:** https://<jira-instance>/browse/<KEY>
+
+  <the converted ticket description (Markdown)>
+  <!-- jira-sync:end -->
+  ```
+
+  **Preserve local body edits.** Take the bead's existing `description` (from Step 1), keep everything **after** the `<!-- jira-sync:end -->` marker verbatim, and replace only the `jira-sync:begin`…`jira-sync:end` region with the freshly composed managed block above. If the existing body has no markers (an older bead created before this convention), treat its entire current text as local content and append it **below** the new managed block so nothing is lost. Write the spliced result to a temp file, then apply the update using these mappings:
+
+  - **Priority** (JIRA → beads): Highest→0, High→1, Medium→2, Low→3, Lowest→4 (default 2).
+  - **Type** (JIRA → beads): Bug→bug, Story→feature, Epic→epic, Task/Sub-task/other→task.
+
+  ```bash
+  bd update {{ $target }} --title "[<KEY>] <summary>" \
+    --priority <mapped-priority> --type <mapped-type> \
+    --body-file /tmp/jira-<key>.md \
+    --set-metadata jira_updated="<ticket.updated>"
+  ```
+
+  Always `--body-file` (never inline `--body "..."`) so Markdown survives shell quoting.
+
+  ## Step 6 — Mirror new JIRA comments
+
+  For each JIRA comment whose id is **not** already listed in `metadata.jira_synced_comments`, convert its body with the Step 3 helper, then append it to the bead with a `[jira]` marker so it is never duplicated, and extend the metadata list:
+
+  ```bash
+  bd comment {{ $target }} "[jira] <author> @ <created>: <converted comment body>"
+  bd update {{ $target }} --set-metadata jira_synced_comments="<previous ids + new ids>"
+  ```
+
+  **Preserve local comments/notes.** Only ever **append** comments, and only for JIRA comment ids not already synced. Never edit or delete existing comments. Beads comments that do **not** start with `[jira]` were added locally — leave them untouched. The `jira_synced_comments` metadata is what prevents re-mirroring, so a local comment can never be mistaken for a JIRA one.
+
+  ## Step 7 — Reflect terminal JIRA status (conservative)
+
+  If the JIRA ticket is in a **terminal** status and the bead is still open, close the bead:
+
+  ```bash
+  bd close {{ $target }} --reason "Closed in JIRA (<status>)"
+  ```
+
+  (In interactive mode you may confirm first with `mitto_ui_options`.)
+
+  A status is **terminal** only when its `name` is one of the following (case-insensitive, exact match):
+
+  - `Done`
+  - `Closed`
+  - `Resolved`
+  - `Cancelled` (or `Canceled`)
+  - `Won't Do` / `Won't Fix` / `Wontfix`
+  - `Duplicate`
+
+  Do **not** close a bead based on `statusCategory == "done"` alone. Many JIRA workflows put deployment-pipeline statuses in the green category — e.g. `Deployed to Stage`, `Deployed`, `Released`, `Ready for Prod`, `In UAT`, `Verified`, `Awaiting Deploy`, `On Prod` — where the ticket has real follow-up work (prod rollout, verification, sign-off) still pending. Treating those as closed would silently lose local work.
+
+  When the status name is not on the allow-list, leave the bead open — the current status is already mirrored into the managed block by Step 5 so a human sees the JIRA state without an automated close. If you are unsure whether a workflow-specific name (e.g. `Complete`, `Delivered`, `Fixed`) is really terminal in this project, **leave the bead open** — a human can close it later; a mistakenly-closed bead cannot be un-lost.
+
+  ## Step 8 — Summary
+
+  Report what changed: whether the body was refreshed, how many new JIRA comments were mirrored, and whether the bead was closed due to a terminal JIRA status. In silent mode send a single `mitto_ui_notify` only if anything changed; stay silent otherwise. In interactive mode print the full summary.
+
+  ## Guidelines
+
+  - **Idempotent**: `metadata.jira_updated` skips unchanged tickets; `metadata.jira_synced_comments` prevents duplicate comments. Running this prompt twice in a row must produce no spurious changes.
+  - **Loop-safe**: `[jira]`-prefixed beads comments are the sync marker — never edit or remove them. `[mitto]`-prefixed JIRA comments (written by `JIRA: push issue`) come back through this pull as `[jira] <author> @ <time>: [mitto] <body>` and are dedup-tracked by `jira_synced_comments`, so the round-trip never duplicates.
+  - Always `--body-file` for descriptions and `--file`/inline text for comments to avoid shell-quoting issues.
+  - **Good-enough conversion**: JIRA wiki markup is converted to Markdown on a best-effort basis (Step 3) — headers and code blocks are the priority; perfect fidelity is not a goal.
+  - **Preserve local information**: local body edits (below the `jira-sync:end` marker) and local comments/notes (those without a `[jira]` prefix) must survive every pull. When unsure, keep the content rather than overwrite it.
+  - **Terminal status (conservative)**: only close the bead when the JIRA status `name` is on the small allow-list above; never rely on `statusCategory`. A mistakenly-open bead is harmless; a mistakenly-closed one can silently drop local work.
+  - **Scope**: this prompt is pull-only — it never writes to JIRA, never wires dependencies (that is a bulk-sync concern), and never touches other beads. Use `JIRA: push issue` to mirror local changes back to JIRA, or `JIRA: sync tasks` for a full two-way batch sync.

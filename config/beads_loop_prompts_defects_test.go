@@ -18,10 +18,10 @@ import (
 // still checked for defects 2 and 4.
 func TestBeadsLoopPrompts_Defects_mitto6am(t *testing.T) {
 	const (
-		mergedOrch    = "beads-issue-loop-processing.prompt.yaml"
-		bugDriver     = "beads-issue-loop-fixing-bug.prompt.yaml"
-		featDriver    = "beads-issue-loop-implementing-feature.prompt.yaml"
-		mentionDriver = "beads-issue-mention-driver.prompt.yaml"
+		mergedOrch    = "beads-issues/loop-processing.prompt.yaml"
+		bugDriver     = "beads-issues/loop-fixing-bug.prompt.yaml"
+		featDriver    = "beads-issues/loop-implementing-feature.prompt.yaml"
+		mentionDriver = "beads-issues/mention-driver.prompt.yaml"
 	)
 
 	load := func(name string) string {
@@ -158,9 +158,9 @@ func TestBeadsLoopPrompts_Defects_mitto6am(t *testing.T) {
 // green.
 func TestBeadsLoopPrompts_Defects_mitto_i5k_BranchOrder(t *testing.T) {
 	const (
-		bugDriver     = "beads-issue-loop-fixing-bug.prompt.yaml"
-		featDriver    = "beads-issue-loop-implementing-feature.prompt.yaml"
-		mentionDriver = "beads-issue-mention-driver.prompt.yaml"
+		bugDriver     = "beads-issues/loop-fixing-bug.prompt.yaml"
+		featDriver    = "beads-issues/loop-implementing-feature.prompt.yaml"
+		mentionDriver = "beads-issues/mention-driver.prompt.yaml"
 	)
 
 	load := func(name string) string {
@@ -225,7 +225,7 @@ func TestBeadsLoopPrompts_Defects_mitto_i5k_BranchOrder(t *testing.T) {
 // flip green once the concurrency-gate and active-bead-skip paragraphs are
 // rewritten to use `mitto_conversation_list` with a workspace filter.
 func TestBeadsLoopPrompts_Defects_mitto9mk_WorkspaceScopedConcurrencyGate(t *testing.T) {
-	const mergedOrch = "beads-issue-loop-processing.prompt.yaml"
+	const mergedOrch = "beads-issues/loop-processing.prompt.yaml"
 
 	body, err := fs.ReadFile(BuiltinPromptsFS, BuiltinPromptsDir+"/"+mergedOrch)
 	if err != nil {
@@ -318,7 +318,7 @@ func TestBeadsLoopPrompts_Defects_mitto9mk_WorkspaceScopedConcurrencyGate(t *tes
 // bead's status), so it keeps `mitto_children_tasks_wait`. This test also
 // asserts §A did not accidentally get rewritten by a §B/§C-wide edit.
 func TestBeadsLoopPrompts_mitto4vr_BeadsStateWait(t *testing.T) {
-	const mergedOrch = "beads-issue-loop-processing.prompt.yaml"
+	const mergedOrch = "beads-issues/loop-processing.prompt.yaml"
 
 	body, err := fs.ReadFile(BuiltinPromptsFS, BuiltinPromptsDir+"/"+mergedOrch)
 	if err != nil {
