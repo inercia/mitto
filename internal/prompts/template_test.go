@@ -3066,3 +3066,118 @@ func TestIssueLoopProcessing_CoalesceDuringBusyIsFalse(t *testing.T) {
 		t.Errorf("loop.coalesceDuringBusy = true, want false (mitto-cwg): supervisor must react to its own subtree's beads mutations, not silently absorb them into a baseline rebase")
 	}
 }
+
+// TestIssueLoopProcessing_EpicReaperPresent pins mitto-qxb: the L1 orchestrator
+// (config/prompts/builtin/beads-issues/loop-processing.prompt.yaml) must contain
+// a pass-local epic-reaper in Step 2P that auto-closes epics whose children are
+// all closed by the same pass.
+//
+// The reaper is a prompt-template edit (bash inside the rendered body executed
+// by the LLM at runtime), so behavioural coverage lives in the live orchestrator.
+// This test locks the *structural* contract so an accidental prompt-edit that
+// drops any of the reaper's load-bearing pieces fails CI:
+//
+//   - Step 2P captures closed_this_pass as it closes terminal-label beads
+//     (used by both the recently-closed-parent exclusion and the reaper below).
+//   - A "Reap epics whose children are all closed" sub-block is rendered when
+//     bugs and/or features are enabled — this is the reaper itself. It must
+//     derive touched_epics, guard on epic|open, count non-closed children via
+//     bd children, invoke bd close with the canonical reason, and enforce a
+//     hard cap (20) with overflow logging.
+//   - Step 2T's transparency table header includes Reaped-epics=<count>.
+//   - Step 6's mitto_ui_notify message includes Reaped-epics: <count>.
+//   - The stale "human owns closing the epic" language is gone from the intro
+//     paragraph and the "Expand epics; don't spawn them" Guidelines bullet
+//     (those two spots now describe the reaper closing the epic).
+func TestIssueLoopProcessing_EpicReaperPresent(t *testing.T) {
+	builtinDir := "../../config/prompts/builtin"
+	name := "beads-issues/loop-processing.prompt.yaml"
+	path := filepath.Join(builtinDir, name)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Skipf("prompt file not found at %s: %v", path, err)
+	}
+	prompt, err := ParsePromptFile(name, data, time.Now())
+	if err != nil {
+		t.Fatalf("ParsePromptFile: %v", err)
+	}
+
+	// Render with both bugs and features enabled — that is the default
+	// deployment (FixBugs="true", WorkOnFeatures="true") and the only mode
+	// where the reaper block is meaningful (it lives inside the same
+	// {{ if or ... }} guard as the terminal-label close loop).
+	ctx := &cel.PromptEnabledContext{
+		Session: cel.SessionContext{ID: "orch-1"},
+		Args:    map[string]string{"FixBugs": "true", "WorkOnFeatures": "true"},
+	}
+	funcs := cel.BuildTemplateFuncMap(ctx)
+	out, rerr := RenderPromptTemplate("beads-issue-loop-processing", prompt.Content, ctx, funcs)
+	if rerr != nil {
+		t.Fatalf("RenderPromptTemplate: %v", rerr)
+	}
+
+	// --- Terminal-label loop tracks closed_this_pass ---
+	if !strings.Contains(out, "closed_this_pass=()") {
+		t.Errorf("expected the terminal-label close loop to initialise `closed_this_pass=()` so the reaper below can walk parents of just-closed children; not found in rendered body")
+	}
+	if !strings.Contains(out, `closed_this_pass+=("$id")`) {
+		t.Errorf("expected the terminal-label close loop to append closed bead IDs into closed_this_pass (`closed_this_pass+=(\"$id\")`); not found in rendered body")
+	}
+
+	// --- Reaper sub-block anchors ---
+	reaperHeader := "### Reap epics whose children are all closed"
+	anchor := strings.Index(out, reaperHeader)
+	if anchor < 0 {
+		t.Fatalf("expected Step 2P sub-heading %q in rendered body (mitto-qxb); not found — the epic-reaper block is missing", reaperHeader)
+	}
+	// Bound the reaper block to the next H3/H2 heading or the end of body.
+	tail := out[anchor+len(reaperHeader):]
+	nextH := len(tail)
+	for _, marker := range []string{"\n### ", "\n## "} {
+		if idx := strings.Index(tail, marker); idx >= 0 && idx < nextH {
+			nextH = idx
+		}
+	}
+	block := tail[:nextH]
+
+	// Load-bearing pieces of the reaper bash: derive touched_epics from
+	// parents of closed_this_pass, guard on epic|open, count open children,
+	// close with the canonical reason, and enforce the 20/pass cap.
+	mustContain := []struct {
+		frag string
+		why  string
+	}{
+		{`for cid in "${closed_this_pass[@]}"`, "reaper must iterate closed_this_pass to derive touched epics (pass-local scope — never sweep all epics)"},
+		{`.[0].parent`, "reaper must read the .parent field from `bd show <id> --json` to find each closed child's owning epic"},
+		{`"epic|open"`, "reaper must guard on issue_type==epic && status==open before closing (idempotency + type safety)"},
+		{`bd children`, "reaper must count non-closed children via `bd children <epic> --json` — the all-children-closed check"},
+		{`bd close "$epic_id"`, "reaper must actually close the epic via bd close"},
+		{"All children closed by L1 orchestrator pass", "reaper must use the canonical close reason from the plan/design"},
+		{"reap_cap=20", "reaper must enforce a hard cap of 20 reaped epics per pass (bounded blast radius)"},
+		{"Epic reaper cap", "reaper must log an overflow message when the 20/pass cap is hit so operators can see the backlog"},
+	}
+	for _, m := range mustContain {
+		if !strings.Contains(block, m.frag) {
+			t.Errorf("epic-reaper block is missing %q (%s); block:\n%s", m.frag, m.why, block)
+		}
+	}
+
+	// --- Step 2T transparency: Reaped-epics counter in the candidates header ---
+	if !strings.Contains(out, "Reaped-epics=<count>") {
+		t.Errorf("Step 2T candidates header must include `Reaped-epics=<count>` alongside A/B/C counts so reap actions surface in the transparency table (mitto-qxb acceptance criterion)")
+	}
+	if !strings.Contains(out, "Reaped epics:") {
+		t.Errorf("Step 2T must define a `Reaped epics:` bulleted list below the candidates table (rendered when the reaper closed any epics this pass)")
+	}
+
+	// --- Step 6 notification includes Reaped-epics count ---
+	if !strings.Contains(out, "Reaped-epics: <count from Step 2P epic-reaper") {
+		t.Errorf("Step 6 mitto_ui_notify message must include the `Reaped-epics: <count from Step 2P epic-reaper, 0 if none>` field so end-of-pass notifications report reaper activity")
+	}
+
+	// --- Stale "human owns closing the epic" language must be gone ---
+	stale := "human owns closing the epic"
+	if strings.Contains(out, stale) {
+		t.Errorf("rendered orchestrator still contains stale language %q — the reaper now closes the epic in the same pass; intro paragraph (Step 2) and Guidelines `Expand epics; don't spawn them` bullet must both be updated (mitto-qxb)", stale)
+	}
+}
