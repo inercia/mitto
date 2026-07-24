@@ -23,11 +23,11 @@ prompt: |
 
   {{ $target := "" -}}
   {{ if .Session.BeadsIssue }}{{ $target = .Session.BeadsIssue }}{{ else if .Args.IssueID }}{{ $target = .Args.IssueID }}{{ end -}}
-  {{ if $target -}}
-  The **target bead** is `{{ $target }}`. Your job is to help the user **think through and refine** this bead — resolving pending decisions, assessing its quality, and clarifying gaps — until it is **ready to work on**, then **capture the outcome back into the tracker**.
-  {{- else -}}
-  There is **no linked bead** for this conversation. Help the user **think through and refine the current problem** under discussion here — the topic, design question, or decision raised in this conversation: resolve pending decisions, surface trade-offs, and sharpen it into an actionable conclusion. Do **not** run any `bd` commands — there is no bead to load or update.
-  {{- end }}
+  {{ template "_shared/beads/target-bead-header" (dict
+      "Target"   $target
+      "Role"     "Your job is to help the user **think through and refine** this bead — resolving pending decisions, assessing its quality, and clarifying gaps — until it is **ready to work on**, then **capture the outcome back into the tracker**."
+      "NoTarget" "Help the user **think through and refine the current problem** under discussion here — the topic, design question, or decision raised in this conversation: resolve pending decisions, surface trade-offs, and sharpen it into an actionable conclusion. Do **not** run any `bd` commands — there is no bead to load or update."
+  ) }}
 
   > **Scope:** this is a *discussion and refinement* prompt. Do **not** implement the work, write
   > code, or change anything outside the beads tracker.
@@ -40,12 +40,7 @@ prompt: |
   {{ if $target -}}
   ## Step 1 — Load the bead and its context
 
-  ```bash
-  bd show {{ $target }} --long --json     # description, acceptance, design, notes, labels, status
-  bd dep tree {{ $target }}               # blockers and what it blocks
-  bd show {{ $target }} --children --json # existing child beads (if any)
-  bd comments {{ $target }}               # prior discussion, if any
-  ```
+  {{ template "_shared/load-bead-context" $target }}
 
   Read everything carefully. Where the bead references code or features, investigate the **codebase**
   just enough to discuss it knowledgeably — but remember you are not here to implement it.
@@ -153,25 +148,4 @@ prompt: |
 
   ## Final step — Offer to delete this conversation
 
-  The task is complete. Offer to tidy up so finished conversations do not accumulate.
-
-  1. Ask the user whether to delete this conversation now, via
-     `mitto_ui_options(self_id: "{{ .Session.ID }}", question: "All done — delete this conversation now?", timeout_seconds: 120)` with options:
-     - **"Yes, delete it"**
-     - **"No, keep it"**
-
-  2. Honour the answer:
-     - **Delete** → first notify the user (the deletion is deferred until your turn ends, so the
-       message is delivered first) with
-       `mitto_ui_notify_mitto(self_id: "{{ .Session.ID }}", title: "<short outcome>", message: "<one-line summary of what was done>", style: "success")`,
-       then self-destruct with
-       `mitto_conversation_delete_mitto(self_id: "{{ .Session.ID }}", conversation_id: "self")`.
-     - **Keep** → leave the conversation in place.
-
-  3. **On timeout** (no response): only delete this conversation if **all** of the following hold —
-     it was **started by this prompt** (a dedicated conversation for this task, not an existing
-     conversation you were invoked into), **no further action is expected from the user**, and
-     **all the work was clearly completed**. If so, notify (as above) then self-destruct; otherwise
-     leave the conversation untouched.
-
-  If the `mitto_*` tools are unavailable, skip this step silently.
+  {{ template "_shared/offer-delete-conversation" . }}

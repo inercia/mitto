@@ -23,21 +23,16 @@ prompt: |
 
   {{ $target := "" -}}
   {{ if .Session.BeadsIssue }}{{ $target = .Session.BeadsIssue }}{{ else if .Args.IssueID }}{{ $target = .Args.IssueID }}{{ end -}}
-  {{ if $target -}}
-  The **target bead** is `{{ $target }}`. Your job is to **deepen the understanding** of this bead: gather the context it is missing, clarify anything vague or underspecified, and enrich it so it is genuinely ready to work on. If the problem turns out to be larger or more complex than the bead currently captures, **split it into sub-issues**.
-  {{- else -}}
-  There is **no linked bead** for this conversation. Investigate the **current problem** under discussion here — the topic, code, error, or question raised in this conversation. Treat the conversation itself as the subject: gather the missing context from the codebase and history, clarify what is vague, and produce an Investigation Report. Do **not** run any `bd` commands — there is no bead to load, enrich, or close.
-  {{- end }}
+  {{ template "_shared/beads/target-bead-header" (dict
+      "Target"   $target
+      "Role"     "Your job is to **deepen the understanding** of this bead: gather the context it is missing, clarify anything vague or underspecified, and enrich it so it is genuinely ready to work on. If the problem turns out to be larger or more complex than the bead currently captures, **split it into sub-issues**."
+      "NoTarget" "Investigate the **current problem** under discussion here — the topic, code, error, or question raised in this conversation. Treat the conversation itself as the subject: gather the missing context from the codebase and history, clarify what is vague, and produce an Investigation Report. Do **not** run any `bd` commands — there is no bead to load, enrich, or close."
+  ) }}
 
   {{ if $target -}}
   ## Step 1 — Load the bead's full detail
 
-  ```bash
-  bd show {{ $target }} --long --json     # description, acceptance, design, notes, metadata
-  bd dep tree {{ $target }}               # blockers and what it blocks
-  bd show {{ $target }} --children --json # existing child beads (if any)
-  bd comments {{ $target }}               # prior discussion, if any
-  ```
+  {{ template "_shared/load-bead-context" $target }}
 
   Note what is already well-specified versus what is thin, vague, or missing.
   {{- end }}
@@ -167,25 +162,4 @@ prompt: |
 
   ## Final step — Offer to delete this conversation
 
-  The task is complete. Offer to tidy up so finished conversations do not accumulate.
-
-  1. Ask the user whether to delete this conversation now, via
-     `mitto_ui_options(self_id: "{{ .Session.ID }}", question: "All done — delete this conversation now?", timeout_seconds: 120)` with options:
-     - **"Yes, delete it"**
-     - **"No, keep it"**
-
-  2. Honour the answer:
-     - **Delete** → first notify the user (the deletion is deferred until your turn ends, so the
-       message is delivered first) with
-       `mitto_ui_notify_mitto(self_id: "{{ .Session.ID }}", title: "<short outcome>", message: "<one-line summary of what was done>", style: "success")`,
-       then self-destruct with
-       `mitto_conversation_delete_mitto(self_id: "{{ .Session.ID }}", conversation_id: "self")`.
-     - **Keep** → leave the conversation in place.
-
-  3. **On timeout** (no response): only delete this conversation if **all** of the following hold —
-     it was **started by this prompt** (a dedicated conversation for this task, not an existing
-     conversation you were invoked into), **no further action is expected from the user**, and
-     **all the work was clearly completed**. If so, notify (as above) then self-destruct; otherwise
-     leave the conversation untouched.
-
-  If the `mitto_*` tools are unavailable, skip this step silently.
+  {{ template "_shared/offer-delete-conversation" . }}

@@ -23,18 +23,11 @@ prompt: |
 
   {{ $target := "" -}}
   {{ if .Session.BeadsIssue }}{{ $target = .Session.BeadsIssue }}{{ else if .Args.IssueID }}{{ $target = .Args.IssueID }}{{ end -}}
-  {{ if $target -}}
-  The **target bead** is `{{ $target }}`. Your job is to investigate, against the **actual state of
-  the codebase**, whether this bead is still worth keeping open — i.e. whether its requirements are
-  **already implemented or fixed**, the work has become **obsolete**, or it **duplicates** another
-  bead — then recommend whether to close it, keep it open, or spin off follow-up beads for any
-  remaining work.
-  {{- else -}}
-  There is **no linked bead** for this conversation. Investigate — against the **actual state of the
-  codebase** — whether the **current problem / topic under discussion here** is **already
-  implemented, fixed, or obsolete**, and report what (if anything) still remains. Do **not** run any
-  `bd` commands — there is no bead to load, close, or modify.
-  {{- end }}
+  {{ template "_shared/beads/target-bead-header" (dict
+      "Target"   $target
+      "Role"     "Your job is to investigate, against the **actual state of the codebase**, whether this bead is still worth keeping open — i.e. whether its requirements are **already implemented or fixed**, the work has become **obsolete**, or it **duplicates** another bead — then recommend whether to close it, keep it open, or spin off follow-up beads for any remaining work."
+      "NoTarget" "Investigate — against the **actual state of the codebase** — whether the **current problem / topic under discussion here** is **already implemented, fixed, or obsolete**, and report what (if anything) still remains. Do **not** run any `bd` commands — there is no bead to load, close, or modify."
+  ) }}
 
   {{ if $target -}}
   ## Step 1 — Load the bead's full detail
@@ -253,25 +246,4 @@ prompt: |
   > **Skip this step entirely** if the user chose **"Start working on it"** — work is now underway, so
   > the conversation must stay open.
 
-  The task is complete. Offer to tidy up so finished conversations do not accumulate.
-
-  1. Ask the user whether to delete this conversation now, via
-     `mitto_ui_options(self_id: "{{ .Session.ID }}", question: "All done — delete this conversation now?", timeout_seconds: 120)` with options:
-     - **"Yes, delete it"**
-     - **"No, keep it"**
-
-  2. Honour the answer:
-     - **Delete** → first notify the user (the deletion is deferred until your turn ends, so the
-       message is delivered first) with
-       `mitto_ui_notify_mitto(self_id: "{{ .Session.ID }}", title: "<short outcome>", message: "<one-line summary of what was done>", style: "success")`,
-       then self-destruct with
-       `mitto_conversation_delete_mitto(self_id: "{{ .Session.ID }}", conversation_id: "self")`.
-     - **Keep** → leave the conversation in place.
-
-  3. **On timeout** (no response): only delete this conversation if **all** of the following hold —
-     it was **started by this prompt** (a dedicated conversation for this task, not an existing
-     conversation you were invoked into), **no further action is expected from the user**, and
-     **all the work was clearly completed**. If so, notify (as above) then self-destruct; otherwise
-     leave the conversation untouched.
-
-  If the `mitto_*` tools are unavailable, skip this step silently.
+  {{ template "_shared/offer-delete-conversation" . }}
