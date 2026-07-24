@@ -25,6 +25,7 @@ import {
   jest,
 } from "../../utils/testing/testGlobals.js";
 import { endpoints } from "../../utils/endpoints.js";
+import { modelColor, UNKNOWN_MODEL_COLOR } from "../../utils/palette.js";
 import { CDN_URLS, VERSIONS } from "../../vendor/config.js";
 
 // =============================================================================
@@ -44,6 +45,9 @@ const REQUESTED_METRICS = [
   "tool_calls_total",
   "mcp_calls",
 ];
+
+// Duplicated from StatsCharts.js for testing (mitto-8wj). Keep in sync.
+const REQUESTED_MODEL_METRICS = ["input_tokens_est", "output_tokens_est"];
 
 // Duplicated from StatsCharts.js for testing. Keep in sync.
 const CHART_HEIGHT = 220;
@@ -105,6 +109,52 @@ function toUplotData(data, metrics) {
     return arr.map((p) => p.v);
   });
   return [xs, ...ys];
+}
+
+// Duplicated from StatsCharts.js for testing (mitto-8wj). Keep in sync.
+function toModelUplotData(data) {
+  if (!data || !data.series) return { xs: [], models: [] };
+  const wanted = new Set(REQUESTED_MODEL_METRICS);
+  const perModel = new Map();
+  let anchor = null;
+  for (const key of Object.keys(data.series)) {
+    const idx = key.indexOf(":");
+    if (idx < 0) continue;
+    const metric = key.slice(0, idx);
+    const model = key.slice(idx + 1);
+    if (!wanted.has(metric)) continue;
+    if (model === "") continue;
+    const arr = Array.isArray(data.series[key]) ? data.series[key] : [];
+    if (!anchor && arr.length > 0) anchor = arr;
+    let entry = perModel.get(model);
+    if (!entry) {
+      entry = { name: model, values: null };
+      perModel.set(model, entry);
+    }
+    if (entry.values === null) {
+      entry.values = arr.map((p) => p.v || 0);
+    } else {
+      for (let i = 0; i < arr.length && i < entry.values.length; i++) {
+        entry.values[i] += arr[i].v || 0;
+      }
+    }
+  }
+  const xs = anchor ? anchor.map((p) => p.t) : [];
+  const models = [];
+  for (const entry of perModel.values()) {
+    const values = entry.values || xs.map(() => 0);
+    let total = 0;
+    for (let i = 0; i < values.length; i++) total += values[i];
+    if (total <= 0) continue;
+    models.push({ name: entry.name, values, total });
+  }
+  models.sort((a, b) => b.total - a.total || a.name.localeCompare(b.name));
+  return { xs, models };
+}
+
+// Duplicated from StatsCharts.js for testing (mitto-8wj). Keep in sync.
+function isEmptyModelSeries(data) {
+  return toModelUplotData(data).models.length === 0;
 }
 
 // =============================================================================
@@ -398,5 +448,219 @@ describe("toUplotData with a realistic six-metric tsResponse", () => {
     expect(d.meta.backfill_in_progress).toBe(true);
     expect(typeof d.meta.note).toBe("string");
     expect(d.meta.note.length).toBeGreaterThan(0);
+  });
+});
+
+// =============================================================================
+// Model usage helpers — acceptance: "one colored line per model, grey unknown,
+// legend total matches sum" (mitto-8wj)
+// =============================================================================
+//
+// Fixture mimics the composite-key contract produced by
+// internal/web/handlers/dashboard_timeseries.go when groupBy=model:
+// keys are "<metric>:<model>"; the backend also seeds a bare "<metric>:" slot
+// for metrics without a model dimension and a synthetic ":unknown" slot for
+// pre-migration data. toModelUplotData must consume all three shapes correctly.
+
+describe("toModelUplotData", () => {
+  const grouped = () => ({
+    meta: { range: "24h", bucket: "hour" },
+    series: {
+      "input_tokens_est:gpt-4o": [
+        { t: 100, v: 10 },
+        { t: 200, v: 20 },
+        { t: 300, v: 30 },
+      ],
+      "output_tokens_est:gpt-4o": [
+        { t: 100, v: 5 },
+        { t: 200, v: 5 },
+        { t: 300, v: 5 },
+      ],
+      "input_tokens_est:claude-3-5-sonnet": [
+        { t: 100, v: 100 },
+        { t: 200, v: 0 },
+        { t: 300, v: 0 },
+      ],
+      "output_tokens_est:claude-3-5-sonnet": [
+        { t: 100, v: 50 },
+        { t: 200, v: 0 },
+        { t: 300, v: 0 },
+      ],
+      // Bare "<metric>:" slot: metrics without a model dimension. Must be
+      // ignored by the model card.
+      "prompts:": [
+        { t: 100, v: 7 },
+        { t: 200, v: 7 },
+        { t: 300, v: 7 },
+      ],
+    },
+  });
+
+  test("returns one entry per model with summed input+output tokens per bucket", () => {
+    const { xs, models } = toModelUplotData(grouped());
+    expect(xs).toEqual([100, 200, 300]);
+    const names = models.map((m) => m.name);
+    expect(names).toContain("gpt-4o");
+    expect(names).toContain("claude-3-5-sonnet");
+    const gpt = models.find((m) => m.name === "gpt-4o");
+    // Per-bucket sums: input(10,20,30) + output(5,5,5) = (15,25,35).
+    expect(gpt.values).toEqual([15, 25, 35]);
+    expect(gpt.total).toBe(15 + 25 + 35);
+    const claude = models.find((m) => m.name === "claude-3-5-sonnet");
+    expect(claude.values).toEqual([150, 0, 0]);
+    expect(claude.total).toBe(150);
+  });
+
+  test("orders models by total desc (busiest first) with stable name tiebreak", () => {
+    const { models } = toModelUplotData(grouped());
+    // gpt-4o total = 75, claude total = 150 → claude first.
+    expect(models[0].name).toBe("claude-3-5-sonnet");
+    expect(models[1].name).toBe("gpt-4o");
+  });
+
+  test("ignores bare '<metric>:' slots (non-model metrics)", () => {
+    const { models } = toModelUplotData(grouped());
+    // 'prompts:' with model="" must not appear as a model row.
+    expect(models.find((m) => m.name === "")).toBeUndefined();
+    // Also must not accidentally land under a "prompts" label — only
+    // REQUESTED_MODEL_METRICS contribute to the summed values.
+    for (const m of models) {
+      expect(m.name).not.toBe("prompts");
+    }
+  });
+
+  test("surfaces the ':unknown' bucket when non-zero", () => {
+    const data = {
+      series: {
+        "input_tokens_est:unknown": [
+          { t: 100, v: 40 },
+          { t: 200, v: 60 },
+        ],
+        "output_tokens_est:unknown": [
+          { t: 100, v: 10 },
+          { t: 200, v: 15 },
+        ],
+      },
+    };
+    const { models } = toModelUplotData(data);
+    expect(models).toHaveLength(1);
+    expect(models[0].name).toBe("unknown");
+    expect(models[0].values).toEqual([50, 75]);
+    // And the palette maps this bucket to the fixed grey.
+    expect(modelColor(models[0].name)).toBe(UNKNOWN_MODEL_COLOR);
+  });
+
+  test("drops models whose summed values are entirely zero", () => {
+    const data = {
+      series: {
+        "input_tokens_est:silent-model": [
+          { t: 100, v: 0 },
+          { t: 200, v: 0 },
+        ],
+        "output_tokens_est:silent-model": [
+          { t: 100, v: 0 },
+          { t: 200, v: 0 },
+        ],
+        "input_tokens_est:gpt-4o": [
+          { t: 100, v: 1 },
+          { t: 200, v: 2 },
+        ],
+      },
+    };
+    const { models } = toModelUplotData(data);
+    expect(models).toHaveLength(1);
+    expect(models[0].name).toBe("gpt-4o");
+  });
+
+  test("null / empty payload yields empty result", () => {
+    expect(toModelUplotData(null)).toEqual({ xs: [], models: [] });
+    expect(toModelUplotData({})).toEqual({ xs: [], models: [] });
+    expect(toModelUplotData({ series: {} })).toEqual({ xs: [], models: [] });
+  });
+
+  test("colors are stable across two toModelUplotData mounts of the same fixture", () => {
+    // Pins the "colors are stable across reloads" acceptance criterion at the
+    // level the component actually consumes: run the transform twice, then
+    // map every produced model name through modelColor. Byte-identical.
+    const first = toModelUplotData(grouped()).models.map((m) => modelColor(m.name));
+    const second = toModelUplotData(grouped()).models.map((m) => modelColor(m.name));
+    expect(first).toEqual(second);
+  });
+});
+
+describe("isEmptyModelSeries", () => {
+  test("null / empty → empty", () => {
+    expect(isEmptyModelSeries(null)).toBe(true);
+    expect(isEmptyModelSeries({})).toBe(true);
+    expect(isEmptyModelSeries({ series: {} })).toBe(true);
+  });
+
+  test("all-zero grouped series → empty (matches empty-state banner condition)", () => {
+    const data = {
+      series: {
+        "input_tokens_est:gpt-4o": [
+          { t: 100, v: 0 },
+          { t: 200, v: 0 },
+        ],
+        "output_tokens_est:gpt-4o": [
+          { t: 100, v: 0 },
+          { t: 200, v: 0 },
+        ],
+      },
+    };
+    expect(isEmptyModelSeries(data)).toBe(true);
+  });
+
+  test("any positive per-model sum → not empty", () => {
+    const data = {
+      series: {
+        "input_tokens_est:gpt-4o": [
+          { t: 100, v: 1 },
+          { t: 200, v: 0 },
+        ],
+      },
+    };
+    expect(isEmptyModelSeries(data)).toBe(false);
+  });
+
+  test("only bare '<metric>:' slots present → empty (no model dimension)", () => {
+    const data = {
+      series: {
+        "prompts:": [
+          { t: 100, v: 5 },
+          { t: 200, v: 5 },
+        ],
+      },
+    };
+    expect(isEmptyModelSeries(data)).toBe(true);
+  });
+});
+
+describe("model usage URL builder (groupBy=model)", () => {
+  test("second fetch URL includes groupBy=model and only the two token metrics", () => {
+    // Pins the exact URL shape the ModelUsageCard's second fetch effect emits
+    // so a regression to a different groupBy or metric list is caught here.
+    const url = endpoints.misc.dashboardTimeseries({
+      range: "24h",
+      metrics: REQUESTED_MODEL_METRICS.join(","),
+      groupBy: "model",
+    });
+    expect(url).toContain("/api/dashboard/timeseries");
+    expect(url).toContain("range=24h");
+    expect(url).toContain("groupBy=model");
+    expect(url).toContain(
+      `metrics=${encodeURIComponent(REQUESTED_MODEL_METRICS.join(","))}`,
+    );
+    // Must NOT include the ungrouped six-metric list — that URL belongs to the
+    // pinned three-card fetch and must stay byte-identical.
+    expect(url).not.toContain("prompts");
+    expect(url).not.toContain("tool_calls_total");
+  });
+
+  test("REQUESTED_MODEL_METRICS is a subset of REQUESTED_METRICS", () => {
+    const known = new Set(REQUESTED_METRICS);
+    for (const m of REQUESTED_MODEL_METRICS) {
+      expect(known.has(m)).toBe(true);
+    }
   });
 });
