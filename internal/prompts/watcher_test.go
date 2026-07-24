@@ -341,6 +341,190 @@ func TestPromptsWatcher_NonExistentDirectory(t *testing.T) {
 	}
 }
 
+// waitForEventWithFlags drains events until one matches wantPrompt/wantFragment
+// or the timeout elapses. Returns the matching event and ok.
+func waitForEventWithFlags(sub *mockSubscriber, timeout time.Duration, wantPrompt, wantFragment bool) (PromptsChangeEvent, bool) {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			break
+		}
+		if !sub.WaitForEvent(remaining) {
+			return PromptsChangeEvent{}, false
+		}
+		ev := sub.LastEvent()
+		if ev.HasPromptChanges == wantPrompt && ev.HasFragmentChanges == wantFragment {
+			return ev, true
+		}
+	}
+	return PromptsChangeEvent{}, false
+}
+
+// TestPromptsWatcher_TmplFileTriggersFragmentFlag verifies a pure *.tmpl edit
+// sets HasFragmentChanges without HasPromptChanges (mitto-g61.5 acceptance).
+func TestPromptsWatcher_TmplFileTriggersFragmentFlag(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	pw, err := NewPromptsWatcher(nil)
+	if err != nil {
+		t.Fatalf("Failed to create watcher: %v", err)
+	}
+	defer pw.Close()
+
+	pw.SetDebounceDelay(20 * time.Millisecond)
+	pw.Start()
+
+	sub := newMockSubscriber()
+	if err := pw.Subscribe(sub, []string{tmpDir}); err != nil {
+		t.Fatalf("Failed to subscribe: %v", err)
+	}
+
+	tmplFile := filepath.Join(tmpDir, "hello.tmpl")
+	if err := os.WriteFile(tmplFile, []byte("hi {{ .Args.X }}"), 0644); err != nil {
+		t.Fatalf("Failed to create fragment file: %v", err)
+	}
+
+	ev, ok := waitForEventWithFlags(sub, 2*time.Second, false, true)
+	if !ok {
+		t.Fatalf("Timed out waiting for fragment-only event; got events=%d last=%+v",
+			sub.EventCount(), sub.LastEvent())
+	}
+	if ev.HasPromptChanges {
+		t.Errorf("HasPromptChanges = true, want false for pure .tmpl edit")
+	}
+	if !ev.HasFragmentChanges {
+		t.Errorf("HasFragmentChanges = false, want true for pure .tmpl edit")
+	}
+	if len(ev.ChangedDirs) == 0 {
+		t.Error("ChangedDirs should be populated on .tmpl edit")
+	}
+}
+
+// TestPromptsWatcher_PromptFileTriggersPromptFlag is a regression guard: a
+// pure *.prompt.yaml edit must set HasPromptChanges only (no fragment flag),
+// matching pre-mitto-g61.5 behavior for existing subscribers.
+func TestPromptsWatcher_PromptFileTriggersPromptFlag(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	pw, err := NewPromptsWatcher(nil)
+	if err != nil {
+		t.Fatalf("Failed to create watcher: %v", err)
+	}
+	defer pw.Close()
+
+	pw.SetDebounceDelay(20 * time.Millisecond)
+	pw.Start()
+
+	sub := newMockSubscriber()
+	if err := pw.Subscribe(sub, []string{tmpDir}); err != nil {
+		t.Fatalf("Failed to subscribe: %v", err)
+	}
+
+	promptFile := filepath.Join(tmpDir, "greet.prompt.yaml")
+	if err := os.WriteFile(promptFile, []byte("name: Greet\nprompt: |\n  Hi\n"), 0644); err != nil {
+		t.Fatalf("Failed to create prompt file: %v", err)
+	}
+
+	ev, ok := waitForEventWithFlags(sub, 2*time.Second, true, false)
+	if !ok {
+		t.Fatalf("Timed out waiting for prompt-only event; got events=%d last=%+v",
+			sub.EventCount(), sub.LastEvent())
+	}
+	if !ev.HasPromptChanges {
+		t.Errorf("HasPromptChanges = false, want true for pure .prompt.yaml edit")
+	}
+	if ev.HasFragmentChanges {
+		t.Errorf("HasFragmentChanges = true, want false for pure .prompt.yaml edit")
+	}
+}
+
+// TestPromptsWatcher_MixedEventCoalescesFlags verifies that a prompt and a
+// fragment edit landing inside the same debounce window collapse into ONE
+// event with both flags set — the coalescing contract on
+// pendingChangeKinds.
+func TestPromptsWatcher_MixedEventCoalescesFlags(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	pw, err := NewPromptsWatcher(nil)
+	if err != nil {
+		t.Fatalf("Failed to create watcher: %v", err)
+	}
+	defer pw.Close()
+
+	// Longer debounce so both writes provably land in the same window.
+	pw.SetDebounceDelay(150 * time.Millisecond)
+	pw.Start()
+
+	sub := newMockSubscriber()
+	if err := pw.Subscribe(sub, []string{tmpDir}); err != nil {
+		t.Fatalf("Failed to subscribe: %v", err)
+	}
+
+	promptFile := filepath.Join(tmpDir, "mix.prompt.yaml")
+	tmplFile := filepath.Join(tmpDir, "mix.tmpl")
+
+	if err := os.WriteFile(promptFile, []byte("name: Mix\nprompt: |\n  x\n"), 0644); err != nil {
+		t.Fatalf("Failed to create prompt file: %v", err)
+	}
+	if err := os.WriteFile(tmplFile, []byte("frag {{ .Args.X }}"), 0644); err != nil {
+		t.Fatalf("Failed to create fragment file: %v", err)
+	}
+
+	ev, ok := waitForEventWithFlags(sub, 2*time.Second, true, true)
+	if !ok {
+		t.Fatalf("Timed out waiting for combined event; got events=%d last=%+v",
+			sub.EventCount(), sub.LastEvent())
+	}
+	if !ev.HasPromptChanges || !ev.HasFragmentChanges {
+		t.Errorf("Combined event flags = (prompt=%v, fragment=%v), want (true, true)",
+			ev.HasPromptChanges, ev.HasFragmentChanges)
+	}
+}
+
+// TestPromptsWatcher_TmplRemoveTriggersFragmentFlag verifies deletions of
+// *.tmpl files also route through the fragment dispatch flag, so subscribers
+// can rebuild the registry and drop the removed entry.
+func TestPromptsWatcher_TmplRemoveTriggersFragmentFlag(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Pre-create the fragment so subscription starts after the file exists.
+	tmplFile := filepath.Join(tmpDir, "gone.tmpl")
+	if err := os.WriteFile(tmplFile, []byte("gone"), 0644); err != nil {
+		t.Fatalf("Failed to create fragment file: %v", err)
+	}
+
+	pw, err := NewPromptsWatcher(nil)
+	if err != nil {
+		t.Fatalf("Failed to create watcher: %v", err)
+	}
+	defer pw.Close()
+
+	pw.SetDebounceDelay(20 * time.Millisecond)
+	pw.Start()
+
+	sub := newMockSubscriber()
+	if err := pw.Subscribe(sub, []string{tmpDir}); err != nil {
+		t.Fatalf("Failed to subscribe: %v", err)
+	}
+
+	if err := os.Remove(tmplFile); err != nil {
+		t.Fatalf("Failed to remove fragment file: %v", err)
+	}
+
+	ev, ok := waitForEventWithFlags(sub, 2*time.Second, false, true)
+	if !ok {
+		t.Fatalf("Timed out waiting for fragment-remove event; got events=%d last=%+v",
+			sub.EventCount(), sub.LastEvent())
+	}
+	if !ev.HasFragmentChanges {
+		t.Errorf("HasFragmentChanges = false on .tmpl remove, want true")
+	}
+	if ev.HasPromptChanges {
+		t.Errorf("HasPromptChanges = true on .tmpl remove, want false")
+	}
+}
+
 func TestPromptsWatcher_ConcurrentSubscribes(t *testing.T) {
 	tmpDir := t.TempDir()
 
