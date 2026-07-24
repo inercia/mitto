@@ -3392,8 +3392,20 @@ prompt: |
 	if err == nil {
 		t.Fatalf("expected ParsePromptFile to fail for unknown fragment reference, got nil")
 	}
-	if !strings.Contains(err.Error(), "broken.prompt.yaml") {
-		t.Errorf("error %q should mention the prompt file path", err.Error())
+	// AC1 (mitto-g61.4): the wrapped error must mention both the prompt name
+	// and the missing fragment name so an operator can locate both sides of
+	// the break from the log line alone. ParsePromptFile wraps with the file
+	// path and the derived prompt name ("Broken" from the name: field); the
+	// inner error must name the missing fragment ("test/unknown").
+	msg := err.Error()
+	if !strings.Contains(msg, "broken.prompt.yaml") {
+		t.Errorf("error %q should mention the prompt file path", msg)
+	}
+	if !strings.Contains(msg, "Broken") {
+		t.Errorf("error %q should mention the prompt name %q", msg, "Broken")
+	}
+	if !strings.Contains(msg, "test/unknown") {
+		t.Errorf("error %q should name the missing fragment %q", msg, "test/unknown")
 	}
 }
 

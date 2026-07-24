@@ -58,10 +58,10 @@ func checkTemplateRefs(t *template.Template) error {
 		return nil
 	}
 	for _, tmpl := range t.Templates() {
-		if tmpl.Tree == nil || tmpl.Tree.Root == nil {
+		if tmpl.Tree == nil || tmpl.Root == nil {
 			continue
 		}
-		if err := walk(tmpl.Tree.Root); err != nil {
+		if err := walk(tmpl.Root); err != nil {
 			return err
 		}
 	}
