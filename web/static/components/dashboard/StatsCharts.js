@@ -7,6 +7,7 @@ const { html, useEffect, useMemo, useRef, useState } = window.preact;
 
 import { authFetch } from "../../utils/csrf.js";
 import { endpoints } from "../../utils/endpoints.js";
+import { modelColor, UNKNOWN_MODEL_NAME } from "../../utils/palette.js";
 import { CDN_URLS } from "../../vendor/config.js";
 import { Toolbar } from "../Toolbar.js";
 
@@ -24,6 +25,11 @@ const REQUESTED_METRICS = [
   "tool_calls_total",
   "mcp_calls",
 ];
+
+// Metrics summed per model for the "Model usage" card. Kept in sync with the
+// composite series keys "<metric>:<model>" produced by
+// internal/web/handlers/dashboard_timeseries.go when groupBy=model.
+export const REQUESTED_MODEL_METRICS = ["input_tokens_est", "output_tokens_est"];
 
 // Chart height in px (fixed so narrow viewports do not collapse). Kept as a
 // number so uPlot can size its canvas directly.
@@ -82,6 +88,67 @@ export function toUplotData(data, metrics) {
     return arr.map((p) => p.v);
   });
   return [xs, ...ys];
+}
+
+/**
+ * Convert a grouped-by-model tsResponse to per-model summed-token rows.
+ * The backend emits composite keys "<metric>:<model>" plus a synthetic
+ * ":unknown" slot for pre-migration data and a bare "<metric>:" slot for
+ * metrics without a model dimension. We ignore the bare-key slots here
+ * (this chart only requests per-model metrics) and sum input+output tokens
+ * per bucket per model on the shared xs from the first grouped series.
+ * @param {object} data - tsResponse from /api/dashboard/timeseries?groupBy=model.
+ * @returns {{xs: number[], models: Array<{name: string, values: number[], total: number}>}}
+ */
+export function toModelUplotData(data) {
+  if (!data || !data.series) return { xs: [], models: [] };
+  const wanted = new Set(REQUESTED_MODEL_METRICS);
+  // Collect the per-model buckets, keeping the first non-empty series as the
+  // xs anchor so all model rows align even when a model appears only under a
+  // subset of the requested metrics.
+  const perModel = new Map();
+  let anchor = null;
+  for (const key of Object.keys(data.series)) {
+    const idx = key.indexOf(":");
+    if (idx < 0) continue;
+    const metric = key.slice(0, idx);
+    const model = key.slice(idx + 1);
+    if (!wanted.has(metric)) continue;
+    if (model === "") continue; // bare "<metric>:" slot — skip.
+    const arr = Array.isArray(data.series[key]) ? data.series[key] : [];
+    if (!anchor && arr.length > 0) anchor = arr;
+    let entry = perModel.get(model);
+    if (!entry) {
+      entry = { name: model, values: null };
+      perModel.set(model, entry);
+    }
+    if (entry.values === null) {
+      entry.values = arr.map((p) => p.v || 0);
+    } else {
+      for (let i = 0; i < arr.length && i < entry.values.length; i++) {
+        entry.values[i] += arr[i].v || 0;
+      }
+    }
+  }
+  const xs = anchor ? anchor.map((p) => p.t) : [];
+  const models = [];
+  for (const entry of perModel.values()) {
+    const values = entry.values || xs.map(() => 0);
+    let total = 0;
+    for (let i = 0; i < values.length; i++) total += values[i];
+    if (total <= 0) continue; // drop all-zero rows (empty models).
+    models.push({ name: entry.name, values, total });
+  }
+  // Stable order: highest total first so the legend leads with the busiest
+  // model. Ties fall back to name for deterministic ordering across renders.
+  models.sort((a, b) => b.total - a.total || a.name.localeCompare(b.name));
+  return { xs, models };
+}
+
+/** True when the grouped payload contains no non-zero model rows. */
+export function isEmptyModelSeries(data) {
+  const { models } = toModelUplotData(data);
+  return models.length === 0;
 }
 
 // --- uPlot CDN loader ------------------------------------------------------
@@ -344,15 +411,172 @@ function ChartCard({ title, metrics, optsFor, data, uplot, empty }) {
   `;
 }
 
+// --- Model usage card ------------------------------------------------------
+
+// Mirrors ChartCard's uPlot shell (create/destroy, ResizeObserver, theme
+// MutationObserver) but computes its series list from the grouped model data
+// so each model gets its own colored line via modelColor(). Kept as a sibling
+// component rather than extending buildChartSpecs so the pinned three cards
+// (mitto-a86b.10) stay byte-identical.
+function ModelUsageCard({ modelData, uplot, empty, hidden, onToggleModel }) {
+  const containerRef = useRef(null);
+  const chartRef = useRef(null);
+  const roRef = useRef(null);
+
+  useEffect(() => {
+    if (!uplot || !containerRef.current) return undefined;
+    if (empty) return undefined;
+    const el = containerRef.current;
+    const { xs, models } = modelData;
+    if (!xs || xs.length === 0 || models.length === 0) return undefined;
+    const width = Math.max(120, el.clientWidth || 300);
+    const rows = [xs, ...models.map((m) => m.values)];
+    const xAxis = {
+      space: 60,
+      size: 32,
+      stroke: axisStroke,
+      grid: { stroke: gridStroke, width: 1 },
+      ticks: { stroke: gridStroke, width: 1, size: 5 },
+    };
+    const yAxis = {
+      size: 44,
+      stroke: axisStroke,
+      grid: { stroke: gridStroke, width: 1 },
+      ticks: { stroke: gridStroke, width: 1, size: 5 },
+    };
+    const yScale = {
+      range: (_up, dataMin, dataMax) => {
+        if (!isFinite(dataMin) || !isFinite(dataMax)) return [0, 1];
+        if (dataMin === dataMax) {
+          const pad = Math.max(1, Math.abs(dataMax) * 0.1);
+          return [dataMin - pad, dataMax + pad];
+        }
+        const span = dataMax - dataMin;
+        const topPad = span * 0.08;
+        if (dataMin >= 0 && dataMin <= span * 0.05) return [0, dataMax + topPad];
+        return [dataMin - span * 0.05, dataMax + topPad];
+      },
+    };
+    const series = [
+      { label: "time" },
+      ...models.map((m) => ({
+        label: m.name,
+        stroke: modelColor(m.name),
+        show: !hidden[m.name],
+      })),
+    ];
+    const opts = {
+      width,
+      height: CHART_HEIGHT,
+      legend: { show: false },
+      padding: [6, 8, 0, 0],
+      scales: { x: { time: true }, y: yScale },
+      axes: [xAxis, yAxis],
+      series,
+    };
+    chartRef.current = new uplot(opts, rows, el);
+    const themeObserver = new MutationObserver(() => {
+      if (chartRef.current) chartRef.current.redraw();
+    });
+    themeObserver.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["class", "data-theme"],
+    });
+    if (typeof ResizeObserver !== "undefined") {
+      const ro = new ResizeObserver(() => {
+        if (chartRef.current) {
+          const w = Math.max(120, el.clientWidth || 300);
+          chartRef.current.setSize({ width: w, height: CHART_HEIGHT });
+        }
+      });
+      ro.observe(el);
+      roRef.current = ro;
+    }
+    return () => {
+      themeObserver.disconnect();
+      if (roRef.current) {
+        roRef.current.disconnect();
+        roRef.current = null;
+      }
+      if (chartRef.current) {
+        chartRef.current.destroy();
+        chartRef.current = null;
+      }
+    };
+    // `hidden` intentionally excluded: toggling visibility uses setSeries in
+    // the sibling effect below rather than tearing down the chart, so re-
+    // creating on every legend click would be wasteful.
+  }, [uplot, modelData, empty]);
+
+  // Reflect the hidden map onto the live chart without recreating it.
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart || !modelData || !modelData.models) return;
+    modelData.models.forEach((m, i) => {
+      const seriesIdx = i + 1; // series[0] is the x/time series.
+      const shouldShow = !hidden[m.name];
+      const cur = chart.series[seriesIdx];
+      if (cur && cur.show !== shouldShow) chart.setSeries(seriesIdx, { show: shouldShow });
+    });
+  }, [hidden, modelData]);
+
+  const models = (modelData && modelData.models) || [];
+  return html`
+    <div
+      class="rounded-lg shadow bg-mitto-surface-2 p-3 flex flex-col gap-2 w-full"
+      style="flex: 0 0 auto;"
+    >
+      <div class="text-xs text-mitto-text-muted truncate">Model usage (total tokens)</div>
+      <div
+        ref=${containerRef}
+        class="w-full overflow-hidden shrink-0 relative"
+        style=${`height: ${CHART_HEIGHT}px; min-height: ${CHART_HEIGHT}px;`}
+      >
+        ${empty
+          ? html`<div class="w-full h-full flex flex-col items-center justify-center gap-1 text-xs text-mitto-text-muted">
+              <div>No activity in this range</div>
+              <div class="opacity-70">No model usage recorded yet — this appears after your next agent turn.</div>
+            </div>`
+          : null}
+      </div>
+      ${!empty && models.length > 0
+        ? html`<div class="flex flex-wrap gap-2 text-xs" data-testid="model-usage-legend">
+            ${models.map(
+              (m) => html`<button
+                key=${m.name}
+                type="button"
+                class=${`flex items-center gap-1 px-1.5 py-0.5 rounded ${hidden[m.name] ? "opacity-40" : ""}`}
+                aria-pressed=${!hidden[m.name]}
+                onClick=${() => onToggleModel(m.name)}
+              >
+                <span
+                  class="inline-block w-2 h-2 rounded-sm"
+                  style=${`background: ${modelColor(m.name)};`}
+                ></span>
+                <span class="text-mitto-text-strong">${m.name}</span>
+                <span class="text-mitto-text-muted">${m.total.toLocaleString()}</span>
+              </button>`,
+            )}
+          </div>`
+        : null}
+    </div>
+  `;
+}
+
 // --- Main component --------------------------------------------------------
 
 /**
- * StatsCharts — three uPlot cards driven by GET /api/dashboard/timeseries.
+ * StatsCharts — dashboard uPlot cards driven by GET /api/dashboard/timeseries.
+ * Renders three fixed cards (tokens, tool calls, prompts vs turns) plus a
+ * dynamic "Model usage" card (mitto-8wj) fed by a second grouped-by-model
+ * fetch.
  * @param {Function} showToast - Toast dispatcher; called on fetch/load error.
  */
 export function StatsCharts({ showToast }) {
   const [range, setRange] = useState(readPersistedRange);
   const [data, setData] = useState(null);
+  const [modelDataRaw, setModelDataRaw] = useState(null);
+  const [hiddenModels, setHiddenModels] = useState({});
   const [uplot, setUplot] = useState(() =>
     typeof window !== "undefined" && window.uPlot ? window.uPlot : null,
   );
@@ -418,10 +642,53 @@ export function StatsCharts({ showToast }) {
     };
   }, [range, showToast]);
 
+  // Second fetch: groupBy=model for the Model usage card (mitto-8wj). Kept
+  // separate from the ungrouped fetch so cards 1–3 keep byte-identical URLs
+  // and payload shape (their tests are pinned) and the backend caches the two
+  // response shapes independently.
+  useEffect(() => {
+    const controller = new AbortController();
+    let cancelled = false;
+    (async () => {
+      try {
+        const url = endpoints.misc.dashboardTimeseries({
+          range,
+          metrics: REQUESTED_MODEL_METRICS.join(","),
+          groupBy: "model",
+        });
+        const res = await authFetch(url, { signal: controller.signal });
+        if (cancelled) return;
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const json = await res.json();
+        if (cancelled) return;
+        setModelDataRaw(json);
+      } catch (err) {
+        if (err && err.name === "AbortError") return;
+        if (cancelled) return;
+        if (showToast) {
+          showToast({
+            style: "error",
+            title: "Model usage fetch failed",
+            message: err && err.message ? err.message : String(err),
+          });
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [range, showToast]);
+
   const empty = useMemo(() => isEmptySeries(data), [data]);
   const specs = useMemo(() => buildChartSpecs(uplot), [uplot]);
+  const modelData = useMemo(() => toModelUplotData(modelDataRaw), [modelDataRaw]);
+  const modelEmpty = modelData.models.length === 0;
   const backfill = data && data.meta && data.meta.backfill_in_progress;
   const note = (data && data.meta && data.meta.note) || "";
+
+  const toggleModel = (name) =>
+    setHiddenModels((prev) => ({ ...prev, [name]: !prev[name] }));
 
   const rangeItems = RANGE_VALUES.map((r) => ({
     kind: "button",
@@ -471,9 +738,21 @@ export function StatsCharts({ showToast }) {
           />`,
         )}
       </div>
+      <${ModelUsageCard}
+        modelData=${modelData}
+        uplot=${uplot}
+        empty=${modelEmpty}
+        hidden=${hiddenModels}
+        onToggleModel=${toggleModel}
+      />
       ${note
         ? html`<div class="text-xs text-mitto-text-muted">${note}</div>`
         : null}
     </div>
   `;
 }
+
+// Silence unused-import lint: UNKNOWN_MODEL_NAME is re-exported for callers
+// that want to compare against the synthetic bucket without importing the
+// palette module separately.
+export { UNKNOWN_MODEL_NAME };
