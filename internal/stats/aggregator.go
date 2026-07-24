@@ -304,7 +304,17 @@ func (a *aggregator) foldOwned(it aggregatorItem) {
 		// arrive before any session_change event are still attributed. A live
 		// session_change(kind=model) — either from disk during backfill or
 		// from the live SessionChangeObserver — overrides this at any time.
-		acc = &sessionAccum{sc: it.sc, currentModel: it.sc.BaselineModel}
+		// Prefer the live getter (set by the live-path observer, which is
+		// attached before the ACP init callback seeds the baseline — mitto-9yl)
+		// over the string snapshot; fall back to BaselineModel when the getter
+		// is nil or returns empty (backfill path leaves the getter nil).
+		baseline := it.sc.BaselineModel
+		if it.sc.BaselineModelGetter != nil {
+			if v := it.sc.BaselineModelGetter(); v != "" {
+				baseline = v
+			}
+		}
+		acc = &sessionAccum{sc: it.sc, currentModel: baseline}
 		a.sessions[it.sc.SessionID] = acc
 	}
 	if it.ev.Seq > acc.lastSeq {

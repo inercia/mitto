@@ -343,11 +343,16 @@ func (sm *SessionManager) attachStatsObserver(bs *BackgroundSession) {
 		return
 	}
 	obs := newStatsObserver(agg, stats.SessionContext{
-		SessionID:     bs.GetSessionID(),
-		Workspace:     bs.GetWorkspaceUUID(),
-		WorkingDir:    bs.GetWorkingDir(),
-		ACPServer:     bs.GetACPServer(),
-		BaselineModel: bs.GetBaselineModel(),
+		SessionID:  bs.GetSessionID(),
+		Workspace:  bs.GetWorkspaceUUID(),
+		WorkingDir: bs.GetWorkingDir(),
+		ACPServer:  bs.GetACPServer(),
+		// Live getter: baseline may be seeded asynchronously by the ACP init
+		// callback (cbInitBaselineModelIfEmpty) AFTER this observer is
+		// attached (mitto-9yl). Reading via a closure lets the aggregator
+		// pick it up at first-event seed time.
+		BaselineModel:       bs.GetBaselineModel(),
+		BaselineModelGetter: bs.GetBaselineModel,
 	})
 	if obs == nil {
 		return

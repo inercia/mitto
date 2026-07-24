@@ -256,6 +256,13 @@ type SessionContext struct {
 	// events update it. Empty when no baseline has been set — token deltas
 	// then land with Model="" until an explicit model change fires.
 	BaselineModel string
+	// BaselineModelGetter, when non-nil, is called at first-event seed time
+	// to obtain the current baseline. Preferred over BaselineModel when set
+	// and returning a non-empty value — used by the live-path observer,
+	// which is attached BEFORE the ACP init callback seeds the session's
+	// baseline (mitto-9yl). The backfill path leaves this nil and continues
+	// to use BaselineModel read from persisted metadata.
+	BaselineModelGetter func() string
 }
 
 // Aggregator turns a stream of session events (from the live SessionObserver

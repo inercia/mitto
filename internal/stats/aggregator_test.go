@@ -741,3 +741,90 @@ func TestAggregator_SessionChange_NonModelKind_IsIgnored(t *testing.T) {
 		}
 	}
 }
+
+// -----------------------------------------------------------------------------
+// mitto-9yl Bug 2 — Live BaselineModelGetter (fresh-session race)
+// -----------------------------------------------------------------------------
+//
+// Fresh sessions attach the live stats observer BEFORE the ACP init callback
+// seeds bs.baselineModel, so SessionContext.BaselineModel captured at attach
+// time is the empty string. The aggregator then seeds acc.currentModel = ""
+// on the first event and every subsequent token delta lands in the "Unknown"
+// bucket until a manual model switch fires.
+//
+// Fix 2 adds a live BaselineModelGetter func() string to SessionContext.
+// When non-nil the aggregator prefers it over the string snapshot at seed
+// time, so the observer's closure over bs.GetBaselineModel picks up the
+// value asynchronously written by cbInitBaselineModelIfEmpty.
+//
+// These tests reference the new field directly and therefore fail to compile
+// on the current tree — the compile failure is the reproduction.
+
+// TestAggregator_UsesLiveBaselineGetter — a fresh session attaches with
+// BaselineModel="" (the snapshot the observer captured before the ACP init
+// callback fired) but a live getter that returns the real baseline. The
+// aggregator MUST prefer the getter at first-event seed time and attribute
+// tokens to the real model, not "".
+func TestAggregator_UsesLiveBaselineGetter(t *testing.T) {
+	fs := &fakeStore{}
+	a := NewAggregator(fs, AggregatorOptions{FlushInterval: time.Hour, MaxBatch: 1_000_000})
+	defer a.Close()
+
+	ts := hour(t, "2026-01-01T00:00:00Z")
+	scLive := SessionContext{
+		SessionID:           "s1",
+		Workspace:           "w1",
+		BaselineModel:       "", // Snapshot at attach time — before ACP init.
+		BaselineModelGetter: func() string { return "sonnet-4.5" },
+	}
+
+	a.Ingest(scLive, evAt(1, ts, session.EventTypeUserPrompt, session.UserPromptData{Message: "abcd"}))
+	a.Ingest(scLive, evAt(2, ts, session.EventTypeAgentMessage, session.AgentMessageData{Text: "efgh"}))
+	mustFlush(t, a)
+
+	for _, metric := range []string{MetricInputTokensEst, MetricOutputTokensEst} {
+		rows := deltasBy(fs, metric, "s1")
+		if len(rows) == 0 {
+			t.Errorf("%s: no rows recorded", metric)
+			continue
+		}
+		for _, d := range rows {
+			if d.Model != "sonnet-4.5" {
+				t.Errorf("%s row has Model=%q, want %q (getter must win over empty BaselineModel — mitto-9yl Bug 2)",
+					metric, d.Model, "sonnet-4.5")
+			}
+		}
+	}
+}
+
+// TestAggregator_LiveGetterFallsBackToBaselineWhenEmpty — when the live
+// getter returns "" (e.g. the ACP init has not yet fired at first-event
+// time) the aggregator must fall back to sc.BaselineModel so the backfill
+// path (getter=nil, string set) is unaffected by the new field.
+func TestAggregator_LiveGetterFallsBackToBaselineWhenEmpty(t *testing.T) {
+	fs := &fakeStore{}
+	a := NewAggregator(fs, AggregatorOptions{FlushInterval: time.Hour, MaxBatch: 1_000_000})
+	defer a.Close()
+
+	ts := hour(t, "2026-01-01T00:00:00Z")
+	scFallback := SessionContext{
+		SessionID:           "s1",
+		Workspace:           "w1",
+		BaselineModel:       "modelA",
+		BaselineModelGetter: func() string { return "" },
+	}
+
+	a.Ingest(scFallback, evAt(1, ts, session.EventTypeUserPrompt, session.UserPromptData{Message: "abcd"}))
+	mustFlush(t, a)
+
+	rows := deltasBy(fs, MetricInputTokensEst, "s1")
+	if len(rows) == 0 {
+		t.Fatalf("input_tokens_est: no rows recorded")
+	}
+	for _, d := range rows {
+		if d.Model != "modelA" {
+			t.Errorf("input_tokens_est.Model = %q, want %q (empty getter must fall back to BaselineModel)",
+				d.Model, "modelA")
+		}
+	}
+}

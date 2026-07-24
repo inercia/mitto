@@ -260,20 +260,32 @@ func (bs *BackgroundSession) cbReplaceModelConfigOption(modelOption SessionConfi
 }
 
 // cbInitBaselineModelIfEmpty initialises baselineModel if it is still empty,
-// preferring persisted metadata over the supplied default.
+// preferring persisted metadata over the supplied default. When the baseline
+// is seeded from defaultModel (no persisted value), it is also written back
+// to session metadata so backfill and resume see the same value (mitto-9yl).
 func (bs *BackgroundSession) cbInitBaselineModelIfEmpty(defaultModel string) {
 	bs.modelMu.Lock()
-	defer bs.modelMu.Unlock()
 	if bs.baselineModel != "" {
+		bs.modelMu.Unlock()
 		return
 	}
 	baseline := defaultModel
+	fromPersisted := false
 	if bs.store != nil && bs.persistedID != "" {
 		if meta, err := bs.store.GetMetadata(bs.persistedID); err == nil && meta.BaselineModel != "" {
 			baseline = meta.BaselineModel
+			fromPersisted = true
 		}
 	}
 	bs.baselineModel = baseline
+	bs.modelMu.Unlock()
+
+	// Persist only when we seeded from the agent's currently-active model
+	// (no prior persisted value) and it is non-empty. cmPersistBaselineModel
+	// takes the store's own lock, so it must be called without holding modelMu.
+	if !fromPersisted && baseline != "" {
+		bs.cmPersistBaselineModel(baseline)
+	}
 }
 
 // cbApplyConfigConstraintsAsync kicks off the async constraint-application
