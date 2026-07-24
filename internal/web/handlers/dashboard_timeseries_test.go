@@ -339,6 +339,198 @@ func TestTimeseries_CacheExpiresAfterTTL(t *testing.T) {
 	}
 }
 
+// --- groupBy=model (mitto-1ac) ---------------------------------------------
+
+// TestTimeseries_GroupByModel_ReturnsPerModelSeries seeds the fake store with
+// two models across two buckets and asserts the handler emits one composite
+// "<metric>:<model>" series per model, each dense/zero-filled to the range.
+func TestTimeseries_GroupByModel_ReturnsPerModelSeries(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Hour)
+	windowStart := now.Add(-24 * time.Hour)
+	tsA := windowStart.Add(2 * time.Hour)
+	tsB := windowStart.Add(5 * time.Hour)
+	store := &fakeStatsStore{points: []stats.Point{
+		{TS: tsA, Metric: stats.MetricOutputTokensEst, Model: "modelA", Value: 11},
+		{TS: tsB, Metric: stats.MetricOutputTokensEst, Model: "modelB", Value: 22},
+	}}
+	h, _ := newTimeseriesTestHandler(store, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/dashboard/timeseries?range=24h&metrics=output_tokens_est&groupBy=model", nil)
+	w := httptest.NewRecorder()
+	h.HandleDashboardTimeseries(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	if store.lastQuery.GroupBy != stats.GroupByModel {
+		t.Errorf("store query GroupBy = %q, want %q", store.lastQuery.GroupBy, stats.GroupByModel)
+	}
+
+	body := decodeTimeseriesBody(t, w)
+	seriesA, okA := body.Series["output_tokens_est:modelA"]
+	if !okA {
+		t.Fatalf("missing series key 'output_tokens_est:modelA'; got keys=%v", keys(body.Series))
+	}
+	seriesB, okB := body.Series["output_tokens_est:modelB"]
+	if !okB {
+		t.Fatalf("missing series key 'output_tokens_est:modelB'; got keys=%v", keys(body.Series))
+	}
+	if len(seriesA) != 24 || len(seriesB) != 24 {
+		t.Errorf("series lengths = %d/%d, want 24/24 (dense zero-fill)", len(seriesA), len(seriesB))
+	}
+	sumSeries := func(pts []tsPoint) int64 {
+		var s int64
+		for _, p := range pts {
+			s += p.V
+		}
+		return s
+	}
+	if sumSeries(seriesA) != 11 {
+		t.Errorf("modelA total = %d, want 11", sumSeries(seriesA))
+	}
+	if sumSeries(seriesB) != 22 {
+		t.Errorf("modelB total = %d, want 22", sumSeries(seriesB))
+	}
+	// modelA's value must land in the tsA bucket, modelB's in tsB — grouping
+	// must not smear values across the wrong buckets.
+	for _, p := range seriesA {
+		if p.T == tsA.Unix() && p.V != 11 {
+			t.Errorf("modelA at tsA = %d, want 11", p.V)
+		}
+	}
+	for _, p := range seriesB {
+		if p.T == tsB.Unix() && p.V != 22 {
+			t.Errorf("modelB at tsB = %d, want 22", p.V)
+		}
+	}
+}
+
+// TestTimeseries_GroupByModel_EmptyModelBecomesUnknown asserts that rows with
+// Model=="" land in a "<metric>:unknown" composite series so pre-migration /
+// non-attributed data still surfaces to the client.
+func TestTimeseries_GroupByModel_EmptyModelBecomesUnknown(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Hour)
+	windowStart := now.Add(-24 * time.Hour)
+	ts := windowStart.Add(3 * time.Hour)
+	store := &fakeStatsStore{points: []stats.Point{
+		{TS: ts, Metric: stats.MetricOutputTokensEst, Model: "", Value: 42},
+	}}
+	h, _ := newTimeseriesTestHandler(store, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/dashboard/timeseries?range=24h&metrics=output_tokens_est&groupBy=model", nil)
+	w := httptest.NewRecorder()
+	h.HandleDashboardTimeseries(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	body := decodeTimeseriesBody(t, w)
+	pts, ok := body.Series["output_tokens_est:unknown"]
+	if !ok {
+		t.Fatalf("missing 'output_tokens_est:unknown' series; got keys=%v", keys(body.Series))
+	}
+	if len(pts) != 24 {
+		t.Errorf("unknown-series length = %d, want 24 (dense zero-fill)", len(pts))
+	}
+	var total int64
+	for _, p := range pts {
+		total += p.V
+		if p.T == ts.Unix() && p.V != 42 {
+			t.Errorf("unknown at ts = %d, want 42", p.V)
+		}
+	}
+	if total != 42 {
+		t.Errorf("unknown-series total = %d, want 42", total)
+	}
+	// No stray '<metric>:' key with empty-model suffix — the collapse target
+	// is 'unknown', not the literal empty string.
+	if _, bad := body.Series["output_tokens_est:"]; bad {
+		t.Errorf("unexpected 'output_tokens_est:' series key: empty model must collapse to 'unknown'")
+	}
+}
+
+// TestTimeseries_GroupByModel_UnknownValue_Returns400 asserts unknown groupBy
+// values are rejected at the handler edge (allowlist == {"", "model"}).
+func TestTimeseries_GroupByModel_UnknownValue_Returns400(t *testing.T) {
+	store := &fakeStatsStore{}
+	h, _ := newTimeseriesTestHandler(store, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/dashboard/timeseries?groupBy=session", nil)
+	w := httptest.NewRecorder()
+	h.HandleDashboardTimeseries(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body=%s", w.Code, http.StatusBadRequest, w.Body.String())
+	}
+	if atomic.LoadInt32(&store.queryHits) != 0 {
+		t.Errorf("store.Query hits = %d, want 0 (invalid groupBy must reject before touching store)", store.queryHits)
+	}
+}
+
+// TestTimeseries_GroupByModel_CacheKeyIsolation asserts that two requests
+// differing only in groupBy live in separate cache slots (the ungrouped
+// response cannot be served for a grouped request or vice versa).
+func TestTimeseries_GroupByModel_CacheKeyIsolation(t *testing.T) {
+	store := &fakeStatsStore{}
+	h, _ := newTimeseriesTestHandler(store, nil)
+
+	// Ungrouped first.
+	req1 := httptest.NewRequest(http.MethodGet, "/api/dashboard/timeseries?range=24h&metrics=output_tokens_est", nil)
+	w1 := httptest.NewRecorder()
+	h.HandleDashboardTimeseries(w1, req1)
+	if w1.Code != http.StatusOK {
+		t.Fatalf("ungrouped status = %d, want 200; body=%s", w1.Code, w1.Body.String())
+	}
+
+	// Same range/metrics but with groupBy=model — must miss the ungrouped
+	// cache slot and hit the store again.
+	req2 := httptest.NewRequest(http.MethodGet, "/api/dashboard/timeseries?range=24h&metrics=output_tokens_est&groupBy=model", nil)
+	w2 := httptest.NewRecorder()
+	h.HandleDashboardTimeseries(w2, req2)
+	if w2.Code != http.StatusOK {
+		t.Fatalf("grouped status = %d, want 200; body=%s", w2.Code, w2.Body.String())
+	}
+	if got := atomic.LoadInt32(&store.queryHits); got != 2 {
+		t.Errorf("store.Query hits = %d, want 2 (groupBy flip must miss cache)", got)
+	}
+	// Re-fire the grouped request — this time the cache must serve it.
+	req3 := httptest.NewRequest(http.MethodGet, "/api/dashboard/timeseries?range=24h&metrics=output_tokens_est&groupBy=model", nil)
+	w3 := httptest.NewRecorder()
+	h.HandleDashboardTimeseries(w3, req3)
+	if got := atomic.LoadInt32(&store.queryHits); got != 2 {
+		t.Errorf("store.Query hits after repeat grouped = %d, want 2 (grouped slot must cache too)", got)
+	}
+}
+
+// TestTimeseries_GroupByModel_UngroupedPreservesLegacyKeys asserts the
+// "byte-identical" acceptance criterion for the ungrouped path: an
+// unqualified request keeps the flat "<metric>" keys, never emitting any
+// composite "<metric>:...".
+func TestTimeseries_GroupByModel_UngroupedPreservesLegacyKeys(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Hour)
+	windowStart := now.Add(-24 * time.Hour)
+	ts := windowStart.Add(2 * time.Hour)
+	store := &fakeStatsStore{points: []stats.Point{
+		// Store rows are still tagged with a model (the store doesn't know
+		// whether the caller wanted grouping), but the ungrouped path must
+		// ignore Model and collapse into a bare "<metric>" key.
+		{TS: ts, Metric: stats.MetricOutputTokensEst, Model: "modelA", Value: 5},
+	}}
+	h, _ := newTimeseriesTestHandler(store, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/dashboard/timeseries?range=24h&metrics=output_tokens_est", nil)
+	w := httptest.NewRecorder()
+	h.HandleDashboardTimeseries(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	if store.lastQuery.GroupBy != "" {
+		t.Errorf("store query GroupBy = %q, want empty (ungrouped path)", store.lastQuery.GroupBy)
+	}
+	body := decodeTimeseriesBody(t, w)
+	if _, ok := body.Series[stats.MetricOutputTokensEst]; !ok {
+		t.Fatalf("missing bare '%s' key in ungrouped response; got keys=%v", stats.MetricOutputTokensEst, keys(body.Series))
+	}
+	for k := range body.Series {
+		if k != stats.MetricOutputTokensEst {
+			t.Errorf("unexpected series key %q in ungrouped response; only bare metric keys allowed", k)
+		}
+	}
+}
+
 // --- helpers ---------------------------------------------------------------
 
 func keys(m map[string][]tsPoint) []string {

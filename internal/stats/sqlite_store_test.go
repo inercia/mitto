@@ -711,3 +711,73 @@ func TestSQLiteStore_UpsertDeltasWithModel_DistinctRows(t *testing.T) {
 		t.Errorf("model='' after modelA re-upsert = %d, want 7 (untouched)", got)
 	}
 }
+
+// TestSQLiteStore_Query_GroupByModel_ReturnsPerModelRows asserts that when
+// Query.GroupBy == GroupByModel the SQLite store returns one Point per
+// (ts_bucket, metric, model) triple and populates Point.Model — the
+// data-source half of the /api/dashboard/timeseries?groupBy=model contract
+// (mitto-1ac).
+func TestSQLiteStore_Query_GroupByModel_ReturnsPerModelRows(t *testing.T) {
+	s, _ := openTestStore(t)
+	ctx := context.Background()
+	ts := hourBucket(t, "2026-06-10T00:00:00Z")
+
+	// Three rows in the same (ts, metric, workspace) bucket split across two
+	// named models and one empty-model row (pre-migration / non-attributed).
+	if err := s.UpsertDeltas(ctx, []Delta{
+		{TSBucket: ts, Metric: MetricInputTokensEst, SessionID: "s1", Workspace: "w", Model: "modelA", Value: 3},
+		{TSBucket: ts, Metric: MetricInputTokensEst, SessionID: "s2", Workspace: "w", Model: "modelB", Value: 5},
+		{TSBucket: ts, Metric: MetricInputTokensEst, SessionID: "s3", Workspace: "w", Model: "", Value: 7},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Ungrouped query keeps the legacy shape: rows collapse into a single
+	// (ts, metric) Point whose value sums across models.
+	{
+		pts, err := s.Query(ctx, Query{
+			RangeFrom: ts.Add(-time.Hour), RangeTo: ts.Add(time.Hour), Bucket: BucketHour,
+		})
+		if err != nil {
+			t.Fatalf("Query ungrouped: %v", err)
+		}
+		if len(pts) != 1 || pts[0].Value != 15 || pts[0].Model != "" {
+			t.Errorf("ungrouped Query = %+v, want single Point{Value=15, Model=\"\"} (3+5+7 rollup)", pts)
+		}
+	}
+
+	// Grouped-by-model query fans the same bucket into three Points, each
+	// tagged with its model (or "" for the un-attributed row).
+	pts, err := s.Query(ctx, Query{
+		RangeFrom: ts.Add(-time.Hour), RangeTo: ts.Add(time.Hour),
+		Bucket: BucketHour, GroupBy: GroupByModel,
+	})
+	if err != nil {
+		t.Fatalf("Query groupBy=model: %v", err)
+	}
+	if len(pts) != 3 {
+		t.Fatalf("Query groupBy=model returned %d points, want 3; pts=%+v", len(pts), pts)
+	}
+	byModel := make(map[string]int64, 3)
+	for _, p := range pts {
+		if !p.TS.Equal(ts) {
+			t.Errorf("Point.TS = %v, want %v (all rows share bucket)", p.TS, ts)
+		}
+		if p.Metric != MetricInputTokensEst {
+			t.Errorf("Point.Metric = %q, want %q", p.Metric, MetricInputTokensEst)
+		}
+		if _, dup := byModel[p.Model]; dup {
+			t.Errorf("duplicate Point.Model = %q; each model must appear once", p.Model)
+		}
+		byModel[p.Model] = p.Value
+	}
+	if byModel["modelA"] != 3 {
+		t.Errorf("byModel[modelA] = %d, want 3", byModel["modelA"])
+	}
+	if byModel["modelB"] != 5 {
+		t.Errorf("byModel[modelB] = %d, want 5", byModel["modelB"])
+	}
+	if byModel[""] != 7 {
+		t.Errorf("byModel[\"\"] = %d, want 7 (empty-model row must survive as its own Point)", byModel[""])
+	}
+}
