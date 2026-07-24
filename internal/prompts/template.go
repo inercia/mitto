@@ -150,8 +150,20 @@ func PrecompileTemplateConds(name, body string) error {
 	fm["Cond"] = condStub
 	fm["When"] = condStub
 
-	t, err := template.New(name).Option("missingkey=zero").Funcs(fm).Parse(body)
-	if err != nil {
+	t := template.New(name).Option("missingkey=zero").Funcs(fm)
+	// Attach every installed fragment as an associated sub-template BEFORE parsing
+	// the caller body so text/template's own parser rejects `{{ template "unknown" }}`
+	// references at load time (same class of failure as an unbalanced `{{ ... }}`).
+	// Nil registry (default until bootstrap installs one) skips attachment and preserves
+	// pre-fragment behavior bytewise. Mirrors RenderPromptTemplate's attach loop.
+	if frags := CurrentFragments(); frags != nil {
+		for fragName, fragBody := range frags.All() {
+			if _, err := t.New(fragName).Parse(fragBody); err != nil {
+				return fmt.Errorf("prompt template %q: fragment %q parse: %w", name, fragName, err)
+			}
+		}
+	}
+	if _, err := t.Parse(body); err != nil {
 		return fmt.Errorf("prompt template %q: parse error: %w", name, err)
 	}
 	var buf bytes.Buffer
@@ -179,7 +191,17 @@ func ValidatePromptTemplateSyntax(name, body string) error {
 		name = "prompt"
 	}
 	fm := cel.BuildTemplateFuncMap(&cel.PromptEnabledContext{})
-	if _, err := template.New(name).Option("missingkey=zero").Funcs(fm).Parse(body); err != nil {
+	t := template.New(name).Option("missingkey=zero").Funcs(fm)
+	// Attach every installed fragment so `{{ template "unknown" }}` fails at parse
+	// (see PrecompileTemplateConds for the same rationale and pattern).
+	if frags := CurrentFragments(); frags != nil {
+		for fragName, fragBody := range frags.All() {
+			if _, err := t.New(fragName).Parse(fragBody); err != nil {
+				return fmt.Errorf("prompt template %q: fragment %q parse: %w", name, fragName, err)
+			}
+		}
+	}
+	if _, err := t.Parse(body); err != nil {
 		return fmt.Errorf("prompt template %q: parse error: %w", name, err)
 	}
 	return nil
