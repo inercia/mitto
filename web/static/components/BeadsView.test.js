@@ -14,6 +14,7 @@
 import {
   readBeadsResponse,
   matchesSearch,
+  computeEffectiveStreamingSet,
   CLEANUP_PROGRESS_TOAST_INTERVAL_MS,
 } from "../utils/beads.js";
 // Namespaced import so a missing named export (e.g. isBeadsSchemaSkew before the
@@ -1936,6 +1937,163 @@ describe("mitto-19j: BeadsIssueView listens for mitto:beads_changed", () => {
     // And it must funnel back into the refresh mechanism the two data-fetch
     // effects already depend on (refreshNonce).
     expect(body).toMatch(/setRefreshNonce/);
+  });
+});
+
+
+// =============================================================================
+// mitto-0qn: computeEffectiveStreamingSet — extends the streaming-issue set
+// with every ancestor reached by walking issue.parent upward from any seed, so
+// an epic row tints blue when any of its transitive descendants is currently
+// prompting (visible even when the group is collapsed).
+// =============================================================================
+//
+// Covers the pure helper in utils/beads.js. A sibling source-guard describe
+// block below asserts BeadsView's renderIssueRow reads `effectiveStreamingSet`
+// (not the raw prop `issueStreamingSet`) so the wiring cannot silently
+// regress.
+
+describe("computeEffectiveStreamingSet (mitto-0qn)", () => {
+  test("empty streaming set → empty result (never mutates input)", () => {
+    const issues = [
+      { id: "a" },
+      { id: "b", parent: "a" },
+    ];
+    const seed = new Set();
+    const out = computeEffectiveStreamingSet(issues, seed);
+    expect(out).toBeInstanceOf(Set);
+    expect(out.size).toBe(0);
+    // Input untouched.
+    expect(seed.size).toBe(0);
+    // Fresh Set instance is returned, not the same reference.
+    expect(out).not.toBe(seed);
+  });
+
+  test("null / undefined streaming set → empty result", () => {
+    expect(computeEffectiveStreamingSet([{ id: "a" }], null).size).toBe(0);
+    expect(computeEffectiveStreamingSet([{ id: "a" }], undefined).size).toBe(0);
+  });
+
+  test("leaf-only, no parent → set unchanged", () => {
+    const issues = [{ id: "leaf" }];
+    const seed = new Set(["leaf"]);
+    const out = computeEffectiveStreamingSet(issues, seed);
+    expect([...out].sort()).toEqual(["leaf"]);
+    // Original set instance is not mutated.
+    expect([...seed].sort()).toEqual(["leaf"]);
+  });
+
+  test("direct parent → parent added to the set", () => {
+    const issues = [
+      { id: "epic1" },
+      { id: "task1", parent: "epic1" },
+    ];
+    const out = computeEffectiveStreamingSet(issues, new Set(["task1"]));
+    expect([...out].sort()).toEqual(["epic1", "task1"]);
+  });
+
+  test("2-deep grandparent chain → both ancestors added", () => {
+    const issues = [
+      { id: "epic1" },
+      { id: "epic2", parent: "epic1" },
+      { id: "task1", parent: "epic2" },
+    ];
+    const out = computeEffectiveStreamingSet(issues, new Set(["task1"]));
+    expect([...out].sort()).toEqual(["epic1", "epic2", "task1"]);
+  });
+
+  test("cycle A→B→A terminates and tints both nodes exactly once", () => {
+    const issues = [
+      { id: "a", parent: "b" },
+      { id: "b", parent: "a" },
+    ];
+    const out = computeEffectiveStreamingSet(issues, new Set(["a"]));
+    expect([...out].sort()).toEqual(["a", "b"]);
+  });
+
+  test("missing parent id in issues list → walk stops cleanly", () => {
+    // task1 references an epic that does not exist in `issues`. The parent id
+    // is still added to the effective set (the tint is a UI concern; the
+    // ancestor id is what the row read compares against), but the walk stops
+    // there without throwing.
+    const issues = [{ id: "task1", parent: "ghost-epic" }];
+    const out = computeEffectiveStreamingSet(issues, new Set(["task1"]));
+    expect([...out].sort()).toEqual(["ghost-epic", "task1"]);
+  });
+
+  test("two disjoint trees, streaming in only one → other tree untouched", () => {
+    const issues = [
+      { id: "epicA" },
+      { id: "taskA", parent: "epicA" },
+      { id: "epicB" },
+      { id: "taskB", parent: "epicB" },
+    ];
+    const out = computeEffectiveStreamingSet(issues, new Set(["taskA"]));
+    expect([...out].sort()).toEqual(["epicA", "taskA"]);
+    expect(out.has("epicB")).toBe(false);
+    expect(out.has("taskB")).toBe(false);
+  });
+
+  test("multiple seeds share ancestor → ancestor tinted once, both leaves included", () => {
+    const issues = [
+      { id: "epic1" },
+      { id: "task1", parent: "epic1" },
+      { id: "task2", parent: "epic1" },
+    ];
+    const out = computeEffectiveStreamingSet(
+      issues,
+      new Set(["task1", "task2"]),
+    );
+    expect([...out].sort()).toEqual(["epic1", "task1", "task2"]);
+  });
+
+  test("empty/undefined issues list still returns the seed set", () => {
+    const out = computeEffectiveStreamingSet([], new Set(["only"]));
+    expect([...out].sort()).toEqual(["only"]);
+    const out2 = computeEffectiveStreamingSet(undefined, new Set(["only"]));
+    expect([...out2].sort()).toEqual(["only"]);
+  });
+});
+
+describe("renderIssueRow effective-streaming-set — source guard (mitto-0qn)", () => {
+  // Guard against silent regression: renderIssueRow's isStreamingIssue read
+  // must consult the memoized `effectiveStreamingSet` (which includes
+  // ancestors), NOT the raw `issueStreamingSet` prop (leaves only). If a
+  // future refactor swaps the read back to the raw prop, the ancestor-tint
+  // acceptance criterion silently breaks — this test trips first.
+  const source = readFileSync(BEADS_VIEW_PATH, "utf8");
+
+  test("BeadsView.js imports computeEffectiveStreamingSet from utils/beads.js", () => {
+    expect(source).toMatch(/computeEffectiveStreamingSet/);
+    // The import must land in the utils/beads.js import block, not from an
+    // unrelated module.
+    expect(source).toMatch(
+      /import\s*\{[\s\S]*?computeEffectiveStreamingSet[\s\S]*?\}\s*from\s*["']\.\.\/utils\/beads\.js["']/,
+    );
+  });
+
+  test("BeadsView.js memoizes effectiveStreamingSet with correct deps", () => {
+    // The memo must derive from both `issues` and `issueStreamingSet` so the
+    // tint recomputes when either the graph or the base streaming set
+    // changes (spec: tint clears within one render after streaming stops).
+    expect(source).toMatch(
+      /const\s+effectiveStreamingSet\s*=\s*useMemo\s*\(\s*\(\s*\)\s*=>\s*computeEffectiveStreamingSet\s*\(\s*issues\s*,\s*issueStreamingSet\s*\)/,
+    );
+    expect(source).toMatch(
+      /computeEffectiveStreamingSet\s*\(\s*issues\s*,\s*issueStreamingSet\s*\)\s*,\s*\[\s*issues\s*,\s*issueStreamingSet\s*\]/,
+    );
+  });
+
+  test("renderIssueRow reads effectiveStreamingSet.has(issue.id), NOT the raw prop", () => {
+    // The read that drives isStreamingIssue must consult the effective set so
+    // ancestor epic rows are tinted.
+    expect(source).toMatch(
+      /const\s+isStreamingIssue\s*=\s*effectiveStreamingSet\.has\(\s*issue\.id\s*\)/,
+    );
+    // And it must NOT read the raw prop `issueStreamingSet.has(...)` anywhere
+    // inside renderIssueRow — that would silently regress the acceptance
+    // criterion (the raw prop contains only leaves).
+    expect(source).not.toMatch(/issueStreamingSet\.has\s*\(/);
   });
 });
 
