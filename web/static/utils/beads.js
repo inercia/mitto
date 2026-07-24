@@ -196,3 +196,34 @@ export function cmpBySort(a, b, sort) {
   if (primary !== 0) return primary * dir;
   return (a.id || "").localeCompare(b.id || "");
 }
+
+
+// Extend a set of "streaming" (actively-prompting) issue ids to also include
+// every transitive ancestor reached by walking `issue.parent` upward from any
+// id in the base set. Used by BeadsView to tint ancestor epic rows blue when
+// any of their descendants is currently prompting, so the active work is
+// visible even when the containing epic group is collapsed (mitto-0qn).
+//
+// The walk follows the raw `issue.parent` link — a strict superset of the
+// epic-only walk — so the helper covers both grouped and flat render modes
+// from a single source of truth. A visited set guards against cycles in
+// malformed data (same idiom as `directEpicParentOf` in BeadsView.js). The
+// incoming set is never mutated; a new Set is always returned.
+export function computeEffectiveStreamingSet(issues, streamingSet) {
+  if (!streamingSet || streamingSet.size === 0) return new Set();
+  const issueById = new Map();
+  for (const i of issues || []) {
+    if (i && i.id) issueById.set(i.id, i);
+  }
+  const result = new Set(streamingSet);
+  for (const seedId of streamingSet) {
+    let cur = issueById.get(seedId);
+    const visited = new Set();
+    while (cur && cur.parent && !visited.has(cur.parent)) {
+      visited.add(cur.parent);
+      result.add(cur.parent);
+      cur = issueById.get(cur.parent);
+    }
+  }
+  return result;
+}

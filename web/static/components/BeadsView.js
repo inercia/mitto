@@ -20,6 +20,7 @@ import {
   readBeadsResponse,
   matchesSearch,
   cmpBySort,
+  computeEffectiveStreamingSet,
   SORT_FIELD_OPTIONS,
   SORT_FIELD_LABELS,
   CLEANUP_PROGRESS_TOAST_INTERVAL_MS,
@@ -1774,6 +1775,14 @@ export function BeadsView({
     return counts;
   }, [issues]);
 
+  // Extend the streaming set with every ancestor of a streaming leaf, so an
+  // epic row tints blue when any of its transitive descendants is currently
+  // prompting — visible even when the group is collapsed (mitto-0qn).
+  const effectiveStreamingSet = useMemo(
+    () => computeEffectiveStreamingSet(issues, issueStreamingSet),
+    [issues, issueStreamingSet],
+  );
+
   // Grouped render model — only computed when the grouping toggle is on.
   // Produces a sorted top-level array of { type: "epic"|"orphan", ... } items.
   // Epics that survived the filter are shown with their filtered children;
@@ -2510,7 +2519,7 @@ export function BeadsView({
   // <details> disclosure marker is hidden via .beads-epic-summary).
   function renderIssueRow(issue, epicExpanded = null) {
     const linkedSessionId = issueSessionMap[issue.id];
-    const isStreamingIssue = issueStreamingSet.has(issue.id);
+    const isStreamingIssue = effectiveStreamingSet.has(issue.id);
     const isSelected = selectedIssue && selectedIssue.id === issue.id;
     const childCount = childCountById[issue.id] || 0;
     const isEpic = issue.issue_type === "epic" || childCount > 0;
