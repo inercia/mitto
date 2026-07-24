@@ -6,6 +6,8 @@ implementation children (mitto-m7sb.2–.12) must follow this spec without reope
 
 **Scope: prompt bodies only.** `@mitto:` substitution in processors stays as-is.
 
+See also §11a (`target.title` templates) and §11b (prompt fragments — co-located `.tmpl` partials).
+
 ---
 
 ## 1. Goal & scope
@@ -452,6 +454,166 @@ titles funnel per rendered value.
   not currently threaded to either dispatch site). Tracked separately.
 - `target.reuse.issue` message templates (not applicable — the
   `reuse.issue` mode keys on the bead ID directly).
+
+---
+
+## 11b. Prompt fragments (co-located `.tmpl` partials)
+
+Prompt authors can factor shared body text into **fragments** — reusable partials
+attached to the render-time template set and referenced from any `.prompt.yaml`
+body via Go text/template's native sub-template mechanism:
+
+```
+{{ template "github/pr-comments" . }}
+```
+
+Fragments are a pure prompt-authoring feature. They add **no** new preprocessor,
+no cycle-detection code, no depth cap, and no dependency graph — every guarantee
+below falls out of `text/template` itself.
+
+### The two-extension convention
+
+Fragments live in the **same directories** as regular prompt files, side by side.
+They are distinguished purely by file extension:
+
+| Extension        | Kind     | Visible in UI? | Loaded by                | Directory tree                           |
+|------------------|----------|----------------|--------------------------|------------------------------------------|
+| `*.prompt.yaml`  | Prompt   | Yes            | `LoadPromptsFromDir`     | `config/prompts/builtin/`, `.mitto/prompts/`, settings, etc. |
+| `*.tmpl`         | Fragment | **No**         | `LoadFragmentsFromDir`   | Same directory tree as prompts           |
+
+Why co-location: keeps related prompts and their partials next to each other,
+avoids a separate directory tree to sync or permission, and matches how prompt
+authors think about their content. There is **no** `fragments/` folder — see the
+non-goals at the end of this section.
+
+### Why fragments cannot leak into the UI
+
+The isolation is **structural**, not policy-based:
+
+- `LoadPromptsFromDir` (`internal/prompts/prompts.go`) filters strictly on the
+  `.prompt.yaml` suffix — `*.tmpl` files are ignored, they never enter the
+  `PromptsCache`, never become `WebPrompt` DTOs, never appear in menus,
+  shortcuts, action buttons, or `/api/*/prompts` responses.
+- `LoadFragmentsFromDir` (`internal/prompts/fragments.go`) filters strictly on
+  `.tmpl` — it populates the fragment registry only.
+- There is **no code path** where a `.tmpl` becomes a `PromptFile` or a
+  `WebPrompt`, and no code path where a `.prompt.yaml` is attached as a
+  fragment.
+
+Locked by tests: `TestLoadFragmentsFromDir_CoLocationIsolation`
+(`internal/prompts/fragments_test.go`) asserts that a directory containing
+`foo.prompt.yaml`, `foo.tmpl`, and `bar/baz.tmpl` yields exactly the two
+`.tmpl` files in the fragment registry and — symmetrically — zero of them in
+`LoadPromptsFromDir`'s output; `TestFragmentsNotInWebPromptDTO`
+(`internal/prompts/cache_test.go`) asserts the same at the `PromptsCache` /
+`WebPrompt` layer.
+
+### Naming (slash-namespaced)
+
+Fragment names are derived from the path relative to the origin root, with the
+`.tmpl` extension stripped:
+
+| On-disk path                                        | Fragment name           |
+|-----------------------------------------------------|-------------------------|
+| `builtin/github/pr-comments.tmpl`                   | `github/pr-comments`    |
+| `builtin/beads/issue-context.tmpl`                  | `beads/issue-context`   |
+| `builtin/simple.tmpl`                               | `simple`                |
+
+Go template names are just strings; slashes are legal. This gives natural
+namespacing without a dedicated directory. Cross-origin merge follows the same
+priority chain as prompts (builtin < settings < workspace) — later origin wins
+by fragment name.
+
+### Passing context: full vs. narrowed
+
+The pipeline argument to `{{ template … }}` is the fragment's render context.
+Two idioms:
+
+- **Full context** — `{{ template "github/pr-comments" . }}`
+  Passes the entire caller context. The fragment sees the same `.Args`,
+  `.Session`, `.Workspace`, `.ACP`, and `.UserData` the caller does.
+- **Narrowed context** — `{{ template "github/pr-comments" .Args }}`
+  Passes only `.Args`. Inside the fragment, `.` **is** the args map;
+  `.Session` is not reachable.
+
+Explicit context at the call site is a feature, not a bug: reviewers can tell
+at a glance whether a fragment depends on session state or only on args.
+
+### FuncMap inheritance
+
+Fragments share the caller's FuncMap automatically: one closure over the render
+context, one `text/template.FuncMap`, applied uniformly to the caller body and
+every attached fragment. So `{{ Arg "X" "default" }}`, `{{ Cond "…" }}`,
+`{{ FileExists "…" }}`, `{{ HasBeads "…" "…" }}`, `{{ Model "smart" }}`, etc.
+all work inside fragments with the same semantics as in prompt bodies.
+
+### Load-time validation semantics
+
+Two classes of errors are caught at load, not at first render, because
+fragments participate in `text/template.Parse`:
+
+- **Unknown fragment name.** `{{ template "no-such-thing" . }}` in a prompt
+  body fails `template.Parse`, so `PrecompileTemplateConds` and
+  `ValidatePromptTemplateSyntax` report `prompt template "<caller>": template
+  "no-such-thing" is undefined` at load — same code path that already
+  fails-fast on syntax errors.
+- **Cycles.** Go `text/template` rejects mutual recursion at parse; there is
+  no cycle-detection code in Mitto for this. `A → B → A` fails to parse and
+  the load errors out with the caller's name.
+
+### fs-watcher live reload
+
+The prompt-directory fs-watcher tracks **both** `*.prompt.yaml` and `*.tmpl` in
+the same tree:
+
+- On any `*.tmpl` change: rebuild the fragment registry, then invalidate the
+  `PromptsCache` (fragment edits affect every prompt that references them).
+- On any `*.prompt.yaml` change: unchanged behavior.
+
+No per-prompt dependency graph is required — fragments are attached to every
+render on the fly, so a fragment edit affects every prompt automatically.
+
+### Worked example
+
+Fragment file `config/prompts/builtin/greetings/hello.tmpl`:
+
+```
+Hello, {{ Arg "Name" "world" }}!
+{{- if .Session.IsChild }}
+(spawned from parent {{ .Session.ID }})
+{{- end }}
+```
+
+Caller `config/prompts/builtin/greetings/say-hello.prompt.yaml`:
+
+```yaml
+name: "Say hello"
+parameters:
+  - name: Name
+    type: text
+    required: false
+prompt: |
+  {{ template "greetings/hello" . }}
+  Have a nice day.
+```
+
+The rendered body sees `.Args.Name`, `.Session.IsChild`, and the caller's
+FuncMap — no wiring beyond the `{{ template … }}` call.
+
+### Shipped pilot
+
+The first shipped fragment is `config/prompts/builtin/github/pr-comments.tmpl`
+(from `mitto-g61.8`), extracting the shared "how to handle PR review comments"
+block from the `github/babysit-*.prompt.yaml` family. See its call sites for a
+production example of full-context sub-template invocation.
+
+### Non-goals
+
+- **Dynamic fragment names** (`{{ template (printf "x-%s" .K) . }}`) — Go
+  `text/template` does not support this. Punt to a follow-up if ever needed.
+- **Fragment-as-raw-text include** (no re-render) — no use case in the current
+  corpus; a preprocessor could be layered on later if required.
+- **A separate `fragments/` directory.** Fragments live alongside prompts.
 
 ---
 
