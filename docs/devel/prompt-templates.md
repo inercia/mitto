@@ -600,12 +600,39 @@ prompt: |
 The rendered body sees `.Args.Name`, `.Session.IsChild`, and the caller's
 FuncMap — no wiring beyond the `{{ template … }}` call.
 
-### Shipped pilot
+### Shipped fragments (inventory)
 
-The first shipped fragment is `config/prompts/builtin/github/pr-comments.tmpl`
-(from `mitto-g61.8`), extracting the shared "how to handle PR review comments"
-block from the `github/babysit-*.prompt.yaml` family. See its call sites for a
-production example of full-context sub-template invocation.
+Fragments in this repo live either **co-located** under the topical prompt
+directory (when they're specific to one agent/topic) or under the top-level
+`_shared/` prefix (when they're consumed cross-topic). Prompt authors adding a
+new prompt should scan this table before restating shared content inline.
+
+| Fragment name              | On-disk path                                                | Consumers | Landed in     | Purpose                                                                          |
+|----------------------------|-------------------------------------------------------------|-----------|---------------|----------------------------------------------------------------------------------|
+| `github/pr-comments`       | `config/prompts/builtin/github/pr-comments.tmpl`            | 3         | `mitto-g61.8` | "How to handle PR review comments" body used by the `github/babysit-*` family (pilot: co-located, agent-specific). |
+| `_shared/session-context`  | `config/prompts/builtin/_shared/session-context.tmpl`       | 64        | `mitto-g61.9` | The `## Session Context` preamble telling the agent its own session ID. Cross-topic — consumed by beads-issues/, beads/, ci/, code/, docs/, github/, jira/, loop/, and support/ prompts. |
+
+**Layout convention.** Fragments that only make sense to one topic (e.g. GitHub
+PR comment handling) are co-located next to their consumers so authors editing
+a topic see the fragment in the same directory. Fragments that are consumed
+across multiple topics live under `_shared/<name>.tmpl`; co-locating a
+cross-topic fragment under any single topic dir would misrepresent ownership.
+
+**Pilot reference.** `config/prompts/builtin/github/pr-comments.tmpl` (from
+`mitto-g61.8`) remains the reference example of full-context sub-template
+invocation — see its call sites for the wiring pattern.
+
+**Non-fragments (evaluated and deferred).** `.Session.IsLoop`/"Interaction Mode"
+branching appears in ~24 prompts but each consumer meaningfully diverges in the
+scheduled-vs-interactive prose (silent-mode wording, autonomy scope, per-prompt
+guidance). Extracting a baseline would either homogenize wording (loses
+per-prompt tone) or leave the fragment as a bare skeleton with every caller
+restating its variant. Per this section's own non-goals ("do NOT extract
+fragments whose consumers meaningfully diverge in wording") this stays inline.
+Other candidates (`ACP.AvailableText` prose, `bd close` snippets, worktree
+recipes, spawn-dedup rules) were similarly rejected during `mitto-g61.9` after
+byte-level inspection — see that bead's `Implementation:` comment for the
+per-candidate rationale.
 
 ### Non-goals
 
