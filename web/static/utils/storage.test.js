@@ -21,6 +21,8 @@ import {
   migrateLegacyTabStorage,
   getDensity,
   setDensity,
+  getDashboardHiddenCharts,
+  setDashboardHiddenCharts,
 } from "./storage.js";
 
 const DENSITY_KEY = "mitto_conversation_density";
@@ -608,5 +610,123 @@ describe("setDensity", () => {
     expect(getDensity()).toBe("comfortable");
     setDensity("condensed");
     expect(getDensity()).toBe("condensed");
+  });
+});
+
+// =============================================================================
+// getDashboardHiddenCharts / setDashboardHiddenCharts (mitto-4t8 / mitto-3i2)
+// =============================================================================
+//
+// Pins the storage-level contract used by StatsCharts.js's
+// useDashboardHiddenCharts hook: (a) parsing rejects unknown ids and non-array
+// payloads defensively, (b) writes filter to strings and dispatch the
+// live-update CustomEvent BEFORE the debounced server sync, so any open
+// Dashboard reacts instantly.
+
+const DASHBOARD_HIDDEN_CHARTS_KEY = "mitto-dashboard-hidden-charts";
+const DASHBOARD_EVENT_NAME = "mitto-dashboard-hidden-charts-changed";
+
+describe("getDashboardHiddenCharts", () => {
+  test("returns [] when nothing persisted", () => {
+    expect(getDashboardHiddenCharts()).toEqual([]);
+  });
+
+  test("returns the persisted array when it is a subset of the known ids", () => {
+    localStorageMock.setItem(
+      DASHBOARD_HIDDEN_CHARTS_KEY,
+      JSON.stringify(["tokens", "model_usage"]),
+    );
+    expect(getDashboardHiddenCharts()).toEqual(["tokens", "model_usage"]);
+  });
+
+  test("drops unknown ids and non-string entries (opt-out defence)", () => {
+    localStorageMock.setItem(
+      DASHBOARD_HIDDEN_CHARTS_KEY,
+      JSON.stringify(["tokens", "bogus", 42, null, "tool_calls"]),
+    );
+    // Only canonical ids survive; ordering follows the persisted array.
+    expect(getDashboardHiddenCharts()).toEqual(["tokens", "tool_calls"]);
+  });
+
+  test("returns [] when the stored value is not an array", () => {
+    localStorageMock.setItem(
+      DASHBOARD_HIDDEN_CHARTS_KEY,
+      JSON.stringify({ tokens: true }),
+    );
+    expect(getDashboardHiddenCharts()).toEqual([]);
+  });
+
+  test("returns [] when the stored value is malformed JSON", () => {
+    localStorageMock.setItem(DASHBOARD_HIDDEN_CHARTS_KEY, "not-json");
+    // The parse error is swallowed with a console.warn; the caller sees the
+    // safe fallback (empty array = everything visible).
+    expect(getDashboardHiddenCharts()).toEqual([]);
+  });
+});
+
+describe("setDashboardHiddenCharts", () => {
+  test("writes a JSON-encoded array to localStorage", () => {
+    setDashboardHiddenCharts(["tokens", "tool_calls"]);
+    expect(mockStore[DASHBOARD_HIDDEN_CHARTS_KEY]).toBe(
+      JSON.stringify(["tokens", "tool_calls"]),
+    );
+  });
+
+  test("coerces a non-array input to [] (never throws)", () => {
+    setDashboardHiddenCharts(null);
+    expect(mockStore[DASHBOARD_HIDDEN_CHARTS_KEY]).toBe(JSON.stringify([]));
+    setDashboardHiddenCharts(undefined);
+    expect(mockStore[DASHBOARD_HIDDEN_CHARTS_KEY]).toBe(JSON.stringify([]));
+    setDashboardHiddenCharts("tokens");
+    expect(mockStore[DASHBOARD_HIDDEN_CHARTS_KEY]).toBe(JSON.stringify([]));
+  });
+
+  test("filters out non-string entries before persisting", () => {
+    setDashboardHiddenCharts(["tokens", 42, null, "tool_calls", undefined]);
+    expect(mockStore[DASHBOARD_HIDDEN_CHARTS_KEY]).toBe(
+      JSON.stringify(["tokens", "tool_calls"]),
+    );
+  });
+
+  test("dispatches the mitto-dashboard-hidden-charts-changed CustomEvent with the sanitised ids", () => {
+    const events = [];
+    const listener = (e) => events.push(e);
+    window.addEventListener(DASHBOARD_EVENT_NAME, listener);
+    try {
+      setDashboardHiddenCharts(["tokens", 7, "model_usage"]);
+    } finally {
+      window.removeEventListener(DASHBOARD_EVENT_NAME, listener);
+    }
+    expect(events).toHaveLength(1);
+    // Every open Dashboard reads `detail.ids` and re-renders on this signal.
+    expect(events[0].detail).toEqual({ ids: ["tokens", "model_usage"] });
+    // Payload matches what was persisted (no drift between the localStorage
+    // write and the broadcast — the hook can read either as source of truth).
+    expect(mockStore[DASHBOARD_HIDDEN_CHARTS_KEY]).toBe(
+      JSON.stringify(["tokens", "model_usage"]),
+    );
+  });
+
+  test("dispatches the CustomEvent even for an empty selection (show-everything path)", () => {
+    // Regression: the "show everything again" path (user unhides the last
+    // chart in Settings ▸ Dashboard) must still broadcast so the Dashboard
+    // stops rendering the empty-state fallback.
+    const events = [];
+    const listener = (e) => events.push(e);
+    window.addEventListener(DASHBOARD_EVENT_NAME, listener);
+    try {
+      setDashboardHiddenCharts([]);
+    } finally {
+      window.removeEventListener(DASHBOARD_EVENT_NAME, listener);
+    }
+    expect(events).toHaveLength(1);
+    expect(events[0].detail).toEqual({ ids: [] });
+  });
+
+  test("round-trips through getDashboardHiddenCharts", () => {
+    setDashboardHiddenCharts(["tokens", "prompts_vs_turns"]);
+    expect(getDashboardHiddenCharts()).toEqual(["tokens", "prompts_vs_turns"]);
+    setDashboardHiddenCharts([]);
+    expect(getDashboardHiddenCharts()).toEqual([]);
   });
 });

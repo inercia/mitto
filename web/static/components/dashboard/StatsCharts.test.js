@@ -54,13 +54,51 @@ const CHART_HEIGHT = 220;
 
 // Duplicated shape of buildChartSpecs from StatsCharts.js, minus uPlot-specific
 // paths factories (which are exercised at runtime by Playwright in a86b.10).
-// Keep the `metrics` and `title` fields in sync with the component.
+// Keep the `metrics`, `title`, and `id` fields in sync with the component.
+// `id` is the canonical chart identifier mirrored across
+// KNOWN_DASHBOARD_CHART_IDS in storage.js and KnownDashboardChartIDs in
+// internal/web/handlers/dashboard_charts.go (mitto-4t8).
 function chartSpecMetrics() {
   return [
-    { title: "Tokens (input + output)", metrics: ["input_tokens_est", "output_tokens_est"] },
-    { title: "Tool calls", metrics: ["tool_calls_total", "mcp_calls"] },
-    { title: "Prompts vs agent turns", metrics: ["prompts", "agent_turns_completed"] },
+    {
+      id: "tokens",
+      title: "Tokens (input + output)",
+      metrics: ["input_tokens_est", "output_tokens_est"],
+    },
+    {
+      id: "tool_calls",
+      title: "Tool calls",
+      metrics: ["tool_calls_total", "mcp_calls"],
+    },
+    {
+      id: "prompts_vs_turns",
+      title: "Prompts vs agent turns",
+      metrics: ["prompts", "agent_turns_completed"],
+    },
   ];
+}
+
+// Duplicated visibility filter from StatsCharts.js (mitto-4t8). Keep in sync.
+// `hidden` is the array returned by useDashboardHiddenCharts(); specs whose
+// canonical `id` appears in it are dropped from the render pass. The
+// ModelUsageCard is rendered SEPARATELY (it is a sibling of the carousel,
+// not a member of specs) — its visibility is gated by
+// `modelUsageVisible(hidden)` below.
+function visibleSpecs(specs, hidden) {
+  return specs.filter((s) => !hidden.includes(s.id));
+}
+
+// Duplicated ModelUsageCard gate from StatsCharts.js (mitto-4t8). Keep in sync.
+function modelUsageVisible(hidden) {
+  return !hidden.includes("model_usage");
+}
+
+// Duplicated empty-state predicate from StatsCharts.js (mitto-4t8). Keep in
+// sync. When BOTH the carousel is empty AND the ModelUsageCard is hidden,
+// the Dashboard renders a muted "All charts are hidden" fallback so the user
+// has a clear next step (Settings ▸ Dashboard).
+function isEverythingHidden(specs, hidden) {
+  return visibleSpecs(specs, hidden).length === 0 && !modelUsageVisible(hidden);
 }
 
 // Duplicated from StatsCharts.js for testing (component imports window.preact
@@ -263,7 +301,6 @@ describe("toUplotData", () => {
   });
 });
 
-
 // =============================================================================
 // Endpoint / URL builder — acceptance: "Charts render at 24h/7d/30d"
 // =============================================================================
@@ -348,7 +385,8 @@ describe("chart specs vs requested metrics", () => {
     expect(specs).toHaveLength(3);
     const titles = specs.map((s) => s.title);
     expect(new Set(titles).size).toBe(3);
-    for (const t of titles) expect(typeof t === "string" && t.length > 0).toBe(true);
+    for (const t of titles)
+      expect(typeof t === "string" && t.length > 0).toBe(true);
   });
 
   test("chart-height constant is a positive integer", () => {
@@ -388,7 +426,12 @@ describe("uPlot CDN URLs", () => {
 
 describe("toUplotData with a realistic six-metric tsResponse", () => {
   const fixture = () => ({
-    meta: { range: "24h", bucket: "hour", backfill_in_progress: false, note: "estimator note" },
+    meta: {
+      range: "24h",
+      bucket: "hour",
+      backfill_in_progress: false,
+      note: "estimator note",
+    },
     series: {
       input_tokens_est: [
         { t: 1_700_000_000, v: 100 },
@@ -423,17 +466,20 @@ describe("toUplotData with a realistic six-metric tsResponse", () => {
     },
   });
 
-  test.each(chartSpecMetrics())("chart '$title' returns aligned [xs, ...ys] arrays", (spec) => {
-    const out = toUplotData(fixture(), spec.metrics);
-    // uPlot invariant: xs and every ys must have equal length.
-    const n = out[0].length;
-    expect(n).toBe(3);
-    for (let i = 1; i < out.length; i++) {
-      expect(out[i]).toHaveLength(n);
-    }
-    // Row count = 1 (xs) + one per metric.
-    expect(out).toHaveLength(1 + spec.metrics.length);
-  });
+  test.each(chartSpecMetrics())(
+    "chart '$title' returns aligned [xs, ...ys] arrays",
+    (spec) => {
+      const out = toUplotData(fixture(), spec.metrics);
+      // uPlot invariant: xs and every ys must have equal length.
+      const n = out[0].length;
+      expect(n).toBe(3);
+      for (let i = 1; i < out.length; i++) {
+        expect(out[i]).toHaveLength(n);
+      }
+      // Row count = 1 (xs) + one per metric.
+      expect(out).toHaveLength(1 + spec.metrics.length);
+    },
+  );
 
   test("fixture is non-empty according to isEmptySeries", () => {
     expect(isEmptySeries(fixture())).toBe(false);
@@ -582,8 +628,12 @@ describe("toModelUplotData", () => {
     // Pins the "colors are stable across reloads" acceptance criterion at the
     // level the component actually consumes: run the transform twice, then
     // map every produced model name through modelColor. Byte-identical.
-    const first = toModelUplotData(grouped()).models.map((m) => modelColor(m.name));
-    const second = toModelUplotData(grouped()).models.map((m) => modelColor(m.name));
+    const first = toModelUplotData(grouped()).models.map((m) =>
+      modelColor(m.name),
+    );
+    const second = toModelUplotData(grouped()).models.map((m) =>
+      modelColor(m.name),
+    );
     expect(first).toEqual(second);
   });
 });
@@ -662,5 +712,127 @@ describe("model usage URL builder (groupBy=model)", () => {
     for (const m of REQUESTED_MODEL_METRICS) {
       expect(known.has(m)).toBe(true);
     }
+  });
+});
+
+// =============================================================================
+// Chart-visibility contract (mitto-4t8 / mitto-3i2 Phase 3)
+// =============================================================================
+//
+// Pins the canonical chart-id set and the visibility helpers that decide
+// which cards render on the Dashboard's Activity strip. The end-to-end
+// live-update path (localStorage → CustomEvent → hook → re-render) is
+// covered by useDashboardHiddenCharts.test.js and storage.test.js; here we
+// pin the pure filter/gate/empty-state logic that consumes the hook's value.
+
+// Canonical chart ids as pinned by KNOWN_DASHBOARD_CHART_IDS in storage.js
+// and KnownDashboardChartIDs in internal/web/handlers/dashboard_charts.go.
+// Any regression that renames a spec `id` or drops one from either registry
+// surfaces here without needing to boot uPlot or the WebSocket.
+const KNOWN_DASHBOARD_CHART_IDS = [
+  "tokens",
+  "tool_calls",
+  "prompts_vs_turns",
+  "model_usage",
+];
+
+describe("buildChartSpecs canonical ids (mitto-4t8)", () => {
+  test("each spec carries a non-empty canonical id", () => {
+    for (const spec of chartSpecMetrics()) {
+      expect(typeof spec.id).toBe("string");
+      expect(spec.id.length).toBeGreaterThan(0);
+    }
+  });
+
+  test("spec ids are a subset of KNOWN_DASHBOARD_CHART_IDS", () => {
+    const known = new Set(KNOWN_DASHBOARD_CHART_IDS);
+    for (const spec of chartSpecMetrics()) {
+      expect(known.has(spec.id)).toBe(true);
+    }
+  });
+
+  test("each spec id is unique (no duplicates in the carousel)", () => {
+    const ids = chartSpecMetrics().map((s) => s.id);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  test("every non-model_usage known id maps to a spec", () => {
+    // KNOWN_DASHBOARD_CHART_IDS is the source of truth; the three carousel
+    // specs must cover every id except `model_usage` (which is rendered as a
+    // sibling ModelUsageCard). This catches a regression where a new id is
+    // added to the registry but not annotated on `buildChartSpecs`.
+    const carouselIds = new Set(chartSpecMetrics().map((s) => s.id));
+    for (const id of KNOWN_DASHBOARD_CHART_IDS) {
+      if (id === "model_usage") continue;
+      expect(carouselIds.has(id)).toBe(true);
+    }
+  });
+});
+
+describe("visibleSpecs (carousel filter)", () => {
+  test("empty hidden set → every spec is visible", () => {
+    const specs = chartSpecMetrics();
+    expect(visibleSpecs(specs, [])).toEqual(specs);
+  });
+
+  test("hides only the specs whose id is in the hidden set", () => {
+    const specs = chartSpecMetrics();
+    const out = visibleSpecs(specs, ["tokens", "prompts_vs_turns"]);
+    expect(out.map((s) => s.id)).toEqual(["tool_calls"]);
+  });
+
+  test("model_usage in the hidden set does NOT affect the carousel filter", () => {
+    // The ModelUsageCard is a sibling of the carousel, not part of specs;
+    // hiding it must leave every carousel spec visible.
+    const specs = chartSpecMetrics();
+    expect(visibleSpecs(specs, ["model_usage"])).toEqual(specs);
+  });
+
+  test("unknown ids in the hidden set are ignored (defensive against stale localStorage)", () => {
+    const specs = chartSpecMetrics();
+    expect(visibleSpecs(specs, ["bogus", "old_removed_chart"])).toEqual(specs);
+  });
+
+  test("all carousel ids hidden → visibleSpecs is empty", () => {
+    const specs = chartSpecMetrics();
+    const allCarouselIds = specs.map((s) => s.id);
+    expect(visibleSpecs(specs, allCarouselIds)).toEqual([]);
+  });
+});
+
+describe("modelUsageVisible (sibling gate)", () => {
+  test("returns true when model_usage is NOT hidden", () => {
+    expect(modelUsageVisible([])).toBe(true);
+    expect(modelUsageVisible(["tokens", "tool_calls"])).toBe(true);
+  });
+
+  test("returns false when model_usage is hidden", () => {
+    expect(modelUsageVisible(["model_usage"])).toBe(false);
+    expect(modelUsageVisible(["tokens", "model_usage"])).toBe(false);
+  });
+});
+
+describe("isEverythingHidden (empty-state fallback)", () => {
+  test("false when at least one carousel spec is visible", () => {
+    const specs = chartSpecMetrics();
+    expect(isEverythingHidden(specs, [])).toBe(false);
+    expect(isEverythingHidden(specs, ["tokens"])).toBe(false);
+    expect(isEverythingHidden(specs, ["tokens", "tool_calls"])).toBe(false);
+  });
+
+  test("false when the ModelUsageCard alone is visible", () => {
+    // Every carousel spec hidden but model_usage still shown → the strip
+    // still has content; empty-state fallback must NOT render.
+    const specs = chartSpecMetrics();
+    const carouselIds = specs.map((s) => s.id);
+    expect(isEverythingHidden(specs, carouselIds)).toBe(false);
+  });
+
+  test("true only when every carousel spec AND model_usage are hidden", () => {
+    // This is the exact condition StatsCharts.js gates the "All charts are
+    // hidden. Enable at least one in Settings ▸ Dashboard." fallback on.
+    const specs = chartSpecMetrics();
+    const everything = [...specs.map((s) => s.id), "model_usage"];
+    expect(isEverythingHidden(specs, everything)).toBe(true);
   });
 });
