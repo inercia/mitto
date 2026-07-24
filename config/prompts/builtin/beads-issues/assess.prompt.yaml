@@ -40,7 +40,7 @@ prompt: |
   {{ if $target -}}
   ## Step 1 — Load the bead and its context
 
-  {{ template "_shared/load-bead-context" $target }}
+  {{ template "_shared/beads/load-context" $target }}
 
   Read everything carefully. Where the bead references code or features, investigate the **codebase**
   just enough to discuss it knowledgeably — but remember you are not here to implement it.

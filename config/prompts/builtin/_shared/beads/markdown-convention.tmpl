@@ -1,0 +1,34 @@
+{{- /*
+  beads/markdown-convention — the standard "Always write in GitHub-flavored
+  Markdown" bullet used at the top of `## Bead writing conventions` sections
+  across the support/* prompts. Codifies the two hard rules that show up in
+  every support prompt that ever writes to beads: (a) descriptions and
+  comments must be valid GFM, (b) real line breaks must be preserved via
+  `$'...'` or by piping multi-line text through stdin.
+
+  Whitespace contract identical to `_shared/no-text-ui`:
+    - Fragment body is column-1 Markdown (NO leading indent) — it slots
+      directly into the caller's already-YAML-stripped body text.
+    - Fragment emits NO leading and NO trailing newline. Callers use
+      plain `{{ template ... }}` (no trim markers) and rely on the
+      surrounding YAML newlines to space it correctly.
+
+  Recommended caller pattern (chained with reply-fence-convention so
+  Markdown treats the two bullets as one list):
+
+      ## Bead writing conventions (descriptions & comments)
+
+      {{ template "_shared/beads/markdown-convention" . }}
+      {{ template "_shared/reply-fence-convention" "reply" }}
+      - <optional prompt-specific extra bullet>
+
+  The stdin-piping example uses `"$c"` as a stand-in for whichever local
+  shell variable the caller uses to hold the comment body — callers do not
+  need to rename their own variable.
+*/ -}}
+- **Always write in GitHub-flavored Markdown.** Every bead **description** (`-d`) and every
+  **comment** you add must be valid markdown — headings, **bold**, `inline code`, fenced code blocks,
+  lists and links so it reads well in the UI. Preserve real line breaks with `$'...'` (real `\n`) or,
+  for anything multi-line, pipe via stdin (`printf '%s' "$c" | bd comment <id> --stdin`) — never
+  collapse a comment into one flat line.
+{{- /* no trailing newline */ -}}

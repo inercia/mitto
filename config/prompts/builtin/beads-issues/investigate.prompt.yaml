@@ -32,7 +32,7 @@ prompt: |
   {{ if $target -}}
   ## Step 1 — Load the bead's full detail
 
-  {{ template "_shared/load-bead-context" $target }}
+  {{ template "_shared/beads/load-context" $target }}
 
   Note what is already well-specified versus what is thin, vague, or missing.
   {{- end }}

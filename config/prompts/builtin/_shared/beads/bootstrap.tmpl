@@ -1,0 +1,32 @@
+{{/*
+  beads/bootstrap — the "check whether .beads/ is initialised, and if not,
+  offer to `bd init` non-interactively" bootstrap step. Kept as its own
+  fragment so any prompt that may legitimately run in a project where beads
+  has not yet been initialised (currently only `beads/new-issue.prompt.yaml`,
+  which intentionally omits the `DirExists(".beads")` gate) shares one
+  authoritative bootstrap wording and flow. Prompts that DO gate on
+  `enabledWhen: ... && DirExists(".beads")` never need this step — the gate
+  itself already guarantees `.beads/` exists.
+
+  Usage — at the very top of the body, before any "gather data" steps:
+
+      ## Step 0 — Bootstrap beads if needed
+
+      {{ template "_shared/beads/bootstrap" . }}
+*/}}
+Check whether beads is already initialised in this project:
+
+```bash
+ls -d .beads 2>/dev/null
+```
+
+- If `.beads` **already exists**: skip to Step 1.
+- If `.beads` **does not exist**: this may be the first time beads is used here. Use `mitto_ui_options(self_id: "{{ .Session.ID }}")` to ask: "Beads is not initialised in this project yet. Initialise it now so we can create the first issue?" with options "Yes — initialise beads" and "No — cancel".
+  - If the user declines, stop.
+  - If the user agrees, initialise beads non-interactively (it auto-detects a sensible default issue prefix from the directory name):
+
+    ```bash
+    bd init --non-interactive
+    ```
+
+    If the user wants a specific issue ID prefix, pass it explicitly (e.g. `bd init --non-interactive --prefix proj`). After init succeeds, continue to Step 1.

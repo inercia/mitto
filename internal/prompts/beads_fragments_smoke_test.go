@@ -8,10 +8,10 @@ import (
 )
 
 // TestBootstrapBeadsFragmentRenders is a smoke test for the
-// _shared/bootstrap-beads fragment: it loads the builtin fragment registry,
+// _shared/beads/bootstrap fragment: it loads the builtin fragment registry,
 // renders each consuming prompt, and asserts that hallmark substrings from
 // the fragment body appear in the rendered output. Presence of a hallmark
-// in the rendered output means the {{ template "_shared/bootstrap-beads"
+// in the rendered output means the {{ template "_shared/beads/bootstrap"
 // . }} call actually resolved and inlined its body.
 func TestBootstrapBeadsFragmentRenders(t *testing.T) {
 	prev := CurrentFragments()
@@ -32,7 +32,7 @@ func TestBootstrapBeadsFragmentRenders(t *testing.T) {
 		t.Fatalf("LoadPromptsFromDir(builtin): %v", err)
 	}
 
-	// Hallmarks unique to the bootstrap-beads fragment body.
+	// Hallmarks unique to the beads/bootstrap fragment body.
 	const (
 		hallmarkProbe       = "ls -d .beads 2>/dev/null"
 		hallmarkQuestion    = "Beads is not initialised in this project yet."
@@ -70,7 +70,7 @@ func TestBootstrapBeadsFragmentRenders(t *testing.T) {
 }
 
 // TestLoadBeadContextFragmentRenders is a smoke test for the
-// _shared/load-bead-context fragment: it renders each of the 3 consuming
+// _shared/beads/load-context fragment: it renders each of the 3 consuming
 // prompts with a valid target bead ID and asserts that (a) each bd command
 // hallmark appears and (b) the target ID substitutes correctly.
 func TestLoadBeadContextFragmentRenders(t *testing.T) {
