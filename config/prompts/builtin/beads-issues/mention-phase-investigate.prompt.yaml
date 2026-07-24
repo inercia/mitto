@@ -92,32 +92,17 @@ prompt: |
 
   ## Step 4 — Blocked → Defer + Handoff
 
-  Use this whenever this phase cannot make progress autonomously (something unclear,
-  a decision only the user can give, an external action is required). **Do not**
-  advance the `mention-investigated` label. Instead:
-
-  1. Defer and flag the bead so it drops out of `bd ready`:
-
-     ```bash
-     bd update {{ if $target }}{{ $target }}{{ else }}<target-bead>{{ end }} --add-label needs-human --defer <when>
-     ```
-
-  2. Write a structured handoff comment (the FIRST line must be the `[deferred: <ts>]`
-     marker so the orchestrator's Step 2Z can undefer on human reply):
-
-     ```bash
-     bd comment {{ if $target }}{{ $target }}{{ else }}<target-bead>{{ end }} "[deferred: <now-RFC3339>]
-     Why: Blocked at mention-investigate — <root cause>.
-     What human intervention is required: <the ONE concrete question/decision/info/action>.
-     How to resume: reply to this bead; the orchestrator will detect the reply on its next pass, clear needs-human, and re-queue."
-     ```
-
-  3. End with a concise handoff and disable the enclosing conversation's loop flag so
-     the router loop does not spin on the blocker:
-
-     ```
-     mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", loop_enabled: false)
-     ```
+  {{ template "_shared/beads/blocked-defer-handoff" (dict
+      "Target"      $target
+      "SessionID"   .Session.ID
+      "Placeholder" "<target-bead>"
+      "Label"       "mention-investigated"
+      "Intro"       "(something unclear, a decision only the user can give, an external action is required)"
+      "BlockedAt"   "mention-investigate"
+      "Style"       "long"
+      "LoopWord"    "router"
+      "TheFirst"    true
+  ) }}
 
   ## Guidelines
 

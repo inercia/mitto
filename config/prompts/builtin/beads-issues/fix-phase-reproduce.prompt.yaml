@@ -133,28 +133,13 @@ prompt: |
 
   ## Step 4 — Blocked → Defer + Handoff
 
-  Use this whenever this phase cannot make progress autonomously. **Do not** advance
-  the `reproduced` label. Instead:
-
-  1. Defer and flag the bead so it drops out of `bd ready`:
-
-     ```bash
-     bd update {{ if $target }}{{ $target }}{{ else }}<target-bug>{{ end }} --add-label needs-human --defer <when>
-     ```
-
-  2. Write a structured handoff comment:
-
-     ```bash
-     bd comment {{ if $target }}{{ $target }}{{ else }}<target-bug>{{ end }} "Blocked at reproduce. What I tried: <summary>. What I need from you: <the ONE concrete question/decision/info/action>. How to resume: bd update <id> --remove-label needs-human --defer '' , then re-run."
-     ```
-
-  3. End with a concise handoff message naming the blocker and the single thing
-     needed, and disable the enclosing conversation's loop flag so the driver
-     loop does not spin on the blocker:
-
-     ```
-     mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", loop_enabled: false)
-     ```
+  {{ template "_shared/beads/blocked-defer-handoff" (dict
+      "Target"      $target
+      "SessionID"   .Session.ID
+      "Placeholder" "<target-bug>"
+      "Label"       "reproduced"
+      "BlockedAt"   "reproduce"
+  ) }}
 
   ## Guidelines
 

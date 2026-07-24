@@ -339,3 +339,156 @@ func TestTargetBeadHeaderStrictFragmentRenders(t *testing.T) {
 		}
 	}
 }
+
+// TestBlockedDeferHandoffFragmentRenders is a smoke test for the
+// _shared/beads/blocked-defer-handoff fragment: renders each of the 11
+// phase prompts and asserts that the fragment's hallmark substrings
+// (per-phase `Blocked at <X>` handoff line, per-phase state label, the
+// `mitto_conversation_update` closer) appear correctly, and that the
+// short/long style + driver/router loop selectors flip the right way.
+func TestBlockedDeferHandoffFragmentRenders(t *testing.T) {
+	prev := CurrentFragments()
+	t.Cleanup(func() { SetCurrentFragments(prev) })
+
+	builtinDir := "../../config/prompts/builtin"
+	reg, loadErrs, err := LoadFragmentsFromDir(builtinDir)
+	if err != nil {
+		t.Fatalf("LoadFragmentsFromDir(builtin): %v", err)
+	}
+	if len(loadErrs) != 0 {
+		t.Fatalf("LoadFragmentsFromDir(builtin) per-file errors: %+v", loadErrs)
+	}
+	SetCurrentFragments(reg)
+
+	list, err := LoadPromptsFromDir(builtinDir)
+	if err != nil {
+		t.Fatalf("LoadPromptsFromDir(builtin): %v", err)
+	}
+	byName := map[string]string{}
+	for _, p := range list {
+		byName[p.Name] = p.Content
+	}
+
+	// (name, label, blockedAt, style, loopWord, wantNotifyNote)
+	type consumer struct {
+		name, label, blockedAt, style, loopWord string
+		notifyNote                              bool
+	}
+	consumers := []consumer{
+		{"Feature — plan phase", "planned", "plan", "short", "driver", true},
+		{"Feature — implement phase", "implemented", "implement", "short", "driver", false},
+		{"Feature — test phase", "tested", "test", "short", "driver", false},
+		{"Feature — review phase", "verified", "review", "short", "driver", false},
+		{"Bug fix — reproduce phase", "reproduced", "reproduce", "short", "driver", false},
+		{"Bug fix — investigate phase", "researched", "investigate", "short", "driver", true},
+		{"Bug fix — fix phase", "fixed", "fix", "short", "driver", false},
+		{"Mention — answer phase", "mention-answered", "mention-answer", "long", "router", false},
+		{"Mention — investigate phase", "mention-investigated", "mention-investigate", "long", "router", false},
+		{"Mention — plan phase", "mention-planned", "mention-plan", "long", "router", false},
+		{"Mention — implement phase", "mention-implemented", "mention-implement", "long", "router", false},
+	}
+
+	// Linked branch: $target resolves so the bd commands substitute the id.
+	linkedCtx := &cel.PromptEnabledContext{
+		Session: cel.SessionContext{ID: "sess-1", Name: "N", HasMessages: true, BeadsIssue: "mitto-abc", HasBeadsIssue: true},
+		Args:    map[string]string{"Commit": "true", "MentionTS": "2026-07-25T00:00:00Z"},
+	}
+	linkedFuncs := cel.BuildTemplateFuncMap(linkedCtx)
+	for _, c := range consumers {
+		body, ok := byName[c.name]
+		if !ok {
+			t.Errorf("prompt %q not found", c.name)
+			continue
+		}
+		out, err := RenderPromptTemplate(c.name, body, linkedCtx, linkedFuncs)
+		if err != nil {
+			t.Errorf("render %q (linked): %v", c.name, err)
+			continue
+		}
+		// Every phase must render the label + a bd-update deferring the target.
+		if !strings.Contains(out, "**Do not** advance") {
+			t.Errorf("%q: missing 'Do not advance' clause", c.name)
+		}
+		if !strings.Contains(out, "`"+c.label+"`") {
+			t.Errorf("%q: missing state label %q", c.name, c.label)
+		}
+		if !strings.Contains(out, "bd update mitto-abc --add-label needs-human --defer <when>") {
+			t.Errorf("%q: missing bd update target substitution", c.name)
+		}
+		// Style-specific hallmarks.
+		if c.style == "short" {
+			want := "bd comment mitto-abc \"Blocked at " + c.blockedAt + "."
+			if !strings.Contains(out, want) {
+				t.Errorf("%q (short): missing short-form handoff %q", c.name, want)
+			}
+		} else {
+			want := "Why: Blocked at " + c.blockedAt + " — <root cause>."
+			if !strings.Contains(out, want) {
+				t.Errorf("%q (long): missing [deferred:] handoff line %q", c.name, want)
+			}
+		}
+		// Loop word: driver vs router. Normalise all whitespace runs to a
+		// single space so a wrapped line ("so the driver\n   loop") still
+		// matches the canonical phrase.
+		normalised := strings.Join(strings.Fields(out), " ")
+		if !strings.Contains(normalised, "so the "+c.loopWord+" loop does not spin") {
+			t.Errorf("%q: missing loop-word clause with %q", c.name, c.loopWord)
+		}
+		// Session id is threaded through the closer.
+		if !strings.Contains(out, `mitto_conversation_update(self_id: "sess-1"`) {
+			t.Errorf("%q: session id not threaded into mitto_conversation_update", c.name)
+		}
+		// NotifyNote toggle (short style only).
+		if c.style == "short" {
+			hasNote := strings.Contains(out, "interactive runs also `mitto_ui_notify`")
+			if hasNote != c.notifyNote {
+				t.Errorf("%q: NotifyNote mismatch — want %v, got %v", c.name, c.notifyNote, hasNote)
+			}
+		}
+	}
+
+	// mention-phase-investigate is the one long-style caller that opts in
+	// to "the FIRST line must be" (TheFirst=true).
+	if body, ok := byName["Mention — investigate phase"]; ok {
+		out, err := RenderPromptTemplate("Mention — investigate phase", body, linkedCtx, linkedFuncs)
+		if err != nil {
+			t.Fatalf("render Mention — investigate phase: %v", err)
+		}
+		if !strings.Contains(out, "(the FIRST line must be the `[deferred: <ts>]`") {
+			t.Errorf("Mention — investigate phase: TheFirst=true wording missing")
+		}
+	}
+
+	// No-link branch: bd commands must fall back to the caller-supplied
+	// placeholder (per Style/Family: <target-feature> / <target-bug> / <target-bead>).
+	noLinkCtx := &cel.PromptEnabledContext{
+		Session: cel.SessionContext{ID: "sess-1", Name: "N", HasMessages: true},
+		Args:    map[string]string{},
+	}
+	noLinkFuncs := cel.BuildTemplateFuncMap(noLinkCtx)
+	fallback := map[string]string{
+		"Feature — plan phase":        "<target-feature>",
+		"Feature — implement phase":   "<target-feature>",
+		"Feature — test phase":        "<target-feature>",
+		"Feature — review phase":      "<target-feature>",
+		"Bug fix — reproduce phase":   "<target-bug>",
+		"Bug fix — investigate phase": "<target-bug>",
+		"Bug fix — fix phase":         "<target-bug>",
+		"Mention — answer phase":      "<target-bead>",
+		"Mention — investigate phase": "<target-bead>",
+		"Mention — plan phase":        "<target-bead>",
+		"Mention — implement phase":   "<target-bead>",
+	}
+	for _, c := range consumers {
+		body := byName[c.name]
+		out, err := RenderPromptTemplate(c.name, body, noLinkCtx, noLinkFuncs)
+		if err != nil {
+			t.Errorf("render %q (nolink): %v", c.name, err)
+			continue
+		}
+		want := "bd update " + fallback[c.name] + " --add-label needs-human"
+		if !strings.Contains(out, want) {
+			t.Errorf("%q (nolink): missing fallback %q", c.name, want)
+		}
+	}
+}
