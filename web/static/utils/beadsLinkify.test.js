@@ -150,4 +150,50 @@ describe("linkifyBeadsRefs", () => {
     expect(links).toHaveLength(1);
     expect(links[0].dataset.beadsId).toBe("on-call-u2i");
   });
+
+  // mitto-h8a.2: linkifyBeadsRefs now returns the list of newly-wrapped
+  // lowercased IDs so callers (e.g. Message.js) can warm the beads cache
+  // via preloadBeadsIssues. The additions below pin that contract.
+  describe("return value (mitto-h8a.2)", () => {
+    test("returns array of lowercased IDs newly wrapped", () => {
+      const root = makeDiv("<p>See mitto-aaa and mitto-uxn here.</p>");
+      const result = linkifyBeadsRefs(root, KNOWN_IDS, META);
+      expect(Array.isArray(result)).toBe(true);
+      expect(result.sort()).toEqual(["mitto-aaa", "mitto-uxn"]);
+    });
+
+    test("returns [] when rootEl is null", () => {
+      expect(linkifyBeadsRefs(null, KNOWN_IDS, META)).toEqual([]);
+    });
+
+    test("returns [] when ids Set is empty", () => {
+      const root = makeDiv("<p>mitto-aaa here.</p>");
+      expect(linkifyBeadsRefs(root, new Set(), META)).toEqual([]);
+    });
+
+    test("returns [] when no known IDs match", () => {
+      const root = makeDiv("<p>See foo-bar for details.</p>");
+      expect(linkifyBeadsRefs(root, KNOWN_IDS, META)).toEqual([]);
+    });
+
+    test("deduplicates: same ID mentioned twice returns single entry", () => {
+      const root = makeDiv("<p>mitto-aaa then mitto-aaa again.</p>");
+      const result = linkifyBeadsRefs(root, KNOWN_IDS, META);
+      expect(result).toEqual(["mitto-aaa"]);
+    });
+
+    test("lowercases IDs regardless of input casing", () => {
+      const root = makeDiv("<p>MITTO-AAA is here.</p>");
+      const result = linkifyBeadsRefs(root, KNOWN_IDS, META);
+      expect(result).toEqual(["mitto-aaa"]);
+    });
+
+    test("idempotent second call returns [] (nothing newly wrapped)", () => {
+      const root = makeDiv("<p>mitto-aaa here.</p>");
+      const first = linkifyBeadsRefs(root, KNOWN_IDS, META);
+      const second = linkifyBeadsRefs(root, KNOWN_IDS, META);
+      expect(first).toEqual(["mitto-aaa"]);
+      expect(second).toEqual([]);
+    });
+  });
 });
