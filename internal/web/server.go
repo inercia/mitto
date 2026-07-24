@@ -2335,10 +2335,53 @@ func (s *Server) OnPromptsChanged(event configPkg.PromptsChangeEvent) {
 		return
 	}
 
-	// Force reload the prompts cache so next API call gets fresh data
+	// Force reload the prompts cache so next API call gets fresh data.
+	// Kept unconditional for backward compatibility: pre-mitto-g61.5 events
+	// arrived without the HasPromptChanges flag, and the cache regenerates
+	// cheaply on demand — the extra work is a no-op when no *.prompt.yaml
+	// actually changed.
 	if s.config.PromptsCache != nil {
 		if _, err := s.config.PromptsCache.ForceReload(); err != nil && s.logger != nil {
 			s.logger.Warn("Failed to reload prompts cache after file change", "error", err)
+		}
+	}
+
+	// Rebuild the fragment registry when co-located *.tmpl files changed
+	// (mitto-g61.5). Walk the same user-writable directories the watcher is
+	// subscribed to and install a freshly-merged registry via
+	// SetCurrentFragments. On a top-level walk failure keep the previous
+	// registry (do NOT install a partial one) so a transient FS error does
+	// not blank out working fragments; per-file failures are non-fatal and
+	// surface as error toasts identical to the prompt-load path above.
+	if event.HasFragmentChanges {
+		dirs := s.getPromptsWatchDirs()
+		newReg, ferrs, err := prompts.ReloadFragmentsFromDirs(dirs)
+		if err != nil {
+			if s.logger != nil {
+				s.logger.Warn("Failed to reload fragment registry after file change; keeping previous registry",
+					"error", err,
+					"dirs", dirs)
+			}
+			s.eventsManager.Broadcast(WSMsgTypeNotification, map[string]interface{}{
+				"title":   "Fragment reload failed",
+				"message": err.Error(),
+				"style":   "error",
+			})
+		} else {
+			prompts.SetCurrentFragments(newReg)
+			if s.logger != nil {
+				s.logger.Debug("Reloaded fragment registry",
+					"count", newReg.Len(),
+					"dirs", dirs,
+					"errors", len(ferrs))
+			}
+		}
+		for _, fe := range ferrs {
+			s.eventsManager.Broadcast(WSMsgTypeNotification, map[string]interface{}{
+				"title":   "Fragment failed to load",
+				"message": fmt.Sprintf("%s: %v", fe.Path, fe.Err),
+				"style":   "error",
+			})
 		}
 	}
 
@@ -2364,6 +2407,8 @@ func (s *Server) OnPromptsChanged(event configPkg.PromptsChangeEvent) {
 	if s.logger != nil {
 		s.logger.Debug("Broadcasted prompts_changed event",
 			"changed_dirs", event.ChangedDirs,
+			"has_prompt_changes", event.HasPromptChanges,
+			"has_fragment_changes", event.HasFragmentChanges,
 			"client_count", s.eventsManager.ClientCount())
 	}
 }

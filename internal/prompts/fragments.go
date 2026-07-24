@@ -270,6 +270,39 @@ func (r *FragmentRegistry) Merge(other *FragmentRegistry) {
 	}
 }
 
+// ReloadFragmentsFromDirs loads *.tmpl fragments from each of the given
+// directories in order and merges them into a single registry with last-wins
+// semantics (matching FragmentRegistry.Merge and the builtin < settings <
+// workspace priority chain used by the prompt loader).
+//
+// Missing directories are tolerated: LoadFragmentsFromDir returns an empty
+// registry with a nil error when a dir does not exist, so callers can pass the
+// same list of "user-writable" prompt roots the fs-watcher watches without
+// having to pre-filter.
+//
+// Per-file failures (parse errors, duplicate names, invalid path segments) are
+// accumulated across all dirs into the returned []FragmentLoadError; a
+// non-empty error slice is NOT fatal — the returned registry still contains
+// every fragment that loaded successfully. A non-nil error is returned only
+// when a top-level filesystem walk fails; in that case the returned registry
+// contains only the fragments merged up to (but not including) the failed
+// directory. Callers that want "keep previous registry on failure" semantics
+// (e.g. the fs-watcher subscriber) should check err before calling
+// SetCurrentFragments.
+func ReloadFragmentsFromDirs(dirs []string) (*FragmentRegistry, []FragmentLoadError, error) {
+	merged := NewFragmentRegistry()
+	var allErrors []FragmentLoadError
+	for _, dir := range dirs {
+		reg, errs, err := LoadFragmentsFromDir(dir)
+		if err != nil {
+			return merged, allErrors, fmt.Errorf("reload fragments from %s: %w", dir, err)
+		}
+		merged.Merge(reg)
+		allErrors = append(allErrors, errs...)
+	}
+	return merged, allErrors, nil
+}
+
 // currentFragments is the package-level singleton holding the fragment registry
 // consulted by RenderPromptTemplate at render time. It is intentionally kept
 // nil-safe: callers of CurrentFragments may receive nil, and RenderPromptTemplate
