@@ -120,6 +120,13 @@ type Cursor struct {
 	UpdatedAt time.Time
 }
 
+// GroupBy dimension names accepted by Query.GroupBy. The empty value keeps the
+// legacy (metric,ts) grouping; GroupByModel additionally groups by model so
+// callers can surface per-model series (mitto-1ac / mitto-5r5.2).
+const (
+	GroupByModel = "model"
+)
+
 // Query describes a timeseries read against a Store.
 type Query struct {
 	// RangeFrom is the inclusive start of the queried window (UTC).
@@ -132,6 +139,12 @@ type Query struct {
 	Metrics []string
 	// Workspace, when non-empty, restricts the query to a single workspace UUID.
 	Workspace string
+	// GroupBy, when non-empty, adds an extra grouping dimension to the query.
+	// v1 accepts only GroupByModel (""); other values are rejected by the
+	// handler edge, so stores may assume it is either empty or GroupByModel.
+	// When set to GroupByModel, returned Points carry Model populated from the
+	// underlying row's model column; otherwise Model is always the zero string.
+	GroupBy string
 }
 
 // Point is a single datum in a Query result: one (ts, metric, value) row.
@@ -142,6 +155,12 @@ type Point struct {
 	Metric string
 	// Value is the aggregated counter for this bucket.
 	Value int64
+	// Model is the ACP model attribution for this point. Only populated when
+	// the originating Query had GroupBy == GroupByModel; otherwise the empty
+	// string. An empty model in a grouped result means the underlying row was
+	// not tagged with a model (pre-migration data, or non-model-attributable
+	// metrics).
+	Model string
 }
 
 // Store persists batched stats deltas and per-session cursors, and answers

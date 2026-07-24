@@ -315,6 +315,10 @@ func (s *SQLiteStore) SetCursor(ctx context.Context, cur Cursor) error {
 // (day-bucket rollup is stats.7's concern and is not implemented here).
 // Points are returned sorted by (TS, Metric). Empty ranges return an empty
 // slice, never ErrNotFound — matching NoopStore's permissive shape.
+//
+// When q.GroupBy == GroupByModel the SELECT additionally groups by the
+// model column and each returned Point carries the row's Model. The
+// ungrouped path (q.GroupBy == "") is byte-identical to the legacy query.
 func (s *SQLiteStore) Query(ctx context.Context, q Query) ([]Point, error) {
 	if s.closed.Load() {
 		return nil, ErrClosed
@@ -340,11 +344,22 @@ func (s *SQLiteStore) Query(ctx context.Context, q Query) ([]Point, error) {
 		where = append(where, "metric IN ("+placeholders+")")
 	}
 
-	sqlText := `SELECT ts_bucket, metric, SUM(value) AS value
-		FROM stats_events
-		WHERE ` + joinAnd(where) + `
-		GROUP BY ts_bucket, metric
-		ORDER BY ts_bucket ASC, metric ASC`
+	groupByModel := q.GroupBy == GroupByModel
+
+	var sqlText string
+	if groupByModel {
+		sqlText = `SELECT ts_bucket, metric, model, SUM(value) AS value
+			FROM stats_events
+			WHERE ` + joinAnd(where) + `
+			GROUP BY ts_bucket, metric, model
+			ORDER BY ts_bucket ASC, metric ASC, model ASC`
+	} else {
+		sqlText = `SELECT ts_bucket, metric, SUM(value) AS value
+			FROM stats_events
+			WHERE ` + joinAnd(where) + `
+			GROUP BY ts_bucket, metric
+			ORDER BY ts_bucket ASC, metric ASC`
+	}
 
 	rows, err := s.db.QueryContext(ctx, sqlText, args...)
 	if err != nil {
@@ -357,15 +372,23 @@ func (s *SQLiteStore) Query(ctx context.Context, q Query) ([]Point, error) {
 		var (
 			ts     int64
 			metric string
+			model  string
 			value  int64
 		)
-		if err := rows.Scan(&ts, &metric, &value); err != nil {
-			return nil, fmt.Errorf("stats: Query scan: %w", err)
+		if groupByModel {
+			if err := rows.Scan(&ts, &metric, &model, &value); err != nil {
+				return nil, fmt.Errorf("stats: Query scan: %w", err)
+			}
+		} else {
+			if err := rows.Scan(&ts, &metric, &value); err != nil {
+				return nil, fmt.Errorf("stats: Query scan: %w", err)
+			}
 		}
 		out = append(out, Point{
 			TS:     time.Unix(ts, 0).UTC(),
 			Metric: metric,
 			Value:  value,
+			Model:  model,
 		})
 	}
 	if err := rows.Err(); err != nil {

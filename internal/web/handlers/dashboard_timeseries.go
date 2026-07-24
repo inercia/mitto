@@ -107,6 +107,7 @@ type tsQueryOpts struct {
 	bucketDur  time.Duration
 	metrics    []string
 	workspace  string
+	groupBy    string
 	backfill   bool
 	rangeLabel string
 	cacheKey   string
@@ -191,12 +192,26 @@ func parseTimeseriesQuery(w http.ResponseWriter, r *http.Request, backfill bool)
 
 	workspace := strings.TrimSpace(q.Get("workspace"))
 
+	groupByRaw := strings.ToLower(strings.TrimSpace(q.Get("groupBy")))
+	var groupBy string
+	switch groupByRaw {
+	case "":
+		// aggregate across models (legacy behavior)
+	case stats.GroupByModel:
+		groupBy = stats.GroupByModel
+	default:
+		writeErrorJSON(w, http.StatusBadRequest, "", "invalid groupBy: only 'model' is supported")
+		return nil
+	}
+
 	// Cache key uses a sorted metric list so ?metrics=a,b and ?metrics=b,a
 	// share the same cache slot. Backfill flag is part of the key so the
-	// response flips true→false immediately when a pass finishes.
+	// response flips true→false immediately when a pass finishes. groupBy is
+	// part of the key so grouped and ungrouped responses live in separate
+	// cache slots (mitto-1ac acceptance criteria).
 	sortedMetrics := append([]string(nil), metrics...)
 	sort.Strings(sortedMetrics)
-	key := rangeLabel + "|" + string(bucket) + "|" + strings.Join(sortedMetrics, ",") + "|" + workspace + "|" + strconv.FormatBool(backfill)
+	key := rangeLabel + "|" + string(bucket) + "|" + strings.Join(sortedMetrics, ",") + "|" + workspace + "|" + groupBy + "|" + strconv.FormatBool(backfill)
 
 	return &tsQueryOpts{
 		rangeDur:   rangeDur,
@@ -204,6 +219,7 @@ func parseTimeseriesQuery(w http.ResponseWriter, r *http.Request, backfill bool)
 		bucketDur:  bucketDur,
 		metrics:    metrics,
 		workspace:  workspace,
+		groupBy:    groupBy,
 		backfill:   backfill,
 		rangeLabel: rangeLabel,
 		cacheKey:   key,
@@ -282,6 +298,7 @@ func (h *Handlers) buildTimeseriesPayload(r *http.Request, opts *tsQueryOpts) ([
 		Bucket:    stats.BucketHour,
 		Metrics:   opts.metrics,
 		Workspace: opts.workspace,
+		GroupBy:   opts.groupBy,
 	}
 
 	var points []stats.Point
@@ -293,30 +310,7 @@ func (h *Handlers) buildTimeseriesPayload(r *http.Request, opts *tsQueryOpts) ([
 		points = p
 	}
 
-	// Bucket the store points by (metric, alignedTS). Alignment is a no-op for
-	// hourly buckets and truncates to the day boundary for daily buckets.
-	buckets := make(map[string]map[time.Time]int64, len(opts.metrics))
-	for _, m := range opts.metrics {
-		buckets[m] = make(map[time.Time]int64)
-	}
-	for _, p := range points {
-		if _, ok := buckets[p.Metric]; !ok {
-			continue
-		}
-		ts := p.TS.UTC().Truncate(opts.bucketDur)
-		buckets[p.Metric][ts] += p.Value
-	}
-
-	// Build the dense grid: one point per bucket boundary in [from, to), for
-	// every requested metric. Zero-filled where the store had no data.
-	series := make(map[string][]tsPoint, len(opts.metrics))
-	for _, m := range opts.metrics {
-		grid := make([]tsPoint, 0, int(opts.rangeDur/opts.bucketDur)+1)
-		for ts := rangeFrom; ts.Before(rangeTo); ts = ts.Add(opts.bucketDur) {
-			grid = append(grid, tsPoint{T: ts.Unix(), V: buckets[m][ts]})
-		}
-		series[m] = grid
-	}
+	series := h.buildSeries(opts, rangeFrom, rangeTo, points)
 
 	resp := tsResponse{
 		Range: tsRange{
@@ -332,4 +326,83 @@ func (h *Handlers) buildTimeseriesPayload(r *http.Request, opts *tsQueryOpts) ([
 		},
 	}
 	return json.Marshal(resp)
+}
+
+// buildSeries rolls up the store's hourly points into the requested bucket and
+// returns a dense (zero-filled) series map keyed by metric (ungrouped) or by
+// "<metric>:<model>" composite key (grouped by model). Every metric requested
+// in opts is present in the returned map — grouped requests always emit the
+// synthetic "<metric>:unknown" and "<metric>:" keys required by the response
+// envelope contract (mitto-1ac).
+func (h *Handlers) buildSeries(opts *tsQueryOpts, rangeFrom, rangeTo time.Time, points []stats.Point) map[string][]tsPoint {
+	// Composite series key = "<metric>" (ungrouped) or "<metric>:<model>" (grouped).
+	// Bucket the store points into per-key aligned totals; alignment is a no-op
+	// for hourly buckets and truncates to the day boundary for daily buckets.
+	metricAllowed := make(map[string]struct{}, len(opts.metrics))
+	for _, m := range opts.metrics {
+		metricAllowed[m] = struct{}{}
+	}
+
+	grouped := opts.groupBy == stats.GroupByModel
+
+	buckets := make(map[string]map[time.Time]int64)
+	seenKeys := make(map[string]struct{})
+
+	seedKey := func(k string) {
+		if _, ok := buckets[k]; !ok {
+			buckets[k] = make(map[time.Time]int64)
+		}
+		seenKeys[k] = struct{}{}
+	}
+
+	// Seed one baseline key per requested metric so every metric always shows
+	// up in the response (dense envelope). Grouped mode uses the synthetic
+	// "<metric>:unknown" slot for empty-model rows so pre-migration data is
+	// still surfaced; a bare "<metric>:" slot is also seeded so metrics that
+	// carry no model dimension (permissions, errors, tool_calls, prompts,
+	// agent_turns_completed, mcp_calls) render alongside the model-tagged ones.
+	for _, m := range opts.metrics {
+		if grouped {
+			seedKey(seriesKeyForModel(m, ""))
+		} else {
+			seedKey(m)
+		}
+	}
+
+	for _, p := range points {
+		if _, ok := metricAllowed[p.Metric]; !ok {
+			continue
+		}
+		var key string
+		if grouped {
+			key = seriesKeyForModel(p.Metric, p.Model)
+		} else {
+			key = p.Metric
+		}
+		seedKey(key)
+		ts := p.TS.UTC().Truncate(opts.bucketDur)
+		buckets[key][ts] += p.Value
+	}
+
+	// Build the dense grid: one point per bucket boundary in [from, to), for
+	// every seen key. Zero-filled where the store had no data.
+	series := make(map[string][]tsPoint, len(seenKeys))
+	for k := range seenKeys {
+		grid := make([]tsPoint, 0, int(opts.rangeDur/opts.bucketDur)+1)
+		for ts := rangeFrom; ts.Before(rangeTo); ts = ts.Add(opts.bucketDur) {
+			grid = append(grid, tsPoint{T: ts.Unix(), V: buckets[k][ts]})
+		}
+		series[k] = grid
+	}
+	return series
+}
+
+// seriesKeyForModel builds the composite series key used when groupBy=model.
+// Empty model becomes "unknown" so the client can render pre-migration and
+// non-model-attributable rows as a labeled grey line.
+func seriesKeyForModel(metric, model string) string {
+	if model == "" {
+		return metric + ":unknown"
+	}
+	return metric + ":" + model
 }
