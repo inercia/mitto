@@ -185,16 +185,29 @@ func validateFragmentName(name string) error {
 // not evaluate) each literal, then Parse + Execute against an empty
 // PromptEnabledContext with missingkey=zero so the stub is actually invoked
 // for every Cond/When call site.
+//
+// Parameterised fragments (called with `{{ template "name" X }}` where X is
+// not the prompt context — e.g. a `dict` or a plain string) will naturally
+// fail this dry-run Execute with a struct-field-access error against the
+// empty PromptEnabledContext, even though the fragment itself is well-formed
+// and works when invoked from a real caller. To support them, we treat any
+// Execute error that is NOT a CEL-compile error (i.e. not raised by the
+// condStub) as a non-fatal warning: parse validation still catches syntax
+// errors, but incompatible dry-run dot-values do not block loading. If the
+// fragment truly does contain a broken Cond/When literal, PrecompileTemplateConds
+// on the composed root template will surface that at render time.
 func validateFragmentBody(name, body string) error {
 	if !HasTemplateSyntax(body) {
 		return nil
 	}
+	var condErr error
 	condStub := func(expr string) (bool, error) {
 		ev := cel.GetCELEvaluator()
 		if ev == nil {
 			return false, nil
 		}
 		if _, err := ev.Compile(expr); err != nil {
+			condErr = err
 			return false, err
 		}
 		return false, nil
@@ -209,7 +222,14 @@ func validateFragmentBody(name, body string) error {
 	}
 	var buf bytes.Buffer
 	if err := t.Execute(&buf, &cel.PromptEnabledContext{}); err != nil {
-		return fmt.Errorf("fragment %q: cond precompile: %w", name, err)
+		// Only fail if the error came from condStub (a real CEL compile
+		// failure); otherwise the fragment is likely parameterised and the
+		// empty PromptEnabledContext is just an incompatible dry-run value.
+		if condErr != nil {
+			return fmt.Errorf("fragment %q: cond precompile: %w", name, err)
+		}
+		slog.Debug("fragment dry-run execute skipped (likely parameterised fragment)",
+			"name", name, "error", err)
 	}
 	return nil
 }
