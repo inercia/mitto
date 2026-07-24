@@ -22,6 +22,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/inercia/mitto/internal/beads"
+	beadswatcher "github.com/inercia/mitto/internal/beads/watcher"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/logging"
 	"github.com/inercia/mitto/internal/session"
@@ -78,6 +79,16 @@ type Server struct {
 	// Non-nil only when the --beads-cache flag is on; the mitto_beads_cache_metrics
 	// tool is registered only when this is non-nil (mitto-is2.5).
 	beadsCacheMetricsFn func() beads.CacheMetrics
+
+	// beadsClient is the beads.Client used by the
+	// mitto_conversation_wait beads_issues_reached_state branch to read
+	// current statuses. Optional; wired via SetBeadsClient after NewServer.
+	beadsClient beads.Client
+	// beadsWatcher is the fsnotify-backed .beads/ watcher used by the
+	// mitto_conversation_wait beads_issues_reached_state branch to re-evaluate
+	// the predicate on debounced change events. Optional; wired via
+	// SetBeadsWatcher after NewServer.
+	beadsWatcher *beadswatcher.BeadsWatcher
 
 	// Session registry for session-scoped tools.
 	// Maps session_id -> registeredSession for routing UI prompts and checking permissions.
@@ -160,6 +171,15 @@ type Dependencies struct {
 	// counters. Wired only when the --beads-cache flag is on. Nil means the
 	// mitto_beads_cache_metrics tool is not registered (mitto-is2.5).
 	BeadsCacheMetrics func() beads.CacheMetrics
+	// BeadsClient, when non-nil, is used by the mitto_conversation_wait
+	// beads_issues_reached_state branch to read current bd statuses. When nil,
+	// that branch fails loudly with a "beads not available" error.
+	BeadsClient beads.Client
+	// BeadsWatcher, when non-nil, is used by the mitto_conversation_wait
+	// beads_issues_reached_state branch to receive debounced fs-notify events
+	// on .beads/ directories. When nil, that branch falls back to a periodic
+	// polling loop.
+	BeadsWatcher *beadswatcher.BeadsWatcher
 }
 
 // SessionManager interface for checking session status and managing sessions.
@@ -330,6 +350,8 @@ func NewServer(cfg Config, deps Dependencies) (*Server, error) {
 		promptsCache:          deps.PromptsCache,
 		sessionManager:        deps.SessionManager,
 		beadsCacheMetricsFn:   deps.BeadsCacheMetrics,
+		beadsClient:           deps.BeadsClient,
+		beadsWatcher:          deps.BeadsWatcher,
 		sessions:              make(map[string]*registeredSession),
 		pendingRequests:       make(map[string][]*pendingRequest),
 		mcpSessionMap:         make(map[string]string),
@@ -772,6 +794,26 @@ func (s *Server) SetLoopRunner(runner LoopRunner) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.loopRunner = runner
+}
+
+// SetBeadsClient sets the beads.Client used by the
+// mitto_conversation_wait beads_issues_reached_state branch. It may be called
+// after NewServer since the beads client is created before the MCP server but
+// wrapped in a CachingClient later. Passing nil disables the branch.
+func (s *Server) SetBeadsClient(c beads.Client) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.beadsClient = c
+}
+
+// SetBeadsWatcher sets the BeadsWatcher used by the
+// mitto_conversation_wait beads_issues_reached_state branch. It may be called
+// after NewServer since the beads watcher is created later in web.Server.Start.
+// Passing nil forces the branch to poll instead of subscribing.
+func (s *Server) SetBeadsWatcher(w *beadswatcher.BeadsWatcher) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.beadsWatcher = w
 }
 
 // RegisterSession registers a session with the MCP server.

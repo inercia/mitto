@@ -317,8 +317,14 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 	mcp.AddTool(mcpSrv, &mcp.Tool{
 		Name: "mitto_conversation_wait",
 		Description: "Wait until something happens in a conversation. " +
-			"Currently supports: 'agent_responded' — blocks until the agent finishes responding. " +
-			"Returns immediately if the condition is already met (e.g., agent is not currently responding). " +
+			"Supports two 'what' values: " +
+			"'agent_responded' — blocks until the agent finishes responding (default timeout: 10 min); " +
+			"'beads_issues_reached_state' — blocks until one or more bd issues reach a target status. " +
+			"For 'beads_issues_reached_state', provide 'beads_issues' (list of bd IDs, e.g. [\"mitto-1ac\"]), " +
+			"'beads_target_state' (e.g. \"closed\", case-insensitive), and optionally 'beads_match' " +
+			"(\"all\" (default) or \"any\"). Default timeout for this mode is 4 hours. " +
+			"The output includes 'reached_issues', 'pending_issues', and 'current_states' (id → status snapshot). " +
+			"Returns immediately if the condition is already met (e.g., agent is not currently responding, or all listed beads already at the target state). " +
 			"Optionally specify a 'workspace' UUID when waiting on a conversation in a different workspace (requires user confirmation). " +
 			"If the wait times out, the result includes 'timed_out: true' and 'still_prompting' indicating whether the agent is still responding — you do NOT need to separately check the prompting status. " +
 			selfIDNote,

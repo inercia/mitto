@@ -902,9 +902,22 @@ type ChildrenTasksReportOutput struct {
 type ConversationWaitInput struct {
 	SelfID         string `json:"self_id"`                   // YOUR session ID (the caller)
 	ConversationID string `json:"conversation_id"`           // Target conversation to wait on
-	What           string `json:"what"`                      // Condition to wait for: "agent_responded"
-	TimeoutSeconds int    `json:"timeout_seconds,omitempty"` // Optional timeout (default: 600s / 10 min)
+	What           string `json:"what"`                      // Condition to wait for: "agent_responded" or "beads_issues_reached_state"
+	TimeoutSeconds int    `json:"timeout_seconds,omitempty"` // Optional timeout (default: 600s / 10 min for agent_responded, 4h for beads_issues_reached_state)
 	Workspace      string `json:"workspace,omitempty"`       // Optional workspace UUID for cross-workspace operations
+
+	// BeadsIssues is the list of bead IDs to observe when
+	// what = "beads_issues_reached_state". Required for that mode.
+	BeadsIssues []string `json:"beads_issues,omitempty"`
+	// BeadsTargetState is the bd status to wait for (e.g. "closed",
+	// "in_progress"). Required when what = "beads_issues_reached_state".
+	// Case-insensitive.
+	BeadsTargetState string `json:"beads_target_state,omitempty"`
+	// BeadsMatch selects the aggregation strategy for
+	// what = "beads_issues_reached_state": "all" (default) completes only
+	// when every listed bead reaches beads_target_state; "any" completes as
+	// soon as one of them does.
+	BeadsMatch string `json:"beads_match,omitempty"`
 }
 
 // ConversationWaitOutput is the output for mitto_conversation_wait tool.
@@ -915,6 +928,17 @@ type ConversationWaitOutput struct {
 	StillPrompting bool   `json:"still_prompting,omitempty"` // True if the target agent is still responding (set on timeout)
 	Message        string `json:"message,omitempty"`         // Human-readable description of the wait outcome
 	Error          string `json:"error,omitempty"`
+
+	// ReachedIssues is the subset of BeadsIssues that satisfied the predicate
+	// when what = "beads_issues_reached_state".
+	ReachedIssues []string `json:"reached_issues,omitempty"`
+	// PendingIssues is the subset of BeadsIssues that did NOT reach the target
+	// state at return time when what = "beads_issues_reached_state" (typically
+	// populated on timeout).
+	PendingIssues []string `json:"pending_issues,omitempty"`
+	// CurrentStates is a snapshot of id -> current bd status at return time
+	// when what = "beads_issues_reached_state".
+	CurrentStates map[string]string `json:"current_states,omitempty"`
 }
 
 // =============================================================================

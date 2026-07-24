@@ -308,6 +308,13 @@ func (c *CachingClient) ListClosedIDs(ctx context.Context, dir string) ([]string
 	return c.inner.ListClosedIDs(ctx, dir)
 }
 
+// Statuses is called from mitto_conversation_wait's beads_issues_reached_state
+// branch. Waiters need to observe fresh statuses on every re-evaluation, so
+// this deliberately bypasses the cache.
+func (c *CachingClient) Statuses(ctx context.Context, dir string, ids []string) (map[string]string, error) {
+	return c.inner.Statuses(ctx, dir, ids)
+}
+
 // ---------------------------------------------------------------------------
 // Writers: invalidate the workspace slot before returning (even on error, so a
 // partially-applied bd write does not leave stale reads visible).

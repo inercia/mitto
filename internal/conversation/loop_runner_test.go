@@ -2602,6 +2602,9 @@ func (c *fakeTasksBeadsClient) Delete(context.Context, string, string) error { r
 func (c *fakeTasksBeadsClient) ListClosedIDs(context.Context, string) ([]string, error) {
 	return nil, nil
 }
+func (c *fakeTasksBeadsClient) Statuses(context.Context, string, []string) (map[string]string, error) {
+	return nil, nil
+}
 func (c *fakeTasksBeadsClient) DeleteIDs(context.Context, string, []string) error       { return nil }
 func (c *fakeTasksBeadsClient) SetStatus(context.Context, string, string, string) error { return nil }
 func (c *fakeTasksBeadsClient) Update(context.Context, string, beads.UpdateParams) error {

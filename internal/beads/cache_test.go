@@ -92,6 +92,10 @@ func (f *fakeClient) ListClosedIDs(_ context.Context, _ string) ([]string, error
 	return nil, nil
 }
 
+func (f *fakeClient) Statuses(_ context.Context, _ string, _ []string) (map[string]string, error) {
+	return nil, nil
+}
+
 func (f *fakeClient) Create(_ context.Context, _ string, _ CreateParams) ([]byte, error) {
 	f.mu.Lock()
 	f.createCalls++

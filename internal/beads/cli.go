@@ -348,6 +348,36 @@ func (c *cliClient) ListClosedIDs(ctx context.Context, dir string) ([]string, er
 	return ids, nil
 }
 
+// statusItem is the minimal shape needed to read id -> status pairs from
+// "bd list --id <csv> --all --json".
+type statusItem struct {
+	ID     string `json:"id"`
+	Status string `json:"status"`
+}
+
+func (c *cliClient) Statuses(ctx context.Context, dir string, ids []string) (map[string]string, error) {
+	if len(ids) == 0 {
+		return map[string]string{}, nil
+	}
+	// Batch: one subprocess for all ids via "bd list --id <csv> --all --json".
+	csv := strings.Join(ids, ",")
+	out, err := c.runJSONRead(ctx, dir, "list", "--id", csv, "--all", "--json")
+	if err != nil {
+		return nil, err
+	}
+	var items []statusItem
+	if err := json.Unmarshal(out, &items); err != nil {
+		return nil, &CmdError{Err: errors.New("failed to parse bd list output")}
+	}
+	result := make(map[string]string, len(items))
+	for _, it := range items {
+		if it.ID != "" {
+			result[it.ID] = it.Status
+		}
+	}
+	return result, nil
+}
+
 func (c *cliClient) DeleteIDs(ctx context.Context, dir string, ids []string) error {
 	if len(ids) == 0 {
 		return nil

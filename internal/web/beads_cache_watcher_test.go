@@ -37,6 +37,9 @@ func (s *stubBeadsClient) Delete(context.Context, string, string) error { return
 func (s *stubBeadsClient) ListClosedIDs(context.Context, string) ([]string, error) {
 	return nil, nil
 }
+func (s *stubBeadsClient) Statuses(context.Context, string, []string) (map[string]string, error) {
+	return nil, nil
+}
 func (s *stubBeadsClient) DeleteIDs(context.Context, string, []string) error       { return nil }
 func (s *stubBeadsClient) SetStatus(context.Context, string, string, string) error { return nil }
 func (s *stubBeadsClient) Update(context.Context, string, beads.UpdateParams) error {

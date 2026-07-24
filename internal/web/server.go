@@ -908,6 +908,7 @@ func NewServer(config Config) (*Server, error) {
 				SessionManager:    &sessionManagerAdapter{sm: sessionMgr},
 				PromptsCache:      config.PromptsCache,
 				BeadsCacheMetrics: s.beadsCacheMetricsCallback(),
+				BeadsClient:       s.beads,
 			},
 		)
 		if err != nil {
@@ -1352,6 +1353,12 @@ func NewServer(config Config) (*Server, error) {
 	} else {
 		s.beadsWatcher = beadsWatcher
 		s.beadsWatcher.Subscribe(s, s.getBeadsWatchDirs())
+		// Wire the watcher into the MCP server so the
+		// mitto_conversation_wait beads_issues_reached_state branch can
+		// subscribe to debounced .beads/ change events (mitto-7rw).
+		if s.mcpServer != nil {
+			s.mcpServer.SetBeadsWatcher(s.beadsWatcher)
+		}
 		// Also subscribe the loop runner so onTasks loop conversations
 		// can fire (or rebase their diff baseline) when beads change.
 		// Record the watcher on the runner so Stop() can Unsubscribe(r)

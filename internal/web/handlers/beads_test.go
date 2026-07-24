@@ -112,6 +112,9 @@ func (c *stubBeadsClient) Delete(_ context.Context, _, _ string) error { return 
 func (c *stubBeadsClient) ListClosedIDs(_ context.Context, _ string) ([]string, error) {
 	return nil, nil
 }
+func (c *stubBeadsClient) Statuses(_ context.Context, _ string, _ []string) (map[string]string, error) {
+	return nil, nil
+}
 func (c *stubBeadsClient) DeleteIDs(_ context.Context, _ string, _ []string) error { return nil }
 func (c *stubBeadsClient) SetStatus(_ context.Context, _, _, _ string) error       { return nil }
 func (c *stubBeadsClient) Update(_ context.Context, _ string, p beads.UpdateParams) error {

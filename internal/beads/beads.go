@@ -359,6 +359,11 @@ type Client interface {
 	Ready(ctx context.Context, dir string) ([]byte, error)
 	Status(ctx context.Context, dir string) ([]byte, error)
 	Show(ctx context.Context, dir, id string) ([]byte, error)
+	// Statuses returns a map of id -> current bd status for each of the given
+	// ids. Missing ids are simply absent from the result (not an error). It is
+	// used by mitto_conversation_wait's beads_issues_reached_state branch as a
+	// batched fast-path check that avoids one bd invocation per id.
+	Statuses(ctx context.Context, dir string, ids []string) (map[string]string, error)
 	Create(ctx context.Context, dir string, p CreateParams) ([]byte, error)
 	Delete(ctx context.Context, dir, id string) error
 	ListClosedIDs(ctx context.Context, dir string) ([]string, error)
