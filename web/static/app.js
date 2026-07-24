@@ -1085,6 +1085,14 @@ function App() {
   // Input font size setting (web UI, default: "default")
   const [inputFontSize, setInputFontSize] = useState("default");
 
+  // Conversation font family setting (web UI, default: "system") — applied to
+  // .markdown-content only, independent of the compose/input font.
+  const [conversationFontFamily, setConversationFontFamily] = useState("system");
+
+  // Conversation base font size (web UI, default: "sm") — the sidebar
+  // small-A / large-A toggle re-anchors on this value.
+  const [conversationFontSize, setConversationFontSize] = useState("sm");
+
   // Send key mode setting (web UI, default: "enter")
   // "enter" = Enter to send, Shift+Enter for new line
   // "ctrl-enter" = Ctrl/Cmd+Enter to send, Enter for new line
@@ -1161,6 +1169,14 @@ function App() {
         // Load input font size setting (web UI)
         if (config?.ui?.web?.input_font_size) {
           setInputFontSize(config.ui.web.input_font_size);
+        }
+        // Load conversation font family setting (web UI)
+        if (config?.ui?.web?.conversation_font_family) {
+          setConversationFontFamily(config.ui.web.conversation_font_family);
+        }
+        // Load conversation base font size setting (web UI)
+        if (config?.ui?.web?.conversation_font_size) {
+          setConversationFontSize(config.ui.web.conversation_font_size);
         }
         // Load send key mode setting (web UI, default: "enter")
         if (config?.ui?.web?.send_key_mode) {
@@ -1248,6 +1264,41 @@ function App() {
     sizeClasses.forEach((cls) => root.classList.remove(cls));
     root.classList.add(`input-fontsize-${inputFontSize}`);
   }, [inputFontSize]);
+
+  // Apply conversation font family class to <html>. Parallel to input-font-*
+  // but targets .markdown-content only via .conv-font-* rules in styles.css.
+  useEffect(() => {
+    const root = document.documentElement;
+    const convFontClasses = [
+      "conv-font-system",
+      "conv-font-sans-serif",
+      "conv-font-serif",
+      "conv-font-inter",
+      "conv-font-sf-pro",
+      "conv-font-helvetica-neue",
+      "conv-font-roboto",
+      "conv-font-georgia",
+      "conv-font-charter",
+      "conv-font-ibm-plex-sans",
+    ];
+    convFontClasses.forEach((cls) => root.classList.remove(cls));
+    root.classList.add(`conv-font-${conversationFontFamily}`);
+  }, [conversationFontFamily]);
+
+  // Apply conversation base font size as a CSS variable so the existing
+  // .font-small / .font-large rules re-anchor on it (small-A = base,
+  // large-A = base + 2px). Kept in sync with the WebUIConfig options.
+  useEffect(() => {
+    const CONV_BASE_PX = {
+      xs: "13px",
+      sm: "14px",
+      md: "15px",
+      lg: "16px",
+      xl: "18px",
+    };
+    const px = CONV_BASE_PX[conversationFontSize] || CONV_BASE_PX.sm;
+    document.documentElement.style.setProperty("--mitto-conv-base-size", px);
+  }, [conversationFontSize]);
 
   // Messages-area scroll management (extracted to hooks/useScrollManagement.js):
   // at-bottom tracking, new-message indicator, auto-scroll on new content,
@@ -3165,6 +3216,14 @@ function App() {
                 );
                 // Reload input font size setting
                 setInputFontSize(config?.ui?.web?.input_font_size || "default");
+                // Reload conversation font family setting
+                setConversationFontFamily(
+                  config?.ui?.web?.conversation_font_family || "system",
+                );
+                // Reload conversation base font size setting
+                setConversationFontSize(
+                  config?.ui?.web?.conversation_font_size || "sm",
+                );
                 // Reload send key mode setting
                 setSendKeyMode(config?.ui?.web?.send_key_mode || "enter");
                 // Reload conversation cycling mode setting

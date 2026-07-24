@@ -549,6 +549,18 @@ type WebUIConfig struct {
 	// Options: "default" (14px), "small" (12px), "medium" (16px), "large" (18px), "xl" (20px)
 	InputFontSize string `json:"input_font_size,omitempty"`
 
+	// ConversationFontFamily is the font family for conversation message rendering
+	// (the .markdown-content area), independent of the compose/input box.
+	// Options: "system" (default), "sans-serif", "serif", "inter", "sf-pro",
+	// "helvetica-neue", "roboto", "georgia", "charter", "ibm-plex-sans"
+	ConversationFontFamily string `json:"conversation_font_family,omitempty"`
+
+	// ConversationFontSize is the base font size for conversation message rendering.
+	// The sidebar small-A / large-A toggle re-anchors on this base: small-A = base,
+	// large-A = base + 2px.
+	// Options: "xs" (13px), "sm" (14px, default), "md" (15px), "lg" (16px), "xl" (18px)
+	ConversationFontSize string `json:"conversation_font_size,omitempty"`
+
 	// ConversationCyclingMode controls which conversations are included when cycling
 	// with keyboard shortcuts (Cmd+Ctrl+Up/Down) or mobile swipe gestures.
 	// Options: "all" (default) - all non-archived conversations
@@ -1334,6 +1346,8 @@ type rawConfig struct {
 		Web *struct {
 			InputFontFamily         string `yaml:"input_font_family"`
 			InputFontSize           string `yaml:"input_font_size"`
+			ConversationFontFamily  string `yaml:"conversation_font_family"`
+			ConversationFontSize    string `yaml:"conversation_font_size"`
 			ConversationCyclingMode string `yaml:"conversation_cycling_mode"`
 			SingleExpandedGroup     bool   `yaml:"single_expanded_group"`
 		} `yaml:"web"`
@@ -1647,6 +1661,8 @@ func Parse(data []byte) (*Config, error) {
 			cfg.UI.Web = &WebUIConfig{
 				InputFontFamily:         raw.UI.Web.InputFontFamily,
 				InputFontSize:           raw.UI.Web.InputFontSize,
+				ConversationFontFamily:  raw.UI.Web.ConversationFontFamily,
+				ConversationFontSize:    raw.UI.Web.ConversationFontSize,
 				ConversationCyclingMode: raw.UI.Web.ConversationCyclingMode,
 				SingleExpandedGroup:     raw.UI.Web.SingleExpandedGroup,
 			}

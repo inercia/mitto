@@ -2073,6 +2073,15 @@ export function SettingsDialog({
   // Input font size setting (web UI)
   const [inputFontSize, setInputFontSize] = useState("default");
 
+  // Conversation font family setting (web UI) — applied to .markdown-content
+  // only, independent of the compose/input font.
+  const [conversationFontFamily, setConversationFontFamily] =
+    useState("system");
+
+  // Conversation base font size (web UI) — the sidebar small-A / large-A
+  // toggle re-anchors on this base.
+  const [conversationFontSize, setConversationFontSize] = useState("sm");
+
   // Send key mode setting (web UI) - default: "enter"
   // "enter" = Enter to send, Shift+Enter for new line
   // "ctrl-enter" = Ctrl/Cmd+Enter to send, Enter for new line
@@ -2510,6 +2519,14 @@ export function SettingsDialog({
       // Load input font size setting (web UI) - default to "default"
       setInputFontSize(config.ui?.web?.input_font_size || "default");
 
+      // Load conversation font family setting (web UI) - default to "system"
+      setConversationFontFamily(
+        config.ui?.web?.conversation_font_family || "system",
+      );
+
+      // Load conversation base font size setting (web UI) - default to "sm"
+      setConversationFontSize(config.ui?.web?.conversation_font_size || "sm");
+
       // Load send key mode setting (web UI) - default to "enter"
       setSendKeyMode(config.ui?.web?.send_key_mode || "enter");
 
@@ -2726,6 +2743,8 @@ export function SettingsDialog({
         web: {
           input_font_family: inputFontFamily,
           input_font_size: inputFontSize,
+          conversation_font_family: conversationFontFamily,
+          conversation_font_size: conversationFontSize,
           send_key_mode: sendKeyMode,
           conversation_cycling_mode: conversationCyclingMode,
           single_expanded_group: singleExpandedGroup,
@@ -5341,6 +5360,55 @@ export function SettingsDialog({
                               <option value="medium">Medium</option>
                               <option value="large">Large</option>
                               <option value="xl">Extra Large</option>
+                            </select>
+                          </div>
+                        </div>
+                      </div>
+                      <div class="p-3">
+                        <div class="flex items-center justify-between">
+                          <div>
+                            <div class="font-medium text-sm">
+                              Conversation font
+                            </div>
+                            <div class="text-xs text-mitto-text-muted">
+                              Font family and base size for conversation
+                              messages. The sidebar small-A / large-A toggle
+                              re-anchors on the base size.
+                            </div>
+                          </div>
+                          <div class="flex items-center gap-2">
+                            <select
+                              value=${conversationFontFamily}
+                              onChange=${(e) =>
+                                setConversationFontFamily(e.target.value)}
+                              class="select select-sm"
+                            >
+                              <option value="system">System Default</option>
+                              <option value="sans-serif">Sans-Serif</option>
+                              <option value="serif">Serif</option>
+                              <option value="inter">Inter</option>
+                              <option value="sf-pro">SF Pro</option>
+                              <option value="helvetica-neue">
+                                Helvetica Neue
+                              </option>
+                              <option value="roboto">Roboto</option>
+                              <option value="georgia">Georgia</option>
+                              <option value="charter">Charter</option>
+                              <option value="ibm-plex-sans">
+                                IBM Plex Sans
+                              </option>
+                            </select>
+                            <select
+                              value=${conversationFontSize}
+                              onChange=${(e) =>
+                                setConversationFontSize(e.target.value)}
+                              class="select select-sm"
+                            >
+                              <option value="xs">Extra Small (13px)</option>
+                              <option value="sm">Small (14px)</option>
+                              <option value="md">Medium (15px)</option>
+                              <option value="lg">Large (16px)</option>
+                              <option value="xl">Extra Large (18px)</option>
                             </select>
                           </div>
                         </div>

@@ -973,9 +973,11 @@ a.mailto-link:hover {
    Font Size Classes (applied to markdown-content)
    ============================================================================= */
 
-/* Small font (default) */
+/* Small font (default). Re-anchored on --mitto-conv-base-size so the
+   Conversation font base-size setting slides both small-A and large-A.
+   Fallback 14px preserves today's baseline when the var is unset. */
 .font-small .markdown-content {
-  font-size: 0.875rem; /* 14px */
+  font-size: var(--mitto-conv-base-size, 14px);
 }
 
 .font-small .markdown-content pre,
@@ -983,9 +985,9 @@ a.mailto-link:hover {
   font-size: 0.8125rem; /* 13px */
 }
 
-/* Large font */
+/* Large font: keeps the historical +2px delta over the base. */
 .font-large .markdown-content {
-  font-size: 1rem; /* 16px */
+  font-size: calc(var(--mitto-conv-base-size, 14px) + 2px);
 }
 
 .font-large .markdown-content pre,
@@ -1079,6 +1081,67 @@ a.mailto-link:hover {
 .input-font-cascadia-code .input-font-target .cm-content {
   font-family:
     "Cascadia Code", "Cascadia Mono", Consolas, "Courier New", monospace;
+}
+
+/* =============================================================================
+   Conversation Font Family Classes (applied to .markdown-content only)
+
+   Prose-friendly font stacks for conversation message rendering. Parallel to
+   .input-font-* but targets .markdown-content, so the compose textarea and
+   CodeMirror description editor are unaffected.
+   ============================================================================= */
+
+.conv-font-system .markdown-content {
+  font-family:
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    Roboto,
+    "Helvetica Neue",
+    Arial,
+    sans-serif;
+}
+
+.conv-font-sans-serif .markdown-content {
+  font-family: sans-serif;
+}
+
+.conv-font-serif .markdown-content {
+  font-family: Georgia, "Times New Roman", Times, serif;
+}
+
+.conv-font-inter .markdown-content {
+  font-family:
+    Inter, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue",
+    sans-serif;
+}
+
+.conv-font-sf-pro .markdown-content {
+  font-family:
+    "SF Pro Text", "SF Pro", -apple-system, BlinkMacSystemFont, system-ui,
+    sans-serif;
+}
+
+.conv-font-helvetica-neue .markdown-content {
+  font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+}
+
+.conv-font-roboto .markdown-content {
+  font-family: Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+
+.conv-font-georgia .markdown-content {
+  font-family: Georgia, "Times New Roman", Times, serif;
+}
+
+.conv-font-charter .markdown-content {
+  font-family:
+    Charter, "Bitstream Charter", "Sitka Text", Cambria, Georgia, serif;
+}
+
+.conv-font-ibm-plex-sans .markdown-content {
+  font-family: "IBM Plex Sans", system-ui, -apple-system, sans-serif;
 }
 
 /* =============================================================================

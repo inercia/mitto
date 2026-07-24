@@ -249,6 +249,8 @@ web:
 #   # Web interface settings (applies to both browser and macOS app)
 #   web:
 #     input_font_family: "system"  # Font for compose area: system, monospace, sans-serif, serif, menlo, etc.
+#     conversation_font_family: "system"  # Prose font for conversation messages: system, sans-serif, serif, inter, sf-pro, helvetica-neue, roboto, georgia, charter, ibm-plex-sans
+#     conversation_font_size: "sm"  # Base size for conversation messages (sidebar small-A/large-A re-anchors on it): xs (13px), sm (14px), md (15px), lg (16px), xl (18px)
 #     conversation_cycling_mode: "all"  # Navigation scope: "all" or "visible_groups" (only expanded groups)
 #     single_expanded_group: false  # Accordion mode: at most one conversation group expanded at a time
 #

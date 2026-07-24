@@ -91,6 +91,18 @@ ui:
     # "jetbrains-mono", "sf-mono", "cascadia-code"
     input_font_family: "system"
 
+    # Font family for conversation message rendering (the .markdown-content
+    # area), independent of the compose box. Prose-friendly options only.
+    # Options: "system" (default), "sans-serif", "serif", "inter", "sf-pro",
+    # "helvetica-neue", "roboto", "georgia", "charter", "ibm-plex-sans"
+    conversation_font_family: "system"
+
+    # Base font size for conversation message rendering. The sidebar
+    # small-A / large-A toggle re-anchors on this base (small-A = base,
+    # large-A = base + 2px), so it slides both together.
+    # Options: "xs" (13px), "sm" (14px, default), "md" (15px), "lg" (16px), "xl" (18px)
+    conversation_font_size: "sm"
+
   # macOS desktop app settings (see mac/README.md for details)
   mac:
     hotkeys:
