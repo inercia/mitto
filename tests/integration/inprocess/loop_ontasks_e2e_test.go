@@ -55,6 +55,9 @@ func (c *fakeOnTasksBeadsClient) Ready(context.Context, string) ([]byte, error) 
 func (c *fakeOnTasksBeadsClient) Status(context.Context, string) ([]byte, error) {
 	return []byte(`{}`), nil
 }
+func (c *fakeOnTasksBeadsClient) Statuses(context.Context, string, []string) (map[string]string, error) {
+	return nil, nil
+}
 func (c *fakeOnTasksBeadsClient) Show(context.Context, string, string) ([]byte, error) {
 	return []byte(`{}`), nil
 }

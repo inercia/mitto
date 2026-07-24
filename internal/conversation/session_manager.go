@@ -2515,6 +2515,11 @@ func (sm *SessionManager) resumeSessionWithConstraint(sessionID, sessionName, wo
 	// where the session is in sm.sessions but pendingResumes hasn't been cleared yet.
 	signalDone(bs, nil)
 
+	// mitto-stw: sweep the queue after resume. Items may have been enqueued while
+	// the BS was offline (e.g. reuseSingletonSession's bs==nil branch seeds a
+	// prompt without triggering dispatch). No-op on an empty queue or busy agent.
+	go bs.TryProcessQueuedMessage()
+
 	if sm.logger != nil {
 		sm.logger.Debug("Resumed background session",
 			"session_id", bs.GetSessionID(),
