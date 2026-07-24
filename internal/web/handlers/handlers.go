@@ -226,6 +226,14 @@ type Deps struct {
 	// callers must nil-guard (treat nil as "not reuseCoalesce").
 	ResolvePromptReuseCoalesce func(promptName, workingDir string) bool
 
+	// ResolvePromptSuppressAutoChildren reports whether the named prompt
+	// (resolved for the given working dir via the full merge pipeline) has
+	// target.suppressAutoChildren set. When true, the create path skips the
+	// workspace-level auto_children spawn for this new top-level session
+	// (mitto-nlx). May be nil; callers must nil-guard (treat nil as "do not
+	// suppress").
+	ResolvePromptSuppressAutoChildren func(promptName, workingDir string) bool
+
 	// DefaultACPServer mirrors Server.config.ACPServer: the default ACP server
 	// name used in the create-session response when the resolved workspace does
 	// not specify one.

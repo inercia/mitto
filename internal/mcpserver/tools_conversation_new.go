@@ -554,6 +554,13 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 		childSettings[k] = v
 	}
 
+	// Note: target.suppressAutoChildren (mitto-nlx) is intentionally NOT
+	// consulted on this MCP path. mitto_conversation_new always sets
+	// ParentSessionID (see below) and delegates process start to
+	// ResumeSession, not CreateSessionWithWorkspace — so the workspace-level
+	// auto_children spawn never runs here today. If MCP ever grows a
+	// top-level create path, mirror the resolveSuppressAutoChildrenByPromptName
+	// wiring used by the REST handler (internal/web/handlers/session_create.go).
 	newMeta := session.Metadata{
 		SessionID:        newSessionID,
 		Name:             input.Title,

@@ -1482,11 +1482,35 @@ func (sm *SessionManager) CreateSession(ctx context.Context, name, workingDir st
 	return sm.CreateSessionWithWorkspace(ctx, name, workingDir, nil)
 }
 
+// CreateSessionOptions carries create-time dispatch flags resolved by the
+// caller (typically from the originating prompt's target frontmatter) that
+// influence side effects of the create beyond the basic (name, workingDir,
+// workspace) inputs. Zero value preserves historical behavior — safe to
+// leave unset on any code path that has not yet been taught to plumb the
+// flags through (mitto-nlx).
+type CreateSessionOptions struct {
+	// SuppressAutoChildren, when true, skips the workspace-level
+	// auto_children spawn for this new top-level session. Set from a
+	// prompt's target.suppressAutoChildren frontmatter by the REST create
+	// handler; defaults to false everywhere else.
+	SuppressAutoChildren bool
+}
+
 // CreateSessionWithWorkspace creates a new session using the specified workspace configuration.
 // If workspace is nil, looks up the workspace by workingDir or uses the default.
 // ctx is used for the initial ACP session creation RPC — pass r.Context() from HTTP handlers
 // so that the 30s request-timeout middleware can cancel the RPC if the agent is busy.
+// Delegates to CreateSessionWithWorkspaceAndOptions with a zero options struct;
+// callers that need to influence create-time dispatch flags should call the
+// options-aware variant directly.
 func (sm *SessionManager) CreateSessionWithWorkspace(ctx context.Context, name, workingDir string, workspace *config.WorkspaceSettings) (*BackgroundSession, error) {
+	return sm.CreateSessionWithWorkspaceAndOptions(ctx, name, workingDir, workspace, CreateSessionOptions{})
+}
+
+// CreateSessionWithWorkspaceAndOptions is the options-aware variant of
+// CreateSessionWithWorkspace. See CreateSessionOptions for the meaning of
+// each flag.
+func (sm *SessionManager) CreateSessionWithWorkspaceAndOptions(ctx context.Context, name, workingDir string, workspace *config.WorkspaceSettings, opts CreateSessionOptions) (*BackgroundSession, error) {
 	createStart := time.Now()
 
 	sm.mu.Lock()
@@ -1843,7 +1867,11 @@ func (sm *SessionManager) CreateSessionWithWorkspace(ctx context.Context, name, 
 
 	// Auto-create children for top-level sessions.
 	// Run in goroutine to not block the parent session creation response.
-	go sm.createAutoChildren(bs, effectiveWs)
+	// Skipped when the originating prompt sets target.suppressAutoChildren
+	// (mitto-nlx) — the flag arrives via CreateSessionOptions.
+	if !opts.SuppressAutoChildren {
+		go sm.createAutoChildren(bs, effectiveWs)
+	}
 
 	// Trigger early MCP tools fetch to warm the cache before the first message.
 	sm.ensureMCPToolsFetch(workspaceUUID)

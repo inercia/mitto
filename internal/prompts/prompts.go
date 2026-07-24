@@ -126,6 +126,16 @@ type PromptTarget struct {
 	// default to false / nil (unchanged behavior: every dispatch creates a
 	// new conversation). A nil block is equivalent to all three off.
 	Reuse *PromptTargetReuse `yaml:"reuse,omitempty" json:"reuse,omitempty"`
+
+	// SuppressAutoChildren, when true, prevents the workspace-level
+	// auto_children configuration from spawning child conversations when
+	// this prompt originates a new top-level session (REST POST
+	// /api/sessions). Create-time only; orthogonal to the Reuse modes.
+	// Defaults to false (unchanged behavior: workspace auto_children spawn
+	// as configured). Has no effect on non-top-level creates — auto-children
+	// are already gated to top-level sessions in the session manager
+	// (mitto-nlx).
+	SuppressAutoChildren bool `yaml:"suppressAutoChildren,omitempty" json:"suppressAutoChildren,omitempty"`
 }
 
 // PromptTargetReuse groups reuse-mode routing keys under target.reuse. Split

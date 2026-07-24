@@ -239,11 +239,24 @@ func (h *Handlers) HandleCreateSession(w http.ResponseWriter, r *http.Request) {
 	// Note: The session manager already has the store set by the server at startup.
 	// No need to create a new store here.
 
+	// Resolve target.suppressAutoChildren from the originating prompt
+	// frontmatter (mitto-nlx). When set, the session manager skips the
+	// workspace-level auto_children spawn for this new top-level session.
+	// Uses the same promptName fallback (initial -> origin) as the reuse
+	// resolvers above.
+	suppressAutoChildren := false
+	if promptName != "" && h.deps.ResolvePromptSuppressAutoChildren != nil {
+		suppressAutoChildren = h.deps.ResolvePromptSuppressAutoChildren(promptName, req.WorkingDir)
+	}
+
 	// Create the background session with workspace configuration.
 	// The session/new ACP RPC is no longer performed here — it is deferred to the
 	// first prompt (see ensureSharedACPSession) so creating a conversation never
 	// blocks on a busy agent. r.Context() is still passed for the create call.
-	bs, err := h.deps.SessionManager.CreateSessionWithWorkspace(r.Context(), req.Name, req.WorkingDir, workspace)
+	bs, err := h.deps.SessionManager.CreateSessionWithWorkspaceAndOptions(
+		r.Context(), req.Name, req.WorkingDir, workspace,
+		conversation.CreateSessionOptions{SuppressAutoChildren: suppressAutoChildren},
+	)
 	if err != nil {
 		if err == conversation.ErrTooManySessions {
 			writeErrorJSON(w, http.StatusServiceUnavailable, "too_many_sessions", "Maximum number of sessions reached (32)")

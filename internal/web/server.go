@@ -1177,6 +1177,9 @@ func NewServer(config Config) (*Server, error) {
 		ResolvePromptReuseCoalesce: func(promptName, workingDir string) bool {
 			return s.resolveReuseCoalesceByPromptName(promptName, workingDir)
 		},
+		ResolvePromptSuppressAutoChildren: func(promptName, workingDir string) bool {
+			return s.resolveSuppressAutoChildrenByPromptName(promptName, workingDir)
+		},
 		RemoveNegativeCache: func(sessionID string) {
 			if s.negativeSessionCache != nil {
 				s.negativeSessionCache.Remove(sessionID)
@@ -2828,6 +2831,92 @@ func (s *Server) resolveReuseIssueByPromptName(promptName, workingDir string) bo
 	for _, p := range merged {
 		if strings.EqualFold(p.Name, promptName) {
 			return p.Target != nil && p.Target.Reuse != nil && p.Target.Reuse.Issue
+		}
+	}
+	return false
+}
+
+// resolveSuppressAutoChildrenByPromptName resolves a prompt name to whether
+// its target.suppressAutoChildren flag is set. Uses the same 5-tier
+// resolution pipeline as resolveReuseIssueByPromptName (global file →
+// settings → ACP-specific → workspace-dir → workspace-inline). Returns
+// false when the prompt is not found or does not declare the flag
+// (mitto-nlx).
+func (s *Server) resolveSuppressAutoChildrenByPromptName(promptName, workingDir string) bool {
+	// 1. Global file prompts
+	var globalFilePrompts []configPkg.WebPrompt
+	if s.config.PromptsCache != nil {
+		gfp, err := s.config.PromptsCache.GetWebPrompts()
+		if err != nil && s.logger != nil {
+			s.logger.Warn("Failed to load global file prompts for suppressAutoChildren resolution", "error", err)
+		}
+		globalFilePrompts = gfp
+	}
+
+	// 2. Settings file prompts
+	var settingsPrompts []configPkg.WebPrompt
+	if s.config.MittoConfig != nil {
+		settingsPrompts = s.config.MittoConfig.Prompts
+	}
+
+	// 3. ACP server-specific prompts
+	var acpServerName, acpServerType string
+	if s.sessionManager != nil {
+		if ws := s.sessionManager.GetWorkspace(workingDir); ws != nil {
+			acpServerName = ws.ACPServer
+		}
+	}
+	if acpServerName != "" && s.config.MittoConfig != nil {
+		acpServerType = s.config.MittoConfig.GetServerType(acpServerName)
+	}
+	if acpServerType == "" {
+		acpServerType = acpServerName
+	}
+
+	var serverPrompts []configPkg.WebPrompt
+	if acpServerType != "" && s.config.PromptsCache != nil {
+		sp, err := s.config.PromptsCache.GetWebPromptsSpecificToACP(acpServerType)
+		if err != nil && s.logger != nil {
+			s.logger.Warn("Failed to load ACP-specific prompts for suppressAutoChildren resolution", "error", err)
+		}
+		serverPrompts = sp
+	}
+	if acpServerName != "" && s.config.MittoConfig != nil {
+		for _, srv := range s.config.MittoConfig.ACPServers {
+			if srv.Name == acpServerName {
+				serverPrompts = append(serverPrompts, srv.Prompts...)
+				break
+			}
+		}
+	}
+
+	// 4. Workspace directory prompts
+	var workspacePromptsDirs []string
+	workspacePromptsDirs = append(workspacePromptsDirs, appdir.WorkspacePromptsDir(workingDir))
+	if s.sessionManager != nil {
+		workspacePromptsDirs = append(workspacePromptsDirs, s.sessionManager.GetWorkspacePromptsDirs(workingDir)...)
+	}
+	dirPrompts := s.loadPromptsFromDirs(workingDir, workspacePromptsDirs)
+
+	// 5. Workspace inline prompts (.mittorc)
+	var inlinePrompts []configPkg.WebPrompt
+	if s.sessionManager != nil {
+		inlinePrompts = s.sessionManager.GetWorkspacePrompts(workingDir)
+	}
+
+	merged := configPkg.MergePrompts(
+		configPkg.MergePrompts(
+			configPkg.MergePrompts(globalFilePrompts, settingsPrompts, serverPrompts),
+			nil,
+			dirPrompts,
+		),
+		nil,
+		inlinePrompts,
+	)
+
+	for _, p := range merged {
+		if strings.EqualFold(p.Name, promptName) {
+			return p.Target != nil && p.Target.SuppressAutoChildren
 		}
 	}
 	return false
