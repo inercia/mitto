@@ -396,4 +396,68 @@ func TestBeadsLoopPrompts_mitto4vr_BeadsStateWait(t *testing.T) {
 	if strings.Contains(waitA, "beads_issues_reached_state") {
 		t.Errorf("[mitto-4vr §A leave-alone regression] §A wait block now references `beads_issues_reached_state`; §A must keep `mitto_children_tasks_wait` — a mention driver may reply/investigate without ever touching a bead's status, so a bead-state wait would hang until timeout on every §A dispatch")
 	}
+
+	// Bead-id substitution — both §B and §C waits MUST observe the BEAD id
+	// (spelled `<id>` everywhere else in this file for the target bead) and
+	// NOT the child conversation id (`<child-id>`). Copy-pasting the wrong
+	// placeholder is a plausible failure mode because both variables are
+	// bound in the same paragraph — `<child-id>` is the spawn's return value,
+	// but a bead-state wait keyed on that would never resolve.
+	for _, tc := range []struct {
+		section, block string
+	}{
+		{"§B", waitB},
+		{"§C", waitC},
+	} {
+		if !strings.Contains(tc.block, `beads_issues: ["<id>"]`) {
+			t.Errorf("[mitto-4vr %s wait wrong bead-id] %s wait block does not contain `beads_issues: [\"<id>\"]`; the bead-state wait MUST observe the bead id (the same `<id>` placeholder used by every other statement in this section), not `<child-id>` or any other placeholder — a wait keyed on the wrong id would hang until the 4h timeout on every dispatch", tc.section, tc.section)
+		}
+		if strings.Contains(tc.block, `beads_issues: ["<child-id>"]`) {
+			t.Errorf("[mitto-4vr %s wait keyed on child-id] %s wait block contains `beads_issues: [\"<child-id>\"]`; the wait must observe the BEAD id (`<id>`), not the spawned child's conversation id — beads_issues_reached_state polls beads status, so `<child-id>` would never resolve", tc.section, tc.section)
+		}
+	}
+
+	// Timeout branch prose — the bead's acceptance criteria (mitto-4vr
+	// description, "Semantics" section) explicitly specifies the exact
+	// comment text on the 4h timeout branch. Both §B and §C must carry it
+	// verbatim so operators see a consistent, machine-greppable marker in
+	// bead histories and can distinguish it from other orchestrator comments.
+	const wantTimeoutProse = `Orchestrator: 4h bead-state wait timed out; leaving child running.`
+	for _, tc := range []struct {
+		section, block string
+	}{
+		{"§B", waitB},
+		{"§C", waitC},
+	} {
+		if !strings.Contains(tc.block, wantTimeoutProse) {
+			t.Errorf("[mitto-4vr %s timeout prose] %s wait block does not contain the acceptance-criteria timeout comment %q; the bead's Semantics section specifies this exact wording so operators can grep bead histories for orchestrator timeouts", tc.section, tc.section, wantTimeoutProse)
+		}
+	}
+
+	// Bookkeeping / archive preservation — the bead description says the
+	// bookkeeping comment and the archive step are "unchanged" from the
+	// prior form. Both §B and §C wait blocks must still invoke
+	// `mitto_conversation_archive` on the child. Regression against a future
+	// edit that drops the archive (which would strand finished children in
+	// the workspace conversation list, defeating Step 2P's reap contract).
+	for _, tc := range []struct {
+		section, block string
+	}{
+		{"§B", waitB},
+		{"§C", waitC},
+	} {
+		if !strings.Contains(tc.block, "mitto_conversation_archive") {
+			t.Errorf("[mitto-4vr %s archive dropped] %s wait block no longer contains `mitto_conversation_archive(...)`; the bead's Section-by-section deltas explicitly say the archive step is unchanged. Dropping it strands finished children in the conversation list — Step 2P will eventually reap them but the happy-path Bead-closed branch must archive inline so the workspace stays clean", tc.section, tc.section)
+		}
+	}
+
+	// File-scope negative space — the token `beads_issues_reached_state`
+	// must appear EXACTLY twice in this file: once in §B wait, once in §C
+	// wait. Any other occurrence means the token leaked into an unrelated
+	// section (Step 2P reap, Step 7 defer, §A, guidelines, ...), which
+	// would be either dead prose or an incorrect wait somewhere unexpected.
+	// Fewer than 2 means one of §B/§C's wait blocks lost it.
+	if got, want := strings.Count(src, "beads_issues_reached_state"), 2; got != want {
+		t.Errorf("[mitto-4vr token leak] `beads_issues_reached_state` appears %d times in %s; want exactly %d (one in §B wait, one in §C wait). Extra occurrences mean the token leaked into an unrelated section; missing occurrences mean §B or §C dropped it", got, mergedOrch, want)
+	}
 }
