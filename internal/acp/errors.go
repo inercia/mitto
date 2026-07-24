@@ -332,6 +332,10 @@ var httpStatusRegex = regexp.MustCompile(`(?:HTTP error:\s*|"httpStatus"\s*:\s*|
 // inlining them in FormatACPError) so that the prompt dispatcher's queue-advancement
 // logic and the loop runner's auto-pause guard (via internal/web) can reuse the
 // same predicate without duplicating strings.
+//
+// mitto-k4x: Augment's chat-stream endpoint returns HTTP 400 with
+// apiStatus="invalidArgument" for oversized/malformed context-flush payloads
+// (not HTTP 413). Both substrings are required so unrelated 400s do not match.
 func IsContextTooLargeError(err error) bool {
 	if err == nil {
 		return false
@@ -345,7 +349,9 @@ func IsContextTooLargeError(err error) bool {
 		strings.Contains(errMsgLower, "context window is full") ||
 		strings.Contains(errMsgLower, "prompt is too long") ||
 		strings.Contains(errMsgLower, "maximum context length") ||
-		strings.Contains(errMsgLower, "context too large for model")
+		strings.Contains(errMsgLower, "context too large for model") ||
+		(strings.Contains(errMsgLower, `"httpstatus":400`) &&
+			strings.Contains(errMsgLower, `"apistatus":"invalidargument"`))
 }
 
 // isAgentBusyError reports whether err is a saturated/overloaded shared ACP

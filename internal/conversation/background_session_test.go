@@ -3385,6 +3385,16 @@ func TestIsContextTooLargeError(t *testing.T) {
 		{name: "context window is full", errMsg: "Context window is full", wantTrue: true},
 		{name: "prompt is too long", errMsg: "prompt is too long", wantTrue: true},
 		{name: "maximum context length", errMsg: "maximum context length exceeded", wantTrue: true},
+		// mitto-k4x: Augment chat-stream returns HTTP 400 apiStatus=invalidArgument
+		// for oversized context-flush payloads (not HTTP 413). The classifier must
+		// recognize the httpStatus:400 + apiStatus:"invalidArgument" substring pair
+		// so the loop-runner's auto-pause guard fires (handleDeliveryFailure at
+		// internal/conversation/loop_runner.go:1772 gates the counter on this).
+		{
+			name:     "HTTP 400 invalidArgument from chat-stream (mitto-k4x)",
+			errMsg:   `-32603 Internal error: HTTP error: 400 Bad Request {"apiStatus":"invalidArgument","httpStatus":400,"httpUrl":"https://xlb.api.augmentcode.com/chat-stream"}`,
+			wantTrue: true,
+		},
 		{name: "rate limit is not context too large", errMsg: "rate limit exceeded", wantTrue: false},
 		{name: "generic internal error", errMsg: `{"code":-32603,"message":"Internal error","data":{"details":"unknown"}}`, wantTrue: false},
 		{name: "unrelated error", errMsg: "some other error", wantTrue: false},
