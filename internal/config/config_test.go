@@ -2907,35 +2907,41 @@ func TestBuiltinPrompts_ModelTagsAreCanonical(t *testing.T) {
 		canonical[strings.ToLower(tag)] = struct{}{}
 	}
 
-	entries, err := fs.ReadDir(defaultConfig.BuiltinPromptsFS, defaultConfig.BuiltinPromptsDir)
-	if err != nil {
-		t.Fatalf("read embedded builtin prompts: %v", err)
-	}
-	if len(entries) == 0 {
-		t.Fatal("no embedded builtin prompts found")
-	}
-
+	// Walk the embedded builtin prompts recursively so nested subgroups
+	// (Phase B of mitto-j88) are validated too, not just the flat top level.
 	var unknown []string
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
-		}
-		data, err := fs.ReadFile(defaultConfig.BuiltinPromptsFS, defaultConfig.BuiltinPromptsDir+"/"+e.Name())
+	var walked int
+	walkErr := fs.WalkDir(defaultConfig.BuiltinPromptsFS, defaultConfig.BuiltinPromptsDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
-			t.Fatalf("read %s: %v", e.Name(), err)
+			return err
 		}
-		pf, err := ParsePromptFile(e.Name(), data, time.Time{})
+		if d.IsDir() || !strings.HasSuffix(path, ".prompt.yaml") {
+			return nil
+		}
+		walked++
+		data, err := fs.ReadFile(defaultConfig.BuiltinPromptsFS, path)
 		if err != nil {
-			t.Fatalf("parse %s: %v", e.Name(), err)
+			t.Fatalf("read %s: %v", path, err)
+		}
+		pf, err := ParsePromptFile(path, data, time.Time{})
+		if err != nil {
+			t.Fatalf("parse %s: %v", path, err)
 		}
 		for _, pm := range pf.PreferredModels {
 			if pm.ModelTag == "" {
 				continue
 			}
 			if _, ok := canonical[strings.ToLower(pm.ModelTag)]; !ok {
-				unknown = append(unknown, e.Name()+": "+pm.ModelTag)
+				unknown = append(unknown, path+": "+pm.ModelTag)
 			}
 		}
+		return nil
+	})
+	if walkErr != nil {
+		t.Fatalf("walk embedded builtin prompts: %v", walkErr)
+	}
+	if walked == 0 {
+		t.Fatal("no embedded builtin prompts found")
 	}
 	if len(unknown) > 0 {
 		sort.Strings(unknown)
