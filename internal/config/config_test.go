@@ -3039,3 +3039,111 @@ stats:
 		t.Errorf("explicit 0 GetRetention() = %v, want 0", got)
 	}
 }
+
+// TestParse_ConversationFont covers the mitto-9tl "Conversation font settings
+// group" additions to WebUIConfig: two new keys must round-trip through the
+// YAML load path (raw struct + populate block) alongside the sibling input-font
+// keys and must remain empty strings (not defaulted here) when the caller
+// omits them — matching how input_font_family / input_font_size behave.
+func TestParse_ConversationFont_Set(t *testing.T) {
+	yaml := `
+acp:
+  - claude:
+      command: "claude"
+ui:
+  web:
+    conversation_font_family: "inter"
+    conversation_font_size: "lg"
+`
+	cfg, err := Parse([]byte(yaml))
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	if cfg.UI.Web == nil {
+		t.Fatal("UI.Web is nil, want populated struct")
+	}
+
+	if got, want := cfg.UI.Web.ConversationFontFamily, "inter"; got != want {
+		t.Errorf("ConversationFontFamily = %q, want %q", got, want)
+	}
+	if got, want := cfg.UI.Web.ConversationFontSize, "lg"; got != want {
+		t.Errorf("ConversationFontSize = %q, want %q", got, want)
+	}
+}
+
+// TestParse_ConversationFont_Empty asserts that when the caller does not
+// provide the two conversation-font keys, they remain empty strings (the
+// frontend applies the "system" / "sm" defaults). This matches the behavior
+// of the sibling InputFontFamily/InputFontSize fields.
+func TestParse_ConversationFont_Empty(t *testing.T) {
+	yaml := `
+acp:
+  - claude:
+      command: "claude"
+ui:
+  web:
+    input_font_family: "system"
+`
+	cfg, err := Parse([]byte(yaml))
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	if cfg.UI.Web == nil {
+		t.Fatal("UI.Web is nil, want populated struct (input_font_family is set)")
+	}
+	if got := cfg.UI.Web.ConversationFontFamily; got != "" {
+		t.Errorf("ConversationFontFamily = %q, want empty string (no config-side default)", got)
+	}
+	if got := cfg.UI.Web.ConversationFontSize; got != "" {
+		t.Errorf("ConversationFontSize = %q, want empty string (no config-side default)", got)
+	}
+}
+
+// TestParse_ConversationFont_PreservedAlongsideInputFont exercises the raw
+// YAML struct + populate block together: all four web font keys must survive
+// the load cycle in the same call. This is the regression test that would
+// have caught forgetting to add the new fields to either the raw block
+// (silently dropped) or the populate block (parsed but not copied).
+func TestParse_ConversationFont_PreservedAlongsideInputFont(t *testing.T) {
+	yaml := `
+acp:
+  - claude:
+      command: "claude"
+ui:
+  web:
+    input_font_family: "menlo"
+    input_font_size: "large"
+    conversation_font_family: "georgia"
+    conversation_font_size: "md"
+    conversation_cycling_mode: "all"
+    single_expanded_group: true
+`
+	cfg, err := Parse([]byte(yaml))
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	if cfg.UI.Web == nil {
+		t.Fatal("UI.Web is nil")
+	}
+
+	checks := []struct {
+		field, got, want string
+	}{
+		{"InputFontFamily", cfg.UI.Web.InputFontFamily, "menlo"},
+		{"InputFontSize", cfg.UI.Web.InputFontSize, "large"},
+		{"ConversationFontFamily", cfg.UI.Web.ConversationFontFamily, "georgia"},
+		{"ConversationFontSize", cfg.UI.Web.ConversationFontSize, "md"},
+		{"ConversationCyclingMode", cfg.UI.Web.ConversationCyclingMode, "all"},
+	}
+	for _, c := range checks {
+		if c.got != c.want {
+			t.Errorf("%s = %q, want %q", c.field, c.got, c.want)
+		}
+	}
+	if !cfg.UI.Web.SingleExpandedGroup {
+		t.Errorf("SingleExpandedGroup = false, want true")
+	}
+}

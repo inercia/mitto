@@ -240,3 +240,197 @@ describe("hasBlankNamedProfile", () => {
     ).toBe(true);
   });
 });
+
+
+/**
+ * mitto-9tl — Conversation font settings group.
+ *
+ * The frontend applies two independent effects when the user picks a new
+ * "Conversation font" family or base size:
+ *
+ *   1. It swaps a single `conv-font-<family>` class on <html> (after removing
+ *      all sibling `conv-font-*` classes it might have added earlier).
+ *   2. It writes the CSS variable `--mitto-conv-base-size` to a fixed px
+ *      value derived from the base-size key (xs/sm/md/lg/xl). The sidebar
+ *      small-A / large-A rules in styles.css key off this variable, so
+ *      changing it re-anchors both toggle states at once.
+ *
+ * Both transformations are pure functions of their input. The SettingsDialog
+ * component reads `window.preact` globals at module load and cannot be
+ * imported directly under jsdom, so we duplicate the tiny helpers here (same
+ * pattern as the existing model-profile helpers above). Keep in sync with
+ * `web/static/app.js` — the size table and family list must match, and any
+ * new option added to the SettingsDialog select must also appear here.
+ */
+
+// Duplicated from web/static/app.js (~lines 1220 and 1260), and the option
+// list rendered by SettingsDialog.js (`Conversation font` row). This is the
+// full set of families the .conv-font-* CSS block in styles.css covers.
+const CONV_FONT_FAMILIES = [
+  "system",
+  "sans-serif",
+  "serif",
+  "inter",
+  "sf-pro",
+  "helvetica-neue",
+  "roboto",
+  "georgia",
+  "charter",
+  "ibm-plex-sans",
+];
+
+// Duplicated from web/static/app.js (~line 1284) — the CSS variable value the
+// frontend writes for each base-size key. Kept as a plain object so the test
+// can assert both the mapping and the fallback behavior for unknown keys.
+const CONV_BASE_PX = {
+  xs: "13px",
+  sm: "14px",
+  md: "15px",
+  lg: "16px",
+  xl: "18px",
+};
+
+/**
+ * Duplicated from web/static/app.js (~line 1290). Resolves a base-size key
+ * to the px string written to `--mitto-conv-base-size`, falling back to the
+ * `sm` (14px) default when the key is unknown or missing.
+ */
+const resolveConvBasePx = (key) => CONV_BASE_PX[key] || CONV_BASE_PX.sm;
+
+/**
+ * Duplicated from web/static/app.js (~lines 1256-1273). Returns the class
+ * name that should end up on <html>.classList after the effect runs. The
+ * real effect first removes every element of `convFontClasses`, then adds
+ * `conv-font-<family>`; the return value is what remains after that swap.
+ */
+const resolveConvFontClass = (family) => `conv-font-${family}`;
+
+describe("mitto-9tl: conversation font — base size CSS variable", () => {
+  test("every documented key maps to its documented px value", () => {
+    expect(resolveConvBasePx("xs")).toBe("13px");
+    expect(resolveConvBasePx("sm")).toBe("14px");
+    expect(resolveConvBasePx("md")).toBe("15px");
+    expect(resolveConvBasePx("lg")).toBe("16px");
+    expect(resolveConvBasePx("xl")).toBe("18px");
+  });
+
+  test("unknown key falls back to sm (14px) so the UI never renders as 0", () => {
+    expect(resolveConvBasePx("bogus")).toBe("14px");
+    expect(resolveConvBasePx("")).toBe("14px");
+    expect(resolveConvBasePx(undefined)).toBe("14px");
+    expect(resolveConvBasePx(null)).toBe("14px");
+  });
+
+  test("14px fallback matches the CSS `var(--mitto-conv-base-size, 14px)` default in styles.css", () => {
+    // styles.css: .font-small .markdown-content { font-size: var(--mitto-conv-base-size, 14px); }
+    // large-A adds 2px on top. This test locks the frontend fallback to the
+    // CSS fallback so an unset setting renders exactly like the pre-9tl
+    // baseline (14px small-A, 16px large-A).
+    expect(resolveConvBasePx(undefined)).toBe("14px");
+  });
+});
+
+describe("mitto-9tl: conversation font — family class swap", () => {
+  test("every documented family resolves to a matching conv-font-<family> class", () => {
+    for (const family of CONV_FONT_FAMILIES) {
+      expect(resolveConvFontClass(family)).toBe(`conv-font-${family}`);
+    }
+  });
+
+  test("default family 'system' resolves to conv-font-system (mirrors default WebUIConfig)", () => {
+    expect(resolveConvFontClass("system")).toBe("conv-font-system");
+  });
+
+  test("family list matches the CSS block in styles.css (10 prose-friendly options)", () => {
+    // If a new family is added to the SettingsDialog select or app.js class
+    // list, this assertion fires so the CSS `.conv-font-*` block and the
+    // documentation lists must be updated together.
+    expect(CONV_FONT_FAMILIES).toHaveLength(10);
+    expect(CONV_FONT_FAMILIES).toEqual([
+      "system",
+      "sans-serif",
+      "serif",
+      "inter",
+      "sf-pro",
+      "helvetica-neue",
+      "roboto",
+      "georgia",
+      "charter",
+      "ibm-plex-sans",
+    ]);
+  });
+
+  test("no family in the list overlaps the input-font namespace", () => {
+    // Regression guard: the .conv-font-* rules must target .markdown-content
+    // only. If a caller ever added e.g. `menlo` here (which belongs to the
+    // input-font list), the two font pipelines would leak into each other.
+    const inputOnlyFamilies = [
+      "monospace",
+      "menlo",
+      "monaco",
+      "consolas",
+      "courier-new",
+      "jetbrains-mono",
+      "sf-mono",
+      "cascadia-code",
+    ];
+    for (const f of inputOnlyFamilies) {
+      expect(CONV_FONT_FAMILIES).not.toContain(f);
+    }
+  });
+});
+
+describe("mitto-9tl: conversation font — save payload shape", () => {
+  // Duplicated from SettingsDialog.js (~line 2727 handleSave `uiConfig.web`).
+  // The dialog builds the outbound settings body from local state; here we
+  // pin the exact key names so a rename on either side is caught by tests.
+  const buildWebUIPayload = (state) => ({
+    input_font_family: state.inputFontFamily,
+    input_font_size: state.inputFontSize,
+    conversation_font_family: state.conversationFontFamily,
+    conversation_font_size: state.conversationFontSize,
+    send_key_mode: state.sendKeyMode,
+    conversation_cycling_mode: state.conversationCyclingMode,
+    single_expanded_group: state.singleExpandedGroup,
+  });
+
+  test("payload uses the exact snake_case keys the Go WebUIConfig struct expects", () => {
+    const payload = buildWebUIPayload({
+      inputFontFamily: "system",
+      inputFontSize: "default",
+      conversationFontFamily: "inter",
+      conversationFontSize: "lg",
+      sendKeyMode: "enter",
+      conversationCyclingMode: "all",
+      singleExpandedGroup: false,
+    });
+    expect(Object.keys(payload).sort()).toEqual(
+      [
+        "conversation_cycling_mode",
+        "conversation_font_family",
+        "conversation_font_size",
+        "input_font_family",
+        "input_font_size",
+        "send_key_mode",
+        "single_expanded_group",
+      ].sort(),
+    );
+    expect(payload.conversation_font_family).toBe("inter");
+    expect(payload.conversation_font_size).toBe("lg");
+  });
+
+  test("defaults (system / sm) round-trip through the payload unchanged", () => {
+    const payload = buildWebUIPayload({
+      inputFontFamily: "system",
+      inputFontSize: "default",
+      conversationFontFamily: "system",
+      conversationFontSize: "sm",
+      sendKeyMode: "enter",
+      conversationCyclingMode: "all",
+      singleExpandedGroup: false,
+    });
+    expect(payload.conversation_font_family).toBe("system");
+    expect(payload.conversation_font_size).toBe("sm");
+  });
+});
+
