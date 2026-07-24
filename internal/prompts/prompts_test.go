@@ -3370,3 +3370,53 @@ func TestBuiltinPrompts_OnCompletionDeclaresCoalesceDuringBusy(t *testing.T) {
 	}
 	t.Logf("checked coalesceDuringBusy on %d onCompletion builtin prompts", checked)
 }
+
+// TestParsePromptFile_UnknownFragmentFails pins mitto-g61.4: a prompt whose
+// body references an unknown fragment must fail at ParsePromptFile (load
+// time), same class of failure as an unbalanced `{{ ... }}` — not silently
+// deferred to render time. The error is expected to be wrapped by the
+// "prompt file %s: ..." envelope added by ParsePromptFile around
+// PrecompileTemplateConds.
+func TestParsePromptFile_UnknownFragmentFails(t *testing.T) {
+	SetCurrentFragments(&FragmentRegistry{entries: map[string]string{
+		"test/known": "hello",
+	}})
+	t.Cleanup(func() { SetCurrentFragments(nil) })
+
+	data := []byte(`name: "Broken"
+prompt: |
+  intro {{ template "test/unknown" . }} outro
+`)
+
+	_, err := ParsePromptFile("broken.prompt.yaml", data, time.Now())
+	if err == nil {
+		t.Fatalf("expected ParsePromptFile to fail for unknown fragment reference, got nil")
+	}
+	if !strings.Contains(err.Error(), "broken.prompt.yaml") {
+		t.Errorf("error %q should mention the prompt file path", err.Error())
+	}
+}
+
+// TestParsePromptFile_KnownFragmentLoads verifies the positive path: when the
+// installed registry contains the referenced fragment, ParsePromptFile
+// succeeds at load time (the reference is resolved by text/template's parser
+// against the attached sub-template).
+func TestParsePromptFile_KnownFragmentLoads(t *testing.T) {
+	SetCurrentFragments(&FragmentRegistry{entries: map[string]string{
+		"test/known": "hello",
+	}})
+	t.Cleanup(func() { SetCurrentFragments(nil) })
+
+	data := []byte(`name: "OK"
+prompt: |
+  intro {{ template "test/known" . }} outro
+`)
+
+	prompt, err := ParsePromptFile("ok.prompt.yaml", data, time.Now())
+	if err != nil {
+		t.Fatalf("ParsePromptFile failed: %v", err)
+	}
+	if prompt.Name != "OK" {
+		t.Errorf("Name = %q, want %q", prompt.Name, "OK")
+	}
+}

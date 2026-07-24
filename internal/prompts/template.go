@@ -9,9 +9,64 @@ import (
 	"strings"
 	"sync"
 	"text/template"
+	"text/template/parse"
 
 	"github.com/inercia/mitto/internal/cel"
 )
+
+// checkTemplateRefs walks the parse tree of every template attached to t and
+// returns the first `{{ template "name" ... }}` invocation whose name has no
+// matching sub-template attached. text/template's own Parse never rejects
+// unknown template refs — only Execute does — so callers that only want to
+// parse-validate (ValidatePromptTemplateSyntax) must walk the tree explicitly.
+func checkTemplateRefs(t *template.Template) error {
+	var walk func(node parse.Node) error
+	walk = func(node parse.Node) error {
+		if node == nil {
+			return nil
+		}
+		switch n := node.(type) {
+		case *parse.ListNode:
+			if n == nil {
+				return nil
+			}
+			for _, sub := range n.Nodes {
+				if err := walk(sub); err != nil {
+					return err
+				}
+			}
+		case *parse.IfNode:
+			if err := walk(n.List); err != nil {
+				return err
+			}
+			return walk(n.ElseList)
+		case *parse.RangeNode:
+			if err := walk(n.List); err != nil {
+				return err
+			}
+			return walk(n.ElseList)
+		case *parse.WithNode:
+			if err := walk(n.List); err != nil {
+				return err
+			}
+			return walk(n.ElseList)
+		case *parse.TemplateNode:
+			if t.Lookup(n.Name) == nil {
+				return fmt.Errorf("template %q not defined", n.Name)
+			}
+		}
+		return nil
+	}
+	for _, tmpl := range t.Templates() {
+		if tmpl.Tree == nil || tmpl.Tree.Root == nil {
+			continue
+		}
+		if err := walk(tmpl.Tree.Root); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
 // migratableMittoVars maps deprecated @mitto:<token> names (without the prefix)
 // to their Go-template replacement. This is the single authoritative source of truth
@@ -203,6 +258,12 @@ func ValidatePromptTemplateSyntax(name, body string) error {
 	}
 	if _, err := t.Parse(body); err != nil {
 		return fmt.Errorf("prompt template %q: parse error: %w", name, err)
+	}
+	// text/template.Parse does not reject `{{ template "unknown" }}` — only
+	// Execute does. Walk the parse tree so an unknown fragment ref fails at
+	// load time on this parse-only path too (mitto-g61.4).
+	if err := checkTemplateRefs(t); err != nil {
+		return fmt.Errorf("prompt template %q: %w", name, err)
 	}
 	return nil
 }

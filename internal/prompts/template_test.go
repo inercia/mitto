@@ -3336,3 +3336,120 @@ func TestRenderPromptTemplate_Fragments(t *testing.T) {
 		}
 	})
 }
+
+// TestValidatePromptTemplateSyntax_Fragments pins mitto-g61.4: load-time
+// validation attaches the fragment registry before parsing the body, so a
+// reference to an unknown fragment fails at parse time (same class of failure
+// as an unbalanced `{{ ... }}`), while a reference to a known fragment
+// validates cleanly.
+//
+// Covers: (a) unknown fragment fails with a wrapped error naming the prompt,
+// (b) known fragment validates, (c) nil registry (default) still validates a
+// syntactically-valid body without fragment refs.
+func TestValidatePromptTemplateSyntax_Fragments(t *testing.T) {
+	newTestRegistry := func(entries map[string]string) *FragmentRegistry {
+		return &FragmentRegistry{entries: entries}
+	}
+	installFragments := func(t *testing.T, r *FragmentRegistry) {
+		t.Helper()
+		SetCurrentFragments(r)
+		t.Cleanup(func() { SetCurrentFragments(nil) })
+	}
+
+	t.Run("unknown-fragment-fails", func(t *testing.T) {
+		installFragments(t, newTestRegistry(map[string]string{
+			"test/known": "hello",
+		}))
+		body := `{{ template "test/unknown" . }}`
+		err := ValidatePromptTemplateSyntax("caller", body)
+		if err == nil {
+			t.Fatalf("expected error for unknown fragment reference, got nil")
+		}
+		if !strings.Contains(err.Error(), "caller") {
+			t.Errorf("error %q should mention the prompt name %q", err.Error(), "caller")
+		}
+	})
+
+	t.Run("known-fragment-validates", func(t *testing.T) {
+		installFragments(t, newTestRegistry(map[string]string{
+			"test/known": "hello {{ .Name }}",
+		}))
+		body := `intro {{ template "test/known" . }} outro`
+		if err := ValidatePromptTemplateSyntax("caller", body); err != nil {
+			t.Fatalf("expected nil error for known fragment reference, got: %v", err)
+		}
+	})
+
+	t.Run("nil-registry-passthrough", func(t *testing.T) {
+		SetCurrentFragments(nil)
+		t.Cleanup(func() { SetCurrentFragments(nil) })
+		// Body has template syntax but no fragment refs — nil registry must
+		// preserve pre-fragment behavior (validates cleanly).
+		if err := ValidatePromptTemplateSyntax("caller", "hello {{ .Name }}"); err != nil {
+			t.Fatalf("expected nil error, got: %v", err)
+		}
+	})
+
+	t.Run("fragment-parse-error-fails-closed", func(t *testing.T) {
+		installFragments(t, newTestRegistry(map[string]string{
+			"test/broken": "{{ if .Flag }}oops", // missing {{ end }}
+		}))
+		body := `hello {{ .X }}`
+		err := ValidatePromptTemplateSyntax("caller", body)
+		if err == nil {
+			t.Fatalf("expected error when an installed fragment fails to parse, got nil")
+		}
+		if !strings.Contains(err.Error(), "test/broken") {
+			t.Errorf("error %q should name the offending fragment %q", err.Error(), "test/broken")
+		}
+	})
+}
+
+// TestPrecompileTemplateConds_Fragments mirrors the fragment attachment
+// contract on the sibling path exercised by ParsePromptFile. Unknown fragment
+// refs must fail at precompile so a broken prompt file is rejected at load
+// (not silently deferred to render time). Known fragments must succeed even
+// though the fragment body references funcs from the FuncMap (Cond/When are
+// stubbed to keep precompile side-effect free).
+func TestPrecompileTemplateConds_Fragments(t *testing.T) {
+	newTestRegistry := func(entries map[string]string) *FragmentRegistry {
+		return &FragmentRegistry{entries: entries}
+	}
+	installFragments := func(t *testing.T, r *FragmentRegistry) {
+		t.Helper()
+		SetCurrentFragments(r)
+		t.Cleanup(func() { SetCurrentFragments(nil) })
+	}
+
+	t.Run("unknown-fragment-fails", func(t *testing.T) {
+		installFragments(t, newTestRegistry(map[string]string{
+			"test/known": "hello",
+		}))
+		body := `pre {{ template "test/unknown" . }} post`
+		err := PrecompileTemplateConds("caller", body)
+		if err == nil {
+			t.Fatalf("expected error for unknown fragment reference, got nil")
+		}
+		if !strings.Contains(err.Error(), "caller") {
+			t.Errorf("error %q should mention the prompt name %q", err.Error(), "caller")
+		}
+	})
+
+	t.Run("known-fragment-succeeds", func(t *testing.T) {
+		installFragments(t, newTestRegistry(map[string]string{
+			"test/known": "hello",
+		}))
+		body := `{{ template "test/known" . }}`
+		if err := PrecompileTemplateConds("caller", body); err != nil {
+			t.Fatalf("expected nil error for known fragment reference, got: %v", err)
+		}
+	})
+
+	t.Run("nil-registry-passthrough", func(t *testing.T) {
+		SetCurrentFragments(nil)
+		t.Cleanup(func() { SetCurrentFragments(nil) })
+		if err := PrecompileTemplateConds("caller", "hello {{ .Session.ID }}"); err != nil {
+			t.Fatalf("expected nil error, got: %v", err)
+		}
+	})
+}
