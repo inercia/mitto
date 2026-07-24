@@ -30,9 +30,7 @@ prompt: |
   schedule it to run as a loop via `mitto_conversation_set_loop` — it
   adapts its behaviour to whichever mode it is invoked in (see Interaction Mode).
 
-  ## Session Context
-
-  Your session ID is `{{ .Session.ID }}` — use this as `self_id` for all `mitto_*` MCP tool calls.
+  {{ template "_shared/session-context" . }}
 
   Project user data (JSON):
   {{ .Session.UserDataJSON }}

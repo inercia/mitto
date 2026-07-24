@@ -37,9 +37,7 @@ prompt: |-
   {{- $days := Arg "LookbackDays" "2" -}}
   # Support — Watch Channel (Triage + Keep Beads in Sync)
 
-  ## Session Context
-
-  Your session ID is `{{ .Session.ID }}` — use it as `self_id` for all `mitto_*` MCP tool calls.
+  {{ template "_shared/session-context" . }}
 
   Available ACP servers:
   {{ .ACP.AvailableText }}

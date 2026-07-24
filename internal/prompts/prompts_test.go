@@ -2751,6 +2751,7 @@ func TestBuiltinPromptsParseClean(t *testing.T) {
 // so an accidental revert on this specific file is caught even if the generic linter
 // is later relaxed.
 func TestBuiltinPrompt_GithubReviewPR_ParameterIsPascalCase(t *testing.T) {
+	installBuiltinFragmentsForTest(t)
 	path := filepath.Join("..", "..", "config", "prompts", "builtin", "github/review-pr.prompt.yaml")
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -2797,6 +2798,7 @@ func TestBuiltinPrompt_GithubReviewPR_ParameterIsPascalCase(t *testing.T) {
 // TestValidatePromptTarget and the reuse tests under internal/session and
 // internal/web/handlers.
 func TestBuiltinPrompts_SingletonMigratedToTargetReuseTitle(t *testing.T) {
+	installBuiltinFragmentsForTest(t)
 	builtinDir := filepath.Join("..", "..", "config", "prompts", "builtin")
 	migrated := []string{
 		"beads/cleanup-stale.prompt.yaml",
@@ -2897,6 +2899,7 @@ func TestBuiltinPrompts_NoSingletonRemains(t *testing.T) {
 // TestValidatePromptTarget and the reuse tests under internal/session and
 // internal/web/handlers.
 func TestBuiltinPrompts_SupportRoutingAdoption(t *testing.T) {
+	installBuiltinFragmentsForTest(t)
 	builtinDir := filepath.Join("..", "..", "config", "prompts", "builtin")
 	type spec struct {
 		file          string
@@ -3124,6 +3127,7 @@ func TestBuiltinPrompts_TodayTierRoutingAdoption(t *testing.T) {
 // reuse.issue being flipped on (which would silently override the templated
 // per-ID bucket with per-bead routing).
 func TestBuiltinPrompts_NeedsTemplatedTitleAdoption(t *testing.T) {
+	installBuiltinFragmentsForTest(t)
 	builtinDir := filepath.Join("..", "..", "config", "prompts", "builtin")
 	type spec struct {
 		file      string
@@ -3183,6 +3187,7 @@ func TestBuiltinPrompts_NeedsTemplatedTitleAdoption(t *testing.T) {
 // missing/empty-arg case for github-*/address-* (Pr is optional) to document
 // the "single fallback bucket" behavior called out in the plan comment.
 func TestBuiltinPrompts_NeedsTemplatedTitleRenders_PerIDBuckets(t *testing.T) {
+	installBuiltinFragmentsForTest(t)
 	builtinDir := filepath.Join("..", "..", "config", "prompts", "builtin")
 	type spec struct {
 		file         string

@@ -35,9 +35,7 @@ prompt: |
   PRs. This prompt does **not** touch your own PRs — use "GitHub: babysit my
   PRs" for that. Designed to be run as a loop via `mitto_conversation_set_loop`.
 
-  ## Session Context
-
-  Your session ID is `{{ .Session.ID }}` — use this as `self_id` for all `mitto_*` MCP tool calls.
+  {{ template "_shared/session-context" . }}
 
   Available ACP servers:
   {{ .ACP.AvailableText }}

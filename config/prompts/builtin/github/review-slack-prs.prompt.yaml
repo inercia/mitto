@@ -40,9 +40,7 @@ prompt: |
   happens inside each spawned child, which uses its own model tier. Designed to
   run **as a loop on a 30-minute schedule**.
 
-  ## Session Context
-
-  Your session ID is `{{ .Session.ID }}` — use this as `self_id` for all `mitto_*` MCP tool calls.
+  {{ template "_shared/session-context" . }}
 
   ## Arguments
 

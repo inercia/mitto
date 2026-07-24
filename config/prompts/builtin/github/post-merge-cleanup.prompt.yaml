@@ -34,9 +34,7 @@ prompt: |
   the durable state store. A **tracker epic** bead holds the run state, each cleanup
   opportunity becomes a **child bead**, and labels encode lifecycle.
 
-  ## Session Context
-
-  Your session ID is `{{ .Session.ID }}` — use this as `self_id` for all `mitto_*` MCP tool calls.
+  {{ template "_shared/session-context" . }}
   Available ACP servers: {{ .ACP.AvailableText }}
   Existing children (spawned by previous runs): {{ .Children.MCPText }}
 

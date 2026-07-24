@@ -563,6 +563,7 @@ func TestIterateUntilComplete_TargetResolution(t *testing.T) {
 //
 // Loaded from the real builtin directory so it exercises the on-disk content.
 func TestRefineImplementation_LoopAndModes(t *testing.T) {
+	installBuiltinFragmentsForTest(t)
 	builtinDir := "../../config/prompts/builtin"
 	name := "beads/refine-implementation.prompt.yaml"
 	path := filepath.Join(builtinDir, name)
@@ -634,6 +635,7 @@ func TestRefineImplementation_LoopAndModes(t *testing.T) {
 // Also asserts the YAML header migration: menus includes both "beadsIssues"
 // and "conversation", and the IssueID parameter is non-required.
 func TestInvestigate_ThreeModeTargetResolution(t *testing.T) {
+	installBuiltinFragmentsForTest(t)
 	builtinDir := "../../config/prompts/builtin"
 	path := filepath.Join(builtinDir, "beads-issues/investigate.prompt.yaml")
 	data, err := os.ReadFile(path)
@@ -741,6 +743,7 @@ func TestInvestigate_ThreeModeTargetResolution(t *testing.T) {
 // Also asserts the YAML header migration: menus includes both "beadsIssues"
 // and "conversation", and the IssueID parameter is non-required.
 func TestDiscuss_ThreeModeTargetResolution(t *testing.T) {
+	installBuiltinFragmentsForTest(t)
 	builtinDir := "../../config/prompts/builtin"
 	path := filepath.Join(builtinDir, "beads-issues/assess.prompt.yaml")
 	data, err := os.ReadFile(path)
@@ -948,6 +951,7 @@ func TestBuiltinPrompts_NoDeprecatedMittoVars(t *testing.T) {
 // would only fail-open silently in production. This test actually renders every
 // builtin prompt with a representative context and fails if any template errors out.
 func TestBuiltinPrompts_AllRenderWithoutError(t *testing.T) {
+	installBuiltinFragmentsForTest(t)
 	builtinDir := "../../config/prompts/builtin"
 	prompts, err := LoadPromptsFromDir(builtinDir)
 	if err != nil {
@@ -1081,6 +1085,7 @@ func TestRenderPromptTemplate_FragmentCycleFailsAtRender(t *testing.T) {
 // Also asserts the YAML header migration: menus includes both "beadsIssues"
 // and "conversation", and the IssueID parameter is non-required.
 func TestStatus_ThreeModeTargetResolution(t *testing.T) {
+	installBuiltinFragmentsForTest(t)
 	builtinDir := "../../config/prompts/builtin"
 	path := filepath.Join(builtinDir, "beads-issues/status.prompt.yaml")
 	data, err := os.ReadFile(path)
@@ -1180,6 +1185,7 @@ func TestStatus_ThreeModeTargetResolution(t *testing.T) {
 // Also asserts the YAML header migration: menus includes both "beadsIssues"
 // and "conversation", and the IssueID parameter is non-required.
 func TestResolved_ThreeModeTargetResolution(t *testing.T) {
+	installBuiltinFragmentsForTest(t)
 	builtinDir := "../../config/prompts/builtin"
 	path := filepath.Join(builtinDir, "beads-issues/resolved.prompt.yaml")
 	data, err := os.ReadFile(path)
@@ -1279,6 +1285,7 @@ func TestResolved_ThreeModeTargetResolution(t *testing.T) {
 // Also asserts the YAML header migration: menus includes both "beadsIssues"
 // and "conversation", and the IssueID parameter is non-required.
 func TestWork_ThreeModeTargetResolution(t *testing.T) {
+	installBuiltinFragmentsForTest(t)
 	builtinDir := "../../config/prompts/builtin"
 	path := filepath.Join(builtinDir, "beads-issues/work.prompt.yaml")
 	data, err := os.ReadFile(path)
@@ -1382,6 +1389,7 @@ func TestWork_ThreeModeTargetResolution(t *testing.T) {
 // Also asserts the YAML header migration: menus includes both "beadsIssues"
 // and "conversation", and the IssueID parameter is non-required.
 func TestFollowupWork_ThreeModeTargetResolution(t *testing.T) {
+	installBuiltinFragmentsForTest(t)
 	builtinDir := "../../config/prompts/builtin"
 	path := filepath.Join(builtinDir, "beads/followup-work.prompt.yaml")
 	data, err := os.ReadFile(path)
@@ -2081,6 +2089,7 @@ func TestIterateImplementingFeatures_RendersForRepresentativeContexts(t *testing
 // resolvePreferredModelsByPromptName → SelectPreferredModel → setActiveModelOnly
 // switches to the right tier when they are dispatched by name from the driver.
 func TestBugFixPhasePrompts_ParseAndDeclarePreferredModels(t *testing.T) {
+	installBuiltinFragmentsForTest(t)
 	builtinDir := "../../config/prompts/builtin"
 
 	cases := []struct {
@@ -2144,6 +2153,7 @@ func TestBugFixPhasePrompts_ParseAndDeclarePreferredModels(t *testing.T) {
 // mirrors TestIterateFixingBug_RendersForRepresentativeContexts and guards
 // against future template regressions in the phase prompts themselves.
 func TestBugFixPhasePrompts_RenderForRepresentativeContexts(t *testing.T) {
+	installBuiltinFragmentsForTest(t)
 	builtinDir := "../../config/prompts/builtin"
 
 	files := []string{
@@ -2379,6 +2389,7 @@ func TestIterateImplementingFeature_RendersForRepresentativeContexts(t *testing.
 // switches to the right tier when they are dispatched by name from the driver.
 // Mirrors TestBugFixPhasePrompts_ParseAndDeclarePreferredModels.
 func TestFeaturePhasePrompts_ParseAndDeclarePreferredModels(t *testing.T) {
+	installBuiltinFragmentsForTest(t)
 	builtinDir := "../../config/prompts/builtin"
 
 	cases := []struct {
@@ -2447,6 +2458,7 @@ func TestFeaturePhasePrompts_ParseAndDeclarePreferredModels(t *testing.T) {
 // of these three would revert them to the session baseline and lose the
 // deliberate cost-tier decision recorded on the bead.
 func TestHighConfidenceBuiltinPrompts_DeclarePairedFallback(t *testing.T) {
+	installBuiltinFragmentsForTest(t)
 	builtinDir := "../../config/prompts/builtin"
 
 	wantTags := []string{"Cheap", "Coding"}
@@ -2490,6 +2502,7 @@ func TestHighConfidenceBuiltinPrompts_DeclarePairedFallback(t *testing.T) {
 // TestBugFixPhasePrompts_RenderForRepresentativeContexts and guards against
 // future template regressions in the feature phase prompts themselves.
 func TestFeaturePhasePrompts_RenderForRepresentativeContexts(t *testing.T) {
+	installBuiltinFragmentsForTest(t)
 	builtinDir := "../../config/prompts/builtin"
 
 	files := []string{
@@ -2586,6 +2599,7 @@ func TestFeaturePhasePrompts_RenderForRepresentativeContexts(t *testing.T) {
 // Test guards against future regressions in ANY of the 7 phase prompts
 // (drop-out of the tier-check block, wrong tier name, or wrong comment prefix).
 func TestPhasePrompts_TierCheckRendersForModelTags(t *testing.T) {
+	installBuiltinFragmentsForTest(t)
 	builtinDir := "../../config/prompts/builtin"
 
 	cases := []struct {
@@ -2710,6 +2724,7 @@ func TestPhasePrompts_TierCheckRendersForModelTags(t *testing.T) {
 // so a bead's audit trail makes the tier split visible without needing to
 // cross-reference the run's active model.
 func TestPhasePrompts_TierTaggedCommentPrefix(t *testing.T) {
+	installBuiltinFragmentsForTest(t)
 	builtinDir := "../../config/prompts/builtin"
 
 	cases := []struct {
@@ -2909,6 +2924,7 @@ func TestBuiltinPromptLoopModes(t *testing.T) {
 // exercises the current on-disk content; the render itself also proves the
 // YAML/template parses.
 func TestMentionDriver_RendersForRepresentativeContexts(t *testing.T) {
+	installBuiltinFragmentsForTest(t)
 	builtinDir := "../../config/prompts/builtin"
 	path := filepath.Join(builtinDir, "beads-issues/mention-driver.prompt.yaml")
 	data, err := os.ReadFile(path)
@@ -3060,6 +3076,7 @@ func TestMentionDriver_RendersForRepresentativeContexts(t *testing.T) {
 // template only sets `arguments:`, so this test fails and pins the bug in place
 // until fix layer 1 lands.
 func TestLoopProcessingSpawns_MirrorArgumentsIntoLoopArguments(t *testing.T) {
+	installBuiltinFragmentsForTest(t)
 	builtinDir := "../../config/prompts/builtin"
 	path := filepath.Join(builtinDir, "beads-issues/loop-processing.prompt.yaml")
 	data, err := os.ReadFile(path)
@@ -3153,6 +3170,7 @@ func TestLoopProcessingSpawns_MirrorArgumentsIntoLoopArguments(t *testing.T) {
 // after the fix, the parser resolves CoalesceDuringBusy to *false and the
 // assertion passes.
 func TestIssueLoopProcessing_CoalesceDuringBusyIsFalse(t *testing.T) {
+	installBuiltinFragmentsForTest(t)
 	builtinDir := "../../config/prompts/builtin"
 	name := "beads-issues/loop-processing.prompt.yaml"
 	path := filepath.Join(builtinDir, name)
@@ -3204,6 +3222,7 @@ func TestIssueLoopProcessing_CoalesceDuringBusyIsFalse(t *testing.T) {
 //     paragraph and the "Expand epics; don't spawn them" Guidelines bullet
 //     (those two spots now describe the reaper closing the epic).
 func TestIssueLoopProcessing_EpicReaperPresent(t *testing.T) {
+	installBuiltinFragmentsForTest(t)
 	builtinDir := "../../config/prompts/builtin"
 	name := "beads-issues/loop-processing.prompt.yaml"
 	path := filepath.Join(builtinDir, name)

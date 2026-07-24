@@ -17,9 +17,7 @@ prompt: |
 
   Beads is a CLI issue tracker (`bd`). Issues are called "beads" and have IDs like `bd-xyz`.
 
-  ## Session Context
-
-  Your session ID is `{{ .Session.ID }}` — use this as `self_id` for all `mitto_*` MCP tool calls.
+  {{ template "_shared/session-context" . }}
 
   ## Step 1 — Fetch in-progress beads
 

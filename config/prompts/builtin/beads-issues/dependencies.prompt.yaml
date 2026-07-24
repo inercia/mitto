@@ -17,9 +17,7 @@ preferredModels:
   - modelTag: Cheap
   - modelTag: Coding
 prompt: |
-  ## Session Context
-
-  Your session ID is `{{ .Session.ID }}` — use this as `self_id` for all `mitto_*` MCP tool calls.
+  {{ template "_shared/session-context" . }}
 
   # Beads: Manage a Bead's Dependencies & Links
 

@@ -8,9 +8,7 @@ enabledWhen: 'Tools.Names.exists(n, n.matches("(?i)jira")) || CommandExists("jir
 preferredModels:
   - modelTag: Coding
 prompt: |
-  ## Session Context
-
-  Your session ID is `{{ .Session.ID }}` — use this as `self_id` for all `mitto_*` MCP tool calls.
+  {{ template "_shared/session-context" . }}
 
   # JIRA: Create a New Ticket
 

@@ -21,9 +21,7 @@ preferredModels:
   - modelTag: Cheap
   - modelTag: Coding
 prompt: |
-  ## Session Context
-
-  Your session ID is `{{ .Session.ID }}` — use this as `self_id` for all `mitto_*` MCP tool calls.
+  {{ template "_shared/session-context" . }}
   Available ACP servers: `{{ .ACP.AvailableText }}`
   {{- if .Children.AllText }}
   Existing children: `{{ .Children.AllText }}`

@@ -33,9 +33,7 @@ prompt: |
   keeping them up-to-date and reporting issues. Only acts on PRs where you are
   the author. Designed to be run as a loop via `mitto_conversation_set_loop`.
 
-  ## Session Context
-
-  Your session ID is `{{ .Session.ID }}` — use this as `self_id` for all `mitto_*` MCP tool calls.
+  {{ template "_shared/session-context" . }}
 
   Available ACP servers:
   {{ .ACP.AvailableText }}

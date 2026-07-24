@@ -25,9 +25,7 @@ loop:
   maxIterations: 20
   maxDuration: "4h"
 prompt: |
-  ## Session Context
-
-  Your session ID is `{{ .Session.ID }}` — use this as `self_id` for all `mitto_*` MCP tool calls.
+  {{ template "_shared/session-context" . }}
 
   # Iterate a Picked Prompt Until a Condition Is Met
 

@@ -20,9 +20,7 @@ target:
     issue: true
     coalesce: true
 prompt: |
-  ## Session Context
-
-  Your session ID is `{{ .Session.ID }}` — use this as `self_id` for all `mitto_*` MCP tool calls.
+  {{ template "_shared/session-context" . }}
 
   # Feature Implementation — Review Phase
 

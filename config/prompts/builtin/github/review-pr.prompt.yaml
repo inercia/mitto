@@ -29,9 +29,7 @@ prompt: |
   the change suits the project's needs, then present editable, approvable review
   comments via an interactive form.
 
-  ## Session Context
-
-  Your session ID is `{{ .Session.ID }}` — use this as `self_id` for all `mitto_*` MCP tool calls.
+  {{ template "_shared/session-context" . }}
   {{- if .Args.RepoDir }}
 
   **Target repository directory:** `{{ .Args.RepoDir }}` — every `git`, `gh`, and

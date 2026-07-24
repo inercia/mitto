@@ -19,9 +19,7 @@ parameters:
 prompt: |-
   # Support — Investigate
 
-  ## Session Context
-
-  Your session ID is `{{ .Session.ID }}` — use it as `self_id` for all `mitto_*` MCP tool calls.
+  {{ template "_shared/session-context" . }}
 
   ## Description
 

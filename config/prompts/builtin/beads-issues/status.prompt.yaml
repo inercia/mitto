@@ -31,9 +31,7 @@ prompt: |
   discussed. Do **not** run any `bd` commands — there is no bead to load.
   {{- end }}
 
-  ## Session Context
-
-  Your session ID is `{{ .Session.ID }}` — use this as `self_id` for all `mitto_*` MCP tool calls.
+  {{ template "_shared/session-context" . }}
 
   {{ if $target -}}
   ## Step 1 — Fetch full bead details

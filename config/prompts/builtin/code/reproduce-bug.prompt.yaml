@@ -11,9 +11,7 @@ group: Debugging
 backgroundColor: '#FFCDD2'
 enabledWhen: Item.Kind != "beadsIssue" || Item.Type == "bug"
 prompt: |
-  ## Session Context
-
-  Your session ID is `{{ .Session.ID }}` — use this as `self_id` for all `mitto_*` MCP tool calls.
+  {{ template "_shared/session-context" . }}
 
   # Reproduce a Bug
 

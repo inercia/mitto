@@ -24,9 +24,7 @@ prompt: |
 
   Diagnose and fix CI pipeline failures for the current branch.
 
-  ## Session Context
-
-  Your session ID is `{{ .Session.ID }}` — use this as `self_id` for all `mitto_*` MCP tool calls.
+  {{ template "_shared/session-context" . }}
 
   ## Interaction Mode
   {{- if and .Session.IsLoop (not .Session.IsLoopForced) }}
