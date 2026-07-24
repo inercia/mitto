@@ -114,6 +114,12 @@ export async function initUIPreferences() {
             String(prefs.reduce_animations),
           );
         }
+        if (Array.isArray(prefs.dashboard_hidden_charts)) {
+          localStorage.setItem(
+            DASHBOARD_HIDDEN_CHARTS_KEY,
+            JSON.stringify(prefs.dashboard_hidden_charts),
+          );
+        }
 
         console.debug(
           "[Mitto] UI preferences loaded from server:",
@@ -186,6 +192,7 @@ function getCurrentUIPreferences() {
     follow_system_theme: getFollowSystemTheme(),
     follow_system_reduced_motion: getFollowSystemReducedMotion(),
     reduce_animations: getReduceAnimations(),
+    dashboard_hidden_charts: getDashboardHiddenCharts(),
   };
 }
 
@@ -691,6 +698,21 @@ const THEME_DARK_KEY = "mitto-theme-dark";
 const FOLLOW_SYSTEM_THEME_KEY = "mitto-follow-system-theme";
 const FOLLOW_SYSTEM_REDUCED_MOTION_KEY = "mitto-follow-system-reduced-motion";
 const REDUCE_ANIMATIONS_KEY = "mitto-reduce-animations";
+// Dashboard hidden-charts key (mitto-e2u). Stores a JSON-encoded array of
+// canonical chart IDs the user has hidden on the Dashboard's Activity strip.
+// Empty/missing means all charts visible (opt-out model so new charts default
+// to visible after upgrade).
+//
+// MIRRORED: keep in sync with `KnownDashboardChartIDs` in
+// `internal/web/handlers/dashboard_charts.go`. The bead (mitto-e2u) explicitly
+// chose static Go const + static JS const over a runtime API endpoint.
+const DASHBOARD_HIDDEN_CHARTS_KEY = "mitto-dashboard-hidden-charts";
+const KNOWN_DASHBOARD_CHART_IDS = [
+  "tokens",
+  "tool_calls",
+  "prompts_vs_turns",
+  "model_usage",
+];
 
 // Accordion mode: when enabled, only one group can be expanded at a time
 // This is configured via settings (ui.web.single_expanded_group)
@@ -1189,6 +1211,45 @@ export function setReduceAnimations(value) {
     console.warn("[Mitto] Failed to set reduce_animations:", e);
   }
 }
+
+/**
+ * Get the list of dashboard chart IDs the user has hidden. Reads from
+ * localStorage and filters to the canonical known-ID set so a stale value
+ * (e.g. after a chart is retired) never leaks into UI code. Returns [] when
+ * unset, empty, or malformed.
+ * @returns {string[]}
+ */
+export function getDashboardHiddenCharts() {
+  try {
+    const value = localStorage.getItem(DASHBOARD_HIDDEN_CHARTS_KEY);
+    if (!value) return [];
+    const parsed = JSON.parse(value);
+    if (!Array.isArray(parsed)) return [];
+    const known = new Set(KNOWN_DASHBOARD_CHART_IDS);
+    return parsed.filter((x) => typeof x === "string" && known.has(x));
+  } catch (e) {
+    console.warn("[Mitto] Failed to get dashboard_hidden_charts:", e);
+    return [];
+  }
+}
+
+/**
+ * Save the list of dashboard chart IDs to hide. Mirrors to localStorage and
+ * syncs to the server via the debounced saveUIPreferencesToServer path.
+ * @param {string[]} ids - Canonical chart IDs to hide.
+ */
+export function setDashboardHiddenCharts(ids) {
+  try {
+    const arr = Array.isArray(ids)
+      ? ids.filter((x) => typeof x === "string")
+      : [];
+    localStorage.setItem(DASHBOARD_HIDDEN_CHARTS_KEY, JSON.stringify(arr));
+    saveUIPreferencesToServer(getCurrentUIPreferences());
+  } catch (e) {
+    console.warn("[Mitto] Failed to set dashboard_hidden_charts:", e);
+  }
+}
+
 
 // =============================================================================
 // Beads View Filters

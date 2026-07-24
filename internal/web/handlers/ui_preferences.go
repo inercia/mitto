@@ -62,6 +62,12 @@ type UIPreferences struct {
 	// Nullable so we don't clobber the OS-driven default when the user
 	// has never touched the toggle.
 	ReduceAnimations *bool `json:"reduce_animations,omitempty"`
+
+	// DashboardHiddenCharts is the list of canonical chart IDs the user has hidden
+	// on the Dashboard's Activity strip. IDs absent from this list render normally,
+	// so charts added in future versions default to visible and existing users are
+	// not surprised by a hidden chart after upgrade. Empty list = all charts visible.
+	DashboardHiddenCharts []string `json:"dashboard_hidden_charts,omitempty"`
 }
 
 // isValidThemeName reports whether s is an acceptable daisyUI theme name.
@@ -186,6 +192,17 @@ func (h *Handlers) handleSaveUIPreferences(w http.ResponseWriter, r *http.Reques
 			writeErrorJSON(w, http.StatusBadRequest, "", "Invalid filter_tab_grouping value: must be 'none', 'server', 'folder', or 'workspace'")
 			return
 		}
+	}
+
+	// Dashboard hidden-charts: strip unknown/duplicate IDs, then reject a payload
+	// that would hide every known chart (Activity strip must always show at least
+	// one card — matches the "cannot uncheck all" UX constraint from mitto-3i2).
+	prefs.DashboardHiddenCharts = filterKnownChartIDs(prefs.DashboardHiddenCharts)
+	if len(prefs.DashboardHiddenCharts) > 0 &&
+		len(prefs.DashboardHiddenCharts) == len(KnownDashboardChartIDs) {
+		writeErrorJSON(w, http.StatusBadRequest, "at_least_one_chart_must_be_visible",
+			"At least one dashboard chart must remain visible")
+		return
 	}
 
 	if err := saveUIPreferences(&prefs); err != nil {
