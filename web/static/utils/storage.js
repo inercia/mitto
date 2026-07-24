@@ -1244,6 +1244,13 @@ export function setDashboardHiddenCharts(ids) {
       ? ids.filter((x) => typeof x === "string")
       : [];
     localStorage.setItem(DASHBOARD_HIDDEN_CHARTS_KEY, JSON.stringify(arr));
+    // Broadcast BEFORE the debounced server sync so any open Dashboard reacts
+    // instantly (matches setGroupingMode's mitto-grouping-mode-changed shape).
+    window.dispatchEvent(
+      new CustomEvent("mitto-dashboard-hidden-charts-changed", {
+        detail: { ids: arr },
+      }),
+    );
     saveUIPreferencesToServer(getCurrentUIPreferences());
   } catch (e) {
     console.warn("[Mitto] Failed to set dashboard_hidden_charts:", e);

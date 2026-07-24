@@ -9,6 +9,7 @@ import { authFetch } from "../../utils/csrf.js";
 import { endpoints } from "../../utils/endpoints.js";
 import { modelColor, UNKNOWN_MODEL_NAME } from "../../utils/palette.js";
 import { CDN_URLS } from "../../vendor/config.js";
+import { useDashboardHiddenCharts } from "../../hooks/useDashboardHiddenCharts.js";
 import { Toolbar } from "../Toolbar.js";
 
 const RANGE_STORAGE_KEY = "mitto:dashboard:statsRange";
@@ -259,8 +260,15 @@ function buildChartSpecs(u) {
       return [dataMin - bottomPad, dataMax + topPad];
     },
   };
+  // `id` is the canonical chart identifier mirrored across the frontend +
+  // backend registries (KNOWN_DASHBOARD_CHART_IDS in storage.js and
+  // KnownDashboardChartIDs in internal/web/handlers/dashboard_charts.go).
+  // It is what the Settings ▸ Dashboard tab writes into
+  // `dashboard_hidden_charts`, and what StatsCharts filters `visibleSpecs`
+  // against. Never rename without updating both registries in lockstep.
   return [
     {
+      id: "tokens",
       title: "Tokens (input + output)",
       metrics: ["input_tokens_est", "output_tokens_est"],
       opts: (w, h) => ({
@@ -275,6 +283,7 @@ function buildChartSpecs(u) {
       }),
     },
     {
+      id: "tool_calls",
       title: "Tool calls",
       metrics: ["tool_calls_total", "mcp_calls"],
       opts: (w, h) => ({
@@ -293,6 +302,7 @@ function buildChartSpecs(u) {
       }),
     },
     {
+      id: "prompts_vs_turns",
       title: "Prompts vs agent turns",
       metrics: ["prompts", "agent_turns_completed"],
       opts: (w, h) => ({
@@ -682,6 +692,16 @@ export function StatsCharts({ showToast }) {
 
   const empty = useMemo(() => isEmptySeries(data), [data]);
   const specs = useMemo(() => buildChartSpecs(uplot), [uplot]);
+  // Chart-visibility preference (mitto-3i2 / mitto-4t8). Live-updates via the
+  // `mitto-dashboard-hidden-charts-changed` window event dispatched by
+  // storage.js:setDashboardHiddenCharts, and hydrates from the async
+  // server → localStorage first-load path via onUIPreferencesLoaded.
+  const hiddenCharts = useDashboardHiddenCharts();
+  const visibleSpecs = useMemo(
+    () => specs.filter((s) => !hiddenCharts.includes(s.id)),
+    [specs, hiddenCharts],
+  );
+  const modelUsageVisible = !hiddenCharts.includes("model_usage");
   const modelData = useMemo(() => toModelUplotData(modelDataRaw), [modelDataRaw]);
   const modelEmpty = modelData.models.length === 0;
   const backfill = data && data.meta && data.meta.backfill_in_progress;
@@ -726,25 +746,31 @@ export function StatsCharts({ showToast }) {
            so multiple cards still fit side-by-side on wide viewports and
            only overflow on narrow ones (phone, split panes). -->
       <div class="mitto-carousel shrink-0 gap-3 w-full">
-        ${specs.map(
-          (s) => html`<${ChartCard}
-            key=${s.title}
-            title=${s.title}
-            metrics=${s.metrics}
-            optsFor=${s.opts}
-            data=${data}
-            uplot=${uplot}
-            empty=${empty}
-          />`,
-        )}
+        ${visibleSpecs.length === 0 && !modelUsageVisible
+          ? html`<div class="text-xs text-mitto-text-muted italic p-3">
+              All charts are hidden. Enable at least one in Settings ▸ Dashboard.
+            </div>`
+          : visibleSpecs.map(
+              (s) => html`<${ChartCard}
+                key=${s.title}
+                title=${s.title}
+                metrics=${s.metrics}
+                optsFor=${s.opts}
+                data=${data}
+                uplot=${uplot}
+                empty=${empty}
+              />`,
+            )}
       </div>
-      <${ModelUsageCard}
-        modelData=${modelData}
-        uplot=${uplot}
-        empty=${modelEmpty}
-        hidden=${hiddenModels}
-        onToggleModel=${toggleModel}
-      />
+      ${modelUsageVisible
+        ? html`<${ModelUsageCard}
+            modelData=${modelData}
+            uplot=${uplot}
+            empty=${modelEmpty}
+            hidden=${hiddenModels}
+            onToggleModel=${toggleModel}
+          />`
+        : null}
       ${note
         ? html`<div class="text-xs text-mitto-text-muted">${note}</div>`
         : null}
