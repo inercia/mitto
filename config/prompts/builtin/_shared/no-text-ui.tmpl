@@ -1,0 +1,37 @@
+{{- /*
+  no-text-ui — the mandatory "no text-based interaction prompts" blockquote
+  that guards every user-facing support prompt. Standardises the rule that
+  choices/reviews/forms/notifications must go through the mitto_ui_* tools,
+  not free-text "type N" prompts.
+
+  Whitespace contract:
+    - Fragment body is column-1 Markdown (NO leading indent) — it slots
+      directly into the caller's already-YAML-stripped body text, which
+      is also column-1 after the `content: |` base indent is removed.
+    - Fragment emits NO leading and NO trailing newline. The caller uses
+      plain `{{ template ... }}` (no trim markers), so the newlines that
+      naturally surround the template action in the caller's YAML block
+      become the fragment's leading and trailing newlines.
+    - The caller's next line (typically a blockquote continuation `>`)
+      follows directly after the template action's line so the blockquote
+      stays contiguous — a blank line inside a blockquote splits it into
+      two blockquotes in Markdown.
+
+  Recommended caller pattern:
+
+      ## CRITICAL: User Interaction Rules
+
+      {{ template "_shared/no-text-ui" . }}
+      >
+      > ⚠️ (prompt-specific posting-policy continuation here)
+
+  If the caller has no continuation, the blank line before the next
+  heading closes the blockquote normally.
+*/ -}}
+> ⚠️ **NEVER use text-based interaction prompts.**
+>
+> - ❌ NEVER ask the user to type a number, command, or keyword to make a selection
+> - ❌ NEVER present numbered options and ask the user to respond with text
+> - ✅ ALWAYS use `mitto_ui_options` for choices, `mitto_ui_textbox` for review/editing,
+>   `mitto_ui_form` for structured input, and `mitto_ui_notify` for non-blocking notifications
+{{- /* no trailing newline */ -}}

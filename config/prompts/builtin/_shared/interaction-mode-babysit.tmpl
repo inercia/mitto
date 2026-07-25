@@ -1,0 +1,38 @@
+{{/*
+  interaction-mode-babysit — "Interaction Mode" block variant for prompts
+  whose primary mode IS the scheduled loop (with on-demand as the
+  force-triggered exception).
+
+  The interactive branch phrases itself as "a force-triggered run or a
+  non-loop conversation; the user may be present" and frames interactive
+  tools as an allowed option rather than the default.
+
+  Consumers: github/babysit-contributions.
+
+  For prompts that add extra bullets in either branch (autonomy criteria,
+  stop-iterating hooks, follow-up guidance), do NOT use this fragment —
+  hand-roll the block using `_shared/silent-notify-only.tmpl` for the
+  common preamble and add your own bullets around it. Examples that need
+  extras: ci/fix-ci, github/address-pr-comments, github/babysit-my-prs,
+  github/check-pr-comments.
+
+  For loop drivers marked "READ THIS FIRST", use
+  `_shared/interaction-mode-unattended` instead.
+
+  Usage:
+
+    {{ template "_shared/interaction-mode-babysit" . }}
+
+  The fragment emits its own `## Interaction Mode` heading — do NOT add
+  one at the call site.
+*/}}
+## Interaction Mode
+{{- if and .Session.IsLoop (not .Session.IsLoopForced) }}
+
+**Silent mode** — a scheduled loop run; the user is not watching.
+{{ template "_shared/silent-notify-only" . }}
+{{- else }}
+
+**Interactive mode** — a force-triggered run or a non-loop conversation; the user may be present.
+- You may freely interact with the user using `mitto_ui_options`, `mitto_ui_form`, and other interactive tools in addition to `mitto_ui_notify`.
+{{- end }}
