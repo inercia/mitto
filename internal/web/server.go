@@ -1353,6 +1353,9 @@ func NewServer(config Config) (*Server, error) {
 		} else {
 			prompts.SetCurrentFragments(reg)
 			logger.Info("Fragment registry bootstrapped", "count", reg.Len(), "dirs", fragDirs, "errors", len(ferrs))
+			if reg.Len() == 0 {
+				logger.Warn("Fragment registry bootstrapped empty; prompts that reference {{ template \"_shared/…\" . }} will fail to load until a fs-watcher fragment change re-installs the registry", "dirs", fragDirs)
+			}
 			for _, fe := range ferrs {
 				logger.Warn("Fragment load error at bootstrap", "path", fe.Path, "error", fe.Err)
 			}
