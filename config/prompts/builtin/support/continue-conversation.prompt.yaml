@@ -52,28 +52,12 @@ prompt: |-
 
   ## Bead writing conventions (descriptions & comments)
 
-  - **Always write in GitHub-flavored Markdown.** Every bead **description** (`-d`) and every
-    **comment** you add must be valid markdown — headings, **bold**, `inline code`, fenced code blocks,
-    lists and links so it reads well in the UI. Preserve real line breaks with `$'...'` (real `\n`) or,
-    for anything multi-line, pipe via stdin (`printf '%s' "$c" | bd comment <id> --stdin`) — never
-    collapse a comment into one flat line.
-  - **The reply we would send the customer MUST be enclosed in a clearly delimited block** so a human
-    can identify *exactly* what we would send, character-for-character. Wrap **only** the reply text
-    between these two fences, on their own lines (nothing else inside them):
-    ```
-    --- BEGIN REPLY ---
-    <the exact message we would send to the user, in markdown>
-    --- END REPLY ---
-    ```
-    Everything outside the fences (the `[OUTBOUND]` header, permalink, notes) is context; everything
-    *inside* is the verbatim reply. Use this same block for every DRAFT and every POSTED reply.
+  {{ template "_shared/beads/markdown-convention" . }}
+  {{ template "_shared/reply-fence-convention" "reply" }}
 
   ## Slack tools (names vary by MCP server)
 
-  Match Slack MCP tools **by capability, not exact name**. You need: (a) identify the current user,
-  (b) read recent channel history, (c) read a thread's replies, and (d) post a reply to a thread
-  (e.g. `slack_get_users*`, `slack_get_channel_history*`, `slack_get_thread_replies*`,
-  `slack_reply_to_thread*`, or their `*_slack` equivalents).
+  {{ template "_shared/support/slack-tools" (dict "Capabilities" "You need: (a) identify the current user, (b) read recent channel history, (c) read a thread's replies, and (d) post a reply to a thread (e.g. `slack_get_users*`, `slack_get_channel_history*`, `slack_get_thread_replies*`, `slack_reply_to_thread*`, or their `*_slack` equivalents)." "NoPosting" false "ReadMetadata" false) }}
 
   ## Step 0: Read the channel playbook
 
@@ -218,15 +202,7 @@ prompt: |-
   **P3** — we have replied, the ball is in the customer's court, and nothing needs your attention until
   they respond. In general the priority reflects how urgently *you* (the human) must act:
 
-  - **P1 (HIGH)** — a draft (reply or clarifying question) is pending **your** approval
-    (`state:drafting`); bump to **P0** only if it answers an escalation / outage / broad-impact thread.
-  - **P2 (MEDIUM)** — in motion, our court, not blocked on your approval: `triaged` / `gathering-info`
-    / `awaiting-us`.
-  - **P3 (LOW)** — waiting on the customer, nothing for you to do now: `awaiting-customer` / `need-info`
-    (we just posted a reply or a clarifying question; the ball is in their court).
-
-  Apply with `bd update <id> --priority <n>` (n is `0`–`3`, 0 = highest) and add a short
-  `**[PRIORITY · <time>]** P<old> → P<new> (<reason>)` comment when it changes.
+  {{ template "_shared/support/priority-rubric" . }}
 
   ## Notes
 

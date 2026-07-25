@@ -36,54 +36,22 @@ prompt: |-
 
   ## CRITICAL: User Interaction Rules
 
-  > ⚠️ **NEVER use text-based interaction prompts.**
-  >
-  > - ❌ NEVER ask the user to type a number, command, or keyword to make a selection
-  > - ❌ NEVER present numbered options and ask the user to respond with text
-  > - ✅ ALWAYS use `mitto_ui_options` for choices, `mitto_ui_textbox` for review/editing,
-  >   `mitto_ui_form` for structured input, and `mitto_ui_notify` for non-blocking notifications
+  {{ template "_shared/no-text-ui" . }}
   >
   > ⚠️ **NEVER post to Slack without explicit user review and approval.**
 
   ## Bead writing conventions (descriptions & comments)
 
-  - **Always write in GitHub-flavored Markdown.** Every bead **description** (`-d`) and every
-    **comment** you add must be valid markdown — headings, **bold**, `inline code`, fenced code blocks,
-    lists and links so it reads well in the UI. Preserve real line breaks with `$'...'` (real `\n`) or,
-    for anything multi-line, pipe via stdin (`printf '%s' "$md" | bd comment <id> --stdin`) — never
-    collapse a comment into one flat line.
-  - **The proposed reply to the user MUST be enclosed in a clearly delimited block** so a human can
-    identify *exactly* what we would send to the customer, character-for-character. Wrap **only** the
-    reply text between these two fences, on their own lines:
-    ```
-    --- BEGIN REPLY ---
-    <the exact message we would send to the user, in markdown>
-    --- END REPLY ---
-    ```
-    Put nothing else inside the fences — everything outside (the `[OUTBOUND]` header, notes) is context;
-    everything *inside* is the verbatim reply. Use this same block for every DRAFT and every POSTED
-    reply you record, and when reading a prior draft, treat the text inside the fences as the reply.
+  {{ template "_shared/beads/markdown-convention" . }}
+  {{ template "_shared/reply-fence-convention" "reply" }}
 
   ## Slack tools (names vary by MCP server)
 
-  Match Slack MCP tools **by capability, not exact name**. You need: (a) **read a thread's replies**
-  and (b) **post a reply to a thread**. Read the target channel and parent `thread_ts` from the bead
-  metadata (`slack_channel` / `slack_thread_ts`).
+  {{ template "_shared/support/slack-tools" (dict "Capabilities" "You need: (a) **read a thread's replies** and (b) **post a reply to a thread**." "NoPosting" false "ReadMetadata" true) }}
 
   ## Step 1: Identify the target bead
 
-  {{ $target := "" -}}
-  {{ if .Session.BeadsIssue }}{{ $target = .Session.BeadsIssue }}{{ else if .Args.IssueID }}{{ $target = .Args.IssueID }}{{ end -}}
-  {{ if $target }}
-  - This prompt was launched from bead **`{{ $target }}`** — operate on it directly (skip the picker).
-  {{- else }}
-  - **No linked bead** — show a picker: list candidates and keep only those in `state:drafting`:
-    `bd list -l support-question --status open,in_progress --all` (read each `state:*` label from
-    `bd show`). Present them with `mitto_ui_options` (first option `{label: "None - Cancel"}`, then
-    one `{label: "<id> [state] — <short summary>"}` per bead, timeout 300).
-  - If there are no `state:drafting` beads, `mitto_ui_notify` (info) that nothing is ready to answer
-    and stop. If the user cancels, acknowledge and stop.
-  {{- end }}
+  {{ template "_shared/support/target-bead-picker" (dict "Ctx" . "Filter" "state:drafting" "EmptyMessage" "nothing is ready to answer") }}
 
   ## Step 2: Load history + verify state (self-check)
 
@@ -93,13 +61,7 @@ prompt: |-
 
   ## Step 2.5: Read the channel playbook
 
-  - Using the bead's `slack_channel` value, read this channel's playbook at
-    **`.mitto/slack-support-<channel-id>.md`** (e.g. `slack_channel` `C0XXXXXXX` →
-    `.mitto/slack-support-C0XXXXXXX.md`). It is the **authoritative guide** for this channel's tone,
-    how to address customers, and reply guidelines (as well as scope and investigation method).
-  - **If it exists**, honor its tone/reply guidance when reviewing or building the draft — it
-    **overrides** the generic defaults below. **If it does not exist**, fall back to the generic
-    defaults below (the watch/investigate prompts are responsible for creating it).
+  - {{ template "_shared/support/channel-playbook-read" (dict "Purpose" "shape the tone/reply guidance when reviewing or building the draft") }}
   - Confirm the `state:*` label is `drafting`. If it is **not**, use `mitto_ui_options` to warn:
     - **Question**: "This bead is in `state:<current>`, not `drafting`. Continue anyway?"
     - **Options**: `[{label: "Continue anyway"}, {label: "Cancel"}]`, timeout 300.
@@ -254,15 +216,7 @@ prompt: |-
   `need-info` (we asked a clarifying question), the ball is now in the customer's court and nothing
   needs your attention until they respond. In general:
 
-  - **P1 (HIGH)** — a draft (reply or clarifying question) is pending **your** approval
-    (`state:drafting`); bump to **P0** only if it answers an escalation / outage / broad-impact thread.
-  - **P2 (MEDIUM)** — in motion, our court, not blocked on your approval: `triaged` / `gathering-info`
-    / `awaiting-us`.
-  - **P3 (LOW)** — waiting on the customer, nothing for you to do now: `awaiting-customer` / `need-info`
-    (we just posted a reply or a clarifying question; the ball is in their court).
-
-  Apply with `bd update <id> --priority <n>` (n is `0`–`3`, 0 = highest) and add a short
-  `**[PRIORITY · <time>]** P<old> → P<new> (<reason>)` comment when it changes.
+  {{ template "_shared/support/priority-rubric" . }}
 
   ## Notes
 

@@ -1,0 +1,48 @@
+{{- /*
+  support/whats-next-mapping — the shared "state → what's next phrase"
+  Markdown table used verbatim in the summary sections of the two
+  list-level sweep prompts (Support: watch channel and Support:
+  housekeeping). Both callers render the same 6-row core table
+  (`triaged`, `gathering-info`, `need-info`, `drafting`,
+  `awaiting-customer`, `awaiting-us`); watch-channel additionally
+  prints two closing-state rows (`resolved`, `stale`).
+
+  Fields on the `dict` argument:
+
+    IncludeClosed:  when true, appends the two closing-state rows
+                    (`resolved` and `stale`). Watch-channel sets this
+                    true; housekeeping does not surface closing rows
+                    in its what's-next table (they've been removed
+                    from the open backlog in Step 4).
+
+  Usage — the caller supplies the surrounding bullet + preamble text
+  and drops the fragment where the table body goes; both callers
+  render the table at 4-space indent (nested inside their bullet), so
+  the fragment emits its rows at 4-space indent as well:
+
+      - **Always end with a "what's next" table** listing every ticket ...
+        (prompt-specific preamble sentences here)
+
+        {{ template "_shared/support/whats-next-mapping" (dict "IncludeClosed" false) }}
+
+        **The "What's next" cell must be a markdown link ...
+
+  Whitespace: fragment body starts and ends flush (no leading/trailing
+  newline); the surrounding YAML newlines and the caller's indent
+  provide framing. Every rendered line is indented 4 spaces so the
+  table lines up under a bullet.
+*/ -}}
+{{- $includeClosed := .IncludeClosed -}}
+| state | what's next |
+  |-------|-------------|
+  | `triaged` | Needs investigation |
+  | `gathering-info` | Investigation in progress |
+  | `need-info` | Needs more info from user |
+  | `drafting` | Ready to reply to user |
+  | `awaiting-customer` | Waiting on customer reply |
+  | `awaiting-us` | Our turn — needs a response |
+{{- if $includeClosed }}
+  | `resolved` | Resolved (closing) |
+  | `stale` | Stale — auto-closing |
+{{- end }}
+{{- /* no trailing newline */ -}}

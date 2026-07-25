@@ -39,23 +39,14 @@ prompt: |-
 
   ## CRITICAL: User Interaction Rules
 
-  > ⚠️ **NEVER use text-based interaction prompts.**
-  >
-  > - ❌ NEVER ask the user to type a number, command, or keyword to make a selection
-  > - ❌ NEVER present numbered options and ask the user to respond with text
-  > - ✅ ALWAYS use `mitto_ui_options` for choices, `mitto_ui_textbox` for review/editing,
-  >   `mitto_ui_form` for structured input, and `mitto_ui_notify` for non-blocking notifications
+  {{ template "_shared/no-text-ui" . }}
   >
   > ⚠️ **This prompt NEVER posts to Slack.** It only reads threads and updates beads. Posting a reply
   > is done — with your approval — by **"Support: reply to user"**.
 
   ## Bead writing conventions (descriptions & comments)
 
-  - **Always write in GitHub-flavored Markdown.** Every bead **description** (`-d`) and every
-    **comment** you add must be valid markdown — headings, **bold**, `inline code`, fenced code blocks,
-    lists and links so the bead reads well in the UI. Preserve real line breaks with `$'...'` (real
-    `\n`) or, for anything multi-line, pipe via stdin (`printf '%s' "$c" | bd comment <id> --stdin`) —
-    never collapse a comment into one flat line.
+  {{ template "_shared/beads/markdown-convention" . }}
   - This sweep never authors a customer reply itself (it hands drafting off to **"Support: investigate"**
     children and posting to **"Support: reply to user"**). Those prompts enclose the proposed reply in
     a `--- BEGIN REPLY ---` / `--- END REPLY ---` block so the exact customer-facing text is
@@ -63,10 +54,7 @@ prompt: |-
 
   ## Slack tools (names vary by MCP server)
 
-  Match Slack MCP tools **by capability, not exact name**. You only need to **read a thread's
-  replies** (e.g. `slack_get_thread_replies*`, `conversations_replies_slack`). Read each ticket's
-  channel + parent `thread_ts` from its bead metadata (`slack_channel` / `slack_thread_ts`). No
-  posting tool is needed.
+  {{ template "_shared/support/slack-tools" (dict "Capabilities" "You only need to **read a thread's replies** (e.g. `slack_get_thread_replies*`, `conversations_replies_slack`). Read each ticket's channel + parent `thread_ts` from its bead metadata (`slack_channel` / `slack_thread_ts`)." "NoPosting" true "ReadMetadata" false) }}
 
   ## State lifecycle (single `state:*` label)
 
@@ -325,14 +313,7 @@ prompt: |-
     **what's next** cell is a short human phrase derived from the bead's current `state:*` label (use
     this exact mapping so it reads the same across runs and matches **"Support: watch channel"**):
 
-    | state | what's next |
-    |-------|-------------|
-    | `triaged` | Needs investigation |
-    | `gathering-info` | Investigation in progress |
-    | `need-info` | Needs more info from user |
-    | `drafting` | Ready to reply to user |
-    | `awaiting-customer` | Waiting on customer reply |
-    | `awaiting-us` | Our turn — needs a response |
+    {{ template "_shared/support/whats-next-mapping" (dict "IncludeClosed" false) }}
 
     **The "What's next" cell must be a markdown link to the Slack thread**, using the phrase above as
     the link text and the bead's stored `slack_url` metadata as the target:

@@ -1,0 +1,47 @@
+{{- /*
+  support/channel-playbook-read — the "read the per-channel playbook,
+  read-only" bullet used by every single-bead support prompt that does
+  NOT itself own creating the playbook (check-status, reply-to-user,
+  gather-info). The playbook is created and maintained by
+  "Support: watch channel" and "Support: investigate"; the read-only
+  prompts just consume it.
+
+  Standardises three things that every consumer says the same way:
+
+    1. Path convention: `.mitto/slack-support-<channel-id>.md` (from
+       the bead's `slack_channel` metadata, with the example
+       `C0XXXXXXX → .mitto/slack-support-C0XXXXXXX.md`).
+    2. That the playbook is the **authoritative guide** for this
+       channel's tone / how to address customers / reply guidelines.
+    3. If-exists / if-missing: honor its guidance when it exists;
+       otherwise fall back to the generic style/defaults in the same
+       section, since this prompt does not create the file itself.
+
+  Callers pass a single named field via a `dict`:
+
+      Purpose:   short caller-supplied phrase spliced into
+                 "use it to <Purpose>" — this is where each consumer
+                 records what it uses the playbook for. Examples:
+                   "keep your status summary consistent with the channel's voice"
+                   "shape the tone/reply guidance when reviewing or building the draft"
+                   "shape the tone when drafting the clarifying message"
+
+  Usage (rendered as a single Markdown bullet — note the leading `- `
+  that the CALLER supplies before the fragment call):
+
+      - {{ template "_shared/support/channel-playbook-read"
+           (dict "Purpose" "shape the tone when drafting the clarifying message") }}
+
+  Whitespace: fragment body starts flush at column 1 (no leading `- `,
+  since the caller supplies the bullet marker) and emits no trailing
+  newline; callers use plain `{{ template ... }}` (no trim markers).
+*/ -}}
+{{- $purpose := .Purpose -}}
+**Read the channel playbook.** Using the bead's `slack_channel` value, read
+  **`.mitto/slack-support-<channel-id>.md`** (e.g. `C0XXXXXXX` →
+  `.mitto/slack-support-C0XXXXXXX.md`). It is the **authoritative guide** for this channel's tone,
+  how to address customers, and reply guidelines (as well as scope and investigation method) — use it
+  to {{ $purpose }}. **If it exists**, honor its guidance; it **overrides** the generic style below.
+  **If it does not exist**, fall back to the generic style below (the watch/investigate prompts are
+  responsible for creating it — this prompt is read-only on the playbook).
+{{- /* no trailing newline */ -}}

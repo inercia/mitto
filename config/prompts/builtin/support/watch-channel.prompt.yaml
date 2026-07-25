@@ -87,10 +87,7 @@ prompt: |-
 
   ## Slack tools (names vary by MCP server)
 
-  Different Slack MCP servers expose different tool names (e.g. `slack_get_channel_history*`,
-  `conversations_history_slack`, `slack_get_thread_replies*`). **Match by capability, not exact name.**
-  You need tools that can: (a) read recent channel history, and (b) read a thread's replies. You do
-  **not** need a posting tool here — this prompt never posts.
+  {{ template "_shared/support/slack-tools" (dict "Capabilities" "You need tools that can: (a) read recent channel history (e.g. `slack_get_channel_history*`, `conversations_history_slack`), and (b) read a thread's replies (e.g. `slack_get_thread_replies*`)." "NoPosting" true "ReadMetadata" false) }}
 
   ## Beads tracking model (one bead per Slack thread)
 
@@ -433,16 +430,7 @@ prompt: |-
     the bead's current `state:*` label (use this exact mapping so it reads the same across runs and
     prompts):
 
-    | state | what's next |
-    |-------|-------------|
-    | `triaged` | Needs investigation |
-    | `gathering-info` | Investigation in progress |
-    | `need-info` | Needs more info from user |
-    | `drafting` | Ready to reply to user |
-    | `awaiting-customer` | Waiting on customer reply |
-    | `awaiting-us` | Our turn — needs a response |
-    | `resolved` | Resolved (closing) |
-    | `stale` | Stale — auto-closing |
+    {{ template "_shared/support/whats-next-mapping" (dict "IncludeClosed" true) }}
 
     **The "What's next" cell must be a markdown link to the Slack thread**, using the phrase above as
     the link text and the bead's stored `slack_url` metadata as the target:

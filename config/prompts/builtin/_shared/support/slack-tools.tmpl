@@ -1,0 +1,47 @@
+{{- /*
+  support/slack-tools — the "Slack tools (names vary by MCP server)"
+  paragraph that every support prompt opens with. Standardises the
+  invariant framing ("Match Slack MCP tools by capability, not exact
+  name") and lets each caller drop in its own capability list.
+
+  Fields on the `dict` argument:
+
+    Capabilities:  a caller-supplied sentence(s) describing what
+                   the caller needs Slack MCP tools for (verbs like
+                   "read a thread's replies", "read recent channel
+                   history", "post a reply to a thread", etc.).
+                   The fragment renders this verbatim after the
+                   stable "Match by capability..." lead-in.
+
+    NoPosting:     when true, adds a trailing sentence noting that
+                   no posting tool is needed for this prompt. Every
+                   read-only support prompt sets this. Set false for
+                   prompts that DO post (reply-to-user, gather-info,
+                   continue-conversation).
+
+    ReadMetadata:  when true, adds the "Read the target channel and
+                   parent thread_ts from the bead metadata
+                   (`slack_channel` / `slack_thread_ts`)" trailer.
+                   Every per-bead prompt sets this; list-level and
+                   channel-level prompts (housekeeping, watch-channel,
+                   continue-conversation) set it false.
+
+  Usage:
+
+      {{ template "_shared/support/slack-tools" (dict
+         "Capabilities" "Here you only need to **read a thread's replies** (e.g. `slack_get_thread_replies*`, `conversations_replies_slack`)."
+         "NoPosting" true
+         "ReadMetadata" true) }}
+
+  Whitespace: fragment body starts and ends flush at column 1 with
+  no leading/trailing newline; callers use plain `{{ template ... }}`
+  (no trim markers) inside their own `## Slack tools ...` heading
+  section.
+*/ -}}
+{{- $caps := .Capabilities -}}
+{{- $noPosting := .NoPosting -}}
+{{- $readMeta := .ReadMetadata -}}
+Match Slack MCP tools **by capability, not exact name**. {{ $caps }}
+{{- if $readMeta }} Read the target channel and parent `thread_ts` from the bead metadata (`slack_channel` / `slack_thread_ts`).{{- end }}
+{{- if $noPosting }} No posting tool is needed — this prompt never posts.{{- end }}
+{{- /* no trailing newline */ -}}
