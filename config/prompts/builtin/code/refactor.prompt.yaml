@@ -65,17 +65,7 @@ prompt: |
 
   For refactorings spanning 3+ files, module extraction, or multiple parallelizable items, delegate to Mitto child conversations.
 
-  **Session context for delegation:**
-
-  Your session ID is `{{ .Session.ID }}` — use as `self_id` for all `mitto_*` tool calls.
-
-  Available ACP servers:
-  {{ .ACP.AvailableText }}
-  {{- if .Children.AllText }}
-
-  Existing children:
-  {{ .Children.AllText }}
-  {{- end }}
+  {{ template "_shared/delegation-context" . }}
 
   **Choosing the right ACP server:**
 

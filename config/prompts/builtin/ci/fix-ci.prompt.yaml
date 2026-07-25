@@ -189,17 +189,7 @@ prompt: |
   run**. **Spawned conversations must never be loops** — they are one-off tasks.
   {{- end }}
 
-  **Session context for delegation:**
-
-  Your session ID is `{{ .Session.ID }}` — use as `self_id` for all `mitto_*` tool calls.
-
-  Available ACP servers:
-  {{ .ACP.AvailableText }}
-  {{- if .Children.AllText }}
-
-  Existing children:
-  {{ .Children.AllText }}
-  {{- end }}
+  {{ template "_shared/delegation-context" . }}
 
   **How to delegate:**
 
