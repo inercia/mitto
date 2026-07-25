@@ -860,8 +860,12 @@ func (c *SessionWSClient) handlePromptWithMeta(message string, promptName string
 		c.tryAttachToSession()
 	}
 
+	// Agent not connected yet (e.g. still doing cold-start / ACP init): enqueue
+	// the message into the session's persistent queue instead of erroring. When
+	// the BackgroundSession finishes booting, session_manager triggers
+	// TryProcessQueuedMessage() which drains the queue.
 	if c.bgSession == nil {
-		c.sendPromptError("The AI agent for this conversation is not connected. It may still be starting up — please wait a moment and try again.", promptID)
+		c.enqueuePromptOffline(message, promptName, promptID, imageIDs, fileIDs)
 		return
 	}
 
@@ -893,6 +897,86 @@ func (c *SessionWSClient) handlePromptWithMeta(message string, promptName string
 			titleMessage = promptName
 		}
 		go c.generateAndSetTitle(titleMessage)
+	}
+}
+
+// enqueuePromptOffline persists a prompt into the session's queue when the
+// BackgroundSession is not yet connected (e.g. during cold-start / ACP init).
+// The queue is drained automatically by SessionManager once the BS becomes
+// available (see session_manager.go: TryProcessQueuedMessage on resume).
+//
+// The client-visible effect matches a normal successful enqueue: a
+// prompt_received ACK resolves the frontend's pending send promise, and a
+// queue_updated broadcast reflects the new queue length in the UI.
+func (c *SessionWSClient) enqueuePromptOffline(message string, promptName string, promptID string, imageIDs, fileIDs []string) {
+	if c.store == nil {
+		c.sendPromptError("The AI agent for this conversation is not connected. It may still be starting up — please wait a moment and try again.", promptID)
+		return
+	}
+
+	trimmedMessage := strings.TrimSpace(message)
+	if trimmedMessage == "" && strings.TrimSpace(promptName) == "" {
+		c.sendPromptError("Cannot send an empty prompt.", promptID)
+		return
+	}
+
+	// Determine whether to auto-generate a title before mutating state.
+	shouldGenerateTitle := c.sessionNeedsTitle()
+
+	// Resolve queue max size. bgSession is nil here so we fall back to defaults.
+	maxSize := config.DefaultQueueMaxSize
+
+	queue := c.store.Queue(c.sessionID)
+	msg, err := queue.Add(message, imageIDs, fileIDs, c.clientID, nil, maxSize, nil, promptName)
+	if err != nil {
+		if err == session.ErrQueueFull {
+			c.sendPromptError(fmt.Sprintf("Queue is full. Maximum %d messages allowed.", maxSize), promptID)
+			return
+		}
+		if c.logger != nil {
+			c.logger.Error("Failed to enqueue offline prompt", "error", err, "session_id", c.sessionID)
+		}
+		c.sendPromptError("Failed to enqueue prompt: "+err.Error(), promptID)
+		return
+	}
+
+	if c.logger != nil {
+		c.logger.Info("Enqueued prompt while agent not connected",
+			"session_id", c.sessionID,
+			"message_id", msg.ID,
+			"prompt_id", promptID)
+	}
+
+	// Send prompt_received ACK so the frontend's pending send promise resolves.
+	// The message is safely persisted in the queue and will be delivered once
+	// the BackgroundSession finishes booting.
+	c.sendMessage(WSMsgTypePromptReceived, map[string]interface{}{
+		"session_id": c.sessionID,
+		"prompt_id":  promptID,
+		"queued":     true,
+		"message_id": msg.ID,
+	})
+
+	// Notify this client's UI about the new queue state. Other per-session
+	// clients (if any) will pick up the length via keepalive polling — we can
+	// not use notifyQueueUpdate here because it requires a live BackgroundSession
+	// to fan out via observers, and bgSession is nil by construction.
+	length, _ := queue.Len()
+	c.sendMessage(WSMsgTypeQueueUpdated, map[string]interface{}{
+		"session_id":   c.sessionID,
+		"queue_length": length,
+		"action":       "added",
+		"message_id":   msg.ID,
+	})
+
+	// Enqueue title generation if enabled (skip for named-prompt items — the
+	// prompt name is the label).
+	if shouldGenerateTitle && promptName == "" && c.server != nil && c.server.queueTitleWorker != nil {
+		c.server.queueTitleWorker.Enqueue(conversation.QueueTitleRequest{
+			SessionID: c.sessionID,
+			MessageID: msg.ID,
+			Message:   message,
+		})
 	}
 }
 
