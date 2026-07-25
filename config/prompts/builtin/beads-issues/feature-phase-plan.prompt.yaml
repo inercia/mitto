@@ -106,8 +106,9 @@ prompt: |
 
   - **One stage only.** This phase advances at most one label (`planned`). Do not
     implement, test, or review — those are separate phases.
-  - **Live state only.** Always re-read labels via `bd show --json` at the start of
-    the phase; never assume labels from a prior run or from `Item.*`.
-  - **Always log to the tracker** with `bd comment` so progress is auditable.
-  - **Tier tag every comment.** Prefix the plan with `Plan [tier: Reasoning]:` so the
-    tier split is observable in the bead history (mitto-mpu5 acceptance criteria).
+  {{ template "_shared/beads/phase-guidelines-footer" (dict
+      "IncludeItemNote" true
+      "TagNoun"         "plan"
+      "TagPrefix"       "Plan"
+      "Tier"            "Reasoning"
+  ) }}

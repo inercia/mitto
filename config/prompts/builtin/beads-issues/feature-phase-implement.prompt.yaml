@@ -134,8 +134,9 @@ prompt: |
   - **Commit to persist across iterations.** Each phase runs in a separate loop
     iteration; without `Commit: "true"`, work here is only as durable as the
     conversation's working tree.
-  - **Live state only.** Always re-read labels via `bd show --json` at the start of
-    the phase; never assume labels from a prior run.
-  - **Always log to the tracker** with `bd comment` so progress is auditable.
-  - **Tier tag every comment.** Prefix the summary with `Implementation [tier: Coding]:`
-    so the tier split is observable in the bead history (mitto-mpu5 acceptance criteria).
+  {{ template "_shared/beads/phase-guidelines-footer" (dict
+      "IncludeItemNote" false
+      "TagNoun"         "summary"
+      "TagPrefix"       "Implementation"
+      "Tier"            "Coding"
+  ) }}

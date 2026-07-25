@@ -149,8 +149,9 @@ prompt: |
     the bead here is optional; the driver's Done branch always self-terminates.
   - **Never rubber-stamp.** Any unmet check means the label must NOT advance — loop
     back or defer, never guess that it is "probably fine".
-  - **Live state only.** Always re-read labels via `bd show --json` at the start of
-    the phase; never assume labels from a prior run.
-  - **Always log to the tracker** with `bd comment` so progress is auditable.
-  - **Tier tag every comment.** Prefix the summary with `Review [tier: Reasoning]:`
-    so the tier split is observable in the bead history (mitto-mpu5 acceptance criteria).
+  {{ template "_shared/beads/phase-guidelines-footer" (dict
+      "IncludeItemNote" false
+      "TagNoun"         "summary"
+      "TagPrefix"       "Review"
+      "Tier"            "Reasoning"
+  ) }}

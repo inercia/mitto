@@ -1,0 +1,51 @@
+{{/*
+  phase-guidelines-footer — the trailing three bullets that close the
+  `## Guidelines` block of every beads-issues **phase** prompt. These
+  bullets are near-identical across all 7 phases with only three
+  degrees of freedom:
+
+    * whether the "Live state only" bullet mentions `Item.*` (only the
+      plan + investigate phases still do, because they run first in
+      their respective driver and callers historically leaned on the
+      last-run `Item.*` payload — dropped for the phases that always
+      re-enter after a Commit step).
+    * the tier-comment noun (\"plan\" for plan, \"findings\" for
+      investigate, \"summary\" for the rest) that the operator's
+      `bd comment` should carry.
+    * the tier-comment prefix word (\"Plan\", \"Implementation\",
+      \"Testing\", \"Review\", \"Reproduction\", \"Investigation\",
+      \"Fix\") + declared .Tier (\"Reasoning\" / \"Coding\").
+
+  Consumers: feature-phase-plan / -implement / -test / -review,
+  fix-phase-reproduce / -investigate / -fix.
+
+  Usage:
+
+      {{ template "_shared/beads/phase-guidelines-footer" (dict
+          "IncludeItemNote" true
+          "TagNoun"         "plan"
+          "TagPrefix"       "Plan"
+          "Tier"            "Reasoning"
+      ) }}
+
+  Parameters:
+    IncludeItemNote — bool; when true, appends " or from `Item.*`"
+                      to the Live-state bullet. Used by the plan +
+                      investigate phases; false for all others.
+    TagNoun         — the noun after "Prefix the " (e.g., "plan",
+                      "summary", "findings").
+    TagPrefix       — the leading word of the tier-tagged bd comment
+                      (e.g., "Plan", "Implementation", "Testing",
+                      "Review", "Reproduction", "Investigation",
+                      "Fix").
+    Tier            — "Reasoning" or "Coding"; declared model tier
+                      for the phase.
+
+  Uses only builtin text/template actions so it is safe to attach to
+  every render context, including the narrow-FuncMap target.title path.
+*/}}
+- **Live state only.** Always re-read labels via `bd show --json` at the start of
+  the phase; never assume labels from a prior run{{ if .IncludeItemNote }} or from `Item.*`{{ end }}.
+- **Always log to the tracker** with `bd comment` so progress is auditable.
+- **Tier tag every comment.** Prefix the {{ .TagNoun }} with `{{ .TagPrefix }} [tier: {{ .Tier }}]:` so
+  the tier split is observable in the bead history (mitto-mpu5 acceptance criteria).

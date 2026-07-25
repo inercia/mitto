@@ -141,8 +141,9 @@ prompt: |
     Do not attempt to fix the bug — the fix phase runs next.
   - **Test must fail for the right reason.** A test that passes, or fails on an
     unrelated setup error, has not reproduced the bug — refine and retry.
-  - **Live state only.** Always re-read labels via `bd show --json` at the start of
-    the phase; never assume labels from a prior run.
-  - **Always log to the tracker** with `bd comment` so progress is auditable.
-  - **Tier tag every comment.** Prefix the summary with `Reproduction [tier: Coding]:`
-    so the tier split is observable in the bead history (mitto-mpu5 acceptance criteria).
+  {{ template "_shared/beads/phase-guidelines-footer" (dict
+      "IncludeItemNote" false
+      "TagNoun"         "summary"
+      "TagPrefix"       "Reproduction"
+      "Tier"            "Coding"
+  ) }}

@@ -188,8 +188,9 @@ prompt: |
     code in the same pass.
   - **Green before green label.** Never add `fixed` while the reproduction test or
     adjacent tests are red.
-  - **Live state only.** Always re-read labels via `bd show --json` at the start of
-    the phase; never assume labels from a prior run.
-  - **Always log to the tracker** with `bd comment` so progress is auditable.
-  - **Tier tag every comment.** Prefix the summary with `Fix [tier: Coding]:` so the
-    tier split is observable in the bead history (mitto-mpu5 acceptance criteria).
+  {{ template "_shared/beads/phase-guidelines-footer" (dict
+      "IncludeItemNote" false
+      "TagNoun"         "summary"
+      "TagPrefix"       "Fix"
+      "Tier"            "Coding"
+  ) }}
