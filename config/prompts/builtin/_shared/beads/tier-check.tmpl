@@ -1,0 +1,67 @@
+{{/*
+  tier-check — the visible "Tier check" preamble used by every beads-issues
+  **phase** prompt to declare which model tier it expects (Reasoning or
+  Coding) and to gracefully surface a tier-degraded run when the
+  transient `preferredModels` switch did not land.
+
+  Consumers: feature-phase-plan / -implement / -test / -review,
+  fix-phase-reproduce / -investigate / -fix.
+
+  Callers first resolve the target bead into a local `$target` (same
+  variable already used for `target-bead-header-strict`), then invoke:
+
+      {{ template "_shared/beads/tier-check" (dict
+          "Target"    $target
+          "Tier"      "Reasoning"
+          "Phase"     "plan"
+          "Confirmed" (Model "Reasoning")
+          "ModelName" .Session.ModelName
+          "ModelTags" .Session.ModelTags
+      ) }}
+
+  Parameters:
+    Target    — the resolved bead ID (used inside the tier-degraded
+                `bd comment` command). Callers reuse the same `$target`
+                variable already set for target-bead-header-strict.
+    Tier      — the declared tier tag: `"Reasoning"` or `"Coding"`.
+    Phase     — the short phase name shown inside the tier-degraded
+                `[phase: <phase>]` marker (e.g. `"plan"`, `"implement"`,
+                `"test"`, `"review"`, `"reproduce"`, `"investigate"`,
+                `"fix"`).
+    Confirmed — bool; true when the active model carries the .Tier tag.
+                Callers must pass `(Model .Tier)` from the outer context
+                because `Model` is not in the narrow FuncMap that
+                target.title templates use (see internal/prompts/target.go),
+                and every fragment is attached to every render — so the
+                fragment itself may not reference `Model`.
+    ModelName — pass through `.Session.ModelName` so the degraded-run
+                comment can name the running model.
+    ModelTags — pass through `.Session.ModelTags` so the degraded-run
+                comment can enumerate the running model's tags.
+
+  Branches:
+    * .Confirmed == true:
+        "✓ <Tier> tier confirmed — proceed."
+    * else (tier-degraded):
+        "⚠ **Tier-degraded run.** … bd comment <target> \"⚠ tier-degraded
+         [phase: <phase>]: declared <Tier> but running on '<model>' (tags:
+         <tags>).\""
+
+  The fragment is self-contained (balanced `{{ if }}/{{ end }}`) and uses
+  ONLY builtin text/template actions (no external funcs), so it is safe to
+  attach to every render — including the narrow-FuncMap target.title path.
+*/}}
+## Tier check
+
+This phase is declared to run on the **{{ .Tier }}** tier (`preferredModels: [{modelTag: {{ .Tier }}}]`).
+Active model: `{{ if .ModelName }}{{ .ModelName }}{{ else }}<unknown>{{ end }}` (tags: {{ if .ModelTags }}{{ range $i, $t := .ModelTags }}{{ if $i }}, {{ end }}{{ $t }}{{ end }}{{ else }}none{{ end }}).
+
+{{ if .Confirmed -}}
+✓ {{ .Tier }} tier confirmed — proceed.
+{{- else -}}
+⚠ **Tier-degraded run.** The active model does not carry the `{{ .Tier }}` tag, so the transient `preferredModels` switch did not land (either the tag is not installed on any workspace profile, or the current model is unknown). Before doing any phase work, record the degradation on the bead so it is visible in the audit trail, then continue on best effort:
+
+```bash
+bd comment {{ .Target }} "⚠ tier-degraded [phase: {{ .Phase }}]: declared {{ .Tier }} but running on '{{ if .ModelName }}{{ .ModelName }}{{ else }}<unknown>{{ end }}' (tags: {{ if .ModelTags }}{{ range $i, $t := .ModelTags }}{{ if $i }}, {{ end }}{{ $t }}{{ end }}{{ else }}none{{ end }})."
+```
+{{- end }}

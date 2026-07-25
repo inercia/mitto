@@ -35,20 +35,14 @@ prompt: |
   ) }}
 
   {{ if $target -}}
-  ## Tier check
-
-  This phase is declared to run on the **Reasoning** tier (`preferredModels: [{modelTag: Reasoning}]`).
-  Active model: `{{ if .Session.ModelName }}{{ .Session.ModelName }}{{ else }}<unknown>{{ end }}` (tags: {{ if .Session.ModelTags }}{{ Join ", " .Session.ModelTags }}{{ else }}none{{ end }}).
-
-  {{ if Model "Reasoning" -}}
-  ✓ Reasoning tier confirmed — proceed.
-  {{- else -}}
-  ⚠ **Tier-degraded run.** The active model does not carry the `Reasoning` tag, so the transient `preferredModels` switch did not land (either the tag is not installed on any workspace profile, or the current model is unknown). Before doing any phase work, record the degradation on the bead so it is visible in the audit trail, then continue on best effort:
-
-  ```bash
-  bd comment {{ $target }} "⚠ tier-degraded [phase: plan]: declared Reasoning but running on '{{ if .Session.ModelName }}{{ .Session.ModelName }}{{ else }}<unknown>{{ end }}' (tags: {{ if .Session.ModelTags }}{{ Join ", " .Session.ModelTags }}{{ else }}none{{ end }})."
-  ```
-  {{- end }}
+  {{ template "_shared/beads/tier-check" (dict
+      "Target"    $target
+      "Tier"      "Reasoning"
+      "Phase"     "plan"
+      "Confirmed" (Model "Reasoning")
+      "ModelName" .Session.ModelName
+      "ModelTags" .Session.ModelTags
+  ) }}
 
   ## Step 1 — Load LIVE state
 
