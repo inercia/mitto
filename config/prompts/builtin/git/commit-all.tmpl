@@ -1,0 +1,19 @@
+{{- /*
+  git/commit-all — commit surface is the entire working tree; there is no
+  prior conversation context to narrow scope with. Callers typically
+  reference this fragment on the "no conversation history" branch (e.g.
+  the `else` arm of `{{ if .Session.HasMessages }}`).
+
+  Emits a short procedure without headers so the caller controls
+  section numbering.
+*/ -}}
+This is the first message in this conversation, so there is no prior context
+to narrow the scope. Analyze the whole repository state:
+
+1. Run `git status --porcelain` and inspect **everything** — modified, added,
+   deleted, renamed, untracked.
+2. Group by scope: feature/component, type (config/docs/deps), path (module/
+   directory).
+3. Check for already-staged changes: should they go first, or be unstaged and
+   re-grouped with the rest?
+4. Ask if uncertain about intent or grouping.

@@ -29,11 +29,12 @@ prompt: |
   {{- if and .Session.IsLoop (not .Session.IsLoopForced) }}
 
   **Scheduled mode** — a loop run; the user is not watching.
-  - Decide **autonomously**; do not ask. Use only `mitto_ui_notify`.
-  - Keep making the next concrete increment of progress each run.
-  - **Commit** completed increments (stage only changed files by path; never
-    `git add -A`/`.` or `git commit -a`; skip if nothing changed) but do **NOT
-    push** — leave that to the user.
+  {{ template "_shared/silent-notify-only" . }}
+  - Decide **autonomously**; keep making the next concrete increment of
+    progress each run.
+  - **Commit** completed increments as follows:
+
+    {{ template "git/safe-stage" . }}
   - If you become genuinely blocked (ambiguous requirement, missing decision), do
     **not** guess — notify what's blocked and stop iterating
     (`mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", loop_enabled: false)`).

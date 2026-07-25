@@ -54,38 +54,10 @@ prompt: |
 
   ### 2. Analyze Changes
 
-  {{- if .Session.HasMessages }}
-  This conversation has been running for a while — focus the commits on the work
-  **we did together**, not on unrelated changes that may already exist in the
-  working tree.
-
-  1. Review the conversation so far and enumerate the files we actually touched
-     (edits, creations, deletions, renames). Prefer explicit tool traces (edits,
-     writes, deletes) over guessing.
-  2. Run `git status --porcelain` and intersect it with that list — the resulting
-     set is the **only** set of files you may propose for commits.
-  3. If files in `git status` are **not** in that set (someone else's uncommitted
-     work, prior WIP, unrelated in-flight changes), leave them alone: do **not**
-     `git add` them, do **not** `git stash` them, do **not** `git checkout` them.
-     Mention them briefly in the plan under an "Ignoring (not part of this
-     conversation)" note so the user knows they were seen and skipped.
-  4. If our conversation touched a file but `git status` shows it as clean, note
-     it (it was likely reverted or already committed) and skip it.
-  5. Group the in-scope files by scope: feature/component, type (config/docs/
-     deps), path (module/directory).
-  6. Ask if the mapping between the conversation's work and the file set is
-     uncertain.
-  {{- else }}
-  This is the first message in this conversation, so there is no prior context
-  to narrow the scope. Analyze the whole repository state:
-
-  1. Run `git status --porcelain` and inspect **everything** — modified, added,
-     deleted, renamed, untracked.
-  2. Group by scope: feature/component, type (config/docs/deps), path (module/
-     directory).
-  3. Check for already-staged changes: should they go first, or be unstaged and
-     re-grouped with the rest?
-  4. Ask if uncertain about intent or grouping.
+  {{ if .Session.HasMessages -}}
+  {{ template "git/commit-scoped" . }}
+  {{- else -}}
+  {{ template "git/commit-all" . }}
   {{- end }}
 
   ### 3. Propose Commits

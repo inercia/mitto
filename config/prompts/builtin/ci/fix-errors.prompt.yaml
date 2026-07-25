@@ -31,11 +31,12 @@ prompt: |
   {{- if and .Session.IsLoop (not .Session.IsLoopForced) }}
 
   **Scheduled mode** — a loop run; the user is not watching.
-  - Decide **autonomously**; do not ask the user. Use only `mitto_ui_notify`.
-  - Determine the errors to fix from the latest build/test output yourself.
-  - **Commit** your fixes (stage only changed files by path; never `git add -A`/`.`
-    or `git commit -a`; skip if nothing changed) but do **NOT push** — leave that to
-    the user.
+  {{ template "_shared/silent-notify-only" . }}
+  - Decide **autonomously**; determine the errors to fix from the latest
+    build/test output yourself.
+  - **Commit** your fixes as follows:
+
+    {{ template "git/safe-stage" . }}
   - If an error is genuinely ambiguous or underspecified, do **not** guess — notify
     what's blocked and stop, rather than asking.
   {{- else }}

@@ -36,43 +36,11 @@ prompt: |
 
   ### 3. Identify Target Remote and Branch
 
-  #### 3a. List Remotes
-
-  ```bash
-  git remote -v
-  git rev-parse --abbrev-ref --symbolic-full-name @{u} 2>/dev/null
-  ```
-
-  #### 3b. Check for Existing PR
-
-  Use GitHub API: `GET /repos/{owner}/{repo}/pulls?head={username}:{branch}&state=open`
-
-  If PR exists: extract `base.ref`, `base.repo.full_name` (target repo), identify push remote (usually `origin`).
-
-  #### 3c. If No PR, Infer Target
-
-  ```bash
-  git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/@@'
-  git symbolic-ref refs/remotes/upstream/HEAD 2>/dev/null | sed 's@^refs/remotes/@@'
-  ```
-
-  Priority: `upstream` → `origin` → tracking branch.
-
-  #### 3d. Confirm with User
-
-  Confirm if: multiple remotes, non-standard setup, no tracking/PR found.
-
-  **With Mitto UI**: `mitto_ui_options(self_id: "{{ .Session.ID }}", ...)` → "PR targets upstream/main, push to origin. Correct?"
-  **Without**: Ask in conversation.
+  {{ template "git/identify-remote-branch" . }}
 
   ### 4. Check if Rebase Needed
 
-  ```bash
-  git fetch <target-remote>
-  git rev-list --count HEAD..<target-remote>/<target-branch>
-  ```
-
-  If behind: inform user to rebase first (use "Rebase changes" prompt), then stop.
+  {{ template "git/check-behind-base" . }}
 
   ### 5. Create or Update PR
 

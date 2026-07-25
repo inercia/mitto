@@ -1,0 +1,16 @@
+{{- /*
+  git/safe-stage — path-only staging convention used by loop/CI/beads
+  drivers that may be running concurrently with other work.
+
+  Callers usually embed this fragment inline in a bullet or step that
+  already introduces "commit" as the action; it emits a short paragraph
+  (no headers, no leading bullet) explaining WHY plain-path staging is
+  mandatory and what to skip. Callers append their own commit-message
+  template around it.
+*/ -}}
+Stage **only** the files you changed for this work, explicitly by path
+(`git add <file> ...`). Do **NOT** use `git add -A`, `git add .`, or
+`git commit -a`: other unrelated, uncommitted changes may exist in the repo
+(concurrent sessions, prior WIP) and must be left untouched. Skip the commit
+entirely if nothing changed this run. Do **NOT push** — leave pushing to the
+user.

@@ -1,0 +1,30 @@
+{{- /*
+  git/commit-scoped — narrow the commit surface to the files this
+  conversation actually touched, ignoring anyone else's uncommitted work
+  that may coexist in the working tree.
+
+  Callers should reference this fragment when the current session has
+  meaningful history (e.g. gated by `{{ if .Session.HasMessages }}`).
+  It emits a short procedure (no headers) so the caller controls the
+  surrounding section numbering.
+*/ -}}
+This conversation has been running for a while — focus the commits on the work
+**we did together**, not on unrelated changes that may already exist in the
+working tree.
+
+1. Review the conversation so far and enumerate the files we actually touched
+   (edits, creations, deletions, renames). Prefer explicit tool traces (edits,
+   writes, deletes) over guessing.
+2. Run `git status --porcelain` and intersect it with that list — the resulting
+   set is the **only** set of files you may propose for commits.
+3. If files in `git status` are **not** in that set (someone else's uncommitted
+   work, prior WIP, unrelated in-flight changes), leave them alone: do **not**
+   `git add` them, do **not** `git stash` them, do **not** `git checkout` them.
+   Mention them briefly in the plan under an "Ignoring (not part of this
+   conversation)" note so the user knows they were seen and skipped.
+4. If our conversation touched a file but `git status` shows it as clean, note
+   it (it was likely reverted or already committed) and skip it.
+5. Group the in-scope files by scope: feature/component, type (config/docs/
+   deps), path (module/directory).
+6. Ask if the mapping between the conversation's work and the file set is
+   uncertain.

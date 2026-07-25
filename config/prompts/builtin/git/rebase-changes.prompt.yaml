@@ -26,35 +26,7 @@ prompt: |
 
   ### 2. Identify Target Remote and Branch
 
-  #### 2a. List Remotes
-
-  ```bash
-  git remote -v
-  ```
-
-  #### 2b. Check for Existing PR
-
-  Use GitHub API: `GET /repos/{owner}/{repo}/pulls?head={username}:{branch}&state=open`
-
-  If PR exists: extract `base.ref` and `base.repo.full_name`, match to a configured remote.
-
-  #### 2c. If No PR, Infer Target
-
-  ```bash
-  git config --get branch.$(git branch --show-current).remote
-  git config --get branch.$(git branch --show-current).merge
-  git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/@@'
-  git symbolic-ref refs/remotes/upstream/HEAD 2>/dev/null | sed 's@^refs/remotes/@@'
-  ```
-
-  Priority: tracking branch → `upstream` remote → `origin` remote.
-
-  #### 2d. Confirm with User
-
-  Confirm if: multiple remotes, detected remote differs from `origin`, no tracking/PR found, branch name suggests non-default target.
-
-  **With Mitto UI**: `mitto_ui_options(self_id: "{{ .Session.ID }}", ...)` → "Detected rebase target: upstream/main. Correct?"
-  **Without**: Ask in conversation.
+  {{ template "git/identify-remote-branch" . }}
 
   ### 3. Fetch and Preview
 
