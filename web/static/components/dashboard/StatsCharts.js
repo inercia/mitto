@@ -533,8 +533,8 @@ function ModelUsageCard({ modelData, uplot, empty, hidden, onToggleModel }) {
   const models = (modelData && modelData.models) || [];
   return html`
     <div
-      class="rounded-lg shadow bg-mitto-surface-2 p-3 flex flex-col gap-2 w-full"
-      style="flex: 0 0 auto;"
+      class="rounded-lg shadow bg-mitto-surface-2 p-3 flex flex-col gap-2"
+      style="width: min(360px, 100%); flex: 0 0 auto;"
     >
       <div class="text-xs text-mitto-text-muted truncate">Model usage (total tokens)</div>
       <div
@@ -761,16 +761,16 @@ export function StatsCharts({ showToast }) {
                 empty=${empty}
               />`,
             )}
+        ${modelUsageVisible
+          ? html`<${ModelUsageCard}
+              modelData=${modelData}
+              uplot=${uplot}
+              empty=${modelEmpty}
+              hidden=${hiddenModels}
+              onToggleModel=${toggleModel}
+            />`
+          : null}
       </div>
-      ${modelUsageVisible
-        ? html`<${ModelUsageCard}
-            modelData=${modelData}
-            uplot=${uplot}
-            empty=${modelEmpty}
-            hidden=${hiddenModels}
-            onToggleModel=${toggleModel}
-          />`
-        : null}
       ${note
         ? html`<div class="text-xs text-mitto-text-muted">${note}</div>`
         : null}

@@ -13,6 +13,19 @@ const { html, Fragment, useState, useRef, useEffect } = window.preact;
 
 import { Modal } from "./Modal.js";
 import { Portal } from "./ContextMenu.js";
+import { tildifyPath } from "../utils/paths.js";
+
+// Pure helper — pick the display label for a hidden workspace entry. Prefers
+// the friendly `name` from folders.json (merged onto workspace records via
+// ApplyFolderDefaults) and falls back to a tildified `working_dir` for the
+// display-only fallback (the raw `working_dir` remains the underlying key).
+// Exported for testing.
+export function pickAddFolderLabel(ws) {
+  if (!ws) return "";
+  return (
+    (ws.name && String(ws.name).trim()) || tildifyPath(ws.working_dir) || ""
+  );
+}
 
 export function AddFolderDialog({
   isOpen,
@@ -153,10 +166,10 @@ export function AddFolderDialog({
         data-testid=${`add-folder-pick-${ws.working_dir}`}
       >
         <span class="font-semibold truncate w-full"
-          >${ws.name || ws.working_dir}</span
+          >${pickAddFolderLabel(ws)}</span
         >
         <span class="text-xs text-mitto-text-muted truncate w-full"
-          >${ws.working_dir}</span
+          >${tildifyPath(ws.working_dir)}</span
         >
       </button>
     </li>
@@ -229,16 +242,15 @@ export function AddFolderDialog({
                   <li key=${ws.working_dir}>
                     <button
                       type="button"
-                      class="w-full text-left break-all py-1"
-                      style="white-space: normal; line-height: 1.35;"
+                      class="w-full text-left truncate py-1"
                       onClick=${() => {
                         setMoreMenu(null);
                         handlePickExisting(ws.working_dir);
                       }}
                       data-testid=${`add-folder-pick-${ws.working_dir}`}
-                      title=${ws.working_dir}
+                      title=${tildifyPath(ws.working_dir)}
                     >
-                      <span class="break-all">${ws.working_dir}</span>
+                      <span class="truncate">${tildifyPath(ws.working_dir)}</span>
                     </button>
                   </li>
                 `,
