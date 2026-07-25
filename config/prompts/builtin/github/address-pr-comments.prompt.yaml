@@ -27,9 +27,7 @@ prompt: |
   {{- if and .Session.IsLoop (not .Session.IsLoopForced) }}
 
   **Scheduled mode** — a loop run; the user is not watching.
-  - Use **only** `mitto_ui_notify` for all communication — non-blocking notifications only.
-  - Do **NOT** use `mitto_ui_options`, `mitto_ui_form`, `mitto_ui_textbox`, or any
-    interactive/blocking UI tool. They will stall an unattended run.
+  {{ template "_shared/silent-notify-only" . }}
   - Act **autonomously** on comments that are objectively valid and low-risk (see
     "Autonomy criteria" below). For anything subjective, ambiguous, or risky,
     reply requesting clarification and notify — do not guess or act unilaterally.
@@ -184,14 +182,19 @@ prompt: |
 
   ### 8. Identify Push Remote
 
-  ```bash
-  git remote -v
-  git rev-parse --abbrev-ref --symbolic-full-name @{u} 2>/dev/null
-  ```
+  {{ template "git/identify-remote-branch" . }}
 
   In fork workflows: push to `origin` (your fork), not `upstream`. Verify via PR's `head.repo.full_name`.
 
-  ### 9. Push and Request Re-review
+  ### 9. Preflight — Check if Branch is Behind Base
+
+  Before pushing fixes on top of a branch that is behind its PR base, verify
+  the branch is current. Missing base commits can re-break what you just
+  addressed, and CI will fail on the exact issue you thought you resolved.
+
+  {{ template "git/check-behind-base" . }}
+
+  ### 11. Push and Request Re-review
 
   {{- if and .Session.IsLoop (not .Session.IsLoopForced) }}
   In scheduled mode: push the autonomy-approved fixes and request re-review
@@ -209,7 +212,7 @@ prompt: |
   glab mr update --ready                                       # GitLab
   ```
 
-  ### 10. Summary Report
+  ### 12. Summary Report
 
   ```console
   ✅ PR Review Comments Addressed

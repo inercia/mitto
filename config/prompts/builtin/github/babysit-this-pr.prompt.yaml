@@ -51,8 +51,7 @@ prompt: |
   {{- if and .Session.IsLoop (not .Session.IsLoopForced) }}
 
   **Silent mode — scheduled loop run.**
-  - Use **only** `mitto_ui_notify`. Do **NOT** call `mitto_ui_options`,
-    `mitto_ui_form`, or `mitto_ui_textbox` — nobody is watching, never block.
+  {{ template "_shared/silent-notify-only" . }}
   - Act autonomously when safe (clean rebases); otherwise just notify.
   {{- else }}
 

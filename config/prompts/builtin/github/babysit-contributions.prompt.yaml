@@ -40,19 +40,7 @@ prompt: |
   Available ACP servers:
   {{ .ACP.AvailableText }}
 
-  ## Interaction Mode
-  {{- if and .Session.IsLoop (not .Session.IsLoopForced) }}
-
-  **Silent mode** — a scheduled loop run; the user is not watching.
-  - Use **only** `mitto_ui_notify` for all communication — non-blocking notifications only.
-  - Do **NOT** use `mitto_ui_options`, `mitto_ui_form`, `mitto_ui_textbox`, or any
-    interactive/blocking UI tool.
-  {{- else }}
-
-  **Interactive mode** — a force-triggered run or a non-loop conversation; the user may be present.
-  - You may freely interact with the user using `mitto_ui_options`, `mitto_ui_form`,
-    and other interactive tools in addition to `mitto_ui_notify`.
-  {{- end }}
+  {{ template "_shared/interaction-mode-babysit" . }}
 
   ## Step 1 — Identify the repository
   {{- if .Args.Repository }}

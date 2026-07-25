@@ -58,9 +58,9 @@ prompt: |
   ## Interaction Mode — READ THIS FIRST
   {{- if and .Session.IsLoop (not .Session.IsLoopForced) }}
 
-  **Silent mode — scheduled loop run.** Use **only** `mitto_ui_notify`. Do **NOT**
-  call `mitto_ui_options`, `mitto_ui_form`, or `mitto_ui_textbox` — nobody is watching.
-  Act autonomously when safe; otherwise file a bead and notify. Stay quiet on no-op runs.
+  **Silent mode — scheduled loop run.**
+  {{ template "_shared/silent-notify-only" . }}
+  - Act autonomously when safe; otherwise file a bead and notify. Stay quiet on no-op runs.
   {{- else }}
 
   **Interactive mode** (first send, or a force-triggered run): a user may be present, so

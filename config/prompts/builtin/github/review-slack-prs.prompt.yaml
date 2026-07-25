@@ -56,8 +56,7 @@ prompt: |
   {{- if and .Session.IsLoop (not .Session.IsLoopForced) }}
 
   **Silent autonomous mode — scheduled loop run.** Nobody is watching.
-  - Use **only** `mitto_ui_notify`. Do **NOT** call `mitto_ui_options`,
-    `mitto_ui_form`, or `mitto_ui_textbox` — never block waiting for a human.
+  {{ template "_shared/silent-notify-only" . }}
   - You do **not** read diffs or post review comments yourself. Your job is to
     scan Slack, decide which PRs are in scope, and delegate each to a child
     conversation via `mitto_conversation_new` (Step 4). The child handles the
