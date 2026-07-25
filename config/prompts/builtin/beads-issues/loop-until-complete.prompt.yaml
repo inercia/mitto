@@ -67,9 +67,7 @@ prompt: |
   {{- if and .Session.IsLoop (not .Session.IsLoopForced) }}
 
   **Silent mode — a scheduled loop run.**
-  - Use **only** `mitto_ui_notify` — non-blocking notifications.
-  - Do **NOT** call `mitto_ui_options`, `mitto_ui_form`, or `mitto_ui_textbox`.
-    Nobody is watching. Never block waiting for input.
+  {{ template "_shared/silent-notify-only" . }}
   - When a decision is ambiguous, do **not** guess and do **not** ask — record the
     question on the bead and defer it (see Step 4).
   {{- else }}
