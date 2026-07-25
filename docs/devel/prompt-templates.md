@@ -634,6 +634,66 @@ recipes, spawn-dedup rules) were similarly rejected during `mitto-g61.9` after
 byte-level inspection — see that bead's `Implementation:` comment for the
 per-candidate rationale.
 
+### Runtime bootstrap requirement (adding a new fragment safely)
+
+`PrecompileTemplateConds` and `RenderPromptTemplate` both attach the process-wide
+fragment registry (`prompts.CurrentFragments()`) to the caller's template set
+**before** parsing the caller body. If that registry is nil or empty when the
+first prompts-cache reload runs, every prompt referencing `{{ template "…" . }}`
+drops out of `PromptsCache` at load time with:
+
+```
+cond precompile: template "_shared/…" not defined
+```
+
+This is the "Bootstrap Paradox" (`mitto-ezw`): the driver conversation's own
+phase prompts silently disappear from the cache, and every consumer of the
+missing fragment fails to render for the lifetime of the process. Two invariants
+protect against recurrence — do **not** break either when adding a new fragment
+or refactoring bootstrap:
+
+1. **Bootstrap ordering.** `internal/web/server.go` calls
+   `prompts.ReloadFragmentsFromDirs(s.getFragmentScanDirs())` +
+   `prompts.SetCurrentFragments(reg)` **before** the first `PromptsCache.Get()`
+   / `ForceReload()` can fire (lazy from HTTP handlers or the fs-watcher).
+   Reordering this block silently reintroduces the paradox. The block emits a
+   WARN when `reg.Len() == 0` after bootstrap so a mis-configured deploy is
+   observable in logs immediately.
+2. **Scan-root correctness.** `getFragmentScanDirs()` lists
+   `BuiltinPromptsDir()` **as its own root** (not the parent), so short
+   fragment names like `_shared/session-context` resolve. Passing the parent
+   would namespace every fragment as `builtin/_shared/…` and break every
+   consumer.
+
+**Regression protection** (in `internal/prompts/`):
+
+- `TestAllBuiltinPromptsPrecompile` (`precompile_smoke_test.go`) walks every
+  embedded `*.prompt.yaml` with the sibling fragment registry installed and
+  fails on any load/precompile error with the offending rel-path. Any new
+  builtin with a broken fragment reference — or any bootstrap/deploy drift
+  that produces an empty registry — trips this test immediately.
+- `TestPrecompileTemplateConds_UnknownFragmentFailsWith{Nil,Empty}Registry` +
+  `_KnownFragmentSucceedsWithPopulatedRegistry` (`template_precompile_test.go`)
+  pin the paradox contract at the smallest surface: nil/empty registry ⇒
+  paradox, populated registry ⇒ recovery. These lock the runtime WARN's
+  premise so a well-meaning refactor of the attach loop cannot silently
+  weaken the guard.
+
+**Checklist when adding a new `_shared/*.tmpl` fragment.**
+
+1. Write the fragment under `config/prompts/builtin/_shared/<name>.tmpl` (or
+   co-located under a topic dir if consumed by only that topic — see the
+   "Layout convention" above).
+2. Reference it from a `.prompt.yaml` body as `{{ template "_shared/<name>" . }}`.
+3. Run `go test ./internal/prompts/` — `TestAllBuiltinPromptsPrecompile` and
+   the topic-specific smoke tests must stay green.
+4. Rebuild (`make build`) and, when overriding a running install, run
+   `./mitto prompts update-builtin --force` — the embedded-config deploy
+   walks the tree without an extension filter, so `.tmpl` files ship
+   alongside `.prompt.yaml`. The
+   `TestDeployBuiltinPrompts_DeploysEmbeddedFragments` family
+   (`config/builtin_prompts_test.go`) pins that.
+
 ### Non-goals
 
 - **Dynamic fragment names** (`{{ template (printf "x-%s" .K) . }}`) — Go
