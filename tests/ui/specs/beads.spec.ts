@@ -1381,6 +1381,145 @@ testWithCleanup.describe("Beads view - return to conversation", () => {
 });
 
 /**
+ * Beads view — drawer stops polling deleted issues (mitto-9vh).
+ *
+ * SKIPPED: the deterministic gate for mitto-9vh lives as source-structure
+ * Jest tests in web/static/components/BeadsView.test.js
+ * ("mitto-9vh: BeadsIssueView stops polling deleted issues" and
+ * "mitto-9vh: BeadsDetailPanelBody suppresses Retry on gone loadError").
+ * Those 9 tests assert the exact code invariants that prevent the 589 x 404
+ * storm from mitto-46k: the goneIdsRef Set, the fetch-effect short-circuit,
+ * the 404 branch adding the id to the ref, the {gone: true} loadError shape,
+ * the absence of showToast in the 404 branch, and PanelBody's Retry
+ * suppression.
+ *
+ * This E2E body is preserved (but skipped) as the intent-of-record — it
+ * mounts the drawer via the linked-conversation flow, flips the mocked
+ * /api/issues/mitto-bbb route from 200 to 404, dispatches
+ * mitto:beads_changed several times, and asserts the request count does
+ * not increase after the first 404. It shares the same harness limitation
+ * as the sibling "return to conversation" describe at line 1311: the
+ * beads-spec baseline currently lands on the Dashboard and cannot reach
+ * the linked-issue click flow reliably (waitForAppReady times out on the
+ * initial textarea, before we ever get to open the drawer). Un-skip once
+ * that flow is unblocked; the assertions themselves are correct.
+ */
+testWithCleanup.describe("Beads view - drawer stops polling deleted issues (mitto-9vh)", () => {
+  testWithCleanup.skip(
+    "stops issuing GET /api/issues/<id> after the first 404 on mitto:beads_changed",
+    async ({ page, request, apiUrl, helpers, timeouts }) => {
+      // Route counter: every /api/issues/mitto-bbb hit (any method) increments.
+      // Initial GET returns the mocked issue so the drawer opens; once we flip
+      // `deleted` to true, subsequent GETs return 404 to simulate the
+      // external delete. Any further hits after the 404 would prove the
+      // storm regression came back.
+      let getHitCount = 0;
+      let deleted = false;
+      await page.route(/\/api\/issues\/mitto-bbb(\?|$)/, async (route) => {
+        const req = route.request();
+        if (req.method() !== "GET") return route.fallback();
+        getHitCount += 1;
+        if (deleted) {
+          await route.fulfill({
+            status: 404,
+            contentType: "application/json",
+            body: JSON.stringify({ error: "Not Found" }),
+          });
+          return;
+        }
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify(MOCK_ISSUES[1]), // mitto-bbb "Short issue"
+        });
+      });
+
+      // Standard linked-conversation harness (mirrors the sibling
+      // "return to conversation" describe): create a session linked to
+      // mitto-bbb, land directly in it on load, then follow the linked-issue
+      // link to open the standalone BeadsIssueView drawer.
+      await request.post(apiUrl("/api/workspaces"), {
+        data: { acp_server: AGENT_NAME, working_dir: WORKSPACE_ALPHA },
+      });
+      const createResp = await request.post(apiUrl("/api/sessions"), {
+        data: {
+          name: `Linked-9vh ${Date.now()}`,
+          working_dir: WORKSPACE_ALPHA,
+          beads_issue: "mitto-bbb",
+        },
+      });
+      expect(createResp.ok()).toBeTruthy();
+      const linkedSessionId = (await createResp.json()).session_id;
+      expect(linkedSessionId).toBeTruthy();
+      await page.addInitScript((sid) => {
+        localStorage.setItem("mitto_last_session_id", sid);
+      }, linkedSessionId);
+      await helpers.navigateAndWait(page);
+
+      await expect(page.locator("textarea")).toBeEnabled({
+        timeout: timeouts.appReady,
+      });
+      await page.locator('button[aria-label="Session details"]').click();
+      const convPanel = page.locator(CONV_PANEL);
+      await expect(convPanel).toBeVisible({ timeout: timeouts.shortAction });
+      await page.locator('[data-tip="Open beads issue mitto-bbb"]').click();
+
+      // Drawer is up and the initial fetch resolved successfully.
+      const issuePanel = page.locator(ISSUE_PANEL);
+      await expect(issuePanel).toBeVisible({ timeout: timeouts.shortAction });
+      await expect(issuePanel.getByText("mitto-bbb")).toBeVisible();
+
+      // Snapshot the pre-delete request count. Multiple hits are OK here
+      // (the initial mount may fetch more than once during the loading →
+      // loaded transition); what matters is what happens AFTER the delete.
+      const hitsBeforeDelete = getHitCount;
+      expect(hitsBeforeDelete).toBeGreaterThanOrEqual(1);
+
+      // Simulate the external delete + fs-watcher event. From here on, any
+      // GET /api/issues/mitto-bbb the drawer issues will 404.
+      deleted = true;
+      await page.evaluate(() => {
+        window.dispatchEvent(
+          new CustomEvent("mitto:beads_changed", {
+            detail: { working_dirs: null },
+          }),
+        );
+      });
+
+      // Wait for the drawer to observe the deletion (its refreshNonce bump
+      // re-runs the fetch effect, which will hit the 404 branch exactly
+      // once, add the id to goneIdsRef, and surface the "gone" notice).
+      await expect
+        .poll(() => getHitCount, { timeout: timeouts.shortAction })
+        .toBeGreaterThan(hitsBeforeDelete);
+      const hitsAfterFirst404 = getHitCount;
+
+      // Now fire mitto:beads_changed several more times. Pre-fix, each one
+      // would trigger another GET (that is the 589 x 404 storm). Post-fix,
+      // the goneIdsRef guard makes them all no-ops for this id.
+      for (let i = 0; i < 5; i += 1) {
+        await page.evaluate(() => {
+          window.dispatchEvent(
+            new CustomEvent("mitto:beads_changed", {
+              detail: { working_dirs: null },
+            }),
+          );
+        });
+        // Small yield so the effect scheduler has a chance to run — if the
+        // regression comes back, the extra GETs will be visible.
+        await page.waitForTimeout(50);
+      }
+
+      // The request count must not have moved: no re-poll after the first
+      // 404. This is the acceptance-criteria assertion ("at most a small
+      // handful of 404s per deletion event, not 589 in 8 hours").
+      expect(getHitCount).toBe(hitsAfterFirst404);
+    },
+  );
+});
+
+
+/**
  * Beads view — single stable Drawer mount across loading → loaded (mitto-zbfq).
  *
  * SKIPPED: the reproduction for mitto-zbfq lives as a source-structure Jest

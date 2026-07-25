@@ -2097,3 +2097,203 @@ describe("renderIssueRow effective-streaming-set — source guard (mitto-0qn)", 
   });
 });
 
+
+// =============================================================================
+// mitto-9vh: BeadsIssueView must stop polling deleted issues after the first 404
+// =============================================================================
+//
+// Bug: when an issue was deleted externally (agent bd close, sibling Mitto
+// session, git pull), the drawer's fetch effect would 404, surface the error,
+// but never mark the id as "gone". Any subsequent mitto:beads_changed event
+// (fired for any .beads/ filesystem change) bumped refreshNonce, re-running
+// the effect and re-issuing the same GET /api/issues/<id> -> 404. Observed:
+// 589 x 404 for mitto-46k in 8h from a single stale drawer, across all
+// connected clients (local + 3 mobile IPs).
+//
+// Fix (frontend-only):
+//   1. BeadsIssueView tracks 404'd ids in a per-instance goneIdsRef (Set).
+//   2. The fetch effect short-circuits any id already in the set.
+//   3. A 404 response adds the id to the set and sets loadError to
+//      {message, gone: true} (skips the toast — external deletion is expected).
+//   4. PanelBody's isLoading branch normalizes loadError (string | object) and
+//      suppresses the Retry button when gone=true (retrying would just 404).
+//
+// A full E2E test that opens the drawer, deletes the issue, fires
+// mitto:beads_changed, and counts network requests lives in
+// tests/ui/specs/beads.spec.ts ("stops polling the drawer's issue after the
+// first 404"). This file's job is to lock the source structure so the fix
+// cannot silently regress via a later refactor — matching the mitto-zbfq /
+// mitto-n5mw pattern already established in this file.
+
+describe("mitto-9vh: BeadsIssueView stops polling deleted issues", () => {
+  const source = readFileSync(BEADS_VIEW_PATH, "utf8");
+
+  // Isolate the BeadsIssueView function body so assertions do not leak into
+  // sibling components. Same slicing pattern as the mitto-zbfq test above.
+  function extractBeadsIssueViewSource() {
+    const startMarker = "function BeadsIssueView(";
+    const startIdx = source.indexOf(startMarker);
+    expect(startIdx).toBeGreaterThan(-1);
+    const afterStart = source.indexOf(
+      "\nfunction ",
+      startIdx + startMarker.length,
+    );
+    const endIdx = afterStart === -1 ? source.length : afterStart;
+    return source.slice(startIdx, endIdx);
+  }
+
+  test("declares a goneIdsRef useRef(new Set()) inside BeadsIssueView", () => {
+    // The gate needs a per-instance, mutation-safe container. A ref (not
+    // state) is deliberate: mutating the Set must NOT trigger a re-render —
+    // the guard is consulted inside the fetch effect whose deps
+    // (refreshNonce/currentIssueId) already re-run on external changes.
+    const body = extractBeadsIssueViewSource();
+    const collapsed = body.replace(/\s+/g, " ");
+    expect(collapsed).toMatch(
+      /const\s+goneIdsRef\s*=\s*useRef\s*\(\s*new\s+Set\s*\(\s*\)\s*\)/,
+    );
+  });
+
+  test("fetch effect short-circuits ids already in goneIdsRef before issuing a request", () => {
+    // The guard must run BEFORE authFetch, so refreshNonce bumps on a known-
+    // gone id become a cheap no-op instead of another 404. Without this,
+    // mitto:beads_changed re-fires the same GET forever (589 x 404 observed).
+    const body = extractBeadsIssueViewSource();
+    const collapsed = body.replace(/\s+/g, " ");
+    // Grab the guard site and the fetch site, then assert the guard's index
+    // is BEFORE the first authFetch call inside the effect.
+    const guardIdx = collapsed.search(
+      /if\s*\(\s*goneIdsRef\.current\.has\s*\(\s*currentIssueId\s*\)\s*\)/,
+    );
+    expect(guardIdx).toBeGreaterThan(-1);
+    const fetchIdx = collapsed.indexOf("authFetch( endpoints.issues.show");
+    // Whitespace-collapsed form may not exactly match — use a regex fallback.
+    const fetchRe = /authFetch\s*\(\s*endpoints\.issues\.show/;
+    const fetchMatch = collapsed.match(fetchRe);
+    expect(fetchMatch).not.toBeNull();
+    expect(guardIdx).toBeLessThan(collapsed.indexOf(fetchMatch[0]));
+  });
+
+  test("404 response adds the id to goneIdsRef so future refreshNonce bumps no-op", () => {
+    // The recovery half of the fix: when the fetch discovers a 404, the id
+    // must be memoized so the guard above will skip it next time. If this
+    // add() is missing, the guard is unreachable and the bug returns.
+    const body = extractBeadsIssueViewSource();
+    const collapsed = body.replace(/\s+/g, " ");
+    // The add() lives inside the res.status === 404 branch. Assert both
+    // pieces exist in that order.
+    const statusIdx = collapsed.search(/res\.status\s*===\s*404/);
+    expect(statusIdx).toBeGreaterThan(-1);
+    const addRe = /goneIdsRef\.current\.add\s*\(\s*currentIssueId\s*\)/;
+    const addMatch = collapsed.match(addRe);
+    expect(addMatch).not.toBeNull();
+    expect(collapsed.indexOf(addMatch[0])).toBeGreaterThan(statusIdx);
+  });
+
+  test("404 branch sets loadError to a {gone: true} object so PanelBody can suppress Retry", () => {
+    // The visible half: without the gone flag, PanelBody renders a Retry
+    // button that would just re-404. The object shape distinguishes the
+    // deleted-issue case from transient errors (which stay as strings and
+    // keep the Retry button).
+    const body = extractBeadsIssueViewSource();
+    const collapsed = body.replace(/\s+/g, " ");
+    // Two setLoadError({..., gone: true}) sites — one in the guard, one in
+    // the 404 branch. Both matter: the guard preserves the notice across
+    // refreshNonce bumps, the 404 branch installs it the first time.
+    const goneSites = collapsed.match(
+      /setLoadError\s*\(\s*\{[^}]*gone\s*:\s*true[^}]*\}\s*\)/g,
+    );
+    expect(goneSites).not.toBeNull();
+    expect(goneSites.length).toBeGreaterThanOrEqual(2);
+  });
+
+  test("404 branch does NOT call showToast — external deletion must not spam every client", () => {
+    // The bug produced 589 x 404 across 4 IPs (local + 3 mobile) in 8h.
+    // Toasting each one would have quadrupled the UX pain. Isolate the 404
+    // branch specifically — the transient-error branches (!res.ok, catch)
+    // legitimately DO toast, so a whole-effect scan would false-positive.
+    const body = extractBeadsIssueViewSource();
+    // Extract from "res.status === 404" up to the branch's closing `return;`
+    // so we only look inside that branch's body. The 404 branch ends with a
+    // bare `return;` (early-exit); the sibling `!res.ok` branch that
+    // legitimately calls showToast lives strictly after that boundary.
+    const idx = body.search(/res\.status\s*===\s*404/);
+    expect(idx).toBeGreaterThan(-1);
+    const rest = body.slice(idx);
+    const endMatch = rest.match(/\breturn\s*;/);
+    expect(endMatch).not.toBeNull();
+    const branchBody = rest.slice(0, endMatch.index + endMatch[0].length);
+    expect(branchBody).not.toMatch(/showToast\s*\(/);
+  });
+});
+
+// =============================================================================
+// mitto-9vh: BeadsDetailPanelBody must suppress Retry when loadError.gone
+// =============================================================================
+//
+// Consumer half of the fix: PanelBody's isLoading branch renders loadError
+// via a small alert with an optional Retry button. The bug fix widens
+// loadError to `string | {message, gone: true}`; PanelBody must normalize
+// the shape (so `[object Object]` never leaks to the UI) AND drop the Retry
+// button when gone=true (retrying would just re-404 the deleted issue).
+
+describe("mitto-9vh: BeadsDetailPanelBody suppresses Retry on gone loadError", () => {
+  const PANEL_BODY_PATH = resolve(
+    __dirname_bv,
+    "beads",
+    "detail",
+    "PanelBody.js",
+  );
+  const source = readFileSync(PANEL_BODY_PATH, "utf8");
+
+  test("normalizes loadError to a string message (handles both string and object shapes)", () => {
+    // Without the normalization, an object loadError renders as
+    // "[object Object]" inside the alert <span>. The fix computes an errMsg
+    // local that reads .message when loadError is an object, else the raw
+    // string.
+    const collapsed = source.replace(/\s+/g, " ");
+    expect(collapsed).toMatch(
+      /const\s+errMsg\s*=\s*loadError\s*&&\s*typeof\s+loadError\s*===\s*"object"\s*\?\s*loadError\.message\s*:\s*loadError/,
+    );
+  });
+
+  test("computes errGone from the loadError.gone flag", () => {
+    // The flag drives Retry suppression below. Must be a coerced boolean
+    // (!!) so a truthy-but-non-boolean payload is safe.
+    const collapsed = source.replace(/\s+/g, " ");
+    expect(collapsed).toMatch(
+      /const\s+errGone\s*=\s*!!\s*\(\s*loadError\s*&&\s*typeof\s+loadError\s*===\s*"object"\s*&&\s*loadError\.gone\s*\)/,
+    );
+  });
+
+  test("Retry button render is gated on `onRetry && !errGone`, not `onRetry` alone", () => {
+    // The regression bar: a naive `onRetry ? Retry : null` would still show
+    // Retry for a deleted issue, whose only purpose would be to re-404. The
+    // gate must also consult errGone.
+    const collapsed = source.replace(/\s+/g, " ");
+    expect(collapsed).toMatch(/onRetry\s*&&\s*!\s*errGone/);
+    // And the pre-fix ternary — `onRetry ? html\`<button` — must NOT exist
+    // as the ONLY guard anywhere in the file. Allow the phrase in comments,
+    // but the JSX site must include the errGone conjunction.
+    // (Structural: the two-clause form above IS the JSX site; the negative
+    // assertion here would false-positive on the errGone form itself, so
+    // asserting the presence of the correct form is sufficient.)
+  });
+
+  test("alert renders errMsg (the normalized string), not raw loadError", () => {
+    // If PanelBody kept rendering ${loadError} directly, an object shape
+    // would print "[object Object]" — regressing the user-visible message.
+    // Assert the span reads errMsg.
+    const collapsed = source.replace(/\s+/g, " ");
+    expect(collapsed).toMatch(/<span>\s*\$\{\s*errMsg\s*\}\s*<\/span>/);
+    // And it must NOT render the raw ${loadError} anywhere in the isLoading
+    // alert body. Scope to just the isLoading branch: from "if (isLoading)"
+    // to the first "return html`" that closes it.
+    const isLoadingIdx = source.indexOf("if (isLoading)");
+    expect(isLoadingIdx).toBeGreaterThan(-1);
+    // Take a bounded window (roughly the length of the loading skeleton
+    // block; PanelBody.js line ~98-170 in the current implementation).
+    const branch = source.slice(isLoadingIdx, isLoadingIdx + 3000);
+    expect(branch).not.toMatch(/<span>\s*\$\{\s*loadError\s*\}\s*<\/span>/);
+  });
+});
