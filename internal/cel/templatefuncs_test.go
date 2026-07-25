@@ -1618,3 +1618,50 @@ func TestBuildTemplateFuncMap_PromptText(t *testing.T) {
 		}
 	})
 }
+
+// TestBuildTemplateFuncMap_Dict verifies the `dict` helper builds a
+// map[string]any from alternating key/value pairs (the well-known Sprig
+// signature) and rejects odd-arity/bad-key calls. Shared support fragments
+// rely on this to pass structured arguments through the single-value
+// `{{ template "name" X }}` call syntax.
+func TestBuildTemplateFuncMap_Dict(t *testing.T) {
+	ctx := &PromptEnabledContext{}
+	fm := BuildTemplateFuncMap(ctx)
+
+	// Happy path: even number of args, string keys, mixed value types.
+	got, err := RenderPromptTemplate("dict-happy",
+		`{{ $d := dict "Name" "alice" "N" 3 }}{{ $d.Name }}={{ $d.N }}`, nil, fm)
+	if err != nil {
+		t.Fatalf("dict happy path: %v", err)
+	}
+	if got != "alice=3" {
+		t.Errorf("dict happy path = %q, want %q", got, "alice=3")
+	}
+
+	// Empty dict.
+	got, err = RenderPromptTemplate("dict-empty", `{{ len (dict) }}`, nil, fm)
+	if err != nil {
+		t.Fatalf("dict empty: %v", err)
+	}
+	if got != "0" {
+		t.Errorf("dict empty len = %q, want %q", got, "0")
+	}
+
+	// Odd arity must surface as an execute error.
+	_, err = RenderPromptTemplate("dict-odd", `{{ dict "K" }}`, nil, fm)
+	if err == nil {
+		t.Fatalf("dict odd arity: expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "odd number of arguments") {
+		t.Errorf("dict odd arity error should mention 'odd number of arguments'; got %v", err)
+	}
+
+	// Non-string key must surface as an execute error.
+	_, err = RenderPromptTemplate("dict-badkey", `{{ dict 1 "v" }}`, nil, fm)
+	if err == nil {
+		t.Fatalf("dict bad key: expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "want string") {
+		t.Errorf("dict bad key error should mention 'want string'; got %v", err)
+	}
+}

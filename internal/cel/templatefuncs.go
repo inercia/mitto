@@ -752,5 +752,30 @@ func BuildTemplateFuncMap(ctx *PromptEnabledContext) template.FuncMap {
 		"HasPrefix": strings.HasPrefix,
 		"HasSuffix": strings.HasSuffix,
 		"Join":      func(sep string, elems []string) string { return strings.Join(elems, sep) },
+
+		// dict builds a map[string]any from alternating key/value pairs. It
+		// mirrors the well-known Sprig helper of the same name so shared
+		// fragments can be passed structured arguments — the template call
+		// syntax `{{ template "name" X }}` accepts only a single value, so
+		// callers that need to pass multiple named fields use a dict:
+		//
+		//     {{ template "_shared/foo" (dict "Ctx" . "Filter" "state:drafting") }}
+		//
+		// Keys must be strings; an odd number of arguments returns an error
+		// so silent truncation cannot mask a caller bug.
+		"dict": func(pairs ...any) (map[string]any, error) {
+			if len(pairs)%2 != 0 {
+				return nil, fmt.Errorf("dict: odd number of arguments (%d) — keys and values must be paired", len(pairs))
+			}
+			out := make(map[string]any, len(pairs)/2)
+			for i := 0; i < len(pairs); i += 2 {
+				key, ok := pairs[i].(string)
+				if !ok {
+					return nil, fmt.Errorf("dict: key at position %d is %T, want string", i, pairs[i])
+				}
+				out[key] = pairs[i+1]
+			}
+			return out, nil
+		},
 	}
 }
