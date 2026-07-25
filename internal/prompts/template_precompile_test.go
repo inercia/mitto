@@ -60,3 +60,92 @@ func TestPrecompileTemplateConds_ParseError(t *testing.T) {
 		t.Fatal("expected parse error, got nil")
 	}
 }
+
+// TestPrecompileTemplateConds_UnknownFragmentFailsWithNilRegistry pins the
+// mitto-ezw paradox contract at the PrecompileTemplateConds entry point:
+// a prompt that references a fragment with NO registry installed (the
+// package default before web.NewServer bootstraps one) must fail load-time
+// precompile with the characteristic `template "…" not defined` error.
+//
+// This is the exact failure mode the runtime WARN at server.go:1356 advertises
+// (`Fragment registry bootstrapped empty; prompts that reference {{ template
+// "_shared/…" . }} will fail to load…`) — proving the WARN's premise is real,
+// and pinning it at the smallest surface (no ParsePromptFile envelope, no
+// ValidatePromptTemplateSyntax wrapper) so any regression in the attach
+// loop's nil-registry branch surfaces immediately.
+func TestPrecompileTemplateConds_UnknownFragmentFailsWithNilRegistry(t *testing.T) {
+	// Belt-and-braces: some other test may have installed a registry and
+	// forgotten to clear it. Explicitly reset to the true default (nil).
+	prev := CurrentFragments()
+	SetCurrentFragments(nil)
+	t.Cleanup(func() { SetCurrentFragments(prev) })
+
+	body := `intro {{ template "_shared/session-context" . }} outro`
+	err := PrecompileTemplateConds("paradox-nil", body)
+	if err == nil {
+		t.Fatal("expected error for fragment reference with nil registry, got nil")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "paradox-nil") {
+		t.Errorf("error %q should name the prompt (%q)", msg, "paradox-nil")
+	}
+	if !strings.Contains(msg, "_shared/session-context") {
+		t.Errorf("error %q should name the missing fragment (%q)", msg, "_shared/session-context")
+	}
+	if !strings.Contains(msg, "not defined") {
+		t.Errorf("error %q should mention 'not defined' (paradox signature)", msg)
+	}
+}
+
+// TestPrecompileTemplateConds_UnknownFragmentFailsWithEmptyRegistry pins the
+// second half of the mitto-ezw paradox contract: an EMPTY (non-nil, zero-
+// entry) registry is functionally equivalent to no registry — a prompt
+// referencing a fragment must still fail precompile. This is the exact
+// state the runtime WARN targets: bootstrap ran but produced reg.Len() == 0,
+// which silently defeats every fragment-using prompt. Distinct from the
+// nil-registry test above because the attach loop's guard is
+// `if frags := CurrentFragments(); frags != nil` — an empty non-nil
+// registry takes the attach branch but attaches nothing, and must not
+// somehow rescue the reference.
+func TestPrecompileTemplateConds_UnknownFragmentFailsWithEmptyRegistry(t *testing.T) {
+	prev := CurrentFragments()
+	SetCurrentFragments(NewFragmentRegistry())
+	t.Cleanup(func() { SetCurrentFragments(prev) })
+
+	body := `intro {{ template "_shared/session-context" . }} outro`
+	err := PrecompileTemplateConds("paradox-empty", body)
+	if err == nil {
+		t.Fatal("expected error for fragment reference with empty registry, got nil")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "paradox-empty") {
+		t.Errorf("error %q should name the prompt (%q)", msg, "paradox-empty")
+	}
+	if !strings.Contains(msg, "_shared/session-context") {
+		t.Errorf("error %q should name the missing fragment (%q)", msg, "_shared/session-context")
+	}
+	if !strings.Contains(msg, "not defined") {
+		t.Errorf("error %q should mention 'not defined' (paradox signature)", msg)
+	}
+}
+
+// TestPrecompileTemplateConds_KnownFragmentSucceedsWithPopulatedRegistry
+// completes the paradox-contract matrix: with a registry that contains the
+// referenced fragment, PrecompileTemplateConds succeeds — the same body that
+// fails in the nil/empty cases above must load cleanly. This is the exact
+// state a healthy runtime achieves after server.go bootstraps the fragment
+// registry from getFragmentScanDirs() before the first prompts cache reload.
+// Together the three tests pin the WARN's contract from both sides:
+// empty ⇒ paradox, populated ⇒ recovery.
+func TestPrecompileTemplateConds_KnownFragmentSucceedsWithPopulatedRegistry(t *testing.T) {
+	prev := CurrentFragments()
+	SetCurrentFragments(&FragmentRegistry{entries: map[string]string{
+		"_shared/session-context": "hello from the fragment",
+	}})
+	t.Cleanup(func() { SetCurrentFragments(prev) })
+
+	body := `intro {{ template "_shared/session-context" . }} outro`
+	if err := PrecompileTemplateConds("paradox-recovered", body); err != nil {
+		t.Fatalf("expected nil for fragment ref with populated registry, got: %v", err)
+	}
+}
