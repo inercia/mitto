@@ -342,6 +342,16 @@ export function BeadsIssueView({
   const [deletingIssue, setDeletingIssue] = useState(false);
   // Bumped to re-fetch the current issue after a status/defer/dep change.
   const [refreshNonce, setRefreshNonce] = useState(0);
+  // mitto-9vh: ids known to be 404 (deleted externally). Once an id lands
+  // here, the fetch effect below short-circuits it so subsequent
+  // mitto:beads_changed bumps do not re-poll a nonexistent issue (a stale
+  // drawer previously generated 589 x GET /api/issues/<id> -> 404 in 8h).
+  // A ref, not state: the guard is checked inside an effect whose deps
+  // (refreshNonce/currentIssueId) already re-run on external changes, so no
+  // re-render is needed when the set mutates. Per-component-instance and
+  // resets on unmount, which is the correct scope (each opened drawer
+  // discovers its own gone set from live 404s).
+  const goneIdsRef = useRef(new Set());
   // Full issue list for the workspace, used to compute the current issue's
   // subtasks (children). /api/issues/{id} does not return children, so without
   // the list the Subtasks section would never render here even though it does
@@ -495,6 +505,13 @@ export function BeadsIssueView({
     // Reset visible state so re-opening a different issue (or a retry) shows
     // the loading skeleton instead of flashing the previous issue's content.
     setIssue(null);
+    // mitto-9vh: short-circuit ids we already discovered were 404. The drawer
+    // keeps showing the "gone" notice; no fetch is issued, so subsequent
+    // mitto:beads_changed bumps become a cheap no-op for this id.
+    if (goneIdsRef.current.has(currentIssueId)) {
+      setLoadError({ message: "This issue no longer exists.", gone: true });
+      return;
+    }
     setLoadError(null);
     let cancelled = false;
     (async () => {
@@ -502,6 +519,20 @@ export function BeadsIssueView({
         const res = await authFetch(
           endpoints.issues.show(currentIssueId, { working_dir: workingDir }),
         );
+        if (cancelled) return;
+        // mitto-9vh: distinguish 404 (issue was deleted externally) from
+        // transient errors. Mark the id gone so future refreshNonce bumps do
+        // not re-issue the same 404, and suppress the toast — external
+        // deletion by an agent / CLI / git pull is expected and should not
+        // spam every connected client.
+        if (res.status === 404) {
+          goneIdsRef.current.add(currentIssueId);
+          setLoadError({
+            message: "This issue no longer exists.",
+            gone: true,
+          });
+          return;
+        }
         const data = await readBeadsResponse(res);
         if (cancelled) return;
         if (!res.ok || data.error) {

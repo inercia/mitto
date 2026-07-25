@@ -96,6 +96,12 @@ export function BeadsDetailPanelBody({
   // fetch resolves. Kept minimal — no toolbar, no header actions, no
   // action bar — because they all depend on `data`.
   if (isLoading) {
+    // mitto-9vh: loadError may be either a string (transient error — Retry
+    // button appropriate) or {message, gone: true} (issue was 404'd —
+    // suppress Retry since retrying would just 404 again).
+    const errMsg =
+      loadError && typeof loadError === "object" ? loadError.message : loadError;
+    const errGone = !!(loadError && typeof loadError === "object" && loadError.gone);
     return html`
       <${Drawer}
         dock
@@ -141,9 +147,9 @@ export function BeadsDetailPanelBody({
                     role="alert"
                     class="alert alert-error alert-soft text-sm"
                   >
-                    <span>${loadError}</span>
+                    <span>${errMsg}</span>
                     ${
-                      onRetry
+                      onRetry && !errGone
                         ? html`<button
                             class="btn btn-ghost btn-xs"
                             onClick=${onRetry}
