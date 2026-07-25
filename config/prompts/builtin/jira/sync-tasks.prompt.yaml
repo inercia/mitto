@@ -48,17 +48,7 @@ prompt: |
 
   {{ template "_shared/session-context" . }}
 
-  ## Interaction Mode
-  {{- if and .Session.IsLoop (not .Session.IsLoopForced) }}
-
-  **Silent mode** — a scheduled loop run; the user is not watching.
-  - Use **only** `mitto_ui_notify` — non-blocking notifications only.
-  - Do **NOT** use `mitto_ui_options`, `mitto_ui_form`, or `mitto_ui_textbox`.
-  {{- else }}
-
-  **Interactive mode** — a regular conversation or a force-triggered loop run; the user is present.
-  - Use interactive tools (`mitto_ui_options`, `mitto_ui_form`, `mitto_ui_textbox`) as well as `mitto_ui_notify`. This is the default when run on demand.
-  {{- end }}
+  {{ template "_shared/interaction-mode" . }}
 
   ## Sync Direction
   {{- $pull := ne .Args.Pull "false" }}
@@ -227,79 +217,13 @@ prompt: |
 
   ### Step 5.0 — JIRA wiki markup → Markdown helper
 
-  JIRA descriptions and comments often use JIRA wiki markup (`h1.`/`h2.` headers, `{code}`/`{noformat}` blocks, `{{ "{{" }}monospace}}`, `[text|url]` links, `*bold*`, `_italic_`). Run every raw description and comment body through this **good-enough** converter before storing it — it preserves the most important structure (headers and code blocks) and is not meant to be perfect. Write it once to a temp file and reuse it:
+  {{ template "jira/jira2md" . }}
 
-  ```python
-  #!/usr/bin/env python3
-  # jira2md.py — good-enough JIRA wiki markup -> Markdown (reads stdin, writes stdout)
-  import re, sys
+  ### Step 5.1 — Managed body block and JIRA → beads mappings
 
-  def convert(s):
-      if not s:
-          return ""
-      fence = chr(96) * 3
-      s = s.replace("\r\n", "\n")
-      # Headers: h1. .. h6.  ->  #..######
-      s = re.sub(r"(?m)^h([1-6])\.\s*", lambda m: "#" * int(m.group(1)) + " ", s)
-      # Block quotes: bq.
-      s = re.sub(r"(?m)^bq\.\s*", "> ", s)
-      # Code / noformat blocks -> fenced code (toggle open/close)
-      parts = re.split(r"(\{code(?::[^}]*)?\}|\{noformat\})", s)
-      res, in_code = [], False
-      for p in parts:
-          if p == "{noformat}" or re.match(r"\{code(?::[^}]*)?\}$", p):
-              if not in_code:
-                  lang = ""
-                  m = re.match(r"\{code:([^}]*)\}$", p)
-                  if m and "title=" not in m.group(1):
-                      lm = re.search(r"(?:language=)?([A-Za-z0-9+#]+)", m.group(1))
-                      if lm:
-                          lang = lm.group(1)
-                  res.append("\n" + fence + lang + "\n"); in_code = True
-              else:
-                  res.append("\n" + fence + "\n"); in_code = False
-          else:
-              res.append(p)
-      s = "".join(res)
-      if in_code:
-          s += "\n" + fence + "\n"
-      # Inline monospace {{ "{{" }}...}} -> `...`
-      s = re.sub(r"\{\{(.+?)\}\}", lambda m: chr(96) + m.group(1) + chr(96), s)
-      # Links [text|url] -> [text](url)
-      s = re.sub(r"\[([^|\]]+)\|([^\]]+)\]", r"[\1](\2)", s)
-      # Bold *text* -> **text**
-      s = re.sub(r"(?<![\w*])\*([^*\n]+)\*(?![\w*])", r"**\1**", s)
-      # Italic _text_ -> *text*
-      s = re.sub(r"(?<![\w_])_([^_\n]+)_(?![\w_])", r"*\1*", s)
-      # Strip color/panel wrappers, keep inner text
-      s = re.sub(r"\{color[^}]*\}", "", s)
-      s = re.sub(r"\{panel[^}]*\}", "", s)
-      s = s.replace("{quote}", "")
-      return s
+  {{ template "jira/managed-body" . }}
 
-  if __name__ == "__main__":
-      sys.stdout.write(convert(sys.stdin.read()))
-  ```
-
-  Use it by piping the raw text through it, e.g. `python3 /tmp/jira2md.py < /tmp/jira-<key>.raw > /tmp/jira-<key>.desc.md`. If `python3` is unavailable, fall back to the `renderedFields` HTML or the raw text unchanged — never block the sync on conversion.
-
-  Use these mappings:
-
-  - **Priority** (JIRA → beads): Highest→0, High→1, Medium→2, Low→3, Lowest→4 (default 2).
-  - **Type** (JIRA → beads): Bug→bug, Story→feature, Epic→epic, Task/Sub-task/other→task.
-
-  Compose a canonical bead **body** for every ticket. Run the ticket description through the Step 5.0 converter first, then wrap the JIRA-managed content between sync markers so local additions can be preserved (see B). Write it to a temp file and pass via `--body-file` to preserve Markdown:
-
-  ```
-  <!-- jira-sync:begin (managed by JIRA sync — content here is overwritten on each run) -->
-  **JIRA:** <KEY> — <status> · <issue type> · assignee: <assignee>
-  **Link:** https://<jira-instance>/browse/<KEY>
-
-  <the converted ticket description (Markdown)>
-  <!-- jira-sync:end -->
-  ```
-
-  Anything a human adds **below** the `jira-sync:end` marker is local content and must survive future syncs.
+  In this batch step the bead-id is `<id>` (the bead that owns the current JIRA key from the Step 4 map); the temp file is `/tmp/jira-<key>.md`. Anything a human adds **below** the `jira-sync:end` marker is local content and must survive future syncs.
 
   For each ticket from Step 3:
 
@@ -332,29 +256,17 @@ prompt: |
 
   - **Status reflection** (conservative — see Guidelines "Terminal status"): if the JIRA ticket is in a **terminal** status and the bead is still open, close it: `bd close <id> --reason "Closed in JIRA (<status>)"`. (In interactive mode you may confirm first.)
 
-    A status is **terminal** only when its `name` is one of the following (case-insensitive, exact match):
+    {{ template "jira/terminal-status" . }}
 
-    - `Done`
-    - `Closed`
-    - `Resolved`
-    - `Cancelled` (or `Canceled`)
-    - `Won't Do` / `Won't Fix` / `Wontfix`
-    - `Duplicate`
+    When the status name is not on the allow-list, note that the current status is already mirrored into the managed block of the bead body by the Step 5B update path, so a human sees the current JIRA state without an automated close.
 
-    Do **not** close a bead based on `statusCategory == "done"` alone. Many JIRA workflows put deployment-pipeline statuses in the green category — e.g. `Deployed to Stage`, `Deployed`, `Released`, `Ready for Prod`, `In UAT`, `Verified`, `Awaiting Deploy`, `On Prod` — where the ticket has real follow-up work (prod rollout, verification, sign-off) still pending. Treating those as closed would silently lose local work.
-
-    When the status name is not on the allow-list, leave the bead open and simply mirror the status change into the managed block of the bead body (Step 5B update path already does this) so a human sees the current JIRA state without an automated close. If you are unsure whether a workflow-specific name (e.g. `Complete`, `Delivered`, `Fixed`) is really terminal in this project, **leave the bead open** — a human can close it later; a mistakenly-closed bead cannot be un-lost.
+  - **Inconsistency reconciliation (pull side)**: when the bead is `closed` locally but the JIRA status `name` is **not** on the terminal allow-list above, the two sides disagree. In **silent mode** never prompt and never write to JIRA — only tag a row in the Step 9 summary table with `⚠️ Inconsistency: bead closed locally but JIRA is "<status>" — deferred to next interactive run.`. In **interactive mode** you may prompt with `mitto_ui_options` (question: `"Bead <beadId> is closed locally but JIRA <KEY> is still \"<status>\". How should we reconcile?"`; options `"Close JIRA ticket too"` / `"Reopen the local bead"` / `"Leave as-is"`, `allow_free_text: true` with placeholder `"Type a note for the summary row"`) **only if the number of such inconsistencies in this run is small (≤ 10)**; apply the chosen action and add a row to the summary table with `↔️ reconciled: <action>` (or `⚠️ inconsistency (left as-is): <status>`). If more than 10 such inconsistencies were detected in this run, do **not** prompt per bead — defer them all with a single grouped `mitto_ui_notify` telling the user how many there are and to re-run `JIRA: pull issue` per bead. This avoids spamming options dialogs during a large batch sync.
 
   **C. Mirror new comments** (both create and update paths):
 
-  For each JIRA comment whose id is **not** in `metadata.jira_synced_comments`, convert its body with the Step 5.0 helper, then append it to the bead with a `[jira]` marker so it is never duplicated, and extend the metadata list:
+  {{ template "jira/mirror-comments-in" . }}
 
-  ```bash
-  bd comment <id> "[jira] <author> @ <created>: <converted comment body>"
-  bd update <id> --set-metadata jira_synced_comments="<previous ids + new ids>"
-  ```
-
-  **Preserve local comments/notes.** Only ever **append** comments, and only for JIRA comment ids not already synced. Never edit or delete existing comments. Beads comments that do **not** start with `[jira]` were added locally — leave them untouched. The `jira_synced_comments` metadata is what prevents re-mirroring, so a local comment can never be mistaken for a JIRA one.
+  In this batch step, `<bead-id>` is `<id>` (the bead that owns the current JIRA key from the Step 4 map).
 
   ## Step 6 — Mirror blocking relationships (dependencies)
 
@@ -417,104 +329,47 @@ prompt: |
 
   ### Step 8A — Close JIRA when the bead is closed locally
 
-  If a bead is **closed** locally and its JIRA ticket is **not** already in a
-  **terminal** status (see Guidelines "Terminal status" — the same conservative
-  allow-list used by Step 5B), transition JIRA to a terminal status. JIRA
-  workflows vary per project, so look up the available transitions for each
-  ticket and pick a transition whose **target status name** matches the
-  terminal allow-list (`Done` / `Closed` / `Resolved` / `Cancelled` / `Won't Do`
-  / `Won't Fix` / `Duplicate`, case-insensitive, exact). Prefer `Done` when
-  multiple terminal transitions are available.
+  {{ template "jira/push-transition" . }}
 
-  Do **not** pick a transition merely because its target `statusCategory` is
-  `done` — deployment-pipeline statuses like `Deployed to Stage`, `Released`,
-  or `Ready for Prod` often live in the green category but are not terminal,
-  and transitioning there would misrepresent the ticket state.
-  {{- if Cond "Tools.Names.exists(n, n.matches('(?i)jira'))" }}
+  In this batch step, `<bead-id>` is `<id>` (the bead that owns the current JIRA key from the Step 4 map).
 
-  Use **JIRA MCP tools** (preferred — available in this run): `jira_get_transitions`
-  to list the workflow's transitions for `<KEY>`, then `jira_transition_issue`
-  to apply the chosen one.
-  {{- else }}
-
-  Use the **`jira` CLI** (MCP tools are not available):
-
-  ```bash
-  jira issue transitions <KEY>                                        # list available transitions
-  jira issue move <KEY> "Done" --resolution "Done" --comment "Closed in beads (<bead-id>)"
-  # (name of the target status may differ per workflow — fall back to whatever
-  # 'jira issue transitions <KEY>' lists as the done-category transition)
-  ```
-  {{- end }}
-
-  If **no** terminal transition is available (workflow restriction,
-  permission denied, or the only reachable done-category transitions are
-  non-terminal names like `Deployed to Stage`), do **not** force it —
-  instead add a `[mitto]` comment saying the bead was closed locally, so a
-  human can transition manually
-  ({{- if Cond "Tools.Names.exists(n, n.matches('(?i)jira'))" }} via `jira_add_comment`{{- else }} via
-  `jira issue comment add <KEY> --body-file /tmp/jira-<key>.mitto.close.md`
-  {{- end }}). The comment body starts with `[mitto] Closed in beads: <reason>`.
-
-  Record what was done on the bead so re-runs are idempotent:
-
-  ```bash
-  bd update <id> --set-metadata jira_pushed_status="<new-status>"
-  ```
-
-  Skip beads whose `metadata.jira_pushed_status` already matches the JIRA
-  ticket's current status.
+  **Inconsistency reconciliation (push side)** — when the bead is **open** locally (its `status` is not `closed`) but the JIRA status `name` **is** on the terminal allow-list, the two sides disagree. In **silent mode** never prompt and never write — only tag a row in the Step 9 summary table with `⚠️ Inconsistency: bead open locally but JIRA is "<status>" — deferred to next interactive run.`. In **interactive mode** you may prompt with `mitto_ui_options` (question: `"Bead <beadId> is open locally but JIRA <KEY> is already \"<status>\". How should we reconcile?"`; options `"Close the local bead too"` / `"Reopen the JIRA ticket"` / `"Leave as-is"`, `allow_free_text: true` with placeholder `"Type a note for the summary row"`) **only if the number of such inconsistencies in this run is small (≤ 10)**; apply the chosen action and add a row to the summary table with `↔️ reconciled: <action>` (or `⚠️ inconsistency (left as-is): <status>`). If more than 10 such inconsistencies were detected in this run, do **not** prompt per bead — defer them all with a single grouped `mitto_ui_notify` telling the user how many there are and to re-run `JIRA: push issue` per bead. This avoids spamming options dialogs during a large batch sync.
 
   ### Step 8B — Mirror local beads comments back to JIRA
 
-  Load the bead's comments (e.g. `bd comments list <id> --json` — adapt to
-  whichever `bd` subcommand exposes comments as JSON). For each comment:
+  Load the bead's comments (e.g. `bd comments list <id> --json` — adapt to whichever `bd` subcommand exposes comments as JSON). Then:
 
-  - **Skip** any comment whose body starts with `[jira]` — that comment was
-    mirrored **from** JIRA by Step 5C and must not loop back.
-  - **Skip** any comment whose id is already listed in
-    `metadata.jira_pushed_comments` (already mirrored to JIRA on a prior run).
-  - Otherwise, post the comment to JIRA prefixed with `[mitto]` so the pull
-    side can recognise the round-trip and does not need to distinguish it from
-    other JIRA comments (it will still come back on the next pull as `[jira]
-    <author> @ <time>: [mitto] <body>` and be tracked by `jira_synced_comments`
-    without duplication). Compose the body as `[mitto] <bd-author> @ <bd-created>: <body>`.
-    {{- if Cond "Tools.Names.exists(n, n.matches('(?i)jira'))" }}
+  {{ template "jira/mirror-comments-out" . }}
 
-    Use **`jira_add_comment`** (preferred — MCP tools available). Capture the
-    resulting JIRA comment id if the tool returns it.
-    {{- else }}
-
-    Use the **`jira` CLI** (MCP tools are not available):
-
-    ```bash
-    # write the composed body to a temp file, then:
-    jira issue comment add <KEY> --body-file /tmp/jira-<key>.push-<comment-id>.md
-    ```
-    {{- end }}
-
-  After all comments for a bead are pushed, extend the metadata list:
-
-  ```bash
-  bd update <id> --set-metadata jira_pushed_comments="<previous ids + new bead-comment ids>"
-  ```
-
-  **Never push** in silent mode when a comment/transition tool errors with a
-  permission or auth failure — record it in the summary and continue with the
-  next bead instead of retrying (retries against a permission failure just
-  waste API budget).
+  In this batch step, `<bead-id>` is `<id>` (the bead that owns the current JIRA key from the Step 4 map).
   {{- end }}
 
   ## Step 9 — Summary
 
-  Report counts. When Pull ran: tickets matched, beads created, beads updated,
-  comments mirrored (JIRA → beads), dependencies wired, beads closed, beads
-  deleted (stale), unchanged (skipped). When Push ran: JIRA tickets transitioned
-  to Done, `[mitto]` close-comments posted (when transition was not possible),
-  local comments pushed to JIRA, push failures (grouped by cause).
+  Render a **markdown summary table** with one row per bead considered in this run (pulled, pushed, wired as a dependency, reconciled as stale, or flagged inconsistent). Use exactly these columns and formatting:
 
-  - Silent mode (scheduled loop): send a single `mitto_ui_notify` only if anything changed; stay silent otherwise.
-  - Interactive mode: print the full summary.
+  ```
+  | JIRA ticket | Beads ticket | Change / notes |
+  |---|---|---|
+  | ABC-123 | mitto-abc | [pull] body refreshed; 2 JIRA comments mirrored |
+  | DEF-456 | mitto-def | [push] JIRA transitioned to Done; 1 local comment pushed |
+  | GHI-789 | mitto-ghi | [dep] depends on mitto-abc |
+  | JKL-000 | mitto-jkl | [stale] bead closed but preserved (dropped out of query) |
+  | MNO-321 | mitto-mno | [reconcile] ↔️ reconciled: Close JIRA ticket too |
+  | PQR-654 | mitto-pqr | [reconcile] ⚠️ Inconsistency: bead closed locally but JIRA is "In Progress" — deferred to next interactive run |
+  ```
+
+  Column rules:
+
+  - **JIRA ticket** — the JIRA key or `—` when unknown.
+  - **Beads ticket** — the beads id.
+  - **Change / notes** — short human sentence, actions joined with `; `. Prefix with `⚠️` for inconsistencies/errors and `↔️` for applied reconciliations. Group rows visually with leading markers **inside the "Change / notes" cell** (they are pure prose, NOT extra columns): `[pull]`, `[push]`, `[dep]`, `[stale]`, `[reconcile]`.
+
+  Below the table, emit a short paragraph with the previous **count breakdown** (still useful at a glance): when Pull ran — tickets matched, beads created, beads updated, comments mirrored (JIRA → beads), dependencies wired, beads closed, beads deleted (stale), unchanged (skipped); when Push ran — JIRA tickets transitioned, `[mitto]` close-comments posted (when transition was not possible), local comments pushed to JIRA, push failures (grouped by cause).
+
+  **Interactive mode** — always render the full table (and the count paragraph), even when nothing changed. Never truncate the table, no matter how many rows it has.
+
+  **Silent mode** (scheduled loop) — send a single `mitto_ui_notify` only when the table would have at least one non-trivial row (any change, any inconsistency, any error). The `message` field of that `mitto_ui_notify` call must contain the markdown table verbatim (and the count paragraph below it). Stay silent otherwise.
 
   ## Guidelines
 
@@ -529,3 +384,4 @@ prompt: |
   - **Terminal status (conservative)**: a JIRA ticket is treated as **closed** only when its status `name` is one of a small allow-list — `Done`, `Closed`, `Resolved`, `Cancelled`/`Canceled`, `Won't Do`, `Won't Fix`/`Wontfix`, `Duplicate` (case-insensitive, exact match). **Do not** rely on `statusCategory == "done"`: many workflows place deployment-pipeline statuses (`Deployed to Stage`, `Deployed`, `Released`, `Ready for Prod`, `In UAT`, `Verified`, `Awaiting Deploy`, `On Prod`, etc.) in the green category even though real work remains. When the name is not on the allow-list, leave the bead open, mirror the current status into the managed block of the bead body, and let a human close it — a mistakenly-closed bead can silently drop local work; a mistakenly-open one is harmless and easy to fix. The same allow-list gates Step 8A's Push transitions.
   - **Stale beads**: tickets that drop out of the query are reconciled based on the bead's local state — already-closed beads are **deleted** (dead weight), still-open beads are **closed but preserved** (JIRA ticket may have moved to a future sprint / been relabelled; local body edits and comments are kept). Interactive mode confirms both lanes with delete as the default for the closed lane; silent mode auto-applies the close-but-keep lane and defers deletes to the next interactive run.
   - **Blocking**: JIRA "Blocks" links become beads dependencies (`bd dep`), so blocked issues drop out of `bd ready` until their blocker closes; a blocker outside the sync set (or a bare *Blocked* status with no named blocker) is marked with a `blocked` label instead. Dependencies are re-evaluated each run — added when newly blocked, removed when unblocked.
+  - **Inconsistency reconciliation**: when the two sides disagree on open/closed state, the run reports each disagreement in the summary table (⚠️ marker). In interactive mode users are prompted per bead (batched ≤ 10 to avoid dialog spam); in silent (loop) mode the runs never resolve inconsistencies automatically — they are always deferred to the next interactive run so no data is silently destroyed.

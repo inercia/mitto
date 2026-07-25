@@ -1,0 +1,63 @@
+{{- /*
+  jira/jira2md — the "good-enough" JIRA wiki markup → Markdown converter used
+  before storing any raw JIRA description or comment body into a bead.
+  Extracted per mitto-g61 from pull-issue.prompt.yaml Step 3 and
+  sync-tasks.prompt.yaml Step 5.0, which shipped byte-identical copies.
+  The consumer references `python3 /tmp/jira2md.py` in its own steps; this
+  fragment just emits the "write once, reuse" helper block.
+*/ -}}
+JIRA descriptions and comments often use JIRA wiki markup (`h1.`/`h2.` headers, `{code}`/`{noformat}` blocks, `{{ "{{" }}monospace}}`, `[text|url]` links, `*bold*`, `_italic_`). Run every raw description and comment body through this **good-enough** converter before storing it — it preserves the most important structure (headers and code blocks) and is not meant to be perfect. Write it once to a temp file and reuse it:
+
+```python
+#!/usr/bin/env python3
+# jira2md.py — good-enough JIRA wiki markup -> Markdown (reads stdin, writes stdout)
+import re, sys
+
+def convert(s):
+    if not s:
+        return ""
+    fence = chr(96) * 3
+    s = s.replace("\r\n", "\n")
+    # Headers: h1. .. h6.  ->  #..######
+    s = re.sub(r"(?m)^h([1-6])\.\s*", lambda m: "#" * int(m.group(1)) + " ", s)
+    # Block quotes: bq.
+    s = re.sub(r"(?m)^bq\.\s*", "> ", s)
+    # Code / noformat blocks -> fenced code (toggle open/close)
+    parts = re.split(r"(\{code(?::[^}]*)?\}|\{noformat\})", s)
+    res, in_code = [], False
+    for p in parts:
+        if p == "{noformat}" or re.match(r"\{code(?::[^}]*)?\}$", p):
+            if not in_code:
+                lang = ""
+                m = re.match(r"\{code:([^}]*)\}$", p)
+                if m and "title=" not in m.group(1):
+                    lm = re.search(r"(?:language=)?([A-Za-z0-9+#]+)", m.group(1))
+                    if lm:
+                        lang = lm.group(1)
+                res.append("\n" + fence + lang + "\n"); in_code = True
+            else:
+                res.append("\n" + fence + "\n"); in_code = False
+        else:
+            res.append(p)
+    s = "".join(res)
+    if in_code:
+        s += "\n" + fence + "\n"
+    # Inline monospace {{ "{{" }}...}} -> `...`
+    s = re.sub(r"\{\{(.+?)\}\}", lambda m: chr(96) + m.group(1) + chr(96), s)
+    # Links [text|url] -> [text](url)
+    s = re.sub(r"\[([^|\]]+)\|([^\]]+)\]", r"[\1](\2)", s)
+    # Bold *text* -> **text**
+    s = re.sub(r"(?<![\w*])\*([^*\n]+)\*(?![\w*])", r"**\1**", s)
+    # Italic _text_ -> *text*
+    s = re.sub(r"(?<![\w_])_([^_\n]+)_(?![\w_])", r"*\1*", s)
+    # Strip color/panel wrappers, keep inner text
+    s = re.sub(r"\{color[^}]*\}", "", s)
+    s = re.sub(r"\{panel[^}]*\}", "", s)
+    s = s.replace("{quote}", "")
+    return s
+
+if __name__ == "__main__":
+    sys.stdout.write(convert(sys.stdin.read()))
+```
+
+Use it by piping the raw text through it, e.g. `python3 /tmp/jira2md.py < /tmp/jira-<key>.raw > /tmp/jira-<key>.desc.md`. If `python3` is unavailable, fall back to the `renderedFields` HTML or the raw text unchanged — never block the sync on conversion.

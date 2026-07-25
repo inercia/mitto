@@ -1,0 +1,16 @@
+{{- /*
+  jira/mirror-comments-in — canonical JIRA → beads comment mirroring loop and
+  the "preserve local comments / never touch existing [jira] comments" rule.
+  Extracted per mitto-g61 from pull-issue Step 6 and sync-tasks Step 5C,
+  which shipped near-identical copies (only the bead-id placeholder differs:
+  `{{ $target }}` in pull-issue, `<id>` in the sync-tasks batch loop — the
+  fragment uses `<bead-id>` and the caller wraps it with its own step framing).
+*/ -}}
+For each JIRA comment whose id is **not** already listed in `metadata.jira_synced_comments`, convert its body with the wiki→Markdown helper, then append it to the bead with a `[jira]` marker so it is never duplicated, and extend the metadata list:
+
+```bash
+bd comment <bead-id> "[jira] <author> @ <created>: <converted comment body>"
+bd update <bead-id> --set-metadata jira_synced_comments="<previous ids + new ids>"
+```
+
+**Preserve local comments/notes.** Only ever **append** comments, and only for JIRA comment ids not already synced. Never edit or delete existing comments. Beads comments that do **not** start with `[jira]` were added locally — leave them untouched. The `jira_synced_comments` metadata is what prevents re-mirroring, so a local comment can never be mistaken for a JIRA one.

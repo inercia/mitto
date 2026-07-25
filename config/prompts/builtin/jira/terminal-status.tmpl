@@ -1,0 +1,22 @@
+{{- /*
+  jira/terminal-status — canonical terminal-status allow-list and the
+  "do not rely on statusCategory" caveat, plus the "when unsure, leave open"
+  guidance. Extracted per mitto-g61 from pull-issue Step 7,
+  push-issue Step 3, and sync-tasks Step 5B / 8A / Guidelines, which all
+  restated the same list and the same conservatism rule.
+  Callers should introduce this fragment with their own sentence framing
+  (e.g. "close the bead", "pick a transition", "treat as closed") since the
+  action varies; this fragment just enumerates the allow-list and the caveat.
+*/ -}}
+A status is **terminal** only when its `name` is one of the following (case-insensitive, exact match):
+
+- `Done`
+- `Closed`
+- `Resolved`
+- `Cancelled` (or `Canceled`)
+- `Won't Do` / `Won't Fix` / `Wontfix`
+- `Duplicate`
+
+Do **not** rely on `statusCategory == "done"` alone. Many JIRA workflows put deployment-pipeline statuses in the green category — e.g. `Deployed to Stage`, `Deployed`, `Released`, `Ready for Prod`, `In UAT`, `Verified`, `Awaiting Deploy`, `On Prod` — where the ticket has real follow-up work (prod rollout, verification, sign-off) still pending. Treating those as closed would silently lose local work.
+
+When the status name is not on the allow-list, leave the bead open. If you are unsure whether a workflow-specific name (e.g. `Complete`, `Delivered`, `Fixed`) is really terminal in this project, **leave the bead open** — a human can close it later; a mistakenly-closed bead cannot be un-lost.
