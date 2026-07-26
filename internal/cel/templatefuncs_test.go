@@ -898,6 +898,29 @@ func TestFormatChildren(t *testing.T) {
 			},
 			"sess-1 (Research) [claude-code], sess-2 (Tests) [auggie]",
 		},
+		{
+			"single with beads issue",
+			[]ChildInfo{{ID: "sess-1", Name: "Research", ACPServer: "claude-code", BeadsIssue: "mitto-59b"}},
+			"sess-1 (Research) [claude-code] {mitto-59b}",
+		},
+		{
+			"bare id with beads issue",
+			[]ChildInfo{{ID: "sess-1", BeadsIssue: "mitto-123"}},
+			"sess-1 {mitto-123}",
+		},
+		{
+			"beads issue without name",
+			[]ChildInfo{{ID: "sess-1", ACPServer: "auggie", BeadsIssue: "mitto-abc"}},
+			"sess-1 [auggie] {mitto-abc}",
+		},
+		{
+			"multi mixed beads issue",
+			[]ChildInfo{
+				{ID: "sess-1", Name: "Research", ACPServer: "claude-code", BeadsIssue: "mitto-59b"},
+				{ID: "sess-2", Name: "Tests", ACPServer: "auggie"},
+			},
+			"sess-1 (Research) [claude-code] {mitto-59b}, sess-2 (Tests) [auggie]",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

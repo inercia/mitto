@@ -74,7 +74,7 @@ func TestBuildCELContext_NewFields(t *testing.T) {
 			{Name: "claude", Type: "claude-code", Tags: []string{"fast"}, Current: false},
 		},
 		ChildSessions: []ChildSession{
-			{ID: "c1", Name: "Coder", ACPServer: "auggie", ChildOrigin: "mcp", IsPrompting: true},
+			{ID: "c1", Name: "Coder", ACPServer: "auggie", ChildOrigin: "mcp", IsPrompting: true, BeadsIssue: "mitto-59b"},
 			{ID: "c2", Name: "Helper", ACPServer: "claude", ChildOrigin: "auto", IsPrompting: false},
 		},
 		UserDataJSON:       `[{"name":"env","value":"prod"}]`,
@@ -111,6 +111,20 @@ func TestBuildCELContext_NewFields(t *testing.T) {
 	}
 	if ctx.Children.MCP[0].ID != "c1" || ctx.Children.MCP[0].Origin != "mcp" {
 		t.Errorf("Children.MCP[0]: got %+v", ctx.Children.MCP[0])
+	}
+
+	// BeadsIssue is propagated onto ChildInfo (mitto-59b): the child that carries
+	// a linked bead surfaces it in both Children.All and Children.MCP; children
+	// without one keep an empty string. This is what backs the trailing " {bd-id}"
+	// suffix in {{ .Children.AllText }} / {{ .Children.MCPText }}.
+	if ctx.Children.All[0].BeadsIssue != "mitto-59b" {
+		t.Errorf("Children.All[0].BeadsIssue = %q, want %q", ctx.Children.All[0].BeadsIssue, "mitto-59b")
+	}
+	if ctx.Children.All[1].BeadsIssue != "" {
+		t.Errorf("Children.All[1].BeadsIssue = %q, want empty", ctx.Children.All[1].BeadsIssue)
+	}
+	if ctx.Children.MCP[0].BeadsIssue != "mitto-59b" {
+		t.Errorf("Children.MCP[0].BeadsIssue = %q, want %q", ctx.Children.MCP[0].BeadsIssue, "mitto-59b")
 	}
 
 	// Session.UserDataJSON
