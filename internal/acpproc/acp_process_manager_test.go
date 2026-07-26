@@ -1937,3 +1937,89 @@ func TestAuxiliaryModelTag_HonoursProfileOrder(t *testing.T) {
 		t.Errorf("unmatchable profile: resolveAuxTagConstraint = %+v, want nil", got)
 	}
 }
+
+// TestGetOrCreateAuxiliarySession_HighActiveRPCsBails is the mitto-9gt
+// reproduction: during a parallel fan-out on a not-yet-saturated shared ACP
+// process, non-essential auxiliary purposes (follow-up, keepalive, mcp-check,
+// title-gen) MUST bail fast instead of paying the full auxSessionCreateBudget
+// (60s) on a NewSession RPC that will time out on the agent's internal
+// deadline. The existing IsSaturated() bail (mitto-z70) is REACTIVE — it fires
+// only after sessionSaturationTimeoutThreshold=3 consecutive timeouts or the
+// rate-window trip — so the FIRST storm always slips past it. Evidence on the
+// bead: two aux sessions (follow-up, keepalive) both burned new_session_ms=60002
+// on a process whose IsSaturated() never returned true during that window,
+// consuming the parent's 2m wait_children budget.
+//
+// The complementary guard is PROACTIVE: when process.ActiveRPCs() reports the
+// shared process is already serving N concurrent user-facing RPCs above some
+// threshold, non-essential aux purposes should bail immediately with the same
+// "process saturated / defer aux" sentinel that mitto-z70 returns. This test
+// primes activeRPCs to a busy count and asserts the bail. Currently there is
+// no such guard, so the call proceeds past the IsSaturated() check into
+// NewSession and either hangs on a nil conn or returns a non-sentinel error —
+// either way, this test FAILS until the fix phase adds the proactive bail.
+func TestGetOrCreateAuxiliarySession_HighActiveRPCsBails(t *testing.T) {
+	m := NewACPProcessManager(context.Background(), nil)
+	defer m.Close()
+
+	const wsUUID = "ws-busy-fanout"
+
+	// Install a bare shared process. Crucially, do NOT flag it saturated —
+	// this test isolates the FIRST-storm hole where saturation has not yet
+	// tripped (real repro: parent + fan-out of ~3-6 concurrent RPCs, no
+	// timeouts yet accumulated).
+	proc := newTestSharedProcess()
+
+	// Prime the in-flight RPC counter to simulate a busy parent + fan-out.
+	// K=6 mirrors the concurrent_prompting=6 observed on the bead at the
+	// moment the aux keepalive session/new was issued.
+	const busyRPCs = 6
+	for i := 0; i < busyRPCs; i++ {
+		proc.activeRPCs.Add(1)
+	}
+	if got := proc.ActiveRPCs(); got != busyRPCs {
+		t.Fatalf("test setup: ActiveRPCs()=%d, want %d", got, busyRPCs)
+	}
+
+	// Precondition: the process must NOT already be saturated — otherwise
+	// the existing mitto-z70 bail would fire and we would not be testing
+	// the proactive guard.
+	if proc.IsSaturated() {
+		t.Fatal("test setup: process must not be saturated (this test isolates the pre-saturation hole)")
+	}
+
+	m.mu.Lock()
+	m.processes[wsUUID] = proc
+	m.mu.Unlock()
+
+	// Non-essential aux purpose (follow-up) is exactly the class the bead
+	// documents burning 60s on a busy process.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	start := time.Now()
+	_, err := m.getOrCreateAuxiliarySession(ctx, wsUUID, "follow-up")
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected error from getOrCreateAuxiliarySession on a busy process (ActiveRPCs above threshold)")
+	}
+	// Must classify as a deadline-exceeded family sentinel so callers can
+	// distinguish "agent is busy, back off" from a genuine failure — same
+	// contract mitto-z70's saturated bail obeys.
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("expected err to wrap context.DeadlineExceeded (saturation-family sentinel), got %v", err)
+	}
+	// Error message must mention the busy/saturated condition so operators
+	// can distinguish this bail from unrelated failures in log analysis.
+	msg := err.Error()
+	if !(strings.Contains(msg, "saturated") || strings.Contains(msg, "busy") || strings.Contains(msg, "active RPCs")) {
+		t.Errorf("expected error message to mention 'saturated'/'busy'/'active RPCs', got %q", msg)
+	}
+	// Must bail well under the auxSessionCreateBudget (60s). A proactive
+	// guard is a synchronous check; anything above a few hundred ms means
+	// the call fell through into NewSession — the exact bug this test pins.
+	if elapsed > 500*time.Millisecond {
+		t.Errorf("expected fast bail (<500ms), got %v — call fell through into NewSession", elapsed)
+	}
+}

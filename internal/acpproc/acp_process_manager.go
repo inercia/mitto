@@ -1054,6 +1054,35 @@ func (m *ACPProcessManager) PromptAuxiliaryAsync(ctx context.Context, workspaceU
 	return nil
 }
 
+// auxSessionCreateBusyRPCThreshold is the number of in-flight user-facing RPCs on
+// the shared process at which non-essential auxiliary session/new attempts bail
+// proactively (mitto-9gt). Rationale: a healthy workspace at rest has 0-1 active
+// RPCs; a single user prompt in flight has 1. During a parallel fan-out the parent
+// + worker RPCs quickly climb to ≥3, and the log-analysis on the bead observed the
+// aux-session storm firing at concurrent_prompting=6. Threshold 3 catches the storm
+// window without penalising the normal single-prompt case. The IsSaturated() bail
+// above is REACTIVE (fires only after sessionSaturationTimeoutThreshold=3
+// consecutive timeouts); this proactive check closes the first-storm hole where
+// saturation has not yet tripped and NewSession would otherwise burn the full
+// auxSessionCreateBudget (60s) hitting the agent's internal deadline.
+const auxSessionCreateBusyRPCThreshold = int32(3)
+
+// isProactiveBailPurpose reports whether an auxiliary purpose is subject to the
+// proactive ActiveRPCs()-based load-shed (mitto-9gt). Background pre-warming and
+// analysis purposes (title-gen, follow-up, keepalive, mcp-check, mcp-tools,
+// queue-title) return true: no user is actively waiting on their result, so
+// bailing costs nothing except a deferred retry. User-triggered purposes where a
+// human clicked "improve prompt" and is watching (improve-prompt) return false —
+// they must proceed through the normal NewSession path even under load.
+func isProactiveBailPurpose(purpose string) bool {
+	switch purpose {
+	case auxiliary.PurposeImprovePrompt:
+		return false
+	default:
+		return true
+	}
+}
+
 // getOrCreateAuxiliarySession returns an existing auxiliary session or creates a new one.
 //
 // Locking design (mitto-w19): auxMu is held ONLY briefly around map reads/writes, never
@@ -1170,6 +1199,36 @@ func (m *ACPProcessManager) getOrCreateAuxiliarySession(ctx context.Context, wor
 				"reason", "process_saturated")
 		}
 		return nil, fmt.Errorf("shared ACP process is saturated; skipping auxiliary session creation for purpose %q: %w", purpose, context.DeadlineExceeded)
+	}
+
+	// Proactive load-based bail (mitto-9gt): the IsSaturated() guard above is
+	// REACTIVE — it fires only after sessionSaturationTimeoutThreshold=3
+	// consecutive timeouts or the rate-window trip. During the FIRST storm of a
+	// parallel fan-out (parent + several concurrent user-facing RPCs), saturation
+	// has not yet tripped, so a background aux session/new would slip past the
+	// guard and burn the full auxSessionCreateBudget (60s) hitting the agent's
+	// internal deadline — the exact log signature the bead documents
+	// (new_session_ms=60002 for follow-up and keepalive fired during
+	// concurrent_prompting=6).
+	//
+	// Complementary check: when process.ActiveRPCs() reports the shared process
+	// is already serving N concurrent user-facing RPCs above a threshold, bail
+	// non-essential aux purposes immediately with the same "process saturated /
+	// defer aux" sentinel mitto-z70 returns. User-triggered purposes where a
+	// human is actively waiting (improve-prompt) are exempt — they are not
+	// background pre-warming and should not be sacrificed for load-shedding.
+	if isProactiveBailPurpose(purpose) {
+		if active := process.ActiveRPCs(); active >= auxSessionCreateBusyRPCThreshold {
+			if m.logger != nil {
+				m.logger.Info("Skipping auxiliary NewSession: shared process is busy",
+					"workspace_uuid", workspaceUUID,
+					"purpose", purpose,
+					"active_rpcs", active,
+					"threshold", auxSessionCreateBusyRPCThreshold,
+					"reason", "process_busy")
+			}
+			return nil, fmt.Errorf("shared ACP process is busy (%d active RPCs >= threshold %d); skipping auxiliary session creation for purpose %q: %w", active, auxSessionCreateBusyRPCThreshold, purpose, context.DeadlineExceeded)
+		}
 	}
 
 	// Instrument auxiliary session creation so cold-start / prewarm timing is
