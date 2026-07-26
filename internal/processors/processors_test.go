@@ -2141,6 +2141,68 @@ func TestApplyProcessors_TextModeTemplateRendering(t *testing.T) {
 	}
 }
 
+// TestApplyProcessors_ChildrenQueuedCountTemplateAccessor verifies that the new
+// mitto-p9r field `.QueuedCount` is reachable from a text-mode processor body via
+// `{{ range .Children.All }}` (the accessor cleanup.prompt.yaml relies on to
+// replace its per-child mitto_conversation_get fan-out). The test also asserts
+// that .QueuedCount is available inside the {{ range .Children.MCP }} view.
+func TestApplyProcessors_ChildrenQueuedCountTemplateAccessor(t *testing.T) {
+	procs := []*Processor{
+		{
+			Name: "children-queued-count",
+			Text: "[Children Status]\n" +
+				"{{- range .Children.All }}\n" +
+				"- {{ .ID }}: origin={{ .Origin }} prompting={{ .IsPrompting }} queued={{ .QueuedCount }}\n" +
+				"{{- end }}\n" +
+				"[MCP-only Queued]\n" +
+				"{{- range .Children.MCP }}\n" +
+				"- {{ .ID }}={{ .QueuedCount }}\n" +
+				"{{- end }}\n---\n",
+			Mutate: config.ProcessorMutatePrepend,
+			When:   WhenConfig{On: PhaseUserPrompt, Match: MatchAll},
+		},
+	}
+
+	ctx := context.Background()
+	input := &ProcessorInput{
+		Message:        "unused",
+		IsFirstMessage: false,
+		SessionID:      "sess-1",
+		ACPServer:      "auggie",
+		ChildSessions: []ChildSession{
+			{ID: "c-mcp", Name: "MCP Child", ACPServer: "auggie", ChildOrigin: "mcp", IsPrompting: false, QueuedCount: 3},
+			{ID: "c-auto", Name: "Auto Child", ACPServer: "auggie", ChildOrigin: "auto", IsPrompting: true, QueuedCount: 0},
+			{ID: "c-human", Name: "Human Child", ACPServer: "auggie", ChildOrigin: "human", IsPrompting: false, QueuedCount: 1},
+		},
+	}
+
+	result, err := ApplyProcessors(ctx, procs, input, "", nil)
+	if err != nil {
+		t.Fatalf("ApplyProcessors() error = %v", err)
+	}
+
+	for _, want := range []string{
+		"c-mcp: origin=mcp prompting=false queued=3",
+		"c-auto: origin=auto prompting=true queued=0",
+		"c-human: origin=human prompting=false queued=1",
+		// MCP-only section — only the mcp-origin child appears
+		"c-mcp=3",
+	} {
+		if !strings.Contains(result.Message, want) {
+			t.Errorf("expected rendered message to contain %q, got:\n%s", want, result.Message)
+		}
+	}
+	// The auto/human children must NOT appear in the MCP-only section.
+	for _, unwanted := range []string{"c-auto=", "c-human="} {
+		if strings.Contains(result.Message, unwanted) {
+			t.Errorf("MCP-only section leaked non-mcp child %q, got:\n%s", unwanted, result.Message)
+		}
+	}
+	if strings.Contains(result.Message, "{{") {
+		t.Errorf("expected all templates rendered (no literal {{), got %q", result.Message)
+	}
+}
+
 // TestApplyProcessorsVariablesInUserMessage tests that @mitto: variables
 // in the user's own message text are also substituted.
 func TestApplyProcessorsVariablesInUserMessage(t *testing.T) {

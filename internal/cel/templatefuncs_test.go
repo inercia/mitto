@@ -921,6 +921,24 @@ func TestFormatChildren(t *testing.T) {
 			},
 			"sess-1 (Research) [claude-code] {mitto-59b}, sess-2 (Tests) [auggie]",
 		},
+		// mitto-p9r: QueuedCount is a per-child struct field for template consumers
+		// ({{ range .Children.All }} … {{ .QueuedCount }}); it must NOT alter the
+		// default FormatChildren rendered string (byte-identical goldens preserved).
+		{
+			"queued-count does not affect rendering",
+			[]ChildInfo{{ID: "sess-1", Name: "Research", ACPServer: "claude-code", QueuedCount: 5}},
+			"sess-1 (Research) [claude-code]",
+		},
+		{
+			"queued-count with beads issue does not affect rendering",
+			[]ChildInfo{{ID: "sess-1", Name: "Research", ACPServer: "claude-code", BeadsIssue: "mitto-59b", QueuedCount: 3}},
+			"sess-1 (Research) [claude-code] {mitto-59b}",
+		},
+		{
+			"queued-count on bare id does not affect rendering",
+			[]ChildInfo{{ID: "sess-1", QueuedCount: 2}},
+			"sess-1",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
