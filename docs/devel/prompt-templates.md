@@ -124,6 +124,12 @@ CEL expression always read the same field from the same struct.
 | `{{ .Workspace.Folder }}` | `Workspace.Folder` | `Workspace.Folder` |
 | `{{ .Workspace.UUID }}` | `Workspace.UUID` | `Workspace.UUID` |
 | `{{ .Workspace.UserDataSchemaJSON }}` | — | `Workspace.UserDataSchemaJSON` — JSON of workspace user-data schema fields |
+| `{{ .Workspace.Peers.Count }}` | `Workspace.Peers.Count` | `Workspace.Peers.Count` — number of non-archived sessions sharing this workspace (excluding self) |
+| `{{ .Workspace.Peers.Exists }}` | `Workspace.Peers.Exists` | `Workspace.Peers.Exists` — `Count > 0` |
+| `{{ .Workspace.Peers.PromptingCount }}` | `Workspace.Peers.PromptingCount` | `Workspace.Peers.PromptingCount` — peers where the agent is currently responding |
+| `{{ .Workspace.Peers.IdleCount }}` | `Workspace.Peers.IdleCount` | `Workspace.Peers.IdleCount` — peers NOT currently prompting (`Count - PromptingCount`) |
+| `{{ .Workspace.Peers.All }}` | — | `Workspace.Peers.All` — `[]config.PeerInfo` for all peer conversations |
+| `{{ .Workspace.Peers.AllText }}` | — | `config.FormatPeers(ctx.Workspace.Peers.All)`; format: `"id (name) [acp] {bd-id}, id2"` — `(name)` / `[acp]` / `{bd-id}` each omitted when empty. Mirrors `.Children.AllText`. |
 | `{{ .Parent.Name }}` | `Parent.Name` | `Parent.Name` |
 | `{{ .Parent.Exists }}` | `Parent.Exists` | `Parent.Exists` |
 | `{{ .Children.Count }}` | `Children.Count` | `Children.Count` |
