@@ -1141,9 +1141,16 @@ The following fields are available at send time. They are the **same fields used
 | `{{ .Trigger.OnTasks.Changes.Reopened }}` | Beads whose status transitioned from closed back to open. Same shape. |
 | `{{ .Trigger.OnTasks.Changes.LabelAdded }}` | Beads that gained one or more labels. Same shape. |
 | `{{ .Trigger.OnTasks.Changes.Touched }}` | `Added ∪ Updated` convenience union. Same shape. |
+| `{{ .Prompts.Exists "name" }}` | Case-insensitive check for a prompt in the effective workspace registry (same view as `mitto_prompt_get`). Empty name and cold-start fail-closed. Template-only. |
+| `{{ .Prompts.Enabled "name" }}` | Case-insensitive check for a currently-enabled prompt. Because disabled prompts are pruned from the cache, this shares the set with `Exists` — any name resolvable via `mitto_prompt_get` returns `true`. Empty name and cold-start fail-closed. Template-only. |
 
 `.Trigger` is nil for scheduled, `onCompletion`, manual "run now", and non-loop
 dispatches. Always guard both levels (nested `with`) before ranging.
+
+`.Prompts.Exists` / `.Prompts.Enabled` let orchestrator prompts guard on the
+availability of another workspace prompt (e.g. a nested driver) without paying
+the `mitto_prompt_get` MCP round-trip on every re-render — the render context
+already exposes the same `PromptsCache` snapshot the MCP tools read.
 
 ### Functions
 

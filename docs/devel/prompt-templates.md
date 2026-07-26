@@ -152,6 +152,8 @@ CEL expression always read the same field from the same struct.
 | `{{ .Trigger.OnTasks.Changes.Reopened }}` | — | `Trigger.OnTasks.Changes.Reopened` — beads that transitioned from closed back to open. Same shape. |
 | `{{ .Trigger.OnTasks.Changes.LabelAdded }}` | — | `Trigger.OnTasks.Changes.LabelAdded` — beads that gained one or more labels. Same shape. |
 | `{{ .Trigger.OnTasks.Changes.Touched }}` | — | `Trigger.OnTasks.Changes.Touched` — `Added ∪ Updated` convenience union. Same shape. |
+| `{{ .Prompts.Exists "name" }}` | — | `Prompts.Exists(name string) bool` — case-insensitive membership check against the effective workspace prompt registry (same view `mitto_prompt_get` / `mitto_prompt_list` see). Empty name and cold-start (nil cache / empty snapshot) fail-closed. **Template-only** — not declared on the CEL env. |
+| `{{ .Prompts.Enabled "name" }}` | — | `Prompts.Enabled(name string) bool` — case-insensitive check for a currently-enabled prompt. Disabled prompts are pruned from the cache during reload, so `Enabled` and `Exists` share the same set (any name that resolves via `mitto_prompt_get` returns `true`). Empty name and cold-start fail-closed. **Template-only**. |
 
 `Args` is populated from `meta.Arguments` at send time. At menu time (`enabledWhen`
 evaluation), `Args` is `nil`. Template rendering runs at **send time only**, so `Args` is
