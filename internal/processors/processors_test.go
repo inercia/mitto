@@ -74,7 +74,7 @@ func TestBuildCELContext_NewFields(t *testing.T) {
 			{Name: "claude", Type: "claude-code", Tags: []string{"fast"}, Current: false},
 		},
 		ChildSessions: []ChildSession{
-			{ID: "c1", Name: "Coder", ACPServer: "auggie", ChildOrigin: "mcp", IsPrompting: true, BeadsIssue: "mitto-59b"},
+			{ID: "c1", Name: "Coder", ACPServer: "auggie", ChildOrigin: "mcp", IsPrompting: true, BeadsIssue: "mitto-59b", QueuedCount: 2},
 			{ID: "c2", Name: "Helper", ACPServer: "claude", ChildOrigin: "auto", IsPrompting: false},
 		},
 		UserDataJSON:       `[{"name":"env","value":"prod"}]`,
@@ -125,6 +125,20 @@ func TestBuildCELContext_NewFields(t *testing.T) {
 	}
 	if ctx.Children.MCP[0].BeadsIssue != "mitto-59b" {
 		t.Errorf("Children.MCP[0].BeadsIssue = %q, want %q", ctx.Children.MCP[0].BeadsIssue, "mitto-59b")
+	}
+
+	// QueuedCount is propagated onto ChildInfo (mitto-p9r): the child with pending
+	// queued prompts surfaces it in both Children.All and Children.MCP so cleanup
+	// prompts can identify busy children without a per-child mitto_conversation_get
+	// fan-out. Children with no queued work keep the zero value.
+	if ctx.Children.All[0].QueuedCount != 2 {
+		t.Errorf("Children.All[0].QueuedCount = %d, want 2", ctx.Children.All[0].QueuedCount)
+	}
+	if ctx.Children.All[1].QueuedCount != 0 {
+		t.Errorf("Children.All[1].QueuedCount = %d, want 0", ctx.Children.All[1].QueuedCount)
+	}
+	if ctx.Children.MCP[0].QueuedCount != 2 {
+		t.Errorf("Children.MCP[0].QueuedCount = %d, want 2", ctx.Children.MCP[0].QueuedCount)
 	}
 
 	// Session.UserDataJSON

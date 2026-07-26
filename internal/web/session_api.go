@@ -129,6 +129,12 @@ func (s *Server) buildPromptEnabledContext(sessionID string) *config.PromptEnabl
 				isPrompting = true
 			}
 			// Populate structured child info for template accessors ({{ .Children.AllText }}, {{ .Children.MCPText }})
+			queuedCount := 0
+			if q := store.Queue(child.SessionID); q != nil {
+				if n, qErr := q.Len(); qErr == nil {
+					queuedCount = n
+				}
+			}
 			childInfo := config.ChildInfo{
 				ID:          child.SessionID,
 				Name:        child.Name,
@@ -136,6 +142,7 @@ func (s *Server) buildPromptEnabledContext(sessionID string) *config.PromptEnabl
 				Origin:      string(child.ChildOrigin),
 				IsPrompting: isPrompting,
 				BeadsIssue:  child.BeadsIssue,
+				QueuedCount: queuedCount,
 			}
 			ctx.Children.All = append(ctx.Children.All, childInfo)
 			if child.ChildOrigin == session.ChildOriginMCP {

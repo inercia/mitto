@@ -145,6 +145,7 @@ func formatChildSessions(children []ChildSession) string {
 			Origin:      child.ChildOrigin,
 			IsPrompting: child.IsPrompting,
 			BeadsIssue:  child.BeadsIssue,
+			QueuedCount: child.QueuedCount,
 		})
 	}
 	return config.FormatChildren(infos)
@@ -181,6 +182,7 @@ func formatMCPChildren(children []ChildSession) string {
 			Origin:      child.ChildOrigin,
 			IsPrompting: child.IsPrompting,
 			BeadsIssue:  child.BeadsIssue,
+			QueuedCount: child.QueuedCount,
 		})
 	}
 	return config.FormatChildren(infos)

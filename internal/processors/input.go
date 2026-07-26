@@ -167,6 +167,10 @@ type ChildSession struct {
 	// building. A structured beads_issue on MITTO_CHILD_SESSIONS is a
 	// deliberate non-goal for this pass (see bead mitto-59b).
 	BeadsIssue string `json:"-"`
+	// QueuedCount is the number of pending queued prompts on the child
+	// session. Excluded from the external-processor JSON payload (json:"-") —
+	// consumed only by in-process template rendering and CEL context building.
+	QueuedCount int `json:"-"`
 }
 
 // PeerSession describes a non-archived conversation sharing the current

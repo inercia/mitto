@@ -316,6 +316,10 @@ type ChildInfo struct {
 	// so orchestrator prompts can inline-dedupe by bead ID without an extra
 	// mitto_conversation_list round-trip.
 	BeadsIssue string
+	// QueuedCount is the number of pending queued prompts on the child
+	// session. Lets orchestrator/cleanup prompts identify children with
+	// pending work without a per-child mitto_conversation_get fan-out.
+	QueuedCount int
 }
 
 // ChildrenContext holds children sessions context for CEL evaluation.

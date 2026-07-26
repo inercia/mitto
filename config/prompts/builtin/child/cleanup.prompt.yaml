@@ -23,25 +23,30 @@ prompt: |
   MCP-created children (these are safe to delete and are never auto-children):
   {{ .Children.MCPText }}
 
-  Use these variables as the authoritative child list — do **not** call
-  `mitto_conversation_list` to re-enumerate them.
+  Structured per-child status (origin, prompting, queued prompts):
+  {{ range .Children.All }}
+  - `{{ .ID }}` — origin=`{{ .Origin }}`, prompting=`{{ .IsPrompting }}`, queued={{ .QueuedCount }}{{ if .BeadsIssue }}, bead={{ .BeadsIssue }}{{ end }}
+  {{- end }}
+
+  Use these variables as the authoritative child list and per-child status — do
+  **not** call `mitto_conversation_list` to re-enumerate them and do **not** call
+  `mitto_conversation_get` per-child just to read `child_origin`, prompting state,
+  or `queued_prompts`: they are already in the context above.
 
   Any child that appears in the full list but **not** in the MCP list was created
   automatically (auto-child) or manually by the user. **Auto-children must never be
   deleted** (they are cascade-managed with this parent).
 
-  ## Phase 2: Inspect Each Child
+  ## Phase 2: Recall Reporting State
 
-  For each child, call `mitto_conversation_get(self_id: "{{ .Session.ID }}",
-  conversation_id: <child_id>)` (run these in parallel) to learn:
+  For each child, recall from this conversation's own context (you are the parent)
+  whether each child was asked to report back and whether it already did. Do **not**
+  call `mitto_conversation_get_summary` — you already have this context. The
+  authoritative signals for the remaining checks come from the structured list above:
 
-  - `child_origin` — `"auto"`, `"mcp"`, or `"human"`. Treat `"auto"` as protected.
-  - Whether the agent is currently replying — a child that is still prompting is busy.
-  - `queued_prompts` — a child with pending queued prompts still has work to do.
-
-  Recall from this conversation's own context (you are the parent) whether each child
-  was asked to report back and whether it already did. Do **not** call
-  `mitto_conversation_get_summary` — you already have this context.
+  - `Origin` — `"auto"`, `"mcp"`, or `"human"`. Treat `"auto"` as protected.
+  - `IsPrompting` — a child that is still prompting is busy.
+  - `QueuedCount` — a child with `QueuedCount > 0` still has queued work.
 
   ## Phase 3: Classify
 

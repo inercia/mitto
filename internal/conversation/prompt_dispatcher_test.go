@@ -53,6 +53,7 @@ type fakePromptDeps struct {
 	workspacePeers                 []session.Metadata
 	workspacePeersErr              error
 	childPrompting                 map[string]bool
+	childQueueLength               map[string]int
 	mcpToolNames                   []string
 	userData                       *session.UserData
 	userDataErr                    error
@@ -144,18 +145,19 @@ type fakePromptDeps struct {
 
 func newFakePromptDeps() *fakePromptDeps {
 	return &fakePromptDeps{
-		logger:         slog.Default(),
-		sessionID:      "test-session",
-		hasStore:       true,
-		agentImages:    true,
-		imagePaths:     make(map[string]string),
-		imageErrs:      make(map[string]error),
-		filePaths:      make(map[string]string),
-		fileErrs:       make(map[string]error),
-		metaByID:       make(map[string]session.Metadata),
-		childPrompting: make(map[string]bool),
-		sessionCtx:     context.Background(),
-		argCache:       newPromptArgCache(),
+		logger:           slog.Default(),
+		sessionID:        "test-session",
+		hasStore:         true,
+		agentImages:      true,
+		imagePaths:       make(map[string]string),
+		imageErrs:        make(map[string]error),
+		filePaths:        make(map[string]string),
+		fileErrs:         make(map[string]error),
+		metaByID:         make(map[string]session.Metadata),
+		childPrompting:   make(map[string]bool),
+		childQueueLength: make(map[string]int),
+		sessionCtx:       context.Background(),
+		argCache:         newPromptArgCache(),
 	}
 }
 
@@ -207,6 +209,7 @@ func (f *fakePromptDeps) pdListWorkspacePeers() ([]session.Metadata, error) {
 	return f.workspacePeers, f.workspacePeersErr
 }
 func (f *fakePromptDeps) pdIsChildPrompting(id string) bool { return f.childPrompting[id] }
+func (f *fakePromptDeps) pdChildQueueLength(id string) int  { return f.childQueueLength[id] }
 func (f *fakePromptDeps) pdCachedMCPToolNames() []string    { return f.mcpToolNames }
 func (f *fakePromptDeps) pdGetUserData() (*session.UserData, error) {
 	return f.userData, f.userDataErr
@@ -1068,6 +1071,44 @@ func TestPromptDispatcher_BuildProcessorInput_WithMetadata(t *testing.T) {
 	}
 	if input.BeadsIssue != "mitto-123" {
 		t.Fatalf("expected BeadsIssue='mitto-123', got %q", input.BeadsIssue)
+	}
+}
+
+// TestPromptDispatcher_BuildProcessorInput_ChildQueuedCount verifies that
+// pdChildQueueLength results propagate to ProcessorInput.ChildSessions[i].QueuedCount
+// so cleanup/orchestrator prompts can identify children with pending queued
+// work without a per-child mitto_conversation_get fan-out (mitto-p9r).
+func TestPromptDispatcher_BuildProcessorInput_ChildQueuedCount(t *testing.T) {
+	p := promptDispatcher{}
+	d := newFakePromptDeps()
+	d.sessionID = "sess-qc"
+	d.sessionMeta = session.Metadata{Name: "Parent", ACPServer: "auggie"}
+	d.childSessions = []session.Metadata{
+		{SessionID: "child-a", Name: "Child A", ACPServer: "auggie"},
+		{SessionID: "child-b", Name: "Child B", ACPServer: "auggie"},
+		{SessionID: "child-c", Name: "Child C", ACPServer: "auggie"},
+	}
+	d.childQueueLength["child-a"] = 3
+	d.childQueueLength["child-b"] = 0
+	// child-c: absent from map → default 0 (documents fail-open semantics)
+
+	input := p.buildProcessorInput(d, "test", false, PromptMeta{})
+
+	if len(input.ChildSessions) != 3 {
+		t.Fatalf("expected 3 children, got %d", len(input.ChildSessions))
+	}
+	byID := map[string]int{}
+	for _, c := range input.ChildSessions {
+		byID[c.ID] = c.QueuedCount
+	}
+	if got := byID["child-a"]; got != 3 {
+		t.Fatalf("child-a QueuedCount: expected 3, got %d", got)
+	}
+	if got := byID["child-b"]; got != 0 {
+		t.Fatalf("child-b QueuedCount: expected 0, got %d", got)
+	}
+	if got := byID["child-c"]; got != 0 {
+		t.Fatalf("child-c QueuedCount (unset → default): expected 0, got %d", got)
 	}
 }
 

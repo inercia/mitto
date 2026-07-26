@@ -52,6 +52,11 @@ type promptDeps interface {
 	pdGetMetadataForID(id string) (session.Metadata, error)
 	pdListChildSessions() ([]session.Metadata, error)
 	pdIsChildPrompting(childSessionID string) bool
+	// pdChildQueueLength returns the number of pending queued prompts on the
+	// given child (or peer) session. Returns 0 when the store is unavailable
+	// or the length cannot be read — errors are swallowed, mirroring the
+	// best-effort semantics of pdListChildSessions / pdListWorkspacePeers.
+	pdChildQueueLength(childSessionID string) int
 	// pdListWorkspacePeers returns non-archived sessions that share this session's
 	// workspace (same working directory and ACP server), excluding self.
 	// Returns an empty slice when no store is available or no peers exist.
@@ -483,6 +488,7 @@ func (p promptDispatcher) buildProcessorInput(d promptDeps, message string, isFi
 					ChildOrigin: string(child.ChildOrigin),
 					IsPrompting: isPrompting,
 					BeadsIssue:  child.BeadsIssue,
+					QueuedCount: d.pdChildQueueLength(child.SessionID),
 				})
 			}
 		}

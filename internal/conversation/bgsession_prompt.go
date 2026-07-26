@@ -838,6 +838,25 @@ func (bs *BackgroundSession) pdIsChildPrompting(childSessionID string) bool {
 	return bs.isChildPrompting(childSessionID)
 }
 
+// pdChildQueueLength returns the number of pending queued prompts on the
+// given child session, or 0 when the store is unavailable or the length
+// cannot be read. Errors are swallowed to match the best-effort semantics
+// of the surrounding child/peer enumeration.
+func (bs *BackgroundSession) pdChildQueueLength(childSessionID string) int {
+	if bs.store == nil || childSessionID == "" {
+		return 0
+	}
+	q := bs.store.Queue(childSessionID)
+	if q == nil {
+		return 0
+	}
+	n, err := q.Len()
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
 func (bs *BackgroundSession) pdCachedMCPToolNames() []string {
 	if bs.auxiliaryManager == nil || bs.workspaceUUID == "" {
 		return nil

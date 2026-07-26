@@ -1125,7 +1125,7 @@ The following fields are available at send time. They are the **same fields used
 | `{{ .Parent.Exists }}` | `true` if this session has a parent |
 | `{{ .Children.Count }}` | Number of child conversations |
 | `{{ .Children.MCPCount }}` | Number of MCP-spawned children |
-| `{{ with .Children.Get "id" }}...{{ end }}` | Look up a specific child by ID (returns nil when absent, so `with` acts as an exists gate). Uses `.All` so any origin (auto/mcp/human) matches. Fields on the block value: `.ID`, `.Name`, `.ACPServer`, `.Origin`, `.IsPrompting`, `.BeadsIssue`. |
+| `{{ with .Children.Get "id" }}...{{ end }}` | Look up a specific child by ID (returns nil when absent, so `with` acts as an exists gate). Uses `.All` so any origin (auto/mcp/human) matches. Fields on the block value: `.ID`, `.Name`, `.ACPServer`, `.Origin`, `.IsPrompting`, `.BeadsIssue`, `.QueuedCount`. |
 | `{{ .Args.NAME }}` | Argument value for `NAME` (from prompt arguments) |
 | `{{ index .UserData "NAME" }}` | Per-conversation user-data field `NAME` (empty if unset); see also the `UserData` function below |
 | `{{ .Iteration.Number }}` | 0-based index of the current loop run (0 for non-loop) |
