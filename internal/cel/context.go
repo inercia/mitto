@@ -349,6 +349,24 @@ func (c ChildrenContext) AllText() string { return FormatChildren(c.All) }
 // MCPText renders MCP-origin child sessions only, comma-separated. Empty when none.
 func (c ChildrenContext) MCPText() string { return FormatChildren(c.MCP) }
 
+// Get returns the ChildInfo whose ID matches, or nil when not found. Enables
+// template lookups like {{ with .Children.Get .Args.TargetConversation }}...{{ end }}
+// so prompts can inline a specific child's metadata without a
+// mitto_conversation_get round-trip. Searches .All (not .MCP) so any origin
+// (auto/mcp/human) matches; returns nil for an empty id so an unset
+// .Args placeholder short-circuits to the {{ else }} branch.
+func (c ChildrenContext) Get(id string) *ChildInfo {
+	if id == "" {
+		return nil
+	}
+	for i := range c.All {
+		if c.All[i].ID == id {
+			return &c.All[i]
+		}
+	}
+	return nil
+}
+
 // ServerToolState represents a single MCP server's tool-list availability
 // state, used to decide fail-open vs fail-closed matching in
 // hasPattern/hasAllPatterns/hasAnyPattern. See docs/devel/mcp-tool-discovery.md

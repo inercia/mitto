@@ -19,15 +19,14 @@ prompt: |
 
   Your session ID is `{{ .Session.ID }}` — use as `self_id` for all `mitto_*` tool calls.
 
-  The target conversation is `{{ .Args.TargetConversation }}`. Load its current state so you can
-  build on what it has already done:
-
-  ```
-  mitto_conversation_get(self_id: "{{ .Session.ID }}", conversation_id: "{{ .Args.TargetConversation }}")
-  ```
-
-  Note its title, ACP server, and whether it is currently running or idle. If the lookup
-  fails (e.g. the conversation no longer exists), inform the user and abort.
+  {{ with .Children.Get .Args.TargetConversation -}}
+  The target conversation is **{{ .Name }}** (`{{ .ID }}`), running on **{{ .ACPServer }}**,
+  currently {{ if .IsPrompting }}**running**{{ else }}**idle**{{ end }}. Build on what it
+  has already accomplished.
+  {{- else -}}
+  The target conversation `{{ .Args.TargetConversation }}` was not found (it may have been
+  deleted). Inform the user and abort.
+  {{- end }}
 
   ## Phase 2: Prepare Instructions
 
@@ -42,8 +41,13 @@ prompt: |
   ```markdown
   ## Continue Conversation
 
-  **Target:** <title> (`{{ .Args.TargetConversation }}`)
-  **Status:** <running/idle>
+  {{ with .Children.Get .Args.TargetConversation -}}
+  **Target:** {{ .Name }} (`{{ .ID }}`)
+  **Status:** {{ if .IsPrompting }}running{{ else }}idle{{ end }}
+  **Server:** {{ .ACPServer }}
+  {{- else -}}
+  **Target:** `{{ .Args.TargetConversation }}` _(not found — may have been deleted)_
+  {{- end }}
 
   **Proposed Instructions:**
   ---
