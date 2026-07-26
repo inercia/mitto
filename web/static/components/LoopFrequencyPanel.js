@@ -806,6 +806,25 @@ export function LoopFrequencyPanel({
       );
       if (response.ok) {
         if (onLoopEnabledChange) onLoopEnabledChange(true);
+        // mitto-5cj: after re-enabling the loop, also POST run-now so the
+        // user's play click actually fires the prompt on the FIRST click
+        // (previously they had to click play twice — once to re-arm, once
+        // to fire). Guards: skip when the loop was cap-stopped and the
+        // user did NOT tick reset_counters (the fire would immediately
+        // re-stop), and swallow the 409 "agent streaming" case silently
+        // since the loop is now enabled either way.
+        const wouldImmediatelyReStop = limitWasStopped && !resetCounters;
+        if (!wouldImmediatelyReStop) {
+          try {
+            await secureFetch(endpoints.sessions.loopRunNow(sessionId), {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ reset_timer: true }),
+            });
+          } catch (_runNowErr) {
+            // Non-fatal: the loop is enabled; the next tick will fire.
+          }
+        }
         setShowRestoreDialog(false);
       } else {
         console.error("Failed to restore loop schedule");
