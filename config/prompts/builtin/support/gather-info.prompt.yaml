@@ -61,7 +61,7 @@ prompt: |-
 
   - Load the full history: `bd show <id>` and `bd comments <id>`. Note the stored `slack_thread_ts`
     / `slack_channel` / `slack_url` metadata.
-  - {{ template "_shared/support/channel-playbook-read" (dict "Purpose" "shape the tone when drafting the clarifying message") }}
+  - {{ template "_shared/support/channel-fragment-read" (dict "Fragment" "tone" "Purpose" "shape the tone when drafting the clarifying message" "Owner" "Support: reply to user" "OwnerAsk" false) }}
   - Confirm the `state:*` label is `need-info`. If it is **not**, use `mitto_ui_options` to warn:
     - **Question**: "This bead is in `state:<current>`, not `need-info`. Continue anyway?"
     - **Options**: `[{label: "Continue anyway"}, {label: "Cancel"}]`, timeout 300.

@@ -1,0 +1,61 @@
+{{- /*
+  support/channel-fragment-read — read ONE topical fragment of the per-channel
+  support playbook. Replaces the monolithic `channel-playbook-read` for prompts
+  that only need a subset (e.g. `reply-to-user` only needs tone, `check-status`
+  needs tone + scope).
+
+  Fragments live under `.mitto/support/<channel-id>/<fragment>.md`, one topic
+  per file. Standard fragments: scope, tone, investigation, resources,
+  escalation, redirects. Missing fragments fall back to the caller prompt's
+  built-in defaults — never a hard failure.
+
+  Owner semantics (Phase 2): if `OwnerAsk` is true, the fragment is owned by
+  the calling prompt and the agent should ask the user (via `mitto_ui_form`)
+  to fill it in when missing, then write the file. In Phase 1 all callers
+  pass `OwnerAsk=false` (reader-only mode).
+
+  Callers pass named fields via a `dict`:
+
+      Fragment: short filename stem (no extension). One of:
+                "scope" | "tone" | "investigation" | "resources"
+                | "escalation" | "redirects".
+      Purpose:  short caller-supplied phrase spliced into "use it to <Purpose>".
+                Same convention as channel-playbook-read.
+      Owner:    canonical name of the owner prompt, e.g. "Support: reply to
+                user" — used in the missing-file message so the reader tells
+                the user which prompt would populate it. Required.
+      OwnerAsk: bool. If true, the CALLING prompt is itself the owner and
+                should ask + write when the fragment is missing. If false
+                (Phase 1 default for readers), the caller just logs a
+                `[CONTEXT]` note and continues with in-prompt defaults.
+
+  Usage (rendered as a single Markdown bullet — the CALLER supplies the
+  leading `- `):
+
+      - {{ template "_shared/support/channel-fragment-read"
+           (dict "Fragment" "tone"
+                 "Purpose"  "shape the tone when drafting the reply"
+                 "Owner"    "Support: reply to user"
+                 "OwnerAsk" false) }}
+
+  Whitespace: fragment body starts flush at column 1 (no leading `- `) and
+  emits no trailing newline; callers use plain `{{ template ... }}`.
+*/ -}}
+{{- $fragment := .Fragment -}}
+{{- $purpose  := .Purpose  -}}
+{{- $owner    := .Owner    -}}
+{{- $ownerAsk := .OwnerAsk -}}
+**Read the channel playbook fragment `{{ $fragment }}.md`.** Using the bead's `slack_channel`
+  value, read **`.mitto/support/<channel-id>/{{ $fragment }}.md`** (e.g. `C0XXXXXXX` →
+  `.mitto/support/C0XXXXXXX/{{ $fragment }}.md`). This is the **authoritative `{{ $fragment }}`
+  guide** for this channel — use it to {{ $purpose }}. **If it exists**, honor its guidance; it
+  **overrides** the generic defaults below.
+  {{- if $ownerAsk }} **If it does not exist**, this prompt owns creating it: ask the user for
+  the `{{ $fragment }}` content via a focused `mitto_ui_form`, write the file, then proceed. See
+  the owner-ask step below for the field list.
+  {{- else }} **If it does not exist**, log a short `[CONTEXT]` bead comment noting
+  `{{ $fragment }}.md missing — using generic defaults; owner = **{{ $owner }}**` and continue
+  with the generic defaults in this section. Do **not** ask the user here — only **{{ $owner }}**
+  is responsible for populating this fragment.
+  {{- end }}
+{{- /* no trailing newline */ -}}

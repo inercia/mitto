@@ -61,7 +61,7 @@ prompt: |-
 
   ## Step 2.5: Read the channel playbook
 
-  - {{ template "_shared/support/channel-playbook-read" (dict "Purpose" "shape the tone/reply guidance when reviewing or building the draft") }}
+  - {{ template "_shared/support/channel-fragment-read" (dict "Fragment" "tone" "Purpose" "shape the tone/reply guidance when reviewing or building the draft" "Owner" "Support: reply to user" "OwnerAsk" false) }}
   - Confirm the `state:*` label is `drafting`. If it is **not**, use `mitto_ui_options` to warn:
     - **Question**: "This bead is in `state:<current>`, not `drafting`. Continue anyway?"
     - **Options**: `[{label: "Continue anyway"}, {label: "Cancel"}]`, timeout 300.
