@@ -238,10 +238,30 @@ prompt: |-
 
   ### 1. Fetch recent questions
 
+  > ⚠️ **Steps 1 and 3 are two separate reads — do NOT collapse them.** Step 1 reads the
+  > **channel history** (top-level messages, which is where a brand-new customer question
+  > lives). Step 3 reads **thread replies** for each already-tracked bead. Executing only
+  > Step 3's thread-reply reads does **not** satisfy Step 1: a new top-level question does
+  > not appear in any existing thread's replies, and the tracked bead list from Step 0 by
+  > definition contains **no** bead for a question you have not discovered yet. You MUST
+  > run Step 1's channel-history fetch on every iteration, even when `bd list` already
+  > returns open beads and even when the channel looks quiet.
+
   - Read the last **{{ $days }} days** of history from `{{ $channel }}`.
   - Keep messages that look like **open** questions/requests for help. Skip ones that already look
     resolved — the asker said "thanks / that worked", someone gave an accepted answer, or a positive
     reaction marks it helpful. Treat a clearly-negative reaction (answer not helpful) as still open.
+
+  > 🔒 **Auditable channel-history gate — this is not satisfiable in prose.** A correct
+  > run emits **at least one `slack_get_channel_history*` (or `conversations_history*`)
+  > call this iteration**, scoped to channel `{{ $channel }}` and covering the last
+  > `{{ $days }}` days. Reading only individual threads (Step 3) is **not** a substitute:
+  > a brand-new top-level question does not appear in any tracked bead's thread replies.
+  > If by the time you reach Step 2 you have made **zero** channel-history calls this
+  > iteration, you have **not** completed Step 1 — go back and fetch channel history
+  > now, before triaging or reconciling anything. Do not assert "channel is quiet" or
+  > "no new questions" for any run in which you have not actually fetched channel
+  > history.
 
   ### 2. Triage — create a bead per NEW open question
 
@@ -279,14 +299,16 @@ prompt: |-
   > Never skip a bead just because it was "waiting on them" last run — that is precisely where a new
   > customer reply is waiting to be noticed.
 
-  > 🔒 **Auditable read gate — this is not satisfiable in prose.** Because you fetch exactly one
-  > thread per bead, a correct run emits **exactly N `slack_get_thread_replies*` (read-thread-replies)
+  > 🔒 **Auditable thread-reply gate — this is not satisfiable in prose.** Because you fetch exactly
+  > one thread per bead, a correct run emits **exactly N `slack_get_thread_replies*` (read-thread-replies)
   > calls** — one per open bead, each using that bead's stored `slack_thread_ts` / `slack_channel`.
-  > Reading channel history is **not** a substitute: a customer reply posted *inside* a thread does
-  > **not** appear in channel history. If by the end of the loop you have made fewer than **N**
-  > thread-fetch calls, you have **not** reconciled every bead — go back and process the remaining
-  > beads now. Do not assert "no customer replies" for any bead whose thread you have not actually
-  > fetched this run.
+  > Reading channel history is **not** a substitute here (and, conversely, satisfying this gate does
+  > **not** satisfy Step 1's separate channel-history gate — they are two independent reads):
+  > a customer reply posted *inside* a thread does **not** appear in channel history, and a brand-new
+  > top-level question does **not** appear in any thread's replies. If by the end of the loop you have
+  > made fewer than **N** thread-fetch calls, you have **not** reconciled every bead — go back and
+  > process the remaining beads now. Do not assert "no customer replies" for any bead whose thread you
+  > have not actually fetched this run.
 
   For each open bead, in the loop above:
 
@@ -465,6 +487,13 @@ prompt: |-
     **investigations were spawned** (and for which beads), and how many beads are `drafting` (ready
     for your review) vs `need-info` vs `awaiting-customer`. On silent runs keep the notify concise but
     **still print the what's-next table** in the run output.
+  - **Channel-history self-check before you claim "channel is quiet".** If your summary or
+    `mitto_ui_notify` is about to say "channel is quiet", "no new questions", or "0 new questions
+    triaged", first confirm you actually made **at least one `slack_get_channel_history*` /
+    `conversations_history*` call this iteration** (Step 1's auditable gate). If you did not, you
+    have not looked at the channel — go back to Step 1 and fetch channel history **now**, then
+    re-do Step 2 (triage) before printing the summary. "Quiet" is only a valid conclusion after an
+    actual channel-history read.
   - **Never list an investigable bead under a "next actions" / "recommendations" section as work
     still to do** — by the time you write Step 5 you have either spawned it, confirmed an existing
     child is on it, or deferred it over the 3-cap (all captured inline on the bead's row). The only
