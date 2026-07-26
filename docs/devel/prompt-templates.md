@@ -136,6 +136,7 @@ CEL expression always read the same field from the same struct.
 | `{{ .Children.MCPCount }}` | `Children.MCPCount` | `Children.MCPCount` |
 | `{{ .Children.All }}` | — | `Children.All` — `[]config.ChildInfo` for all children |
 | `{{ .Children.MCP }}` | — | `Children.MCP` — `[]config.ChildInfo` for MCP-origin children only |
+| `{{ with .Children.Get "id" }}...{{ end }}` | — | `Children.Get(id string) *ChildInfo` — O(n) lookup over `Children.All`; returns nil for empty/unknown id so `{{ with }}` acts as an exists gate. Fields on the block value: `.ID`, `.Name`, `.ACPServer`, `.Origin`, `.IsPrompting`, `.BeadsIssue`. |
 | `{{ .ACP.Available }}` | — | `ACP.Available` — `[]config.ACPServerInfo` for workspace ACP servers |
 | `{{ .Args.NAME }}` | `Args["NAME"]` (new) | `Args["NAME"]` (new) |
 | `{{ .Iteration.Number }}` | — | `Iteration.Number` — 0-based index of the current loop run; 0 for non-loop |
