@@ -583,6 +583,35 @@ func FormatChildren(children []ChildInfo) string {
 	return strings.Join(parts, ", ")
 }
 
+// FormatPeers renders a workspace-peers list as a human-readable
+// comma-separated string. Mirrors FormatChildren for the peers namespace.
+//
+// Format: "id (name) [acp-server] {bd-id}, id2 (name2) [acp-server2] {bd-id2}"
+// "(name)" is omitted when Name == "".
+// "[acp-server]" is omitted when ACPServer == "".
+// "{bd-id}" is omitted when BeadsIssue == "".
+// Returns "" when peers is nil or empty.
+func FormatPeers(peers []PeerInfo) string {
+	if len(peers) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(peers))
+	for _, peer := range peers {
+		s := peer.ID
+		if peer.Name != "" {
+			s += " (" + peer.Name + ")"
+		}
+		if peer.ACPServer != "" {
+			s += " [" + peer.ACPServer + "]"
+		}
+		if peer.BeadsIssue != "" {
+			s += " {" + peer.BeadsIssue + "}"
+		}
+		parts = append(parts, s)
+	}
+	return strings.Join(parts, ", ")
+}
+
 // =============================================================================
 // Template FuncMap builder
 // =============================================================================

@@ -63,6 +63,15 @@ func NewCELEvaluator() (*CELEvaluator, error) {
 		cel.Variable("Workspace.HasMittoRC", cel.BoolType),
 		cel.Variable("Workspace.HasMetadataDescription", cel.BoolType),
 
+		// Workspace.Peers variables (mitto-4d6): scalar aggregates of the
+		// non-archived sibling conversations in the same workspace (excluding
+		// self). The structured .All slice is template-only — CEL exposes only
+		// the aggregate counters for menu-time gating.
+		cel.Variable("Workspace.Peers.Count", cel.IntType),
+		cel.Variable("Workspace.Peers.Exists", cel.BoolType),
+		cel.Variable("Workspace.Peers.PromptingCount", cel.IntType),
+		cel.Variable("Workspace.Peers.IdleCount", cel.IntType),
+
 		// Session variables
 		cel.Variable("Session.ID", cel.StringType),
 		cel.Variable("Session.Name", cel.StringType),
@@ -457,6 +466,11 @@ func buildActivation(ctx *PromptEnabledContext) map[string]any {
 		"Workspace.HasUserDataSchema":      ctx.Workspace.HasUserDataSchema,
 		"Workspace.HasMittoRC":             ctx.Workspace.HasMittoRC,
 		"Workspace.HasMetadataDescription": ctx.Workspace.HasMetadataDescription,
+
+		"Workspace.Peers.Count":          int64(ctx.Workspace.Peers.Count),
+		"Workspace.Peers.Exists":         ctx.Workspace.Peers.Exists,
+		"Workspace.Peers.PromptingCount": int64(ctx.Workspace.Peers.PromptingCount),
+		"Workspace.Peers.IdleCount":      int64(ctx.Workspace.Peers.IdleCount),
 
 		"Session.ID":                 ctx.Session.ID,
 		"Session.Name":               ctx.Session.Name,

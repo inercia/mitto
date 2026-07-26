@@ -167,7 +167,58 @@ type WorkspaceContext struct {
 	// UserDataSchemaJSON is the JSON representation of the workspace user data schema fields.
 	// Empty when no schema is defined. Used by the {{ .Workspace.UserDataSchemaJSON }} template accessor.
 	UserDataSchemaJSON string
+	// Peers holds non-archived conversations sharing this workspace (excluding self).
+	// Used by the {{ .Workspace.Peers.* }} template namespace and Workspace.Peers.*
+	// CEL variables for orchestrator prompts that need to reason about sibling
+	// conversations. Empty when no peers exist or the workspace is unknown.
+	Peers PeersContext
 }
+
+// PeerInfo describes a single peer conversation (a non-archived session in the
+// same workspace as the current one, excluding self). Mirrors ChildInfo shape
+// for orchestrator prompts that inspect sibling conversations.
+type PeerInfo struct {
+	// ID is the peer session identifier.
+	ID string
+	// Name is the peer session title/name (may be empty if not yet set).
+	Name string
+	// ACPServer is the ACP server name used by the peer session.
+	ACPServer string
+	// ParentID is the peer's parent session ID (empty if the peer is a top-level session).
+	ParentID string
+	// Origin is the peer's child origin string: "auto", "mcp", "human", or ""
+	// when the peer is a top-level session.
+	Origin string
+	// IsPrompting indicates the peer agent is currently responding.
+	IsPrompting bool
+	// BeadsIssue is the linked beads issue ID for the peer session
+	// (e.g. "mitto-123"), or empty when the peer has no linked bead.
+	// Rendered as a trailing " {<id>}" suffix by FormatPeers when non-empty
+	// so orchestrator prompts can inline-dedupe by bead ID without an extra
+	// mitto_conversation_list round-trip.
+	BeadsIssue string
+}
+
+// PeersContext holds workspace-peers context for CEL evaluation. Mirrors
+// ChildrenContext for the peers namespace (sibling conversations in the same
+// workspace, excluding self).
+type PeersContext struct {
+	// Count is the number of peer conversations.
+	Count int
+	// Exists indicates whether there are any peer conversations (Count > 0).
+	Exists bool
+	// PromptingCount is the number of peer conversations where the agent is currently responding.
+	PromptingCount int
+	// IdleCount is the number of peer conversations NOT currently prompting (Count - PromptingCount).
+	IdleCount int
+	// All contains structured info for all peer conversations.
+	// Used by the {{ .Workspace.Peers.AllText }} template accessor (FormatPeers).
+	All []PeerInfo
+}
+
+// AllText renders all peer conversations as a human-readable comma-separated
+// string (see FormatPeers). Empty when none.
+func (p PeersContext) AllText() string { return FormatPeers(p.All) }
 
 // SessionContext holds current session context for CEL evaluation.
 type SessionContext struct {

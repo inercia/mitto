@@ -50,6 +50,8 @@ type fakePromptDeps struct {
 	metaByID                       map[string]session.Metadata
 	childSessions                  []session.Metadata
 	childSessionsErr               error
+	workspacePeers                 []session.Metadata
+	workspacePeersErr              error
 	childPrompting                 map[string]bool
 	mcpToolNames                   []string
 	userData                       *session.UserData
@@ -200,6 +202,9 @@ func (f *fakePromptDeps) pdGetMetadataForID(id string) (session.Metadata, error)
 }
 func (f *fakePromptDeps) pdListChildSessions() ([]session.Metadata, error) {
 	return f.childSessions, f.childSessionsErr
+}
+func (f *fakePromptDeps) pdListWorkspacePeers() ([]session.Metadata, error) {
+	return f.workspacePeers, f.workspacePeersErr
 }
 func (f *fakePromptDeps) pdIsChildPrompting(id string) bool { return f.childPrompting[id] }
 func (f *fakePromptDeps) pdCachedMCPToolNames() []string    { return f.mcpToolNames }

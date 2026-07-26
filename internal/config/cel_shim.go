@@ -26,6 +26,8 @@ type SessionContext = cel.SessionContext
 type ParentContext = cel.ParentContext
 type ChildInfo = cel.ChildInfo
 type ChildrenContext = cel.ChildrenContext
+type PeerInfo = cel.PeerInfo
+type PeersContext = cel.PeersContext
 type ServerToolState = cel.ServerToolState
 type ServerToolInfo = cel.ServerToolInfo
 type ToolsContext = cel.ToolsContext
@@ -57,5 +59,6 @@ var (
 	ValidateCondition          = cel.ValidateCondition
 	FormatACPServers           = cel.FormatACPServers
 	FormatChildren             = cel.FormatChildren
+	FormatPeers                = cel.FormatPeers
 	BuildTemplateFuncMap       = cel.BuildTemplateFuncMap
 )

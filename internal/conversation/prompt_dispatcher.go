@@ -52,6 +52,11 @@ type promptDeps interface {
 	pdGetMetadataForID(id string) (session.Metadata, error)
 	pdListChildSessions() ([]session.Metadata, error)
 	pdIsChildPrompting(childSessionID string) bool
+	// pdListWorkspacePeers returns non-archived sessions that share this session's
+	// workspace (same working directory and ACP server), excluding self.
+	// Returns an empty slice when no store is available or no peers exist.
+	// Errors are best-effort — the caller swallows them like the sibling list.
+	pdListWorkspacePeers() ([]session.Metadata, error)
 
 	// MCP tool names from the auxiliary manager (empty when unavailable)
 	pdCachedMCPToolNames() []string
@@ -449,6 +454,7 @@ func (p promptDispatcher) buildAttachmentBlocks(d promptDeps, imageIDs, fileIDs 
 func (p promptDispatcher) buildProcessorInput(d promptDeps, message string, isFirst bool, meta PromptMeta) *processors.ProcessorInput {
 	var sessionName, acpServer, parentSessionID, parentSessionName, beadsIssue string
 	var childSessions []processors.ChildSession
+	var workspacePeers []processors.PeerSession
 	var advancedSettings map[string]bool
 	var hasMessages bool
 
@@ -477,6 +483,19 @@ func (p promptDispatcher) buildProcessorInput(d promptDeps, message string, isFi
 					ChildOrigin: string(child.ChildOrigin),
 					IsPrompting: isPrompting,
 					BeadsIssue:  child.BeadsIssue,
+				})
+			}
+		}
+		if peers, err := d.pdListWorkspacePeers(); err == nil {
+			for _, peer := range peers {
+				workspacePeers = append(workspacePeers, processors.PeerSession{
+					ID:          peer.SessionID,
+					Name:        peer.Name,
+					ACPServer:   peer.ACPServer,
+					ParentID:    peer.ParentSessionID,
+					ChildOrigin: string(peer.ChildOrigin),
+					IsPrompting: d.pdIsChildPrompting(peer.SessionID),
+					BeadsIssue:  peer.BeadsIssue,
 				})
 			}
 		}
@@ -551,6 +570,7 @@ func (p promptDispatcher) buildProcessorInput(d promptDeps, message string, isFi
 		BeadsIssue:             beadsIssue,
 		AvailableACPServers:    d.pdAvailableACPServers(),
 		ChildSessions:          childSessions,
+		WorkspacePeers:         workspacePeers,
 		MCPToolNames:           mcpToolNames,
 		IsLoop:                 meta.SenderID == senderIDLoop,
 		IsLoopForced:           meta.IsLoopForced,

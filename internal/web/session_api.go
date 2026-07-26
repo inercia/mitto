@@ -189,6 +189,48 @@ func (s *Server) buildPromptEnabledContext(sessionID string) *config.PromptEnabl
 		}
 	}
 
+	// Workspace peers (mitto-4d6): non-archived sessions sharing the same
+	// (WorkingDir, ACPServer) composite key — the identity of a workspace in
+	// the registry — excluding self. Populates the {{ .Workspace.Peers.* }}
+	// template namespace and Workspace.Peers.* CEL variables. Fail-open: any
+	// store error leaves Peers zero-valued and never fails the menu render.
+	if meta.WorkingDir != "" || meta.ACPServer != "" {
+		if all, lerr := store.List(); lerr == nil {
+			var peers []config.PeerInfo
+			var promptingCount int
+			for _, pm := range all {
+				if pm.SessionID == sessionID {
+					continue
+				}
+				if pm.Archived {
+					continue
+				}
+				if pm.WorkingDir != meta.WorkingDir || pm.ACPServer != meta.ACPServer {
+					continue
+				}
+				isPrompting := false
+				if peerBS := s.sessionManager.GetSession(pm.SessionID); peerBS != nil && peerBS.IsPrompting() {
+					isPrompting = true
+					promptingCount++
+				}
+				peers = append(peers, config.PeerInfo{
+					ID:          pm.SessionID,
+					Name:        pm.Name,
+					ACPServer:   pm.ACPServer,
+					ParentID:    pm.ParentSessionID,
+					Origin:      string(pm.ChildOrigin),
+					IsPrompting: isPrompting,
+					BeadsIssue:  pm.BeadsIssue,
+				})
+			}
+			ctx.Workspace.Peers.Count = len(peers)
+			ctx.Workspace.Peers.Exists = len(peers) > 0
+			ctx.Workspace.Peers.PromptingCount = promptingCount
+			ctx.Workspace.Peers.IdleCount = len(peers) - promptingCount
+			ctx.Workspace.Peers.All = peers
+		}
+	}
+
 	// Session user data JSON for template rendering ({{ .Session.UserDataJSON }}).
 	// Also build UserData map (name→value) for {{ UserData "NAME" }} / CEL UserData["X"].
 	if ud, uerr := store.GetUserData(sessionID); uerr == nil && ud != nil && len(ud.Attributes) > 0 {

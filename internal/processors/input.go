@@ -48,6 +48,12 @@ type ProcessorInput struct {
 	// ChildSessions lists direct child sessions of the current session.
 	// Each entry includes the session ID, name, and ACP server.
 	ChildSessions []ChildSession `json:"child_sessions,omitempty"`
+	// WorkspacePeers lists non-archived conversations sharing this session's
+	// workspace (same working directory and ACP server), excluding self.
+	// Feeds the {{ .Workspace.Peers.* }} template namespace / Workspace.Peers.*
+	// CEL variables and is emitted to external command processors as
+	// "workspace_peers". Each entry mirrors ChildSession semantics.
+	WorkspacePeers []PeerSession `json:"workspace_peers,omitempty"`
 	// MCPToolNames is the list of MCP tool names available in the current workspace.
 	// Used for Tools.* CEL context in enabledWhen expressions.
 	// May be empty if tools haven't been fetched yet.
@@ -160,6 +166,33 @@ type ChildSession struct {
 	// field is consumed only by in-process template rendering and CEL context
 	// building. A structured beads_issue on MITTO_CHILD_SESSIONS is a
 	// deliberate non-goal for this pass (see bead mitto-59b).
+	BeadsIssue string `json:"-"`
+}
+
+// PeerSession describes a non-archived conversation sharing the current
+// session's workspace (same working directory and ACP server), excluding self.
+// Mirrors ChildSession's shape so orchestrator prompts can reason about
+// sibling conversations the same way they reason about children.
+type PeerSession struct {
+	// ID is the peer session identifier.
+	ID string `json:"id"`
+	// Name is the peer session title/name (may be empty if not yet set).
+	Name string `json:"name,omitempty"`
+	// ACPServer is the ACP server name used by the peer session.
+	ACPServer string `json:"acp_server,omitempty"`
+	// ParentID is the peer's parent session ID (empty when the peer is a
+	// top-level session). Lets prompts distinguish peers spawned by self from
+	// unrelated top-level siblings.
+	ParentID string `json:"parent_id,omitempty"`
+	// ChildOrigin indicates how the peer was created: "auto", "mcp", "human",
+	// or "" when the peer is a top-level session.
+	ChildOrigin string `json:"child_origin,omitempty"`
+	// IsPrompting indicates the peer agent is currently responding.
+	IsPrompting bool `json:"is_prompting,omitempty"`
+	// BeadsIssue is the linked beads issue ID for the peer session
+	// (e.g. "mitto-123"), or empty when the peer has no linked bead.
+	// Excluded from the external-processor JSON payload (json:"-") — same
+	// sensitivity rule as ChildSession.BeadsIssue.
 	BeadsIssue string `json:"-"`
 }
 

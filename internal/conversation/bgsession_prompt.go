@@ -798,6 +798,39 @@ func (bs *BackgroundSession) pdListChildSessions() ([]session.Metadata, error) {
 	return bs.store.ListChildSessions(bs.persistedID)
 }
 
+// pdListWorkspacePeers returns non-archived sessions sharing this session's
+// workspace (identified by the (WorkingDir, ACPServer) composite key, which
+// maps 1:1 to a WorkspaceUUID in the registry), excluding self. Returns an
+// empty slice — never nil — when no store is available so callers can range
+// unconditionally. Errors from store.List are propagated so the caller can
+// swallow them the same way sibling helpers do.
+func (bs *BackgroundSession) pdListWorkspacePeers() ([]session.Metadata, error) {
+	if bs.store == nil || bs.persistedID == "" {
+		return nil, fmt.Errorf("store not available")
+	}
+	if bs.workingDir == "" && bs.acpServer == "" {
+		return []session.Metadata{}, nil
+	}
+	all, err := bs.store.List()
+	if err != nil {
+		return nil, err
+	}
+	peers := make([]session.Metadata, 0, len(all))
+	for _, m := range all {
+		if m.SessionID == bs.persistedID {
+			continue
+		}
+		if m.Archived {
+			continue
+		}
+		if m.WorkingDir != bs.workingDir || m.ACPServer != bs.acpServer {
+			continue
+		}
+		peers = append(peers, m)
+	}
+	return peers, nil
+}
+
 func (bs *BackgroundSession) pdIsChildPrompting(childSessionID string) bool {
 	if bs.isChildPrompting == nil {
 		return false
