@@ -466,3 +466,204 @@ func TestAskFragmentTimeouts(t *testing.T) {
 		}
 	}
 }
+
+// TestMigrateMonolithFragmentRenders is a smoke test for
+// _shared/support/migrate-monolith (mitto-da9.3). It renders the two
+// host prompts that invoke the migration block — `Support: watch channel`
+// (scope gate) and `Support: investigate` (Step 3) — and asserts the
+// stable hallmarks unique to the migration body appear in each.
+//
+// Also asserts that non-host support prompts do NOT accidentally include
+// the migration block (owner mapping guard).
+func TestMigrateMonolithFragmentRenders(t *testing.T) {
+	ctx := &cel.PromptEnabledContext{
+		Session: cel.SessionContext{ID: "s", Name: "N", HasMessages: true},
+	}
+	// Hallmarks unique to the migrate-monolith fragment body: the
+	// sub-heading, the idempotence-check phrasing, the six-row heading→
+	// fragment table (a sampling), and the move-to-archive command.
+	hallmarks := []string{
+		"### Monolithic-playbook auto-migration",
+		"Idempotence check.",
+		"No-monolith check.",
+		"Split the monolith.",
+		"| Scope of Investigation and Reply             | `scope.md`",
+		"| Response Style and Tone                      | `tone.md`",
+		"| Investigations: how to gather information    | `investigation.md`",
+		"| Repos / docs / runbooks                      | `resources.md`",
+		"| Escalation                                   | `escalation.md`",
+		"_migrated_from_monolith.md",
+		"_unclassified.md",
+	}
+	hosts := []string{
+		"Support: watch channel",
+		"Support: investigate",
+	}
+	for _, name := range hosts {
+		out := renderSupportPrompt(t, name, ctx)
+		for _, hallmark := range hallmarks {
+			if !strings.Contains(out, hallmark) {
+				t.Errorf("prompt %q: rendered output missing migrate-monolith hallmark %q", name, hallmark)
+			}
+		}
+	}
+	// Non-host support prompts must NOT include the migration block.
+	nonHosts := []string{
+		"Support: check status",
+		"Support: continue conversation",
+		"Support: gather more information",
+		"Support: housekeeping",
+		"Support: reply to user",
+	}
+	guard := "### Monolithic-playbook auto-migration"
+	for _, name := range nonHosts {
+		out := renderSupportPrompt(t, name, ctx)
+		if strings.Contains(out, guard) {
+			t.Errorf("non-host prompt %q: unexpectedly renders migrate-monolith block %q", name, guard)
+		}
+	}
+}
+
+// TestMigrateMonolithChannelSubstitution verifies that the `Channel` arg
+// passed by the caller is spliced into the rendered paths, and the
+// `ActiveBead` arg controls whether the block ends with a scoped
+// `bd comment <id> ...` command (non-empty) or a generic "any tracked
+// bead in this channel" fallback (empty).
+func TestMigrateMonolithChannelSubstitution(t *testing.T) {
+	ctx := &cel.PromptEnabledContext{
+		Session: cel.SessionContext{ID: "s", Name: "N", HasMessages: true},
+	}
+
+	// `Support: watch channel` renders with the literal Go-template
+	// variable `$channel` substituted at render time via the prompt's
+	// own `SlackChannelID` arg. Passing a concrete channel ID exercises
+	// that substitution end-to-end.
+	watchCtx := &cel.PromptEnabledContext{
+		Session: cel.SessionContext{ID: "s", Name: "N", HasMessages: true},
+		Args:    map[string]string{"SlackChannelID": "C0TESTMIG1"},
+	}
+	watchOut := renderSupportPrompt(t, "Support: watch channel", watchCtx)
+	if !strings.Contains(watchOut, ".mitto/slack-support-C0TESTMIG1.md") {
+		t.Errorf("watch-channel: expected substituted monolith path with C0TESTMIG1; got no match")
+	}
+	if !strings.Contains(watchOut, ".mitto/support/C0TESTMIG1/") {
+		t.Errorf("watch-channel: expected substituted target dir with C0TESTMIG1; got no match")
+	}
+	// Empty ActiveBead branch: the generic fallback prose fires.
+	if !strings.Contains(watchOut, "any tracked bead in this channel") {
+		t.Errorf("watch-channel: expected empty-ActiveBead fallback prose; got no match")
+	}
+
+	// `Support: investigate` passes the literal `<channel-id>` and `<id>`
+	// placeholder strings (the prompt does not know the channel/bead at
+	// template-render time), so the rendered block should preserve them
+	// verbatim in both the paths and the scoped bd comment command.
+	invOut := renderSupportPrompt(t, "Support: investigate", ctx)
+	if !strings.Contains(invOut, ".mitto/slack-support-<channel-id>.md") {
+		t.Errorf("investigate: expected placeholder-substituted monolith path; got no match")
+	}
+	if !strings.Contains(invOut, ".mitto/support/<channel-id>/") {
+		t.Errorf("investigate: expected placeholder-substituted target dir; got no match")
+	}
+	// Non-empty ActiveBead branch: the scoped bd comment command fires.
+	if !strings.Contains(invOut, "bd comment <id> ") {
+		t.Errorf("investigate: expected scoped `bd comment <id> ...` command from non-empty ActiveBead; got no match")
+	}
+	if strings.Contains(invOut, "any tracked bead in this channel") {
+		t.Errorf("investigate: unexpectedly contains empty-ActiveBead fallback prose (ActiveBead is set)")
+	}
+}
+
+// TestChannelPlaybookReadDeprecated is a regression guard for
+// mitto-da9.3's deprecation of `_shared/support/channel-playbook-read`.
+//
+//   - The fragment body itself must render the DEPRECATED banner and the
+//     drift-note instruction so any future caller emits a `[CONTEXT]` bead
+//     comment naming the legacy template.
+//   - No in-tree builtin prompt may call the deprecated fragment: zero
+//     `{{ template "_shared/support/channel-playbook-read" ... }}` sites
+//     across the builtin corpus.
+func TestChannelPlaybookReadDeprecated(t *testing.T) {
+	installBuiltinFragmentsForTest(t)
+
+	// (a) Body-level assertions: render the fragment directly against a
+	// minimal context and check the deprecation hallmarks.
+	reg := CurrentFragments()
+	body, ok := reg.Get("_shared/support/channel-playbook-read")
+	if !ok {
+		t.Fatalf("fragment %q not present in the loaded registry", "_shared/support/channel-playbook-read")
+	}
+	// Minimal wrapper template that invokes the fragment with a Purpose.
+	wrapper := `{{ template "_shared/support/channel-playbook-read" (dict "Purpose" "smoke-test") }}`
+	ctx := &cel.PromptEnabledContext{
+		Session: cel.SessionContext{ID: "s", Name: "N", HasMessages: true},
+	}
+	funcs := cel.BuildTemplateFuncMap(ctx)
+	out, err := RenderPromptTemplate("channel-playbook-read-deprecation", wrapper, ctx, funcs)
+	if err != nil {
+		t.Fatalf("render deprecated fragment wrapper: %v", err)
+	}
+	// Guard the fragment content is non-empty so `Get` did not silently
+	// return an empty string.
+	if strings.TrimSpace(body) == "" {
+		t.Fatalf("deprecated fragment body is empty")
+	}
+	deprecationHallmarks := []string{
+		"⚠ **DEPRECATED**",
+		"channel-fragment-read",
+		"still using legacy",
+	}
+	for _, hallmark := range deprecationHallmarks {
+		if !strings.Contains(out, hallmark) {
+			t.Errorf("rendered deprecated fragment missing hallmark %q; got:\n%s", hallmark, out)
+		}
+	}
+
+	// (b) Zero-caller assertion: no builtin prompt may invoke the
+	// deprecated fragment. Scan every builtin prompt's raw body for the
+	// template call. Doc-comment mentions inside `{{- /* ... */ -}}` blocks
+	// and prose references are OK — only actual invocations fail.
+	builtinDir := "../../config/prompts/builtin"
+	prompts, err := LoadPromptsFromDir(builtinDir)
+	if err != nil {
+		t.Skipf("cannot load builtins from %s: %v", builtinDir, err)
+	}
+	invocation := `template "_shared/support/channel-playbook-read"`
+	for _, p := range prompts {
+		if strings.Contains(p.Content, invocation) {
+			t.Errorf("builtin prompt %q still invokes the deprecated fragment %q — migrate the caller to _shared/support/channel-fragment-read", p.Name, "_shared/support/channel-playbook-read")
+		}
+	}
+}
+
+// TestContinueConversationOffMonolithicPath is a regression guard for
+// mitto-da9.3's migration of `Support: continue conversation` off the
+// legacy monolithic playbook path. The rendered body must reference the
+// fragment layout (`.mitto/support/<channel-id>/`) but MUST NOT reference
+// the legacy monolith path (`.mitto/slack-support-<channel-id>.md`) —
+// this was the last active caller of the monolith and it now uses
+// `channel-fragment-read` for scope/tone/investigation reads.
+func TestContinueConversationOffMonolithicPath(t *testing.T) {
+	// Render with a concrete channel ID so any leftover `$channel`-templated
+	// reference to the legacy path resolves and fails the check below.
+	ctx := &cel.PromptEnabledContext{
+		Session: cel.SessionContext{ID: "s", Name: "N", HasMessages: true},
+		Args:    map[string]string{"SlackChannelID": "C0TESTCC01"},
+	}
+	out := renderSupportPrompt(t, "Support: continue conversation", ctx)
+	// Positive: at least one fragment path substituted with the arg.
+	if !strings.Contains(out, ".mitto/support/C0TESTCC01/") {
+		t.Errorf("continue-conversation: expected fragment path with substituted channel; got no match")
+	}
+	// Negative: zero references to the legacy monolithic path, either
+	// literal or substituted.
+	forbidden := []string{
+		".mitto/slack-support-C0TESTCC01.md",
+		".mitto/slack-support-<channel-id>.md",
+	}
+	for _, f := range forbidden {
+		if strings.Contains(out, f) {
+			t.Errorf("continue-conversation: forbidden legacy monolith path %q leaked into rendered body", f)
+		}
+	}
+}
