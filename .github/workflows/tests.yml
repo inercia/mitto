@@ -28,6 +28,15 @@ jobs:
           version: latest
           args: --timeout=5m
 
+      # Static validation of every builtin prompt + fragment + model-tag
+      # reference (mitto-11m). Fails the build if any builtin prompt
+      # references an unknown modelTag, any processor calls
+      # Session.HasModelTag("<tag>") with an unknown tag, or any prompt has
+      # bad YAML, an unresolved fragment reference, or an uncompilable
+      # template/CEL expression. Reproduce locally with: make check-prompts
+      - name: Validate prompts and model tags
+        run: make check-prompts
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:

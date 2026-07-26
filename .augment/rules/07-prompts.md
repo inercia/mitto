@@ -235,3 +235,18 @@ parameters:
 - Loop loop config change / pause / re-enable
 
 **Authoring rule**: compact "continue" branch must carry durable re-anchor (one-line goal + file/bead ref). Always render verbose form when `IsFirst || !IsUninterrupted` to reset context after interruptions.
+
+## CI Validation (mitto-11m)
+
+Every PR runs `make check-prompts` in the `lint` job of `.github/workflows/tests.yml`. The umbrella target chains two validators:
+
+- **`make check-model-tags`** — Go tests in `internal/config/` and `internal/processors/` verifying that every builtin prompt's `modelTag:` and every processor's `Session.HasModelTag("…")` resolves to a canonical tag in `config.CanonicalModelTags()`, and that `config/config.default.yaml`'s `models:` matches `config.DefaultModelProfiles()`.
+- **`./mitto prompts verify`** — statically loads every fragment (`*.tmpl`) and prompt (`*.prompt.yaml`), validates YAML schema, precompiles Go templates and CEL expressions, and confirms every `{{ template "…" }}` reference resolves to a known fragment. Because `verify` reads from `MITTO_DIR/prompts/`, the target first runs `make build` and `./mitto prompts update-builtin --force` to deploy the embedded builtin tree.
+
+Reproduce locally before pushing:
+
+```bash
+make check-prompts
+```
+
+A broken fragment reference, typo'd `modelTag`, or invalid prompt YAML fails CI before unit tests even run.

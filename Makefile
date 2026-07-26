@@ -1,4 +1,4 @@
-.PHONY: build install test test-go test-js check-model-tags check-stderr-patterns test-integration test-integration-go test-integration-cli test-integration-api test-integration-client test-integration-runner test-runner-smoke test-runner-smoke-assert test-ui test-ui-headed test-ui-debug test-ui-report test-all test-ci test-setup test-clean clean run fmt fmt-check fmt-docs fmt-docs-check lint lint-go lint-frontend deps-go deps-js deps tailwind vendor-codemirror build-mac-app clean-mac-app test-webviewlog build-mock-acp ci install-hooks homebrew-generate homebrew-test homebrew-test-style homebrew-test-install homebrew-test-cask homebrew-tap-setup homebrew-clean smoke-build smoke-test-cli smoke-test smoke-clean
+.PHONY: build install test test-go test-js check-model-tags check-stderr-patterns check-prompts test-integration test-integration-go test-integration-cli test-integration-api test-integration-client test-integration-runner test-runner-smoke test-runner-smoke-assert test-ui test-ui-headed test-ui-debug test-ui-report test-all test-ci test-setup test-clean clean run fmt fmt-check fmt-docs fmt-docs-check lint lint-go lint-frontend deps-go deps-js deps tailwind vendor-codemirror build-mac-app clean-mac-app test-webviewlog build-mock-acp ci install-hooks homebrew-generate homebrew-test homebrew-test-style homebrew-test-install homebrew-test-cask homebrew-tap-setup homebrew-clean smoke-build smoke-test-cli smoke-test smoke-clean
 
 # Binary name
 BINARY_NAME=mitto
@@ -59,6 +59,19 @@ check-model-tags:
 check-stderr-patterns:
 	@echo "Validating builtin agent stderr patterns..."
 	$(GOTEST) -run 'TestBuiltinAgents_StderrPatternsCompile' ./internal/agents/
+
+# Umbrella target that runs every static prompt/model validator (mitto-11m).
+# Wired from .github/workflows/tests.yml so a broken fragment reference, typo'd
+# modelTag, or invalid prompt YAML fails CI before unit tests even run.
+# Two validators:
+#   1. check-model-tags — pure Go tests, no MITTO_DIR needed.
+#   2. mitto prompts verify — needs the embedded builtin prompts deployed to
+#      MITTO_DIR (fresh checkouts have neither), so we build+deploy first.
+check-prompts: check-model-tags build
+	@echo "Deploying embedded builtin prompts to MITTO_DIR for verification..."
+	./$(BINARY_NAME) prompts update-builtin --force
+	@echo "Validating prompts and fragments (schema, templates, fragment refs)..."
+	./$(BINARY_NAME) prompts verify
 
 # =============================================================================
 # Integration & UI Tests
