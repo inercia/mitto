@@ -1,11 +1,32 @@
 package prompts
 
 import (
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/inercia/mitto/internal/cel"
 )
+
+// installFakeBdForRender writes a fake `bd` shell script to a fresh temp dir
+// (unique per call) and prepends it to PATH for the test's lifetime. It ignores
+// its arguments and always emits `stdout`. Mirrors the internal/cel unexported
+// helper of the same purpose so integration renders in this package can
+// exercise the `BeadMetadata` fallback path (mitto-09k) against the real
+// builtin corpus without requiring a working `bd` in the host PATH.
+func installFakeBdForRender(t *testing.T, stdout string) {
+	t.Helper()
+	dir := t.TempDir()
+	script := fmt.Sprintf("#!/bin/sh\ncat <<'MITTO_BD_EOF'\n%s\nMITTO_BD_EOF\nexit 0\n", stdout)
+	bdPath := filepath.Join(dir, "bd")
+	if err := os.WriteFile(bdPath, []byte(script), 0755); err != nil {
+		t.Fatal(err)
+	}
+	oldPath := os.Getenv("PATH")
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+oldPath)
+}
 
 // renderSupportPrompt is a small helper: it loads the builtin fragment
 // registry, resolves the named prompt from the builtin corpus, and renders
@@ -629,6 +650,185 @@ func TestContinueConversationOffMonolithicPath(t *testing.T) {
 	for _, f := range forbidden {
 		if strings.Contains(out, f) {
 			t.Errorf("continue-conversation: forbidden legacy monolith path %q leaked into rendered body", f)
+		}
+	}
+}
+
+// TestBeadMetadataFallbackResolvesChannel_UIInvoked (mitto-09k) is the
+// acceptance-criteria integration test for the BeadMetadata render-time
+// fallback. It exercises the three UI-invoked support prompts
+// (`Support: check status`, `Support: reply to user`,
+// `Support: gather more information`) exactly the way the Beads issue menu
+// dispatches them: only `IssueID` is passed, `SlackChannelID` is intentionally
+// omitted. The prompt bodies must fall back to `BeadMetadata (Arg "IssueID" "")
+// "slack_channel"` and hand `channel-fragment-read.tmpl` a non-empty channel
+// value — so the fragment reader emits the fragment-scoped branch (either the
+// inlined body when the file exists, or the owner-ask "fragment MISSING"
+// branch when it does not) and never the "runtime read fallback" branch.
+//
+// Setup:
+//   - Fake `bd show <id> --json` returns a bead JSON carrying
+//     `metadata.slack_channel = C0DERIVED`.
+//   - No fragment files are written under `.mitto/support/C0DERIVED/` — this
+//     drives the reader into the "fragment MISSING" branch, whose hallmark
+//     ("`C0DERIVED`") pins the derived channel value into the render.
+//
+// Positive assertions (per acceptance criterion #3 on the bead):
+//   - Rendered output contains the derived channel id, proving the derivation
+//     value actually flowed into `channel-fragment-read.tmpl`.
+//   - Rendered output does NOT contain "runtime read fallback" — the branch
+//     that fires when `$channel` is empty at render time.
+func TestBeadMetadataFallbackResolvesChannel_UIInvoked(t *testing.T) {
+	installFakeBdForRender(t, `[{"id":"mitto-1","status":"open","labels":["support-question"],"metadata":{"slack_channel":"C0DERIVED"}}]`)
+	tmpDir := t.TempDir()
+
+	ctx := &cel.PromptEnabledContext{
+		Session:   cel.SessionContext{ID: "s", Name: "N", HasMessages: true},
+		Workspace: cel.WorkspaceContext{Folder: tmpDir},
+		// UI-invoked shape: only IssueID is passed; SlackChannelID is empty.
+		Args: map[string]string{"IssueID": "mitto-1"},
+	}
+	consumers := []string{
+		"Support: check status",
+		"Support: reply to user",
+		"Support: gather more information",
+	}
+	for _, name := range consumers {
+		t.Run(name, func(t *testing.T) {
+			out := renderSupportPrompt(t, name, ctx)
+			// The derived channel id must appear in the render — proving the
+			// $channel value flowed into channel-fragment-read.tmpl's paths
+			// or messages (either "embedded from `.mitto/support/C0DERIVED/…`"
+			// or the "fragment MISSING (`.mitto/support/C0DERIVED/…`)" branch).
+			if !strings.Contains(out, "C0DERIVED") {
+				t.Errorf("derived channel id C0DERIVED not present in render — BeadMetadata fallback did not fire")
+			}
+			// The runtime-read fallback branch must NOT fire: $channel is
+			// non-empty at render time thanks to BeadMetadata.
+			if strings.Contains(out, "runtime read fallback") {
+				t.Errorf("render unexpectedly contains 'runtime read fallback' — BeadMetadata fallback did not produce a non-empty $channel")
+			}
+		})
+	}
+}
+
+// TestBeadMetadataFallbackLegacyBeadStillReadsAtRuntime (mitto-09k) is the
+// zero-regression guard for acceptance criterion #4: a bead WITHOUT a
+// `metadata.slack_channel` value (older beads, or beads created outside the
+// support pipeline) must still work — the three UI-invoked support prompts
+// must fall through to `channel-fragment-read.tmpl`'s "runtime read fallback"
+// branch exactly as they did before this change.
+//
+// Setup:
+//   - Fake `bd show <id> --json` returns a bead JSON with NO metadata field
+//     at all. `BeadMetadata(...)` returns "" (fail-open), so `$channel`
+//     remains empty at render time.
+//
+// Assertions:
+//   - Rendered output contains "runtime read fallback" — the legacy branch
+//     is still reachable.
+//   - Rendered output does NOT mention the derived channel token used in the
+//     sibling positive test (`C0DERIVED`), proving the negative case is
+//     genuinely negative and the tests are not aliasing each other via cache.
+func TestBeadMetadataFallbackLegacyBeadStillReadsAtRuntime(t *testing.T) {
+	installFakeBdForRender(t, `[{"id":"mitto-legacy","status":"open","labels":["support-question"]}]`)
+	tmpDir := t.TempDir()
+
+	ctx := &cel.PromptEnabledContext{
+		Session:   cel.SessionContext{ID: "s", Name: "N", HasMessages: true},
+		Workspace: cel.WorkspaceContext{Folder: tmpDir},
+		Args:      map[string]string{"IssueID": "mitto-legacy"},
+	}
+	consumers := []string{
+		"Support: check status",
+		"Support: reply to user",
+		"Support: gather more information",
+	}
+	for _, name := range consumers {
+		t.Run(name, func(t *testing.T) {
+			out := renderSupportPrompt(t, name, ctx)
+			if !strings.Contains(out, "runtime read fallback") {
+				t.Errorf("legacy bead without metadata: render missing 'runtime read fallback' hallmark — the legacy branch was unreachable, indicating a regression")
+			}
+			if strings.Contains(out, "C0DERIVED") {
+				t.Errorf("legacy bead render unexpectedly contains 'C0DERIVED' — tests are aliasing via cache or fake-bd is leaking across cases")
+			}
+		})
+	}
+}
+
+// TestBeadMetadataFallbackExplicitSlackChannelIDWins (mitto-09k) verifies the
+// argument-wins semantics: when the caller passes an explicit `SlackChannelID`
+// (as the loop-spawned `Support: continue conversation` and `Support:
+// investigate` paths do), the fallback must NOT overwrite it — even if the
+// bead's `metadata.slack_channel` would have resolved to a different value.
+// This is the "Arg wins" branch of `{{- if eq $channel "" -}}`.
+//
+// Setup:
+//   - Fake `bd show` returns metadata.slack_channel = C0METADATA (deliberately
+//     different from the caller-supplied value).
+//   - Caller passes SlackChannelID = C0EXPLICIT.
+//
+// Assertions:
+//   - Rendered output contains "C0EXPLICIT" (caller-supplied value wins).
+//   - Rendered output does NOT contain "C0METADATA" (fallback did not fire).
+func TestBeadMetadataFallbackExplicitSlackChannelIDWins(t *testing.T) {
+	installFakeBdForRender(t, `[{"id":"mitto-1","status":"open","labels":["support-question"],"metadata":{"slack_channel":"C0METADATA"}}]`)
+	tmpDir := t.TempDir()
+
+	ctx := &cel.PromptEnabledContext{
+		Session:   cel.SessionContext{ID: "s", Name: "N", HasMessages: true},
+		Workspace: cel.WorkspaceContext{Folder: tmpDir},
+		Args: map[string]string{
+			"IssueID":        "mitto-1",
+			"SlackChannelID": "C0EXPLICIT",
+		},
+	}
+	consumers := []string{
+		"Support: check status",
+		"Support: reply to user",
+		"Support: gather more information",
+	}
+	for _, name := range consumers {
+		t.Run(name, func(t *testing.T) {
+			out := renderSupportPrompt(t, name, ctx)
+			if !strings.Contains(out, "C0EXPLICIT") {
+				t.Errorf("caller-supplied SlackChannelID=C0EXPLICIT not present in render — the explicit arg did not flow through")
+			}
+			if strings.Contains(out, "C0METADATA") {
+				t.Errorf("render unexpectedly contains 'C0METADATA' — BeadMetadata fallback overwrote a non-empty caller-supplied $channel")
+			}
+		})
+	}
+}
+
+// TestBeadMetadataFallbackNotWiredIntoLoopSpawnedPrompts (mitto-09k) is a
+// scope-creep guard: the plan explicitly leaves `continue-conversation` and
+// `investigate` untouched because they always receive `SlackChannelID`
+// explicitly from their loop parent. Verify the fallback stanza was NOT
+// mistakenly added to those two prompt bodies. Uses a raw source scan (not
+// render) so we can pinpoint the exact prompt bodies, independent of fragment
+// composition.
+func TestBeadMetadataFallbackNotWiredIntoLoopSpawnedPrompts(t *testing.T) {
+	builtinDir := "../../config/prompts/builtin"
+	list, err := LoadPromptsFromDir(builtinDir)
+	if err != nil {
+		t.Fatalf("LoadPromptsFromDir(builtin): %v", err)
+	}
+	// The exact stanza the Implement phase added to the three UI-invoked
+	// prompt bodies. The plan pins this to only those three; the loop-spawned
+	// prompts must not carry it.
+	fallbackStanza := `BeadMetadata (Arg "IssueID" "") "slack_channel"`
+	scopeGuarded := map[string]bool{
+		"Support: continue conversation": true,
+		"Support: investigate":           true,
+	}
+	for _, p := range list {
+		if !scopeGuarded[p.Name] {
+			continue
+		}
+		if strings.Contains(p.Content, fallbackStanza) {
+			t.Errorf("prompt %q: unexpectedly contains the BeadMetadata fallback stanza — the plan explicitly excluded this loop-spawned prompt (it always receives SlackChannelID from its spawner)", p.Name)
 		}
 	}
 }
