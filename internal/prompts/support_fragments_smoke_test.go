@@ -346,3 +346,123 @@ func TestWhatsNextMappingFragmentRenders(t *testing.T) {
 		}
 	}
 }
+
+// TestAskFragmentTemplatesRender is a smoke test for the six new
+// `_shared/support/ask-*.tmpl` templates introduced in mitto-da9.2.
+// It renders the three owner prompts and asserts that each ask
+// template's "Ask + write `<fragment>.md`" hallmark is present in
+// the correct owner (and only that owner) — protecting the owner
+// mapping from silent drift.
+func TestAskFragmentTemplatesRender(t *testing.T) {
+	ctx := &cel.PromptEnabledContext{
+		Session: cel.SessionContext{ID: "s", Name: "N", HasMessages: true},
+	}
+	// Owner mapping: (owner prompt name) -> list of fragment names it owns.
+	owners := map[string][]string{
+		"Support: watch channel": {"scope"},
+		"Support: investigate":   {"investigation", "resources", "escalation", "redirects"},
+		"Support: reply to user": {"tone"},
+	}
+	// Fragments not owned by a given owner must NOT appear as owner-ask
+	// hallmarks in that owner's render — the ask template is emitted only
+	// by its owning prompt.
+	allFragments := []string{"scope", "tone", "investigation", "resources", "escalation", "redirects"}
+	for ownerName, owned := range owners {
+		out := renderSupportPrompt(t, ownerName, ctx)
+		ownedSet := make(map[string]bool, len(owned))
+		for _, f := range owned {
+			ownedSet[f] = true
+			hallmark := "**Ask + write `" + f + ".md`."
+			if !strings.Contains(out, hallmark) {
+				t.Errorf("prompt %q: rendered output missing ask-%s hallmark %q", ownerName, f, hallmark)
+			}
+			// Each ask template must instruct writing under the stable
+			// per-fragment path.
+			pathHallmark := ".mitto/support/<channel-id>/" + f + ".md"
+			if !strings.Contains(out, pathHallmark) {
+				t.Errorf("prompt %q: rendered output missing per-fragment path hallmark %q", ownerName, pathHallmark)
+			}
+		}
+		for _, f := range allFragments {
+			if ownedSet[f] {
+				continue
+			}
+			hallmark := "**Ask + write `" + f + ".md`."
+			if strings.Contains(out, hallmark) {
+				t.Errorf("prompt %q: unexpectedly renders ask-%s hallmark %q (not its owner)", ownerName, f, hallmark)
+			}
+		}
+	}
+	// Non-owner support prompts must not emit ANY ask hallmark.
+	nonOwners := []string{
+		"Support: check status",
+		"Support: continue conversation",
+		"Support: gather more information",
+		"Support: housekeeping",
+	}
+	for _, name := range nonOwners {
+		out := renderSupportPrompt(t, name, ctx)
+		for _, f := range allFragments {
+			hallmark := "**Ask + write `" + f + ".md`."
+			if strings.Contains(out, hallmark) {
+				t.Errorf("non-owner prompt %q: unexpectedly renders ask-%s hallmark %q", name, f, hallmark)
+			}
+		}
+	}
+}
+
+// TestAskFragmentTimeouts is a regression guard for mitto-da9.2's
+// silent-loop-safety contract:
+//
+//   - `Support: watch channel` runs in a scheduled loop and MUST use a
+//     short timeout (60s) for its ask so the run does not block for
+//     minutes waiting on a user who is not there.
+//   - `Support: investigate` and `Support: reply to user` are interactive
+//     owners; they use the interactive 300s convention.
+//
+// If a future edit accidentally flips watch-channel to 300s (or an
+// interactive owner to 60s), this test catches it.
+func TestAskFragmentTimeouts(t *testing.T) {
+	ctx := &cel.PromptEnabledContext{
+		Session: cel.SessionContext{ID: "s", Name: "N", HasMessages: true},
+	}
+	cases := []struct {
+		owner    string
+		fragment string
+		timeout  string // the exact `timeout_seconds: <N>` value expected
+	}{
+		{"Support: watch channel", "scope", "60"},
+		{"Support: investigate", "investigation", "300"},
+		{"Support: investigate", "resources", "300"},
+		{"Support: investigate", "escalation", "300"},
+		{"Support: investigate", "redirects", "300"},
+		{"Support: reply to user", "tone", "300"},
+	}
+	// One render per owner is enough; cache to avoid redundant work.
+	renders := map[string]string{}
+	for _, tc := range cases {
+		out, ok := renders[tc.owner]
+		if !ok {
+			out = renderSupportPrompt(t, tc.owner, ctx)
+			renders[tc.owner] = out
+		}
+		// Find the ask block for this fragment, then look for the timeout
+		// within a short window that follows it (the templates render the
+		// timeout on the same line as the title).
+		anchor := "**Ask + write `" + tc.fragment + ".md`."
+		idx := strings.Index(out, anchor)
+		if idx < 0 {
+			t.Errorf("prompt %q: missing ask block for fragment %q (anchor %q)", tc.owner, tc.fragment, anchor)
+			continue
+		}
+		end := idx + 400
+		if end > len(out) {
+			end = len(out)
+		}
+		block := out[idx:end]
+		want := "timeout_seconds: " + tc.timeout
+		if !strings.Contains(block, want) {
+			t.Errorf("prompt %q, fragment %q: ask block missing expected timeout %q\nblock: %s", tc.owner, tc.fragment, want, block)
+		}
+	}
+}
