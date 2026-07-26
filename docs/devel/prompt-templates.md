@@ -272,8 +272,8 @@ no template syntax. This check is identical to the `@mitto:` fast-path in `Subst
 | `@mitto:loop` | `{{ .Session.IsLoop }}` | bool, not `"true"`/`"false"` string |
 | `@mitto:loop_forced` | `{{ .Session.IsLoopForced }}` | bool, not `"true"`/`"false"` string. Field added to `SessionContext` (mitto-m7sb.3); fully wired into the CEL env (`Session.IsLoopForced`). |
 | `@mitto:available_acp_servers` | `{{ .ACP.AvailableText }}` | `config.FormatACPServers(ctx.ACP.Available)`; format: `"name [tags] (current), name2"` |
-| `@mitto:children` | `{{ .Children.AllText }}` | `config.FormatChildren(ctx.Children.All)`; format: `"id (name) [acp], id2"` |
-| `@mitto:mcp_children` | `{{ .Children.MCPText }}` | `config.FormatChildren(ctx.Children.MCP)`; MCP-origin only |
+| `@mitto:children` | `{{ .Children.AllText }}` | `config.FormatChildren(ctx.Children.All)`; format: `"id (name) [acp] {bd-id}, id2"` — `{bd-id}` appended only when the child has a linked beads issue |
+| `@mitto:mcp_children` | `{{ .Children.MCPText }}` | `config.FormatChildren(ctx.Children.MCP)`; MCP-origin only; same `{bd-id}` suffix rule as above |
 | `@mitto:user_data` | `{{ .Session.UserDataJSON }}` | JSON of session user-data attributes; `""` when none |
 | `@mitto:user_data_schema` | `{{ .Workspace.UserDataSchemaJSON }}` | JSON of workspace user-data schema fields; `""` when none |
 

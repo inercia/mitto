@@ -1033,16 +1033,17 @@ The same data is also available as a structured JSON array via the `available_ac
 Produces a comma-separated list of direct child sessions. Each entry follows the pattern:
 
 ```
-id (name) [acp-server]
+id (name) [acp-server] {bd-id}
 ```
 
 - **`(name)`** — omitted when the child session has no name/title yet
 - **`[acp-server]`** — omitted when the child has no ACP server set
+- **`{bd-id}`** — omitted when the child has no linked beads issue; when set, the trailing `{mitto-xxx}` lets orchestrator prompts inline-dedupe by bead ID without a separate lookup
 
-Example with two children:
+Example with two children (second one has a linked bead):
 
 ```
-20260407-120000-a1b2c3d4 (Research task) [claude-code], 20260407-120100-e5f6a7b8 (Test runner) [auggie]
+20260407-120000-a1b2c3d4 (Research task) [claude-code], 20260407-120100-e5f6a7b8 (Test runner) [auggie] {mitto-59b}
 ```
 
 The same data is also available as a structured JSON array via the `child_sessions` field in stdin and the `MITTO_CHILD_SESSIONS` environment variable (see above).

@@ -154,6 +154,13 @@ type ChildSession struct {
 	ChildOrigin string `json:"child_origin,omitempty"`
 	// IsPrompting indicates the child agent is currently responding.
 	IsPrompting bool `json:"is_prompting,omitempty"`
+	// BeadsIssue is the linked beads issue ID for the child session
+	// (e.g. "mitto-123"), or empty when the child has no linked bead.
+	// Excluded from the external-processor JSON payload (json:"-") — this
+	// field is consumed only by in-process template rendering and CEL context
+	// building. A structured beads_issue on MITTO_CHILD_SESSIONS is a
+	// deliberate non-goal for this pass (see bead mitto-59b).
+	BeadsIssue string `json:"-"`
 }
 
 // ProcessorOutput contains the result of processor execution.

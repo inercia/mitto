@@ -259,6 +259,12 @@ type ChildInfo struct {
 	Origin string
 	// IsPrompting indicates the child agent is currently responding.
 	IsPrompting bool
+	// BeadsIssue is the linked beads issue ID for the child session
+	// (e.g. "mitto-123"), or empty when the child has no linked bead.
+	// Rendered as a trailing " {<id>}" suffix by FormatChildren when non-empty
+	// so orchestrator prompts can inline-dedupe by bead ID without an extra
+	// mitto_conversation_list round-trip.
+	BeadsIssue string
 }
 
 // ChildrenContext holds children sessions context for CEL evaluation.

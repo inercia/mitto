@@ -490,7 +490,8 @@ prompt: |
   ## §A — Address ONE `@mitto` mention
 
   Take the first tuple from 2A — call it **`(<id>, <ts>, <body>)`**. If any existing
-  child in `{{ .Children.MCPText }}` has `beads_issue: <id>` AND its title mentions
+  child in `{{ .Children.MCPText }}` carries the literal trailing `{<id>}` suffix
+  (the rendered `beads_issue` — e.g. `... {mitto-59b}`) AND its `(name)` mentions
   `[<ts>]`, this mention was already dispatched — drop it and re-run Step 3. Otherwise
   spawn ONE per-mention router driver whose seed AND `onCompletion` re-fire are both
   the named mention driver (which itself dispatches phase-tiered prompts —

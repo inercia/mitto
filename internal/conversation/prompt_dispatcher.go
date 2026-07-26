@@ -476,6 +476,7 @@ func (p promptDispatcher) buildProcessorInput(d promptDeps, message string, isFi
 					IsAutoChild: child.ChildOrigin == session.ChildOriginAuto,
 					ChildOrigin: string(child.ChildOrigin),
 					IsPrompting: isPrompting,
+					BeadsIssue:  child.BeadsIssue,
 				})
 			}
 		}

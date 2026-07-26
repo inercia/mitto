@@ -280,6 +280,7 @@ func BuildCELContext(input *ProcessorInput) *config.PromptEnabledContext {
 			ACPServer:   child.ACPServer,
 			Origin:      child.ChildOrigin,
 			IsPrompting: child.IsPrompting,
+			BeadsIssue:  child.BeadsIssue,
 		}
 		ctx.Children.All = append(ctx.Children.All, childInfo)
 		if child.ChildOrigin == "mcp" {

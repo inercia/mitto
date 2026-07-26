@@ -554,11 +554,13 @@ func FormatACPServers(servers []ACPServerInfo) string {
 
 // FormatChildren renders a child-session list as a human-readable
 // comma-separated string, producing output byte-identical to the legacy
-// @mitto:children (and @mitto:mcp_children) substitution.
+// @mitto:children (and @mitto:mcp_children) substitution when no child has a
+// linked beads issue.
 //
-// Format: "id (name) [acp-server], id2 (name2) [acp-server2]"
+// Format: "id (name) [acp-server] {bd-id}, id2 (name2) [acp-server2] {bd-id2}"
 // "(name)" is omitted when Name == "".
 // "[acp-server]" is omitted when ACPServer == "".
+// "{bd-id}" is omitted when BeadsIssue == "".
 // Returns "" when children is nil or empty.
 func FormatChildren(children []ChildInfo) string {
 	if len(children) == 0 {
@@ -572,6 +574,9 @@ func FormatChildren(children []ChildInfo) string {
 		}
 		if child.ACPServer != "" {
 			s += " [" + child.ACPServer + "]"
+		}
+		if child.BeadsIssue != "" {
+			s += " {" + child.BeadsIssue + "}"
 		}
 		parts = append(parts, s)
 	}

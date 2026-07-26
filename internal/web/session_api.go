@@ -135,6 +135,7 @@ func (s *Server) buildPromptEnabledContext(sessionID string) *config.PromptEnabl
 				ACPServer:   child.ACPServer,
 				Origin:      string(child.ChildOrigin),
 				IsPrompting: isPrompting,
+				BeadsIssue:  child.BeadsIssue,
 			}
 			ctx.Children.All = append(ctx.Children.All, childInfo)
 			if child.ChildOrigin == session.ChildOriginMCP {

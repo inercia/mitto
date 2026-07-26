@@ -144,6 +144,7 @@ func formatChildSessions(children []ChildSession) string {
 			ACPServer:   child.ACPServer,
 			Origin:      child.ChildOrigin,
 			IsPrompting: child.IsPrompting,
+			BeadsIssue:  child.BeadsIssue,
 		})
 	}
 	return config.FormatChildren(infos)
@@ -179,6 +180,7 @@ func formatMCPChildren(children []ChildSession) string {
 			ACPServer:   child.ACPServer,
 			Origin:      child.ChildOrigin,
 			IsPrompting: child.IsPrompting,
+			BeadsIssue:  child.BeadsIssue,
 		})
 	}
 	return config.FormatChildren(infos)
