@@ -208,29 +208,51 @@ func TestTargetBeadPickerFragmentRenders(t *testing.T) {
 	}
 }
 
-// TestChannelPlaybookReadFragmentRenders is a smoke test for
-// _shared/support/channel-playbook-read. Verifies the stable path
-// convention hallmark appears in every consumer.
-func TestChannelPlaybookReadFragmentRenders(t *testing.T) {
+// TestChannelFragmentReadRenders is a smoke test for
+// _shared/support/channel-fragment-read. Verifies the stable
+// per-fragment path convention hallmark appears in every consumer
+// (mitto-da9.1 introduced the fragment; mitto-da9.2 migrated the
+// remaining consumers off the monolithic channel-playbook-read).
+func TestChannelFragmentReadRenders(t *testing.T) {
 	ctx := &cel.PromptEnabledContext{
 		Session: cel.SessionContext{ID: "s", Name: "N", HasMessages: true},
 	}
+	// Hallmarks unique to the channel-fragment-read fragment body:
+	// the per-fragment path convention and the "authoritative fragment
+	// guide" phrasing (as opposed to the monolithic "authoritative guide"
+	// of the deprecated channel-playbook-read).
 	hallmarks := []string{
-		"Read the channel playbook",
-		"`.mitto/slack-support-<channel-id>.md`",
-		"authoritative guide",
+		"Read the channel playbook fragment",
+		"`.mitto/support/<channel-id>/",
+		"authoritative",
 	}
 	consumers := []string{
 		"Support: check status",
 		"Support: gather more information",
+		"Support: investigate",
 		"Support: reply to user",
+		"Support: watch channel",
 	}
 	for _, name := range consumers {
 		out := renderSupportPrompt(t, name, ctx)
 		for _, hallmark := range hallmarks {
 			if !strings.Contains(out, hallmark) {
-				t.Errorf("prompt %q: rendered output missing channel-playbook hallmark %q", name, hallmark)
+				t.Errorf("prompt %q: rendered output missing channel-fragment-read hallmark %q", name, hallmark)
 			}
+		}
+	}
+	// Owner-ask branch hallmark: the three owner prompts must render the
+	// "this prompt owns creating it" text for at least one fragment.
+	ownerAskHallmark := "this prompt owns creating it"
+	owners := []string{
+		"Support: watch channel",
+		"Support: investigate",
+		"Support: reply to user",
+	}
+	for _, name := range owners {
+		out := renderSupportPrompt(t, name, ctx)
+		if !strings.Contains(out, ownerAskHallmark) {
+			t.Errorf("prompt %q: rendered output missing owner-ask hallmark %q", name, ownerAskHallmark)
 		}
 	}
 }

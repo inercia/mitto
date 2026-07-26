@@ -1,0 +1,38 @@
+{{- /*
+  support/ask-scope — owner-ask step for the `scope.md` fragment.
+  Owner: `Support: watch channel`.
+
+  Rendered by the owner prompt when `.mitto/support/<channel-id>/scope.md`
+  does not yet exist. Instructs the agent to open a focused `mitto_ui_form`
+  covering only scope (~4 fields), then write the file. Written to be
+  usable inside a Markdown bullet the caller supplies.
+
+  Fields on the `dict` argument:
+
+    TimeoutSeconds:  int. Timeout for the `mitto_ui_form` call. Silent /
+                     scheduled owners (watch-channel) pass a short value
+                     (e.g. 60); interactive owners pass 300.
+
+  Whitespace: fragment body starts flush at column 1 (no leading `- `) and
+  emits no trailing newline; callers use plain `{{ template ... }}`.
+*/ -}}
+{{- $timeout := .TimeoutSeconds -}}
+**Ask + write `scope.md`.** Open a focused `mitto_ui_form` (`timeout_seconds: {{ $timeout }}`) titled
+  "Channel scope — what is this channel responsible for?" with these fields (all required unless
+  noted):
+  - `in_scope` (textarea) — "In-scope topics: what customer questions is this channel responsible
+    for? Be concrete — list product areas, features, subsystems."
+  - `out_of_scope` (textarea) — "Out-of-scope topics: what customer questions should this channel
+    NOT try to answer (even if asked)?"
+  - `hard_filters` (textarea, optional) — "Hard filters: message patterns to ignore entirely
+    (bots, automated notifications, off-topic banter). One pattern per line."
+  - `notes` (textarea, optional) — "Anything else relevant to scope (edge cases, historical
+    context)."
+
+  When the form returns, create `.mitto/support/<channel-id>/` if it does not exist, then write the
+  result to `.mitto/support/<channel-id>/scope.md` as a Markdown document with sections
+  `# In scope`, `# Out of scope`, `# Hard filters` (only if non-empty), and `# Notes` (only if
+  non-empty). Confirm the write via `mitto_ui_notify` (success). If the form times out or is
+  aborted, do **not** write a partial file — fall back per the caller's silent-run policy (log a
+  `[CONTEXT]` note, notify, skip drafting).
+{{- /* no trailing newline */ -}}

@@ -1,0 +1,36 @@
+{{- /*
+  support/ask-resources — owner-ask step for the `resources.md` fragment.
+  Owner: `Support: investigate`.
+
+  Rendered by the owner prompt when
+  `.mitto/support/<channel-id>/resources.md` does not yet exist. Instructs
+  the agent to open a focused `mitto_ui_form` covering only concrete
+  reference links (repos, runbooks, dashboards, docs), then write the file.
+
+  Fields on the `dict` argument:
+
+    TimeoutSeconds:  int. Interactive owners pass 300; silent owners a
+                     short value.
+
+  Whitespace: fragment body starts flush at column 1 (no leading `- `) and
+  emits no trailing newline; callers use plain `{{ template ... }}`.
+*/ -}}
+{{- $timeout := .TimeoutSeconds -}}
+**Ask + write `resources.md`.** Open a focused `mitto_ui_form`
+  (`timeout_seconds: {{ $timeout }}`) titled "Channel resources — where do we look things up for
+  this channel?" with these fields (all optional, but at least one should be filled in):
+  - `repos` (textarea) — "Repos to search: URLs or `owner/name` pairs. One per line, with a short
+    note on what each covers."
+  - `runbooks` (textarea) — "Runbooks / SOPs: links to internal runbooks or troubleshooting
+    documents. One per line."
+  - `dashboards` (textarea) — "Dashboards: links to Grafana / Kibana / other observability
+    dashboards relevant to this channel. One per line."
+  - `docs` (textarea) — "Docs: links to product documentation, API references, or knowledge-base
+    articles. One per line."
+
+  When the form returns, create `.mitto/support/<channel-id>/` if it does not exist, then write the
+  result to `.mitto/support/<channel-id>/resources.md` as a Markdown document with sections
+  `# Repos`, `# Runbooks`, `# Dashboards`, and `# Docs` (each section only if the field is
+  non-empty). Confirm the write via `mitto_ui_notify` (success). If the form times out or is
+  aborted, do **not** write a partial file — fall back per the caller's policy.
+{{- /* no trailing newline */ -}}

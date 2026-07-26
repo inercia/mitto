@@ -1,5 +1,5 @@
 name: 'Support: investigate'
-description: 'Investigate a tracked support question internally using the channel playbook (.mitto/slack-support-<channel-id>.md), record findings on the bead, and produce a draft reply. Never posts to Slack.'
+description: 'Investigate a tracked support question internally using the channel playbook fragments (.mitto/support/<channel-id>/{investigation,resources,escalation}.md), record findings on the bead, and produce a draft reply. Never posts to Slack.'
 group: Support
 backgroundColor: '#D1C4E9'
 icon: search
@@ -25,10 +25,9 @@ prompt: |-
 
   Investigate a tracked support question **on our side** — do the work needed to actually answer it.
   Use this when we have enough of the customer's context but still need to **find the answer**: follow
-  the channel's playbook (`.mitto/slack-support-<channel-id>.md` — scope, docs, runbooks, repos, a
-  Q&A/knowledge MCP tool, commands, escalation paths, tone/reply guidelines), correlate with what is
-  on the bead, record what you learn, and — if you reach a confident answer — leave a **draft reply**
-  ready for review.
+  the channel's playbook fragments (`.mitto/support/<channel-id>/{investigation,resources,escalation,
+  scope,tone,redirects}.md` — one topic per file), correlate with what is on the bead, record what
+  you learn, and — if you reach a confident answer — leave a **draft reply** ready for review.
 
   > **Applicable state:** any open tracked bead. Typically `state:triaged`, `awaiting-us`, or
   > `gathering-info`. This prompt sets `state:gathering-info` while it works.
@@ -73,50 +72,73 @@ prompt: |-
     `bd update <id> --remove-label state:<previous> --add-label state:gathering-info`, and add a short
     `**[STATE · <time>]** <prev> → gathering-info` comment.
 
-  ## Step 3: Read the channel playbook (the per-channel knowledge file)
+  ## Step 3: Read the channel playbook fragments (this prompt owns four)
 
-  You must work using **this channel's documented playbook**, not by guessing. The playbook is stored
-  **per channel** in **`.mitto/slack-support-<channel-id>.md`**, where `<channel-id>` is the bead's
-  stored `slack_channel` value (from Step 2). Build the exact path from that value — e.g. if
-  `slack_channel` is `C0XXXXXXX`, the file is `.mitto/slack-support-C0XXXXXXX.md`.
+  You must work using **this channel's documented playbook**, not by guessing. The playbook is
+  stored **per channel** as topical fragments under **`.mitto/support/<channel-id>/`**, where
+  `<channel-id>` is the bead's stored `slack_channel` value (from Step 2). Build the exact path
+  from that value — e.g. if `slack_channel` is `C0XXXXXXX`, fragments live in
+  `.mitto/support/C0XXXXXXX/`.
 
-  This file is the **authoritative guide for everything about this channel**, not just investigation.
-  A complete playbook covers:
-  - **Areas of expertise / scope** — what this channel is (and is **not**) responsible for; the
-    topics we are experts in versus questions to redirect elsewhere.
-  - **Investigation method** — which repos to search, which docs/runbooks/knowledge bases to consult,
-    common patterns, and how to use any relevant MCP tools.
-  - **Escalation paths** — who/what to escalate to, and when.
-  - **Tone & addressing customers** — how we speak to this channel's audience.
-  - **Reply guidelines** — house style for answers (length, hedging, links, do's and don'ts).
+  This prompt is the **owner** of `investigation.md`, `resources.md`, `escalation.md`, and
+  (optionally) `redirects.md`. It reads `scope.md` and `tone.md` (owned by `Support: watch channel`
+  and `Support: reply to user` respectively) but does not create them here.
 
-  1. **Read it.** Check whether the channel playbook exists.
-     - **If it exists** — read it in full. Follow its investigation method and scope rules in Step 4,
-       and honor its tone/reply guidelines when you draft.
-     - **If it does NOT exist** — do not silently guess. Create the `.mitto/` directory if missing,
-       then use `mitto_ui_form` / `mitto_ui_textbox` to ASK the user for this channel's playbook: its
-       areas of expertise / scope, how to investigate answers (repos, docs, commands, knowledge
-       bases, MCP tools, people), escalation paths, and how to address/reply to customers. Do not
-       settle for a vague answer — re-ask for specifics. Write it to
-       `.mitto/slack-support-<channel-id>.md` (create the file) and confirm the write, so future runs
-       find it. If nobody responds (timeout), record a `[CONTEXT]` note that no playbook exists yet
-       and stop.
-  2. **Keep it current.** If you discover a new useful pattern during this investigation (a better
-     search, a docs link that answered it, a recurring issue + resolution, an escalation contact, or
-     a tone/phrasing that worked well), **append it** to `.mitto/slack-support-<channel-id>.md` so
-     future runs benefit.
+  For each owned fragment, if the file is missing, ask the user with a focused `mitto_ui_form`
+  (300s timeout — this is an interactive prompt), write the file, and continue. Do not settle for
+  vague answers; re-ask for specifics.
+
+  ### 3.1 `investigation.md` (owner)
+
+  - {{ template "_shared/support/channel-fragment-read" (dict "Fragment" "investigation" "Purpose" "learn this channel's investigation method (tool order, safe commands, MCP/CLI tools, confidence rules)" "Owner" "Support: investigate" "OwnerAsk" true) }}
+  - **Owner-ask step (only if `investigation.md` is missing).** Create the
+    `.mitto/support/<channel-id>/` directory if missing, then:
+    {{ template "_shared/support/ask-investigation" (dict "TimeoutSeconds" 300) }}
+
+  ### 3.2 `resources.md` (owner)
+
+  - {{ template "_shared/support/channel-fragment-read" (dict "Fragment" "resources" "Purpose" "know which repos, runbooks, dashboards, and docs to consult for this channel" "Owner" "Support: investigate" "OwnerAsk" true) }}
+  - **Owner-ask step (only if `resources.md` is missing).**
+    {{ template "_shared/support/ask-resources" (dict "TimeoutSeconds" 300) }}
+
+  ### 3.3 `escalation.md` (owner)
+
+  - {{ template "_shared/support/channel-fragment-read" (dict "Fragment" "escalation" "Purpose" "know who/when/how to escalate for this channel" "Owner" "Support: investigate" "OwnerAsk" true) }}
+  - **Owner-ask step (only if `escalation.md` is missing).**
+    {{ template "_shared/support/ask-escalation" (dict "TimeoutSeconds" 300) }}
+
+  ### 3.4 `redirects.md` (optional owner)
+
+  - {{ template "_shared/support/channel-fragment-read" (dict "Fragment" "redirects" "Purpose" "know where out-of-scope questions should go" "Owner" "Support: investigate" "OwnerAsk" true) }}
+  - **Owner-ask step (only if `redirects.md` is missing AND the current question is out of scope
+    for this channel).** This fragment is optional — if the question is in scope for the channel,
+    do **not** ask; skip silently. Only when out-of-scope handling is actually needed for this
+    investigation:
+    {{ template "_shared/support/ask-redirects" (dict "TimeoutSeconds" 300) }}
+
+  ### 3.5 `scope.md` and `tone.md` (readers)
+
+  - {{ template "_shared/support/channel-fragment-read" (dict "Fragment" "scope" "Purpose" "confirm the question is in scope for this channel before investigating" "Owner" "Support: watch channel" "OwnerAsk" false) }}
+  - {{ template "_shared/support/channel-fragment-read" (dict "Fragment" "tone" "Purpose" "shape the tone/reply guidance when drafting the reply" "Owner" "Support: reply to user" "OwnerAsk" false) }}
+
+  ### 3.6 Keep the owned fragments current
+
+  If you discover a new useful pattern during this investigation, **append it** to the appropriate
+  owned fragment (`investigation.md` for a better search / tool order, `resources.md` for a new
+  docs link / runbook, `escalation.md` for a new escalation contact) so future runs benefit. Do
+  **not** append to `scope.md` or `tone.md` here — those are owned by other prompts.
 
   ## Step 4: Investigate
 
-  - **Scope check first.** Using the playbook's *areas of expertise / scope*, confirm the question is
-    something this channel is responsible for. If it is clearly **out of scope**, do not fabricate a
-    generic answer — record a `[CONTEXT]` note that it is out of scope (and where it should go, if the
-    playbook says), and draft a brief redirect instead of a solution. If scope is unclear, treat it as
-    in-scope but lower your confidence.
-  - Follow the channel playbook to actually find the answer. Pull in whatever it points to: the
-    Q&A / knowledge tool, docs links, repos, related tickets, prior resolved beads on the same topic,
-    and — where safe and useful — **run simple read-only commands locally** (e.g. `curl
-    some.domain.com`) and capture the command **and** its output.
+  - **Scope check first.** Using `scope.md` (Step 3.5), confirm the question is something this
+    channel is responsible for. If it is clearly **out of scope**, do not fabricate a generic
+    answer — record a `[CONTEXT]` note that it is out of scope (and where it should go, per
+    `redirects.md` if present), and draft a brief redirect instead of a solution. If scope is
+    unclear, treat it as in-scope but lower your confidence.
+  - Follow `investigation.md` and `resources.md` to actually find the answer. Pull in whatever they
+    point to: the Q&A / knowledge tool, docs links, repos, related tickets, prior resolved beads on
+    the same topic, and — where safe and useful — **run simple read-only commands locally** (e.g.
+    `curl some.domain.com`) and capture the command **and** its output.
   - Correlate findings with the question on the bead. Note confidence, caveats, and any documentation
     links you found (they are valuable in the eventual reply).
 

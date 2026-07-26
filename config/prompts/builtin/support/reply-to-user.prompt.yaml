@@ -59,9 +59,16 @@ prompt: |-
     for what has already been said. Note the stored `slack_thread_ts` / `slack_channel` /
     `slack_url` metadata.
 
-  ## Step 2.5: Read the channel playbook
+  ## Step 2.5: Read (and if needed, ask for) the channel `tone.md`
 
-  - {{ template "_shared/support/channel-fragment-read" (dict "Fragment" "tone" "Purpose" "shape the tone/reply guidance when reviewing or building the draft" "Owner" "Support: reply to user" "OwnerAsk" false) }}
+  This prompt is the **owner** of `tone.md`. On the first draft for a channel that has no
+  `tone.md` yet, the interactive review path (user is present for `state:drafting`) asks the user
+  to define tone once and writes the file; subsequent runs just read it.
+
+  - {{ template "_shared/support/channel-fragment-read" (dict "Fragment" "tone" "Purpose" "shape the tone/reply guidance when reviewing or building the draft" "Owner" "Support: reply to user" "OwnerAsk" true) }}
+  - **Owner-ask step (only if `tone.md` is missing).** Create the `.mitto/support/<channel-id>/`
+    directory if missing, then:
+    {{ template "_shared/support/ask-tone" (dict "TimeoutSeconds" 300) }}
   - Confirm the `state:*` label is `drafting`. If it is **not**, use `mitto_ui_options` to warn:
     - **Question**: "This bead is in `state:<current>`, not `drafting`. Continue anyway?"
     - **Options**: `[{label: "Continue anyway"}, {label: "Cancel"}]`, timeout 300.
@@ -96,9 +103,8 @@ prompt: |-
      **"Support: investigate"** when a customer detail is still missing); anything else is an answer.
      Remember this classification — it decides the post-posting state transition in Step 7 (an answer
      → `awaiting-customer`; a clarifying question → `need-info`).
-  2. **Formatting guidelines (only when building a new draft).** Follow the channel playbook's
-     tone/reply guidelines first (Step 2.5); the rules below are the fallback default when the
-     playbook is silent:
+  2. **Formatting guidelines (only when building a new draft).** Follow `tone.md` first (Step 2.5);
+     the rules below are the fallback default when `tone.md` is missing or silent on a given point:
      1. **No direct addressing** — do not use the user's name.
      2. **No follow-up offers** — do not end with "let me know if you need anything else".
      3. **Hedge** — start with "I think that…", "It seems like…"; we are never 100% sure.

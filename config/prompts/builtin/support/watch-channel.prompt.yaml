@@ -63,19 +63,19 @@ prompt: |-
 
   **Silent scheduled run** — nobody is watching.
   - Use **only** `mitto_ui_notify` for status and summaries. Do **NOT** call `mitto_ui_options` /
-    `mitto_ui_form` / `mitto_ui_textbox` for anything **except the channel playbook gate below** —
+    `mitto_ui_form` / `mitto_ui_textbox` for anything **except the channel scope gate below** —
     they would otherwise block with no one to answer.
-  - **Exception — the channel playbook gate.** If `.mitto/slack-support-{{ $channel }}.md` is missing
-    you cannot answer this channel, so you MAY use a blocking `mitto_ui_form` / `mitto_ui_textbox`
-    **with a short `timeout_seconds`** to ask for the playbook and save the file. If nobody
-    answers before the timeout, fall back to a `mitto_ui_notify` warning, then continue triage +
-    reconcile but **skip drafting** this run — the next iteration asks again.
+  - **Exception — the channel scope gate.** If `.mitto/support/{{ $channel }}/scope.md` is missing
+    you cannot know what to triage on this channel, so you MAY use a blocking `mitto_ui_form` /
+    `mitto_ui_textbox` **with a short `timeout_seconds`** to ask for the scope and save the file.
+    If nobody answers before the timeout, fall back to a `mitto_ui_notify` warning, then continue
+    triage + reconcile but **skip drafting** this run — the next iteration asks again.
   - Otherwise do triage + reconcile beads normally.
   {{- else }}
 
   **Interactive run** (first send, or force-triggered ▶️) — a user is present, so use the interactive
-  `mitto_ui_*` tools freely. Run the **channel playbook gate first**: if the file is missing, ask the
-  user for the playbook and persist it before doing anything else.
+  `mitto_ui_*` tools freely. Run the **channel scope gate first**: if `scope.md` is missing, ask
+  the user for the scope and persist it before doing anything else.
   {{- end }}
 
   ## CRITICAL: user interaction rules
@@ -175,50 +175,44 @@ prompt: |-
   | **P2** | MEDIUM — in motion, our court, not blocked on your approval | `state:triaged`, `state:gathering-info`, `state:awaiting-us` (customer replied, our turn). |
   | **P3** | LOW — waiting on the customer, nothing for you to do now | `state:awaiting-customer` or `state:need-info` — we posted a reply or a clarifying question and are waiting on the customer (also drifting toward the 10-day auto-close as time passes). |
 
-  ## Channel playbook gate: check this FIRST, every iteration
+  ## Channel scope gate: check this FIRST, every iteration
 
-  Before you can help a customer you must know this channel's **playbook** — not only a reliable way
-  to gather answers, but also what this channel is responsible for and how to talk to its customers.
-  The playbook is stored **per channel** in **`.mitto/slack-support-{{ $channel }}.md`** — a file
-  dedicated to channel `{{ $channel }}`. A complete playbook covers:
-  - **Areas of expertise / scope** — what this channel is (and is **not**) responsible for.
-  - **Investigation method** — which repos to search, which docs/runbooks/knowledge bases to consult,
-    common patterns, and how to use any relevant MCP tools.
-  - **Escalation paths** — who/what to escalate to, and when.
-  - **Tone & addressing customers** — how we speak to this channel's audience.
-  - **Reply guidelines** — house style for answers (length, hedging, links, do's and don'ts).
+  Before you can triage this channel you must know **what it is responsible for** — i.e. its
+  `scope.md`. The rest of the playbook (investigation method, resources, escalation, tone) is
+  created on demand by the **child prompts that need it** (`Support: investigate` owns
+  investigation/resources/escalation; `Support: reply to user` owns tone). This gate only owns
+  `scope.md`; it also reads `tone.md` when available to keep triage summaries consistent with the
+  channel's voice.
+
+  Fragments live under **`.mitto/support/{{ $channel }}/`**, one topic per file. This prompt is
+  the **owner** of `scope.md` — it asks for it and writes it when missing. All other fragments are
+  read-only here.
 
   **This gate runs first, before every numbered step below — on *every* iteration, not just the
-  first.** A channel that never had a playbook keeps getting asked until one exists.
+  first.** A channel that never had `scope.md` keeps getting asked until it exists.
 
-  1. **Check + create.** At the **start of every iteration**, check whether
-     `.mitto/slack-support-{{ $channel }}.md` exists.
-     - **If it exists** — read it in full now. It is the **authoritative guide** for how to gather
-       information, what is in scope, and how to answer/address customers for this channel. Use it
-       throughout (Step 4 and any drafting).
-     - **If it does NOT exist** — you do not yet know how to answer reliably, so **ask for the
-       playbook and save it before proceeding** (this applies on every run, silent or interactive):
-       - Create the `.mitto/` directory if missing, then ASK the user (via `mitto_ui_form` /
-         `mitto_ui_textbox`) for the channel playbook: its areas of expertise / scope, which repos to
-         search, which docs/runbooks/knowledge bases to consult, common patterns, escalation paths,
-         and how to address and reply to customers. **Do not be satisfied until you get concrete,
-         usable guidance** — if the reply is vague, re-ask for specifics. Write it to
-         `.mitto/slack-support-{{ $channel }}.md` (create the file), then confirm the write. From then
-         on, every run finds it above.
-       - **On a silent scheduled run**, use a **short `timeout_seconds`** on the ask so an unattended
-         tick does not hang. If nobody answers before it times out, send a `mitto_ui_notify` (warning)
-         that no playbook exists yet, then continue triage + keeping beads in sync but **skip
-         drafting** this run. The next iteration asks again.
-  2. **Keep it current.** Whenever you learn a new useful pattern while working a question this run
-     (a better search, a docs link that answered it, a recurring issue + resolution, an escalation
-     contact, or a tone/phrasing that worked well), **append it** to
-     `.mitto/slack-support-{{ $channel }}.md` so future runs benefit.
+  1. **Scope fragment (owner).**
+     - {{ template "_shared/support/channel-fragment-read" (dict "Fragment" "scope" "Purpose" "know what this channel is (and is not) responsible for before triaging" "Owner" "Support: watch channel" "OwnerAsk" true) }}
+     - **Owner-ask step (only if `scope.md` is missing).** Create the
+       `.mitto/support/{{ $channel }}/` directory if missing, then:
+       {{ template "_shared/support/ask-scope" (dict "TimeoutSeconds" 60) }}
+     - **On a silent scheduled run**, keep the ask's `timeout_seconds` short (60s above) so an
+       unattended tick does not hang. If nobody answers before it times out, send a
+       `mitto_ui_notify` (warning) that no `scope.md` exists yet, then continue triage + keeping
+       beads in sync but **skip drafting** this run. The next iteration asks again.
+  2. **Tone fragment (reader).**
+     - {{ template "_shared/support/channel-fragment-read" (dict "Fragment" "tone" "Purpose" "keep triage summaries and any notifications consistent with the channel's voice" "Owner" "Support: reply to user" "OwnerAsk" false) }}
+  3. **Keep `scope.md` current.** Whenever you learn a new in-scope or out-of-scope pattern while
+     triaging this run (a topic we now cover, a topic we should redirect), **append it** to
+     `.mitto/support/{{ $channel }}/scope.md` so future runs benefit. Other fragments
+     (investigation, resources, escalation, tone) are owned elsewhere — do **not** append to them
+     from this prompt.
 
   ## Instructions
 
-  > **Run the channel playbook gate above FIRST**, at the start of every iteration — before Step 0 and
-  > everything else. If `.mitto/slack-support-{{ $channel }}.md` is missing, ask for the playbook
-  > and save the file before triaging.
+  > **Run the channel scope gate above FIRST**, at the start of every iteration — before Step 0 and
+  > everything else. If `.mitto/support/{{ $channel }}/scope.md` is missing, ask for the scope and
+  > save the file before triaging. Children read the other fragments during investigation.
 
   ### 0. Ensure beads ready + housekeeping
 
@@ -400,9 +394,11 @@ prompt: |-
       arguments: { "IssueID": "<id>" },
       acp_server: <prefer a "coding" or "fast" tagged server>)
     ```
-    The child runs "Support: investigate" end-to-end on that bead: it gathers the answer from
-    **`.mitto/slack-support-{{ $channel }}.md`**, records `[CONTEXT]` findings, and — on a confident
-    answer — saves an `[OUTBOUND]` DRAFT and sets `state:drafting`. **Do not wait** for the children;
+    The child runs "Support: investigate" end-to-end on that bead: it gathers the answer from the
+    channel's playbook fragments under **`.mitto/support/{{ $channel }}/`** (owning
+    `investigation.md`, `resources.md`, `escalation.md`, and optionally `redirects.md`), records
+    `[CONTEXT]` findings, and — on a confident answer — saves an `[OUTBOUND]` DRAFT and sets
+    `state:drafting`. **Do not wait** for the children;
     they report their own results on the bead and via their own notifications. This run continues to
     its summary while investigations proceed in the background; the next iteration's Step 3 reconcile
     will pick up their `state:drafting` / `need-info` outcomes.
@@ -425,13 +421,14 @@ prompt: |-
 
   - **Child spawning is unavailable** (the *Can start conversation* permission is off), so fall back
     to inline investigation — but only for the **single** highest-priority investigable bead this run
-    to protect the time budget: set `state:gathering-info`, follow
-    **`.mitto/slack-support-{{ $channel }}.md`** to gather the answer, record a **proposed reply** as
+    to protect the time budget: set `state:gathering-info`, follow the channel's playbook fragments
+    under **`.mitto/support/{{ $channel }}/`** to gather the answer, record a **proposed reply** as
     an `[OUTBOUND]`-style *draft* comment (clearly marked "DRAFT — not yet posted", the reply text
     **enclosed in the `--- BEGIN REPLY ---` / `--- END REPLY ---` block** — see the Beads tracking
     model) and set `state:drafting`. Leave the rest for subsequent iterations, tagging each as
-    `deferred: no-spawn-permission` for Step 5. If you learn a reusable pattern, append it to the
-    playbook (see the channel playbook gate).
+    `deferred: no-spawn-permission` for Step 5. If you learn a reusable in-scope/out-of-scope
+    pattern, append it to `scope.md` (see the channel scope gate); other fragments are owned by
+    the investigate / reply-to-user prompts.
   {{- end }}
 
   - If a bead genuinely cannot be answered without more detail from the customer, set `state:need-info`
@@ -439,8 +436,8 @@ prompt: |-
     them) — do not spawn an investigation for it.
   - **Never post to Slack here** (nor do the children). Drafts wait for review in
     **"Support: reply to user"**.
-  - If no playbook exists for this channel yet, skip this step entirely (see the channel playbook
-    gate) — never spawn investigations without a playbook.
+  - If `scope.md` does not exist for this channel yet, skip this step entirely (see the channel
+    scope gate) — never spawn investigations without a scope definition.
 
   ### 5. Summary
 
@@ -507,8 +504,11 @@ prompt: |-
     **"Support: investigate"** (dig for the answer using the channel playbook + record a draft),
     **"Support: gather more information"** (ask the customer), **"Support: reply to user"** (post our
     answer). All posting requires your explicit approval.
-  - The channel playbook lives in **`.mitto/slack-support-{{ $channel }}.md`** — read it before
-    drafting and append newly-learned patterns to it.
+  - The channel playbook lives under **`.mitto/support/{{ $channel }}/`** as topical fragments
+    (`scope.md`, `tone.md`, `investigation.md`, `resources.md`, `escalation.md`, `redirects.md`).
+    This prompt owns `scope.md`; other fragments are owned by `Support: investigate` (investigation,
+    resources, escalation, redirects) and `Support: reply to user` (tone). Read `scope.md` before
+    triaging and append newly-learned scope patterns to it.
   - **Proactive investigation** — Step 4 delegates investigable beads (`state:triaged` /
     `awaiting-us`) to parallel one-off children running **"Support: investigate"**, capped at **3 per
     run** and deduped against existing children so a bead is never investigated twice at once. Spawned

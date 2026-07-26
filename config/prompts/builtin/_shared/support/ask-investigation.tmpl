@@ -1,0 +1,37 @@
+{{- /*
+  support/ask-investigation — owner-ask step for the `investigation.md`
+  fragment. Owner: `Support: investigate`.
+
+  Rendered by the owner prompt when
+  `.mitto/support/<channel-id>/investigation.md` does not yet exist.
+  Instructs the agent to open a focused `mitto_ui_form` covering only
+  investigation method (~4 fields), then write the file.
+
+  Fields on the `dict` argument:
+
+    TimeoutSeconds:  int. Interactive owners pass 300; silent owners a
+                     short value.
+
+  Whitespace: fragment body starts flush at column 1 (no leading `- `) and
+  emits no trailing newline; callers use plain `{{ template ... }}`.
+*/ -}}
+{{- $timeout := .TimeoutSeconds -}}
+**Ask + write `investigation.md`.** Open a focused `mitto_ui_form`
+  (`timeout_seconds: {{ $timeout }}`) titled "Channel investigation method — how do we find answers
+  for this channel?" with these fields (all required unless noted):
+  - `tool_order` (textarea) — "Tool order: which tools/knowledge bases to try first, second, third?
+    (e.g. 'fj chat' knowledge tool, docs search, repo grep, dashboards)."
+  - `safe_commands` (textarea, optional) — "Safe read-only commands we can run locally to gather
+    evidence (e.g. `curl some.domain.com/health`). Include command + expected output pattern."
+  - `mcp_cli_tools` (textarea, optional) — "MCP/CLI tools to try first for this channel (e.g.
+    `slack_*`, workspace-specific tools, `gh` for GitHub lookups)."
+  - `confidence_rules` (textarea) — "Confidence rules: when do we say 'confident answer' vs 'still
+    investigating' vs 'need to ask the customer'? Any rubric or examples."
+
+  When the form returns, create `.mitto/support/<channel-id>/` if it does not exist, then write the
+  result to `.mitto/support/<channel-id>/investigation.md` as a Markdown document with sections
+  `# Tool order`, `# Safe read-only commands` (only if non-empty), `# MCP/CLI tools` (only if
+  non-empty), and `# Confidence rules`. Confirm the write via `mitto_ui_notify` (success). If the
+  form times out or is aborted, do **not** write a partial file — fall back per the caller's
+  policy.
+{{- /* no trailing newline */ -}}
