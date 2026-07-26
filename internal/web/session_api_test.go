@@ -2622,3 +2622,177 @@ func TestQueueMoveViaRouter(t *testing.T) {
 		t.Errorf("messages[1].ID = %q, want %q (msg1 should be second)", resp.Messages[1].ID, msg1.ID)
 	}
 }
+
+// TestBuildPromptEnabledContext_WorkspacePeers verifies that the web server's
+// buildPromptEnabledContext populates the Workspace.Peers block (mitto-4d6)
+// from the store: non-archived sessions sharing the current session's
+// (WorkingDir, ACPServer) composite key — excluding self, excluding archived
+// entries, excluding foreign working-dir or ACP-server rows. The IsPrompting
+// counters must be zero here because no BackgroundSession is registered
+// against these session IDs (the peers are store-only rows).
+func TestBuildPromptEnabledContext_WorkspacePeers(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	const (
+		workDir = "/tmp/mitto-peers-ws"
+		acpSrv  = "auggie"
+	)
+
+	// Self: the session we resolve the context for.
+	if err := store.Create(session.Metadata{
+		SessionID:  "self",
+		Name:       "Self",
+		ACPServer:  acpSrv,
+		WorkingDir: workDir,
+	}); err != nil {
+		t.Fatalf("Create(self): %v", err)
+	}
+	// Peer A: same workspace — must appear.
+	if err := store.Create(session.Metadata{
+		SessionID:  "peer-a",
+		Name:       "Peer A",
+		ACPServer:  acpSrv,
+		WorkingDir: workDir,
+		BeadsIssue: "mitto-a",
+	}); err != nil {
+		t.Fatalf("Create(peer-a): %v", err)
+	}
+	// Peer B: same workspace — must appear.
+	if err := store.Create(session.Metadata{
+		SessionID:       "peer-b",
+		Name:            "Peer B",
+		ACPServer:       acpSrv,
+		WorkingDir:      workDir,
+		ParentSessionID: "self",
+		ChildOrigin:     session.ChildOriginAuto,
+	}); err != nil {
+		t.Fatalf("Create(peer-b): %v", err)
+	}
+	// Different working directory — must be excluded.
+	if err := store.Create(session.Metadata{
+		SessionID:  "other-dir",
+		Name:       "Other Dir",
+		ACPServer:  acpSrv,
+		WorkingDir: "/tmp/other-ws",
+	}); err != nil {
+		t.Fatalf("Create(other-dir): %v", err)
+	}
+	// Different ACP server — must be excluded.
+	if err := store.Create(session.Metadata{
+		SessionID:  "other-acp",
+		Name:       "Other ACP",
+		ACPServer:  "claude-code",
+		WorkingDir: workDir,
+	}); err != nil {
+		t.Fatalf("Create(other-acp): %v", err)
+	}
+	// Archived peer — must be excluded even though workspace matches.
+	if err := store.Create(session.Metadata{
+		SessionID:  "peer-arch",
+		Name:       "Archived Peer",
+		ACPServer:  acpSrv,
+		WorkingDir: workDir,
+		Archived:   true,
+	}); err != nil {
+		t.Fatalf("Create(peer-arch): %v", err)
+	}
+
+	server := &Server{
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
+		store:          store,
+	}
+
+	ctx := server.buildPromptEnabledContext("self")
+	if ctx == nil {
+		t.Fatal("buildPromptEnabledContext returned nil")
+	}
+
+	peers := ctx.Workspace.Peers
+	if peers.Count != 2 {
+		t.Fatalf("Workspace.Peers.Count = %d, want 2 (peer-a + peer-b); All=%+v", peers.Count, peers.All)
+	}
+	if !peers.Exists {
+		t.Errorf("Workspace.Peers.Exists = false, want true")
+	}
+	if peers.PromptingCount != 0 {
+		t.Errorf("Workspace.Peers.PromptingCount = %d, want 0 (no BackgroundSession registered)", peers.PromptingCount)
+	}
+	if peers.IdleCount != 2 {
+		t.Errorf("Workspace.Peers.IdleCount = %d, want 2", peers.IdleCount)
+	}
+	if len(peers.All) != 2 {
+		t.Fatalf("len(Workspace.Peers.All) = %d, want 2", len(peers.All))
+	}
+
+	got := map[string]config.PeerInfo{}
+	for _, p := range peers.All {
+		got[p.ID] = p
+	}
+	// Self must never appear in its own peer list.
+	if _, ok := got["self"]; ok {
+		t.Error("self appeared in Workspace.Peers.All (must be excluded)")
+	}
+	// Foreign workspace / ACP / archived rows must never appear.
+	for _, id := range []string{"other-dir", "other-acp", "peer-arch"} {
+		if _, ok := got[id]; ok {
+			t.Errorf("%q appeared in Workspace.Peers.All (must be excluded)", id)
+		}
+	}
+
+	pa, ok := got["peer-a"]
+	if !ok {
+		t.Fatal("peer-a missing from Workspace.Peers.All")
+	}
+	if pa.Name != "Peer A" || pa.ACPServer != acpSrv || pa.BeadsIssue != "mitto-a" || pa.IsPrompting {
+		t.Errorf("peer-a field mismatch: %+v", pa)
+	}
+
+	pb, ok := got["peer-b"]
+	if !ok {
+		t.Fatal("peer-b missing from Workspace.Peers.All")
+	}
+	if pb.Name != "Peer B" || pb.ACPServer != acpSrv || pb.ParentID != "self" ||
+		pb.Origin != string(session.ChildOriginAuto) || pb.IsPrompting {
+		t.Errorf("peer-b field mismatch: %+v", pb)
+	}
+}
+
+// TestBuildPromptEnabledContext_WorkspacePeersEmpty verifies that a session
+// with no workspace siblings yields a zero-valued Peers block (Exists=false,
+// Count=0), so downstream CEL / templates read safe defaults.
+func TestBuildPromptEnabledContext_WorkspacePeersEmpty(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	if err := store.Create(session.Metadata{
+		SessionID:  "lonely",
+		Name:       "Lonely",
+		ACPServer:  "auggie",
+		WorkingDir: "/tmp/lonely-ws",
+	}); err != nil {
+		t.Fatalf("Create(lonely): %v", err)
+	}
+
+	server := &Server{
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
+		store:          store,
+	}
+
+	ctx := server.buildPromptEnabledContext("lonely")
+	if ctx == nil {
+		t.Fatal("buildPromptEnabledContext returned nil")
+	}
+	peers := ctx.Workspace.Peers
+	if peers.Count != 0 || peers.Exists || peers.PromptingCount != 0 || peers.IdleCount != 0 || len(peers.All) != 0 {
+		t.Errorf("expected zero-valued Peers, got %+v", peers)
+	}
+}

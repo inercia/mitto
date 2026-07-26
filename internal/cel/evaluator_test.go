@@ -855,3 +855,56 @@ func TestCELEvaluator_UserData(t *testing.T) {
 		})
 	}
 }
+
+// TestCELEvaluator_WorkspacePeers validates the Workspace.Peers.* CEL variables
+// added by mitto-4d6. The structured .All slice is template-only — CEL exposes
+// only the aggregate counters (Count/Exists/PromptingCount/IdleCount) for
+// menu-time gating (see docs comment in evaluator.go).
+func TestCELEvaluator_WorkspacePeers(t *testing.T) {
+	e := newTestEvaluator(t)
+
+	populated := &PromptEnabledContext{
+		Workspace: WorkspaceContext{
+			Peers: PeersContext{
+				Count:          3,
+				Exists:         true,
+				PromptingCount: 1,
+				IdleCount:      2,
+				All: []PeerInfo{
+					{ID: "s1", Name: "Peer A", ACPServer: "auggie", IsPrompting: true},
+					{ID: "s2", Name: "Peer B", ACPServer: "auggie"},
+					{ID: "s3", Name: "Peer C", ACPServer: "claude-code"},
+				},
+			},
+		},
+	}
+	empty := &PromptEnabledContext{}
+
+	tests := []struct {
+		expr string
+		ctx  *PromptEnabledContext
+		want bool
+	}{
+		// populated aggregates
+		{`Workspace.Peers.Count == 3`, populated, true},
+		{`Workspace.Peers.Exists`, populated, true},
+		{`Workspace.Peers.PromptingCount == 1`, populated, true},
+		{`Workspace.Peers.IdleCount == 2`, populated, true},
+		{`Workspace.Peers.Count == Workspace.Peers.PromptingCount + Workspace.Peers.IdleCount`, populated, true},
+		// empty defaults (zero-value context)
+		{`Workspace.Peers.Count == 0`, empty, true},
+		{`!Workspace.Peers.Exists`, empty, true},
+		{`Workspace.Peers.PromptingCount == 0`, empty, true},
+		{`Workspace.Peers.IdleCount == 0`, empty, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.expr, func(t *testing.T) {
+			ce := compile(t, e, tt.expr)
+			got := evaluate(t, e, ce, tt.ctx)
+			if got != tt.want {
+				t.Errorf("Evaluate(%q) = %v, want %v", tt.expr, got, tt.want)
+			}
+		})
+	}
+}

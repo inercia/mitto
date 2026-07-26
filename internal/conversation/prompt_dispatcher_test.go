@@ -1071,6 +1071,95 @@ func TestPromptDispatcher_BuildProcessorInput_WithMetadata(t *testing.T) {
 	}
 }
 
+// TestPromptDispatcher_BuildProcessorInput_WorkspacePeers verifies that
+// pdListWorkspacePeers results propagate to ProcessorInput.WorkspacePeers
+// with the correct field mapping and IsPrompting resolved via
+// pdIsChildPrompting (which is a generic session-ID prompting check reused
+// for peers; see mitto-4d6 implementation). The store-error path must fail
+// open (leave WorkspacePeers empty).
+func TestPromptDispatcher_BuildProcessorInput_WorkspacePeers(t *testing.T) {
+	p := promptDispatcher{}
+	d := newFakePromptDeps()
+	d.sessionID = "self"
+	d.sessionMeta = session.Metadata{Name: "Self", ACPServer: "auggie"}
+	d.workspacePeers = []session.Metadata{
+		{
+			SessionID:       "peer-1",
+			Name:            "Peer A",
+			ACPServer:       "auggie",
+			ParentSessionID: "self",
+			ChildOrigin:     session.ChildOriginAuto,
+			BeadsIssue:      "mitto-1",
+		},
+		{
+			SessionID: "peer-2",
+			Name:      "Peer B",
+			ACPServer: "auggie",
+		},
+	}
+	// Reuse the generic prompting map — pdIsChildPrompting is the same
+	// resolver used for both children and peers.
+	d.childPrompting["peer-1"] = true
+	d.childPrompting["peer-2"] = false
+
+	input := p.buildProcessorInput(d, "msg", false, PromptMeta{})
+
+	if len(input.WorkspacePeers) != 2 {
+		t.Fatalf("expected 2 workspace peers, got %d: %+v", len(input.WorkspacePeers), input.WorkspacePeers)
+	}
+	got := map[string]processors.PeerSession{}
+	for _, p := range input.WorkspacePeers {
+		got[p.ID] = p
+	}
+	p1, ok := got["peer-1"]
+	if !ok {
+		t.Fatalf("missing peer-1: %+v", input.WorkspacePeers)
+	}
+	if p1.Name != "Peer A" || p1.ACPServer != "auggie" || p1.ParentID != "self" ||
+		p1.ChildOrigin != string(session.ChildOriginAuto) || !p1.IsPrompting || p1.BeadsIssue != "mitto-1" {
+		t.Errorf("peer-1 field mismatch: %+v", p1)
+	}
+	p2, ok := got["peer-2"]
+	if !ok {
+		t.Fatalf("missing peer-2: %+v", input.WorkspacePeers)
+	}
+	if p2.Name != "Peer B" || p2.ACPServer != "auggie" || p2.ParentID != "" ||
+		p2.ChildOrigin != "" || p2.IsPrompting || p2.BeadsIssue != "" {
+		t.Errorf("peer-2 field mismatch: %+v", p2)
+	}
+}
+
+// TestPromptDispatcher_BuildProcessorInput_WorkspacePeersError verifies that
+// a store error from pdListWorkspacePeers is swallowed (fail-open) so
+// menu-time gating and processor invocation are never broken by a peer
+// lookup failure — matches the sibling ChildSessions error handling.
+func TestPromptDispatcher_BuildProcessorInput_WorkspacePeersError(t *testing.T) {
+	p := promptDispatcher{}
+	d := newFakePromptDeps()
+	d.sessionID = "self"
+	d.workspacePeersErr = errors.New("simulated store failure")
+
+	input := p.buildProcessorInput(d, "msg", false, PromptMeta{})
+	if len(input.WorkspacePeers) != 0 {
+		t.Fatalf("expected empty WorkspacePeers on error, got %+v", input.WorkspacePeers)
+	}
+}
+
+// TestPromptDispatcher_BuildProcessorInput_WorkspacePeersNoStore verifies
+// that a missing store leaves WorkspacePeers empty (peers block gated on
+// pdHasStore, same as ChildSessions).
+func TestPromptDispatcher_BuildProcessorInput_WorkspacePeersNoStore(t *testing.T) {
+	p := promptDispatcher{}
+	d := newFakePromptDeps()
+	d.hasStore = false
+	d.workspacePeers = []session.Metadata{{SessionID: "peer-1", Name: "Peer A"}}
+
+	input := p.buildProcessorInput(d, "msg", false, PromptMeta{})
+	if len(input.WorkspacePeers) != 0 {
+		t.Fatalf("expected empty WorkspacePeers when no store, got %+v", input.WorkspacePeers)
+	}
+}
+
 func TestPromptDispatcher_BuildProcessorInput_IsLoopForced(t *testing.T) {
 	p := promptDispatcher{}
 	d := newFakePromptDeps()

@@ -1045,6 +1045,126 @@ func TestTemplateFuncs_MCPChildrenFiltersCorrectly(t *testing.T) {
 }
 
 // =============================================================================
+// FormatPeers tests (mitto-4d6)
+// =============================================================================
+
+func TestFormatPeers(t *testing.T) {
+	cases := []struct {
+		name  string
+		peers []PeerInfo
+		want  string
+	}{
+		{"nil", nil, ""},
+		{"empty", []PeerInfo{}, ""},
+		{
+			"single with name and acp",
+			[]PeerInfo{{ID: "sess-1", Name: "Driver", ACPServer: "auggie"}},
+			"sess-1 (Driver) [auggie]",
+		},
+		{
+			"single no-name",
+			[]PeerInfo{{ID: "sess-1", ACPServer: "claude-code"}},
+			"sess-1 [claude-code]",
+		},
+		{
+			"single no-acp",
+			[]PeerInfo{{ID: "sess-1", Name: "Fixer"}},
+			"sess-1 (Fixer)",
+		},
+		{
+			"bare id only",
+			[]PeerInfo{{ID: "sess-1"}},
+			"sess-1",
+		},
+		{
+			"single with beads issue",
+			[]PeerInfo{{ID: "sess-1", Name: "Driver", ACPServer: "auggie", BeadsIssue: "mitto-4d6"}},
+			"sess-1 (Driver) [auggie] {mitto-4d6}",
+		},
+		{
+			"bare id with beads issue",
+			[]PeerInfo{{ID: "sess-1", BeadsIssue: "mitto-123"}},
+			"sess-1 {mitto-123}",
+		},
+		{
+			"multi mixed beads issue",
+			[]PeerInfo{
+				{ID: "sess-1", Name: "Fix mitto-4d6", ACPServer: "auggie", BeadsIssue: "mitto-4d6"},
+				{ID: "sess-2", Name: "Implement mitto-abc", ACPServer: "claude-code"},
+			},
+			"sess-1 (Fix mitto-4d6) [auggie] {mitto-4d6}, sess-2 (Implement mitto-abc) [claude-code]",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := FormatPeers(tc.peers); got != tc.want {
+				t.Errorf("FormatPeers() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestPeersContext_AllText verifies that PeersContext.AllText() delegates to
+// FormatPeers and produces the same byte-identical output as the template
+// accessor { .Workspace.Peers.AllText }.
+func TestPeersContext_AllText(t *testing.T) {
+	pc := PeersContext{
+		All: []PeerInfo{
+			{ID: "s1", Name: "Peer A", ACPServer: "auggie", BeadsIssue: "mitto-1"},
+			{ID: "s2", ACPServer: "claude-code"},
+		},
+	}
+	want := "s1 (Peer A) [auggie] {mitto-1}, s2 [claude-code]"
+	if got := pc.AllText(); got != want {
+		t.Errorf("PeersContext.AllText() = %q, want %q", got, want)
+	}
+
+	// Zero value returns empty string.
+	if got := (PeersContext{}).AllText(); got != "" {
+		t.Errorf("zero PeersContext.AllText() = %q, want \"\"", got)
+	}
+}
+
+// TestTemplateFuncs_WorkspacePeersAllText verifies the { .Workspace.Peers.AllText }
+// template accessor renders correctly from a populated PromptEnabledContext.
+func TestTemplateFuncs_WorkspacePeersAllText(t *testing.T) {
+	ctx := &PromptEnabledContext{
+		Workspace: WorkspaceContext{
+			Peers: PeersContext{
+				Count:  2,
+				Exists: true,
+				All: []PeerInfo{
+					{ID: "s1", Name: "Driver", ACPServer: "auggie", BeadsIssue: "mitto-4d6"},
+					{ID: "s2", Name: "Helper", ACPServer: "claude-code"},
+				},
+			},
+		},
+	}
+	fm := BuildTemplateFuncMap(ctx)
+	got, err := RenderPromptTemplate("t", `{{ .Workspace.Peers.AllText }}`, ctx, fm)
+	if err != nil {
+		t.Fatalf("Workspace.Peers.AllText render error: %v", err)
+	}
+	if want := "s1 (Driver) [auggie] {mitto-4d6}, s2 (Helper) [claude-code]"; got != want {
+		t.Errorf("Workspace.Peers.AllText: got %q, want %q", got, want)
+	}
+}
+
+// TestTemplateFuncs_WorkspacePeersEmpty verifies that { .Workspace.Peers.AllText }
+// returns "" when the peers slice is nil or empty (zero-value safety).
+func TestTemplateFuncs_WorkspacePeersEmpty(t *testing.T) {
+	ctx := &PromptEnabledContext{}
+	fm := BuildTemplateFuncMap(ctx)
+	got, err := RenderPromptTemplate("t", `{{ .Workspace.Peers.AllText }}`, ctx, fm)
+	if err != nil {
+		t.Fatalf("zero-value Workspace.Peers.AllText render error: %v", err)
+	}
+	if got != "" {
+		t.Errorf("zero-value Workspace.Peers.AllText: got %q, want \"\"", got)
+	}
+}
+
+// =============================================================================
 // cond/when tests (mitto-m7sb.12)
 // =============================================================================
 
