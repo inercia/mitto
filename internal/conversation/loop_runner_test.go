@@ -4954,3 +4954,121 @@ func TestLoopRunner_FireOnStartPulses_ArchivedSkipped(t *testing.T) {
 		t.Error("runOnStartFired[s1] = true for an archived session, want false")
 	}
 }
+
+// TestLoopRunner_ProcessTasksChange_RapidDeltasOnIdle_ShouldCollapseToSingleFire
+// is the reproduction of mitto-1uv: when an agent produces two (or more) fs
+// deltas in quick succession on an *idle* onTasks subtree — for example a
+// `bd create` followed immediately by a `bd update` that sets a label or
+// dependency — processTasksChange fires the loop on the very first delta with
+// an incomplete view of the bead. The follow-up deltas that land while the
+// resulting run is now busy are handled by the existing during-busy path
+// (mitto-cwg.1), but the first run has already been kicked off against
+// stale/partial state.
+//
+// Per the bead spec: on the idle→first-fire path, the runner should arm a
+// short pre-fire settle timer whenever tasksActionFire is reached, resetting
+// the timer on each subsequent material delta, and fire exactly once (with a
+// coalesced view) when the timer expires. The current implementation has no
+// idle-side debounce — processTasksChange takes tasksActionFire and calls
+// triggerNowWithTasksDelta synchronously, so N rapid deltas produce N fires.
+//
+// This test drives two rapid processTasksChange calls on an idle onTasks
+// session against a fake beads client that advances the snapshot between
+// calls, and asserts exactly ONE promptResolver invocation. Sibling coverage
+// (TestLoopRunner_EvaluateTasksChange_ConditionTrue_Fires and friends)
+// documents the current fire-on-first-delta behaviour; this test asserts the
+// desired behaviour and therefore FAILS on unfixed code.
+//
+// Observable: a loop configured with PromptName + a spy promptResolver — the
+// resolver is called synchronously inside deliverPrompt before PromptWithMeta,
+// so its invocation is a direct proxy for "a fire was dispatched."
+func TestLoopRunner_ProcessTasksChange_RapidDeltasOnIdle_ShouldCollapseToSingleFire(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	ps := newOnTasksSession(t, store, "s1", "/proj", "")
+	// Switch to a PromptName-backed loop so the spy resolver can observe the
+	// fire attempt. Defaults for CoalesceDuringBusy stay as-is (nil → true) —
+	// this test targets the idle→first-fire path, not the during-busy path.
+	promptName := "supervisor"
+	if err := ps.Update(nil, &promptName, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+
+	// Pre-run baseline: only mitto-1 exists.
+	rawBefore := mustMarshalRows(t, beadsRow("mitto-1", "open", "2026-01-01T00:00:00Z"))
+	if err := NewTasksBaselineStore(store.SessionDir("s1")).Set(rawBefore); err != nil {
+		t.Fatalf("Set() baseline error = %v", err)
+	}
+
+	// Session is IDLE — we want processTasksChange to reach tasksActionFire,
+	// not tasksActionDeferBusy. This is the pre-fire settle-window path.
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{})
+	sm.AddSessionForTest(NewMinimalBackgroundSessionPrompting("s1", false))
+
+	runner := NewLoopRunner(store, sm, nil)
+	// Opt into the pre-fire settle window with a short test-scale duration
+	// (mitto-1uv). Production loops opt in per-prompt via
+	// LoopPrompt.SettleWindowSeconds; the runner-level default (0) preserves
+	// the current fire-on-first-delta behaviour for loops that don't opt in.
+	runner.SetTasksSettleWindow(50 * time.Millisecond)
+	var resolverCalls int32
+	runner.SetPromptResolver(func(name, dir string) (string, error) {
+		atomic.AddInt32(&resolverCalls, 1)
+		return "iterate", nil
+	})
+
+	// The fake beads client advances the snapshot between the two rapid
+	// processTasksChange calls, mimicking an agent that ran
+	//   bd create ...           (delta 1: mitto-2 appears)
+	//   bd update mitto-2 ...   (delta 2: mitto-2 is edited)
+	// within a few milliseconds. Both deltas are material relative to the
+	// pre-run baseline (mitto-1 only), so evaluateTasksChange returns
+	// tasksActionFire twice — and today processTasksChange fires twice.
+	rawStep1 := mustMarshalRows(t,
+		beadsRow("mitto-1", "open", "2026-01-01T00:00:00Z"),
+		beadsRow("mitto-2", "open", "2026-01-02T00:00:00Z"),
+	)
+	rawStep2 := mustMarshalRows(t,
+		beadsRow("mitto-1", "open", "2026-01-01T00:00:00Z"),
+		beadsRow("mitto-2", "in_progress", "2026-01-02T00:00:01Z"),
+	)
+	var listCalls int32
+	fake := &fakeTasksBeadsClient{listFn: func(string) ([]byte, error) {
+		n := atomic.AddInt32(&listCalls, 1)
+		if n == 1 {
+			return rawStep1, nil
+		}
+		return rawStep2, nil
+	}}
+	runner.SetBeadsClient(fake)
+
+	meta, err := store.GetMetadata("s1")
+	if err != nil {
+		t.Fatalf("GetMetadata() error = %v", err)
+	}
+	loop, err := ps.Get()
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+
+	// Two rapid fs-watcher deltas — under the desired settle-window semantics,
+	// the second delta should reset the pending settle timer, and only ONE
+	// fire should occur after the window expires with the merged view.
+	runner.processTasksChange(meta, loop, ps, rawStep1)
+	runner.processTasksChange(meta, loop, ps, rawStep2)
+
+	// Give any pending settle timer time to elapse. Once the fix lands, a
+	// short settle window (a few tens of ms in test config) will have expired
+	// by now and exactly one fire will have been dispatched. Today this sleep
+	// is unused by the (missing) settle path — both fires have already
+	// happened synchronously inside the calls above.
+	time.Sleep(150 * time.Millisecond)
+
+	if got := atomic.LoadInt32(&resolverCalls); got != 1 {
+		t.Errorf("promptResolver call count = %d, want 1 (two rapid fs-watcher deltas on an idle onTasks subtree must collapse to a single fire via the pre-fire settle window)", got)
+	}
+}

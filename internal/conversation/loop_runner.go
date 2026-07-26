@@ -283,6 +283,24 @@ type LoopRunner struct {
 	// the same code paths).
 	tasksRefirePending map[string]bool
 
+	// tasksSettleWindow is the runner-level default pre-fire settle/debounce
+	// window applied on the idle→first-fire path of the onTasks trigger
+	// (mitto-1uv). When > 0 (or the per-loop LoopPrompt.SettleWindow() is > 0),
+	// processTasksChange arms a settle timer on tasksActionFire instead of firing
+	// immediately; the timer is reset by subsequent material fs-watcher deltas
+	// and dispatches a single coalesced fire when it expires. Default 0 =
+	// disabled (current fire-on-first-delta behaviour). Intended primarily as a
+	// test seam via SetTasksSettleWindow; production loops opt in per-prompt via
+	// LoopPrompt.SettleWindowSeconds.
+	tasksSettleWindow time.Duration
+
+	// tasksSettleTimers holds armed one-shot settle timers that dispatch a
+	// coalesced onTasks fire once the pre-fire settle window elapses without a
+	// further material delta, keyed by session ID. Guarded by
+	// tasksSettleTimersMu.
+	tasksSettleTimers   map[string]*time.Timer
+	tasksSettleTimersMu sync.Mutex
+
 	// loopWorkspaceConcurrency caps how many loop prompts may be in flight for a
 	// single WorkingDir + ACPServer pair. 0 disables the cap. Default is set by
 	// config (see DefaultLoopWorkspaceConcurrency). Manual "Run Now" (forced)
@@ -345,6 +363,7 @@ func NewLoopRunner(store *session.Store, sm *SessionManager, logger *slog.Logger
 		tasksQuiescenceWindow:      tasksDefaultQuiescenceWindow,
 		tasksRebaseTimers:          make(map[string]*time.Timer),
 		tasksRefirePending:         make(map[string]bool),
+		tasksSettleTimers:          make(map[string]*time.Timer),
 		autoUnarchiveEnabled:       true,
 		autoUnarchiveRetryInterval: DefaultAutoUnarchiveRetryInterval,
 		autoUnarchiveStagger:       DefaultAutoUnarchiveStaggerInterval,
@@ -630,6 +649,18 @@ func (r *LoopRunner) Stop() {
 	}
 	r.tasksRebaseTimersMu.Unlock()
 
+	// Cancel any pending onTasks pre-fire settle timers so they don't fire
+	// after shutdown (mitto-1uv). Separate from the rebase timer map — the
+	// settle timer arms on the idle→first-fire path before any run has
+	// started, so a Stop() during the settle window must drop the pending
+	// dispatch cleanly.
+	r.tasksSettleTimersMu.Lock()
+	for id, t := range r.tasksSettleTimers {
+		t.Stop()
+		delete(r.tasksSettleTimers, id)
+	}
+	r.tasksSettleTimersMu.Unlock()
+
 	// Wait for the poll loop to finish
 	<-doneCh
 
@@ -819,6 +850,15 @@ func (r *LoopRunner) StopLoopForArchive(sessionID string, reason session.Stopped
 	}
 	delete(r.tasksRefirePending, sessionID)
 	r.tasksRebaseTimersMu.Unlock()
+
+	// Cancel any pending pre-fire settle timer — an archived session must not
+	// dispatch a settled fire (mitto-1uv).
+	r.tasksSettleTimersMu.Lock()
+	if existing, ok := r.tasksSettleTimers[sessionID]; ok {
+		existing.Stop()
+		delete(r.tasksSettleTimers, sessionID)
+	}
+	r.tasksSettleTimersMu.Unlock()
 
 	loopStore := r.store.Loop(sessionID)
 	loop, err := loopStore.Get()

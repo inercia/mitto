@@ -86,6 +86,36 @@ func (r *LoopRunner) SetTasksQuiescenceWindow(d time.Duration) {
 	r.tasksQuiescenceWindow = d
 }
 
+// SetTasksSettleWindow sets the runner-level default pre-fire settle/debounce
+// window applied on the idle→first-fire path of the onTasks trigger
+// (mitto-1uv). Values <= 0 disable the runner-level default (per-loop
+// LoopPrompt.SettleWindow() still applies when set). Intended primarily for
+// tests to use a short window; production loops opt in per-prompt via
+// LoopPrompt.SettleWindowSeconds.
+func (r *LoopRunner) SetTasksSettleWindow(d time.Duration) {
+	if d < 0 {
+		d = 0
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.tasksSettleWindow = d
+}
+
+// effectiveTasksSettleWindow returns the effective pre-fire settle window for
+// a given loop: the per-loop LoopPrompt.SettleWindow() if set (> 0), otherwise
+// the runner-level default (r.tasksSettleWindow). Returns 0 when neither is
+// set — the current fire-on-first-delta behaviour.
+func (r *LoopRunner) effectiveTasksSettleWindow(loop *session.LoopPrompt) time.Duration {
+	if loop != nil {
+		if w := loop.SettleWindow(); w > 0 {
+			return w
+		}
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.tasksSettleWindow
+}
+
 // OnBeadsChanged implements watcher.BeadsSubscriber. It is called by the
 // BeadsWatcher whenever a watched .beads/ directory changes. For every
 // enabled onTasks conversation whose working directory matches one of the
@@ -298,6 +328,19 @@ func (r *LoopRunner) processTasksChange(meta session.Metadata, loop *session.Loo
 		}
 
 	case tasksActionFire:
+		// Pre-fire settle/debounce: if a settle window is configured for this
+		// loop (per-prompt LoopPrompt.SettleWindow() or the runner-level
+		// default), arm/reset a one-shot settle timer instead of firing now
+		// (mitto-1uv). Subsequent material fs-watcher deltas during the window
+		// reset the timer; when it expires, fireTasksSettle re-evaluates
+		// against the current beads snapshot and dispatches a single coalesced
+		// fire. This absorbs multi-step agent edits (e.g. `bd create` followed
+		// by `bd update`) that would otherwise fire on the first partial
+		// delta.
+		if window := r.effectiveTasksSettleWindow(loop); window > 0 {
+			r.armTasksSettleTimer(sessionID, loopStore, window)
+			return
+		}
 		// A normal fire consumes any pending re-fire flag — the accumulated
 		// delta is being delivered as this run's payload, so a follow-up
 		// re-fire on quiescence would be redundant (mitto-cwg.1).
@@ -431,6 +474,103 @@ func (r *LoopRunner) armTasksRebase(sessionID string, loopStore *session.LoopSto
 	r.tasksRebaseTimers[sessionID] = time.AfterFunc(window, func() {
 		r.fireTasksRebase(sessionID, loopStore)
 	})
+}
+
+// armTasksSettleTimer schedules (or resets) the pre-fire settle timer for
+// sessionID (mitto-1uv). Called from processTasksChange on tasksActionFire
+// when an effective settle window is configured. Subsequent material
+// fs-watcher deltas that route through tasksActionFire while the timer is
+// pending reset it — so N rapid deltas collapse to a single fire once the
+// window elapses without a further delta. If the subtree becomes busy during
+// the settle window, evaluateTasksChange returns tasksActionDeferBusy on the
+// next delta and the busy/quiescence path takes over; the settle timer, if
+// still pending when it fires, is a no-op because fireTasksSettle re-checks
+// busyness.
+func (r *LoopRunner) armTasksSettleTimer(sessionID string, loopStore *session.LoopStore, window time.Duration) {
+	r.tasksSettleTimersMu.Lock()
+	defer r.tasksSettleTimersMu.Unlock()
+	if existing, ok := r.tasksSettleTimers[sessionID]; ok {
+		existing.Stop()
+	}
+	r.tasksSettleTimers[sessionID] = time.AfterFunc(window, func() {
+		r.fireTasksSettle(sessionID, loopStore)
+	})
+}
+
+// fireTasksSettle is invoked when a pre-fire settle timer expires without a
+// further material delta. It re-fetches the current beads snapshot, re-runs
+// evaluateTasksChange to re-apply all Layer 0/1/2 guards and the CEL
+// condition against the freshest state, and — on a positive decision —
+// dispatches the coalesced fire directly (bypassing the settle path so it
+// cannot re-arm itself indefinitely). The fire may still be filtered out by
+// cooldown, maxDuration, an archived session, a now-busy subtree (which
+// hands off to the busy/quiescence path), or a condition that no longer
+// matches (mitto-1uv).
+func (r *LoopRunner) fireTasksSettle(sessionID string, loopStore *session.LoopStore) {
+	r.tasksSettleTimersMu.Lock()
+	delete(r.tasksSettleTimers, sessionID)
+	r.tasksSettleTimersMu.Unlock()
+
+	if r.store == nil {
+		return
+	}
+
+	meta, err := r.store.GetMetadata(sessionID)
+	if err != nil || meta.Archived {
+		return
+	}
+
+	loop, err := loopStore.Get()
+	if err != nil || loop == nil || !loop.Enabled || !loop.IsOnTasks() {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), tasksListTimeout)
+	raw, err := r.beadsClientOrDefault().List(ctx, meta.WorkingDir)
+	cancel()
+	if err != nil {
+		if r.logger != nil {
+			r.logger.Warn("onTasks: failed to list beads for settle fire",
+				"session_id", sessionID, "error", err)
+		}
+		return
+	}
+
+	decision := r.evaluateTasksChange(meta, loop, raw)
+	switch decision.action {
+	case tasksActionDeferBusy:
+		// Subtree became busy during the settle window — hand off to the
+		// existing busy/quiescence path exactly like a fresh delta would.
+		r.markTasksRefirePending(sessionID)
+		r.armTasksRebase(sessionID, loopStore)
+
+	case tasksActionInitBaseline:
+		if err := decision.baseline.Set(raw); err != nil && r.logger != nil {
+			r.logger.Warn("onTasks: failed to initialize baseline on settle",
+				"session_id", sessionID, "error", err)
+		}
+
+	case tasksActionFire:
+		// Dispatch the coalesced fire directly. Do NOT re-arm the settle
+		// timer here — that would produce an unbounded stall as long as
+		// evaluateTasksChange keeps returning tasksActionFire.
+		r.clearTasksRefirePending(sessionID)
+		if err := r.triggerNowWithTasksDelta(sessionID, true, decision.delta); err != nil {
+			if errors.Is(err, ErrPromptResolveFailed) {
+				r.handlePromptResolveFailure(sessionID, meta.Name, loop, loopStore, err)
+			} else if r.logger != nil && !errors.Is(err, ErrSessionBusy) {
+				r.logger.Warn("onTasks: settled firing failed", "session_id", sessionID, "error", err)
+			}
+			return
+		}
+		if err := decision.baseline.Set(raw); err != nil && r.logger != nil {
+			r.logger.Warn("onTasks: failed to persist baseline after settled fire",
+				"session_id", sessionID, "error", err)
+		}
+
+	case tasksActionSkip:
+		// No-op: cooldown, maxDuration, immaterial delta, or condition-false.
+	}
 }
 
 // fireTasksRebase re-checks idleness and, once the subtree is confirmed idle,

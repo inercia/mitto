@@ -241,6 +241,17 @@ type LoopPrompt struct {
 	// immediately at startup without waiting for the next scheduled tick. Defaults
 	// to false (unset) — a fresh Mitto restart does not re-fire arbitrary loops.
 	RunOnStart *bool `json:"run_on_start,omitempty"`
+	// SettleWindowSeconds is an optional pre-fire debounce window (seconds) for
+	// the onTasks trigger. When > 0, processTasksChange arms a settle timer on
+	// the idle→first-fire path (tasksActionFire) instead of firing immediately,
+	// resetting the timer on each subsequent material fs-watcher delta; a single
+	// coalesced fire is dispatched when the timer expires. Complements the
+	// existing during-busy path (CoalesceDuringBusy + Layer 2 quiescence rebase)
+	// by absorbing multi-step agent edits (e.g. `bd create` followed by
+	// `bd update`) that would otherwise produce a first-delta fire on partial
+	// state. 0 or nil = disabled (current fire-on-first-delta behaviour). Only
+	// meaningful when Trigger is onTasks (mitto-1uv).
+	SettleWindowSeconds *int `json:"settle_window_seconds,omitempty"`
 }
 
 // ShouldCoalesceDuringBusy reports whether the onTasks trigger should silently
@@ -251,6 +262,17 @@ func (p *LoopPrompt) ShouldCoalesceDuringBusy() bool {
 		return true
 	}
 	return *p.CoalesceDuringBusy
+}
+
+// SettleWindow returns the pre-fire settle/debounce window applied on the
+// idle→first-fire path of the onTasks trigger. Returns 0 when the field is
+// unset or non-positive — the current (undebounced) behaviour. Only meaningful
+// when Trigger is onTasks (mitto-1uv).
+func (p *LoopPrompt) SettleWindow() time.Duration {
+	if p.SettleWindowSeconds == nil || *p.SettleWindowSeconds <= 0 {
+		return 0
+	}
+	return time.Duration(*p.SettleWindowSeconds) * time.Second
 }
 
 // ShouldRunOnStart reports whether this loop should fire exactly once when
