@@ -177,6 +177,8 @@ prompt: |-
 
   ## Channel scope gate: check this FIRST, every iteration
 
+  {{ template "_shared/support/migrate-monolith" (dict "Channel" $channel "ActiveBead" "") }}
+
   Before you can triage this channel you must know **what it is responsible for** — i.e. its
   `scope.md`. The rest of the playbook (investigation method, resources, escalation, tone) is
   created on demand by the **child prompts that need it** (`Support: investigate` owns

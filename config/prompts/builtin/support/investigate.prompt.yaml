@@ -74,11 +74,15 @@ prompt: |-
 
   ## Step 3: Read the channel playbook fragments (this prompt owns four)
 
+  {{ template "_shared/support/migrate-monolith" (dict "Channel" "<channel-id>" "ActiveBead" "<id>") }}
+
   You must work using **this channel's documented playbook**, not by guessing. The playbook is
   stored **per channel** as topical fragments under **`.mitto/support/<channel-id>/`**, where
   `<channel-id>` is the bead's stored `slack_channel` value (from Step 2). Build the exact path
   from that value — e.g. if `slack_channel` is `C0XXXXXXX`, fragments live in
-  `.mitto/support/C0XXXXXXX/`.
+  `.mitto/support/C0XXXXXXX/`. In the migration block above, substitute `<channel-id>` with the
+  actual `slack_channel` value and `<id>` with the bead ID from Step 1 before running the shell
+  commands.
 
   This prompt is the **owner** of `investigation.md`, `resources.md`, `escalation.md`, and
   (optionally) `redirects.md`. It reads `scope.md` and `tone.md` (owned by `Support: watch channel`

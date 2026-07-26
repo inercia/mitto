@@ -1,4 +1,14 @@
 {{- /*
+  DEPRECATED — use `_shared/support/channel-fragment-read` instead. This
+  helper reads the legacy monolithic per-channel playbook
+  (`.mitto/slack-support-<channel-id>.md`), which Phase 3 (mitto-da9.3)
+  auto-splits into topical fragments under `.mitto/support/<channel-id>/`
+  on first read by `Support: watch channel` and `Support: investigate`.
+  This file is kept for ONE release cycle so any external prompts that
+  import it don't break silently; it will be removed after that. Any
+  prompt that still calls it emits a `[CONTEXT]` bead note (see body
+  below) so the drift is auditable in bead history.
+
   support/channel-playbook-read — the "read the per-channel playbook,
   read-only" bullet used by every single-bead support prompt that does
   NOT itself own creating the playbook (check-status, reply-to-user,
@@ -37,7 +47,12 @@
   newline; callers use plain `{{ template ... }}` (no trim markers).
 */ -}}
 {{- $purpose := .Purpose -}}
-**Read the channel playbook.** Using the bead's `slack_channel` value, read
+**Read the channel playbook.** ⚠ **DEPRECATED** — this reads the legacy monolithic playbook
+  (`.mitto/slack-support-<channel-id>.md`); the current layout is topical fragments under
+  `.mitto/support/<channel-id>/` (see `channel-fragment-read`). Before proceeding, post a short
+  `[CONTEXT]` bead comment on any active bead in this channel noting: `still using legacy
+  channel-playbook-read — should migrate caller to channel-fragment-read`, so the drift is visible
+  in the tracker. Then, using the bead's `slack_channel` value, read
   **`.mitto/slack-support-<channel-id>.md`** (e.g. `C0XXXXXXX` →
   `.mitto/slack-support-C0XXXXXXX.md`). It is the **authoritative guide** for this channel's tone,
   how to address customers, and reply guidelines (as well as scope and investigation method) — use it

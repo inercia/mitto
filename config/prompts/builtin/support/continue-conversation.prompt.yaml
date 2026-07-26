@@ -59,18 +59,17 @@ prompt: |-
 
   {{ template "_shared/support/slack-tools" (dict "Capabilities" "You need: (a) identify the current user, (b) read recent channel history, (c) read a thread's replies, and (d) post a reply to a thread (e.g. `slack_get_users*`, `slack_get_channel_history*`, `slack_get_thread_replies*`, `slack_reply_to_thread*`, or their `*_slack` equivalents)." "NoPosting" false "ReadMetadata" false) }}
 
-  ## Step 0: Read the channel playbook
+  ## Step 0: Read the channel playbook fragments
 
-  - This channel's playbook lives at **`.mitto/slack-support-{{ $channel }}.md`**. It is the
-    **authoritative guide** for this channel's scope, investigation method, tone, how to address
-    customers, and reply guidelines.
-  - **If it exists**, read it in full now and honor it throughout — especially its tone/reply guidance
-    when crafting any reply below.
-  - **If it does NOT exist**, create the `.mitto/` directory if missing, ASK the user (via
-    `mitto_ui_form` / `mitto_ui_textbox`) for the channel playbook (scope, how to gather answers,
-    escalation paths, and how to address/reply to customers), and write their guidance to
-    `.mitto/slack-support-{{ $channel }}.md` before crafting a reply. If you learn a new useful
-    pattern later, append it to that file.
+  This channel's playbook lives as topical fragments under **`.mitto/support/{{ $channel }}/`**, one
+  topic per file. This prompt is a **reader** — it does not own any fragment; the owners are
+  `Support: watch channel` (`scope.md`), `Support: reply to user` (`tone.md`), and
+  `Support: investigate` (`investigation.md`, `resources.md`, `escalation.md`, `redirects.md`).
+  Read the fragments needed to craft a reply and honor them throughout.
+
+  - {{ template "_shared/support/channel-fragment-read" (dict "Fragment" "scope" "Purpose" "confirm the conversation is in scope for this channel before continuing" "Owner" "Support: watch channel" "OwnerAsk" false) }}
+  - {{ template "_shared/support/channel-fragment-read" (dict "Fragment" "tone" "Purpose" "shape the tone/reply guidance when crafting any reply below" "Owner" "Support: reply to user" "OwnerAsk" false) }}
+  - {{ template "_shared/support/channel-fragment-read" (dict "Fragment" "investigation" "Purpose" "guide any gathering of answers in Option A of Step 5" "Owner" "Support: investigate" "OwnerAsk" false) }}
 
   ## Step 1: Identify the current user
 
@@ -133,11 +132,13 @@ prompt: |-
 
   ### Option A — "Gather an answer for me"
 
-  - Follow the channel playbook you read in **Step 0** (`.mitto/slack-support-{{ $channel }}.md`) as
-    the authoritative guide for how to gather answers (scope, which repos to search,
-    docs/runbooks/knowledge bases to consult, common patterns, escalation paths, relevant MCP tools)
-    and for tone/reply style. If you learn a new useful pattern while gathering, append it to that
-    file.
+  - Follow the channel playbook fragments you read in **Step 0** (under
+    `.mitto/support/{{ $channel }}/` — `investigation.md` for tool order and safe commands,
+    `scope.md` to confirm the ask is in scope, and `tone.md` for reply style). If any of those
+    fragments were missing in Step 0, note that in a `[CONTEXT]` bead comment and use the generic
+    defaults for the missing pieces. Do **not** create or append to those fragments here — this
+    prompt is a reader; the owners (`Support: watch channel`, `Support: investigate`,
+    `Support: reply to user`) are responsible for populating them.
   - Feed the full conversation context (original question, thread history, the specific unanswered
     question) and ask for a response that addresses the open point, avoids repeating what was said,
     and links docs/tickets if relevant. Proceed to Step 6.
