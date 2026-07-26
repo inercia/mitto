@@ -1,18 +1,16 @@
 {{- /*
   support/channel-fragment-read — read ONE topical fragment of the per-channel
-  support playbook. Replaces the monolithic `channel-playbook-read` for prompts
-  that only need a subset (e.g. `reply-to-user` only needs tone, `check-status`
-  needs tone + scope).
+  support playbook.
 
   Fragments live under `.mitto/support/<channel-id>/<fragment>.md`, one topic
   per file. Standard fragments: scope, tone, investigation, resources,
   escalation, redirects. Missing fragments fall back to the caller prompt's
   built-in defaults — never a hard failure.
 
-  Owner semantics (Phase 2): if `OwnerAsk` is true, the fragment is owned by
-  the calling prompt and the agent should ask the user (via `mitto_ui_form`)
-  to fill it in when missing, then write the file. In Phase 1 all callers
-  pass `OwnerAsk=false` (reader-only mode).
+  Owner semantics: if `OwnerAsk` is true, the fragment is owned by the calling
+  prompt and the agent should ask the user (via `mitto_ui_form`) to fill it
+  in when missing, then write the file. If false (reader mode), the caller
+  just logs a `[CONTEXT]` note and continues with in-prompt defaults.
 
   Callers pass named fields via a `dict`:
 
@@ -20,14 +18,13 @@
                 "scope" | "tone" | "investigation" | "resources"
                 | "escalation" | "redirects".
       Purpose:  short caller-supplied phrase spliced into "use it to <Purpose>".
-                Same convention as channel-playbook-read.
       Owner:    canonical name of the owner prompt, e.g. "Support: reply to
                 user" — used in the missing-file message so the reader tells
                 the user which prompt would populate it. Required.
       OwnerAsk: bool. If true, the CALLING prompt is itself the owner and
                 should ask + write when the fragment is missing. If false
-                (Phase 1 default for readers), the caller just logs a
-                `[CONTEXT]` note and continues with in-prompt defaults.
+                (reader mode), the caller just logs a `[CONTEXT]` note and
+                continues with in-prompt defaults.
 
   Usage (rendered as a single Markdown bullet — the CALLER supplies the
   leading `- `):

@@ -210,17 +210,14 @@ func TestTargetBeadPickerFragmentRenders(t *testing.T) {
 
 // TestChannelFragmentReadRenders is a smoke test for
 // _shared/support/channel-fragment-read. Verifies the stable
-// per-fragment path convention hallmark appears in every consumer
-// (mitto-da9.1 introduced the fragment; mitto-da9.2 migrated the
-// remaining consumers off the monolithic channel-playbook-read).
+// per-fragment path convention hallmark appears in every consumer.
 func TestChannelFragmentReadRenders(t *testing.T) {
 	ctx := &cel.PromptEnabledContext{
 		Session: cel.SessionContext{ID: "s", Name: "N", HasMessages: true},
 	}
 	// Hallmarks unique to the channel-fragment-read fragment body:
 	// the per-fragment path convention and the "authoritative fragment
-	// guide" phrasing (as opposed to the monolithic "authoritative guide"
-	// of the deprecated channel-playbook-read).
+	// guide" phrasing.
 	hallmarks := []string{
 		"Read the channel playbook fragment",
 		"`.mitto/support/<channel-id>/",
@@ -574,55 +571,23 @@ func TestMigrateMonolithChannelSubstitution(t *testing.T) {
 	}
 }
 
-// TestChannelPlaybookReadDeprecated is a regression guard for
-// mitto-da9.3's deprecation of `_shared/support/channel-playbook-read`.
-//
-//   - The fragment body itself must render the DEPRECATED banner and the
-//     drift-note instruction so any future caller emits a `[CONTEXT]` bead
-//     comment naming the legacy template.
-//   - No in-tree builtin prompt may call the deprecated fragment: zero
-//     `{{ template "_shared/support/channel-playbook-read" ... }}` sites
-//     across the builtin corpus.
-func TestChannelPlaybookReadDeprecated(t *testing.T) {
+// TestChannelPlaybookReadRemoved is a regression guard for the removal
+// of `_shared/support/channel-playbook-read` (mitto-5cx). The fragment
+// must not exist in the loaded registry, and no in-tree builtin prompt
+// may call it.
+func TestChannelPlaybookReadRemoved(t *testing.T) {
 	installBuiltinFragmentsForTest(t)
 
-	// (a) Body-level assertions: render the fragment directly against a
-	// minimal context and check the deprecation hallmarks.
+	// (a) Registry assertion: the fragment must be gone.
 	reg := CurrentFragments()
-	body, ok := reg.Get("_shared/support/channel-playbook-read")
-	if !ok {
-		t.Fatalf("fragment %q not present in the loaded registry", "_shared/support/channel-playbook-read")
-	}
-	// Minimal wrapper template that invokes the fragment with a Purpose.
-	wrapper := `{{ template "_shared/support/channel-playbook-read" (dict "Purpose" "smoke-test") }}`
-	ctx := &cel.PromptEnabledContext{
-		Session: cel.SessionContext{ID: "s", Name: "N", HasMessages: true},
-	}
-	funcs := cel.BuildTemplateFuncMap(ctx)
-	out, err := RenderPromptTemplate("channel-playbook-read-deprecation", wrapper, ctx, funcs)
-	if err != nil {
-		t.Fatalf("render deprecated fragment wrapper: %v", err)
-	}
-	// Guard the fragment content is non-empty so `Get` did not silently
-	// return an empty string.
-	if strings.TrimSpace(body) == "" {
-		t.Fatalf("deprecated fragment body is empty")
-	}
-	deprecationHallmarks := []string{
-		"⚠ **DEPRECATED**",
-		"channel-fragment-read",
-		"still using legacy",
-	}
-	for _, hallmark := range deprecationHallmarks {
-		if !strings.Contains(out, hallmark) {
-			t.Errorf("rendered deprecated fragment missing hallmark %q; got:\n%s", hallmark, out)
-		}
+	if _, ok := reg.Get("_shared/support/channel-playbook-read"); ok {
+		t.Fatalf("fragment %q is still present in the loaded registry — it was removed in mitto-5cx", "_shared/support/channel-playbook-read")
 	}
 
-	// (b) Zero-caller assertion: no builtin prompt may invoke the
-	// deprecated fragment. Scan every builtin prompt's raw body for the
-	// template call. Doc-comment mentions inside `{{- /* ... */ -}}` blocks
-	// and prose references are OK — only actual invocations fail.
+	// (b) Zero-caller assertion: no builtin prompt may invoke the removed
+	// fragment. Scan every builtin prompt's raw body for the template call.
+	// Doc-comment mentions inside `{{- /* ... */ -}}` blocks and prose
+	// references are OK — only actual invocations fail.
 	builtinDir := "../../config/prompts/builtin"
 	prompts, err := LoadPromptsFromDir(builtinDir)
 	if err != nil {
@@ -631,7 +596,7 @@ func TestChannelPlaybookReadDeprecated(t *testing.T) {
 	invocation := `template "_shared/support/channel-playbook-read"`
 	for _, p := range prompts {
 		if strings.Contains(p.Content, invocation) {
-			t.Errorf("builtin prompt %q still invokes the deprecated fragment %q — migrate the caller to _shared/support/channel-fragment-read", p.Name, "_shared/support/channel-playbook-read")
+			t.Errorf("builtin prompt %q still invokes the removed fragment %q — use _shared/support/channel-fragment-read instead", p.Name, "_shared/support/channel-playbook-read")
 		}
 	}
 }
