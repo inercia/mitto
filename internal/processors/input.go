@@ -131,6 +131,13 @@ type ProcessorInput struct {
 	// ModelName is the display name of the session's current model (convenience for
 	// {{ .Session.ModelName }} display). Excluded from JSON (json:"-").
 	ModelName string `json:"-"`
+	// PromptsSnapshotFn, when non-nil, returns a snapshot of the workspace
+	// prompt registry (names + enabled names) for the {{ .Prompts.Exists }} /
+	// {{ .Prompts.Enabled }} template predicates. Lazy so non-templated
+	// prompts (the >99% case) do not pay the snapshot cost. Nil is safe:
+	// BuildCELContext leaves ctx.Prompts zero-valued, and the predicates
+	// fail-closed (return false) in that case. Excluded from JSON (json:"-").
+	PromptsSnapshotFn func() *config.PromptsSnapshot `json:"-"`
 }
 
 // AvailableACPServer describes an ACP server available in the session's workspace.

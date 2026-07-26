@@ -258,6 +258,44 @@ func (c *PromptsCache) GetWebPromptsSpecificToACP(acpServer string) ([]WebPrompt
 	return PromptsToWebPrompts(filtered), nil
 }
 
+// PromptsSnapshot is an immutable view of the workspace prompt registry at
+// snapshot time. Populates cel.PromptsContext (Names / EnabledNames) for the
+// {{ .Prompts.Exists }} / {{ .Prompts.Enabled }} template predicates. The
+// snapshot is the same merged/post-filter view mitto_prompt_get reads, so
+// predicates return the same answer as an MCP round-trip.
+type PromptsSnapshot struct {
+	Names        []string
+	EnabledNames []string
+}
+
+// NamesSnapshot returns a canonical-case snapshot of the currently cached
+// prompt names. Since the cache prunes disabled prompts during reload (they
+// have already served their merge-time purpose of suppressing lower-priority
+// same-named entries), Names and EnabledNames are equivalent here — both
+// reflect the enabled, resolvable set that mitto_prompt_get / mitto_prompt_list
+// see. Callers who also need workspace-level disabled overrides should merge
+// them in at the call site (see internal/web/session_api.go population sites).
+func (c *PromptsCache) NamesSnapshot() PromptsSnapshot {
+	// Ensure cache is loaded before reading.
+	_, _ = c.Get()
+
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	names := make([]string, 0, len(c.webPrompts))
+	enabled := make([]string, 0, len(c.webPrompts))
+	for _, p := range c.webPrompts {
+		if p.Name == "" {
+			continue
+		}
+		names = append(names, p.Name)
+		if p.Enabled == nil || *p.Enabled {
+			enabled = append(enabled, p.Name)
+		}
+	}
+	return PromptsSnapshot{Names: names, EnabledNames: enabled}
+}
+
 // ForceReload clears the cache and reloads from disk.
 func (c *PromptsCache) ForceReload() ([]*PromptFile, error) {
 	c.mu.Lock()

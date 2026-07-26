@@ -66,6 +66,13 @@ type promptDeps interface {
 	// MCP tool names from the auxiliary manager (empty when unavailable)
 	pdCachedMCPToolNames() []string
 
+	// pdPromptsSnapshot returns a lazy fn that snapshots the workspace prompt
+	// registry (names + enabled names) for the {{ .Prompts.Exists }} /
+	// {{ .Prompts.Enabled }} template predicates. May return nil when no
+	// PromptsCache is available (tests / suspended sessions), in which case
+	// the predicates fail-closed at render time.
+	pdPromptsSnapshot() func() *config.PromptsSnapshot
+
 	// User data from the store (nil when unavailable or empty)
 	pdGetUserData() (*session.UserData, error)
 
@@ -596,6 +603,7 @@ func (p promptDispatcher) buildProcessorInput(d promptDeps, message string, isFi
 		ModelTags:              modelTags,
 		ModelName:              modelName,
 		ProcessorArgOverrides:  d.pdWorkspaceProcessorArgOverrides(),
+		PromptsSnapshotFn:      d.pdPromptsSnapshot(),
 	}
 }
 

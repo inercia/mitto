@@ -55,6 +55,7 @@ type fakePromptDeps struct {
 	childPrompting                 map[string]bool
 	childQueueLength               map[string]int
 	mcpToolNames                   []string
+	promptsSnapshotFn              func() *config.PromptsSnapshot
 	userData                       *session.UserData
 	userDataErr                    error
 	sessionCtx                     context.Context
@@ -211,6 +212,9 @@ func (f *fakePromptDeps) pdListWorkspacePeers() ([]session.Metadata, error) {
 func (f *fakePromptDeps) pdIsChildPrompting(id string) bool { return f.childPrompting[id] }
 func (f *fakePromptDeps) pdChildQueueLength(id string) int  { return f.childQueueLength[id] }
 func (f *fakePromptDeps) pdCachedMCPToolNames() []string    { return f.mcpToolNames }
+func (f *fakePromptDeps) pdPromptsSnapshot() func() *config.PromptsSnapshot {
+	return f.promptsSnapshotFn
+}
 func (f *fakePromptDeps) pdGetUserData() (*session.UserData, error) {
 	return f.userData, f.userDataErr
 }

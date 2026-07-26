@@ -169,6 +169,12 @@ type SessionManager struct {
 	// Passed to BackgroundSession via BackgroundSessionConfig on creation/resume.
 	promptParametersResolver func(name, workingDir string) []config.PromptParameter
 
+	// promptsCache is the workspace prompt registry passed to every new /
+	// resumed BackgroundSession via BackgroundSessionConfig so the render-time
+	// {{ .Prompts.Exists }} / {{ .Prompts.Enabled }} predicates can snapshot
+	// the same view mitto_prompt_get reads (mitto-s1w). Nil is safe.
+	promptsCache *config.PromptsCache
+
 	// stderrPatternsResolver returns per-agent compiled stderr regex patterns for
 	// a given ACP server name (mitto-k6h). Passed to BackgroundSession via
 	// BackgroundSessionConfig on creation/resume so legacy per-session ACP
@@ -911,6 +917,15 @@ func (sm *SessionManager) SetPromptResolver(resolver PromptResolver) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 	sm.promptResolver = resolver
+}
+
+// SetPromptsCache sets the workspace prompt registry used by every new /
+// resumed BackgroundSession to snapshot the render-time {{ .Prompts.* }}
+// context (mitto-s1w). Nil-safe: predicates fail-closed when unset.
+func (sm *SessionManager) SetPromptsCache(cache *config.PromptsCache) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.promptsCache = cache
 }
 
 // SetPreferredModelsResolver sets the function used to resolve a prompt name to its preferredModels list.
@@ -1739,6 +1754,7 @@ func (sm *SessionManager) CreateSessionWithWorkspaceAndOptions(ctx context.Conte
 		PromptResolver:                 sm.promptResolver,           // Named prompt resolver (resolves prompt name → text)
 		PreferredModelsResolver:        sm.preferredModelsResolver,  // Named prompt resolver (resolves prompt name → preferredModels)
 		PromptParametersResolver:       sm.promptParametersResolver, // Named prompt resolver (resolves prompt name → parameters)
+		PromptsCache:                   sm.promptsCache,             // Workspace prompt registry for {{ .Prompts.* }} snapshot (mitto-s1w)
 		StderrPatterns:                 sm.resolveStderrPatterns(acpServer),
 		OnTurnIdle: func(sessionID string) {
 			sm.mu.RLock()
@@ -2360,6 +2376,7 @@ func (sm *SessionManager) resumeSessionWithConstraint(sessionID, sessionName, wo
 		PromptResolver:                 sm.promptResolver,           // Named prompt resolver (resolves prompt name → text)
 		PreferredModelsResolver:        sm.preferredModelsResolver,  // Named prompt resolver (resolves prompt name → preferredModels)
 		PromptParametersResolver:       sm.promptParametersResolver, // Named prompt resolver (resolves prompt name → parameters)
+		PromptsCache:                   sm.promptsCache,             // Workspace prompt registry for {{ .Prompts.* }} snapshot (mitto-s1w)
 		StderrPatterns:                 sm.resolveStderrPatterns(acpServer),
 		OnTurnIdle: func(sessionID string) {
 			sm.mu.RLock()

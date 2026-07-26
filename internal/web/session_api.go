@@ -289,6 +289,18 @@ func (s *Server) buildPromptEnabledContext(sessionID string) *config.PromptEnabl
 	ctx.Permissions.CanInteractOtherWorkspaces = session.GetFlagValue(meta.AdvancedSettings, session.FlagCanInteractOtherWorkspaces)
 	ctx.Permissions.AutoApprovePermissions = session.GetFlagValue(meta.AdvancedSettings, session.FlagAutoApprovePermissions)
 
+	// Prompts context (mitto-s1w): snapshot of the workspace prompt registry
+	// for the {{ .Prompts.Exists }} / {{ .Prompts.Enabled }} template
+	// predicates. Same source of truth as mitto_prompt_get. Nil cache leaves
+	// ctx.Prompts zero-valued (predicates fail-closed).
+	if s.config.PromptsCache != nil {
+		snap := s.config.PromptsCache.NamesSnapshot()
+		ctx.Prompts = config.PromptsContext{
+			Names:        snap.Names,
+			EnabledNames: snap.EnabledNames,
+		}
+	}
+
 	return ctx
 }
 
@@ -409,6 +421,17 @@ func (s *Server) applyWorkspaceNamespace(ctx *config.PromptEnabledContext, worki
 				names = append(names, tool.Name)
 			}
 			ctx.Tools = config.NewReachableToolsContext(names)
+		}
+	}
+
+	// Prompts context (mitto-s1w): reset then repopulate from PromptsCache
+	// so no session-derived Names leak through in the session-less menu path.
+	ctx.Prompts = config.PromptsContext{}
+	if s.config.PromptsCache != nil {
+		snap := s.config.PromptsCache.NamesSnapshot()
+		ctx.Prompts = config.PromptsContext{
+			Names:        snap.Names,
+			EnabledNames: snap.EnabledNames,
 		}
 	}
 }

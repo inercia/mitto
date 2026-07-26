@@ -750,6 +750,22 @@ func (bs *BackgroundSession) ForceReset() {
 func (bs *BackgroundSession) pdPromptResolver() PromptResolver { return bs.promptResolver }
 func (bs *BackgroundSession) pdWorkingDir() string             { return bs.workingDir }
 
+// pdPromptsSnapshot returns a lazy fn that snapshots the workspace prompt
+// registry for the render-time {{ .Prompts.Exists }} / {{ .Prompts.Enabled }}
+// predicates (mitto-s1w). Returns nil when no PromptsCache is wired — the
+// dispatcher hands the nil fn to ProcessorInput, and BuildCELContext leaves
+// ctx.Prompts zero-valued (predicates fail-closed).
+func (bs *BackgroundSession) pdPromptsSnapshot() func() *config.PromptsSnapshot {
+	if bs.promptsCache == nil {
+		return nil
+	}
+	cache := bs.promptsCache
+	return func() *config.PromptsSnapshot {
+		snap := cache.NamesSnapshot()
+		return &snap
+	}
+}
+
 func (bs *BackgroundSession) pdAgentSupportsImages() bool { return bs.agentSupportsImages }
 
 func (bs *BackgroundSession) pdHasStore() bool { return bs.store != nil }

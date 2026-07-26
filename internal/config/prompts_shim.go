@@ -24,6 +24,7 @@ type PromptLoadError = prompts.PromptLoadError
 
 // --- Types (cache.go) ---
 type PromptsCache = prompts.PromptsCache
+type PromptsSnapshot = prompts.PromptsSnapshot
 
 // --- Types (watcher.go) ---
 type PromptsChangeEvent = prompts.PromptsChangeEvent

@@ -306,6 +306,18 @@ func BuildCELContext(input *ProcessorInput) *config.PromptEnabledContext {
 	// fail-open grace used by the prompt menus (mitto-sys.1).
 	ctx.Tools = config.NewProcessorToolsContext(input.MCPToolNames)
 
+	// Prompts context — lazy snapshot of the workspace prompt registry for
+	// {{ .Prompts.Exists }} / {{ .Prompts.Enabled }}. Nil fn or nil snapshot
+	// leaves ctx.Prompts zero-valued (predicates fail-closed).
+	if input.PromptsSnapshotFn != nil {
+		if snap := input.PromptsSnapshotFn(); snap != nil {
+			ctx.Prompts = config.PromptsContext{
+				Names:        snap.Names,
+				EnabledNames: snap.EnabledNames,
+			}
+		}
+	}
+
 	// Permissions context - resolve flags with defaults
 	ctx.Permissions.CanDoIntrospection = session.GetFlagValue(input.AdvancedSettings, session.FlagCanDoIntrospection)
 	ctx.Permissions.CanSendPrompt = session.GetFlagValue(input.AdvancedSettings, session.FlagCanSendPrompt)

@@ -33,6 +33,7 @@ type ServerToolInfo = cel.ServerToolInfo
 type ToolsContext = cel.ToolsContext
 type ItemContext = cel.ItemContext
 type PermissionsContext = cel.PermissionsContext
+type PromptsContext = cel.PromptsContext
 
 // --- Types (tasks_condition.go) ---
 type TasksSnapshot = cel.TasksSnapshot

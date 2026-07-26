@@ -343,6 +343,13 @@ type BackgroundSession struct {
 	// when merging cached values into supplied arguments and writing them back.
 	promptParametersResolver func(name, workingDir string) []config.PromptParameter
 
+	// promptsCache is the workspace prompt registry used to snapshot Names /
+	// EnabledNames into the render-time PromptEnabledContext (mitto-s1w). May
+	// be nil when no cache is wired (tests, suspended sessions) — in that
+	// case ctx.Prompts stays zero-valued and .Prompts.Exists / .Prompts.Enabled
+	// fail-closed. Set via BackgroundSessionConfig.PromptsCache.
+	promptsCache *config.PromptsCache
+
 	// Model preference override tracking (guarded by modelMu).
 	modelMu        sync.Mutex // Protects baselineModel and overrideActive
 	baselineModel  string     // User's intended model; never mutated by per-prompt overrides
@@ -505,6 +512,12 @@ type BackgroundSessionConfig struct {
 	// when merging cached values into supplied arguments and writing them back.
 	PromptParametersResolver func(name, workingDir string) []config.PromptParameter
 
+	// PromptsCache is the workspace prompt registry snapshotted at render
+	// time to populate ctx.Prompts.Names / EnabledNames for the
+	// {{ .Prompts.Exists }} / {{ .Prompts.Enabled }} template predicates
+	// (mitto-s1w). Nil is safe: predicates fail-closed.
+	PromptsCache *config.PromptsCache
+
 	// IsChildPrompting checks if a child session's agent is currently responding.
 	// Used to populate children.promptingCount in the CEL context for enabledWhen.
 	IsChildPrompting func(childSessionID string) bool
@@ -659,6 +672,7 @@ func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, erro
 		promptResolver:                 cfg.PromptResolver,           // Named prompt resolver (resolves name → text at send time)
 		preferredModelsResolver:        cfg.PreferredModelsResolver,  // Named prompt resolver (resolves name → preferredModels)
 		promptParametersResolver:       cfg.PromptParametersResolver, // Named prompt resolver (resolves name → parameters)
+		promptsCache:                   cfg.PromptsCache,             // Workspace prompt registry for {{ .Prompts.* }} snapshot (mitto-s1w)
 		isChildPrompting:               cfg.IsChildPrompting,         // Callback to check if a child session is prompting
 		creationCtx:                    cfg.CreationCtx,              // Context for initial ACP session creation RPC only
 	}
@@ -903,6 +917,7 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 		promptResolver:                 config.PromptResolver,           // Named prompt resolver (resolves name → text at send time)
 		preferredModelsResolver:        config.PreferredModelsResolver,  // Named prompt resolver (resolves name → preferredModels)
 		promptParametersResolver:       config.PromptParametersResolver, // Named prompt resolver (resolves name → parameters)
+		promptsCache:                   config.PromptsCache,             // Workspace prompt registry for {{ .Prompts.* }} snapshot (mitto-s1w)
 		isChildPrompting:               config.IsChildPrompting,         // Callback to check if a child session is prompting
 		creationCtx:                    config.CreationCtx,              // Context for initial ACP session creation RPC only
 	}

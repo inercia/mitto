@@ -1,5 +1,7 @@
 package cel
 
+import "strings"
+
 // PromptEnabledContext holds all data available to CEL expressions
 // for evaluating prompt enabled conditions.
 // All fields have zero values that are safe to use in expressions.
@@ -51,6 +53,14 @@ type PromptEnabledContext struct {
 	// the dispatch/render path (see prompt_dispatcher.go). Template-only; NOT
 	// exposed to CEL.
 	PromptTextResolver func(name string) (string, error)
+	// Prompts exposes the set of workspace prompts registered in the current
+	// PromptsCache view (global + workspace, post-merge, same source of truth
+	// as mitto_prompt_get / mitto_prompt_list). Templates use it to gate on
+	// whether a peer prompt exists / is enabled without an MCP round-trip
+	// (see loop-processing.prompt.yaml Step 1). Zero-value context means
+	// "unknown" — Exists / Enabled return false (fail-closed), matching the
+	// mitto_prompt_get failure branch. Template-only; NOT exposed to CEL.
+	Prompts PromptsContext
 }
 
 // IterationContext holds loop-iteration info for CEL/template evaluation.
@@ -530,6 +540,62 @@ type ItemContext struct {
 	Labels []string
 	// Kind distinguishes the source of the item (e.g. "beadsIssue")
 	Kind string
+}
+
+// PromptsContext exposes the workspace prompt registry to prompt templates
+// (Go-template only; NOT declared on the CEL env, mirroring the .Trigger and
+// PromptTextResolver posture). Backed by a snapshot of the same PromptsCache
+// view mitto_prompt_get / mitto_prompt_list read, so .Prompts.Exists /
+// .Prompts.Enabled return the same answer without the MCP round-trip.
+//
+// Name matching is case-insensitive (matches mitto_prompt_get resolution).
+// Names / EnabledNames preserve canonical case for display; membership is
+// checked via lowercased-key sets for O(1) lookup.
+//
+// A zero-value context (both name slices nil) means "the snapshot is unknown"
+// — Exists / Enabled fail-closed (return false), matching the pass-start
+// mitto_prompt_get failure branch that disables the class for the pass.
+type PromptsContext struct {
+	// Names lists all registered prompt names in the current workspace view
+	// (enabled and disabled), in canonical case. Includes disabled entries so
+	// {{ .Prompts.Exists "X" }} can distinguish "prompt file exists but is
+	// disabled" from "prompt not registered".
+	Names []string
+	// EnabledNames lists prompts that are registered AND enabled (Enabled ==
+	// nil OR *Enabled == true), in canonical case. Subset of Names.
+	EnabledNames []string
+}
+
+// Exists reports whether a prompt is registered in the workspace view under
+// the given name (case-insensitive). Returns true regardless of enabled state
+// — disabled prompts still exist in the registry.
+func (p PromptsContext) Exists(name string) bool {
+	if name == "" {
+		return false
+	}
+	lower := strings.ToLower(name)
+	for _, n := range p.Names {
+		if strings.ToLower(n) == lower {
+			return true
+		}
+	}
+	return false
+}
+
+// Enabled reports whether a prompt is registered AND enabled in the
+// workspace view under the given name (case-insensitive). Returns false for
+// unknown names and for known-but-disabled prompts.
+func (p PromptsContext) Enabled(name string) bool {
+	if name == "" {
+		return false
+	}
+	lower := strings.ToLower(name)
+	for _, n := range p.EnabledNames {
+		if strings.ToLower(n) == lower {
+			return true
+		}
+	}
+	return false
 }
 
 // PermissionsContext holds session permission flags for CEL evaluation.

@@ -56,6 +56,69 @@ prompt: |
 	}
 }
 
+// TestPromptsCache_NamesSnapshot verifies that NamesSnapshot returns the same
+// canonical-case names Web layer / mitto_prompt_get see (mitto-s1w). Since the
+// cache filters disabled prompts out during reload, Names and EnabledNames are
+// equivalent — both reflect the enabled, resolvable set.
+func TestPromptsCache_NamesSnapshot(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv(appdir.MittoDirEnv, tmpDir)
+	appdir.ResetCache()
+	t.Cleanup(appdir.ResetCache)
+
+	promptsDir := filepath.Join(tmpDir, appdir.PromptsDirName)
+	if err := os.MkdirAll(promptsDir, 0755); err != nil {
+		t.Fatalf("mkdir prompts: %v", err)
+	}
+
+	entries := map[string]string{
+		"alpha.prompt.yaml": `name: "Alpha"
+prompt: |
+  a
+`,
+		"beta.prompt.yaml": `name: "Beta"
+prompt: |
+  b
+`,
+		"disabled.prompt.yaml": `name: "Disabled Prompt"
+enabled: false
+prompt: |
+  x
+`,
+	}
+	for f, content := range entries {
+		if err := os.WriteFile(filepath.Join(promptsDir, f), []byte(content), 0644); err != nil {
+			t.Fatalf("write %s: %v", f, err)
+		}
+	}
+
+	cache := NewPromptsCache()
+	snap := cache.NamesSnapshot()
+
+	// Disabled prompt is filtered out during reload — it does not appear in
+	// either Names or EnabledNames (same view mitto_prompt_get sees).
+	nameSet := make(map[string]bool, len(snap.Names))
+	for _, n := range snap.Names {
+		nameSet[n] = true
+	}
+	if !nameSet["Alpha"] || !nameSet["Beta"] {
+		t.Errorf("expected Alpha and Beta in Names, got %v", snap.Names)
+	}
+	if nameSet["Disabled Prompt"] {
+		t.Errorf("disabled prompt should NOT appear in Names; got %v", snap.Names)
+	}
+	enabledSet := make(map[string]bool, len(snap.EnabledNames))
+	for _, n := range snap.EnabledNames {
+		enabledSet[n] = true
+	}
+	if !enabledSet["Alpha"] || !enabledSet["Beta"] {
+		t.Errorf("expected Alpha and Beta in EnabledNames, got %v", snap.EnabledNames)
+	}
+	if enabledSet["Disabled Prompt"] {
+		t.Errorf("disabled prompt should NOT appear in EnabledNames; got %v", snap.EnabledNames)
+	}
+}
+
 func TestPromptsCache_GetWebPrompts(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv(appdir.MittoDirEnv, tmpDir)

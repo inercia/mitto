@@ -112,17 +112,21 @@ prompt: |
 
   ## Step 1 — Validate the nested driver prompts
 
-  §B/§C spawn children by name; resolve each enabled driver up front (closes
-  mitto-dj9 short-circuit). On failure, disable that class for this pass only.
+  §B/§C spawn children by name; each enabled driver must be registered in the
+  workspace prompt view. Checked in-template via `.Prompts.Enabled` (mitto-s1w
+  — same source of truth as `mitto_prompt_get` / `mitto_prompt_list`, no MCP
+  round-trip). On failure, disable that class for this pass only.
 
-  ```
-  {{ if ne .Args.FixBugs "false" -}}
-  mitto_prompt_get(self_id: "{{ .Session.ID }}", name: "Loop fixing bug")
-  {{ end -}}
-  {{ if ne .Args.WorkOnFeatures "false" -}}
-  mitto_prompt_get(self_id: "{{ .Session.ID }}", name: "Loop implementing feature")
-  {{ end -}}
-  ```
+  {{- $fixBugsEnabled := ne .Args.FixBugs "false" }}
+  {{- $workOnFeaturesEnabled := ne .Args.WorkOnFeatures "false" }}
+  {{- $bugDriverPresent := .Prompts.Enabled "Loop fixing bug" }}
+  {{- $featureDriverPresent := .Prompts.Enabled "Loop implementing feature" }}
+  {{ if and $fixBugsEnabled (not $bugDriverPresent) }}
+  - §B disabled this pass: `Loop fixing bug` is not enabled in the workspace prompt registry.
+  {{- end }}
+  {{ if and $workOnFeaturesEnabled (not $featureDriverPresent) }}
+  - §C disabled this pass: `Loop implementing feature` is not enabled in the workspace prompt registry.
+  {{- end }}
 
   ## Step 2P — Prune stale children (reap before you spawn)
 

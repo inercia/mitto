@@ -1322,6 +1322,10 @@ func NewServer(config Config) (*Server, error) {
 		s.sessionManager.SetPromptResolver(promptResolverFunc)
 		s.sessionManager.SetPreferredModelsResolver(preferredModelsResolverFunc)
 		s.sessionManager.SetPromptParametersResolver(promptParametersResolverFunc)
+		// Pass the workspace prompt registry to every new/resumed session so the
+		// render-time {{ .Prompts.Exists }} / {{ .Prompts.Enabled }} predicates
+		// snapshot the same view mitto_prompt_get reads (mitto-s1w).
+		s.sessionManager.SetPromptsCache(s.config.PromptsCache)
 		// Wire event-driven on-completion loop firing: sessions notify the runner
 		// when they go idle so it can arm the next onCompletion run.
 		s.sessionManager.SetOnConversationIdle(s.loopRunner.OnConversationIdle)
