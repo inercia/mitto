@@ -196,6 +196,65 @@ func TestBuildCELContext_ModelTags(t *testing.T) {
 	}
 }
 
+// TestBuildCELContext_Prompts asserts that BuildCELContext populates ctx.Prompts
+// from ProcessorInput.PromptsSnapshotFn (mitto-s1w), and that both the nil-fn and
+// nil-snapshot-return branches leave the context zero-valued so the .Prompts.Exists /
+// .Prompts.Enabled predicates fail-closed on cold-start / unwired callers.
+func TestBuildCELContext_Prompts(t *testing.T) {
+	// Branch A: fn returns a real snapshot — Names and EnabledNames are copied
+	// onto ctx.Prompts and the case-insensitive predicates work end-to-end.
+	input := &ProcessorInput{
+		SessionID: "sess-1",
+		PromptsSnapshotFn: func() *config.PromptsSnapshot {
+			return &config.PromptsSnapshot{
+				Names:        []string{"Loop fixing bug", "Loop implementing feature"},
+				EnabledNames: []string{"Loop fixing bug", "Loop implementing feature"},
+			}
+		},
+	}
+	ctx := BuildCELContext(input)
+	if len(ctx.Prompts.Names) != 2 {
+		t.Errorf("ctx.Prompts.Names len = %d, want 2 (%v)", len(ctx.Prompts.Names), ctx.Prompts.Names)
+	}
+	if !ctx.Prompts.Enabled("loop fixing bug") { // case-insensitive
+		t.Error("ctx.Prompts.Enabled(\"loop fixing bug\") = false, want true")
+	}
+	if !ctx.Prompts.Exists("Loop implementing feature") {
+		t.Error("ctx.Prompts.Exists(\"Loop implementing feature\") = false, want true")
+	}
+	if ctx.Prompts.Enabled("Nonexistent") {
+		t.Error("ctx.Prompts.Enabled(\"Nonexistent\") = true, want false")
+	}
+
+	// Branch B: fn nil — ctx.Prompts stays zero-valued and predicates fail-closed.
+	nilFnCtx := BuildCELContext(&ProcessorInput{SessionID: "sess-2"})
+	if len(nilFnCtx.Prompts.Names) != 0 || len(nilFnCtx.Prompts.EnabledNames) != 0 {
+		t.Errorf("nil PromptsSnapshotFn: expected zero-valued Prompts, got Names=%v EnabledNames=%v",
+			nilFnCtx.Prompts.Names, nilFnCtx.Prompts.EnabledNames)
+	}
+	if nilFnCtx.Prompts.Enabled("Loop fixing bug") {
+		t.Error("nil PromptsSnapshotFn: Enabled(...) should fail-closed (false)")
+	}
+	if nilFnCtx.Prompts.Exists("Loop fixing bug") {
+		t.Error("nil PromptsSnapshotFn: Exists(...) should fail-closed (false)")
+	}
+
+	// Branch C: fn returns nil snapshot — ctx.Prompts stays zero-valued (same as
+	// branch B); guards against a lazy snapshotter that briefly returns nil on
+	// cold start or under a transient cache miss.
+	nilSnapCtx := BuildCELContext(&ProcessorInput{
+		SessionID:         "sess-3",
+		PromptsSnapshotFn: func() *config.PromptsSnapshot { return nil },
+	})
+	if len(nilSnapCtx.Prompts.Names) != 0 || len(nilSnapCtx.Prompts.EnabledNames) != 0 {
+		t.Errorf("nil snapshot return: expected zero-valued Prompts, got Names=%v EnabledNames=%v",
+			nilSnapCtx.Prompts.Names, nilSnapCtx.Prompts.EnabledNames)
+	}
+	if nilSnapCtx.Prompts.Enabled("Loop fixing bug") {
+		t.Error("nil snapshot: Enabled(...) should fail-closed (false)")
+	}
+}
+
 // TestBuildCELContext_UserData asserts that BuildCELContext populates ctx.UserData
 // from input.UserData (name→value map).
 func TestBuildCELContext_UserData(t *testing.T) {

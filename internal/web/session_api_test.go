@@ -2796,3 +2796,113 @@ func TestBuildPromptEnabledContext_WorkspacePeersEmpty(t *testing.T) {
 		t.Errorf("expected zero-valued Peers, got %+v", peers)
 	}
 }
+
+// TestBuildPromptEnabledContext_PromptsSnapshot verifies that the web server's
+// buildPromptEnabledContext populates ctx.Prompts from the PromptsCache
+// (mitto-s1w) so template {{ .Prompts.Enabled }} / {{ .Prompts.Exists }}
+// predicates and CEL enabledWhen gates see the same enabled set as
+// mitto_prompt_get. A nil PromptsCache leaves ctx.Prompts zero-valued so the
+// predicates fail-closed.
+func TestBuildPromptEnabledContext_PromptsSnapshot(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv(appdir.MittoDirEnv, tmpDir)
+	appdir.ResetCache()
+	t.Cleanup(appdir.ResetCache)
+
+	promptsDir := filepath.Join(tmpDir, appdir.PromptsDirName)
+	if err := os.MkdirAll(promptsDir, 0755); err != nil {
+		t.Fatalf("mkdir prompts: %v", err)
+	}
+	entries := map[string]string{
+		"alpha.prompt.yaml":    "name: \"Alpha\"\nprompt: |\n  a\n",
+		"beta.prompt.yaml":     "name: \"Beta\"\nprompt: |\n  b\n",
+		"disabled.prompt.yaml": "name: \"Disabled Prompt\"\nenabled: false\nprompt: |\n  x\n",
+	}
+	for f, content := range entries {
+		if err := os.WriteFile(filepath.Join(promptsDir, f), []byte(content), 0644); err != nil {
+			t.Fatalf("write %s: %v", f, err)
+		}
+	}
+
+	storeDir := t.TempDir()
+	store, err := session.NewStore(storeDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	const (
+		workDir = "/tmp/mitto-prompts-snap-ws"
+		acpSrv  = "auggie"
+	)
+	if err := store.Create(session.Metadata{
+		SessionID:  "self",
+		Name:       "Self",
+		ACPServer:  acpSrv,
+		WorkingDir: workDir,
+	}); err != nil {
+		t.Fatalf("Create(self): %v", err)
+	}
+
+	cache := config.NewPromptsCache()
+
+	server := &Server{
+		config: Config{
+			PromptsCache: cache,
+		},
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
+		store:          store,
+	}
+
+	// Session-scoped context path.
+	ctx := server.buildPromptEnabledContext("self")
+	if ctx == nil {
+		t.Fatal("buildPromptEnabledContext returned nil")
+	}
+	if !ctx.Prompts.Enabled("Alpha") {
+		t.Errorf("ctx.Prompts.Enabled(\"Alpha\") = false, want true (Names=%v EnabledNames=%v)",
+			ctx.Prompts.Names, ctx.Prompts.EnabledNames)
+	}
+	if !ctx.Prompts.Exists("beta") { // case-insensitive
+		t.Errorf("ctx.Prompts.Exists(\"beta\") = false, want true (case-insensitive)")
+	}
+	if ctx.Prompts.Enabled("Disabled Prompt") {
+		t.Errorf("ctx.Prompts.Enabled(\"Disabled Prompt\") = true, want false (disabled prompts filtered)")
+	}
+	if ctx.Prompts.Exists("Disabled Prompt") {
+		t.Errorf("ctx.Prompts.Exists(\"Disabled Prompt\") = true, want false (disabled prompts filtered)")
+	}
+
+	// Session-less workspace-namespace path — applyWorkspaceNamespace resets and
+	// repopulates ctx.Prompts from the same PromptsCache.
+	wsCtx := &config.PromptEnabledContext{}
+	// Seed with stale values to prove the reset actually happens.
+	wsCtx.Prompts = config.PromptsContext{
+		Names:        []string{"stale"},
+		EnabledNames: []string{"stale"},
+	}
+	server.applyWorkspaceNamespace(wsCtx, workDir)
+	if !wsCtx.Prompts.Enabled("Alpha") {
+		t.Errorf("applyWorkspaceNamespace: Enabled(\"Alpha\") = false, want true (Names=%v)", wsCtx.Prompts.Names)
+	}
+	if wsCtx.Prompts.Exists("stale") {
+		t.Errorf("applyWorkspaceNamespace: stale Names leaked through (Names=%v)", wsCtx.Prompts.Names)
+	}
+
+	// Nil PromptsCache: ctx.Prompts stays zero-valued (fail-closed).
+	nilCacheServer := &Server{
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
+		store:          store,
+	}
+	nilCtx := nilCacheServer.buildPromptEnabledContext("self")
+	if nilCtx == nil {
+		t.Fatal("buildPromptEnabledContext (nil cache) returned nil")
+	}
+	if len(nilCtx.Prompts.Names) != 0 || len(nilCtx.Prompts.EnabledNames) != 0 {
+		t.Errorf("nil PromptsCache: expected zero-valued Prompts, got Names=%v EnabledNames=%v",
+			nilCtx.Prompts.Names, nilCtx.Prompts.EnabledNames)
+	}
+	if nilCtx.Prompts.Enabled("Alpha") {
+		t.Error("nil PromptsCache: Enabled(...) should fail-closed (false)")
+	}
+}
