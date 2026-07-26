@@ -16,7 +16,15 @@ parameters:
     description: 'The beads issue ID to act on (auto-filled from the Beads issue menu)'
     required: false
     type: beadsId
+  - name: SlackChannelID
+    type: text
+    required: false
+    description: 'The Slack channel ID (e.g. C0XXXXXXX). Optional; when set at spawn time it is used to inline channel playbook fragments at render time. When omitted, the prompt auto-derives it from the linked bead''s `metadata.slack_channel` field (via `BeadMetadata`); if that is also empty, the fragment reader falls back to instructing the agent to read the file at runtime.'
 prompt: |-
+  {{- $channel := Arg "SlackChannelID" "" -}}
+  {{- if eq $channel "" -}}
+  {{-   $channel = BeadMetadata (Arg "IssueID" "") "slack_channel" -}}
+  {{- end -}}
   # Support — Gather More Information
 
   {{ template "_shared/session-context" . }}
@@ -61,7 +69,7 @@ prompt: |-
 
   - Load the full history: `bd show <id>` and `bd comments <id>`. Note the stored `slack_thread_ts`
     / `slack_channel` / `slack_url` metadata.
-  - {{ template "_shared/support/channel-fragment-read" (dict "Fragment" "tone" "Purpose" "shape the tone when drafting the clarifying message" "Owner" "Support: reply to user" "OwnerAsk" false) }}
+  - {{ template "_shared/support/channel-fragment-read" (dict "Channel" $channel "Fragment" "tone" "Purpose" "shape the tone when drafting the clarifying message" "Owner" "Support: reply to user" "OwnerAsk" false) }}
   - Confirm the `state:*` label is `need-info`. If it is **not**, use `mitto_ui_options` to warn:
     - **Question**: "This bead is in `state:<current>`, not `need-info`. Continue anyway?"
     - **Options**: `[{label: "Continue anyway"}, {label: "Cancel"}]`, timeout 300.

@@ -753,9 +753,9 @@ func TestBuildTemplateFuncMap_AllKeysPresent(t *testing.T) {
 	fm := BuildTemplateFuncMap(nil)
 	expected := []string{
 		"Arg", "Default", "UserData",
-		"FileExists", "DirExists", "CommandExists", "HasPattern", "Model",
+		"FileExists", "DirExists", "ReadFile", "CommandExists", "HasPattern", "Model",
 		"GitFileModified", "GitDirModified", "GitStatusFiles", "GitFileTracked", "GitFileDeleted",
-		"BeadsCount", "HasBeads",
+		"BeadsCount", "HasBeads", "BeadHasLabels", "BeadIsOpen", "BeadMetadata",
 		"PromptText",
 		"Trim", "Lower", "Upper", "Contains", "HasPrefix", "HasSuffix", "Join",
 	}
@@ -802,6 +802,109 @@ func TestBuildTemplateFuncMap_FileExistsParity(t *testing.T) {
 		if got != wantGo {
 			t.Errorf("template fileExists(%q) = %q, pure-Go = %q", path, got, wantGo)
 		}
+	}
+}
+
+// TestReadFile_Basic covers the happy path, missing-file, and directory cases.
+func TestReadFile_Basic(t *testing.T) {
+	tmpDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tmpDir, "hello.md"), []byte("hi\nworld"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(tmpDir, "sub"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		name string
+		path string
+		want string
+	}{
+		{"present", "hello.md", "hi\nworld"},
+		{"missing", "absent.md", ""},
+		{"empty_path", "", ""},
+		{"is_dir", "sub", ""},
+		{"path_escape_dotdot", "../etc/passwd", ""},
+		{"absolute_path_rejected", "/etc/passwd", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := readFile(tmpDir, tc.path)
+			if got != tc.want {
+				t.Errorf("readFile(%q) = %q, want %q", tc.path, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestReadFile_SizeCap verifies content beyond readFileMaxBytes is truncated
+// rather than returned in full or aborted.
+func TestReadFile_SizeCap(t *testing.T) {
+	tmpDir := t.TempDir()
+	// Write cap+1024 bytes; expect exactly cap bytes back.
+	big := make([]byte, readFileMaxBytes+1024)
+	for i := range big {
+		big[i] = 'x'
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, "big.md"), big, 0644); err != nil {
+		t.Fatal(err)
+	}
+	got := readFile(tmpDir, "big.md")
+	if len(got) != readFileMaxBytes {
+		t.Errorf("readFile(big.md) len = %d, want %d (cap)", len(got), readFileMaxBytes)
+	}
+}
+
+// TestReadFile_TemplateInlining verifies ReadFile plugged into
+// RenderPromptTemplate inlines contents at render time.
+func TestReadFile_TemplateInlining(t *testing.T) {
+	tmpDir := t.TempDir()
+	fragDir := filepath.Join(tmpDir, ".mitto", "support", "C0TEST")
+	if err := os.MkdirAll(fragDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	body := "**Scope:** channel-specific triage rules go here."
+	if err := os.WriteFile(filepath.Join(fragDir, "scope.md"), []byte(body), 0644); err != nil {
+		t.Fatal(err)
+	}
+	ctx := &PromptEnabledContext{Workspace: WorkspaceContext{Folder: tmpDir}}
+	fm := BuildTemplateFuncMap(ctx)
+
+	// Present: inline body.
+	tmplPresent := `{{- if FileExists ".mitto/support/C0TEST/scope.md" -}}` +
+		`{{ ReadFile ".mitto/support/C0TEST/scope.md" }}` +
+		`{{- else -}}FALLBACK{{- end -}}`
+	got, err := RenderPromptTemplate("t", tmplPresent, ctx, fm)
+	if err != nil {
+		t.Fatalf("render (present): %v", err)
+	}
+	if got != body {
+		t.Errorf("present: got %q, want %q", got, body)
+	}
+
+	// Missing: fallback branch.
+	tmplMissing := `{{- if FileExists ".mitto/support/C0TEST/tone.md" -}}` +
+		`{{ ReadFile ".mitto/support/C0TEST/tone.md" }}` +
+		`{{- else -}}FALLBACK{{- end -}}`
+	got, err = RenderPromptTemplate("t", tmplMissing, ctx, fm)
+	if err != nil {
+		t.Fatalf("render (missing): %v", err)
+	}
+	if got != "FALLBACK" {
+		t.Errorf("missing: got %q, want FALLBACK", got)
+	}
+}
+
+// TestReadFile_NilCtxSafe verifies ReadFile is safe when BuildTemplateFuncMap
+// is called with a nil ctx (folder == ""): every call returns "".
+func TestReadFile_NilCtxSafe(t *testing.T) {
+	fm := BuildTemplateFuncMap(nil)
+	got, err := RenderPromptTemplate("t", `[{{ ReadFile "anything.md" }}]`, nil, fm)
+	if err != nil {
+		t.Fatalf("render error: %v", err)
+	}
+	if got != "[]" {
+		t.Errorf("nil-ctx ReadFile got %q, want []", got)
 	}
 }
 
@@ -1797,6 +1900,148 @@ func TestBeadIsOpen_CELParity(t *testing.T) {
 		ctx)
 	if combined {
 		t.Errorf("combined open+label gate = true for closed bead, want false")
+	}
+}
+
+// TestBeadMetadata_PresentArrayShape verifies happy-path retrieval from the
+// current `bd show --json` shape, a single-element ARRAY ([{...}]).
+func TestBeadMetadata_PresentArrayShape(t *testing.T) {
+	installFakeBd(t, `[{"id":"mitto-1","metadata":{"slack_channel":"C0TEST","other":"x"}}]`, 0)
+	tmp := t.TempDir()
+
+	if got := beadMetadata(tmp, "mitto-1", "slack_channel"); got != "C0TEST" {
+		t.Errorf("beadMetadata array-shape slack_channel = %q, want %q", got, "C0TEST")
+	}
+}
+
+// TestBeadMetadata_PresentObjectShape verifies parsing of the legacy bare
+// object shape (`{...}`, older bd) — the extended bdBead struct piggybacks on
+// parseBdShow's dual-shape tolerance.
+func TestBeadMetadata_PresentObjectShape(t *testing.T) {
+	installFakeBd(t, `{"id":"mitto-1","metadata":{"slack_channel":"C0LEG"}}`, 0)
+	tmp := t.TempDir()
+
+	if got := beadMetadata(tmp, "mitto-1", "slack_channel"); got != "C0LEG" {
+		t.Errorf("beadMetadata object-shape slack_channel = %q, want %q", got, "C0LEG")
+	}
+}
+
+// TestBeadMetadata_MissingKey verifies that a present metadata map without the
+// requested key returns "" (fail-open / natural nil-map indexing semantics).
+func TestBeadMetadata_MissingKey(t *testing.T) {
+	installFakeBd(t, `[{"id":"mitto-1","metadata":{"other":"x"}}]`, 0)
+	tmp := t.TempDir()
+
+	if got := beadMetadata(tmp, "mitto-1", "slack_channel"); got != "" {
+		t.Errorf("beadMetadata missing key = %q, want %q", got, "")
+	}
+}
+
+// TestBeadMetadata_NullMetadata verifies that a null metadata field decodes to
+// a nil map and returns "" (nil-map indexing is safe).
+func TestBeadMetadata_NullMetadata(t *testing.T) {
+	installFakeBd(t, `[{"id":"mitto-1","metadata":null}]`, 0)
+	tmp := t.TempDir()
+
+	if got := beadMetadata(tmp, "mitto-1", "slack_channel"); got != "" {
+		t.Errorf("beadMetadata null metadata = %q, want %q", got, "")
+	}
+}
+
+// TestBeadMetadata_NoMetadataField verifies that a bead JSON with no metadata
+// field at all (as real bd currently emits — see AGENTS.md observations) still
+// returns "" without erroring.
+func TestBeadMetadata_NoMetadataField(t *testing.T) {
+	installFakeBd(t, `[{"id":"mitto-1","status":"open","labels":["support-question"]}]`, 0)
+	tmp := t.TempDir()
+
+	if got := beadMetadata(tmp, "mitto-1", "slack_channel"); got != "" {
+		t.Errorf("beadMetadata absent metadata field = %q, want %q", got, "")
+	}
+}
+
+// TestBeadMetadata_EmptyID verifies fail-open on an empty id (skips exec).
+func TestBeadMetadata_EmptyID(t *testing.T) {
+	installFakeBd(t, `[{"id":"mitto-1","metadata":{"slack_channel":"C0TEST"}}]`, 0)
+	tmp := t.TempDir()
+
+	if got := beadMetadata(tmp, "", "slack_channel"); got != "" {
+		t.Errorf("beadMetadata empty id = %q, want %q (fail-open)", got, "")
+	}
+	if got := beadMetadata(tmp, "   ", "slack_channel"); got != "" {
+		t.Errorf("beadMetadata whitespace id = %q, want %q (fail-open)", got, "")
+	}
+}
+
+// TestBeadMetadata_FailOpenWhenBdMissing verifies fail-open ("") when bd is
+// absent from PATH — mirrors TestBeadHasLabels_FailOpenWhenMissing.
+func TestBeadMetadata_FailOpenWhenBdMissing(t *testing.T) {
+	emptyDir := t.TempDir()
+	t.Setenv("PATH", emptyDir)
+	beadsCacheMu.Lock()
+	beadsCache = map[string]beadsCacheEntry{}
+	beadsStrCache = map[string]beadsStrCacheEntry{}
+	beadsCacheMu.Unlock()
+
+	if got := beadMetadata(emptyDir, "mitto-1", "slack_channel"); got != "" {
+		t.Errorf("beadMetadata missing bd = %q, want %q (fail-open)", got, "")
+	}
+}
+
+// TestBeadMetadata_FailOpenOnBadJSON verifies fail-open ("") when bd emits
+// unparseable stdout.
+func TestBeadMetadata_FailOpenOnBadJSON(t *testing.T) {
+	installFakeBd(t, "not json at all {{{", 0)
+	tmp := t.TempDir()
+
+	if got := beadMetadata(tmp, "mitto-1", "slack_channel"); got != "" {
+		t.Errorf("beadMetadata bad JSON = %q, want %q (fail-open)", got, "")
+	}
+}
+
+// TestBeadMetadata_Caching verifies repeated in-window calls return the same
+// value without re-execing bd. Mirrors TestBeadsCount_Cache: install one fake
+// stdout, take the first value, swap the fake mid-test, verify the second
+// call still returns the cached first value.
+func TestBeadMetadata_Caching(t *testing.T) {
+	dir := installFakeBd(t, `[{"id":"mitto-1","metadata":{"slack_channel":"C0FIRST"}}]`, 0)
+	tmp := t.TempDir()
+
+	first := beadMetadata(tmp, "mitto-1", "slack_channel")
+	if first != "C0FIRST" {
+		t.Fatalf("first beadMetadata = %q, want %q", first, "C0FIRST")
+	}
+
+	// Swap the fake bd's stdout in place.
+	bdPath := filepath.Join(dir, "bd")
+	newScript := "#!/bin/sh\ncat <<'MITTO_BD_EOF'\n[{\"id\":\"mitto-1\",\"metadata\":{\"slack_channel\":\"C0SECOND\"}}]\nMITTO_BD_EOF\nexit 0\n"
+	if err := os.WriteFile(bdPath, []byte(newScript), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	second := beadMetadata(tmp, "mitto-1", "slack_channel")
+	if second != first {
+		t.Errorf("cached beadMetadata second call = %q, want %q (cache miss?)", second, first)
+	}
+}
+
+// TestBeadMetadata_TemplateFuncRender verifies BeadMetadata renders through
+// RenderPromptTemplate — the actual production usage path (a support prompt
+// falls back to it when SlackChannelID was not passed at spawn time).
+func TestBeadMetadata_TemplateFuncRender(t *testing.T) {
+	installFakeBd(t, `[{"id":"mitto-1","metadata":{"slack_channel":"C0TMPL"}}]`, 0)
+	tmp := t.TempDir()
+
+	ctx := &PromptEnabledContext{Workspace: WorkspaceContext{Folder: tmp}}
+	fm := BuildTemplateFuncMap(ctx)
+
+	body := `{{- $c := "" -}}{{- if eq $c "" -}}{{- $c = BeadMetadata "mitto-1" "slack_channel" -}}{{- end -}}channel={{ $c }}`
+	got, err := RenderPromptTemplate("test", body, ctx, fm)
+	if err != nil {
+		t.Fatalf("render BeadMetadata: %v", err)
+	}
+	if got != "channel=C0TMPL" {
+		t.Errorf("BeadMetadata render = %q, want %q", got, "channel=C0TMPL")
 	}
 }
 

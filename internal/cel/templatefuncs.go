@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -42,6 +44,16 @@ var (
 
 type beadsCacheEntry struct {
 	count int
+	at    time.Time
+}
+
+// beadsStrCache is a parallel, string-valued sibling of beadsCache used by
+// BeadMetadata (whose value is a free-form string, not a boolean/count). Same
+// TTL, same mutex-guarded pattern.
+var beadsStrCache = map[string]beadsStrCacheEntry{}
+
+type beadsStrCacheEntry struct {
+	value string
 	at    time.Time
 }
 
@@ -157,6 +169,72 @@ func fileExists(folder, path string) bool {
 func dirExists(folder, path string) bool {
 	info, ok := statResolved(folder, path)
 	return ok && info.IsDir()
+}
+
+// readFileMaxBytes caps the byte size of a single ReadFile template invocation
+// so a runaway or malicious fragment cannot balloon the rendered prompt. 256 KB
+// is well above the largest support-channel fragment observed to date (~6 KB)
+// while still bounded enough to keep the render deterministic. Content beyond
+// this cap is silently truncated at a byte boundary; a UTF-8 rune split would
+// be visible in the rendered prompt but not corrupt subsequent template parsing.
+const readFileMaxBytes = 256 * 1024
+
+// readFile reads a workspace-relative regular file and returns its contents
+// as a string. It is fail-open by design: empty string on any error (missing
+// path, symlink to elsewhere, directory, over-size, permission denied) so
+// callers pair it with FileExists to distinguish "missing" from "empty" —
+// mirroring the FileExists / DirExists idiom used elsewhere in the FuncMap.
+//
+// Path safety: absolute paths are rejected (return ""); relative paths are
+// resolved against folder and must remain inside it after Clean — a "../"
+// escape returns "". Symlinks that resolve outside folder are also rejected.
+//
+// Size cap: readFileMaxBytes (256 KB). Files larger than the cap have their
+// content truncated to the cap; callers that need to detect truncation
+// should stat the file separately.
+func readFile(folder, path string) string {
+	if path == "" || folder == "" {
+		return ""
+	}
+	if filepath.IsAbs(path) {
+		return ""
+	}
+	joined := filepath.Join(folder, path)
+	// Clean folder for the containment check so a trailing slash or "./" in
+	// either operand does not spuriously fail the HasPrefix comparison.
+	cleanFolder := filepath.Clean(folder)
+	cleanJoined := filepath.Clean(joined)
+	if cleanJoined != cleanFolder && !strings.HasPrefix(cleanJoined, cleanFolder+string(filepath.Separator)) {
+		return ""
+	}
+	// Resolve symlinks and re-check containment so a symlink inside folder
+	// pointing at /etc/passwd (or similar) cannot leak out.
+	resolved, err := filepath.EvalSymlinks(cleanJoined)
+	if err != nil {
+		return ""
+	}
+	resolvedFolder, ferr := filepath.EvalSymlinks(cleanFolder)
+	if ferr != nil {
+		resolvedFolder = cleanFolder
+	}
+	if resolved != resolvedFolder && !strings.HasPrefix(resolved, resolvedFolder+string(filepath.Separator)) {
+		return ""
+	}
+	info, err := os.Stat(resolved)
+	if err != nil || info.IsDir() || !info.Mode().IsRegular() {
+		return ""
+	}
+	f, err := os.Open(resolved)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	buf := make([]byte, readFileMaxBytes)
+	n, err := io.ReadFull(f, buf)
+	if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
+		return ""
+	}
+	return string(buf[:n])
 }
 
 // runGit runs `git <args...>` with the working directory set to folder (when
@@ -365,10 +443,14 @@ func hasBeads(folder, labels, statuses string) bool {
 
 // bdBead is the minimal subset of a `bd show <id> --json` record that the
 // per-issue gate helpers inspect. bd emits the full issue with many more fields;
-// only labels + status matter here.
+// only labels, status and metadata matter here. Metadata is a bd-side free-form
+// map (nil / absent / null all decode as nil, which is safe to index) — used
+// today by BeadMetadata(id, key) to resolve per-bead render-time values such as
+// the Slack channel ID on a support question.
 type bdBead struct {
-	Labels []string `json:"labels"`
-	Status string   `json:"status"`
+	Labels   []string          `json:"labels"`
+	Status   string            `json:"status"`
+	Metadata map[string]string `json:"metadata"`
 }
 
 // parseBdShow parses the stdout of `bd show <id> --json`, tolerating BOTH shapes
@@ -511,6 +593,46 @@ func beadIsOpen(folder, id string) bool {
 	return result
 }
 
+// beadMetadata returns the string value of bead <id>'s metadata[key], via
+// `bd show <id> --json`. Companion to beadHasLabels/beadIsOpen — scopes to ONE
+// specific issue and is used at RENDER time (not enabledWhen) to inline a
+// per-bead value such as the Slack channel ID from a support question's
+// metadata.
+//
+// Fail-open (returns ""): empty id, missing bd, timeout, non-zero exit,
+// unparseable JSON, absent bead, absent/null metadata field, or absent key. A
+// nil bead.Metadata indexes safely to "". Empty-string values are cached
+// alongside non-empty ones so a legitimately-absent key does not re-exec bd
+// within the TTL window.
+//
+// Results are memoised for beadsCacheTTL per (folder, id, key) tuple in
+// beadsStrCache — parallel to beadsCache but string-valued.
+func beadMetadata(folder, id, key string) string {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return "" // fail-open: no id to check
+	}
+
+	cacheKey := "beadMetadata\x00" + folder + "\x00" + id + "\x00" + key
+	beadsCacheMu.Lock()
+	if e, ok := beadsStrCache[cacheKey]; ok && time.Since(e.at) < beadsCacheTTL {
+		beadsCacheMu.Unlock()
+		return e.value
+	}
+	beadsCacheMu.Unlock()
+
+	bead, ok := showBead(folder, id)
+	if !ok {
+		return "" // fail-open
+	}
+	value := bead.Metadata[key] // nil map indexes to ""
+
+	beadsCacheMu.Lock()
+	beadsStrCache[cacheKey] = beadsStrCacheEntry{value: value, at: time.Now()}
+	beadsCacheMu.Unlock()
+	return value
+}
+
 // splitCSV splits a comma-separated string into trimmed, non-empty tokens.
 func splitCSV(s string) []string {
 	var out []string
@@ -625,6 +747,9 @@ func FormatPeers(peers []PeerInfo) string {
 //   - default(fallback, val) — val if non-empty, else fallback.
 //   - fileExists(path) — true iff path is a regular file (relative to workspace folder).
 //   - dirExists(path)  — true iff path is a directory.
+//   - ReadFile(path) — file contents as a string (workspace-relative; fail-open
+//     on missing / oversize / path-escape; capped at readFileMaxBytes). Pair
+//     with FileExists to distinguish absent from empty.
 //   - commandExists(name) — true iff name is in PATH.
 //   - GitRepo(path?) — true iff the folder (default: workspace root) is inside a git work tree.
 //   - GitFileModified(path) — true iff the tracked file has pending (staged/unstaged) changes.
@@ -644,6 +769,11 @@ func FormatPeers(peers []PeerInfo) string {
 //     Scopes to one issue (unlike HasBeads, which aggregates across the workspace).
 //   - BeadIsOpen(id) — true iff the single bead <id> is not closed (via
 //     `bd show <id> --json`). Fail-open on error. Companion to BeadHasLabels.
+//   - BeadMetadata(id, key) — string value of the single bead <id>'s metadata[key]
+//     (via `bd show <id> --json`). Fail-open (""): missing bd, unparseable JSON,
+//     absent bead, absent/null metadata, or absent key. Render-time only — used
+//     to inline per-bead values (e.g. Slack channel ID) into a prompt body when
+//     the caller did not pass them explicitly.
 //   - hasPattern(pattern) — true iff any MCP tool name matches pattern (fail-open).
 //   - Model(tag) — true iff the current model carries the capability tag (case-insensitive).
 //   - cond(expr) / when(expr) — compile+evaluate a CEL expression via GetCELEvaluator()
@@ -711,6 +841,14 @@ func BuildTemplateFuncMap(ctx *PromptEnabledContext) template.FuncMap {
 		"FileExists":    func(path string) bool { return fileExists(folder, path) },
 		"DirExists":     func(path string) bool { return dirExists(folder, path) },
 		"CommandExists": func(name string) bool { return commandExists(name) },
+		// ReadFile inlines the contents of a workspace-relative regular file
+		// verbatim into the rendered template. Fail-open (empty string on
+		// missing/oversize/escape/error) so callers pair it with FileExists
+		// to distinguish absent from empty. See readFile (this file) for the
+		// path-safety and size-cap semantics. Intended for small, curated
+		// fragment files (e.g. .mitto/support/<channel>/*.md); do NOT use for
+		// arbitrary user-supplied paths without an out-of-band allow-list.
+		"ReadFile": func(path string) string { return readFile(folder, path) },
 		"GitRepo": func(path ...string) bool {
 			p := ""
 			if len(path) > 0 {
@@ -752,7 +890,12 @@ func BuildTemplateFuncMap(ctx *PromptEnabledContext) template.FuncMap {
 		// BeadIsOpen(id) — true iff the single bead <id> is not closed. Fail-open.
 		// Companion to BeadHasLabels for gating on the linked bead's status.
 		"BeadIsOpen": func(id string) bool { return beadIsOpen(folder, id) },
-		"HasPattern": func(pattern string) bool { return hasPattern(toolServers, pattern) },
+		// BeadMetadata(id, key) — string value of bead <id>'s metadata[key], via
+		// `bd show <id> --json`. Fail-open (""). Render-time helper for inlining
+		// a per-bead value (e.g. Slack channel ID) when the caller did not pass
+		// it as an explicit argument.
+		"BeadMetadata": func(id, key string) string { return beadMetadata(folder, id, key) },
+		"HasPattern":   func(pattern string) bool { return hasPattern(toolServers, pattern) },
 		// Model(tag) — true iff the session's current model carries the capability tag
 		// (case-insensitive), resolved from the models: profiles. False for an unknown model.
 		"Model": func(tag string) bool { return hasModelTag(modelTags, tag) },

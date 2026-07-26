@@ -16,7 +16,15 @@ parameters:
     description: 'The beads issue ID to act on (auto-filled from the Beads issue menu)'
     required: false
     type: beadsId
+  - name: SlackChannelID
+    type: text
+    required: false
+    description: 'The Slack channel ID (e.g. C0XXXXXXX). Optional; when set at spawn time it is used to inline channel playbook fragments at render time. When omitted, the prompt auto-derives it from the linked bead''s `metadata.slack_channel` field (via `BeadMetadata`); if that is also empty, the fragment reader falls back to instructing the agent to read the file at runtime.'
 prompt: |-
+  {{- $channel := Arg "SlackChannelID" "" -}}
+  {{- if eq $channel "" -}}
+  {{-   $channel = BeadMetadata (Arg "IssueID" "") "slack_channel" -}}
+  {{- end -}}
   # Support — Reply to User
 
   {{ template "_shared/session-context" . }}
@@ -65,7 +73,7 @@ prompt: |-
   `tone.md` yet, the interactive review path (user is present for `state:drafting`) asks the user
   to define tone once and writes the file; subsequent runs just read it.
 
-  - {{ template "_shared/support/channel-fragment-read" (dict "Fragment" "tone" "Purpose" "shape the tone/reply guidance when reviewing or building the draft" "Owner" "Support: reply to user" "OwnerAsk" true) }}
+  - {{ template "_shared/support/channel-fragment-read" (dict "Channel" $channel "Fragment" "tone" "Purpose" "shape the tone/reply guidance when reviewing or building the draft" "Owner" "Support: reply to user" "OwnerAsk" true) }}
   - **Owner-ask step (only if `tone.md` is missing).** Create the `.mitto/support/<channel-id>/`
     directory if missing, then:
     {{ template "_shared/support/ask-tone" (dict "TimeoutSeconds" 300) }}

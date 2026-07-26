@@ -16,10 +16,18 @@ parameters:
     description: 'The beads issue ID to act on (auto-filled from the Beads issue menu)'
     required: false
     type: beadsId
+  - name: SlackChannelID
+    type: text
+    required: false
+    description: 'The Slack channel ID (e.g. C0XXXXXXX). Optional; when set at spawn time it is used to inline channel playbook fragments at render time. When omitted, the prompt auto-derives it from the linked bead''s `metadata.slack_channel` field (via `BeadMetadata`); if that is also empty, the fragment reader falls back to instructing the agent to read the file at runtime.'
 preferredModels:
   - modelTag: Cheap
   - modelTag: Coding
 prompt: |-
+  {{- $channel := Arg "SlackChannelID" "" -}}
+  {{- if eq $channel "" -}}
+  {{-   $channel = BeadMetadata (Arg "IssueID" "") "slack_channel" -}}
+  {{- end -}}
   # Support — Check Status
 
   {{ template "_shared/session-context" . }}
@@ -62,8 +70,8 @@ prompt: |-
     recorded state and message were.
   - Note the current `state:*` label, the stored `slack_thread_ts` / `slack_channel` / `slack_url`
     metadata, and the timestamp/author of the most recent comment.
-  - {{ template "_shared/support/channel-fragment-read" (dict "Fragment" "tone" "Purpose" "keep your status summary consistent with the channel's voice (this prompt never posts to Slack; the playbook is context only here)" "Owner" "Support: reply to user" "OwnerAsk" false) }}
-  - {{ template "_shared/support/channel-fragment-read" (dict "Fragment" "scope" "Purpose" "judge whether an open question is in scope for this channel when summarising status" "Owner" "Support: watch channel" "OwnerAsk" false) }}
+  - {{ template "_shared/support/channel-fragment-read" (dict "Channel" $channel "Fragment" "tone" "Purpose" "keep your status summary consistent with the channel's voice (this prompt never posts to Slack; the playbook is context only here)" "Owner" "Support: reply to user" "OwnerAsk" false) }}
+  - {{ template "_shared/support/channel-fragment-read" (dict "Channel" $channel "Fragment" "scope" "Purpose" "judge whether an open question is in scope for this channel when summarising status" "Owner" "Support: watch channel" "OwnerAsk" false) }}
 
   ## Step 3: Refresh the Slack thread
 
