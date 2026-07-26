@@ -1981,6 +1981,80 @@ func TestLoopRunner_AutoStopPromptUnresolved_SetsStoppedReason(t *testing.T) {
 	}
 }
 
+// TestLoopRunner_AutoStopPromptUnresolved_SkipsTransientCompileRace reproduces
+// mitto-8bg: the loop auto-pause tripwire fires on transient fragment
+// compile-race errors that should not count as strikes.
+//
+// When a workspace prompt references a shared fragment via
+// `{{ template "_shared/foo" . }}` and the fragment registry has not yet been
+// refreshed (fs-watcher race), the prompts cache reload records a load error
+// whose chain contains `template "_shared/foo" not defined`, and the resolver
+// returns a generic "not found" for the consumer prompt. This is a transient
+// condition — the fragment will be registered on the next reload — and must
+// NOT increment promptResolveFailures[sessionID] toward the auto-pause
+// tripwire.
+//
+// This test asserts the desired post-fix behavior: three consecutive
+// resolve failures whose underlying error carries the compile-race signature
+// leave the loop enabled and the failure counter at zero. It fails before
+// the fix (all three errors count as strikes, so the loop is auto-paused
+// with StoppedReasonPromptUnresolved), and passes once the classifier at
+// handlePromptResolveFailure recognises the sentinel.
+func TestLoopRunner_AutoStopPromptUnresolved_SkipsTransientCompileRace(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	meta := session.Metadata{SessionID: "compile-race", ACPServer: "test", WorkingDir: "/tmp"}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("store.Create() error = %v", err)
+	}
+
+	loopStore := store.Loop("compile-race")
+	if err := loopStore.Set(&session.LoopPrompt{
+		PromptName: "consumer-prompt",
+		Frequency:  session.Frequency{Value: 1, Unit: session.FrequencyHours},
+		Enabled:    true,
+	}); err != nil {
+		t.Fatalf("loopStore.Set() error = %v", err)
+	}
+
+	runner := NewLoopRunner(store, nil, nil)
+
+	// Simulate the shape produced by deliverPrompt when the resolver reports
+	// a transient fragment-compile race: the resolver wraps its "not found"
+	// with ErrPromptTransientCompileRace, and deliverPrompt further wraps that
+	// with ErrPromptResolveFailed. The strike-counter classifier must see the
+	// inner sentinel via errors.Is.
+	resolveErr := fmt.Errorf("%w: %q: %w",
+		ErrPromptResolveFailed,
+		"consumer-prompt",
+		fmt.Errorf("%w: prompt %q not found (load errors present)",
+			ErrPromptTransientCompileRace, "consumer-prompt"))
+
+	loop, _ := loopStore.Get()
+
+	// Call the failure handler MaxPromptResolveFailures times. With the fix
+	// in place, transient compile-race errors are classified and do NOT
+	// increment the strike counter, so the loop stays enabled.
+	for i := 0; i < MaxPromptResolveFailures; i++ {
+		runner.handlePromptResolveFailure("compile-race", meta.Name, loop, loopStore, resolveErr)
+	}
+
+	final, _ := loopStore.Get()
+	if !final.Enabled {
+		t.Errorf("loop was auto-paused by transient compile-race errors; want Enabled=true (bug: strikes counted for transient errors)")
+	}
+	if final.StoppedReason == session.StoppedReasonPromptUnresolved {
+		t.Errorf("StoppedReason = %q; want empty (transient compile-race should not trip the tripwire)", final.StoppedReason)
+	}
+	if final.StoppedAt != nil {
+		t.Errorf("StoppedAt = %v; want nil (transient compile-race should not stop the loop)", final.StoppedAt)
+	}
+}
+
 // TestLoopRunner_AutoStopResumeFailures_SetsStoppedReason verifies that the
 // resume-failures path persists StoppedReason=resumeFailures before archiving.
 func TestLoopRunner_AutoStopResumeFailures_SetsStoppedReason(t *testing.T) {

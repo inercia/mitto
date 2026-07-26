@@ -2689,6 +2689,23 @@ func (s *Server) resolvePromptByName(promptName string, workingDir string) (stri
 		}
 	}
 
+	// mitto-8bg: distinguish a transient template fragment compile-race from a
+	// genuinely missing/renamed prompt. When a consumer prompt references a
+	// `_shared/foo` fragment and the fragment registry has not yet been refreshed
+	// by the fs-watcher, PromptsCache drops the consumer from promptsByName and
+	// records the parse error in LoadErrors() with a `template "..." not defined`
+	// signature. Wrap the "not found" with ErrPromptTransientCompileRace so the
+	// loop-runner strike counter can skip it and avoid auto-pausing on the race.
+	if s.config.PromptsCache != nil {
+		for _, le := range s.config.PromptsCache.LoadErrors() {
+			if le.Err != nil && strings.Contains(le.Err.Error(), "not defined") &&
+				strings.Contains(le.Err.Error(), "template ") {
+				return "", fmt.Errorf("%w: prompt %q not found (load errors present)",
+					conversation.ErrPromptTransientCompileRace, promptName)
+			}
+		}
+	}
+
 	return "", fmt.Errorf("prompt %q not found", promptName)
 }
 

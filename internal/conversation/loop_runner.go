@@ -108,6 +108,15 @@ var (
 	ErrLoopNotEnabled             = errors.New("loop is not enabled for this session")
 	ErrSessionBusy                = errors.New("session is currently processing a prompt")
 	ErrPromptResolveFailed        = errors.New("loop prompt could not be resolved")
+	// ErrPromptTransientCompileRace signals that a prompt-name resolution failure
+	// was caused by a transient template fragment compile-race (e.g. a consumer
+	// prompt referencing a `_shared/foo` fragment while the fragment registry has
+	// not yet been refreshed by the fs-watcher). The resolver wraps a "not found"
+	// with this sentinel when PromptsCache.LoadErrors() indicates the miss stems
+	// from a `template "..." not defined` compile error rather than a genuinely
+	// missing/renamed prompt. The loop-runner strike counter (mitto-8bg) skips
+	// these to avoid auto-pausing loops on transient reload races.
+	ErrPromptTransientCompileRace = errors.New("loop prompt transiently unresolved due to template compile race")
 	// ErrWorkspaceBusy signals that the workspace/ACP-server pair already has the
 	// configured maximum number of loop prompts in flight. The scheduled loop is
 	// skipped for this poll cycle and retried on the next tick (no schedule
@@ -1691,6 +1700,21 @@ func (r *LoopRunner) autoStopIfMaxDurationReached(sessionID string, loop *sessio
 // auto-pauses (disables) the loop config and broadcasts the change, mirroring the
 // MaxLoopResumeFailures auto-archive safety.
 func (r *LoopRunner) handlePromptResolveFailure(sessionID, sessionName string, loop *session.LoopPrompt, loopStore *session.LoopStore, err error) {
+	// mitto-8bg: a transient template fragment compile-race must not count as a
+	// strike toward the auto-pause tripwire. The resolver wraps such misses with
+	// ErrPromptTransientCompileRace; the failure will clear itself on the next
+	// reload. We do NOT reset the counter here — a subsequent genuine "not found"
+	// still trips the tripwire as before.
+	if errors.Is(err, ErrPromptTransientCompileRace) {
+		if r.logger != nil {
+			r.logger.Debug("Loop prompt transiently unresolved (template compile race); not counting as strike",
+				"session_id", sessionID,
+				"prompt_name", loop.PromptName,
+				"error", err)
+		}
+		return
+	}
+
 	r.promptResolveFailuresMu.Lock()
 	r.promptResolveFailures[sessionID]++
 	failures := r.promptResolveFailures[sessionID]
@@ -1890,7 +1914,10 @@ func (r *LoopRunner) deliverPrompt(bs *BackgroundSession, sessionMeta session.Me
 	if loop.PromptName != "" && r.promptResolver != nil {
 		resolved, err := r.promptResolver(loop.PromptName, sessionMeta.WorkingDir)
 		if err != nil {
-			return fmt.Errorf("%w: %q: %v", ErrPromptResolveFailed, loop.PromptName, err)
+			// Wrap both ErrPromptResolveFailed and the underlying resolver error
+			// via %w so errors.Is preserves resolver-emitted sentinels (notably
+			// ErrPromptTransientCompileRace, mitto-8bg) through this delivery layer.
+			return fmt.Errorf("%w: %q: %w", ErrPromptResolveFailed, loop.PromptName, err)
 		}
 		promptText = resolved
 		if r.logger != nil {
