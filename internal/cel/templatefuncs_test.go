@@ -1044,6 +1044,129 @@ func TestTemplateFuncs_MCPChildrenFiltersCorrectly(t *testing.T) {
 	}
 }
 
+// TestChildrenContext_Get_DirectMethodCall exercises the Get lookup accessor
+// directly (independent of template rendering) to pin the pure Go contract:
+// found → non-nil pointer to the matching ChildInfo, unknown/empty id → nil,
+// searches .All so any origin (mcp/auto/human) matches.
+func TestChildrenContext_Get_DirectMethodCall(t *testing.T) {
+	ctx := ChildrenContext{
+		All: []ChildInfo{
+			{ID: "s1", Name: "Worker", ACPServer: "auggie", Origin: "mcp", IsPrompting: true, BeadsIssue: "mitto-1"},
+			{ID: "s2", Name: "Helper", ACPServer: "claude-code", Origin: "auto"},
+			{ID: "s3", Name: "Human child", ACPServer: "auggie", Origin: "human"},
+		},
+		MCP: []ChildInfo{
+			{ID: "s1", Name: "Worker", ACPServer: "auggie", Origin: "mcp", IsPrompting: true, BeadsIssue: "mitto-1"},
+		},
+	}
+
+	// Found: mcp-origin child.
+	if got := ctx.Get("s1"); got == nil {
+		t.Fatal("Get(\"s1\"): got nil, want non-nil pointer to Worker")
+	} else if got.Name != "Worker" || got.ACPServer != "auggie" || !got.IsPrompting || got.BeadsIssue != "mitto-1" {
+		t.Errorf("Get(\"s1\"): fields mismatch: %+v", *got)
+	}
+
+	// Found: auto-origin child (Get searches .All, not .MCP).
+	if got := ctx.Get("s2"); got == nil {
+		t.Fatal("Get(\"s2\"): got nil, want non-nil pointer to Helper")
+	} else if got.Name != "Helper" || got.Origin != "auto" {
+		t.Errorf("Get(\"s2\"): fields mismatch: %+v", *got)
+	}
+
+	// Found: human-origin child.
+	if got := ctx.Get("s3"); got == nil || got.Origin != "human" {
+		t.Errorf("Get(\"s3\"): want human-origin child, got %+v", got)
+	}
+
+	// Not found → nil.
+	if got := ctx.Get("does-not-exist"); got != nil {
+		t.Errorf("Get(unknown): want nil, got %+v", *got)
+	}
+
+	// Empty id short-circuits to nil so an unset .Args placeholder is safe.
+	if got := ctx.Get(""); got != nil {
+		t.Errorf("Get(\"\"): want nil, got %+v", *got)
+	}
+
+	// Zero-valued ChildrenContext (no children at all) → nil for any id.
+	var zero ChildrenContext
+	if got := zero.Get("s1"); got != nil {
+		t.Errorf("zero ChildrenContext.Get: want nil, got %+v", *got)
+	}
+}
+
+// TestTemplateFuncs_ChildrenGet_TemplateRender verifies the accessor works
+// end-to-end through the prompt template renderer — the canonical usage pattern
+// documented in docs/config/prompts.md ({{ with .Children.Get "id" }}...{{ else }}...{{ end }}).
+func TestTemplateFuncs_ChildrenGet_TemplateRender(t *testing.T) {
+	ctx := &PromptEnabledContext{
+		Children: ChildrenContext{
+			All: []ChildInfo{
+				{ID: "s1", Name: "Worker", ACPServer: "auggie", Origin: "mcp", IsPrompting: true},
+				{ID: "s2", Name: "Helper", ACPServer: "claude-code", Origin: "auto", IsPrompting: false},
+			},
+		},
+	}
+	fm := BuildTemplateFuncMap(ctx)
+
+	// Found + IsPrompting=true → "running" branch, inlines all four fields.
+	body := `{{ with .Children.Get "s1" }}{{ .Name }} ({{ .ID }}) on {{ .ACPServer }} — {{ if .IsPrompting }}running{{ else }}idle{{ end }}{{ else }}not found{{ end }}`
+	got, err := RenderPromptTemplate("t", body, ctx, fm)
+	if err != nil {
+		t.Fatalf("Children.Get render error: %v", err)
+	}
+	if want := "Worker (s1) on auggie — running"; got != want {
+		t.Errorf("Children.Get found+prompting: got %q, want %q", got, want)
+	}
+
+	// Found + IsPrompting=false → "idle" branch.
+	body = `{{ with .Children.Get "s2" }}{{ .Name }} — {{ if .IsPrompting }}running{{ else }}idle{{ end }}{{ else }}not found{{ end }}`
+	got, err = RenderPromptTemplate("t", body, ctx, fm)
+	if err != nil {
+		t.Fatalf("Children.Get render error: %v", err)
+	}
+	if want := "Helper — idle"; got != want {
+		t.Errorf("Children.Get found+idle: got %q, want %q", got, want)
+	}
+
+	// Not found → {{ else }} branch fires (nil pointer is falsy for `with`).
+	body = `{{ with .Children.Get "missing" }}{{ .Name }}{{ else }}not found{{ end }}`
+	got, err = RenderPromptTemplate("t", body, ctx, fm)
+	if err != nil {
+		t.Fatalf("Children.Get render error: %v", err)
+	}
+	if want := "not found"; got != want {
+		t.Errorf("Children.Get missing: got %q, want %q", got, want)
+	}
+
+	// Empty id → {{ else }} branch (unset .Args placeholder should be safe).
+	body = `{{ with .Children.Get "" }}{{ .Name }}{{ else }}empty-id{{ end }}`
+	got, err = RenderPromptTemplate("t", body, ctx, fm)
+	if err != nil {
+		t.Fatalf("Children.Get render error: %v", err)
+	}
+	if want := "empty-id"; got != want {
+		t.Errorf("Children.Get empty id: got %q, want %q", got, want)
+	}
+}
+
+// TestTemplateFuncs_ChildrenGet_ZeroValueCtx verifies the accessor is safe on
+// a zero-valued PromptEnabledContext — nil-safe, no panic, {{ else }} fires.
+func TestTemplateFuncs_ChildrenGet_ZeroValueCtx(t *testing.T) {
+	ctx := &PromptEnabledContext{}
+	fm := BuildTemplateFuncMap(ctx)
+
+	body := `{{ with .Children.Get "s1" }}{{ .Name }}{{ else }}no-children{{ end }}`
+	got, err := RenderPromptTemplate("t", body, ctx, fm)
+	if err != nil {
+		t.Fatalf("zero-value ctx Children.Get: unexpected error: %v", err)
+	}
+	if got != "no-children" {
+		t.Errorf("zero-value ctx Children.Get: got %q, want %q", got, "no-children")
+	}
+}
+
 // =============================================================================
 // FormatPeers tests (mitto-4d6)
 // =============================================================================
