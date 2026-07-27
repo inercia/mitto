@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -135,6 +136,31 @@ var (
 	// See mitto-61z.
 	ErrWorkspaceBusy = errors.New("workspace has reached the loop concurrency cap")
 )
+
+// isTransientPromptCompileRace reports whether err represents a transient
+// template-fragment compile-race — i.e. a prompt-name resolution failure caused
+// by the fragment registry lagging behind a fs-watcher reload (see the wrap
+// logic in internal/web/server.go around the PromptsCache.LoadErrors iteration).
+//
+// The primary match is errors.Is against ErrPromptTransientCompileRace, which
+// covers every wrapped occurrence from the resolver. The defensive heuristic
+// (both "template " and "not defined" in the error string) catches an unwrapped
+// raw Go template error if any inner code path returns it verbatim; it mirrors
+// the substring set the wrapper itself uses to detect the same condition.
+//
+// Used by the loop-runner strike counter (mitto-8bg) and by the queue
+// dispatcher's bounded retry (mitto-omu) to avoid treating a transient race as
+// a durable error.
+func isTransientPromptCompileRace(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, ErrPromptTransientCompileRace) {
+		return true
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "template ") && strings.Contains(msg, "not defined")
+}
 
 // LoopStartedCallback is called when a loop prompt is delivered.
 // sessionID is the session that received the prompt.
