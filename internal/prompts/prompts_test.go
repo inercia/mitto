@@ -3051,6 +3051,7 @@ func TestBuiltinPrompts_TodayTierRoutingAdoption(t *testing.T) {
 		{file: "docs/document-arch.prompt.yaml", bucket: workspaceTitle, wantTitle: "Document Architecture"},
 		{file: "docs/document-code.prompt.yaml", bucket: workspaceTitle, wantTitle: "Document Code"},
 		{file: "docs/generate-agents-md.prompt.yaml", bucket: workspaceTitle, wantTitle: "Generate AGENTS.md"},
+		{file: "blog/ideation.prompt.yaml", bucket: workspaceTitle, wantTitle: "Blog: ideation"},
 	}
 	for _, s := range specs {
 		t.Run(s.file, func(t *testing.T) {

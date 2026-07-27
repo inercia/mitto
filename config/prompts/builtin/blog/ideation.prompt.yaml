@@ -1,0 +1,165 @@
+icon: plus
+name: 'Blog: ideation'
+menus: prompts, conversation
+parameters:
+  - name: Folder
+    type: text
+    default: blog/posts
+    required: false
+    description: Folder where blog post drafts live (repo-relative)
+description: Blog — brainstorm and flesh out a new post idea, then create a blog/draft-labelled bead pointing at the seeded draft file
+backgroundColor: '#C8E6C9'
+group: Blog
+target:
+  title: 'Blog: ideation'
+  reuse:
+    title: true
+    coalesce: true
+preferredModels:
+  - modelTag: Coding
+prompt: |
+  {{ template "_shared/session-context" . }}
+
+  # Blog: Ideation — seed a new post
+
+  This is the entry point to the blog prompt suite. It takes a rough idea from
+  the author, refines it into an outline, seeds a draft markdown file under
+  `{{ Arg "Folder" "blog/posts" }}/`, and creates a `blog`/`draft`-labelled
+  bead pointing at the file so downstream prompts (content-review, fact-check,
+  add-references, polish, publish, linkedin-post) can pick it up.
+
+  ## Step 0 — Bootstrap beads if needed
+
+  {{ template "beads-issues/shared/bootstrap" . }}
+
+  ## Step 1 — Load blog voice and topics
+
+  Bring the standard drafting voice into the working context so the outline
+  matches this blog's audience and tone:
+
+  {{ template "blog/shared/audience-and-tone" . }}
+
+  Load the in-scope themes for this blog:
+
+  {{ template "blog/shared/blog-config-fragment"
+       (dict "Name"        "topics"
+             "DefaultText" "No topics.md file configured; ask the user what themes are in-scope for this blog.") }}
+
+  ## Step 2 — Collect the rough idea
+
+  Use `mitto_ui_form_mitto(self_id: "{{ .Session.ID }}")` to collect the seed
+  fields in a single form call:
+
+  ```html
+  <label>Topic (one-liner)</label>
+  <input type="text" name="topic" placeholder="The specific subject of the post" />
+
+  <label>Angle</label>
+  <input type="text" name="angle" placeholder="What makes this post interesting — the specific take" />
+
+  <label>Notes (optional)</label>
+  <textarea name="notes" rows="8" placeholder="Outline, references, related work — anything to seed the draft"></textarea>
+  ```
+
+  Read `topic`, `angle`, and `notes` from the returned form payload.
+
+  ## Step 3 — Iterative refinement rounds
+
+  Expand the seed into a rough outline — headings plus 2–3 bullets under each —
+  respecting the audience, tone, and topics loaded in Step 1. Then use
+  `mitto_ui_options_mitto(self_id: "{{ .Session.ID }}")` to ask:
+
+  > "Ready to seed the draft file, or refine more?"
+
+  Options:
+
+  - `"Seed draft now"` — proceed to Step 4.
+  - `"Refine outline further"` — expand or tighten the outline, then loop back
+    to this same question.
+  - `"Change angle"` — return to Step 2 to collect a new angle/topic, then
+    redo the outline.
+
+  Cap this refinement loop at **5 rounds** to avoid runaway; on the 5th round
+  proceed to Step 4 regardless of the author's choice.
+
+  ## Step 4 — Seed the draft file
+
+  Derive a `<slug>` from the topic: kebab-case, ASCII-only, `≤ 60 chars` (drop
+  punctuation, replace spaces with `-`, collapse consecutive dashes). Confirm
+  the slug with the author via
+  `mitto_ui_textbox_mitto(self_id: "{{ .Session.ID }}")` before writing:
+
+  - `title`: `"Draft slug — review & edit"`
+  - `text`: the generated slug
+  - `result`: `"full"`
+
+  The full draft path is `{{ Arg "Folder" "blog/posts" }}/draft-<slug>.md`.
+
+  Load any project-specific frontmatter conventions so the seeded file matches
+  the local house style when present, or fall through to the standard
+  frontmatter set otherwise:
+
+  {{ template "blog/shared/blog-config-fragment"
+       (dict "Name"        "frontmatter"
+             "DefaultText" "") }}
+
+  Write the draft file — YAML frontmatter header followed by the outline from
+  Step 3 as the body (headings + bullets, a real starting point, not an empty
+  file). When the frontmatter fragment above rendered project-specific
+  conventions, merge those fields into the YAML block below (overriding the
+  standard defaults) before writing.
+
+  ```bash
+  folder="{{ Arg "Folder" "blog/posts" }}"
+  slug="<confirmed-slug>"
+  post_path="$folder/draft-$slug.md"
+  mkdir -p "$folder"
+  cat > "$post_path" <<'MITTO_DRAFT'
+  ---
+  title: "<topic>"
+  description: "<one-line description derived from angle>"
+  date: 0000-00-00
+  tags: []
+  publish: false
+  ---
+
+  <outline body from Step 3 — headings + bullets>
+  MITTO_DRAFT
+  echo "seeded $post_path"
+  ```
+
+  ## Step 5 — Create the bead and attach the file
+
+  Compose the bead description in Markdown. It **must** include, on its own
+  line, the marker the downstream `blog/shared/locate-post-file` fragment
+  greps for:
+
+      File: [<Folder>/draft-<slug>.md](<Folder>/draft-<slug>.md)
+
+  Also include: the angle, a short summary derived from the Step-3 outline,
+  and any related-bead links the author mentioned during Steps 2–3.
+
+  Write the description to a temp file and create the bead, capturing the new
+  ID into `$new_id`:
+
+  ```bash
+  desc=$(mktemp)
+  cat > "$desc" <<'MITTO_DESC'
+  <composed markdown description including the File: line>
+  MITTO_DESC
+  new_id=$(bd create -l blog,draft,needs-fact-check,needs-polish -t task -p 3 \
+    --title "<topic>" --body-file "$desc" --json | jq -r '.id')
+  rm -f "$desc"
+  echo "created $new_id"
+  ```
+
+  Attach the draft file to the new bead so it travels with `bd dolt push`/`pull`
+  alongside other metadata (see .augment/rules/44-beads-attachments.md):
+
+  {{ template "blog/shared/attach-file-to-bead"
+       (dict "IssueID" "$new_id"
+             "Path"    "$post_path") }}
+
+  Finally, report the new bead via
+  `mitto_ui_notify_mitto(self_id: "{{ .Session.ID }}")` (informative,
+  non-blocking) — title `"Blog draft seeded"`, message `"$new_id · $post_path"`.
