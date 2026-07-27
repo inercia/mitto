@@ -1080,6 +1080,280 @@ func TestFetchMCPTools_ConcurrentSuspectHits_SingleAsyncReverify(t *testing.T) {
 	}
 }
 
+// =============================================================================
+// mitto-dza.1 — v2 two-bucket schema, per-bucket TTL, LLM-bucket-forces-reverify,
+// and anti-hallucination overwrite semantics.
+// =============================================================================
+
+// TestFetchMCPTools_V2Snapshot_RoundTripPreservesBothBuckets covers plan item (a):
+// a v2 snapshot with entries in BOTH `Deterministic` and `LLM` buckets is
+// loaded, both buckets appear in the merged view, and the LLM bucket forces
+// an async re-verify on load (mitto-dza.1 acceptance criterion "must be
+// re-verified on load").
+func TestFetchMCPTools_V2Snapshot_RoundTripPreservesBothBuckets(t *testing.T) {
+	dir := t.TempDir()
+	snap := persistedMCPTools{
+		Deterministic:  []MCPToolInfo{{Name: "jira_search"}},
+		LLM:            []MCPToolInfo{{Name: "slack_post"}},
+		UpdatedAt:      time.Now(),
+		SchemaVersion:  persistedMCPToolsSchemaVersion,
+		AnyUnreachable: false,
+	}
+	if err := fileutil.WriteJSONAtomic(filepath.Join(dir, "ws.json"), &snap, 0o644); err != nil {
+		t.Fatalf("seed snapshot: %v", err)
+	}
+
+	mgr := NewWorkspaceAuxiliaryManager(&mockProcessProvider{
+		promptFunc: func(ctx context.Context, workspaceUUID, purpose, message string) (string, error) {
+			// Async re-verify path: re-confirm both tools.
+			return `{"tools":[{"name":"slack_post"},{"name":"jira_search"}]}`, nil
+		},
+	}, nil)
+	mgr.MCPToolsPersistDir = dir
+	mgr.StdioToolsDiscoverer = func(ctx context.Context, workspaceUUID string) ([]mcpdiscovery.ServerToolsResult, error) {
+		return []mcpdiscovery.ServerToolsResult{
+			{Server: "jira", Reachable: true, Tools: []string{"jira_search"}},
+			{Server: "slack", Reachable: false, Err: errors.New("unreachable")},
+		}, nil
+	}
+
+	var hookFired atomic.Bool
+	mgr.MCPToolsRefreshedHook = func(workspaceUUID string) { hookFired.Store(true) }
+
+	tools, err := mgr.FetchMCPTools(context.Background(), "ws")
+	if err != nil {
+		t.Fatalf("FetchMCPTools error = %v", err)
+	}
+	// Merged view (deterministic first, then LLM) — assertToolNames enforces
+	// order and count.
+	assertToolNames(t, tools, "jira_search", "slack_post")
+
+	// LLM bucket presence must have forced an async re-verify.
+	if !waitForRefreshHook(t, &hookFired) {
+		t.Fatalf("expected MCPToolsRefreshedHook to fire when LLM bucket is present on load")
+	}
+}
+
+// TestFetchMCPTools_LLMTTLExpiry_DropsLLMBucketKeepsDeterministic covers plan
+// item (b): an LLM bucket older than its shorter TTL is dropped from the
+// returned view, while a deterministic bucket still within its TTL is served.
+// This exercises the belt-and-braces floor for pathologically fast restart
+// cycles.
+func TestFetchMCPTools_LLMTTLExpiry_DropsLLMBucketKeepsDeterministic(t *testing.T) {
+	dir := t.TempDir()
+	// Snapshot is 10 minutes old: past the LLM TTL (5m) but within the
+	// deterministic TTL (15m).
+	snap := persistedMCPTools{
+		Deterministic:  []MCPToolInfo{{Name: "jira_search"}},
+		LLM:            []MCPToolInfo{{Name: "slack_post"}},
+		UpdatedAt:      time.Now().Add(-10 * time.Minute),
+		SchemaVersion:  persistedMCPToolsSchemaVersion,
+		AnyUnreachable: false,
+	}
+	if err := fileutil.WriteJSONAtomic(filepath.Join(dir, "ws.json"), &snap, 0o644); err != nil {
+		t.Fatalf("seed snapshot: %v", err)
+	}
+
+	mgr := NewWorkspaceAuxiliaryManager(&mockProcessProvider{
+		promptFunc: func(ctx context.Context, workspaceUUID, purpose, message string) (string, error) {
+			// Async re-verify (LLM bucket was present pre-drop → suspect).
+			// Return empty so the LLM bucket disappears on overwrite too.
+			return `{"tools":[]}`, nil
+		},
+	}, nil)
+	mgr.MCPToolsPersistDir = dir
+	// Explicit TTLs mirror production defaults so the intent is visible.
+	mgr.mcpToolsTTL = 15 * time.Minute
+	mgr.mcpToolsLLMTTL = 5 * time.Minute
+	mgr.StdioToolsDiscoverer = func(ctx context.Context, workspaceUUID string) ([]mcpdiscovery.ServerToolsResult, error) {
+		return []mcpdiscovery.ServerToolsResult{
+			{Server: "jira", Reachable: true, Tools: []string{"jira_search"}},
+		}, nil
+	}
+
+	tools, err := mgr.FetchMCPTools(context.Background(), "ws")
+	if err != nil {
+		t.Fatalf("FetchMCPTools error = %v", err)
+	}
+	// LLM entry must have been dropped; deterministic entry served instantly.
+	assertToolNames(t, tools, "jira_search")
+}
+
+// TestFetchMCPTools_LLMBucketPresence_TriggersReverifyEvenWhenReachable covers
+// plan item (c): with AnyUnreachable=false, a current schema version, and a
+// non-empty LLM bucket, the load still triggers an async re-verify. This is
+// the crux of mitto-dza.1: LLM entries must never survive across two restarts
+// unconfirmed, even when nothing else on disk looks suspicious.
+func TestFetchMCPTools_LLMBucketPresence_TriggersReverifyEvenWhenReachable(t *testing.T) {
+	dir := t.TempDir()
+	snap := persistedMCPTools{
+		Deterministic:  []MCPToolInfo{{Name: "jira_search"}},
+		LLM:            []MCPToolInfo{{Name: "slack_post"}},
+		UpdatedAt:      time.Now(),
+		SchemaVersion:  persistedMCPToolsSchemaVersion,
+		AnyUnreachable: false, // nothing else would flag this snapshot as suspect
+	}
+	if err := fileutil.WriteJSONAtomic(filepath.Join(dir, "ws.json"), &snap, 0o644); err != nil {
+		t.Fatalf("seed snapshot: %v", err)
+	}
+
+	var probeCalls int32
+	mgr := NewWorkspaceAuxiliaryManager(&mockProcessProvider{
+		promptFunc: func(ctx context.Context, workspaceUUID, purpose, message string) (string, error) {
+			return `{"tools":[{"name":"slack_post"}]}`, nil
+		},
+	}, nil)
+	mgr.MCPToolsPersistDir = dir
+	mgr.StdioToolsDiscoverer = func(ctx context.Context, workspaceUUID string) ([]mcpdiscovery.ServerToolsResult, error) {
+		atomic.AddInt32(&probeCalls, 1)
+		return []mcpdiscovery.ServerToolsResult{
+			{Server: "jira", Reachable: true, Tools: []string{"jira_search"}},
+			{Server: "slack", Reachable: false, Err: errors.New("unreachable")},
+		}, nil
+	}
+
+	var hookFired atomic.Bool
+	mgr.MCPToolsRefreshedHook = func(workspaceUUID string) { hookFired.Store(true) }
+
+	tools, err := mgr.FetchMCPTools(context.Background(), "ws")
+	if err != nil {
+		t.Fatalf("FetchMCPTools error = %v", err)
+	}
+	// Turn one: merged view (deterministic + llm) served immediately.
+	assertToolNames(t, tools, "jira_search", "slack_post")
+
+	// LLM-bucket-presence must have forced the async re-verify even though
+	// AnyUnreachable=false and SchemaVersion==current.
+	if !waitForRefreshHook(t, &hookFired) {
+		t.Fatalf("expected MCPToolsRefreshedHook to fire because LLM bucket is non-empty on load")
+	}
+	if atomic.LoadInt32(&probeCalls) == 0 {
+		t.Errorf("expected the async re-verify to invoke the deterministic discoverer")
+	}
+}
+
+// TestFetchMCPTools_AsyncReverifyDropsUnconfirmedLLMTool covers plan item (d)
+// and the mitto-dza.1 anti-hallucination invariant: an LLM tool that was
+// present in a previous snapshot but is no longer reported by the re-verify
+// must disappear from disk (and from the merged view) after the overwrite.
+func TestFetchMCPTools_AsyncReverifyDropsUnconfirmedLLMTool(t *testing.T) {
+	dir := t.TempDir()
+	// Seed a snapshot with a stale LLM-only tool that will not come back on
+	// re-verify.
+	snap := persistedMCPTools{
+		Deterministic:  []MCPToolInfo{{Name: "jira_search"}},
+		LLM:            []MCPToolInfo{{Name: "stale_llm_tool"}},
+		UpdatedAt:      time.Now(),
+		SchemaVersion:  persistedMCPToolsSchemaVersion,
+		AnyUnreachable: false,
+	}
+	if err := fileutil.WriteJSONAtomic(filepath.Join(dir, "ws.json"), &snap, 0o644); err != nil {
+		t.Fatalf("seed snapshot: %v", err)
+	}
+
+	mgr := NewWorkspaceAuxiliaryManager(&mockProcessProvider{
+		promptFunc: func(ctx context.Context, workspaceUUID, purpose, message string) (string, error) {
+			// Re-verify no longer reports stale_llm_tool.
+			return `{"tools":[]}`, nil
+		},
+	}, nil)
+	mgr.MCPToolsPersistDir = dir
+	mgr.StdioToolsDiscoverer = func(ctx context.Context, workspaceUUID string) ([]mcpdiscovery.ServerToolsResult, error) {
+		// All servers reachable now → LLM fallback still runs because a
+		// non-empty LLM bucket makes the snapshot suspect on load.
+		return []mcpdiscovery.ServerToolsResult{
+			{Server: "jira", Reachable: true, Tools: []string{"jira_search"}},
+		}, nil
+	}
+
+	var hookFired atomic.Bool
+	mgr.MCPToolsRefreshedHook = func(workspaceUUID string) { hookFired.Store(true) }
+
+	// Turn one: merged view still shows the stale entry (served instantly).
+	tools, err := mgr.FetchMCPTools(context.Background(), "ws")
+	if err != nil {
+		t.Fatalf("FetchMCPTools error = %v", err)
+	}
+	assertToolNames(t, tools, "jira_search", "stale_llm_tool")
+
+	// Wait for async re-verify overwrite.
+	if !waitForRefreshHook(t, &hookFired) {
+		t.Fatalf("expected async re-verify to fire and overwrite the snapshot")
+	}
+
+	// After overwrite: the persisted snapshot must no longer carry the
+	// unconfirmed LLM tool. The deterministic bucket keeps jira_search
+	// (all servers reachable, no LLM path invoked because AnyUnreachable=false
+	// after the re-verify's own probe).
+	snapAfter := readPersistedSnapshot(t, dir, "ws")
+	for _, tool := range snapAfter.LLM {
+		if tool.Name == "stale_llm_tool" {
+			t.Fatalf("unconfirmed LLM tool must be dropped from disk after re-verify, snap.LLM = %v", snapAfter.LLM)
+		}
+	}
+	assertToolNames(t, snapAfter.Deterministic, "jira_search")
+}
+
+// TestFetchMCPTools_LegacySnapshot_MigratesAsDeterministicOnlyAndSuspect covers
+// plan item (e): a legacy v0/v1 snapshot (populated `Tools`, empty
+// `Deterministic`/`LLM`) is served as deterministic-only, treated as suspect
+// (SchemaVersion < 2), triggers an async re-verify, and the on-disk snapshot
+// is re-written in v2 shape (Deterministic populated, Tools no longer written).
+func TestFetchMCPTools_LegacySnapshot_MigratesAsDeterministicOnlyAndSuspect(t *testing.T) {
+	dir := t.TempDir()
+	// v0/v1 shape: only the legacy Tools field, no SchemaVersion.
+	snap := persistedMCPTools{
+		Tools:     []MCPToolInfo{{Name: "jira_search"}},
+		UpdatedAt: time.Now(),
+	}
+	if err := fileutil.WriteJSONAtomic(filepath.Join(dir, "ws.json"), &snap, 0o644); err != nil {
+		t.Fatalf("seed snapshot: %v", err)
+	}
+
+	var probeCalls int32
+	mgr := NewWorkspaceAuxiliaryManager(&mockProcessProvider{
+		promptFunc: func(ctx context.Context, workspaceUUID, purpose, message string) (string, error) {
+			return `{"tools":[]}`, nil
+		},
+	}, nil)
+	mgr.MCPToolsPersistDir = dir
+	mgr.StdioToolsDiscoverer = func(ctx context.Context, workspaceUUID string) ([]mcpdiscovery.ServerToolsResult, error) {
+		atomic.AddInt32(&probeCalls, 1)
+		return []mcpdiscovery.ServerToolsResult{
+			{Server: "jira", Reachable: true, Tools: []string{"jira_search"}},
+		}, nil
+	}
+
+	var hookFired atomic.Bool
+	mgr.MCPToolsRefreshedHook = func(workspaceUUID string) { hookFired.Store(true) }
+
+	// Turn one: legacy snapshot is served as deterministic-only.
+	tools, err := mgr.FetchMCPTools(context.Background(), "ws")
+	if err != nil {
+		t.Fatalf("FetchMCPTools error = %v", err)
+	}
+	assertToolNames(t, tools, "jira_search")
+
+	// Legacy schema must trigger async re-verify.
+	if !waitForRefreshHook(t, &hookFired) {
+		t.Fatalf("expected legacy snapshot to trigger async re-verify")
+	}
+	if atomic.LoadInt32(&probeCalls) == 0 {
+		t.Errorf("expected deterministic discoverer to run during re-verify")
+	}
+
+	// After re-verify: on-disk snapshot must be v2 shape (Deterministic
+	// populated, Tools no longer written by the v2 writer).
+	snapAfter := readPersistedSnapshot(t, dir, "ws")
+	if snapAfter.SchemaVersion != persistedMCPToolsSchemaVersion {
+		t.Errorf("schema version after migration = %d, want %d", snapAfter.SchemaVersion, persistedMCPToolsSchemaVersion)
+	}
+	assertToolNames(t, snapAfter.Deterministic, "jira_search")
+	if len(snapAfter.Tools) != 0 {
+		t.Errorf("legacy Tools field must not be populated by v2 writer, got %v", snapAfter.Tools)
+	}
+}
+
 func TestClearMCPToolsCache_RemovesPersistedSnapshot(t *testing.T) {
 	dir := t.TempDir()
 	snap := persistedMCPTools{Tools: []MCPToolInfo{{Name: "jira_search"}}, UpdatedAt: time.Now()}
