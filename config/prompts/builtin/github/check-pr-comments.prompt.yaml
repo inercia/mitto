@@ -43,18 +43,7 @@ prompt: |
 
   ### 1. Identify the PR/MR
 
-  ```bash
-  git branch --show-current
-  gh pr status          # GitHub
-  glab mr view          # GitLab
-  ```
-
-  {{- if and .Session.IsLoop (not .Session.IsLoopForced) }}
-  In scheduled mode: auto-select the PR for the current branch. If multiple or
-  none match, end the run quietly with a `mitto_ui_notify` note — do not ask.
-  {{- else }}
-  If multiple or none found, ask the user to specify.
-  {{- end }}
+  {{ template "github/shared/identify-pr-by-branch" . }}
 
   ### 2. Retrieve All Comments
 

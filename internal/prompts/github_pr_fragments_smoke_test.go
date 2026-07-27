@@ -7,6 +7,43 @@ import (
 	"github.com/inercia/mitto/internal/cel"
 )
 
+// renderBuiltinPromptWithFragments loads the builtin prompts + fragment
+// registry, renders `promptName`, and returns the rendered output. Used by
+// the github/shared fragment smoke tests below. The prior fragment registry
+// is restored via t.Cleanup so tests remain isolated.
+func renderBuiltinPromptWithFragments(t *testing.T, promptName string, ctx *cel.PromptEnabledContext) string {
+	t.Helper()
+	prev := CurrentFragments()
+	t.Cleanup(func() { SetCurrentFragments(prev) })
+
+	builtinDir := "../../config/prompts/builtin"
+	reg, loadErrs, err := LoadFragmentsFromDir(builtinDir)
+	if err != nil {
+		t.Fatalf("LoadFragmentsFromDir(builtin): %v", err)
+	}
+	if len(loadErrs) != 0 {
+		t.Fatalf("LoadFragmentsFromDir(builtin) per-file errors: %+v", loadErrs)
+	}
+	SetCurrentFragments(reg)
+
+	list, err := LoadPromptsFromDir(builtinDir)
+	if err != nil {
+		t.Fatalf("LoadPromptsFromDir(builtin): %v", err)
+	}
+	for _, p := range list {
+		if p.Name == promptName {
+			funcs := cel.BuildTemplateFuncMap(ctx)
+			out, err := RenderPromptTemplate(promptName, p.Content, ctx, funcs)
+			if err != nil {
+				t.Fatalf("render %q: %v", promptName, err)
+			}
+			return out
+		}
+	}
+	t.Fatalf("prompt %q not found in builtin corpus", promptName)
+	return ""
+}
+
 // TestGitHubPRFragmentsRenderCorrectly is a smoke test for the github/shared
 // PR-babysit fragment extraction: `pr-working-copy-decision`,
 // `pr-fetch-review-threads`, `pr-rebase-if-behind`, and `pr-fix-ci`. It loads
@@ -88,6 +125,35 @@ func TestGitHubPRFragmentsRenderCorrectly(t *testing.T) {
 			if !strings.Contains(out, needle) {
 				t.Errorf("prompt %q: rendered output missing hallmark %q — fragment did not inline",
 					r.promptName, needle)
+			}
+		}
+	}
+}
+
+// TestIdentifyPRByBranchFragmentInlines verifies that the
+// github/shared/identify-pr-by-branch fragment resolves and inlines into
+// both consuming prompts (check-pr-comments, address-pr-comments) — the
+// shared PR/MR identification block extracted from §1 of each.
+func TestIdentifyPRByBranchFragmentInlines(t *testing.T) {
+	// Hallmarks unique to the fragment body (short phrases callers don't
+	// paraphrase locally).
+	const (
+		hallmarkGitBranch = "git branch --show-current"
+		hallmarkGlabMR    = "glab mr view          # GitLab"
+		hallmarkAskUser   = "If multiple or none found, ask the user to specify."
+	)
+
+	ctx := &cel.PromptEnabledContext{
+		Session: cel.SessionContext{ID: "s", Name: "N"},
+		Args:    map[string]string{},
+	}
+
+	for _, promptName := range []string{"Check PR Comments", "Address PR Comments"} {
+		out := renderBuiltinPromptWithFragments(t, promptName, ctx)
+		for _, needle := range []string{hallmarkGitBranch, hallmarkGlabMR, hallmarkAskUser} {
+			if !strings.Contains(out, needle) {
+				t.Errorf("prompt %q: rendered output missing hallmark %q — fragment did not inline",
+					promptName, needle)
 			}
 		}
 	}
