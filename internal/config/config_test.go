@@ -2372,6 +2372,24 @@ func TestEffectiveMaxLoopIterations(t *testing.T) {
 			configMax: 0,
 			want:      GlobalMaxLoopIterations,
 		},
+		// mitto-48x: prompt-declared maxIterations=0 means the author explicitly opted
+		// out of any per-prompt cap ("standing supervisor, unlimited"). The config
+		// default must NOT silently downgrade that to itself — only the hardcoded
+		// GlobalMaxLoopIterations backstop applies. This test pins that contract and
+		// is expected to fail against the current symmetric "smallest positive wins"
+		// implementation, which returns configMax (100) here.
+		{
+			name:      "mitto-48x: prompt zero honored as unlimited (author opt-out, config default ignored)",
+			promptMax: 0,
+			configMax: 100,
+			want:      GlobalMaxLoopIterations,
+		},
+		{
+			name:      "mitto-48x: prompt zero honored as unlimited even when config is tiny",
+			promptMax: 0,
+			configMax: 5,
+			want:      GlobalMaxLoopIterations,
+		},
 	}
 
 	for _, tt := range tests {
