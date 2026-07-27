@@ -90,7 +90,7 @@ prompt: |
 
   Inform user: "Waiting for child tasks (iteration N)... Monitor in Conversations panel."
 
-  **On timeout**: retry pending children with `mitto_children_tasks_wait` using the **same `task_id`** (omit prompt to avoid duplicates). Reports already received are preserved. After two timeouts, treat as failure.
+  {{ template "_shared/loop/wait-with-retry" . }}
 
   ## Phase 6: Synthesize and Evaluate
 

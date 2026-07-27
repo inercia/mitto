@@ -25,7 +25,7 @@ prompt: |
   Then analyze and fix the errors that showed up.
   {{- end }}
 
-  Your session ID is `{{ .Session.ID }}` — use as `self_id` for all `mitto_*` MCP tool calls.
+  {{ template "_shared/session-id-line" . }}
 
   ## Interaction Mode
   {{- if and .Session.IsLoop (not .Session.IsLoopForced) }}

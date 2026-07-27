@@ -15,8 +15,9 @@ enabledWhen: '(Tools.Names.exists(n, n.matches("(?i)jira")) || CommandExists("ji
 preferredModels:
   - modelTag: Coding
 target:
+  title: 'JIRA: sync tasks'
   reuse:
-    issue: true
+    title: true
     coalesce: true
 prompt: |
   {{ template "_shared/session-context" . }}

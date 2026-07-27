@@ -205,10 +205,10 @@ prompt: |
   {{- if eq .Args.Commit "true" }}
      - **Tell the worker to commit its work.** Include in the worker prompt an
        explicit instruction to commit **only** the files it changed for this
-       increment — staged by path (`git add <file> ...`), never `git add -A`,
-       `git add .`, or `git commit -a`, since unrelated uncommitted changes may
-       exist and must be left untouched — using a concise, conventional commit
-       message, and to skip the commit if it changed nothing.
+       increment, using a concise, conventional commit message that references
+       the bead, and to skip the commit if it changed nothing.
+
+       {{ template "git/shared/safe-stage" . }}
   {{- end }}
   4. **Wait for the child to finish, then judge the outcome.** Block until the
      child reports back so this run can act on the result:

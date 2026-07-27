@@ -130,13 +130,18 @@ prompt: |
   tree (per the concurrent-loop stash-reset gotcha), and a wildcard stage sweeps
   them into the fix commit.
 
-  {{ template "git/shared/safe-stage" . }}
+  Before committing, verify only fix files are staged:
 
   ```bash
-  git add <path1> <path2> ...      # only the files YOU touched for this fix
-  git status --porcelain           # confirm only fix files are staged
-  git commit -m "fix({{ $target }}): <one-line summary>" -m "<body: what changed and why. Refs: {{ $target }}>"
+  git status --porcelain
   ```
+
+  {{ template "git/shared/safe-commit" (dict
+      "Type"     "fix"
+      "Target"   $target
+      "Summary"  "<one-line summary>"
+      "BodyHint" (printf "<body: what changed and why. Refs: %s>" $target)
+  ) }}
   {{- else -}}
   ### Step 3.3 — Do NOT commit
 

@@ -17,7 +17,7 @@ prompt: |
 
   ## Phase 1: Context
 
-  Your session ID is `{{ .Session.ID }}` — use as `self_id` for all `mitto_*` tool calls.
+  {{ template "_shared/session-id-line" . }}
 
   {{ with .Children.Get .Args.TargetConversation -}}
   The target conversation is **{{ .Name }}** (`{{ .ID }}`), running on **{{ .ACPServer }}**,
@@ -102,9 +102,7 @@ prompt: |
 
   Inform user: "Waiting for the conversation to report... Monitor in the Conversations panel."
 
-  **On timeout**: retry with `mitto_children_tasks_wait` using the **same `task_id`**
-  (omit the prompt to avoid duplicates). Reports already received are preserved. After
-  two timeouts, treat as failure.
+  {{ template "_shared/loop/wait-with-retry" . }}
 
   > Note: `mitto_children_tasks_wait` only receives a report when `{{ .Args.TargetConversation }}`
   > is a **child of this conversation**. If the target is not a child of this session, it

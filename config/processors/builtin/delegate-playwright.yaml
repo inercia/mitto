@@ -56,9 +56,12 @@ text: |
   
   {{ .ACP.AvailableText }}
   
-  Existing children:
-  
-  {{ .Children.AllText }}
+  {{- if .Children.AllText }}
+  Existing children: `{{ .Children.AllText }}`
+  {{- else }}
+  No children conversations.
+  {{- end }}
+
 
   Use `mitto_conversation_new` to create a child, or
   `mitto_conversation_send_prompt` to instruct an existing child.

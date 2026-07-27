@@ -94,15 +94,14 @@ prompt: |
 
   {{ if $commit -}}
   Then commit the test changes as a **single, focused commit** using the project's
-  commit conventions and reference the bead ID in the message. Stage only the files
-  changed for this increment — by path (`git add <file> ...`) — never `git add -A`,
-  `git add .`, or `git commit -a`, since unrelated uncommitted changes may exist and
-  must be left untouched:
+  commit conventions and reference the bead ID in the message.
 
-  ```bash
-  git add <file> ...
-  git commit -m "test({{ $target }}): <one-line summary>" -m "<body: what was tested and why, reference {{ $target }}>"
-  ```
+  {{ template "git/shared/safe-commit" (dict
+      "Type"     "test"
+      "Target"   $target
+      "Summary"  "<one-line summary>"
+      "BodyHint" (printf "<body: what was tested and why, reference %s>" $target)
+  ) }}
 
   Do **not** push automatically — the driver / user decides when to push. Skip the
   commit if nothing changed.

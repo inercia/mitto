@@ -105,15 +105,14 @@ prompt: |
 
   {{ if $commit -}}
   Then commit any review-driven changes as a **single, focused commit** using the
-  project's commit conventions and reference the bead ID in the message. Stage only
-  the files changed for this pass — by path (`git add <file> ...`) — never
-  `git add -A`, `git add .`, or `git commit -a`, since unrelated uncommitted changes
-  may exist and must be left untouched:
+  project's commit conventions and reference the bead ID in the message.
 
-  ```bash
-  git add <file> ...
-  git commit -m "chore({{ $target }}): <one-line summary of the review fix-ups>" -m "<body: what changed and why, reference {{ $target }}>"
-  ```
+  {{ template "git/shared/safe-commit" (dict
+      "Type"     "chore"
+      "Target"   $target
+      "Summary"  "<one-line summary of the review fix-ups>"
+      "BodyHint" (printf "<body: what changed and why, reference %s>" $target)
+  ) }}
 
   Do **not** push automatically — the driver / user decides when to push. Skip the
   commit if nothing changed.

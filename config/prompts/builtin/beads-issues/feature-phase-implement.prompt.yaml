@@ -102,12 +102,12 @@ prompt: |
   Then commit the increment as a **single, focused commit** using the project's commit
   conventions and reference the bead ID in the message.
 
-  {{ template "git/shared/safe-stage" . }}
-
-  ```bash
-  git add <file> ...
-  git commit -m "feat({{ $target }}): <one-line summary>" -m "<body: what changed and why, reference {{ $target }}>"
-  ```
+  {{ template "git/shared/safe-commit" (dict
+      "Type"     "feat"
+      "Target"   $target
+      "Summary"  "<one-line summary>"
+      "BodyHint" (printf "<body: what changed and why, reference %s>" $target)
+  ) }}
   {{- else -}}
   Do **not** commit. Leave the implementation changes staged/unstaged for the user to
   review; the bead comment already records what changed.

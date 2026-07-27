@@ -25,32 +25,9 @@ prompt: |
 
   ### 1. Ensure Feature Branch
 
-  ```bash
-  git branch --show-current
-  ```
+  {{ template "git/shared/ensure-feature-branch" . }}
 
-  If on `main`/`master`/protected branch:
-
-  - Check recent branch naming: `git branch -r --sort=-committerdate | head -20`
-  - Suggest branch name following detected convention (based on the changes to commit)
-  - **With Mitto UI**: Use `mitto_ui_form` to let the user choose:
-    ```
-    mitto_ui_form(self_id: "{{ .Session.ID }}", title: "Create Feature Branch?", html: "
-      <label for='action'>Action:</label>
-      <select name='action' id='action'>
-        <option value='create_branch'>Create feature branch</option>
-        <option value='continue'>Continue on current branch</option>
-      </select>
-      <div>
-        <label for='branch_name'>Branch name:</label>
-        <input type='text' name='branch_name' id='branch_name' placeholder='feat/my-feature' value='<suggested-name>'>
-      </div>
-    ")
-    ```
-    If `action == "create_branch"`: `git checkout -b <branch_name>`
-  - **Without**: Ask in conversation
-
-  If on feature branch: fetch and rebase on target branch (usually "main").
+  If on a feature branch: fetch and rebase on target branch (usually "main").
 
   ### 2. Analyze Changes
 

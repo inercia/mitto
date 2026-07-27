@@ -552,6 +552,24 @@ prompt: |
     mitto_conversation_archive(self_id: "{{ .Session.ID }}", conversation_id: "<child-id>")
     ```
 
+    Then surface the milestone to the operator (workspace-scoped toast; clicking
+    opens the bead via the `beads_issue` deep-link — mitto-9yz). Capture the bead
+    title once for the message body:
+
+    ```bash
+    title=$(bd show <id> --json | jq -r '.[0].title')
+    ```
+    ```
+    mitto_workspace_ui_notify(
+      self_id: "{{ .Session.ID }}",
+      workspace_uuid: "{{ .Workspace.UUID }}",
+      title: "@mitto mention addressed",
+      message: "Replied on <id>: <title>",
+      style: "info",
+      beads_issue: "<id>"
+    )
+    ```
+
   - **Timeout** — log on the bead, do NOT kill/archive (driver may still be walking
     its phases): `bd comment <id> "Orchestrator: 30-minute wait for @mitto driver (mention at <ts>) timed out; leaving driver running."`
   - **Wait errored** (flag missing at runtime) → notify and STOP; do not archive.
@@ -633,10 +651,25 @@ prompt: |
     `Reproduction:` / `Fix:` comments):
 
     ```bash
+    title=$(bd show <id> --json | jq -r '.[0].title')
     bd comment <id> "Orchestrator: bead reached terminal state (closed); archiving worker conversation <child-id>."
     ```
     ```
     mitto_conversation_archive(self_id: "{{ .Session.ID }}", conversation_id: "<child-id>")
+    ```
+
+    Then surface the terminal close to the operator (workspace-scoped toast;
+    clicking opens the closed bead — mitto-9yz):
+
+    ```
+    mitto_workspace_ui_notify(
+      self_id: "{{ .Session.ID }}",
+      workspace_uuid: "{{ .Workspace.UUID }}",
+      title: "Task completed",
+      message: "Closed <id>: <title>",
+      style: "success",
+      beads_issue: "<id>"
+    )
     ```
 
   - **Timeout** (4h wall-clock cap) — log and move on, do NOT kill/archive
@@ -709,10 +742,25 @@ prompt: |
     `Implementation:` / `Testing:` / `Review:` comments):
 
     ```bash
+    title=$(bd show <id> --json | jq -r '.[0].title')
     bd comment <id> "Orchestrator: bead reached terminal state (closed); archiving worker conversation <child-id>."
     ```
     ```
     mitto_conversation_archive(self_id: "{{ .Session.ID }}", conversation_id: "<child-id>")
+    ```
+
+    Then surface the terminal close to the operator (workspace-scoped toast;
+    clicking opens the closed bead — mitto-9yz):
+
+    ```
+    mitto_workspace_ui_notify(
+      self_id: "{{ .Session.ID }}",
+      workspace_uuid: "{{ .Workspace.UUID }}",
+      title: "Task completed",
+      message: "Closed <id>: <title>",
+      style: "success",
+      beads_issue: "<id>"
+    )
     ```
 
   - **Timeout** (4h wall-clock cap) — log and move on, do NOT kill/archive.
@@ -781,6 +829,12 @@ prompt: |
   - **Top-level only.** `Session.IsChild` → notify + STOP; no `bd` writes, no spawns.
   - **Silent unless it matters.** `mitto_ui_notify` only at Step 6, degrade paths
     (Step 7, wait errors), and wait-timeout milestones. Never per-target.
+  - **Milestone toasts only.** `mitto_workspace_ui_notify` fires ONLY on terminal
+    close (§B/§C "Bead closed" branch) and on `@mitto` mention addressed (§A
+    "Driver done" branch). Never on phase transitions, dispatches, per-pass
+    activity, timeouts, or failures — those already surface via the beads list
+    and would flood the operator on retry storms. `sound`/`sticky`/`native`
+    stay off (loops fire frequently; audible/persistent spam is an anti-pattern).
   - **Live state every pass.** Re-run 2P/2Z/2A/2B/2C fresh; never cache — sets go
     stale by design.
   - **Uncommitted changes never justify skipping a pass.** A dirty working tree is

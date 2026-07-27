@@ -223,16 +223,16 @@ prompt: |
   terminal step as optional):
 
   1. **Commit (fix/feature route only, and only if `Commit=true` and files changed).**
-     {{ if $commit }}Commit ONLY the files changed by this mention by explicit path
-     (`git add <file> ...`, never `-A` / `.` / `-a`) using a conventional message
-     that references the bead:
+     {{ if $commit }}Commit ONLY the files changed by this mention with a
+     conventional message that references the bead. Skip if nothing changed.
 
-     ```bash
-     git add <file> ...
-     git commit -m "<type>(<scope>): <one-line summary> (refs {{ $target }})" -m "<body>"
-     ```
-
-     Skip if nothing changed. {{ else }}`Commit=false` — do NOT commit. Leave any
+     {{ template "git/shared/safe-commit" (dict
+         "Type"     ""
+         "Target"   $target
+         "Summary"  "<one-line summary>"
+         "BodyHint" "<body>"
+     ) }}
+     {{ else }}`Commit=false` — do NOT commit. Leave any
      file changes on disk for the human to review; note this in the back-reference
      below so the human knows there is uncommitted work.{{ end }}
 

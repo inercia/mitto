@@ -23,7 +23,7 @@ prompt: |
   follow-ups are the current task** — see the "Beads issue" section below to resolve what to work on.
   {{- end }}
 
-  Your session ID is `{{ .Session.ID }}` — use as `self_id` for all `mitto_*` MCP tool calls.
+  {{ template "_shared/session-id-line" . }}
 
   ## Interaction Mode
   {{- if and .Session.IsLoop (not .Session.IsLoopForced) }}

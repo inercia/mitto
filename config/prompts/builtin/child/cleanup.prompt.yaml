@@ -15,7 +15,7 @@ prompt: |
 
   ## Phase 1: Context
 
-  Your session ID is `{{ .Session.ID }}` — use as `self_id` for all `mitto_*` tool calls.
+  {{ template "_shared/session-id-line" . }}
 
   All child conversations:
   {{ .Children.AllText }}

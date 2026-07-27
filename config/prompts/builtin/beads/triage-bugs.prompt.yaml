@@ -25,6 +25,8 @@ prompt: |
   Available ACP servers: `{{ .ACP.AvailableText }}`
   {{- if .Children.AllText }}
   Existing children: `{{ .Children.AllText }}`
+  {{- else }}
+  No children conversations.
   {{- end }}
 
   # Beads: Triage Untriaged Bugs

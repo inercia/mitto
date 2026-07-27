@@ -11,9 +11,8 @@ backgroundColor: '#DCEDC8'
 group: Tasks
 enabledWhen: CommandExists("bd") && DirExists(".beads") && (Session.HasMessages || Session.HasBeadsIssue || Item.Id != "")
 target:
-  title: 'Identify follow-up issues'
   reuse:
-    title: true
+    issue: true
     coalesce: true
 prompt: |
   {{ template "_shared/session-context" . }}

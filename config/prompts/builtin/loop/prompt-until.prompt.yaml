@@ -70,10 +70,9 @@ prompt: |
      files; do it inline instead. If a spawn call errors because a flag is off, fall
      back to doing the increment inline.
   {{- if eq .Args.Commit "true" }}
-     If you changed files and verified them, commit ONLY those files, staged
-     explicitly by path (git add <file> ...); never git add -A, git add ., or
-     git commit -a. Use a concise, conventional message; if nothing changed,
-     skip the commit.
+
+     If you changed files and verified them, commit them.
+     {{ template "git/shared/safe-stage" . }}
   {{- end }}
 
   ## This iteration — picked prompt
