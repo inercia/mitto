@@ -146,6 +146,13 @@ export function promptResolveAsLoop(prompt, override) {
  *                    boolean/prompts): no menu auto-supplies it and it never
  *                    gates menu visibility. Feeds the {{ ReadFile .Args.NAME }}
  *                    template action.
+ *   dirname        — a workspace-relative directory path, rendered as a
+ *                    dropdown of immediate sub-directories under an optional
+ *                    `dir` (workspace-relative, non-recursive), optionally
+ *                    filtered by a `glob` (filepath.Match on the base name).
+ *                    Interactive, dialog-collected (like filename): no menu
+ *                    auto-supplies it and it never gates menu visibility.
+ *                    Hidden directories (leading ".") are excluded by default.
  */
 export const KNOWN_PARAM_TYPES = [
   "beadsId",
@@ -159,6 +166,7 @@ export const KNOWN_PARAM_TYPES = [
   "boolean",
   "prompts",
   "filename",
+  "dirname",
 ];
 
 /**
@@ -177,18 +185,22 @@ export function isBooleanParam(p) {
  * Returns true if the parameter is an *interactive picker* type — i.e. one that
  * no menu can auto-supply and that must always be collected via the parameter
  * dialog. Currently: `boolean` (checkbox), `prompts` (workspace-prompt picker),
- * and `filename` (workspace-file dropdown).
+ * `filename` (workspace-file dropdown), and `dirname` (workspace-directory
+ * dropdown).
  *
  * Rationale: these parameters carry values that no menu context has in scope
- * (a workspace-prompt name, a checkbox answer, or a workspace-relative file
- * path). They behave like `boolean` for gating purposes — never gating menu
- * visibility (menuSatisfies) and always included in getMissingPromptParameters
- * regardless of `required` or the menu's auto-supplied types. The dialog
- * offers the picker unconditionally.
+ * (a workspace-prompt name, a checkbox answer, or a workspace-relative
+ * file/directory path). They behave like `boolean` for gating purposes — never
+ * gating menu visibility (menuSatisfies) and always included in
+ * getMissingPromptParameters regardless of `required` or the menu's
+ * auto-supplied types. The dialog offers the picker unconditionally.
  */
 export function isInteractivePickerParam(p) {
   return (
-    p?.type === "boolean" || p?.type === "prompts" || p?.type === "filename"
+    p?.type === "boolean" ||
+    p?.type === "prompts" ||
+    p?.type === "filename" ||
+    p?.type === "dirname"
   );
 }
 

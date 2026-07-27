@@ -95,6 +95,7 @@ Frontend mirror: `KNOWN_PARAM_TYPES` in `web/static/utils/prompts.js`. Both must
 | `text` | Generic free-form text (catch-all). Renders as a single-line input by default; add `multiLine: true` to render a resizable multi-line textarea. |
 | `boolean` | Yes/no flag, rendered as a checkbox. Supplied as the string `"true"`/`"false"` (default unchecked → `"false"`). Never gates menu visibility; always collected via the dialog. |
 | `filename` | Workspace-relative file path, rendered as a dropdown of files under an optional `dir` (workspace-relative, non-recursive), optionally filtered by a `glob` (e.g. `"*.md"`). Never gates menu visibility; always collected via the dialog (like `boolean`/`prompts`). Feeds `{{ ReadFile .Args.NAME }}` directly. `dir`/`glob` are UI hints only — path safety is enforced at read time by `ReadFile` (absolute-path/`..`/symlink-escape rejection, 256 KB cap). |
+| `dirname` | Workspace-relative directory path, rendered as a dropdown of immediate sub-directories under an optional `dir` (workspace-relative, non-recursive), optionally filtered by a `glob` applied to the base name. Never gates menu visibility; always collected via the dialog (like `filename`). Hidden directories (leading `.`) are excluded by default. `dir`/`glob` are UI hints only — the endpoint (`GET /api/workspace-dirs`) re-enforces path safety (absolute-path/`..`/symlink-escape rejection). |
 
 ### Type-based menu gating
 
@@ -104,7 +105,7 @@ Prompt shown in menu **M** only when M supplies **every required** declared type
 
 **Boolean parameters** (`type: boolean`) never gate either, regardless of `required`: a checkbox always has a definite answer. They are always collected via the dialog (`getMissingPromptParameters` always includes them) and never block **Save**; the value is emitted as the string `"true"`/`"false"` (default unchecked → `"false"`).
 
-**Interactive picker parameters** (`isInteractivePickerParam` in `web/static/utils/prompts.js`: `boolean`, `prompts`, `filename`) are all dialog-collected and never gate menu visibility — no menu context can auto-supply them. The dialog offers each picker unconditionally; a `filename` param whose backing folder is empty falls back to a text input so the user can still type a path.
+**Interactive picker parameters** (`isInteractivePickerParam` in `web/static/utils/prompts.js`: `boolean`, `prompts`, `filename`, `dirname`) are all dialog-collected and never gate menu visibility — no menu context can auto-supply them. The dialog offers each picker unconditionally; a `filename`/`dirname` param whose backing folder is empty falls back to a text input so the user can still type a path.
 
 ## Context-Adaptive Prompts (Three Modes)
 

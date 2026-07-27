@@ -28,6 +28,8 @@ import { Modal } from "./Modal.js";
  * @param {boolean} loadingPrompts
  * @param {Object} filesByParam - loaded file lists keyed by param.name (may be undefined)
  * @param {Object} loadingFilesByParam - per-param loading flag keyed by param.name
+ * @param {Object} dirsByParam - loaded dir lists keyed by param.name (may be undefined)
+ * @param {Object} loadingDirsByParam - per-param loading flag keyed by param.name
  */
 function ParamField({
   param,
@@ -46,6 +48,8 @@ function ParamField({
   loadingPrompts,
   filesByParam,
   loadingFilesByParam,
+  dirsByParam,
+  loadingDirsByParam,
 }) {
   const { name, type, description, required, multiLine, options } = param;
   const hasOptions = Array.isArray(options) && options.length > 0;
@@ -322,6 +326,41 @@ function ParamField({
         </select>
       `;
     }
+  } else if (type === "dirname") {
+    // Value is a workspace-relative directory path (e.g. "docs/instructions").
+    // Mirrors the filename branch: spinner while loading, text-input fallback
+    // when the list is empty or the fetch failed, otherwise a select of paths.
+    // Per-param state keyed by param.name — different dirname params may have
+    // different dir/glob and therefore different candidate lists.
+    const dirs = (dirsByParam && dirsByParam[name]) || [];
+    const loadingDirs = !!(loadingDirsByParam && loadingDirsByParam[name]);
+    if (loadingDirs) {
+      control = html`<span class="loading loading-spinner loading-xs"></span>`;
+    } else if (dirs.length === 0) {
+      control = html`
+        <input
+          type="text"
+          class="input input-sm w-full"
+          value=${value}
+          onInput=${(e) => onChange(name, e.target.value)}
+          placeholder="Workspace-relative directory path"
+        />
+      `;
+    } else {
+      control = html`
+        <select
+          class="select select-sm w-full"
+          value=${value}
+          onChange=${(e) => onChange(name, e.target.value)}
+        >
+          <option value="">Select a directory…</option>
+          ${dirs.map(
+            (path) =>
+              html`<option key=${path} value=${path}>${path}</option>`,
+          )}
+        </select>
+      `;
+    }
   } else if (type === "text") {
     // options (dropdown) wins over multiLine when both are set — this mirrors
     // the backend validation which rejects that combination, so this branch
@@ -443,6 +482,11 @@ export function PromptParameterDialog({
   // per param so multiple filename params render independent spinners.
   const [filesByParam, setFilesByParam] = useState({});
   const [loadingFilesByParam, setLoadingFilesByParam] = useState({});
+  // Dirname params mirror the filename per-param state — see the filename
+  // pattern above. Kept as a separate map so the two picker types can coexist
+  // in the same dialog without key collisions.
+  const [dirsByParam, setDirsByParam] = useState({});
+  const [loadingDirsByParam, setLoadingDirsByParam] = useState({});
 
   // Reset state each time the dialog opens; seed from initialValues when provided.
   // Seeds on the open transition only — initialValues is intentionally NOT a
@@ -459,6 +503,8 @@ export function PromptParameterDialog({
     setPromptsList([]);
     setFilesByParam({});
     setLoadingFilesByParam({});
+    setDirsByParam({});
+    setLoadingDirsByParam({});
     setLoadingBeads(false);
     setLoadingSessions(false);
     setLoadingWorkspaces(false);
@@ -596,6 +642,44 @@ export function PromptParameterDialog({
     }
   }, [isOpen, workingDir]);
 
+  // Fetch workspace directories per dirname param when dialog opens. Mirrors
+  // the filename fetch pattern above: one request per param, results stored
+  // keyed by param.name, failures degrade to an empty list (dialog falls back
+  // to a text input via the ParamField render branch).
+  useEffect(() => {
+    if (!isOpen) return;
+    const dirnameParams = parameters.filter((p) => p.type === "dirname");
+    if (dirnameParams.length === 0 || !workingDir) return;
+
+    setLoadingDirsByParam(() => {
+      const next = {};
+      for (const p of dirnameParams) next[p.name] = true;
+      return next;
+    });
+
+    for (const p of dirnameParams) {
+      const params = { working_dir: workingDir };
+      if (p.dir) params.dir = p.dir;
+      if (p.glob) params.glob = p.glob;
+      const paramName = p.name;
+      authFetch(endpoints.workspaceDirs.list(params))
+        .then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
+        .then((data) => {
+          setDirsByParam((prev) => ({
+            ...prev,
+            [paramName]: Array.isArray(data?.dirs) ? data.dirs : [],
+          }));
+        })
+        .catch((err) => {
+          console.warn("[PromptParameterDialog] dirs list error:", err);
+          setDirsByParam((prev) => ({ ...prev, [paramName]: [] }));
+        })
+        .finally(() => {
+          setLoadingDirsByParam((prev) => ({ ...prev, [paramName]: false }));
+        });
+    }
+  }, [isOpen, workingDir]);
+
   const handleFieldChange = useCallback((fieldName, val) => {
     setValues((prev) => ({ ...prev, [fieldName]: val }));
   }, []);
@@ -677,6 +761,8 @@ export function PromptParameterDialog({
                 loadingPrompts=${loadingPrompts}
                 filesByParam=${filesByParam}
                 loadingFilesByParam=${loadingFilesByParam}
+                dirsByParam=${dirsByParam}
+                loadingDirsByParam=${loadingDirsByParam}
               />`,
           )}
         </div>

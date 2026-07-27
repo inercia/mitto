@@ -43,6 +43,19 @@ import (
 //     ".." reject, symlink-escape reject, 256 KB cap) at read time — Dir/Glob
 //     are UI dropdown hints only. multiLine/options are not supported
 //     (rejected by the existing text-only check).
+//   - dirname        — a workspace-relative directory path, rendered as a
+//     dropdown of immediate sub-directories under an optional Dir
+//     (workspace-relative, non-recursive), optionally filtered by a Glob
+//     (filepath.Match applied to the sub-directory name only). Interactive,
+//     dialog-collected (like boolean/prompts/filename): no menu auto-supplies
+//     it and it never gates menu visibility. Hidden directories (leading ".")
+//     are excluded by default. Returned value is a workspace-relative
+//     directory path suitable for the {{ dirExists .Args.NAME }} template
+//     action or joining with a filename to build a ReadFile argument. Dir/Glob
+//     are UI dropdown hints only — path safety for downstream consumers is
+//     enforced at read time by the helper that consumes the value.
+//     multiLine/options are not supported (rejected by the existing text-only
+//     check).
 var KnownPromptParameterTypes = []string{
 	"beadsId",
 	"beadsTitle",
@@ -55,6 +68,7 @@ var KnownPromptParameterTypes = []string{
 	"boolean",
 	"prompts",
 	"filename",
+	"dirname",
 }
 
 // IsKnownPromptParameterType reports whether t is a recognised parameter type.
@@ -139,15 +153,17 @@ func ValidatePromptParameters(menus string, params []PromptParameter) error {
 				}
 			}
 		}
-		// Dir/Glob are only meaningful for the "filename" type. Reject elsewhere
-		// to catch misconfiguration early (mirrors the multiLine/options pattern).
-		if param.Dir != "" && param.Type != "filename" {
-			return fmt.Errorf("parameter %q: dir is only valid for type \"filename\", not %q", param.Name, param.Type)
+		// Dir/Glob are only meaningful for the "filename" and "dirname" types.
+		// Reject elsewhere to catch misconfiguration early (mirrors the
+		// multiLine/options pattern).
+		isFileOrDirType := param.Type == "filename" || param.Type == "dirname"
+		if param.Dir != "" && !isFileOrDirType {
+			return fmt.Errorf("parameter %q: dir is only valid for types \"filename\" or \"dirname\", not %q", param.Name, param.Type)
 		}
-		if param.Glob != "" && param.Type != "filename" {
-			return fmt.Errorf("parameter %q: glob is only valid for type \"filename\", not %q", param.Name, param.Type)
+		if param.Glob != "" && !isFileOrDirType {
+			return fmt.Errorf("parameter %q: glob is only valid for types \"filename\" or \"dirname\", not %q", param.Name, param.Type)
 		}
-		if param.Type == "filename" {
+		if isFileOrDirType {
 			// Dir must be workspace-relative: no absolute paths, no ".." segments.
 			// The runtime endpoint re-checks containment against the workspace
 			// root; these guards catch obvious misconfiguration at load time.

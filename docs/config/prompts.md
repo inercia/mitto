@@ -1015,6 +1015,7 @@ in sync.
 | `text` | Generic free-form text (catch-all type). Rendered as a single-line input by default; set `multiLine: true` to render a resizable multi-line textarea instead, or set `options: [...]` to constrain the value to a fixed enumeration rendered as a dropdown (mutually exclusive with `multiLine`). |
 | `boolean` | A yes/no flag, rendered as a checkbox. Supplied to the template as the string `"true"` or `"false"` (default unchecked → `"false"`). Boolean parameters never gate menu visibility and are always collected via the parameter dialog. |
 | `filename` | A workspace-relative file path, rendered as a dropdown of files under an optional `dir` (workspace-relative, non-recursive), optionally filtered by a `glob` (e.g. `"*.md"`). Interactive and dialog-collected (never gates menu visibility, always offered by the parameter dialog). Feeds `{{ ReadFile .Args.NAME }}` directly. `dir`/`glob` are dropdown hints only — path safety (absolute-path/`..`-escape/symlink-escape rejection, 256 KB cap) is enforced at read time by `ReadFile`. |
+| `dirname` | A workspace-relative directory path, rendered as a dropdown of immediate sub-directories under an optional `dir` (workspace-relative, non-recursive), optionally filtered by a `glob` (e.g. `"prod-*"`) applied to the sub-directory's base name. Interactive and dialog-collected (never gates menu visibility, always offered by the parameter dialog). Hidden directories (leading `.`) are excluded by default. Value is a workspace-relative directory path suitable for joining with a filename or passing to template helpers. `dir`/`glob` are dropdown hints only — path safety is enforced by the endpoint (absolute-path/`..`-escape/symlink-escape rejection). |
 
 #### `filename` YAML example
 
@@ -1030,6 +1031,20 @@ parameters:
 prompt: |
   {{ if .Args.Instructions }}{{ ReadFile .Args.Instructions }}{{ end }}
   … rest of the prompt …
+```
+
+#### `dirname` YAML example
+
+```yaml
+name: "Deploy to environment"
+parameters:
+  - name: Env
+    type: dirname
+    dir: deploy/environments
+    required: true
+    description: Sub-directory under deploy/environments to target
+prompt: |
+  Deploy using config from {{ .Args.Env }}/…
 ```
 
 ### Visibility rule (type-based gating)
