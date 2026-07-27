@@ -158,3 +158,41 @@ func TestIdentifyPRByBranchFragmentInlines(t *testing.T) {
 		}
 	}
 }
+
+// TestPRFetchCommentsFragmentInlines verifies that the
+// github/shared/pr-fetch-comments fragment resolves and inlines into both
+// consuming prompts (check-pr-comments, address-pr-comments) — the retrieval
+// + categorize block extracted from §2 of each, replacing the mitto-emcc
+// broken `gh pr view --json reviews,comments,reviewThreads` form.
+func TestPRFetchCommentsFragmentInlines(t *testing.T) {
+	// Hallmarks unique to the fragment body (short phrases callers don't
+	// paraphrase locally).
+	const (
+		hallmarkReviewsComments = "gh pr view <number> --json reviews,comments"
+		hallmarkGraphQL         = "gh api graphql -f query="
+		hallmarkReviewThreads   = "reviewThreads(first:100)"
+		hallmarkGlab            = "glab mr view <number> --comments"
+		hallmarkCategorize      = "Categorize the merged set"
+	)
+
+	ctx := &cel.PromptEnabledContext{
+		Session: cel.SessionContext{ID: "s", Name: "N"},
+		Args:    map[string]string{},
+	}
+
+	for _, promptName := range []string{"Check PR Comments", "Address PR Comments"} {
+		out := renderBuiltinPromptWithFragments(t, promptName, ctx)
+		for _, needle := range []string{
+			hallmarkReviewsComments,
+			hallmarkGraphQL,
+			hallmarkReviewThreads,
+			hallmarkGlab,
+			hallmarkCategorize,
+		} {
+			if !strings.Contains(out, needle) {
+				t.Errorf("prompt %q: rendered output missing hallmark %q — fragment did not inline",
+					promptName, needle)
+			}
+		}
+	}
+}

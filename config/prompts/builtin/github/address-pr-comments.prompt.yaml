@@ -61,12 +61,7 @@ prompt: |
 
   ### 2. Retrieve All Comments
 
-  ```bash
-  gh pr view <number> --json reviews,comments,reviewThreads   # GitHub
-  glab mr view <number> --comments                             # GitLab
-  ```
-
-  Categorize: review comments, inline code comments, conversation threads, change requests, approvals with comments.
+  {{ template "github/shared/pr-fetch-comments" . }}
 
   ### 3. Analyze Each Comment
 
