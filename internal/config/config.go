@@ -1117,20 +1117,32 @@ func (c *ConversationsConfig) GetMinLoopCompletionDelaySeconds() int {
 }
 
 // EffectiveMaxLoopIterations returns the binding iteration cap for a loop
-// conversation: the smallest positive of { promptMax, configMax, GlobalMaxLoopIterations }.
+// conversation.
 //
-// All three inputs are literal caps, not sentinels for anything other than
-// "unlimited":
-//   - promptMax and configMax: 0 means "unlimited" (that cap is ignored).
-//   - Any positive value is treated literally (e.g. configMax=1 means stop after 1).
-//   - GlobalMaxLoopIterations is the hardcoded absolute backstop and always applies.
+// The inputs are asymmetric: promptMax is authoritative when the prompt author
+// has an opinion; configMax is a default only used when the prompt has no
+// opinion.
 //
-// Per-conversation caps are honored below the global safeguard: if promptMax > 0
-// and smaller than configMax, the per-conversation cap wins. The result is always
-// positive.
+//   - promptMax == 0 ("unlimited" at the prompt level, i.e. the author explicitly
+//     opted out of any per-prompt cap — the standing-supervisor contract):
+//     configMax is IGNORED, only the hardcoded GlobalMaxLoopIterations backstop
+//     applies. This preserves the author-visible contract in prompt frontmatter
+//     that `maxIterations: 0` means "unlimited scheduled runs, bounded only by
+//     the absolute backstop" (mitto-48x).
+//   - promptMax > 0: the smallest positive of { promptMax, configMax,
+//     GlobalMaxLoopIterations } wins. A positive promptMax is treated literally
+//     (e.g. promptMax=1 stops after 1 run); configMax further constrains it.
+//
+// GlobalMaxLoopIterations is the hardcoded absolute backstop and always applies.
+// The result is always positive.
 func EffectiveMaxLoopIterations(promptMax, configMax int) int {
+	// mitto-48x: prompt-declared 0 is an explicit author opt-out from any
+	// per-prompt cap; the config default must not silently downgrade it.
+	if promptMax == 0 {
+		return GlobalMaxLoopIterations
+	}
 	effective := GlobalMaxLoopIterations
-	if promptMax > 0 && promptMax < effective {
+	if promptMax < effective {
 		effective = promptMax
 	}
 	if configMax > 0 && configMax < effective {

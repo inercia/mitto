@@ -710,15 +710,17 @@ auto-stops. The loop engine counts each delivered run (`iteration_count`) and,
 when the cap is reached, **disables** the loop prompt so it stops firing. The
 prompt is **not** deleted or archived — you can re-enable it at any time.
 
-The binding cap is the **smallest positive** of:
+The binding cap depends on whether the prompt author expressed an opinion:
 
-- the prompt's `maxIterations`,
-- the server's `conversations.max_loop_iterations` setting (default `100`,
-  `0` = unlimited), and
-- a hardcoded absolute backstop of `1000`.
-
-A `maxIterations` of `0` (or absent) means "unlimited" at the prompt level, but the
-config setting and the backstop still apply.
+- **`maxIterations` `> 0`** — the binding cap is the **smallest positive** of the
+  prompt's `maxIterations`, the server's `conversations.max_loop_iterations`
+  setting (default `100`, `0` = unlimited), and the hardcoded absolute backstop
+  of `1000`.
+- **`maxIterations` `= 0` (or absent)** — the author has explicitly opted out of
+  any per-prompt cap (the standing-supervisor contract). The
+  `max_loop_iterations` config setting is **ignored**; only the hardcoded
+  backstop of `1000` still applies. This preserves the prompt-frontmatter
+  contract that `maxIterations: 0` means "unlimited scheduled runs".
 
 #### Triggers: schedule vs on-completion
 

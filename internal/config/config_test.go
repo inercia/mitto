@@ -2349,10 +2349,12 @@ func TestEffectiveMaxLoopIterations(t *testing.T) {
 			want:      50,
 		},
 		{
-			name:      "config cap wins when prompt is zero",
+			// mitto-48x: promptMax=0 is an explicit author opt-out; configMax
+			// (even when positive) does NOT bind — only the backstop applies.
+			name:      "prompt zero opts out even when config is set",
 			promptMax: 0,
 			configMax: 200,
-			want:      200,
+			want:      GlobalMaxLoopIterations,
 		},
 		{
 			name:      "prompt cap wins when config is zero",

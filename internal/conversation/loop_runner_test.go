@@ -664,9 +664,14 @@ func TestLoopRunner_AutoArchiveNoLoopConfig(t *testing.T) {
 	}
 }
 
-// TestLoopRunner_ConfigCapAutoStop verifies that a loop conversation with no
-// per-prompt cap (MaxIterations=0) auto-stops when the runner's configured default cap
-// is reached. This tests the global safeguard layer independently of the per-prompt cap.
+// TestLoopRunner_ConfigCapAutoStop verifies that a loop conversation whose
+// per-prompt cap is set (MaxIterations > 0) but larger than the runner's
+// configured default cap auto-stops when the config default is reached — i.e.
+// the config-level default binds via the smallest-positive rule.
+//
+// Note (mitto-48x): promptMax=0 is now an explicit author opt-out from configMax
+// (see TestLoopRunner_ConfigCapDoesNotBindWhenPromptZero); to still exercise the
+// config-cap-binds path, this test uses a positive promptMax above configCap.
 func TestLoopRunner_ConfigCapAutoStop(t *testing.T) {
 	store, err := session.NewStore(t.TempDir())
 	if err != nil {
@@ -674,7 +679,8 @@ func TestLoopRunner_ConfigCapAutoStop(t *testing.T) {
 	}
 	defer store.Close()
 
-	// Create a session with MaxIterations=0 (no per-prompt cap)
+	// Create a session with a positive per-prompt cap larger than the config cap,
+	// so the config default is the binding limit.
 	meta := session.Metadata{
 		SessionID:  "config-cap-session",
 		ACPServer:  "test",
@@ -689,7 +695,7 @@ func TestLoopRunner_ConfigCapAutoStop(t *testing.T) {
 		Prompt:        "Test prompt",
 		Frequency:     session.Frequency{Value: 1, Unit: session.FrequencyHours},
 		Enabled:       true,
-		MaxIterations: 0, // No per-prompt cap
+		MaxIterations: 10, // Positive per-prompt cap, larger than configCap below.
 	}); err != nil {
 		t.Fatalf("loopStore.Set() error = %v", err)
 	}
@@ -726,9 +732,9 @@ func TestLoopRunner_ConfigCapAutoStop(t *testing.T) {
 		t.Errorf("IterationCount = %d, want %d", updated.IterationCount, configCap)
 	}
 
-	// Verify ReachedMaxIterations is false (per-prompt cap is 0 = unlimited)
+	// Verify ReachedMaxIterations is false (per-prompt cap is 10, count is 3)
 	if updated.ReachedMaxIterations() {
-		t.Error("ReachedMaxIterations() = true, want false (per-prompt cap is 0)")
+		t.Error("ReachedMaxIterations() = true, want false (per-prompt cap not yet reached)")
 	}
 
 	// Compute effective cap as the OnComplete callback would
@@ -737,7 +743,8 @@ func TestLoopRunner_ConfigCapAutoStop(t *testing.T) {
 	runner.mu.Unlock()
 	effective := config.EffectiveMaxLoopIterations(updated.MaxIterations, cfgCap)
 
-	// Verify effective cap matches the configured cap (since per-prompt cap is 0)
+	// Verify effective cap matches the configured cap (smallest-positive rule,
+	// with promptMax=10 > configCap=3).
 	if effective != configCap {
 		t.Errorf("effective cap = %d, want %d", effective, configCap)
 	}
@@ -785,6 +792,81 @@ func TestLoopRunner_ConfigCapAutoStop(t *testing.T) {
 	}
 }
 
+// TestLoopRunner_ConfigCapDoesNotBindWhenPromptZero pins the mitto-48x contract:
+// when the loop's per-prompt cap is 0 (author-declared "standing supervisor,
+// unlimited"), the runner's configured default cap MUST NOT bind — only the
+// hardcoded GlobalMaxLoopIterations backstop applies. Under the pre-fix code,
+// EffectiveMaxLoopIterations(0, small) returned small and the loop auto-stopped
+// at small; under the fix it returns GlobalMaxLoopIterations and the loop
+// continues.
+func TestLoopRunner_ConfigCapDoesNotBindWhenPromptZero(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	meta := session.Metadata{
+		SessionID:  "prompt-zero-session",
+		ACPServer:  "test",
+		WorkingDir: "/tmp",
+	}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("store.Create() error = %v", err)
+	}
+
+	loopStore := store.Loop(meta.SessionID)
+	if err := loopStore.Set(&session.LoopPrompt{
+		Prompt:        "Standing supervisor",
+		Frequency:     session.Frequency{Value: 1, Unit: session.FrequencyHours},
+		Enabled:       true,
+		MaxIterations: 0, // Explicit author opt-out from any per-prompt cap.
+	}); err != nil {
+		t.Fatalf("loopStore.Set() error = %v", err)
+	}
+
+	// A small config default that WOULD have bound under the pre-fix semantics.
+	const configCap = 3
+	runner := NewLoopRunner(store, nil, nil)
+	runner.SetMaxLoopIterations(configCap)
+
+	// Drive configCap successful deliveries so IterationCount reaches configCap.
+	for i := 0; i < configCap; i++ {
+		if err := loopStore.RecordSent(); err != nil {
+			t.Fatalf("RecordSent() [%d] error = %v", i+1, err)
+		}
+	}
+
+	updated, err := loopStore.Get()
+	if err != nil {
+		t.Fatalf("loopStore.Get() error = %v", err)
+	}
+	if updated.IterationCount != configCap {
+		t.Fatalf("IterationCount = %d, want %d", updated.IterationCount, configCap)
+	}
+	if updated.ReachedMaxIterations() {
+		t.Fatal("ReachedMaxIterations() = true, want false (per-prompt cap is 0)")
+	}
+
+	runner.mu.Lock()
+	cfgCap := runner.maxLoopIterations
+	runner.mu.Unlock()
+	effective := config.EffectiveMaxLoopIterations(updated.MaxIterations, cfgCap)
+
+	// mitto-48x: configCap MUST NOT bind. Effective falls through to the
+	// hardcoded backstop.
+	if effective != config.GlobalMaxLoopIterations {
+		t.Errorf("effective cap = %d, want %d (backstop; configCap must not bind when promptMax=0)",
+			effective, config.GlobalMaxLoopIterations)
+	}
+
+	// The auto-stop condition must be FALSE: the loop keeps firing past configCap.
+	if updated.IterationCount >= effective {
+		t.Errorf("auto-stop would trigger at IterationCount=%d effective=%d; want no auto-stop",
+			updated.IterationCount, effective)
+	}
+}
+
 // TestLoopRunner_IterationSafeguardBranchSelection verifies the discriminant
 // used by the auto-stop log branches in deliverPrompt: when the per-prompt cap
 // is unlimited (MaxIterations=0), the runner distinguishes the hardcoded
@@ -799,9 +881,14 @@ func TestLoopRunner_IterationSafeguardBranchSelection(t *testing.T) {
 			effective, config.GlobalMaxLoopIterations)
 	}
 
-	// Case B: config-level cap is the binding limit, per-prompt cap is unlimited.
+	// Case B: config-level cap is the binding limit and per-prompt cap is set
+	// larger than it (so perPromptReached=false and effective < backstop). Under
+	// mitto-48x, promptMax=0 is an explicit opt-out from configMax, so the INFO
+	// (configured-cap) branch is only reachable when promptMax > 0 AND
+	// configMax < promptMax; a positive promptMax above configMax reproduces
+	// that.
 	const cfgCap = 100
-	effective = config.EffectiveMaxLoopIterations(0, cfgCap)
+	effective = config.EffectiveMaxLoopIterations(500, cfgCap)
 	if effective != cfgCap {
 		t.Errorf("case B: effective = %d, want %d (config-level cap)", effective, cfgCap)
 	}
@@ -816,6 +903,15 @@ func TestLoopRunner_IterationSafeguardBranchSelection(t *testing.T) {
 	effective = config.EffectiveMaxLoopIterations(5, cfgCap)
 	if effective != 5 {
 		t.Errorf("case C: effective = %d, want 5 (per-prompt cap honored)", effective)
+	}
+
+	// Case D (mitto-48x): promptMax=0 is an author opt-out; configMax MUST NOT
+	// bind. Effective falls through to the hardcoded backstop, so the runner
+	// takes the WARN branch (not the INFO configured-cap branch).
+	effective = config.EffectiveMaxLoopIterations(0, cfgCap)
+	if effective != config.GlobalMaxLoopIterations {
+		t.Errorf("case D: effective = %d, want %d (backstop; config cap must not bind when promptMax=0)",
+			effective, config.GlobalMaxLoopIterations)
 	}
 }
 

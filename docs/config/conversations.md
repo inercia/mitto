@@ -82,12 +82,15 @@ Loop conversations run on a schedule indefinitely by default. To prevent runaway
 2. **User-configurable default cap** (`max_loop_iterations` in settings) — applies when no per-prompt cap is set.
 3. **Hardcoded backstop** (`GlobalMaxLoopIterations = 1000`) — an absolute ceiling that always applies, even when both the per-prompt cap and user cap are set to 0 (unlimited).
 
-The **effective cap** is the smallest positive value among the three: per-prompt `max_iterations`, the configured `max_loop_iterations`, and the hardcoded backstop of 1000.
+The **effective cap** depends on whether the prompt author has expressed an opinion:
+
+- **Per-prompt cap `= 0` (unlimited)** — the prompt author has explicitly opted out of any per-prompt cap (the standing-supervisor contract). The `max_loop_iterations` config default is **ignored**; only the hardcoded backstop of 1000 applies.
+- **Per-prompt cap `> 0`** — the effective cap is the smallest positive of `{ per-prompt max_iterations, max_loop_iterations, 1000 }`.
 
 Examples:
 - Per-prompt cap = 0 (unlimited), config cap = 0 (unlimited) → effective cap = 1000 (backstop)
 - Per-prompt cap = 5, config cap = 100 → effective cap = 5
-- Per-prompt cap = 0, config cap = 200 → effective cap = 200
+- Per-prompt cap = 0, config cap = 200 → effective cap = 1000 (author opted out; config default ignored)
 - Per-prompt cap = 2000, config cap = 50 → effective cap = 50
 
 ### Configuration
