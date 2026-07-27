@@ -203,17 +203,16 @@ const gridStroke = () => cssVar("--mitto-border-1", "#e4e4e7");
 function buildChartSpecs(u) {
   // Compact axis sizes (uPlot defaults are 50/50 which eats ~70% of a 140px
   // chart, leaving the plot area a stubby band at the bottom of the card).
-  // xAxis: 40px = tick line + gap + HH:MM baseline + room for uPlot's
-  // second-tier date row (e.g. "7/26") on multi-day ranges (32px was
-  // cropping either that second tier or the bottom of "12pm" descenders).
-  // yAxis: 56px fits 6-char values like "20,000" or "100k" (44px was
-  // clipping the leading digit — dashboards routinely hit 5-digit token
-  // counts). stroke/grid/ticks are set to function-form theme colors so
-  // the labels ("12am", "20,000") stay legible against both light and dark
-  // surfaces (was defaulting to uPlot's #000).
+  // xAxis: 42px fits uPlot's two-tier x-axis (tick + HH:MM row + inter-tier
+  // gap + date row like "7/26/26") without cropping tier-2 descenders (36px
+  // clipped the date row). yAxis: 56px fits 6-char values like "20,000" or
+  // "100k" (44px was clipping the leading digit — dashboards routinely hit
+  // 5-digit token counts). stroke/grid/ticks are set to function-form theme
+  // colors so the labels ("12am", "20,000") stay legible against both light
+  // and dark surfaces (was defaulting to uPlot's #000).
   const xAxis = {
     space: 60,
-    size: 40,
+    size: 42,
     stroke: axisStroke,
     grid: { stroke: gridStroke, width: 1 },
     ticks: { stroke: gridStroke, width: 1, size: 5 },
@@ -445,7 +444,7 @@ function ModelUsageCard({ modelData, uplot, empty, hidden, onToggleModel }) {
     const rows = [xs, ...models.map((m) => m.values)];
     const xAxis = {
       space: 60,
-      size: 40,
+      size: 42,
       stroke: axisStroke,
       grid: { stroke: gridStroke, width: 1 },
       ticks: { stroke: gridStroke, width: 1, size: 5 },
@@ -746,8 +745,13 @@ export function StatsCharts({ showToast }) {
            scrollbar fades in only on hover / focus / active scrolling (see
            .mitto-carousel in styles.css). Each card carries its own min-width
            so multiple cards still fit side-by-side on wide viewports and
-           only overflow on narrow ones (phone, split panes). -->
-      <div class="mitto-carousel shrink-0 gap-3 w-full">
+           only overflow on narrow ones (phone, split panes). items-start
+           overrides .mitto-carousel's default align-items:stretch so the
+           shorter chart-only cards keep their natural height instead of
+           being padded out to match ModelUsageCard's title+canvas+legend
+           height (the legend row on tall-legend workspaces was leaking as
+           dead space below the other cards' x-axis labels). -->
+      <div class="mitto-carousel shrink-0 gap-3 w-full items-start">
         ${visibleSpecs.length === 0 && !modelUsageVisible
           ? html`<div class="text-xs text-mitto-text-muted italic p-3">
               All charts are hidden. Enable at least one in Settings ▸ Dashboard.
