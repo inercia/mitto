@@ -18,7 +18,7 @@ import (
 const DefaultMinLoopTasksCooldownSeconds = 30
 
 // tasksDefaultQuiescenceWindow is the default value for tasksQuiescenceWindow.
-const tasksDefaultQuiescenceWindow = 30 * time.Second
+const tasksDefaultQuiescenceWindow = 10 * time.Second
 
 // tasksListTimeout bounds how long a single `bd list` invocation may take when
 // fetching a beads snapshot for onTasks condition evaluation.
