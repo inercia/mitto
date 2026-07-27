@@ -90,7 +90,7 @@ prompt: |-
 
   ## Slack tools (names vary by MCP server)
 
-  {{ template "_shared/support/slack-tools" (dict "Capabilities" "You need tools that can: (a) read recent channel history (e.g. `slack_get_channel_history*`, `conversations_history_slack`), and (b) read a thread's replies (e.g. `slack_get_thread_replies*`)." "NoPosting" true "ReadMetadata" false) }}
+  {{ template "support/shared/slack-tools" (dict "Capabilities" "You need tools that can: (a) read recent channel history (e.g. `slack_get_channel_history*`, `conversations_history_slack`), and (b) read a thread's replies (e.g. `slack_get_thread_replies*`)." "NoPosting" true "ReadMetadata" false) }}
 
   ## Beads tracking model (one bead per Slack thread)
 
@@ -180,11 +180,11 @@ prompt: |-
 
   ## Channel bootstrap gate: first-run playbook setup
 
-  {{ template "_shared/support/bootstrap-gate" (dict "Channel" $channel "Silent" (and .Session.IsLoop (not .Session.IsLoopForced))) }}
+  {{ template "support/shared/bootstrap-gate" (dict "Channel" $channel "Silent" (and .Session.IsLoop (not .Session.IsLoopForced))) }}
 
   ## Channel scope gate: check this FIRST, every iteration
 
-  {{ template "_shared/support/migrate-monolith" (dict "Channel" $channel "ActiveBead" "") }}
+  {{ template "support/shared/migrate-monolith" (dict "Channel" $channel "ActiveBead" "") }}
 
   > **Note.** On a channel that has been through the bootstrap gate above, `scope.md` is guaranteed
   > to exist. This per-iteration gate is the **repair path**: if `scope.md` was deleted or the
@@ -205,16 +205,16 @@ prompt: |-
   `scope.md` was deleted keeps getting asked until it exists again.
 
   1. **Scope fragment (owner).**
-     - {{ template "_shared/support/channel-fragment-read" (dict "Channel" $channel "Fragment" "scope" "Purpose" "know what this channel is (and is not) responsible for before triaging" "Owner" "Support: watch channel" "OwnerAsk" true) }}
+     - {{ template "support/shared/channel-fragment-read" (dict "Channel" $channel "Fragment" "scope" "Purpose" "know what this channel is (and is not) responsible for before triaging" "Owner" "Support: watch channel" "OwnerAsk" true) }}
      - **Owner-ask step (only if `scope.md` is missing).** Create the
        `.mitto/support/{{ $channel }}/` directory if missing, then:
-       {{ template "_shared/support/ask-scope" (dict "TimeoutSeconds" 60) }}
+       {{ template "support/shared/ask-scope" (dict "TimeoutSeconds" 60) }}
      - **On a silent scheduled run**, keep the ask's `timeout_seconds` short (60s above) so an
        unattended tick does not hang. If nobody answers before it times out, send a
        `mitto_ui_notify` (warning) that no `scope.md` exists yet, then continue triage + keeping
        beads in sync but **skip drafting** this run. The next iteration asks again.
   2. **Tone fragment (reader).**
-     - {{ template "_shared/support/channel-fragment-read" (dict "Channel" $channel "Fragment" "tone" "Purpose" "keep triage summaries and any notifications consistent with the channel's voice" "Owner" "Support: reply to user" "OwnerAsk" false) }}
+     - {{ template "support/shared/channel-fragment-read" (dict "Channel" $channel "Fragment" "tone" "Purpose" "keep triage summaries and any notifications consistent with the channel's voice" "Owner" "Support: reply to user" "OwnerAsk" false) }}
   3. **Keep `scope.md` current.** Whenever you learn a new in-scope or out-of-scope pattern while
      triaging this run (a topic we now cover, a topic we should redirect), **append it** to
      `.mitto/support/{{ $channel }}/scope.md` so future runs benefit. Other fragments
@@ -469,7 +469,7 @@ prompt: |-
     the bead's current `state:*` label (use this exact mapping so it reads the same across runs and
     prompts):
 
-    {{ template "_shared/support/whats-next-mapping" (dict "IncludeClosed" true) }}
+    {{ template "support/shared/whats-next-mapping" (dict "IncludeClosed" true) }}
 
     **The "What's next" cell must be a markdown link to the Slack thread**, using the phrase above as
     the link text and the bead's stored `slack_url` metadata as the target:

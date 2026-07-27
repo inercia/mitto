@@ -28,7 +28,7 @@ prompt: |
 
   {{ $target := "" -}}
   {{ if .Session.BeadsIssue }}{{ $target = .Session.BeadsIssue }}{{ else if .Args.IssueID }}{{ $target = .Args.IssueID }}{{ end -}}
-  {{ template "_shared/beads/target-bead-header" (dict
+  {{ template "beads-issues/shared/target-bead-header" (dict
       "Target"   $target
       "Role"     "The user wants to **discuss, refine, or add something** to it. Your job is to explore the topic below together with them — grounded in the bead and the codebase — and, once you reach a conclusion, **capture the outcome back into the tracker**."
       "NoTarget" "Discuss the topic below with the user in the context of the current problem under discussion here. Do **not** run any `bd` commands — there is no bead to load or update (you may, with confirmation, create one to capture the outcome)."
@@ -50,7 +50,7 @@ prompt: |
   {{ if $target -}}
   ## Step 1 — Load the bead and its context
 
-  {{ template "_shared/beads/load-context" $target }}
+  {{ template "beads-issues/shared/load-context" $target }}
 
   Read everything carefully so you can discuss the topic knowledgeably. Where the bead or the topic
   references code or features, investigate the **codebase** just enough to ground the conversation —

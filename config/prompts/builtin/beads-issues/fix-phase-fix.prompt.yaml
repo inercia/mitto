@@ -34,7 +34,7 @@ prompt: |
   {{ $commit := eq .Args.Commit "true" -}}
   {{ $suffix := "Commit-after-fix is **disabled** (`Commit` argument)." -}}
   {{ if $commit }}{{ $suffix = "Commit-after-fix is **enabled** (`Commit` argument)." }}{{ end -}}
-  {{ template "_shared/beads/target-bead-header-strict" (dict
+  {{ template "beads-issues/shared/target-bead-header-strict" (dict
       "Target"      $target
       "Noun"        "target bug"
       "FromLink"    (ne .Session.BeadsIssue "")
@@ -42,7 +42,7 @@ prompt: |
   ) }}
 
   {{ if $target -}}
-  {{ template "_shared/beads/tier-check" (dict
+  {{ template "beads-issues/shared/tier-check" (dict
       "Target"    $target
       "Tier"      "Coding"
       "Phase"     "fix"
@@ -171,7 +171,7 @@ prompt: |
 
   ## Step 4 — Blocked → Defer + Handoff
 
-  {{ template "_shared/beads/blocked-defer-handoff" (dict
+  {{ template "beads-issues/shared/blocked-defer-handoff" (dict
       "Target"      $target
       "SessionID"   .Session.ID
       "Placeholder" "<target-bug>"
@@ -188,7 +188,7 @@ prompt: |
     code in the same pass.
   - **Green before green label.** Never add `fixed` while the reproduction test or
     adjacent tests are red.
-  {{ template "_shared/beads/phase-guidelines-footer" (dict
+  {{ template "beads-issues/shared/phase-guidelines-footer" (dict
       "IncludeItemNote" false
       "TagNoun"         "summary"
       "TagPrefix"       "Fix"

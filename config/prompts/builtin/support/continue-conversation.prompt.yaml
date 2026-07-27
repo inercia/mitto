@@ -52,12 +52,12 @@ prompt: |-
 
   ## Bead writing conventions (descriptions & comments)
 
-  {{ template "_shared/beads/markdown-convention" . }}
+  {{ template "beads-issues/shared/markdown-convention" . }}
   {{ template "_shared/reply-fence-convention" "reply" }}
 
   ## Slack tools (names vary by MCP server)
 
-  {{ template "_shared/support/slack-tools" (dict "Capabilities" "You need: (a) identify the current user, (b) read recent channel history, (c) read a thread's replies, and (d) post a reply to a thread (e.g. `slack_get_users*`, `slack_get_channel_history*`, `slack_get_thread_replies*`, `slack_reply_to_thread*`, or their `*_slack` equivalents)." "NoPosting" false "ReadMetadata" false) }}
+  {{ template "support/shared/slack-tools" (dict "Capabilities" "You need: (a) identify the current user, (b) read recent channel history, (c) read a thread's replies, and (d) post a reply to a thread (e.g. `slack_get_users*`, `slack_get_channel_history*`, `slack_get_thread_replies*`, `slack_reply_to_thread*`, or their `*_slack` equivalents)." "NoPosting" false "ReadMetadata" false) }}
 
   ## Step 0: Read the channel playbook fragments
 
@@ -67,9 +67,9 @@ prompt: |-
   `Support: investigate` (`investigation.md`, `resources.md`, `escalation.md`, `redirects.md`).
   Read the fragments needed to craft a reply and honor them throughout.
 
-  - {{ template "_shared/support/channel-fragment-read" (dict "Channel" $channel "Fragment" "scope" "Purpose" "confirm the conversation is in scope for this channel before continuing" "Owner" "Support: watch channel" "OwnerAsk" false) }}
-  - {{ template "_shared/support/channel-fragment-read" (dict "Channel" $channel "Fragment" "tone" "Purpose" "shape the tone/reply guidance when crafting any reply below" "Owner" "Support: reply to user" "OwnerAsk" false) }}
-  - {{ template "_shared/support/channel-fragment-read" (dict "Channel" $channel "Fragment" "investigation" "Purpose" "guide any gathering of answers in Option A of Step 5" "Owner" "Support: investigate" "OwnerAsk" false) }}
+  - {{ template "support/shared/channel-fragment-read" (dict "Channel" $channel "Fragment" "scope" "Purpose" "confirm the conversation is in scope for this channel before continuing" "Owner" "Support: watch channel" "OwnerAsk" false) }}
+  - {{ template "support/shared/channel-fragment-read" (dict "Channel" $channel "Fragment" "tone" "Purpose" "shape the tone/reply guidance when crafting any reply below" "Owner" "Support: reply to user" "OwnerAsk" false) }}
+  - {{ template "support/shared/channel-fragment-read" (dict "Channel" $channel "Fragment" "investigation" "Purpose" "guide any gathering of answers in Option A of Step 5" "Owner" "Support: investigate" "OwnerAsk" false) }}
 
   ## Step 1: Identify the current user
 
@@ -203,7 +203,7 @@ prompt: |-
   **P3** — we have replied, the ball is in the customer's court, and nothing needs your attention until
   they respond. In general the priority reflects how urgently *you* (the human) must act:
 
-  {{ template "_shared/support/priority-rubric" . }}
+  {{ template "support/shared/priority-rubric" . }}
 
   ## Notes
 

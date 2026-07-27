@@ -46,16 +46,16 @@ prompt: |-
 
   ## Bead writing conventions (descriptions & comments)
 
-  {{ template "_shared/beads/markdown-convention" . }}
+  {{ template "beads-issues/shared/markdown-convention" . }}
   {{ template "_shared/reply-fence-convention" "reply" }}
 
   ## Slack tools (names vary by MCP server)
 
-  {{ template "_shared/support/slack-tools" (dict "Capabilities" "Here you only need to **read a thread's replies** (to make sure you are investigating the latest ask)." "NoPosting" true "ReadMetadata" true) }}
+  {{ template "support/shared/slack-tools" (dict "Capabilities" "Here you only need to **read a thread's replies** (to make sure you are investigating the latest ask)." "NoPosting" true "ReadMetadata" true) }}
 
   ## Step 1: Identify the target bead
 
-  {{ template "_shared/support/target-bead-picker" (dict "Ctx" . "Filter" "" "EmptyMessage" "") }}
+  {{ template "support/shared/target-bead-picker" (dict "Ctx" . "Filter" "" "EmptyMessage" "") }}
 
   ## Step 2: Load history + refresh the thread
 
@@ -79,7 +79,7 @@ prompt: |-
 
   ## Step 3: Read the channel playbook fragments (this prompt owns four)
 
-  {{ template "_shared/support/migrate-monolith" (dict "Channel" "<channel-id>" "ActiveBead" "<id>") }}
+  {{ template "support/shared/migrate-monolith" (dict "Channel" "<channel-id>" "ActiveBead" "<id>") }}
 
   You must work using **this channel's documented playbook**, not by guessing. The playbook is
   stored **per channel** as topical fragments under **`.mitto/support/<channel-id>/`**, where
@@ -99,36 +99,36 @@ prompt: |-
 
   ### 3.1 `investigation.md` (owner)
 
-  - {{ template "_shared/support/channel-fragment-read" (dict "Channel" $channel "Fragment" "investigation" "Purpose" "learn this channel's investigation method (tool order, safe commands, MCP/CLI tools, confidence rules)" "Owner" "Support: investigate" "OwnerAsk" true) }}
+  - {{ template "support/shared/channel-fragment-read" (dict "Channel" $channel "Fragment" "investigation" "Purpose" "learn this channel's investigation method (tool order, safe commands, MCP/CLI tools, confidence rules)" "Owner" "Support: investigate" "OwnerAsk" true) }}
   - **Owner-ask step (only if `investigation.md` is missing).** Create the
     `.mitto/support/<channel-id>/` directory if missing, then:
-    {{ template "_shared/support/ask-investigation" (dict "TimeoutSeconds" 300) }}
+    {{ template "support/shared/ask-investigation" (dict "TimeoutSeconds" 300) }}
 
   ### 3.2 `resources.md` (owner)
 
-  - {{ template "_shared/support/channel-fragment-read" (dict "Channel" $channel "Fragment" "resources" "Purpose" "know which repos, runbooks, dashboards, and docs to consult for this channel" "Owner" "Support: investigate" "OwnerAsk" true) }}
+  - {{ template "support/shared/channel-fragment-read" (dict "Channel" $channel "Fragment" "resources" "Purpose" "know which repos, runbooks, dashboards, and docs to consult for this channel" "Owner" "Support: investigate" "OwnerAsk" true) }}
   - **Owner-ask step (only if `resources.md` is missing).**
-    {{ template "_shared/support/ask-resources" (dict "TimeoutSeconds" 300) }}
+    {{ template "support/shared/ask-resources" (dict "TimeoutSeconds" 300) }}
 
   ### 3.3 `escalation.md` (owner)
 
-  - {{ template "_shared/support/channel-fragment-read" (dict "Channel" $channel "Fragment" "escalation" "Purpose" "know who/when/how to escalate for this channel" "Owner" "Support: investigate" "OwnerAsk" true) }}
+  - {{ template "support/shared/channel-fragment-read" (dict "Channel" $channel "Fragment" "escalation" "Purpose" "know who/when/how to escalate for this channel" "Owner" "Support: investigate" "OwnerAsk" true) }}
   - **Owner-ask step (only if `escalation.md` is missing).**
-    {{ template "_shared/support/ask-escalation" (dict "TimeoutSeconds" 300) }}
+    {{ template "support/shared/ask-escalation" (dict "TimeoutSeconds" 300) }}
 
   ### 3.4 `redirects.md` (optional owner)
 
-  - {{ template "_shared/support/channel-fragment-read" (dict "Channel" $channel "Fragment" "redirects" "Purpose" "know where out-of-scope questions should go" "Owner" "Support: investigate" "OwnerAsk" true) }}
+  - {{ template "support/shared/channel-fragment-read" (dict "Channel" $channel "Fragment" "redirects" "Purpose" "know where out-of-scope questions should go" "Owner" "Support: investigate" "OwnerAsk" true) }}
   - **Owner-ask step (only if `redirects.md` is missing AND the current question is out of scope
     for this channel).** This fragment is optional — if the question is in scope for the channel,
     do **not** ask; skip silently. Only when out-of-scope handling is actually needed for this
     investigation:
-    {{ template "_shared/support/ask-redirects" (dict "TimeoutSeconds" 300) }}
+    {{ template "support/shared/ask-redirects" (dict "TimeoutSeconds" 300) }}
 
   ### 3.5 `scope.md` and `tone.md` (readers)
 
-  - {{ template "_shared/support/channel-fragment-read" (dict "Channel" $channel "Fragment" "scope" "Purpose" "confirm the question is in scope for this channel before investigating" "Owner" "Support: watch channel" "OwnerAsk" false) }}
-  - {{ template "_shared/support/channel-fragment-read" (dict "Channel" $channel "Fragment" "tone" "Purpose" "shape the tone/reply guidance when drafting the reply" "Owner" "Support: reply to user" "OwnerAsk" false) }}
+  - {{ template "support/shared/channel-fragment-read" (dict "Channel" $channel "Fragment" "scope" "Purpose" "confirm the question is in scope for this channel before investigating" "Owner" "Support: watch channel" "OwnerAsk" false) }}
+  - {{ template "support/shared/channel-fragment-read" (dict "Channel" $channel "Fragment" "tone" "Purpose" "shape the tone/reply guidance when drafting the reply" "Owner" "Support: reply to user" "OwnerAsk" false) }}
 
   ### 3.6 Keep the owned fragments current
 
@@ -212,7 +212,7 @@ prompt: |-
   posted the clarifying question and are waiting on the customer), reached only after
   **"Support: reply to user"** posts the draft. In general:
 
-  {{ template "_shared/support/priority-rubric" . }}
+  {{ template "support/shared/priority-rubric" . }}
 
   ## Notes
 

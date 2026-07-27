@@ -23,7 +23,7 @@ prompt: |
 
   {{ $target := "" -}}
   {{ if .Session.BeadsIssue }}{{ $target = .Session.BeadsIssue }}{{ else if .Args.IssueID }}{{ $target = .Args.IssueID }}{{ end -}}
-  {{ template "_shared/beads/target-bead-header" (dict
+  {{ template "beads-issues/shared/target-bead-header" (dict
       "Target"   $target
       "NoTarget" "Fact-check the **current problem / topic under discussion here** against the codebase — what appears implemented vs. missing for the work being discussed. Do **not** run any `bd` commands — there is no bead to load."
   ) }}

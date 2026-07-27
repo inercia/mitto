@@ -34,7 +34,7 @@ prompt: |
   {{ $commit := eq .Args.Commit "true" -}}
   {{ $suffix := "Commit-after-review is **disabled** (`Commit` argument)." -}}
   {{ if $commit }}{{ $suffix = "Commit-after-review is **enabled** (`Commit` argument)." }}{{ end -}}
-  {{ template "_shared/beads/target-bead-header-strict" (dict
+  {{ template "beads-issues/shared/target-bead-header-strict" (dict
       "Target"      $target
       "Noun"        "target feature"
       "FromLink"    (ne .Session.BeadsIssue "")
@@ -42,7 +42,7 @@ prompt: |
   ) }}
 
   {{ if $target -}}
-  {{ template "_shared/beads/tier-check" (dict
+  {{ template "beads-issues/shared/tier-check" (dict
       "Target"    $target
       "Tier"      "Reasoning"
       "Phase"     "review"
@@ -134,7 +134,7 @@ prompt: |
 
   ## Step 4 — Blocked → Defer + Handoff
 
-  {{ template "_shared/beads/blocked-defer-handoff" (dict
+  {{ template "beads-issues/shared/blocked-defer-handoff" (dict
       "Target"      $target
       "SessionID"   .Session.ID
       "Placeholder" "<target-feature>"
@@ -149,7 +149,7 @@ prompt: |
     the bead here is optional; the driver's Done branch always self-terminates.
   - **Never rubber-stamp.** Any unmet check means the label must NOT advance — loop
     back or defer, never guess that it is "probably fine".
-  {{ template "_shared/beads/phase-guidelines-footer" (dict
+  {{ template "beads-issues/shared/phase-guidelines-footer" (dict
       "IncludeItemNote" false
       "TagNoun"         "summary"
       "TagPrefix"       "Review"

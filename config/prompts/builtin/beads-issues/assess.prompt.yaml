@@ -23,7 +23,7 @@ prompt: |
 
   {{ $target := "" -}}
   {{ if .Session.BeadsIssue }}{{ $target = .Session.BeadsIssue }}{{ else if .Args.IssueID }}{{ $target = .Args.IssueID }}{{ end -}}
-  {{ template "_shared/beads/target-bead-header" (dict
+  {{ template "beads-issues/shared/target-bead-header" (dict
       "Target"   $target
       "Role"     "Your job is to help the user **think through and refine** this bead — resolving pending decisions, assessing its quality, and clarifying gaps — until it is **ready to work on**, then **capture the outcome back into the tracker**."
       "NoTarget" "Help the user **think through and refine the current problem** under discussion here — the topic, design question, or decision raised in this conversation: resolve pending decisions, surface trade-offs, and sharpen it into an actionable conclusion. Do **not** run any `bd` commands — there is no bead to load or update."
@@ -40,7 +40,7 @@ prompt: |
   {{ if $target -}}
   ## Step 1 — Load the bead and its context
 
-  {{ template "_shared/beads/load-context" $target }}
+  {{ template "beads-issues/shared/load-context" $target }}
 
   Read everything carefully. Where the bead references code or features, investigate the **codebase**
   just enough to discuss it knowledgeably — but remember you are not here to implement it.

@@ -16,7 +16,7 @@ prompt: |
 
   ## Step 0 — Bootstrap beads if needed
 
-  {{ template "_shared/beads/bootstrap" . }}
+  {{ template "beads-issues/shared/bootstrap" . }}
 
   ## Step 1 — Determine issue source
 

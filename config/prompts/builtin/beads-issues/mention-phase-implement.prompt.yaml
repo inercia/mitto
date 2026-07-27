@@ -37,7 +37,7 @@ prompt: |
   {{ if .Session.BeadsIssue }}{{ $target = .Session.BeadsIssue }}{{ else if .Args.IssueID }}{{ $target = .Args.IssueID }}{{ end -}}
   {{ $suffix := "" -}}
   {{ if .Args.MentionTS }}{{ $suffix = printf "Mention timestamp (dedup key): `%s`." .Args.MentionTS }}{{ end -}}
-  {{ template "_shared/beads/target-bead-header-strict" (dict
+  {{ template "beads-issues/shared/target-bead-header-strict" (dict
       "Target"      $target
       "FromLink"    (ne .Session.BeadsIssue "")
       "PhaseSuffix" $suffix
@@ -108,7 +108,7 @@ prompt: |
 
   ## Step 4 — Blocked → Defer + Handoff
 
-  {{ template "_shared/beads/blocked-defer-handoff" (dict
+  {{ template "beads-issues/shared/blocked-defer-handoff" (dict
       "Target"      $target
       "SessionID"   .Session.ID
       "Placeholder" "<target-bead>"

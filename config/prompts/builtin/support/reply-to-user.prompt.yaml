@@ -50,16 +50,16 @@ prompt: |-
 
   ## Bead writing conventions (descriptions & comments)
 
-  {{ template "_shared/beads/markdown-convention" . }}
+  {{ template "beads-issues/shared/markdown-convention" . }}
   {{ template "_shared/reply-fence-convention" "reply" }}
 
   ## Slack tools (names vary by MCP server)
 
-  {{ template "_shared/support/slack-tools" (dict "Capabilities" "You need: (a) **read a thread's replies** and (b) **post a reply to a thread**." "NoPosting" false "ReadMetadata" true) }}
+  {{ template "support/shared/slack-tools" (dict "Capabilities" "You need: (a) **read a thread's replies** and (b) **post a reply to a thread**." "NoPosting" false "ReadMetadata" true) }}
 
   ## Step 1: Identify the target bead
 
-  {{ template "_shared/support/target-bead-picker" (dict "Ctx" . "Filter" "state:drafting" "EmptyMessage" "nothing is ready to answer") }}
+  {{ template "support/shared/target-bead-picker" (dict "Ctx" . "Filter" "state:drafting" "EmptyMessage" "nothing is ready to answer") }}
 
   ## Step 2: Load history + verify state (self-check)
 
@@ -73,10 +73,10 @@ prompt: |-
   `tone.md` yet, the interactive review path (user is present for `state:drafting`) asks the user
   to define tone once and writes the file; subsequent runs just read it.
 
-  - {{ template "_shared/support/channel-fragment-read" (dict "Channel" $channel "Fragment" "tone" "Purpose" "shape the tone/reply guidance when reviewing or building the draft" "Owner" "Support: reply to user" "OwnerAsk" true) }}
+  - {{ template "support/shared/channel-fragment-read" (dict "Channel" $channel "Fragment" "tone" "Purpose" "shape the tone/reply guidance when reviewing or building the draft" "Owner" "Support: reply to user" "OwnerAsk" true) }}
   - **Owner-ask step (only if `tone.md` is missing).** Create the `.mitto/support/<channel-id>/`
     directory if missing, then:
-    {{ template "_shared/support/ask-tone" (dict "TimeoutSeconds" 300) }}
+    {{ template "support/shared/ask-tone" (dict "TimeoutSeconds" 300) }}
   - Confirm the `state:*` label is `drafting`. If it is **not**, use `mitto_ui_options` to warn:
     - **Question**: "This bead is in `state:<current>`, not `drafting`. Continue anyway?"
     - **Options**: `[{label: "Continue anyway"}, {label: "Cancel"}]`, timeout 300.
@@ -230,7 +230,7 @@ prompt: |-
   `need-info` (we asked a clarifying question), the ball is now in the customer's court and nothing
   needs your attention until they respond. In general:
 
-  {{ template "_shared/support/priority-rubric" . }}
+  {{ template "support/shared/priority-rubric" . }}
 
   ## Notes
 

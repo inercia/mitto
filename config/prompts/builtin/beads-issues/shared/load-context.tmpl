@@ -15,7 +15,7 @@
       {{ if $target -}}
       ## Step 1 — Load the bead and its context
 
-      {{ template "_shared/beads/load-context" $target }}
+      {{ template "beads-issues/shared/load-context" $target }}
 
       Read everything carefully. <prompt-specific reader guidance here>.
       {{- end }}

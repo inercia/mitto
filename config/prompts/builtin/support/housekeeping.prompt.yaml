@@ -46,7 +46,7 @@ prompt: |-
 
   ## Bead writing conventions (descriptions & comments)
 
-  {{ template "_shared/beads/markdown-convention" . }}
+  {{ template "beads-issues/shared/markdown-convention" . }}
   - This sweep never authors a customer reply itself (it hands drafting off to **"Support: investigate"**
     children and posting to **"Support: reply to user"**). Those prompts enclose the proposed reply in
     a `--- BEGIN REPLY ---` / `--- END REPLY ---` block so the exact customer-facing text is
@@ -54,7 +54,7 @@ prompt: |-
 
   ## Slack tools (names vary by MCP server)
 
-  {{ template "_shared/support/slack-tools" (dict "Capabilities" "You only need to **read a thread's replies** (e.g. `slack_get_thread_replies*`, `conversations_replies_slack`). Read each ticket's channel + parent `thread_ts` from its bead metadata (`slack_channel` / `slack_thread_ts`)." "NoPosting" true "ReadMetadata" false) }}
+  {{ template "support/shared/slack-tools" (dict "Capabilities" "You only need to **read a thread's replies** (e.g. `slack_get_thread_replies*`, `conversations_replies_slack`). Read each ticket's channel + parent `thread_ts` from its bead metadata (`slack_channel` / `slack_thread_ts`)." "NoPosting" true "ReadMetadata" false) }}
 
   ## State lifecycle (single `state:*` label)
 
@@ -313,7 +313,7 @@ prompt: |-
     **what's next** cell is a short human phrase derived from the bead's current `state:*` label (use
     this exact mapping so it reads the same across runs and matches **"Support: watch channel"**):
 
-    {{ template "_shared/support/whats-next-mapping" (dict "IncludeClosed" false) }}
+    {{ template "support/shared/whats-next-mapping" (dict "IncludeClosed" false) }}
 
     **The "What's next" cell must be a markdown link to the Slack thread**, using the phrase above as
     the link text and the bead's stored `slack_url` metadata as the target:

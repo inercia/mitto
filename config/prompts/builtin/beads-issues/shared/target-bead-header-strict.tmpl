@@ -2,7 +2,7 @@
   target-bead-header-strict — the visible "target bead" preamble used by
   every beads-issues **phase** / **loop-driver** prompt that REQUIRES a
   resolved target and refuses to guess when one is missing. Complements
-  `_shared/beads/target-bead-header.tmpl`, which supports the flexible
+  `beads-issues/shared/target-bead-header.tmpl`, which supports the flexible
   "linked bead OR fallback to the current conversation topic" convention.
 
   Consumers: feature-phase-plan / -implement / -test / -review,
@@ -22,7 +22,7 @@
       {{ $suffix := "" -}}
       {{ if $commit }}{{ $suffix = "Commit-after-fix is **enabled** (`Commit` argument)." -}}
       {{ else }}{{ $suffix = "Commit-after-fix is **disabled** (`Commit` argument)." }}{{ end -}}
-      {{ template "_shared/beads/target-bead-header-strict" (dict
+      {{ template "beads-issues/shared/target-bead-header-strict" (dict
           "Target"      $target
           "Noun"        "target bug"
           "FromLink"    (ne .Session.BeadsIssue "")

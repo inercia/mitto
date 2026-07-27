@@ -23,7 +23,7 @@
   Usage (rendered as a top-level Markdown block — the CALLER supplies no
   surrounding markers):
 
-      {{ template "_shared/support/migrate-monolith"
+      {{ template "support/shared/migrate-monolith"
            (dict "Channel" $channel "ActiveBead" "<id-or-empty>") }}
 
   Whitespace: emits a leading `###` sub-heading and a trailing blank line

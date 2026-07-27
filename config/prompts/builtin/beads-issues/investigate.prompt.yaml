@@ -23,7 +23,7 @@ prompt: |
 
   {{ $target := "" -}}
   {{ if .Session.BeadsIssue }}{{ $target = .Session.BeadsIssue }}{{ else if .Args.IssueID }}{{ $target = .Args.IssueID }}{{ end -}}
-  {{ template "_shared/beads/target-bead-header" (dict
+  {{ template "beads-issues/shared/target-bead-header" (dict
       "Target"   $target
       "Role"     "Your job is to **deepen the understanding** of this bead: gather the context it is missing, clarify anything vague or underspecified, and enrich it so it is genuinely ready to work on. If the problem turns out to be larger or more complex than the bead currently captures, **split it into sub-issues**."
       "NoTarget" "Investigate the **current problem** under discussion here — the topic, code, error, or question raised in this conversation. Treat the conversation itself as the subject: gather the missing context from the codebase and history, clarify what is vague, and produce an Investigation Report. Do **not** run any `bd` commands — there is no bead to load, enrich, or close."
@@ -32,7 +32,7 @@ prompt: |
   {{ if $target -}}
   ## Step 1 — Load the bead's full detail
 
-  {{ template "_shared/beads/load-context" $target }}
+  {{ template "beads-issues/shared/load-context" $target }}
 
   Note what is already well-specified versus what is thin, vague, or missing.
   {{- end }}

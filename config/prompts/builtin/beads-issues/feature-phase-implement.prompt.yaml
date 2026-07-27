@@ -35,7 +35,7 @@ prompt: |
   {{ $commit := eq .Args.Commit "true" -}}
   {{ $suffix := "Commit-after-implement is **disabled** (`Commit` argument)." -}}
   {{ if $commit }}{{ $suffix = "Commit-after-implement is **enabled** (`Commit` argument)." }}{{ end -}}
-  {{ template "_shared/beads/target-bead-header-strict" (dict
+  {{ template "beads-issues/shared/target-bead-header-strict" (dict
       "Target"      $target
       "Noun"        "target feature"
       "FromLink"    (ne .Session.BeadsIssue "")
@@ -43,7 +43,7 @@ prompt: |
   ) }}
 
   {{ if $target -}}
-  {{ template "_shared/beads/tier-check" (dict
+  {{ template "beads-issues/shared/tier-check" (dict
       "Target"    $target
       "Tier"      "Coding"
       "Phase"     "implement"
@@ -119,7 +119,7 @@ prompt: |
 
   ## Step 4 — Blocked → Defer + Handoff
 
-  {{ template "_shared/beads/blocked-defer-handoff" (dict
+  {{ template "beads-issues/shared/blocked-defer-handoff" (dict
       "Target"      $target
       "SessionID"   .Session.ID
       "Placeholder" "<target-feature>"
@@ -134,7 +134,7 @@ prompt: |
   - **Commit to persist across iterations.** Each phase runs in a separate loop
     iteration; without `Commit: "true"`, work here is only as durable as the
     conversation's working tree.
-  {{ template "_shared/beads/phase-guidelines-footer" (dict
+  {{ template "beads-issues/shared/phase-guidelines-footer" (dict
       "IncludeItemNote" false
       "TagNoun"         "summary"
       "TagPrefix"       "Implementation"

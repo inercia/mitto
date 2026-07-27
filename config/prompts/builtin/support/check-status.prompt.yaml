@@ -50,7 +50,7 @@ prompt: |-
 
   ## Bead writing conventions (descriptions & comments)
 
-  {{ template "_shared/beads/markdown-convention" . }}
+  {{ template "beads-issues/shared/markdown-convention" . }}
   - This prompt only reconciles thread **history** onto the bead; it never authors a customer reply. If
     you ever record one of our own outbound messages, keep the message text **enclosed in a
     `--- BEGIN REPLY ---` / `--- END REPLY ---` block** (the shared convention the drafting/reply
@@ -58,11 +58,11 @@ prompt: |-
 
   ## Slack tools (names vary by MCP server)
 
-  {{ template "_shared/support/slack-tools" (dict "Capabilities" "Here you only need to **read a thread's replies** (e.g. `slack_get_thread_replies*`, `conversations_replies_slack`)." "NoPosting" true "ReadMetadata" false) }}
+  {{ template "support/shared/slack-tools" (dict "Capabilities" "Here you only need to **read a thread's replies** (e.g. `slack_get_thread_replies*`, `conversations_replies_slack`)." "NoPosting" true "ReadMetadata" false) }}
 
   ## Step 1: Identify the target bead
 
-  {{ template "_shared/support/target-bead-picker" (dict "Ctx" . "Filter" "" "EmptyMessage" "") }}
+  {{ template "support/shared/target-bead-picker" (dict "Ctx" . "Filter" "" "EmptyMessage" "") }}
 
   ## Step 2: Load the bead history
 
@@ -70,8 +70,8 @@ prompt: |-
     recorded state and message were.
   - Note the current `state:*` label, the stored `slack_thread_ts` / `slack_channel` / `slack_url`
     metadata, and the timestamp/author of the most recent comment.
-  - {{ template "_shared/support/channel-fragment-read" (dict "Channel" $channel "Fragment" "tone" "Purpose" "keep your status summary consistent with the channel's voice (this prompt never posts to Slack; the playbook is context only here)" "Owner" "Support: reply to user" "OwnerAsk" false) }}
-  - {{ template "_shared/support/channel-fragment-read" (dict "Channel" $channel "Fragment" "scope" "Purpose" "judge whether an open question is in scope for this channel when summarising status" "Owner" "Support: watch channel" "OwnerAsk" false) }}
+  - {{ template "support/shared/channel-fragment-read" (dict "Channel" $channel "Fragment" "tone" "Purpose" "keep your status summary consistent with the channel's voice (this prompt never posts to Slack; the playbook is context only here)" "Owner" "Support: reply to user" "OwnerAsk" false) }}
+  - {{ template "support/shared/channel-fragment-read" (dict "Channel" $channel "Fragment" "scope" "Purpose" "judge whether an open question is in scope for this channel when summarising status" "Owner" "Support: watch channel" "OwnerAsk" false) }}
 
   ## Step 3: Refresh the Slack thread
 
@@ -156,7 +156,7 @@ prompt: |-
   After updating the state (Step 5) — and unless you closed the bead in Step 7 — set its priority to
   match how urgently *you* (the human) must act. In general:
 
-  {{ template "_shared/support/priority-rubric" . }}
+  {{ template "support/shared/priority-rubric" . }}
 
   ## Notes
 

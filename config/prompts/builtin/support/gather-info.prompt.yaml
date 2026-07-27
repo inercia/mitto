@@ -54,22 +54,22 @@ prompt: |-
 
   ## Bead writing conventions (descriptions & comments)
 
-  {{ template "_shared/beads/markdown-convention" . }}
+  {{ template "beads-issues/shared/markdown-convention" . }}
   {{ template "_shared/reply-fence-convention" "clarifying message" }}
 
   ## Slack tools (names vary by MCP server)
 
-  {{ template "_shared/support/slack-tools" (dict "Capabilities" "You need: (a) **read a thread's replies** and (b) **post a reply to a thread** (e.g. `slack_reply_to_thread*`)." "NoPosting" false "ReadMetadata" true) }}
+  {{ template "support/shared/slack-tools" (dict "Capabilities" "You need: (a) **read a thread's replies** and (b) **post a reply to a thread** (e.g. `slack_reply_to_thread*`)." "NoPosting" false "ReadMetadata" true) }}
 
   ## Step 1: Identify the target bead
 
-  {{ template "_shared/support/target-bead-picker" (dict "Ctx" . "Filter" "state:need-info" "EmptyMessage" "nothing is awaiting a customer detail (nothing to follow up on)") }}
+  {{ template "support/shared/target-bead-picker" (dict "Ctx" . "Filter" "state:need-info" "EmptyMessage" "nothing is awaiting a customer detail (nothing to follow up on)") }}
 
   ## Step 2: Load history + verify state (self-check)
 
   - Load the full history: `bd show <id>` and `bd comments <id>`. Note the stored `slack_thread_ts`
     / `slack_channel` / `slack_url` metadata.
-  - {{ template "_shared/support/channel-fragment-read" (dict "Channel" $channel "Fragment" "tone" "Purpose" "shape the tone when drafting the clarifying message" "Owner" "Support: reply to user" "OwnerAsk" false) }}
+  - {{ template "support/shared/channel-fragment-read" (dict "Channel" $channel "Fragment" "tone" "Purpose" "shape the tone when drafting the clarifying message" "Owner" "Support: reply to user" "OwnerAsk" false) }}
   - Confirm the `state:*` label is `need-info`. If it is **not**, use `mitto_ui_options` to warn:
     - **Question**: "This bead is in `state:<current>`, not `need-info`. Continue anyway?"
     - **Options**: `[{label: "Continue anyway"}, {label: "Cancel"}]`, timeout 300.
@@ -177,7 +177,7 @@ prompt: |-
   (Contrast: the *first* clarifying question is a `state:drafting` draft, which is **P1** while pending
   your approval — but that is handled by **"Support: reply to user"**, not here.) In general:
 
-  {{ template "_shared/support/priority-rubric" . }}
+  {{ template "support/shared/priority-rubric" . }}
 
   ## Notes
 

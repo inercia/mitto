@@ -10,7 +10,7 @@
   Callers first resolve the target bead into a local `$target` (same
   variable already used for `target-bead-header-strict`), then invoke:
 
-      {{ template "_shared/beads/tier-check" (dict
+      {{ template "beads-issues/shared/tier-check" (dict
           "Target"    $target
           "Tier"      "Reasoning"
           "Phase"     "plan"

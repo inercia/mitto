@@ -23,7 +23,7 @@ prompt: |
 
   {{ $target := "" -}}
   {{ if .Session.BeadsIssue }}{{ $target = .Session.BeadsIssue }}{{ else if .Args.IssueID }}{{ $target = .Args.IssueID }}{{ end -}}
-  {{ template "_shared/beads/target-bead-header" (dict
+  {{ template "beads-issues/shared/target-bead-header" (dict
       "Target"   $target
       "Role"     "Your job is to investigate, against the **actual state of the codebase**, whether this bead is still worth keeping open — i.e. whether its requirements are **already implemented or fixed**, the work has become **obsolete**, or it **duplicates** another bead — then recommend whether to close it, keep it open, or spin off follow-up beads for any remaining work."
       "NoTarget" "Investigate — against the **actual state of the codebase** — whether the **current problem / topic under discussion here** is **already implemented, fixed, or obsolete**, and report what (if anything) still remains. Do **not** run any `bd` commands — there is no bead to load, close, or modify."

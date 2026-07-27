@@ -27,7 +27,7 @@ prompt: |
 
   {{ $target := "" -}}
   {{ if .Session.BeadsIssue }}{{ $target = .Session.BeadsIssue }}{{ else if .Args.IssueID }}{{ $target = .Args.IssueID }}{{ end -}}
-  {{ template "_shared/beads/target-bead-header" (dict
+  {{ template "beads-issues/shared/target-bead-header" (dict
       "Target"   $target
       "NoTarget" "Work on the **current problem** under discussion: read the conversation history to understand what needs to be built or fixed, then plan and implement that. Do **not** run any `bd` commands."
   ) }}

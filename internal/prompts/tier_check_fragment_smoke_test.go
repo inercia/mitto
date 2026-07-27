@@ -8,7 +8,7 @@ import (
 )
 
 // TestTierCheckFragmentRenders is a smoke test for the
-// _shared/beads/tier-check fragment: renders each of the 7 phase-prompt
+// beads-issues/shared/tier-check fragment: renders each of the 7 phase-prompt
 // consumers in BOTH branches (tier confirmed via matching ModelTags, and
 // tier-degraded when no tag matches) and asserts that the fragment's
 // per-tier / per-phase hallmark substrings appear correctly (with the

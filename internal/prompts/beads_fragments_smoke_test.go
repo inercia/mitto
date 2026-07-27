@@ -8,10 +8,10 @@ import (
 )
 
 // TestBootstrapBeadsFragmentRenders is a smoke test for the
-// _shared/beads/bootstrap fragment: it loads the builtin fragment registry,
+// beads-issues/shared/bootstrap fragment: it loads the builtin fragment registry,
 // renders each consuming prompt, and asserts that hallmark substrings from
 // the fragment body appear in the rendered output. Presence of a hallmark
-// in the rendered output means the {{ template "_shared/beads/bootstrap"
+// in the rendered output means the {{ template "beads-issues/shared/bootstrap"
 // . }} call actually resolved and inlined its body.
 func TestBootstrapBeadsFragmentRenders(t *testing.T) {
 	prev := CurrentFragments()
@@ -70,7 +70,7 @@ func TestBootstrapBeadsFragmentRenders(t *testing.T) {
 }
 
 // TestLoadBeadContextFragmentRenders is a smoke test for the
-// _shared/beads/load-context fragment: it renders each of the 3 consuming
+// beads-issues/shared/load-context fragment: it renders each of the 3 consuming
 // prompts with a valid target bead ID and asserts that (a) each bd command
 // hallmark appears and (b) the target ID substitutes correctly.
 func TestLoadBeadContextFragmentRenders(t *testing.T) {
@@ -135,7 +135,7 @@ func TestLoadBeadContextFragmentRenders(t *testing.T) {
 }
 
 // TestTargetBeadHeaderFragmentRenders is a smoke test for the flexible
-// _shared/beads/target-bead-header fragment: renders each Pattern A consumer
+// beads-issues/shared/target-bead-header fragment: renders each Pattern A consumer
 // in BOTH branches (linked bead + no linked bead) and asserts the
 // branch-specific hallmark substrings appear (with the target substituted
 // where relevant), so a regression that breaks the dict parameterization,
@@ -163,7 +163,7 @@ func TestTargetBeadHeaderFragmentRenders(t *testing.T) {
 		byName[p.Name] = p.Content
 	}
 
-	// Pattern A consumers of _shared/beads/target-bead-header: they render
+	// Pattern A consumers of beads-issues/shared/target-bead-header: they render
 	// "The **target bead** is `<id>`. <Role>" when a bead is linked, and
 	// "There is **no linked bead** for this conversation. <NoTarget>" when
 	// none is resolvable.
@@ -224,7 +224,7 @@ func TestTargetBeadHeaderFragmentRenders(t *testing.T) {
 }
 
 // TestTargetBeadHeaderStrictFragmentRenders is the same smoke check for the
-// _shared/beads/target-bead-header-strict fragment used by every phase /
+// beads-issues/shared/target-bead-header-strict fragment used by every phase /
 // mention-driver / mention-phase-* prompt.
 func TestTargetBeadHeaderStrictFragmentRenders(t *testing.T) {
 	prev := CurrentFragments()
@@ -341,7 +341,7 @@ func TestTargetBeadHeaderStrictFragmentRenders(t *testing.T) {
 }
 
 // TestBlockedDeferHandoffFragmentRenders is a smoke test for the
-// _shared/beads/blocked-defer-handoff fragment: renders each of the 11
+// beads-issues/shared/blocked-defer-handoff fragment: renders each of the 11
 // phase prompts and asserts that the fragment's hallmark substrings
 // (per-phase `Blocked at <X>` handoff line, per-phase state label, the
 // `mitto_conversation_update` closer) appear correctly, and that the

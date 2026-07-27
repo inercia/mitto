@@ -97,7 +97,7 @@ func TestNoTextUIFragmentRenders(t *testing.T) {
 }
 
 // TestBeadMarkdownConventionFragmentRenders is a smoke test for
-// _shared/beads/markdown-convention: it renders every consuming support
+// beads-issues/shared/markdown-convention: it renders every consuming support
 // prompt and asserts hallmark substrings unique to the fragment body.
 func TestBeadMarkdownConventionFragmentRenders(t *testing.T) {
 	ctx := &cel.PromptEnabledContext{
@@ -164,7 +164,7 @@ func TestReplyFenceConventionFragmentRenders(t *testing.T) {
 }
 
 // TestPriorityRubricFragmentRenders is a smoke test for
-// _shared/support/priority-rubric: renders every consuming per-bead
+// support/shared/priority-rubric: renders every consuming per-bead
 // support prompt and asserts hallmark substrings unique to the fragment
 // (the three-bullet P1/P2/P3 list + the `bd update --priority` trailer).
 func TestPriorityRubricFragmentRenders(t *testing.T) {
@@ -196,7 +196,7 @@ func TestPriorityRubricFragmentRenders(t *testing.T) {
 }
 
 // TestTargetBeadPickerFragmentRenders is a smoke test for
-// _shared/support/target-bead-picker. It renders each consumer twice —
+// support/shared/target-bead-picker. It renders each consumer twice —
 // once WITH a linked bead (so the "launched from bead" branch fires)
 // and once WITHOUT (so the picker branch fires) — and asserts each
 // branch's hallmark substrings appear.
@@ -230,7 +230,7 @@ func TestTargetBeadPickerFragmentRenders(t *testing.T) {
 }
 
 // TestChannelFragmentReadRenders is a smoke test for
-// _shared/support/channel-fragment-read (mitto-eyf: render-time inlining).
+// support/shared/channel-fragment-read (mitto-eyf: render-time inlining).
 // The fragment has three branches: (a) inline when the channel is known and
 // the file exists on disk, (b) MISSING when the channel is known but the file
 // does not exist, (c) runtime-read fallback when the caller did not supply a
@@ -306,7 +306,7 @@ func TestChannelFragmentReadRenders(t *testing.T) {
 }
 
 // TestChannelFragmentReadInlinesRenderTime (mitto-eyf) is the acceptance test
-// for the render-time inlining branch of `_shared/support/channel-fragment-read`.
+// for the render-time inlining branch of `support/shared/channel-fragment-read`.
 // It writes a fragment file to a temp workspace, renders `Support: watch
 // channel` with an explicit SlackChannelID, and asserts:
 //
@@ -372,7 +372,7 @@ func TestChannelFragmentReadInlinesRenderTime(t *testing.T) {
 	}
 }
 
-// TestSlackToolsFragmentRenders is a smoke test for _shared/support/slack-tools.
+// TestSlackToolsFragmentRenders is a smoke test for support/shared/slack-tools.
 // Asserts the stable "match by capability" preamble appears in every
 // consumer, plus the two optional trailers (NoPosting, ReadMetadata)
 // fire only when the caller opts in.
@@ -424,7 +424,7 @@ func TestSlackToolsFragmentRenders(t *testing.T) {
 }
 
 // TestWhatsNextMappingFragmentRenders is a smoke test for
-// _shared/support/whats-next-mapping. Asserts the six-row core table
+// support/shared/whats-next-mapping. Asserts the six-row core table
 // appears in both consumers and the closing-state rows appear only in
 // watch-channel (IncludeClosed=true).
 func TestWhatsNextMappingFragmentRenders(t *testing.T) {
@@ -463,7 +463,7 @@ func TestWhatsNextMappingFragmentRenders(t *testing.T) {
 }
 
 // TestAskFragmentTemplatesRender is a smoke test for the six new
-// `_shared/support/ask-*.tmpl` templates introduced in mitto-da9.2.
+// `support/shared/ask-*.tmpl` templates introduced in mitto-da9.2.
 // It renders the three owner prompts and asserts that each ask
 // template's "Ask + write `<fragment>.md`" hallmark is present in
 // the correct owner (and only that owner) — protecting the owner
@@ -583,7 +583,7 @@ func TestAskFragmentTimeouts(t *testing.T) {
 }
 
 // TestMigrateMonolithFragmentRenders is a smoke test for
-// _shared/support/migrate-monolith (mitto-da9.3). It renders the two
+// support/shared/migrate-monolith (mitto-da9.3). It renders the two
 // host prompts that invoke the migration block — `Support: watch channel`
 // (scope gate) and `Support: investigate` (Step 3) — and asserts the
 // stable hallmarks unique to the migration body appear in each.
@@ -690,7 +690,7 @@ func TestMigrateMonolithChannelSubstitution(t *testing.T) {
 }
 
 // TestChannelPlaybookReadRemoved is a regression guard for the removal
-// of `_shared/support/channel-playbook-read` (mitto-5cx). The fragment
+// of `support/shared/channel-playbook-read` (mitto-5cx). The fragment
 // must not exist in the loaded registry, and no in-tree builtin prompt
 // may call it.
 func TestChannelPlaybookReadRemoved(t *testing.T) {
@@ -698,8 +698,8 @@ func TestChannelPlaybookReadRemoved(t *testing.T) {
 
 	// (a) Registry assertion: the fragment must be gone.
 	reg := CurrentFragments()
-	if _, ok := reg.Get("_shared/support/channel-playbook-read"); ok {
-		t.Fatalf("fragment %q is still present in the loaded registry — it was removed in mitto-5cx", "_shared/support/channel-playbook-read")
+	if _, ok := reg.Get("support/shared/channel-playbook-read"); ok {
+		t.Fatalf("fragment %q is still present in the loaded registry — it was removed in mitto-5cx", "support/shared/channel-playbook-read")
 	}
 
 	// (b) Zero-caller assertion: no builtin prompt may invoke the removed
@@ -711,10 +711,10 @@ func TestChannelPlaybookReadRemoved(t *testing.T) {
 	if err != nil {
 		t.Skipf("cannot load builtins from %s: %v", builtinDir, err)
 	}
-	invocation := `template "_shared/support/channel-playbook-read"`
+	invocation := `template "support/shared/channel-playbook-read"`
 	for _, p := range prompts {
 		if strings.Contains(p.Content, invocation) {
-			t.Errorf("builtin prompt %q still invokes the removed fragment %q — use _shared/support/channel-fragment-read instead", p.Name, "_shared/support/channel-playbook-read")
+			t.Errorf("builtin prompt %q still invokes the removed fragment %q — use support/shared/channel-fragment-read instead", p.Name, "support/shared/channel-playbook-read")
 		}
 	}
 }

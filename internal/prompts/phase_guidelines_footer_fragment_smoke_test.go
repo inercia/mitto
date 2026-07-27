@@ -8,7 +8,7 @@ import (
 )
 
 // TestPhaseGuidelinesFooterFragmentRenders is a smoke test for the
-// _shared/beads/phase-guidelines-footer fragment: renders each of the 7
+// beads-issues/shared/phase-guidelines-footer fragment: renders each of the 7
 // beads-issues phase prompts and asserts the fragment's three-bullet
 // output appears verbatim with the caller-declared parameters
 // (IncludeItemNote, TagNoun, TagPrefix, Tier).

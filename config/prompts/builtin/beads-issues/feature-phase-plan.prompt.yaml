@@ -28,14 +28,14 @@ prompt: |
 
   {{ $target := "" -}}
   {{ if .Session.BeadsIssue }}{{ $target = .Session.BeadsIssue }}{{ else if .Args.IssueID }}{{ $target = .Args.IssueID }}{{ end -}}
-  {{ template "_shared/beads/target-bead-header-strict" (dict
+  {{ template "beads-issues/shared/target-bead-header-strict" (dict
       "Target"   $target
       "Noun"     "target feature"
       "FromLink" (ne .Session.BeadsIssue "")
   ) }}
 
   {{ if $target -}}
-  {{ template "_shared/beads/tier-check" (dict
+  {{ template "beads-issues/shared/tier-check" (dict
       "Target"    $target
       "Tier"      "Reasoning"
       "Phase"     "plan"
@@ -92,7 +92,7 @@ prompt: |
 
   ## Step 4 — Blocked → Defer + Handoff
 
-  {{ template "_shared/beads/blocked-defer-handoff" (dict
+  {{ template "beads-issues/shared/blocked-defer-handoff" (dict
       "Target"      $target
       "SessionID"   .Session.ID
       "Placeholder" "<target-feature>"
@@ -106,7 +106,7 @@ prompt: |
 
   - **One stage only.** This phase advances at most one label (`planned`). Do not
     implement, test, or review — those are separate phases.
-  {{ template "_shared/beads/phase-guidelines-footer" (dict
+  {{ template "beads-issues/shared/phase-guidelines-footer" (dict
       "IncludeItemNote" true
       "TagNoun"         "plan"
       "TagPrefix"       "Plan"

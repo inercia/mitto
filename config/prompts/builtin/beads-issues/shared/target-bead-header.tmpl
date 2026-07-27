@@ -3,7 +3,7 @@
   beads-issues prompt that follows the flexible "linked bead OR fallback to
   the current conversation topic" convention (assess, discuss, investigate,
   resolved, status, work, mention-phase-*, mention-driver, and future
-  consumers). Complements `_shared/beads/target-bead-header-strict.tmpl`,
+  consumers). Complements `beads-issues/shared/target-bead-header-strict.tmpl`,
   which is used by phase/driver prompts that REQUIRE a resolved target and
   bail via `mitto_ui_notify` when one is missing.
 
@@ -14,7 +14,7 @@
       {{ if .Session.BeadsIssue }}{{ $target = .Session.BeadsIssue }}
       {{ else if .Args.IssueID }}{{ $target = .Args.IssueID }}{{ end -}}
 
-      {{ template "_shared/beads/target-bead-header" (dict
+      {{ template "beads-issues/shared/target-bead-header" (dict
           "Target"   $target
           "Noun"     "target bead"
           "Role"     "help the user **think through and refine** this bead ..."

@@ -22,7 +22,7 @@
   Callers first resolve the target into a local `$target` (identical to
   the target-bead-header fragments), then invoke this fragment:
 
-      {{ template "_shared/beads/blocked-defer-handoff" (dict
+      {{ template "beads-issues/shared/blocked-defer-handoff" (dict
           "Target"      $target
           "SessionID"   .Session.ID
           "Placeholder" "<target-feature>"

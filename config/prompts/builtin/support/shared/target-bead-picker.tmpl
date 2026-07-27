@@ -18,16 +18,16 @@
   optional filter label:
 
       generic (all open questions):
-          {{ template "_shared/support/target-bead-picker"
+          {{ template "support/shared/target-bead-picker"
              (dict "Ctx" . "Filter" "") }}
 
       drafting-only:
-          {{ template "_shared/support/target-bead-picker"
+          {{ template "support/shared/target-bead-picker"
              (dict "Ctx" . "Filter" "state:drafting"
                    "EmptyMessage" "nothing is ready to answer") }}
 
       need-info-only:
-          {{ template "_shared/support/target-bead-picker"
+          {{ template "support/shared/target-bead-picker"
              (dict "Ctx" . "Filter" "state:need-info"
                    "EmptyMessage" "nothing is awaiting a customer detail (nothing to follow up on)") }}
 

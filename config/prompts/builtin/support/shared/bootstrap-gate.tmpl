@@ -102,16 +102,16 @@ and skip that fragment — the gate re-asks it next iteration.
 
 1. **`scope.md`** — what this channel is (and is not) responsible for.
    {{ if $scopeOK }}Already present ✓ — skip.{{ else }}Missing ✗ — ask + write now.
-   {{ template "_shared/support/ask-scope" (dict "TimeoutSeconds" $timeout) }}
+   {{ template "support/shared/ask-scope" (dict "TimeoutSeconds" $timeout) }}
    {{ end }}
 2. **`investigation.md`** — how to investigate questions on this channel
    (tool order, safe commands, MCP/CLI tools, confidence rules).
    {{ if $investigateOK }}Already present ✓ — skip.{{ else }}Missing ✗ — ask + write now.
-   {{ template "_shared/support/ask-investigation" (dict "TimeoutSeconds" $timeout) }}
+   {{ template "support/shared/ask-investigation" (dict "TimeoutSeconds" $timeout) }}
    {{ end }}
 3. **`escalation.md`** — who / when / how to escalate for this channel.
    {{ if $escalationOK }}Already present ✓ — skip.{{ else }}Missing ✗ — ask + write now.
-   {{ template "_shared/support/ask-escalation" (dict "TimeoutSeconds" $timeout) }}
+   {{ template "support/shared/ask-escalation" (dict "TimeoutSeconds" $timeout) }}
    {{ end }}
 
 ### Phase 2 — Optional fragments (skip by default; opt in on demand)
@@ -152,11 +152,11 @@ skipped now) and these choices:
 
 {{ if not $toneOK -}}
 **Optional owner-ask — `tone.md`** (only run if the user opted in above):
-{{ template "_shared/support/ask-tone" (dict "TimeoutSeconds" $timeout) }}
+{{ template "support/shared/ask-tone" (dict "TimeoutSeconds" $timeout) }}
 {{ end -}}
 {{ if not $resourcesOK -}}
 **Optional owner-ask — `resources.md`** (only run if the user opted in above):
-{{ template "_shared/support/ask-resources" (dict "TimeoutSeconds" $timeout) }}
+{{ template "support/shared/ask-resources" (dict "TimeoutSeconds" $timeout) }}
 {{ end -}}
 {{ else -}}
 Both optional fragments are already present — nothing to ask.

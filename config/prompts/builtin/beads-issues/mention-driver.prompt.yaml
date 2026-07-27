@@ -66,7 +66,7 @@ prompt: |
   {{ $suffix := "" -}}
   {{ if $ts }}{{ $suffix = printf "Mention timestamp (dedup key): `%s`." $ts }}{{ end -}}
   {{ if $commit }}{{ $suffix = printf "%s\nCommit-after-implement is **enabled** (`Commit` argument)." $suffix }}{{ else }}{{ $suffix = printf "%s\nCommit-after-implement is **disabled** (`Commit` argument)." $suffix }}{{ end -}}
-  {{ template "_shared/beads/target-bead-header-strict" (dict
+  {{ template "beads-issues/shared/target-bead-header-strict" (dict
       "Target"      $target
       "Scope"       "for this run"
       "FromLink"    (ne .Session.BeadsIssue "")

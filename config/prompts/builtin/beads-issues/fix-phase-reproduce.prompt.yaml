@@ -27,14 +27,14 @@ prompt: |
 
   {{ $target := "" -}}
   {{ if .Session.BeadsIssue }}{{ $target = .Session.BeadsIssue }}{{ else if .Args.IssueID }}{{ $target = .Args.IssueID }}{{ end -}}
-  {{ template "_shared/beads/target-bead-header-strict" (dict
+  {{ template "beads-issues/shared/target-bead-header-strict" (dict
       "Target"   $target
       "Noun"     "target bug"
       "FromLink" (ne .Session.BeadsIssue "")
   ) }}
 
   {{ if $target -}}
-  {{ template "_shared/beads/tier-check" (dict
+  {{ template "beads-issues/shared/tier-check" (dict
       "Target"    $target
       "Tier"      "Coding"
       "Phase"     "reproduce"
@@ -127,7 +127,7 @@ prompt: |
 
   ## Step 4 — Blocked → Defer + Handoff
 
-  {{ template "_shared/beads/blocked-defer-handoff" (dict
+  {{ template "beads-issues/shared/blocked-defer-handoff" (dict
       "Target"      $target
       "SessionID"   .Session.ID
       "Placeholder" "<target-bug>"
@@ -141,7 +141,7 @@ prompt: |
     Do not attempt to fix the bug — the fix phase runs next.
   - **Test must fail for the right reason.** A test that passes, or fails on an
     unrelated setup error, has not reproduced the bug — refine and retry.
-  {{ template "_shared/beads/phase-guidelines-footer" (dict
+  {{ template "beads-issues/shared/phase-guidelines-footer" (dict
       "IncludeItemNote" false
       "TagNoun"         "summary"
       "TagPrefix"       "Reproduction"

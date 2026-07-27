@@ -91,7 +91,7 @@ func RenderPromptTargetTitle(promptName, tpl string, ctx PromptTargetContext) (s
 	// `{{ template "..." }}`, and attaching CurrentFragments here would
 	// require them to parse against the stripped targetTitleFuncMap — which
 	// omits helpers like FileExists/ReadFile used by fragments such as
-	// _shared/support/channel-fragment-read (mitto-eyf).
+	// support/shared/channel-fragment-read (mitto-eyf).
 	rendered, err := RenderPromptTemplateWithoutFragments(name, tpl, ctx, targetTitleFuncMap(ctx))
 	if err != nil {
 		return "", err
