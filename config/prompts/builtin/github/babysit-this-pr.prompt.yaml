@@ -192,11 +192,9 @@ prompt: |
   there. Rebases go through a temporary worktree; force-pushes use
   `--force-with-lease` (never `--force`).
 
-  **Spawn rules** (used by 3b and 3c): before spawning a child, check
-  `{{ .Children.MCPText }}` and **skip** if a child already exists for the
-  same PR + task (e.g. `Fix CI for PR #<number>` is running or was updated
-  after the failing CI run). Cap spawning at **3 per run**; spawned
-  conversations are one-off and **must never be loops**.
+  **Spawn rules** (used by 3b and 3c):
+
+  {{ template "github/shared/spawn-rules" . }}
 
   ### 3a. Rebase if behind base
 

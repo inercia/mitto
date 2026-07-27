@@ -47,15 +47,11 @@ prompt: |
   Existing child conversations (spawned by previous runs):
   {{ .Children.MCPText }}
 
-  Before spawning any new conversation, **check the list above**. Search for a
-  child whose title matches the PR you are about to spawn for (e.g., title
-  contains "PR #<number>"). If a child conversation already exists for that PR
-  and check type, **skip spawning** — the previous run already created one and
-  it may still be working.
+  {{ template "github/shared/spawn-rules" . }}
 
-  **Spawn cap:** spawn at most **3 conversations per run**. If more PRs need
-  attention, prioritize by severity: rebase conflicts > CI failures > unresolved
-  comments. Notify the user about any remaining items that were not spawned.
+  When the cap is reached and more PRs still need attention, prioritize by
+  severity: rebase conflicts > CI failures > unresolved comments. Notify the
+  user about any remaining items that were not spawned.
 
   ## Interaction Mode
   {{- if and .Session.IsLoop (not .Session.IsLoopForced) }}

@@ -1,0 +1,45 @@
+{{/*
+  spawn-rules — the common spawn-deduplication + spawn-cap rules for
+  babysit-family prompts.
+
+  Every babysit prompt that spawns fix/comment children shares three rules:
+  (1) check `Children.MCPText` before spawning and skip if a child already
+  exists for the same PR + task, (2) cap spawning at 3 conversations per
+  run, and (3) spawned conversations are one-off — never loops. This
+  fragment states those three rules in one place so future tweaks (e.g.
+  raising the cap, adding a new dedup key) propagate to every consumer.
+
+  Consumers: github/babysit-this-pr (as the Step 3 preamble), github/
+  babysit-my-prs (as the top-of-prompt `## Spawn Deduplication` section).
+
+  NOT extracted here: any prompt-specific priority ordering when the cap
+  is hit (e.g. "prioritize rebase conflicts > CI failures > unresolved
+  comments"). `babysit-my-prs` needs one because it processes many PRs;
+  `babysit-this-pr` processes exactly one PR and has no priority to
+  express. Callers add their own priority sentence around this fragment
+  when needed.
+
+  NOT extracted here: the `Existing child conversations: {{ .Children.MCPText }}`
+  literal — callers may want it in a different position (preamble vs.
+  section body). This fragment references `Children.MCPText` in prose but
+  does not print the raw MCP list.
+
+  Usage:
+
+    {{ template "github/shared/spawn-rules" . }}
+
+  The fragment emits a self-contained paragraph of rules with NO heading
+  — callers position it under whatever heading fits their structure
+  (`## Spawn Deduplication`, `## Step 3 preamble`, etc.).
+*/}}
+Before spawning a new child conversation, **check `{{ .Children.MCPText }}`**
+(the existing children list) and **skip spawning** if a child already exists
+for the same PR + task (e.g. a child titled `Fix CI for PR #<number>` is
+still running, or was updated after the failing CI run that would trigger a
+new spawn). The previous run already created it and it may still be
+working.
+
+**Spawn cap:** spawn at most **3 conversations per run**. Spawned
+conversations are one-off and **must never be loops** — do not call
+`mitto_conversation_set_loop` on them and never pass `loop_prompt` /
+`loop_frequency_*` when creating them.

@@ -232,3 +232,39 @@ func TestGhOwnedLoginsFragmentInlines(t *testing.T) {
 		}
 	}
 }
+
+// TestSpawnRulesFragmentInlines verifies that the github/shared/spawn-rules
+// fragment resolves and inlines into both babysit prompts — the common
+// "check Children.MCPText, skip if child exists, cap 3, never loops" rules
+// statement.
+func TestSpawnRulesFragmentInlines(t *testing.T) {
+	// Hallmarks unique to the fragment body.
+	const (
+		hallmarkCheckChildren = "**check `"
+		hallmarkSkipSameTask  = "**skip spawning** if a child already exists"
+		hallmarkCap3          = "spawn at most **3 conversations per run**"
+		hallmarkNeverLoops    = "**must never be loops**"
+		hallmarkNoSetLoop     = "`mitto_conversation_set_loop`"
+	)
+
+	ctx := &cel.PromptEnabledContext{
+		Session: cel.SessionContext{ID: "s", Name: "N"},
+		Args:    map[string]string{},
+	}
+
+	for _, promptName := range []string{"GitHub: babysit this PR", "GitHub: babysit my PRs"} {
+		out := renderBuiltinPromptWithFragments(t, promptName, ctx)
+		for _, needle := range []string{
+			hallmarkCheckChildren,
+			hallmarkSkipSameTask,
+			hallmarkCap3,
+			hallmarkNeverLoops,
+			hallmarkNoSetLoop,
+		} {
+			if !strings.Contains(out, needle) {
+				t.Errorf("prompt %q: rendered output missing hallmark %q — fragment did not inline",
+					promptName, needle)
+			}
+		}
+	}
+}
