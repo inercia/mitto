@@ -2574,13 +2574,17 @@ function App() {
 
   // Only the active conversation can have queued messages; streaming state comes
   // from the live socket. Both block archiving (matches SessionItem logic).
+  // Direction-aware: an archived session can always be unarchived — the
+  // queue/streaming preconditions only apply to the archive direction (mitto-a5p).
   const headerHasQueued = queueLength > 0;
-  const headerCanArchive = !headerHasQueued && !isStreaming;
-  const headerArchiveBlockedReason = headerHasQueued
-    ? "Clear queue before archiving"
-    : isStreaming
-      ? "Wait for response to complete"
-      : null;
+  const headerCanArchive =
+    headerIsArchived || (!headerHasQueued && !isStreaming);
+  const headerArchiveBlockedReason =
+    !headerIsArchived && headerHasQueued
+      ? "Clear queue before archiving"
+      : !headerIsArchived && isStreaming
+        ? "Wait for response to complete"
+        : null;
   const headerWorkingDir =
     activeSession?.working_dir || sessionInfo?.working_dir || "";
 

@@ -205,14 +205,19 @@ export function SessionItem({
   // Archive button should be disabled if:
   // 1. There are queued messages (can't archive with pending messages)
   // 2. The session is streaming (agent is responding - archiving would block for up to 5 minutes)
-  const canArchive = !hasQueuedMessages && !isSessionStreaming;
+  // Direction-aware: an archived session can always be unarchived — the
+  // queue/streaming preconditions only apply to the archive direction (mitto-a5p).
+  const canArchive =
+    isArchived || (!hasQueuedMessages && !isSessionStreaming);
 
-  // Get the reason why archiving is blocked (for tooltip)
-  const archiveBlockedReason = hasQueuedMessages
-    ? "Clear queue before archiving"
-    : isSessionStreaming
-      ? "Wait for response to complete"
-      : null;
+  // Get the reason why archiving is blocked (for tooltip). Only surface when
+  // NOT archived — unarchive has no blocking preconditions.
+  const archiveBlockedReason =
+    !isArchived && hasQueuedMessages
+      ? "Clear queue before archiving"
+      : !isArchived && isSessionStreaming
+        ? "Wait for response to complete"
+        : null;
 
   // Get working_dir from session, or fall back to global map
   const workingDir =
