@@ -203,21 +203,23 @@ const gridStroke = () => cssVar("--mitto-border-1", "#e4e4e7");
 function buildChartSpecs(u) {
   // Compact axis sizes (uPlot defaults are 50/50 which eats ~70% of a 140px
   // chart, leaving the plot area a stubby band at the bottom of the card).
-  // xAxis: 32px accommodates the tick line + gap + label baseline for the
-  // HH:MM tick labels (24px was cropping the bottom of glyphs like "12pm"
-  // against the card's overflow:hidden edge). yAxis: 44px fits 5-digit
-  // numbers like "20,000" without truncation. stroke/grid/ticks are set to
-  // function-form theme colors so the labels ("12am", "20,000") stay legible
-  // against both light and dark surfaces (was defaulting to uPlot's #000).
+  // xAxis: 40px = tick line + gap + HH:MM baseline + room for uPlot's
+  // second-tier date row (e.g. "7/26") on multi-day ranges (32px was
+  // cropping either that second tier or the bottom of "12pm" descenders).
+  // yAxis: 56px fits 6-char values like "20,000" or "100k" (44px was
+  // clipping the leading digit — dashboards routinely hit 5-digit token
+  // counts). stroke/grid/ticks are set to function-form theme colors so
+  // the labels ("12am", "20,000") stay legible against both light and dark
+  // surfaces (was defaulting to uPlot's #000).
   const xAxis = {
     space: 60,
-    size: 32,
+    size: 40,
     stroke: axisStroke,
     grid: { stroke: gridStroke, width: 1 },
     ticks: { stroke: gridStroke, width: 1, size: 5 },
   };
   const yAxis = {
-    size: 44,
+    size: 56,
     stroke: axisStroke,
     grid: { stroke: gridStroke, width: 1 },
     ticks: { stroke: gridStroke, width: 1, size: 5 },
@@ -443,13 +445,13 @@ function ModelUsageCard({ modelData, uplot, empty, hidden, onToggleModel }) {
     const rows = [xs, ...models.map((m) => m.values)];
     const xAxis = {
       space: 60,
-      size: 32,
+      size: 40,
       stroke: axisStroke,
       grid: { stroke: gridStroke, width: 1 },
       ticks: { stroke: gridStroke, width: 1, size: 5 },
     };
     const yAxis = {
-      size: 44,
+      size: 56,
       stroke: axisStroke,
       grid: { stroke: gridStroke, width: 1 },
       ticks: { stroke: gridStroke, width: 1, size: 5 },
