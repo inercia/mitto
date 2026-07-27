@@ -1210,6 +1210,89 @@ func TestAuthManager_ShouldWarnSplitIP(t *testing.T) {
 	}
 }
 
+// TestAuthManager_HandleLogin_SplitIP_RaisesAnomalyFlag verifies that a CSRF
+// token IP fingerprint mismatch during login writes SplitIP=true into the
+// mutable *AuthAnomaly context holder for BOTH mobile and desktop user agents.
+// This is the audit-trail promotion path used by AccessLogger to suffix
+// EventType with "+split_ip"; the flag must be raised regardless of the
+// mitto.log dedup window and regardless of UA class.
+func TestAuthManager_HandleLogin_SplitIP_RaisesAnomalyFlag(t *testing.T) {
+	am := NewAuthManager(&config.WebAuth{
+		Simple: &config.SimpleAuth{Username: "admin", Password: "secret"},
+	})
+	defer am.Close()
+
+	// Build a CSRF cookie whose fingerprint was embedded for a DIFFERENT
+	// network prefix than the login request's IP, so VerifyIPFromToken
+	// will report a mismatch.
+	const issuedIP = "10.20.30.40"
+	baseToken := strings.Repeat("a", csrfTokenLength*2) // 64 hex chars
+	cases := []struct {
+		name string
+		ua   string
+	}{
+		{"mobile UA (iPhone Safari)", "Mozilla/5.0 (iPhone; CPU iPhone OS 18_7) Safari/604.1"},
+		{"desktop UA (Chrome on macOS)", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Chrome/120.0.0.0 Safari/537.36"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cookieValue := embedFingerprint(baseToken, issuedIP, tc.ua)
+
+			req := httptest.NewRequest("POST", "/api/login",
+				strings.NewReader(`{"username":"admin","password":"wrong"}`))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("User-Agent", tc.ua)
+			// Login POST arrives from a different network prefix (/24) than
+			// the one baked into the CSRF cookie.
+			req.RemoteAddr = "192.168.1.100:12345"
+			req.AddCookie(&http.Cookie{Name: csrfCookieName, Value: cookieValue})
+
+			anomaly := &AuthAnomaly{}
+			req = req.WithContext(context.WithValue(req.Context(), ContextKeyAuthAnomaly, anomaly))
+
+			w := httptest.NewRecorder()
+			am.HandleLogin(w, req)
+
+			if !anomaly.SplitIP {
+				t.Errorf("AuthAnomaly.SplitIP = false, want true (UA class must not gate the audit flag)")
+			}
+		})
+	}
+}
+
+// TestAuthManager_HandleLogin_SplitIP_MatchingFingerprintDoesNotFlag verifies
+// the negative path: when the CSRF cookie's embedded fingerprint matches the
+// request IP+UA (the normal case), no anomaly is recorded.
+func TestAuthManager_HandleLogin_SplitIP_MatchingFingerprintDoesNotFlag(t *testing.T) {
+	am := NewAuthManager(&config.WebAuth{
+		Simple: &config.SimpleAuth{Username: "admin", Password: "secret"},
+	})
+	defer am.Close()
+
+	const clientIP = "192.168.1.100"
+	const ua = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Chrome/120.0.0.0 Safari/537.36"
+	baseToken := strings.Repeat("b", csrfTokenLength*2)
+	cookieValue := embedFingerprint(baseToken, clientIP, ua)
+
+	req := httptest.NewRequest("POST", "/api/login",
+		strings.NewReader(`{"username":"admin","password":"wrong"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", ua)
+	req.RemoteAddr = clientIP + ":12345"
+	req.AddCookie(&http.Cookie{Name: csrfCookieName, Value: cookieValue})
+
+	anomaly := &AuthAnomaly{}
+	req = req.WithContext(context.WithValue(req.Context(), ContextKeyAuthAnomaly, anomaly))
+
+	w := httptest.NewRecorder()
+	am.HandleLogin(w, req)
+
+	if anomaly.SplitIP {
+		t.Error("AuthAnomaly.SplitIP = true on matching fingerprint, want false")
+	}
+}
+
 func TestAuthManager_PruneSplitIPWarnSeen(t *testing.T) {
 	am := NewAuthManager(&config.WebAuth{
 		Simple: &config.SimpleAuth{Username: "user", Password: "pass"},
