@@ -36,11 +36,14 @@ func TestGitFragmentsRenderCorrectly(t *testing.T) {
 	// paraphrase locally, so their presence in the rendered output means the
 	// fragment inlined (rather than the caller having its own copy).
 	const (
-		hallmarkSafeStage       = "`git add -A`, `git add .`, or"              // from git/shared/safe-stage
-		hallmarkCommitScoped    = "Ignoring (not part of this"                 // from git/shared/commit-scoped
-		hallmarkCommitAll       = "first message in this conversation"         // from git/shared/commit-all
-		hallmarkIdentifyRemote  = "git symbolic-ref refs/remotes/origin/HEAD"  // from git/shared/identify-remote-branch
-		hallmarkCheckBehindBase = "git rev-list --count HEAD..<target-remote>" // from git/shared/check-behind-base
+		hallmarkSafeStage          = "`git add -A`, `git add .`, or"              // from git/shared/safe-stage
+		hallmarkCommitScoped       = "Ignoring (not part of this"                 // from git/shared/commit-scoped
+		hallmarkCommitAll          = "first message in this conversation"         // from git/shared/commit-all
+		hallmarkIdentifyRemote     = "git symbolic-ref refs/remotes/origin/HEAD"  // from git/shared/identify-remote-branch
+		hallmarkCheckBehindBase    = "git rev-list --count HEAD..<target-remote>" // from git/shared/check-behind-base
+		hallmarkSafeCommit         = "git commit -m \""                           // from git/shared/safe-commit (present in every safe-commit output)
+		hallmarkSafeCommitRefsFoot = "(refs mitto-abc)"                           // when Target=mitto-abc, the refs footer must render
+		hallmarkEnsureFeatureForm  = "Create Feature Branch?"                     // uniquely from git/shared/ensure-feature-branch interactive branch
 	)
 
 	// Two contexts: with and without HasMessages, so we exercise both branches
@@ -93,6 +96,23 @@ func TestGitFragmentsRenderCorrectly(t *testing.T) {
 		{"Submit changes", ctxWith, []string{hallmarkCheckBehindBase}, nil},
 		{"Fix CI", ctxWith, []string{hallmarkCheckBehindBase}, nil},
 		{"Address PR Comments", ctxWith, []string{hallmarkCheckBehindBase}, nil},
+
+		// safe-stage — newly wired consumers.
+		{"Feature — test phase", ctxWith, []string{hallmarkSafeStage}, nil},
+		{"Feature — review phase", ctxWith, []string{hallmarkSafeStage}, nil},
+		{"Loop until issue complete", ctxWith, []string{hallmarkSafeStage}, nil},
+		{"Mention — driver", ctxWith, []string{hallmarkSafeStage}, nil},
+
+		// safe-commit — every consumer must render the commit line + refs footer when Target is set.
+		{"Feature — implement phase", ctxWith, []string{hallmarkSafeCommit, hallmarkSafeCommitRefsFoot}, nil},
+		{"Feature — test phase", ctxWith, []string{hallmarkSafeCommit, hallmarkSafeCommitRefsFoot}, nil},
+		{"Feature — review phase", ctxWith, []string{hallmarkSafeCommit, hallmarkSafeCommitRefsFoot}, nil},
+		{"Bug fix — fix phase", ctxWith, []string{hallmarkSafeCommit, hallmarkSafeCommitRefsFoot}, nil},
+		{"Mention — driver", ctxWith, []string{hallmarkSafeCommit, hallmarkSafeCommitRefsFoot}, nil},
+
+		// ensure-feature-branch — interactive form present in non-loop context.
+		{"Commit changes", ctxWith, []string{hallmarkEnsureFeatureForm}, nil},
+		{"Submit changes", ctxWith, []string{hallmarkEnsureFeatureForm}, nil},
 	}
 
 	byName := map[string]string{}

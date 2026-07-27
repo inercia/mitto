@@ -90,3 +90,150 @@ func TestLoopProcessingStep1_PromptsPredicate(t *testing.T) {
 		t.Errorf("missing drivers: Step 1 should disable §C; got:\n%s", step1Missing)
 	}
 }
+
+// TestLoopProcessingNotifications_MittoDnx pins mitto-dnx: the supervisor
+// prompt loop-processing.prompt.yaml must emit workspace-scoped
+// notifications on three milestone events, and only on those events.
+//
+// Acceptance criteria (from the bead):
+//
+//   - Closing a §B (bug) or §C (feature) bead surfaces a workspace toast
+//     within one loop pass — expressed by a `mitto_workspace_ui_notify(...)`
+//     call inside each of the two `Bead closed (happy path)` branches with
+//     `style: "success"`, a `Task completed` title, and the bead's id
+//     carried in `beads_issue:` for click-through (plumbing landed via
+//     mitto-9yz).
+//   - Addressing a @mitto mention surfaces a workspace toast, clickable —
+//     expressed by a `mitto_workspace_ui_notify(...)` call inside the §A
+//     `Driver done` branch with `style: "info"`, an `@mitto mention
+//     addressed` title, and `beads_issue:` for click-through.
+//   - No toasts during phase transitions — expressed by an explicit
+//     `Milestone toasts only` bullet in the Guidelines section that names
+//     the three legitimate fire sites and forbids the illegitimate ones
+//     (phase transitions, dispatches, timeouts, failures).
+//
+// Rendering is not required — the toast calls are static text (workspace
+// UUID + session id come from Go-template context and stay templated in
+// the raw body). This test asserts on the parsed prompt body so drift
+// (a moved/removed notify call, a flipped style, a stripped beads_issue,
+// or a dropped Guidelines bullet) is caught structurally.
+func TestLoopProcessingNotifications_MittoDnx(t *testing.T) {
+	installBuiltinFragmentsForTest(t)
+	path := filepath.Join("..", "..", "config", "prompts", "builtin", "beads-issues/loop-processing.prompt.yaml")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Skipf("prompt file not found at %s: %v", path, err)
+	}
+	prompt, err := ParsePromptFile("beads-issues/loop-processing.prompt.yaml", data, time.Now())
+	if err != nil {
+		t.Fatalf("ParsePromptFile: %v", err)
+	}
+	body := prompt.Content
+
+	// Section slicer: return the body between two headings. `to` may be
+	// empty to slice from `from` to end of body.
+	section := func(from, to string) string {
+		i := strings.Index(body, from)
+		if i < 0 {
+			return ""
+		}
+		rest := body[i:]
+		if to == "" {
+			return rest
+		}
+		j := strings.Index(rest, to)
+		if j < 0 {
+			return rest
+		}
+		return rest[:j]
+	}
+
+	// §A — @mitto mention addressed (Driver done branch of the §A wait).
+	// The §A wait is bounded by "### §A wait, verify, archive" above and
+	// "## §B" below (the section header for the next branch).
+	sectionA := section("### §A wait, verify, archive", "{{ if ne .Args.FixBugs")
+	if sectionA == "" {
+		t.Fatal("§A wait section not found in prompt body")
+	}
+	if !strings.Contains(sectionA, "mitto_workspace_ui_notify(") {
+		t.Errorf("§A wait: expected mitto_workspace_ui_notify(...) call in Driver-done branch; not found")
+	}
+	if !strings.Contains(sectionA, `title: "@mitto mention addressed"`) {
+		t.Errorf("§A wait: expected title `\"@mitto mention addressed\"` in notify call; not found")
+	}
+	if !strings.Contains(sectionA, `style: "info"`) {
+		t.Errorf("§A wait: expected style: \"info\" in notify call; not found")
+	}
+	if !strings.Contains(sectionA, `beads_issue: "<id>"`) {
+		t.Errorf("§A wait: expected beads_issue: \"<id>\" in notify call for click-through (mitto-9yz); not found")
+	}
+
+	// §B — Bug close (Bead-closed branch of the §B wait).
+	sectionB := section("### §B wait, log, archive", "{{ if ne .Args.WorkOnFeatures")
+	if sectionB == "" {
+		t.Fatal("§B wait section not found in prompt body")
+	}
+	if !strings.Contains(sectionB, "mitto_workspace_ui_notify(") {
+		t.Errorf("§B wait: expected mitto_workspace_ui_notify(...) call in Bead-closed branch; not found")
+	}
+	if !strings.Contains(sectionB, `title: "Task completed"`) {
+		t.Errorf("§B wait: expected title `\"Task completed\"` in notify call; not found")
+	}
+	if !strings.Contains(sectionB, `style: "success"`) {
+		t.Errorf("§B wait: expected style: \"success\" in notify call; not found")
+	}
+	if !strings.Contains(sectionB, `beads_issue: "<id>"`) {
+		t.Errorf("§B wait: expected beads_issue: \"<id>\" in notify call for click-through; not found")
+	}
+
+	// §C — Feature close (Bead-closed branch of the §C wait). The §C wait
+	// runs until Step 6 / the ---{{- end }} that closes the WorkOnFeatures
+	// gate; the closest stable boundary is "## Step 6".
+	sectionC := section("### §C wait, log, archive", "## Step 6")
+	if sectionC == "" {
+		t.Fatal("§C wait section not found in prompt body")
+	}
+	if !strings.Contains(sectionC, "mitto_workspace_ui_notify(") {
+		t.Errorf("§C wait: expected mitto_workspace_ui_notify(...) call in Bead-closed branch; not found")
+	}
+	if !strings.Contains(sectionC, `title: "Task completed"`) {
+		t.Errorf("§C wait: expected title `\"Task completed\"` in notify call; not found")
+	}
+	if !strings.Contains(sectionC, `style: "success"`) {
+		t.Errorf("§C wait: expected style: \"success\" in notify call; not found")
+	}
+	if !strings.Contains(sectionC, `beads_issue: "<id>"`) {
+		t.Errorf("§C wait: expected beads_issue: \"<id>\" in notify call for click-through; not found")
+	}
+
+	// Guidelines — "Milestone toasts only" bullet must be present, must
+	// name the three legitimate fire sites, and must forbid the anti-
+	// pattern fire sites (phase transitions, dispatches, timeouts,
+	// failures). This is the volume guardrail that prevents the LLM from
+	// interpreting §B/§C phase transitions or spawn-side events as
+	// notify-worthy.
+	guidelines := section("## Guidelines", "")
+	if guidelines == "" {
+		t.Fatal("Guidelines section not found in prompt body")
+	}
+	if !strings.Contains(guidelines, "Milestone toasts only") {
+		t.Errorf("Guidelines: expected `Milestone toasts only` bullet; not found")
+	}
+	forbidden := []string{"phase transitions", "dispatches", "timeouts", "failures"}
+	for _, phrase := range forbidden {
+		if !strings.Contains(guidelines, phrase) {
+			t.Errorf("Guidelines `Milestone toasts only` bullet: expected forbidden fire site %q named; not found", phrase)
+		}
+	}
+
+	// Volume guardrail: the raw body should never carry `sound: true`,
+	// `sticky: true`, or `native: true` on a notify call — loops fire
+	// frequently and audible/persistent spam is the anti-pattern the
+	// Guidelines bullet explicitly forbids. Guard against them showing
+	// up in any notify site (§A/§B/§C or anywhere else).
+	for _, banned := range []string{"sound: true", "sticky: true", "native: true"} {
+		if strings.Contains(body, banned) {
+			t.Errorf("prompt body: %q must not appear on any notify call (spam anti-pattern)", banned)
+		}
+	}
+}
