@@ -1,0 +1,45 @@
+{{- /*
+  blog/attach-file-to-bead — wrap the `scripts/bd-attach.sh add` helper for
+  recording a file-path attachment on a bead, with a raw
+  `bd update --metadata` fallback when the helper is not on PATH. See
+  .augment/rules/44-beads-attachments.md for the attachment convention:
+  attachments are stored as structured JSON under the `attachments` metadata
+  key on the issue, so they travel with `bd dolt push`/`pull`.
+
+  Callers pass named fields via a `dict`:
+
+      IssueID: the bead ID to attach to (e.g. `mitto-abc.1`). Required.
+      Path:    repo-relative file path (portable across clones) or absolute
+               path (for out-of-repo references). Required.
+
+  Usage:
+
+      {{ template "blog/shared/attach-file-to-bead"
+           (dict "IssueID" "mitto-abc.1"
+                 "Path"    "blog/posts/draft-slug.md") }}
+*/ -}}
+{{- $id := .IssueID -}}
+{{- $path := .Path -}}
+Record the file as a structured attachment on the bead so it travels with
+`bd dolt push`/`pull` alongside other metadata:
+
+```bash
+if command -v scripts/bd-attach.sh >/dev/null 2>&1 \
+   || [[ -x scripts/bd-attach.sh ]]; then
+  # Preferred: use the helper (deduplicates + preserves other metadata keys).
+  scripts/bd-attach.sh add {{ $id }} {{ $path }}
+else
+  # Fallback: raw `bd update --metadata` merges at the top level, so other
+  # metadata keys on the issue are preserved automatically. This appends a
+  # single {path: "..."} entry to the attachments array; run
+  # `bd show {{ $id }} --json | jq '.[0].metadata.attachments'` first if you
+  # need to dedupe against an existing entry.
+  existing=$(bd show {{ $id }} --json | jq -c '.[0].metadata.attachments // []')
+  updated=$(jq -c --arg p '{{ $path }}' '. + [{path: $p}]' <<<"$existing")
+  tmp=$(mktemp)
+  jq -nc --argjson a "$updated" '{attachments: $a}' > "$tmp"
+  bd update {{ $id }} --metadata "@$tmp" >/dev/null
+  rm -f "$tmp"
+  echo "✓ attached {{ $path }} to {{ $id }} (raw bd update fallback)"
+fi
+```

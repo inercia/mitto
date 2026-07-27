@@ -1,0 +1,23 @@
+{{- /*
+  blog/audience-and-tone — standard voice/audience block for the blog suite.
+  A small composite that calls blog-config-fragment twice (for `audience` and
+  `tone`), so consumer prompts (ideation, polish, publish, linkedin-post) can
+  include one `{{ template "blog/shared/audience-and-tone" . }}` line and get:
+
+  - the user's overrides if `{{ Arg "Folder" "blog/posts" }}/.mitto/audience.md`
+    and/or `.mitto/tone.md` exist, or
+  - the standard defaults ("expert practitioners, slightly informal, direct,
+    no hand-holding") otherwise.
+
+  The fragment takes no direct parameters — it forwards the caller's dot value
+  to blog-config-fragment via nested dicts, and blog-config-fragment resolves
+  the `Folder` argument through the caller's context. Callers must invoke this
+  fragment with their own dot (`{{ template "blog/shared/audience-and-tone" . }}`).
+*/ -}}
+**Audience.** {{ template "blog/shared/blog-config-fragment"
+  (dict "Name" "audience"
+        "DefaultText" "Expert practitioners: engineers, technical leads, and hands-on architects. Assume familiarity with the domain; do not hand-hold on basics.") }}
+
+**Tone.** {{ template "blog/shared/blog-config-fragment"
+  (dict "Name" "tone"
+        "DefaultText" "Slightly informal, direct, and confident. Prefer concrete examples over abstract exposition. Avoid marketing language, filler phrases, and needless qualifiers.") }}

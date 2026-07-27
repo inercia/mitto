@@ -1,0 +1,50 @@
+{{- /*
+  blog/blog-config-fragment — inline ONE user-config fragment of the blog
+  suite AT RENDER TIME.
+
+  Config files live under `{{ Arg "Folder" "blog/posts" }}/.mitto/<Name>.md`,
+  one topic per file. Standard fragments: audience, tone, topics, frontmatter,
+  publish-checklist, linkedin-template.
+
+  Architectural intent (mitto-98l.1): the fragment CONTENT is embedded verbatim
+  into the rendered prompt via Go text/template — the agent never reads the
+  file at runtime. This makes prompts auditable (the exact bytes the agent
+  received are visible in event logs), deterministic (no per-run filesystem
+  drift), and cheaper (no shell/tool round-trip). Mirrors
+  support/shared/channel-fragment-read.
+
+  When the fragment file is MISSING, the template falls back to the caller-
+  supplied `DefaultText` verbatim (no BEGIN/END markers around the default —
+  callers get exactly the bytes they asked for).
+
+  Callers pass named fields via a `dict`:
+
+      Name:        short filename stem (no extension). One of:
+                   "audience" | "tone" | "topics" | "frontmatter"
+                   | "publish-checklist" | "linkedin-template".
+                   Required.
+      DefaultText: fallback body to emit verbatim when the file is missing.
+                   May be empty (the fragment then emits nothing on miss).
+
+  Usage (rendered as a Markdown block — the CALLER supplies any leading
+  bullet/heading):
+
+      {{ template "blog/shared/blog-config-fragment"
+           (dict "Name"        "audience"
+                 "DefaultText" "Expert practitioners, slightly informal, direct, no hand-holding.") }}
+*/ -}}
+{{- $name := .Name -}}
+{{- $default := .DefaultText -}}
+{{- $folder := Arg "Folder" "blog/posts" -}}
+{{- $path := printf "%s/.mitto/%s.md" $folder $name -}}
+{{- if FileExists $path -}}
+**Blog `{{ $name }}` (embedded from `{{ $path }}`)** — this is the authoritative
+`{{ $name }}` guide for this blog. It **overrides** the generic default below.
+
+<!-- BEGIN {{ $path }} -->
+{{ ReadFile $path }}
+<!-- END {{ $path }} -->
+{{- else -}}
+{{ $default }}
+{{- end -}}
+{{- /* no trailing newline */ -}}

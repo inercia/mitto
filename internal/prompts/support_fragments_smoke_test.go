@@ -372,6 +372,261 @@ func TestChannelFragmentReadInlinesRenderTime(t *testing.T) {
 	}
 }
 
+// TestChannelFragmentReadInlinesAtRenderTime (mitto-eyf) verifies the
+// render-time-inline branch of the channel-fragment-read reader: when a
+// caller supplies Args["SlackChannelID"] AND the corresponding fragment
+// file exists in the workspace, the file's CONTENTS appear verbatim in the
+// rendered prompt, NOT the runtime-read instructions.
+//
+// This is the architectural inversion introduced by mitto-eyf: the agent
+// never reads the fragment at runtime — the template embeds it during
+// prompt render.
+func TestChannelFragmentReadInlinesAtRenderTime(t *testing.T) {
+	// Set up a synthetic workspace with a `scope` fragment.
+	tmpDir := t.TempDir()
+	channel := "C0INLINE"
+	fragDir := filepath.Join(tmpDir, ".mitto", "support", channel)
+	if err := os.MkdirAll(fragDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	scopeBody := "SCOPE_MARKER: only triage CGW ingress/route53 questions here."
+	toneBody := "TONE_MARKER: warm, concise, senior SRE voice."
+	if err := os.WriteFile(filepath.Join(fragDir, "scope.md"), []byte(scopeBody), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(fragDir, "tone.md"), []byte(toneBody), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Render each of the two channel-scoped prompts (watch-channel and
+	// continue-conversation) with SlackChannelID + workspace folder set so
+	// $channel is populated at render time and ReadFile can resolve the
+	// synthetic files.
+	ctx := &cel.PromptEnabledContext{
+		Session:   cel.SessionContext{ID: "s", Name: "N", HasMessages: true},
+		Workspace: cel.WorkspaceContext{Folder: tmpDir},
+		Args: map[string]string{
+			"SlackChannelID":    channel,
+			"SlackWorkspaceURL": "https://example.slack.com",
+		},
+	}
+
+	cases := []struct {
+		prompt      string
+		mustHave    []string
+		mustNotHave []string
+	}{
+		{
+			prompt: "Support: watch channel",
+			mustHave: []string{
+				"SCOPE_MARKER: only triage CGW ingress/route53 questions here.",
+				"TONE_MARKER: warm, concise, senior SRE voice.",
+				"embedded from `.mitto/support/" + channel + "/scope.md`",
+			},
+			mustNotHave: []string{
+				"runtime read fallback",
+			},
+		},
+		{
+			prompt: "Support: continue conversation",
+			mustHave: []string{
+				"SCOPE_MARKER: only triage CGW ingress/route53 questions here.",
+				"TONE_MARKER: warm, concise, senior SRE voice.",
+			},
+			mustNotHave: []string{
+				"runtime read fallback",
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.prompt, func(t *testing.T) {
+			out := renderSupportPrompt(t, tc.prompt, ctx)
+			for _, h := range tc.mustHave {
+				if !strings.Contains(out, h) {
+					t.Errorf("prompt %q: rendered output missing inline hallmark %q", tc.prompt, h)
+				}
+			}
+			for _, h := range tc.mustNotHave {
+				if strings.Contains(out, h) {
+					t.Errorf("prompt %q: rendered output unexpectedly contains fallback hallmark %q (fragment should have been inlined)", tc.prompt, h)
+				}
+			}
+		})
+	}
+}
+
+// TestChannelFragmentReadOwnerAskWhenChannelKnownButFileMissing (mitto-eyf)
+// verifies that when the channel IS known at render time but the fragment
+// file is missing on disk, the owner-ask branch fires — NOT the runtime
+// fallback. This ensures the auditable prompt tells the agent to create the
+// file for a NEW channel instead of instructing a runtime read that would
+// also fail.
+func TestChannelFragmentReadOwnerAskWhenChannelKnownButFileMissing(t *testing.T) {
+	tmpDir := t.TempDir() // no fragment files under it
+	channel := "C0EMPTY"
+	ctx := &cel.PromptEnabledContext{
+		Session:   cel.SessionContext{ID: "s", Name: "N", HasMessages: true},
+		Workspace: cel.WorkspaceContext{Folder: tmpDir},
+		Args: map[string]string{
+			"SlackChannelID":    channel,
+			"SlackWorkspaceURL": "https://example.slack.com",
+		},
+	}
+	out := renderSupportPrompt(t, "Support: watch channel", ctx)
+	// Must fire the missing-fragment branch, not the runtime-read fallback.
+	if !strings.Contains(out, "fragment MISSING") {
+		t.Errorf("rendered output missing the 'fragment MISSING' hallmark; got:\n%s", out[:min(len(out), 500)])
+	}
+	if strings.Contains(out, "runtime read fallback") {
+		t.Errorf("rendered output unexpectedly contains 'runtime read fallback' — channel WAS known at render time, so this branch should not fire")
+	}
+}
+
+// TestBootstrapGateFragmentRenders is a smoke test for
+// _shared/support/bootstrap-gate. It exercises the three branches of the
+// gate — no-channel skip, already-bootstrapped short-circuit, and
+// first-run setup — as rendered by its only host (`Support: watch
+// channel`), and asserts each branch's stable hallmarks appear (and the
+// other branches' hallmarks do not).
+func TestBootstrapGateFragmentRenders(t *testing.T) {
+	// Branch A: channel unknown at render time -> skip note.
+	t.Run("no_channel_skip", func(t *testing.T) {
+		ctx := &cel.PromptEnabledContext{
+			Session: cel.SessionContext{ID: "s", Name: "N", HasMessages: true},
+		}
+		out := renderSupportPrompt(t, "Support: watch channel", ctx)
+		mustHave := []string{
+			"Bootstrap gate — skipped.",
+			"No channel id supplied at render time",
+		}
+		for _, h := range mustHave {
+			if !strings.Contains(out, h) {
+				t.Errorf("no-channel branch missing hallmark %q", h)
+			}
+		}
+		mustNotHave := []string{
+			"Bootstrap gate — already bootstrapped.",
+			"Bootstrap gate — first-run playbook setup",
+		}
+		for _, h := range mustNotHave {
+			if strings.Contains(out, h) {
+				t.Errorf("no-channel branch unexpectedly contains hallmark %q", h)
+			}
+		}
+	})
+
+	// Branch B: channel known, ALL three mandatory fragments present ->
+	// idempotent short-circuit.
+	t.Run("already_bootstrapped", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		channel := "C0BOOTED"
+		fragDir := filepath.Join(tmpDir, ".mitto", "support", channel)
+		if err := os.MkdirAll(fragDir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		for _, name := range []string{"scope.md", "investigation.md", "escalation.md"} {
+			if err := os.WriteFile(filepath.Join(fragDir, name), []byte("body"), 0644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		ctx := &cel.PromptEnabledContext{
+			Session:   cel.SessionContext{ID: "s", Name: "N", HasMessages: true},
+			Workspace: cel.WorkspaceContext{Folder: tmpDir},
+			Args: map[string]string{
+				"SlackChannelID":    channel,
+				"SlackWorkspaceURL": "https://example.slack.com",
+			},
+		}
+		out := renderSupportPrompt(t, "Support: watch channel", ctx)
+		mustHave := []string{
+			"Bootstrap gate — already bootstrapped.",
+			"scope.md` ✓",
+			"investigation.md` ✓",
+			"escalation.md` ✓",
+			"requested on demand by **Support: investigate**",
+		}
+		for _, h := range mustHave {
+			if !strings.Contains(out, h) {
+				t.Errorf("already-bootstrapped branch missing hallmark %q", h)
+			}
+		}
+		// The bootstrap gate must not itself render the first-run heading
+		// on an already-bootstrapped channel.
+		if strings.Contains(out, "Bootstrap gate — first-run playbook setup") {
+			t.Errorf("already-bootstrapped branch unexpectedly contains first-run heading")
+		}
+		// The bootstrap gate must not itself inline the mandatory owner-asks
+		// on an already-bootstrapped channel. Scope this assertion to the
+		// bootstrap-gate output slice (bounded by its two neighbouring
+		// section headings in watch-channel.prompt.yaml) so the *per-iteration
+		// scope gate*'s own owner-ask further down the prompt is not
+		// mistaken for a bootstrap-gate leak.
+		start := strings.Index(out, "## Channel bootstrap gate")
+		end := strings.Index(out, "## Channel scope gate")
+		if start < 0 || end < 0 || end <= start {
+			t.Fatalf("could not locate bootstrap-gate slice in rendered output (start=%d end=%d)", start, end)
+		}
+		bootstrapSlice := out[start:end]
+		for _, h := range []string{
+			"Ask + write `scope.md`.",
+			"Ask + write `investigation.md`.",
+			"Ask + write `escalation.md`.",
+		} {
+			if strings.Contains(bootstrapSlice, h) {
+				t.Errorf("already-bootstrapped branch: bootstrap-gate slice unexpectedly contains %q", h)
+			}
+		}
+	})
+
+	// Branch C: channel known, NO fragments present -> first-run setup
+	// with all three mandatory owner-asks emitted and the optional opt-in
+	// prompt structure present.
+	t.Run("first_run_setup", func(t *testing.T) {
+		tmpDir := t.TempDir() // no fragments under it
+		channel := "C0FRESH"
+		ctx := &cel.PromptEnabledContext{
+			Session:   cel.SessionContext{ID: "s", Name: "N", HasMessages: true},
+			Workspace: cel.WorkspaceContext{Folder: tmpDir},
+			Args: map[string]string{
+				"SlackChannelID":    channel,
+				"SlackWorkspaceURL": "https://example.slack.com",
+			},
+		}
+		out := renderSupportPrompt(t, "Support: watch channel", ctx)
+		mustHave := []string{
+			"Bootstrap gate — first-run playbook setup for channel `C0FRESH`",
+			"Phase 1 — Mandatory fragments",
+			"Phase 2 — Optional fragments",
+			// All three mandatory owner-asks are inlined:
+			"Ask + write `scope.md`.",
+			"Ask + write `investigation.md`.",
+			"Ask + write `escalation.md`.",
+			// Optional opt-in structure present:
+			"Add optional playbook fragments now?",
+			"Add `tone.md` only",
+			"Add `resources.md` only",
+			// redirects.md is called out as intentionally deferred:
+			"`redirects.md`** is intentionally **not** offered here.",
+			// Optional owner-asks inlined so the agent has them ready:
+			"Ask + write `tone.md`.",
+			"Ask + write `resources.md`.",
+		}
+		for _, h := range mustHave {
+			if !strings.Contains(out, h) {
+				t.Errorf("first-run branch missing hallmark %q", h)
+			}
+		}
+		// redirects owner-ask must NOT be inlined by the bootstrap gate
+		// (it stays on-demand under the investigate prompt).
+		if strings.Contains(out, "Ask + write `redirects.md`.") {
+			// It IS emitted elsewhere in watch-channel's render (nowhere —
+			// watch-channel does not own redirects), but the guard is worth
+			// keeping so a future refactor cannot silently smuggle it in.
+			t.Errorf("first-run branch unexpectedly inlines redirects owner-ask (must remain on-demand under Support: investigate)")
+		}
+	})
+}
+
 // TestSlackToolsFragmentRenders is a smoke test for support/shared/slack-tools.
 // Asserts the stable "match by capability" preamble appears in every
 // consumer, plus the two optional trailers (NoPosting, ReadMetadata)
