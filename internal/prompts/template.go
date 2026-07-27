@@ -309,3 +309,31 @@ func RenderPromptTemplate(name, body string, data any, funcs template.FuncMap) (
 	}
 	return buf.String(), nil
 }
+
+// RenderPromptTemplateWithoutFragments renders body with data + funcs but
+// SKIPS the CurrentFragments attach loop that RenderPromptTemplate performs.
+//
+// This is intentional isolation for narrow-scope renders (currently target.title,
+// mitto-eyf) whose FuncMap is deliberately narrower than the full BuildTemplateFuncMap
+// and would fail to parse a fragment that references a func absent from the
+// stripped FuncMap — even when the render body itself does not use that fragment.
+// target.title strings never use `{{ template "..." }}` (they are short,
+// dispatch-time identifiers), so skipping fragment attach here is safe and
+// avoids leaking fragment-func requirements into the target-title contract.
+//
+// Same fail-closed semantics as RenderPromptTemplate: parse and execution
+// errors are wrapped and returned; missing keys render as "" (missingkey=zero).
+func RenderPromptTemplateWithoutFragments(name, body string, data any, funcs template.FuncMap) (string, error) {
+	if !HasTemplateSyntax(body) {
+		return body, nil
+	}
+	t := template.New(name).Option("missingkey=zero").Funcs(funcs)
+	if _, err := t.Parse(body); err != nil {
+		return "", fmt.Errorf("prompt template %q: parse error: %w", name, err)
+	}
+	var buf bytes.Buffer
+	if err := t.Execute(&buf, data); err != nil {
+		return "", fmt.Errorf("prompt template %q: render error: %w", name, err)
+	}
+	return buf.String(), nil
+}

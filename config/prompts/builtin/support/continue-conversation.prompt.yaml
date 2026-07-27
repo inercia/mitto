@@ -67,9 +67,9 @@ prompt: |-
   `Support: investigate` (`investigation.md`, `resources.md`, `escalation.md`, `redirects.md`).
   Read the fragments needed to craft a reply and honor them throughout.
 
-  - {{ template "_shared/support/channel-fragment-read" (dict "Fragment" "scope" "Purpose" "confirm the conversation is in scope for this channel before continuing" "Owner" "Support: watch channel" "OwnerAsk" false) }}
-  - {{ template "_shared/support/channel-fragment-read" (dict "Fragment" "tone" "Purpose" "shape the tone/reply guidance when crafting any reply below" "Owner" "Support: reply to user" "OwnerAsk" false) }}
-  - {{ template "_shared/support/channel-fragment-read" (dict "Fragment" "investigation" "Purpose" "guide any gathering of answers in Option A of Step 5" "Owner" "Support: investigate" "OwnerAsk" false) }}
+  - {{ template "_shared/support/channel-fragment-read" (dict "Channel" $channel "Fragment" "scope" "Purpose" "confirm the conversation is in scope for this channel before continuing" "Owner" "Support: watch channel" "OwnerAsk" false) }}
+  - {{ template "_shared/support/channel-fragment-read" (dict "Channel" $channel "Fragment" "tone" "Purpose" "shape the tone/reply guidance when crafting any reply below" "Owner" "Support: reply to user" "OwnerAsk" false) }}
+  - {{ template "_shared/support/channel-fragment-read" (dict "Channel" $channel "Fragment" "investigation" "Purpose" "guide any gathering of answers in Option A of Step 5" "Owner" "Support: investigate" "OwnerAsk" false) }}
 
   ## Step 1: Identify the current user
 

@@ -230,17 +230,22 @@ func TestTargetBeadPickerFragmentRenders(t *testing.T) {
 }
 
 // TestChannelFragmentReadRenders is a smoke test for
-// _shared/support/channel-fragment-read. Verifies the stable
-// per-fragment path convention hallmark appears in every consumer.
+// _shared/support/channel-fragment-read (mitto-eyf: render-time inlining).
+// The fragment has three branches: (a) inline when the channel is known and
+// the file exists on disk, (b) MISSING when the channel is known but the file
+// does not exist, (c) runtime-read fallback when the caller did not supply a
+// channel id at render time. This test covers branches (b) and (c); the
+// inline branch (a) has its own dedicated test with a temp-workspace file.
 func TestChannelFragmentReadRenders(t *testing.T) {
+	// Rendering with NO SlackChannelID (and no linked bead) forces the
+	// runtime-read fallback branch — hallmarks unique to that branch include
+	// the parenthetical marker and the "<channel-id>" placeholder path
+	// convention which no other branch emits.
 	ctx := &cel.PromptEnabledContext{
 		Session: cel.SessionContext{ID: "s", Name: "N", HasMessages: true},
 	}
-	// Hallmarks unique to the channel-fragment-read fragment body:
-	// the per-fragment path convention and the "authoritative fragment
-	// guide" phrasing.
-	hallmarks := []string{
-		"Read the channel playbook fragment",
+	fallbackHallmarks := []string{
+		"fragment (runtime read fallback)",
 		"`.mitto/support/<channel-id>/",
 		"authoritative",
 	}
@@ -253,9 +258,9 @@ func TestChannelFragmentReadRenders(t *testing.T) {
 	}
 	for _, name := range consumers {
 		out := renderSupportPrompt(t, name, ctx)
-		for _, hallmark := range hallmarks {
+		for _, hallmark := range fallbackHallmarks {
 			if !strings.Contains(out, hallmark) {
-				t.Errorf("prompt %q: rendered output missing channel-fragment-read hallmark %q", name, hallmark)
+				t.Errorf("prompt %q: rendered output missing channel-fragment-read fallback hallmark %q", name, hallmark)
 			}
 		}
 	}
@@ -272,6 +277,98 @@ func TestChannelFragmentReadRenders(t *testing.T) {
 		if !strings.Contains(out, ownerAskHallmark) {
 			t.Errorf("prompt %q: rendered output missing owner-ask hallmark %q", name, ownerAskHallmark)
 		}
+	}
+
+	// MISSING branch (channel known, file absent): render `Support: watch
+	// channel` with an explicit SlackChannelID and no fragment files in the
+	// temp workspace. The template emits the "fragment MISSING" marker
+	// scoped to the concrete channel id, proving branch (b) fires.
+	tmpDir := t.TempDir()
+	missingCtx := &cel.PromptEnabledContext{
+		Session:   cel.SessionContext{ID: "s", Name: "N", HasMessages: true},
+		Workspace: cel.WorkspaceContext{Folder: tmpDir},
+		Args:      map[string]string{"SlackChannelID": "C0MISSING1"},
+	}
+	missOut := renderSupportPrompt(t, "Support: watch channel", missingCtx)
+	missingHallmarks := []string{
+		"fragment MISSING",
+		"`.mitto/support/C0MISSING1/",
+	}
+	for _, hallmark := range missingHallmarks {
+		if !strings.Contains(missOut, hallmark) {
+			t.Errorf("watch-channel (channel set, no file): rendered output missing hallmark %q", hallmark)
+		}
+	}
+	// The runtime-read fallback branch must NOT fire when a channel is set.
+	if strings.Contains(missOut, "fragment (runtime read fallback)") {
+		t.Errorf("watch-channel (channel set): unexpectedly rendered runtime-read fallback branch")
+	}
+}
+
+// TestChannelFragmentReadInlinesRenderTime (mitto-eyf) is the acceptance test
+// for the render-time inlining branch of `_shared/support/channel-fragment-read`.
+// It writes a fragment file to a temp workspace, renders `Support: watch
+// channel` with an explicit SlackChannelID, and asserts:
+//
+//  1. The rendered body contains the "embedded from `<path>`" marker unique
+//     to the inline branch.
+//  2. The `<!-- BEGIN <path> -->` / `<!-- END <path> -->` framing markers
+//     bracket the inlined content.
+//  3. The exact bytes written to disk appear verbatim between the markers —
+//     proving `{{ ReadFile }}` inlined the file at render time (no runtime
+//     tool call needed).
+//  4. Neither the MISSING nor runtime-read-fallback branches fire.
+func TestChannelFragmentReadInlinesRenderTime(t *testing.T) {
+	tmpDir := t.TempDir()
+	channel := "C0INLINE01"
+	fragmentDir := filepath.Join(tmpDir, ".mitto", "support", channel)
+	if err := os.MkdirAll(fragmentDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(%s): %v", fragmentDir, err)
+	}
+	// Scope fragment is the one owned by `Support: watch channel`, so it is
+	// guaranteed to be referenced in that prompt's rendered body.
+	scopeBody := "SCOPE-SENTINEL-XYZ: this channel triages Kubernetes questions only.\nOut of scope: billing, HR, marketing.\n"
+	scopePath := filepath.Join(fragmentDir, "scope.md")
+	if err := os.WriteFile(scopePath, []byte(scopeBody), 0o644); err != nil {
+		t.Fatalf("WriteFile(%s): %v", scopePath, err)
+	}
+
+	ctx := &cel.PromptEnabledContext{
+		Session:   cel.SessionContext{ID: "s", Name: "N", HasMessages: true},
+		Workspace: cel.WorkspaceContext{Folder: tmpDir},
+		Args:      map[string]string{"SlackChannelID": channel},
+	}
+	out := renderSupportPrompt(t, "Support: watch channel", ctx)
+
+	relPath := ".mitto/support/" + channel + "/scope.md"
+	embeddedMarker := "embedded from `" + relPath + "`"
+	if !strings.Contains(out, embeddedMarker) {
+		t.Errorf("inline branch: rendered output missing %q — ReadFile did not inline the fragment", embeddedMarker)
+	}
+	beginMarker := "<!-- BEGIN " + relPath + " -->"
+	endMarker := "<!-- END " + relPath + " -->"
+	if !strings.Contains(out, beginMarker) {
+		t.Errorf("inline branch: rendered output missing BEGIN marker %q", beginMarker)
+	}
+	if !strings.Contains(out, endMarker) {
+		t.Errorf("inline branch: rendered output missing END marker %q", endMarker)
+	}
+	// The file body must appear verbatim in the render — this is the whole
+	// point of mitto-eyf: auditable, deterministic inlining.
+	if !strings.Contains(out, "SCOPE-SENTINEL-XYZ: this channel triages Kubernetes questions only.") {
+		t.Errorf("inline branch: rendered output missing verbatim fragment body — ReadFile did not embed the file contents")
+	}
+	// The other two branches must not fire when the file exists.
+	if strings.Contains(out, "fragment MISSING") {
+		// Note: other fragments (tone.md) may still emit MISSING for this
+		// channel. Guard only the scope-fragment MISSING marker to avoid
+		// false positives from unrelated fragments in the same render.
+		if strings.Contains(out, "`scope` fragment MISSING") {
+			t.Errorf("inline branch: unexpectedly rendered MISSING for scope.md when file exists")
+		}
+	}
+	if strings.Contains(out, "`scope` fragment (runtime read fallback)") {
+		t.Errorf("inline branch: unexpectedly rendered runtime-read fallback for scope.md when channel is set")
 	}
 }
 

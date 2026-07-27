@@ -1,26 +1,34 @@
 {{- /*
-  support/channel-fragment-read — read ONE topical fragment of the per-channel
-  support playbook.
+  support/channel-fragment-read — inline ONE topical fragment of the per-channel
+  support playbook AT RENDER TIME.
 
   Fragments live under `.mitto/support/<channel-id>/<fragment>.md`, one topic
   per file. Standard fragments: scope, tone, investigation, resources,
-  escalation, redirects. Missing fragments fall back to the caller prompt's
-  built-in defaults — never a hard failure.
+  escalation, redirects.
 
-  Owner semantics: if `OwnerAsk` is true, the fragment is owned by the calling
-  prompt and the agent should ask the user (via `mitto_ui_form`) to fill it
-  in when missing, then write the file. If false (reader mode), the caller
-  just logs a `[CONTEXT]` note and continues with in-prompt defaults.
+  Architectural intent (mitto-eyf): the fragment CONTENT is embedded verbatim
+  into the rendered prompt via Go text/template — the agent never reads the
+  file at runtime. This makes prompts auditable (the exact bytes the agent
+  received are visible in event logs), deterministic (no per-run filesystem
+  drift), and cheaper (no shell/tool round-trip).
+
+  When the fragment file is MISSING, the template falls back to a short
+  `[CONTEXT]` note or an owner-ask instruction, depending on `OwnerAsk`.
 
   Callers pass named fields via a `dict`:
 
+      Channel:  the Slack channel id (e.g. C0XXXXXXX). Required. Callers that
+                do not know the channel at render time (per-bead prompts that
+                receive only IssueID) should pass "" — the template then emits
+                a minimal runtime-read instruction as a last-resort fallback,
+                so the caller still gets fragment content.
       Fragment: short filename stem (no extension). One of:
                 "scope" | "tone" | "investigation" | "resources"
                 | "escalation" | "redirects".
       Purpose:  short caller-supplied phrase spliced into "use it to <Purpose>".
       Owner:    canonical name of the owner prompt, e.g. "Support: reply to
-                user" — used in the missing-file message so the reader tells
-                the user which prompt would populate it. Required.
+                user" — used in the missing-file / no-channel message so the
+                reader tells the user which prompt would populate it. Required.
       OwnerAsk: bool. If true, the CALLING prompt is itself the owner and
                 should ask + write when the fragment is missing. If false
                 (reader mode), the caller just logs a `[CONTEXT]` note and
@@ -30,29 +38,52 @@
   leading `- `):
 
       - {{ template "_shared/support/channel-fragment-read"
-           (dict "Fragment" "tone"
+           (dict "Channel"  $channel
+                 "Fragment" "tone"
                  "Purpose"  "shape the tone when drafting the reply"
                  "Owner"    "Support: reply to user"
                  "OwnerAsk" false) }}
-
-  Whitespace: fragment body starts flush at column 1 (no leading `- `) and
-  emits no trailing newline; callers use plain `{{ template ... }}`.
 */ -}}
+{{- $channel := .Channel -}}
 {{- $fragment := .Fragment -}}
 {{- $purpose  := .Purpose  -}}
 {{- $owner    := .Owner    -}}
 {{- $ownerAsk := .OwnerAsk -}}
-**Read the channel playbook fragment `{{ $fragment }}.md`.** Using the bead's `slack_channel`
-  value, read **`.mitto/support/<channel-id>/{{ $fragment }}.md`** (e.g. `C0XXXXXXX` →
-  `.mitto/support/C0XXXXXXX/{{ $fragment }}.md`). This is the **authoritative `{{ $fragment }}`
-  guide** for this channel — use it to {{ $purpose }}. **If it exists**, honor its guidance; it
-  **overrides** the generic defaults below.
-  {{- if $ownerAsk }} **If it does not exist**, this prompt owns creating it: ask the user for
-  the `{{ $fragment }}` content via a focused `mitto_ui_form`, write the file, then proceed. See
-  the owner-ask step below for the field list.
-  {{- else }} **If it does not exist**, log a short `[CONTEXT]` bead comment noting
-  `{{ $fragment }}.md missing — using generic defaults; owner = **{{ $owner }}**` and continue
-  with the generic defaults in this section. Do **not** ask the user here — only **{{ $owner }}**
-  is responsible for populating this fragment.
-  {{- end }}
+{{- $path := printf ".mitto/support/%s/%s.md" $channel $fragment -}}
+{{- if and $channel (FileExists $path) -}}
+**Channel `{{ $fragment }}` (embedded from `{{ $path }}`)** — this is the
+authoritative `{{ $fragment }}` guide for channel `{{ $channel }}`; use it to
+{{ $purpose }}. It **overrides** the generic defaults in the caller prompt.
+
+<!-- BEGIN {{ $path }} -->
+{{ ReadFile $path }}
+<!-- END {{ $path }} -->
+{{- else if $channel -}}
+**Channel `{{ $fragment }}` fragment MISSING** (`{{ $path }}` does not exist for channel
+`{{ $channel }}`).
+{{- if $ownerAsk }} This prompt owns creating it: ask the user for the `{{ $fragment }}`
+content via a focused `mitto_ui_form`, write the file, then proceed. See the owner-ask
+step below for the field list.
+{{- else }} Log a short `[CONTEXT]` bead comment noting `{{ $fragment }}.md missing —
+using generic defaults; owner = **{{ $owner }}**` and continue with the generic defaults
+in this section. Do **not** ask the user here — only **{{ $owner }}** is responsible
+for populating this fragment.
+{{- end }}
+{{- else -}}
+**Channel `{{ $fragment }}` fragment (runtime read fallback)** — the caller did not
+supply a channel id at render time, so this fragment could not be inlined. Using the
+bead's `slack_channel` value, read
+**`.mitto/support/<channel-id>/{{ $fragment }}.md`** (e.g. `C0XXXXXXX` →
+`.mitto/support/C0XXXXXXX/{{ $fragment }}.md`). This is the authoritative
+`{{ $fragment }}` guide for this channel — use it to {{ $purpose }}. **If it exists**,
+honor its guidance; it **overrides** the generic defaults below.
+{{- if $ownerAsk }} **If it does not exist**, this prompt owns creating it: ask the user
+for the `{{ $fragment }}` content via a focused `mitto_ui_form`, write the file, then
+proceed. See the owner-ask step below for the field list.
+{{- else }} **If it does not exist**, log a short `[CONTEXT]` bead comment noting
+`{{ $fragment }}.md missing — using generic defaults; owner = **{{ $owner }}**` and
+continue with the generic defaults in this section. Do **not** ask the user here — only
+**{{ $owner }}** is responsible for populating this fragment.
+{{- end }}
+{{- end -}}
 {{- /* no trailing newline */ -}}

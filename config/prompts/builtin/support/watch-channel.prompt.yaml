@@ -63,19 +63,22 @@ prompt: |-
 
   **Silent scheduled run** — nobody is watching.
   - Use **only** `mitto_ui_notify` for status and summaries. Do **NOT** call `mitto_ui_options` /
-    `mitto_ui_form` / `mitto_ui_textbox` for anything **except the channel scope gate below** —
-    they would otherwise block with no one to answer.
-  - **Exception — the channel scope gate.** If `.mitto/support/{{ $channel }}/scope.md` is missing
-    you cannot know what to triage on this channel, so you MAY use a blocking `mitto_ui_form` /
-    `mitto_ui_textbox` **with a short `timeout_seconds`** to ask for the scope and save the file.
-    If nobody answers before the timeout, fall back to a `mitto_ui_notify` warning, then continue
-    triage + reconcile but **skip drafting** this run — the next iteration asks again.
+    `mitto_ui_form` / `mitto_ui_textbox` for anything **except the channel bootstrap gate and the
+    channel scope gate below** — they would otherwise block with no one to answer.
+  - **Exception — the channel bootstrap gate + channel scope gate.** If any mandatory playbook
+    fragment (`scope.md`, `investigation.md`, `escalation.md`) is missing you cannot triage /
+    investigate this channel correctly, so you MAY use blocking `mitto_ui_form` /
+    `mitto_ui_options` / `mitto_ui_textbox` calls **with a short `timeout_seconds` (60s)** to ask
+    for the missing content and save the file. If nobody answers before the timeout, fall back to
+    a `mitto_ui_notify` warning, then continue triage + reconcile but **skip drafting** this run —
+    the next iteration asks again.
   - Otherwise do triage + reconcile beads normally.
   {{- else }}
 
   **Interactive run** (first send, or force-triggered ▶️) — a user is present, so use the interactive
-  `mitto_ui_*` tools freely. Run the **channel scope gate first**: if `scope.md` is missing, ask
-  the user for the scope and persist it before doing anything else.
+  `mitto_ui_*` tools freely. Run the **channel bootstrap gate first** (one-time playbook setup: it
+  asks for the mandatory fragments if missing and offers the optional ones), then the **channel
+  scope gate** as a per-iteration safety net.
   {{- end }}
 
   ## CRITICAL: user interaction rules
@@ -175,9 +178,17 @@ prompt: |-
   | **P2** | MEDIUM — in motion, our court, not blocked on your approval | `state:triaged`, `state:gathering-info`, `state:awaiting-us` (customer replied, our turn). |
   | **P3** | LOW — waiting on the customer, nothing for you to do now | `state:awaiting-customer` or `state:need-info` — we posted a reply or a clarifying question and are waiting on the customer (also drifting toward the 10-day auto-close as time passes). |
 
+  ## Channel bootstrap gate: first-run playbook setup
+
+  {{ template "_shared/support/bootstrap-gate" (dict "Channel" $channel "Silent" (and .Session.IsLoop (not .Session.IsLoopForced))) }}
+
   ## Channel scope gate: check this FIRST, every iteration
 
   {{ template "_shared/support/migrate-monolith" (dict "Channel" $channel "ActiveBead" "") }}
+
+  > **Note.** On a channel that has been through the bootstrap gate above, `scope.md` is guaranteed
+  > to exist. This per-iteration gate is the **repair path**: if `scope.md` was deleted or the
+  > channel was never bootstrapped (imported / hand-created), it re-asks for it here.
 
   Before you can triage this channel you must know **what it is responsible for** — i.e. its
   `scope.md`. The rest of the playbook (investigation method, resources, escalation, tone) is
@@ -190,11 +201,11 @@ prompt: |-
   the **owner** of `scope.md` — it asks for it and writes it when missing. All other fragments are
   read-only here.
 
-  **This gate runs first, before every numbered step below — on *every* iteration, not just the
-  first.** A channel that never had `scope.md` keeps getting asked until it exists.
+  **This gate runs on *every* iteration** as a safety net for `scope.md`. A channel whose
+  `scope.md` was deleted keeps getting asked until it exists again.
 
   1. **Scope fragment (owner).**
-     - {{ template "_shared/support/channel-fragment-read" (dict "Fragment" "scope" "Purpose" "know what this channel is (and is not) responsible for before triaging" "Owner" "Support: watch channel" "OwnerAsk" true) }}
+     - {{ template "_shared/support/channel-fragment-read" (dict "Channel" $channel "Fragment" "scope" "Purpose" "know what this channel is (and is not) responsible for before triaging" "Owner" "Support: watch channel" "OwnerAsk" true) }}
      - **Owner-ask step (only if `scope.md` is missing).** Create the
        `.mitto/support/{{ $channel }}/` directory if missing, then:
        {{ template "_shared/support/ask-scope" (dict "TimeoutSeconds" 60) }}
@@ -203,7 +214,7 @@ prompt: |-
        `mitto_ui_notify` (warning) that no `scope.md` exists yet, then continue triage + keeping
        beads in sync but **skip drafting** this run. The next iteration asks again.
   2. **Tone fragment (reader).**
-     - {{ template "_shared/support/channel-fragment-read" (dict "Fragment" "tone" "Purpose" "keep triage summaries and any notifications consistent with the channel's voice" "Owner" "Support: reply to user" "OwnerAsk" false) }}
+     - {{ template "_shared/support/channel-fragment-read" (dict "Channel" $channel "Fragment" "tone" "Purpose" "keep triage summaries and any notifications consistent with the channel's voice" "Owner" "Support: reply to user" "OwnerAsk" false) }}
   3. **Keep `scope.md` current.** Whenever you learn a new in-scope or out-of-scope pattern while
      triaging this run (a topic we now cover, a topic we should redirect), **append it** to
      `.mitto/support/{{ $channel }}/scope.md` so future runs benefit. Other fragments
@@ -212,9 +223,13 @@ prompt: |-
 
   ## Instructions
 
-  > **Run the channel scope gate above FIRST**, at the start of every iteration — before Step 0 and
-  > everything else. If `.mitto/support/{{ $channel }}/scope.md` is missing, ask for the scope and
-  > save the file before triaging. Children read the other fragments during investigation.
+  > **Run the two gates above FIRST**, in order, at the start of every iteration — before Step 0
+  > and everything else. The **channel bootstrap gate** is a one-time (idempotent) playbook setup:
+  > it asks for the mandatory fragments (`scope`, `investigation`, `escalation`) if missing and
+  > offers the optional ones (`tone`, `resources`) as opt-in; on subsequent iterations it
+  > short-circuits with a one-line "already bootstrapped" note. The **channel scope gate** is the
+  > per-iteration safety net for `scope.md`. Children read the other fragments during
+  > investigation.
 
   ### 0. Ensure beads ready + housekeeping
 
@@ -393,9 +408,12 @@ prompt: |-
       title: "Investigate <id>: <short summary>",
       beads_issue: "<id>",
       prompt_name: "Support: investigate",
-      arguments: { "IssueID": "<id>" },
+      arguments: { "IssueID": "<id>", "SlackChannelID": "{{ $channel }}" },
       acp_server: <prefer a "coding" or "fast" tagged server>)
     ```
+    Passing `SlackChannelID` here lets the child inline the channel's playbook fragments at
+    prompt-render time (no runtime file read); it is also carried through into the child's
+    bead metadata via its own Step 2.
     The child runs "Support: investigate" end-to-end on that bead: it gathers the answer from the
     channel's playbook fragments under **`.mitto/support/{{ $channel }}/`** (owning
     `investigation.md`, `resources.md`, `escalation.md`, and optionally `redirects.md`), records

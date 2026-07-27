@@ -144,15 +144,17 @@ prompt: |
   posting — this scanner just dispatches.
 
   Before spawning, check existing children so you do **not** duplicate an
-  already-running review for the same PR:
+  already-running review for the same PR. Use the render-time child list —
+  no MCP call needed:
 
   ```
-  mitto_conversation_list(self_id: "{{ .Session.ID }}")
+  Existing children: {{ .Children.MCPText }}
   ```
 
-  If a child with title `PR #<number> review` already exists for this
-  `(owner, repo, number)` and is either running or has not yet completed the
-  current head commit, **skip** — do not spawn a second one.
+  Each entry is rendered as `id (title) [acp-server]` (with an optional
+  ` {bd-id}` suffix). If any entry's title matches `PR #<number> review —
+  <owner>/<repo>` for this `(owner, repo, number)`, **skip** — do not spawn
+  a second one.
 
   Otherwise spawn:
 

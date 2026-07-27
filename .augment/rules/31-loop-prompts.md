@@ -104,6 +104,20 @@ Related: parameter defaults are NOT auto-merged into `.Args` at render time; eit
 
 When an `onTasks` loop is busy (child driver still running), fs-watcher fires do NOT dispatch — they arm a **quiescence rebase** timer. When the subtree quiesces, the baseline is silently rebased to include all intervening changes with **no fire, no dispatch**. A user action (e.g. changing a bead's type via the web UI) can be absorbed into the new baseline and never trigger the loop until an external event re-fires the watcher (`onTasks: baseline rebased after idle+quiescence` in logs). This is intentional coalescing (feature `coalesceDuringBusy`), not a bug — but it means supervisor loops can silently miss user-driven state changes for minutes.
 
+## `runOnStart` Boot Pulse — Once-per-Process Guard
+
+`fireOnStartPulses` (`internal/conversation/loop_runner.go` ~L1000) marks `runOnStartFired[sessionID] = true` **before** calling `triggerNowFull → deliverPrompt → promptResolver`. If prompt resolution fails at that instant, the guard has already consumed the pulse and the boot fire will **not** be retried this process lifetime — the loop appears "deaf on restart".
+
+- Anti-flap window default: `config.DefaultRunOnStartAntiFlapSeconds = 60` seconds (not minutes). Only suppresses if the loop actually ran within that window.
+- Historical root cause of `prompt "X" not found` at boot: prompts-cache warmed before the fragment registry — fixed by `mitto-g61` / commit `2fd8e7b3` (`internal/web/server.go` now calls `prompts.SetCurrentFragments(reg)` BEFORE starting the prompts watcher). The guard-consume-on-failure hazard remains latent for any other transient resolve failure.
+- Diagnosis path: `grep 'Firing loop boot pulse' mitto.log` for `session_id`, then `grep 'Boot pulse delivery failed'` for the resolver error.
+
+## Sending Prompts Inside a Running Loop Iteration
+
+`mitto_conversation_send_prompt` inside a loop iteration does **not** run inline — it queues on the child, and the current iteration's `onCompletion` fires on THIS turn's end. Any `send_prompt` (e.g. dispatching a shared "Commit changes" prompt from inside a driver's phase prompt) lands as a NEW turn AFTER the current iteration finishes — arriving after the driver has already updated bd labels, spawned the next phase, or been reaped.
+
+**Consequence**: you cannot chain follow-up work into the currently-active loop turn via `send_prompt`. For in-turn work, either inline the logic in the current prompt body or factor it into a template partial (`{{ template "…" . }}`). This is why the L1 beads-loop drivers commit inline via `git` rather than by dispatching a shared commit prompt.
+
 ## Schema-Extension Pattern for New Loop Fields
 
 Canonical reference for adding an optional field to `LoopPrompt`: `CoalesceDuringBusy` (beads `mitto-dmb` / `mitto-f9q`). The plumbing touches, in order:

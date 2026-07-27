@@ -1,0 +1,176 @@
+{{- /*
+  support/bootstrap-gate — first-run playbook setup for a Slack support
+  channel. Owner: `Support: watch channel`.
+
+  Runs BEFORE the per-iteration channel scope gate. Its job is to make
+  sure the three MANDATORY fragments (`scope.md`, `investigation.md`,
+  `escalation.md`) exist for the channel before any triage/reply work
+  begins, so lazily-owned prompts (`Support: investigate`, `Support: reply
+  to user`) never block a silent scheduled run on a UI form nobody sees.
+
+  Idempotent: reads each fragment's presence via FileExists at render
+  time. When all three mandatory fragments are already present, the gate
+  short-circuits with a one-line "already bootstrapped" note and does
+  nothing else.
+
+  Optional fragments (`tone.md`, `resources.md`) are handled by a single
+  opt-in `mitto_ui_options` prompt after the mandatory pass — the user
+  can decline and add them later via their normal lazy owner-ask paths
+  (`Support: reply to user`, `Support: investigate`).
+
+  `redirects.md` is intentionally not offered here: its owner
+  (`Support: investigate`) only asks for it on demand the first time an
+  out-of-scope question actually arrives, so proactively bootstrapping it
+  would waste the user's time.
+
+  Callers pass named fields via a `dict`:
+
+    Channel:  the Slack channel id (e.g. C0XXXXXXX). Required. If empty
+              (per-bead callers that do not know the channel at render
+              time) the gate emits a short "cannot bootstrap without a
+              channel id" note and does nothing — the individual owner
+              prompts will still ask lazily.
+    Silent:   bool. True for a silent scheduled loop run (nobody is
+              watching), false for an interactive / force-triggered run.
+              Silent runs use short (60s) timeouts on all forms and, on
+              timeout, fall back to a `mitto_ui_notify` warning +
+              skip-drafting policy consistent with the existing channel
+              scope gate.
+
+  Whitespace: fragment body starts flush at column 1 and emits no
+  trailing newline; the caller frames it with its own heading.
+*/ -}}
+{{- $channel := .Channel -}}
+{{- $silent  := .Silent  -}}
+{{- $scopePath        := printf ".mitto/support/%s/scope.md"         $channel -}}
+{{- $investigatePath  := printf ".mitto/support/%s/investigation.md" $channel -}}
+{{- $escalationPath   := printf ".mitto/support/%s/escalation.md"    $channel -}}
+{{- $tonePath         := printf ".mitto/support/%s/tone.md"          $channel -}}
+{{- $resourcesPath    := printf ".mitto/support/%s/resources.md"     $channel -}}
+{{- $scopeOK        := and $channel (FileExists $scopePath) -}}
+{{- $investigateOK  := and $channel (FileExists $investigatePath) -}}
+{{- $escalationOK   := and $channel (FileExists $escalationPath) -}}
+{{- $toneOK         := and $channel (FileExists $tonePath) -}}
+{{- $resourcesOK    := and $channel (FileExists $resourcesPath) -}}
+{{- $mandatoryAllOK := and $scopeOK $investigateOK $escalationOK -}}
+{{- $timeout := 300 -}}{{- if $silent }}{{ $timeout = 60 }}{{ end -}}
+{{- if not $channel -}}
+**Bootstrap gate — skipped.** No channel id supplied at render time, so
+per-channel playbook paths cannot be resolved. Individual owner prompts
+(`Support: watch channel`, `Support: investigate`, `Support: reply to
+user`) will still ask for their fragments lazily the first time each is
+needed.
+{{- else if $mandatoryAllOK -}}
+**Bootstrap gate — already bootstrapped.** All mandatory playbook
+fragments for channel `{{ $channel }}` are present on disk:
+- `{{ $scopePath }}` ✓
+- `{{ $investigatePath }}` ✓
+- `{{ $escalationPath }}` ✓
+
+Optional fragments (informational — the gate does **not** ask for these
+here; each is owned by its own prompt and will be requested lazily when
+first needed):
+- `{{ $tonePath }}` — {{ if $toneOK }}present ✓{{ else }}absent (owned by **Support: reply to user**){{ end }}
+- `{{ $resourcesPath }}` — {{ if $resourcesOK }}present ✓{{ else }}absent (owned by **Support: investigate**){{ end }}
+- `.mitto/support/{{ $channel }}/redirects.md` — requested on demand by **Support: investigate** the first time an out-of-scope question arrives; do not proactively create.
+
+Skipping bootstrap this iteration. Proceed directly to the channel scope
+gate below (it re-checks `scope.md` as a safety net in case the file was
+deleted between iterations).
+{{- else -}}
+**Bootstrap gate — first-run playbook setup for channel `{{ $channel }}`.**
+{{- if $silent }} *Silent scheduled run (nobody is watching).* All forms below use a
+short `timeout_seconds: {{ $timeout }}`; on timeout, send a `mitto_ui_notify`
+warning that the channel has not been bootstrapped yet, then continue triage +
+reconcile but **skip drafting** this run — the next iteration re-runs this gate.
+{{- else }} *Interactive run — a user is present.* This is a one-time, idempotent
+setup pass; subsequent iterations short-circuit once all three mandatory
+fragments exist on disk.
+{{- end }}
+
+Create the `.mitto/support/{{ $channel }}/` directory if it does not exist
+(single `mkdir -p`), then work through the two phases below in order.
+
+### Phase 1 — Mandatory fragments (must exist before triage can produce drafts)
+
+Each of the three fragments below is REQUIRED. Skip the ones already present
+(marked ✓); ask for the missing ones (marked ✗) using the linked owner-ask
+step. Do **not** batch — ask one at a time, write the file after each form
+returns, then move on. If any form times out or is aborted, do **not** write
+a partial file; log a `[CONTEXT]` note (or `mitto_ui_notify` on a silent run)
+and skip that fragment — the gate re-asks it next iteration.
+
+1. **`scope.md`** — what this channel is (and is not) responsible for.
+   {{ if $scopeOK }}Already present ✓ — skip.{{ else }}Missing ✗ — ask + write now.
+   {{ template "_shared/support/ask-scope" (dict "TimeoutSeconds" $timeout) }}
+   {{ end }}
+2. **`investigation.md`** — how to investigate questions on this channel
+   (tool order, safe commands, MCP/CLI tools, confidence rules).
+   {{ if $investigateOK }}Already present ✓ — skip.{{ else }}Missing ✗ — ask + write now.
+   {{ template "_shared/support/ask-investigation" (dict "TimeoutSeconds" $timeout) }}
+   {{ end }}
+3. **`escalation.md`** — who / when / how to escalate for this channel.
+   {{ if $escalationOK }}Already present ✓ — skip.{{ else }}Missing ✗ — ask + write now.
+   {{ template "_shared/support/ask-escalation" (dict "TimeoutSeconds" $timeout) }}
+   {{ end }}
+
+### Phase 2 — Optional fragments (skip by default; opt in on demand)
+
+{{ if $silent -}}
+On a silent scheduled run, **do not** ask about optional fragments — send a
+single `mitto_ui_notify` (info style) noting which optional fragments are
+absent and that they will be requested by their owner prompts (`Support:
+reply to user`, `Support: investigate`) the next time an interactive run
+needs them. Then proceed to the channel scope gate below.
+{{- else -}}
+After Phase 1 completes, ask the user **once** whether to bootstrap any
+optional fragments now. Skip this ask entirely if BOTH `tone.md` and
+`resources.md` are already present (marked ✓ below).
+
+- `{{ $tonePath }}` — {{ if $toneOK }}present ✓{{ else }}absent (owned by **Support: reply to user**){{ end }}
+- `{{ $resourcesPath }}` — {{ if $resourcesOK }}present ✓{{ else }}absent (owned by **Support: investigate**){{ end }}
+
+{{ if not (and $toneOK $resourcesOK) -}}
+Open `mitto_ui_options` (`timeout_seconds: {{ $timeout }}`) titled
+"Add optional playbook fragments now?" with a short description explaining
+that these are optional (the owner prompts will ask for them lazily if
+skipped now) and these choices:
+- **Skip both** — the default. Send a `mitto_ui_notify` (info) reminding
+  the user that `tone.md` / `resources.md` can be added later by running
+  **Support: reply to user** / **Support: investigate** on any bead in
+  this channel (their owner-ask steps will fire the first time each is
+  missing).
+{{ if not $toneOK -}}
+- **Add `tone.md` only** — invoke the reply-to-user owner-ask below.
+{{ end -}}
+{{ if not $resourcesOK -}}
+- **Add `resources.md` only** — invoke the investigate owner-ask below.
+{{ end -}}
+{{ if and (not $toneOK) (not $resourcesOK) -}}
+- **Add both** — invoke both owner-asks below, one after the other.
+{{ end }}
+
+{{ if not $toneOK -}}
+**Optional owner-ask — `tone.md`** (only run if the user opted in above):
+{{ template "_shared/support/ask-tone" (dict "TimeoutSeconds" $timeout) }}
+{{ end -}}
+{{ if not $resourcesOK -}}
+**Optional owner-ask — `resources.md`** (only run if the user opted in above):
+{{ template "_shared/support/ask-resources" (dict "TimeoutSeconds" $timeout) }}
+{{ end -}}
+{{ else -}}
+Both optional fragments are already present — nothing to ask.
+{{ end -}}
+
+**`redirects.md`** is intentionally **not** offered here. Its owner
+(`Support: investigate`) requests it on demand the first time an
+out-of-scope question actually arrives on this channel, so proactively
+creating it would waste the user's time.
+{{- end }}
+
+After Phase 2 completes (or is skipped), proceed to the channel scope
+gate below. The scope gate re-checks `scope.md` as a safety net in case
+the file was deleted between iterations, and reads `tone.md` if it is
+present.
+{{- end -}}
+{{- /* no trailing newline */ -}}
