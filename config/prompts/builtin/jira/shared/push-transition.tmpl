@@ -13,7 +13,7 @@
   `jira issue move`, `jira issue comment add`) so callers can drop it in
   under an existing "prefer MCP tools" preamble.
 */ -}}
-If the bead is **closed** locally and the JIRA ticket is **not** already in a **terminal** status (see the terminal-status allow-list), transition JIRA to a terminal status. JIRA workflows vary per project, so look up the available transitions for this ticket and pick a transition whose **target status name** matches the terminal allow-list (`Done` / `Closed` / `Resolved` / `Cancelled`/`Canceled` / `Won't Do` / `Won't Fix`/`Wontfix` / `Duplicate`, case-insensitive, exact). Prefer `Done` when multiple terminal transitions are available.
+If the bead is **closed** locally (status `closed` — **not** `deferred`, `blocked`, or any other non-terminal local status; `deferred` is local-only and must never trigger a JIRA-side write) and the JIRA ticket is **not** already in a **terminal** status (see the terminal-status allow-list), transition JIRA to a terminal status. JIRA workflows vary per project, so look up the available transitions for this ticket and pick a transition whose **target status name** matches the terminal allow-list (`Done` / `Closed` / `Resolved` / `Cancelled`/`Canceled` / `Won't Do` / `Won't Fix`/`Wontfix` / `Duplicate`, case-insensitive, exact). Prefer `Done` when multiple terminal transitions are available.
 
 Do **not** pick a transition merely because its target `statusCategory` is `done` — deployment-pipeline statuses like `Deployed to Stage`, `Released`, or `Ready for Prod` often live in the green category but are not terminal, and transitioning there would misrepresent the ticket state.
 
