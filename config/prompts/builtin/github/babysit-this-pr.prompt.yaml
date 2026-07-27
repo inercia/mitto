@@ -225,22 +225,14 @@ prompt: |
 
   ### 3d. Merge when ready
 
-  If `reviewDecision == "APPROVED"`, all CI checks are passing, and the PR
-  is not a draft, it is ready to merge.
-  - **Interactive mode**: offer to merge —
+  {{ template "github/shared/pr-ready-to-merge" . }}
 
-    ```
-    mitto_ui_options(self_id: "{{ .Session.ID }}",
-      question: "🚀 PR #<number> (<title>) is approved with passing CI. Merge it?",
-      options: [ { label: "Yes, merge now" }, { label: "No, just notify" } ])
-    ```
+  This prompt babysits a specific PR, so the `--repo` scope for
+  `gh pr merge` is the `<owner>/<repo>` identified in Step 1. Merging
+  makes the PR **done** → next run's Step 2 sees `MERGED` and stops.
 
-    On "Yes": `gh pr merge <number> --repo <owner>/<repo> --squash` (or
-    `--merge`/`--rebase` per repo convention), then notify success. Merging
-    makes the PR **done** → next run's Step 2 sees `MERGED` and stops.
-
-  - **Silent mode**: do **not** auto-merge. Just notify (`success`) that
-    it is ready, and treat it as **actionable** (still waiting on a human).
+  In silent mode, treat a ready-but-unmerged PR as **actionable** (still
+  waiting on a human).
 
   ## Step 4 — Summary and stop decision
 

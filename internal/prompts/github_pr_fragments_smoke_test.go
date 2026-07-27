@@ -268,3 +268,39 @@ func TestSpawnRulesFragmentInlines(t *testing.T) {
 		}
 	}
 }
+
+// TestPRReadyToMergeFragmentInlines verifies that the
+// github/shared/pr-ready-to-merge fragment resolves and inlines into both
+// babysit prompts — the "approved + CI green + not draft → offer/notify"
+// block extracted from Step 3c/3d of each.
+func TestPRReadyToMergeFragmentInlines(t *testing.T) {
+	// Hallmarks unique to the fragment body.
+	const (
+		hallmarkGate          = `**all approvals** (`
+		hallmarkQuestionEmoji = "🚀 PR #<number> (<title>) is approved with passing CI. Merge it?"
+		hallmarkOnYesGh       = "run `gh pr merge <number>` with the repo scope"
+		hallmarkSilentNoMerge = "do **not** auto-merge"
+		hallmarkNotifyReady   = "🚀 PR #<number> is ready to merge"
+	)
+
+	ctx := &cel.PromptEnabledContext{
+		Session: cel.SessionContext{ID: "s", Name: "N"},
+		Args:    map[string]string{},
+	}
+
+	for _, promptName := range []string{"GitHub: babysit this PR", "GitHub: babysit my PRs"} {
+		out := renderBuiltinPromptWithFragments(t, promptName, ctx)
+		for _, needle := range []string{
+			hallmarkGate,
+			hallmarkQuestionEmoji,
+			hallmarkOnYesGh,
+			hallmarkSilentNoMerge,
+			hallmarkNotifyReady,
+		} {
+			if !strings.Contains(out, needle) {
+				t.Errorf("prompt %q: rendered output missing hallmark %q — fragment did not inline",
+					promptName, needle)
+			}
+		}
+	}
+}

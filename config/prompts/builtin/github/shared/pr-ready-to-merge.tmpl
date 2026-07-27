@@ -1,0 +1,65 @@
+{{/*
+  pr-ready-to-merge — the common "PR is approved with passing CI"
+  ready-to-merge branch for the babysit family.
+
+  A PR is ready to merge when three conditions hold simultaneously:
+
+    1. `reviewDecision == "APPROVED"`
+    2. all CI checks are passing (`statusCheckRollup` has no failing items)
+    3. the PR is not a draft (`isDraft == false`)
+
+  This block renders the same interactive-vs-silent branch used by
+  babysit-this-pr Step 3d and babysit-my-prs Step 3c. In interactive mode
+  the agent offers to merge with `mitto_ui_options`; in silent (scheduled
+  loop) mode it merely notifies and waits for a human to merge.
+
+  Consumers: github/babysit-this-pr, github/babysit-my-prs.
+
+  Merge invocation policy: the fragment prints the generic `gh pr merge
+  <number>` form and asks the agent to attach the repo-flag idiom
+  appropriate to the calling prompt (e.g. `--repo <owner>/<repo>` when
+  the PR is single-scoped, `--repo {{"{{"}} .Args.Repository {{"}}"}}` when
+  the caller has that argument) and the repo-preferred merge strategy
+  (`--squash` / `--merge` / `--rebase`). Extracting a hard-coded flag
+  here would force one caller into the other's idiom.
+
+  Usage:
+
+    {{ template "github/shared/pr-ready-to-merge" . }}
+
+  The fragment emits its own gate paragraph — do NOT precede it with
+  "If reviewDecision == APPROVED and CI passes..." prose at the call
+  site. Callers may follow the fragment with a post-merge note (e.g.
+  "next run's Step 2 sees MERGED and stops") if their loop structure
+  requires it.
+*/}}
+If the PR has **all approvals** (`reviewDecision == "APPROVED"`) **and**
+all CI checks are passing **and** it is not a draft, it is ready to
+merge.
+
+**In interactive mode**, offer to merge:
+
+```
+mitto_ui_options(self_id: "{{ .Session.ID }}",
+  question: "🚀 PR #<number> (<title>) is approved with passing CI. Merge it?",
+  options: [
+    { label: "Yes, merge now" },
+    { label: "No, just notify" }
+  ])
+```
+
+On "Yes": run `gh pr merge <number>` with the repo scope used elsewhere in
+this prompt (e.g. `--repo <owner>/<repo>` or the prompt's `--repo` flag)
+and the repo's preferred merge strategy (`--squash`, `--merge`, or
+`--rebase` — pick whichever the repo has configured as default). Then
+notify success.
+
+**In silent mode** (scheduled loop run), do **not** auto-merge — just
+notify:
+
+```
+mitto_ui_notify(self_id: "{{ .Session.ID }}",
+  title: "🚀 PR #<number> is ready to merge",
+  message: "<title> — approved with passing CI, waiting to be merged",
+  style: "success")
+```

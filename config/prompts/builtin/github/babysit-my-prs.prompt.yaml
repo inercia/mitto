@@ -151,28 +151,10 @@ prompt: |
 
   ### 3c. Ready-to-merge check
 
-  If a PR has **all approvals** (`reviewDecision == "APPROVED"`) **and** all CI
-  checks are passing **and** it is not a draft:
+  {{ template "github/shared/pr-ready-to-merge" . }}
 
-  **In interactive mode**, offer to merge:
-  ```
-  mitto_ui_options(self_id: "{{ .Session.ID }}",
-    question: "🚀 PR #<number> (<title>) is approved with passing CI. Merge it?",
-    options: [
-      { label: "Yes, merge now" },
-      { label: "No, just notify" }
-    ])
-  ```
-  If the user selects "Yes": `gh pr merge <number>{{ $repoFlag }} --merge` (or `--squash`/`--rebase`
-  based on repo settings). Then notify success.
-
-  **In scheduled mode**, just notify:
-  ```
-  mitto_ui_notify(self_id: "{{ .Session.ID }}",
-    title: "🚀 PR #<number> is ready to merge",
-    message: "<title> — approved with passing CI, waiting to be merged",
-    style: "success")
-  ```
+  This prompt targets `{{ if .Args.Repository }}{{ .Args.Repository }}{{ else }}the current folder's repo{{ end }}`,
+  so the `--repo` scope for `gh pr merge` is `{{ $repoFlag }}`.
 
   ### 3d. Unresolved review comments
 
