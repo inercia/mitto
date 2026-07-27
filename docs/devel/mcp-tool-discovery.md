@@ -131,6 +131,24 @@ server-side (`internal/mcpserver`); nothing currently uses its client side.
    `ClearMCPToolsCache` invalidation hook. Do **not** persist the LLM-fallback
    result across restarts — it is inherently less trustworthy; keep it
    in-memory only, as today.
+
+   **Restart heuristic re-verify (mitto-dza, Fix 4).** Because deterministic
+   discovery can't reach every legitimately-configured server (npm-wrapper
+   commands, `npx mcp-remote` proxies, custom binaries — see mitto-dza
+   description), a workspace whose LLM fallback contributed real tools would
+   otherwise lose them across restart until the TTL expired. The on-disk
+   `persistedMCPTools` snapshot therefore carries a `SchemaVersion` + an
+   `AnyUnreachable` flag capturing whether at least one server was unreachable
+   at persist time. On load, a snapshot flagged suspect
+   (`AnyUnreachable=true`, or `SchemaVersion < current`) is still served
+   instantly (zero flicker on turn one) **and** triggers a background async
+   re-probe (`triggerAsyncMCPToolsRefetch`, per-workspace in-flight guard, 60s
+   bounded context). On completion the manager fires
+   `MCPToolsRefreshedHook`, which the web layer wires to a
+   `prompts_changed` broadcast (reason `mcp_tools_reverified`) so
+   `enabledWhen` tool-gates re-evaluate within seconds. Trusted snapshots
+   (current schema + `AnyUnreachable=false`) short-circuit without any
+   background work.
 4. **Retire blind timed retries.** The 30s/60s/120s re-broadcast loop in
    `checkRequiredToolPatterns` (`session_ws.go:1684`) exists only because the
    LLM path is slow and unreliable. A bounded (5-10s timeout) direct MCP
