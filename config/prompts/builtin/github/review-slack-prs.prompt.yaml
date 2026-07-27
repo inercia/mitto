@@ -148,7 +148,7 @@ prompt: |
   no MCP call needed:
 
   ```
-  Existing children: {{ .Children.MCPText }}
+  Existing children: {{ Default "(none)" .Children.MCPText }}
   ```
 
   Each entry is rendered as `id (title) [acp-server]` (with an optional

@@ -38,7 +38,7 @@ prompt: |
   {{ template "_shared/session-context" . }}
 
   Available ACP servers:
-  {{ .ACP.AvailableText }}
+  {{ Default "(none)" .ACP.AvailableText }}
 
   Existing child conversations (spawned by previous runs):
   {{ .Children.MCPText }}

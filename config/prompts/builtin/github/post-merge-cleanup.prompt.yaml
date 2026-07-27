@@ -35,7 +35,7 @@ prompt: |
   opportunity becomes a **child bead**, and labels encode lifecycle.
 
   {{ template "_shared/session-context" . }}
-  Available ACP servers: {{ .ACP.AvailableText }}
+  Available ACP servers: {{ Default "(none)" .ACP.AvailableText }}
   Existing children (spawned by previous runs): {{ .Children.MCPText }}
 
   When spawning fix conversations, prefer `"coding"` or `"fast"` tagged servers.

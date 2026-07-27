@@ -31,8 +31,8 @@ target:
     issue: true
 prompt: |
   {{ template "_shared/session-context" . }}
-  Available ACP servers: `{{ .ACP.AvailableText }}`
-  Existing children: `{{ .Children.MCPText }}`
+  Available ACP servers: `{{ Default "(none)" .ACP.AvailableText }}`
+  Existing children: `{{ Default "(none)" .Children.MCPText }}`
 
   # Beads: Iterate Implementing Feature
 

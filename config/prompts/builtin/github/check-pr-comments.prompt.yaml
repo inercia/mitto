@@ -87,7 +87,7 @@ prompt: |
   Delegate the actual work to the **Address PR Comments** prompt — do **not**
   implement fixes in this conversation.
 
-  Available ACP servers: `{{ .ACP.AvailableText }}`
+  Available ACP servers: `{{ Default "(none)" .ACP.AvailableText }}`
   {{- if .Children.AllText }}
   Existing children: `{{ .Children.AllText }}`
   {{- end }}

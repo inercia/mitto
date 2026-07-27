@@ -36,7 +36,7 @@ prompt: |
   {{ template "_shared/session-context" . }}
 
   Available ACP servers:
-  {{ .ACP.AvailableText }}
+  {{ Default "(none)" .ACP.AvailableText }}
 
   When spawning new conversations to fix issues, prefer `"coding"` or `"fast"`
   tagged servers for straightforward fixes. **Never** configure spawned conversations

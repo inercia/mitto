@@ -128,7 +128,7 @@ prompt: |
   **How to delegate (requires Mitto MCP tools):**
 
   Your session ID is `{{ .Session.ID }}` — use as `self_id` for all `mitto_*` tool calls.
-  Available ACP servers: `{{ .ACP.AvailableText }}`
+  Available ACP servers: `{{ Default "(none)" .ACP.AvailableText }}`
   {{- if .Children.AllText }}
   Existing children: `{{ .Children.AllText }}`
   {{- end }}

@@ -16,7 +16,7 @@ target:
     coalesce: true
 prompt: |
   {{ template "_shared/session-context" . }}
-  Available ACP servers: `{{ .ACP.AvailableText }}`
+  Available ACP servers: `{{ Default "(none)" .ACP.AvailableText }}`
   {{- if .Children.AllText }}
   Existing children: `{{ .Children.AllText }}`
   {{- end }}
