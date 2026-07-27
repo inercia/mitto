@@ -217,11 +217,11 @@ prompt: |
 
   ### Step 5.0 — JIRA wiki markup → Markdown helper
 
-  {{ template "jira/jira2md" . }}
+  {{ template "jira/shared/jira2md" . }}
 
   ### Step 5.1 — Managed body block and JIRA → beads mappings
 
-  {{ template "jira/managed-body" . }}
+  {{ template "jira/shared/managed-body" . }}
 
   In this batch step the bead-id is `<id>` (the bead that owns the current JIRA key from the Step 4 map); the temp file is `/tmp/jira-<key>.md`. Anything a human adds **below** the `jira-sync:end` marker is local content and must survive future syncs.
 
@@ -256,7 +256,7 @@ prompt: |
 
   - **Status reflection** (conservative — see Guidelines "Terminal status"): if the JIRA ticket is in a **terminal** status and the bead is still open, close it: `bd close <id> --reason "Closed in JIRA (<status>)"`. (In interactive mode you may confirm first.)
 
-    {{ template "jira/terminal-status" . }}
+    {{ template "jira/shared/terminal-status" . }}
 
     When the status name is not on the allow-list, note that the current status is already mirrored into the managed block of the bead body by the Step 5B update path, so a human sees the current JIRA state without an automated close.
 
@@ -264,7 +264,7 @@ prompt: |
 
   **C. Mirror new comments** (both create and update paths):
 
-  {{ template "jira/mirror-comments-in" . }}
+  {{ template "jira/shared/mirror-comments-in" . }}
 
   In this batch step, `<bead-id>` is `<id>` (the bead that owns the current JIRA key from the Step 4 map).
 
@@ -329,7 +329,7 @@ prompt: |
 
   ### Step 8A — Close JIRA when the bead is closed locally
 
-  {{ template "jira/push-transition" . }}
+  {{ template "jira/shared/push-transition" . }}
 
   In this batch step, `<bead-id>` is `<id>` (the bead that owns the current JIRA key from the Step 4 map).
 
@@ -339,7 +339,7 @@ prompt: |
 
   Load the bead's comments (e.g. `bd comments list <id> --json` — adapt to whichever `bd` subcommand exposes comments as JSON). Then:
 
-  {{ template "jira/mirror-comments-out" . }}
+  {{ template "jira/shared/mirror-comments-out" . }}
 
   In this batch step, `<bead-id>` is `<id>` (the bead that owns the current JIRA key from the Step 4 map).
   {{- end }}

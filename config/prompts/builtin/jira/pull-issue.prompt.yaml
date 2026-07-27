@@ -74,7 +74,7 @@ prompt: |
 
   ## Step 3 — JIRA wiki markup → Markdown helper
 
-  {{ template "jira/jira2md" . }}
+  {{ template "jira/shared/jira2md" . }}
 
   ## Step 4 — Detect whether anything actually changed
 
@@ -85,7 +85,7 @@ prompt: |
 
   ## Step 5 — Update the bead body (preserve local edits)
 
-  {{ template "jira/managed-body" . }}
+  {{ template "jira/shared/managed-body" . }}
 
   Apply the update:
 
@@ -98,7 +98,7 @@ prompt: |
 
   ## Step 6 — Mirror new JIRA comments
 
-  {{ template "jira/mirror-comments-in" . }}
+  {{ template "jira/shared/mirror-comments-in" . }}
 
   In this prompt, `<bead-id>` is `{{ $target }}`.
 
@@ -112,7 +112,7 @@ prompt: |
 
   (In interactive mode you may confirm first with `mitto_ui_options`.)
 
-  {{ template "jira/terminal-status" . }}
+  {{ template "jira/shared/terminal-status" . }}
 
   When the status name is not on the allow-list, note that the current status is already mirrored into the managed block by Step 5 so a human sees the JIRA state without an automated close.
 

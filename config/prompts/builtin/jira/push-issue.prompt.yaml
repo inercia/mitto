@@ -75,7 +75,7 @@ prompt: |
 
   ## Step 3 — Close JIRA when the bead is closed locally
 
-  {{ template "jira/push-transition" . }}
+  {{ template "jira/shared/push-transition" . }}
 
   In this prompt, `<bead-id>` is `{{ $target }}`.
 
@@ -83,7 +83,7 @@ prompt: |
 
   Load the bead's comments from Step 1, then:
 
-  {{ template "jira/mirror-comments-out" . }}
+  {{ template "jira/shared/mirror-comments-out" . }}
 
   In this prompt, `<bead-id>` is `{{ $target }}`.
 
