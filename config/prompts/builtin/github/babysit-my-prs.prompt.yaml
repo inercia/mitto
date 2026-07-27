@@ -69,31 +69,15 @@ prompt: |
   {{- end }}
 
   ## Step 1 — Identify the repository
+
+  {{ template "github/shared/identify-repository" . }}
   {{- if .Args.Repository }}
-
-  A target repository was supplied: **`{{ .Args.Repository }}`**. Every `gh`
-  command in this prompt already targets it via `--repo {{ .Args.Repository }}`,
-  so you do not need to be inside that repository's checkout.
-
-  ```bash
-  gh repo view {{ .Args.Repository }} --json nameWithOwner,defaultBranchRef -q '.nameWithOwner + " (default: " + .defaultBranchRef.name + ")"'
-  ```
 
   **Local git operations** (the rebase in Step 3a) still need a local clone of
   the target repo. If the current folder is already a checkout of
   `{{ .Args.Repository }}`, use it; otherwise clone it on demand into a temp dir
   (`gh repo clone {{ .Args.Repository }} "$(mktemp -d)"`) and run the git
   commands there.
-  {{- else }}
-
-  No repository was supplied, so operate on the repository of the **current
-  folder** where this prompt runs.
-
-  ```bash
-  git remote -v
-  git rev-parse --show-toplevel
-  gh repo view --json nameWithOwner,defaultBranchRef -q '.nameWithOwner + " (default: " + .defaultBranchRef.name + ")"'
-  ```
   {{- end }}
 
   If `gh` is not authenticated (`gh auth status` fails), inform the user and stop.

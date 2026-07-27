@@ -304,3 +304,64 @@ func TestPRReadyToMergeFragmentInlines(t *testing.T) {
 		}
 	}
 }
+
+// TestIdentifyRepositoryFragmentInlines verifies that the
+// github/shared/identify-repository fragment resolves and inlines into both
+// consuming prompts (babysit-my-prs, babysit-contributions). Exercises both
+// branches by rendering with/without `.Args.Repository`.
+func TestIdentifyRepositoryFragmentInlines(t *testing.T) {
+	// Hallmarks unique to the fragment body, per branch.
+	const (
+		// .Args.Repository == "" branch (current folder path)
+		hallmarkFolderBranch    = "operate on the repository of the **current"
+		hallmarkGitRemote       = "git remote -v"
+		hallmarkGitRevParse     = "git rev-parse --show-toplevel"
+		hallmarkGhRepoViewLocal = "gh repo view --json nameWithOwner"
+
+		// .Args.Repository != "" branch (repo-flag path)
+		hallmarkTargetSupplied = "A target repository was supplied"
+		hallmarkRepoFlagRepo   = "already targets it via `--repo my-org/my-repo`"
+		hallmarkGhRepoViewArg  = "gh repo view my-org/my-repo --json nameWithOwner"
+	)
+
+	consumers := []string{"GitHub: babysit my PRs", "GitHub: babysit contributions"}
+
+	// Branch A: no Repository arg — current-folder path.
+	ctxNoRepo := &cel.PromptEnabledContext{
+		Session: cel.SessionContext{ID: "s", Name: "N"},
+		Args:    map[string]string{},
+	}
+	for _, promptName := range consumers {
+		out := renderBuiltinPromptWithFragments(t, promptName, ctxNoRepo)
+		for _, needle := range []string{
+			hallmarkFolderBranch,
+			hallmarkGitRemote,
+			hallmarkGitRevParse,
+			hallmarkGhRepoViewLocal,
+		} {
+			if !strings.Contains(out, needle) {
+				t.Errorf("prompt %q (no Repository arg): missing hallmark %q — fragment did not inline current-folder branch",
+					promptName, needle)
+			}
+		}
+	}
+
+	// Branch B: Repository arg present — --repo path.
+	ctxWithRepo := &cel.PromptEnabledContext{
+		Session: cel.SessionContext{ID: "s", Name: "N"},
+		Args:    map[string]string{"Repository": "my-org/my-repo"},
+	}
+	for _, promptName := range consumers {
+		out := renderBuiltinPromptWithFragments(t, promptName, ctxWithRepo)
+		for _, needle := range []string{
+			hallmarkTargetSupplied,
+			hallmarkRepoFlagRepo,
+			hallmarkGhRepoViewArg,
+		} {
+			if !strings.Contains(out, needle) {
+				t.Errorf("prompt %q (Repository=my-org/my-repo): missing hallmark %q — fragment did not inline --repo branch",
+					promptName, needle)
+			}
+		}
+	}
+}
