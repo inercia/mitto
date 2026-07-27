@@ -81,10 +81,7 @@ prompt: |
 
   For each selected bead, load its full state and understand what it really requires:
 
-  ```bash
-  bd show <bead-id> --long --json     # full description, acceptance, design, notes, metadata
-  bd dep tree <bead-id>               # blockers and what it blocks
-  ```
+  {{ template "beads-issues/shared/load-context-min" "<bead-id>" }}
 
   Then investigate the **actual codebase** so the plan is grounded in reality — find the files,
   functions, types, and existing patterns the work will touch (use your code-search and file-reading

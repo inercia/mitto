@@ -37,10 +37,7 @@ prompt: |
 
   For the selected bead, run:
 
-  ```bash
-  bd show <bead-id> --long --json     # description, acceptance, design, assignee, metadata
-  bd dep tree <bead-id>               # blockers and dependents
-  ```
+  {{ template "beads-issues/shared/load-context-min" "<bead-id>" }}
 
   Also run locally to gather implementation evidence:
 

@@ -30,10 +30,7 @@ prompt: |
 
   For **each** in-progress bead, fetch its full details:
 
-  ```bash
-  bd show <bead-id> --long --json     # description, acceptance, design, assignee, metadata
-  bd dep tree <bead-id>               # blockers and dependents
-  ```
+  {{ template "beads-issues/shared/load-context-min" "<bead-id>" }}
 
   Also run locally (once, shared across all beads) to cross-reference implementation evidence:
 

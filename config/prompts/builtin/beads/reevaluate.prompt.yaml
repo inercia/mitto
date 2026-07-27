@@ -39,10 +39,7 @@ prompt: |
   For any bead whose scope, blockers, or rationale is unclear, fetch its full detail and
   dependency tree (do this for the beads that matter — you do not need every field of every bead):
 
-  ```bash
-  bd show <bead-id> --long --json     # full description, acceptance, design, metadata
-  bd dep tree <bead-id>               # blockers and what it blocks
-  ```
+  {{ template "beads-issues/shared/load-context-min" "<bead-id>" }}
 
   Optionally cross-reference real implementation progress so importance reflects reality:
 

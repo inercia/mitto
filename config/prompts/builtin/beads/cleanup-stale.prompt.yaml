@@ -33,10 +33,7 @@ prompt: |
 
   For candidate beads, fetch full detail so your reasoning is grounded:
 
-  ```bash
-  bd show <bead-id> --long --json     # description, acceptance, design, metadata, timestamps
-  bd dep tree <bead-id>               # blockers and what it blocks
-  ```
+  {{ template "beads-issues/shared/load-context-min" "<bead-id>" }}
 
   Cross-reference real implementation progress to detect work that is already finished:
 

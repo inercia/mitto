@@ -134,6 +134,92 @@ func TestLoadBeadContextFragmentRenders(t *testing.T) {
 	}
 }
 
+// TestLoadBeadContextMinFragmentRenders is a smoke test for the
+// beads-issues/shared/load-context-min fragment: renders each of the callers
+// that adopted the 2-line loader and asserts (a) both bd hallmarks appear
+// and (b) the target-id substitution wins (both the `<bead-id>` literal
+// placeholder path and the `$target` runtime path). A regression that
+// silently drops the fragment or breaks the argument passthrough is caught.
+func TestLoadBeadContextMinFragmentRenders(t *testing.T) {
+	prev := CurrentFragments()
+	t.Cleanup(func() { SetCurrentFragments(prev) })
+
+	builtinDir := "../../config/prompts/builtin"
+	reg, loadErrs, err := LoadFragmentsFromDir(builtinDir)
+	if err != nil {
+		t.Fatalf("LoadFragmentsFromDir(builtin): %v", err)
+	}
+	if len(loadErrs) != 0 {
+		t.Fatalf("LoadFragmentsFromDir(builtin) per-file errors: %+v", loadErrs)
+	}
+	SetCurrentFragments(reg)
+
+	list, err := LoadPromptsFromDir(builtinDir)
+	if err != nil {
+		t.Fatalf("LoadPromptsFromDir(builtin): %v", err)
+	}
+	byName := map[string]string{}
+	for _, p := range list {
+		byName[p.Name] = p.Content
+	}
+
+	// Callers that inline `<bead-id>` literally (no target resolution).
+	literalConsumers := []string{
+		"Cleanup stale issues",
+		"Reevaluate all issues",
+		"Refine issue implementation details",
+		"Status ALL in-progress",
+		"Status ONE in-progress",
+	}
+	litCtx := &cel.PromptEnabledContext{
+		Session: cel.SessionContext{ID: "s", Name: "N", HasMessages: true},
+	}
+	litFuncs := cel.BuildTemplateFuncMap(litCtx)
+	for _, name := range literalConsumers {
+		body, ok := byName[name]
+		if !ok {
+			t.Errorf("prompt %q not found in builtin corpus", name)
+			continue
+		}
+		out, err := RenderPromptTemplate(name, body, litCtx, litFuncs)
+		if err != nil {
+			t.Errorf("render %q: %v", name, err)
+			continue
+		}
+		for _, hallmark := range []string{
+			"bd show <bead-id> --long --json",
+			"bd dep tree <bead-id>",
+		} {
+			if !strings.Contains(out, hallmark) {
+				t.Errorf("prompt %q: missing hallmark %q — load-context-min did not inline", name, hallmark)
+			}
+		}
+	}
+
+	// Caller that substitutes `$target` from Session.BeadsIssue.
+	targetCtx := &cel.PromptEnabledContext{
+		Session: cel.SessionContext{ID: "s", Name: "N", HasMessages: true, BeadsIssue: "mitto-abc", HasBeadsIssue: true},
+		Args:    map[string]string{"IssueID": "mitto-abc"},
+	}
+	targetFuncs := cel.BuildTemplateFuncMap(targetCtx)
+	body, ok := byName["Show status"]
+	if !ok {
+		t.Fatalf("prompt \"Show status\" not found in builtin corpus")
+	}
+	out, err := RenderPromptTemplate("Show status", body, targetCtx, targetFuncs)
+	if err != nil {
+		t.Fatalf("render \"Show status\": %v", err)
+	}
+	for _, hallmark := range []string{
+		"bd show mitto-abc --long --json",
+		"bd dep tree mitto-abc",
+	} {
+		if !strings.Contains(out, hallmark) {
+			t.Errorf("prompt \"Show status\": missing hallmark %q — load-context-min did not substitute $target", hallmark)
+		}
+	}
+}
+
 // TestTargetBeadHeaderFragmentRenders is a smoke test for the flexible
 // beads-issues/shared/target-bead-header fragment: renders each Pattern A consumer
 // in BOTH branches (linked bead + no linked bead) and asserts the

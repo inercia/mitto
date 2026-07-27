@@ -1,0 +1,25 @@
+{{/*
+  beads-issues/load-context-min — the minimal 2-command bead loader used by
+  prompts that only need the bead's own description and its dependency edges
+  (no children, no prior comments). This is the smaller sibling of
+  `beads-issues/shared/load-context` (which is the 4-command superset used by
+  prompts that also need children and prior comments, such as assess /
+  discuss / investigate).
+
+  The template argument (`.` inside the fragment) is the target bead ID as a
+  plain string. Callers pass either a hardcoded `<bead-id>` placeholder or a
+  resolved `$target` / `.Args.IssueID`:
+
+      {{ template "beads-issues/shared/load-context-min" "<bead-id>" }}
+      {{ template "beads-issues/shared/load-context-min" $target }}
+      {{ template "beads-issues/shared/load-context-min" .Args.IssueID }}
+
+  The trailing comments on the two bd commands are cosmetic and intentionally
+  match the pre-refactor phrasing seen in the majority of callers; consumers
+  that historically used a slightly different noun list (e.g. "notes",
+  "metadata, timestamps") absorb the drift silently.
+*/}}
+```bash
+bd show {{ . }} --long --json     # description, acceptance, design, metadata
+bd dep tree {{ . }}               # blockers and what it blocks
+```
