@@ -80,7 +80,7 @@ prompt: |
   7. Commit your work — but only if you actually changed files this iteration.
      Write a concise, conventional commit message describing this increment.
 
-     {{ template "git/safe-stage" . }}
+     {{ template "git/shared/safe-stage" . }}
   {{- end }}
 
   Once complete, verify against original problem description.

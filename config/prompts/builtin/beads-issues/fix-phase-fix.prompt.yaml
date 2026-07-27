@@ -130,7 +130,7 @@ prompt: |
   tree (per the concurrent-loop stash-reset gotcha), and a wildcard stage sweeps
   them into the fix commit.
 
-  {{ template "git/safe-stage" . }}
+  {{ template "git/shared/safe-stage" . }}
 
   ```bash
   git add <path1> <path2> ...      # only the files YOU touched for this fix

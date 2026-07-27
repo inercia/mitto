@@ -11,8 +11,8 @@ import (
 // extraction (commit-scoped, commit-all, safe-stage): it loads the builtin
 // fragment registry, renders each consuming prompt, and asserts that hallmark
 // substrings from the referenced fragment(s) appear in the rendered output.
-// This proves the {{ template "git/..." . }} calls actually resolved and
-// inlined their bodies.
+// This proves the {{ template "git/shared/..." . }} calls actually resolved
+// and inlined their bodies.
 func TestGitFragmentsRenderCorrectly(t *testing.T) {
 	prev := CurrentFragments()
 	t.Cleanup(func() { SetCurrentFragments(prev) })
@@ -36,11 +36,11 @@ func TestGitFragmentsRenderCorrectly(t *testing.T) {
 	// paraphrase locally, so their presence in the rendered output means the
 	// fragment inlined (rather than the caller having its own copy).
 	const (
-		hallmarkSafeStage       = "`git add -A`, `git add .`, or"              // from git/safe-stage
-		hallmarkCommitScoped    = "Ignoring (not part of this"                 // from git/commit-scoped
-		hallmarkCommitAll       = "first message in this conversation"         // from git/commit-all
-		hallmarkIdentifyRemote  = "git symbolic-ref refs/remotes/origin/HEAD"  // from git/identify-remote-branch
-		hallmarkCheckBehindBase = "git rev-list --count HEAD..<target-remote>" // from git/check-behind-base
+		hallmarkSafeStage       = "`git add -A`, `git add .`, or"              // from git/shared/safe-stage
+		hallmarkCommitScoped    = "Ignoring (not part of this"                 // from git/shared/commit-scoped
+		hallmarkCommitAll       = "first message in this conversation"         // from git/shared/commit-all
+		hallmarkIdentifyRemote  = "git symbolic-ref refs/remotes/origin/HEAD"  // from git/shared/identify-remote-branch
+		hallmarkCheckBehindBase = "git rev-list --count HEAD..<target-remote>" // from git/shared/check-behind-base
 	)
 
 	// Two contexts: with and without HasMessages, so we exercise both branches

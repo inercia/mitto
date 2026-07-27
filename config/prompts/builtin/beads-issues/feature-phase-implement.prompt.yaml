@@ -102,7 +102,7 @@ prompt: |
   Then commit the increment as a **single, focused commit** using the project's commit
   conventions and reference the bead ID in the message.
 
-  {{ template "git/safe-stage" . }}
+  {{ template "git/shared/safe-stage" . }}
 
   ```bash
   git add <file> ...

@@ -36,7 +36,7 @@ prompt: |
     build/test output yourself.
   - **Commit** your fixes as follows:
 
-    {{ template "git/safe-stage" . }}
+    {{ template "git/shared/safe-stage" . }}
   - If an error is genuinely ambiguous or underspecified, do **not** guess — notify
     what's blocked and stop, rather than asking.
   {{- else }}

@@ -218,14 +218,14 @@ prompt: |
   the branch is current. Missing base commits can re-break the exact issue you
   just fixed, producing green local checks and red CI on push.
 
-  {{ template "git/check-behind-base" . }}
+  {{ template "git/shared/check-behind-base" . }}
 
   ### 8. Commit and Push
   {{- if and .Session.IsLoop (not .Session.IsLoopForced) }}
 
   In scheduled mode: **commit** your fixes.
 
-  {{ template "git/safe-stage" . }}
+  {{ template "git/shared/safe-stage" . }}
 
   If you fixed in a temporary worktree (dirty checkout), commit there and report the
   worktree/branch. When beads is in use, **close** the fixed failure bead and append a run

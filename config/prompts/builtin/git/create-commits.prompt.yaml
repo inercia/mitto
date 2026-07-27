@@ -55,9 +55,9 @@ prompt: |
   ### 2. Analyze Changes
 
   {{ if .Session.HasMessages -}}
-  {{ template "git/commit-scoped" . }}
+  {{ template "git/shared/commit-scoped" . }}
   {{- else -}}
-  {{ template "git/commit-all" . }}
+  {{ template "git/shared/commit-all" . }}
   {{- end }}
 
   ### 3. Propose Commits

@@ -36,11 +36,11 @@ prompt: |
 
   ### 3. Identify Target Remote and Branch
 
-  {{ template "git/identify-remote-branch" . }}
+  {{ template "git/shared/identify-remote-branch" . }}
 
   ### 4. Check if Rebase Needed
 
-  {{ template "git/check-behind-base" . }}
+  {{ template "git/shared/check-behind-base" . }}
 
   ### 5. Create or Update PR
 

@@ -182,7 +182,7 @@ prompt: |
 
   ### 8. Identify Push Remote
 
-  {{ template "git/identify-remote-branch" . }}
+  {{ template "git/shared/identify-remote-branch" . }}
 
   In fork workflows: push to `origin` (your fork), not `upstream`. Verify via PR's `head.repo.full_name`.
 
@@ -192,7 +192,7 @@ prompt: |
   the branch is current. Missing base commits can re-break what you just
   addressed, and CI will fail on the exact issue you thought you resolved.
 
-  {{ template "git/check-behind-base" . }}
+  {{ template "git/shared/check-behind-base" . }}
 
   ### 11. Push and Request Re-review
 

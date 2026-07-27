@@ -628,13 +628,14 @@ table before restating shared content inline.
 **Layout convention.** Fragments whose primary consumer is one family live
 under `<family>/shared/<name>.tmpl` (e.g. `github/shared/pr-comments.tmpl`,
 `support/shared/slack-tools.tmpl`, `beads-issues/shared/target-bead-header.tmpl`,
-`jira/shared/managed-body.tmpl`). A small number of cross-family borrowers of
-such a fragment is allowed (same pattern as `git/safe-stage.tmpl`, which is
-used by ci/, misc/, beads-issues/, loop/, and github/). Fragments with **no**
-clear owner — consumed cross-family — live under the top-level `_shared/`
-prefix (`_shared/<name>.tmpl`). This layout keeps family-scoped shared bodies
-grouped with their owning consumers while preserving `_shared/` for the
-truly-cross-cutting handful (session-context, interaction-mode, etc.).
+`jira/shared/managed-body.tmpl`, `git/shared/safe-stage.tmpl`). A small number
+of cross-family borrowers of such a fragment is allowed (e.g.
+`git/shared/safe-stage.tmpl` is used by ci/, misc/, beads-issues/, loop/, and
+github/ in addition to git/). Fragments with **no** clear owner — consumed
+cross-family — live under the top-level `_shared/` prefix (`_shared/<name>.tmpl`).
+This layout keeps family-scoped shared bodies grouped with their owning
+consumers while preserving `_shared/` for the truly-cross-cutting handful
+(session-context, interaction-mode, etc.).
 
 **Pilot reference.** `config/prompts/builtin/github/shared/pr-comments.tmpl`
 (from `mitto-g61.8`) remains the reference example of full-context sub-template

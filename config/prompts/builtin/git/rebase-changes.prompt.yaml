@@ -26,7 +26,7 @@ prompt: |
 
   ### 2. Identify Target Remote and Branch
 
-  {{ template "git/identify-remote-branch" . }}
+  {{ template "git/shared/identify-remote-branch" . }}
 
   ### 3. Fetch and Preview
 

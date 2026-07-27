@@ -34,7 +34,7 @@ prompt: |
     progress each run.
   - **Commit** completed increments as follows:
 
-    {{ template "git/safe-stage" . }}
+    {{ template "git/shared/safe-stage" . }}
   - If you become genuinely blocked (ambiguous requirement, missing decision), do
     **not** guess — notify what's blocked and stop iterating
     (`mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", loop_enabled: false)`).
