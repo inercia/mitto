@@ -741,6 +741,32 @@ describe("canSave with boolean params", () => {
     expect(canSave(parameters, {})).toBe(false);
     expect(canSave(parameters, { Note: "hello" })).toBe(true);
   });
+
+  // mitto-vlg acceptance criterion #3: "Empty listing — value resolves to \"\";
+  // dialog blocks submission only when required:true AND no default provided."
+  test("a required filename param blocks Save until a value is chosen", () => {
+    const parameters = [{ name: "F", type: "filename", required: true }];
+    expect(canSave(parameters, {})).toBe(false);
+    expect(canSave(parameters, { F: "" })).toBe(false);
+    expect(canSave(parameters, { F: "   " })).toBe(false);
+    expect(canSave(parameters, { F: "docs/a.md" })).toBe(true);
+  });
+
+  test("a required filename param with a seeded default does NOT block Save", () => {
+    const parameters = [
+      { name: "F", type: "filename", required: true, default: "docs/a.md" },
+    ];
+    // Mirrors dialog opening with initialValues seeded from the parameter's
+    // default — required + default is a satisfied requirement out of the box.
+    const seeded = seedValues({ F: "docs/a.md" });
+    expect(canSave(parameters, seeded)).toBe(true);
+  });
+
+  test("an optional filename param never blocks Save (even when empty)", () => {
+    const parameters = [{ name: "F", type: "filename", required: false }];
+    expect(canSave(parameters, {})).toBe(true);
+    expect(canSave(parameters, { F: "" })).toBe(true);
+  });
 });
 
 // =============================================================================
@@ -871,7 +897,9 @@ describe("text render branch (multiLine)", () => {
 
 describe("text render branch (options dropdown)", () => {
   test("renders a select when options is a non-empty array", () => {
-    const result = renderTextControl({ options: ["Simplification", "Cleanup"] });
+    const result = renderTextControl({
+      options: ["Simplification", "Cleanup"],
+    });
     expect(result.kind).toBe("select");
     expect(result.options).toEqual(["Simplification", "Cleanup"]);
   });
@@ -1002,9 +1030,7 @@ describe("prompts render branch", () => {
 function renderFilenameControl({ param, filesByParam, loadingFilesByParam }) {
   const name = param.name;
   const files = (filesByParam && filesByParam[name]) || [];
-  const loadingFiles = !!(
-    loadingFilesByParam && loadingFilesByParam[name]
-  );
+  const loadingFiles = !!(loadingFilesByParam && loadingFilesByParam[name]);
   if (loadingFiles) {
     return { kind: "spinner" };
   }
