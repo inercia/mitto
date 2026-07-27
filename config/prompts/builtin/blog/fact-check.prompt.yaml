@@ -1,0 +1,142 @@
+icon: shield-check
+name: 'Blog: fact-check'
+menus: beadsIssues
+parameters:
+  - name: IssueID
+    type: beadsId
+    required: false
+    description: The bead whose blog draft to fact-check
+  - name: Folder
+    type: text
+    default: blog/posts
+    required: false
+    description: Folder where blog post files live (repo-relative)
+description: Blog — verify facts, working links, versions, and dates in a `blog`/`draft` post; clears `needs-fact-check` on a clean pass and promotes to `ready` if no other `needs-*` label remains
+backgroundColor: '#C8E6C9'
+group: Blog
+enabledWhen: CommandExists("bd") && DirExists(".beads") && "blog" in Item.Labels && "draft" in Item.Labels
+target:
+  reuse:
+    issue: true
+    coalesce: true
+preferredModels:
+  - modelTag: Coding
+prompt: |
+  {{ template "_shared/session-context" . }}
+
+  # Blog: Fact-Check — verify claims, links, versions
+
+  This prompt takes a `blog`/`draft`-labelled bead, loads the post it points
+  at, and verifies **every checkable claim** in it: quoted numbers, product
+  versions, feature availability, dates, direct-quote wording, and — crucially
+  — that every external URL resolves.
+
+  ## Step 1 — Locate the post file
+
+  {{ template "blog/shared/locate-post-file" . }}
+
+  ## Step 2 — Load the audience yardstick
+
+  So the reviewer's judgement of "which claims need a citation for THIS
+  audience" is grounded in the blog's own voice guide:
+
+  {{ template "blog/shared/blog-config-fragment"
+       (dict "Name"        "audience"
+             "DefaultText" "Expert practitioners: engineers, technical leads, and hands-on architects. Assume familiarity with the domain; do not hand-hold on basics.") }}
+
+  ## Step 3 — Read the draft
+
+  ```bash
+  cat "$post_abs"
+  ```
+
+  ## Step 4 — Extract and verify
+
+  Enumerate every **checkable** item into a working list. For this audience,
+  skip trivia; focus on claims whose failure would embarrass the post:
+
+  - **Product / library versions** — the specific version the post says a
+    behaviour appeared in; the current major/latest release date.
+  - **Benchmark numbers, throughput claims, cost figures.**
+  - **Direct quotes** attributed to a named source — verify wording verbatim.
+  - **Feature availability claims** ("X supports Y") — check upstream docs.
+  - **Dates and timelines** — "since 2019", "released last month", etc.
+  - **External URLs** — every link in the post must resolve to a live page
+    with content matching what the post says it links to. Redirects that
+    change semantics count as failures. Prefer permalinks over branch links
+    for code refs.
+
+  For URL verification, batch-fetch:
+
+  ```bash
+  # Extract URLs from the draft; check each with a HEAD (fall back to GET).
+  grep -oE 'https?://[^ )\]]+' "$post_abs" | sort -u > /tmp/{{ .Args.IssueID }}-urls.txt
+  while IFS= read -r url; do
+    status=$(curl -sI -o /dev/null -w '%{http_code}' -L --max-time 10 "$url" 2>/dev/null \
+             || curl -s -o /dev/null -w '%{http_code}' -L --max-time 10 "$url" 2>/dev/null \
+             || echo "000")
+    printf '%s\t%s\n' "$status" "$url"
+  done < /tmp/{{ .Args.IssueID }}-urls.txt > /tmp/{{ .Args.IssueID }}-urlcheck.txt
+  cat /tmp/{{ .Args.IssueID }}-urlcheck.txt
+  ```
+
+  Anything not in `2xx`/`3xx` is a broken link. Do **not** silently drop
+  broken URLs from the post; record them so the polish pass can fix them.
+
+  For factual claims, use web search / doc lookup as needed (do not fabricate
+  citations). If you cannot verify a claim from a primary source within
+  reasonable effort, log it as **unverified** rather than "verified".
+
+  ## Step 5 — Record findings and adjust labels
+
+  Compose a Markdown findings block:
+
+  ```
+  ## Fact-check — $(date -u +%Y-%m-%dT%H:%MZ)
+
+  ### Verified (OK)
+  - "<claim>" — <source URL / doc reference>
+
+  ### Corrections needed
+  - "<claim>" — should be <corrected value>; source: <URL>
+
+  ### Broken / redirected URLs
+  - <status> <url> — <suggested replacement or "remove">
+
+  ### Unverified (needs a citation or the claim should be removed)
+  - "<claim>"
+  ```
+
+  Write and post:
+
+  ```bash
+  fc_file=$(mktemp)
+  cat > "$fc_file" <<'MITTO_FC'
+  <composed findings block>
+  MITTO_FC
+  bd comment {{ .Args.IssueID }} --file "$fc_file"
+  rm -f "$fc_file"
+  ```
+
+  Then adjust labels per the finish semantics:
+
+  - **Clean pass** — no corrections needed, no broken URLs, nothing unverified:
+    ```bash
+    bd update {{ .Args.IssueID }} --remove-label needs-fact-check
+    # Promote to ready ONLY if no other needs-* label remains.
+    remaining=$(bd show {{ .Args.IssueID }} --json | jq -r '.[0].labels[]' | grep -c '^needs-' || true)
+    if [[ "$remaining" -eq 0 ]]; then
+      bd update {{ .Args.IssueID }} --add-label ready
+    fi
+    ```
+  - **Findings present**:
+    ```bash
+    # Keep needs-fact-check; ensure ready is off so the post isn't picked
+    # up as publishable.
+    bd update {{ .Args.IssueID }} --remove-label ready
+    ```
+
+  ## Step 6 — Notify
+
+  Report via `mitto_ui_notify_mitto` — title `"Fact-check complete"`, message
+  `"{{ .Args.IssueID }} · <N corrections / M broken links>"` or `"<clean pass>"`.

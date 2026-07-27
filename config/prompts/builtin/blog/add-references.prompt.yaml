@@ -1,0 +1,121 @@
+icon: link
+name: 'Blog: add references'
+menus: beadsIssues
+parameters:
+  - name: IssueID
+    type: beadsId
+    required: false
+    description: The bead whose blog draft to audit for missing references
+  - name: Folder
+    type: text
+    default: blog/posts
+    required: false
+    description: Folder where blog post files live (repo-relative)
+description: Blog — audit a `blog`/`draft` post for missing citations; classifies each as REQUIRED (direct claim) or RECOMMENDED (further reading), and flags the bead for fact-check when any REQUIRED link is absent
+backgroundColor: '#C8E6C9'
+group: Blog
+enabledWhen: CommandExists("bd") && DirExists(".beads") && "blog" in Item.Labels && "draft" in Item.Labels
+target:
+  reuse:
+    issue: true
+    coalesce: true
+preferredModels:
+  - modelTag: Coding
+prompt: |
+  {{ template "_shared/session-context" . }}
+
+  # Blog: Add References — missing-link audit
+
+  This prompt reads a `blog`/`draft`-labelled post and audits it for **missing
+  references**. Unlike `fact-check`, this pass does **not** verify existing
+  URLs; it enumerates ideas/claims that would benefit from a citation and
+  classifies each as **REQUIRED** (an unsupported direct claim that must be
+  backed) or **RECOMMENDED** (further-reading pointers that would enrich the
+  post but are not load-bearing).
+
+  ## Step 1 — Locate the post file
+
+  {{ template "blog/shared/locate-post-file" . }}
+
+  ## Step 2 — Read the draft
+
+  ```bash
+  cat "$post_abs"
+  ```
+
+  ## Step 3 — Enumerate missing references
+
+  Walk the draft top-to-bottom. For each of the categories below, list items
+  the post asserts or builds on **without a link**:
+
+  - **Direct factual claims** presented without a source — these are
+    candidates for **REQUIRED** citations. Example: "Foo v3 doubled throughput
+    over v2" with no link to a benchmark or release note.
+  - **Named prior art** — papers, blog posts, RFCs, standards, well-known
+    tools — mentioned by name but not linked. Usually **REQUIRED**.
+  - **Direct quotes / paraphrases** — text presented as coming from a named
+    person or source but without attribution URL. **REQUIRED**.
+  - **Concepts introduced without definition** — jargon or acronyms an expert
+    reader knows but that would be useful to link to canonical docs.
+    Typically **RECOMMENDED** (this audience assumes familiarity — see the
+    audience yardstick).
+  - **Adjacent topics / further reading** — related work the reader might
+    want to explore next. **RECOMMENDED**.
+
+  Classification rule of thumb:
+
+  - **REQUIRED** — the claim/quote is load-bearing for the post's argument
+    and a reader would reasonably ask "source?". Missing it is a factual gap.
+  - **RECOMMENDED** — the post reads fine without it, but adding it would
+    make the post more useful. Missing it is a nice-to-have.
+
+  When in doubt, err on the side of **RECOMMENDED**; overshooting into
+  REQUIRED will spuriously flip the bead back into `needs-fact-check`.
+
+  ## Step 4 — Record the audit and adjust labels
+
+  Compose the audit as a Markdown block:
+
+  ```
+  ## References audit — $(date -u +%Y-%m-%dT%H:%MZ)
+
+  ### REQUIRED (post cannot ship without these)
+  - "<quoted claim>" (section: ...) — needs a citation for <what>.
+    Suggested source(s): <URL / doc>.
+
+  ### RECOMMENDED (nice-to-have further reading)
+  - "<quoted mention>" (section: ...) — reader would benefit from a link to
+    <resource>.
+
+  ### Suggested link block (for the post's References/Further reading section)
+  - [<title>](<url>)
+  - [<title>](<url>)
+  ```
+
+  Post the audit as a bead comment:
+
+  ```bash
+  refs_file=$(mktemp)
+  cat > "$refs_file" <<'MITTO_REFS'
+  <composed audit block>
+  MITTO_REFS
+  bd comment {{ .Args.IssueID }} --file "$refs_file"
+  rm -f "$refs_file"
+  ```
+
+  Then adjust labels per the finish semantics:
+
+  - **Any REQUIRED item** → route back to fact-check:
+    ```bash
+    bd update {{ .Args.IssueID }} --add-label needs-fact-check
+    bd update {{ .Args.IssueID }} --remove-label ready
+    ```
+  - **Clean pass** (no REQUIRED items) or **RECOMMENDED-only findings**:
+    **do not touch labels.** RECOMMENDED items are informational; the polish
+    pass may choose to fold them in, but the post is not blocked on them.
+
+  ## Step 5 — Notify
+
+  Report via `mitto_ui_notify_mitto` — title `"References audit complete"`,
+  message `"{{ .Args.IssueID }} · <N required / M recommended>"` or
+  `"<clean pass>"`.

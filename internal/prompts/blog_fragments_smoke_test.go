@@ -187,3 +187,78 @@ func TestBlogIdeationPromptFragmentHallmarks(t *testing.T) {
 		}
 	}
 }
+
+// TestBlogReviewFamilyPromptFragmentHallmarks is the consumer-hallmark smoke
+// test for mitto-98l.3: it renders each of the three review-family blog
+// prompts (content-review, fact-check, add-references) and asserts hallmarks
+// from every `{{ template "..." . }}` call they make appear in the rendered
+// body. Modelled on TestBlogIdeationPromptFragmentHallmarks.
+func TestBlogReviewFamilyPromptFragmentHallmarks(t *testing.T) {
+	prev := CurrentFragments()
+	t.Cleanup(func() { SetCurrentFragments(prev) })
+
+	builtinDir := "../../config/prompts/builtin"
+	reg, loadErrs, err := LoadFragmentsFromDir(builtinDir)
+	if err != nil {
+		t.Fatalf("LoadFragmentsFromDir(builtin): %v", err)
+	}
+	if len(loadErrs) != 0 {
+		t.Fatalf("LoadFragmentsFromDir(builtin) per-file errors: %+v", loadErrs)
+	}
+	SetCurrentFragments(reg)
+
+	list, err := LoadPromptsFromDir(builtinDir)
+	if err != nil {
+		t.Fatalf("LoadPromptsFromDir(builtin): %v", err)
+	}
+
+	ctx := &cel.PromptEnabledContext{
+		Session: cel.SessionContext{ID: "s-test", Name: "Test"},
+		Args:    map[string]string{"IssueID": "mitto-abc.1", "Folder": "blog/posts"},
+	}
+
+	// Hallmarks: substrings unique to each fragment's own body that must
+	// appear in the rendered prompt if the {{ template "..." }} call inlined
+	// correctly. content-review and fact-check pull in the audience fragment;
+	// add-references does not.
+	wantHallmarks := map[string][]string{
+		"Blog: content review": {
+			"File: [path](path)",   // from blog/shared/locate-post-file
+			"post_abs=$post_abs",   // from blog/shared/locate-post-file (bash resolve)
+			"Expert practitioners", // from blog/shared/blog-config-fragment (audience default)
+		},
+		"Blog: fact-check": {
+			"File: [path](path)",   // from blog/shared/locate-post-file
+			"post_abs=$post_abs",   // from blog/shared/locate-post-file
+			"Expert practitioners", // from blog/shared/blog-config-fragment (audience default)
+		},
+		"Blog: add references": {
+			"File: [path](path)", // from blog/shared/locate-post-file
+			"post_abs=$post_abs", // from blog/shared/locate-post-file
+		},
+	}
+
+	byName := map[string]string{}
+	for _, p := range list {
+		byName[p.Name] = p.Content
+	}
+
+	for promptName, hallmarks := range wantHallmarks {
+		body, ok := byName[promptName]
+		if !ok {
+			t.Errorf("prompt %q not found in builtin corpus", promptName)
+			continue
+		}
+		funcs := cel.BuildTemplateFuncMap(ctx)
+		out, err := RenderPromptTemplate(promptName, body, ctx, funcs)
+		if err != nil {
+			t.Errorf("render %q: %v", promptName, err)
+			continue
+		}
+		for _, needle := range hallmarks {
+			if !strings.Contains(out, needle) {
+				t.Errorf("prompt %q: rendered output missing hallmark %q — fragment did not inline correctly", promptName, needle)
+			}
+		}
+	}
+}
