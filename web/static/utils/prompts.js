@@ -119,7 +119,7 @@ export function promptResolveAsLoop(prompt, override) {
 
 /**
  * Frontend mirror of the backend parameter-type registry.
- * Canonical source of truth: internal/config/prompt_param_types.go
+ * Canonical source of truth: internal/prompts/param_types.go
  * These two lists MUST be kept in sync — do not add types here without also
  * adding them to the Go registry, and vice versa.
  *
@@ -139,6 +139,13 @@ export function promptResolveAsLoop(prompt, override) {
  *                    boolean): no menu auto-supplies it and it never gates menu
  *                    visibility. Feeds the {{ PromptText .Args.NAME }} template
  *                    action. multiLine is not supported.
+ *   filename       — a workspace-relative file path, rendered as a dropdown of
+ *                    files under an optional `dir` (workspace-relative,
+ *                    non-recursive), optionally filtered by a `glob`
+ *                    (filepath.Match). Interactive, dialog-collected (like
+ *                    boolean/prompts): no menu auto-supplies it and it never
+ *                    gates menu visibility. Feeds the {{ ReadFile .Args.NAME }}
+ *                    template action.
  */
 export const KNOWN_PARAM_TYPES = [
   "beadsId",
@@ -151,6 +158,7 @@ export const KNOWN_PARAM_TYPES = [
   "text",
   "boolean",
   "prompts",
+  "filename",
 ];
 
 /**
@@ -168,17 +176,20 @@ export function isBooleanParam(p) {
 /**
  * Returns true if the parameter is an *interactive picker* type — i.e. one that
  * no menu can auto-supply and that must always be collected via the parameter
- * dialog. Currently: `boolean` (checkbox) and `prompts` (workspace-prompt
- * picker).
+ * dialog. Currently: `boolean` (checkbox), `prompts` (workspace-prompt picker),
+ * and `filename` (workspace-file dropdown).
  *
- * Rationale: `prompts` parameters carry the NAME of another workspace prompt.
- * No menu context has such a name in scope, so they behave like `boolean` for
- * gating purposes — never gating visibility (menuSatisfies) and always
- * included in getMissingPromptParameters regardless of `required` or the
- * menu's auto-supplied types. The dialog offers the picker unconditionally.
+ * Rationale: these parameters carry values that no menu context has in scope
+ * (a workspace-prompt name, a checkbox answer, or a workspace-relative file
+ * path). They behave like `boolean` for gating purposes — never gating menu
+ * visibility (menuSatisfies) and always included in getMissingPromptParameters
+ * regardless of `required` or the menu's auto-supplied types. The dialog
+ * offers the picker unconditionally.
  */
 export function isInteractivePickerParam(p) {
-  return p?.type === "boolean" || p?.type === "prompts";
+  return (
+    p?.type === "boolean" || p?.type === "prompts" || p?.type === "filename"
+  );
 }
 
 /**

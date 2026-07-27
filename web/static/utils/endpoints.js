@@ -125,6 +125,11 @@ export const endpoints = {
       apiUrl(`/api/workspace-prompts/${enc(name)}`) + qs(params),
   },
 
+  /** Workspace file listing — feeds the "filename" prompt parameter type. */
+  workspaceFiles: {
+    list: (params) => apiUrl("/api/workspace-files") + qs(params),
+  },
+
   /** Folder-level settings (stored in folders.json, per-user). */
   folders: {
     shortcuts: (params) => apiUrl("/api/folders/shortcuts") + qs(params),

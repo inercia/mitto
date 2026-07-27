@@ -988,3 +988,125 @@ describe("prompts render branch", () => {
     });
   });
 });
+
+// =============================================================================
+// filename render-branch logic (mitto-vlg)
+// Duplicated from ParamField in PromptParameterDialog.js — keep in sync.
+// =============================================================================
+
+/**
+ * Mirrors the filename branch of ParamField.
+ * Returns a plain descriptor so tests can assert without a real DOM.
+ *   { kind: "spinner" | "textInput" | "select", options?: Array<{value,label}> }
+ */
+function renderFilenameControl({ param, filesByParam, loadingFilesByParam }) {
+  const name = param.name;
+  const files = (filesByParam && filesByParam[name]) || [];
+  const loadingFiles = !!(
+    loadingFilesByParam && loadingFilesByParam[name]
+  );
+  if (loadingFiles) {
+    return { kind: "spinner" };
+  }
+  if (files.length === 0) {
+    return { kind: "textInput", placeholder: "Workspace-relative file path" };
+  }
+  const options = files.map((path) => ({ value: path, label: path }));
+  return { kind: "select", options };
+}
+
+describe("filename render branch", () => {
+  describe("loading state", () => {
+    test("shows spinner when this param's loading flag is true", () => {
+      const result = renderFilenameControl({
+        param: { name: "F", type: "filename" },
+        filesByParam: {},
+        loadingFilesByParam: { F: true },
+      });
+      expect(result.kind).toBe("spinner");
+    });
+
+    test("does NOT show spinner when a different param is loading", () => {
+      const result = renderFilenameControl({
+        param: { name: "F", type: "filename" },
+        filesByParam: {},
+        loadingFilesByParam: { G: true },
+      });
+      // F is not loading and has no files → text-input fallback.
+      expect(result.kind).toBe("textInput");
+    });
+  });
+
+  describe("empty / unavailable files list → text input fallback", () => {
+    test("renders text input with workspace-relative placeholder when list is empty", () => {
+      const result = renderFilenameControl({
+        param: { name: "F", type: "filename" },
+        filesByParam: { F: [] },
+        loadingFilesByParam: { F: false },
+      });
+      expect(result.kind).toBe("textInput");
+      expect(result.placeholder).toBe("Workspace-relative file path");
+    });
+
+    test("renders text input when this param has no entry in filesByParam", () => {
+      const result = renderFilenameControl({
+        param: { name: "F", type: "filename" },
+        filesByParam: { G: ["docs/g.md"] },
+        loadingFilesByParam: {},
+      });
+      expect(result.kind).toBe("textInput");
+    });
+
+    test("renders text input when filesByParam is null/undefined", () => {
+      expect(
+        renderFilenameControl({
+          param: { name: "F", type: "filename" },
+          filesByParam: null,
+          loadingFilesByParam: null,
+        }).kind,
+      ).toBe("textInput");
+      expect(
+        renderFilenameControl({
+          param: { name: "F", type: "filename" },
+          filesByParam: undefined,
+          loadingFilesByParam: undefined,
+        }).kind,
+      ).toBe("textInput");
+    });
+  });
+
+  describe("populated list → select of file paths", () => {
+    test("renders one option per file, using path as both value and label", () => {
+      const result = renderFilenameControl({
+        param: { name: "F", type: "filename" },
+        filesByParam: { F: ["docs/a.md", "docs/b.md"] },
+        loadingFilesByParam: { F: false },
+      });
+      expect(result.kind).toBe("select");
+      expect(result.options).toEqual([
+        { value: "docs/a.md", label: "docs/a.md" },
+        { value: "docs/b.md", label: "docs/b.md" },
+      ]);
+    });
+
+    test("keeps per-param isolation — file lists keyed by param name", () => {
+      const filesByParam = {
+        Alpha: ["a1.md", "a2.md"],
+        Beta: ["b1.md"],
+      };
+      const loadingFilesByParam = { Alpha: false, Beta: false };
+      const alpha = renderFilenameControl({
+        param: { name: "Alpha", type: "filename" },
+        filesByParam,
+        loadingFilesByParam,
+      });
+      const beta = renderFilenameControl({
+        param: { name: "Beta", type: "filename" },
+        filesByParam,
+        loadingFilesByParam,
+      });
+      expect(alpha.options.map((o) => o.value)).toEqual(["a1.md", "a2.md"]);
+      expect(beta.options.map((o) => o.value)).toEqual(["b1.md"]);
+    });
+  });
+});

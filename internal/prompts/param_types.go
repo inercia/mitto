@@ -2,6 +2,7 @@ package prompts
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -33,6 +34,15 @@ import (
 //     visibility. Feeds the {{ PromptText .Args.NAME }} template
 //     action. multiLine is not supported (rejected by the existing
 //     text-only check).
+//   - filename       — a workspace-relative file path, rendered as a dropdown
+//     of files under an optional Dir (workspace-relative, non-recursive),
+//     optionally filtered by a Glob (filepath.Match). Interactive,
+//     dialog-collected (like boolean/prompts): no menu auto-supplies it and
+//     it never gates menu visibility. Feeds the {{ ReadFile .Args.NAME }}
+//     template action, which enforces path safety (absolute-path reject,
+//     ".." reject, symlink-escape reject, 256 KB cap) at read time — Dir/Glob
+//     are UI dropdown hints only. multiLine/options are not supported
+//     (rejected by the existing text-only check).
 var KnownPromptParameterTypes = []string{
 	"beadsId",
 	"beadsTitle",
@@ -44,6 +54,7 @@ var KnownPromptParameterTypes = []string{
 	"text",
 	"boolean",
 	"prompts",
+	"filename",
 }
 
 // IsKnownPromptParameterType reports whether t is a recognised parameter type.
@@ -125,6 +136,40 @@ func ValidatePromptParameters(menus string, params []PromptParameter) error {
 			if param.Default != "" {
 				if _, ok := seen[param.Default]; !ok {
 					return fmt.Errorf("parameter %q: default %q is not one of the declared options", param.Name, param.Default)
+				}
+			}
+		}
+		// Dir/Glob are only meaningful for the "filename" type. Reject elsewhere
+		// to catch misconfiguration early (mirrors the multiLine/options pattern).
+		if param.Dir != "" && param.Type != "filename" {
+			return fmt.Errorf("parameter %q: dir is only valid for type \"filename\", not %q", param.Name, param.Type)
+		}
+		if param.Glob != "" && param.Type != "filename" {
+			return fmt.Errorf("parameter %q: glob is only valid for type \"filename\", not %q", param.Name, param.Type)
+		}
+		if param.Type == "filename" {
+			// Dir must be workspace-relative: no absolute paths, no ".." segments.
+			// The runtime endpoint re-checks containment against the workspace
+			// root; these guards catch obvious misconfiguration at load time.
+			if param.Dir != "" {
+				if filepath.IsAbs(param.Dir) {
+					return fmt.Errorf("parameter %q: dir must be workspace-relative, not absolute (%q)", param.Name, param.Dir)
+				}
+				clean := filepath.Clean(param.Dir)
+				if clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+					return fmt.Errorf("parameter %q: dir must not escape the workspace root (%q)", param.Name, param.Dir)
+				}
+				for _, seg := range strings.Split(param.Dir, string(filepath.Separator)) {
+					if seg == ".." {
+						return fmt.Errorf("parameter %q: dir must not contain %q segments (%q)", param.Name, "..", param.Dir)
+					}
+				}
+			}
+			// Glob compile-check: reject malformed patterns at load time so
+			// prompt files fail-fast instead of at first UI open.
+			if param.Glob != "" {
+				if _, err := filepath.Match(param.Glob, "x"); err != nil {
+					return fmt.Errorf("parameter %q: invalid glob %q: %w", param.Name, param.Glob, err)
 				}
 			}
 		}

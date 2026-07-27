@@ -168,6 +168,10 @@ describe("KNOWN_PARAM_TYPES", () => {
   test("includes prompts", () => {
     expect(KNOWN_PARAM_TYPES).toContain("prompts");
   });
+
+  test("includes filename", () => {
+    expect(KNOWN_PARAM_TYPES).toContain("filename");
+  });
 });
 
 // =============================================================================
@@ -350,6 +354,10 @@ describe("isInteractivePickerParam", () => {
 
   test("returns true for prompts", () => {
     expect(isInteractivePickerParam({ type: "prompts" })).toBe(true);
+  });
+
+  test("returns true for filename", () => {
+    expect(isInteractivePickerParam({ type: "filename" })).toBe(true);
   });
 
   test("returns false for text", () => {

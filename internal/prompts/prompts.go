@@ -357,6 +357,15 @@ type PromptParameter struct {
 	// The collected argument value is stored so the UI can skip re-asking within the
 	// same conversation. See PromptParameterCache for the configuration schema.
 	Cache *PromptParameterCache `yaml:"cache,omitempty" json:"cache,omitempty"`
+	// Dir, when set, scopes the "filename" parameter's dropdown to files under
+	// this workspace-relative directory. Empty = workspace root. Non-recursive.
+	// Only valid for type "filename"; rejected by ValidatePromptParameters
+	// elsewhere. Absolute paths and ".." segments are rejected at validation.
+	Dir string `yaml:"dir,omitempty" json:"dir,omitempty"`
+	// Glob, when set, filters candidates in Dir via filepath.Match (e.g. "*.md").
+	// Empty = all regular files. Only valid for type "filename"; validated with
+	// a filepath.Match compile-check at parse time.
+	Glob string `yaml:"glob,omitempty" json:"glob,omitempty"`
 }
 
 // PromptPreferredModel references a global model profile (Settings → Models) either

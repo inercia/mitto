@@ -2037,6 +2037,105 @@ func TestValidatePromptParameters(t *testing.T) {
 			t.Errorf("unexpected error: %v", err)
 		}
 	})
+
+	// filename param type — mitto-vlg.
+	t.Run("filename param with no dir/glob is OK", func(t *testing.T) {
+		err := ValidatePromptParameters("", []PromptParameter{{Name: "F", Type: "filename"}})
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("filename param with valid dir and glob is OK", func(t *testing.T) {
+		err := ValidatePromptParameters("", []PromptParameter{{Name: "F", Type: "filename", Dir: "docs/instructions", Glob: "*.md"}})
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("filename param is OK in any menu (never gates)", func(t *testing.T) {
+		for _, menus := range []string{"", "prompts", "conversation", "beadsIssues"} {
+			err := ValidatePromptParameters(menus, []PromptParameter{{Name: "F", Type: "filename"}})
+			if err != nil {
+				t.Errorf("menus=%q: unexpected error: %v", menus, err)
+			}
+		}
+	})
+
+	t.Run("dir on non-filename type returns error mentioning dir and filename", func(t *testing.T) {
+		err := ValidatePromptParameters("", []PromptParameter{{Name: "X", Type: "text", Dir: "docs"}})
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "dir") {
+			t.Errorf("error = %q, want it to contain 'dir'", err.Error())
+		}
+		if !strings.Contains(err.Error(), "filename") {
+			t.Errorf("error = %q, want it to contain 'filename'", err.Error())
+		}
+	})
+
+	t.Run("glob on non-filename type returns error mentioning glob and filename", func(t *testing.T) {
+		err := ValidatePromptParameters("", []PromptParameter{{Name: "X", Type: "text", Glob: "*.md"}})
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "glob") {
+			t.Errorf("error = %q, want it to contain 'glob'", err.Error())
+		}
+		if !strings.Contains(err.Error(), "filename") {
+			t.Errorf("error = %q, want it to contain 'filename'", err.Error())
+		}
+	})
+
+	t.Run("absolute dir returns error mentioning absolute", func(t *testing.T) {
+		err := ValidatePromptParameters("", []PromptParameter{{Name: "F", Type: "filename", Dir: "/etc"}})
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "absolute") {
+			t.Errorf("error = %q, want it to contain 'absolute'", err.Error())
+		}
+	})
+
+	t.Run("dir with .. segment returns error", func(t *testing.T) {
+		err := ValidatePromptParameters("", []PromptParameter{{Name: "F", Type: "filename", Dir: "docs/../etc"}})
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+	})
+
+	t.Run("dir equal to .. returns error", func(t *testing.T) {
+		err := ValidatePromptParameters("", []PromptParameter{{Name: "F", Type: "filename", Dir: ".."}})
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+	})
+
+	t.Run("invalid glob returns error mentioning glob", func(t *testing.T) {
+		// filepath.Match rejects an unterminated character class like "[abc".
+		err := ValidatePromptParameters("", []PromptParameter{{Name: "F", Type: "filename", Glob: "[abc"}})
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "glob") {
+			t.Errorf("error = %q, want it to contain 'glob'", err.Error())
+		}
+	})
+
+	t.Run("multiLine on filename type returns error", func(t *testing.T) {
+		err := ValidatePromptParameters("", []PromptParameter{{Name: "F", Type: "filename", MultiLine: true}})
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+	})
+
+	t.Run("options on filename type returns error", func(t *testing.T) {
+		err := ValidatePromptParameters("", []PromptParameter{{Name: "F", Type: "filename", Options: []string{"a.md", "b.md"}}})
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+	})
 }
 
 func TestParsePromptFile_WithMultiLineParameter(t *testing.T) {
@@ -3010,6 +3109,7 @@ func TestBuiltinPrompts_TodayTierRoutingAdoption(t *testing.T) {
 		{file: "blog/add-references.prompt.yaml", bucket: perBeadWithCoalesce},
 		{file: "blog/content-review.prompt.yaml", bucket: perBeadWithCoalesce},
 		{file: "blog/fact-check.prompt.yaml", bucket: perBeadWithCoalesce},
+		{file: "blog/polish.prompt.yaml", bucket: perBeadWithCoalesce},
 		// 2b — per-bead phase prompts.
 		{file: "beads-issues/feature-phase-plan.prompt.yaml", bucket: perBeadWithCoalesce},
 		{file: "beads-issues/feature-phase-implement.prompt.yaml", bucket: perBeadWithCoalesce},

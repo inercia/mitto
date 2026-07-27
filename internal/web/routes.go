@@ -81,6 +81,9 @@ func (s *Server) apiRoutes(authMgr *middleware.AuthManager, csrfMgr *middleware.
 		apiRoute{method: "PUT", pattern: "/api/workspaces/{uuid}/folder-group", handler: http.HandlerFunc(s.apiHandlers.HandleFolderGroup)},
 		apiRoute{pattern: "/api/workspace-prompts", handler: http.HandlerFunc(s.apiHandlers.HandleWorkspacePromptsRoute)},
 		apiRoute{method: "PATCH", pattern: "/api/workspace-prompts/{name}", handler: http.HandlerFunc(s.apiHandlers.HandleWorkspacePromptsToggleEnabled)},
+		// Workspace file listing — feeds the "filename" prompt parameter type's
+		// dropdown. Non-recursive; containment-checked. See mitto-vlg.
+		apiRoute{method: "GET", pattern: "/api/workspace-files", handler: http.HandlerFunc(s.apiHandlers.HandleWorkspaceFiles)},
 	)
 
 	// Config and discovery endpoints.

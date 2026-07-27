@@ -997,7 +997,7 @@ prompt: |
 
 ### Predefined types
 
-The canonical registry lives in `internal/config/prompt_param_types.go` and is
+The canonical registry lives in `internal/prompts/param_types.go` and is
 mirrored by `KNOWN_PARAM_TYPES` in `web/static/utils/prompts.js`. Both must be kept
 in sync.
 
@@ -1012,6 +1012,23 @@ in sync.
 | `acpServer` | An ACP server (agent) name. Lets a prompt that creates a new conversation choose which agent runs it. |
 | `text` | Generic free-form text (catch-all type). Rendered as a single-line input by default; set `multiLine: true` to render a resizable multi-line textarea instead, or set `options: [...]` to constrain the value to a fixed enumeration rendered as a dropdown (mutually exclusive with `multiLine`). |
 | `boolean` | A yes/no flag, rendered as a checkbox. Supplied to the template as the string `"true"` or `"false"` (default unchecked → `"false"`). Boolean parameters never gate menu visibility and are always collected via the parameter dialog. |
+| `filename` | A workspace-relative file path, rendered as a dropdown of files under an optional `dir` (workspace-relative, non-recursive), optionally filtered by a `glob` (e.g. `"*.md"`). Interactive and dialog-collected (never gates menu visibility, always offered by the parameter dialog). Feeds `{{ ReadFile .Args.NAME }}` directly. `dir`/`glob` are dropdown hints only — path safety (absolute-path/`..`-escape/symlink-escape rejection, 256 KB cap) is enforced at read time by `ReadFile`. |
+
+#### `filename` YAML example
+
+```yaml
+name: "With instructions"
+parameters:
+  - name: Instructions
+    type: filename
+    dir: docs/instructions
+    glob: "*.md"
+    required: false
+    description: Optional instructions file to inline
+prompt: |
+  {{ if .Args.Instructions }}{{ ReadFile .Args.Instructions }}{{ end }}
+  … rest of the prompt …
+```
 
 ### Visibility rule (type-based gating)
 
