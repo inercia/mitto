@@ -17,8 +17,8 @@ import (
 // session-context.tmpl and consumed via
 // `{{ template "_shared/session-context" . }}`.
 //
-// Unlike the pilot fragment (github/pr-comments — co-located under builtin/
-// github/), the session-context fragment is cross-topic: it is used by
+// Unlike the pilot fragment (github/shared/pr-comments — scoped under
+// builtin/github/shared/), the session-context fragment is cross-topic: it is used by
 // prompts under beads-issues/, beads/, ci/, code/, docs/, github/, jira/,
 // loop/, and support/, so the Implementation deliberately placed it under
 // a top-level `_shared/` prefix. This test pins that layout.

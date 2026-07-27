@@ -476,7 +476,7 @@ attached to the render-time template set and referenced from any `.prompt.yaml`
 body via Go text/template's native sub-template mechanism:
 
 ```
-{{ template "github/pr-comments" . }}
+{{ template "github/shared/pr-comments" . }}
 ```
 
 Fragments are a pure prompt-authoring feature. They add **no** new preprocessor,
@@ -527,7 +527,7 @@ Fragment names are derived from the path relative to the origin root, with the
 
 | On-disk path                                        | Fragment name           |
 |-----------------------------------------------------|-------------------------|
-| `builtin/github/pr-comments.tmpl`                   | `github/pr-comments`    |
+| `builtin/github/shared/pr-comments.tmpl`            | `github/shared/pr-comments` |
 | `builtin/beads/issue-context.tmpl`                  | `beads/issue-context`   |
 | `builtin/simple.tmpl`                               | `simple`                |
 
@@ -541,10 +541,10 @@ by fragment name.
 The pipeline argument to `{{ template … }}` is the fragment's render context.
 Two idioms:
 
-- **Full context** — `{{ template "github/pr-comments" . }}`
+- **Full context** — `{{ template "github/shared/pr-comments" . }}`
   Passes the entire caller context. The fragment sees the same `.Args`,
   `.Session`, `.Workspace`, `.ACP`, and `.UserData` the caller does.
-- **Narrowed context** — `{{ template "github/pr-comments" .Args }}`
+- **Narrowed context** — `{{ template "github/shared/pr-comments" .Args }}`
   Passes only `.Args`. Inside the fragment, `.` **is** the args map;
   `.Session` is not reachable.
 
@@ -614,24 +614,30 @@ FuncMap — no wiring beyond the `{{ template … }}` call.
 
 ### Shipped fragments (inventory)
 
-Fragments in this repo live either **co-located** under the topical prompt
-directory (when they're specific to one agent/topic) or under the top-level
-`_shared/` prefix (when they're consumed cross-topic). Prompt authors adding a
-new prompt should scan this table before restating shared content inline.
+Fragments in this repo live under **`<family>/shared/`** when they're used
+primarily by one topical family (with a small number of borrowers allowed),
+or under the top-level `_shared/` prefix when they're genuinely cross-family
+with no clear owner. Prompt authors adding a new prompt should scan this
+table before restating shared content inline.
 
 | Fragment name              | On-disk path                                                | Consumers | Landed in     | Purpose                                                                          |
 |----------------------------|-------------------------------------------------------------|-----------|---------------|----------------------------------------------------------------------------------|
-| `github/pr-comments`       | `config/prompts/builtin/github/pr-comments.tmpl`            | 3         | `mitto-g61.8` | "How to handle PR review comments" body used by the `github/babysit-*` family (pilot: co-located, agent-specific). |
+| `github/shared/pr-comments` | `config/prompts/builtin/github/shared/pr-comments.tmpl`    | 3         | `mitto-g61.8` | "How to handle PR review comments" body used by the `github/babysit-*` family (pilot: family-scoped, agent-specific). |
 | `_shared/session-context`  | `config/prompts/builtin/_shared/session-context.tmpl`       | 64        | `mitto-g61.9` | The `## Session Context` preamble telling the agent its own session ID. Cross-topic — consumed by beads-issues/, beads/, ci/, code/, docs/, github/, jira/, loop/, and support/ prompts. |
 
-**Layout convention.** Fragments that only make sense to one topic (e.g. GitHub
-PR comment handling) are co-located next to their consumers so authors editing
-a topic see the fragment in the same directory. Fragments that are consumed
-across multiple topics live under `_shared/<name>.tmpl`; co-locating a
-cross-topic fragment under any single topic dir would misrepresent ownership.
+**Layout convention.** Fragments whose primary consumer is one family live
+under `<family>/shared/<name>.tmpl` (e.g. `github/shared/pr-comments.tmpl`,
+`support/shared/slack-tools.tmpl`, `beads-issues/shared/target-bead-header.tmpl`,
+`jira/shared/managed-body.tmpl`). A small number of cross-family borrowers of
+such a fragment is allowed (same pattern as `git/safe-stage.tmpl`, which is
+used by ci/, misc/, beads-issues/, loop/, and github/). Fragments with **no**
+clear owner — consumed cross-family — live under the top-level `_shared/`
+prefix (`_shared/<name>.tmpl`). This layout keeps family-scoped shared bodies
+grouped with their owning consumers while preserving `_shared/` for the
+truly-cross-cutting handful (session-context, interaction-mode, etc.).
 
-**Pilot reference.** `config/prompts/builtin/github/pr-comments.tmpl` (from
-`mitto-g61.8`) remains the reference example of full-context sub-template
+**Pilot reference.** `config/prompts/builtin/github/shared/pr-comments.tmpl`
+(from `mitto-g61.8`) remains the reference example of full-context sub-template
 invocation — see its call sites for the wiring pattern.
 
 **Non-fragments (evaluated and deferred).** `.Session.IsLoop`/"Interaction Mode"

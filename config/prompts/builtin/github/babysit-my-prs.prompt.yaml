@@ -471,7 +471,7 @@ prompt: |
   silently ignore):
 
   ```
-  {{ template "github/pr-comments" . }}
+  {{ template "github/shared/pr-comments" . }}
   ```
 
   ### 3e. Stale PR detection

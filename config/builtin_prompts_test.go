@@ -233,7 +233,7 @@ func TestIsBuiltinManagedFile(t *testing.T) {
 		{"foo.prompt.yaml", true},
 		{"beads/foo.prompt.yaml", true}, // rel-path suffix still ends in .prompt.yaml
 		{"pr-comments.tmpl", true},
-		{"github/pr-comments.tmpl", true},
+		{"github/shared/pr-comments.tmpl", true},
 		{"legacy.md", false},
 		{"random.txt", false},
 		{"noext", false},

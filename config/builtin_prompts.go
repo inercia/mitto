@@ -279,7 +279,7 @@ func ListEmbeddedPrompts() ([]string, error) {
 // (*.tmpl files co-located in the same directory tree as prompts, mitto-g61.2).
 // Rel-paths use forward slashes and are rooted at BuiltinPromptsDir, so a
 // top-level fragment appears as `foo.tmpl` and a nested one as
-// `github/pr-comments.tmpl`. The list is walked recursively.
+// `github/shared/pr-comments.tmpl`. The list is walked recursively.
 //
 // Fragments are structurally hidden from the prompt loader (which filters
 // strictly by `.prompt.yaml`), so they never enter PromptsCache, menus, or

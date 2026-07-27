@@ -375,7 +375,7 @@ prompt: |
   in 3b and spawn (interactive: ask first; silent: automatic):
 
   ```
-  {{ template "github/pr-comments" . }}
+  {{ template "github/shared/pr-comments" . }}
   ```
 
   ### 3d. Merge when ready

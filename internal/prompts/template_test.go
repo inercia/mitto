@@ -1505,7 +1505,7 @@ func TestInteractionMode_ConditionalRendering(t *testing.T) {
 	builtinDir := "../../config/prompts/builtin"
 
 	// Install the on-disk fragment registry so ParsePromptFile can resolve
-	// `{{ template "github/pr-comments" . }}` at parse-time precompile
+	// `{{ template "github/shared/pr-comments" . }}` at parse-time precompile
 	// (mitto-g61.4). Restored on cleanup.
 	prev := CurrentFragments()
 	t.Cleanup(func() { SetCurrentFragments(prev) })
@@ -2781,7 +2781,7 @@ func TestBuiltinPromptLoopModes(t *testing.T) {
 	builtinDir := "../../config/prompts/builtin"
 
 	// Install the on-disk fragment registry so ParsePromptFile can resolve
-	// `{{ template "github/pr-comments" . }}` at parse-time precompile
+	// `{{ template "github/shared/pr-comments" . }}` at parse-time precompile
 	// (mitto-g61.4). Restored on cleanup.
 	prev := CurrentFragments()
 	t.Cleanup(func() { SetCurrentFragments(prev) })

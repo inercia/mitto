@@ -2972,7 +2972,7 @@ func TestBuiltinPrompts_SupportRoutingAdoption(t *testing.T) {
 func TestBuiltinPrompts_TodayTierRoutingAdoption(t *testing.T) {
 	builtinDir := filepath.Join("..", "..", "config", "prompts", "builtin")
 	// Install the on-disk fragment registry so ParsePromptFile can resolve
-	// `{{ template "github/pr-comments" . }}` at parse-time precompile
+	// `{{ template "github/shared/pr-comments" . }}` at parse-time precompile
 	// (mitto-g61.4). Restored on cleanup so parallel/subsequent tests that
 	// expect the nil-registry baseline are unaffected.
 	prev := CurrentFragments()

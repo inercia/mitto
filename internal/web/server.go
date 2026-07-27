@@ -2472,7 +2472,7 @@ func (s *Server) getFragmentScanDirs() []string {
 	var dirs []string
 
 	// 1. Builtin prompts root — produces the short names ("_shared/…",
-	//    "github/pr-comments") that embedded prompts reference via
+	//    "github/shared/pr-comments") that embedded prompts reference via
 	//    `{{ template "_shared/session-context" . }}`.
 	if builtinDir, err := appdir.BuiltinPromptsDir(); err == nil {
 		dirs = append(dirs, builtinDir)
