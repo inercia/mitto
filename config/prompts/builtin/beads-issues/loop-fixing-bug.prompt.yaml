@@ -264,33 +264,11 @@ prompt: |
 
   ## Step 4 — Blocked → Defer + Handoff (applies at EVERY stage above)
 
-  Use this whenever a run cannot make progress autonomously: something is unclear (a
-  decision/info only the user can give), something can't be solved without help (a
-  secret, an external action, a product decision), or you are otherwise stuck. **Do not**
-  advance the state label in this case. Instead:
-
-  1. Defer and flag the bead so it drops out of `bd ready`:
-
-     ```bash
-     bd update {{ if $target }}{{ $target }}{{ else }}<target-bug>{{ end }} --add-label needs-human --defer <when>   # e.g. tomorrow / +1d
-     ```
-
-  2. Write a **structured handoff** comment on the bead:
-
-     ```bash
-     bd comment {{ if $target }}{{ $target }}{{ else }}<target-bug>{{ end }} "Blocked at <stage>. What I tried: <summary>. What I need from you: <the ONE concrete question/decision/info/action>. How to resume: bd update <id> --remove-label needs-human --defer '' , then re-run."
-     ```
-
-  3. End the iteration with a concise handoff message naming the blocker and the single
-     thing needed (interactive runs also `mitto_ui_notify`), and disable this
-     conversation's own loop flag so the loop does not spin on the blocker:
-
-     ```
-     mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", loop_enabled: false)
-     ```
-
-  The user resumes the loop (re-enabling the loop, or force-running) after clearing the
-  `needs-human` label and addressing the handoff.
+  {{ template "beads-issues/shared/blocked-defer-loop-driver" (dict
+      "Target"      $target
+      "SessionID"   .Session.ID
+      "Placeholder" "<target-bug>"
+  ) }}
 
   ## Guidelines
 

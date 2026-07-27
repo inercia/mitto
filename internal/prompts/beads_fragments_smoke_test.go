@@ -426,6 +426,106 @@ func TestTargetBeadHeaderStrictFragmentRenders(t *testing.T) {
 	}
 }
 
+// TestBlockedDeferLoopDriverFragmentRenders is a smoke test for the
+// beads-issues/shared/blocked-defer-loop-driver fragment: renders the 3
+// loop-driver-shaped consumers and asserts each variant's hallmarks
+// (per-caller Placeholder, per-caller IntroExtra, and the fixed
+// loop-driver-only "state label" / "End the iteration" / "user resumes
+// the loop" phrasing) appear correctly.
+func TestBlockedDeferLoopDriverFragmentRenders(t *testing.T) {
+	prev := CurrentFragments()
+	t.Cleanup(func() { SetCurrentFragments(prev) })
+
+	builtinDir := "../../config/prompts/builtin"
+	reg, loadErrs, err := LoadFragmentsFromDir(builtinDir)
+	if err != nil {
+		t.Fatalf("LoadFragmentsFromDir(builtin): %v", err)
+	}
+	if len(loadErrs) != 0 {
+		t.Fatalf("LoadFragmentsFromDir(builtin) per-file errors: %+v", loadErrs)
+	}
+	SetCurrentFragments(reg)
+
+	list, err := LoadPromptsFromDir(builtinDir)
+	if err != nil {
+		t.Fatalf("LoadPromptsFromDir(builtin): %v", err)
+	}
+	byName := map[string]string{}
+	for _, p := range list {
+		byName[p.Name] = p.Content
+	}
+
+	type consumer struct {
+		name, placeholder, introExtra string
+	}
+	consumers := []consumer{
+		{"Loop fixing bug", "<target-bug>", ""},
+		{"Loop implementing feature", "<target-feature>", ""},
+		{"Publish post", "<target-post>", ` — including "the publish command is still a placeholder"`},
+	}
+
+	// Linked branch: $target resolves so the bd commands substitute the id.
+	linkedCtx := &cel.PromptEnabledContext{
+		Session: cel.SessionContext{ID: "sess-1", Name: "N", HasMessages: true, BeadsIssue: "mitto-abc", HasBeadsIssue: true},
+		Args:    map[string]string{"IssueID": "mitto-abc"},
+	}
+	linkedFuncs := cel.BuildTemplateFuncMap(linkedCtx)
+	for _, c := range consumers {
+		body, ok := byName[c.name]
+		if !ok {
+			t.Errorf("prompt %q not found", c.name)
+			continue
+		}
+		out, err := RenderPromptTemplate(c.name, body, linkedCtx, linkedFuncs)
+		if err != nil {
+			t.Errorf("render %q (linked): %v", c.name, err)
+			continue
+		}
+		// Shared loop-driver-only hallmarks.
+		for _, hallmark := range []string{
+			"Use this whenever a run cannot make progress autonomously",
+			"advance the state label in this case. Instead:",
+			"bd update mitto-abc --add-label needs-human --defer <when>   # e.g. tomorrow / +1d",
+			`Write a **structured handoff** comment on the bead:`,
+			`bd comment mitto-abc "Blocked at <stage>.`,
+			"End the iteration with a concise handoff",
+			"(interactive runs also `mitto_ui_notify`)",
+			`mitto_conversation_update(self_id: "sess-1"`,
+			"The user resumes the loop",
+			"`needs-human` label and addressing the handoff",
+		} {
+			if !strings.Contains(out, hallmark) {
+				t.Errorf("%q (linked): missing hallmark %q", c.name, hallmark)
+			}
+		}
+		// IntroExtra: publish-post extends the intro; the other 2 do not.
+		if c.introExtra != "" {
+			if !strings.Contains(out, "a product decision"+c.introExtra+"),") {
+				t.Errorf("%q (linked): IntroExtra %q not spliced into intro", c.name, c.introExtra)
+			}
+		}
+	}
+
+	// No-link branch: bd commands fall back to the caller-supplied placeholder.
+	noLinkCtx := &cel.PromptEnabledContext{
+		Session: cel.SessionContext{ID: "sess-1", Name: "N", HasMessages: true},
+		Args:    map[string]string{},
+	}
+	noLinkFuncs := cel.BuildTemplateFuncMap(noLinkCtx)
+	for _, c := range consumers {
+		body := byName[c.name]
+		out, err := RenderPromptTemplate(c.name, body, noLinkCtx, noLinkFuncs)
+		if err != nil {
+			t.Errorf("render %q (nolink): %v", c.name, err)
+			continue
+		}
+		want := "bd update " + c.placeholder + " --add-label needs-human"
+		if !strings.Contains(out, want) {
+			t.Errorf("%q (nolink): missing fallback %q", c.name, want)
+		}
+	}
+}
+
 // TestBlockedDeferHandoffFragmentRenders is a smoke test for the
 // beads-issues/shared/blocked-defer-handoff fragment: renders each of the 11
 // phase prompts and asserts that the fragment's hallmark substrings
