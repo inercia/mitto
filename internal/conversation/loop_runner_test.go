@@ -4815,6 +4815,72 @@ func TestLoopRunner_RecordSentFailure_LoopFileMissing_DoesNotWarn(t *testing.T) 
 	}
 }
 
+// TestLoopRunner_RecordSentFailure_ResurrectionSentinel_WarnsLoudly is the
+// D3 classifier test for mitto-uun: when RecordSent surfaces the resurrection
+// sentinel (session.ErrRecordSentOnStoppedLoop — a delivery fired against a
+// config that was already MarkStopped'd), logLoopRecordSentFailure must emit
+// exactly one WARN-or-higher record so the regression is auditable in
+// production, without being suppressed as a teardown-race like ErrLoopNotFound
+// is (mitto-rz9j).
+func TestLoopRunner_RecordSentFailure_ResurrectionSentinel_WarnsLoudly(t *testing.T) {
+	// Set up a real stopped loop and drive RecordSent through the LoopStore
+	// so the test asserts against the exact sentinel wire path used in
+	// production.
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	meta := session.Metadata{
+		SessionID:  "uun-resurrection",
+		ACPServer:  "test",
+		WorkingDir: "/tmp",
+	}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("store.Create() error = %v", err)
+	}
+	loopStore := store.Loop(meta.SessionID)
+	if err := loopStore.Set(&session.LoopPrompt{
+		Prompt:    "iterate",
+		Frequency: session.Frequency{Value: 1, Unit: session.FrequencyHours},
+		Enabled:   true,
+	}); err != nil {
+		t.Fatalf("loopStore.Set() error = %v", err)
+	}
+	if err := loopStore.MarkStopped(session.StoppedReasonMaxIterations); err != nil {
+		t.Fatalf("loopStore.MarkStopped() error = %v", err)
+	}
+
+	// RecordSent on an already-stopped loop returns the resurrection sentinel.
+	err = loopStore.RecordSent()
+	if !errors.Is(err, session.ErrRecordSentOnStoppedLoop) {
+		t.Fatalf("loopStore.RecordSent() error = %v, want ErrRecordSentOnStoppedLoop", err)
+	}
+
+	// Feed that error through the exact log-classification helper the
+	// OnComplete callback uses.
+	handler := &recordingSlogHandler{minLevel: slog.LevelDebug}
+	logger := slog.New(handler)
+
+	logLoopRecordSentFailure(logger, meta.SessionID, err)
+
+	warns := handler.warnOrHigher()
+	if len(warns) != 1 {
+		msgs := make([]string, 0, len(warns))
+		for _, r := range warns {
+			msgs = append(msgs, fmt.Sprintf("level=%s msg=%q", r.Level, r.Message))
+		}
+		t.Fatalf("logLoopRecordSentFailure warn count for resurrection sentinel = %d, want 1 "+
+			"(mitto-uun: must NOT be suppressed like ErrLoopNotFound is). records: %s",
+			len(warns), strings.Join(msgs, "; "))
+	}
+	if !strings.Contains(warns[0].Message, "resurrection") {
+		t.Errorf("resurrection WARN message = %q, want it to mention 'resurrection' for auditability",
+			warns[0].Message)
+	}
+}
+
 // newRunOnStartSession creates a session with a loop configured for RunOnStart=true
 // and returns its LoopStore. trigger selects the underlying trigger (schedule/
 // onCompletion/onTasks); the runOnStart flag is orthogonal.

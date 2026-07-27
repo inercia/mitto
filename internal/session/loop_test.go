@@ -1809,3 +1809,234 @@ func TestLoopStore_Update_RunOnStart(t *testing.T) {
 		t.Error("ShouldRunOnStart() should be false after opt-out")
 	}
 }
+
+// --- Sticky auto-stop / resurrection guard tests (mitto-uun) ---
+
+// TestLoopStore_Set_PreservesAutoStopOnClobber verifies the D1 guard: once a
+// loop has been MarkStopped'd (Enabled=false + non-empty StoppedReason), a
+// subsequent Set() call carrying Enabled=true from a caller that did a
+// read → mutate → write cycle must NOT silently resurrect the loop. The on-disk
+// Enabled/StoppedReason/StoppedAt fields are the source of truth and win over
+// the incoming payload. This closes the write-ordering clobber path that
+// caused loop.json to diverge from the runtime auto-stop across a restart.
+func TestLoopStore_Set_PreservesAutoStopOnClobber(t *testing.T) {
+	dir := t.TempDir()
+	ps := NewLoopStore(dir)
+
+	if err := ps.Set(&LoopPrompt{
+		Prompt:    "iterate",
+		Frequency: Frequency{Value: 1, Unit: FrequencyHours},
+		Enabled:   true,
+	}); err != nil {
+		t.Fatalf("Set() initial error = %v", err)
+	}
+	if err := ps.MarkStopped(StoppedReasonMaxIterations); err != nil {
+		t.Fatalf("MarkStopped() error = %v", err)
+	}
+
+	// Simulate a caller that read the (now-stopped) config, mutated a benign
+	// field, forgot to preserve the stopped-state fields, and wrote back with
+	// Enabled=true.  Before the D1 guard this silently resurrected the loop.
+	clobber := &LoopPrompt{
+		Prompt:    "iterate (edited)",
+		Frequency: Frequency{Value: 2, Unit: FrequencyHours},
+		Enabled:   true, // <-- the clobber
+	}
+	if err := ps.Set(clobber); err != nil {
+		t.Fatalf("Set() clobber error = %v", err)
+	}
+
+	got, err := ps.Get()
+	if err != nil {
+		t.Fatalf("Get() after clobber error = %v", err)
+	}
+	if got.Enabled {
+		t.Error("Enabled = true after Set() clobber; sticky auto-stop was not preserved")
+	}
+	if got.StoppedReason != StoppedReasonMaxIterations {
+		t.Errorf("StoppedReason = %q, want %q (must survive Set() clobber)",
+			got.StoppedReason, StoppedReasonMaxIterations)
+	}
+	if got.StoppedAt == nil {
+		t.Error("StoppedAt = nil after Set() clobber; expected preserved timestamp")
+	}
+	// The mutable/non-stopped fields (Prompt, Frequency) must still be applied.
+	if got.Prompt != "iterate (edited)" {
+		t.Errorf("Prompt = %q, want %q (mutable field must apply)", got.Prompt, "iterate (edited)")
+	}
+	if got.Frequency.Value != 2 {
+		t.Errorf("Frequency.Value = %d, want 2 (mutable field must apply)", got.Frequency.Value)
+	}
+}
+
+// TestLoopStore_Set_ActiveLoopRespectsIncomingEnabled is the regression guard
+// for the D1 guard's blast radius: on an already-running (not-stopped) config,
+// Set() must still take the incoming Enabled value verbatim. Otherwise pausing
+// a loop by round-tripping (Enabled=false, no StoppedReason) would silently
+// fail — only auto-stopped configs are sticky, not paused ones.
+func TestLoopStore_Set_ActiveLoopRespectsIncomingEnabled(t *testing.T) {
+	dir := t.TempDir()
+	ps := NewLoopStore(dir)
+
+	if err := ps.Set(&LoopPrompt{
+		Prompt:    "iterate",
+		Frequency: Frequency{Value: 1, Unit: FrequencyHours},
+		Enabled:   true,
+	}); err != nil {
+		t.Fatalf("Set() initial error = %v", err)
+	}
+
+	// Set() with Enabled=false must land — the loop is NOT in the sticky
+	// auto-stopped state (StoppedReason is empty), so the D1 guard must not
+	// engage.
+	if err := ps.Set(&LoopPrompt{
+		Prompt:    "iterate",
+		Frequency: Frequency{Value: 1, Unit: FrequencyHours},
+		Enabled:   false,
+	}); err != nil {
+		t.Fatalf("Set() disable error = %v", err)
+	}
+	got, _ := ps.Get()
+	if got.Enabled {
+		t.Error("Enabled = true after Set(Enabled=false) on an active loop; the guard misfired")
+	}
+	if got.StoppedReason != "" {
+		t.Errorf("StoppedReason = %q, want empty (no auto-stop yet)", got.StoppedReason)
+	}
+}
+
+// TestLoopStore_AutoStopSurvivesRestartAndClobber is the end-to-end acceptance
+// test for mitto-uun (acceptance criterion #1): after auto-stop, loop.json
+// reflects Enabled=false + terminal iteration_count, a fresh LoopStore ("process
+// restart") sees the same state, and a subsequent clobbering Set() call from
+// e.g. a restart-time config write does NOT resurrect the loop.
+func TestLoopStore_AutoStopSurvivesRestartAndClobber(t *testing.T) {
+	dir := t.TempDir()
+	ps := NewLoopStore(dir)
+
+	if err := ps.Set(&LoopPrompt{
+		Prompt:        "iterate",
+		Frequency:     Frequency{Value: 1, Unit: FrequencyHours},
+		Enabled:       true,
+		MaxIterations: 3,
+	}); err != nil {
+		t.Fatalf("Set() error = %v", err)
+	}
+	// Bump the iteration counter a few times, then hit the cap via MarkStopped.
+	for i := 0; i < 3; i++ {
+		if err := ps.RecordSent(); err != nil {
+			t.Fatalf("RecordSent()[%d] error = %v", i, err)
+		}
+	}
+	if err := ps.MarkStopped(StoppedReasonMaxIterations); err != nil {
+		t.Fatalf("MarkStopped() error = %v", err)
+	}
+
+	// Simulate restart: fresh LoopStore on the same session directory.
+	ps2 := NewLoopStore(dir)
+	got, err := ps2.Get()
+	if err != nil {
+		t.Fatalf("Get() on fresh store error = %v", err)
+	}
+	if got.Enabled {
+		t.Error("Enabled = true after restart; auto-stop did not persist")
+	}
+	if got.StoppedReason != StoppedReasonMaxIterations {
+		t.Errorf("StoppedReason = %q, want %q after restart",
+			got.StoppedReason, StoppedReasonMaxIterations)
+	}
+	if got.IterationCount != 3 {
+		t.Errorf("IterationCount = %d, want 3 after restart", got.IterationCount)
+	}
+
+	// Simulate a restart-time restore-config path that writes back with
+	// Enabled=true. Before the D1 guard this resurrected the loop; now the
+	// sticky auto-stop must survive.
+	if err := ps2.Set(&LoopPrompt{
+		Prompt:        "iterate",
+		Frequency:     Frequency{Value: 1, Unit: FrequencyHours},
+		Enabled:       true,
+		MaxIterations: 3,
+	}); err != nil {
+		t.Fatalf("Set() restart-clobber error = %v", err)
+	}
+	got2, _ := ps2.Get()
+	if got2.Enabled {
+		t.Error("Enabled = true after post-restart Set() clobber; sticky auto-stop bypassed")
+	}
+	if got2.StoppedReason != StoppedReasonMaxIterations {
+		t.Errorf("StoppedReason = %q, want %q after post-restart Set() clobber",
+			got2.StoppedReason, StoppedReasonMaxIterations)
+	}
+	if got2.IterationCount != 3 {
+		t.Errorf("IterationCount = %d, want 3 (counter preserved by Set)", got2.IterationCount)
+	}
+}
+
+// TestLoopStore_RecordSent_OnStoppedLoop_ReturnsSentinel verifies D3: when
+// RecordSent is called on a loop that is already MarkStopped'd, it returns the
+// ErrRecordSentOnStoppedLoop sentinel wrapped alongside a successful on-disk
+// write. Callers can errors.Is-check it and emit a WARN without changing
+// behavior; the resurrection-detector must not swallow the write.
+func TestLoopStore_RecordSent_OnStoppedLoop_ReturnsSentinel(t *testing.T) {
+	dir := t.TempDir()
+	ps := NewLoopStore(dir)
+
+	if err := ps.Set(&LoopPrompt{
+		Prompt:    "iterate",
+		Frequency: Frequency{Value: 1, Unit: FrequencyHours},
+		Enabled:   true,
+	}); err != nil {
+		t.Fatalf("Set() error = %v", err)
+	}
+	if err := ps.MarkStopped(StoppedReasonMaxIterations); err != nil {
+		t.Fatalf("MarkStopped() error = %v", err)
+	}
+
+	err := ps.RecordSent()
+	if !errors.Is(err, ErrRecordSentOnStoppedLoop) {
+		t.Fatalf("RecordSent() on stopped loop error = %v, want ErrRecordSentOnStoppedLoop", err)
+	}
+
+	// Even though the sentinel was returned, the on-disk write must have
+	// succeeded — LastSentAt and IterationCount must reflect the delivery.
+	got, err := ps.Get()
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if got.IterationCount != 1 {
+		t.Errorf("IterationCount = %d, want 1 (write must succeed alongside sentinel)",
+			got.IterationCount)
+	}
+	if got.LastSentAt == nil {
+		t.Error("LastSentAt = nil, want non-nil (write must succeed alongside sentinel)")
+	}
+	// The stopped-state fields must NOT be cleared by RecordSent.
+	if got.Enabled {
+		t.Error("Enabled = true after RecordSent on stopped loop; state must not be cleared")
+	}
+	if got.StoppedReason != StoppedReasonMaxIterations {
+		t.Errorf("StoppedReason = %q, want %q (must survive RecordSent)",
+			got.StoppedReason, StoppedReasonMaxIterations)
+	}
+}
+
+// TestLoopStore_RecordSent_OnHealthyLoop_ReturnsNil is the regression guard
+// for D3's blast radius: the resurrection sentinel must fire only on
+// already-stopped configs, never on healthy running loops.
+func TestLoopStore_RecordSent_OnHealthyLoop_ReturnsNil(t *testing.T) {
+	dir := t.TempDir()
+	ps := NewLoopStore(dir)
+
+	if err := ps.Set(&LoopPrompt{
+		Prompt:    "iterate",
+		Frequency: Frequency{Value: 1, Unit: FrequencyHours},
+		Enabled:   true,
+	}); err != nil {
+		t.Fatalf("Set() error = %v", err)
+	}
+
+	if err := ps.RecordSent(); err != nil {
+		t.Errorf("RecordSent() on healthy loop error = %v, want nil", err)
+	}
+}

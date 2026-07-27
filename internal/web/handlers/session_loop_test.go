@@ -1228,3 +1228,115 @@ func TestHandleSessionLoop_PUT_MergesPromptDefaults_UnknownPromptName(t *testing
 		t.Errorf("FreshContext = true, want false (unknown prompt is graceful fallback)")
 	}
 }
+
+// TestHandleSessionLoop_Restore_StoppedSavedConfig_ClearsReasonAndResetsCounters
+// verifies the D2 two-step restore for mitto-uun: when the saved config was
+// preserved from an auto-stopped loop (Enabled=false + StoppedReason set +
+// IterationCount>0), the restore path (a) clears the stopped-reason so Set()
+// writes a resumable config, (b) calls ResetCounters() as a separate step so
+// IterationCount / FirstRunAt / LastSentAt land at zero, and (c) preserves the
+// saved Enabled value (a stopped loop restores as paused; the user must
+// explicitly re-enable via Update). This decouples the counter-reset intent
+// from Set()'s field-preservation semantics.
+func TestHandleSessionLoop_Restore_StoppedSavedConfig_ClearsReasonAndResetsCounters(t *testing.T) {
+	store, h := newLoopStore(t)
+	tmpDir := t.TempDir()
+
+	const sid = "test-restore-stopped-saved"
+	if err := store.Create(session.Metadata{
+		SessionID:  sid,
+		ACPServer:  "test-server",
+		WorkingDir: tmpDir,
+	}); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	// Step 1: configure an active loop, record several deliveries, then
+	// auto-stop it — mirrors the shape of a loop that hit its cap.
+	loop := store.Loop(sid)
+	if err := loop.Set(&session.LoopPrompt{
+		Prompt:        "keep going",
+		Frequency:     session.Frequency{Value: 3, Unit: session.FrequencyHours},
+		Enabled:       true,
+		MaxIterations: 3,
+	}); err != nil {
+		t.Fatalf("Set() error = %v", err)
+	}
+	for i := 0; i < 3; i++ {
+		if err := loop.RecordSent(); err != nil {
+			t.Fatalf("RecordSent()[%d] error = %v", i, err)
+		}
+	}
+	if err := loop.MarkStopped(session.StoppedReasonMaxIterations); err != nil {
+		t.Fatalf("MarkStopped() error = %v", err)
+	}
+
+	// Step 2: un-loop (detach) — the stopped state is preserved in the saved
+	// slot, and loop.json is removed.
+	delReq := httptest.NewRequest(http.MethodDelete, "/api/sessions/"+sid+"/loop", nil)
+	delW := httptest.NewRecorder()
+	h.HandleSessionLoop(delW, delReq, sid, "")
+	if delW.Code != http.StatusNoContent {
+		t.Fatalf("DELETE loop: Status = %d, want %d. Body: %s", delW.Code, http.StatusNoContent, delW.Body.String())
+	}
+	savedBeforeRestore, err := loop.GetSaved()
+	if err != nil {
+		t.Fatalf("GetSaved() before restore = %v, want nil", err)
+	}
+	// Sanity: the saved slot really does carry the auto-stopped state — that
+	// is the input this test is exercising.
+	if savedBeforeRestore.Enabled {
+		t.Fatalf("saved.Enabled = true before restore; test setup is wrong (expected auto-stopped shape)")
+	}
+	if savedBeforeRestore.StoppedReason != session.StoppedReasonMaxIterations {
+		t.Fatalf("saved.StoppedReason = %q, want %q (test setup is wrong)",
+			savedBeforeRestore.StoppedReason, session.StoppedReasonMaxIterations)
+	}
+	if savedBeforeRestore.IterationCount != 3 {
+		t.Fatalf("saved.IterationCount = %d, want 3 (test setup is wrong)",
+			savedBeforeRestore.IterationCount)
+	}
+
+	// Step 3: POST /loop/restore — must clear StoppedReason, reset counters,
+	// and preserve the saved Enabled state (paused stays paused).
+	restReq := httptest.NewRequest(http.MethodPost, "/api/sessions/"+sid+"/loop/restore", nil)
+	restW := httptest.NewRecorder()
+	h.HandleSessionLoop(restW, restReq, sid, "restore")
+	if restW.Code != http.StatusOK {
+		t.Fatalf("POST restore: Status = %d, want %d. Body: %s", restW.Code, http.StatusOK, restW.Body.String())
+	}
+	var restored session.LoopPrompt
+	if err := json.Unmarshal(restW.Body.Bytes(), &restored); err != nil {
+		t.Fatalf("decode restore response: %v", err)
+	}
+
+	// D2 acceptance criteria:
+	if restored.StoppedReason != "" {
+		t.Errorf("restored.StoppedReason = %q, want empty (D2 pre-Set clear)", restored.StoppedReason)
+	}
+	if restored.StoppedAt != nil {
+		t.Errorf("restored.StoppedAt = %v, want nil (D2 pre-Set clear)", restored.StoppedAt)
+	}
+	if restored.IterationCount != 0 {
+		t.Errorf("restored.IterationCount = %d, want 0 (D2 explicit ResetCounters)",
+			restored.IterationCount)
+	}
+	if restored.FirstRunAt != nil {
+		t.Errorf("restored.FirstRunAt = %v, want nil (D2 explicit ResetCounters)",
+			restored.FirstRunAt)
+	}
+	if restored.LastSentAt != nil {
+		t.Errorf("restored.LastSentAt = %v, want nil (D2 explicit ResetCounters)",
+			restored.LastSentAt)
+	}
+	// Enabled must reflect the saved value — a stopped loop restores as paused
+	// (the D2 comment: "paused draft comes back paused"). The user re-enables
+	// via a subsequent Update.
+	if restored.Enabled {
+		t.Errorf("restored.Enabled = true, want false (auto-stopped saved config must restore as paused)")
+	}
+	// Mutable config fields must survive the round-trip.
+	if restored.Prompt != "keep going" {
+		t.Errorf("restored.Prompt = %q, want %q", restored.Prompt, "keep going")
+	}
+}
