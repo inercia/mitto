@@ -2136,6 +2136,92 @@ func TestValidatePromptParameters(t *testing.T) {
 			t.Fatal("expected error, got nil")
 		}
 	})
+
+	// dirname param type — mitto-2hw.
+	t.Run("dirname param with no dir/glob is OK", func(t *testing.T) {
+		err := ValidatePromptParameters("", []PromptParameter{{Name: "D", Type: "dirname"}})
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("dirname param with valid dir and glob is OK", func(t *testing.T) {
+		err := ValidatePromptParameters("", []PromptParameter{{Name: "D", Type: "dirname", Dir: "docs", Glob: "20*"}})
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("dirname param is OK in any menu (never gates)", func(t *testing.T) {
+		for _, menus := range []string{"", "prompts", "conversation", "beadsIssues"} {
+			err := ValidatePromptParameters(menus, []PromptParameter{{Name: "D", Type: "dirname"}})
+			if err != nil {
+				t.Errorf("menus=%q: unexpected error: %v", menus, err)
+			}
+		}
+	})
+
+	t.Run("dir on dirname type is accepted (widened gate)", func(t *testing.T) {
+		err := ValidatePromptParameters("", []PromptParameter{{Name: "D", Type: "dirname", Dir: "docs/plans"}})
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("glob on dirname type is accepted (widened gate)", func(t *testing.T) {
+		err := ValidatePromptParameters("", []PromptParameter{{Name: "D", Type: "dirname", Glob: "*"}})
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("dirname with absolute dir returns error mentioning absolute", func(t *testing.T) {
+		err := ValidatePromptParameters("", []PromptParameter{{Name: "D", Type: "dirname", Dir: "/etc"}})
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "absolute") {
+			t.Errorf("error = %q, want it to contain 'absolute'", err.Error())
+		}
+	})
+
+	t.Run("dirname with .. segment returns error", func(t *testing.T) {
+		err := ValidatePromptParameters("", []PromptParameter{{Name: "D", Type: "dirname", Dir: "docs/../etc"}})
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+	})
+
+	t.Run("dirname with dir equal to .. returns error", func(t *testing.T) {
+		err := ValidatePromptParameters("", []PromptParameter{{Name: "D", Type: "dirname", Dir: ".."}})
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+	})
+
+	t.Run("dirname with invalid glob returns error mentioning glob", func(t *testing.T) {
+		err := ValidatePromptParameters("", []PromptParameter{{Name: "D", Type: "dirname", Glob: "[abc"}})
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "glob") {
+			t.Errorf("error = %q, want it to contain 'glob'", err.Error())
+		}
+	})
+
+	t.Run("multiLine on dirname type returns error", func(t *testing.T) {
+		err := ValidatePromptParameters("", []PromptParameter{{Name: "D", Type: "dirname", MultiLine: true}})
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+	})
+
+	t.Run("options on dirname type returns error", func(t *testing.T) {
+		err := ValidatePromptParameters("", []PromptParameter{{Name: "D", Type: "dirname", Options: []string{"a", "b"}}})
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+	})
 }
 
 func TestParsePromptFile_WithMultiLineParameter(t *testing.T) {

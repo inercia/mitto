@@ -1136,3 +1136,124 @@ describe("filename render branch", () => {
     });
   });
 });
+
+// =============================================================================
+// dirname render-branch logic (mitto-2hw)
+// Duplicated from ParamField in PromptParameterDialog.js — keep in sync.
+// =============================================================================
+
+/**
+ * Mirrors the dirname branch of ParamField.
+ * Returns a plain descriptor so tests can assert without a real DOM.
+ *   { kind: "spinner" | "textInput" | "select", options?: Array<{value,label}> }
+ */
+function renderDirnameControl({ param, dirsByParam, loadingDirsByParam }) {
+  const name = param.name;
+  const dirs = (dirsByParam && dirsByParam[name]) || [];
+  const loadingDirs = !!(loadingDirsByParam && loadingDirsByParam[name]);
+  if (loadingDirs) {
+    return { kind: "spinner" };
+  }
+  if (dirs.length === 0) {
+    return { kind: "textInput", placeholder: "Workspace-relative directory path" };
+  }
+  const options = dirs.map((path) => ({ value: path, label: path }));
+  return { kind: "select", options };
+}
+
+describe("dirname render branch", () => {
+  describe("loading state", () => {
+    test("shows spinner when this param's loading flag is true", () => {
+      const result = renderDirnameControl({
+        param: { name: "D", type: "dirname" },
+        dirsByParam: {},
+        loadingDirsByParam: { D: true },
+      });
+      expect(result.kind).toBe("spinner");
+    });
+
+    test("does NOT show spinner when a different param is loading", () => {
+      const result = renderDirnameControl({
+        param: { name: "D", type: "dirname" },
+        dirsByParam: {},
+        loadingDirsByParam: { E: true },
+      });
+      // D is not loading and has no dirs → text-input fallback.
+      expect(result.kind).toBe("textInput");
+    });
+  });
+
+  describe("empty / unavailable dirs list → text input fallback", () => {
+    test("renders text input with workspace-relative placeholder when list is empty", () => {
+      const result = renderDirnameControl({
+        param: { name: "D", type: "dirname" },
+        dirsByParam: { D: [] },
+        loadingDirsByParam: { D: false },
+      });
+      expect(result.kind).toBe("textInput");
+      expect(result.placeholder).toBe("Workspace-relative directory path");
+    });
+
+    test("renders text input when this param has no entry in dirsByParam", () => {
+      const result = renderDirnameControl({
+        param: { name: "D", type: "dirname" },
+        dirsByParam: { E: ["docs/e"] },
+        loadingDirsByParam: {},
+      });
+      expect(result.kind).toBe("textInput");
+    });
+
+    test("renders text input when dirsByParam is null/undefined", () => {
+      expect(
+        renderDirnameControl({
+          param: { name: "D", type: "dirname" },
+          dirsByParam: null,
+          loadingDirsByParam: null,
+        }).kind,
+      ).toBe("textInput");
+      expect(
+        renderDirnameControl({
+          param: { name: "D", type: "dirname" },
+          dirsByParam: undefined,
+          loadingDirsByParam: undefined,
+        }).kind,
+      ).toBe("textInput");
+    });
+  });
+
+  describe("populated list → select of directory paths", () => {
+    test("renders one option per dir, using path as both value and label", () => {
+      const result = renderDirnameControl({
+        param: { name: "D", type: "dirname" },
+        dirsByParam: { D: ["docs/api", "docs/plans"] },
+        loadingDirsByParam: { D: false },
+      });
+      expect(result.kind).toBe("select");
+      expect(result.options).toEqual([
+        { value: "docs/api", label: "docs/api" },
+        { value: "docs/plans", label: "docs/plans" },
+      ]);
+    });
+
+    test("keeps per-param isolation — dir lists keyed by param name", () => {
+      const dirsByParam = {
+        Alpha: ["a1", "a2"],
+        Beta: ["b1"],
+      };
+      const loadingDirsByParam = { Alpha: false, Beta: false };
+      const alpha = renderDirnameControl({
+        param: { name: "Alpha", type: "dirname" },
+        dirsByParam,
+        loadingDirsByParam,
+      });
+      const beta = renderDirnameControl({
+        param: { name: "Beta", type: "dirname" },
+        dirsByParam,
+        loadingDirsByParam,
+      });
+      expect(alpha.options.map((o) => o.value)).toEqual(["a1", "a2"]);
+      expect(beta.options.map((o) => o.value)).toEqual(["b1"]);
+    });
+  });
+});
+
