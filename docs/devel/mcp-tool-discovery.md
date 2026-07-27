@@ -125,30 +125,41 @@ server-side (`internal/mcpserver`); nothing currently uses its client side.
    is already the code's intent (`session_api.go:350`) but should become an
    explicit, tested invariant rather than a side effect of "only cache
    non-empty results".
-3. **Persistence.** Persist the **real-MCP-derived** list to disk per
-   workspace (it reflects static config, so it's stable) with a TTL-based
-   refresh (e.g. 15 min) plus an explicit "refresh" action and the existing
-   `ClearMCPToolsCache` invalidation hook. Do **not** persist the LLM-fallback
-   result across restarts — it is inherently less trustworthy; keep it
-   in-memory only, as today.
+3. **Persistence — two-bucket schema with separate trust semantics
+   (mitto-dza.1, durable Fix 2).** Persist tool discovery results to disk per
+   workspace as a **two-bucket** snapshot (`SchemaVersion=2`):
+   `Deterministic []MCPToolInfo` (from direct `tools/list` probes) and
+   `LLM []MCPToolInfo` (from the strict-parsed LLM fallback), each with
+   independent TTLs — 15 min for deterministic (`defaultMCPToolsTTL`) and 5 min
+   for LLM (`defaultMCPToolsLLMTTL`). Superseding the earlier "keep LLM
+   in-memory only" policy: LLM entries **do** persist across restart now, but
+   only under strict trust semantics (see below), preserving the
+   anti-hallucination invariant end-to-end. Both buckets share
+   `UpdatedAt`/`AnyUnreachable` metadata and the existing `ClearMCPToolsCache`
+   invalidation hook. Legacy v0/v1 snapshots (populated flat `Tools` field, no
+   `SchemaVersion`) load as deterministic-only + suspect (one free re-verify)
+   and are rewritten in v2 shape on the next successful fetch. The **only**
+   writer path (`runMCPToolsFetch → savePersistedMCPTools`) writes tools
+   observed via either deterministic discovery or a strict-parsed LLM response
+   (`parseMCPToolsList`, mitto-sys.7) — nothing else can enter disk.
 
-   **Restart heuristic re-verify (mitto-dza, Fix 4).** Because deterministic
-   discovery can't reach every legitimately-configured server (npm-wrapper
-   commands, `npx mcp-remote` proxies, custom binaries — see mitto-dza
-   description), a workspace whose LLM fallback contributed real tools would
-   otherwise lose them across restart until the TTL expired. The on-disk
-   `persistedMCPTools` snapshot therefore carries a `SchemaVersion` + an
-   `AnyUnreachable` flag capturing whether at least one server was unreachable
-   at persist time. On load, a snapshot flagged suspect
-   (`AnyUnreachable=true`, or `SchemaVersion < current`) is still served
-   instantly (zero flicker on turn one) **and** triggers a background async
-   re-probe (`triggerAsyncMCPToolsRefetch`, per-workspace in-flight guard, 60s
-   bounded context). On completion the manager fires
-   `MCPToolsRefreshedHook`, which the web layer wires to a
-   `prompts_changed` broadcast (reason `mcp_tools_reverified`) so
-   `enabledWhen` tool-gates re-evaluate within seconds. Trusted snapshots
-   (current schema + `AnyUnreachable=false`) short-circuit without any
-   background work.
+   **Restart re-verify (mitto-dza.1, durable Fix 2, superseding mitto-dza
+   Fix 4).** On load, a snapshot is flagged **suspect** when
+   `AnyUnreachable=true`, `SchemaVersion < 2`, **OR the LLM bucket is
+   non-empty**. Any suspect snapshot is still served instantly (zero flicker
+   on turn one) **and** triggers a background async re-probe
+   (`triggerAsyncMCPToolsRefetch`, per-workspace in-flight guard, 60s bounded
+   context). On completion the manager fires `MCPToolsRefreshedHook`, which
+   the web layer wires to a `prompts_changed` broadcast (reason
+   `mcp_tools_reverified`) so `enabledWhen` tool-gates re-evaluate within
+   seconds. Any LLM tool the re-probe does not re-confirm is dropped by the
+   normal overwrite semantics — so an unconfirmed LLM entry cannot survive
+   two consecutive process starts. Trusted snapshots (current schema,
+   `AnyUnreachable=false`, deterministic-only) short-circuit without any
+   background work. Each bucket's TTL is enforced independently: an LLM
+   bucket older than 5 min is dropped from the returned view even when the
+   deterministic bucket is still within its 15-min window (belt-and-braces
+   floor for pathologically fast restart cycles).
 4. **Retire blind timed retries.** The 30s/60s/120s re-broadcast loop in
    `checkRequiredToolPatterns` (`session_ws.go:1684`) exists only because the
    LLM path is slow and unreliable. A bounded (5-10s timeout) direct MCP
