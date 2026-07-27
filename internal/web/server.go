@@ -2388,24 +2388,24 @@ func (s *Server) OnPromptsChanged(event configPkg.PromptsChangeEvent) {
 		return
 	}
 
-	// Force reload the prompts cache so next API call gets fresh data.
-	// Kept unconditional for backward compatibility: pre-mitto-g61.5 events
-	// arrived without the HasPromptChanges flag, and the cache regenerates
-	// cheaply on demand — the extra work is a no-op when no *.prompt.yaml
-	// actually changed.
-	if s.config.PromptsCache != nil {
-		if _, err := s.config.PromptsCache.ForceReload(); err != nil && s.logger != nil {
-			s.logger.Warn("Failed to reload prompts cache after file change", "error", err)
-		}
-	}
-
-	// Rebuild the fragment registry when co-located *.tmpl files changed
-	// (mitto-g61.5). Walk the same user-writable directories the watcher is
-	// subscribed to and install a freshly-merged registry via
-	// SetCurrentFragments. On a top-level walk failure keep the previous
-	// registry (do NOT install a partial one) so a transient FS error does
-	// not blank out working fragments; per-file failures are non-fatal and
-	// surface as error toasts identical to the prompt-load path above.
+	// Rebuild the fragment registry BEFORE reloading the prompts cache when
+	// co-located *.tmpl files changed (mitto-g61.5, ordering fix mitto-ag0 /
+	// mitto-ezw). PromptsCache.ForceReload re-parses every consumer template
+	// against the process-wide fragment registry via PrecompileTemplateConds,
+	// so if we swapped the registry AFTER the cache reload every consumer
+	// that references a newly-added / renamed / updated fragment would be
+	// evaluated against the stale registry, fail precompile with
+	// `template "…" not defined`, and get dropped from promptsByName — the
+	// exact data-loss window observed in the 2026-07-27 log (480 WARN
+	// `failed to load prompt file`, 43 loop-firing failures, 4 dropped
+	// user-composed queued prompts). Swap first, then reload.
+	//
+	// Walk the same user-writable directories the watcher is subscribed to
+	// and install a freshly-merged registry via SetCurrentFragments. On a
+	// top-level walk failure keep the previous registry (do NOT install a
+	// partial one) so a transient FS error does not blank out working
+	// fragments; per-file failures are non-fatal and surface as error
+	// toasts identical to the prompt-load path below.
 	if event.HasFragmentChanges {
 		dirs := s.getFragmentScanDirs()
 		newReg, ferrs, err := prompts.ReloadFragmentsFromDirs(dirs)
@@ -2435,6 +2435,18 @@ func (s *Server) OnPromptsChanged(event configPkg.PromptsChangeEvent) {
 				"message": fmt.Sprintf("%s: %v", fe.Path, fe.Err),
 				"style":   "error",
 			})
+		}
+	}
+
+	// Force reload the prompts cache so next API call gets fresh data. Runs
+	// AFTER the fragment-registry swap above so consumers precompile against
+	// the fresh registry (mitto-ag0 / mitto-ezw). Kept unconditional for
+	// backward compatibility: pre-mitto-g61.5 events arrived without the
+	// HasPromptChanges flag, and the cache regenerates cheaply on demand —
+	// the extra work is a no-op when no *.prompt.yaml actually changed.
+	if s.config.PromptsCache != nil {
+		if _, err := s.config.PromptsCache.ForceReload(); err != nil && s.logger != nil {
+			s.logger.Warn("Failed to reload prompts cache after file change", "error", err)
 		}
 	}
 
