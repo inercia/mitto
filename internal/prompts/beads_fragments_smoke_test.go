@@ -678,3 +678,146 @@ func TestBlockedDeferHandoffFragmentRenders(t *testing.T) {
 		}
 	}
 }
+
+// TestLoopDriverGuidelinesFragmentsRender is a smoke test for the two
+// beads-issues/shared/loop-driver-guidelines-{common,parallel} fragments:
+// renders the 3 loop-driver-shaped consumers and asserts each variant's
+// hallmarks (per-caller MilestoneList for the common fragment; per-caller
+// Chain/LabelList for the parallel fragment; and the constraint that the
+// parallel fragment is present in the two dispatch drivers but absent
+// from publish-post, which is a label-only driver).
+func TestLoopDriverGuidelinesFragmentsRender(t *testing.T) {
+	prev := CurrentFragments()
+	t.Cleanup(func() { SetCurrentFragments(prev) })
+
+	builtinDir := "../../config/prompts/builtin"
+	reg, loadErrs, err := LoadFragmentsFromDir(builtinDir)
+	if err != nil {
+		t.Fatalf("LoadFragmentsFromDir(builtin): %v", err)
+	}
+	if len(loadErrs) != 0 {
+		t.Fatalf("LoadFragmentsFromDir(builtin) per-file errors: %+v", loadErrs)
+	}
+	SetCurrentFragments(reg)
+
+	list, err := LoadPromptsFromDir(builtinDir)
+	if err != nil {
+		t.Fatalf("LoadPromptsFromDir(builtin): %v", err)
+	}
+	byName := map[string]string{}
+	for _, p := range list {
+		byName[p.Name] = p.Content
+	}
+
+	ctx := &cel.PromptEnabledContext{
+		Session: cel.SessionContext{ID: "sess-1", Name: "N", HasMessages: true, BeadsIssue: "mitto-abc", HasBeadsIssue: true},
+		Args:    map[string]string{"IssueID": "mitto-abc"},
+	}
+	funcs := cel.BuildTemplateFuncMap(ctx)
+
+	// Common-fragment hallmarks that MUST appear verbatim in every consumer.
+	commonHallmarks := []string{
+		"**Live state only.** Always re-read labels via `bd show --json`",
+		"**Decide autonomously; never guess.**",
+		"**Silent unless it matters.** On scheduled runs, `mitto_ui_notify`",
+		"**Always log to the tracker** with `bd comment`",
+	}
+
+	// (name, milestoneList, chain, labelList, splitAntipattern, wantsParallel)
+	type consumer struct {
+		name             string
+		milestoneList    string
+		chain            string
+		labelList        string
+		splitAntipattern string
+		wantsParallel    bool
+	}
+	consumers := []consumer{
+		{
+			name:             "Loop fixing bug",
+			milestoneList:    "phase dispatched, fixed, blocked/deferred, or final stop",
+			chain:            "`researched` → `reproduced` → `fixed`",
+			labelList:        "`researched`/`reproduced`/`fixed`",
+			splitAntipattern: "a single-root-cause fix or work that shares files",
+			wantsParallel:    true,
+		},
+		{
+			name:             "Loop implementing feature",
+			milestoneList:    "phase dispatched, verified, blocked/deferred, or final stop",
+			chain:            "`planned` → `implemented` → `tested` → `verified`",
+			labelList:        "`planned`/`implemented`/`tested`/`verified`",
+			splitAntipattern: "a tightly-coupled increment or work that shares files",
+			wantsParallel:    true,
+		},
+		{
+			name:          "Publish post",
+			milestoneList: "stage advanced, published, blocked/deferred, or final stop",
+			wantsParallel: false,
+		},
+	}
+
+	// Parallel-fragment hallmarks (leader phrases from each of the 3 bullets).
+	parallelHallmarks := []string{
+		"**One phase per run.** Dispatch a single phase prompt",
+		"**Parallelize only when genuinely independent.**",
+		"**Never do the phase work inline.**",
+	}
+
+	for _, c := range consumers {
+		body, ok := byName[c.name]
+		if !ok {
+			t.Errorf("prompt %q not found", c.name)
+			continue
+		}
+		out, err := RenderPromptTemplate(c.name, body, ctx, funcs)
+		if err != nil {
+			t.Errorf("render %q: %v", c.name, err)
+			continue
+		}
+
+		// Common fragment: always present, all 4 hallmarks + per-caller
+		// MilestoneList substring.
+		for _, h := range commonHallmarks {
+			if !strings.Contains(out, h) {
+				t.Errorf("%q: missing common hallmark %q", c.name, h)
+			}
+		}
+		if !strings.Contains(out, "meaningful milestones ("+c.milestoneList+").") {
+			t.Errorf("%q: missing MilestoneList %q", c.name, c.milestoneList)
+		}
+
+		// Parallel fragment: present iff wantsParallel. Also check per-caller
+		// Chain / LabelList / SplitAntipattern substitutions.
+		if c.wantsParallel {
+			for _, h := range parallelHallmarks {
+				if !strings.Contains(out, h) {
+					t.Errorf("%q: missing parallel hallmark %q", c.name, h)
+				}
+			}
+			if !strings.Contains(out, "single phase prompt ("+c.chain+")") {
+				t.Errorf("%q: missing Chain %q", c.name, c.chain)
+			}
+			if !strings.Contains(out, "`bd update ... --add-label` for\n  "+c.labelList+" inside") {
+				t.Errorf("%q: missing LabelList %q", c.name, c.labelList)
+			}
+			if !strings.Contains(out, "never\n  split "+c.splitAntipattern+".") {
+				t.Errorf("%q: missing SplitAntipattern %q", c.name, c.splitAntipattern)
+			}
+		} else {
+			for _, h := range parallelHallmarks {
+				if strings.Contains(out, h) {
+					t.Errorf("%q: unexpected parallel hallmark %q (should be absent for label-only drivers)", c.name, h)
+				}
+			}
+			// Publish-post keeps its 2 caller-unique bullets inline.
+			for _, want := range []string{
+				"**One stage per run.** Add a single next label",
+				"**Publish step is a placeholder.**",
+			} {
+				if !strings.Contains(out, want) {
+					t.Errorf("%q: missing caller-unique bullet %q", c.name, want)
+				}
+			}
+		}
+	}
+}

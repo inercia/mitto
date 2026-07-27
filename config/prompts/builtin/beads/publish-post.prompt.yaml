@@ -227,14 +227,9 @@ prompt: |
 
   - **One stage per run.** Add a single next label (`drafted` → `reviewed` → `published`),
     then end the turn. Never skip a stage or add two labels at once.
-  - **Live state only.** Always re-read labels via `bd show --json` at the start of the
-    run; never assume labels from a prior run or from `Item.*`.
-  - **Decide autonomously; never guess.** The only time you must not proceed is when
-    something is genuinely unclear/unsolvable without the user — then use Step 4.
+  {{ template "beads-issues/shared/loop-driver-guidelines-common" (dict
+      "MilestoneList" "stage advanced, published, blocked/deferred, or final stop"
+  ) }}
   - **Publish step is a placeholder.** The `Step 3c` command block above is intentionally
     a placeholder; wire it to your project's real publish/deploy command before relying
     on this driver in a live blog workflow.
-  - **Silent unless it matters.** On scheduled runs, `mitto_ui_notify` only for
-    meaningful milestones (stage advanced, published, blocked/deferred, or final stop).
-  - **Always log to the tracker** with `bd comment` so progress is auditable even when
-    you stay silent in the UI.

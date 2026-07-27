@@ -324,27 +324,11 @@ prompt: |
 
   ## Guidelines
 
-  - **One phase per run.** Dispatch a single phase prompt (`planned` → `implemented` →
-    `tested` → `verified`) via `mitto_conversation_send_prompt`, then end the turn.
-    Never skip a stage or dispatch two at once. The sole exception is **Step 3f (Parallel
-    fan-out)**, which resolves one genuinely decomposable stage across parallel children
-    within a single run.
-  - **Parallelize only when genuinely independent.** Prefer the single self-send phase by
-    default. Only fan out (Step 3f) when the stage's work splits into disjoint,
-    non-conflicting parts with no interdependencies and children can be spawned; never
-    split a tightly-coupled increment or work that shares files.
-  - **Never do the phase work inline.** The whole point of this driver is per-phase
-    model tiering. If you catch yourself running `bd update ... --add-label` for
-    `planned`/`implemented`/`tested`/`verified` inside *this* prompt, stop — that is the
-    phase prompt's job. This driver only labels `needs-human` (Step 4) and closes on
-    Done. The one documented exception is **Step 3f**: when a stage is distributed across
-    parallel children, this driver adds that stage's label itself after synthesizing and
-    verifying the children's reports.
-  - **Live state only.** Always re-read labels via `bd show --json` at the start of the
-    run; never assume labels from a prior run or from `Item.*`.
-  - **Decide autonomously; never guess.** The only time you must not proceed is when
-    something is genuinely unclear/unsolvable without the user — then use Step 4.
-  - **Silent unless it matters.** On scheduled runs, `mitto_ui_notify` only for
-    meaningful milestones (phase dispatched, verified, blocked/deferred, or final stop).
-  - **Always log to the tracker** with `bd comment` so progress is auditable even when
-    you stay silent in the UI.
+  {{ template "beads-issues/shared/loop-driver-guidelines-parallel" (dict
+      "Chain"            "`planned` → `implemented` → `tested` → `verified`"
+      "SplitAntipattern" "a tightly-coupled increment or work that shares files"
+      "LabelList"        "`planned`/`implemented`/`tested`/`verified`"
+  ) }}
+  {{ template "beads-issues/shared/loop-driver-guidelines-common" (dict
+      "MilestoneList" "phase dispatched, verified, blocked/deferred, or final stop"
+  ) }}

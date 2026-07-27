@@ -1,0 +1,33 @@
+{{/*
+  beads-issues/shared/loop-driver-guidelines-common — the 4 "## Guidelines"
+  bullets shared by all three loop-driver-shaped prompts (loop-fixing-bug,
+  loop-implementing-feature, publish-post): Live state / Decide
+  autonomously / Silent unless it matters / Always log to the tracker.
+
+  Callers pass the caller-specific milestone list spliced into the "Silent
+  unless it matters" bullet:
+
+      {{ template "beads-issues/shared/loop-driver-guidelines-common" (dict
+          "MilestoneList" "phase dispatched, fixed, blocked/deferred, or final stop"
+      ) }}
+
+  Parameters:
+    MilestoneList — comma-separated list of the milestones that warrant a
+                    `mitto_ui_notify` call on scheduled runs. Spliced into
+                    the parenthetical at the end of the "Silent unless it
+                    matters" bullet.
+
+  The output is column-0 text (matches the existing beads-issues/shared/*
+  fragments' convention). The caller's YAML `content: |` scalar's own
+  indentation is applied by the YAML loader before the template engine
+  runs, so this fragment renders at the same visible indent as the
+  caller's surrounding bullets — no double-indentation.
+*/ -}}
+- **Live state only.** Always re-read labels via `bd show --json` at the start of the
+  run; never assume labels from a prior run or from `Item.*`.
+- **Decide autonomously; never guess.** The only time you must not proceed is when
+  something is genuinely unclear/unsolvable without the user — then use Step 4.
+- **Silent unless it matters.** On scheduled runs, `mitto_ui_notify` only for
+  meaningful milestones ({{ .MilestoneList }}).
+- **Always log to the tracker** with `bd comment` so progress is auditable even when
+  you stay silent in the UI.
