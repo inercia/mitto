@@ -275,14 +275,30 @@ export function useBackgroundNotifications({
         );
       }
 
-      // Show in-app toast. When the notification carries a session_id, clicking
-      // it brings that conversation into focus (leaving the beads view if open).
+      // Show in-app toast. Click precedence:
+      //  1. beads_issue → open the beads viewer for that issue (takes priority
+      //     because a bead-scoped notification is implicitly about the bead,
+      //     not the conversation). Guarded on window.mittoOpenBeadsIssue so
+      //     old/stripped frontends no-op instead of throwing.
+      //  2. session_id → focus that conversation (pre-existing behavior).
+      //  3. otherwise non-clickable.
+      let onClick = null;
+      if (data.beads_issue) {
+        const beadsIssue = data.beads_issue;
+        onClick = () => {
+          if (typeof window.mittoOpenBeadsIssue === "function") {
+            window.mittoOpenBeadsIssue(beadsIssue);
+          }
+        };
+      } else if (data.session_id) {
+        onClick = () => focusSession(data.session_id);
+      }
       showToast({
         style: data.style || "info",
         title: data.title || "Notification",
         message: data.message || "",
         duration: data.style === "error" ? 8000 : 5000,
-        onClick: data.session_id ? () => focusSession(data.session_id) : null,
+        onClick,
       });
     };
     window.addEventListener("mitto:notification", handleNotification);

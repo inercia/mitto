@@ -171,6 +171,7 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 			"native=true shows a native OS notification (macOS only) in addition to the in-app toast. " +
 			"sound=true plays a notification sound. " +
 			"sticky=true keeps the native notification in Notification Center until the user dismisses it (default: false, auto-removes after 5s). " +
+			"beads_issue is an optional bead ID (e.g. 'mitto-abc') — when set, clicking the toast opens the beads viewer for that issue (takes precedence over session-focus fallback; no-op if the frontend cannot resolve the id). " +
 			"Requires 'Can prompt user' flag to be enabled. " +
 			selfIDNote,
 	}, s.handleUINotify)
@@ -193,6 +194,7 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 			"native=true shows a native OS notification (macOS only) in addition to the in-app toast. " +
 			"sound=true plays a notification sound. " +
 			"sticky=true keeps the native notification in Notification Center until the user dismisses it (default: false, auto-removes after 5s). " +
+			"beads_issue is an optional bead ID (e.g. 'mitto-abc') — when set, clicking the toast opens the beads viewer for that issue (takes precedence over session-focus fallback; no-op if the frontend cannot resolve the id). " +
 			"Requires 'Can prompt user' flag to be enabled on the caller session when the caller has a registered session; " +
 			"unregistered callers (auxiliary sessions) are allowed as long as they supply a valid workspace_uuid. " +
 			selfIDNote,

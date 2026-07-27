@@ -199,6 +199,11 @@ type UINotifyRequest struct {
 	// Sticky keeps the native notification in Notification Center until the user dismisses it.
 	// When false (default), the notification auto-removes after 5 seconds.
 	Sticky bool `json:"sticky,omitempty"`
+	// BeadsIssue is an optional bead ID (e.g. "mitto-abc"). When set, clicking
+	// the toast opens the beads viewer for that issue via the frontend's
+	// window.mittoOpenBeadsIssue global, taking precedence over any
+	// session-focus fallback. Zero-value = today's behavior.
+	BeadsIssue string `json:"beads_issue,omitempty"`
 }
 
 // UIPrompter allows MCP tools to display interactive prompts in the UI.

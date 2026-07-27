@@ -2984,12 +2984,13 @@ func (c *SessionWSClient) OnNotification(req conversation.UINotifyRequest) {
 			"style", req.Style)
 	}
 	c.sendMessage(WSMsgTypeNotification, map[string]interface{}{
-		"session_id": c.sessionID,
-		"title":      req.Title,
-		"message":    req.Message,
-		"style":      req.Style,
-		"sound":      req.Sound,
-		"native":     req.Native,
-		"sticky":     req.Sticky,
+		"session_id":  c.sessionID,
+		"title":       req.Title,
+		"message":     req.Message,
+		"style":       req.Style,
+		"sound":       req.Sound,
+		"native":      req.Native,
+		"sticky":      req.Sticky,
+		"beads_issue": req.BeadsIssue,
 	})
 }

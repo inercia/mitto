@@ -507,13 +507,14 @@ type UIFormOutput struct {
 
 // UINotifyInput is the input for the mitto_ui_notify tool.
 type UINotifyInput struct {
-	SelfID  string `json:"self_id"`           // YOUR session ID (the caller)
-	Title   string `json:"title"`             // Notification title (required)
-	Message string `json:"message,omitempty"` // Optional body text
-	Style   string `json:"style,omitempty"`   // "info" (default), "success", "warning", "error"
-	Sound   bool   `json:"sound,omitempty"`   // Play notification sound
-	Native  bool   `json:"native,omitempty"`  // Show native OS notification if available
-	Sticky  bool   `json:"sticky,omitempty"`  // Keep notification in Notification Center until dismissed
+	SelfID     string `json:"self_id"`               // YOUR session ID (the caller)
+	Title      string `json:"title"`                 // Notification title (required)
+	Message    string `json:"message,omitempty"`     // Optional body text
+	Style      string `json:"style,omitempty"`       // "info" (default), "success", "warning", "error"
+	Sound      bool   `json:"sound,omitempty"`       // Play notification sound
+	Native     bool   `json:"native,omitempty"`      // Show native OS notification if available
+	Sticky     bool   `json:"sticky,omitempty"`      // Keep notification in Notification Center until dismissed
+	BeadsIssue string `json:"beads_issue,omitempty"` // Optional bead ID (e.g. "mitto-abc"); makes the toast open the beads viewer on click
 }
 
 // UINotifyOutput is the output for the mitto_ui_notify tool.
@@ -529,14 +530,15 @@ type UINotifyOutput struct {
 // executing close-phase (conversationClosed) processors — can still surface
 // toasts to the user (mitto-6bn).
 type WorkspaceUINotifyInput struct {
-	SelfID        string `json:"self_id"`           // Caller session ID (for logging/audit; not required to resolve to a live session)
-	WorkspaceUUID string `json:"workspace_uuid"`    // Target workspace UUID (required)
-	Title         string `json:"title"`             // Notification title (required)
-	Message       string `json:"message,omitempty"` // Optional body text
-	Style         string `json:"style,omitempty"`   // "info" (default), "success", "warning", "error"
-	Sound         bool   `json:"sound,omitempty"`   // Play notification sound
-	Native        bool   `json:"native,omitempty"`  // Show native OS notification if available
-	Sticky        bool   `json:"sticky,omitempty"`  // Keep native notification in Notification Center until dismissed
+	SelfID        string `json:"self_id"`               // Caller session ID (for logging/audit; not required to resolve to a live session)
+	WorkspaceUUID string `json:"workspace_uuid"`        // Target workspace UUID (required)
+	Title         string `json:"title"`                 // Notification title (required)
+	Message       string `json:"message,omitempty"`     // Optional body text
+	Style         string `json:"style,omitempty"`       // "info" (default), "success", "warning", "error"
+	Sound         bool   `json:"sound,omitempty"`       // Play notification sound
+	Native        bool   `json:"native,omitempty"`      // Show native OS notification if available
+	Sticky        bool   `json:"sticky,omitempty"`      // Keep native notification in Notification Center until dismissed
+	BeadsIssue    string `json:"beads_issue,omitempty"` // Optional bead ID (e.g. "mitto-abc"); makes the toast open the beads viewer on click
 }
 
 // WorkspaceUINotifyOutput is the output for the mitto_workspace_ui_notify tool.

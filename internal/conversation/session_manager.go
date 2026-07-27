@@ -1221,6 +1221,7 @@ func (sm *SessionManager) BroadcastWorkspaceUINotify(workspaceUUID, workspaceNam
 		"sound":          req.Sound,
 		"native":         req.Native,
 		"sticky":         req.Sticky,
+		"beads_issue":    req.BeadsIssue,
 	})
 
 	if sm.logger != nil {

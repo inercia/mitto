@@ -291,6 +291,59 @@ func TestHandleWorkspaceUINotify_TruncatesTitleAndMessage(t *testing.T) {
 	}
 }
 
+// TestHandleWorkspaceUINotify_BeadsIssueRoundTrip verifies the mitto-9yz
+// contract: an optional beads_issue field on WorkspaceUINotifyInput survives
+// end-to-end into the recorded BroadcastWorkspaceUINotify call's
+// UINotifyRequest. The zero-value case is covered by the pre-existing
+// TestHandleWorkspaceUINotify_Success (asserts today's behavior is preserved).
+func TestHandleWorkspaceUINotify_BeadsIssueRoundTrip(t *testing.T) {
+	ws := &config.WorkspaceSettings{UUID: "w", Name: "w", WorkingDir: "/x"}
+	srv, sm, sid := newServerForWorkspaceNotify(t,
+		map[string]*config.WorkspaceSettings{"w": ws}, true)
+
+	_, out, err := srv.handleWorkspaceUINotify(context.Background(), nil, WorkspaceUINotifyInput{
+		SelfID:        sid,
+		WorkspaceUUID: "w",
+		Title:         "@mitto mention addressed",
+		Message:       "on mitto-abc",
+		BeadsIssue:    "mitto-abc",
+	})
+	if err != nil || !out.Success {
+		t.Fatalf("handleWorkspaceUINotify: err=%v success=%v", err, out.Success)
+	}
+	calls := sm.recorded()
+	if len(calls) != 1 {
+		t.Fatalf("broadcast count=%d, want 1", len(calls))
+	}
+	if got := calls[0].req.BeadsIssue; got != "mitto-abc" {
+		t.Errorf("BeadsIssue not propagated: got %q, want %q", got, "mitto-abc")
+	}
+}
+
+// TestHandleWorkspaceUINotify_BeadsIssueOmittedByDefault asserts the
+// zero-value / omitted-field path: when the caller doesn't set BeadsIssue,
+// the recorded UINotifyRequest carries the empty string (matching today's
+// byte-identical wire behavior post-omitempty).
+func TestHandleWorkspaceUINotify_BeadsIssueOmittedByDefault(t *testing.T) {
+	ws := &config.WorkspaceSettings{UUID: "w", Name: "w", WorkingDir: "/x"}
+	srv, sm, sid := newServerForWorkspaceNotify(t,
+		map[string]*config.WorkspaceSettings{"w": ws}, true)
+
+	_, _, err := srv.handleWorkspaceUINotify(context.Background(), nil, WorkspaceUINotifyInput{
+		SelfID: sid, WorkspaceUUID: "w", Title: "plain",
+	})
+	if err != nil {
+		t.Fatalf("handleWorkspaceUINotify: %v", err)
+	}
+	calls := sm.recorded()
+	if len(calls) != 1 {
+		t.Fatalf("broadcast count=%d, want 1", len(calls))
+	}
+	if calls[0].req.BeadsIssue != "" {
+		t.Errorf("BeadsIssue should default to empty, got %q", calls[0].req.BeadsIssue)
+	}
+}
+
 // TestHandleWorkspaceUINotify_PermissionDenied verifies the permission gate
 // fires when the caller *is* a registered session but lacks CanPromptUser.
 func TestHandleWorkspaceUINotify_PermissionDenied(t *testing.T) {

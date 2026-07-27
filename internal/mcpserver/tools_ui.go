@@ -480,18 +480,20 @@ func (s *Server) handleUINotify(_ context.Context, req *mcp.CallToolRequest, inp
 	}
 
 	notifyReq := UINotifyRequest{
-		Title:   string(title),
-		Message: string(message),
-		Style:   style,
-		Sound:   input.Sound,
-		Native:  input.Native,
-		Sticky:  input.Sticky,
+		Title:      string(title),
+		Message:    string(message),
+		Style:      style,
+		Sound:      input.Sound,
+		Native:     input.Native,
+		Sticky:     input.Sticky,
+		BeadsIssue: input.BeadsIssue,
 	}
 
 	s.logger.Debug("UI notify dispatched",
 		"session_id", realSessionID,
 		"title", notifyReq.Title,
-		"style", style)
+		"style", style,
+		"beads_issue", notifyReq.BeadsIssue)
 
 	// Fire-and-forget — UINotify is non-blocking
 	if err := reg.uiPrompter.UINotify(notifyReq); err != nil {
@@ -585,12 +587,13 @@ func (s *Server) handleWorkspaceUINotify(_ context.Context, req *mcp.CallToolReq
 	}
 
 	notifyReq := UINotifyRequest{
-		Title:   string(title),
-		Message: string(message),
-		Style:   style,
-		Sound:   input.Sound,
-		Native:  input.Native,
-		Sticky:  input.Sticky,
+		Title:      string(title),
+		Message:    string(message),
+		Style:      style,
+		Sound:      input.Sound,
+		Native:     input.Native,
+		Sticky:     input.Sticky,
+		BeadsIssue: input.BeadsIssue,
 	}
 
 	s.logger.Debug("Workspace UI notify dispatched",
@@ -598,7 +601,8 @@ func (s *Server) handleWorkspaceUINotify(_ context.Context, req *mcp.CallToolReq
 		"workspace_uuid", input.WorkspaceUUID,
 		"workspace_name", ws.Name,
 		"title", notifyReq.Title,
-		"style", style)
+		"style", style,
+		"beads_issue", notifyReq.BeadsIssue)
 
 	s.sessionManager.BroadcastWorkspaceUINotify(input.WorkspaceUUID, ws.Name, ws.WorkingDir, notifyReq)
 

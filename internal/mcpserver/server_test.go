@@ -6474,10 +6474,12 @@ func TestArchiveConversation_ChildNonParentRejected(t *testing.T) {
 
 // mockUIPrompter is a mock UIPrompter for testing handleUIOptions.
 type mockUIPrompter struct {
-	mu       sync.Mutex
-	response UIPromptResponse
-	err      error
-	calls    []UIPromptRequest
+	mu          sync.Mutex
+	response    UIPromptResponse
+	err         error
+	calls       []UIPromptRequest
+	notifyCalls []UINotifyRequest
+	notifyErr   error
 }
 
 func (m *mockUIPrompter) UIPrompt(_ context.Context, req UIPromptRequest) (UIPromptResponse, error) {
@@ -6489,7 +6491,12 @@ func (m *mockUIPrompter) UIPrompt(_ context.Context, req UIPromptRequest) (UIPro
 
 func (m *mockUIPrompter) DismissPrompt(_ string) {}
 
-func (m *mockUIPrompter) UINotify(_ UINotifyRequest) error { return nil }
+func (m *mockUIPrompter) UINotify(req UINotifyRequest) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.notifyCalls = append(m.notifyCalls, req)
+	return m.notifyErr
+}
 
 func (m *mockUIPrompter) lastCall() UIPromptRequest {
 	m.mu.Lock()
@@ -6498,6 +6505,16 @@ func (m *mockUIPrompter) lastCall() UIPromptRequest {
 		return UIPromptRequest{}
 	}
 	return m.calls[len(m.calls)-1]
+}
+
+// recordedNotifies returns a copy of every UINotify call the prompter has
+// received. Used by handler round-trip tests (e.g. mitto-9yz).
+func (m *mockUIPrompter) recordedNotifies() []UINotifyRequest {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]UINotifyRequest, len(m.notifyCalls))
+	copy(out, m.notifyCalls)
+	return out
 }
 
 // newServerWithUIPrompter creates a test server with a session that has a UIPrompter and can_prompt_user flag.
