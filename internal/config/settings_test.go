@@ -1174,3 +1174,64 @@ func TestSessionConfig_GetStartupResumeConcurrency(t *testing.T) {
 		t.Errorf("positive.GetStartupResumeConcurrency() = %d, want 8", got)
 	}
 }
+
+// TestLoadSettings_BeadsReadCacheTTL verifies that a settings.json with
+// web.beads.read_cache_ttl parses to the expected duration via
+// EffectiveReadCacheTTL (mitto-9ni).
+func TestLoadSettings_BeadsReadCacheTTL(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv(appdir.MittoDirEnv, tmpDir)
+	appdir.ResetCache()
+	t.Cleanup(appdir.ResetCache)
+
+	settingsPath := filepath.Join(tmpDir, appdir.SettingsFileName)
+	customSettings := `{
+		"web": {
+			"beads": {
+				"read_cache_ttl": "5m"
+			}
+		}
+	}`
+	if err := os.WriteFile(settingsPath, []byte(customSettings), 0644); err != nil {
+		t.Fatalf("failed to create test settings.json: %v", err)
+	}
+
+	cfg, err := LoadSettings()
+	if err != nil {
+		t.Fatalf("LoadSettings() failed: %v", err)
+	}
+	if cfg.Web.Beads == nil {
+		t.Fatal("Web.Beads should not be nil")
+	}
+	if got, want := cfg.Web.Beads.ReadCacheTTL, "5m"; got != want {
+		t.Errorf("ReadCacheTTL = %q, want %q", got, want)
+	}
+	if got, want := cfg.Web.Beads.EffectiveReadCacheTTL(), 5*time.Minute; got != want {
+		t.Errorf("EffectiveReadCacheTTL() = %v, want %v", got, want)
+	}
+}
+
+// TestWebBeadsConfig_EffectiveReadCacheTTL_Fallback verifies that empty,
+// invalid, zero, and negative durations all fall back to the mirror default,
+// and that a nil receiver is also safe (mitto-9ni).
+func TestWebBeadsConfig_EffectiveReadCacheTTL_Fallback(t *testing.T) {
+	cases := []struct {
+		name string
+		in   *WebBeadsConfig
+	}{
+		{"nil receiver", nil},
+		{"empty string", &WebBeadsConfig{ReadCacheTTL: ""}},
+		{"unparseable", &WebBeadsConfig{ReadCacheTTL: "not-a-duration"}},
+		{"zero", &WebBeadsConfig{ReadCacheTTL: "0s"}},
+		{"negative", &WebBeadsConfig{ReadCacheTTL: "-5m"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := tc.in.EffectiveReadCacheTTL()
+			if got != defaultBeadsReadCacheTTL {
+				t.Errorf("EffectiveReadCacheTTL() = %v, want default %v",
+					got, defaultBeadsReadCacheTTL)
+			}
+		})
+	}
+}

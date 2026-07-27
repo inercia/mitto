@@ -9,11 +9,21 @@ import (
 	"golang.org/x/sync/singleflight"
 )
 
-// defaultCacheTTL is the backstop expiry for cached read payloads. Writer-side
-// invalidation is the primary freshness mechanism; the TTL just bounds staleness
-// when an external process mutates the bd database without going through this
-// CachingClient (e.g. bd run manually from the shell).
-const defaultCacheTTL = 60 * time.Second
+// DefaultCacheTTL is the backstop expiry for cached read payloads. Writer-side
+// invalidation (defer c.Invalidate(dir) on every mutating method) plus the
+// .beads/ fsnotify watcher are the primary freshness mechanisms; this TTL only
+// bounds staleness in the corner cases those two paths can miss:
+//   - fsnotify holes on NFS / SMB / other network mounts,
+//   - Linux inotify per-user watch-limit exhaustion,
+//   - the watch-registration race (a workspace read before its .beads/ watch is
+//     installed),
+//   - the 2 s BeadsSelfSuppressGrace window hiding a rapid external write.
+//
+// A 10 min backstop is a substantial hit-rate win over the historical 60 s
+// default (mitto-9ni) while remaining a strict upper bound for the corner
+// cases above. Overridable per-deployment via web.beads.read_cache_ttl in
+// settings.json / .mittorc.
+const DefaultCacheTTL = 10 * time.Minute
 
 // cacheEntry is a single cached read payload. For JSON reads (List, Ready,
 // Status, ListAllLabels) payload holds the raw JSON bytes. For ConfigShow the
@@ -71,7 +81,21 @@ type CacheMetrics struct {
 func NewCachingClient(inner Client) *CachingClient {
 	return &CachingClient{
 		inner:   inner,
-		ttl:     defaultCacheTTL,
+		ttl:     DefaultCacheTTL,
+		entries: make(map[string]map[string]cacheEntry),
+	}
+}
+
+// NewCachingClientWithTTL wraps inner with an in-memory read cache using
+// the supplied ttl. Non-positive ttl falls back to DefaultCacheTTL so
+// callers can pass a config-derived value without pre-validation.
+func NewCachingClientWithTTL(inner Client, ttl time.Duration) *CachingClient {
+	if ttl <= 0 {
+		ttl = DefaultCacheTTL
+	}
+	return &CachingClient{
+		inner:   inner,
+		ttl:     ttl,
 		entries: make(map[string]map[string]cacheEntry),
 	}
 }

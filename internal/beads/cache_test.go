@@ -548,6 +548,42 @@ func TestCachingClient_MetricsTTLInvalidation(t *testing.T) {
 	}
 }
 
+// TestNewCachingClientWithTTL_UsesSuppliedTTL verifies that a client constructed
+// via the ttl-aware constructor honors the supplied TTL for eviction (mitto-9ni).
+func TestNewCachingClientWithTTL_UsesSuppliedTTL(t *testing.T) {
+	dir := initializedDir(t)
+	fake := &fakeClient{}
+	c := NewCachingClientWithTTL(fake, 20*time.Millisecond)
+
+	if _, err := c.List(context.Background(), dir); err != nil {
+		t.Fatalf("List #1: %v", err)
+	}
+	time.Sleep(30 * time.Millisecond)
+	if _, err := c.List(context.Background(), dir); err != nil {
+		t.Fatalf("List #2: %v", err)
+	}
+	if fake.listCalls != 2 {
+		t.Errorf("listCalls = %d, want 2 (supplied TTL should force re-fetch)", fake.listCalls)
+	}
+	m := c.Metrics()
+	if m.InvalidationsTTL != 1 {
+		t.Errorf("InvalidationsTTL = %d, want 1", m.InvalidationsTTL)
+	}
+}
+
+// TestNewCachingClientWithTTL_FallsBackOnNonPositive verifies that zero and
+// negative durations fall back to DefaultCacheTTL (mitto-9ni).
+func TestNewCachingClientWithTTL_FallsBackOnNonPositive(t *testing.T) {
+	fake := &fakeClient{}
+	for _, ttl := range []time.Duration{0, -1 * time.Second, -1 * time.Hour} {
+		c := NewCachingClientWithTTL(fake, ttl)
+		if c.ttl != DefaultCacheTTL {
+			t.Errorf("NewCachingClientWithTTL(%v).ttl = %v, want DefaultCacheTTL (%v)",
+				ttl, c.ttl, DefaultCacheTTL)
+		}
+	}
+}
+
 func TestCachingClient_MetricsSingleflightShared(t *testing.T) {
 	dir := initializedDir(t)
 	fake := &fakeClient{blockList: make(chan struct{})}

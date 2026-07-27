@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -637,6 +638,35 @@ type WebBeadsConfig struct {
 	// Mitto against a shared remote-backed clone can set this to false to
 	// forbid UI-initiated migrations entirely. See mitto-erry.
 	AllowMigrateFromUI *bool `json:"allow_migrate_from_ui,omitempty" yaml:"allow_migrate_from_ui,omitempty"`
+
+	// ReadCacheTTL is the backstop expiry for the in-memory beads read
+	// cache (enabled by --beads-cache). Any positive Go duration string
+	// (e.g. "10m", "2h"). Empty, missing, or non-positive falls back to
+	// beads.DefaultCacheTTL (10 min). Freshness is primarily driven by
+	// writer-side invalidation and the .beads/ fsnotify watcher; this
+	// TTL only bounds staleness in the corner cases fsnotify can miss
+	// (NFS/SMB mounts, inotify limits, watch-registration race, the 2 s
+	// self-suppress window). See mitto-9ni.
+	ReadCacheTTL string `json:"read_cache_ttl,omitempty" yaml:"read_cache_ttl,omitempty"`
+}
+
+// defaultBeadsReadCacheTTL mirrors beads.DefaultCacheTTL to avoid an import
+// cycle between internal/config and internal/beads. Source of truth is
+// beads.DefaultCacheTTL — keep the two in sync. See mitto-9ni.
+const defaultBeadsReadCacheTTL = 10 * time.Minute
+
+// EffectiveReadCacheTTL returns the parsed ReadCacheTTL, falling back to the
+// default (mirrors beads.DefaultCacheTTL) when the string is empty, unparseable,
+// or non-positive. Nil-safe so callers do not need to pre-validate the pointer.
+func (w *WebBeadsConfig) EffectiveReadCacheTTL() time.Duration {
+	if w == nil || w.ReadCacheTTL == "" {
+		return defaultBeadsReadCacheTTL
+	}
+	d, err := time.ParseDuration(w.ReadCacheTTL)
+	if err != nil || d <= 0 {
+		return defaultBeadsReadCacheTTL
+	}
+	return d
 }
 
 // AccessLogConfig represents access log configuration.
@@ -1336,7 +1366,8 @@ type rawConfig struct {
 			MaxWSMessageSize int64    `yaml:"max_ws_message_size"`
 		} `yaml:"security"`
 		Beads *struct {
-			AllowMigrateFromUI *bool `yaml:"allow_migrate_from_ui"`
+			AllowMigrateFromUI *bool  `yaml:"allow_migrate_from_ui"`
+			ReadCacheTTL       string `yaml:"read_cache_ttl"`
 		} `yaml:"beads"`
 	} `yaml:"web"`
 	UI *struct {
@@ -1644,6 +1675,7 @@ func Parse(data []byte) (*Config, error) {
 	if raw.Web.Beads != nil {
 		cfg.Web.Beads = &WebBeadsConfig{
 			AllowMigrateFromUI: raw.Web.Beads.AllowMigrateFromUI,
+			ReadCacheTTL:       raw.Web.Beads.ReadCacheTTL,
 		}
 	}
 

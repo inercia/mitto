@@ -840,7 +840,11 @@ func NewServer(config Config) (*Server, error) {
 	// Order (outermost → inner): CachingClient → cliClient → suppressingBeadsRunner → execRunner.
 	// Cache hits skip both the exec and the suppression window.
 	if config.BeadsCache {
-		s.beadsCache = beads.NewCachingClient(s.beads)
+		ttl := beads.DefaultCacheTTL
+		if config.MittoConfig != nil && config.MittoConfig.Web.Beads != nil {
+			ttl = config.MittoConfig.Web.Beads.EffectiveReadCacheTTL()
+		}
+		s.beadsCache = beads.NewCachingClientWithTTL(s.beads, ttl)
 		s.beads = s.beadsCache
 	}
 

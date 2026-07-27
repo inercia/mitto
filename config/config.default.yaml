@@ -215,6 +215,16 @@ web:
   #   # clone where forking the schema is unacceptable. See mitto-ukl,
   #   # mitto-erry.
   #   allow_migrate_from_ui: true
+  #
+  #   # In-memory read-cache backstop TTL. Only relevant when
+  #   # --beads-cache is enabled (default: on). Freshness is primarily
+  #   # driven by writer-side invalidation and the .beads/ fsnotify
+  #   # watcher; this TTL only bounds staleness in the corner cases
+  #   # fsnotify can miss (NFS/SMB, inotify watch-limit exhaustion,
+  #   # watch-registration race, the 2 s self-suppress window).
+  #   # Any positive Go duration string. Empty / missing / non-positive
+  #   # falls back to the default. See mitto-9ni.
+  #   read_cache_ttl: "10m"
 
   # Scanner Defense (only applies to external listener)
   # Automatically blocks IPs that exhibit scanner-like behavior:
