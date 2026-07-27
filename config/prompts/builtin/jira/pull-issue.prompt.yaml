@@ -58,7 +58,7 @@ prompt: |
   ## Step 2 — Fetch the JIRA ticket
   {{- if Cond "Tools.Names.exists(n, n.matches('(?i)jira'))" }}
 
-  Call **`jira_get_issue_jira`** for the key with `fields="*all"` and `expand="renderedFields"`.
+  Call **`jira_get_issue_jira`** for the key with `fields="*all"` and `expand="renderedFields,changelog"`. The `changelog` expansion is needed by Step 6.5 to detect a JIRA reopen after a local close.
   {{- else }}
 
   Run:
@@ -66,12 +66,13 @@ prompt: |
   ```bash
   jira issue list -q "key = <KEY>" --raw
   PAGER=cat jira issue view <KEY> --comments 200
+  PAGER=cat jira issue view <KEY> --history
   ```
 
-  Comment bodies may be omitted from list `--raw`; the `jira issue view --comments` output is what to convert.
+  Comment bodies may be omitted from list `--raw`; the `jira issue view --comments` output is what to convert. The `jira issue view --history` output supplies the status-transition changelog consumed by Step 6.5.
   {{- end }}
 
-  Capture: key, summary, status name, priority, issue type, labels, assignee, the `updated` timestamp, and every comment (id, author, created, body). For the **description** and each **comment body**, capture the **raw** field value — on JIRA Server / Data Center this is JIRA wiki markup, which Step 3 converts to Markdown. Keep the `renderedFields` HTML only as a fallback for content the converter does not handle.
+  Capture: key, summary, status name, priority, issue type, labels, assignee, the `updated` timestamp, and every comment (id, author, created, body). For the **description** and each **comment body**, capture the **raw** field value — on JIRA Server / Data Center this is JIRA wiki markup, which Step 3 converts to Markdown. Keep the `renderedFields` HTML only as a fallback for content the converter does not handle. Also capture the ticket's **status transition history** (from `changelog.histories` on the MCP path, or the `--history` output on the CLI path) — Step 6.5 walks it to find the most recent transition into a non-terminal status.
 
   ## Step 3 — JIRA wiki markup → Markdown helper
 
@@ -103,6 +104,17 @@ prompt: |
 
   In this prompt, `<bead-id>` is `{{ $target }}`.
 
+  ## Step 6.5 — Detect a JIRA reopen after a local close
+
+  Compute two timestamps used by Step 7.5's auto-reopen branch. This step only prepares data — it never writes to the bead.
+
+  - **`T_close`** — the bead's `closed_at` field from Step 1's `bd show --json`. If the bead is still open (`closed_at` is null / empty), skip the rest of this step and leave `T_reopen` unset; Step 7.5's auto-reopen branch will not fire.
+  - **`T_reopen`** — walk the JIRA ticket's `changelog.histories` (from Step 2) newest first and find the **most recent** entry whose `items[]` contains a `field == "status"` transition whose `toString` is **not** on the terminal-status allow-list from Step 7 (case-insensitive, exact match). `T_reopen` is that entry's `created` timestamp. If no such transition exists, leave `T_reopen` unset.
+
+  On the CLI fallback, `changelog.histories` is not machine-readable JSON — parse the `jira issue view <KEY> --history` output for the most recent `Status` change whose target name is not on the terminal allow-list and use that row's timestamp as `T_reopen`.
+
+  Both `T_close` and `T_reopen` are just captured here; Step 7.5 compares them.
+
   ## Step 7 — Reflect terminal JIRA status (conservative)
 
   If the JIRA ticket is in a **terminal** status and the bead is still open, close the bead:
@@ -120,6 +132,20 @@ prompt: |
   ## Step 7.5 — Reconcile inconsistencies
 
   After Step 7, check for a specific inconsistency: **the bead is closed locally but the JIRA ticket is not in a terminal status** (the terminal allow-list is the one enumerated in Step 7). If the bead's `status` is `closed` and the JIRA status `name` is **not** on that allow-list (case-insensitive, exact match), the two sides disagree about whether the work is done.
+
+  **Auto-reopen (unambiguous branch, evaluated first)** — before prompting, compare `T_reopen` and `T_close` from Step 6.5 with a **60s skew tolerance** (JIRA server time vs local `bd` time can drift). If `T_reopen` is set and `T_reopen > T_close + 60s`, the JIRA reopen strictly followed our local close — the remote team has explicitly picked the work back up and the bead should follow JIRA. Auto-reopen locally, skip the interactive prompt entirely, and record the outcome in the Step 8 summary. This is safe to do without user confirmation because reopening is strictly additive — it never drops local work — mirroring the "act automatically only when the signal is unambiguous" rule already used for closes in Step 7.
+
+  In interactive mode:
+
+  ```bash
+  bd reopen {{ $target }} --reason "Auto-reopened: JIRA <KEY> reopened at <T_reopen> after local close at <T_close>"
+  ```
+
+  Then add a Step 8 row with `↔️ reopened (JIRA reopened after local close)` in the "Change / notes" column and do **not** run the three-option prompt below for this bead.
+
+  In silent mode, preserve the "never write in silent mode" invariant: do **not** run `bd reopen`; instead record `⚠️ JIRA reopened at <T_reopen> after local close — reopen pending next interactive run` in the Step 8 table and let Step 8's `mitto_ui_notify` surface it so a human can force-run this prompt.
+
+  Fall through to the manual reconciliation prompt below only when the auto-reopen branch does **not** fire — i.e. `T_reopen` is unset (JIRA never left a terminal status, or the changelog contained no status transitions), or `T_reopen ≤ T_close + 60s` (the reopen predates or is contemporaneous with our close, so the local close was deliberate against an already-open JIRA — a human decision).
 
   **Interactive mode** — present a `mitto_ui_options` prompt with question `"Bead <beadId> is closed locally but JIRA <KEY> is still \"<status>\". How should we reconcile?"` and these options (labels exactly as shown):
 
@@ -161,4 +187,5 @@ prompt: |
   - **Good-enough conversion**: JIRA wiki markup is converted to Markdown on a best-effort basis (Step 3) — headers and code blocks are the priority; perfect fidelity is not a goal.
   - **Preserve local information**: local body edits (below the `jira-sync:end` marker) and local comments/notes (those without a `[jira]` prefix) must survive every pull. When unsure, keep the content rather than overwrite it.
   - **Terminal status (conservative)**: only close the bead when the JIRA status `name` is on the small allow-list above; never rely on `statusCategory`. A mistakenly-open bead is harmless; a mistakenly-closed one can silently drop local work.
-  - **Scope**: this prompt is pull-first — it only writes to JIRA when the user explicitly confirms a reconciliation option in Step 7.5 (close the ticket or add a `[mitto]` comment); otherwise it is read-only. It never wires dependencies (that is a bulk-sync concern) and never touches other beads. Use `JIRA: push issue` to mirror local changes back to JIRA, or `JIRA: sync tasks` for a full two-way batch sync.
+  - **Auto-reopen (unambiguous only)**: when the JIRA changelog shows a status transition into a non-terminal status **after** `bead.closed_at` (with a 60s skew tolerance), Step 7.5 auto-reopens the bead without prompting. Reopens are strictly additive — they never drop local work — which is what justifies the automatic write. When the reopen event predates the local close, or no reopen event exists, Step 7.5 falls through to the interactive three-option prompt (or the silent-mode deferred-inconsistency row) so a human decides.
+  - **Scope**: this prompt is pull-first — it only writes to JIRA when the user explicitly confirms a reconciliation option in Step 7.5 (close the ticket or add a `[mitto]` comment). It also writes locally to `bd` in Step 7.5's auto-reopen branch when the changelog shows an unambiguous post-close reopen. Otherwise it is read-only. It never wires dependencies (that is a bulk-sync concern) and never touches other beads. Use `JIRA: push issue` to mirror local changes back to JIRA, or `JIRA: sync tasks` for a full two-way batch sync.
