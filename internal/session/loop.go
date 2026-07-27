@@ -79,6 +79,11 @@ var (
 	ErrInvalidDelay = errors.New("invalid delay_seconds: must be >= 0")
 	// ErrInvalidMaxDuration is returned when max_duration_seconds is negative.
 	ErrInvalidMaxDuration = errors.New("invalid max_duration_seconds: must be >= 0")
+	// ErrRecordSentOnStoppedLoop is returned by RecordSent when it is called on
+	// a config that is already in the auto-stopped state (Enabled=false && a
+	// non-empty StoppedReason). It is a belt-and-suspenders sentinel for
+	// resurrection regressions (mitto-uun); the on-disk write still succeeds.
+	ErrRecordSentOnStoppedLoop = errors.New("record sent called on an already-stopped loop (auto-stop resurrection)")
 )
 
 // LoopTrigger defines how/when a loop prompt is fired.
@@ -450,6 +455,19 @@ func (ps *LoopStore) Set(p *LoopPrompt) error {
 		p.LastSentAt = existing.LastSentAt
 		p.IterationCount = existing.IterationCount
 		p.FirstRunAt = existing.FirstRunAt
+
+		// Sticky auto-stop (mitto-uun): once a loop has been MarkStopped'd (e.g. after
+		// reaching its max-iterations or max-duration cap), a subsequent Set() that
+		// rewrites the config with Enabled=true must not silently resurrect it. Callers
+		// that legitimately want to un-stop a loop go through Update(enabled=&true, …)
+		// (which clears StoppedReason/StoppedAt explicitly). Preserving the stopped
+		// state here closes the write-ordering / clobber path that caused the on-disk
+		// state to diverge from the runtime auto-stop across a restart.
+		if !existing.Enabled && existing.StoppedReason != "" {
+			p.Enabled = existing.Enabled
+			p.StoppedReason = existing.StoppedReason
+			p.StoppedAt = existing.StoppedAt
+		}
 	} else {
 		// Create: set created_at
 		p.CreatedAt = now
@@ -645,6 +663,14 @@ func (ps *LoopStore) ResetCounters() error {
 }
 
 // RecordSent updates the last_sent_at timestamp, increments iteration_count, and computes next_scheduled_at.
+//
+// Returns a non-nil sentinel error ErrRecordSentOnStoppedLoop wrapped alongside a
+// successful write when RecordSent is called on a config that is already in the
+// auto-stopped state (Enabled=false && StoppedReason != ""). This is a
+// belt-and-suspenders detector for the mitto-uun class of resurrection bugs:
+// callers can errors.Is-check it and log a WARN without changing behavior. The
+// on-disk write still happens (existing behavior preserved) so a caller that
+// ignores the error observes no regression.
 func (ps *LoopStore) RecordSent() error {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
@@ -653,6 +679,9 @@ func (ps *LoopStore) RecordSent() error {
 	if err != nil {
 		return err
 	}
+
+	// Sanity: detect delivery on an already-stopped loop (mitto-uun regression guard).
+	stoppedResurrection := !existing.Enabled && existing.StoppedReason != ""
 
 	now := time.Now().UTC()
 	// Set the elapsed-time anchor on the very first delivery; preserve it thereafter.
@@ -666,6 +695,9 @@ func (ps *LoopStore) RecordSent() error {
 
 	if err := fileutil.WriteJSONAtomic(ps.loopPath(), existing, 0644); err != nil {
 		return fmt.Errorf("failed to write loop file: %w", err)
+	}
+	if stoppedResurrection {
+		return ErrRecordSentOnStoppedLoop
 	}
 	return nil
 }
