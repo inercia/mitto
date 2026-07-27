@@ -1,0 +1,29 @@
+{{- /*
+  git/safe-commit — safe path-only staging + a concrete git-add / git-commit
+  skeleton carrying the conventional prefix and the `(refs <Target>)` footer
+  required by bd's commit-attach convention.
+
+  Composes `git/safe-stage` (staging discipline) with a fenced `git add` +
+  `git commit -m` block. Emits no section heading — callers control the
+  surrounding numbering.
+
+  Callers pass a dict:
+    "Type"     — conventional prefix (feat, fix, test, chore, refactor,
+                 docs). Empty string → renders `<type>` placeholder.
+    "Target"   — bead ID used as scope and refs footer. Empty string →
+                 renders `<scope>` placeholder and omits the refs footer.
+    "Summary"  — optional one-line summary hint (defaults to
+                 `<one-line summary>`).
+    "BodyHint" — optional body-line hint (defaults to
+                 `<body: what changed and why>`).
+*/ -}}
+{{- $type := .Type -}}{{- if eq $type "" }}{{ $type = "<type>" }}{{ end -}}
+{{- $scope := .Target -}}{{- if eq $scope "" }}{{ $scope = "<scope>" }}{{ end -}}
+{{- $summary := .Summary -}}{{- if eq $summary "" }}{{ $summary = "<one-line summary>" }}{{ end -}}
+{{- $body := .BodyHint -}}{{- if eq $body "" }}{{ $body = "<body: what changed and why>" }}{{ end -}}
+{{ template "git/shared/safe-stage" . }}
+
+```bash
+git add <file> ...
+git commit -m "{{ $type }}({{ $scope }}): {{ $summary }}{{ if .Target }} (refs {{ .Target }}){{ end }}" -m "{{ $body }}"
+```

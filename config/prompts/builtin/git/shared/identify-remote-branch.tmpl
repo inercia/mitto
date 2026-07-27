@@ -37,20 +37,37 @@ git symbolic-ref refs/remotes/upstream/HEAD 2>/dev/null | sed 's@^refs/remotes/@
 
 Priority: an explicit tracking branch (`@{u}`) → `upstream` remote → `origin` remote.
 
-#### Confirm with the user
+#### Proceed or confirm
 
-Confirm when: multiple remotes are configured, the detected remote differs
-from `origin`, no tracking branch and no PR was found, the branch name
-suggests a non-default target, or anything else looks non-standard.
+Detection is **unambiguous** — proceed **without asking** — when any of:
+
+- An existing PR pins the target (`gh pr view` returned a `baseRefName`).
+- The current branch has an upstream tracking ref (`@{u}` resolved).
+- Only a single remote is configured.
+- Standard fork workflow is detected: exactly two remotes named `origin`
+  and `upstream`, push-to-`origin`, PR-to-`upstream/<default>` (or
+  `origin/<default>` when `upstream` is unreachable). This is the norm,
+  not an ambiguity.
+
+State the resolved `<target-remote>/<target-branch>` and `<push-remote>`
+in one line and continue.
+
+Only ask the user when detection is **genuinely ambiguous**:
+
+- No PR, no tracking branch, and 3+ remotes are configured.
+- The detected target branch differs from the repo's default branch and
+  no PR pins it.
+- Remote names/URLs are non-standard (not `origin`/`upstream`) and no PR
+  or tracking branch resolves the choice.
 
 {{- if and .Session.IsLoop (not .Session.IsLoopForced) }}
 
-**Scheduled mode**: do not prompt — proceed only if detection is unambiguous
-(single remote, or a PR pins the target). Otherwise `mitto_ui_notify` and
-stop; a human will re-trigger the run.
+**Scheduled mode**: never prompt — proceed on unambiguous detection.
+On genuine ambiguity, `mitto_ui_notify` and stop; a human will re-trigger
+the run.
 {{- else }}
 
-**With Mitto UI**: `mitto_ui_options(self_id: "{{ .Session.ID }}", ...)` →
+**Interactive mode** (only on genuine ambiguity):
+`mitto_ui_options(self_id: "{{ .Session.ID }}", ...)` →
 "Detected target: `<target-remote>/<target-branch>`, push to `<push-remote>`. Correct?"
-**Without**: ask in the conversation.
 {{- end }}
