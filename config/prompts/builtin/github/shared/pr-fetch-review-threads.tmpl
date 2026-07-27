@@ -1,0 +1,44 @@
+{{- /*
+  github/shared/pr-fetch-review-threads — fetch every unresolved (and
+  not-outdated) review thread for a PR via GraphQL, producing a THREADS_JSON
+  array whose length is the unresolved-comment count.
+
+  `gh pr view --json reviewThreads` does NOT exist — the field is GraphQL-only.
+
+  Callers: babysit-this-pr §3c, babysit-my-prs §3d.
+
+  Placeholders substituted by the agent from the surrounding context:
+    <owner>/<repo> — the target repository (e.g. "some-org/some-repo")
+    <number>       — the PR number
+*/ -}}
+`gh pr view --json reviewThreads` is **not supported** by the `gh` CLI — the
+field only exists via GraphQL. Fetch unresolved threads with `gh api graphql`:
+
+```bash
+# Every unresolved (and not-outdated) review thread with the first comment
+# of each thread (author, path, line, body, thread id).
+REPO_OWNER=$(echo "<owner>/<repo>" | cut -d/ -f1)
+REPO_NAME=$(echo "<owner>/<repo>" | cut -d/ -f2)
+gh api graphql -f query='
+query($owner:String!,$name:String!,$number:Int!) {
+  repository(owner:$owner, name:$name) {
+    pullRequest(number:$number) {
+      reviewThreads(first:100) { nodes {
+        id isResolved isOutdated
+        comments(first:1) { nodes {
+          author { login } path line originalLine body
+        } }
+      } }
+    }
+  }
+}' -F owner="$REPO_OWNER" -F name="$REPO_NAME" -F number=<number> \
+  --jq '[.data.repository.pullRequest.reviewThreads.nodes[]
+         | select(.isResolved == false and .isOutdated == false)
+         | {id, path: .comments.nodes[0].path,
+            line: (.comments.nodes[0].line // .comments.nodes[0].originalLine),
+            author: .comments.nodes[0].author.login,
+            body: .comments.nodes[0].body}]'
+```
+
+Save the JSON array as `THREADS_JSON`. Its length is the unresolved count; if
+zero, there is nothing to address.

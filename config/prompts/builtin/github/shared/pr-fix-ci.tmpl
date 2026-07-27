@@ -1,0 +1,83 @@
+{{- /*
+  github/shared/pr-fix-ci — check CI on a PR, pull a brief failure summary,
+  notify, and (if `mitto_conversation_new` is available and no dedup match
+  exists) spawn a one-off fix child with a fully-scoped initial prompt.
+
+  Callers: babysit-this-pr §3b, babysit-my-prs §3b.
+
+  Placeholders substituted by the agent from the surrounding context:
+    <number>          — the PR number
+    <owner>/<repo>    — the target repository
+    <headRefName>     — the PR's branch
+    <baseRefName>     — the PR's base branch
+    <title>           — the PR title
+    <WORKING_MODE>    — set by github/shared/pr-working-copy-decision
+    <WORKING_PATH>    — set by github/shared/pr-working-copy-decision
+    <PR_HEAD>         — set by github/shared/pr-working-copy-decision
+*/ -}}
+Check whether CI is failing on the PR:
+
+```bash
+gh pr checks <number> --repo <owner>/<repo> --json name,state,description,detailsUrl
+```
+
+If any check is failing, this PR is **actionable**. Pull a brief failure
+summary:
+
+```bash
+gh run list --repo <owner>/<repo> --branch <headRefName> --status failure --limit 1 --json databaseId,name,conclusion
+gh run view --repo <owner>/<repo> <run-id> --log-failed 2>/dev/null | tail -80
+```
+
+Then `mitto_ui_notify` (`error`, `sound: true`, `native: true`) with the
+failing check names and a short failure summary.
+
+If `mitto_conversation_new` is available, compute the working-copy decision
+(see the `github/shared/pr-working-copy-decision` block above), then apply a
+**dedup guard**: skip spawning if an existing child titled `Fix CI for PR
+#<number>` is still running or was updated after the failing run completed —
+prefer sending a follow-up prompt to that existing child via
+`mitto_conversation_send_prompt` over spawning a duplicate.
+
+- **Interactive mode**: ask before spawning ("Yes, spawn a fix conversation" /
+  "No, just notify").
+- **Silent mode**: spawn automatically.
+
+```
+mitto_conversation_new(self_id: "{{ .Session.ID }}",
+  title: "Fix CI for PR #<number>: <title>",
+  initial_prompt: "PR #<number> (<title>) in <owner>/<repo> has failing CI checks on branch <headRefName>.
+    Failing checks: <check names>
+    Error summary: <brief failure details from logs>
+
+    Working-copy mode: <WORKING_MODE>  ('local' = reuse repo path as-is;
+                                          'worktree' = create a fresh worktree, do NOT touch the main checkout)
+    Repo path:         <WORKING_PATH>
+    PR branch:         <headRefName>   (head commit <PR_HEAD>)
+    Base branch:       <baseRefName>
+
+    Working-copy rules:
+      - If 'local': operate directly in the given repo path. If anything
+        is dirty at start, abort and re-plan in a worktree instead.
+      - If 'worktree': create a fresh worktree with
+          git -C <WORKING_PATH> fetch origin <headRefName>
+          TMPDIR=\$(mktemp -d) && git -C <WORKING_PATH> worktree add \"\$TMPDIR\" origin/<headRefName>
+        Do all edits inside \$TMPDIR. Never modify files under
+        <WORKING_PATH> itself; the user may be working there.
+
+    Please diagnose and fix the CI failures. Run the project's full local
+    gate before pushing (format → lint → unit → integration — whatever
+    the repo's Makefile or docs specify). Only push once every gate step
+    passes. Force-push with --force-with-lease.
+
+    If a failure is NOT caused by this PR (i.e. it also fails on the
+    base branch's latest commit), do not push a spurious fix; instead
+    report back with the diagnosis and file a beads issue for the
+    pre-existing failure, so the babysit parent can surface it.
+
+    When done, report back a per-check summary: which CI checks passed
+    after your push and which remain failing (with root cause).",
+  acp_server: <prefer "coding" or "fast" tagged server>)
+```
+
+If all checks are passing, this step is **not actionable**.

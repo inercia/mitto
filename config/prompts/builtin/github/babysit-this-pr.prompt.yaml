@@ -214,164 +214,25 @@ prompt: |
 
   ### 3a. Rebase if behind base
 
-  ```bash
-  gh pr view <number> --repo <owner>/<repo> --json mergeStateStatus,mergeable,baseRefName,headRefName
-  ```
-
-  If the PR is behind its base and cannot cleanly merge:
-  - Interactive mode: ask before rebasing.
-  - Silent mode: notify (`info`) and proceed.
-
-  Rebase in a temp worktree — inside a checkout of `<owner>/<repo>` (the
-  current folder if it is that repo, otherwise the temp clone from Step 1):
-
-  ```bash
-  git fetch origin <baseRefName> <headRefName>
-  TMPDIR=$(mktemp -d)
-  git worktree add "$TMPDIR" origin/<headRefName> --detach
-  cd "$TMPDIR" && git rebase origin/<baseRefName>
-  ```
-
-  - **On conflicts**: `git rebase --abort`, `git worktree remove "$TMPDIR"
-    --force`, notify (`warning`, `sound: true`, `native: true`) that manual
-    rebase is needed, and — if `mitto_conversation_new` is available and no
-    dedup match exists — spawn a one-off rebase-conflict child:
-
-    ```
-    mitto_conversation_new(self_id: "{{ .Session.ID }}",
-      title: "Rebase PR #<number>: <title>",
-      initial_prompt: "PR #<number> (<title>) in <owner>/<repo> needs rebasing onto <baseRefName> but has conflicts.
-        Check out branch <headRefName>, rebase onto origin/<baseRefName>,
-        resolve the conflicts, and force-push with --force-with-lease.
-        Never touch the main checkout at <repo path> — use a fresh worktree.",
-      acp_server: <prefer "coding" or "fast" tagged server>)
-    ```
-
-  - **On success**:
-
-    ```bash
-    git push --force-with-lease origin HEAD:refs/heads/<headRefName>
-    cd - && git worktree remove "$TMPDIR" --force
-    ```
-
-    Notify (`success`) that the PR was rebased.
-
-  If the PR is already up-to-date, this step is **not actionable**.
+  {{ template "github/shared/pr-rebase-if-behind" . }}
 
   ### 3b. Fix failing CI
 
-  ```bash
-  gh pr checks <number> --repo <owner>/<repo> --json name,state,description,detailsUrl
-  ```
+  {{ template "github/shared/pr-working-copy-decision" . }}
 
-  If any check is failing, this PR is **actionable**. Pull a brief failure
-  summary:
-
-  ```bash
-  gh run list --repo <owner>/<repo> --branch <headRefName> --status failure --limit 1 --json databaseId,name,conclusion
-  gh run view --repo <owner>/<repo> <run-id> --log-failed 2>/dev/null | tail -80
-  ```
-
-  Notify (`error`, `sound: true`, `native: true`) with the failing check
-  names and summary.
-
-  Then, if `mitto_conversation_new` is available and no dedup match exists,
-  compute the working-copy decision and spawn a one-off fix child:
-
-  ```bash
-  # Are we sitting on the PR branch, clean, at the PR's head commit?
-  CUR_BRANCH=$(git -C "<repo path>" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
-  CUR_HEAD=$(git -C "<repo path>" rev-parse HEAD 2>/dev/null || echo "")
-  PR_HEAD=$(gh pr view <number> --repo <owner>/<repo> --json headRefOid -q .headRefOid)
-  DIRTY=$(git -C "<repo path>" status --porcelain 2>/dev/null | head -c 1)
-  STAGED=$(git -C "<repo path>" diff --cached --name-only 2>/dev/null | head -c 1)
-  if [ "$CUR_BRANCH" = "<headRefName>" ] && [ "$CUR_HEAD" = "$PR_HEAD" ] \
-     && [ -z "$DIRTY" ] && [ -z "$STAGED" ]; then
-    WORKING_MODE="local"; WORKING_PATH="<repo path>"
-  else
-    WORKING_MODE="worktree"
-    WORKING_PATH="(child will create a fresh worktree via 'git worktree add')"
-  fi
-  ```
-
-  Interactive mode: ask before spawning. Silent mode: spawn automatically.
-
-  ```
-  mitto_conversation_new(self_id: "{{ .Session.ID }}",
-    title: "Fix CI for PR #<number>: <title>",
-    initial_prompt: "PR #<number> (<title>) in <owner>/<repo> has failing CI checks on branch <headRefName>.
-      Failing checks: <check names>
-      Error summary: <brief failure details from logs>
-
-      Working-copy mode: <WORKING_MODE>  ('local' = reuse repo path as-is;
-                                            'worktree' = create a fresh worktree, do NOT touch the main checkout)
-      Repo path:         <WORKING_PATH>
-      PR branch:         <headRefName>   (head commit <PR_HEAD>)
-      Base branch:       <baseRefName>
-
-      Working-copy rules:
-        - If 'local': operate directly in the given repo path. If anything
-          is dirty at start, abort and re-plan in a worktree instead.
-        - If 'worktree': create a fresh worktree with
-            git -C <WORKING_PATH> fetch origin <headRefName>
-            TMPDIR=\$(mktemp -d) && git -C <WORKING_PATH> worktree add \"\$TMPDIR\" origin/<headRefName>
-          Do all edits inside \$TMPDIR. Never modify files under
-          <WORKING_PATH> itself; the user may be working there.
-
-      Please diagnose and fix the CI failures. Run the project's full local
-      gate before pushing (format → lint → unit → integration — whatever
-      the repo's Makefile or docs specify). Only push once every gate step
-      passes. Force-push with --force-with-lease.
-
-      If a failure is NOT caused by this PR (i.e. it also fails on the
-      base branch's latest commit), do not push a spurious fix; instead
-      report back with the diagnosis and file a beads issue for the
-      pre-existing failure, so the babysit parent can surface it.
-
-      When done, report back a per-check summary: which CI checks passed
-      after your push and which remain failing (with root cause).",
-    acp_server: <prefer "coding" or "fast" tagged server>)
-  ```
-
-  If all checks pass, this step is **not actionable**.
+  {{ template "github/shared/pr-fix-ci" . }}
 
   ### 3c. Address unresolved review comments
 
-  `gh pr view --json reviewThreads` is **not supported** by the `gh` CLI —
-  fetch via GraphQL:
+  {{ template "github/shared/pr-fetch-review-threads" . }}
 
-  ```bash
-  REPO_OWNER=$(echo "<owner>/<repo>" | cut -d/ -f1)
-  REPO_NAME=$(echo "<owner>/<repo>" | cut -d/ -f2)
-  gh api graphql -f query='
-  query($owner:String!,$name:String!,$number:Int!) {
-    repository(owner:$owner, name:$name) {
-      pullRequest(number:$number) {
-        reviewThreads(first:100) { nodes {
-          id isResolved isOutdated
-          comments(first:1) { nodes {
-            author { login } path line originalLine body
-          } }
-        } }
-      }
-    }
-  }' -F owner="$REPO_OWNER" -F name="$REPO_NAME" -F number=<number> \
-    --jq '[.data.repository.pullRequest.reviewThreads.nodes[]
-           | select(.isResolved == false and .isOutdated == false)
-           | {id, path: .comments.nodes[0].path,
-              line: (.comments.nodes[0].line // .comments.nodes[0].originalLine),
-              author: .comments.nodes[0].author.login,
-              body: .comments.nodes[0].body}]'
-  ```
-
-  Save the JSON array as `THREADS_JSON`; its length is the unresolved count.
-  If 0, this step is **not actionable** — skip to 3d.
+  If the unresolved count is 0, this step is **not actionable** — skip to 3d.
 
   Otherwise this PR is **actionable**. Notify (`warning`) with the count.
 
   Dedup guard: skip spawning if an existing child titled `Address review
   comments on PR #<number>` is still running or was updated after the newest
-  thread's `createdAt`. Otherwise, compute the same working-copy decision as
+  thread's `createdAt`. Otherwise, reuse the working-copy decision computed
   in 3b and spawn (interactive: ask first; silent: automatic):
 
   ```

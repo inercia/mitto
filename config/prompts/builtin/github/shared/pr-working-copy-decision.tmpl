@@ -1,0 +1,38 @@
+{{- /*
+  github/shared/pr-working-copy-decision — decide whether the local checkout
+  is safe to reuse ("local") for a fix conversation, or whether the child
+  must create a fresh worktree ("worktree"). Computed in the babysit parent
+  and passed to the spawned fix child so the child never has to guess.
+
+  Callers: babysit-this-pr, babysit-my-prs (§3b Fix CI, §3c/§3d Address
+  review comments).
+
+  Placeholders substituted by the agent from the surrounding context:
+    <repo path>    — the local checkout of <owner>/<repo>
+    <headRefName>  — the PR's branch name
+
+  Outputs (shell variables, consumed later in the spawn payload):
+    WORKING_MODE   — "local" or "worktree"
+    WORKING_PATH   — the path the child should operate in (or a description
+                     of the worktree the child must create)
+*/ -}}
+Compute the working-copy decision in this parent, then pass it explicitly to
+the spawned child — do **not** let the child guess:
+
+```bash
+# Are we sitting on the PR branch, clean, and at the PR's head commit?
+CUR_BRANCH=$(git -C "<repo path>" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+CUR_HEAD=$(git -C "<repo path>" rev-parse HEAD 2>/dev/null || echo "")
+PR_HEAD=$(gh pr view <number> --repo <owner>/<repo> --json headRefOid -q .headRefOid)
+DIRTY=$(git -C "<repo path>" status --porcelain 2>/dev/null | head -c 1)
+STAGED=$(git -C "<repo path>" diff --cached --name-only 2>/dev/null | head -c 1)
+
+if [ "$CUR_BRANCH" = "<headRefName>" ] && [ "$CUR_HEAD" = "$PR_HEAD" ] \
+   && [ -z "$DIRTY" ] && [ -z "$STAGED" ]; then
+  WORKING_MODE="local"
+  WORKING_PATH="<repo path>"
+else
+  WORKING_MODE="worktree"
+  WORKING_PATH="(child will create a fresh worktree via 'git worktree add')"
+fi
+```
