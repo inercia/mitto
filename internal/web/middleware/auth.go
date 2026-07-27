@@ -875,6 +875,27 @@ func SetAuthIdentity(r *http.Request, user string) {
 	}
 }
 
+// AuthAnomaly is a mutable holder for security-anomaly flags raised during a login
+// request. Like AuthIdentity, it is placed in the context by the OUTER access-log
+// middleware so inner auth handlers can write back to it — context values only flow
+// downward, so a shared pointer is required to hoist the signal up.
+type AuthAnomaly struct {
+	// SplitIP is set when the CSRF token IP fingerprint did not match the login IP.
+	SplitIP bool
+}
+
+// ContextKeyAuthAnomaly is the context key for the *AuthAnomaly holder.
+const ContextKeyAuthAnomaly contextKey = "authAnomaly"
+
+// SetSplitIPFlag records a Split-IP CSRF fingerprint mismatch in the mutable
+// anomaly holder placed in the request context by the access-log middleware.
+// Safe no-op if no holder is present (e.g. access logging disabled).
+func SetSplitIPFlag(r *http.Request) {
+	if a, ok := r.Context().Value(ContextKeyAuthAnomaly).(*AuthAnomaly); ok && a != nil {
+		a.SplitIP = true
+	}
+}
+
 // IsExternalConnection returns true if the request came through the external listener.
 // External connections always require authentication, regardless of client IP.
 func IsExternalConnection(r *http.Request) bool {
@@ -1100,12 +1121,30 @@ func (a *AuthManager) HandleLogin(w http.ResponseWriter, r *http.Request) {
 	userAgent := r.Header.Get("User-Agent")
 	if cookie, err := r.Cookie(csrfCookieName); err == nil {
 		if !VerifyIPFromToken(cookie.Value, ipKey, userAgent) {
+			// Always record the anomaly on the audit trail (access.log) so a
+			// real incident can be correlated later, independent of the
+			// mitto.log dedup window.
+			SetSplitIPFlag(r)
+
 			dedupKey := normalizeIPForFingerprint(ipKey) + "|" + userAgent
 			if a.shouldWarnSplitIP(dedupKey) {
-				logger.Warn("Split-IP login detected: CSRF token IP fingerprint mismatch",
-					"login_ip", ipKey,
-					"user_agent", userAgent,
-				)
+				// Dampen mobile UAs to Info: carrier NAT/CGNAT rotation makes
+				// IP drift between the CSRF-token fetch and the login POST an
+				// expected false-positive class on mobile networks, and WARN
+				// spam here erodes alert signal for genuine desktop cases.
+				mobile := isMobileUserAgent(userAgent)
+				if mobile {
+					logger.Info("Split-IP login detected: CSRF token IP fingerprint mismatch",
+						"login_ip", ipKey,
+						"user_agent", userAgent,
+						"mobile_ua", true,
+					)
+				} else {
+					logger.Warn("Split-IP login detected: CSRF token IP fingerprint mismatch",
+						"login_ip", ipKey,
+						"user_agent", userAgent,
+					)
+				}
 			}
 		}
 	}
