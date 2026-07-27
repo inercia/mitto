@@ -142,21 +142,7 @@ prompt: |
 
   If `gh auth status` fails, stop immediately and inform the user.
 
-  Enumerate every GitHub login you own (a work + a personal account may both
-  be present):
-
-  ```bash
-  gh auth status 2>&1 \
-    | awk '
-        /^[^ ]/            { host=$1; next }
-        /Logged in to/     { if (host=="github.com") { for (i=1;i<=NF;i++) if ($i=="account") print $(i+1) } }
-      ' \
-    | sort -u
-  ```
-
-  Store this as the **owned-logins set**. If empty for any reason, fall back
-  to `gh api user -q '.login'`. Any action below (rebase, merge, spawn fix
-  children) only fires when the PR's `author.login` is a member of this set.
+  {{ template "github/shared/gh-owned-logins" . }}
 
   Rename this conversation so it's easy to identify — but only if the current
   name (`{{ .Session.Name }}`) doesn't already start with "Babysit PR #":

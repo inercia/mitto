@@ -196,3 +196,39 @@ func TestPRFetchCommentsFragmentInlines(t *testing.T) {
 		}
 	}
 }
+
+// TestGhOwnedLoginsFragmentInlines verifies that the
+// github/shared/gh-owned-logins fragment resolves and inlines into both
+// consuming prompts (babysit-this-pr, babysit-my-prs) — the awk-based
+// enumeration of every logged-in github.com account extracted from Step 1.
+func TestGhOwnedLoginsFragmentInlines(t *testing.T) {
+	// Hallmarks unique to the fragment body.
+	const (
+		hallmarkAwkHost  = `/^[^ ]/            { host=$1; next }`
+		hallmarkLoggedIn = `/Logged in to/     { if (host==`
+		hallmarkOwnedSet = "Store this as the **owned-logins set**"
+		hallmarkFallback = "fall back to `gh api user -q '.login'`"
+		hallmarkInvisPRs = "are silently invisible"
+	)
+
+	ctx := &cel.PromptEnabledContext{
+		Session: cel.SessionContext{ID: "s", Name: "N"},
+		Args:    map[string]string{},
+	}
+
+	for _, promptName := range []string{"GitHub: babysit this PR", "GitHub: babysit my PRs"} {
+		out := renderBuiltinPromptWithFragments(t, promptName, ctx)
+		for _, needle := range []string{
+			hallmarkAwkHost,
+			hallmarkLoggedIn,
+			hallmarkOwnedSet,
+			hallmarkFallback,
+			hallmarkInvisPRs,
+		} {
+			if !strings.Contains(out, needle) {
+				t.Errorf("prompt %q: rendered output missing hallmark %q — fragment did not inline",
+					promptName, needle)
+			}
+		}
+	}
+}

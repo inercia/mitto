@@ -102,27 +102,7 @@ prompt: |
 
   If `gh` is not authenticated (`gh auth status` fails), inform the user and stop.
 
-  Identify **all** GitHub users you may act as. `gh auth status` can list
-  multiple `github.com` accounts (e.g. a work account and a personal one), but
-  `--author @me` and `gh api user -q '.login'` only ever resolve to the single
-  currently-active account — which means PRs authored by any of your other
-  logged-in accounts are silently invisible.
-
-  Enumerate every `github.com` account (active or not) from `gh auth status`:
-
-  ```bash
-  gh auth status 2>&1 \
-    | awk '
-        /^[^ ]/            { host=$1; next }
-        /Logged in to/     { if (host=="github.com") { for (i=1;i<=NF;i++) if ($i=="account") print $(i+1) } }
-      ' \
-    | sort -u
-  ```
-
-  Store this as the **owned-logins set** — every login in this set counts as
-  "you" for the rest of the prompt. Only act on PRs where `author.login` is a
-  member of this set (rebase, merge, spawn fix conversations). If the set is
-  empty for some reason, fall back to `gh api user -q '.login'`.
+  {{ template "github/shared/gh-owned-logins" . }}
 
   Once you have the `nameWithOwner` (e.g., `some-org/some-repo`), rename this
   conversation so it's easy to identify — but only if the current name
