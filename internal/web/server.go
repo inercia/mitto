@@ -606,6 +606,27 @@ func NewServer(config Config) (*Server, error) {
 		logger.Warn("mcp tools persistence disabled: cannot resolve cache dir", "error", cerr)
 	}
 
+	// Broadcast prompts_changed after an async MCP tools re-verify triggered
+	// by a suspect persisted snapshot (mitto-dza, Fix 4). This lets
+	// `enabledWhen` tool-gates re-evaluate against the freshly loaded LLM-only
+	// tools within seconds of a restart, instead of waiting for the TTL to
+	// expire. Uses the same broadcast surface as the event-driven watcher
+	// (WSMsgTypePromptsChanged).
+	auxiliaryManager.MCPToolsRefreshedHook = func(workspaceUUID string) {
+		if eventsManager == nil {
+			return
+		}
+		eventsManager.Broadcast(WSMsgTypePromptsChanged, map[string]interface{}{
+			"changed_dirs": []string{},
+			"timestamp":    time.Now().UTC().Format(time.RFC3339),
+			"reason":       "mcp_tools_reverified",
+		})
+		if logger != nil {
+			logger.Debug("Broadcasted prompts_changed after mcp tools async re-verify",
+				"workspace_uuid", workspaceUUID)
+		}
+	}
+
 	// Wire deterministic MCP tool discovery (mitto-sys.2/mitto-sys.3/mitto-sys.6):
 	// resolves a workspace to its ACP agent and probes its configured stdio +
 	// http/sse MCP servers directly via tools/list, so FetchMCPTools can skip
