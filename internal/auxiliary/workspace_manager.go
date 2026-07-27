@@ -20,6 +20,14 @@ import (
 // reused after a restart before a fresh probe is required (mitto-sys.8).
 const defaultMCPToolsTTL = 15 * time.Minute
 
+// defaultMCPToolsLLMTTL bounds how long the LLM bucket of a persisted snapshot
+// is reused before it is considered stale and dropped from the returned view
+// (mitto-dza.1). Shorter than defaultMCPToolsTTL because LLM-fallback tools
+// are inherently less trustworthy; a fresh async re-verify is always triggered
+// on load whenever the LLM bucket is non-empty, so the shorter TTL is a
+// belt-and-braces floor for pathologically fast restart cycles.
+const defaultMCPToolsLLMTTL = 5 * time.Minute
+
 // Purpose constants for auxiliary sessions
 const (
 	PurposeTitleGen      = "title-gen"
@@ -116,12 +124,18 @@ type WorkspaceAuxiliaryManager struct {
 	// real-MCP-derived (deterministic) tools list per workspace, so a restart
 	// reuses the last snapshot within the TTL instead of re-probing every
 	// server. The web layer wires it to an appdir-based directory; empty
-	// (tests/CLI) disables persistence. Only deterministic results are ever
-	// written — never the LLM fallback (docs/devel/mcp-tool-discovery.md, Q3.3).
+	// (tests/CLI) disables persistence. As of mitto-dza.1 (schema v2), both
+	// deterministic and LLM-fallback results are persisted into separate
+	// buckets with independent TTLs; LLM entries always trigger an async
+	// re-verify on load (docs/devel/mcp-tool-discovery.md, Q3.3).
 	MCPToolsPersistDir string
-	// mcpToolsTTL bounds reuse of a persisted snapshot; defaults to
-	// defaultMCPToolsTTL. Overridable in tests for speed.
+	// mcpToolsTTL bounds reuse of a persisted snapshot's deterministic
+	// bucket; defaults to defaultMCPToolsTTL. Overridable in tests for speed.
 	mcpToolsTTL time.Duration
+	// mcpToolsLLMTTL bounds reuse of a persisted snapshot's LLM-fallback
+	// bucket; defaults to defaultMCPToolsLLMTTL (mitto-dza.1). Overridable
+	// in tests for speed.
+	mcpToolsLLMTTL time.Duration
 
 	// PrewarmPinReevaluator, when set, is called once per EnsureMCPBackoffRetry
 	// round (after each MCP probe) so the adaptive pre-warming controller
@@ -159,6 +173,7 @@ func NewWorkspaceAuxiliaryManager(provider ProcessProvider, logger *slog.Logger)
 		mcpBackoffPolicy:   mcpdiscovery.DefaultBackoffPolicy(),
 		mcpWatchers:        make(map[string][]*mcpdiscovery.ToolListWatcher),
 		mcpToolsTTL:        defaultMCPToolsTTL,
+		mcpToolsLLMTTL:     defaultMCPToolsLLMTTL,
 		mcpRefetchInFlight: make(map[string]bool),
 	}
 }
@@ -468,6 +483,13 @@ func (m *WorkspaceAuxiliaryManager) runMCPToolsFetch(ctx context.Context, worksp
 	}
 
 	merged := deterministic
+	// llmPersist retains the LLM-only slice (dedup by name against
+	// deterministic) so it can reach the persistence layer as its own bucket
+	// (mitto-dza.1). Under the pre-mitto-dza.1 design the LLM entries were
+	// folded into merged and dropped; now they must survive to disk in the
+	// dedicated `llm` bucket, still passing through the strict
+	// parseMCPToolsList channel (mitto-sys.7) so nothing hallucinated leaks in.
+	var llmPersist []MCPToolInfo
 
 	if needLLM {
 		llmTools, err := m.fetchMCPToolsViaLLM(ctx, workspaceUUID, configuredServerCount)
@@ -486,6 +508,7 @@ func (m *WorkspaceAuxiliaryManager) runMCPToolsFetch(ctx context.Context, worksp
 					continue // deterministic entries win on name collision
 				}
 				merged = append(merged, tool)
+				llmPersist = append(llmPersist, tool)
 			}
 		}
 	}
@@ -500,18 +523,24 @@ func (m *WorkspaceAuxiliaryManager) runMCPToolsFetch(ctx context.Context, worksp
 	// fetch (see applyMCPToolsCachePolicy).
 	result := m.applyMCPToolsCachePolicy(workspaceUUID, merged)
 
-	// Persist ONLY the real-MCP-derived (deterministic) list to disk — never
-	// the LLM fallback (mitto-sys.8, ADR Q3.3). A no-op when persistence is
-	// disabled or discovery produced no tools. A subsequent restart reuses this
-	// snapshot within the TTL instead of re-probing. Record anyUnreachable so
-	// a future load knows to trigger an async re-verify (mitto-dza, Fix 4).
-	m.savePersistedMCPTools(workspaceUUID, deterministic, anyUnreachable)
+	// Persist the real-MCP-derived (deterministic) list AND the LLM-fallback
+	// list to disk as two separate buckets (mitto-dza.1, v2 schema). The write
+	// path only accepts tools that came from either the deterministic
+	// tools/list probe or a strict-parsed LLM response (parseMCPToolsList,
+	// mitto-sys.7), so the anti-hallucination guarantee is preserved even
+	// though the LLM bucket now survives across restart. Record anyUnreachable
+	// so a future load knows to trigger an async re-verify (mitto-dza, Fix 4);
+	// additionally, any non-empty LLM bucket on load always triggers an async
+	// re-verify (mitto-dza.1) so unconfirmed entries are dropped by the next
+	// overwrite. A no-op when persistence is disabled or both buckets are empty.
+	m.savePersistedMCPTools(workspaceUUID, deterministic, llmPersist, anyUnreachable)
 
 	if m.logger != nil {
 		m.logger.Info("MCP tools fetch completed",
 			"workspace_uuid", workspaceUUID,
 			"tool_count", len(result),
 			"deterministic_count", len(deterministic),
+			"llm_count", len(llmPersist),
 			"any_unreachable", anyUnreachable)
 	}
 
@@ -1057,26 +1086,50 @@ func (m *WorkspaceAuxiliaryManager) GetCachedMCPTools(workspaceUUID string) ([]M
 }
 
 // persistedMCPToolsSchemaVersion is the current on-disk schema version for
-// persistedMCPTools. Bumped from 0 (implicit) to 1 by mitto-dza when the
-// AnyUnreachable flag was added; snapshots with SchemaVersion == 0 are
-// treated as suspect (one free async re-verify on load) so upgrades from
-// pre-mitto-dza builds recover their LLM-only tools within seconds.
-const persistedMCPToolsSchemaVersion = 1
+// persistedMCPTools. History: 0 (implicit) → 1 (mitto-dza, added
+// AnyUnreachable) → 2 (mitto-dza.1, split Tools into Deterministic + LLM
+// buckets with independent TTLs). Snapshots with SchemaVersion < current are
+// treated as suspect (one free async re-verify on load) so upgrades recover
+// LLM-only tools within seconds and future field additions can migrate
+// safely.
+const persistedMCPToolsSchemaVersion = 2
 
 // persistedMCPTools is the on-disk representation of a workspace's
-// real-MCP-derived tools snapshot (mitto-sys.8). Only deterministic
-// (direct tools/list) results are persisted; the LLM fallback is never
-// written to disk (docs/devel/mcp-tool-discovery.md, Q3.3).
+// real-MCP-derived tools snapshot (mitto-sys.8, mitto-dza.1).
+//
+// As of schema v2, tools are split into two buckets with independent TTLs
+// and trust semantics (mitto-dza.1):
+//
+//   - Deterministic: tools observed via a direct MCP tools/list probe
+//     (mcpdiscovery). Trusted, persisted under the longer defaultMCPToolsTTL.
+//   - LLM: tools reported only by the LLM-introspection fallback
+//     (fetchMCPToolsViaLLM, strict parseMCPToolsList). Persisted under the
+//     shorter defaultMCPToolsLLMTTL and always trigger an async re-verify on
+//     load; unconfirmed entries disappear when the re-verify overwrites the
+//     snapshot. This closes the "LLM-only servers vanish across restart" gap
+//     (mitto-dza) while preserving the anti-hallucination invariant — the
+//     only write path is runMCPToolsFetch → savePersistedMCPTools, and both
+//     buckets only ever carry tools that a probe returned via the strict
+//     channels (mitto-sys.7).
+//
+// The legacy `Tools` field is retained for backward-compatible reads of v0/v1
+// snapshots (which stored a single merged list). On load, a snapshot that has
+// no `Deterministic` / `LLM` fields but a populated `Tools` field is treated
+// as deterministic-only and suspect, matching the pre-mitto-dza.1 behaviour.
+// The writer never populates `Tools` in v2 output.
 //
 // AnyUnreachable records whether, at persist time, the deterministic
 // discoverer flagged at least one configured MCP server as unreachable —
 // meaning some of the workspace's tools were only known via LLM
-// introspection and are therefore missing from the persisted list. On
-// load, a true value triggers an async re-fetch so LLM-only tools reappear
-// in-memory within seconds instead of waiting for the TTL to expire
-// (mitto-dza, Fix 4).
+// introspection. On load, a true value triggers an async re-fetch so
+// LLM-only tools reappear in-memory within seconds instead of waiting for
+// the TTL to expire (mitto-dza, Fix 4).
 type persistedMCPTools struct {
-	Tools          []MCPToolInfo `json:"tools"`
+	// Tools is the legacy v0/v1 single-bucket field, retained for
+	// backward-compatible reads. Never written by v2 code paths.
+	Tools          []MCPToolInfo `json:"tools,omitempty"`
+	Deterministic  []MCPToolInfo `json:"deterministic,omitempty"`
+	LLM            []MCPToolInfo `json:"llm,omitempty"`
 	UpdatedAt      time.Time     `json:"updated_at"`
 	SchemaVersion  int           `json:"schema_version,omitempty"`
 	AnyUnreachable bool          `json:"any_unreachable,omitempty"`
@@ -1093,14 +1146,27 @@ func (m *WorkspaceAuxiliaryManager) mcpToolsPersistPath(workspaceUUID string) st
 }
 
 // loadPersistedMCPTools returns the persisted real-MCP tools for a workspace
-// when a snapshot exists and is still within the TTL, along with a `suspect`
-// flag that is true when the caller should trigger an async re-verify — either
-// because the snapshot was written while at least one MCP server was
-// unreachable to the deterministic discoverer (so LLM-only tools are missing
-// from disk, mitto-dza Fix 4), or because it predates the current schema
-// (SchemaVersion == 0) and its trust semantics are unknown. Returns
-// (nil, false, false) when persistence is disabled, the file is missing/
-// unreadable, the snapshot is empty, or it has expired.
+// when a snapshot exists and at least one bucket is still within its TTL,
+// along with a `suspect` flag that is true when the caller should trigger an
+// async re-verify.
+//
+// A snapshot is suspect when any of the following holds (mitto-dza.1):
+//   - AnyUnreachable was true at persist time (LLM-only tools may be missing
+//     from disk, mitto-dza Fix 4).
+//   - SchemaVersion predates the current version (trust semantics unknown /
+//     migration required).
+//   - The LLM bucket is non-empty — LLM tools must be re-verified on load per
+//     the mitto-dza.1 acceptance criterion, so unconfirmed entries disappear
+//     via the next runMCPToolsFetch overwrite.
+//
+// Buckets have independent TTLs (Deterministic: mcpToolsTTL / 15 min;
+// LLM: mcpToolsLLMTTL / 5 min). An expired bucket is dropped from the
+// returned merged view but does not prevent the still-fresh bucket from being
+// served. Returns (nil, false, false) when persistence is disabled, the file
+// is missing/unreadable, or both buckets are empty/expired.
+//
+// Legacy v0/v1 snapshots (populated `Tools`, empty `Deterministic`/`LLM`) are
+// loaded as deterministic-only + suspect, matching pre-mitto-dza.1 behaviour.
 func (m *WorkspaceAuxiliaryManager) loadPersistedMCPTools(workspaceUUID string) ([]MCPToolInfo, bool, bool) {
 	path := m.mcpToolsPersistPath(workspaceUUID)
 	if path == "" {
@@ -1111,15 +1177,35 @@ func (m *WorkspaceAuxiliaryManager) loadPersistedMCPTools(workspaceUUID string) 
 	if err := fileutil.ReadJSON(path, &snapshot); err != nil {
 		return nil, false, false
 	}
-	if len(snapshot.Tools) == 0 {
+
+	// Legacy v0/v1 shape: single `Tools` bucket, no `Deterministic`/`LLM`.
+	// Treat as deterministic-only for TTL purposes; suspect flag is set below
+	// via SchemaVersion < current.
+	legacy := len(snapshot.Deterministic) == 0 && len(snapshot.LLM) == 0 && len(snapshot.Tools) > 0
+	deterministic := snapshot.Deterministic
+	if legacy {
+		deterministic = snapshot.Tools
+	}
+	llm := snapshot.LLM
+
+	if len(deterministic) == 0 && len(llm) == 0 {
 		return nil, false, false
 	}
 
-	ttl := m.mcpToolsTTL
-	if ttl <= 0 {
-		ttl = defaultMCPToolsTTL
+	detTTL := m.mcpToolsTTL
+	if detTTL <= 0 {
+		detTTL = defaultMCPToolsTTL
 	}
-	if age := time.Since(snapshot.UpdatedAt); age > ttl {
+	llmTTL := m.mcpToolsLLMTTL
+	if llmTTL <= 0 {
+		llmTTL = defaultMCPToolsLLMTTL
+	}
+
+	age := time.Since(snapshot.UpdatedAt)
+	detExpired := age > detTTL
+	llmExpired := age > llmTTL
+
+	if detExpired && (len(llm) == 0 || llmExpired) {
 		if m.logger != nil {
 			m.logger.Debug("mcp tools persist: snapshot expired, forcing re-probe",
 				"workspace_uuid", workspaceUUID,
@@ -1128,25 +1214,64 @@ func (m *WorkspaceAuxiliaryManager) loadPersistedMCPTools(workspaceUUID string) 
 		return nil, false, false
 	}
 
-	suspect := snapshot.AnyUnreachable || snapshot.SchemaVersion < persistedMCPToolsSchemaVersion
-	return snapshot.Tools, true, suspect
+	// Drop expired buckets from the returned merged view.
+	if detExpired {
+		deterministic = nil
+	}
+	if llmExpired {
+		llm = nil
+	}
+
+	// Merge into a single dedup-by-name list (deterministic wins on collision),
+	// preserving the pre-mitto-dza.1 return contract.
+	merged := make([]MCPToolInfo, 0, len(deterministic)+len(llm))
+	seen := make(map[string]bool, len(deterministic)+len(llm))
+	for _, tool := range deterministic {
+		if seen[tool.Name] {
+			continue
+		}
+		seen[tool.Name] = true
+		merged = append(merged, tool)
+	}
+	for _, tool := range llm {
+		if seen[tool.Name] {
+			continue
+		}
+		seen[tool.Name] = true
+		merged = append(merged, tool)
+	}
+	if len(merged) == 0 {
+		return nil, false, false
+	}
+
+	suspect := snapshot.AnyUnreachable ||
+		snapshot.SchemaVersion < persistedMCPToolsSchemaVersion ||
+		len(llm) > 0
+	return merged, true, suspect
 }
 
 // savePersistedMCPTools writes a workspace's real-MCP-derived tools snapshot to
-// disk atomically. It is a no-op when persistence is disabled or tools is empty.
-// Only deterministic results must be passed here — never the LLM fallback list.
-// anyUnreachable records whether the deterministic discoverer flagged at least
-// one MCP server as unreachable at persist time; a true value tells a later
-// loadPersistedMCPTools to trigger an async re-verify so LLM-only tools can
-// reappear after a restart (mitto-dza, Fix 4).
-func (m *WorkspaceAuxiliaryManager) savePersistedMCPTools(workspaceUUID string, tools []MCPToolInfo, anyUnreachable bool) {
+// disk atomically in schema v2 form (mitto-dza.1): two separate buckets, one
+// for deterministic (stdio tools/list) results and one for LLM-fallback
+// results. Both buckets pass through strict parsing before reaching this
+// function (mcpdiscovery for deterministic, parseMCPToolsList / mitto-sys.7
+// for LLM) so nothing hallucinated can enter disk.
+//
+// It is a no-op when persistence is disabled or both buckets are empty.
+// anyUnreachable records whether the deterministic discoverer flagged at
+// least one MCP server as unreachable at persist time; a true value tells a
+// later loadPersistedMCPTools to trigger an async re-verify (mitto-dza,
+// Fix 4). Additionally, a non-empty LLM bucket always triggers a re-verify on
+// load (mitto-dza.1).
+func (m *WorkspaceAuxiliaryManager) savePersistedMCPTools(workspaceUUID string, deterministic, llm []MCPToolInfo, anyUnreachable bool) {
 	path := m.mcpToolsPersistPath(workspaceUUID)
-	if path == "" || len(tools) == 0 {
+	if path == "" || (len(deterministic) == 0 && len(llm) == 0) {
 		return
 	}
 
 	snapshot := persistedMCPTools{
-		Tools:          tools,
+		Deterministic:  deterministic,
+		LLM:            llm,
 		UpdatedAt:      time.Now(),
 		SchemaVersion:  persistedMCPToolsSchemaVersion,
 		AnyUnreachable: anyUnreachable,

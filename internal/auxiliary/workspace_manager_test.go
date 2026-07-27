@@ -680,7 +680,13 @@ func TestFetchMCPTools_PersistsRealMCPToDisk(t *testing.T) {
 	}
 
 	snap := readPersistedSnapshot(t, dir, "ws")
-	assertToolNames(t, snap.Tools, "jira_create_issue", "jira_search")
+	assertToolNames(t, snap.Deterministic, "jira_create_issue", "jira_search")
+	if len(snap.LLM) != 0 {
+		t.Errorf("LLM bucket must be empty when all servers are reachable, got %v", snap.LLM)
+	}
+	if snap.SchemaVersion != persistedMCPToolsSchemaVersion {
+		t.Errorf("schema version = %d, want %d", snap.SchemaVersion, persistedMCPToolsSchemaVersion)
+	}
 	if snap.UpdatedAt.IsZero() {
 		t.Errorf("expected UpdatedAt to be set")
 	}
@@ -689,7 +695,13 @@ func TestFetchMCPTools_PersistsRealMCPToDisk(t *testing.T) {
 	}
 }
 
-func TestFetchMCPTools_DoesNotPersistLLMFallback(t *testing.T) {
+// TestFetchMCPTools_PersistsLLMFallbackToLLMBucket verifies the mitto-dza.1
+// design change: LLM-fallback tools ARE now persisted, but into a dedicated
+// `llm` bucket (not merged with `deterministic`). The bucket carries a
+// shorter TTL and forces async re-verify on next load, preserving the
+// anti-hallucination invariant while closing the "LLM-only servers vanish
+// across restart" gap (parent bead mitto-dza).
+func TestFetchMCPTools_PersistsLLMFallbackToLLMBucket(t *testing.T) {
 	dir := t.TempDir()
 	mock := &mockProcessProvider{
 		promptFunc: func(ctx context.Context, workspaceUUID, purpose, message string) (string, error) {
@@ -698,7 +710,7 @@ func TestFetchMCPTools_DoesNotPersistLLMFallback(t *testing.T) {
 	}
 	mgr := NewWorkspaceAuxiliaryManager(mock, nil)
 	mgr.MCPToolsPersistDir = dir
-	// No StdioToolsDiscoverer → pure-LLM path; nothing real-MCP to persist.
+	// No StdioToolsDiscoverer → pure-LLM path; LLM bucket is what gets persisted.
 
 	tools, err := mgr.FetchMCPTools(context.Background(), "ws")
 	if err != nil {
@@ -706,8 +718,16 @@ func TestFetchMCPTools_DoesNotPersistLLMFallback(t *testing.T) {
 	}
 	assertToolNames(t, tools, "slack_post")
 
-	if _, err := os.Stat(filepath.Join(dir, "ws.json")); !os.IsNotExist(err) {
-		t.Fatalf("LLM-fallback result must not be persisted (stat err = %v)", err)
+	snap := readPersistedSnapshot(t, dir, "ws")
+	assertToolNames(t, snap.LLM, "slack_post")
+	if len(snap.Deterministic) != 0 {
+		t.Errorf("deterministic bucket must be empty when only LLM fallback ran, got %v", snap.Deterministic)
+	}
+	if len(snap.Tools) != 0 {
+		t.Errorf("legacy Tools field must not be populated by v2 writer, got %v", snap.Tools)
+	}
+	if snap.SchemaVersion != persistedMCPToolsSchemaVersion {
+		t.Errorf("schema version = %d, want %d", snap.SchemaVersion, persistedMCPToolsSchemaVersion)
 	}
 }
 
@@ -787,9 +807,10 @@ func TestFetchMCPTools_ExpiredSnapshot_ReProbes(t *testing.T) {
 	}
 	assertToolNames(t, tools, "jira_search")
 
-	// The stale snapshot must have been overwritten with the fresh probe.
+	// The stale snapshot must have been overwritten with the fresh probe
+	// (v2 writer emits Deterministic, not the legacy Tools field).
 	snap := readPersistedSnapshot(t, dir, "ws")
-	assertToolNames(t, snap.Tools, "jira_search")
+	assertToolNames(t, snap.Deterministic, "jira_search")
 }
 
 // =============================================================================
