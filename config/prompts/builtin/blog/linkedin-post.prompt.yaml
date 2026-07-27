@@ -1,0 +1,150 @@
+icon: globe
+name: 'Blog: linkedin-post'
+menus: beadsIssues
+parameters:
+  - name: IssueID
+    type: beadsId
+    required: false
+    description: The bead whose published blog post should get a LinkedIn snippet
+  - name: Folder
+    type: text
+    default: blog/posts
+    required: false
+    description: Folder where blog post files live (repo-relative)
+description: 'Blog - draft a LinkedIn social snippet (hook + canonical URL + 3-5 hashtags) for a published blog post. Downstream artefact only; the bead is not modified.'
+backgroundColor: '#C8E6C9'
+group: Blog
+enabledWhen: CommandExists("bd") && DirExists(".beads") && "blog" in Item.Labels && "published" in Item.Labels
+target:
+  reuse:
+    issue: true
+    coalesce: true
+preferredModels:
+  - modelTag: Coding
+prompt: |
+  {{ template "_shared/session-context" . }}
+
+  # Blog: LinkedIn post -- draft a social snippet for a published post
+
+  This prompt drafts a LinkedIn snippet announcing a published blog article
+  recorded on the bead. It iterates with the author until the draft is
+  approved, then emits the final snippet as a fenced code block for
+  copy-paste. This is a **downstream artefact only** -- the bead is NOT
+  modified (no label changes, no `bd close`, no edits to the post file, no
+  git operations).
+
+  ## Step 1 -- Locate the (now published) post file
+
+  {{ template "blog/shared/locate-post-file" . }}
+
+  After the fragment resolves `$post_abs`, the current basename SHOULD start
+  with a `YYYY-MM-DD-` date prefix (i.e. the post was already published via
+  the `Blog: publish` prompt). If it does not, print a warning and continue
+  -- the bead already carries the `published` label which is authoritative
+  for this prompt's gate:
+
+  ```bash
+  base=$(basename "$post_abs")
+  if [[ ! "$base" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}- ]]; then
+    echo "WARNING: $post_abs is not named YYYY-MM-DD-<slug>.md; expected a published post." >&2
+    echo "Continuing anyway because the bead is labelled 'published'." >&2
+  fi
+  ```
+
+  ## Step 2 -- Load audience and tone
+
+  Bring the drafting voice into context so the LinkedIn snippet matches the
+  blog's own audience and tone:
+
+  {{ template "blog/shared/audience-and-tone" . }}
+
+  ## Step 3 -- Load optional LinkedIn template
+
+  Bring the project-specific LinkedIn layout into context if the workspace
+  has one; otherwise fall back to the default layout below:
+
+  {{ template "blog/shared/blog-config-fragment"
+       (dict "Name"        "linkedin-template"
+             "DefaultText" "No linkedin-template.md file configured - use this default layout for the LinkedIn snippet:\n1. HOOK (1-2 sentences): a punchy opener that names the concrete problem or insight. Avoid generic \"Excited to share...\" openings.\n2. BODY (2-4 short paragraphs, one-sentence-per-line preferred): the core takeaway, one concrete example, and why the reader should care. Keep total length under 1300 characters (LinkedIn free-tier \"see more\" fold).\n3. CANONICAL URL: the full URL to the published post.\n4. HASHTAGS: 3-5 relevant tags, mixed reach (one broad like #Engineering, two narrow domain-specific)." ) }}
+
+  ## Step 4 -- Extract canonical URL and title from the post
+
+  Read the leading YAML frontmatter block of `$post_abs` and extract the
+  `title:` value plus (if present) a `canonical_url:` or `permalink:` value:
+
+  ```bash
+  awk 'BEGIN{fm=0} /^---$/{fm++; if(fm==2){exit} next} fm==1{print}' "$post_abs" > /tmp/blog-fm.yaml
+  post_title=$(awk -F': *' '/^title:/{sub(/^title: *"?/,""); sub(/"? *$/,""); print; exit}' /tmp/blog-fm.yaml)
+  post_url=$(awk -F': *' '/^canonical_url:/{sub(/^canonical_url: *"?/,""); sub(/"? *$/,""); print; exit}' /tmp/blog-fm.yaml)
+  if [[ -z "$post_url" ]]; then
+    post_url=$(awk -F': *' '/^permalink:/{sub(/^permalink: *"?/,""); sub(/"? *$/,""); print; exit}' /tmp/blog-fm.yaml)
+  fi
+  echo "Post title: $post_title"
+  echo "Post URL:   ${post_url:-<none in frontmatter>}"
+  ```
+
+  If `$post_url` is empty, ask the author for the canonical URL via
+  `mitto_ui_form_mitto` (single field labelled `Canonical URL`, pre-filled
+  with `https://`). Print back the confirmed values before proceeding:
+
+  ```
+  Confirmed title: <post_title>
+  Confirmed URL:   <post_url>
+  ```
+
+  ## Step 5 -- Draft the LinkedIn snippet
+
+  Apply the layout loaded in Step 3, in the audience+tone loaded in Step 2,
+  using the title and canonical URL confirmed in Step 4. Emit the draft in a
+  fenced code block for easy copy-paste, and print a running character count
+  on the line below the block:
+
+  ```
+  Draft (attempt N):
+  ```linkedin
+  <HOOK>
+
+  <BODY paragraph 1>
+
+  <BODY paragraph 2>
+
+  <CANONICAL URL>
+
+  <HASHTAGS>
+  ```
+  Character count: <N>
+  ```
+
+  ## Step 6 -- Iterate to approval
+
+  Ask the author how to proceed via `mitto_ui_options_mitto` with three
+  choices: **Approve** (accept the current draft), **Revise (I'll describe
+  changes)** (author provides free-text feedback), **Regenerate from
+  scratch** (start over with a different hook). On `Revise`, follow up with
+  `mitto_ui_textbox_mitto` to collect the requested changes, then re-emit
+  the draft applying them. On `Regenerate`, re-run Step 5 with a different
+  hook. Cap the loop at **5 iterations** for safety; after that, print the
+  current best draft and stop.
+
+  ## Step 7 -- Final output
+
+  On `Approve`, print the header line `Copy the block below and paste into
+  LinkedIn.` followed by the approved snippet in a single fenced code block
+  labelled `linkedin`:
+
+  ```
+  Copy the block below and paste into LinkedIn.
+
+  ```linkedin
+  <final HOOK>
+
+  <final BODY>
+
+  <final CANONICAL URL>
+
+  <final HASHTAGS>
+  ```
+  ```
+
+  No trailing action items. This prompt does NOT call `bd update`, does NOT
+  call `bd close`, does NOT modify `$post_abs`, and does NOT touch git.

@@ -3109,6 +3109,7 @@ func TestBuiltinPrompts_TodayTierRoutingAdoption(t *testing.T) {
 		{file: "blog/add-references.prompt.yaml", bucket: perBeadWithCoalesce},
 		{file: "blog/content-review.prompt.yaml", bucket: perBeadWithCoalesce},
 		{file: "blog/fact-check.prompt.yaml", bucket: perBeadWithCoalesce},
+		{file: "blog/linkedin-post.prompt.yaml", bucket: perBeadWithCoalesce},
 		{file: "blog/polish.prompt.yaml", bucket: perBeadWithCoalesce},
 		// 2b — per-bead phase prompts.
 		{file: "beads-issues/feature-phase-plan.prompt.yaml", bucket: perBeadWithCoalesce},
