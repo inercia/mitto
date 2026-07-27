@@ -713,10 +713,14 @@ func TestFetchMCPTools_DoesNotPersistLLMFallback(t *testing.T) {
 
 func TestFetchMCPTools_LoadsPersistedWithinTTL_SkipsProbe(t *testing.T) {
 	dir := t.TempDir()
-	// Pre-seed a fresh snapshot on disk.
+	// Pre-seed a fresh, trusted snapshot (current schema, no unreachable
+	// servers at persist time) — this is the only shape that must
+	// short-circuit without triggering a background re-verify (mitto-dza).
 	snap := persistedMCPTools{
-		Tools:     []MCPToolInfo{{Name: "jira_search"}, {Name: "slack_post"}},
-		UpdatedAt: time.Now(),
+		Tools:          []MCPToolInfo{{Name: "jira_search"}, {Name: "slack_post"}},
+		UpdatedAt:      time.Now(),
+		SchemaVersion:  persistedMCPToolsSchemaVersion,
+		AnyUnreachable: false,
 	}
 	if err := fileutil.WriteJSONAtomic(filepath.Join(dir, "ws.json"), &snap, 0o644); err != nil {
 		t.Fatalf("seed snapshot: %v", err)
@@ -724,14 +728,14 @@ func TestFetchMCPTools_LoadsPersistedWithinTTL_SkipsProbe(t *testing.T) {
 
 	mock := &mockProcessProvider{
 		promptFunc: func(ctx context.Context, workspaceUUID, purpose, message string) (string, error) {
-			t.Fatal("LLM provider must not be called when a fresh snapshot exists")
+			t.Fatal("LLM provider must not be called when a trusted snapshot exists")
 			return "", nil
 		},
 	}
 	mgr := NewWorkspaceAuxiliaryManager(mock, nil)
 	mgr.MCPToolsPersistDir = dir
 	mgr.StdioToolsDiscoverer = func(ctx context.Context, workspaceUUID string) ([]mcpdiscovery.ServerToolsResult, error) {
-		t.Fatal("discovery must not run when a fresh snapshot exists")
+		t.Fatal("discovery must not run when a trusted snapshot exists")
 		return nil, nil
 	}
 
@@ -740,6 +744,10 @@ func TestFetchMCPTools_LoadsPersistedWithinTTL_SkipsProbe(t *testing.T) {
 		t.Fatalf("FetchMCPTools error = %v", err)
 	}
 	assertToolNames(t, tools, "jira_search", "slack_post")
+
+	// Give any (bug-triggered) background re-verify a moment to run — it
+	// must not, since the snapshot was trusted.
+	time.Sleep(50 * time.Millisecond)
 }
 
 func TestFetchMCPTools_ExpiredSnapshot_ReProbes(t *testing.T) {
@@ -782,6 +790,273 @@ func TestFetchMCPTools_ExpiredSnapshot_ReProbes(t *testing.T) {
 	// The stale snapshot must have been overwritten with the fresh probe.
 	snap := readPersistedSnapshot(t, dir, "ws")
 	assertToolNames(t, snap.Tools, "jira_search")
+}
+
+// =============================================================================
+// FetchMCPTools restart heuristic: suspect snapshots trigger async re-verify
+// (mitto-dza, Fix 4). A snapshot is "suspect" when it was written while at
+// least one MCP server was unreachable to the deterministic discoverer
+// (AnyUnreachable=true), or when it predates the current schema
+// (SchemaVersion < persistedMCPToolsSchemaVersion). Trusted snapshots (schema
+// stamped + AnyUnreachable=false) must NOT trigger a re-verify.
+// =============================================================================
+
+// waitForRefreshHook polls up to 2s for a refresh hook to fire, returning true
+// when it does. Used by the async-re-verify tests so they don't sleep for the
+// full worst case when the goroutine finishes sooner.
+func waitForRefreshHook(t *testing.T, hookFired *atomic.Bool) bool {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if hookFired.Load() {
+			return true
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	return false
+}
+
+func TestFetchMCPTools_SuspectSnapshot_TriggersAsyncReverify(t *testing.T) {
+	dir := t.TempDir()
+	// Seed a snapshot recorded while `slack` was unreachable: on disk we
+	// have jira_search only, but the LLM knows slack_post.
+	snap := persistedMCPTools{
+		Tools:          []MCPToolInfo{{Name: "jira_search"}},
+		UpdatedAt:      time.Now(),
+		SchemaVersion:  persistedMCPToolsSchemaVersion,
+		AnyUnreachable: true,
+	}
+	if err := fileutil.WriteJSONAtomic(filepath.Join(dir, "ws.json"), &snap, 0o644); err != nil {
+		t.Fatalf("seed snapshot: %v", err)
+	}
+
+	var llmCalls int32
+	mock := &mockProcessProvider{
+		promptFunc: func(ctx context.Context, workspaceUUID, purpose, message string) (string, error) {
+			atomic.AddInt32(&llmCalls, 1)
+			return `{"tools":[{"name":"slack_post"},{"name":"jira_search"}]}`, nil
+		},
+	}
+	mgr := NewWorkspaceAuxiliaryManager(mock, nil)
+	mgr.MCPToolsPersistDir = dir
+	mgr.StdioToolsDiscoverer = func(ctx context.Context, workspaceUUID string) ([]mcpdiscovery.ServerToolsResult, error) {
+		return []mcpdiscovery.ServerToolsResult{
+			{Server: "jira", Reachable: true, Tools: []string{"jira_search"}},
+			{Server: "slack", Reachable: false, Err: errors.New("unreachable")},
+		}, nil
+	}
+
+	var hookFired atomic.Bool
+	var hookWorkspace atomic.Value
+	mgr.MCPToolsRefreshedHook = func(workspaceUUID string) {
+		hookWorkspace.Store(workspaceUUID)
+		hookFired.Store(true)
+	}
+
+	// Turn one: return the cached deterministic list instantly (zero flicker).
+	tools, err := mgr.FetchMCPTools(context.Background(), "ws")
+	if err != nil {
+		t.Fatalf("FetchMCPTools error = %v", err)
+	}
+	assertToolNames(t, tools, "jira_search")
+
+	// The async re-verify must run in the background and fire the hook.
+	if !waitForRefreshHook(t, &hookFired) {
+		t.Fatalf("expected MCPToolsRefreshedHook to fire after suspect snapshot re-verify")
+	}
+	if got := hookWorkspace.Load(); got != "ws" {
+		t.Errorf("hook workspace = %v, want ws", got)
+	}
+	if atomic.LoadInt32(&llmCalls) == 0 {
+		t.Errorf("expected the async re-verify to invoke the LLM fallback")
+	}
+
+	// The in-memory cache is now the merged deterministic+LLM list.
+	merged, ok := mgr.GetCachedMCPTools("ws")
+	if !ok {
+		t.Fatalf("expected cache to be populated after async re-verify")
+	}
+	names := make(map[string]bool)
+	for _, tool := range merged {
+		names[tool.Name] = true
+	}
+	if !names["slack_post"] {
+		t.Errorf("expected slack_post to be present in cache after re-verify, got %v", merged)
+	}
+	if !names["jira_search"] {
+		t.Errorf("expected jira_search to remain present in cache after re-verify, got %v", merged)
+	}
+}
+
+func TestFetchMCPTools_LegacySnapshot_TriggersAsyncReverify(t *testing.T) {
+	dir := t.TempDir()
+	// Seed a pre-mitto-dza snapshot: no SchemaVersion / AnyUnreachable field.
+	// This must be treated as suspect so upgraded installs recover any
+	// LLM-only tools they had before the upgrade.
+	snap := persistedMCPTools{
+		Tools:     []MCPToolInfo{{Name: "jira_search"}},
+		UpdatedAt: time.Now(),
+	}
+	if err := fileutil.WriteJSONAtomic(filepath.Join(dir, "ws.json"), &snap, 0o644); err != nil {
+		t.Fatalf("seed snapshot: %v", err)
+	}
+
+	var probeCalls int32
+	mgr := NewWorkspaceAuxiliaryManager(&mockProcessProvider{
+		promptFunc: func(ctx context.Context, workspaceUUID, purpose, message string) (string, error) {
+			return `{"tools":[]}`, nil
+		},
+	}, nil)
+	mgr.MCPToolsPersistDir = dir
+	mgr.StdioToolsDiscoverer = func(ctx context.Context, workspaceUUID string) ([]mcpdiscovery.ServerToolsResult, error) {
+		atomic.AddInt32(&probeCalls, 1)
+		return []mcpdiscovery.ServerToolsResult{
+			{Server: "jira", Reachable: true, Tools: []string{"jira_search"}},
+		}, nil
+	}
+
+	var hookFired atomic.Bool
+	mgr.MCPToolsRefreshedHook = func(workspaceUUID string) { hookFired.Store(true) }
+
+	if _, err := mgr.FetchMCPTools(context.Background(), "ws"); err != nil {
+		t.Fatalf("FetchMCPTools error = %v", err)
+	}
+
+	if !waitForRefreshHook(t, &hookFired) {
+		t.Fatalf("expected MCPToolsRefreshedHook to fire for legacy schema snapshot")
+	}
+	if atomic.LoadInt32(&probeCalls) == 0 {
+		t.Errorf("expected the async re-verify to invoke the deterministic discoverer")
+	}
+
+	// The persisted snapshot must have been re-written with the current schema.
+	snapAfter := readPersistedSnapshot(t, dir, "ws")
+	if snapAfter.SchemaVersion != persistedMCPToolsSchemaVersion {
+		t.Errorf("schema version after re-verify = %d, want %d", snapAfter.SchemaVersion, persistedMCPToolsSchemaVersion)
+	}
+}
+
+func TestFetchMCPTools_TrustedSnapshot_DoesNotTriggerAsyncReverify(t *testing.T) {
+	dir := t.TempDir()
+	// Seed a fully-trusted snapshot: current schema, all servers were reachable.
+	snap := persistedMCPTools{
+		Tools:          []MCPToolInfo{{Name: "jira_search"}},
+		UpdatedAt:      time.Now(),
+		SchemaVersion:  persistedMCPToolsSchemaVersion,
+		AnyUnreachable: false,
+	}
+	if err := fileutil.WriteJSONAtomic(filepath.Join(dir, "ws.json"), &snap, 0o644); err != nil {
+		t.Fatalf("seed snapshot: %v", err)
+	}
+
+	var probeCalls int32
+	mgr := NewWorkspaceAuxiliaryManager(&mockProcessProvider{
+		promptFunc: func(ctx context.Context, workspaceUUID, purpose, message string) (string, error) {
+			t.Fatal("LLM provider must not be called for a trusted snapshot")
+			return "", nil
+		},
+	}, nil)
+	mgr.MCPToolsPersistDir = dir
+	mgr.StdioToolsDiscoverer = func(ctx context.Context, workspaceUUID string) ([]mcpdiscovery.ServerToolsResult, error) {
+		atomic.AddInt32(&probeCalls, 1)
+		return nil, nil
+	}
+
+	var hookFired atomic.Bool
+	mgr.MCPToolsRefreshedHook = func(workspaceUUID string) { hookFired.Store(true) }
+
+	if _, err := mgr.FetchMCPTools(context.Background(), "ws"); err != nil {
+		t.Fatalf("FetchMCPTools error = %v", err)
+	}
+
+	// Give any (bug-triggered) background re-verify a chance to run and prove
+	// none did.
+	time.Sleep(100 * time.Millisecond)
+	if hookFired.Load() {
+		t.Errorf("MCPToolsRefreshedHook must NOT fire for a trusted snapshot")
+	}
+	if atomic.LoadInt32(&probeCalls) != 0 {
+		t.Errorf("deterministic discoverer must NOT run for a trusted snapshot, ran %d times", probeCalls)
+	}
+}
+
+func TestFetchMCPTools_ConcurrentSuspectHits_SingleAsyncReverify(t *testing.T) {
+	dir := t.TempDir()
+	snap := persistedMCPTools{
+		Tools:          []MCPToolInfo{{Name: "jira_search"}},
+		UpdatedAt:      time.Now(),
+		SchemaVersion:  persistedMCPToolsSchemaVersion,
+		AnyUnreachable: true,
+	}
+	if err := fileutil.WriteJSONAtomic(filepath.Join(dir, "ws.json"), &snap, 0o644); err != nil {
+		t.Fatalf("seed snapshot: %v", err)
+	}
+
+	// Slow discoverer so all concurrent callers hit the persisted-snapshot
+	// branch while the first goroutine is still running.
+	probeStarted := make(chan struct{}, 8)
+	probeUnblock := make(chan struct{})
+	var probeCalls int32
+	mgr := NewWorkspaceAuxiliaryManager(&mockProcessProvider{
+		promptFunc: func(ctx context.Context, workspaceUUID, purpose, message string) (string, error) {
+			return `{"tools":[{"name":"slack_post"}]}`, nil
+		},
+	}, nil)
+	mgr.MCPToolsPersistDir = dir
+	mgr.StdioToolsDiscoverer = func(ctx context.Context, workspaceUUID string) ([]mcpdiscovery.ServerToolsResult, error) {
+		atomic.AddInt32(&probeCalls, 1)
+		probeStarted <- struct{}{}
+		<-probeUnblock
+		return []mcpdiscovery.ServerToolsResult{
+			{Server: "jira", Reachable: true, Tools: []string{"jira_search"}},
+			{Server: "slack", Reachable: false, Err: errors.New("unreachable")},
+		}, nil
+	}
+
+	var hookFired atomic.Int32
+	mgr.MCPToolsRefreshedHook = func(workspaceUUID string) { hookFired.Add(1) }
+
+	// Fan-in: 5 concurrent FetchMCPTools calls on the same workspace.
+	var wg sync.WaitGroup
+	for i := 0; i < 5; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			// Each caller must clear its own in-memory cache first, since the
+			// first successful call populates it and later callers would
+			// short-circuit on cache-hit before reaching the persisted-load path.
+			// Skip cache-clear so we exercise both paths (cache hit AND persisted
+			// suspect hit) at once — either way, the in-flight guard must dedup.
+			_, _ = mgr.FetchMCPTools(context.Background(), "ws")
+		}()
+	}
+
+	// Wait until the first probe goroutine has started, then release it.
+	select {
+	case <-probeStarted:
+	case <-time.After(2 * time.Second):
+		close(probeUnblock)
+		wg.Wait()
+		t.Fatalf("no probe started within 2s — async re-verify may not be firing")
+	}
+	// Give any (bug-triggered) additional probe goroutines a chance to arrive
+	// at the discoverer before we release the first one.
+	time.Sleep(50 * time.Millisecond)
+	close(probeUnblock)
+	wg.Wait()
+
+	// Wait for hook to fire and any lingering probes to drain.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && hookFired.Load() == 0 {
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	if got := atomic.LoadInt32(&probeCalls); got != 1 {
+		t.Errorf("expected exactly 1 async probe (in-flight guard should dedup), got %d", got)
+	}
+	if got := hookFired.Load(); got != 1 {
+		t.Errorf("expected exactly 1 hook invocation, got %d", got)
+	}
 }
 
 func TestClearMCPToolsCache_RemovesPersistedSnapshot(t *testing.T) {
