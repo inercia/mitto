@@ -82,21 +82,30 @@ func (h *Handlers) handleRestoreLoop(w http.ResponseWriter, r *http.Request, ses
 		return
 	}
 
-	// Reset the run counters/anchors and stopped reason so the restored loop
-	// starts fresh; keep the saved enabled state so an actively-looping
-	// conversation resumes and a paused draft comes back paused.
-	saved.IterationCount = 0
-	saved.FirstRunAt = nil
-	saved.LastSentAt = nil
+	// Restore in two explicit steps so the counter-reset intent is not tangled
+	// up with LoopStore.Set()'s field-preservation semantics (mitto-uun). First
+	// clear any stopped-reason on the saved config so Set() writes the
+	// resumable config; then ResetCounters() zeroes IterationCount / FirstRunAt
+	// / LastSentAt independently. This makes the "restore starts fresh"
+	// contract auditable and robust against future changes to Set().
 	saved.StoppedReason = ""
 	saved.StoppedAt = nil
 	saved.NextScheduledAt = nil
+	// Keep the saved enabled state so an actively-looping conversation resumes
+	// and a paused draft comes back paused.
 
 	if err := ps.Set(saved); err != nil {
 		if h.deps.Logger != nil {
 			h.deps.Logger.Error("Failed to restore loop settings", "error", err)
 		}
 		writeErrorJSON(w, http.StatusInternalServerError, "", "Failed to restore loop settings")
+		return
+	}
+	if err := ps.ResetCounters(); err != nil {
+		if h.deps.Logger != nil {
+			h.deps.Logger.Error("Failed to reset counters after restore", "error", err)
+		}
+		writeErrorJSON(w, http.StatusInternalServerError, "", "Failed to reset counters after restore")
 		return
 	}
 	if err := ps.ClearSaved(); err != nil && h.deps.Logger != nil {

@@ -96,6 +96,17 @@ func logLoopRecordSentFailure(logger *slog.Logger, sessionID string, err error) 
 			"error", err)
 		return
 	}
+	// Resurrection detector (mitto-uun): RecordSent was invoked on a loop that
+	// was already MarkStopped'd — the write still succeeded, but the fact that
+	// a delivery fired at all points to a resurrection bug upstream (a Set()
+	// clobber or a lost auto-stop write). Log loudly so regressions surface in
+	// production without altering delivery behavior.
+	if errors.Is(err, session.ErrRecordSentOnStoppedLoop) {
+		logger.Warn("Loop RecordSent fired on an already-stopped loop (auto-stop resurrection)",
+			"session_id", sessionID,
+			"error", err)
+		return
+	}
 	logger.Warn("Failed to update loop last_sent_at",
 		"session_id", sessionID,
 		"error", err)
@@ -1936,6 +1947,18 @@ func (r *LoopRunner) deliverPrompt(bs *BackgroundSession, sessionMeta session.Me
 			"prompt_preview", truncatePrompt(promptText, 100))
 	}
 
+	// Broadcast the current loop state before dispatch (mitto-uun). This
+	// invalidates any stale "Stopped" pill left over from a previous auto-stop
+	// that a client may still be caching from a prior session — the fresh
+	// Enabled/StoppedReason on the loop_updated event overrides the pill.
+	// Re-read from disk so the broadcast reflects any concurrent writes rather
+	// than the caller's in-memory copy.
+	if r.onLoopUpdated != nil {
+		if fresh, err := loopStore.Get(); err == nil && fresh != nil {
+			r.onLoopUpdated(sessionID, fresh)
+		}
+	}
+
 	// Per-workspace loop-dispatch concurrency guard (mitto-61z). Forced ("Run
 	// Now") deliveries always bypass the cap. For scheduled deliveries we
 	// reserve a slot before PromptWithMeta and release it once the prompt
@@ -2023,10 +2046,17 @@ func (r *LoopRunner) deliverPrompt(bs *BackgroundSession, sessionMeta session.Me
 				return
 			}
 
-			// Prompt completed successfully — now update the schedule
-			if err := loopStore.RecordSent(); err != nil {
-				logLoopRecordSentFailure(r.logger, sessionID, err)
+			// Prompt completed successfully — now update the schedule.
+			// ErrRecordSentOnStoppedLoop (mitto-uun) is a soft sentinel: the write
+			// still succeeded, we just want a WARN emitted, so classify it and
+			// fall through to the post-success schedule/cap logic.
+			recordErr := loopStore.RecordSent()
+			if recordErr != nil && !errors.Is(recordErr, session.ErrRecordSentOnStoppedLoop) {
+				logLoopRecordSentFailure(r.logger, sessionID, recordErr)
 			} else {
+				if recordErr != nil {
+					logLoopRecordSentFailure(r.logger, sessionID, recordErr)
+				}
 				updated, getErr := loopStore.Get()
 				if getErr == nil && updated != nil {
 					r.mu.Lock()
