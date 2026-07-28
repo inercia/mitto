@@ -461,7 +461,6 @@ func TestBlockedDeferLoopDriverFragmentRenders(t *testing.T) {
 	consumers := []consumer{
 		{"Loop fixing bug", "<target-bug>", ""},
 		{"Loop implementing feature", "<target-feature>", ""},
-		{"Publish post", "<target-post>", ` — including "the publish command is still a placeholder"`},
 	}
 
 	// Linked branch: $target resolves so the bd commands substitute the id.
@@ -748,11 +747,6 @@ func TestLoopDriverGuidelinesFragmentsRender(t *testing.T) {
 			labelList:        "`planned`/`implemented`/`tested`/`verified`",
 			splitAntipattern: "a tightly-coupled increment or work that shares files",
 			wantsParallel:    true,
-		},
-		{
-			name:          "Publish post",
-			milestoneList: "stage advanced, published, blocked/deferred, or final stop",
-			wantsParallel: false,
 		},
 	}
 

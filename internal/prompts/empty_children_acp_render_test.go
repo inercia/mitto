@@ -47,7 +47,7 @@ func TestBuiltinPromptsRenderEmptyBackticksForEmptyChildrenAndACP(t *testing.T) 
 	rows := []row{
 		{"Loop fixing bug", []string{emptyChildrenArtifact, emptyACPArtifact}},
 		{"Loop processing tasks", []string{emptyChildrenArtifact, emptyACPArtifact}},
-		{"Publish post", []string{emptyChildrenArtifact}},
+		{"Blog: publish", []string{emptyChildrenArtifact}},
 	}
 
 	for _, r := range rows {

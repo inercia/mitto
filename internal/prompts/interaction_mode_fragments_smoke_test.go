@@ -78,7 +78,6 @@ func TestInteractionModeFragmentsRenderCorrectly(t *testing.T) {
 		"Loop fixing bug",
 		"Loop implementing feature",
 		"Loop until issue complete",
-		"Publish post",
 		"Triage untriaged bugs",
 		"GitHub: babysit this PR",
 		"GitHub: post-merge cleanup",
