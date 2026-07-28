@@ -1297,6 +1297,11 @@ apply inside git-managed folders.
 
 String utilities: `trim`, `lower`, `upper`, `contains`, `hasPrefix`, `hasSuffix`, `join`.
 
+Path utilities: `Dir(path)` returns the forward-slash directory portion of `path`
+(same semantics as Go's `path.Dir`, not the OS-native `filepath.Dir`), useful
+for deriving a sibling-file path from a workspace-relative argument such as
+`{{ Dir .Args.Test }}/cleanup.md`.
+
 Model tags are also available at menu time in `enabledWhen`: `Session.HasModelTag("smart")`
 or `"smart" in Session.ModelTags`. See [Model Profiles](models.md).
 
