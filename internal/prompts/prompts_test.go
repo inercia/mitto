@@ -2038,6 +2038,30 @@ func TestValidatePromptParameters(t *testing.T) {
 		}
 	})
 
+	// Remember field — mitto-x8v.
+	t.Run("remember field: accepts empty/never/folder/global; rejects unknown", func(t *testing.T) {
+		cases := []struct {
+			remember string
+			wantErr  bool
+		}{
+			{"", false},
+			{RememberNever, false},
+			{RememberFolder, false},
+			{RememberGlobal, false},
+			{"sometimes", true},
+			{"Folder", true}, // case-sensitive
+		}
+		for _, tc := range cases {
+			err := ValidatePromptParameters("", []PromptParameter{{Name: "X", Type: "text", Remember: tc.remember}})
+			if tc.wantErr && err == nil {
+				t.Errorf("remember=%q: expected error, got nil", tc.remember)
+			}
+			if !tc.wantErr && err != nil {
+				t.Errorf("remember=%q: unexpected error: %v", tc.remember, err)
+			}
+		}
+	})
+
 	// filename param type — mitto-vlg.
 	t.Run("filename param with no dir/glob is OK", func(t *testing.T) {
 		err := ValidatePromptParameters("", []PromptParameter{{Name: "F", Type: "filename"}})
@@ -2113,13 +2137,27 @@ func TestValidatePromptParameters(t *testing.T) {
 	})
 
 	t.Run("invalid glob returns error mentioning glob", func(t *testing.T) {
-		// filepath.Match rejects an unterminated character class like "[abc".
+		// doublestar.ValidatePattern rejects an unterminated character class like "[abc".
 		err := ValidatePromptParameters("", []PromptParameter{{Name: "F", Type: "filename", Glob: "[abc"}})
 		if err == nil {
 			t.Fatal("expected error, got nil")
 		}
 		if !strings.Contains(err.Error(), "glob") {
 			t.Errorf("error = %q, want it to contain 'glob'", err.Error())
+		}
+	})
+
+	t.Run("recursive glob **/*.md accepted for filename", func(t *testing.T) {
+		err := ValidatePromptParameters("", []PromptParameter{{Name: "F", Type: "filename", Glob: "**/*.md"}})
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("anchored recursive glob docs/**/*.md accepted for filename", func(t *testing.T) {
+		err := ValidatePromptParameters("", []PromptParameter{{Name: "F", Type: "filename", Glob: "docs/**/*.md"}})
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
 		}
 	})
 
@@ -2196,6 +2234,13 @@ func TestValidatePromptParameters(t *testing.T) {
 		err := ValidatePromptParameters("", []PromptParameter{{Name: "D", Type: "dirname", Dir: ".."}})
 		if err == nil {
 			t.Fatal("expected error, got nil")
+		}
+	})
+
+	t.Run("recursive glob **/env-* accepted for dirname", func(t *testing.T) {
+		err := ValidatePromptParameters("", []PromptParameter{{Name: "D", Type: "dirname", Glob: "**/env-*"}})
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
 		}
 	})
 

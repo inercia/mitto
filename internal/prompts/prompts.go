@@ -362,10 +362,21 @@ type PromptParameter struct {
 	// Only valid for type "filename"; rejected by ValidatePromptParameters
 	// elsewhere. Absolute paths and ".." segments are rejected at validation.
 	Dir string `yaml:"dir,omitempty" json:"dir,omitempty"`
-	// Glob, when set, filters candidates in Dir via filepath.Match (e.g. "*.md").
-	// Empty = all regular files. Only valid for type "filename"; validated with
-	// a filepath.Match compile-check at parse time.
+	// Glob, when set, filters candidates in Dir via filepath.Match syntax plus
+	// doublestar "**" for recursive matches (e.g. "*.md", "**/*.md",
+	// "docs/**/*.md"). Non-"**" patterns match base names only under Dir
+	// (non-recursive). Patterns containing "**" walk recursively from Dir and
+	// match against the entry's workspace-relative path. Empty = all regular
+	// files. Only valid for type "filename"; validated with a
+	// doublestar.ValidatePattern compile-check at parse time.
 	Glob string `yaml:"glob,omitempty" json:"glob,omitempty"`
+	// Remember controls whether the most recently submitted value for this
+	// parameter is persisted and pre-filled the next time the same prompt
+	// dialog opens. Valid values (see IsValidRemember): "" or "never"
+	// (default: do not persist), "folder" (per-workspace persistence, keyed by
+	// workspace UUID), and "global" (reserved; enum-accepted but not stored
+	// in v1). Unknown values are rejected by ValidatePromptParameters.
+	Remember string `yaml:"remember,omitempty" json:"remember,omitempty"`
 }
 
 // PromptPreferredModel references a global model profile (Settings → Models) either

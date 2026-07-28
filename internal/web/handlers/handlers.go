@@ -381,6 +381,20 @@ type Deps struct {
 	// reports whether a stats backfill pass is currently running so the
 	// timeseries response can flag partial data. May be nil; treated as false.
 	StatsBackfillerInProgress func() bool
+
+	// RememberFolderArgs persists a filtered subset of prompt arguments so that
+	// the same prompt dialog opens pre-filled next time in the same workspace
+	// (mitto-x8v). The handler filters args to those whose declared Remember
+	// value is RememberFolder; this closure only performs the write and returns
+	// a non-nil error on I/O failure. May be nil; callers must nil-guard.
+	// workspaceUUID / promptName may be empty — the closure then no-ops.
+	RememberFolderArgs func(workspaceUUID, promptName string, args map[string]string) error
+
+	// GetRememberedArgs returns the previously remembered arguments for a
+	// (workspace UUID, prompt name) pair (mitto-x8v). It returns an empty map
+	// when nothing is remembered or when either identifier is empty. May be
+	// nil; the GET handler treats that as "feature disabled" (empty response).
+	GetRememberedArgs func(workspaceUUID, promptName string) (map[string]string, error)
 }
 
 // Handlers groups the REST API handler methods extracted from the web server.

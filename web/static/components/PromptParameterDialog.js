@@ -511,6 +511,37 @@ export function PromptParameterDialog({
     setLoadingPrompts(false);
   }, [isOpen]);
 
+  // mitto-x8v: when the dialog opens for a prompt that declares any
+  // `remember: folder` parameter, fetch previously-remembered values for the
+  // current workspace and merge them into `values`. Remembered entries
+  // override any seeded initialValues (per spec). Fail-open: any fetch
+  // failure leaves values untouched.
+  useEffect(() => {
+    if (!isOpen || !workingDir) return;
+    const promptName = title;
+    if (!promptName || promptName === "Prompt parameters") return;
+    const needsRemember = parameters.some((p) => p.remember === "folder");
+    if (!needsRemember) return;
+    let cancelled = false;
+    authFetch(endpoints.workspacePrompts.rememberedArgs(workingDir, promptName))
+      .then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
+      .then((data) => {
+        if (cancelled) return;
+        const remembered =
+          data && data.arguments && typeof data.arguments === "object"
+            ? data.arguments
+            : null;
+        if (!remembered) return;
+        setValues((prev) => ({ ...prev, ...remembered }));
+      })
+      .catch((err) => {
+        console.warn("[PromptParameterDialog] remembered-args error:", err);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen, workingDir, title]);
+
   // Fetch beads issues when dialog opens (only if a beadsId param is present)
   useEffect(() => {
     if (!isOpen) return;

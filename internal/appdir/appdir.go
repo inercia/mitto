@@ -74,6 +74,11 @@ const (
 	// time-series stats SQLite database (created by the first writer under
 	// internal/stats).
 	StatsDirName = "stats"
+
+	// RememberedArgsDirName is the name of the subdirectory holding per-workspace
+	// remembered prompt-argument snapshots (one JSON file per workspace UUID).
+	// See internal/rememberedargs.
+	RememberedArgsDirName = "remembered-args"
 )
 
 var (
@@ -430,6 +435,18 @@ func StatsDir() (string, error) {
 		return "", err
 	}
 	return filepath.Join(dir, StatsDirName), nil
+}
+
+// RememberedArgsDir returns the directory holding per-workspace remembered
+// prompt-argument snapshots ($MITTO_DIR/remembered-args). The directory is not
+// created here; callers persist via fileutil.WriteJSONAtomic, which creates it
+// on first write. Mirrors the MCPToolsCacheDir pattern (mitto-x8v).
+func RememberedArgsDir() (string, error) {
+	dir, err := Dir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, RememberedArgsDirName), nil
 }
 
 // ResetCache clears the cached directory path.

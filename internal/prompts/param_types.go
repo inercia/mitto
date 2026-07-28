@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/bmatcuk/doublestar/v4"
 )
 
 // KnownPromptParameterTypes is the canonical registry of supported parameter types
@@ -77,6 +79,28 @@ func IsKnownPromptParameterType(t string) bool {
 		if t == known {
 			return true
 		}
+	}
+	return false
+}
+
+// Remember* constants enumerate the accepted values of PromptParameter.Remember.
+// An empty string is treated as RememberNever (default: do not persist).
+//
+//   - RememberNever: do not persist (default)
+//   - RememberFolder: per-workspace persistence, keyed by workspace UUID
+//   - RememberGlobal: reserved; accepted by the enum but not stored in v1
+const (
+	RememberNever  = "never"
+	RememberFolder = "folder"
+	RememberGlobal = "global"
+)
+
+// IsValidRemember reports whether s is an accepted value for the Remember
+// field of a PromptParameter. An empty string counts as valid (means "never").
+func IsValidRemember(s string) bool {
+	switch s {
+	case "", RememberNever, RememberFolder, RememberGlobal:
+		return true
 	}
 	return false
 }
@@ -182,12 +206,20 @@ func ValidatePromptParameters(menus string, params []PromptParameter) error {
 				}
 			}
 			// Glob compile-check: reject malformed patterns at load time so
-			// prompt files fail-fast instead of at first UI open.
+			// prompt files fail-fast instead of at first UI open. Uses
+			// doublestar so patterns with "**" (recursive) are accepted here
+			// and honored by the runtime endpoint.
 			if param.Glob != "" {
-				if _, err := filepath.Match(param.Glob, "x"); err != nil {
-					return fmt.Errorf("parameter %q: invalid glob %q: %w", param.Name, param.Glob, err)
+				if !doublestar.ValidatePattern(param.Glob) {
+					return fmt.Errorf("parameter %q: invalid glob %q", param.Name, param.Glob)
 				}
 			}
+		}
+		// Validate the optional Remember field: reject unknown values so
+		// prompt files fail-fast instead of silently ignoring a typo (mitto-x8v).
+		if !IsValidRemember(param.Remember) {
+			return fmt.Errorf("parameter %q: unknown remember value %q (must be one of: %q, %q, %q)",
+				param.Name, param.Remember, RememberNever, RememberFolder, RememberGlobal)
 		}
 		// Validate the optional cache block.
 		if param.Cache != nil {

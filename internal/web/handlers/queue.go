@@ -9,6 +9,7 @@ import (
 
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/conversation"
+	"github.com/inercia/mitto/internal/prompts"
 	"github.com/inercia/mitto/internal/session"
 )
 
@@ -160,6 +161,11 @@ func (h *Handlers) handleAddToQueue(w http.ResponseWriter, r *http.Request, queu
 		h.deps.NotifyQueueUpdate(sessionID, "added", msg.ID)
 	}
 
+	// Persist per-argument "remember: folder" values so the next open of the
+	// same prompt dialog in this workspace pre-fills them (mitto-x8v).
+	// Best-effort: any failure is logged and does not affect the enqueue.
+	h.rememberFolderArgsForQueueAdd(sessionID, req.PromptName, req.Arguments)
+
 	// Enqueue title generation if enabled (skip for named-prompt items — the prompt name is the label)
 	if h.deps.QueueTitleWorker != nil && queueConfig.ShouldAutoGenerateTitles() && req.PromptName == "" {
 		h.deps.QueueTitleWorker.Enqueue(conversation.QueueTitleRequest{
@@ -180,6 +186,69 @@ func (h *Handlers) handleAddToQueue(w http.ResponseWriter, r *http.Request, queu
 	}
 
 	writeJSONCreated(w, msg)
+}
+
+// rememberFolderArgsForQueueAdd filters the client-supplied arguments down to
+// those declared `remember: folder` on the resolved prompt definition and
+// persists them via the RememberFolderArgs closure. It is best-effort: nil
+// deps, empty inputs, unresolved workspaces, or unknown prompts all no-op;
+// I/O failures are logged at WARN and swallowed so the enqueue is never
+// affected. See mitto-x8v.
+func (h *Handlers) rememberFolderArgsForQueueAdd(sessionID, promptName string, args map[string]string) {
+	if h.deps.RememberFolderArgs == nil {
+		return
+	}
+	if promptName == "" || len(args) == 0 {
+		return
+	}
+	if h.deps.SessionManager == nil {
+		return
+	}
+	bs := h.deps.SessionManager.GetSession(sessionID)
+	if bs == nil {
+		return
+	}
+	workspaceUUID := bs.GetWorkspaceUUID()
+	workingDir := bs.GetWorkingDir()
+	if workspaceUUID == "" || workingDir == "" {
+		return
+	}
+	if h.deps.GetWorkspacePromptsAll == nil {
+		return
+	}
+	all := h.deps.GetWorkspacePromptsAll(workingDir)
+	var target *config.WebPrompt
+	for i := range all {
+		if strings.EqualFold(all[i].Name, promptName) {
+			target = &all[i]
+			break
+		}
+	}
+	if target == nil {
+		return
+	}
+	filtered := make(map[string]string, len(args))
+	for _, p := range target.Parameters {
+		if p.Remember != prompts.RememberFolder {
+			continue
+		}
+		v, ok := args[p.Name]
+		if !ok || v == "" {
+			continue
+		}
+		filtered[p.Name] = v
+	}
+	if len(filtered) == 0 {
+		return
+	}
+	if err := h.deps.RememberFolderArgs(workspaceUUID, promptName, filtered); err != nil {
+		if h.deps.Logger != nil {
+			h.deps.Logger.Warn("Failed to persist remembered prompt args",
+				"session_id", sessionID,
+				"prompt_name", promptName,
+				"error", err)
+		}
+	}
 }
 
 // handleClearQueue handles DELETE {prefix}/api/sessions/{id}/queue

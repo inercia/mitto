@@ -32,6 +32,7 @@ import (
 	"github.com/inercia/mitto/internal/mcpserver"
 	"github.com/inercia/mitto/internal/processors"
 	"github.com/inercia/mitto/internal/prompts"
+	"github.com/inercia/mitto/internal/rememberedargs"
 	"github.com/inercia/mitto/internal/session"
 	"github.com/inercia/mitto/internal/stats"
 	"github.com/inercia/mitto/internal/web/handlers"
@@ -277,6 +278,12 @@ type Server struct {
 	// apiHandlers holds the REST handlers extracted into the internal/web/handlers
 	// sub-package. Routing stays in server.go; the actual handler logic lives there.
 	apiHandlers *handlers.Handlers
+
+	// rememberedArgs persists per-workspace prompt-argument values so that
+	// arguments declared `remember: folder` pre-fill the next time the prompt
+	// dialog opens for the same workspace (mitto-x8v). Nil when the appdir
+	// helper failed to resolve at startup; callers treat that as inert.
+	rememberedArgs *rememberedargs.Store
 
 	// Dashboard time-series stats subsystem (mitto-a86b). statsStore is the
 	// underlying persistence (SQLite in production, Noop when disabled or
@@ -814,6 +821,18 @@ func NewServer(config Config) (*Server, error) {
 		mcpAvailable:         true,
 	}
 
+	// Remembered prompt-arguments store (mitto-x8v). Resolved against
+	// appdir.RememberedArgsDir; an empty baseDir (e.g. when the appdir helper
+	// fails) leaves the Store inert so callers can no-op cleanly.
+	if raDir, err := appdir.RememberedArgsDir(); err == nil {
+		s.rememberedArgs = rememberedargs.NewStore(raDir)
+	} else {
+		if logger != nil {
+			logger.Warn("Failed to resolve remembered-args dir; feature disabled", "error", err)
+		}
+		s.rememberedArgs = rememberedargs.NewStore("")
+	}
+
 	// Bound concurrent interactive ResumeSession calls issued from the
 	// cold-start WebSocket fan-out (mitto-54k.1). Config knob mirrors the
 	// existing startup_stagger_ms pattern; the user-focused ensure_resumed
@@ -1279,6 +1298,18 @@ func NewServer(config Config) (*Server, error) {
 		StatsStore: s.statsStore,
 		StatsBackfillerInProgress: func() bool {
 			return s.statsBackfiller != nil && s.statsBackfiller.InProgress()
+		},
+		RememberFolderArgs: func(workspaceUUID, promptName string, args map[string]string) error {
+			if s.rememberedArgs == nil {
+				return nil
+			}
+			return s.rememberedArgs.Set(workspaceUUID, promptName, args)
+		},
+		GetRememberedArgs: func(workspaceUUID, promptName string) (map[string]string, error) {
+			if s.rememberedArgs == nil {
+				return map[string]string{}, nil
+			}
+			return s.rememberedArgs.Get(workspaceUUID, promptName)
 		},
 	})
 

@@ -81,6 +81,10 @@ func (s *Server) apiRoutes(authMgr *middleware.AuthManager, csrfMgr *middleware.
 		apiRoute{method: "POST", pattern: "/api/workspaces/{uuid}/mcp-tools/remove", handler: http.HandlerFunc(s.apiHandlers.HandleWorkspaceMCPRemove)},
 		apiRoute{method: "PUT", pattern: "/api/workspaces/{uuid}/folder-group", handler: http.HandlerFunc(s.apiHandlers.HandleFolderGroup)},
 		apiRoute{pattern: "/api/workspace-prompts", handler: http.HandlerFunc(s.apiHandlers.HandleWorkspacePromptsRoute)},
+		// Remembered per-argument values for prompt dialogs (mitto-x8v):
+		// registered BEFORE the /{name} pattern so the mux doesn't route
+		// "remembered-args" as a prompt name.
+		apiRoute{method: "GET", pattern: "/api/workspace-prompts/remembered-args", handler: http.HandlerFunc(s.apiHandlers.HandleRememberedArgsGET)},
 		apiRoute{method: "PATCH", pattern: "/api/workspace-prompts/{name}", handler: http.HandlerFunc(s.apiHandlers.HandleWorkspacePromptsToggleEnabled)},
 		// Workspace file listing — feeds the "filename" prompt parameter type's
 		// dropdown. Non-recursive; containment-checked. See mitto-vlg.
