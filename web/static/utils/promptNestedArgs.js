@@ -110,7 +110,6 @@ export function pruneNestedTree(tree, outerParams, outerValues, promptsList) {
   return mutated ? next : tree;
 }
 
-
 // Build the JSON-string payload for a picker at any level. Mirrors the v1
 // outer serializer per-field rules (booleans → "true"/"false", strings →
 // trim, drop-if-empty-and-not-required), and recursively emits `<Picker>` /

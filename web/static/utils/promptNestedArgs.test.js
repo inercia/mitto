@@ -345,12 +345,7 @@ describe("buildInnerArgs", () => {
       values: { wouldBeDeeper: "sentinel", note: "kept" },
       sub: {},
     };
-    const result = buildInnerArgs(
-      params,
-      node,
-      promptsList,
-      MAX_NESTED_LEVEL,
-    );
+    const result = buildInnerArgs(params, node, promptsList, MAX_NESTED_LEVEL);
     expect(result.wouldBeDeeper).toBeUndefined();
     expect(result.wouldBeDeeper_Args).toBeUndefined();
     // Non-picker sibling still emitted at the same level.
@@ -418,7 +413,6 @@ describe("buildInnerArgs", () => {
   });
 });
 
-
 // -----------------------------------------------------------------------------
 // collectPickedPaths — walks the tree and enumerates every currently-picked
 // node so the remembered-args fetch effect can fire one request per depth.
@@ -432,9 +426,9 @@ describe("collectPickedPaths", () => {
   test("returns [] when the tree is empty or non-object", () => {
     expect(collectPickedPaths({}, outerParams, {}, promptsList)).toEqual([]);
     expect(collectPickedPaths(null, outerParams, {}, promptsList)).toEqual([]);
-    expect(
-      collectPickedPaths(undefined, outerParams, {}, promptsList),
-    ).toEqual([]);
+    expect(collectPickedPaths(undefined, outerParams, {}, promptsList)).toEqual(
+      [],
+    );
   });
 
   test("returns [] when no picker has a value", () => {
@@ -512,4 +506,3 @@ describe("collectPickedPaths", () => {
     expect(result[0].pickedPromptName).toBe("mid");
   });
 });
-

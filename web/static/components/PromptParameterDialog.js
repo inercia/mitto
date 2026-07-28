@@ -942,7 +942,11 @@ export function PromptParameterDialog({
                   node = node[pn].sub || {};
                 }
               }
-              if (existing === undefined || existing === null || existing === "") {
+              if (
+                existing === undefined ||
+                existing === null ||
+                existing === ""
+              ) {
                 next = updateNestedTree(next, path, k, v);
               }
             }
