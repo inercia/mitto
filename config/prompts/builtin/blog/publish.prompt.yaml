@@ -11,7 +11,7 @@ parameters:
     default: blog/posts
     required: false
     description: Folder where blog post files live (repo-relative)
-description: 'Blog - publish a finalised blog/draft post: rewrite frontmatter, rename draft-slug.md -> YYYY-MM-DD-slug.md, update the bead file attachment, add published/remove draft+needs-*+ready, close the bead'
+description: 'Blog - publish a finalised blog/draft post: rewrite frontmatter, rename draft-slug.md -> YYYY-MM-DD-slug.md, update the bead file attachment, add published/remove draft+needs-*+ready (does NOT close the bead)'
 backgroundColor: '#C8E6C9'
 group: Blog
 enabledWhen: CommandExists("bd") && DirExists(".beads") && "blog" in Item.Labels && "draft" in Item.Labels && !("published" in Item.Labels)
@@ -24,14 +24,16 @@ preferredModels:
 prompt: |
   {{ template "_shared/session-context" . }}
 
-  # Blog: Publish -- finalise a draft post and close the bead
+  # Blog: Publish -- finalise a draft post
 
   This prompt drives the final `draft` -> `published` transition of the blog
   suite state machine. It is a **one-shot per-bead** flow (NOT a loop): a
   single invocation confirms the finalised metadata with the author, rewrites
   the frontmatter in place, renames the file from `draft-<slug>.md` to
   `YYYY-MM-DD-<slug>.md`, refreshes the bead's file attachment, runs the
-  publish checklist, and closes the bead with the `published` label.
+  publish checklist, and applies the `published` label. It does NOT close
+  the bead -- closure is left to the author, who decides when the downstream
+  work (e.g. `linkedin-post`) is truly done.
 
   ## Step 1 -- Locate the post file
 
@@ -163,7 +165,7 @@ prompt: |
   without adding the `published` label). If Abort is chosen, record the
   reason via `bd comment` and stop without proceeding to Step 9.
 
-  ## Step 9 -- Update labels and close the bead
+  ## Step 9 -- Update labels
 
   ```bash
   bd update {{ .Args.IssueID }} --add-label published
@@ -172,10 +174,13 @@ prompt: |
   for l in needs-polish needs-fact-check needs-references; do
     bd update {{ .Args.IssueID }} --remove-label "$l" 2>/dev/null || true
   done
-  bd close {{ .Args.IssueID }} --reason "Published: $(basename "$post_abs")."
   ```
+
+  Do **not** run `bd close` here. Closing the bead is the author's decision
+  and is intentionally left as a manual step after any downstream work
+  (e.g. `linkedin-post`) is complete.
 
   ## Step 10 -- Notify
 
   Report via `mitto_ui_notify_mitto` -- title `"Blog post published"`,
-  message `"{{ .Args.IssueID }} - $(basename "$post_abs")"`.
+  message `"{{ .Args.IssueID }} - $(basename "$post_abs") (bead left open for author to close)"`.

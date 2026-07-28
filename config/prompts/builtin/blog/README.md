@@ -106,8 +106,24 @@ no gate -- it is the entry point, always visible in the workspace menu).
 | `fact-check` | `CommandExists("bd") && DirExists(".beads") && "blog" in Item.Labels && "draft" in Item.Labels` | Removes `needs-fact-check`; adds `ready` iff no `needs-*` remain. |
 | `add-references` | `CommandExists("bd") && DirExists(".beads") && "blog" in Item.Labels && "draft" in Item.Labels` | Flags REQUIRED vs RECOMMENDED references; adds `needs-fact-check`; removes `ready`. |
 | `polish` | `CommandExists("bd") && DirExists(".beads") && "blog" in Item.Labels && "draft" in Item.Labels` | Six-mode dropdown (General, Concise, Expand, Technical, Sharpen opening, Fluent); removes `needs-polish`; adds `ready` iff no `needs-*` remain. |
-| `publish` | `CommandExists("bd") && DirExists(".beads") && "blog" in Item.Labels && "draft" in Item.Labels && !("published" in Item.Labels)` | Terminal transition: rewrites frontmatter, `git mv draft-<slug>.md -> YYYY-MM-DD-<slug>.md`, refreshes attachment, adds `published`, removes `draft`+`ready`+every `needs-*`, closes the bead. |
+| `publish` | `CommandExists("bd") && DirExists(".beads") && "blog" in Item.Labels && "draft" in Item.Labels && !("published" in Item.Labels)` | Terminal label transition: rewrites frontmatter, `git mv draft-<slug>.md -> YYYY-MM-DD-<slug>.md`, refreshes attachment, adds `published`, removes `draft`+`ready`+every `needs-*`. **Does NOT close the bead** -- closure is a manual step for the author (see "No automatic closure" below). |
 | `linkedin-post` | `CommandExists("bd") && DirExists(".beads") && "blog" in Item.Labels && "published" in Item.Labels` | Post-publication only. Downstream artefact -- does NOT modify the bead. |
+
+## No automatic closure
+
+**No prompt in this suite runs `bd close`.** The bead lifecycle stops at
+labels; closing the bead is a deliberate manual action for the author, not an
+automated side-effect of the state machine. Rationale: "published" is not the
+same as "done" -- the author may still want to post to LinkedIn, share
+internally, iterate on comments, or link the bead from follow-up work before
+declaring it closed. Encoding the close into any prompt would race that
+judgement.
+
+When adding a new blog prompt, do **not** include `bd close` in its body,
+even for prompts that appear terminal. If closure ever needs to be
+automated for a specific workflow, that belongs in a separate, opt-in
+prompt (e.g. `blog/archive`) -- never as a hidden step of an editing or
+publishing flow.
 
 ## Bucket classifications
 
