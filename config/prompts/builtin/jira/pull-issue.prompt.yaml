@@ -59,6 +59,10 @@ prompt: |
   {{- if Cond "Tools.Names.exists(n, n.matches('(?i)jira'))" }}
 
   Call **`jira_get_issue_jira`** for the key with `fields="*all"` and `expand="renderedFields,changelog"`. The `changelog` expansion is needed by Step 6.5 to detect a JIRA reopen after a local close.
+
+  **Do not** substitute a batch search tool (`jira_search_jira` / `search_jira_issues` / any `*search*` name) for this call, even as a fallback when `jira_get_issue_jira` errors. On JIRA Server / Data Center the batch search response **omits the `comment` field** by default and returns a truncated `changelog`, so a search-based fallback silently drops comments and status transitions — exactly the failure mode this step exists to prevent. If the per-issue tool errors, try a dedicated per-issue comments tool (any `mcp__*__jira_get_comments` / `get_jira_comments` / `jira_get_issue_comments` name that is exposed) for the `comment` array, then retry `jira_get_issue_jira` for the rest. If none of the per-issue tools work, fall through to the CLI branch below — never to a batch search.
+
+  **Verify the response contains a `comment` field** (an array, possibly empty) before continuing. If the field is **absent** — not just empty — you fetched from an endpoint that elides comments; retry with a per-issue tool. An absent `comment` field is never evidence of "0 comments."
   {{- else }}
 
   Run:
@@ -69,10 +73,10 @@ prompt: |
   PAGER=cat jira issue view <KEY> --history
   ```
 
-  Comment bodies may be omitted from list `--raw`; the `jira issue view --comments` output is what to convert. The `jira issue view --history` output supplies the status-transition changelog consumed by Step 6.5.
+  Comment bodies **are** omitted from list `--raw` on JIRA Server / Data Center — treat that response as authoritative for the ticket fields (status, priority, `updated`, etc.) only, never as evidence about comments. The `jira issue view <KEY> --comments 200` output is the authoritative source for comment bodies and must succeed before Step 4 can decide "already up to date"; do not fall back to `list --raw` as a comment source. The `jira issue view --history` output supplies the status-transition changelog consumed by Step 6.5.
   {{- end }}
 
-  Capture: key, summary, status name, priority, issue type, labels, assignee, the `updated` timestamp, and every comment (id, author, created, body). For the **description** and each **comment body**, capture the **raw** field value — on JIRA Server / Data Center this is JIRA wiki markup, which Step 3 converts to Markdown. Keep the `renderedFields` HTML only as a fallback for content the converter does not handle. Also capture the ticket's **status transition history** (from `changelog.histories` on the MCP path, or the `--history` output on the CLI path) — Step 6.5 walks it to find the most recent transition into a non-terminal status.
+  Capture: key, summary, status name, priority, issue type, labels, assignee, the `updated` timestamp, and every comment (id, author, created, body) from the per-issue endpoint. For the **description** and each **comment body**, capture the **raw** field value — on JIRA Server / Data Center this is JIRA wiki markup, which Step 3 converts to Markdown. Keep the `renderedFields` HTML only as a fallback for content the converter does not handle. Also capture the ticket's **status transition history** (from `changelog.histories` on the MCP path, or the `--history` output on the CLI path) — Step 6.5 walks it to find the most recent transition into a non-terminal status.
 
   ## Step 3 — JIRA wiki markup → Markdown helper
 
@@ -84,6 +88,8 @@ prompt: |
 
   - If `metadata.jira_updated` **equals** the ticket's `updated` timestamp **and** every comment id on the ticket is already listed in `metadata.jira_synced_comments`, there is nothing to do. In interactive mode print a one-line "already up to date" message; in silent mode stay silent. Then **stop** (do not run Steps 5–7).
   - Otherwise continue to Step 5.
+
+  **Precondition — trust the comment list only when it came from a per-issue endpoint.** This "already up to date" short-circuit is only safe when the `comment` field in Step 2's response is an actual (possibly empty) array returned by `jira_get_issue_jira` / a dedicated comments tool / `jira issue view --comments`. If the response's `comment` field was *absent* (e.g. Step 2 ended up on a batch search fallback), do **not** short-circuit here — re-run Step 2 through a per-issue endpoint first. Trusting an absent `comment` field poisons `jira_updated` and permanently drops any comment created before the next JIRA `updated` bump.
 
   ## Step 5 — Update the bead body (preserve local edits)
 
