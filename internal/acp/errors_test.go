@@ -349,6 +349,53 @@ func TestBackoffDelay(t *testing.T) {
 	})
 }
 
+// TestFormatACPError_QueryClosedHandshake verifies the Claude Code cold-start
+// auth-expiry branch (mitto-bov). The Anthropic SDK tears down its session/new
+// async iterator when auth verification fails, surfacing as JSON-RPC -32603
+// whose data.details contains "Query closed before response received". The
+// friendly re-auth guidance must fire in place of the generic -32603 catch-all.
+func TestFormatACPError_QueryClosedHandshake(t *testing.T) {
+	tests := []struct {
+		name         string
+		err          error
+		wantContains string
+		wantExcludes string
+	}{
+		{
+			name:         "exact SDK payload triggers re-auth guidance",
+			err:          fmt.Errorf(`failed to create session: {"code":-32603,"message":"Internal error","data":{"details":"Query closed before response received"}}`),
+			wantContains: "authentication has expired",
+		},
+		{
+			name:         "case-insensitive match on details substring",
+			err:          fmt.Errorf(`{"code":-32603,"message":"Internal error","data":{"details":"QUERY CLOSED BEFORE RESPONSE RECEIVED"}}`),
+			wantContains: "handshake failed",
+		},
+		{
+			name:         "generic -32603 without query-closed falls through to catch-all",
+			err:          fmt.Errorf(`{"code":-32603,"message":"Internal error"}`),
+			wantExcludes: "authentication has expired",
+		},
+		{
+			name:         "query-closed phrase without -32603 does not hijack",
+			err:          fmt.Errorf(`something else: query closed before response received`),
+			wantExcludes: "authentication has expired",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := FormatACPError(tt.err)
+			if tt.wantContains != "" && !containsIgnoreCase(got, tt.wantContains) {
+				t.Errorf("FormatACPError(%v) = %q, want to contain %q", tt.err, got, tt.wantContains)
+			}
+			if tt.wantExcludes != "" && containsIgnoreCase(got, tt.wantExcludes) {
+				t.Errorf("FormatACPError(%v) = %q, must NOT contain %q", tt.err, got, tt.wantExcludes)
+			}
+		})
+	}
+}
+
 // TestIsAuthError verifies the predicate used by handlePromptError to stop
 // queue advancement when the upstream CLI's authentication has expired
 // (mitto-r5o). Match is case-insensitive on "authentication required".

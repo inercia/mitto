@@ -456,6 +456,24 @@ func FormatACPError(err error) string {
 			"for Claude Code, or `auggie auth login` for Auggie), then send your message again."
 	}
 
+	// Claude Code cold-start handshake auth-expiry (mitto-bov). When the shared
+	// Claude Code process has expired auth, the SDK's session/new async iterator
+	// is torn down before writing a response and surfaces as JSON-RPC -32603
+	// with data.details "Query closed before response received" — a different
+	// code path from the -32000 case above. Same root cause (expired CLI auth),
+	// same fix (re-auth), so we render the same actionable guidance. Placed
+	// before the generic -32603 catch-all so the friendly message wins over
+	// "AI service returned an error". Match is case-insensitive on the details
+	// substring in case the SDK wording drifts.
+	if strings.Contains(errMsg, "-32603") &&
+		strings.Contains(strings.ToLower(errMsg), "query closed before response received") {
+		return "🔐 The AI agent's authentication has expired (handshake failed). " +
+			"The shared agent process could not complete session/new. " +
+			"Please re-authenticate the CLI in a terminal (e.g. `claude auth login` " +
+			"for Claude Code, or `auggie auth login` for Auggie), then start a new " +
+			"conversation or click Restart ACP for this workspace."
+	}
+
 	// JSON-RPC internal error (-32603) — try to extract HTTP status for better messages.
 	// Previously this required "details" to be present in the message; without it the
 	// raw JSON-RPC error string was shown to the user. Now we always return a
