@@ -236,7 +236,7 @@ func TestHandleSessionQueue_Add_NamedPromptTriggersConversationTitle(t *testing.
 
 	h := New(Deps{Store: store, SessionManager: sm})
 
-	body := `{"prompt_name": "Follow instructions"}`
+	body := `{"prompt_name": "Run scripted test"}`
 	req := httptest.NewRequest(http.MethodPost, "/mitto/api/sessions/"+sid+"/queue", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()

@@ -682,7 +682,7 @@ func TestBuildTemplateFuncMap_StringUtils(t *testing.T) {
 }
 
 // TestBuildTemplateFuncMap_DirWithFileExistsAndReadFile pins the composition
-// used by the "Follow instructions" builtin prompt: derive a sibling file path
+// used by the "Run scripted test" builtin prompt: derive a sibling file path
 // from a workspace-relative argument via Dir, then conditionally inline it via
 // FileExists / ReadFile.
 func TestBuildTemplateFuncMap_DirWithFileExistsAndReadFile(t *testing.T) {
