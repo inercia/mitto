@@ -94,15 +94,26 @@ prompt: |
   ```bash
   bd update {{ $target }} --title "[<KEY>] <summary>" \
     --priority <mapped-priority> --type <mapped-type> \
-    --body-file /tmp/jira-<key>.md \
-    --set-metadata jira_updated="<ticket.updated>"
+    --body-file /tmp/jira-<key>.md
   ```
+
+  Do **not** write `jira_updated` on this `bd update` — it is a high-water mark that must be advanced only after Step 6 (mirror comments) succeeds. Step 6.9 handles that final commit.
 
   ## Step 6 — Mirror new JIRA comments
 
   {{ template "jira/shared/mirror-comments-in" . }}
 
   In this prompt, `<bead-id>` is `{{ $target }}`.
+
+  ## Step 6.9 — High-water mark: commit `jira_updated` last
+
+  Only after Step 5 (body) and Step 6 (per-comment mirror loop) both succeeded for this ticket, advance the idempotency guard used by Step 4:
+
+  ```bash
+  bd update {{ $target }} --set-metadata jira_updated="<ticket.updated>"
+  ```
+
+  If either the body update or any per-comment append in Step 6 failed, **skip this write** — leaving `jira_updated` behind lets a future run retry the missing pieces. Never advance `jira_updated` past unmirrored data (see Guidelines "high-water mark").
 
   ## Step 6.5 — Detect a JIRA reopen after a local close
 
@@ -204,6 +215,7 @@ prompt: |
   ## Guidelines
 
   - **Idempotent**: `metadata.jira_updated` skips unchanged tickets; `metadata.jira_synced_comments` prevents duplicate comments. Running this prompt twice in a row must produce no spurious changes.
+  - **`jira_updated` is a high-water mark**: it must **never** advance past data that has not yet been mirrored into the bead. Bump it only as the **last** `bd update` for this ticket (Step 6.9), gated on Step 5 (body) and Step 6 (comment mirror loop) both having succeeded. Bumping it early poisons Step 4's idempotency guard so a missed comment becomes permanently unreachable until some other JIRA event ticks `updated` again. Comments must also be sourced from the per-issue endpoint before mirroring — the batch search payload cannot be trusted for comment content on JIRA Server / Data Center.
   - **Loop-safe**: `[jira]`-prefixed beads comments are the sync marker — never edit or remove them. `[mitto]`-prefixed JIRA comments (written by `JIRA: push issue`) come back through this pull as `[jira] <author> @ <time>: [mitto] <body>` and are dedup-tracked by `jira_synced_comments`, so the round-trip never duplicates.
   - Always `--body-file` for descriptions and `--file`/inline text for comments to avoid shell-quoting issues.
   - **Good-enough conversion**: JIRA wiki markup is converted to Markdown on a best-effort basis (Step 3) — headers and code blocks are the priority; perfect fidelity is not a goal.

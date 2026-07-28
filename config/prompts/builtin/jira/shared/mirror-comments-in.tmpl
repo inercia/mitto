@@ -6,11 +6,13 @@
   `{{ $target }}` in pull-issue, `<id>` in the sync-tasks batch loop — the
   fragment uses `<bead-id>` and the caller wraps it with its own step framing).
 */ -}}
-For each JIRA comment whose id is **not** already listed in `metadata.jira_synced_comments`, convert its body with the wiki→Markdown helper, then append it to the bead with a `[jira]` marker so it is never duplicated, and extend the metadata list:
+**Fetch comments from the per-issue endpoint, not the batch search payload.** On JIRA Server / Data Center the batch search (`jira_search_jira` / `/rest/api/2/search`, or `jira issue list --raw`) returns zero or heavily-truncated comments even with `fields="*all"` — so callers **must** reload the comment list here via `jira_get_issue_jira` on the MCP path (or `PAGER=cat jira issue view <KEY> --comments 200` on the CLI path) before iterating. Do not trust `fields.comment` from a search response.
+
+For each JIRA comment whose id is **not** already listed in `metadata.jira_synced_comments`, convert its body with the wiki→Markdown helper, then append it to the bead with a `[jira]` marker so it is never duplicated, and extend the metadata list **inside the loop** (partial-failure safe — a mid-loop failure still leaves the run in a forward-progressable state):
 
 ```bash
 bd comment <bead-id> "[jira] <author> @ <created>: <converted comment body>"
-bd update <bead-id> --set-metadata jira_synced_comments="<previous ids + new ids>"
+bd update <bead-id> --set-metadata jira_synced_comments="<previous ids + this comment's id>"
 ```
 
 **Preserve local comments/notes.** Only ever **append** comments, and only for JIRA comment ids not already synced. Never edit or delete existing comments. Beads comments that do **not** start with `[jira]` were added locally — leave them untouched. The `jira_synced_comments` metadata is what prevents re-mirroring, so a local comment can never be mistaken for a JIRA one.

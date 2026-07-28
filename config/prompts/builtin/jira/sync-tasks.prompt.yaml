@@ -198,7 +198,7 @@ prompt: |
   through the Step 5.0 converter.
   {{- end }}
 
-  For each ticket capture: key, summary, status (the **status name**, so you can spot a *Blocked* status), priority, issue type, labels, assignee, the `updated` timestamp, the **issue links** (`fields.issuelinks` — for each, the link type name plus the inward/outward issue key, used for blocking relationships), and every comment (id, author, created, body).
+  For each ticket capture: key, summary, status (the **status name**, so you can spot a *Blocked* status), priority, issue type, labels, assignee, the `updated` timestamp, and the **issue links** (`fields.issuelinks` — for each, the link type name plus the inward/outward issue key, used for blocking relationships). Comment bodies are **not** reliably carried by the batch search on JIRA Server / Data Center (see the mirror-comments-in preamble); Step 5C reloads comments per-ticket via the per-issue endpoint before mirroring, so do not depend on `fields.comment` from this response.
 
   For the **description** and each **comment body**, capture the **raw** field value (e.g. `fields.description`, `comment.body`) — on JIRA Server/Data Center this is **JIRA wiki markup** (headers like `h1.`, code blocks like `{code}`, etc.), which Step 5 converts to Markdown. Keep the `renderedFields` HTML only as a fallback for content the converter does not handle.
 
@@ -236,11 +236,7 @@ prompt: |
     --body-file /tmp/jira-<key>.md
   ```
 
-  Capture the new bead ID, then record sync state and mirror all comments (see C):
-
-  ```bash
-  bd update <id> --set-metadata jira_updated="<ticket.updated>" --set-metadata jira_synced_comments="<csv of comment ids>"
-  ```
+  Capture the new bead ID. Do **not** write `jira_updated` here — that high-water mark is written at the end of Step 5D, only after comments are mirrored (see Guidelines "high-water mark").
 
   **B. A matching bead exists** → detect changes and update:
 
@@ -250,9 +246,10 @@ prompt: |
   ```bash
   bd update <id> --title "[<KEY>] <summary>" \
     --priority <mapped-priority> --type <mapped-type> \
-    --body-file /tmp/jira-<key>.md \
-    --set-metadata jira_updated="<ticket.updated>"
+    --body-file /tmp/jira-<key>.md
   ```
+
+  Do **not** write `jira_updated` on this `bd update` either — Step 5D handles it after comment mirroring succeeds.
 
   - **Status reflection** (conservative — see Guidelines "Terminal status"): if the JIRA ticket is in a **terminal** status and the bead's local `status` is `open`, `in_progress`, or `blocked` (i.e. non-terminal but **not** `deferred`), close it: `bd close <id> --reason "Closed in JIRA (<status>)"`. (In interactive mode you may confirm first.) A `deferred` bead is **not** auto-closed here — see the deferred branch below; `deferred` is a local scheduling decision and JIRA reaching terminal is a reconciliation case, not a signal to override the user's parking choice.
 
@@ -266,9 +263,19 @@ prompt: |
 
   **C. Mirror new comments** (both create and update paths):
 
+  Before entering the mirror loop, reload this ticket's comments via the per-issue endpoint so nothing is missed: on the MCP path call `jira_get_issue_jira` for the key (with `fields="comment"` or `fields="*all"`); on the CLI path run `PAGER=cat jira issue view <KEY> --comments 200`. Use that response — not Step 3's search payload — as the source list.
+
   {{ template "jira/shared/mirror-comments-in" . }}
 
   In this batch step, `<bead-id>` is `<id>` (the bead that owns the current JIRA key from the Step 4 map).
+
+  **D. High-water mark — commit `jira_updated` last** (both create and update paths). Only after Step 5.1 (body) and Step 5C (comments) succeeded for this ticket, advance the idempotency guard:
+
+  ```bash
+  bd update <id> --set-metadata jira_updated="<ticket.updated>"
+  ```
+
+  If either the body update or any per-comment append in Step 5C failed, **skip this write** — leaving `jira_updated` behind lets the next run retry the missing pieces. Never advance `jira_updated` past unmirrored data (see Guidelines "high-water mark").
 
   ## Step 6 — Mirror blocking relationships (dependencies)
 
@@ -382,6 +389,7 @@ prompt: |
   - **`deferred` is local-only** (deferred is local-only — never translated to JIRA-side actions): a bead in `deferred` status must never cause a JIRA-side write (no transition, no `[mitto]` close-comment, no reopen). Push transitions (Step 8A) fire only on `bead.status == "closed"`. Pull-side status reflection (Step 5B) never auto-closes a `deferred` bead when JIRA is terminal, and push-side reconciliation (Step 8A) never offers "Reopen the JIRA ticket" for a `deferred` bead. Reconciliation dialogs may surface a `deferred` bead in interactive mode via the deferred-branch dialogs, but even then the safe "Leave deferred" option performs no JIRA write, and in silent mode the bead is always deferred to the next interactive run.
   - **Sync direction is toggleable per run** via the `Pull` and `Push` arguments — both default to true (full two-way sync). Set either to false to run one direction only; setting both to false is a no-op.
   - **Idempotent (pull)**: the `external_ref` (`jira-<key>`) is the join key; `metadata.jira_updated` skips unchanged tickets; `metadata.jira_synced_comments` prevents duplicate comments. Running Pull twice in a row must produce no spurious changes.
+  - **`jira_updated` is a high-water mark**: it must **never** advance past data that has not yet been mirrored into the bead. Bump it only as the **last** `bd update` for a ticket per run, gated on the body update **and** the per-comment mirror loop having both succeeded. Bumping it early poisons the Step 4 / Step 5B idempotency guard so a missed comment becomes permanently unreachable until some other JIRA event ticks `updated` again. Comments must also be sourced from the per-issue endpoint before mirroring — the batch search payload cannot be trusted for comment content on JIRA Server / Data Center.
   - **Idempotent (push)**: `metadata.jira_pushed_status` skips already-transitioned beads; `metadata.jira_pushed_comments` prevents re-pushing the same beads comment. Running Push twice in a row must produce no spurious JIRA writes.
   - **Loop-safe**: `[jira]`-prefixed beads comments are **never** pushed to JIRA; `[mitto]`-prefixed JIRA comments still come back through Pull but are dedup-tracked by `jira_synced_comments`, so the round-trip never duplicates.
   - **Push safety**: on any transition/comment permission or auth failure, record it in the run summary and move on — do not retry against a permission wall. Never edit or delete existing JIRA content; Push only **adds** (a new comment) or **transitions** (status only).
