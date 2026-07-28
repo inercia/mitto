@@ -30,6 +30,14 @@ import { Modal } from "./Modal.js";
  * @param {Object} loadingFilesByParam - per-param loading flag keyed by param.name
  * @param {Object} dirsByParam - loaded dir lists keyed by param.name (may be undefined)
  * @param {Object} loadingDirsByParam - per-param loading flag keyed by param.name
+ * @param {Array}  [nestedParams] - inner PromptParameter[] to render below a
+ *   `type: prompts` picker (may be [] or undefined). mitto-47y.2.
+ * @param {Object} [nestedValues] - { [innerName]: value } for the picked prompt's inner fields.
+ * @param {Function} [onNestedChange] - (pickerName, innerName, val) => void.
+ * @param {boolean} [loadingNestedRemembered] - remembered-args fetch in flight for this picker.
+ * @param {string}  [pickedPromptName] - display name of the picked prompt (for the legend).
+ * @param {boolean} [isNested] - true when this field is an inner nested field;
+ *   suppresses further recursion into `type: prompts` (rendered as a disabled note).
  */
 function ParamField({
   param,
@@ -50,6 +58,12 @@ function ParamField({
   loadingFilesByParam,
   dirsByParam,
   loadingDirsByParam,
+  nestedParams,
+  nestedValues,
+  onNestedChange,
+  loadingNestedRemembered,
+  pickedPromptName,
+  isNested,
 }) {
   const { name, type, description, required, multiLine, options } = param;
   const hasOptions = Array.isArray(options) && options.length > 0;
@@ -262,7 +276,19 @@ function ParamField({
     // Value is the NAME of another workspace prompt. Mirrors the beadsId
     // pattern: spinner while loading, text-input fallback when the list is
     // unavailable, otherwise a select of prompt names.
-    if (loadingPrompts) {
+    // mitto-47y.2: when this is an inner (nested) field, we do NOT recurse
+    // into another picker — render a disabled note instead (depth-1 cap).
+    if (isNested) {
+      control = html`
+        <input
+          type="text"
+          class="input input-sm w-full"
+          value=""
+          disabled
+          placeholder="nested prompt pickers are not supported here"
+        />
+      `;
+    } else if (loadingPrompts) {
       control = html`<span class="loading loading-spinner loading-xs"></span>`;
     } else if (!promptsList || promptsList.length === 0) {
       control = html`
@@ -296,9 +322,7 @@ function ParamField({
     // Per-param state keyed by param.name — different filename params may
     // have different dir/glob and therefore different candidate lists.
     const files = (filesByParam && filesByParam[name]) || [];
-    const loadingFiles = !!(
-      loadingFilesByParam && loadingFilesByParam[name]
-    );
+    const loadingFiles = !!(loadingFilesByParam && loadingFilesByParam[name]);
     if (loadingFiles) {
       control = html`<span class="loading loading-spinner loading-xs"></span>`;
     } else if (files.length === 0) {
@@ -320,8 +344,7 @@ function ParamField({
         >
           <option value="">Select a file…</option>
           ${files.map(
-            (path) =>
-              html`<option key=${path} value=${path}>${path}</option>`,
+            (path) => html`<option key=${path} value=${path}>${path}</option>`,
           )}
         </select>
       `;
@@ -355,8 +378,7 @@ function ParamField({
         >
           <option value="">Select a directory…</option>
           ${dirs.map(
-            (path) =>
-              html`<option key=${path} value=${path}>${path}</option>`,
+            (path) => html`<option key=${path} value=${path}>${path}</option>`,
           )}
         </select>
       `;
@@ -373,11 +395,8 @@ function ParamField({
           value=${current}
           onChange=${(e) => onChange(name, e.target.value)}
         >
-          ${!required &&
-          html`<option value="">${"— select —"}</option>`}
-          ${options.map(
-            (opt) => html`<option value=${opt}>${opt}</option>`,
-          )}
+          ${!required && html`<option value="">${"— select —"}</option>`}
+          ${options.map((opt) => html`<option value=${opt}>${opt}</option>`)}
         </select>
       `;
     } else {
@@ -432,6 +451,16 @@ function ParamField({
     `;
   }
 
+  // mitto-47y.2: for a `type: prompts` picker that is NOT itself nested and
+  // has a non-empty picked value with inner params, render an inline nested
+  // block reusing ParamField for each inner param. Inner `type: prompts` is
+  // rendered as a disabled note (depth-1 cap; see the isNested guard above).
+  const showNested =
+    type === "prompts" &&
+    !isNested &&
+    Array.isArray(nestedParams) &&
+    nestedParams.length > 0;
+
   return html`
     <fieldset class="fieldset">
       <legend class="fieldset-legend text-mitto-text-secondary">
@@ -441,6 +470,45 @@ function ParamField({
       ${control}
       ${description &&
       html`<p class="text-xs text-mitto-text-muted mt-1">${description}</p>`}
+      ${showNested &&
+      html`
+        <fieldset
+          class="fieldset mt-3 pl-4 border-l-2 border-mitto-border space-y-3"
+          data-testid=${`nested-params-${name}`}
+        >
+          <legend class="fieldset-legend text-mitto-text-secondary">
+            Parameters for ${pickedPromptName || value}
+          </legend>
+          ${loadingNestedRemembered &&
+          html`<span class="loading loading-spinner loading-xs"></span>`}
+          ${nestedParams.map(
+            (inner) =>
+              html`<${ParamField}
+                key=${inner.name}
+                param=${inner}
+                value=${(nestedValues && nestedValues[inner.name]) || ""}
+                onChange=${(innerName, val) =>
+                  onNestedChange && onNestedChange(name, innerName, val)}
+                beadsIssues=${beadsIssues}
+                loadingBeads=${loadingBeads}
+                sessions=${sessions}
+                loadingSessions=${loadingSessions}
+                workspaces=${workspaces}
+                loadingWorkspaces=${loadingWorkspaces}
+                workingDir=${workingDir}
+                acpServers=${acpServers}
+                hostSessionId=${hostSessionId}
+                promptsList=${promptsList}
+                loadingPrompts=${loadingPrompts}
+                filesByParam=${filesByParam}
+                loadingFilesByParam=${loadingFilesByParam}
+                dirsByParam=${dirsByParam}
+                loadingDirsByParam=${loadingDirsByParam}
+                isNested=${true}
+              />`,
+          )}
+        </fieldset>
+      `}
     </fieldset>
   `;
 }
@@ -487,6 +555,14 @@ export function PromptParameterDialog({
   // in the same dialog without key collisions.
   const [dirsByParam, setDirsByParam] = useState({});
   const [loadingDirsByParam, setLoadingDirsByParam] = useState({});
+  // mitto-47y.2: nested-param state for `type: prompts` pickers. Mirrors the
+  // per-param map shape (filesByParam/dirsByParam) so a single dialog can
+  // host multiple pickers with disjoint inner scopes without key collisions.
+  //   nestedValues:                    { [pickerName]: { [innerName]: value } }
+  //   loadingNestedRememberedByPicker: { [pickerName]: bool }
+  const [nestedValues, setNestedValues] = useState({});
+  const [loadingNestedRememberedByPicker, setLoadingNestedRememberedByPicker] =
+    useState({});
 
   // Reset state each time the dialog opens; seed from initialValues when provided.
   // Seeds on the open transition only — initialValues is intentionally NOT a
@@ -505,6 +581,8 @@ export function PromptParameterDialog({
     setLoadingFilesByParam({});
     setDirsByParam({});
     setLoadingDirsByParam({});
+    setNestedValues({});
+    setLoadingNestedRememberedByPicker({});
     setLoadingBeads(false);
     setLoadingSessions(false);
     setLoadingWorkspaces(false);
@@ -715,6 +793,128 @@ export function PromptParameterDialog({
     setValues((prev) => ({ ...prev, [fieldName]: val }));
   }, []);
 
+  // mitto-47y.2: derive the inner-param list for each `type: prompts` picker
+  // from the picked value against the already-loaded promptsList. No extra
+  // API call — WebPrompt already carries `parameters` in the list response.
+  // Recomputed on every render (cheap: N pickers × M prompts) and is the
+  // single source of truth for what the outer render passes to ParamField.
+  const nestedParamsByPicker = {};
+  const pickedPromptNameByPicker = {};
+  for (const p of parameters) {
+    if (p.type !== "prompts") continue;
+    const picked = (values[p.name] || "").trim();
+    if (!picked) continue;
+    const found = (promptsList || []).find((wp) => wp && wp.name === picked);
+    if (!found) continue;
+    pickedPromptNameByPicker[p.name] = found.name;
+    // Filter out inner `type: prompts` params from the fetch/derive set so
+    // the depth-1 cap is enforced at the data layer too (defense in depth
+    // — the ParamField render branch also renders them as a disabled note).
+    const innerParams = Array.isArray(found.parameters) ? found.parameters : [];
+    nestedParamsByPicker[p.name] = innerParams;
+  }
+
+  // mitto-47y.2: when a picker's value changes to a prompt whose declared
+  // inner params drop out, clear the corresponding nestedValues[pickerName]
+  // slot so a subsequent submit does not carry stale inner args.
+  useEffect(() => {
+    if (!isOpen) return;
+    setNestedValues((prev) => {
+      let mutated = false;
+      const next = { ...prev };
+      for (const key of Object.keys(prev)) {
+        if (!nestedParamsByPicker[key]) {
+          delete next[key];
+          mutated = true;
+        }
+      }
+      return mutated ? next : prev;
+    });
+    // Dependency intentionally on the JSON-serialised picker → prompt map so
+    // the effect fires when the picked prompt for any picker changes but not
+    // on unrelated re-renders (e.g. typing into an outer text field).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen, JSON.stringify(pickedPromptNameByPicker)]);
+
+  // mitto-47y.2: when a picker's value changes to a non-empty prompt name,
+  // fetch that inner prompt's remembered-args and seed nestedValues[picker]
+  // for fields the user has not filled yet. Fail-open: any error leaves
+  // nestedValues untouched. Skipped when the picked prompt declares no
+  // parameters (nothing to seed).
+  useEffect(() => {
+    if (!isOpen || !workingDir) return;
+    const cancels = [];
+    for (const [pickerName, pickedName] of Object.entries(
+      pickedPromptNameByPicker,
+    )) {
+      const inner = nestedParamsByPicker[pickerName];
+      if (!inner || inner.length === 0) continue;
+      const needsRemember = inner.some((p) => p.remember === "folder");
+      if (!needsRemember) continue;
+      let cancelled = false;
+      cancels.push(() => {
+        cancelled = true;
+      });
+      setLoadingNestedRememberedByPicker((prev) => ({
+        ...prev,
+        [pickerName]: true,
+      }));
+      authFetch(
+        endpoints.workspacePrompts.rememberedArgs(workingDir, pickedName),
+      )
+        .then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
+        .then((data) => {
+          if (cancelled) return;
+          const remembered =
+            data && data.arguments && typeof data.arguments === "object"
+              ? data.arguments
+              : null;
+          if (!remembered) return;
+          setNestedValues((prev) => {
+            const existing = prev[pickerName] || {};
+            const merged = { ...existing };
+            for (const [k, v] of Object.entries(remembered)) {
+              if (
+                merged[k] === undefined ||
+                merged[k] === null ||
+                merged[k] === ""
+              ) {
+                merged[k] = v;
+              }
+            }
+            return { ...prev, [pickerName]: merged };
+          });
+        })
+        .catch((err) => {
+          console.warn(
+            "[PromptParameterDialog] nested remembered-args error:",
+            err,
+          );
+        })
+        .finally(() => {
+          if (cancelled) return;
+          setLoadingNestedRememberedByPicker((prev) => ({
+            ...prev,
+            [pickerName]: false,
+          }));
+        });
+    }
+    return () => {
+      for (const c of cancels) c();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen, workingDir, JSON.stringify(pickedPromptNameByPicker)]);
+
+  const handleNestedFieldChange = useCallback((pickerName, innerName, val) => {
+    setNestedValues((prev) => {
+      const existing = prev[pickerName] || {};
+      return {
+        ...prev,
+        [pickerName]: { ...existing, [innerName]: val },
+      };
+    });
+  }, []);
+
   const handleSubmit = useCallback(() => {
     // Build args map; omit empty optional fields
     const args = {};
@@ -729,10 +929,42 @@ export function PromptParameterDialog({
       if (v !== "" || p.required) {
         args[p.name] = v;
       }
+      // mitto-47y.2: for `type: prompts` pickers with a non-empty picked
+      // value and inner values collected, serialize the inner map as a JSON
+      // string under `<PickerName>_Args`. Consumed on the backend by
+      // `ArgsMap "<PickerName>_Args"` inside PromptTextWithArgs (Phase A).
+      // Skip when the inner map is empty or the picked prompt declared no
+      // params — an empty _Args field would just decode back to an empty
+      // map, so omitting is equivalent and cleaner on the wire.
+      if (p.type === "prompts" && v !== "") {
+        const inner = nestedValues[p.name] || {};
+        // Filter out empty inner values and boolean-normalize (mirrors the
+        // outer loop above): booleans become "true"/"false", strings are
+        // trimmed and dropped when empty and not required.
+        const innerParams =
+          (promptsList || []).find((wp) => wp && wp.name === v)?.parameters ||
+          [];
+        const innerOut = {};
+        for (const ip of innerParams) {
+          if (ip.type === "prompts") continue; // depth-1 cap
+          if (ip.type === "boolean") {
+            const ck = inner[ip.name] === true || inner[ip.name] === "true";
+            innerOut[ip.name] = ck ? "true" : "false";
+            continue;
+          }
+          const iv = (inner[ip.name] || "").toString().trim();
+          if (iv !== "" || ip.required) {
+            innerOut[ip.name] = iv;
+          }
+        }
+        if (Object.keys(innerOut).length > 0) {
+          args[`${p.name}_Args`] = JSON.stringify(innerOut);
+        }
+      }
     }
     onSubmit?.(args);
     onClose?.();
-  }, [parameters, values, onSubmit, onClose]);
+  }, [parameters, values, nestedValues, promptsList, onSubmit, onClose]);
 
   // Save enabled only when all required params have non-empty trimmed values.
   // Boolean params are excluded: a checkbox always has a definite answer.
@@ -794,6 +1026,13 @@ export function PromptParameterDialog({
                 loadingFilesByParam=${loadingFilesByParam}
                 dirsByParam=${dirsByParam}
                 loadingDirsByParam=${loadingDirsByParam}
+                nestedParams=${nestedParamsByPicker[param.name]}
+                nestedValues=${nestedValues[param.name]}
+                onNestedChange=${handleNestedFieldChange}
+                loadingNestedRemembered=${!!loadingNestedRememberedByPicker[
+                  param.name
+                ]}
+                pickedPromptName=${pickedPromptNameByPicker[param.name]}
               />`,
           )}
         </div>

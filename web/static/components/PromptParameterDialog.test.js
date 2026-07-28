@@ -1155,7 +1155,10 @@ function renderDirnameControl({ param, dirsByParam, loadingDirsByParam }) {
     return { kind: "spinner" };
   }
   if (dirs.length === 0) {
-    return { kind: "textInput", placeholder: "Workspace-relative directory path" };
+    return {
+      kind: "textInput",
+      placeholder: "Workspace-relative directory path",
+    };
   }
   const options = dirs.map((path) => ({ value: path, label: path }));
   return { kind: "select", options };
@@ -1257,3 +1260,373 @@ describe("dirname render branch", () => {
   });
 });
 
+// =============================================================================
+// mitto-47y.2 — nested-param render + serialization for `type: prompts`
+// Duplicated from ParamField / handleSubmit — keep in sync.
+// =============================================================================
+
+/**
+ * Mirrors the derivation loop that computes nestedParamsByPicker /
+ * pickedPromptNameByPicker from `parameters`, `values`, and `promptsList`.
+ * Returns { nestedParamsByPicker, pickedPromptNameByPicker }.
+ */
+function derivePickerMaps({ parameters, values, promptsList }) {
+  const nestedParamsByPicker = {};
+  const pickedPromptNameByPicker = {};
+  for (const p of parameters) {
+    if (p.type !== "prompts") continue;
+    const picked = (values[p.name] || "").trim();
+    if (!picked) continue;
+    const found = (promptsList || []).find((wp) => wp && wp.name === picked);
+    if (!found) continue;
+    pickedPromptNameByPicker[p.name] = found.name;
+    nestedParamsByPicker[p.name] = Array.isArray(found.parameters)
+      ? found.parameters
+      : [];
+  }
+  return { nestedParamsByPicker, pickedPromptNameByPicker };
+}
+
+/**
+ * Mirrors the ParamField `showNested` gate:
+ *   type=prompts + !isNested + non-empty derived nestedParams.
+ */
+function shouldShowNested({ type, isNested, nestedParams }) {
+  return (
+    type === "prompts" &&
+    !isNested &&
+    Array.isArray(nestedParams) &&
+    nestedParams.length > 0
+  );
+}
+
+/**
+ * Mirrors the inner `type: prompts` branch: an inner picker is always
+ * rendered as a disabled note, regardless of promptsList state.
+ */
+function renderInnerPromptsControl({ isNested }) {
+  if (isNested) {
+    return {
+      kind: "disabledNote",
+      placeholder: "nested prompt pickers are not supported here",
+    };
+  }
+  return { kind: "select" };
+}
+
+/**
+ * Mirrors handleSubmit's serialization of `<Picker>_Args`.
+ * Returns the args map that would be sent to onSubmit.
+ */
+function serializeArgs({ parameters, values, nestedValues, promptsList }) {
+  const args = {};
+  for (const p of parameters) {
+    if (p.type === "boolean") {
+      const checked = values[p.name] === true || values[p.name] === "true";
+      args[p.name] = checked ? "true" : "false";
+      continue;
+    }
+    const v = (values[p.name] || "").trim();
+    if (v !== "" || p.required) {
+      args[p.name] = v;
+    }
+    if (p.type === "prompts" && v !== "") {
+      const inner = (nestedValues && nestedValues[p.name]) || {};
+      const innerParams =
+        (promptsList || []).find((wp) => wp && wp.name === v)?.parameters || [];
+      const innerOut = {};
+      for (const ip of innerParams) {
+        if (ip.type === "prompts") continue;
+        if (ip.type === "boolean") {
+          const ck = inner[ip.name] === true || inner[ip.name] === "true";
+          innerOut[ip.name] = ck ? "true" : "false";
+          continue;
+        }
+        const iv = (inner[ip.name] || "").toString().trim();
+        if (iv !== "" || ip.required) {
+          innerOut[ip.name] = iv;
+        }
+      }
+      if (Object.keys(innerOut).length > 0) {
+        args[`${p.name}_Args`] = JSON.stringify(innerOut);
+      }
+    }
+  }
+  return args;
+}
+
+/**
+ * Mirrors the picker-change cleanup effect: entries in `prev` whose picker
+ * name is no longer present in nestedParamsByPicker are dropped.
+ */
+function pruneNestedValues(prev, nestedParamsByPicker) {
+  const next = { ...prev };
+  let mutated = false;
+  for (const key of Object.keys(prev)) {
+    if (!nestedParamsByPicker[key]) {
+      delete next[key];
+      mutated = true;
+    }
+  }
+  return mutated ? next : prev;
+}
+
+describe("prompts nested-param branch (mitto-47y.2)", () => {
+  const promptsList = [
+    {
+      name: "prompt-a",
+      parameters: [
+        { name: "Msg", type: "string", required: true },
+        { name: "Loud", type: "boolean" },
+      ],
+    },
+    {
+      name: "prompt-b",
+      parameters: [
+        { name: "Path", type: "filename" },
+        { name: "Inner", type: "prompts" },
+      ],
+    },
+    { name: "prompt-c", parameters: [] },
+    { name: "prompt-d" }, // no parameters field at all
+  ];
+
+  describe("derivePickerMaps", () => {
+    test("returns empty maps when no picker is filled", () => {
+      const out = derivePickerMaps({
+        parameters: [{ name: "P", type: "prompts" }],
+        values: {},
+        promptsList,
+      });
+      expect(out.nestedParamsByPicker).toEqual({});
+      expect(out.pickedPromptNameByPicker).toEqual({});
+    });
+
+    test("skips non-prompts parameters", () => {
+      const out = derivePickerMaps({
+        parameters: [{ name: "S", type: "string" }],
+        values: { S: "hi" },
+        promptsList,
+      });
+      expect(out.nestedParamsByPicker).toEqual({});
+    });
+
+    test("skips picker whose value does not match any prompt", () => {
+      const out = derivePickerMaps({
+        parameters: [{ name: "P", type: "prompts" }],
+        values: { P: "does-not-exist" },
+        promptsList,
+      });
+      expect(out.nestedParamsByPicker).toEqual({});
+      expect(out.pickedPromptNameByPicker).toEqual({});
+    });
+
+    test("returns the picked prompt's parameters array", () => {
+      const out = derivePickerMaps({
+        parameters: [{ name: "P", type: "prompts" }],
+        values: { P: "prompt-a" },
+        promptsList,
+      });
+      expect(out.pickedPromptNameByPicker).toEqual({ P: "prompt-a" });
+      expect(out.nestedParamsByPicker.P.map((p) => p.name)).toEqual([
+        "Msg",
+        "Loud",
+      ]);
+    });
+
+    test("handles a picked prompt with no parameters field", () => {
+      const out = derivePickerMaps({
+        parameters: [{ name: "P", type: "prompts" }],
+        values: { P: "prompt-d" },
+        promptsList,
+      });
+      expect(out.nestedParamsByPicker.P).toEqual([]);
+    });
+
+    test("keeps two pickers isolated by name", () => {
+      const out = derivePickerMaps({
+        parameters: [
+          { name: "P1", type: "prompts" },
+          { name: "P2", type: "prompts" },
+        ],
+        values: { P1: "prompt-a", P2: "prompt-c" },
+        promptsList,
+      });
+      expect(out.nestedParamsByPicker.P1.map((p) => p.name)).toEqual([
+        "Msg",
+        "Loud",
+      ]);
+      expect(out.nestedParamsByPicker.P2).toEqual([]);
+    });
+  });
+
+  describe("shouldShowNested gate", () => {
+    test("hides nested block when not a prompts picker", () => {
+      expect(
+        shouldShowNested({
+          type: "string",
+          isNested: false,
+          nestedParams: [{ name: "X" }],
+        }),
+      ).toBe(false);
+    });
+
+    test("hides nested block for inner (nested) fields — depth-1 cap", () => {
+      expect(
+        shouldShowNested({
+          type: "prompts",
+          isNested: true,
+          nestedParams: [{ name: "X" }],
+        }),
+      ).toBe(false);
+    });
+
+    test("hides nested block when nestedParams is undefined", () => {
+      expect(
+        shouldShowNested({
+          type: "prompts",
+          isNested: false,
+          nestedParams: undefined,
+        }),
+      ).toBe(false);
+    });
+
+    test("hides nested block when nestedParams is empty", () => {
+      expect(
+        shouldShowNested({
+          type: "prompts",
+          isNested: false,
+          nestedParams: [],
+        }),
+      ).toBe(false);
+    });
+
+    test("shows nested block when outer picker has ≥1 inner param", () => {
+      expect(
+        shouldShowNested({
+          type: "prompts",
+          isNested: false,
+          nestedParams: [{ name: "X" }],
+        }),
+      ).toBe(true);
+    });
+  });
+
+  describe("inner `type: prompts` — depth-1 cap", () => {
+    test("renders a disabled note when nested", () => {
+      const r = renderInnerPromptsControl({ isNested: true });
+      expect(r.kind).toBe("disabledNote");
+      expect(r.placeholder).toMatch(/not supported/i);
+    });
+
+    test("renders normally when not nested", () => {
+      const r = renderInnerPromptsControl({ isNested: false });
+      expect(r.kind).toBe("select");
+    });
+  });
+
+  describe("pruneNestedValues", () => {
+    test("drops entries whose picker name is no longer present", () => {
+      const prev = { P1: { A: "1" }, P2: { B: "2" } };
+      const out = pruneNestedValues(prev, { P1: [] });
+      expect(out).toEqual({ P1: { A: "1" } });
+    });
+
+    test("returns the same object reference when nothing changes", () => {
+      const prev = { P1: { A: "1" } };
+      const out = pruneNestedValues(prev, { P1: [] });
+      expect(out).toBe(prev);
+    });
+
+    test("clears everything when no picker is active", () => {
+      const prev = { P1: { A: "1" }, P2: { B: "2" } };
+      const out = pruneNestedValues(prev, {});
+      expect(out).toEqual({});
+    });
+  });
+
+  describe("serializeArgs — `<Picker>_Args` JSON emission", () => {
+    test("omits _Args when picker value is empty", () => {
+      const args = serializeArgs({
+        parameters: [{ name: "P", type: "prompts" }],
+        values: { P: "" },
+        nestedValues: { P: { Msg: "hi" } },
+        promptsList,
+      });
+      expect(args.P_Args).toBeUndefined();
+    });
+
+    test("emits required inner fields even when empty; booleans always present", () => {
+      const args = serializeArgs({
+        parameters: [{ name: "P", type: "prompts" }],
+        values: { P: "prompt-a" },
+        nestedValues: { P: { Msg: "" } },
+        promptsList,
+      });
+      // Msg is required → emitted as "". Loud is a boolean → always emitted.
+      // Mirrors the outer required/boolean rules applied recursively.
+      expect(JSON.parse(args.P_Args)).toEqual({ Msg: "", Loud: "false" });
+    });
+
+    test("serializes non-empty inner values as JSON", () => {
+      const args = serializeArgs({
+        parameters: [{ name: "P", type: "prompts" }],
+        values: { P: "prompt-a" },
+        nestedValues: { P: { Msg: "  hello  ", Loud: true } },
+        promptsList,
+      });
+      expect(args.P).toBe("prompt-a");
+      expect(JSON.parse(args.P_Args)).toEqual({ Msg: "hello", Loud: "true" });
+    });
+
+    test("normalizes inner boolean to 'false' when unchecked", () => {
+      const args = serializeArgs({
+        parameters: [{ name: "P", type: "prompts" }],
+        values: { P: "prompt-a" },
+        nestedValues: { P: { Msg: "x" } },
+        promptsList,
+      });
+      expect(JSON.parse(args.P_Args)).toEqual({ Msg: "x", Loud: "false" });
+    });
+
+    test("skips inner `type: prompts` (depth-1 cap on the wire too)", () => {
+      const args = serializeArgs({
+        parameters: [{ name: "P", type: "prompts" }],
+        values: { P: "prompt-b" },
+        nestedValues: { P: { Path: "src/a.go", Inner: "prompt-a" } },
+        promptsList,
+      });
+      const parsed = JSON.parse(args.P_Args);
+      expect(parsed).toEqual({ Path: "src/a.go" });
+      expect(parsed.Inner).toBeUndefined();
+    });
+
+    test("keeps two pickers isolated on the wire", () => {
+      const args = serializeArgs({
+        parameters: [
+          { name: "P1", type: "prompts" },
+          { name: "P2", type: "prompts" },
+        ],
+        values: { P1: "prompt-a", P2: "prompt-b" },
+        nestedValues: {
+          P1: { Msg: "one" },
+          P2: { Path: "x.txt" },
+        },
+        promptsList,
+      });
+      expect(JSON.parse(args.P1_Args).Msg).toBe("one");
+      expect(JSON.parse(args.P2_Args).Path).toBe("x.txt");
+    });
+
+    test("does not emit _Args when the picked prompt has no parameters", () => {
+      const args = serializeArgs({
+        parameters: [{ name: "P", type: "prompts" }],
+        values: { P: "prompt-c" },
+        nestedValues: { P: { Ignored: "value" } },
+        promptsList,
+      });
+      expect(args.P).toBe("prompt-c");
+      expect(args.P_Args).toBeUndefined();
+    });
+  });
+});

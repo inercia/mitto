@@ -78,7 +78,7 @@ prompt: |
   ## This iteration — picked prompt
   {{- if .Args.Prompt }}
 
-  {{ PromptText .Args.Prompt }}
+  {{ PromptTextWithArgs .Args.Prompt (ArgsMap "Prompt_Args") }}
   {{- else }}
 
   (No prompt selected — do the smallest meaningful increment toward the stop
