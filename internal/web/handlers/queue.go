@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -198,10 +199,17 @@ func (h *Handlers) handleAddToQueue(w http.ResponseWriter, r *http.Request, queu
 
 // rememberFolderArgsForQueueAdd filters the client-supplied arguments down to
 // those declared `remember: folder` on the resolved prompt definition and
-// persists them via the RememberFolderArgs closure. It is best-effort: nil
-// deps, empty inputs, unresolved workspaces, or unknown prompts all no-op;
-// I/O failures are logged at WARN and swallowed so the enqueue is never
-// affected. See mitto-x8v.
+// persists them via the RememberFolderArgs closure. It also persists the
+// `remember: folder` values of any inner prompts referenced through
+// `type: prompts` picker parameters (carried on the wire as
+// "<PickerName>_Args" JSON blobs, mitto-47y.2), keying each write under the
+// INNER prompt name so different outer prompts picking the same inner prompt
+// share remembered values (mitto-47y.3).
+//
+// Best-effort: nil deps, empty inputs, unresolved workspaces, or unknown
+// prompts all no-op; I/O and unmarshal failures are logged at WARN and
+// swallowed so the enqueue is never affected. Depth cap = 1: never
+// recursively decode "<Inner>_Args" from within an inner map. See mitto-x8v.
 func (h *Handlers) rememberFolderArgsForQueueAdd(sessionID, promptName string, args map[string]string) {
 	if h.deps.RememberFolderArgs == nil {
 		return
@@ -235,7 +243,8 @@ func (h *Handlers) rememberFolderArgsForQueueAdd(sessionID, promptName string, a
 	if target == nil {
 		return
 	}
-	filtered := make(map[string]string, len(args))
+	// Persist the OUTER prompt's remember:folder values under the outer name.
+	outerFiltered := make(map[string]string, len(args))
 	for _, p := range target.Parameters {
 		if p.Remember != prompts.RememberFolder {
 			continue
@@ -244,17 +253,82 @@ func (h *Handlers) rememberFolderArgsForQueueAdd(sessionID, promptName string, a
 		if !ok || v == "" {
 			continue
 		}
-		filtered[p.Name] = v
+		outerFiltered[p.Name] = v
 	}
-	if len(filtered) == 0 {
-		return
+	if len(outerFiltered) > 0 {
+		if err := h.deps.RememberFolderArgs(workspaceUUID, promptName, outerFiltered); err != nil {
+			if h.deps.Logger != nil {
+				h.deps.Logger.Warn("Failed to persist remembered prompt args",
+					"session_id", sessionID,
+					"prompt_name", promptName,
+					"error", err)
+			}
+		}
 	}
-	if err := h.deps.RememberFolderArgs(workspaceUUID, promptName, filtered); err != nil {
-		if h.deps.Logger != nil {
-			h.deps.Logger.Warn("Failed to persist remembered prompt args",
-				"session_id", sessionID,
-				"prompt_name", promptName,
-				"error", err)
+	// Persist any INNER prompt remember:folder values carried through
+	// `type: prompts` pickers. Each picker's inner map is written under the
+	// INNER prompt's name so a different outer prompt picking the same inner
+	// prompt shares the remembered values (mitto-47y.3 acceptance criterion).
+	for _, p := range target.Parameters {
+		if p.Type != "prompts" {
+			continue
+		}
+		innerName := args[p.Name]
+		if innerName == "" {
+			continue
+		}
+		blob := args[p.Name+"_Args"]
+		if blob == "" {
+			continue
+		}
+		var innerArgs map[string]string
+		if err := json.Unmarshal([]byte(blob), &innerArgs); err != nil {
+			if h.deps.Logger != nil {
+				h.deps.Logger.Warn("Failed to decode inner prompt args for remembered-args",
+					"session_id", sessionID,
+					"prompt_name", promptName,
+					"picker", p.Name,
+					"inner_prompt", innerName,
+					"error", err)
+			}
+			continue
+		}
+		if len(innerArgs) == 0 {
+			continue
+		}
+		var inner *config.WebPrompt
+		for i := range all {
+			if strings.EqualFold(all[i].Name, innerName) {
+				inner = &all[i]
+				break
+			}
+		}
+		if inner == nil {
+			continue
+		}
+		innerFiltered := make(map[string]string, len(innerArgs))
+		for _, ip := range inner.Parameters {
+			if ip.Remember != prompts.RememberFolder {
+				continue
+			}
+			v, ok := innerArgs[ip.Name]
+			if !ok || v == "" {
+				continue
+			}
+			innerFiltered[ip.Name] = v
+		}
+		if len(innerFiltered) == 0 {
+			continue
+		}
+		if err := h.deps.RememberFolderArgs(workspaceUUID, inner.Name, innerFiltered); err != nil {
+			if h.deps.Logger != nil {
+				h.deps.Logger.Warn("Failed to persist remembered inner prompt args",
+					"session_id", sessionID,
+					"prompt_name", promptName,
+					"picker", p.Name,
+					"inner_prompt", inner.Name,
+					"error", err)
+			}
 		}
 	}
 }
