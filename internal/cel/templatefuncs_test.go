@@ -665,6 +665,9 @@ func TestBuildTemplateFuncMap_StringUtils(t *testing.T) {
 		{`{{ Contains "foobar" "bar" }}`, "true"},
 		{`{{ HasPrefix "foobar" "foo" }}`, "true"},
 		{`{{ HasSuffix "foobar" "baz" }}`, "false"},
+		{`{{ Dir "a/b/test_foo.md" }}`, "a/b"},
+		{`{{ Dir "test_foo.md" }}`, "."},
+		{`{{ Dir "" }}`, "."},
 	}
 	for _, tc := range cases {
 		got, err := RenderPromptTemplate("test", tc.body, nil, fm)
@@ -675,6 +678,74 @@ func TestBuildTemplateFuncMap_StringUtils(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("render %q = %q, want %q", tc.body, got, tc.want)
 		}
+	}
+}
+
+// TestBuildTemplateFuncMap_DirWithFileExistsAndReadFile pins the composition
+// used by the "Follow instructions" builtin prompt: derive a sibling file path
+// from a workspace-relative argument via Dir, then conditionally inline it via
+// FileExists / ReadFile.
+func TestBuildTemplateFuncMap_DirWithFileExistsAndReadFile(t *testing.T) {
+	dir := t.TempDir()
+	// Set up   <folder>/tests/test_foo.md   and   <folder>/tests/cleanup.md
+	subdir := filepath.Join(dir, "tests")
+	if err := os.MkdirAll(subdir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(subdir, "test_foo.md"), []byte("test body"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(subdir, "cleanup.md"), []byte("wipe tmp files"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	body := `{{- $cleanupFile := printf "%s/cleanup.md" (Dir .Args.Test) -}}` +
+		`{{- if FileExists $cleanupFile -}}` +
+		`FOUND at {{ $cleanupFile }}: {{ ReadFile $cleanupFile }}` +
+		`{{- else -}}` +
+		`MISSING: create {{ $cleanupFile }}` +
+		`{{- end -}}`
+
+	// Cleanup exists — sibling of the test file at tests/cleanup.md.
+	ctx := &PromptEnabledContext{
+		Workspace: WorkspaceContext{Folder: dir},
+		Args:      map[string]string{"Test": "tests/test_foo.md"},
+	}
+	fm := BuildTemplateFuncMap(ctx)
+	got, err := RenderPromptTemplate("t", body, ctx, fm)
+	if err != nil {
+		t.Fatalf("render (present): %v", err)
+	}
+	if want := "FOUND at tests/cleanup.md: wipe tmp files"; got != want {
+		t.Errorf("cleanup-present render = %q, want %q", got, want)
+	}
+
+	// Cleanup absent — remove it and re-render; the else branch must fire and
+	// mention the derived path so users know where to create the file.
+	if err := os.Remove(filepath.Join(subdir, "cleanup.md")); err != nil {
+		t.Fatal(err)
+	}
+	got, err = RenderPromptTemplate("t", body, ctx, fm)
+	if err != nil {
+		t.Fatalf("render (absent): %v", err)
+	}
+	if want := "MISSING: create tests/cleanup.md"; got != want {
+		t.Errorf("cleanup-absent render = %q, want %q", got, want)
+	}
+
+	// Test file at repo root — Dir should return "." so the derived path is
+	// "./cleanup.md" (path.Dir semantics), still workspace-relative.
+	ctxRoot := &PromptEnabledContext{
+		Workspace: WorkspaceContext{Folder: dir},
+		Args:      map[string]string{"Test": "test_bar.md"},
+	}
+	fmRoot := BuildTemplateFuncMap(ctxRoot)
+	got, err = RenderPromptTemplate("t", body, ctxRoot, fmRoot)
+	if err != nil {
+		t.Fatalf("render (root): %v", err)
+	}
+	if want := "MISSING: create ./cleanup.md"; got != want {
+		t.Errorf("root-test render = %q, want %q", got, want)
 	}
 }
 
@@ -864,7 +935,7 @@ func TestBuildTemplateFuncMap_AllKeysPresent(t *testing.T) {
 		"GitFileModified", "GitDirModified", "GitStatusFiles", "GitFileTracked", "GitFileDeleted",
 		"BeadsCount", "HasBeads", "BeadHasLabels", "BeadIsOpen", "BeadMetadata",
 		"PromptText",
-		"Trim", "Lower", "Upper", "Contains", "HasPrefix", "HasSuffix", "Join",
+		"Trim", "Lower", "Upper", "Contains", "HasPrefix", "HasSuffix", "Join", "Dir",
 	}
 	for _, key := range expected {
 		if fm[key] == nil {
