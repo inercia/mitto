@@ -94,8 +94,8 @@ Frontend mirror: `KNOWN_PARAM_TYPES` in `web/static/utils/prompts.js`. Both must
 | `workspaceFolder` | Absolute path to a workspace root directory. |
 | `text` | Generic free-form text (catch-all). Renders as a single-line input by default; add `multiLine: true` to render a resizable multi-line textarea. |
 | `boolean` | Yes/no flag, rendered as a checkbox. Supplied as the string `"true"`/`"false"` (default unchecked → `"false"`). Never gates menu visibility; always collected via the dialog. |
-| `filename` | Workspace-relative file path, rendered as a dropdown of files under an optional `dir` (workspace-relative, non-recursive), optionally filtered by a `glob` (e.g. `"*.md"`). Never gates menu visibility; always collected via the dialog (like `boolean`/`prompts`). Feeds `{{ ReadFile .Args.NAME }}` directly. `dir`/`glob` are UI hints only — path safety is enforced at read time by `ReadFile` (absolute-path/`..`/symlink-escape rejection, 256 KB cap). |
-| `dirname` | Workspace-relative directory path, rendered as a dropdown of immediate sub-directories under an optional `dir` (workspace-relative, non-recursive), optionally filtered by a `glob` applied to the base name. Never gates menu visibility; always collected via the dialog (like `filename`). Hidden directories (leading `.`) are excluded by default. `dir`/`glob` are UI hints only — the endpoint (`GET /api/workspace-dirs`) re-enforces path safety (absolute-path/`..`/symlink-escape rejection). |
+| `filename` | Workspace-relative file path, rendered as a dropdown of files under an optional `dir` (workspace-relative), optionally filtered by a `glob` (e.g. `"*.md"` or recursive `"**/*.md"` / `"docs/**/*.md"` — see "Recursive globs" below). Never gates menu visibility; always collected via the dialog (like `boolean`/`prompts`). Feeds `{{ ReadFile .Args.NAME }}` directly. `dir`/`glob` are UI hints only — path safety is enforced at read time by `ReadFile` (absolute-path/`..`/symlink-escape rejection, 256 KB cap). |
+| `dirname` | Workspace-relative directory path, rendered as a dropdown of sub-directories under an optional `dir` (workspace-relative), optionally filtered by a `glob` applied to the base name (or full workspace-relative path with `**`). Never gates menu visibility; always collected via the dialog (like `filename`). Hidden directories (leading `.`) are excluded by default. `dir`/`glob` are UI hints only — the endpoint (`GET /api/workspace-dirs`) re-enforces path safety (absolute-path/`..`/symlink-escape rejection). |
 
 ### Type-based menu gating
 
@@ -175,7 +175,17 @@ Updates replicate the 5-layer REST API merge. Name slugification via `config.Slu
 
 ## enabledWhen Filtering & Preferred Models
 
-Server-side via `filterPromptsByEnabled()` / `buildPromptEnabledContext()`. Use `enabledWhen` (CEL) exclusively. Full CEL context: see `05-msghooks.md`. Useful functions: `FileExists(".git/config")`, `CommandExists("gh")`, `Tools.HasPattern("github_*")`, `BeadsCount("label", "open,in_progress")` / `HasBeads("label", "open,in_progress")`.
+Server-side via `filterPromptsByEnabled()` / `buildPromptEnabledContext()`. Use `enabledWhen` (CEL) exclusively. Full CEL context: see `05-msghooks.md`. Available helpers in both `enabledWhen` (CEL) and Go-template bodies — full catalogue in `internal/cel/templatefuncs.go` (`BuildTemplateFuncMap`); user-facing reference in [docs/config/prompts.md](../../docs/config/prompts.md#go-template-syntax-in-prompts):
+
+- **Filesystem / path**: `FileExists(path)`, `DirExists(path)`, `ReadFile(path)` (workspace-relative, size-capped, path-safe; fail-open empty string), `Dir(path)` (forward-slash `path.Dir` — derive a sibling path from a workspace-relative argument, e.g. `{{ Dir .Args.Test }}/cleanup.md`).
+- **Command**: `CommandExists(name)` (looks up an executable on `PATH`).
+- **Git**: `GitRepo([path])`, `GitFileModified(path)`, `GitDirModified([path])`, `GitStatusFiles([path])` (porcelain lines), `GitFileTracked(path)`, `GitFileDeleted(path)`.
+- **Beads** — aggregate `BeadsCount` / `HasBeads` covered in the paragraph below; single-bead helpers here: `BeadHasLabels(id, labels)` (ALL match), `BeadIsOpen(id)`, `BeadMetadata(id, key)`. All fail-open.
+- **Tools / session**: `Tools.HasPattern("github_*")` (CEL) / `HasPattern("...")` (template), `Model("smart")` — see the `Session.ModelTags` paragraph below.
+- **Prompt composition**: `PromptText(name)` inlines another workspace prompt's body verbatim (mitto-85y.3; fail-closed on unknown name); `dict "k" v ...` builds a `map[string]any` for `{{ template "x" (dict ...) }}` fragment calls.
+- **Conditionals**: `Cond "<CEL>"` / `When "<CEL>"` (alias) — evaluate a CEL expression against the full enabled-context inside a Go template.
+- **Argument access**: `.Args.NAME` (missing → `""`), `Arg "NAME" "default"` (default-on-empty), `Default v fallback`.
+- **String utilities**: `Trim`, `Lower`, `Upper`, `Contains`, `HasPrefix`, `HasSuffix`, `Join(sep, elems)`.
 
 **Beads gating (`BeadsCount` / `HasBeads`)**: query the workspace's `bd` (beads) DB from CEL AND Go templates. Both accept two comma-separated string args — `labels` (ALL match) and `statuses` (ANY match) — and run `bd list -l <labels> --status <statuses> --all --json` in `Workspace.Folder` (5s timeout, 5s in-memory cache). **Fail-open**: missing `bd`, non-zero exit, unparseable JSON, or timeout returns a positive sentinel (count=1 / true) so gated prompts are never wrongly hidden; a legitimate `[]` returns 0/false. Always short-circuit with cheap gates first so `bd` isn't exec'd when there's no DB: `CommandExists("bd") && DirExists(".beads") && HasBeads("support-question", "open,in_progress")`. Shared pure-Go helper (`beadsCount` in `internal/config/templatefuncs.go`) is the single source of truth for both surfaces — the CEL macros (`beadsCountMacro`, `hasBeadsMacro`) auto-inject `Workspace.Folder`.
 
