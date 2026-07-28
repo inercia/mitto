@@ -821,9 +821,11 @@ func NewServer(config Config) (*Server, error) {
 		mcpAvailable:         true,
 	}
 
-	// Remembered prompt-arguments store (mitto-x8v). Resolved against
-	// appdir.RememberedArgsDir; an empty baseDir (e.g. when the appdir helper
-	// fails) leaves the Store inert so callers can no-op cleanly.
+	// Remembered prompt-arguments store (mitto-x8v, mitto-47y.6.2). Resolved
+	// against appdir.RememberedArgsDir (folder scope) and
+	// appdir.RememberedArgsConversationDir (conversation scope); an empty
+	// baseDir on either side leaves that namespace inert so callers can
+	// no-op cleanly.
 	if raDir, err := appdir.RememberedArgsDir(); err == nil {
 		s.rememberedArgs = rememberedargs.NewStore(raDir)
 	} else {
@@ -831,6 +833,11 @@ func NewServer(config Config) (*Server, error) {
 			logger.Warn("Failed to resolve remembered-args dir; feature disabled", "error", err)
 		}
 		s.rememberedArgs = rememberedargs.NewStore("")
+	}
+	if raConvDir, err := appdir.RememberedArgsConversationDir(); err == nil {
+		s.rememberedArgs.WithConversationBaseDir(raConvDir)
+	} else if logger != nil {
+		logger.Warn("Failed to resolve remembered-args-conversation dir; conversation scope disabled", "error", err)
 	}
 
 	// Bound concurrent interactive ResumeSession calls issued from the
@@ -1310,6 +1317,18 @@ func NewServer(config Config) (*Server, error) {
 				return map[string]string{}, nil
 			}
 			return s.rememberedArgs.Get(workspaceUUID, promptName)
+		},
+		RememberConversationArgs: func(sessionID, promptName string, args map[string]string) error {
+			if s.rememberedArgs == nil {
+				return nil
+			}
+			return s.rememberedArgs.SetConversation(sessionID, promptName, args)
+		},
+		GetRememberedConversationArgs: func(sessionID, promptName string) (map[string]string, error) {
+			if s.rememberedArgs == nil {
+				return map[string]string{}, nil
+			}
+			return s.rememberedArgs.GetConversation(sessionID, promptName)
 		},
 	})
 

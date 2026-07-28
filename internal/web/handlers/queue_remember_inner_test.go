@@ -77,7 +77,7 @@ func TestRememberFolderArgsForQueueAdd_PersistsInnerUnderInnerName(t *testing.T)
 	h, sessionID, writes := buildInnerRememberedHandlers(t,
 		[]config.WebPrompt{outer, inner})
 
-	h.rememberFolderArgsForQueueAdd(sessionID, "Wrap", map[string]string{
+	h.rememberScopedArgsForQueueAdd(sessionID, "Wrap", map[string]string{
 		"Picked":      "Commit",
 		"Picked_Args": `{"Msg":"hello"}`,
 	})
@@ -93,7 +93,7 @@ func TestRememberFolderArgsForQueueAdd_PersistsInnerUnderInnerName(t *testing.T)
 	// A different outer prompt that picks the same inner prompt must observe
 	// the shared inner value on subsequent reads via the store (mirrored by
 	// the writes map's merge semantics).
-	h.rememberFolderArgsForQueueAdd(sessionID, "Wrap", map[string]string{
+	h.rememberScopedArgsForQueueAdd(sessionID, "Wrap", map[string]string{
 		"Picked":      "Commit",
 		"Picked_Args": `{"Msg":"second"}`,
 	})
@@ -123,7 +123,7 @@ func TestRememberFolderArgsForQueueAdd_PersistsOuterAndInner(t *testing.T) {
 	h, sessionID, writes := buildInnerRememberedHandlers(t,
 		[]config.WebPrompt{outer, inner})
 
-	h.rememberFolderArgsForQueueAdd(sessionID, "Wrap", map[string]string{
+	h.rememberScopedArgsForQueueAdd(sessionID, "Wrap", map[string]string{
 		"Label":       "outer-value",
 		"Picked":      "Commit",
 		"Picked_Args": `{"Msg":"inner-value"}`,
@@ -156,7 +156,7 @@ func TestRememberFolderArgsForQueueAdd_EmptyPickedSkipsInner(t *testing.T) {
 	h, sessionID, writes := buildInnerRememberedHandlers(t,
 		[]config.WebPrompt{outer, inner})
 
-	h.rememberFolderArgsForQueueAdd(sessionID, "Wrap", map[string]string{
+	h.rememberScopedArgsForQueueAdd(sessionID, "Wrap", map[string]string{
 		"Picked":      "",
 		"Picked_Args": `{"Msg":"ignored"}`,
 	})
@@ -186,7 +186,7 @@ func TestRememberFolderArgsForQueueAdd_MalformedInnerArgsIsBestEffort(t *testing
 	h, sessionID, writes := buildInnerRememberedHandlers(t,
 		[]config.WebPrompt{outer, inner})
 
-	h.rememberFolderArgsForQueueAdd(sessionID, "Wrap", map[string]string{
+	h.rememberScopedArgsForQueueAdd(sessionID, "Wrap", map[string]string{
 		"Label":       "outer-still-lands",
 		"Picked":      "Commit",
 		"Picked_Args": `not-json`,
@@ -221,7 +221,7 @@ func TestRememberFolderArgsForQueueAdd_InnerParamWithoutRememberIsFiltered(t *te
 	h, sessionID, writes := buildInnerRememberedHandlers(t,
 		[]config.WebPrompt{outer, inner})
 
-	h.rememberFolderArgsForQueueAdd(sessionID, "Wrap", map[string]string{
+	h.rememberScopedArgsForQueueAdd(sessionID, "Wrap", map[string]string{
 		"Picked":      "Commit",
 		"Picked_Args": `{"Msg":"kept","Secret":"leaked","Legacy":"old"}`,
 	})
@@ -255,7 +255,7 @@ func TestRememberFolderArgsForQueueAdd_UnknownInnerPromptSkips(t *testing.T) {
 	h, sessionID, writes := buildInnerRememberedHandlers(t,
 		[]config.WebPrompt{outer})
 
-	h.rememberFolderArgsForQueueAdd(sessionID, "Wrap", map[string]string{
+	h.rememberScopedArgsForQueueAdd(sessionID, "Wrap", map[string]string{
 		"Picked":      "Ghost",
 		"Picked_Args": `{"Msg":"orphan"}`,
 	})
@@ -284,7 +284,7 @@ func TestRememberFolderArgsForQueueAdd_InnerResolutionIsCaseInsensitive(t *testi
 		[]config.WebPrompt{outer, inner})
 
 	// Picked value differs in case from registered inner prompt name "Commit".
-	h.rememberFolderArgsForQueueAdd(sessionID, "Wrap", map[string]string{
+	h.rememberScopedArgsForQueueAdd(sessionID, "Wrap", map[string]string{
 		"Picked":      "commit",
 		"Picked_Args": `{"Msg":"case-insensitive"}`,
 	})

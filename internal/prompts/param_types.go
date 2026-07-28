@@ -88,18 +88,22 @@ func IsKnownPromptParameterType(t string) bool {
 //
 //   - RememberNever: do not persist (default)
 //   - RememberFolder: per-workspace persistence, keyed by workspace UUID
+//   - RememberConversation: per-session persistence, keyed by session ID
+//     (mitto-47y.6.2). Applies at both outer and inner (`type: prompts`)
+//     picker scopes with the same read/write semantics as folder.
 //   - RememberGlobal: reserved; accepted by the enum but not stored in v1
 const (
-	RememberNever  = "never"
-	RememberFolder = "folder"
-	RememberGlobal = "global"
+	RememberNever        = "never"
+	RememberFolder       = "folder"
+	RememberConversation = "conversation"
+	RememberGlobal       = "global"
 )
 
 // IsValidRemember reports whether s is an accepted value for the Remember
 // field of a PromptParameter. An empty string counts as valid (means "never").
 func IsValidRemember(s string) bool {
 	switch s {
-	case "", RememberNever, RememberFolder, RememberGlobal:
+	case "", RememberNever, RememberFolder, RememberConversation, RememberGlobal:
 		return true
 	}
 	return false
@@ -218,8 +222,8 @@ func ValidatePromptParameters(menus string, params []PromptParameter) error {
 		// Validate the optional Remember field: reject unknown values so
 		// prompt files fail-fast instead of silently ignoring a typo (mitto-x8v).
 		if !IsValidRemember(param.Remember) {
-			return fmt.Errorf("parameter %q: unknown remember value %q (must be one of: %q, %q, %q)",
-				param.Name, param.Remember, RememberNever, RememberFolder, RememberGlobal)
+			return fmt.Errorf("parameter %q: unknown remember value %q (must be one of: %q, %q, %q, %q)",
+				param.Name, param.Remember, RememberNever, RememberFolder, RememberConversation, RememberGlobal)
 		}
 		// Validate the optional cache block.
 		if param.Cache != nil {

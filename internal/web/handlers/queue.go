@@ -170,10 +170,11 @@ func (h *Handlers) handleAddToQueue(w http.ResponseWriter, r *http.Request, queu
 	// can be many minutes for long-running first turns. See mitto-58b.
 	h.triggerTitleFromLoop(sessionID, req.Message, req.PromptName)
 
-	// Persist per-argument "remember: folder" values so the next open of the
-	// same prompt dialog in this workspace pre-fills them (mitto-x8v).
-	// Best-effort: any failure is logged and does not affect the enqueue.
-	h.rememberFolderArgsForQueueAdd(sessionID, req.PromptName, req.Arguments)
+	// Persist per-argument remember:* values so the next open of the same
+	// prompt dialog in this workspace/session pre-fills them (mitto-x8v,
+	// mitto-47y.6.2). Best-effort: any failure is logged and does not affect
+	// the enqueue.
+	h.rememberScopedArgsForQueueAdd(sessionID, req.PromptName, req.Arguments)
 
 	// Enqueue title generation if enabled (skip for named-prompt items — the prompt name is the label)
 	if h.deps.QueueTitleWorker != nil && queueConfig.ShouldAutoGenerateTitles() && req.PromptName == "" {
@@ -197,11 +198,13 @@ func (h *Handlers) handleAddToQueue(w http.ResponseWriter, r *http.Request, queu
 	writeJSONCreated(w, msg)
 }
 
-// rememberFolderArgsForQueueAdd filters the client-supplied arguments down to
-// those declared `remember: folder` on the resolved prompt definition and
-// persists them via the RememberFolderArgs closure. It also persists the
-// `remember: folder` values of any inner prompts referenced through
-// `type: prompts` picker parameters (carried on the wire as
+// rememberScopedArgsForQueueAdd filters the client-supplied arguments down to
+// those declared `remember:*` on the resolved prompt definition and persists
+// them via the scope-matched closure: `remember: folder` writes go to the
+// RememberFolderArgs closure keyed by workspace UUID, and `remember:
+// conversation` writes go to the RememberConversationArgs closure keyed by
+// session ID (mitto-47y.6.2). It also persists inner prompts referenced
+// through `type: prompts` picker parameters (carried on the wire as
 // "<PickerName>_Args" JSON blobs, mitto-47y.2), keying each write under the
 // INNER prompt name so different outer prompts picking the same inner prompt
 // share remembered values (mitto-47y.3).
@@ -210,8 +213,8 @@ func (h *Handlers) handleAddToQueue(w http.ResponseWriter, r *http.Request, queu
 // prompts all no-op; I/O and unmarshal failures are logged at WARN and
 // swallowed so the enqueue is never affected. Depth cap = 1: never
 // recursively decode "<Inner>_Args" from within an inner map. See mitto-x8v.
-func (h *Handlers) rememberFolderArgsForQueueAdd(sessionID, promptName string, args map[string]string) {
-	if h.deps.RememberFolderArgs == nil {
+func (h *Handlers) rememberScopedArgsForQueueAdd(sessionID, promptName string, args map[string]string) {
+	if h.deps.RememberFolderArgs == nil && h.deps.RememberConversationArgs == nil {
 		return
 	}
 	if promptName == "" || len(args) == 0 {
@@ -226,7 +229,7 @@ func (h *Handlers) rememberFolderArgsForQueueAdd(sessionID, promptName string, a
 	}
 	workspaceUUID := bs.GetWorkspaceUUID()
 	workingDir := bs.GetWorkingDir()
-	if workspaceUUID == "" || workingDir == "" {
+	if workingDir == "" {
 		return
 	}
 	if h.deps.GetWorkspacePromptsAll == nil {
@@ -243,29 +246,10 @@ func (h *Handlers) rememberFolderArgsForQueueAdd(sessionID, promptName string, a
 	if target == nil {
 		return
 	}
-	// Persist the OUTER prompt's remember:folder values under the outer name.
-	outerFiltered := make(map[string]string, len(args))
-	for _, p := range target.Parameters {
-		if p.Remember != prompts.RememberFolder {
-			continue
-		}
-		v, ok := args[p.Name]
-		if !ok || v == "" {
-			continue
-		}
-		outerFiltered[p.Name] = v
-	}
-	if len(outerFiltered) > 0 {
-		if err := h.deps.RememberFolderArgs(workspaceUUID, promptName, outerFiltered); err != nil {
-			if h.deps.Logger != nil {
-				h.deps.Logger.Warn("Failed to persist remembered prompt args",
-					"session_id", sessionID,
-					"prompt_name", promptName,
-					"error", err)
-			}
-		}
-	}
-	// Persist any INNER prompt remember:folder values carried through
+	// Persist the OUTER prompt's remember:* values under the outer name,
+	// dispatched to the right scope's writer.
+	h.persistScopedArgs(sessionID, workspaceUUID, promptName, target.Parameters, args, promptName, "")
+	// Persist any INNER prompt remember:* values carried through
 	// `type: prompts` pickers. Each picker's inner map is written under the
 	// INNER prompt's name so a different outer prompt picking the same inner
 	// prompt shares the remembered values (mitto-47y.3 acceptance criterion).
@@ -306,27 +290,50 @@ func (h *Handlers) rememberFolderArgsForQueueAdd(sessionID, promptName string, a
 		if inner == nil {
 			continue
 		}
-		innerFiltered := make(map[string]string, len(innerArgs))
-		for _, ip := range inner.Parameters {
-			if ip.Remember != prompts.RememberFolder {
-				continue
-			}
-			v, ok := innerArgs[ip.Name]
-			if !ok || v == "" {
-				continue
-			}
-			innerFiltered[ip.Name] = v
-		}
-		if len(innerFiltered) == 0 {
+		h.persistScopedArgs(sessionID, workspaceUUID, promptName, inner.Parameters, innerArgs, inner.Name, p.Name)
+	}
+}
+
+// persistScopedArgs walks the given params, groups source values by their
+// declared remember scope, and writes each non-empty group to its scope's
+// closure keyed under storeKey. The outer prompt name and picker name are
+// included in the log context so failures at either level are attributable.
+// (mitto-47y.6.2)
+func (h *Handlers) persistScopedArgs(sessionID, workspaceUUID, outerPromptName string, params []prompts.PromptParameter, src map[string]string, storeKey, pickerName string) {
+	folderFiltered := map[string]string{}
+	conversationFiltered := map[string]string{}
+	for _, p := range params {
+		v, ok := src[p.Name]
+		if !ok || v == "" {
 			continue
 		}
-		if err := h.deps.RememberFolderArgs(workspaceUUID, inner.Name, innerFiltered); err != nil {
+		switch p.Remember {
+		case prompts.RememberFolder:
+			folderFiltered[p.Name] = v
+		case prompts.RememberConversation:
+			conversationFiltered[p.Name] = v
+		}
+	}
+	if len(folderFiltered) > 0 && h.deps.RememberFolderArgs != nil && workspaceUUID != "" {
+		if err := h.deps.RememberFolderArgs(workspaceUUID, storeKey, folderFiltered); err != nil {
 			if h.deps.Logger != nil {
-				h.deps.Logger.Warn("Failed to persist remembered inner prompt args",
+				h.deps.Logger.Warn("Failed to persist remembered folder args",
 					"session_id", sessionID,
-					"prompt_name", promptName,
-					"picker", p.Name,
-					"inner_prompt", inner.Name,
+					"prompt_name", outerPromptName,
+					"picker", pickerName,
+					"store_key", storeKey,
+					"error", err)
+			}
+		}
+	}
+	if len(conversationFiltered) > 0 && h.deps.RememberConversationArgs != nil && sessionID != "" {
+		if err := h.deps.RememberConversationArgs(sessionID, storeKey, conversationFiltered); err != nil {
+			if h.deps.Logger != nil {
+				h.deps.Logger.Warn("Failed to persist remembered conversation args",
+					"session_id", sessionID,
+					"prompt_name", outerPromptName,
+					"picker", pickerName,
+					"store_key", storeKey,
 					"error", err)
 			}
 		}

@@ -127,10 +127,16 @@ export const endpoints = {
       apiUrl(`/api/workspace-prompts/${enc(name)}`) + qs(params),
     remove: (name, params) =>
       apiUrl(`/api/workspace-prompts/${enc(name)}`) + qs(params),
-    // mitto-x8v: per-argument "remember last value" for prompt dialogs.
-    rememberedArgs: (workingDir, promptName) =>
+    // mitto-x8v, mitto-47y.6.2: per-argument "remember last value" for prompt
+    // dialogs. sessionId is optional; when provided the server merges
+    // conversation-scoped values on top of folder-scoped values.
+    rememberedArgs: (workingDir, promptName, sessionId) =>
       apiUrl("/api/workspace-prompts/remembered-args") +
-      qs({ working_dir: workingDir, prompt: promptName }),
+      qs({
+        working_dir: workingDir,
+        prompt: promptName,
+        session_id: sessionId,
+      }),
   },
 
   /** Workspace file listing — feeds the "filename" prompt parameter type. */

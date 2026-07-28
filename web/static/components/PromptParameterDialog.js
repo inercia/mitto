@@ -658,10 +658,20 @@ export function PromptParameterDialog({
     if (!isOpen || !workingDir) return;
     const promptName = title;
     if (!promptName || promptName === "Prompt parameters") return;
-    const needsRemember = parameters.some((p) => p.remember === "folder");
+    // mitto-47y.6.2: gate also honors `remember: conversation` so the fetch
+    // fires whenever any scoped-persistence mode is declared.
+    const needsRemember = parameters.some(
+      (p) => p.remember === "folder" || p.remember === "conversation",
+    );
     if (!needsRemember) return;
     let cancelled = false;
-    authFetch(endpoints.workspacePrompts.rememberedArgs(workingDir, promptName))
+    authFetch(
+      endpoints.workspacePrompts.rememberedArgs(
+        workingDir,
+        promptName,
+        hostSessionId,
+      ),
+    )
       .then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
       .then((data) => {
         if (cancelled) return;
@@ -678,7 +688,7 @@ export function PromptParameterDialog({
     return () => {
       cancelled = true;
     };
-  }, [isOpen, workingDir, title]);
+  }, [isOpen, workingDir, title, hostSessionId]);
 
   // Fetch beads issues when dialog opens (only if a beadsId param is present)
   useEffect(() => {
@@ -899,7 +909,11 @@ export function PromptParameterDialog({
         ? entry.prompt.parameters
         : [];
       if (inner.length === 0) continue;
-      const needsRemember = inner.some((p) => p.remember === "folder");
+      // mitto-47y.6.2: gate also honors `remember: conversation` at every
+      // nested picker depth (same semantics as the top-level effect above).
+      const needsRemember = inner.some(
+        (p) => p.remember === "folder" || p.remember === "conversation",
+      );
       if (!needsRemember) continue;
       const pathKey = entry.path.join("/");
       const pickedName = entry.pickedPromptName;
@@ -910,7 +924,11 @@ export function PromptParameterDialog({
       });
       setLoadingRememberedByPath((prev) => ({ ...prev, [pathKey]: true }));
       authFetch(
-        endpoints.workspacePrompts.rememberedArgs(workingDir, pickedName),
+        endpoints.workspacePrompts.rememberedArgs(
+          workingDir,
+          pickedName,
+          hostSessionId,
+        ),
       )
         .then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
         .then((data) => {
@@ -971,6 +989,7 @@ export function PromptParameterDialog({
   }, [
     isOpen,
     workingDir,
+    hostSessionId,
     JSON.stringify(pickedPaths.map((e) => [e.path, e.pickedPromptName])),
   ]);
 

@@ -395,6 +395,23 @@ type Deps struct {
 	// when nothing is remembered or when either identifier is empty. May be
 	// nil; the GET handler treats that as "feature disabled" (empty response).
 	GetRememberedArgs func(workspaceUUID, promptName string) (map[string]string, error)
+
+	// RememberConversationArgs persists a filtered subset of prompt arguments
+	// so that the same prompt dialog opens pre-filled next time in the same
+	// SESSION (mitto-47y.6.2). Mirrors RememberFolderArgs but keyed by
+	// sessionID rather than workspace UUID. The handler filters args to those
+	// whose declared Remember value is RememberConversation; this closure only
+	// performs the write and returns a non-nil error on I/O failure. May be
+	// nil; callers must nil-guard. sessionID / promptName may be empty — the
+	// closure then no-ops.
+	RememberConversationArgs func(sessionID, promptName string, args map[string]string) error
+
+	// GetRememberedConversationArgs returns the previously remembered
+	// arguments for a (session ID, prompt name) pair from the
+	// conversation-scope namespace (mitto-47y.6.2). It returns an empty map
+	// when nothing is remembered or when either identifier is empty. May be
+	// nil; the GET handler treats that as "conversation scope disabled".
+	GetRememberedConversationArgs func(sessionID, promptName string) (map[string]string, error)
 }
 
 // Handlers groups the REST API handler methods extracted from the web server.

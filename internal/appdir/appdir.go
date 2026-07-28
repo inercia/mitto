@@ -79,6 +79,12 @@ const (
 	// remembered prompt-argument snapshots (one JSON file per workspace UUID).
 	// See internal/rememberedargs.
 	RememberedArgsDirName = "remembered-args"
+
+	// RememberedArgsConversationDirName is the name of the subdirectory holding
+	// per-session remembered prompt-argument snapshots (one JSON file per
+	// session ID). Used for `remember: conversation` mode (mitto-47y.6.2).
+	// See internal/rememberedargs.
+	RememberedArgsConversationDirName = "remembered-args-conversation"
 )
 
 var (
@@ -447,6 +453,19 @@ func RememberedArgsDir() (string, error) {
 		return "", err
 	}
 	return filepath.Join(dir, RememberedArgsDirName), nil
+}
+
+// RememberedArgsConversationDir returns the directory holding per-session
+// remembered prompt-argument snapshots ($MITTO_DIR/remembered-args-conversation).
+// The directory is not created here; callers persist via
+// fileutil.WriteJSONAtomic, which creates it on first write. Mirrors the
+// RememberedArgsDir pattern for `remember: conversation` mode (mitto-47y.6.2).
+func RememberedArgsConversationDir() (string, error) {
+	dir, err := Dir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, RememberedArgsConversationDirName), nil
 }
 
 // ResetCache clears the cached directory path.
