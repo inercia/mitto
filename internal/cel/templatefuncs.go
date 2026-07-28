@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -787,6 +788,8 @@ func FormatPeers(peers []PeerInfo) string {
 //     is preserved. Pairs with the `prompts` parameter type.
 //   - trim, lower, upper, contains, hasPrefix, hasSuffix — thin strings wrappers.
 //   - join(sep, elems) — strings.Join with sep first (template-natural argument order).
+//   - Dir(path) — path.Dir (forward-slash, not OS-native) for deriving a sibling
+//     path from a workspace-relative argument.
 func BuildTemplateFuncMap(ctx *PromptEnabledContext) template.FuncMap {
 	var (
 		folder             string
@@ -929,6 +932,13 @@ func BuildTemplateFuncMap(ctx *PromptEnabledContext) template.FuncMap {
 		"HasPrefix": strings.HasPrefix,
 		"HasSuffix": strings.HasSuffix,
 		"Join":      func(sep string, elems []string) string { return strings.Join(elems, sep) },
+		// Dir returns the directory portion of a forward-slash path (path.Dir
+		// semantics — NOT OS-native filepath.Dir). Intended for deriving a
+		// sibling-file path from a workspace-relative argument such as
+		// {{ .Args.Test }}: e.g. Dir("a/b/test_foo.md") == "a/b",
+		// Dir("test_foo.md") == ".", Dir("") == ".". Pairs with FileExists /
+		// ReadFile to inline files that sit next to a user-selected file.
+		"Dir": path.Dir,
 
 		// dict builds a map[string]any from alternating key/value pairs. It
 		// mirrors the well-known Sprig helper of the same name so shared
