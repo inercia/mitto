@@ -879,6 +879,36 @@ func TestResolveAndSubstitute_QueueUserOrigin_InvalidTemplate_FailOpen(t *testin
 	}
 }
 
+// TestResolveAndSubstitute_AgentQueueOrigin_ExecuteError_FailOpen verifies that
+// an agent-origin queue dispatch (SenderID=queue, QueueOrigin=agent, no
+// PromptName — i.e. mitto_conversation_send_prompt called with raw 'prompt:'
+// free text) whose body PARSES cleanly but references a missing field/method
+// at exec time (e.g. literal "{{ .DefaultText }}" quoted from a fragment
+// docstring) is delivered raw with a warn log — NOT fail-closed and silently
+// dropped after the queue-dispatcher's bounded retry. Reproduces mitto-z6f:
+// 3 driver-composed messages were lost because "prompt template \"prompt\":
+// render error: template: prompt:31:121: can't evaluate field DefaultText in
+// type *cel.PromptEnabledContext" was treated as fail-closed. Parse errors on
+// the same origin remain fail-closed (see the AutomatedDispatch test above)
+// so the mitto-e7u guarantee for structurally broken templates is unchanged.
+func TestResolveAndSubstitute_AgentQueueOrigin_ExecuteError_FailOpen(t *testing.T) {
+	p := promptDispatcher{}
+	d := newFakePromptDeps()
+
+	// Parses as a valid pipeline but "DefaultText" is not a field of
+	// *cel.PromptEnabledContext, so Execute reports:
+	//   can't evaluate field DefaultText in type *cel.PromptEnabledContext
+	body := "please see fragment docs: {{ .DefaultText }} — end"
+	meta := PromptMeta{SenderID: senderIDQueue, QueueOrigin: session.QueueOriginAgent}
+	msg, _, _, err := p.resolveAndSubstitute(d, body, meta)
+	if err != nil {
+		t.Fatalf("expected nil error (fail-open) for agent-origin queue dispatch with execute-time template error, got: %v", err)
+	}
+	if msg != body {
+		t.Fatalf("expected raw body byte-for-byte, got %q", msg)
+	}
+}
+
 // --- buildAttachmentBlocks tests ---
 
 func TestPromptDispatcher_BuildAttachmentBlocks_NoStore(t *testing.T) {

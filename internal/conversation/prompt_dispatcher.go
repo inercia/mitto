@@ -211,6 +211,22 @@ const (
 	senderIDLoop  = "loop-runner"
 )
 
+// isTemplateExecuteError reports whether err is a text/template EXECUTE error
+// (template parsed OK but referenced a missing field/method at run time) as
+// opposed to a PARSE error (structural — unbalanced action, unknown template
+// ref, etc.). RenderPromptTemplate wraps the two classes with stable "parse
+// error:" / "render error:" prefixes (see internal/prompts/template.go); this
+// helper matches the render-error prefix. Used by resolveAndSubstitute to
+// downgrade agent-origin queue dispatches from fail-closed to fail-open on
+// execute errors only (mitto-z6f), preserving the mitto-e7u fail-closed
+// guarantee for structurally broken templates.
+func isTemplateExecuteError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "render error:")
+}
+
 // resolveAndSubstitute covers the top of PromptWithMeta:
 //  1. Name-resolution: if meta.PromptName != "", resolve via promptResolver
 //     (error if no resolver, or if resolution fails). The resolved body replaces
@@ -326,6 +342,23 @@ func (p promptDispatcher) resolveAndSubstitute(d promptDeps, message string, met
 			// input, so pasted text containing {{ is delivered literally (mitto-nvb).
 			failClosed := meta.PromptName != "" || meta.SenderID == senderIDLoop ||
 				(meta.SenderID == senderIDQueue && meta.QueueOrigin == session.QueueOriginAgent)
+			// mitto-z6f: within the agent-origin queue-dispatch fail-closed branch,
+			// downgrade EXECUTE errors (template parsed OK but referenced a missing
+			// struct field/method on *cel.PromptEnabledContext at exec time) to
+			// fail-open. Rationale: parse errors signal the sender intended a
+			// template but broke its syntax — silent raw delivery yields garbage on
+			// the receiver, so keep failing closed to preserve mitto-e7u. Execute
+			// errors typically mean the body is prose that HAPPENED to trip
+			// HasTemplateSyntax (e.g. quoted fragment docs containing literal
+			// "{{ .DefaultText }}"). Failing closed there silently drops legitimate
+			// content after mitto-omu's bounded retry — 3 messages were lost this
+			// way on session 20260727-163316-99e4efda. Named prompts and loop
+			// dispatches still fail closed on execute errors (their bodies are
+			// authored templates whose data contract must hold).
+			if failClosed && meta.PromptName == "" && meta.SenderID == senderIDQueue &&
+				isTemplateExecuteError(rerr) {
+				failClosed = false
+			}
 			if failClosed {
 				return "", 0, meta, rerr
 			}
