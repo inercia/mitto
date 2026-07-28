@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"strings"
 	"time"
 
@@ -204,6 +205,78 @@ type promptDeps interface {
 // PromptWithMeta that contain no goto labels and no goroutines.
 type promptDispatcher struct{}
 
+// nestedArgsCallRE matches the two idiomatic forms of a PromptTextWithArgs
+// invocation in a resolved prompt body, capturing the "_Args" field name that
+// carries the nested inner arguments (mitto-47y.4). Both shapes are documented
+// on rules/07-prompts.md:
+//
+//	PromptTextWithArgs .Args.Prompt (ArgsMap "Prompt_Args")   → captures "Prompt_Args" in group 1
+//	PromptTextWithArgs .Args.Prompt .Args.Prompt_Args          → captures "Prompt_Args" in group 2
+//
+// The regex is deliberately narrow: it does NOT try to handle arbitrary
+// template expressions (e.g. computed picker names built via printf). Those
+// simply don't match and the validator stays silent (correct — we can't
+// reason about them statically).
+var nestedArgsCallRE = regexp.MustCompile(
+	`PromptTextWithArgs\s+[\.\w"]+\s+(?:\(\s*ArgsMap\s+"([^"]+)"|\.Args\.([A-Za-z_][A-Za-z0-9_]*))`,
+)
+
+// warnMissingNestedArgs scans the resolved prompt body for PromptTextWithArgs
+// calls and emits a single WARN when an MCP/agent-origin dispatch supplied the
+// bare picker key (e.g. "Prompt") but forgot the sibling "<PickerName>_Args"
+// key that carries the nested inner arguments. This is fail-open on the
+// validation itself: the render still proceeds and simply yields empty inner
+// values — the WARN just makes the dropped-arg bug visible in the log so
+// callers can fix their mirroring (see rules/07-prompts.md "Nested _Args").
+//
+// The heuristic distinguishes an intentional no-inner-args dispatch (bare
+// picker key ALSO absent → silent) from the mirroring bug (bare picker key
+// present, "_Args" sibling missing → WARN). It matches the loop-arg
+// mirroring lesson (memory mitto-rtdr).
+//
+// Warns at most once per dispatch on the FIRST missing "_Args" field — a
+// noisy per-occurrence log would flood on prompts that pick several nested
+// bodies. Missing logger / regex miss → silent no-op.
+func warnMissingNestedArgs(logger *slog.Logger, promptName, body string, args map[string]string) {
+	if logger == nil || body == "" {
+		return
+	}
+	matches := nestedArgsCallRE.FindAllStringSubmatch(body, -1)
+	if len(matches) == 0 {
+		return
+	}
+	for _, m := range matches {
+		field := m[1]
+		if field == "" {
+			field = m[2]
+		}
+		if field == "" {
+			continue
+		}
+		if _, ok := args[field]; ok && args[field] != "" {
+			continue
+		}
+		// Only warn when the companion bare picker key (field with the "_Args"
+		// suffix stripped) IS present — otherwise the caller almost certainly
+		// meant "no inner args here" and staying silent is correct.
+		companion := strings.TrimSuffix(field, "_Args")
+		if companion == field {
+			// field did not end in "_Args" — not the mirroring bug shape.
+			continue
+		}
+		if v, ok := args[companion]; !ok || v == "" {
+			continue
+		}
+		logger.Warn(
+			"MCP dispatch: nested inner args missing; will render empty. See rules/07-prompts.md 'Nested _Args'.",
+			"prompt", promptName,
+			"missing_key", field,
+			"companion_key", companion,
+		)
+		return
+	}
+}
+
 // SenderID sentinels for non-human dispatch paths: queued messages (which include
 // MCP cross-session sends via mitto_conversation_send_prompt) and loop runs.
 const (
@@ -292,6 +365,17 @@ func (p promptDispatcher) resolveAndSubstitute(d promptDeps, message string, met
 				}
 			}
 		}
+	}
+
+	// mitto-47y.4: for MCP/agent-origin dispatches, warn (fail-open) when the
+	// resolved body calls PromptTextWithArgs but the caller forgot the
+	// "<PickerName>_Args" sibling key. Human free-text and human queued
+	// messages are exempt (no template contract). Runs after cache read/merge
+	// so companion-key detection sees the effective argument map.
+	isMCPAgentDispatch := (meta.SenderID == senderIDQueue && meta.QueueOrigin == session.QueueOriginAgent) ||
+		(meta.PromptName != "" && meta.SenderID == "")
+	if isMCPAgentDispatch {
+		warnMissingNestedArgs(d.pdLogger(), meta.PromptName, message, meta.Arguments)
 	}
 
 	// Template render (mitto-m7sb.5): runs after name-resolution and cache
