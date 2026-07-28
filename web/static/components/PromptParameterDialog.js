@@ -10,6 +10,218 @@ import { apiUrl } from "../utils/api.js";
 import { endpoints } from "../utils/endpoints.js";
 import { Modal } from "./Modal.js";
 
+// mitto-47y.6.1: maximum picker-nesting level the UI will render normally.
+// Mirrors backend `promptTextMaxDepth = 3` in internal/cel/templatefuncs.go —
+// each picker level N produces `<Picker>_Args` that the backend consumes via a
+// PromptTextWithArgs sub-render at depth N+1 (the outer prompt renders at
+// depth 0). A picker at level 3 would drive a depth-4 sub-render which the
+// backend fail-closes, so at level === MAX_NESTED_LEVEL the picker itself
+// renders as a disabled placeholder — matching the pre-existing v1 note used
+// at level 1 (Phase B `mitto-47y.2`). Keep in sync with promptTextMaxDepth.
+const MAX_NESTED_LEVEL = 3;
+
+// mitto-47y.6.1: write `val` into the nested-args tree at `path`.`innerName`.
+// `tree` shape: `{ [pickerName]: { values, sub } }` (the "sub" of an implicit
+// root). `path` is the picker-name chain from the outermost picker down to the
+// picker that owns the field being written (length === level of the field's
+// parent picker). Missing intermediate nodes are created on write; existing
+// nodes are shallow-cloned so callers can rely on referential-equality checks
+// for cheap change detection. Returns a NEW tree — the input is never mutated.
+export function updateNestedTree(tree, path, innerName, val) {
+  if (!Array.isArray(path) || path.length === 0) return tree;
+  const next = { ...(tree || {}) };
+  let parent = next;
+  for (let i = 0; i < path.length; i++) {
+    const pickerName = path[i];
+    const existing = parent[pickerName] || { values: {}, sub: {} };
+    const clone = {
+      values: { ...(existing.values || {}) },
+      sub: { ...(existing.sub || {}) },
+    };
+    parent[pickerName] = clone;
+    if (i === path.length - 1) {
+      clone.values = { ...clone.values, [innerName]: val };
+    } else {
+      parent = clone.sub;
+    }
+  }
+  return next;
+}
+
+// mitto-47y.6.1: prune subtree slots whose picker-value no longer matches a
+// prompt in `promptsList`, walking from the root down. `outerParams` is the
+// PromptParameter[] at the current level; `outerValues` is the values map at
+// this level (for the root, this is the top-level `values` state). Recurses
+// into each still-valid picker using the picked prompt's inner parameters.
+// Returns a NEW tree (or the same reference when nothing changed). Pure —
+// mirrors the v1 stale-clear effect but walks the whole tree.
+export function pruneNestedTree(tree, outerParams, outerValues, promptsList) {
+  if (!tree || typeof tree !== "object") return tree;
+  let mutated = false;
+  const next = { ...tree };
+  const paramsList = Array.isArray(outerParams) ? outerParams : [];
+  const promptByName = new Map(
+    (promptsList || [])
+      .filter((wp) => wp && wp.name)
+      .map((wp) => [wp.name, wp]),
+  );
+  // Any subtree keyed under a name that is NOT a `type: prompts` param at this
+  // level, or whose picked value at this level is empty / no longer matches a
+  // known prompt, is stale and gets dropped.
+  const pickerParamByName = new Map(
+    paramsList.filter((p) => p && p.type === "prompts").map((p) => [p.name, p]),
+  );
+  for (const key of Object.keys(next)) {
+    const pickerParam = pickerParamByName.get(key);
+    if (!pickerParam) {
+      delete next[key];
+      mutated = true;
+      continue;
+    }
+    const pickedName = ((outerValues && outerValues[key]) || "")
+      .toString()
+      .trim();
+    if (!pickedName) {
+      delete next[key];
+      mutated = true;
+      continue;
+    }
+    const pickedPrompt = promptByName.get(pickedName);
+    if (!pickedPrompt) {
+      delete next[key];
+      mutated = true;
+      continue;
+    }
+    // Descend into this picker's own subtree. The recursive call uses the
+    // picked prompt's inner parameters as the next level's outerParams and
+    // this node's own `values` map as outerValues at that deeper level.
+    const node = next[key];
+    const innerParams = Array.isArray(pickedPrompt.parameters)
+      ? pickedPrompt.parameters
+      : [];
+    const prunedSub = pruneNestedTree(
+      node.sub || {},
+      innerParams,
+      node.values || {},
+      promptsList,
+    );
+    if (prunedSub !== node.sub) {
+      next[key] = { ...node, sub: prunedSub };
+      mutated = true;
+    }
+  }
+  return mutated ? next : tree;
+}
+
+// mitto-47y.6.1: build the JSON-string payload for a picker at any level.
+// Mirrors the v1 outer serializer per-field rules (booleans → "true"/"false",
+// strings → trim, drop-if-empty-and-not-required), and recursively emits
+// `<Picker>` / `<Picker>_Args` companions for inner `type: prompts` fields.
+// `level` is the depth of the BLOCK being processed — the level at which
+// these `innerParams` live. Level 0 = the dialog's top-level `parameters`;
+// level 1 = the inner block opened by a level-0 picker; and so on. A picker
+// at `level >= MAX_NESTED_LEVEL` cannot open another block (its own `_Args`
+// would drive a backend sub-render past `promptTextMaxDepth`), so its inner
+// `type: prompts` field is skipped entirely (defense-in-depth alongside the
+// ParamField disabled render at the same level). Returns a plain object;
+// JSON encoding is the caller's job so an empty result can be detected and
+// the `_Args` companion omitted from the outer args map (matches v1 wire).
+export function buildInnerArgs(innerParams, node, promptsList, level) {
+  const out = {};
+  const values = (node && node.values) || {};
+  const sub = (node && node.sub) || {};
+  const paramsList = Array.isArray(innerParams) ? innerParams : [];
+  for (const ip of paramsList) {
+    if (!ip || !ip.name) continue;
+    if (ip.type === "prompts") {
+      // Deepest allowed picker: skip inner `type: prompts` entirely — its
+      // `_Args` would need a backend sub-render at depth level+1 which
+      // exceeds promptTextMaxDepth once level >= MAX_NESTED_LEVEL.
+      if (level >= MAX_NESTED_LEVEL) continue;
+      const pickedName = (values[ip.name] || "").toString().trim();
+      if (pickedName === "") {
+        if (ip.required) out[ip.name] = "";
+        continue;
+      }
+      out[ip.name] = pickedName;
+      const pickedPrompt = (promptsList || []).find(
+        (wp) => wp && wp.name === pickedName,
+      );
+      const deeperInner =
+        pickedPrompt && Array.isArray(pickedPrompt.parameters)
+          ? pickedPrompt.parameters
+          : [];
+      const deeperNode = sub[ip.name];
+      const deeperOut = buildInnerArgs(
+        deeperInner,
+        deeperNode,
+        promptsList,
+        level + 1,
+      );
+      if (Object.keys(deeperOut).length > 0) {
+        out[`${ip.name}_Args`] = JSON.stringify(deeperOut);
+      }
+      continue;
+    }
+    if (ip.type === "boolean") {
+      const checked = values[ip.name] === true || values[ip.name] === "true";
+      out[ip.name] = checked ? "true" : "false";
+      continue;
+    }
+    const iv = (values[ip.name] || "").toString().trim();
+    if (iv !== "" || ip.required) {
+      out[ip.name] = iv;
+    }
+  }
+  return out;
+}
+
+// mitto-47y.6.1: walk the nested tree collecting `{ path, pickedPromptName }`
+// entries for every currently-picked node — used by the remembered-args fetch
+// effect to fire one request per non-empty picker at every depth. `outerParams`
+// / `outerValues` describe the level whose picker keys are stored in `tree`;
+// for the root that's the dialog's `parameters` prop and `values` state.
+export function collectPickedPaths(
+  tree,
+  outerParams,
+  outerValues,
+  promptsList,
+  parentPath = [],
+) {
+  const out = [];
+  if (!tree || typeof tree !== "object") return out;
+  const pickerParams = (outerParams || []).filter(
+    (p) => p && p.type === "prompts",
+  );
+  for (const p of pickerParams) {
+    const pickedName = ((outerValues && outerValues[p.name]) || "")
+      .toString()
+      .trim();
+    if (!pickedName) continue;
+    const pickedPrompt = (promptsList || []).find(
+      (wp) => wp && wp.name === pickedName,
+    );
+    if (!pickedPrompt) continue;
+    const path = [...parentPath, p.name];
+    out.push({ path, pickedPromptName: pickedName, prompt: pickedPrompt });
+    const node = tree[p.name];
+    if (!node) continue;
+    const innerParams = Array.isArray(pickedPrompt.parameters)
+      ? pickedPrompt.parameters
+      : [];
+    out.push(
+      ...collectPickedPaths(
+        node.sub || {},
+        innerParams,
+        node.values || {},
+        promptsList,
+        path,
+      ),
+    );
+  }
+  return out;
+}
+
 /**
  * Render one parameter field based on its type.
  * @param {Object} param     - { name, type, description?, required?, multiLine?, options? }
@@ -30,14 +242,23 @@ import { Modal } from "./Modal.js";
  * @param {Object} loadingFilesByParam - per-param loading flag keyed by param.name
  * @param {Object} dirsByParam - loaded dir lists keyed by param.name (may be undefined)
  * @param {Object} loadingDirsByParam - per-param loading flag keyed by param.name
- * @param {Array}  [nestedParams] - inner PromptParameter[] to render below a
- *   `type: prompts` picker (may be [] or undefined). mitto-47y.2.
- * @param {Object} [nestedValues] - { [innerName]: value } for the picked prompt's inner fields.
- * @param {Function} [onNestedChange] - (pickerName, innerName, val) => void.
- * @param {boolean} [loadingNestedRemembered] - remembered-args fetch in flight for this picker.
- * @param {string}  [pickedPromptName] - display name of the picked prompt (for the legend).
- * @param {boolean} [isNested] - true when this field is an inner nested field;
- *   suppresses further recursion into `type: prompts` (rendered as a disabled note).
+ * @param {Object} [nestedNode] - recursive nested-args tree slot for this field
+ *   (mitto-47y.6.1). Shape: `{ values: { [innerName]: value }, sub: { [innerPicker]: node } }`.
+ *   Undefined for non-picker fields or when this picker has no picked value yet.
+ * @param {Function} [onNestedTreeChange] - `(pathFromRoot, innerName, val) => void`
+ *   where `pathFromRoot` is the array of outer picker names from the root down
+ *   to (and including) this field's parent picker. A leaf write at level L uses
+ *   a path of length L. Single canonical callback for every depth — the root
+ *   dialog updates the correct subtree slot in `nestedValues`.
+ * @param {Object} [loadingRememberedByPath] - `{ [pathKey]: bool }` map keyed
+ *   by the picker-name path (e.g. `"outer/inner"`) so per-level remembered-args
+ *   spinners never collide when two pickers at different depths share a name.
+ * @param {Array<string>} [ancestorPath] - picker-name chain from root to this
+ *   field's parent picker (empty at level 0). Used both to build spinner-lookup
+ *   keys and to compose the path passed to `onNestedTreeChange` for children.
+ * @param {number} [level] - 0 at the outermost prompt, incremented per nested
+ *   block. When `level === MAX_NESTED_LEVEL`, `type: prompts` fields render
+ *   as the disabled "nested prompt pickers are not supported here" note.
  */
 function ParamField({
   param,
@@ -58,12 +279,11 @@ function ParamField({
   loadingFilesByParam,
   dirsByParam,
   loadingDirsByParam,
-  nestedParams,
-  nestedValues,
-  onNestedChange,
-  loadingNestedRemembered,
-  pickedPromptName,
-  isNested,
+  nestedNode,
+  onNestedTreeChange,
+  loadingRememberedByPath,
+  ancestorPath = [],
+  level = 0,
 }) {
   const { name, type, description, required, multiLine, options } = param;
   const hasOptions = Array.isArray(options) && options.length > 0;
@@ -276,9 +496,12 @@ function ParamField({
     // Value is the NAME of another workspace prompt. Mirrors the beadsId
     // pattern: spinner while loading, text-input fallback when the list is
     // unavailable, otherwise a select of prompt names.
-    // mitto-47y.2: when this is an inner (nested) field, we do NOT recurse
-    // into another picker — render a disabled note instead (depth-1 cap).
-    if (isNested) {
+    // mitto-47y.6.1: at level === MAX_NESTED_LEVEL a picker would drive a
+    // backend sub-render past `promptTextMaxDepth` — render the pre-existing
+    // disabled placeholder instead (defense-in-depth alongside the submit
+    // serializer skip at the same depth). This preserves the v1 (`mitto-47y.2`)
+    // Phase B note at the new deepest level.
+    if (level >= MAX_NESTED_LEVEL) {
       control = html`
         <input
           type="text"
@@ -451,15 +674,43 @@ function ParamField({
     `;
   }
 
-  // mitto-47y.2: for a `type: prompts` picker that is NOT itself nested and
-  // has a non-empty picked value with inner params, render an inline nested
-  // block reusing ParamField for each inner param. Inner `type: prompts` is
-  // rendered as a disabled note (depth-1 cap; see the isNested guard above).
+  // mitto-47y.6.1: recursive nested-block render. A `type: prompts` picker
+  // that is below the depth cap AND has a non-empty picked value opens an
+  // inline block for the picked prompt's parameters, reusing ParamField at
+  // `level + 1`. Inner-param lookup is against the shared promptsList prop
+  // (single source of truth for parameters at every level). At the cap level
+  // the block is not rendered (the control above is the disabled placeholder).
+  const trimmedValue = typeof value === "string" ? value.trim() : "";
+  const pickedPrompt =
+    type === "prompts" && trimmedValue && Array.isArray(promptsList)
+      ? promptsList.find((wp) => wp && wp.name === trimmedValue)
+      : null;
+  const innerParams =
+    pickedPrompt && Array.isArray(pickedPrompt.parameters)
+      ? pickedPrompt.parameters
+      : null;
   const showNested =
     type === "prompts" &&
-    !isNested &&
-    Array.isArray(nestedParams) &&
-    nestedParams.length > 0;
+    level < MAX_NESTED_LEVEL &&
+    innerParams &&
+    innerParams.length > 0;
+  // Path from root down to and INCLUDING this picker — used both to build
+  // spinner-lookup keys and to compose the path children pass back when they
+  // write via onNestedTreeChange. Empty at level 0's non-pickers.
+  const pathIncludingSelf = [...ancestorPath, name];
+  const pathKey = pathIncludingSelf.join("/");
+  const nestedValues = (nestedNode && nestedNode.values) || null;
+  const nestedSub = (nestedNode && nestedNode.sub) || null;
+  const loadingNestedRemembered = !!(
+    loadingRememberedByPath && loadingRememberedByPath[pathKey]
+  );
+  // Testid: preserve the pre-existing `nested-params-<name>` shape at level 0
+  // for regression compatibility; deeper blocks include the level for tests
+  // that need to target a specific depth.
+  const nestedTestid =
+    level === 0
+      ? `nested-params-${name}`
+      : `nested-params-L${level + 1}-${name}`;
 
   return html`
     <fieldset class="fieldset">
@@ -474,21 +725,22 @@ function ParamField({
       html`
         <fieldset
           class="fieldset mt-3 pl-4 border-l-2 border-mitto-border space-y-3"
-          data-testid=${`nested-params-${name}`}
+          data-testid=${nestedTestid}
         >
           <legend class="fieldset-legend text-mitto-text-secondary">
-            Parameters for ${pickedPromptName || value}
+            Parameters for ${(pickedPrompt && pickedPrompt.name) || value}
           </legend>
           ${loadingNestedRemembered &&
           html`<span class="loading loading-spinner loading-xs"></span>`}
-          ${nestedParams.map(
+          ${innerParams.map(
             (inner) =>
               html`<${ParamField}
                 key=${inner.name}
                 param=${inner}
                 value=${(nestedValues && nestedValues[inner.name]) || ""}
                 onChange=${(innerName, val) =>
-                  onNestedChange && onNestedChange(name, innerName, val)}
+                  onNestedTreeChange &&
+                  onNestedTreeChange(pathIncludingSelf, innerName, val)}
                 beadsIssues=${beadsIssues}
                 loadingBeads=${loadingBeads}
                 sessions=${sessions}
@@ -504,7 +756,11 @@ function ParamField({
                 loadingFilesByParam=${loadingFilesByParam}
                 dirsByParam=${dirsByParam}
                 loadingDirsByParam=${loadingDirsByParam}
-                isNested=${true}
+                nestedNode=${nestedSub && nestedSub[inner.name]}
+                onNestedTreeChange=${onNestedTreeChange}
+                loadingRememberedByPath=${loadingRememberedByPath}
+                ancestorPath=${pathIncludingSelf}
+                level=${level + 1}
               />`,
           )}
         </fieldset>
@@ -555,14 +811,19 @@ export function PromptParameterDialog({
   // in the same dialog without key collisions.
   const [dirsByParam, setDirsByParam] = useState({});
   const [loadingDirsByParam, setLoadingDirsByParam] = useState({});
-  // mitto-47y.2: nested-param state for `type: prompts` pickers. Mirrors the
-  // per-param map shape (filesByParam/dirsByParam) so a single dialog can
-  // host multiple pickers with disjoint inner scopes without key collisions.
-  //   nestedValues:                    { [pickerName]: { [innerName]: value } }
-  //   loadingNestedRememberedByPicker: { [pickerName]: bool }
+  // mitto-47y.6.1: nested-param state for `type: prompts` pickers, restructured
+  // from the v1 flat `{ [pickerName]: { [innerName]: value } }` map into a
+  // recursive tree matching the on-the-wire nesting shape. Each node:
+  //   { values: { [innerName]: value }, sub: { [innerPickerName]: node } }
+  // The root `nestedValues` is `{ [outerPickerName]: node }` — the "sub" of an
+  // implicit level-(-1) root. `updateNestedTree` walks the path and creates
+  // missing intermediate nodes on write. Depth is capped by MAX_NESTED_LEVEL
+  // at the render layer, so the tree is never deeper than that.
+  //   loadingRememberedByPath: `{ [path]: bool }` keyed by the picker-name path
+  // (e.g. `"outerPicker/innerPicker"`) so per-level remembered-args spinners
+  // never collide when two pickers at different depths share a name.
   const [nestedValues, setNestedValues] = useState({});
-  const [loadingNestedRememberedByPicker, setLoadingNestedRememberedByPicker] =
-    useState({});
+  const [loadingRememberedByPath, setLoadingRememberedByPath] = useState({});
 
   // Reset state each time the dialog opens; seed from initialValues when provided.
   // Seeds on the open transition only — initialValues is intentionally NOT a
@@ -582,7 +843,7 @@ export function PromptParameterDialog({
     setDirsByParam({});
     setLoadingDirsByParam({});
     setNestedValues({});
-    setLoadingNestedRememberedByPicker({});
+    setLoadingRememberedByPath({});
     setLoadingBeads(false);
     setLoadingSessions(false);
     setLoadingWorkspaces(false);
@@ -793,72 +1054,62 @@ export function PromptParameterDialog({
     setValues((prev) => ({ ...prev, [fieldName]: val }));
   }, []);
 
-  // mitto-47y.2: derive the inner-param list for each `type: prompts` picker
-  // from the picked value against the already-loaded promptsList. No extra
-  // API call — WebPrompt already carries `parameters` in the list response.
-  // Recomputed on every render (cheap: N pickers × M prompts) and is the
-  // single source of truth for what the outer render passes to ParamField.
-  const nestedParamsByPicker = {};
-  const pickedPromptNameByPicker = {};
-  for (const p of parameters) {
-    if (p.type !== "prompts") continue;
-    const picked = (values[p.name] || "").trim();
-    if (!picked) continue;
-    const found = (promptsList || []).find((wp) => wp && wp.name === picked);
-    if (!found) continue;
-    pickedPromptNameByPicker[p.name] = found.name;
-    // Filter out inner `type: prompts` params from the fetch/derive set so
-    // the depth-1 cap is enforced at the data layer too (defense in depth
-    // — the ParamField render branch also renders them as a disabled note).
-    const innerParams = Array.isArray(found.parameters) ? found.parameters : [];
-    nestedParamsByPicker[p.name] = innerParams;
-  }
+  // mitto-47y.6.1: collect all currently-picked (path, promptName) pairs from
+  // the root down. Powers both the stale-clear effect (drop subtree slots
+  // whose picker is no longer picked or no longer matches a known prompt) and
+  // the remembered-args fetch effect (fire one fetch per picked prompt at
+  // every level). Recomputed on every render — cheap tree walk of
+  // (# non-empty pickers) at each level.
+  const pickedPaths = collectPickedPaths(
+    nestedValues,
+    parameters,
+    values,
+    promptsList,
+  );
 
-  // mitto-47y.2: when a picker's value changes to a prompt whose declared
-  // inner params drop out, clear the corresponding nestedValues[pickerName]
-  // slot so a subsequent submit does not carry stale inner args.
+  // mitto-47y.6.1: when any picker's value changes to a prompt whose declared
+  // inner params drop out, prune the corresponding subtree slot so a
+  // subsequent submit does not carry stale inner args. Recurses over the full
+  // tree — same fail-open behavior as the v1 outer-only effect.
   useEffect(() => {
     if (!isOpen) return;
-    setNestedValues((prev) => {
-      let mutated = false;
-      const next = { ...prev };
-      for (const key of Object.keys(prev)) {
-        if (!nestedParamsByPicker[key]) {
-          delete next[key];
-          mutated = true;
-        }
-      }
-      return mutated ? next : prev;
-    });
-    // Dependency intentionally on the JSON-serialised picker → prompt map so
-    // the effect fires when the picked prompt for any picker changes but not
-    // on unrelated re-renders (e.g. typing into an outer text field).
+    setNestedValues((prev) =>
+      pruneNestedTree(prev, parameters, values, promptsList),
+    );
+    // Dependency on the JSON-serialised picked-path map so the effect fires
+    // when any picker's picked prompt changes but not on unrelated re-renders
+    // (e.g. typing into an outer text field).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isOpen, JSON.stringify(pickedPromptNameByPicker)]);
+  }, [
+    isOpen,
+    JSON.stringify(pickedPaths.map((e) => [e.path, e.pickedPromptName])),
+  ]);
 
-  // mitto-47y.2: when a picker's value changes to a non-empty prompt name,
-  // fetch that inner prompt's remembered-args and seed nestedValues[picker]
-  // for fields the user has not filled yet. Fail-open: any error leaves
-  // nestedValues untouched. Skipped when the picked prompt declares no
-  // parameters (nothing to seed).
+  // mitto-47y.6.1: when a picker's value changes to a non-empty prompt name,
+  // fetch that inner prompt's remembered-args and seed the corresponding
+  // subtree node's `values` map for fields the user has not filled yet.
+  // Fail-open: any error leaves nestedValues untouched. Skipped when the
+  // picked prompt declares no `remember: folder` params. Fires at every depth
+  // via collectPickedPaths — the path is joined to key the spinner state so
+  // pickers at different depths sharing a name never collide.
   useEffect(() => {
     if (!isOpen || !workingDir) return;
     const cancels = [];
-    for (const [pickerName, pickedName] of Object.entries(
-      pickedPromptNameByPicker,
-    )) {
-      const inner = nestedParamsByPicker[pickerName];
-      if (!inner || inner.length === 0) continue;
+    for (const entry of pickedPaths) {
+      const inner = Array.isArray(entry.prompt.parameters)
+        ? entry.prompt.parameters
+        : [];
+      if (inner.length === 0) continue;
       const needsRemember = inner.some((p) => p.remember === "folder");
       if (!needsRemember) continue;
+      const pathKey = entry.path.join("/");
+      const pickedName = entry.pickedPromptName;
+      const path = entry.path;
       let cancelled = false;
       cancels.push(() => {
         cancelled = true;
       });
-      setLoadingNestedRememberedByPicker((prev) => ({
-        ...prev,
-        [pickerName]: true,
-      }));
+      setLoadingRememberedByPath((prev) => ({ ...prev, [pathKey]: true }));
       authFetch(
         endpoints.workspacePrompts.rememberedArgs(workingDir, pickedName),
       )
@@ -871,18 +1122,32 @@ export function PromptParameterDialog({
               : null;
           if (!remembered) return;
           setNestedValues((prev) => {
-            const existing = prev[pickerName] || {};
-            const merged = { ...existing };
+            // Merge remembered values into the subtree node at `path`, but
+            // only for keys the user has not filled yet (existing non-empty
+            // values win). Mirrors the v1 semantics one level deeper.
+            let next = prev;
             for (const [k, v] of Object.entries(remembered)) {
-              if (
-                merged[k] === undefined ||
-                merged[k] === null ||
-                merged[k] === ""
-              ) {
-                merged[k] = v;
+              // Read current value at path.k
+              let node = next;
+              let existing;
+              for (let i = 0; i < path.length; i++) {
+                const pn = path[i];
+                if (!node || !node[pn]) {
+                  existing = undefined;
+                  node = null;
+                  break;
+                }
+                if (i === path.length - 1) {
+                  existing = (node[pn].values || {})[k];
+                } else {
+                  node = node[pn].sub || {};
+                }
+              }
+              if (existing === undefined || existing === null || existing === "") {
+                next = updateNestedTree(next, path, k, v);
               }
             }
-            return { ...prev, [pickerName]: merged };
+            return next;
           });
         })
         .catch((err) => {
@@ -893,30 +1158,29 @@ export function PromptParameterDialog({
         })
         .finally(() => {
           if (cancelled) return;
-          setLoadingNestedRememberedByPicker((prev) => ({
-            ...prev,
-            [pickerName]: false,
-          }));
+          setLoadingRememberedByPath((prev) => ({ ...prev, [pathKey]: false }));
         });
     }
     return () => {
       for (const c of cancels) c();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isOpen, workingDir, JSON.stringify(pickedPromptNameByPicker)]);
+  }, [
+    isOpen,
+    workingDir,
+    JSON.stringify(pickedPaths.map((e) => [e.path, e.pickedPromptName])),
+  ]);
 
-  const handleNestedFieldChange = useCallback((pickerName, innerName, val) => {
-    setNestedValues((prev) => {
-      const existing = prev[pickerName] || {};
-      return {
-        ...prev,
-        [pickerName]: { ...existing, [innerName]: val },
-      };
-    });
+  // mitto-47y.6.1: single canonical callback for every nested level. `path`
+  // is the picker-name chain from the root to (and including) the picker that
+  // owns `innerName`; length === level of that parent picker (>= 1 for any
+  // nested write). Delegates to the pure `updateNestedTree` helper.
+  const handleNestedTreeChange = useCallback((path, innerName, val) => {
+    setNestedValues((prev) => updateNestedTree(prev, path, innerName, val));
   }, []);
 
   const handleSubmit = useCallback(() => {
-    // Build args map; omit empty optional fields
+    // Build args map; omit empty optional fields.
     const args = {};
     for (const p of parameters) {
       if (p.type === "boolean") {
@@ -929,34 +1193,33 @@ export function PromptParameterDialog({
       if (v !== "" || p.required) {
         args[p.name] = v;
       }
-      // mitto-47y.2: for `type: prompts` pickers with a non-empty picked
-      // value and inner values collected, serialize the inner map as a JSON
-      // string under `<PickerName>_Args`. Consumed on the backend by
-      // `ArgsMap "<PickerName>_Args"` inside PromptTextWithArgs (Phase A).
-      // Skip when the inner map is empty or the picked prompt declared no
-      // params — an empty _Args field would just decode back to an empty
-      // map, so omitting is equivalent and cleaner on the wire.
+      // mitto-47y.6.1: for `type: prompts` pickers with a non-empty picked
+      // value, delegate the inner-args JSON build to `buildInnerArgs`. The
+      // helper recursively emits `<Picker>` / `<Picker>_Args` companions for
+      // deeper picker levels, so a level-0 picker whose picked prompt itself
+      // declares a `type: prompts` param produces JSON-strings-inside-JSON-
+      // strings on the wire — exactly what the backend's `ArgsMap` +
+      // PromptTextWithArgs sub-render decode chain expects. Empty inner map
+      // is omitted (matches v1 wire behavior: no `_Args` field emitted).
       if (p.type === "prompts" && v !== "") {
-        const inner = nestedValues[p.name] || {};
-        // Filter out empty inner values and boolean-normalize (mirrors the
-        // outer loop above): booleans become "true"/"false", strings are
-        // trimmed and dropped when empty and not required.
+        const pickedPrompt = (promptsList || []).find(
+          (wp) => wp && wp.name === v,
+        );
         const innerParams =
-          (promptsList || []).find((wp) => wp && wp.name === v)?.parameters ||
-          [];
-        const innerOut = {};
-        for (const ip of innerParams) {
-          if (ip.type === "prompts") continue; // depth-1 cap
-          if (ip.type === "boolean") {
-            const ck = inner[ip.name] === true || inner[ip.name] === "true";
-            innerOut[ip.name] = ck ? "true" : "false";
-            continue;
-          }
-          const iv = (inner[ip.name] || "").toString().trim();
-          if (iv !== "" || ip.required) {
-            innerOut[ip.name] = iv;
-          }
-        }
+          pickedPrompt && Array.isArray(pickedPrompt.parameters)
+            ? pickedPrompt.parameters
+            : [];
+        // Outer picker sits at level 0, so its inner block is at level 1 —
+        // pass that as buildInnerArgs's "level of the picker owning these
+        // innerParams". A `type: prompts` inside those innerParams would be
+        // a picker at level 2 (still openable), and its inner picker at
+        // level 3 (disallowed — matches MAX_NESTED_LEVEL cap).
+        const innerOut = buildInnerArgs(
+          innerParams,
+          nestedValues[p.name],
+          promptsList,
+          1,
+        );
         if (Object.keys(innerOut).length > 0) {
           args[`${p.name}_Args`] = JSON.stringify(innerOut);
         }
@@ -1026,13 +1289,11 @@ export function PromptParameterDialog({
                 loadingFilesByParam=${loadingFilesByParam}
                 dirsByParam=${dirsByParam}
                 loadingDirsByParam=${loadingDirsByParam}
-                nestedParams=${nestedParamsByPicker[param.name]}
-                nestedValues=${nestedValues[param.name]}
-                onNestedChange=${handleNestedFieldChange}
-                loadingNestedRemembered=${!!loadingNestedRememberedByPicker[
-                  param.name
-                ]}
-                pickedPromptName=${pickedPromptNameByPicker[param.name]}
+                nestedNode=${nestedValues[param.name]}
+                onNestedTreeChange=${handleNestedTreeChange}
+                loadingRememberedByPath=${loadingRememberedByPath}
+                ancestorPath=${[]}
+                level=${0}
               />`,
           )}
         </div>
