@@ -35,6 +35,7 @@ import {
   BeakerIcon,
   EyeIcon,
   CheckIcon,
+  WarningIcon,
 } from "./Icons.js";
 
 // Maps the `currentIconName` field from derivePhaseState() to the concrete
@@ -158,6 +159,12 @@ export function SessionItem({
   isExpanded = false, // If true, chevron points down (expanded state)
   onToggleExpand = null, // Callback when expand/collapse is clicked
   density = "condensed",
+  // Loop-error warning: when true, render an amber warning icon in the row
+  // to signal that the loop stopped due to an error (missing prompt, resume
+  // failures, context too large). Dismissal is managed by the parent
+  // (SessionList): focusing the session clears the flag on the next render.
+  showLoopErrorWarning = false,
+  loopErrorLabel = "",
 }) {
   // Check if session is archived
   const isArchived = session.archived || false;
@@ -665,6 +672,23 @@ export function SessionItem({
                           ...${tipHandlers("Waiting for user input")}
                         >
                           <${QuestionMarkIcon} className="w-4 h-4" />
+                        </span>
+                      `
+                    : null}
+                  ${showLoopErrorWarning && !isActive
+                    ? html`
+                        <span
+                          class="shrink-0 text-amber-400"
+                          data-tip=${loopErrorLabel ||
+                          "Loop stopped: needs attention"}
+                          aria-label=${loopErrorLabel ||
+                          "Loop stopped: needs attention"}
+                          ...${tipHandlers(
+                            loopErrorLabel || "Loop stopped: needs attention",
+                          )}
+                          data-testid="session-item-loop-error-warning"
+                        >
+                          <${WarningIcon} className="w-4 h-4" />
                         </span>
                       `
                     : null}

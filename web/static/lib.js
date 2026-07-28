@@ -362,17 +362,47 @@ function _parseUndelimited(text, segments) {
  */
 // Labels shown in the conversation-header subtitle when a loop has stopped or paused.
 // Keyed by the `loop_stopped_reason` string sent by the backend.
-// Each entry has { label, kind } where kind is "stopped" (terminal/red) or "paused" (resumable/amber).
+// Each entry has { label, kind, isError? } where kind is "stopped" (terminal/red)
+// or "paused" (resumable/amber). isError=true marks stops that require user
+// attention (missing prompt / resume failures / context too large) — these
+// drive the sidebar warning indicator via isLoopErrorStop() below. Natural
+// terminations (maxDuration, maxIterations, iterationSafeguard) are not
+// errors: the loop did what it was configured to do.
 export const LOOP_STOPPED_LABELS = {
   maxDuration: { label: "Stopped: max time", kind: "stopped" },
   maxIterations: { label: "Stopped: max iters", kind: "stopped" },
   iterationSafeguard: { label: "Stopped: max iters", kind: "stopped" },
-  promptUnresolved: { label: "Stopped: prompt missing", kind: "stopped" },
-  resumeFailures: { label: "Stopped: resume errors", kind: "stopped" },
-  contextWindowExceeded: { label: "Stopped: context too large", kind: "stopped" },
+  promptUnresolved: {
+    label: "Stopped: prompt missing",
+    kind: "stopped",
+    isError: true,
+  },
+  resumeFailures: {
+    label: "Stopped: resume errors",
+    kind: "stopped",
+    isError: true,
+  },
+  contextWindowExceeded: {
+    label: "Stopped: context too large",
+    kind: "stopped",
+    isError: true,
+  },
   pausedByUser: { label: "Paused by you", kind: "paused" },
   disabledByAgent: { label: "Paused by the agent", kind: "paused" },
 };
+
+/**
+ * Returns true when a loop's stopped_reason represents an error condition
+ * that requires user attention (missing prompt, repeated resume failures,
+ * context window exceeded). Natural terminations and user/agent pauses
+ * return false.
+ * @param {string|null|undefined} reason - The loop_stopped_reason value.
+ * @returns {boolean}
+ */
+export function isLoopErrorStop(reason) {
+  if (!reason) return false;
+  return LOOP_STOPPED_LABELS[reason]?.isError === true;
+}
 
 /**
  * Compact human-readable duration for a loop max-duration cap.

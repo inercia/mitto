@@ -30,6 +30,8 @@ import {
   computeAllSessions,
   getBasename,
   getGlobalWorkingDir,
+  isLoopErrorStop,
+  LOOP_STOPPED_LABELS,
 } from "../lib.js";
 import { SessionItem } from "./SessionItem.js";
 import { ContextMenu, PortalTooltip } from "./ContextMenu.js";
@@ -625,6 +627,106 @@ export function SessionList({
     return map;
   }, [allSessions]);
 
+  // UI-prompt (mitto_ui_*) reminder dismissal (transient, in-memory): Set of
+  // session_ids the user has focused while the session was waiting for input.
+  // A dismissed session is filtered out of visibleUIPromptMap below, so the
+  // purple ? indicator disappears on focus. The dismissal is cleared once the
+  // underlying isWaitingForUserInput goes false (prompt answered) — so a
+  // subsequent UI prompt will surface the reminder again.
+  const [dismissedUIPrompts, setDismissedUIPrompts] = useState(
+    () => new Set(),
+  );
+
+  useEffect(() => {
+    if (!activeSessionId) return;
+    if (!uiPromptMap.has(activeSessionId)) return;
+    setDismissedUIPrompts((prev) => {
+      if (prev.has(activeSessionId)) return prev;
+      const next = new Set(prev);
+      next.add(activeSessionId);
+      return next;
+    });
+  }, [activeSessionId, uiPromptMap]);
+
+  useEffect(() => {
+    setDismissedUIPrompts((prev) => {
+      if (prev.size === 0) return prev;
+      let changed = false;
+      const next = new Set(prev);
+      for (const sid of prev) {
+        if (!uiPromptMap.has(sid)) {
+          next.delete(sid);
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [uiPromptMap]);
+
+  // Filtered UI-prompt map consumed by the sidebar tree renderers. Excludes
+  // the currently-active session (its UI prompt is already visible inline in
+  // the conversation view — the sidebar reminder is redundant and clears
+  // instantly on focus) and any session the user has previously dismissed
+  // while it was waiting for input.
+  const visibleUIPromptMap = useMemo(() => {
+    if (uiPromptMap.size === 0) return uiPromptMap;
+    const map = new Map();
+    for (const [sid, v] of uiPromptMap) {
+      if (sid === activeSessionId) continue;
+      if (dismissedUIPrompts.has(sid)) continue;
+      map.set(sid, v);
+    }
+    return map;
+  }, [uiPromptMap, dismissedUIPrompts, activeSessionId]);
+
+  // Loop-error warning dismissal (transient, in-memory): Map of session_id →
+  // the loop_stopped_reason that was acknowledged when the user last focused
+  // that session. A session shows the sidebar warning icon only when its
+  // current loop_stopped_reason is an error-class reason AND does not match
+  // the dismissed one for that session. Focusing the session records the
+  // current reason so the warning disappears; if the loop is later
+  // re-enabled and errors again, the dismissal is cleared and the warning
+  // reappears (see cleanup effect below).
+  const [dismissedLoopErrors, setDismissedLoopErrors] = useState(
+    () => new Map(),
+  );
+
+  // Record a dismissal when the active session has an error-class stop.
+  useEffect(() => {
+    if (!activeSessionId) return;
+    const active = allSessions.find(
+      (s) => s.session_id === activeSessionId,
+    );
+    if (!active) return;
+    const reason = active.loop_stopped_reason;
+    if (!isLoopErrorStop(reason)) return;
+    setDismissedLoopErrors((prev) => {
+      if (prev.get(activeSessionId) === reason) return prev;
+      const next = new Map(prev);
+      next.set(activeSessionId, reason);
+      return next;
+    });
+  }, [activeSessionId, allSessions]);
+
+  // Clear dismissals for sessions whose loop is no longer stopped with an
+  // error (e.g. the user re-enabled the loop). This way, a subsequent error
+  // stop will surface the warning again instead of being silently masked.
+  useEffect(() => {
+    setDismissedLoopErrors((prev) => {
+      if (prev.size === 0) return prev;
+      let changed = false;
+      const next = new Map(prev);
+      for (const sid of prev.keys()) {
+        const s = allSessions.find((x) => x.session_id === sid);
+        if (!s || !isLoopErrorStop(s.loop_stopped_reason)) {
+          next.delete(sid);
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [allSessions]);
+
   // Unified sidebar tree (mitto-1er.3): a single folder-grouped tree over ALL
   // sessions (regular + loop + archived), independent of the filter tab.
   const unifiedTree = useMemo(
@@ -901,6 +1003,16 @@ export function SessionList({
     const isSessionStreaming = session.isStreaming || false;
     // Check if this is a new session (for blink animation)
     const isNew = newSessionIds.has(session.session_id);
+    // Loop-error warning: show when the loop's stopped_reason is an
+    // error-class reason AND the user hasn't focused this session with
+    // that same reason recorded. See dismissedLoopErrors above.
+    const loopStoppedReason = session.loop_stopped_reason || null;
+    const showLoopErrorWarning =
+      isLoopErrorStop(loopStoppedReason) &&
+      dismissedLoopErrors.get(session.session_id) !== loopStoppedReason;
+    const loopErrorLabel = showLoopErrorWarning
+      ? LOOP_STOPPED_LABELS[loopStoppedReason]?.label || "Loop stopped: error"
+      : "";
 
     return html`
       <${SessionItem}
@@ -908,6 +1020,8 @@ export function SessionList({
         session=${finalSession}
         isActive=${activeSessionId === session.session_id &&
         mainView === "conversation"}
+        showLoopErrorWarning=${showLoopErrorWarning}
+        loopErrorLabel=${loopErrorLabel}
         onSelect=${handleSelectWithCollapse}
         onRename=${onRename}
         onDelete=${onDelete}
@@ -1030,7 +1144,9 @@ export function SessionList({
                 ...session,
                 isStreaming: streamingMap.has(session.session_id),
                 isWaitingForChildren: waitingMap.has(session.session_id),
-                isWaitingForUserInput: uiPromptMap.has(session.session_id),
+                isWaitingForUserInput: visibleUIPromptMap.has(
+                  session.session_id,
+                ),
               },
               {
                 // The folder tree already groups by workspace, so the only
@@ -1067,7 +1183,7 @@ export function SessionList({
                           isWaitingForChildren: waitingMap.has(
                             child.session_id,
                           ),
-                          isWaitingForUserInput: uiPromptMap.has(
+                          isWaitingForUserInput: visibleUIPromptMap.has(
                             child.session_id,
                           ),
                         },

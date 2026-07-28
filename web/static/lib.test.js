@@ -65,6 +65,7 @@ import {
   messageToMarkdown,
   conversationToMarkdown,
   LOOP_STOPPED_LABELS,
+  isLoopErrorStop,
   formatLoopMaxDuration,
   buildRetryTargets,
   messageKey,
@@ -5693,14 +5694,17 @@ describe("LOOP_STOPPED_LABELS", () => {
     expect(LOOP_STOPPED_LABELS.promptUnresolved).toEqual({
       label: "Stopped: prompt missing",
       kind: "stopped",
+      isError: true,
     });
     expect(LOOP_STOPPED_LABELS.resumeFailures).toEqual({
       label: "Stopped: resume errors",
       kind: "stopped",
+      isError: true,
     });
     expect(LOOP_STOPPED_LABELS.contextWindowExceeded).toEqual({
       label: "Stopped: context too large",
       kind: "stopped",
+      isError: true,
     });
     expect(LOOP_STOPPED_LABELS.pausedByUser).toEqual({
       label: "Paused by you",
@@ -5741,6 +5745,57 @@ describe("LOOP_STOPPED_LABELS", () => {
     for (const reason of pausedReasons) {
       expect(LOOP_STOPPED_LABELS[reason].kind).toBe("paused");
     }
+  });
+
+  test("only the three attention-required reasons carry isError=true", () => {
+    const errorReasons = [
+      "promptUnresolved",
+      "resumeFailures",
+      "contextWindowExceeded",
+    ];
+    const nonErrorReasons = [
+      "maxDuration",
+      "maxIterations",
+      "iterationSafeguard",
+      "pausedByUser",
+      "disabledByAgent",
+    ];
+    for (const reason of errorReasons) {
+      expect(LOOP_STOPPED_LABELS[reason].isError).toBe(true);
+    }
+    for (const reason of nonErrorReasons) {
+      expect(LOOP_STOPPED_LABELS[reason].isError).toBeUndefined();
+    }
+  });
+});
+
+// =============================================================================
+// isLoopErrorStop Tests
+// =============================================================================
+
+describe("isLoopErrorStop", () => {
+  test("returns true for missing-prompt / resume-failure / context-window reasons", () => {
+    expect(isLoopErrorStop("promptUnresolved")).toBe(true);
+    expect(isLoopErrorStop("resumeFailures")).toBe(true);
+    expect(isLoopErrorStop("contextWindowExceeded")).toBe(true);
+  });
+
+  test("returns false for natural terminations (maxDuration, maxIterations, iterationSafeguard)", () => {
+    expect(isLoopErrorStop("maxDuration")).toBe(false);
+    expect(isLoopErrorStop("maxIterations")).toBe(false);
+    expect(isLoopErrorStop("iterationSafeguard")).toBe(false);
+  });
+
+  test("returns false for intentional pauses (pausedByUser, disabledByAgent)", () => {
+    expect(isLoopErrorStop("pausedByUser")).toBe(false);
+    expect(isLoopErrorStop("disabledByAgent")).toBe(false);
+  });
+
+  test("returns false for empty / null / undefined / unknown reasons", () => {
+    expect(isLoopErrorStop("")).toBe(false);
+    expect(isLoopErrorStop(null)).toBe(false);
+    expect(isLoopErrorStop(undefined)).toBe(false);
+    expect(isLoopErrorStop("someFutureReason")).toBe(false);
   });
 
   // headerLoopState derivation logic
