@@ -188,6 +188,30 @@ Server-side via `filterPromptsByEnabled()` / `buildPromptEnabledContext()`. Use 
 - **Argument access**: `.Args.NAME` (missing → `""`), `Arg "NAME" "default"` (default-on-empty), `Default v fallback`.
 - **String utilities**: `Trim`, `Lower`, `Upper`, `Contains`, `HasPrefix`, `HasSuffix`, `Join(sep, elems)`.
 
+### Nested prompt parameters (`type: prompts`)
+
+Pattern origin: epic `mitto-47y` — Phase A `mitto-47y.1` shipped the backend two-pass sub-render helpers, Phase B `mitto-47y.2` shipped the frontend PromptParameterDialog collection path, Phase C `mitto-47y.3` shipped `remember:folder` persistence for inner args, Phase D `mitto-47y.4` shipped the missing-`_Args` dispatch WARN.
+
+**Decision guide — `PromptText` vs `PromptTextWithArgs`**:
+
+- Use **`PromptText "<name>"`** when the referenced prompt is **argument-free** (or when you deliberately want unsubstituted `{{ .Args.X }}` placeholders to surface as literal text in the composed output). Verbatim inline; no sub-render; no fresh `.Args` scope. Cheapest option — prefer it whenever the composed prompt has no `parameters:` of its own.
+- Use **`PromptTextWithArgs "<name>" <argsMap>`** when the referenced prompt **has parameters** (declares `parameters:` and reads them via `{{ .Args.X }}`) and you want those placeholders resolved. The helper fetches the body and **sub-renders** it against a fresh `.Args` scope built from `<argsMap>` (a `map[string]string`) — so the inner `{{ .Args.X }}` reads from the caller-supplied map, not the outer render's `.Args`.
+
+**Wire format for `type: prompts` fields**: a picker parameter named `Prompt` emits two entries into the outer `.Args` at dispatch:
+
+- `.Args.Prompt` — the picked prompt's **name** (string).
+- `.Args.Prompt_Args` — a **JSON-encoded** `map[string]string` of the inner prompt's parameter values, decoded on the render side via `ArgsMap "Prompt_Args"` (empty/absent → empty non-nil map; malformed JSON → fail-closed).
+
+Typical composition (inside the outer prompt's body):
+
+```gotemplate
+{{ PromptTextWithArgs .Args.Prompt (ArgsMap "Prompt_Args") }}
+```
+
+**Backend recursion cap**: sub-renders are capped at **depth 3** and **fail-closed** on overflow — cycles or accidental deep nesting are rejected at render time, not silently truncated. Sub-renders also do not attach `{{ template "_shared/..." }}` fragments (Phase-A limitation).
+
+**v1 frontend depth limit**: the PromptParameterDialog (`mitto-47y.2`) **does not recurse into an inner `type: prompts` picker**. When the picked prompt itself declares a `type: prompts` parameter, the dialog renders that inner field as a **disabled "nested prompt pickers are not supported here" note** (Phase B item 2 guard) rather than opening a second dialog level. Raising this UI depth is tracked as `mitto-47y.6.1` (under the v2 tracking epic `mitto-47y.6`). Backend depth remains 3; the constraint here is purely the collection UI.
+
 **Beads gating (`BeadsCount` / `HasBeads`)**: query the workspace's `bd` (beads) DB from CEL AND Go templates. Both accept two comma-separated string args — `labels` (ALL match) and `statuses` (ANY match) — and run `bd list -l <labels> --status <statuses> --all --json` in `Workspace.Folder` (5s timeout, 5s in-memory cache). **Fail-open**: missing `bd`, non-zero exit, unparseable JSON, or timeout returns a positive sentinel (count=1 / true) so gated prompts are never wrongly hidden; a legitimate `[]` returns 0/false. Always short-circuit with cheap gates first so `bd` isn't exec'd when there's no DB: `CommandExists("bd") && DirExists(".beads") && HasBeads("support-question", "open,in_progress")`. Shared pure-Go helper (`beadsCount` in `internal/config/templatefuncs.go`) is the single source of truth for both surfaces — the CEL macros (`beadsCountMacro`, `hasBeadsMacro`) auto-inject `Workspace.Folder`.
 
 **Per-conversation user data (`UserData`)**: exposed as a `map[string]string` in both the template context (`{{ UserData "NAME" }}` / `{{ index .UserData "NAME" }}`) and CEL (`UserData["NAME"]` / `"NAME" in UserData`), built from the same conversation attributes that back `Session.UserDataJSON`. Wired exactly like `Args` (struct field + `cel.Variable` + `buildActivation` normalization + template func), but populated at **both** menu time (`buildPromptEnabledContext`) and send time (`buildProcessorInput`) — the parity invariant — so menu gating and body rendering agree. Use it for set-if-unset, else-do-Y flows; the opaque `UserDataJSON` blob cannot drive a per-field conditional.
