@@ -678,6 +678,113 @@ func TestBuildTemplateFuncMap_StringUtils(t *testing.T) {
 	}
 }
 
+// TestBuildTemplateFuncMap_DirEdgeCases pins the behaviour of Dir on path
+// shapes a prompt author can realistically hit (absolute, backslash, trailing
+// slash, ".." segments) and — where relevant — how the derived path composes
+// with FileExists / ReadFile. These are regression pins for mitto-qv2: no
+// behavioural change is intended, but a future refactor of Dir, readFile's
+// containment check, or the FileExists jail must not silently weaken these
+// interactions.
+func TestBuildTemplateFuncMap_DirEdgeCases(t *testing.T) {
+	// Shared workspace with a small on-disk fixture: <folder>/a/b/x.md
+	dir := t.TempDir()
+	subdir := filepath.Join(dir, "a", "b")
+	if err := os.MkdirAll(subdir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(subdir, "x.md"), []byte("x body"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := &PromptEnabledContext{Workspace: WorkspaceContext{Folder: dir}}
+	fm := BuildTemplateFuncMap(ctx)
+	dirFn := fm["Dir"].(func(string) string)
+
+	// --- Direct Dir() assertions: pin path.Dir semantics on each shape. ---
+	t.Run("direct", func(t *testing.T) {
+		cases := []struct {
+			name string
+			in   string
+			want string
+		}{
+			// Absolute path: Dir returns the parent as-is; the jail is enforced
+			// downstream by ReadFile (see composition subtests below).
+			{"absolute", "/etc/passwd", "/etc"},
+			// Backslash path: path.Dir treats "\" as a literal on all platforms
+			// (workspace paths are documented as forward-slash), so a
+			// Windows-authored path silently degrades to ".". This is a
+			// decision, not an accident — pin it.
+			{"backslash", `a\b\x.md`, "."},
+			// Trailing-slash shapes that composed printf paths rely on.
+			{"trailing_slash_nested", "a/b/", "a/b"},
+			{"trailing_slash_shallow", "a/", "a"},
+			{"root", "/", "/"},
+			// ".." segment: Dir preserves it; the jail rejection happens in
+			// ReadFile (see composition subtests below).
+			{"parent_segment", "../x.md", ".."},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				if got := dirFn(tc.in); got != tc.want {
+					t.Errorf("Dir(%q) = %q, want %q", tc.in, got, tc.want)
+				}
+			})
+		}
+	})
+
+	// --- Composition assertions: ReadFile must reject unsafe derived paths. ---
+	// FileExists (via evaluator.statResolved) does NOT reject absolute paths,
+	// so we do not assert on its output here — the security-relevant contract
+	// is that ReadFile's jail holds, so a runaway "%s/leaf.md" template cannot
+	// exfiltrate arbitrary files even when Dir happily returns "/etc" or "..".
+	t.Run("readfile_rejects_absolute_derived", func(t *testing.T) {
+		body := `{{ ReadFile (printf "%s/passwd" (Dir .Args.Test)) }}`
+		ctx2 := &PromptEnabledContext{
+			Workspace: WorkspaceContext{Folder: dir},
+			Args:      map[string]string{"Test": "/etc/passwd"},
+		}
+		got, err := RenderPromptTemplate("t", body, ctx2, BuildTemplateFuncMap(ctx2))
+		if err != nil {
+			t.Fatalf("render: %v", err)
+		}
+		if got != "" {
+			t.Errorf("ReadFile of absolute-derived path = %q, want %q", got, "")
+		}
+	})
+
+	t.Run("readfile_rejects_parent_escape_derived", func(t *testing.T) {
+		body := `{{ ReadFile (printf "%s/cleanup.md" (Dir .Args.Test)) }}`
+		ctx2 := &PromptEnabledContext{
+			Workspace: WorkspaceContext{Folder: dir},
+			Args:      map[string]string{"Test": "../x.md"},
+		}
+		got, err := RenderPromptTemplate("t", body, ctx2, BuildTemplateFuncMap(ctx2))
+		if err != nil {
+			t.Fatalf("render: %v", err)
+		}
+		if got != "" {
+			t.Errorf("ReadFile of ..-derived path = %q, want %q", got, "")
+		}
+	})
+
+	// Trailing-slash composition: Dir("a/b/") = "a/b", so the derived leaf is
+	// a normal in-workspace path and ReadFile should return the fixture body.
+	t.Run("readfile_trailing_slash_composes", func(t *testing.T) {
+		body := `{{ ReadFile (printf "%s/x.md" (Dir .Args.Test)) }}`
+		ctx2 := &PromptEnabledContext{
+			Workspace: WorkspaceContext{Folder: dir},
+			Args:      map[string]string{"Test": "a/b/"},
+		}
+		got, err := RenderPromptTemplate("t", body, ctx2, BuildTemplateFuncMap(ctx2))
+		if err != nil {
+			t.Fatalf("render: %v", err)
+		}
+		if want := "x body"; got != want {
+			t.Errorf("ReadFile of trailing-slash-derived path = %q, want %q", got, want)
+		}
+	})
+}
+
 // TestUserData verifies the UserData template function.
 func TestUserData(t *testing.T) {
 	ctx := &PromptEnabledContext{
