@@ -90,9 +90,7 @@ prompt: |
 
   ## Step 4.5 — Reconcile inconsistencies
 
-  After Steps 3 and 4, check for a specific inconsistency: the bead is not `closed` locally but the JIRA ticket is already in a terminal status (see Guidelines "Terminal status" — the same conservative allow-list used elsewhere in this prompt). Split on the bead's local status: `open`/`in_progress`/`blocked` follow the ordinary reconciliation branch below; `deferred` follows a distinct branch that never offers a JIRA-side write, because `deferred` is a local-only scheduling label with no JIRA analogue.
-
-  **Ordinary branch — bead is `open` / `in_progress` / `blocked`, JIRA is terminal.**
+  After Steps 3 and 4, check for a specific inconsistency: the bead is `open`, `in_progress`, or `blocked` locally but the JIRA ticket is already in a terminal status (see Guidelines "Terminal status" — the same conservative allow-list used elsewhere in this prompt).
 
   **Interactive mode** — present a `mitto_ui_options` prompt with question `"Bead <beadId> is open locally but JIRA <KEY> is already \"<status>\". How should we reconcile?"` and these options (labels exactly as shown):
 
@@ -103,17 +101,6 @@ prompt: |
   Set `allow_free_text: true` with placeholder `"Type a note for the summary row"`. Apply the chosen action, then add a row to the Step 5 summary table with `↔️ reconciled: <action>` in the "Change / notes" column (or `⚠️ inconsistency (left as-is): <status>` when the user chose "Leave as-is" or entered free text).
 
   **Silent mode** — never prompt, never write. Record the inconsistency for Step 5's table with `⚠️ Inconsistency: bead open locally but JIRA is "<status>" — deferred to next interactive run.`, and let Step 5 emit the `mitto_ui_notify` (only when the table has at least one non-trivial row).
-
-  **Deferred branch — bead is `deferred`, JIRA is terminal.** The bead is parked locally (a scheduling decision) but JIRA has already reached a terminal status. `deferred` is a local-only status with no JIRA analogue, so the "Reopen the JIRA ticket" option is **not offered** here — that would push a JIRA write derived from a purely local scheduling choice and violate the invariant.
-
-  **Interactive mode** — present a `mitto_ui_options` prompt with question `"Bead <beadId> is deferred locally but JIRA <KEY> is already \"<status>\". How should we reconcile?"` and these options (labels exactly as shown):
-
-  - `"Close the local bead too"` — description: `"Run 'bd close <beadId> --reason \"Closed in JIRA (<status>)\"'."`
-  - `"Leave deferred"` — description: `"Do nothing on either side; deferred is a local-only status."` (safe default — no JIRA write.)
-
-  Set `allow_free_text: true` with placeholder `"Type a note for the summary row"`. Apply the chosen action, then add a row to the Step 5 summary table with `↔️ reconciled: <action>` (or `⚠️ inconsistency (left as-is): <status>` when the user chose "Leave deferred" or entered free text).
-
-  **Silent mode** — never prompt, never write. Record the inconsistency for Step 5's table with `⚠️ Inconsistency: bead deferred locally but JIRA is "<status>" — deferred to next interactive run.`, and let Step 5 emit the `mitto_ui_notify` (only when the table has at least one non-trivial row).
 
   ## Step 5 — Summary
 
@@ -139,7 +126,7 @@ prompt: |
 
   ## Guidelines
 
-  - **`deferred` is local-only** (deferred is local-only — never translated to JIRA-side actions): a bead in `deferred` status must never cause a JIRA-side write (no transition, no `[mitto]` close-comment, no reopen). Push transitions fire only on `bead.status == "closed"`. Reconciliation dialogs may surface a `deferred` bead when JIRA is terminal (interactive mode only, via Step 4.5's deferred branch), but even then the safe "Leave deferred" option performs no JIRA write, and in silent mode the bead is always deferred to the next interactive run.
+  - **`deferred` is a local work-planning flag, orthogonal to JIRA sync.** Whether a bead syncs with JIRA is controlled by the `jira-sync` label alone. `deferred` says only "we are not working on this locally right now" — it does NOT gate pull, push, body refresh, comment mirroring, auto-close-on-JIRA-terminal, or any other sync behaviour. `deferred` never translates to a JIRA-side write (no transition to "Blocked" or similar). Push transitions fire on `bead.status == "closed"` and only on `closed`.
   - **Idempotent**: `metadata.jira_pushed_status` skips already-transitioned beads; `metadata.jira_pushed_comments` prevents re-pushing the same beads comment. Running this prompt twice in a row must produce no spurious JIRA writes.
   - **Loop-safe**: `[jira]`-prefixed beads comments are **never** pushed to JIRA; `[mitto]`-prefixed JIRA comments still come back through pull but are dedup-tracked by `jira_synced_comments`, so the round-trip never duplicates.
   - **Push safety**: on any transition or comment permission/auth failure, record it in the run summary and move on — do not retry against a permission wall. Never edit or delete existing JIRA content; this prompt only **adds** (a new comment) or **transitions** (status only).
