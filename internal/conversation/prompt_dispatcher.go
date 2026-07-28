@@ -1372,7 +1372,10 @@ func (p promptDispatcher) handlePromptError(
 	//   conversation — stop the queue.
 	// Rate-limit: the API will reject the next message too — stop the queue;
 	//   the keepalive-driven TryProcessQueuedMessage will retry once the session is idle.
-	if !mittoAcp.IsContextTooLargeError(err) && !mittoAcp.IsRateLimitError(err) {
+	// Auth error (mitto-r5o): upstream CLI's session token has expired — every queued
+	//   message will hit the same "Authentication required" until the user re-authenticates
+	//   the CLI. Stop the queue.
+	if !mittoAcp.IsContextTooLargeError(err) && !mittoAcp.IsRateLimitError(err) && !mittoAcp.IsAuthError(err) {
 		// Apply any config changes deferred during this turn before
 		// dispatching the next queued message.
 		d.pdFlushPendingConfig()

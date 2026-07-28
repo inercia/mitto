@@ -3216,6 +3216,20 @@ func TestFormatACPError(t *testing.T) {
 			errMsg:   "too many requests",
 			contains: "Rate limit reached",
 		},
+		// --- Authentication required (mitto-r5o) ---
+		{
+			// Claude Code surfaces expired Anthropic OAuth token as JSON-RPC -32000
+			// with message "Authentication required". FormatACPError must produce an
+			// actionable hint pointing to `claude auth login` / `auggie auth login`.
+			name:     "Claude Code -32000 auth required",
+			errMsg:   `{"code":-32000,"message":"Authentication required"}`,
+			contains: "authentication has expired",
+		},
+		{
+			name:     "authentication required lowercase phrase",
+			errMsg:   "authentication required",
+			contains: "authentication has expired",
+		},
 		{
 			name:     "generic internal error with details",
 			errMsg:   `{"code":-32603,"message":"Internal error","data":{"details":"something went wrong"}}`,

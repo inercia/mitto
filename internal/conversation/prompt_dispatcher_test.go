@@ -2714,6 +2714,24 @@ func TestPromptDispatcher_HandlePromptError_ContextTooLargeError_QueueNotAdvance
 	}
 }
 
+// mitto-r5o: Authentication-required errors from the upstream CLI (e.g. Claude
+// Code's -32000 "Authentication required" when the OAuth token expires) must
+// NOT advance the queue — every queued message will hit the same failure until
+// the user re-authenticates, so cascading them just spams identical errors.
+func TestPromptDispatcher_HandlePromptError_AuthError_QueueNotAdvanced(t *testing.T) {
+	p := promptDispatcher{}
+	d := newFakePromptDeps()
+	d.acpDead = false
+
+	authErr := &fakeAuthError{}
+	autoRetried := false
+	p.handlePromptError(d, authErr, &autoRetried, 0, false)
+
+	if d.processNextCalled != 0 {
+		t.Fatalf("expected no queue advance for auth error, got %d", d.processNextCalled)
+	}
+}
+
 // containsSubstring is a simple helper to avoid importing strings in test.
 func containsSubstring(s, sub string) bool {
 	for i := 0; i <= len(s)-len(sub); i++ {
@@ -2735,6 +2753,15 @@ func (e *fakeRateLimitError) Error() string { return "rate_limit_error: too many
 type fakeContextTooLargeError struct{}
 
 func (e *fakeContextTooLargeError) Error() string { return "context_length_exceeded: 413" }
+
+// fakeAuthError mimics the shape IsAuthError checks (mitto-r5o). The predicate
+// matches "authentication required" case-insensitively — same JSON-RPC -32000
+// payload Claude Code emits when the Anthropic OAuth token expires.
+type fakeAuthError struct{}
+
+func (e *fakeAuthError) Error() string {
+	return `{"code":-32000,"message":"Authentication required"}`
+}
 
 // --- mitto-pchx.3: prompt-arg cache merge + write-back tests ---
 

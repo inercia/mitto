@@ -375,6 +375,20 @@ func IsRateLimitError(err error) bool {
 	return strings.Contains(errMsgLower, "rate limit") || strings.Contains(errMsgLower, "too many requests")
 }
 
+// IsAuthError returns true if the error indicates the upstream CLI's
+// authentication has expired or the user is not logged in. Claude Code
+// surfaces this as JSON-RPC `-32000 "Authentication required"` when its
+// Anthropic OAuth token has expired mid-conversation; the ACP process is
+// still alive, so a restart won't help — the user must re-authenticate the
+// CLI. Callers (handlePromptError) use this to stop queue advancement so
+// every queued message doesn't cascade the same failure (mitto-r5o).
+func IsAuthError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "authentication required")
+}
+
 // FormatACPError transforms ACP errors into user-friendly messages.
 // It detects common error patterns and provides actionable guidance.
 func FormatACPError(err error) string {
@@ -431,6 +445,15 @@ func FormatACPError(err error) string {
 	// Rate limiting
 	if IsRateLimitError(err) {
 		return "Rate limit reached. Please wait a moment before sending another message."
+	}
+
+	// Authentication required (mitto-r5o) — upstream CLI's session token has
+	// expired or the user is not logged in. The ACP agent process is still
+	// alive; restarting won't help. User needs to re-authenticate the CLI.
+	if IsAuthError(err) {
+		return "🔐 The AI agent's authentication has expired. " +
+			"Please re-authenticate the CLI in a terminal (e.g. `claude auth login` " +
+			"for Claude Code, or `auggie auth login` for Auggie), then send your message again."
 	}
 
 	// JSON-RPC internal error (-32603) — try to extract HTTP status for better messages.

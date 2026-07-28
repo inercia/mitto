@@ -349,6 +349,64 @@ func TestBackoffDelay(t *testing.T) {
 	})
 }
 
+// TestIsAuthError verifies the predicate used by handlePromptError to stop
+// queue advancement when the upstream CLI's authentication has expired
+// (mitto-r5o). Match is case-insensitive on "authentication required".
+func TestIsAuthError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{
+			name: "nil error",
+			err:  nil,
+			want: false,
+		},
+		{
+			name: "Claude Code -32000 payload",
+			err:  fmt.Errorf(`{"code":-32000,"message":"Authentication required"}`),
+			want: true,
+		},
+		{
+			name: "lowercase phrase",
+			err:  fmt.Errorf("authentication required"),
+			want: true,
+		},
+		{
+			name: "mixed case phrase",
+			err:  fmt.Errorf("Authentication Required"),
+			want: true,
+		},
+		{
+			name: "wrapped in ACPClassifiedError",
+			err: &ACPClassifiedError{
+				Class:         ACPErrorTransient,
+				OriginalError: fmt.Errorf(`{"code":-32000,"message":"Authentication required"}`),
+			},
+			want: true,
+		},
+		{
+			name: "unrelated error",
+			err:  fmt.Errorf("some other failure"),
+			want: false,
+		},
+		{
+			name: "bare -32000 without auth phrase does not match",
+			err:  fmt.Errorf(`{"code":-32000,"message":"Some unrelated server error"}`),
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsAuthError(tt.err); got != tt.want {
+				t.Errorf("IsAuthError(%v) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
+	}
+}
+
 // TestIsMCPInitTimeout verifies the predicate used by the auto-resume paths to
 // carve out the transient cold-start MCP-init timeout from the hard failure
 // counter (mitto-54k.6).
