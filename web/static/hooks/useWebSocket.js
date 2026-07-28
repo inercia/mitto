@@ -2864,6 +2864,16 @@ export function useWebSocket({
         isActive: !s.archived,
         isWaitingForChildren: s.is_waiting_for_children || false,
         isStreaming: s.is_streaming || false,
+        // Server-persisted UI-prompt state — restores the sidebar "?"
+        // indicator (and any prior server-side dismissal) across a full
+        // page reload before any live WebSocket broadcast arrives.
+        isWaitingForUserInput: s.is_waiting_for_user_input || false,
+        acked_ui_prompt_request_id: s.acked_ui_prompt_request_id || null,
+        // Server-persisted loop-error dismissal — mirrors loop_stopped_reason
+        // symmetry so the amber warning icon respects an earlier ack across
+        // reloads and connected browsers.
+        loop_acknowledged_stopped_reason:
+          s.loop_acknowledged_stopped_reason || null,
       }));
       setStoredSessions(mapped);
       return mapped;
@@ -3399,15 +3409,27 @@ export function useWebSocket({
 
       case "session_ui_prompt":
         // Update session waiting-for-user-input state
-        // This is broadcast when a session starts/stops blocking on a UI prompt
+        // This is broadcast when a session starts/stops blocking on a UI prompt,
+        // OR when a user acknowledges (dismisses) the sidebar "?" indicator for
+        // the currently-active prompt. The acked_request_id field is present in
+        // the latter case; when isWaiting flips false the ack is cleared so a
+        // future prompt re-surfaces the indicator.
         console.log(
-          `[global] Session UI prompt state changed: ${msg.data.session_id} -> ${msg.data.is_waiting}`,
+          `[global] Session UI prompt state changed: ${msg.data.session_id} -> ${msg.data.is_waiting}${msg.data.acked_request_id ? ` (acked=${msg.data.acked_request_id})` : ""}`,
         );
         // Update in stored sessions (for sidebar display)
         setStoredSessions((prev) =>
           prev.map((s) =>
             s.session_id === msg.data.session_id
-              ? { ...s, isWaitingForUserInput: msg.data.is_waiting }
+              ? {
+                  ...s,
+                  isWaitingForUserInput: msg.data.is_waiting,
+                  acked_ui_prompt_request_id: msg.data.is_waiting
+                    ? msg.data.acked_request_id ||
+                      s.acked_ui_prompt_request_id ||
+                      null
+                    : null,
+                }
               : s,
           ),
         );
@@ -3420,6 +3442,11 @@ export function useWebSocket({
             [msg.data.session_id]: {
               ...session,
               isWaitingForUserInput: msg.data.is_waiting,
+              acked_ui_prompt_request_id: msg.data.is_waiting
+                ? msg.data.acked_request_id ||
+                  session.acked_ui_prompt_request_id ||
+                  null
+                : null,
             },
           };
         });
@@ -3472,6 +3499,8 @@ export function useWebSocket({
                   loop_iteration_count: msg.data.iteration_count ?? null,
                   loop_max_iterations: msg.data.max_iterations ?? null,
                   loop_stopped_reason: msg.data.loop_stopped_reason || null,
+                  loop_acknowledged_stopped_reason:
+                    msg.data.loop_acknowledged_stopped_reason || null,
                   loop_trigger: msg.data.trigger ?? null,
                   loop_delay_seconds: msg.data.delay_seconds ?? null,
                   loop_max_duration_seconds:
@@ -3499,6 +3528,8 @@ export function useWebSocket({
                 loop_iteration_count: msg.data.iteration_count ?? null,
                 loop_max_iterations: msg.data.max_iterations ?? null,
                 loop_stopped_reason: msg.data.loop_stopped_reason || null,
+                loop_acknowledged_stopped_reason:
+                  msg.data.loop_acknowledged_stopped_reason || null,
                 loop_trigger: msg.data.trigger ?? null,
                 loop_delay_seconds: msg.data.delay_seconds ?? null,
                 loop_max_duration_seconds:

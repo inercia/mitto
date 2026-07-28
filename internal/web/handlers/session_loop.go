@@ -138,6 +138,14 @@ func (h *Handlers) HandleSessionLoop(w http.ResponseWriter, r *http.Request, ses
 		return
 	}
 
+	// Handle acknowledge-stopped-reason sub-path — records the user's
+	// dismissal of the current StoppedReason so the sidebar warning icon
+	// disappears in every connected browser and survives page reloads.
+	if subPath == "acknowledge-stopped-reason" {
+		h.handleAcknowledgeLoopStoppedReason(w, r, sessionID, loopStore)
+		return
+	}
+
 	switch r.Method {
 	case http.MethodGet:
 		h.handleGetLoop(w, loopStore)
@@ -185,4 +193,34 @@ func (h *Handlers) broadcastLoop(sessionID string, updated *session.LoopPrompt) 
 	if h.deps.BroadcastLoopUpdated != nil {
 		h.deps.BroadcastLoopUpdated(sessionID, updated)
 	}
+}
+
+// handleAcknowledgeLoopStoppedReason handles POST /api/sessions/{id}/loop/acknowledge-stopped-reason.
+// Records the user's dismissal of the current StoppedReason so the sidebar
+// warning icon disappears in every connected browser and survives page reloads.
+// No-op (200 OK, no broadcast) when the loop has no StoppedReason or the
+// current reason is already acknowledged.
+func (h *Handlers) handleAcknowledgeLoopStoppedReason(w http.ResponseWriter, r *http.Request, sessionID string, ps *session.LoopStore) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+
+	updated, changed, err := ps.AcknowledgeStoppedReason()
+	if err != nil {
+		if err == session.ErrLoopNotFound {
+			writeErrorJSON(w, http.StatusNotFound, "", "No loop prompt configured")
+			return
+		}
+		if h.deps.Logger != nil {
+			h.deps.Logger.Error("Failed to acknowledge loop stopped reason", "error", err, "session_id", sessionID)
+		}
+		writeErrorJSON(w, http.StatusInternalServerError, "", "Failed to acknowledge loop stopped reason")
+		return
+	}
+
+	if changed {
+		h.broadcastLoop(sessionID, updated)
+	}
+	writeJSONOK(w, updated)
 }

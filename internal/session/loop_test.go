@@ -1256,6 +1256,155 @@ func TestLoopStore_MarkStopped_NotFound(t *testing.T) {
 	}
 }
 
+// --- AcknowledgeStoppedReason tests ---
+
+func TestLoopStore_AcknowledgeStoppedReason_SetsAndPersists(t *testing.T) {
+	dir := t.TempDir()
+	ps := NewLoopStore(dir)
+
+	if err := ps.Set(&LoopPrompt{
+		Prompt:    "Test",
+		Frequency: Frequency{Value: 1, Unit: FrequencyHours},
+		Enabled:   true,
+	}); err != nil {
+		t.Fatalf("Set() error = %v", err)
+	}
+	if err := ps.MarkStopped(StoppedReasonPromptUnresolved); err != nil {
+		t.Fatalf("MarkStopped() error = %v", err)
+	}
+
+	got, changed, err := ps.AcknowledgeStoppedReason()
+	if err != nil {
+		t.Fatalf("AcknowledgeStoppedReason() error = %v", err)
+	}
+	if !changed {
+		t.Error("AcknowledgeStoppedReason() should report changed=true on first ack")
+	}
+	if got.AcknowledgedStoppedReason != StoppedReasonPromptUnresolved {
+		t.Errorf("AcknowledgedStoppedReason = %q, want %q",
+			got.AcknowledgedStoppedReason, StoppedReasonPromptUnresolved)
+	}
+
+	// Persists across a re-read.
+	got, err = ps.Get()
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if got.AcknowledgedStoppedReason != StoppedReasonPromptUnresolved {
+		t.Errorf("AcknowledgedStoppedReason after re-read = %q, want %q",
+			got.AcknowledgedStoppedReason, StoppedReasonPromptUnresolved)
+	}
+}
+
+func TestLoopStore_AcknowledgeStoppedReason_IdempotentNoBroadcast(t *testing.T) {
+	dir := t.TempDir()
+	ps := NewLoopStore(dir)
+
+	if err := ps.Set(&LoopPrompt{
+		Prompt:    "Test",
+		Frequency: Frequency{Value: 1, Unit: FrequencyHours},
+		Enabled:   true,
+	}); err != nil {
+		t.Fatalf("Set() error = %v", err)
+	}
+	if err := ps.MarkStopped(StoppedReasonResumeFailures); err != nil {
+		t.Fatalf("MarkStopped() error = %v", err)
+	}
+	if _, changed, err := ps.AcknowledgeStoppedReason(); err != nil || !changed {
+		t.Fatalf("first ack: changed=%v err=%v", changed, err)
+	}
+	// Second call must report changed=false so the handler does not
+	// re-broadcast.
+	if _, changed, err := ps.AcknowledgeStoppedReason(); err != nil || changed {
+		t.Errorf("second ack: changed=%v err=%v; want changed=false, err=nil", changed, err)
+	}
+}
+
+func TestLoopStore_AcknowledgeStoppedReason_NoStoppedReason(t *testing.T) {
+	dir := t.TempDir()
+	ps := NewLoopStore(dir)
+
+	if err := ps.Set(&LoopPrompt{
+		Prompt:    "Test",
+		Frequency: Frequency{Value: 1, Unit: FrequencyHours},
+		Enabled:   true,
+	}); err != nil {
+		t.Fatalf("Set() error = %v", err)
+	}
+	// No MarkStopped -> ack is a no-op.
+	got, changed, err := ps.AcknowledgeStoppedReason()
+	if err != nil {
+		t.Fatalf("AcknowledgeStoppedReason() error = %v", err)
+	}
+	if changed {
+		t.Error("AcknowledgeStoppedReason() with no StoppedReason should report changed=false")
+	}
+	if got.AcknowledgedStoppedReason != "" {
+		t.Errorf("AcknowledgedStoppedReason should stay empty, got %q", got.AcknowledgedStoppedReason)
+	}
+}
+
+func TestLoopStore_MarkStopped_ClearsAckWhenReasonChanges(t *testing.T) {
+	dir := t.TempDir()
+	ps := NewLoopStore(dir)
+
+	if err := ps.Set(&LoopPrompt{
+		Prompt:    "Test",
+		Frequency: Frequency{Value: 1, Unit: FrequencyHours},
+		Enabled:   true,
+	}); err != nil {
+		t.Fatalf("Set() error = %v", err)
+	}
+	if err := ps.MarkStopped(StoppedReasonPromptUnresolved); err != nil {
+		t.Fatalf("MarkStopped() error = %v", err)
+	}
+	if _, _, err := ps.AcknowledgeStoppedReason(); err != nil {
+		t.Fatalf("AcknowledgeStoppedReason() error = %v", err)
+	}
+	// A new, DIFFERENT stopped reason must invalidate the prior ack.
+	if err := ps.MarkStopped(StoppedReasonResumeFailures); err != nil {
+		t.Fatalf("MarkStopped(second) error = %v", err)
+	}
+	got, err := ps.Get()
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if got.AcknowledgedStoppedReason != "" {
+		t.Errorf("AcknowledgedStoppedReason should be cleared, got %q", got.AcknowledgedStoppedReason)
+	}
+}
+
+func TestLoopStore_Update_EnableTrue_ClearsAck(t *testing.T) {
+	dir := t.TempDir()
+	ps := NewLoopStore(dir)
+
+	if err := ps.Set(&LoopPrompt{
+		Prompt:    "Test",
+		Frequency: Frequency{Value: 1, Unit: FrequencyHours},
+		Enabled:   true,
+	}); err != nil {
+		t.Fatalf("Set() error = %v", err)
+	}
+	if err := ps.MarkStopped(StoppedReasonPromptUnresolved); err != nil {
+		t.Fatalf("MarkStopped() error = %v", err)
+	}
+	if _, _, err := ps.AcknowledgeStoppedReason(); err != nil {
+		t.Fatalf("AcknowledgeStoppedReason() error = %v", err)
+	}
+	enabled := true
+	if err := ps.Update(nil, nil, nil, &enabled, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
+		t.Fatalf("Update(enabled=true) error = %v", err)
+	}
+	got, err := ps.Get()
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if got.AcknowledgedStoppedReason != "" {
+		t.Errorf("AcknowledgedStoppedReason should be cleared after re-enable, got %q",
+			got.AcknowledgedStoppedReason)
+	}
+}
+
 func TestLoopStore_Update_EnableTrue_ClearsStoppedState(t *testing.T) {
 	dir := t.TempDir()
 	ps := NewLoopStore(dir)

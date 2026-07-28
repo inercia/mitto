@@ -31,8 +31,23 @@ type SessionListResponse struct {
 	// IsStreaming is true when the session is currently prompting (agent streaming).
 	// This is a runtime state (not persisted) tracked by the SessionManager.
 	IsStreaming bool `json:"is_streaming,omitempty"`
+	// IsWaitingForUserInput is true when the session currently has a blocking UI
+	// prompt (mitto_ui_options/mitto_ui_form/mitto_ui_textbox) awaiting a response.
+	// Runtime state (not persisted) tracked by the SessionManager. Used to
+	// restore the sidebar "?" indicator on page reload.
+	IsWaitingForUserInput bool `json:"is_waiting_for_user_input,omitempty"`
+	// AckedUIPromptRequestID is the RequestID of the currently active UI prompt
+	// that the user has dismissed from the sidebar. When it equals the active
+	// prompt's RequestID, the "?" indicator stays hidden across reloads and
+	// connected browsers. Cleared when the prompt resolves.
+	AckedUIPromptRequestID string `json:"acked_ui_prompt_request_id,omitempty"`
 	// LoopStoppedReason is the reason the loop was auto-stopped (empty when still running).
 	LoopStoppedReason string `json:"loop_stopped_reason,omitempty"`
+	// LoopAcknowledgedStoppedReason is the StoppedReason the user has dismissed
+	// (persisted server-side so the sidebar warning stays hidden across reloads
+	// and connected browsers). The UI hides the amber warning icon when this
+	// equals LoopStoppedReason.
+	LoopAcknowledgedStoppedReason string `json:"loop_acknowledged_stopped_reason,omitempty"`
 	// LoopTrigger is "schedule" or "onCompletion" (resolved via EffectiveTrigger so schedule loops
 	// always report "schedule", never the empty-string default).
 	LoopTrigger string `json:"loop_trigger,omitempty"`
@@ -99,6 +114,9 @@ func (h *Handlers) HandleListSessions(w http.ResponseWriter, r *http.Request) {
 			if loop.StoppedReason != "" {
 				response[i].LoopStoppedReason = string(loop.StoppedReason)
 			}
+			if loop.AcknowledgedStoppedReason != "" {
+				response[i].LoopAcknowledgedStoppedReason = string(loop.AcknowledgedStoppedReason)
+			}
 			// Glance fields for conversation header display.
 			response[i].LoopTrigger = string(loop.EffectiveTrigger())
 			response[i].LoopIterationCount = loop.IterationCount
@@ -113,6 +131,8 @@ func (h *Handlers) HandleListSessions(w http.ResponseWriter, r *http.Request) {
 		if h.deps.SessionManager != nil {
 			response[i].IsWaitingForChildren = h.deps.SessionManager.IsWaitingForChildren(meta.SessionID)
 			response[i].IsStreaming = h.deps.SessionManager.IsStreaming(meta.SessionID)
+			response[i].IsWaitingForUserInput = h.deps.SessionManager.IsWaitingForUserInput(meta.SessionID)
+			response[i].AckedUIPromptRequestID = h.deps.SessionManager.GetAckedUIPromptRequestID(meta.SessionID)
 		}
 	}
 

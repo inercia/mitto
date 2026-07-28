@@ -627,105 +627,113 @@ export function SessionList({
     return map;
   }, [allSessions]);
 
-  // UI-prompt (mitto_ui_*) reminder dismissal (transient, in-memory): Set of
-  // session_ids the user has focused while the session was waiting for input.
-  // A dismissed session is filtered out of visibleUIPromptMap below, so the
-  // purple ? indicator disappears on focus. The dismissal is cleared once the
-  // underlying isWaitingForUserInput goes false (prompt answered) — so a
-  // subsequent UI prompt will surface the reminder again.
-  const [dismissedUIPrompts, setDismissedUIPrompts] = useState(
-    () => new Set(),
-  );
+  // UI-prompt (mitto_ui_*) and loop-error dismissal are backend-persisted so
+  // the ack survives page reloads and syncs across every connected browser.
+  // On focus of the active session, POST an acknowledge to the server, which
+  // broadcasts session_ui_prompt (with acked_request_id) or loop_updated
+  // (with loop_acknowledged_stopped_reason). The server clears the UI-prompt
+  // ack automatically when the prompt resolves, so a fresh prompt always
+  // re-surfaces the indicator without frontend bookkeeping. Fire-and-forget:
+  // transient network errors simply mean the indicator stays until the next
+  // successful focus (the local guards below prevent request storms).
+  const acknowledgedUIPromptRef = useRef(new Map()); // sid → true (in-flight guard)
+  const acknowledgedLoopErrorRef = useRef(new Set()); // "sid|reason" ack sent
 
+  // Reset the UI-prompt in-flight guard whenever a session's waiting state
+  // toggles or its server-side ack changes, so a fresh prompt (new RequestID)
+  // triggers a new ack POST on the next focus.
   useEffect(() => {
-    if (!activeSessionId) return;
-    if (!uiPromptMap.has(activeSessionId)) return;
-    setDismissedUIPrompts((prev) => {
-      if (prev.has(activeSessionId)) return prev;
-      const next = new Set(prev);
-      next.add(activeSessionId);
-      return next;
-    });
-  }, [activeSessionId, uiPromptMap]);
-
-  useEffect(() => {
-    setDismissedUIPrompts((prev) => {
-      if (prev.size === 0) return prev;
-      let changed = false;
-      const next = new Set(prev);
-      for (const sid of prev) {
-        if (!uiPromptMap.has(sid)) {
-          next.delete(sid);
-          changed = true;
-        }
+    const g = acknowledgedUIPromptRef.current;
+    for (const sid of Array.from(g.keys())) {
+      const s = allSessions.find((x) => x.session_id === sid);
+      if (!s || !s.isWaitingForUserInput || !s.acked_ui_prompt_request_id) {
+        g.delete(sid);
       }
-      return changed ? next : prev;
-    });
-  }, [uiPromptMap]);
-
-  // Filtered UI-prompt map consumed by the sidebar tree renderers. Excludes
-  // the currently-active session (its UI prompt is already visible inline in
-  // the conversation view — the sidebar reminder is redundant and clears
-  // instantly on focus) and any session the user has previously dismissed
-  // while it was waiting for input.
-  const visibleUIPromptMap = useMemo(() => {
-    if (uiPromptMap.size === 0) return uiPromptMap;
-    const map = new Map();
-    for (const [sid, v] of uiPromptMap) {
-      if (sid === activeSessionId) continue;
-      if (dismissedUIPrompts.has(sid)) continue;
-      map.set(sid, v);
     }
-    return map;
-  }, [uiPromptMap, dismissedUIPrompts, activeSessionId]);
+  }, [allSessions]);
 
-  // Loop-error warning dismissal (transient, in-memory): Map of session_id →
-  // the loop_stopped_reason that was acknowledged when the user last focused
-  // that session. A session shows the sidebar warning icon only when its
-  // current loop_stopped_reason is an error-class reason AND does not match
-  // the dismissed one for that session. Focusing the session records the
-  // current reason so the warning disappears; if the loop is later
-  // re-enabled and errors again, the dismissal is cleared and the warning
-  // reappears (see cleanup effect below).
-  const [dismissedLoopErrors, setDismissedLoopErrors] = useState(
-    () => new Map(),
-  );
+  // Clear loop-error ack guard when the reason changes (or clears) so a new
+  // error stop after re-enable triggers a fresh ack on focus.
+  useEffect(() => {
+    const g = acknowledgedLoopErrorRef.current;
+    for (const key of Array.from(g)) {
+      const [sid, reason] = key.split("|");
+      const s = allSessions.find((x) => x.session_id === sid);
+      if (!s || s.loop_stopped_reason !== reason) {
+        g.delete(key);
+      }
+    }
+  }, [allSessions]);
 
-  // Record a dismissal when the active session has an error-class stop.
   useEffect(() => {
     if (!activeSessionId) return;
     const active = allSessions.find(
       (s) => s.session_id === activeSessionId,
     );
     if (!active) return;
-    const reason = active.loop_stopped_reason;
-    if (!isLoopErrorStop(reason)) return;
-    setDismissedLoopErrors((prev) => {
-      if (prev.get(activeSessionId) === reason) return prev;
-      const next = new Map(prev);
-      next.set(activeSessionId, reason);
-      return next;
-    });
-  }, [activeSessionId, allSessions]);
 
-  // Clear dismissals for sessions whose loop is no longer stopped with an
-  // error (e.g. the user re-enabled the loop). This way, a subsequent error
-  // stop will surface the warning again instead of being silently masked.
-  useEffect(() => {
-    setDismissedLoopErrors((prev) => {
-      if (prev.size === 0) return prev;
-      let changed = false;
-      const next = new Map(prev);
-      for (const sid of prev.keys()) {
-        const s = allSessions.find((x) => x.session_id === sid);
-        if (!s || !isLoopErrorStop(s.loop_stopped_reason)) {
-          next.delete(sid);
-          changed = true;
-        }
+    // UI-prompt ack: send when the active session is currently waiting AND
+    // the server has not yet recorded an ack for the current prompt. The
+    // real RequestID comes from the per-session activeSessions state (set
+    // by the ui_prompt WebSocket message in useWebSocket.js) — the sidebar
+    // list itself does not carry it. If the RequestID is not yet available
+    // (race: the sidebar sees isWaitingForUserInput before the per-session
+    // ws delivers ui_prompt), we skip and retry on the next render.
+    const activeUIRequestId =
+      activeSessions[activeSessionId]?.activeUIPrompt?.requestId || null;
+    if (
+      active.isWaitingForUserInput &&
+      activeUIRequestId &&
+      active.acked_ui_prompt_request_id !== activeUIRequestId &&
+      acknowledgedUIPromptRef.current.get(activeSessionId) !==
+        activeUIRequestId
+    ) {
+      acknowledgedUIPromptRef.current.set(activeSessionId, activeUIRequestId);
+      authFetch(endpoints.sessions.uiPromptAcknowledge(activeSessionId), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ request_id: activeUIRequestId }),
+      }).catch(() => {
+        acknowledgedUIPromptRef.current.delete(activeSessionId);
+      });
+    }
+
+    // Loop-error ack: send when the active session's loop stopped with an
+    // error-class reason that is not already server-acknowledged.
+    const reason = active.loop_stopped_reason;
+    if (
+      isLoopErrorStop(reason) &&
+      active.loop_acknowledged_stopped_reason !== reason
+    ) {
+      const key = `${activeSessionId}|${reason}`;
+      if (!acknowledgedLoopErrorRef.current.has(key)) {
+        acknowledgedLoopErrorRef.current.add(key);
+        authFetch(
+          endpoints.sessions.loopAcknowledgeStoppedReason(activeSessionId),
+          { method: "POST" },
+        ).catch(() => {
+          acknowledgedLoopErrorRef.current.delete(key);
+        });
       }
-      return changed ? next : prev;
-    });
-  }, [allSessions]);
+    }
+  }, [activeSessionId, allSessions, activeSessions]);
+
+  // Filtered UI-prompt map consumed by the sidebar tree renderers. Excludes
+  // the currently-active session (its UI prompt is already visible inline in
+  // the conversation view — the sidebar reminder is redundant and clears
+  // instantly on focus) and any session with a server-persisted UI-prompt
+  // acknowledgment for the current prompt.
+  const visibleUIPromptMap = useMemo(() => {
+    if (uiPromptMap.size === 0) return uiPromptMap;
+    const map = new Map();
+    for (const [sid, v] of uiPromptMap) {
+      if (sid === activeSessionId) continue;
+      const s = allSessions.find((x) => x.session_id === sid);
+      if (s && s.acked_ui_prompt_request_id) continue;
+      map.set(sid, v);
+    }
+    return map;
+  }, [uiPromptMap, activeSessionId, allSessions]);
 
   // Unified sidebar tree (mitto-1er.3): a single folder-grouped tree over ALL
   // sessions (regular + loop + archived), independent of the filter tab.
@@ -1004,12 +1012,16 @@ export function SessionList({
     // Check if this is a new session (for blink animation)
     const isNew = newSessionIds.has(session.session_id);
     // Loop-error warning: show when the loop's stopped_reason is an
-    // error-class reason AND the user hasn't focused this session with
-    // that same reason recorded. See dismissedLoopErrors above.
+    // error-class reason AND does not match the server-persisted
+    // acknowledged_stopped_reason. The ack survives page reloads and syncs
+    // across every connected browser (see AcknowledgedStoppedReason in
+    // internal/session/loop.go); re-enabling the loop clears it server-side.
     const loopStoppedReason = session.loop_stopped_reason || null;
+    const loopAckedStoppedReason =
+      session.loop_acknowledged_stopped_reason || null;
     const showLoopErrorWarning =
       isLoopErrorStop(loopStoppedReason) &&
-      dismissedLoopErrors.get(session.session_id) !== loopStoppedReason;
+      loopAckedStoppedReason !== loopStoppedReason;
     const loopErrorLabel = showLoopErrorWarning
       ? LOOP_STOPPED_LABELS[loopStoppedReason]?.label || "Loop stopped: error"
       : "";

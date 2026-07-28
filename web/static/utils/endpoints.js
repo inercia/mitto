@@ -70,6 +70,10 @@ export const endpoints = {
     loop: (id) => apiUrl(`/api/sessions/${enc(id)}/loop`),
     loopRunNow: (id) => apiUrl(`/api/sessions/${enc(id)}/loop/run-now`),
     loopRestore: (id) => apiUrl(`/api/sessions/${enc(id)}/loop/restore`),
+    loopAcknowledgeStoppedReason: (id) =>
+      apiUrl(`/api/sessions/${enc(id)}/loop/acknowledge-stopped-reason`),
+    uiPromptAcknowledge: (id) =>
+      apiUrl(`/api/sessions/${enc(id)}/ui-prompt/acknowledge`),
     flush: (id) => apiUrl(`/api/sessions/${enc(id)}/flush`),
     callback: (id) => apiUrl(`/api/sessions/${enc(id)}/callback`),
     userData: (id) => apiUrl(`/api/sessions/${enc(id)}/user-data`),

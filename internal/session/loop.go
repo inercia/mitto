@@ -222,6 +222,14 @@ type LoopPrompt struct {
 	StoppedReason StoppedReason `json:"stopped_reason,omitempty"`
 	// StoppedAt is the timestamp when the loop was auto-stopped (nil when still running).
 	StoppedAt *time.Time `json:"stopped_at,omitempty"`
+	// AcknowledgedStoppedReason records the StoppedReason value the user has
+	// acknowledged (dismissed the sidebar warning for). The frontend warning
+	// icon is suppressed when AcknowledgedStoppedReason == StoppedReason and
+	// both are non-empty. Persisting this here (rather than in transient
+	// per-tab state) makes the dismissal survive page reloads and sync across
+	// all connected browsers. Cleared whenever the loop is re-enabled or the
+	// StoppedReason changes (see MarkStopped / RecordSent).
+	AcknowledgedStoppedReason StoppedReason `json:"acknowledged_stopped_reason,omitempty"`
 	// Condition is a CEL expression gating onTasks firing. Empty means fire on ANY
 	// beads/task change. Only meaningful when Trigger is onTasks.
 	Condition string `json:"condition,omitempty"`
@@ -467,6 +475,7 @@ func (ps *LoopStore) Set(p *LoopPrompt) error {
 			p.Enabled = existing.Enabled
 			p.StoppedReason = existing.StoppedReason
 			p.StoppedAt = existing.StoppedAt
+			p.AcknowledgedStoppedReason = existing.AcknowledgedStoppedReason
 		}
 	} else {
 		// Create: set created_at
@@ -509,6 +518,9 @@ func (ps *LoopStore) Update(prompt *string, promptName *string, frequency *Frequ
 		if *enabled {
 			existing.StoppedReason = ""
 			existing.StoppedAt = nil
+			// Drop any stale acknowledgment so a future error stop always
+			// surfaces the sidebar warning again.
+			existing.AcknowledgedStoppedReason = ""
 		}
 	}
 	if freshContext != nil {
@@ -749,11 +761,49 @@ func (ps *LoopStore) MarkStopped(reason StoppedReason) error {
 	existing.StoppedAt = &now
 	existing.NextScheduledAt = nil
 	existing.UpdatedAt = now
+	// Clear a stale acknowledgment when the reason changes so a *new* error
+	// stop always re-surfaces the sidebar warning even if a prior reason had
+	// been acknowledged.
+	if existing.AcknowledgedStoppedReason != reason {
+		existing.AcknowledgedStoppedReason = ""
+	}
 
 	if err := fileutil.WriteJSONAtomic(ps.loopPath(), existing, 0644); err != nil {
 		return fmt.Errorf("failed to write loop file: %w", err)
 	}
 	return nil
+}
+
+// AcknowledgeStoppedReason records that the user has acknowledged (dismissed)
+// the current StoppedReason so the sidebar warning icon disappears in every
+// connected browser. It sets AcknowledgedStoppedReason = StoppedReason and
+// updates UpdatedAt. Returns ErrLoopNotFound if no loop config exists.
+//
+// No-op (no disk write) when the loop has no StoppedReason or the current
+// StoppedReason is already acknowledged, so repeated focus events do not
+// churn disk or fire redundant broadcasts.
+func (ps *LoopStore) AcknowledgeStoppedReason() (*LoopPrompt, bool, error) {
+	ps.mu.Lock()
+	defer ps.mu.Unlock()
+
+	existing, err := ps.getUnlocked()
+	if err != nil {
+		return nil, false, err
+	}
+	if existing.StoppedReason == "" {
+		return existing, false, nil
+	}
+	if existing.AcknowledgedStoppedReason == existing.StoppedReason {
+		return existing, false, nil
+	}
+
+	existing.AcknowledgedStoppedReason = existing.StoppedReason
+	existing.UpdatedAt = time.Now().UTC()
+
+	if err := fileutil.WriteJSONAtomic(ps.loopPath(), existing, 0644); err != nil {
+		return nil, false, fmt.Errorf("failed to write loop file: %w", err)
+	}
+	return existing, true, nil
 }
 
 // getUnlocked reads the loop file without locking (caller must hold lock).

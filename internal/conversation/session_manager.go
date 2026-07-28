@@ -136,6 +136,21 @@ type SessionManager struct {
 	// the frontend can show the pulsing ring even after fetchStoredSessions() overwrites storedSessions.
 	streaming map[string]bool
 
+	// uiPromptStateMu protects waitingForUserInput and ackedUIPromptRequestIDs maps.
+	uiPromptStateMu sync.RWMutex
+	// waitingForUserInput tracks which sessions currently have a blocking UI prompt
+	// awaiting a response. Mirrors the BackgroundSession.activePrompt lifecycle via the
+	// OnUIPromptStateChanged hook. In-memory only; used to populate the session list
+	// API response so a page reload restores the sidebar "?" indicator.
+	waitingForUserInput map[string]bool
+	// ackedUIPromptRequestIDs records, per session, the RequestID of the currently
+	// active UI prompt that the user has dismissed (acknowledged) from the sidebar.
+	// Persisting this server-side (in memory) makes the "?" dismissal synchronise
+	// across all connected browsers for the lifetime of that prompt. Cleared
+	// automatically when the prompt resolves (isWaiting=false) so the next prompt
+	// re-surfaces the indicator.
+	ackedUIPromptRequestIDs map[string]string
+
 	// mcpServer is the global MCP server for session registration.
 	// Sessions register with this server to enable session-scoped MCP tools.
 	mcpServer *mcpserver.Server
@@ -244,6 +259,8 @@ func NewSessionManager(acpCommand, acpServer string, autoApprove bool, logger *s
 		planState:                 make(map[string][]PlanEntry),
 		waitingForChildren:        make(map[string]bool),
 		streaming:                 make(map[string]bool),
+		waitingForUserInput:       make(map[string]bool),
+		ackedUIPromptRequestIDs:   make(map[string]string),
 		mcpCheckedWorkspaces:      make(map[string]bool),
 		mcpToolsFetchedWorkspaces: make(map[string]bool),
 		resumeSemaphore:           make(chan struct{}, maxConcurrentSessionResumes),
@@ -299,6 +316,8 @@ func NewSessionManagerWithOptions(opts SessionManagerOptions) *SessionManager {
 		planState:                 make(map[string][]PlanEntry),
 		waitingForChildren:        make(map[string]bool),
 		streaming:                 make(map[string]bool),
+		waitingForUserInput:       make(map[string]bool),
+		ackedUIPromptRequestIDs:   make(map[string]string),
 		mcpCheckedWorkspaces:      make(map[string]bool),
 		mcpToolsFetchedWorkspaces: make(map[string]bool),
 		resumeSemaphore:           make(chan struct{}, maxConcurrentSessionResumes),
@@ -1282,6 +1301,107 @@ func (sm *SessionManager) IsStreaming(sessionID string) bool {
 	return sm.streaming[sessionID]
 }
 
+// IsWaitingForUserInput returns whether a session currently has a blocking UI
+// prompt awaiting a response. Used by the session-list API to restore the
+// sidebar "?" indicator on page reload.
+func (sm *SessionManager) IsWaitingForUserInput(sessionID string) bool {
+	sm.uiPromptStateMu.RLock()
+	defer sm.uiPromptStateMu.RUnlock()
+	return sm.waitingForUserInput[sessionID]
+}
+
+// GetAckedUIPromptRequestID returns the RequestID of the currently active
+// UI prompt the user has dismissed from the sidebar, or "" if none. The
+// caller compares it against the currently active UI prompt's RequestID to
+// decide whether to hide the "?" indicator.
+func (sm *SessionManager) GetAckedUIPromptRequestID(sessionID string) string {
+	sm.uiPromptStateMu.RLock()
+	defer sm.uiPromptStateMu.RUnlock()
+	return sm.ackedUIPromptRequestIDs[sessionID]
+}
+
+// handleUIPromptStateChanged is the shared implementation for the
+// OnUIPromptStateChanged BackgroundSession hook. It updates in-memory
+// waiting state, clears any stale acknowledgment when the prompt resolves,
+// and broadcasts session_ui_prompt to all connected clients. Kept as a
+// method so both NewSessionManager code paths (NewSessionCore / resume)
+// share identical semantics.
+func (sm *SessionManager) handleUIPromptStateChanged(sessionID string, isWaiting bool) {
+	sm.uiPromptStateMu.Lock()
+	if isWaiting {
+		sm.waitingForUserInput[sessionID] = true
+	} else {
+		delete(sm.waitingForUserInput, sessionID)
+		// A stale ack must not survive into the next prompt; clear it
+		// when the current prompt resolves so a fresh RequestID re-shows
+		// the sidebar "?" indicator.
+		delete(sm.ackedUIPromptRequestIDs, sessionID)
+	}
+	sm.uiPromptStateMu.Unlock()
+
+	sm.mu.RLock()
+	em := sm.eventsManager
+	sm.mu.RUnlock()
+	if em == nil {
+		return
+	}
+	em.Broadcast(WSMsgTypeSessionUIPrompt, map[string]interface{}{
+		"session_id": sessionID,
+		"is_waiting": isWaiting,
+	})
+}
+
+// BroadcastUIPromptAck broadcasts a session_ui_prompt message carrying an
+// acknowledgment for the currently-active UI prompt. Used by the REST
+// acknowledge endpoint so every connected browser hides its "?" indicator
+// in sync.
+func (sm *SessionManager) BroadcastUIPromptAck(sessionID, requestID string) {
+	sm.mu.RLock()
+	em := sm.eventsManager
+	sm.mu.RUnlock()
+	if em == nil {
+		return
+	}
+	em.Broadcast(WSMsgTypeSessionUIPrompt, map[string]interface{}{
+		"session_id":       sessionID,
+		"is_waiting":       true,
+		"acked_request_id": requestID,
+	})
+}
+
+// AcknowledgeUIPrompt records that the user has dismissed the sidebar "?"
+// indicator for the given RequestID. Returns true when the state changed
+// (caller may then broadcast so other browsers hide the indicator too).
+// No-op when the session is not currently waiting, when the given requestID
+// does not match the active prompt (stale request), or when the request was
+// already acknowledged.
+func (sm *SessionManager) AcknowledgeUIPrompt(sessionID, requestID string) bool {
+	if sessionID == "" || requestID == "" {
+		return false
+	}
+	// Verify the acknowledgment matches the currently active prompt so a
+	// stale client (holding an already-answered RequestID) cannot mask a
+	// fresh prompt that arrived meanwhile.
+	sm.mu.RLock()
+	bs := sm.sessions[sessionID]
+	sm.mu.RUnlock()
+	if bs == nil {
+		return false
+	}
+	active := bs.GetActiveUIPrompt()
+	if active == nil || active.RequestID != requestID {
+		return false
+	}
+
+	sm.uiPromptStateMu.Lock()
+	defer sm.uiPromptStateMu.Unlock()
+	if sm.ackedUIPromptRequestIDs[sessionID] == requestID {
+		return false
+	}
+	sm.ackedUIPromptRequestIDs[sessionID] = requestID
+	return true
+}
+
 // ConcurrentPromptingCount returns the number of sessions currently prompting
 // (their agents are actively streaming). Used by cold-start diagnostics
 // (mitto-3mv) to attribute host contention to concurrent prompt load.
@@ -1782,14 +1902,7 @@ func (sm *SessionManager) CreateSessionWithWorkspaceAndOptions(ctx context.Conte
 				})
 			}
 		},
-		OnUIPromptStateChanged: func(sessionID string, isWaiting bool) {
-			if sm.eventsManager != nil {
-				sm.eventsManager.Broadcast(WSMsgTypeSessionUIPrompt, map[string]interface{}{
-					"session_id": sessionID,
-					"is_waiting": isWaiting,
-				})
-			}
-		},
+		OnUIPromptStateChanged: sm.handleUIPromptStateChanged,
 		OnUIPromptTimeout: func(sessionID string, req UIPromptRequest, sessionName string) {
 			if sm.eventsManager != nil {
 				question := req.Question
@@ -2404,14 +2517,7 @@ func (sm *SessionManager) resumeSessionWithConstraint(sessionID, sessionName, wo
 				})
 			}
 		},
-		OnUIPromptStateChanged: func(sessionID string, isWaiting bool) {
-			if sm.eventsManager != nil {
-				sm.eventsManager.Broadcast(WSMsgTypeSessionUIPrompt, map[string]interface{}{
-					"session_id": sessionID,
-					"is_waiting": isWaiting,
-				})
-			}
-		},
+		OnUIPromptStateChanged: sm.handleUIPromptStateChanged,
 		OnUIPromptTimeout: func(sessionID string, req UIPromptRequest, sessionName string) {
 			if sm.eventsManager != nil {
 				question := req.Question

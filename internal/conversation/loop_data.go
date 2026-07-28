@@ -36,6 +36,9 @@ func BuildLoopUpdatedData(sessionID string, loop *session.LoopPrompt) map[string
 		if loop.StoppedReason != "" {
 			data["loop_stopped_reason"] = string(loop.StoppedReason)
 		}
+		if loop.AcknowledgedStoppedReason != "" {
+			data["loop_acknowledged_stopped_reason"] = string(loop.AcknowledgedStoppedReason)
+		}
 		// Glance fields for conversation header display (trigger resolved via EffectiveTrigger
 		// so schedule loops always report "schedule", not the empty-string default).
 		data["trigger"] = string(loop.EffectiveTrigger())

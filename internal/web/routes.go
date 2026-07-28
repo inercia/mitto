@@ -59,6 +59,7 @@ func (s *Server) apiRoutes(authMgr *middleware.AuthManager, csrfMgr *middleware.
 		apiRoute{pattern: "/api/sessions/{id}/queue/{msgId}/{subAction}", handler: http.HandlerFunc(s.apiHandlers.HandleSessionQueueRoute)},
 		apiRoute{pattern: "/api/sessions/{id}/loop", handler: http.HandlerFunc(s.apiHandlers.HandleSessionLoopRoute)},
 		apiRoute{pattern: "/api/sessions/{id}/loop/{subPath}", handler: http.HandlerFunc(s.apiHandlers.HandleSessionLoopRoute)},
+		apiRoute{method: "POST", pattern: "/api/sessions/{id}/ui-prompt/acknowledge", handler: http.HandlerFunc(s.apiHandlers.HandleSessionUIPromptAcknowledgeRoute)},
 		apiRoute{method: "GET", pattern: "/api/sessions/{id}/prompt-arg-cache", handler: http.HandlerFunc(s.apiHandlers.HandleSessionPromptArgCacheRoute)},
 	)
 

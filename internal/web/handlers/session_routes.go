@@ -128,6 +128,13 @@ func (h *Handlers) HandleSessionFlushRoute(w http.ResponseWriter, r *http.Reques
 	}
 }
 
+// HandleSessionUIPromptAcknowledgeRoute handles POST /api/sessions/{id}/ui-prompt/acknowledge.
+func (h *Handlers) HandleSessionUIPromptAcknowledgeRoute(w http.ResponseWriter, r *http.Request) {
+	if id, ok := sessionIDFromPath(w, r); ok {
+		h.HandleSessionUIPromptAcknowledge(w, r, id)
+	}
+}
+
 // HandleSessionPromptArgCacheRoute handles GET /api/sessions/{id}/prompt-arg-cache.
 func (h *Handlers) HandleSessionPromptArgCacheRoute(w http.ResponseWriter, r *http.Request) {
 	if id, ok := sessionIDFromPath(w, r); ok {
