@@ -977,6 +977,12 @@ parameters:
                             #   with multiLine. Empty strings and duplicate values
                             #   are rejected at load. When `default` is set it must
                             #   be one of the listed options.
+    remember: folder        # optional — persist the last submitted value and
+                            #   pre-fill the dialog next time. One of:
+                            #     "" / "never" → do not persist (default)
+                            #     "folder"     → per-workspace (per prompt + arg)
+                            #     "global"     → reserved; accepted but not stored in v1
+                            #   See "Remembering the last submitted value" below.
 ```
 
 Multiple parameters may be listed; the menu must supply all **required** ones (`required`
@@ -1163,6 +1169,44 @@ parameters:
 
 For the runtime data-flow (dispatch-time merge/write-back, the status endpoint, and the
 names-only contract), see [Argument caching](../devel/prompts.md#argument-caching).
+
+### Remembering the last submitted value (`remember` field)
+
+An optional `remember` field on any parameter persists the **most recently
+submitted value** so the parameter dialog pre-fills it the next time the same
+prompt opens. Unlike `cache`, remembered values survive across conversations
+and process restarts.
+
+```yaml
+parameters:
+  - name: TargetBranch
+    type: text
+    description: Branch to deploy to
+    remember: folder      # per-workspace: value is scoped to (prompt, workspace UUID)
+```
+
+#### Values
+
+| Value | Behavior |
+| ----- | -------- |
+| `""` / `never` | Do not persist. Default. |
+| `folder` | Persist per-workspace, keyed by workspace UUID and prompt name. The next time the same prompt opens in the same workspace, the dialog pre-fills the last submitted value. Different workspaces keep independent values. |
+| `global` | Reserved — accepted by the schema but **not stored in v1**. Behaves as `never` at runtime. |
+
+#### Rules
+
+- Values are written on dispatch (when the parameter dialog is submitted and the
+  prompt is enqueued). Failures to persist are logged and never block the enqueue.
+- Only parameters currently declared in the prompt file are surfaced back to the
+  UI — stale keys from removed parameters are filtered out on read.
+- Storage is one JSON file per workspace UUID under
+  `$MITTO_DIR/remembered-args/`, with atomic writes. A `Set()` merges into the
+  existing file so remembered values for unrelated prompts in the same
+  workspace are preserved.
+- Pre-filled values **override** any `default:` declared on the parameter — the
+  intent is "what the user last typed" wins over the prompt author's default.
+- Remembered values are workspace-scoped, not per-conversation: `cache` and
+  `remember` are independent and may coexist on the same parameter.
 
 ## Go Template Syntax in Prompts
 

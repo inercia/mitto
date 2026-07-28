@@ -233,6 +233,25 @@ parameters:
 - **Status endpoint**: `GET /api/sessions/{id}/prompt-arg-cache?prompt=<name>` returns `{ "cached": ["A","B"] }` — **names only**, never values. Empty array when nothing cached (never null). Handler: `internal/web/handlers/session_prompt_arg_cache.go`.
 - **Frontend dialog-skip** (mitto-pchx.5): before opening `PromptParameterDialog`, the frontend calls the status endpoint and subtracts cacheable+fresh params from the `missing` list (`fetchCachedParamNames` / `effectiveMissingParams` in `web/static/utils/prompts.js`). If nothing remains, it dispatches directly without showing the dialog.
 
+## Parameter Value Remembering (`remember:` field, mitto-x8v)
+
+Per-argument opt-in persistence of the last submitted value across conversations (contrast with `cache:`, which is per-conversation, in-memory, TTL-bound):
+
+```yaml
+parameters:
+  - name: SlackChannel
+    type: text
+    remember: folder    # never (default) | folder | global (reserved, no storage yet)
+```
+
+- **Scope**: `folder` persists per `(workspace UUID, prompt name, arg name)`. `global` is enum-only in v1 (no storage path).
+- **Storage**: one JSON per workspace UUID under `$MITTO_DIR/remembered-args/` (path via `appdir.RememberedArgsDir()`); atomic writes; RWMutex-guarded cache. `Store.Set()` **merges** into the existing per-workspace file so unrelated remembered args from other prompts are preserved.
+- **Package**: `internal/rememberedargs/`. Wired into handlers via `Deps` closures (mirrors `ImprovePrompt` / `GenerateAuxTitle` in `internal/web/handlers/handlers.go`) — never a direct package import.
+- **Write hook**: `handleAddToQueue` (`internal/web/handlers/queue.go`) saves best-effort (WARN + continue on failure) on every dispatch of a `remember: folder` arg.
+- **Read endpoint**: `GET /api/workspace-prompts/remembered-args?working_dir=…&prompt=…` (`workspace_prompts_remembered.go`). MUST be registered before the `/{name}` sub-route to avoid path collision.
+- **Frontend**: centralized in `web/static/components/PromptParameterDialog.js` (fetch-on-open effect merges over `initialValues`) — not replicated at the 12+ call sites. Remembered values **override** declared defaults.
+- **Schema**: `Remember` field + `RememberNever|Folder|Global` constants + `IsValidRemember` validator in `internal/prompts/prompts.go` and `param_types.go`.
+
 ### Pitfalls
 
 - `EnabledWhen` has `json:"-"` → settings override of a builtin loses `enabledWhen`. Merge logic must carry forward from lower-priority source.
