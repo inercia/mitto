@@ -34,12 +34,56 @@ prompt: |
   - If `changed == true`: use the edited plan as the approved version.
   - If `aborted == true`: ask the user what they'd like to change, revise, and present again.
 
-  Then confirm execution:
+  Then present the next-step choices. Build the options list with the entries
+  below, **including only the ones whose gating condition matches this
+  session**:
+
+  1. **Refine this plan** — always present. Selecting this returns to the
+     textbox flow above so the user can iterate on the wording.
+  2. **Execute the plan here** — always present. Selecting this means the
+     agent starts executing the plan inline, in this conversation.
+  3. **Execute the plan in a new child conversation** — include this option
+     ONLY when `{{ if not .Session.IsChild }}true{{ end }}` (i.e. this
+     conversation is not itself a child of another one). On selection, spawn
+     a fresh child with `mitto_conversation_new`:
+
+     - `initial_prompt`: the approved plan (verbatim) plus a short preamble
+       instructing the child to execute it and report progress back.
+     - `acp_server`: **pick the most appropriate ACP for the work.** Consult
+       the current session's available agents (`available_acp_servers` in
+       `mitto_conversation_get_current`) and choose based on the plan's
+       characteristics — e.g. coding-heavy work → a `Coding`-tagged agent;
+       broad reasoning / design → a `Thinking`/`Deep` agent; short cheap
+       edits → a `Fast`/`Cheap` agent. Do NOT hardcode a specific ACP; the
+       set varies per workspace. If no clear winner, keep the current ACP.
+     - `title`: a short label derived from the plan's Goal section.
+  4. **File this as a beads issue (or epic) instead** — see the fragment
+     below for the exact wording and safety rails. Include this option
+     ONLY when beads is configured in this workspace.
+  5. **Cancel** — always present. Stop without executing, spawning, or
+     filing anything.
+
+  {{ template "_shared/offer-file-as-bead" . }}
+
+  Present the menu:
 
   ```
   mitto_ui_options(self_id: "{{ .Session.ID }}",
-    question: "Plan reviewed. Proceed?",
-    options: [{label: "Execute the plan"}, {label: "Revise further"}, {label: "Cancel"}])
+    question: "Plan reviewed. What next?",
+    options: [
+      {label: "Refine this plan"},
+      {label: "Execute the plan here"},
+      {{- if not .Session.IsChild }}
+      {label: "Execute the plan in a new child conversation"},
+      {{- end }}
+      {{- if and (CommandExists "bd") (DirExists ".beads") }}
+      {label: "File this as a beads issue (or epic) instead"},
+      {{- end }}
+      {label: "Cancel"}
+    ])
   ```
 
-  **Without**: Present plan in conversation and ask for approval.
+  **Without Mitto UI**: Present the plan in conversation and offer the same
+  choices as a numbered list, applying the same gating rules (skip the child
+  conversation option in a child session; skip the beads option when
+  `bd` is unavailable).

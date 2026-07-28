@@ -1,0 +1,69 @@
+{{/*
+  offer-file-as-bead — reusable "instead of executing now, file this as a
+  beads issue (or epic)" option snippet.
+
+  The consuming prompt has just presented a plan / prioritized change list /
+  set of proposed actions and is at the "wait for user approval" step. This
+  fragment provides:
+
+    1. The prose describing the option (what it means, when it's chosen).
+    2. The exact gating condition to include in a `mitto_ui_options` list.
+    3. Post-selection guidance — single-issue vs epic, safety rails on
+       `bd close` / `bd update --claim`.
+
+  It intentionally does NOT emit the whole `mitto_ui_options` call — the
+  caller keeps ownership of the surrounding menu so it can add its own
+  approval buttons ("Approve all", "Approve selected", "Cancel", etc.).
+
+  The fragment is emitted only when `bd` and `.beads` are both present.
+  When neither is, the whole block is empty so the caller can concatenate
+  its own menu unconditionally.
+
+  Consumers: docs/propose-a-plan, code/refactor, code/optimize,
+  code/cleanup-code, code/simplify, docs/implement-spec.
+
+  Usage — parameter-less; render against the ambient
+  *PromptEnabledContext so `.Session` and the FuncMap resolve:
+
+      {{ template "_shared/offer-file-as-bead" . }}
+
+  Callers embed the resulting text right next to their approval menu. The
+  option label used inside the caller's `options: [...]` list is:
+
+      {{`{{- if and (CommandExists "bd") (DirExists ".beads") }}`}}
+      {label: "File this as a beads issue (or epic) instead"},
+      {{`{{- end }}`}}
+*/}}
+{{- if and (CommandExists "bd") (DirExists ".beads") }}
+**Optional: file this as a beads issue (or epic) instead of executing now.**
+
+Beads (`bd`) is configured in this workspace, so the proposal above can be
+tracked as a durable issue rather than executed immediately. When adding your
+approval menu, include this option **gated on `bd` availability**:
+
+```
+{{`{{- if and (CommandExists "bd") (DirExists ".beads") }}`}}
+{label: "File this as a beads issue (or epic) instead"},
+{{`{{- end }}`}}
+```
+
+If the user picks it, decide between a single issue and an epic based on the
+proposal's scope:
+
+- **Single issue** when the proposal is one tightly-scoped change — roughly
+  ≲ 3 concrete actions with a shared goal — that can be captured in one
+  `bd create` call.
+- **Epic (with one child issue per proposal item)** when the proposal spans
+  multiple independent milestones, subsystems, or would take more than a
+  working day. Create the parent epic first with `bd create --type epic`,
+  then one child issue per item under it via `bd create --parent <epic-id>`.
+
+Safety rails when filing:
+
+- Do **NOT** run `bd close` — issue closure is always the user's decision.
+- Do **NOT** claim the issue (`bd update <id> --claim`) unless the user
+  also asked to start executing it right away.
+- Preserve enough of the proposal's context (priorities, effort estimates,
+  affected files) in the issue body that someone picking it up later can
+  act on it without replaying this conversation.
+{{- end }}

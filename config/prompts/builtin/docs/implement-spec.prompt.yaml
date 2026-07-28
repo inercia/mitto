@@ -53,8 +53,10 @@ prompt: |
 
   Present plan, wait for approval.
 
-  **With Mitto UI**: `mitto_ui_options(self_id: "{{ .Session.ID }}", ...)` → "Approve and start / Modify plan"
+  **With Mitto UI**: `mitto_ui_options(self_id: "{{ .Session.ID }}", ...)` → "Approve and start / Modify plan{{ if and (CommandExists "bd") (DirExists ".beads") }} / File as beads issue{{ end }}"
   **Without**: Ask in conversation.
+
+  {{ template "_shared/offer-file-as-bead" . }}
 
   Once approved, per step: implement → write/update tests → verify → report → next.
 

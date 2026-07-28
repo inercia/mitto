@@ -39,8 +39,10 @@ prompt: |
 
   ### 3. Wait for Approval
 
-  **With Mitto UI**: `mitto_ui_options(self_id: "{{ .Session.ID }}", ...` → "Approve all / Approve selected / Investigate / Cancel"
+  **With Mitto UI**: `mitto_ui_options(self_id: "{{ .Session.ID }}", ...` → "Approve all / Approve selected / Investigate{{ if and (CommandExists "bd") (DirExists ".beads") }} / File as beads issue{{ end }} / Cancel"
   **Without**: Ask in conversation. Wait for explicit approval.
+
+  {{ template "_shared/offer-file-as-bead" . }}
 
   ### 4. Execute
 
