@@ -170,15 +170,16 @@ func (s *Server) handlePromptList(ctx context.Context, req *mcp.CallToolRequest,
 	prompts := make([]PromptInfo, 0, len(merged)) // Must be empty array, not nil — ACP validates this
 	for _, p := range merged {
 		prompts = append(prompts, PromptInfo{
-			Name:            p.Name,
-			Description:     p.Description,
-			Group:           p.Group,
-			BackgroundColor: p.BackgroundColor,
-			Icon:            p.Icon,
-			Source:          string(p.Source),
-			Enabled:         p.Enabled,
-			Loop:            p.Loop,
-			Parameters:      p.Parameters,
+			Name:                p.Name,
+			Description:         p.Description,
+			Group:               p.Group,
+			BackgroundColor:     p.BackgroundColor,
+			Icon:                p.Icon,
+			Source:              string(p.Source),
+			Enabled:             p.Enabled,
+			Loop:                p.Loop,
+			Parameters:          p.Parameters,
+			NestedPromptSchemas: buildNestedPromptSchemas(p.Parameters, merged),
 		})
 	}
 	return nil, PromptListOutput{Success: true, Prompts: prompts, WorkingDir: workingDir}, nil
@@ -202,23 +203,33 @@ func (s *Server) handlePromptGet(ctx context.Context, req *mcp.CallToolRequest, 
 		return nil, PromptGetOutput{Error: err.Error()}, nil
 	}
 
-	p, found := s.findPromptByName(workingDir, input.Name)
+	merged := s.loadMergedPrompts(workingDir)
+	var p config.WebPrompt
+	found := false
+	for _, wp := range merged {
+		if strings.EqualFold(wp.Name, input.Name) {
+			p = wp
+			found = true
+			break
+		}
+	}
 	if !found {
 		return nil, PromptGetOutput{Error: "prompt not found: " + input.Name}, nil
 	}
 	return nil, PromptGetOutput{
 		Success: true,
 		Prompt: &PromptDetail{
-			Name:            p.Name,
-			Prompt:          p.Prompt,
-			Description:     p.Description,
-			Group:           p.Group,
-			BackgroundColor: p.BackgroundColor,
-			Icon:            p.Icon,
-			Source:          string(p.Source),
-			Enabled:         p.Enabled,
-			Loop:            p.Loop,
-			Parameters:      p.Parameters,
+			Name:                p.Name,
+			Prompt:              p.Prompt,
+			Description:         p.Description,
+			Group:               p.Group,
+			BackgroundColor:     p.BackgroundColor,
+			Icon:                p.Icon,
+			Source:              string(p.Source),
+			Enabled:             p.Enabled,
+			Loop:                p.Loop,
+			Parameters:          p.Parameters,
+			NestedPromptSchemas: buildNestedPromptSchemas(p.Parameters, merged),
 		},
 	}, nil
 }

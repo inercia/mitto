@@ -215,6 +215,11 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 		initialPromptText = p.Prompt
 		originPromptName = input.PromptName
 		promptIsSingleton = p.Singleton
+		// v2 wire-shape normalization (mitto-47y.6.3): rewrite any JSON-encoded
+		// picker values in input.Arguments to the v1 sibling-key shape before
+		// the value reaches template rendering / target-title / queue. Bare v1
+		// name strings pass through untouched.
+		input.Arguments = normalizeMCPArguments(input.PromptName, input.Arguments, s.loadMergedPrompts(promptWorkingDir))
 		if p.Target != nil {
 			promptTargetTitle = p.Target.Title
 			if p.Target.Reuse != nil {
@@ -293,6 +298,8 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 		// Store the canonical name from the merged prompt so downstream consumers see
 		// a stable identifier regardless of the caller's case.
 		loopPromptName = p.Name
+		// v2 wire-shape normalization for loop arguments (mitto-47y.6.3).
+		input.LoopArguments = normalizeMCPArguments(input.LoopPromptName, input.LoopArguments, s.loadMergedPrompts(loopWorkingDir))
 	}
 
 	// Reject a suspiciously short, placeholder-shaped free-text initial_prompt

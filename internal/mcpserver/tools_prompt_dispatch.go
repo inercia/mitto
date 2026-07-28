@@ -163,11 +163,23 @@ func (s *Server) handleSendPromptToConversation(ctx context.Context, req *mcp.Ca
 		}
 	}
 
+	// v2 wire-shape normalization (mitto-47y.6.3): when the caller supplied a
+	// prompt_name, walk its declared parameters and rewrite any JSON-encoded
+	// picker values ({"name": "X", "arguments": {...}}) to the v1 sibling-key
+	// shape the dispatcher expects. Bare v1 name strings pass through untouched.
+	normalizedArgs := input.Arguments
+	if input.PromptName != "" {
+		promptWorkingDir := targetMeta.WorkingDir
+		if promptWorkingDir != "" {
+			normalizedArgs = normalizeMCPArguments(input.PromptName, input.Arguments, s.loadMergedPrompts(promptWorkingDir))
+		}
+	}
+
 	// Get the queue for the target conversation
 	queue := store.Queue(input.ConversationID)
 
 	// Add the prompt to the queue (agent origin: cross-session MCP dispatch, fail-closed on broken templates)
-	msg, err := queue.AddWithOrigin(input.Prompt, nil, nil, realSessionID, scheduledTime, 0, input.Arguments, input.PromptName, session.QueueOriginAgent)
+	msg, err := queue.AddWithOrigin(input.Prompt, nil, nil, realSessionID, scheduledTime, 0, normalizedArgs, input.PromptName, session.QueueOriginAgent)
 	if err != nil {
 		return nil, SendPromptOutput{
 			Success: false,

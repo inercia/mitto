@@ -1005,6 +1005,15 @@ type PromptInfo struct {
 	Enabled         *bool                    `json:"enabled,omitempty"`    // nil = enabled (default true)
 	Loop            *config.PromptLoop       `json:"loop,omitempty"`       // non-nil = prompt starts a loop conversation
 	Parameters      []config.PromptParameter `json:"parameters,omitempty"` // Declared typed input parameters (omitted when empty)
+	// NestedPromptSchemas advertises the inner parameter schemas addressable by
+	// each `type: prompts` picker parameter declared on this prompt (mitto-47y.6.3).
+	// Outer key = picker parameter's Name (as declared in Parameters); inner
+	// key = candidate inner-prompt name; value = that inner prompt's own
+	// Parameters slice. Clients can use this to construct typed nested
+	// arguments (v2 wire shape) instead of the legacy JSON-encoded `_Args`
+	// sibling-key string. Omitted when no picker parameters exist or none of
+	// the pickable inner prompts declare parameters.
+	NestedPromptSchemas map[string]map[string][]config.PromptParameter `json:"nested_prompt_schemas,omitempty"`
 }
 
 // PromptListOutput is the output for mitto_prompt_list tool.
@@ -1034,6 +1043,10 @@ type PromptDetail struct {
 	Enabled         *bool                    `json:"enabled,omitempty"`    // nil = enabled (default true)
 	Loop            *config.PromptLoop       `json:"loop,omitempty"`       // non-nil = prompt starts a loop conversation
 	Parameters      []config.PromptParameter `json:"parameters,omitempty"` // Declared typed input parameters (omitted when empty)
+	// NestedPromptSchemas advertises the inner parameter schemas addressable by
+	// each `type: prompts` picker parameter declared on this prompt (mitto-47y.6.3).
+	// See PromptInfo.NestedPromptSchemas for the shape and semantics.
+	NestedPromptSchemas map[string]map[string][]config.PromptParameter `json:"nested_prompt_schemas,omitempty"`
 }
 
 // PromptGetOutput is the output for mitto_prompt_get tool.
