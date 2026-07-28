@@ -11,6 +11,7 @@ export {
   buildWorkspaceViewerURL,
   openViewerUrl,
   setCurrentWorkspace,
+  setKnownWorkspaces,
   hasNativeFolderPicker,
   pickFolder,
   pickImages,

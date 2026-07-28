@@ -57,6 +57,7 @@ import {
   convertFileURLToViewer,
   convertHTTPFileURLToViewer,
   setCurrentWorkspace,
+  setKnownWorkspaces,
   pickImages,
   hasNativeImagePicker,
   isNativeApp,
@@ -1225,6 +1226,14 @@ function App() {
       setCurrentWorkspace(workingDir, workspaceUUID);
     }
   }, [sessionInfo?.working_dir, sessionInfo?.workspace_uuid]);
+
+  // Publish the known-workspaces registry so buildWorkspaceViewerURL can
+  // resolve the correct UUID for File: links in views that target a workspace
+  // other than the currently-active conversation (e.g. the beads view opened
+  // for workspace B while the active conversation is in workspace A).
+  useEffect(() => {
+    setKnownWorkspaces(workspaces || []);
+  }, [workspaces]);
 
   // Theme, font-size, and reduced-motion preferences (extracted to hooks/useTheme.js)
   const { theme, toggleTheme, fontSize, toggleFontSize } = useTheme();

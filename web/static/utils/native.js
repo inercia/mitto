@@ -224,8 +224,21 @@ export function buildWorkspaceViewerURL(href, workspacePath) {
   if (!relPath) return null;
 
   const apiPrefix = getAPIPrefix();
-  const workspaceUUID = getCurrentWorkspaceUUID();
-  const wsPath = workspacePath || getCurrentWorkspace() || "";
+  const currentWs = getCurrentWorkspace() || "";
+  const wsPath = workspacePath || currentWs;
+
+  // Resolve the workspace UUID for `wsPath`. Prefer the current-workspace UUID
+  // only when `wsPath` matches the current workspace; otherwise look up the
+  // caller-supplied `workspacePath` in the known-workspaces registry. This
+  // avoids sending the current conversation's UUID with a `path` that belongs
+  // to a *different* workspace (bug: beads view opened for workspace B while
+  // active conversation is in workspace A resolved File links against A).
+  let workspaceUUID = null;
+  if (workspacePath && workspacePath !== currentWs) {
+    workspaceUUID = lookupWorkspaceUUIDByPath(workspacePath);
+  } else {
+    workspaceUUID = getCurrentWorkspaceUUID();
+  }
 
   let url;
   if (workspaceUUID) {
@@ -446,6 +459,41 @@ export function setCurrentWorkspace(workspace, uuid) {
     window.mittoCurrentWorkspaceUUID = uuid;
     sessionStorage.setItem("mittoCurrentWorkspaceUUID", uuid);
   }
+}
+
+/**
+ * Publishes the known-workspaces registry so `buildWorkspaceViewerURL` can
+ * resolve the correct UUID for a workspace that isn't the currently-active
+ * one (e.g. clicking a "File:" link inside the beads view of workspace B
+ * while the active conversation is in workspace A).
+ * @param {Array<{uuid: string, working_dir: string}>} workspaces
+ */
+export function setKnownWorkspaces(workspaces) {
+  if (!Array.isArray(workspaces)) {
+    window.mittoKnownWorkspaces = [];
+    return;
+  }
+  // Store a lean copy — only the fields we use — to avoid retaining unrelated
+  // fields and to make debugging via devtools easier.
+  window.mittoKnownWorkspaces = workspaces
+    .filter((w) => w && w.uuid && w.working_dir)
+    .map((w) => ({ uuid: w.uuid, working_dir: w.working_dir }));
+}
+
+/**
+ * Looks up a workspace UUID by its working directory path from the
+ * known-workspaces registry published by `setKnownWorkspaces`.
+ * @param {string} workingDir - Absolute path of the workspace working dir.
+ * @returns {string|null} The workspace UUID, or null if not found.
+ */
+function lookupWorkspaceUUIDByPath(workingDir) {
+  if (!workingDir) return null;
+  const list = window.mittoKnownWorkspaces;
+  if (!Array.isArray(list) || list.length === 0) return null;
+  for (const w of list) {
+    if (w.working_dir === workingDir) return w.uuid;
+  }
+  return null;
 }
 
 // =============================================================================
