@@ -261,3 +261,121 @@ func TestWorkspaceDirs_DirWithOnlyFilesReturnsEmptyList(t *testing.T) {
 		t.Fatalf("dirs = %v, want empty (files-only dir)", got)
 	}
 }
+
+func mkDirs(t *testing.T, root string, dirs []string) {
+	t.Helper()
+	for _, d := range dirs {
+		if err := os.MkdirAll(filepath.Join(root, filepath.FromSlash(d)), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", d, err)
+		}
+	}
+}
+
+func TestWorkspaceDirs_Recursive_MatchesNested(t *testing.T) {
+	tmp := t.TempDir()
+	mkDirs(t, tmp, []string{"env-a", "sub/env-b", "sub/deep/env-c", "sub/other"})
+	w, body := doWorkspaceDirs(t, tmp, "", "%2A%2A%2Fenv-%2A") // **/env-*
+	if w.Code != http.StatusOK {
+		t.Fatalf("code = %d, want %d; body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+	got := dirsList(t, body)
+	want := []string{"env-a", "sub/deep/env-c", "sub/env-b"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("dirs = %v, want %v", got, want)
+	}
+}
+
+func TestWorkspaceDirs_Recursive_AnchoredPrefix(t *testing.T) {
+	tmp := t.TempDir()
+	mkDirs(t, tmp, []string{"deploy/env-a", "deploy/sub/env-b", "other/env-c"})
+	w, body := doWorkspaceDirs(t, tmp, "", "deploy%2F%2A%2A%2Fenv-%2A") // deploy/**/env-*
+	if w.Code != http.StatusOK {
+		t.Fatalf("code = %d, want %d", w.Code, http.StatusOK)
+	}
+	got := dirsList(t, body)
+	want := []string{"deploy/env-a", "deploy/sub/env-b"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("dirs = %v, want %v", got, want)
+	}
+}
+
+func TestWorkspaceDirs_Recursive_PrunesHeavyDirs(t *testing.T) {
+	tmp := t.TempDir()
+	mkDirs(t, tmp, []string{
+		"src/nested",
+		"node_modules/big",
+		".git/refs",
+		"vendor/x",
+		"dist/y",
+	})
+	w, body := doWorkspaceDirs(t, tmp, "", "%2A%2A") // **
+	if w.Code != http.StatusOK {
+		t.Fatalf("code = %d, want %d", w.Code, http.StatusOK)
+	}
+	got := dirsList(t, body)
+	want := []string{"src", "src/nested"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("dirs = %v, want %v (heavy/hidden dirs pruned)", got, want)
+	}
+}
+
+func TestWorkspaceDirs_Recursive_HonorsResultsCap(t *testing.T) {
+	tmp := t.TempDir()
+	dirs := make([]string, 0, workspaceDirsMaxResults+100)
+	for i := 0; i < workspaceDirsMaxResults+100; i++ {
+		dirs = append(dirs, "sub/d"+strconv.Itoa(i))
+	}
+	mkDirs(t, tmp, dirs)
+	w, body := doWorkspaceDirs(t, tmp, "", "%2A%2A%2Fd%2A") // **/d*
+	if w.Code != http.StatusOK {
+		t.Fatalf("code = %d, want %d", w.Code, http.StatusOK)
+	}
+	if got := dirsList(t, body); len(got) != workspaceDirsMaxResults {
+		t.Fatalf("len(dirs) = %d, want %d", len(got), workspaceDirsMaxResults)
+	}
+}
+
+func TestWorkspaceDirs_Recursive_DoesNotFollowSymlinks(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink permissions vary on Windows CI")
+	}
+	root := t.TempDir()
+	ws := filepath.Join(root, "ws")
+	other := filepath.Join(root, "other")
+	if err := os.MkdirAll(filepath.Join(other, "hidden"), 0o755); err != nil {
+		t.Fatalf("mkdir other: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(ws, "sub"), 0o755); err != nil {
+		t.Fatalf("mkdir ws: %v", err)
+	}
+	if err := os.Symlink(other, filepath.Join(ws, "link")); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+	w, body := doWorkspaceDirs(t, ws, "", "%2A%2A")
+	if w.Code != http.StatusOK {
+		t.Fatalf("code = %d, want %d", w.Code, http.StatusOK)
+	}
+	got := dirsList(t, body)
+	if strings.Join(got, ",") != "sub" {
+		t.Fatalf("dirs = %v, want [sub] (symlink not descended)", got)
+	}
+}
+
+func TestWorkspaceDirs_Recursive_ContainmentPrefixEscape(t *testing.T) {
+	root := t.TempDir()
+	ws := filepath.Join(root, "ws")
+	other := filepath.Join(root, "other")
+	if err := os.MkdirAll(ws, 0o755); err != nil {
+		t.Fatalf("mkdir ws: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(other, "secret"), 0o755); err != nil {
+		t.Fatalf("mkdir other/secret: %v", err)
+	}
+	w, body := doWorkspaceDirs(t, ws, "", "..%2Fother%2F%2A%2A") // ../other/**
+	if w.Code != http.StatusOK {
+		t.Fatalf("code = %d, want %d", w.Code, http.StatusOK)
+	}
+	if got := dirsList(t, body); len(got) != 0 {
+		t.Fatalf("dirs = %v, want empty (prefix escape rejected)", got)
+	}
+}

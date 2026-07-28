@@ -236,3 +236,134 @@ func TestWorkspaceFiles_NonExistentDirEmptyList(t *testing.T) {
 		t.Fatalf("files = %v, want empty (missing dir)", got)
 	}
 }
+
+func writeFiles(t *testing.T, root string, paths []string) {
+	t.Helper()
+	for _, p := range paths {
+		full := filepath.Join(root, filepath.FromSlash(p))
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatalf("mkdir parent %s: %v", p, err)
+		}
+		if err := os.WriteFile(full, []byte("x"), 0o644); err != nil {
+			t.Fatalf("write %s: %v", p, err)
+		}
+	}
+}
+
+func TestWorkspaceFiles_Recursive_MatchesNested(t *testing.T) {
+	tmp := t.TempDir()
+	writeFiles(t, tmp, []string{"a.md", "sub/b.md", "sub/deep/c.md"})
+	w, body := doWorkspaceFiles(t, tmp, "", "%2A%2A%2F%2A.md") // **/*.md
+	if w.Code != http.StatusOK {
+		t.Fatalf("code = %d, want %d; body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+	got := filesList(t, body)
+	want := []string{"a.md", "sub/b.md", "sub/deep/c.md"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("files = %v, want %v", got, want)
+	}
+}
+
+func TestWorkspaceFiles_Recursive_AnchoredPrefix(t *testing.T) {
+	tmp := t.TempDir()
+	writeFiles(t, tmp, []string{"docs/a.md", "docs/sub/b.md", "src/skip.md"})
+	w, body := doWorkspaceFiles(t, tmp, "", "docs%2F%2A%2A%2F%2A.md") // docs/**/*.md
+	if w.Code != http.StatusOK {
+		t.Fatalf("code = %d, want %d", w.Code, http.StatusOK)
+	}
+	got := filesList(t, body)
+	want := []string{"docs/a.md", "docs/sub/b.md"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("files = %v, want %v", got, want)
+	}
+}
+
+func TestWorkspaceFiles_Recursive_PrunesHeavyDirs(t *testing.T) {
+	tmp := t.TempDir()
+	writeFiles(t, tmp, []string{
+		"src/a.md",
+		"node_modules/big.md",
+		".git/HEAD.md",
+		"vendor/v.md",
+		"dist/x.md",
+	})
+	w, body := doWorkspaceFiles(t, tmp, "", "%2A%2A%2F%2A.md")
+	if w.Code != http.StatusOK {
+		t.Fatalf("code = %d, want %d", w.Code, http.StatusOK)
+	}
+	got := filesList(t, body)
+	if strings.Join(got, ",") != "src/a.md" {
+		t.Fatalf("files = %v, want [src/a.md]", got)
+	}
+}
+
+func TestWorkspaceFiles_Recursive_HonorsResultsCap(t *testing.T) {
+	tmp := t.TempDir()
+	files := make([]string, 0, workspaceFilesMaxResults+100)
+	for i := 0; i < workspaceFilesMaxResults+100; i++ {
+		files = append(files, "sub/f"+strconv.Itoa(i)+".md")
+	}
+	writeFiles(t, tmp, files)
+	w, body := doWorkspaceFiles(t, tmp, "", "%2A%2A%2F%2A.md")
+	if w.Code != http.StatusOK {
+		t.Fatalf("code = %d, want %d", w.Code, http.StatusOK)
+	}
+	if got := filesList(t, body); len(got) != workspaceFilesMaxResults {
+		t.Fatalf("len(files) = %d, want %d", len(got), workspaceFilesMaxResults)
+	}
+}
+
+func TestWorkspaceFiles_Recursive_DoesNotFollowSymlinks(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink permissions vary on Windows CI")
+	}
+	root := t.TempDir()
+	ws := filepath.Join(root, "ws")
+	other := filepath.Join(root, "other")
+	if err := os.MkdirAll(filepath.Join(other, "hidden"), 0o755); err != nil {
+		t.Fatalf("mkdir other: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(other, "hidden", "secret.md"), []byte("s"), 0o644); err != nil {
+		t.Fatalf("write secret: %v", err)
+	}
+	if err := os.MkdirAll(ws, 0o755); err != nil {
+		t.Fatalf("mkdir ws: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(ws, "top.md"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("write top: %v", err)
+	}
+	if err := os.Symlink(other, filepath.Join(ws, "link")); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+	w, body := doWorkspaceFiles(t, ws, "", "%2A%2A%2F%2A.md")
+	if w.Code != http.StatusOK {
+		t.Fatalf("code = %d, want %d", w.Code, http.StatusOK)
+	}
+	got := filesList(t, body)
+	if strings.Join(got, ",") != "top.md" {
+		t.Fatalf("files = %v, want [top.md] (symlink not descended)", got)
+	}
+}
+
+func TestWorkspaceFiles_Recursive_ContainmentPrefixEscape(t *testing.T) {
+	root := t.TempDir()
+	ws := filepath.Join(root, "ws")
+	other := filepath.Join(root, "other")
+	if err := os.MkdirAll(ws, 0o755); err != nil {
+		t.Fatalf("mkdir ws: %v", err)
+	}
+	if err := os.MkdirAll(other, 0o755); err != nil {
+		t.Fatalf("mkdir other: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(other, "secret.md"), []byte("s"), 0o644); err != nil {
+		t.Fatalf("write secret: %v", err)
+	}
+	// glob "../other/**/*.md" — literal prefix "../other" resolves outside ws.
+	w, body := doWorkspaceFiles(t, ws, "", "..%2Fother%2F%2A%2A%2F%2A.md")
+	if w.Code != http.StatusOK {
+		t.Fatalf("code = %d, want %d", w.Code, http.StatusOK)
+	}
+	if got := filesList(t, body); len(got) != 0 {
+		t.Fatalf("files = %v, want empty (prefix escape rejected)", got)
+	}
+}

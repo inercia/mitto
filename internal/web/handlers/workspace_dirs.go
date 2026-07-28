@@ -1,11 +1,15 @@
 package handlers
 
 import (
+	"context"
 	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
+
+	"github.com/bmatcuk/doublestar/v4"
 )
 
 // workspaceDirsMaxResults caps the number of entries returned by
@@ -54,8 +58,8 @@ func (h *Handlers) HandleWorkspaceDirs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if glob != "" {
-		if _, err := filepath.Match(glob, "x"); err != nil {
-			writeErrorJSON(w, http.StatusBadRequest, "", "invalid glob: "+err.Error())
+		if !doublestar.ValidatePattern(glob) {
+			writeErrorJSON(w, http.StatusBadRequest, "", "invalid glob")
 			return
 		}
 	}
@@ -90,6 +94,60 @@ func (h *Handlers) HandleWorkspaceDirs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if containsDoublestar(glob) {
+		prefix := literalPrefix(glob)
+		walkRoot := resolved
+		if prefix != "" {
+			joined := filepath.Join(resolved, prefix)
+			cleaned := filepath.Clean(joined)
+			if cleaned != resolved && !strings.HasPrefix(cleaned, resolved+string(filepath.Separator)) {
+				writeJSONOK(w, map[string]interface{}{"dirs": []string{}})
+				return
+			}
+			if pi, perr := os.Stat(cleaned); perr != nil || !pi.IsDir() {
+				writeJSONOK(w, map[string]interface{}{"dirs": []string{}})
+				return
+			}
+			walkRoot = cleaned
+		}
+		pattern := glob
+		if prefix != "" {
+			pattern = strings.TrimPrefix(pattern, prefix+"/")
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		defer cancel()
+		res := walkMatch(walkMatchOpts{
+			ctx:        ctx,
+			root:       walkRoot,
+			pattern:    pattern,
+			maxResults: workspaceDirsMaxResults,
+			maxVisited: walkMatchMaxVisited,
+			wantFiles:  false,
+		})
+		dirs := make([]string, 0, len(res.matches))
+		for _, m := range res.matches {
+			abs := filepath.Join(walkRoot, filepath.FromSlash(m))
+			rel, rerr := filepath.Rel(resolvedRoot, abs)
+			if rerr != nil {
+				continue
+			}
+			dirs = append(dirs, filepath.ToSlash(rel))
+		}
+		sort.Strings(dirs)
+		if h.deps.Logger != nil {
+			if res.truncated {
+				h.deps.Logger.Debug("workspace-dirs listed",
+					"working_dir", workingDir, "dir", dir, "glob", glob,
+					"count", len(dirs), "truncated", true, "reason", res.reason)
+			} else {
+				h.deps.Logger.Debug("workspace-dirs listed",
+					"working_dir", workingDir, "dir", dir, "glob", glob, "count", len(dirs))
+			}
+		}
+		writeJSONOK(w, map[string]interface{}{"dirs": dirs})
+		return
+	}
+
 	entries, err := os.ReadDir(resolved)
 	if err != nil {
 		writeJSONOK(w, map[string]interface{}{"dirs": []string{}})
@@ -108,16 +166,14 @@ func (h *Handlers) HandleWorkspaceDirs(w http.ResponseWriter, r *http.Request) {
 		if !e.IsDir() {
 			continue
 		}
-		// Skip hidden directories by default (leading "."). Callers who want
-		// them can pass an explicit glob like ".*" — filepath.Match on ".*"
-		// matches leading dots, so this is opt-in.
+		// Skip hidden directories by default (leading ".").
 		if strings.HasPrefix(name, ".") {
 			if glob == "" {
 				continue
 			}
 		}
 		if glob != "" {
-			ok, _ := filepath.Match(glob, name)
+			ok, _ := doublestar.PathMatch(glob, name)
 			if !ok {
 				continue
 			}

@@ -1014,8 +1014,8 @@ in sync.
 | `acpServer` | An ACP server (agent) name. Lets a prompt that creates a new conversation choose which agent runs it. |
 | `text` | Generic free-form text (catch-all type). Rendered as a single-line input by default; set `multiLine: true` to render a resizable multi-line textarea instead, or set `options: [...]` to constrain the value to a fixed enumeration rendered as a dropdown (mutually exclusive with `multiLine`). |
 | `boolean` | A yes/no flag, rendered as a checkbox. Supplied to the template as the string `"true"` or `"false"` (default unchecked → `"false"`). Boolean parameters never gate menu visibility and are always collected via the parameter dialog. |
-| `filename` | A workspace-relative file path, rendered as a dropdown of files under an optional `dir` (workspace-relative, non-recursive), optionally filtered by a `glob` (e.g. `"*.md"`). Interactive and dialog-collected (never gates menu visibility, always offered by the parameter dialog). Feeds `{{ ReadFile .Args.NAME }}` directly. `dir`/`glob` are dropdown hints only — path safety (absolute-path/`..`-escape/symlink-escape rejection, 256 KB cap) is enforced at read time by `ReadFile`. |
-| `dirname` | A workspace-relative directory path, rendered as a dropdown of immediate sub-directories under an optional `dir` (workspace-relative, non-recursive), optionally filtered by a `glob` (e.g. `"prod-*"`) applied to the sub-directory's base name. Interactive and dialog-collected (never gates menu visibility, always offered by the parameter dialog). Hidden directories (leading `.`) are excluded by default. Value is a workspace-relative directory path suitable for joining with a filename or passing to template helpers. `dir`/`glob` are dropdown hints only — path safety is enforced by the endpoint (absolute-path/`..`-escape/symlink-escape rejection). |
+| `filename` | A workspace-relative file path, rendered as a dropdown of files under an optional `dir` (workspace-relative), optionally filtered by a `glob` (e.g. `"*.md"` or `"**/*.md"` — see below). Interactive and dialog-collected (never gates menu visibility, always offered by the parameter dialog). Feeds `{{ ReadFile .Args.NAME }}` directly. `dir`/`glob` are dropdown hints only — path safety (absolute-path/`..`-escape/symlink-escape rejection, 256 KB cap) is enforced at read time by `ReadFile`. |
+| `dirname` | A workspace-relative directory path, rendered as a dropdown of sub-directories under an optional `dir` (workspace-relative), optionally filtered by a `glob` (e.g. `"prod-*"` or `"**/env-*"` — see below). Interactive and dialog-collected (never gates menu visibility, always offered by the parameter dialog). Hidden directories (leading `.`) are excluded by default. Value is a workspace-relative directory path suitable for joining with a filename or passing to template helpers. `dir`/`glob` are dropdown hints only — path safety is enforced by the endpoint (absolute-path/`..`-escape/symlink-escape rejection). |
 
 #### `filename` YAML example
 
@@ -1045,6 +1045,46 @@ parameters:
     description: Sub-directory under deploy/environments to target
 prompt: |
   Deploy using config from {{ .Args.Env }}/…
+```
+
+#### Recursive glob (`**`) for `filename` and `dirname`
+
+The `glob` field on `filename` / `dirname` accepts recursive patterns using
+`**` (doublestar semantics). Presence of `**` in the pattern switches the
+picker from a single-directory listing to a bounded workspace walk.
+
+- **Non-`**` patterns** (`"*.md"`, `"prod-*"`) match against the entry's
+  **base name only** and list a single directory (non-recursive) — unchanged.
+- **`**` patterns** walk recursively starting at `dir` (or the workspace root
+  if `dir` is empty) and match against the entry's **workspace-relative path**
+  using forward slashes. `**/*.md` matches `a.md`, `sub/b.md`, `sub/deep/c.md`;
+  `docs/**/*.md` matches only under `docs/`.
+
+Guardrails on the recursive walk (fixed, not configurable):
+
+- 2 second wall-clock deadline.
+- 500-result cap (partial list returned on overflow).
+- 50 000 entries-visited cap (partial list returned on overflow).
+- Hidden directories (base name starting with `.`) and the heavy directories
+  `node_modules`, `vendor`, `target`, `dist`, `build`, `out` are never
+  descended into.
+- Directory symlinks are not followed; symlinked files are not returned.
+
+YAML examples:
+
+```yaml
+parameters:
+  - name: Doc
+    type: filename
+    glob: "**/*.md"
+```
+
+```yaml
+parameters:
+  - name: Doc
+    type: filename
+    dir: docs
+    glob: "docs/**/*.md"
 ```
 
 ### Visibility rule (type-based gating)

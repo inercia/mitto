@@ -1,11 +1,15 @@
 package handlers
 
 import (
+	"context"
 	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
+
+	"github.com/bmatcuk/doublestar/v4"
 )
 
 // workspaceFilesMaxResults caps the number of entries returned by
@@ -55,10 +59,11 @@ func (h *Handlers) HandleWorkspaceFiles(w http.ResponseWriter, r *http.Request) 
 	}
 	// Compile-check glob so a malformed pattern surfaces as a 400 instead of
 	// silently matching nothing. Mirrors the parse-time guard in
-	// prompts.ValidatePromptParameters.
+	// prompts.ValidatePromptParameters. Uses doublestar so recursive patterns
+	// ("**") are accepted here and honored below.
 	if glob != "" {
-		if _, err := filepath.Match(glob, "x"); err != nil {
-			writeErrorJSON(w, http.StatusBadRequest, "", "invalid glob: "+err.Error())
+		if !doublestar.ValidatePattern(glob) {
+			writeErrorJSON(w, http.StatusBadRequest, "", "invalid glob")
 			return
 		}
 	}
@@ -97,6 +102,60 @@ func (h *Handlers) HandleWorkspaceFiles(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	if containsDoublestar(glob) {
+		prefix := literalPrefix(glob)
+		walkRoot := resolved
+		if prefix != "" {
+			joined := filepath.Join(resolved, prefix)
+			cleaned := filepath.Clean(joined)
+			if cleaned != resolved && !strings.HasPrefix(cleaned, resolved+string(filepath.Separator)) {
+				writeJSONOK(w, map[string]interface{}{"files": []string{}})
+				return
+			}
+			if pi, perr := os.Stat(cleaned); perr != nil || !pi.IsDir() {
+				writeJSONOK(w, map[string]interface{}{"files": []string{}})
+				return
+			}
+			walkRoot = cleaned
+		}
+		pattern := glob
+		if prefix != "" {
+			pattern = strings.TrimPrefix(pattern, prefix+"/")
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		defer cancel()
+		res := walkMatch(walkMatchOpts{
+			ctx:        ctx,
+			root:       walkRoot,
+			pattern:    pattern,
+			maxResults: workspaceFilesMaxResults,
+			maxVisited: walkMatchMaxVisited,
+			wantFiles:  true,
+		})
+		files := make([]string, 0, len(res.matches))
+		for _, m := range res.matches {
+			abs := filepath.Join(walkRoot, filepath.FromSlash(m))
+			rel, rerr := filepath.Rel(resolvedRoot, abs)
+			if rerr != nil {
+				continue
+			}
+			files = append(files, filepath.ToSlash(rel))
+		}
+		sort.Strings(files)
+		if h.deps.Logger != nil {
+			if res.truncated {
+				h.deps.Logger.Debug("workspace-files listed",
+					"working_dir", workingDir, "dir", dir, "glob", glob,
+					"count", len(files), "truncated", true, "reason", res.reason)
+			} else {
+				h.deps.Logger.Debug("workspace-files listed",
+					"working_dir", workingDir, "dir", dir, "glob", glob, "count", len(files))
+			}
+		}
+		writeJSONOK(w, map[string]interface{}{"files": files})
+		return
+	}
+
 	entries, err := os.ReadDir(resolved)
 	if err != nil {
 		writeJSONOK(w, map[string]interface{}{"files": []string{}})
@@ -121,7 +180,7 @@ func (h *Handlers) HandleWorkspaceFiles(w http.ResponseWriter, r *http.Request) 
 			continue
 		}
 		if glob != "" {
-			ok, _ := filepath.Match(glob, name)
+			ok, _ := doublestar.PathMatch(glob, name)
 			if !ok {
 				continue
 			}
