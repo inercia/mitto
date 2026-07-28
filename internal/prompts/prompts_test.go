@@ -3280,7 +3280,7 @@ func TestBuiltinPrompts_TodayTierRoutingAdoption(t *testing.T) {
 		{file: "git/create-commits.prompt.yaml", bucket: workspaceTitle, wantTitle: "Commit changes"},
 		{file: "git/rebase-changes.prompt.yaml", bucket: workspaceTitle, wantTitle: "Rebase changes"},
 		{file: "git/submit-changes.prompt.yaml", bucket: workspaceTitle, wantTitle: "Submit changes"},
-		{file: "ci/run-tests.prompt.yaml", bucket: workspaceTitle, wantTitle: "Run tests"},
+		{file: "testing/run-tests.prompt.yaml", bucket: workspaceTitle, wantTitle: "Run tests"},
 		{file: "ci/analyze-logs.prompt.yaml", bucket: workspaceTitle, wantTitle: "Analyze logs"},
 		{file: "docs/architectural-analysis.prompt.yaml", bucket: workspaceTitle, wantTitle: "Architectural Analysis"},
 		{file: "docs/document-arch.prompt.yaml", bucket: workspaceTitle, wantTitle: "Document Architecture"},
