@@ -83,9 +83,20 @@ func TestRememberedArgs_EnqueueThenGET(t *testing.T) {
 // non-200 response.
 func fetchRememberedArgs(t *testing.T, ts *TestServer, workingDir, promptName string) map[string]string {
 	t.Helper()
+	return fetchRememberedArgsWithSession(t, ts, workingDir, promptName, "")
+}
+
+// fetchRememberedArgsWithSession is like fetchRememberedArgs but appends the
+// optional session_id query parameter, enabling the merged folder+conversation
+// scope response (mitto-47y.6.2). An empty sessionID omits the parameter.
+func fetchRememberedArgsWithSession(t *testing.T, ts *TestServer, workingDir, promptName, sessionID string) map[string]string {
+	t.Helper()
 	q := url.Values{}
 	q.Set("working_dir", workingDir)
 	q.Set("prompt", promptName)
+	if sessionID != "" {
+		q.Set("session_id", sessionID)
+	}
 	u := ts.HTTPServer.URL + "/mitto/api/workspace-prompts/remembered-args?" + q.Encode()
 	resp, err := http.Get(u)
 	if err != nil {
@@ -106,4 +117,61 @@ func fetchRememberedArgs(t *testing.T, ts *TestServer, workingDir, promptName st
 		return map[string]string{}
 	}
 	return out.Arguments
+}
+
+// TestRememberedArgs_ConversationScope_EnqueueThenGET is the end-to-end
+// regression test for the conversation-scope arg cache (mitto-47y.6.2): a
+// param declared remember:conversation is persisted per session, is only
+// returned when the GET includes session_id, and does NOT bleed to a
+// different session's read.
+func TestRememberedArgs_ConversationScope_EnqueueThenGET(t *testing.T) {
+	trueP := true
+	remPrompt := config.WebPrompt{
+		Name:   "note",
+		Prompt: "note {{ .Args.Body }}",
+		Parameters: []config.PromptParameter{
+			{Name: "Body", Type: "text", Remember: prompts.RememberConversation, Required: &trueP},
+		},
+	}
+	ts := SetupTestServer(t, func(cfg *web.Config) {
+		if cfg.MittoConfig == nil {
+			cfg.MittoConfig = &config.Config{}
+		}
+		cfg.MittoConfig.Prompts = append(cfg.MittoConfig.Prompts, remPrompt)
+	})
+
+	sessA, err := ts.Client.CreateSession(client.CreateSessionRequest{Name: "conv-remember-A"})
+	if err != nil {
+		t.Fatalf("CreateSession A: %v", err)
+	}
+	defer ts.Client.DeleteSession(sessA.SessionID)
+	sessB, err := ts.Client.CreateSession(client.CreateSessionRequest{Name: "conv-remember-B"})
+	if err != nil {
+		t.Fatalf("CreateSession B: %v", err)
+	}
+	defer ts.Client.DeleteSession(sessB.SessionID)
+
+	// Enqueue on session A only.
+	if _, err := ts.Client.AddToQueueNamedWithArgs(sessA.SessionID, "note",
+		map[string]string{"Body": "hello-A"}); err != nil {
+		t.Fatalf("AddToQueueNamedWithArgs A: %v", err)
+	}
+
+	// Without session_id, no conversation-scope value is returned.
+	got := fetchRememberedArgs(t, ts, sessA.WorkingDir, "note")
+	if _, has := got["Body"]; has {
+		t.Errorf("no session_id: Body should be omitted, got %v", got)
+	}
+
+	// With session A's session_id, the value comes back.
+	got = fetchRememberedArgsWithSession(t, ts, sessA.WorkingDir, "note", sessA.SessionID)
+	if got["Body"] != "hello-A" {
+		t.Errorf("with session A: Body = %q, want %q", got["Body"], "hello-A")
+	}
+
+	// Session B never enqueued: even with its session_id, no value.
+	got = fetchRememberedArgsWithSession(t, ts, sessB.WorkingDir, "note", sessB.SessionID)
+	if _, has := got["Body"]; has {
+		t.Errorf("session B never wrote: Body should be absent, got %v", got)
+	}
 }

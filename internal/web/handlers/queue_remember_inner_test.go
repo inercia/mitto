@@ -293,3 +293,210 @@ func TestRememberFolderArgsForQueueAdd_InnerResolutionIsCaseInsensitive(t *testi
 		t.Errorf("inner write via case-insensitive match failed: %v", writes)
 	}
 }
+
+// buildScopedRememberedHandlers extends buildInnerRememberedHandlers with a
+// RememberConversationArgs closure so tests can assert per-session writes
+// alongside per-workspace writes (mitto-47y.6.2). Both captured maps are keyed
+// by prompt name; the caller's session ID is verified on each conversation
+// write to catch key drift.
+func buildScopedRememberedHandlers(t *testing.T, ws []config.WebPrompt) (
+	h *Handlers,
+	sessionID string,
+	folderWrites map[string]map[string]string,
+	convWrites map[string]map[string]string,
+) {
+	t.Helper()
+	const (
+		sID           = "20260728-140000-test47y62"
+		workspaceUUID = "ws-scoped"
+		workingDir    = "/wd"
+	)
+	sm := conversation.NewSessionManager("", "", false, nil)
+	sm.SetWorkspaces([]config.WorkspaceSettings{
+		{UUID: workspaceUUID, WorkingDir: workingDir, ACPServer: "srv"},
+	})
+	bs := conversation.NewMinimalBackgroundSession(sID, workingDir, workspaceUUID)
+	sm.AddSessionForTest(bs)
+
+	folderWrites = make(map[string]map[string]string)
+	convWrites = make(map[string]map[string]string)
+	h = New(Deps{
+		SessionManager: sm,
+		GetWorkspacePromptsAll: func(string) []config.WebPrompt {
+			return ws
+		},
+		RememberFolderArgs: func(uuid, name string, args map[string]string) error {
+			if uuid != workspaceUUID {
+				t.Errorf("RememberFolderArgs uuid=%q want %q", uuid, workspaceUUID)
+			}
+			existing := folderWrites[name]
+			if existing == nil {
+				existing = make(map[string]string, len(args))
+			}
+			for k, v := range args {
+				existing[k] = v
+			}
+			folderWrites[name] = existing
+			return nil
+		},
+		RememberConversationArgs: func(sess, name string, args map[string]string) error {
+			if sess != sID {
+				t.Errorf("RememberConversationArgs sess=%q want %q", sess, sID)
+			}
+			existing := convWrites[name]
+			if existing == nil {
+				existing = make(map[string]string, len(args))
+			}
+			for k, v := range args {
+				existing[k] = v
+			}
+			convWrites[name] = existing
+			return nil
+		},
+	})
+	return h, sID, folderWrites, convWrites
+}
+
+// TestRememberScopedArgsForQueueAdd_ConversationScopeOuter verifies that an
+// outer prompt param declared remember:conversation is persisted via the
+// RememberConversationArgs closure keyed by session ID (not workspace UUID),
+// and NOT via the folder closure (mitto-47y.6.2).
+func TestRememberScopedArgsForQueueAdd_ConversationScopeOuter(t *testing.T) {
+	outer := config.WebPrompt{
+		Name: "Note",
+		Parameters: []config.PromptParameter{
+			{Name: "Body", Type: "text", Remember: prompts.RememberConversation},
+		},
+	}
+	h, sessionID, folderWrites, convWrites := buildScopedRememberedHandlers(t,
+		[]config.WebPrompt{outer})
+
+	h.rememberScopedArgsForQueueAdd(sessionID, "Note", map[string]string{
+		"Body": "session-only",
+	})
+
+	if got := convWrites["Note"]["Body"]; got != "session-only" {
+		t.Errorf("conversation write Note.Body = %q; want %q", got, "session-only")
+	}
+	if _, ok := folderWrites["Note"]; ok {
+		t.Errorf("folder writer should not receive conversation-scope args: %v", folderWrites["Note"])
+	}
+}
+
+// TestRememberScopedArgsForQueueAdd_FolderAndConversation_CoexistOnOuter
+// verifies that a single outer prompt declaring one remember:folder param and
+// one remember:conversation param dispatches each to its own scope on a single
+// enqueue (mitto-47y.6.2).
+func TestRememberScopedArgsForQueueAdd_FolderAndConversation_CoexistOnOuter(t *testing.T) {
+	outer := config.WebPrompt{
+		Name: "Compose",
+		Parameters: []config.PromptParameter{
+			{Name: "Template", Type: "text", Remember: prompts.RememberFolder},
+			{Name: "Draft", Type: "text", Remember: prompts.RememberConversation},
+		},
+	}
+	h, sessionID, folderWrites, convWrites := buildScopedRememberedHandlers(t,
+		[]config.WebPrompt{outer})
+
+	h.rememberScopedArgsForQueueAdd(sessionID, "Compose", map[string]string{
+		"Template": "shared",
+		"Draft":    "private",
+	})
+
+	if got := folderWrites["Compose"]["Template"]; got != "shared" {
+		t.Errorf("folder write Compose.Template = %q; want %q", got, "shared")
+	}
+	if _, ok := folderWrites["Compose"]["Draft"]; ok {
+		t.Errorf("folder writer should not receive conversation-scope arg Draft: %v", folderWrites["Compose"])
+	}
+	if got := convWrites["Compose"]["Draft"]; got != "private" {
+		t.Errorf("conversation write Compose.Draft = %q; want %q", got, "private")
+	}
+	if _, ok := convWrites["Compose"]["Template"]; ok {
+		t.Errorf("conversation writer should not receive folder-scope arg Template: %v", convWrites["Compose"])
+	}
+}
+
+// TestRememberScopedArgsForQueueAdd_ConversationScopeInner verifies that an
+// inner (type: prompts picker) parameter declared remember:conversation is
+// persisted per session and keyed under the INNER prompt's name (mitto-47y.3
+// inner-name keying rule extended to the conversation scope, mitto-47y.6.2).
+func TestRememberScopedArgsForQueueAdd_ConversationScopeInner(t *testing.T) {
+	inner := config.WebPrompt{
+		Name: "Note",
+		Parameters: []config.PromptParameter{
+			{Name: "Body", Type: "text", Remember: prompts.RememberConversation},
+		},
+	}
+	outer := config.WebPrompt{
+		Name: "Wrap",
+		Parameters: []config.PromptParameter{
+			{Name: "Picked", Type: "prompts"},
+		},
+	}
+	h, sessionID, folderWrites, convWrites := buildScopedRememberedHandlers(t,
+		[]config.WebPrompt{outer, inner})
+
+	h.rememberScopedArgsForQueueAdd(sessionID, "Wrap", map[string]string{
+		"Picked":      "Note",
+		"Picked_Args": `{"Body":"inner-session"}`,
+	})
+
+	if got := convWrites["Note"]["Body"]; got != "inner-session" {
+		t.Errorf("inner conversation write under Note.Body = %q; want %q", got, "inner-session")
+	}
+	if _, ok := convWrites["Wrap"]; ok {
+		t.Errorf("inner write must be keyed under inner prompt name, not outer: %v", convWrites["Wrap"])
+	}
+	if _, ok := folderWrites["Note"]; ok {
+		t.Errorf("folder writer should not receive conversation-scope inner args: %v", folderWrites["Note"])
+	}
+}
+
+// TestRememberScopedArgsForQueueAdd_InnerParamFilteredByScope verifies that
+// inner values whose declared parameter has a scope OTHER than the one being
+// tested are correctly filtered per-scope: a remember:folder inner param goes
+// only to folderWrites; a remember:conversation inner param goes only to
+// convWrites; no-remember params never persist (mitto-47y.6.2).
+func TestRememberScopedArgsForQueueAdd_InnerParamFilteredByScope(t *testing.T) {
+	inner := config.WebPrompt{
+		Name: "Mixed",
+		Parameters: []config.PromptParameter{
+			{Name: "Folded", Type: "text", Remember: prompts.RememberFolder},
+			{Name: "Convo", Type: "text", Remember: prompts.RememberConversation},
+			{Name: "Secret", Type: "text"}, // no remember
+		},
+	}
+	outer := config.WebPrompt{
+		Name: "Wrap",
+		Parameters: []config.PromptParameter{
+			{Name: "Picked", Type: "prompts"},
+		},
+	}
+	h, sessionID, folderWrites, convWrites := buildScopedRememberedHandlers(t,
+		[]config.WebPrompt{outer, inner})
+
+	h.rememberScopedArgsForQueueAdd(sessionID, "Wrap", map[string]string{
+		"Picked":      "Mixed",
+		"Picked_Args": `{"Folded":"f","Convo":"c","Secret":"leaked"}`,
+	})
+
+	if got := folderWrites["Mixed"]["Folded"]; got != "f" {
+		t.Errorf("folder write Mixed.Folded = %q; want %q", got, "f")
+	}
+	if _, ok := folderWrites["Mixed"]["Convo"]; ok {
+		t.Errorf("folder writer should not receive conversation-scope arg Convo: %v", folderWrites["Mixed"])
+	}
+	if got := convWrites["Mixed"]["Convo"]; got != "c" {
+		t.Errorf("conversation write Mixed.Convo = %q; want %q", got, "c")
+	}
+	if _, ok := convWrites["Mixed"]["Folded"]; ok {
+		t.Errorf("conversation writer should not receive folder-scope arg Folded: %v", convWrites["Mixed"])
+	}
+	if _, ok := folderWrites["Mixed"]["Secret"]; ok {
+		t.Errorf("Secret should not be persisted (no remember) in folder: %v", folderWrites["Mixed"])
+	}
+	if _, ok := convWrites["Mixed"]["Secret"]; ok {
+		t.Errorf("Secret should not be persisted (no remember) in conversation: %v", convWrites["Mixed"])
+	}
+}
