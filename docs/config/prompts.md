@@ -979,9 +979,10 @@ parameters:
                             #   be one of the listed options.
     remember: folder        # optional — persist the last submitted value and
                             #   pre-fill the dialog next time. One of:
-                            #     "" / "never" → do not persist (default)
-                            #     "folder"     → per-workspace (per prompt + arg)
-                            #     "global"     → reserved; accepted but not stored in v1
+                            #     "" / "never"   → do not persist (default)
+                            #     "folder"       → per-workspace (per prompt + arg)
+                            #     "conversation" → per-session (per prompt + arg)
+                            #     "global"       → reserved; accepted but not stored in v1
                             #   See "Remembering the last submitted value" below.
 ```
 
@@ -1191,6 +1192,7 @@ parameters:
 | ----- | -------- |
 | `""` / `never` | Do not persist. Default. |
 | `folder` | Persist per-workspace, keyed by workspace UUID and prompt name. The next time the same prompt opens in the same workspace, the dialog pre-fills the last submitted value. Different workspaces keep independent values. |
+| `conversation` | Persist per-session, keyed by session ID and prompt name. The next time the same prompt opens in the same conversation, the dialog pre-fills the last submitted value. Different conversations keep independent values, even in the same workspace. |
 | `global` | Reserved — accepted by the schema but **not stored in v1**. Behaves as `never` at runtime. |
 
 #### Rules
@@ -1199,14 +1201,21 @@ parameters:
   prompt is enqueued). Failures to persist are logged and never block the enqueue.
 - Only parameters currently declared in the prompt file are surfaced back to the
   UI — stale keys from removed parameters are filtered out on read.
-- Storage is one JSON file per workspace UUID under
-  `$MITTO_DIR/remembered-args/`, with atomic writes. A `Set()` merges into the
-  existing file so remembered values for unrelated prompts in the same
-  workspace are preserved.
+- Storage is scope-specific, with atomic writes and merge-preserving `Set()` so
+  remembered values for unrelated prompts in the same scope are preserved:
+  - `folder` — one JSON file per workspace UUID under `$MITTO_DIR/remembered-args/`.
+  - `conversation` — one JSON file per session ID under `$MITTO_DIR/remembered-args-conversation/`.
 - Pre-filled values **override** any `default:` declared on the parameter — the
   intent is "what the user last typed" wins over the prompt author's default.
-- Remembered values are workspace-scoped, not per-conversation: `cache` and
-  `remember` are independent and may coexist on the same parameter.
+- When a prompt opens with a known session, the parameter dialog reads BOTH
+  scopes and merges them; on a name collision the `conversation`-scope value
+  wins (more recent context). Each scope only persists values for parameters
+  declared with the matching `remember:` mode.
+- `folder` and `conversation` also apply to **nested** `type: prompts` picker
+  parameters: inner remembered values are keyed under the INNER prompt name so
+  two different outer prompts picking the same inner prompt share their
+  remembered inner values.
+- `cache` and `remember` are independent and may coexist on the same parameter.
 
 ## Go Template Syntax in Prompts
 
