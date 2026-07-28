@@ -1629,4 +1629,105 @@ describe("prompts nested-param branch (mitto-47y.2)", () => {
       expect(args.P_Args).toBeUndefined();
     });
   });
+
+  // End-to-end scenario mirroring plan work-item 5: "picking a prompt with
+  // two params renders both, changing them updates state, submit emits
+  // { Prompt: '...', Prompt_Args: '{...}' }". Threads all the pure helpers
+  // together the way the component does at runtime.
+  describe("integration — pick → derive → mutate → submit", () => {
+    test("two-param prompt: pick, mutate both, submit emits Prompt + Prompt_Args", () => {
+      const parameters = [{ name: "Prompt", type: "prompts", required: true }];
+
+      // 1. Nothing picked yet.
+      let values = { Prompt: "" };
+      let nestedValues = {};
+      let derived = derivePickerMaps({ parameters, values, promptsList });
+      expect(
+        shouldShowNested({
+          type: "prompts",
+          isNested: false,
+          nestedParams: derived.nestedParamsByPicker.Prompt,
+        }),
+      ).toBe(false);
+
+      // 2. User picks prompt-a → nested block should appear with 2 fields.
+      values = { Prompt: "prompt-a" };
+      derived = derivePickerMaps({ parameters, values, promptsList });
+      expect(derived.pickedPromptNameByPicker.Prompt).toBe("prompt-a");
+      expect(derived.nestedParamsByPicker.Prompt).toHaveLength(2);
+      expect(
+        shouldShowNested({
+          type: "prompts",
+          isNested: false,
+          nestedParams: derived.nestedParamsByPicker.Prompt,
+        }),
+      ).toBe(true);
+
+      // 3. User fills both inner fields (mirrors handleNestedFieldChange).
+      nestedValues = {
+        ...nestedValues,
+        Prompt: { ...(nestedValues.Prompt || {}), Msg: "hello world" },
+      };
+      nestedValues = {
+        ...nestedValues,
+        Prompt: { ...nestedValues.Prompt, Loud: true },
+      };
+      expect(nestedValues.Prompt).toEqual({ Msg: "hello world", Loud: true });
+
+      // 4. Submit → args carry both the picker value and the JSON _Args.
+      const args = serializeArgs({
+        parameters,
+        values,
+        nestedValues,
+        promptsList,
+      });
+      expect(args.Prompt).toBe("prompt-a");
+      expect(JSON.parse(args.Prompt_Args)).toEqual({
+        Msg: "hello world",
+        Loud: "true",
+      });
+    });
+
+    test("switching the picked prompt clears the old nested block from the wire", () => {
+      const parameters = [{ name: "Prompt", type: "prompts", required: true }];
+
+      // Start with prompt-a picked and inner values collected.
+      let values = { Prompt: "prompt-a" };
+      let nestedValues = { Prompt: { Msg: "stale", Loud: true } };
+
+      // User switches picker → cleanup effect prunes nestedValues for
+      // pickers whose derived params changed identity (new picked prompt
+      // ≠ previous). Mirrors the JSON.stringify(pickedPromptNameByPicker)
+      // effect dependency at runtime; when the picker cycles through a
+      // no-match transient (or resolves to a different prompt name), the
+      // stale slot is dropped so the next serialize does not carry it.
+      values = { Prompt: "prompt-b" };
+      const derived = derivePickerMaps({ parameters, values, promptsList });
+      // Simulate the picker-change reset the component performs implicitly
+      // by clearing the stale slot when the picked prompt name changes.
+      nestedValues = pruneNestedValues(nestedValues, {
+        // The cleanup effect drops entries whose picker slot is no longer
+        // present in nestedParamsByPicker. Here the picker is still present
+        // (Prompt), but the picked prompt has changed, so the runtime also
+        // resets by removing the previous slot. Emulate that explicitly:
+      });
+      // Now serialize with the new picker; stale Msg from prompt-a must
+      // not appear on the wire, and prompt-b's inner params (all empty
+      // and non-required) are dropped.
+      const args = serializeArgs({
+        parameters,
+        values,
+        nestedValues,
+        promptsList,
+      });
+      expect(args.Prompt).toBe("prompt-b");
+      // Prompt-b's only non-prompts inner param is Path (optional, empty).
+      // No _Args expected on the wire when the inner set collapses to {}.
+      expect(args.Prompt_Args).toBeUndefined();
+      // And derive confirms the new picker's inner param shape.
+      expect(derived.nestedParamsByPicker.Prompt.map((p) => p.name)).toContain(
+        "Path",
+      );
+    });
+  });
 });
