@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/inercia/mitto/internal/conversation"
 	"github.com/inercia/mitto/internal/session"
 )
 
@@ -155,6 +156,107 @@ func TestHandleSessionQueue_Add_EmptyMessage(t *testing.T) {
 	}
 
 	queue.Delete()
+}
+
+// TestHandleSessionQueue_Add_TriggersConversationTitle verifies that POST
+// /queue triggers auto-title generation when the session has no title yet,
+// mirroring the WebSocket prompt path (mitto-58b). Without this, sessions
+// whose first user prompt arrives via the queue REST path stay titled
+// "Conversation" until the ACP turn eventually completes.
+func TestHandleSessionQueue_Add_TriggersConversationTitle(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	tmpDir := t.TempDir()
+	const sid = "20260201-140000-queue-title"
+	if err := store.Create(session.Metadata{SessionID: sid, ACPServer: "test", WorkingDir: tmpDir}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	bs := conversation.NewTestBackgroundSession(conversation.BackgroundSessionTestOpts{
+		SessionID:  sid,
+		WorkingDir: tmpDir,
+		Store:      store,
+	})
+	sm := conversation.NewSessionManager("", "", false, nil)
+	sm.AddSessionForTest(bs)
+
+	h := New(Deps{Store: store, SessionManager: sm})
+
+	body := `{"message": "Investigate the cold-start MCP wedge on cgw-managed-tools"}`
+	req := httptest.NewRequest(http.MethodPost, "/mitto/api/sessions/"+sid+"/queue", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	h.HandleSessionQueue(w, req, sid, "")
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("Status = %d, want %d; body: %s", w.Code, http.StatusCreated, w.Body.String())
+	}
+
+	meta, err := store.GetMetadata(sid)
+	if err != nil {
+		t.Fatalf("GetMetadata: %v", err)
+	}
+	if meta.Name == "" {
+		t.Errorf("metadata.Name is empty after POST /queue; expected a synchronous quick fallback title to be set (mitto-58b regression)")
+	}
+}
+
+// TestHandleSessionQueue_Add_NamedPromptTriggersConversationTitle verifies that
+// POST /queue with a bare prompt_name (no inline message) still triggers
+// auto-title generation, using the prompt name (or its resolved body) as the
+// title source text. Guards the named-prompt fallback of mitto-58b.
+func TestHandleSessionQueue_Add_NamedPromptTriggersConversationTitle(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	tmpDir := t.TempDir()
+	const sid = "20260201-140000-queue-named"
+	if err := store.Create(session.Metadata{SessionID: sid, ACPServer: "test", WorkingDir: tmpDir}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	bs := conversation.NewTestBackgroundSession(conversation.BackgroundSessionTestOpts{
+		SessionID:  sid,
+		WorkingDir: tmpDir,
+		Store:      store,
+		PromptResolver: func(name, dir string) (string, error) {
+			return "The actual resolved body for " + name, nil
+		},
+	})
+	sm := conversation.NewSessionManager("", "", false, nil)
+	sm.AddSessionForTest(bs)
+
+	h := New(Deps{Store: store, SessionManager: sm})
+
+	body := `{"prompt_name": "Follow instructions"}`
+	req := httptest.NewRequest(http.MethodPost, "/mitto/api/sessions/"+sid+"/queue", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	h.HandleSessionQueue(w, req, sid, "")
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("Status = %d, want %d; body: %s", w.Code, http.StatusCreated, w.Body.String())
+	}
+
+	meta, err := store.GetMetadata(sid)
+	if err != nil {
+		t.Fatalf("GetMetadata: %v", err)
+	}
+	if meta.Name == "" {
+		t.Errorf("metadata.Name is empty after POST /queue with prompt_name; expected a synchronous quick fallback title derived from the resolved prompt (mitto-58b regression)")
+	}
+	if strings.Contains(strings.ToLower(meta.Name), "pending") {
+		t.Errorf("metadata.Name = %q should not contain 'pending'", meta.Name)
+	}
 }
 
 func TestHandleSessionQueue_Delete_Message(t *testing.T) {

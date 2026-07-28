@@ -161,6 +161,14 @@ func (h *Handlers) handleAddToQueue(w http.ResponseWriter, r *http.Request, queu
 		h.deps.NotifyQueueUpdate(sessionID, "added", msg.ID)
 	}
 
+	// Trigger conversation-level auto-title generation when the session has no
+	// title yet. Mirrors the WebSocket prompt path (session_ws.handlePrompt):
+	// without this, sessions whose first user prompt arrives via POST /queue
+	// stay titled "Conversation" until the ACP turn eventually completes and
+	// the post-turn safety net (retryTitleGenerationIfNeeded) fires — which
+	// can be many minutes for long-running first turns. See mitto-58b.
+	h.triggerTitleFromLoop(sessionID, req.Message, req.PromptName)
+
 	// Persist per-argument "remember: folder" values so the next open of the
 	// same prompt dialog in this workspace pre-fills them (mitto-x8v).
 	// Best-effort: any failure is logged and does not affect the enqueue.
