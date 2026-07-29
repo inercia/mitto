@@ -1362,7 +1362,9 @@ export function ChatInput({
       return;
     }
 
-    // When agent is streaming, queue the prompt instead of sending immediately
+    // When agent is streaming, queue the prompt instead of sending immediately.
+    // Mirror the non-streaming branch's parameter-dialog flow so `required: true`
+    // parameters are collected before the prompt is enqueued (mitto-gtf).
     if (isStreaming && onAddToQueue && prompt.name) {
       if (isQueueFull) {
         setSendError(
@@ -1371,14 +1373,31 @@ export function ChatInput({
         setTimeout(() => setSendError(null), 10000);
         return;
       }
-      try {
-        lastSentPromptNameRef.current = prompt.name;
-        await onAddToQueue("", [], [], { promptName: prompt.name });
-      } catch (err) {
-        console.error("Failed to add to queue:", err);
-        setSendError(err.message || "Failed to add to queue");
-        setTimeout(() => setSendError(null), 10000);
+      const enqueue = async (userArgs) => {
+        try {
+          lastSentPromptNameRef.current = prompt.name;
+          await onAddToQueue("", [], [], {
+            promptName: prompt.name,
+            ...(userArgs ? { arguments: userArgs } : {}),
+          });
+        } catch (err) {
+          console.error("Failed to add to queue:", err);
+          setSendError(err.message || "Failed to add to queue");
+          setTimeout(() => setSendError(null), 10000);
+        }
+      };
+      let missing = getMissingPromptParameters(prompt, "prompts");
+      if (missing.length > 0 && sessionId) {
+        const cached = await fetchCachedParamNames(sessionId, prompt.name);
+        missing = effectiveMissingParams(missing, cached);
       }
+      if (missing.length > 0 && onOpenPromptParamDialog) {
+        onOpenPromptParamDialog(prompt, missing, async (userArgs) => {
+          await enqueue(userArgs);
+        });
+        return;
+      }
+      await enqueue(null);
       return;
     }
 

@@ -115,6 +115,46 @@ func (h *Handlers) handleAddToQueue(w http.ResponseWriter, r *http.Request, queu
 		return
 	}
 
+	// Defence-in-depth: when a workspace prompt is being enqueued by name,
+	// reject the request if any `required: true` parameter is missing from
+	// req.Arguments. Prevents MCP / integration-test / third-party callers
+	// from tripping the same class of bug the frontend queue path had before
+	// mitto-gtf. Fails open when SessionManager or GetWorkspacePromptsAll is
+	// nil (preserves handler behavior under test harnesses that do not wire
+	// those deps).
+	if strings.TrimSpace(req.PromptName) != "" &&
+		h.deps.SessionManager != nil && h.deps.GetWorkspacePromptsAll != nil {
+		if bs := h.deps.SessionManager.GetSession(sessionID); bs != nil {
+			if workingDir := bs.GetWorkingDir(); workingDir != "" {
+				all := h.deps.GetWorkspacePromptsAll(workingDir)
+				var target *config.WebPrompt
+				for i := range all {
+					if strings.EqualFold(all[i].Name, req.PromptName) {
+						target = &all[i]
+						break
+					}
+				}
+				if target != nil {
+					var missing []string
+					for _, p := range target.Parameters {
+						if p.Required == nil || !*p.Required {
+							continue
+						}
+						if strings.TrimSpace(req.Arguments[p.Name]) == "" {
+							missing = append(missing, p.Name)
+						}
+					}
+					if len(missing) > 0 {
+						writeErrorJSON(w, http.StatusBadRequest, "missing_required_arguments",
+							fmt.Sprintf("Prompt %q is missing required arguments: %s",
+								req.PromptName, strings.Join(missing, ", ")))
+						return
+					}
+				}
+			}
+		}
+	}
+
 	// Get client ID from request context if available (e.g., from auth)
 	clientID := ""
 

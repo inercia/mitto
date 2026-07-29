@@ -85,7 +85,7 @@ export function useWSQueue(activeSessionId) {
   // Add a message to the queue
   const addToQueue = useCallback(
     async (message, imageIds = [], fileIds = [], opts = {}) => {
-      const { promptName } = opts;
+      const { promptName, arguments: promptArgs } = opts;
       if (!activeSessionId || (!message?.trim() && !promptName))
         return { success: false };
       try {
@@ -95,6 +95,12 @@ export function useWSQueue(activeSessionId) {
           file_ids: fileIds,
         };
         if (promptName) body.prompt_name = promptName;
+        // Forward per-parameter values for Go-template `.Args.*` substitution
+        // (mitto-gtf). Only sent when non-empty to keep the wire clean on
+        // argument-less queue-adds.
+        if (promptArgs && Object.keys(promptArgs).length > 0) {
+          body.arguments = promptArgs;
+        }
         const response = await secureFetch(
           endpoints.sessions.queue(activeSessionId),
           {
