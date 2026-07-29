@@ -1198,7 +1198,11 @@ func (m *ACPProcessManager) getOrCreateAuxiliarySession(ctx context.Context, wor
 				"purpose", purpose,
 				"reason", "process_saturated")
 		}
-		return nil, fmt.Errorf("shared ACP process is saturated; skipping auxiliary session creation for purpose %q: %w", purpose, context.DeadlineExceeded)
+		// Wrap BOTH ErrSharedProcessSaturated (so callers with their own
+		// retry loops — e.g. title-gen, mitto-ammz.1 — can classify and
+		// abandon) AND context.DeadlineExceeded (preserved for pre-existing
+		// callers that only checked DeadlineExceeded).
+		return nil, fmt.Errorf("%w; skipping auxiliary session creation for purpose %q: %w", ErrSharedProcessSaturated, purpose, context.DeadlineExceeded)
 	}
 
 	// Proactive load-based bail (mitto-9gt): the IsSaturated() guard above is
@@ -1227,7 +1231,11 @@ func (m *ACPProcessManager) getOrCreateAuxiliarySession(ctx context.Context, wor
 					"threshold", auxSessionCreateBusyRPCThreshold,
 					"reason", "process_busy")
 			}
-			return nil, fmt.Errorf("shared ACP process is busy (%d active RPCs >= threshold %d); skipping auxiliary session creation for purpose %q: %w", active, auxSessionCreateBusyRPCThreshold, purpose, context.DeadlineExceeded)
+			// Same rationale as the mitto-z70 bail above: wrap
+			// ErrSharedProcessSaturated so caller-side retry loops (mitto-ammz.1)
+			// can classify and abandon, while keeping the DeadlineExceeded chain
+			// for pre-existing callers.
+			return nil, fmt.Errorf("%w: shared ACP process is busy (%d active RPCs >= threshold %d); skipping auxiliary session creation for purpose %q: %w", ErrSharedProcessSaturated, active, auxSessionCreateBusyRPCThreshold, purpose, context.DeadlineExceeded)
 		}
 	}
 

@@ -18,6 +18,7 @@ import (
 	"github.com/coder/acp-go-sdk"
 
 	mittoAcp "github.com/inercia/mitto/internal/acp"
+	"github.com/inercia/mitto/internal/acpproc/acperrors"
 	"github.com/inercia/mitto/internal/acpproc/procstart"
 	"github.com/inercia/mitto/internal/coldstart"
 	"github.com/inercia/mitto/internal/conversation"
@@ -1429,6 +1430,22 @@ func rpcErrorCode(err error) (int, bool) {
 		return re.Code, true
 	}
 	return 0, false
+}
+
+// ErrSharedProcessSaturated is re-exported from internal/acpproc/acperrors
+// so consumers already importing internal/acpproc get the classifier through
+// the same package they use for aux calls. The canonical definition lives in
+// acperrors to keep the classifier surface cycle-free (internal/acpproc
+// imports internal/conversation, which cannot in turn import
+// internal/acpproc — mitto-ammz.1).
+var ErrSharedProcessSaturated = acperrors.ErrSharedProcessSaturated
+
+// IsAgentInternalDeadlineErr is re-exported from internal/acpproc/acperrors
+// (same rationale as ErrSharedProcessSaturated). Prefer acperrors as the
+// import path from packages that only need the classifier and do not depend
+// on internal/acpproc otherwise.
+func IsAgentInternalDeadlineErr(err error) bool {
+	return acperrors.IsAgentInternalDeadlineErr(err)
 }
 
 // isAgentInternalDeadlineErr reports whether err is the agent's OWN internal

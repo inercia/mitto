@@ -2,12 +2,14 @@ package conversation
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"regexp"
 	"strings"
 	"time"
 	"unicode"
 
+	"github.com/inercia/mitto/internal/acpproc/acperrors"
 	"github.com/inercia/mitto/internal/auxiliary"
 	"github.com/inercia/mitto/internal/session"
 )
@@ -121,11 +123,16 @@ func SessionNeedsTitle(store *session.Store, sessionID string) bool {
 	return meta.Name == ""
 }
 
+// titleMaxRetries is the maximum number of retry attempts for title generation.
+// var (not const) so tests can override the cadence to exercise the retry loop
+// in unit time. See internal/conversation/title_wedge_repro_test.go (mitto-ammz.1).
+var titleMaxRetries = 3 // 4 total attempts: delays 30s, 60s, 120s
+
+// titleRetryBaseDelay is the initial delay between retry attempts (exponential backoff).
+// var (not const) so tests can override the cadence. See titleMaxRetries.
+var titleRetryBaseDelay = 30 * time.Second // delays: 30s, 60s, 120s
+
 const (
-	// titleMaxRetries is the maximum number of retry attempts for title generation.
-	titleMaxRetries = 3 // 4 total attempts: delays 30s, 60s, 120s
-	// titleRetryBaseDelay is the initial delay between retry attempts (exponential backoff).
-	titleRetryBaseDelay = 30 * time.Second // delays: 30s, 60s, 120s
 	// titleSessionCreateTimeout is the timeout for a single title generation attempt.
 	// This covers the full round-trip: auxiliary session creation + the title prompt itself.
 	// 20 minutes per attempt is generous. With titleMaxRetries=3 the total worst-case
@@ -208,6 +215,29 @@ func GenerateAndSetTitle(cfg TitleGenerationConfig) {
 					"session_id", cfg.SessionID,
 					"attempt", attempt+1,
 					"max_attempts", titleMaxRetries+1)
+			}
+
+			// mitto-ammz.1: classify-and-abandon on wedge/saturation signals.
+			// The retry cadence (30s / 60s / 120s) is failure-agnostic, and
+			// each attempt burns the full 60s extended-MCP budget on a wedged
+			// or saturated shared process with near-zero chance of success.
+			// The next natural quiescence will re-attempt via the normal
+			// auto-title path; do not amplify the storm here.
+			if lastErr != nil && (acperrors.IsAgentInternalDeadlineErr(lastErr) ||
+				errors.Is(lastErr, acperrors.ErrSharedProcessSaturated)) {
+				if cfg.Logger != nil {
+					reason := "agent_internal_deadline"
+					if errors.Is(lastErr, acperrors.ErrSharedProcessSaturated) {
+						reason = "shared_process_saturated"
+					}
+					cfg.Logger.Info("Abandoning title generation retries on wedge signal",
+						"session_id", cfg.SessionID,
+						"workspace_uuid", cfg.WorkspaceUUID,
+						"attempt", attempt+1,
+						"reason", reason,
+						"error", lastErr)
+				}
+				return
 			}
 		}
 
