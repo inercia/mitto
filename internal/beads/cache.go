@@ -210,6 +210,12 @@ func (c *CachingClient) store(dir, tag string, entry cacheEntry) {
 // doJSON is the shared cache-then-singleflight body for read methods returning
 // []byte. It skips the cache entirely for uninitialized dirs (see cache.go
 // contract note) so the isInitialized short-circuit payload is never stored.
+//
+// Uses sf.DoChan (not sf.Do) so followers can abandon the wait on ctx
+// cancellation rather than block on the leader's WaitGroup past their own
+// request deadline (mitto-kij). The leader continues fetching in the
+// background regardless; when it finishes the cache is populated for later
+// callers.
 func (c *CachingClient) doJSON(ctx context.Context, dir, tag string, fetch func(context.Context) ([]byte, error)) ([]byte, error) {
 	if !isInitialized(dir) {
 		return fetch(ctx)
@@ -219,26 +225,37 @@ func (c *CachingClient) doJSON(ctx context.Context, dir, tag string, fetch func(
 		return entry.payload, nil
 	}
 	key := dir + "\x00" + tag
-	v, err, shared := c.sf.Do(key, func() (any, error) {
+	ch := c.sf.DoChan(key, func() (any, error) {
 		if entry, ok := c.lookup(dir, tag); ok {
 			c.hits.Add(1)
 			return entry.payload, nil
 		}
 		c.misses.Add(1)
-		out, err := fetch(ctx)
+		// Detach from the caller's ctx: this closure runs as the singleflight
+		// leader on behalf of any number of followers; using the leader's ctx
+		// would let its early cancellation abort the shared fetch and starve
+		// unrelated followers. Use context.Background() so the leader always
+		// runs to completion (bounded downstream by cliClient.runJSONRead's
+		// own timeout).
+		out, err := fetch(context.Background())
 		if err != nil {
 			return nil, err
 		}
 		c.store(dir, tag, cacheEntry{payload: out, capturedAt: time.Now()})
 		return out, nil
 	})
-	if shared {
-		c.singleflightShared.Add(1)
+	select {
+	case r := <-ch:
+		if r.Shared {
+			c.singleflightShared.Add(1)
+		}
+		if r.Err != nil {
+			return nil, r.Err
+		}
+		return r.Val.([]byte), nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
-	if err != nil {
-		return nil, err
-	}
-	return v.([]byte), nil
 }
 
 // ---------------------------------------------------------------------------
@@ -276,7 +293,8 @@ func (c *CachingClient) ListAllLabels(ctx context.Context, dir string) ([]byte, 
 // ConfigShow returns the cached bd config map for dir, populating on miss.
 // Uses the same singleflight group as the []byte readers, but stores the
 // decoded map in a dedicated cacheEntry field so the two representations do
-// not collide.
+// not collide. Mirrors doJSON's DoChan + ctx-observing select so followers
+// do not block past their request deadline (mitto-kij).
 func (c *CachingClient) ConfigShow(ctx context.Context, dir string) (map[string]string, error) {
 	const tag = "configshow"
 	if !isInitialized(dir) {
@@ -287,26 +305,32 @@ func (c *CachingClient) ConfigShow(ctx context.Context, dir string) (map[string]
 		return entry.configMap, nil
 	}
 	key := dir + "\x00" + tag
-	v, err, shared := c.sf.Do(key, func() (any, error) {
+	ch := c.sf.DoChan(key, func() (any, error) {
 		if entry, ok := c.lookup(dir, tag); ok && entry.configMap != nil {
 			c.hits.Add(1)
 			return entry.configMap, nil
 		}
 		c.misses.Add(1)
-		out, err := c.inner.ConfigShow(ctx, dir)
+		// Detach from caller's ctx; see doJSON for rationale.
+		out, err := c.inner.ConfigShow(context.Background(), dir)
 		if err != nil {
 			return nil, err
 		}
 		c.store(dir, tag, cacheEntry{configMap: out, capturedAt: time.Now()})
 		return out, nil
 	})
-	if shared {
-		c.singleflightShared.Add(1)
+	select {
+	case r := <-ch:
+		if r.Shared {
+			c.singleflightShared.Add(1)
+		}
+		if r.Err != nil {
+			return nil, r.Err
+		}
+		return r.Val.(map[string]string), nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
-	if err != nil {
-		return nil, err
-	}
-	return v.(map[string]string), nil
 }
 
 // Show returns the cached payload for `bd show <id>` in dir, populating on

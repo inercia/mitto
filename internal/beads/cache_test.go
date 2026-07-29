@@ -38,6 +38,10 @@ type fakeClient struct {
 	// If non-nil, List blocks on this channel before returning; used to
 	// exercise singleflight coalescing.
 	blockList chan struct{}
+
+	// If non-nil, Show blocks on this channel before returning; used to
+	// simulate a slow-leader bd show call (mitto-kij reproduction).
+	blockShow chan struct{}
 }
 
 func (f *fakeClient) List(_ context.Context, _ string) ([]byte, error) {
@@ -65,6 +69,9 @@ func (f *fakeClient) Status(_ context.Context, _ string) ([]byte, error) {
 }
 
 func (f *fakeClient) Show(_ context.Context, _, id string) ([]byte, error) {
+	if f.blockShow != nil {
+		<-f.blockShow
+	}
 	f.mu.Lock()
 	f.showCalls++
 	f.mu.Unlock()
@@ -723,4 +730,83 @@ func TestCachingClient_ShowKeyedPerID(t *testing.T) {
 	if string(outB1) != string(outB2) || string(outB1) != `{"id":"mitto-B"}` {
 		t.Errorf("B payloads mismatched: %q vs %q", outB1, outB2)
 	}
+}
+
+// TestCachingClient_Show_FollowerContextIsHonored is a REPRODUCTION test for
+// mitto-kij (API 503 storm: 3x GET /mitto/api/issues/<id> stalled 60s at
+// handler deadline).
+//
+// Root cause under test: doJSON in cache.go uses singleflight.Group.Do, which
+// blocks followers on a WaitGroup and does NOT observe their per-caller
+// context. When a leader's `bd show` stalls, all followers sharing the same
+// (dir, id) key block past their own request deadlines until the outer
+// http.TimeoutHandler fires the canned 60s "Request timeout" 503.
+//
+// Expected behavior: a follower whose context expires while the leader is
+// still fetching MUST return promptly with ctx.Err() (DeadlineExceeded), not
+// block on the leader.
+//
+// This test is expected to FAIL on the current sf.Do implementation and to
+// PASS once doJSON is switched to sf.DoChan + select on ctx.Done().
+func TestCachingClient_Show_FollowerContextIsHonored(t *testing.T) {
+	dir := initializedDir(t)
+	fake := &fakeClient{blockShow: make(chan struct{})}
+	c := NewCachingClient(fake)
+
+	const id = "mitto-kij"
+
+	// Leader: blocks inside fakeClient.Show until we close blockShow.
+	leaderDone := make(chan struct{})
+	go func() {
+		defer close(leaderDone)
+		_, _ = c.Show(context.Background(), dir, id)
+	}()
+
+	// Give the leader a moment to enter sf.Do and start the fetch.
+	time.Sleep(20 * time.Millisecond)
+
+	// Follower: same (dir, id), tight per-request deadline. On the buggy
+	// implementation this call blocks on sf.Do's WaitGroup and only returns
+	// when the leader finishes — long past ctx expiry.
+	const followerDeadline = 50 * time.Millisecond
+	ctx, cancel := context.WithTimeout(context.Background(), followerDeadline)
+	defer cancel()
+
+	type result struct {
+		err     error
+		elapsed time.Duration
+	}
+	resCh := make(chan result, 1)
+	go func() {
+		start := time.Now()
+		_, err := c.Show(ctx, dir, id)
+		resCh <- result{err: err, elapsed: time.Since(start)}
+	}()
+
+	// Bound the assertion: give the follower at most 10x its own deadline to
+	// return. On the buggy impl the follower will still be blocked here and
+	// we surface a clear failure rather than hanging the test binary.
+	const assertWindow = 10 * followerDeadline
+	select {
+	case r := <-resCh:
+		if !errors.Is(r.err, context.DeadlineExceeded) {
+			t.Fatalf("follower err = %v, want context.DeadlineExceeded "+
+				"(singleflight is not honoring per-caller ctx)", r.err)
+		}
+		// Sanity: it returned somewhere near its own deadline, not way past it.
+		if r.elapsed > assertWindow {
+			t.Fatalf("follower returned after %v, want ~%v "+
+				"(singleflight blocked follower past its ctx deadline)",
+				r.elapsed, followerDeadline)
+		}
+	case <-time.After(assertWindow):
+		t.Fatalf("follower did not return within %v of its %v ctx deadline "+
+			"(singleflight is blocking followers on the leader's WaitGroup, "+
+			"ignoring caller ctx — mitto-kij)", assertWindow, followerDeadline)
+	}
+
+	// Cleanup: unblock the leader so the goroutine can exit and the test
+	// process does not leak a goroutine into subsequent tests.
+	close(fake.blockShow)
+	<-leaderDone
 }
