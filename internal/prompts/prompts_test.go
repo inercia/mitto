@@ -2071,7 +2071,7 @@ func TestValidatePromptParameters(t *testing.T) {
 	})
 
 	t.Run("filename param with valid dir and glob is OK", func(t *testing.T) {
-		err := ValidatePromptParameters("", []PromptParameter{{Name: "F", Type: "filename", Dir: "docs/instructions", Glob: "*.md"}})
+		err := ValidatePromptParameters("", []PromptParameter{{Name: "F", Type: "filename", Dir: "docs/instructions", Glob: []string{"*.md"}}})
 		if err != nil {
 			t.Errorf("unexpected error: %v", err)
 		}
@@ -2100,7 +2100,7 @@ func TestValidatePromptParameters(t *testing.T) {
 	})
 
 	t.Run("glob on non-filename type returns error mentioning glob and filename", func(t *testing.T) {
-		err := ValidatePromptParameters("", []PromptParameter{{Name: "X", Type: "text", Glob: "*.md"}})
+		err := ValidatePromptParameters("", []PromptParameter{{Name: "X", Type: "text", Glob: []string{"*.md"}}})
 		if err == nil {
 			t.Fatal("expected error, got nil")
 		}
@@ -2138,7 +2138,7 @@ func TestValidatePromptParameters(t *testing.T) {
 
 	t.Run("invalid glob returns error mentioning glob", func(t *testing.T) {
 		// doublestar.ValidatePattern rejects an unterminated character class like "[abc".
-		err := ValidatePromptParameters("", []PromptParameter{{Name: "F", Type: "filename", Glob: "[abc"}})
+		err := ValidatePromptParameters("", []PromptParameter{{Name: "F", Type: "filename", Glob: []string{"[abc"}}})
 		if err == nil {
 			t.Fatal("expected error, got nil")
 		}
@@ -2148,14 +2148,14 @@ func TestValidatePromptParameters(t *testing.T) {
 	})
 
 	t.Run("recursive glob **/*.md accepted for filename", func(t *testing.T) {
-		err := ValidatePromptParameters("", []PromptParameter{{Name: "F", Type: "filename", Glob: "**/*.md"}})
+		err := ValidatePromptParameters("", []PromptParameter{{Name: "F", Type: "filename", Glob: []string{"**/*.md"}}})
 		if err != nil {
 			t.Errorf("unexpected error: %v", err)
 		}
 	})
 
 	t.Run("anchored recursive glob docs/**/*.md accepted for filename", func(t *testing.T) {
-		err := ValidatePromptParameters("", []PromptParameter{{Name: "F", Type: "filename", Glob: "docs/**/*.md"}})
+		err := ValidatePromptParameters("", []PromptParameter{{Name: "F", Type: "filename", Glob: []string{"docs/**/*.md"}}})
 		if err != nil {
 			t.Errorf("unexpected error: %v", err)
 		}
@@ -2184,7 +2184,7 @@ func TestValidatePromptParameters(t *testing.T) {
 	})
 
 	t.Run("dirname param with valid dir and glob is OK", func(t *testing.T) {
-		err := ValidatePromptParameters("", []PromptParameter{{Name: "D", Type: "dirname", Dir: "docs", Glob: "20*"}})
+		err := ValidatePromptParameters("", []PromptParameter{{Name: "D", Type: "dirname", Dir: "docs", Glob: []string{"20*"}}})
 		if err != nil {
 			t.Errorf("unexpected error: %v", err)
 		}
@@ -2207,7 +2207,7 @@ func TestValidatePromptParameters(t *testing.T) {
 	})
 
 	t.Run("glob on dirname type is accepted (widened gate)", func(t *testing.T) {
-		err := ValidatePromptParameters("", []PromptParameter{{Name: "D", Type: "dirname", Glob: "*"}})
+		err := ValidatePromptParameters("", []PromptParameter{{Name: "D", Type: "dirname", Glob: []string{"*"}}})
 		if err != nil {
 			t.Errorf("unexpected error: %v", err)
 		}
@@ -2238,14 +2238,14 @@ func TestValidatePromptParameters(t *testing.T) {
 	})
 
 	t.Run("recursive glob **/env-* accepted for dirname", func(t *testing.T) {
-		err := ValidatePromptParameters("", []PromptParameter{{Name: "D", Type: "dirname", Glob: "**/env-*"}})
+		err := ValidatePromptParameters("", []PromptParameter{{Name: "D", Type: "dirname", Glob: []string{"**/env-*"}}})
 		if err != nil {
 			t.Errorf("unexpected error: %v", err)
 		}
 	})
 
 	t.Run("dirname with invalid glob returns error mentioning glob", func(t *testing.T) {
-		err := ValidatePromptParameters("", []PromptParameter{{Name: "D", Type: "dirname", Glob: "[abc"}})
+		err := ValidatePromptParameters("", []PromptParameter{{Name: "D", Type: "dirname", Glob: []string{"[abc"}}})
 		if err == nil {
 			t.Fatal("expected error, got nil")
 		}

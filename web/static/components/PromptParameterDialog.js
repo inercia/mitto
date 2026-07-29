@@ -801,7 +801,13 @@ export function PromptParameterDialog({
     for (const p of filenameParams) {
       const params = { working_dir: workingDir };
       if (p.dir) params.dir = p.dir;
-      if (p.glob) params.glob = p.glob;
+      // mitto-ebb: glob is a list on the wire (repeated ?glob=…). qs()
+      // fans an array out into repeated params; a defensive scalar branch
+      // survives an old payload slipping through.
+      if (p.glob) {
+        if (Array.isArray(p.glob) ? p.glob.length : String(p.glob))
+          params.glob = p.glob;
+      }
       const paramName = p.name;
       authFetch(endpoints.workspaceFiles.list(params))
         .then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
@@ -839,7 +845,11 @@ export function PromptParameterDialog({
     for (const p of dirnameParams) {
       const params = { working_dir: workingDir };
       if (p.dir) params.dir = p.dir;
-      if (p.glob) params.glob = p.glob;
+      // mitto-ebb: see comment in the filename fetch above.
+      if (p.glob) {
+        if (Array.isArray(p.glob) ? p.glob.length : String(p.glob))
+          params.glob = p.glob;
+      }
       const paramName = p.name;
       authFetch(endpoints.workspaceDirs.list(params))
         .then((r) => (r.ok ? r.json() : Promise.reject(r.status)))

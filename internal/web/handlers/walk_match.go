@@ -32,6 +32,18 @@ func containsDoublestar(pattern string) bool {
 	return strings.Contains(pattern, "**")
 }
 
+// patternsContainDoublestar reports whether ANY pattern in the list uses
+// recursive semantics. Used to choose between the non-recursive os.ReadDir
+// branch and the recursive walker branch in the handlers.
+func patternsContainDoublestar(patterns []string) bool {
+	for _, p := range patterns {
+		if containsDoublestar(p) {
+			return true
+		}
+	}
+	return false
+}
+
 // literalPrefix returns the longest literal path prefix of pattern (empty if
 // the first segment contains a wildcard). Used to anchor the walk.
 func literalPrefix(pattern string) string {
@@ -52,12 +64,34 @@ func literalPrefix(pattern string) string {
 	return strings.Join(out, "/")
 }
 
+// commonLiteralPrefix returns the shared literal prefix across all patterns:
+// non-empty only when every pattern has the same non-empty literalPrefix.
+// This keeps the walk-root optimization safe when patterns diverge (e.g.
+// "docs/**/*.md" and "spec/**/*.md" share no prefix and must walk from root).
+func commonLiteralPrefix(patterns []string) string {
+	if len(patterns) == 0 {
+		return ""
+	}
+	first := literalPrefix(patterns[0])
+	if first == "" {
+		return ""
+	}
+	for _, p := range patterns[1:] {
+		if literalPrefix(p) != first {
+			return ""
+		}
+	}
+	return first
+}
+
 // walkMatchOpts describes a bounded recursive walk under a resolved root,
-// returning entries whose relative path matches a doublestar pattern.
+// returning entries whose relative path matches any of the doublestar
+// patterns (union semantics; a single entry that matches multiple patterns
+// is only reported once).
 type walkMatchOpts struct {
 	ctx        context.Context
 	root       string
-	pattern    string
+	patterns   []string
 	maxResults int
 	maxVisited int
 	wantFiles  bool
@@ -127,8 +161,16 @@ func walkMatch(opts walkMatchOpts) walkMatchResult {
 				return nil
 			}
 		}
-		ok, mErr := doublestar.PathMatch(opts.pattern, p)
-		if mErr != nil || !ok {
+		matched := false
+		for _, pat := range opts.patterns {
+			ok, mErr := doublestar.PathMatch(pat, p)
+			if mErr != nil || !ok {
+				continue
+			}
+			matched = true
+			break
+		}
+		if !matched {
 			return nil
 		}
 		res.matches = append(res.matches, p)

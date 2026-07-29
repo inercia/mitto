@@ -1021,8 +1021,15 @@ in sync.
 | `acpServer` | An ACP server (agent) name. Lets a prompt that creates a new conversation choose which agent runs it. |
 | `text` | Generic free-form text (catch-all type). Rendered as a single-line input by default; set `multiLine: true` to render a resizable multi-line textarea instead, or set `options: [...]` to constrain the value to a fixed enumeration rendered as a dropdown (mutually exclusive with `multiLine`). |
 | `boolean` | A yes/no flag, rendered as a checkbox. Supplied to the template as the string `"true"` or `"false"` (default unchecked → `"false"`). Boolean parameters never gate menu visibility and are always collected via the parameter dialog. |
-| `filename` | A workspace-relative file path, rendered as a dropdown of files under an optional `dir` (workspace-relative), optionally filtered by a `glob` (e.g. `"*.md"` or `"**/*.md"` — see below). Interactive and dialog-collected (never gates menu visibility, always offered by the parameter dialog). Feeds `{{ ReadFile .Args.NAME }}` directly. `dir`/`glob` are dropdown hints only — path safety (absolute-path/`..`-escape/symlink-escape rejection, 256 KB cap) is enforced at read time by `ReadFile`. |
-| `dirname` | A workspace-relative directory path, rendered as a dropdown of sub-directories under an optional `dir` (workspace-relative), optionally filtered by a `glob` (e.g. `"prod-*"` or `"**/env-*"` — see below). Interactive and dialog-collected (never gates menu visibility, always offered by the parameter dialog). Hidden directories (leading `.`) are excluded by default. Value is a workspace-relative directory path suitable for joining with a filename or passing to template helpers. `dir`/`glob` are dropdown hints only — path safety is enforced by the endpoint (absolute-path/`..`-escape/symlink-escape rejection). |
+| `filename` | A workspace-relative file path, rendered as a dropdown of files under an optional `dir` (workspace-relative), optionally filtered by a `glob` **list** (e.g. `["*.md"]` or `["**/*.md", "**/*.rst"]` — see below). A candidate matches when ANY listed pattern matches (union semantics). Interactive and dialog-collected (never gates menu visibility, always offered by the parameter dialog). Feeds `{{ ReadFile .Args.NAME }}` directly. `dir`/`glob` are dropdown hints only — path safety (absolute-path/`..`-escape/symlink-escape rejection, 256 KB cap) is enforced at read time by `ReadFile`. |
+| `dirname` | A workspace-relative directory path, rendered as a dropdown of sub-directories under an optional `dir` (workspace-relative), optionally filtered by a `glob` **list** (e.g. `["prod-*"]` or `["**/env-*", "**/stage-*"]` — see below). A candidate matches when ANY listed pattern matches (union semantics). Interactive and dialog-collected (never gates menu visibility, always offered by the parameter dialog). Hidden directories (leading `.`) are excluded by default. Value is a workspace-relative directory path suitable for joining with a filename or passing to template helpers. `dir`/`glob` are dropdown hints only — path safety is enforced by the endpoint (absolute-path/`..`-escape/symlink-escape rejection). |
+
+> **Breaking change (mitto-ebb):** `glob` is now a **list of patterns**, not a
+> single string. Existing external prompts (`.mittorc` / workspace prompts)
+> using the scalar form `glob: "*.md"` must migrate to `glob: ["*.md"]` (or
+> the block-list form) — a scalar value is rejected at YAML unmarshal time.
+> The single-pattern behavior is unchanged when the list has one entry; use
+> multiple entries to accept a union of extensions (e.g. `["**/*.md", "**/*.rst"]`).
 
 #### `filename` YAML example
 
@@ -1032,7 +1039,8 @@ parameters:
   - name: Instructions
     type: filename
     dir: docs/instructions
-    glob: "*.md"
+    glob:
+      - "*.md"
     required: false
     description: Optional instructions file to inline
 prompt: |
@@ -1056,9 +1064,10 @@ prompt: |
 
 #### Recursive glob (`**`) for `filename` and `dirname`
 
-The `glob` field on `filename` / `dirname` accepts recursive patterns using
-`**` (doublestar semantics). Presence of `**` in the pattern switches the
-picker from a single-directory listing to a bounded workspace walk.
+The `glob` field on `filename` / `dirname` is a **list of doublestar patterns**;
+a candidate matches when ANY listed pattern matches (union semantics). Any
+entry containing `**` switches the picker from a single-directory listing
+to a bounded workspace walk.
 
 - **Non-`**` patterns** (`"*.md"`, `"prod-*"`) match against the entry's
   **base name only** and list a single directory (non-recursive) — unchanged.
@@ -1083,7 +1092,8 @@ YAML examples:
 parameters:
   - name: Doc
     type: filename
-    glob: "**/*.md"
+    glob:
+      - "**/*.md"
 ```
 
 ```yaml
@@ -1091,7 +1101,19 @@ parameters:
   - name: Doc
     type: filename
     dir: docs
-    glob: "docs/**/*.md"
+    glob:
+      - "docs/**/*.md"
+```
+
+Multi-pattern union — accept Markdown OR reStructuredText anywhere:
+
+```yaml
+parameters:
+  - name: Doc
+    type: filename
+    glob:
+      - "**/*.md"
+      - "**/*.rst"
 ```
 
 ### Visibility rule (type-based gating)

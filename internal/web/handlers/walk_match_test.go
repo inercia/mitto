@@ -76,7 +76,7 @@ func TestWalkMatch_MatchesNestedFiles(t *testing.T) {
 	mkTree(t, root, []string{"a.md", "sub/b.md", "sub/deep/c.md", "sub/deep/d.txt"}, nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	res := walkMatch(walkMatchOpts{ctx: ctx, root: root, pattern: "**/*.md", maxResults: 500, maxVisited: 50000, wantFiles: true})
+	res := walkMatch(walkMatchOpts{ctx: ctx, root: root, patterns: []string{"**/*.md"}, maxResults: 500, maxVisited: 50000, wantFiles: true})
 	sort.Strings(res.matches)
 	got := strings.Join(res.matches, ",")
 	want := "a.md,sub/b.md,sub/deep/c.md"
@@ -93,7 +93,7 @@ func TestWalkMatch_PrunesHeavyDirs(t *testing.T) {
 	mkTree(t, root, []string{"src/a.md", "node_modules/big.md", ".git/HEAD.md", "vendor/v.md", "dist/x.md"}, nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	res := walkMatch(walkMatchOpts{ctx: ctx, root: root, pattern: "**/*.md", maxResults: 500, maxVisited: 50000, wantFiles: true})
+	res := walkMatch(walkMatchOpts{ctx: ctx, root: root, patterns: []string{"**/*.md"}, maxResults: 500, maxVisited: 50000, wantFiles: true})
 	sort.Strings(res.matches)
 	if got := strings.Join(res.matches, ","); got != "src/a.md" {
 		t.Fatalf("matches = %q, want %q", got, "src/a.md")
@@ -109,7 +109,7 @@ func TestWalkMatch_HonorsResultsCap(t *testing.T) {
 	mkTree(t, root, files, nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	res := walkMatch(walkMatchOpts{ctx: ctx, root: root, pattern: "**/*.md", maxResults: 5, maxVisited: 50000, wantFiles: true})
+	res := walkMatch(walkMatchOpts{ctx: ctx, root: root, patterns: []string{"**/*.md"}, maxResults: 5, maxVisited: 50000, wantFiles: true})
 	if len(res.matches) != 5 {
 		t.Fatalf("len(matches) = %d, want 5", len(res.matches))
 	}
@@ -127,7 +127,7 @@ func TestWalkMatch_HonorsVisitedCap(t *testing.T) {
 	mkTree(t, root, files, nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	res := walkMatch(walkMatchOpts{ctx: ctx, root: root, pattern: "**/*.md", maxResults: 500, maxVisited: 3, wantFiles: true})
+	res := walkMatch(walkMatchOpts{ctx: ctx, root: root, patterns: []string{"**/*.md"}, maxResults: 500, maxVisited: 3, wantFiles: true})
 	if !res.truncated || res.reason != "visited_cap" {
 		t.Fatalf("truncated=%v reason=%q, want truncated=true reason=visited_cap", res.truncated, res.reason)
 	}
@@ -138,7 +138,7 @@ func TestWalkMatch_HonorsDeadline(t *testing.T) {
 	mkTree(t, root, []string{"a.md", "sub/b.md"}, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	res := walkMatch(walkMatchOpts{ctx: ctx, root: root, pattern: "**/*.md", maxResults: 500, maxVisited: 50000, wantFiles: true})
+	res := walkMatch(walkMatchOpts{ctx: ctx, root: root, patterns: []string{"**/*.md"}, maxResults: 500, maxVisited: 50000, wantFiles: true})
 	if !res.truncated || res.reason != "deadline" {
 		t.Fatalf("truncated=%v reason=%q, want truncated=true reason=deadline", res.truncated, res.reason)
 	}

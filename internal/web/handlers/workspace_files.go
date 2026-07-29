@@ -48,7 +48,10 @@ func (h *Handlers) HandleWorkspaceFiles(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	dir := r.URL.Query().Get("dir")
-	glob := r.URL.Query().Get("glob")
+	// mitto-ebb: accept repeated ?glob=… query params (list form). A file is
+	// a candidate when it matches ANY entry (union semantics). Empty list =
+	// no filter.
+	globs := r.URL.Query()["glob"]
 
 	// Reject absolute dir up-front — the endpoint is scoped to files INSIDE
 	// working_dir. The Clean+HasPrefix check below would also catch this but
@@ -57,12 +60,16 @@ func (h *Handlers) HandleWorkspaceFiles(w http.ResponseWriter, r *http.Request) 
 		writeErrorJSON(w, http.StatusBadRequest, "", "dir must be workspace-relative, not absolute")
 		return
 	}
-	// Compile-check glob so a malformed pattern surfaces as a 400 instead of
-	// silently matching nothing. Mirrors the parse-time guard in
-	// prompts.ValidatePromptParameters. Uses doublestar so recursive patterns
-	// ("**") are accepted here and honored below.
-	if glob != "" {
-		if !doublestar.ValidatePattern(glob) {
+	// Compile-check every glob entry so a malformed pattern surfaces as a
+	// 400 instead of silently matching nothing. Mirrors the parse-time guard
+	// in prompts.ValidatePromptParameters. Uses doublestar so recursive
+	// patterns ("**") are accepted here and honored below.
+	for _, g := range globs {
+		if g == "" {
+			writeErrorJSON(w, http.StatusBadRequest, "", "glob entries must not be empty")
+			return
+		}
+		if !doublestar.ValidatePattern(g) {
 			writeErrorJSON(w, http.StatusBadRequest, "", "invalid glob")
 			return
 		}
@@ -102,8 +109,11 @@ func (h *Handlers) HandleWorkspaceFiles(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	if containsDoublestar(glob) {
-		prefix := literalPrefix(glob)
+	if patternsContainDoublestar(globs) {
+		// Anchor the walk only when every pattern shares the same non-empty
+		// literal prefix; otherwise walk from the resolved root and let
+		// PathMatch handle the divergent patterns from there.
+		prefix := commonLiteralPrefix(globs)
 		walkRoot := resolved
 		if prefix != "" {
 			joined := filepath.Join(resolved, prefix)
@@ -118,16 +128,20 @@ func (h *Handlers) HandleWorkspaceFiles(w http.ResponseWriter, r *http.Request) 
 			}
 			walkRoot = cleaned
 		}
-		pattern := glob
-		if prefix != "" {
-			pattern = strings.TrimPrefix(pattern, prefix+"/")
+		patterns := make([]string, len(globs))
+		for i, g := range globs {
+			if prefix != "" {
+				patterns[i] = strings.TrimPrefix(g, prefix+"/")
+			} else {
+				patterns[i] = g
+			}
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 		defer cancel()
 		res := walkMatch(walkMatchOpts{
 			ctx:        ctx,
 			root:       walkRoot,
-			pattern:    pattern,
+			patterns:   patterns,
 			maxResults: workspaceFilesMaxResults,
 			maxVisited: walkMatchMaxVisited,
 			wantFiles:  true,
@@ -145,11 +159,11 @@ func (h *Handlers) HandleWorkspaceFiles(w http.ResponseWriter, r *http.Request) 
 		if h.deps.Logger != nil {
 			if res.truncated {
 				h.deps.Logger.Debug("workspace-files listed",
-					"working_dir", workingDir, "dir", dir, "glob", glob,
+					"working_dir", workingDir, "dir", dir, "glob", globs,
 					"count", len(files), "truncated", true, "reason", res.reason)
 			} else {
 				h.deps.Logger.Debug("workspace-files listed",
-					"working_dir", workingDir, "dir", dir, "glob", glob, "count", len(files))
+					"working_dir", workingDir, "dir", dir, "glob", globs, "count", len(files))
 			}
 		}
 		writeJSONOK(w, map[string]interface{}{"files": files})
@@ -165,7 +179,9 @@ func (h *Handlers) HandleWorkspaceFiles(w http.ResponseWriter, r *http.Request) 
 	// Filter to regular files (by mode; a symlink pointing at a regular file
 	// is not included — dir is meant to be a curated flat set of source files,
 	// and symlinks are not covered by the containment guarantees applied to
-	// dir itself). Glob is applied to the base name only.
+	// dir itself). Globs are applied to the base name; a candidate wins if
+	// ANY listed pattern matches (union semantics). Dedup is trivially free
+	// here because os.ReadDir yields unique base names in a single pass.
 	files := make([]string, 0, len(entries))
 	for _, e := range entries {
 		if len(files) >= workspaceFilesMaxResults {
@@ -179,9 +195,16 @@ func (h *Handlers) HandleWorkspaceFiles(w http.ResponseWriter, r *http.Request) 
 		if ferr != nil || !fi.Mode().IsRegular() {
 			continue
 		}
-		if glob != "" {
-			ok, _ := doublestar.PathMatch(glob, name)
-			if !ok {
+		if len(globs) > 0 {
+			matched := false
+			for _, g := range globs {
+				ok, _ := doublestar.PathMatch(g, name)
+				if ok {
+					matched = true
+					break
+				}
+			}
+			if !matched {
 				continue
 			}
 		}
@@ -199,7 +222,7 @@ func (h *Handlers) HandleWorkspaceFiles(w http.ResponseWriter, r *http.Request) 
 
 	if h.deps.Logger != nil {
 		h.deps.Logger.Debug("workspace-files listed",
-			"working_dir", workingDir, "dir", dir, "glob", glob, "count", len(files))
+			"working_dir", workingDir, "dir", dir, "glob", globs, "count", len(files))
 	}
 	writeJSONOK(w, map[string]interface{}{"files": files})
 }

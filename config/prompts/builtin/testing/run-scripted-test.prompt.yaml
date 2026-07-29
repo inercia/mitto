@@ -9,13 +9,15 @@ preferredModels:
 parameters:
   - name: Setup
     type: filename
-    glob: "**/setup_test_*.md"
+    glob:
+      - "**/setup_test_*.md"
     remember: folder
     required: false
     description: Markdown file describing the one-time setup steps for this test run
   - name: Test
     type: filename
-    glob: "**/test_*.md"
+    glob:
+      - "**/test_*.md"
     remember: folder
     required: true
     description: Markdown file describing the test procedure to follow
@@ -96,14 +98,40 @@ prompt: |
   ## File beads issues for errors
 
   For **each distinct error** you observed during the run, file a beads
-  issue so the failure is tracked:
+  issue so the failure is tracked. Write the description to a temporary
+  Markdown file and pass it via `--body-file` (this preserves formatting
+  and avoids shell-escaping bugs):
 
   ```bash
+  cat > /tmp/bug-body.md <<'EOF'
+  ## Step
+
+  Step <N> of `{{ .Args.Test }}` — "<short quote of the step>".
+
+  ## Expected
+
+  <what the instructions said should happen>
+
+  ## Actual
+
+  <what actually happened; include the exact command output / error
+  message, trimmed to the relevant lines, in a fenced code block>
+
+  ## Notes
+
+  <optional: environment details, workaround tried, related steps also
+  affected by the same root cause>
+  EOF
+
   bd create "<short summary of the failure>" \
     --type bug \
     --priority 2 \
-    --body-file <(printf '%s\n' "<detailed description: which step, expected vs actual, relevant output>")
+    --labels "scripted-test" \
+    --body-file /tmp/bug-body.md
   ```
+
+  `bd create` prints the new bead ID on success (e.g. `Created mitto-abc`).
+  Capture it — you will need it for the verification step below.
 
   Guidelines:
 
@@ -115,15 +143,55 @@ prompt: |
   - Include the observed command output / error message verbatim (trim to
     the relevant lines).
   - If the failure looks like an environment / setup issue rather than a
-    product bug, label it accordingly in the summary (e.g. `[env]
-    <summary>`) so triage can route it.
+    product bug, prefix the summary with `[env]` (e.g. `[env] mock-acp
+    binary missing`) so triage can route it.
+  - **Do not** invent bead IDs of the form `BUG-1` / `BUG-2` — the only
+    valid IDs are the ones `bd create` printed. If `bd create` did not
+    print an ID, the bead was not filed.
 
-  After filing, list the created bead IDs in the final report.
+  ### Verification (MANDATORY)
+
+  After all `bd create` invocations, verify the beads actually landed:
+
+  ```bash
+  bd list --label scripted-test --status open --json \
+    | jq -r '.[] | "\(.id)\t\(.title)"'
+  ```
+
+  Cross-check the printed IDs against the ones you captured from `bd
+  create` output. If any expected bead is missing, the filing FAILED —
+  say so explicitly in the final report ("filing failed for: <summary>")
+  and do NOT claim the bug was tracked.
+
+  In the final report, add a **"Beads filed"** section that lists each
+  new bead as `<bd-id> — <title>`. If no beads were filed (either because
+  no errors occurred, or because filing failed), say so in one line
+  instead of omitting the section.
   {{- else -}}
-  ## Errors
+  ## Errors observed
 
-  Report any errors in the final report above. Do **not** file beads
-  issues — the user did not enable issue creation for this run.
+  Report any errors in the final report above under an **"Errors
+  observed"** heading (one bullet per distinct error, with the step
+  reference and the observed vs expected result).
+
+  **Do not** file beads issues — the user did not enable issue creation
+  for this run. Because nothing is being tracked, you MUST also avoid
+  wording that implies a tracker action:
+
+  - Do **not** title the section "Bugs filed", "Tickets filed", "Issues
+    created", or similar.
+  - Do **not** invent IDs like `BUG-1`, `TICKET-2`, `ISSUE-3` — they read
+    as real ticket references and mislead the reader into looking for
+    beads that do not exist.
+  - Do **not** use the verbs "filed", "tracked", "logged", or "created a
+    ticket for" when describing an error.
+  - If you want to cross-reference an error from another section, use a
+    neutral local label such as `Error A`, `Error B`, … and make it
+    obvious in prose that these are report-local labels, not tracker IDs.
+
+  If you want the errors tracked as beads, tell the user at the end of
+  the report that they can re-run this prompt with **CreateIssues =
+  true** to file them.
   {{- end }}
 
   {{- $cleanupFile := printf "%s/cleanup.md" (Dir .Args.Test) }}

@@ -188,7 +188,7 @@ func ValidatePromptParameters(menus string, params []PromptParameter) error {
 		if param.Dir != "" && !isFileOrDirType {
 			return fmt.Errorf("parameter %q: dir is only valid for types \"filename\" or \"dirname\", not %q", param.Name, param.Type)
 		}
-		if param.Glob != "" && !isFileOrDirType {
+		if len(param.Glob) > 0 && !isFileOrDirType {
 			return fmt.Errorf("parameter %q: glob is only valid for types \"filename\" or \"dirname\", not %q", param.Name, param.Type)
 		}
 		if isFileOrDirType {
@@ -212,10 +212,15 @@ func ValidatePromptParameters(menus string, params []PromptParameter) error {
 			// Glob compile-check: reject malformed patterns at load time so
 			// prompt files fail-fast instead of at first UI open. Uses
 			// doublestar so patterns with "**" (recursive) are accepted here
-			// and honored by the runtime endpoint.
-			if param.Glob != "" {
-				if !doublestar.ValidatePattern(param.Glob) {
-					return fmt.Errorf("parameter %q: invalid glob %q", param.Name, param.Glob)
+			// and honored by the runtime endpoint. Every entry in the list
+			// is validated; an empty entry is rejected explicitly (an empty
+			// pattern would silently match nothing).
+			for _, g := range param.Glob {
+				if g == "" {
+					return fmt.Errorf("parameter %q: glob entries must not be empty", param.Name)
+				}
+				if !doublestar.ValidatePattern(g) {
+					return fmt.Errorf("parameter %q: invalid glob %q", param.Name, g)
 				}
 			}
 		}

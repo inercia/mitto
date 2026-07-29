@@ -366,10 +366,13 @@ type PromptParameter struct {
 	// doublestar "**" for recursive matches (e.g. "*.md", "**/*.md",
 	// "docs/**/*.md"). Non-"**" patterns match base names only under Dir
 	// (non-recursive). Patterns containing "**" walk recursively from Dir and
-	// match against the entry's workspace-relative path. Empty = all regular
-	// files. Only valid for type "filename"; validated with a
-	// doublestar.ValidatePattern compile-check at parse time.
-	Glob string `yaml:"glob,omitempty" json:"glob,omitempty"`
+	// match against the entry's workspace-relative path. A candidate is
+	// included when it matches ANY listed pattern (union semantics). Empty or
+	// nil = all regular files. Only valid for types "filename"/"dirname";
+	// each entry is validated with a doublestar.ValidatePattern compile-check
+	// at parse time. YAML must use the list form (`glob: ["*.md", "*.rst"]`
+	// or block-list); a scalar string is rejected at unmarshal time.
+	Glob []string `yaml:"glob,omitempty" json:"glob,omitempty"`
 	// Remember controls whether the most recently submitted value for this
 	// parameter is persisted and pre-filled the next time the same prompt
 	// dialog opens. Valid values (see IsValidRemember): "" or "never"

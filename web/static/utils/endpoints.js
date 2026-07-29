@@ -12,12 +12,23 @@
  */
 import { apiUrl, wsUrl } from "./api.js";
 
-/** Build a query string from a params object, omitting null/undefined/"" values. */
+/** Build a query string from a params object, omitting null/undefined/"" values.
+ *  Array values emit repeated `key=v` params (one per element); empty arrays
+ *  are treated as "no filter" and omitted entirely. Empty string entries
+ *  inside an array are skipped so a caller does not accidentally send
+ *  `?key=` (which the backend would reject as an empty entry). */
 function qs(params) {
   if (!params) return "";
   const sp = new URLSearchParams();
   for (const [k, v] of Object.entries(params)) {
     if (v === undefined || v === null || v === "") continue;
+    if (Array.isArray(v)) {
+      for (const item of v) {
+        if (item === undefined || item === null || item === "") continue;
+        sp.append(k, item);
+      }
+      continue;
+    }
     sp.append(k, v);
   }
   const s = sp.toString();

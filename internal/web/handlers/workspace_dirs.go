@@ -51,14 +51,21 @@ func (h *Handlers) HandleWorkspaceDirs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	dir := r.URL.Query().Get("dir")
-	glob := r.URL.Query().Get("glob")
+	// mitto-ebb: accept repeated ?glob=… query params (list form). A
+	// sub-directory is a candidate when it matches ANY entry (union
+	// semantics). Empty list = no filter.
+	globs := r.URL.Query()["glob"]
 
 	if dir != "" && filepath.IsAbs(dir) {
 		writeErrorJSON(w, http.StatusBadRequest, "", "dir must be workspace-relative, not absolute")
 		return
 	}
-	if glob != "" {
-		if !doublestar.ValidatePattern(glob) {
+	for _, g := range globs {
+		if g == "" {
+			writeErrorJSON(w, http.StatusBadRequest, "", "glob entries must not be empty")
+			return
+		}
+		if !doublestar.ValidatePattern(g) {
 			writeErrorJSON(w, http.StatusBadRequest, "", "invalid glob")
 			return
 		}
@@ -94,8 +101,10 @@ func (h *Handlers) HandleWorkspaceDirs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if containsDoublestar(glob) {
-		prefix := literalPrefix(glob)
+	if patternsContainDoublestar(globs) {
+		// Anchor the walk only when every pattern shares the same non-empty
+		// literal prefix; otherwise walk from the resolved root.
+		prefix := commonLiteralPrefix(globs)
 		walkRoot := resolved
 		if prefix != "" {
 			joined := filepath.Join(resolved, prefix)
@@ -110,16 +119,20 @@ func (h *Handlers) HandleWorkspaceDirs(w http.ResponseWriter, r *http.Request) {
 			}
 			walkRoot = cleaned
 		}
-		pattern := glob
-		if prefix != "" {
-			pattern = strings.TrimPrefix(pattern, prefix+"/")
+		patterns := make([]string, len(globs))
+		for i, g := range globs {
+			if prefix != "" {
+				patterns[i] = strings.TrimPrefix(g, prefix+"/")
+			} else {
+				patterns[i] = g
+			}
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 		defer cancel()
 		res := walkMatch(walkMatchOpts{
 			ctx:        ctx,
 			root:       walkRoot,
-			pattern:    pattern,
+			patterns:   patterns,
 			maxResults: workspaceDirsMaxResults,
 			maxVisited: walkMatchMaxVisited,
 			wantFiles:  false,
@@ -137,11 +150,11 @@ func (h *Handlers) HandleWorkspaceDirs(w http.ResponseWriter, r *http.Request) {
 		if h.deps.Logger != nil {
 			if res.truncated {
 				h.deps.Logger.Debug("workspace-dirs listed",
-					"working_dir", workingDir, "dir", dir, "glob", glob,
+					"working_dir", workingDir, "dir", dir, "glob", globs,
 					"count", len(dirs), "truncated", true, "reason", res.reason)
 			} else {
 				h.deps.Logger.Debug("workspace-dirs listed",
-					"working_dir", workingDir, "dir", dir, "glob", glob, "count", len(dirs))
+					"working_dir", workingDir, "dir", dir, "glob", globs, "count", len(dirs))
 			}
 		}
 		writeJSONOK(w, map[string]interface{}{"dirs": dirs})
@@ -156,7 +169,8 @@ func (h *Handlers) HandleWorkspaceDirs(w http.ResponseWriter, r *http.Request) {
 
 	// Filter to real sub-directories (symlink-to-dir is skipped — mirrors the
 	// filename handler's regular-file-only stance so a symlink under dir cannot
-	// leak paths outside the workspace via the dropdown).
+	// leak paths outside the workspace via the dropdown). A sub-directory
+	// wins when ANY listed glob matches its base name (union semantics).
 	dirs := make([]string, 0, len(entries))
 	for _, e := range entries {
 		if len(dirs) >= workspaceDirsMaxResults {
@@ -168,13 +182,20 @@ func (h *Handlers) HandleWorkspaceDirs(w http.ResponseWriter, r *http.Request) {
 		}
 		// Skip hidden directories by default (leading ".").
 		if strings.HasPrefix(name, ".") {
-			if glob == "" {
+			if len(globs) == 0 {
 				continue
 			}
 		}
-		if glob != "" {
-			ok, _ := doublestar.PathMatch(glob, name)
-			if !ok {
+		if len(globs) > 0 {
+			matched := false
+			for _, g := range globs {
+				ok, _ := doublestar.PathMatch(g, name)
+				if ok {
+					matched = true
+					break
+				}
+			}
+			if !matched {
 				continue
 			}
 		}
@@ -188,7 +209,7 @@ func (h *Handlers) HandleWorkspaceDirs(w http.ResponseWriter, r *http.Request) {
 
 	if h.deps.Logger != nil {
 		h.deps.Logger.Debug("workspace-dirs listed",
-			"working_dir", workingDir, "dir", dir, "glob", glob, "count", len(dirs))
+			"working_dir", workingDir, "dir", dir, "glob", globs, "count", len(dirs))
 	}
 	writeJSONOK(w, map[string]interface{}{"dirs": dirs})
 }
