@@ -1,5 +1,6 @@
 import { test, expect } from "../fixtures/test-fixtures";
-import type { Page } from "@playwright/test";
+import { selectors, timeouts as timeoutConsts } from "../utils/selectors";
+import type { Page, APIRequestContext } from "@playwright/test";
 import path from "path";
 import fs from "fs/promises";
 import { fileURLToPath } from "url";
@@ -54,14 +55,46 @@ const PROMPT_BODY_RAW = [
 
 const PROMPT_BODY_EXPECTED = PROMPT_BODY_RAW.replace(/\s+$/, "");
 
-async function stubNativeApp(page: Page) {
-  await page.addInitScript(() => {
+/**
+ * Boot the app directly into a conversation view for the empty-project
+ * workspace, bypassing the sidebar helper (its `new-conversation-btn` selector
+ * is stale — see upload-zero-byte.spec.ts). Also stubs window.mittoPickFolder
+ * so isNativeApp() returns true and the Save Prompt trigger renders.
+ */
+async function bootWithSession(
+  page: Page,
+  request: APIRequestContext,
+  apiUrl: (p: string) => string,
+): Promise<string> {
+  const resp = await request.post(apiUrl("/api/sessions"), {
+    data: { acp_server: "mock-acp", working_dir: WORKSPACE },
+  });
+  expect(resp.ok(), `POST /api/sessions failed: ${resp.status()}`).toBe(true);
+  const id: string = (await resp.json()).session_id;
+
+  await page.addInitScript((sid) => {
+    localStorage.setItem("mitto_last_session_id", sid);
+    localStorage.removeItem("mitto_conversation_filter_tab");
+    // Stub isNativeApp() gate: SavePromptDialog trigger is macOS-native-only.
     Object.defineProperty(window, "mittoPickFolder", {
       configurable: true,
       get: () => () => {},
       set: () => {},
     });
-  });
+  }, id);
+
+  await page.goto("/");
+
+  // Force the conversation view: cold-start may land on the Dashboard even
+  // when a valid last-session id is present (see upload-zero-byte.spec.ts).
+  const chatInput = page.locator(selectors.chatInput);
+  try {
+    await expect(chatInput).toBeVisible({ timeout: 3000 });
+  } catch {
+    await page.locator(`[data-session-id="${id}"]`).click({ timeout: 5000 });
+  }
+  await expect(chatInput).toBeEnabled({ timeout: timeoutConsts.agentResponse });
+  return id;
 }
 
 test.describe("SavePromptDialog round-trip (mitto-rxr)", () => {
@@ -95,11 +128,9 @@ test.describe("SavePromptDialog round-trip (mitto-rxr)", () => {
     page,
     request,
     apiUrl,
-    helpers,
     timeouts,
   }) => {
-    await stubNativeApp(page);
-    await helpers.navigateAndEnsureSession(page);
+    await bootWithSession(page, request, apiUrl);
 
     // Fill the composition textarea with the edge-case body. The Save Prompt
     // trigger is disabled while text is empty, so this must precede the click.
