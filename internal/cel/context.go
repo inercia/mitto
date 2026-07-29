@@ -53,6 +53,13 @@ type PromptEnabledContext struct {
 	// the dispatch/render path (see prompt_dispatcher.go). Template-only; NOT
 	// exposed to CEL.
 	PromptTextResolver func(name string) (string, error)
+	// PromptTextDepth tracks the current nesting depth of PromptTextWithArgs
+	// sub-renders (mitto-47y.1). Zero at the top-level render; incremented by
+	// one on each nested sub-render. Capped at promptTextMaxDepth to prevent
+	// runaway recursion (e.g. {{ PromptTextWithArgs "self" .Args }}). Never
+	// mutated on the parent context — each nested sub-render operates on a
+	// shallow copy.
+	PromptTextDepth int
 	// Prompts exposes the set of workspace prompts registered in the current
 	// PromptsCache view (global + workspace, post-merge, same source of truth
 	// as mitto_prompt_get / mitto_prompt_list). Templates use it to gate on

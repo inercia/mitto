@@ -19,6 +19,13 @@ import (
 // before it is killed, so template/CEL evaluation never hangs on a stalled repo.
 const gitCmdTimeout = 5 * time.Second
 
+// promptTextMaxDepth caps recursion for PromptTextWithArgs sub-renders so a
+// self-referential body (e.g. {{ PromptTextWithArgs "self" .Args }}) cannot
+// crash the process. Beyond this depth the sub-render errors out; the outer
+// template execution aborts with the wrapped error, matching PromptText's
+// fail-closed policy.
+const promptTextMaxDepth = 3
+
 // bdCmdTimeout bounds how long a bd (beads) subprocess invocation is allowed to
 // run before it is killed. Mirrors gitCmdTimeout for the git helpers.
 const bdCmdTimeout = 5 * time.Second
@@ -786,6 +793,23 @@ func FormatPeers(peers []PeerInfo) string {
 //     fail-closed on nil resolver, empty name, or unknown/failed resolution.
 //     Trailing newlines are stripped from the returned body; interior whitespace
 //     is preserved. Pairs with the `prompts` parameter type.
+//   - PromptTextWithArgs(name, args) — like PromptText but ALSO sub-renders the
+//     fetched body against args as a fresh text/template scope (mitto-47y.1).
+//     The inner body's {{ .Args.X }} placeholders bind to the supplied inner
+//     args map, independent of the outer scope. args must be map[string]string
+//     (typically produced by ArgsMap). Fail-closed on nil resolver, empty name,
+//     resolver error, sub-render parse/exec error, or recursion depth exceeded
+//     (cap: promptTextMaxDepth). Nested bodies get the same funcmap (so they
+//     may themselves call PromptTextWithArgs), but cannot use {{ template
+//     "_shared/..." }} fragments — fragment attach is intentionally omitted
+//     from the sub-render (Phase-A limitation of mitto-47y.1). Trailing
+//     newlines are stripped.
+//   - ArgsMap(name) — reads args[name] as a JSON-encoded map[string]string and
+//     returns the decoded map (mitto-47y.1). Empty/absent field returns an
+//     empty non-nil map (Phase B may omit the field when the picked prompt has
+//     no parameters). Malformed JSON returns (nil, error) — fail-closed.
+//     Intended to feed PromptTextWithArgs the inner arg scope decoded from a
+//     picker-side JSON string (e.g. .Args.Prompt_Args).
 //   - trim, lower, upper, contains, hasPrefix, hasSuffix — thin strings wrappers.
 //   - join(sep, elems) — strings.Join with sep first (template-natural argument order).
 //   - Dir(path) — path.Dir (forward-slash, not OS-native) for deriving a sibling
@@ -798,6 +822,7 @@ func BuildTemplateFuncMap(ctx *PromptEnabledContext) template.FuncMap {
 		userData           map[string]string
 		modelTags          []string
 		promptTextResolver func(name string) (string, error)
+		promptTextDepth    int
 	)
 	if ctx != nil {
 		folder = ctx.Workspace.Folder
@@ -806,6 +831,7 @@ func BuildTemplateFuncMap(ctx *PromptEnabledContext) template.FuncMap {
 		userData = ctx.UserData
 		modelTags = ctx.Session.ModelTags
 		promptTextResolver = ctx.PromptTextResolver
+		promptTextDepth = ctx.PromptTextDepth
 	}
 
 	// cond/when: compile+evaluate a CEL expression against ctx using the singleton.
@@ -923,6 +949,68 @@ func BuildTemplateFuncMap(ctx *PromptEnabledContext) template.FuncMap {
 			}
 			return strings.TrimRight(body, "\n"), nil
 		},
+		// PromptTextWithArgs(name, args) fetches the named prompt's body via
+		// the resolver, then sub-renders it against a fresh scope whose .Args
+		// is the supplied inner map (mitto-47y.1). This is the two-pass
+		// counterpart to PromptText: the inner body's {{ .Args.X }} bind to
+		// innerArgs, independent of the outer scope. Recursion is capped at
+		// promptTextMaxDepth to keep self-referential bodies from crashing
+		// the process. Fragments ({{ template "_shared/..." }}) are NOT
+		// attached in the sub-render (Phase-A limitation).
+		"PromptTextWithArgs": func(name string, innerArgs any) (string, error) {
+			if promptTextResolver == nil {
+				return "", fmt.Errorf("PromptTextWithArgs: no resolver available")
+			}
+			if name == "" {
+				return "", fmt.Errorf("PromptTextWithArgs: empty prompt name")
+			}
+			if promptTextDepth >= promptTextMaxDepth {
+				return "", fmt.Errorf("PromptTextWithArgs(%q): recursion depth exceeded (max %d)", name, promptTextMaxDepth)
+			}
+			innerMap, err := coerceArgsMap(innerArgs)
+			if err != nil {
+				return "", fmt.Errorf("PromptTextWithArgs(%q): %w", name, err)
+			}
+			body, err := promptTextResolver(name)
+			if err != nil {
+				return "", fmt.Errorf("PromptTextWithArgs(%q): %w", name, err)
+			}
+			// Build a shallow copy of ctx with Args replaced and depth
+			// incremented, so the sub-render is isolated from the outer
+			// scope. ctx may be nil at menu/enabledWhen time — but a nil
+			// resolver would have short-circuited above, so ctx is non-nil
+			// here in practice; guard anyway for defensiveness.
+			var inner PromptEnabledContext
+			if ctx != nil {
+				inner = *ctx
+			}
+			inner.Args = innerMap
+			inner.PromptTextDepth = promptTextDepth + 1
+			innerFuncs := BuildTemplateFuncMap(&inner)
+			rendered, err := renderNestedPromptBody(name, body, &inner, innerFuncs)
+			if err != nil {
+				return "", fmt.Errorf("PromptTextWithArgs(%q): %w", name, err)
+			}
+			return strings.TrimRight(rendered, "\n"), nil
+		},
+		// ArgsMap(name) reads args[name] as a JSON-encoded map[string]string
+		// (mitto-47y.1). Empty/absent field returns an empty non-nil map so
+		// Phase B may omit the field when the picked prompt has no
+		// parameters. Malformed JSON returns (nil, error) — fail-closed.
+		"ArgsMap": func(name string) (map[string]string, error) {
+			raw := args[name]
+			if raw == "" {
+				return map[string]string{}, nil
+			}
+			var out map[string]string
+			if err := json.Unmarshal([]byte(raw), &out); err != nil {
+				return nil, fmt.Errorf("ArgsMap(%q): %w", name, err)
+			}
+			if out == nil {
+				out = map[string]string{}
+			}
+			return out, nil
+		},
 		"Cond":      condFn,
 		"When":      condFn, // alias for Cond
 		"Trim":      strings.TrimSpace,
@@ -964,5 +1052,65 @@ func BuildTemplateFuncMap(ctx *PromptEnabledContext) template.FuncMap {
 			}
 			return out, nil
 		},
+	}
+}
+
+// renderNestedPromptBody sub-renders body against data using funcs. It mirrors
+// the "no-fragments" branch of the outer prompt renderer (fragments are NOT
+// attached — Phase-A limitation of mitto-47y.1). The bare template.Parse path
+// is intentional: internal/cel deliberately does not import internal/prompts
+// (decoupled in mitto-b8k.3), and fragment attach lives in the prompts
+// package. name is used only for error messages.
+func renderNestedPromptBody(name, body string, data any, funcs template.FuncMap) (string, error) {
+	if !strings.Contains(body, "{{") {
+		return body, nil
+	}
+	tmpl, err := template.New(name).Option("missingkey=zero").Funcs(funcs).Parse(body)
+	if err != nil {
+		return "", fmt.Errorf("parse error: %w", err)
+	}
+	var buf strings.Builder
+	if err := tmpl.Execute(&buf, data); err != nil {
+		return "", fmt.Errorf("render error: %w", err)
+	}
+	return buf.String(), nil
+}
+
+// coerceArgsMap accepts the second argument to PromptTextWithArgs and returns
+// a map[string]string suitable for the inner scope's .Args. It accepts:
+//   - map[string]string (typical: from ArgsMap or the outer .Args)
+//   - map[string]any (defensive: text/template may hand us this for dict-built
+//     maps or JSON-derived data)
+//   - nil (returns an empty non-nil map so the sub-render behaves like a
+//     prompt dispatched with no arguments)
+//
+// Any other type is rejected so callers cannot silently pass a struct or
+// stringly-typed slice and get "".
+func coerceArgsMap(v any) (map[string]string, error) {
+	if v == nil {
+		return map[string]string{}, nil
+	}
+	switch m := v.(type) {
+	case map[string]string:
+		if m == nil {
+			return map[string]string{}, nil
+		}
+		return m, nil
+	case map[string]any:
+		out := make(map[string]string, len(m))
+		for k, val := range m {
+			if val == nil {
+				out[k] = ""
+				continue
+			}
+			s, ok := val.(string)
+			if !ok {
+				return nil, fmt.Errorf("args[%q] is %T, want string", k, val)
+			}
+			out[k] = s
+		}
+		return out, nil
+	default:
+		return nil, fmt.Errorf("args must be map[string]string or map[string]any, got %T", v)
 	}
 }

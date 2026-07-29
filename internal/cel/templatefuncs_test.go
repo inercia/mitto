@@ -934,7 +934,7 @@ func TestBuildTemplateFuncMap_AllKeysPresent(t *testing.T) {
 		"FileExists", "DirExists", "ReadFile", "CommandExists", "HasPattern", "Model",
 		"GitFileModified", "GitDirModified", "GitStatusFiles", "GitFileTracked", "GitFileDeleted",
 		"BeadsCount", "HasBeads", "BeadHasLabels", "BeadIsOpen", "BeadMetadata",
-		"PromptText",
+		"PromptText", "PromptTextWithArgs", "ArgsMap",
 		"Trim", "Lower", "Upper", "Contains", "HasPrefix", "HasSuffix", "Join", "Dir",
 	}
 	for _, key := range expected {
@@ -2371,4 +2371,242 @@ func TestBuildTemplateFuncMap_Dict(t *testing.T) {
 	if !strings.Contains(err.Error(), "want string") {
 		t.Errorf("dict bad key error should mention 'want string'; got %v", err)
 	}
+}
+
+// =============================================================================
+// mitto-47y.1 — Two-pass nested prompt args
+// =============================================================================
+
+// TestBuildTemplateFuncMap_PromptTextWithArgs verifies the two-pass template
+// function that fetches a prompt body by NAME and sub-renders it against a
+// fresh {{ .Args.X }} scope (mitto-47y.1). Covers the happy path, all
+// fail-closed guards, and the recursion cap.
+func TestBuildTemplateFuncMap_PromptTextWithArgs(t *testing.T) {
+	// Bodies keyed by prompt name for the fake resolver.
+	bodies := map[string]string{
+		"greeter":         `Hello {{ .Args.Name }}!`,
+		"plain":           `no args here`,
+		"broken":          `{{ .Args.X `, // parse error
+		"self-recursive":  `{{ PromptTextWithArgs "self-recursive" .Args }}`,
+		"reads-outer-arg": `outer={{ Arg "Outer" }} inner={{ .Args.Inner }}`,
+	}
+	resolver := func(name string) (string, error) {
+		if b, ok := bodies[name]; ok {
+			return b, nil
+		}
+		return "", fmt.Errorf("resolver: unknown %q", name)
+	}
+
+	t.Run("resolves and sub-renders with inner args", func(t *testing.T) {
+		ctx := &PromptEnabledContext{
+			PromptTextResolver: resolver,
+			Args:               map[string]string{"Name": "outer-name"},
+		}
+		fm := BuildTemplateFuncMap(ctx)
+		body := `{{ PromptTextWithArgs "greeter" (dict "Name" "alice") }}`
+		got, err := RenderPromptTemplate("t", body, ctx, fm)
+		if err != nil {
+			t.Fatalf("render: %v", err)
+		}
+		if got != "Hello alice!" {
+			t.Errorf("got %q, want %q", got, "Hello alice!")
+		}
+	})
+
+	t.Run("inner body without .Args.X still renders", func(t *testing.T) {
+		ctx := &PromptEnabledContext{PromptTextResolver: resolver}
+		fm := BuildTemplateFuncMap(ctx)
+		got, err := RenderPromptTemplate("t", `{{ PromptTextWithArgs "plain" (dict) }}`, ctx, fm)
+		if err != nil {
+			t.Fatalf("render: %v", err)
+		}
+		if got != "no args here" {
+			t.Errorf("got %q, want %q", got, "no args here")
+		}
+	})
+
+	t.Run("parent ctx.Args not mutated after nested render", func(t *testing.T) {
+		outerArgs := map[string]string{"Outer": "keep-me"}
+		ctx := &PromptEnabledContext{
+			PromptTextResolver: resolver,
+			Args:               outerArgs,
+		}
+		fm := BuildTemplateFuncMap(ctx)
+		body := `{{ PromptTextWithArgs "greeter" (dict "Name" "bob") }}|outer-after={{ Arg "Outer" }}`
+		got, err := RenderPromptTemplate("t", body, ctx, fm)
+		if err != nil {
+			t.Fatalf("render: %v", err)
+		}
+		if got != "Hello bob!|outer-after=keep-me" {
+			t.Errorf("got %q, want %q", got, "Hello bob!|outer-after=keep-me")
+		}
+		// Parent map identity + content must be untouched.
+		if len(outerArgs) != 1 || outerArgs["Outer"] != "keep-me" {
+			t.Errorf("parent Args mutated: %v", outerArgs)
+		}
+	})
+
+	t.Run("accepts map[string]string as args", func(t *testing.T) {
+		ctx := &PromptEnabledContext{
+			PromptTextResolver: resolver,
+			Args:               map[string]string{"Inner": `{"Name":"raw"}`},
+		}
+		fm := BuildTemplateFuncMap(ctx)
+		// ArgsMap decodes the JSON into a map[string]string and feeds it.
+		body := `{{ PromptTextWithArgs "greeter" (ArgsMap "Inner") }}`
+		got, err := RenderPromptTemplate("t", body, ctx, fm)
+		if err != nil {
+			t.Fatalf("render: %v", err)
+		}
+		if got != "Hello raw!" {
+			t.Errorf("got %q, want %q", got, "Hello raw!")
+		}
+	})
+
+	t.Run("nil resolver fails-closed", func(t *testing.T) {
+		ctx := &PromptEnabledContext{PromptTextResolver: nil}
+		fm := BuildTemplateFuncMap(ctx)
+		_, err := RenderPromptTemplate("t", `{{ PromptTextWithArgs "greeter" (dict) }}`, ctx, fm)
+		if err == nil {
+			t.Fatalf("expected error for nil resolver, got nil")
+		}
+		if !strings.Contains(err.Error(), "no resolver") {
+			t.Errorf("error should mention 'no resolver'; got %v", err)
+		}
+	})
+
+	t.Run("empty name fails-closed", func(t *testing.T) {
+		ctx := &PromptEnabledContext{PromptTextResolver: resolver}
+		fm := BuildTemplateFuncMap(ctx)
+		_, err := RenderPromptTemplate("t", `{{ PromptTextWithArgs "" (dict) }}`, ctx, fm)
+		if err == nil {
+			t.Fatalf("expected error for empty name, got nil")
+		}
+		if !strings.Contains(err.Error(), "empty prompt name") {
+			t.Errorf("error should mention 'empty prompt name'; got %v", err)
+		}
+	})
+
+	t.Run("resolver error propagates", func(t *testing.T) {
+		ctx := &PromptEnabledContext{PromptTextResolver: resolver}
+		fm := BuildTemplateFuncMap(ctx)
+		_, err := RenderPromptTemplate("t", `{{ PromptTextWithArgs "does-not-exist" (dict) }}`, ctx, fm)
+		if err == nil {
+			t.Fatalf("expected resolver error, got nil")
+		}
+		if !strings.Contains(err.Error(), "does-not-exist") {
+			t.Errorf("error should mention prompt name; got %v", err)
+		}
+	})
+
+	t.Run("sub-render parse error fails-closed", func(t *testing.T) {
+		ctx := &PromptEnabledContext{PromptTextResolver: resolver}
+		fm := BuildTemplateFuncMap(ctx)
+		_, err := RenderPromptTemplate("t", `{{ PromptTextWithArgs "broken" (dict) }}`, ctx, fm)
+		if err == nil {
+			t.Fatalf("expected sub-render parse error, got nil")
+		}
+		if !strings.Contains(err.Error(), "parse error") {
+			t.Errorf("error should mention 'parse error'; got %v", err)
+		}
+	})
+
+	t.Run("recursion cap exceeded fails-closed", func(t *testing.T) {
+		ctx := &PromptEnabledContext{PromptTextResolver: resolver}
+		fm := BuildTemplateFuncMap(ctx)
+		// self-recursive body calls itself; depth caps at promptTextMaxDepth (3).
+		_, err := RenderPromptTemplate("t", `{{ PromptTextWithArgs "self-recursive" (dict) }}`, ctx, fm)
+		if err == nil {
+			t.Fatalf("expected recursion cap error, got nil")
+		}
+		if !strings.Contains(err.Error(), "recursion depth exceeded") {
+			t.Errorf("error should mention 'recursion depth exceeded'; got %v", err)
+		}
+	})
+
+	t.Run("bad args type rejected", func(t *testing.T) {
+		ctx := &PromptEnabledContext{PromptTextResolver: resolver}
+		fm := BuildTemplateFuncMap(ctx)
+		// Pass a string where a map is expected — must fail-closed rather than silently render empty.
+		_, err := RenderPromptTemplate("t", `{{ PromptTextWithArgs "greeter" "not-a-map" }}`, ctx, fm)
+		if err == nil {
+			t.Fatalf("expected type error, got nil")
+		}
+		if !strings.Contains(err.Error(), "args must be") {
+			t.Errorf("error should mention 'args must be'; got %v", err)
+		}
+	})
+}
+
+// TestBuildTemplateFuncMap_ArgsMap verifies ArgsMap reads args[name] as a
+// JSON-encoded map[string]string and fails-closed on malformed JSON while
+// tolerating absent fields (mitto-47y.1).
+func TestBuildTemplateFuncMap_ArgsMap(t *testing.T) {
+	t.Run("happy path decodes JSON map", func(t *testing.T) {
+		ctx := &PromptEnabledContext{
+			Args: map[string]string{"Payload": `{"A":"1","B":"two"}`},
+		}
+		fm := BuildTemplateFuncMap(ctx)
+		got, err := RenderPromptTemplate("t",
+			`{{ $m := ArgsMap "Payload" }}{{ index $m "A" }}|{{ index $m "B" }}`, ctx, fm)
+		if err != nil {
+			t.Fatalf("render: %v", err)
+		}
+		if got != "1|two" {
+			t.Errorf("got %q, want %q", got, "1|two")
+		}
+	})
+
+	t.Run("absent field returns empty non-nil map", func(t *testing.T) {
+		ctx := &PromptEnabledContext{Args: map[string]string{}}
+		fm := BuildTemplateFuncMap(ctx)
+		// len() on a nil map is 0 too, but the closure must return a non-nil
+		// map so ranging and follow-on ArgsMap-consumers don't blow up.
+		got, err := RenderPromptTemplate("t",
+			`{{ $m := ArgsMap "Missing" }}len={{ len $m }}`, ctx, fm)
+		if err != nil {
+			t.Fatalf("render: %v", err)
+		}
+		if got != "len=0" {
+			t.Errorf("got %q, want %q", got, "len=0")
+		}
+	})
+
+	t.Run("empty string field returns empty map", func(t *testing.T) {
+		ctx := &PromptEnabledContext{Args: map[string]string{"Payload": ""}}
+		fm := BuildTemplateFuncMap(ctx)
+		got, err := RenderPromptTemplate("t",
+			`{{ $m := ArgsMap "Payload" }}len={{ len $m }}`, ctx, fm)
+		if err != nil {
+			t.Fatalf("render: %v", err)
+		}
+		if got != "len=0" {
+			t.Errorf("got %q, want %q", got, "len=0")
+		}
+	})
+
+	t.Run("malformed JSON fails-closed", func(t *testing.T) {
+		ctx := &PromptEnabledContext{Args: map[string]string{"Payload": `{not json`}}
+		fm := BuildTemplateFuncMap(ctx)
+		_, err := RenderPromptTemplate("t", `{{ ArgsMap "Payload" }}`, ctx, fm)
+		if err == nil {
+			t.Fatalf("expected JSON parse error, got nil")
+		}
+		if !strings.Contains(err.Error(), "ArgsMap") {
+			t.Errorf("error should mention ArgsMap; got %v", err)
+		}
+	})
+
+	t.Run("nil ctx.Args safe (nil-map indexing)", func(t *testing.T) {
+		ctx := &PromptEnabledContext{Args: nil}
+		fm := BuildTemplateFuncMap(ctx)
+		got, err := RenderPromptTemplate("t",
+			`{{ $m := ArgsMap "Anything" }}len={{ len $m }}`, ctx, fm)
+		if err != nil {
+			t.Fatalf("render: %v", err)
+		}
+		if got != "len=0" {
+			t.Errorf("got %q, want %q", got, "len=0")
+		}
+	})
 }
