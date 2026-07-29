@@ -2267,6 +2267,163 @@ func TestValidatePromptParameters(t *testing.T) {
 			t.Fatal("expected error, got nil")
 		}
 	})
+
+	// mitto-ebb: multi-entry glob lists on filename/dirname.
+	t.Run("filename multi-entry glob list accepted", func(t *testing.T) {
+		err := ValidatePromptParameters("", []PromptParameter{{Name: "F", Type: "filename", Glob: []string{"*.md", "*.rst", "**/*.txt"}}})
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("dirname multi-entry glob list accepted", func(t *testing.T) {
+		err := ValidatePromptParameters("", []PromptParameter{{Name: "D", Type: "dirname", Glob: []string{"prod-*", "stage-*", "**/env-*"}}})
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("filename glob list with empty entry rejected", func(t *testing.T) {
+		err := ValidatePromptParameters("", []PromptParameter{{Name: "F", Type: "filename", Glob: []string{"*.md", ""}}})
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "glob") || !strings.Contains(err.Error(), "empty") {
+			t.Errorf("error = %q, want it to mention glob/empty", err.Error())
+		}
+	})
+
+	t.Run("dirname glob list with empty entry rejected", func(t *testing.T) {
+		err := ValidatePromptParameters("", []PromptParameter{{Name: "D", Type: "dirname", Glob: []string{"", "prod-*"}}})
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "glob") || !strings.Contains(err.Error(), "empty") {
+			t.Errorf("error = %q, want it to mention glob/empty", err.Error())
+		}
+	})
+
+	t.Run("filename glob list with mid-list invalid entry rejected", func(t *testing.T) {
+		// The first entry is valid; validation must still surface the second
+		// entry's failure (loop over every entry, not just the first).
+		err := ValidatePromptParameters("", []PromptParameter{{Name: "F", Type: "filename", Glob: []string{"*.md", "[abc"}}})
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "glob") {
+			t.Errorf("error = %q, want it to contain 'glob'", err.Error())
+		}
+	})
+
+	t.Run("filename empty glob list is OK (no filter)", func(t *testing.T) {
+		// A zero-length list means "no filter" — must be accepted (len == 0
+		// is the same shape as an omitted field for downstream code).
+		err := ValidatePromptParameters("", []PromptParameter{{Name: "F", Type: "filename", Glob: []string{}}})
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+}
+
+// TestParsePromptFile_GlobRejectsScalarYAMLForm pins mitto-ebb: after the
+// PromptParameter.Glob switch from string to []string, YAML files that still
+// use the old scalar form (`glob: "*.md"`) MUST fail at unmarshal time. A
+// silent accept would leave external workspaces on the old shape after upgrade
+// with no visible error.
+func TestParsePromptFile_GlobRejectsScalarYAMLForm(t *testing.T) {
+	data := []byte(`name: "Scalar glob"
+parameters:
+  - name: Instructions
+    type: filename
+    glob: "*.md"
+prompt: |
+  Body
+`)
+	_, err := ParsePromptFile("scalar-glob.prompt.yaml", data, time.Now())
+	if err == nil {
+		t.Fatal("expected error for scalar glob form, got nil")
+	}
+	// The error should surface from the YAML decode layer, not from
+	// ValidatePromptParameters, because the shape mismatch is caught there.
+	if !strings.Contains(err.Error(), "scalar-glob.prompt.yaml") {
+		t.Errorf("error = %q, want it to mention the file path", err.Error())
+	}
+}
+
+// TestParsePromptFile_GlobAcceptsSingleEntryListForm covers the base case: a
+// one-element list must parse and behave identically to the previous single
+// string.
+func TestParsePromptFile_GlobAcceptsSingleEntryListForm(t *testing.T) {
+	data := []byte(`name: "Single glob"
+parameters:
+  - name: Instructions
+    type: filename
+    glob:
+      - "*.md"
+prompt: |
+  Body
+`)
+	p, err := ParsePromptFile("single-glob.prompt.yaml", data, time.Now())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(p.Parameters) != 1 {
+		t.Fatalf("len(Parameters) = %d, want 1", len(p.Parameters))
+	}
+	got := p.Parameters[0].Glob
+	if len(got) != 1 || got[0] != "*.md" {
+		t.Errorf("Glob = %v, want [\"*.md\"]", got)
+	}
+}
+
+// TestParsePromptFile_GlobAcceptsMultiEntryListForm covers the mitto-ebb
+// primary target: a prompt can accept multiple extensions in one dropdown.
+func TestParsePromptFile_GlobAcceptsMultiEntryListForm(t *testing.T) {
+	data := []byte(`name: "Multi glob"
+parameters:
+  - name: Doc
+    type: filename
+    glob:
+      - "**/*.md"
+      - "**/*.rst"
+prompt: |
+  Body
+`)
+	p, err := ParsePromptFile("multi-glob.prompt.yaml", data, time.Now())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(p.Parameters) != 1 {
+		t.Fatalf("len(Parameters) = %d, want 1", len(p.Parameters))
+	}
+	got := p.Parameters[0].Glob
+	want := []string{"**/*.md", "**/*.rst"}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Errorf("Glob = %v, want %v", got, want)
+	}
+}
+
+// TestParsePromptFile_GlobRejectsEmptyEntryInList pins the load-time reject
+// for an empty pattern hidden inside an otherwise-valid list (an empty
+// pattern would silently match nothing at runtime).
+func TestParsePromptFile_GlobRejectsEmptyEntryInList(t *testing.T) {
+	data := []byte(`name: "Empty entry"
+parameters:
+  - name: Doc
+    type: filename
+    glob:
+      - "*.md"
+      - ""
+prompt: |
+  Body
+`)
+	_, err := ParsePromptFile("empty-entry.prompt.yaml", data, time.Now())
+	if err == nil {
+		t.Fatal("expected error for empty glob entry, got nil")
+	}
+	if !strings.Contains(err.Error(), "glob") || !strings.Contains(err.Error(), "empty") {
+		t.Errorf("error = %q, want it to mention glob/empty", err.Error())
+	}
 }
 
 func TestParsePromptFile_WithMultiLineParameter(t *testing.T) {

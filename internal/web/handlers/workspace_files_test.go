@@ -367,3 +367,124 @@ func TestWorkspaceFiles_Recursive_ContainmentPrefixEscape(t *testing.T) {
 		t.Fatalf("files = %v, want empty (prefix escape rejected)", got)
 	}
 }
+
+// doWorkspaceFilesMulti mirrors doWorkspaceFiles but accepts a list of glob
+// entries emitted as repeated ?glob=… query parameters (mitto-ebb).
+func doWorkspaceFilesMulti(t *testing.T, workingDir, dir string, globs []string) (*httptest.ResponseRecorder, map[string]interface{}) {
+	t.Helper()
+	q := ""
+	sep := "?"
+	if workingDir != "" {
+		q += sep + "working_dir=" + workingDir
+		sep = "&"
+	}
+	if dir != "" {
+		q += sep + "dir=" + dir
+		sep = "&"
+	}
+	for _, g := range globs {
+		q += sep + "glob=" + g
+		sep = "&"
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/workspace-files"+q, nil)
+	w := httptest.NewRecorder()
+	h := New(Deps{})
+	h.HandleWorkspaceFiles(w, req)
+
+	var body map[string]interface{}
+	if w.Body.Len() > 0 {
+		if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+			t.Fatalf("decode: %v; body=%s", err, w.Body.String())
+		}
+	}
+	return w, body
+}
+
+// TestWorkspaceFiles_MultiGlob_Union pins mitto-ebb: repeated ?glob=… params
+// produce a UNION of matches (a file wins when ANY listed glob matches).
+func TestWorkspaceFiles_MultiGlob_Union(t *testing.T) {
+	tmp := t.TempDir()
+	for _, name := range []string{"a.md", "b.rst", "c.txt", "d.md"} {
+		if err := os.WriteFile(filepath.Join(tmp, name), []byte("x"), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	w, body := doWorkspaceFilesMulti(t, tmp, "", []string{"%2A.md", "%2A.rst"}) // *.md and *.rst
+	if w.Code != http.StatusOK {
+		t.Fatalf("code = %d, want %d; body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+	got := filesList(t, body)
+	want := []string{"a.md", "b.rst", "d.md"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("files = %v, want %v (union of *.md and *.rst; c.txt excluded)", got, want)
+	}
+}
+
+// TestWorkspaceFiles_MultiGlob_Dedup pins that a file matching multiple listed
+// globs is reported EXACTLY ONCE at the API level.
+func TestWorkspaceFiles_MultiGlob_Dedup(t *testing.T) {
+	tmp := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tmp, "a.md"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	// Both patterns match a.md; the API must not report it twice.
+	w, body := doWorkspaceFilesMulti(t, tmp, "", []string{"%2A.md", "a%2A"}) // *.md and a*
+	if w.Code != http.StatusOK {
+		t.Fatalf("code = %d, want %d; body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+	got := filesList(t, body)
+	if len(got) != 1 || got[0] != "a.md" {
+		t.Fatalf("files = %v, want exactly [a.md] (dedup)", got)
+	}
+}
+
+// TestWorkspaceFiles_MultiGlob_EmptyEntryRejected pins that an empty glob
+// entry (e.g. from ?glob=*.md&glob=) surfaces as 400 instead of silently
+// matching nothing.
+func TestWorkspaceFiles_MultiGlob_EmptyEntryRejected(t *testing.T) {
+	tmp := t.TempDir()
+	w, _ := doWorkspaceFilesMulti(t, tmp, "", []string{"%2A.md", ""})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("code = %d, want %d; body=%s", w.Code, http.StatusBadRequest, w.Body.String())
+	}
+}
+
+// TestWorkspaceFiles_MultiGlob_InvalidEntryRejected pins that a malformed
+// entry hidden mid-list (not just the first entry) is caught.
+func TestWorkspaceFiles_MultiGlob_InvalidEntryRejected(t *testing.T) {
+	tmp := t.TempDir()
+	w, _ := doWorkspaceFilesMulti(t, tmp, "", []string{"%2A.md", "%5Babc"}) // "*.md" then "[abc"
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("code = %d, want %d; body=%s", w.Code, http.StatusBadRequest, w.Body.String())
+	}
+}
+
+// TestWorkspaceFiles_MultiGlob_RecursiveDivergentPrefixes pins the walker
+// fallback path through the HTTP layer: patterns with divergent literal
+// prefixes force a walk from the workspace root and still union-match.
+func TestWorkspaceFiles_MultiGlob_RecursiveDivergentPrefixes(t *testing.T) {
+	tmp := t.TempDir()
+	for _, rel := range []string{"docs/a.md", "docs/sub/b.md", "spec/x.md", "spec/deep/y.md", "other/skip.md"} {
+		p := filepath.Join(tmp, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+			t.Fatalf("write %s: %v", rel, err)
+		}
+	}
+	// docs/**/*.md and spec/**/*.md — divergent prefixes → walk from root.
+	w, body := doWorkspaceFilesMulti(t, tmp, "", []string{
+		"docs%2F%2A%2A%2F%2A.md",
+		"spec%2F%2A%2A%2F%2A.md",
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("code = %d, want %d; body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+	got := filesList(t, body)
+	// API returns forward-slash paths already sorted alphabetically.
+	want := []string{"docs/a.md", "docs/sub/b.md", "spec/deep/y.md", "spec/x.md"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("files = %v, want %v (other/skip.md must be excluded)", got, want)
+	}
+}

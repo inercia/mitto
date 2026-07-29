@@ -379,3 +379,93 @@ func TestWorkspaceDirs_Recursive_ContainmentPrefixEscape(t *testing.T) {
 		t.Fatalf("dirs = %v, want empty (prefix escape rejected)", got)
 	}
 }
+
+// doWorkspaceDirsMulti mirrors doWorkspaceDirs but accepts a list of glob
+// entries emitted as repeated ?glob=… query parameters (mitto-ebb).
+func doWorkspaceDirsMulti(t *testing.T, workingDir, dir string, globs []string) (*httptest.ResponseRecorder, map[string]interface{}) {
+	t.Helper()
+	q := ""
+	sep := "?"
+	if workingDir != "" {
+		q += sep + "working_dir=" + workingDir
+		sep = "&"
+	}
+	if dir != "" {
+		q += sep + "dir=" + dir
+		sep = "&"
+	}
+	for _, g := range globs {
+		q += sep + "glob=" + g
+		sep = "&"
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/workspace-dirs"+q, nil)
+	w := httptest.NewRecorder()
+	h := New(Deps{})
+	h.HandleWorkspaceDirs(w, req)
+
+	var body map[string]interface{}
+	if w.Body.Len() > 0 {
+		if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+			t.Fatalf("decode: %v; body=%s", err, w.Body.String())
+		}
+	}
+	return w, body
+}
+
+// TestWorkspaceDirs_MultiGlob_Union pins mitto-ebb for dir-typed params: a
+// sub-directory wins when ANY listed glob matches its base name.
+func TestWorkspaceDirs_MultiGlob_Union(t *testing.T) {
+	tmp := t.TempDir()
+	for _, name := range []string{"prod-a", "prod-b", "stage-c", "dev-d", "notes"} {
+		if err := os.MkdirAll(filepath.Join(tmp, name), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", name, err)
+		}
+	}
+	w, body := doWorkspaceDirsMulti(t, tmp, "", []string{"prod-%2A", "stage-%2A"}) // prod-* and stage-*
+	if w.Code != http.StatusOK {
+		t.Fatalf("code = %d, want %d; body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+	got := dirsList(t, body)
+	want := []string{"prod-a", "prod-b", "stage-c"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("dirs = %v, want %v (dev-d and notes excluded)", got, want)
+	}
+}
+
+// TestWorkspaceDirs_MultiGlob_Dedup pins that a directory matching multiple
+// listed globs is reported EXACTLY ONCE at the API level.
+func TestWorkspaceDirs_MultiGlob_Dedup(t *testing.T) {
+	tmp := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(tmp, "prod-a"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	// Both patterns match prod-a; the API must not report it twice.
+	w, body := doWorkspaceDirsMulti(t, tmp, "", []string{"prod-%2A", "%2A-a"}) // prod-* and *-a
+	if w.Code != http.StatusOK {
+		t.Fatalf("code = %d, want %d; body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+	got := dirsList(t, body)
+	if len(got) != 1 || got[0] != "prod-a" {
+		t.Fatalf("dirs = %v, want exactly [prod-a] (dedup)", got)
+	}
+}
+
+// TestWorkspaceDirs_MultiGlob_EmptyEntryRejected pins that an empty glob
+// entry surfaces as 400.
+func TestWorkspaceDirs_MultiGlob_EmptyEntryRejected(t *testing.T) {
+	tmp := t.TempDir()
+	w, _ := doWorkspaceDirsMulti(t, tmp, "", []string{"prod-%2A", ""})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("code = %d, want %d; body=%s", w.Code, http.StatusBadRequest, w.Body.String())
+	}
+}
+
+// TestWorkspaceDirs_MultiGlob_InvalidEntryRejected pins that a malformed
+// entry mid-list is caught (not just the first).
+func TestWorkspaceDirs_MultiGlob_InvalidEntryRejected(t *testing.T) {
+	tmp := t.TempDir()
+	w, _ := doWorkspaceDirsMulti(t, tmp, "", []string{"prod-%2A", "%5Babc"}) // "prod-*" then "[abc"
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("code = %d, want %d; body=%s", w.Code, http.StatusBadRequest, w.Body.String())
+	}
+}
