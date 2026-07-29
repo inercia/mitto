@@ -44,6 +44,14 @@ type PromptsCache struct {
 
 	// loadErrors holds per-file load errors from the most recent reload.
 	loadErrors []PromptLoadError
+
+	// fragmentsGen is the CurrentFragmentsGeneration() value observed at the
+	// last successful reload. If the global fragment registry has advanced
+	// since then (e.g. because the bootstrap installed fragments AFTER an
+	// early Get() sampled an empty registry — mitto-9jh.1), needsReload()
+	// returns true so template precompiles are retried with the current
+	// registry instead of serving a poisoned earlier result.
+	fragmentsGen uint64
 }
 
 // NewPromptsCache creates a new prompts cache.
@@ -125,9 +133,15 @@ func (c *PromptsCache) getAllDirs() ([]string, error) {
 	return dirs, nil
 }
 
-// needsReload checks if any directory has been modified since last load.
+// needsReload checks if any directory has been modified since last load, or
+// if the global fragment registry has advanced since the last reload (which
+// invalidates any earlier PrecompileTemplateConds result — mitto-9jh.1).
 func (c *PromptsCache) needsReload(dirs []string) bool {
 	if c.prompts == nil {
+		return true
+	}
+
+	if CurrentFragmentsGeneration() != c.fragmentsGen {
 		return true
 	}
 
@@ -179,6 +193,11 @@ func (c *PromptsCache) reload() ([]*PromptFile, error) {
 		return c.prompts, nil
 	}
 
+	// Sample the fragment generation BEFORE loading so a concurrent
+	// SetCurrentFragments landing mid-reload leaves us with the older
+	// value cached — needsReload() will then re-fire on the next Get().
+	fragmentsGen := CurrentFragmentsGeneration()
+
 	// Load prompts from all directories, merging by name
 	// Later directories override earlier ones
 	promptsByName := make(map[string]*PromptFile)
@@ -218,6 +237,7 @@ func (c *PromptsCache) reload() ([]*PromptFile, error) {
 	c.loadedAt = time.Now()
 	c.dirModTimes = newModTimes
 	c.loadErrors = newLoadErrors
+	c.fragmentsGen = fragmentsGen
 
 	return prompts, nil
 }

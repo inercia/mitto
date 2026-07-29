@@ -937,6 +937,31 @@ func NewServer(config Config) (*Server, error) {
 		s.BroadcastPrewarmPinAlert(workspaceUUID, workspaceName, workingDir, reason, expired)
 	})
 
+	// Bootstrap the process-wide fragment registry BEFORE starting the MCP
+	// server so that any prompt lookup triggered by an early MCP client (or by
+	// PromptsCache warming during MCP startup) sees the installed fragments.
+	// Without this, PrecompileTemplateConds fails closed with `template
+	// "_shared/…" not defined` for the entire window between MCP accept and
+	// the deferred fragment install, and the failed cache result is sticky
+	// until an fs-watcher event or ForceReload (mitto-9jh.1). Uses
+	// getFragmentScanDirs() — which lists the builtin dir as its own root —
+	// so short fragment names ("_shared/…") resolve correctly.
+	{
+		fragDirs := s.getFragmentScanDirs()
+		if reg, ferrs, err := prompts.ReloadFragmentsFromDirs(fragDirs); err != nil {
+			logger.Warn("Failed to bootstrap fragment registry", "error", err, "dirs", fragDirs)
+		} else {
+			prompts.SetCurrentFragments(reg)
+			logger.Info("Fragment registry bootstrapped", "count", reg.Len(), "dirs", fragDirs, "errors", len(ferrs))
+			if reg.Len() == 0 {
+				logger.Warn("Fragment registry bootstrapped empty; prompts that reference {{ template \"_shared/…\" . }} will fail to load until a fs-watcher fragment change re-installs the registry", "dirs", fragDirs)
+			}
+			for _, fe := range ferrs {
+				logger.Warn("Fragment load error at bootstrap", "path", fe.Path, "error", fe.Err)
+			}
+		}
+	}
+
 	// Initialize MCP server.
 	// This serves both global tools and session-scoped tools.
 	// The MCP server is always started; only its bind host/port are configurable.
@@ -1417,29 +1442,9 @@ func NewServer(config Config) (*Server, error) {
 	// Build callback index from existing sessions
 	s.buildCallbackIndex()
 
-	// Bootstrap the process-wide fragment registry BEFORE the first prompts
-	// cache reload so PrecompileTemplateConds can resolve fragment references
-	// like `{{ template "_shared/session-context" . }}` at load time. Without
-	// this, every prompt that uses a fragment fails precompile and is dropped
-	// from the cache until the fs-watcher fires (mitto: fragments never
-	// installed at startup). Uses getFragmentScanDirs() — which lists the
-	// builtin dir as its own root — so short fragment names ("_shared/…")
-	// resolve correctly.
-	{
-		fragDirs := s.getFragmentScanDirs()
-		if reg, ferrs, err := prompts.ReloadFragmentsFromDirs(fragDirs); err != nil {
-			logger.Warn("Failed to bootstrap fragment registry", "error", err, "dirs", fragDirs)
-		} else {
-			prompts.SetCurrentFragments(reg)
-			logger.Info("Fragment registry bootstrapped", "count", reg.Len(), "dirs", fragDirs, "errors", len(ferrs))
-			if reg.Len() == 0 {
-				logger.Warn("Fragment registry bootstrapped empty; prompts that reference {{ template \"_shared/…\" . }} will fail to load until a fs-watcher fragment change re-installs the registry", "dirs", fragDirs)
-			}
-			for _, fe := range ferrs {
-				logger.Warn("Fragment load error at bootstrap", "path", fe.Path, "error", fe.Err)
-			}
-		}
-	}
+	// (Fragment registry bootstrap was moved above the MCP server start to
+	// avoid an early-boot window where MCP-triggered prompt lookups landed
+	// against an empty registry and poisoned the PromptsCache — mitto-9jh.1.)
 
 	// Initialize prompts watcher for monitoring prompt file changes
 	if promptsWatcher, err := configPkg.NewPromptsWatcher(logger); err != nil {

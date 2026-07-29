@@ -334,8 +334,9 @@ func ReloadFragmentsFromDirs(dirs []string) (*FragmentRegistry, []FragmentLoadEr
 // registry via SetCurrentFragments and restore via t.Cleanup so isolation is
 // preserved across parallel test runs.
 var (
-	currentFragmentsMu sync.RWMutex
-	currentFragments   *FragmentRegistry
+	currentFragmentsMu  sync.RWMutex
+	currentFragments    *FragmentRegistry
+	currentFragmentsGen uint64
 )
 
 // CurrentFragments returns the currently-installed fragment registry, or nil if
@@ -346,10 +347,23 @@ func CurrentFragments() *FragmentRegistry {
 	return currentFragments
 }
 
+// CurrentFragmentsGeneration returns a monotonically-increasing counter that is
+// bumped every time SetCurrentFragments is called. Consumers that cache work
+// derived from the registry (e.g. PromptsCache) sample it alongside their
+// other freshness signals so a late fragment install invalidates any earlier
+// load performed against an empty or stale registry (mitto-9jh.1).
+func CurrentFragmentsGeneration() uint64 {
+	currentFragmentsMu.RLock()
+	defer currentFragmentsMu.RUnlock()
+	return currentFragmentsGen
+}
+
 // SetCurrentFragments installs r as the process-wide fragment registry consulted
-// by RenderPromptTemplate. Pass nil to clear (useful in test teardown).
+// by RenderPromptTemplate. Pass nil to clear (useful in test teardown). Bumps
+// CurrentFragmentsGeneration so downstream caches invalidate on the next read.
 func SetCurrentFragments(r *FragmentRegistry) {
 	currentFragmentsMu.Lock()
 	defer currentFragmentsMu.Unlock()
 	currentFragments = r
+	currentFragmentsGen++
 }
