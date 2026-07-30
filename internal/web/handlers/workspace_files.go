@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/bmatcuk/doublestar/v4"
+
+	"github.com/inercia/mitto/internal/pathglob"
 )
 
 // workspaceFilesMaxResults caps the number of entries returned by
@@ -109,11 +111,11 @@ func (h *Handlers) HandleWorkspaceFiles(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	if patternsContainDoublestar(globs) {
+	if pathglob.PatternsContainDoublestar(globs) {
 		// Anchor the walk only when every pattern shares the same non-empty
 		// literal prefix; otherwise walk from the resolved root and let
 		// PathMatch handle the divergent patterns from there.
-		prefix := commonLiteralPrefix(globs)
+		prefix := pathglob.CommonLiteralPrefix(globs)
 		walkRoot := resolved
 		if prefix != "" {
 			joined := filepath.Join(resolved, prefix)
@@ -138,16 +140,16 @@ func (h *Handlers) HandleWorkspaceFiles(w http.ResponseWriter, r *http.Request) 
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 		defer cancel()
-		res := walkMatch(walkMatchOpts{
-			ctx:        ctx,
-			root:       walkRoot,
-			patterns:   patterns,
-			maxResults: workspaceFilesMaxResults,
-			maxVisited: walkMatchMaxVisited,
-			wantFiles:  true,
+		res := pathglob.WalkMatch(pathglob.WalkMatchOpts{
+			Ctx:        ctx,
+			Root:       walkRoot,
+			Patterns:   patterns,
+			MaxResults: workspaceFilesMaxResults,
+			MaxVisited: pathglob.WalkMatchMaxVisited,
+			WantFiles:  true,
 		})
-		files := make([]string, 0, len(res.matches))
-		for _, m := range res.matches {
+		files := make([]string, 0, len(res.Matches))
+		for _, m := range res.Matches {
 			abs := filepath.Join(walkRoot, filepath.FromSlash(m))
 			rel, rerr := filepath.Rel(resolvedRoot, abs)
 			if rerr != nil {
@@ -157,10 +159,10 @@ func (h *Handlers) HandleWorkspaceFiles(w http.ResponseWriter, r *http.Request) 
 		}
 		sort.Strings(files)
 		if h.deps.Logger != nil {
-			if res.truncated {
+			if res.Truncated {
 				h.deps.Logger.Debug("workspace-files listed",
 					"working_dir", workingDir, "dir", dir, "glob", globs,
-					"count", len(files), "truncated", true, "reason", res.reason)
+					"count", len(files), "truncated", true, "reason", res.Reason)
 			} else {
 				h.deps.Logger.Debug("workspace-files listed",
 					"working_dir", workingDir, "dir", dir, "glob", globs, "count", len(files))

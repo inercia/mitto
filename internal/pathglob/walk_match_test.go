@@ -1,4 +1,4 @@
-package handlers
+package pathglob
 
 import (
 	"context"
@@ -23,8 +23,8 @@ func TestContainsDoublestar(t *testing.T) {
 		"**/foo/bar.md": true,
 	}
 	for pat, want := range cases {
-		if got := containsDoublestar(pat); got != want {
-			t.Errorf("containsDoublestar(%q) = %v, want %v", pat, got, want)
+		if got := ContainsDoublestar(pat); got != want {
+			t.Errorf("ContainsDoublestar(%q) = %v, want %v", pat, got, want)
 		}
 	}
 }
@@ -47,8 +47,8 @@ func TestLiteralPrefix(t *testing.T) {
 		{"docs/?/x", "docs"},
 	}
 	for _, tc := range cases {
-		if got := literalPrefix(tc.pattern); got != tc.want {
-			t.Errorf("literalPrefix(%q) = %q, want %q", tc.pattern, got, tc.want)
+		if got := LiteralPrefix(tc.pattern); got != tc.want {
+			t.Errorf("LiteralPrefix(%q) = %q, want %q", tc.pattern, got, tc.want)
 		}
 	}
 }
@@ -76,15 +76,15 @@ func TestWalkMatch_MatchesNestedFiles(t *testing.T) {
 	mkTree(t, root, []string{"a.md", "sub/b.md", "sub/deep/c.md", "sub/deep/d.txt"}, nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	res := walkMatch(walkMatchOpts{ctx: ctx, root: root, patterns: []string{"**/*.md"}, maxResults: 500, maxVisited: 50000, wantFiles: true})
-	sort.Strings(res.matches)
-	got := strings.Join(res.matches, ",")
+	res := WalkMatch(WalkMatchOpts{Ctx: ctx, Root: root, Patterns: []string{"**/*.md"}, MaxResults: 500, MaxVisited: 50000, WantFiles: true})
+	sort.Strings(res.Matches)
+	got := strings.Join(res.Matches, ",")
 	want := "a.md,sub/b.md,sub/deep/c.md"
 	if got != want {
 		t.Fatalf("matches = %q, want %q", got, want)
 	}
-	if res.truncated {
-		t.Fatalf("unexpected truncated=true reason=%s", res.reason)
+	if res.Truncated {
+		t.Fatalf("unexpected truncated=true reason=%s", res.Reason)
 	}
 }
 
@@ -93,9 +93,9 @@ func TestWalkMatch_PrunesHeavyDirs(t *testing.T) {
 	mkTree(t, root, []string{"src/a.md", "node_modules/big.md", ".git/HEAD.md", "vendor/v.md", "dist/x.md"}, nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	res := walkMatch(walkMatchOpts{ctx: ctx, root: root, patterns: []string{"**/*.md"}, maxResults: 500, maxVisited: 50000, wantFiles: true})
-	sort.Strings(res.matches)
-	if got := strings.Join(res.matches, ","); got != "src/a.md" {
+	res := WalkMatch(WalkMatchOpts{Ctx: ctx, Root: root, Patterns: []string{"**/*.md"}, MaxResults: 500, MaxVisited: 50000, WantFiles: true})
+	sort.Strings(res.Matches)
+	if got := strings.Join(res.Matches, ","); got != "src/a.md" {
 		t.Fatalf("matches = %q, want %q", got, "src/a.md")
 	}
 }
@@ -109,12 +109,12 @@ func TestWalkMatch_HonorsResultsCap(t *testing.T) {
 	mkTree(t, root, files, nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	res := walkMatch(walkMatchOpts{ctx: ctx, root: root, patterns: []string{"**/*.md"}, maxResults: 5, maxVisited: 50000, wantFiles: true})
-	if len(res.matches) != 5 {
-		t.Fatalf("len(matches) = %d, want 5", len(res.matches))
+	res := WalkMatch(WalkMatchOpts{Ctx: ctx, Root: root, Patterns: []string{"**/*.md"}, MaxResults: 5, MaxVisited: 50000, WantFiles: true})
+	if len(res.Matches) != 5 {
+		t.Fatalf("len(matches) = %d, want 5", len(res.Matches))
 	}
-	if !res.truncated || res.reason != "results_cap" {
-		t.Fatalf("truncated=%v reason=%q, want truncated=true reason=results_cap", res.truncated, res.reason)
+	if !res.Truncated || res.Reason != "results_cap" {
+		t.Fatalf("truncated=%v reason=%q, want truncated=true reason=results_cap", res.Truncated, res.Reason)
 	}
 }
 
@@ -127,9 +127,9 @@ func TestWalkMatch_HonorsVisitedCap(t *testing.T) {
 	mkTree(t, root, files, nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	res := walkMatch(walkMatchOpts{ctx: ctx, root: root, patterns: []string{"**/*.md"}, maxResults: 500, maxVisited: 3, wantFiles: true})
-	if !res.truncated || res.reason != "visited_cap" {
-		t.Fatalf("truncated=%v reason=%q, want truncated=true reason=visited_cap", res.truncated, res.reason)
+	res := WalkMatch(WalkMatchOpts{Ctx: ctx, Root: root, Patterns: []string{"**/*.md"}, MaxResults: 500, MaxVisited: 3, WantFiles: true})
+	if !res.Truncated || res.Reason != "visited_cap" {
+		t.Fatalf("truncated=%v reason=%q, want truncated=true reason=visited_cap", res.Truncated, res.Reason)
 	}
 }
 
@@ -138,14 +138,12 @@ func TestWalkMatch_HonorsDeadline(t *testing.T) {
 	mkTree(t, root, []string{"a.md", "sub/b.md"}, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	res := walkMatch(walkMatchOpts{ctx: ctx, root: root, patterns: []string{"**/*.md"}, maxResults: 500, maxVisited: 50000, wantFiles: true})
-	if !res.truncated || res.reason != "deadline" {
-		t.Fatalf("truncated=%v reason=%q, want truncated=true reason=deadline", res.truncated, res.reason)
+	res := WalkMatch(WalkMatchOpts{Ctx: ctx, Root: root, Patterns: []string{"**/*.md"}, MaxResults: 500, MaxVisited: 50000, WantFiles: true})
+	if !res.Truncated || res.Reason != "deadline" {
+		t.Fatalf("truncated=%v reason=%q, want truncated=true reason=deadline", res.Truncated, res.Reason)
 	}
 }
 
-// TestPatternsContainDoublestar pins the list-form recursive detector: any
-// entry with "**" flips the caller into the recursive walker branch.
 func TestPatternsContainDoublestar(t *testing.T) {
 	cases := []struct {
 		patterns []string
@@ -156,21 +154,16 @@ func TestPatternsContainDoublestar(t *testing.T) {
 		{[]string{"*.md"}, false},
 		{[]string{"*.md", "*.rst"}, false},
 		{[]string{"**/*.md"}, true},
-		{[]string{"*.md", "**/*.rst"}, true}, // one recursive is enough
+		{[]string{"*.md", "**/*.rst"}, true},
 		{[]string{"docs/**/*.md", "spec/**/*.md"}, true},
 	}
 	for _, tc := range cases {
-		if got := patternsContainDoublestar(tc.patterns); got != tc.want {
-			t.Errorf("patternsContainDoublestar(%v) = %v, want %v", tc.patterns, got, tc.want)
+		if got := PatternsContainDoublestar(tc.patterns); got != tc.want {
+			t.Errorf("PatternsContainDoublestar(%v) = %v, want %v", tc.patterns, got, tc.want)
 		}
 	}
 }
 
-// TestCommonLiteralPrefix pins the walk-root optimization gate: an anchored
-// walk root is safe ONLY when every pattern shares the same non-empty literal
-// prefix. Divergent prefixes must yield "" so the caller falls back to the
-// workspace root — otherwise the walk would silently miss matches under other
-// literal prefixes.
 func TestCommonLiteralPrefix(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -187,53 +180,40 @@ func TestCommonLiteralPrefix(t *testing.T) {
 		{"deeper vs shallow same first segment → different literalPrefix → empty", []string{"docs/**/*.md", "docs/sub/foo.md"}, ""},
 	}
 	for _, tc := range cases {
-		if got := commonLiteralPrefix(tc.patterns); got != tc.want {
-			t.Errorf("%s: commonLiteralPrefix(%v) = %q, want %q", tc.name, tc.patterns, got, tc.want)
+		if got := CommonLiteralPrefix(tc.patterns); got != tc.want {
+			t.Errorf("%s: CommonLiteralPrefix(%v) = %q, want %q", tc.name, tc.patterns, got, tc.want)
 		}
 	}
 }
 
-// TestWalkMatch_MultiPattern_Union pins union semantics: a file matches when
-// ANY pattern in the list matches. Files that match neither are dropped;
-// results include entries reached via each pattern.
 func TestWalkMatch_MultiPattern_Union(t *testing.T) {
 	root := t.TempDir()
 	mkTree(t, root, []string{"a.md", "b.rst", "c.txt", "sub/d.md", "sub/e.rst"}, nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	res := walkMatch(walkMatchOpts{ctx: ctx, root: root, patterns: []string{"**/*.md", "**/*.rst"}, maxResults: 500, maxVisited: 50000, wantFiles: true})
-	sort.Strings(res.matches)
-	got := strings.Join(res.matches, ",")
+	res := WalkMatch(WalkMatchOpts{Ctx: ctx, Root: root, Patterns: []string{"**/*.md", "**/*.rst"}, MaxResults: 500, MaxVisited: 50000, WantFiles: true})
+	sort.Strings(res.Matches)
+	got := strings.Join(res.Matches, ",")
 	want := "a.md,b.rst,sub/d.md,sub/e.rst"
 	if got != want {
 		t.Fatalf("matches = %q, want %q", got, want)
 	}
-	if res.truncated {
-		t.Fatalf("unexpected truncated=true reason=%s", res.reason)
+	if res.Truncated {
+		t.Fatalf("unexpected truncated=true reason=%s", res.Reason)
 	}
 }
 
-// TestWalkMatch_MultiPattern_Dedup pins that a file matching multiple patterns
-// is reported EXACTLY ONCE. The walker sees each entry once and short-circuits
-// on the first pattern hit, so this naturally holds — the regression guard
-// pins the invariant against a future refactor that iterates patterns in the
-// outer loop.
 func TestWalkMatch_MultiPattern_Dedup(t *testing.T) {
 	root := t.TempDir()
 	mkTree(t, root, []string{"a.md"}, nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	// Both patterns match a.md; result must not contain a duplicate.
-	res := walkMatch(walkMatchOpts{ctx: ctx, root: root, patterns: []string{"**/*.md", "*.md"}, maxResults: 500, maxVisited: 50000, wantFiles: true})
-	if len(res.matches) != 1 || res.matches[0] != "a.md" {
-		t.Fatalf("matches = %v, want exactly [a.md] (dedup)", res.matches)
+	res := WalkMatch(WalkMatchOpts{Ctx: ctx, Root: root, Patterns: []string{"**/*.md", "*.md"}, MaxResults: 500, MaxVisited: 50000, WantFiles: true})
+	if len(res.Matches) != 1 || res.Matches[0] != "a.md" {
+		t.Fatalf("matches = %v, want exactly [a.md] (dedup)", res.Matches)
 	}
 }
 
-// TestWalkMatch_MultiPattern_DivergentPrefixesFromRoot pins the fallback: when
-// the caller has already selected the workspace root as the walk root
-// (because commonLiteralPrefix returned ""), the walker must still find
-// matches under EACH pattern's own literal prefix without any anchoring.
 func TestWalkMatch_MultiPattern_DivergentPrefixesFromRoot(t *testing.T) {
 	root := t.TempDir()
 	mkTree(t, root, []string{
@@ -245,22 +225,15 @@ func TestWalkMatch_MultiPattern_DivergentPrefixesFromRoot(t *testing.T) {
 	}, nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	// Divergent prefixes — the caller would walk from root; the walker must
-	// still recognize BOTH prefix branches via PathMatch.
-	res := walkMatch(walkMatchOpts{ctx: ctx, root: root, patterns: []string{"docs/**/*.md", "spec/**/*.md"}, maxResults: 500, maxVisited: 50000, wantFiles: true})
-	sort.Strings(res.matches)
-	got := strings.Join(res.matches, ",")
+	res := WalkMatch(WalkMatchOpts{Ctx: ctx, Root: root, Patterns: []string{"docs/**/*.md", "spec/**/*.md"}, MaxResults: 500, MaxVisited: 50000, WantFiles: true})
+	sort.Strings(res.Matches)
+	got := strings.Join(res.Matches, ",")
 	want := "docs/a.md,docs/sub/b.md,spec/deep/y.md,spec/x.md"
 	if got != want {
 		t.Fatalf("matches = %q, want %q (other/skip.md must be excluded)", got, want)
 	}
 }
 
-// TestWalkMatch_MultiPattern_SharedPrefixAnchored pins that when every
-// pattern shares the same non-empty literal prefix, the caller can anchor
-// the walk at that prefix and pass the patterns stripped of the prefix; the
-// walker still returns forward-slash paths RELATIVE TO the anchored root.
-// This mirrors the anchored-optimization codepath in the handler.
 func TestWalkMatch_MultiPattern_SharedPrefixAnchored(t *testing.T) {
 	root := t.TempDir()
 	mkTree(t, root, []string{
@@ -272,14 +245,10 @@ func TestWalkMatch_MultiPattern_SharedPrefixAnchored(t *testing.T) {
 	}, nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	// Simulate the handler's anchored branch: walk from docs/ and strip the
-	// shared "docs/" prefix from each pattern.
 	docsRoot := filepath.Join(root, "docs")
-	res := walkMatch(walkMatchOpts{ctx: ctx, root: docsRoot, patterns: []string{"**/*.md", "**/*.rst"}, maxResults: 500, maxVisited: 50000, wantFiles: true})
-	sort.Strings(res.matches)
-	got := strings.Join(res.matches, ",")
-	// Paths returned are RELATIVE to docsRoot; other/ is unreachable from
-	// docsRoot so skip.md never surfaces.
+	res := WalkMatch(WalkMatchOpts{Ctx: ctx, Root: docsRoot, Patterns: []string{"**/*.md", "**/*.rst"}, MaxResults: 500, MaxVisited: 50000, WantFiles: true})
+	sort.Strings(res.Matches)
+	got := strings.Join(res.Matches, ",")
 	want := "a.md,b.rst,sub/c.md,sub/d.rst"
 	if got != want {
 		t.Fatalf("matches = %q, want %q", got, want)

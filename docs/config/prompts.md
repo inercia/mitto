@@ -1309,8 +1309,8 @@ already exposes the same `PromptsCache` snapshot the MCP tools read.
 | `UserData` | `UserData "NAME"` | Per-conversation user-data field value, or `""` if unset. Handles names with spaces, e.g. `UserData "JIRA Ticket"`. |
 | `default` | `default "fallback" .Value` | `.Value` if non-empty, else fallback |
 | `cond` / `when` | `cond "celExpr"` | Evaluate a CEL expression (same grammar as `enabledWhen`) → bool |
-| `fileExists` | `fileExists "path"` | Path exists as a file (relative to workspace folder) |
-| `dirExists` | `dirExists "path"` | Directory exists |
+| `fileExists` | `fileExists "path"` | Path exists as a file (relative to workspace folder). Auto-detects glob metacharacters (`*`, `?`, `[`, `{`) and switches to a bounded workspace walk that reports whether ANY regular file matches (e.g. `fileExists "**/*.go"`, 2 s timeout, fail-open on cap/deadline, absolute globs / `..`-escapes → `false`). |
+| `dirExists` | `dirExists "path"` | Directory exists. Same glob-mode semantics as `fileExists` but matches directories (e.g. `dirExists "vendor/**/pkg"`). |
 | `commandExists` | `commandExists "name"` | Command is on PATH |
 | `GitRepo` | `GitRepo "path"` | Folder (omit `path` for the whole workspace) is inside a git work tree — use as a gatekeeper before other `Git*` checks |
 | `GitFileModified` | `GitFileModified "path"` | Tracked file at `path` has pending (staged/unstaged) changes vs HEAD/index; untracked files are `false` |

@@ -13,6 +13,8 @@ import (
 	"sync"
 	"text/template"
 	"time"
+
+	"github.com/inercia/mitto/internal/pathglob"
 )
 
 // gitCmdTimeout bounds how long a git subprocess invocation is allowed to run
@@ -63,6 +65,140 @@ var beadsStrCache = map[string]beadsStrCacheEntry{}
 type beadsStrCacheEntry struct {
 	value string
 	at    time.Time
+}
+
+// globCacheTTL bounds how long a fileExists/dirExists glob-mode result is
+// memoised per (folder, pattern, wantFiles) tuple, to avoid repeat walks on
+// rapid menu re-opens. Mirrors beadsCacheTTL — kept short so a filesystem
+// mutation is reflected within one TTL window.
+const globCacheTTL = 5 * time.Second
+
+// globWalkTimeout bounds a single fileExists/dirExists glob-mode walk. On
+// deadline the walker returns Truncated=true reason="deadline" and the caller
+// fails open (returns true) so a prompt is never wrongly hidden by a slow
+// filesystem — consistent with the CEL fail-open policy.
+const globWalkTimeout = 2 * time.Second
+
+// globCache memoises fileExists/dirExists glob-mode results for globCacheTTL,
+// keyed by folder\x00pattern\x00wantFiles. Simple sync.Mutex-guarded map with
+// a timestamped bool per key. Non-glob (literal) calls bypass this cache and
+// keep the current O(1) os.Stat path.
+var (
+	globCacheMu sync.Mutex
+	globCache   = map[string]globCacheEntry{}
+)
+
+type globCacheEntry struct {
+	value bool
+	at    time.Time
+}
+
+// containsGlobMeta reports whether pattern uses any glob metacharacter that
+// switches fileExists/dirExists to walker mode: '*', '?', '[', '{'. Matches
+// pathglob.LiteralPrefix's segment-splitter so the two agree on what counts
+// as "has a wildcard".
+func containsGlobMeta(pattern string) bool {
+	return strings.ContainsAny(pattern, "*?[{")
+}
+
+// resolveGlobRoot returns the (walkRoot, patternRel, ok) triple for a glob
+// pattern rooted at folder. It mirrors the handler-side literal-prefix
+// anchoring: when pattern has a non-empty literal prefix, walk from
+// folder/prefix and strip the prefix from the pattern; otherwise walk from
+// folder verbatim.
+//
+// ok=false rejects the call (fileExists/dirExists then return false without
+// walking): empty folder or pattern, absolute pattern, ".." escape after
+// Clean, or the anchored root is not an existing directory.
+func resolveGlobRoot(folder, pattern string) (walkRoot, patternRel string, ok bool) {
+	if folder == "" || pattern == "" {
+		return "", "", false
+	}
+	// Reject absolute paths (mirrors readFile / statResolved policy — CEL
+	// glob helpers are workspace-scoped by construction).
+	if filepath.IsAbs(pattern) || strings.HasPrefix(pattern, "/") {
+		return "", "", false
+	}
+	cleanFolder := filepath.Clean(folder)
+	prefix := pathglob.LiteralPrefix(pattern)
+	walkRoot = cleanFolder
+	patternRel = pattern
+	if prefix != "" {
+		joined := filepath.Join(cleanFolder, prefix)
+		cleaned := filepath.Clean(joined)
+		// Containment check: after Clean, the anchored root must sit inside
+		// folder — a "../" escape in prefix must be rejected.
+		if cleaned != cleanFolder && !strings.HasPrefix(cleaned, cleanFolder+string(filepath.Separator)) {
+			return "", "", false
+		}
+		pi, perr := os.Stat(cleaned)
+		if perr != nil || !pi.IsDir() {
+			return "", "", false
+		}
+		walkRoot = cleaned
+		patternRel = strings.TrimPrefix(pattern, prefix+"/")
+	}
+	return walkRoot, patternRel, true
+}
+
+// existsByGlob reports whether ANY entry under folder matches pattern using
+// pathglob.WalkMatch with maxResults=1. wantFiles gates the entry-type filter
+// (regular files vs. directories), matching the fileExists/dirExists split.
+//
+// Fail-open on any walker truncation (deadline, visited_cap, results_cap):
+// results_cap with matches>0 is a hit; results_cap with matches==0 is
+// unreachable (the walker only reports results_cap after appending a match);
+// deadline/visited_cap with matches==0 fails open (returns true) so a prompt
+// is never wrongly hidden by a slow or huge filesystem.
+//
+// Results are memoised for globCacheTTL per (folder, pattern, wantFiles)
+// tuple.
+func existsByGlob(folder, pattern string, wantFiles bool) bool {
+	cacheKey := folder + "\x00" + pattern + "\x00"
+	if wantFiles {
+		cacheKey += "f"
+	} else {
+		cacheKey += "d"
+	}
+	globCacheMu.Lock()
+	if e, ok := globCache[cacheKey]; ok && time.Since(e.at) < globCacheTTL {
+		globCacheMu.Unlock()
+		return e.value
+	}
+	globCacheMu.Unlock()
+
+	walkRoot, patternRel, ok := resolveGlobRoot(folder, pattern)
+	if !ok {
+		globCacheMu.Lock()
+		globCache[cacheKey] = globCacheEntry{value: false, at: time.Now()}
+		globCacheMu.Unlock()
+		return false
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), globWalkTimeout)
+	defer cancel()
+	res := pathglob.WalkMatch(pathglob.WalkMatchOpts{
+		Ctx:        ctx,
+		Root:       walkRoot,
+		Patterns:   []string{patternRel},
+		MaxResults: 1,
+		MaxVisited: pathglob.WalkMatchMaxVisited,
+		WantFiles:  wantFiles,
+	})
+	var result bool
+	if len(res.Matches) > 0 {
+		result = true
+	} else if res.Truncated && (res.Reason == "deadline" || res.Reason == "visited_cap") {
+		// Fail-open: a slow/huge filesystem must not wrongly hide a prompt.
+		result = true
+	} else {
+		result = false
+	}
+
+	globCacheMu.Lock()
+	globCache[cacheKey] = globCacheEntry{value: result, at: time.Now()}
+	globCacheMu.Unlock()
+	return result
 }
 
 // =============================================================================
@@ -165,16 +301,37 @@ func commandExists(name string) bool {
 	return err == nil
 }
 
-// fileExists reports whether path exists and is a regular file.
-// Relative paths are resolved against folder (workspace root).
+// fileExists reports whether path exists and is a regular file. Relative
+// paths are resolved against folder (workspace root).
+//
+// When path contains any glob metacharacter ('*', '?', '[', '{'), fileExists
+// switches to a bounded workspace walk (pathglob.WalkMatch with maxResults=1)
+// and reports whether ANY regular file matches. The walk is capped by
+// globWalkTimeout, visited_cap and results_cap; fail-open on cap/deadline
+// (returns true) so a slow or huge filesystem never wrongly hides a prompt.
+// Absolute globs and "../" escapes are rejected (return false).
+//
+// The literal (no-metachar) path is unchanged: O(1) os.Stat via statResolved.
+// Glob-mode results are memoised for globCacheTTL per (folder, pattern, wantFiles).
 func fileExists(folder, path string) bool {
+	if containsGlobMeta(path) {
+		return existsByGlob(folder, path, true)
+	}
 	info, ok := statResolved(folder, path)
 	return ok && !info.IsDir()
 }
 
-// dirExists reports whether path exists and is a directory.
-// Relative paths are resolved against folder (workspace root).
+// dirExists reports whether path exists and is a directory. Relative paths
+// are resolved against folder (workspace root).
+//
+// When path contains any glob metacharacter ('*', '?', '[', '{'), dirExists
+// switches to a bounded workspace walk (pathglob.WalkMatch with maxResults=1)
+// and reports whether ANY directory matches. Same caps, fail-open policy and
+// caching as fileExists.
 func dirExists(folder, path string) bool {
+	if containsGlobMeta(path) {
+		return existsByGlob(folder, path, false)
+	}
 	info, ok := statResolved(folder, path)
 	return ok && info.IsDir()
 }
@@ -754,7 +911,13 @@ func FormatPeers(peers []PeerInfo) string {
 //   - arg(name, default?) — ctx.Args[name] if present and non-empty, else default or "".
 //   - default(fallback, val) — val if non-empty, else fallback.
 //   - fileExists(path) — true iff path is a regular file (relative to workspace folder).
-//   - dirExists(path)  — true iff path is a directory.
+//     When path contains any glob metacharacter ('*', '?', '[', '{'),
+//     switches to a bounded workspace walk (pathglob.WalkMatch, maxResults=1,
+//     2s timeout) and reports whether ANY regular file matches. Fail-open on
+//     cap/deadline (returns true). Absolute globs and "../" escapes return
+//     false. Glob results are memoised for 5s.
+//   - dirExists(path)  — true iff path is a directory. Same glob-mode
+//     semantics as fileExists but matches directories.
 //   - ReadFile(path) — file contents as a string (workspace-relative; fail-open
 //     on missing / oversize / path-escape; capped at readFileMaxBytes). Pair
 //     with FileExists to distinguish absent from empty.
