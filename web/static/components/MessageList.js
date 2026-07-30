@@ -81,7 +81,6 @@ export function MessageList({
             <div
               class="text-xs text-mitto-text-muted flex items-center gap-2 bg-mitto-surface-2 px-3 py-1.5 rounded-lg opacity-70"
             >
-              <span class="loading loading-spinner w-3 h-3"></span>
               <span
                 >Working${agentWorking.toolTitle
                   ? ` — ${agentWorking.toolTitle}`
@@ -271,9 +270,6 @@ export function MessageList({
                       <p
                         class="text-sm mt-6 text-mitto-warning flex items-center gap-2"
                       >
-                        <span
-                          class="loading loading-spinner w-3 h-3 text-yellow-500"
-                        ></span>
                         Establishing ACP session...
                       </p>
                     `}

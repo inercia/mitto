@@ -90,7 +90,10 @@ function ParamField({
   let control;
   if (type === "beadsId") {
     if (loadingBeads) {
-      control = html`<span class="loading loading-spinner loading-xs"></span>`;
+      control = html`<span
+        class="text-mitto-text-muted text-xs opacity-60"
+        >…</span
+      >`;
     } else if (beadsIssues.length === 0) {
       // Fallback to text input when list is unavailable
       control = html`
@@ -121,7 +124,10 @@ function ParamField({
     }
   } else if (type === "sessionId") {
     if (loadingSessions) {
-      control = html`<span class="loading loading-spinner loading-xs"></span>`;
+      control = html`<span
+        class="text-mitto-text-muted text-xs opacity-60"
+        >…</span
+      >`;
     } else if (sessions.length === 0) {
       control = html`
         <input
@@ -154,7 +160,10 @@ function ParamField({
       (s) => hostSessionId && s.parent_session_id === hostSessionId,
     );
     if (loadingSessions) {
-      control = html`<span class="loading loading-spinner loading-xs"></span>`;
+      control = html`<span
+        class="text-mitto-text-muted text-xs opacity-60"
+        >…</span
+      >`;
     } else if (childSessions.length === 0) {
       control = html`
         <input
@@ -184,7 +193,10 @@ function ParamField({
     }
   } else if (type === "workspaceId") {
     if (loadingWorkspaces) {
-      control = html`<span class="loading loading-spinner loading-xs"></span>`;
+      control = html`<span
+        class="text-mitto-text-muted text-xs opacity-60"
+        >…</span
+      >`;
     } else if (workspaces.length === 0) {
       control = html`
         <input
@@ -222,7 +234,10 @@ function ParamField({
       return true;
     });
     if (loadingWorkspaces) {
-      control = html`<span class="loading loading-spinner loading-xs"></span>`;
+      control = html`<span
+        class="text-mitto-text-muted text-xs opacity-60"
+        >…</span
+      >`;
     } else if (folders.length === 0) {
       control = html`
         <input
@@ -254,7 +269,10 @@ function ParamField({
     }
   } else if (type === "acpServer") {
     if (loadingWorkspaces) {
-      control = html`<span class="loading loading-spinner loading-xs"></span>`;
+      control = html`<span
+        class="text-mitto-text-muted text-xs opacity-60"
+        >…</span
+      >`;
     } else if (!acpServers || acpServers.length === 0) {
       control = html`
         <input
@@ -311,7 +329,10 @@ function ParamField({
         />
       `;
     } else if (loadingPrompts) {
-      control = html`<span class="loading loading-spinner loading-xs"></span>`;
+      control = html`<span
+        class="text-mitto-text-muted text-xs opacity-60"
+        >…</span
+      >`;
     } else if (!promptsList || promptsList.length === 0) {
       control = html`
         <input
@@ -346,7 +367,10 @@ function ParamField({
     const files = (filesByParam && filesByParam[name]) || [];
     const loadingFiles = !!(loadingFilesByParam && loadingFilesByParam[name]);
     if (loadingFiles) {
-      control = html`<span class="loading loading-spinner loading-xs"></span>`;
+      control = html`<span
+        class="text-mitto-text-muted text-xs opacity-60"
+        >…</span
+      >`;
     } else if (files.length === 0) {
       control = html`
         <input
@@ -380,7 +404,10 @@ function ParamField({
     const dirs = (dirsByParam && dirsByParam[name]) || [];
     const loadingDirs = !!(loadingDirsByParam && loadingDirsByParam[name]);
     if (loadingDirs) {
-      control = html`<span class="loading loading-spinner loading-xs"></span>`;
+      control = html`<span
+        class="text-mitto-text-muted text-xs opacity-60"
+        >…</span
+      >`;
     } else if (dirs.length === 0) {
       control = html`
         <input
@@ -530,7 +557,9 @@ function ParamField({
             Parameters for ${(pickedPrompt && pickedPrompt.name) || value}
           </legend>
           ${loadingNestedRemembered &&
-          html`<span class="loading loading-spinner loading-xs"></span>`}
+          html`<span class="text-mitto-text-muted text-xs opacity-60"
+            >…</span
+          >`}
           ${innerParams.map(
             (inner) =>
               html`<${ParamField}
