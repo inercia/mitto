@@ -1,5 +1,6 @@
 // Mitto Web Interface - Save Prompt Dialog Component
-// Modal dialog for saving the current prompt text as a markdown file with frontmatter
+// Modal dialog for saving the current prompt text as a .prompt.yaml file
+// (pure YAML document parsed by internal/prompts.ParsePromptFile).
 
 const { useState, useEffect, useCallback, useRef, html, Fragment } =
   window.preact;
@@ -30,19 +31,41 @@ function nameToFilename(name) {
 }
 
 /**
- * Build the file content with YAML frontmatter.
+ * YAML double-quoted flow scalar. Escapes are a JSON-compatible subset that
+ * covers everything a name/description field will realistically contain.
+ * @param {string} s
+ * @returns {string}
+ */
+function yamlDoubleQuoted(s) {
+  return '"' + s.replace(/\\/g, "\\\\").replace(/"/g, '\\"') + '"';
+}
+
+/**
+ * Build the file content as a pure YAML document matching the .prompt.yaml
+ * schema loaded by internal/prompts.ParsePromptFile — `name:` / optional
+ * `description:` scalars plus `prompt: |-` as a block-literal scalar with
+ * 2-space indentation. This is NOT markdown-with-frontmatter — .prompt.yaml
+ * files are parsed as whole YAML documents.
  * @param {string} name - Prompt name
  * @param {string} description - Optional description
  * @param {string} promptText - The prompt body text
- * @returns {string} Markdown content with frontmatter
+ * @returns {string} YAML document
  */
 function buildFileContent(name, description, promptText) {
-  let frontmatter = `---\nname: "${name.replace(/"/g, '\\"')}"`;
-  if (description.trim()) {
-    frontmatter += `\ndescription: "${description.trim().replace(/"/g, '\\"')}"`;
+  let out = `name: ${yamlDoubleQuoted(name)}\n`;
+  const desc = description.trim();
+  if (desc) {
+    out += `description: ${yamlDoubleQuoted(desc)}\n`;
   }
-  frontmatter += "\n---\n\n";
-  return frontmatter + promptText;
+  // "|-" strips trailing newlines; each body line is indented by 2 spaces,
+  // while empty lines remain empty (permitted within a block-literal scalar).
+  const body = promptText.replace(/\s+$/, "");
+  const indented = body
+    .split("\n")
+    .map((line) => (line.length ? "  " + line : ""))
+    .join("\n");
+  out += `prompt: |-\n${indented}\n`;
+  return out;
 }
 
 /**
