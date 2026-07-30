@@ -2,11 +2,12 @@
 // Renders the scrollable messages area: empty state, reversed message list with
 // date separators and retry buttons, load-more controls, infinite-scroll sentinel,
 // and the scroll-to-bottom floating button.
-const { html, Fragment, useMemo, useState, useEffect } = window.preact;
+const { html, Fragment, useMemo, useState } = window.preact;
 
 import { Message } from "./Message.js";
 import { SpinnerIcon, ArrowDownIcon, SettingsIcon } from "./Icons.js";
 import { buildRetryTargets, messageKey } from "../lib.js";
+import { useVisibleInterval } from "../hooks/useVisibleInterval.js";
 
 /**
  * @param {Array}    displayMessages   - Coalesced messages to render
@@ -55,14 +56,13 @@ export function MessageList({
 }) {
   // Tick every second while the "agent is still working" heartbeat is visible, to
   // update the mm:ss timer and to re-evaluate staleness (auto-hide after 25s with
-  // no new heartbeat). The interval is cleared whenever streaming stops or there's
-  // no heartbeat to show, so it never runs needlessly in the background.
+  // no new heartbeat). Gated on visibility via useVisibleInterval so the tick
+  // stops when the Mitto webview is hidden (background/Cmd-H), and catches up on
+  // wake so the chip's mm:ss is never stuck at an old value.
   const [workingNow, setWorkingNow] = useState(Date.now());
-  useEffect(() => {
-    if (!isStreaming || !agentWorking) return undefined;
-    const interval = setInterval(() => setWorkingNow(Date.now()), 1000);
-    return () => clearInterval(interval);
-  }, [isStreaming, agentWorking]);
+  useVisibleInterval(() => setWorkingNow(Date.now()), 1000, {
+    enabled: isStreaming && !!agentWorking,
+  });
 
   const showAgentWorking =
     isStreaming && agentWorking && workingNow - agentWorking.receivedAt < 25000;

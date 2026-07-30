@@ -28,3 +28,4 @@ export {
 } from "./useConversationSeeding.js";
 export { useBeadsKnownIds } from "./useBeadsKnownIds.js";
 export { useLinkedBeadPhase } from "./useLinkedBeadPhase.js";
+export { useVisibleInterval } from "./useVisibleInterval.js";

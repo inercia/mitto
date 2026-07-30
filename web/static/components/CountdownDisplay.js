@@ -3,7 +3,9 @@
 // Granularity adapts to the schedule unit (days/hours/minutes) and the component
 // manages its own ticking interval so callers only pass the target + unit.
 
-const { useState, useEffect, html } = window.preact;
+const { useState, html } = window.preact;
+
+import { useVisibleInterval } from "../hooks/useVisibleInterval.js";
 
 /**
  * Compute adaptive countdown segments to the next scheduled run.
@@ -75,19 +77,13 @@ export function CountdownDisplay({
   // Current time (ms), ticked by an interval to drive the live countdown
   const [nowMs, setNowMs] = useState(() => Date.now());
 
-  // Tick while active and a target is set. Minute/hour schedules show seconds
-  // (1s tick); daily schedules tick every 60s to minimize re-renders.
-  useEffect(() => {
-    if (!active || !targetIso) {
-      return;
-    }
-    const intervalMs = unit === "days" ? 60000 : 1000;
-    setNowMs(Date.now());
-    const intervalId = setInterval(() => {
-      setNowMs(Date.now());
-    }, intervalMs);
-    return () => clearInterval(intervalId);
-  }, [active, targetIso, unit]);
+  // Tick while active, a target is set, and the page is visible. Minute/hour
+  // schedules show seconds (1s tick); daily schedules tick every 60s to minimize
+  // re-renders. useVisibleInterval also fires the callback once on each arm so
+  // the countdown catches up to wall-clock time when the page becomes visible.
+  useVisibleInterval(() => setNowMs(Date.now()), unit === "days" ? 60000 : 1000, {
+    enabled: !!(active && targetIso),
+  });
 
   const segments = getCountdownSegments(targetIso, unit, nowMs);
   if (!segments) return null;
