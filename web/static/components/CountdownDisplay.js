@@ -56,9 +56,10 @@ export function getCountdownSegments(targetIso, unit, nowMs) {
 
 /**
  * CountdownDisplay - live, adaptive countdown to `targetIso`, rendered with
- * daisyUI `countdown` spans. Manages its own ticking interval: minute/hour
- * schedules tick every second (to show seconds); daily schedules tick every
- * 60s. Renders nothing when there is no valid target.
+ * daisyUI `countdown` spans. Manages its own ticking interval: minute schedules
+ * tick every second (to show seconds); hour schedules tick every 5s (only minute
+ * resolution is visible); daily schedules tick every 60s. Renders nothing when
+ * there is no valid target.
  *
  * @param {Object} props
  * @param {string} props.targetIso - ISO timestamp of the next run (falsy => renders nothing)
@@ -77,13 +78,16 @@ export function CountdownDisplay({
   // Current time (ms), ticked by an interval to drive the live countdown
   const [nowMs, setNowMs] = useState(() => Date.now());
 
-  // Tick while active, a target is set, and the page is visible. Minute/hour
-  // schedules show seconds (1s tick); daily schedules tick every 60s to minimize
-  // re-renders. useVisibleInterval also fires the callback once on each arm so
-  // the countdown catches up to wall-clock time when the page becomes visible.
-  useVisibleInterval(() => setNowMs(Date.now()), unit === "days" ? 60000 : 1000, {
-    enabled: !!(active && targetIso),
-  });
+  // Tick while active, a target is set, and the page is visible. Minute schedules
+  // show seconds (1s tick); hour schedules only need minute resolution (5s tick);
+  // daily schedules tick every 60s to minimize re-renders. useVisibleInterval also
+  // fires the callback once on each arm so the countdown catches up to wall-clock
+  // time when the page becomes visible.
+  useVisibleInterval(
+    () => setNowMs(Date.now()),
+    unit === "days" ? 60000 : unit === "hours" ? 5000 : 1000,
+    { enabled: !!(active && targetIso) },
+  );
 
   const segments = getCountdownSegments(targetIso, unit, nowMs);
   if (!segments) return null;

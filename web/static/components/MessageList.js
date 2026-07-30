@@ -54,13 +54,15 @@ export function MessageList({
   workspaces,
   messagesContainerRef,
 }) {
-  // Tick every second while the "agent is still working" heartbeat is visible, to
+  // Tick every 2s while the "agent is still working" heartbeat is visible, to
   // update the mm:ss timer and to re-evaluate staleness (auto-hide after 25s with
-  // no new heartbeat). Gated on visibility via useVisibleInterval so the tick
-  // stops when the Mitto webview is hidden (background/Cmd-H), and catches up on
-  // wake so the chip's mm:ss is never stuck at an old value.
+  // no new heartbeat). 2s resolution is invisible to the eye at mm:ss scale and
+  // halves MessageList re-renders during long-running turns. Gated on visibility
+  // via useVisibleInterval so the tick stops when the Mitto webview is hidden
+  // (background/Cmd-H), and catches up on wake so the chip's mm:ss is never
+  // stuck at an old value.
   const [workingNow, setWorkingNow] = useState(Date.now());
-  useVisibleInterval(() => setWorkingNow(Date.now()), 1000, {
+  useVisibleInterval(() => setWorkingNow(Date.now()), 2000, {
     enabled: isStreaming && !!agentWorking,
   });
 
