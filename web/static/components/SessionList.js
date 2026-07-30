@@ -1302,7 +1302,7 @@ export function SessionList({
                 ${hasFolderStreaming
                   ? html`
                       <span
-                        class="loading loading-ring loading-xs shrink-0 text-mitto-accent"
+                        class="loading loading-ring loading-xs shrink-0 text-mitto-accent sidebar-streaming-ring"
                         data-tip="Agent responding in this folder"
                         aria-label="Agent responding in this folder"
                         ...${rowTipHandlers("Agent responding in this folder")}

@@ -358,6 +358,22 @@
   animation: pulse-streaming 1.2s ease-in-out infinite;
 }
 
+/* mitto-2fx.4: sidebar session-row streaming rings render statically by
+   default; the daisyUI spin animation is restored only when the row is the
+   active one, is hovered, or when the pointer is anywhere inside the drawer
+   side (so scanning the sidebar reveals live activity). Cuts the sidebar's
+   per-row compositor layer promotions to ~1. */
+.sidebar-streaming-ring {
+  animation-play-state: paused;
+  opacity: 0.75;
+}
+.session-item-container:hover .sidebar-streaming-ring,
+.session-item-active .sidebar-streaming-ring,
+.drawer-side:hover .sidebar-streaming-ring {
+  animation-play-state: running;
+  opacity: 1;
+}
+
 /* Reconnecting banner: keep daisyUI's skeleton-text gradient shimmer but raise
    the dim baseline text from 20% to 60% opacity so the label stays clearly
    readable while still shimmering. daisyUI's .skeleton-text gradient lives in an
@@ -2364,6 +2380,12 @@ mitto-action {
   will-change: auto;
 }
 
+.reduce-animations .sidebar-streaming-ring {
+  animation: none;
+  opacity: 1;
+  will-change: auto;
+}
+
 .reduce-animations .new-messages-indicator {
   animation: none;
   opacity: 1;
@@ -2420,6 +2442,12 @@ mitto-action {
   }
 
   .streaming-cursor::after {
+    animation: none;
+    opacity: 1;
+    will-change: auto;
+  }
+
+  .sidebar-streaming-ring {
     animation: none;
     opacity: 1;
     will-change: auto;

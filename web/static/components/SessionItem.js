@@ -538,7 +538,7 @@ export function SessionItem({
           class="px-2.5 ${density === "comfortable"
             ? "py-2.5"
             : "py-1"} rounded-lg cursor-pointer relative overflow-hidden ${isActive
-            ? "bg-mitto-accent text-mitto-accent-fg"
+            ? "bg-mitto-accent text-mitto-accent-fg session-item-active"
             : "bg-mitto-sidebar hover:bg-mitto-surface-3/50"} ${isSwiping
             ? ""
             : "transition-transform duration-200"} ${extraLeftPadding} ${isNew
@@ -581,7 +581,7 @@ export function SessionItem({
                             : "text-mitto-accent"}"
                         >
                           <span
-                            class="loading loading-ring loading-xs"
+                            class="loading loading-ring loading-xs sidebar-streaming-ring"
                             data-tip=${ringTitle}
                             aria-label=${ringTitle}
                             ...${tipHandlers(ringTitle)}
@@ -600,7 +600,7 @@ export function SessionItem({
                         >
                           ${showLoadingRing
                             ? html`<span
-                                class="loading loading-ring loading-xs"
+                                class="loading loading-ring loading-xs sidebar-streaming-ring"
                                 data-tip=${ringTitle}
                                 aria-label=${ringTitle}
                                 ...${tipHandlers(ringTitle)}
