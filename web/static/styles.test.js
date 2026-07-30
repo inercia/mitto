@@ -104,3 +104,114 @@ describe("styles.css — deliberate will-change sites survive", () => {
     );
   });
 });
+
+/**
+ * mitto-2fx.4: sidebar session-row streaming rings render statically by
+ * default; the daisyUI spin animation is restored only when the row is the
+ * active one, hovered, or when the pointer is anywhere inside `.drawer-side`.
+ * These tests pin the CSS gate (marker class + selectors + reduced-motion
+ * parity) so a stray refactor cannot silently re-promote a per-row compositor
+ * layer for every streaming sidebar session.
+ */
+describe("styles.css — mitto-2fx.4 sidebar-streaming-ring gate", () => {
+  test("base .sidebar-streaming-ring rule pauses the animation", () => {
+    const body = ruleBody(stylesCss, ".sidebar-streaming-ring");
+    expect(body).not.toBeNull();
+    expect(body).toMatch(/animation-play-state\s*:\s*paused/);
+  });
+
+  test.each([
+    ".session-item-container:hover .sidebar-streaming-ring",
+    ".session-item-active .sidebar-streaming-ring",
+    ".drawer-side:hover .sidebar-streaming-ring",
+  ])("running-state selector present: %s", (selector) => {
+    // The three overrides live in a single comma-separated selector list, so
+    // assert each participating selector textually rather than trying to
+    // extract a shared body via ruleBody() (which pins to a single selector).
+    const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    expect(stylesCss).toMatch(new RegExp(escaped));
+  });
+
+  test("running-state block sets animation-play-state: running", () => {
+    // Locate the block that lists all three override selectors and verify the
+    // shared body restores the animation. Anchoring on the last selector in
+    // the list gives ruleBody() a unique starting point.
+    const body = ruleBody(
+      stylesCss,
+      ".drawer-side:hover .sidebar-streaming-ring",
+    );
+    expect(body).not.toBeNull();
+    expect(body).toMatch(/animation-play-state\s*:\s*running/);
+  });
+
+  test(".reduce-animations opt-out disables the animation", () => {
+    const body = ruleBody(
+      stylesCss,
+      ".reduce-animations .sidebar-streaming-ring",
+    );
+    expect(body).not.toBeNull();
+    expect(body).toMatch(/animation\s*:\s*none/);
+  });
+
+  test("prefers-reduced-motion media query includes .sidebar-streaming-ring", () => {
+    // The @media block wraps the rule, so assert both the media block and a
+    // .sidebar-streaming-ring rule with animation: none appear in the file
+    // and that a .sidebar-streaming-ring rule follows the media opener.
+    const mediaMatch = stylesCss.match(
+      /@media\s*\(\s*prefers-reduced-motion\s*:\s*reduce\s*\)\s*\{([\s\S]*)$/,
+    );
+    expect(mediaMatch).not.toBeNull();
+    const mediaBody = mediaMatch[1];
+    expect(mediaBody).toMatch(
+      /\.sidebar-streaming-ring\s*\{[^}]*animation\s*:\s*none/,
+    );
+  });
+});
+
+/**
+ * mitto-2fx.4: the CSS gate is only meaningful if the JSX actually renders
+ * the marker classes it targets. Pin the three call sites so a rename or a
+ * copy/paste omission fails a fast unit test rather than surfacing as a
+ * silent GPU-layer regression in production.
+ */
+describe("sidebar-streaming-ring marker classes wired in JSX", () => {
+  const sessionItemJs = readFileSync(
+    resolve(__dirname, "components/SessionItem.js"),
+    "utf8",
+  );
+  const sessionListJs = readFileSync(
+    resolve(__dirname, "components/SessionList.js"),
+    "utf8",
+  );
+
+  test("SessionItem.js: session-item-active applied on active swipeable div", () => {
+    // The class is composed conditionally onto the isActive branch of the
+    // swipeable content div's class list.
+    expect(sessionItemJs).toMatch(/session-item-active/);
+  });
+
+  test("SessionItem.js: every loading-ring span carries sidebar-streaming-ring", () => {
+    // There are two loading-ring spans in SessionItem (spawned + regular
+    // paths). Every occurrence of `loading loading-ring loading-xs` in this
+    // component MUST also carry the marker class so the CSS gate applies.
+    const ringOccurrences = sessionItemJs.match(
+      /loading loading-ring loading-xs[^"]*/g,
+    );
+    expect(ringOccurrences).not.toBeNull();
+    expect(ringOccurrences.length).toBeGreaterThanOrEqual(2);
+    for (const occ of ringOccurrences) {
+      expect(occ).toMatch(/sidebar-streaming-ring/);
+    }
+  });
+
+  test("SessionList.js: folder-header loading-ring carries sidebar-streaming-ring", () => {
+    const ringOccurrences = sessionListJs.match(
+      /loading loading-ring loading-xs[^"]*/g,
+    );
+    expect(ringOccurrences).not.toBeNull();
+    expect(ringOccurrences.length).toBeGreaterThanOrEqual(1);
+    for (const occ of ringOccurrences) {
+      expect(occ).toMatch(/sidebar-streaming-ring/);
+    }
+  });
+});
