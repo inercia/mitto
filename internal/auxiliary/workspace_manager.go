@@ -446,6 +446,8 @@ func (m *WorkspaceAuxiliaryManager) runMCPToolsFetch(ctx context.Context, worksp
 	needLLM := true
 	configuredServerCount := -1
 	anyUnreachable := false
+	reachableCount := 0
+	unreachableCount := 0
 
 	if m.StdioToolsDiscoverer != nil {
 		results, derr := m.StdioToolsDiscoverer(ctx, workspaceUUID)
@@ -460,8 +462,10 @@ func (m *WorkspaceAuxiliaryManager) runMCPToolsFetch(ctx context.Context, worksp
 			for _, r := range results {
 				if !r.Reachable {
 					anyUnreachable = true
+					unreachableCount++
 					continue
 				}
+				reachableCount++
 				for _, name := range r.Tools {
 					if detNames[name] {
 						continue
@@ -470,13 +474,25 @@ func (m *WorkspaceAuxiliaryManager) runMCPToolsFetch(ctx context.Context, worksp
 					deterministic = append(deterministic, MCPToolInfo{Name: name})
 				}
 			}
-			needLLM = anyUnreachable || len(results) == 0
+			// mitto-wnr: only fall back to LLM when deterministic discovery
+			// returned nothing at all (no servers configured OR every probed
+			// server was unreachable). Do NOT trigger the fallback when we
+			// already have some real tools from real reachable servers — the
+			// LLM cannot recover tools from a server it also cannot reach, so
+			// firing the fallback here just burns aux-session budget on the
+			// chronic-unreachable case (splunk on the on-call workspace, etc.).
+			// EnsureMCPBackoffRetry handles eventual recovery of the
+			// unreachable servers via exponential-backoff re-probes.
+			needLLM = len(results) == 0 || len(deterministic) == 0
 			if m.logger != nil {
 				m.logger.Debug("mcp tools fetch: stdio discovery completed",
 					"workspace_uuid", workspaceUUID,
 					"server_count", len(results),
+					"reachable_count", reachableCount,
+					"unreachable_count", unreachableCount,
 					"tool_count", len(deterministic),
 					"any_unreachable", anyUnreachable,
+					"partial_deterministic", anyUnreachable && len(deterministic) > 0,
 					"need_llm", needLLM)
 			}
 		}
@@ -500,6 +516,9 @@ func (m *WorkspaceAuxiliaryManager) runMCPToolsFetch(ctx context.Context, worksp
 			if m.logger != nil {
 				m.logger.Warn("mcp tools fetch: LLM fallback failed, using deterministic tools only",
 					"workspace_uuid", workspaceUUID,
+					"reachable_count", reachableCount,
+					"unreachable_count", unreachableCount,
+					"partial_deterministic", anyUnreachable && len(deterministic) > 0,
 					"error", err.Error())
 			}
 		} else {
