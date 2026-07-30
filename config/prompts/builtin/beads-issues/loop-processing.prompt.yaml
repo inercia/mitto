@@ -44,6 +44,8 @@ prompt: |
   {{ template "_shared/session-context" . }}
   Available ACP servers: `{{ Default "(none)" .ACP.AvailableText }}`
   Existing children: `{{ Default "(none)" .Children.MCPText }}`
+  Workspace peers: `{{ Default "(none)" .Workspace.Peers.AllText }}`
+  Active peer drivers: {{ .Workspace.Peers.PromptingCount }} / {{ .Workspace.Peers.Count }}
 
   {{- with .Trigger }}{{ with .OnTasks }}
 
@@ -96,8 +98,9 @@ prompt: |
 
   - **Cap: 1 active driver per workspace** total across §B + §C (`onCompletion`
     children with title `Fix …` / `Implement …` in a non-terminal state). The
-    cap is workspace-scoped (enumerated via `mitto_conversation_list` filtered
-    by `workspace: "{{ .Workspace.UUID }}"`), not per-orchestrator — parallel
+    cap is workspace-scoped (enumerated via `.Workspace.Peers.All` — non-archived
+    sibling conversations sharing this session's `(WorkingDir, ACPServer)`,
+    populated at template-dispatch time), not per-orchestrator — parallel
     `Loop processing tasks` sessions in the same workspace share the single
     slot (mitto-9mk). §A mention drivers self-terminate and are NOT counted.
     Serial execution prevents overlapping-file races. Step 2P prunes stale
@@ -302,9 +305,12 @@ prompt: |
   `(id, ts, body)` tuples, ordered by ascending `ts` then bead ID (oldest first).
 
   **Exclude** any tuple whose `<id>` matches an existing non-archived conversation's
-  `beads_issue` in `{{ .Children.MCPText }}` — another agent (or user-driven session)
-  is already working on that bead, so this pass leaves the mention alone; it will
-  re-surface on a future pass once the active conversation is done or archived.
+  `beads_issue` in **either** this session's `{{ .Children.MCPText }}` **or** the
+  pre-rendered `Workspace peers:` block at the top (peers are the workspace-wide
+  siblings; both renderings expose the linked beads_issue as a literal `{<id>}`
+  substring) — another agent (or user-driven session) is already working on that
+  bead, so this pass leaves the mention alone; it will re-surface on a future pass
+  once the active conversation is done or archived.
 
   **Formal-match only — no title inference.** The "already working on it"
   exclusion fires ONLY when a non-archived conversation's `beads_issue` field
@@ -347,8 +353,9 @@ prompt: |
   - is `in_progress` elsewhere, OR
   - carries `needs-human` (previously deferred), OR
   - **formally** matches a non-archived conversation's `beads_issue` in
-    `{{ .Children.MCPText }}` (literal `==` — NOT fuzzy title match; see 2A's
-    "Formal-match only" note), OR
+    **either** this session's `{{ .Children.MCPText }}` **or** the pre-rendered
+    `Workspace peers:` block at the top (literal `==` — NOT fuzzy title match;
+    see 2A's "Formal-match only" note), OR
   - **appears already fixed** (see below), OR
   - has a `parent-child` dependency whose parent was closed **by THIS pass's
     Step 2P** (pass-local set only — mitto-fko; check `bd show <id> --json`
@@ -582,23 +589,13 @@ prompt: |
   ## §B — Fix ONE bug
 
   Take the first entry from 2B as **`<id>`**. **Concurrency gate (workspace-scoped):**
-  enumerate ALL active drivers in this workspace — not just this orchestrator's own
-  children — by calling:
-
-  ```
-  mitto_conversation_list(
-    self_id: "{{ .Session.ID }}",
-    workspace: "{{ .Workspace.UUID }}",
-    is_running: true,
-    archived: false,
-    exclude_self: "{{ .Session.ID }}"
-  )
-  ```
-
-  Count returned entries whose `title` starts with `Fix ` or `Implement ` (any
-  non-terminal status: running / iterating / queued). This counts drivers spawned
-  by any orchestrator in the workspace, so parallel `Loop processing tasks`
-  sessions share the single slot instead of each spawning their own (mitto-9mk).
+  read the pre-rendered `Workspace peers:` block at the top and count peers whose
+  `(name)` starts with `Fix ` or `Implement `. `.Workspace.Peers.All` is already
+  scoped to non-archived sibling conversations sharing this session's
+  `(WorkingDir, ACPServer)` — i.e. the workspace boundary — and is populated at
+  template-dispatch time (no MCP round-trip), so this counts drivers spawned by any
+  orchestrator in the workspace and parallel `Loop processing tasks` sessions share
+  the single slot instead of each spawning their own (mitto-9mk).
   If the workspace-wide count is already ≥ **1**, skip the spawn this pass — write
   `bd comment <id> "Orchestrator: concurrency cap (1 active driver in workspace) reached; bug queued for a later pass."`
   and jump to Step 6. Otherwise spawn ONE child whose seed AND `onCompletion` re-fire
@@ -686,9 +683,9 @@ prompt: |
   ## §C — Implement ONE feature
 
   Take the first entry from 2C as **`<id>`**. **Concurrency gate (workspace-scoped):**
-  same rule as §B — enumerate via `mitto_conversation_list(self_id, workspace: "{{ .Workspace.UUID }}", is_running: true, archived: false, exclude_self: "{{ .Session.ID }}")`
-  and count entries whose `title` starts with `Fix ` or `Implement ` (§B and §C
-  share the 1-driver budget workspace-wide, not per-orchestrator; mitto-9mk).
+  same rule as §B — read the pre-rendered `Workspace peers:` block at the top and
+  count peers whose `(name)` starts with `Fix ` or `Implement ` (§B and §C share
+  the 1-driver budget workspace-wide, not per-orchestrator; mitto-9mk).
   At cap → `bd comment <id> "Orchestrator: concurrency cap (1 active driver in workspace) reached; feature queued for a later pass."`
   and jump to Step 6. Otherwise spawn ONE child (seed AND `onCompletion` re-fire both the
   named per-feature driver):
@@ -863,11 +860,13 @@ prompt: |
     for (a) nudging the SAME child about the SAME bead, or (b) telling it to stop.
     For any new bead / mention, always spawn fresh with `mitto_conversation_new`.
   - **Skip beads with active conversations (workspace-scoped).** Any bead whose
-    `beads_issue` matches a non-archived conversation returned by
-    `mitto_conversation_list(self_id, workspace: "{{ .Workspace.UUID }}", archived: false)`
-    (ours, a peer orchestrator's, or a user's) is excluded from all three sets —
-    racing loses updates. Enumerate workspace-wide, not just this session's own
-    children (mitto-9mk). Re-enumerated once the conversation is done or archived.
+    `beads_issue` matches a non-archived conversation in **either** this session's
+    `{{ .Children.MCPText }}` **or** `.Workspace.Peers.All` (ours, a peer
+    orchestrator's, or a user's) is excluded from all three sets — racing loses
+    updates. Enumerate workspace-wide, not just this session's own children
+    (mitto-9mk); `.Workspace.Peers` is already scoped to non-archived siblings
+    sharing this session's `(WorkingDir, ACPServer)` and populated at template-
+    dispatch time. Re-enumerated once the conversation is done or archived.
   - **Honor scope flags.** `FixBugs` and `WorkOnFeatures` (both default `"true"`)
     gate §B and §C. When `"false"`, the section is skipped and treated as empty
     in Step 3. §A is ALWAYS on regardless.
