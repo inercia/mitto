@@ -111,7 +111,10 @@ type TitleGenerationConfig struct {
 }
 
 // SessionNeedsTitle returns true if the session has no title yet and needs auto-title generation.
-// Returns false if the session already has a title (either auto-generated or user-set).
+// Returns false if the session already has a final (LLM-generated or user-set) title.
+// A quick fallback title populated by GenerateAndSetTitle (marked via meta.NameIsFallback)
+// is treated as still needing generation so titleCoordinator.retryIfNeeded can upgrade
+// it to the real LLM-generated title on the next prompt_complete quiescence (mitto-ee3).
 func SessionNeedsTitle(store *session.Store, sessionID string) bool {
 	if store == nil || sessionID == "" {
 		return false
@@ -120,7 +123,7 @@ func SessionNeedsTitle(store *session.Store, sessionID string) bool {
 	if err != nil {
 		return false
 	}
-	return meta.Name == ""
+	return meta.Name == "" || meta.NameIsFallback
 }
 
 // titleMaxRetries is the maximum number of retry attempts for title generation.
@@ -156,6 +159,7 @@ func GenerateAndSetTitle(cfg TitleGenerationConfig) {
 		if err := cfg.Store.UpdateMetadata(cfg.SessionID, func(m *session.Metadata) {
 			if m.Name == "" { // Only set if no title yet
 				m.Name = quickTitle
+				m.NameIsFallback = true // mitto-ee3: mark so retryIfNeeded can upgrade later
 			}
 		}); err == nil {
 			if cfg.Logger != nil {
@@ -260,6 +264,7 @@ func GenerateAndSetTitle(cfg TitleGenerationConfig) {
 		if cfg.Store != nil {
 			if err := cfg.Store.UpdateMetadata(cfg.SessionID, func(m *session.Metadata) {
 				m.Name = title
+				m.NameIsFallback = false // mitto-ee3: real title replaces the quick fallback
 			}); err != nil {
 				if cfg.Logger != nil {
 					cfg.Logger.Error("Failed to update session name", "error", err, "session_id", cfg.SessionID)

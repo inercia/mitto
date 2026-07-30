@@ -248,7 +248,8 @@ type SessionChangeData struct {
 // Metadata contains session metadata stored separately from the event log.
 type Metadata struct {
 	SessionID               string          `json:"session_id"`
-	Name                    string          `json:"name,omitempty"` // User-friendly session name
+	Name                    string          `json:"name,omitempty"`             // User-friendly session name
+	NameIsFallback          bool            `json:"name_is_fallback,omitempty"` // True when Name was populated by the quick fallback path (GenerateAndSetTitle step 1) and has not yet been overwritten by an aux-generated real title (mitto-ee3)
 	ACPServer               string          `json:"acp_server"`
 	ACPSessionID            string          `json:"acp_session_id,omitempty"` // ACP-assigned session ID for resumption
 	WorkingDir              string          `json:"working_dir"`
