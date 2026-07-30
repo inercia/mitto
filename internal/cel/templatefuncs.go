@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path"
@@ -191,6 +192,9 @@ func existsByGlob(folder, pattern string, wantFiles bool) bool {
 	} else if res.Truncated && (res.Reason == "deadline" || res.Reason == "visited_cap") {
 		// Fail-open: a slow/huge filesystem must not wrongly hide a prompt.
 		result = true
+		slog.Debug("cel glob exists fail-open",
+			"pattern", pattern, "folder", folder, "wantFiles", wantFiles,
+			"reason", res.Reason)
 	} else {
 		result = false
 	}
