@@ -1,5 +1,7 @@
 import { test, expect } from "../fixtures/test-fixtures";
 import type { Page } from "@playwright/test";
+import fs from "fs";
+import os from "os";
 import path from "path";
 import { fileURLToPath } from "url";
 
@@ -130,5 +132,53 @@ test.describe("WorkspacesDialog structure (daisyUI conversion safety net)", () =
     }
 
     await expect(page.locator('[data-testid="ws-save"]')).toBeVisible();
+  });
+
+  // Regression: adding a new folder + Save must leave exactly one working-dir
+  // input (holding the typed path) and one display-name input (empty, with
+  // basename placeholder). Preact's positional child diff on the isNewFolder
+  // ternary previously leaked the new-folder editable input into the
+  // display-name slot after Save, wiping the working-dir input and swapping
+  // the visible fields.
+  test("add folder + Save keeps working-dir/display-name inputs consistent", async ({
+    page,
+  }) => {
+    const NEW_FOLDER = fs.mkdtempSync(
+      path.join(os.tmpdir(), "mitto-newfolder-"),
+    );
+    try {
+      await openDialog(page);
+
+      const addFolder = dialog(page).locator(
+        'button[aria-label="Add folder"]',
+      );
+      await expect(addFolder).toBeVisible();
+      await expect(addFolder).toHaveAttribute("aria-disabled", "false");
+      await addFolder.click();
+
+      const wd = page.locator("#ws-working-dir");
+      await expect(wd).toBeVisible();
+      await wd.fill(NEW_FOLDER);
+
+      await page.locator('[data-testid="ws-save"]').click();
+      // Save spinner is on for ~1s; the dialog stays open.
+      await page.waitForTimeout(1500);
+
+      // Exactly one of each input, non-swapped.
+      await expect(page.locator("#ws-working-dir")).toHaveCount(1);
+      await expect(page.locator("#ws-display-name")).toHaveCount(1);
+      await expect(page.locator("#ws-working-dir")).toHaveValue(NEW_FOLDER);
+      await expect(page.locator("#ws-working-dir")).toHaveAttribute(
+        "readonly",
+        /.*/,
+      );
+      await expect(page.locator("#ws-display-name")).toHaveValue("");
+      await expect(page.locator("#ws-display-name")).toHaveAttribute(
+        "placeholder",
+        path.basename(NEW_FOLDER),
+      );
+    } finally {
+      fs.rmSync(NEW_FOLDER, { recursive: true, force: true });
+    }
   });
 });
