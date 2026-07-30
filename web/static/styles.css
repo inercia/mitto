@@ -356,7 +356,6 @@
 }
 .streaming-indicator {
   animation: pulse-streaming 1.2s ease-in-out infinite;
-  will-change: opacity, transform;
 }
 
 /* Reconnecting banner: keep daisyUI's skeleton-text gradient shimmer but raise
@@ -447,7 +446,6 @@
   pointer-events: none;
   background-color: rgba(51, 65, 85, 1); /* slate-700 fixed background */
   animation: filter-tab-pulse 1.8s ease-in-out infinite;
-  will-change: opacity;
 }
 .filter-tab-streaming > * {
   position: relative;
@@ -485,7 +483,6 @@
   border-radius: 0.25rem;
   background-color: rgba(59, 130, 246, 0.4); /* blue-500 */
   animation: filter-tab-pulse 1.8s ease-in-out infinite;
-  will-change: opacity;
 }
 .child-expand-streaming > * {
   position: relative;
@@ -516,7 +513,6 @@
   animation: blink 1s infinite;
   color: #60a5fa;
   margin-left: 2px;
-  will-change: opacity;
 }
 @keyframes blink {
   0%,
@@ -1258,7 +1254,6 @@ a.mailto-link:hover {
   border: none;
   border-radius: 9999px;
   animation: pulse-indicator 1.5s ease-in-out infinite;
-  will-change: opacity, transform;
 }
 
 @keyframes pulse-indicator {
