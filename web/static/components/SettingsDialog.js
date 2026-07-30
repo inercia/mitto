@@ -3425,6 +3425,33 @@ export function SettingsDialog({
   // Commit a profile's raw tag draft text into its tags array (comma-separated,
   // trimmed, empties dropped, deduped), then reset the draft to empty so the
   // input is ready for the next tag (existing tags are shown as chips).
+  const duplicateProfile = (i) => {
+    setModelProfiles((prev) => {
+      if (i < 0 || i >= prev.length) return prev;
+      const src = prev[i];
+      const copy = {
+        ...src,
+        name: `${(src.name || "").trim()} (Copy)`.trim(),
+        criteria: src.criteria ? { ...src.criteria } : null,
+        tags: Array.isArray(src.tags) ? [...src.tags] : [],
+      };
+      const next = [...prev];
+      next.splice(i + 1, 0, copy);
+      return next;
+    });
+    // Shift tagDrafts for indices > i up by one to stay aligned; the
+    // freshly-inserted i+1 slot starts with no in-progress draft.
+    setTagDrafts((prev) => {
+      const next = {};
+      Object.entries(prev).forEach(([key, val]) => {
+        const idx = Number(key);
+        next[idx > i ? idx + 1 : idx] = val;
+      });
+      return next;
+    });
+    setExpandedProfileIndex(i + 1);
+  };
+
   const commitTagDraft = (i) => {
     const raw = tagDrafts[i];
     if (raw === undefined) return;
@@ -6045,7 +6072,7 @@ export function SettingsDialog({
                               `;
                             })()}
                             <button
-                              class="btn btn-sm btn-ghost"
+                              class="btn btn-xs btn-ghost btn-square"
                               title="Move up"
                               aria-label="Move up"
                               data-testid=${`model-profile-move-up-${i}`}
@@ -6058,7 +6085,7 @@ export function SettingsDialog({
                               <${ChevronUpIcon} className="w-4 h-4" />
                             </button>
                             <button
-                              class="btn btn-sm btn-ghost"
+                              class="btn btn-xs btn-ghost btn-square"
                               title="Move down"
                               aria-label="Move down"
                               data-testid=${`model-profile-move-down-${i}`}
@@ -6071,8 +6098,22 @@ export function SettingsDialog({
                               <${ChevronDownIcon} className="w-4 h-4" />
                             </button>
                             <button
-                              class="btn btn-sm btn-ghost text-error"
+                              class="btn btn-xs btn-ghost btn-square"
+                              title="Duplicate profile"
+                              aria-label="Duplicate profile"
+                              data-testid=${`model-profile-duplicate-${i}`}
+                              onClick=${(e) => {
+                                e.stopPropagation();
+                                duplicateProfile(i);
+                              }}
+                            >
+                              <${DuplicateIcon} className="w-4 h-4" />
+                            </button>
+                            <button
+                              class="btn btn-xs btn-ghost btn-square text-error"
                               title="Remove profile"
+                              aria-label="Remove profile"
+                              data-testid=${`model-profile-remove-${i}`}
                               onClick=${(e) => {
                                 e.stopPropagation();
                                 removeProfile(i);
