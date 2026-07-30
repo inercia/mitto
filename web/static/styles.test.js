@@ -215,3 +215,69 @@ describe("sidebar-streaming-ring marker classes wired in JSX", () => {
     }
   });
 });
+
+/**
+ * mitto-2fx.5: two always-mounted surfaces previously carried a daisyUI
+ * `loading loading-spinner` span whose infinite-mask animation kept the
+ * WKWebView compositor hot even while the surface was steady. Both were
+ * replaced with a static `…` glyph. Pin the removal at the source level so a
+ * future refactor cannot silently re-introduce an always-mounted spinner on:
+ *
+ *   - MessageList.js — the agent-working chip and the "Establishing ACP
+ *     session..." status line.
+ *   - PromptParameterDialog.js — the 10 placeholder branches that render
+ *     while the beadsId / sessionId / childSessions / workspaceId / folder /
+ *     acpServer / promptName / filename / dirname / nested-remembered option
+ *     lists are still loading.
+ *
+ * Static parse-and-assert mirrors the mitto-2fx.4 tests above — no jsdom, no
+ * runtime, runs in the fast Jest suite.
+ */
+describe("mitto-2fx.5 — no always-mounted loading-spinner on steady surfaces", () => {
+  const messageListJs = readFileSync(
+    resolve(__dirname, "components/MessageList.js"),
+    "utf8",
+  );
+  const promptParameterDialogJs = readFileSync(
+    resolve(__dirname, "components/PromptParameterDialog.js"),
+    "utf8",
+  );
+
+  test("MessageList.js: no loading-spinner class anywhere", () => {
+    // MessageList renders on every conversation view; its only two prior
+    // spinner spans (agent-working chip + "Establishing ACP session...") were
+    // replaced with the trailing "…" already carried in each message string.
+    expect(messageListJs).not.toMatch(/loading-spinner/);
+  });
+
+  test("MessageList.js: agent-working chip still shows the loading cue", () => {
+    // Positive assertion: guards against a stray delete that removes the
+    // whole chip alongside the spinner span.
+    expect(messageListJs).toMatch(/Working\$\{agentWorking\.toolTitle/);
+  });
+
+  test("MessageList.js: ACP-session status message still shows the loading cue", () => {
+    expect(messageListJs).toMatch(/Establishing ACP session\.\.\./);
+  });
+
+  test("PromptParameterDialog.js: no loading-spinner class anywhere", () => {
+    // The 10 placeholder branches that showed a spinner while a select's
+    // option list was still fetching now render a static "…" glyph. There
+    // are no other spinner spans in this file, so the whole file must be
+    // spinner-free.
+    expect(promptParameterDialogJs).not.toMatch(/loading-spinner/);
+  });
+
+  test("PromptParameterDialog.js: static … glyph replaces every placeholder branch", () => {
+    // Each of the 10 replaced placeholder branches emits the same static
+    // `<span class="text-mitto-text-muted text-xs opacity-60">…</span>`
+    // shape. Assert the marker appears at least 10 times so a future refactor
+    // that drops one of the branches back to a spinner (or to nothing) fails
+    // this test rather than surfacing as a silent GPU-layer regression.
+    const staticGlyphs = promptParameterDialogJs.match(
+      /text-mitto-text-muted text-xs opacity-60/g,
+    );
+    expect(staticGlyphs).not.toBeNull();
+    expect(staticGlyphs.length).toBeGreaterThanOrEqual(10);
+  });
+});
