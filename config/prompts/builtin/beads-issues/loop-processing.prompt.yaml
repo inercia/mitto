@@ -683,9 +683,11 @@ prompt: |
   ## §C — Implement ONE feature
 
   Take the first entry from 2C as **`<id>`**. **Concurrency gate (workspace-scoped):**
-  same rule as §B — read the pre-rendered `Workspace peers:` block at the top and
-  count peers whose `(name)` starts with `Fix ` or `Implement ` (§B and §C share
-  the 1-driver budget workspace-wide, not per-orchestrator; mitto-9mk).
+  same rule as §B — read the pre-rendered `Workspace peers:` block at the top
+  (backed by `.Workspace.Peers.All`, scoped to non-archived siblings sharing
+  this session's `(WorkingDir, ACPServer)`) and count peers whose `(name)`
+  starts with `Fix ` or `Implement ` (§B and §C share the 1-driver budget
+  workspace-wide, not per-orchestrator; mitto-9mk).
   At cap → `bd comment <id> "Orchestrator: concurrency cap (1 active driver in workspace) reached; feature queued for a later pass."`
   and jump to Step 6. Otherwise spawn ONE child (seed AND `onCompletion` re-fire both the
   named per-feature driver):
