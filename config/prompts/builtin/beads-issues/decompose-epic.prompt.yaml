@@ -1,0 +1,277 @@
+icon: layers
+name: Expand epic
+menus: beadsIssues
+parameters:
+  - name: IssueID
+    type: beadsId
+    description: The epic bead ID to expand into children
+description: Expand an empty epic into child beads by parsing its description into sub-tasks, creating one child per sub-task, then minimising the epic body to a summary + links (original spec preserved as a comment)
+backgroundColor: '#D1C4E9'
+group: Tasks
+# Empty-epic gate: only surface on open epics. The "no existing children" check
+# is enforced at Step 1 inside the prompt because Item.ChildCount is not
+# exposed in the CEL context — we still want the entry to appear on all open
+# epics so the user gets a clear "already expanded" message instead of a
+# silently-missing menu item.
+enabledWhen: '!Session.IsChild && CommandExists("bd") && DirExists(".beads") && Item.Type == "epic" && Item.Status != "closed"'
+target:
+  reuse:
+    issue: true
+    coalesce: true
+prompt: |
+  {{ template "_shared/session-context" . }}
+
+  # Beads: Expand an Empty Epic into Child Beads
+
+  Beads is a CLI issue tracker (`bd`). Issues are called "beads" and have IDs like `bd-xyz`. An **epic** is a container bead that groups related child beads; the `Loop processing tasks` supervisor never dispatches an epic itself — it always walks the epic's open children. An epic with **zero children** is therefore invisible to the supervisor: its description sits forever with no work happening.
+
+  This prompt turns such an **empty epic** into a proper container by parsing its description into discrete sub-tasks, creating one child bead per sub-task, then minimising the epic body to a short summary + a link table to the children. The original spec is preserved verbatim as a `bd comment` for history.
+
+  The **target epic** is `{{ .Args.IssueID }}`.
+
+  ## Step 1 — Load epic and confirm it is empty
+
+  Fetch the full bead and its (expected-empty) children set:
+
+  ```bash
+  bd show {{ .Args.IssueID }} --long --json     # full description, labels, metadata
+  bd children {{ .Args.IssueID }} --json        # existing children (must be [])
+  ```
+
+  Reason about the payload:
+
+  - If `issue_type != "epic"`: notify via `mitto_ui_notify(self_id: "{{ .Session.ID }}", title: "Not an epic", message: "`{{ .Args.IssueID }}` is not typed `epic` (`<actual-type>`). Use `Decompose issue` instead.", style: "warning")` and STOP.
+  - If `status == "closed"`: notify "epic is closed — nothing to expand" and STOP.
+  - If `bd children` returns a non-empty list (regardless of child status — open, closed, deferred): notify via `mitto_ui_notify(self_id: "{{ .Session.ID }}", title: "Epic already has children", message: "`{{ .Args.IssueID }}` already has <N> child bead(s); expansion applies only to empty epics. Use `Decompose issue` on individual children or file new sub-beads manually.", style: "info")` and STOP. Do NOT proceed — even if the existing children are all closed, the human has already made a decomposition choice on this epic that we must not override.
+
+  Only continue past this step if the target is an **open, empty epic**.
+
+  ## Step 2 — Defer the epic while expansion is in progress
+
+  Deferring signals to the `Loop processing tasks` supervisor (and to any parallel invocation of this prompt) that the epic is under active reshaping. Set the marker BEFORE any structural work:
+
+  ```bash
+  now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  bd update {{ .Args.IssueID }} --add-label needs-human --defer +1d
+  bd comment {{ .Args.IssueID }} "[deferred: $now]
+  Orchestrator: expanding empty epic — deferred while sub-beads are created. Will un-defer at end of this run."
+  ```
+
+  Remember `$now` (call it **`<deferred-ts>`**) — the un-defer at Step 9 must reference this exact timestamp.
+
+  **All bead comments emitted by THIS prompt from now until Step 9 MUST begin with the literal prefix `Orchestrator:`** so `Loop processing tasks` Step 2Z does not mistake them for a human reply and un-defer the epic mid-run.
+
+  If anything fails between here and Step 9, jump to **Recovery** (Step 10) to un-defer before exiting — the epic must NEVER be left permanently deferred by a partial run.
+
+  ## Step 3 — Parse the description into candidate sub-tasks
+
+  Read the epic's description (from Step 1's `bd show --long --json`). Look for natural sub-task structure, in this order of preference:
+
+  1. **Explicit sub-task section** — a heading like `## Sub-tasks`, `## Phases`, `## Steps`, `## Tasks`, `## Work items` followed by numbered/bulleted items. Each item is one child.
+  2. **Phase headings** — `### Phase A — …`, `### Phase B — …` (or `Phase 1`, `Milestone 1`, `Stage 1`). Each phase is one child.
+  3. **Top-level numbered list** at the same nesting depth (`1.`, `2.`, `3.`) where each item is substantive (multi-line, has its own sub-items, or is at least a full sentence describing a deliverable).
+  4. **Second-level headings** (`##` or `###`) that clearly partition the work (e.g. `## Backend`, `## Frontend`, `## Tests`) — each heading is one child.
+
+  Reason carefully:
+
+  - **Cap the count at 3–7 children.** Fewer than 3 usually means the epic is not really an epic (should be a plain feature). More than 7 means the granularity is too fine — group related items together. If the natural structure yields more than 7, propose a two-level split (top-level headings become children; leaf items become sub-bullets in the child's description).
+  - **Preserve wording.** Each child's description is the verbatim sub-section from the epic, lightly reformatted (H2 → H1, list depth reduced by one) so it reads as a standalone bead.
+  - **Detect dependencies.** Look for phrases like "depends on Phase A", "must land after X", "critical path", "can start in parallel once Y is frozen". Record explicit dependency edges (`Phase B blocked by Phase A`).
+  - **Infer type per child.** Default to the epic's implicit type (usually `feature` or `task`). Bug-shaped children keep `bug`. If the description marks an item as "chore/cleanup/refactor", use `chore`. When in doubt, use `feature`.
+  - **Infer priority per child.** Inherit the epic's priority as the default. Explicit "P0"/"critical"/"blocker"/"must-have" language bumps up; "nice-to-have"/"v2"/"future" bumps down.
+
+  ### When to abort instead of guessing
+
+  If the description has **no discernible sub-structure** (a single wall of prose, a placeholder like "TODO: figure out how to do X", a bullet list of unrelated brainstorming ideas, or fewer than 3 candidate sub-tasks emerge):
+
+  ```bash
+  bd comment {{ .Args.IssueID }} "Orchestrator: cannot infer a clean 3–7-child decomposition from the description. Human decomposition required — please either (a) edit the epic body to add a numbered Sub-tasks / Phases section and re-run 'Expand epic', or (b) file the sub-beads manually with --parent {{ .Args.IssueID }}."
+  ```
+
+  Then jump to **Recovery** (Step 10) to un-defer and stop. Never guess — over-sharding or mis-sharding a human-authored spec is worse than leaving the epic empty for the human to handle.
+
+  ## Step 4 — Present the decomposition for approval
+
+  Prepare a compact proposal for the user. First, **print the structured plan as a regular message** so the full reasoning is visible:
+
+  > **Epic: `{{ .Args.IssueID }}`** — <epic title>
+  >
+  > Proposed decomposition into **<N>** children:
+  >
+  > 1. **<child title>** (`<type>`, P<priority>) — <one-line summary>. Depends on: <sibling refs or "—">.
+  > 2. **<child title>** (`<type>`, P<priority>) — <one-line summary>. Depends on: <sibling refs or "—">.
+  > … (up to 7)
+  >
+  > **Body plan for the epic after expansion**: minimised to a summary + link table. Original description preserved as a comment tagged `[original-epic-spec]`.
+
+  Then present the plan for approval using a form so the user can drop individual children they disagree with:
+
+  ```
+  mitto_ui_form(
+    self_id: "{{ .Session.ID }}",
+    title: "Expand epic {{ .Args.IssueID }}",
+    html: "<p>Uncheck any child you do NOT want created.</p>
+           <label><input type='checkbox' name='child_1' checked> 1. <child-1 title> (<type>, P<priority>)</label>
+           <label><input type='checkbox' name='child_2' checked> 2. <child-2 title> (<type>, P<priority>)</label>
+           …
+           <label><input type='checkbox' name='minimize_body' checked> Also minimise the epic body to summary + link table (original preserved as comment)</label>",
+    timeout_seconds: 300
+  )
+  ```
+
+  Interpreting the result:
+
+  - If the user cancels or submits with everything unchecked → jump to **Recovery** (Step 10). Nothing is created.
+  - If fewer than 2 `child_N` boxes remain checked → notify "at least 2 children are required to justify keeping this bead as an epic" and re-present, OR jump to Recovery if the user gives up.
+  - Otherwise proceed with only the checked children (in original order) and honour `minimize_body`.
+
+  If the user disagrees with the proposal itself (not just individual boxes) they will typically cancel — offer once more via `mitto_ui_options` to "revise the proposal" (returns to Step 3 with the feedback) or "abort". Do not loop on revision more than twice.
+
+  ## Step 5 — Create the approved children
+
+  For each approved child, in the same order they appeared in the proposal:
+
+  ```bash
+  # Write the child description to a temp file to preserve Markdown formatting.
+  cat > /tmp/child-body.md <<'EOF'
+  <verbatim sub-section from the epic, lightly reformatted as standalone bead>
+  EOF
+
+  bd create "<child title>" \
+    --type <type> \
+    --priority <P0..P3> \
+    --parent {{ .Args.IssueID }} \
+    --body-file /tmp/child-body.md
+  ```
+
+  Capture the returned child ID for each (call it `<child-N-id>`). Child beads inherit the parent's labels by default; the label set on the epic (e.g. `backend`, `frontend`, `prompts`) is exactly what belongs on the children.
+
+  If any `bd create` fails: log the failure with `bd comment {{ .Args.IssueID }} "Orchestrator: bd create failed for child <N> '<title>': <error>. Aborting further creates."`, then jump to **Recovery** (Step 10). Do NOT partially proceed — an epic with 2 of 5 requested children is worse than an epic with 0.
+
+  ## Step 6 — Wire dependencies between children
+
+  For each `blocked-by` edge identified in Step 3 and confirmed at Step 4:
+
+  ```bash
+  bd dep add <blocked-child-id> <blocker-child-id>
+  ```
+
+  Verify no cycles:
+
+  ```bash
+  bd dep cycles 2>&1 | head -5
+  ```
+
+  On cycle detection: log with `bd comment`, do NOT abort — dependencies are advisory and the children are already created. Note the cycle in the epic's summary body so the user knows to fix it.
+
+  ## Step 7 — Preserve the original description as a comment
+
+  Before rewriting the epic body, snapshot the original so it stays retrievable one click away:
+
+  ```bash
+  # Extract the current body from Step 1's cached bd show output.
+  cat > /tmp/original-epic-spec.md <<'EOF'
+  [original-epic-spec: <deferred-ts>]
+
+  Below is the epic's description as it stood before the Expand epic run at <deferred-ts>,
+  preserved so no content is lost. The current epic body has been minimised to a summary +
+  link table; refer to this comment for the full original spec.
+
+  ---
+
+  <verbatim original description body>
+  EOF
+
+  bd comment {{ .Args.IssueID }} --file /tmp/original-epic-spec.md
+  ```
+
+  Note that the leading `[original-epic-spec: ...]` marker is a machine-readable audit tag — do NOT prefix this specific comment with `Orchestrator:` (the tag itself is the identity), but keep the `Orchestrator:` prefix on all OTHER comments during this run.
+
+  ## Step 8 — Minimise the epic body
+
+  Only if the user left `minimize_body` checked at Step 4. Otherwise skip to Step 9 with the original body intact.
+
+  Compose a compact new description:
+
+  ```bash
+  cat > /tmp/new-epic-body.md <<'EOF'
+  <one-paragraph restatement of the epic's goal — 2–4 sentences, extracted from the
+  original description's opening>
+
+  ## Sub-tasks
+
+  | # | Bead | Title | Type | Priority | Depends on |
+  |---|------|-------|------|----------|------------|
+  | 1 | `<child-1-id>` | <title> | <type> | P<priority> | — |
+  | 2 | `<child-2-id>` | <title> | <type> | P<priority> | `<child-1-id>` |
+  | … | | | | | |
+
+  ---
+
+  _Expanded from a longer specification on <deferred-ts>. The original description
+  is preserved verbatim on this bead as the comment tagged `[original-epic-spec: <deferred-ts>]`._
+  EOF
+
+  bd update {{ .Args.IssueID }} --body-file /tmp/new-epic-body.md
+  ```
+
+  Do NOT use `--append-notes` for this — the new body replaces the old body entirely. That is safe because Step 7 already preserved the original as a comment.
+
+  ## Step 9 — Un-defer the epic (leave it OPEN and ready for work)
+
+  Reverse the Step 2 defer with the canonical undeferral marker (matches the format `Loop processing tasks` Step 2Z produces on its own un-defers):
+
+  ```bash
+  bd update {{ .Args.IssueID }} --remove-label needs-human --defer ''
+  bd comment {{ .Args.IssueID }} "[undeferred: <deferred-ts>]
+  Orchestrator: expansion complete — <N> children created (`<child-1-id>`, `<child-2-id>`, …). Epic body minimised; original spec preserved as the `[original-epic-spec: <deferred-ts>]` comment above. Epic remains OPEN so its children are picked up by the supervisor; `Loop processing tasks` Step 2P will close the epic automatically once the last child bead is closed."
+  ```
+
+  **Do NOT close the epic.** Decomposition is the START of the work, not the end — the deliverables live in the newly-created children, none of which have been implemented yet. The epic MUST remain open so:
+
+  - `Loop processing tasks` §C can enumerate the newly-created children and dispatch them on its next pass.
+  - Step 2P's epic-reaper will close the epic automatically once all children are closed, preserving the "container aggregates progress" semantics.
+
+  Do NOT present a "close now" option to the user. Print `bd dep tree {{ .Args.IssueID }}` for visual confirmation of the new epic + children structure.
+
+  Finish with a summary message listing:
+
+  - Each created child (ID + title + type/priority).
+  - The dependency edges (if any).
+  - Whether the body was minimised.
+  - The epic's final state: **open, un-deferred, ready for the supervisor to pick up children on its next pass**.
+
+  Then surface completion to the operator (workspace-scoped is unnecessary — this is a per-item human-invoked action, use the session-scoped notify):
+
+  ```
+  mitto_ui_notify(
+    self_id: "{{ .Session.ID }}",
+    title: "Epic expanded",
+    message: "`{{ .Args.IssueID }}` → <N> children created; Loop processing tasks will pick them up on its next pass.",
+    style: "success",
+    beads_issue: "{{ .Args.IssueID }}"
+  )
+  ```
+
+  ## Step 10 — Recovery (un-defer on any failure or abort)
+
+  Any exit path that leaves Step 2's defer in place is a bug. Reach this step whenever:
+
+  - Step 3 aborts (no clean decomposition inferrable).
+  - Step 4 is cancelled / submits everything unchecked / drops below 2 children after two revision loops.
+  - Step 5 fails partway (any `bd create` errored).
+  - Any other unexpected error surfaces before Step 9's un-defer runs.
+
+  Un-defer with a marker that names the abort reason, so `Loop processing tasks` Step 2Z sees a proper `[undeferred: <deferred-ts>]` and does not race:
+
+  ```bash
+  bd update {{ .Args.IssueID }} --remove-label needs-human --defer ''
+  bd comment {{ .Args.IssueID }} "[undeferred: <deferred-ts>]
+  Orchestrator: expansion aborted — <one-line reason>. Any partially-created children (see 'bd children {{ .Args.IssueID }}') remain in place; delete them with 'bd delete <id>' if the abort should be undone cleanly."
+  ```
+
+  Then notify the user via `mitto_ui_notify(..., style: "warning")` describing what happened, and continue to the final step below (do NOT skip cleanup).
+
+  ## Final step — Offer to delete this conversation
+
+  {{ template "_shared/offer-delete-conversation" . }}

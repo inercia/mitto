@@ -1,0 +1,215 @@
+icon: book-open
+name: 'On-Call: update investigation instructions'
+menus: prompts, !promptsLoop
+description: 'Create or update the investigation-instructions file used by "On-Call: I have been paged" — populate it from a Slack channel''s incident history or from a documentation directory. Idempotent: only touches auto-generated sections and never clobbers manually-authored content.'
+group: On-Call
+backgroundColor: '#FFCDD2'
+enabledWhen: '!Session.IsChild'
+preferredModels:
+  - modelTag: Coding
+parameters:
+  - name: InvestigationInstructions
+    type: filename
+    glob:
+      - "**/*.md"
+    remember: folder
+    required: false
+    description: 'The instructions file to create or update. Same parameter (and folder-scoped remembered value) used by ''On-Call: I have been paged'' — pick the same path there and it stays in sync. If empty, the prompt offers a default under docs/on-call/.'
+  - name: SourceType
+    type: text
+    required: true
+    description: 'One of `slack` or `directory`. `slack` mines a Slack channel''s incident history; `directory` catalogs a documentation tree. Any other value is rejected.'
+  - name: SourceArg
+    type: text
+    required: true
+    description: 'Depends on SourceType. For `slack`, a Slack channel ID (e.g. `C0123456789`). For `directory`, a path (absolute or relative to the workspace root) to a directory to catalog.'
+prompt: |-
+  {{ template "_shared/session-context" . }}
+
+  # On-Call: Update Investigation Instructions
+
+  You are creating or updating the **investigation-instructions file** that is inlined into every child investigator's prompt by `On-Call: I have been paged`. This is a maintenance / authoring task, not an incident. Do all the work in this conversation; do not spawn children.
+
+  ## Step 0 — Validate arguments
+
+  - **SourceType**: `{{ .Args.SourceType }}` — must be exactly `slack` or `directory`. Anything else (empty, other value) → `mitto_ui_notify(self_id: "{{ .Session.ID }}", title: "Unknown SourceType", message: "SourceType must be 'slack' or 'directory' (got: '{{ .Args.SourceType }}').", style: "error")` and stop.
+  - **SourceArg**: `{{ .Args.SourceArg }}` — must be non-empty. If empty, notify with `style: "error"` and stop.
+
+  ## Step 1 — Resolve the target file path
+
+  {{ if .Args.InvestigationInstructions -}}
+  Use `{{ .Args.InvestigationInstructions }}` (chosen by the operator; same folder-remembered value as `On-Call: I have been paged`).
+  {{- else -}}
+  No file was picked. Offer a sensible default via `mitto_ui_options(self_id: "{{ .Session.ID }}", allow_free_text: true)`:
+
+  - Question: "No investigation-instructions file selected. Where should I write it?"
+  - Options:
+    - `docs/on-call/investigation-instructions.md` (recommended — will be created)
+    - Any existing `**/*.md` files matching `investigation` or `runbook` in the workspace, if the agent's `list_files` / equivalent tool returns some — offer them as additional options
+    - Free-text: operator can type any relative or absolute path
+
+  If the operator cancels or times out, stop.
+  {{- end }}
+
+  Call the resolved path `$FILE` for the rest of this prompt. Ensure its parent directory exists:
+
+  ```bash
+  mkdir -p "$(dirname "$FILE")"
+  ```
+
+  If `$FILE` does not yet exist, create it with a minimal header:
+
+  ```markdown
+  # Investigation Instructions
+
+  Background context used by on-call investigators. This file is inlined verbatim into every child
+  investigator's prompt by the `On-Call: I have been paged` orchestrator.
+
+  Sections between `<!-- BEGIN AUTO on-call/... -->` and `<!-- END AUTO on-call/... -->` markers are
+  **maintained by the `On-Call: update investigation instructions` prompt** — running that prompt
+  again will re-scan the source and merge new entries. Content **outside** those markers is
+  hand-authored and is never touched by the prompt.
+  ```
+
+  If `$FILE` already exists, **do not overwrite it**. Read it into memory so you can locate (or add) the relevant auto-marker block in Step 3.
+
+  ## Step 2 — Gather source material
+
+  Which branch runs depends on `SourceType`:
+
+  ### Branch A — SourceType == `slack`
+
+  Validate `SourceArg` looks like a Slack channel ID (regex `^[CG][A-Z0-9]{8,}$`). If not, `mitto_ui_notify(self_id: "{{ .Session.ID }}", title: "Bad channel ID", message: "SourceArg does not look like a Slack channel ID (expected e.g. C0123456789, got '{{ .Args.SourceArg }}').", style: "error")` and stop.
+
+  Fetch messages from the channel bounded to the **last 6 months**. Use whatever Slack MCP tool is available — typically `slack_conversations_history` or equivalent — with an `oldest` cursor at `now - 15552000 seconds` (~180 days). Page until the window is covered or the channel is shorter.
+
+  If the fetched window has **fewer than 20 threads** (i.e. the channel is quiet), ask via `mitto_ui_options(self_id: "{{ .Session.ID }}")`:
+
+  - Question: "Only <N> threads found in the last 6 months of `{{ .Args.SourceArg }}`. Widen the window?"
+  - Options: `[{label: "Yes — widen to 12 months"}, {label: "Yes — widen to 24 months"}, {label: "No — proceed with what I have"}, {label: "Cancel"}]`
+
+  For every thread that looks incident-related (heuristics: keywords like `incident`, `outage`, `sev`, `sev1`, `sev2`, `page`, `paged`, `war room`, `RCA`, `postmortem`, `resolved`, `mitigated`; or a thread with ≥ 5 replies mentioning services / errors / dashboards), expand replies (`slack_conversations_replies` or equivalent) and extract:
+
+  - **Title** — short, human-readable (≤ 80 chars). Prefer the first-message subject / topic; fall back to the first sentence.
+  - **Symptoms** — what was observed (errors, alerts, user-visible impact).
+  - **Root cause** — what actually broke, if the thread reached a conclusion.
+  - **Resolution** — the fix / mitigation applied.
+  - **Slack permalink** — the permalink to the parent message (`slack_conversations_get_permalink` or built from `channel + ts`).
+  - **Date** — ISO date of the parent message (`YYYY-MM-DD`).
+
+  Skip threads that are pure banter, questions without answers, or non-incident chatter. Be conservative — an honest "not enough signal" for a thread is better than an invented root cause.
+
+  ### Branch B — SourceType == `directory`
+
+  Resolve `SourceArg` against the workspace root if relative. If the resolved path is not a directory (missing, not a dir, unreadable), `mitto_ui_notify(self_id: "{{ .Session.ID }}", title: "Not a directory", message: "SourceArg '{{ .Args.SourceArg }}' is not a directory or is unreadable.", style: "error")` and stop.
+
+  Recursively scan for documentation files. Include: `*.md`, `*.mdx`, `*.rst`, `*.txt`. Skip common ignore dirs: `.git`, `.beads`, `node_modules`, `vendor`, `dist`, `build`, `out`, `target`, and any directory starting with `.`.
+
+  For every included file:
+
+  - **Path** — relative to the workspace root (e.g. `docs/on-call/runbooks/redis-oom.md`).
+  - **Group** — top-level subdirectory of that path relative to `SourceArg` (files directly under `SourceArg` are grouped under `(root)`).
+  - **Summary** — one-line description, derived (in order of preference) from:
+    1. The first non-empty `#`/`##` heading line, stripped of leading `#`s.
+    2. The first non-empty, non-heading paragraph, truncated to ~120 chars.
+    3. The file name (last resort).
+
+  ### Any other SourceType
+
+  Handled by the Step-0 guard above.
+
+  ## Step 3 — Diff, deduplicate, and merge into `$FILE`
+
+  Read `$FILE` (the version on disk after Step 1). Identify the **auto-marker block** owned by this SourceType:
+
+  - `slack` → `<!-- BEGIN AUTO on-call/slack-incidents -->` … `<!-- END AUTO on-call/slack-incidents -->`
+  - `directory` → `<!-- BEGIN AUTO on-call/reference-docs -->` … `<!-- END AUTO on-call/reference-docs -->`
+
+  If the pair is missing, you will append a fresh pair at the end of `$FILE` in Step 4. If it is present, parse its current contents into a set of existing entries — keyed by:
+
+  - **Slack**: case-insensitive `Title` (also compare permalinks — an exact permalink match is a strong duplicate signal).
+  - **Directory**: relative `Path`.
+
+  For each proposed new entry from Step 2:
+
+  - If an existing entry with the same key is present → **skip** (idempotency).
+  - If a proposed entry is **substantially similar** to an existing one (Slack: same root cause and overlapping symptoms; Directory: same file but the summary has drifted) → **consolidate** by merging fields rather than duplicating.
+  - Otherwise → **queue for append**.
+
+  If nothing new to add and no consolidations to do, notify `mitto_ui_notify(self_id: "{{ .Session.ID }}", title: "Investigation instructions up to date", message: "No new entries — the file already covers this source.", style: "info")` and skip Step 4.
+
+  ## Step 4 — Write the merged block back to `$FILE`
+
+  Reconstruct the target auto-marker block with:
+
+  - all existing entries (in place; consolidated where Step 3 identified overlaps), then
+  - the queued new entries, sorted deterministically (Slack: newest date first; Directory: alphabetical by group, then by path).
+
+  Format:
+
+  **`slack` block**:
+
+  ```markdown
+  <!-- BEGIN AUTO on-call/slack-incidents -->
+  ## Incidents observed in Slack
+
+  <!-- Source: channel {{ .Args.SourceArg }} — last refreshed <ISO date> -->
+
+  ### <Title>
+  - **Date**: YYYY-MM-DD
+  - **Symptoms**: …
+  - **Root cause**: …
+  - **Resolution**: …
+  - **Slack**: <permalink>
+
+  ### <Title 2>
+  …
+  <!-- END AUTO on-call/slack-incidents -->
+  ```
+
+  **`directory` block**:
+
+  ```markdown
+  <!-- BEGIN AUTO on-call/reference-docs -->
+  ## Reference documentation
+
+  <!-- Source: {{ .Args.SourceArg }} — last refreshed <ISO date> -->
+
+  ### <top-level subdir>
+  - [`<relative path>`](<relative path>) — <one-line summary>
+  - [`<relative path>`](<relative path>) — <one-line summary>
+
+  ### <next subdir>
+  …
+  <!-- END AUTO on-call/reference-docs -->
+  ```
+
+  **Write rules — respect manual content:**
+
+  1. Read `$FILE` fresh, replace **only** the bytes between the matching BEGIN/END markers for the block owned by this SourceType.
+  2. Everything else in the file — the header, other AUTO blocks, hand-authored sections between AUTO blocks — must be preserved **byte-for-byte** in the write. Do not reformat, re-wrap, or re-normalise unrelated content.
+  3. If the marker pair is missing, append the new block at the end of the file (preceded by a single blank line), then write.
+  4. Never delete an existing entry the operator added by hand inside the auto block. If you cannot cleanly parse the existing block, `mitto_ui_notify(style: "warning")` with the reason and stop — do not clobber.
+
+  ## Step 5 — Final summary
+
+  Notify the operator with a concise summary via `mitto_ui_notify(self_id: "{{ .Session.ID }}", title: "Investigation instructions updated", message: "<file>: +N new, M consolidated, K unchanged (source: <SourceType> <SourceArg>)", style: "success")`.
+
+  Also print inline in this conversation:
+
+  ```
+  📄 Updated: <relative $FILE>
+     +N new entries, M consolidated, K unchanged
+     Source: <SourceType> = <SourceArg>
+  ```
+
+  Do **not** run `git add` / `git commit` — the operator reviews and commits manually, matching the convention of the other on-call and blog prompts.
+
+  ## Guardrails
+
+  - **Idempotent.** Re-running with the same arguments must be a no-op (or a small consolidation), never a duplicate append.
+  - **Manual content is sacred.** Only bytes inside the matching BEGIN/END AUTO marker pair may change. Hand-authored sections, other AUTO blocks, and the file header are preserved verbatim.
+  - **Fail-safe on parse errors.** If the existing auto block is malformed (mismatched markers, unexpected structure), stop with a warning notification rather than rewriting the block.
+  - **Do not spawn child conversations.** This is an authoring task, small enough for the current agent.
+  - **Do not commit.** The operator reviews and commits manually.
+  - **Honesty over completeness.** If Slack signal is thin or a doc has no first heading / first paragraph, record that faithfully — do not fabricate.

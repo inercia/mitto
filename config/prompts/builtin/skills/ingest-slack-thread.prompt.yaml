@@ -1,0 +1,248 @@
+icon: message-circle
+name: 'Skill: ingest from Slack thread'
+menus: prompts, !promptsLoop
+description: Extract information from a Slack thread and integrate it into an existing `SKILL.md` (and its `references/` folder)
+group: Agents & Mitto
+backgroundColor: '#B3E5FC'
+enabledWhen: '!Session.IsLoopConversation && FileExists("**/SKILL.md") && Tools.HasAnyPattern(["slack_*", "*_slack"])'
+preferredModels:
+  - modelTag: Reasoning
+parameters:
+  - name: SkillFile
+    type: filename
+    glob:
+      - "**/SKILL.md"
+    remember: folder
+    required: true
+    description: The `SKILL.md` file this ingestion run integrates into. New reference files land in its sibling `references/` folder.
+  - name: SlackThreadURL
+    type: text
+    required: true
+    description: 'URL of the Slack thread to ingest (e.g. https://<workspace>.slack.com/archives/C0123456/p1700000000000000)'
+  - name: Focus
+    type: text
+    required: false
+    multiLine: true
+    description: 'Optional narrowing of what to extract from the thread — one or more topics, subsections, or aspects the operator cares about (e.g. "only the retry/timeout tuning discussion", "the decision about which auth mode to use, ignore the deployment tangent", "just the error-message table Alice pasted"). If empty, the entire thread is treated as relevant and evaluated message-by-message per Step 3.'
+target:
+  # Shared with every other prompt under config/prompts/builtin/skills/: all
+  # `Skill: …` prompts funnel into the same non-archived conversation in this
+  # working_dir so they never run in parallel on the same skill.
+  title: 'Skill workshop'
+  reuse:
+    title: true
+    coalesce: true
+prompt: |
+  This run integrates into the skill anchored at
+  `{{ .Args.SkillFile }}` (workspace-relative). Its sibling references
+  folder is `{{ Dir .Args.SkillFile }}/references/`. Every mention
+  below of "`SKILL.md`" means that specific file; every mention of
+  "`references/`" means that specific sibling folder — do not touch a
+  different skill's files.
+
+  Extract information from the Slack thread at
+  `{{ .Args.SlackThreadURL }}` and integrate the relevant parts into
+  `{{ .Args.SkillFile }}` and, where appropriate, into files under
+  `{{ Dir .Args.SkillFile }}/references/`.
+
+  {{ if .Args.Focus -}}
+  ## Operator focus (narrows this run)
+
+  The operator has asked this run to focus specifically on:
+
+  ```
+  {{ .Args.Focus }}
+  ```
+
+  Treat only the parts of the thread that speak to that focus as
+  in-scope. Messages, sub-threads, or tangents that do not bear on the
+  focus above are **Off-topic for this run**, even if they would
+  otherwise teach something useful about the skill — file them as
+  `Off-topic` in the Step 3 analysis table with a one-word note (e.g.
+  `off-focus`) and move on. If nothing in the thread matches the focus,
+  say so explicitly in Step 7 and do not invent placements.
+  {{- else -}}
+  The operator did not narrow the focus, so treat the **entire thread**
+  as potentially relevant and evaluate every message per Step 3.
+  {{- end }}
+
+  ## Step 1 — Understand the target skill
+
+  Read `{{ .Args.SkillFile }}` in full. Then think carefully and
+  summarize, in this conversation, a short **skill briefing** (5–10
+  lines) covering:
+
+  - **Purpose** — what problem does this skill solve?
+  - **Scope** — what is in-scope vs. explicitly out-of-scope?
+  - **Aim** — what outcome does an agent using this skill try to achieve?
+  - **Audience** — which agent(s) / which situations trigger this skill?
+
+  Do not proceed until this briefing is written out — every later placement
+  decision refers back to it.
+
+  ## Step 2 — Fetch the Slack thread
+
+  Match Slack MCP tools **by capability, not exact name**. Here you need to
+  **read a thread's parent message and all of its replies** (e.g.
+  `slack_get_thread_replies*`, `conversations_replies_slack`). No posting
+  tool is needed — this prompt never posts back to Slack.
+
+  From `{{ .Args.SlackThreadURL }}`, resolve the channel ID and parent
+  `thread_ts` (the trailing `pNNNNNNNNNNNNNNNN` fragment in the URL is
+  `thread_ts` with the decimal point removed after the first ten digits).
+  Fetch the parent message **and every reply in the thread**.
+
+  If the thread cannot be fetched — invalid URL, missing permissions,
+  channel not accessible to the connected Slack workspace, tool error —
+  **stop immediately** and print a one-line explanation. Do not guess the
+  thread's content; do not proceed to the analysis step.
+
+  ## Step 3 — Analyze the thread against the skill briefing
+
+  Walk through the fetched messages in order. For each message (or coherent
+  cluster of messages) decide:
+
+  - **Relevant** — teaches something that fits the Step 1 briefing.
+    Note *what* is being taught (a fact, a gotcha, a workflow step, an
+    example, an API detail, a decision + rationale, a validation trick).
+  - **Off-topic** — chatter, greetings, unrelated tangents, resolved
+    misunderstandings that leave no lasting lesson. Explicitly ignore.
+
+  Print a compact **analysis table** in this conversation:
+  `<message ref or timestamp> | relevant? | what it teaches` — one row per
+  message or cluster. Do not fabricate lessons that are not clearly stated
+  or clearly implied by the thread.
+
+  ## Step 4 — Decide destination for each relevant chunk
+
+  For every **Relevant** row from Step 3, pick exactly one destination and
+  briefly justify:
+
+  - **`SKILL.md`** — core, canonical guidance the agent must always see
+    (invariants, primary workflow, key gotchas, trigger conditions,
+    "always do X / never do Y" rules). Keep the file lean; only promote
+    content that materially changes agent behavior for the common case.
+  - **`references/<file>.md`** — supporting material: examples, transcripts,
+    edge-case discussions, long API tables, alternative approaches, or
+    background reading. Choose a **descriptive, kebab-case filename**
+    derived from the thread's topic (e.g. `references/timeout-tuning.md`,
+    `references/oncall-escalation-notes.md`). Reuse an existing file under
+    `references/` when the new content is a natural extension of it;
+    create a new file only when no reasonable home exists. Create the
+    `references/` directory if it does not yet exist.
+
+  Print the placement plan as a bullet list — one bullet per chunk with
+  destination + one-sentence justification — before writing anything.
+
+  ## Step 4.5 — De-duplicate against existing content
+
+  Before writing anything, verify each planned chunk is genuinely new
+  information — not a restatement of something already in the skill.
+
+  For every chunk from Step 4:
+
+  1. **Load the full comparison surface.** Read the current contents of
+     `SKILL.md` **and** every file under `references/` (not just the
+     chosen destination file — the same lesson may already live in a
+     sibling reference). Use grep/search for keywords, symbol names, and
+     distinctive phrases from the chunk to locate candidate overlaps
+     fast, then read the surrounding paragraph to judge in context.
+  2. **Compare semantically, not textually.** Two passages count as
+     duplicates when they convey the **same fact, rule, gotcha, or
+     example**, even if worded differently or split across bullets.
+     Superficial paraphrases, reordered lists, or the same code snippet
+     with renamed variables are duplicates. A different fact about the
+     same topic is **not** a duplicate.
+  3. **Classify each chunk into exactly one bucket:**
+     - `Duplicate` — the fact is already covered somewhere in the skill;
+       drop the chunk. Note the existing location.
+     - `Refinement` — the fact exists but the Slack thread adds precision
+       (a caveat, an exact version/number, a corner case, a corrected
+       claim). Do not add a new section; instead, edit the existing
+       passage in place to incorporate the refinement (Step 5 rules on
+       preserving surrounding content still apply).
+     - `New` — the fact does not appear anywhere in `SKILL.md` or
+       `references/`. Write as planned in Step 4.
+  4. **Print the de-duplication table** before proceeding to Step 5:
+     `chunk (short label) | bucket | existing location (if Duplicate /
+     Refinement) | action`. This is the operator's audit trail — if half
+     the chunks come back as `Duplicate`, that is a healthy outcome, not
+     a failure.
+
+  If **every** relevant chunk resolves to `Duplicate`, skip Step 5
+  entirely and go straight to Step 7 with a "nothing new to add"
+  summary. Do not invent additions just to justify running the prompt.
+
+  ## Step 5 — Write the extracted content
+
+  Apply the plan from Step 4, filtered by Step 4.5. Rules:
+
+  - **Add or refine, never remove.** Do not delete or rewrite existing
+    lines in `SKILL.md` or in reference files just to make room; only
+    append new sections, extend existing ones, or make the targeted
+    in-place edits identified as `Refinement` in Step 4.5.
+  - **No duplication.** Step 4.5 is the authoritative gate — write only
+    chunks classified as `New` or `Refinement`. If new evidence surfaces
+    mid-write that a chunk is actually a duplicate, stop and reclassify
+    rather than writing it "just in case".
+  - **Match the target file's style.** Mirror the existing heading
+    depth, list style, code-block conventions, and voice. If `SKILL.md`
+    uses `##` for top-level sections, so should any additions.
+  - **Attribute sparingly.** Do not paste raw Slack messages, user
+    handles, or timestamps into the file; distill the lesson. If a
+    reference file is meant as a transcript / notes dump, redact user
+    identifiers to display names or roles only.
+  - **New reference files** must begin with a short header (title +
+    one-paragraph purpose statement) so the agent knows when to load
+    them. When adding a new file under `references/`, also add a
+    trigger sentence in `SKILL.md` linking to it (e.g.
+    `- Read [\`references/<name>\`](references/<name>) when <trigger>.`).
+  - Edit files with the workspace file-editing tools — **never** `sed`
+    or full-file rewrites.
+
+  ## Step 6 — Review and polish
+
+  Re-read every file you touched, end-to-end. Improve **flow, legibility,
+  and organization** without changing meaning:
+
+  - Reorder new bullets/sections so related material is contiguous.
+  - Merge near-duplicate bullets you just introduced.
+  - Fix transitions between the new content and the surrounding prose.
+  - Ensure headings still form a logical outline.
+  - Remove trailing whitespace and normalize blank lines.
+
+  Do not restyle or reword pre-existing content that you did not modify
+  in Step 5.
+
+  ## Step 7 — Summary
+
+  Notify with
+  `mitto_ui_notify(self_id: "{{ .Session.ID }}", title: "Slack thread ingested into skill", style: "success")`
+  and print a short summary:
+
+  - `SKILL.md`: sections added / extended / left untouched
+  - `references/`: files created / extended (one line per file, with the
+    trigger sentence added to `SKILL.md`)
+  - Chunk classification totals from Step 4.5:
+    `New: <n> / Refinement: <n> / Duplicate: <n> / Off-topic: <n>`
+  - If `New + Refinement == 0`, say so explicitly ("nothing new to add,
+    thread is already fully covered by the existing skill") — this is
+    a healthy outcome, not a failure.
+
+  ## Guardrails
+
+  - **Preserve existing content.** This prompt only adds or refines; it
+    never removes lines that were in the file before Step 5.
+  - **No fabrication.** Do not invent facts, APIs, or gotchas that are
+    not stated (or clearly implied) in the thread.
+  - **No duplication.** Never write a chunk without first classifying it
+    against the full existing skill in Step 4.5. "I did not see it in
+    the destination file" is not sufficient — check `SKILL.md` and every
+    file under `references/`. A silent duplicate is a worse outcome than
+    a missed refinement.
+  - **No git mutations.** Do not run `git add` / `git commit` / `git
+    push` — the operator reviews and commits the diff themselves.
+  - **Stop on inaccessible thread.** If Step 2 cannot fetch the thread,
+    stop and report; do not guess.
+  - **Do not spawn child conversations** — this is an in-place authoring
+    task.

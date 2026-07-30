@@ -1,0 +1,204 @@
+icon: magic-wand
+name: 'Skill: improve'
+menus: prompts, !promptsLoop
+description: Review and improve a `SKILL.md` file against the agentskills.io best-practices for skill creators
+group: Agents & Mitto
+backgroundColor: '#B3E5FC'
+enabledWhen: '!Session.IsLoopConversation && FileExists("**/SKILL.md")'
+preferredModels:
+  - modelTag: Reasoning
+parameters:
+  - name: SkillFile
+    type: filename
+    glob:
+      - "**/SKILL.md"
+    remember: folder
+    required: true
+    description: The `SKILL.md` file this audit operates against. Its sibling `references/` folder (if any) is treated as the split-out destination for oversized sections.
+target:
+  # Shared with every other prompt under config/prompts/builtin/skills/: all
+  # `Skill: …` prompts funnel into the same non-archived conversation in this
+  # working_dir so they never run in parallel on the same skill.
+  title: 'Skill workshop'
+  reuse:
+    title: true
+    coalesce: true
+prompt: |
+  This run operates on the skill anchored at `{{ .Args.SkillFile }}`
+  (workspace-relative). Its sibling references folder (used for split-
+  out reference material) is `{{ Dir .Args.SkillFile }}/references/`.
+  Every mention below of "`SKILL.md`" means that specific file; every
+  mention of "`references/`" means that specific sibling folder — do
+  not touch a different skill's files.
+
+  Review `{{ .Args.SkillFile }}` against the best-practices for skill
+  creators published at <https://agentskills.io/skill-creation/best-practices>
+  and — only with explicit, per-change operator approval — apply small,
+  surgical improvements.
+
+  This is primarily an **audit** prompt. The default outcome is a written
+  report, not a rewritten file. Bulk rewrites are forbidden.
+
+  ## Step 0 — Read the target file
+
+  Read `{{ .Args.SkillFile }}` into memory. If it does not exist or is
+  empty, stop with a brief note; this prompt improves an existing skill,
+  it does not bootstrap one.
+
+  ## Step 1 — Audit against the best-practices checklist
+
+  Score the current file against each point below. Note which items already
+  pass, which need work, and which do not apply. Do **not** edit yet.
+
+  **Grounding & scope**
+  - Does the skill capture project-specific expertise (real conventions,
+    APIs, gotchas), or does it read like generic training-data advice?
+  - Is the scope a coherent unit — neither so narrow it must load with other
+    skills to be useful, nor so broad it is hard to trigger precisely?
+
+  **Context economy** — every token competes with the rest of the context window
+  - Does the file add what the agent would **not** already know, and omit what
+    it already knows (no explanations of what a PDF / HTTP / a migration is)?
+  - Is `SKILL.md` under ~500 lines / ~5,000 tokens? If not, is longer material
+    moved to `references/` (or `assets/`, `scripts/`) with **explicit triggers**
+    telling the agent *when* to load each file (e.g. "Read `references/api-errors.md`
+    if the API returns a non-200 status")?
+
+  **Calibrating control**
+  - Is specificity matched to fragility: freedom + rationale where multiple
+    valid approaches exist, prescriptive commands where a specific sequence is
+    required?
+  - When multiple tools/approaches could work, does the file pick a **default**
+    and mention alternatives briefly, rather than presenting equal options?
+  - Does it teach **how to approach** a class of problems (procedural) rather
+    than baking in one specific answer (declarative)?
+
+  **Effective-instruction patterns** (use the ones that fit; do not force all)
+  - A **Gotchas** section listing concrete, non-obvious environment facts.
+  - **Templates** for any required output format (inline for short, `assets/`
+    for long or conditional).
+  - **Checklists** for multi-step workflows with dependencies or validation gates.
+  - **Validation loops** (do → validate → fix → repeat) for fragile edits.
+  - **Plan-validate-execute** for batch or destructive operations.
+  - **Bundled scripts** in `scripts/` for logic the agent would otherwise
+    reinvent on every run.
+
+  **Metadata**
+  - Is the `description` (front-matter) precise about *when* to trigger the
+    skill? Vague descriptions cause both false positives and misses.
+
+  ## Step 2 — Propose improvements
+
+  Print a compact report in this conversation with three sections:
+
+  1. **Keep** — items already meeting the practice (one-line each).
+  2. **Change** — items that should be revised, each as
+     `- <section/line ref>: <what to change> — <why>`.
+  3. **Add / Remove** — new sections to add (Gotchas, templates, references,
+     scripts) and existing content to cut as dead weight or generic filler.
+
+  Order the **Change** and **Add/Remove** items by impact (highest first).
+
+  ## Step 3 — Choose scope (default: no edits)
+
+  After printing the report, ask the operator via
+  `mitto_ui_options(self_id: "{{ .Session.ID }}", question: "How would you like to proceed?", options: [{"label": "Report only — do not touch SKILL.md"}, {"label": "Walk through the top ~3 highest-impact items, one at a time"}, {"label": "Walk through a specific item I will pick"}, {"label": "Cancel"}])`.
+
+  The **first option is the default** and the expected outcome for most runs.
+  There is no "apply all" option — the agent must never rewrite `SKILL.md` in
+  bulk, even when the operator asks for edits.
+
+  ## Step 3a — Per-change approval loop (only if the operator picked a walk-through)
+
+  For each selected **Change** or **Add/Remove** item, in order of impact:
+
+  1. Locate the exact lines / section the item refers to (quote them back
+     briefly so the operator sees what will move).
+  2. Draft the **smallest possible** edit that addresses the item. Rules:
+     - Change only the lines needed for this one item; leave every other
+       section, heading, and paragraph byte-for-byte untouched.
+     - Do **not** re-flow prose, re-order sections, re-title headings, or
+       "modernize" wording for style alone.
+     - Preserve any hand-authored voice you cannot clearly improve.
+     - If the item would require rewriting more than a handful of contiguous
+       lines, downgrade it to a `TODO(operator)` note in the report instead
+       of attempting the rewrite.
+  3. Present the proposal via
+     `mitto_ui_textbox(self_id: "{{ .Session.ID }}", title: "Apply: <item summary>", text: "BEFORE:\n<original lines>\n\n---\n\nAFTER:\n<proposed lines>", result: "edit")`
+     so the operator can approve, tweak, or reject the exact final text.
+  4. Apply the (possibly edited) replacement in place. An empty result means
+     **skip** — leave the file untouched and move to the next item.
+  5. After each applied or skipped item, ask via `mitto_ui_options` whether to
+     `Continue with the next item` or `Stop here`. Stop immediately when
+     asked.
+
+  When applying any edit:
+  - Edit `{{ .Args.SkillFile }}` in place; never rewrite it from
+    scratch.
+  - If the file grows past ~500 lines, split detailed reference material
+    into `{{ Dir .Args.SkillFile }}/references/<topic>.md` (create the
+    directory if needed) and add an explicit trigger sentence in
+    `{{ .Args.SkillFile }}` that tells the agent when to load it. This
+    split is itself a Step 3a item — propose and confirm it like any
+    other change.
+  - Do **not** run `git add` / `git commit`; the operator reviews and commits.
+
+  ## Step 3.5 — Re-evaluate the `description` frontmatter
+
+  After the Step 3a walk-through finishes (or immediately if the operator
+  picked **Report only** in Step 3), decide whether the skill's `description`
+  still accurately reflects **what the skill does** and **when it should be
+  triggered**. When Step 3 was "Report only", base this check on the Step 2
+  report — do not apply any change silently; still route the proposal through
+  Step 3.5's own `mitto_ui_textbox` below.
+
+  1. Re-read the current `description` from the frontmatter/header of
+     `{{ .Args.SkillFile }}` verbatim.
+  2. Compare it against the updated scope, behavior, and any sections
+     added/removed in this run. Look for drift such as: features the skill no
+     longer covers, new capabilities not mentioned, trigger conditions that
+     have widened or narrowed, or vague wording that would cause misses or
+     false positives.
+  3. Reach one of two verdicts:
+
+     - **Still accurate** — print a single line
+       `Description unchanged: "<current description>"` and move on to Step 4.
+       Do not touch the frontmatter.
+     - **Stale** — draft a replacement that follows the same style as
+       existing skill descriptions in this repo: concise (one sentence, no
+       trailing period), trigger-oriented, describing *when* to use the
+       skill rather than restating its name. Present the change via
+       `mitto_ui_textbox(self_id: "{{ .Session.ID }}", title: "Update SKILL.md description", text: "OLD: <current description>\n\n---\n\nNEW: <proposed description>", result: "description")`
+       and replace the frontmatter value with the operator's returned text
+       (empty → skip and leave the current description in place).
+
+  ## Step 4 — Summary
+
+  If any edits landed (Step 3a or Step 3.5), notify with
+  `mitto_ui_notify(self_id: "{{ .Session.ID }}", title: "SKILL.md improved", style: "success")`
+  and print a short "before → after" summary: line count, items applied vs.
+  skipped, files split out under `references/` / `scripts/` / `assets/`, and
+  whether the `description` was updated.
+
+  If Step 3 was **Report only** and Step 3.5 made no change, skip the
+  notification and just print `No edits applied — audit report above.`
+
+  ## Guardrails
+
+  - **Report-first, edits are opt-in.** The default outcome of this prompt is
+    the Step 2 report. Do nothing to `SKILL.md` unless the operator explicitly
+    picks a walk-through in Step 3.
+  - **Surgical edits only.** Every applied change must be scoped to a single
+    Step 2 item and touch the minimum lines required. **No bulk rewrites, no
+    whole-section replacements, no style-only reflows.** If a proposed change
+    cannot be made surgically, downgrade it to a `TODO(operator)` note.
+  - **One approval per change.** Each edit needs its own `mitto_ui_textbox`
+    confirmation in Step 3a — never batch multiple items into a single
+    approval.
+  - **Preserve untouched content byte-for-byte.** Sections not referenced by
+    an approved Step 3a item must be identical before and after.
+  - **No fabrication.** If a section would require domain knowledge you do not
+    have, mark it as `TODO(operator)` rather than inventing content.
+  - **Do not spawn child conversations** — this is an authoring task.
+  - **Honor progressive disclosure.** Prefer moving long/optional content to
+    `references/` with explicit load triggers over inflating `SKILL.md`.
