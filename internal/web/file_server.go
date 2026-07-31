@@ -100,6 +100,23 @@ func (fs *FileServer) validateFilePath(w http.ResponseWriter, r *http.Request, w
 	// Security check 2: Clean and validate the relative path
 	cleanPath := filepath.Clean(relativePath)
 	if strings.HasPrefix(cleanPath, "..") || filepath.IsAbs(cleanPath) {
+		// Before flagging as a security event, check whether an absolute
+		// path actually lives inside another workspace the user owns. If so,
+		// respond 409 with a JSON hint so the viewer can offer to re-open
+		// the file under the correct workspace, and log a non-security
+		// INFO event instead of poisoning the security-event stream.
+		if filepath.IsAbs(cleanPath) {
+			if targetUUID, targetName, ok := fs.findOwningWorkspace(cleanPath); ok {
+				fs.logCrossWorkspaceEvent(workspace, targetUUID, targetName, cleanPath, r)
+				writeJSON(w, http.StatusConflict, map[string]string{
+					"error":          "path_in_other_workspace",
+					"workspace_uuid": targetUUID,
+					"workspace_name": targetName,
+					"path":           cleanPath,
+				})
+				return "", nil, false
+			}
+		}
 		fs.logSecurityEvent("path_traversal_attempt", workspace, relativePath, r)
 		http.Error(w, "Invalid path", http.StatusForbidden)
 		return "", nil, false
@@ -367,6 +384,86 @@ func (fs *FileServer) logSecurityEvent(event, workspace, path string, r *http.Re
 			"user_agent", r.UserAgent(),
 		)
 	}
+}
+
+// logCrossWorkspaceEvent logs an INFO-level event when a request for one
+// workspace targets an absolute path that lives inside a different, also
+// user-owned workspace. This is a UX signal (viewer will offer to re-open in
+// the correct workspace), not a security violation, so it must not use the
+// same "File server security event" WARN channel as path_traversal_attempt.
+func (fs *FileServer) logCrossWorkspaceEvent(sourceWorkspace, targetUUID, targetName, path string, r *http.Request) {
+	if fs.logger != nil {
+		fs.logger.Info("File server cross-workspace path attempt",
+			"event", "cross_workspace_path_attempt",
+			"source_workspace", sourceWorkspace,
+			"target_workspace_uuid", targetUUID,
+			"target_workspace_name", targetName,
+			"path", path,
+			"client_ip", r.RemoteAddr,
+			"user_agent", r.UserAgent(),
+		)
+	}
+}
+
+// findOwningWorkspace returns the registered workspace whose WorkingDir is a
+// prefix of absPath (longest match wins, to handle nested-workspace layouts).
+// Returns the target workspace's UUID and a display name (falling back to the
+// directory basename when Name is unset). Returns ok=false when absPath does
+// not resolve into any known workspace or when the path is not absolute.
+//
+// Symlinks are resolved on both the workspace root and the target path so that
+// e.g. /tmp on macOS (a symlink to /private/tmp) matches consistently.
+func (fs *FileServer) findOwningWorkspace(absPath string) (uuid, name string, ok bool) {
+	if fs.sessionManager == nil || !filepath.IsAbs(absPath) {
+		return "", "", false
+	}
+
+	// Resolve symlinks on the candidate path when possible. If the file does
+	// not exist yet or cannot be resolved, fall back to the cleaned absolute
+	// path — prefix matching still works for the common case where the
+	// requested path lives inside a real workspace root.
+	resolvedPath := filepath.Clean(absPath)
+	if r, err := filepath.EvalSymlinks(resolvedPath); err == nil {
+		resolvedPath = r
+	}
+
+	var bestUUID, bestName string
+	bestLen := -1
+
+	for _, ws := range fs.sessionManager.GetWorkspaces() {
+		if ws.WorkingDir == "" {
+			continue
+		}
+		resolvedWS, err := filepath.EvalSymlinks(ws.WorkingDir)
+		if err != nil {
+			// Skip workspaces whose root is missing/unreadable — fail closed
+			// (don't route a cross-workspace hint to a workspace we cannot
+			// even confirm exists on disk).
+			continue
+		}
+		resolvedWS = filepath.Clean(resolvedWS)
+		// Require an exact match or a strict directory-boundary prefix so
+		// /a/foo does not accidentally match workspace root /a/fo.
+		match := resolvedPath == resolvedWS ||
+			strings.HasPrefix(resolvedPath, resolvedWS+string(filepath.Separator))
+		if !match {
+			continue
+		}
+		if len(resolvedWS) > bestLen {
+			bestLen = len(resolvedWS)
+			bestUUID = ws.UUID
+			if ws.Name != "" {
+				bestName = ws.Name
+			} else {
+				bestName = filepath.Base(resolvedWS)
+			}
+		}
+	}
+
+	if bestLen < 0 {
+		return "", "", false
+	}
+	return bestUUID, bestName, true
 }
 
 // isSensitiveFile checks if a file path matches sensitive patterns.

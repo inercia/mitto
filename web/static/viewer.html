@@ -785,6 +785,23 @@
 
           const response = await fetch(fileUrl, { credentials: "include", cache: 'no-store' });
           if (response.status === 401) { redirectToLogin(); return; }
+          // 409 Conflict: the requested absolute path lives inside a
+          // different, user-owned workspace. The backend returns a JSON hint
+          // so we can offer to re-open the file under the correct workspace
+          // instead of bubbling up a generic "Access denied".
+          if (response.status === 409) {
+            let hint = null;
+            try {
+              const ct = response.headers.get("Content-Type") || "";
+              if (ct.indexOf("application/json") !== -1) {
+                hint = await response.json();
+              }
+            } catch (_) { /* fall through to generic error */ }
+            if (hint && hint.error === "path_in_other_workspace" && hint.workspace_uuid) {
+              showCrossWorkspaceBanner(hint);
+              return;
+            }
+          }
           if (!response.ok) {
             throw new Error(
               response.status === 404
@@ -1715,6 +1732,37 @@
         document.getElementById("loading").style.display = "none";
         document.getElementById("error").style.display = "flex";
         document.getElementById("errorMessage").textContent = message;
+      }
+
+      // Render a friendly "file lives in another workspace" banner in place
+      // of the generic error, with a button that reloads the viewer against
+      // the workspace that actually owns the file. Deliberately does NOT
+      // transparent-redirect: the user chooses when to switch workspaces.
+      function showCrossWorkspaceBanner(hint) {
+        document.getElementById("loading").style.display = "none";
+        const errBox = document.getElementById("error");
+        const msg = document.getElementById("errorMessage");
+        errBox.style.display = "flex";
+        msg.textContent = "";
+
+        const wsName = hint.workspace_name || "another workspace";
+        const filePath = hint.path || path;
+
+        const line = document.createElement("div");
+        line.textContent = "This file lives in workspace \u201C" + wsName + "\u201D.";
+        msg.appendChild(line);
+
+        const btn = document.createElement("button");
+        btn.className = "btn";
+        btn.style.marginTop = "8px";
+        btn.textContent = "Open in " + wsName;
+        btn.addEventListener("click", () => {
+          const target = window.location.pathname +
+            "?ws=" + encodeURIComponent(hint.workspace_uuid) +
+            "&path=" + encodeURIComponent(filePath);
+          window.location.href = target;
+        });
+        msg.appendChild(btn);
       }
 
       // Load file on page load
