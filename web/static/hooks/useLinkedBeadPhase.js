@@ -15,6 +15,7 @@ const { useEffect, useState } = window.preact;
 import { authFetch } from "../utils/csrf.js";
 import { endpoints } from "../utils/endpoints.js";
 import { derivePhaseState } from "../utils/phaseState.js";
+import { isGone, markGone } from "../utils/beadsGoneCache.js";
 
 // Module-level cache: key -> { promise, value: {issue_type, labels}|null }
 // Only ONE entry per (workingDir,issueId); refresh replaces it in place.
@@ -28,7 +29,14 @@ async function fetchIssue(workingDir, issueId) {
   const res = await authFetch(
     endpoints.issues.show(issueId, { working_dir: workingDir }),
   );
-  if (!res.ok) return null;
+  if (!res.ok) {
+    // mitto-msv: any 404 means the bead has been deleted (or never existed);
+    // record it in the shared negative cache so subsequent polls from any
+    // surface (this hook, header status effect, side-panel effect) skip the
+    // network entirely. The verdict outlives cache invalidations by design.
+    if (res.status === 404) markGone(workingDir, issueId);
+    return null;
+  }
   const data = await res.json();
   const issueObj = Array.isArray(data) ? data[0] : data;
   if (!issueObj || issueObj.error) return null;
@@ -43,6 +51,9 @@ async function fetchIssue(workingDir, issueId) {
 // the same key share the same in-flight promise. Once resolved the result is
 // cached; use invalidate() (or a `mitto:beads_changed` broadcast) to refresh.
 function getOrFetch(workingDir, issueId) {
+  // mitto-msv: short-circuit ids already known to 404. Resolve to null without
+  // touching the network so `mitto:beads_changed` re-fires cost nothing.
+  if (isGone(workingDir, issueId)) return Promise.resolve(null);
   const key = cacheKey(workingDir, issueId);
   const existing = cache.get(key);
   if (existing) return existing.promise;
@@ -74,13 +85,18 @@ function invalidateAll() {
  *
  * @param {string|undefined} issueId
  * @param {string|undefined} workingDir
+ * @param {boolean} [archived=false] - when true, short-circuit to null without
+ *   touching the cache or network. Archived sessions are inert; there is no
+ *   reason to poll their linked bead's phase, and stale linkages (a bead
+ *   deleted after the session was archived) would otherwise drive a permanent
+ *   404 storm through every `mitto:beads_changed` broadcast (mitto-msv).
  * @returns {object|null} phase state or null
  */
-export function useLinkedBeadPhase(issueId, workingDir) {
+export function useLinkedBeadPhase(issueId, workingDir, archived = false) {
   const [state, setState] = useState(null);
 
   useEffect(() => {
-    if (!issueId || !workingDir) {
+    if (!issueId || !workingDir || archived) {
       setState(null);
       return;
     }
@@ -118,7 +134,7 @@ export function useLinkedBeadPhase(issueId, workingDir) {
       cancelled = true;
       window.removeEventListener("mitto:beads_changed", onBeadsChanged);
     };
-  }, [issueId, workingDir]);
+  }, [issueId, workingDir, archived]);
 
   return state;
 }

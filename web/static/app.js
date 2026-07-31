@@ -84,6 +84,7 @@ import {
   getSidebarWidth,
   setSidebarWidth,
 } from "./utils/index.js";
+import { isGone, markGone } from "./utils/beadsGoneCache.js";
 
 // Import hooks
 import {
@@ -677,6 +678,13 @@ function App() {
       setHeaderBeadsStatus(null);
       return;
     }
+    // mitto-msv: short-circuit ids known to 404. Keeps beadsRefreshTick bumps
+    // (fired for any mitto:beads_changed broadcast) from re-issuing the same
+    // 404 for a stale linked bead.
+    if (isGone(workingDir, issueId)) {
+      setHeaderBeadsStatus(null);
+      return;
+    }
     let cancelled = false;
     (async () => {
       try {
@@ -684,6 +692,7 @@ function App() {
           endpoints.issues.show(issueId, { working_dir: workingDir }),
         );
         if (!res.ok) {
+          if (res.status === 404) markGone(workingDir, issueId);
           if (!cancelled) setHeaderBeadsStatus(null);
           return;
         }

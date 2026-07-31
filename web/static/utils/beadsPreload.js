@@ -11,6 +11,7 @@
 
 import { authFetch } from "./csrf.js";
 import { endpoints } from "./endpoints.js";
+import { isGone } from "./beadsGoneCache.js";
 
 const TTL_MS = 30_000;
 
@@ -37,6 +38,9 @@ export function preloadBeadsIssues(ids, workingDir) {
 
   for (const id of ids) {
     if (!id) continue;
+    // mitto-msv: skip ids already known to 404 — preload can't warm a missing
+    // bead and would just add to the storm.
+    if (isGone(workingDir, id)) continue;
     const last = bucket.get(id);
     if (last !== undefined && now - last < TTL_MS) continue;
     bucket.set(id, now);

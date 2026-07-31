@@ -16,6 +16,7 @@ import {
 import { apiUrl, errorMessageFromData } from "../utils/api.js";
 import { secureFetch, authFetch } from "../utils/csrf.js";
 import { endpoints } from "../utils/endpoints.js";
+import { isGone, markGone } from "../utils/beadsGoneCache.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
 import { Drawer } from "./Drawer.js";
 import { Tooltip } from "./Tooltip.js";
@@ -354,6 +355,13 @@ export function SessionPanel({
       setBeadsStatus(null);
       return;
     }
+    // mitto-msv: skip ids already known to 404 so re-opens of a stale panel
+    // do not re-issue the same 404. markGone below feeds the shared negative
+    // cache so the other surfaces (header, session-item pill) also skip it.
+    if (isGone(sessionInfo.working_dir, sessionInfo.beads_issue)) {
+      setBeadsStatus(null);
+      return;
+    }
     let cancelled = false;
     (async () => {
       try {
@@ -363,6 +371,9 @@ export function SessionPanel({
           }),
         );
         if (!res.ok) {
+          if (res.status === 404) {
+            markGone(sessionInfo.working_dir, sessionInfo.beads_issue);
+          }
           if (!cancelled) setBeadsStatus(null);
           return;
         }

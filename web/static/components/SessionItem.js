@@ -237,7 +237,15 @@ export function SessionItem({
   // "Feature · implement" pill next to the workspace pill. Fetch is shared
   // module-wide via useLinkedBeadPhase; a workspace-wide beads_changed
   // broadcast refreshes it.
-  const beadPhase = useLinkedBeadPhase(session.beads_issue, workingDir);
+  //
+  // mitto-msv: pass isArchived so the hook short-circuits without polling for
+  // archived sessions — otherwise a stale beads_issue on an archived row would
+  // drive a permanent 404 storm through every beads_changed broadcast.
+  const beadPhase = useLinkedBeadPhase(
+    session.beads_issue,
+    workingDir,
+    isArchived,
+  );
 
   // Build tooltip with session metadata
   const buildTooltip = () => {
