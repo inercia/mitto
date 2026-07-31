@@ -789,14 +789,33 @@ func (p *SharedACPProcess) doStartProcess() (string, error) {
 					"exit_code", exitErr.ExitCode(),
 					"acp_server", p.config.ACPServer,
 				}
+				intentional := p.ctx.Err() != nil
+				var (
+					sig      os.Signal
+					signaled bool
+				)
 				if status, ok := exitErr.Sys().(syscall.WaitStatus); ok {
 					if status.Signaled() {
-						logAttrs = append(logAttrs, "signal", status.Signal().String())
+						signaled = true
+						sig = status.Signal()
+						// Keep the legacy `signal=<Go string>` field for
+						// back-compat with existing log-grep habits.
+						logAttrs = append(logAttrs, "signal", sig.String())
 					}
 				}
+				// mitto-7vq: enrich with canonical death_signal + stderr tail
+				// so operators can tell OOM (SIGKILL) from panic (SIGSEGV) from
+				// upstream disconnect. Intentional shutdowns get death_signal
+				// for symmetry but skip the stderr tail (not diagnostic).
+				var tailCollector *procstart.StderrCollector
+				if !intentional {
+					tailCollector = stderrCollector
+				}
+				logAttrs = append(logAttrs,
+					procstart.AbnormalExitAttrs(sig, signaled, tailCollector, procstart.DefaultStderrTailBytes)...)
 
 				// Log at DEBUG if we intentionally killed it, WARN if it crashed on its own
-				if p.ctx.Err() != nil {
+				if intentional {
 					p.logger.Debug("ACP process exited (intentional shutdown)", logAttrs...)
 				} else {
 					p.logger.Warn("ACP process exited abnormally", logAttrs...)
