@@ -1,9 +1,12 @@
 package web
 
 import (
+	"bytes"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -869,6 +872,155 @@ func TestFileServer_PUT_InvalidWorkspace(t *testing.T) {
 
 	if w.Code != http.StatusForbidden {
 		t.Errorf("Expected status 403, got %d. Body: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestFileServer_CrossWorkspacePath verifies that an absolute path targeting
+// a file inside a *different* registered workspace is answered with a 409
+// JSON hint (so the viewer can offer to re-open there) instead of a bare 403
+// plus a `path_traversal_attempt` security WARN. It also verifies that the
+// original path_traversal_attempt behaviour is preserved for absolute paths
+// that do not live inside any known workspace, and that a workspace nested
+// under another is picked by longest-match.
+//
+// Regression coverage for mitto-c4b.
+func TestFileServer_CrossWorkspacePath(t *testing.T) {
+	// Workspace A ("on-call")
+	wsA := t.TempDir()
+	// Workspace B ("ops-skills") — sibling, distinct root
+	wsB := t.TempDir()
+	// A file inside B that A does not own
+	bFile := filepath.Join(wsB, "SKILL.md")
+	if err := os.WriteFile(bFile, []byte("skill contents"), 0644); err != nil {
+		t.Fatalf("Failed to create file in B: %v", err)
+	}
+
+	// Nested-case: workspace C lives inside A. A file inside C must resolve
+	// to C, not A, thanks to longest-match.
+	wsC := filepath.Join(wsA, "nested-project")
+	if err := os.MkdirAll(wsC, 0755); err != nil {
+		t.Fatalf("Failed to create nested workspace dir: %v", err)
+	}
+	cFile := filepath.Join(wsC, "readme.md")
+	if err := os.WriteFile(cFile, []byte("nested readme"), 0644); err != nil {
+		t.Fatalf("Failed to create file in C: %v", err)
+	}
+
+	const (
+		uuidA = "cross-ws-a-uuid"
+		uuidB = "cross-ws-b-uuid"
+		uuidC = "cross-ws-c-uuid"
+		nameB = "ops-skills"
+		nameC = "nested-project"
+	)
+	sm := conversation.NewSessionManagerWithOptions(conversation.SessionManagerOptions{
+		Workspaces: []config.WorkspaceSettings{
+			{UUID: uuidA, WorkingDir: wsA, ACPServer: "test", Name: "on-call"},
+			{UUID: uuidB, WorkingDir: wsB, ACPServer: "test", Name: nameB},
+			{UUID: uuidC, WorkingDir: wsC, ACPServer: "test", Name: nameC},
+		},
+	})
+
+	tests := []struct {
+		name           string
+		wsUUID         string
+		path           string
+		expectedStatus int
+		expectOwnerB   bool     // 409 body must name workspace B (uuid + name)
+		expectOwnerC   bool     // 409 body must name workspace C (nested longest-match)
+		wantLogEvents  []string // security-event keys expected in logger output
+		bannedLog      string   // security-event key that MUST NOT appear
+	}{
+		{
+			name:           "cross-workspace absolute path is offered as 409",
+			wsUUID:         uuidA,
+			path:           bFile,
+			expectedStatus: http.StatusConflict,
+			expectOwnerB:   true,
+			wantLogEvents:  []string{"cross_workspace_path_attempt"},
+			bannedLog:      "path_traversal_attempt",
+		},
+		{
+			name:           "absolute path matching no workspace still 403 + path_traversal_attempt",
+			wsUUID:         uuidA,
+			path:           "/etc/passwd",
+			expectedStatus: http.StatusForbidden,
+			wantLogEvents:  []string{"path_traversal_attempt"},
+		},
+		{
+			name:           "nested workspace wins longest-match",
+			wsUUID:         uuidA,
+			path:           cFile,
+			expectedStatus: http.StatusConflict,
+			expectOwnerC:   true,
+			wantLogEvents:  []string{"cross_workspace_path_attempt"},
+			bannedLog:      "path_traversal_attempt",
+		},
+		{
+			name:           "relative traversal still 403 + path_traversal_attempt",
+			wsUUID:         uuidA,
+			path:           "../etc/passwd",
+			expectedStatus: http.StatusForbidden,
+			wantLogEvents:  []string{"path_traversal_attempt"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Capture logger output so we can assert on both presence and
+			// absence of specific security events.
+			var buf bytes.Buffer
+			logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+			fs := NewFileServer(sm, logger)
+
+			req := httptest.NewRequest("GET",
+				"/api/files?ws="+tt.wsUUID+"&path="+url.QueryEscape(tt.path), nil)
+			w := httptest.NewRecorder()
+			fs.ServeHTTP(w, req)
+
+			if w.Code != tt.expectedStatus {
+				t.Fatalf("status = %d, want %d. Body: %s", w.Code, tt.expectedStatus, w.Body.String())
+			}
+
+			if tt.expectedStatus == http.StatusConflict {
+				var body map[string]string
+				if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+					t.Fatalf("409 body is not JSON: %v (raw=%q)", err, w.Body.String())
+				}
+				if body["error"] != "path_in_other_workspace" {
+					t.Errorf(`body["error"] = %q, want "path_in_other_workspace"`, body["error"])
+				}
+				if body["path"] != tt.path {
+					t.Errorf(`body["path"] = %q, want %q`, body["path"], tt.path)
+				}
+				if tt.expectOwnerB {
+					if body["workspace_uuid"] != uuidB {
+						t.Errorf(`body["workspace_uuid"] = %q, want %q`, body["workspace_uuid"], uuidB)
+					}
+					if body["workspace_name"] != nameB {
+						t.Errorf(`body["workspace_name"] = %q, want %q`, body["workspace_name"], nameB)
+					}
+				}
+				if tt.expectOwnerC {
+					if body["workspace_uuid"] != uuidC {
+						t.Errorf(`body["workspace_uuid"] = %q, want %q (longest-match failed)`, body["workspace_uuid"], uuidC)
+					}
+					if body["workspace_name"] != nameC {
+						t.Errorf(`body["workspace_name"] = %q, want %q`, body["workspace_name"], nameC)
+					}
+				}
+			}
+
+			logOut := buf.String()
+			for _, ev := range tt.wantLogEvents {
+				if !strings.Contains(logOut, `"event":"`+ev+`"`) {
+					t.Errorf("expected log event %q not found. Log:\n%s", ev, logOut)
+				}
+			}
+			if tt.bannedLog != "" && strings.Contains(logOut, `"event":"`+tt.bannedLog+`"`) {
+				t.Errorf("unexpected log event %q leaked into security stream. Log:\n%s", tt.bannedLog, logOut)
+			}
+		})
 	}
 }
 
