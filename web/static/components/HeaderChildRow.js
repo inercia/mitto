@@ -44,7 +44,14 @@ const PHASE_ICON_COMPONENTS = {
 };
 
 export function HeaderChildRow({ child, onSelect }) {
-  const beadPhase = useLinkedBeadPhase(child.beads_issue, child.working_dir);
+  // mitto-msv: pass archived so the hook short-circuits without polling for
+  // archived children — otherwise a stale beads_issue on an archived child
+  // would drive a permanent 404 storm through every beads_changed broadcast.
+  const beadPhase = useLinkedBeadPhase(
+    child.beads_issue,
+    child.working_dir,
+    !!child.archived,
+  );
 
   const isStreaming = !child.archived && !!child.isStreaming;
 
