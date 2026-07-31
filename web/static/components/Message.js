@@ -92,6 +92,49 @@ function formatMessageTime(timestamp) {
 }
 
 /**
+ * MessageEnter — wraps a message with the `.message-enter` fadeIn animation,
+ * then strips the class from the DOM element after the animation ends. Retiring
+ * the class drops the finished-but-not-retired animation from the compositor
+ * so the element no longer occupies its own GPU layer once faded in (mitto-e5k).
+ *
+ * The animation itself remains declared in styles.css so the initial paint
+ * still fades in; only the post-fadeIn residency is retired.
+ *
+ * The animationend listener is filtered on `animationName === "fadeIn"` so a
+ * future @keyframes on the same element cannot mis-trigger cleanup. A 250 ms
+ * setTimeout safety net also strips the class in case animationend never fires
+ * (e.g. an engine that collapses the animation to 0 s without firing the
+ * event); it is idempotent.
+ */
+function MessageEnter(props) {
+  const className = props.class || props.className || "";
+  const ref = useRef(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return undefined;
+    let done = false;
+    const strip = () => {
+      if (done) return;
+      done = true;
+      el.classList.remove("message-enter");
+    };
+    const onEnd = (e) => {
+      if (e.animationName === "fadeIn") strip();
+    };
+    el.addEventListener("animationend", onEnd);
+    const timeoutId = setTimeout(strip, 250);
+    return () => {
+      el.removeEventListener("animationend", onEnd);
+      clearTimeout(timeoutId);
+    };
+  }, []);
+  const finalClass = className
+    ? `message-enter ${className}`
+    : "message-enter";
+  return html`<div ref=${ref} class=${finalClass}>${props.children}</div>`;
+}
+
+/**
  * NamedPromptPill component - renders a named prompt as a distinctive pill/badge.
  * Displayed right-aligned (like user messages) with an icon and the prompt name.
  * When the prompt was sent with arguments (argumentCount > 0), a small numeric
@@ -118,7 +161,7 @@ function NamedPromptPill({ message }) {
     argTip = `${message.argumentCount} argument(s)`;
   }
   return html`
-    <div class="message-enter flex justify-end items-center gap-2 mb-3">
+    <${MessageEnter} class="flex justify-end items-center gap-2 mb-3">
       ${timeStr && html`<span class="message-timestamp">${timeStr}</span>`}
       <div
         class="badge badge-primary badge-lg gap-2"
@@ -147,7 +190,7 @@ function NamedPromptPill({ message }) {
           >
         <//>`}
       </div>
-    </div>
+    <//>
   `;
 }
 
@@ -192,7 +235,7 @@ function ThoughtBubble({ message, isLast, isStreaming }) {
     : "max-w-[85%] md:max-w-[75%] px-4 py-2 rounded-2xl rounded-bl-sm bg-mitto-surface-2 text-mitto-text-muted";
 
   return html`
-    <div class="message-enter flex justify-start mb-3">
+    <${MessageEnter} class="flex justify-start mb-3">
       <div
         class="${bubbleClass} ${isCollapsible
           ? "thought-bubble-collapsible"
@@ -224,7 +267,7 @@ function ThoughtBubble({ message, isLast, isStreaming }) {
           </div>
         </div>
       </div>
-    </div>
+    <//>
   `;
 }
 
@@ -247,13 +290,13 @@ function MessageImpl({ message, isLast, isStreaming, onRetry }) {
   // System messages
   if (isSystem) {
     return html`
-      <div class="message-enter flex justify-center mb-3">
+      <${MessageEnter} class="flex justify-center mb-3">
         <div
           class="text-xs text-mitto-text-muted bg-mitto-surface-2 px-3 py-1 rounded-full"
         >
           ${message.kind ? sessionChangeText(message) : message.text}
         </div>
-      </div>
+      <//>
     `;
   }
 
@@ -365,7 +408,7 @@ function MessageImpl({ message, isLast, isStreaming, onRetry }) {
     };
 
     return html`
-      <div class="message-enter flex justify-center mb-1">
+      <${MessageEnter} class="flex justify-center mb-1">
         <div
           class="text-sm text-mitto-text-muted flex items-center gap-2 bg-mitto-surface-2 px-3 py-1.5 rounded-lg"
         >
@@ -373,7 +416,7 @@ function MessageImpl({ message, isLast, isStreaming, onRetry }) {
           <span class="font-medium">${renderTitle()}</span>
           ${renderStatus()}
         </div>
-      </div>
+      <//>
     `;
   }
 
@@ -394,7 +437,7 @@ function MessageImpl({ message, isLast, isStreaming, onRetry }) {
       [message.text],
     );
     return html`
-      <div class="message-enter flex justify-start mb-3">
+      <${MessageEnter} class="flex justify-start mb-3">
         <div role="alert" class="alert alert-error max-w-[85%] md:max-w-[75%]">
           <span>❌</span>
           <span dangerouslySetInnerHTML=${{ __html: linkedErrorText }} />
@@ -425,7 +468,7 @@ function MessageImpl({ message, isLast, isStreaming, onRetry }) {
             </button>
           <//>`}
         </div>
-      </div>
+      <//>
     `;
   }
 
@@ -507,7 +550,7 @@ function MessageImpl({ message, isLast, isStreaming, onRetry }) {
 
     const userTimeStr = formatMessageTime(message.timestamp);
     return html`
-      <div class="message-enter flex justify-end mb-3 group">
+      <${MessageEnter} class="flex justify-end mb-3 group">
         <div
           class="max-w-[95%] md:max-w-[75%] px-4 py-2 rounded-2xl bg-mitto-user text-mitto-user-text border border-mitto-user-border rounded-br-sm"
         >
@@ -562,7 +605,7 @@ function MessageImpl({ message, isLast, isStreaming, onRetry }) {
             html`<div class="message-timestamp">${userTimeStr}</div>`}
           </div>
         </div>
-      </div>
+      <//>
     `;
   }
 
@@ -649,7 +692,7 @@ function MessageImpl({ message, isLast, isStreaming, onRetry }) {
       ? formatMessageTime(message.timestamp)
       : null;
     return html`
-      <div class="message-enter flex justify-start mb-3 group">
+      <${MessageEnter} class="flex justify-start mb-3 group">
         <div
           class="max-w-[95%] md:max-w-[75%] px-4 py-3 rounded-2xl bg-mitto-agent text-mitto-text rounded-bl-sm"
         >
@@ -684,7 +727,7 @@ function MessageImpl({ message, isLast, isStreaming, onRetry }) {
             html`<div class="message-timestamp ml-auto">${agentTimeStr}</div>`}
           </div>
         </div>
-      </div>
+      <//>
     `;
   }
 
