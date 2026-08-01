@@ -32,6 +32,8 @@
 #         - no `actions/setup-node@` step (mitto-3vb: bunx replaces npx)
 #         - no `npx playwright` invocation (mitto-3vb: bunx everywhere)
 #   T8  README.md documents the Bun contributor requirement.
+#   T9  tests/smoke/run.sh (CI smoke-tests entry point) contains no `npx`
+#       (mitto-3vb: CI runner has no Node.js; Playwright launches via bunx).
 #
 # Exits 0 on success (green ✅), 1 on any failure (red ❌).
 # Runs cross-platform; only reads files, does not invoke bun/npm.
@@ -245,6 +247,25 @@ else
         fail "T7g: $WF still uses 'npx playwright': $wf_npx_playwright"
     else
         pass "T7g: $WF has no 'npx playwright' invocation (mitto-3vb)"
+    fi
+fi
+
+# -----------------------------------------------------------------------------
+# T9 — tests/smoke/run.sh (CI entry point via `make smoke-test`) must not
+# reintroduce `npx playwright`. The workflow job runs `make smoke-test`, which
+# execs this script; the CI runner has no Node.js toolchain (mitto-3vb removed
+# `setup-node`), so any `npx` here would fail the smoke-tests job outright.
+# Strip `#` comments before probing so reminder prose doesn't false-match.
+# -----------------------------------------------------------------------------
+SMOKE_RUN=tests/smoke/run.sh
+if [ ! -f "$SMOKE_RUN" ]; then
+    fail "T9: $SMOKE_RUN missing"
+else
+    smoke_npx_hits="$(sed 's/#.*$//' "$SMOKE_RUN" | grep -nE '\bnpx\b' || true)"
+    if [ -n "$smoke_npx_hits" ]; then
+        fail "T9: $SMOKE_RUN still uses 'npx' (mitto-3vb: bunx only): $smoke_npx_hits"
+    else
+        pass "T9: $SMOKE_RUN has no 'npx' invocation (mitto-3vb)"
     fi
 fi
 
