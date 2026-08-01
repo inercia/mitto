@@ -2215,7 +2215,40 @@ function App() {
           throw new Error(`HTTP ${restoreRes.status}`);
         }
 
-        // Nothing saved — create a fresh draft config.
+        // Nothing saved — try to pre-fill the draft from the most recent
+        // named prompt's loop: frontmatter block (mitto-qff). On any non-200
+        // fall through to today's blank-draft PUT below.
+        try {
+          const suggestRes = await secureFetch(
+            endpoints.sessions.loopSuggestFromRecent(sessionId),
+            { method: "GET" },
+          );
+          if (suggestRes.ok) {
+            const suggestion = await suggestRes.json();
+            const putRes = await secureFetch(
+              endpoints.sessions.loop(sessionId),
+              {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ ...suggestion, enabled: false }),
+              },
+            );
+            if (putRes.ok) {
+              focusSession(sessionId);
+              showToast({
+                style: "success",
+                title: "Loop pre-filled from your last prompt",
+                message: "Review and enable scheduling.",
+                duration: 6000,
+              });
+              return;
+            }
+          }
+        } catch (_) {
+          // Fall through to blank-draft PUT on any suggest/PUT failure.
+        }
+
+        // Nothing saved and no suggestion — create a fresh blank draft.
         const res = await secureFetch(endpoints.sessions.loop(sessionId), {
           method: "PUT",
           headers: { "Content-Type": "application/json" },

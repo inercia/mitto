@@ -81,6 +81,8 @@ export const endpoints = {
     loop: (id) => apiUrl(`/api/sessions/${enc(id)}/loop`),
     loopRunNow: (id) => apiUrl(`/api/sessions/${enc(id)}/loop/run-now`),
     loopRestore: (id) => apiUrl(`/api/sessions/${enc(id)}/loop/restore`),
+    loopSuggestFromRecent: (id) =>
+      apiUrl(`/api/sessions/${enc(id)}/loop/suggest-from-recent`),
     loopAcknowledgeStoppedReason: (id) =>
       apiUrl(`/api/sessions/${enc(id)}/loop/acknowledge-stopped-reason`),
     uiPromptAcknowledge: (id) =>

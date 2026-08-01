@@ -146,6 +146,14 @@ func (h *Handlers) HandleSessionLoop(w http.ResponseWriter, r *http.Request, ses
 		return
 	}
 
+	// Handle suggest-from-recent sub-path — read-only lookup that returns a
+	// LoopPrompt draft pre-filled from the most recent named prompt's loop:
+	// frontmatter block (mitto-qff). Never writes session state.
+	if subPath == "suggest-from-recent" {
+		h.handleSuggestLoopFromRecent(w, r, sessionID)
+		return
+	}
+
 	switch r.Method {
 	case http.MethodGet:
 		h.handleGetLoop(w, loopStore)
