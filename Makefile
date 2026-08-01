@@ -1,4 +1,4 @@
-.PHONY: build install test test-go test-js check-model-tags check-stderr-patterns check-prompts test-integration test-integration-go test-integration-cli test-integration-api test-integration-client test-integration-runner test-runner-smoke test-runner-smoke-assert test-ui test-ui-headed test-ui-debug test-ui-report test-all test-ci test-setup test-clean clean run fmt fmt-check fmt-docs fmt-docs-check lint lint-go lint-frontend deps-go deps-js deps tailwind vendor-codemirror build-mac-app clean-mac-app test-webviewlog build-mock-acp ci install-hooks homebrew-generate homebrew-test homebrew-test-style homebrew-test-install homebrew-test-cask homebrew-tap-setup homebrew-clean smoke-build smoke-test-cli smoke-test smoke-clean
+.PHONY: build install test test-go test-js check-model-tags check-stderr-patterns check-prompts test-integration test-integration-go test-integration-cli test-integration-api test-integration-client test-integration-runner test-runner-smoke test-runner-smoke-assert test-bun-tooling test-ui test-ui-headed test-ui-debug test-ui-report test-all test-ci test-setup test-clean clean run fmt fmt-check fmt-docs fmt-docs-check lint lint-go lint-frontend deps-go deps-js deps tailwind vendor-codemirror build-mac-app clean-mac-app test-webviewlog build-mock-acp ci install-hooks homebrew-generate homebrew-test homebrew-test-style homebrew-test-install homebrew-test-cask homebrew-tap-setup homebrew-clean smoke-build smoke-test-cli smoke-test smoke-clean
 
 # Binary name
 BINARY_NAME=mitto
@@ -129,6 +129,14 @@ test-runner-smoke: build build-mock-acp
 test-runner-smoke-assert:
 	@echo "Running restricted-runner smoke-assert unit test..."
 	./tests/manual/test-restricted-runner-smoke-assert.sh
+
+# Regression guard for mitto-txpp.4 — pins the "Bun is the package manager"
+# invariants (bun.lock present, package-lock.json gone, no npm ci/install,
+# no npx outside the Playwright carve-out, workflow uses setup-bun and
+# hashes bun.lock, README documents Bun). Cross-platform, no build deps.
+test-bun-tooling:
+	@echo "Running Bun tooling smoke test..."
+	./tests/manual/bun-tooling-smoke.sh
 
 # Run all integration tests (Go-based, uses mock ACP)
 test-integration: test-integration-go
