@@ -143,15 +143,16 @@ type fakeHandshakeDeps struct {
 	handshakeMu sync.Mutex
 
 	// recorders
-	persistedACPID  int
-	clearedACPID    int
-	notifiedEvents  []string
-	appliedModes    []*acp.SessionModeState
-	appliedModels   []*SessionModelState
-	startMcpCalls   int
-	stopMcpCalls    int
-	processDonesSet int
-	niledCreation   int
+	persistedACPID   int
+	clearedACPID     int
+	notifiedEvents   []string
+	appliedModes     []*acp.SessionModeState
+	appliedModels    []*SessionModelState
+	synthesizedCalls int // mitto-886: hsApplySynthesizedModelsIfEmpty invocations
+	startMcpCalls    int
+	stopMcpCalls     int
+	processDonesSet  int
+	niledCreation    int
 }
 
 func newFakeHandshakeDeps() *fakeHandshakeDeps {
@@ -247,6 +248,11 @@ func (f *fakeHandshakeDeps) hsApplyAgentModels(m *SessionModelState) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.appliedModels = append(f.appliedModels, m)
+}
+func (f *fakeHandshakeDeps) hsApplySynthesizedModelsIfEmpty() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.synthesizedCalls++
 }
 func (f *fakeHandshakeDeps) hsApplyAgentModelConfigId(id acp.SessionConfigId) {
 	f.mu.Lock()

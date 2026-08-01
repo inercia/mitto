@@ -992,14 +992,16 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 				bs.acpID = acpSessionID
 				bs.resumeMethod = "resume"
 				bs.setSessionModes(resumeResp.Modes)
-				bs.logSessionConfigOptions("resume", resumeResp.ConfigOptions)
-				models, cfgId := ModelStateFromConfigOptions(resumeResp.ConfigOptions)
-				if models == nil {
-					// Fall back to the SDK-decoded top-level `models` field
-					// (Auggie ships its catalog there rather than in
-					// configOptions[]; mitto-i8n).
-					models = ModelStateFromACP(resumeResp.Models)
+				models, cfgId, modelSource := DeriveAgentModels(
+					resumeResp.ConfigOptions,
+					resumeResp.Models,
+					bs.mittoConfig.EffectiveModelProfiles(),
+				)
+				fallbackTag := ""
+				if modelSource != "" && modelSource != ModelCatalogSourceConfigOptions {
+					fallbackTag = modelSource
 				}
+				bs.logSessionConfigOptions("resume", resumeResp.ConfigOptions, fallbackTag)
 				bs.setAgentModels(models)
 				if cfgId != "" {
 					bs.modelConfigId = cfgId
@@ -1048,11 +1050,16 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 				bs.resumeMethod = "load"
 				// Store available modes from session load
 				bs.setSessionModes(loadResp.Modes)
-				bs.logSessionConfigOptions("load", loadResp.ConfigOptions)
-				models, cfgId := ModelStateFromConfigOptions(loadResp.ConfigOptions)
-				if models == nil {
-					models = ModelStateFromACP(loadResp.Models)
+				models, cfgId, modelSource := DeriveAgentModels(
+					loadResp.ConfigOptions,
+					loadResp.Models,
+					bs.mittoConfig.EffectiveModelProfiles(),
+				)
+				fallbackTag := ""
+				if modelSource != "" && modelSource != ModelCatalogSourceConfigOptions {
+					fallbackTag = modelSource
 				}
+				bs.logSessionConfigOptions("load", loadResp.ConfigOptions, fallbackTag)
 				bs.setAgentModels(models)
 				if cfgId != "" {
 					bs.modelConfigId = cfgId
@@ -1116,11 +1123,16 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 
 	// Store available modes from session setup
 	bs.setSessionModes(sessResp.Modes)
-	bs.logSessionConfigOptions("new", sessResp.ConfigOptions)
-	models, cfgId := ModelStateFromConfigOptions(sessResp.ConfigOptions)
-	if models == nil {
-		models = ModelStateFromACP(sessResp.Models)
+	models, cfgId, modelSource := DeriveAgentModels(
+		sessResp.ConfigOptions,
+		sessResp.Models,
+		bs.mittoConfig.EffectiveModelProfiles(),
+	)
+	fallbackTag := ""
+	if modelSource != "" && modelSource != ModelCatalogSourceConfigOptions {
+		fallbackTag = modelSource
 	}
+	bs.logSessionConfigOptions("new", sessResp.ConfigOptions, fallbackTag)
 	bs.setAgentModels(models)
 	if cfgId != "" {
 		bs.modelConfigId = cfgId

@@ -166,6 +166,9 @@ func (bs *BackgroundSession) hsApplySessionModes(modes *acp.SessionModeState) {
 func (bs *BackgroundSession) hsApplyAgentModels(models *SessionModelState) {
 	bs.setAgentModels(models)
 }
+func (bs *BackgroundSession) hsApplySynthesizedModelsIfEmpty() {
+	bs.applySynthesizedModelsIfEmpty()
+}
 func (bs *BackgroundSession) hsApplyAgentModelConfigId(id acp.SessionConfigId) {
 	bs.modelConfigId = id
 }
@@ -240,9 +243,46 @@ func (bs *BackgroundSession) logSessionModes(modes *acp.SessionModeState) {
 // logSessionConfigOptions is a thin BackgroundSession wrapper around
 // LogSessionConfigOptions (see model_state.go). The shared-process path in
 // internal/acpproc calls the free function directly since it does not have a
-// *BackgroundSession in scope.
-func (bs *BackgroundSession) logSessionConfigOptions(source string, opts []acp.SessionConfigOption) {
-	LogSessionConfigOptions(bs.logger, source, opts)
+// *BackgroundSession in scope. sourceFallback names the winning branch of the
+// model-catalog decode chain when a non-primary branch supplied the catalog
+// (see DeriveAgentModels); pass "" to preserve the pre-mitto-886 log format.
+func (bs *BackgroundSession) logSessionConfigOptions(source string, opts []acp.SessionConfigOption, sourceFallback string) {
+	LogSessionConfigOptions(bs.logger, source, opts, sourceFallback)
+}
+
+// applySynthesizedModelsIfEmpty is the shared-process branch of the mitto-886
+// local-profile fallback. The shared ACP process (internal/acpproc) has no
+// *config.Config in scope, so it cannot itself synthesize; instead it stashes
+// whatever the agent advertised (possibly nil) in handle.Models, applies it
+// via hsApplyAgentModels, then invokes this hook. When bs.agentModels ended up
+// nil AND the local Mitto config supplies profiles, we synthesize a catalog
+// from EffectiveModelProfiles() and re-apply — populating bs.configOptions[]
+// with a Category=model entry via cbReplaceModelConfigOption so the WebSocket
+// `connected` message surfaces the chip.
+//
+// No-op when the agent already advertised a real catalog (bs.agentModels
+// non-nil) or when no local profiles are configured. The direct-ACP path in
+// bgsession_acp_process.go does not use this hook — it calls DeriveAgentModels
+// inline since the config is already in scope there.
+func (bs *BackgroundSession) applySynthesizedModelsIfEmpty() {
+	if bs.agentModels != nil {
+		return
+	}
+	if bs.mittoConfig == nil {
+		return
+	}
+	profiles := bs.mittoConfig.EffectiveModelProfiles()
+	synthesized := SynthesizeModelStateFromProfiles(profiles)
+	if synthesized == nil {
+		return
+	}
+	bs.setAgentModels(synthesized)
+	if bs.logger != nil {
+		bs.logger.Info("ACP session model fallback",
+			"session_id", bs.persistedID,
+			"source", ModelCatalogSourceLocalProfileFallback,
+			"available_models", len(synthesized.AvailableModels))
+	}
 }
 
 // logAgentInfo logs the agent information and capabilities from the Initialize response at DEBUG level.

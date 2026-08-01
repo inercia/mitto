@@ -18,7 +18,15 @@ import (
 // at prompt time. Only non-secret structural metadata is logged (id/category
 // /type + Select current value and option counts) — never a user-supplied
 // _meta payload. No-op when logger is nil.
-func LogSessionConfigOptions(logger *slog.Logger, source string, opts []acp.SessionConfigOption) {
+//
+// sourceFallback names the winning branch of the model-catalog decode chain
+// (see DeriveAgentModels): "config_options", "acp_models",
+// "local_profile_fallback", or "" when no model catalog is present at all.
+// It is emitted as the "source_fallback" field only when non-empty so callers
+// that don't participate in the fallback chain (or agents that provide a real
+// catalog via configOptions) get byte-identical output to the pre-mitto-886
+// log line.
+func LogSessionConfigOptions(logger *slog.Logger, source string, opts []acp.SessionConfigOption, sourceFallback string) {
 	if logger == nil {
 		return
 	}
@@ -58,11 +66,16 @@ func LogSessionConfigOptions(logger *slog.Logger, source string, opts []acp.Sess
 			summaries = append(summaries, "?[unknown-variant]")
 		}
 	}
-	logger.Info("ACP session config options",
+	fields := []any{
 		"source", source,
 		"config_option_count", len(opts),
 		"has_model_option", hasModel,
-		"config_options", summaries)
+		"config_options", summaries,
+	}
+	if sourceFallback != "" {
+		fields = append(fields, "source_fallback", sourceFallback)
+	}
+	logger.Info("ACP session config options", fields...)
 }
 
 // SessionModelState is a Mitto-owned view of an agent's available models and the
@@ -186,4 +199,59 @@ func SynthesizeModelStateFromProfiles(profiles []config.ModelProfile) *SessionMo
 		})
 	}
 	return state
+}
+
+// Model-catalog decode source tags returned by DeriveAgentModels.
+// Also written into the "source_fallback" field of LogSessionConfigOptions
+// when the winning branch was not the primary ConfigOptions path.
+const (
+	ModelCatalogSourceConfigOptions        = "config_options"
+	ModelCatalogSourceACPModels            = "acp_models"
+	ModelCatalogSourceLocalProfileFallback = "local_profile_fallback"
+)
+
+// DeriveAgentModels centralizes the three-tier model-catalog decode chain used
+// for every ACP session-setup response (session/new, session/load,
+// session/resume):
+//
+//  1. ConfigOptions[category="model"] via ModelStateFromConfigOptions — the
+//     spec-aligned path, always preferred when the agent advertises it.
+//  2. Top-level `resp.Models` via ModelStateFromACP — out-of-spec but widely
+//     used (e.g. Auggie ships its catalog here; mitto-i8n).
+//  3. Local config profile synthesis via SynthesizeModelStateFromProfiles —
+//     Mitto-side defensive fallback (mitto-886) so any agent that legitimately
+//     omits BOTH sources still gets a usable UI selector populated from
+//     EffectiveModelProfiles() rather than an empty chip.
+//
+// Returns (models, cfgId, source):
+//   - models is nil only when all three branches yield nil (agent silent AND
+//     no local profiles configured).
+//   - cfgId is the agent-declared SessionConfigId from ConfigOptions when
+//     branch 1 wins; empty for branches 2 and 3 (callers should NOT overwrite
+//     bs.modelConfigId with "" so the conventional ModelConfigId default from
+//     model_state.go remains in force).
+//   - source names the winning branch (see the ModelCatalogSource* constants
+//     above) or "" when no catalog was derived. Callers forward this to
+//     LogSessionConfigOptions as sourceFallback so the "source_fallback" log
+//     field appears iff a non-primary branch supplied the catalog.
+//
+// The synthesized fallback is a *read-only* UI aid: SynthesizeModelStateFromProfiles
+// leaves CurrentModelId empty and downstream cmSetSessionModel is a no-op on
+// agents that don't accept set_model — no persistent baseline is seeded with a
+// fake id. See the SynthesizeModelStateFromProfiles doc comment.
+func DeriveAgentModels(
+	opts []acp.SessionConfigOption,
+	respModels *acp.SessionModelState,
+	profiles []config.ModelProfile,
+) (*SessionModelState, acp.SessionConfigId, string) {
+	if models, cfgId := ModelStateFromConfigOptions(opts); models != nil {
+		return models, cfgId, ModelCatalogSourceConfigOptions
+	}
+	if models := ModelStateFromACP(respModels); models != nil {
+		return models, "", ModelCatalogSourceACPModels
+	}
+	if models := SynthesizeModelStateFromProfiles(profiles); models != nil {
+		return models, "", ModelCatalogSourceLocalProfileFallback
+	}
+	return nil, "", ""
 }

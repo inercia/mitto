@@ -114,6 +114,14 @@ type handshakeDeps interface {
 	hsApplyAgentModels(models *SessionModelState)
 	hsApplyAgentModelConfigId(id acp.SessionConfigId)
 	hsLogAgentModels(models *SessionModelState)
+	// hsApplySynthesizedModelsIfEmpty is the shared-process branch of the
+	// mitto-886 local-profile fallback. Invoked once immediately after
+	// hsApplyAgentModels: if the agent supplied no model catalog (or the SDK
+	// dropped it) AND local config has model profiles, this synthesizes one
+	// from EffectiveModelProfiles() so bs.ConfigOptions() surfaces a
+	// Category=model entry in the WebSocket `connected` message. No-op when
+	// the agent already advertised a real catalog.
+	hsApplySynthesizedModelsIfEmpty()
 
 	// Store persistence (no-op when no store)
 	hsPersistACPSessionID()
@@ -275,6 +283,10 @@ func (c sharedSessionHandshaker) applyPendingSharedModes(d handshakeDeps) {
 	if models != nil {
 		d.hsApplyAgentModels(models)
 	}
+	// mitto-886: local-profile fallback. No-op when the agent already
+	// advertised a real catalog (bs.agentModels non-nil) or when local config
+	// has no model profiles.
+	d.hsApplySynthesizedModelsIfEmpty()
 	if modelCfgId != "" {
 		d.hsApplyAgentModelConfigId(modelCfgId)
 	}
@@ -561,6 +573,9 @@ func (c sharedSessionHandshaker) resumeSharedACPSession(d handshakeDeps, sharedP
 	d.hsSetAgentSupportsImages(caps.PromptCapabilities.Image)
 	d.hsApplySessionModes(handle.Modes)
 	d.hsApplyAgentModels(handle.Models)
+	// mitto-886: local-profile fallback for the resume path when the agent
+	// omits a catalog entirely. No-op when handle.Models was non-nil.
+	d.hsApplySynthesizedModelsIfEmpty()
 	if handle.ModelConfigId != "" {
 		d.hsApplyAgentModelConfigId(handle.ModelConfigId)
 	}

@@ -1735,7 +1735,12 @@ func (p *SharedACPProcess) NewSession(ctx context.Context, cwd string, mcpServer
 			p.markMCPInitDone()
 			p.mcpInitInProgress.Store(false) // close the MCP-init window (mitto-29q)
 			traceSessionResponse(p.logger, "new", sessResp)
-			conversation.LogSessionConfigOptions(p.logger, "new", sessResp.ConfigOptions)
+			// mitto-886: local-profile fallback (branch 3) is applied later on the
+			// BackgroundSession side via applySynthesizedModelsIfEmpty (config not in
+			// scope here). Pass "" so this log line remains byte-identical to the
+			// pre-mitto-886 output; the fallback, when it happens, logs its own
+			// "ACP session model fallback" line.
+			conversation.LogSessionConfigOptions(p.logger, "new", sessResp.ConfigOptions, "")
 			models, modelCfgId := conversation.ModelStateFromConfigOptions(sessResp.ConfigOptions)
 			if models == nil {
 				// Fall back to the SDK-decoded top-level `models` field (Auggie
@@ -1981,7 +1986,7 @@ func (p *SharedACPProcess) LoadSession(ctx context.Context, acpSessionID, cwd st
 	p.markMCPInitDone()
 	p.mcpInitInProgress.Store(false) // close the MCP-init window (mitto-29q)
 	traceSessionResponse(p.logger, "load", loadResp)
-	conversation.LogSessionConfigOptions(p.logger, "load", loadResp.ConfigOptions)
+	conversation.LogSessionConfigOptions(p.logger, "load", loadResp.ConfigOptions, "")
 	loadModels, loadModelCfgId := conversation.ModelStateFromConfigOptions(loadResp.ConfigOptions)
 	if loadModels == nil {
 		loadModels = conversation.ModelStateFromACP(loadResp.Models)
@@ -2063,7 +2068,7 @@ func (p *SharedACPProcess) ResumeSession(ctx context.Context, acpSessionID, cwd 
 	}
 
 	traceSessionResponse(p.logger, "resume", resumeResp)
-	conversation.LogSessionConfigOptions(p.logger, "resume", resumeResp.ConfigOptions)
+	conversation.LogSessionConfigOptions(p.logger, "resume", resumeResp.ConfigOptions, "")
 	resumeModels, resumeModelCfgId := conversation.ModelStateFromConfigOptions(resumeResp.ConfigOptions)
 	if resumeModels == nil {
 		resumeModels = conversation.ModelStateFromACP(resumeResp.Models)
