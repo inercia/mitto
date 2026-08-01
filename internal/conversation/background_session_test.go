@@ -5375,3 +5375,107 @@ func TestBackgroundSession_CumulativeUsage(t *testing.T) {
 		t.Errorf("total = %d, want 43", total)
 	}
 }
+
+// TestApplySynthesizedModelsIfEmpty_NoOpWhenAgentModelsPresent verifies the
+// shared-process hook (mitto-886) leaves bs.agentModels untouched when the
+// agent already advertised a real catalog. This is the primary guard against
+// double-population that would corrupt the frontend model chip with synthesized
+// tier names on top of genuine agent-side model ids.
+func TestApplySynthesizedModelsIfEmpty_NoOpWhenAgentModelsPresent(t *testing.T) {
+	bs := &BackgroundSession{}
+	bs.promptCond = sync.NewCond(&bs.promptMu)
+	bs.pendingConfig = make(map[string]string)
+
+	existing := &SessionModelState{
+		CurrentModelId: "claude-sonnet-4-6",
+		AvailableModels: []ModelInfo{
+			{ModelId: "claude-sonnet-4-6", Name: "Sonnet 4.6"},
+		},
+	}
+	bs.agentModels = existing
+	bs.mittoConfig = &config.Config{Models: []config.ModelProfile{{Name: "Opus"}}}
+
+	bs.applySynthesizedModelsIfEmpty()
+
+	if bs.agentModels != existing {
+		t.Fatalf("agentModels was replaced: got %+v, want pointer identity with existing", bs.agentModels)
+	}
+	if bs.agentModels.CurrentModelId != "claude-sonnet-4-6" {
+		t.Fatalf("CurrentModelId=%q, want claude-sonnet-4-6", bs.agentModels.CurrentModelId)
+	}
+}
+
+// TestApplySynthesizedModelsIfEmpty_NoOpWhenNoMittoConfig documents the second
+// guard: even when agentModels is nil, we cannot synthesize without a config
+// (EffectiveModelProfiles would still return defaults on a nil receiver, but
+// the hook short-circuits before that to preserve the "no config wired" test
+// scenario).
+func TestApplySynthesizedModelsIfEmpty_NoOpWhenNoMittoConfig(t *testing.T) {
+	bs := &BackgroundSession{}
+	bs.promptCond = sync.NewCond(&bs.promptMu)
+	bs.pendingConfig = make(map[string]string)
+	// bs.agentModels is nil; bs.mittoConfig is nil.
+
+	bs.applySynthesizedModelsIfEmpty()
+
+	if bs.agentModels != nil {
+		t.Fatalf("expected agentModels to remain nil when mittoConfig is nil, got %+v", bs.agentModels)
+	}
+}
+
+// TestApplySynthesizedModelsIfEmpty_SynthesizesWhenEmpty is the mitto-886 core
+// scenario: agent advertised no catalog via either configOptions or resp.Models
+// (shared-process branch handed us a nil), local config supplies profiles →
+// we must populate bs.agentModels with a synthetic state whose ModelId/Name
+// mirror the profile Name (so downstream tag resolvers work identically).
+func TestApplySynthesizedModelsIfEmpty_SynthesizesWhenEmpty(t *testing.T) {
+	bs := &BackgroundSession{}
+	bs.promptCond = sync.NewCond(&bs.promptMu)
+	bs.pendingConfig = make(map[string]string)
+	bs.mittoConfig = &config.Config{Models: []config.ModelProfile{
+		{Name: "Opus"},
+		{Name: "Sonnet"},
+	}}
+
+	bs.applySynthesizedModelsIfEmpty()
+
+	if bs.agentModels == nil {
+		t.Fatalf("expected agentModels to be populated from local profiles")
+	}
+	// EffectiveModelProfiles merges user Models with DefaultModelProfiles, so
+	// we can't assert exact len(). But the user-configured ones must appear
+	// first (see EffectiveModelProfiles doc: user profiles before defaults).
+	if len(bs.agentModels.AvailableModels) < 2 {
+		t.Fatalf("len(AvailableModels)=%d, want >=2", len(bs.agentModels.AvailableModels))
+	}
+	if bs.agentModels.AvailableModels[0].ModelId != "Opus" {
+		t.Fatalf("AvailableModels[0].ModelId=%q, want Opus", bs.agentModels.AvailableModels[0].ModelId)
+	}
+	if bs.agentModels.AvailableModels[0].Name != "Opus" {
+		t.Fatalf("AvailableModels[0].Name=%q, want Opus (synth uses profile.Name for both)", bs.agentModels.AvailableModels[0].Name)
+	}
+	if bs.agentModels.CurrentModelId != "" {
+		t.Fatalf("CurrentModelId=%q, want empty (synth cannot know current)", bs.agentModels.CurrentModelId)
+	}
+}
+
+// TestApplySynthesizedModelsIfEmpty_UsesDefaultsWhenUserModelsEmpty verifies the
+// mitto-886 fallback still fires when the user has no Models in settings.json:
+// EffectiveModelProfiles returns DefaultModelProfiles() (the 7 canonical
+// hardcoded profiles) so a fresh install without settings.json still gets a
+// populated model selector for silent agents.
+func TestApplySynthesizedModelsIfEmpty_UsesDefaultsWhenUserModelsEmpty(t *testing.T) {
+	bs := &BackgroundSession{}
+	bs.promptCond = sync.NewCond(&bs.promptMu)
+	bs.pendingConfig = make(map[string]string)
+	bs.mittoConfig = &config.Config{} // Models: nil
+
+	bs.applySynthesizedModelsIfEmpty()
+
+	if bs.agentModels == nil {
+		t.Fatalf("expected agentModels populated from DefaultModelProfiles even with empty user Models")
+	}
+	if len(bs.agentModels.AvailableModels) == 0 {
+		t.Fatalf("expected non-empty AvailableModels from DefaultModelProfiles")
+	}
+}
