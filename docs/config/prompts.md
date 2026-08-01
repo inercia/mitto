@@ -1021,7 +1021,7 @@ in sync.
 | `acpServer` | An ACP server (agent) name. Lets a prompt that creates a new conversation choose which agent runs it. |
 | `text` | Generic free-form text (catch-all type). Rendered as a single-line input by default; set `multiLine: true` to render a resizable multi-line textarea instead, or set `options: [...]` to constrain the value to a fixed enumeration rendered as a dropdown (mutually exclusive with `multiLine`). |
 | `boolean` | A yes/no flag, rendered as a checkbox. Supplied to the template as the string `"true"` or `"false"` (default unchecked → `"false"`). Boolean parameters never gate menu visibility and are always collected via the parameter dialog. |
-| `filename` | A workspace-relative file path, rendered as a dropdown of files under an optional `dir` (workspace-relative), optionally filtered by a `glob` **list** (e.g. `["*.md"]` or `["**/*.md", "**/*.rst"]` — see below). A candidate matches when ANY listed pattern matches (union semantics). Interactive and dialog-collected (never gates menu visibility, always offered by the parameter dialog). Feeds `{{ ReadFile .Args.NAME }}` directly. `dir`/`glob` are dropdown hints only — path safety (absolute-path/`..`-escape/symlink-escape rejection, 256 KB cap) is enforced at read time by `ReadFile`. |
+| `filename` | A workspace-relative file path, rendered as a dropdown of files under an optional `dir` (workspace-relative), optionally filtered by a `glob` **list** (e.g. `["*.md"]` or `["**/*.md", "**/*.rst"]` — see below). A candidate matches when ANY listed pattern matches (union semantics). Interactive and dialog-collected (never gates menu visibility, always offered by the parameter dialog). Feeds either `{{ ReadFile .Args.NAME }}` (verbatim inclusion) or `{{ ReadTemplate .Args.NAME . }}` (variable-expanding inclusion — the included file may reference `{{ .Args.X }}` and any FuncMap helper). `dir`/`glob` are dropdown hints only — path safety (absolute-path/`..`-escape/symlink-escape rejection, 256 KB cap) is enforced at read time and applies identically to both helpers. |
 | `dirname` | A workspace-relative directory path, rendered as a dropdown of sub-directories under an optional `dir` (workspace-relative), optionally filtered by a `glob` **list** (e.g. `["prod-*"]` or `["**/env-*", "**/stage-*"]` — see below). A candidate matches when ANY listed pattern matches (union semantics). Interactive and dialog-collected (never gates menu visibility, always offered by the parameter dialog). Hidden directories (leading `.`) are excluded by default. Value is a workspace-relative directory path suitable for joining with a filename or passing to template helpers. `dir`/`glob` are dropdown hints only — path safety is enforced by the endpoint (absolute-path/`..`-escape/symlink-escape rejection). |
 
 > **Breaking change (mitto-ebb):** `glob` is now a **list of patterns**, not a
@@ -1047,6 +1047,32 @@ prompt: |
   {{ if .Args.Instructions }}{{ ReadFile .Args.Instructions }}{{ end }}
   … rest of the prompt …
 ```
+
+##### `ReadFile` vs. `ReadTemplate` — when to use which
+
+Both helpers share the same fail-open path safety (absolute-path / `..` /
+symlink-escape rejection, 256 KB size cap) and both return `""` on missing,
+oversize, or unreadable files. They differ in how they treat the file body:
+
+| Helper | Body treatment | Failure of the include step |
+|---|---|---|
+| `{{ ReadFile "path" }}` | Inlined **verbatim** — no template parsing, `{{ ... }}` is preserved as-is. | Cannot fail at include time (fail-open only). |
+| `{{ ReadTemplate "path" . }}` | Body is **sub-rendered** as a Go text/template against the outer context — the included file may reference `{{ .Args.X }}`, `{{ .Session.* }}`, and any FuncMap helper. Fast path: files with no `{{` are returned verbatim (no parse cost). | Parse/exec error, unknown func reference, or exceeding the recursion cap aborts the outer render (**fail-closed**). |
+
+Rule of thumb:
+
+- Use **`ReadFile`** for fixed reference content (checklists, canned
+  instructions, per-channel Markdown fragments) where the file body should be
+  passed through byte-for-byte, including any literal `{{ ... }}` occurrences.
+- Use **`ReadTemplate`** for parameterized fragments — files whose body needs
+  to see the current prompt's `.Args`, session context, or FuncMap helpers.
+  The included file is recursion-capped at `promptTextMaxDepth` (=3) and does
+  NOT have access to shared fragments (`{{ template "_shared/..." }}`), same
+  Phase-A limitation as `PromptTextWithArgs`.
+
+The second argument to `ReadTemplate` is the current dot (`.`) — an authoring
+convention that makes the call site self-documenting; its value is ignored in
+v1 (the sub-render always uses the closure's captured context).
 
 #### `dirname` YAML example
 

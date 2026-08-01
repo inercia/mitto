@@ -406,6 +406,68 @@ func readFile(folder, path string) string {
 	return string(buf[:n])
 }
 
+// readTemplate reads a workspace-relative file (same path-safety and size-cap
+// semantics as readFile — fail-open, returns "" on missing / directory /
+// oversize / path-escape / symlink-escape) and then renders its contents as a
+// Go text/template against ctx with funcs attached. This is the variable-
+// expanding counterpart to readFile: authors can include a file whose body
+// references {{ .Args.X }} / {{ .Session.* }} / any helper in the FuncMap,
+// while ReadFile stays the verbatim path.
+//
+// Error policy differs by phase (matches PromptTextWithArgs / mitto-47y.1):
+//   - Read step is **fail-open**: any read-side failure (empty path, absolute
+//     path, ".." escape, symlink-out, directory, oversize, missing) returns
+//     ("", nil). Callers pair with FileExists to distinguish absent from empty.
+//   - Render step is **fail-closed**: parse error, execution error, unknown
+//     function, and depth-exceeded all return a non-nil error which propagates
+//     through the outer template's fail-closed policy (docs/devel/prompt-
+//     templates.md §7) and aborts the send.
+//
+// Fast path: if the file body contains no `{{`, it is returned verbatim (no
+// parse cost, no missingkey substitution). Files that DO contain `{{` are
+// always parsed — including files whose only `{{` occurrences are inside a
+// GitHub-Actions `${{ ... }}` expression, since Go text/template treats `$`
+// and `{{ }}` independently. Use ReadFile for verbatim inclusion of arbitrary
+// Markdown that may contain `{{`.
+//
+// Depth guard: reuses promptTextMaxDepth (3), incrementing the closure's
+// PromptTextDepth on each nested render so a self-referential file
+// (a.tmpl -> a.tmpl) or a two-file cycle (a -> b -> a) errors out with a
+// "recursion depth exceeded" message rather than blowing the stack.
+//
+// No fragments: renderNestedPromptBody deliberately does NOT attach the
+// workspace fragment registry (a Phase-A limitation shared with
+// PromptTextWithArgs — preserves the internal/cel -> internal/prompts
+// decoupling in mitto-b8k.3). A file containing
+// {{ template "_shared/foo" . }} will fail with a template-not-defined parse
+// error, which is fail-closed.
+func readTemplate(name, folder string, ctx *PromptEnabledContext, depth int) (string, error) {
+	contents := readFile(folder, name)
+	if contents == "" {
+		return "", nil
+	}
+	if depth >= promptTextMaxDepth {
+		return "", fmt.Errorf("ReadTemplate(%q): recursion depth exceeded (max %d)", name, promptTextMaxDepth)
+	}
+	// Shallow-copy ctx so incrementing PromptTextDepth for the nested render
+	// does not mutate the parent scope (mirrors PromptTextWithArgs' inner =
+	// *ctx idiom). ctx may be nil when the FuncMap was built with a nil ctx
+	// (e.g. tests, menu-time enabledWhen); a nil ctx short-circuits the read
+	// step above (readFile("", ...) returns ""), so we would not reach here.
+	// Guard anyway for defensiveness.
+	var inner PromptEnabledContext
+	if ctx != nil {
+		inner = *ctx
+	}
+	inner.PromptTextDepth = depth + 1
+	innerFuncs := BuildTemplateFuncMap(&inner)
+	rendered, err := renderNestedPromptBody(name, contents, &inner, innerFuncs)
+	if err != nil {
+		return "", fmt.Errorf("ReadTemplate(%q): %w", name, err)
+	}
+	return rendered, nil
+}
+
 // runGit runs `git <args...>` with the working directory set to folder (when
 // non-empty), bounded by gitCmdTimeout. It returns the trimmed stdout and true
 // when git exits 0. Returns ("", false) when git is unavailable, the folder is
@@ -925,6 +987,16 @@ func FormatPeers(peers []PeerInfo) string {
 //   - ReadFile(path) — file contents as a string (workspace-relative; fail-open
 //     on missing / oversize / path-escape; capped at readFileMaxBytes). Pair
 //     with FileExists to distinguish absent from empty.
+//   - ReadTemplate(path, .) — the variable-expanding counterpart to ReadFile:
+//     reads a workspace-relative file (same fail-open read semantics) and then
+//     sub-renders its contents as a Go text/template against the current
+//     context, so the included file may reference {{ .Args.X }} and any
+//     FuncMap helper. The second argument is the current dot (`.`) — its
+//     value is IGNORED in v1; the sub-render always uses the closure's
+//     captured ctx. Render step is fail-closed (parse/exec error, unknown
+//     func, or depth-exceeded returns an error). Depth-capped at
+//     promptTextMaxDepth. Fragments are NOT attached in the sub-render
+//     (Phase-A limitation, same as PromptTextWithArgs).
 //   - commandExists(name) — true iff name is in PATH.
 //   - GitRepo(path?) — true iff the folder (default: workspace root) is inside a git work tree.
 //   - GitFileModified(path) — true iff the tracked file has pending (staged/unstaged) changes.
@@ -1045,6 +1117,31 @@ func BuildTemplateFuncMap(ctx *PromptEnabledContext) template.FuncMap {
 		// fragment files (e.g. .mitto/support/<channel>/*.md); do NOT use for
 		// arbitrary user-supplied paths without an out-of-band allow-list.
 		"ReadFile": func(path string) string { return readFile(folder, path) },
+		// ReadTemplate is the variable-expanding counterpart to ReadFile: it
+		// reads a workspace-relative file (same fail-open path-safety and
+		// size-cap semantics as ReadFile) and then renders its contents as a
+		// Go text/template against the current context, so the included file
+		// may reference {{ .Args.X }} / {{ .Session.* }} / any FuncMap helper.
+		//
+		// The second argument is the current dot (`.`) — a caller idiom of
+		// `{{ ReadTemplate "path/to.md" . }}`. Its value is IGNORED in v1;
+		// the sub-render always uses the closure's captured ctx (which is the
+		// same *PromptEnabledContext as the outer dot at render time). The
+		// parameter is retained at the API level so the call site is self-
+		// documenting and so a future extension can widen the semantics
+		// without a source-incompatible signature change.
+		//
+		// Read step: fail-open (same as ReadFile — missing/oversize/escape
+		// return "" with nil error). Render step: fail-closed (parse or
+		// execution error, unknown func, or depth-exceeded return a non-nil
+		// error which propagates through the outer template's fail-closed
+		// policy). Fragments (`{{ template "_shared/..." }}`) are NOT
+		// attached in the sub-render — Phase-A limitation shared with
+		// PromptTextWithArgs — so a file that references a shared fragment
+		// will parse-fail cleanly.
+		"ReadTemplate": func(path string, _ any) (string, error) {
+			return readTemplate(path, folder, ctx, promptTextDepth)
+		},
 		"GitRepo": func(path ...string) bool {
 			p := ""
 			if len(path) > 0 {

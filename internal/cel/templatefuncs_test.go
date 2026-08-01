@@ -931,7 +931,7 @@ func TestBuildTemplateFuncMap_AllKeysPresent(t *testing.T) {
 	fm := BuildTemplateFuncMap(nil)
 	expected := []string{
 		"Arg", "Default", "UserData",
-		"FileExists", "DirExists", "ReadFile", "CommandExists", "HasPattern", "Model",
+		"FileExists", "DirExists", "ReadFile", "ReadTemplate", "CommandExists", "HasPattern", "Model",
 		"GitFileModified", "GitDirModified", "GitStatusFiles", "GitFileTracked", "GitFileDeleted",
 		"BeadsCount", "HasBeads", "BeadHasLabels", "BeadIsOpen", "BeadMetadata",
 		"PromptText", "PromptTextWithArgs", "ArgsMap",
