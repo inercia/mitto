@@ -144,21 +144,21 @@ test-integration: test-integration-go
 # Run UI tests with Playwright
 test-ui: build tailwind build-mock-acp
 	@echo "Running UI tests..."
-	npx playwright test --config=tests/ui/playwright.config.ts
+	bunx playwright test --config=tests/ui/playwright.config.ts
 
 # Run UI tests in headed mode (visible browser)
 test-ui-headed: build tailwind build-mock-acp
 	@echo "Running UI tests (headed)..."
-	npx playwright test --config=tests/ui/playwright.config.ts --headed
+	bunx playwright test --config=tests/ui/playwright.config.ts --headed
 
 # Run UI tests in debug mode
 test-ui-debug: build tailwind build-mock-acp
 	@echo "Running UI tests (debug)..."
-	npx playwright test --config=tests/ui/playwright.config.ts --debug
+	bunx playwright test --config=tests/ui/playwright.config.ts --debug
 
 # Show Playwright test report
 test-ui-report:
-	npx playwright show-report tests/ui/playwright-report
+	bunx playwright show-report tests/ui/playwright-report
 
 # Run all tests (unit + integration + UI)
 test-all: test test-integration test-ui
@@ -166,7 +166,7 @@ test-all: test test-integration test-ui
 # Setup test environment (install Playwright browsers, etc.)
 test-setup: deps
 	@echo "Setting up test environment..."
-	npx playwright install chromium
+	bunx playwright install chromium
 	@echo "Test environment ready."
 
 # Clean test artifacts

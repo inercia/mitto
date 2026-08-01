@@ -16,12 +16,13 @@
 #         - NPM=bun (not NPM=npm, not NPM=bun run — the plan/impl deviation)
 #         - deps-js target uses `bun install --frozen-lockfile`
 #         - no bare `npm ci` / `npm install`
-#         - no `npx` outside the Playwright carve-out
+#         - no `npx` anywhere in Makefile (mitto-3vb: Playwright carve-out lifted)
 #   T5  package.json scripts:
 #         - no `npx @tailwindcss` (must be `bunx @tailwindcss`)
 #         - no `npm run` (must be `bun run` in lint:frontend)
 #         - no `npx htmlhint`
-#         - `test:ui*` may keep `npx playwright` (Phase-5 carve-out)
+#         - no `npx` anywhere in package.json scripts (mitto-3vb: Playwright
+#           carve-out lifted — test:ui* now uses `bunx playwright`)
 #   T6  scripts/lint-html.sh uses `bunx htmlhint`, not `npx htmlhint`.
 #   T7  .github/workflows/tests.yml:
 #         - every job that installs JS deps uses oven-sh/setup-bun@v2
@@ -119,14 +120,14 @@ else
         pass "T4c: Makefile has no npm ci/install command"
     fi
 
-    # No `npx` outside the Playwright carve-out. Allow `npx playwright`
-    # invocations because Phase-5 is explicitly deferred. Strip Makefile
-    # comments first so prose mentioning npx doesn't false-match.
-    npx_hits="$(sed 's/#.*$//' Makefile | grep -nE '\bnpx\b' | grep -vE 'npx[[:space:]]+playwright\b' || true)"
+    # No `npx` anywhere in Makefile (mitto-3vb: Playwright carve-out lifted —
+    # test-ui / test-setup / test-ui-report etc. now use `bunx playwright`).
+    # Strip Makefile comments first so prose mentioning npx doesn't false-match.
+    npx_hits="$(sed 's/#.*$//' Makefile | grep -nE '\bnpx\b' || true)"
     if [ -n "$npx_hits" ]; then
-        fail "T4d: Makefile has non-Playwright npx invocations: $npx_hits"
+        fail "T4d: Makefile still contains npx invocations: $npx_hits"
     else
-        pass "T4d: Makefile npx usage limited to Playwright carve-out"
+        pass "T4d: Makefile has no npx invocations"
     fi
 fi
 
@@ -158,13 +159,13 @@ else
         pass "T5c: package.json has no npx htmlhint"
     fi
 
-    # Non-Playwright npx must not appear. `npx playwright` in test:ui* is
-    # explicitly allowed (Phase-5 carve-out).
-    pkg_npx="$(grep -nE '\bnpx\b' package.json | grep -vE 'npx[[:space:]]+playwright\b' || true)"
+    # No `npx` anywhere in package.json (mitto-3vb: Playwright carve-out
+    # lifted — test:ui* scripts now use `bunx playwright`).
+    pkg_npx="$(grep -nE '\bnpx\b' package.json || true)"
     if [ -n "$pkg_npx" ]; then
-        fail "T5d: package.json has non-Playwright npx: $pkg_npx"
+        fail "T5d: package.json still contains npx: $pkg_npx"
     else
-        pass "T5d: package.json npx usage limited to Playwright carve-out"
+        pass "T5d: package.json has no npx invocations"
     fi
 fi
 
