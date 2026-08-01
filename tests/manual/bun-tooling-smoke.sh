@@ -29,6 +29,8 @@
 #         - no `npm ci` (Playwright cache carve-out uses bun install)
 #         - Playwright cache key hashes bun.lock (not package-lock.json)
 #         - no `hashFiles('package-lock.json')` anywhere
+#         - no `actions/setup-node@` step (mitto-3vb: bunx replaces npx)
+#         - no `npx playwright` invocation (mitto-3vb: bunx everywhere)
 #   T8  README.md documents the Bun contributor requirement.
 #
 # Exits 0 on success (green ✅), 1 on any failure (red ❌).
@@ -221,6 +223,28 @@ else
         fail "T7e: $WF must run 'bun install --frozen-lockfile'"
     else
         pass "T7e: $WF runs 'bun install --frozen-lockfile'"
+    fi
+
+    # mitto-3vb: no `actions/setup-node@` step anywhere in the workflow —
+    # Playwright now launches via bunx, so a Node.js toolchain install would be
+    # dead weight and reintroducing it silently would mask a regression on the
+    # bunx path. Strip YAML `#` comments before probing so reminder prose that
+    # mentions setup-node doesn't false-match.
+    setup_node_hits="$(sed 's/#.*$//' "$WF" | grep -nE 'actions/setup-node@' || true)"
+    if [ -n "$setup_node_hits" ]; then
+        fail "T7f: $WF still references actions/setup-node: $setup_node_hits"
+    else
+        pass "T7f: $WF has no actions/setup-node step (mitto-3vb)"
+    fi
+
+    # mitto-3vb: no `npx playwright` in the workflow — all Playwright
+    # invocations must go through bunx. Strip YAML `#` comments first so
+    # reminder prose that mentions npx doesn't false-match.
+    wf_npx_playwright="$(sed 's/#.*$//' "$WF" | grep -nE 'npx[[:space:]]+playwright\b' || true)"
+    if [ -n "$wf_npx_playwright" ]; then
+        fail "T7g: $WF still uses 'npx playwright': $wf_npx_playwright"
+    else
+        pass "T7g: $WF has no 'npx playwright' invocation (mitto-3vb)"
     fi
 fi
 
