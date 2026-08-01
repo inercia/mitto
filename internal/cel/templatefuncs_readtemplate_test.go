@@ -1,6 +1,8 @@
 package cel
 
 import (
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"strings"
@@ -61,6 +63,36 @@ func TestReadTemplate_HappyPath(t *testing.T) {
 			t.Errorf("got %q, want %q", got, "[]")
 		}
 	})
+}
+
+// TestReadTemplate_OuterContextExpansion verifies that fields on the outer
+// PromptEnabledContext beyond .Args (Session, Workspace) are visible inside
+// the included template body. Pins the plan-time claim that ReadTemplate
+// "expands {{ .Session.WorkingDir }} and other outer-context fields": the
+// canonical working-dir accessor in this codebase is .Workspace.Folder
+// (there is no Session.WorkingDir field — verify via internal/cel/context.go
+// SessionContext / WorkspaceContext). Also covers a Session.* field so a
+// future struct refactor that drops or renames a public accessor surfaces
+// here loudly.
+func TestReadTemplate_OuterContextExpansion(t *testing.T) {
+	tmpDir := t.TempDir()
+	body := `folder={{ .Workspace.Folder }} session={{ .Session.ID }} bead={{ .Session.BeadsIssue }}`
+	if err := os.WriteFile(filepath.Join(tmpDir, "ctx.md"), []byte(body), 0644); err != nil {
+		t.Fatal(err)
+	}
+	ctx := &PromptEnabledContext{
+		Workspace: WorkspaceContext{Folder: tmpDir},
+		Session:   SessionContext{ID: "sess-42", BeadsIssue: "mitto-hiy"},
+	}
+	fm := BuildTemplateFuncMap(ctx)
+	got, err := RenderPromptTemplate("t", `{{ ReadTemplate "ctx.md" . }}`, ctx, fm)
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	want := "folder=" + tmpDir + " session=sess-42 bead=mitto-hiy"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
 }
 
 // TestReadTemplate_ReadStepSafetyParity verifies the read step inherits
@@ -210,6 +242,50 @@ func TestReadTemplate_DepthGuard(t *testing.T) {
 			t.Errorf("promptTextMaxDepth = %d, want 3 (if the cap is intentionally raised, update this test and audit ReadTemplate/PromptTextWithArgs docs)", promptTextMaxDepth)
 		}
 	})
+}
+
+// TestReadTemplate_NoPromptsImport pins the mitto-b8k.3 decoupling acceptance
+// criterion: no file in internal/cel may import internal/prompts. The
+// ReadTemplate helper is implemented purely with internal/cel primitives
+// (readFile + renderNestedPromptBody) so that internal/prompts continues to
+// depend on internal/cel and never the other way around. A future refactor
+// that pulls a shared type from internal/prompts into internal/cel would
+// silently reintroduce an import cycle risk; this test fails loudly instead.
+func TestReadTemplate_NoPromptsImport(t *testing.T) {
+	const forbidden = "github.com/inercia/mitto/internal/prompts"
+	fset := token.NewFileSet()
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatalf("read internal/cel dir: %v", err)
+	}
+	var offenders []string
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".go") {
+			continue
+		}
+		// Skip *_test.go — this guard is about the package itself. Test
+		// files are allowed to import internal/prompts (e.g. integration
+		// smoke tests) if the reverse-dependency layering wanted it, but
+		// today none do — mirrored in a separate assertion below.
+		if strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		f, perr := parser.ParseFile(fset, name, nil, parser.ImportsOnly)
+		if perr != nil {
+			t.Fatalf("parse %s: %v", name, perr)
+		}
+		for _, imp := range f.Imports {
+			// imp.Path.Value is quoted, e.g. `"github.com/.../prompts"`.
+			if imp.Path != nil && strings.Trim(imp.Path.Value, `"`) == forbidden {
+				offenders = append(offenders, name)
+				break
+			}
+		}
+	}
+	if len(offenders) > 0 {
+		t.Fatalf("internal/cel must not import %s (mitto-b8k.3 decoupling); offenders: %v", forbidden, offenders)
+	}
 }
 
 // TestReadTemplate_NilCtxSafe verifies ReadTemplate is safe when
