@@ -85,8 +85,8 @@ github.com/huandu/xstrings v1.5.0 h1:2ag3IFq9ZDANvthTwTiqSSZLjDc+BedvHPAp5tJy2TI
 github.com/huandu/xstrings v1.5.0/go.mod h1:y5/lhBue+AyNmUVz9RLU9xbLR0o4KIIExikq4ovT0aE=
 github.com/inconshreveable/mousetrap v1.1.0 h1:wN+x4NVGpMsO7ErUn/mUI3vEoE6Jt13X2s0bqwp9tc8=
 github.com/inconshreveable/mousetrap v1.1.0/go.mod h1:vpF70FUmC8bwa3OWnCshd2FqLfsEA9PFc4w1p2J65bw=
-github.com/inercia/acp-go-sdk v0.13.1-0.20260709073340-5f600e0bd169 h1:pFmhpdvRNTFGrcTs07/ATAlww3Ump3DjKeKW+nab2VI=
-github.com/inercia/acp-go-sdk v0.13.1-0.20260709073340-5f600e0bd169/go.mod h1:yKzM/3R9uELp4+nBAwwtkS0aN1FOFjo11CNPy37yFko=
+github.com/inercia/acp-go-sdk v0.13.1-0.20260515074117-56c2c30ca894 h1:DpfydWIFp84YyYC/ZwquTyIikclC2jbmrEFOdmIGMdc=
+github.com/inercia/acp-go-sdk v0.13.1-0.20260515074117-56c2c30ca894/go.mod h1:yKzM/3R9uELp4+nBAwwtkS0aN1FOFjo11CNPy37yFko=
 github.com/inercia/go-restricted-runner v0.2.0 h1:nMvNtuDy2nd1Bb5ZvJNJbhaEch5ZkXKu1c0mze+FmNs=
 github.com/inercia/go-restricted-runner v0.2.0/go.mod h1:4eJiTSKybwS7d6yCPiX26xIN1mfLkqRj69cNaW3RltQ=
 github.com/keybase/go-keychain v0.0.1 h1:way+bWYa6lDppZoZcgMbYsvC7GxljxrskdNInRtuthU=

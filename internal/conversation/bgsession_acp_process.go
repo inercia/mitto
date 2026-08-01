@@ -994,6 +994,12 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 				bs.setSessionModes(resumeResp.Modes)
 				bs.logSessionConfigOptions("resume", resumeResp.ConfigOptions)
 				models, cfgId := ModelStateFromConfigOptions(resumeResp.ConfigOptions)
+				if models == nil {
+					// Fall back to the SDK-decoded top-level `models` field
+					// (Auggie ships its catalog there rather than in
+					// configOptions[]; mitto-i8n).
+					models = ModelStateFromACP(resumeResp.Models)
+				}
 				bs.setAgentModels(models)
 				if cfgId != "" {
 					bs.modelConfigId = cfgId
@@ -1044,6 +1050,9 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 				bs.setSessionModes(loadResp.Modes)
 				bs.logSessionConfigOptions("load", loadResp.ConfigOptions)
 				models, cfgId := ModelStateFromConfigOptions(loadResp.ConfigOptions)
+				if models == nil {
+					models = ModelStateFromACP(loadResp.Models)
+				}
 				bs.setAgentModels(models)
 				if cfgId != "" {
 					bs.modelConfigId = cfgId
@@ -1109,6 +1118,9 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 	bs.setSessionModes(sessResp.Modes)
 	bs.logSessionConfigOptions("new", sessResp.ConfigOptions)
 	models, cfgId := ModelStateFromConfigOptions(sessResp.ConfigOptions)
+	if models == nil {
+		models = ModelStateFromACP(sessResp.Models)
+	}
 	bs.setAgentModels(models)
 	if cfgId != "" {
 		bs.modelConfigId = cfgId

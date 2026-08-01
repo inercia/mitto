@@ -135,6 +135,30 @@ func ModelStateFromConfigOptions(opts []acp.SessionConfigOption) (*SessionModelS
 	return nil, ""
 }
 
+// ModelStateFromACP converts an SDK-native *acp.SessionModelState (populated from
+// the top-level `models` field on session/new, session/load, or session/resume
+// responses) into Mitto's local *SessionModelState. Returns nil when src is nil
+// or advertises no available models. Used as the fallback path for agents (e.g.
+// Auggie) that ship their model catalog under the out-of-spec top-level `models`
+// field instead of inside configOptions[] with category="model" (mitto-i8n).
+func ModelStateFromACP(src *acp.SessionModelState) *SessionModelState {
+	if src == nil || len(src.AvailableModels) == 0 {
+		return nil
+	}
+	state := &SessionModelState{
+		CurrentModelId:  string(src.CurrentModelId),
+		AvailableModels: make([]ModelInfo, 0, len(src.AvailableModels)),
+	}
+	for _, m := range src.AvailableModels {
+		state.AvailableModels = append(state.AvailableModels, ModelInfo{
+			ModelId:     string(m.ModelId),
+			Name:        m.Name,
+			Description: m.Description,
+		})
+	}
+	return state
+}
+
 // SynthesizeModelStateFromProfiles builds a synthetic SessionModelState from the
 // caller's model profiles for agents that never advertise a model catalog via ACP
 // ConfigOptions (mitto-ishl). One ModelInfo per profile is emitted with both
