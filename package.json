@@ -5,11 +5,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js",
-    "test:watch": "node --experimental-vm-modules node_modules/jest/bin/jest.js --watch",
-    "test:coverage": "node --experimental-vm-modules node_modules/jest/bin/jest.js --coverage",
-    "test:bun": "bash scripts/test-bun.sh",
-    "test:bun:watch": "bash scripts/test-bun.sh --watch",
+    "test": "bun test web/static",
+    "test:watch": "bun test web/static --watch",
+    "test:coverage": "bun test web/static --coverage",
     "test:ui": "npx playwright test --config=tests/ui/playwright.config.ts",
     "test:ui:headed": "npx playwright test --config=tests/ui/playwright.config.ts --headed",
     "test:ui:debug": "npx playwright test --config=tests/ui/playwright.config.ts --debug",
@@ -41,26 +39,10 @@
     "eslint": "^10.2.1",
     "globals": "^17.5.0",
     "htmlhint": "^1.9.2",
-    "jest": "^29.7.0",
-    "jest-environment-jsdom": "^29.7.0",
     "prettier": "^3.8.1",
     "stylelint": "^17.9.1",
     "stylelint-config-standard": "^40.0.0",
     "tailwindcss": "^4.3.0",
     "typescript": "^5.4.0"
-  },
-  "jest": {
-    "testEnvironment": "jsdom",
-    "roots": [
-      "<rootDir>/web/static"
-    ],
-    "testMatch": [
-      "**/*.test.js"
-    ],
-    "moduleFileExtensions": [
-      "js"
-    ],
-    "transform": {},
-    "verbose": true
   }
 }

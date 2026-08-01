@@ -58,25 +58,6 @@ jobs:
             exit 1
           fi
 
-  # Fast-path JS tests via `bun test` on the curated clean subset (see
-  # scripts/test-bun.sh). Runs in parallel with `unit-tests` and is meant as
-  # an early-signal smoke: if this fails, the full Jest suite in `unit-tests`
-  # will almost certainly fail too. The authoritative JS test run is still
-  # `make test-js` (Jest+jsdom) inside the `unit-tests` job below.
-  bun-tests:
-    name: Bun Tests (fast subset)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
-
-      - name: Run bun test subset
-        run: bun run test:bun
-
   unit-tests:
     name: Unit Tests
     runs-on: ubuntu-latest
@@ -94,6 +75,11 @@ jobs:
         with:
           node-version: '20'
           cache: 'npm'
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
 
       - name: Install dependencies
         run: make deps

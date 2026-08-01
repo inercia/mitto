@@ -8,7 +8,8 @@ globs:
   - "internal/client/**/*"
   - "web/static/**/*.test.js"
   - "web/static/lib.js"
-  - "web/static/package.json"
+  - "package.json"
+  - "bunfig.toml"
   - "web/static/utils/*.test.js"
 keywords:
   - unit test
@@ -29,13 +30,23 @@ keywords:
 ```bash
 make test              # All unit tests
 make test-go           # Go unit tests only
-make test-js           # JavaScript unit tests (cd web/static && npm test)
+make test-js           # JavaScript unit tests (bun test web/static)
 make test-integration  # Integration tests
 make smoke-build       # Cross-compile binaries + build Docker image
 make smoke-test-cli    # CLI-only smoke tests inside Docker (fast, no browser)
 make smoke-test        # Full smoke tests (CLI + Playwright via Docker)
 make smoke-clean       # Clean up Docker image and .build/ artifacts
 ```
+
+## JavaScript Test Runner: Bun
+
+`bun test web/static` is the authoritative JS unit-test runner (Phase 3 of
+mitto-txpp). The `web/static` scope matches Jest's old `roots` configuration
+and keeps Bun's recursive discovery away from `tests/ui/specs/*.spec.ts`
+(Playwright specs, incompatible test runner). `bunfig.toml` preloads
+`scripts/bun-happy-dom.js` which registers happy-dom as the global DOM for
+tests that touch `window` / `document` / `DOMParser`. Jest and
+`jest-environment-jsdom` are no longer devDependencies.
 
 ## Test Isolation for Global State
 

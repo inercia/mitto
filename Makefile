@@ -39,10 +39,13 @@ test-go:
 	@echo "Running Go unit tests..."
 	$(GOTEST) -v ./internal/... ./cmd/...
 
-# Run JavaScript unit tests
+# Run JavaScript unit tests (Bun; happy-dom preloaded via bunfig.toml).
+# `web/static` scope matches the roots of the old Jest config and keeps
+# `bun test`'s recursive discovery away from `tests/ui/specs/*.spec.ts`
+# (Playwright specs, which use an incompatible test runner).
 test-js: deps-js
 	@echo "Running JavaScript tests..."
-	$(NPM) test
+	bun test web/static
 
 # Validate builtin model-tag references against the canonical Go tag set.
 # Fails if any builtin prompt references a modelTag not in config.CanonicalModelTags(),
