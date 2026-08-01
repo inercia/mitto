@@ -2,11 +2,14 @@ package prompts
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -881,6 +884,93 @@ prompt: |
 	}
 	if loadErrors[0].Err == nil {
 		t.Error("loadErrors[0].Err = nil, want non-nil")
+	}
+}
+
+// warnCountHandler is a minimal slog.Handler that counts WARN+ records whose
+// Message matches a fixed string. Safe for concurrent use.
+type warnCountHandler struct {
+	mu     sync.Mutex
+	target string
+	count  int
+}
+
+func (h *warnCountHandler) Enabled(_ context.Context, lv slog.Level) bool {
+	return lv >= slog.LevelWarn
+}
+
+func (h *warnCountHandler) Handle(_ context.Context, r slog.Record) error {
+	if r.Message == h.target {
+		h.mu.Lock()
+		h.count++
+		h.mu.Unlock()
+	}
+	return nil
+}
+
+func (h *warnCountHandler) WithAttrs(_ []slog.Attr) slog.Handler { return h }
+func (h *warnCountHandler) WithGroup(_ string) slog.Handler      { return h }
+
+// TestLoadPromptsFromDirWithErrors_LogsFailedFileOncePerReload is the reproduction
+// for mitto-e8r: LoadPromptsFromDirWithErrors currently emits an unbounded
+// slog.Warn("failed to load prompt file", ...) on EVERY reload for the same
+// broken file, polluting the log (60x in 15h in the field). The structured
+// PromptLoadError already flows to LoadErrors() (and thence to UI toasts via
+// mitto-mqe + the `mitto prompts verify` CLI), so the WARN is redundant with
+// existing observability paths and safe to de-duplicate per process lifetime.
+//
+// This test loads the same tmpdir containing one permanently-broken
+// .prompt.yaml twice and asserts the WARN was emitted exactly once. Today it
+// emits twice, so the test fails at the second assertion. When the AC3 fix
+// lands (dedupe keyed by path+err.Error() in prompts.go:674) the assertion
+// flips green. PromptLoadError entries must still be returned on BOTH calls
+// so the UI/CLI paths keep working — that invariant is asserted explicitly.
+func TestLoadPromptsFromDirWithErrors_LogsFailedFileOncePerReload(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Prompt body with an invalid Cond literal — trips PrecompileTemplateConds
+	// in LoadPromptFile, mirroring the real-world .Workspace.WorkingDir case
+	// (both go through the same "cond precompile" error path).
+	badPrompt := `name: "Repro mitto-e8r"
+prompt: |
+  {{ if Cond "this is ::: not valid CEL" }}x{{ end }}
+`
+	if err := os.WriteFile(filepath.Join(tmpDir, "bad.prompt.yaml"), []byte(badPrompt), 0644); err != nil {
+		t.Fatalf("Failed to write bad.prompt.yaml: %v", err)
+	}
+
+	// Install a WARN counter on the slog default so prompts.go:674's emission
+	// is captured. Restore the original default on cleanup.
+	cap := &warnCountHandler{target: "failed to load prompt file"}
+	oldDefault := slog.Default()
+	slog.SetDefault(slog.New(cap))
+	t.Cleanup(func() { slog.SetDefault(oldDefault) })
+
+	// First load: baseline — WARN fires, PromptLoadError recorded.
+	_, loadErrors1, err := LoadPromptsFromDirWithErrors(tmpDir)
+	if err != nil {
+		t.Fatalf("first LoadPromptsFromDirWithErrors failed: %v", err)
+	}
+	if len(loadErrors1) != 1 {
+		t.Fatalf("first call: len(loadErrors) = %d, want 1 (%+v)", len(loadErrors1), loadErrors1)
+	}
+
+	// Second load: same tmpdir, same broken file — WARN must NOT fire again
+	// (post-fix), but PromptLoadError MUST still be returned (invariant).
+	_, loadErrors2, err := LoadPromptsFromDirWithErrors(tmpDir)
+	if err != nil {
+		t.Fatalf("second LoadPromptsFromDirWithErrors failed: %v", err)
+	}
+	if len(loadErrors2) != 1 {
+		t.Fatalf("second call: len(loadErrors) = %d, want 1 (invariant: structured error must still be returned on every reload; %+v)", len(loadErrors2), loadErrors2)
+	}
+
+	cap.mu.Lock()
+	got := cap.count
+	cap.mu.Unlock()
+
+	if got != 1 {
+		t.Fatalf("WARN 'failed to load prompt file' fired %d times across 2 reloads, want 1 (mitto-e8r: dedupe per (path, err) per process lifetime)", got)
 	}
 }
 

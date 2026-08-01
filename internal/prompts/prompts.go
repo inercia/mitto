@@ -14,12 +14,21 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"gopkg.in/yaml.v3"
 
 	"github.com/inercia/mitto/internal/cel"
 )
+
+// loadWarnSeen dedupes the "failed to load prompt file" WARN across reloads:
+// key is (absPath, err.Error()) and the WARN fires only the first time a given
+// (file, error) pair is observed in this process. Structured PromptLoadError is
+// still returned to every caller — the UI toasts (mitto-mqe) and the
+// `mitto prompts verify` CLI depend on it, so callers see the failure on every
+// reload; only the log emission is bounded (mitto-e8r).
+var loadWarnSeen sync.Map
 
 // PromptLoop declares that selecting this prompt should start a loop
 // (recurring) conversation instead of a one-time one. A prompt falls into one
@@ -671,9 +680,18 @@ func LoadPromptsFromDirWithErrors(dir string) ([]*PromptFile, []PromptLoadError,
 		prompt, err := LoadPromptFile(dir, relPath)
 		if err != nil {
 			loadErrors = append(loadErrors, PromptLoadError{Path: relPath, Err: err})
-			slog.Warn("failed to load prompt file",
-				"path", filepath.Join(dir, relPath),
-				"error", err)
+			// De-dup WARN per (absPath, err) per process lifetime (mitto-e8r):
+			// a permanently-broken workspace file otherwise emits one WARN per
+			// reload (fs-watcher + cold cache + ForceReload), spamming the log
+			// while adding no new signal. Structured error already flows via
+			// PromptLoadError → LoadErrors() → UI toasts + verify CLI above.
+			absPath := filepath.Join(dir, relPath)
+			key := absPath + "\x00" + err.Error()
+			if _, loaded := loadWarnSeen.LoadOrStore(key, struct{}{}); !loaded {
+				slog.Warn("failed to load prompt file",
+					"path", absPath,
+					"error", err)
+			}
 			return nil
 		}
 
