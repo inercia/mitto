@@ -1737,6 +1737,11 @@ func (p *SharedACPProcess) NewSession(ctx context.Context, cwd string, mcpServer
 			traceSessionResponse(p.logger, "new", sessResp)
 			conversation.LogSessionConfigOptions(p.logger, "new", sessResp.ConfigOptions)
 			models, modelCfgId := conversation.ModelStateFromConfigOptions(sessResp.ConfigOptions)
+			if models == nil {
+				// Fall back to the SDK-decoded top-level `models` field (Auggie
+				// ships its catalog there rather than in configOptions[]; mitto-i8n).
+				models = conversation.ModelStateFromACP(sessResp.Models)
+			}
 			handle := &conversation.SessionHandle{
 				SessionID:     string(sessResp.SessionId),
 				Process:       p,
@@ -1978,6 +1983,9 @@ func (p *SharedACPProcess) LoadSession(ctx context.Context, acpSessionID, cwd st
 	traceSessionResponse(p.logger, "load", loadResp)
 	conversation.LogSessionConfigOptions(p.logger, "load", loadResp.ConfigOptions)
 	loadModels, loadModelCfgId := conversation.ModelStateFromConfigOptions(loadResp.ConfigOptions)
+	if loadModels == nil {
+		loadModels = conversation.ModelStateFromACP(loadResp.Models)
+	}
 	handle := &conversation.SessionHandle{
 		SessionID:     acpSessionID,
 		Capabilities:  *caps,
@@ -2057,6 +2065,9 @@ func (p *SharedACPProcess) ResumeSession(ctx context.Context, acpSessionID, cwd 
 	traceSessionResponse(p.logger, "resume", resumeResp)
 	conversation.LogSessionConfigOptions(p.logger, "resume", resumeResp.ConfigOptions)
 	resumeModels, resumeModelCfgId := conversation.ModelStateFromConfigOptions(resumeResp.ConfigOptions)
+	if resumeModels == nil {
+		resumeModels = conversation.ModelStateFromACP(resumeResp.Models)
+	}
 	handle := &conversation.SessionHandle{
 		SessionID:     acpSessionID,
 		Capabilities:  *caps,
