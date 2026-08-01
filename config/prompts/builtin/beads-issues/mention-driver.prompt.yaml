@@ -110,6 +110,11 @@ prompt: |
   `mitto_ui_notify`, report to the parent, disable the loop, and stop without
   advancing any label.
 
+  {{ template "beads-issues/shared/claim-entry" (dict
+      "Target"    $target
+      "SessionID" .Session.ID
+  ) }}
+
   ## Step 3 — Branch on the live labels; dispatch exactly ONE phase this run
 
   Do **not** do the phase's work inline. Dispatch the matching phase prompt by name
@@ -259,7 +264,11 @@ prompt: |
        (`bd show {{ $target }} --json | jq '.dependencies'` — bail on any
        `dependency_type: parent-child` whose child is still `status: open`).
 
-     If all four hold:
+     If all four hold, clear the passive claim first, then close:
+
+     {{ template "beads-issues/shared/claim-clear" (dict
+         "Target" $target
+     ) }}
 
      ```bash
      bd close {{ $target }} --reason "@mitto mention at {{ $ts }}: <one-line summary>"

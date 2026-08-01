@@ -167,11 +167,17 @@ prompt: |
   parent-child dependents this pass, AND so the epic-reaper below can walk their
   parent epics.
 
+  For each bead closed here, strip the `in-flight` label + `claimed_*` metadata
+  before `bd close` (mitto-ial: ghost claims must not survive into archives):
+
   ```bash
   closed_this_pass=()
   {{ if ne .Args.FixBugs "false" -}}
   for id in $(bd list --type bug --status open --label fixed --json | jq -r '.[].id'); do
     bd comment "$id" "Orchestrator: terminal label=fixed; closing."
+    bd update "$id" --remove-label in-flight \
+      --unset-metadata claimed_by --unset-metadata claimed_at \
+      --unset-metadata claim_heartbeat_at
     bd close "$id"
     closed_this_pass+=("$id")
   done
@@ -179,6 +185,9 @@ prompt: |
   {{- if ne .Args.WorkOnFeatures "false" }}
   for id in $(bd list --type feature --status open --label verified --json | jq -r '.[].id'); do
     bd comment "$id" "Orchestrator: terminal label=verified; closing."
+    bd update "$id" --remove-label in-flight \
+      --unset-metadata claimed_by --unset-metadata claimed_at \
+      --unset-metadata claim_heartbeat_at
     bd close "$id"
     closed_this_pass+=("$id")
   done
@@ -242,6 +251,60 @@ prompt: |
   {{- end }}
 
   Log one-line count for Step 6: `Reaped: <n>`.
+
+  ## Step 2R — Reap stale in-flight claims (cross-signal reaper)
+
+  Run AFTER Step 2P (children/beads already reaped) and BEFORE Step 2Z (undefer),
+  so a released claim is eligible for §B/§C in the *same* pass. Enumerate every
+  open bead carrying the `in-flight` label whose `claim_heartbeat_at` is stale
+  (older than 60 min) — the L2 loop-drivers refresh the heartbeat every
+  iteration (`delay: 30 s + turn duration`), so 60 min without a heartbeat means
+  the driver is genuinely dead, wedged, or archived. For each stale bead, cross-
+  signal against the claimer conversation via `mitto_conversation_get` before
+  clearing the claim (a legitimately long turn is not a stale claim — see the
+  mitto-ial bead description's cross-signal table):
+
+  | Claimer conversation state           | Action                                            |
+  |--------------------------------------|---------------------------------------------------|
+  | not-found / archived / !is_running   | REAP (`conversation_gone`)                        |
+  | is_prompting == true                 | SKIP (`still_prompting` — long turn is legit)     |
+  | updated_at > now − 30 min            | SKIP-with-warn (`wedged_but_ticking`)             |
+  | else                                 | REAP (`silent_conversation`)                      |
+
+  Enumerate stale claims:
+
+  ```bash
+  stale_cutoff=$(date -u -v-60M +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d '60 minutes ago' +%Y-%m-%dT%H:%M:%SZ)
+  bd list --status open --label in-flight --has-metadata-key claim_heartbeat_at --json \
+    | jq -r --arg cutoff "$stale_cutoff" '.[] | select(.metadata.claim_heartbeat_at < $cutoff) | "\(.id)\t\(.metadata.claimed_by)\t\(.metadata.claim_heartbeat_at)"'
+  ```
+
+  For each `<id>\t<claimer>\t<heartbeat>` row, cross-signal:
+
+  ```
+  mitto_conversation_get(self_id: "{{ .Session.ID }}", conversation_id: "<claimer>")
+  ```
+
+  Decide via the table above. On **REAP** — one bead comment, then clear the
+  claim (the bead itself remains open; it becomes eligible again on the next
+  pass's §B/§C enumeration — releasing and re-picking in the same pass would
+  race the reaper's own writes):
+
+  ```bash
+  bd comment <id> "Orchestrator reaper: releasing stale in-flight claim (claimer=<claimer>, last heartbeat=<heartbeat>, reason=<conversation_gone|silent_conversation|wedged_but_ticking>). Bead is back in the normal work queue."
+  bd update <id> --remove-label in-flight \
+    --unset-metadata claimed_by --unset-metadata claimed_at \
+    --unset-metadata claim_heartbeat_at
+  ```
+
+  On **SKIP** / **SKIP-with-warn** — one bead comment only, do NOT clear the
+  claim:
+
+  ```bash
+  bd comment <id> "Orchestrator reaper: stale heartbeat (<heartbeat>) but claimer <claimer> is <is_prompting|updated recently>; leaving claim in place."
+  ```
+
+  Log one-line count for Step 6: `Reaper: released=<n> skipped=<n>`.
 
   ## Step 2Z — Undefer any bead the user has replied to
 
@@ -350,6 +413,10 @@ prompt: |
   **Exclude** any bug that:
 
   - carries terminal label `fixed` (Step 2P will close it this pass), OR
+  - carries the `in-flight` label (mitto-ial: an L2 driver already holds a
+    passive claim; belt-and-suspenders with the `beads_issue` peer-match rule
+    below, since a peer conversation may have been archived without clearing
+    its claim — Step 2R will release those on staleness), OR
   - is `in_progress` elsewhere, OR
   - carries `needs-human` (previously deferred), OR
   - **formally** matches a non-archived conversation's `beads_issue` in
@@ -447,6 +514,8 @@ prompt: |
   - **Reason** — 🟢: blank or `ready`; otherwise ONE dominant reason
     (`beads_issue match: <session-id>` — always include the literal session ID,
     `label: needs-human`, `label: fixed (terminal)`,
+    `label: in-flight (claimed by <claimer>)` — always include the claimer
+    session ID from `metadata.claimed_by`,
     `already-landed fix (commit <hash>)`, `recently-closed parent <id>`,
     `blocked-by <id>`, `scope disabled`, `concurrency cap`, `epic (container)`).
 
@@ -780,7 +849,7 @@ prompt: |
   mitto_ui_notify(
     self_id: "{{ .Session.ID }}",
     title: "Loop processing tasks — pass complete",
-    message: "<Class ran (A/B/C) and target processed | 'nothing eligible' if Step 3 fell through | 'at cap' if concurrency gate skipped>. Sets: A=<count> B=<count> C=<count>. Active drivers: <count of running Fix/Implement children after this pass>/1. Reaped: <count from Step 2P, 0 if none>. Closed: <count of terminal-label beads closed this pass, 0 if none>. Reaped-epics: <count from Step 2P epic-reaper, 0 if none>. Undeferred: <count from Step 2Z, 0 if none>. Will re-fire on beads changes.",
+    message: "<Class ran (A/B/C) and target processed | 'nothing eligible' if Step 3 fell through | 'at cap' if concurrency gate skipped>. Sets: A=<count> B=<count> C=<count>. Active drivers: <count of running Fix/Implement children after this pass>/1. Reaped: <count from Step 2P, 0 if none>. Closed: <count of terminal-label beads closed this pass, 0 if none>. Reaped-epics: <count from Step 2P epic-reaper, 0 if none>. Reaper: released=<n> skipped=<n> (from Step 2R, 0/0 if none). Undeferred: <count from Step 2Z, 0 if none>. Will re-fire on beads changes.",
     style: "success"
   )
   ```
@@ -869,6 +938,16 @@ prompt: |
     (mitto-9mk); `.Workspace.Peers` is already scoped to non-archived siblings
     sharing this session's `(WorkingDir, ACPServer)` and populated at template-
     dispatch time. Re-enumerated once the conversation is done or archived.
+  - **Skip beads with an `in-flight` claim (mitto-ial).** An L2 loop-driver
+    marks the beads it is actively working with the `in-flight` label plus
+    `claimed_by`/`claimed_at`/`claim_heartbeat_at` metadata, while leaving
+    `status=open` so a crash never strands the bead. 2B/2C exclude such beads
+    (belt-and-suspenders with the workspace-peer rule above — a peer may have
+    been archived without clearing its claim). Step 2R's cross-signal reaper
+    releases stale claims (heartbeat > 60 min old AND claimer conversation is
+    gone / silent) so the bead re-enters the queue on the next pass. Every
+    close site (Step 2P sweep, driver Done branches, mention Finalize) strips
+    the claim before `bd close` so closed beads never carry ghost claims.
   - **Honor scope flags.** `FixBugs` and `WorkOnFeatures` (both default `"true"`)
     gate §B and §C. When `"false"`, the section is skipped and treated as empty
     in Step 3. §A is ALWAYS on regardless.

@@ -127,6 +127,11 @@ prompt: |
   stop here: post a `mitto_ui_notify` explaining why, and self-terminate (Step 3e's
   self-termination steps) without changing any label.
 
+  {{ template "beads-issues/shared/claim-entry" (dict
+      "Target"    $target
+      "SessionID" .Session.ID
+  ) }}
+
   ## Step 3 — Branch on the live labels; dispatch exactly ONE phase this run
 
   Do **not** do the phase's work inline. Dispatch the matching phase prompt by name
@@ -239,6 +244,10 @@ prompt: |
   further phase work to do (mitto-i5k: never treat close or `loop_enabled: false` as
   optional here — a soft-gated Done branch lets the loop re-fire past the terminal
   label).
+
+  {{ template "beads-issues/shared/claim-clear" (dict
+      "Target" $target
+  ) }}
 
   ```bash
   bd close {{ $target }} --reason "<short summary of what was delivered>"
