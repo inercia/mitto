@@ -195,3 +195,12 @@ scripts/spike-bundler/vite-chatinput/node_modules/
 scripts/spike-bundler/vite-chatinput/dist/
 scripts/spike-bundler/vite-chatinput/package-lock.json
 .tokensave
+
+# Bun is the authoritative package manager (mitto-txpp.4). Ignore any
+# npm/yarn/pnpm lockfiles at the repo root so a contributor accidentally
+# running `npm install` does not commit a divergent lockfile alongside
+# bun.lock. The scripts/spike-bundler/ carve-out above keeps that
+# subdirectory's own lockfile ignored independently.
+/package-lock.json
+/yarn.lock
+/pnpm-lock.yaml

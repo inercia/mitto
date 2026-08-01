@@ -97,7 +97,13 @@ Download the latest release from the [releases page](https://github.com/inercia/
 
 #### Build from Source
 
-Requires Go 1.24+ and (for the macOS app) Xcode Command Line Tools.
+Requires Go 1.24+, [Bun](https://bun.sh/) 1.2+ (frontend package manager) and (for the macOS app) Xcode Command Line Tools.
+
+Install Bun with:
+
+```bash
+curl -fsSL https://bun.sh/install | bash
+```
 
 ```bash
 # CLI only

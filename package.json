@@ -13,13 +13,13 @@
     "test:ui:debug": "npx playwright test --config=tests/ui/playwright.config.ts --debug",
     "test:ui:report": "npx playwright show-report tests/ui/playwright-report",
     "test:ui:legacy": "npx playwright test --config=tests/ui/playwright.config.js",
-    "tailwind": "npx @tailwindcss/cli -i web/static/tailwind.src.css -o web/static/tailwind.css --minify",
+    "tailwind": "bunx @tailwindcss/cli -i web/static/tailwind.src.css -o web/static/tailwind.css --minify",
     "vendor:codemirror": "esbuild scripts/codemirror/entry.js --bundle --format=esm --minify --legal-comments=none --outfile=web/static/vendor/codemirror/codemirror.js",
-    "tailwind:watch": "npx @tailwindcss/cli -i web/static/tailwind.src.css -o web/static/tailwind.css --watch",
+    "tailwind:watch": "bunx @tailwindcss/cli -i web/static/tailwind.src.css -o web/static/tailwind.css --watch",
     "lint:html": "bash scripts/lint-html.sh",
     "lint:css": "stylelint 'web/static/**/*.css' --ignore-path .gitignore",
     "lint:js": "eslint",
-    "lint:frontend": "npm run lint:html && npm run lint:css && npm run lint:js"
+    "lint:frontend": "bun run lint:html && bun run lint:css && bun run lint:js"
   },
   "devDependencies": {
     "@codemirror/commands": "6.10.3",

@@ -18,7 +18,7 @@ GOMOD=$(GOCMD) mod
 GOFMT=$(GOCMD) fmt
 
 # Node parameters
-NPM=npm
+NPM=bun
 
 # Build flags
 LDFLAGS=-ldflags "-s -w"
@@ -199,12 +199,12 @@ fmt-check:
 # Format documentation markdown files (requires prettier)
 fmt-docs: deps-js
 	@echo "Formatting documentation markdown files..."
-	npx prettier --write "docs/**/*.md"
+	bunx prettier --write "docs/**/*.md"
 
 # Check documentation formatting (fails if files need formatting)
 fmt-docs-check: deps-js
 	@echo "Checking documentation formatting..."
-	npx prettier --check "docs/**/*.md"
+	bunx prettier --check "docs/**/*.md"
 
 # Lint Go code (requires golangci-lint)
 lint-go:
@@ -273,7 +273,7 @@ deps-go:
 deps-js:
 	@if [ ! -d "node_modules" ]; then \
 		echo "Installing JavaScript dependencies..."; \
-		$(NPM) install; \
+		bun install --frozen-lockfile; \
 	fi
 
 # Build Tailwind CSS (generates web/static/tailwind.css)
