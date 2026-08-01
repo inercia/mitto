@@ -34,7 +34,10 @@ text: |
   This project uses `bd` (beads) for issue and task tracking. Use it for ALL task
   tracking — do NOT use markdown TODO lists or ad-hoc task files.
 
-  - Run `bd ready` to find available work, `bd show <id>` to view an issue.
+  - Run `bd ready --exclude-label in-flight` to find available work (the
+    `in-flight` label is written by automated drivers on beads they are
+    actively holding, so excluding it avoids colliding with an active
+    driver), then `bd show <id>` to view an issue.
   - Use `bd update <id> --claim` to claim work and `bd close <id>` when done.
   - File new issues with `bd` for any follow-up work you discover.
   - Use `bd remember` for persistent knowledge — do NOT create MEMORY.md files.

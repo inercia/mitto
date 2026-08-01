@@ -60,6 +60,45 @@ func TestBeadsReadyTasksProcessor_ExcludeInFlightLabel(t *testing.T) {
 	}
 }
 
+// TestBeadsTrackTasksProcessor_ExcludeInFlightLabel pins the peer
+// `beads-track-tasks` processor: it also injects a system-notes reminder
+// recommending `bd ready`, so the mitto-kvq contract (human-facing bd
+// reminders must show `--exclude-label in-flight`) applies here too.
+// Without this pin, a future edit could silently regress this processor
+// back to the bare `bd ready` form while leaving `beads-ready-tasks`
+// correct.
+func TestBeadsTrackTasksProcessor_ExcludeInFlightLabel(t *testing.T) {
+	const path = "../../config/processors/builtin/beads-track-tasks.yaml"
+
+	loader := NewLoader("../../config/processors/builtin", nil)
+	proc, err := loader.LoadFile(path)
+	if err != nil {
+		t.Fatalf("LoadFile(%q): %v", path, err)
+	}
+	if proc == nil {
+		t.Fatalf("LoadFile(%q): nil processor (file may be empty)", path)
+	}
+
+	if proc.Name != "beads-track-tasks" {
+		t.Errorf("processor name = %q, want %q", proc.Name, "beads-track-tasks")
+	}
+	if !proc.IsTextMode() {
+		t.Errorf("processor must be text-mode; got Text=%q Command=%q Prompt=%q",
+			proc.Text, proc.Command, proc.Prompt)
+	}
+
+	if !strings.Contains(proc.Text, "bd ready --exclude-label in-flight") {
+		t.Errorf("beads-track-tasks reminder missing `bd ready --exclude-label in-flight` (mitto-kvq)\n---\ntext:\n%s\n---", proc.Text)
+	}
+
+	// Anti-regression: bare `bd ready` recommendation must not reappear in
+	// the reminder body. Same voice check as the peer test.
+	if strings.Contains(proc.Text, "Run `bd ready` ") || strings.Contains(proc.Text, "Run `bd ready`\n") ||
+		strings.Contains(proc.Text, "run `bd ready` ") || strings.Contains(proc.Text, "run `bd ready`\n") {
+		t.Errorf("beads-track-tasks reminder still contains the pre-mitto-kvq bare `bd ready` form (mitto-kvq)\n---\ntext:\n%s\n---", proc.Text)
+	}
+}
+
 // TestAgentsMD_DocumentsInFlightLabelExclusion pins the AGENTS.md side of the
 // mitto-kvq contract: the repo's human-facing agent instructions must (a)
 // show the `--exclude-label in-flight` form in the Quick Reference and (b)
