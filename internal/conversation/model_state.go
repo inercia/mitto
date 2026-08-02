@@ -86,6 +86,18 @@ type SessionModelState struct {
 	CurrentModelId string
 	// AvailableModels is the set of models the agent advertises for selection.
 	AvailableModels []ModelInfo
+	// Synthesized is true when this state was built locally by
+	// SynthesizeModelStateFromProfiles rather than reported by the agent
+	// (branch 3 of DeriveAgentModels). ModelId values in AvailableModels are
+	// Mitto profile display names, not agent-confirmed model ids, and
+	// CurrentModelId (when later seeded, e.g. from a persisted baseline) has
+	// never been validated against the live agent or backend. Callers MUST
+	// NOT treat current==desired agreement on a synthesized state as proof a
+	// real model is bound server-side (mitto-fvt): after an ACP process
+	// restart wipes the agent's catalog, the synthetic fallback can silently
+	// match a stale persisted baseline and wedge every future prompt behind
+	// a 404 "selected model is not available" that never self-heals.
+	Synthesized bool
 }
 
 // ModelInfo describes a single selectable model.
@@ -191,6 +203,7 @@ func SynthesizeModelStateFromProfiles(profiles []config.ModelProfile) *SessionMo
 	}
 	state := &SessionModelState{
 		AvailableModels: make([]ModelInfo, 0, len(profiles)),
+		Synthesized:     true,
 	}
 	for _, p := range profiles {
 		state.AvailableModels = append(state.AvailableModels, ModelInfo{

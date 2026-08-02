@@ -1102,6 +1102,45 @@ func (p promptDispatcher) applyModelPreference(d promptDeps, meta PromptMeta) {
 	isOverride := desired != "" && desired != baseline
 	switching := desired != "" && desired != currentModel
 
+	// mitto-fvt: a synthesized catalog (models.Synthesized) is a Mitto-local
+	// UI aid built from profile display names, never confirmed by the agent
+	// or backend (see SynthesizeModelStateFromProfiles). If desired agrees
+	// with currentModel purely because both happen to equal the same
+	// synthetic name — e.g. a persisted baseline surviving an ACP restart
+	// that wiped the agent's real catalog — that agreement is NOT proof a
+	// real model is bound server-side. Trusting it here is exactly the
+	// wedge reported in mitto-fvt: applyModelPreference short-circuits
+	// forever while chat-stream 404s "selected model is not available".
+	// Force a re-verification attempt via pdSetActiveModelOnly instead of
+	// skipping, so a poisoned session gets a chance to recover (or fail
+	// loudly) rather than looping silently.
+	reverifySynthetic := models.Synthesized && !switching && desired != ""
+
+	if l := d.pdLogger(); l != nil {
+		decision := "switching"
+		switch {
+		case switching:
+			decision = "switching"
+		case reverifySynthetic:
+			decision = "reverify_synthetic_catalog"
+		case len(preferredModels) == 0:
+			decision = "skip_no_preference"
+		case !matched:
+			decision = "skip_no_match"
+		default:
+			decision = "skip_already_satisfied"
+		}
+		l.Debug("apply_model_preference",
+			"session_id", d.pdSessionID(),
+			"prompt_name", meta.PromptName,
+			"preferred_models", preferredModels,
+			"baseline", baseline,
+			"current_model", currentModel,
+			"desired", desired,
+			"synthesized_catalog", models.Synthesized,
+			"decision", decision)
+	}
+
 	finalizeOverride := func(switchFailed bool) {
 		if isOverride && !switchFailed {
 			d.pdRecordSessionChange(
@@ -1113,26 +1152,8 @@ func (p promptDispatcher) applyModelPreference(d promptDeps, meta PromptMeta) {
 		d.pdWriteOverrideActive(isOverride)
 	}
 
-	if l := d.pdLogger(); l != nil {
-		decision := "switching"
-		if !switching {
-			switch {
-			case len(preferredModels) == 0:
-				decision = "skip_no_preference"
-			case !matched:
-				decision = "skip_no_match"
-			default:
-				decision = "skip_already_satisfied"
-			}
-		}
-		l.Debug("apply_model_preference",
-			"session_id", d.pdSessionID(),
-			"prompt_name", meta.PromptName,
-			"preferred_models", preferredModels,
-			"baseline", baseline,
-			"current_model", currentModel,
-			"desired", desired,
-			"decision", decision)
+	if reverifySynthetic {
+		switching = true
 	}
 
 	if !switching {

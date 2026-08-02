@@ -2003,6 +2003,72 @@ func TestPromptDispatcher_ApplyModelPreference_NoAgentModels_SynthesizesPillFrom
 	}
 }
 
+// TestPromptDispatcher_ApplyModelPreference_SyntheticCatalog_NeverReverifiesModel
+// reproduces mitto-fvt: after the shared ACP process restarts and the agent
+// advertises an empty model catalog (availableModels: []), DeriveAgentModels
+// falls back to SynthesizeModelStateFromProfiles (model_state.go), whose
+// AvailableModels entries use ModelId == profile.Name — Mitto-internal display
+// labels (e.g. "Opus 5") that were never validated against the live agent or
+// backend. Per the mitto-fvt investigation, a session/set_model RPC issued
+// with one of these synthetic ids can appear to succeed locally (the agent
+// just stores the opaque string), so bs.agentModels.CurrentModelId and the
+// persisted baselineModel both end up recording the fake id — indistinguishable
+// from a genuinely agent-confirmed model. Every subsequent chat-stream request
+// naming that id then 404s ("The selected model is not available for this
+// session"), yet applyModelPreference sees current==baseline and short-circuits
+// at decision=skip_no_preference forever, so the wedge never self-heals.
+//
+// Pre-fix (buggy) behavior, asserted here: zero pdSetActiveModelOnly calls —
+// applyModelPreference trusts the synthetic current==baseline agreement as if
+// it were a real negotiated state and never attempts to re-establish a valid
+// model.
+//
+// Post-fix contract (mitto-fvt): when every entry in the active catalog carries
+// the SynthesizeModelStateFromProfiles signature (ModelId == Name), the catalog
+// must not be treated as agent-confirmed truth merely because current==baseline;
+// applyModelPreference must attempt to (re)establish a real model via
+// pdSetActiveModelOnly so a poisoned session can recover instead of looping
+// 404s indefinitely.
+func TestPromptDispatcher_ApplyModelPreference_SyntheticCatalog_NeverReverifiesModel(t *testing.T) {
+	p := promptDispatcher{}
+	d := newFakePromptDeps()
+
+	profiles := []config.ModelProfile{
+		{Name: "Opus 5", Criteria: &config.ACPServerConstraint{MatchMode: "contains", Pattern: "Opus"}},
+	}
+	// Build the catalog exactly as DeriveAgentModels' branch 3 would after an
+	// ACP restart wipes the agent's real catalog (mitto-fvt evidence:
+	// availableModels: [] from 10:11:45 onward, config_option_count=0).
+	synth := SynthesizeModelStateFromProfiles(profiles)
+	if synth == nil {
+		t.Fatal("expected SynthesizeModelStateFromProfiles to produce a non-nil catalog")
+	}
+	// Simulate the post-wedge state observed in the bead: CurrentModelId has
+	// been recorded as the synthetic profile-name id, and the persisted
+	// baseline carried the same value across the restart (metadata.json
+	// baseline_model: "Opus 5").
+	synth.CurrentModelId = "Opus 5"
+	d.agentModels = synth
+	d.baselineModel = "Opus 5"
+	d.modelProfiles = profiles
+
+	var buf bytes.Buffer
+	d.logger = slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	// Ordinary scheduled loop prompt: no per-prompt preferredModels declared,
+	// mirroring the on-call loop conversations' periodic re-runs.
+	p.applyModelPreference(d, PromptMeta{})
+
+	if len(d.setActiveModelCalls) == 0 {
+		t.Fatalf(
+			"mitto-fvt reproduction: applyModelPreference silently trusted a "+
+				"SYNTHETIC catalog's current==baseline agreement and never "+
+				"attempted to re-establish a real model — this is the infinite "+
+				"404 wedge (\"selected model is not available for this session\"). "+
+				"log: %s", buf.String())
+	}
+}
+
 func TestPromptDispatcher_ApplyModelPreference_NoPreference_DesiredIsBaseline_NoSwitch(t *testing.T) {
 	p := promptDispatcher{}
 	d := newFakePromptDeps()
