@@ -37,6 +37,35 @@ function ruleBody(css, selector) {
   return m ? m[2] : null;
 }
 
+/**
+ * Extract every flat declaration block whose selector list textually contains
+ * `selector`. Handles both single-selector rules and comma-separated selector
+ * groups (as introduced by mitto-2fx.6 which merged
+ * `.filter-tab-streaming::before` and `.child-expand-streaming::before` into
+ * one shared rule with per-selector overrides below it).
+ *
+ * Returns an array of rule bodies (may be empty).
+ */
+function ruleBodiesMatching(css, selector) {
+  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  // Match every `{...}` block whose selector list starts a selector with
+  // `selector` (either as the whole selector or as one entry in a
+  // comma-separated group). Left boundary is start-of-line, `\n`, or `,` so
+  // that descendant compounds (e.g. `.reduce-animations .foo` or `.light .foo`)
+  // and rules nested inside an at-rule prefix DO NOT match — those live in
+  // dedicated blocks that we don't want to conflate with the primary rule.
+  const re = new RegExp(
+    `(?:^|\\n|,)\\s*${escaped}(?:\\s*,[^{}]*)?\\s*\\{([^}]+)\\}`,
+    "gm",
+  );
+  const bodies = [];
+  let m;
+  while ((m = re.exec(css)) !== null) {
+    bodies.push(m[1]);
+  }
+  return bodies;
+}
+
 const TARGET_RULES = [
   ".streaming-indicator",
   ".filter-tab-streaming::before",
@@ -47,21 +76,151 @@ const TARGET_RULES = [
 
 describe("styles.css — mitto-2fx.1 will-change invariant", () => {
   describe.each(TARGET_RULES)("%s", (selector) => {
-    const body = ruleBody(stylesCss, selector);
+    // Collect every rule that targets the selector (either as its own rule or
+    // as part of a comma-separated selector group). mitto-2fx.6 split the
+    // pulse animation for `.filter-tab-streaming::before` and
+    // `.child-expand-streaming::before` across a shared rule + per-selector
+    // overrides, so we assert across ALL matching bodies rather than a single
+    // primary body.
+    const bodies = ruleBodiesMatching(stylesCss, selector);
 
     test("rule exists", () => {
-      expect(body).not.toBeNull();
+      expect(bodies.length).toBeGreaterThan(0);
     });
 
     test("declares an infinite animation", () => {
       // Positive assertion: guards against a stray delete that removes the
-      // animation alongside the will-change hint.
-      expect(body).toMatch(/animation:\s*[^;]*\binfinite\b/);
+      // animation alongside the will-change hint. At least one of the bodies
+      // that reference this selector must declare the infinite animation.
+      const withAnim = bodies.filter((b) =>
+        /animation:\s*[^;]*\binfinite\b/.test(b),
+      );
+      expect(withAnim.length).toBeGreaterThan(0);
     });
 
-    test("does not declare will-change", () => {
-      expect(body).not.toMatch(/\bwill-change\s*:/);
+    test("does not declare will-change with a pinning value", () => {
+      // The mitto-2fx.1 invariant is that no primary always-on animated rule
+      // may pin a GPU compositor layer via `will-change: <hint>`. The
+      // deliberate `.reduce-animations` and @media (prefers-reduced-motion)
+      // opt-outs explicitly set `will-change: auto` (the reset value) — that
+      // is allowed and even required. Reject any other value.
+      for (const b of bodies) {
+        // Find every will-change declaration in the body and check its value.
+        const decls = b.match(/will-change\s*:\s*[^;]+/g) || [];
+        for (const d of decls) {
+          expect(d).toMatch(/will-change\s*:\s*auto\b/);
+        }
+      }
     });
+  });
+});
+
+/**
+ * mitto-2fx.6: the shared `::before` pulse layer for `.filter-tab-streaming`
+ * and `.child-expand-streaming` was deduped into one selector-group rule
+ * carrying the six identical properties (content/position/inset/z-index/
+ * pointer-events/animation). The per-selector color and border-radius
+ * overrides live below it. Pin the dedup so a future refactor cannot
+ * silently re-duplicate the shared block.
+ */
+describe("styles.css — mitto-2fx.6 dedup of filter-tab-pulse ::before layer", () => {
+  test("shared ::before rule combines both selectors in one group", () => {
+    // The combined selector-group rule declares the six shared properties
+    // exactly once. Assert both selectors appear together in a single rule
+    // head that immediately precedes `{`.
+    expect(stylesCss).toMatch(
+      /\.filter-tab-streaming::before\s*,\s*\.child-expand-streaming::before\s*\{[^}]*animation:\s*filter-tab-pulse\s+1\.8s\s+ease-in-out\s+infinite/,
+    );
+  });
+
+  test("shared > * z-index rule is also combined", () => {
+    // The two identical `> *` z-index rules were merged into a single
+    // selector-group rule.
+    expect(stylesCss).toMatch(
+      /\.filter-tab-streaming\s*>\s*\*\s*,\s*\.child-expand-streaming\s*>\s*\*\s*\{[^}]*z-index:\s*1/,
+    );
+  });
+
+  test("per-selector background-color overrides survive", () => {
+    // The two ::before pseudo-elements still carry different fixed backgrounds
+    // (slate-700 for filter tabs, blue-500 for child-expand). The overrides
+    // live below the shared rule as small isolated blocks.
+    const bodies = ruleBodiesMatching(
+      stylesCss,
+      ".filter-tab-streaming::before",
+    );
+    const hasSlateBg = bodies.some((b) =>
+      /background-color:\s*rgba\(\s*51\s*,\s*65\s*,\s*85\s*,\s*1\s*\)/.test(
+        b,
+      ),
+    );
+    expect(hasSlateBg).toBe(true);
+
+    const childBodies = ruleBodiesMatching(
+      stylesCss,
+      ".child-expand-streaming::before",
+    );
+    const hasBlueBg = childBodies.some((b) =>
+      /background-color:\s*rgba\(\s*59\s*,\s*130\s*,\s*246\s*,\s*0\.4\s*\)/.test(
+        b,
+      ),
+    );
+    expect(hasBlueBg).toBe(true);
+  });
+
+  test("child-expand ::before keeps its border-radius override", () => {
+    // .child-expand-streaming clips its pseudo-element to a rounded rect;
+    // .filter-tab-streaming does not. The border-radius override MUST NOT be
+    // hoisted into the shared rule.
+    const childBodies = ruleBodiesMatching(
+      stylesCss,
+      ".child-expand-streaming::before",
+    );
+    const hasRadius = childBodies.some((b) =>
+      /border-radius:\s*0\.25rem/.test(b),
+    );
+    expect(hasRadius).toBe(true);
+
+    // filter-tab ::before must NOT inherit border-radius. Every block that
+    // targets .filter-tab-streaming::before (including the combined group)
+    // must be border-radius-free.
+    const filterBodies = ruleBodiesMatching(
+      stylesCss,
+      ".filter-tab-streaming::before",
+    );
+    for (const b of filterBodies) {
+      expect(b).not.toMatch(/border-radius\s*:/);
+    }
+  });
+
+  test("light-theme overrides remain per-selector", () => {
+    // Light-theme background-color overrides stay split so a shared dark
+    // background never accidentally applies to both selectors.
+    expect(stylesCss).toMatch(
+      /\.light\s+\.filter-tab-streaming::before\s*\{[^}]*background-color:\s*rgba\(\s*203\s*,\s*213\s*,\s*225/,
+    );
+    expect(stylesCss).toMatch(
+      /\.light\s+\.child-expand-streaming::before\s*\{[\s\S]*?background-color:\s*rgba\([\s\S]*?59[\s\S]*?130[\s\S]*?246[\s\S]*?0\.3/,
+    );
+  });
+
+  test("shared ::before rule declares each shared property exactly once", () => {
+    // The whole point of the dedup: the six shared properties appear in the
+    // combined rule; a re-duplication would put them in a second
+    // .filter-tab-streaming::before-only block below it. Count occurrences of
+    // `content: ""` in any block that targets .filter-tab-streaming::before —
+    // must be exactly one.
+    const bodies = ruleBodiesMatching(
+      stylesCss,
+      ".filter-tab-streaming::before",
+    );
+    const contentCount = bodies.filter((b) => /content:\s*""/.test(b)).length;
+    expect(contentCount).toBe(1);
+
+    const positionCount = bodies.filter((b) =>
+      /position:\s*absolute/.test(b),
+    ).length;
+    expect(positionCount).toBe(1);
   });
 });
 

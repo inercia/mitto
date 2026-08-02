@@ -450,20 +450,40 @@
   }
 }
 
-/* Filter tab streaming pulse - uses ::before pseudo-element to only animate background */
-.filter-tab-streaming {
-  position: relative;
-}
-.filter-tab-streaming::before {
+/* Streaming pulse ::before layer, shared by filter tabs and child-expand buttons.
+   Uses a pseudo-element so only the background is animated. Per-selector overrides
+   below carry the color (and .child-expand-streaming's border-radius) so the
+   visible output stays identical to the previous split rules. */
+.filter-tab-streaming::before,
+.child-expand-streaming::before {
   content: "";
   position: absolute;
   inset: 0;
   z-index: 0;
   pointer-events: none;
-  background-color: rgba(51, 65, 85, 1); /* slate-700 fixed background */
   animation: filter-tab-pulse 1.8s ease-in-out infinite;
 }
-.filter-tab-streaming > * {
+.filter-tab-streaming::before {
+  background-color: rgba(51, 65, 85, 1); /* slate-700 fixed background */
+}
+.child-expand-streaming::before {
+  border-radius: 0.25rem;
+  background-color: rgba(59, 130, 246, 0.4); /* blue-500 */
+}
+
+/* Wrappers - .child-expand-streaming also clips the pseudo-element to a rounded rect. */
+.filter-tab-streaming {
+  position: relative;
+}
+.child-expand-streaming {
+  position: relative;
+  overflow: hidden;
+  border-radius: 0.25rem;
+}
+
+/* Both wrappers stack content above their ::before pulse. */
+.filter-tab-streaming > *,
+.child-expand-streaming > * {
   position: relative;
   z-index: 1;
 }
@@ -479,33 +499,10 @@
   }
 }
 
-/* Light theme: different fixed background color */
+/* Light theme: different fixed background colors */
 .light .filter-tab-streaming::before {
   background-color: rgba(203, 213, 225, 1); /* slate-300 fixed background */
 }
-
-/* Child expand button streaming pulse - similar approach to filter-tab-streaming */
-.child-expand-streaming {
-  position: relative;
-  overflow: hidden;
-  border-radius: 0.25rem;
-}
-.child-expand-streaming::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  z-index: 0;
-  pointer-events: none;
-  border-radius: 0.25rem;
-  background-color: rgba(59, 130, 246, 0.4); /* blue-500 */
-  animation: filter-tab-pulse 1.8s ease-in-out infinite;
-}
-.child-expand-streaming > * {
-  position: relative;
-  z-index: 1;
-}
-
-/* Light theme: slightly more subtle blue for child expand button */
 .light .child-expand-streaming::before {
   background-color: rgba(
     59,
