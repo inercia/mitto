@@ -2297,14 +2297,36 @@ func (p *SharedACPProcess) SetSessionModel(ctx context.Context, sessionID acp.Se
 			ctxRemainingMs = time.Until(dl).Milliseconds()
 		}
 
+		// Primary path (mitto-vd5): the ACP 0.13 schema moved model semantics out
+		// of the generic ConfigOptions collection into a dedicated top-level
+		// 'models' field plus a dedicated session/set_model RPC. Auggie 0.34+
+		// only recognises the new RPC and rejects session/set_config_option with
+		// -32601 Method not found. Prefer the new RPC; fall back to the legacy
+		// setter (single-shot, inside this same attempt) on -32601 so pre-0.13
+		// agents keep working.
 		rpcStart := time.Now()
-		_, err := conn.SetSessionConfigOption(attemptCtx, acp.SetSessionConfigOptionRequest{
-			ValueId: &acp.SetSessionConfigOptionValueId{
-				SessionId: sessionID,
-				ConfigId:  conversation.ModelConfigId,
-				Value:     acp.SessionConfigValueId(modelID),
-			},
+		_, err := conn.UnstableSetSessionModel(attemptCtx, acp.UnstableSetSessionModelRequest{
+			SessionId: sessionID,
+			ModelId:   acp.UnstableModelId(modelID),
 		})
+		if code, ok := rpcErrorCode(err); ok && code == -32601 {
+			// Legacy fallback for pre-0.13-schema agents that only implement
+			// session/set_config_option. One-shot inside this attempt — do NOT
+			// consume a separate retry-loop iteration.
+			if p.logger != nil {
+				p.logger.Debug("SetSessionModel: legacy fallback (pre-0.13 agent)",
+					"session_id", sessionID,
+					"model_id", modelID,
+					"attempt", attempt)
+			}
+			_, err = conn.SetSessionConfigOption(attemptCtx, acp.SetSessionConfigOptionRequest{
+				ValueId: &acp.SetSessionConfigOptionValueId{
+					SessionId: sessionID,
+					ConfigId:  conversation.ModelConfigId,
+					Value:     acp.SessionConfigValueId(modelID),
+				},
+			})
+		}
 		rpcDuration := time.Since(rpcStart)
 		attemptCancel()
 
