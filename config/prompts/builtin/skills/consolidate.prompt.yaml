@@ -101,6 +101,68 @@ prompt: |
   (e.g. a duplication + a contradiction that share a root cause should
   be listed together).
 
+  ## Step 2.5 — Audit the `description` frontmatter
+
+  The `description:` field at the top of `{{ .Args.SkillFile }}` is
+  what a routing agent reads to decide **whether to load this skill at
+  all**. A weak description (`"Notes about X"`, `"Guide for Y"`, a
+  bare topic label) means the skill will be silently skipped when it
+  should fire, or loaded when it should not. Treat it as a first-class
+  consolidation artefact, not decorative metadata.
+
+  Read the current `description` verbatim, then evaluate it against
+  **all** of the following criteria. A good description must:
+
+  - **Open with an explicit trigger clause** — the words `"Use this
+    skill whenever …"` or a close paraphrase, so the routing agent
+    sees the activation cue on the first line.
+  - **Enumerate concrete situations that fire the skill** — a list of
+    the specific tasks, questions, or user intents that mean this
+    skill is relevant (e.g. *"about to answer an X question, prep
+    for a Y meeting, look up Z history, research W guidance"*), not
+    a single vague topic label. Prefer 3–6 concrete situations over
+    one abstract sentence.
+  - **Name the required preconditions** — any MCP connection, tool,
+    credential, workspace state, or environment the skill assumes
+    (e.g. *"whenever the user has an FJ MCP connection"*, *"in a
+    repo containing …"*, *"when the operator is on-call"*). If a
+    precondition is required, say so; if none, don't invent one.
+  - **Address the "user doesn't know to ask" case** — if this skill
+    is the right tool for a class of task even when the user hasn't
+    named the skill, say so explicitly (e.g. *"most users don't
+    know to use it or how to use it well … use it proactively"*).
+  - **Cover the negative space when non-obvious** — if there are
+    look-alike situations where the skill should **not** fire
+    (adjacent topics that a routing agent might confuse with the
+    real trigger), name one or two to prevent misfires.
+  - **Be self-contained** — a routing agent reads only the
+    description, not `SKILL.md` itself, before deciding. Do not
+    rely on outside context to make the trigger legible.
+  - **Stay operational, not marketing** — no adjectives like
+    "comprehensive", "powerful", "advanced"; every phrase must help
+    a routing agent decide *when* to load, not sell the skill.
+  - **Fit the length budget** — long enough to enumerate the
+    triggers concretely (typically 4–10 sentences / ~60–150 words),
+    short enough to fit in a routing agent's context without
+    ceremony. Prefer prose over a bulleted list because the field
+    renders as a single paragraph.
+
+  Score the current description against each criterion in a small
+  table (`criterion | pass/fail | evidence`). If **any** criterion
+  fails, draft a **replacement description** that satisfies all of
+  them, grounded in what the inventory + findings actually show this
+  skill is for — do not invent capabilities the skill does not have.
+
+  The replacement is a Step 3 change plan item like any other:
+  proposed, presented for operator approval (the operator may accept,
+  edit, or reject), and applied only in Step 4 via `mitto_ui_textbox`
+  showing `OLD:` and `NEW:` side by side so the operator can tweak
+  the wording before commit.
+
+  If the current description already passes every criterion, record
+  that in the Step 5 report and skip the replacement — do **not**
+  rewrite a description that is already doing its job.
+
   ## Step 3 — Propose the consolidation plan
 
   From the findings, draft a **change plan** — a bullet list, one bullet
@@ -173,6 +235,11 @@ prompt: |
 
   - **Files changed** — one line per file, with a one-sentence rationale
     tying it back to the finding it resolved.
+  - **Description outcome** — one of *"kept as-is (already passes every
+    criterion)"*, *"rewritten (operator approved)"*, *"rewrite drafted
+    but rejected by operator"*, or *"rewrite deferred"*. Include the
+    final approved wording verbatim so it is visible in the audit
+    trail.
   - **Files created** (should be rare — each one justified).
   - **Files split or merged** (each called out with before/after paths).
   - **Findings deferred** — every `NEEDS OPERATOR DECISION` item from
@@ -198,6 +265,12 @@ prompt: |
   - **Flag, do not guess.** Contradictions with no obvious resolution
     become `NEEDS OPERATOR DECISION` items; the prompt does not silently
     pick a winner.
+  - **Description quality is non-optional.** Step 2.5 must always run
+    and its verdict must appear in the Step 5 report. A vague or
+    topic-label-only description is a **finding**, not an acceptable
+    baseline — silently leaving it in place is a failure of this
+    prompt. The routing agent only sees the `description`, so an
+    unclear one means the whole skill is invisible when it matters.
   - **No git mutations.** Do not run `git add` / `git commit` / `git
     push` — the operator reviews and commits the diff themselves.
   - **Do not spawn child conversations** — this is an in-place authoring
