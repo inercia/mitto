@@ -29,13 +29,18 @@ type transientHookPattern struct {
 //
 //	Failed to fetch features ... lookup cfd-features.cloudflare.com on 127.0.0.53:53: read udp ...: connection refused
 //	the DNS query failed error=lookup features.argotunnel.com on 127.0.0.53:53: ...
+//
+// Note: Go's regexp (RE2) does not support Perl shorthand like \s / \S, so
+// we use explicit character classes ([^ ] rather than [^\s]) plus [^\n]* to
+// bridge the address-and-port noise between the DNS-lookup preamble and the
+// "connection refused" suffix.
 var transientHookPatterns = []transientHookPattern{
 	{
-		re:     regexp.MustCompile(`lookup [^\s]+ on [^\s]+:53: (read udp|read tcp|dial [^\s]+): connection refused`),
+		re:     regexp.MustCompile(`lookup [^ ]+ on [^ ]+:53: (read udp|read tcp|dial [^ ]+)[^\n]*connection refused`),
 		reason: "loopback DNS refused connection during cloudflared bootstrap",
 	},
 	{
-		re:     regexp.MustCompile(`the DNS query failed error=lookup [^\s]+ on [^\s]+:53:`),
+		re:     regexp.MustCompile(`the DNS query failed error=lookup [^ ]+ on [^ ]+:53:`),
 		reason: "transient DNS query failure during cloudflared bootstrap",
 	},
 }

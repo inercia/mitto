@@ -265,3 +265,200 @@ func TestJitter(t *testing.T) {
 		}
 	}
 }
+
+// resetPackageThrottle clears the shared process-wide throttle between tests
+// so timing/counter state from earlier tests does not leak into these ones.
+func resetPackageThrottle() {
+	packageThrottle = newHookFailureThrottle()
+}
+
+// TestStartUp_TransientFlagOnFailure verifies that when the hook emits output
+// matching a known transient pattern (cloudflared loopback DNS refusal), the
+// callback receives HookFailure.Transient=true so the broadcast pipeline can
+// downgrade the toast (mitto-y6i AC#1).
+func TestStartUp_TransientFlagOnFailure(t *testing.T) {
+	resetPackageThrottle()
+	// Ensure the throttle does NOT suppress this single failure so onFailure
+	// definitely fires (default threshold=2 → first fire is suppressed).
+	origT := hookFailureThreshold
+	hookFailureThreshold = 0
+	defer func() { hookFailureThreshold = origT }()
+
+	// The hook prints a transient DNS refusal line to stderr then exits non-zero.
+	transientLine := `lookup cfd-features.cloudflare.com on 127.0.0.53:53: read udp 127.0.0.1:44567->127.0.0.53:53: connection refused`
+	cmd := "echo '" + transientLine + "' 1>&2; exit 1"
+	hook := config.WebHook{Command: cmd, Name: "cf-tunnel-up"}
+
+	var mu sync.Mutex
+	var got HookFailure
+	var called bool
+	hp := StartUp(hook, 8080, WithOnFailure(func(f HookFailure) {
+		mu.Lock()
+		defer mu.Unlock()
+		called = true
+		got = f
+	}))
+	if hp == nil {
+		t.Fatal("StartUp returned nil for valid transient-error command")
+	}
+	// Wait for the goroutine to run cmd.Wait() and invoke the callback.
+	time.Sleep(300 * time.Millisecond)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if !called {
+		t.Fatal("onFailure was not invoked for transient-output failure")
+	}
+	if !got.Transient {
+		t.Errorf("HookFailure.Transient=false, want true (classifier missed transient DNS pattern in %q)", got.Output)
+	}
+	if got.ExitCode != 1 {
+		t.Errorf("ExitCode=%d, want 1", got.ExitCode)
+	}
+}
+
+// TestStartUp_TransientThrottled verifies the sliding-window throttle: with
+// the default threshold, the first N transient failures per hook name are
+// suppressed (callback NOT invoked) — the (N+1)-th broadcasts (mitto-y6i AC#2).
+func TestStartUp_TransientThrottled(t *testing.T) {
+	resetPackageThrottle()
+	origW, origT := hookFailureWindow, hookFailureThreshold
+	hookFailureWindow = 5 * time.Minute
+	hookFailureThreshold = 2
+	defer func() { hookFailureWindow, hookFailureThreshold = origW, origT }()
+
+	transientLine := `lookup x.example on 127.0.0.53:53: read udp 127.0.0.1:1->127.0.0.53:53: connection refused`
+	cmd := "echo '" + transientLine + "' 1>&2; exit 1"
+	hook := config.WebHook{Command: cmd, Name: "cf-tunnel-throttled"}
+
+	var mu sync.Mutex
+	callCount := 0
+	onFailure := WithOnFailure(func(f HookFailure) {
+		mu.Lock()
+		defer mu.Unlock()
+		if !f.Transient {
+			t.Errorf("expected Transient=true on any invocation, got false")
+		}
+		callCount++
+	})
+
+	// Fire the transient-output hook 3 times sequentially and wait for each to complete.
+	for i := 0; i < 3; i++ {
+		hp := StartUp(hook, 8080, onFailure)
+		if hp == nil {
+			t.Fatalf("iteration %d: StartUp returned nil", i)
+		}
+		// Give the goroutine time to Wait() and run the failure branch.
+		time.Sleep(250 * time.Millisecond)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	// With threshold=2, the first 2 transient failures are suppressed; the 3rd
+	// broadcasts. Callback should be invoked exactly once.
+	if callCount != 1 {
+		t.Errorf("callback invoked %d times, want exactly 1 (threshold=2, 3 fires → first 2 suppressed)", callCount)
+	}
+}
+
+// TestRunDownWithOptions_TransientCallback verifies that RunDownWithOptions
+// classifies output and passes Transient=true through to the callback, and
+// that the shared throttle path applies (mitto-y6i AC#2, AC#3).
+func TestRunDownWithOptions_TransientCallback(t *testing.T) {
+	resetPackageThrottle()
+	// Disable throttling so the single failure definitely surfaces.
+	origT := hookFailureThreshold
+	hookFailureThreshold = 0
+	defer func() { hookFailureThreshold = origT }()
+
+	transientLine := `the DNS query failed error=lookup features.argotunnel.com on 127.0.0.53:53: server misbehaving`
+	cmd := "echo '" + transientLine + "' 1>&2; exit 1"
+	hook := config.WebHook{Command: cmd, Name: "cf-tunnel-down"}
+
+	var got HookFailure
+	var called bool
+	RunDownWithOptions(hook, 8080, func(f HookFailure) {
+		called = true
+		got = f
+	})
+
+	if !called {
+		t.Fatal("RunDownWithOptions did not invoke onFailure for transient-output failure")
+	}
+	if !got.Transient {
+		t.Errorf("HookFailure.Transient=false, want true (classifier missed pattern in %q)", got.Output)
+	}
+	if got.Name != "cf-tunnel-down" {
+		t.Errorf("HookFailure.Name=%q, want cf-tunnel-down", got.Name)
+	}
+	if got.ExitCode != 1 {
+		t.Errorf("HookFailure.ExitCode=%d, want 1", got.ExitCode)
+	}
+}
+
+// TestRunDownWithOptions_RealErrorNotThrottled verifies that a real
+// (non-transient) failure always surfaces the callback even if the throttle
+// would otherwise suppress it.
+func TestRunDownWithOptions_RealErrorNotThrottled(t *testing.T) {
+	resetPackageThrottle()
+	// Even with a very aggressive throttle, real failures must broadcast.
+	origT := hookFailureThreshold
+	hookFailureThreshold = 100
+	defer func() { hookFailureThreshold = origT }()
+
+	hook := config.WebHook{Command: "echo 'boom: fatal error' 1>&2; exit 2", Name: "real-down-fail"}
+
+	var got HookFailure
+	var called bool
+	RunDownWithOptions(hook, 8080, func(f HookFailure) {
+		called = true
+		got = f
+	})
+
+	if !called {
+		t.Fatal("real (non-transient) down-hook failure must not be throttled")
+	}
+	if got.Transient {
+		t.Errorf("real failure classified transient (regex over-match?): output=%q", got.Output)
+	}
+	if got.ExitCode != 2 {
+		t.Errorf("ExitCode=%d, want 2", got.ExitCode)
+	}
+}
+
+// TestRunDownWithOptions_NilCallback verifies backward compatibility: passing
+// a nil callback (as RunDown does) must not panic.
+func TestRunDownWithOptions_NilCallback(t *testing.T) {
+	resetPackageThrottle()
+	hook := config.WebHook{Command: "exit 1", Name: "no-cb"}
+	// Must not panic when onFailure is nil.
+	RunDownWithOptions(hook, 8080, nil)
+}
+
+// TestRunDownWithOptions_SuccessNoCallback verifies that a successful (exit 0)
+// down hook never invokes the failure callback.
+func TestRunDownWithOptions_SuccessNoCallback(t *testing.T) {
+	resetPackageThrottle()
+	hook := config.WebHook{Command: "exit 0", Name: "ok"}
+	called := false
+	RunDownWithOptions(hook, 8080, func(HookFailure) { called = true })
+	if called {
+		t.Error("onFailure invoked for successful down hook (exit 0)")
+	}
+}
+
+// TestRunDownWithOptions_TimeoutNoCallback verifies that a timed-out down hook
+// does NOT invoke the failure callback (mirrors StartUp's signal-kill behavior).
+func TestRunDownWithOptions_TimeoutNoCallback(t *testing.T) {
+	resetPackageThrottle()
+	orig := downHookTimeout
+	downHookTimeout = 100 * time.Millisecond
+	defer func() { downHookTimeout = orig }()
+
+	hook := config.WebHook{Command: "sleep 5", Name: "timeout-nocb"}
+	called := false
+	RunDownWithOptions(hook, 8080, func(HookFailure) { called = true })
+	if called {
+		t.Error("onFailure invoked for timed-out down hook (should be silent on timeout)")
+	}
+}
