@@ -21,6 +21,12 @@ parameters:
     remember: folder
     required: true
     description: Markdown file describing the test procedure to follow
+  - name: Instructions
+    type: text
+    multiLine: true
+    remember: folder
+    required: false
+    description: 'Optional additional instructions to steer this test run (e.g. "skip the migration step", "use the staging endpoint instead of prod", "report timing for each step"). These override or add to the scripted procedure without editing the source Markdown files.'
   - name: CreateIssues
     type: boolean
     default: "false"
@@ -82,6 +88,25 @@ prompt: |
   **⚠️ Test file `{{ .Args.Test }}` could not be read** (missing, outside
   the workspace, oversize, or unreadable). Report this to the user and
   stop.
+  {{- end }}
+  {{- if .Args.Instructions }}
+
+  ### Additional instructions for this run
+
+  The user supplied the following extra instructions that apply on top of
+  the scripted procedure above. Treat them as **overrides / clarifications**
+  from the person running the test, not as edits to the source Markdown:
+
+  - If an instruction here **contradicts** a step above, follow the
+    instruction here and note the deviation in the report.
+  - If an instruction **adds** context (e.g. environment choice, extra
+    verification), incorporate it at the relevant step.
+  - If an instruction is unclear or you cannot reconcile it with the
+    scripted steps, stop and ask before proceeding.
+
+  ---
+  {{ .Args.Instructions }}
+  ---
   {{- end }}
 
   ## Reporting
