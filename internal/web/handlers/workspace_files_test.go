@@ -488,3 +488,38 @@ func TestWorkspaceFiles_MultiGlob_RecursiveDivergentPrefixes(t *testing.T) {
 		t.Fatalf("files = %v, want %v (other/skip.md must be excluded)", got, want)
 	}
 }
+
+// TestWorkspaceFiles_NonRecursive_HoistsLiteralPrefix pins that a
+// non-recursive glob whose literal prefix nests multiple directories deep
+// (e.g. "apps/foo/bar/*.md") is anchored at that prefix instead of being
+// applied verbatim to top-level base names. Mirrors the equivalent
+// dir-handler regression test.
+func TestWorkspaceFiles_NonRecursive_HoistsLiteralPrefix(t *testing.T) {
+	tmp := t.TempDir()
+	for _, rel := range []string{
+		"apps/cgw-managed-tools/test/promtps/a.md",
+		"apps/cgw-managed-tools/test/promtps/b.md",
+		"apps/cgw-managed-tools/test/promtps/skip.txt",
+		"apps/other/unrelated.md",
+	} {
+		p := filepath.Join(tmp, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+			t.Fatalf("write %s: %v", rel, err)
+		}
+	}
+	w, body := doWorkspaceFiles(t, tmp, "", "apps%2Fcgw-managed-tools%2Ftest%2Fpromtps%2F%2A.md")
+	if w.Code != http.StatusOK {
+		t.Fatalf("code = %d, want %d; body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+	got := filesList(t, body)
+	want := []string{
+		"apps/cgw-managed-tools/test/promtps/a.md",
+		"apps/cgw-managed-tools/test/promtps/b.md",
+	}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("files = %v, want %v (skip.txt and apps/other/unrelated.md excluded)", got, want)
+	}
+}

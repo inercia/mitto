@@ -73,6 +73,27 @@ func (h *Handlers) HandleWorkspaceDirs(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Hoist a common literal glob prefix into dir so a non-recursive pattern
+	// like "apps/foo/*" resolves under apps/foo/ instead of silently returning
+	// nothing (the non-recursive branch below matches base names, so a
+	// multi-segment pattern would otherwise never match). The doublestar
+	// branch already performs an equivalent hoist inside itself; doing it once
+	// up-front here keeps both branches consistent and lets pure-literal
+	// prefixes (no ** anywhere) work as users naturally expect. Prefix safety
+	// (e.g. ".." escapes) is enforced by the containment check below.
+	if prefix := pathglob.CommonLiteralPrefix(globs); prefix != "" {
+		if dir == "" {
+			dir = filepath.FromSlash(prefix)
+		} else {
+			dir = filepath.Join(dir, filepath.FromSlash(prefix))
+		}
+		trimmed := make([]string, len(globs))
+		for i, g := range globs {
+			trimmed[i] = strings.TrimPrefix(g, prefix+"/")
+		}
+		globs = trimmed
+	}
+
 	// Containment check: joined must be inside working_dir after Clean.
 	cleanRoot := filepath.Clean(workingDir)
 	joined := filepath.Join(cleanRoot, dir)

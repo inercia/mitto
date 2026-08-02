@@ -469,3 +469,67 @@ func TestWorkspaceDirs_MultiGlob_InvalidEntryRejected(t *testing.T) {
 		t.Fatalf("code = %d, want %d; body=%s", w.Code, http.StatusBadRequest, w.Body.String())
 	}
 }
+
+// TestWorkspaceDirs_NonRecursive_HoistsLiteralPrefix pins that a
+// non-recursive glob whose literal prefix nests multiple directories deep
+// (e.g. "apps/foo/bar/*") is anchored at that prefix instead of being
+// applied verbatim to top-level base names. Regression: without the
+// hoist, this pattern silently returned an empty list even when the
+// nested directory contained matching sub-directories.
+func TestWorkspaceDirs_NonRecursive_HoistsLiteralPrefix(t *testing.T) {
+	tmp := t.TempDir()
+	mkDirs(t, tmp, []string{
+		"apps/cgw-managed-tools/test/promtps/a",
+		"apps/cgw-managed-tools/test/promtps/b",
+		"apps/cgw-managed-tools/test/promtps/c",
+		"apps/other/unrelated",
+	})
+	w, body := doWorkspaceDirs(t, tmp, "", "apps%2Fcgw-managed-tools%2Ftest%2Fpromtps%2F%2A") // apps/cgw-managed-tools/test/promtps/*
+	if w.Code != http.StatusOK {
+		t.Fatalf("code = %d, want %d; body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+	got := dirsList(t, body)
+	want := []string{
+		"apps/cgw-managed-tools/test/promtps/a",
+		"apps/cgw-managed-tools/test/promtps/b",
+		"apps/cgw-managed-tools/test/promtps/c",
+	}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("dirs = %v, want %v", got, want)
+	}
+}
+
+// TestWorkspaceDirs_NonRecursive_HoistsLiteralPrefix_WithFilter pins that
+// after hoisting a multi-segment literal prefix, the trailing wildcard
+// still filters base names as expected.
+func TestWorkspaceDirs_NonRecursive_HoistsLiteralPrefix_WithFilter(t *testing.T) {
+	tmp := t.TempDir()
+	mkDirs(t, tmp, []string{
+		"apps/foo/env-a",
+		"apps/foo/env-b",
+		"apps/foo/notes",
+	})
+	w, body := doWorkspaceDirs(t, tmp, "", "apps%2Ffoo%2Fenv-%2A") // apps/foo/env-*
+	if w.Code != http.StatusOK {
+		t.Fatalf("code = %d, want %d; body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+	got := dirsList(t, body)
+	want := []string{"apps/foo/env-a", "apps/foo/env-b"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("dirs = %v, want %v (notes excluded)", got, want)
+	}
+}
+
+// TestWorkspaceDirs_NonRecursive_MissingLiteralPrefixEmpty pins that a
+// non-recursive glob whose literal prefix does not exist on disk yields
+// an empty list (fail-open contract), not a 500.
+func TestWorkspaceDirs_NonRecursive_MissingLiteralPrefixEmpty(t *testing.T) {
+	tmp := t.TempDir()
+	w, body := doWorkspaceDirs(t, tmp, "", "apps%2Fnope%2F%2A") // apps/nope/*
+	if w.Code != http.StatusOK {
+		t.Fatalf("code = %d, want %d; body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+	if got := dirsList(t, body); len(got) != 0 {
+		t.Fatalf("dirs = %v, want empty", got)
+	}
+}
