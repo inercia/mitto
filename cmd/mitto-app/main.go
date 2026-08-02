@@ -1318,7 +1318,7 @@ func run() error {
 	if cfg != nil {
 		// Set up failure callback to broadcast to UI clients
 		onFailure := hooks.WithOnFailure(func(failure hooks.HookFailure) {
-			srv.BroadcastHookFailed(failure.Name, failure.ExitCode, failure.Error, failure.Output)
+			srv.BroadcastHookFailed(failure.Name, failure.ExitCode, failure.Error, failure.Output, failure.Transient)
 		})
 		upHook = hooks.StartUp(cfg.Web.Hooks.Up, hookPort, onFailure)
 	}
@@ -1549,7 +1549,7 @@ func run() error {
 			DownHook:  cfg.Web.Hooks.Down,
 			Port:      hookPort,
 			OnFailure: func(failure hooks.HookFailure) {
-				srv.BroadcastHookFailed(failure.Name, failure.ExitCode, failure.Error, failure.Output)
+				srv.BroadcastHookFailed(failure.Name, failure.ExitCode, failure.Error, failure.Output, failure.Transient)
 			},
 			OnRestart: func(attempt int) {
 				srv.BroadcastHookRestarted(attempt)

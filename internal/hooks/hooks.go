@@ -67,10 +67,11 @@ func (lb *limitedBuffer) Write(p []byte) (n int, err error) {
 
 // HookFailure contains information about a hook that failed to execute.
 type HookFailure struct {
-	Name     string // Hook name
-	ExitCode int    // Exit code (-1 if killed by signal)
-	Error    string // Error message
-	Output   string // Captured stdout+stderr from the failed command (truncated to maxHookOutputBytes)
+	Name      string // Hook name
+	ExitCode  int    // Exit code (-1 if killed by signal)
+	Error     string // Error message
+	Output    string // Captured stdout+stderr from the failed command (truncated to maxHookOutputBytes)
+	Transient bool   // True when ClassifyHookOutput matched a known self-healing pattern (e.g. cloudflared loopback DNS refusal); consumers should render this quietly (info toast) rather than as a red error.
 }
 
 // Process manages a running hook command and its lifecycle.
@@ -193,23 +194,51 @@ func StartUp(hook config.WebHook, port int, opts ...StartUpOption) *Process {
 				return
 			}
 			output := rawBuf.String()
+			transient, reason := ClassifyHookOutput(output)
 			fmt.Printf("⚠️  Hook '%s' exited with code %d: %v\n", hookName, exitCode, err)
 			if output != "" {
 				fmt.Printf("   Output: %s\n", output)
 			}
-			logger.Error("Up hook exited with error",
-				"name", hookName,
-				"exit_code", exitCode,
-				"error", err,
-				"output", output,
-			)
+			if transient {
+				logger.Warn("Up hook exited with transient error",
+					"name", hookName,
+					"exit_code", exitCode,
+					"error", err,
+					"output", output,
+					"transient_reason", reason,
+				)
+			} else {
+				logger.Error("Up hook exited with error",
+					"name", hookName,
+					"exit_code", exitCode,
+					"error", err,
+					"output", output,
+				)
+			}
+			// Rate-limit transient failures so a DNS blip does not flood the
+			// UI with red toasts — a real (non-transient) failure always
+			// broadcasts.
+			suppress := false
+			if transient {
+				var seen int
+				suppress, seen = packageThrottle.ShouldSuppress(hookName, time.Now())
+				if suppress {
+					logger.Debug("Suppressing transient up-hook failure notification",
+						"name", hookName,
+						"seen_in_window", seen,
+						"window", hookFailureWindow,
+						"threshold", hookFailureThreshold,
+					)
+				}
+			}
 			// Notify about runtime failure
-			if onFailure != nil {
+			if onFailure != nil && !suppress {
 				onFailure(HookFailure{
-					Name:     hookName,
-					ExitCode: exitCode,
-					Error:    err.Error(),
-					Output:   output,
+					Name:      hookName,
+					ExitCode:  exitCode,
+					Error:     err.Error(),
+					Output:    output,
+					Transient: transient,
 				})
 			}
 		} else {
@@ -272,16 +301,32 @@ func (hp *Process) Stop() {
 }
 
 // RunDown runs the web.hooks.down command synchronously.
+// It is a thin wrapper around RunDownWithOptions with no callback — kept for
+// backward compatibility with existing call sites that do not need to
+// surface down-hook failures through the broadcast pipeline.
+func RunDown(hook config.WebHook, port int) {
+	RunDownWithOptions(hook, port, nil)
+}
+
+// RunDownWithOptions runs the web.hooks.down command synchronously.
 // It waits for the command to complete before returning, subject to downHookTimeout.
 // It replaces ${PORT} in the command with the actual port number.
 // Does nothing if the hook command is empty.
+//
+// The optional onFailure callback is invoked with a populated HookFailure
+// only when the command exits with a genuine non-zero code (i.e. not on
+// timeout and not when killed by an external signal, which mirror StartUp's
+// behavior). Transient failures classified by ClassifyHookOutput are
+// throttled through the shared packageThrottle so a DNS blip does not
+// flood the UI with red toasts — see StartUp for the same treatment.
 //
 // Error handling:
 //   - If the command times out (context deadline exceeded), logs Warn and returns.
 //   - If the command is killed by a signal (exit_code == -1, e.g. "signal: terminated"),
 //     logs at Debug level — this is normal during hook restarts and mirrors StartUp's behavior.
-//   - Any other non-zero exit code is logged as Error for diagnosis.
-func RunDown(hook config.WebHook, port int) {
+//   - Any other non-zero exit code is logged as Error (or Warn if transient) with
+//     the resolved command string for forensic diagnosis (AC#3, mitto-y6i).
+func RunDownWithOptions(hook config.WebHook, port int, onFailure func(HookFailure)) {
 	if hook.Command == "" {
 		return
 	}
@@ -349,6 +394,7 @@ func RunDown(hook config.WebHook, port int) {
 			fmt.Printf("⚠️  Down hook '%s' timed out after %v\n", hookName, downHookTimeout)
 			logger.Warn("Down hook timed out",
 				"name", hookName,
+				"command", command,
 				"timeout", downHookTimeout,
 			)
 			return
@@ -363,17 +409,31 @@ func RunDown(hook config.WebHook, port int) {
 			return
 		}
 
-		// Genuine non-zero exit: log as error for diagnosis.
+		transient, reason := ClassifyHookOutput(output)
+
+		// Genuine non-zero exit: log as error (or warn if transient) for diagnosis.
+		// The resolved command is always included so operators can see what
+		// `sh -c` was actually asked to run (AC#3 fix, mitto-y6i).
 		fmt.Printf("⚠️  Down hook '%s' exited with code %d: %v\n", hookName, exitCode, err)
 		if output != "" {
 			fmt.Printf("   Output: %s\n", output)
 		}
-		if output == "" {
+		if transient {
+			logger.Warn("Down hook failed with transient error",
+				"name", hookName,
+				"exit_code", exitCode,
+				"command", command,
+				"error", err,
+				"output", output,
+				"transient_reason", reason,
+			)
+		} else if output == "" {
 			// No output captured — flag explicitly so log analysis can distinguish
 			// "command produced nothing" from "output was not collected".
 			logger.Error("Down hook failed",
 				"name", hookName,
 				"exit_code", exitCode,
+				"command", command,
 				"error", err,
 				"output_empty", true,
 			)
@@ -381,9 +441,34 @@ func RunDown(hook config.WebHook, port int) {
 			logger.Error("Down hook failed",
 				"name", hookName,
 				"exit_code", exitCode,
+				"command", command,
 				"error", err,
 				"output", output,
 			)
+		}
+
+		// Rate-limit transient failures — real errors always broadcast.
+		suppress := false
+		if transient {
+			var seen int
+			suppress, seen = packageThrottle.ShouldSuppress(hookName, time.Now())
+			if suppress {
+				logger.Debug("Suppressing transient down-hook failure notification",
+					"name", hookName,
+					"seen_in_window", seen,
+					"window", hookFailureWindow,
+					"threshold", hookFailureThreshold,
+				)
+			}
+		}
+		if onFailure != nil && !suppress {
+			onFailure(HookFailure{
+				Name:      hookName,
+				ExitCode:  exitCode,
+				Error:     err.Error(),
+				Output:    output,
+				Transient: transient,
+			})
 		}
 	} else {
 		fmt.Printf("🔗 Down hook '%s' completed (exit code 0)\n", hookName)

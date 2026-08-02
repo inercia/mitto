@@ -2106,17 +2106,22 @@ func (s *Server) BroadcastLoopStarted(sessionID, sessionName string) {
 
 // BroadcastHookFailed notifies all connected clients that a lifecycle hook failed.
 // This allows the frontend to show a toast notification about the hook failure.
-func (s *Server) BroadcastHookFailed(name string, exitCode int, errorMsg string, output string) {
+// When transient is true, the failure was classified as a known self-healing
+// pattern (e.g. cloudflared loopback DNS refusal, mitto-y6i) and the frontend
+// should render it quietly (info-style toast) rather than a red error.
+func (s *Server) BroadcastHookFailed(name string, exitCode int, errorMsg string, output string, transient bool) {
 	s.eventsManager.Broadcast(WSMsgTypeHookFailed, map[string]interface{}{
 		"name":      name,
 		"exit_code": exitCode,
 		"error":     errorMsg,
 		"output":    output,
+		"transient": transient,
 	})
 
 	if s.logger != nil {
 		s.logger.Warn("Broadcast hook failed", "name", name, "exit_code", exitCode, "error", errorMsg,
 			"output", output,
+			"transient", transient,
 			"clients", s.eventsManager.ClientCount())
 	}
 }
@@ -2270,7 +2275,7 @@ func (s *Server) updateHealthMonitor(hooksConfig configPkg.WebHooks) {
 			DownHook:  hooksConfig.Down,
 			Port:      s.hookPort,
 			OnFailure: func(failure hooks.HookFailure) {
-				s.BroadcastHookFailed(failure.Name, failure.ExitCode, failure.Error, failure.Output)
+				s.BroadcastHookFailed(failure.Name, failure.ExitCode, failure.Error, failure.Output, failure.Transient)
 			},
 			OnRestart: func(attempt int) {
 				s.BroadcastHookRestarted(attempt)

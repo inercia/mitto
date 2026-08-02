@@ -217,18 +217,24 @@ export function useBackgroundNotifications({
     };
   }, [showToast]);
 
-  // Listen for hook failed events
+  // Listen for hook failed events. Transient failures (e.g. cloudflared
+  // loopback DNS refusal during bootstrap, mitto-y6i) are rendered as a
+  // quieter info-style toast rather than a red warning so users are not
+  // alarmed by normal network fluctuations — the backend already throttles
+  // the first N transient failures per window so only persistent transient
+  // failures reach the frontend.
   useEffect(() => {
     const handleHookFailed = (event) => {
       const data = event.detail;
       if (data) {
         const exitPart =
           data.exit_code !== undefined ? ` (exit code ${data.exit_code})` : "";
+        const transient = !!data.transient;
         showToast({
-          style: "warning",
-          title: `Hook Failed: ${data.name || "up"}${exitPart}`,
+          style: transient ? "info" : "warning",
+          title: `Hook ${transient ? "Blip" : "Failed"}: ${data.name || "up"}${exitPart}`,
           message: data.error || "",
-          duration: 10000,
+          duration: transient ? 5000 : 10000,
         });
       }
     };
