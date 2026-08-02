@@ -322,6 +322,18 @@ func BackoffDelay(attempt int, baseDelay, maxDelay time.Duration, jitterRatio fl
 // It looks for patterns like "HTTP error: NNN", `"httpStatus":NNN`, or "HTTP/1.1 NNN".
 var httpStatusRegex = regexp.MustCompile(`(?:HTTP error:\s*|"httpStatus"\s*:\s*|HTTP/[12](?:\.[01])?\s+)(\d{3})`)
 
+// status413Regex matches a 413 status code anchored to a recognizable status
+// keyword or HTTP-response prefix (mitto-3rs). Unlike a bare `strings.Contains(s,
+// "413")`, this does not false-positive on the digits "413" appearing incidentally
+// elsewhere in the error string (e.g. inside a request-id UUID segment such as
+// "f24b-4130-..."). It deliberately does NOT use a plain `\b413\b` word-boundary
+// match either: this codebase's error strings routinely carry duration-style
+// fields (e.g. "duration_ms=413", "elapsed_ms=413") that would reintroduce the
+// same class of false positive. Kept separate from httpStatusRegex (which is
+// shared with extractHTTPStatus and feeds unrelated -32603 message formatting)
+// so this fix does not alter other call sites.
+var status413Regex = regexp.MustCompile(`(?i)(?:HTTP error:\s*|"?(?:http)?status"?\s*:\s*|HTTP/[12](?:\.[01])?\s+)413\b`)
+
 // IsContextTooLargeError returns true if the error indicates the AI model
 // rejected the prompt because the conversation context is too large (HTTP 413
 // or an equivalent model-specific error phrase).
@@ -342,7 +354,7 @@ func IsContextTooLargeError(err error) bool {
 	}
 	errMsg := err.Error()
 	errMsgLower := strings.ToLower(errMsg)
-	return strings.Contains(errMsg, "413") ||
+	return status413Regex.MatchString(errMsg) ||
 		strings.Contains(errMsgLower, "context too large") ||
 		strings.Contains(errMsgLower, "context_too_long") ||
 		strings.Contains(errMsgLower, "context_length_exceeded") ||

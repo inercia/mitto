@@ -3392,7 +3392,14 @@ func TestIsContextTooLargeError(t *testing.T) {
 	}{
 		{name: "nil", errMsg: "", wantTrue: false},
 		{name: "HTTP 413 status in JSON-RPC data", errMsg: `{"code":-32603,"message":"Internal error","data":{"status":413}}`, wantTrue: true},
-		{name: "bare 413 digit", errMsg: "upstream returned 413", wantTrue: true},
+		// mitto-3rs: this used to be `wantTrue: true` under the old unanchored
+		// `strings.Contains(errMsg, "413")` check. That check also matched "413"
+		// appearing incidentally anywhere in an error string (e.g. inside a
+		// request-id UUID segment), so it was replaced with status413Regex,
+		// which requires "413" to be anchored to a status/HTTP-response prefix.
+		// This synthetic phrase has no such anchor, so it now correctly returns
+		// false — the ambiguity this bead was filed to fix.
+		{name: "bare 413 digit (no status anchor, mitto-3rs)", errMsg: "upstream returned 413", wantTrue: false},
 		{name: "context too large phrase", errMsg: "context too large for model", wantTrue: true},
 		{name: "context_too_long API code", errMsg: "error: context_too_long", wantTrue: true},
 		{name: "context_length_exceeded API code", errMsg: "context_length_exceeded", wantTrue: true},
@@ -3412,6 +3419,16 @@ func TestIsContextTooLargeError(t *testing.T) {
 		{name: "rate limit is not context too large", errMsg: "rate limit exceeded", wantTrue: false},
 		{name: "generic internal error", errMsg: `{"code":-32603,"message":"Internal error","data":{"details":"unknown"}}`, wantTrue: false},
 		{name: "unrelated error", errMsg: "some other error", wantTrue: false},
+		// mitto-3rs: the bare `strings.Contains(errMsg, "413")` check false-positives
+		// on a 404 model-unavailable error whose requestId UUID segment happens to
+		// contain the digits "413" (f24b-4130-...). This must NOT classify as
+		// context-too-large, or the loop runner's auto-pause guard and the prompt
+		// dispatcher's queue-stall logic misfire on an unrelated 404.
+		{
+			name:     "404 model-unavailable error with 413 inside requestId UUID (mitto-3rs)",
+			errMsg:   `-32603 Internal error: HTTP error: 404 Not Found {"message":"The selected model is not available for this session.","requestId":"80d593fb-f24b-4130-83e3-bf89b1bca239"}`,
+			wantTrue: false,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
