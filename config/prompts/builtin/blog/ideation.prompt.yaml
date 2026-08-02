@@ -1,6 +1,6 @@
 icon: plus
 name: 'Blog: ideation'
-menus: prompts, conversation
+menus: prompts, conversation, !promptsLoop
 parameters:
   - name: Folder
     type: text

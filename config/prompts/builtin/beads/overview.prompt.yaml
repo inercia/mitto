@@ -1,6 +1,6 @@
 icon: list
 name: Overview
-menus: prompts, beadsList
+menus: prompts, beadsList, !promptsLoop
 description: 'Read-only health snapshot of the whole tracker: ready, blocked, in-progress, stale, and dependency cycles'
 backgroundColor: '#CFD8DC'
 group: Tasks

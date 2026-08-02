@@ -1,6 +1,6 @@
 icon: search
 name: Identify follow-up issues
-menus: beadsIssues, prompts, conversation
+menus: beadsIssues, prompts, conversation, !promptsLoop
 parameters:
   - name: IssueID
     type: beadsId

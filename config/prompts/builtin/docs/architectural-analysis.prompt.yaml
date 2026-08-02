@@ -1,6 +1,6 @@
 icon: layers
 name: Architectural Analysis
-menus: prompts
+menus: prompts, !promptsLoop
 description: Analyze the codebase architecture from a 10,000-ft view and file beads issues for structural improvements, design-pattern violations, separation-of-concerns problems, and cross-package dependencies — grouping related findings under epics
 backgroundColor: '#C8E6C9'
 group: Code Quality

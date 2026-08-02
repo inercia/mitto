@@ -1,6 +1,6 @@
 icon: search
 name: 'GitHub: review a Pull Request'
-menus: prompts
+menus: prompts, !promptsLoop
 target:
   title: "PR #{{ .Args.Pr }} review"
   reuse:

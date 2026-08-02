@@ -1,6 +1,6 @@
 icon: refresh
 name: Reevaluate all issues
-menus: prompts, beadsList
+menus: prompts, beadsList, !promptsLoop
 description: Reevaluate priority, dependencies, and importance of all beads — close any already-completed ones, delegate deeper evaluation to child conversations when needed — then propose changes and surface what to do now
 backgroundColor: '#FFCC80'
 group: Tasks

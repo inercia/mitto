@@ -1,6 +1,6 @@
 icon: broom
 name: 'GitHub: post-merge cleanup'
-menus: prompts
+menus: prompts, !promptsLoop
 parameters:
   - name: IssuesOnly
     type: boolean
