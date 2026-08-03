@@ -1239,6 +1239,37 @@ func (m *ACPProcessManager) getOrCreateAuxiliarySession(ctx context.Context, wor
 		}
 	}
 
+	// MCP-init-aware bail (mitto-337): the two guards above are keyed on
+	// saturation history / concurrent RPC load, so neither fires against a
+	// QUIESCENT process that the agent has already reported is gated on its
+	// MCP handshake. A serialized cold-start (first-user-session in flight)
+	// leaves ActiveRPCs()==1 and IsSaturated()==false while an aux create
+	// waits behind createMu, then proceeds straight into a NewSession RPC
+	// doomed to burn the full auxSessionCreateBudget (60s) — the observed
+	// "22:31/22:32/22:33 serialized 60s failures" log signature. Bail
+	// immediately when either positive signal is present:
+	//   - MCPInitTimedOut(): the agent has explicitly given up on MCP init;
+	//     any session/new is certain to fail the same way.
+	//   - MCPInitInProgress() && !MCPInitDone(): a cold-start handshake is
+	//     actively running and has never completed. Deliberately NOT gating
+	//     on !MCPInitDone() alone (would deadlock the very first aux session
+	//     that could otherwise warm the process) and NOT on
+	//     MCPInitInProgress() alone (would also bail the normal per-session
+	//     warm re-handshake agents like Auggie run on every session/new,
+	//     mitto-29q).
+	if process.MCPInitTimedOut() || (process.MCPInitInProgress() && !process.MCPInitDone()) {
+		if m.logger != nil {
+			m.logger.Info("Skipping auxiliary NewSession: shared process is MCP-init gated",
+				"workspace_uuid", workspaceUUID,
+				"purpose", purpose,
+				"mcp_init_timed_out", process.MCPInitTimedOut(),
+				"mcp_init_in_progress", process.MCPInitInProgress(),
+				"mcp_init_done", process.MCPInitDone(),
+				"reason", "mcp_init_gated")
+		}
+		return nil, fmt.Errorf("%w: shared ACP process is mcp-init gated; skipping auxiliary session creation for purpose %q: %w", ErrSharedProcessSaturated, purpose, context.DeadlineExceeded)
+	}
+
 	// Instrument auxiliary session creation so cold-start / prewarm timing is
 	// observable in mitto.log. createStart brackets the whole create path from
 	// the cache-miss decision through the NewSession RPC; newSessionStart isolates

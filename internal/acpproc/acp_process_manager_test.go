@@ -2023,3 +2023,117 @@ func TestGetOrCreateAuxiliarySession_HighActiveRPCsBails(t *testing.T) {
 		t.Errorf("expected fast bail (<500ms), got %v — call fell through into NewSession", elapsed)
 	}
 }
+
+// TestGetOrCreateAuxiliarySession_MCPInitTimedOutBails is the mitto-337
+// reproduction (hard case): the shared process's stderr monitor has already
+// observed the agent report "MCP initialization timed out"
+// (mcpInitTimedOut=true), yet the process is QUIESCENT — not saturated
+// (IsSaturated()=false, no accumulated recordRPCTimeout calls yet) and not
+// busy (ActiveRPCs() below auxSessionCreateBusyRPCThreshold). Neither existing
+// guard (mitto-z70 IsSaturated, mitto-9gt ActiveRPCs) fires, so today the call
+// falls through into NewSession and burns the full auxSessionCreateBudget
+// (60s) against an agent that has explicitly given up on MCP init — exactly
+// the "22:31/22:32/22:33 serialized 60s failures" log signature on the bead.
+//
+// getOrCreateAuxiliarySession should instead consult the already-tracked
+// MCPInitTimedOut() signal and bail immediately with the same
+// ErrSharedProcessSaturated + context.DeadlineExceeded sentinel the other
+// bails use. This test FAILS today because no such bail exists.
+func TestGetOrCreateAuxiliarySession_MCPInitTimedOutBails(t *testing.T) {
+	m := NewACPProcessManager(context.Background(), nil)
+	defer m.Close()
+
+	const wsUUID = "ws-mcp-init-timed-out"
+
+	proc := newTestSharedProcess()
+	proc.mcpInitTimedOut.Store(true)
+
+	// Preconditions: isolate this guard from the two existing ones.
+	if proc.IsSaturated() {
+		t.Fatal("test setup: process must not be saturated (isolates the MCP-init-aware guard)")
+	}
+	if got := proc.ActiveRPCs(); got >= auxSessionCreateBusyRPCThreshold {
+		t.Fatalf("test setup: ActiveRPCs()=%d must be below threshold %d", got, auxSessionCreateBusyRPCThreshold)
+	}
+
+	m.mu.Lock()
+	m.processes[wsUUID] = proc
+	m.mu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	start := time.Now()
+	_, err := m.getOrCreateAuxiliarySession(ctx, wsUUID, "title-gen")
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected error from getOrCreateAuxiliarySession while MCP init has timed out")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("expected err to wrap context.DeadlineExceeded (saturation-family sentinel), got %v", err)
+	}
+	msg := strings.ToLower(err.Error())
+	if !strings.Contains(msg, "mcp") {
+		t.Errorf("expected error message to mention the MCP-init condition, got %q", err.Error())
+	}
+	if elapsed > 500*time.Millisecond {
+		t.Errorf("expected fast bail (<500ms), got %v — call fell through into NewSession", elapsed)
+	}
+}
+
+// TestGetOrCreateAuxiliarySession_MCPInitInProgressBails is the mitto-337
+// reproduction (soft case): the agent has reported it is actively waiting on
+// its MCP handshake (mcpInitInProgress=true) and has never completed one
+// (mcpInitDone=false) — i.e. it is mid cold-start, not yet hard-timed-out.
+// Same gap as the hard case: neither IsSaturated() nor ActiveRPCs() fires on a
+// quiescent process, so a non-essential aux purpose (follow-up) falls through
+// into a doomed 60s NewSession call instead of bailing on the
+// already-available "agent is gated on MCP init" signal.
+//
+// This test FAILS today for the same reason as the timed-out case above.
+func TestGetOrCreateAuxiliarySession_MCPInitInProgressBails(t *testing.T) {
+	m := NewACPProcessManager(context.Background(), nil)
+	defer m.Close()
+
+	const wsUUID = "ws-mcp-init-in-progress"
+
+	proc := newTestSharedProcess()
+	proc.mcpInitInProgress.Store(true)
+	// mcpInitDone left false (zero value): the handshake is still running,
+	// not yet warm — this is the precondition that distinguishes the "gated"
+	// case from a normal warm per-session re-handshake (mitto-29q), which
+	// must NOT be bailed.
+
+	if proc.IsSaturated() {
+		t.Fatal("test setup: process must not be saturated (isolates the MCP-init-aware guard)")
+	}
+	if got := proc.ActiveRPCs(); got >= auxSessionCreateBusyRPCThreshold {
+		t.Fatalf("test setup: ActiveRPCs()=%d must be below threshold %d", got, auxSessionCreateBusyRPCThreshold)
+	}
+
+	m.mu.Lock()
+	m.processes[wsUUID] = proc
+	m.mu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	start := time.Now()
+	_, err := m.getOrCreateAuxiliarySession(ctx, wsUUID, "follow-up")
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected error from getOrCreateAuxiliarySession while MCP init is in progress")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("expected err to wrap context.DeadlineExceeded (saturation-family sentinel), got %v", err)
+	}
+	msg := strings.ToLower(err.Error())
+	if !strings.Contains(msg, "mcp") {
+		t.Errorf("expected error message to mention the MCP-init condition, got %q", err.Error())
+	}
+	if elapsed > 500*time.Millisecond {
+		t.Errorf("expected fast bail (<500ms), got %v — call fell through into NewSession", elapsed)
+	}
+}

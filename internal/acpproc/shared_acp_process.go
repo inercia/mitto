@@ -1333,6 +1333,20 @@ func (p *SharedACPProcess) MCPInitDone() bool {
 	return p.mcpInitDone.Load()
 }
 
+// MCPInitInProgress reports whether the shared process's stderr monitor has
+// observed the agent actively waiting on an MCP-init handshake that has not
+// yet completed (mitto-337). Edge-detected true/false via the stderr monitor
+// (see onMCPInitProgress/mcpInitInProgress field doc); cleared on each
+// successful session/new or session/load RPC. Used alongside MCPInitDone() by
+// getOrCreateAuxiliarySession to bail proactively on a quiescent-but-MCP-gated
+// process — checking this flag alone (without MCPInitDone()) would also match
+// the normal per-session re-handshake on agents like Auggie that re-run MCP
+// init on every warm session/new (mitto-29q), so callers must gate on
+// (!MCPInitDone() && MCPInitInProgress()) to target only the cold-start case.
+func (p *SharedACPProcess) MCPInitInProgress() bool {
+	return p.mcpInitInProgress.Load()
+}
+
 // WaitForMCPInit blocks until the shared process's MCP-init window closes
 // (mcpInitDone latched via a successful session RPC), ctx is done, or the
 // process exits. Returns true only if the process became warm. Used by the
