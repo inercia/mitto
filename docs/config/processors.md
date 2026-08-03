@@ -5,7 +5,7 @@ Mitto supports processors that can run at four points in the conversation lifecy
 - **`on: userPrompt`** — Processors fire *before* the user's message is sent to the ACP agent. This is the standard phase for injecting context, prepending reminders, running scripts, or dispatching background prompts.
 - **`on: agentResponded`** — Processors fire *after* the agent finishes **each** turn — even while more queued messages are still pending. Only command-mode and prompt-mode are allowed here (text injection is not meaningful post-response).
 - **`on: agentIdle`** — Like `agentResponded`, but fires only once the agent has **drained its message queue and gone idle**. Within a burst of queued messages it fires a single time, at the idle breakpoint, so the processor sees the *complete* exchange rather than a partial mid-burst turn. Same execution rules as `agentResponded`. This is the right phase for memory/insight processors (e.g., `memorize-preferences`, `identify-user-data`, `auggie-update-rules`, `claude-update-memory`) that need full context. Cadence still applies and accumulates across the burst (see [Cadence Throttling](#cadence-throttling-cadence)).
-- **`on: conversationClosed`** — Processors fire **once** when a session is archived, either manually from the UI or automatically due to inactivity. Fire-and-forget: the archive path does not wait for these processors to complete. Only command-mode and prompt-mode are allowed, and `match` must be `all` (there is a single close event — `first`/`allExceptFirst` are meaningless). `mutate`, `rerun`, `cadence`, `stopReasons`, and `excludeOrigins` are rejected. Because the session is no longer active, only `output: discard` is supported — notifications, action buttons, and user-data patches cannot be delivered back to the closed conversation. This phase is ideal for post-mortem knowledge extraction (see the builtin `extract-memories-on-close`).
+- **`on: conversationClosed`** — Processors fire **once** when a session is archived, either manually from the UI or automatically due to inactivity. Fire-and-forget: the archive path does not wait for these processors to complete. Only command-mode and prompt-mode are allowed, and `match` must be `all` (there is a single close event — `first`/`allExceptFirst` are meaningless). `mutate`, `rerun`, `cadence`, `stopReasons`, and `excludeOrigins` are rejected. Because the session is no longer active, only `output: discard` is supported — notifications, action buttons, and user-data patches cannot be delivered back to the closed conversation. Prompt-mode processors can still reach the user with a workspace-scoped toast by calling the `mitto_workspace_ui_notify` MCP tool with `{{ .Workspace.UUID }}`. This phase is ideal for post-mortem knowledge extraction (see the builtin `extract-memories-on-close`).
 
 Within each phase, three execution modes are available:
 
@@ -487,6 +487,24 @@ fire-and-forget: the pipeline runs in the background and never blocks the archiv
 response. Because the session is closed, the processor cannot post notifications,
 action buttons or user-data patches back to the conversation — its work must be
 side-effects on the workspace side (files, external stores, task trackers).
+
+A prompt-mode close processor can still inform the user about those side-effects by
+calling the `mitto_workspace_ui_notify` MCP tool, which delivers a workspace-scoped
+toast instead of a conversation-scoped one. The workspace identifier is available as
+`{{ .Workspace.UUID }}` (the `@mitto:workspace_uuid` placeholder is **not** substituted
+in this phase — only `@mitto:close`, `@mitto:session_id`, `@mitto:archive_reason` and
+`@mitto:working_dir` are). Guard the call so the processor stays silent when the
+identifier is unavailable:
+
+```yaml
+prompt: |
+  {{ if .Workspace.UUID }}
+  When you have saved something, report it with mitto_workspace_ui_notify
+  (workspace_uuid: "{{ .Workspace.UUID }}"). If you saved nothing, do not notify.
+  {{ end }}
+```
+
+A complete close-phase processor:
 
 ```yaml
 name: my-close-memoriser
