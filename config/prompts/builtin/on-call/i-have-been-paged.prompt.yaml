@@ -4,7 +4,7 @@ menus: prompts, !promptsLoop
 description: 'Kick off incident triage — collect the incident links via a form, create a beads epic, ingest context from Slack / web pages / GitHub in parallel, decompose into sub-tasks, and dispatch a curious child investigator per sub-task. Every finding is written back to the corresponding bead.'
 group: On-Call
 backgroundColor: '#FFCDD2'
-enabledWhen: '!Session.IsChild && CommandExists("bd") && DirExists(".beads") && Permissions.CanStartConversation'
+enabledWhen: '!Session.IsChild && CommandExists("bd") && Permissions.CanStartConversation'
 preferredModels:
   - modelTag: Coding
 parameters:
@@ -23,8 +23,6 @@ prompt: |-
   # On-Call: I Have Been Paged
 
   You are helping an on-call engineer triage a live incident. This prompt orchestrates the opening minutes: gather links, open a tracker epic, ingest context in parallel, decompose the epic into sub-tasks, and dispatch one curious child investigator per sub-task. You act as the **coordinator** — real digging happens in the children.
-
-  ## Step 0 — Bootstrap beads if needed
 
   {{ template "beads-issues/shared/bootstrap" . }}
 

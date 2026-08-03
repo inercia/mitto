@@ -1,6 +1,8 @@
 package prompts
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -13,6 +15,10 @@ import (
 // the fragment body appear in the rendered output. Presence of a hallmark
 // in the rendered output means the {{ template "beads-issues/shared/bootstrap"
 // . }} call actually resolved and inlined its body.
+//
+// The fragment is conditional on the workspace lacking a .beads/ directory, so
+// each case pins Workspace.Folder to a temp dir: an empty one exercises the
+// bootstrap branch, one containing .beads/ exercises the no-op branch.
 func TestBootstrapBeadsFragmentRenders(t *testing.T) {
 	prev := CurrentFragments()
 	t.Cleanup(func() { SetCurrentFragments(prev) })
@@ -34,37 +40,97 @@ func TestBootstrapBeadsFragmentRenders(t *testing.T) {
 
 	// Hallmarks unique to the beads/bootstrap fragment body.
 	const (
-		hallmarkProbe       = "ls -d .beads 2>/dev/null"
-		hallmarkQuestion    = "Beads is not initialised in this project yet."
+		hallmarkHeading     = "## Step 0 — Bootstrap beads"
 		hallmarkInitCommand = "bd init --non-interactive"
+		hallmarkQuestion    = `"Yes — initialise beads"`
+		hallmarkUnattended  = "cannot answer a question"
 	)
-
-	ctx := &cel.PromptEnabledContext{
-		Session: cel.SessionContext{ID: "s", Name: "N", HasMessages: true},
-	}
 
 	byName := map[string]string{}
 	for _, p := range list {
 		byName[p.Name] = p.Content
 	}
-	funcs := cel.BuildTemplateFuncMap(ctx)
 
-	consumers := []string{"New issue"}
+	consumers := []string{
+		"New issue",
+		"Identify follow-up issues",
+		"Analyze logs",
+		"Architectural Analysis",
+		"GitHub: post-merge cleanup",
+		"On-Call: I have been paged",
+		"Support: watch channel",
+		"Loop fixing",
+		"Loop implementing",
+	}
+
+	// Uninitialised workspace: the bootstrap step must render.
+	noBeads := t.TempDir()
+	interactiveCtx := &cel.PromptEnabledContext{
+		Session:   cel.SessionContext{ID: "s", Name: "N", HasMessages: true},
+		Workspace: cel.WorkspaceContext{Folder: noBeads},
+	}
+	interactiveFuncs := cel.BuildTemplateFuncMap(interactiveCtx)
 	for _, name := range consumers {
 		body, ok := byName[name]
 		if !ok {
 			t.Errorf("prompt %q not found in builtin corpus", name)
 			continue
 		}
-		out, err := RenderPromptTemplate(name, body, ctx, funcs)
+		out, err := RenderPromptTemplate(name, body, interactiveCtx, interactiveFuncs)
 		if err != nil {
 			t.Errorf("render %q: %v", name, err)
 			continue
 		}
-		for _, hallmark := range []string{hallmarkProbe, hallmarkQuestion, hallmarkInitCommand} {
+		for _, hallmark := range []string{hallmarkHeading, hallmarkQuestion, hallmarkInitCommand} {
 			if !strings.Contains(out, hallmark) {
 				t.Errorf("prompt %q: rendered output missing hallmark %q — fragment did not inline", name, hallmark)
 			}
+		}
+		if strings.Contains(out, hallmarkUnattended) {
+			t.Errorf("prompt %q: interactive render took the loop (unattended) branch", name)
+		}
+	}
+
+	// Loop conversation: initialise unattended, never ask.
+	loopCtx := &cel.PromptEnabledContext{
+		Session:   cel.SessionContext{ID: "s", Name: "N", HasMessages: true, IsLoopConversation: true},
+		Workspace: cel.WorkspaceContext{Folder: noBeads},
+	}
+	loopFuncs := cel.BuildTemplateFuncMap(loopCtx)
+	for _, name := range consumers {
+		out, err := RenderPromptTemplate(name, byName[name], loopCtx, loopFuncs)
+		if err != nil {
+			t.Errorf("render %q (loop): %v", name, err)
+			continue
+		}
+		for _, hallmark := range []string{hallmarkHeading, hallmarkInitCommand, hallmarkUnattended} {
+			if !strings.Contains(out, hallmark) {
+				t.Errorf("prompt %q (loop): missing hallmark %q", name, hallmark)
+			}
+		}
+		if strings.Contains(out, hallmarkQuestion) {
+			t.Errorf("prompt %q (loop): unattended branch must not ask the user", name)
+		}
+	}
+
+	// Already-initialised workspace: the fragment must render nothing.
+	withBeads := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(withBeads, ".beads"), 0o755); err != nil {
+		t.Fatalf("mkdir .beads: %v", err)
+	}
+	initialisedCtx := &cel.PromptEnabledContext{
+		Session:   cel.SessionContext{ID: "s", Name: "N", HasMessages: true},
+		Workspace: cel.WorkspaceContext{Folder: withBeads},
+	}
+	initialisedFuncs := cel.BuildTemplateFuncMap(initialisedCtx)
+	for _, name := range consumers {
+		out, err := RenderPromptTemplate(name, byName[name], initialisedCtx, initialisedFuncs)
+		if err != nil {
+			t.Errorf("render %q (initialised): %v", name, err)
+			continue
+		}
+		if strings.Contains(out, hallmarkHeading) {
+			t.Errorf("prompt %q: bootstrap step rendered even though .beads/ exists", name)
 		}
 	}
 }

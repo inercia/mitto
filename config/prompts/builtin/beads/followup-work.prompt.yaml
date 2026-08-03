@@ -9,13 +9,14 @@ parameters:
 description: Review for incomplete work, follow-up items, and edge cases — for a specific bead or the whole conversation — organize them (grouping related items under epics), and file them as beads
 backgroundColor: '#DCEDC8'
 group: Tasks
-enabledWhen: CommandExists("bd") && DirExists(".beads") && (Session.HasMessages || Session.HasBeadsIssue || Item.Id != "")
+enabledWhen: CommandExists("bd") && (Session.HasMessages || Session.HasBeadsIssue || Item.Id != "")
 target:
   reuse:
     issue: true
     coalesce: true
 prompt: |
   {{ template "_shared/session-context" . }}
+  {{ template "beads-issues/shared/bootstrap" . }}
 
   # Beads: Identify Follow-up Work
 

@@ -14,8 +14,6 @@ prompt: |
 
   Beads is a CLI issue tracker (`bd`). Issues are called "beads" and have IDs like `bd-xyz`.
 
-  ## Step 0 — Bootstrap beads if needed
-
   {{ template "beads-issues/shared/bootstrap" . }}
 
   ## Step 1 — Determine issue source

@@ -25,7 +25,7 @@ parameters:
     type: text
     required: false
     description: 'How many days of channel history to scan each run (default 2).'
-enabledWhen: '!Session.IsChild && CommandExists("bd") && DirExists(".beads") && Tools.HasAnyPattern(["slack_*", "*_slack"])'
+enabledWhen: '!Session.IsChild && CommandExists("bd") && Tools.HasAnyPattern(["slack_*", "*_slack"])'
 loop:
   mode: optional
   default: true
@@ -38,6 +38,7 @@ prompt: |-
   # Support — Watch Channel (Triage + Keep Beads in Sync)
 
   {{ template "_shared/session-context" . }}
+  {{ template "beads-issues/shared/bootstrap" . }}
 
   Available ACP servers:
   {{ Default "(none)" .ACP.AvailableText }}

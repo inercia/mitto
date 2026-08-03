@@ -6,7 +6,7 @@ backgroundColor: '#C8E6C9'
 group: Code Quality
 tags:
 - loop
-enabledWhen: CommandExists("bd") && DirExists(".beads")
+enabledWhen: CommandExists("bd")
 loop:
   mode: optional
   default: false
@@ -24,6 +24,7 @@ prompt: |
   {{- if .Children.AllText }}
   Existing children: `{{ .Children.AllText }}`
   {{- end }}
+  {{ template "beads-issues/shared/bootstrap" . }}
 
   # Architectural Analysis
 
