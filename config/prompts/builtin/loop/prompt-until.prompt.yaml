@@ -1,6 +1,6 @@
 icon: loop
 name: Loop prompt until ...
-menus: prompts, conversation
+menus: prompts, promptsLoop, conversation
 parameters:
   - name: Prompt
     type: prompts
@@ -16,7 +16,7 @@ parameters:
 description: Make this conversation a loop (on completion), run a picked prompt each iteration, and keep iterating until your condition is met — then self-terminate
 backgroundColor: '#D1C4E9'
 group: Work flow
-enabledWhen: '!Session.IsChild && !Session.IsLoopConversation'
+enabledWhen: 'Session.HasMessages && !Session.IsChild'
 loop:
   mode: always
   trigger: onCompletion

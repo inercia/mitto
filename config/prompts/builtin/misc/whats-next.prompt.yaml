@@ -4,7 +4,7 @@ description: Analyze progress and suggest next steps
 group: Work flow
 menus: prompts, conversation
 backgroundColor: '#FFF9C4'
-enabledWhen: '!Session.IsLoopConversation && (Session.HasMessages || Session.HasBeadsIssue)'
+enabledWhen: 'Session.HasMessages || Session.HasBeadsIssue'
 prompt: |
   {{- if .Session.BeadsIssue }}
   This conversation is linked to beads issue `{{ .Session.BeadsIssue }}` — frame everything
