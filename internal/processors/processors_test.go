@@ -5498,6 +5498,81 @@ func TestApplyOnClose_PromptMode_Dispatched(t *testing.T) {
 	}
 }
 
+// TestApplyOnClose_PromptMode_RetriesOnTransientFailure reproduces mitto-exr:
+// close-phase prompt-mode dispatch failures are silent (no toast, no retry,
+// work lost). A transient promptFunc error (e.g. "shared ACP process is
+// saturated" from acperrors.ErrSharedProcessSaturated, or an aux-session lock
+// context-cancellation) should be retried with a bounded backoff instead of
+// being dropped after a single attempt — the 15-minute workspace pin taken by
+// SessionManager.ApplyOnCloseProcessors around the close pipeline (see
+// internal/conversation/session_manager.go) exists specifically to make such a
+// retry window safe.
+//
+// Today dispatchPromptBatch (apply.go) calls promptFunc exactly once and only
+// logs on error, so this test currently fails: promptFunc is invoked once and
+// never retried even though the injected error is transient and eventually
+// succeeds.
+func TestApplyOnClose_PromptMode_RetriesOnTransientFailure(t *testing.T) {
+	// Test-seam: shrink the retry cadence so the test doesn't race the
+	// production 2s base delay against its own polling window. Mirrors the
+	// titleRetryBaseDelay override pattern in title_wedge_repro_test.go.
+	origDelay := dispatchPromptRetryBaseDelay
+	dispatchPromptRetryBaseDelay = time.Millisecond
+	t.Cleanup(func() { dispatchPromptRetryBaseDelay = origDelay })
+
+	var mu sync.Mutex
+	var attempts int
+
+	proc := &Processor{
+		Name:   "close-memoriser-flaky",
+		When:   WhenConfig{On: PhaseConversationClosed, Match: MatchAll},
+		Prompt: "Persist for session @mitto:session_id.",
+	}
+
+	m := NewManager("", nil)
+	m.processors = []*Processor{proc}
+	m.SetPromptFunc(func(_ context.Context, _, _, _ string) error {
+		mu.Lock()
+		attempts++
+		n := attempts
+		mu.Unlock()
+		if n < 2 {
+			// Transient failure: mirrors acperrors.ErrSharedProcessSaturated /
+			// "shared ACP process is saturated" surfaced by
+			// getOrCreateAuxiliarySession — NOT the non-retryable "no shared
+			// process for workspace" sentinel.
+			return fmt.Errorf("failed to get auxiliary session: shared ACP process is saturated")
+		}
+		return nil
+	})
+
+	m.ApplyOnClose(context.Background(), CloseProcessorInput{
+		SessionID:     "sess-close-flaky",
+		WorkspaceUUID: "ws-uuid",
+		WorkingDir:    "/tmp/wd",
+		ArchiveReason: "manual",
+	})
+
+	// Dispatch is fire-and-forget; poll for the retry to land.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		n := attempts
+		mu.Unlock()
+		if n >= 2 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if attempts < 2 {
+		t.Fatalf("expected dispatchPromptBatch to retry a transient failure (attempts >= 2), got attempts=%d — "+
+			"a single-attempt dispatch silently drops close-phase work on transient errors (mitto-exr)", attempts)
+	}
+}
+
 // TestApplyOnClose_SkipsOtherPhases ensures processors from other phases are ignored.
 func TestApplyOnClose_SkipsOtherPhases(t *testing.T) {
 	var dispatched int

@@ -280,6 +280,14 @@ type Manager struct {
 	// Set by the web layer via SetPromptFunc to bridge to auxiliary ACP sessions.
 	promptFunc PromptFunc
 
+	// notifyFunc is an optional callback invoked when a prompt-mode dispatch
+	// exhausts all retries (see dispatchWithRetry). Set by the web layer via
+	// SetNotifyFunc to surface a failure toast to the user — most importantly
+	// for close-phase (conversationClosed) processors, where the session is
+	// already archived and no other UI channel exists (mitto-exr). nil means
+	// exhausted retries are only logged, matching pre-fix behavior.
+	notifyFunc NotifyFunc
+
 	// rerunState tracks per-processor run state for rerun logic.
 	// Keyed by processor name. Only populated for processors with rerun config.
 	// In-memory only — not persisted across restarts (isFirstPrompt=true on resume
@@ -375,6 +383,15 @@ func (m *Manager) SetPromptFunc(fn PromptFunc) {
 	m.promptFunc = fn
 }
 
+// SetNotifyFunc sets the callback invoked when a prompt-mode dispatch
+// exhausts all retries (mitto-exr). The callback is injected by the web
+// layer to surface a workspace-scoped UI toast (e.g. via
+// SessionManager.BroadcastWorkspaceUINotify), which works even when the
+// originating session has already been archived (close-phase processors).
+func (m *Manager) SetNotifyFunc(fn NotifyFunc) {
+	m.notifyFunc = fn
+}
+
 // SetStats seeds the activation counters from persisted values.
 // This is used when resuming a session to restore the cumulative count.
 func (m *Manager) SetStats(activations int, lastAt time.Time) {
@@ -399,6 +416,7 @@ func (m *Manager) CloneWithTextProcessors(procs []config.MessageProcessor, prior
 		processors:       make([]*Processor, len(m.processors)),
 		rerunState:       make(map[string]*processorRunState),
 		promptFunc:       m.promptFunc,
+		notifyFunc:       m.notifyFunc,
 		totalActivations: activations,
 		lastActivationAt: lastAt,
 		stateStore:       m.stateStore,
@@ -432,6 +450,7 @@ func (m *Manager) CloneWithDirProcessors(dirs []string, logger *slog.Logger) *Ma
 		processors:       make([]*Processor, len(m.processors)),
 		rerunState:       make(map[string]*processorRunState),
 		promptFunc:       m.promptFunc,
+		notifyFunc:       m.notifyFunc,
 		totalActivations: activations,
 		lastActivationAt: lastAt,
 		stateStore:       m.stateStore,
@@ -529,6 +548,7 @@ func (m *Manager) CloneWithEnabledOverrides(overrides []config.ProcessorOverride
 		processors:       make([]*Processor, len(m.processors)),
 		rerunState:       make(map[string]*processorRunState),
 		promptFunc:       m.promptFunc,
+		notifyFunc:       m.notifyFunc,
 		totalActivations: activations,
 		lastActivationAt: lastAt,
 		stateStore:       m.stateStore,
@@ -1504,6 +1524,85 @@ func EstimateTokens(text string) int {
 	return (len(text) + 3) / 4 // Round up
 }
 
+// dispatchPromptMaxRetries is the number of retry attempts (beyond the
+// initial attempt) for a transient prompt-mode close-phase dispatch failure
+// before giving up and (if configured) notifying the user. var (not const)
+// so tests can shrink the retry cadence — mirrors the titleMaxRetries
+// pattern in internal/conversation/title.go.
+var dispatchPromptMaxRetries = 2 // 3 total attempts
+
+// dispatchPromptRetryBaseDelay is the initial delay between retries
+// (exponential backoff: base, 2*base, ...). The 15-minute workspace pin
+// taken by SessionManager.ApplyOnCloseProcessors around the whole close
+// pipeline (mitto-4is) exists specifically to make this retry window safe.
+var dispatchPromptRetryBaseDelay = 2 * time.Second
+
+// isNonRetryableDispatchErr reports whether err indicates the workspace's
+// shared ACP process is simply not running (e.g. reaped by GC between the
+// caller's pre-check and this fire-and-forget dispatch, or a caller that
+// skipped the pre-check entirely). Retrying cannot help — there is no
+// process to route to — so this is a quiet, immediate skip rather than a
+// retryable transient failure such as saturation or a busy shared process
+// (mitto-6bn.1).
+func isNonRetryableDispatchErr(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "no shared process for workspace")
+}
+
+// dispatchWithRetry invokes m.promptFunc for the given name/prompt, retrying
+// up to dispatchPromptMaxRetries additional times with exponential backoff
+// when the error is transient. The non-retryable "no shared process for
+// workspace" sentinel is logged at WARN and abandoned immediately
+// (mitto-6bn.1). If every attempt fails, the final error is logged at ERROR
+// and, when a NotifyFunc is configured (see SetNotifyFunc), surfaced to the
+// user — previously such failures were silently logged and the work was
+// lost with no retry and no UI signal (mitto-exr). skipLog/failLog are the
+// exact log messages used for the two outcomes, letting single vs batched
+// dispatch keep their previously distinct wording.
+func (m *Manager) dispatchWithRetry(workspaceUUID, name, prompt string, timeout time.Duration, skipLog, failLog string) {
+	var lastErr error
+	for attempt := 0; attempt <= dispatchPromptMaxRetries; attempt++ {
+		if attempt > 0 {
+			delay := dispatchPromptRetryBaseDelay * time.Duration(uint(1)<<uint(attempt-1))
+			time.Sleep(delay)
+		}
+
+		bgCtx, cancel := context.WithTimeout(context.Background(), timeout)
+		lastErr = m.promptFunc(bgCtx, workspaceUUID, name, prompt)
+		cancel()
+
+		if lastErr == nil {
+			return
+		}
+
+		if isNonRetryableDispatchErr(lastErr) {
+			if m.logger != nil {
+				m.logger.Warn(skipLog, "name", name, "error", lastErr)
+			}
+			return
+		}
+
+		if m.logger != nil {
+			m.logger.Warn("prompt-mode processor dispatch attempt failed; will retry",
+				"name", name,
+				"attempt", attempt+1,
+				"max_attempts", dispatchPromptMaxRetries+1,
+				"error", lastErr,
+			)
+		}
+	}
+
+	if m.logger != nil {
+		m.logger.Error(failLog,
+			"name", name,
+			"attempts", dispatchPromptMaxRetries+1,
+			"error", lastErr,
+		)
+	}
+	if m.notifyFunc != nil {
+		m.notifyFunc(workspaceUUID, name, lastErr)
+	}
+}
+
 // dispatchPromptBatch dispatches prompt-mode processors as fire-and-forget.
 // If there is a single processor, it dispatches directly with the processor name.
 // If there are multiple processors, it combines their prompts into a single
@@ -1516,29 +1615,10 @@ func (m *Manager) dispatchPromptBatch(workspaceUUID string, prompts []pendingPro
 	if len(prompts) == 1 {
 		// Single processor — dispatch directly.
 		p := prompts[0]
-		go func() {
-			bgCtx, cancel := context.WithTimeout(context.Background(), p.timeout)
-			defer cancel()
-			if err := m.promptFunc(bgCtx, workspaceUUID, p.name, p.prompt); err != nil {
-				if m.logger != nil {
-					// Belt-and-suspenders: if the shared ACP process was reaped
-					// between the caller's pre-check and this dispatch (or if a
-					// caller skipped the pre-check entirely), downgrade to WARN
-					// instead of ERROR so the log is not noisy (mitto-6bn.1).
-					if strings.Contains(err.Error(), "no shared process for workspace") {
-						m.logger.Warn("prompt-mode processor dispatch skipped: shared ACP process not available",
-							"name", p.name,
-							"error", err,
-						)
-					} else {
-						m.logger.Error("prompt-mode processor dispatch failed",
-							"name", p.name,
-							"error", err,
-						)
-					}
-				}
-			}
-		}()
+		go m.dispatchWithRetry(workspaceUUID, p.name, p.prompt, p.timeout,
+			"prompt-mode processor dispatch skipped: shared ACP process not available",
+			"prompt-mode processor dispatch failed",
+		)
 		m.logger.Info("prompt-mode processor dispatched (single)",
 			"name", prompts[0].name,
 			"prompt_len", len(prompts[0].prompt),
@@ -1564,29 +1644,10 @@ func (m *Manager) dispatchPromptBatch(workspaceUUID string, prompts []pendingPro
 	combinedName := strings.Join(names, "+")
 	combinedPrompt := sb.String()
 
-	go func() {
-		bgCtx, cancel := context.WithTimeout(context.Background(), maxTimeout)
-		defer cancel()
-		if err := m.promptFunc(bgCtx, workspaceUUID, combinedName, combinedPrompt); err != nil {
-			if m.logger != nil {
-				// Belt-and-suspenders: same rationale as the single-processor
-				// path above — downgrade the "no shared process" sentinel to
-				// WARN so a race against GC does not surface as an ERROR
-				// (mitto-6bn.1).
-				if strings.Contains(err.Error(), "no shared process for workspace") {
-					m.logger.Warn("batched prompt-mode processor dispatch skipped: shared ACP process not available",
-						"names", combinedName,
-						"error", err,
-					)
-				} else {
-					m.logger.Error("batched prompt-mode processor dispatch failed",
-						"names", combinedName,
-						"error", err,
-					)
-				}
-			}
-		}
-	}()
+	go m.dispatchWithRetry(workspaceUUID, combinedName, combinedPrompt, maxTimeout,
+		"batched prompt-mode processor dispatch skipped: shared ACP process not available",
+		"batched prompt-mode processor dispatch failed",
+	)
 
 	m.logger.Info("prompt-mode processors dispatched (batched)",
 		"names", combinedName,

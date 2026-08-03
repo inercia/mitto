@@ -126,6 +126,15 @@ const (
 // (fire-and-forget). Returns error only if the prompt couldn't be dispatched.
 type PromptFunc func(ctx context.Context, workspaceUUID, processorName, prompt string) error
 
+// NotifyFunc is a callback invoked when a prompt-mode processor dispatch
+// exhausts all retries (see Manager.dispatchWithRetry, mitto-exr). name is
+// the processor name (or "+"-joined combined name for a batched dispatch)
+// and lastErr is the final error from the last attempt. Injected by the web
+// layer via Manager.SetNotifyFunc to surface a workspace-scoped UI toast —
+// this is the only user-visible signal for close-phase (conversationClosed)
+// processors, whose originating session has already been archived.
+type NotifyFunc func(workspaceUUID, name string, lastErr error)
+
 // Phase defines when in the conversation lifecycle a processor fires.
 type Phase string
 

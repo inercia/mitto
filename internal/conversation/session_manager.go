@@ -748,6 +748,22 @@ func (sm *SessionManager) ApplyOnCloseProcessors(sessionID string, reason string
 		})
 	}
 
+	// Wire the failure-notify seam (mitto-exr): when dispatchWithRetry exhausts
+	// its retries, surface a workspace-scoped toast so a lost close-phase
+	// processor is no longer silent. Workspace-scoped because the originating
+	// session has already been archived by the time this fires.
+	workspaceName := workspaceUUID
+	if ws := sm.wsRegistry.GetWorkspaceByUUID(workspaceUUID); ws != nil && ws.Name != "" {
+		workspaceName = ws.Name
+	}
+	procMgr.SetNotifyFunc(func(wsUUID, name string, lastErr error) {
+		sm.BroadcastWorkspaceUINotify(wsUUID, workspaceName, workingDir, UINotifyRequest{
+			Title:   "Close-phase processor failed",
+			Message: fmt.Sprintf("%q could not be dispatched after retries: %v", name, lastErr),
+			Style:   "warning",
+		})
+	})
+
 	input := processors.CloseProcessorInput{
 		SessionID:             sessionID,
 		SessionDir:            store.SessionDir(sessionID),
