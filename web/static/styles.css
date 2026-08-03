@@ -2657,11 +2657,14 @@ mitto-action {
 
 
 
-/* Loop toggle in the prompts menu — the unchecked box must not inherit the
-   prompt row's pill color, so pin its surface to the theme input background
-   (white in light, dark panel in dark). The checked state keeps daisyUI's
-   `checkbox-success` green fill. */
-.prompt-loop-checkbox:not(:checked) {
-  background-color: var(--mitto-input);
-  border-color: var(--mitto-border-3, rgba(128, 128, 128, 0.4));
+/* Loop toggle in the prompts menu — the box must never inherit the prompt row's
+   pill color, and the pills keep their light tints in both themes, so pin the
+   surface to white in checked and unchecked state regardless of theme. daisyUI
+   paints the checked fill from `--input-color` (transparent when unset), so
+   override it too; the tick is drawn from `currentColor`, hence the green. */
+.prompt-loop-checkbox,
+.prompt-loop-checkbox:checked {
+  background-color: #ffffff;
+  border-color: rgba(0, 0, 0, 0.35);
+  color: #16a34a;
 }
