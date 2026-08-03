@@ -4412,6 +4412,154 @@ func TestCancel_NoActiveUIPrompt(t *testing.T) {
 	}
 }
 
+// TestCancel_DrainsStrandedQueueAfterWedgedPrompt reproduces mitto-79x: stopping a
+// wedged prompt via Cancel() must drain any messages stranded in the queue.
+// Cancel()/ForceReset() are the only user-visible way to un-wedge a session, and
+// the queue dispatcher is otherwise entirely event-driven (enqueue, spawn, resume,
+// loop fire) — there is no periodic self-heal tick, so without an explicit drain
+// here the queued message stays stuck forever. No live ACP connection is needed:
+// the dispatch attempt fails fast and deterministically (session is nil), and
+// this test only cares whether the queue was drained, not the ACP outcome.
+func TestCancel_DrainsStrandedQueueAfterWedgedPrompt(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	sessionID := "test-session-cancel-drain"
+	if err := store.Create(session.Metadata{
+		SessionID:  sessionID,
+		ACPServer:  "test-server",
+		WorkingDir: "/tmp",
+	}); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	// Queue a message while the session will be marked "wedged" below.
+	queue := store.Queue(sessionID)
+	if _, err := queue.Add("stranded message", nil, nil, "client1", nil, 0, nil, ""); err != nil {
+		t.Fatalf("Add failed: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	bs := &BackgroundSession{
+		observers:   make(map[SessionObserver]struct{}),
+		ctx:         ctx,
+		cancel:      cancel,
+		persistedID: sessionID,
+		store:       store,
+	}
+	bs.promptCond = sync.NewCond(&bs.promptMu)
+
+	observer := &mockSessionObserver{}
+	bs.AddObserver(observer)
+
+	// Simulate a wedged prompt: isPrompting=true as if a turn is stuck.
+	bs.promptMu.Lock()
+	bs.isPrompting = true
+	bs.promptMu.Unlock()
+
+	if err := bs.Cancel(); err != nil {
+		t.Fatalf("Cancel() returned unexpected error: %v", err)
+	}
+
+	// Cancel() must trigger a queue drain (mirroring every other
+	// TryProcessQueuedMessage call site in the codebase, run asynchronously
+	// since promptWithMeta re-acquires promptMu). Poll with a bound instead of
+	// asserting immediately after Cancel() returns.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if qLen, _ := queue.Len(); qLen == 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	qLen, err := queue.Len()
+	if err != nil {
+		t.Fatalf("queue.Len() failed: %v", err)
+	}
+	if qLen != 0 {
+		t.Errorf("mitto-79x: queue still has %d message(s) stranded after Cancel() on a wedged prompt; "+
+			"Cancel() must drain the queue (e.g. via go bs.TryProcessQueuedMessage())", qLen)
+	}
+	if len(observer.getQueueMessagesSending()) == 0 {
+		t.Error("mitto-79x: expected OnQueueMessageSending to fire after Cancel() drains the stranded message")
+	}
+}
+
+// TestForceReset_DrainsStrandedQueueAfterWedgedPrompt is the ForceReset() sibling
+// of TestCancel_DrainsStrandedQueueAfterWedgedPrompt — see that test for the full
+// rationale (mitto-79x). ForceReset() has the identical drain gap as Cancel().
+func TestForceReset_DrainsStrandedQueueAfterWedgedPrompt(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	sessionID := "test-session-forcereset-drain"
+	if err := store.Create(session.Metadata{
+		SessionID:  sessionID,
+		ACPServer:  "test-server",
+		WorkingDir: "/tmp",
+	}); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	queue := store.Queue(sessionID)
+	if _, err := queue.Add("stranded message", nil, nil, "client1", nil, 0, nil, ""); err != nil {
+		t.Fatalf("Add failed: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	bs := &BackgroundSession{
+		observers:   make(map[SessionObserver]struct{}),
+		ctx:         ctx,
+		cancel:      cancel,
+		persistedID: sessionID,
+		store:       store,
+	}
+	bs.promptCond = sync.NewCond(&bs.promptMu)
+
+	observer := &mockSessionObserver{}
+	bs.AddObserver(observer)
+
+	// Simulate a wedged prompt: isPrompting=true as if a turn is stuck.
+	bs.promptMu.Lock()
+	bs.isPrompting = true
+	bs.promptMu.Unlock()
+
+	bs.ForceReset()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if qLen, _ := queue.Len(); qLen == 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	qLen, err := queue.Len()
+	if err != nil {
+		t.Fatalf("queue.Len() failed: %v", err)
+	}
+	if qLen != 0 {
+		t.Errorf("mitto-79x: queue still has %d message(s) stranded after ForceReset() on a wedged prompt; "+
+			"ForceReset() must drain the queue (e.g. via go bs.TryProcessQueuedMessage())", qLen)
+	}
+	if len(observer.getQueueMessagesSending()) == 0 {
+		t.Error("mitto-79x: expected OnQueueMessageSending to fire after ForceReset() drains the stranded message")
+	}
+}
+
 // =============================================================================
 // IsACPReady Tests
 // =============================================================================

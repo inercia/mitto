@@ -1476,7 +1476,8 @@ func (p promptDispatcher) handlePromptError(
 	// Context-too-large (413): all queued messages will fail until the user starts a fresh
 	//   conversation — stop the queue.
 	// Rate-limit: the API will reject the next message too — stop the queue;
-	//   the keepalive-driven TryProcessQueuedMessage will retry once the session is idle.
+	//   the keepalive poll (mitto-79x, session_ws.go handleKeepalive) retries
+	//   TryProcessQueuedMessage once the session is idle.
 	// Auth error (mitto-r5o): upstream CLI's session token has expired — every queued
 	//   message will hit the same "Authentication required" until the user re-authenticates
 	//   the CLI. Stop the queue.

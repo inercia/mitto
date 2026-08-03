@@ -1622,6 +1622,18 @@ func (c *SessionWSClient) handleKeepalive(clientTime int64, clientLastSeenSeq in
 		}
 	}
 
+	// mitto-79x: periodic safety-net drain. The queue dispatcher is otherwise
+	// entirely event-driven (enqueue, spawn, resume, loop fire, Cancel/ForceReset)
+	// with no self-heal tick, so a message stranded behind a still-pending
+	// queue_delay_seconds window (e.g. right after Cancel/ForceReset stamps
+	// lastResponseComplete) would otherwise sit until the next event. Piggyback
+	// on the keepalive poll (every 5-10s) instead: best-effort and idempotent —
+	// TryProcessQueuedMessage no-ops when idle-with-no-queue, prompting, or
+	// still inside the delay window.
+	if c.bgSession != nil && isRunning && !isPrompting && queueLength > 0 {
+		go c.bgSession.TryProcessQueuedMessage()
+	}
+
 	// Get session status from metadata
 	var status string
 	if c.store != nil {

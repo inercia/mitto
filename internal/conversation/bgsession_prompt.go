@@ -694,6 +694,15 @@ func (bs *BackgroundSession) Cancel() error {
 		bs.flushPendingConfig()
 	}
 
+	// mitto-79x: Cancel() only clears local prompting state — it never used to
+	// trigger the queue dispatcher, so any message queued while wedged stayed
+	// stranded forever (the dispatcher is entirely event-driven; there is no
+	// periodic self-heal). Async because TryProcessQueuedMessage ultimately
+	// calls promptWithMeta, which re-acquires promptMu.
+	if wasPrompting {
+		go bs.TryProcessQueuedMessage()
+	}
+
 	return cancelErr
 }
 
@@ -737,6 +746,11 @@ func (bs *BackgroundSession) ForceReset() {
 	// Apply any config changes deferred during the reset turn now that the session
 	// is idle (best effort; the RPC fails fast if the agent connection is dead).
 	bs.flushPendingConfig()
+
+	// mitto-79x: see the matching comment in Cancel() — ForceReset() has the same
+	// drain gap. Async because TryProcessQueuedMessage ultimately calls
+	// promptWithMeta, which re-acquires promptMu.
+	go bs.TryProcessQueuedMessage()
 
 	if bs.logger != nil {
 		bs.logger.Warn("Session forcefully reset due to unresponsive agent")
