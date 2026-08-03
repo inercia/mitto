@@ -8,7 +8,7 @@ tags:
 - loop
 - github
 target:
-  title: "PR #{{ .Args.Pr }} address comments"
+  title: "PR #{{ .Args.Pr }}"
   reuse:
     title: true
     coalesce: true

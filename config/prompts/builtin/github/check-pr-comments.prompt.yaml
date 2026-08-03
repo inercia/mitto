@@ -8,7 +8,7 @@ tags:
 - loop
 - github
 target:
-  title: "PR #{{ .Args.Pr }} check comments"
+  title: "PR #{{ .Args.Pr }}"
   reuse:
     title: true
     coalesce: true
@@ -85,27 +85,24 @@ prompt: |
   ### 5. Hand Off (only when the verdict is "Address now")
 
   Delegate the actual work to the **Address PR Comments** prompt — do **not**
-  implement fixes in this conversation.
+  implement fixes in this turn.
 
-  Available ACP servers: `{{ Default "(none)" .ACP.AvailableText }}`
-  {{- if .Children.AllText }}
-  Existing children: `{{ .Children.AllText }}`
-  {{- end }}
+  This conversation is the single conversation for this PR (its title is
+  `PR #{{ .Args.Pr }}`, shared by every per-PR GitHub prompt), so the hand-off
+  goes to **this** conversation, not to a child — that keeps one worker per PR
+  and avoids two agents pushing to the same branch:
 
-  1. If an existing child is already handling this PR (check `{{ .Children.AllText }}`
-     and titles like `PR #{{ .Args.Pr }} address comments`), **reuse it** — send an
-     update via `mitto_conversation_send_prompt` instead of spawning a duplicate.
-  2. Otherwise spawn a fresh conversation:
-     ```
-     mitto_conversation_new(
-       self_id: "{{ .Session.ID }}",
-       prompt_name: "Address PR Comments",
-       arguments: { "Pr": "{{ .Args.Pr }}" },
-       acp_server: <prefer a "coding"/"fast" tagged server; fallback: current>,
-     )
-     ```
-  3. Notify the user with `mitto_ui_notify` that the address run has started,
-     including the child's title/ID and a one-line summary of what needs fixing.
+  ```
+  mitto_conversation_send_prompt(
+    self_id: "{{ .Session.ID }}",
+    conversation_id: "self",
+    prompt_name: "Address PR Comments",
+    arguments: { "Pr": "{{ .Args.Pr }}" })
+  ```
+
+  The queued prompt runs as the **next** turn of this conversation, after this
+  triage turn ends. Then notify the user with `mitto_ui_notify` that the address
+  run is queued, including a one-line summary of what needs fixing.
 
   ### 6. Summary Notification
 
@@ -116,7 +113,7 @@ prompt: |
 
   📊 Comments: X total (Y unresolved, Z noise/ignored)
   🎯 Verdict: <address now | defer | ignore>
-  ➡️  Action: <"Address PR Comments" spawned as <title>" | "no action needed">
+  ➡️  Action: <"Address PR Comments" queued on this conversation" | "no action needed">
   🔗 PR: <pr-url>
   ```
 
@@ -127,4 +124,5 @@ prompt: |
   - Treat already-resolved threads and self-authored comments as out of scope.
   - When in doubt about importance, err on the side of "address now" so a human
     (or the Address prompt) can make the final call.
-  - Prefer reusing an existing address-comments child over spawning duplicates.
+  - **One conversation per PR**: hand off by queueing "Address PR Comments" on
+    this conversation, never by spawning a child for the same PR.

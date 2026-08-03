@@ -2,7 +2,7 @@ icon: search
 name: 'GitHub: review a Pull Request'
 menus: prompts, !promptsLoop
 target:
-  title: "PR #{{ .Args.Pr }} review"
+  title: "PR #{{ .Args.Pr }}"
   reuse:
     title: true
     coalesce: true

@@ -3622,8 +3622,14 @@ func TestBuiltinPrompts_NeedsTemplatedTitleAdoption(t *testing.T) {
 	specs := []spec{
 		{file: "support/continue-conversation.prompt.yaml", wantTitle: "Support: continue {{ .Args.SlackChannelID }}"},
 		{file: "support/watch-channel.prompt.yaml", wantTitle: "Support: watch {{ .Args.SlackChannelID }}"},
-		{file: "github/review-pr.prompt.yaml", wantTitle: "PR #{{ .Args.Pr }} review"},
-		{file: "github/address-pr-comments.prompt.yaml", wantTitle: "PR #{{ .Args.Pr }} address comments"},
+		// The four per-PR GitHub prompts deliberately share ONE templated
+		// title so only a single conversation ever works on a given PR
+		// (review + triage + address + babysit all funnel into "PR #<n>").
+		// Two of them mutate the PR branch (address, babysit), so distinct
+		// titles here would let two agents push to the same branch.
+		{file: "github/review-pr.prompt.yaml", wantTitle: "PR #{{ .Args.Pr }}"},
+		{file: "github/address-pr-comments.prompt.yaml", wantTitle: "PR #{{ .Args.Pr }}"},
+		{file: "github/check-pr-comments.prompt.yaml", wantTitle: "PR #{{ .Args.Pr }}"},
 	}
 	for _, s := range specs {
 		t.Run(s.file, func(t *testing.T) {
@@ -3700,19 +3706,40 @@ func TestBuiltinPrompts_NeedsTemplatedTitleRenders_PerIDBuckets(t *testing.T) {
 			missingIsErr: false,
 			wantMissing:  "Support: watch ",
 		},
+		// The three per-PR GitHub prompts below render to the SAME title for
+		// the same Pr, which is the point: one conversation per PR. Distinct
+		// Pr values still yield distinct buckets.
 		{
 			file: "github/review-pr.prompt.yaml", argName: "Pr",
 			sameValue: "123", otherValue: "456",
-			wantSame: "PR #123 review", wantOther: "PR #456 review",
+			wantSame: "PR #123", wantOther: "PR #456",
 			missingIsErr: false,
-			wantMissing:  "PR # review",
+			wantMissing:  "PR #",
 		},
 		{
 			file: "github/address-pr-comments.prompt.yaml", argName: "Pr",
 			sameValue: "123", otherValue: "456",
-			wantSame: "PR #123 address comments", wantOther: "PR #456 address comments",
+			wantSame: "PR #123", wantOther: "PR #456",
 			missingIsErr: false,
-			wantMissing:  "PR # address comments",
+			wantMissing:  "PR #",
+		},
+		{
+			file: "github/check-pr-comments.prompt.yaml", argName: "Pr",
+			sameValue: "123", otherValue: "456",
+			wantSame: "PR #123", wantOther: "PR #456",
+			missingIsErr: false,
+			wantMissing:  "PR #",
+		},
+		// babysit-this-pr guards the empty-Pr case explicitly: with no Pr it
+		// falls back to a literal title (the PR is auto-detected from the
+		// conversation at run time), instead of collapsing every babysat PR
+		// into a shared "PR #" bucket.
+		{
+			file: "github/babysit-this-pr.prompt.yaml", argName: "Pr",
+			sameValue: "123", otherValue: "456",
+			wantSame: "PR #123", wantOther: "PR #456",
+			missingIsErr: false,
+			wantMissing:  "GitHub: babysit this PR",
 		},
 	}
 	for _, s := range specs {

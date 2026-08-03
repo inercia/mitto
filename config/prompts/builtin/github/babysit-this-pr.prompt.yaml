@@ -2,7 +2,7 @@ icon: globe
 name: 'GitHub: babysit this PR'
 menus: prompts, conversations
 parameters:
-  - name: PullRequest
+  - name: Pr
     type: text
     required: false
     description: 'Optional PR reference (a number like `123`, or a full URL like `https://github.com/owner/repo/pull/123`). If omitted, the PR created earlier in THIS conversation is auto-detected from the conversation history; if none is found, the loop aborts.'
@@ -21,7 +21,7 @@ loop:
   maxIterations: 30
   maxDuration: "6h"
 target:
-  title: 'GitHub: babysit this PR'
+  title: '{{ if .Args.Pr }}PR #{{ .Args.Pr }}{{ else }}GitHub: babysit this PR{{ end }}'
   reuse:
     title: true
     coalesce: true
@@ -74,10 +74,10 @@ prompt: |
   **this** conversation. Establish it in the following priority order — the
   first source that yields a PR wins; do **not** merge sources or babysit more
   than one PR:
-  {{- if .Args.PullRequest }}
+  {{- if .Args.Pr }}
 
-  **Source 0 — explicit `PullRequest` argument (highest priority).** The user
-  supplied `PullRequest = {{ .Args.PullRequest }}`. Parse it:
+  **Source 0 — explicit `Pr` argument (highest priority).** The user
+  supplied `Pr = {{ .Args.Pr }}`. Parse it:
   - If it looks like a full URL (`https://github.com/<owner>/<repo>/pull/<n>`),
     extract `<owner>/<repo>` as the repository and `<n>` as the PR number.
   - If it is a bare number, use the current folder's repository (see below) and
@@ -144,14 +144,21 @@ prompt: |
 
   {{ template "github/shared/gh-owned-logins" . }}
 
-  Rename this conversation so it's easy to identify — but only if the current
-  name (`{{ .Session.Name }}`) doesn't already start with "Babysit PR #":
+  Every per-PR GitHub prompt routes into **one** conversation per PR, keyed on the
+  conversation title `PR #<number>`. Normalise this conversation's name to that
+  exact form so later dispatches of "Address PR Comments", "Check PR Comments" or
+  "GitHub: review a Pull Request" for the same PR land here instead of starting a
+  second worker on the same branch. Skip the call if the current name
+  (`{{ .Session.Name }}`) is already exactly `PR #<number>`:
 
   ```
   mitto_conversation_update(self_id: "{{ .Session.ID }}",
     conversation_id: "{{ .Session.ID }}",
-    name: "Babysit PR #<number> in <owner>/<repo>")
+    name: "PR #<number>")
   ```
+
+  Use the bare PR **number** (not a URL or branch name) so the title is
+  canonical even when this run was started from a URL.
 
   Print one line to standard output so source 1 of future runs recovers the
   target:
@@ -281,10 +288,14 @@ prompt: |
 
   - **Single-PR scope**: this loop babysits **exactly one** PR — the one
     created in this conversation (or the one supplied via the
-    `PullRequest` parameter). Never expand the target set to other PRs on
+    `Pr` parameter). Never expand the target set to other PRs on
     the account; for that, use "GitHub: babysit my PRs" or
     "GitHub: iterate babysitting new PRs" instead.
-  - **PR identification order**: `PullRequest` argument → prior-run marker
+  - **One conversation per PR**: this conversation is named `PR #<number>`,
+    the shared routing key of every per-PR GitHub prompt. Never rename it
+    away from that form, or concurrent dispatches will start a second
+    worker on the same branch.
+  - **PR identification order**: `Pr` argument → prior-run marker
     in this conversation's history / children → PR-creation event in this
     conversation's history → self-terminate (nothing to babysit).
   - **Only act on your own PR** — the PR's `author.login` must be a
