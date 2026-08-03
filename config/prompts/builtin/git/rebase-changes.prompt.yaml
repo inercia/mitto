@@ -7,7 +7,7 @@ backgroundColor: '#B2DFDB'
 preferredModels:
   - modelTag: Coding
 target:
-  title: 'Rebase changes'
+  title: 'Submission of changes'
   reuse:
     title: true
     coalesce: true
@@ -28,44 +28,18 @@ prompt: |
 
   {{ template "git/shared/identify-remote-branch" . }}
 
-  ### 3. Fetch and Preview
+  ### 3. Rebase and Resolve Conflicts
 
-  ```bash
-  git fetch <target-remote>
-  git log --oneline <target-remote>/<target-branch>..HEAD
-  ```
+  {{ template "git/shared/rebase-onto-base" . }}
 
-  ### 4. Rebase
-
-  If rebase already in progress: check for conflicts (`git diff --name-only --diff-filter=U`), resolve or continue.
-
-  Otherwise: `git rebase <target-remote>/<target-branch>`
-
-  ### 5. Conflict Resolution
-
-  Per conflicting file:
-
-  1. Identify: `git diff --name-only --diff-filter=U`
-  2. Examine both sides
-  3. Analyze: incoming vs. ours, same logical area?
-
-  **Auto-resolve** when: whitespace/formatting, non-overlapping additions, clear merge of both, import ordering.
-
-  **Ask user** when: same logic modified differently, semantic meaning changes, multiple valid resolutions, complex refactoring.
-
-  **With Mitto UI**: `mitto_ui_options(self_id: "{{ .Session.ID }}", ...` → "Accept theirs / Accept ours / Combine both / Custom"
-  **Without**: Present options in conversation.
-
-  After each file: `git add <file>` → `git rebase --continue`. Iterate until complete.
-
-  ### 6. Report
+  ### 4. Report
 
   ```console
   ✅ Rebase completed successfully!
   Rebased X commits onto <target-remote>/<target-branch>
   ```
 
-  ### 7. Push
+  ### 5. Push
 
   ```bash
   git push --force-with-lease origin <current-branch>

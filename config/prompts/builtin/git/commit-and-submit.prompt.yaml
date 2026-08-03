@@ -1,0 +1,102 @@
+icon: rocket-launch
+name: Commit & Submit changes
+menus: prompts, conversation, !promptsLoop
+description: Commit changes, rebase onto the base branch, and push to a pull request
+group: Submission of changes
+backgroundColor: '#B2DFDB'
+preferredModels:
+  - modelTag: Coding
+target:
+  title: 'Submission of changes'
+  reuse:
+    title: true
+    coalesce: true
+prompt: |
+  Take the current work all the way from uncommitted changes to a pull request:
+  commit, rebase onto the base branch if needed, then push and create or update
+  the PR. Do not stop between phases.
+
+  ### 0. Prerequisites
+
+  **Formatting:** Run project formatters. Report any files modified and include in commit analysis.
+
+  **Tests:**
+
+  - If not run recently: warn user, ask to proceed or run tests first
+  - If failing: warn user, ask to fix or proceed
+
+  ### 1. Ensure Feature Branch
+
+  {{ template "git/shared/ensure-feature-branch" . }}
+
+  ### 2. Analyze Changes
+
+  {{ if .Session.HasMessages -}}
+  {{ template "git/shared/commit-scoped" . }}
+  {{- else -}}
+  {{ template "git/shared/commit-all" . }}
+  {{- end }}
+
+  ### 3. Plan, Approve and Commit
+
+  {{ template "git/shared/commit-plan" . }}
+
+  ### 4. Identify Target Remote and Branch
+
+  {{ template "git/shared/identify-remote-branch" . }}
+
+  ### 5. Check if Rebase Needed
+
+  {{ template "git/shared/behind-base-count" . }}
+
+  ### 6. Rebase if Behind
+
+  Skip this step entirely if Step 5 reported `0`.
+
+  Otherwise rebase **inline** — unlike the standalone "Submit changes" prompt,
+  this workflow does not defer to the "Rebase changes" prompt:
+
+  {{ template "git/shared/rebase-onto-base" . }}
+
+  ### 7. Create or Update PR
+
+  {{ template "git/shared/create-or-update-pr" . }}
+
+  {{ if .Session.BeadsIssue -}}
+  ### 8. Close Linked Beads Issue
+
+  {{ template "git/shared/close-linked-bead" . }}
+
+  ### 9. Update Agent Rules (Optional)
+  {{- else }}
+  ### 8. Update Agent Rules (Optional)
+  {{- end }}
+
+  {{ template "git/shared/update-agent-rules" . }}
+
+  ## Summary Report
+
+  ✅ Changes Committed & Submitted
+  📋 Status:
+  - Branch: <branch-name>
+  - Commits: <N created>
+  - Rebase: [Not needed | Completed | Aborted]
+  - Action: [Created new PR | Updated existing PR]
+  🔗 PR: <pr-url>
+  📝 Rules Updated: [Yes - added X | No updates needed]
+
+  ## Guidelines
+
+  - The user asked for the whole flow — commit, rebase, push, PR. Do **not**
+    stop after committing to ask whether to continue, and do **not** defer the
+    rebase to another prompt.
+  - Never commit without the explicit approval collected in Step 3.
+  - Respect `.gitignore`, skip empty commits, handle binary/large files
+    appropriately.
+  - Distinguish target vs push remote: push to `origin`, PR targets
+    `upstream` in fork workflows.
+  - Use `--force-with-lease` when force pushing.
+  - Use rebase, not merge, for updating branches.
+  - Abort the rebase (`git rebase --abort`) rather than guessing on a complex
+    conflict; report that the PR was not updated.
+  - Document learnings in rules only with user approval.

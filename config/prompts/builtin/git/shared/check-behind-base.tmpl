@@ -1,8 +1,13 @@
 {{/*
   check-behind-base — verify the current branch is not behind its target base
-  before pushing. Consumed by prompts that push commits to an existing PR
-  (fix-ci, address-pr-comments, submit-changes). Prevents "green locally, red
-  in CI" surprises caused by missing recent base commits.
+  before pushing, and STOP if it is. Consumed by prompts that push commits to
+  an existing PR (fix-ci, address-pr-comments, submit-changes) and that must
+  not rebase inline. Prevents "green locally, red in CI" surprises caused by
+  missing recent base commits.
+
+  Composes git/shared/behind-base-count (the detection) with a stop-and-defer
+  verdict. Prompts that DO rebase inline (git/commit-and-submit) consume
+  behind-base-count directly instead.
 
   Preconditions: the caller has already resolved `<target-remote>` and
   `<target-branch>` (usually via the git/identify-remote-branch fragment) OR
@@ -12,17 +17,7 @@
   Callers should place this fragment under a numbered step heading of their
   choice (e.g. "### 4. Check if Rebase Needed").
 */}}
-Fetch the target and count how many commits the current branch is behind:
-
-```bash
-git fetch <target-remote> <target-branch>
-git rev-list --count HEAD..<target-remote>/<target-branch>
-```
-
-- **Result `0`**: branch is up-to-date — continue.
-- **Result > `0`**: branch is behind. Do **not** push a fix on top of a stale
-  base — the missing base commits may re-break what you just fixed, and CI
-  will fail on the exact issue you thought you fixed.
+{{ template "git/shared/behind-base-count" . }}
 {{- if and .Session.IsLoop (not .Session.IsLoopForced) }}
 
 **Scheduled mode**: do not attempt to rebase inline (conflicts mid-fix are

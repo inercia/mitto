@@ -44,6 +44,13 @@ func TestGitFragmentsRenderCorrectly(t *testing.T) {
 		hallmarkSafeCommit         = "git commit -m \""                           // from git/shared/safe-commit (present in every safe-commit output)
 		hallmarkSafeCommitRefsFoot = "(refs mitto-abc)"                           // when Target=mitto-abc, the refs footer must render
 		hallmarkEnsureFeatureForm  = "Create Feature Branch?"                     // uniquely from git/shared/ensure-feature-branch interactive branch
+		hallmarkCommitPlan         = "SEQUENCE | COMMIT MESSAGE | FILES | REASON" // from git/shared/commit-plan
+		hallmarkRebaseOntoBase     = "Accept theirs / Accept ours"                // from git/shared/rebase-onto-base interactive branch
+		hallmarkCreateOrUpdatePR   = "gh pr create --fill --base"                 // from git/shared/create-or-update-pr
+		hallmarkCloseLinkedBead    = "bd show mitto-abc --long --json"            // from git/shared/close-linked-bead
+		hallmarkUpdateAgentRules   = "Ask user before modifying rules files"      // from git/shared/update-agent-rules
+		// check-behind-base's stop-and-defer verdict, absent from behind-base-count.
+		hallmarkCheckBehindVerdict = "**\"Rebase changes\"** prompt"
 	)
 
 	// Two contexts: with and without HasMessages, so we exercise both branches
@@ -113,6 +120,23 @@ func TestGitFragmentsRenderCorrectly(t *testing.T) {
 		// ensure-feature-branch — interactive form present in non-loop context.
 		{"Commit changes", ctxWith, []string{hallmarkEnsureFeatureForm}, nil},
 		{"Submit changes", ctxWith, []string{hallmarkEnsureFeatureForm}, nil},
+
+		// commit-plan / close-linked-bead / update-agent-rules consumers.
+		{"Commit changes", ctxWith, []string{hallmarkCommitPlan, hallmarkCloseLinkedBead, hallmarkUpdateAgentRules}, nil},
+		{"Submit changes", ctxWith, []string{hallmarkCreateOrUpdatePR, hallmarkUpdateAgentRules}, nil},
+
+		// rebase-onto-base consumers.
+		{"Rebase changes", ctxWith, []string{hallmarkRebaseOntoBase}, nil},
+
+		// commit-and-submit: the union of the three flows, with an INLINE rebase —
+		// so it renders behind-base-count + rebase-onto-base but never
+		// check-behind-base's stop-and-defer verdict.
+		{"Commit & Submit changes", ctxWith, []string{
+			hallmarkEnsureFeatureForm, hallmarkCommitScoped, hallmarkCommitPlan,
+			hallmarkIdentifyRemote, hallmarkCheckBehindBase, hallmarkRebaseOntoBase,
+			hallmarkCreateOrUpdatePR, hallmarkCloseLinkedBead, hallmarkUpdateAgentRules,
+		}, []string{hallmarkCommitAll, hallmarkCheckBehindVerdict}},
+		{"Commit & Submit changes", ctxWithout, []string{hallmarkCommitAll}, []string{hallmarkCommitScoped}},
 	}
 
 	byName := map[string]string{}

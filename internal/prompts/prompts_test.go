@@ -3524,9 +3524,12 @@ func TestBuiltinPrompts_TodayTierRoutingAdoption(t *testing.T) {
 		{file: "jira/work.prompt.yaml", bucket: workspaceTitle, wantTitle: "JIRA: start work"},
 		{file: "ci/check-ci.prompt.yaml", bucket: workspaceTitle, wantTitle: "Check CI"},
 		{file: "ci/fix-ci.prompt.yaml", bucket: workspaceTitle, wantTitle: "Fix CI"},
-		{file: "git/create-commits.prompt.yaml", bucket: workspaceTitle, wantTitle: "Commit changes"},
-		{file: "git/rebase-changes.prompt.yaml", bucket: workspaceTitle, wantTitle: "Rebase changes"},
-		{file: "git/submit-changes.prompt.yaml", bucket: workspaceTitle, wantTitle: "Submit changes"},
+		// The four git prompts share one routing title so they serialise on the
+		// single working tree they all mutate.
+		{file: "git/create-commits.prompt.yaml", bucket: workspaceTitle, wantTitle: "Submission of changes"},
+		{file: "git/rebase-changes.prompt.yaml", bucket: workspaceTitle, wantTitle: "Submission of changes"},
+		{file: "git/submit-changes.prompt.yaml", bucket: workspaceTitle, wantTitle: "Submission of changes"},
+		{file: "git/commit-and-submit.prompt.yaml", bucket: workspaceTitle, wantTitle: "Submission of changes"},
 		{file: "testing/run-tests.prompt.yaml", bucket: workspaceTitle, wantTitle: "Run tests"},
 		{file: "ci/analyze-logs.prompt.yaml", bucket: workspaceTitle, wantTitle: "Analyze logs"},
 		{file: "docs/architectural-analysis.prompt.yaml", bucket: workspaceTitle, wantTitle: "Architectural Analysis"},
