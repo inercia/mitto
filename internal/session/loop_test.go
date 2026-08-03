@@ -2189,3 +2189,50 @@ func TestLoopStore_RecordSent_OnHealthyLoop_ReturnsNil(t *testing.T) {
 		t.Errorf("RecordSent() on healthy loop error = %v, want nil", err)
 	}
 }
+
+// TestLoopStore_RecordSent_OnAgentDisabledLoop_DoesNotReturnSentinel is the
+// reproduction test for mitto-8wx: the resurrection sentinel
+// (ErrRecordSentOnStoppedLoop) is meant to flag genuine mitto-uun-class
+// resurrection bugs (a Set() clobber or a lost auto-stop write racing a
+// concurrent delivery). It must NOT fire for the ordinary, expected shutdown
+// path where a loop-driver prompt self-disables its own loop mid-turn via
+// mitto_conversation_update(loop_enabled:false) — internal/mcpserver/
+// tools_conversation_lifecycle.go calls MarkStopped(StoppedReasonDisabledByAgent)
+// for that path — and the already-in-flight OnComplete callback then calls
+// RecordSent() on what is now a deliberately-stopped loop
+// (internal/conversation/loop_runner.go:2079). That is benign self-stop, not
+// resurrection, and today it is indistinguishable from a real regression,
+// which is exactly the noise reported in production (mitto.log WARNs across
+// sessions 20260802-161041-518d4bfd, 20260802-171804-39297cda,
+// 20260803-080738-1e23182e — all "Loop fixing bug" driver runs that hit
+// Step 3d's inline loop_enabled:false).
+//
+// This currently FAILS because RecordSent's stoppedResurrection check treats
+// every non-empty StoppedReason identically, without distinguishing the
+// resumable/paused reasons (pausedByUser, disabledByAgent, archived) from
+// genuine auto-stop reasons (maxIterations, iterationSafeguard, maxDuration,
+// promptUnresolved, resumeFailures, contextWindowExceeded).
+func TestLoopStore_RecordSent_OnAgentDisabledLoop_DoesNotReturnSentinel(t *testing.T) {
+	dir := t.TempDir()
+	ps := NewLoopStore(dir)
+
+	if err := ps.Set(&LoopPrompt{
+		Prompt:    "iterate",
+		Frequency: Frequency{Value: 1, Unit: FrequencyHours},
+		Enabled:   true,
+	}); err != nil {
+		t.Fatalf("Set() error = %v", err)
+	}
+
+	// Simulate the agent self-disabling its own loop mid-turn (the exact path
+	// hit by mitto_conversation_update(loop_enabled:false) in production).
+	if err := ps.MarkStopped(StoppedReasonDisabledByAgent); err != nil {
+		t.Fatalf("MarkStopped() error = %v", err)
+	}
+
+	// Simulate the OnComplete callback (captured before the mid-turn stop)
+	// still firing RecordSent() after the turn ends.
+	if err := ps.RecordSent(); err != nil {
+		t.Errorf("RecordSent() after benign self-stop (disabledByAgent) error = %v, want nil (not a resurrection)", err)
+	}
+}

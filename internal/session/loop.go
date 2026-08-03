@@ -64,6 +64,21 @@ const (
 	StoppedReasonArchived StoppedReason = "archived"
 )
 
+// isBenignStopReason reports whether reason is an intentional, resumable pause
+// (user pause, agent self-disable, or archive) rather than a genuine automatic
+// safeguard stop (max iterations/duration, resume failures, etc.). It is used
+// by RecordSent's resurrection guard: an OnComplete callback captured before
+// such a benign stop can legitimately still be in flight when the stop lands
+// mid-turn, so that sequence must not be flagged as a resurrection (mitto-8wx).
+func isBenignStopReason(reason StoppedReason) bool {
+	switch reason {
+	case StoppedReasonPausedByUser, StoppedReasonDisabledByAgent, StoppedReasonArchived:
+		return true
+	default:
+		return false
+	}
+}
+
 var (
 	// ErrLoopNotFound is returned when no loop prompt is configured.
 	ErrLoopNotFound = errors.New("loop prompt not found")
@@ -693,7 +708,11 @@ func (ps *LoopStore) RecordSent() error {
 	}
 
 	// Sanity: detect delivery on an already-stopped loop (mitto-uun regression guard).
-	stoppedResurrection := !existing.Enabled && existing.StoppedReason != ""
+	// Benign, intentional stops (pausedByUser/disabledByAgent/archived) are excluded:
+	// they can legitimately land mid-turn, after the delivering RecordSent call was
+	// already in flight, so treating them as a resurrection is a false positive
+	// (mitto-8wx). Only genuine auto-stop safeguards should trip the sentinel.
+	stoppedResurrection := !existing.Enabled && existing.StoppedReason != "" && !isBenignStopReason(existing.StoppedReason)
 
 	now := time.Now().UTC()
 	// Set the elapsed-time anchor on the very first delivery; preserve it thereafter.
