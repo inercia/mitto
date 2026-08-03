@@ -1201,6 +1201,7 @@ func (m *Manager) ApplyAfter(ctx context.Context, input AfterProcessorInput) App
 			resolvedArgs := ResolveProcessorArgs(proc.Parameters, input.ProcessorArgOverrides[proc.Name])
 			tctx := &config.PromptEnabledContext{}
 			tctx.Session.ID = input.SessionID
+			tctx.Workspace.UUID = input.WorkspaceUUID
 			tctx.Workspace.Folder = input.WorkingDir
 			tctx.Args = resolvedArgs
 			// PromptText resolver is not wired here; template fails-closed if used from processor-rendered prompts (mitto-85y.3).
@@ -1434,6 +1435,7 @@ func (m *Manager) ApplyOnClose(ctx context.Context, input CloseProcessorInput) {
 			resolvedArgs := ResolveProcessorArgs(proc.Parameters, input.ProcessorArgOverrides[proc.Name])
 			tctx := &config.PromptEnabledContext{}
 			tctx.Session.ID = input.SessionID
+			tctx.Workspace.UUID = input.WorkspaceUUID
 			tctx.Workspace.Folder = input.WorkingDir
 			tctx.Args = resolvedArgs
 			funcs := config.BuildTemplateFuncMap(tctx)

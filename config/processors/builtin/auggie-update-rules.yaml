@@ -107,8 +107,27 @@ prompt: |
 
   Review these messages for patterns, conventions, and lessons learned.
 
-  ## Silent completion
+  ## Completion
 
-  This is a background clean-up processor. Do NOT call `mitto_ui_notify` and do NOT
-  post any user-visible summary — the session is already archived and there is no
-  active UI to notify. If no changes were needed, just exit silently.
+  This is a background clean-up processor with no attached UI — do NOT call
+  `mitto_ui_notify` (it requires a live session and will fail here). If no changes
+  were needed, just exit silently — do NOT call any notify tool.
+
+  If you DID update one or more rules files, surface it as a workspace-scoped toast
+  (visible to any client currently viewing this workspace) instead of a chat
+  message. Get your own session ID via `mitto_conversation_get_current` first, then:
+
+  {{ if .Workspace.UUID -}}
+  ```
+  mitto_workspace_ui_notify(
+    self_id: "<your session ID, from mitto_conversation_get_current>",
+    workspace_uuid: "{{ .Workspace.UUID }}",
+    title: "Updated .augment/rules/",
+    message: "<one line: which rules file(s) changed and why>",
+    style: "success"
+  )
+  ```
+  {{- else -}}
+  No workspace UUID is available for this run — skip the toast and exit silently
+  even if you made changes.
+  {{- end }}
