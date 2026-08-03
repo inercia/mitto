@@ -120,15 +120,35 @@ prompt: |
   — same source of truth as `mitto_prompt_get` / `mitto_prompt_list`, no MCP
   round-trip). On failure, disable that class for this pass only.
 
+  **The verdicts below are AUTHORITATIVE and already final.** They were computed
+  by Mitto against the live workspace prompt registry at dispatch time. Do NOT
+  re-verify them with `mitto_prompt_get`, `mitto_prompt_list`, `grep`, or any
+  shell command — a prompt whose YAML has no `enabled:` key IS enabled (the
+  registry prunes disabled prompts before the snapshot is built, so absence of
+  the key means enabled, never disabled). Overriding a `PASSED` verdict with a
+  hand-rolled check is a bug, not diligence.
+
   {{- $fixBugsEnabled := ne .Args.FixBugs "false" }}
   {{- $workOnFeaturesEnabled := ne .Args.WorkOnFeatures "false" }}
   {{- $bugDriverPresent := .Prompts.Enabled "Loop fixing bug" }}
   {{- $featureDriverPresent := .Prompts.Enabled "Loop implementing feature" }}
-  {{ if and $fixBugsEnabled (not $bugDriverPresent) }}
+  {{ if $fixBugsEnabled }}
+  {{- if $bugDriverPresent }}
+  - §B driver check: **PASSED** — `Loop fixing bug` is registered and enabled. §B may spawn.
+  {{- else }}
   - §B disabled this pass: `Loop fixing bug` is not enabled in the workspace prompt registry.
   {{- end }}
-  {{ if and $workOnFeaturesEnabled (not $featureDriverPresent) }}
+  {{- else }}
+  - §B not applicable this pass (`FixBugs=false`).
+  {{- end }}
+  {{ if $workOnFeaturesEnabled }}
+  {{- if $featureDriverPresent }}
+  - §C driver check: **PASSED** — `Loop implementing feature` is registered and enabled. §C may spawn.
+  {{- else }}
   - §C disabled this pass: `Loop implementing feature` is not enabled in the workspace prompt registry.
+  {{- end }}
+  {{- else }}
+  - §C not applicable this pass (`WorkOnFeatures=false`).
   {{- end }}
 
   ## Step 2P — Prune stale children (reap before you spawn)

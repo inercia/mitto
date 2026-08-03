@@ -91,6 +91,86 @@ func TestLoopProcessingStep1_PromptsPredicate(t *testing.T) {
 	}
 }
 
+// TestLoopProcessingStep1_PassedVerdict_Mitto3gx pins mitto-3gx: on the happy
+// path (each class's driver prompt registered+enabled) Step 1 must render an
+// explicit affirmative "**PASSED**" verdict per class, and when a class flag
+// is off, an explicit "not applicable this pass" verdict — never an empty
+// section. Before the mitto-3gx fix, Step 1 rendered NOTHING on the happy
+// path (TestLoopProcessingStep1_PromptsPredicate above only asserts the
+// ABSENCE of the disable-messages, which is why this silent-success
+// regression went uncaught), which reads as "nothing was validated" and
+// invites agents to hand-roll a re-verification via mitto_prompt_get /
+// mitto_prompt_list / grep — the exact regression reported in session
+// 20260803-204301-e307e7f9 (workspace cgw-managed-tools).
+func TestLoopProcessingStep1_PassedVerdict_Mitto3gx(t *testing.T) {
+	installBuiltinFragmentsForTest(t)
+	builtinDir := "../../config/prompts/builtin"
+	path := filepath.Join(builtinDir, "beads-issues/loop-processing.prompt.yaml")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Skipf("prompt file not found at %s: %v", path, err)
+	}
+	prompt, err := ParsePromptFile("beads-issues/loop-processing.prompt.yaml", data, time.Now())
+	if err != nil {
+		t.Fatalf("ParsePromptFile: %v", err)
+	}
+	body := prompt.Content
+
+	step1Excerpt := func(out string) string {
+		i := strings.Index(out, "## Step 1")
+		if i < 0 {
+			return ""
+		}
+		rel := strings.Index(out[i:], "## Step 2P")
+		if rel < 0 {
+			return out[i:]
+		}
+		return out[i : i+rel]
+	}
+
+	// Case A: both driver prompts registered + enabled — Step 1 must render
+	// an explicit **PASSED** verdict for each class, not silence.
+	ctxOK := &cel.PromptEnabledContext{
+		Session: cel.SessionContext{ID: "orch-1"},
+		Args:    map[string]string{"Commit": "true", "FixBugs": "true", "WorkOnFeatures": "true"},
+		Prompts: cel.PromptsContext{
+			Names:        []string{"Loop fixing bug", "Loop implementing feature"},
+			EnabledNames: []string{"Loop fixing bug", "Loop implementing feature"},
+		},
+	}
+	funcs := cel.BuildTemplateFuncMap(ctxOK)
+	out, rerr := RenderPromptTemplate("beads-issue-loop-processing", body, ctxOK, funcs)
+	if rerr != nil {
+		t.Fatalf("RenderPromptTemplate (both enabled): %v", rerr)
+	}
+	step1 := step1Excerpt(out)
+	if !strings.Contains(step1, "§B driver check: **PASSED**") {
+		t.Errorf("both drivers enabled: Step 1 must render an explicit §B PASSED verdict (not silence); got:\n%s", step1)
+	}
+	if !strings.Contains(step1, "§C driver check: **PASSED**") {
+		t.Errorf("both drivers enabled: Step 1 must render an explicit §C PASSED verdict (not silence); got:\n%s", step1)
+	}
+
+	// Case B: both class flags off — Step 1 must render an explicit "not
+	// applicable this pass" verdict per class, not silence.
+	ctxOff := &cel.PromptEnabledContext{
+		Session: cel.SessionContext{ID: "orch-1"},
+		Args:    map[string]string{"Commit": "true", "FixBugs": "false", "WorkOnFeatures": "false"},
+	}
+	funcs2 := cel.BuildTemplateFuncMap(ctxOff)
+	out2, rerr := RenderPromptTemplate("beads-issue-loop-processing", body, ctxOff, funcs2)
+	if rerr != nil {
+		t.Fatalf("RenderPromptTemplate (both flags off): %v", rerr)
+	}
+	step1Off := step1Excerpt(out2)
+	if !strings.Contains(step1Off, "§B not applicable this pass (`FixBugs=false`)") {
+		t.Errorf("FixBugs=false: Step 1 must render an explicit §B not-applicable verdict; got:\n%s", step1Off)
+	}
+	if !strings.Contains(step1Off, "§C not applicable this pass (`WorkOnFeatures=false`)") {
+		t.Errorf("WorkOnFeatures=false: Step 1 must render an explicit §C not-applicable verdict; got:\n%s", step1Off)
+	}
+}
+
 // TestLoopProcessingNotifications_MittoDnx pins mitto-dnx: the supervisor
 // prompt loop-processing.prompt.yaml must emit workspace-scoped
 // notifications on three milestone events, and only on those events.
