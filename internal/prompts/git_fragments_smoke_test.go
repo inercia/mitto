@@ -51,6 +51,11 @@ func TestGitFragmentsRenderCorrectly(t *testing.T) {
 		hallmarkUpdateAgentRules   = "Ask user before modifying rules files"      // from git/shared/update-agent-rules
 		// check-behind-base's stop-and-defer verdict, absent from behind-base-count.
 		hallmarkCheckBehindVerdict = "**\"Rebase changes\"** prompt"
+		// check-behind-base's scheduled-mode (loop) verdict — the counterpart to
+		// hallmarkCheckBehindVerdict's interactive-mode branch. Regression guard for
+		// the behind-base-count extraction: both branches of check-behind-base must
+		// still compose correctly around the shared detection fragment.
+		hallmarkCheckBehindScheduledVerdict = "unsafe when unattended"
 	)
 
 	// Two contexts: with and without HasMessages, so we exercise both branches
@@ -103,6 +108,16 @@ func TestGitFragmentsRenderCorrectly(t *testing.T) {
 		{"Submit changes", ctxWith, []string{hallmarkCheckBehindBase}, nil},
 		{"Fix CI", ctxWith, []string{hallmarkCheckBehindBase}, nil},
 		{"Address PR Comments", ctxWith, []string{hallmarkCheckBehindBase}, nil},
+
+		// check-behind-base's own interactive-mode verdict must still compose
+		// around behind-base-count for its pre-existing consumers (regression
+		// guard for the extraction: it's easy to split detection from verdict
+		// and silently drop the verdict for one branch).
+		{"Submit changes", ctxWith, []string{hallmarkCheckBehindBase, hallmarkCheckBehindVerdict}, nil},
+		{"Fix CI", ctxWith, []string{hallmarkCheckBehindBase, hallmarkCheckBehindVerdict}, nil},
+		{"Address PR Comments", ctxWith, []string{hallmarkCheckBehindBase, hallmarkCheckBehindVerdict}, nil},
+		// ...and the scheduled-mode (loop) verdict branch for at least one consumer.
+		{"Fix CI", ctxLoop, []string{hallmarkCheckBehindBase, hallmarkCheckBehindScheduledVerdict}, []string{hallmarkCheckBehindVerdict}},
 
 		// safe-stage — newly wired consumers.
 		{"Feature — test phase", ctxWith, []string{hallmarkSafeStage}, nil},
