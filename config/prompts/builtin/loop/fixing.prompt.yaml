@@ -1,6 +1,6 @@
 icon: refresh
 name: Loop fixing
-menus: promptsLoop
+menus: prompts, promptsLoop, conversation
 parameters:
   - name: Commit
     type: boolean
@@ -8,6 +8,7 @@ parameters:
 description: Continue iterating to fix the problem we have been working on
 group: Development
 backgroundColor: '#BBDEFB'
+enabledWhen: 'Session.HasMessages && CommandExists("bd")'
 loop:
   mode: always
   trigger: onCompletion
@@ -15,21 +16,22 @@ loop:
   delay: 30
   maxIterations: 20
 prompt: |
+  {{ template "beads-issues/shared/bootstrap" . }}
   {{- if .Iteration.IsUninterrupted }}
-  Continue fixing the problem you have been working on in this loop. Read the state
-  file `implement-<problem>-<date>.md` and the relevant source first — do not
-  speculate about code you haven't opened.
+  Continue fixing the problem you have been working on in this loop. Read the
+  tracking bead and the relevant source first — do not speculate about code you
+  haven't opened.
 
   Do exactly one increment this run (a single increment may itself fan out into
   parallel children — see "Parallelize independent subtasks" below):
 
-  1. Review the state file: what's been tried, what's still failing.
+  1. Review the tracking bead: what's been tried, what's still failing.
   2. Pick the highest-priority remaining issue and find its root cause. If several
      remaining issues are independent and non-conflicting, consider fixing them in
      parallel (see "Parallelize independent subtasks" below).
   3. Implement the fix — minimal and focused on the root cause, not symptoms.
   4. Verify the fix.
-  5. Update the state file (Progress / Issues remaining).
+  5. Record the increment on the tracking bead (see "Tracking progress" below).
   {{- if eq .Args.Commit "true" }}
   6. Commit only the files you changed with a concise, conventional message;
      skip the commit if nothing changed.
@@ -38,13 +40,15 @@ prompt: |
   {{- end }}
 
   **Decide autonomously; do not ask the user.** Only when a requirement is
-  genuinely ill-defined, record it under "Issues remaining", report it, and stop
+  genuinely ill-defined, record it on the tracking bead, report it, and stop
   — never guess.
   {{- else }}
-  Read the state file and relevant source files first. Do not speculate about
+  Read the tracking bead and relevant source files first. Do not speculate about
   code you haven't opened.
 
-  Continue fixing problems using a state file to track progress across iterations.
+  Continue fixing the problem we have been working on in this conversation,
+  tracking progress across iterations on a beads issue (see "Tracking progress"
+  below).
 
   Only fix identified problems. Keep changes minimal and focused on root causes.
 
@@ -54,32 +58,17 @@ prompt: |
   **Decide autonomously; do not ask the user.** Take every decision needed to make
   progress yourself. The sole exception is when part of the problem is **not properly
   defined or understood** (a genuinely ambiguous requirement or unknown you cannot
-  resolve from the available context): then do **not** guess — record it in the state
-  file under "Issues remaining", report it, and stop rather than asking.
-
-  # Preparation
-
-  State file: `implement-<problem>-<date>.md` (date as `YYYY-MM-DD`).
-
-  Template:
-  ```markdown
-  # The problem
-  [description]
-  # Progress
-  ## [num] [issue title]
-  [description] [fix applied]
-  # Issues remaining
-  ## [num] [issue title]
-  ```
+  resolve from the available context): then do **not** guess — record it as a comment
+  on the tracking bead, report it, and stop rather than asking.
 
   # The Task
 
-  1. Read state file (create if missing)
+  1. Read the tracking bead (find or create it as described below)
   2. Review current state, what's been tried, what's still failing
   3. Analyze remaining issues and root causes
   4. Prioritize and implement fix
   5. Verify the fix
-  6. Update state file
+  6. Record the increment on the tracking bead
   {{- if eq .Args.Commit "true" }}
   7. Commit your work — but only if you actually changed files this iteration.
      Write a concise, conventional commit message describing this increment.
@@ -87,11 +76,19 @@ prompt: |
      {{ template "git/shared/safe-stage" . }}
   {{- end }}
 
-  Once fully fixed, verify against original problem description.
+  Once fully fixed, verify against the original problem description on the bead
+  and close it.
   {{- end }}
+
+  {{ template "_shared/loop/bead-progress-tracking" (dict
+      "Verb"       "fix"
+      "Noun"       "problem"
+      "BeadsIssue" .Session.BeadsIssue
+      "SessionID"  .Session.ID
+  ) }}
 
   {{ template "_shared/loop/parallelize-subtasks" (dict
       "Verb"      "fix"
-      "StateFile" "state file"
+      "StateFile" "tracking bead"
       "SessionID" .Session.ID
   ) }}

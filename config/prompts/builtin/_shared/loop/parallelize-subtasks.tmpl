@@ -6,11 +6,12 @@
   fan-out" (see beads-issues/shared/loop-driver-guidelines-parallel).
 
   Callers pass a Verb and a StateFile so the wording fits the caller's
-  domain (fix vs implement, and whatever state file the caller uses):
+  domain (fix vs implement, and whatever tracking artifact the caller
+  uses):
 
       {{ template "_shared/loop/parallelize-subtasks" (dict
           "Verb"          "fix"
-          "StateFile"     "state file"
+          "StateFile"     "tracking bead"
           "SessionID"     .Session.ID
       ) }}
 
@@ -18,7 +19,7 @@
     Verb       — the caller's work verb ("fix", "implement", …). Spliced
                  into "prefer to <Verb> the subtasks in parallel" and
                  similar spots.
-    StateFile  — noun for the tracking artifact ("state file", "spec",
+    StateFile  — noun for the tracking artifact ("tracking bead", "spec",
                  …). Used in the "update the <StateFile>" wrap-up bullet.
     SessionID  — the caller's .Session.ID (spliced into the fan-out
                  mitto_* call examples; keeps the fragment usable inside
