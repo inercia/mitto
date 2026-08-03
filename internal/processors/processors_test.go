@@ -5729,3 +5729,238 @@ func TestBuildCELContext_TriggerOnTasks(t *testing.T) {
 		}
 	}
 }
+
+// TestApplyAfter_TemplateExposesWorkspaceUUID verifies mitto-nhr: the after-phase
+// (agentResponded) prompt-render context populates .Workspace.UUID from
+// AfterProcessorInput.WorkspaceUUID, mirroring what hook.go already does for
+// enabledWhen. Regression guard for internal/processors/apply.go's
+// `tctx.Workspace.UUID = input.WorkspaceUUID` assignment in ApplyAfter.
+func TestApplyAfter_TemplateExposesWorkspaceUUID(t *testing.T) {
+	proc := &Processor{
+		Name:   "after-uuid-probe",
+		When:   WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"end_turn"}},
+		Prompt: `{{ if .Workspace.UUID }}ws={{ .Workspace.UUID }}{{ else }}no-ws{{ end }}`,
+	}
+
+	t.Run("non-empty WorkspaceUUID reaches the template", func(t *testing.T) {
+		var mu sync.Mutex
+		var dispatched []string
+		m := makeAfterManager([]*Processor{proc})
+		m.SetPromptFunc(func(_ context.Context, _, _, prompt string) error {
+			mu.Lock()
+			dispatched = append(dispatched, prompt)
+			mu.Unlock()
+			return nil
+		})
+
+		input := makeAfterInput("user", "end_turn") // WorkspaceUUID: "test-workspace"
+		m.ApplyAfter(context.Background(), input)
+		time.Sleep(50 * time.Millisecond)
+
+		mu.Lock()
+		defer mu.Unlock()
+		if len(dispatched) != 1 {
+			t.Fatalf("expected 1 dispatched prompt, got %d", len(dispatched))
+		}
+		if want := "ws=test-workspace"; dispatched[0] != want {
+			t.Errorf("prompt = %q, want %q", dispatched[0], want)
+		}
+	})
+
+	t.Run("empty WorkspaceUUID renders the else-branch", func(t *testing.T) {
+		var mu sync.Mutex
+		var dispatched []string
+		m := makeAfterManager([]*Processor{proc})
+		m.SetPromptFunc(func(_ context.Context, _, _, prompt string) error {
+			mu.Lock()
+			dispatched = append(dispatched, prompt)
+			mu.Unlock()
+			return nil
+		})
+
+		input := makeAfterInput("user", "end_turn")
+		input.WorkspaceUUID = ""
+		m.ApplyAfter(context.Background(), input)
+		time.Sleep(50 * time.Millisecond)
+
+		mu.Lock()
+		defer mu.Unlock()
+		if len(dispatched) != 1 {
+			t.Fatalf("expected 1 dispatched prompt, got %d", len(dispatched))
+		}
+		if want := "no-ws"; dispatched[0] != want {
+			t.Errorf("prompt = %q, want %q", dispatched[0], want)
+		}
+	})
+}
+
+// TestApplyOnClose_TemplateExposesWorkspaceUUID verifies mitto-nhr: the
+// close-phase (conversationClosed) prompt-render context populates
+// .Workspace.UUID from CloseProcessorInput.WorkspaceUUID. Regression guard for
+// internal/processors/apply.go's `tctx.Workspace.UUID = input.WorkspaceUUID`
+// assignment in ApplyOnClose — this is the render site the five close-phase
+// builtins (auggie-update-rules, claude-update-memory, memorize-preferences,
+// extract-memories-on-close, curate-memories-on-close) rely on to guard their
+// mitto_workspace_ui_notify instruction.
+func TestApplyOnClose_TemplateExposesWorkspaceUUID(t *testing.T) {
+	proc := &Processor{
+		Name:   "close-uuid-probe",
+		When:   WhenConfig{On: PhaseConversationClosed, Match: MatchAll},
+		Prompt: `{{ if .Workspace.UUID }}ws={{ .Workspace.UUID }}{{ else }}no-ws{{ end }}`,
+	}
+
+	waitForDispatch := func(t *testing.T, mu *sync.Mutex, dispatched *[]string) string {
+		t.Helper()
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			mu.Lock()
+			n := len(*dispatched)
+			mu.Unlock()
+			if n > 0 {
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		if len(*dispatched) != 1 {
+			t.Fatalf("expected 1 dispatch, got %d", len(*dispatched))
+		}
+		return (*dispatched)[0]
+	}
+
+	t.Run("non-empty WorkspaceUUID reaches the template", func(t *testing.T) {
+		var mu sync.Mutex
+		var dispatched []string
+		m := NewManager("", nil)
+		m.processors = []*Processor{proc}
+		m.SetPromptFunc(func(_ context.Context, _, _, prompt string) error {
+			mu.Lock()
+			dispatched = append(dispatched, prompt)
+			mu.Unlock()
+			return nil
+		})
+
+		m.ApplyOnClose(context.Background(), CloseProcessorInput{
+			SessionID:     "sess-close-uuid",
+			WorkspaceUUID: "ws-close-uuid",
+			WorkingDir:    "/tmp/wd",
+			ArchiveReason: "manual",
+		})
+
+		if got, want := waitForDispatch(t, &mu, &dispatched), "ws=ws-close-uuid"; got != want {
+			t.Errorf("prompt = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("empty WorkspaceUUID renders the else-branch", func(t *testing.T) {
+		var mu sync.Mutex
+		var dispatched []string
+		m := NewManager("", nil)
+		m.processors = []*Processor{proc}
+		m.SetPromptFunc(func(_ context.Context, _, _, prompt string) error {
+			mu.Lock()
+			dispatched = append(dispatched, prompt)
+			mu.Unlock()
+			return nil
+		})
+
+		m.ApplyOnClose(context.Background(), CloseProcessorInput{
+			SessionID:     "sess-close-no-uuid",
+			WorkspaceUUID: "",
+			WorkingDir:    "/tmp/wd",
+			ArchiveReason: "manual",
+		})
+
+		if got, want := waitForDispatch(t, &mu, &dispatched), "no-ws"; got != want {
+			t.Errorf("prompt = %q, want %q", got, want)
+		}
+	})
+}
+
+// TestBuiltinCloseProcessors_WorkspaceUINotify verifies mitto-nhr's acceptance
+// criteria against the real embedded builtin processors: the five close-phase
+// (conversationClosed) processors that write files — auggie-update-rules,
+// claude-update-memory, memorize-preferences, extract-memories-on-close,
+// curate-memories-on-close — must render a mitto_workspace_ui_notify
+// instruction carrying the live workspace UUID when one is available, and must
+// omit it (falling back to a silent-exit instruction) when the UUID is empty,
+// so a background aux session never calls the tool with a blank
+// workspace_uuid (which the tool hard-rejects).
+func TestBuiltinCloseProcessors_WorkspaceUINotify(t *testing.T) {
+	names := []string{
+		"auggie-update-rules",
+		"claude-update-memory",
+		"memorize-preferences",
+		"extract-memories-on-close",
+		"curate-memories-on-close",
+	}
+
+	dir := t.TempDir()
+	for _, name := range names {
+		srcPath := rootconfig.BuiltinProcessorsDir + "/" + name + ".yaml"
+		content, err := rootconfig.BuiltinProcessorsFS.ReadFile(srcPath)
+		if err != nil {
+			t.Fatalf("ReadFile(%s) error = %v", srcPath, err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, name+".yaml"), content, 0644); err != nil {
+			t.Fatalf("WriteFile(%s) error = %v", name, err)
+		}
+	}
+
+	procs, err := NewLoader(dir, nil).Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	byName := make(map[string]*Processor, len(procs))
+	for _, p := range procs {
+		byName[p.Name] = p
+	}
+	for _, name := range names {
+		if byName[name] == nil {
+			t.Fatalf("builtin processor %q not found among loaded processors", name)
+		}
+	}
+
+	render := func(t *testing.T, proc *Processor, uuid string) string {
+		t.Helper()
+		ctx := &config.PromptEnabledContext{
+			Args: map[string]string{"PreferencesFile": "90-local.md"}, // needed for memorize-preferences to resolve $file
+		}
+		ctx.Session.ID = "sess-1"
+		ctx.Workspace.UUID = uuid
+		ctx.Workspace.Folder = t.TempDir()
+		funcs := config.BuildTemplateFuncMap(ctx)
+		out, rerr := config.RenderPromptTemplate(proc.Name, proc.Prompt, ctx, funcs)
+		if rerr != nil {
+			t.Fatalf("render(%s, uuid=%q) error = %v", proc.Name, uuid, rerr)
+		}
+		return out
+	}
+
+	for _, name := range names {
+		name := name
+		t.Run(name, func(t *testing.T) {
+			proc := byName[name]
+
+			withUUID := render(t, proc, "ws-1234")
+			if !strings.Contains(withUUID, "mitto_workspace_ui_notify") {
+				t.Errorf("%s: expected mitto_workspace_ui_notify instruction when Workspace.UUID is set, got:\n%s", name, withUUID)
+			}
+			if !strings.Contains(withUUID, `workspace_uuid: "ws-1234"`) {
+				t.Errorf("%s: expected the live UUID substituted into workspace_uuid, got:\n%s", name, withUUID)
+			}
+			if strings.Contains(withUUID, "active UI to notify") {
+				t.Errorf("%s: old 'Silent completion' gag clause text still present", name)
+			}
+
+			withoutUUID := render(t, proc, "")
+			if strings.Contains(withoutUUID, "mitto_workspace_ui_notify") {
+				t.Errorf("%s: mitto_workspace_ui_notify must NOT render when Workspace.UUID is empty, got:\n%s", name, withoutUUID)
+			}
+			if !strings.Contains(withoutUUID, "skip the toast and exit silently") {
+				t.Errorf("%s: expected the fail-silent instruction when Workspace.UUID is empty, got:\n%s", name, withoutUUID)
+			}
+		})
+	}
+}
