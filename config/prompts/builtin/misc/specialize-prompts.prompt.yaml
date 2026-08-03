@@ -5,15 +5,29 @@ description: Analyze and specialize workspace prompts for this project
 group: Agents & Mitto
 backgroundColor: '#B3E5FC'
 enabledWhen: '!Session.IsLoopConversation'
+parameters:
+  - name: Prompt
+    type: prompts
+    required: false
+    description: A single prompt to specialize. Leave empty to review every prompt in the workspace.
 prompt: |
   Specialize the available prompts for this workspace by analyzing the project and tailoring
   generic prompts to its specific technologies, commands, and workflows.
 
   Use Mitto's MCP tools to list, inspect, and update prompts interactively.
 
+  {{- if .Args.Prompt }}
+
+  ## Step 1: Target prompt
+
+  The user picked a single prompt to specialize: **{{ .Args.Prompt }}**.
+  Skip the workspace-wide sweep — Steps 3 and 4 operate on this prompt only.
+  {{- else }}
+
   ## Step 1: List all prompts
 
   Use `mitto_prompt_list` to retrieve all prompts available in this workspace.
+  {{- end }}
 
   ## Step 2: Analyze the project
 
@@ -27,6 +41,18 @@ prompt: |
   Read multiple files in parallel to gather this context quickly.
 
   ## Step 3: Identify candidates for specialization
+  {{- if .Args.Prompt }}
+
+  The only candidate is **{{ .Args.Prompt }}**. Consider how it could benefit from
+  project-specific knowledge:
+
+  - Generic commands that could be replaced with project-specific ones (e.g., "run tests" → specific test commands)
+  - Generic workflows that could include project-specific steps
+  - Project conventions, file paths, or tool configurations worth inlining
+
+  If it is already workspace-specific or inherently generic, say so and stop — do not
+  invent changes just to have something to apply.
+  {{- else }}
 
   Review the prompt list from Step 1. For each prompt, consider whether it could benefit
   from project-specific knowledge. Good candidates are prompts that:
@@ -37,6 +63,7 @@ prompt: |
 
   Skip prompts that are already workspace-specific (source: "workspace") or that are
   inherently generic (e.g., "Continue", "Explain").
+  {{- end }}
 
   ## Step 4: Interactive specialization
 
