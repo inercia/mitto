@@ -47,6 +47,17 @@ type fakeSharedProcess struct {
 	// returning a fast -32602. Used to exercise the mitto-1ut starvation fix where
 	// a timed-out probe must NOT truncate the session/new fallback's budget.
 	loadBlocksUntilCtxDone bool
+
+	// promptCalls records every Prompt() invocation (session ID + content blocks
+	// handed to the transport). Used by mitto-ip1 to pin the exact payload
+	// BackgroundSession.FlushContext sends to the agent.
+	promptCalls []fakeSharedProcessPromptCall
+}
+
+// fakeSharedProcessPromptCall records a single Prompt() call on fakeSharedProcess.
+type fakeSharedProcessPromptCall struct {
+	sessionID acp.SessionId
+	blocks    []acp.ContentBlock
 }
 
 func newFakeSharedProcess() *fakeSharedProcess {
@@ -94,7 +105,10 @@ func (f *fakeSharedProcess) RegisterSession(id acp.SessionId, _ *SessionCallback
 func (f *fakeSharedProcess) UnregisterSession(_ acp.SessionId)               {}
 func (f *fakeSharedProcess) Cancel(_ context.Context, _ acp.SessionId) error { return nil }
 func (f *fakeSharedProcess) Done() <-chan struct{}                           { return f.processDone }
-func (f *fakeSharedProcess) Prompt(_ context.Context, _ acp.SessionId, _ []acp.ContentBlock) (acp.PromptResponse, error) {
+func (f *fakeSharedProcess) Prompt(_ context.Context, sessionID acp.SessionId, blocks []acp.ContentBlock) (acp.PromptResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.promptCalls = append(f.promptCalls, fakeSharedProcessPromptCall{sessionID: sessionID, blocks: blocks})
 	return acp.PromptResponse{}, nil
 }
 func (f *fakeSharedProcess) SetSessionMode(_ context.Context, _ acp.SessionId, _ string) error {

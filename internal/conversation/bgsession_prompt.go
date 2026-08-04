@@ -256,11 +256,23 @@ func (bs *BackgroundSession) flushContextInPlace(ctx context.Context) error {
 }
 
 // FlushContext clears the agent's conversation context by sending the configured
-// agent-native context-flush command (e.g. "/clear") through the normal prompt
-// path. It runs asynchronously like any other prompt. Returns an error when no
-// flush command is configured for this session's ACP server, or when the session
-// is closed. Callers (e.g. the REST handler) should gate on IsPrompting() to
-// avoid issuing a flush while a turn is in flight.
+// agent-native context-flush command (e.g. "/clear") directly to the existing ACP
+// session via flushContextInPlace — the same in-place primitive used by the loop
+// FreshContext path (see createFreshContextSession) — instead of routing through
+// the full PromptWithMeta pipeline. Routing through PromptWithMeta previously
+// wrapped/processor-polluted the command (breaking the agent's prefix-recognition
+// contract for slash commands) and persisted+broadcast a fake user turn for what
+// is a UI-only control action (mitto-ip1).
+//
+// It runs asynchronously (dispatched in a goroutine), mirroring the async
+// contract of the normal prompt path: callers (e.g. the REST handler) get an
+// immediate nil return and the flush RPC completes in the background. Streaming
+// is suppressed for the duration so the flush turn never reaches the recorder,
+// observers, or the transcript; on success a "context_cleared" timeline pill is
+// recorded instead. Returns an error synchronously when no flush command is
+// configured for this session's ACP server, when the session is closed, or when
+// there is no live ACP session ID to flush. Callers should gate on IsPrompting()
+// to avoid issuing a flush while a turn is in flight.
 func (bs *BackgroundSession) FlushContext() error {
 	cmd := strings.TrimSpace(bs.ContextFlushCommand())
 	if cmd == "" {
@@ -269,7 +281,29 @@ func (bs *BackgroundSession) FlushContext() error {
 	if bs.IsClosed() {
 		return &sessionError{"session is closed"}
 	}
-	return bs.PromptWithMeta(cmd, PromptMeta{SenderID: "context-flush"})
+	if bs.acpID == "" {
+		return &sessionError{"no ACP session ID available for in-place flush"}
+	}
+
+	go func() {
+		flushCtx, flushCancel := context.WithTimeout(bs.ctx, 30*time.Second)
+		defer flushCancel()
+		if err := bs.flushContextInPlace(flushCtx); err != nil {
+			if bs.logger != nil {
+				bs.logger.Warn("In-place context flush failed",
+					"error", err, "session_id", bs.persistedID)
+			}
+			bs.notifyObservers(func(o SessionObserver) {
+				o.OnError("Failed to clear context: " + err.Error())
+			})
+			return
+		}
+		// Surface the context clear in the conversation timeline (mirrors the
+		// loop FreshContext pill recorded by createFreshContextSession).
+		bs.cmRecordSessionChange("context_cleared", "flush", "")
+	}()
+
+	return nil
 }
 
 // PromptWithMeta sends a message with optional metadata to the agent. This runs asynchronously.

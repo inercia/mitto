@@ -14,6 +14,7 @@ import (
 
 	mittoAcp "github.com/inercia/mitto/internal/acp"
 	"github.com/inercia/mitto/internal/config"
+	"github.com/inercia/mitto/internal/processors"
 	"github.com/inercia/mitto/internal/session"
 )
 
@@ -360,6 +361,125 @@ func TestFlushContext_NotConfigured(t *testing.T) {
 	}
 }
 
+// TestFlushContext_BugRepro_SendsExactCommand_NotProcessorPolluted reproduces
+// mitto-ip1: FlushContext() must send the configured agent-native flush command
+// (e.g. "/clear") to the transport as the leading/only characters of a single
+// text block, exactly as flushContextInPlace does — and must NOT persist a fake
+// user turn or broadcast one to observers.
+//
+// Root cause under test (see the mitto-ip1 Investigation comment): FlushContext
+// currently calls PromptWithMeta instead of flushContextInPlace, so the command
+// travels through the full processor pipeline (prepend/append injected) and the
+// normal user-prompt persistence/broadcast path.
+//
+// The reproduction deliberately configures a Match:"all" (not "first") prepend
+// processor and leaves isFirstPrompt at its zero value (false) so the failure is
+// pinned on the unconditional processor-injection side effect described in the
+// investigation, independent of the separately-conditional <user_request>
+// wrapper (which only fires on the first message or a processor rerun).
+func TestFlushContext_BugRepro_SendsExactCommand_NotProcessorPolluted(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	recorder := session.NewRecorder(store)
+	if err := recorder.Start("test-server", tmpDir, ""); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	sessionID := recorder.SessionID()
+
+	procMgr := processors.NewManager("", nil)
+	procMgr.AddTextProcessors([]config.MessageProcessor{
+		{
+			When:   config.ProcessorWhenBlock{On: config.ProcessorPhaseUserPrompt, Match: config.ProcessorMatchAll},
+			Mutate: config.ProcessorMutatePrepend,
+			Text:   "[Session Context]\n---\n",
+		},
+	}, 0)
+
+	shared := newFakeSharedProcess()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	bs := &BackgroundSession{
+		ctx:                 ctx,
+		cancel:              cancel,
+		observers:           make(map[SessionObserver]struct{}),
+		store:               store,
+		recorder:            recorder,
+		persistedID:         sessionID,
+		nextSeq:             2, // recorder.Start() already persisted session_start at seq=1
+		sharedProcess:       shared,
+		acpID:               "acp-sess-1",
+		contextFlushCommand: "/clear",
+		processorManager:    procMgr,
+		pendingConfig:       make(map[string]string),
+	}
+	bs.promptCond = sync.NewCond(&bs.promptMu)
+
+	obs := &mockSessionObserver{}
+	bs.AddObserver(obs)
+
+	if err := bs.FlushContext(); err != nil {
+		t.Fatalf("FlushContext() error = %v", err)
+	}
+
+	// FlushContext dispatches asynchronously (same contract as PromptWithMeta);
+	// wait for the fake transport to observe the Prompt() call.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		shared.mu.Lock()
+		n := len(shared.promptCalls)
+		shared.mu.Unlock()
+		if n > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for sharedProcess.Prompt to be called")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	shared.mu.Lock()
+	blocks := shared.promptCalls[0].blocks
+	shared.mu.Unlock()
+
+	// THE BUG: an agent-native flush command must be sent as-is (prefix
+	// recognition on a plain text block) — any prepended/appended text breaks
+	// it. flushContextInPlace sends exactly acp.TextBlock(cmd); FlushContext
+	// today does not.
+	var gotText string
+	if len(blocks) == 1 && blocks[0].Text != nil {
+		gotText = blocks[0].Text.Text
+	}
+	if len(blocks) != 1 || gotText != "/clear" {
+		t.Errorf("FlushContext must send exactly one text block equal to %q, got %d block(s) with text %q",
+			"/clear", len(blocks), gotText)
+	}
+
+	// THE BUG: FlushContext must not persist a fake "/clear" user turn in the
+	// transcript.
+	events, err := store.ReadEvents(sessionID)
+	if err != nil {
+		t.Fatalf("ReadEvents failed: %v", err)
+	}
+	for _, e := range events {
+		if e.Type == session.EventTypeUserPrompt {
+			t.Errorf("FlushContext must not persist a user_prompt event, got: %+v", e)
+		}
+	}
+
+	// THE BUG: FlushContext must not broadcast the flush command to observers
+	// as if it were a real user prompt.
+	if msgs := obs.getUserPromptMessages(); len(msgs) != 0 {
+		t.Errorf("FlushContext must not broadcast OnUserPrompt, got: %v", msgs)
+	}
+}
+
 // TestBackgroundSession_ContextFlushCommand pins down the resolution order
 // used by ContextFlushCommand (mitto-1o8): a statically configured command is
 // always authoritative, and runtime detection of the agent's advertised slash
@@ -635,6 +755,7 @@ type mockSessionObserver struct {
 	queueMessagesSent    []string
 	availableCommands    []AvailableCommand
 	acpStoppedReasons    []string
+	userPromptMessages   []string // messages seen via OnUserPrompt (mitto-ip1)
 }
 
 type queueUpdate struct {
@@ -680,7 +801,9 @@ func (m *mockSessionObserver) OnPromptComplete(eventCount int) {
 }
 
 func (m *mockSessionObserver) OnUserPrompt(seq int64, senderID, promptID, message string, imageIDs, fileIDs []string, promptName string, argumentCount int) {
-	// No-op for tests
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.userPromptMessages = append(m.userPromptMessages, message)
 }
 
 func (m *mockSessionObserver) OnError(message string) {
@@ -771,6 +894,14 @@ func (m *mockSessionObserver) getQueueMessagesSending() []string {
 	defer m.mu.Unlock()
 	result := make([]string, len(m.queueMessagesSending))
 	copy(result, m.queueMessagesSending)
+	return result
+}
+
+func (m *mockSessionObserver) getUserPromptMessages() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	result := make([]string, len(m.userPromptMessages))
+	copy(result, m.userPromptMessages)
 	return result
 }
 
