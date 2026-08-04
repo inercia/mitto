@@ -3127,30 +3127,37 @@ ${activeUIPrompt.text || ""}</textarea
                   </svg>
                 </button>
 
-                <!-- Flush Context Button (mitto-c23): first-class surface for
-                     the per-ACP context-flush command. Same code path as the
-                     "..." menu's Flush item (kept as fallback) and the header
-                     toolbar's Flush button. Hidden entirely when the ACP does
-                     not advertise a flush command, matching
-                     useConversationMenu.js so the composer layout stays
-                     unchanged on ACPs without one. Not gated on isStreaming
-                     (matches the menu item) or on text.trim (flushing the
-                     agent's context is independent of composer content). -->
-                ${flushCommand &&
-                onFlushContext &&
-                html`
-                  <button
-                    type="button"
-                    onClick=${() => onFlushContext()}
-                    onMouseDown=${(e) => e.preventDefault()}
-                    disabled=${isFullyDisabled || isReadOnly || !acpReady}
-                    class="chat-input-action tooltip tooltip-top"
-                    data-tip=${`Clear the agent's context (${flushCommand})`}
-                    aria-label="Clear the agent's context"
-                  >
-                    <${BroomIcon} className="w-4 h-4" />
-                  </button>
-                `}
+                <!-- Flush Context Button (mitto-c23, mitto-cmk): first-class
+                     surface for the per-ACP context-flush command. Same code
+                     path as the "..." menu's Flush item (kept as fallback) and
+                     the header toolbar's Flush button. Always rendered so the
+                     capability stays discoverable; disabled with an
+                     explanatory tooltip when the ACP advertises no flush
+                     command (mitto-cmk). The "..." menu and header toolbar
+                     still omit their entry entirely — greying out a row inside
+                     a menu is worse than leaving it out. Not gated on
+                     isStreaming (matches the menu item) or on text.trim
+                     (flushing the agent's context is independent of composer
+                     content). -->
+                <button
+                  type="button"
+                  onClick=${() => onFlushContext && onFlushContext()}
+                  onMouseDown=${(e) => e.preventDefault()}
+                  disabled=${isFullyDisabled ||
+                  isReadOnly ||
+                  !acpReady ||
+                  !flushCommand ||
+                  !onFlushContext}
+                  class="chat-input-action tooltip tooltip-top"
+                  data-tip=${flushCommand
+                    ? `Clear the agent's context (${flushCommand})`
+                    : "This agent does not support clearing the context"}
+                  aria-label=${flushCommand
+                    ? "Clear the agent's context"
+                    : "This agent does not support clearing the context"}
+                >
+                  <${BroomIcon} className="w-4 h-4" />
+                </button>
               </div>
 
               <!-- Center: Config selectors and context usage (shown when either is available) -->

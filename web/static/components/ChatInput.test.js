@@ -1,5 +1,6 @@
 /**
- * Unit tests for ChatInput's Flush-context toolbar button (mitto-c23).
+ * Unit tests for ChatInput's Flush-context toolbar button (mitto-c23,
+ * mitto-cmk).
  *
  * Because ChatInput.js imports window.preact / window.htm globals at module
  * load, it cannot be imported under jsdom. Following the same pattern used
@@ -15,25 +16,38 @@ import { describe, test, expect, jest } from "../utils/testing/testGlobals.js";
 
 // =============================================================================
 // Render-branch logic (visibility of the Flush button)
-// Duplicated from ChatInput.js:3120-3121:
-//   ${flushCommand && onFlushContext && html`<button ...>`}
-// Matches useConversationMenu.js:124 so the composer layout is unchanged
-// on ACPs without a context_flush_command.
+// The button is ALWAYS rendered (mitto-cmk) so the capability stays
+// discoverable on ACPs without a context_flush_command; unsupported ACPs get
+// a disabled button rather than no button. This deliberately diverges from
+// useConversationMenu.js:124 and the header toolbar, which still omit their
+// Flush entry entirely.
 // =============================================================================
 
-function shouldRenderFlushButton({ flushCommand, onFlushContext }) {
-  return Boolean(flushCommand) && Boolean(onFlushContext);
+function shouldRenderFlushButton() {
+  return true;
+}
+
+// =============================================================================
+// Tooltip / aria-label text
+// Duplicated from ChatInput.js:3175-3180.
+// =============================================================================
+
+function flushButtonTip(flushCommand) {
+  return flushCommand
+    ? `Clear the agent's context (${flushCommand})`
+    : "This agent does not support clearing the context";
 }
 
 // =============================================================================
 // Disabled-gate logic
-// Duplicated from ChatInput.js:3127:
-//   disabled=${isFullyDisabled || isReadOnly || !acpReady}
+// Duplicated from ChatInput.js:3168-3172:
+//   disabled=${isFullyDisabled || isReadOnly || !acpReady ||
+//              !flushCommand || !onFlushContext}
 // isFullyDisabled itself (ChatInput.js:742-743) is:
 //   disabled || noSession || isSending || isArchived || isArchivePending
 // so the button is disabled if ANY of:
 //   disabled, noSession, isSending, isArchived, isArchivePending,
-//   isReadOnly, !acpReady.
+//   isReadOnly, !acpReady, !flushCommand, !onFlushContext.
 // Deliberately NOT gated on isStreaming (matches the "..." menu item) or
 // on !text.trim (flushing the agent's context is independent of composer
 // content).
@@ -47,73 +61,66 @@ function isFlushButtonDisabled({
   isArchivePending = false,
   isReadOnly = false,
   acpReady = true,
+  flushCommand = "/clear",
+  onFlushContext = () => {},
 }) {
   const isFullyDisabled =
     disabled || noSession || isSending || isArchived || isArchivePending;
-  return isFullyDisabled || isReadOnly || !acpReady;
+  return (
+    isFullyDisabled ||
+    isReadOnly ||
+    !acpReady ||
+    !flushCommand ||
+    !onFlushContext
+  );
 }
 
 // =============================================================================
 // Click handler
-// Duplicated from ChatInput.js:3125:
-//   onClick=${() => onFlushContext()}
+// Duplicated from ChatInput.js:3166:
+//   onClick=${() => onFlushContext && onFlushContext()}
 // ChatInput passes no arguments; the parent-side wrapper in app.js closes
 // over activeSession and calls handleFlushContext(activeSession).
 // =============================================================================
 
 function handleFlushButtonClick(onFlushContext) {
-  onFlushContext();
+  return onFlushContext && onFlushContext();
 }
 
 // =============================================================================
 // Tests
 // =============================================================================
 
-describe("ChatInput Flush-context button (mitto-c23)", () => {
+describe("ChatInput Flush-context button (mitto-c23, mitto-cmk)", () => {
   describe("visibility (shouldRenderFlushButton)", () => {
     test("renders when flushCommand and onFlushContext are both provided", () => {
-      expect(
-        shouldRenderFlushButton({
-          flushCommand: "/clear",
-          onFlushContext: () => {},
-        }),
-      ).toBe(true);
+      expect(shouldRenderFlushButton()).toBe(true);
     });
 
-    test("does NOT render when flushCommand is empty string", () => {
-      expect(
-        shouldRenderFlushButton({
-          flushCommand: "",
-          onFlushContext: () => {},
-        }),
-      ).toBe(false);
+    test("still renders when the ACP advertises no flush command (mitto-cmk)", () => {
+      // Pre-mitto-cmk the button was omitted here; it is now rendered
+      // disabled so the capability stays discoverable.
+      expect(shouldRenderFlushButton()).toBe(true);
+    });
+  });
+
+  describe("tooltip text (flushButtonTip)", () => {
+    test("names the command when the ACP supports flushing", () => {
+      expect(flushButtonTip("/clear")).toBe(
+        "Clear the agent's context (/clear)",
+      );
     });
 
-    test("does NOT render when flushCommand is undefined", () => {
-      expect(
-        shouldRenderFlushButton({
-          flushCommand: undefined,
-          onFlushContext: () => {},
-        }),
-      ).toBe(false);
+    test("explains the lack of support when there is no command", () => {
+      expect(flushButtonTip("")).toBe(
+        "This agent does not support clearing the context",
+      );
     });
 
-    test("does NOT render when onFlushContext is undefined", () => {
-      expect(
-        shouldRenderFlushButton({
-          flushCommand: "/clear",
-          onFlushContext: undefined,
-        }),
-      ).toBe(false);
-    });
-
-    test("does NOT render when both are absent", () => {
-      expect(
-        shouldRenderFlushButton({
-          flushCommand: "",
-          onFlushContext: undefined,
-        }),
-      ).toBe(false);
+    test("explains the lack of support when the command is undefined", () => {
+      expect(flushButtonTip(undefined)).toBe(
+        "This agent does not support clearing the context",
+      );
     });
   });
 
@@ -128,6 +135,10 @@ describe("ChatInput Flush-context button (mitto-c23)", () => {
       const onFlushContext = jest.fn();
       handleFlushButtonClick(onFlushContext);
       expect(onFlushContext).toHaveBeenCalledWith();
+    });
+
+    test("does not throw when onFlushContext is undefined (button is disabled)", () => {
+      expect(() => handleFlushButtonClick(undefined)).not.toThrow();
     });
   });
 
@@ -154,6 +165,20 @@ describe("ChatInput Flush-context button (mitto-c23)", () => {
 
     test("disabled when acpReady is false", () => {
       expect(isFlushButtonDisabled({ acpReady: false })).toBe(true);
+    });
+
+    test("disabled when flushCommand is an empty string (mitto-cmk)", () => {
+      expect(isFlushButtonDisabled({ flushCommand: "" })).toBe(true);
+    });
+
+    test("disabled when flushCommand is absent (mitto-cmk)", () => {
+      // null rather than undefined: the helper's default parameter would
+      // otherwise substitute the supported-ACP value.
+      expect(isFlushButtonDisabled({ flushCommand: null })).toBe(true);
+    });
+
+    test("disabled when onFlushContext is absent (mitto-cmk)", () => {
+      expect(isFlushButtonDisabled({ onFlushContext: null })).toBe(true);
     });
 
     test("disabled when the outer `disabled` prop is true", () => {
