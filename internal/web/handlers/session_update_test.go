@@ -342,3 +342,59 @@ func TestUnarchive_DoesNotFireApplyOnCloseProcessors(t *testing.T) {
 		t.Errorf("ApplyOnCloseProcessors call count = %d, want 0 on unarchive", callCount)
 	}
 }
+
+// TestHandleUpdateSession_BackgroundColorSetAndClear verifies PATCH
+// /api/sessions/{id} can set and then clear background_color (mitto-8sk),
+// mirroring the existing beads_issue set/clear coverage.
+func TestHandleUpdateSession_BackgroundColorSetAndClear(t *testing.T) {
+	sid := "test-session-color"
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+	if err := store.Create(session.Metadata{
+		SessionID:  sid,
+		ACPServer:  "test-server",
+		WorkingDir: t.TempDir(),
+	}); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+	h := New(Deps{Store: store})
+
+	// Set.
+	color := "#E1BEE7"
+	body, _ := json.Marshal(SessionUpdateRequest{BackgroundColor: &color})
+	req := httptest.NewRequest(http.MethodPatch, "/api/sessions/"+sid, bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h.HandleUpdateSession(w, req, sid)
+	if w.Code != http.StatusOK {
+		t.Fatalf("Set: Status = %d, want %d; body: %s", w.Code, http.StatusOK, w.Body.String())
+	}
+	meta, err := store.GetMetadata(sid)
+	if err != nil {
+		t.Fatalf("GetMetadata after set: %v", err)
+	}
+	if meta.BackgroundColor != color {
+		t.Errorf("BackgroundColor after set = %q, want %q", meta.BackgroundColor, color)
+	}
+
+	// Clear (empty string).
+	empty := ""
+	body2, _ := json.Marshal(SessionUpdateRequest{BackgroundColor: &empty})
+	req2 := httptest.NewRequest(http.MethodPatch, "/api/sessions/"+sid, bytes.NewReader(body2))
+	req2.Header.Set("Content-Type", "application/json")
+	w2 := httptest.NewRecorder()
+	h.HandleUpdateSession(w2, req2, sid)
+	if w2.Code != http.StatusOK {
+		t.Fatalf("Clear: Status = %d, want %d; body: %s", w2.Code, http.StatusOK, w2.Body.String())
+	}
+	cleared, err := store.GetMetadata(sid)
+	if err != nil {
+		t.Fatalf("GetMetadata after clear: %v", err)
+	}
+	if cleared.BackgroundColor != "" {
+		t.Errorf("BackgroundColor after clear = %q, want empty", cleared.BackgroundColor)
+	}
+}

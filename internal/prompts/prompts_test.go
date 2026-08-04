@@ -1700,6 +1700,45 @@ func TestValidatePromptTarget(t *testing.T) {
 		}
 	})
 
+	// --- BackgroundColor validation (mitto-8sk). Must be a `#RGB` or
+	// `#RRGGBB` hex color, case-insensitive; empty/absent is always valid
+	// (unset). Runs from ParsePromptFile so a typo is caught at load time. ---
+
+	t.Run("backgroundColor empty is valid", func(t *testing.T) {
+		if err := ValidatePromptTarget("p", &PromptTarget{BackgroundColor: ""}, false); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	validColors := []string{
+		"#fff", "#FFF", "#123", "#abc",
+		"#ffffff", "#FFFFFF", "#E1BEE7", "#e1bee7", "#123456", "#AbC123",
+	}
+	for _, c := range validColors {
+		c := c
+		t.Run("backgroundColor "+c+" is valid", func(t *testing.T) {
+			if err := ValidatePromptTarget("p", &PromptTarget{BackgroundColor: c}, false); err != nil {
+				t.Errorf("unexpected error for %q: %v", c, err)
+			}
+		})
+	}
+
+	invalidColors := []string{
+		"red", "#12", "#GGGGGG", "#12345", "#1234567", "fff", "#",
+	}
+	for _, c := range invalidColors {
+		c := c
+		t.Run("backgroundColor "+c+" is rejected", func(t *testing.T) {
+			err := ValidatePromptTarget("My Prompt", &PromptTarget{BackgroundColor: c}, false)
+			if err == nil {
+				t.Fatalf("expected error for %q, got nil", c)
+			}
+			if !strings.Contains(err.Error(), "My Prompt") || !strings.Contains(err.Error(), "backgroundColor") {
+				t.Errorf("error should mention prompt name and backgroundColor: %v", err)
+			}
+		})
+	}
+
 	// --- SuppressAutoChildren validation (mitto-nlx). The flag is a
 	// create-time hint orthogonal to the reuse modes and has no cross-field
 	// requirements, so every combination — alone, with title, with reuse

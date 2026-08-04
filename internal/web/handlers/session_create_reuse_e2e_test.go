@@ -488,3 +488,142 @@ func TestTargetTitleE2E_TemplateError_Rejects400(t *testing.T) {
 type errFake struct{ s string }
 
 func (e errFake) Error() string { return e.s }
+
+// =============================================================================
+// target.backgroundColor (mitto-8sk) — reuse dispatches must never overwrite
+// an existing conversation's color. Each test pre-populates a session with a
+// color, wires the resolver to return a DIFFERENT color, drives the request
+// through a specific reuse branch, and asserts the stored color is unchanged.
+// =============================================================================
+
+// TestReuseIssueE2E_HitDoesNotOverwriteBackgroundColor — reuseIssue branch.
+func TestReuseIssueE2E_HitDoesNotOverwriteBackgroundColor(t *testing.T) {
+	const workingDir = "/work-color-reuseissue"
+	store, h := newReuseE2EHandlers(t, workingDir)
+
+	sessionID := "20260201-140000-colorissue"
+	if err := store.Create(session.Metadata{
+		SessionID:       sessionID,
+		Status:          "active",
+		ACPServer:       "test-server",
+		WorkingDir:      workingDir,
+		BeadsIssue:      "mitto-color",
+		BackgroundColor: "#111111", // pre-existing / user-recolored value
+		UpdatedAt:       time.Now(),
+	}); err != nil {
+		t.Fatalf("store.Create: %v", err)
+	}
+
+	h.deps.ResolvePromptReuseIssue = func(string, string) bool { return true }
+	h.deps.ResolvePromptSingleton = func(string, string) bool { return false }
+	h.deps.ResolvePromptTarget = func(string, string, map[string]string, string) (ResolvedPromptTarget, error) {
+		return ResolvedPromptTarget{BackgroundColor: "#E1BEE7"}, nil // different color
+	}
+
+	w := postSession(t, h, SessionCreateRequest{
+		WorkingDir:       workingDir,
+		BeadsIssue:       "mitto-color",
+		OriginPromptName: "cleanup-issue",
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("Status = %d, want %d; body: %s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	meta, err := store.GetMetadata(sessionID)
+	if err != nil {
+		t.Fatalf("GetMetadata: %v", err)
+	}
+	if meta.BackgroundColor != "#111111" {
+		t.Errorf("BackgroundColor = %q after reuseIssue hit, want unchanged %q", meta.BackgroundColor, "#111111")
+	}
+}
+
+// TestReuseTitleE2E_HitDoesNotOverwriteBackgroundColor — reuseTitle branch.
+func TestReuseTitleE2E_HitDoesNotOverwriteBackgroundColor(t *testing.T) {
+	const workingDir = "/work-color-reusetitle"
+	store, h := newReuseE2EHandlers(t, workingDir)
+
+	sessionID := "20260201-140000-colortitle"
+	if err := store.Create(session.Metadata{
+		SessionID:       sessionID,
+		Status:          "active",
+		ACPServer:       "test-server",
+		WorkingDir:      workingDir,
+		Name:            "Weekly triage",
+		BackgroundColor: "#111111",
+		UpdatedAt:       time.Now(),
+	}); err != nil {
+		t.Fatalf("store.Create: %v", err)
+	}
+
+	h.deps.ResolvePromptReuseIssue = func(string, string) bool { return false }
+	h.deps.ResolvePromptSingleton = func(string, string) bool { return false }
+	h.deps.ResolvePromptTarget = func(string, string, map[string]string, string) (ResolvedPromptTarget, error) {
+		return ResolvedPromptTarget{Title: "Weekly triage", ReuseTitle: true, BackgroundColor: "#E1BEE7"}, nil
+	}
+
+	w := postSession(t, h, SessionCreateRequest{
+		WorkingDir:       workingDir,
+		OriginPromptName: "weekly-triage",
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("Status = %d, want %d; body: %s", w.Code, http.StatusOK, w.Body.String())
+	}
+	resp := decodeSessionResponse(t, w)
+	if resp == nil || resp["session_id"] != sessionID || resp["reused"] != true {
+		t.Fatalf("expected reuseTitle hit to route to %q; got %+v", sessionID, resp)
+	}
+
+	meta, err := store.GetMetadata(sessionID)
+	if err != nil {
+		t.Fatalf("GetMetadata: %v", err)
+	}
+	if meta.BackgroundColor != "#111111" {
+		t.Errorf("BackgroundColor = %q after reuseTitle hit, want unchanged %q", meta.BackgroundColor, "#111111")
+	}
+}
+
+// TestSingletonE2E_HitDoesNotOverwriteBackgroundColor — singleton find-or-route branch.
+func TestSingletonE2E_HitDoesNotOverwriteBackgroundColor(t *testing.T) {
+	const workingDir = "/work-color-singleton"
+	store, h := newReuseE2EHandlers(t, workingDir)
+
+	sessionID := "20260201-140000-colorsingle"
+	if err := store.Create(session.Metadata{
+		SessionID:        sessionID,
+		Status:           "active",
+		ACPServer:        "test-server",
+		WorkingDir:       workingDir,
+		OriginPromptName: "only-singleton",
+		BackgroundColor:  "#111111",
+		UpdatedAt:        time.Now(),
+	}); err != nil {
+		t.Fatalf("store.Create: %v", err)
+	}
+
+	h.deps.ResolvePromptReuseIssue = func(string, string) bool { return false }
+	h.deps.ResolvePromptSingleton = func(promptName, _ string) bool { return promptName == "only-singleton" }
+	h.deps.ResolvePromptTarget = func(string, string, map[string]string, string) (ResolvedPromptTarget, error) {
+		return ResolvedPromptTarget{BackgroundColor: "#E1BEE7"}, nil
+	}
+
+	w := postSession(t, h, SessionCreateRequest{
+		WorkingDir:       workingDir,
+		OriginPromptName: "only-singleton",
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("Status = %d, want %d; body: %s", w.Code, http.StatusOK, w.Body.String())
+	}
+	resp := decodeSessionResponse(t, w)
+	if resp == nil || resp["session_id"] != sessionID || resp["reused"] != true {
+		t.Fatalf("expected singleton hit to route to %q; got %+v", sessionID, resp)
+	}
+
+	meta, err := store.GetMetadata(sessionID)
+	if err != nil {
+		t.Fatalf("GetMetadata: %v", err)
+	}
+	if meta.BackgroundColor != "#111111" {
+		t.Errorf("BackgroundColor = %q after singleton hit, want unchanged %q", meta.BackgroundColor, "#111111")
+	}
+}
