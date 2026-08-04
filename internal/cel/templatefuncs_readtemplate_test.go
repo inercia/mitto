@@ -141,9 +141,11 @@ func TestReadTemplate_RenderFailClosed(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(tmpDir, "unknown.md"), []byte(`{{ NoSuchFunction "x" }}`), 0644); err != nil {
 		t.Fatal(err)
 	}
-	// Fragment reference — Phase-A limitation: fragments are NOT attached in
-	// the sub-render, so this parse-fails with a "template ... not defined"
-	// exec error.
+	// Fragment reference with NO provider installed (mitto-twa default state
+	// for this test — SetFragmentProvider is never called here): renderNested
+	// PromptBody's attach loop is a no-op, so this still parse-fails with a
+	// "template ... not defined" exec error, same as before mitto-twa. See
+	// fragments_test.go for the provider-installed happy-path coverage.
 	if err := os.WriteFile(filepath.Join(tmpDir, "frag.md"), []byte(`{{ template "_shared/foo" . }}`), 0644); err != nil {
 		t.Fatal(err)
 	}
@@ -168,7 +170,7 @@ func TestReadTemplate_RenderFailClosed(t *testing.T) {
 		}
 	})
 
-	t.Run("fragment reference fails (no fragments attached)", func(t *testing.T) {
+	t.Run("fragment reference fails (no provider installed)", func(t *testing.T) {
 		_, err := RenderPromptTemplate("t", `{{ ReadTemplate "frag.md" . }}`, ctx, fm)
 		if err == nil {
 			t.Fatal("expected fragment-not-defined error, got nil")
