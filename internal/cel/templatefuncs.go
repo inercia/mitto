@@ -106,9 +106,15 @@ var (
 
 // globCacheTTL bounds how long a fileExists/dirExists glob-mode result is
 // memoised per (folder, pattern, wantFiles) tuple, to avoid repeat walks on
-// rapid menu re-opens. Mirrors beadsCacheTTL — kept short so a filesystem
-// mutation is reflected within one TTL window.
-const globCacheTTL = 5 * time.Second
+// rapid menu re-opens. Raised from the original 5s to 30s (mitto-ayl): at the
+// observed /mitto/api/workspace-prompts request rate (~1 per 6.4s) a 5s TTL
+// expires between essentially every request, so the memo never hit and every
+// evaluation re-walked the workspace. Staleness remains TTL-bounded (no
+// filesystem watcher covers arbitrary glob patterns — see mitto-ayl.1 for a
+// future watcher-driven approach); 30s mirrors beadsCacheTTL and is short
+// enough that a newly-added/removed file affects prompt visibility within one
+// window.
+const globCacheTTL = 30 * time.Second
 
 // globWalkTimeout bounds a single fileExists/dirExists glob-mode walk. On
 // deadline the walker returns Truncated=true reason="deadline" and the caller
@@ -123,11 +129,41 @@ const globWalkTimeout = 2 * time.Second
 var (
 	globCacheMu sync.Mutex
 	globCache   = map[string]globCacheEntry{}
+
+	// globSF collapses concurrent existsByGlob walks for the same
+	// (folder, pattern, wantFiles) key into one walk (mitto-ayl): several
+	// prompts can share an identical FileExists/DirExists glob gate (e.g. the
+	// skills prompts all gate on FileExists("**/SKILL.md")), so when the
+	// cache entry for that key is cold, an overlapping batch of enabledWhen
+	// evaluations (one /mitto/api/workspace-prompts request touches many
+	// prompts; concurrent requests multiply it) would otherwise start one
+	// full workspace walk per evaluation instead of sharing one. Mirrors
+	// beadsListSF/beadsShowSF.
+	globSF singleflight.Group
 )
 
 type globCacheEntry struct {
 	value bool
 	at    time.Time
+}
+
+// globCacheLookup returns the memoised value for key if present and not
+// expired (globCacheTTL). Mirrors beadsCacheLookup.
+func globCacheLookup(key string) (bool, bool) {
+	globCacheMu.Lock()
+	defer globCacheMu.Unlock()
+	e, ok := globCache[key]
+	if !ok || time.Since(e.at) >= globCacheTTL {
+		return false, false
+	}
+	return e.value, true
+}
+
+// globCacheStore memoises value for key. Mirrors beadsCacheStore.
+func globCacheStore(key string, value bool) {
+	globCacheMu.Lock()
+	globCache[key] = globCacheEntry{value: value, at: time.Now()}
+	globCacheMu.Unlock()
 }
 
 // containsGlobMeta reports whether pattern uses any glob metacharacter that
@@ -189,7 +225,8 @@ func resolveGlobRoot(folder, pattern string) (walkRoot, patternRel string, ok bo
 // is never wrongly hidden by a slow or huge filesystem.
 //
 // Results are memoised for globCacheTTL per (folder, pattern, wantFiles)
-// tuple.
+// tuple. Concurrent misses on the same key collapse to a single walk via
+// globSF (mitto-ayl), mirroring beadsCount/showBead.
 func existsByGlob(folder, pattern string, wantFiles bool) bool {
 	cacheKey := folder + "\x00" + pattern + "\x00"
 	if wantFiles {
@@ -197,48 +234,51 @@ func existsByGlob(folder, pattern string, wantFiles bool) bool {
 	} else {
 		cacheKey += "d"
 	}
-	globCacheMu.Lock()
-	if e, ok := globCache[cacheKey]; ok && time.Since(e.at) < globCacheTTL {
-		globCacheMu.Unlock()
-		return e.value
-	}
-	globCacheMu.Unlock()
-
-	walkRoot, patternRel, ok := resolveGlobRoot(folder, pattern)
-	if !ok {
-		globCacheMu.Lock()
-		globCache[cacheKey] = globCacheEntry{value: false, at: time.Now()}
-		globCacheMu.Unlock()
-		return false
+	if v, ok := globCacheLookup(cacheKey); ok {
+		return v
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), globWalkTimeout)
-	defer cancel()
-	res := pathglob.WalkMatch(pathglob.WalkMatchOpts{
-		Ctx:        ctx,
-		Root:       walkRoot,
-		Patterns:   []string{patternRel},
-		MaxResults: 1,
-		MaxVisited: pathglob.WalkMatchMaxVisited,
-		WantFiles:  wantFiles,
+	v, _, _ := globSF.Do(cacheKey, func() (interface{}, error) {
+		// Re-probe inside the flight: a sibling call may have just populated
+		// the entry while this goroutine waited to be scheduled/acquire the
+		// singleflight slot, in which case skip the walk entirely.
+		if v, ok := globCacheLookup(cacheKey); ok {
+			return v, nil
+		}
+
+		walkRoot, patternRel, ok := resolveGlobRoot(folder, pattern)
+		if !ok {
+			globCacheStore(cacheKey, false)
+			return false, nil
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), globWalkTimeout)
+		defer cancel()
+		res := pathglob.WalkMatch(pathglob.WalkMatchOpts{
+			Ctx:        ctx,
+			Root:       walkRoot,
+			Patterns:   []string{patternRel},
+			MaxResults: 1,
+			MaxVisited: pathglob.WalkMatchMaxVisited,
+			WantFiles:  wantFiles,
+		})
+		var result bool
+		if len(res.Matches) > 0 {
+			result = true
+		} else if res.Truncated && (res.Reason == "deadline" || res.Reason == "visited_cap") {
+			// Fail-open: a slow/huge filesystem must not wrongly hide a prompt.
+			result = true
+			slog.Debug("cel glob exists fail-open",
+				"pattern", pattern, "folder", folder, "wantFiles", wantFiles,
+				"reason", res.Reason)
+		} else {
+			result = false
+		}
+
+		globCacheStore(cacheKey, result)
+		return result, nil
 	})
-	var result bool
-	if len(res.Matches) > 0 {
-		result = true
-	} else if res.Truncated && (res.Reason == "deadline" || res.Reason == "visited_cap") {
-		// Fail-open: a slow/huge filesystem must not wrongly hide a prompt.
-		result = true
-		slog.Debug("cel glob exists fail-open",
-			"pattern", pattern, "folder", folder, "wantFiles", wantFiles,
-			"reason", res.Reason)
-	} else {
-		result = false
-	}
-
-	globCacheMu.Lock()
-	globCache[cacheKey] = globCacheEntry{value: result, at: time.Now()}
-	globCacheMu.Unlock()
-	return result
+	return v.(bool)
 }
 
 // =============================================================================
