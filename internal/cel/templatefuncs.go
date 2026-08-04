@@ -214,6 +214,13 @@ func resolveGlobRoot(folder, pattern string) (walkRoot, patternRel string, ok bo
 	return walkRoot, patternRel, true
 }
 
+// walkMatchFn indirects pathglob.WalkMatch so tests can wrap it (count calls,
+// inject a delay) to pin existsByGlob's globSF singleflight collapse without
+// needing a real large/slow filesystem. Always pathglob.WalkMatch in
+// production; mirrors the existing test-seam convention of
+// pathglob.WalkMatchMaxVisited being a var for the same reason.
+var walkMatchFn = pathglob.WalkMatch
+
 // existsByGlob reports whether ANY entry under folder matches pattern using
 // pathglob.WalkMatch with maxResults=1. wantFiles gates the entry-type filter
 // (regular files vs. directories), matching the fileExists/dirExists split.
@@ -254,7 +261,7 @@ func existsByGlob(folder, pattern string, wantFiles bool) bool {
 
 		ctx, cancel := context.WithTimeout(context.Background(), globWalkTimeout)
 		defer cancel()
-		res := pathglob.WalkMatch(pathglob.WalkMatchOpts{
+		res := walkMatchFn(pathglob.WalkMatchOpts{
 			Ctx:        ctx,
 			Root:       walkRoot,
 			Patterns:   []string{patternRel},

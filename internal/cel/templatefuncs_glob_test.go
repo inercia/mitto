@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -427,5 +428,90 @@ func TestGlob_CEL_TemplateSurfaceParity(t *testing.T) {
 				t.Errorf("render %q = %q, want %q", tc.body, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestGlob_Singleflight_CollapsesConcurrentWalks pins mitto-ayl D1: concurrent
+// existsByGlob misses on the SAME (folder, pattern, wantFiles) key collapse
+// into a single pathglob.WalkMatch call via globSF, instead of each goroutine
+// walking in parallel. Mirrors
+// TestShowBead_SingleflightCollapsesConcurrentExecs / beadsShowSF's test
+// pattern: walkMatchFn is swapped for a counting+delayed wrapper so all
+// goroutines are guaranteed to be in flight before the first one returns and
+// populates the cache.
+func TestGlob_Singleflight_CollapsesConcurrentWalks(t *testing.T) {
+	clearGlobCache(t)
+	root := makeGlobFixture(t)
+
+	origWalk := walkMatchFn
+	var walkCount int32
+	var mu sync.Mutex
+	walkMatchFn = func(opts pathglob.WalkMatchOpts) pathglob.WalkMatchResult {
+		mu.Lock()
+		walkCount++
+		mu.Unlock()
+		time.Sleep(200 * time.Millisecond)
+		return origWalk(opts)
+	}
+	defer func() { walkMatchFn = origWalk }()
+
+	const n = 20
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func() {
+			defer wg.Done()
+			if got := fileExists(root, "**/*.tf"); !got {
+				t.Errorf("fileExists(**/*.tf) concurrent = false, want true")
+			}
+		}()
+	}
+	wg.Wait()
+
+	mu.Lock()
+	got := walkCount
+	mu.Unlock()
+	if got != 1 {
+		t.Errorf("WalkMatch call count under concurrency = %d, want 1 (singleflight should collapse all %d callers)", got, n)
+	}
+}
+
+// TestGlob_Singleflight_DistinctKeysWalkIndependently pins that globSF keys
+// by the full (folder, pattern, wantFiles) cache key: concurrent misses on
+// DIFFERENT patterns must NOT collapse into each other — each distinct key
+// still gets its own walk.
+func TestGlob_Singleflight_DistinctKeysWalkIndependently(t *testing.T) {
+	clearGlobCache(t)
+	root := makeGlobFixture(t)
+
+	origWalk := walkMatchFn
+	var walkCount int32
+	var mu sync.Mutex
+	walkMatchFn = func(opts pathglob.WalkMatchOpts) pathglob.WalkMatchResult {
+		mu.Lock()
+		walkCount++
+		mu.Unlock()
+		time.Sleep(100 * time.Millisecond)
+		return origWalk(opts)
+	}
+	defer func() { walkMatchFn = origWalk }()
+
+	patterns := []string{"**/*.tf", "**/*.md", "**/deep"}
+	var wg sync.WaitGroup
+	wg.Add(len(patterns))
+	for _, p := range patterns {
+		p := p
+		go func() {
+			defer wg.Done()
+			_ = fileExists(root, p)
+		}()
+	}
+	wg.Wait()
+
+	mu.Lock()
+	got := walkCount
+	mu.Unlock()
+	if got != int32(len(patterns)) {
+		t.Errorf("WalkMatch call count for %d distinct keys = %d, want %d (distinct keys must not collapse)", len(patterns), got, len(patterns))
 	}
 }
