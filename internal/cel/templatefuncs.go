@@ -435,12 +435,11 @@ func readFile(folder, path string) string {
 // (a.tmpl -> a.tmpl) or a two-file cycle (a -> b -> a) errors out with a
 // "recursion depth exceeded" message rather than blowing the stack.
 //
-// No fragments: renderNestedPromptBody deliberately does NOT attach the
-// workspace fragment registry (a Phase-A limitation shared with
-// PromptTextWithArgs — preserves the internal/cel -> internal/prompts
-// decoupling in mitto-b8k.3). A file containing
-// {{ template "_shared/foo" . }} will fail with a template-not-defined parse
-// error, which is fail-closed.
+// Fragments: renderNestedPromptBody attaches the workspace fragment registry
+// (via the fragmentProvider hook, preserving the internal/cel ->
+// internal/prompts decoupling in mitto-b8k.3) so a file containing
+// {{ template "_shared/foo" . }} resolves the same way it would in a
+// top-level prompt render (mitto-twa).
 func readTemplate(name, folder string, ctx *PromptEnabledContext, depth int) (string, error) {
 	contents := readFile(folder, name)
 	if contents == "" {
@@ -1039,10 +1038,10 @@ func FormatPeers(peers []PeerInfo) string {
 //     (typically produced by ArgsMap). Fail-closed on nil resolver, empty name,
 //     resolver error, sub-render parse/exec error, or recursion depth exceeded
 //     (cap: promptTextMaxDepth). Nested bodies get the same funcmap (so they
-//     may themselves call PromptTextWithArgs), but cannot use {{ template
-//     "_shared/..." }} fragments — fragment attach is intentionally omitted
-//     from the sub-render (Phase-A limitation of mitto-47y.1). Trailing
-//     newlines are stripped.
+//     may themselves call PromptTextWithArgs) and may use {{ template
+//     "_shared/..." }} fragments — the workspace fragment registry is
+//     attached to the sub-render (mitto-twa; lifts the mitto-47y.1 Phase-A
+//     limitation). Trailing newlines are stripped.
 //   - ArgsMap(name) — reads args[name] as a JSON-encoded map[string]string and
 //     returns the decoded map (mitto-47y.1). Empty/absent field returns an
 //     empty non-nil map (Phase B may omit the field when the picked prompt has
@@ -1135,10 +1134,8 @@ func BuildTemplateFuncMap(ctx *PromptEnabledContext) template.FuncMap {
 		// return "" with nil error). Render step: fail-closed (parse or
 		// execution error, unknown func, or depth-exceeded return a non-nil
 		// error which propagates through the outer template's fail-closed
-		// policy). Fragments (`{{ template "_shared/..." }}`) are NOT
-		// attached in the sub-render — Phase-A limitation shared with
-		// PromptTextWithArgs — so a file that references a shared fragment
-		// will parse-fail cleanly.
+		// policy). Fragments (`{{ template "_shared/..." }}`) ARE attached in
+		// the sub-render, same as PromptTextWithArgs (mitto-twa).
 		"ReadTemplate": func(path string, _ any) (string, error) {
 			return readTemplate(path, folder, ctx, promptTextDepth)
 		},
@@ -1219,8 +1216,9 @@ func BuildTemplateFuncMap(ctx *PromptEnabledContext) template.FuncMap {
 		// counterpart to PromptText: the inner body's {{ .Args.X }} bind to
 		// innerArgs, independent of the outer scope. Recursion is capped at
 		// promptTextMaxDepth to keep self-referential bodies from crashing
-		// the process. Fragments ({{ template "_shared/..." }}) are NOT
-		// attached in the sub-render (Phase-A limitation).
+		// the process. Fragments ({{ template "_shared/..." }}) ARE attached
+		// in the sub-render (mitto-twa; lifts the mitto-47y.1 Phase-A
+		// limitation).
 		"PromptTextWithArgs": func(name string, innerArgs any) (string, error) {
 			if promptTextResolver == nil {
 				return "", fmt.Errorf("PromptTextWithArgs: no resolver available")
@@ -1320,16 +1318,32 @@ func BuildTemplateFuncMap(ctx *PromptEnabledContext) template.FuncMap {
 }
 
 // renderNestedPromptBody sub-renders body against data using funcs. It mirrors
-// the "no-fragments" branch of the outer prompt renderer (fragments are NOT
-// attached — Phase-A limitation of mitto-47y.1). The bare template.Parse path
-// is intentional: internal/cel deliberately does not import internal/prompts
-// (decoupled in mitto-b8k.3), and fragment attach lives in the prompts
-// package. name is used only for error messages.
+// the outer prompt renderer's fragment-attach behavior (internal/prompts'
+// RenderPromptTemplate): every fragment returned by fragmentsForNestedRender
+// is attached as an associated sub-template BEFORE body is parsed, so
+// {{ template "_shared/foo" . }} resolves the same way in ReadTemplate and
+// PromptTextWithArgs sub-renders as it does in a top-level prompt render
+// (mitto-twa; lifts the mitto-47y.1 Phase-A "no fragments in sub-render"
+// limitation). A nil/empty fragment set (no provider installed, e.g. a
+// standalone internal/cel test or a binary that never loads prompts) skips
+// the attach loop entirely, leaving behavior bytewise-identical to before
+// mitto-twa. Attach happens via the func-typed fragmentProvider hook rather
+// than a direct import: internal/cel deliberately does not import
+// internal/prompts (decoupled in mitto-b8k.3), and TestReadTemplate_
+// NoPromptsImport pins that. A fragment that fails to parse is a fail-closed
+// error, consistent with RenderPromptTemplate. name is used only for error
+// messages.
 func renderNestedPromptBody(name, body string, data any, funcs template.FuncMap) (string, error) {
 	if !strings.Contains(body, "{{") {
 		return body, nil
 	}
-	tmpl, err := template.New(name).Option("missingkey=zero").Funcs(funcs).Parse(body)
+	tmpl := template.New(name).Option("missingkey=zero").Funcs(funcs)
+	for fragName, fragBody := range fragmentsForNestedRender() {
+		if _, err := tmpl.New(fragName).Parse(fragBody); err != nil {
+			return "", fmt.Errorf("fragment %q parse: %w", fragName, err)
+		}
+	}
+	tmpl, err := tmpl.Parse(body)
 	if err != nil {
 		return "", fmt.Errorf("parse error: %w", err)
 	}

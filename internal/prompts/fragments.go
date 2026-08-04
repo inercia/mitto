@@ -367,3 +367,22 @@ func SetCurrentFragments(r *FragmentRegistry) {
 	currentFragments = r
 	currentFragmentsGen++
 }
+
+// init installs the internal/cel fragment provider hook (mitto-twa) so that
+// ReadTemplate/PromptTextWithArgs sub-renders (internal/cel/templatefuncs.go
+// renderNestedPromptBody) can attach the SAME workspace fragment registry
+// used by top-level prompt renders, without internal/cel importing
+// internal/prompts (forbidden direction — mitto-b8k.3, pinned by
+// TestReadTemplate_NoPromptsImport). The closure reads through
+// CurrentFragments() at call time rather than capturing a snapshot, so a
+// later SetCurrentFragments (fs-watcher reload, test install/teardown) is
+// observed on the very next sub-render with no extra plumbing.
+func init() {
+	cel.SetFragmentProvider(func() map[string]string {
+		frags := CurrentFragments()
+		if frags == nil {
+			return nil
+		}
+		return frags.All()
+	})
+}
