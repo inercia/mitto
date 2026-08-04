@@ -1626,6 +1626,76 @@ func TestGCHealthTier_RecyclesSaturatedIdleProcess(t *testing.T) {
 	}
 }
 
+// TestGCHealthTier_OnHealthRecycledCallback verifies the mitto-aoo
+// notification wiring: recycling a saturated-idle process (Tier 5) invokes
+// onHealthRecycled exactly once with reason "saturated_idle" and the correct
+// workspace UUID, saturation level, and recycled session count — the signal
+// the web layer uses to broadcast the "agent_recycled" toast.
+func TestGCHealthTier_OnHealthRecycledCallback(t *testing.T) {
+	workspaceUUID := "ws-saturated-cb"
+	proc := newTestSharedProcess()
+
+	for i := 0; i < sessionSaturationTimeoutThreshold; i++ {
+		proc.recordRPCTimeout()
+	}
+	// Re-trip in case the cooldown already elapsed and opened a probe.
+	for i := 0; i < sessionSaturationTimeoutThreshold; i++ {
+		proc.recordRPCTimeout()
+	}
+	wantLevel := proc.SaturationLevel()
+
+	sessions := map[string][]conversation.SessionInfo{
+		workspaceUUID: {
+			{SessionID: "s1", WorkspaceUUID: workspaceUUID, HasObservers: true},
+			{SessionID: "s2", WorkspaceUUID: workspaceUUID, HasObservers: true},
+		},
+	}
+
+	var mu sync.Mutex
+	m := newTestGCManager(
+		func() map[string][]conversation.SessionInfo { return sessions },
+		func(id string) {},
+	)
+	m.mu.Lock()
+	m.processes[workspaceUUID] = proc
+	m.mu.Unlock()
+	m.gcConfig.MemoryRecycleThreshold = gcTier4Threshold
+	m.rssSampler = func(p *SharedACPProcess) (uint64, error) { return gcTier4Threshold / 2, nil }
+
+	var calls int
+	var gotUUID, gotReason string
+	var gotLevel, gotCount int
+	m.onHealthRecycled = func(workspaceUUID, reason string, saturationLevel, sessionCount int) {
+		mu.Lock()
+		defer mu.Unlock()
+		calls++
+		gotUUID = workspaceUUID
+		gotReason = reason
+		gotLevel = saturationLevel
+		gotCount = sessionCount
+	}
+
+	m.RunGCOnce()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("expected onHealthRecycled to be called once, got %d", calls)
+	}
+	if gotUUID != workspaceUUID {
+		t.Errorf("expected recycled workspace %q, got %q", workspaceUUID, gotUUID)
+	}
+	if gotReason != "saturated_idle" {
+		t.Errorf("expected reason %q, got %q", "saturated_idle", gotReason)
+	}
+	if gotLevel != wantLevel {
+		t.Errorf("expected saturationLevel %d, got %d", wantLevel, gotLevel)
+	}
+	if gotCount != 2 {
+		t.Errorf("expected recycled session count 2, got %d", gotCount)
+	}
+}
+
 // driveToConfirmedDegraded pushes proc's saturation state machine to
 // saturationLevel >= confirmedDegradedLevel (2), mirroring the real sequence:
 // trip saturation (threshold consecutive timeouts) -> cooldown elapses (probe
@@ -1711,6 +1781,72 @@ func TestGCTier6_RecyclesBusyConfirmedDegradedProcess(t *testing.T) {
 	}
 	if !m.IsGCSuspended("s1") {
 		t.Error("expected session s1 to be marked GC-suspended before close")
+	}
+}
+
+// TestGCTier6_OnHealthRecycledCallback verifies the mitto-aoo notification
+// wiring for the Tier 6 (confirmed-degraded, busy) recycle path: the
+// callback fires once with reason "confirmed_degraded" and the correct
+// workspace UUID, saturation level, and recycled session count.
+func TestGCTier6_OnHealthRecycledCallback(t *testing.T) {
+	workspaceUUID := "ws-degraded-busy-cb"
+	proc := newTestSharedProcess()
+	driveToConfirmedDegraded(t, proc)
+	proc.activeRPCs.Add(1)
+	wantLevel := proc.SaturationLevel()
+
+	sessions := map[string][]conversation.SessionInfo{
+		workspaceUUID: {
+			{
+				SessionID:            "s1",
+				WorkspaceUUID:        workspaceUUID,
+				HasObservers:         true,
+				IsPrompting:          true,
+				LastStreamActivityAt: time.Now().Add(-time.Hour), // stale
+			},
+		},
+	}
+
+	var mu sync.Mutex
+	m := newTestGCManager(
+		func() map[string][]conversation.SessionInfo { return sessions },
+		func(id string) {},
+	)
+	m.mu.Lock()
+	m.processes[workspaceUUID] = proc
+	m.mu.Unlock()
+
+	var calls int
+	var gotUUID, gotReason string
+	var gotLevel, gotCount int
+	m.onHealthRecycled = func(workspaceUUID, reason string, saturationLevel, sessionCount int) {
+		mu.Lock()
+		defer mu.Unlock()
+		calls++
+		gotUUID = workspaceUUID
+		gotReason = reason
+		gotLevel = saturationLevel
+		gotCount = sessionCount
+	}
+
+	m.RunGCOnce()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("expected onHealthRecycled to be called once, got %d", calls)
+	}
+	if gotUUID != workspaceUUID {
+		t.Errorf("expected recycled workspace %q, got %q", workspaceUUID, gotUUID)
+	}
+	if gotReason != "confirmed_degraded" {
+		t.Errorf("expected reason %q, got %q", "confirmed_degraded", gotReason)
+	}
+	if gotLevel != wantLevel {
+		t.Errorf("expected saturationLevel %d, got %d", wantLevel, gotLevel)
+	}
+	if gotCount != 1 {
+		t.Errorf("expected recycled session count 1, got %d", gotCount)
 	}
 }
 
