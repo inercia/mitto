@@ -3055,26 +3055,35 @@ func TestMentionDriver_RendersForRepresentativeContexts(t *testing.T) {
 	}
 }
 
-// TestLoopProcessingSpawns_MirrorArgumentsIntoLoopArguments reproduces mitto-rtdr.
+// TestLoopProcessingSpawns_MirrorArgumentsIntoLoopArguments reproduces mitto-rtdr,
+// updated for the mitto-cwz.3 rename of .Args.Commit -> .Args.SubmitStrategy.
 //
-// beads-issue-loop-processing.prompt.yaml spawns per-mention (§A), per-bug (§B) and
-// per-feature (§C) child conversations, all with loop_prompt_name and
-// loop_trigger: onCompletion — i.e. their onCompletion re-fires must render the
+// beads-issue-loop-processing.prompt.yaml spawns per-mention (SS A), per-bug (SS B) and
+// per-feature (SS C) child conversations, all with loop_prompt_name and
+// loop_trigger: onCompletion -- i.e. their onCompletion re-fires must render the
 // loop body with the same .Args as the initial run. In internal/mcpserver the
 // initial-prompt path reads input.Arguments (tools_conversation_new.go:651)
 // while the loop-body path reads a separate input.LoopArguments field
-// (:538 → session.LoopPrompt.Arguments). If the spawn block passes only
+// (:538 -> session.LoopPrompt.Arguments). If the spawn block passes only
 // arguments: and not loop_arguments:, every re-fire renders the loop body with
-// .Args = nil (missingkey=zero → .Args.Commit == ""), which in the loop-body
-// phase-dispatch template's positive-match gate
-// (`{{ if eq .Args.Commit "true" }}true{{ else }}false{{ end }}`) resolves to
-// "false" — silently disabling commits.
+// .Args = nil (missingkey=zero => .Args.SubmitStrategy == ""), which in the
+// loop-body phase-dispatch templates' default-on gate
+// (`{{ $commit := ne $submit "None" }}`) still resolves to "commit" for an
+// empty string -- so an unmirrored spawn does not silently disable commits the
+// way the old positive-match `eq .Args.Commit "true"` gate did. The invariant
+// this test pins is narrower but still real: the spawn block must literally
+// mirror the SAME resolved SubmitStrategy value into both `arguments:` and
+// `loop_arguments:`, for every value the picker can produce ("Commit",
+// "Pull Request", "None") and for the unset case (default-on fallback to
+// "Commit") -- a spawn block that mirrors the literal into `arguments:` only,
+// or mirrors a stale/different value into `loop_arguments:`, would still pass
+// a "value present somewhere in the block" check but desyncs the initial run
+// from every re-fire.
 //
-// The reproduction: render the orchestrator body with .Args.Commit = "true" and
-// assert each of the §A, §B, §C spawn blocks includes BOTH `arguments:` AND
-// `loop_arguments:` fields — with the resolved Commit value. The current
-// template only sets `arguments:`, so this test fails and pins the bug in place
-// until fix layer 1 lands.
+// The reproduction: render the orchestrator body with each SubmitStrategy
+// value (including unset) and assert each of the SS A, SS B, SS C spawn blocks
+// includes BOTH `arguments:` AND `loop_arguments:` fields, with the identical
+// resolved SubmitStrategy literal on both sides.
 func TestLoopProcessingSpawns_MirrorArgumentsIntoLoopArguments(t *testing.T) {
 	installBuiltinFragmentsForTest(t)
 	builtinDir := "../../config/prompts/builtin"
@@ -3089,65 +3098,96 @@ func TestLoopProcessingSpawns_MirrorArgumentsIntoLoopArguments(t *testing.T) {
 	}
 	body := prompt.Content
 
-	ctx := &cel.PromptEnabledContext{
-		Session: cel.SessionContext{
-			ID:            "orch-1",
-			BeadsIssue:    "",
-			HasBeadsIssue: false,
-		},
-		Args: map[string]string{"SubmitStrategy": "Commit"},
-	}
-	funcs := cel.BuildTemplateFuncMap(ctx)
-	out, rerr := RenderPromptTemplate("beads-issue-loop-processing", body, ctx, funcs)
-	if rerr != nil {
-		t.Fatalf("RenderPromptTemplate: %v", rerr)
-	}
-
-	// The three named-prompt spawn blocks — one per section. Each maps to a
+	// The three named-prompt spawn blocks -- one per section. Each maps to a
 	// loop_prompt_name whose loop body renders on onCompletion re-fires.
 	sections := []struct {
-		section    string // §A / §B / §C label for error messages
+		section    string // section label for error messages
 		promptName string // prompt_name string that anchors the spawn block
 	}{
-		{"§A", `prompt_name: "Mention — driver",`},
-		{"§B", `prompt_name: "Loop fixing bug",`},
-		{"§C", `prompt_name: "Loop implementing feature",`},
+		{"section A", `prompt_name: "Mention — driver",`},
+		{"section B", `prompt_name: "Loop fixing bug",`},
+		{"section C", `prompt_name: "Loop implementing feature",`},
 	}
 
-	for _, sec := range sections {
-		anchor := strings.Index(out, sec.promptName)
-		if anchor < 0 {
-			t.Errorf("%s: spawn block anchor %q not found in rendered orchestrator; got:\n%s",
-				sec.section, sec.promptName, out)
-			continue
-		}
-		// The spawn block is a compact mitto_conversation_new(...) call — bound
-		// the window generously to the next closing paren.
-		end := strings.Index(out[anchor:], "\n  )\n")
-		if end < 0 {
-			end = len(out) - anchor
-			if end > 2000 {
-				end = 2000
-			}
-		}
-		block := out[anchor : anchor+end]
+	// cases covers the three SubmitStrategy picker values plus the unset case
+	// (default-on fallback to "Commit" per the template's
+	// `{{ if .Args.SubmitStrategy }}...{{ else }}Commit{{ end }}` literal).
+	cases := []struct {
+		name    string
+		args    map[string]string
+		wantVal string
+	}{
+		{"unset defaults to Commit", map[string]string{}, "Commit"},
+		{"Commit", map[string]string{"SubmitStrategy": "Commit"}, "Commit"},
+		{"Pull Request", map[string]string{"SubmitStrategy": "Pull Request"}, "Pull Request"},
+		{"None", map[string]string{"SubmitStrategy": "None"}, "None"},
+	}
 
-		if !strings.Contains(block, "arguments:") {
-			t.Errorf("%s: spawn block is missing an `arguments:` field entirely; block:\n%s",
-				sec.section, block)
-		}
-		if !strings.Contains(block, "loop_arguments:") {
-			t.Errorf("%s: spawn block sets loop_prompt_name + onCompletion but is missing `loop_arguments:` — every re-fire will render the loop body with an empty .Args. Mirror `arguments:` into `loop_arguments:`. Block:\n%s",
-				sec.section, block)
-		}
-		// loop_arguments must carry the resolved SubmitStrategy value so the
-		// default-on gate in the loop body resolves correctly on every
-		// re-fire, not just the initial prompt.
-		if strings.Contains(block, "loop_arguments:") &&
-			!strings.Contains(block, `"SubmitStrategy": "Commit"`) {
-			t.Errorf("%s: rendered .Args.SubmitStrategy=\"Commit\" but no `\"SubmitStrategy\": \"Commit\"` in the spawn block; block:\n%s",
-				sec.section, block)
-		}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := &cel.PromptEnabledContext{
+				Session: cel.SessionContext{
+					ID:            "orch-1",
+					BeadsIssue:    "",
+					HasBeadsIssue: false,
+				},
+				Args: tc.args,
+			}
+			funcs := cel.BuildTemplateFuncMap(ctx)
+			out, rerr := RenderPromptTemplate("beads-issue-loop-processing", body, ctx, funcs)
+			if rerr != nil {
+				t.Fatalf("RenderPromptTemplate: %v", rerr)
+			}
+
+			for _, sec := range sections {
+				anchor := strings.Index(out, sec.promptName)
+				if anchor < 0 {
+					t.Errorf("%s: spawn block anchor %q not found in rendered orchestrator; got:\n%s",
+						sec.section, sec.promptName, out)
+					continue
+				}
+				// The spawn block is a compact mitto_conversation_new(...) call -- bound
+				// the window generously to the next closing paren.
+				end := strings.Index(out[anchor:], "\n  )\n")
+				if end < 0 {
+					end = len(out) - anchor
+					if end > 2000 {
+						end = 2000
+					}
+				}
+				block := out[anchor : anchor+end]
+
+				argsIdx := strings.Index(block, "arguments:")
+				loopArgsIdx := strings.Index(block, "loop_arguments:")
+				if argsIdx < 0 {
+					t.Errorf("%s: spawn block is missing an `arguments:` field entirely; block:\n%s",
+						sec.section, block)
+					continue
+				}
+				if loopArgsIdx < 0 {
+					t.Errorf("%s: spawn block sets loop_prompt_name + onCompletion but is missing `loop_arguments:` -- every re-fire will render the loop body with an empty .Args. Mirror `arguments:` into `loop_arguments:`. Block:\n%s",
+						sec.section, block)
+					continue
+				}
+
+				// Split the block at the loop_arguments: anchor so the two
+				// halves can be checked independently -- a block that only
+				// sets the literal in `arguments:` (and leaves
+				// `loop_arguments:` referencing something else, or omits the
+				// key) must fail here, not just "somewhere in the block".
+				argsSide := block[argsIdx:loopArgsIdx]
+				loopArgsSide := block[loopArgsIdx:]
+
+				wantLiteral := `"SubmitStrategy": "` + tc.wantVal + `"`
+				if !strings.Contains(argsSide, wantLiteral) {
+					t.Errorf("%s: arguments: side missing %s; args-side:\n%s", sec.section, wantLiteral, argsSide)
+				}
+				if !strings.Contains(loopArgsSide, wantLiteral) {
+					t.Errorf("%s: loop_arguments: side missing %s -- re-fires would desync from the initial run; loop_arguments-side:\n%s", sec.section, wantLiteral, loopArgsSide)
+				}
+			}
+		})
 	}
 }
 

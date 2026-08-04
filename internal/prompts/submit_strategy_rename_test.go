@@ -191,3 +191,196 @@ func TestSubmitStrategy_FragmentWiringCallSites(t *testing.T) {
 		}
 	}
 }
+
+// TestSubmitStrategy_StrategyMatrixAcrossPhases covers the three SubmitStrategy
+// values ("Commit", "Pull Request", "None") across every file that actually
+// consumes the strategy at render time, closing the gap left by
+// TestSubmitStrategy_DefaultOnGateSafety (which only exercises
+// feature-phase-implement.prompt.yaml).
+//
+// The roles are NOT uniform across the 9-file surface (verified by grep over
+// the builtin prompt suite):
+//   - safe-commit (git/shared/safe-commit) callers: the four phase prompts
+//     that make their own commit (feature-phase-implement/test/review,
+//     fix-phase-fix) plus mention-driver's inline finalize commit.
+//   - ensure-bead-branch callers: only the two FIRST-committing phases
+//     (feature-phase-implement, fix-phase-fix) -- Pull-Request-only.
+//   - push-and-open-pr callers: only the three driver Done/finalize branches
+//     (loop-implementing-feature, loop-fixing-bug, mention-driver) --
+//     Pull-Request-only, called exactly once per bead lifecycle.
+//
+// loop-processing (mirrors only, does no commit work itself) and
+// loop-until-complete (has its own bespoke `ne .Args.SubmitStrategy "None"`
+// gate, no safe-commit/ensure-bead-branch/push-and-open-pr wiring) are
+// intentionally excluded from this matrix -- they are covered by
+// TestLoopProcessingSpawns_MirrorArgumentsIntoLoopArguments and existing
+// loop-until-complete-specific tests respectively.
+//
+// For every (file, strategy) pair this asserts, on the rendered output:
+//   - the safe-commit hallmark (a `git commit -m "<type>(<scope>): ... (refs
+//     <target>)"` line) is present iff strategy != "None" AND the file is a
+//     safe-commit caller;
+//   - the ensure-bead-branch hallmark is present iff strategy == "Pull Request"
+//     AND the file is a branch caller;
+//   - the push-and-open-pr hallmark is present iff strategy == "Pull Request"
+//     AND the file is a PR caller;
+//   - the per-strategy PhaseSuffix/suffix copy matches the strategy, so a
+//     mis-set $pr/$commit pair cannot pass silently.
+func TestSubmitStrategy_StrategyMatrixAcrossPhases(t *testing.T) {
+	installBuiltinFragmentsForTest(t)
+	builtinDir := "../../config/prompts/builtin"
+
+	const target = "mitto-abc"
+	safeCommitHallmark := `(refs ` + target + `)`
+	const branchHallmark = "must be **stable across phases**"
+	const prHallmark = "existing_url=$(gh pr view"
+
+	type file struct {
+		rel           string
+		safeCommit    bool
+		branch        bool
+		pr            bool
+		suffixNone    string
+		suffixCommit  string
+		suffixPR      string
+		fallbackToArg bool // whether IssueID must be passed explicitly (no Session.BeadsIssue)
+	}
+	files := []file{
+		{
+			rel:          "beads-issues/feature-phase-implement.prompt.yaml",
+			safeCommit:   true,
+			branch:       true,
+			suffixNone:   "commit-after-implement is disabled",
+			suffixCommit: "commit-after-implement is enabled",
+			suffixPR:     "committed on a per-bead branch",
+		},
+		{
+			rel:          "beads-issues/feature-phase-test.prompt.yaml",
+			safeCommit:   true,
+			suffixNone:   "commit-after-test is disabled",
+			suffixCommit: "commit-after-test is enabled",
+			suffixPR:     "committed on the bead's existing feature branch",
+		},
+		{
+			rel:          "beads-issues/feature-phase-review.prompt.yaml",
+			safeCommit:   true,
+			suffixNone:   "commit-after-review is disabled",
+			suffixCommit: "commit-after-review is enabled",
+			suffixPR:     "committed on the bead's existing feature branch",
+		},
+		{
+			rel:          "beads-issues/fix-phase-fix.prompt.yaml",
+			safeCommit:   true,
+			branch:       true,
+			suffixNone:   "commit-after-fix is disabled",
+			suffixCommit: "commit-after-fix is enabled",
+			suffixPR:     "committed on a per-bead branch",
+		},
+		{
+			rel:          "beads-issues/loop-implementing-feature.prompt.yaml",
+			pr:           true,
+			suffixNone:   "", // driver has no PhaseSuffix; skip suffix assertions
+			suffixCommit: "",
+			suffixPR:     "",
+		},
+		{
+			rel:          "beads-issues/loop-fixing-bug.prompt.yaml",
+			pr:           true,
+			suffixNone:   "",
+			suffixCommit: "",
+			suffixPR:     "",
+		},
+		{
+			rel:          "beads-issues/mention-driver.prompt.yaml",
+			safeCommit:   true,
+			pr:           true,
+			suffixNone:   "Submit strategy is **None**",
+			suffixCommit: "Submit strategy is **Commit**",
+			suffixPR:     "Submit strategy is **Pull Request**",
+		},
+	}
+
+	strategies := []struct {
+		value       string
+		wantSuffix  func(f file) string
+		wantCommit  bool // safe-commit hallmark expected (if f.safeCommit)
+		wantPR      bool // ensure-bead-branch / push-and-open-pr expected (if f.branch / f.pr)
+		otherSuffix []string
+	}{
+		{
+			value:      "None",
+			wantSuffix: func(f file) string { return f.suffixNone },
+			wantCommit: false,
+			wantPR:     false,
+		},
+		{
+			value:      "Commit",
+			wantSuffix: func(f file) string { return f.suffixCommit },
+			wantCommit: true,
+			wantPR:     false,
+		},
+		{
+			value:      "Pull Request",
+			wantSuffix: func(f file) string { return f.suffixPR },
+			wantCommit: true,
+			wantPR:     true,
+		},
+	}
+
+	for _, f := range files {
+		f := f
+		t.Run(f.rel, func(t *testing.T) {
+			data, err := os.ReadFile(filepath.Join(builtinDir, f.rel))
+			if err != nil {
+				t.Fatalf("read %s: %v", f.rel, err)
+			}
+			prompt, err := ParsePromptFile(f.rel, data, time.Now())
+			if err != nil {
+				t.Fatalf("ParsePromptFile(%s): %v", f.rel, err)
+			}
+
+			for _, strat := range strategies {
+				strat := strat
+				t.Run(strat.value, func(t *testing.T) {
+					ctx := &cel.PromptEnabledContext{
+						Session: cel.SessionContext{ID: "sess-1", BeadsIssue: target, HasBeadsIssue: true},
+						Args:    map[string]string{"IssueID": target, "SubmitStrategy": strat.value},
+					}
+					out, rerr := RenderPromptTemplate(prompt.Name, prompt.Content, ctx, cel.BuildTemplateFuncMap(ctx))
+					if rerr != nil {
+						t.Fatalf("RenderPromptTemplate(%s, SubmitStrategy=%s): %v", f.rel, strat.value, rerr)
+					}
+
+					if f.safeCommit {
+						gotCommit := strings.Contains(out, safeCommitHallmark)
+						if gotCommit != strat.wantCommit {
+							t.Errorf("SubmitStrategy=%s: safe-commit hallmark present=%v, want %v; output:\n%s",
+								strat.value, gotCommit, strat.wantCommit, out)
+						}
+					}
+					if f.branch {
+						gotBranch := strings.Contains(out, branchHallmark)
+						wantBranch := strat.wantPR
+						if gotBranch != wantBranch {
+							t.Errorf("SubmitStrategy=%s: ensure-bead-branch hallmark present=%v, want %v; output:\n%s",
+								strat.value, gotBranch, wantBranch, out)
+						}
+					}
+					if f.pr {
+						gotPR := strings.Contains(out, prHallmark)
+						if gotPR != strat.wantPR {
+							t.Errorf("SubmitStrategy=%s: push-and-open-pr hallmark present=%v, want %v; output:\n%s",
+								strat.value, gotPR, strat.wantPR, out)
+						}
+					}
+
+					wantSuffix := strat.wantSuffix(f)
+					if wantSuffix != "" && !strings.Contains(out, wantSuffix) {
+						t.Errorf("SubmitStrategy=%s: expected suffix copy %q not found; output:\n%s",
+							strat.value, wantSuffix, out)
+					}
+				})
+			}
+		})
+	}
+}
