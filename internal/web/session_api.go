@@ -1,7 +1,9 @@
 package web
 
 import (
+	"context"
 	"encoding/json"
+	"log/slog"
 	"path/filepath"
 
 	"github.com/inercia/mitto/internal/appdir"
@@ -320,6 +322,14 @@ func (s *Server) filterPromptsByEnabled(prompts []config.WebPrompt, ctx *config.
 		return prompts
 	}
 
+	// debugEnabled gates accumulation of hidden prompt names below so nothing is
+	// allocated when DEBUG logging is off (mitto-t3i). When the file log level is
+	// DEBUG (the packaged app's default), this still accumulates — but the loop
+	// now emits at most ONE aggregated Debug record per call instead of one per
+	// hidden prompt, which is the actual volume fix.
+	debugEnabled := s.logger != nil && s.logger.Enabled(context.Background(), slog.LevelDebug)
+	var hiddenNames []string
+
 	var filtered []config.WebPrompt
 	for _, p := range prompts {
 		// --- enabledWhen CEL check ---
@@ -359,11 +369,20 @@ func (s *Server) filterPromptsByEnabled(prompts []config.WebPrompt, ctx *config.
 
 		if visible {
 			filtered = append(filtered, p)
-		} else if s.logger != nil {
-			s.logger.Debug("Prompt hidden by enabledWhen expression",
-				"prompt", p.Name,
-				"expression", p.EnabledWhen)
+		} else if debugEnabled {
+			hiddenNames = append(hiddenNames, p.Name)
 		}
+	}
+
+	// Emit at most one aggregated Debug record for all prompts hidden by
+	// enabledWhen this call, instead of one record per hidden prompt. The
+	// static CEL expression text is intentionally omitted here — it carries no
+	// per-call information and is already retrievable via the prompt
+	// definitions (mitto_prompt_get, GET /api/workspace-prompts).
+	if len(hiddenNames) > 0 {
+		s.logger.Debug("Prompts hidden by enabledWhen",
+			"hidden_count", len(hiddenNames),
+			"hidden", hiddenNames)
 	}
 
 	return filtered
