@@ -185,3 +185,84 @@ func TestGitFragmentsRenderCorrectly(t *testing.T) {
 		}
 	}
 }
+
+// TestHeadlessBeadsGitFragmentsRenderCorrectly is a smoke test for the two
+// new headless git fragments (mitto-cwz.2): beads-issues/shared/ensure-bead-branch
+// and beads-issues/shared/push-and-open-pr. Unlike TestGitFragmentsRenderCorrectly
+// above, no prompt consumes these fragments yet (that is mitto-cwz.3's job), so
+// this test renders each fragment DIRECTLY via a minimal wrapper template that
+// calls it with the same `(dict "Ctx" . ...)` convention real callers will use.
+//
+// Asserts:
+//   - the composed sub-fragments' hallmarks appear (identify-remote-branch,
+//     behind-base-count for push-and-open-pr) — proving composition resolved;
+//   - the bead's core acceptance criterion: no mitto_ui_form / mitto_ui_options /
+//     mitto_ui_textbox anywhere in the rendered output (mitto_ui_notify is NOT
+//     forbidden — identify-remote-branch's scheduled branch uses it, and it is
+//     non-blocking).
+func TestHeadlessBeadsGitFragmentsRenderCorrectly(t *testing.T) {
+	prev := CurrentFragments()
+	t.Cleanup(func() { SetCurrentFragments(prev) })
+
+	builtinDir := "../../config/prompts/builtin"
+	reg, loadErrs, err := LoadFragmentsFromDir(builtinDir)
+	if err != nil {
+		t.Fatalf("LoadFragmentsFromDir(builtin): %v", err)
+	}
+	if len(loadErrs) != 0 {
+		t.Fatalf("LoadFragmentsFromDir(builtin) per-file errors: %+v", loadErrs)
+	}
+	SetCurrentFragments(reg)
+
+	const (
+		hallmarkIdentifyRemote2  = "git symbolic-ref refs/remotes/origin/HEAD"  // from git/shared/identify-remote-branch
+		hallmarkBehindBaseCount  = "git rev-list --count HEAD..<target-remote>" // from git/shared/behind-base-count
+		hallmarkEnsureBeadBranch = "must be **stable across phases**"           // unique to ensure-bead-branch
+	)
+
+	forbiddenUITools := []string{"mitto_ui_form", "mitto_ui_options", "mitto_ui_textbox"}
+
+	// ctxLoop: scheduled loop run (IsLoop=true, IsLoopForced=false) — the mode
+	// these fragments must primarily support headlessly.
+	ctxLoop := &cel.PromptEnabledContext{
+		Session: cel.SessionContext{ID: "s", Name: "N", IsLoop: true, IsLoopForced: false, BeadsIssue: "mitto-abc", HasBeadsIssue: true},
+		Args:    map[string]string{"IssueID": "mitto-abc"},
+	}
+
+	type row struct {
+		name    string
+		call    string
+		require []string
+	}
+	rows := []row{
+		{
+			name:    "ensure-bead-branch",
+			call:    `{{ template "beads-issues/shared/ensure-bead-branch" (dict "Ctx" . "Target" "mitto-abc" "Type" "feat") }}`,
+			require: []string{hallmarkIdentifyRemote2, hallmarkEnsureBeadBranch, "feat/mitto-abc-$slug"},
+		},
+		{
+			name:    "push-and-open-pr",
+			call:    `{{ template "beads-issues/shared/push-and-open-pr" (dict "Ctx" . "Target" "mitto-abc") }}`,
+			require: []string{hallmarkIdentifyRemote2, hallmarkBehindBaseCount, `bd comment mitto-abc "PR: $pr_url"`},
+		},
+	}
+
+	funcs := cel.BuildTemplateFuncMap(ctxLoop)
+	for _, r := range rows {
+		out, err := RenderPromptTemplate(r.name, r.call, ctxLoop, funcs)
+		if err != nil {
+			t.Errorf("render %q: %v", r.name, err)
+			continue
+		}
+		for _, needle := range r.require {
+			if !strings.Contains(out, needle) {
+				t.Errorf("fragment %q: rendered output missing hallmark %q — fragment did not inline correctly\n---\n%s", r.name, needle, out)
+			}
+		}
+		for _, needle := range forbiddenUITools {
+			if strings.Contains(out, needle) {
+				t.Errorf("fragment %q: rendered output UNEXPECTEDLY contains %q — headless fragment must never prompt", r.name, needle)
+			}
+		}
+	}
+}
