@@ -1539,6 +1539,28 @@ var dispatchPromptMaxRetries = 2 // 3 total attempts
 // pipeline (mitto-4is) exists specifically to make this retry window safe.
 var dispatchPromptRetryBaseDelay = 2 * time.Second
 
+// dispatchSaturationMaxWait bounds how long dispatchWithRetry will keep
+// retrying while the shared ACP process reports itself saturated, before
+// giving up. This is deliberately much longer than the ~6s window covered
+// by dispatchPromptMaxRetries/dispatchPromptRetryBaseDelay: the only event
+// that clears saturation is GC Tier 5's saturated-idle recycle
+// (internal/acpproc/acp_process_gc.go), which runs on a 30s ticker, so a 6s
+// window can never span it — the fixed, failure-agnostic budget made
+// saturation failures structurally unrecoverable (mitto-7q2). 120s spans
+// ~4 GC ticks and sits comfortably inside the 15-minute close-pipeline
+// workspace pin (SessionManager.ApplyOnCloseProcessors) that makes such a
+// wait safe; that pin is not consulted by Tier 5, so waiting here cannot
+// deadlock against it. var (not const) so tests can shrink the bound.
+var dispatchSaturationMaxWait = 120 * time.Second
+
+// dispatchSaturationRetryInterval is the fixed polling interval used while
+// waiting out a sustained saturation window — distinct from the exponential
+// backoff used for ordinary transient RPC failures, since here we are
+// waiting for a periodic external event (the GC recycle tick) rather than
+// hoping a flaky call succeeds sooner. var (not const) so tests can shrink
+// the cadence.
+var dispatchSaturationRetryInterval = 5 * time.Second
+
 // isNonRetryableDispatchErr reports whether err indicates the workspace's
 // shared ACP process is simply not running (e.g. reaped by GC between the
 // caller's pre-check and this fire-and-forget dispatch, or a caller that
@@ -1550,27 +1572,56 @@ func isNonRetryableDispatchErr(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "no shared process for workspace")
 }
 
-// dispatchWithRetry invokes m.promptFunc for the given name/prompt, retrying
-// up to dispatchPromptMaxRetries additional times with exponential backoff
-// when the error is transient. The non-retryable "no shared process for
-// workspace" sentinel is logged at WARN and abandoned immediately
-// (mitto-6bn.1). If every attempt fails, the final error is logged at ERROR
-// and, when a NotifyFunc is configured (see SetNotifyFunc), surfaced to the
-// user — previously such failures were silently logged and the work was
-// lost with no retry and no UI signal (mitto-exr). skipLog/failLog are the
-// exact log messages used for the two outcomes, letting single vs batched
-// dispatch keep their previously distinct wording.
+// isSaturationDispatchErr reports whether err indicates the shared ACP
+// process is currently saturated (acperrors.ErrSharedProcessSaturated, as
+// surfaced by any of the pre-RPC bails in getOrCreateAuxiliarySession).
+// Unlike an ordinary transient RPC failure, saturation is cleared ONLY by
+// the periodic GC Tier 5 recycle, so it is given its own bounded long-wait
+// retry policy (dispatchSaturationMaxWait/dispatchSaturationRetryInterval)
+// instead of counting against the normal fixed attempt budget (mitto-7q2).
+// String-matched (mirroring isNonRetryableDispatchErr) rather than
+// errors.Is(acperrors.ErrSharedProcessSaturated) to avoid a dependency from
+// internal/processors on internal/acpproc/acperrors.
+func isSaturationDispatchErr(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "shared ACP process is saturated")
+}
+
+// dispatchWithRetry invokes m.promptFunc for the given name/prompt. Ordinary
+// transient failures are retried up to dispatchPromptMaxRetries additional
+// times with exponential backoff. Shared-process-saturation failures
+// (isSaturationDispatchErr) are instead retried on a fixed
+// dispatchSaturationRetryInterval cadence up to a bounded
+// dispatchSaturationMaxWait wall-clock window, without consuming the normal
+// attempt budget — see dispatchSaturationMaxWait for why saturation needs a
+// much longer window than other transient errors (mitto-7q2). The
+// non-retryable "no shared process for workspace" sentinel is logged at
+// WARN and abandoned immediately (mitto-6bn.1). If retrying is exhausted,
+// the final error is logged at ERROR and, when a NotifyFunc is configured
+// (see SetNotifyFunc), surfaced to the user — previously such failures were
+// silently logged and the work was lost with no retry and no UI signal
+// (mitto-exr). skipLog/failLog are the exact log messages used for the two
+// outcomes, letting single vs batched dispatch keep their previously
+// distinct wording.
 func (m *Manager) dispatchWithRetry(workspaceUUID, name, prompt string, timeout time.Duration, skipLog, failLog string) {
 	var lastErr error
-	for attempt := 0; attempt <= dispatchPromptMaxRetries; attempt++ {
-		if attempt > 0 {
-			delay := dispatchPromptRetryBaseDelay * time.Duration(uint(1)<<uint(attempt-1))
-			time.Sleep(delay)
+	var saturationDeadline time.Time // zero until the first saturation error is observed
+	normalRetries := 0               // count of non-saturation failures, bounded by dispatchPromptMaxRetries
+	totalAttempts := 0
+
+	for {
+		if totalAttempts > 0 {
+			if isSaturationDispatchErr(lastErr) {
+				time.Sleep(dispatchSaturationRetryInterval)
+			} else {
+				delay := dispatchPromptRetryBaseDelay * time.Duration(uint(1)<<uint(normalRetries-1))
+				time.Sleep(delay)
+			}
 		}
 
 		bgCtx, cancel := context.WithTimeout(context.Background(), timeout)
 		lastErr = m.promptFunc(bgCtx, workspaceUUID, name, prompt)
 		cancel()
+		totalAttempts++
 
 		if lastErr == nil {
 			return
@@ -1583,10 +1634,32 @@ func (m *Manager) dispatchWithRetry(workspaceUUID, name, prompt string, timeout 
 			return
 		}
 
+		if isSaturationDispatchErr(lastErr) {
+			if saturationDeadline.IsZero() {
+				saturationDeadline = time.Now().Add(dispatchSaturationMaxWait)
+			}
+			if time.Now().Before(saturationDeadline) {
+				if m.logger != nil {
+					m.logger.Warn("prompt-mode processor dispatch attempt failed; shared process saturated, waiting for GC recycle",
+						"name", name,
+						"attempt", totalAttempts,
+						"error", lastErr,
+					)
+				}
+				continue
+			}
+			// Bounded saturation wait exhausted; give up below.
+			break
+		}
+
+		normalRetries++
+		if normalRetries > dispatchPromptMaxRetries {
+			break
+		}
 		if m.logger != nil {
 			m.logger.Warn("prompt-mode processor dispatch attempt failed; will retry",
 				"name", name,
-				"attempt", attempt+1,
+				"attempt", totalAttempts,
 				"max_attempts", dispatchPromptMaxRetries+1,
 				"error", lastErr,
 			)
@@ -1596,7 +1669,7 @@ func (m *Manager) dispatchWithRetry(workspaceUUID, name, prompt string, timeout 
 	if m.logger != nil {
 		m.logger.Error(failLog,
 			"name", name,
-			"attempts", dispatchPromptMaxRetries+1,
+			"attempts", totalAttempts,
 			"error", lastErr,
 		)
 	}

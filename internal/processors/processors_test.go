@@ -5516,9 +5516,15 @@ func TestApplyOnClose_PromptMode_RetriesOnTransientFailure(t *testing.T) {
 	// Test-seam: shrink the retry cadence so the test doesn't race the
 	// production 2s base delay against its own polling window. Mirrors the
 	// titleRetryBaseDelay override pattern in title_wedge_repro_test.go.
+	// The injected error below is saturation-shaped (mitto-7q2), so it is
+	// retried on dispatchSaturationRetryInterval rather than
+	// dispatchPromptRetryBaseDelay — shrink both so this stays fast.
 	origDelay := dispatchPromptRetryBaseDelay
 	dispatchPromptRetryBaseDelay = time.Millisecond
 	t.Cleanup(func() { dispatchPromptRetryBaseDelay = origDelay })
+	origSaturationInterval := dispatchSaturationRetryInterval
+	dispatchSaturationRetryInterval = time.Millisecond
+	t.Cleanup(func() { dispatchSaturationRetryInterval = origSaturationInterval })
 
 	var mu sync.Mutex
 	var attempts int
@@ -5570,6 +5576,106 @@ func TestApplyOnClose_PromptMode_RetriesOnTransientFailure(t *testing.T) {
 	if attempts < 2 {
 		t.Fatalf("expected dispatchPromptBatch to retry a transient failure (attempts >= 2), got attempts=%d — "+
 			"a single-attempt dispatch silently drops close-phase work on transient errors (mitto-exr)", attempts)
+	}
+}
+
+// TestApplyOnClose_PromptMode_GivesUpDuringSustainedSaturation reproduces
+// mitto-7q2: dispatchWithRetry used to apply a fixed, failure-agnostic
+// budget (dispatchPromptMaxRetries=2 => 3 total attempts,
+// dispatchPromptRetryBaseDelay exponential backoff) to ALL transient
+// errors, including acperrors.ErrSharedProcessSaturated. In production the
+// only event that clears saturation is GC Tier 5's saturated-idle recycle
+// (internal/acpproc/acp_process_gc.go), which runs on a 30s ticker — far
+// longer than the ~6s the 3-attempt/2s-base-exponential-backoff budget
+// could span. So any close-phase dispatch that hit sustained saturation was
+// structurally guaranteed to be abandoned — and its work permanently lost,
+// since the source conversation is already archived by the time this fires
+// — no matter how soon the process would actually recover.
+//
+// Fixed by giving isSaturationDispatchErr errors their own bounded long-wait
+// policy (dispatchSaturationMaxWait/dispatchSaturationRetryInterval)
+// instead of counting against the normal fixed attempt budget.
+//
+// This test simulates a saturation window that outlasts the old 3-attempt
+// budget but clears well within the new bounded ~120s wait (the 15-min
+// close-pipeline workspace pin taken by SessionManager.ApplyOnCloseProcessors
+// makes such a wait safe, and does not block the Tier 5 recycle). promptFunc
+// fails with a "shared ACP process is saturated" error (mirroring
+// acperrors.ErrSharedProcessSaturated as surfaced by
+// getOrCreateAuxiliarySession) for the first 4 calls and succeeds on the
+// 5th; the dispatch now succeeds instead of giving up after 3 attempts.
+func TestApplyOnClose_PromptMode_GivesUpDuringSustainedSaturation(t *testing.T) {
+	// Test-seam: shrink the retry cadence so the test doesn't have to wait
+	// out the production delays. Mirrors the override pattern used by
+	// TestApplyOnClose_PromptMode_RetriesOnTransientFailure above.
+	origDelay := dispatchPromptRetryBaseDelay
+	dispatchPromptRetryBaseDelay = time.Millisecond
+	t.Cleanup(func() { dispatchPromptRetryBaseDelay = origDelay })
+	origSaturationInterval := dispatchSaturationRetryInterval
+	dispatchSaturationRetryInterval = time.Millisecond
+	t.Cleanup(func() { dispatchSaturationRetryInterval = origSaturationInterval })
+
+	var mu sync.Mutex
+	var attempts int
+	var notified bool
+	var notifiedErr error
+
+	const attemptsNeededToClearSaturation = 5 // > dispatchPromptMaxRetries+1 (3)
+
+	proc := &Processor{
+		Name:   "close-memoriser-saturated",
+		When:   WhenConfig{On: PhaseConversationClosed, Match: MatchAll},
+		Prompt: "Persist for session @mitto:session_id.",
+	}
+
+	m := NewManager("", nil)
+	m.processors = []*Processor{proc}
+	m.SetPromptFunc(func(_ context.Context, _, _, _ string) error {
+		mu.Lock()
+		attempts++
+		n := attempts
+		mu.Unlock()
+		if n < attemptsNeededToClearSaturation {
+			// Mirrors the pre-RPC saturation bail in
+			// getOrCreateAuxiliarySession (acp_process_manager.go), which
+			// wraps acperrors.ErrSharedProcessSaturated.
+			return fmt.Errorf("failed to get auxiliary session: shared ACP process is saturated")
+		}
+		return nil
+	})
+	m.SetNotifyFunc(func(_, _ string, lastErr error) {
+		mu.Lock()
+		notified = true
+		notifiedErr = lastErr
+		mu.Unlock()
+	})
+
+	m.ApplyOnClose(context.Background(), CloseProcessorInput{
+		SessionID:     "sess-close-saturated",
+		WorkspaceUUID: "ws-uuid",
+		WorkingDir:    "/tmp/wd",
+		ArchiveReason: "manual",
+	})
+
+	// Dispatch is fire-and-forget; poll for either the success attempt or
+	// the give-up notification to land.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		n, gaveUp := attempts, notified
+		mu.Unlock()
+		if n >= attemptsNeededToClearSaturation || gaveUp {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if attempts < attemptsNeededToClearSaturation {
+		t.Fatalf("dispatchWithRetry gave up after %d attempt(s) while the shared process was still saturated "+
+			"(notified=%v, lastErr=%v) — a fixed failure-agnostic retry budget cannot span a sustained "+
+			"saturation window, permanently losing close-phase work (mitto-7q2)", attempts, notified, notifiedErr)
 	}
 }
 
