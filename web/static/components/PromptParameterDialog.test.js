@@ -862,6 +862,142 @@ describe("initialValues seeding", () => {
 });
 
 // =============================================================================
+// options-picker default seeding (mitto-cwz.1)
+// Mirrors isOptionsPickerParam (utils/prompts.js) and the updated open-effect
+// in PromptParameterDialog.js: a type:text param with a non-empty options
+// array is seeded from its declared `default` on open, merged UNDER
+// initialValues (initialValues wins when both are present).
+// =============================================================================
+
+/**
+ * Duplicated from utils/prompts.js — keep in sync (see also prompts.test.js).
+ */
+function isOptionsPickerParam(p) {
+  return (
+    p?.type === "text" && Array.isArray(p.options) && p.options.length > 0
+  );
+}
+
+/**
+ * Mirrors the updated open-transition effect: builds optionDefaults from
+ * declared `default`s for options params, then merges initialValues on top.
+ */
+function seedInitialValues(parameters, initialValues) {
+  const optionDefaults = {};
+  for (const p of parameters || []) {
+    if (
+      isOptionsPickerParam(p) &&
+      p.default !== undefined &&
+      p.default !== null
+    ) {
+      optionDefaults[p.name] = p.default;
+    }
+  }
+  return {
+    ...optionDefaults,
+    ...(initialValues ? { ...initialValues } : {}),
+  };
+}
+
+describe("options-picker default seeding", () => {
+  test("a required options param with a declared default is seeded and Save is enabled on open", () => {
+    const parameters = [
+      {
+        name: "Mode",
+        type: "text",
+        options: ["Simplification", "Cleanup"],
+        required: true,
+        default: "Simplification",
+      },
+    ];
+    const seeded = seedInitialValues(parameters, null);
+    expect(seeded).toEqual({ Mode: "Simplification" });
+    expect(canSave(parameters, seeded)).toBe(true);
+  });
+
+  test("a required options param with NO default is not seeded — Save stays disabled until picked", () => {
+    const parameters = [
+      {
+        name: "Mode",
+        type: "text",
+        options: ["Simplification", "Cleanup"],
+        required: true,
+      },
+    ];
+    const seeded = seedInitialValues(parameters, null);
+    expect(seeded).toEqual({});
+    expect(canSave(parameters, seeded)).toBe(false);
+    expect(canSave(parameters, { ...seeded, Mode: "Cleanup" })).toBe(true);
+  });
+
+  test("initialValues overrides the declared default", () => {
+    const parameters = [
+      {
+        name: "Mode",
+        type: "text",
+        options: ["Simplification", "Cleanup"],
+        default: "Simplification",
+      },
+    ];
+    const seeded = seedInitialValues(parameters, { Mode: "Cleanup" });
+    expect(seeded).toEqual({ Mode: "Cleanup" });
+  });
+
+  test("a plain text param's default is NOT auto-seeded (only options params are)", () => {
+    // Regression pin: this fix is scoped to type:text WITH options; a bare
+    // text param's `default` (if ever declared) must not start being seeded
+    // as a side effect, since ParamField's plain-input branch never reads it.
+    const parameters = [
+      { name: "Note", type: "text", required: true, default: "hello" },
+    ];
+    const seeded = seedInitialValues(parameters, null);
+    expect(seeded).toEqual({});
+    expect(canSave(parameters, seeded)).toBe(false);
+  });
+
+  test("text with an empty options array is not an options picker — default is not seeded", () => {
+    const parameters = [
+      {
+        name: "Mode",
+        type: "text",
+        options: [],
+        required: true,
+        default: "Simplification",
+      },
+    ];
+    expect(seedInitialValues(parameters, null)).toEqual({});
+  });
+
+  test("multiple options params are each seeded from their own declared default", () => {
+    const parameters = [
+      {
+        name: "Mode",
+        type: "text",
+        options: ["A", "B"],
+        default: "A",
+      },
+      {
+        name: "Style",
+        type: "text",
+        options: ["X", "Y"],
+        default: "Y",
+      },
+    ];
+    expect(seedInitialValues(parameters, null)).toEqual({
+      Mode: "A",
+      Style: "Y",
+    });
+  });
+
+  test("default of null/undefined is not seeded (falls through to unset)", () => {
+    const parameters = [
+      { name: "Mode", type: "text", options: ["A", "B"], default: null },
+    ];
+    expect(seedInitialValues(parameters, null)).toEqual({});
+  });
+});
+
+// =============================================================================
 // text render-branch logic (single-line input vs multiLine textarea)
 // Duplicated from the `text` branch of ParamField in PromptParameterDialog.js —
 // keep in sync.

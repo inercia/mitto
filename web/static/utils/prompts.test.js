@@ -21,6 +21,7 @@ import {
   autofillConversationMenuArgs,
   isBooleanParam,
   isInteractivePickerParam,
+  isOptionsPickerParam,
   isCacheableParam,
   fetchCachedParamNames,
   effectiveMissingParams,
@@ -341,6 +342,71 @@ describe("menuSatisfies", () => {
     expect(menuSatisfies(prompt, "beadsIssues")).toBe(true);
     expect(menuSatisfies(prompt, "unknownMenu")).toBe(true);
   });
+
+  // mitto-cwz.1: a required type:text param with a declared options array
+  // must not gate menu visibility (it is collected via the dialog's dropdown,
+  // never auto-supplied by a menu) — previously it was misclassified as a
+  // plain required text field and hid the prompt from every menu.
+  test("required text+options param never gates — satisfied by any menu", () => {
+    const prompt = {
+      parameters: [
+        { name: "Mode", type: "text", options: ["a", "b"], required: true },
+      ],
+    };
+    expect(menuSatisfies(prompt, "prompts")).toBe(true);
+    expect(menuSatisfies(prompt, "conversation")).toBe(true);
+    expect(menuSatisfies(prompt, "beadsIssues")).toBe(true);
+    expect(menuSatisfies(prompt, "unknownMenu")).toBe(true);
+  });
+
+  test("text+options alongside a required gating param does not relax that gate", () => {
+    const prompt = {
+      parameters: [
+        { name: "ISSUE_ID", type: "beadsId", required: true },
+        { name: "Mode", type: "text", options: ["a", "b"] },
+      ],
+    };
+    expect(menuSatisfies(prompt, "beadsIssues")).toBe(true);
+    expect(menuSatisfies(prompt, "conversation")).toBe(false);
+  });
+});
+
+// =============================================================================
+// isOptionsPickerParam Tests (mitto-cwz.1)
+// =============================================================================
+
+describe("isOptionsPickerParam", () => {
+  test("returns true for type:text with a non-empty options array", () => {
+    expect(
+      isOptionsPickerParam({ type: "text", options: ["a", "b"] }),
+    ).toBe(true);
+  });
+
+  test("returns false for type:text with an empty options array", () => {
+    expect(isOptionsPickerParam({ type: "text", options: [] })).toBe(false);
+  });
+
+  test("returns false for type:text with no options field", () => {
+    expect(isOptionsPickerParam({ type: "text" })).toBe(false);
+  });
+
+  test("returns false for type:text when options is not an array", () => {
+    expect(isOptionsPickerParam({ type: "text", options: "a,b" })).toBe(
+      false,
+    );
+  });
+
+  test("returns false for a non-text type even with a non-empty options array", () => {
+    expect(
+      isOptionsPickerParam({ type: "beadsId", options: ["a", "b"] }),
+    ).toBe(false);
+  });
+
+  test("returns false for undefined/null/no type", () => {
+    expect(isOptionsPickerParam(undefined)).toBe(false);
+    expect(isOptionsPickerParam(null)).toBe(false);
+    expect(isOptionsPickerParam({})).toBe(false);
+  });
 });
 
 // =============================================================================
@@ -358,6 +424,26 @@ describe("isInteractivePickerParam", () => {
 
   test("returns true for filename", () => {
     expect(isInteractivePickerParam({ type: "filename" })).toBe(true);
+  });
+
+  test("returns true for dirname", () => {
+    expect(isInteractivePickerParam({ type: "dirname" })).toBe(true);
+  });
+
+  // mitto-cwz.1: type:text with a non-empty options array renders as a
+  // dropdown picker and must be treated the same as the other picker types.
+  test("returns true for text with a non-empty options array", () => {
+    expect(
+      isInteractivePickerParam({ type: "text", options: ["a", "b"] }),
+    ).toBe(true);
+  });
+
+  // Regression pin (mitto-cwz.1): a text+options fix must not accidentally
+  // widen plain free-text params into pickers.
+  test("returns false for text with an empty options array", () => {
+    expect(isInteractivePickerParam({ type: "text", options: [] })).toBe(
+      false,
+    );
   });
 
   test("returns false for text", () => {
@@ -685,6 +771,47 @@ describe("getMissingPromptParameters", () => {
     const prompt = { parameters: [param] };
     // required:false would normally suppress it, but prompts overrides that
     expect(getMissingPromptParameters(prompt, "conversation")).toEqual([param]);
+  });
+
+  // mitto-cwz.1: a type:text param with a declared options array is
+  // collected via the dialog's dropdown, so it must ALWAYS appear in the
+  // missing list regardless of `required` or the menu's auto-supplied types
+  // — previously it was silently dropped from the form when `required: false`.
+  test("text+options param is ALWAYS missing (collected via dropdown) in every menu", () => {
+    const param = { name: "Mode", type: "text", options: ["a", "b"] };
+    const prompt = { parameters: [param] };
+    expect(getMissingPromptParameters(prompt, "prompts")).toEqual([param]);
+    expect(getMissingPromptParameters(prompt, "conversation")).toEqual([param]);
+    expect(getMissingPromptParameters(prompt, "beadsIssues")).toEqual([param]);
+  });
+
+  test("text+options param is collected even when marked required:false", () => {
+    const param = {
+      name: "Mode",
+      type: "text",
+      options: ["a", "b"],
+      required: false,
+    };
+    const prompt = { parameters: [param] };
+    // required:false would normally suppress it, but text+options overrides that
+    expect(getMissingPromptParameters(prompt, "conversation")).toEqual([param]);
+  });
+
+  test("text with an empty options array is NOT an options picker — still gated by required", () => {
+    const param = { name: "Note", type: "text", options: [], required: true };
+    const prompt = { parameters: [param] };
+    expect(getMissingPromptParameters(prompt, "prompts")).toEqual([param]);
+  });
+
+  test("mixed boolean + text+options + auto-supplied param: only the auto-supplied one is excluded", () => {
+    const boolParam = { name: "Commit", type: "boolean" };
+    const modeParam = { name: "Mode", type: "text", options: ["a", "b"] };
+    const issueParam = { name: "ISSUE_ID", type: "beadsId", required: true };
+    const prompt = { parameters: [issueParam, boolParam, modeParam] };
+    expect(getMissingPromptParameters(prompt, "beadsIssues")).toEqual([
+      boolParam,
+      modeParam,
+    ]);
   });
 });
 
