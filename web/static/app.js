@@ -2763,7 +2763,7 @@ function App() {
       const sessionId = session?.session_id || activeSessionId;
       if (!sessionId) return;
       try {
-        const res = await authFetch(endpoints.sessions.flush(sessionId), {
+        const res = await secureFetch(endpoints.sessions.flush(sessionId), {
           method: "POST",
         });
         if (res.ok) {
