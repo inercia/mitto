@@ -3,6 +3,8 @@ package conversation
 import (
 	"strings"
 	"testing"
+
+	mittoAcp "github.com/inercia/mitto/internal/acp"
 )
 
 func TestBuildArgumentMetadata_Basic(t *testing.T) {
@@ -105,6 +107,46 @@ func TestRedactArgValue_Truncation(t *testing.T) {
 	if len(runes) != maxArgValueLen+1 {
 		t.Errorf("expected %d runes (80 + ellipsis), got %d", maxArgValueLen+1, len(runes))
 	}
+}
+
+// mcpInitFlagSharedProcess is a minimal SharedProcess stub (embeds
+// alwaysFailSharedProcess, defined in background_session_test.go, for the
+// other 14 interface methods) with a configurable MCPInitDone() return
+// value, used to exercise pdSharedProcessHistory's cold/warm mapping
+// (mitto-azk).
+type mcpInitFlagSharedProcess struct {
+	alwaysFailSharedProcess
+	mcpInitDone bool
+}
+
+func (p *mcpInitFlagSharedProcess) MCPInitDone() bool { return p.mcpInitDone }
+
+// TestBackgroundSession_PdSharedProcessHistory verifies the three-way mapping
+// from BackgroundSession.sharedProcess state to mittoAcp.ProcessHistory
+// (mitto-azk): no shared process -> Unknown (legacy per-session process
+// ownership, no corroborating signal); a shared process that has completed
+// at least one session RPC -> Warm; one that has not -> Cold.
+func TestBackgroundSession_PdSharedProcessHistory(t *testing.T) {
+	t.Run("no shared process returns Unknown", func(t *testing.T) {
+		bs := &BackgroundSession{}
+		if got := bs.pdSharedProcessHistory(); got != mittoAcp.ProcessHistoryUnknown {
+			t.Errorf("pdSharedProcessHistory() = %v, want ProcessHistoryUnknown", got)
+		}
+	})
+
+	t.Run("shared process with MCPInitDone=true returns Warm", func(t *testing.T) {
+		bs := &BackgroundSession{sharedProcess: &mcpInitFlagSharedProcess{mcpInitDone: true}}
+		if got := bs.pdSharedProcessHistory(); got != mittoAcp.ProcessHistoryWarm {
+			t.Errorf("pdSharedProcessHistory() = %v, want ProcessHistoryWarm", got)
+		}
+	})
+
+	t.Run("shared process with MCPInitDone=false returns Cold", func(t *testing.T) {
+		bs := &BackgroundSession{sharedProcess: &mcpInitFlagSharedProcess{mcpInitDone: false}}
+		if got := bs.pdSharedProcessHistory(); got != mittoAcp.ProcessHistoryCold {
+			t.Errorf("pdSharedProcessHistory() = %v, want ProcessHistoryCold", got)
+		}
+	})
 }
 
 // TestLoopContinuation_Marker tests the peek/advance/reset lifecycle of the

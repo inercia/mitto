@@ -408,6 +408,81 @@ func TestFormatACPError_QueryClosedHandshake(t *testing.T) {
 	}
 }
 
+// TestFormatACPErrorWithContext_QueryClosedHandshake_ProcessHistory verifies
+// the mitto-azk warm/cold/unknown split: a shared process that previously
+// completed a session RPC (ProcessHistoryWarm) gets a wedge-oriented message
+// with the authentication hint dropped entirely, while ProcessHistoryCold and
+// the zero-value ProcessHistoryUnknown both retain the original mitto-biu
+// hedged wording (auth remains a plausible cause on a first-contact failure).
+func TestFormatACPErrorWithContext_QueryClosedHandshake_ProcessHistory(t *testing.T) {
+	queryClosedErr := fmt.Errorf(`failed to create session: {"code":-32603,"message":"Internal error","data":{"details":"Query closed before response received"}}`)
+
+	tests := []struct {
+		name         string
+		hints        FormatErrorHints
+		wantContains []string
+		wantExcludes []string
+	}{
+		{
+			name:         "warm process drops the auth hint entirely",
+			hints:        FormatErrorHints{ProcessHistory: ProcessHistoryWarm},
+			wantContains: []string{"Restart ACP", "handshake failed", "wedged"},
+			wantExcludes: []string{"authenticated", "authentication", "claude auth login", "auggie auth login"},
+		},
+		{
+			name:         "cold process retains the hedged auth hint",
+			hints:        FormatErrorHints{ProcessHistory: ProcessHistoryCold},
+			wantContains: []string{"Restart ACP", "handshake failed", "authenticated"},
+		},
+		{
+			name:         "unknown (zero-value) process history retains the hedged auth hint",
+			hints:        FormatErrorHints{ProcessHistory: ProcessHistoryUnknown},
+			wantContains: []string{"Restart ACP", "handshake failed", "authenticated"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := FormatACPErrorWithContext(queryClosedErr, tt.hints)
+			for _, want := range tt.wantContains {
+				if !containsIgnoreCase(got, want) {
+					t.Errorf("FormatACPErrorWithContext(err, %+v) = %q, want to contain %q", tt.hints, got, want)
+				}
+			}
+			for _, exclude := range tt.wantExcludes {
+				if containsIgnoreCase(got, exclude) {
+					t.Errorf("FormatACPErrorWithContext(err, %+v) = %q, must NOT contain %q", tt.hints, got, exclude)
+				}
+			}
+		})
+	}
+}
+
+// TestFormatACPError_IsZeroHintWrapperAroundFormatACPErrorWithContext locks in
+// that FormatACPError(err) stays byte-identical to
+// FormatACPErrorWithContext(err, FormatErrorHints{}) for every existing
+// caller — the mitto-azk contract that the context-aware variant is
+// opt-in-only and does not alter default behavior.
+func TestFormatACPError_IsZeroHintWrapperAroundFormatACPErrorWithContext(t *testing.T) {
+	errs := []error{
+		nil,
+		fmt.Errorf(`failed to create session: {"code":-32603,"message":"Internal error","data":{"details":"Query closed before response received"}}`),
+		fmt.Errorf(`{"code":-32603,"message":"Internal error"}`),
+		errors.New("rate limit exceeded"),
+		errors.New("Authentication required"),
+		errors.New("peer disconnected"),
+		errors.New("some unrecognized failure"),
+	}
+
+	for _, err := range errs {
+		wrapper := FormatACPError(err)
+		explicit := FormatACPErrorWithContext(err, FormatErrorHints{})
+		if wrapper != explicit {
+			t.Errorf("FormatACPError(%v) = %q, want byte-identical to FormatACPErrorWithContext(err, FormatErrorHints{}) = %q", err, wrapper, explicit)
+		}
+	}
+}
+
 // TestIsHandshakeQueryClosedError is the classifier truth table for the
 // string-based predicate extracted in mitto-biu, mirroring the structured twin
 // acperrors.IsAgentQueryClosedErr (internal/acpproc/acperrors/acperrors_test.go).
