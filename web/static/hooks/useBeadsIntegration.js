@@ -10,7 +10,7 @@
 // buildBeadsPromptToast — remain importable by Jest tests that do not have a
 // preact-populated window.
 
-import { authFetch, endpoints } from "../utils/index.js";
+import { fetchWorkspacePromptsCached } from "../utils/index.js";
 import {
   promptMenuIncludes,
   menuSatisfies,
@@ -211,9 +211,7 @@ export function useBeadsIntegration({
             params.item_labels = issue.labels.join(",");
           }
         }
-        const res = await authFetch(endpoints.workspacePrompts.list(params));
-        if (!res.ok) return [];
-        const data = await res.json();
+        const data = await fetchWorkspacePromptsCached(params);
         const all = data?.prompts || [];
         return all
           .filter((p) => p && promptMenuIncludes(p, "beadsIssues"))
@@ -240,14 +238,10 @@ export function useBeadsIntegration({
   const fetchBeadsListPromptsForWorkspace = useCallback(async (workingDir) => {
     if (!workingDir) return [];
     try {
-      const res = await authFetch(
-        endpoints.workspacePrompts.list({
-          working_dir: workingDir,
-          enabled_context: "workspace",
-        }),
-      );
-      if (!res.ok) return [];
-      const data = await res.json();
+      const data = await fetchWorkspacePromptsCached({
+        working_dir: workingDir,
+        enabled_context: "workspace",
+      });
       const all = data?.prompts || [];
       return all
         .filter(
