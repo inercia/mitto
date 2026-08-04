@@ -9,6 +9,24 @@ import (
 	"github.com/inercia/mitto/internal/config"
 )
 
+// promptLoopDefaultEnabled reports whether a prompt's loop: frontmatter implies
+// the loop should start enabled, per pl.Mode/pl.Default (mitto-ydj). Mirrors the
+// frontend's promptLoopInitialState (web/static/utils/prompts.js):
+//
+//   - Mode != "optional" (i.e. "always" or absent): always enabled — Default is
+//     not applicable and, if present, is ignored (with a load-time lint warning
+//     from ValidatePromptLoop).
+//   - Mode == "optional": nil or *true => enabled (on by default); *false =>
+//     disabled. This is a deliberate reversal of a naive "Default nil => off"
+//     reading — nil/absent means "on by default, user-toggleable", matching
+//     config.PromptLoop's own doc comment and the frontend.
+func promptLoopDefaultEnabled(pl *config.PromptLoop) bool {
+	if pl == nil || pl.Mode != config.PromptLoopModeOptional {
+		return true
+	}
+	return pl.Default == nil || *pl.Default
+}
+
 // applyPromptLoopDefaultsToStartInput merges a seeded prompt's loop: frontmatter
 // into the ConversationStartInput. Only fields the caller did not set are
 // filled; explicit non-zero / non-nil caller values win.
@@ -86,6 +104,16 @@ func applyPromptLoopDefaultsToStartInput(input *ConversationStartInput, pl *conf
 		v := *pl.RunOnStart
 		input.LoopRunOnStart = &v
 	}
+
+	// Initial enabled state (mitto-ydj). Only fills when the caller left
+	// loop_enabled unset, and only ever writes false — the "on" case is already
+	// handled by the enabled := true default at the ConversationStart call site,
+	// so this clause is strictly subtractive: it never turns a loop on that the
+	// caller/default path wouldn't have turned on anyway.
+	if input.LoopEnabled == nil && !promptLoopDefaultEnabled(pl) {
+		v := false
+		input.LoopEnabled = &v
+	}
 }
 
 // applyPromptLoopDefaultsToUpdateInput is the update-tool equivalent. Because
@@ -156,5 +184,17 @@ func applyPromptLoopDefaultsToUpdateInput(input *ConversationUpdateInput, pl *co
 	if input.LoopRunOnStart == nil && pl.RunOnStart != nil {
 		v := *pl.RunOnStart
 		input.LoopRunOnStart = &v
+	}
+
+	// Initial enabled state (mitto-ydj). Same rules as the start-input helper:
+	// fills only when the caller left loop_enabled unset, and only ever writes
+	// false. Callers of this helper must capture whether loop_enabled was
+	// caller-set BEFORE calling it if they need to distinguish "caller explicitly
+	// disabled" from "frontmatter disabled" afterwards (see the call site in
+	// tools_conversation_lifecycle.go, which uses this for the
+	// StoppedReasonDisabledByAgent bookkeeping).
+	if input.LoopEnabled == nil && !promptLoopDefaultEnabled(pl) {
+		v := false
+		input.LoopEnabled = &v
 	}
 }

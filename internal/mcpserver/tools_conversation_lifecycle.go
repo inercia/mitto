@@ -667,6 +667,11 @@ func (s *Server) handleConversationUpdate(ctx context.Context, req *mcp.CallTool
 			}, nil
 		}
 		var resolvedLoopText, resolvedLoopName string
+		// Captured BEFORE applyPromptLoopDefaultsToUpdateInput may fill LoopEnabled
+		// from the resolved prompt's loop: frontmatter (mitto-ydj), so the
+		// StoppedReasonDisabledByAgent bookkeeping below reflects only an explicit
+		// caller-supplied loop_enabled:false, not a frontmatter-derived one.
+		callerSetLoopEnabled := input.LoopEnabled != nil
 		if input.LoopPromptName != nil && *input.LoopPromptName != "" {
 			loopWorkingDir, err := s.resolvePromptWorkingDir(realSessionID, "")
 			if err != nil {
@@ -952,7 +957,10 @@ func (s *Server) handleConversationUpdate(ctx context.Context, req *mcp.CallTool
 
 			// Agent self-disabled loop — record it as a resumable "Paused by the agent"
 			// (amber) reason so the header pill is unambiguous. Re-enabling clears it.
-			if input.LoopEnabled != nil && !*input.LoopEnabled {
+			// Gated on callerSetLoopEnabled (captured before the frontmatter merge
+			// above) so a prompt's mode:optional/default:false does not get
+			// mislabelled as an agent-initiated pause (mitto-ydj).
+			if callerSetLoopEnabled && input.LoopEnabled != nil && !*input.LoopEnabled {
 				if err := loopStore.MarkStopped(session.StoppedReasonDisabledByAgent); err != nil {
 					s.logger.Warn("Failed to record disabledByAgent reason", "error", err)
 				}

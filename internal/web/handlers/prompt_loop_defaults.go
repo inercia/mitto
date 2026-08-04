@@ -20,6 +20,14 @@ import (
 // applyPromptLoopDefaultsToUpdateInput in internal/mcpserver. The field list
 // and precedence rules MUST stay in sync across all three helpers — see the
 // authoritative merge list in internal/mcpserver/prompt_loop_defaults.go.
+//
+// Deliberate exception: unlike the MCP helpers, this one does NOT merge
+// pl.Mode/pl.Default into an initial enabled state (mitto-ydj). LoopPrompt.Enabled
+// on the request DTO (session_loop.go) is a plain bool, so "caller left it unset"
+// is indistinguishable from "caller explicitly sent false" — the same value-type
+// constraint already noted below for FreshContext. The web UI does not need this
+// merge either: it already computes the initial toggle state client-side via
+// promptLoopInitialState (web/static/utils/prompts.js) before building the request.
 func applyPromptLoopDefaultsToLoopPrompt(lp *session.LoopPrompt, pl *configPkg.PromptLoop, optOut *bool) {
 	if lp == nil || pl == nil {
 		return
