@@ -87,18 +87,20 @@ For long-running loop prompts that track external state (CI status, branch statu
 - `arguments:` — fills `.Args` **only on the initial prompt** dispatched at spawn time.
 - `loop_arguments:` — fills `.Args` on **every subsequent loop re-fire** of the child.
 
-**Anti-pattern**: passing only `arguments:` when the spawned child is itself a loop. The initial turn sees `.Args.Commit=true`, but every re-fire renders with `.Args.Commit=""` — positive-match gates (`{{ if eq .Args.Commit "true" }}`) silently resolve false and the argument is lost across the loop's lifetime (bug `mitto-rtdr`, fixed 25ed20d9; pinned by `TestLoopProcessingSpawns_MirrorArgumentsIntoLoopArguments`).
+**Anti-pattern**: passing only `arguments:` when the spawned child is itself a loop. The initial turn sees the value, but every re-fire renders with `.Args.<Name>=""` and the argument is lost across the loop's lifetime (bug `mitto-rtdr`, fixed 25ed20d9). With a positive-match gate (`{{ if eq .Args.Commit "true" }}`) the empty value silently resolves false; with a default-on gate the re-fire silently falls back to the default instead of the operator's choice.
 
-**Fix**: when the child is a loop, MIRROR the same map into both:
+**Fix**: when the child is a loop, MIRROR the same resolved value into both:
 
 ```yaml
 mitto_conversation_new(
-  arguments:      { Commit: "true", ... }
-  loop_arguments: { Commit: "true", ... }   # required for re-fires
+  arguments:      { SubmitStrategy: "Pull Request", ... }
+  loop_arguments: { SubmitStrategy: "Pull Request", ... }   # required for re-fires
 )
 ```
 
-Related: parameter defaults are NOT auto-merged into `.Args` at render time; either pass the value explicitly or write templates as `{{ if ne .Args.Commit "false" }}` (default-on) instead of positive-match `{{ if eq .Args.Commit "true" }}`.
+`TestLoopProcessingSpawns_MirrorArgumentsIntoLoopArguments` pins this for `beads-issues/loop-processing.prompt.yaml`: for every `SubmitStrategy` the picker can produce (`Commit`, `Pull Request`, `None`) plus the unset case, each of the §A/§B/§C spawn blocks must carry BOTH `arguments:` and `loop_arguments:` with the **identical** resolved literal — mirroring into `arguments:` only, or mirroring a stale/different value, fails.
+
+Related: parameter defaults are NOT auto-merged into `.Args` at render time; either pass the value explicitly or write default-on gates (`{{ ne .Args.SubmitStrategy "None" }}`, `{{ if ne .Args.Commit "false" }}`) instead of positive-match ones (`{{ if eq .Args.Commit "true" }}`).
 
 ## `coalesceDuringBusy` Silent-Swallow During Quiescence Rebase
 

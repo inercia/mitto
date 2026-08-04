@@ -227,8 +227,10 @@ func TestSubmitStrategy_FragmentWiringCallSites(t *testing.T) {
 //     pins the bead's "exactly one push-and-open-pr occurrence in the whole
 //     rendered driver" acceptance criterion (a duplicated invocation would
 //     silently open two PRs for the same bead);
-//   - the per-strategy PhaseSuffix/suffix copy matches the strategy, so a
-//     mis-set $pr/$commit pair cannot pass silently.
+//   - the per-strategy PhaseSuffix/suffix copy matches the strategy AND the
+//     other two strategies' copies are absent (the templates assign the suffix
+//     through a mutually-exclusive if/else-if chain), so a mis-set $pr/$commit
+//     pair cannot pass silently.
 func TestSubmitStrategy_StrategyMatrixAcrossPhases(t *testing.T) {
 	installBuiltinFragmentsForTest(t)
 	builtinDir := "../../config/prompts/builtin"
@@ -239,14 +241,13 @@ func TestSubmitStrategy_StrategyMatrixAcrossPhases(t *testing.T) {
 	const prHallmark = "existing_url=$(gh pr view"
 
 	type file struct {
-		rel           string
-		safeCommit    bool
-		branch        bool
-		pr            bool
-		suffixNone    string
-		suffixCommit  string
-		suffixPR      string
-		fallbackToArg bool // whether IssueID must be passed explicitly (no Session.BeadsIssue)
+		rel          string
+		safeCommit   bool
+		branch       bool
+		pr           bool
+		suffixNone   string
+		suffixCommit string
+		suffixPR     string
 	}
 	files := []file{
 		{
@@ -304,11 +305,10 @@ func TestSubmitStrategy_StrategyMatrixAcrossPhases(t *testing.T) {
 	}
 
 	strategies := []struct {
-		value       string
-		wantSuffix  func(f file) string
-		wantCommit  bool // safe-commit hallmark expected (if f.safeCommit)
-		wantPR      bool // ensure-bead-branch / push-and-open-pr expected (if f.branch / f.pr)
-		otherSuffix []string
+		value      string
+		wantSuffix func(f file) string
+		wantCommit bool // safe-commit hallmark expected (if f.safeCommit)
+		wantPR     bool // ensure-bead-branch / push-and-open-pr expected (if f.branch / f.pr)
 	}{
 		{
 			value:      "None",
@@ -391,6 +391,24 @@ func TestSubmitStrategy_StrategyMatrixAcrossPhases(t *testing.T) {
 					if wantSuffix != "" && !strings.Contains(out, wantSuffix) {
 						t.Errorf("SubmitStrategy=%s: expected suffix copy %q not found; output:\n%s",
 							strat.value, wantSuffix, out)
+					}
+					// The suffix is assigned through a mutually-exclusive
+					// if/else-if chain in the templates, so exactly ONE
+					// strategy's copy may render. Asserting the other two are
+					// absent is what makes a mis-set $pr/$commit pair (or a
+					// chain that stops being exclusive) fail -- presence of the
+					// expected copy alone would not.
+					if wantSuffix != "" {
+						for _, other := range strategies {
+							otherSuffix := other.wantSuffix(f)
+							if otherSuffix == "" || otherSuffix == wantSuffix {
+								continue
+							}
+							if strings.Contains(out, otherSuffix) {
+								t.Errorf("SubmitStrategy=%s: also rendered the %q strategy's suffix copy %q -- the suffix chain must be mutually exclusive; output:\n%s",
+									strat.value, other.value, otherSuffix, out)
+							}
+						}
 					}
 				})
 			}
