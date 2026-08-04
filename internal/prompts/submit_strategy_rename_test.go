@@ -222,8 +222,11 @@ func TestSubmitStrategy_FragmentWiringCallSites(t *testing.T) {
 //     safe-commit caller;
 //   - the ensure-bead-branch hallmark is present iff strategy == "Pull Request"
 //     AND the file is a branch caller;
-//   - the push-and-open-pr hallmark is present iff strategy == "Pull Request"
-//     AND the file is a PR caller;
+//   - the push-and-open-pr hallmark occurs exactly once iff strategy ==
+//     "Pull Request" AND the file is a PR caller, and zero times otherwise --
+//     pins the bead's "exactly one push-and-open-pr occurrence in the whole
+//     rendered driver" acceptance criterion (a duplicated invocation would
+//     silently open two PRs for the same bead);
 //   - the per-strategy PhaseSuffix/suffix copy matches the strategy, so a
 //     mis-set $pr/$commit pair cannot pass silently.
 func TestSubmitStrategy_StrategyMatrixAcrossPhases(t *testing.T) {
@@ -367,10 +370,20 @@ func TestSubmitStrategy_StrategyMatrixAcrossPhases(t *testing.T) {
 						}
 					}
 					if f.pr {
-						gotPR := strings.Contains(out, prHallmark)
-						if gotPR != strat.wantPR {
-							t.Errorf("SubmitStrategy=%s: push-and-open-pr hallmark present=%v, want %v; output:\n%s",
-								strat.value, gotPR, strat.wantPR, out)
+						// Exactly-once invariant (bead acceptance criteria): "Pull
+						// Request" must call push-and-open-pr exactly ONCE in the
+						// whole rendered driver -- a duplicated invocation would
+						// silently open two PRs for the same bead. "None"/"Commit"
+						// must call it zero times. strings.Count (not Contains)
+						// so a regression that renders the fragment twice fails.
+						gotPRCount := strings.Count(out, prHallmark)
+						wantPRCount := 0
+						if strat.wantPR {
+							wantPRCount = 1
+						}
+						if gotPRCount != wantPRCount {
+							t.Errorf("SubmitStrategy=%s: push-and-open-pr hallmark occurrences=%d, want %d (exactly-once invariant); output:\n%s",
+								strat.value, gotPRCount, wantPRCount, out)
 						}
 					}
 
