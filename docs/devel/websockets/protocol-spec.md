@@ -645,11 +645,19 @@ Sent asynchronously after `prompt_complete` when follow-up suggestions are enabl
   "data": {
     "session_id": "...",
     "commands": [
-      { "name": "/help", "description": "Show help", "input_hint": "" }
-    ]
+      { "name": "help", "description": "Show help", "input_hint": "" }
+    ],
+    "context_flush_command": "/clear"
   }
 }
 ```
+
+`context_flush_command` is the resolved agent-native context-flush command. It
+is repeated here (it is also sent in `connected` and `acp_started`) because it
+may only become resolvable once the agent's commands arrive: when no command is
+statically configured, it is detected from this very list. Omitted entirely when
+no `BackgroundSession` is attached — clients must preserve their previous value
+rather than clearing it on absence.
 
 #### `config_option_changed` — Config option changed
 

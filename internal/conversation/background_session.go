@@ -1133,6 +1133,13 @@ func (bs *BackgroundSession) GetACPID() string {
 // advertises "compact" and "context" over ACP but NOT "clear" — even though
 // "/clear" is exactly its static default and does work — so detection must
 // only ever fill a gap, never override a configured value.
+//
+// Per-agent status (mitto-1o8): claude-code and augment carry a verified static
+// default in their agents/builtin metadata. The remaining builtin agents (amp,
+// cline, codex, cursor, gemini, github-copilot, goose, junie, kilo,
+// mistral-vibe, opencode, qwen-code) declare none — no live session evidence
+// was available to verify one — and are covered by this runtime fallback
+// whenever they advertise "clear" or "compact".
 var contextFlushCommandAllowlist = []string{"clear", "compact"}
 
 // ContextFlushCommand returns the agent-native context-flush command (e.g.
