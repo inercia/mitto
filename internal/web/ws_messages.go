@@ -224,6 +224,18 @@ const (
 	//         "rss_bytes": uint64, "threshold_bytes": uint64, "session_count": int }
 	WSMsgTypeMemoryRecycled = "memory_recycled"
 
+	// WSMsgTypeHealthRecycled notifies that the GC's health-recycle tiers (Tier 5:
+	// saturated + idle, or Tier 6: confirmed-degraded even while busy) stopped a
+	// shared ACP process that had stopped completing session/new or session/load
+	// RPCs (mitto-aoo) — e.g. the "query closed before response received" wedge,
+	// which previously produced 38 consecutive failures over 9h with no other
+	// user-visible signal. Affected conversations resume transparently against a
+	// freshly-built process on next focus. Broadcast on /api/events to all
+	// connected clients. Data: { "workspace_uuid": string, "workspace_name": string,
+	// "working_dir": string, "reason": string ("saturated_idle"|"confirmed_degraded"),
+	// "saturation_level": int, "session_count": int }
+	WSMsgTypeHealthRecycled = "agent_recycled"
+
 	// WSMsgTypeMCPInitializing notifies that the agent for a workspace is currently
 	// blocked waiting for one or more MCP servers to initialize (mitto-8ul.1). This is
 	// an informational "session/new may take longer than usual" hint the UI can use to

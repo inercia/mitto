@@ -120,6 +120,17 @@ type ACPProcessManager struct {
 	// a toast notification to connected clients. Set after construction (see NewServer).
 	onMemoryRecycled func(workspaceUUID string, rssBytes, threshold uint64, sessionCount int)
 
+	// onHealthRecycled, if set, is called by the GC's Tier 5 (saturated + idle)
+	// and Tier 6 (confirmed-degraded, even busy) recycle paths (mitto-aoo) when a
+	// shared ACP process is stopped because it stopped completing session/new or
+	// session/load RPCs. Used to broadcast a toast notification to connected
+	// clients so a silently-wedged process (e.g. the "query closed before
+	// response received" signature, which produced 38 consecutive failures over
+	// 9h with no other user-visible signal) is surfaced instead of leaving users
+	// to read a misleading agent error. reason is "saturated_idle" (Tier 5) or
+	// "confirmed_degraded" (Tier 6). Set after construction (see NewServer).
+	onHealthRecycled func(workspaceUUID, reason string, saturationLevel, sessionCount int)
+
 	// gcSuspendedSessions tracks session IDs that were intentionally suspended
 	// by the GC's loop-suspend heuristic. When a loop session's next run
 	// is far away, the GC closes it and adds it here. The WebSocket auto-resume
@@ -320,6 +331,13 @@ func (m *ACPProcessManager) CleanupOrphanedProcesses() {
 // path when a memory-bloated idle shared ACP process is recycled.
 func (m *ACPProcessManager) SetOnMemoryRecycled(fn func(workspaceUUID string, rssBytes, threshold uint64, sessionCount int)) {
 	m.onMemoryRecycled = fn
+}
+
+// SetOnHealthRecycled sets the callback invoked by the GC's Tier 5 (saturated
+// + idle) and Tier 6 (confirmed-degraded) recycle paths when a wedged shared
+// ACP process is recycled (mitto-aoo).
+func (m *ACPProcessManager) SetOnHealthRecycled(fn func(workspaceUUID, reason string, saturationLevel, sessionCount int)) {
+	m.onHealthRecycled = fn
 }
 
 // UpdateMCPInitTimeout sets the extended MCP-init budget passed to every new

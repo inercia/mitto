@@ -894,6 +894,19 @@ func NewServer(config Config) (*Server, error) {
 		s.BroadcastMemoryRecycled(workspaceUUID, workspaceName, workingDir, rssBytes, threshold, sessionCount)
 	})
 
+	// Surface a toast when the GC's health-recycle tiers (Tier 5/6) restart a
+	// shared ACP process that stopped completing session/new or session/load
+	// RPCs (mitto-aoo, the "query closed before response received" wedge).
+	acpProcessMgr.SetOnHealthRecycled(func(workspaceUUID, reason string, saturationLevel, sessionCount int) {
+		workspaceName := ""
+		workingDir := ""
+		if ws := sessionMgr.GetWorkspaceByUUID(workspaceUUID); ws != nil {
+			workspaceName = ws.Name
+			workingDir = ws.WorkingDir
+		}
+		s.BroadcastHealthRecycled(workspaceUUID, workspaceName, workingDir, reason, saturationLevel, sessionCount)
+	})
+
 	// MCP-init lifecycle notifications (mitto-8ul.1): fired at most once per shared
 	// process. "initializing" is informational; "timed out" indicates the agent gave
 	// up on its own MCP-init wait budget and the pending session/new was aborted.
@@ -2158,6 +2171,32 @@ func (s *Server) BroadcastMemoryRecycled(workspaceUUID, workspaceName, workingDi
 			"workspace_uuid", workspaceUUID,
 			"rss_bytes", rssBytes,
 			"threshold_bytes", threshold,
+			"session_count", sessionCount,
+			"clients", s.eventsManager.ClientCount())
+	}
+}
+
+// BroadcastHealthRecycled notifies all connected clients that the GC's health-recycle
+// tiers (Tier 5: saturated + idle, or Tier 6: confirmed-degraded) stopped a shared
+// ACP process that had stopped completing session/new or session/load RPCs
+// (mitto-aoo). This lets the frontend show a toast instead of leaving users to read
+// a misleading agent-side error. Affected conversations resume transparently
+// against a freshly-built process on next focus.
+func (s *Server) BroadcastHealthRecycled(workspaceUUID, workspaceName, workingDir, reason string, saturationLevel, sessionCount int) {
+	s.eventsManager.Broadcast(WSMsgTypeHealthRecycled, map[string]interface{}{
+		"workspace_uuid":   workspaceUUID,
+		"workspace_name":   workspaceName,
+		"working_dir":      workingDir,
+		"reason":           reason,
+		"saturation_level": saturationLevel,
+		"session_count":    sessionCount,
+	})
+
+	if s.logger != nil {
+		s.logger.Info("Broadcast health recycled",
+			"workspace_uuid", workspaceUUID,
+			"reason", reason,
+			"saturation_level", saturationLevel,
 			"session_count", sessionCount,
 			"clients", s.eventsManager.ClientCount())
 	}

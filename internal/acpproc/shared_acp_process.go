@@ -1132,10 +1132,19 @@ func (p *SharedACPProcess) evaluateSaturationRateTriggerLocked(now time.Time) {
 func (p *SharedACPProcess) recordRPCTimeout() {
 	p.saturationMu.Lock()
 	defer p.saturationMu.Unlock()
-	now := time.Now()
+	p.recordRPCFailureLocked(time.Now())
+}
+
+// recordRPCFailureLocked is the shared escalation body for both full RPC
+// deadlines (recordRPCTimeout) and the agent's self-reported "query closed
+// before response received" wedge (recordRPCWedgeFailure, mitto-aoo). Both
+// are direct evidence the shared process cannot complete a session/new, so
+// they feed the SAME consecutive-timeout fast path and rolling window.
+// Callers must hold saturationMu.
+func (p *SharedACPProcess) recordRPCFailureLocked(now time.Time) {
 	p.saturationCurrentBucketLocked(now).timeouts++
 	if p.inProbe {
-		// Probe timed out: immediately escalate and re-saturate.
+		// Probe failed: immediately escalate and re-saturate.
 		p.inProbe = false
 		p.saturationLevel++
 		p.consecutiveRPCTimeouts = 0
@@ -1151,6 +1160,21 @@ func (p *SharedACPProcess) recordRPCTimeout() {
 	// Consecutive threshold not reached — the rate/rolling-window trigger may still
 	// fire for the intermittent-storm case (mitto-5eq).
 	p.evaluateSaturationRateTriggerLocked(now)
+}
+
+// recordRPCWedgeFailure records a NewSession/LoadSession RPC failing with the
+// agent's "query closed before response received" wedge signature (mitto-aoo,
+// see isAgentQueryClosedErr). This reply is fast (1-10ms), not a timeout, but
+// it is direct, self-reported evidence the agent's query loop is torn down
+// and can never complete another session/new on this process — so it is fed
+// into the SAME consecutive-timeout fast path as recordRPCTimeout rather than
+// only the rolling window (unlike recordRPCBudgetBail/recordDegradedStderr,
+// which record softer signals). Deliberately not gated on extendedBudget: a
+// 1-10ms failure cannot be cold-start MCP latency.
+func (p *SharedACPProcess) recordRPCWedgeFailure() {
+	p.saturationMu.Lock()
+	defer p.saturationMu.Unlock()
+	p.recordRPCFailureLocked(time.Now())
 }
 
 // recordRPCBudgetBail records a mid-flight budget-exhaustion bail from
@@ -1508,6 +1532,30 @@ func isAgentInternalDeadlineErr(err error) bool {
 		strings.Contains(msg, "context deadline")
 }
 
+// isAgentQueryClosedErr reports whether err is the agent's "query closed
+// before response received" wedge signature on a session/new (or
+// session/load) RPC (mitto-aoo): a JSON-RPC application error -32603
+// ("Internal error") whose data carries "query closed before response
+// received". Observed returning in 1-10ms — the process is alive and
+// answering JSON-RPC, but its internal query loop is torn down and can never
+// create another session. Unlike isAgentInternalDeadlineErr this is not a
+// deadline/timeout signature, so it previously fed zero saturation samples:
+// neither the consecutive-timeout fast path nor the mitto-5eq rolling window
+// ever saw it, so a process wedged this way was never recycled by GC Tier
+// 5/6 (observed: 38 consecutive session/new failures over 9h). Keep this in
+// sync with acperrors.IsAgentQueryClosedErr.
+func isAgentQueryClosedErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	code, ok := rpcErrorCode(err)
+	if !ok || code != -32603 {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "query closed before response received")
+}
+
 // NewSession creates a new ACP session on this shared process.
 func (p *SharedACPProcess) NewSession(ctx context.Context, cwd string, mcpServers []acp.McpServer) (*conversation.SessionHandle, error) {
 	p.activeRPCs.Add(1)
@@ -1818,8 +1866,15 @@ func (p *SharedACPProcess) NewSession(ctx context.Context, cwd string, mcpServer
 		//     the wedge (rpc_ms=30000, ctx_remaining_ms=29999, rpc_code=-32603) never
 		//     tripped saturation, so the wedged process was never recycled and the
 		//     interactive prompt stayed gated behind a dead session/new handler.
+		//  3. The agent's OWN "query closed before response received" wedge
+		//     (mitto-aoo): a JSON-RPC -32603 returned in 1-10ms, not a deadline.
+		//     Direct evidence the agent's query loop is torn down and will never
+		//     complete another session/new. Not gated on extendedBudget: a
+		//     1-10ms failure cannot be cold-start MCP latency.
 		if isAgentInternalDeadlineErr(err) {
 			p.recordRPCTimeout()
+		} else if isAgentQueryClosedErr(err) {
+			p.recordRPCWedgeFailure()
 		} else if errors.Is(err, context.DeadlineExceeded) && !extendedBudget {
 			p.recordRPCTimeout()
 		}
@@ -1832,6 +1887,7 @@ func (p *SharedACPProcess) NewSession(ctx context.Context, cwd string, mcpServer
 				"ctx_remaining_ms", ctxRemainingMs,
 				"rpc_code", rpcCode,
 				"agent_internal_deadline", isAgentInternalDeadlineErr(err),
+				"agent_query_closed", isAgentQueryClosedErr(err),
 				"extended_mcp_budget", extendedBudget,
 				"cold_start_id", coldstart.FromContext(rpcCtx).ID(),
 				"error", err)
@@ -1982,6 +2038,10 @@ func (p *SharedACPProcess) LoadSession(ctx context.Context, acpSessionID, cwd st
 		}
 		if errors.Is(err, context.DeadlineExceeded) && !extendedBudget {
 			p.recordRPCTimeout()
+		} else if isAgentQueryClosedErr(err) {
+			// mitto-aoo: fast "query closed before response received" wedge,
+			// not a deadline. Not gated on extendedBudget (see NewSession).
+			p.recordRPCWedgeFailure()
 		}
 		if p.logger != nil {
 			p.logger.Info("SharedACPProcess.LoadSession failed",
@@ -1990,6 +2050,7 @@ func (p *SharedACPProcess) LoadSession(ctx context.Context, acpSessionID, cwd st
 				"ctx_remaining_ms", ctxRemainingMs,
 				"ctx_already_expired", ctxAlreadyExpired,
 				"extended_mcp_budget", extendedBudget,
+				"agent_query_closed", isAgentQueryClosedErr(err),
 				"cold_start_id", coldstart.FromContext(rpcCtx).ID(),
 				"error", err)
 		}
@@ -2431,6 +2492,14 @@ func isRetryableCreateError(err error) bool {
 		return true
 	}
 	if isAgentInternalDeadlineErr(err) {
+		return true
+	}
+	if isAgentQueryClosedErr(err) {
+		// mitto-aoo: retry the wedge signature too so the bounded
+		// sessionCreateMaxAttempts loop records multiple consecutive failure
+		// samples (recordRPCWedgeFailure) within a single NewSession call,
+		// tripping saturation on the first wedged create instead of waiting
+		// for sessionSaturationTimeoutThreshold separate caller attempts.
 		return true
 	}
 	msg := strings.ToLower(err.Error())

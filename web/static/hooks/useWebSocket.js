@@ -2451,6 +2451,18 @@ export function useWebSocket({
         }
         break;
 
+      case "agent_recycled":
+        // Server notifies that the GC's health-recycle tiers (Tier 5/6)
+        // restarted a shared ACP process that stopped completing
+        // session/new or session/load RPCs (mitto-aoo).
+        console.log("Agent recycled (health):", msg.data);
+        if (msg.data) {
+          window.dispatchEvent(
+            new CustomEvent("mitto:agent_recycled", { detail: msg.data }),
+          );
+        }
+        break;
+
       case "mcp_initializing":
         // Server notifies that the agent for a workspace is blocked waiting for
         // MCP servers to initialize on this cold start (mitto-8ul.1). Informational

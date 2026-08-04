@@ -73,6 +73,31 @@ export function useBackgroundNotifications({
     };
   }, [showToast]);
 
+  // Listen for health-recycle events (GC Tier 5/6 restarted a wedged agent
+  // process that stopped completing session/new or session/load RPCs, mitto-aoo)
+  useEffect(() => {
+    const handleHealthRecycled = (event) => {
+      const data = event.detail;
+      if (!data) return;
+      const name =
+        data.workspace_name ||
+        (data.working_dir ? data.working_dir.split("/").pop() : "") ||
+        "a workspace";
+      const count = data.session_count || 0;
+      const convs = count === 1 ? "conversation" : "conversations";
+      showToast({
+        style: "warning",
+        title: `Agent restarted: ${name}`,
+        message: `A stuck agent process was automatically restarted. ${count} ${convs} will resume automatically when reopened.`,
+        duration: 10000,
+      });
+    };
+    window.addEventListener("mitto:agent_recycled", handleHealthRecycled);
+    return () => {
+      window.removeEventListener("mitto:agent_recycled", handleHealthRecycled);
+    };
+  }, [showToast]);
+
   // Listen for MCP-init progress events (mitto-8ul.1): agent is blocked waiting
   // for MCP servers to initialize on cold start. Informational, low-priority toast.
   useEffect(() => {

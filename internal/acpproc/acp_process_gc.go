@@ -788,6 +788,7 @@ gcTier1:
 			}
 
 			// Saturated and idle — recycle to reclaim a healthy process.
+			saturationLevel := p.SaturationLevel()
 			if m.logger != nil {
 				m.logger.Info("GC: recycling saturated idle shared ACP process",
 					"workspace_uuid", workspaceUUID,
@@ -796,6 +797,7 @@ gcTier1:
 			// Mark each session GC-suspended BEFORE closing so the WebSocket
 			// auto-resume handler skips resume and avoids a thrash loop — same
 			// ordering as Tier 1's loop-suspend and Tier 4's memory-recycle paths.
+			recycledCount := len(sessions)
 			for _, s := range sessions {
 				m.MarkGCSuspended(s.SessionID)
 				m.sessionClose(s.SessionID)
@@ -810,6 +812,12 @@ gcTier1:
 			// mitto-clc: proactive re-warm after recycle was inactivated — a
 			// naturally cold next NewSession is preferable to piling load onto
 			// an already-degraded workspace.
+			// Notify clients so they can surface a toast (mitto-aoo): a wedged
+			// process otherwise recycles silently and users are left reading a
+			// misleading agent-side error.
+			if m.onHealthRecycled != nil {
+				m.onHealthRecycled(workspaceUUID, "saturated_idle", saturationLevel, recycledCount)
+			}
 		}
 	}
 
@@ -895,13 +903,15 @@ gcTier1:
 			}
 
 			// Confirmed-degraded, not progressing — recycle even though busy.
+			saturationLevel := p.SaturationLevel()
 			if m.logger != nil {
 				m.logger.Info("GC: recycling confirmed-degraded busy shared ACP process",
 					"workspace_uuid", workspaceUUID,
-					"saturation_level", p.SaturationLevel(),
+					"saturation_level", saturationLevel,
 					"active_rpcs", p.ActiveRPCs(),
 					"session_count", len(sessions))
 			}
+			recycledCount := len(sessions)
 			for _, s := range sessions {
 				m.MarkGCSuspended(s.SessionID)
 				m.sessionClose(s.SessionID)
@@ -911,6 +921,10 @@ gcTier1:
 			delete(m.lastSessionSeen, workspaceUUID)
 			m.gcMu.Unlock()
 			// mitto-clc: proactive re-warm after recycle was inactivated.
+			// Notify clients so they can surface a toast (mitto-aoo).
+			if m.onHealthRecycled != nil {
+				m.onHealthRecycled(workspaceUUID, "confirmed_degraded", saturationLevel, recycledCount)
+			}
 		}
 	}
 

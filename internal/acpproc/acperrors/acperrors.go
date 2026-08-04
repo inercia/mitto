@@ -54,3 +54,32 @@ func IsAgentInternalDeadlineErr(err error) bool {
 	return strings.Contains(msg, "deadline exceeded") ||
 		strings.Contains(msg, "context deadline")
 }
+
+// IsAgentQueryClosedErr reports whether err is the agent's "query closed before
+// response received" wedge signature on a session/new (or session/load) RPC
+// (mitto-aoo). Like the internal-deadline wedge above, the agent's handler
+// returns a JSON-RPC application error -32603 ("Internal error"), but here the
+// data carries "query closed before response received" instead of a deadline
+// message — evidence the agent's internal query loop was torn down and can
+// never complete another session/new, even though the process is still alive
+// and answering JSON-RPC. Unlike the deadline wedge this reply is fast (1-10ms),
+// not a timeout, so it previously fed NO saturation signal at all: the GC's
+// Tier 5/6 recycle tiers stayed inert while every session/new failed for hours
+// (observed: 38 consecutive failures over 9h). Treating it as a fast-path
+// failure sample lets the mitto-13ck.2 saturation machinery (and therefore GC
+// Tier 5/6 recycle) heal the wedged process.
+//
+// The canonical (package-private) implementation lives in
+// internal/acpproc/shared_acp_process.go:isAgentQueryClosedErr; keep the two
+// implementations in sync.
+func IsAgentQueryClosedErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	var re *acp.RequestError
+	if !errors.As(err, &re) || re == nil || re.Code != -32603 {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "query closed before response received")
+}
