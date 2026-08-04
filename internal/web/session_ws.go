@@ -2861,10 +2861,17 @@ func (c *SessionWSClient) OnQueueMessageSent(messageID string) {
 
 // OnAvailableCommandsUpdated is called when the agent sends available slash commands.
 func (c *SessionWSClient) OnAvailableCommandsUpdated(commands []conversation.AvailableCommand) {
-	c.sendMessage(WSMsgTypeAvailableCommandsUpdated, map[string]interface{}{
+	data := map[string]interface{}{
 		"session_id": c.sessionID,
 		"commands":   commands,
-	})
+	}
+	if c.bgSession != nil {
+		// The context-flush command may only become resolvable once the agent's
+		// available commands arrive (runtime-detected fallback, mitto-1o8); repeat
+		// it here so the UI can un-grey the flush action without a reload.
+		data["context_flush_command"] = c.bgSession.ContextFlushCommand()
+	}
+	c.sendMessage(WSMsgTypeAvailableCommandsUpdated, data)
 }
 
 // OnConfigOptionChanged is called when a session config option changes.
@@ -2893,6 +2900,10 @@ func (c *SessionWSClient) buildACPStartedPayload() map[string]interface{} {
 		if commands := c.bgSession.AvailableCommands(); len(commands) > 0 {
 			data["available_commands"] = commands
 		}
+		// Agent-native context-flush command (e.g. "/clear"). Also sent in
+		// "connected", but that message is built before the BackgroundSession
+		// is attached on the resume path, so repeat it here (mitto-1o8).
+		data["context_flush_command"] = c.bgSession.ContextFlushCommand()
 		// Include processor stats
 		procCount, procActivations, procLastAt, procLastNames := c.bgSession.GetProcessorStats()
 		data["processor_count"] = procCount

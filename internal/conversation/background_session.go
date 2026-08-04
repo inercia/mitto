@@ -1123,11 +1123,45 @@ func (bs *BackgroundSession) GetACPID() string {
 	return bs.acpID
 }
 
+// contextFlushCommandAllowlist is the ordered set of agent-advertised slash
+// command names (without the leading "/") treated as context-flush
+// equivalents when no static contextFlushCommand is configured for the ACP
+// server. "clear" is preferred over "compact" because compact is lossy
+// summarization, not a flush. Live evidence (mitto-1o8): Claude Code
+// advertises "compact" and "context" over ACP but NOT "clear" — even though
+// "/clear" is exactly its static default and does work — so detection must
+// only ever fill a gap, never override a configured value.
+var contextFlushCommandAllowlist = []string{"clear", "compact"}
+
 // ContextFlushCommand returns the agent-native context-flush command (e.g.
-// "/clear") configured for this session's ACP server, or "" when the feature is
-// not configured. Used by the API/UI to decide whether to expose the flush action.
+// "/clear") to use for this session's ACP server, or "" when no such command
+// is known. Used by the API/UI to decide whether to expose the flush action,
+// and by FlushContext/flushContextInPlace to know what to send.
+//
+// Resolution order (mitto-1o8):
+//  1. The statically configured value (agents/builtin metadata default or a
+//     settings.json override) — authoritative, never overridden by detection.
+//  2. A runtime fallback: the first name in contextFlushCommandAllowlist that
+//     the agent has advertised via the ACP available_commands notification.
+//
+// Resolved on every read rather than cached, since available commands can
+// arrive after the session starts and are stored separately (cbGetAvailableCommands).
 func (bs *BackgroundSession) ContextFlushCommand() string {
-	return bs.contextFlushCommand
+	if cmd := strings.TrimSpace(bs.contextFlushCommand); cmd != "" {
+		return cmd
+	}
+	advertised := bs.cbGetAvailableCommands()
+	if len(advertised) == 0 {
+		return ""
+	}
+	for _, allowed := range contextFlushCommandAllowlist {
+		for _, cmd := range advertised {
+			if cmd.Name == allowed {
+				return "/" + allowed
+			}
+		}
+	}
+	return ""
 }
 
 // StartedAt returns when this session was started or resumed.

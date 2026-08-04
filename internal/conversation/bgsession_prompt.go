@@ -231,7 +231,7 @@ func (bs *BackgroundSession) PromptWithAttachments(message string, imageIDs, fil
 //     any returned error.
 //   - Works for both direct-conn (acpConn) and shared-process (sharedProcess) sessions.
 func (bs *BackgroundSession) flushContextInPlace(ctx context.Context) error {
-	cmd := strings.TrimSpace(bs.contextFlushCommand)
+	cmd := strings.TrimSpace(bs.ContextFlushCommand())
 	if cmd == "" {
 		return &sessionError{"context flush command not configured for this server"}
 	}
@@ -262,7 +262,7 @@ func (bs *BackgroundSession) flushContextInPlace(ctx context.Context) error {
 // is closed. Callers (e.g. the REST handler) should gate on IsPrompting() to
 // avoid issuing a flush while a turn is in flight.
 func (bs *BackgroundSession) FlushContext() error {
-	cmd := strings.TrimSpace(bs.contextFlushCommand)
+	cmd := strings.TrimSpace(bs.ContextFlushCommand())
 	if cmd == "" {
 		return &sessionError{"context flush command not configured for this server"}
 	}
@@ -1256,7 +1256,7 @@ func (bs *BackgroundSession) pdReacquirePromptingState() {
 
 // === New in mitto-2tm ===
 
-func (bs *BackgroundSession) pdContextFlushCommand() string { return bs.contextFlushCommand }
+func (bs *BackgroundSession) pdContextFlushCommand() string { return bs.ContextFlushCommand() }
 
 func (bs *BackgroundSession) pdFlushContextInPlace(ctx context.Context) error {
 	return bs.flushContextInPlace(ctx)

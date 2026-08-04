@@ -843,6 +843,13 @@ export function useWebSocket({
                 // Use ?? to preserve existing options when server omits the field (e.g. pre-acp_started reconnect)
                 config_options:
                   msg.data.config_options ?? session.info?.config_options ?? [],
+                // Agent-native context-flush command (e.g. "/clear"). Omitted by
+                // the server when no BackgroundSession is attached yet, so keep
+                // the previous value rather than clearing it (mitto-1o8).
+                context_flush_command:
+                  msg.data.context_flush_command ??
+                  session.info?.context_flush_command ??
+                  "",
               },
               isStreaming: msg.data.is_prompting || false,
               isRunning: msg.data.is_running ?? session.isRunning ?? false,
@@ -2547,6 +2554,13 @@ export function useWebSocket({
                 // Update config options if provided
                 config_options:
                   msg.data.config_options || session.info?.config_options || [],
+                // Context-flush command, resolved once the ACP server is known
+                // (not available in "connected" when the session was not yet
+                // attached).
+                context_flush_command:
+                  msg.data.context_flush_command ??
+                  session.info?.context_flush_command ??
+                  "",
               },
             },
           };
@@ -2768,6 +2782,29 @@ export function useWebSocket({
             `Available commands updated: ${msg.data.commands.length} commands`,
           );
           setAvailableCommands(msg.data.commands);
+        }
+        // The context-flush command may only become resolvable once the
+        // agent's available commands arrive (runtime-detected fallback,
+        // mitto-1o8); merge it in so the flush button un-greys live. Use ??
+        // to preserve the previous value when the server omits the field.
+        if (msg.data?.context_flush_command !== undefined) {
+          setSessions((prev) => {
+            const session = prev[sessionId];
+            if (!session) return prev;
+            return {
+              ...prev,
+              [sessionId]: {
+                ...session,
+                info: {
+                  ...session.info,
+                  context_flush_command:
+                    msg.data.context_flush_command ??
+                    session.info?.context_flush_command ??
+                    "",
+                },
+              },
+            };
+          });
         }
         break;
 
