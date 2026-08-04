@@ -1123,7 +1123,7 @@ func (p promptDispatcher) applyModelPreference(d promptDeps, meta PromptMeta) {
 	reverifySynthetic := models.Synthesized && !switching && desired != ""
 
 	if l := d.pdLogger(); l != nil {
-		decision := "switching"
+		var decision string
 		switch {
 		case switching:
 			decision = "switching"

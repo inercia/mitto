@@ -2013,7 +2013,7 @@ func TestGetOrCreateAuxiliarySession_HighActiveRPCsBails(t *testing.T) {
 	// Error message must mention the busy/saturated condition so operators
 	// can distinguish this bail from unrelated failures in log analysis.
 	msg := err.Error()
-	if !(strings.Contains(msg, "saturated") || strings.Contains(msg, "busy") || strings.Contains(msg, "active RPCs")) {
+	if !strings.Contains(msg, "saturated") && !strings.Contains(msg, "busy") && !strings.Contains(msg, "active RPCs") {
 		t.Errorf("expected error message to mention 'saturated'/'busy'/'active RPCs', got %q", msg)
 	}
 	// Must bail well under the auxSessionCreateBudget (60s). A proactive

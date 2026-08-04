@@ -15,9 +15,9 @@ func TestEstimateTokensText(t *testing.T) {
 		{"", 0},
 		{"a", 1},
 		{"hi", 1},
-		{"hell", 1},                              // 4 bytes → (4+3)/4 = 1
-		{"hello", 2},                             // 5 bytes → (5+3)/4 = 2
-		{string(make([]byte, 400, 400))[:], 100}, // 400 bytes → 100
+		{"hell", 1},                      // 4 bytes → (4+3)/4 = 1
+		{"hello", 2},                     // 5 bytes → (5+3)/4 = 2
+		{string(make([]byte, 400)), 100}, // 400 bytes → 100
 		// UTF-8 counts by BYTES, not runes: "héllo" is 6 bytes → (6+3)/4 = 2.
 		{"héllo", 2},
 	}

@@ -3103,11 +3103,11 @@ func TestFreshContextPillOrdering_PillSeqBeforeUserPromptSeq(t *testing.T) {
 
 	// mitto-c36 acceptance criterion:
 	// session_change(context_cleared, flush).seq < user_prompt.seq < agent_message.seq
-	if !(gotPillSeq < gotUserSeq) {
+	if gotPillSeq >= gotUserSeq {
 		t.Errorf("mitto-c36 ordering violated: pill seq=%d must be < user_prompt seq=%d",
 			gotPillSeq, gotUserSeq)
 	}
-	if !(gotUserSeq < gotAgentSeq) {
+	if gotUserSeq >= gotAgentSeq {
 		t.Errorf("ordering violated: user_prompt seq=%d must be < agent_message seq=%d",
 			gotUserSeq, gotAgentSeq)
 	}
@@ -3174,7 +3174,7 @@ func TestFreshContextPillOrdering_NewSessionKind(t *testing.T) {
 	if gotPillSeq < 0 || gotUserSeq < 0 {
 		t.Fatalf("missing events: pill=%d user=%d events=%+v", gotPillSeq, gotUserSeq, events)
 	}
-	if !(gotPillSeq < gotUserSeq) {
+	if gotPillSeq >= gotUserSeq {
 		t.Errorf("mitto-c36 ordering violated (new_session): pill seq=%d must be < user_prompt seq=%d",
 			gotPillSeq, gotUserSeq)
 	}
