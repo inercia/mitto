@@ -107,6 +107,30 @@ The **evaluation context differs by caller** — this is the subtle part:
 After fetching, the client filters once more by
 `promptMenus(p).includes(<menu>) && menuSatisfies(p, <menu>)`.
 
+**All of those call sites go through one shared client-side cache**
+(`fetchWorkspacePromptsCached` in `web/static/utils/promptsCache.js`, mitto-8x9).
+Because every prompt's `enabledWhen` is re-evaluated server-side per request, a
+burst (menu open, re-render, `beads_changed` fan-out, one row per beads issue)
+would otherwise trigger one full evaluation pass each. The cache collapses them
+in three layers, keyed on the canonicalized request params (`working_dir`,
+`session_id`, `enabled_context`, `item_*`):
+
+1. **TTL** — a response is reused for 3s.
+2. **In-flight dedup** — concurrent calls with the same key share one promise,
+   so N simultaneous callers issue one request.
+3. **Revalidation** — once the TTL expires the request carries
+   `If-Modified-Since` from the remembered `Last-Modified`; a 304 re-serves the
+   cached body.
+
+`{ force: true }` bypasses layers 1–3 (still deduping in flight) and is used
+where a stale answer would be wrong: workspace change, session switch, and the
+`mitto:prompts_changed` handler. That handler is itself **trailing-edge
+debounced by 250ms** (`useWorkspacePrompts.js`), because one on-disk change fans
+out over several events (`prompts_changed`, `mcp_tools_available`, plus the
+server's re-broadcast after an async MCP-tools re-verify).
+`invalidateWorkspacePromptsCache(workingDir?)` clears everything or one
+workspace's entries after a mutation.
+
 ## 3. The two start behaviors
 
 Both paths converge on the **same queue + named-prompt mechanism**; they differ
@@ -332,6 +356,7 @@ Loop conversations can only be **top-level** (not children). The `at` field
 | Backend  | `internal/web/handlers/session_prompt_arg_cache.go` | `GET /sessions/{id}/prompt-arg-cache` status endpoint (names only)   |
 | Backend  | `internal/session/queue.go`                       | `QueuedMessage{ PromptName, Arguments }`, `Add`/`Pop`                  |
 | Frontend | `web/static/utils/prompts.js`                     | `promptMenus`, `getMissingPromptParameters`, `fetchCachedParamNames`, `effectiveMissingParams` |
+| Frontend | `web/static/utils/promptsCache.js`                | `fetchWorkspacePromptsCached`, `invalidateWorkspacePromptsCache` (TTL + dedup + 304) |
 | Frontend | `web/static/hooks/useWorkspacePrompts.js`         | `fetchConversationPromptsForSession`                                   |
 | Frontend | `web/static/hooks/useBeadsIntegration.js`         | `fetchBeads*PromptsForWorkspace`, `handleRunBeads*Prompt`              |
 | Frontend | `web/static/hooks/useConversationSeeding.js`      | `seedConversationWithPrompt`, `startConversationWithPrompt`            |
