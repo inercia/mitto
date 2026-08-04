@@ -9,6 +9,7 @@ import { authFetch } from "../utils/csrf.js";
 import { apiUrl } from "../utils/api.js";
 import { endpoints } from "../utils/endpoints.js";
 import { Modal } from "./Modal.js";
+import { isOptionsPickerParam } from "../utils/prompts.js";
 // mitto-47y.6.1: recursive nested-picker helpers live under utils/ so they can
 // be unit-tested without hitting the `window.preact` module-load import gate.
 // See utils/promptNestedArgs.js for the full contract; MAX_NESTED_LEVEL stays
@@ -660,7 +661,28 @@ export function PromptParameterDialog({
   // user-typed values.
   useEffect(() => {
     if (!isOpen) return;
-    setValues(initialValues ? { ...initialValues } : {});
+    // mitto-cwz.1: seed declared `default` values for text+options picker
+    // params so the select's preselected option (see ParamField's
+    // `value || param.default` display fallback) and `values`/`canSave` agree
+    // from the first render — otherwise a required options param with a
+    // declared default blocks Save until the user re-picks the value that is
+    // already shown. Precedence: declared default < initialValues (merged
+    // next) < remembered-args (merged by the effect below via `setValues(prev
+    // => ...)`, which runs after and still wins per its documented spec).
+    const optionDefaults = {};
+    for (const p of parameters) {
+      if (
+        isOptionsPickerParam(p) &&
+        p.default !== undefined &&
+        p.default !== null
+      ) {
+        optionDefaults[p.name] = p.default;
+      }
+    }
+    setValues({
+      ...optionDefaults,
+      ...(initialValues ? { ...initialValues } : {}),
+    });
     setBeadsIssues([]);
     setSessions([]);
     setWorkspaces([]);

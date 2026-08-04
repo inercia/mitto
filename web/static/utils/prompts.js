@@ -182,25 +182,41 @@ export function isBooleanParam(p) {
 }
 
 /**
+ * Returns true if the parameter is a `type: text` parameter that declares a
+ * non-empty `options` array — i.e. it renders as a dropdown picker
+ * (PromptParameterDialog) rather than a free-text input, even though its
+ * declared `type` is "text". Exported (not inlined) so every call site that
+ * needs to distinguish "text as picker" from "text as free-text input" uses
+ * the identical test — a duplicated inline check across files is exactly how
+ * this class of bug (mitto-cwz.1) arose.
+ */
+export function isOptionsPickerParam(p) {
+  return p?.type === "text" && Array.isArray(p.options) && p.options.length > 0;
+}
+
+/**
  * Returns true if the parameter is an *interactive picker* type — i.e. one that
  * no menu can auto-supply and that must always be collected via the parameter
  * dialog. Currently: `boolean` (checkbox), `prompts` (workspace-prompt picker),
- * `filename` (workspace-file dropdown), and `dirname` (workspace-directory
- * dropdown).
+ * `filename` (workspace-file dropdown), `dirname` (workspace-directory
+ * dropdown), and `text` with a declared `options` array (dropdown picker —
+ * see isOptionsPickerParam).
  *
  * Rationale: these parameters carry values that no menu context has in scope
- * (a workspace-prompt name, a checkbox answer, or a workspace-relative
- * file/directory path). They behave like `boolean` for gating purposes — never
- * gating menu visibility (menuSatisfies) and always included in
- * getMissingPromptParameters regardless of `required` or the menu's
- * auto-supplied types. The dialog offers the picker unconditionally.
+ * (a workspace-prompt name, a checkbox answer, a workspace-relative
+ * file/directory path, or a value from a fixed option list). They behave like
+ * `boolean` for gating purposes — never gating menu visibility
+ * (menuSatisfies) and always included in getMissingPromptParameters
+ * regardless of `required` or the menu's auto-supplied types. The dialog
+ * offers the picker unconditionally.
  */
 export function isInteractivePickerParam(p) {
   return (
     p?.type === "boolean" ||
     p?.type === "prompts" ||
     p?.type === "filename" ||
-    p?.type === "dirname"
+    p?.type === "dirname" ||
+    isOptionsPickerParam(p)
   );
 }
 
@@ -251,11 +267,12 @@ export const MENU_PARAM_TYPES = {
  * Unset (`required` absent/null) or `required: true` keeps the current gating
  * behaviour, preserving all existing prompts unchanged.
  *
- * Interactive picker parameters (boolean, prompts) never gate: a checkbox
- * always has a definite answer, and a workspace-prompt picker is always
- * offered by the dialog, so both behave like an optional param for visibility
- * purposes (they are collected via the dialog rather than auto-supplied by
- * a menu). See isInteractivePickerParam.
+ * Interactive picker parameters (boolean, prompts, text+options, ...) never
+ * gate: a checkbox always has a definite answer, a workspace-prompt picker is
+ * always offered by the dialog, and a text+options dropdown always has a
+ * fixed value list, so all of them behave like an optional param for
+ * visibility purposes (they are collected via the dialog rather than
+ * auto-supplied by a menu). See isInteractivePickerParam.
  */
 export function menuSatisfies(prompt, menu) {
   const params = promptParameters(prompt);
@@ -282,9 +299,10 @@ export function menuSatisfies(prompt, menu) {
  * Rules:
  *   - An unknown or missing `menu` is treated as providing [] (all required params missing).
  *   - A prompt with no parameters always returns [].
- *   - An interactive picker parameter (boolean, prompts) is ALWAYS included
- *     (it is rendered as a checkbox or a workspace-prompt picker and collected
- *     via the dialog; no menu can auto-supply it). See isInteractivePickerParam.
+ *   - An interactive picker parameter (boolean, prompts, text+options, ...) is
+ *     ALWAYS included (it is rendered as a checkbox, a workspace-prompt
+ *     picker, or a fixed-options dropdown and collected via the dialog; no
+ *     menu can auto-supply it). See isInteractivePickerParam.
  *   - A parameter whose type IS in the menu's provided-types list is excluded.
  *   - A parameter with `required === false` is excluded (optional, no form shown).
  *   - Declared order is preserved.
