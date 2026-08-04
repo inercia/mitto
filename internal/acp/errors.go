@@ -401,6 +401,31 @@ func IsAuthError(err error) bool {
 	return strings.Contains(strings.ToLower(err.Error()), "authentication required")
 }
 
+// IsHandshakeQueryClosedError reports whether err is the agent's "query closed
+// before response received" wedge signature on a session/new handshake — JSON-RPC
+// -32603 ("Internal error") whose data carries "query closed before response
+// received" (case-insensitive). This is NOT necessarily an auth failure
+// (mitto-biu, correcting the mitto-bov assumption): the SDK's async iterator is
+// torn down before writing a response both on cold-start auth failure AND on a
+// long-lived shared process whose internal query loop has wedged (mitto-aoo,
+// which now auto-recycles this exact signature via
+// internal/acpproc.isAgentQueryClosedErr -> recordRPCWedgeFailure -> saturation
+// -> GC Tier 5/6 recycle).
+//
+// internal/acp cannot import internal/acpproc/acperrors here (acperrors imports
+// this package, an import cycle), so this is a string-based twin of the
+// structured classifier acperrors.IsAgentQueryClosedErr /
+// internal/acpproc/shared_acp_process.go:isAgentQueryClosedErr — keep the three
+// implementations in sync.
+func IsHandshakeQueryClosedError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errMsg := err.Error()
+	return strings.Contains(errMsg, "-32603") &&
+		strings.Contains(strings.ToLower(errMsg), "query closed before response received")
+}
+
 // FormatACPError transforms ACP errors into user-friendly messages.
 // It detects common error patterns and provides actionable guidance.
 func FormatACPError(err error) string {
@@ -468,22 +493,25 @@ func FormatACPError(err error) string {
 			"for Claude Code, or `auggie auth login` for Auggie), then send your message again."
 	}
 
-	// Claude Code cold-start handshake auth-expiry (mitto-bov). When the shared
-	// Claude Code process has expired auth, the SDK's session/new async iterator
-	// is torn down before writing a response and surfaces as JSON-RPC -32603
-	// with data.details "Query closed before response received" — a different
-	// code path from the -32000 case above. Same root cause (expired CLI auth),
-	// same fix (re-auth), so we render the same actionable guidance. Placed
-	// before the generic -32603 catch-all so the friendly message wins over
-	// "AI service returned an error". Match is case-insensitive on the details
-	// substring in case the SDK wording drifts.
-	if strings.Contains(errMsg, "-32603") &&
-		strings.Contains(strings.ToLower(errMsg), "query closed before response received") {
-		return "🔐 The AI agent's authentication has expired (handshake failed). " +
-			"The shared agent process could not complete session/new. " +
-			"Please re-authenticate the CLI in a terminal (e.g. `claude auth login` " +
-			"for Claude Code, or `auggie auth login` for Auggie), then start a new " +
-			"conversation or click Restart ACP for this workspace."
+	// Handshake "query closed before response received" (mitto-biu, correcting
+	// mitto-bov). The SDK's session/new async iterator is torn down before
+	// writing a response and surfaces as JSON-RPC -32603 with data.details
+	// "Query closed before response received" — a different code path from the
+	// -32000 case above. mitto-bov assumed this always means expired CLI auth;
+	// it does not — it's also the symptom of a wedged shared process whose
+	// internal query loop has torn down (mitto-aoo), which Mitto now detects
+	// and recycles automatically. The message is therefore cause-neutral and
+	// remedy-first: Restart ACP (with a note that Mitto also auto-recycles this
+	// case) leads, and re-authenticating is only a hedged secondary hint.
+	// Placed before the generic -32603 catch-all so this friendly message wins
+	// over "AI service returned an error". Match is case-insensitive on the
+	// details substring in case the SDK wording drifts.
+	if IsHandshakeQueryClosedError(err) {
+		return "The agent process could not start a new session (handshake failed). " +
+			"Click Restart ACP for this workspace — Mitto also recycles a wedged agent " +
+			"process automatically. If it keeps happening, check that the CLI is " +
+			"authenticated (e.g. `claude auth login` for Claude Code, or `auggie auth login` " +
+			"for Auggie)."
 	}
 
 	// JSON-RPC internal error (-32603) — try to extract HTTP status for better messages.
