@@ -196,6 +196,13 @@ func TestGitFragmentsRenderCorrectly(t *testing.T) {
 // Asserts:
 //   - the composed sub-fragments' hallmarks appear (identify-remote-branch,
 //     behind-base-count for push-and-open-pr) — proving composition resolved;
+//   - ensure-bead-branch's "Type" parameter drives the conventional branch
+//     prefix per the bead's acceptance criteria ("fix" for bugs, "feat" for
+//     features, and the documented "<type>" placeholder when omitted);
+//   - ensure-bead-branch's idempotency ladder (no-op / switch / create) is
+//     present in the rendered output;
+//   - push-and-open-pr's idempotency (existing-PR reuse) and behind-base
+//     preflight gating text are present;
 //   - the bead's core acceptance criterion: no mitto_ui_form / mitto_ui_options /
 //     mitto_ui_textbox anywhere in the rendered output (mitto_ui_notify is NOT
 //     forbidden — identify-remote-branch's scheduled branch uses it, and it is
@@ -218,6 +225,12 @@ func TestHeadlessBeadsGitFragmentsRenderCorrectly(t *testing.T) {
 		hallmarkIdentifyRemote2  = "git symbolic-ref refs/remotes/origin/HEAD"  // from git/shared/identify-remote-branch
 		hallmarkBehindBaseCount  = "git rev-list --count HEAD..<target-remote>" // from git/shared/behind-base-count
 		hallmarkEnsureBeadBranch = "must be **stable across phases**"           // unique to ensure-bead-branch
+		hallmarkNoOpBranch       = "already on it — no-op"                      // ensure-bead-branch idempotency: already on branch
+		hallmarkSwitchExisting   = `elif git show-ref --verify --quiet "refs/heads/$branch"; then`
+		hallmarkCreateBranch     = `git switch -c "$branch" <target-remote>/<target-branch>`
+		hallmarkExistingPR       = "existing_url=$(gh pr view" // push-and-open-pr idempotency: reuse existing PR
+		hallmarkPushNewBranch    = "git push -u <push-remote>" // push-and-open-pr: first-time push
+		hallmarkNoPushIfBehind   = "do **not** push"           // push-and-open-pr: behind-base preflight gate
 	)
 
 	forbiddenUITools := []string{"mitto_ui_form", "mitto_ui_options", "mitto_ui_textbox"}
@@ -236,14 +249,34 @@ func TestHeadlessBeadsGitFragmentsRenderCorrectly(t *testing.T) {
 	}
 	rows := []row{
 		{
-			name:    "ensure-bead-branch",
-			call:    `{{ template "beads-issues/shared/ensure-bead-branch" (dict "Ctx" . "Target" "mitto-abc" "Type" "feat") }}`,
-			require: []string{hallmarkIdentifyRemote2, hallmarkEnsureBeadBranch, "feat/mitto-abc-$slug"},
+			name: "ensure-bead-branch-feat",
+			call: `{{ template "beads-issues/shared/ensure-bead-branch" (dict "Ctx" . "Target" "mitto-abc" "Type" "feat") }}`,
+			require: []string{
+				hallmarkIdentifyRemote2, hallmarkEnsureBeadBranch, "feat/mitto-abc-$slug",
+				hallmarkNoOpBranch, hallmarkSwitchExisting, hallmarkCreateBranch,
+			},
 		},
 		{
-			name:    "push-and-open-pr",
-			call:    `{{ template "beads-issues/shared/push-and-open-pr" (dict "Ctx" . "Target" "mitto-abc") }}`,
-			require: []string{hallmarkIdentifyRemote2, hallmarkBehindBaseCount, `bd comment mitto-abc "PR: $pr_url"`},
+			// Acceptance criteria: "<type> is fix for bugs" — the bug-fix branch
+			// type must also resolve correctly, not just the feature default.
+			name:    "ensure-bead-branch-fix",
+			call:    `{{ template "beads-issues/shared/ensure-bead-branch" (dict "Ctx" . "Target" "mitto-abc" "Type" "fix") }}`,
+			require: []string{"fix/mitto-abc-$slug"},
+		},
+		{
+			// Documented fallback: an empty Type renders the literal "<type>"
+			// placeholder rather than silently defaulting to "feat" or "fix".
+			name:    "ensure-bead-branch-default-type",
+			call:    `{{ template "beads-issues/shared/ensure-bead-branch" (dict "Ctx" . "Target" "mitto-abc" "Type" "") }}`,
+			require: []string{"<type>/mitto-abc-$slug"},
+		},
+		{
+			name: "push-and-open-pr",
+			call: `{{ template "beads-issues/shared/push-and-open-pr" (dict "Ctx" . "Target" "mitto-abc") }}`,
+			require: []string{
+				hallmarkIdentifyRemote2, hallmarkBehindBaseCount, `bd comment mitto-abc "PR: $pr_url"`,
+				hallmarkExistingPR, hallmarkPushNewBranch, hallmarkNoPushIfBehind,
+			},
 		},
 	}
 
