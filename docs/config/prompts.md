@@ -823,6 +823,7 @@ the same ladder.
 ```yaml
 target:
   title: "{{ .Args.IssueID }}: work"   # canonical conversation Name (Go template rendered at dispatch)
+  backgroundColor: "#E1BEE7"           # accent color for the created conversation in the sidebar
   reuse:
     issue: true                        # requires the request to carry beads_issue
     title: true                        # requires title above; funnels by Name match
@@ -839,6 +840,7 @@ equivalent to all three off.
 | Field                  | Type   | Description |
 | ---------------------- | ------ | ----------- |
 | `title`                | string | Canonical name for the conversation. Rendered as a Go text/template at dispatch (context: `.Args`, `.Session.BeadsIssue`, `.Workspace.Folder`). When `reuse.title` is `true`, the **rendered** string is also the lookup key. When the caller omits an explicit name and this prompt originates a new conversation, the created conversation's Name is set to the rendered title. Empty or whitespace-only renders are rejected at dispatch. |
+| `backgroundColor`      | string | Hex color (`#RGB` or `#RRGGBB`, case-insensitive) applied to the conversation this prompt **creates**, rendered as a left accent stripe in the sidebar conversations tree. **Creation-time default only**: when the dispatch funnels into an existing conversation (any `reuse` mode or `singleton`), the existing conversation's color is left untouched, so a manual recolor is never clobbered by a later dispatch. Set or clear it manually with `PATCH /api/sessions/{id}` (`background_color`; empty string clears). Invalid values are rejected at prompt-load time. Distinct from the top-level [`backgroundColor`](#yaml-fields), which colors the prompt's own button. Unset = no stripe (unchanged behavior). |
 | `reuse.issue`          | bool   | When `true` and the request carries a `beads_issue`, funnel into an existing non-archived conversation with the same `beads_issue` in the same `working_dir`. |
 | `reuse.title`          | bool   | When `true` (requires non-empty `title`), funnel into an existing non-archived conversation in the same `working_dir` whose `Name` equals the rendered `title` (byte-for-byte, case-sensitive). On miss, create with `Name = title` so a subsequent scan matches. |
 | `reuse.coalesce`       | bool   | When `true`, suppresses a dispatch to the reused conversation when an identical prompt (same `prompt_name` and `arguments`) is already queued or currently in flight. The caller still gets a `{"reused": true, "coalesced": true}` response so it can focus the target, but no duplicate work is enqueued. Requires at least one reuse mode (`reuse.issue`, `reuse.title`, or top-level `singleton: true`). Nil/absent = behavior unchanged (every dispatch is delivered). |

@@ -353,6 +353,7 @@ same ladder.
 ```yaml
 target:
   title: "Weekly triage"    # canonical conversation Name
+  backgroundColor: "#E1BEE7" # sidebar accent color for the created conversation
   reuse:
     issue: true             # requires the request to carry beads_issue
     title: true             # requires title above; funnels by Name match
@@ -370,6 +371,7 @@ equivalent to all three off (`issue: false`, `title: false`,
 | Field                  | Type   | Description                                                                                                          |
 | ---------------------- | ------ | -------------------------------------------------------------------------------------------------------------------- |
 | `title`                | string | Canonical name for the conversation. When `reuse.title` is true, also the lookup key. When the caller omits an explicit name and this prompt originates a new conversation, the created conversation's Name is set to this value. |
+| `backgroundColor`      | string | Hex color (`#RGB` / `#RRGGBB`, case-insensitive; validated by `ValidatePromptTarget` against `hexColorRe`) persisted as `session.Metadata.BackgroundColor` (`background_color`) on the conversation the prompt **creates**. Resolved on both create paths: REST via `Deps.ResolvePromptTarget` → `ResolvedPromptTarget.BackgroundColor` (hoisted above the reuse ladder in `session_create.go` so it is available on every create branch, including one whose prompt sets `reuse.issue`), MCP via `p.Target.BackgroundColor` → `newMeta.BackgroundColor`. All reuse branches return before the metadata write, so a reused conversation's color — including a manual recolor via `PATCH /api/sessions/{id}` — is never overwritten. Transport is free: `SessionListResponse` embeds `session.Metadata`, and `background_color` is also included in the `session_created` broadcast payload. `SessionItem.js` renders it as a left accent stripe, suppressed while the row is active (`bg-mitto-accent` owns that state). Orthogonal to the workspace color pill, and to the top-level prompt `BackgroundColor` (which colors the prompt button and stays unvalidated). |
 | `reuse.issue`          | bool   | When true and the request carries a `beads_issue`, funnel into an existing non-archived conversation with the same `beads_issue` in the same `working_dir`. |
 | `reuse.title`          | bool   | When true (requires non-empty `title`), funnel into an existing non-archived conversation in the same `working_dir` whose `Name` equals `title` (byte-for-byte, case-sensitive). On miss, create with `Name = title` so a subsequent scan matches. |
 | `reuse.coalesce`       | \*bool | When true, suppresses a dispatch to the reused conversation when an identical prompt (same `PromptName` and `Arguments`, deep-equal treating nil and empty maps as equivalent) is already queued or currently in flight on that conversation. The second dispatch becomes a no-op — the caller still gets `{"session_id": existingID, "reused": true, "coalesced": true}` so it can focus the target, but no duplicate work is enqueued. Free-text (empty `PromptName`) dispatches never coalesce. Requires at least one reuse mode (`reuse.issue`, `reuse.title`, or top-level `singleton: true`). Defaults to nil (behavior unchanged: every dispatch is delivered). |
@@ -378,8 +380,9 @@ equivalent to all three off (`issue: false`, `title: false`,
 `ValidatePromptTarget` (`internal/prompts/prompts.go`) is run by
 `ParsePromptFile` at load time and rejects prompts that set
 `reuse.title: true` without a `title` (a title-keyed lookup with no key),
-or `reuse.coalesce: true` without any reuse mode (no target conversation
-to coalesce against). `ParsePromptFile` also rejects the legacy flat form
+`reuse.coalesce: true` without any reuse mode (no target conversation
+to coalesce against), or a `backgroundColor` that is not a valid hex color.
+`ParsePromptFile` also rejects the legacy flat form
 (`target.reuseIssue` / `target.reuseTitle` / `target.reuseCoalesce`) with
 a migration error pointing at the nested equivalent — the legacy keys
 are no longer accepted (mitto-6b3, no backwards compatibility).
