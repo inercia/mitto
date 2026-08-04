@@ -994,8 +994,8 @@ func FormatPeers(peers []PeerInfo) string {
 //     value is IGNORED in v1; the sub-render always uses the closure's
 //     captured ctx. Render step is fail-closed (parse/exec error, unknown
 //     func, or depth-exceeded returns an error). Depth-capped at
-//     promptTextMaxDepth. Fragments are NOT attached in the sub-render
-//     (Phase-A limitation, same as PromptTextWithArgs).
+//     promptTextMaxDepth. Fragments ARE attached in the sub-render, same as
+//     PromptTextWithArgs (mitto-twa).
 //   - commandExists(name) — true iff name is in PATH.
 //   - GitRepo(path?) — true iff the folder (default: workspace root) is inside a git work tree.
 //   - GitFileModified(path) — true iff the tracked file has pending (staged/unstaged) changes.

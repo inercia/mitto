@@ -1068,9 +1068,9 @@ Rule of thumb:
   passed through byte-for-byte, including any literal `{{ ... }}` occurrences.
 - Use **`ReadTemplate`** for parameterized fragments — files whose body needs
   to see the current prompt's `.Args`, session context, or FuncMap helpers.
-  The included file is recursion-capped at `promptTextMaxDepth` (=3) and does
-  NOT have access to shared fragments (`{{ template "_shared/..." }}`), same
-  Phase-A limitation as `PromptTextWithArgs`.
+  The included file is recursion-capped at `promptTextMaxDepth` (=3) and DOES
+  have access to shared fragments (`{{ template "_shared/..." }}`), same as
+  `PromptTextWithArgs`.
 
 The second argument to `ReadTemplate` is the current dot (`.`) — an authoring
 convention that makes the call site self-documenting; its value is ignored in
