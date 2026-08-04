@@ -6,8 +6,10 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"text/template"
+	"time"
 )
 
 // =============================================================================
@@ -1762,6 +1764,49 @@ func installFakeBd(t *testing.T, stdout string, exitCode int) string {
 	return dir
 }
 
+// installCountingFakeBd is like installFakeBd but the fake `bd` script also
+// appends one byte to a counter file on every invocation, so tests can assert
+// the EXACT number of times bd was forked (mitto-z0t A1/A2/A3/A4: snapshot-
+// cache sharing, singleflight collapse, negative-cache non-reexec, and
+// invalidation forcing re-exec). When sleepSeconds is non-empty (e.g. "0.2")
+// the script sleeps that long before emitting stdout, widening the race
+// window so concurrent callers actually overlap inside a singleflight.Do.
+// Returns the fake-bd dir and the counter file path; use countBdCalls to read it.
+func installCountingFakeBd(t *testing.T, stdout string, exitCode int, sleepSeconds string) (dir, counterFile string) {
+	t.Helper()
+	dir = t.TempDir()
+	counterFile = filepath.Join(dir, "calls.count")
+	sleepLine := ""
+	if sleepSeconds != "" {
+		sleepLine = "sleep " + sleepSeconds + "\n"
+	}
+	script := fmt.Sprintf("#!/bin/sh\nprintf 'x' >> \"%s\"\n%scat <<'MITTO_BD_EOF'\n%s\nMITTO_BD_EOF\nexit %d\n",
+		counterFile, sleepLine, stdout, exitCode)
+	bdPath := filepath.Join(dir, "bd")
+	if err := os.WriteFile(bdPath, []byte(script), 0755); err != nil {
+		t.Fatal(err)
+	}
+	oldPath := os.Getenv("PATH")
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+oldPath)
+	InvalidateAllBeadsCaches()
+	return dir, counterFile
+}
+
+// countBdCalls reads the counter file written by installCountingFakeBd's
+// fake script and returns the number of invocations recorded so far (0 if
+// the file does not exist yet, i.e. bd was never invoked).
+func countBdCalls(t *testing.T, counterFile string) int {
+	t.Helper()
+	data, err := os.ReadFile(counterFile)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0
+		}
+		t.Fatal(err)
+	}
+	return len(data)
+}
+
 // TestBeadsCount_EmptyResult verifies that a legitimate empty result (bd exit
 // 0, `[]`) returns 0 — NOT the fail-open sentinel.
 func TestBeadsCount_EmptyResult(t *testing.T) {
@@ -2235,6 +2280,204 @@ func TestBeadsCount_TemplateFuncRender(t *testing.T) {
 	}
 	if got != "count=1" {
 		t.Errorf("BeadsCount render = %q, want %q", got, "count=1")
+	}
+}
+
+// =============================================================================
+// mitto-z0t: showBead snapshot sharing, singleflight collapse, negative
+// caching, and watcher-driven invalidation.
+// =============================================================================
+
+// TestShowBead_SharedSnapshotCollapsesExecsAcrossGates verifies mitto-z0t D1:
+// evaluating BeadHasLabels, BeadIsOpen and BeadMetadata for the SAME (folder,
+// id) — as the conversation/prompts menu does for one linked bead — forks
+// `bd show` at most ONCE, because all three derive from the shared showBead
+// snapshot cache instead of each forking their own `bd show`.
+func TestShowBead_SharedSnapshotCollapsesExecsAcrossGates(t *testing.T) {
+	_, counterFile := installCountingFakeBd(t,
+		`[{"id":"mitto-1","status":"open","labels":["support-question","state:drafting"],"metadata":{"slack_channel":"C0TEST"}}]`,
+		0, "")
+	tmp := t.TempDir()
+
+	if !beadHasLabels(tmp, "mitto-1", "support-question,state:drafting") {
+		t.Errorf("beadHasLabels = false, want true")
+	}
+	if !beadIsOpen(tmp, "mitto-1") {
+		t.Errorf("beadIsOpen = false, want true")
+	}
+	if got := beadMetadata(tmp, "mitto-1", "slack_channel"); got != "C0TEST" {
+		t.Errorf("beadMetadata = %q, want %q", got, "C0TEST")
+	}
+
+	if n := countBdCalls(t, counterFile); n != 1 {
+		t.Errorf("bd exec count = %d, want 1 (beadHasLabels+beadIsOpen+beadMetadata should share one showBead snapshot)", n)
+	}
+}
+
+// TestShowBead_SingleflightCollapsesConcurrentExecs verifies mitto-z0t D2:
+// concurrent showBead misses on the SAME (folder, id) key collapse into a
+// single `bd show` fork via beadsShowSF, instead of each goroutine forking
+// its own bd in parallel. The fake bd sleeps briefly so all goroutines are
+// guaranteed to be in flight before the first one returns and populates the
+// cache.
+func TestShowBead_SingleflightCollapsesConcurrentExecs(t *testing.T) {
+	_, counterFile := installCountingFakeBd(t,
+		`[{"id":"mitto-1","status":"open","labels":["support-question"]}]`, 0, "0.2")
+	tmp := t.TempDir()
+
+	const n = 20
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func() {
+			defer wg.Done()
+			if !beadIsOpen(tmp, "mitto-1") {
+				t.Errorf("beadIsOpen concurrent = false, want true")
+			}
+		}()
+	}
+	wg.Wait()
+
+	if got := countBdCalls(t, counterFile); got != 1 {
+		t.Errorf("bd exec count under concurrency = %d, want 1 (singleflight should collapse all %d callers)", got, n)
+	}
+}
+
+// TestBeadsCount_SingleflightCollapsesConcurrentExecs mirrors
+// TestShowBead_SingleflightCollapsesConcurrentExecs for the beadsCount /
+// beadsListSF path (`bd list`), the other half of mitto-z0t D2.
+func TestBeadsCount_SingleflightCollapsesConcurrentExecs(t *testing.T) {
+	_, counterFile := installCountingFakeBd(t, `[{"id":"a"},{"id":"b"}]`, 0, "0.2")
+	tmp := t.TempDir()
+
+	const n = 20
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func() {
+			defer wg.Done()
+			if got := beadsCount(tmp, "support-question", "open,in_progress"); got != 2 {
+				t.Errorf("beadsCount concurrent = %d, want 2", got)
+			}
+		}()
+	}
+	wg.Wait()
+
+	if got := countBdCalls(t, counterFile); got != 1 {
+		t.Errorf("bd exec count under concurrency = %d, want 1 (singleflight should collapse all %d callers)", got, n)
+	}
+}
+
+// TestShowBead_NegativeCacheDoesNotReexecWithinTTL verifies mitto-z0t D3 for
+// the showBead path: a FAILING `bd show` (non-zero exit) is memoised too, so
+// repeated evaluations within beadsFailCacheTTL do not re-fork bd on every
+// single call — a broken/slow bd is no longer the hottest possible path.
+// Fail-open semantics (beadIsOpen/beadHasLabels return true, beadMetadata
+// returns "") must be preserved throughout.
+func TestShowBead_NegativeCacheDoesNotReexecWithinTTL(t *testing.T) {
+	_, counterFile := installCountingFakeBd(t, "error: not a beads repo", 1, "")
+	tmp := t.TempDir()
+
+	if !beadIsOpen(tmp, "mitto-1") {
+		t.Errorf("beadIsOpen fail-open = false, want true")
+	}
+	if !beadHasLabels(tmp, "mitto-1", "support-question") {
+		t.Errorf("beadHasLabels fail-open = false, want true")
+	}
+	if got := beadMetadata(tmp, "mitto-1", "slack_channel"); got != "" {
+		t.Errorf("beadMetadata fail-open = %q, want %q", got, "")
+	}
+	if n := countBdCalls(t, counterFile); n != 1 {
+		t.Errorf("bd exec count after 3 failed lookups = %d, want 1 (negative cache should collapse them)", n)
+	}
+}
+
+// TestBeadsCount_NegativeCacheDoesNotReexecWithinTTL mirrors the above for
+// the beadsCount path (`bd list`).
+func TestBeadsCount_NegativeCacheDoesNotReexecWithinTTL(t *testing.T) {
+	_, counterFile := installCountingFakeBd(t, "error: not a beads repo", 1, "")
+	tmp := t.TempDir()
+
+	for i := 0; i < 3; i++ {
+		if got := beadsCount(tmp, "support-question", "open,in_progress"); got != beadsCountFailOpen {
+			t.Errorf("beadsCount fail-open = %d, want %d", got, beadsCountFailOpen)
+		}
+	}
+	if n := countBdCalls(t, counterFile); n != 1 {
+		t.Errorf("bd exec count after 3 failed lookups = %d, want 1 (negative cache should collapse them)", n)
+	}
+}
+
+// TestBeadsFailCache_ExpiresAndSelfHeals verifies that once beadsFailCacheTTL
+// elapses, a subsequent call re-execs bd (self-healing) rather than staying
+// negatively cached forever — i.e. the negative cache in D3 is bounded, not
+// permanent. Uses a real sleep past the TTL; kept as a single instance to
+// bound the added test time.
+func TestBeadsFailCache_ExpiresAndSelfHeals(t *testing.T) {
+	_, counterFile := installCountingFakeBd(t, "error: not a beads repo", 1, "")
+	tmp := t.TempDir()
+
+	if got := beadsCount(tmp, "support-question", "open,in_progress"); got != beadsCountFailOpen {
+		t.Fatalf("beadsCount fail-open = %d, want %d", got, beadsCountFailOpen)
+	}
+	if n := countBdCalls(t, counterFile); n != 1 {
+		t.Fatalf("bd exec count after first failure = %d, want 1", n)
+	}
+
+	time.Sleep(beadsFailCacheTTL + 200*time.Millisecond)
+
+	if got := beadsCount(tmp, "support-question", "open,in_progress"); got != beadsCountFailOpen {
+		t.Errorf("beadsCount fail-open after TTL = %d, want %d", got, beadsCountFailOpen)
+	}
+	if n := countBdCalls(t, counterFile); n != 2 {
+		t.Errorf("bd exec count after TTL expiry = %d, want 2 (should have re-execed)", n)
+	}
+}
+
+// TestInvalidateBeadsCache_ForcesReexec verifies mitto-z0t D5: calling
+// InvalidateBeadsCache(folder) drops both the beadsCount cache and the
+// showBead snapshot cache for that folder, so the NEXT call re-execs bd
+// immediately instead of waiting out the (now 30s) beadsCacheTTL. This is
+// what lets OnBeadsChanged (internal/web) keep results fresh despite the
+// longer TTL.
+func TestInvalidateBeadsCache_ForcesReexec(t *testing.T) {
+	_, counterFile := installCountingFakeBd(t,
+		`[{"id":"mitto-1","status":"open","labels":["support-question"]}]`, 0, "")
+	tmp := t.TempDir()
+
+	// Prime both caches for this folder.
+	if !beadIsOpen(tmp, "mitto-1") {
+		t.Fatalf("beadIsOpen = false, want true")
+	}
+	if got := beadsCount(tmp, "support-question", "open,in_progress"); got != 1 {
+		t.Fatalf("beadsCount = %d, want 1", got)
+	}
+	if n := countBdCalls(t, counterFile); n != 2 {
+		t.Fatalf("bd exec count after priming = %d, want 2 (one showBead + one list)", n)
+	}
+
+	// Still within TTL: repeat calls must NOT re-exec.
+	beadIsOpen(tmp, "mitto-1")
+	beadsCount(tmp, "support-question", "open,in_progress")
+	if n := countBdCalls(t, counterFile); n != 2 {
+		t.Fatalf("bd exec count before invalidation = %d, want 2 (cache should mask repeats)", n)
+	}
+
+	InvalidateBeadsCache(tmp)
+
+	// A DIFFERENT folder's cache entries must be unaffected by invalidating tmp.
+	other := t.TempDir()
+	beadIsOpen(other, "mitto-1")
+	if n := countBdCalls(t, counterFile); n != 3 {
+		t.Fatalf("bd exec count after unrelated-folder call = %d, want 3", n)
+	}
+
+	// The invalidated folder must re-exec on the very next call for both
+	// the showBead snapshot and the beadsCount list.
+	beadIsOpen(tmp, "mitto-1")
+	beadsCount(tmp, "support-question", "open,in_progress")
+	if n := countBdCalls(t, counterFile); n != 5 {
+		t.Errorf("bd exec count after InvalidateBeadsCache = %d, want 5 (both caches for tmp should have re-execed)", n)
 	}
 }
 
