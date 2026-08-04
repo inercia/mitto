@@ -377,9 +377,9 @@ describe("menuSatisfies", () => {
 
 describe("isOptionsPickerParam", () => {
   test("returns true for type:text with a non-empty options array", () => {
-    expect(
-      isOptionsPickerParam({ type: "text", options: ["a", "b"] }),
-    ).toBe(true);
+    expect(isOptionsPickerParam({ type: "text", options: ["a", "b"] })).toBe(
+      true,
+    );
   });
 
   test("returns false for type:text with an empty options array", () => {
@@ -391,15 +391,13 @@ describe("isOptionsPickerParam", () => {
   });
 
   test("returns false for type:text when options is not an array", () => {
-    expect(isOptionsPickerParam({ type: "text", options: "a,b" })).toBe(
-      false,
-    );
+    expect(isOptionsPickerParam({ type: "text", options: "a,b" })).toBe(false);
   });
 
   test("returns false for a non-text type even with a non-empty options array", () => {
-    expect(
-      isOptionsPickerParam({ type: "beadsId", options: ["a", "b"] }),
-    ).toBe(false);
+    expect(isOptionsPickerParam({ type: "beadsId", options: ["a", "b"] })).toBe(
+      false,
+    );
   });
 
   test("returns false for undefined/null/no type", () => {
@@ -441,9 +439,7 @@ describe("isInteractivePickerParam", () => {
   // Regression pin (mitto-cwz.1): a text+options fix must not accidentally
   // widen plain free-text params into pickers.
   test("returns false for text with an empty options array", () => {
-    expect(isInteractivePickerParam({ type: "text", options: [] })).toBe(
-      false,
-    );
+    expect(isInteractivePickerParam({ type: "text", options: [] })).toBe(false);
   });
 
   test("returns false for text", () => {

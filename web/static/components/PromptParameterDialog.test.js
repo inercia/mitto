@@ -873,9 +873,7 @@ describe("initialValues seeding", () => {
  * Duplicated from utils/prompts.js — keep in sync (see also prompts.test.js).
  */
 function isOptionsPickerParam(p) {
-  return (
-    p?.type === "text" && Array.isArray(p.options) && p.options.length > 0
-  );
+  return p?.type === "text" && Array.isArray(p.options) && p.options.length > 0;
 }
 
 /**
