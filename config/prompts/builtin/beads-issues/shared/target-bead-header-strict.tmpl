@@ -19,10 +19,11 @@
       {{ else if .Args.IssueID }}{{ $target = .Args.IssueID }}{{ end -}}
       {{ $submit := .Args.SubmitStrategy -}}
       {{ $commit := ne $submit "None" -}}
+      {{ $pr := eq $submit "Pull Request" -}}
 
-      {{ $suffix := "" -}}
-      {{ if $commit }}{{ $suffix = printf "Submit strategy is **%s** (`SubmitStrategy` argument)." $submit -}}
-      {{ else }}{{ $suffix = "Submit strategy is **None** (`SubmitStrategy` argument) — commit-after-fix is disabled." }}{{ end -}}
+      {{ $suffix := "Submit strategy is **None** (`SubmitStrategy` argument) — commit-after-fix is disabled." -}}
+      {{ if $pr }}{{ $suffix = "Submit strategy is **Pull Request** (`SubmitStrategy` argument) — committed on a per-bead branch." }}
+      {{ else if $commit }}{{ $suffix = "Submit strategy is **Commit** (`SubmitStrategy` argument) — commit-after-fix is enabled." }}{{ end -}}
       {{ template "beads-issues/shared/target-bead-header-strict" (dict
           "Target"      $target
           "Noun"        "target bug"
@@ -46,7 +47,7 @@
                   mention-driver to add "durable across loop runs").
     PhaseSuffix — an optional trailing sentence appended after the
                   "The <noun> <scope> is `<id>` …" line, typically used to
-                  surface the Commit-after-X toggle or a MentionTS line.
+                  surface the `SubmitStrategy` line or a MentionTS line.
                   Omit or pass empty for phases without a suffix.
     FailStop    — the final clause of the missing-target sentence, starting
                   after "Post a `mitto_ui_notify` explaining the missing
