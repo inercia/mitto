@@ -14,6 +14,7 @@ import (
 
 	acp "github.com/coder/acp-go-sdk"
 
+	mittoAcp "github.com/inercia/mitto/internal/acp"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/processors"
 	"github.com/inercia/mitto/internal/session"
@@ -67,8 +68,11 @@ type fakePromptDeps struct {
 
 	// === New in 2.5-c ===
 	hasSharedProcess bool
-	handshakeErr     error
-	handshakeCalls   int
+	// sharedProcessHistory backs pdSharedProcessHistory; zero value
+	// (mittoAcp.ProcessHistoryUnknown) matches the "no shared process" default.
+	sharedProcessHistory mittoAcp.ProcessHistory
+	handshakeErr         error
+	handshakeCalls       int
 	// handshakeBlock, when non-nil, is closed by the test to release a blocked
 	// pdCompleteDeferredHandshake. Used to simulate a wedged handshake for the
 	// completeHandshakeOrAbort watchdog test (mitto-f51).
@@ -238,6 +242,9 @@ func (f *fakePromptDeps) pdWorkspaceProcessorArgOverrides() map[string]map[strin
 // === New in 2.5-c ===
 
 func (f *fakePromptDeps) pdHasSharedProcess() bool { return f.hasSharedProcess }
+func (f *fakePromptDeps) pdSharedProcessHistory() mittoAcp.ProcessHistory {
+	return f.sharedProcessHistory
+}
 func (f *fakePromptDeps) pdCompleteDeferredHandshake() error {
 	f.mu.Lock()
 	f.handshakeCalls++

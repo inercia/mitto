@@ -96,6 +96,11 @@ type promptDeps interface {
 
 	// Handshake
 	pdHasSharedProcess() bool
+	// pdSharedProcessHistory reports whether the shared process had previously
+	// completed at least one successful session RPC before this handshake
+	// attempt, corroborating -32603 "query closed" cause diagnosis (mitto-azk).
+	// Returns mittoAcp.ProcessHistoryUnknown when there is no shared process.
+	pdSharedProcessHistory() mittoAcp.ProcessHistory
 	pdCompleteDeferredHandshake() error
 	// pdRecommendedHandshakeDeadline returns the outer wall-clock budget the
 	// deferred session/new handshake should be bounded by (mitto-f51). Derived
@@ -880,7 +885,8 @@ func (p promptDispatcher) completeHandshakeOrAbort(d promptDeps) bool {
 	if errors.Is(handshakeErr, errHandshakeWatchdogFired) {
 		friendlyMsg = "The agent is still starting up — please resend your message."
 	} else {
-		friendlyMsg = "Could not start the agent session: " + mittoAcp.FormatACPError(handshakeErr) + " Please resend your message."
+		hints := mittoAcp.FormatErrorHints{ProcessHistory: d.pdSharedProcessHistory()}
+		friendlyMsg = "Could not start the agent session: " + mittoAcp.FormatACPErrorWithContext(handshakeErr, hints) + " Please resend your message."
 	}
 	if d.pdHasRecorder() {
 		seq := d.pdGetNextSeq()
@@ -1463,7 +1469,8 @@ func (p promptDispatcher) handlePromptError(
 	}
 
 	// Transient error: ACP process is still alive.
-	userFriendlyErr := mittoAcp.FormatACPError(err)
+	hints := mittoAcp.FormatErrorHints{ProcessHistory: d.pdSharedProcessHistory()}
+	userFriendlyErr := mittoAcp.FormatACPErrorWithContext(err, hints)
 	d.pdNotifyObservers(func(o SessionObserver) {
 		o.OnError(userFriendlyErr)
 	})

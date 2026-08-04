@@ -426,9 +426,57 @@ func IsHandshakeQueryClosedError(err error) bool {
 		strings.Contains(strings.ToLower(errMsg), "query closed before response received")
 }
 
+// ProcessHistory is a tri-state signal describing whether the shared ACP
+// process that produced an error had previously completed at least one
+// successful session RPC (session/new or session/load) before this failure.
+// Kept tri-state (rather than a plain bool) so FormatACPError's existing
+// unhedged behavior is preserved by default: only a caller that explicitly
+// passes ProcessHistoryWarm gets the auth-free wording (mitto-azk).
+type ProcessHistory int
+
+const (
+	// ProcessHistoryUnknown is the zero value: the caller has no corroborating
+	// signal about the process's prior health. Formatting falls back to the
+	// original cause-neutral-but-hedged wording (mitto-biu).
+	ProcessHistoryUnknown ProcessHistory = iota
+	// ProcessHistoryCold indicates this is a first-contact failure: the shared
+	// process has never completed a session RPC. Auth is a plausible cause, so
+	// the secondary "check the CLI is authenticated" hint is retained.
+	ProcessHistoryCold
+	// ProcessHistoryWarm indicates the shared process previously completed at
+	// least one session/new or session/load successfully. Auth cannot be the
+	// cause of a later handshake failure on the same process, so the message
+	// drops the authentication hint entirely (mitto-azk).
+	ProcessHistoryWarm
+)
+
+// FormatErrorHints carries optional corroborating context that lets
+// FormatACPErrorWithContext refine its message beyond what the raw error
+// string alone can tell. Zero value means "no additional context" and
+// FormatACPErrorWithContext(err, FormatErrorHints{}) is byte-identical to
+// FormatACPError(err). Designed so future hints can be added as new fields
+// without another functions signature change (mitto-azk).
+type FormatErrorHints struct {
+	// ProcessHistory corroborates a handshake failure's likely cause using the
+	// shared process's prior session-RPC history. See ProcessHistory.
+	ProcessHistory ProcessHistory
+}
+
 // FormatACPError transforms ACP errors into user-friendly messages.
 // It detects common error patterns and provides actionable guidance.
+// This is a convenience wrapper around FormatACPErrorWithContext with no
+// additional hints (ProcessHistoryUnknown) — see that function for the
+// context-aware variant.
 func FormatACPError(err error) string {
+	return FormatACPErrorWithContext(err, FormatErrorHints{})
+}
+
+// FormatACPErrorWithContext transforms ACP errors into user-friendly messages,
+// optionally refining the wording using corroborating hints the caller already
+// has (e.g. whether the shared process had previously completed a session RPC).
+// With the zero-value FormatErrorHints{}, behavior is identical to
+// FormatACPError.
+func FormatACPErrorWithContext(err error, hints FormatErrorHints) string {
 	if err == nil {
 		return ""
 	}
@@ -507,6 +555,15 @@ func FormatACPError(err error) string {
 	// over "AI service returned an error". Match is case-insensitive on the
 	// details substring in case the SDK wording drifts.
 	if IsHandshakeQueryClosedError(err) {
+		if hints.ProcessHistory == ProcessHistoryWarm {
+			// The shared process previously completed at least one session RPC
+			// successfully, so an auth problem cannot explain this failure —
+			// omit the hint entirely (mitto-azk).
+			return "The agent process could not start a new session (handshake failed). " +
+				"The agent had been working normally and its internal query loop has " +
+				"since wedged. Click Restart ACP for this workspace — Mitto also " +
+				"recycles a wedged agent process automatically."
+		}
 		return "The agent process could not start a new session (handshake failed). " +
 			"Click Restart ACP for this workspace — Mitto also recycles a wedged agent " +
 			"process automatically. If it keeps happening, check that the CLI is " +

@@ -940,6 +940,27 @@ func (bs *BackgroundSession) pdBuildPromptWithHistory(message string) string {
 
 func (bs *BackgroundSession) pdHasSharedProcess() bool { return bs.sharedProcess != nil }
 
+// pdSharedProcessHistory reports whether this session's shared process has
+// previously completed at least one successful session RPC, corroborating
+// -32603 "query closed" handshake-failure diagnosis (mitto-azk). Backed by
+// MCPInitDone(), which latches on the first successful session/new or
+// session/load and is NOT reset by Restart() — a process recycle keeps the
+// prior latch, so a first-contact failure on a freshly-restarted process is
+// still reported as "warm". This errs safely: it only ever removes the
+// (possibly misleading) auth hint, never adds one, and the underlying agent
+// did previously authenticate successfully in this Mitto run. Returns
+// ProcessHistoryUnknown when no shared process is configured (legacy
+// per-session process ownership) and ProcessHistoryCold/Warm otherwise.
+func (bs *BackgroundSession) pdSharedProcessHistory() mittoAcp.ProcessHistory {
+	if bs.sharedProcess == nil {
+		return mittoAcp.ProcessHistoryUnknown
+	}
+	if bs.sharedProcess.MCPInitDone() {
+		return mittoAcp.ProcessHistoryWarm
+	}
+	return mittoAcp.ProcessHistoryCold
+}
+
 func (bs *BackgroundSession) pdCompleteDeferredHandshake() error {
 	return bs.completeDeferredHandshake()
 }
