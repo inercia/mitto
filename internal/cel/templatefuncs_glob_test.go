@@ -444,7 +444,7 @@ func TestGlob_Singleflight_CollapsesConcurrentWalks(t *testing.T) {
 	root := makeGlobFixture(t)
 
 	origWalk := walkMatchFn
-	var walkCount int32
+	var walkCount int
 	var mu sync.Mutex
 	walkMatchFn = func(opts pathglob.WalkMatchOpts) pathglob.WalkMatchResult {
 		mu.Lock()
@@ -485,7 +485,7 @@ func TestGlob_Singleflight_DistinctKeysWalkIndependently(t *testing.T) {
 	root := makeGlobFixture(t)
 
 	origWalk := walkMatchFn
-	var walkCount int32
+	var walkCount int
 	var mu sync.Mutex
 	walkMatchFn = func(opts pathglob.WalkMatchOpts) pathglob.WalkMatchResult {
 		mu.Lock()
@@ -511,7 +511,7 @@ func TestGlob_Singleflight_DistinctKeysWalkIndependently(t *testing.T) {
 	mu.Lock()
 	got := walkCount
 	mu.Unlock()
-	if got != int32(len(patterns)) {
+	if got != len(patterns) {
 		t.Errorf("WalkMatch call count for %d distinct keys = %d, want %d (distinct keys must not collapse)", len(patterns), got, len(patterns))
 	}
 }
