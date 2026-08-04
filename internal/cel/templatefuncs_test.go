@@ -1757,10 +1757,8 @@ func installFakeBd(t *testing.T, stdout string, exitCode int) string {
 	}
 	oldPath := os.Getenv("PATH")
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+oldPath)
-	// Clear the cache so a previous test's result doesn't shadow this one.
-	beadsCacheMu.Lock()
-	beadsCache = map[string]beadsCacheEntry{}
-	beadsCacheMu.Unlock()
+	// Clear the caches so a previous test's result doesn't shadow this one.
+	InvalidateAllBeadsCaches()
 	return dir
 }
 
@@ -1826,9 +1824,7 @@ func TestBeadsCount_FailOpenWhenMissing(t *testing.T) {
 	// Force an isolated PATH with no bd.
 	emptyDir := t.TempDir()
 	t.Setenv("PATH", emptyDir)
-	beadsCacheMu.Lock()
-	beadsCache = map[string]beadsCacheEntry{}
-	beadsCacheMu.Unlock()
+	InvalidateAllBeadsCaches()
 
 	got := beadsCount(emptyDir, "support-question", "open,in_progress")
 	if got != beadsCountFailOpen {
@@ -1939,9 +1935,7 @@ func TestBeadHasLabels_EmptyIDOrLabels(t *testing.T) {
 func TestBeadHasLabels_FailOpenWhenMissing(t *testing.T) {
 	emptyDir := t.TempDir()
 	t.Setenv("PATH", emptyDir)
-	beadsCacheMu.Lock()
-	beadsCache = map[string]beadsCacheEntry{}
-	beadsCacheMu.Unlock()
+	InvalidateAllBeadsCaches()
 
 	if !beadHasLabels(emptyDir, "mitto-1", "support-question,state:drafting") {
 		t.Errorf("beadHasLabels missing bd = false, want true (fail-open)")
@@ -2038,9 +2032,7 @@ func TestBeadIsOpen_FailOpen(t *testing.T) {
 
 	emptyDir := t.TempDir()
 	t.Setenv("PATH", emptyDir)
-	beadsCacheMu.Lock()
-	beadsCache = map[string]beadsCacheEntry{}
-	beadsCacheMu.Unlock()
+	InvalidateAllBeadsCaches()
 	if !beadIsOpen(emptyDir, "mitto-1") {
 		t.Errorf("beadIsOpen missing bd = false, want true (fail-open)")
 	}
@@ -2156,10 +2148,7 @@ func TestBeadMetadata_EmptyID(t *testing.T) {
 func TestBeadMetadata_FailOpenWhenBdMissing(t *testing.T) {
 	emptyDir := t.TempDir()
 	t.Setenv("PATH", emptyDir)
-	beadsCacheMu.Lock()
-	beadsCache = map[string]beadsCacheEntry{}
-	beadsStrCache = map[string]beadsStrCacheEntry{}
-	beadsCacheMu.Unlock()
+	InvalidateAllBeadsCaches()
 
 	if got := beadMetadata(emptyDir, "mitto-1", "slack_channel"); got != "" {
 		t.Errorf("beadMetadata missing bd = %q, want %q (fail-open)", got, "")

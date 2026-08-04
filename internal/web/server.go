@@ -23,6 +23,7 @@ import (
 	"github.com/inercia/mitto/internal/auxiliary"
 	"github.com/inercia/mitto/internal/beads"
 	"github.com/inercia/mitto/internal/beads/watcher"
+	"github.com/inercia/mitto/internal/cel"
 	configPkg "github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/conversation"
 	"github.com/inercia/mitto/internal/defense"
@@ -2703,6 +2704,19 @@ func (s *Server) beadsCacheMetricsCallback() func() beads.CacheMetrics {
 // OnBeadsChanged is called by the BeadsWatcher when .beads/ directories change.
 // It broadcasts the change to all connected clients via the global events WebSocket.
 func (s *Server) OnBeadsChanged(event watcher.BeadsChangeEvent) {
+	// mitto-z0t D5: invalidate the CEL enabledWhen beads caches (beadsCount /
+	// showBead snapshot) for every changed working dir so external mutations
+	// (bd from another process, direct .beads/ writes, git pulls) are reflected
+	// immediately rather than waiting out beadsCacheTTL. Done unconditionally,
+	// before the eventsManager nil-check below, so invalidation still happens
+	// even with no WebSocket clients connected. Uses this unconditional
+	// subscriber rather than beadsCacheWatcherSubscriber (which is only wired
+	// when --beads-cache is enabled) since internal/cel's cache runs regardless
+	// of that flag.
+	for _, dir := range event.WorkingDirs {
+		cel.InvalidateBeadsCache(dir)
+	}
+
 	if s.eventsManager == nil {
 		return
 	}

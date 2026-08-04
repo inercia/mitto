@@ -15,6 +15,8 @@ import (
 	"text/template"
 	"time"
 
+	"golang.org/x/sync/singleflight"
+
 	"github.com/inercia/mitto/internal/pathglob"
 )
 
@@ -33,10 +35,23 @@ const promptTextMaxDepth = 3
 // run before it is killed. Mirrors gitCmdTimeout for the git helpers.
 const bdCmdTimeout = 5 * time.Second
 
-// beadsCacheTTL bounds how long a BeadsCount/HasBeads result is memoised per
-// (folder, labels, statuses) tuple, to avoid re-exec on rapid menu re-opens.
-// Kept short so a beads mutation is reflected within one TTL window.
-const beadsCacheTTL = 5 * time.Second
+// beadsCacheTTL bounds how long a BeadsCount/HasBeads/BeadHasLabels/BeadIsOpen
+// /BeadMetadata result is memoised, to avoid re-exec on rapid menu re-opens.
+// Raised from the original 5s to 30s (mitto-z0t D4): safe because external
+// mutations invalidate the affected folder's entries immediately via the
+// .beads/ fsnotify watcher (see InvalidateBeadsCache, wired from
+// internal/web Server.OnBeadsChanged), so this is now a bounded backstop for
+// folders the watcher does not cover rather than the primary freshness
+// mechanism.
+const beadsCacheTTL = 30 * time.Second
+
+// beadsFailCacheTTL bounds how long a FAILED bd invocation (missing bd,
+// non-zero exit, unparseable JSON) is memoised (mitto-z0t D3). Before this,
+// every fail-open path returned without caching anything, so a broken or
+// slow bd was the hottest possible path — it re-forked on every single
+// evaluation. Kept short (well under beadsCacheTTL) so a transient failure
+// self-heals quickly once bd starts working again.
+const beadsFailCacheTTL = 2 * time.Second
 
 // beadsCountFailOpen is the sentinel returned by beadsCount on ANY error (bd
 // missing, timeout, non-zero exit, unparseable JSON). It is a positive value
@@ -45,28 +60,49 @@ const beadsCacheTTL = 5 * time.Second
 // (`[]`) is NOT an error and returns 0.
 const beadsCountFailOpen = 1
 
-// beadsCache memoises beadsCount results for beadsCacheTTL keyed by
-// folder\x00labels\x00statuses. Simple sync.Mutex-guarded map with a
-// timestamped entry per key.
+// beadsCache memoises beadsCount results keyed by folder\x00labels\x00statuses.
+// Simple sync.Mutex-guarded map with a timestamped entry per key. Failed
+// lookups are cached too (entry.failed=true) under the shorter
+// beadsFailCacheTTL — see beadsCountLookup/beadsCacheStore.
 var (
 	beadsCacheMu sync.Mutex
 	beadsCache   = map[string]beadsCacheEntry{}
+
+	// beadsListSF collapses concurrent `bd list` execs for the same
+	// (folder, labels, statuses) key into one fork (mitto-z0t D2): when
+	// beadsCacheTTL has just expired, several concurrent enabledWhen
+	// evaluations (e.g. overlapping /api/workspace-prompts requests) would
+	// otherwise all miss together and fork in parallel.
+	beadsListSF singleflight.Group
 )
 
 type beadsCacheEntry struct {
-	count int
-	at    time.Time
+	count  int
+	at     time.Time
+	failed bool // true when this entry memoises a fail-open result (beadsFailCacheTTL applies)
 }
 
-// beadsStrCache is a parallel, string-valued sibling of beadsCache used by
-// BeadMetadata (whose value is a free-form string, not a boolean/count). Same
-// TTL, same mutex-guarded pattern.
-var beadsStrCache = map[string]beadsStrCacheEntry{}
-
-type beadsStrCacheEntry struct {
-	value string
-	at    time.Time
+// beadsShowCacheEntry is a single cached `bd show <id> --json` snapshot,
+// positive (ok=true) or negative (ok=false, on any error), keyed by
+// folder\x00id. Introduced by mitto-z0t D1 to replace the earlier scheme
+// where beadHasLabels/beadIsOpen/beadMetadata each cached only their own
+// DERIVED answer while sharing an uncached showBead — so evaluating all
+// three gates on the same bead forked `bd show` three times. Now all three
+// derive from this ONE shared snapshot per (folder, id).
+type beadsShowCacheEntry struct {
+	bead bdBead
+	ok   bool
+	at   time.Time
 }
+
+var (
+	beadsShowCacheMu sync.Mutex
+	beadsShowCache   = map[string]beadsShowCacheEntry{}
+
+	// beadsShowSF collapses concurrent `bd show` execs for the same
+	// (folder, id) key into one fork (mitto-z0t D2). Mirrors beadsListSF.
+	beadsShowSF singleflight.Group
+)
 
 // globCacheTTL bounds how long a fileExists/dirExists glob-mode result is
 // memoised per (folder, pattern, wantFiles) tuple, to avoid repeat walks on
@@ -621,6 +657,34 @@ func runBd(folder string, args ...string) ([]byte, bool) {
 	return out, true
 }
 
+// beadsCacheLookup returns the memoised value for key if present and not
+// expired. A failed (fail-open) entry expires after the shorter
+// beadsFailCacheTTL; a successful entry after beadsCacheTTL (mitto-z0t D3).
+func beadsCacheLookup(key string) (int, bool) {
+	beadsCacheMu.Lock()
+	defer beadsCacheMu.Unlock()
+	e, ok := beadsCache[key]
+	if !ok {
+		return 0, false
+	}
+	ttl := beadsCacheTTL
+	if e.failed {
+		ttl = beadsFailCacheTTL
+	}
+	if time.Since(e.at) >= ttl {
+		return 0, false
+	}
+	return e.count, true
+}
+
+// beadsCacheStore memoises value for key, tagged failed when it represents a
+// fail-open result (see beadsCacheLookup for the TTL this implies).
+func beadsCacheStore(key string, value int, failed bool) {
+	beadsCacheMu.Lock()
+	beadsCache[key] = beadsCacheEntry{count: value, at: time.Now(), failed: failed}
+	beadsCacheMu.Unlock()
+}
+
 // beadsCount counts beads matching ALL comma-separated labels AND ANY of the
 // comma-separated statuses, running `bd list -l <labels> --status <statuses>
 // --all --json` in folder and parsing the resulting JSON array length.
@@ -629,40 +693,48 @@ func runBd(folder string, args ...string) ([]byte, bool) {
 // exit, unparseable JSON) returns beadsCountFailOpen (a positive sentinel) so
 // HasBeads(...) returns true and callers gating a prompt never wrongly hide
 // it — consistent with the CEL fail-open policy. A legitimate empty result
-// (`[]`, exit 0) is NOT an error and returns 0.
+// (`[]`, exit 0) is NOT an error and returns 0. Failures are memoised too
+// (beadsFailCacheTTL, mitto-z0t D3) so a broken/slow bd is not re-exec'd on
+// every single evaluation.
 //
 // Results are memoised for beadsCacheTTL per (folder, labels, statuses) tuple
-// to bound exec frequency on rapid menu re-opens. Consumers relying on
-// short-circuit ordering (e.g. `CommandExists("bd") && DirExists(".beads") &&
-// HasBeads(...)`) still get zero exec cost when the cheap gates fail.
+// to bound exec frequency on rapid menu re-opens. Concurrent misses on the
+// same key collapse to a single exec via beadsListSF (mitto-z0t D2). Consumers
+// relying on short-circuit ordering (e.g. `CommandExists("bd") &&
+// DirExists(".beads") && HasBeads(...)`) still get zero exec cost when the
+// cheap gates fail.
 func beadsCount(folder, labels, statuses string) int {
 	key := folder + "\x00" + labels + "\x00" + statuses
-	beadsCacheMu.Lock()
-	if e, ok := beadsCache[key]; ok && time.Since(e.at) < beadsCacheTTL {
-		beadsCacheMu.Unlock()
-		return e.count
+	if v, ok := beadsCacheLookup(key); ok {
+		return v
 	}
-	beadsCacheMu.Unlock()
 
-	out, ok := runBd(folder, "list", "-l", labels, "--status", statuses, "--all", "--json")
-	if !ok {
-		return beadsCountFailOpen
-	}
-	trimmed := strings.TrimSpace(string(out))
-	if trimmed == "" {
-		// Empty stdout is unexpected (bd emits at least `[]`); treat as error.
-		return beadsCountFailOpen
-	}
-	var arr []json.RawMessage
-	if err := json.Unmarshal([]byte(trimmed), &arr); err != nil {
-		return beadsCountFailOpen
-	}
-	count := len(arr)
+	v, _, _ := beadsListSF.Do(key, func() (interface{}, error) {
+		if v, ok := beadsCacheLookup(key); ok {
+			return v, nil
+		}
 
-	beadsCacheMu.Lock()
-	beadsCache[key] = beadsCacheEntry{count: count, at: time.Now()}
-	beadsCacheMu.Unlock()
-	return count
+		out, ok := runBd(folder, "list", "-l", labels, "--status", statuses, "--all", "--json")
+		if !ok {
+			beadsCacheStore(key, beadsCountFailOpen, true)
+			return beadsCountFailOpen, nil
+		}
+		trimmed := strings.TrimSpace(string(out))
+		if trimmed == "" {
+			// Empty stdout is unexpected (bd emits at least `[]`); treat as error.
+			beadsCacheStore(key, beadsCountFailOpen, true)
+			return beadsCountFailOpen, nil
+		}
+		var arr []json.RawMessage
+		if err := json.Unmarshal([]byte(trimmed), &arr); err != nil {
+			beadsCacheStore(key, beadsCountFailOpen, true)
+			return beadsCountFailOpen, nil
+		}
+		count := len(arr)
+		beadsCacheStore(key, count, false)
+		return count, nil
+	})
+	return v.(int)
 }
 
 // hasBeads reports whether beadsCount(folder, labels, statuses) > 0. Convenience
@@ -712,16 +784,66 @@ func parseBdShow(out []byte) (bdBead, bool) {
 	return obj, true
 }
 
-// showBead runs `bd show <id> --json` in folder and returns the parsed record.
-// Fail behaviour is left to callers (they treat !ok as fail-open). Results are
-// NOT cached here; callers cache their derived boolean via beadsCache to keep
-// the cache keyed by the specific question being asked (labels / open).
+// showBead returns the parsed `bd show <id> --json` record for (folder, id),
+// backed by a shared snapshot cache (mitto-z0t D1): beadHasLabels, beadIsOpen
+// and beadMetadata all call this instead of each forking their own `bd show`,
+// so evaluating all three gates on the same bead performs AT MOST ONE exec
+// per TTL window instead of three. Concurrent misses on the same (folder, id)
+// collapse to a single exec via beadsShowSF (mitto-z0t D2). A failed lookup
+// (bd missing, non-zero exit, unparseable JSON) is cached too, under the
+// shorter beadsFailCacheTTL (mitto-z0t D3), and (bdBead{}, false) is returned
+// so callers apply their own fail-open policy.
 func showBead(folder, id string) (bdBead, bool) {
-	out, ok := runBd(folder, "show", id, "--json")
-	if !ok {
-		return bdBead{}, false
+	key := folder + "\x00" + id
+	if e, ok := beadsShowCacheLookup(key); ok {
+		return e.bead, e.ok
 	}
-	return parseBdShow(out)
+
+	v, _, _ := beadsShowSF.Do(key, func() (interface{}, error) {
+		if e, ok := beadsShowCacheLookup(key); ok {
+			return e, nil
+		}
+
+		out, ok := runBd(folder, "show", id, "--json")
+		if !ok {
+			e := beadsShowCacheEntry{ok: false, at: time.Now()}
+			beadsShowCacheStore(key, e)
+			return e, nil
+		}
+		bead, ok := parseBdShow(out)
+		e := beadsShowCacheEntry{bead: bead, ok: ok, at: time.Now()}
+		beadsShowCacheStore(key, e)
+		return e, nil
+	})
+	e := v.(beadsShowCacheEntry)
+	return e.bead, e.ok
+}
+
+// beadsShowCacheLookup returns the memoised showBead snapshot for key if
+// present and not expired. A failed (ok=false) entry expires after the
+// shorter beadsFailCacheTTL; a successful entry after beadsCacheTTL.
+func beadsShowCacheLookup(key string) (beadsShowCacheEntry, bool) {
+	beadsShowCacheMu.Lock()
+	defer beadsShowCacheMu.Unlock()
+	e, found := beadsShowCache[key]
+	if !found {
+		return beadsShowCacheEntry{}, false
+	}
+	ttl := beadsCacheTTL
+	if !e.ok {
+		ttl = beadsFailCacheTTL
+	}
+	if time.Since(e.at) >= ttl {
+		return beadsShowCacheEntry{}, false
+	}
+	return e, true
+}
+
+// beadsShowCacheStore memoises entry for key.
+func beadsShowCacheStore(key string, entry beadsShowCacheEntry) {
+	beadsShowCacheMu.Lock()
+	beadsShowCache[key] = entry
+	beadsShowCacheMu.Unlock()
 }
 
 // beadHasLabels reports whether the single bead identified by id carries ALL of
@@ -736,8 +858,9 @@ func showBead(folder, id string) (bdBead, bool) {
 // wrongly hides a prompt — consistent with the CEL fail-open policy. An empty
 // labels list is treated as "no requirement" and returns true.
 //
-// Results are memoised for beadsCacheTTL per (folder, id, labels) tuple to bound
-// exec frequency on rapid menu re-opens.
+// Derives from the shared showBead(folder, id) snapshot (mitto-z0t D1), which
+// is itself cached/singleflighted, so evaluating this alongside beadIsOpen
+// and/or beadMetadata on the same bead performs at most one `bd show` exec.
 func beadHasLabels(folder, id, labels string) bool {
 	id = strings.TrimSpace(id)
 	if id == "" {
@@ -748,14 +871,6 @@ func beadHasLabels(folder, id, labels string) bool {
 		return true // no requirement
 	}
 
-	key := "beadHasLabels\x00" + folder + "\x00" + id + "\x00" + labels
-	beadsCacheMu.Lock()
-	if e, ok := beadsCache[key]; ok && time.Since(e.at) < beadsCacheTTL {
-		beadsCacheMu.Unlock()
-		return e.count > 0
-	}
-	beadsCacheMu.Unlock()
-
 	bead, ok := showBead(folder, id)
 	if !ok {
 		return true // fail-open
@@ -765,22 +880,12 @@ func beadHasLabels(folder, id, labels string) bool {
 	for _, l := range bead.Labels {
 		have[l] = struct{}{}
 	}
-	result := true
 	for _, w := range want {
 		if _, ok := have[w]; !ok {
-			result = false
-			break
+			return false
 		}
 	}
-
-	cached := 0
-	if result {
-		cached = 1
-	}
-	beadsCacheMu.Lock()
-	beadsCache[key] = beadsCacheEntry{count: cached, at: time.Now()}
-	beadsCacheMu.Unlock()
-	return result
+	return true
 }
 
 // beadIsOpen reports whether the single bead identified by id is NOT closed
@@ -791,36 +896,21 @@ func beadHasLabels(folder, id, labels string) bool {
 //
 // Fail-open: on ANY error (bd missing, empty id, timeout, non-zero exit,
 // unparseable JSON) returns true so a gate using it never wrongly hides a
-// prompt — consistent with the CEL fail-open policy. Results are memoised for
-// beadsCacheTTL per (folder, id) tuple.
+// prompt — consistent with the CEL fail-open policy.
+//
+// Derives from the shared showBead(folder, id) snapshot (mitto-z0t D1); see
+// beadHasLabels for the shared-exec rationale.
 func beadIsOpen(folder, id string) bool {
 	id = strings.TrimSpace(id)
 	if id == "" {
 		return true // fail-open: no id to check
 	}
 
-	key := "beadIsOpen\x00" + folder + "\x00" + id
-	beadsCacheMu.Lock()
-	if e, ok := beadsCache[key]; ok && time.Since(e.at) < beadsCacheTTL {
-		beadsCacheMu.Unlock()
-		return e.count > 0
-	}
-	beadsCacheMu.Unlock()
-
 	bead, ok := showBead(folder, id)
 	if !ok {
 		return true // fail-open
 	}
-	result := bead.Status != "closed"
-
-	cached := 0
-	if result {
-		cached = 1
-	}
-	beadsCacheMu.Lock()
-	beadsCache[key] = beadsCacheEntry{count: cached, at: time.Now()}
-	beadsCacheMu.Unlock()
-	return result
+	return bead.Status != "closed"
 }
 
 // beadMetadata returns the string value of bead <id>'s metadata[key], via
@@ -831,36 +921,70 @@ func beadIsOpen(folder, id string) bool {
 //
 // Fail-open (returns ""): empty id, missing bd, timeout, non-zero exit,
 // unparseable JSON, absent bead, absent/null metadata field, or absent key. A
-// nil bead.Metadata indexes safely to "". Empty-string values are cached
-// alongside non-empty ones so a legitimately-absent key does not re-exec bd
-// within the TTL window.
+// nil bead.Metadata indexes safely to "".
 //
-// Results are memoised for beadsCacheTTL per (folder, id, key) tuple in
-// beadsStrCache — parallel to beadsCache but string-valued.
+// Derives from the shared showBead(folder, id) snapshot (mitto-z0t D1); see
+// beadHasLabels for the shared-exec rationale. No separate string-valued
+// cache is needed since the snapshot already holds the parsed Metadata map.
 func beadMetadata(folder, id, key string) string {
 	id = strings.TrimSpace(id)
 	if id == "" {
 		return "" // fail-open: no id to check
 	}
 
-	cacheKey := "beadMetadata\x00" + folder + "\x00" + id + "\x00" + key
-	beadsCacheMu.Lock()
-	if e, ok := beadsStrCache[cacheKey]; ok && time.Since(e.at) < beadsCacheTTL {
-		beadsCacheMu.Unlock()
-		return e.value
-	}
-	beadsCacheMu.Unlock()
-
 	bead, ok := showBead(folder, id)
 	if !ok {
 		return "" // fail-open
 	}
-	value := bead.Metadata[key] // nil map indexes to ""
+	return bead.Metadata[key] // nil map indexes to ""
+}
+
+// InvalidateBeadsCache drops every memoised beadsCount/showBead cache entry
+// for folder (mitto-z0t D5), so the next BeadsCount/HasBeads/BeadHasLabels/
+// BeadIsOpen/BeadMetadata call for that folder re-execs bd instead of
+// returning a stale in-memory value. Intended to be called from
+// (*web.Server).OnBeadsChanged for each event.WorkingDirs entry when the
+// .beads/ fsnotify watcher reports an external mutation, which is what lets
+// beadsCacheTTL be raised safely (staleness is now watcher-bounded, not
+// TTL-bounded). A linear scan over the (typically tiny) cache maps is
+// acceptable here: entries are few, per-folder invalidation is infrequent
+// relative to lookups, and this keeps the key scheme simple (folder is a
+// substring of each composite key, not a separate index).
+func InvalidateBeadsCache(folder string) {
+	if folder == "" {
+		return
+	}
+	prefix := folder + "\x00"
 
 	beadsCacheMu.Lock()
-	beadsStrCache[cacheKey] = beadsStrCacheEntry{value: value, at: time.Now()}
+	for k := range beadsCache {
+		if k == folder || strings.HasPrefix(k, prefix) {
+			delete(beadsCache, k)
+		}
+	}
 	beadsCacheMu.Unlock()
-	return value
+
+	beadsShowCacheMu.Lock()
+	for k := range beadsShowCache {
+		if strings.HasPrefix(k, prefix) {
+			delete(beadsShowCache, k)
+		}
+	}
+	beadsShowCacheMu.Unlock()
+}
+
+// InvalidateAllBeadsCaches drops every memoised beadsCount/showBead cache
+// entry across all folders (mitto-z0t D5). Companion to InvalidateBeadsCache
+// for callers that don't have a specific folder scope (e.g. tests, or a
+// global cache-clear).
+func InvalidateAllBeadsCaches() {
+	beadsCacheMu.Lock()
+	beadsCache = map[string]beadsCacheEntry{}
+	beadsCacheMu.Unlock()
+
+	beadsShowCacheMu.Lock()
+	beadsShowCache = map[string]beadsShowCacheEntry{}
+	beadsShowCacheMu.Unlock()
 }
 
 // splitCSV splits a comma-separated string into trimmed, non-empty tokens.
