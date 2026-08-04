@@ -247,29 +247,35 @@ type SessionChangeData struct {
 
 // Metadata contains session metadata stored separately from the event log.
 type Metadata struct {
-	SessionID               string          `json:"session_id"`
-	Name                    string          `json:"name,omitempty"`             // User-friendly session name
-	NameIsFallback          bool            `json:"name_is_fallback,omitempty"` // True when Name was populated by the quick fallback path (GenerateAndSetTitle step 1) and has not yet been overwritten by an aux-generated real title (mitto-ee3)
-	ACPServer               string          `json:"acp_server"`
-	ACPSessionID            string          `json:"acp_session_id,omitempty"` // ACP-assigned session ID for resumption
-	WorkingDir              string          `json:"working_dir"`
-	CreatedAt               time.Time       `json:"created_at"`
-	UpdatedAt               time.Time       `json:"updated_at"`
-	LastUserMessageAt       time.Time       `json:"last_user_message_at,omitempty"` // Time of last user prompt
-	EventCount              int             `json:"event_count"`
-	MaxSeq                  int64           `json:"max_seq,omitempty"` // Highest sequence number persisted (for immediate persistence)
-	Status                  SessionStatus   `json:"status"`
-	Description             string          `json:"description,omitempty"`
-	Pinned                  bool            `json:"pinned,omitempty"`                    // Deprecated: use Archived instead. If true, session cannot be deleted
-	Archived                bool            `json:"archived,omitempty"`                  // If true, session is archived (hidden from main list by default)
-	ArchivedAt              time.Time       `json:"archived_at,omitempty"`               // Time when session was archived (cleared when unarchived)
-	ArchiveReason           ArchiveReason   `json:"archived_reason,omitempty"`           // Reason why the session was archived (cleared when unarchived)
-	RunnerType              string          `json:"runner_type,omitempty"`               // Type of runner used (exec, sandbox-exec, firejail, docker)
-	RunnerRestricted        bool            `json:"runner_restricted,omitempty"`         // Whether the runner has restrictions enabled
-	CurrentModeID           string          `json:"current_mode_id,omitempty"`           // Current session mode ID (e.g., "ask", "code", "architect")
-	BaselineModel           string          `json:"baseline_model,omitempty"`            // User's intended model; never mutated by per-prompt overrides
-	BeadsIssue              string          `json:"beads_issue,omitempty"`               // Linked beads issue ID (e.g. "mitto-123"), empty if none
-	OriginPromptName        string          `json:"origin_prompt_name,omitempty"`        // Name of the prompt that originated this conversation (singleton scope: WorkingDir+OriginPromptName)
+	SessionID         string        `json:"session_id"`
+	Name              string        `json:"name,omitempty"`             // User-friendly session name
+	NameIsFallback    bool          `json:"name_is_fallback,omitempty"` // True when Name was populated by the quick fallback path (GenerateAndSetTitle step 1) and has not yet been overwritten by an aux-generated real title (mitto-ee3)
+	ACPServer         string        `json:"acp_server"`
+	ACPSessionID      string        `json:"acp_session_id,omitempty"` // ACP-assigned session ID for resumption
+	WorkingDir        string        `json:"working_dir"`
+	CreatedAt         time.Time     `json:"created_at"`
+	UpdatedAt         time.Time     `json:"updated_at"`
+	LastUserMessageAt time.Time     `json:"last_user_message_at,omitempty"` // Time of last user prompt
+	EventCount        int           `json:"event_count"`
+	MaxSeq            int64         `json:"max_seq,omitempty"` // Highest sequence number persisted (for immediate persistence)
+	Status            SessionStatus `json:"status"`
+	Description       string        `json:"description,omitempty"`
+	Pinned            bool          `json:"pinned,omitempty"`             // Deprecated: use Archived instead. If true, session cannot be deleted
+	Archived          bool          `json:"archived,omitempty"`           // If true, session is archived (hidden from main list by default)
+	ArchivedAt        time.Time     `json:"archived_at,omitempty"`        // Time when session was archived (cleared when unarchived)
+	ArchiveReason     ArchiveReason `json:"archived_reason,omitempty"`    // Reason why the session was archived (cleared when unarchived)
+	RunnerType        string        `json:"runner_type,omitempty"`        // Type of runner used (exec, sandbox-exec, firejail, docker)
+	RunnerRestricted  bool          `json:"runner_restricted,omitempty"`  // Whether the runner has restrictions enabled
+	CurrentModeID     string        `json:"current_mode_id,omitempty"`    // Current session mode ID (e.g., "ask", "code", "architect")
+	BaselineModel     string        `json:"baseline_model,omitempty"`     // User's intended model; never mutated by per-prompt overrides
+	BeadsIssue        string        `json:"beads_issue,omitempty"`        // Linked beads issue ID (e.g. "mitto-123"), empty if none
+	OriginPromptName  string        `json:"origin_prompt_name,omitempty"` // Name of the prompt that originated this conversation (singleton scope: WorkingDir+OriginPromptName)
+	// BackgroundColor is a creation-time default color (hex, e.g. "#E1BEE7")
+	// applied from the originating prompt's target.backgroundColor
+	// (mitto-8sk), rendered by the sidebar as a left accent stripe. Also
+	// settable/clearable manually via PATCH /api/sessions/{id}. Reuse
+	// dispatches never overwrite an existing value.
+	BackgroundColor         string          `json:"background_color,omitempty"`
 	AdvancedSettings        map[string]bool `json:"advanced_settings,omitempty"`         // Per-session feature flags (flag name → enabled)
 	ProcessorActivations    int             `json:"processor_activations,omitempty"`     // Cumulative processor pipeline activation count
 	ProcessorLastActivation time.Time       `json:"processor_last_activation,omitempty"` // When processors were last activated

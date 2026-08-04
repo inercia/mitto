@@ -8,7 +8,11 @@ import {
   useConversationMenu,
   useLinkedBeadPhase,
 } from "../hooks/index.js";
-import { getArchiveReasonText, getGlobalWorkingDir } from "../lib.js";
+import {
+  getArchiveReasonText,
+  getGlobalWorkingDir,
+  hexToRgb,
+} from "../lib.js";
 import {
   LOOP_PROGRESS_STYLE,
   LOOP_PROGRESS_COLORS,
@@ -208,6 +212,16 @@ export function SessionItem({
     session.loop_frequency,
     isLightTheme,
   ]);
+
+  // Conversation accent color (mitto-8sk): a creation-time default from the
+  // originating prompt's target.backgroundColor, or set/cleared manually via
+  // PATCH /api/sessions/{id}. Rendered as a left accent stripe rather than a
+  // full row fill so text contrast is never at risk in either theme, and it
+  // composes cleanly with the isActive / loopProgressBg layers below.
+  const accentRgb = useMemo(
+    () => hexToRgb(session.background_color),
+    [session.background_color],
+  );
 
   // Archive button should be disabled if:
   // 1. There are queued messages (can't archive with pending messages)
@@ -560,6 +574,13 @@ export function SessionItem({
             ? html`<div
                 class="absolute inset-0 z-0 pointer-events-none"
                 style="background: ${loopProgressBg};"
+                aria-hidden="true"
+              ></div>`
+            : ""}
+          ${accentRgb && !isActive
+            ? html`<div
+                class="absolute left-0 top-0 bottom-0 w-1 rounded-l-lg z-0 pointer-events-none"
+                style="background: rgb(${accentRgb.r}, ${accentRgb.g}, ${accentRgb.b});"
                 aria-hidden="true"
               ></div>`
             : ""}

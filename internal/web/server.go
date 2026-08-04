@@ -1260,8 +1260,8 @@ func NewServer(config Config) (*Server, error) {
 		ResolvePromptReuseIssue: func(promptName, workingDir string) bool {
 			return s.resolveReuseIssueByPromptName(promptName, workingDir)
 		},
-		ResolvePromptTargetTitle: func(promptName, workingDir string, args map[string]string, beadsIssue string) (string, bool, error) {
-			return s.resolvePromptTargetTitleByPromptName(promptName, workingDir, args, beadsIssue)
+		ResolvePromptTarget: func(promptName, workingDir string, args map[string]string, beadsIssue string) (handlers.ResolvedPromptTarget, error) {
+			return s.resolvePromptTargetByPromptName(promptName, workingDir, args, beadsIssue)
 		},
 		ResolvePromptReuseCoalesce: func(promptName, workingDir string) bool {
 			return s.resolveReuseCoalesceByPromptName(promptName, workingDir)
@@ -3181,14 +3181,15 @@ func (s *Server) resolveSuppressAutoChildrenByPromptName(promptName, workingDir 
 	return false
 }
 
-// resolvePromptTargetTitleByPromptName resolves a prompt name to its
-// target.title (rendered as a Go text/template against args + beadsIssue +
-// workingDir, mitto-5qbo) and target.reuseTitle fields. Uses the same
-// resolution pipeline as resolveSingletonByPromptName /
-// resolveReuseIssueByPromptName. Returns ("", false, nil) when the prompt
-// is not found or has no target block. Returns ("", false, err) on template
-// render or empty-output error so the HTTP handler can reject the create.
-func (s *Server) resolvePromptTargetTitleByPromptName(promptName, workingDir string, args map[string]string, beadsIssue string) (string, bool, error) {
+// resolvePromptTargetByPromptName resolves a prompt name to its full
+// target: block — title (rendered as a Go text/template against args +
+// beadsIssue + workingDir, mitto-5qbo), reuseTitle, and backgroundColor
+// (mitto-8sk). Uses the same resolution pipeline as
+// resolveSingletonByPromptName / resolveReuseIssueByPromptName. Returns a
+// zero-value ResolvedPromptTarget with a nil error when the prompt is not
+// found or has no target block. Returns a non-nil err on template render or
+// empty-output error so the HTTP handler can reject the create.
+func (s *Server) resolvePromptTargetByPromptName(promptName, workingDir string, args map[string]string, beadsIssue string) (handlers.ResolvedPromptTarget, error) {
 	// 1. Global file prompts
 	var globalFilePrompts []configPkg.WebPrompt
 	if s.config.PromptsCache != nil {
@@ -3263,7 +3264,7 @@ func (s *Server) resolvePromptTargetTitleByPromptName(promptName, workingDir str
 	for _, p := range merged {
 		if strings.EqualFold(p.Name, promptName) {
 			if p.Target == nil {
-				return "", false, nil
+				return handlers.ResolvedPromptTarget{}, nil
 			}
 			title := p.Target.Title
 			if title != "" {
@@ -3272,19 +3273,23 @@ func (s *Server) resolvePromptTargetTitleByPromptName(promptName, workingDir str
 				ctx.Workspace.Folder = workingDir
 				rendered, err := prompts.RenderPromptTargetTitle(p.Name, title, ctx)
 				if err != nil {
-					return "", false, err
+					return handlers.ResolvedPromptTarget{}, err
 				}
 				title = rendered
 			}
-			return title, p.Target.Reuse != nil && p.Target.Reuse.Title, nil
+			return handlers.ResolvedPromptTarget{
+				Title:           title,
+				ReuseTitle:      p.Target.Reuse != nil && p.Target.Reuse.Title,
+				BackgroundColor: p.Target.BackgroundColor,
+			}, nil
 		}
 	}
-	return "", false, nil
+	return handlers.ResolvedPromptTarget{}, nil
 }
 
 // resolveReuseCoalesceByPromptName resolves a prompt name to whether its
 // target.reuseCoalesce flag is true. Uses the same resolution pipeline as
-// resolveSingletonByPromptName / resolvePromptTargetTitleByPromptName. Returns
+// resolveSingletonByPromptName / resolvePromptTargetByPromptName. Returns
 // false when the prompt is not found, has no target block, or has reuseCoalesce
 // unset / false. Consumed by the coalescing check in session_create (mitto-djs1).
 func (s *Server) resolveReuseCoalesceByPromptName(promptName, workingDir string) bool {

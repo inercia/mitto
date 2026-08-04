@@ -25,6 +25,22 @@ import (
 	"github.com/inercia/mitto/internal/stats"
 )
 
+// ResolvedPromptTarget is the resolved form of a prompt's target: block,
+// returned by Deps.ResolvePromptTarget (mitto-8sk). Grouped into a struct
+// (rather than growing another positional return value) so new target
+// fields can be added without touching every call site's signature.
+type ResolvedPromptTarget struct {
+	// Title is the rendered target.title (empty when the prompt has no
+	// target block or no title).
+	Title string
+	// ReuseTitle mirrors target.reuse.title.
+	ReuseTitle bool
+	// BackgroundColor mirrors target.backgroundColor: a creation-time
+	// default color for the conversation this prompt creates. Empty when
+	// unset. Never re-applied on a reuse dispatch.
+	BackgroundColor string
+}
+
 // Deps holds the dependencies that REST handlers need from the web server.
 // It is a facade that decouples handlers from the concrete *web.Server type.
 //
@@ -207,15 +223,17 @@ type Deps struct {
 	// May be nil; callers must nil-guard (treat nil as "not reuseIssue").
 	ResolvePromptReuseIssue func(promptName, workingDir string) bool
 
-	// ResolvePromptTargetTitle returns the named prompt's target.title
-	// (rendered as a Go text/template against args + beadsIssue + workingDir,
-	// mitto-5qbo) and target.reuseTitle fields (resolved for the given working
-	// dir via the full merge pipeline). Returns ("", false, nil) when the
+	// ResolvePromptTarget returns the named prompt's resolved target block:
+	// title (rendered as a Go text/template against args + beadsIssue +
+	// workingDir, mitto-5qbo), reuseTitle, and backgroundColor (mitto-8sk;
+	// a creation-time-only default, never re-applied on a reuse dispatch)
+	// (resolved for the given working dir via the full merge pipeline).
+	// Returns a zero-value ResolvedPromptTarget with a nil error when the
 	// prompt is not found or has no target block. Returns a non-nil err on
 	// template parse/exec failure or an empty rendered title, so the caller
 	// can reject the create with a 4xx (invalid prompt frontmatter). May be
 	// nil; callers must nil-guard.
-	ResolvePromptTargetTitle func(promptName, workingDir string, args map[string]string, beadsIssue string) (title string, reuseTitle bool, err error)
+	ResolvePromptTarget func(promptName, workingDir string, args map[string]string, beadsIssue string) (ResolvedPromptTarget, error)
 
 	// ResolvePromptReuseCoalesce reports whether the named prompt (resolved for
 	// the given working dir via the full merge pipeline) has target.reuseCoalesce

@@ -123,6 +123,25 @@ func (h *Handlers) HandleCreateSession(w http.ResponseWriter, r *http.Request) {
 		promptName = req.OriginPromptName
 	}
 
+	// Resolve the full target: block once, up front, so target.backgroundColor
+	// (mitto-8sk) is available on EVERY create branch — including one that
+	// hits the reuseIssue block below and therefore never reaches the
+	// reuseTitle resolution call further down. The title/reuseTitle
+	// *decision* is still made independently at its original call site;
+	// this hoisted call only harvests the color (and avoids a second
+	// resolution call when reuseTitle also needs to run, see below).
+	var targetBackgroundColor string
+	var resolvedTarget ResolvedPromptTarget
+	var resolvedTargetErr error
+	targetResolved := false
+	if promptName != "" && h.deps.ResolvePromptTarget != nil {
+		resolvedTarget, resolvedTargetErr = h.deps.ResolvePromptTarget(promptName, req.WorkingDir, req.Arguments, req.BeadsIssue)
+		targetResolved = true
+		if resolvedTargetErr == nil {
+			targetBackgroundColor = resolvedTarget.BackgroundColor
+		}
+	}
+
 	// reuseIssue find-or-route: when a request carries beads_issue AND the
 	// originating prompt declares target.reuseIssue, the per-issue reuse
 	// decision is authoritative. If a matching non-archived conversation
@@ -167,8 +186,8 @@ func (h *Handlers) HandleCreateSession(w http.ResponseWriter, r *http.Request) {
 	// override it (with a debug log) since target.title is the canonical
 	// lookup key.
 	reuseTitleEvaluated := false
-	if !reuseIssueEvaluated && promptName != "" && h.deps.ResolvePromptTargetTitle != nil {
-		title, reuseTitle, terr := h.deps.ResolvePromptTargetTitle(promptName, req.WorkingDir, req.Arguments, req.BeadsIssue)
+	if !reuseIssueEvaluated && promptName != "" && targetResolved {
+		title, reuseTitle, terr := resolvedTarget.Title, resolvedTarget.ReuseTitle, resolvedTargetErr
 		if terr != nil {
 			writeErrorJSON(w, http.StatusBadRequest, "invalid_prompt_target_title", terr.Error())
 			return
@@ -316,6 +335,20 @@ func (h *Handlers) HandleCreateSession(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Persist the originating prompt's target.backgroundColor (if any) as a
+	// creation-time default (mitto-8sk). Create-only: reuse dispatches above
+	// return before reaching this point, so an existing conversation's color
+	// (including a user's manual recolor) is never overwritten.
+	if targetBackgroundColor != "" {
+		if store := h.deps.Store; store != nil {
+			if err := store.UpdateMetadata(bs.GetSessionID(), func(meta *session.Metadata) {
+				meta.BackgroundColor = targetBackgroundColor
+			}); err != nil && h.deps.Logger != nil {
+				h.deps.Logger.Warn("Failed to set background_color on new session", "error", err, "session_id", bs.GetSessionID())
+			}
+		}
+	}
+
 	// Determine the ACP server name for the response
 	acpServerName := h.deps.DefaultACPServer
 	if workspace != nil && workspace.ACPServer != "" {
@@ -339,6 +372,7 @@ func (h *Handlers) HandleCreateSession(w http.ResponseWriter, r *http.Request) {
 		"status":             "active",
 		"beads_issue":        req.BeadsIssue,
 		"origin_prompt_name": originPromptName,
+		"background_color":   targetBackgroundColor,
 	}
 	if h.deps.BroadcastSessionCreated != nil {
 		h.deps.BroadcastSessionCreated(sessionData)

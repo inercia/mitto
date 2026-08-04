@@ -130,6 +130,16 @@ type PromptTarget struct {
 	// whose Name matches (see PromptTargetReuse.Title).
 	Title string `yaml:"title,omitempty" json:"title,omitempty"`
 
+	// BackgroundColor, when set, is applied as a creation-time default color
+	// on the conversation this prompt creates (mitto-8sk), rendered by the
+	// sidebar as a left accent stripe. Must be a `#RGB` or `#RRGGBB` hex
+	// value (case-insensitive); validated by ValidatePromptTarget at
+	// prompt-load time. A reuse dispatch (Reuse.Issue / Reuse.Title / a
+	// singleton hit) never re-applies this value — it is only set when a
+	// NEW conversation is created, so a user's manual recolor is never
+	// clobbered by a later dispatch. Empty/absent = no color set.
+	BackgroundColor string `yaml:"backgroundColor,omitempty" json:"backgroundColor,omitempty"`
+
 	// Reuse groups the three "funnel this dispatch into an existing
 	// conversation" routing modes (issue / title / coalesce). All three
 	// default to false / nil (unchanged behavior: every dispatch creates a
@@ -224,6 +234,12 @@ func ValidatePromptLoop(promptName string, p *PromptLoop) error {
 	return nil
 }
 
+// hexColorRe matches a `#RGB` or `#RRGGBB` hex color, case-insensitive.
+// Used only to validate PromptTarget.BackgroundColor (mitto-8sk) — the
+// existing top-level prompt BackgroundColor field is intentionally left
+// unvalidated (out of scope, would break existing unvalidated prompts).
+var hexColorRe = regexp.MustCompile(`^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$`)
+
 // ValidatePromptTarget validates the target block's field combination.
 // Returns an error when Reuse.Title is true but Title is empty, since a
 // reuse-by-title dispatch has no lookup key in that case. A nil target or
@@ -245,6 +261,9 @@ func ValidatePromptTarget(promptName string, t *PromptTarget, promptSingleton bo
 		if t.Reuse.Coalesce != nil && *t.Reuse.Coalesce && !t.Reuse.Issue && !t.Reuse.Title && !promptSingleton {
 			return fmt.Errorf("prompt %q: target.reuse.coalesce requires at least one reuse mode (target.reuse.issue, target.reuse.title, or top-level singleton: true)", promptName)
 		}
+	}
+	if strings.TrimSpace(t.BackgroundColor) != "" && !hexColorRe.MatchString(strings.TrimSpace(t.BackgroundColor)) {
+		return fmt.Errorf("prompt %q: target.backgroundColor %q is not a valid hex color (expected #RGB or #RRGGBB)", promptName, t.BackgroundColor)
 	}
 	// Validate target.title Go-template syntax at load time (mitto-5qbo).
 	// Fast-path no-op for literal titles (no "{{"); catches unbalanced actions

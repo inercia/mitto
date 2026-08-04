@@ -9,11 +9,12 @@ import (
 
 // SessionUpdateRequest represents a request to update session metadata.
 type SessionUpdateRequest struct {
-	Name        *string `json:"name,omitempty"`
-	Description *string `json:"description,omitempty"`
-	Pinned      *bool   `json:"pinned,omitempty"`      // Deprecated: use Archived instead
-	Archived    *bool   `json:"archived,omitempty"`    // If true, session is archived
-	BeadsIssue  *string `json:"beads_issue,omitempty"` // Linked beads issue ID (empty string clears it)
+	Name            *string `json:"name,omitempty"`
+	Description     *string `json:"description,omitempty"`
+	Pinned          *bool   `json:"pinned,omitempty"`           // Deprecated: use Archived instead
+	Archived        *bool   `json:"archived,omitempty"`         // If true, session is archived
+	BeadsIssue      *string `json:"beads_issue,omitempty"`      // Linked beads issue ID (empty string clears it)
+	BackgroundColor *string `json:"background_color,omitempty"` // Conversation accent color, hex (empty string clears it); mitto-8sk
 }
 
 // archiveWaitTimeout is the maximum time to wait for a response to complete when archiving.
@@ -79,6 +80,9 @@ func (h *Handlers) HandleUpdateSession(w http.ResponseWriter, r *http.Request, s
 		}
 		if req.BeadsIssue != nil {
 			meta.BeadsIssue = *req.BeadsIssue
+		}
+		if req.BackgroundColor != nil {
+			meta.BackgroundColor = *req.BackgroundColor
 		}
 		if req.Pinned != nil {
 			meta.Pinned = *req.Pinned

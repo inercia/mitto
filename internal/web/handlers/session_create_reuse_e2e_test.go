@@ -357,11 +357,11 @@ func TestTargetTitleE2E_WithoutReuseTitle_AdoptedAsDefaultName(t *testing.T) {
 	}
 	h.deps.ResolvePromptReuseIssue = func(string, string) bool { return false }
 	h.deps.ResolvePromptSingleton = func(string, string) bool { return false }
-	h.deps.ResolvePromptTargetTitle = func(promptName, wd string, _ map[string]string, _ string) (string, bool, error) {
+	h.deps.ResolvePromptTarget = func(promptName, wd string, _ map[string]string, _ string) (ResolvedPromptTarget, error) {
 		if promptName == "weekly-triage" && wd == workingDir {
-			return "Weekly triage", false, nil // plain: title set, reuseTitle=false
+			return ResolvedPromptTarget{Title: "Weekly triage"}, nil // plain: title set, reuseTitle=false
 		}
-		return "", false, nil
+		return ResolvedPromptTarget{}, nil
 	}
 
 	w := postSession(t, h, SessionCreateRequest{
@@ -394,8 +394,8 @@ func TestTargetTitleE2E_WithoutReuseTitle_CallerNameWins(t *testing.T) {
 	}
 	h.deps.ResolvePromptReuseIssue = func(string, string) bool { return false }
 	h.deps.ResolvePromptSingleton = func(string, string) bool { return false }
-	h.deps.ResolvePromptTargetTitle = func(string, string, map[string]string, string) (string, bool, error) {
-		return "Weekly triage", false, nil // plain
+	h.deps.ResolvePromptTarget = func(string, string, map[string]string, string) (ResolvedPromptTarget, error) {
+		return ResolvedPromptTarget{Title: "Weekly triage"}, nil // plain
 	}
 
 	w := postSession(t, h, SessionCreateRequest{
@@ -428,12 +428,12 @@ func TestTargetTitleE2E_TemplateRendered_PassesArgsThrough(t *testing.T) {
 
 	var gotArgs map[string]string
 	var gotBeadsIssue string
-	h.deps.ResolvePromptTargetTitle = func(promptName, wd string, args map[string]string, beadsIssue string) (string, bool, error) {
+	h.deps.ResolvePromptTarget = func(promptName, wd string, args map[string]string, beadsIssue string) (ResolvedPromptTarget, error) {
 		gotArgs = args
 		gotBeadsIssue = beadsIssue
 		// Simulate what the real resolver does after rendering
 		// "{{ .Args.IssueID }}: work" against the caller's arguments.
-		return args["IssueID"] + ": work", true, nil
+		return ResolvedPromptTarget{Title: args["IssueID"] + ": work", ReuseTitle: true}, nil
 	}
 
 	w := postSession(t, h, SessionCreateRequest{
@@ -464,8 +464,8 @@ func TestTargetTitleE2E_TemplateError_Rejects400(t *testing.T) {
 
 	h.deps.ResolvePromptReuseIssue = func(string, string) bool { return false }
 	h.deps.ResolvePromptSingleton = func(string, string) bool { return false }
-	h.deps.ResolvePromptTargetTitle = func(string, string, map[string]string, string) (string, bool, error) {
-		return "", false, errFake{"target.title render error"}
+	h.deps.ResolvePromptTarget = func(string, string, map[string]string, string) (ResolvedPromptTarget, error) {
+		return ResolvedPromptTarget{}, errFake{"target.title render error"}
 	}
 
 	before, _ := store.List()

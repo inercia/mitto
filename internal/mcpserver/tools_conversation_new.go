@@ -187,6 +187,10 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 	promptReuseIssue := false
 	promptReuseTitle := false
 	promptTargetTitle := ""
+	// promptTargetBackgroundColor: a creation-time default color for the
+	// new conversation, from target.backgroundColor (mitto-8sk). Only
+	// applied on the create branch below; reuse hits never re-apply it.
+	promptTargetBackgroundColor := ""
 	// promptReuseCoalesce: when true, a duplicate (same PromptName + Arguments)
 	// dispatch onto an already-in-flight or queued conversation is a no-op
 	// (mitto-djs1). Only consulted after a reuse hit resolves to existingID.
@@ -222,6 +226,7 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 		input.Arguments = normalizeMCPArguments(input.PromptName, input.Arguments, s.loadMergedPrompts(promptWorkingDir))
 		if p.Target != nil {
 			promptTargetTitle = p.Target.Title
+			promptTargetBackgroundColor = p.Target.BackgroundColor
 			if p.Target.Reuse != nil {
 				promptReuseIssue = p.Target.Reuse.Issue
 				promptReuseTitle = p.Target.Reuse.Title
@@ -577,7 +582,8 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 		ChildOrigin:      session.ChildOriginMCP, // Created via MCP tool
 		AdvancedSettings: childSettings,
 		BeadsIssue:       input.BeadsIssue,
-		OriginPromptName: originPromptName, // Track originating prompt for singleton find-or-route
+		OriginPromptName: originPromptName,            // Track originating prompt for singleton find-or-route
+		BackgroundColor:  promptTargetBackgroundColor, // Creation-time default from target.backgroundColor (mitto-8sk)
 	}
 
 	// Create the session
