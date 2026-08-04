@@ -360,6 +360,82 @@ func TestFlushContext_NotConfigured(t *testing.T) {
 	}
 }
 
+// TestBackgroundSession_ContextFlushCommand pins down the resolution order
+// used by ContextFlushCommand (mitto-1o8): a statically configured command is
+// always authoritative, and runtime detection of the agent's advertised slash
+// commands is used only as a fallback when nothing is statically configured.
+func TestBackgroundSession_ContextFlushCommand(t *testing.T) {
+	t.Run("static value wins even when advertised commands differ", func(t *testing.T) {
+		bs := &BackgroundSession{contextFlushCommand: "/clear"}
+		bs.cbSetAvailableCommands([]AvailableCommand{
+			{Name: "compact"},
+			{Name: "context"},
+		})
+		if got := bs.ContextFlushCommand(); got != "/clear" {
+			t.Errorf("expected static '/clear' to win, got %q", got)
+		}
+	})
+
+	t.Run("no static value, no advertised commands returns empty", func(t *testing.T) {
+		bs := &BackgroundSession{}
+		if got := bs.ContextFlushCommand(); got != "" {
+			t.Errorf("expected empty command, got %q", got)
+		}
+	})
+
+	t.Run("no static value falls back to advertised clear", func(t *testing.T) {
+		bs := &BackgroundSession{}
+		bs.cbSetAvailableCommands([]AvailableCommand{
+			{Name: "compact"},
+			{Name: "clear"},
+		})
+		if got := bs.ContextFlushCommand(); got != "/clear" {
+			t.Errorf("expected fallback '/clear', got %q", got)
+		}
+	})
+
+	t.Run("no static value and no clear falls back to compact", func(t *testing.T) {
+		bs := &BackgroundSession{}
+		bs.cbSetAvailableCommands([]AvailableCommand{
+			{Name: "context"},
+			{Name: "compact"},
+		})
+		if got := bs.ContextFlushCommand(); got != "/compact" {
+			t.Errorf("expected fallback '/compact', got %q", got)
+		}
+	})
+
+	t.Run("no static value and no allowlist match returns empty", func(t *testing.T) {
+		bs := &BackgroundSession{}
+		bs.cbSetAvailableCommands([]AvailableCommand{
+			{Name: "context"},
+			{Name: "help"},
+		})
+		if got := bs.ContextFlushCommand(); got != "" {
+			t.Errorf("expected empty command when no allowlist entry matches, got %q", got)
+		}
+	})
+
+	t.Run("clear preferred over compact when both advertised", func(t *testing.T) {
+		bs := &BackgroundSession{}
+		bs.cbSetAvailableCommands([]AvailableCommand{
+			{Name: "compact"},
+			{Name: "clear"},
+		})
+		if got := bs.ContextFlushCommand(); got != "/clear" {
+			t.Errorf("expected 'clear' to be preferred over 'compact', got %q", got)
+		}
+	})
+
+	t.Run("whitespace-only static value falls through to detection", func(t *testing.T) {
+		bs := &BackgroundSession{contextFlushCommand: "   "}
+		bs.cbSetAvailableCommands([]AvailableCommand{{Name: "clear"}})
+		if got := bs.ContextFlushCommand(); got != "/clear" {
+			t.Errorf("expected fallback '/clear' when static value is blank, got %q", got)
+		}
+	})
+}
+
 // TestBackgroundSessionConfig_PopulatesConstraintsFromMittoConfig verifies the
 // end-to-end wiring through the constructor field: given a MittoConfig with a
 // matching ACPServer entry, the constraint-lookup logic invoked by both

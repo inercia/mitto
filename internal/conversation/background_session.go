@@ -607,28 +607,30 @@ func (bs *BackgroundSession) SimulateClose() {
 // BackgroundSessionTestOpts carries optional fields for NewTestBackgroundSession.
 // Only set the fields your test needs; zero values are used for the rest.
 type BackgroundSessionTestOpts struct {
-	SessionID      string
-	WorkingDir     string
-	WorkspaceUUID  string
-	ACPID          string
-	IsPrompting    bool
-	NextSeq        int64
-	Store          *session.Store
-	PromptResolver PromptResolver
+	SessionID           string
+	WorkingDir          string
+	WorkspaceUUID       string
+	ACPID               string
+	IsPrompting         bool
+	NextSeq             int64
+	Store               *session.Store
+	PromptResolver      PromptResolver
+	ContextFlushCommand string
 }
 
 // NewTestBackgroundSession creates a BackgroundSession from test options.
 // Use this for tests that need to set multiple private fields.
 func NewTestBackgroundSession(opts BackgroundSessionTestOpts) *BackgroundSession {
 	bs := &BackgroundSession{
-		persistedID:    opts.SessionID,
-		workingDir:     opts.WorkingDir,
-		workspaceUUID:  opts.WorkspaceUUID,
-		acpID:          opts.ACPID,
-		isPrompting:    opts.IsPrompting,
-		nextSeq:        opts.NextSeq,
-		store:          opts.Store,
-		promptResolver: opts.PromptResolver,
+		persistedID:         opts.SessionID,
+		workingDir:          opts.WorkingDir,
+		workspaceUUID:       opts.WorkspaceUUID,
+		acpID:               opts.ACPID,
+		isPrompting:         opts.IsPrompting,
+		nextSeq:             opts.NextSeq,
+		store:               opts.Store,
+		promptResolver:      opts.PromptResolver,
+		contextFlushCommand: opts.ContextFlushCommand,
 	}
 	return bs
 }

@@ -814,6 +814,71 @@ func TestSessionWSClient_OnAvailableCommandsUpdated(t *testing.T) {
 	}
 }
 
+// TestSessionWSClient_OnAvailableCommandsUpdated_ContextFlushCommand verifies
+// the resolved context-flush command (mitto-1o8) is repeated in the
+// available_commands_updated payload so the frontend can un-grey the flush
+// action as soon as the agent's commands arrive, without waiting for a reload.
+func TestSessionWSClient_OnAvailableCommandsUpdated_ContextFlushCommand(t *testing.T) {
+	mockWS := newMockWSConn()
+	client := &SessionWSClient{
+		sessionID: "test-session",
+		wsConn:    &WSConn{send: mockWS.send},
+		bgSession: conversation.NewTestBackgroundSession(conversation.BackgroundSessionTestOpts{
+			ContextFlushCommand: "/clear",
+		}),
+	}
+
+	client.OnAvailableCommandsUpdated([]conversation.AvailableCommand{
+		{Name: "clear"},
+	})
+
+	select {
+	case msgBytes := <-mockWS.send:
+		var msg struct {
+			Type string                 `json:"type"`
+			Data map[string]interface{} `json:"data"`
+		}
+		if err := json.Unmarshal(msgBytes, &msg); err != nil {
+			t.Fatalf("Failed to unmarshal message: %v", err)
+		}
+		if got := msg.Data["context_flush_command"]; got != "/clear" {
+			t.Errorf("Expected context_flush_command '/clear', got %v", got)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Error("Expected available_commands_updated message but got none")
+	}
+}
+
+// TestSessionWSClient_OnAvailableCommandsUpdated_NoBgSession verifies the
+// payload omits context_flush_command entirely (rather than sending an empty
+// string) when there is no attached BackgroundSession to resolve it from.
+func TestSessionWSClient_OnAvailableCommandsUpdated_NoBgSession(t *testing.T) {
+	mockWS := newMockWSConn()
+	client := &SessionWSClient{
+		sessionID: "test-session",
+		wsConn:    &WSConn{send: mockWS.send},
+		bgSession: nil,
+	}
+
+	client.OnAvailableCommandsUpdated([]conversation.AvailableCommand{{Name: "help"}})
+
+	select {
+	case msgBytes := <-mockWS.send:
+		var msg struct {
+			Type string                 `json:"type"`
+			Data map[string]interface{} `json:"data"`
+		}
+		if err := json.Unmarshal(msgBytes, &msg); err != nil {
+			t.Fatalf("Failed to unmarshal message: %v", err)
+		}
+		if _, present := msg.Data["context_flush_command"]; present {
+			t.Errorf("Expected context_flush_command to be absent when bgSession is nil, got %v", msg.Data["context_flush_command"])
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Error("Expected available_commands_updated message but got none")
+	}
+}
+
 func TestSessionWSClient_OnAvailableCommandsUpdated_Empty(t *testing.T) {
 	mockWS := newMockWSConn()
 	client := &SessionWSClient{
