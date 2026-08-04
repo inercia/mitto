@@ -24,6 +24,7 @@ import {
   buildBeadsPromptToast,
   useBeadsIntegration,
 } from "./useBeadsIntegration.js";
+import { invalidateWorkspacePromptsCache } from "../utils/promptsCache.js";
 
 // Provide a minimal window.preact stub so the hook's lazy destructure works.
 // useBeadsIntegration reads useState/useCallback/useMemo/useRef from
@@ -59,6 +60,7 @@ if (typeof document === "undefined") {
 
 afterEach(() => {
   jest.restoreAllMocks();
+  invalidateWorkspacePromptsCache();
 });
 
 describe("buildBeadsPromptToast", () => {
@@ -274,5 +276,122 @@ describe("useBeadsIntegration — handleRunBeadsListPrompt reused branch", () =>
     expect(showToast).toHaveBeenCalledTimes(1);
     const arg = showToast.mock.calls[0][0];
     expect(arg.style).toBe("error");
+  });
+});
+
+// =============================================================================
+// fetchBeadsPromptsForWorkspace / fetchBeadsListPromptsForWorkspace (mitto-8x9)
+// =============================================================================
+//
+// Both fetchers were routed through the shared promptsCache module so bursts
+// of beads-row/list menu opens coalesce into one /api/workspace-prompts
+// request. Exercised end-to-end against a mocked global.fetch (not a mocked
+// cache) so the assertions cover the real coalescing behavior.
+
+function immediateOkFetch(body = { prompts: [], migrated: [] }) {
+  return jest.fn(() =>
+    Promise.resolve({
+      status: 200,
+      ok: true,
+      headers: { get: () => null },
+      json: () => Promise.resolve(body),
+    }),
+  );
+}
+
+function mountBundle() {
+  return useBeadsIntegration({
+    allSessions: [],
+    workspaces: [{ working_dir: "/w", is_default: true, acp_server: "acp" }],
+    newSession: jest.fn(),
+    showToast: jest.fn(),
+    switchSession: jest.fn(),
+    setMainView: jest.fn(),
+    setShowSidebar: jest.fn(),
+    setShowSidePanel: jest.fn(),
+    setSidePanelTab: jest.fn(),
+    activeSessionId: "s-current",
+  });
+}
+
+describe("fetchBeadsPromptsForWorkspace", () => {
+  test("maps issue fields to item_* params and keeps only beadsIssues-menu prompts", async () => {
+    global.fetch = immediateOkFetch({
+      prompts: [
+        { name: "Review", menus: "beadsIssues" },
+        { name: "Not for beads", menus: "prompts" },
+      ],
+    });
+    const bundle = mountBundle();
+
+    const result = await bundle.fetchBeadsPromptsForWorkspace("/w", {
+      id: "mitto-1",
+      status: "open",
+      issue_type: "task",
+      priority: 2,
+      labels: ["frontend", "performance"],
+    });
+
+    expect(result.map((p) => p.name)).toEqual(["Review"]);
+    const url = global.fetch.mock.calls[0][0];
+    expect(url).toContain("working_dir=");
+    expect(url).toContain("item_kind=beadsIssue");
+    expect(url).toContain("item_id=mitto-1");
+    expect(url).toContain("item_status=open");
+    expect(url).toContain("item_priority=2");
+    expect(url).toContain("item_labels=frontend%2Cperformance");
+  });
+
+  test("two calls with identical workingDir+issue coalesce into one HTTP request", async () => {
+    global.fetch = immediateOkFetch({ prompts: [] });
+    const bundle = mountBundle();
+    const issue = { id: "mitto-1", status: "open", issue_type: "task" };
+
+    const p1 = bundle.fetchBeadsPromptsForWorkspace("/w", issue);
+    const p2 = bundle.fetchBeadsPromptsForWorkspace("/w", issue);
+    await Promise.all([p1, p2]);
+
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  test("no workingDir → [] without calling fetch", async () => {
+    global.fetch = jest.fn();
+    const bundle = mountBundle();
+
+    const result = await bundle.fetchBeadsPromptsForWorkspace(null, {
+      id: "mitto-1",
+    });
+
+    expect(result).toEqual([]);
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+});
+
+describe("fetchBeadsListPromptsForWorkspace", () => {
+  test("sends enabled_context=workspace with no item_* params, keeps only beadsList-menu prompts", async () => {
+    global.fetch = immediateOkFetch({
+      prompts: [
+        { name: "Triage", menus: "beadsList" },
+        { name: "Per-issue only", menus: "beadsIssues" },
+      ],
+    });
+    const bundle = mountBundle();
+
+    const result = await bundle.fetchBeadsListPromptsForWorkspace("/w");
+
+    expect(result.map((p) => p.name)).toEqual(["Triage"]);
+    const url = global.fetch.mock.calls[0][0];
+    expect(url).toContain("enabled_context=workspace");
+    expect(url).not.toContain("item_kind");
+  });
+
+  test("the list-button call site and loadShortcuts call site share one cached response", async () => {
+    global.fetch = immediateOkFetch({ prompts: [] });
+    const bundle = mountBundle();
+
+    await bundle.fetchBeadsListPromptsForWorkspace("/w"); // e.g. list button
+    await bundle.fetchBeadsListPromptsForWorkspace("/w"); // e.g. loadShortcuts
+
+    expect(global.fetch).toHaveBeenCalledTimes(1);
   });
 });
