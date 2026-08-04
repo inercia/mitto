@@ -228,11 +228,15 @@ func GenerateAndSetTitle(cfg TitleGenerationConfig) {
 			// The next natural quiescence will re-attempt via the normal
 			// auto-title path; do not amplify the storm here.
 			if lastErr != nil && (acperrors.IsAgentInternalDeadlineErr(lastErr) ||
+				acperrors.IsAgentQueryClosedErr(lastErr) ||
 				errors.Is(lastErr, acperrors.ErrSharedProcessSaturated)) {
 				if cfg.Logger != nil {
 					reason := "agent_internal_deadline"
-					if errors.Is(lastErr, acperrors.ErrSharedProcessSaturated) {
+					switch {
+					case errors.Is(lastErr, acperrors.ErrSharedProcessSaturated):
 						reason = "shared_process_saturated"
+					case acperrors.IsAgentQueryClosedErr(lastErr):
+						reason = "agent_query_closed"
 					}
 					cfg.Logger.Info("Abandoning title generation retries on wedge signal",
 						"session_id", cfg.SessionID,

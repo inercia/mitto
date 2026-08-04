@@ -517,7 +517,7 @@ within 2× the GC interval). When those gates pass, each session is marked
 
 #### Saturation triggers feeding Tier 5 / Tier 6
 
-Two independent triggers can set `saturatedUntil` / `saturationLevel`; both are
+Three independent triggers can set `saturatedUntil` / `saturationLevel`; all are
 picked up by `IsSaturated()` and `IsConfirmedDegraded()` identically, so no changes
 in `acp_process_gc.go` are required beyond reading those getters.
 
@@ -558,6 +558,23 @@ in `acp_process_gc.go` are required beyond reading those getters.
    are excluded from the window on the same rationale as the consecutive path
    (`extendedBudget == true` → skipped).
 
+3. **Agent "query closed" wedge** (mitto-aoo): the agent answers `session/new` /
+   `session/load` with JSON-RPC `-32603` whose data carries *"Query closed before
+   response received"*, in **1-10 ms** — not a deadline. It is the agent's own
+   report that its query loop is torn down and will never complete another
+   `session/new`, so `recordRPCWedgeFailure()` feeds the *same* consecutive-failure
+   fast path as trigger 1 (`recordRPCFailureLocked`), rather than the softer
+   rolling window only.
+
+   Unlike triggers 1 and 2, this signature is **not** gated on `extendedBudget`: a
+   1-10 ms reply cannot be cold-start MCP latency. The wedge is also classified as
+   retryable in `isRetryableCreateError`, so the bounded `sessionCreateMaxAttempts`
+   (3) loop records three consecutive samples within a *single* `NewSession` call
+   and trips saturation immediately, instead of waiting for three separate caller
+   attempts. Before this trigger, the signature fed zero saturation samples: one
+   incident produced 38 consecutive `session/new` failures over 9 h with no
+   liveness detection and no recycle.
+
 ### Tier 6 — Non-Idle Recycle for Confirmed-Degraded Processes (mitto-1h0)
 
 Tier 5 is **idle-gated**: it skips a process with in-flight RPCs or a prompting
@@ -591,6 +608,22 @@ process is stopped exactly as in Tier 5, logged at `Info` as "GC: recycling
 confirmed-degraded busy shared ACP process". A level-1 (first-trip, non-probed)
 saturated busy process is **not** recycled by Tier 6 — only Tier 5's idle path
 governs it until it escalates to level 2.
+
+#### Health-recycle notification (mitto-aoo)
+
+Both Tier 5 and Tier 6 invoke the `onHealthRecycled` callback after `StopProcess`
+(wired in `server.go` via `SetOnHealthRecycled`, mirroring Tier 4's
+`onMemoryRecycled`). It resolves a friendly workspace name and calls
+`Server.BroadcastHealthRecycled`, which broadcasts an `agent_recycled` event
+(`WSMsgTypeHealthRecycled`) on `/api/events`. The frontend (`useWebSocket.js` →
+`mitto:agent_recycled` → `useBackgroundNotifications.js`) surfaces a **warning
+toast** naming the workspace and the number of conversations that will resume
+automatically. Payload: `workspace_uuid`, `workspace_name`, `working_dir`,
+`reason` (`"saturated_idle"` for Tier 5, `"confirmed_degraded"` for Tier 6),
+`saturation_level`, `session_count`.
+
+Without this, a wedged process recycled silently and the user was left reading a
+misleading agent-side error.
 
 ### Tier 3 — Auxiliary Session Cleanup
 
