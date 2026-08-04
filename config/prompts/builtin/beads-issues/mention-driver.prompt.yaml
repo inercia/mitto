@@ -14,10 +14,10 @@ parameters:
     type: text
     required: false
     description: Verbatim body of the @mitto mention
-  - name: Commit
+  - name: SubmitStrategy
     type: text
     required: false
-    description: If "true", commit any file changes after the implement phase; otherwise leave changes uncommitted for human review
+    description: How finished work is submitted. "Commit" (default) — commit any file changes after the implement phase. "Pull Request" — same, on a per-bead branch, with a PR opened before finalizing. "None" — leave changes uncommitted for human review.
 description: Internal router driver for a single @mitto mention. Classifies the mention (question / fix / feature / directive), dispatches per-phase prompts on their tier, and finally writes the `[addressed-comment]` back-reference (and optional commit + close). Invoked by name from the beadsList orchestrator; no preferredModels (per-phase tiering).
 group: Tasks
 backgroundColor: '#E1BEE7'
@@ -62,10 +62,12 @@ prompt: |
   {{ $target := "" -}}
   {{ if .Session.BeadsIssue }}{{ $target = .Session.BeadsIssue }}{{ else if .Args.IssueID }}{{ $target = .Args.IssueID }}{{ end -}}
   {{ $ts := .Args.MentionTS -}}
-  {{ $commit := eq .Args.Commit "true" -}}
+  {{ $submit := .Args.SubmitStrategy -}}
+  {{ $commit := ne $submit "None" -}}
+  {{ $pr := eq $submit "Pull Request" -}}
   {{ $suffix := "" -}}
   {{ if $ts }}{{ $suffix = printf "Mention timestamp (dedup key): `%s`." $ts }}{{ end -}}
-  {{ if $commit }}{{ $suffix = printf "%s\nCommit-after-implement is **enabled** (`Commit` argument)." $suffix }}{{ else }}{{ $suffix = printf "%s\nCommit-after-implement is **disabled** (`Commit` argument)." $suffix }}{{ end -}}
+  {{ if $pr }}{{ $suffix = printf "%s\nSubmit strategy is **Pull Request** (`SubmitStrategy` argument) — committed on a per-bead branch, PR opened before finalizing." $suffix }}{{ else if $commit }}{{ $suffix = printf "%s\nSubmit strategy is **Commit** (`SubmitStrategy` argument)." $suffix }}{{ else }}{{ $suffix = printf "%s\nSubmit strategy is **None** (`SubmitStrategy` argument) — changes left uncommitted." $suffix }}{{ end -}}
   {{ template "beads-issues/shared/target-bead-header-strict" (dict
       "Target"      $target
       "Scope"       "for this run"
@@ -227,7 +229,8 @@ prompt: |
   inline — no phase dispatch on this branch (mitto-i5k lesson: never treat the
   terminal step as optional):
 
-  1. **Commit (fix/feature route only, and only if `Commit=true` and files changed).**
+  1. **Commit (fix/feature route only, and only if the submit strategy commits and
+     files changed).**
      {{ if $commit }}Commit ONLY the files changed by this mention with a
      conventional message that references the bead. Skip if nothing changed.
 
@@ -237,7 +240,16 @@ prompt: |
          "Summary"  "<one-line summary>"
          "BodyHint" "<body>"
      ) }}
-     {{ else }}`Commit=false` — do NOT commit. Leave any
+     {{ if $pr }}
+     Submit strategy is **Pull Request** — push the branch and open (or update) the
+     PR before writing the back-reference:
+
+     {{ template "beads-issues/shared/push-and-open-pr" (dict
+         "Ctx"    .
+         "Target" $target
+     ) }}
+     {{ end }}
+     {{ else }}`SubmitStrategy=None` — do NOT commit. Leave any
      file changes on disk for the human to review; note this in the back-reference
      below so the human knows there is uncommitted work.{{ end }}
 
@@ -247,7 +259,7 @@ prompt: |
 
      ```bash
      bd comment {{ $target }} "[addressed-comment: {{ $ts }}]
-     <what you did and why> — or, if deferred earlier: Deferred to human — see the [deferred: ...] comment above.{{ if not $commit }} Files modified but NOT committed (Commit=false); review and commit manually.{{ end }}"
+     <what you did and why> — or, if deferred earlier: Deferred to human — see the [deferred: ...] comment above.{{ if not $commit }} Files modified but NOT committed (SubmitStrategy=None); review and commit manually.{{ end }}"
      ```
 
   3. **Four-condition close check.** Close the bead ONLY when ALL four hold —
@@ -257,8 +269,8 @@ prompt: |
        `@mitto mark fixed`) OR the work performed fully satisfies the stated intent
        AND leaves no known follow-up on this bead.
      - You did NOT defer earlier (Step 4).
-     - {{ if $commit }}Any file changes are committed.{{ else }}NO file changes were
-       made (with `Commit=false` you are not permitted to commit, so any file change
+     - {{ if $commit }}Any file changes are committed{{ if $pr }} and the PR is open{{ end }}.{{ else }}NO file changes were
+       made (with `SubmitStrategy=None` you are not permitted to commit, so any file change
        means the bead is NOT yet resolvable — leave it open for the human).{{ end }}
      - The bead currently has no open child dependency
        (`bd show {{ $target }} --json | jq '.dependencies'` — bail on any

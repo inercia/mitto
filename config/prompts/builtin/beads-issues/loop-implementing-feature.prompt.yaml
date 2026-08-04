@@ -6,9 +6,10 @@ parameters:
     type: beadsId
     required: false
     description: The beads issue ID to act on
-  - name: Commit
-    type: boolean
-    description: Commit the work at the end of the review stage
+  - name: SubmitStrategy
+    type: text
+    required: false
+    description: How finished work is submitted. "Commit" (default) — commit at the end of each stage. "Pull Request" — same, on a per-bead branch, with a PR opened in the Done branch. "None" — leave changes uncommitted for human review.
 description: Auto-loop — drive a feature bead through plan → implement → test → review by dispatching per-phase prompts (each on its own model tier), then self-terminate
 backgroundColor: '#C8E6C9'
 group: Tasks
@@ -52,6 +53,9 @@ prompt: |
 
   {{ $target := "" -}}
   {{ if .Session.BeadsIssue }}{{ $target = .Session.BeadsIssue }}{{ else if .Args.IssueID }}{{ $target = .Args.IssueID }}{{ end -}}
+  {{ $submit := .Args.SubmitStrategy -}}
+  {{ $commit := ne $submit "None" -}}
+  {{ $pr := eq $submit "Pull Request" -}}
   {{ if $target -}}
   The **target feature** for this run is `{{ $target }}`{{ if .Session.BeadsIssue }} (from this conversation's linked beads issue — preferred, durable across loop runs){{ else }} (supplied as the `IssueID` argument){{ end }}.
   {{- else -}}
@@ -189,13 +193,13 @@ prompt: |
     self_id: "{{ .Session.ID }}",
     conversation_id: "self",
     prompt_name: "Feature — implement phase",
-    arguments: { "IssueID": "{{ $target }}", "Commit": "{{ if eq .Args.Commit "true" }}true{{ else }}false{{ end }}" }
+    arguments: { "IssueID": "{{ $target }}", "SubmitStrategy": "{{ if .Args.SubmitStrategy }}{{ .Args.SubmitStrategy }}{{ else }}Commit{{ end }}" }
   )
   ```
 
   Then end this turn. The Implement phase runs on the **Coding** tier, writes the
   smallest coherent increment per the plan, records an `Implementation:` comment, adds
-  the `implemented` label{{ if eq .Args.Commit "true" }}, commits the increment{{ end }},
+  the `implemented` label{{ if $commit }}, commits the increment{{ end }},
   and stops. The next scheduled run of this driver will observe `implemented` and
   dispatch Test.
 
@@ -206,14 +210,14 @@ prompt: |
     self_id: "{{ .Session.ID }}",
     conversation_id: "self",
     prompt_name: "Feature — test phase",
-    arguments: { "IssueID": "{{ $target }}", "Commit": "{{ if eq .Args.Commit "true" }}true{{ else }}false{{ end }}" }
+    arguments: { "IssueID": "{{ $target }}", "SubmitStrategy": "{{ if .Args.SubmitStrategy }}{{ .Args.SubmitStrategy }}{{ else }}Commit{{ end }}" }
   )
   ```
 
   Then end this turn. The Test phase runs on the **Coding** tier, writes/extends tests
   covering the acceptance criteria until the new tests and the full relevant suite
   pass, records a `Testing:` comment, adds the `tested`
-  label{{ if eq .Args.Commit "true" }}, commits the test changes{{ end }}, and stops.
+  label{{ if $commit }}, commits the test changes{{ end }}, and stops.
   The next scheduled run of this driver will observe `tested` and dispatch Review.
 
   ### Step 3d — Dispatch Review/Verify (`tested` present, not yet `verified`)
@@ -223,7 +227,7 @@ prompt: |
     self_id: "{{ .Session.ID }}",
     conversation_id: "self",
     prompt_name: "Feature — review phase",
-    arguments: { "IssueID": "{{ $target }}", "Commit": "{{ if eq .Args.Commit "true" }}true{{ else }}false{{ end }}" }
+    arguments: { "IssueID": "{{ $target }}", "SubmitStrategy": "{{ if .Args.SubmitStrategy }}{{ .Args.SubmitStrategy }}{{ else }}Commit{{ end }}" }
   )
   ```
 
@@ -231,7 +235,7 @@ prompt: |
   build/lint/docs/acceptance-criteria/downstream-impact — looping back **without**
   advancing the label if any gap is found — and once genuinely satisfied records a
   `Review:` comment, adds the `verified`
-  label{{ if eq .Args.Commit "true" }}, commits any review fix-ups{{ end }}, optionally
+  label{{ if $commit }}, commits any review fix-ups{{ end }}, optionally
   closes the bead, and stops. The next scheduled run of this driver will observe
   `verified` and take the Done branch (Step 3e).
 
@@ -245,6 +249,15 @@ prompt: |
   optional here — a soft-gated Done branch lets the loop re-fire past the terminal
   label).
 
+  {{ if $pr }}
+  Submit strategy is **Pull Request** — push the branch and open (or update) the PR
+  before closing the bead:
+
+  {{ template "beads-issues/shared/push-and-open-pr" (dict
+      "Ctx"    .
+      "Target" $target
+  ) }}
+  {{ end }}
   {{ template "beads-issues/shared/claim-clear" (dict
       "Target" $target
   ) }}
@@ -311,7 +324,7 @@ prompt: |
      catches placeholder short-circuits before advancing the feature's state). If all
      reports verify and the combined increment is build/lint clean, record an
      `Implementation:` comment summarising the distributed work, add the `implemented`
-     label{{ if eq .Args.Commit "true" }} and commit only the changed files (staged by
+     label{{ if $commit }} and commit only the changed files (staged by
      path){{ end }}, archive the finished children, and end the turn. The next
      scheduled run will observe `implemented` and dispatch Test. If any part reports a
      conflict, abandon the split and finish via the single Implement phase on the next

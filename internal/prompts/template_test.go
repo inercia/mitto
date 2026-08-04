@@ -2953,10 +2953,10 @@ func TestMentionDriver_RendersForRepresentativeContexts(t *testing.T) {
 			HasBeadsIssue: true,
 		},
 		Args: map[string]string{
-			"IssueID":     "mitto-abc",
-			"MentionTS":   "2026-07-16T10:00:00Z",
-			"MentionBody": "please fix the crash",
-			"Commit":      "true",
+			"IssueID":        "mitto-abc",
+			"MentionTS":      "2026-07-16T10:00:00Z",
+			"MentionBody":    "please fix the crash",
+			"SubmitStrategy": "Commit",
 		},
 		Iteration: cel.IterationContext{IsFirst: true},
 	}
@@ -2994,12 +2994,12 @@ func TestMentionDriver_RendersForRepresentativeContexts(t *testing.T) {
 	if !strings.Contains(outA, "[addressed-comment:") {
 		t.Errorf("branch (a): expected back-reference marker '[addressed-comment:' in output")
 	}
-	// Commit=true branch: git-add-by-path guidance must render, "do NOT commit" must not.
+	// SubmitStrategy=Commit branch: git-add-by-path guidance must render, "do NOT commit" must not.
 	if !strings.Contains(outA, "git add <file>") {
-		t.Errorf("branch (a): expected Commit=true git-add guidance in output; got:\n%s", outA)
+		t.Errorf("branch (a): expected SubmitStrategy=Commit git-add guidance in output; got:\n%s", outA)
 	}
 	if strings.Contains(outA, "do NOT commit") {
-		t.Errorf("branch (a): Commit=true rendered the Commit=false 'do NOT commit' copy")
+		t.Errorf("branch (a): SubmitStrategy=Commit rendered the SubmitStrategy=None 'do NOT commit' copy")
 	}
 	// The router must NOT do the phase work inline — it must never contain
 	// `bd update ... --add-label mention-{investigated|planned|implemented|answered}`.
@@ -3014,13 +3014,13 @@ func TestMentionDriver_RendersForRepresentativeContexts(t *testing.T) {
 		}
 	}
 
-	// (b) Arg-only context, Commit=false.
+	// (b) Arg-only context, SubmitStrategy=None.
 	ctxB := &cel.PromptEnabledContext{
 		Args: map[string]string{
-			"IssueID":     "mitto-xyz",
-			"MentionTS":   "2026-07-16T11:00:00Z",
-			"MentionBody": "how do I run tests?",
-			"Commit":      "false",
+			"IssueID":        "mitto-xyz",
+			"MentionTS":      "2026-07-16T11:00:00Z",
+			"MentionBody":    "how do I run tests?",
+			"SubmitStrategy": "None",
 		},
 		Iteration: cel.IterationContext{IsLoop: true},
 	}
@@ -3029,10 +3029,10 @@ func TestMentionDriver_RendersForRepresentativeContexts(t *testing.T) {
 		t.Errorf("branch (b): expected bead ID 'mitto-xyz' in output; got:\n%s", outB)
 	}
 	if !strings.Contains(outB, "do NOT commit") {
-		t.Errorf("branch (b): expected Commit=false 'do NOT commit' copy in output; got:\n%s", outB)
+		t.Errorf("branch (b): expected SubmitStrategy=None 'do NOT commit' copy in output; got:\n%s", outB)
 	}
 	if strings.Contains(outB, "git add <file>") {
-		t.Errorf("branch (b): Commit=false rendered the Commit=true git-add guidance")
+		t.Errorf("branch (b): SubmitStrategy=None rendered the SubmitStrategy=Commit git-add guidance")
 	}
 	if !strings.Contains(outB, `"IssueID": "mitto-xyz"`) {
 		t.Errorf("branch (b): expected resolved target 'mitto-xyz' passed as IssueID; got:\n%s", outB)
@@ -3095,7 +3095,7 @@ func TestLoopProcessingSpawns_MirrorArgumentsIntoLoopArguments(t *testing.T) {
 			BeadsIssue:    "",
 			HasBeadsIssue: false,
 		},
-		Args: map[string]string{"Commit": "true"},
+		Args: map[string]string{"SubmitStrategy": "Commit"},
 	}
 	funcs := cel.BuildTemplateFuncMap(ctx)
 	out, rerr := RenderPromptTemplate("beads-issue-loop-processing", body, ctx, funcs)
@@ -3140,12 +3140,12 @@ func TestLoopProcessingSpawns_MirrorArgumentsIntoLoopArguments(t *testing.T) {
 			t.Errorf("%s: spawn block sets loop_prompt_name + onCompletion but is missing `loop_arguments:` — every re-fire will render the loop body with an empty .Args. Mirror `arguments:` into `loop_arguments:`. Block:\n%s",
 				sec.section, block)
 		}
-		// loop_arguments must carry the resolved Commit value so the
-		// positive-match gate in the loop body resolves correctly on every
+		// loop_arguments must carry the resolved SubmitStrategy value so the
+		// default-on gate in the loop body resolves correctly on every
 		// re-fire, not just the initial prompt.
 		if strings.Contains(block, "loop_arguments:") &&
-			!strings.Contains(block, `"Commit": "true"`) {
-			t.Errorf("%s: rendered .Args.Commit=\"true\" but no `\"Commit\": \"true\"` in the spawn block; block:\n%s",
+			!strings.Contains(block, `"SubmitStrategy": "Commit"`) {
+			t.Errorf("%s: rendered .Args.SubmitStrategy=\"Commit\" but no `\"SubmitStrategy\": \"Commit\"` in the spawn block; block:\n%s",
 				sec.section, block)
 		}
 	}

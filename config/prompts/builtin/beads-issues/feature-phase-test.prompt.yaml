@@ -6,10 +6,10 @@ parameters:
     type: beadsId
     required: false
     description: The beads issue ID to test
-  - name: Commit
+  - name: SubmitStrategy
     type: text
     required: false
-    description: If "true", commit any test-related changes after this phase; otherwise leave changes staged for review
+    description: How finished work is submitted. "Commit" (default) — commit any test-related changes after this phase. "Pull Request" — same, on the bead's existing feature branch. "None" — leave changes staged for review.
 description: Internal phase-tier prompt — write/extend tests covering a feature's acceptance criteria and add the `tested` label. Invoked by name from the feature-implementation driver; runs on the Coding tier.
 group: Tasks
 backgroundColor: '#FFE0B2'
@@ -31,9 +31,11 @@ prompt: |
 
   {{ $target := "" -}}
   {{ if .Session.BeadsIssue }}{{ $target = .Session.BeadsIssue }}{{ else if .Args.IssueID }}{{ $target = .Args.IssueID }}{{ end -}}
-  {{ $commit := eq .Args.Commit "true" -}}
-  {{ $suffix := "Commit-after-test is **disabled** (`Commit` argument)." -}}
-  {{ if $commit }}{{ $suffix = "Commit-after-test is **enabled** (`Commit` argument)." }}{{ end -}}
+  {{ $submit := .Args.SubmitStrategy -}}
+  {{ $commit := ne $submit "None" -}}
+  {{ $pr := eq $submit "Pull Request" -}}
+  {{ $suffix := "Submit strategy is **None** (`SubmitStrategy` argument) — commit-after-test is disabled." -}}
+  {{ if $pr }}{{ $suffix = "Submit strategy is **Pull Request** (`SubmitStrategy` argument) — committed on the bead's existing feature branch." }}{{ else if $commit }}{{ $suffix = "Submit strategy is **Commit** (`SubmitStrategy` argument) — commit-after-test is enabled." }}{{ end -}}
   {{ template "beads-issues/shared/target-bead-header-strict" (dict
       "Target"      $target
       "Noun"        "target feature"
@@ -132,7 +134,7 @@ prompt: |
   - **Green before green label.** Never add `tested` while any new or existing
     relevant test is red.
   - **Commit to persist across iterations.** Each phase runs in a separate loop
-    iteration; without `Commit: "true"`, work here is only as durable as the
+    iteration; with `SubmitStrategy: "None"`, work here is only as durable as the
     conversation's working tree.
   {{ template "beads-issues/shared/phase-guidelines-footer" (dict
       "IncludeItemNote" false

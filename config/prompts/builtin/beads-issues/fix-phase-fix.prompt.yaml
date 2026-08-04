@@ -6,10 +6,10 @@ parameters:
     type: beadsId
     required: false
     description: The beads issue ID to fix
-  - name: Commit
+  - name: SubmitStrategy
     type: text
     required: false
-    description: If "true", commit the fix after tests pass; otherwise leave changes staged for review
+    description: How finished work is submitted. "Commit" (default) — commit the fix after tests pass. "Pull Request" — same, on a per-bead branch created here. "None" — leave changes staged for review.
 description: Internal phase-tier prompt — implement the fix so the reproducing test passes, add the `fixed` label, and (optionally) commit. Invoked by name from the bug-fix driver; runs on the Coding tier.
 group: Tasks
 backgroundColor: '#C8E6C9'
@@ -31,9 +31,11 @@ prompt: |
 
   {{ $target := "" -}}
   {{ if .Session.BeadsIssue }}{{ $target = .Session.BeadsIssue }}{{ else if .Args.IssueID }}{{ $target = .Args.IssueID }}{{ end -}}
-  {{ $commit := eq .Args.Commit "true" -}}
-  {{ $suffix := "Commit-after-fix is **disabled** (`Commit` argument)." -}}
-  {{ if $commit }}{{ $suffix = "Commit-after-fix is **enabled** (`Commit` argument)." }}{{ end -}}
+  {{ $submit := .Args.SubmitStrategy -}}
+  {{ $commit := ne $submit "None" -}}
+  {{ $pr := eq $submit "Pull Request" -}}
+  {{ $suffix := "Submit strategy is **None** (`SubmitStrategy` argument) — commit-after-fix is disabled." -}}
+  {{ if $pr }}{{ $suffix = "Submit strategy is **Pull Request** (`SubmitStrategy` argument) — committed on a per-bead branch." }}{{ else if $commit }}{{ $suffix = "Submit strategy is **Commit** (`SubmitStrategy` argument) — commit-after-fix is enabled." }}{{ end -}}
   {{ template "beads-issues/shared/target-bead-header-strict" (dict
       "Target"      $target
       "Noun"        "target bug"
@@ -117,6 +119,16 @@ prompt: |
   {{ if $commit -}}
   ### Step 3.3 — Format, then commit (explicit paths only)
 
+  {{ if $pr }}
+  Submit strategy is **Pull Request** — ensure the bead's fix branch exists and is
+  checked out before formatting/committing:
+
+  {{ template "beads-issues/shared/ensure-bead-branch" (dict
+      "Ctx"    .
+      "Target" $target
+      "Type"   "fix"
+  ) }}
+  {{ end }}
   Before staging, run `make fmt` (or the language-appropriate formatter). The
   project's pre-commit hook rejects gofmt-dirty commits — running the formatter
   up front avoids a blocked commit and re-stage cycle.

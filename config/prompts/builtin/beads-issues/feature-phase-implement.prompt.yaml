@@ -6,10 +6,10 @@ parameters:
     type: beadsId
     required: false
     description: The beads issue ID to implement
-  - name: Commit
+  - name: SubmitStrategy
     type: text
     required: false
-    description: If "true", commit the increment after this phase; otherwise leave changes staged for review
+    description: How finished work is submitted. "Commit" (default) — commit the increment after this phase. "Pull Request" — same, on a per-bead branch created here. "None" — leave changes staged for review.
 description: Internal phase-tier prompt — implement the feature per its plan and add the `implemented` label. Invoked by name from the feature-implementation driver; runs on the Coding tier.
 group: Tasks
 backgroundColor: '#C8E6C9'
@@ -32,9 +32,11 @@ prompt: |
 
   {{ $target := "" -}}
   {{ if .Session.BeadsIssue }}{{ $target = .Session.BeadsIssue }}{{ else if .Args.IssueID }}{{ $target = .Args.IssueID }}{{ end -}}
-  {{ $commit := eq .Args.Commit "true" -}}
-  {{ $suffix := "Commit-after-implement is **disabled** (`Commit` argument)." -}}
-  {{ if $commit }}{{ $suffix = "Commit-after-implement is **enabled** (`Commit` argument)." }}{{ end -}}
+  {{ $submit := .Args.SubmitStrategy -}}
+  {{ $commit := ne $submit "None" -}}
+  {{ $pr := eq $submit "Pull Request" -}}
+  {{ $suffix := "Submit strategy is **None** (`SubmitStrategy` argument) — commit-after-implement is disabled." -}}
+  {{ if $pr }}{{ $suffix = "Submit strategy is **Pull Request** (`SubmitStrategy` argument) — committed on a per-bead branch." }}{{ else if $commit }}{{ $suffix = "Submit strategy is **Commit** (`SubmitStrategy` argument) — commit-after-implement is enabled." }}{{ end -}}
   {{ template "beads-issues/shared/target-bead-header-strict" (dict
       "Target"      $target
       "Noun"        "target feature"
@@ -99,6 +101,16 @@ prompt: |
   Only add the label after the comment is posted.
 
   {{ if $commit -}}
+  {{ if $pr }}
+  Submit strategy is **Pull Request** — ensure the bead's feature branch exists and
+  is checked out before committing:
+
+  {{ template "beads-issues/shared/ensure-bead-branch" (dict
+      "Ctx"    .
+      "Target" $target
+      "Type"   "feat"
+  ) }}
+  {{ end }}
   Then commit the increment as a **single, focused commit** using the project's commit
   conventions and reference the bead ID in the message.
 
@@ -132,7 +144,7 @@ prompt: |
   - **One stage only.** This phase advances at most one label (`implemented`). Do not
     write tests or self-review — those are separate phases.
   - **Commit to persist across iterations.** Each phase runs in a separate loop
-    iteration; without `Commit: "true"`, work here is only as durable as the
+    iteration; with `SubmitStrategy: "None"`, work here is only as durable as the
     conversation's working tree.
   {{ template "beads-issues/shared/phase-guidelines-footer" (dict
       "IncludeItemNote" false

@@ -17,11 +17,12 @@
       {{ $target := "" -}}
       {{ if .Session.BeadsIssue }}{{ $target = .Session.BeadsIssue }}
       {{ else if .Args.IssueID }}{{ $target = .Args.IssueID }}{{ end -}}
-      {{ $commit := eq .Args.Commit "true" -}}
+      {{ $submit := .Args.SubmitStrategy -}}
+      {{ $commit := ne $submit "None" -}}
 
       {{ $suffix := "" -}}
-      {{ if $commit }}{{ $suffix = "Commit-after-fix is **enabled** (`Commit` argument)." -}}
-      {{ else }}{{ $suffix = "Commit-after-fix is **disabled** (`Commit` argument)." }}{{ end -}}
+      {{ if $commit }}{{ $suffix = printf "Submit strategy is **%s** (`SubmitStrategy` argument)." $submit -}}
+      {{ else }}{{ $suffix = "Submit strategy is **None** (`SubmitStrategy` argument) — commit-after-fix is disabled." }}{{ end -}}
       {{ template "beads-issues/shared/target-bead-header-strict" (dict
           "Target"      $target
           "Noun"        "target bug"

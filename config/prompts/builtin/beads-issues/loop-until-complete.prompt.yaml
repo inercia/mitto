@@ -6,9 +6,10 @@ parameters:
     type: beadsId
     required: false
     description: The beads issue ID to act on
-  - name: Commit
-    type: boolean
-    description: Have the delegated worker commit its changes at the end of each increment
+  - name: SubmitStrategy
+    type: text
+    required: false
+    description: How finished work is submitted. "Commit" (default) — the delegated worker commits its changes at the end of each increment. "Pull Request" — treated the same as "Commit" here (no branch/PR automation at this orchestration level). "None" — the worker leaves changes uncommitted.
 description: Auto-loop — keep advancing this bead toward completion, then self-terminate when nothing ready remains
 backgroundColor: '#C8E6C9'
 group: Tasks
@@ -202,7 +203,7 @@ prompt: |
        `mitto_conversation_send_prompt_mitto(self_id: "{{ .Session.ID }}", conversation_id: "<child-id>", prompt: "<fully self-contained worker prompt>")`.
      - Otherwise create one with `mitto_conversation_new_mitto(self_id: "{{ .Session.ID }}", title: "<target-bead> · <increment>", beads_issue: "<target>", acp_server: "<prefer faster/cheaper; escalate to a capable agent only for complex work>", initial_prompt: "<fully self-contained worker prompt incl. bead ID, title, description, acceptance criteria, the specific increment, definition of done, and an instruction to report back via mitto_children_tasks_report_mitto>")`.
      - Cap spawning at **one** new child per run to avoid runaway fan-out.
-  {{- if eq .Args.Commit "true" }}
+  {{- if ne .Args.SubmitStrategy "None" }}
      - **Tell the worker to commit its work.** Include in the worker prompt an
        explicit instruction to commit **only** the files it changed for this
        increment, using a concise, conventional commit message that references

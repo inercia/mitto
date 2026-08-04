@@ -2,10 +2,11 @@ icon: loop
 name: Loop processing tasks
 menus: beadsList
 parameters:
-  - name: Commit
-    type: boolean
-    default: "true"
-    description: When true (default), workers commit their changes — §A one-shot workers commit inline and §B/§C drivers commit at each terminal stage. When false, changes are left uncommitted (working tree only) for human review.
+  - name: SubmitStrategy
+    type: text
+    description: 'How finished work is submitted. "Commit" (default) — workers commit their changes: §A one-shot workers commit inline and §B/§C drivers commit at each terminal stage. "Pull Request" — same, but on a per-bead branch, with the driver opening a PR in its Done branch. "None" — changes are left uncommitted (working tree only) for human review.'
+    options: ["Commit", "Pull Request", "None"]
+    default: "Commit"
   - name: FixBugs
     type: boolean
     default: "true"
@@ -14,6 +15,10 @@ parameters:
     type: boolean
     default: "true"
     description: When true (default), the loop processes open features via §C. Set to false to disable feature handling entirely — Step 2C is skipped and §C is never dispatched. Useful when the operator only wants the loop to work on bugs (or on @mitto mentions).
+  - name: PostIterationPrompt
+    type: prompts
+    required: false
+    description: Optional prompt to run after a task completes and before the next one is picked (e.g. "Run tests"). Dispatched as its own short-lived child conversation from Step 5H; best-effort — a failing hook never blocks the next task. Leave empty to disable.
 description: "Unified standing supervisor — on every beads change, process at most one increment from whichever class has work — (A) unaddressed @mitto comments, (B) eligible open bugs, (C) eligible open features. Comments first, then bugs, then features. One worker in flight at a time."
 backgroundColor: '#E1BEE7'
 group: Tasks
@@ -156,7 +161,8 @@ prompt: |
   Run FIRST every pass, before Step 2Z. Walk `{{ .Children.MCPText }}` and delete
   (via `mitto_conversation_delete`, NOT archive — delete frees the ACP slot fully)
   any child matching the FIRST applicable category. Do NOT reap §A mention drivers
-  (they self-terminate; §A owns their wait/archive path).
+  (they self-terminate; §A owns their wait/archive path) and do NOT reap
+  `Post-task: …` hook children (Step 5H owns their wait/delete path).
 
   1. **Terminal** — child status `done`/`completed`/`stopped`/`failed`, OR its
      `beads_issue` carries the class-terminal label ({{ if ne .Args.FixBugs "false" }}`fixed` for `Fix …`{{ if ne .Args.WorkOnFeatures "false" }}, {{ end }}{{ end }}{{ if ne .Args.WorkOnFeatures "false" }}`verified` for
@@ -603,9 +609,9 @@ prompt: |
     title: "Address @mitto on <id> [<ts>]",
     beads_issue: "<id>",
     prompt_name: "Mention — driver",
-    arguments: { "IssueID": "<id>", "MentionTS": "<ts>", "MentionBody": "<body>", "Commit": "{{ if eq .Args.Commit "false" }}false{{ else }}true{{ end }}" },
+    arguments: { "IssueID": "<id>", "MentionTS": "<ts>", "MentionBody": "<body>", "SubmitStrategy": "{{ if .Args.SubmitStrategy }}{{ .Args.SubmitStrategy }}{{ else }}Commit{{ end }}" },
     loop_prompt_name: "Mention — driver",
-    loop_arguments: { "IssueID": "<id>", "MentionTS": "<ts>", "MentionBody": "<body>", "Commit": "{{ if eq .Args.Commit "false" }}false{{ else }}true{{ end }}" },
+    loop_arguments: { "IssueID": "<id>", "MentionTS": "<ts>", "MentionBody": "<body>", "SubmitStrategy": "{{ if .Args.SubmitStrategy }}{{ .Args.SubmitStrategy }}{{ else }}Commit{{ end }}" },
     loop_trigger: "onCompletion",
     loop_completion_delay_seconds: 30,
     loop_max_iterations: 8,
@@ -670,7 +676,7 @@ prompt: |
     its phases): `bd comment <id> "Orchestrator: 30-minute wait for @mitto driver (mention at <ts>) timed out; leaving driver running."`
   - **Wait errored** (flag missing at runtime) → notify and STOP; do not archive.
 
-  Then Step 6.
+  Then {{ if .Args.PostIterationPrompt }}Step 5H{{ else }}Step 6{{ end }}.
 
   ---
 
@@ -696,9 +702,9 @@ prompt: |
     title: "Fix <id>",
     beads_issue: "<id>",
     prompt_name: "Loop fixing bug",
-    arguments: { "IssueID": "<id>", "Commit": "{{ if eq .Args.Commit "false" }}false{{ else }}true{{ end }}" },
+    arguments: { "IssueID": "<id>", "SubmitStrategy": "{{ if .Args.SubmitStrategy }}{{ .Args.SubmitStrategy }}{{ else }}Commit{{ end }}" },
     loop_prompt_name: "Loop fixing bug",
-    loop_arguments: { "IssueID": "<id>", "Commit": "{{ if eq .Args.Commit "false" }}false{{ else }}true{{ end }}" },
+    loop_arguments: { "IssueID": "<id>", "SubmitStrategy": "{{ if .Args.SubmitStrategy }}{{ .Args.SubmitStrategy }}{{ else }}Commit{{ end }}" },
     loop_trigger: "onCompletion",
     loop_completion_delay_seconds: 30,
     loop_max_iterations: 20,
@@ -763,7 +769,7 @@ prompt: |
     `bd comment <id> "Orchestrator: 4h bead-state wait timed out; leaving child running."`
   - **Wait errored** → notify and STOP.
 
-  Then Step 6.
+  Then {{ if .Args.PostIterationPrompt }}Step 5H{{ else }}Step 6{{ end }}.
 
   ---
   {{- end }}
@@ -787,9 +793,9 @@ prompt: |
     title: "Implement <id>: <slug>",
     beads_issue: "<id>",
     prompt_name: "Loop implementing feature",
-    arguments: { "IssueID": "<id>", "Commit": "{{ if eq .Args.Commit "false" }}false{{ else }}true{{ end }}" },
+    arguments: { "IssueID": "<id>", "SubmitStrategy": "{{ if .Args.SubmitStrategy }}{{ .Args.SubmitStrategy }}{{ else }}Commit{{ end }}" },
     loop_prompt_name: "Loop implementing feature",
-    loop_arguments: { "IssueID": "<id>", "Commit": "{{ if eq .Args.Commit "false" }}false{{ else }}true{{ end }}" },
+    loop_arguments: { "IssueID": "<id>", "SubmitStrategy": "{{ if .Args.SubmitStrategy }}{{ .Args.SubmitStrategy }}{{ else }}Commit{{ end }}" },
     loop_trigger: "onCompletion",
     loop_completion_delay_seconds: 30,
     loop_max_iterations: 30,
@@ -858,6 +864,69 @@ prompt: |
     `bd comment <id> "Orchestrator: 4h bead-state wait timed out; leaving child running."`
   - **Wait errored** → notify and STOP.
 
+  Then {{ if .Args.PostIterationPrompt }}Step 5H{{ else }}Step 6{{ end }}.
+
+  ---
+  {{- end }}
+
+  {{ if .Args.PostIterationPrompt -}}
+  ## Step 5H — Post-task hook (after ONE task completes, before the next is picked)
+
+  Reached **only** from the completion branches above — §A "Driver done", §B/§C
+  "Bead closed" — i.e. a real task just finished. Do NOT run it on the at-cap,
+  nothing-eligible, timeout, wait-errored or Step 7 (deferral) paths: this hook
+  marks *a task finished*, not *a pass finished*.
+
+  Dispatch the operator-picked follow-up as its **own child conversation** so its
+  token spend, file reads and tool calls never pollute this supervisor's context,
+  then block until it reports. Spawn it **by name** (`prompt_name`, never
+  `initial_prompt`) — the server expands `{{ .Args.PostIterationPrompt }}` in the
+  child's own context, exactly like the §A/§B/§C drivers (mitto-dj9); you never
+  inline or execute the hook's text yourself. `<id>` is the bead just completed
+  (for §A, the bead carrying the addressed mention):
+
+  {{- $hookArgs := ArgsMap "PostIterationPrompt_Args" }}
+
+  ```
+  mitto_conversation_new(
+    self_id: "{{ .Session.ID }}",
+    title: "Post-task: <id>",
+    beads_issue: "<id>",
+    prompt_name: "{{ .Args.PostIterationPrompt }}"{{ if $hookArgs }},
+    arguments: { {{ $sep := "" }}{{ range $k, $v := $hookArgs }}{{ $sep }}"{{ $k }}": "{{ $v }}"{{ $sep = ", " }}{{ end }} }{{ end }}
+  )
+  ```
+
+  Record the returned `conversation_id` as **`<hook-child-id>`**, then block on it,
+  passing the context/reporting inquiry as the wait's own prompt (the wait appends
+  the reporting instructions for you):
+
+  ```
+  mitto_children_tasks_wait(
+    self_id: "{{ .Session.ID }}",
+    children_list: ["<hook-child-id>"],
+    task_id: "post-task-<id>",
+    prompt: "You ran as a post-task hook right after beads issue <id> was completed by the Loop processing tasks orchestrator, before the next task is picked. Summarize the outcome.",
+    timeout_seconds: 3600
+  )
+  ```
+
+  - **Reported** — log and delete the hook child:
+    `bd comment <id> "Orchestrator: post-task hook ({{ .Args.PostIterationPrompt }}) completed: <one-line outcome from the report>."`
+    then `mitto_conversation_delete(self_id: "{{ .Session.ID }}", conversation_id: "<hook-child-id>")`.
+  - **Timed out (1h) or no report** — `bd comment <id> "Orchestrator: post-task hook ({{ .Args.PostIterationPrompt }}) did not report within 1h; leaving child running."` and continue.
+  - **Spawn failed** (flag off, quota, unknown prompt) — one
+    `bd comment <id> "Orchestrator: post-task hook ({{ .Args.PostIterationPrompt }}) could not be dispatched: <error>; skipped."` and continue.
+    Do NOT run the hook inline — the supervisor stays procedural.
+
+  Best-effort by construction: a hook that fails, times out or reports a problem
+  **never** blocks the next task and never re-opens the completed bead. If the hook
+  discovers real work (e.g. tests it ran now fail), it is the hook prompt's own job
+  to file a bead — the orchestrator will pick it up on the next `onTasks` pass.
+
+  The hook child does not count against the §B/§C 1-driver cap (it is short-lived
+  and not an `onCompletion` driver), and Step 2P never reaps it.
+
   Then Step 6.
 
   ---
@@ -869,7 +938,7 @@ prompt: |
   mitto_ui_notify(
     self_id: "{{ .Session.ID }}",
     title: "Loop processing tasks — pass complete",
-    message: "<Class ran (A/B/C) and target processed | 'nothing eligible' if Step 3 fell through | 'at cap' if concurrency gate skipped>. Sets: A=<count> B=<count> C=<count>. Active drivers: <count of running Fix/Implement children after this pass>/1. Reaped: <count from Step 2P, 0 if none>. Closed: <count of terminal-label beads closed this pass, 0 if none>. Reaped-epics: <count from Step 2P epic-reaper, 0 if none>. Reaper: released=<n> skipped=<n> (from Step 2R, 0/0 if none). Undeferred: <count from Step 2Z, 0 if none>. Will re-fire on beads changes.",
+    message: "<Class ran (A/B/C) and target processed | 'nothing eligible' if Step 3 fell through | 'at cap' if concurrency gate skipped>. Sets: A=<count> B=<count> C=<count>. Active drivers: <count of running Fix/Implement children after this pass>/1. Reaped: <count from Step 2P, 0 if none>. Closed: <count of terminal-label beads closed this pass, 0 if none>. Reaped-epics: <count from Step 2P epic-reaper, 0 if none>. Reaper: released=<n> skipped=<n> (from Step 2R, 0/0 if none). Undeferred: <count from Step 2Z, 0 if none>.{{ if .Args.PostIterationPrompt }} Post-task hook: <ran-ok|timed-out|spawn-failed|not-run>.{{ end }} Will re-fire on beads changes.",
     style: "success"
   )
   ```
@@ -971,6 +1040,14 @@ prompt: |
   - **Honor scope flags.** `FixBugs` and `WorkOnFeatures` (both default `"true"`)
     gate §B and §C. When `"false"`, the section is skipped and treated as empty
     in Step 3. §A is ALWAYS on regardless.
+  {{ if .Args.PostIterationPrompt -}}
+  - **Post-task hook is best-effort.** Step 5H runs `{{ .Args.PostIterationPrompt }}`
+    in its own short-lived child only after a task actually completed (§A driver
+    done, §B/§C bead closed) — never on at-cap, nothing-eligible, timeout or
+    deferral paths. Its failure, timeout or negative findings never block the
+    next task and never re-open the completed bead; new work it discovers must
+    be filed as a bead and picked up on a later pass.
+  {{- end }}
   - **Expand epics; don't spawn them.** An `epic` bead is a container — never
     dispatched itself. 2B and 2C walk each open epic's open children: `bug`
     children → §B, other non-epic types (`feature`/`task`/`story`/`chore`) → §C
