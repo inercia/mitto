@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -2089,6 +2090,103 @@ func TestFilterPromptsByEnabled(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestFilterPromptsByEnabled_DebugLogAggregation pins the mitto-t3i behavior:
+// filterPromptsByEnabled must emit at most ONE aggregated Debug record per
+// call naming all prompts hidden by enabledWhen (never one record per hidden
+// prompt), and that record must never carry the CEL "expression" field. It
+// also pins that nothing is logged at all when DEBUG logging is disabled, and
+// that the fail-open Warn branches (invalid/unevaluable expressions) are left
+// untouched, still carrying "expression".
+func TestFilterPromptsByEnabled_DebugLogAggregation(t *testing.T) {
+	prompts := []config.WebPrompt{
+		makePrompt("shown"),
+		makePrompt("hidden-1", withEnabledWhen("Session.IsChild")),
+		makePrompt("hidden-2", withEnabledWhen("Session.IsChild")),
+		makePrompt("hidden-3", withEnabledWhen("Session.IsChild")),
+	}
+	ctx := &config.PromptEnabledContext{Session: config.SessionContext{IsChild: false}}
+
+	t.Run("debug enabled: single aggregated record, no expression field", func(t *testing.T) {
+		var buf bytes.Buffer
+		logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+		server := &Server{logger: logger}
+
+		got := server.filterPromptsByEnabled(prompts, ctx)
+
+		var gotNames []string
+		for _, p := range got {
+			gotNames = append(gotNames, p.Name)
+		}
+		if len(gotNames) != 1 || gotNames[0] != "shown" {
+			t.Fatalf("filtering result changed by logging refactor: got %v, want [shown]", gotNames)
+		}
+
+		output := buf.String()
+		lines := 0
+		for _, line := range strings.Split(strings.TrimRight(output, "\n"), "\n") {
+			if strings.Contains(line, "Prompts hidden by enabledWhen") {
+				lines++
+			}
+		}
+		if lines != 1 {
+			t.Fatalf("got %d 'Prompts hidden by enabledWhen' records, want exactly 1 (output: %s)", lines, output)
+		}
+		if !strings.Contains(output, "hidden_count=3") {
+			t.Errorf("expected hidden_count=3 in output, got: %s", output)
+		}
+		for _, name := range []string{"hidden-1", "hidden-2", "hidden-3"} {
+			if !strings.Contains(output, name) {
+				t.Errorf("expected hidden prompt name %q in aggregated record, got: %s", name, output)
+			}
+		}
+		if strings.Contains(output, "expression=") {
+			t.Errorf("aggregated hidden-prompt record must not contain the CEL expression, got: %s", output)
+		}
+	})
+
+	t.Run("debug disabled: no hidden-prompt record emitted", func(t *testing.T) {
+		var buf bytes.Buffer
+		logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+		server := &Server{logger: logger}
+
+		got := server.filterPromptsByEnabled(prompts, ctx)
+
+		var gotNames []string
+		for _, p := range got {
+			gotNames = append(gotNames, p.Name)
+		}
+		if len(gotNames) != 1 || gotNames[0] != "shown" {
+			t.Fatalf("filtering result changed by logging refactor: got %v, want [shown]", gotNames)
+		}
+
+		if strings.Contains(buf.String(), "Prompts hidden by enabledWhen") {
+			t.Errorf("expected no hidden-prompt record when DEBUG is disabled, got: %s", buf.String())
+		}
+	})
+
+	t.Run("fail-open Warn branches keep the expression field", func(t *testing.T) {
+		var buf bytes.Buffer
+		logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+		server := &Server{logger: logger}
+
+		invalidPrompts := []config.WebPrompt{
+			makePrompt("bad-cel", withEnabledWhen("this is not valid CEL !!")),
+		}
+		got := server.filterPromptsByEnabled(invalidPrompts, &config.PromptEnabledContext{})
+
+		if len(got) != 1 || got[0].Name != "bad-cel" {
+			t.Fatalf("expected fail-open inclusion of bad-cel, got %v", got)
+		}
+		output := buf.String()
+		if !strings.Contains(output, "Invalid enabledWhen expression") {
+			t.Fatalf("expected Invalid enabledWhen expression warning, got: %s", output)
+		}
+		if !strings.Contains(output, "expression=") {
+			t.Errorf("fail-open Warn branch must still carry the expression field, got: %s", output)
+		}
+	})
 }
 
 // TestHandleUpdateSession_BeadsIssue verifies that PATCH /api/sessions/{id} with
