@@ -1,6 +1,7 @@
 package acp
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -349,11 +350,12 @@ func TestBackoffDelay(t *testing.T) {
 	})
 }
 
-// TestFormatACPError_QueryClosedHandshake verifies the Claude Code cold-start
-// auth-expiry branch (mitto-bov). The Anthropic SDK tears down its session/new
-// async iterator when auth verification fails, surfacing as JSON-RPC -32603
-// whose data.details contains "Query closed before response received". The
-// friendly re-auth guidance must fire in place of the generic -32603 catch-all.
+// TestFormatACPError_QueryClosedHandshake verifies the cause-neutral,
+// remedy-first handshake message (mitto-biu, correcting mitto-bov). The SDK
+// tears down its session/new async iterator on this signature both on
+// cold-start auth failure AND on a wedged shared process (mitto-aoo) — so the
+// message must NOT assert an auth diagnosis, must lead with "Restart ACP", and
+// may only mention re-authentication as a hedged secondary hint.
 func TestFormatACPError_QueryClosedHandshake(t *testing.T) {
 	tests := []struct {
 		name         string
@@ -362,14 +364,24 @@ func TestFormatACPError_QueryClosedHandshake(t *testing.T) {
 		wantExcludes string
 	}{
 		{
-			name:         "exact SDK payload triggers re-auth guidance",
+			name:         "exact SDK payload triggers remedy-first guidance",
 			err:          fmt.Errorf(`failed to create session: {"code":-32603,"message":"Internal error","data":{"details":"Query closed before response received"}}`),
-			wantContains: "authentication has expired",
+			wantContains: "Restart ACP",
+		},
+		{
+			name:         "exact SDK payload does not assert an auth diagnosis",
+			err:          fmt.Errorf(`failed to create session: {"code":-32603,"message":"Internal error","data":{"details":"Query closed before response received"}}`),
+			wantExcludes: "authentication has expired",
 		},
 		{
 			name:         "case-insensitive match on details substring",
 			err:          fmt.Errorf(`{"code":-32603,"message":"Internal error","data":{"details":"QUERY CLOSED BEFORE RESPONSE RECEIVED"}}`),
 			wantContains: "handshake failed",
+		},
+		{
+			name:         "case-insensitive match still does not assert auth expiry",
+			err:          fmt.Errorf(`{"code":-32603,"message":"Internal error","data":{"details":"QUERY CLOSED BEFORE RESPONSE RECEIVED"}}`),
+			wantExcludes: "authentication has expired",
 		},
 		{
 			name:         "generic -32603 without query-closed falls through to catch-all",
@@ -391,6 +403,48 @@ func TestFormatACPError_QueryClosedHandshake(t *testing.T) {
 			}
 			if tt.wantExcludes != "" && containsIgnoreCase(got, tt.wantExcludes) {
 				t.Errorf("FormatACPError(%v) = %q, must NOT contain %q", tt.err, got, tt.wantExcludes)
+			}
+		})
+	}
+}
+
+// TestIsHandshakeQueryClosedError is the classifier truth table for the
+// string-based predicate extracted in mitto-biu, mirroring the structured twin
+// acperrors.IsAgentQueryClosedErr (internal/acpproc/acperrors/acperrors_test.go).
+func TestIsHandshakeQueryClosedError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil error", nil, false},
+		{
+			"exact wedge signature",
+			fmt.Errorf(`{"code":-32603,"message":"Internal error","data":{"details":"Query closed before response received"}}`),
+			true,
+		},
+		{
+			"case-insensitive message match",
+			fmt.Errorf(`{"code":-32603,"message":"Internal error","data":{"details":"QUERY CLOSED BEFORE RESPONSE RECEIVED"}}`),
+			true,
+		},
+		{
+			"right code, unrelated message",
+			fmt.Errorf(`{"code":-32603,"message":"Internal error","data":{"details":"some other failure"}}`),
+			false,
+		},
+		{
+			"query-closed phrase without -32603",
+			errors.New("something else: query closed before response received"),
+			false,
+		},
+		{"unrelated plain error", errors.New("context canceled"), false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsHandshakeQueryClosedError(tt.err); got != tt.want {
+				t.Errorf("IsHandshakeQueryClosedError(%v) = %v, want %v", tt.err, got, tt.want)
 			}
 		})
 	}
