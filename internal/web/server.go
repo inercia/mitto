@@ -934,6 +934,21 @@ func NewServer(config Config) (*Server, error) {
 		s.BroadcastHealthRecycled(workspaceUUID, workspaceName, workingDir, reason, saturationLevel, sessionCount)
 	})
 
+	// Surface a toast when GC Tier 5 detects (or clears) a degraded shared
+	// ACP process — saturated, MCP-init gated, or MCP-init wedged (mitto-13n.3).
+	// Unlike SetOnHealthRecycled above, this fires BEFORE the idle safety gates
+	// that can delay an actual recycle indefinitely, closing the previously
+	// silent pre-recycle window.
+	acpProcessMgr.SetOnDegraded(func(workspaceUUID, state string, degraded bool) {
+		workspaceName := ""
+		workingDir := ""
+		if ws := sessionMgr.GetWorkspaceByUUID(workspaceUUID); ws != nil {
+			workspaceName = ws.Name
+			workingDir = ws.WorkingDir
+		}
+		s.BroadcastAgentDegraded(workspaceUUID, workspaceName, workingDir, state, degraded)
+	})
+
 	// MCP-init lifecycle notifications (mitto-8ul.1): fired at most once per shared
 	// process. "initializing" is informational; "timed out" indicates the agent gave
 	// up on its own MCP-init wait budget and the pending session/new was aborted.
@@ -2239,6 +2254,29 @@ func (s *Server) BroadcastHealthRecycled(workspaceUUID, workspaceName, workingDi
 			"reason", reason,
 			"saturation_level", saturationLevel,
 			"session_count", sessionCount,
+			"clients", s.eventsManager.ClientCount())
+	}
+}
+
+// BroadcastAgentDegraded notifies all connected clients that a workspace's
+// shared ACP process entered (degraded=true) or recovered from (degraded=false)
+// a degraded state — saturated, MCP-init gated, or MCP-init wedged (mitto-13n.3).
+// Fired before an eventual health recycle, so this is often the ONLY
+// user-visible signal for the (potentially long) window during which the
+// process is degraded but not yet idle enough to recycle.
+func (s *Server) BroadcastAgentDegraded(workspaceUUID, workspaceName, workingDir, state string, degraded bool) {
+	s.eventsManager.Broadcast(WSMsgTypeAgentDegraded, map[string]interface{}{
+		"workspace_uuid": workspaceUUID,
+		"workspace_name": workspaceName,
+		"working_dir":    workingDir,
+		"state":          state,
+		"degraded":       degraded,
+	})
+	if s.logger != nil {
+		s.logger.Warn("Broadcast agent degraded",
+			"workspace_uuid", workspaceUUID,
+			"state", state,
+			"degraded", degraded,
 			"clients", s.eventsManager.ClientCount())
 	}
 }

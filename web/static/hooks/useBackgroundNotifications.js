@@ -98,6 +98,43 @@ export function useBackgroundNotifications({
     };
   }, [showToast]);
 
+  // Listen for degraded-state events (GC Tier 5 detected — or cleared — a
+  // saturated / MCP-init-gated / MCP-init-wedged shared ACP process, fired
+  // BEFORE an eventual health recycle, mitto-13n.3). This is the pre-recycle
+  // signal: a degraded process that stays busy (or not yet idle) can go
+  // unnoticed for a long time otherwise, since the health-recycle toast only
+  // fires once the process is actually stopped.
+  useEffect(() => {
+    const handleAgentDegraded = (event) => {
+      const data = event.detail;
+      if (!data) return;
+      const name =
+        data.workspace_name ||
+        (data.working_dir ? data.working_dir.split("/").pop() : "") ||
+        "a workspace";
+      if (data.degraded) {
+        showToast({
+          style: "warning",
+          title: `Agent degraded: ${name}`,
+          message:
+            "The agent process is stuck or slow to respond. Background features (titles, suggestions) are paused; it will be restarted automatically once idle.",
+          duration: 10000,
+        });
+      } else {
+        showToast({
+          style: "info",
+          title: `Agent recovered: ${name}`,
+          message: "The agent process is responding normally again.",
+          duration: 6000,
+        });
+      }
+    };
+    window.addEventListener("mitto:agent_degraded", handleAgentDegraded);
+    return () => {
+      window.removeEventListener("mitto:agent_degraded", handleAgentDegraded);
+    };
+  }, [showToast]);
+
   // Listen for MCP-init progress events (mitto-8ul.1): agent is blocked waiting
   // for MCP servers to initialize on cold start. Informational, low-priority toast.
   useEffect(() => {

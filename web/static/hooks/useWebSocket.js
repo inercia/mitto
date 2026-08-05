@@ -2133,6 +2133,7 @@ export function useWebSocket({
           is_prompting,
           prompt_name,
           argument_count,
+          arguments: promptArguments,
           meta,
         } = msg.data;
         console.log("user_prompt received:", {
@@ -2316,6 +2317,7 @@ export function useWebSocket({
               seq, // Include seq for ordering and deduplication
               promptName: prompt_name || undefined,
               argumentCount: argument_count || undefined,
+              arguments: promptArguments || undefined,
               meta: meta || undefined, // Generic event metadata conduit (experimental annotations only)
             };
             // Add image references if present, constructing full image objects
@@ -2466,6 +2468,20 @@ export function useWebSocket({
         if (msg.data) {
           window.dispatchEvent(
             new CustomEvent("mitto:agent_recycled", { detail: msg.data }),
+          );
+        }
+        break;
+
+      case "agent_degraded":
+        // Server notifies that a workspace's shared ACP process entered or
+        // recovered from a degraded state (saturated, MCP-init gated, or
+        // MCP-init wedged) — fired BEFORE an eventual health recycle, so this
+        // is often the only user-visible signal while the process is degraded
+        // but not yet idle enough to recycle (mitto-13n.3).
+        console.log("Agent degraded:", msg.data);
+        if (msg.data) {
+          window.dispatchEvent(
+            new CustomEvent("mitto:agent_degraded", { detail: msg.data }),
           );
         }
         break;

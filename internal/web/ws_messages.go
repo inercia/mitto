@@ -236,6 +236,25 @@ const (
 	// "saturation_level": int, "session_count": int }
 	WSMsgTypeHealthRecycled = "agent_recycled"
 
+	// WSMsgTypeAgentDegraded notifies that a workspace's shared ACP process has
+	// entered or recovered from a degraded state (mitto-13n.3): saturated by
+	// repeated RPC timeouts, permanently gated on a timed-out MCP-init
+	// handshake, or wedged in an MCP-init handshake that started but never
+	// completed. Unlike WSMsgTypeHealthRecycled (fired AFTER the process is
+	// stopped and only once the process is also fully idle), this fires as
+	// soon as GC Tier 5 detects the degraded predicate — closing the window
+	// where a busy or not-yet-idle degraded process gives the user no signal
+	// at all (previously observed lasting ~100 minutes with zero user-visible
+	// indication). Fired at most once per healthy<->degraded transition edge
+	// per workspace; the recovery edge (degraded=false) is NOT fired when the
+	// transition is itself a health recycle (WSMsgTypeHealthRecycled already
+	// covers that case). Broadcast on /api/events to all connected clients.
+	// Data: { "workspace_uuid": string, "workspace_name": string,
+	// "working_dir": string, "state": string
+	// ("process_saturated"|"mcp_init_gated"|"mcp_init_wedged"|""),
+	// "degraded": bool }
+	WSMsgTypeAgentDegraded = "agent_degraded"
+
 	// WSMsgTypeMCPInitializing notifies that the agent for a workspace is currently
 	// blocked waiting for one or more MCP servers to initialize (mitto-8ul.1). This is
 	// an informational "session/new may take longer than usual" hint the UI can use to

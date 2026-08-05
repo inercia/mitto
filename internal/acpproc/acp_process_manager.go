@@ -131,6 +131,27 @@ type ACPProcessManager struct {
 	// "confirmed_degraded" (Tier 6). Set after construction (see NewServer).
 	onHealthRecycled func(workspaceUUID, reason string, saturationLevel, sessionCount int)
 
+	// degradedMu guards degradedState. Written from the single-threaded GC
+	// loop (Tier 5, once per tick per workspace); a mutex is used anyway so
+	// any future concurrent reader is safe.
+	degradedMu sync.Mutex
+	// degradedState tracks, per workspace UUID, the current non-empty reason
+	// string from processDegradedState (mitto-13n.3), or is absent when the
+	// workspace's process is healthy. Used to detect transition edges so
+	// onDegraded fires exactly once per edge instead of once per GC tick.
+	degradedState map[string]string
+	// onDegraded, if set, is called on each healthy<->degraded transition
+	// edge for a workspace's shared ACP process (mitto-13n.3): once when
+	// processDegradedState first returns a non-empty reason (degraded=true,
+	// state=reason), and once when it returns to "" (degraded=false,
+	// state=""). Fired from GC Tier 5, BEFORE the idle safety gates that can
+	// hold off an actual health recycle indefinitely — this is the signal
+	// that closes the invisible pre-recycle window. Not fired on the
+	// recycle-driven recovery edge (see dropDegradedStateSilently), since
+	// onHealthRecycled already broadcasts a dedicated toast for that case.
+	// Set after construction (see NewServer).
+	onDegraded func(workspaceUUID, state string, degraded bool)
+
 	// gcSuspendedSessions tracks session IDs that were intentionally suspended
 	// by the GC's loop-suspend heuristic. When a loop session's next run
 	// is far away, the GC closes it and adds it here. The WebSocket auto-resume
@@ -338,6 +359,14 @@ func (m *ACPProcessManager) SetOnMemoryRecycled(fn func(workspaceUUID string, rs
 // ACP process is recycled (mitto-aoo).
 func (m *ACPProcessManager) SetOnHealthRecycled(fn func(workspaceUUID, reason string, saturationLevel, sessionCount int)) {
 	m.onHealthRecycled = fn
+}
+
+// SetOnDegraded sets the callback invoked on each healthy<->degraded
+// transition edge for a workspace's shared ACP process, fired by GC Tier 5
+// before its idle safety gates (mitto-13n.3). See the onDegraded field doc
+// for the exact semantics.
+func (m *ACPProcessManager) SetOnDegraded(fn func(workspaceUUID, state string, degraded bool)) {
+	m.onDegraded = fn
 }
 
 // UpdateMCPInitTimeout sets the extended MCP-init budget passed to every new
@@ -1211,7 +1240,12 @@ func (m *ACPProcessManager) getOrCreateAuxiliarySession(ctx context.Context, wor
 	// can back off and retry once the process has recovered.
 	if process.IsSaturated() {
 		if m.logger != nil {
-			m.logger.Info("Skipping auxiliary NewSession: shared process is saturated",
+			// mitto-13n.3: demoted from Info to Debug. This bail fires on every
+			// aux-session attempt while a process is saturated — dozens of times
+			// per incident (58 occurrences observed on 2026-08-05) — and is now
+			// redundant with the once-per-transition WARN the GC's degraded-state
+			// tracker emits (see updateDegradedState / acp_process_degraded.go).
+			m.logger.Debug("Skipping auxiliary NewSession: shared process is saturated",
 				"workspace_uuid", workspaceUUID,
 				"purpose", purpose,
 				"reason", "process_saturated")
@@ -1243,7 +1277,11 @@ func (m *ACPProcessManager) getOrCreateAuxiliarySession(ctx context.Context, wor
 	if isProactiveBailPurpose(purpose) {
 		if active := process.ActiveRPCs(); active >= auxSessionCreateBusyRPCThreshold {
 			if m.logger != nil {
-				m.logger.Info("Skipping auxiliary NewSession: shared process is busy",
+				// mitto-13n.3: demoted from Info to Debug (61 occurrences observed
+				// on 2026-08-05) — deliberately NOT surfaced by the degraded-state
+				// tracker either, since process_busy is momentary load, not a
+				// degraded process (see processDegradedState doc).
+				m.logger.Debug("Skipping auxiliary NewSession: shared process is busy",
 					"workspace_uuid", workspaceUUID,
 					"purpose", purpose,
 					"active_rpcs", active,
@@ -1279,7 +1317,9 @@ func (m *ACPProcessManager) getOrCreateAuxiliarySession(ctx context.Context, wor
 	//     mitto-29q).
 	if process.MCPInitTimedOut() || (process.MCPInitInProgress() && !process.MCPInitDone()) {
 		if m.logger != nil {
-			m.logger.Info("Skipping auxiliary NewSession: shared process is MCP-init gated",
+			// mitto-13n.3: demoted from Info to Debug, same rationale as the
+			// process_saturated bail above.
+			m.logger.Debug("Skipping auxiliary NewSession: shared process is MCP-init gated",
 				"workspace_uuid", workspaceUUID,
 				"purpose", purpose,
 				"mcp_init_timed_out", process.MCPInitTimedOut(),

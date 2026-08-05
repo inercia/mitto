@@ -740,6 +740,15 @@ gcTier1:
 			// such a process (including the adaptive prewarm health probe
 			// itself, which uses the same bail path) would never be recycled
 			// and would survive GC indefinitely.
+			//
+			// mitto-13n.3: degradedReason is the single shared predicate (see
+			// processDegradedState) also used to fire the pre-recycle
+			// degraded-state notification below, BEFORE the idle safety gates —
+			// those gates are exactly what can hold off an actual recycle
+			// indefinitely, leaving users with no signal in the meantime.
+			degradedReason := processDegradedState(p, now)
+			m.updateDegradedState(workspaceUUID, degradedReason)
+
 			mcpInitGated := p.MCPInitTimedOut()
 			// Third signal (mitto-13n.1): a process whose MCP-init handshake
 			// started (MCPInitInProgress()) but never completed (!MCPInitDone())
@@ -850,6 +859,11 @@ gcTier1:
 			if m.onHealthRecycled != nil {
 				m.onHealthRecycled(workspaceUUID, reason, saturationLevel, recycledCount)
 			}
+			// mitto-13n.3: drop the degraded-state entry WITHOUT firing the
+			// recovery edge — onHealthRecycled above already broadcasts a
+			// dedicated "agent restarted" toast for this exact transition, so
+			// also firing the degraded-recovery toast would double-notify.
+			m.dropDegradedStateSilently(workspaceUUID)
 		}
 	}
 
@@ -957,6 +971,9 @@ gcTier1:
 			if m.onHealthRecycled != nil {
 				m.onHealthRecycled(workspaceUUID, "confirmed_degraded", saturationLevel, recycledCount)
 			}
+			// mitto-13n.3: see the matching Tier 5 comment above — avoid a
+			// double notification alongside onHealthRecycled's own toast.
+			m.dropDegradedStateSilently(workspaceUUID)
 		}
 	}
 
