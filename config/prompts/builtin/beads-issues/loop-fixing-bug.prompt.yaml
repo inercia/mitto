@@ -1,6 +1,6 @@
 icon: loop
 name: Loop fixing bug
-menus: beadsIssues, conversation
+menus: beadsIssues, conversation, promptsLoop
 parameters:
   - name: IssueID
     type: beadsId

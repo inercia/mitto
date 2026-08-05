@@ -1,6 +1,6 @@
 icon: loop
 name: Loop until issue complete
-menus: beadsIssues, conversation
+menus: beadsIssues, conversation, promptsLoop
 parameters:
   - name: IssueID
     type: beadsId
