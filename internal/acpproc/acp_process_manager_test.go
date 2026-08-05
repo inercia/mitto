@@ -13,6 +13,7 @@ import (
 
 	acp "github.com/coder/acp-go-sdk"
 
+	"github.com/inercia/mitto/internal/acpproc/acperrors"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/conversation"
 )
@@ -1885,6 +1886,23 @@ func TestGetOrCreateAuxiliarySession_SaturatedBails(t *testing.T) {
 	if !strings.Contains(err.Error(), "saturated") {
 		t.Errorf("expected error message to mention 'saturated', got %q", err.Error())
 	}
+	// mitto-13n.2: the reactive IsSaturated() bail is real, timeout-driven
+	// degradation and must classify as the specific ErrProcessSaturated
+	// sentinel (not the busy or MCP-gated ones), while still satisfying the
+	// umbrella ErrSharedProcessSaturated for transition-era callers. This
+	// FAILS today because ErrProcessSaturated does not exist yet.
+	if !errors.Is(err, acperrors.ErrProcessSaturated) {
+		t.Errorf("expected err to wrap acperrors.ErrProcessSaturated, got %v", err)
+	}
+	if !errors.Is(err, ErrSharedProcessSaturated) {
+		t.Errorf("expected err to still wrap the umbrella ErrSharedProcessSaturated during transition, got %v", err)
+	}
+	if errors.Is(err, acperrors.ErrProcessBusy) {
+		t.Errorf("saturation bail must NOT classify as ErrProcessBusy, got %v", err)
+	}
+	if errors.Is(err, acperrors.ErrMCPInitGated) {
+		t.Errorf("saturation bail must NOT classify as ErrMCPInitGated, got %v", err)
+	}
 }
 
 // TestAuxiliaryModelTag_HonoursProfileOrder locks the "list order = priority"
@@ -2022,6 +2040,23 @@ func TestGetOrCreateAuxiliarySession_HighActiveRPCsBails(t *testing.T) {
 	if elapsed > 500*time.Millisecond {
 		t.Errorf("expected fast bail (<500ms), got %v — call fell through into NewSession", elapsed)
 	}
+	// mitto-13n.2: transient concurrent-RPC load-shedding is NOT the same
+	// as real degradation — it must classify as ErrProcessBusy specifically
+	// (not ErrProcessSaturated/ErrMCPInitGated), while still satisfying the
+	// umbrella sentinel for transition-era callers. FAILS today because
+	// ErrProcessBusy does not exist yet.
+	if !errors.Is(err, acperrors.ErrProcessBusy) {
+		t.Errorf("expected err to wrap acperrors.ErrProcessBusy, got %v", err)
+	}
+	if !errors.Is(err, ErrSharedProcessSaturated) {
+		t.Errorf("expected err to still wrap the umbrella ErrSharedProcessSaturated during transition, got %v", err)
+	}
+	if errors.Is(err, acperrors.ErrProcessSaturated) {
+		t.Errorf("busy bail must NOT classify as ErrProcessSaturated, got %v", err)
+	}
+	if errors.Is(err, acperrors.ErrMCPInitGated) {
+		t.Errorf("busy bail must NOT classify as ErrMCPInitGated, got %v", err)
+	}
 }
 
 // TestGetOrCreateAuxiliarySession_MCPInitTimedOutBails is the mitto-337
@@ -2080,6 +2115,23 @@ func TestGetOrCreateAuxiliarySession_MCPInitTimedOutBails(t *testing.T) {
 	if elapsed > 500*time.Millisecond {
 		t.Errorf("expected fast bail (<500ms), got %v — call fell through into NewSession", elapsed)
 	}
+	// mitto-13n.2: a wedged/timed-out MCP handshake is neither timeout-driven
+	// process degradation nor concurrent-RPC load — it must classify as
+	// ErrMCPInitGated specifically, while still satisfying the umbrella
+	// sentinel for transition-era callers. FAILS today because
+	// ErrMCPInitGated does not exist yet.
+	if !errors.Is(err, acperrors.ErrMCPInitGated) {
+		t.Errorf("expected err to wrap acperrors.ErrMCPInitGated, got %v", err)
+	}
+	if !errors.Is(err, ErrSharedProcessSaturated) {
+		t.Errorf("expected err to still wrap the umbrella ErrSharedProcessSaturated during transition, got %v", err)
+	}
+	if errors.Is(err, acperrors.ErrProcessSaturated) {
+		t.Errorf("mcp-init-timed-out bail must NOT classify as ErrProcessSaturated, got %v", err)
+	}
+	if errors.Is(err, acperrors.ErrProcessBusy) {
+		t.Errorf("mcp-init-timed-out bail must NOT classify as ErrProcessBusy, got %v", err)
+	}
 }
 
 // TestGetOrCreateAuxiliarySession_MCPInitInProgressBails is the mitto-337
@@ -2135,5 +2187,22 @@ func TestGetOrCreateAuxiliarySession_MCPInitInProgressBails(t *testing.T) {
 	}
 	if elapsed > 500*time.Millisecond {
 		t.Errorf("expected fast bail (<500ms), got %v — call fell through into NewSession", elapsed)
+	}
+	// mitto-13n.2: same classification contract as the timed-out (hard) case
+	// above — an in-progress/never-completed MCP handshake must classify as
+	// ErrMCPInitGated, not ErrProcessSaturated/ErrProcessBusy, while still
+	// satisfying the umbrella sentinel. FAILS today because ErrMCPInitGated
+	// does not exist yet.
+	if !errors.Is(err, acperrors.ErrMCPInitGated) {
+		t.Errorf("expected err to wrap acperrors.ErrMCPInitGated, got %v", err)
+	}
+	if !errors.Is(err, ErrSharedProcessSaturated) {
+		t.Errorf("expected err to still wrap the umbrella ErrSharedProcessSaturated during transition, got %v", err)
+	}
+	if errors.Is(err, acperrors.ErrProcessSaturated) {
+		t.Errorf("mcp-init-in-progress bail must NOT classify as ErrProcessSaturated, got %v", err)
+	}
+	if errors.Is(err, acperrors.ErrProcessBusy) {
+		t.Errorf("mcp-init-in-progress bail must NOT classify as ErrProcessBusy, got %v", err)
 	}
 }

@@ -1523,6 +1523,17 @@ func rpcErrorCode(err error) (int, bool) {
 // internal/acpproc — mitto-ammz.1).
 var ErrSharedProcessSaturated = acperrors.ErrSharedProcessSaturated
 
+// ErrProcessSaturated, ErrProcessBusy, and ErrMCPInitGated are re-exported
+// from internal/acpproc/acperrors (same rationale as ErrSharedProcessSaturated
+// above) so the three bail sites in acp_process_manager.go can return the
+// specific sentinel for their condition using the same acpproc-local name
+// they already use for the umbrella (mitto-13n.2).
+var (
+	ErrProcessSaturated = acperrors.ErrProcessSaturated
+	ErrProcessBusy      = acperrors.ErrProcessBusy
+	ErrMCPInitGated     = acperrors.ErrMCPInitGated
+)
+
 // IsAgentInternalDeadlineErr is re-exported from internal/acpproc/acperrors
 // (same rationale as ErrSharedProcessSaturated). Prefer acperrors as the
 // import path from packages that only need the classifier and do not depend

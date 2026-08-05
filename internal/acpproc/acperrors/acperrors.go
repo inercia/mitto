@@ -12,19 +12,52 @@ package acperrors
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 
 	acp "github.com/coder/acp-go-sdk"
 )
 
-// ErrSharedProcessSaturated is the sentinel returned by both aux-session bail
-// paths in acpproc.ACPProcessManager.getOrCreateAuxiliarySession — the
-// reactive saturation bail (mitto-z70) and the proactive ActiveRPCs bail
-// (mitto-9gt). Callers running their own retry loops (e.g. title-gen,
-// mitto-ammz.1) can errors.Is for this sentinel and abandon their loop
-// instead of piling further NewSession RPCs onto an already-struggling
-// shared process.
+// ErrSharedProcessSaturated is the umbrella sentinel returned by all three
+// aux-session bail paths in acpproc.ACPProcessManager.getOrCreateAuxiliarySession
+// — the reactive saturation bail (mitto-z70), the proactive ActiveRPCs bail
+// (mitto-9gt), and the MCP-init-aware bail (mitto-337). Callers running their
+// own retry loops (e.g. title-gen, mitto-ammz.1) can errors.Is for this
+// sentinel and abandon their loop instead of piling further NewSession RPCs
+// onto an already-struggling shared process.
+//
+// mitto-13n.2: the three bails above are conceptually distinct conditions
+// (real timeout-driven degradation vs. transient concurrent-RPC load vs. a
+// wedged/in-progress MCP handshake) that historically shared this one
+// sentinel, preventing callers from telling them apart. ErrProcessSaturated,
+// ErrProcessBusy, and ErrMCPInitGated below give each condition its own
+// identity while each wraps this umbrella so errors.Is(err,
+// ErrSharedProcessSaturated) keeps working for callers that have not yet
+// migrated to the granular sentinels (e.g. internal/processors/apply.go's
+// string-matched isSaturationDispatchErr).
 var ErrSharedProcessSaturated = errors.New("shared ACP process is saturated")
+
+// ErrProcessSaturated is the sentinel returned by the REACTIVE saturation
+// bail (mitto-z70): the shared process has already been flagged saturated by
+// repeated RPC timeouts or a cold-MCP wedge. Wraps ErrSharedProcessSaturated
+// for transition-era callers.
+var ErrProcessSaturated = fmt.Errorf("%w: process saturated (reactive degradation)", ErrSharedProcessSaturated)
+
+// ErrProcessBusy is the sentinel returned by the PROACTIVE load-based bail
+// (mitto-9gt): the shared process is currently serving more concurrent
+// user-facing RPCs than the configured threshold. This is transient
+// load-shedding, not the same condition as ErrProcessSaturated — it clears as
+// soon as concurrent load drops, with no GC recycle involved. Wraps
+// ErrSharedProcessSaturated for transition-era callers.
+var ErrProcessBusy = fmt.Errorf("%w: process busy (concurrent RPC load-shedding)", ErrSharedProcessSaturated)
+
+// ErrMCPInitGated is the sentinel returned by the MCP-init-aware bail
+// (mitto-337): the shared process has either given up on its MCP handshake
+// (MCPInitTimedOut) or is still in the middle of one that has never completed
+// (MCPInitInProgress && !MCPInitDone). Distinct from both saturation and
+// busy-load, since the process may otherwise be quiescent. Wraps
+// ErrSharedProcessSaturated for transition-era callers.
+var ErrMCPInitGated = fmt.Errorf("%w: process mcp-init gated", ErrSharedProcessSaturated)
 
 // IsAgentInternalDeadlineErr reports whether err is the agent's OWN internal
 // deadline firing on a session/new (or session/load) RPC — the auggie

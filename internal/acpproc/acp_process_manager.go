@@ -1216,11 +1216,12 @@ func (m *ACPProcessManager) getOrCreateAuxiliarySession(ctx context.Context, wor
 				"purpose", purpose,
 				"reason", "process_saturated")
 		}
-		// Wrap BOTH ErrSharedProcessSaturated (so callers with their own
-		// retry loops — e.g. title-gen, mitto-ammz.1 — can classify and
-		// abandon) AND context.DeadlineExceeded (preserved for pre-existing
-		// callers that only checked DeadlineExceeded).
-		return nil, fmt.Errorf("%w; skipping auxiliary session creation for purpose %q: %w", ErrSharedProcessSaturated, purpose, context.DeadlineExceeded)
+		// Wrap ErrProcessSaturated (mitto-13n.2: the specific reactive
+		// sentinel, which itself wraps the umbrella ErrSharedProcessSaturated
+		// for transition-era callers with their own retry loops — e.g.
+		// title-gen, mitto-ammz.1) AND context.DeadlineExceeded (preserved
+		// for pre-existing callers that only checked DeadlineExceeded).
+		return nil, fmt.Errorf("%w; skipping auxiliary session creation for purpose %q: %w", ErrProcessSaturated, purpose, context.DeadlineExceeded)
 	}
 
 	// Proactive load-based bail (mitto-9gt): the IsSaturated() guard above is
@@ -1249,11 +1250,12 @@ func (m *ACPProcessManager) getOrCreateAuxiliarySession(ctx context.Context, wor
 					"threshold", auxSessionCreateBusyRPCThreshold,
 					"reason", "process_busy")
 			}
-			// Same rationale as the mitto-z70 bail above: wrap
-			// ErrSharedProcessSaturated so caller-side retry loops (mitto-ammz.1)
-			// can classify and abandon, while keeping the DeadlineExceeded chain
-			// for pre-existing callers.
-			return nil, fmt.Errorf("%w: shared ACP process is busy (%d active RPCs >= threshold %d); skipping auxiliary session creation for purpose %q: %w", ErrSharedProcessSaturated, active, auxSessionCreateBusyRPCThreshold, purpose, context.DeadlineExceeded)
+			// Wrap ErrProcessBusy (mitto-13n.2: the specific proactive
+			// load-shedding sentinel, which itself wraps the umbrella
+			// ErrSharedProcessSaturated so caller-side retry loops
+			// (mitto-ammz.1) can still classify and abandon), while keeping
+			// the DeadlineExceeded chain for pre-existing callers.
+			return nil, fmt.Errorf("%w: shared ACP process is busy (%d active RPCs >= threshold %d); skipping auxiliary session creation for purpose %q: %w", ErrProcessBusy, active, auxSessionCreateBusyRPCThreshold, purpose, context.DeadlineExceeded)
 		}
 	}
 
@@ -1285,7 +1287,11 @@ func (m *ACPProcessManager) getOrCreateAuxiliarySession(ctx context.Context, wor
 				"mcp_init_done", process.MCPInitDone(),
 				"reason", "mcp_init_gated")
 		}
-		return nil, fmt.Errorf("%w: shared ACP process is mcp-init gated; skipping auxiliary session creation for purpose %q: %w", ErrSharedProcessSaturated, purpose, context.DeadlineExceeded)
+		// Wrap ErrMCPInitGated (mitto-13n.2: the specific MCP-handshake
+		// sentinel, which itself wraps the umbrella ErrSharedProcessSaturated
+		// for transition-era callers), while keeping the DeadlineExceeded
+		// chain for pre-existing callers.
+		return nil, fmt.Errorf("%w: shared ACP process is mcp-init gated; skipping auxiliary session creation for purpose %q: %w", ErrMCPInitGated, purpose, context.DeadlineExceeded)
 	}
 
 	// Instrument auxiliary session creation so cold-start / prewarm timing is
