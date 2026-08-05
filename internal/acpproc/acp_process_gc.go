@@ -732,8 +732,16 @@ gcTier1:
 				continue
 			}
 
-			// Only act on degraded processes.
-			if !p.IsSaturated() {
+			// Act on degraded processes, OR a process permanently gated on a
+			// timed-out MCP-init handshake (mitto-13n). The mcp_init_gated bail
+			// in getOrCreateAuxiliarySession returns before any RPC is
+			// attempted, so it never calls recordRPCTimeout/etc and
+			// IsSaturated() stays false forever — without this second signal
+			// such a process (including the adaptive prewarm health probe
+			// itself, which uses the same bail path) would never be recycled
+			// and would survive GC indefinitely.
+			mcpInitGated := p.MCPInitTimedOut()
+			if !p.IsSaturated() && !mcpInitGated {
 				continue
 			}
 
@@ -787,12 +795,18 @@ gcTier1:
 				continue
 			}
 
-			// Saturated and idle — recycle to reclaim a healthy process.
+			// Saturated (or mcp-init-gated) and idle — recycle to reclaim a
+			// healthy process.
 			saturationLevel := p.SaturationLevel()
+			reason := "saturated_idle"
+			if mcpInitGated && !p.IsSaturated() {
+				reason = "mcp_init_gated"
+			}
 			if m.logger != nil {
 				m.logger.Info("GC: recycling saturated idle shared ACP process",
 					"workspace_uuid", workspaceUUID,
-					"session_count", len(sessions))
+					"session_count", len(sessions),
+					"reason", reason)
 			}
 			// Mark each session GC-suspended BEFORE closing so the WebSocket
 			// auto-resume handler skips resume and avoids a thrash loop — same
@@ -816,7 +830,7 @@ gcTier1:
 			// process otherwise recycles silently and users are left reading a
 			// misleading agent-side error.
 			if m.onHealthRecycled != nil {
-				m.onHealthRecycled(workspaceUUID, "saturated_idle", saturationLevel, recycledCount)
+				m.onHealthRecycled(workspaceUUID, reason, saturationLevel, recycledCount)
 			}
 		}
 	}

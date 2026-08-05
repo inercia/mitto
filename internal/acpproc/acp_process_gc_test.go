@@ -1696,6 +1696,95 @@ func TestGCHealthTier_OnHealthRecycledCallback(t *testing.T) {
 	}
 }
 
+// TestGCHealthTier_RecyclesMCPInitGatedProcess is the mitto-13n regression
+// test: a shared ACP process whose stderr monitor has observed the agent
+// report "MCP initialization timed out" (mcpInitTimedOut=true) is permanently
+// gated in getOrCreateAuxiliarySession (the "mcp_init_gated" bail in
+// acp_process_manager.go) — every auxiliary NewSession call (title-gen,
+// follow-up, keepalive, the adaptive prewarm health probe itself) bails
+// before issuing an RPC, so mcpInitTimedOut is NEVER cleared (it is only
+// cleared by beginMCPInitWindow(), called from an actual NewSession/
+// LoadSession attempt) and the gate never opens.
+//
+// Before the fix, Tier 5 (the GC's only proactive health-recycle path for an
+// idle process) gated exclusively on IsSaturated(), which reads the SEPARATE
+// saturatedUntil state set only by recordRPCTimeout/recordRPCWedgeFailure/etc
+// — none of which getOrCreateAuxiliarySession's early-return bails ever call.
+// So a process that has only ever hit the mcp_init_gated bail had
+// IsSaturated()==false and IsConfirmedDegraded()==false: Tier 5/6 never saw
+// it, even though it was fully idle (zero sessions) and permanently unable to
+// serve auxiliary work — surviving GC forever.
+//
+// Tier 5 now also treats MCPInitTimedOut()==true as a health-recycle signal
+// (independent of IsSaturated()), so this idle mcp-init-gated process is
+// recycled and this test verifies that outcome, plus the "mcp_init_gated"
+// reason surfaced via onHealthRecycled.
+func TestGCHealthTier_RecyclesMCPInitGatedProcess(t *testing.T) {
+	workspaceUUID := "ws-mcp-init-gated"
+	proc := newTestSharedProcess()
+	proc.mcpInitTimedOut.Store(true)
+
+	// Preconditions: confirm this process is invisible to the saturation
+	// signal, isolating this test from the already-covered saturation-timeout
+	// path (TestGCHealthTier_RecyclesSaturatedIdleProcess) — recycling here
+	// must be driven solely by MCPInitTimedOut().
+	if proc.IsSaturated() {
+		t.Fatal("test setup: mcp-init-timed-out process must read IsSaturated()=false (isolates the gap from the timeout-driven saturation path)")
+	}
+	if proc.IsConfirmedDegraded() {
+		t.Fatal("test setup: mcp-init-timed-out process must read IsConfirmedDegraded()=false")
+	}
+
+	// Zero sessions: this workspace is otherwise fully idle, satisfying every
+	// hard safety gate Tier 5 already checks (ActiveRPCs()==0, no prompting
+	// session, no queued work, no imminent loop). The only thing that used to
+	// keep this process alive was the missing MCPInitTimedOut() health signal.
+	sessions := map[string][]conversation.SessionInfo{}
+
+	var mu sync.Mutex
+	m := newTestGCManager(
+		func() map[string][]conversation.SessionInfo { return sessions },
+		func(id string) {},
+	)
+	m.mu.Lock()
+	m.processes[workspaceUUID] = proc
+	m.mu.Unlock()
+	// Keep this workspace out of Tier 2's idle-timeout path (which recycles
+	// purely on session absence + grace period, unrelated to health) so a
+	// pass fairly isolates the Tier 5 health-recycle path under test.
+	m.lastSessionSeen[workspaceUUID] = time.Now()
+	m.gcConfig.MemoryRecycleThreshold = gcTier4Threshold
+	m.rssSampler = func(p *SharedACPProcess) (uint64, error) { return gcTier4Threshold / 2, nil }
+
+	var calls int
+	var gotReason string
+	m.onHealthRecycled = func(_, reason string, _, _ int) {
+		mu.Lock()
+		defer mu.Unlock()
+		calls++
+		gotReason = reason
+	}
+
+	m.RunGCOnce()
+
+	m.mu.RLock()
+	_, exists := m.processes[workspaceUUID]
+	m.mu.RUnlock()
+	if exists {
+		t.Fatal("mcp-init-gated idle process was NOT recycled by any GC health tier " +
+			"— it would survive indefinitely while every auxiliary call keeps bailing on it")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("expected onHealthRecycled to be called once, got %d", calls)
+	}
+	if gotReason != "mcp_init_gated" {
+		t.Errorf("expected reason %q, got %q", "mcp_init_gated", gotReason)
+	}
+}
+
 // driveToConfirmedDegraded pushes proc's saturation state machine to
 // saturationLevel >= confirmedDegradedLevel (2), mirroring the real sequence:
 // trip saturation (threshold consecutive timeouts) -> cooldown elapses (probe
