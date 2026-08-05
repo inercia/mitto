@@ -2708,7 +2708,9 @@ func (c *SessionWSClient) OnActionButtons(buttons []conversation.ActionButton) {
 // promptName is the name of the workspace prompt used (empty for ad-hoc prompts).
 // seq is the sequence number for this user prompt event.
 // argumentCount is the number of Go-template .Args arguments supplied (0 for ad-hoc or no-arg named prompts).
-func (c *SessionWSClient) OnUserPrompt(seq int64, senderID, promptID, message string, imageIDs, fileIDs []string, promptName string, argumentCount int) {
+// arguments carries the raw (exactly replayable) .Args values, with sensitive-named keys already
+// omitted; nil for ad-hoc prompts or when any argument was sensitive.
+func (c *SessionWSClient) OnUserPrompt(seq int64, senderID, promptID, message string, imageIDs, fileIDs []string, promptName string, argumentCount int, arguments map[string]string) {
 	// Always deliver user_prompt to the client — do NOT skip based on lastSentSeq.
 	// Unlike streamed agent_message chunks, user_prompt is a one-shot event.
 	// The frontend's alreadyExists check (by seq) handles dedup if events_loaded
@@ -2750,6 +2752,9 @@ func (c *SessionWSClient) OnUserPrompt(seq int64, senderID, promptID, message st
 	}
 	if argumentCount > 0 {
 		data["argument_count"] = argumentCount
+	}
+	if len(arguments) > 0 {
+		data["arguments"] = arguments
 	}
 
 	// Attach and clear any pending generic metadata stored by OnEventMeta.

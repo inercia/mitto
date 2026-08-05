@@ -144,7 +144,9 @@ type SessionObserver interface {
 	// promptName is the name of the workspace prompt used (empty string for ad-hoc prompts).
 	// seq is the sequence number for this user prompt event.
 	// argumentCount is the number of Go-template .Args arguments supplied (0 for ad-hoc or no-arg named prompts).
-	OnUserPrompt(seq int64, senderID, promptID, message string, imageIDs, fileIDs []string, promptName string, argumentCount int)
+	// arguments carries the raw (exactly replayable) .Args values, with sensitive-named keys
+	// already omitted by the caller; nil for ad-hoc prompts or when any argument was sensitive.
+	OnUserPrompt(seq int64, senderID, promptID, message string, imageIDs, fileIDs []string, promptName string, argumentCount int, arguments map[string]string)
 
 	// OnError is called when an error occurs.
 	OnError(message string)

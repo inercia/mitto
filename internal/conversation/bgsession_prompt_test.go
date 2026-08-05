@@ -99,6 +99,60 @@ func TestBuildArgumentMetadata_Empty(t *testing.T) {
 	}
 }
 
+func TestPersistableArguments_Empty(t *testing.T) {
+	if got := persistableArguments(nil); got != nil {
+		t.Errorf("persistableArguments(nil) = %v, want nil", got)
+	}
+	if got := persistableArguments(map[string]string{}); got != nil {
+		t.Errorf("persistableArguments(empty map) = %v, want nil", got)
+	}
+}
+
+func TestPersistableArguments_ExactRoundTripNoRedaction(t *testing.T) {
+	// Values are NOT truncated or redacted, unlike buildArgumentMetadata/redactArgValue —
+	// they must be exactly replayable for retry.
+	longValue := strings.Repeat("x", maxArgValueLen+20)
+	args := map[string]string{"IssueID": "mitto-123", "Notes": longValue}
+	got := persistableArguments(args)
+	if got["IssueID"] != "mitto-123" {
+		t.Errorf("IssueID = %q, want unmodified %q", got["IssueID"], "mitto-123")
+	}
+	if got["Notes"] != longValue {
+		t.Errorf("Notes was modified; got %d runes, want %d runes untruncated", len([]rune(got["Notes"])), len([]rune(longValue)))
+	}
+}
+
+func TestPersistableArguments_OmitsSensitiveKeysEntirely(t *testing.T) {
+	args := map[string]string{
+		"IssueID":  "mitto-123",
+		"password": "hunter2",
+		"apikey":   "sk-live-abc",
+	}
+	got := persistableArguments(args)
+	if _, ok := got["password"]; ok {
+		t.Errorf("sensitive key %q must be entirely absent, got %v", "password", got)
+	}
+	if _, ok := got["apikey"]; ok {
+		t.Errorf("sensitive key %q must be entirely absent, got %v", "apikey", got)
+	}
+	if got["IssueID"] != "mitto-123" {
+		t.Errorf("non-sensitive key IssueID = %q, want %q", got["IssueID"], "mitto-123")
+	}
+	// No "***" placeholder anywhere — the key is absent, not redacted in place.
+	for _, v := range got {
+		if v == "***" {
+			t.Errorf("found a \"***\" placeholder value; persistableArguments must omit, not redact")
+		}
+	}
+}
+
+func TestPersistableArguments_AllSensitiveReturnsNil(t *testing.T) {
+	args := map[string]string{"password": "hunter2", "secret": "shh"}
+	if got := persistableArguments(args); got != nil {
+		t.Errorf("persistableArguments(all sensitive) = %v, want nil", got)
+	}
+}
+
 func TestRedactArgValue_Truncation(t *testing.T) {
 	// Unicode-safe: 80 runes of multi-byte content
 	unicodeVal := strings.Repeat("é", 90)

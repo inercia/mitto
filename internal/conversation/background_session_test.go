@@ -800,7 +800,7 @@ func (m *mockSessionObserver) OnPromptComplete(eventCount int) {
 	m.completed = true
 }
 
-func (m *mockSessionObserver) OnUserPrompt(seq int64, senderID, promptID, message string, imageIDs, fileIDs []string, promptName string, argumentCount int) {
+func (m *mockSessionObserver) OnUserPrompt(seq int64, senderID, promptID, message string, imageIDs, fileIDs []string, promptName string, argumentCount int, arguments map[string]string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.userPromptMessages = append(m.userPromptMessages, message)
@@ -2319,7 +2319,7 @@ func (o *trackingObserver) OnPlan(seq int64, entries []PlanEntry)             {}
 func (o *trackingObserver) OnFileWrite(seq int64, path string, size int)      {}
 func (o *trackingObserver) OnFileRead(seq int64, path string, size int)       {}
 func (o *trackingObserver) OnPromptComplete(eventCount int)                   {}
-func (o *trackingObserver) OnUserPrompt(seq int64, senderID, promptID, message string, imageIDs, fileIDs []string, promptName string, argumentCount int) {
+func (o *trackingObserver) OnUserPrompt(seq int64, senderID, promptID, message string, imageIDs, fileIDs []string, promptName string, argumentCount int, arguments map[string]string) {
 }
 func (o *trackingObserver) OnError(message string)                                   {}
 func (o *trackingObserver) OnQueueUpdated(queueLength int, action, messageID string) {}
@@ -3103,7 +3103,7 @@ func TestSeqUniqueness_ConcurrentStreamingAndUserPrompt(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		userSeq := bs.getNextSeq()
-		_ = recorder.RecordUserPromptCompleteWithSeq(userSeq, "hello", nil, nil, "", "", 0)
+		_ = recorder.RecordUserPromptCompleteWithSeq(userSeq, "hello", nil, nil, "", "", 0, nil)
 	}()
 
 	wg.Wait()
@@ -3170,7 +3170,7 @@ func TestFreshContextPillOrdering_PillSeqBeforeUserPromptSeq(t *testing.T) {
 	userPromptSeq := bs.getNextSeq()
 
 	// Persist the user prompt (matches PromptWithMeta L477-L484).
-	if err := recorder.RecordUserPromptCompleteWithSeq(userPromptSeq, "hello", nil, nil, "", "", 0); err != nil {
+	if err := recorder.RecordUserPromptCompleteWithSeq(userPromptSeq, "hello", nil, nil, "", "", 0, nil); err != nil {
 		t.Fatalf("RecordUserPromptCompleteWithSeq failed: %v", err)
 	}
 
@@ -3280,7 +3280,7 @@ func TestFreshContextPillOrdering_NewSessionKind(t *testing.T) {
 	pillSeq := bs.getNextSeq()
 	userPromptSeq := bs.getNextSeq()
 
-	if err := recorder.RecordUserPromptCompleteWithSeq(userPromptSeq, "hello", nil, nil, "", "", 0); err != nil {
+	if err := recorder.RecordUserPromptCompleteWithSeq(userPromptSeq, "hello", nil, nil, "", "", 0, nil); err != nil {
 		t.Fatalf("RecordUserPromptCompleteWithSeq failed: %v", err)
 	}
 	bs.cmRecordSessionChangeWithSeq(pillSeq, "context_cleared", "new_session", "")
@@ -3342,7 +3342,7 @@ func TestFreshContextPillOrdering_FlushFailureLeavesSeqGap(t *testing.T) {
 	pillSeq := bs.getNextSeq()
 	userPromptSeq := bs.getNextSeq()
 
-	if err := recorder.RecordUserPromptCompleteWithSeq(userPromptSeq, "hello", nil, nil, "", "", 0); err != nil {
+	if err := recorder.RecordUserPromptCompleteWithSeq(userPromptSeq, "hello", nil, nil, "", "", 0, nil); err != nil {
 		t.Fatalf("RecordUserPromptCompleteWithSeq failed: %v", err)
 	}
 

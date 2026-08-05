@@ -57,7 +57,7 @@ func (m *mockObserver) OnPromptComplete(eventCount int) {
 	m.promptsDone++
 }
 
-func (m *mockObserver) OnUserPrompt(seq int64, senderID, promptID, message string, imageIDs, fileIDs []string, promptName string, argumentCount int) {
+func (m *mockObserver) OnUserPrompt(seq int64, senderID, promptID, message string, imageIDs, fileIDs []string, promptName string, argumentCount int, arguments map[string]string) {
 	m.userPrompts = append(m.userPrompts, message)
 }
 

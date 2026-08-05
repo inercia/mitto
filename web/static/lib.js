@@ -705,6 +705,7 @@ export function convertEventsToMessages(events, options = {}) {
           seq,
           promptName: event.data?.prompt_name || undefined,
           argumentCount: event.data?.argument_count || undefined,
+          arguments: event.data?.arguments || undefined,
           meta: event.data?.meta || undefined,
         };
         // Convert stored image references to full image objects with URLs
@@ -2060,28 +2061,67 @@ export async function copyToClipboard(text) {
  * @returns {string}
  */
 /**
- * Build a map from error-message index → retry payload { text, images }.
+ * Build a map from error-message index → retry payload
+ * { text, images, promptName, argumentCount, arguments }.
  * Single forward pass: tracks the most recent user message that has truthy
  * `.text`; when an error message is encountered, records that payload.
+ * promptName/argumentCount/arguments are carried through so a retry can
+ * replay the original named prompt exactly (see MessageList.js retry handler).
  *
  * @param {Array} displayMessages - The ordered (forward) array of messages
- * @returns {Map<number, {text: string, images: Array}>} index → retry payload
+ * @returns {Map<number, {text: string, images: Array, promptName: (string|undefined), argumentCount: (number|undefined), arguments: (Object|undefined)}>} index → retry payload
  */
 export function buildRetryTargets(displayMessages) {
   const map = new Map();
   if (!Array.isArray(displayMessages)) return map;
   let lastUserText = null;
   let lastUserImages = [];
+  let lastUserPromptName;
+  let lastUserArgumentCount;
+  let lastUserArguments;
   for (let i = 0; i < displayMessages.length; i++) {
     const msg = displayMessages[i];
     if (msg.role === ROLE_USER && msg.text) {
       lastUserText = msg.text;
       lastUserImages = msg.images || [];
+      lastUserPromptName = msg.promptName;
+      lastUserArgumentCount = msg.argumentCount;
+      lastUserArguments = msg.arguments;
     } else if (msg.role === ROLE_ERROR && lastUserText !== null) {
-      map.set(i, { text: lastUserText, images: lastUserImages });
+      map.set(i, {
+        text: lastUserText,
+        images: lastUserImages,
+        promptName: lastUserPromptName,
+        argumentCount: lastUserArgumentCount,
+        arguments: lastUserArguments,
+      });
     }
   }
   return map;
+}
+
+/**
+ * Decide whether a retry target (from buildRetryTargets) can be replayed as
+ * the original named prompt (preserving its UI pill, modelTag/preferredModels
+ * routing, and prompt-level processing) instead of falling back to plain
+ * full-text replay.
+ *
+ * True only when the target has a promptName AND either the prompt took no
+ * arguments (argumentCount falsy) or the persisted `arguments` map has at
+ * least `argumentCount` entries. Older events with no persisted arguments,
+ * and events where a sensitive argument was omitted at persist time (map
+ * has fewer entries than argumentCount), fall back to full-text replay.
+ *
+ * @param {{promptName: (string|undefined), argumentCount: (number|undefined), arguments: (Object|undefined)}} target
+ * @returns {boolean}
+ */
+export function canReplayNamedPrompt(target) {
+  if (!target || !target.promptName) return false;
+  if (!target.argumentCount) return true;
+  return (
+    !!target.arguments &&
+    Object.keys(target.arguments).length >= target.argumentCount
+  );
 }
 
 /**

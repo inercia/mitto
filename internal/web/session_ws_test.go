@@ -1115,7 +1115,7 @@ func TestSessionWSClient_OnUserPrompt_ArgumentCount(t *testing.T) {
 				wsConn:    &WSConn{send: mockWS.send},
 			}
 
-			client.OnUserPrompt(1, "client-1", "pid-1", "hello", nil, nil, tc.promptName, tc.argumentCount)
+			client.OnUserPrompt(1, "client-1", "pid-1", "hello", nil, nil, tc.promptName, tc.argumentCount, nil)
 
 			// Read from the send channel (same pattern as TestSessionWSClient_OnAvailableCommandsUpdated)
 			select {
@@ -1151,6 +1151,76 @@ func TestSessionWSClient_OnUserPrompt_ArgumentCount(t *testing.T) {
 	}
 }
 
+// TestSessionWSClient_OnUserPrompt_Arguments verifies that the WS user_prompt
+// payload includes the "arguments" map when non-empty, and omits it when nil/empty
+// (mitto-e2h: retry replay needs the raw argument values, not just the count).
+func TestSessionWSClient_OnUserPrompt_Arguments(t *testing.T) {
+	tests := []struct {
+		name         string
+		arguments    map[string]string
+		wantHasArgs  bool
+		wantArgValue string
+	}{
+		{
+			name:         "with arguments",
+			arguments:    map[string]string{"IssueID": "mitto-123"},
+			wantHasArgs:  true,
+			wantArgValue: "mitto-123",
+		},
+		{
+			name:        "nil arguments",
+			arguments:   nil,
+			wantHasArgs: false,
+		},
+		{
+			name:        "empty arguments map",
+			arguments:   map[string]string{},
+			wantHasArgs: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			mockWS := newMockWSConn()
+			client := &SessionWSClient{
+				sessionID: "test-session",
+				clientID:  "client-1",
+				wsConn:    &WSConn{send: mockWS.send},
+			}
+
+			client.OnUserPrompt(1, "client-1", "pid-1", "hello", nil, nil, "my-prompt", 1, tc.arguments)
+
+			select {
+			case msgBytes := <-mockWS.send:
+				var msg struct {
+					Type string                 `json:"type"`
+					Data map[string]interface{} `json:"data"`
+				}
+				if err := json.Unmarshal(msgBytes, &msg); err != nil {
+					t.Fatalf("failed to unmarshal message: %v", err)
+				}
+				argsVal, hasArgs := msg.Data["arguments"]
+				if tc.wantHasArgs {
+					if !hasArgs {
+						t.Fatalf("expected \"arguments\" in payload, got none")
+					}
+					argsMap, ok := argsVal.(map[string]interface{})
+					if !ok {
+						t.Fatalf("arguments has type %T, want map[string]interface{}", argsVal)
+					}
+					if argsMap["IssueID"] != tc.wantArgValue {
+						t.Errorf("arguments[IssueID] = %v, want %q", argsMap["IssueID"], tc.wantArgValue)
+					}
+				} else if hasArgs {
+					t.Errorf("expected \"arguments\" absent from payload, got %v", argsVal)
+				}
+			case <-time.After(100 * time.Millisecond):
+				t.Error("expected user_prompt message on send channel but got none")
+			}
+		})
+	}
+}
+
 // TestSessionWSClient_OnEventMeta_AttachedToUserPrompt verifies that meta stored via
 // OnEventMeta is attached to the subsequent user_prompt WebSocket payload, and that
 // without OnEventMeta the "meta" key is absent from the payload.
@@ -1168,7 +1238,7 @@ func TestSessionWSClient_OnEventMeta_AttachedToUserPrompt(t *testing.T) {
 
 		// Simulate the ordering guarantee: OnEventMeta fires before OnUserPrompt.
 		client.OnEventMeta(seq, metaIn)
-		client.OnUserPrompt(seq, "client-1", "pid-1", "hello", nil, nil, "", 0)
+		client.OnUserPrompt(seq, "client-1", "pid-1", "hello", nil, nil, "", 0, nil)
 
 		select {
 		case msgBytes := <-mockWS.send:
@@ -1206,7 +1276,7 @@ func TestSessionWSClient_OnEventMeta_AttachedToUserPrompt(t *testing.T) {
 			wsConn:    &WSConn{send: mockWS.send},
 		}
 
-		client.OnUserPrompt(1, "client-1", "pid-1", "hello", nil, nil, "", 0)
+		client.OnUserPrompt(1, "client-1", "pid-1", "hello", nil, nil, "", 0, nil)
 
 		select {
 		case msgBytes := <-mockWS.send:
@@ -1236,11 +1306,11 @@ func TestSessionWSClient_OnEventMeta_AttachedToUserPrompt(t *testing.T) {
 		const seq = int64(10)
 		client.OnEventMeta(seq, map[string]any{"once": true})
 		// First call consumes the meta.
-		client.OnUserPrompt(seq, "client-1", "pid-1", "msg1", nil, nil, "", 0)
+		client.OnUserPrompt(seq, "client-1", "pid-1", "msg1", nil, nil, "", 0, nil)
 		<-mockWS.send // drain first message
 
 		// Second call for same seq must NOT have meta.
-		client.OnUserPrompt(seq, "client-1", "pid-1", "msg2", nil, nil, "", 0)
+		client.OnUserPrompt(seq, "client-1", "pid-1", "msg2", nil, nil, "", 0, nil)
 
 		select {
 		case msgBytes := <-mockWS.send:
@@ -1269,7 +1339,7 @@ func TestSessionWSClient_OnEventMeta_AttachedToUserPrompt(t *testing.T) {
 
 		const seq = int64(99)
 		client.OnEventMeta(seq, map[string]any{"argument_names": []string{"ISSUE_ID", "PROJECT"}})
-		client.OnUserPrompt(seq, "client-1", "pid-1", "review", nil, nil, "Review", 2)
+		client.OnUserPrompt(seq, "client-1", "pid-1", "review", nil, nil, "Review", 2, nil)
 
 		select {
 		case msgBytes := <-mockWS.send:

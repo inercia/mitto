@@ -54,6 +54,31 @@ func redactArgValue(name, value string) string {
 	return value
 }
 
+// persistableArguments returns a copy of args with any sensitive-named keys
+// (per isSensitiveArgName) omitted entirely, for exact-replay persistence in
+// the user_prompt event and broadcast. Unlike redactArgValue/buildArgumentMetadata,
+// surviving values are stored raw and untruncated — the persisted map must be
+// exactly replayable or the key must be absent (never a "***" placeholder or a
+// truncated value). Returns nil when args is empty or nothing survives
+// filtering, so callers can rely on it for both the recorder (omitempty) and
+// the observer notification.
+func persistableArguments(args map[string]string) map[string]string {
+	if len(args) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(args))
+	for name, value := range args {
+		if isSensitiveArgName(name) {
+			continue
+		}
+		out[name] = value
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 // buildArgumentMetadata derives the sorted argument_names list and the ordered
 // arguments bag ([]map[string]any with "name"/"value" keys) from the raw args map.
 // Values are processed through redactArgValue before inclusion.
@@ -506,6 +531,12 @@ retryAfterRestart:
 	// event is ordered atomically with respect to any concurrent streaming events.
 	// This avoids the duplicate/out-of-order seq bug caused by AppendEvent assigning
 	// seq independently from the in-memory counter.
+	// persistArgs holds the raw (exactly replayable) argument values to persist
+	// and broadcast, with sensitive-named keys omitted (see persistableArguments).
+	// Computed unconditionally so both the recorder call below and the observer
+	// notification further down use the same filtered map.
+	persistArgs := persistableArguments(meta.Arguments)
+
 	var userPromptSeq int64
 	if bs.recorder != nil {
 		userPromptSeq = bs.getNextSeq()
@@ -513,7 +544,7 @@ retryAfterRestart:
 		if len(meta.Meta) > 0 {
 			recordOpts = append(recordOpts, session.WithMetaMap(meta.Meta))
 		}
-		if err := bs.recorder.RecordUserPromptCompleteWithSeq(userPromptSeq, message, imageRefs, fileRefs, meta.PromptID, meta.PromptName, argCount, recordOpts...); err != nil && bs.logger != nil {
+		if err := bs.recorder.RecordUserPromptCompleteWithSeq(userPromptSeq, message, imageRefs, fileRefs, meta.PromptID, meta.PromptName, argCount, persistArgs, recordOpts...); err != nil && bs.logger != nil {
 			bs.logger.Error("Failed to persist user prompt", "error", err)
 		}
 	}
@@ -538,7 +569,7 @@ retryAfterRestart:
 	}
 
 	bs.notifyObservers(func(o SessionObserver) {
-		o.OnUserPrompt(userPromptSeq, meta.SenderID, meta.PromptID, message, imageIDs, fileIDStrings, meta.PromptName, argCount)
+		o.OnUserPrompt(userPromptSeq, meta.SenderID, meta.PromptID, message, imageIDs, fileIDStrings, meta.PromptName, argCount, persistArgs)
 	})
 
 	// Build processor input and assemble final content blocks.

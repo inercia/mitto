@@ -6,7 +6,7 @@ const { html, Fragment, useMemo, useState } = window.preact;
 
 import { Message } from "./Message.js";
 import { SpinnerIcon, ArrowDownIcon, SettingsIcon } from "./Icons.js";
-import { buildRetryTargets, messageKey } from "../lib.js";
+import { buildRetryTargets, canReplayNamedPrompt, messageKey } from "../lib.js";
 import { useVisibleInterval } from "../hooks/useVisibleInterval.js";
 
 /**
@@ -23,7 +23,9 @@ import { useVisibleInterval } from "../hooks/useVisibleInterval.js";
  * @param {boolean}  isUserAtBottom
  * @param {boolean}  hasNewMessages
  * @param {object}   sentinelRef       - ref forwarded to the IntersectionObserver sentinel
- * @param {Function} onRetry           - called with (text, images) for error retry
+ * @param {Function} onRetry           - called with (text, images) for a plain-text retry, or
+ *                                        ("", images, [], { promptName, arguments }) to replay a
+ *                                        named prompt exactly (matches handleSendPrompt's signature)
  * @param {string}   activeSessionId
  * @param {string}   swipeDirection    - 'left'|'right'|null
  * @param {string}   swipeArrow        - 'left'|'right'|null
@@ -108,8 +110,16 @@ export function MessageList({
       if (msg.role === "error") {
         const target = retryTargets.get(origIdx);
         if (target) {
-          const { text, images } = target;
-          retryHandler = () => onRetry(text, images);
+          const { text, images, promptName, arguments: args } = target;
+          // Replay the original named prompt (preserving its UI pill,
+          // modelTag/preferredModels routing, and prompt-level processing)
+          // when we have persisted argument values for ALL of its arguments.
+          // Otherwise fall back to today's full-text replay — this covers
+          // ad-hoc messages, older events with no persisted arguments, and
+          // the case where a sensitive argument was omitted at persist time.
+          retryHandler = canReplayNamedPrompt(target)
+            ? () => onRetry("", images, [], { promptName, arguments: args })
+            : () => onRetry(text, images);
         }
       }
 

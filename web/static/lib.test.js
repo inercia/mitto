@@ -31,6 +31,7 @@ import {
   MAX_PASSWORD_LENGTH,
   computeAllSessions,
   convertEventsToMessages,
+  canReplayNamedPrompt,
   coalesceAgentMessages,
   COALESCE_DEFAULTS,
   getMaxSeq,
@@ -6340,6 +6341,81 @@ describe("buildRetryTargets", () => {
       { role: ROLE_TOOL, text: "tool" },
     ];
     expect(buildRetryTargets(msgs).size).toBe(0);
+  });
+
+  test("carries promptName, argumentCount, and arguments from the user message", () => {
+    const msgs = [
+      {
+        role: ROLE_USER,
+        text: "run it",
+        promptName: "deploy-prompt",
+        argumentCount: 2,
+        arguments: { ISSUE_ID: "mitto-123", ENV: "prod" },
+      },
+      { role: ROLE_ERROR, text: "failed" },
+    ];
+    const target = buildRetryTargets(msgs).get(1);
+    expect(target.promptName).toBe("deploy-prompt");
+    expect(target.argumentCount).toBe(2);
+    expect(target.arguments).toEqual({ ISSUE_ID: "mitto-123", ENV: "prod" });
+  });
+
+  test("promptName/argumentCount/arguments are undefined for ad-hoc messages", () => {
+    const msgs = [
+      { role: ROLE_USER, text: "hello" },
+      { role: ROLE_ERROR, text: "err" },
+    ];
+    const target = buildRetryTargets(msgs).get(1);
+    expect(target.promptName).toBeUndefined();
+    expect(target.argumentCount).toBeUndefined();
+    expect(target.arguments).toBeUndefined();
+  });
+});
+
+// =============================================================================
+// canReplayNamedPrompt Tests
+// =============================================================================
+
+describe("canReplayNamedPrompt", () => {
+  test("false for missing/null target", () => {
+    expect(canReplayNamedPrompt(null)).toBe(false);
+    expect(canReplayNamedPrompt(undefined)).toBe(false);
+  });
+
+  test("false when promptName is absent (ad-hoc message)", () => {
+    expect(canReplayNamedPrompt({ text: "hi" })).toBe(false);
+  });
+
+  test("true for a named prompt with no arguments", () => {
+    expect(
+      canReplayNamedPrompt({ promptName: "plain-prompt", argumentCount: 0 }),
+    ).toBe(true);
+  });
+
+  test("true when the persisted arguments map has all argumentCount entries", () => {
+    expect(
+      canReplayNamedPrompt({
+        promptName: "deploy-prompt",
+        argumentCount: 2,
+        arguments: { A: "1", B: "2" },
+      }),
+    ).toBe(true);
+  });
+
+  test("false when arguments map is missing (older event, no persisted args)", () => {
+    expect(
+      canReplayNamedPrompt({ promptName: "deploy-prompt", argumentCount: 2 }),
+    ).toBe(false);
+  });
+
+  test("false when arguments map has fewer entries than argumentCount (sensitive arg omitted)", () => {
+    expect(
+      canReplayNamedPrompt({
+        promptName: "deploy-prompt",
+        argumentCount: 2,
+        arguments: { A: "1" },
+      }),
+    ).toBe(false);
   });
 });
 

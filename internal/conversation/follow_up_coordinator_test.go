@@ -162,7 +162,7 @@ func (r *followUpRecorderObserver) OnQueueUpdated(int, string, string)          
 func (r *followUpRecorderObserver) OnQueueReordered([]session.QueuedMessage)      {}
 func (r *followUpRecorderObserver) OnError(string)                                {}
 func (r *followUpRecorderObserver) OnPromptComplete(int)                          {}
-func (r *followUpRecorderObserver) OnUserPrompt(int64, string, string, string, []string, []string, string, int) {
+func (r *followUpRecorderObserver) OnUserPrompt(int64, string, string, string, []string, []string, string, int, map[string]string) {
 }
 func (r *followUpRecorderObserver) OnACPStopped(string)              {}
 func (r *followUpRecorderObserver) OnACPStarted()                    {}

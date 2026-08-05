@@ -74,7 +74,7 @@ func (o *statsObserver) OnToolCall(seq int64, id, title, status string) {
 	})
 }
 
-func (o *statsObserver) OnUserPrompt(seq int64, senderID, promptID, message string, imageIDs, fileIDs []string, promptName string, argumentCount int) {
+func (o *statsObserver) OnUserPrompt(seq int64, senderID, promptID, message string, imageIDs, fileIDs []string, promptName string, argumentCount int, arguments map[string]string) {
 	// Aggregator token estimator counts Images by len() and Files by name
 	// length; we don't have full FileRefs at the callback layer, so pass
 	// name-only refs sized from the id list. This mirrors what the recorder
@@ -100,6 +100,7 @@ func (o *statsObserver) OnUserPrompt(seq int64, senderID, promptID, message stri
 		PromptID:      promptID,
 		PromptName:    promptName,
 		ArgumentCount: argumentCount,
+		Arguments:     arguments,
 	})
 }
 

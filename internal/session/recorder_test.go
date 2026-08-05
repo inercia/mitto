@@ -1097,7 +1097,7 @@ func TestRecorder_RecordUserPromptComplete_ArgumentCount(t *testing.T) {
 	}
 
 	// Record a named prompt with arguments.
-	if err := recorder.RecordUserPromptComplete("Hello world", nil, nil, "pid-1", "my-prompt", 3); err != nil {
+	if err := recorder.RecordUserPromptComplete("Hello world", nil, nil, "pid-1", "my-prompt", 3, nil); err != nil {
 		t.Fatalf("RecordUserPromptComplete failed: %v", err)
 	}
 
@@ -1140,6 +1140,61 @@ func TestRecorder_RecordUserPromptComplete_ArgumentCount(t *testing.T) {
 		if f, ok := v.(float64); ok && f != 0 {
 			t.Errorf("plain prompt argument_count = %v, want absent/0", v)
 		}
+	}
+}
+
+// TestRecorder_RecordUserPromptComplete_Arguments verifies that the raw
+// Arguments map is persisted exactly (for retry replay) when non-nil, and
+// omitted entirely (via omitempty) when nil/empty — including via the
+// convenience wrappers which always pass nil.
+func TestRecorder_RecordUserPromptComplete_Arguments(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	recorder := NewRecorder(store)
+	if err := recorder.Start("test-server", "/test/dir", ""); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+
+	args := map[string]string{"IssueID": "mitto-123", "Notes": "fix the bug"}
+	if err := recorder.RecordUserPromptComplete("Hello world", nil, nil, "pid-1", "my-prompt", 2, args); err != nil {
+		t.Fatalf("RecordUserPromptComplete failed: %v", err)
+	}
+	// Ad-hoc prompt via wrapper — must persist no arguments.
+	if err := recorder.RecordUserPrompt("plain message"); err != nil {
+		t.Fatalf("RecordUserPrompt failed: %v", err)
+	}
+
+	events, err := store.ReadEvents(recorder.SessionID())
+	if err != nil {
+		t.Fatalf("ReadEvents failed: %v", err)
+	}
+	if len(events) != 3 {
+		t.Fatalf("expected 3 events, got %d", len(events))
+	}
+
+	namedDataMap, ok := events[1].Data.(map[string]interface{})
+	if !ok {
+		t.Fatalf("events[1].Data is %T, want map[string]interface{}", events[1].Data)
+	}
+	rawArgs, ok := namedDataMap["arguments"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("events[1].Data[\"arguments\"] is %T, want map[string]interface{}", namedDataMap["arguments"])
+	}
+	if rawArgs["IssueID"] != "mitto-123" || rawArgs["Notes"] != "fix the bug" {
+		t.Errorf("arguments = %v, want exact round-trip of %v", rawArgs, args)
+	}
+
+	plainDataMap, ok := events[2].Data.(map[string]interface{})
+	if !ok {
+		t.Fatalf("events[2].Data is %T, want map[string]interface{}", events[2].Data)
+	}
+	if v, exists := plainDataMap["arguments"]; exists && v != nil {
+		t.Errorf("plain prompt arguments = %v, want absent (omitempty)", v)
 	}
 }
 

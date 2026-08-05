@@ -96,7 +96,7 @@ func (r *recorderObserver) OnFileWrite(int64, string, int)           {}
 func (r *recorderObserver) OnFileRead(int64, string, int)            {}
 func (r *recorderObserver) OnPromptComplete(int)                     {}
 func (r *recorderObserver) OnActionButtons([]ActionButton)           {}
-func (r *recorderObserver) OnUserPrompt(int64, string, string, string, []string, []string, string, int) {
+func (r *recorderObserver) OnUserPrompt(int64, string, string, string, []string, []string, string, int, map[string]string) {
 }
 func (r *recorderObserver) OnAvailableCommandsUpdated([]AvailableCommand) {}
 func (r *recorderObserver) OnACPStopped(string)                           {}

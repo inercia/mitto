@@ -328,7 +328,7 @@ func (r *handshakeRecorderObserver) OnQueueReordered([]session.QueuedMessage)   
 func (r *handshakeRecorderObserver) OnError(string)                                {}
 func (r *handshakeRecorderObserver) OnPromptComplete(int)                          {}
 func (r *handshakeRecorderObserver) OnActionButtons([]ActionButton)                {}
-func (r *handshakeRecorderObserver) OnUserPrompt(int64, string, string, string, []string, []string, string, int) {
+func (r *handshakeRecorderObserver) OnUserPrompt(int64, string, string, string, []string, []string, string, int, map[string]string) {
 }
 func (r *handshakeRecorderObserver) OnUIPrompt(UIPromptRequest)       {}
 func (r *handshakeRecorderObserver) OnUIPromptDismiss(string, string) {}

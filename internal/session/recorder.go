@@ -219,35 +219,37 @@ func (r *Recorder) Resume() error {
 
 // RecordUserPrompt records a user prompt event.
 func (r *Recorder) RecordUserPrompt(message string, opts ...RecordOption) error {
-	return r.RecordUserPromptComplete(message, nil, nil, "", "", 0, opts...)
+	return r.RecordUserPromptComplete(message, nil, nil, "", "", 0, nil, opts...)
 }
 
 // RecordUserPromptWithImages records a user prompt event with optional image references.
 func (r *Recorder) RecordUserPromptWithImages(message string, images []ImageRef, opts ...RecordOption) error {
-	return r.RecordUserPromptComplete(message, images, nil, "", "", 0, opts...)
+	return r.RecordUserPromptComplete(message, images, nil, "", "", 0, nil, opts...)
 }
 
 // RecordUserPromptComplete records a user prompt event with optional image/file references, prompt ID, prompt name, and argument count.
 // The promptID is a client-generated ID used for delivery confirmation on reconnect.
 // The promptName is the name of the workspace prompt used (for UI rendering); empty string means no named prompt.
 // The argumentCount is the number of Go-template .Args values supplied; 0 means no arguments (ad-hoc or no-arg named prompt).
-func (r *Recorder) RecordUserPromptComplete(message string, images []ImageRef, files []FileRef, promptID string, promptName string, argumentCount int, opts ...RecordOption) error {
+// The arguments map holds the raw (exactly replayable) .Args values for named prompts, with any
+// sensitive-named keys already omitted by the caller; nil/empty means nothing to persist.
+func (r *Recorder) RecordUserPromptComplete(message string, images []ImageRef, files []FileRef, promptID string, promptName string, argumentCount int, arguments map[string]string, opts ...RecordOption) error {
 	return r.recordEvent(applyOptions(Event{
 		Type:      EventTypeUserPrompt,
 		Timestamp: time.Now(),
-		Data:      UserPromptData{Message: message, Images: images, Files: files, PromptID: promptID, PromptName: promptName, ArgumentCount: argumentCount},
+		Data:      UserPromptData{Message: message, Images: images, Files: files, PromptID: promptID, PromptName: promptName, ArgumentCount: argumentCount, Arguments: arguments},
 	}, opts))
 }
 
 // RecordUserPromptCompleteWithSeq records a user prompt event with a pre-assigned sequence number.
 // The seq must have been obtained from getNextSeq() so that user-prompt persistence shares the
 // same monotonic counter as the streaming path and avoids duplicate / out-of-order seq numbers.
-func (r *Recorder) RecordUserPromptCompleteWithSeq(seq int64, message string, images []ImageRef, files []FileRef, promptID string, promptName string, argumentCount int, opts ...RecordOption) error {
+func (r *Recorder) RecordUserPromptCompleteWithSeq(seq int64, message string, images []ImageRef, files []FileRef, promptID string, promptName string, argumentCount int, arguments map[string]string, opts ...RecordOption) error {
 	return r.RecordEventWithSeq(applyOptions(Event{
 		Seq:       seq,
 		Type:      EventTypeUserPrompt,
 		Timestamp: time.Now(),
-		Data:      UserPromptData{Message: message, Images: images, Files: files, PromptID: promptID, PromptName: promptName, ArgumentCount: argumentCount},
+		Data:      UserPromptData{Message: message, Images: images, Files: files, PromptID: promptID, PromptName: promptName, ArgumentCount: argumentCount, Arguments: arguments},
 	}, opts))
 }
 
