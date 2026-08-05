@@ -37,6 +37,14 @@ prompt: |
 
   {{ template "beads-issues/shared/load-context-min" $target }}
 
+  If `bd show` reports the bead as **deferred** (a `deferred` status, a future
+  `defer_until` / snooze timestamp, or a `needs-human` label), also load the
+  discussion — the deferral reason is recorded there, not in the bead body:
+
+  ```bash
+  bd comments {{ $target }}         # look for the newest [deferred: <ts>] marker
+  ```
+
   Also run locally to gather implementation evidence:
 
   ```bash
@@ -72,6 +80,42 @@ prompt: |
 
   **Goal** (one sentence restating what this bead or current problem is supposed to deliver)
 
+  {{ if $target -}}
+  #### Deferred — Why, and What Is Needed From You
+
+  Include this section **only if the bead is deferred** (`deferred` status, a future
+  `defer_until` / snooze timestamp, or a `needs-human` label). Omit it entirely otherwise —
+  do not render an empty or "not deferred" placeholder.
+
+  When it is deferred, be explicit and concrete. Never leave the reader guessing why work
+  stopped:
+
+  - **Deferred since**: the timestamp of the newest `[deferred: <ts>]` comment (or the
+    `defer_until` value), and — if present — when it is scheduled to come back.
+  - **Why it was deferred**: the actual root cause, quoted or summarised from the `Why:`
+    line of that comment. If no `[deferred: …]` comment exists (hand-deferred, or a legacy
+    bead), say so explicitly — "no deferral reason was recorded on the bead" — and then
+    infer the most likely cause from the dependency tree, blockers, and recent comments,
+    clearly labelled as an inference rather than a recorded fact.
+  - **What is needed from you**: the ONE concrete question, decision, piece of information,
+    or external action the human must supply, taken from the `What human intervention is
+    required:` / `What I need from you:` line. If the bead does not name one, derive the
+    smallest concrete ask that would unblock it and mark it as your proposal.
+  - **Whether human intervention is actually required**: state plainly `Yes — blocked on the
+    human` or `No — waiting on time / an external event / another bead`, and name that
+    dependency when the answer is No.
+  - **How to resume**: the exact command that clears the deferral, so the user can act
+    without looking it up:
+
+    ```bash
+    bd update {{ $target }} --remove-label needs-human --defer ''
+    ```
+
+    If the recorded handoff prescribes a different resume path (e.g. "reply to this bead and
+    the orchestrator will undefer it on its next pass"), quote that path instead — it is
+    authoritative over the generic command above.
+
+  {{ end -}}
   #### Acceptance Criteria — Status
 
   For each acceptance criterion listed in the bead (or, when there is no bead, each requirement
@@ -93,7 +137,7 @@ prompt: |
   - **Completion estimate**: `<percentage or qualitative: Not started / Early / Midway / Nearly done / Done>`
   - **What appears to be done**: bullet list of concrete evidence of completed work
   - **What appears to be missing**: bullet list of acceptance criteria with no evidence of completion
-  - **Blockers or risks**: anything preventing completion (e.g., a failing test, an unanswered question in notes)
+  - **Blockers or risks**: anything preventing completion (e.g., a failing test, an unanswered question in notes). If the bead is deferred, lead with that and point back to the "Deferred" section above.
 
   {{ if $target -}}
   > ⚠️ **This report is read-only.** No code changes and no beads updates will be performed. Use the "Start work" prompt to continue implementation.
