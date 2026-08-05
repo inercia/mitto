@@ -1,6 +1,6 @@
 icon: loop
 name: Loop processing tasks
-menus: beadsList
+menus: beadsList, promptsLoop
 parameters:
   - name: SubmitStrategy
     type: text
@@ -101,15 +101,17 @@ prompt: |
 
   ### Concurrency, deferral, preflight (summary — enforced in Steps 2P/2Z/§B/§C/7)
 
-  - **Cap: 1 active driver per workspace** total across §B + §C (`onCompletion`
-    children with title `Fix …` / `Implement …` in a non-terminal state). The
+  - **Cap: 1 active worker per workspace** total across §B + §C{{ if .Args.PostIterationPrompt }} + the Step 5H
+    post-task hook{{ end }} (non-archived conversations whose title starts with `Fix ` /
+    `Implement `{{ if .Args.PostIterationPrompt }} / `Post-task: `{{ end }}). The
     cap is workspace-scoped (enumerated via `.Workspace.Peers.All` — non-archived
     sibling conversations sharing this session's `(WorkingDir, ACPServer)`,
     populated at template-dispatch time), not per-orchestrator — parallel
     `Loop processing tasks` sessions in the same workspace share the single
     slot (mitto-9mk). §A mention drivers self-terminate and are NOT counted.
-    Serial execution prevents overlapping-file races. Step 2P prunes stale
-    children every pass to free the slot.
+    Serial execution prevents overlapping-file races{{ if .Args.PostIterationPrompt }} — including between a
+    driver editing the tree and a post-task hook (e.g. `Run tests`) reading it{{ end }}. Step 2P prunes
+    stale children every pass to free the slot.
   - **Deferral:** any un-progressable bead gets `--add-label needs-human --defer +1d`
     plus a comment starting `[deferred: <RFC3339>]` (full template in Step 7).
     Step 2Z undefers when the human replies, posting `[undeferred: <deferred-ts>]`.
@@ -161,8 +163,11 @@ prompt: |
   Run FIRST every pass, before Step 2Z. Walk `{{ .Children.MCPText }}` and delete
   (via `mitto_conversation_delete`, NOT archive — delete frees the ACP slot fully)
   any child matching the FIRST applicable category. Do NOT reap §A mention drivers
-  (they self-terminate; §A owns their wait/archive path) and do NOT reap
-  `Post-task: …` hook children (Step 5H owns their wait/delete path).
+  (they self-terminate; §A owns their wait/archive path){{ if .Args.PostIterationPrompt }}. `Post-task: …` hook
+  children are owned by Step 5H's wait/delete path and are NOT reaped here — with
+  one exception: a hook child older than **2h** is stale (its owning Step 5H pass
+  died mid-wait) and MUST be reaped, otherwise it holds the workspace worker slot
+  forever and every subsequent pass yields at-cap{{ end }}.
 
   1. **Terminal** — child status `done`/`completed`/`stopped`/`failed`, OR its
      `beads_issue` carries the class-terminal label ({{ if ne .Args.FixBugs "false" }}`fixed` for `Fix …`{{ if ne .Args.WorkOnFeatures "false" }}, {{ end }}{{ end }}{{ if ne .Args.WorkOnFeatures "false" }}`verified` for
@@ -685,14 +690,17 @@ prompt: |
 
   Take the first entry from 2B as **`<id>`**. **Concurrency gate (workspace-scoped):**
   read the pre-rendered `Workspace peers:` block at the top and count peers whose
-  `(name)` starts with `Fix ` or `Implement `. `.Workspace.Peers.All` is already
+  `(name)` starts with `Fix `{{ if .Args.PostIterationPrompt }}, `Implement ` or `Post-task: `{{ else }} or `Implement `{{ end }}.
+  `.Workspace.Peers.All` is already
   scoped to non-archived sibling conversations sharing this session's
   `(WorkingDir, ACPServer)` — i.e. the workspace boundary — and is populated at
   template-dispatch time (no MCP round-trip), so this counts drivers spawned by any
   orchestrator in the workspace and parallel `Loop processing tasks` sessions share
-  the single slot instead of each spawning their own (mitto-9mk).
+  the single slot instead of each spawning their own (mitto-9mk).{{ if .Args.PostIterationPrompt }}
+  A running `Post-task: …` hook holds the same slot, so a driver never starts while
+  the hook is mutating/reading the tree.{{ end }}
   If the workspace-wide count is already ≥ **1**, skip the spawn this pass — write
-  `bd comment <id> "Orchestrator: concurrency cap (1 active driver in workspace) reached; bug queued for a later pass."`
+  `bd comment <id> "Orchestrator: concurrency cap (1 active worker in workspace) reached; bug queued for a later pass."`
   and jump to Step 6. Otherwise spawn ONE child whose seed AND `onCompletion` re-fire
   are both the named per-bug driver:
 
@@ -781,9 +789,10 @@ prompt: |
   same rule as §B — read the pre-rendered `Workspace peers:` block at the top
   (backed by `.Workspace.Peers.All`, scoped to non-archived siblings sharing
   this session's `(WorkingDir, ACPServer)`) and count peers whose `(name)`
-  starts with `Fix ` or `Implement ` (§B and §C share the 1-driver budget
+  starts with `Fix `{{ if .Args.PostIterationPrompt }}, `Implement ` or `Post-task: ` (§B, §C and the Step 5H hook share
+  the 1-worker budget{{ else }} or `Implement ` (§B and §C share the 1-driver budget{{ end }}
   workspace-wide, not per-orchestrator; mitto-9mk).
-  At cap → `bd comment <id> "Orchestrator: concurrency cap (1 active driver in workspace) reached; feature queued for a later pass."`
+  At cap → `bd comment <id> "Orchestrator: concurrency cap (1 active worker in workspace) reached; feature queued for a later pass."`
   and jump to Step 6. Otherwise spawn ONE child (seed AND `onCompletion` re-fire both the
   named per-feature driver):
 
@@ -877,13 +886,41 @@ prompt: |
   nothing-eligible, timeout, wait-errored or Step 7 (deferral) paths: this hook
   marks *a task finished*, not *a pass finished*.
 
+  **Exclusivity gate (mandatory, run BEFORE the spawn).** The hook shares the
+  single workspace worker slot with §B/§C drivers: it must not start while any
+  other worker is running, and while it runs no other worker may start. The
+  pre-rendered `Workspace peers:` block is a template-dispatch-time snapshot and
+  is stale by now (a driver may have been spawned earlier in this very pass), so
+  re-enumerate live:
+
+  ```
+  mitto_conversation_list(
+    self_id: "{{ .Session.ID }}",
+    archived: false,
+    working_dir: "{{ .Workspace.Folder }}"
+  )
+  ```
+
+  Count entries whose `title` starts with `Fix `, `Implement ` or `Post-task: `,
+  excluding this session itself and the just-finished child you archived in
+  §A/§B/§C above (it may still appear if the archive has not settled — match it
+  by `conversation_id`).
+
+  - Count ≥ 1 → **do not spawn**. Write
+    `bd comment <id> "Orchestrator: post-task hook ({{ .Args.PostIterationPrompt }}) skipped — another worker is active in the workspace; will run after a later task completes."`
+    and jump to Step 6 with hook status `not-run`. Never queue, never retry
+    inline: skipping is correct, the hook fires after the next completed task.
+  - Count = 0 → proceed with the spawn below.
+
   Dispatch the operator-picked follow-up as its **own child conversation** so its
   token spend, file reads and tool calls never pollute this supervisor's context,
   then block until it reports. Spawn it **by name** (`prompt_name`, never
   `initial_prompt`) — the server expands `{{ .Args.PostIterationPrompt }}` in the
   child's own context, exactly like the §A/§B/§C drivers (mitto-dj9); you never
-  inline or execute the hook's text yourself. `<id>` is the bead just completed
-  (for §A, the bead carrying the addressed mention):
+  inline or execute the hook's text yourself. The `Post-task: ` title prefix is
+  load-bearing: it is what §B/§C's concurrency gate counts, so peer orchestrators
+  hold off while this hook runs. `<id>` is the bead just completed (for §A, the
+  bead carrying the addressed mention):
 
   {{- $hookArgs := ArgsMap "PostIterationPrompt_Args" }}
 
@@ -914,7 +951,11 @@ prompt: |
   - **Reported** — log and delete the hook child:
     `bd comment <id> "Orchestrator: post-task hook ({{ .Args.PostIterationPrompt }}) completed: <one-line outcome from the report>."`
     then `mitto_conversation_delete(self_id: "{{ .Session.ID }}", conversation_id: "<hook-child-id>")`.
-  - **Timed out (1h) or no report** — `bd comment <id> "Orchestrator: post-task hook ({{ .Args.PostIterationPrompt }}) did not report within 1h; leaving child running."` and continue.
+  - **Timed out (1h) or no report** — the hook holds the workspace worker slot, so
+    it must not be left running indefinitely:
+    `bd comment <id> "Orchestrator: post-task hook ({{ .Args.PostIterationPrompt }}) did not report within 1h; deleting hook child to release the worker slot."`
+    then `mitto_conversation_delete(self_id: "{{ .Session.ID }}", conversation_id: "<hook-child-id>")`
+    and continue.
   - **Spawn failed** (flag off, quota, unknown prompt) — one
     `bd comment <id> "Orchestrator: post-task hook ({{ .Args.PostIterationPrompt }}) could not be dispatched: <error>; skipped."` and continue.
     Do NOT run the hook inline — the supervisor stays procedural.
@@ -924,8 +965,11 @@ prompt: |
   discovers real work (e.g. tests it ran now fail), it is the hook prompt's own job
   to file a bead — the orchestrator will pick it up on the next `onTasks` pass.
 
-  The hook child does not count against the §B/§C 1-driver cap (it is short-lived
-  and not an `onCompletion` driver), and Step 2P never reaps it.
+  The hook child **does** count against the workspace 1-worker cap while it runs
+  (that mutual exclusion is the point: a `Run tests`-style hook must never race a
+  driver editing the same tree). Every exit branch above therefore releases the
+  slot — reported and timed-out both end in `mitto_conversation_delete`. Step 2P
+  still never reaps a `Post-task: …` child: Step 5H owns its lifecycle.
 
   Then Step 6.
 
@@ -938,7 +982,7 @@ prompt: |
   mitto_ui_notify(
     self_id: "{{ .Session.ID }}",
     title: "Loop processing tasks — pass complete",
-    message: "<Class ran (A/B/C) and target processed | 'nothing eligible' if Step 3 fell through | 'at cap' if concurrency gate skipped>. Sets: A=<count> B=<count> C=<count>. Active drivers: <count of running Fix/Implement children after this pass>/1. Reaped: <count from Step 2P, 0 if none>. Closed: <count of terminal-label beads closed this pass, 0 if none>. Reaped-epics: <count from Step 2P epic-reaper, 0 if none>. Reaper: released=<n> skipped=<n> (from Step 2R, 0/0 if none). Undeferred: <count from Step 2Z, 0 if none>.{{ if .Args.PostIterationPrompt }} Post-task hook: <ran-ok|timed-out|spawn-failed|not-run>.{{ end }} Will re-fire on beads changes.",
+    message: "<Class ran (A/B/C) and target processed | 'nothing eligible' if Step 3 fell through | 'at cap' if concurrency gate skipped>. Sets: A=<count> B=<count> C=<count>. Active drivers: <count of running Fix/Implement children after this pass>/1. Reaped: <count from Step 2P, 0 if none>. Closed: <count of terminal-label beads closed this pass, 0 if none>. Reaped-epics: <count from Step 2P epic-reaper, 0 if none>. Reaper: released=<n> skipped=<n> (from Step 2R, 0/0 if none). Undeferred: <count from Step 2Z, 0 if none>.{{ if .Args.PostIterationPrompt }} Post-task hook: <ran-ok|timed-out|spawn-failed|skipped-worker-active|not-run>.{{ end }} Will re-fire on beads changes.",
     style: "success"
   )
   ```
@@ -1003,7 +1047,8 @@ prompt: |
     The ONLY legitimate pass-level yields: (a) sets empty after 2A/2B/2C,
     (b) concurrency cap (Step 3), (c) Step 7 deferral, (d) preflight failure.
   {{ if or (ne .Args.FixBugs "false") (ne .Args.WorkOnFeatures "false") -}}
-  - **Cap: 1 active driver.** {{ if and (ne .Args.FixBugs "false") (ne .Args.WorkOnFeatures "false") }}§B and §C share{{ else }}{{ if ne .Args.FixBugs "false" }}§B has{{ else }}§C has{{ end }}{{ end }} a budget of 1 persistent `onCompletion` child.
+  - **Cap: 1 active worker.** {{ if and (ne .Args.FixBugs "false") (ne .Args.WorkOnFeatures "false") }}§B and §C share{{ else }}{{ if ne .Args.FixBugs "false" }}§B has{{ else }}§C has{{ end }}{{ end }}{{ if .Args.PostIterationPrompt }} — together with the Step 5H
+    post-task hook —{{ end }} a budget of 1 concurrent worker conversation.
     Serial execution prevents overlapping-file races. At cap → skip the spawn;
     Step 2P will free the slot. §A mention drivers self-terminate and don't count.
   {{- end }}
@@ -1041,12 +1086,17 @@ prompt: |
     gate §B and §C. When `"false"`, the section is skipped and treated as empty
     in Step 3. §A is ALWAYS on regardless.
   {{ if .Args.PostIterationPrompt -}}
-  - **Post-task hook is best-effort.** Step 5H runs `{{ .Args.PostIterationPrompt }}`
-    in its own short-lived child only after a task actually completed (§A driver
-    done, §B/§C bead closed) — never on at-cap, nothing-eligible, timeout or
-    deferral paths. Its failure, timeout or negative findings never block the
-    next task and never re-open the completed bead; new work it discovers must
-    be filed as a bead and picked up on a later pass.
+  - **Post-task hook is best-effort AND mutually exclusive with drivers.** Step 5H
+    runs `{{ .Args.PostIterationPrompt }}` in its own short-lived child only after a
+    task actually completed (§A driver done, §B/§C bead closed) — never on at-cap,
+    nothing-eligible, timeout or deferral paths. It holds the single workspace
+    worker slot for its duration: it is skipped when any `Fix …` / `Implement …` /
+    `Post-task: …` conversation is already live (re-checked live at Step 5H, not
+    from the stale dispatch-time peers snapshot), and while it runs §B/§C count it
+    and refuse to spawn. Without this a `Run tests`-style hook would race a driver
+    editing the very tree it is testing. Its failure, timeout or negative findings
+    never block the next task and never re-open the completed bead; new work it
+    discovers must be filed as a bead and picked up on a later pass.
   {{- end }}
   - **Expand epics; don't spawn them.** An `epic` bead is a container — never
     dispatched itself. 2B and 2C walk each open epic's open children: `bug`
