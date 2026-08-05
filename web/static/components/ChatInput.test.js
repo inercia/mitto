@@ -88,6 +88,72 @@ function handleFlushButtonClick(onFlushContext) {
 }
 
 // =============================================================================
+// Composition-area visibility gate (mitto-9l8, post-fix)
+// Duplicated from ChatInput.js:2775-2776:
+//   ${!mcpUIBlocking && !(isPromptCollapsed && loopConfigured) && html`...`}
+// mcpUIBlocking (ChatInput.js:2049-2058) is a hard, unconditional gate on
+// hasActiveUIPrompt (excluding "permission" prompts, which render inline
+// buttons) — independent of isPromptCollapsed, which now only governs the
+// unrelated loop-collapse UX.
+// =============================================================================
+
+function computeMcpUIBlocking({ hasActiveUIPrompt, promptType }) {
+  return hasActiveUIPrompt && promptType !== "permission";
+}
+
+function shouldShowCompositionArea({
+  isPromptCollapsed,
+  loopConfigured,
+  hasActiveUIPrompt,
+  promptType,
+}) {
+  const mcpUIBlocking = computeMcpUIBlocking({
+    hasActiveUIPrompt,
+    promptType,
+  });
+  return !mcpUIBlocking && !(isPromptCollapsed && loopConfigured);
+}
+
+// =============================================================================
+// handleUIPromptAnswer's optimistic collapse restore (mitto-9l8)
+// Duplicated from ChatInput.js:2051-2066: on click, isPromptCollapsed is
+// unconditionally restored to whatever it was BEFORE the auto-collapse effect
+// (prevCollapsedBeforeUIRef.current) — synchronously, BEFORE onUIPromptAnswer
+// (and therefore before the WebSocket send) is even attempted.
+// =============================================================================
+
+function applyUIPromptAnswerClick(prevCollapsedBeforeUI) {
+  return prevCollapsedBeforeUI;
+}
+
+// =============================================================================
+// sendUIPromptAnswer's activeUIPrompt-clearing gate (mitto-9l8)
+// Duplicated from useWebSocket.js:4598-4636: activeUIPrompt is cleared ONLY
+// inside `if (sent)`. `sent` comes from sendToSession
+// (useWSConnection.js:457-464), which returns false whenever the per-session
+// socket is missing or its readyState !== WebSocket.OPEN (mid-reconnect, or
+// the documented mobile "zombie socket" state — .augment/rules/23-web-frontend-mobile.md).
+// On a non-OPEN socket, activeUIPrompt is left untouched.
+// =============================================================================
+
+function clearActiveUIPromptAfterAnswer(activeUIPrompt, sent) {
+  return sent ? null : activeUIPrompt;
+}
+
+// =============================================================================
+// ui_prompt dedup guard (mitto-9l8)
+// Duplicated from useWebSocket.js:1188-1198: an incoming ui_prompt for a
+// requestId that is already the active prompt is silently ignored. This is
+// why the stuck state cannot self-heal on WebSocket reconnect: the backend's
+// re-sent ui_prompt for the still-pending requestId never re-triggers the
+// auto-collapse effect.
+// =============================================================================
+
+function isDuplicateUIPrompt(activeRequestId, incomingRequestId) {
+  return activeRequestId === incomingRequestId;
+}
+
+// =============================================================================
 // Tests
 // =============================================================================
 
@@ -204,6 +270,111 @@ describe("ChatInput Flush-context button (mitto-c23, mitto-cmk)", () => {
           acpReady: true,
         }),
       ).toBe(false);
+    });
+  });
+});
+
+// =============================================================================
+// mitto-9l8: composition area visible while an MCP UI prompt is active
+// =============================================================================
+
+describe("ChatInput composition-area visibility during MCP UI prompts (mitto-9l8)", () => {
+  describe("shouldShowCompositionArea (render gate)", () => {
+    test("hides the composition area while a blocking UI prompt is active and collapsed", () => {
+      expect(
+        shouldShowCompositionArea({
+          isPromptCollapsed: true,
+          loopConfigured: false,
+          hasActiveUIPrompt: true,
+          promptType: "options",
+        }),
+      ).toBe(false);
+    });
+
+    // FIX (mitto-9l8): the gate is now a hard, unconditional block on
+    // hasActiveUIPrompt (mcpUIBlocking) rather than being conditional on
+    // isPromptCollapsed happening to be true. Even when isPromptCollapsed
+    // has been (incorrectly) restored to false while a blocking prompt is
+    // still active, the composition area stays hidden. This is exactly the
+    // permanently-stuck scenario from the investigation: a failed WebSocket
+    // send leaves activeUIPrompt non-null while the optimistic click
+    // handler has already un-collapsed the composer.
+    test("composition area stays hidden even if isPromptCollapsed is restored while a UI prompt is still active", () => {
+      expect(
+        shouldShowCompositionArea({
+          isPromptCollapsed: false,
+          loopConfigured: false,
+          hasActiveUIPrompt: true,
+          promptType: "options",
+        }),
+      ).toBe(false);
+    });
+
+    // Permission prompts are excluded from mcpUIBlocking — they render
+    // inline buttons and the composition area may legitimately be visible
+    // alongside them.
+    test("does NOT block the composition area for permission-type prompts", () => {
+      expect(
+        shouldShowCompositionArea({
+          isPromptCollapsed: false,
+          loopConfigured: false,
+          hasActiveUIPrompt: true,
+          promptType: "permission",
+        }),
+      ).toBe(true);
+    });
+  });
+
+  describe("end-to-end: click -> failed send -> composition area stays hidden", () => {
+    test("after handleUIPromptAnswer runs on a closed socket, the composition area remains hidden while the prompt panel is still shown", () => {
+      // 1. A blocking MCP UI prompt (e.g. promptType "options") arrives and
+      //    the auto-collapse effect (ChatInput.js:519-538) captures the
+      //    prior collapsed state and force-collapses the composer.
+      const prevCollapsedBeforeUI = false; // conversation wasn't collapsed before the prompt
+      let isPromptCollapsed = true; // auto-collapse effect ran
+      let activeUIPrompt = { requestId: "req-1", promptType: "options" };
+
+      // Sanity: composer is correctly hidden while the prompt is pending.
+      expect(
+        shouldShowCompositionArea({
+          isPromptCollapsed,
+          loopConfigured: false,
+          hasActiveUIPrompt: !!activeUIPrompt,
+          promptType: activeUIPrompt.promptType,
+        }),
+      ).toBe(false);
+
+      // 2. User clicks an option. handleUIPromptAnswer optimistically
+      //    restores isPromptCollapsed BEFORE the send is attempted/resolved.
+      isPromptCollapsed = applyUIPromptAnswerClick(prevCollapsedBeforeUI);
+      expect(isPromptCollapsed).toBe(false);
+
+      // 3. The WebSocket send fails (socket mid-reconnect / "zombie" state —
+      //    sendToSession returns false). sendUIPromptAnswer only clears
+      //    activeUIPrompt `if (sent)`, so it remains set.
+      const sent = false;
+      activeUIPrompt = clearActiveUIPromptAfterAnswer(activeUIPrompt, sent);
+      expect(activeUIPrompt).not.toBeNull();
+
+      // 4. FIX: the composition area stays hidden — mcpUIBlocking is a hard
+      //    gate on hasActiveUIPrompt, independent of isPromptCollapsed — so
+      //    the permanent wedge cannot occur even though the socket send
+      //    failed and isPromptCollapsed was already restored to false.
+      const visible = shouldShowCompositionArea({
+        isPromptCollapsed,
+        loopConfigured: false,
+        hasActiveUIPrompt: !!activeUIPrompt,
+        promptType: activeUIPrompt.promptType,
+      });
+      expect(visible).toBe(false);
+
+      // 5. Even though the dedup guard would swallow a reconnect re-send of
+      //    the same requestId (so the auto-collapse effect never re-fires),
+      //    that no longer matters for visibility: the hard gate already
+      //    keeps the composer hidden without relying on the effect.
+      expect(isDuplicateUIPrompt(activeUIPrompt.requestId, "req-1")).toBe(
+        true,
+      );
     });
   });
 });

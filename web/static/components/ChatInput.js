@@ -2046,6 +2046,17 @@ export function ChatInput({
   const hasActionButtons = actionButtons && actionButtons.length > 0;
   // UI prompts from MCP tools should be shown WHILE streaming (the tool is waiting for user input)
   const hasActiveUIPrompt = !!activeUIPrompt;
+  // Hard gate (mitto-9l8): true whenever a blocking MCP UI prompt (form,
+  // options, textbox) is on screen. Permission prompts are excluded — they
+  // render inline buttons and don't need the composition area hidden.
+  // Unlike isPromptCollapsed (a soft, one-shot UX flag that other code paths
+  // can flip independently of the prompt's lifecycle), this is derived
+  // structurally from activeUIPrompt itself, so the composition area cannot
+  // be exposed while a prompt is still pending regardless of what happens to
+  // isPromptCollapsed (e.g. the optimistic restore in handleUIPromptAnswer
+  // below, or a WebSocket send failing before the prompt is cleared).
+  const mcpUIBlocking =
+    hasActiveUIPrompt && activeUIPrompt.promptType !== "permission";
 
   // Handle UI prompt answer click
   const handleUIPromptAnswer = useCallback(
@@ -2761,7 +2772,8 @@ ${activeUIPrompt.text || ""}</textarea
           </div>
         </div>
       `}
-      ${!(isPromptCollapsed && (loopConfigured || hasActiveUIPrompt)) &&
+      ${!mcpUIBlocking &&
+      !(isPromptCollapsed && loopConfigured) &&
       html`
         <div class="max-w-4xl mx-auto chat-input-container">
           <div class="chat-input-box" ref=${dropupRef}>
