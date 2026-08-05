@@ -3116,11 +3116,23 @@ func TestLoopProcessingSpawns_MirrorArgumentsIntoLoopArguments(t *testing.T) {
 		name    string
 		args    map[string]string
 		wantVal string
+		// wantInstr, when non-empty, is the AdditionalInstructions literal that
+		// must be mirrored into both sides alongside SubmitStrategy. The
+		// operator's instructions only reach the §A/§B/§C drivers (and from
+		// there their phase prompts) through the spawn maps, so an unmirrored
+		// value silently drops them on every onCompletion re-fire.
+		wantInstr string
 	}{
-		{"unset defaults to Commit", map[string]string{}, "Commit"},
-		{"Commit", map[string]string{"SubmitStrategy": "Commit"}, "Commit"},
-		{"Pull Request", map[string]string{"SubmitStrategy": "Pull Request"}, "Pull Request"},
-		{"None", map[string]string{"SubmitStrategy": "None"}, "None"},
+		{"unset defaults to Commit", map[string]string{}, "Commit", ""},
+		{"Commit", map[string]string{"SubmitStrategy": "Commit"}, "Commit", ""},
+		{"Pull Request", map[string]string{"SubmitStrategy": "Pull Request"}, "Pull Request", ""},
+		{"None", map[string]string{"SubmitStrategy": "None"}, "None", ""},
+		{
+			"AdditionalInstructions propagated",
+			map[string]string{"SubmitStrategy": "Commit", "AdditionalInstructions": "Only touch pkg/foo"},
+			"Commit",
+			"Only touch pkg/foo",
+		},
 	}
 
 	for _, tc := range cases {
@@ -3185,6 +3197,16 @@ func TestLoopProcessingSpawns_MirrorArgumentsIntoLoopArguments(t *testing.T) {
 				}
 				if !strings.Contains(loopArgsSide, wantLiteral) {
 					t.Errorf("%s: loop_arguments: side missing %s -- re-fires would desync from the initial run; loop_arguments-side:\n%s", sec.section, wantLiteral, loopArgsSide)
+				}
+
+				if tc.wantInstr != "" {
+					wantInstrLiteral := `"AdditionalInstructions": "` + tc.wantInstr + `"`
+					if !strings.Contains(argsSide, wantInstrLiteral) {
+						t.Errorf("%s: arguments: side missing %s; args-side:\n%s", sec.section, wantInstrLiteral, argsSide)
+					}
+					if !strings.Contains(loopArgsSide, wantInstrLiteral) {
+						t.Errorf("%s: loop_arguments: side missing %s -- re-fires would drop the operator's instructions; loop_arguments-side:\n%s", sec.section, wantInstrLiteral, loopArgsSide)
+					}
 				}
 			}
 		})

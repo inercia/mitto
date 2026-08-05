@@ -10,6 +10,11 @@ parameters:
     type: text
     required: false
     description: How finished work is submitted. "Commit" (default) — commit the increment after this phase. "Pull Request" — same, on a per-bead branch created here. "None" — leave changes staged for review.
+  - name: AdditionalInstructions
+    type: text
+    required: false
+    multiLine: true
+    description: Optional additional instructions for this phase, forwarded by the driver that dispatched it.
 description: Internal phase-tier prompt — implement the feature per its plan and add the `implemented` label. Invoked by name from the feature-implementation driver; runs on the Coding tier.
 group: Tasks
 backgroundColor: '#C8E6C9'
@@ -45,6 +50,8 @@ prompt: |
   ) }}
 
   {{ if $target -}}
+  {{ template "beads-issues/shared/additional-instructions" . }}
+
   {{ template "beads-issues/shared/tier-check" (dict
       "Target"    $target
       "Tier"      "Coding"

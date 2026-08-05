@@ -6,6 +6,11 @@ parameters:
     type: beadsId
     required: false
     description: The beads issue ID to plan
+  - name: AdditionalInstructions
+    type: text
+    required: false
+    multiLine: true
+    description: Optional additional instructions for this phase, forwarded by the driver that dispatched it.
 description: Internal phase-tier prompt — plan a feature and add the `planned` label. Invoked by name from the feature-implementation driver; runs on the Reasoning tier.
 group: Tasks
 backgroundColor: '#B3E5FC'
@@ -35,6 +40,8 @@ prompt: |
   ) }}
 
   {{ if $target -}}
+  {{ template "beads-issues/shared/additional-instructions" . }}
+
   {{ template "beads-issues/shared/tier-check" (dict
       "Target"    $target
       "Tier"      "Reasoning"

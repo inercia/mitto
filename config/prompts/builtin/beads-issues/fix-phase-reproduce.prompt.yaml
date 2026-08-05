@@ -6,6 +6,11 @@ parameters:
     type: beadsId
     required: false
     description: The beads issue ID to reproduce
+  - name: AdditionalInstructions
+    type: text
+    required: false
+    multiLine: true
+    description: Optional additional instructions for this phase, forwarded by the driver that dispatched it.
 description: Internal phase-tier prompt — write a failing test that reproduces the bug and add the `reproduced` label. Invoked by name from the bug-fix driver; runs on the Coding tier.
 group: Tasks
 backgroundColor: '#FFCDD2'
@@ -34,6 +39,8 @@ prompt: |
   ) }}
 
   {{ if $target -}}
+  {{ template "beads-issues/shared/additional-instructions" . }}
+
   {{ template "beads-issues/shared/tier-check" (dict
       "Target"    $target
       "Tier"      "Coding"

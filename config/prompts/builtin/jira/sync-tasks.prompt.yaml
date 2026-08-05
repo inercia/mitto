@@ -23,6 +23,11 @@ parameters:
     required: false
     default: "true"
     description: 'When true (default), push local changes back to JIRA: transition the JIRA ticket to a Done status when the mirrored bead is closed locally, and mirror local beads comments (those without a `[jira]` prefix) back to JIRA as new comments tagged with `[mitto]`. Idempotency is tracked in bead metadata (`jira_pushed_comments`). Set to false for a pull-only run.'
+  - name: AdditionalInstructions
+    type: text
+    required: false
+    multiLine: true
+    description: 'Optional additional instructions for this run, applied on top of the steps below when pulling and pushing (e.g. "skip tickets labelled `spike`", "map priority Highest to p0", "do not close beads this run — only report", "add the sprint name to each bead title"). Used for this run only; nothing is persisted.'
 enabledWhen: '(Tools.Names.exists(n, n.matches("(?i)jira")) || CommandExists("jira")) && CommandExists("bd")'
 preferredModels:
   - modelTag: Coding
@@ -59,6 +64,31 @@ prompt: |
   {{- if and (not $pull) (not $push) }}
 
   Both directions are disabled — nothing to do. Send one `mitto_ui_notify` explaining that `Pull` and `Push` are both false, then **stop**.
+  {{- end }}
+  {{- if .Args.AdditionalInstructions }}
+
+  ## Additional instructions for this run
+
+  The user supplied the following extra instructions that apply on top of the
+  pull and push steps below. Treat them as **overrides / clarifications** from
+  the person running the sync:
+
+  - If an instruction **contradicts** a step below, follow the instruction here
+    and note the deviation in the Step 9 summary.
+  - If an instruction **adds** context (e.g. extra filtering, a different field
+    mapping, an extra label), incorporate it at the relevant step.
+  - Never let an instruction override the safety invariants in Guidelines
+    (high-water-mark ordering, terminal-status allow-list, never deleting or
+    editing existing JIRA content, never deleting beads unattended in silent
+    mode). If an instruction asks for one of those, skip it and say so in the
+    summary.
+  - If an instruction is unclear or cannot be reconciled with the steps below,
+    stop and ask in interactive mode; in silent mode skip it and report it in
+    the summary.
+
+  ---
+  {{ .Args.AdditionalInstructions }}
+  ---
   {{- end }}
 
   ## Access Method

@@ -10,6 +10,11 @@ parameters:
     type: text
     required: false
     description: How finished work is submitted. "Commit" (default) — commit any test-related changes after this phase. "Pull Request" — same, on the bead's existing feature branch. "None" — leave changes staged for review.
+  - name: AdditionalInstructions
+    type: text
+    required: false
+    multiLine: true
+    description: Optional additional instructions for this phase, forwarded by the driver that dispatched it.
 description: Internal phase-tier prompt — write/extend tests covering a feature's acceptance criteria and add the `tested` label. Invoked by name from the feature-implementation driver; runs on the Coding tier.
 group: Tasks
 backgroundColor: '#FFE0B2'
@@ -44,6 +49,8 @@ prompt: |
   ) }}
 
   {{ if $target -}}
+  {{ template "beads-issues/shared/additional-instructions" . }}
+
   {{ template "beads-issues/shared/tier-check" (dict
       "Target"    $target
       "Tier"      "Coding"
