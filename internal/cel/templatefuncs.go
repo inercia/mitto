@@ -109,11 +109,13 @@ var (
 // rapid menu re-opens. Raised from the original 5s to 30s (mitto-ayl): at the
 // observed /mitto/api/workspace-prompts request rate (~1 per 6.4s) a 5s TTL
 // expires between essentially every request, so the memo never hit and every
-// evaluation re-walked the workspace. Staleness remains TTL-bounded (no
-// filesystem watcher covers arbitrary glob patterns — see mitto-ayl.1 for a
-// future watcher-driven approach); 30s mirrors beadsCacheTTL and is short
-// enough that a newly-added/removed file affects prompt visibility within one
-// window.
+// evaluation re-walked the workspace. Staleness is now PARTIALLY
+// watcher-bounded (mitto-ayl.1): InvalidateGlobCache / InvalidateAllGlobCaches
+// are driven from the .beads/ and prompts fsnotify watchers, but no watcher
+// covers arbitrary glob patterns over the whole workspace, so this TTL remains
+// the backstop for changes neither watcher observes; 30s mirrors beadsCacheTTL
+// and is short enough that a newly-added/removed file affects prompt
+// visibility within one window.
 const globCacheTTL = 30 * time.Second
 
 // globWalkTimeout bounds a single fileExists/dirExists glob-mode walk. On
