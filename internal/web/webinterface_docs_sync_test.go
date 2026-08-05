@@ -74,8 +74,16 @@ func TestDocsGoroutineTriageSectionExists(t *testing.T) {
 // simpler and a stronger pin: it fails the build, not just this test, if
 // either method is renamed without updating the docs).
 func TestDocsGoroutineTriageWSPumpMethodsExist(t *testing.T) {
-	var _ func(*SessionWSClient) = (*SessionWSClient).readPump
-	var _ func(*SessionWSClient) = (*SessionWSClient).writePump
+	// The map's explicit value type pins both signatures at compile time.
+	pumps := map[string]func(*SessionWSClient){
+		"readPump":  (*SessionWSClient).readPump,
+		"writePump": (*SessionWSClient).writePump,
+	}
+	for name, fn := range pumps {
+		if fn == nil {
+			t.Errorf("SessionWSClient.%s method expression is nil", name)
+		}
+	}
 }
 
 // webInterfaceDocsRepoRoot returns the absolute path to the repo root,

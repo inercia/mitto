@@ -555,11 +555,11 @@ sessions.
 **Per-session marginal cost**, measured by creating one session and then
 attaching/detaching one WebSocket client:
 
-| Event | Δ goroutines | Source |
-|---|---|---|
-| Session created (ACP process spawn, no WS client) | +9 | `acp-go-sdk.NewConnection` (4), `os/exec.(*Cmd).Start`, `acpproc/procstart.StartStderrMonitor`, `BackgroundSession.hsInitACPProcessDone`, `ACPProcessManager.{EnsurePrewarmed,GetOrCreateProcess}` (2, transient — settle once prewarm completes) |
-| WebSocket client connects | +2 | `web.(*Server).handleSessionWS` — the `readPump`/`writePump` pair (`internal/web/session_ws.go`) |
-| WebSocket client disconnects | −2 | same pump pair torn down cleanly |
+| Event                                             | Δ goroutines | Source                                                                                                                                                                                                                                            |
+| ------------------------------------------------- | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Session created (ACP process spawn, no WS client) | +9           | `acp-go-sdk.NewConnection` (4), `os/exec.(*Cmd).Start`, `acpproc/procstart.StartStderrMonitor`, `BackgroundSession.hsInitACPProcessDone`, `ACPProcessManager.{EnsurePrewarmed,GetOrCreateProcess}` (2, transient — settle once prewarm completes) |
+| WebSocket client connects                         | +2           | `web.(*Server).handleSessionWS` — the `readPump`/`writePump` pair (`internal/web/session_ws.go`)                                                                                                                                                  |
+| WebSocket client disconnects                      | −2           | same pump pair torn down cleanly                                                                                                                                                                                                                  |
 
 So each **connected browser tab** costs ~2 goroutines (pumps) on top of ~7
 durable per-ACP-process goroutines (the prewarm transients retire). A
@@ -571,3 +571,9 @@ processes across restarts, not the raw total** — the raw total is a poor leak
 signal on its own because it conflates fixed cost, per-session cost, and
 transport-detail cost (idle SSE) that all vary independently of any actual
 defect.
+
+Computing that ratio currently means reading cold-start log lines by hand,
+because the goroutine count is only sampled when a cold start happens. A
+periodic gauge with per-category attribution (ACP processes, WS clients, open
+MCP SSE streams) is tracked as `mitto-x3x`; once it lands it should become the
+first instrument listed above.
