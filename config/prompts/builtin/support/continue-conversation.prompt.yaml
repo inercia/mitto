@@ -55,6 +55,8 @@ prompt: |-
   {{ template "beads-issues/shared/markdown-convention" . }}
   {{ template "_shared/reply-fence-convention" "reply" }}
 
+  {{ template "support/shared/message-comment-key" . }}
+
   ## Slack tools (names vary by MCP server)
 
   {{ template "support/shared/slack-tools" (dict "Capabilities" "You need: (a) identify the current user, (b) read recent channel history, (c) read a thread's replies, and (d) post a reply to a thread (e.g. `slack_get_users*`, `slack_get_channel_history*`, `slack_get_thread_replies*`, `slack_reply_to_thread*`, or their `*_slack` equivalents)." "NoPosting" false "ReadMetadata" false) }}
@@ -187,7 +189,8 @@ prompt: |-
      has **no `@file` expansion** (unlike `gh`), so `-d @/tmp/....txt` stores the raw path as the
      description. For a long body, write it to a file and read it with **`--body-file <path>`** (or
      `--stdin`) instead.
-     Also add an `[INBOUND]` comment with the original customer question for history.
+     Also add an `[INBOUND]` comment with the original customer question for history, keyed with that
+     message's Slack `ts` (see the `ts:` dedup rule).
   3. **Log the posted reply** — add a markdown `[OUTBOUND]` comment with the final text and the
      permalink (preserve markdown with `$'...'` or `printf '%s' "$c" | bd comment <id> --stdin`):
      Header `**[OUTBOUND us · POSTED · YYYY-MM-DD HH:MM UTC]**`, then the posted text **enclosed in the

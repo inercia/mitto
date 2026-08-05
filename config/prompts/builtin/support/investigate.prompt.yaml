@@ -22,6 +22,9 @@ parameters:
     description: 'The Slack channel ID (e.g. C0XXXXXXX). Optional; when set at spawn time it is used to inline channel playbook fragments at render time. When omitted, the fragment reader falls back to instructing the agent to read the file at runtime using the bead metadata slack_channel field.'
 prompt: |-
   {{- $channel := Arg "SlackChannelID" "" -}}
+  {{- if eq $channel "" -}}
+  {{-   $channel = BeadMetadata (Arg "IssueID" "") "slack_channel" -}}
+  {{- end -}}
   # Support — Investigate
 
   {{ template "_shared/session-context" . }}
@@ -49,6 +52,8 @@ prompt: |-
   {{ template "beads-issues/shared/markdown-convention" . }}
   {{ template "_shared/reply-fence-convention" "reply" }}
 
+  {{ template "support/shared/message-comment-key" . }}
+
   ## Slack tools (names vary by MCP server)
 
   {{ template "support/shared/slack-tools" (dict "Capabilities" "Here you only need to **read a thread's replies** (to make sure you are investigating the latest ask)." "NoPosting" true "ReadMetadata" true) }}
@@ -70,9 +75,9 @@ prompt: |-
       suggesting **"Support: reply to user"**, and stop without changing state.
     - Only on **"Re-investigate anyway"** proceed with the rest of this step.
   - Re-fetch the Slack thread (read-thread-replies tool) using the stored `slack_thread_ts`, and add a
-    markdown comment for **each new** message not yet captured (`[INBOUND]` customer / `[CONTEXT]`
-    others). Do not duplicate existing comments — this keeps the investigation grounded in the latest
-    ask.
+    markdown comment for **each new** message (`[INBOUND]` customer / `[CONTEXT]` others) — "new"
+    meaning its Slack `ts` is not already in `bd comments <id>` (see the `ts:` dedup rule). This keeps
+    the investigation grounded in the latest ask.
   - Mark that we are actively working it: swap the state label in place (never `bd set-state`):
     `bd update <id> --remove-label state:<previous> --add-label state:gathering-info`, and add a short
     `**[STATE · <time>]** <prev> → gathering-info` comment.
@@ -222,3 +227,4 @@ prompt: |-
   - Keep the bead the single source of truth: log findings as `[CONTEXT]`, the draft as a marked
     `[OUTBOUND]` DRAFT, and every state change as `[STATE]`. The chat transcript is **not** a store —
     the draft must live on the bead, never only in chat.
+  {{- template "support/shared/channel-post-phase" (dict "Channel" $channel "Phase" "investigate" "When" "the investigation is complete (Steps 5–7)" "ChannelStep" " (Step 2)") }}

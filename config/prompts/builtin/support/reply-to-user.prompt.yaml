@@ -53,6 +53,8 @@ prompt: |-
   {{ template "beads-issues/shared/markdown-convention" . }}
   {{ template "_shared/reply-fence-convention" "reply" }}
 
+  {{ template "support/shared/message-comment-key" . }}
+
   ## Slack tools (names vary by MCP server)
 
   {{ template "support/shared/slack-tools" (dict "Capabilities" "You need: (a) **read a thread's replies** and (b) **post a reply to a thread**." "NoPosting" false "ReadMetadata" true) }}
@@ -167,7 +169,8 @@ prompt: |-
     - **If nothing new** appeared since our last recorded message → proceed to post below.
     - **If a new message DID appear** (a customer reply/follow-up, or a reply from someone else that
       already addresses the question) → **do NOT post yet.** The approved `result` may now be stale.
-      Log the new message(s) on the bead as `[INBOUND]` / `[CONTEXT]` comments, then use
+      Log the new message(s) on the bead as `[INBOUND]` / `[CONTEXT]` comments (keyed by Slack `ts`,
+      skipping any `ts` already present), then use
       `mitto_ui_options` (timeout 300):
       - **Question**: "A new message arrived in the thread while you were reviewing — your reply may be
         stale. Post it anyway, or stop to reassess?"
@@ -241,3 +244,4 @@ prompt: |-
     `POSTED` `[OUTBOUND]` comment must contain the **verbatim text we actually published** — the
     textbox `result` with the user's edits applied — not the original draft we proposed.
   - **NEVER** send a reply in the support channel without explicit review and approval.
+  {{- template "support/shared/channel-post-phase" (dict "Channel" $channel "Phase" "reply" "When" "the reply has been posted (Step 7)") }}

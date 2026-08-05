@@ -121,12 +121,14 @@ prompt: |-
   - **Comments = full history.** Log every relevant message as a markdown comment (preserve layout
     with `$'...'` or `printf '%s' "$c" | bd comment <id> --stdin`). Header then blank line then body:
     ```
-    **[TAG @author · YYYY-MM-DD HH:MM UTC]**
+    **[TAG @author · YYYY-MM-DD HH:MM UTC · ts:<slack_ts>]**
 
     <content in markdown>
     ```
     Tags: `[INBOUND @user]` customer messages · `[OUTBOUND us]` our posted replies ·
     `[CONTEXT @other]` messages from other participants · `[STATE]` a state transition + reason.
+
+    {{ template "support/shared/message-comment-key" . }}
   - **Everything is GitHub-flavored Markdown.** Both the bead **description** (`-d`) and **every
     comment** must be valid markdown — headings, **bold**, `inline code`, fenced code blocks, lists and
     links so the bead reads well in the UI. Preserve real line breaks with `$'...'` (real `\n`) or
@@ -327,7 +329,8 @@ prompt: |-
   - Load `bd show <id>` + `bd comments <id>`, then re-fetch its Slack thread using the stored
     `slack_thread_ts`.
   - Add a markdown comment for **each new** thread message not yet captured (`[INBOUND]` customer /
-    `[CONTEXT]` others / `[OUTBOUND]` any of our own replies). Do not duplicate existing comments.
+    `[CONTEXT]` others / `[OUTBOUND]` any of our own replies), applying the `ts:` dedup key from
+    **Comments = full history**: skip any message whose `ts` already appears in `bd comments <id>`.
   - **First check for closure.** If the customer's last message just **acknowledges / closes** the
     thread — "thanks", "that worked", "got it", "sorted", or a positive reaction on our answer, with
     **no new question** — and we already replied (`awaiting-customer`, or otherwise answered), the

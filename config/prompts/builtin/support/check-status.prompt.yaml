@@ -56,6 +56,8 @@ prompt: |-
     `--- BEGIN REPLY ---` / `--- END REPLY ---` block** (the shared convention the drafting/reply
     prompts use) so the customer-facing text stays identifiable.
 
+  {{ template "support/shared/message-comment-key" . }}
+
   ## Slack tools (names vary by MCP server)
 
   {{ template "support/shared/slack-tools" (dict "Capabilities" "Here you only need to **read a thread's replies** (e.g. `slack_get_thread_replies*`, `conversations_replies_slack`)." "NoPosting" true "ReadMetadata" false) }}
@@ -77,18 +79,20 @@ prompt: |-
 
   - Re-fetch the full thread (read-thread-replies tool) using the stored `slack_thread_ts` and
     `slack_channel` from the bead metadata / `# Links`.
-  - Build the chronological list of thread messages with author + UTC time. Identify which messages
-    are **new** (not yet captured as comments on the bead) since our last recorded activity.
+  - Build the chronological list of thread messages with author + UTC time **and Slack `ts`**.
+    Identify which messages are **new** — i.e. whose `ts` is not already present in `bd comments <id>`
+    (see the `ts:` dedup rule).
   - Note any reactions on our answers (a positive reaction = helpful, a negative one = not helpful).
 
   ## Step 4: Reconcile new messages onto the bead
 
   - For **each** new thread message, add a markdown comment (preserve layout with `$'...'` or
     `printf '%s' "$c" | bd comment <id> --stdin`):
-    - Customer messages → `**[INBOUND @user · YYYY-MM-DD HH:MM UTC]**`
-    - Team / other participants → `**[CONTEXT @user · YYYY-MM-DD HH:MM UTC]**`
-    - Any of our own replies not yet logged → `**[OUTBOUND us · YYYY-MM-DD HH:MM UTC]**`
-  - Do **not** duplicate comments that are already on the bead.
+    - Customer messages → `**[INBOUND @user · YYYY-MM-DD HH:MM UTC · ts:<slack_ts>]**`
+    - Team / other participants → `**[CONTEXT @user · YYYY-MM-DD HH:MM UTC · ts:<slack_ts>]**`
+    - Any of our own replies not yet logged → `**[OUTBOUND us · YYYY-MM-DD HH:MM UTC · ts:<slack_ts>]**`
+  - Do **not** duplicate comments that are already on the bead — decide solely by `ts`, never by how
+    similar the text looks.
 
   ## Step 5: Update the state to reflect reality
 
@@ -162,3 +166,4 @@ prompt: |-
 
   - This prompt is **read-and-record** on Slack — it never posts a reply to the channel.
   - Keep the bead the single source of truth: log every new thread message and every state change.
+  {{- template "support/shared/channel-post-phase" (dict "Channel" $channel "Phase" "check-status" "When" "the status summary has been presented and the close decision made (Steps 6–7)" "ChannelStep" " (Step 2)") }}

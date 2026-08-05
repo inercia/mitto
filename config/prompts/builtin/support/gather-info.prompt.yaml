@@ -187,3 +187,4 @@ prompt: |-
   - When the customer replies, the thread moves to `state:awaiting-us`; use **"Support: check
     status"** to pull the reply onto the bead, then **"Support: reply to user"** once we can answer.
   - **NEVER** post in the support channel without explicit review and approval.
+  {{- template "support/shared/channel-post-phase" (dict "Channel" $channel "Phase" "gather-info" "When" "the follow-up nudge has been handled (Step 7)" "ChannelStep" " (Step 2)") }}

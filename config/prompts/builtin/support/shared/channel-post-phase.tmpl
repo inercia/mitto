@@ -1,0 +1,60 @@
+{{- /*
+  support/channel-post-phase — inline the per-channel `post-<phase>` instruction
+  file AT RENDER TIME, as a trailing `##` section.
+
+  These files live at `.mitto/support/<channel-id>/post-<phase>.md` and hold extra
+  channel-specific steps to run AFTER the prompt's main work is done (e.g. after an
+  investigation has been recorded, or after a reply has been posted).
+
+  Unlike `support/shared/channel-fragment-read`, this fragment:
+    - reads with `ReadTemplate` (the file may itself contain `{{ }}` variables),
+    - emits a whole `##` section rather than a single bullet,
+    - stays SILENT when the channel is known but the file is absent — a missing
+      `post-<phase>.md` simply means "nothing extra to do".
+
+  Callers pass named fields via a `dict`:
+
+      Channel:     the Slack channel id (e.g. C0XXXXXXX). Required. Callers that do
+                   not know the channel at render time should pass "" — the template
+                   then emits a runtime-read instruction as a last-resort fallback.
+      Phase:       short stem naming the phase, e.g. "investigate" | "reply". The
+                   file read is `post-<Phase>.md`.
+      When:        phrase spliced into "apply them **after** <When>", e.g.
+                   "the investigation is complete (Steps 5–7)".
+      ChannelStep: optional phrase appended after "the bead's `slack_channel` value"
+                   in the fallback branch, e.g. " (Step 2)". Omit for none.
+
+  Whitespace contract: the fragment emits its own leading blank line and NO trailing
+  newline, and stays completely silent (emits nothing at all) when the channel is
+  known but the file is absent. Callers therefore use a LEADING TRIM MARKER so the
+  silent case leaves no stray blank line behind:
+
+      {{- template "support/shared/channel-post-phase"
+            (dict "Channel" $channel
+                  "Phase"   "reply"
+                  "When"    "the reply has been posted (Step 7)") }}
+*/ -}}
+{{- $channel := .Channel -}}
+{{- $phase   := .Phase   -}}
+{{- $when    := .When    -}}
+{{- $path := printf ".mitto/support/%s/post-%s.md" $channel $phase -}}
+{{- if and $channel (FileExists $path) }}
+
+## Channel post-{{ $phase }} instructions (embedded from `{{ $path }}`)
+
+These are extra channel-specific instructions for channel `{{ $channel }}`; apply them **after**
+{{ $when }}, in addition to everything above.
+
+<!-- BEGIN {{ $path }} -->
+{{ ReadTemplate $path . }}
+<!-- END {{ $path }} -->
+{{- else if eq $channel "" }}
+
+## Channel post-{{ $phase }} instructions (runtime read fallback)
+
+The channel id was not known at render time, so any channel-specific post-{{ $phase }} instructions
+could not be inlined. Using the bead's `slack_channel` value{{ if .ChannelStep }}{{ .ChannelStep }}{{ end }}, read
+**`.mitto/support/<channel-id>/post-{{ $phase }}.md`**. **If it exists**, apply its instructions
+after {{ $when }}. If it does not exist, do nothing extra.
+{{- end -}}
+{{- /* no trailing newline */ -}}

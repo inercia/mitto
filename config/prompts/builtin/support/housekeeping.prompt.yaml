@@ -52,6 +52,8 @@ prompt: |-
     a `--- BEGIN REPLY ---` / `--- END REPLY ---` block so the exact customer-facing text is
     identifiable — when reading a draft, treat the text inside those fences as the reply.
 
+  {{ template "support/shared/message-comment-key" . }}
+
   ## Slack tools (names vary by MCP server)
 
   {{ template "support/shared/slack-tools" (dict "Capabilities" "You only need to **read a thread's replies** (e.g. `slack_get_thread_replies*`, `conversations_replies_slack`). Read each ticket's channel + parent `thread_ts` from its bead metadata (`slack_channel` / `slack_thread_ts`)." "NoPosting" true "ReadMetadata" false) }}
@@ -134,11 +136,12 @@ prompt: |-
   - Re-fetch the thread (read-thread-replies tool) using the stored `slack_thread_ts` /
     `slack_channel`. Build the chronological message list (author + UTC time) and identify messages
     **not yet captured** on the bead.
-  - Add one markdown comment per **new** message (never duplicate existing ones; preserve layout with
-    `printf '%s' "$c" | bd comment <id> --stdin`):
-    - Customer messages → `**[INBOUND @user · YYYY-MM-DD HH:MM UTC]**`
-    - Team / others → `**[CONTEXT @user · YYYY-MM-DD HH:MM UTC]**`
-    - Any of our own replies not yet logged → `**[OUTBOUND us · YYYY-MM-DD HH:MM UTC]**`
+  - Add one markdown comment per **new** message — "new" means its Slack `ts` is **not** already in
+    `bd comments <id>` (see the `ts:` dedup rule above); preserve layout with
+    `printf '%s' "$c" | bd comment <id> --stdin`:
+    - Customer messages → `**[INBOUND @user · YYYY-MM-DD HH:MM UTC · ts:<slack_ts>]**`
+    - Team / others → `**[CONTEXT @user · YYYY-MM-DD HH:MM UTC · ts:<slack_ts>]**`
+    - Any of our own replies not yet logged → `**[OUTBOUND us · YYYY-MM-DD HH:MM UTC · ts:<slack_ts>]**`
   - Note any reactions on our answers (positive = helpful, negative = not helpful).
   - Update the `state:*` label **in place** to reflect whose turn it is (same issue — never
     `bd set-state`), following the standard rules:

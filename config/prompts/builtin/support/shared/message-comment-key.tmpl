@@ -1,0 +1,39 @@
+{{- /*
+  support/message-comment-key — the idempotency rule for logging Slack
+  thread messages as bead comments.
+
+  Every prompt that mirrors thread messages onto a bead (watch-channel,
+  housekeeping, check-status, investigate, continue-conversation) must
+  dedup on the Slack message `ts`, never on the comment text: re-rendered
+  headers (different clock time, `@name` vs `<@Uxxxx>`, trimmed greeting)
+  made text-matching fail and the same customer message was appended once
+  per cycle.
+
+  Whitespace contract identical to the other support fragments: fragment
+  body is column-1 Markdown with NO leading and NO trailing newline;
+  callers use plain `{{ template ... }}` and rely on the surrounding YAML
+  newlines for spacing.
+*/ -}}
+🔑 **Dedup thread messages by Slack `ts`, never by text.** Every Slack message has a stable
+`ts` (e.g. `1753693512.874319`). Put it in the comment header as the **last** field:
+
+```
+**[TAG @author · YYYY-MM-DD HH:MM UTC · ts:<slack_ts>]**
+
+<content in markdown>
+```
+
+Before writing **any** message comment: read `bd comments <id>` once, collect every `ts:<...>`
+already present, and **skip** the message if its `ts` is in that set. A message is "already
+captured" **iff** its `ts` appears — do not judge by how similar the text looks, and do not
+re-add a message just because the header you would render now differs from the stored one
+(different clock time, `@name` vs `<@Uxxxx>`, trimmed greeting). Conversely, only messages
+with a `ts` you have never stored are new.
+
+If a tool genuinely does not return a `ts` for a message, use `ts:unknown-<YYYY-MM-DDTHH:MM>`
+(the message's own Slack timestamp, not the current time) so the key is still stable across runs.
+
+`ts:` keys apply **only** to comments that mirror a Slack message (`[INBOUND]` / `[CONTEXT]` /
+`[OUTBOUND]`). Bookkeeping comments (`[STATE]`, `[PRIORITY]`, `[CONTEXT investigation]`, drafts)
+have no `ts` and are exempt.
+{{- /* no trailing newline */ -}}
