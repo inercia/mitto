@@ -10619,6 +10619,132 @@ func TestConversationStart_FreeTextSeed_NoAutoApply(t *testing.T) {
 	}
 }
 
+// TestConversationStart_PromptName_LoopDefaults_OptionalDefaultFalse (mitto-ydj)
+// verifies that spawning a prompt whose loop: frontmatter is mode:optional
+// with default:false (e.g. testing/run-tests.prompt.yaml) creates the loop
+// fully configured but disabled when the caller leaves loop_enabled unset.
+func TestConversationStart_PromptName_LoopDefaults_OptionalDefaultFalse(t *testing.T) {
+	store, srv, parentID := setupConversationStartServerWithPrompts(t, []config.WebPrompt{
+		{
+			Name:   "Run tests",
+			Prompt: "run the tests",
+			Loop: &config.PromptLoop{
+				Trigger:       string(session.TriggerOnCompletion),
+				Delay:         30,
+				MaxIterations: 20,
+				Mode:          config.PromptLoopModeOptional,
+				Default:       boolPtr(false),
+			},
+		},
+	})
+
+	ctx := context.Background()
+	_, out, err := srv.handleConversationStart(ctx, nil, ConversationStartInput{
+		SelfID:     parentID,
+		PromptName: "Run tests",
+	})
+	if err != nil {
+		t.Fatalf("handleConversationStart error: %v", err)
+	}
+	if !out.LoopConfigured {
+		t.Fatalf("expected LoopConfigured=true (loop must still be created, just disabled): %s", out.Error)
+	}
+
+	stored, err := store.Loop(out.SessionID).Get()
+	if err != nil {
+		t.Fatalf("Loop.Get error: %v", err)
+	}
+	if stored.Enabled {
+		t.Errorf("stored Enabled = true, want false (mode:optional, default:false, caller left loop_enabled unset)")
+	}
+	// The rest of the frontmatter must still have been applied normally.
+	if !stored.IsOnCompletion() {
+		t.Errorf("stored trigger = %q, want onCompletion", stored.Trigger)
+	}
+	if stored.MaxIterations != 20 {
+		t.Errorf("stored MaxIterations = %d, want 20 (from frontmatter)", stored.MaxIterations)
+	}
+}
+
+// TestConversationStart_PromptName_LoopDefaults_OptionalDefaultFalse_CallerOverrides
+// (mitto-ydj) verifies precedence: an explicit loop_enabled=true from the
+// caller wins over a mode:optional/default:false frontmatter.
+func TestConversationStart_PromptName_LoopDefaults_OptionalDefaultFalse_CallerOverrides(t *testing.T) {
+	store, srv, parentID := setupConversationStartServerWithPrompts(t, []config.WebPrompt{
+		{
+			Name:   "Run tests",
+			Prompt: "run the tests",
+			Loop: &config.PromptLoop{
+				Trigger: string(session.TriggerOnCompletion),
+				Delay:   30,
+				Mode:    config.PromptLoopModeOptional,
+				Default: boolPtr(false),
+			},
+		},
+	})
+
+	ctx := context.Background()
+	callerEnabled := true
+	_, out, err := srv.handleConversationStart(ctx, nil, ConversationStartInput{
+		SelfID:      parentID,
+		PromptName:  "Run tests",
+		LoopEnabled: &callerEnabled,
+	})
+	if err != nil {
+		t.Fatalf("handleConversationStart error: %v", err)
+	}
+	if !out.LoopConfigured {
+		t.Fatalf("expected LoopConfigured=true: %s", out.Error)
+	}
+
+	stored, err := store.Loop(out.SessionID).Get()
+	if err != nil {
+		t.Fatalf("Loop.Get error: %v", err)
+	}
+	if !stored.Enabled {
+		t.Errorf("stored Enabled = false, want true (explicit caller loop_enabled=true must win over frontmatter default:false)")
+	}
+}
+
+// TestConversationStart_PromptName_LoopDefaults_OptionalDefaultNil_OnByDefault
+// (mitto-ydj) verifies that mode:optional with an absent default still spawns
+// an enabled loop — nil means "on by default, user-toggleable" (matches the
+// frontend's promptLoopInitialState), not "off".
+func TestConversationStart_PromptName_LoopDefaults_OptionalDefaultNil_OnByDefault(t *testing.T) {
+	store, srv, parentID := setupConversationStartServerWithPrompts(t, []config.WebPrompt{
+		{
+			Name:   "Watch channel",
+			Prompt: "watch the channel",
+			Loop: &config.PromptLoop{
+				Trigger: string(session.TriggerOnCompletion),
+				Delay:   30,
+				Mode:    config.PromptLoopModeOptional,
+				// Default intentionally left nil.
+			},
+		},
+	})
+
+	ctx := context.Background()
+	_, out, err := srv.handleConversationStart(ctx, nil, ConversationStartInput{
+		SelfID:     parentID,
+		PromptName: "Watch channel",
+	})
+	if err != nil {
+		t.Fatalf("handleConversationStart error: %v", err)
+	}
+	if !out.LoopConfigured {
+		t.Fatalf("expected LoopConfigured=true: %s", out.Error)
+	}
+
+	stored, err := store.Loop(out.SessionID).Get()
+	if err != nil {
+		t.Fatalf("Loop.Get error: %v", err)
+	}
+	if !stored.Enabled {
+		t.Errorf("stored Enabled = false, want true (mode:optional with nil default is on-by-default)")
+	}
+}
+
 // TestConversationStart_PromptName_LoopFrequencyAutoApply (mitto-r7y) verifies
 // that a schedule-trigger frontmatter (value/unit) is auto-applied so the
 // caller does not need to pass loop_frequency_value/unit.
