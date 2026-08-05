@@ -51,6 +51,15 @@ const (
 	// context that will only grow. The user must archive the session or trim MCP
 	// servers before re-enabling. Not resumable by simply toggling Enabled.
 	StoppedReasonContextWindowExceeded StoppedReason = "contextWindowExceeded"
+	// StoppedReasonDeliveryFailures is set when a scheduled loop's prompt
+	// delivery fails MaxLoopDeliveryFailures consecutive times for a generic
+	// (non context-window) reason. Before this reason existed, the schedule
+	// backoff had no ceiling: a deterministically permanent failure (e.g. a
+	// 404 "selected model is not available") would re-fire forever at the
+	// capped backoff interval with the loop still reporting Enabled and no
+	// stopped_reason (mitto-aeb). Not resumable by simply toggling Enabled —
+	// the underlying delivery error must be addressed first.
+	StoppedReasonDeliveryFailures StoppedReason = "deliveryFailures"
 
 	// StoppedReasonPausedByUser is a resumable (paused) reason set when the user manually
 	// disables the loop (e.g. via the pause button). Re-enabling clears it.

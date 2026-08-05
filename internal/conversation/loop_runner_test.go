@@ -4670,6 +4670,94 @@ func TestLoopRunner_ContextWindowFailure_OnCompletionLoop_AutoPauses(t *testing.
 	}
 }
 
+// TestLoopRunner_DeliveryFailure_GenericError_AutoPausesAtCeiling is the
+// regression test for mitto-aeb: handleDeliveryFailure's generic branch
+// (loop_runner.go, everything that is not a context-window/413 error)
+// used to increment scheduleBackoffFailures and defer the next run via
+// loopScheduleBackoff forever, with no comparison against any maximum.
+// Unlike the sibling counters (MaxLoopResumeFailures, MaxPromptResolveFailures,
+// MaxLoopContextWindowFailures — all capped at 3), there was no ceiling, so a
+// deterministically permanent delivery failure (e.g. the mitto-fvt "selected
+// model is not available" 404) re-fired forever with the loop still reporting
+// Enabled and no StoppedReason — exactly the observed 58-consecutive-failures
+// state.
+//
+// This test drives the real handleDeliveryFailure path past MaxLoopDeliveryFailures
+// with a generic, non-context-window error and asserts the loop is now
+// auto-paused with StoppedReasonDeliveryFailures, exactly like the
+// context-window/resume/prompt-resolve counters.
+func TestLoopRunner_DeliveryFailure_GenericError_AutoPausesAtCeiling(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	const sessionID = "delivery-failure-ceiling"
+	meta := session.Metadata{SessionID: sessionID, ACPServer: "auggie", WorkingDir: "/tmp"}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	loopStore := store.Loop(sessionID)
+	loop := &session.LoopPrompt{
+		Prompt:    "Test",
+		Trigger:   session.TriggerSchedule,
+		Frequency: session.Frequency{Value: 4, Unit: session.FrequencyHours},
+		Enabled:   true,
+	}
+	if err := loopStore.Set(loop); err != nil {
+		t.Fatalf("loopStore.Set() error = %v", err)
+	}
+
+	runner := NewLoopRunner(store, nil, nil)
+	var autoStopCalls int
+	runner.SetOnLoopAutoStopped(func(sid string, p *session.LoopPrompt) {
+		autoStopCalls++
+	})
+
+	// A generic, permanent, non-context-window transport error — mirrors the
+	// mitto-fvt "selected model is not available" 404 from the bead evidence.
+	genericErr := errors.New("Internal error: HTTP error: 404 Not Found: The selected model is not available for this session.")
+
+	// Hits 1..MaxLoopDeliveryFailures-1 must NOT auto-pause yet (backoff only).
+	for i := 1; i < MaxLoopDeliveryFailures; i++ {
+		runner.handleDeliveryFailure(sessionID, "cgw-translation", loop, loopStore, genericErr, true, false)
+	}
+	mid, err := loopStore.Get()
+	if err != nil {
+		t.Fatalf("loopStore.Get() error = %v", err)
+	}
+	if !mid.Enabled {
+		t.Fatalf("loop.Enabled = false after %d hits; want true (under threshold, backoff only)",
+			MaxLoopDeliveryFailures-1)
+	}
+	if autoStopCalls != 0 {
+		t.Fatalf("onLoopAutoStopped invocation count = %d after %d hits; want 0 (under threshold)",
+			autoStopCalls, MaxLoopDeliveryFailures-1)
+	}
+
+	// The Nth consecutive hit must trip the ceiling.
+	runner.handleDeliveryFailure(sessionID, "cgw-translation", loop, loopStore, genericErr, true, false)
+
+	final, err := loopStore.Get()
+	if err != nil {
+		t.Fatalf("loopStore.Get() error = %v", err)
+	}
+	if final.Enabled {
+		t.Errorf("loop.Enabled = true after %d consecutive generic delivery failures; "+
+			"want false (mitto-aeb: MaxLoopDeliveryFailures ceiling must auto-pause the loop)",
+			MaxLoopDeliveryFailures)
+	}
+	if final.StoppedReason != session.StoppedReasonDeliveryFailures {
+		t.Errorf("loop.StoppedReason = %q after %d consecutive generic delivery failures; "+
+			"want %q", final.StoppedReason, MaxLoopDeliveryFailures, session.StoppedReasonDeliveryFailures)
+	}
+	if autoStopCalls != 1 {
+		t.Errorf("onLoopAutoStopped invocation count = %d after %d consecutive generic "+
+			"delivery failures; want 1", autoStopCalls, MaxLoopDeliveryFailures)
+	}
+}
+
 // TestLoopRunner_OnTasks_PromptResolveFailure_AutoPauses is the reproduction
 // test for mitto-uhnc: an onTasks-triggered loop whose loop_prompt_name no
 // longer resolves (e.g. the builtin prompt was renamed) must auto-pause after

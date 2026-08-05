@@ -35,6 +35,16 @@ const (
 	// re-fires against a wedged context (mitto-7jn).
 	MaxLoopContextWindowFailures = 3
 
+	// MaxLoopDeliveryFailures is the number of consecutive generic (non
+	// context-window) scheduled-delivery failures after which the loop is
+	// auto-paused with StoppedReasonDeliveryFailures. Set higher than the
+	// other Max*Failures constants (which are all 3) because this branch also
+	// catches genuinely transient transport errors (mitto-qal.2) that the
+	// exponential backoff alone is meant to absorb — but a failure that
+	// persists this many consecutive times is, in practice, permanent and
+	// must not be retried forever (mitto-aeb).
+	MaxLoopDeliveryFailures = 8
+
 	// loopScheduleBackoffBase is the initial delay applied to NextScheduledAt
 	// after the first scheduled loop delivery failure. It doubles with each
 	// consecutive failure, capped at loopScheduleBackoffCap. This prevents a
@@ -1869,6 +1879,11 @@ func (r *LoopRunner) handleContextWindowFailure(sessionID, sessionName string, l
 //     triggers are event-driven (their NextScheduledAt is nil) and manual "keep
 //     schedule" runs (resetTimer=false) or forced one-shots must not push out
 //     the regular schedule.
+//   - The same schedule-backoff counter also gates a MaxLoopDeliveryFailures
+//     ceiling: once a generic (non-context-window) failure recurs that many
+//     consecutive times, the loop is auto-paused with
+//     StoppedReasonDeliveryFailures instead of being deferred again, so a
+//     deterministically permanent failure cannot re-fire forever (mitto-aeb).
 func (r *LoopRunner) handleDeliveryFailure(sessionID, sessionName string, loop *session.LoopPrompt, loopStore *session.LoopStore, err error, resetTimer, forced bool) {
 	if mittoAcp.IsContextTooLargeError(err) {
 		if r.handleContextWindowFailure(sessionID, sessionName, loopStore) {
@@ -1889,6 +1904,37 @@ func (r *LoopRunner) handleDeliveryFailure(sessionID, sessionName string, loop *
 		failures := r.scheduleBackoffFailures[sessionID]
 		r.scheduleBackoffFailuresMu.Unlock()
 
+		if failures >= MaxLoopDeliveryFailures {
+			if stopErr := loopStore.MarkStopped(session.StoppedReasonDeliveryFailures); stopErr != nil {
+				if r.logger != nil {
+					r.logger.Warn("Failed to auto-pause loop after repeated delivery failures",
+						"session_id", sessionID,
+						"session_name", sessionName,
+						"consecutive_failures", failures,
+						"error", stopErr)
+				}
+				// Do not clear the counter so a subsequent retry can try again.
+				return
+			}
+			if r.logger != nil {
+				r.logger.Warn("Auto-paused loop conversation after repeated delivery failures",
+					"session_id", sessionID,
+					"session_name", sessionName,
+					"consecutive_failures", failures,
+					"max_failures", MaxLoopDeliveryFailures,
+					"error", err)
+			}
+			if r.onLoopAutoStopped != nil {
+				if final, gErr := loopStore.Get(); gErr == nil {
+					r.onLoopAutoStopped(sessionID, final)
+				}
+			}
+			r.scheduleBackoffFailuresMu.Lock()
+			delete(r.scheduleBackoffFailures, sessionID)
+			r.scheduleBackoffFailuresMu.Unlock()
+			return
+		}
+
 		delay := loopScheduleBackoff(failures)
 		if deferErr := loopStore.DeferNextSchedule(delay); deferErr != nil {
 			if r.logger != nil {
@@ -1904,6 +1950,7 @@ func (r *LoopRunner) handleDeliveryFailure(sessionID, sessionName string, loop *
 					"session_id", sessionID,
 					"session_name", sessionName,
 					"consecutive_failures", failures,
+					"max_failures", MaxLoopDeliveryFailures,
 					"backoff", delay,
 					"error", err)
 			}

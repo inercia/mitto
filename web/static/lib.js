@@ -387,6 +387,11 @@ export const LOOP_STOPPED_LABELS = {
     kind: "stopped",
     isError: true,
   },
+  deliveryFailures: {
+    label: "Stopped: delivery errors",
+    kind: "stopped",
+    isError: true,
+  },
   pausedByUser: { label: "Paused by you", kind: "paused" },
   disabledByAgent: { label: "Paused by the agent", kind: "paused" },
 };
