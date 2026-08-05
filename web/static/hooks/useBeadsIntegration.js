@@ -342,9 +342,14 @@ export function useBeadsIntegration({
         // When the menu can't auto-fill every parameter, collect the rest first,
         // then open the loop dialog with the merged arguments.
         if (missing.length > 0 && onOpenPromptParamDialog) {
-          onOpenPromptParamDialog(prompt, missing, async (userArgs) => {
-            launchLoop({ ...autoArgs, ...userArgs });
-          });
+          onOpenPromptParamDialog(
+            prompt,
+            missing,
+            async (userArgs) => {
+              launchLoop({ ...autoArgs, ...userArgs });
+            },
+            { workingDir: beadsWorkingDir },
+          );
           return;
         }
 
@@ -355,34 +360,39 @@ export function useBeadsIntegration({
       // When there are parameters the menu cannot auto-fill, open the dialog so
       // the user can supply them. The dispatch happens inside the onSubmit callback.
       if (missing.length > 0 && onOpenPromptParamDialog) {
-        onOpenPromptParamDialog(prompt, missing, async (userArgs) => {
-          const result = await startConversationWithPrompt({
-            workingDir: beadsWorkingDir,
-            acpServer: ws?.acp_server,
-            name: convName,
-            beadsIssue: issue.id,
-            prompt,
-            arguments: { ...autoArgs, ...userArgs },
-          });
-          if (!result?.sessionId) {
-            showToast({
-              style: "error",
-              title: result?.error || "Failed to create conversation",
-              duration: 4000,
+        onOpenPromptParamDialog(
+          prompt,
+          missing,
+          async (userArgs) => {
+            const result = await startConversationWithPrompt({
+              workingDir: beadsWorkingDir,
+              acpServer: ws?.acp_server,
+              name: convName,
+              beadsIssue: issue.id,
+              prompt,
+              arguments: { ...autoArgs, ...userArgs },
             });
-            return;
-          }
-          setMainView("conversation");
-          dismissBeadsIssueOverlay();
-          showToast(
-            buildBeadsPromptToast({
-              result,
-              promptName: prompt.name,
-              issueId: issue.id,
-              activeSessionId,
-            }),
-          );
-        });
+            if (!result?.sessionId) {
+              showToast({
+                style: "error",
+                title: result?.error || "Failed to create conversation",
+                duration: 4000,
+              });
+              return;
+            }
+            setMainView("conversation");
+            dismissBeadsIssueOverlay();
+            showToast(
+              buildBeadsPromptToast({
+                result,
+                promptName: prompt.name,
+                issueId: issue.id,
+                activeSessionId,
+              }),
+            );
+          },
+          { workingDir: beadsWorkingDir },
+        );
         return;
       }
 
@@ -487,9 +497,14 @@ export function useBeadsIntegration({
         };
 
         if (missing.length > 0 && onOpenPromptParamDialog) {
-          onOpenPromptParamDialog(prompt, missing, async (userArgs) => {
-            launchLoop(userArgs);
-          });
+          onOpenPromptParamDialog(
+            prompt,
+            missing,
+            async (userArgs) => {
+              launchLoop(userArgs);
+            },
+            { workingDir: wd },
+          );
           return;
         }
 
@@ -500,32 +515,37 @@ export function useBeadsIntegration({
       // When there are parameters the menu cannot auto-fill, open the dialog so
       // the user can supply them. The dispatch happens inside the onSubmit callback.
       if (missing.length > 0 && onOpenPromptParamDialog) {
-        onOpenPromptParamDialog(prompt, missing, async (userArgs) => {
-          const result = await startConversationWithPrompt({
-            workingDir: wd,
-            acpServer: ws?.acp_server,
-            name: prompt.name,
-            prompt,
-            arguments: userArgs,
-          });
-          if (!result?.sessionId) {
-            showToast({
-              style: "error",
-              title: result?.error || "Failed to create conversation",
-              duration: 4000,
+        onOpenPromptParamDialog(
+          prompt,
+          missing,
+          async (userArgs) => {
+            const result = await startConversationWithPrompt({
+              workingDir: wd,
+              acpServer: ws?.acp_server,
+              name: prompt.name,
+              prompt,
+              arguments: userArgs,
             });
-            return;
-          }
-          setMainView("conversation");
-          dismissBeadsIssueOverlay();
-          showToast(
-            buildBeadsPromptToast({
-              result,
-              promptName: prompt.name,
-              activeSessionId,
-            }),
-          );
-        });
+            if (!result?.sessionId) {
+              showToast({
+                style: "error",
+                title: result?.error || "Failed to create conversation",
+                duration: 4000,
+              });
+              return;
+            }
+            setMainView("conversation");
+            dismissBeadsIssueOverlay();
+            showToast(
+              buildBeadsPromptToast({
+                result,
+                promptName: prompt.name,
+                activeSessionId,
+              }),
+            );
+          },
+          { workingDir: wd },
+        );
         return;
       }
 

@@ -26,6 +26,7 @@ parameters:
     multiLine: true
     remember: folder
     required: false
+    ask: always
     description: 'Optional additional instructions to steer this test run (e.g. "skip the migration step", "use the staging endpoint instead of prod", "report timing for each step"). These override or add to the scripted procedure without editing the source Markdown files.'
   - name: CreateIssues
     type: boolean

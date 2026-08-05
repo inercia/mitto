@@ -10,6 +10,8 @@ import { apiUrl } from "../utils/api.js";
 import { endpoints } from "../utils/endpoints.js";
 import { Modal } from "./Modal.js";
 import { isOptionsPickerParam } from "../utils/prompts.js";
+import { getBasename } from "../lib.js";
+import { SlidersIcon } from "./Icons.js";
 // mitto-47y.6.1: recursive nested-picker helpers live under utils/ so they can
 // be unit-tested without hitting the `window.preact` module-load import gate.
 // See utils/promptNestedArgs.js for the full contract; MAX_NESTED_LEVEL stays
@@ -60,6 +62,97 @@ import {
  *   block. When `level === MAX_NESTED_LEVEL`, `type: prompts` fields render
  *   as the disabled "nested prompt pickers are not supported here" note.
  */
+
+// mitto-l78: recursively summarize a nested-args tree node — how many leaf
+// values are filled, and how many *required* leaves (at any depth) are still
+// unset. Powers the compact sliders button's badge/danger-flag next to a
+// `type: prompts` picker, since its inner parameters are no longer always
+// visible on the main form. Deliberately duplicated (not added to
+// utils/promptNestedArgs.js) — this bead is presentation-only and must not
+// change that module's wire-format contract; the walk mirrors
+// buildInnerArgs's structure (booleans always "answered", required-empty
+// strings count as missing, `type: prompts` recurses into `sub`) but counts
+// instead of building an args map. Naturally bounded by the same
+// MAX_NESTED_LEVEL cap as buildInnerArgs: a picker at the cap renders as a
+// disabled placeholder (see the `type === "prompts"` branch below) and can
+// never acquire a picked value, so this function never recurses past what
+// the UI can actually produce.
+function summarizeNestedNode(innerParams, node, promptsList) {
+  let filled = 0;
+  let missingRequired = 0;
+  const values = (node && node.values) || {};
+  const sub = (node && node.sub) || {};
+  const paramsList = Array.isArray(innerParams) ? innerParams : [];
+  for (const ip of paramsList) {
+    if (!ip || !ip.name) continue;
+    if (ip.type === "prompts") {
+      const pickedName = (values[ip.name] || "").toString().trim();
+      if (pickedName === "") {
+        if (ip.required) missingRequired += 1;
+        continue;
+      }
+      filled += 1;
+      // mitto-48c: collectInnerArgs: false discards this picker's inner
+      // values entirely — count the picked name as filled but never recurse
+      // into (or flag missing-required leaves from) its discarded subtree.
+      if (ip.collectInnerArgs === false) continue;
+      const pickedPrompt = (promptsList || []).find(
+        (wp) => wp && wp.name === pickedName,
+      );
+      const deeperInner =
+        pickedPrompt && Array.isArray(pickedPrompt.parameters)
+          ? pickedPrompt.parameters
+          : [];
+      const deeper = summarizeNestedNode(deeperInner, sub[ip.name], promptsList);
+      filled += deeper.filled;
+      missingRequired += deeper.missingRequired;
+      continue;
+    }
+    if (ip.type === "boolean") {
+      // A checkbox always has a definite answer (default unchecked); only
+      // count it toward "filled" when explicitly checked so the badge
+      // reflects meaningful state rather than every boolean by default.
+      if (values[ip.name] === true || values[ip.name] === "true") filled += 1;
+      continue;
+    }
+    const iv = (values[ip.name] || "").toString().trim();
+    if (iv !== "") {
+      filled += 1;
+    } else if (ip.required) {
+      missingRequired += 1;
+    }
+  }
+  return { filled, missingRequired };
+}
+
+// mitto-l78: does ANY `type: prompts` picker in `parameters` (at any depth,
+// via summarizeNestedNode's recursion) currently have an unmet required
+// inner parameter? Required inner params are hidden behind the sliders
+// sub-dialog once picked, so Save must not succeed while one is unset —
+// without this the operator could silently submit an incomplete nested
+// prompt invocation with no visual cue on the main form.
+function hasUnmetNestedRequired(parameters, values, nestedValues, promptsList) {
+  for (const p of parameters || []) {
+    if (!p || p.type !== "prompts") continue;
+    // mitto-48c: an opted-out picker's inner params are discarded, so an
+    // unmet required inner param there must never block Save.
+    if (p.collectInnerArgs === false) continue;
+    const pickedName = (values[p.name] || "").toString().trim();
+    if (!pickedName) continue;
+    const pickedPrompt = (promptsList || []).find(
+      (wp) => wp && wp.name === pickedName,
+    );
+    const innerParams =
+      pickedPrompt && Array.isArray(pickedPrompt.parameters)
+        ? pickedPrompt.parameters
+        : [];
+    const node = nestedValues && nestedValues[p.name];
+    const summary = summarizeNestedNode(innerParams, node, promptsList);
+    if (summary.missingRequired > 0) return true;
+  }
+  return false;
+}
+
 function ParamField({
   param,
   value,
@@ -87,6 +180,47 @@ function ParamField({
 }) {
   const { name, type, description, required, multiLine, options } = param;
   const hasOptions = Array.isArray(options) && options.length > 0;
+
+  // mitto-l78: nested sub-dialog open state for `type: prompts` pickers.
+  // Declared unconditionally (Rules of Hooks) even though only the
+  // `prompts` branch below ever toggles it — ParamField is always rendered
+  // as a Preact component (via `<${ParamField} .../>`), never called as a
+  // plain function, so this is safe regardless of `type`.
+  const [nestedModalOpen, setNestedModalOpen] = useState(false);
+
+  // mitto-l78: resolve the picked prompt + its declared parameters once, up
+  // front, so both the sliders-button state computed in the `prompts`
+  // control branch below and the nested-modal wiring at the end of this
+  // function share the same values (previously this lookup lived only at
+  // the bottom of this function, for the inline fieldset it replaces).
+  const trimmedValue = typeof value === "string" ? value.trim() : "";
+  const pickedPrompt =
+    type === "prompts" && trimmedValue && Array.isArray(promptsList)
+      ? promptsList.find((wp) => wp && wp.name === trimmedValue)
+      : null;
+  const innerParams =
+    pickedPrompt && Array.isArray(pickedPrompt.parameters)
+      ? pickedPrompt.parameters
+      : null;
+  // mitto-48c: a picker declaring `collectInnerArgs: false` never opens the
+  // nested sub-dialog — its picked prompt's own parameters are discarded
+  // (e.g. a picker used only as a name/edit-subject reference), so asking
+  // for them would be wasted interaction.
+  const collectInnerArgs = param.collectInnerArgs !== false;
+  const canOpenNested =
+    type === "prompts" &&
+    collectInnerArgs &&
+    level < MAX_NESTED_LEVEL &&
+    innerParams &&
+    innerParams.length > 0;
+
+  // mitto-l78: if the picker's value changes (or its picked prompt loses its
+  // parameters) while the sub-dialog is open, close it — otherwise a later
+  // change back to a prompt with parameters would silently reopen a stale
+  // modal without the user clicking the sliders button again.
+  useEffect(() => {
+    if (!canOpenNested) setNestedModalOpen(false);
+  }, [canOpenNested]);
 
   let control;
   if (type === "beadsId") {
@@ -259,8 +393,13 @@ function ParamField({
           <option value="">Select a folder…</option>
           ${folders.map(
             (ws) =>
-              html`<option key=${ws.working_dir} value=${ws.working_dir}>
-                ${ws.working_dir}${ws.working_dir === workingDir
+              html`<option
+                key=${ws.working_dir}
+                value=${ws.working_dir}
+                title=${ws.working_dir}
+              >
+                ${ws.name || getBasename(ws.working_dir)}${ws.working_dir ===
+                workingDir
                   ? " (current)"
                   : ""}
               </option>`,
@@ -314,49 +453,120 @@ function ParamField({
     // Value is the NAME of another workspace prompt. Mirrors the beadsId
     // pattern: spinner while loading, text-input fallback when the list is
     // unavailable, otherwise a select of prompt names.
+    // mitto-l78: the picked prompt's own parameters are no longer expanded
+    // inline — a compact sliders button (daisyUI `join`, next to the select)
+    // opens them in a nested Modal at `level + 1` instead. The button badge
+    // shows the count of currently-filled inner values (or, if any required
+    // inner param is unset at any depth, a danger-colored count of those
+    // instead — see summarizeNestedNode above and hasUnmetNestedRequired,
+    // which also gates the outer Save button).
     // mitto-47y.6.1: at level === MAX_NESTED_LEVEL a picker would drive a
     // backend sub-render past `promptTextMaxDepth` — render the pre-existing
     // disabled placeholder instead (defense-in-depth alongside the submit
     // serializer skip at the same depth). This preserves the v1 (`mitto-47y.2`)
-    // Phase B note at the new deepest level.
-    if (level >= MAX_NESTED_LEVEL) {
+    // Phase B note at the new deepest level; the button stays disabled here
+    // too, carrying the same "not supported" text as a tooltip.
+    const capped = level >= MAX_NESTED_LEVEL;
+    const hasInnerParams = !!(innerParams && innerParams.length > 0);
+    // mitto-48c: collectInnerArgs: false discards the picked prompt's own
+    // parameters entirely — never summarize/warn/open for it.
+    const nestedSummary =
+      hasInnerParams && collectInnerArgs
+        ? summarizeNestedNode(innerParams, nestedNode, promptsList)
+        : { filled: 0, missingRequired: 0 };
+    const sliderDisabled = capped || !collectInnerArgs || !hasInnerParams;
+    const sliderHasWarning = !sliderDisabled && nestedSummary.missingRequired > 0;
+    const sliderTip = capped
+      ? "nested prompt pickers are not supported here"
+      : !collectInnerArgs
+        ? "This prompt's parameters are not used here"
+        : !trimmedValue
+          ? "Pick a prompt to configure its parameters"
+          : !hasInnerParams
+            ? "This prompt has no parameters"
+            : sliderHasWarning
+              ? `${nestedSummary.missingRequired} required parameter${nestedSummary.missingRequired === 1 ? "" : "s"} unset`
+              : "Prompt parameters";
+    const sliderBadgeCount = sliderHasWarning
+      ? nestedSummary.missingRequired
+      : nestedSummary.filled;
+    const sliderButton = html`
+      <button
+        type="button"
+        class="btn btn-sm btn-square join-item tooltip tooltip-left ${sliderHasWarning ? "btn-error" : ""}"
+        data-tip=${sliderTip}
+        disabled=${sliderDisabled}
+        onClick=${() => setNestedModalOpen(true)}
+        data-testid="nested-params-btn-${name}"
+      >
+        <span class="indicator">
+          <${SlidersIcon} className="w-4 h-4" />
+          ${!sliderDisabled &&
+          sliderBadgeCount > 0 &&
+          html`<span
+            class="indicator-item badge badge-sm ${sliderHasWarning ? "badge-error" : "badge-primary"}"
+            data-testid="nested-params-badge-${name}"
+          >
+            ${sliderBadgeCount}
+          </span>`}
+        </span>
+      </button>
+    `;
+    if (capped) {
       control = html`
-        <input
-          type="text"
-          class="input input-sm w-full"
-          value=""
-          disabled
-          placeholder="nested prompt pickers are not supported here"
-        />
+        <div class="join w-full">
+          <input
+            type="text"
+            class="input input-sm join-item flex-1"
+            value=""
+            disabled
+            placeholder="nested prompt pickers are not supported here"
+          />
+          ${sliderButton}
+        </div>
       `;
     } else if (loadingPrompts) {
-      control = html`<span
-        class="text-mitto-text-muted text-xs opacity-60"
-        >…</span
-      >`;
+      control = html`
+        <div class="join w-full">
+          <span
+            class="text-mitto-text-muted text-xs opacity-60 join-item flex-1 flex items-center px-2"
+            >…</span
+          >
+          ${sliderButton}
+        </div>
+      `;
     } else if (!promptsList || promptsList.length === 0) {
       control = html`
-        <input
-          type="text"
-          class="input input-sm w-full"
-          value=${value}
-          onInput=${(e) => onChange(name, e.target.value)}
-          placeholder="Prompt name"
-        />
+        <div class="join w-full">
+          <input
+            type="text"
+            class="input input-sm join-item flex-1"
+            value=${value}
+            onInput=${(e) => onChange(name, e.target.value)}
+            placeholder="Prompt name"
+          />
+          ${sliderButton}
+        </div>
       `;
     } else {
+      const sortedPrompts = [...promptsList].sort((a, b) =>
+        String(a?.name ?? "").localeCompare(String(b?.name ?? "")),
+      );
       control = html`
-        <select
-          class="select select-sm w-full"
-          value=${value}
-          onChange=${(e) => onChange(name, e.target.value)}
-        >
-          <option value="">Select a prompt…</option>
-          ${promptsList.map(
-            (p) =>
-              html`<option key=${p.name} value=${p.name}>${p.name}</option>`,
-          )}
-        </select>
+        <div class="join w-full">
+          <select
+            class="select select-sm join-item flex-1"
+            value=${value}
+            onChange=${(e) => onChange(name, e.target.value)}
+          >
+            <option value="">Select a prompt…</option>
+            ${sortedPrompts.map(
+              (p) =>
+                html`<option key=${p.name} value=${p.name}>${p.name}</option>`,
+            )}
+          </select>
+          ${sliderButton}
+        </div>
       `;
     }
   } else if (type === "filename") {
@@ -501,26 +711,12 @@ function ParamField({
     `;
   }
 
-  // mitto-47y.6.1: recursive nested-block render. A `type: prompts` picker
-  // that is below the depth cap AND has a non-empty picked value opens an
-  // inline block for the picked prompt's parameters, reusing ParamField at
-  // `level + 1`. Inner-param lookup is against the shared promptsList prop
-  // (single source of truth for parameters at every level). At the cap level
-  // the block is not rendered (the control above is the disabled placeholder).
-  const trimmedValue = typeof value === "string" ? value.trim() : "";
-  const pickedPrompt =
-    type === "prompts" && trimmedValue && Array.isArray(promptsList)
-      ? promptsList.find((wp) => wp && wp.name === trimmedValue)
-      : null;
-  const innerParams =
-    pickedPrompt && Array.isArray(pickedPrompt.parameters)
-      ? pickedPrompt.parameters
-      : null;
-  const showNested =
-    type === "prompts" &&
-    level < MAX_NESTED_LEVEL &&
-    innerParams &&
-    innerParams.length > 0;
+  // mitto-l78: recursive nested-block render. A `type: prompts` picker that
+  // is below the depth cap AND has a non-empty picked value can open the
+  // picked prompt's parameters — rendered via ParamField at `level + 1` — in
+  // a nested Modal (opened by the sliders button built above) instead of the
+  // old inline indented fieldset. `pickedPrompt`/`innerParams` are computed
+  // once at the top of this function so the button and this modal agree.
   // Path from root down to and INCLUDING this picker — used both to build
   // spinner-lookup keys and to compose the path children pass back when they
   // write via onNestedTreeChange. Empty at level 0's non-pickers.
@@ -540,61 +736,78 @@ function ParamField({
       : `nested-params-L${level + 1}-${name}`;
 
   return html`
-    <fieldset class="fieldset">
-      <legend class="fieldset-legend text-mitto-text-secondary">
-        ${name}
-        ${required && html`<span class="text-mitto-danger ml-0.5">*</span>`}
-      </legend>
-      ${control}
-      ${description &&
-      html`<p class="text-xs text-mitto-text-muted mt-1">${description}</p>`}
-      ${showNested &&
+    <${Fragment}>
+      <fieldset class="fieldset">
+        <legend class="fieldset-legend text-mitto-text-secondary">
+          ${name}
+          ${required && html`<span class="text-mitto-danger ml-0.5">*</span>`}
+        </legend>
+        ${control}
+        ${description &&
+        html`<p class="text-xs text-mitto-text-muted mt-1">
+          ${description}
+        </p>`}
+      </fieldset>
+      ${canOpenNested &&
+      nestedModalOpen &&
       html`
-        <fieldset
-          class="fieldset mt-3 pl-4 border-l-2 border-mitto-border space-y-3"
-          data-testid=${nestedTestid}
+        <${Modal}
+          isOpen=${nestedModalOpen}
+          onClose=${() => setNestedModalOpen(false)}
+          title=${`Parameters for ${(pickedPrompt && pickedPrompt.name) || value}`}
+          testid=${nestedTestid}
+          closeTestid="nested-params-close-${name}"
+          backdropTestid="nested-params-backdrop-${name}"
+          footer=${html`
+            <button
+              onClick=${() => setNestedModalOpen(false)}
+              class="btn btn-sm btn-primary"
+              data-testid="nested-params-done-${name}"
+            >
+              Done
+            </button>
+          `}
         >
-          <legend class="fieldset-legend text-mitto-text-secondary">
-            Parameters for ${(pickedPrompt && pickedPrompt.name) || value}
-          </legend>
-          ${loadingNestedRemembered &&
-          html`<span class="text-mitto-text-muted text-xs opacity-60"
-            >…</span
-          >`}
-          ${innerParams.map(
-            (inner) =>
-              html`<${ParamField}
-                key=${inner.name}
-                param=${inner}
-                value=${(nestedValues && nestedValues[inner.name]) || ""}
-                onChange=${(innerName, val) =>
-                  onNestedTreeChange &&
-                  onNestedTreeChange(pathIncludingSelf, innerName, val)}
-                beadsIssues=${beadsIssues}
-                loadingBeads=${loadingBeads}
-                sessions=${sessions}
-                loadingSessions=${loadingSessions}
-                workspaces=${workspaces}
-                loadingWorkspaces=${loadingWorkspaces}
-                workingDir=${workingDir}
-                acpServers=${acpServers}
-                hostSessionId=${hostSessionId}
-                promptsList=${promptsList}
-                loadingPrompts=${loadingPrompts}
-                filesByParam=${filesByParam}
-                loadingFilesByParam=${loadingFilesByParam}
-                dirsByParam=${dirsByParam}
-                loadingDirsByParam=${loadingDirsByParam}
-                nestedNode=${nestedSub && nestedSub[inner.name]}
-                onNestedTreeChange=${onNestedTreeChange}
-                loadingRememberedByPath=${loadingRememberedByPath}
-                ancestorPath=${pathIncludingSelf}
-                level=${level + 1}
-              />`,
-          )}
-        </fieldset>
+          <div class="space-y-4">
+            ${loadingNestedRemembered &&
+            html`<span class="text-mitto-text-muted text-xs opacity-60"
+              >…</span
+            >`}
+            ${innerParams.map(
+              (inner) =>
+                html`<${ParamField}
+                  key=${inner.name}
+                  param=${inner}
+                  value=${(nestedValues && nestedValues[inner.name]) || ""}
+                  onChange=${(innerName, val) =>
+                    onNestedTreeChange &&
+                    onNestedTreeChange(pathIncludingSelf, innerName, val)}
+                  beadsIssues=${beadsIssues}
+                  loadingBeads=${loadingBeads}
+                  sessions=${sessions}
+                  loadingSessions=${loadingSessions}
+                  workspaces=${workspaces}
+                  loadingWorkspaces=${loadingWorkspaces}
+                  workingDir=${workingDir}
+                  acpServers=${acpServers}
+                  hostSessionId=${hostSessionId}
+                  promptsList=${promptsList}
+                  loadingPrompts=${loadingPrompts}
+                  filesByParam=${filesByParam}
+                  loadingFilesByParam=${loadingFilesByParam}
+                  dirsByParam=${dirsByParam}
+                  loadingDirsByParam=${loadingDirsByParam}
+                  nestedNode=${nestedSub && nestedSub[inner.name]}
+                  onNestedTreeChange=${onNestedTreeChange}
+                  loadingRememberedByPath=${loadingRememberedByPath}
+                  ancestorPath=${pathIncludingSelf}
+                  level=${level + 1}
+                />`,
+            )}
+          </div>
+        </${Modal}>
       `}
-    </fieldset>
+    </${Fragment}>
   `;
 }
 
@@ -1084,7 +1297,7 @@ export function PromptParameterDialog({
       // strings on the wire — exactly what the backend's `ArgsMap` +
       // PromptTextWithArgs sub-render decode chain expects. Empty inner map
       // is omitted (matches v1 wire behavior: no `_Args` field emitted).
-      if (p.type === "prompts" && v !== "") {
+      if (p.type === "prompts" && v !== "" && p.collectInnerArgs !== false) {
         const pickedPrompt = (promptsList || []).find(
           (wp) => wp && wp.name === v,
         );
@@ -1114,9 +1327,15 @@ export function PromptParameterDialog({
 
   // Save enabled only when all required params have non-empty trimmed values.
   // Boolean params are excluded: a checkbox always has a definite answer.
-  const canSave = parameters
-    .filter((p) => p.required && p.type !== "boolean")
-    .every((p) => (values[p.name] || "").trim() !== "");
+  // mitto-l78: also blocked while any `type: prompts` picker has an unmet
+  // required inner parameter (at any depth) — those fields are now hidden
+  // behind the sliders sub-dialog, so Save must not silently succeed while
+  // one is unset (the outer sliders button also flags this — see ParamField).
+  const canSave =
+    parameters
+      .filter((p) => p.required && p.type !== "boolean")
+      .every((p) => (values[p.name] || "").trim() !== "") &&
+    !hasUnmetNestedRequired(parameters, values, nestedValues, promptsList);
 
   if (!isOpen) return null;
 

@@ -560,8 +560,15 @@ function App() {
     activeSessionId,
     onOpenLoopDialog: (prompt, onSchedule) =>
       setLoopScheduleDialog({ prompt, onSchedule }),
-    onOpenPromptParamDialog: (prompt, parameters, onSubmit) =>
-      setPromptParamDialog({ prompt, parameters, onSubmit }),
+    onOpenPromptParamDialog: (prompt, parameters, onSubmit, opts = {}) =>
+      setPromptParamDialog({
+        prompt,
+        parameters,
+        onSubmit,
+        workingDir: opts.workingDir,
+        initialValues: opts.initialValues,
+        hostSessionId: opts.hostSessionId,
+      }),
   });
 
   // Ref mirror of beadsIssueOpen: the native swipe-gesture handlers are
@@ -2323,6 +2330,9 @@ function App() {
     async (session, prompt, opts) => {
       if (!prompt?.name) return;
 
+      // The menu can target any conversation, not just the active one, so the
+      // parameter dialog is scoped to that conversation's folder.
+      const targetWorkingDir = session?.working_dir || undefined;
       const asLoop = promptResolveAsLoop(prompt, opts?.asLoop);
       if (asLoop) {
         const action = decideLoopAction(session);
@@ -2340,6 +2350,7 @@ function App() {
               prompt,
               parameters: missing,
               hostSessionId: sessionId,
+              workingDir: targetWorkingDir,
               onSubmit: async (userArgs) => {
                 const result = await makeLoopNow(sessionId, prompt, {
                   arguments: userArgs,
@@ -2392,6 +2403,7 @@ function App() {
               prompt,
               parameters: missing,
               hostSessionId: sessionId,
+              workingDir: targetWorkingDir,
               onSubmit: async (userArgs) => {
                 const result = await seedConversationWithPrompt(
                   sessionId,
@@ -2475,6 +2487,7 @@ function App() {
           setPromptParamDialog({
             prompt,
             parameters: missingForNewLoop,
+            workingDir: targetWorkingDir,
             onSubmit: (userArgs) => openScheduleDialog(userArgs),
           });
           return;
@@ -2505,6 +2518,7 @@ function App() {
           prompt,
           parameters: missing,
           hostSessionId: sessionId,
+          workingDir: targetWorkingDir,
           onSubmit: async (userArgs) => {
             const result = await seedConversationWithPrompt(sessionId, prompt, {
               arguments: { ...autoArgs, ...userArgs },
@@ -3313,6 +3327,7 @@ function App() {
               prompt,
               parameters,
               onSubmit,
+              workingDir: opts.workingDir,
               initialValues: opts.initialValues,
               hostSessionId: opts.hostSessionId,
             })}
@@ -3352,14 +3367,17 @@ function App() {
            the ChatInput dropup) has prompt params it cannot auto-fill. The
            conversation menu sets hostSessionId to the right-clicked conversation
            so a childSessionId picker is scoped to its children; other surfaces
-           fall back to the active session. workingDir prefers the beads view's
-           working dir (when opened from a beads context) and otherwise falls back
-           to the active conversation's working dir, so the workspace-scoped
-           "prompts" picker can populate regardless of the opening surface. -->
+           fall back to the active session. workingDir prefers the dir the opener
+           passed explicitly, then the beads view's dir but only while a beads
+           surface is actually on screen (beadsWorkingDir is sticky and would
+           otherwise leak a previously-visited folder into a conversation-opened
+           dialog), and finally the active conversation's working dir. -->
         <${PromptParameterDialog}
           isOpen=${promptParamDialog !== null}
           parameters=${promptParamDialog?.parameters || []}
-          workingDir=${beadsWorkingDir || headerWorkingDir}
+          workingDir=${promptParamDialog?.workingDir ||
+          ((mainView === "beads" || beadsIssueOpen) && beadsWorkingDir) ||
+          headerWorkingDir}
           hostSessionId=${promptParamDialog?.hostSessionId ?? activeSessionId}
           title=${promptParamDialog?.prompt?.name || "Prompt parameters"}
           initialValues=${promptParamDialog?.initialValues || {}}
@@ -3757,6 +3775,7 @@ function App() {
                           prompt,
                           parameters,
                           onSubmit,
+                          workingDir: opts.workingDir,
                           initialValues: opts.initialValues,
                           hostSessionId: opts.hostSessionId,
                         })}

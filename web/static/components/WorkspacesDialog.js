@@ -245,17 +245,36 @@ export function WorkspacesDialog({
   // three tab-scoped effects (load/reset), and all API mutators. Kept out of
   // the shell so the shell only forwards the grouped {beads, beadsSetters,
   // beadsHandlers} objects to WorkspaceFolderEditor.
+  const getSelectedFolderDir = () => {
+    const folderGroup = groupedWorkspaces.find(
+      (g) => g.displayName === selectedFolder,
+    );
+    return folderGroup?.workspaces[0]?.working_dir || null;
+  };
+
   const { beads, beadsSetters, beadsHandlers } = useBeadsFolderConfig({
     selectedFolder,
     activeTab,
     isOpen,
-    getSelectedFolderDir: () => {
-      const folderGroup = groupedWorkspaces.find(
-        (g) => g.displayName === selectedFolder,
-      );
-      return folderGroup?.workspaces[0]?.working_dir || null;
-    },
+    getSelectedFolderDir,
   });
+
+  // Scope the parameter dialog to the folder being edited: this dialog is not
+  // tied to the active conversation, so without an explicit working dir the
+  // dialog would resolve file/dir pickers and remembered args against whatever
+  // conversation happens to be open behind it.
+  const openPromptParamDialogForFolder = (
+    prompt,
+    parameters,
+    onSubmit,
+    opts = {},
+  ) => {
+    if (!onOpenPromptParamDialog) return;
+    onOpenPromptParamDialog(prompt, parameters, onSubmit, {
+      ...opts,
+      workingDir: opts.workingDir || getSelectedFolderDir() || undefined,
+    });
+  };
 
   // Folder Prompts tab state + handlers. Owns the 13 prompt state pairs, the
   // tab-open load effect, and the four CRUD handlers (reload/save/delete/toggle).
@@ -789,7 +808,7 @@ export function WorkspacesDialog({
                 processorsHandlers=${processorsHandlers}
                 shortcuts=${shortcuts}
                 shortcutsHandlers=${shortcutsHandlers}
-                onOpenPromptParamDialog=${onOpenPromptParamDialog}
+                onOpenPromptParamDialog=${openPromptParamDialogForFolder}
               />`
             : !selectedWorkspace
               ? html`<div

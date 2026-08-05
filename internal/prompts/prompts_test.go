@@ -2108,6 +2108,26 @@ func TestValidatePromptParameters(t *testing.T) {
 			t.Errorf("unexpected error: %v", err)
 		}
 	})
+
+	t.Run("ask accepts empty, auto and always", func(t *testing.T) {
+		for _, ask := range []string{"", AskAuto, AskAlways} {
+			err := ValidatePromptParameters("", []PromptParameter{{Name: "x", Type: "text", Ask: ask}})
+			if err != nil {
+				t.Errorf("ask=%q: unexpected error: %v", ask, err)
+			}
+		}
+	})
+
+	t.Run("ask rejects an unknown value", func(t *testing.T) {
+		err := ValidatePromptParameters("", []PromptParameter{{Name: "x", Type: "text", Ask: "sometimes"}})
+		if err == nil {
+			t.Fatal("expected error for unknown ask value")
+		}
+		if !strings.Contains(err.Error(), "unknown ask value") {
+			t.Errorf("unexpected error text: %v", err)
+		}
+	})
+
 	t.Run("boolean param is OK in any menu", func(t *testing.T) {
 		for _, menus := range []string{"", "prompts", "conversation", "beadsIssues"} {
 			err := ValidatePromptParameters(menus, []PromptParameter{{Name: "Commit", Type: "boolean"}})

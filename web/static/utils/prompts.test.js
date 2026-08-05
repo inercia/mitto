@@ -428,6 +428,10 @@ describe("isInteractivePickerParam", () => {
     expect(isInteractivePickerParam({ type: "dirname" })).toBe(true);
   });
 
+  test("returns true for workspaceFolder", () => {
+    expect(isInteractivePickerParam({ type: "workspaceFolder" })).toBe(true);
+  });
+
   // mitto-cwz.1: type:text with a non-empty options array renders as a
   // dropdown picker and must be treated the same as the other picker types.
   test("returns true for text with a non-empty options array", () => {
@@ -727,6 +731,54 @@ describe("getMissingPromptParameters", () => {
     expect(getMissingPromptParameters(prompt, "prompts")).toEqual([
       requiredParam,
     ]);
+  });
+
+  // --- ask: always tests ---
+
+  test("optional text param with ask:always IS missing (rendered, non-blocking)", () => {
+    const param = {
+      name: "Instructions",
+      type: "text",
+      required: false,
+      ask: "always",
+    };
+    const prompt = { parameters: [param] };
+    expect(getMissingPromptParameters(prompt, "prompts")).toEqual([param]);
+    expect(getMissingPromptParameters(prompt, "conversation")).toEqual([param]);
+  });
+
+  test("optional text param with ask:auto or absent ask stays omitted", () => {
+    for (const ask of [undefined, "auto"]) {
+      const prompt = {
+        parameters: [
+          { name: "Instructions", type: "text", required: false, ask },
+        ],
+      };
+      expect(getMissingPromptParameters(prompt, "prompts")).toEqual([]);
+    }
+  });
+
+  test("ask:always does not override a menu-supplied type", () => {
+    const param = {
+      name: "ISSUE_ID",
+      type: "beadsId",
+      required: false,
+      ask: "always",
+    };
+    const prompt = { parameters: [param] };
+    // beadsIssues auto-supplies beadsId → never re-asked
+    expect(getMissingPromptParameters(prompt, "beadsIssues")).toEqual([]);
+    // conversation cannot supply it → asked
+    expect(getMissingPromptParameters(prompt, "conversation")).toEqual([param]);
+  });
+
+  test("ask:always does not change menu gating", () => {
+    const prompt = {
+      parameters: [
+        { name: "ISSUE_ID", type: "beadsId", required: false, ask: "always" },
+      ],
+    };
+    expect(menuSatisfies(prompt, "conversation")).toBe(true);
   });
 
   test("boolean param is ALWAYS missing (collected via checkbox) in every menu", () => {

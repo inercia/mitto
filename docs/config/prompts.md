@@ -1042,7 +1042,7 @@ in sync.
 | `sessionId` | A Mitto conversation/session UUID. |
 | `childSessionId` | A child conversation/session UUID, relative to the host conversation. In the `conversation` menu it is auto-filled when the right-clicked conversation has exactly one (non-archived) child; otherwise the picker is scoped to that conversation's children. |
 | `workspaceId` | A Mitto workspace UUID. |
-| `workspaceFolder` | An absolute path to a workspace root directory. |
+| `workspaceFolder` | An absolute path to a workspace root directory. Rendered as a dropdown of the known workspace folders, labelled by workspace display name (its custom name, or the folder basename — e.g. `cgw-managed-tools`) and de-duplicated by path; the current folder is marked `(current)`. The value expanded into the template is the **absolute path** (e.g. `/Users/alvaro/Development/adobe/ethos/cgw-managed-tools`). Interactive and dialog-collected (never gates menu visibility, always offered by the parameter dialog). Falls back to a free-text input when no workspaces are known. |
 | `acpServer` | An ACP server (agent) name. Lets a prompt that creates a new conversation choose which agent runs it. |
 | `text` | Generic free-form text (catch-all type). Rendered as a single-line input by default; set `multiLine: true` to render a resizable multi-line textarea instead, or set `options: [...]` to constrain the value to a fixed enumeration rendered as a dropdown (mutually exclusive with `multiLine`). |
 | `boolean` | A yes/no flag, rendered as a checkbox. Supplied to the template as the string `"true"` or `"false"` (default unchecked → `"false"`). Boolean parameters never gate menu visibility and are always collected via the parameter dialog. |

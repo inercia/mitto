@@ -7,6 +7,8 @@
  * BeadsView.test.js and Message.test.js.
  */
 
+import { getBasename } from "../lib.js";
+
 // =============================================================================
 // workspaceId render-branch logic
 // Duplicated from ParamField in PromptParameterDialog.js — keep in sync.
@@ -201,7 +203,9 @@ function renderWorkspaceFolderControl({
   }
   const options = folders.map((ws) => ({
     value: ws.working_dir,
-    label: ws.working_dir + (ws.working_dir === workingDir ? " (current)" : ""),
+    label:
+      (ws.name || getBasename(ws.working_dir)) +
+      (ws.working_dir === workingDir ? " (current)" : ""),
   }));
   return { kind: "select", options };
 }
@@ -277,13 +281,26 @@ describe("workspaceFolder render branch", () => {
       expect(result.options[2].value).toBe("/home/user/current");
     });
 
-    test("label is the working_dir path", () => {
+    test("label is the workspace display name, not the path", () => {
       const result = renderWorkspaceFolderControl({
         loadingWorkspaces: false,
         workspaces,
         workingDir: "/other",
       });
-      expect(result.options[0].label).toBe("/home/user/alpha");
+      expect(result.options[0].label).toBe("Alpha");
+      expect(result.options[1].label).toBe("Beta");
+    });
+
+    test("label falls back to the folder basename when no name is set", () => {
+      const result = renderWorkspaceFolderControl({
+        loadingWorkspaces: false,
+        workspaces: [
+          { uuid: "x", working_dir: "/home/user/cgw-managed-tools" },
+        ],
+        workingDir: "/other",
+      });
+      expect(result.options[0].label).toBe("cgw-managed-tools");
+      expect(result.options[0].value).toBe("/home/user/cgw-managed-tools");
     });
 
     test("marks the current folder with '(current)'", () => {
@@ -292,7 +309,7 @@ describe("workspaceFolder render branch", () => {
         workspaces,
         workingDir: "/home/user/current",
       });
-      expect(result.options[2].label).toBe("/home/user/current (current)");
+      expect(result.options[2].label).toBe("Current (current)");
     });
 
     test("does not mark non-current folders with '(current)'", () => {
@@ -1077,7 +1094,9 @@ function renderPromptsControl({ loadingPrompts, promptsList }) {
   if (!promptsList || promptsList.length === 0) {
     return { kind: "textInput", placeholder: "Prompt name" };
   }
-  const options = promptsList.map((p) => ({ value: p.name, label: p.name }));
+  const options = [...promptsList]
+    .sort((a, b) => String(a?.name ?? "").localeCompare(String(b?.name ?? "")))
+    .map((p) => ({ value: p.name, label: p.name }));
   return { kind: "select", options };
 }
 
@@ -1141,12 +1160,16 @@ describe("prompts render branch", () => {
       ]);
     });
 
-    test("preserves declared order in options", () => {
+    test("sorts options alphabetically by name", () => {
       const result = renderPromptsControl({
         loadingPrompts: false,
-        promptsList: [{ name: "zeta" }, { name: "alpha" }],
+        promptsList: [{ name: "zeta" }, { name: "alpha" }, { name: "Mid" }],
       });
-      expect(result.options.map((o) => o.value)).toEqual(["zeta", "alpha"]);
+      expect(result.options.map((o) => o.value)).toEqual([
+        "alpha",
+        "Mid",
+        "zeta",
+      ]);
     });
   });
 });
@@ -1863,5 +1886,483 @@ describe("prompts nested-param branch (mitto-47y.2)", () => {
         "Path",
       );
     });
+  });
+});
+
+// =============================================================================
+// mitto-l78 — compact sliders-button UI for nested `type: prompts` params
+// Duplicated from summarizeNestedNode / hasUnmetNestedRequired / the sliders
+// button's disabled/badge derivation in PromptParameterDialog.js — keep in
+// sync.
+// =============================================================================
+
+/**
+ * Mirrors summarizeNestedNode in PromptParameterDialog.js.
+ */
+function summarizeNestedNode(innerParams, node, promptsList) {
+  let filled = 0;
+  let missingRequired = 0;
+  const values = (node && node.values) || {};
+  const sub = (node && node.sub) || {};
+  const paramsList = Array.isArray(innerParams) ? innerParams : [];
+  for (const ip of paramsList) {
+    if (!ip || !ip.name) continue;
+    if (ip.type === "prompts") {
+      const pickedName = (values[ip.name] || "").toString().trim();
+      if (pickedName === "") {
+        if (ip.required) missingRequired += 1;
+        continue;
+      }
+      filled += 1;
+      // mitto-48c: collectInnerArgs: false discards this picker's inner
+      // values entirely — count the picked name as filled but never recurse
+      // into (or flag missing-required leaves from) its discarded subtree.
+      if (ip.collectInnerArgs === false) continue;
+      const pickedPrompt = (promptsList || []).find(
+        (wp) => wp && wp.name === pickedName,
+      );
+      const deeperInner =
+        pickedPrompt && Array.isArray(pickedPrompt.parameters)
+          ? pickedPrompt.parameters
+          : [];
+      const deeper = summarizeNestedNode(deeperInner, sub[ip.name], promptsList);
+      filled += deeper.filled;
+      missingRequired += deeper.missingRequired;
+      continue;
+    }
+    if (ip.type === "boolean") {
+      if (values[ip.name] === true || values[ip.name] === "true") filled += 1;
+      continue;
+    }
+    const iv = (values[ip.name] || "").toString().trim();
+    if (iv !== "") {
+      filled += 1;
+    } else if (ip.required) {
+      missingRequired += 1;
+    }
+  }
+  return { filled, missingRequired };
+}
+
+/**
+ * Mirrors hasUnmetNestedRequired in PromptParameterDialog.js.
+ */
+function hasUnmetNestedRequired(parameters, values, nestedValues, promptsList) {
+  for (const p of parameters || []) {
+    if (!p || p.type !== "prompts") continue;
+    // mitto-48c: an opted-out picker's inner params are discarded, so an
+    // unmet required inner param there must never block Save.
+    if (p.collectInnerArgs === false) continue;
+    const pickedName = (values[p.name] || "").toString().trim();
+    if (!pickedName) continue;
+    const pickedPrompt = (promptsList || []).find(
+      (wp) => wp && wp.name === pickedName,
+    );
+    const innerParams =
+      pickedPrompt && Array.isArray(pickedPrompt.parameters)
+        ? pickedPrompt.parameters
+        : [];
+    const node = nestedValues && nestedValues[p.name];
+    const summary = summarizeNestedNode(innerParams, node, promptsList);
+    if (summary.missingRequired > 0) return true;
+  }
+  return false;
+}
+
+/**
+ * Mirrors the sliders button's disabled/tooltip/badge derivation for a
+ * single `type: prompts` picker (the non-capped branch of ParamField).
+ *   { disabled, hasWarning, badgeCount }
+ */
+function deriveSliderButtonState({
+  level,
+  innerParams,
+  nestedNode,
+  promptsList,
+  collectInnerArgs = true,
+}) {
+  const capped = level >= 3; // MAX_NESTED_LEVEL
+  const hasInnerParams = !!(innerParams && innerParams.length > 0);
+  // mitto-48c: an opted-out picker never summarizes/warns — its inner
+  // parameters are discarded, so the button is disabled regardless of
+  // whether the picked prompt happens to declare parameters.
+  const summary =
+    hasInnerParams && collectInnerArgs
+      ? summarizeNestedNode(innerParams, nestedNode, promptsList)
+      : { filled: 0, missingRequired: 0 };
+  const disabled = capped || !collectInnerArgs || !hasInnerParams;
+  const hasWarning = !disabled && summary.missingRequired > 0;
+  const badgeCount = hasWarning ? summary.missingRequired : summary.filled;
+  return { disabled, hasWarning, badgeCount };
+}
+
+describe("mitto-l78 sliders button — summarizeNestedNode", () => {
+  const promptsList = [
+    {
+      name: "prompt-a",
+      parameters: [
+        { name: "Msg", type: "text", required: true },
+        { name: "Loud", type: "boolean" },
+      ],
+    },
+    {
+      name: "prompt-nested",
+      parameters: [
+        { name: "Note", type: "text", required: true },
+        { name: "Inner", type: "prompts", required: true },
+      ],
+    },
+  ];
+
+  test("empty node: no filled, no missing when nothing required", () => {
+    const innerParams = [{ name: "Opt", type: "text" }];
+    expect(summarizeNestedNode(innerParams, null, promptsList)).toEqual({
+      filled: 0,
+      missingRequired: 0,
+    });
+  });
+
+  test("counts a filled required text field", () => {
+    const innerParams = [{ name: "Msg", type: "text", required: true }];
+    const node = { values: { Msg: "hello" } };
+    expect(summarizeNestedNode(innerParams, node, promptsList)).toEqual({
+      filled: 1,
+      missingRequired: 0,
+    });
+  });
+
+  test("counts a missing required text field", () => {
+    const innerParams = [{ name: "Msg", type: "text", required: true }];
+    const node = { values: { Msg: "" } };
+    expect(summarizeNestedNode(innerParams, node, promptsList)).toEqual({
+      filled: 0,
+      missingRequired: 1,
+    });
+  });
+
+  test("optional empty field counts toward neither", () => {
+    const innerParams = [{ name: "Opt", type: "text" }];
+    const node = { values: { Opt: "" } };
+    expect(summarizeNestedNode(innerParams, node, promptsList)).toEqual({
+      filled: 0,
+      missingRequired: 0,
+    });
+  });
+
+  test("boolean counts as filled only when checked", () => {
+    const innerParams = [{ name: "Loud", type: "boolean" }];
+    expect(
+      summarizeNestedNode(innerParams, { values: { Loud: true } }, promptsList)
+        .filled,
+    ).toBe(1);
+    expect(
+      summarizeNestedNode(innerParams, { values: { Loud: false } }, promptsList)
+        .filled,
+    ).toBe(0);
+    expect(summarizeNestedNode(innerParams, null, promptsList).filled).toBe(0);
+  });
+
+  test("recurses into a deeper `type: prompts` field and sums both levels", () => {
+    const innerParams = [
+      { name: "Note", type: "text", required: true },
+      { name: "Inner", type: "prompts", required: true },
+    ];
+    const node = {
+      values: { Note: "hi", Inner: "prompt-a" },
+      sub: { Inner: { values: { Msg: "deep hello", Loud: true } } },
+    };
+    // Note(1) + Inner-picked(1) + deep Msg(1) + deep Loud(1) = 4 filled.
+    expect(summarizeNestedNode(innerParams, node, promptsList)).toEqual({
+      filled: 4,
+      missingRequired: 0,
+    });
+  });
+
+  test("unmet required field at a deeper level is still counted", () => {
+    const innerParams = [
+      { name: "Note", type: "text", required: true },
+      { name: "Inner", type: "prompts", required: true },
+    ];
+    const node = {
+      values: { Note: "hi", Inner: "prompt-a" },
+      sub: { Inner: { values: { Msg: "" } } }, // required Msg left empty
+    };
+    const result = summarizeNestedNode(innerParams, node, promptsList);
+    expect(result.missingRequired).toBe(1);
+  });
+
+  test("an unpicked required deeper picker itself counts as missingRequired", () => {
+    const innerParams = [{ name: "Inner", type: "prompts", required: true }];
+    const node = { values: { Inner: "" } };
+    expect(summarizeNestedNode(innerParams, node, promptsList)).toEqual({
+      filled: 0,
+      missingRequired: 1,
+    });
+  });
+
+  // mitto-48c: a collectInnerArgs: false inner picker counts as filled (its
+  // own picked name) but its discarded subtree contributes neither filled
+  // nor missingRequired, even though the picked prompt has a required field.
+  test("mitto-48c: collectInnerArgs: false inner picker counts as filled but never recurses", () => {
+    const innerParams = [
+      {
+        name: "Inner",
+        type: "prompts",
+        required: true,
+        collectInnerArgs: false,
+      },
+    ];
+    const node = {
+      values: { Inner: "prompt-a" }, // prompt-a has a required "Msg" left unset
+      sub: { Inner: { values: {} } },
+    };
+    expect(summarizeNestedNode(innerParams, node, promptsList)).toEqual({
+      filled: 1,
+      missingRequired: 0,
+    });
+  });
+});
+
+describe("mitto-l78 sliders button — disabled/enabled state", () => {
+  test("disabled when no prompt is picked (no innerParams derived)", () => {
+    const state = deriveSliderButtonState({
+      level: 0,
+      innerParams: null,
+      nestedNode: null,
+      promptsList: [],
+    });
+    expect(state.disabled).toBe(true);
+    expect(state.badgeCount).toBe(0);
+  });
+
+  test("disabled when the picked prompt declares no parameters", () => {
+    const state = deriveSliderButtonState({
+      level: 0,
+      innerParams: [],
+      nestedNode: null,
+      promptsList: [],
+    });
+    expect(state.disabled).toBe(true);
+  });
+
+  test("enabled when the picked prompt has >=1 parameter", () => {
+    const state = deriveSliderButtonState({
+      level: 0,
+      innerParams: [{ name: "Msg", type: "text" }],
+      nestedNode: null,
+      promptsList: [],
+    });
+    expect(state.disabled).toBe(false);
+  });
+
+  test("disabled at the MAX_NESTED_LEVEL depth cap even with parameters", () => {
+    const state = deriveSliderButtonState({
+      level: 3, // MAX_NESTED_LEVEL
+      innerParams: [{ name: "Msg", type: "text" }],
+      nestedNode: null,
+      promptsList: [],
+    });
+    expect(state.disabled).toBe(true);
+  });
+
+  test("not disabled one level below the cap", () => {
+    const state = deriveSliderButtonState({
+      level: 2,
+      innerParams: [{ name: "Msg", type: "text" }],
+      nestedNode: null,
+      promptsList: [],
+    });
+    expect(state.disabled).toBe(false);
+  });
+
+  // mitto-48c: collectInnerArgs: false disables the sliders button even
+  // though the picked prompt declares parameters and the level is well
+  // below the depth cap — the button must never open for a discarded picker.
+  test("mitto-48c: disabled when collectInnerArgs is false, even with parameters below the cap", () => {
+    const state = deriveSliderButtonState({
+      level: 0,
+      innerParams: [{ name: "Msg", type: "text", required: true }],
+      nestedNode: { values: { Msg: "" } },
+      promptsList: [],
+      collectInnerArgs: false,
+    });
+    expect(state.disabled).toBe(true);
+    expect(state.hasWarning).toBe(false);
+    expect(state.badgeCount).toBe(0);
+  });
+});
+
+describe("mitto-l78 sliders button — filled-count badge", () => {
+  const innerParams = [
+    { name: "Msg", type: "text" },
+    { name: "Path", type: "text" },
+  ];
+
+  test("badge count is 0 when nothing is filled", () => {
+    const state = deriveSliderButtonState({
+      level: 0,
+      innerParams,
+      nestedNode: null,
+      promptsList: [],
+    });
+    expect(state.badgeCount).toBe(0);
+    expect(state.hasWarning).toBe(false);
+  });
+
+  test("badge count reflects the number of filled inner values", () => {
+    const state = deriveSliderButtonState({
+      level: 0,
+      innerParams,
+      nestedNode: { values: { Msg: "hello" } },
+      promptsList: [],
+    });
+    expect(state.badgeCount).toBe(1);
+  });
+
+  test("badge count increases as more inner values are filled", () => {
+    const state = deriveSliderButtonState({
+      level: 0,
+      innerParams,
+      nestedNode: { values: { Msg: "hello", Path: "a.md" } },
+      promptsList: [],
+    });
+    expect(state.badgeCount).toBe(2);
+  });
+});
+
+describe("mitto-l78 sliders button — required-inner-param guard", () => {
+  const innerParams = [
+    { name: "Msg", type: "text", required: true },
+    { name: "Note", type: "text" },
+  ];
+
+  test("hasWarning is true and badge shows the missing-required count", () => {
+    const state = deriveSliderButtonState({
+      level: 0,
+      innerParams,
+      nestedNode: { values: { Msg: "" } },
+      promptsList: [],
+    });
+    expect(state.hasWarning).toBe(true);
+    expect(state.badgeCount).toBe(1);
+  });
+
+  test("hasWarning clears once the required field is filled", () => {
+    const state = deriveSliderButtonState({
+      level: 0,
+      innerParams,
+      nestedNode: { values: { Msg: "hello" } },
+      promptsList: [],
+    });
+    expect(state.hasWarning).toBe(false);
+    expect(state.badgeCount).toBe(1); // Msg filled; Note optional/empty
+  });
+
+  test("hasWarning is false (not just disabled) when the picker itself is disabled", () => {
+    // A disabled button (no params) never shows a danger flag, regardless of
+    // whatever stale nestedNode data might exist.
+    const state = deriveSliderButtonState({
+      level: 0,
+      innerParams: [],
+      nestedNode: { values: { Msg: "" } },
+      promptsList: [],
+    });
+    expect(state.disabled).toBe(true);
+    expect(state.hasWarning).toBe(false);
+  });
+});
+
+describe("mitto-l78 — hasUnmetNestedRequired (outer Save gating)", () => {
+  const promptsList = [
+    {
+      name: "prompt-req",
+      parameters: [{ name: "Msg", type: "text", required: true }],
+    },
+    {
+      name: "prompt-optional",
+      parameters: [{ name: "Note", type: "text" }],
+    },
+  ];
+
+  test("false when no picker is filled", () => {
+    expect(
+      hasUnmetNestedRequired(
+        [{ name: "P", type: "prompts" }],
+        {},
+        {},
+        promptsList,
+      ),
+    ).toBe(false);
+  });
+
+  test("false when the picked prompt has no required inner params", () => {
+    expect(
+      hasUnmetNestedRequired(
+        [{ name: "P", type: "prompts" }],
+        { P: "prompt-optional" },
+        { P: { values: {} } },
+        promptsList,
+      ),
+    ).toBe(false);
+  });
+
+  test("true when a required inner param is unset", () => {
+    expect(
+      hasUnmetNestedRequired(
+        [{ name: "P", type: "prompts" }],
+        { P: "prompt-req" },
+        { P: { values: { Msg: "" } } },
+        promptsList,
+      ),
+    ).toBe(true);
+  });
+
+  test("false once the required inner param is filled", () => {
+    expect(
+      hasUnmetNestedRequired(
+        [{ name: "P", type: "prompts" }],
+        { P: "prompt-req" },
+        { P: { values: { Msg: "hello" } } },
+        promptsList,
+      ),
+    ).toBe(false);
+  });
+
+  test("blocks Save (combined with the top-level canSave check)", () => {
+    const parameters = [{ name: "P", type: "prompts", required: false }];
+    const values = { P: "prompt-req" };
+    const nestedValues = { P: { values: { Msg: "" } } };
+    const topLevelOk = canSave(parameters, values); // no top-level required params
+    expect(topLevelOk).toBe(true);
+    const overallOk =
+      topLevelOk &&
+      !hasUnmetNestedRequired(parameters, values, nestedValues, promptsList);
+    expect(overallOk).toBe(false);
+  });
+
+  test("Save is allowed once the nested required param is filled", () => {
+    const parameters = [{ name: "P", type: "prompts", required: false }];
+    const values = { P: "prompt-req" };
+    const nestedValues = { P: { values: { Msg: "hello" } } };
+    const overallOk =
+      canSave(parameters, values) &&
+      !hasUnmetNestedRequired(parameters, values, nestedValues, promptsList);
+    expect(overallOk).toBe(true);
+  });
+
+  // mitto-48c: this is the concrete bug the opt-out fixes — before
+  // collectInnerArgs existed, a picker whose picked prompt has a required
+  // inner param blocked Save even though that picker's own body never
+  // consumes the inner value (e.g. specialize-prompts' name-only "Prompt"
+  // picker). With collectInnerArgs: false, Save must NOT be blocked.
+  test("mitto-48c: collectInnerArgs: false never blocks Save, even with an unset required inner param", () => {
+    expect(
+      hasUnmetNestedRequired(
+        [{ name: "P", type: "prompts", collectInnerArgs: false }],
+        { P: "prompt-req" },
+        { P: { values: { Msg: "" } } },
+        promptsList,
+      ),
+    ).toBe(false);
   });
 });

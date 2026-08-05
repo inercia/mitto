@@ -129,7 +129,11 @@ export function promptResolveAsLoop(prompt, override) {
  *   sessionId      — a Mitto conversation/session UUID
  *   childSessionId — a child conversation/session UUID (relative to the host conversation)
  *   workspaceId    — a Mitto workspace UUID
- *   workspaceFolder — an absolute path to the workspace root directory
+ *   workspaceFolder — an absolute path to the workspace root directory,
+ *                    rendered as a dropdown of the known workspace folders
+ *                    (labelled by display name, valued by absolute path).
+ *                    Interactive, dialog-collected (like boolean/prompts): no
+ *                    menu auto-supplies it and it never gates menu visibility.
  *   acpServer      — an ACP server (agent) name
  *   text           — generic free-form text (catch-all)
  *   boolean        — a yes/no flag, rendered as a checkbox; supplied as the
@@ -199,16 +203,16 @@ export function isOptionsPickerParam(p) {
  * no menu can auto-supply and that must always be collected via the parameter
  * dialog. Currently: `boolean` (checkbox), `prompts` (workspace-prompt picker),
  * `filename` (workspace-file dropdown), `dirname` (workspace-directory
- * dropdown), and `text` with a declared `options` array (dropdown picker —
- * see isOptionsPickerParam).
+ * dropdown), `workspaceFolder` (workspace-folder dropdown), and `text` with a
+ * declared `options` array (dropdown picker — see isOptionsPickerParam).
  *
  * Rationale: these parameters carry values that no menu context has in scope
  * (a workspace-prompt name, a checkbox answer, a workspace-relative
- * file/directory path, or a value from a fixed option list). They behave like
- * `boolean` for gating purposes — never gating menu visibility
- * (menuSatisfies) and always included in getMissingPromptParameters
- * regardless of `required` or the menu's auto-supplied types. The dialog
- * offers the picker unconditionally.
+ * file/directory path, a workspace folder, or a value from a fixed option
+ * list). They behave like `boolean` for gating purposes — never gating menu
+ * visibility (menuSatisfies) and always included in
+ * getMissingPromptParameters regardless of `required` or the menu's
+ * auto-supplied types. The dialog offers the picker unconditionally.
  */
 export function isInteractivePickerParam(p) {
   return (
@@ -216,8 +220,20 @@ export function isInteractivePickerParam(p) {
     p?.type === "prompts" ||
     p?.type === "filename" ||
     p?.type === "dirname" ||
+    p?.type === "workspaceFolder" ||
     isOptionsPickerParam(p)
   );
+}
+
+/**
+ * Returns true if the parameter declares `ask: always` — i.e. it must be
+ * rendered in the parameter dialog whenever that dialog opens, even when the
+ * parameter is optional free text (which the default `ask: auto` behaviour
+ * would omit). It stays non-blocking: an optional `ask: always` parameter is
+ * never part of the canSave check and never gates menu visibility.
+ */
+export function isAlwaysAskedParam(p) {
+  return p?.ask === "always";
 }
 
 /**
@@ -294,7 +310,10 @@ export function menuSatisfies(prompt, menu) {
  * A parameter with `required === false` is considered optional: it is never
  * included in the missing list, so no blocking form is shown for it even when
  * the menu cannot auto-supply it. Its value will simply be absent from the
- * arguments map.
+ * arguments map. A parameter that declares `ask: always` opts out of that
+ * omission (see isAlwaysAskedParam): it is rendered even when optional, so the
+ * user can review and edit it. It remains non-blocking — the dialog's canSave
+ * check only considers `required` params.
  *
  * Rules:
  *   - An unknown or missing `menu` is treated as providing [] (all required params missing).
@@ -303,8 +322,11 @@ export function menuSatisfies(prompt, menu) {
  *     ALWAYS included (it is rendered as a checkbox, a workspace-prompt
  *     picker, or a fixed-options dropdown and collected via the dialog; no
  *     menu can auto-supply it). See isInteractivePickerParam.
- *   - A parameter whose type IS in the menu's provided-types list is excluded.
- *   - A parameter with `required === false` is excluded (optional, no form shown).
+ *   - A parameter whose type IS in the menu's provided-types list is excluded
+ *     (the menu auto-fills it; `ask: always` does not override this, so an
+ *     explicit flag never shadows a value the menu already has in scope).
+ *   - A parameter with `required === false` is excluded unless it declares
+ *     `ask: always`.
  *   - Declared order is preserved.
  *
  * @param {Object} prompt - Prompt object with optional `parameters` array
@@ -318,7 +340,8 @@ export function getMissingPromptParameters(prompt, menu) {
   return params.filter(
     (p) =>
       isInteractivePickerParam(p) ||
-      (p.required !== false && !provided.includes(p.type)),
+      (!provided.includes(p.type) &&
+        (p.required !== false || isAlwaysAskedParam(p))),
   );
 }
 

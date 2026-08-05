@@ -23,7 +23,11 @@ import (
 //   - sessionId      — a Mitto conversation/session UUID
 //   - childSessionId — a child conversation/session UUID (relative to the host conversation)
 //   - workspaceId    — a Mitto workspace UUID
-//   - workspaceFolder — an absolute path to the workspace root directory
+//   - workspaceFolder — an absolute path to a workspace root directory, rendered
+//     as a dropdown of the known workspace folders (labelled by workspace
+//     display name, valued by absolute path). Interactive, dialog-collected
+//     (like boolean/prompts): no menu auto-supplies it and it never gates menu
+//     visibility.
 //   - acpServer      — an ACP server (agent) name
 //   - text           — generic free-form text (the catch-all type)
 //   - boolean        — a yes/no flag, rendered as a checkbox; supplied as the
