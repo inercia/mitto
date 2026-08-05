@@ -518,3 +518,56 @@ curl -s http://127.0.0.1:8080/debug/pprof/goroutine?debug=2 > goroutines.txt
 Adjust the port to match the running instance. For symbol resolution in
 external tools (`sample`, `atos`) rather than `go tool pprof`, build with
 `make build-debug` (unstripped) instead of `make build`.
+
+### Triaging goroutine counts (mitto-am0)
+
+A steady-state count in the hundreds (600–1000 range observed across normal
+usage with several active sessions) is **not** by itself evidence of a leak —
+Mitto's goroutine population tracks workload rather than climbing
+monotonically. Two lightweight instruments answer "is this growing?" without
+needing pprof or a restart:
+
+- **Live count, no restart.** `runtime.NumGoroutine()` is already exposed via
+  the MCP `mitto_get_runtime_info` tool and the internal runtime-info API
+  (`internal/mcpserver/types.go`). Sample it on demand.
+- **Historical series, already recorded.** `internal/coldstart/contention.go`
+  logs `num_goroutine=N` (alongside `concurrent_prompting` and
+  `live_acp_processes`) on every cold start, in `mitto.log`. Grep
+  `num_goroutine=` across log rotations to reconstruct a time series correlated
+  with concurrent load — this is normally enough to distinguish "rises and
+  falls with load" from "ratchets upward regardless of load".
+
+Only reach for `/debug/pprof/goroutine?debug=2` (stack attribution) once the
+series above suggests an actual ratchet. Because enabling pprof requires a
+restart, a pprof dump always describes a freshly-resumed instance — treat it
+as a **ratio/baseline snapshot**, not a reconciliation of a specific historical
+peak.
+
+**Empirical baseline** (measured against an isolated instance with a mock ACP
+server, zero workspaces/sessions after cold start): **~18 goroutines** fixed
+cost — HTTP server accept/timeout loops, the four middleware `cleanupLoop`s,
+`LoopRunner.Start`, `QueueTitleWorker`, `ACPProcessManager.StartGC`,
+`BeadsWatcher.Start`, `PromptsWatcher.Start` (fsnotify, 2 goroutines),
+`stats.NewAggregator`/`RetentionWorker`/`backfiller`, `ShutdownManager.Start`,
+and `database/sql.OpenDB`. This is restart-durable and does not scale with
+sessions.
+
+**Per-session marginal cost**, measured by creating one session and then
+attaching/detaching one WebSocket client:
+
+| Event | Δ goroutines | Source |
+|---|---|---|
+| Session created (ACP process spawn, no WS client) | +9 | `acp-go-sdk.NewConnection` (4), `os/exec.(*Cmd).Start`, `acpproc/procstart.StartStderrMonitor`, `BackgroundSession.hsInitACPProcessDone`, `ACPProcessManager.{EnsurePrewarmed,GetOrCreateProcess}` (2, transient — settle once prewarm completes) |
+| WebSocket client connects | +2 | `web.(*Server).handleSessionWS` — the `readPump`/`writePump` pair (`internal/web/session_ws.go`) |
+| WebSocket client disconnects | −2 | same pump pair torn down cleanly |
+
+So each **connected browser tab** costs ~2 goroutines (pumps) on top of ~7
+durable per-ACP-process goroutines (the prewarm transients retire). A
+workspace with several concurrently prompting sessions plus long-lived MCP SSE
+keepalive streams (each pins a goroutine while the GET stream is open) easily
+accounts for a population in the hundreds without anything being wrong.
+**Conclusion: track the ratio (total − ~18 fixed baseline) ÷ live ACP
+processes across restarts, not the raw total** — the raw total is a poor leak
+signal on its own because it conflates fixed cost, per-session cost, and
+transport-detail cost (idle SSE) that all vary independently of any actual
+defect.
