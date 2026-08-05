@@ -74,7 +74,8 @@ func TestBlogSharedFragmentsExistAndParse(t *testing.T) {
 	rows := []row{
 		{
 			fragment: "blog/shared/locate-post-file",
-			wrapper:  `{{ template "blog/shared/locate-post-file" . }}`,
+			wrapper: `{{ template "blog/shared/locate-post-file" ` +
+				`(dict "Target" "mitto-abc.1") }}`,
 			hallmark: "File: [path](path)",
 		},
 		{

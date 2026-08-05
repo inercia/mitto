@@ -1,6 +1,6 @@
 icon: magnifying-glass
 name: 'Blog: content review'
-menus: beadsIssues
+menus: beadsIssues, prompts
 parameters:
   - name: IssueID
     type: beadsId
@@ -14,7 +14,7 @@ parameters:
 description: Blog — adversarial content review of a `blog`/`draft` post; flags weak claims, structural issues, and voice drift, and marks the bead for downstream review passes when problems are found
 backgroundColor: '#C8E6C9'
 group: Blog
-enabledWhen: CommandExists("bd") && DirExists(".beads") && "blog" in Item.Labels && "draft" in Item.Labels
+enabledWhen: 'CommandExists("bd") && DirExists(".beads") && (("blog" in Item.Labels && "draft" in Item.Labels) || (Session.HasBeadsIssue && BeadIsOpen(Session.BeadsIssue) && BeadHasLabels(Session.BeadsIssue, "blog,draft")))'
 target:
   reuse:
     issue: true
@@ -22,9 +22,19 @@ target:
 preferredModels:
   - modelTag: Coding
 prompt: |
+  {{ $target := "" -}}
+  {{ if .Session.BeadsIssue }}{{ $target = .Session.BeadsIssue }}{{ else if .Args.IssueID }}{{ $target = .Args.IssueID }}{{ end -}}
   {{ template "_shared/session-context" . }}
 
   # Blog: Content Review — adversarial pass on a draft post
+
+  {{ template "beads-issues/shared/target-bead-header-strict" (dict
+      "Target"   $target
+      "Noun"     "target blog bead"
+      "Scope"    "for this review"
+      "FromLink" (ne .Session.BeadsIssue "")
+      "FailStop" "then stop without changing anything."
+  ) }}
 
   This prompt takes a `blog`/`draft`-labelled bead, loads the post file it
   points at, and reviews the draft **adversarially**: as a skeptical peer
@@ -35,7 +45,7 @@ prompt: |
 
   ## Step 1 — Locate the post file
 
-  {{ template "blog/shared/locate-post-file" . }}
+  {{ template "blog/shared/locate-post-file" (dict "Target" $target) }}
 
   ## Step 2 — Load the drafting voice
 
@@ -103,7 +113,7 @@ prompt: |
   cat > "$review_file" <<'MITTO_REVIEW'
   <composed findings block>
   MITTO_REVIEW
-  bd comment {{ .Args.IssueID }} --file "$review_file"
+  bd comment {{ $target }} --file "$review_file"
   rm -f "$review_file"
   ```
 
@@ -114,9 +124,9 @@ prompt: |
     # Route to specialised passes. Include needs-polish when structural / voice
     # issues appeared; include needs-fact-check when claim / reference issues
     # appeared. Add whichever apply — you may add both.
-    bd update {{ .Args.IssueID }} --add-label needs-polish        # if structural / voice / other
-    bd update {{ .Args.IssueID }} --add-label needs-fact-check    # if claims / missing references
-    bd update {{ .Args.IssueID }} --remove-label ready
+    bd update {{ $target }} --add-label needs-polish        # if structural / voice / other
+    bd update {{ $target }} --add-label needs-fact-check    # if claims / missing references
+    bd update {{ $target }} --remove-label ready
     ```
   - **Clean pass** (nothing to flag): **do not touch labels.** The specialised
     downstream prompts (fact-check, add-references) own their own
@@ -127,4 +137,4 @@ prompt: |
 
   Report completion via `mitto_ui_notify_mitto` — title
   `"Content review complete"`, message
-  `"{{ .Args.IssueID }} · <N findings>"` (or `"<clean pass>"`).
+  `"{{ $target }} · <N findings>"` (or `"<clean pass>"`).

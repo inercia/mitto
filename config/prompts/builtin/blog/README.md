@@ -146,13 +146,19 @@ Recipe for adding a new prompt to the state machine (for example, a
 `Blog: retrospective` transition from `Published` to `Retrospected`):
 
 1. Pick a state transition. Decide which existing label(s) gate the prompt
-   (`"published" in Item.Labels` for a post-publication action) and which
-   labels the prompt itself adds/removes.
+   and which labels the prompt itself adds/removes. Gate on **both** menu
+   contexts: `"published" in Item.Labels` for the beads-list row menu, and
+   `Session.HasBeadsIssue && BeadHasLabels(Session.BeadsIssue, "blog,published")`
+   for the conversation-level prompts menu.
 2. Add the prompt YAML under `config/prompts/builtin/blog/`, reusing shared
    fragments (`locate-post-file`, `audience-and-tone`, `blog-config-fragment`,
    `attach-file-to-bead`) wherever the same logic applies. Match the sibling
-   YAML shape: `menus: beadsIssues`, `parameters: [IssueID, Folder]`,
+   YAML shape: `menus: beadsIssues, prompts`, `parameters: [IssueID, Folder]`,
    `target.reuse.{issue,coalesce}: true`, `preferredModels: [modelTag: Coding]`.
+   Resolve the target bead at the top of the body
+   (`{{ $target := "" }}{{ if .Session.BeadsIssue }}…{{ else if .Args.IssueID }}…{{ end }}`),
+   emit the `beads-issues/shared/target-bead-header-strict` preamble, and pass
+   `$target` to `locate-post-file` via `(dict "Target" $target)`.
 3. Add the bucket entry to `internal/prompts/prompts_test.go` -- almost
    certainly `perBeadWithCoalesce` (only `ideation` is `workspaceTitle`).
 4. Add a `TestBlog<Name>PromptFragmentHallmarks` smoke test in

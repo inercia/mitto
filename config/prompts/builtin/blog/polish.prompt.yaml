@@ -1,6 +1,6 @@
 icon: sparkles
 name: 'Blog: polish'
-menus: beadsIssues
+menus: beadsIssues, prompts
 parameters:
   - name: IssueID
     type: beadsId
@@ -26,7 +26,7 @@ parameters:
 description: Blog -- polish a `blog`/`draft` post file with one of six focus modes (General, Concise, Expand, Technical, Sharpen opening, Fluent); rewrites the file in place and updates labels
 backgroundColor: '#C8E6C9'
 group: Blog
-enabledWhen: CommandExists("bd") && DirExists(".beads") && "blog" in Item.Labels && "draft" in Item.Labels
+enabledWhen: 'CommandExists("bd") && DirExists(".beads") && (("blog" in Item.Labels && "draft" in Item.Labels) || (Session.HasBeadsIssue && BeadIsOpen(Session.BeadsIssue) && BeadHasLabels(Session.BeadsIssue, "blog,draft")))'
 target:
   reuse:
     issue: true
@@ -34,9 +34,19 @@ target:
 preferredModels:
   - modelTag: Coding
 prompt: |
+  {{ $target := "" -}}
+  {{ if .Session.BeadsIssue }}{{ $target = .Session.BeadsIssue }}{{ else if .Args.IssueID }}{{ $target = .Args.IssueID }}{{ end -}}
   {{ template "_shared/session-context" . }}
 
   # Blog: Polish -- rewrite a draft post in place with a focused pass
+
+  {{ template "beads-issues/shared/target-bead-header-strict" (dict
+      "Target"   $target
+      "Noun"     "target blog bead"
+      "Scope"    "for this polish pass"
+      "FromLink" (ne .Session.BeadsIssue "")
+      "FailStop" "then stop without changing anything."
+  ) }}
 
   This prompt takes a `blog`/`draft`-labelled bead, loads the post file it
   points at, and rewrites it **in place** with a single focused polish pass.
@@ -47,7 +57,7 @@ prompt: |
 
   ## Step 1 -- Locate the post file
 
-  {{ template "blog/shared/locate-post-file" . }}
+  {{ template "blog/shared/locate-post-file" (dict "Target" $target) }}
 
   ## Step 2 -- Load the drafting voice
 
@@ -146,18 +156,18 @@ prompt: |
   - **Confident finish** -- the target axis is genuinely met and no other
     issues surfaced during the pass:
     ```bash
-    bd update {{ .Args.IssueID }} --remove-label needs-polish
+    bd update {{ $target }} --remove-label needs-polish
     # Auto-graduate to ready when no other needs-* labels remain:
-    remaining=$(bd show {{ .Args.IssueID }} --json | jq -r '.[0].labels[]' 2>/dev/null | grep -c '^needs-' || true)
+    remaining=$(bd show {{ $target }} --json | jq -r '.[0].labels[]' 2>/dev/null | grep -c '^needs-' || true)
     if [ "$remaining" = "0" ]; then
-      bd update {{ .Args.IssueID }} --add-label ready
+      bd update {{ $target }} --add-label ready
     fi
     ```
   - **Unfinished** -- more work of this kind (or a different mode) is
     needed:
     ```bash
-    bd update {{ .Args.IssueID }} --add-label needs-polish
-    bd update {{ .Args.IssueID }} --remove-label ready
+    bd update {{ $target }} --add-label needs-polish
+    bd update {{ $target }} --remove-label ready
     ```
     Comment on the bead explaining what remains and, if useful, which
     `Mode` a follow-up run should use.
@@ -165,4 +175,4 @@ prompt: |
   ## Step 8 -- Notify
 
   Report via `mitto_ui_notify_mitto` -- title `"Polish complete"`, message
-  `"{{ .Args.IssueID }} - {{ .Args.Mode }} - <one-line summary of what changed>"`.
+  `"{{ $target }} - {{ .Args.Mode }} - <one-line summary of what changed>"`.

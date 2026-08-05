@@ -1,6 +1,6 @@
 icon: shield-check
 name: 'Blog: fact-check'
-menus: beadsIssues
+menus: beadsIssues, prompts
 parameters:
   - name: IssueID
     type: beadsId
@@ -14,7 +14,7 @@ parameters:
 description: Blog — verify facts, working links, versions, and dates in a `blog`/`draft` post; clears `needs-fact-check` on a clean pass and promotes to `ready` if no other `needs-*` label remains
 backgroundColor: '#C8E6C9'
 group: Blog
-enabledWhen: CommandExists("bd") && DirExists(".beads") && "blog" in Item.Labels && "draft" in Item.Labels
+enabledWhen: 'CommandExists("bd") && DirExists(".beads") && (("blog" in Item.Labels && "draft" in Item.Labels) || (Session.HasBeadsIssue && BeadIsOpen(Session.BeadsIssue) && BeadHasLabels(Session.BeadsIssue, "blog,draft")))'
 target:
   reuse:
     issue: true
@@ -22,9 +22,19 @@ target:
 preferredModels:
   - modelTag: Coding
 prompt: |
+  {{ $target := "" -}}
+  {{ if .Session.BeadsIssue }}{{ $target = .Session.BeadsIssue }}{{ else if .Args.IssueID }}{{ $target = .Args.IssueID }}{{ end -}}
   {{ template "_shared/session-context" . }}
 
   # Blog: Fact-Check — verify claims, links, versions
+
+  {{ template "beads-issues/shared/target-bead-header-strict" (dict
+      "Target"   $target
+      "Noun"     "target blog bead"
+      "Scope"    "for this fact-check"
+      "FromLink" (ne .Session.BeadsIssue "")
+      "FailStop" "then stop without changing anything."
+  ) }}
 
   This prompt takes a `blog`/`draft`-labelled bead, loads the post it points
   at, and verifies **every checkable claim** in it: quoted numbers, product
@@ -33,7 +43,7 @@ prompt: |
 
   ## Step 1 — Locate the post file
 
-  {{ template "blog/shared/locate-post-file" . }}
+  {{ template "blog/shared/locate-post-file" (dict "Target" $target) }}
 
   ## Step 2 — Load the audience yardstick
 
@@ -70,14 +80,14 @@ prompt: |
 
   ```bash
   # Extract URLs from the draft; check each with a HEAD (fall back to GET).
-  grep -oE 'https?://[^ )\]]+' "$post_abs" | sort -u > /tmp/{{ .Args.IssueID }}-urls.txt
+  grep -oE 'https?://[^ )\]]+' "$post_abs" | sort -u > /tmp/{{ $target }}-urls.txt
   while IFS= read -r url; do
     status=$(curl -sI -o /dev/null -w '%{http_code}' -L --max-time 10 "$url" 2>/dev/null \
              || curl -s -o /dev/null -w '%{http_code}' -L --max-time 10 "$url" 2>/dev/null \
              || echo "000")
     printf '%s\t%s\n' "$status" "$url"
-  done < /tmp/{{ .Args.IssueID }}-urls.txt > /tmp/{{ .Args.IssueID }}-urlcheck.txt
-  cat /tmp/{{ .Args.IssueID }}-urlcheck.txt
+  done < /tmp/{{ $target }}-urls.txt > /tmp/{{ $target }}-urlcheck.txt
+  cat /tmp/{{ $target }}-urlcheck.txt
   ```
 
   Anything not in `2xx`/`3xx` is a broken link. Do **not** silently drop
@@ -114,7 +124,7 @@ prompt: |
   cat > "$fc_file" <<'MITTO_FC'
   <composed findings block>
   MITTO_FC
-  bd comment {{ .Args.IssueID }} --file "$fc_file"
+  bd comment {{ $target }} --file "$fc_file"
   rm -f "$fc_file"
   ```
 
@@ -122,21 +132,21 @@ prompt: |
 
   - **Clean pass** — no corrections needed, no broken URLs, nothing unverified:
     ```bash
-    bd update {{ .Args.IssueID }} --remove-label needs-fact-check
+    bd update {{ $target }} --remove-label needs-fact-check
     # Promote to ready ONLY if no other needs-* label remains.
-    remaining=$(bd show {{ .Args.IssueID }} --json | jq -r '.[0].labels[]' | grep -c '^needs-' || true)
+    remaining=$(bd show {{ $target }} --json | jq -r '.[0].labels[]' | grep -c '^needs-' || true)
     if [[ "$remaining" -eq 0 ]]; then
-      bd update {{ .Args.IssueID }} --add-label ready
+      bd update {{ $target }} --add-label ready
     fi
     ```
   - **Findings present**:
     ```bash
     # Keep needs-fact-check; ensure ready is off so the post isn't picked
     # up as publishable.
-    bd update {{ .Args.IssueID }} --remove-label ready
+    bd update {{ $target }} --remove-label ready
     ```
 
   ## Step 6 — Notify
 
   Report via `mitto_ui_notify_mitto` — title `"Fact-check complete"`, message
-  `"{{ .Args.IssueID }} · <N corrections / M broken links>"` or `"<clean pass>"`.
+  `"{{ $target }} · <N corrections / M broken links>"` or `"<clean pass>"`.

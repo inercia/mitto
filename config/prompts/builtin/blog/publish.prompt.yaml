@@ -1,6 +1,6 @@
 icon: rocket-launch
 name: 'Blog: publish'
-menus: beadsIssues
+menus: beadsIssues, prompts
 parameters:
   - name: IssueID
     type: beadsId
@@ -14,7 +14,7 @@ parameters:
 description: 'Blog - publish a finalised blog/draft post: rewrite frontmatter, rename draft-slug.md -> YYYY-MM-DD-slug.md, update the bead file attachment, add published/remove draft+needs-*+ready (does NOT close the bead)'
 backgroundColor: '#C8E6C9'
 group: Blog
-enabledWhen: CommandExists("bd") && DirExists(".beads") && "blog" in Item.Labels && "draft" in Item.Labels && !("published" in Item.Labels)
+enabledWhen: 'CommandExists("bd") && DirExists(".beads") && (("blog" in Item.Labels && "draft" in Item.Labels && !("published" in Item.Labels)) || (Session.HasBeadsIssue && BeadIsOpen(Session.BeadsIssue) && BeadHasLabels(Session.BeadsIssue, "blog,draft") && !BeadHasLabels(Session.BeadsIssue, "published")))'
 target:
   reuse:
     issue: true
@@ -22,9 +22,19 @@ target:
 preferredModels:
   - modelTag: Coding
 prompt: |
+  {{ $target := "" -}}
+  {{ if .Session.BeadsIssue }}{{ $target = .Session.BeadsIssue }}{{ else if .Args.IssueID }}{{ $target = .Args.IssueID }}{{ end -}}
   {{ template "_shared/session-context" . }}
 
   # Blog: Publish -- finalise a draft post
+
+  {{ template "beads-issues/shared/target-bead-header-strict" (dict
+      "Target"   $target
+      "Noun"     "target blog bead"
+      "Scope"    "for this publish run"
+      "FromLink" (ne .Session.BeadsIssue "")
+      "FailStop" "then stop without changing anything."
+  ) }}
 
   This prompt drives the final `draft` -> `published` transition of the blog
   suite state machine. It is a **one-shot per-bead** flow (NOT a loop): a
@@ -37,7 +47,7 @@ prompt: |
 
   ## Step 1 -- Locate the post file
 
-  {{ template "blog/shared/locate-post-file" . }}
+  {{ template "blog/shared/locate-post-file" (dict "Target" $target) }}
 
   After the fragment resolves `$post_abs`, verify the current basename starts
   with `draft-` -- this prompt only makes sense on a bead that is still in
@@ -141,18 +151,18 @@ prompt: |
   this bead:
 
   ```bash
-  bd show {{ .Args.IssueID }} --json > /tmp/bead-{{ .Args.IssueID }}.json
+  bd show {{ $target }} --json > /tmp/bead-{{ $target }}.json
   new_rel="${new_path#$(git rev-parse --show-toplevel)/}"
-  new_desc=$(jq -r '.[0].description' /tmp/bead-{{ .Args.IssueID }}.json \
+  new_desc=$(jq -r '.[0].description' /tmp/bead-{{ $target }}.json \
     | sed -E "s|^File:[[:space:]]+\[[^]]+\]\([^)]+\)|File: [${new_rel}](${new_rel})|")
-  bd update {{ .Args.IssueID }} --description "$new_desc"
+  bd update {{ $target }} --description "$new_desc"
   ```
 
   Then record the renamed file as a structured attachment on the bead so
   the metadata travels with `bd dolt push`/`pull`:
 
   {{ template "blog/shared/attach-file-to-bead"
-       (dict "IssueID" .Args.IssueID
+       (dict "IssueID" $target
              "Path"    "$new_path") }}
 
   ## Step 8 -- Run the publish checklist
@@ -168,11 +178,11 @@ prompt: |
   ## Step 9 -- Update labels
 
   ```bash
-  bd update {{ .Args.IssueID }} --add-label published
-  bd update {{ .Args.IssueID }} --remove-label draft
-  bd update {{ .Args.IssueID }} --remove-label ready
+  bd update {{ $target }} --add-label published
+  bd update {{ $target }} --remove-label draft
+  bd update {{ $target }} --remove-label ready
   for l in needs-polish needs-fact-check needs-references; do
-    bd update {{ .Args.IssueID }} --remove-label "$l" 2>/dev/null || true
+    bd update {{ $target }} --remove-label "$l" 2>/dev/null || true
   done
   ```
 
@@ -183,4 +193,4 @@ prompt: |
   ## Step 10 -- Notify
 
   Report via `mitto_ui_notify_mitto` -- title `"Blog post published"`,
-  message `"{{ .Args.IssueID }} - $(basename "$post_abs") (bead left open for author to close)"`.
+  message `"{{ $target }} - $(basename "$post_abs") (bead left open for author to close)"`.

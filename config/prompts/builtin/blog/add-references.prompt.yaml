@@ -1,6 +1,6 @@
 icon: link
 name: 'Blog: add references'
-menus: beadsIssues
+menus: beadsIssues, prompts
 parameters:
   - name: IssueID
     type: beadsId
@@ -14,7 +14,7 @@ parameters:
 description: Blog — audit a `blog`/`draft` post for missing citations; classifies each as REQUIRED (direct claim) or RECOMMENDED (further reading), and flags the bead for fact-check when any REQUIRED link is absent
 backgroundColor: '#C8E6C9'
 group: Blog
-enabledWhen: CommandExists("bd") && DirExists(".beads") && "blog" in Item.Labels && "draft" in Item.Labels
+enabledWhen: 'CommandExists("bd") && DirExists(".beads") && (("blog" in Item.Labels && "draft" in Item.Labels) || (Session.HasBeadsIssue && BeadIsOpen(Session.BeadsIssue) && BeadHasLabels(Session.BeadsIssue, "blog,draft")))'
 target:
   reuse:
     issue: true
@@ -22,9 +22,19 @@ target:
 preferredModels:
   - modelTag: Coding
 prompt: |
+  {{ $target := "" -}}
+  {{ if .Session.BeadsIssue }}{{ $target = .Session.BeadsIssue }}{{ else if .Args.IssueID }}{{ $target = .Args.IssueID }}{{ end -}}
   {{ template "_shared/session-context" . }}
 
   # Blog: Add References — missing-link audit
+
+  {{ template "beads-issues/shared/target-bead-header-strict" (dict
+      "Target"   $target
+      "Noun"     "target blog bead"
+      "Scope"    "for this audit"
+      "FromLink" (ne .Session.BeadsIssue "")
+      "FailStop" "then stop without changing anything."
+  ) }}
 
   This prompt reads a `blog`/`draft`-labelled post and audits it for **missing
   references**. Unlike `fact-check`, this pass does **not** verify existing
@@ -35,7 +45,7 @@ prompt: |
 
   ## Step 1 — Locate the post file
 
-  {{ template "blog/shared/locate-post-file" . }}
+  {{ template "blog/shared/locate-post-file" (dict "Target" $target) }}
 
   ## Step 2 — Read the draft
 
@@ -99,7 +109,7 @@ prompt: |
   cat > "$refs_file" <<'MITTO_REFS'
   <composed audit block>
   MITTO_REFS
-  bd comment {{ .Args.IssueID }} --file "$refs_file"
+  bd comment {{ $target }} --file "$refs_file"
   rm -f "$refs_file"
   ```
 
@@ -107,8 +117,8 @@ prompt: |
 
   - **Any REQUIRED item** → route back to fact-check:
     ```bash
-    bd update {{ .Args.IssueID }} --add-label needs-fact-check
-    bd update {{ .Args.IssueID }} --remove-label ready
+    bd update {{ $target }} --add-label needs-fact-check
+    bd update {{ $target }} --remove-label ready
     ```
   - **Clean pass** (no REQUIRED items) or **RECOMMENDED-only findings**:
     **do not touch labels.** RECOMMENDED items are informational; the polish
@@ -117,5 +127,5 @@ prompt: |
   ## Step 5 — Notify
 
   Report via `mitto_ui_notify_mitto` — title `"References audit complete"`,
-  message `"{{ .Args.IssueID }} · <N required / M recommended>"` or
+  message `"{{ $target }} · <N required / M recommended>"` or
   `"<clean pass>"`.

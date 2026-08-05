@@ -5,26 +5,32 @@
   Markdown link, resolves the path, and bails with a clear error when the
   `File:` line is missing.
 
-  The fragment reads `.Args.IssueID` from the caller's context (the epic-wide
-  convention for the target-bead ID argument in the blog suite). Callers that
-  invoke this fragment must pass their own dot value so `.Args.IssueID` is
-  available — i.e. `{{ template "blog/shared/locate-post-file" . }}`.
+  Callers resolve the target bead themselves (`.Session.BeadsIssue` when the
+  conversation is linked to a blog bead, else `.Args.IssueID` when launched
+  from the beads list) and pass it via a `dict`:
+
+      Target: the resolved bead ID. Required.
+
+  Usage:
+
+      {{ template "blog/shared/locate-post-file" (dict "Target" $target) }}
 
   Architectural intent (mitto-98l.1): centralise the "find the post file"
   boilerplate so consumer prompts (content-review, fact-check, polish,
   publish, linkedin-post) don't each ship their own byte-drifted copy. Any
   future change to the File-line convention lands here once.
 */ -}}
+{{- $id := .Target -}}
 Load the bead and resolve the post file recorded in its description. The
 convention is a single `File: [path](path)` Markdown link that gives the
 repo-relative path to the draft:
 
 ```bash
-bd show {{ .Args.IssueID }} --json > /tmp/bead-{{ .Args.IssueID }}.json
-file_line=$(jq -r '.[0].description' /tmp/bead-{{ .Args.IssueID }}.json \
+bd show {{ $id }} --json > /tmp/bead-{{ $id }}.json
+file_line=$(jq -r '.[0].description' /tmp/bead-{{ $id }}.json \
   | grep -m1 -E '^File:[[:space:]]+\[.+\]\(.+\)' || true)
 if [[ -z "$file_line" ]]; then
-  echo "ERROR: bead {{ .Args.IssueID }} has no 'File: [path](path)' line in its description." >&2
+  echo "ERROR: bead {{ $id }} has no 'File: [path](path)' line in its description." >&2
   echo "Add one (e.g. via the ideation prompt) before running this stage." >&2
   exit 1
 fi

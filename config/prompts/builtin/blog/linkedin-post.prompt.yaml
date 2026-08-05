@@ -1,6 +1,6 @@
 icon: globe
 name: 'Blog: linkedin-post'
-menus: beadsIssues
+menus: beadsIssues, prompts
 parameters:
   - name: IssueID
     type: beadsId
@@ -14,7 +14,7 @@ parameters:
 description: 'Blog - draft a LinkedIn social snippet (hook + canonical URL + 3-5 hashtags) for a published blog post. Downstream artefact only; the bead is not modified.'
 backgroundColor: '#C8E6C9'
 group: Blog
-enabledWhen: CommandExists("bd") && DirExists(".beads") && "blog" in Item.Labels && "published" in Item.Labels
+enabledWhen: 'CommandExists("bd") && DirExists(".beads") && (("blog" in Item.Labels && "published" in Item.Labels) || (Session.HasBeadsIssue && BeadHasLabels(Session.BeadsIssue, "blog,published")))'
 target:
   reuse:
     issue: true
@@ -22,9 +22,19 @@ target:
 preferredModels:
   - modelTag: Coding
 prompt: |
+  {{ $target := "" -}}
+  {{ if .Session.BeadsIssue }}{{ $target = .Session.BeadsIssue }}{{ else if .Args.IssueID }}{{ $target = .Args.IssueID }}{{ end -}}
   {{ template "_shared/session-context" . }}
 
   # Blog: LinkedIn post -- draft a social snippet for a published post
+
+  {{ template "beads-issues/shared/target-bead-header-strict" (dict
+      "Target"   $target
+      "Noun"     "target blog bead"
+      "Scope"    "for this snippet"
+      "FromLink" (ne .Session.BeadsIssue "")
+      "FailStop" "then stop without changing anything."
+  ) }}
 
   This prompt drafts a LinkedIn snippet announcing a published blog article
   recorded on the bead. It iterates with the author until the draft is
@@ -35,7 +45,7 @@ prompt: |
 
   ## Step 1 -- Locate the (now published) post file
 
-  {{ template "blog/shared/locate-post-file" . }}
+  {{ template "blog/shared/locate-post-file" (dict "Target" $target) }}
 
   After the fragment resolves `$post_abs`, the current basename SHOULD start
   with a `YYYY-MM-DD-` date prefix (i.e. the post was already published via
