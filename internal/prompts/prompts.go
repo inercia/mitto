@@ -377,6 +377,14 @@ type PromptParameter struct {
 	// supplied before the prompt is dispatched. Defaults to unset (caller decides).
 	// Declarative defaults are handled by the Arg helper in the template body, not here.
 	Required *bool `yaml:"required,omitempty" json:"required,omitempty"`
+	// Ask controls whether the parameter is rendered in the parameter dialog.
+	// Valid values (see IsValidAsk): "" or "auto" (default: rendered only when the
+	// parameter is required or is an interactive picker) and "always" (rendered
+	// whenever the dialog opens, even for an optional free-text parameter). It only
+	// affects UI collection: an optional `ask: always` field never blocks submission
+	// and never gates menu visibility. Unknown values are rejected by
+	// ValidatePromptParameters.
+	Ask string `yaml:"ask,omitempty" json:"ask,omitempty"`
 	// Default is the default value substituted when the parameter is not explicitly
 	// supplied. Required for processor parameters (mandatory); optional for prompt-file
 	// parameters (the Arg helper in the template body also provides per-site defaults).
@@ -408,6 +416,23 @@ type PromptParameter struct {
 	// workspace UUID), and "global" (reserved; enum-accepted but not stored
 	// in v1). Unknown values are rejected by ValidatePromptParameters.
 	Remember string `yaml:"remember,omitempty" json:"remember,omitempty"`
+	// CollectInnerArgs controls whether a "prompts" picker's nested parameter
+	// dialog collects and ships the picked prompt's own parameters as a
+	// `<Name>_Args` companion argument. Defaults to true (collect) when nil —
+	// see ShouldCollectInnerArgs. Set to false when the picker is used only
+	// as an edit subject / name reference and the picked prompt's own
+	// parameter values are never consumed, so asking for them would be
+	// wasted interaction (mitto-48c). Only valid for type "prompts"; rejected
+	// by ValidatePromptParameters elsewhere.
+	CollectInnerArgs *bool `yaml:"collectInnerArgs,omitempty" json:"collectInnerArgs,omitempty"`
+}
+
+// ShouldCollectInnerArgs reports whether a "prompts" picker parameter should
+// collect and ship the picked prompt's own parameters as a `<Name>_Args`
+// companion argument. Absent/nil CollectInnerArgs defaults to true so every
+// pre-existing picker (declared before mitto-48c) is unaffected.
+func (p PromptParameter) ShouldCollectInnerArgs() bool {
+	return p.CollectInnerArgs == nil || *p.CollectInnerArgs
 }
 
 // PromptPreferredModel references a global model profile (Settings → Models) either

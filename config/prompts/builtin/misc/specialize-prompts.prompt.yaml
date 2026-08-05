@@ -9,6 +9,7 @@ parameters:
   - name: Prompt
     type: prompts
     required: false
+    collectInnerArgs: false
     description: A single prompt to specialize. Leave empty to review every prompt in the workspace.
 prompt: |
   Specialize the available prompts for this workspace by analyzing the project and tailoring

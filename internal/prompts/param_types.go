@@ -35,7 +35,13 @@ import (
 //     boolean): no menu auto-supplies it and it never gates menu
 //     visibility. Feeds the {{ PromptText .Args.NAME }} template
 //     action. multiLine is not supported (rejected by the existing
-//     text-only check).
+//     text-only check). The picked prompt's own parameters are, by
+//     default, collected in a nested sub-dialog and shipped as a
+//     `<Name>_Args` companion argument; set `collectInnerArgs: false`
+//     to opt out when the picker is used only as a name/edit-subject
+//     reference and the picked prompt's own parameter values are never
+//     consumed (mitto-48c). collectInnerArgs is only valid on type
+//     "prompts" (rejected elsewhere).
 //   - filename       — a workspace-relative file path, rendered as a dropdown
 //     of files under an optional Dir (workspace-relative, non-recursive),
 //     optionally filtered by a Glob (filepath.Match). Interactive,
@@ -104,6 +110,28 @@ const (
 func IsValidRemember(s string) bool {
 	switch s {
 	case "", RememberNever, RememberFolder, RememberConversation, RememberGlobal:
+		return true
+	}
+	return false
+}
+
+// Ask* constants enumerate the accepted values of PromptParameter.Ask.
+// An empty string is treated as AskAuto (default).
+//
+//   - AskAuto: render in the parameter dialog only when the parameter is
+//     required or is an interactive picker (default)
+//   - AskAlways: always render in the parameter dialog once it opens, even for
+//     an optional free-text parameter. Still non-blocking when optional.
+const (
+	AskAuto   = "auto"
+	AskAlways = "always"
+)
+
+// IsValidAsk reports whether s is an accepted value for the Ask field of a
+// PromptParameter. An empty string counts as valid (means "auto").
+func IsValidAsk(s string) bool {
+	switch s {
+	case "", AskAuto, AskAlways:
 		return true
 	}
 	return false
@@ -191,6 +219,12 @@ func ValidatePromptParameters(menus string, params []PromptParameter) error {
 		if len(param.Glob) > 0 && !isFileOrDirType {
 			return fmt.Errorf("parameter %q: glob is only valid for types \"filename\" or \"dirname\", not %q", param.Name, param.Type)
 		}
+		// collectInnerArgs only controls nested-args collection for a
+		// "prompts" picker's own sub-dialog; reject it elsewhere (mirrors
+		// the multiLine/options/dir/glob "only valid for type X" pattern).
+		if param.CollectInnerArgs != nil && param.Type != "prompts" {
+			return fmt.Errorf("parameter %q: collectInnerArgs is only valid for type \"prompts\", not %q", param.Name, param.Type)
+		}
 		if isFileOrDirType {
 			// Dir must be workspace-relative: no absolute paths, no ".." segments.
 			// The runtime endpoint re-checks containment against the workspace
@@ -229,6 +263,12 @@ func ValidatePromptParameters(menus string, params []PromptParameter) error {
 		if !IsValidRemember(param.Remember) {
 			return fmt.Errorf("parameter %q: unknown remember value %q (must be one of: %q, %q, %q, %q)",
 				param.Name, param.Remember, RememberNever, RememberFolder, RememberConversation, RememberGlobal)
+		}
+		// Validate the optional Ask field: reject unknown values so a typo
+		// fails fast instead of silently degrading to the default behaviour.
+		if !IsValidAsk(param.Ask) {
+			return fmt.Errorf("parameter %q: unknown ask value %q (must be one of: %q, %q)",
+				param.Name, param.Ask, AskAuto, AskAlways)
 		}
 		// Validate the optional cache block.
 		if param.Cache != nil {

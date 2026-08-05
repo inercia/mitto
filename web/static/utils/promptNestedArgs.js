@@ -68,8 +68,14 @@ export function pruneNestedTree(tree, outerParams, outerValues, promptsList) {
       .filter((wp) => wp && wp.name)
       .map((wp) => [wp.name, wp]),
   );
+  // mitto-48c: an opted-out (`collectInnerArgs: false`) picker never has a
+  // subtree slot — exclude it here so a stale slot from before the flag was
+  // set (or before the picked prompt was swapped) is pruned like an unknown
+  // key.
   const pickerParamByName = new Map(
-    paramsList.filter((p) => p && p.type === "prompts").map((p) => [p.name, p]),
+    paramsList
+      .filter((p) => p && p.type === "prompts" && p.collectInnerArgs !== false)
+      .map((p) => [p.name, p]),
   );
   for (const key of Object.keys(next)) {
     const pickerParam = pickerParamByName.get(key);
@@ -138,6 +144,9 @@ export function buildInnerArgs(innerParams, node, promptsList, level) {
         continue;
       }
       out[ip.name] = pickedName;
+      // mitto-48c: collectInnerArgs: false discards this picker's inner
+      // values — emit the picked name but skip the recursive `_Args` build.
+      if (ip.collectInnerArgs === false) continue;
       const pickedPrompt = (promptsList || []).find(
         (wp) => wp && wp.name === pickedName,
       );
@@ -184,8 +193,10 @@ export function collectPickedPaths(
 ) {
   const out = [];
   if (!tree || typeof tree !== "object") return out;
+  // mitto-48c: skip opted-out pickers so the remembered-args fetch effect
+  // never fires a request for a block that will never be rendered/collected.
   const pickerParams = (outerParams || []).filter(
-    (p) => p && p.type === "prompts",
+    (p) => p && p.type === "prompts" && p.collectInnerArgs !== false,
   );
   for (const p of pickerParams) {
     const pickedName = ((outerValues && outerValues[p.name]) || "")

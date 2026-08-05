@@ -140,6 +140,12 @@ func buildNestedPromptSchemas(promptParams []config.PromptParameter, allPrompts 
 		if p.Type != pickerParamType {
 			continue
 		}
+		// mitto-48c: a picker with collectInnerArgs: false never collects or
+		// ships the picked prompt's own parameters, so its MCP tool schema
+		// should not advertise the unused `<Name>_Args` companion either.
+		if !p.ShouldCollectInnerArgs() {
+			continue
+		}
 		catalog := make(map[string][]config.PromptParameter)
 		for _, inner := range allPrompts {
 			if len(inner.Parameters) == 0 {

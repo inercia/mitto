@@ -969,6 +969,14 @@ parameters:
                             #   false       → optional: auto-fills when menu supplies
                             #                 it, but never hides the prompt from menus
                             #                 that cannot. No blocking form is shown.
+    ask: always             # optional — controls whether the param is rendered in
+                            #   the parameter dialog. One of:
+                            #     "" / "auto" → rendered only when required or an
+                            #                   interactive picker (default)
+                            #     "always"    → rendered whenever the dialog opens,
+                            #                   even when `required: false`. Still
+                            #                   non-blocking (Save is not gated on it).
+                            #   A param the menu auto-supplies is never re-asked.
     multiLine: true         # optional bool — only valid for type: text. Renders a
                             #   resizable multi-line textarea in the parameter dialog
                             #   instead of a single-line input. Rejected at load on
@@ -986,12 +994,27 @@ parameters:
                             #     "conversation" → per-session (per prompt + arg)
                             #     "global"       → reserved; accepted but not stored in v1
                             #   See "Remembering the last submitted value" below.
+    collectInnerArgs: false # optional bool — only valid for type: prompts.
+                            #   Defaults to true: picking a prompt opens a nested
+                            #   sub-dialog for the picked prompt's own parameters
+                            #   and ships them as a `<PARAM_NAME>_Args` companion
+                            #   argument. Set to false when the picker is used only
+                            #   as a name/edit-subject reference and the picked
+                            #   prompt's own parameter values are never consumed —
+                            #   the sub-dialog button is disabled and no `_Args`
+                            #   companion is collected or sent.
 ```
 
 Multiple parameters may be listed; the menu must supply all **required** ones (`required`
 absent or `true`). Parameters with `required: false` are **optional**: they auto-fill when
 the menu can supply their type, but they do not gate menu visibility and no form is shown
 if the menu cannot supply them.
+
+An optional parameter is therefore *invisible* in the dialog by default, even when the
+dialog is already open for other parameters. Add `ask: always` to render it anyway — useful
+for an optional free-text field the user should be able to review or edit (especially when
+combined with `remember:`, whose persisted value would otherwise be unreachable). `ask:
+always` never makes the field mandatory and never changes menu gating.
 
 ### YAML example
 
