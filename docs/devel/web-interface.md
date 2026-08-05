@@ -467,3 +467,54 @@ Treat `webview.log` staleness during hidden periods as expected. To distinguish 
 - `.augment/rules/09-macos-app.md` — native WKWebView bridge and console capture
 - `.augment/rules/23-web-frontend-mobile.md` — visibility change handling, wake resync
 - `websockets/synchronization.md` — seq-aligned `load_events` and reconnection flow
+
+---
+
+## Profiling (opt-in, mitto-aek)
+
+Mitto ships with no profiling endpoint by default — the release binary is also
+built with `-s -w` (Makefile `LDFLAGS`), which strips Go symbols, so external
+sampling tools (`sample`, `atos`) cannot attribute CPU to Go functions either.
+To get real attribution, enable the `net/http/pprof` debug endpoints.
+
+### Enabling
+
+Precedence: CLI flag > `MITTO_PPROF` env var > `web.pprof` in `settings.json`.
+Off unless one of these is set.
+
+```bash
+mitto web --pprof              # CLI
+MITTO_PPROF=1 open Mitto.app   # macOS app (env var only, no CLI flag)
+```
+
+Or in `settings.json`:
+
+```json
+{ "web": { "pprof": true } }
+```
+
+### Security
+
+The routes (`/debug/pprof/*`) are **loopback-bound and auth-gated**, matching
+the pattern used by other localhost-only endpoints (`internal/web/handlers/save_file.go`):
+requests from the external listener or from a non-loopback client IP get a
+plain `404` (not `403`), so an external probe cannot even tell profiling is
+enabled. They are not added to the auth middleware's public-path allowlist, so
+normal session auth still applies on top of the loopback check.
+
+### Capturing a profile
+
+```bash
+# 30s CPU profile
+go tool pprof http://127.0.0.1:8080/debug/pprof/profile?seconds=30
+
+# Heap snapshot
+go tool pprof http://127.0.0.1:8080/debug/pprof/heap
+
+# Full goroutine dump (stacks for every goroutine)
+curl -s http://127.0.0.1:8080/debug/pprof/goroutine?debug=2 > goroutines.txt
+```
+
+Adjust the port to match the running instance. For symbol resolution in
+external tools (`sample`, `atos`) rather than `go tool pprof`, build with
+`make build-debug` (unstripped) instead of `make build`.

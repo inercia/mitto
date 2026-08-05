@@ -25,6 +25,7 @@ var (
 	workspacesFile  string
 	foldersFile     string
 	webBeadsCache   bool
+	webPProf        bool
 )
 
 // webCmd represents the web command
@@ -60,6 +61,7 @@ func init() {
 	webCmd.Flags().StringVar(&workspacesFile, "workspaces", "", "Path to workspaces file (JSON or YAML)")
 	webCmd.Flags().StringVar(&foldersFile, "folders", "", "Path to folders file (JSON or YAML); overlays folder-level settings onto loaded workspaces (changes not persisted)")
 	webCmd.Flags().BoolVar(&webBeadsCache, "beads-cache", true, "Enable in-memory cache for read-only bd invocations (mitto-is2). Pass --beads-cache=false to disable.")
+	webCmd.Flags().BoolVar(&webPProf, "pprof", false, "Enable net/http/pprof debug endpoints (/debug/pprof/*), loopback-only. Also settable via MITTO_PPROF=1 or web.pprof in settings.json (mitto-aek).")
 }
 
 func runWeb(cmd *cobra.Command, args []string) error {
@@ -229,6 +231,7 @@ func runWeb(cmd *cobra.Command, args []string) error {
 		PromptsCache:     promptsCache,
 		AccessLog:        accessLogConfig,
 		BeadsCache:       webBeadsCache,
+		EnablePProf:      webPProf || config.PProfEnabled(cfg),
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create server: %w", err)

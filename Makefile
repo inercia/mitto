@@ -1,4 +1,4 @@
-.PHONY: build install test test-go test-js check-model-tags check-stderr-patterns check-prompts test-integration test-integration-go test-integration-cli test-integration-api test-integration-client test-integration-runner test-runner-smoke test-runner-smoke-assert test-bun-tooling test-ui test-ui-headed test-ui-debug test-ui-report test-all test-ci test-setup test-clean clean run fmt fmt-check fmt-docs fmt-docs-check lint lint-go lint-frontend deps-go deps-js deps tailwind vendor-codemirror build-mac-app clean-mac-app test-webviewlog build-mock-acp ci install-hooks homebrew-generate homebrew-test homebrew-test-style homebrew-test-install homebrew-test-cask homebrew-tap-setup homebrew-clean smoke-build smoke-test-cli smoke-test smoke-clean
+.PHONY: build build-debug install test test-go test-js check-model-tags check-stderr-patterns check-prompts test-integration test-integration-go test-integration-cli test-integration-api test-integration-client test-integration-runner test-runner-smoke test-runner-smoke-assert test-bun-tooling test-ui test-ui-headed test-ui-debug test-ui-report test-all test-ci test-setup test-clean clean run fmt fmt-check fmt-docs fmt-docs-check lint lint-go lint-frontend deps-go deps-js deps tailwind vendor-codemirror build-mac-app clean-mac-app test-webviewlog build-mock-acp ci install-hooks homebrew-generate homebrew-test homebrew-test-style homebrew-test-install homebrew-test-cask homebrew-tap-setup homebrew-clean smoke-build smoke-test-cli smoke-test smoke-clean
 
 # Binary name
 BINARY_NAME=mitto
@@ -26,6 +26,11 @@ LDFLAGS=-ldflags "-s -w"
 # Main build target
 build:
 	$(GOBUILD) $(LDFLAGS) -o $(BINARY_NAME) ./cmd/mitto
+
+# Debug build: no -s -w stripping, so external samplers (sample, atos) can
+# resolve Go symbols. Pair with --pprof / MITTO_PPROF=1 (mitto-aek).
+build-debug:
+	$(GOBUILD) -o $(BINARY_NAME) ./cmd/mitto
 
 # Install to GOPATH/bin
 install:

@@ -623,6 +623,31 @@ type WebConfig struct {
 	AccessLog *AccessLogConfig `json:"access_log,omitempty"`
 	// Beads contains configuration specific to the /api/issues (beads) endpoints
 	Beads *WebBeadsConfig `json:"beads,omitempty" yaml:"beads,omitempty"`
+	// PProf, when true, registers the net/http/pprof debug endpoints
+	// (/debug/pprof/*). Off by default; profiles leak goroutine stacks and
+	// heap contents, so the routes are also loopback-bound and auth-gated
+	// regardless of this setting. See PProfEnabled and mitto-aek.
+	PProf bool `json:"pprof,omitempty" yaml:"pprof,omitempty"`
+}
+
+// PProfEnabled resolves whether the net/http/pprof debug endpoints should be
+// registered. Precedence: MITTO_PPROF environment variable (if set) takes
+// priority over the config value; a nil cfg resolves to false. Accepts the
+// usual truthy strings ("1", "true", "yes", case-insensitive); any other
+// non-empty value is treated as false.
+func PProfEnabled(cfg *Config) bool {
+	if v := os.Getenv("MITTO_PPROF"); v != "" {
+		switch strings.ToLower(v) {
+		case "1", "true", "yes":
+			return true
+		default:
+			return false
+		}
+	}
+	if cfg == nil {
+		return false
+	}
+	return cfg.Web.PProf
 }
 
 // WebBeadsConfig gates optional behaviour on the beads (issues) endpoints.

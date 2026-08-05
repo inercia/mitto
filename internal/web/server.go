@@ -86,6 +86,12 @@ type Config struct {
 	// If Path is empty, access logging is disabled.
 	AccessLog AccessLogConfig
 
+	// EnablePProf registers the net/http/pprof debug endpoints (/debug/pprof/*)
+	// on the mux. Off by default (mitto-aek); resolve via configPkg.PProfEnabled
+	// before constructing Config so CLI flag / env var / settings.json
+	// precedence is applied consistently across entry points.
+	EnablePProf bool
+
 	// DisableAuxiliaryPrewarm disables auxiliary session pre-warming on process creation.
 	// Used in tests to avoid interference with mock ACP servers.
 	DisableAuxiliaryPrewarm bool
@@ -1526,6 +1532,16 @@ func NewServer(config Config) (*Server, error) {
 	mux.HandleFunc("/robots.txt", handleRobotsTxt)
 	if apiPrefix != "" {
 		mux.HandleFunc(apiPrefix+"/robots.txt", handleRobotsTxt)
+	}
+
+	// pprof debug endpoints: opt-in only (mitto-aek). Registered unprefixed
+	// (not through apiRoutes/apiPrefix) so `go tool pprof` URLs work verbatim.
+	// When disabled, the patterns are simply never registered, so requests
+	// fall through to the static catch-all below and 404 like any other
+	// unknown path.
+	if config.EnablePProf {
+		s.registerPProfRoutes(mux)
+		logger.Warn("pprof debug endpoints enabled (loopback-only)", "path", "/debug/pprof/")
 	}
 
 	// Static files: use filesystem directory if specified, otherwise use embedded assets

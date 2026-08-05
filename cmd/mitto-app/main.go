@@ -1235,6 +1235,7 @@ func run() error {
 		PromptsCache:     promptsCache,
 		AccessLog:        accessLogConfig,
 		BeadsCache:       true, // mitto-is2.5: read-cache on by default in the macOS app
+		EnablePProf:      config.PProfEnabled(cfg),
 	}
 
 	// Set legacy fields as fallback (for auxiliary sessions, etc.)
