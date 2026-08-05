@@ -18,6 +18,11 @@ parameters:
     type: text
     required: false
     description: How finished work is submitted. "Commit" (default) — commit any file changes after the implement phase. "Pull Request" — same, on a per-bead branch, with a PR opened before finalizing. "None" — leave changes uncommitted for human review.
+  - name: AdditionalInstructions
+    type: text
+    required: false
+    multiLine: true
+    description: 'Optional additional instructions applied on top of the steps below and forwarded verbatim to every phase prompt this router dispatches. Propagated from the "Loop processing tasks" supervisor. Used for this run only; nothing is persisted.'
 description: Internal router driver for a single @mitto mention. Classifies the mention (question / fix / feature / directive), dispatches per-phase prompts on their tier, and finally writes the `[addressed-comment]` back-reference (and optional commit + close). Invoked by name from the beadsList orchestrator; no preferredModels (per-phase tiering).
 group: Tasks
 backgroundColor: '#E1BEE7'
@@ -85,6 +90,8 @@ prompt: |
   use **Step 4 (Blocked → Defer + Handoff)** rather than guessing or asking.
 
   {{ if $target -}}
+  {{ template "beads-issues/shared/additional-instructions" . }}
+
   ## Step 1 — Load LIVE state
 
   Labels drift between runs. Load the bead's **current** state fresh, every run:
@@ -168,7 +175,7 @@ prompt: |
     self_id: "{{ .Session.ID }}",
     conversation_id: "self",
     prompt_name: "Mention — investigate phase",
-    arguments: { "IssueID": "{{ $target }}", "MentionTS": "{{ $ts }}", "MentionBody": "<verbatim mention body>" }
+    arguments: { "IssueID": "{{ $target }}", "MentionTS": "{{ $ts }}", "MentionBody": "<verbatim mention body>"{{ with .Args.AdditionalInstructions }}, "AdditionalInstructions": {{ . | printf "%q" }}{{ end }} }
   )
   ```
 
@@ -184,7 +191,7 @@ prompt: |
     self_id: "{{ .Session.ID }}",
     conversation_id: "self",
     prompt_name: "Mention — plan phase",
-    arguments: { "IssueID": "{{ $target }}", "MentionTS": "{{ $ts }}", "MentionBody": "<verbatim mention body>" }
+    arguments: { "IssueID": "{{ $target }}", "MentionTS": "{{ $ts }}", "MentionBody": "<verbatim mention body>"{{ with .Args.AdditionalInstructions }}, "AdditionalInstructions": {{ . | printf "%q" }}{{ end }} }
   )
   ```
 
@@ -199,7 +206,7 @@ prompt: |
     self_id: "{{ .Session.ID }}",
     conversation_id: "self",
     prompt_name: "Mention — implement phase",
-    arguments: { "IssueID": "{{ $target }}", "MentionTS": "{{ $ts }}", "MentionBody": "<verbatim mention body>" }
+    arguments: { "IssueID": "{{ $target }}", "MentionTS": "{{ $ts }}", "MentionBody": "<verbatim mention body>"{{ with .Args.AdditionalInstructions }}, "AdditionalInstructions": {{ . | printf "%q" }}{{ end }} }
   )
   ```
 
@@ -214,7 +221,7 @@ prompt: |
     self_id: "{{ .Session.ID }}",
     conversation_id: "self",
     prompt_name: "Mention — answer phase",
-    arguments: { "IssueID": "{{ $target }}", "MentionTS": "{{ $ts }}", "MentionBody": "<verbatim mention body>" }
+    arguments: { "IssueID": "{{ $target }}", "MentionTS": "{{ $ts }}", "MentionBody": "<verbatim mention body>"{{ with .Args.AdditionalInstructions }}, "AdditionalInstructions": {{ . | printf "%q" }}{{ end }} }
   )
   ```
 

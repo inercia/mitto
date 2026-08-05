@@ -14,6 +14,11 @@ parameters:
     type: text
     required: false
     description: Verbatim body of the @mitto mention (already scoped by the router)
+  - name: AdditionalInstructions
+    type: text
+    required: false
+    multiLine: true
+    description: Optional additional instructions for this phase, forwarded by the driver that dispatched it.
 description: Internal phase-tier prompt — plan a fix/feature @mitto mention and add the `mention-planned` label. Invoked by name from the mention driver; runs on the Reasoning tier.
 group: Tasks
 backgroundColor: '#B3E5FC'
@@ -45,6 +50,8 @@ prompt: |
   ) }}
 
   {{ if $target -}}
+  {{ template "beads-issues/shared/additional-instructions" . }}
+
   ## Step 1 — Load LIVE state
 
   Labels drift between runs. Load the bead's **current** state fresh:

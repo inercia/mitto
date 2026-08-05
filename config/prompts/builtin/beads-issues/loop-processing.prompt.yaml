@@ -19,6 +19,11 @@ parameters:
     type: prompts
     required: false
     description: Optional prompt to run after a task completes and before the next one is picked (e.g. "Run tests"). Dispatched as its own short-lived child conversation from Step 5H; best-effort — a failing hook never blocks the next task. Leave empty to disable.
+  - name: AdditionalInstructions
+    type: text
+    required: false
+    multiLine: true
+    description: 'Optional additional instructions applied on top of the steps below, and propagated verbatim to every §A/§B/§C driver (and from there to their phase prompts) so the whole chain follows them (e.g. "only work on beads labelled `frontend`", "always run `make lint` before committing", "never touch files under vendor/"). Used for this run only; nothing is persisted.'
 description: "Unified standing supervisor — on every beads change, process at most one increment from whichever class has work — (A) unaddressed @mitto comments, (B) eligible open bugs, (C) eligible open features. Comments first, then bugs, then features. One worker in flight at a time."
 backgroundColor: '#E1BEE7'
 group: Tasks
@@ -70,6 +75,7 @@ prompt: |
   {{- end }}
   {{ end }}{{ end }}
 
+  {{ template "beads-issues/shared/additional-instructions" . }}
   # Beads: Loop Processing Beads (unified list-level orchestrator)
 
   Beads is a CLI issue tracker (`bd`); IDs look like `bd-xyz`. This is a list-level
@@ -614,9 +620,9 @@ prompt: |
     title: "Address @mitto on <id> [<ts>]",
     beads_issue: "<id>",
     prompt_name: "Mention — driver",
-    arguments: { "IssueID": "<id>", "MentionTS": "<ts>", "MentionBody": "<body>", "SubmitStrategy": "{{ if .Args.SubmitStrategy }}{{ .Args.SubmitStrategy }}{{ else }}Commit{{ end }}" },
+    arguments: { "IssueID": "<id>", "MentionTS": "<ts>", "MentionBody": "<body>", "SubmitStrategy": "{{ if .Args.SubmitStrategy }}{{ .Args.SubmitStrategy }}{{ else }}Commit{{ end }}"{{ with .Args.AdditionalInstructions }}, "AdditionalInstructions": {{ . | printf "%q" }}{{ end }} },
     loop_prompt_name: "Mention — driver",
-    loop_arguments: { "IssueID": "<id>", "MentionTS": "<ts>", "MentionBody": "<body>", "SubmitStrategy": "{{ if .Args.SubmitStrategy }}{{ .Args.SubmitStrategy }}{{ else }}Commit{{ end }}" },
+    loop_arguments: { "IssueID": "<id>", "MentionTS": "<ts>", "MentionBody": "<body>", "SubmitStrategy": "{{ if .Args.SubmitStrategy }}{{ .Args.SubmitStrategy }}{{ else }}Commit{{ end }}"{{ with .Args.AdditionalInstructions }}, "AdditionalInstructions": {{ . | printf "%q" }}{{ end }} },
     loop_trigger: "onCompletion",
     loop_completion_delay_seconds: 30,
     loop_max_iterations: 8,
@@ -710,9 +716,9 @@ prompt: |
     title: "Fix <id>",
     beads_issue: "<id>",
     prompt_name: "Loop fixing bug",
-    arguments: { "IssueID": "<id>", "SubmitStrategy": "{{ if .Args.SubmitStrategy }}{{ .Args.SubmitStrategy }}{{ else }}Commit{{ end }}" },
+    arguments: { "IssueID": "<id>", "SubmitStrategy": "{{ if .Args.SubmitStrategy }}{{ .Args.SubmitStrategy }}{{ else }}Commit{{ end }}"{{ with .Args.AdditionalInstructions }}, "AdditionalInstructions": {{ . | printf "%q" }}{{ end }} },
     loop_prompt_name: "Loop fixing bug",
-    loop_arguments: { "IssueID": "<id>", "SubmitStrategy": "{{ if .Args.SubmitStrategy }}{{ .Args.SubmitStrategy }}{{ else }}Commit{{ end }}" },
+    loop_arguments: { "IssueID": "<id>", "SubmitStrategy": "{{ if .Args.SubmitStrategy }}{{ .Args.SubmitStrategy }}{{ else }}Commit{{ end }}"{{ with .Args.AdditionalInstructions }}, "AdditionalInstructions": {{ . | printf "%q" }}{{ end }} },
     loop_trigger: "onCompletion",
     loop_completion_delay_seconds: 30,
     loop_max_iterations: 20,
@@ -802,9 +808,9 @@ prompt: |
     title: "Implement <id>: <slug>",
     beads_issue: "<id>",
     prompt_name: "Loop implementing feature",
-    arguments: { "IssueID": "<id>", "SubmitStrategy": "{{ if .Args.SubmitStrategy }}{{ .Args.SubmitStrategy }}{{ else }}Commit{{ end }}" },
+    arguments: { "IssueID": "<id>", "SubmitStrategy": "{{ if .Args.SubmitStrategy }}{{ .Args.SubmitStrategy }}{{ else }}Commit{{ end }}"{{ with .Args.AdditionalInstructions }}, "AdditionalInstructions": {{ . | printf "%q" }}{{ end }} },
     loop_prompt_name: "Loop implementing feature",
-    loop_arguments: { "IssueID": "<id>", "SubmitStrategy": "{{ if .Args.SubmitStrategy }}{{ .Args.SubmitStrategy }}{{ else }}Commit{{ end }}" },
+    loop_arguments: { "IssueID": "<id>", "SubmitStrategy": "{{ if .Args.SubmitStrategy }}{{ .Args.SubmitStrategy }}{{ else }}Commit{{ end }}"{{ with .Args.AdditionalInstructions }}, "AdditionalInstructions": {{ . | printf "%q" }}{{ end }} },
     loop_trigger: "onCompletion",
     loop_completion_delay_seconds: 30,
     loop_max_iterations: 30,

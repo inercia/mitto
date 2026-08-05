@@ -10,6 +10,11 @@ parameters:
     type: text
     required: false
     description: How finished work is submitted. "Commit" (default) — commit at the end of each stage. "Pull Request" — same, on a per-bead branch, with a PR opened in the Done branch. "None" — leave changes uncommitted for human review.
+  - name: AdditionalInstructions
+    type: text
+    required: false
+    multiLine: true
+    description: 'Optional additional instructions applied on top of the steps below and forwarded verbatim to every phase prompt this driver dispatches (e.g. "always run `make lint` before committing", "never touch files under vendor/"). Set by the operator, or propagated from the "Loop processing tasks" supervisor. Used for this run only; nothing is persisted.'
 description: Auto-loop — drive a feature bead through plan → implement → test → review by dispatching per-phase prompts (each on its own model tier), then self-terminate
 backgroundColor: '#C8E6C9'
 group: Tasks
@@ -114,6 +119,8 @@ prompt: |
   {{- end }}
 
   {{ if $target -}}
+  {{ template "beads-issues/shared/additional-instructions" . }}
+
   ## Step 1 — Load LIVE state (never rely on a stale snapshot)
 
   Labels drift between runs. Load the bead's **current** state fresh, every run:
@@ -165,7 +172,7 @@ prompt: |
     self_id: "{{ .Session.ID }}",
     conversation_id: "self",
     prompt_name: "Feature — plan phase",
-    arguments: { "IssueID": "{{ $target }}" }
+    arguments: { "IssueID": "{{ $target }}"{{ with .Args.AdditionalInstructions }}, "AdditionalInstructions": {{ . | printf "%q" }}{{ end }} }
   )
   ```
 
@@ -193,7 +200,7 @@ prompt: |
     self_id: "{{ .Session.ID }}",
     conversation_id: "self",
     prompt_name: "Feature — implement phase",
-    arguments: { "IssueID": "{{ $target }}", "SubmitStrategy": "{{ if .Args.SubmitStrategy }}{{ .Args.SubmitStrategy }}{{ else }}Commit{{ end }}" }
+    arguments: { "IssueID": "{{ $target }}", "SubmitStrategy": "{{ if .Args.SubmitStrategy }}{{ .Args.SubmitStrategy }}{{ else }}Commit{{ end }}"{{ with .Args.AdditionalInstructions }}, "AdditionalInstructions": {{ . | printf "%q" }}{{ end }} }
   )
   ```
 
@@ -210,7 +217,7 @@ prompt: |
     self_id: "{{ .Session.ID }}",
     conversation_id: "self",
     prompt_name: "Feature — test phase",
-    arguments: { "IssueID": "{{ $target }}", "SubmitStrategy": "{{ if .Args.SubmitStrategy }}{{ .Args.SubmitStrategy }}{{ else }}Commit{{ end }}" }
+    arguments: { "IssueID": "{{ $target }}", "SubmitStrategy": "{{ if .Args.SubmitStrategy }}{{ .Args.SubmitStrategy }}{{ else }}Commit{{ end }}"{{ with .Args.AdditionalInstructions }}, "AdditionalInstructions": {{ . | printf "%q" }}{{ end }} }
   )
   ```
 
@@ -227,7 +234,7 @@ prompt: |
     self_id: "{{ .Session.ID }}",
     conversation_id: "self",
     prompt_name: "Feature — review phase",
-    arguments: { "IssueID": "{{ $target }}", "SubmitStrategy": "{{ if .Args.SubmitStrategy }}{{ .Args.SubmitStrategy }}{{ else }}Commit{{ end }}" }
+    arguments: { "IssueID": "{{ $target }}", "SubmitStrategy": "{{ if .Args.SubmitStrategy }}{{ .Args.SubmitStrategy }}{{ else }}Commit{{ end }}"{{ with .Args.AdditionalInstructions }}, "AdditionalInstructions": {{ . | printf "%q" }}{{ end }} }
   )
   ```
 
