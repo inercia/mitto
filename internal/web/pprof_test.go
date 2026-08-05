@@ -97,6 +97,11 @@ func TestRegisterPProfRoutes_RegistersExpectedPaths(t *testing.T) {
 		"/debug/pprof/profile",
 		"/debug/pprof/symbol",
 		"/debug/pprof/trace",
+		// Named profiles have no dedicated pattern — they must resolve via
+		// the "/debug/pprof/" prefix to pprof.Index (acceptance criterion:
+		// heap and goroutine?debug=2 respond when enabled).
+		"/debug/pprof/heap",
+		"/debug/pprof/goroutine?debug=2",
 	}
 	for _, p := range paths {
 		req := httptest.NewRequest(http.MethodGet, p, nil)
@@ -105,5 +110,59 @@ func TestRegisterPProfRoutes_RegistersExpectedPaths(t *testing.T) {
 		if pattern == "" {
 			t.Errorf("expected a registered handler for path %q, got none (unmatched)", p)
 		}
+	}
+}
+
+// TestMaybeRegisterPProfRoutes_Disabled_LeavesRoutesUnregistered pins the
+// off-by-default acceptance criterion: with profiling disabled, no
+// /debug/pprof pattern is registered, so requests fall through to the
+// catch-all (as they do in NewServer) and 404 like any unknown path.
+func TestMaybeRegisterPProfRoutes_Disabled_LeavesRoutesUnregistered(t *testing.T) {
+	s := &Server{}
+	mux := http.NewServeMux()
+	catchAllHit := false
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		catchAllHit = true
+		http.NotFound(w, r)
+	})
+
+	if registered := s.maybeRegisterPProfRoutes(mux, false); registered {
+		t.Fatal("maybeRegisterPProfRoutes(false) reported routes as registered")
+	}
+
+	for _, p := range []string{"/debug/pprof/", "/debug/pprof/profile", "/debug/pprof/heap"} {
+		catchAllHit = false
+		req := httptest.NewRequest(http.MethodGet, p, nil)
+		req.Host = "127.0.0.1"
+
+		if _, pattern := mux.Handler(req); pattern != "/" {
+			t.Errorf("path %q matched pattern %q, want the catch-all %q", p, pattern, "/")
+		}
+
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		if !catchAllHit {
+			t.Errorf("path %q did not reach the catch-all handler", p)
+		}
+		if w.Code != http.StatusNotFound {
+			t.Errorf("path %q status = %d, want %d", p, w.Code, http.StatusNotFound)
+		}
+	}
+}
+
+// TestMaybeRegisterPProfRoutes_Enabled_RegistersRoutes verifies the enabled
+// branch of the same gate actually installs the routes (mitto-aek).
+func TestMaybeRegisterPProfRoutes_Enabled_RegistersRoutes(t *testing.T) {
+	s := &Server{}
+	mux := http.NewServeMux()
+
+	if registered := s.maybeRegisterPProfRoutes(mux, true); !registered {
+		t.Fatal("maybeRegisterPProfRoutes(true) did not report routes as registered")
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/debug/pprof/heap", nil)
+	req.Host = "127.0.0.1"
+	if _, pattern := mux.Handler(req); pattern != "/debug/pprof/" {
+		t.Errorf("pattern = %q, want %q", pattern, "/debug/pprof/")
 	}
 }

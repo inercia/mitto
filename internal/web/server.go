@@ -1539,8 +1539,7 @@ func NewServer(config Config) (*Server, error) {
 	// When disabled, the patterns are simply never registered, so requests
 	// fall through to the static catch-all below and 404 like any other
 	// unknown path.
-	if config.EnablePProf {
-		s.registerPProfRoutes(mux)
+	if s.maybeRegisterPProfRoutes(mux, config.EnablePProf) {
 		logger.Warn("pprof debug endpoints enabled (loopback-only)", "path", "/debug/pprof/")
 	}
 

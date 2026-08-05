@@ -7,9 +7,20 @@ import (
 	"github.com/inercia/mitto/internal/web/middleware"
 )
 
+// maybeRegisterPProfRoutes registers the pprof debug endpoints only when
+// enabled, and reports whether it did. Extracted from NewServer so the
+// off-by-default contract is directly testable (mitto-aek).
+func (s *Server) maybeRegisterPProfRoutes(mux *http.ServeMux, enabled bool) bool {
+	if !enabled {
+		return false
+	}
+	s.registerPProfRoutes(mux)
+	return true
+}
+
 // registerPProfRoutes registers the standard net/http/pprof debug endpoints
 // on mux, gated to loopback-only connections (mitto-aek). Only called from
-// NewServer when config.EnablePProf is true.
+// maybeRegisterPProfRoutes when profiling is enabled.
 //
 // SECURITY: profiles can leak goroutine stacks, heap contents and command
 // line arguments, so every handler is wrapped with pprofLocalOnly — the same
