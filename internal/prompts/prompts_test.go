@@ -699,6 +699,72 @@ prompt: hi
 	}
 }
 
+// TestParsePromptFile_CollectInnerArgs pins mitto-48c: a `type: prompts`
+// picker's collectInnerArgs opt-out parses to a non-nil pointer, defaults to
+// nil (=> ShouldCollectInnerArgs() true) when absent, and survives the
+// WebPrompt JSON round-trip under the "collectInnerArgs" key (mirrors
+// TestParsePromptFile_TargetSuppressAutoChildrenJSONRoundTrip above).
+func TestParsePromptFile_CollectInnerArgs(t *testing.T) {
+	data := []byte(`name: "Specialize"
+parameters:
+  - name: Prompt
+    type: prompts
+    collectInnerArgs: false
+  - name: Other
+    type: prompts
+prompt: hi
+`)
+
+	prompt, err := ParsePromptFile("specialize.prompt.yaml", data, time.Now())
+	if err != nil {
+		t.Fatalf("ParsePromptFile failed: %v", err)
+	}
+	if len(prompt.Parameters) != 2 {
+		t.Fatalf("len(Parameters) = %d, want 2", len(prompt.Parameters))
+	}
+
+	optedOut := prompt.Parameters[0]
+	if optedOut.CollectInnerArgs == nil || *optedOut.CollectInnerArgs != false {
+		t.Fatalf("Parameters[0].CollectInnerArgs = %v, want pointer to false", optedOut.CollectInnerArgs)
+	}
+	if optedOut.ShouldCollectInnerArgs() {
+		t.Errorf("ShouldCollectInnerArgs() = true, want false when collectInnerArgs: false is set")
+	}
+
+	// Absent collectInnerArgs defaults to nil => ShouldCollectInnerArgs() true,
+	// so every pre-mitto-48c picker is unaffected.
+	defaulted := prompt.Parameters[1]
+	if defaulted.CollectInnerArgs != nil {
+		t.Errorf("Parameters[1].CollectInnerArgs = %v, want nil (absent from YAML)", defaulted.CollectInnerArgs)
+	}
+	if !defaulted.ShouldCollectInnerArgs() {
+		t.Errorf("ShouldCollectInnerArgs() = false, want true when collectInnerArgs is absent")
+	}
+
+	wp := prompt.ToWebPrompt()
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(wp); err != nil {
+		t.Fatalf("json.Encode(WebPrompt): %v", err)
+	}
+	body := buf.String()
+	if !strings.Contains(body, `"collectInnerArgs":false`) {
+		t.Errorf("JSON body missing collectInnerArgs:false key for the opted-out param; got %s", body)
+	}
+	// omitempty on a *bool nil field: the "Other" param's JSON must not
+	// carry a spurious collectInnerArgs key at all (nil, not false).
+	if strings.Count(body, "collectInnerArgs") != 1 {
+		t.Errorf("expected exactly one collectInnerArgs occurrence (nil is omitted); got body %s", body)
+	}
+
+	var round WebPrompt
+	if err := json.NewDecoder(bytes.NewReader(buf.Bytes())).Decode(&round); err != nil {
+		t.Fatalf("json.Decode(WebPrompt): %v", err)
+	}
+	if len(round.Parameters) != 2 || round.Parameters[0].CollectInnerArgs == nil || *round.Parameters[0].CollectInnerArgs != false {
+		t.Errorf("round-tripped WebPrompt.Parameters[0].CollectInnerArgs = %+v, want pointer to false", round.Parameters)
+	}
+}
+
 func TestParsePromptFile_WithoutSingleton(t *testing.T) {
 	data := []byte(`name: "Plain Prompt"
 prompt: |
@@ -2042,7 +2108,6 @@ func TestValidatePromptParameters(t *testing.T) {
 			t.Errorf("unexpected error: %v", err)
 		}
 	})
-
 	t.Run("boolean param is OK in any menu", func(t *testing.T) {
 		for _, menus := range []string{"", "prompts", "conversation", "beadsIssues"} {
 			err := ValidatePromptParameters(menus, []PromptParameter{{Name: "Commit", Type: "boolean"}})
@@ -2058,6 +2123,36 @@ func TestValidatePromptParameters(t *testing.T) {
 			if err != nil {
 				t.Errorf("menus=%q: unexpected error: %v", menus, err)
 			}
+		}
+	})
+
+	t.Run("collectInnerArgs: false on a prompts param is OK", func(t *testing.T) {
+		no := false
+		err := ValidatePromptParameters("", []PromptParameter{{Name: "Target", Type: "prompts", CollectInnerArgs: &no}})
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("collectInnerArgs: true on a prompts param is OK", func(t *testing.T) {
+		yes := true
+		err := ValidatePromptParameters("", []PromptParameter{{Name: "Target", Type: "prompts", CollectInnerArgs: &yes}})
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("collectInnerArgs on a non-prompts param returns error mentioning collectInnerArgs and the type", func(t *testing.T) {
+		no := false
+		err := ValidatePromptParameters("", []PromptParameter{{Name: "Notes", Type: "text", CollectInnerArgs: &no}})
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "collectInnerArgs") {
+			t.Errorf("error = %q, want it to contain 'collectInnerArgs'", err.Error())
+		}
+		if !strings.Contains(err.Error(), "prompts") {
+			t.Errorf("error = %q, want it to contain 'prompts'", err.Error())
 		}
 	})
 

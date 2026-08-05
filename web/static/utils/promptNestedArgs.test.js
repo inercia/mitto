@@ -221,6 +221,24 @@ describe("pruneNestedTree", () => {
       undefined,
     );
   });
+
+  // mitto-48c: an opted-out (`collectInnerArgs: false`) picker never gets a
+  // subtree slot — any stale slot left over from before the flag was set (or
+  // from a previous picked prompt) must be pruned exactly like an unknown key.
+  test("mitto-48c: drops a stale subtree slot for a collectInnerArgs: false picker", () => {
+    const optedOutParams = [
+      { name: "picker", type: "prompts", collectInnerArgs: false },
+    ];
+    const tree = { picker: { values: { note: "stale" }, sub: {} } };
+    const result = pruneNestedTree(
+      tree,
+      optedOutParams,
+      { picker: "mid" },
+      promptsList,
+    );
+    expect(result).toEqual({});
+    expect(result).not.toBe(tree);
+  });
 });
 
 // -----------------------------------------------------------------------------
@@ -411,6 +429,40 @@ describe("buildInnerArgs", () => {
       enable: "true",
     });
   });
+
+  // mitto-48c: collectInnerArgs: false — the picked NAME is still emitted
+  // (the picker select itself is unaffected) but the recursive `_Args`
+  // companion build must be skipped entirely, even though the picked
+  // prompt ("leaf") does declare parameters.
+  test("mitto-48c: collectInnerArgs: false emits the name but never builds _Args", () => {
+    const params = [
+      { name: "picker", type: "prompts", collectInnerArgs: false },
+    ];
+    const node = {
+      values: { picker: "leaf" },
+      sub: { picker: { values: { answer: "should-be-ignored" }, sub: {} } },
+    };
+    const result = buildInnerArgs(params, node, promptsList, 0);
+    expect(result).toEqual({ picker: "leaf" });
+    expect(result.picker_Args).toBeUndefined();
+  });
+
+  // mitto-48c: an opted-out picker still honors the required-empty
+  // pass-through for its OWN value (the picker select is still shown and
+  // still required) — only the inner `_Args` recursion is discarded.
+  test("mitto-48c: collectInnerArgs: false still emits '' for an unset required picker", () => {
+    const params = [
+      {
+        name: "picker",
+        type: "prompts",
+        required: true,
+        collectInnerArgs: false,
+      },
+    ];
+    const node = { values: {} };
+    const result = buildInnerArgs(params, node, promptsList, 0);
+    expect(result).toEqual({ picker: "" });
+  });
 });
 
 // -----------------------------------------------------------------------------
@@ -504,5 +556,23 @@ describe("collectPickedPaths", () => {
     expect(result).toHaveLength(1);
     expect(result[0].path).toEqual(["picker"]);
     expect(result[0].pickedPromptName).toBe("mid");
+  });
+
+  // mitto-48c: a collectInnerArgs: false picker is skipped entirely, even
+  // with a picked value matching a known prompt — its block will never be
+  // rendered/collected, so the remembered-args fetch effect must not fire a
+  // request for it.
+  test("mitto-48c: skips a collectInnerArgs: false picker even when picked", () => {
+    const optedOutParams = [
+      { name: "picker", type: "prompts", collectInnerArgs: false },
+    ];
+    const tree = { picker: { values: {}, sub: {} } };
+    const result = collectPickedPaths(
+      tree,
+      optedOutParams,
+      { picker: "mid" },
+      promptsList,
+    );
+    expect(result).toEqual([]);
   });
 });

@@ -140,4 +140,25 @@ func TestSpecializePrompts_PickerIsNameOnly(t *testing.T) {
 	if !strings.Contains(body, "mitto_prompt_get") || !strings.Contains(body, "mitto_prompt_update") {
 		t.Errorf("specialize-prompts.prompt.yaml: expected mitto_prompt_get/mitto_prompt_update edit-subject usage; not found")
 	}
+
+	// mitto-48c: since the picked prompt's own parameters are never consumed
+	// (pinned above by the absence of any PromptText call), the `Prompt`
+	// picker must declare `collectInnerArgs: false` so the UI/MCP stop
+	// collecting and shipping the unused `Prompt_Args` companion.
+	var picker *PromptParameter
+	for i := range prompt.Parameters {
+		if prompt.Parameters[i].Name == "Prompt" {
+			picker = &prompt.Parameters[i]
+			break
+		}
+	}
+	if picker == nil {
+		t.Fatal("specialize-prompts.prompt.yaml: expected a \"Prompt\" parameter; not found")
+	}
+	if picker.Type != "prompts" {
+		t.Errorf("specialize-prompts.prompt.yaml: Prompt param type = %q, want \"prompts\"", picker.Type)
+	}
+	if picker.ShouldCollectInnerArgs() {
+		t.Errorf("specialize-prompts.prompt.yaml: Prompt param ShouldCollectInnerArgs() = true, want false (collectInnerArgs: false); its value is only ever used as a name/edit-subject reference")
+	}
 }

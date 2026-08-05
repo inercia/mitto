@@ -363,6 +363,50 @@ func TestBuildNestedPromptSchemas_EmptyAllPromptsReturnsNil(t *testing.T) {
 	}
 }
 
+// mitto-48c: a picker declaring collectInnerArgs: false must never appear in
+// the catalog — the MCP tool schema should not advertise the unused
+// `<Name>_Args` companion for a picker whose inner values are discarded.
+func TestBuildNestedPromptSchemas_SkipsOptedOutPicker(t *testing.T) {
+	no := false
+	outer := config.WebPrompt{
+		Name: "outer",
+		Parameters: []config.PromptParameter{
+			{Name: "Prompt", Type: "prompts", CollectInnerArgs: &no},
+		},
+	}
+	leaf := promptWithTextParam("leaf-a", "X")
+
+	got := buildNestedPromptSchemas(outer.Parameters, []config.WebPrompt{outer, leaf})
+	if got != nil {
+		t.Fatalf("expected nil catalog for a prompt whose only picker opted out; got %v", got)
+	}
+}
+
+// mitto-48c: an opted-out picker is skipped even alongside a normal picker —
+// only the normal one is catalogued.
+func TestBuildNestedPromptSchemas_OptedOutPickerSkippedAlongsideNormalOne(t *testing.T) {
+	no := false
+	outer := config.WebPrompt{
+		Name: "outer",
+		Parameters: []config.PromptParameter{
+			{Name: "Discarded", Type: "prompts", CollectInnerArgs: &no},
+			{Name: "Collected", Type: "prompts"},
+		},
+	}
+	leaf := promptWithTextParam("leaf-a", "X")
+
+	got := buildNestedPromptSchemas(outer.Parameters, []config.WebPrompt{outer, leaf})
+	if got == nil {
+		t.Fatalf("expected non-nil result (Collected picker should be catalogued)")
+	}
+	if _, ok := got["Discarded"]; ok {
+		t.Errorf("opted-out picker %q should not appear in the catalog; got keys %v", "Discarded", got)
+	}
+	if _, ok := got["Collected"]; !ok {
+		t.Errorf("expected %q in the catalog; got keys %v", "Collected", got)
+	}
+}
+
 // -----------------------------------------------------------------------------
 // End-to-end round-trip test (mitto-47y.6.3 acceptance criterion #3):
 // A v2 dispatch, after passing through normalizeMCPArguments, must render
