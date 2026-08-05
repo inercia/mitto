@@ -39,6 +39,14 @@ func TestDocsGoroutineTriageSectionExists(t *testing.T) {
 		"readPump",
 		"writePump",
 		"~18 goroutines",
+		// Periodic gauge with per-category attribution (mitto-x3x).
+		"internal/coldstart/gauge.go",
+		"StartGauge",
+		"mitto_goroutine_gauge_recent",
+		"goroutine_gauge_sample",
+		"live_acp_processes",
+		"connected_ws_clients",
+		"open_mcp_sse_streams",
 	} {
 		if !strings.Contains(doc, marker) {
 			t.Errorf("docs/devel/web-interface.md §Triaging goroutine counts: missing marker %q", marker)
@@ -63,6 +71,49 @@ func TestDocsGoroutineTriageSectionExists(t *testing.T) {
 	}
 	if tag := snapField.Tag.Get("json"); tag != "num_goroutine" {
 		t.Errorf("coldstart.ContentionSnapshot.NumGoroutine json tag = %q, want %q", tag, "num_goroutine")
+	}
+
+	// The three per-category attribution fields named in the doc's periodic-gauge
+	// paragraph (mitto-x3x) must still be real exported fields on both
+	// ContentionSnapshot (what the gauge samples) and RuntimeInfo (what
+	// mitto_get_runtime_info now also reports), with the json tags the doc
+	// quotes verbatim (live_acp_processes, connected_ws_clients,
+	// open_mcp_sse_streams).
+	for _, tc := range []struct {
+		fieldName string
+		wantTag   string
+	}{
+		{"LiveACPProcesses", "live_acp_processes"},
+		{"ConnectedWSClients", "connected_ws_clients"},
+		{"OpenMCPSSEStreams", "open_mcp_sse_streams"},
+	} {
+		snapF, ok := reflect.TypeOf(coldstart.ContentionSnapshot{}).FieldByName(tc.fieldName)
+		if !ok {
+			t.Errorf("coldstart.ContentionSnapshot: missing %s field (docs reference %q)", tc.fieldName, tc.wantTag)
+		} else if tag := snapF.Tag.Get("json"); tag != tc.wantTag {
+			t.Errorf("coldstart.ContentionSnapshot.%s json tag = %q, want %q", tc.fieldName, tag, tc.wantTag)
+		}
+
+		rtF, ok := reflect.TypeOf(mcpserver.RuntimeInfo{}).FieldByName(tc.fieldName)
+		if !ok {
+			t.Errorf("mcpserver.RuntimeInfo: missing %s field (docs reference %q)", tc.fieldName, tc.wantTag)
+		} else if tag := rtF.Tag.Get("json"); tag != tc.wantTag {
+			t.Errorf("mcpserver.RuntimeInfo.%s json tag = %q, want %q", tc.fieldName, tag, tc.wantTag)
+		}
+	}
+
+	// coldstart.GaugeSample (what mitto_goroutine_gauge_recent returns) must
+	// still embed ContentionSnapshot and carry the "at" timestamp field the
+	// gauge ring records each sample under.
+	atField, ok := reflect.TypeOf(coldstart.GaugeSample{}).FieldByName("At")
+	if !ok {
+		t.Fatal("coldstart.GaugeSample: missing At field")
+	}
+	if tag := atField.Tag.Get("json"); tag != "at" {
+		t.Errorf("coldstart.GaugeSample.At json tag = %q, want %q", tag, "at")
+	}
+	if _, ok := reflect.TypeOf(coldstart.GaugeSample{}).FieldByName("NumGoroutine"); !ok {
+		t.Error("coldstart.GaugeSample: missing embedded ContentionSnapshot.NumGoroutine")
 	}
 }
 

@@ -981,6 +981,44 @@ func TestSessionManager_ActiveAndPromptingCounts(t *testing.T) {
 	}
 }
 
+// TestSessionManager_ConnectedWSClientCount tests the ConnectedWSClientCount
+// method (mitto-x3x), which feeds the periodic goroutine gauge's
+// "connected_ws_clients" contention counter.
+func TestSessionManager_ConnectedWSClientCount(t *testing.T) {
+	sm := NewSessionManager("echo test", "test-server", true, nil)
+
+	// No sessions: 0.
+	if count := sm.ConnectedWSClientCount(); count != 0 {
+		t.Errorf("ConnectedWSClientCount() = %d, want 0", count)
+	}
+
+	session1 := NewMinimalBackgroundSession("s1", "", "")
+	session2 := NewMinimalBackgroundSession("s2", "", "")
+	sm.mu.Lock()
+	sm.sessions["s1"] = session1
+	sm.sessions["s2"] = session2
+	sm.mu.Unlock()
+
+	// Sessions present but no connected clients yet: still 0.
+	if count := sm.ConnectedWSClientCount(); count != 0 {
+		t.Errorf("ConnectedWSClientCount() with no clients = %d, want 0", count)
+	}
+
+	// Attach 2 clients to s1 and 1 to s2: summed across sessions.
+	session1.AddConnectedClient()
+	session1.AddConnectedClient()
+	session2.AddConnectedClient()
+	if count := sm.ConnectedWSClientCount(); count != 3 {
+		t.Errorf("ConnectedWSClientCount() = %d, want 3", count)
+	}
+
+	// Detach one client from s1: count follows.
+	session1.RemoveConnectedClient()
+	if count := sm.ConnectedWSClientCount(); count != 2 {
+		t.Errorf("ConnectedWSClientCount() after detach = %d, want 2", count)
+	}
+}
+
 // =============================================================================
 // CloseSessionGracefully Tests
 // =============================================================================

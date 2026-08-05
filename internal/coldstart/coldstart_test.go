@@ -101,6 +101,8 @@ func TestContentionDefaults(t *testing.T) {
 	// Ensure clean provider state before assertions.
 	SetPromptingCounter(nil)
 	SetLiveACPCounter(nil)
+	SetConnectedWSCounter(nil)
+	SetOpenMCPStreamCounter(nil)
 
 	c := Contention()
 	if c.NumGoroutine <= 0 {
@@ -115,12 +117,22 @@ func TestContentionDefaults(t *testing.T) {
 	if c.LiveACPProcesses != -1 {
 		t.Errorf("expected LiveACPProcesses=-1 without provider, got %d", c.LiveACPProcesses)
 	}
+	if c.ConnectedWSClients != -1 {
+		t.Errorf("expected ConnectedWSClients=-1 without provider, got %d", c.ConnectedWSClients)
+	}
+	if c.OpenMCPSSEStreams != -1 {
+		t.Errorf("expected OpenMCPSSEStreams=-1 without provider, got %d", c.OpenMCPSSEStreams)
+	}
 
 	SetPromptingCounter(func() int { return 7 })
 	SetLiveACPCounter(func() int { return 3 })
+	SetConnectedWSCounter(func() int { return 5 })
+	SetOpenMCPStreamCounter(func() int { return 2 })
 	t.Cleanup(func() {
 		SetPromptingCounter(nil)
 		SetLiveACPCounter(nil)
+		SetConnectedWSCounter(nil)
+		SetOpenMCPStreamCounter(nil)
 	})
 	c2 := Contention()
 	if c2.ConcurrentPrompting != 7 {
@@ -129,11 +141,19 @@ func TestContentionDefaults(t *testing.T) {
 	if c2.LiveACPProcesses != 3 {
 		t.Errorf("expected LiveACPProcesses=3, got %d", c2.LiveACPProcesses)
 	}
+	if c2.ConnectedWSClients != 5 {
+		t.Errorf("expected ConnectedWSClients=5, got %d", c2.ConnectedWSClients)
+	}
+	if c2.OpenMCPSSEStreams != 2 {
+		t.Errorf("expected OpenMCPSSEStreams=2, got %d", c2.OpenMCPSSEStreams)
+	}
 }
 
 func TestContentionLogAttrsOmissions(t *testing.T) {
 	SetPromptingCounter(nil)
 	SetLiveACPCounter(nil)
+	SetConnectedWSCounter(nil)
+	SetOpenMCPStreamCounter(nil)
 	c := Contention()
 	attrs := c.LogAttrs()
 	// Convert to a set of keys for lookup.
@@ -149,6 +169,34 @@ func TestContentionLogAttrsOmissions(t *testing.T) {
 	if keys["concurrent_prompting"] || keys["live_acp_processes"] {
 		t.Errorf("expected prompting/acp omitted when -1, got %v", keys)
 	}
+	if keys["connected_ws_clients"] || keys["open_mcp_sse_streams"] {
+		t.Errorf("expected ws/sse omitted when -1, got %v", keys)
+	}
+
+	SetConnectedWSCounter(func() int { return 4 })
+	SetOpenMCPStreamCounter(func() int { return 1 })
+	t.Cleanup(func() {
+		SetConnectedWSCounter(nil)
+		SetOpenMCPStreamCounter(nil)
+	})
+	attrs2 := c2LogAttrs(t)
+	if !attrs2["connected_ws_clients"] || !attrs2["open_mcp_sse_streams"] {
+		t.Errorf("expected ws/sse present once providers registered, got %v", attrs2)
+	}
+}
+
+// c2LogAttrs is a small helper that samples Contention() and returns its
+// LogAttrs() as a key-presence set, used by TestContentionLogAttrsOmissions.
+func c2LogAttrs(t *testing.T) map[string]bool {
+	t.Helper()
+	attrs := Contention().LogAttrs()
+	keys := map[string]bool{}
+	for i := 0; i < len(attrs); i += 2 {
+		if k, ok := attrs[i].(string); ok {
+			keys[k] = true
+		}
+	}
+	return keys
 }
 
 func TestContentionLoadPlausible(t *testing.T) {

@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,6 +17,7 @@ import (
 
 	mcp "github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/inercia/mitto/internal/coldstart"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/session"
 )
@@ -148,6 +151,162 @@ func TestGetRuntimeInfo(t *testing.T) {
 	}
 	if info.NumCPU == 0 {
 		t.Error("NumCPU should not be 0")
+	}
+}
+
+// TestGetRuntimeInfoGoroutineAttribution pins buildRuntimeInfo's mitto-x3x
+// goroutine-attribution fields to the coldstart.Contention() providers: with
+// no providers registered they default to -1, and once registered they
+// surface the provider's value (same convention as the periodic gauge and
+// the cold-start log line, since buildRuntimeInfo sources all four from one
+// coldstart.Contention() call).
+func TestGetRuntimeInfoGoroutineAttribution(t *testing.T) {
+	coldstart.SetPromptingCounter(nil)
+	coldstart.SetLiveACPCounter(nil)
+	coldstart.SetConnectedWSCounter(nil)
+	coldstart.SetOpenMCPStreamCounter(nil)
+
+	info := buildRuntimeInfo()
+	if info.ConcurrentPrompting != -1 {
+		t.Errorf("ConcurrentPrompting = %d, want -1 without provider", info.ConcurrentPrompting)
+	}
+	if info.LiveACPProcesses != -1 {
+		t.Errorf("LiveACPProcesses = %d, want -1 without provider", info.LiveACPProcesses)
+	}
+	if info.ConnectedWSClients != -1 {
+		t.Errorf("ConnectedWSClients = %d, want -1 without provider", info.ConnectedWSClients)
+	}
+	if info.OpenMCPSSEStreams != -1 {
+		t.Errorf("OpenMCPSSEStreams = %d, want -1 without provider", info.OpenMCPSSEStreams)
+	}
+
+	coldstart.SetPromptingCounter(func() int { return 2 })
+	coldstart.SetLiveACPCounter(func() int { return 4 })
+	coldstart.SetConnectedWSCounter(func() int { return 6 })
+	coldstart.SetOpenMCPStreamCounter(func() int { return 1 })
+	t.Cleanup(func() {
+		coldstart.SetPromptingCounter(nil)
+		coldstart.SetLiveACPCounter(nil)
+		coldstart.SetConnectedWSCounter(nil)
+		coldstart.SetOpenMCPStreamCounter(nil)
+	})
+
+	info2 := buildRuntimeInfo()
+	if info2.ConcurrentPrompting != 2 || info2.LiveACPProcesses != 4 ||
+		info2.ConnectedWSClients != 6 || info2.OpenMCPSSEStreams != 1 {
+		t.Errorf("unexpected attribution: %+v", info2)
+	}
+	if info2.NumGoroutine <= 0 {
+		t.Errorf("NumGoroutine should be > 0, got %d", info2.NumGoroutine)
+	}
+}
+
+// TestCreateGoroutineGaugeRecentHandler exercises the mitto_goroutine_gauge_recent
+// tool handler (mitto-x3x) end to end against the real coldstart gauge ring:
+// it starts a short-interval gauge to populate real samples, then checks the
+// handler mirrors coldstart.RecentGaugeSamples and honors Limit.
+func TestCreateGoroutineGaugeRecentHandler(t *testing.T) {
+	stop := coldstart.StartGauge(context.Background(), nil, 5*time.Millisecond)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(coldstart.RecentGaugeSamples(0)) >= 2 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	stop()
+
+	want := coldstart.RecentGaugeSamples(0)
+	if len(want) < 2 {
+		t.Fatalf("expected at least 2 gauge samples to be present, got %d", len(want))
+	}
+
+	srv := &Server{}
+	handler := srv.createGoroutineGaugeRecentHandler()
+
+	_, out, err := handler(context.Background(), nil, GoroutineGaugeRecentInput{})
+	if err != nil {
+		t.Fatalf("handler returned unexpected error: %v", err)
+	}
+	if len(out.Samples) != len(want) {
+		t.Errorf("Samples length = %d, want %d (matching coldstart.RecentGaugeSamples(0))", len(out.Samples), len(want))
+	}
+
+	_, out2, err := handler(context.Background(), nil, GoroutineGaugeRecentInput{Limit: 1})
+	if err != nil {
+		t.Fatalf("handler returned unexpected error: %v", err)
+	}
+	if len(out2.Samples) != 1 {
+		t.Errorf("Samples length with Limit=1 = %d, want 1", len(out2.Samples))
+	}
+}
+
+// TestMcpRequestLoggingMiddlewareTracksOpenSSEStreams pins the mitto-x3x
+// open-SSE-stream tracking added to mcpRequestLoggingMiddleware: a GET
+// request increments Server.openSSEStreams for the duration of the (blocking)
+// downstream handler call and decrements it afterwards, while a POST leaves
+// the counter untouched.
+func TestMcpRequestLoggingMiddlewareTracksOpenSSEStreams(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	defer store.Close()
+
+	srv, err := NewServer(Config{Port: 0}, Dependencies{Store: store})
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+
+	// Downstream handler blocks until released, simulating a long-lived SSE
+	// GET stream that pins a goroutine for its lifetime.
+	release := make(chan struct{})
+	var observedDuringGET int64
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		observedDuringGET = srv.openSSEStreams.Load()
+		<-release
+	})
+	wrapped := srv.mcpRequestLoggingMiddleware(next)
+
+	if got := srv.openSSEStreams.Load(); got != 0 {
+		t.Fatalf("expected openSSEStreams=0 before any request, got %d", got)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		req := httptest.NewRequest(http.MethodGet, "/mcp", nil)
+		wrapped.ServeHTTP(httptest.NewRecorder(), req)
+		close(done)
+	}()
+
+	// Wait for the handler to observe the incremented counter.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && atomic.LoadInt64(&observedDuringGET) == 0 {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if observedDuringGET != 1 {
+		t.Errorf("expected openSSEStreams=1 while GET is in flight, got %d", observedDuringGET)
+	}
+
+	close(release)
+	<-done
+
+	if got := srv.openSSEStreams.Load(); got != 0 {
+		t.Errorf("expected openSSEStreams=0 after GET completes, got %d", got)
+	}
+
+	// A POST must not affect the counter at all.
+	postNext := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := srv.openSSEStreams.Load(); got != 0 {
+			t.Errorf("expected openSSEStreams=0 during POST, got %d", got)
+		}
+	})
+	postWrapped := srv.mcpRequestLoggingMiddleware(postNext)
+	postReq := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader("{}"))
+	postWrapped.ServeHTTP(httptest.NewRecorder(), postReq)
+	if got := srv.openSSEStreams.Load(); got != 0 {
+		t.Errorf("expected openSSEStreams=0 after POST, got %d", got)
 	}
 }
 
