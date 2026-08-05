@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/inercia/mitto/internal/appdir"
+	"github.com/inercia/mitto/internal/cel"
 	configPkg "github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/prompts"
 )
@@ -135,5 +136,57 @@ prompt: |
 	}
 	if _, ok := reg.Get("_shared/foo"); !ok {
 		t.Errorf("expected fragment _shared/foo to be installed; registry has %d entries", reg.Len())
+	}
+}
+
+// TestOnPromptsChanged_InvalidatesGlobCache pins mitto-ayl.1: firing
+// Server.OnPromptsChanged must invalidate the CEL glob-mode
+// FileExists/DirExists cache across ALL folders (not just one), since
+// PromptsChangeEvent carries prompt directories rather than workspace roots
+// and so has no per-folder scope to invalidate selectively.
+func TestOnPromptsChanged_InvalidatesGlobCache(t *testing.T) {
+	dir := t.TempDir()
+	tfPath := filepath.Join(dir, "a.tf")
+	if err := os.WriteFile(tfPath, []byte("resource {}"), 0o644); err != nil {
+		t.Fatalf("write fixture file: %v", err)
+	}
+
+	fileExists := func() bool {
+		funcs := cel.BuildTemplateFuncMap(&cel.PromptEnabledContext{
+			Workspace: cel.WorkspaceContext{Folder: dir},
+		})
+		fn, ok := funcs["FileExists"].(func(string) bool)
+		if !ok {
+			t.Fatalf("FuncMap[\"FileExists\"] has unexpected type %T", funcs["FileExists"])
+		}
+		return fn("**/*.tf")
+	}
+
+	// Prime the glob cache with a match, then delete the file so a
+	// stale-within-TTL read would still (wrongly) return true.
+	if !fileExists() {
+		t.Fatalf("priming FileExists(**/*.tf) = false, want true")
+	}
+	if err := os.Remove(tfPath); err != nil {
+		t.Fatal(err)
+	}
+	if !fileExists() {
+		t.Fatalf("cached FileExists(**/*.tf) after remove = false, want true (within TTL)")
+	}
+
+	s := &Server{
+		config: Config{
+			PromptsCache: prompts.NewPromptsCache(),
+			MittoConfig:  &configPkg.Config{},
+		},
+		eventsManager: NewGlobalEventsManager(),
+	}
+	s.OnPromptsChanged(configPkg.PromptsChangeEvent{
+		ChangedDirs: []string{t.TempDir()},
+		Timestamp:   time.Now(),
+	})
+
+	if fileExists() {
+		t.Errorf("FileExists(**/*.tf) after OnPromptsChanged = true, want false (glob cache should have been invalidated)")
 	}
 }

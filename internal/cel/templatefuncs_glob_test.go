@@ -476,6 +476,111 @@ func TestGlob_Singleflight_CollapsesConcurrentWalks(t *testing.T) {
 	}
 }
 
+// TestInvalidateGlobCache_ForcesRewalk pins mitto-ayl.1: calling
+// InvalidateGlobCache(folder) drops every memoised glob entry for that
+// folder, so the NEXT fileExists/dirExists glob-mode call for that folder
+// re-walks instead of returning the (still within-TTL) cached value. A
+// DIFFERENT folder's entries must survive. Mirrors
+// TestInvalidateBeadsCache_ForcesReexec's folder-scoping assertion.
+func TestInvalidateGlobCache_ForcesRewalk(t *testing.T) {
+	clearGlobCache(t)
+	root := t.TempDir()
+	tfPath := filepath.Join(root, "a.tf")
+	if err := os.WriteFile(tfPath, []byte("resource {}"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	other := t.TempDir()
+	otherTf := filepath.Join(other, "b.tf")
+	if err := os.WriteFile(otherTf, []byte("resource {}"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Prime both folders' cache entries with true.
+	if got := fileExists(root, "**/*.tf"); !got {
+		t.Fatalf("fileExists(root, **/*.tf) = false, want true")
+	}
+	if got := fileExists(other, "**/*.tf"); !got {
+		t.Fatalf("fileExists(other, **/*.tf) = false, want true")
+	}
+
+	// Delete both files. Within TTL, cached calls must still see the (now
+	// stale) memoised true.
+	if err := os.Remove(tfPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(otherTf); err != nil {
+		t.Fatal(err)
+	}
+	if got := fileExists(root, "**/*.tf"); !got {
+		t.Fatalf("cached fileExists(root) after remove = false, want true (within TTL)")
+	}
+	if got := fileExists(other, "**/*.tf"); !got {
+		t.Fatalf("cached fileExists(other) after remove = false, want true (within TTL)")
+	}
+
+	InvalidateGlobCache(root)
+
+	// The invalidated folder must re-walk and observe the deletion.
+	if got := fileExists(root, "**/*.tf"); got {
+		t.Errorf("fileExists(root) after InvalidateGlobCache = true, want false (should re-walk)")
+	}
+
+	// The OTHER folder's entry must be unaffected by invalidating root.
+	if got := fileExists(other, "**/*.tf"); !got {
+		t.Errorf("fileExists(other) after InvalidateGlobCache(root) = false, want true (unrelated folder must be unaffected)")
+	}
+}
+
+// TestInvalidateGlobCache_EmptyFolderNoop pins that InvalidateGlobCache("")
+// is a no-op — it must not wipe every folder's entries (that is what
+// InvalidateAllGlobCaches is for).
+func TestInvalidateGlobCache_EmptyFolderNoop(t *testing.T) {
+	clearGlobCache(t)
+	root := makeGlobFixture(t)
+	if !fileExists(root, "**/*.tf") {
+		t.Fatalf("fileExists(root, **/*.tf) = false, want true")
+	}
+
+	InvalidateGlobCache("")
+
+	globCacheMu.Lock()
+	_, ok := globCache[root+"\x00**/*.tf\x00f"]
+	globCacheMu.Unlock()
+	if !ok {
+		t.Errorf("InvalidateGlobCache(\"\") must be a no-op; entry for root was dropped")
+	}
+}
+
+// TestInvalidateAllGlobCaches_DropsEveryFolder pins mitto-ayl.1: the
+// no-folder-scope variant clears every entry across all folders, used by
+// OnPromptsChanged which has no workspace-root scope available.
+func TestInvalidateAllGlobCaches_DropsEveryFolder(t *testing.T) {
+	clearGlobCache(t)
+	rootA := t.TempDir()
+	rootB := t.TempDir()
+	for _, r := range []string{rootA, rootB} {
+		if err := os.WriteFile(filepath.Join(r, "a.tf"), []byte("resource {}"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if !fileExists(rootA, "**/*.tf") {
+		t.Fatalf("fileExists(rootA) = false, want true")
+	}
+	if !fileExists(rootB, "**/*.tf") {
+		t.Fatalf("fileExists(rootB) = false, want true")
+	}
+
+	InvalidateAllGlobCaches()
+
+	globCacheMu.Lock()
+	n := len(globCache)
+	globCacheMu.Unlock()
+	if n != 0 {
+		t.Errorf("globCache len after InvalidateAllGlobCaches = %d, want 0", n)
+	}
+}
+
 // TestGlob_Singleflight_DistinctKeysWalkIndependently pins that globSF keys
 // by the full (folder, pattern, wantFiles) cache key: concurrent misses on
 // DIFFERENT patterns must NOT collapse into each other — each distinct key
