@@ -30,6 +30,21 @@ type ColdStartRecent struct {
 	WorkspaceStats []coldstart.WorkspaceColdStats `json:"workspace_stats,omitempty"`
 }
 
+// GoroutineGaugeRecentInput is the input for the mitto_goroutine_gauge_recent
+// tool (mitto-x3x).
+type GoroutineGaugeRecentInput struct {
+	// Limit is the maximum number of recent gauge samples to return. 0 or
+	// omitted returns all samples currently held (up to the ring capacity).
+	Limit int `json:"limit,omitempty" jsonschema:"max number of recent gauge samples to return; 0 or omitted = all (up to the ring capacity)"`
+}
+
+// GoroutineGaugeRecent is the output for the mitto_goroutine_gauge_recent
+// tool. It wraps the ring-buffer snapshot returned by
+// coldstart.RecentGaugeSamples, newest first.
+type GoroutineGaugeRecent struct {
+	Samples []coldstart.GaugeSample `json:"samples"`
+}
+
 // ListConversationsInput contains optional filter criteria for mitto_conversation_list.
 // All fields are optional — when omitted, no filtering is applied for that field.
 type ListConversationsInput struct {
@@ -185,6 +200,13 @@ type RuntimeInfo struct {
 	GoVersion    string `json:"go_version"`
 	NumGoroutine int    `json:"num_goroutine"`
 
+	// Goroutine attribution (mitto-x3x). -1 when the corresponding provider
+	// is not registered (e.g. CLI/test paths without a running web server).
+	ConcurrentPrompting int `json:"concurrent_prompting"`
+	LiveACPProcesses    int `json:"live_acp_processes"`
+	ConnectedWSClients  int `json:"connected_ws_clients"`
+	OpenMCPSSEStreams   int `json:"open_mcp_sse_streams"`
+
 	// Mitto directories
 	DataDir     string `json:"data_dir,omitempty"`
 	SessionsDir string `json:"sessions_dir,omitempty"`
@@ -218,13 +240,22 @@ type ConfigFilesInfo struct {
 
 // buildRuntimeInfo gathers runtime information about the Mitto instance.
 func buildRuntimeInfo() *RuntimeInfo {
+	// Reuse coldstart.Contention() for the goroutine-attribution fields
+	// (mitto-x3x) rather than re-reading the providers directly, so this and
+	// the periodic gauge / cold-start log always agree on the same sample
+	// shape and -1-when-unregistered convention.
+	contention := coldstart.Contention()
 	info := &RuntimeInfo{
-		OS:           runtime.GOOS,
-		Arch:         runtime.GOARCH,
-		NumCPU:       runtime.NumCPU(),
-		GoVersion:    runtime.Version(),
-		NumGoroutine: runtime.NumGoroutine(),
-		PID:          os.Getpid(),
+		OS:                  runtime.GOOS,
+		Arch:                runtime.GOARCH,
+		NumCPU:              runtime.NumCPU(),
+		GoVersion:           runtime.Version(),
+		NumGoroutine:        contention.NumGoroutine,
+		ConcurrentPrompting: contention.ConcurrentPrompting,
+		LiveACPProcesses:    contention.LiveACPProcesses,
+		ConnectedWSClients:  contention.ConnectedWSClients,
+		OpenMCPSSEStreams:   contention.OpenMCPSSEStreams,
+		PID:                 os.Getpid(),
 	}
 
 	// Hostname

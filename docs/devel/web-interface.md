@@ -524,12 +524,22 @@ external tools (`sample`, `atos`) rather than `go tool pprof`, build with
 A steady-state count in the hundreds (600–1000 range observed across normal
 usage with several active sessions) is **not** by itself evidence of a leak —
 Mitto's goroutine population tracks workload rather than climbing
-monotonically. Two lightweight instruments answer "is this growing?" without
-needing pprof or a restart:
+monotonically. Three lightweight instruments answer "is this growing?"
+without needing pprof or a restart:
 
+- **Periodic gauge, per-category attribution (mitto-x3x — reach for this
+  first).** `internal/coldstart/gauge.go`'s `StartGauge` samples
+  `coldstart.Contention()` every 60s (independent of cold-start frequency)
+  and keeps the last 64 samples in a ring, each already broken into
+  `live_acp_processes`, `connected_ws_clients`, and `open_mcp_sse_streams`
+  alongside the raw `num_goroutine` total. Read it via the MCP
+  `mitto_goroutine_gauge_recent` tool, or grep `goroutine_gauge_sample` in
+  `mitto.log` (DEBUG per tick, promoted to INFO when the total moves by at
+  least 10 since the last INFO line).
 - **Live count, no restart.** `runtime.NumGoroutine()` is already exposed via
   the MCP `mitto_get_runtime_info` tool and the internal runtime-info API
-  (`internal/mcpserver/types.go`). Sample it on demand.
+  (`internal/mcpserver/types.go`), which also now reports the same
+  per-category attribution as the periodic gauge for the current instant.
 - **Historical series, already recorded.** `internal/coldstart/contention.go`
   logs `num_goroutine=N` (alongside `concurrent_prompting` and
   `live_acp_processes`) on every cold start, in `mitto.log`. Grep
@@ -572,8 +582,6 @@ signal on its own because it conflates fixed cost, per-session cost, and
 transport-detail cost (idle SSE) that all vary independently of any actual
 defect.
 
-Computing that ratio currently means reading cold-start log lines by hand,
-because the goroutine count is only sampled when a cold start happens. A
-periodic gauge with per-category attribution (ACP processes, WS clients, open
-MCP SSE streams) is tracked as `mitto-x3x`; once it lands it should become the
-first instrument listed above.
+The `mitto_goroutine_gauge_recent` gauge above computes the per-category
+pieces of that ratio directly, on a fixed schedule, instead of requiring a
+cold start or a manual log-grep to get a fresh sample.

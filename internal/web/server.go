@@ -24,6 +24,7 @@ import (
 	"github.com/inercia/mitto/internal/beads"
 	"github.com/inercia/mitto/internal/beads/watcher"
 	"github.com/inercia/mitto/internal/cel"
+	"github.com/inercia/mitto/internal/coldstart"
 	configPkg "github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/conversation"
 	"github.com/inercia/mitto/internal/defense"
@@ -305,6 +306,11 @@ type Server struct {
 	// statsRetention (mitto-a86b.9) runs the nightly prune + weekly Sunday
 	// VACUUM against statsStore. Nil when the subsystem was not wired.
 	statsRetention *stats.RetentionWorker
+
+	// goroutineGaugeStop cancels the periodic goroutine gauge (mitto-x3x)
+	// started in NewServer. Nil when the gauge was not started (test /
+	// MITTO_TEST_MODE paths, matching the ACP process GC gating above).
+	goroutineGaugeStop func()
 }
 
 // APIPrefix returns the URL prefix for all API and WebSocket endpoints.
@@ -472,6 +478,19 @@ func NewServer(config Config) (*Server, error) {
 		}, func(sessionID string) {
 			sessionMgr.CloseIdleSession(sessionID)
 		})
+	}
+
+	// Start the periodic goroutine gauge (mitto-x3x) under the same gating as
+	// the ACP process GC above, so tests and MITTO_TEST_MODE runs do not gain
+	// a background ticker that would shift the documented ~18-goroutine fixed
+	// baseline (docs/devel/web-interface.md "Triaging goroutine counts").
+	// coldstart.Contention()'s per-category providers (prompting, live ACP,
+	// connected WS clients, open MCP SSE streams) are registered by the
+	// session manager and MCP server constructors above/below, independent of
+	// this gauge's own start/stop.
+	var goroutineGaugeStop func()
+	if !config.DisableAuxiliaryPrewarm && os.Getenv("MITTO_TEST_MODE") == "" {
+		goroutineGaugeStop = coldstart.StartGauge(context.Background(), logger, 0)
 	}
 
 	// Set global conversations config for message processing
@@ -826,6 +845,7 @@ func NewServer(config Config) (*Server, error) {
 		recentStartFails:     make(map[string]time.Time),
 		beads:                beads.NewClient(),
 		mcpAvailable:         true,
+		goroutineGaugeStop:   goroutineGaugeStop,
 	}
 
 	// Remembered prompt-arguments store (mitto-x8v, mitto-47y.6.2). Resolved
@@ -1763,6 +1783,11 @@ func (s *Server) Shutdown() error {
 	// Close beads watcher
 	if s.beadsWatcher != nil {
 		s.beadsWatcher.Close()
+	}
+
+	// Stop the periodic goroutine gauge (mitto-x3x)
+	if s.goroutineGaugeStop != nil {
+		s.goroutineGaugeStop()
 	}
 
 	// Shut down the HTTP server with a timeout so we don't hang indefinitely.

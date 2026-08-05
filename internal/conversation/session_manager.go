@@ -271,6 +271,9 @@ func NewSessionManager(acpCommand, acpServer string, autoApprove bool, logger *s
 	// deployments; tests that construct multiple managers still see a plausible
 	// (albeit non-deterministic) counter.
 	coldstart.SetPromptingCounter(sm.ConcurrentPromptingCount)
+	// Periodic goroutine gauge (mitto-x3x): expose connected WS client count
+	// as the "connected_ws_clients" contention counter.
+	coldstart.SetConnectedWSCounter(sm.ConnectedWSClientCount)
 	return sm
 }
 
@@ -324,6 +327,8 @@ func NewSessionManagerWithOptions(opts SessionManagerOptions) *SessionManager {
 	}
 	// Cold-start diagnostics (mitto-3mv): see NewSessionManager for rationale.
 	coldstart.SetPromptingCounter(sm.ConcurrentPromptingCount)
+	// Periodic goroutine gauge (mitto-x3x): see NewSessionManager for rationale.
+	coldstart.SetConnectedWSCounter(sm.ConnectedWSClientCount)
 	return sm
 }
 
@@ -1425,6 +1430,21 @@ func (sm *SessionManager) ConcurrentPromptingCount() int {
 	sm.streamingMu.RLock()
 	defer sm.streamingMu.RUnlock()
 	return len(sm.streaming)
+}
+
+// ConnectedWSClientCount returns the number of currently connected session
+// WebSocket clients, summed across all sessions. Used by the periodic
+// goroutine gauge (mitto-x3x) to attribute goroutine cost to WS pumps
+// (~2 goroutines per connected client, see docs/devel/web-interface.md
+// "Triaging goroutine counts").
+func (sm *SessionManager) ConnectedWSClientCount() int {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	count := 0
+	for _, bs := range sm.sessions {
+		count += bs.ConnectedClientCount()
+	}
+	return count
 }
 
 // childArchiveTimeout is the timeout for gracefully closing child sessions when a parent is archived.

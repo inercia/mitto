@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -23,6 +24,7 @@ import (
 
 	"github.com/inercia/mitto/internal/beads"
 	beadswatcher "github.com/inercia/mitto/internal/beads/watcher"
+	"github.com/inercia/mitto/internal/coldstart"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/logging"
 	"github.com/inercia/mitto/internal/session"
@@ -65,6 +67,13 @@ type Server struct {
 	// For STDIO mode
 	stdioSession *mcp.ServerSession
 	stdioDone    chan struct{}
+
+	// openSSEStreams counts currently open long-lived MCP Streamable-HTTP GET
+	// (keepalive) requests, incremented/decremented around each GET request in
+	// mcpRequestLoggingMiddleware. Exposed to the periodic goroutine gauge via
+	// coldstart.SetOpenMCPStreamCounter in startSSE (mitto-x3x). Only used in
+	// HTTP mode; always 0 in STDIO mode.
+	openSSEStreams atomic.Int64
 
 	mu             sync.RWMutex
 	store          *session.Store
@@ -460,6 +469,10 @@ func (s *Server) startSSE(ctx context.Context) error {
 		"port", actualPort,
 	)
 
+	// Periodic goroutine gauge (mitto-x3x): expose the open-SSE-stream count
+	// as the "open_mcp_sse_streams" contention counter.
+	coldstart.SetOpenMCPStreamCounter(func() int { return int(s.openSSEStreams.Load()) })
+
 	// Create HTTP server using Streamable HTTP transport (MCP spec 2025-03-26).
 	// This is the modern transport that Augment Agent and other clients use.
 	mux := http.NewServeMux()
@@ -596,6 +609,15 @@ func (s *Server) mcpRequestLoggingMiddleware(next http.Handler) http.Handler {
 			"remote_addr", r.RemoteAddr,
 			"body_bytes", bodyLen,
 		)
+
+		// Track long-lived GET (idle SSE keepalive) streams for the periodic
+		// goroutine gauge (mitto-x3x): a GET's next.ServeHTTP call blocks for
+		// the lifetime of the stream, so bracketing it here counts exactly the
+		// streams currently pinning a goroutine.
+		if r.Method == http.MethodGet {
+			s.openSSEStreams.Add(1)
+			defer s.openSSEStreams.Add(-1)
+		}
 
 		rec := &mcpStatusRecorder{ResponseWriter: w}
 		start := time.Now()
