@@ -417,6 +417,17 @@ type SharedACPProcess struct {
 	mcpInitMu         sync.Mutex
 	mcpInitTimeoutCh  chan struct{}
 
+	// mcpInitInProgressSince records when the current mcpInitInProgress window
+	// began (stamped at the false->true edge in onMCPInitProgress, cleared
+	// back to the zero Time whenever mcpInitInProgress is cleared to false).
+	// Guarded by mcpInitMu. Used by GC Tier 5 (mitto-13n.1) to detect a
+	// handshake the agent silently abandons — MCPInitInProgress()==true,
+	// MCPInitDone()==false, with no MCPInitTimedOut() stderr line ever
+	// observed — by bounding how long the in-progress state may persist
+	// before the process is treated as wedged, rather than relying solely on
+	// the agent's own (sometimes never-emitted) timeout signal.
+	mcpInitInProgressSince time.Time
+
 	// mcpInitDoneCh is closed exactly once (via mcpInitDoneOnce) when mcpInitDone
 	// first latches, so WaitForMCPInit can block until the process is warm without
 	// polling (mitto-54k.4).
@@ -630,6 +641,9 @@ func (p *SharedACPProcess) doStartProcess() (string, error) {
 		if !p.mcpInitInProgress.CompareAndSwap(false, true) {
 			return
 		}
+		p.mcpInitMu.Lock()
+		p.mcpInitInProgressSince = time.Now()
+		p.mcpInitMu.Unlock()
 		if p.logger != nil {
 			p.logger.Info("ACP agent reports MCP servers initializing",
 				"acp_server", p.config.ACPServer)
@@ -1371,6 +1385,18 @@ func (p *SharedACPProcess) MCPInitInProgress() bool {
 	return p.mcpInitInProgress.Load()
 }
 
+// MCPInitInProgressSince reports when the current MCPInitInProgress() window
+// began, or the zero Time if no window is currently open (see
+// mcpInitInProgressSince field doc). Used by GC Tier 5 (mitto-13n.1) to bound
+// how long a process may sit in the in-progress-but-not-done state before
+// being treated as wedged, independent of MCPInitTimedOut() which the agent
+// does not always emit.
+func (p *SharedACPProcess) MCPInitInProgressSince() time.Time {
+	p.mcpInitMu.Lock()
+	defer p.mcpInitMu.Unlock()
+	return p.mcpInitInProgressSince
+}
+
 // WaitForMCPInit blocks until the shared process's MCP-init window closes
 // (mcpInitDone latched via a successful session RPC), ctx is done, or the
 // process exits. Returns true only if the process became warm. Used by the
@@ -1796,6 +1822,9 @@ func (p *SharedACPProcess) NewSession(ctx context.Context, cwd string, mcpServer
 			p.recordRPCSuccess()
 			p.markMCPInitDone()
 			p.mcpInitInProgress.Store(false) // close the MCP-init window (mitto-29q)
+			p.mcpInitMu.Lock()
+			p.mcpInitInProgressSince = time.Time{}
+			p.mcpInitMu.Unlock()
 			traceSessionResponse(p.logger, "new", sessResp)
 			// mitto-886: local-profile fallback (branch 3) is applied later on the
 			// BackgroundSession side via applySynthesizedModelsIfEmpty (config not in
@@ -2060,6 +2089,9 @@ func (p *SharedACPProcess) LoadSession(ctx context.Context, acpSessionID, cwd st
 	p.recordRPCSuccess()
 	p.markMCPInitDone()
 	p.mcpInitInProgress.Store(false) // close the MCP-init window (mitto-29q)
+	p.mcpInitMu.Lock()
+	p.mcpInitInProgressSince = time.Time{}
+	p.mcpInitMu.Unlock()
 	traceSessionResponse(p.logger, "load", loadResp)
 	conversation.LogSessionConfigOptions(p.logger, "load", loadResp.ConfigOptions, "")
 	loadModels, loadModelCfgId := conversation.ModelStateFromConfigOptions(loadResp.ConfigOptions)

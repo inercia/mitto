@@ -741,7 +741,23 @@ gcTier1:
 			// itself, which uses the same bail path) would never be recycled
 			// and would survive GC indefinitely.
 			mcpInitGated := p.MCPInitTimedOut()
-			if !p.IsSaturated() && !mcpInitGated {
+			// Third signal (mitto-13n.1): a process whose MCP-init handshake
+			// started (MCPInitInProgress()) but never completed (!MCPInitDone())
+			// is ALSO invisible to the two signals above whenever the agent
+			// abandons its own wait without ever emitting the stderr line
+			// mcpInitTimedOut watches for — observed in production alongside
+			// the already-fixed mcp_init_gated case. Bounded by 2x the
+			// configured MCPInitTimeout (via mcpInitInProgressSince, stamped at
+			// the false->true edge) so a handshake that is merely slow-but-
+			// progressing is not recycled prematurely; skipped entirely when
+			// MCPInitTimeout is disabled (<=0), matching the cold-budget gating
+			// elsewhere in this package.
+			mcpInitWedged := p.config.MCPInitTimeout > 0 && p.MCPInitInProgress() && !p.MCPInitDone()
+			if mcpInitWedged {
+				since := p.MCPInitInProgressSince()
+				mcpInitWedged = !since.IsZero() && now.Sub(since) > 2*p.config.MCPInitTimeout
+			}
+			if !p.IsSaturated() && !mcpInitGated && !mcpInitWedged {
 				continue
 			}
 
@@ -795,12 +811,14 @@ gcTier1:
 				continue
 			}
 
-			// Saturated (or mcp-init-gated) and idle — recycle to reclaim a
-			// healthy process.
+			// Saturated (or mcp-init-gated/wedged) and idle — recycle to
+			// reclaim a healthy process.
 			saturationLevel := p.SaturationLevel()
 			reason := "saturated_idle"
 			if mcpInitGated && !p.IsSaturated() {
 				reason = "mcp_init_gated"
+			} else if mcpInitWedged && !p.IsSaturated() && !mcpInitGated {
+				reason = "mcp_init_wedged"
 			}
 			if m.logger != nil {
 				m.logger.Info("GC: recycling saturated idle shared ACP process",

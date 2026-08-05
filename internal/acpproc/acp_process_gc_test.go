@@ -1785,6 +1785,111 @@ func TestGCHealthTier_RecyclesMCPInitGatedProcess(t *testing.T) {
 	}
 }
 
+// TestGCHealthTier_RecyclesMCPInitInProgressWedgedProcess is the mitto-13n.1
+// reproduction test: a shared ACP process whose stderr monitor observed the
+// agent begin an MCP-init handshake (mcpInitInProgress=true) that never
+// completes (mcpInitDone=false) is invisible to EVERY existing health-recycle
+// signal, even though it is fully idle:
+//
+//   - IsSaturated()/IsConfirmedDegraded(): both read saturatedUntil, set only
+//     by recordRPCTimeout/recordRPCWedgeFailure — never called because the
+//     mcp_init_gated bail in getOrCreateAuxiliarySession returns BEFORE any
+//     RPC is attempted.
+//   - MCPInitTimedOut(): false — per the mitto-13n.1 investigation, the agent
+//     frequently gives up on its own MCP-init wait WITHOUT ever emitting the
+//     stderr line the timeout callback watches for, so this flag never
+//     latches true for the cold in-progress case (disjunct (2) in the
+//     investigation comment, distinct from the already-fixed disjunct (1)
+//     covered by TestGCHealthTier_RecyclesMCPInitGatedProcess above).
+//
+// Tier 5's predicate today (acp_process_gc.go) is
+// `!p.IsSaturated() && !p.MCPInitTimedOut() -> continue`, which has no term
+// for MCPInitInProgress()&&!MCPInitDone() at all — so this process survives
+// GC indefinitely regardless of how long it has been wedged, reproducing the
+// "waiting for GC recycle" symptom logged 30 times in production
+// (internal/processors/apply.go) for a recycle that could never occur.
+//
+// This test currently FAILS: it asserts the wedged-but-idle process IS
+// recycled, which is the intended (not yet implemented) behavior once Tier 5
+// gains the MCPInitInProgress()&&!MCPInitDone() disjunct.
+func TestGCHealthTier_RecyclesMCPInitInProgressWedgedProcess(t *testing.T) {
+	workspaceUUID := "ws-mcp-init-in-progress-wedged"
+	proc := newTestSharedProcess()
+	proc.config.MCPInitTimeout = 5 * time.Second
+	proc.mcpInitInProgress.Store(true)
+	// mcpInitInProgressSince mirrors the timestamp onMCPInitProgress stamps at
+	// the false->true edge; back-dated well past the 2x-MCPInitTimeout bound
+	// so this reproduces a handshake that has been wedged for a while, not one
+	// merely slow-but-progressing.
+	proc.mcpInitInProgressSince = time.Now().Add(-3 * proc.config.MCPInitTimeout)
+	// mcpInitDone and mcpInitTimedOut are left at their zero value (false),
+	// mirroring the observed production case: the handshake started and
+	// never finished, and the agent never logged its own timeout either.
+
+	// Preconditions: confirm this process is invisible to every
+	// currently-implemented health signal, isolating this test from the
+	// already-covered saturation and MCPInitTimedOut paths.
+	if proc.IsSaturated() {
+		t.Fatal("test setup: mcp-init-in-progress process must read IsSaturated()=false")
+	}
+	if proc.IsConfirmedDegraded() {
+		t.Fatal("test setup: mcp-init-in-progress process must read IsConfirmedDegraded()=false")
+	}
+	if proc.MCPInitTimedOut() {
+		t.Fatal("test setup: mcp-init-in-progress process must read MCPInitTimedOut()=false")
+	}
+	if !proc.MCPInitInProgress() || proc.MCPInitDone() {
+		t.Fatal("test setup: expected MCPInitInProgress()=true, MCPInitDone()=false")
+	}
+
+	// Zero sessions: this workspace is otherwise fully idle, satisfying every
+	// hard safety gate Tier 5 already checks (ActiveRPCs()==0, no prompting
+	// session, no queued work, no imminent loop).
+	sessions := map[string][]conversation.SessionInfo{}
+
+	var mu sync.Mutex
+	m := newTestGCManager(
+		func() map[string][]conversation.SessionInfo { return sessions },
+		func(id string) {},
+	)
+	m.mu.Lock()
+	m.processes[workspaceUUID] = proc
+	m.mu.Unlock()
+	// Keep this workspace out of Tier 2's idle-timeout path so a pass fairly
+	// isolates the Tier 5 health-recycle path under test.
+	m.lastSessionSeen[workspaceUUID] = time.Now()
+	m.gcConfig.MemoryRecycleThreshold = gcTier4Threshold
+	m.rssSampler = func(p *SharedACPProcess) (uint64, error) { return gcTier4Threshold / 2, nil }
+
+	var calls int
+	var gotReason string
+	m.onHealthRecycled = func(_, reason string, _, _ int) {
+		mu.Lock()
+		defer mu.Unlock()
+		calls++
+		gotReason = reason
+	}
+
+	m.RunGCOnce()
+
+	m.mu.RLock()
+	_, exists := m.processes[workspaceUUID]
+	m.mu.RUnlock()
+	if exists {
+		t.Fatal("mcp-init-in-progress wedged idle process was NOT recycled by any GC health tier " +
+			"— it would survive indefinitely since MCPInitTimedOut() never latches for this case (mitto-13n.1)")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("expected onHealthRecycled to be called once, got %d", calls)
+	}
+	if gotReason != "mcp_init_wedged" {
+		t.Errorf("expected reason %q, got %q", "mcp_init_wedged", gotReason)
+	}
+}
+
 // driveToConfirmedDegraded pushes proc's saturation state machine to
 // saturationLevel >= confirmedDegradedLevel (2), mirroring the real sequence:
 // trip saturation (threshold consecutive timeouts) -> cooldown elapses (probe
