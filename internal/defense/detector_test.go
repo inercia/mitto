@@ -28,6 +28,13 @@ func TestIsSuspiciousPath(t *testing.T) {
 		{"/static/app.js", false},
 		{"/index.html", false},
 		{"/auth.html", false}, // auth.html is rate-limited, not suspicious
+
+		// mitto-aek: /debug/pprof/* is an opt-in, loopback-gated internal
+		// endpoint (internal/web/pprof.go), not a scanner signature. Pin this
+		// so a future SuspiciousPaths addition doesn't accidentally make an
+		// authenticated local user's own profiling requests look malicious.
+		{"/debug/pprof/", false},
+		{"/debug/pprof/profile", false},
 	}
 
 	for _, tt := range tests {
