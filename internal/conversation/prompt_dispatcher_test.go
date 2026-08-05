@@ -534,7 +534,7 @@ func (r *pdRecorderObserver) OnQueueUpdated(int, string, string)            {}
 func (r *pdRecorderObserver) OnQueueReordered([]session.QueuedMessage)      {}
 func (r *pdRecorderObserver) OnPromptComplete(int)                          {}
 func (r *pdRecorderObserver) OnActionButtons([]ActionButton)                {}
-func (r *pdRecorderObserver) OnUserPrompt(int64, string, string, string, []string, []string, string, int) {
+func (r *pdRecorderObserver) OnUserPrompt(int64, string, string, string, []string, []string, string, int, map[string]string) {
 }
 func (r *pdRecorderObserver) OnACPStopped(string)              {}
 func (r *pdRecorderObserver) OnACPStarted()                    {}
@@ -2632,6 +2632,31 @@ func TestPromptDispatcher_HandlePromptError_WatchdogFired_RecoverableMessage_NoR
 	}
 	if d.processNextCalled != 0 {
 		t.Fatal("expected no queue advance for watchdog-fired path")
+	}
+}
+
+// TestPromptDispatcher_HandlePromptError_WatchdogFired_PersistsErrorEvent
+// reproduces mitto-vxn: when the inactivity watchdog cancels a hung prompt,
+// handlePromptError must persist a session.EventTypeError event via
+// pdRecordErrorEvent (the same recorder-then-notify idiom already used by
+// completeHandshakeOrAbort), not just notify live observers. Without this,
+// the cancelled turn leaves no trace in events.jsonl and is invisible after
+// a page reload or when no WebSocket client is attached.
+func TestPromptDispatcher_HandlePromptError_WatchdogFired_PersistsErrorEvent(t *testing.T) {
+	p := promptDispatcher{}
+	d := newFakePromptDeps()
+	d.acpDead = false // irrelevant when watchdog fires
+	d.hasRecorder = true
+
+	autoRetried := false
+	retry := p.handlePromptError(d, transientErr(), &autoRetried, 1, true /* watchdogFired */)
+
+	if retry {
+		t.Fatal("expected retry=false for watchdog-fired path")
+	}
+	if len(d.recordedErrorEvents) != 1 {
+		t.Fatalf("expected watchdog-fired error to be persisted via pdRecordErrorEvent, got %d recorded events: %v",
+			len(d.recordedErrorEvents), d.recordedErrorEvents)
 	}
 }
 

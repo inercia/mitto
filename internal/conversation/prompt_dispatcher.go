@@ -1415,8 +1415,21 @@ func (p promptDispatcher) handlePromptError(
 			l.Warn("prompt_cancelled_by_inactivity_watchdog",
 				"session_id", d.pdSessionID())
 		}
+		watchdogMsg := "The AI agent stopped responding (no activity for a while), so the conversation was reset. Please resend your message. If this keeps happening, switch to another conversation and back to restart the agent."
+		// Persist the error so it survives a reload / replay even when no
+		// WebSocket client is attached (mitto-vxn) — mirrors the
+		// recorder-then-notify idiom used by completeHandshakeOrAbort above.
+		if d.pdHasRecorder() {
+			seq := d.pdGetNextSeq()
+			if recErr := d.pdRecordErrorEvent(seq, watchdogMsg); recErr != nil {
+				if l := d.pdLogger(); l != nil {
+					l.Error("Failed to persist inactivity-watchdog error", "error", recErr)
+				}
+			}
+			d.pdRefreshNextSeq()
+		}
 		d.pdNotifyObservers(func(o SessionObserver) {
-			o.OnError("The AI agent stopped responding (no activity for a while), so the conversation was reset. Please resend your message. If this keeps happening, switch to another conversation and back to restart the agent.")
+			o.OnError(watchdogMsg)
 		})
 		return false
 	} else if acpDead && *autoRetried {
