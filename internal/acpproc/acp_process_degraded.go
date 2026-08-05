@@ -84,31 +84,14 @@ func (m *ACPProcessManager) updateDegradedState(workspaceUUID, reason string) {
 	m.onDegraded(workspaceUUID, reason, reason != "")
 }
 
-// clearDegradedState removes any tracked degraded-state entry for
-// workspaceUUID and fires onDegraded's recovery edge (degraded=false) if,
-// and only if, the workspace was actually tracked as degraded. Used when a
-// process disappears from m.processes via a path that does NOT already
-// broadcast its own dedicated recovery signal (e.g. recreated due to a
-// config change) — see dropDegradedStateSilently for the recycle case.
-func (m *ACPProcessManager) clearDegradedState(workspaceUUID string) {
-	m.degradedMu.Lock()
-	_, hadEntry := m.degradedState[workspaceUUID]
-	if hadEntry {
-		delete(m.degradedState, workspaceUUID)
-	}
-	m.degradedMu.Unlock()
-
-	if hadEntry && m.onDegraded != nil {
-		m.onDegraded(workspaceUUID, "", false)
-	}
-}
-
 // dropDegradedStateSilently removes any tracked degraded-state entry for
-// workspaceUUID WITHOUT firing onDegraded's recovery edge. Used when GC
-// Tier 5/6 itself recycles the process: onHealthRecycled already broadcasts
-// a dedicated "agent restarted" toast for that exact transition, so also
-// firing the degraded-recovery toast would double-notify the user for one
-// event (mitto-13n.3).
+// workspaceUUID WITHOUT firing onDegraded's recovery edge. Called from
+// StopProcess, i.e. on every path that removes a process (GC Tiers 1/4/5/6
+// and manual stops): the entry would otherwise leak and a later process for
+// the same workspace UUID would miss its degraded edge. Silent because the
+// stop paths the user should hear about already broadcast their own
+// dedicated toast (onMemoryRecycled / onHealthRecycled), so also firing the
+// degraded-recovery toast would double-notify for one event (mitto-13n.3).
 func (m *ACPProcessManager) dropDegradedStateSilently(workspaceUUID string) {
 	m.degradedMu.Lock()
 	delete(m.degradedState, workspaceUUID)

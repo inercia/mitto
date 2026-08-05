@@ -859,11 +859,11 @@ gcTier1:
 			if m.onHealthRecycled != nil {
 				m.onHealthRecycled(workspaceUUID, reason, saturationLevel, recycledCount)
 			}
-			// mitto-13n.3: drop the degraded-state entry WITHOUT firing the
-			// recovery edge — onHealthRecycled above already broadcasts a
-			// dedicated "agent restarted" toast for this exact transition, so
-			// also firing the degraded-recovery toast would double-notify.
-			m.dropDegradedStateSilently(workspaceUUID)
+			// mitto-13n.3: StopProcess above already dropped the
+			// degraded-state entry WITHOUT firing the recovery edge —
+			// onHealthRecycled broadcasts a dedicated "agent restarted" toast
+			// for this exact transition, so also firing the degraded-recovery
+			// toast would double-notify.
 		}
 	}
 
@@ -971,9 +971,9 @@ gcTier1:
 			if m.onHealthRecycled != nil {
 				m.onHealthRecycled(workspaceUUID, "confirmed_degraded", saturationLevel, recycledCount)
 			}
-			// mitto-13n.3: see the matching Tier 5 comment above — avoid a
-			// double notification alongside onHealthRecycled's own toast.
-			m.dropDegradedStateSilently(workspaceUUID)
+			// mitto-13n.3: see the matching Tier 5 comment above — StopProcess
+			// already dropped the entry silently, avoiding a double
+			// notification alongside onHealthRecycled's own toast.
 		}
 	}
 

@@ -109,7 +109,7 @@ func TestProcessDegradedState_PriorityOrder(t *testing.T) {
 	}
 }
 
-// --- updateDegradedState / clearDegradedState / dropDegradedStateSilently -
+// --- updateDegradedState / dropDegradedStateSilently ---------------------
 
 func newTestDegradedManager() (*ACPProcessManager, *[]struct {
 	uuid, state string
@@ -193,20 +193,49 @@ func TestDropDegradedStateSilently_NoRecoveryEdge(t *testing.T) {
 	}
 }
 
-func TestClearDegradedState_OnlyFiresWhenTracked(t *testing.T) {
+func TestDropDegradedStateSilently_UntrackedIsNoOp(t *testing.T) {
 	m, calls := newTestDegradedManager()
-	m.clearDegradedState("ws-untracked") // no prior entry: must be a no-op
+	m.dropDegradedStateSilently("ws-untracked")
 	if len(*calls) != 0 {
 		t.Fatalf("expected no calls for an untracked workspace, got %d: %+v", len(*calls), *calls)
 	}
+}
 
-	m.updateDegradedState("ws-1", "mcp_init_wedged")
-	m.clearDegradedState("ws-1")
-	if len(*calls) != 2 {
-		t.Fatalf("expected 2 calls (degrade + recovery), got %d: %+v", len(*calls), *calls)
+// TestStopProcess_DropsDegradedStateSilently pins the cleanup contract: every
+// path that removes a process funnels through StopProcess, which must drop the
+// tracked degraded state so it cannot leak into a later process for the same
+// workspace UUID — and must do so without firing a recovery edge (the stop
+// paths users care about broadcast their own toast).
+func TestStopProcess_DropsDegradedStateSilently(t *testing.T) {
+	workspaceUUID := "ws-stopped"
+	m := newTestGCManager(
+		func() map[string][]conversation.SessionInfo { return map[string][]conversation.SessionInfo{} },
+		func(string) {},
+	)
+	var mu sync.Mutex
+	var degradedCalls int
+	m.onDegraded = func(string, string, bool) {
+		mu.Lock()
+		defer mu.Unlock()
+		degradedCalls++
 	}
-	if (*calls)[1].degraded {
-		t.Errorf("expected clearDegradedState's edge to report degraded=false, got %+v", (*calls)[1])
+	m.mu.Lock()
+	m.processes[workspaceUUID] = newTestSharedProcess()
+	m.mu.Unlock()
+
+	m.updateDegradedState(workspaceUUID, "process_saturated")
+	m.StopProcess(workspaceUUID)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if degradedCalls != 1 {
+		t.Fatalf("expected exactly 1 onDegraded call (entry edge only), got %d", degradedCalls)
+	}
+	m.degradedMu.Lock()
+	_, tracked := m.degradedState[workspaceUUID]
+	m.degradedMu.Unlock()
+	if tracked {
+		t.Error("expected degradedState entry to be dropped by StopProcess")
 	}
 }
 

@@ -625,6 +625,39 @@ automatically. Payload: `workspace_uuid`, `workspace_name`, `working_dir`,
 Without this, a wedged process recycled silently and the user was left reading a
 misleading agent-side error.
 
+#### Pre-recycle degraded-state notification (mitto-13n.3)
+
+`onHealthRecycled` only fires once a degraded process is *actually recycled*, and
+Tier 5's idle safety gates can hold that off indefinitely — a saturated process
+that keeps receiving traffic stays degraded and invisible for hours. Tier 5
+therefore also reports the degraded state itself, before those gates.
+
+`processDegradedState(p, now)` (`acp_process_degraded.go`) is the shared
+predicate Tier 5 uses both to decide recycle eligibility and to report state, so
+the two can never diverge. It returns `"process_saturated"` (`IsSaturated()`),
+`"mcp_init_gated"` (`MCPInitTimedOut()`), `"mcp_init_wedged"` (handshake started
+but incomplete for more than 2x `MCPInitTimeout`), or `""` when healthy. It
+deliberately **excludes** `ActiveRPCs()`-based load shedding (`process_busy`): a
+busy-but-healthy process is momentarily loaded, not stuck, and must not alarm.
+
+`updateDegradedState(workspaceUUID, reason)` runs every GC tick for every live
+process and invokes the `onDegraded` callback (wired in `server.go` via
+`SetOnDegraded`) **only on a transition edge** — first entry into a degraded
+reason, a change of reason, or the return to healthy — so steady-state ticks are
+silent. It calls `Server.BroadcastAgentDegraded`, which emits an `agent_degraded`
+event (`WSMsgTypeAgentDegraded`) on `/api/events`; the frontend
+(`useWebSocket.js` → `mitto:agent_degraded` → `useBackgroundNotifications.js`)
+shows a warning toast on the degraded edge and an info toast on recovery.
+Payload: `workspace_uuid`, `workspace_name`, `working_dir`, `state`, `degraded`.
+
+**Anti-double-toast**: `StopProcess` calls `dropDegradedStateSilently`, removing
+the tracked entry without firing the recovery edge. This is the single choke
+point for every stop path (Tier 1 idle timeout, Tier 4 memory recycle, Tier 5/6
+health recycle, manual stops) — so the entry can never leak into a later process
+for the same workspace UUID, and a recycle that already broadcasts
+`memory_recycled` / `agent_recycled` does not additionally emit a recovery
+`agent_degraded`.
+
 ### Tier 3 — Auxiliary Session Cleanup
 
 Cleans up auxiliary sessions (title-gen, follow-ups, prompt improvement) idle longer

@@ -863,6 +863,15 @@ func (m *ACPProcessManager) StopProcess(workspaceUUID string) {
 	}
 	m.mu.Unlock()
 
+	// mitto-13n.3: the process is gone, so any tracked degraded state for it
+	// is stale — drop it here (the single choke point for every stop path:
+	// GC Tiers 1/4/5/6 and manual stops) so a later workspace with the same
+	// UUID starts from a clean edge. Dropped silently: every stop path that
+	// the user should hear about already broadcasts its own dedicated toast
+	// (onMemoryRecycled / onHealthRecycled), and an idle-timeout stop is not
+	// a recovery worth notifying.
+	m.dropDegradedStateSilently(workspaceUUID)
+
 	if ok && p != nil {
 		if m.logger != nil {
 			m.logger.Info("Stopping shared ACP process",
