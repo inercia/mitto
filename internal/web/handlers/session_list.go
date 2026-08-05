@@ -124,7 +124,7 @@ func (h *Handlers) HandleListSessions(w http.ResponseWriter, r *http.Request) {
 			response[i].LoopDelaySeconds = loop.DelaySeconds
 			response[i].LoopMaxDurationSeconds = loop.MaxDurationSeconds
 			// Prompt presence flag and free-text preview for the selector UI.
-			response[i].LoopHasPrompt = loop.Prompt != "" || loop.PromptName != ""
+			response[i].LoopHasPrompt = loop.HasPrompt()
 			response[i].LoopPromptPreview = loop.PromptPreview()
 		}
 		// Check if session is currently waiting for children (runtime state from SessionManager)

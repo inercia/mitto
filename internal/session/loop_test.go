@@ -168,6 +168,24 @@ func TestLoopPrompt_Validate(t *testing.T) {
 			},
 			wantErr: true,
 		},
+		{
+			name: "empty prompt is valid while disabled (draft)",
+			prompt: LoopPrompt{
+				Prompt:    "",
+				Frequency: Frequency{Value: 1, Unit: FrequencyHours},
+				Enabled:   false,
+			},
+			wantErr: false,
+		},
+		{
+			name: "legacy pending placeholder is not deliverable when enabled",
+			prompt: LoopPrompt{
+				Prompt:    "(pending)",
+				Frequency: Frequency{Value: 1, Unit: FrequencyHours},
+				Enabled:   true,
+			},
+			wantErr: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -242,7 +260,7 @@ func TestLoopStore_SetValidation(t *testing.T) {
 	dir := t.TempDir()
 	ps := NewLoopStore(dir)
 
-	// Empty prompt
+	// Empty prompt on an enabled loop
 	err := ps.Set(&LoopPrompt{
 		Prompt:    "",
 		Frequency: Frequency{Value: 1, Unit: FrequencyHours},
@@ -250,6 +268,20 @@ func TestLoopStore_SetValidation(t *testing.T) {
 	})
 	if err == nil {
 		t.Error("Set() with empty prompt should return error")
+	}
+
+	// Legacy "(pending)" placeholder is normalized away, never persisted.
+	if err := ps.Set(&LoopPrompt{
+		Prompt:    "(pending)",
+		Frequency: Frequency{Value: 1, Unit: FrequencyHours},
+		Enabled:   false,
+	}); err != nil {
+		t.Fatalf("Set() with disabled placeholder draft should succeed: %v", err)
+	}
+	if got, gErr := ps.Get(); gErr != nil {
+		t.Fatalf("Get() after placeholder draft: %v", gErr)
+	} else if got.Prompt != "" {
+		t.Errorf("Stored prompt = %q, want empty (placeholder normalized)", got.Prompt)
 	}
 
 	// Invalid frequency (value must be >= 1)

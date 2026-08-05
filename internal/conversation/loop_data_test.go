@@ -44,14 +44,25 @@ func TestBuildLoopUpdatedData_PromptFields(t *testing.T) {
 			wantLoopConfigured: true,
 		},
 		{
-			name: "pending placeholder prompt yields has_prompt=false and no preview",
+			name: "legacy pending placeholder prompt yields has_prompt=false and no preview",
 			loop: &session.LoopPrompt{
 				Prompt:    "(pending)",
 				Frequency: session.Frequency{Value: 1, Unit: session.FrequencyHours},
 				Enabled:   false,
 			},
-			// Prompt is "(pending)" so PromptPreview() returns ""; but Prompt != "" so has_prompt is true.
-			wantHasPrompt:      true,
+			// "(pending)" is a legacy draft placeholder: it normalises to an
+			// empty body, so the config has nothing deliverable.
+			wantHasPrompt:      false,
+			wantPreviewPresent: false,
+			wantLoopConfigured: true,
+		},
+		{
+			name: "empty draft prompt yields has_prompt=false and no preview",
+			loop: &session.LoopPrompt{
+				Frequency: session.Frequency{Value: 1, Unit: session.FrequencyHours},
+				Enabled:   false,
+			},
+			wantHasPrompt:      false,
 			wantPreviewPresent: false,
 			wantLoopConfigured: true,
 		},

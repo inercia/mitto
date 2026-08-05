@@ -45,7 +45,7 @@ func BuildLoopUpdatedData(sessionID string, loop *session.LoopPrompt) map[string
 		data["delay_seconds"] = loop.DelaySeconds
 		data["max_duration_seconds"] = loop.MaxDurationSeconds
 		// Prompt presence flag and free-text preview for the selector UI.
-		data["loop_has_prompt"] = loop.Prompt != "" || loop.PromptName != ""
+		data["loop_has_prompt"] = loop.HasPrompt()
 		if preview := loop.PromptPreview(); preview != "" {
 			data["loop_prompt_preview"] = preview
 		}

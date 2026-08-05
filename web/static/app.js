@@ -2259,10 +2259,11 @@ function App() {
         const res = await secureFetch(endpoints.sessions.loop(sessionId), {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
-          // Draft body: "(pending)" satisfies LoopPrompt.Validate() while
-          // enabled:false keeps it as DRAFT so nothing is scheduled yet.
+          // Draft body: an empty prompt is accepted while enabled:false keeps
+          // it as DRAFT so nothing is scheduled yet. Never write a placeholder
+          // body — the runner would deliver it literally once enabled.
           body: JSON.stringify({
-            prompt: "(pending)",
+            prompt: "",
             frequency: { value: 1, unit: "hours" },
             enabled: false,
           }),

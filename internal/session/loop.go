@@ -346,20 +346,41 @@ func (p *LoopPrompt) IsOnTasks() bool {
 	return p.EffectiveTrigger() == TriggerOnTasks
 }
 
-// pendingPlaceholder is the placeholder value treated as "no prompt" for preview purposes.
+// pendingPlaceholder is a legacy draft placeholder written by older frontends
+// when a conversation was turned into a loop before a prompt was chosen. New
+// drafts store an empty Prompt; the constant is kept so configs already on disk
+// are still normalised to "no prompt" instead of being delivered literally.
 const pendingPlaceholder = "(pending)"
 
 // promptPreviewMaxRunes is the maximum number of runes shown in PromptPreview.
 const promptPreviewMaxRunes = 80
 
-// PromptPreview returns a short preview of the free-text Prompt body.
-// Returns "" when Prompt is empty or the literal placeholder "(pending)".
-// Otherwise returns the first line, trimmed, truncated to 80 runes with a
-// trailing "…" appended when the original first line exceeded that length.
-// Named-prompt-only configs (PromptName set, Prompt empty) also return "".
-func (p *LoopPrompt) PromptPreview() string {
+// EffectivePromptBody returns the free-text prompt body, trimmed, with the
+// legacy "(pending)" draft placeholder normalised to "". This is the only
+// value that may be delivered as a prompt — callers must never use the raw
+// Prompt field for dispatch.
+func (p *LoopPrompt) EffectivePromptBody() string {
 	body := strings.TrimSpace(p.Prompt)
-	if body == "" || body == pendingPlaceholder {
+	if body == pendingPlaceholder {
+		return ""
+	}
+	return body
+}
+
+// HasPrompt reports whether the config has anything deliverable: either a
+// non-placeholder free-text body or a named prompt to resolve.
+func (p *LoopPrompt) HasPrompt() bool {
+	return p.EffectivePromptBody() != "" || p.PromptName != ""
+}
+
+// PromptPreview returns a short preview of the free-text Prompt body.
+// Returns "" when the effective body is empty (including the legacy
+// "(pending)" placeholder). Otherwise returns the first line, trimmed,
+// truncated to 80 runes with a trailing "…" appended when the original first
+// line exceeded that length. Named-prompt-only configs also return "".
+func (p *LoopPrompt) PromptPreview() string {
+	body := p.EffectivePromptBody()
+	if body == "" {
 		return ""
 	}
 	// Use the first line only.
@@ -396,9 +417,21 @@ func (p *LoopPrompt) ClampDelay(floorSeconds int) {
 	}
 }
 
+// Normalize rewrites the legacy "(pending)" draft placeholder to an empty
+// Prompt so it is never persisted — and therefore never delivered — as a
+// literal prompt body. Callers should invoke it before Validate/persist.
+func (p *LoopPrompt) Normalize() {
+	if strings.TrimSpace(p.Prompt) == pendingPlaceholder {
+		p.Prompt = ""
+	}
+}
+
 // Validate checks if the loop prompt configuration is valid.
+// An enabled config must have something deliverable (free-text body or a named
+// prompt). A disabled config may have neither: that is the draft state created
+// when a conversation is turned into a loop before a prompt is chosen.
 func (p *LoopPrompt) Validate() error {
-	if p.Prompt == "" && p.PromptName == "" {
+	if p.Enabled && !p.HasPrompt() {
 		return ErrPromptEmpty
 	}
 	if p.MaxIterations < 0 {
@@ -467,6 +500,7 @@ func (ps *LoopStore) Get() (*LoopPrompt, error) {
 
 // Set creates or replaces the loop prompt configuration.
 func (ps *LoopStore) Set(p *LoopPrompt) error {
+	p.Normalize()
 	if err := p.Validate(); err != nil {
 		return err
 	}
@@ -583,6 +617,7 @@ func (ps *LoopStore) Update(prompt *string, promptName *string, frequency *Frequ
 		existing.RunOnStart = &v
 	}
 
+	existing.Normalize()
 	if err := existing.Validate(); err != nil {
 		return err
 	}

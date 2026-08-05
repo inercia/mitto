@@ -394,7 +394,7 @@ func TestHandleSessionLoop_PatchDelayClamped(t *testing.T) {
 }
 
 // TestHandleSessionLoop_MakeLoopDraft verifies the "Make loop" frontend flow:
-// PUT /api/sessions/{id}/loop with a draft body (enabled:false, prompt:"(pending)")
+// PUT /api/sessions/{id}/loop with a draft body (enabled:false, empty prompt)
 // on an existing top-level session succeeds and stores the draft config.
 func TestHandleSessionLoop_MakeLoopDraft(t *testing.T) {
 	store, h := newLoopStore(t)
@@ -410,7 +410,6 @@ func TestHandleSessionLoop_MakeLoopDraft(t *testing.T) {
 
 	// Draft body — mirrors what handleMakeLoop in app.js sends.
 	body, _ := json.Marshal(LoopPromptRequest{
-		Prompt:    "(pending)",
 		Frequency: session.Frequency{Value: 1, Unit: session.FrequencyHours},
 		Enabled:   false,
 	})
@@ -433,8 +432,80 @@ func TestHandleSessionLoop_MakeLoopDraft(t *testing.T) {
 	if stored.Enabled {
 		t.Errorf("Draft loop should have Enabled=false, got true")
 	}
-	if stored.Prompt != "(pending)" {
-		t.Errorf("Draft loop prompt = %q, want %q", stored.Prompt, "(pending)")
+	if stored.Prompt != "" {
+		t.Errorf("Draft loop prompt = %q, want empty", stored.Prompt)
+	}
+}
+
+// TestHandleSessionLoop_PendingPlaceholderNormalized verifies that a legacy
+// client sending the "(pending)" draft placeholder has it normalised to an
+// empty prompt on write, so the runner can never deliver it literally.
+func TestHandleSessionLoop_PendingPlaceholderNormalized(t *testing.T) {
+	store, h := newLoopStore(t)
+	tmpDir := t.TempDir()
+
+	const sid = "test-pending-normalized"
+	if err := store.Create(session.Metadata{
+		SessionID:  sid,
+		ACPServer:  "test-server",
+		WorkingDir: tmpDir,
+	}); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	body, _ := json.Marshal(LoopPromptRequest{
+		Prompt:    "(pending)",
+		Frequency: session.Frequency{Value: 1, Unit: session.FrequencyHours},
+		Enabled:   false,
+	})
+	req := httptest.NewRequest(http.MethodPut, "/api/sessions/"+sid+"/loop", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	h.HandleSessionLoop(w, req, sid, "")
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("PUT loop: Status = %d, want 200. Body: %s", w.Code, w.Body.String())
+	}
+
+	stored, err := store.Loop(sid).Get()
+	if err != nil {
+		t.Fatalf("Get loop after PUT: %v", err)
+	}
+	if stored.Prompt != "" {
+		t.Errorf("Stored prompt = %q, want empty (placeholder normalized)", stored.Prompt)
+	}
+}
+
+// TestHandleSessionLoop_EnableWithoutPromptRejected verifies that enabling a
+// loop that has neither a free-text body nor a prompt name is rejected, so a
+// draft can never start firing an empty prompt.
+func TestHandleSessionLoop_EnableWithoutPromptRejected(t *testing.T) {
+	store, h := newLoopStore(t)
+	tmpDir := t.TempDir()
+
+	const sid = "test-enable-no-prompt"
+	if err := store.Create(session.Metadata{
+		SessionID:  sid,
+		ACPServer:  "test-server",
+		WorkingDir: tmpDir,
+	}); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	body, _ := json.Marshal(LoopPromptRequest{
+		Frequency: session.Frequency{Value: 1, Unit: session.FrequencyHours},
+		Enabled:   true,
+	})
+	req := httptest.NewRequest(http.MethodPut, "/api/sessions/"+sid+"/loop", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	h.HandleSessionLoop(w, req, sid, "")
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("PUT enabled loop without prompt: Status = %d, want %d. Body: %s",
+			w.Code, http.StatusBadRequest, w.Body.String())
 	}
 }
 

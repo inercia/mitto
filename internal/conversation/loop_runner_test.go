@@ -2347,6 +2347,74 @@ func TestLoopRunner_DeliverPrompt_ArgumentsForwardedAndSubstituted(t *testing.T)
 	}
 }
 
+// TestLoopRunner_DeliverPrompt_EmptyPromptNotDispatched verifies that a loop
+// with nothing deliverable (draft state, or a named prompt resolving to an
+// empty body) is never dispatched: deliverPrompt returns ErrPromptResolveFailed
+// so the caller routes it into the promptUnresolved auto-pause path instead of
+// sending an empty message to the agent.
+func TestLoopRunner_DeliverPrompt_EmptyPromptNotDispatched(t *testing.T) {
+	tests := []struct {
+		name     string
+		loop     *session.LoopPrompt
+		resolver func(name, dir string) (string, error)
+	}{
+		{
+			name: "no body and no prompt name",
+			loop: &session.LoopPrompt{
+				Frequency: session.Frequency{Value: 1, Unit: session.FrequencyHours},
+				Enabled:   true,
+			},
+		},
+		{
+			name: "legacy pending placeholder body",
+			loop: &session.LoopPrompt{
+				Prompt:    "(pending)",
+				Frequency: session.Frequency{Value: 1, Unit: session.FrequencyHours},
+				Enabled:   true,
+			},
+		},
+		{
+			name: "named prompt resolving to whitespace",
+			loop: &session.LoopPrompt{
+				PromptName: "blank-prompt",
+				Frequency:  session.Frequency{Value: 1, Unit: session.FrequencyHours},
+				Enabled:    true,
+			},
+			resolver: func(name, dir string) (string, error) { return "   \n", nil },
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store, err := session.NewStore(t.TempDir())
+			if err != nil {
+				t.Fatalf("NewStore() error = %v", err)
+			}
+			defer store.Close()
+
+			const sid = "empty-prompt"
+			meta := session.Metadata{SessionID: sid, ACPServer: "test", WorkingDir: "/tmp"}
+			if err := store.Create(meta); err != nil {
+				t.Fatalf("store.Create() error = %v", err)
+			}
+
+			runner := NewLoopRunner(store, nil, nil)
+			if tt.resolver != nil {
+				runner.SetPromptResolver(tt.resolver)
+			}
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			bs := NewTestBackgroundSessionWithCtx(sid, ctx, cancel)
+
+			err = runner.deliverPrompt(bs, meta, tt.loop, store.Loop(sid), false, true, nil, false)
+			if !errors.Is(err, ErrPromptResolveFailed) {
+				t.Errorf("deliverPrompt() error = %v, want ErrPromptResolveFailed", err)
+			}
+		})
+	}
+}
+
 // TestLoopRunner_DeliverPrompt_DefaultRendered verifies that the Arg helper
 // in a named prompt renders the default string when the key is absent from Arguments.
 func TestLoopRunner_DeliverPrompt_DefaultRendered(t *testing.T) {

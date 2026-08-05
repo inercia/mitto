@@ -1243,6 +1243,13 @@ func (r *LoopRunner) fireOnCompletion(sessionID string) {
 	// counter advances and the max-iteration auto-stop applies. The delivered prompt's
 	// completion produces another idle transition, which re-arms the next run.
 	if err := r.TriggerNow(sessionID, true); err != nil {
+		// Route resolve failures (including an empty/draft prompt) through the
+		// shared strike counter so onCompletion loops auto-pause with
+		// StoppedReasonPromptUnresolved like the scheduled and onTasks paths.
+		if errors.Is(err, ErrPromptResolveFailed) {
+			r.handlePromptResolveFailure(sessionID, meta.Name, loop, loopStore, err)
+			return
+		}
 		if r.logger == nil {
 			return
 		}
@@ -1993,8 +2000,10 @@ func (r *LoopRunner) deliverPrompt(bs *BackgroundSession, sessionMeta session.Me
 	sessionID := bs.GetSessionID()
 	sessionName := sessionMeta.Name
 
-	// Resolve prompt text from name if needed
-	promptText := loop.Prompt
+	// Resolve prompt text from name if needed. EffectivePromptBody normalises
+	// the legacy "(pending)" draft placeholder to "" so it is never delivered
+	// as a literal prompt body.
+	promptText := loop.EffectivePromptBody()
 	if loop.PromptName != "" && r.promptResolver != nil {
 		resolved, err := r.promptResolver(loop.PromptName, sessionMeta.WorkingDir)
 		if err != nil {
@@ -2010,6 +2019,16 @@ func (r *LoopRunner) deliverPrompt(bs *BackgroundSession, sessionMeta session.Me
 				"prompt_name", loop.PromptName,
 				"prompt_preview", truncatePrompt(promptText, 100))
 		}
+	}
+
+	// Never dispatch an empty prompt. A loop left in the draft state (no body,
+	// no prompt name) or one whose named prompt resolves to nothing has nothing
+	// to say; delivering it burns a turn and, if the agent errors, re-fires
+	// forever. Route it through the shared resolve-failure path so the loop
+	// auto-pauses with StoppedReasonPromptUnresolved and the sidebar shows the
+	// amber warning.
+	if strings.TrimSpace(promptText) == "" {
+		return fmt.Errorf("%w: %q: resolved prompt is empty", ErrPromptResolveFailed, loop.PromptName)
 	}
 
 	if r.logger != nil {
