@@ -1034,6 +1034,54 @@ func InvalidateAllBeadsCaches() {
 	beadsShowCacheMu.Unlock()
 }
 
+// InvalidateGlobCache drops every memoised fileExists/dirExists glob-mode
+// cache entry for folder (mitto-ayl.1), so the next glob-mode FileExists/
+// DirExists call for that folder re-walks instead of returning a stale
+// in-memory value. Intended to be called from (*web.Server).OnBeadsChanged
+// for each event.WorkingDirs entry, riding the same .beads/ fsnotify signal
+// that already drives InvalidateBeadsCache: BeadsWatcher suppresses this
+// process's own bd activity, so a surviving event is an EXTERNAL mutation
+// (bd from another process, direct .beads/ writes, or notably a git
+// pull/checkout) — precisely the class of change that can add/remove a file
+// a glob gate cares about (e.g. FileExists("**/SKILL.md")). Coverage is a
+// partial proxy, not total, which is why globCacheTTL remains as a backstop
+// for changes no watcher observes.
+//
+// Does NOT cancel an in-flight globSF walk for a key under folder: a walk
+// already running may still store its result after this call returns. That
+// is acceptable — the in-flight walk started after the fs event that
+// triggered this invalidation, so its result is a FRESHER read than the
+// entry being dropped, not a stale one.
+//
+// A linear scan over the (typically tiny) cache map is acceptable here for
+// the same reasons documented on InvalidateBeadsCache.
+func InvalidateGlobCache(folder string) {
+	if folder == "" {
+		return
+	}
+	prefix := folder + "\x00"
+
+	globCacheMu.Lock()
+	for k := range globCache {
+		if k == folder || strings.HasPrefix(k, prefix) {
+			delete(globCache, k)
+		}
+	}
+	globCacheMu.Unlock()
+}
+
+// InvalidateAllGlobCaches drops every memoised fileExists/dirExists
+// glob-mode cache entry across all folders (mitto-ayl.1). Companion to
+// InvalidateGlobCache for callers that don't have a specific folder scope —
+// e.g. (*web.Server).OnPromptsChanged, whose event carries prompt
+// directories rather than workspace roots, so a folder-scoped invalidation
+// key is not available.
+func InvalidateAllGlobCaches() {
+	globCacheMu.Lock()
+	globCache = map[string]globCacheEntry{}
+	globCacheMu.Unlock()
+}
+
 // splitCSV splits a comma-separated string into trimmed, non-empty tokens.
 func splitCSV(s string) []string {
 	var out []string

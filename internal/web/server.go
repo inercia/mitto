@@ -2484,6 +2484,17 @@ func (a *sessionManagerAdapter) IsMCPInitTimeout(err error) bool {
 // OnPromptsChanged is called by the PromptsWatcher when prompt files change.
 // It broadcasts the change to all connected clients via the global events WebSocket.
 func (s *Server) OnPromptsChanged(event configPkg.PromptsChangeEvent) {
+	// mitto-ayl.1: invalidate the CEL glob-mode FileExists/DirExists cache on
+	// any prompt/fragment change. PromptsChangeEvent carries prompt
+	// directories, not workspace roots, so no per-folder scope is available
+	// here (contrast OnBeadsChanged) — use the All variant. Prompt changes
+	// are debounced and rare and the cache map is tiny, and after any
+	// prompt/fragment edit the whole enabledWhen gate set is re-evaluated and
+	// shown to the user, so it should see fresh glob state. Done
+	// unconditionally, before the eventsManager nil-check below, so
+	// invalidation still happens with zero WebSocket clients connected.
+	cel.InvalidateAllGlobCaches()
+
 	if s.eventsManager == nil {
 		return
 	}
@@ -2713,8 +2724,13 @@ func (s *Server) OnBeadsChanged(event watcher.BeadsChangeEvent) {
 	// subscriber rather than beadsCacheWatcherSubscriber (which is only wired
 	// when --beads-cache is enabled) since internal/cel's cache runs regardless
 	// of that flag.
+	// mitto-ayl.1: also invalidate the CEL glob-mode FileExists/DirExists
+	// cache for each changed working dir. event.WorkingDirs are workspace
+	// roots, which is exactly the "folder" component of the glob cache's
+	// composite key, so this rides the existing loop with no new watcher.
 	for _, dir := range event.WorkingDirs {
 		cel.InvalidateBeadsCache(dir)
+		cel.InvalidateGlobCache(dir)
 	}
 
 	if s.eventsManager == nil {
