@@ -838,13 +838,14 @@ started — this distinction matters for orchestrator authors:**
 | How the prompt is dispatched | Does `loop:` auto-apply? |
 |---|---|
 | Selected directly in the UI (ChatInput dropup, Beads context menu, loop selector) | **Yes.** The frontend reads the prompt's `loop:` block and configures the conversation accordingly (see [Behavior](../config/prompts.md#behavior)). |
-| Spawned programmatically via `mitto_conversation_new(prompt_name: "...")` (e.g. from an orchestrator prompt) | **No.** The prompt's own `loop:` frontmatter is **not** read or applied. The caller must pass explicit `loop_prompt`, `loop_trigger`, `loop_completion_delay_seconds`, `loop_max_iterations`, and `loop_max_duration_seconds` arguments to `mitto_conversation_new` to reproduce the same schedule. |
+| Spawned programmatically via `mitto_conversation_new(prompt_name: "...")` (e.g. from an orchestrator prompt) | **Yes** (since mitto-r7y). `applyPromptLoopDefaultsToStartInput` (`internal/mcpserver/prompt_loop_defaults.go`) fills every `loop_*` argument the caller left unset from the resolved prompt's `loop:` block, and defaults the loop body to the seed prompt itself (self-referential loop). Explicit caller arguments always win; `loop_apply_prompt_defaults: false` disables the whole merge. `mode: optional` + `default: false` yields a **disabled** loop unless the caller passes `loop_enabled: true` (mitto-ydj). |
 
 The shipped list-level orchestrators (`Iterate fixing bugs`,
-`Iterate implementing features`) work around this by fetching the per-issue
-driver's body once via `mitto_prompt_get`, then passing that body as **both**
-`initial_prompt` and `loop_prompt`, with the numeric loop fields
-copied from the driver's own `loop:` block (see §13.9).
+`Iterate implementing features`) predate the auto-merge and still fetch the
+per-issue driver's body once via `mitto_prompt_get`, then pass that body as
+**both** `initial_prompt` and `loop_prompt`, with the numeric loop fields
+copied from the driver's own `loop:` block (see §13.9). That remains valid —
+explicit caller arguments win over the merge — but is no longer required.
 
 ### 13.5  Self-termination
 
@@ -1018,5 +1019,5 @@ child, wait for it, then move to the next:
 Both orchestrators are themselves **non-loop, one-shot** runs (they loop
 internally via `mitto_children_tasks_wait`); the *children* they spawn are the
 loop ones, and both fetch the child driver's body via `mitto_prompt_get`
-and pass it as both `initial_prompt` and `loop_prompt` — a direct
-consequence of the `mitto_conversation_new` behavior documented in §13.4.
+and pass it as both `initial_prompt` and `loop_prompt` — historically a
+requirement, now redundant given the auto-merge documented in §13.4.
