@@ -17,6 +17,17 @@ target:
   reuse:
     title: true
     coalesce: true
+parameters:
+  - name: FixTests
+    type: boolean
+    default: "false"
+    required: false
+    description: When enabled, fix failing tests immediately and re-run until green instead of only reporting them
+  - name: CreateIssues
+    type: boolean
+    default: "false"
+    required: false
+    description: When enabled, file a beads issue for each important test failure that is left unresolved
 prompt: |
   Run the project's test suite and report results.
 
@@ -32,10 +43,22 @@ prompt: |
 
   Pass: report success.
 
+  {{ if eq (Arg "FixTests" "false") "true" -}}
+  Fail: **fix the failures**, starting with the simplest ones.
+
+  - Fix the root cause, re-run the affected tests, and repeat until they pass.
+  - Do not weaken a test (skip, delete, loosen an assertion) to make it pass —
+    if the test is genuinely wrong, say so explicitly and explain why.
+  - Stage nothing and do not commit; leave the fixes in the working tree.
+  - If a failure resists a safe fix (unclear intent, needs a product decision,
+    or the fix would be large/risky), stop working on it and report it under
+    "Unresolved Failures" below.
+  {{- else -}}
   Fail:
 
   - Simple failures (typos, missing imports): fix immediately, re-run, repeat
   - Complex failures: report for manual review
+  {{- end }}
 
   ### 3. Summary
 
@@ -48,3 +71,64 @@ prompt: |
   ### 4. Unresolved Failures
 
   Per failure: **Test**, **Error**, **Cause**, **Suggested fix**
+  {{ if eq (Arg "CreateIssues" "false") "true" }}
+  ### 5. File beads issues for important failures
+
+  {{ if and (CommandExists "bd") (DirExists ".beads") -}}
+  This project uses beads, so file an issue for each **important** unresolved
+  failure from section 4. Write the description to a temporary Markdown file
+  and pass it via `--body-file` (this preserves formatting and avoids
+  shell-escaping bugs — `bd` does NOT support `@file` expansion for `-d`):
+
+  ```bash
+  cat > /tmp/test-failure.md <<'EOF'
+  ## Test
+
+  `<fully qualified test name>` (<package / file>)
+
+  ## Expected
+
+  <what the test asserts>
+
+  ## Actual
+
+  <observed failure output, trimmed to the relevant lines, in a fenced code block>
+
+  ## Notes
+
+  <optional: suspected cause, other tests affected by the same root cause>
+  EOF
+
+  bd create "<short summary of the failure>" \
+    --type bug \
+    --priority 2 \
+    --labels "tests" \
+    --body-file /tmp/test-failure.md
+  ```
+
+  Guidelines:
+
+  - Only file **important** failures: a real product bug, a broken invariant,
+    or a persistently failing test. Do NOT file flakes you could not reproduce,
+    environment/setup problems you already fixed, or failures you resolved in
+    section 2.
+  - One bead per **distinct root cause** — mention the other affected tests in
+    the body instead of filing duplicates.
+  - Before filing, check for an existing open bead covering the same failure
+    (`bd list --label tests --status open`) and comment on it instead of
+    creating a duplicate.
+  - If the failure is an environment / setup issue rather than a product bug,
+    prefix the summary with `[env]`.
+  - `bd create` prints the new bead ID on success (e.g. `Created mitto-abc`).
+    Capture it — never invent IDs like `BUG-1`; if no ID was printed, the bead
+    was not filed.
+
+  End the report with a **"Beads filed"** section listing each new bead as
+  `<bd-id> — <title>`. If nothing was filed (no important failures, or filing
+  failed), say so in one line instead of omitting the section.
+  {{- else -}}
+  This project does **not** use beads (no `bd` command and/or no `.beads`
+  directory), so no issues can be filed. Say so in one line in the report and
+  leave the unresolved failures in section 4 as the record.
+  {{- end }}
+  {{- end }}
