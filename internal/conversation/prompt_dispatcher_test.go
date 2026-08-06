@@ -90,6 +90,7 @@ type fakePromptDeps struct {
 	acpNewSessionErr       error
 	agentModels            *SessionModelState
 	resolvedModelTags      []string
+	modelTagsByName        map[string][]string // when set, pdResolveModelTags keys off the model name
 	resolvedPreferred      []config.PromptPreferredModel
 	modelProfiles          []config.ModelProfile
 	baselineModel          string
@@ -292,7 +293,12 @@ func (f *fakePromptDeps) pdACPConnNewSession(_ context.Context, _ string) (strin
 	return f.acpNewSessionID, f.acpNewSessionErr
 }
 func (f *fakePromptDeps) pdGetAgentModels() *SessionModelState { return f.agentModels }
-func (f *fakePromptDeps) pdResolveModelTags(_ string) []string { return f.resolvedModelTags }
+func (f *fakePromptDeps) pdResolveModelTags(name string) []string {
+	if f.modelTagsByName != nil {
+		return f.modelTagsByName[name]
+	}
+	return f.resolvedModelTags
+}
 func (f *fakePromptDeps) pdResolvePreferredModels(_ string) []config.PromptPreferredModel {
 	return f.resolvedPreferred
 }
@@ -1309,6 +1315,70 @@ func TestPromptDispatcher_BuildProcessorInput_UserDataJSON(t *testing.T) {
 	}
 	if input.UserData["JIRA Ticket"] != "PROJ-99" {
 		t.Errorf(`UserData["JIRA Ticket"] = %q, want "PROJ-99"`, input.UserData["JIRA Ticket"])
+	}
+}
+
+// TestPromptDispatcher_BuildProcessorInput_ModelTagsUseIntendedModel verifies that
+// buildProcessorInput renders ModelName/ModelTags against the model the dispatch's
+// preferredModels resolves to, not the model left active by the previous turn.
+// applyModelPreference runs later in the pipeline, so without this a tier-declaring
+// prompt (e.g. the beads-issues phase prompts' tier-check) always observed the stale
+// tier and reported a spurious tier-degraded run.
+func TestPromptDispatcher_BuildProcessorInput_ModelTagsUseIntendedModel(t *testing.T) {
+	p := promptDispatcher{}
+	newDeps := func() *fakePromptDeps {
+		d := newFakePromptDeps()
+		d.agentModels = &SessionModelState{
+			CurrentModelId: "m-opus",
+			AvailableModels: []ModelInfo{
+				{ModelId: "m-opus", Name: "Claude Opus"},
+				{ModelId: "m-sonnet", Name: "Claude Sonnet"},
+			},
+		}
+		d.modelProfiles = []config.ModelProfile{
+			{Name: "Coding", Criteria: &config.ACPServerConstraint{MatchMode: "contains", Pattern: "Sonnet"}, Tags: []string{"Coding"}},
+			{Name: "Reasoning", Criteria: &config.ACPServerConstraint{MatchMode: "contains", Pattern: "Opus"}, Tags: []string{"Reasoning"}},
+		}
+		d.modelTagsByName = map[string][]string{
+			"Claude Opus":   {"Reasoning"},
+			"Claude Sonnet": {"Coding"},
+		}
+		return d
+	}
+
+	// Explicit meta.PreferredModels → intended model wins over the active one.
+	d := newDeps()
+	meta := PromptMeta{PreferredModels: []config.PromptPreferredModel{{ModelTag: "Coding"}}}
+	input := p.buildProcessorInput(d, "msg", false, meta)
+	if input.ModelName != "Claude Sonnet" {
+		t.Errorf("ModelName = %q, want %q", input.ModelName, "Claude Sonnet")
+	}
+	if len(input.ModelTags) != 1 || input.ModelTags[0] != "Coding" {
+		t.Errorf("ModelTags = %v, want [Coding]", input.ModelTags)
+	}
+
+	// Preference declared by the named prompt (resolved via pdResolvePreferredModels).
+	d = newDeps()
+	d.resolvedPreferred = []config.PromptPreferredModel{{ModelTag: "Coding"}}
+	input = p.buildProcessorInput(d, "msg", false, PromptMeta{PromptName: "Feature — test phase"})
+	if input.ModelName != "Claude Sonnet" {
+		t.Errorf("named-prompt ModelName = %q, want %q", input.ModelName, "Claude Sonnet")
+	}
+
+	// No preference → falls back to the active model.
+	d = newDeps()
+	input = p.buildProcessorInput(d, "msg", false, PromptMeta{})
+	if input.ModelName != "Claude Opus" {
+		t.Errorf("no-preference ModelName = %q, want %q", input.ModelName, "Claude Opus")
+	}
+
+	// Preference that resolves to nothing → falls back to the active model.
+	d = newDeps()
+	input = p.buildProcessorInput(d, "msg", false, PromptMeta{
+		PreferredModels: []config.PromptPreferredModel{{ModelTag: "Nonexistent"}},
+	})
+	if input.ModelName != "Claude Opus" {
+		t.Errorf("unresolvable-preference ModelName = %q, want %q", input.ModelName, "Claude Opus")
 	}
 }
 

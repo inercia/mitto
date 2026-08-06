@@ -674,13 +674,24 @@ func (p promptDispatcher) buildProcessorInput(d promptDeps, message string, isFi
 		}
 	}
 
-	// Resolve the CURRENT model's capability tags (config models: profiles) for the
+	// Resolve the model's capability tags (config models: profiles) for the
 	// Model(tag) template func and Session.HasModelTag CEL macro. Degrades to empty
 	// (no tags) when agentModels is nil — never errors the render. See mitto-i5sr.
+	//
+	// The tags describe the model this turn will RUN on, which for a prompt
+	// declaring preferredModels is the model applyModelPreference is about to
+	// switch to — not the one left over from the previous turn. applyModelPreference
+	// runs later in the dispatch pipeline (inside PromptWithMeta's goroutine), so
+	// rendering against the active model would make a tier-declaring prompt always
+	// observe the stale tier.
 	var modelName string
 	var modelTags []string
 	if models := d.pdGetAgentModels(); models != nil {
-		modelName = ModelDisplayName(models, string(models.CurrentModelId))
+		modelID := string(models.CurrentModelId)
+		if intended := p.intendedModelID(d, meta, models); intended != "" {
+			modelID = intended
+		}
+		modelName = ModelDisplayName(models, modelID)
 		modelTags = d.pdResolveModelTags(modelName)
 	}
 
@@ -1030,6 +1041,28 @@ var modelSwitchSyncGrace = 3 * time.Second
 // cold agent gets its full retry schedule off the critical path (mitto-54k.5).
 // A var so tests can shrink it.
 var modelSwitchAsyncBudget = 90 * time.Second
+
+// intendedModelID resolves the model this turn is meant to run on, given the
+// dispatch's preferredModels (explicit on meta, or declared by the named prompt).
+// It mirrors applyModelPreference's resolution but performs no RPC and records no
+// pill, so buildProcessorInput can render the template against the tier the prompt
+// asked for instead of the tier left over from the previous turn.
+//
+// Returns "" when there is no preference, when nothing resolves, or when the
+// preference cannot be honoured — leaving the caller on the active model.
+func (p promptDispatcher) intendedModelID(d promptDeps, meta PromptMeta, models *SessionModelState) string {
+	if models == nil {
+		return ""
+	}
+	preferredModels := meta.PreferredModels
+	if len(preferredModels) == 0 && meta.PromptName != "" {
+		preferredModels = d.pdResolvePreferredModels(meta.PromptName)
+	}
+	if len(preferredModels) == 0 {
+		return ""
+	}
+	return SelectPreferredModel(preferredModels, d.pdModelProfiles(), models)
+}
 
 // applyModelPreference ensures the correct model is active before sending the prompt.
 // Implements set-if-different (lazy): only issues a SetSessionModel RPC when the
