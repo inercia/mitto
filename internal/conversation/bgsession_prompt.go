@@ -170,6 +170,10 @@ type PromptMeta struct {
 	// LoopKind classifies a loop run (none/scheduled/forced). Set by the
 	// LoopRunner. Drives the Iteration.IsUninterrupted continuation signal.
 	LoopKind LoopKind
+	// LoopTrigger names the trigger that won this dispatch for a multi-trigger
+	// loop (mitto-r6j.2): schedule, onCompletion, or onTasks. Set by the
+	// LoopRunner; empty for non-loop prompts.
+	LoopTrigger session.LoopTrigger
 	// IterationNumber is the 0-based index of the current loop run (loop.IterationCount
 	// at dispatch). Zero for non-loop prompts. Feeds the {{ .Iteration.* }} template namespace.
 	IterationNumber int

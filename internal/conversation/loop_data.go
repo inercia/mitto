@@ -41,7 +41,15 @@ func BuildLoopUpdatedData(sessionID string, loop *session.LoopPrompt) map[string
 		}
 		// Glance fields for conversation header display (trigger resolved via EffectiveTrigger
 		// so schedule loops always report "schedule", not the empty-string default).
+		// "trigger" stays the primary/first one for back-compat; "triggers" carries
+		// the full armed set of a multi-trigger loop (mitto-r6j.2).
 		data["trigger"] = string(loop.EffectiveTrigger())
+		triggers := loop.EffectiveTriggers()
+		triggerNames := make([]string, 0, len(triggers))
+		for _, t := range triggers {
+			triggerNames = append(triggerNames, string(t))
+		}
+		data["triggers"] = triggerNames
 		data["delay_seconds"] = loop.DelaySeconds
 		data["max_duration_seconds"] = loop.MaxDurationSeconds
 		// Prompt presence flag and free-text preview for the selector UI.

@@ -358,14 +358,27 @@ func (p *LoopPrompt) EffectiveTrigger() LoopTrigger {
 	return p.EffectiveTriggers()[0]
 }
 
+// HasTrigger returns true when this loop prompt's resolved trigger list
+// includes t. Multi-trigger configs (mitto-r6j.2) arm every listed trigger
+// independently, so membership — not the primary/first trigger — is what the
+// dispatch paths must test.
+func (p *LoopPrompt) HasTrigger(t LoopTrigger) bool {
+	return slices.Contains(p.EffectiveTriggers(), t)
+}
+
+// IsSchedule returns true when this loop prompt's trigger list includes schedule.
+func (p *LoopPrompt) IsSchedule() bool {
+	return p.HasTrigger(TriggerSchedule)
+}
+
 // IsOnCompletion returns true when this loop prompt's trigger list includes onCompletion.
 func (p *LoopPrompt) IsOnCompletion() bool {
-	return slices.Contains(p.EffectiveTriggers(), TriggerOnCompletion)
+	return p.HasTrigger(TriggerOnCompletion)
 }
 
 // IsOnTasks returns true when this loop prompt's trigger list includes onTasks.
 func (p *LoopPrompt) IsOnTasks() bool {
-	return slices.Contains(p.EffectiveTriggers(), TriggerOnTasks)
+	return p.HasTrigger(TriggerOnTasks)
 }
 
 // pendingPlaceholder is a legacy draft placeholder written by older frontends
@@ -489,9 +502,11 @@ func (p *LoopPrompt) Validate() error {
 			return fmt.Errorf("invalid condition: %w", err)
 		}
 	}
-	// For schedule trigger (default), Frequency must be valid.
-	// For onCompletion and onTasks, frequency is not required.
-	if p.EffectiveTrigger() == TriggerSchedule {
+	// Frequency must be valid whenever schedule is one of the armed triggers —
+	// membership, not primacy, since a multi-trigger config such as
+	// [onTasks, schedule] still runs a schedule leg (mitto-r6j.2).
+	// For onCompletion and onTasks alone, frequency is not required.
+	if p.IsSchedule() {
 		return p.Frequency.Validate()
 	}
 	return nil
@@ -819,8 +834,9 @@ func (ps *LoopStore) RecordSent() error {
 // DeferNextSchedule pushes NextScheduledAt out to now+delay WITHOUT advancing the
 // iteration count or LastSentAt. It is used to back off after a transient delivery
 // failure so the runner does not re-fire the same prompt on every poll tick.
-// It is a no-op (returns nil) for disabled configs and for onCompletion/onTasks
-// triggers, whose next run is event-driven (NextScheduledAt is always nil).
+// It is a no-op (returns nil) for disabled configs and for configs without a
+// schedule leg, whose next run is purely event-driven (NextScheduledAt is
+// always nil).
 func (ps *LoopStore) DeferNextSchedule(delay time.Duration) error {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
@@ -829,7 +845,7 @@ func (ps *LoopStore) DeferNextSchedule(delay time.Duration) error {
 	if err != nil {
 		return err
 	}
-	if !existing.Enabled || existing.IsOnCompletion() || existing.IsOnTasks() {
+	if !existing.Enabled || !existing.IsSchedule() {
 		return nil
 	}
 
@@ -922,14 +938,15 @@ func (ps *LoopStore) getUnlocked() (*LoopPrompt, error) {
 }
 
 // computeNextScheduledTime calculates when the next prompt should be sent.
-// Returns nil for onCompletion/onTasks triggers — their next run is armed by the
-// event-driven firing path, not a frequency-based schedule.
+// Returns nil when schedule is not one of the armed triggers — a purely
+// event-driven loop's next run is armed by its firing path, not a
+// frequency-based schedule. A multi-trigger config that lists schedule
+// alongside onCompletion/onTasks still gets a next-run anchor (mitto-r6j.2).
 func (ps *LoopStore) computeNextScheduledTime(p *LoopPrompt) *time.Time {
 	if !p.Enabled {
 		return nil
 	}
-	// Event-driven triggers do not use a frequency-based schedule.
-	if p.IsOnCompletion() || p.IsOnTasks() {
+	if !p.IsSchedule() {
 		return nil
 	}
 

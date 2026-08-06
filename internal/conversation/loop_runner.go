@@ -145,6 +145,12 @@ var (
 	// advance, no failure backoff). Manual "Run Now" (forced) bypasses this cap.
 	// See mitto-61z.
 	ErrWorkspaceBusy = errors.New("workspace has reached the loop concurrency cap")
+	// ErrLoopDispatchCoalesced signals that another trigger of the same
+	// multi-trigger loop already owns an in-flight dispatch for this session, so
+	// this fire was dropped rather than queued (mitto-r6j.2). It is an expected,
+	// non-error outcome: callers log it at Debug and do not count it as a
+	// delivery failure.
+	ErrLoopDispatchCoalesced = errors.New("loop dispatch coalesced: another trigger is already in flight")
 )
 
 // isTransientPromptCompileRace reports whether err represents a transient
@@ -391,6 +397,16 @@ type LoopRunner struct {
 	workspaceInFlight   map[string]int
 	workspaceInFlightMu sync.Mutex
 
+	// dispatchInFlight records, per session, which trigger currently owns an
+	// in-flight loop dispatch (mitto-r6j.2). A multi-trigger loop arms every
+	// listed trigger independently, so two of them can fire in the same window;
+	// the claim makes the coalescing rule explicit and testable: the first
+	// trigger to claim wins, and a losing trigger is DROPPED (never queued).
+	// Claimed just before deliverPrompt, released in OnComplete and on every
+	// synchronous failure path. Guarded by dispatchInFlightMu.
+	dispatchInFlight   map[string]session.LoopTrigger
+	dispatchInFlightMu sync.Mutex
+
 	mu      sync.Mutex
 	running bool
 	// stopped flips to true exactly once, inside Stop(), and stays true
@@ -436,6 +452,7 @@ func NewLoopRunner(store *session.Store, sm *SessionManager, logger *slog.Logger
 		autoUnarchiveStagger:        DefaultAutoUnarchiveStaggerInterval,
 		loopWorkspaceConcurrency:    config.DefaultLoopWorkspaceConcurrency,
 		workspaceInFlight:           make(map[string]int),
+		dispatchInFlight:            make(map[string]session.LoopTrigger),
 		runOnStartAntiFlapSeconds:   config.DefaultRunOnStartAntiFlapSeconds,
 		runOnStartFired:             make(map[string]bool),
 	}
@@ -581,6 +598,29 @@ func (r *LoopRunner) releaseWorkspaceSlot(key string) {
 			r.workspaceInFlight[key] = n - 1
 		}
 	}
+}
+
+// claimDispatch attempts to claim the single in-flight dispatch slot for a
+// session on behalf of firedBy (mitto-r6j.2). It returns ok=true when the claim
+// succeeded; otherwise ok=false and winner names the trigger that already owns
+// the dispatch. This implements the documented coalescing rule for
+// multi-trigger loops: a trigger that fires while another one's run is already
+// dispatching or in flight is DROPPED, not queued.
+func (r *LoopRunner) claimDispatch(sessionID string, firedBy session.LoopTrigger) (winner session.LoopTrigger, ok bool) {
+	r.dispatchInFlightMu.Lock()
+	defer r.dispatchInFlightMu.Unlock()
+	if existing, held := r.dispatchInFlight[sessionID]; held {
+		return existing, false
+	}
+	r.dispatchInFlight[sessionID] = firedBy
+	return firedBy, true
+}
+
+// releaseDispatch drops the in-flight dispatch claim for a session. Idempotent.
+func (r *LoopRunner) releaseDispatch(sessionID string) {
+	r.dispatchInFlightMu.Lock()
+	defer r.dispatchInFlightMu.Unlock()
+	delete(r.dispatchInFlight, sessionID)
 }
 
 // workspaceInFlightCount returns the current in-flight count for a workspace
@@ -751,7 +791,14 @@ func (r *LoopRunner) IsRunning() bool {
 //
 // Returns an error if the delivery fails or the session is not configured for loop prompts.
 func (r *LoopRunner) TriggerNow(sessionID string, resetTimer bool) error {
-	return r.triggerNowFull(sessionID, resetTimer, nil, false)
+	return r.triggerNowFull(sessionID, resetTimer, nil, false, "")
+}
+
+// TriggerNowFrom is TriggerNow with an explicit winning trigger, recorded on the
+// delivered PromptMeta and used for the coalescing claim (mitto-r6j.2). An empty
+// firedBy defers to the loop's primary EffectiveTrigger.
+func (r *LoopRunner) TriggerNowFrom(sessionID string, resetTimer bool, firedBy session.LoopTrigger) error {
+	return r.triggerNowFull(sessionID, resetTimer, nil, false, firedBy)
 }
 
 // triggerNowWithTasksDelta is the internal variant of TriggerNow that
@@ -761,7 +808,7 @@ func (r *LoopRunner) TriggerNow(sessionID string, resetTimer bool) error {
 // onTasks fires; all other paths (manual "Run Now", onCompletion, delayed
 // retries) pass a nil delta via the public TriggerNow.
 func (r *LoopRunner) triggerNowWithTasksDelta(sessionID string, resetTimer bool, tasksDelta *config.TasksDelta) error {
-	return r.triggerNowFull(sessionID, resetTimer, tasksDelta, false)
+	return r.triggerNowFull(sessionID, resetTimer, tasksDelta, false, session.TriggerOnTasks)
 }
 
 // triggerNowFull is the unified internal entry point behind TriggerNow and its
@@ -771,7 +818,10 @@ func (r *LoopRunner) triggerNowWithTasksDelta(sessionID string, resetTimer bool,
 // {{ .Session.IsLoopRunOnStart }}. All existing behaviour (auto-resume of a
 // stopped session, IsPrompting guard, workspace concurrency cap bypass because
 // this dispatch is a forced/manual-equivalent) is preserved.
-func (r *LoopRunner) triggerNowFull(sessionID string, resetTimer bool, tasksDelta *config.TasksDelta, isRunOnStart bool) error {
+//
+// firedBy names the trigger that won this dispatch (mitto-r6j.2); empty defers
+// to the loop's primary EffectiveTrigger.
+func (r *LoopRunner) triggerNowFull(sessionID string, resetTimer bool, tasksDelta *config.TasksDelta, isRunOnStart bool, firedBy session.LoopTrigger) error {
 	if r.store == nil {
 		return ErrSessionStoreNotAvailable
 	}
@@ -826,15 +876,20 @@ func (r *LoopRunner) triggerNowFull(sessionID string, resetTimer bool, tasksDelt
 		return ErrSessionBusy
 	}
 
+	if firedBy == "" {
+		firedBy = loop.EffectiveTrigger()
+	}
+
 	if r.logger != nil {
 		r.logger.Info("Triggering immediate loop delivery",
 			"session_id", sessionID,
 			"session_name", meta.Name,
+			"fired_by", string(firedBy),
 			"prompt_preview", truncatePrompt(loop.Prompt, 100))
 	}
 
 	// Deliver the prompt
-	return r.deliverPrompt(bs, meta, loop, loopStore, resetTimer, true, tasksDelta, isRunOnStart)
+	return r.deliverPrompt(bs, meta, loop, loopStore, resetTimer, true, tasksDelta, isRunOnStart, firedBy)
 }
 
 // OnConversationIdle is invoked when a session's agent has stopped and the session
@@ -926,6 +981,10 @@ func (r *LoopRunner) StopLoopForArchive(sessionID string, reason session.Stopped
 		delete(r.tasksSettleTimers, sessionID)
 	}
 	r.tasksSettleTimersMu.Unlock()
+
+	// Drop any dispatch claim so a stopped loop cannot leave a session
+	// permanently coalesced if it is later re-enabled (mitto-r6j.2).
+	r.releaseDispatch(sessionID)
 
 	loopStore := r.store.Loop(sessionID)
 	loop, err := loopStore.Get()
@@ -1127,7 +1186,7 @@ func (r *LoopRunner) fireOnStartPulses() {
 				"trigger", string(loop.EffectiveTrigger()))
 		}
 
-		if err := r.triggerNowFull(meta.SessionID, true, nil, true); err != nil {
+		if err := r.triggerNowFull(meta.SessionID, true, nil, true, ""); err != nil {
 			if r.logger == nil {
 				continue
 			}
@@ -1136,6 +1195,9 @@ func (r *LoopRunner) fireOnStartPulses() {
 					"session_id", meta.SessionID)
 			} else if errors.Is(err, ErrWorkspaceBusy) {
 				r.logger.Debug("Boot pulse skipped, workspace concurrency cap reached",
+					"session_id", meta.SessionID)
+			} else if errors.Is(err, ErrLoopDispatchCoalesced) {
+				r.logger.Debug("Boot pulse coalesced, another trigger already in flight",
 					"session_id", meta.SessionID)
 			} else {
 				r.logger.Warn("Boot pulse delivery failed",
@@ -1253,7 +1315,7 @@ func (r *LoopRunner) fireOnCompletion(sessionID string) {
 	// Deliver via the standard immediate path with resetTimer=true so the iteration
 	// counter advances and the max-iteration auto-stop applies. The delivered prompt's
 	// completion produces another idle transition, which re-arms the next run.
-	if err := r.TriggerNow(sessionID, true); err != nil {
+	if err := r.TriggerNowFrom(sessionID, true, session.TriggerOnCompletion); err != nil {
 		// Route resolve failures (including an empty/draft prompt) through the
 		// shared strike counter so onCompletion loops auto-pause with
 		// StoppedReasonPromptUnresolved like the scheduled and onTasks paths.
@@ -1266,6 +1328,9 @@ func (r *LoopRunner) fireOnCompletion(sessionID string) {
 		}
 		if errors.Is(err, ErrSessionBusy) {
 			r.logger.Debug("On-completion loop firing skipped, session busy",
+				"session_id", sessionID)
+		} else if errors.Is(err, ErrLoopDispatchCoalesced) {
+			r.logger.Debug("On-completion loop firing coalesced, another trigger already in flight",
 				"session_id", sessionID)
 		} else {
 			r.logger.Warn("On-completion loop firing failed",
@@ -1503,24 +1568,32 @@ func (r *LoopRunner) checkSession(meta session.Metadata, now time.Time) (deliver
 		return 0, 0, 0
 	}
 
-	// onCompletion configs never have a NextScheduledAt — the schedule loop cannot
-	// deliver them. Bootstrap the very first run here so that a crash or restart
-	// before any delivery still kicks off the loop. No-op if already run or in-flight.
+	// Arm every listed trigger independently (mitto-r6j.2). A multi-trigger loop
+	// keeps all of its sources live at once, so these legs are sequential and
+	// non-exclusive: the event-driven ones are (re-)armed first — establishing
+	// the onTasks > onCompletion > schedule precedence within a single tick —
+	// and only then does the schedule leg run its due-check.
+
+	// onCompletion is delivered by an in-memory timer, never by NextScheduledAt.
+	// Bootstrap the very first run here so that a crash or restart before any
+	// delivery still kicks off the loop. No-op if already run or in-flight.
 	if loop.IsOnCompletion() {
 		r.BootstrapOnCompletion(sessionID)
 		// Self-healing safety net for an already-running loop whose end-of-turn
 		// re-arm was missed (e.g. around an ACP resume or a heavy children-wait
 		// turn that did not register as a clean idle transition). See mitto-5dn.
 		r.recoverStalledOnCompletion(meta, loop)
-		return 0, 0, 0
 	}
 
-	// onTasks configs are event-driven (fired from OnBeadsChanged) and never have
-	// a NextScheduledAt either. Bootstrap the baseline here so a crash/restart
-	// before the baseline was ever captured does not cause a spurious first fire
-	// the next time beads change (mitto-oja.2).
+	// onTasks is fired from OnBeadsChanged. Bootstrap the baseline here so a
+	// crash/restart before the baseline was ever captured does not cause a
+	// spurious first fire the next time beads change (mitto-oja.2).
 	if loop.IsOnTasks() {
 		r.BootstrapTasksBaseline(sessionID)
+	}
+
+	// Without a schedule leg there is nothing left for the poll loop to deliver.
+	if !loop.IsSchedule() {
 		return 0, 0, 0
 	}
 
@@ -1687,7 +1760,7 @@ func (r *LoopRunner) checkSession(meta session.Metadata, now time.Time) (deliver
 	// Deliver the prompt — normal scheduled runs always reset the timer. No
 	// onTasks delta on the scheduled path (that path only fires on time; onTasks
 	// fires go through triggerNowWithTasksDelta — mitto-xkn).
-	if err := r.deliverPrompt(bs, meta, loop, loopStore, true, false, nil, false); err != nil {
+	if err := r.deliverPrompt(bs, meta, loop, loopStore, true, false, nil, false, session.TriggerSchedule); err != nil {
 		if errors.Is(err, ErrWorkspaceBusy) {
 			// A sibling loop in the same workspace is in flight. Skip this
 			// session for this poll cycle — do not advance NextScheduledAt
@@ -1695,6 +1768,17 @@ func (r *LoopRunner) checkSession(meta session.Metadata, now time.Time) (deliver
 			// will retry (mitto-61z).
 			if r.logger != nil {
 				r.logger.Debug("Skipping loop prompt - workspace concurrency cap reached",
+					"session_id", sessionID,
+					"session_name", meta.Name)
+			}
+			return 0, 1, 0
+		}
+		if errors.Is(err, ErrLoopDispatchCoalesced) {
+			// Another trigger of this same multi-trigger loop already owns the
+			// in-flight dispatch. The schedule fire is dropped, not queued: no
+			// schedule advance, no failure backoff (mitto-r6j.2).
+			if r.logger != nil {
+				r.logger.Debug("Skipping loop prompt - dispatch coalesced with another trigger",
 					"session_id", sessionID,
 					"session_name", meta.Name)
 			}
@@ -1891,18 +1975,20 @@ func (r *LoopRunner) handleContextWindowFailure(sessionID, sessionName string, l
 //     consecutive hits (mitto-7jn). This runs regardless of trigger type —
 //     onCompletion loops need the same safety net (mitto-4he), and the counter
 //     is trigger-agnostic. Only the schedule-backoff block below is schedule-only.
-//   - Scheduled triggers with resetTimer=true and forced=false then back off
+//   - Schedule-initiated runs with resetTimer=true and forced=false then back off
 //     NextScheduledAt so a transient transport failure (e.g. -32603) does not
-//     re-fire the same prompt on every poll tick (mitto-qal.2). onCompletion
-//     triggers are event-driven (their NextScheduledAt is nil) and manual "keep
-//     schedule" runs (resetTimer=false) or forced one-shots must not push out
-//     the regular schedule.
+//     re-fire the same prompt on every poll tick (mitto-qal.2). Event-driven
+//     fires (onCompletion/onTasks) and manual "keep schedule" runs
+//     (resetTimer=false) or forced one-shots must not push out the regular
+//     schedule. The gate is on firedBy — the trigger that actually won this
+//     dispatch — so that on a multi-trigger loop a failed onCompletion run does
+//     not consume the schedule leg's breaker (mitto-r6j.2).
 //   - The same schedule-backoff counter also gates a MaxLoopDeliveryFailures
 //     ceiling: once a generic (non-context-window) failure recurs that many
 //     consecutive times, the loop is auto-paused with
 //     StoppedReasonDeliveryFailures instead of being deferred again, so a
 //     deterministically permanent failure cannot re-fire forever (mitto-aeb).
-func (r *LoopRunner) handleDeliveryFailure(sessionID, sessionName string, loop *session.LoopPrompt, loopStore *session.LoopStore, err error, resetTimer, forced bool) {
+func (r *LoopRunner) handleDeliveryFailure(sessionID, sessionName string, loop *session.LoopPrompt, loopStore *session.LoopStore, err error, resetTimer, forced bool, firedBy session.LoopTrigger) {
 	if mittoAcp.IsContextTooLargeError(err) {
 		if r.handleContextWindowFailure(sessionID, sessionName, loopStore) {
 			if r.onLoopUpdated != nil {
@@ -1916,7 +2002,7 @@ func (r *LoopRunner) handleDeliveryFailure(sessionID, sessionName string, loop *
 		// loop keeps ticking (with backoff) until the auto-pause threshold is hit.
 	}
 
-	if resetTimer && !forced && !loop.IsOnCompletion() {
+	if resetTimer && !forced && firedBy == session.TriggerSchedule {
 		r.scheduleBackoffFailuresMu.Lock()
 		r.scheduleBackoffFailures[sessionID]++
 		failures := r.scheduleBackoffFailures[sessionID]
@@ -2007,9 +2093,18 @@ func (r *LoopRunner) handleDeliveryFailure(sessionID, sessionName string, loop *
 // fireOnStartPulses shortly after Mitto boots. It flags the delivered PromptMeta
 // so the prompt body can gate on {{ .Session.IsLoopRunOnStart }} (and the
 // @mitto:loop_run_on_start placeholder).
-func (r *LoopRunner) deliverPrompt(bs *BackgroundSession, sessionMeta session.Metadata, loop *session.LoopPrompt, loopStore *session.LoopStore, resetTimer bool, forced bool, tasksDelta *config.TasksDelta, isRunOnStart bool) error {
+//
+// firedBy names the trigger that won this dispatch (mitto-r6j.2). It is recorded
+// on the delivered PromptMeta and claims the per-session dispatch slot: while a
+// run is in flight, a fire from any other trigger of the same loop is dropped
+// with ErrLoopDispatchCoalesced rather than queued. An empty firedBy defers to
+// the loop's primary EffectiveTrigger.
+func (r *LoopRunner) deliverPrompt(bs *BackgroundSession, sessionMeta session.Metadata, loop *session.LoopPrompt, loopStore *session.LoopStore, resetTimer bool, forced bool, tasksDelta *config.TasksDelta, isRunOnStart bool, firedBy session.LoopTrigger) error {
 	sessionID := bs.GetSessionID()
 	sessionName := sessionMeta.Name
+	if firedBy == "" {
+		firedBy = loop.EffectiveTrigger()
+	}
 
 	// Resolve prompt text from name if needed. EffectivePromptBody normalises
 	// the legacy "(pending)" draft placeholder to "" so it is never delivered
@@ -2042,11 +2137,30 @@ func (r *LoopRunner) deliverPrompt(bs *BackgroundSession, sessionMeta session.Me
 		return fmt.Errorf("%w: %q: resolved prompt is empty", ErrPromptResolveFailed, loop.PromptName)
 	}
 
+	// Coalescing claim (mitto-r6j.2). A multi-trigger loop arms every listed
+	// trigger independently, so two of them can reach this point in the same
+	// window. The first to claim wins; the loser is dropped, never queued. The
+	// claim is taken after prompt resolution so a resolve failure does not hold
+	// the slot, and before the workspace reservation so a coalesced fire does
+	// not consume workspace capacity. It applies to forced runs too: unlike the
+	// workspace cap, this guards a single conversation against a double turn.
+	if winner, ok := r.claimDispatch(sessionID, firedBy); !ok {
+		if r.logger != nil {
+			r.logger.Debug("Loop dispatch coalesced - another trigger is already in flight",
+				"session_id", sessionID,
+				"session_name", sessionName,
+				"winner", string(winner),
+				"dropped", string(firedBy))
+		}
+		return ErrLoopDispatchCoalesced
+	}
+
 	if r.logger != nil {
 		r.logger.Debug("Delivering loop prompt",
 			"session_id", sessionID,
 			"session_name", sessionName,
 			"reset_timer", resetTimer,
+			"fired_by", string(firedBy),
 			"prompt_preview", truncatePrompt(promptText, 100))
 	}
 
@@ -2077,19 +2191,23 @@ func (r *LoopRunner) deliverPrompt(bs *BackgroundSession, sessionMeta session.Me
 					"working_dir", sessionMeta.WorkingDir,
 					"acp_server", sessionMeta.ACPServer)
 			}
+			r.releaseDispatch(sessionID)
 			return ErrWorkspaceBusy
 		}
 		slotReserved = true
 	}
 
-	// releaseOnce ensures the workspace slot is released at most once, whether
-	// via OnComplete or the synchronous PromptWithMeta error path below.
+	// releaseOnce ensures the workspace slot and the dispatch claim are released
+	// at most once, whether via OnComplete or the synchronous PromptWithMeta
+	// error path below.
 	var releaseOnce sync.Once
 	releaseSlot := func() {
-		if !slotReserved {
-			return
-		}
-		releaseOnce.Do(func() { r.releaseWorkspaceSlot(wsKey) })
+		releaseOnce.Do(func() {
+			if slotReserved {
+				r.releaseWorkspaceSlot(wsKey)
+			}
+			r.releaseDispatch(sessionID)
+		})
 	}
 
 	// Use OnComplete callback to defer RecordSent until the prompt actually finishes.
@@ -2120,12 +2238,14 @@ func (r *LoopRunner) deliverPrompt(bs *BackgroundSession, sessionMeta session.Me
 		MaxIterations:    loop.MaxIterations,
 		FreshContext:     loop.FreshContext,
 		Trigger:          triggerCtx,
+		LoopTrigger:      firedBy,
 		OnComplete: func(err error) {
-			// Always release the workspace slot when the prompt terminates,
-			// regardless of success or failure (mitto-61z).
+			// Always release the workspace slot and the dispatch claim when the
+			// prompt terminates, regardless of success or failure (mitto-61z,
+			// mitto-r6j.2).
 			defer releaseSlot()
 			if err != nil {
-				r.handleDeliveryFailure(sessionID, sessionName, loop, loopStore, err, resetTimer, forced)
+				r.handleDeliveryFailure(sessionID, sessionName, loop, loopStore, err, resetTimer, forced, firedBy)
 				return
 			}
 
