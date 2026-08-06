@@ -14,11 +14,13 @@ tags:
 - github
 enabledWhen: FileExists(".git/config") && (Tools.HasPattern("github_*") || CommandExists("gh"))
 loop:
+  trigger: [onCompletion]
+  onCompletion:
+    delay: 3600
+  onTasks:
+    coalesceDuringBusy: true
   mode: optional
   default: true
-  trigger: onCompletion
-  coalesceDuringBusy: true
-  delay: 3600
   maxIterations: 30
 target:
   title: 'GitHub: babysit contributions'

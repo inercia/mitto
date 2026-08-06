@@ -6,11 +6,13 @@ menus: prompts, conversation
 backgroundColor: '#FFF9C4'
 enabledWhen: Session.HasMessages
 loop:
+  trigger: [onCompletion]
+  onCompletion:
+    delay: 60
+  onTasks:
+    coalesceDuringBusy: true
   mode: optional
   default: false
-  trigger: onCompletion
-  coalesceDuringBusy: true
-  delay: 60
   maxIterations: 20
   maxDuration: "4h"
 prompt: |

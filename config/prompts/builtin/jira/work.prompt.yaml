@@ -6,11 +6,13 @@ backgroundColor: '#BBDEFB'
 group: JIRA
 enabledWhen: '!Session.IsChild && (Tools.Names.exists(n, n.matches("(?i)jira")) || CommandExists("jira")) && Permissions.CanStartConversation'
 loop:
+  trigger: [onCompletion]
+  onCompletion:
+    delay: 60
+  onTasks:
+    coalesceDuringBusy: true
   mode: optional
   default: false
-  trigger: onCompletion
-  coalesceDuringBusy: true
-  delay: 60
 target:
   title: 'JIRA: start work'
   reuse:

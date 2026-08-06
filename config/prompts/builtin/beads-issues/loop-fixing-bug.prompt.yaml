@@ -20,10 +20,12 @@ backgroundColor: '#FFCDD2'
 group: Tasks
 enabledWhen: '!Session.IsChild && CommandExists("bd") && DirExists(".beads") && Permissions.CanSendPrompt && Item.Type == "bug" && Item.Status != "closed"'
 loop:
+  trigger: [onCompletion]
+  onCompletion:
+    delay: 30
+  onTasks:
+    coalesceDuringBusy: true
   mode: always
-  trigger: onCompletion
-  coalesceDuringBusy: true
-  delay: 30
   maxIterations: 20
   maxDuration: "4h"
   # Phase state (researched / reproduced / fixed) is authoritative on the bead

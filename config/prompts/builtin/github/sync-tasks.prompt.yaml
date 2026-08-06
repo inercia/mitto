@@ -12,11 +12,13 @@ preferredModels:
   - modelTag: Cheap
   - modelTag: Coding
 loop:
+  trigger: [schedule]
+  schedule:
+    value: 1
+    unit: days
+    at: "09:00"
   mode: optional
   default: true
-  value: 1
-  unit: days
-  at: "09:00"
 target:
   title: 'GitHub: sync tasks'
   reuse:

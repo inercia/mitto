@@ -10,10 +10,12 @@ group: Development
 backgroundColor: '#BBDEFB'
 enabledWhen: 'Session.HasMessages && CommandExists("bd")'
 loop:
+  trigger: [onCompletion]
+  onCompletion:
+    delay: 30
+  onTasks:
+    coalesceDuringBusy: true
   mode: always
-  trigger: onCompletion
-  coalesceDuringBusy: true
-  delay: 30
   maxIterations: 20
 prompt: |
   {{ template "beads-issues/shared/bootstrap" . }}

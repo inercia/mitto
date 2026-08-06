@@ -54,6 +54,10 @@ higher-priority sources override lower-priority ones.
 | 6           | Workspace prompts dirs        | `prompts_dirs` in `.mittorc`     |
 | 7 (highest) | Workspace `.mittorc` prompts  | `prompts:` in `.mittorc`         |
 
+Every directory-based source above is also scanned for `*.tmpl`
+[fragments](#prompt-fragments-tmpl-partials) — reusable body chunks shared
+between prompts — which merge by name using the same priority chain.
+
 ### 1. Built-in Default Prompts
 
 Mitto includes a set of default prompts for common workflows. These are defined in
@@ -260,12 +264,11 @@ prompt: |
 | `description`     | No       | string   | Tooltip text shown on hover                                                                  |
 | `group`           | No       | string   | Group name for organizing prompts in the menu (e.g., `"Git"`, `"Testing"`)                   |
 | `menus`           | No       | string   | Comma-separated list of menus the prompt appears in: `prompts` (ChatInput dropup), `promptsLoop` (loop prompt selector), `conversation` (per-conversation context menu), `beadsIssues` (per-issue context menu in the Beads list), and/or `beadsList` (list-level prompts button in the Beads list footer). Defaults to `prompts` if omitted. See [below](#menus). |
-| `parameters`      | No       | list     | Typed input declarations. Each entry: `{ name, type, description?, required? }`. The menu must supply every declared type or the prompt is hidden. See [below](#parameters-typed-inputs--type-based-gating). |
+| `parameters`      | No       | list     | Typed input declarations. Each entry: `{ name, type, description?, required?, ask?, default?, multiLine?, options?, dir?, glob?, remember?, cache?, collectInnerArgs? }`. The menu must supply every declared **required** type or the prompt is hidden. See [below](#parameters-typed-inputs--type-based-gating). |
 | `backgroundColor` | No       | string   | Hex color for the button (e.g., `"#E8F5E9"`)                                                 |
 | `icon`            | No       | string   | Icon name shown next to the prompt in menus. See [valid names](#icon-names). Unknown names fall back to the default icon. |
 | `tags`            | No       | string[] | Categorization tags (reserved for future use)                                                |
 | `singleton`       | No       | bool     | `true` means launching this prompt from the menu does not create a duplicate conversation if a non-archived conversation started from the same prompt already exists in the same working directory. Instead the existing conversation is reused: if it is idle the prompt is re-seeded into its queue; if it is busy it is only focused (focus-only). Scope key is (working directory, origin prompt name). Default: `false` |
-| `acps`            | No       | string   | Comma-separated ACP server types this prompt belongs to. Makes the prompt server-specific.   |
 | `enabled`         | No       | bool     | Set to `false` to disable the prompt. Default: `true`                                        |
 | `enabledWhen`     | No       | string   | CEL expression for conditional enablement. See [below](#enabledwhen-conditional-enablement). |
 | `loop`        | No       | mapping  | Opt-in loop mode — presence makes the prompt behave **context-sensitively** when selected (start a new recurring conversation, convert an existing one to loop, or send a single one-shot run). See [below](#loop-prompts). |
@@ -277,6 +280,11 @@ prompt: |
 "code-review").
 
 \*\*`prompt` is optional for disable-only overrides — an entry with only `name` and `enabled: false` is valid.
+
+> **Removed field: `acps`.** Restricting a prompt to particular agents is done
+> with `enabledWhen` instead — e.g.
+> `enabledWhen: 'ACP.MatchesServerType("auggie")'`. A leftover `acps:` key is
+> ignored. See [ACP server checks](#enabledwhen-conditional-enablement).
 
 ### icon (Names)
 
@@ -977,6 +985,14 @@ parameters:
                             #                   even when `required: false`. Still
                             #                   non-blocking (Save is not gated on it).
                             #   A param the menu auto-supplies is never re-asked.
+    default: "..."          # optional — value pre-filled in the parameter dialog.
+                            #   Overridden by a `remember:`ed value when one exists.
+                            #   When `options:` is set it must be one of them.
+    dir: docs/instructions  # optional — only for type: filename / dirname. Root of
+                            #   the dropdown listing (workspace-relative).
+    glob: ["*.md"]          # optional LIST — only for type: filename / dirname.
+                            #   A candidate matches when ANY pattern matches. See
+                            #   "Recursive glob" below.
     multiLine: true         # optional bool — only valid for type: text. Renders a
                             #   resizable multi-line textarea in the parameter dialog
                             #   instead of a single-line input. Rejected at load on
@@ -1354,35 +1370,79 @@ already exposes the same `PromptsCache` snapshot the MCP tools read.
 
 ### Functions
 
+Function names are **case-sensitive** and all start with an upper-case letter
+(except `dict`). There are no lower-case aliases — `{{ arg "X" "y" }}` fails to
+parse with `function "arg" not defined` and the prompt is dropped at load time.
+
+**Arguments and context**
+
 | Function | Signature | Meaning |
 | --- | --- | --- |
-| `arg` | `arg "NAME" "default"` | Argument value, or default if absent/empty (replaces the removed `${NAME:-default}` bash syntax) |
+| `Arg` | `Arg "NAME" "default"` | Argument value, or default if absent/empty (replaces the removed `${NAME:-default}` bash syntax) |
 | `UserData` | `UserData "NAME"` | Per-conversation user-data field value, or `""` if unset. Handles names with spaces, e.g. `UserData "JIRA Ticket"`. |
-| `default` | `default "fallback" .Value` | `.Value` if non-empty, else fallback |
-| `cond` / `when` | `cond "celExpr"` | Evaluate a CEL expression (same grammar as `enabledWhen`) → bool |
-| `fileExists` | `fileExists "path"` | Path exists as a file (relative to workspace folder). Auto-detects glob metacharacters (`*`, `?`, `[`, `{`) and switches to a bounded workspace walk that reports whether ANY regular file matches (e.g. `fileExists "**/*.go"`, 2 s timeout, fail-open on cap/deadline, absolute globs / `..`-escapes → `false`). |
-| `dirExists` | `dirExists "path"` | Directory exists. Same glob-mode semantics as `fileExists` but matches directories (e.g. `dirExists "vendor/**/pkg"`). |
-| `commandExists` | `commandExists "name"` | Command is on PATH |
+| `Default` | `Default "fallback" .Value` | `.Value` if non-empty, else fallback |
+| `Cond` / `When` | `Cond "celExpr"` | Evaluate a CEL expression (same grammar as `enabledWhen`) → bool |
+| `dict` | `dict "K1" v1 "K2" v2` | Build a `map[string]any` from alternating key/value pairs. The `{{ template … }}` action accepts only one pipeline argument, so this is how a [fragment](#prompt-fragments-tmpl-partials) receives several named values. An odd argument count or a non-string key is an error (fail-closed). |
+
+**Filesystem**
+
+| Function | Signature | Meaning |
+| --- | --- | --- |
+| `FileExists` | `FileExists "path"` | Path exists as a file (relative to workspace folder). Auto-detects glob metacharacters (`*`, `?`, `[`, `{`) and switches to a bounded workspace walk that reports whether ANY regular file matches (e.g. `FileExists "**/*.go"`, 2 s timeout, fail-open on cap/deadline, absolute globs / `..`-escapes → `false`). |
+| `DirExists` | `DirExists "path"` | Directory exists. Same glob-mode semantics as `FileExists` but matches directories (e.g. `DirExists "vendor/**/pkg"`). |
+| `CommandExists` | `CommandExists "name"` | Command is on PATH |
+| `ReadFile` | `ReadFile "path"` | Inline a workspace-relative file **verbatim** — `{{ … }}` inside it is preserved as-is. Fail-open: `""` on missing / oversize / unreadable. See [`ReadFile` vs. `ReadTemplate`](#readfile-vs-readtemplate--when-to-use-which). |
+| `ReadTemplate` | `ReadTemplate "path" .` | Same as `ReadFile`, but the body is **sub-rendered** as a Go template against the current context (it may use `.Args`, `.Session.*`, other helpers, and `{{ template … }}` fragments). Fail-closed on parse/exec errors. |
+| `Dir` | `Dir "a/b/c.md"` | Forward-slash directory portion of a path (`path.Dir` semantics, not OS-native `filepath.Dir`). Useful for a sibling-file path off a workspace-relative argument: `{{ Dir .Args.Test }}/cleanup.md`. |
+
+Path safety for `ReadFile` / `ReadTemplate` is enforced at read time: absolute
+paths, `..` escapes, and symlink escapes are rejected, and the file is capped at
+256 KB.
+
+**Git**
+
+| Function | Signature | Meaning |
+| --- | --- | --- |
 | `GitRepo` | `GitRepo "path"` | Folder (omit `path` for the whole workspace) is inside a git work tree — use as a gatekeeper before other `Git*` checks |
 | `GitFileModified` | `GitFileModified "path"` | Tracked file at `path` has pending (staged/unstaged) changes vs HEAD/index; untracked files are `false` |
 | `GitDirModified` | `GitDirModified "path"` | Directory (omit `path` for the whole workspace) has any pending changes, including untracked files |
+| `GitStatusFiles` | `GitStatusFiles "path"` | `range`-able list of `git status --porcelain` lines for `path` (omit for the whole workspace). `nil` outside a repo or on error. |
 | `GitFileTracked` | `GitFileTracked "path"` | `path` is tracked by git (present in the index) |
 | `GitFileDeleted` | `GitFileDeleted "path"` | Tracked file at `path` has been deleted (staged or unstaged deletion) |
-| `Model` | `Model "tag"` | Current model carries capability `tag` (case-insensitive), from [`models:` profiles](models.md); `false` when the model is unknown or no profile matches |
-| `PromptText` | `PromptText "name"` | Inline the full body of another workspace prompt by NAME. Fails-closed at send time if the resolver is unavailable (menu/enabledWhen), the name is empty, or the prompt is unknown. Trailing newlines are stripped; interior whitespace is preserved. The fetched body is inlined verbatim — Go-template actions inside it are NOT re-rendered. Pairs with the `prompts` parameter type. |
 
 All `Git*` functions resolve relative paths against `Workspace.Folder`, run `git` as a
 subprocess (bounded to 5s), and return `false` outside a git repo or when git is unavailable.
-They are evaluated at send/display time, same as `fileExists`/`dirExists`/`commandExists`.
+They are evaluated at send/display time, same as `FileExists`/`DirExists`/`CommandExists`.
 Use `GitRepo` as a gatekeeper (e.g. `GitRepo() && GitDirModified()`) when a prompt should only
 apply inside git-managed folders.
 
-String utilities: `trim`, `lower`, `upper`, `contains`, `hasPrefix`, `hasSuffix`, `join`.
+**Beads**
 
-Path utilities: `Dir(path)` returns the forward-slash directory portion of `path`
-(same semantics as Go's `path.Dir`, not the OS-native `filepath.Dir`), useful
-for deriving a sibling-file path from a workspace-relative argument such as
-`{{ Dir .Args.Test }}/cleanup.md`.
+All beads helpers shell out to `bd` and are **fail-open** (a missing `bd`, a
+missing `.beads/` database, or an error yields the zero value). Gate them behind
+the cheap checks first — `CommandExists "bd"` and `DirExists ".beads"` — so `bd`
+only runs in workspaces that actually have a beads database.
+
+| Function | Signature | Meaning |
+| --- | --- | --- |
+| `BeadsCount` | `BeadsCount "labels" "statuses"` | Number of beads matching the comma-separated label and status filters (either may be empty). |
+| `HasBeads` | `HasBeads "labels" "statuses"` | `true` when `BeadsCount` would be non-zero. |
+| `BeadHasLabels` | `BeadHasLabels "id" "labels"` | `true` iff the single bead `id` carries **all** the comma-separated labels. |
+| `BeadIsOpen` | `BeadIsOpen "id"` | `true` iff bead `id` is not closed. |
+| `BeadMetadata` | `BeadMetadata "id" "key"` | String value of bead `id`'s `metadata[key]`, or `""`. |
+
+**Models, tools and other prompts**
+
+| Function | Signature | Meaning |
+| --- | --- | --- |
+| `Model` | `Model "tag"` | Current model carries capability `tag` (case-insensitive), from [`models:` profiles](models.md); `false` when the model is unknown or no profile matches |
+| `HasPattern` | `HasPattern "github_*"` | An MCP tool matching the glob pattern is available. Render-time counterpart of `Tools.HasPattern` in `enabledWhen`. |
+| `PromptText` | `PromptText "name"` | Inline the full body of another workspace prompt by NAME. Fails-closed at send time if the resolver is unavailable (menu/enabledWhen), the name is empty, or the prompt is unknown. Trailing newlines are stripped; interior whitespace is preserved. The fetched body is inlined verbatim — Go-template actions inside it are NOT re-rendered. Pairs with the `prompts` parameter type. |
+| `PromptTextWithArgs` | `PromptTextWithArgs "name" $args` | Two-pass counterpart of `PromptText`: the fetched body **is** rendered, against a fresh scope whose `.Args` is the supplied map. Fragments are available in the sub-render. Recursion is capped at depth 3. Fail-closed. |
+| `ArgsMap` | `ArgsMap "TARGET_Args"` | Decode a JSON-encoded `map[string]string` argument into a map — used to feed `PromptTextWithArgs` from the `<Param>_Args` companion argument that a `type: prompts` parameter collects. Empty/absent yields an empty map; malformed JSON is an error. |
+
+**String utilities:** `Trim`, `Lower`, `Upper`, `Contains`, `HasPrefix`, `HasSuffix`,
+`Join` (`Join "," $list`).
 
 Model tags are also available at menu time in `enabledWhen`: `Session.HasModelTag("smart")`
 or `"smart" in Session.ModelTags`. See [Model Profiles](models.md).
@@ -1431,6 +1491,150 @@ The same field is available at menu time in `enabledWhen`, e.g. `enabledWhen: '"
 - Struct-field typos (e.g. `{{ .Session.IDd }}`) are caught at **load time** (fail-fast validation). Missing `.Args.X` map keys render as empty string (`missingkey=zero`).
 
 See [devel §10](../devel/prompt-templates.md#10-corner-cases) for the full corner-case reference.
+
+---
+
+## Prompt Fragments (`.tmpl` partials)
+
+A **fragment** is a reusable chunk of prompt body text stored in its own file
+and pulled into any number of prompts. Fragments let you write a shared
+instruction block — a safety checklist, a common preamble, a canonical commit
+recipe — exactly once, and keep every prompt that uses it in sync.
+
+Fragments are referenced with Go template's native sub-template action:
+
+```
+{{ template "git/shared/safe-stage" . }}
+```
+
+### Where fragments live
+
+Fragments live **in the same directories as prompts** — every source listed in
+[Prompt Sources](#prompt-sources) is scanned for both. They are distinguished
+purely by file extension:
+
+| Extension | Kind | Appears in menus? |
+| --------- | ---- | ----------------- |
+| `*.prompt.yaml` | Prompt | Yes |
+| `*.tmpl` | Fragment | **No** |
+
+A `.tmpl` file can never become a prompt: it is never listed in the prompts
+dropdown, the loop selector, the context menus, or the API. Conversely a
+`.prompt.yaml` can never be used as a fragment. There is no `fragments/`
+directory — put the `.tmpl` next to the prompts that use it.
+
+So a workspace might look like:
+
+```
+my-project/
+└── .mitto/
+    └── prompts/
+        ├── deploy.prompt.yaml
+        ├── rollback.prompt.yaml
+        └── shared/
+            └── preflight.tmpl
+```
+
+### Naming
+
+A fragment's name is its path **relative to the prompts directory it was loaded
+from**, with `.tmpl` stripped:
+
+| On-disk path (under a prompts dir) | Fragment name |
+| --- | --- |
+| `shared/preflight.tmpl` | `shared/preflight` |
+| `git/shared/safe-stage.tmpl` | `git/shared/safe-stage` |
+| `simple.tmpl` | `simple` |
+
+Slashes are part of the name, not a directory lookup — they simply give you
+namespacing for free. Fragments from different sources merge by name using the
+same priority chain as prompts (built-in < settings < workspace), so a workspace
+fragment can override a built-in one by using the same name.
+
+### Passing context
+
+The value after the fragment name is the fragment's `.` (dot). Three idioms:
+
+```
+{{ template "shared/preflight" . }}                        Full caller context
+{{ template "shared/preflight" .Args }}                    Only .Args — inside, `.` IS the args map
+{{ template "shared/preflight" (dict "Ctx" . "Env" "prod") }}   Several named values
+```
+
+Use the full context (`.`) unless you have a reason not to; the narrowed forms
+make it explicit at the call site that a fragment does not depend on session
+state. The `dict` form is the way to pass more than one value, since
+`{{ template … }}` accepts exactly one argument.
+
+All the [functions](#functions) available in a prompt body are available inside
+a fragment, with identical semantics.
+
+### Worked example
+
+`.mitto/prompts/shared/preflight.tmpl`:
+
+```
+Before doing anything else:
+
+1. Confirm the working tree is clean{{ if GitDirModified }} — it currently is NOT{{ end }}.
+2. Target environment: {{ Arg "Env" "staging" }}.
+{{- if .Session.IsLoop }}
+3. This is an unattended loop run — never ask the user; stop and report instead.
+{{- end }}
+```
+
+`.mitto/prompts/deploy.prompt.yaml`:
+
+```yaml
+name: "Deploy"
+parameters:
+  - name: Env
+    type: text
+    options: [staging, prod]
+prompt: |
+  {{ template "shared/preflight" . }}
+
+  Now deploy the application to {{ .Args.Env }}.
+```
+
+### Errors are caught at load time
+
+Because fragments participate in template parsing, mistakes surface when the
+prompt is loaded, not when it is sent:
+
+- **Unknown fragment name** — `{{ template "no-such-thing" . }}` makes the
+  *calling prompt* fail to load, with `template "no-such-thing" is undefined`.
+  The prompt disappears from the menus until it is fixed.
+- **Cycles** — `A` including `B` including `A` is rejected by Go's template
+  parser; no depth limit or cycle detector of Mitto's own is involved.
+
+Check the whole tree before shipping:
+
+```bash
+mitto prompts verify -v            # parses every prompt + fragment, resolves every reference
+mitto prompts render "Deploy" --arg Env=prod
+```
+
+`mitto prompts render` expands fragments, so it shows exactly what the agent
+will receive.
+
+### Live reload
+
+Editing a `.tmpl` file reloads the fragment registry and invalidates the prompts
+cache, so every prompt that references it picks up the change immediately — no
+restart, and no need to touch the prompt files themselves.
+
+### Built-in fragments
+
+Mitto's built-in prompts ship with their own fragments under
+`MITTO_DIR/prompts/builtin/`, deployed alongside the built-in prompts by
+`mitto prompts update-builtin`. Cross-cutting ones live under the `_shared/`
+prefix (e.g. `{{ template "_shared/session-context" . }}`, which renders the
+"Session Context" preamble); family-specific ones live under
+`<family>/shared/` (e.g. `git/shared/safe-stage`). Your own prompts can
+reference them by name. See
+[devel/prompt-templates.md §11b](../devel/prompt-templates.md#11b-prompt-fragments-co-located-tmpl-partials)
+for the shipped inventory and the internals.
 
 ---
 
@@ -2022,12 +2226,43 @@ Write Tests  Generate comprehensive tests for the...   testing/write-tests.promp
 Total: 3 prompt(s)
 ```
 
+Statically check every prompt **and fragment** — YAML schema, template syntax,
+CEL expressions in `Cond`/`When`, unresolved `{{ template … }}` references, and
+duplicate prompt names. Exits non-zero on the first error, so it fits in a CI
+step:
+
+```bash
+mitto prompts verify              # errors only
+mitto prompts verify -v           # also list everything that loaded
+mitto prompts verify --dir ./.mitto/prompts   # include a workspace directory
+```
+
+Render a prompt end-to-end — arguments substituted, fragments expanded — and
+print exactly what would be sent to the agent:
+
+```bash
+mitto prompts render "Deploy" --arg Env=prod
+mitto prompts render "Code Review" --workspace-dir ~/src/my-project -o /tmp/out.txt
+```
+
+Redeploy the embedded built-in prompts and fragments into
+`MITTO_DIR/prompts/builtin/` (run after upgrading Mitto):
+
+```bash
+mitto prompts update-builtin --force
+```
+
+> `update-builtin` only **writes** files; it never deletes. If a built-in prompt
+> was renamed or moved in a newer version, the stale copy stays behind and shows
+> up as a duplicate in the picker — remove it manually.
+
 ## Hot Reload
 
 Prompts are automatically reloaded when the prompts dropdown is opened. The server
 checks file modification times for all prompt sources (global directory, workspace
 `.mitto/prompts/`, and `.mittorc` files) and re-merges when any source has changed.
-You don't need to restart Mitto after adding or modifying prompt files.
+Fragment (`.tmpl`) edits are picked up the same way. You don't need to restart
+Mitto after adding or modifying prompt or fragment files.
 
 ## Related Documentation
 

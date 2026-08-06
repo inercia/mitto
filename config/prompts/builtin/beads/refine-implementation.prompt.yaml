@@ -12,14 +12,15 @@ enabledWhen: CommandExists("bd") && DirExists(".beads")
 preferredModels:
   - modelTag: Smart
 loop:
+  trigger: [onTasks]
+  onTasks:
+    condition: 'Changes.Touched.exists(i, i.status == "open" && !("implementation-refined" in i.labels))'
+    # Opt in to per-event re-fire (mitto-dmb): when beads change during a run,
+    # the accumulated delta is exposed as .Trigger.OnTasks.* on the follow-up fire
+    # so newly-arrived candidates are picked up promptly instead of waiting for
+    # the next external change.
+    coalesceDuringBusy: false
   mode: always
-  trigger: onTasks
-  condition: 'Changes.Touched.exists(i, i.status == "open" && !("implementation-refined" in i.labels))'
-  # Opt in to per-event re-fire (mitto-dmb): when beads change during a run,
-  # the accumulated delta is exposed as .Trigger.OnTasks.* on the follow-up fire
-  # so newly-arrived candidates are picked up promptly instead of waiting for
-  # the next external change.
-  coalesceDuringBusy: false
   maxIterations: 20
   maxDuration: "4h"
 prompt: |

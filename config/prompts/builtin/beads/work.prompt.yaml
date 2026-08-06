@@ -6,11 +6,13 @@ backgroundColor: '#B2DFDB'
 group: Tasks
 enabledWhen: '!Session.IsChild && CommandExists("bd") && DirExists(".beads") && Permissions.CanStartConversation'
 loop:
+  trigger: [onCompletion]
+  onCompletion:
+    delay: 60
+  onTasks:
+    coalesceDuringBusy: true
   mode: optional
   default: false
-  trigger: onCompletion
-  coalesceDuringBusy: true
-  delay: 60
 target:
   title: 'Start working on ready'
   reuse:

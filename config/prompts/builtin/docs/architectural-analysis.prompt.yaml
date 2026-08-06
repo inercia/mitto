@@ -8,11 +8,13 @@ tags:
 - loop
 enabledWhen: CommandExists("bd")
 loop:
+  trigger: [onCompletion]
+  onCompletion:
+    delay: 60
+  onTasks:
+    coalesceDuringBusy: true
   mode: optional
   default: false
-  trigger: onCompletion
-  coalesceDuringBusy: true
-  delay: 60
 target:
   title: 'Architectural Analysis'
   reuse:

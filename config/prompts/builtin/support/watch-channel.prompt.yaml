@@ -27,10 +27,12 @@ parameters:
     description: 'How many days of channel history to scan each run (default 2).'
 enabledWhen: '!Session.IsChild && CommandExists("bd") && Tools.HasAnyPattern(["slack_*", "*_slack"])'
 loop:
+  trigger: [schedule]
+  schedule:
+    value: 15
+    unit: minutes
   mode: optional
   default: true
-  value: 15
-  unit: minutes
 prompt: |-
   {{- $channel := .Args.SlackChannelID -}}
   {{- $ws := .Args.SlackWorkspaceURL -}}

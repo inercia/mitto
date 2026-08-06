@@ -14,10 +14,12 @@ tags:
 - github
 enabledWhen: '!Session.IsChild && FileExists(".git/config") && (Tools.HasPattern("github_*") || CommandExists("gh")) && Permissions.CanStartConversation'
 loop:
+  trigger: [onCompletion]
+  onCompletion:
+    delay: 3600
+  onTasks:
+    coalesceDuringBusy: true
   mode: always
-  trigger: onCompletion
-  coalesceDuringBusy: true
-  delay: 3600
   maxIterations: 30
   maxDuration: "6h"
 target:

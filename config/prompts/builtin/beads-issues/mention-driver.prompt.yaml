@@ -27,9 +27,11 @@ description: Internal router driver for a single @mitto mention. Classifies the 
 group: Tasks
 backgroundColor: '#E1BEE7'
 loop:
-  trigger: onCompletion
-  coalesceDuringBusy: true
-  delay: 30
+  trigger: [onCompletion]
+  onCompletion:
+    delay: 30
+  onTasks:
+    coalesceDuringBusy: true
   maxIterations: 8
   maxDuration: "1h"
   # Per-mention phase state is authoritative on the bead (labels + phase

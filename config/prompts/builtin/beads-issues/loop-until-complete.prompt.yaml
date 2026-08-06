@@ -15,10 +15,12 @@ backgroundColor: '#C8E6C9'
 group: Tasks
 enabledWhen: '!Session.IsChild && CommandExists("bd") && DirExists(".beads") && Permissions.CanStartConversation && Item.Status != "closed"'
 loop:
+  trigger: [onCompletion]
+  onCompletion:
+    delay: 30
+  onTasks:
+    coalesceDuringBusy: true
   mode: always
-  trigger: onCompletion
-  coalesceDuringBusy: true
-  delay: 30
   maxIterations: 20
   maxDuration: "4h"
 target:

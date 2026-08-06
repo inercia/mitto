@@ -34,12 +34,13 @@ loop:
   # change; freshContext keeps token spend bounded and prevents stale reasoning;
   # coalesceDuringBusy: false ensures §A/§B/§C children's own .beads/ mutations
   # re-fire the supervisor (mitto-cwg) instead of being silently rebased.
-  trigger: onTasks
+  trigger: [onTasks]
+  onTasks:
+    coalesceDuringBusy: false
   maxIterations: 0
   maxDuration: 0
   runOnStart: true
   freshContext: true
-  coalesceDuringBusy: false
 target:
   title: 'Loop processing tasks'
   reuse:

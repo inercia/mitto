@@ -8,11 +8,13 @@ preferredModels:
   - modelTag: Cheap
   - modelTag: Coding
 loop:
+  trigger: [onCompletion]
+  onCompletion:
+    delay: 60
+  onTasks:
+    coalesceDuringBusy: true
   mode: optional
   default: false
-  trigger: onCompletion
-  coalesceDuringBusy: true
-  delay: 60
 target:
   title: 'Check CI'
   reuse:

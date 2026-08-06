@@ -20,10 +20,12 @@ backgroundColor: '#C8E6C9'
 group: Tasks
 enabledWhen: '!Session.IsChild && CommandExists("bd") && DirExists(".beads") && Permissions.CanSendPrompt && Item.Type == "feature" && Item.Status != "closed"'
 loop:
+  trigger: [onCompletion]
+  onCompletion:
+    delay: 30
+  onTasks:
+    coalesceDuringBusy: true
   mode: always
-  trigger: onCompletion
-  coalesceDuringBusy: true
-  delay: 30
   maxIterations: 30
   maxDuration: "8h"
   # Phase state (planned / implemented / tested / verified) is authoritative on

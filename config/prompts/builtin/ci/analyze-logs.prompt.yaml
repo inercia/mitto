@@ -16,11 +16,13 @@ parameters:
     description: 'Optional additional instructions to steer the analysis (e.g. "these are nginx access logs — focus on security and abuse", "this is the payment service, flag any data-consistency issues", "ignore deprecation warnings", "correlate by request-id")'
 enabledWhen: CommandExists("bd")
 loop:
+  trigger: [onCompletion]
+  onCompletion:
+    delay: 60
+  onTasks:
+    coalesceDuringBusy: true
   mode: optional
   default: false
-  trigger: onCompletion
-  coalesceDuringBusy: true
-  delay: 60
 target:
   title: 'Analyze logs'
   reuse:

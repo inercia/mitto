@@ -18,10 +18,12 @@ backgroundColor: '#D1C4E9'
 group: Work flow
 enabledWhen: 'Session.HasMessages && !Session.IsChild'
 loop:
+  trigger: [onCompletion]
+  onCompletion:
+    delay: 30
+  onTasks:
+    coalesceDuringBusy: true
   mode: always
-  trigger: onCompletion
-  coalesceDuringBusy: true
-  delay: 30
   maxIterations: 20
   maxDuration: "4h"
 prompt: |

@@ -19,10 +19,12 @@ enabledWhen: Tools.HasPattern("slack_*") && (Tools.HasPattern("github_*") || Com
 preferredModels:
   - modelTag: Cheap
 loop:
+  trigger: [schedule]
+  schedule:
+    value: 30
+    unit: minutes
   mode: optional
   default: false
-  value: 30
-  unit: minutes
 target:
   title: 'GitHub: review PRs requests in slack'
   reuse:

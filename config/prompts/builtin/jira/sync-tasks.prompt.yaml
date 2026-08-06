@@ -32,11 +32,13 @@ enabledWhen: '(Tools.Names.exists(n, n.matches("(?i)jira")) || CommandExists("ji
 preferredModels:
   - modelTag: Coding
 loop:
+  trigger: [schedule]
+  schedule:
+    value: 1
+    unit: days
+    at: "09:00"
   mode: optional
   default: true
-  value: 1
-  unit: days
-  at: "09:00"
 target:
   title: 'JIRA: sync tasks'
   reuse:
