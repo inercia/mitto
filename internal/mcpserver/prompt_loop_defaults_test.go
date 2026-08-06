@@ -576,3 +576,120 @@ func TestApplyPromptLoopDefaults_MultiTriggerAndSettleWindow(t *testing.T) {
 		}
 	})
 }
+
+// TestApplyPromptLoopDefaults_SyncGuard is a table-driven cross-helper sync
+// guard: it asserts that for every PromptLoop frontmatter field currently
+// merged into ConversationStartInput, the ConversationUpdateInput helper
+// merges the same field to the same value. If the two MCP helpers drift
+// (e.g. a new frontmatter field is wired into one but not the other), one
+// side of the table will trip the expectation.
+//
+// This test intentionally uses the exhaustive PromptLoop fixture below
+// (every mergeable field set) rather than per-field sub-tests: a drift bug
+// is most likely to appear as "helper A merges field X, helper B does not",
+// and the exhaustive fixture surfaces that as a single failing assertion
+// with a clear diff.
+//
+// Sibling test in internal/web/handlers pins the third helper
+// (applyPromptLoopDefaultsToLoopPrompt) against the same fixture so all
+// three merge points stay in lock-step.
+func TestApplyPromptLoopDefaults_SyncGuard(t *testing.T) {
+	// The exhaustive fixture: every PromptLoop field the helpers currently
+	// merge, with distinguishable non-zero values so an assertion can pin
+	// exactly which field was mis-merged.
+	pl := &config.PromptLoop{
+		Trigger:      []string{"schedule", "onCompletion", "onTasks"},
+		Schedule:     &config.PromptLoopSchedule{Value: 7, Unit: "hours", At: ""},
+		OnCompletion: &config.PromptLoopOnCompletion{Delay: 45},
+		OnTasks: &config.PromptLoopOnTasks{
+			Condition:          "e2e:pr:closed",
+			ConditionPreset:    "pr-closed",
+			Cooldown:           90,
+			SettleWindow:       33,
+			CoalesceDuringBusy: boolPtr(false),
+		},
+		MaxIterations: 11,
+		MaxDuration:   "2h",
+		FreshContext:  boolPtr(true),
+		RunOnStart:    boolPtr(true),
+	}
+
+	t.Run("start input merges every field", func(t *testing.T) {
+		in := &ConversationStartInput{}
+		applyPromptLoopDefaultsToStartInput(in, pl, "seed")
+
+		// Trigger: whole list, comma-joined (mitto-r6j.5).
+		if in.LoopTrigger != "schedule,onCompletion,onTasks" {
+			t.Errorf("LoopTrigger = %q, want the whole comma-joined list", in.LoopTrigger)
+		}
+		if in.LoopCompletionDelaySeconds == nil || *in.LoopCompletionDelaySeconds != 45 {
+			t.Errorf("LoopCompletionDelaySeconds = %v, want *45", in.LoopCompletionDelaySeconds)
+		}
+		if in.LoopSettleWindowSeconds == nil || *in.LoopSettleWindowSeconds != 33 {
+			t.Errorf("LoopSettleWindowSeconds = %v, want *33", in.LoopSettleWindowSeconds)
+		}
+		if in.LoopFrequencyValue != 7 {
+			t.Errorf("LoopFrequencyValue = %d, want 7", in.LoopFrequencyValue)
+		}
+		if in.LoopFrequencyUnit != "hours" {
+			t.Errorf("LoopFrequencyUnit = %q, want hours", in.LoopFrequencyUnit)
+		}
+		if in.LoopMaxIterations == nil || *in.LoopMaxIterations != 11 {
+			t.Errorf("LoopMaxIterations = %v, want *11", in.LoopMaxIterations)
+		}
+		if in.LoopMaxDurationSeconds == nil || *in.LoopMaxDurationSeconds != 7200 {
+			t.Errorf("LoopMaxDurationSeconds = %v, want *7200 (2h)", in.LoopMaxDurationSeconds)
+		}
+		if in.LoopCondition != "e2e:pr:closed" {
+			t.Errorf("LoopCondition = %q, want %q", in.LoopCondition, "e2e:pr:closed")
+		}
+		if in.LoopCoalesceDuringBusy == nil || *in.LoopCoalesceDuringBusy != false {
+			t.Errorf("LoopCoalesceDuringBusy = %v, want *false", in.LoopCoalesceDuringBusy)
+		}
+		if in.LoopFreshContext == nil || *in.LoopFreshContext != true {
+			t.Errorf("LoopFreshContext = %v, want *true", in.LoopFreshContext)
+		}
+		if in.LoopRunOnStart == nil || *in.LoopRunOnStart != true {
+			t.Errorf("LoopRunOnStart = %v, want *true", in.LoopRunOnStart)
+		}
+	})
+
+	t.Run("update input merges every field", func(t *testing.T) {
+		in := &ConversationUpdateInput{}
+		applyPromptLoopDefaultsToUpdateInput(in, pl)
+
+		if in.LoopTrigger == nil || *in.LoopTrigger != "schedule,onCompletion,onTasks" {
+			t.Errorf("LoopTrigger = %v, want the whole comma-joined list", in.LoopTrigger)
+		}
+		if in.LoopCompletionDelaySeconds == nil || *in.LoopCompletionDelaySeconds != 45 {
+			t.Errorf("LoopCompletionDelaySeconds = %v, want *45", in.LoopCompletionDelaySeconds)
+		}
+		if in.LoopSettleWindowSeconds == nil || *in.LoopSettleWindowSeconds != 33 {
+			t.Errorf("LoopSettleWindowSeconds = %v, want *33", in.LoopSettleWindowSeconds)
+		}
+		if in.LoopFrequencyValue == nil || *in.LoopFrequencyValue != 7 {
+			t.Errorf("LoopFrequencyValue = %v, want *7", in.LoopFrequencyValue)
+		}
+		if in.LoopFrequencyUnit == nil || *in.LoopFrequencyUnit != "hours" {
+			t.Errorf("LoopFrequencyUnit = %v, want *hours", in.LoopFrequencyUnit)
+		}
+		if in.LoopMaxIterations == nil || *in.LoopMaxIterations != 11 {
+			t.Errorf("LoopMaxIterations = %v, want *11", in.LoopMaxIterations)
+		}
+		if in.LoopMaxDurationSeconds == nil || *in.LoopMaxDurationSeconds != 7200 {
+			t.Errorf("LoopMaxDurationSeconds = %v, want *7200 (2h)", in.LoopMaxDurationSeconds)
+		}
+		if in.LoopCondition == nil || *in.LoopCondition != "e2e:pr:closed" {
+			t.Errorf("LoopCondition = %v, want *%q", in.LoopCondition, "e2e:pr:closed")
+		}
+		if in.LoopCoalesceDuringBusy == nil || *in.LoopCoalesceDuringBusy != false {
+			t.Errorf("LoopCoalesceDuringBusy = %v, want *false", in.LoopCoalesceDuringBusy)
+		}
+		if in.LoopFreshContext == nil || *in.LoopFreshContext != true {
+			t.Errorf("LoopFreshContext = %v, want *true", in.LoopFreshContext)
+		}
+		if in.LoopRunOnStart == nil || *in.LoopRunOnStart != true {
+			t.Errorf("LoopRunOnStart = %v, want *true", in.LoopRunOnStart)
+		}
+	})
+}
