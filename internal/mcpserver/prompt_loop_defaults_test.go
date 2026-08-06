@@ -16,8 +16,8 @@ func TestApplyPromptLoopDefaultsToStartInput_CoalesceDuringBusy(t *testing.T) {
 	t.Run("frontmatter fills unset caller", func(t *testing.T) {
 		input := &ConversationStartInput{}
 		pl := &config.PromptLoop{
-			Trigger:            "onTasks",
-			CoalesceDuringBusy: boolPtr(false),
+			Trigger: []string{"onTasks"},
+			OnTasks: &config.PromptLoopOnTasks{CoalesceDuringBusy: boolPtr(false)},
 		}
 		applyPromptLoopDefaultsToStartInput(input, pl, "seed-prompt")
 		if input.LoopCoalesceDuringBusy == nil {
@@ -32,8 +32,8 @@ func TestApplyPromptLoopDefaultsToStartInput_CoalesceDuringBusy(t *testing.T) {
 		callerVal := true
 		input := &ConversationStartInput{LoopCoalesceDuringBusy: &callerVal}
 		pl := &config.PromptLoop{
-			Trigger:            "onTasks",
-			CoalesceDuringBusy: boolPtr(false),
+			Trigger: []string{"onTasks"},
+			OnTasks: &config.PromptLoopOnTasks{CoalesceDuringBusy: boolPtr(false)},
 		}
 		applyPromptLoopDefaultsToStartInput(input, pl, "seed-prompt")
 		if input.LoopCoalesceDuringBusy == nil || *input.LoopCoalesceDuringBusy != true {
@@ -43,7 +43,7 @@ func TestApplyPromptLoopDefaultsToStartInput_CoalesceDuringBusy(t *testing.T) {
 
 	t.Run("nil frontmatter leaves caller nil", func(t *testing.T) {
 		input := &ConversationStartInput{}
-		pl := &config.PromptLoop{Trigger: "onTasks"} // CoalesceDuringBusy unset
+		pl := &config.PromptLoop{Trigger: []string{"onTasks"}} // CoalesceDuringBusy unset
 		applyPromptLoopDefaultsToStartInput(input, pl, "seed-prompt")
 		if input.LoopCoalesceDuringBusy != nil {
 			t.Errorf("LoopCoalesceDuringBusy should remain nil when frontmatter is silent, got %v", *input.LoopCoalesceDuringBusy)
@@ -53,8 +53,8 @@ func TestApplyPromptLoopDefaultsToStartInput_CoalesceDuringBusy(t *testing.T) {
 	t.Run("opt-out disables the whole merge", func(t *testing.T) {
 		input := &ConversationStartInput{LoopApplyPromptDefaults: boolPtr(false)}
 		pl := &config.PromptLoop{
-			Trigger:            "onTasks",
-			CoalesceDuringBusy: boolPtr(false),
+			Trigger: []string{"onTasks"},
+			OnTasks: &config.PromptLoopOnTasks{CoalesceDuringBusy: boolPtr(false)},
 		}
 		applyPromptLoopDefaultsToStartInput(input, pl, "seed-prompt")
 		if input.LoopCoalesceDuringBusy != nil {
@@ -69,8 +69,8 @@ func TestApplyPromptLoopDefaultsToUpdateInput_CoalesceDuringBusy(t *testing.T) {
 	t.Run("frontmatter fills unset caller", func(t *testing.T) {
 		input := &ConversationUpdateInput{}
 		pl := &config.PromptLoop{
-			Trigger:            "onTasks",
-			CoalesceDuringBusy: boolPtr(false),
+			Trigger: []string{"onTasks"},
+			OnTasks: &config.PromptLoopOnTasks{CoalesceDuringBusy: boolPtr(false)},
 		}
 		applyPromptLoopDefaultsToUpdateInput(input, pl)
 		if input.LoopCoalesceDuringBusy == nil || *input.LoopCoalesceDuringBusy != false {
@@ -82,8 +82,8 @@ func TestApplyPromptLoopDefaultsToUpdateInput_CoalesceDuringBusy(t *testing.T) {
 		callerVal := true
 		input := &ConversationUpdateInput{LoopCoalesceDuringBusy: &callerVal}
 		pl := &config.PromptLoop{
-			Trigger:            "onTasks",
-			CoalesceDuringBusy: boolPtr(false),
+			Trigger: []string{"onTasks"},
+			OnTasks: &config.PromptLoopOnTasks{CoalesceDuringBusy: boolPtr(false)},
 		}
 		applyPromptLoopDefaultsToUpdateInput(input, pl)
 		if input.LoopCoalesceDuringBusy == nil || *input.LoopCoalesceDuringBusy != true {
@@ -94,8 +94,8 @@ func TestApplyPromptLoopDefaultsToUpdateInput_CoalesceDuringBusy(t *testing.T) {
 	t.Run("opt-out disables the whole merge", func(t *testing.T) {
 		input := &ConversationUpdateInput{LoopApplyPromptDefaults: boolPtr(false)}
 		pl := &config.PromptLoop{
-			Trigger:            "onTasks",
-			CoalesceDuringBusy: boolPtr(false),
+			Trigger: []string{"onTasks"},
+			OnTasks: &config.PromptLoopOnTasks{CoalesceDuringBusy: boolPtr(false)},
 		}
 		applyPromptLoopDefaultsToUpdateInput(input, pl)
 		if input.LoopCoalesceDuringBusy != nil {
@@ -113,7 +113,7 @@ func TestApplyPromptLoopDefaultsToStartInput_FreshContext(t *testing.T) {
 	t.Run("frontmatter fills unset caller", func(t *testing.T) {
 		input := &ConversationStartInput{}
 		pl := &config.PromptLoop{
-			Trigger:      "onTasks",
+			Trigger:      []string{"onTasks"},
 			FreshContext: boolPtr(true),
 		}
 		applyPromptLoopDefaultsToStartInput(input, pl, "seed-prompt")
@@ -129,7 +129,7 @@ func TestApplyPromptLoopDefaultsToStartInput_FreshContext(t *testing.T) {
 		callerVal := false
 		input := &ConversationStartInput{LoopFreshContext: &callerVal}
 		pl := &config.PromptLoop{
-			Trigger:      "onTasks",
+			Trigger:      []string{"onTasks"},
 			FreshContext: boolPtr(true),
 		}
 		applyPromptLoopDefaultsToStartInput(input, pl, "seed-prompt")
@@ -140,7 +140,7 @@ func TestApplyPromptLoopDefaultsToStartInput_FreshContext(t *testing.T) {
 
 	t.Run("nil frontmatter leaves caller nil", func(t *testing.T) {
 		input := &ConversationStartInput{}
-		pl := &config.PromptLoop{Trigger: "onTasks"} // FreshContext unset
+		pl := &config.PromptLoop{Trigger: []string{"onTasks"}} // FreshContext unset
 		applyPromptLoopDefaultsToStartInput(input, pl, "seed-prompt")
 		if input.LoopFreshContext != nil {
 			t.Errorf("LoopFreshContext should remain nil when frontmatter is silent, got %v", *input.LoopFreshContext)
@@ -150,7 +150,7 @@ func TestApplyPromptLoopDefaultsToStartInput_FreshContext(t *testing.T) {
 	t.Run("opt-out disables the whole merge", func(t *testing.T) {
 		input := &ConversationStartInput{LoopApplyPromptDefaults: boolPtr(false)}
 		pl := &config.PromptLoop{
-			Trigger:      "onTasks",
+			Trigger:      []string{"onTasks"},
 			FreshContext: boolPtr(true),
 		}
 		applyPromptLoopDefaultsToStartInput(input, pl, "seed-prompt")
@@ -166,7 +166,7 @@ func TestApplyPromptLoopDefaultsToUpdateInput_FreshContext(t *testing.T) {
 	t.Run("frontmatter fills unset caller", func(t *testing.T) {
 		input := &ConversationUpdateInput{}
 		pl := &config.PromptLoop{
-			Trigger:      "onTasks",
+			Trigger:      []string{"onTasks"},
 			FreshContext: boolPtr(true),
 		}
 		applyPromptLoopDefaultsToUpdateInput(input, pl)
@@ -179,7 +179,7 @@ func TestApplyPromptLoopDefaultsToUpdateInput_FreshContext(t *testing.T) {
 		callerVal := false
 		input := &ConversationUpdateInput{LoopFreshContext: &callerVal}
 		pl := &config.PromptLoop{
-			Trigger:      "onTasks",
+			Trigger:      []string{"onTasks"},
 			FreshContext: boolPtr(true),
 		}
 		applyPromptLoopDefaultsToUpdateInput(input, pl)
@@ -191,7 +191,7 @@ func TestApplyPromptLoopDefaultsToUpdateInput_FreshContext(t *testing.T) {
 	t.Run("opt-out disables the whole merge", func(t *testing.T) {
 		input := &ConversationUpdateInput{LoopApplyPromptDefaults: boolPtr(false)}
 		pl := &config.PromptLoop{
-			Trigger:      "onTasks",
+			Trigger:      []string{"onTasks"},
 			FreshContext: boolPtr(true),
 		}
 		applyPromptLoopDefaultsToUpdateInput(input, pl)
@@ -210,7 +210,7 @@ func TestApplyPromptLoopDefaultsToStartInput_RunOnStart(t *testing.T) {
 	t.Run("frontmatter fills unset caller", func(t *testing.T) {
 		input := &ConversationStartInput{}
 		pl := &config.PromptLoop{
-			Trigger:    "onTasks",
+			Trigger:    []string{"onTasks"},
 			RunOnStart: boolPtr(true),
 		}
 		applyPromptLoopDefaultsToStartInput(input, pl, "seed-prompt")
@@ -223,7 +223,7 @@ func TestApplyPromptLoopDefaultsToStartInput_RunOnStart(t *testing.T) {
 		callerVal := false
 		input := &ConversationStartInput{LoopRunOnStart: &callerVal}
 		pl := &config.PromptLoop{
-			Trigger:    "onTasks",
+			Trigger:    []string{"onTasks"},
 			RunOnStart: boolPtr(true),
 		}
 		applyPromptLoopDefaultsToStartInput(input, pl, "seed-prompt")
@@ -234,7 +234,7 @@ func TestApplyPromptLoopDefaultsToStartInput_RunOnStart(t *testing.T) {
 
 	t.Run("nil frontmatter leaves caller nil", func(t *testing.T) {
 		input := &ConversationStartInput{}
-		pl := &config.PromptLoop{Trigger: "onTasks"} // RunOnStart unset
+		pl := &config.PromptLoop{Trigger: []string{"onTasks"}} // RunOnStart unset
 		applyPromptLoopDefaultsToStartInput(input, pl, "seed-prompt")
 		if input.LoopRunOnStart != nil {
 			t.Errorf("LoopRunOnStart should remain nil when frontmatter is silent, got %v", *input.LoopRunOnStart)
@@ -244,7 +244,7 @@ func TestApplyPromptLoopDefaultsToStartInput_RunOnStart(t *testing.T) {
 	t.Run("opt-out disables the whole merge", func(t *testing.T) {
 		input := &ConversationStartInput{LoopApplyPromptDefaults: boolPtr(false)}
 		pl := &config.PromptLoop{
-			Trigger:    "onTasks",
+			Trigger:    []string{"onTasks"},
 			RunOnStart: boolPtr(true),
 		}
 		applyPromptLoopDefaultsToStartInput(input, pl, "seed-prompt")
@@ -430,7 +430,7 @@ func TestApplyPromptLoopDefaultsToUpdateInput_RunOnStart(t *testing.T) {
 	t.Run("frontmatter fills unset caller", func(t *testing.T) {
 		input := &ConversationUpdateInput{}
 		pl := &config.PromptLoop{
-			Trigger:    "onTasks",
+			Trigger:    []string{"onTasks"},
 			RunOnStart: boolPtr(true),
 		}
 		applyPromptLoopDefaultsToUpdateInput(input, pl)
@@ -443,7 +443,7 @@ func TestApplyPromptLoopDefaultsToUpdateInput_RunOnStart(t *testing.T) {
 		callerVal := false
 		input := &ConversationUpdateInput{LoopRunOnStart: &callerVal}
 		pl := &config.PromptLoop{
-			Trigger:    "onTasks",
+			Trigger:    []string{"onTasks"},
 			RunOnStart: boolPtr(true),
 		}
 		applyPromptLoopDefaultsToUpdateInput(input, pl)
@@ -455,7 +455,7 @@ func TestApplyPromptLoopDefaultsToUpdateInput_RunOnStart(t *testing.T) {
 	t.Run("opt-out disables the whole merge", func(t *testing.T) {
 		input := &ConversationUpdateInput{LoopApplyPromptDefaults: boolPtr(false)}
 		pl := &config.PromptLoop{
-			Trigger:    "onTasks",
+			Trigger:    []string{"onTasks"},
 			RunOnStart: boolPtr(true),
 		}
 		applyPromptLoopDefaultsToUpdateInput(input, pl)

@@ -36,24 +36,26 @@ func applyPromptLoopDefaultsToLoopPrompt(lp *session.LoopPrompt, pl *configPkg.P
 		return
 	}
 
-	// Trigger + on-completion fields.
-	if lp.Trigger == "" && pl.Trigger != "" {
-		lp.Trigger = session.LoopTrigger(pl.Trigger)
+	// Trigger + on-completion fields. Trigger is now a list (mitto-r6j); this
+	// DTO's Trigger field is still singular, so fill from the primary (first)
+	// declared trigger when the caller left it unset.
+	if lp.Trigger == "" && len(pl.Trigger) > 0 {
+		lp.Trigger = session.LoopTrigger(pl.Trigger[0])
 	}
-	if lp.DelaySeconds == 0 && pl.Delay > 0 {
-		lp.DelaySeconds = pl.Delay
+	if lp.DelaySeconds == 0 && pl.CompletionDelay() > 0 {
+		lp.DelaySeconds = pl.CompletionDelay()
 	}
 
 	// Frequency (only meaningful for schedule trigger, but fill unconditionally —
 	// downstream code ignores frequency for onCompletion/onTasks).
-	if lp.Frequency.Value == 0 && pl.Value > 0 {
-		lp.Frequency.Value = pl.Value
+	if lp.Frequency.Value == 0 && pl.FrequencyValue() > 0 {
+		lp.Frequency.Value = pl.FrequencyValue()
 	}
-	if lp.Frequency.Unit == "" && pl.Unit != "" {
-		lp.Frequency.Unit = session.FrequencyUnit(pl.Unit)
+	if lp.Frequency.Unit == "" && pl.FrequencyUnit() != "" {
+		lp.Frequency.Unit = session.FrequencyUnit(pl.FrequencyUnit())
 	}
-	if lp.Frequency.At == "" && pl.At != "" {
-		lp.Frequency.At = pl.At
+	if lp.Frequency.At == "" && pl.FrequencyAt() != "" {
+		lp.Frequency.At = pl.FrequencyAt()
 	}
 
 	// Caps.
@@ -67,15 +69,15 @@ func applyPromptLoopDefaultsToLoopPrompt(lp *session.LoopPrompt, pl *configPkg.P
 	}
 
 	// onTasks condition.
-	if lp.Condition == "" && pl.Condition != "" {
-		lp.Condition = pl.Condition
+	if lp.Condition == "" && pl.TasksCondition() != "" {
+		lp.Condition = pl.TasksCondition()
 	}
 
 	// *bool fields — pointer-presence semantics: both nil and *false are
 	// meaningful frontmatter values, so check the pointer for presence rather
 	// than dereferencing. Mirrors the MCP helper rules.
-	if lp.CoalesceDuringBusy == nil && pl.CoalesceDuringBusy != nil {
-		v := *pl.CoalesceDuringBusy
+	if lp.CoalesceDuringBusy == nil && pl.TasksCoalesceDuringBusy() != nil {
+		v := *pl.TasksCoalesceDuringBusy()
 		lp.CoalesceDuringBusy = &v
 	}
 	if !lp.FreshContext && pl.FreshContext != nil && *pl.FreshContext {

@@ -48,25 +48,27 @@ func applyPromptLoopDefaultsToStartInput(input *ConversationStartInput, pl *conf
 		input.LoopPromptName = seedPromptName
 	}
 
-	// Trigger + on-completion fields
-	if input.LoopTrigger == "" && pl.Trigger != "" {
-		input.LoopTrigger = pl.Trigger
+	// Trigger + on-completion fields. Trigger is now a list (mitto-r6j); the
+	// MCP surface stays flat/singular, so fill from the primary (first)
+	// declared trigger when the caller left loop_trigger unset.
+	if input.LoopTrigger == "" && len(pl.Trigger) > 0 {
+		input.LoopTrigger = pl.Trigger[0]
 	}
-	if input.LoopCompletionDelaySeconds == nil && pl.Delay > 0 {
-		d := pl.Delay
+	if input.LoopCompletionDelaySeconds == nil && pl.CompletionDelay() > 0 {
+		d := pl.CompletionDelay()
 		input.LoopCompletionDelaySeconds = &d
 	}
 
 	// Frequency (only meaningful for schedule trigger, but fill unconditionally —
 	// downstream code ignores frequency for onCompletion/onTasks).
-	if input.LoopFrequencyValue == 0 && pl.Value > 0 {
-		input.LoopFrequencyValue = pl.Value
+	if input.LoopFrequencyValue == 0 && pl.FrequencyValue() > 0 {
+		input.LoopFrequencyValue = pl.FrequencyValue()
 	}
-	if input.LoopFrequencyUnit == "" && pl.Unit != "" {
-		input.LoopFrequencyUnit = pl.Unit
+	if input.LoopFrequencyUnit == "" && pl.FrequencyUnit() != "" {
+		input.LoopFrequencyUnit = pl.FrequencyUnit()
 	}
-	if input.LoopFrequencyAt == "" && pl.At != "" {
-		input.LoopFrequencyAt = pl.At
+	if input.LoopFrequencyAt == "" && pl.FrequencyAt() != "" {
+		input.LoopFrequencyAt = pl.FrequencyAt()
 	}
 
 	// Caps
@@ -81,15 +83,15 @@ func applyPromptLoopDefaultsToStartInput(input *ConversationStartInput, pl *conf
 	}
 
 	// onTasks condition
-	if input.LoopCondition == "" && pl.Condition != "" {
-		input.LoopCondition = pl.Condition
+	if input.LoopCondition == "" && pl.TasksCondition() != "" {
+		input.LoopCondition = pl.TasksCondition()
 	}
 
 	// onTasks opt-in re-fire (mitto-dmb). Fill only when the caller did not
 	// explicitly set it. Both nil and *false are meaningful frontmatter values,
 	// so we check the pointer for presence rather than dereferencing.
-	if input.LoopCoalesceDuringBusy == nil && pl.CoalesceDuringBusy != nil {
-		v := *pl.CoalesceDuringBusy
+	if input.LoopCoalesceDuringBusy == nil && pl.TasksCoalesceDuringBusy() != nil {
+		v := *pl.TasksCoalesceDuringBusy()
 		input.LoopCoalesceDuringBusy = &v
 	}
 
@@ -127,27 +129,28 @@ func applyPromptLoopDefaultsToUpdateInput(input *ConversationUpdateInput, pl *co
 		return
 	}
 
-	// Trigger + on-completion fields
-	if input.LoopTrigger == nil && pl.Trigger != "" {
-		t := pl.Trigger
+	// Trigger + on-completion fields. Same primary-trigger rule as the
+	// start-input helper (mitto-r6j: Trigger is now a list).
+	if input.LoopTrigger == nil && len(pl.Trigger) > 0 {
+		t := pl.Trigger[0]
 		input.LoopTrigger = &t
 	}
-	if input.LoopCompletionDelaySeconds == nil && pl.Delay > 0 {
-		d := pl.Delay
+	if input.LoopCompletionDelaySeconds == nil && pl.CompletionDelay() > 0 {
+		d := pl.CompletionDelay()
 		input.LoopCompletionDelaySeconds = &d
 	}
 
 	// Frequency
-	if input.LoopFrequencyValue == nil && pl.Value > 0 {
-		v := pl.Value
+	if input.LoopFrequencyValue == nil && pl.FrequencyValue() > 0 {
+		v := pl.FrequencyValue()
 		input.LoopFrequencyValue = &v
 	}
-	if input.LoopFrequencyUnit == nil && pl.Unit != "" {
-		u := pl.Unit
+	if input.LoopFrequencyUnit == nil && pl.FrequencyUnit() != "" {
+		u := pl.FrequencyUnit()
 		input.LoopFrequencyUnit = &u
 	}
-	if input.LoopFrequencyAt == nil && pl.At != "" {
-		a := pl.At
+	if input.LoopFrequencyAt == nil && pl.FrequencyAt() != "" {
+		a := pl.FrequencyAt()
 		input.LoopFrequencyAt = &a
 	}
 
@@ -163,14 +166,14 @@ func applyPromptLoopDefaultsToUpdateInput(input *ConversationUpdateInput, pl *co
 	}
 
 	// onTasks condition
-	if input.LoopCondition == nil && pl.Condition != "" {
-		c := pl.Condition
+	if input.LoopCondition == nil && pl.TasksCondition() != "" {
+		c := pl.TasksCondition()
 		input.LoopCondition = &c
 	}
 
 	// onTasks opt-in re-fire (mitto-dmb). Same rules as the start-input helper.
-	if input.LoopCoalesceDuringBusy == nil && pl.CoalesceDuringBusy != nil {
-		v := *pl.CoalesceDuringBusy
+	if input.LoopCoalesceDuringBusy == nil && pl.TasksCoalesceDuringBusy() != nil {
+		v := *pl.TasksCoalesceDuringBusy()
 		input.LoopCoalesceDuringBusy = &v
 	}
 

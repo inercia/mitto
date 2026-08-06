@@ -580,14 +580,14 @@ func TestRefineImplementation_LoopAndModes(t *testing.T) {
 	if prompt.Loop == nil {
 		t.Fatalf("expected a loop block; got nil")
 	}
-	if prompt.Loop.Trigger != "onTasks" {
-		t.Errorf("loop.trigger = %q, want %q", prompt.Loop.Trigger, "onTasks")
+	if !prompt.Loop.hasTrigger("onTasks") {
+		t.Errorf("loop.trigger = %v, want to include %q", prompt.Loop.Trigger, "onTasks")
 	}
 	if prompt.Loop.Mode != PromptLoopModeAlways {
 		t.Errorf("loop.mode = %q, want %q", prompt.Loop.Mode, PromptLoopModeAlways)
 	}
-	if !strings.Contains(prompt.Loop.Condition, "implementation-refined") {
-		t.Errorf("loop.condition should gate on the implementation-refined label; got %q", prompt.Loop.Condition)
+	if !strings.Contains(prompt.Loop.TasksCondition(), "implementation-refined") {
+		t.Errorf("loop.onTasks.condition should gate on the implementation-refined label; got %q", prompt.Loop.TasksCondition())
 	}
 
 	body := prompt.Content
@@ -3249,15 +3249,15 @@ func TestIssueLoopProcessing_CoalesceDuringBusyIsFalse(t *testing.T) {
 	}
 	// Guard: coalesceDuringBusy is only meaningful for trigger: onTasks. If this
 	// ever regresses, the rest of the assertion is moot — fail loudly.
-	if prompt.Loop.Trigger != "onTasks" {
-		t.Fatalf("loop.trigger = %q, want %q (mitto-cwg guard)",
+	if !prompt.Loop.hasTrigger("onTasks") {
+		t.Fatalf("loop.trigger = %v, want to include %q (mitto-cwg guard)",
 			prompt.Loop.Trigger, "onTasks")
 	}
-	if prompt.Loop.CoalesceDuringBusy == nil {
-		t.Fatalf("loop.coalesceDuringBusy is unset; the deployed supervisor takes the silent-swallow branch at fireTasksRebase (mitto-cwg). Declare `coalesceDuringBusy: false` in the loop: frontmatter of %s, mirroring beads-refine-implementation.prompt.yaml", name)
+	if prompt.Loop.TasksCoalesceDuringBusy() == nil {
+		t.Fatalf("loop.onTasks.coalesceDuringBusy is unset; the deployed supervisor takes the silent-swallow branch at fireTasksRebase (mitto-cwg). Declare `coalesceDuringBusy: false` in the loop.onTasks: frontmatter of %s, mirroring beads-refine-implementation.prompt.yaml", name)
 	}
-	if *prompt.Loop.CoalesceDuringBusy {
-		t.Errorf("loop.coalesceDuringBusy = true, want false (mitto-cwg): supervisor must react to its own subtree's beads mutations, not silently absorb them into a baseline rebase")
+	if *prompt.Loop.TasksCoalesceDuringBusy() {
+		t.Errorf("loop.onTasks.coalesceDuringBusy = true, want false (mitto-cwg): supervisor must react to its own subtree's beads mutations, not silently absorb them into a baseline rebase")
 	}
 }
 

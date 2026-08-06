@@ -1115,10 +1115,10 @@ func TestHandleSessionLoop_PUT_MergesPromptDefaults_Baseline(t *testing.T) {
 		return []configPkg.WebPrompt{{
 			Name: "test-prompt",
 			Loop: &configPkg.PromptLoop{
-				Trigger:            "onTasks",
-				FreshContext:       &tr,
-				RunOnStart:         &tr,
-				CoalesceDuringBusy: &fa,
+				Trigger:      []string{"onTasks"},
+				OnTasks:      &configPkg.PromptLoopOnTasks{CoalesceDuringBusy: &fa},
+				FreshContext: &tr,
+				RunOnStart:   &tr,
 			},
 		}}
 	}
@@ -1159,7 +1159,7 @@ func TestHandleSessionLoop_PUT_MergesPromptDefaults_ExplicitWins(t *testing.T) {
 		return []configPkg.WebPrompt{{
 			Name: "test-prompt",
 			Loop: &configPkg.PromptLoop{
-				Trigger:       "onTasks",
+				Trigger:       []string{"onTasks"},
 				MaxIterations: 42,
 				RunOnStart:    &tr,
 			},
@@ -1202,7 +1202,7 @@ func TestHandleSessionLoop_PUT_MergesPromptDefaults_OptOut(t *testing.T) {
 		return []configPkg.WebPrompt{{
 			Name: "test-prompt",
 			Loop: &configPkg.PromptLoop{
-				Trigger:       "onTasks",
+				Trigger:       []string{"onTasks"},
 				FreshContext:  &tr,
 				RunOnStart:    &tr,
 				MaxIterations: 42,

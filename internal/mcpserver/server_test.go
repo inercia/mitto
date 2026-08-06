@@ -10611,8 +10611,8 @@ func TestConversationStart_PromptName_AutoAppliesLoopFrontmatter(t *testing.T) {
 			Name:   "Loop fixing bug",
 			Prompt: "drive the bug through phases",
 			Loop: &config.PromptLoop{
-				Trigger:       string(session.TriggerOnCompletion),
-				Delay:         30,
+				Trigger:       []string{string(session.TriggerOnCompletion)},
+				OnCompletion:  &config.PromptLoopOnCompletion{Delay: 30},
 				MaxIterations: 20,
 				MaxDuration:   "4h",
 			},
@@ -10665,8 +10665,8 @@ func TestConversationStart_PromptName_LoopDefaults_ExplicitOverridesWin(t *testi
 			Name:   "Loop fixing bug",
 			Prompt: "body",
 			Loop: &config.PromptLoop{
-				Trigger:       string(session.TriggerOnCompletion),
-				Delay:         30,
+				Trigger:       []string{string(session.TriggerOnCompletion)},
+				OnCompletion:  &config.PromptLoopOnCompletion{Delay: 30},
 				MaxIterations: 20,
 				MaxDuration:   "4h",
 			},
@@ -10737,8 +10737,8 @@ func TestConversationStart_PromptName_LoopApplyPromptDefaults_False(t *testing.T
 			Name:   "Loop fixing bug",
 			Prompt: "body",
 			Loop: &config.PromptLoop{
-				Trigger:       string(session.TriggerOnCompletion),
-				Delay:         30,
+				Trigger:       []string{string(session.TriggerOnCompletion)},
+				OnCompletion:  &config.PromptLoopOnCompletion{Delay: 30},
 				MaxIterations: 20,
 			},
 		},
@@ -10788,8 +10788,8 @@ func TestConversationStart_PromptName_LoopDefaults_OptionalDefaultFalse(t *testi
 			Name:   "Run tests",
 			Prompt: "run the tests",
 			Loop: &config.PromptLoop{
-				Trigger:       string(session.TriggerOnCompletion),
-				Delay:         30,
+				Trigger:       []string{string(session.TriggerOnCompletion)},
+				OnCompletion:  &config.PromptLoopOnCompletion{Delay: 30},
 				MaxIterations: 20,
 				Mode:          config.PromptLoopModeOptional,
 				Default:       boolPtr(false),
@@ -10834,10 +10834,10 @@ func TestConversationStart_PromptName_LoopDefaults_OptionalDefaultFalse_CallerOv
 			Name:   "Run tests",
 			Prompt: "run the tests",
 			Loop: &config.PromptLoop{
-				Trigger: string(session.TriggerOnCompletion),
-				Delay:   30,
-				Mode:    config.PromptLoopModeOptional,
-				Default: boolPtr(false),
+				Trigger:      []string{string(session.TriggerOnCompletion)},
+				OnCompletion: &config.PromptLoopOnCompletion{Delay: 30},
+				Mode:         config.PromptLoopModeOptional,
+				Default:      boolPtr(false),
 			},
 		},
 	})
@@ -10875,9 +10875,9 @@ func TestConversationStart_PromptName_LoopDefaults_OptionalDefaultNil_OnByDefaul
 			Name:   "Watch channel",
 			Prompt: "watch the channel",
 			Loop: &config.PromptLoop{
-				Trigger: string(session.TriggerOnCompletion),
-				Delay:   30,
-				Mode:    config.PromptLoopModeOptional,
+				Trigger:      []string{string(session.TriggerOnCompletion)},
+				OnCompletion: &config.PromptLoopOnCompletion{Delay: 30},
+				Mode:         config.PromptLoopModeOptional,
 				// Default intentionally left nil.
 			},
 		},
@@ -10913,8 +10913,7 @@ func TestConversationStart_PromptName_LoopFrequencyAutoApply(t *testing.T) {
 			Name:   "Hourly loop",
 			Prompt: "check things",
 			Loop: &config.PromptLoop{
-				Value: 1,
-				Unit:  "hours",
+				Schedule: &config.PromptLoopSchedule{Value: 1, Unit: "hours"},
 			},
 		},
 	})
@@ -10950,8 +10949,8 @@ func TestConversationUpdate_LoopPromptName_AutoAppliesLoopFrontmatter(t *testing
 			Name:   "Loop fixing bug",
 			Prompt: "drive the bug",
 			Loop: &config.PromptLoop{
-				Trigger:       string(session.TriggerOnCompletion),
-				Delay:         30,
+				Trigger:       []string{string(session.TriggerOnCompletion)},
+				OnCompletion:  &config.PromptLoopOnCompletion{Delay: 30},
 				MaxIterations: 20,
 				MaxDuration:   "4h",
 			},
@@ -11006,8 +11005,8 @@ func TestConversationUpdate_LoopPromptName_LoopApplyPromptDefaults_False(t *test
 			Name:   "Loop fixing bug",
 			Prompt: "body",
 			Loop: &config.PromptLoop{
-				Trigger: string(session.TriggerOnCompletion),
-				Delay:   30,
+				Trigger:      []string{string(session.TriggerOnCompletion)},
+				OnCompletion: &config.PromptLoopOnCompletion{Delay: 30},
 			},
 		},
 	})

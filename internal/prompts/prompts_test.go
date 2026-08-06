@@ -207,9 +207,11 @@ func TestParsePromptFile_WithLoop(t *testing.T) {
 	data := []byte(`name: "Daily Standup"
 description: "Run daily standup"
 loop:
-  value: 1
-  unit: days
-  at: "09:00"
+  trigger: [schedule]
+  schedule:
+    value: 1
+    unit: days
+    at: "09:00"
 prompt: |
   Run the daily standup.
 `)
@@ -225,14 +227,14 @@ prompt: |
 	if prompt.Loop == nil {
 		t.Fatal("Loop = nil, want non-nil")
 	}
-	if prompt.Loop.Value != 1 {
-		t.Errorf("Loop.Value = %d, want 1", prompt.Loop.Value)
+	if prompt.Loop.FrequencyValue() != 1 {
+		t.Errorf("Loop.FrequencyValue() = %d, want 1", prompt.Loop.FrequencyValue())
 	}
-	if prompt.Loop.Unit != "days" {
-		t.Errorf("Loop.Unit = %q, want %q", prompt.Loop.Unit, "days")
+	if prompt.Loop.FrequencyUnit() != "days" {
+		t.Errorf("Loop.FrequencyUnit() = %q, want %q", prompt.Loop.FrequencyUnit(), "days")
 	}
-	if prompt.Loop.At != "09:00" {
-		t.Errorf("Loop.At = %q, want %q", prompt.Loop.At, "09:00")
+	if prompt.Loop.FrequencyAt() != "09:00" {
+		t.Errorf("Loop.FrequencyAt() = %q, want %q", prompt.Loop.FrequencyAt(), "09:00")
 	}
 
 	// Verify ToWebPrompt carries the Loop field.
@@ -240,14 +242,14 @@ prompt: |
 	if wp.Loop == nil {
 		t.Fatal("WebPrompt.Loop = nil, want non-nil after ToWebPrompt()")
 	}
-	if wp.Loop.Value != 1 {
-		t.Errorf("WebPrompt.Loop.Value = %d, want 1", wp.Loop.Value)
+	if wp.Loop.FrequencyValue() != 1 {
+		t.Errorf("WebPrompt.Loop.FrequencyValue() = %d, want 1", wp.Loop.FrequencyValue())
 	}
-	if wp.Loop.Unit != "days" {
-		t.Errorf("WebPrompt.Loop.Unit = %q, want %q", wp.Loop.Unit, "days")
+	if wp.Loop.FrequencyUnit() != "days" {
+		t.Errorf("WebPrompt.Loop.FrequencyUnit() = %q, want %q", wp.Loop.FrequencyUnit(), "days")
 	}
-	if wp.Loop.At != "09:00" {
-		t.Errorf("WebPrompt.Loop.At = %q, want %q", wp.Loop.At, "09:00")
+	if wp.Loop.FrequencyAt() != "09:00" {
+		t.Errorf("WebPrompt.Loop.FrequencyAt() = %q, want %q", wp.Loop.FrequencyAt(), "09:00")
 	}
 }
 
@@ -256,7 +258,7 @@ prompt: |
 func TestParsePromptFile_WithLoop_RunOnStart(t *testing.T) {
 	data := []byte(`name: "Boot Pulse"
 loop:
-  trigger: onTasks
+  trigger: [onTasks]
   runOnStart: true
 prompt: |
   Boot pulse loop.
@@ -280,7 +282,7 @@ prompt: |
 	// Explicit false must round-trip as *false, distinct from unset/nil.
 	dataFalse := []byte(`name: "No Boot Pulse"
 loop:
-  trigger: onTasks
+  trigger: [onTasks]
   runOnStart: false
 prompt: |
   No boot pulse.
@@ -299,7 +301,7 @@ prompt: |
 	// Absent runOnStart must remain nil (default).
 	dataAbsent := []byte(`name: "Default"
 loop:
-  trigger: onTasks
+  trigger: [onTasks]
 prompt: |
   Default.
 `)
@@ -315,8 +317,10 @@ prompt: |
 func TestParsePromptFile_WithLoop_NoAt(t *testing.T) {
 	data := []byte(`name: "Hourly Check"
 loop:
-  value: 2
-  unit: hours
+  trigger: [schedule]
+  schedule:
+    value: 2
+    unit: hours
 prompt: |
   Check every 2 hours.
 `)
@@ -329,22 +333,24 @@ prompt: |
 	if prompt.Loop == nil {
 		t.Fatal("Loop = nil, want non-nil")
 	}
-	if prompt.Loop.Value != 2 {
-		t.Errorf("Loop.Value = %d, want 2", prompt.Loop.Value)
+	if prompt.Loop.FrequencyValue() != 2 {
+		t.Errorf("Loop.FrequencyValue() = %d, want 2", prompt.Loop.FrequencyValue())
 	}
-	if prompt.Loop.Unit != "hours" {
-		t.Errorf("Loop.Unit = %q, want %q", prompt.Loop.Unit, "hours")
+	if prompt.Loop.FrequencyUnit() != "hours" {
+		t.Errorf("Loop.FrequencyUnit() = %q, want %q", prompt.Loop.FrequencyUnit(), "hours")
 	}
-	if prompt.Loop.At != "" {
-		t.Errorf("Loop.At = %q, want empty (no at for hours)", prompt.Loop.At)
+	if prompt.Loop.FrequencyAt() != "" {
+		t.Errorf("Loop.FrequencyAt() = %q, want empty (no at for hours)", prompt.Loop.FrequencyAt())
 	}
 }
 
 func TestParsePromptFile_WithLoop_MaxIterations(t *testing.T) {
 	data := []byte(`name: "Capped"
 loop:
-  value: 1
-  unit: hours
+  trigger: [schedule]
+  schedule:
+    value: 1
+    unit: hours
   maxIterations: 5
 prompt: |
   do thing
@@ -395,8 +401,9 @@ prompt: |
 func TestParsePromptFile_WithLoop_OnTasksCondition(t *testing.T) {
 	data := []byte(`name: "On Tasks"
 loop:
-  trigger: onTasks
-  condition: 'Tasks.Open > Prev.Open'
+  trigger: [onTasks]
+  onTasks:
+    condition: 'Tasks.Open > Prev.Open'
   maxIterations: 20
   maxDuration: "4h"
 prompt: |
@@ -410,11 +417,11 @@ prompt: |
 	if prompt.Loop == nil {
 		t.Fatal("Loop = nil, want non-nil")
 	}
-	if prompt.Loop.Trigger != "onTasks" {
-		t.Errorf("Loop.Trigger = %q, want %q", prompt.Loop.Trigger, "onTasks")
+	if !prompt.Loop.hasTrigger("onTasks") {
+		t.Errorf("Loop.Trigger = %v, want to include %q", prompt.Loop.Trigger, "onTasks")
 	}
-	if prompt.Loop.Condition != `Tasks.Open > Prev.Open` {
-		t.Errorf("Loop.Condition = %q, want %q", prompt.Loop.Condition, `Tasks.Open > Prev.Open`)
+	if prompt.Loop.TasksCondition() != `Tasks.Open > Prev.Open` {
+		t.Errorf("Loop.TasksCondition() = %q, want %q", prompt.Loop.TasksCondition(), `Tasks.Open > Prev.Open`)
 	}
 	if prompt.Loop.MaxIterations != 20 {
 		t.Errorf("Loop.MaxIterations = %d, want 20", prompt.Loop.MaxIterations)
@@ -428,19 +435,20 @@ prompt: |
 	if wp.Loop == nil {
 		t.Fatal("WebPrompt.Loop = nil, want non-nil after ToWebPrompt()")
 	}
-	if wp.Loop.Trigger != "onTasks" {
-		t.Errorf("WebPrompt.Loop.Trigger = %q, want %q", wp.Loop.Trigger, "onTasks")
+	if !wp.Loop.hasTrigger("onTasks") {
+		t.Errorf("WebPrompt.Loop.Trigger = %v, want to include %q", wp.Loop.Trigger, "onTasks")
 	}
-	if wp.Loop.Condition != `Tasks.Open > Prev.Open` {
-		t.Errorf("WebPrompt.Loop.Condition = %q, want %q", wp.Loop.Condition, `Tasks.Open > Prev.Open`)
+	if wp.Loop.TasksCondition() != `Tasks.Open > Prev.Open` {
+		t.Errorf("WebPrompt.Loop.TasksCondition() = %q, want %q", wp.Loop.TasksCondition(), `Tasks.Open > Prev.Open`)
 	}
 }
 
 func TestParsePromptFile_WithLoop_InvalidCondition(t *testing.T) {
 	data := []byte(`name: "Bad Condition"
 loop:
-  trigger: onTasks
-  condition: 'Tasks.Open > '
+  trigger: [onTasks]
+  onTasks:
+    condition: 'Tasks.Open > '
 prompt: |
   Broken CEL.
 `)
@@ -449,8 +457,8 @@ prompt: |
 	if err == nil {
 		t.Fatal("ParsePromptFile succeeded, want error for invalid CEL condition")
 	}
-	if !strings.Contains(err.Error(), "loop.condition") {
-		t.Errorf("error = %q, want it to mention loop.condition", err.Error())
+	if !strings.Contains(err.Error(), "loop.onTasks.condition") {
+		t.Errorf("error = %q, want it to mention loop.onTasks.condition", err.Error())
 	}
 }
 
@@ -786,7 +794,7 @@ prompt: |
 }
 
 func TestMergePrompts_PreservesLoopField(t *testing.T) {
-	loop := &PromptLoop{Value: 3, Unit: "hours"}
+	loop := &PromptLoop{Schedule: &PromptLoopSchedule{Value: 3, Unit: "hours"}}
 	globalPrompts := []WebPrompt{
 		{Name: "Loop Prompt", Prompt: "do it", Loop: loop, Source: PromptSourceFile},
 		{Name: "Regular Prompt", Prompt: "also do it", Source: PromptSourceFile},
@@ -808,11 +816,11 @@ func TestMergePrompts_PreservesLoopField(t *testing.T) {
 	if found.Loop == nil {
 		t.Fatal("merged Loop Prompt has nil Loop field, want non-nil")
 	}
-	if found.Loop.Value != 3 {
-		t.Errorf("merged Loop.Value = %d, want 3", found.Loop.Value)
+	if found.Loop.FrequencyValue() != 3 {
+		t.Errorf("merged Loop.FrequencyValue() = %d, want 3", found.Loop.FrequencyValue())
 	}
-	if found.Loop.Unit != "hours" {
-		t.Errorf("merged Loop.Unit = %q, want hours", found.Loop.Unit)
+	if found.Loop.FrequencyUnit() != "hours" {
+		t.Errorf("merged Loop.FrequencyUnit() = %q, want hours", found.Loop.FrequencyUnit())
 	}
 }
 
@@ -1361,8 +1369,9 @@ func TestFilterPromptsSpecificToACP(t *testing.T) {
 func TestParsePromptFile_WithLoop_OnCompletion(t *testing.T) {
 	data := []byte(`name: "On Completion Prompt"
 loop:
-  trigger: onCompletion
-  delay: 10
+  trigger: [onCompletion]
+  onCompletion:
+    delay: 10
   maxDuration: "2h"
 prompt: |
   Fire after agent stops.
@@ -1376,29 +1385,30 @@ prompt: |
 	if prompt.Loop == nil {
 		t.Fatal("Loop = nil, want non-nil")
 	}
-	if prompt.Loop.Trigger != "onCompletion" {
-		t.Errorf("Loop.Trigger = %q, want %q", prompt.Loop.Trigger, "onCompletion")
+	if !prompt.Loop.hasTrigger("onCompletion") {
+		t.Errorf("Loop.Trigger = %v, want to include %q", prompt.Loop.Trigger, "onCompletion")
 	}
-	if prompt.Loop.Delay != 10 {
-		t.Errorf("Loop.Delay = %d, want 10", prompt.Loop.Delay)
+	if prompt.Loop.CompletionDelay() != 10 {
+		t.Errorf("Loop.CompletionDelay() = %d, want 10", prompt.Loop.CompletionDelay())
 	}
 	if prompt.Loop.MaxDuration != "2h" {
 		t.Errorf("Loop.MaxDuration = %q, want %q", prompt.Loop.MaxDuration, "2h")
 	}
 	// value/unit absent → zero values
-	if prompt.Loop.Value != 0 {
-		t.Errorf("Loop.Value = %d, want 0 (not set)", prompt.Loop.Value)
+	if prompt.Loop.FrequencyValue() != 0 {
+		t.Errorf("Loop.FrequencyValue() = %d, want 0 (not set)", prompt.Loop.FrequencyValue())
 	}
-	if prompt.Loop.Unit != "" {
-		t.Errorf("Loop.Unit = %q, want empty (not set)", prompt.Loop.Unit)
+	if prompt.Loop.FrequencyUnit() != "" {
+		t.Errorf("Loop.FrequencyUnit() = %q, want empty (not set)", prompt.Loop.FrequencyUnit())
 	}
 }
 
 func TestParsePromptFile_WithLoop_ScheduleNoTrigger(t *testing.T) {
 	data := []byte(`name: "Schedule Prompt"
 loop:
-  value: 2
-  unit: hours
+  schedule:
+    value: 2
+    unit: hours
   maxIterations: 5
 prompt: |
   Run every 2 hours.
@@ -1412,21 +1422,21 @@ prompt: |
 	if prompt.Loop == nil {
 		t.Fatal("Loop = nil, want non-nil")
 	}
-	// Trigger absent → empty string (schedule default)
-	if prompt.Loop.Trigger != "" {
-		t.Errorf("Loop.Trigger = %q, want empty (schedule default)", prompt.Loop.Trigger)
+	// Trigger absent → defaults to ["schedule"]
+	if got := prompt.Loop.Triggers(); len(got) != 1 || got[0] != "schedule" {
+		t.Errorf("Loop.Triggers() = %v, want [schedule] (default)", got)
 	}
-	if prompt.Loop.Value != 2 {
-		t.Errorf("Loop.Value = %d, want 2", prompt.Loop.Value)
+	if prompt.Loop.FrequencyValue() != 2 {
+		t.Errorf("Loop.FrequencyValue() = %d, want 2", prompt.Loop.FrequencyValue())
 	}
-	if prompt.Loop.Unit != "hours" {
-		t.Errorf("Loop.Unit = %q, want %q", prompt.Loop.Unit, "hours")
+	if prompt.Loop.FrequencyUnit() != "hours" {
+		t.Errorf("Loop.FrequencyUnit() = %q, want %q", prompt.Loop.FrequencyUnit(), "hours")
 	}
 	if prompt.Loop.MaxIterations != 5 {
 		t.Errorf("Loop.MaxIterations = %d, want 5", prompt.Loop.MaxIterations)
 	}
-	if prompt.Loop.Delay != 0 {
-		t.Errorf("Loop.Delay = %d, want 0 (not set)", prompt.Loop.Delay)
+	if prompt.Loop.CompletionDelay() != 0 {
+		t.Errorf("Loop.CompletionDelay() = %d, want 0 (not set)", prompt.Loop.CompletionDelay())
 	}
 	if prompt.Loop.MaxDuration != "" {
 		t.Errorf("Loop.MaxDuration = %q, want empty (not set)", prompt.Loop.MaxDuration)
@@ -1438,9 +1448,9 @@ func TestToWebPrompt_OnCompletion_JSONRoundTrip(t *testing.T) {
 		Name:    "On Completion",
 		Content: "body",
 		Loop: &PromptLoop{
-			Trigger:     "onCompletion",
-			Delay:       10,
-			MaxDuration: "2h",
+			Trigger:      []string{"onCompletion"},
+			OnCompletion: &PromptLoopOnCompletion{Delay: 10},
+			MaxDuration:  "2h",
 		},
 	}
 
@@ -1455,7 +1465,7 @@ func TestToWebPrompt_OnCompletion_JSONRoundTrip(t *testing.T) {
 	}
 	jsonStr := string(raw)
 
-	if !strings.Contains(jsonStr, `"trigger":"onCompletion"`) {
+	if !strings.Contains(jsonStr, `"trigger":["onCompletion"]`) {
 		t.Errorf("JSON missing trigger field; got: %s", jsonStr)
 	}
 	if !strings.Contains(jsonStr, `"delay":10`) {
@@ -1466,11 +1476,11 @@ func TestToWebPrompt_OnCompletion_JSONRoundTrip(t *testing.T) {
 	}
 
 	// Also verify via struct fields.
-	if wp.Loop.Trigger != "onCompletion" {
-		t.Errorf("WebPrompt.Loop.Trigger = %q, want %q", wp.Loop.Trigger, "onCompletion")
+	if !wp.Loop.hasTrigger("onCompletion") {
+		t.Errorf("WebPrompt.Loop.Trigger = %v, want to include %q", wp.Loop.Trigger, "onCompletion")
 	}
-	if wp.Loop.Delay != 10 {
-		t.Errorf("WebPrompt.Loop.Delay = %d, want 10", wp.Loop.Delay)
+	if wp.Loop.CompletionDelay() != 10 {
+		t.Errorf("WebPrompt.Loop.CompletionDelay() = %d, want 10", wp.Loop.CompletionDelay())
 	}
 	if wp.Loop.MaxDuration != "2h" {
 		t.Errorf("WebPrompt.Loop.MaxDuration = %q, want %q", wp.Loop.MaxDuration, "2h")
@@ -1482,7 +1492,7 @@ func TestParsePromptFile_WithLoop_OptionalDefaultFalse(t *testing.T) {
 loop:
   mode: optional
   default: false
-  trigger: onCompletion
+  trigger: [onCompletion]
 prompt: |
   Maybe run periodically.
 `)
@@ -4048,16 +4058,16 @@ func TestBuiltinPrompts_OnCompletionDeclaresCoalesceDuringBusy(t *testing.T) {
 		if err != nil {
 			return nil // parse errors already reported by TestBuiltinPromptsParseClean
 		}
-		if prompt.Loop == nil || prompt.Loop.Trigger != "onCompletion" {
+		if prompt.Loop == nil || !prompt.Loop.hasTrigger("onCompletion") {
 			return nil
 		}
 		checked++
-		if prompt.Loop.CoalesceDuringBusy == nil {
-			t.Errorf("%s: loop.trigger = onCompletion but loop.coalesceDuringBusy is unset — must be explicitly declared as true (mitto-nfy)", d.Name())
+		if prompt.Loop.TasksCoalesceDuringBusy() == nil {
+			t.Errorf("%s: loop.trigger = onCompletion but loop.onTasks.coalesceDuringBusy is unset — must be explicitly declared as true (mitto-nfy)", d.Name())
 			return nil
 		}
-		if !*prompt.Loop.CoalesceDuringBusy {
-			t.Errorf("%s: loop.coalesceDuringBusy = false, want true for trigger: onCompletion (mitto-nfy)", d.Name())
+		if !*prompt.Loop.TasksCoalesceDuringBusy() {
+			t.Errorf("%s: loop.onTasks.coalesceDuringBusy = false, want true for trigger: onCompletion (mitto-nfy)", d.Name())
 		}
 		return nil
 	})

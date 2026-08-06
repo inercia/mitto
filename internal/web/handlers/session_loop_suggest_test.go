@@ -139,14 +139,13 @@ func TestHandleSuggestLoopFromRecent(t *testing.T) {
 			return []configPkg.WebPrompt{{
 				Name: "seed-prompt",
 				Loop: &configPkg.PromptLoop{
-					Trigger:            "onCompletion",
-					Delay:              45,
-					MaxIterations:      7,
-					MaxDuration:        "2h",
-					Condition:          "tasks.changed()",
-					FreshContext:       &tr,
-					RunOnStart:         &tr,
-					CoalesceDuringBusy: &fa,
+					Trigger:       []string{"onCompletion"},
+					OnCompletion:  &configPkg.PromptLoopOnCompletion{Delay: 45},
+					MaxIterations: 7,
+					MaxDuration:   "2h",
+					OnTasks:       &configPkg.PromptLoopOnTasks{Condition: "tasks.changed()", CoalesceDuringBusy: &fa},
+					FreshContext:  &tr,
+					RunOnStart:    &tr,
 				},
 			}}
 		}
@@ -202,7 +201,7 @@ func TestHandleSuggestLoopFromRecent(t *testing.T) {
 		promptStub := func(string) []configPkg.WebPrompt {
 			return []configPkg.WebPrompt{{
 				Name: "bad-loop",
-				Loop: &configPkg.PromptLoop{Trigger: "not-a-real-trigger"},
+				Loop: &configPkg.PromptLoop{Trigger: []string{"not-a-real-trigger"}},
 			}}
 		}
 		store, h, sid := suggestFixture(t, tmp, promptStub)
@@ -234,7 +233,7 @@ func TestHandleSuggestLoopFromRecent(t *testing.T) {
 		promptStub := func(string) []configPkg.WebPrompt {
 			return []configPkg.WebPrompt{{
 				Name: "someprompt", // lower-case in workspace list
-				Loop: &configPkg.PromptLoop{Trigger: "onCompletion", Delay: 10},
+				Loop: &configPkg.PromptLoop{Trigger: []string{"onCompletion"}, OnCompletion: &configPkg.PromptLoopOnCompletion{Delay: 10}},
 			}}
 		}
 		store, h, sid := suggestFixture(t, tmp, promptStub)
@@ -258,8 +257,8 @@ func TestHandleSuggestLoopFromRecent(t *testing.T) {
 		tmp := t.TempDir()
 		promptStub := func(string) []configPkg.WebPrompt {
 			return []configPkg.WebPrompt{
-				{Name: "older-prompt", Loop: &configPkg.PromptLoop{Trigger: "schedule", Value: 5, Unit: "hours"}},
-				{Name: "newer-prompt", Loop: &configPkg.PromptLoop{Trigger: "onCompletion", Delay: 99, MaxIterations: 42}},
+				{Name: "older-prompt", Loop: &configPkg.PromptLoop{Trigger: []string{"schedule"}, Schedule: &configPkg.PromptLoopSchedule{Value: 5, Unit: "hours"}}},
+				{Name: "newer-prompt", Loop: &configPkg.PromptLoop{Trigger: []string{"onCompletion"}, OnCompletion: &configPkg.PromptLoopOnCompletion{Delay: 99}, MaxIterations: 42}},
 			}
 		}
 		store, h, sid := suggestFixture(t, tmp, promptStub)
@@ -293,7 +292,7 @@ func TestHandleSuggestLoopFromRecent(t *testing.T) {
 		promptStub := func(string) []configPkg.WebPrompt {
 			return []configPkg.WebPrompt{{
 				Name: "ro-prompt",
-				Loop: &configPkg.PromptLoop{Trigger: "onCompletion", Delay: 30},
+				Loop: &configPkg.PromptLoop{Trigger: []string{"onCompletion"}, OnCompletion: &configPkg.PromptLoopOnCompletion{Delay: 30}},
 			}}
 		}
 		store, h, sid := suggestFixture(t, tmp, promptStub)

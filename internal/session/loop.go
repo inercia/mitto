@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -232,7 +233,16 @@ type LoopPrompt struct {
 	NextScheduledAt *time.Time `json:"next_scheduled_at,omitempty"`
 	// Trigger controls how this loop prompt is fired.
 	// Empty or "schedule" means frequency-based; "onCompletion" means event-driven.
+	//
+	// Deprecated: retained as a legacy read-only field for on-disk
+	// backward-compatibility (loop.json written by pre-r6j Mitto versions).
+	// Triggers is now canonical; see EffectiveTriggers. Not written by Set/Update
+	// (mitto-r6j.5 owns the on-disk migration); still read as a fallback.
 	Trigger LoopTrigger `json:"trigger,omitempty"`
+	// Triggers is the canonical list of triggers that arm this loop (mitto-r6j).
+	// Empty falls back to []LoopTrigger{Trigger} when Trigger is set, then to
+	// []LoopTrigger{TriggerSchedule} — see EffectiveTriggers.
+	Triggers []LoopTrigger `json:"triggers,omitempty"`
 	// DelaySeconds is the number of seconds to wait after the agent stops responding
 	// before the next run. Only meaningful when Trigger is onCompletion.
 	DelaySeconds int `json:"delay_seconds,omitempty"`
@@ -327,23 +337,35 @@ func (p *LoopPrompt) ReachedMaxIterations() bool {
 	return p.MaxIterations > 0 && p.IterationCount >= p.MaxIterations
 }
 
-// EffectiveTrigger returns the resolved trigger type.
-// When Trigger is empty, TriggerSchedule (the default) is returned.
-func (p *LoopPrompt) EffectiveTrigger() LoopTrigger {
-	if p.Trigger == "" {
-		return TriggerSchedule
+// EffectiveTriggers returns the resolved trigger list (mitto-r6j): Triggers
+// verbatim when non-empty, falling back to []LoopTrigger{Trigger} when the
+// legacy singular Trigger field is set, falling back to
+// []LoopTrigger{TriggerSchedule} (today's implicit default) when neither is set.
+func (p *LoopPrompt) EffectiveTriggers() []LoopTrigger {
+	if len(p.Triggers) > 0 {
+		return p.Triggers
 	}
-	return p.Trigger
+	if p.Trigger != "" {
+		return []LoopTrigger{p.Trigger}
+	}
+	return []LoopTrigger{TriggerSchedule}
 }
 
-// IsOnCompletion returns true when this loop prompt uses the onCompletion trigger.
+// EffectiveTrigger returns the primary (first) resolved trigger. Existing
+// single-trigger callers keep their current behaviour; multi-trigger configs
+// should prefer EffectiveTriggers.
+func (p *LoopPrompt) EffectiveTrigger() LoopTrigger {
+	return p.EffectiveTriggers()[0]
+}
+
+// IsOnCompletion returns true when this loop prompt's trigger list includes onCompletion.
 func (p *LoopPrompt) IsOnCompletion() bool {
-	return p.EffectiveTrigger() == TriggerOnCompletion
+	return slices.Contains(p.EffectiveTriggers(), TriggerOnCompletion)
 }
 
-// IsOnTasks returns true when this loop prompt uses the onTasks trigger.
+// IsOnTasks returns true when this loop prompt's trigger list includes onTasks.
 func (p *LoopPrompt) IsOnTasks() bool {
-	return p.EffectiveTrigger() == TriggerOnTasks
+	return slices.Contains(p.EffectiveTriggers(), TriggerOnTasks)
 }
 
 // pendingPlaceholder is a legacy draft placeholder written by older frontends
@@ -442,6 +464,19 @@ func (p *LoopPrompt) Validate() error {
 		// valid
 	default:
 		return ErrInvalidTrigger
+	}
+	seenTriggers := make(map[LoopTrigger]bool, len(p.Triggers))
+	for _, t := range p.Triggers {
+		switch t {
+		case TriggerSchedule, TriggerOnCompletion, TriggerOnTasks:
+			// valid
+		default:
+			return ErrInvalidTrigger
+		}
+		if seenTriggers[t] {
+			return fmt.Errorf("%w: duplicate trigger %q", ErrInvalidTrigger, t)
+		}
+		seenTriggers[t] = true
 	}
 	if p.DelaySeconds < 0 {
 		return ErrInvalidDelay
@@ -589,6 +624,10 @@ func (ps *LoopStore) Update(prompt *string, promptName *string, frequency *Frequ
 	}
 	if trigger != nil {
 		existing.Trigger = *trigger
+		// Keep Triggers in sync so EffectiveTriggers (which checks Triggers
+		// first) reflects this single-trigger update rather than a stale
+		// multi-trigger list from a prior write (mitto-r6j).
+		existing.Triggers = []LoopTrigger{*trigger}
 	}
 	if delaySeconds != nil {
 		existing.DelaySeconds = *delaySeconds

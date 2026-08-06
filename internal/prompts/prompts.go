@@ -37,68 +37,87 @@ var loadWarnSeen sync.Map
 //   - `mode: always` (or `mode` absent) → always loop; not user-toggleable.
 //   - `mode: optional` → user-choosable; `default` sets the initial per-send state.
 //
+// Schema (mitto-r6j): `trigger:` is a list of one or more of
+// "schedule" | "onCompletion" | "onTasks", and each trigger's attributes are
+// grouped under a nested block of the same name. A block for a trigger not
+// listed in `trigger:` is inert (parses fine, warns at load time). Loop-wide
+// fields (MaxIterations, MaxDuration, FreshContext, RunOnStart, Mode, Default)
+// remain flat siblings of `trigger:` since they apply regardless of which
+// trigger fires.
+//
+// This is a breaking change from the pre-r6j single-trigger flat schema
+// (`trigger: onCompletion` + flat `delay`/`condition`/... siblings) — see
+// mitto-r6j.3 for the migration registry that rewrites old-form prompt files,
+// and mitto-r6j.4 for the builtin prompt rewrite. A leftover flat key (e.g.
+// `delay:` outside `onCompletion:`) is a parse error naming the migration.
+//
 // Example frontmatter (always loop, schedule-based):
 //
 //	loop:
-//	  value: 1
-//	  unit: hours          # minutes | hours | days
-//	  at: "09:00"          # optional, only for days (UTC)
-//	  maxIterations: 10    # optional; 0/absent = unlimited scheduled runs
+//	  trigger: [schedule]
+//	  schedule:
+//	    value: 1
+//	    unit: hours          # minutes | hours | days
+//	    at: "09:00"          # optional, only for days (UTC)
+//	  maxIterations: 10      # optional; 0/absent = unlimited scheduled runs
 //
 // Example frontmatter (always loop, on-completion trigger):
 //
 //	loop:
-//	  trigger: onCompletion  # fire after the agent stops responding
-//	  delay: 30              # seconds to wait after agent stops (clamped to floor at consumption)
-//	  maxIterations: 20      # optional safety cap
-//	  maxDuration: "4h"      # optional wall-clock cap; 0/absent = unlimited
+//	  trigger: [onCompletion]
+//	  onCompletion:
+//	    delay: 30              # seconds to wait after agent stops (clamped to floor at consumption)
+//	  maxIterations: 20        # optional safety cap
+//	  maxDuration: "4h"        # optional wall-clock cap; 0/absent = unlimited
 //
 // Example frontmatter (always loop, on-tasks trigger with CEL condition):
 //
 //	loop:
-//	  trigger: onTasks
-//	  condition: 'tasks.exists(t, t.status == "open" && "backend" in t.labels)'
+//	  trigger: [onTasks]
+//	  onTasks:
+//	    condition: 'tasks.exists(t, t.status == "open" && "backend" in t.labels)'
 //	  maxIterations: 20
 //	  maxDuration: "4h"
+//
+// Example frontmatter (multiple simultaneous triggers):
+//
+//	loop:
+//	  trigger: [schedule, onCompletion]
+//	  schedule:
+//	    value: 1
+//	    unit: hours
+//	  onCompletion:
+//	    delay: 30
 //
 // Example frontmatter (optionally loop, off by default):
 //
 //	loop:
 //	  mode: optional
 //	  default: false         # initial per-send toggle state; nil/absent => true (on)
-//	  trigger: onCompletion
-//	  delay: 30
+//	  trigger: [onCompletion]
+//	  onCompletion:
+//	    delay: 30
 type PromptLoop struct {
-	// Value is the number of time units between runs (min 1). Used for trigger: schedule (default).
-	Value int `yaml:"value" json:"value"`
-	// Unit is the time unit: "minutes", "hours", or "days". Used for trigger: schedule (default).
-	Unit string `yaml:"unit" json:"unit"`
-	// At is the time of day in HH:MM format (UTC). Only meaningful for the "days" unit.
-	At string `yaml:"at,omitempty" json:"at,omitempty"`
+	// Trigger is the list of triggers that arm this loop; each entry must be
+	// one of "schedule", "onCompletion", or "onTasks". Duplicates are rejected.
+	// Empty/absent defaults to ["schedule"] (preserves pre-r6j implicit-schedule
+	// prompts). Validated by ValidatePromptLoop / ValidateLoopTriggers.
+	Trigger []string `yaml:"trigger,omitempty" json:"trigger,omitempty"`
+	// Schedule groups the frequency-based trigger's attributes. Meaningful only
+	// when "schedule" is present in Trigger.
+	Schedule *PromptLoopSchedule `yaml:"schedule,omitempty" json:"schedule,omitempty"`
+	// OnCompletion groups the event-driven "fire after the agent stops
+	// responding" trigger's attributes. Meaningful only when "onCompletion" is
+	// present in Trigger.
+	OnCompletion *PromptLoopOnCompletion `yaml:"onCompletion,omitempty" json:"onCompletion,omitempty"`
+	// OnTasks groups the event-driven "fire when beads/tasks change" trigger's
+	// attributes. Meaningful only when "onTasks" is present in Trigger.
+	OnTasks *PromptLoopOnTasks `yaml:"onTasks,omitempty" json:"onTasks,omitempty"`
 	// MaxIterations caps the number of scheduled runs when the conversation is made loop (0 / absent = unlimited).
 	MaxIterations int `yaml:"maxIterations,omitempty" json:"maxIterations,omitempty"`
-	// Trigger selects how the loop run fires: "" or "schedule" (default, frequency-based),
-	// "onCompletion" (fire after the agent stops responding + Delay seconds), or
-	// "onTasks" (fire when beads/tasks in the workspace change, optionally gated by Condition).
-	Trigger string `yaml:"trigger,omitempty" json:"trigger,omitempty"`
-	// Delay is the number of seconds to wait after the agent stops responding before the
-	// next run. Only meaningful for trigger: onCompletion. Clamped to a global minimum
-	// (default 5s) at the consumption boundary.
-	Delay int `yaml:"delay,omitempty" json:"delay,omitempty"`
 	// MaxDuration is an optional wall-clock cap (e.g. "2h", "30m"); 0/absent = unlimited.
 	// Parsed to seconds at the consumption boundary.
 	MaxDuration string `yaml:"maxDuration,omitempty" json:"maxDuration,omitempty"`
-	// Condition is an optional CEL expression gating which beads/task changes fire
-	// the run; empty = fire on any change. Only meaningful for trigger: onTasks.
-	// Validated at parse time in ParsePromptFile.
-	Condition string `yaml:"condition,omitempty" json:"condition,omitempty"`
-	// CoalesceDuringBusy controls how the onTasks trigger handles beads changes
-	// that arrive while the loop's subtree is busy. Nil/absent or true = silently
-	// absorb into the quiescence rebase (default). False = at quiescence, fire
-	// once more with the accumulated pre-run→current delta available as
-	// .Trigger.OnTasks.*, gated by Layer 0 and the CEL condition (mitto-dmb).
-	// Only meaningful for trigger: onTasks.
-	CoalesceDuringBusy *bool `yaml:"coalesceDuringBusy,omitempty" json:"coalesceDuringBusy,omitempty"`
 	// FreshContext, when true, starts each scheduled/re-fired run with a clean
 	// agent context: no history injection on resumed sessions, and a fresh ACP
 	// session is created per run (see createFreshContextSession). Nil/absent =
@@ -118,6 +137,224 @@ type PromptLoop struct {
 	// Default is the initial per-send toggle state when Mode is "optional".
 	// nil/absent => true (on). Ignored (with a lint warning) when Mode is "always".
 	Default *bool `yaml:"default,omitempty" json:"default,omitempty"`
+}
+
+// PromptLoopSchedule groups the frequency-based ("schedule") trigger's
+// attributes, nested under loop.schedule.
+type PromptLoopSchedule struct {
+	// Value is the number of time units between runs (min 1).
+	Value int `yaml:"value" json:"value"`
+	// Unit is the time unit: "minutes", "hours", or "days".
+	Unit string `yaml:"unit" json:"unit"`
+	// At is the time of day in HH:MM format (UTC). Only meaningful for the "days" unit.
+	At string `yaml:"at,omitempty" json:"at,omitempty"`
+}
+
+// PromptLoopOnCompletion groups the "onCompletion" trigger's attributes,
+// nested under loop.onCompletion.
+type PromptLoopOnCompletion struct {
+	// Delay is the number of seconds to wait after the agent stops responding
+	// before the next run. Clamped to a global minimum (default 5s) at the
+	// consumption boundary.
+	Delay int `yaml:"delay,omitempty" json:"delay,omitempty"`
+}
+
+// PromptLoopOnTasks groups the "onTasks" trigger's attributes, nested under
+// loop.onTasks.
+type PromptLoopOnTasks struct {
+	// Condition is an optional CEL expression gating which beads/task changes
+	// fire the run; empty = fire on any change. Validated at parse time in
+	// ParsePromptFile.
+	Condition string `yaml:"condition,omitempty" json:"condition,omitempty"`
+	// ConditionPreset is an optional UI preset id that was compiled into Condition.
+	ConditionPreset string `yaml:"conditionPreset,omitempty" json:"conditionPreset,omitempty"`
+	// CoalesceDuringBusy controls how the onTasks trigger handles beads changes
+	// that arrive while the loop's subtree is busy. Nil/absent or true = silently
+	// absorb into the quiescence rebase (default). False = at quiescence, fire
+	// once more with the accumulated pre-run→current delta available as
+	// .Trigger.OnTasks.*, gated by Layer 0 and the CEL condition (mitto-dmb).
+	CoalesceDuringBusy *bool `yaml:"coalesceDuringBusy,omitempty" json:"coalesceDuringBusy,omitempty"`
+	// SettleWindow is an optional pre-fire debounce window (seconds). When > 0,
+	// a single coalesced fire is dispatched after the timer expires instead of
+	// firing immediately on the first delta (mitto-1uv).
+	SettleWindow int `yaml:"settleWindow,omitempty" json:"settleWindow,omitempty"`
+	// Cooldown is the per-conversation cooldown floor (seconds) honoured by the
+	// runner between onTasks firings. 0 means use the global floor.
+	Cooldown int `yaml:"cooldown,omitempty" json:"cooldown,omitempty"`
+}
+
+// knownLoopTriggers enumerates valid PromptLoop.Trigger entries.
+var knownLoopTriggers = map[string]bool{
+	"schedule":     true,
+	"onCompletion": true,
+	"onTasks":      true,
+}
+
+// Triggers returns the effective, resolved trigger list: p.Trigger verbatim
+// when non-empty, otherwise ["schedule"] (the pre-r6j implicit default). Safe
+// to call on a nil receiver (returns ["schedule"]).
+func (p *PromptLoop) Triggers() []string {
+	if p == nil || len(p.Trigger) == 0 {
+		return []string{"schedule"}
+	}
+	return p.Trigger
+}
+
+// hasTrigger reports whether name is present in the effective trigger list.
+func (p *PromptLoop) hasTrigger(name string) bool {
+	for _, t := range p.Triggers() {
+		if t == name {
+			return true
+		}
+	}
+	return false
+}
+
+// FrequencyValue returns loop.schedule.value, or 0 when unset/nil.
+func (p *PromptLoop) FrequencyValue() int {
+	if p == nil || p.Schedule == nil {
+		return 0
+	}
+	return p.Schedule.Value
+}
+
+// FrequencyUnit returns loop.schedule.unit, or "" when unset/nil.
+func (p *PromptLoop) FrequencyUnit() string {
+	if p == nil || p.Schedule == nil {
+		return ""
+	}
+	return p.Schedule.Unit
+}
+
+// FrequencyAt returns loop.schedule.at, or "" when unset/nil.
+func (p *PromptLoop) FrequencyAt() string {
+	if p == nil || p.Schedule == nil {
+		return ""
+	}
+	return p.Schedule.At
+}
+
+// CompletionDelay returns loop.onCompletion.delay, or 0 when unset/nil.
+func (p *PromptLoop) CompletionDelay() int {
+	if p == nil || p.OnCompletion == nil {
+		return 0
+	}
+	return p.OnCompletion.Delay
+}
+
+// TasksCondition returns loop.onTasks.condition, or "" when unset/nil.
+func (p *PromptLoop) TasksCondition() string {
+	if p == nil || p.OnTasks == nil {
+		return ""
+	}
+	return p.OnTasks.Condition
+}
+
+// TasksConditionPreset returns loop.onTasks.conditionPreset, or "" when unset/nil.
+func (p *PromptLoop) TasksConditionPreset() string {
+	if p == nil || p.OnTasks == nil {
+		return ""
+	}
+	return p.OnTasks.ConditionPreset
+}
+
+// TasksCoalesceDuringBusy returns loop.onTasks.coalesceDuringBusy, or nil when
+// unset/nil (pointer-presence semantics: nil means "not declared", matching
+// the frontmatter's own tri-state).
+func (p *PromptLoop) TasksCoalesceDuringBusy() *bool {
+	if p == nil || p.OnTasks == nil {
+		return nil
+	}
+	return p.OnTasks.CoalesceDuringBusy
+}
+
+// TasksSettleWindow returns loop.onTasks.settleWindow, or 0 when unset/nil.
+func (p *PromptLoop) TasksSettleWindow() int {
+	if p == nil || p.OnTasks == nil {
+		return 0
+	}
+	return p.OnTasks.SettleWindow
+}
+
+// TasksCooldown returns loop.onTasks.cooldown, or 0 when unset/nil.
+func (p *PromptLoop) TasksCooldown() int {
+	if p == nil || p.OnTasks == nil {
+		return 0
+	}
+	return p.OnTasks.Cooldown
+}
+
+// legacyPromptLoopFlatKeys enumerates the pre-r6j flat keys that lived
+// directly under loop: and are now only valid nested under a trigger block
+// (or have moved: `value`/`unit`/`at` → `schedule.*`, `delay` →
+// `onCompletion.delay`, `condition`/`coalesceDuringBusy` → `onTasks.*`). A
+// leftover top-level occurrence is a strict parse error naming the migration
+// (mitto-r6j.3) since yaml.v3 would otherwise silently ignore the unknown key.
+var legacyPromptLoopFlatKeys = map[string]string{
+	"value":              "schedule.value",
+	"unit":               "schedule.unit",
+	"at":                 "schedule.at",
+	"delay":              "onCompletion.delay",
+	"condition":          "onTasks.condition",
+	"conditionPreset":    "onTasks.conditionPreset",
+	"coalesceDuringBusy": "onTasks.coalesceDuringBusy",
+	"settleWindow":       "onTasks.settleWindow",
+	"cooldown":           "onTasks.cooldown",
+}
+
+// promptLoopAux mirrors PromptLoop's real (grouped) fields; used as the
+// UnmarshalYAML decode target so the custom method can add the legacy-key
+// rejection pass without recursing into itself.
+type promptLoopAux struct {
+	Trigger       []string                `yaml:"trigger,omitempty"`
+	Schedule      *PromptLoopSchedule     `yaml:"schedule,omitempty"`
+	OnCompletion  *PromptLoopOnCompletion `yaml:"onCompletion,omitempty"`
+	OnTasks       *PromptLoopOnTasks      `yaml:"onTasks,omitempty"`
+	MaxIterations int                     `yaml:"maxIterations,omitempty"`
+	MaxDuration   string                  `yaml:"maxDuration,omitempty"`
+	FreshContext  *bool                   `yaml:"freshContext,omitempty"`
+	RunOnStart    *bool                   `yaml:"runOnStart,omitempty"`
+	Mode          string                  `yaml:"mode,omitempty"`
+	Default       *bool                   `yaml:"default,omitempty"`
+}
+
+// UnmarshalYAML implements yaml.Unmarshaler for PromptLoop. It first scans the
+// raw mapping node for any pre-r6j flat key (value/unit/at/delay/condition/...)
+// and returns a clear migration error if one is found — yaml.v3 otherwise
+// silently ignores unknown keys, which would parse a stale flat-form loop:
+// block into an all-zero grouped struct instead of failing loudly. Files that
+// go through the mitto-r6j.3 migration registry never reach this path with a
+// legacy key present.
+func (p *PromptLoop) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind != yaml.MappingNode {
+		return fmt.Errorf("loop: must be a mapping")
+	}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		k := node.Content[i]
+		if k.Kind != yaml.ScalarNode {
+			continue
+		}
+		if newPath, ok := legacyPromptLoopFlatKeys[k.Value]; ok {
+			return fmt.Errorf("loop.%s is the pre-r6j flat schema — nest it under loop.%s, or run the prompt migration (see mitto-r6j.3)", k.Value, newPath)
+		}
+	}
+
+	var aux promptLoopAux
+	if err := node.Decode(&aux); err != nil {
+		return err
+	}
+
+	p.Trigger = aux.Trigger
+	p.Schedule = aux.Schedule
+	p.OnCompletion = aux.OnCompletion
+	p.OnTasks = aux.OnTasks
+	p.MaxIterations = aux.MaxIterations
+	p.MaxDuration = aux.MaxDuration
+	p.FreshContext = aux.FreshContext
+	p.RunOnStart = aux.RunOnStart
+	p.Mode = aux.Mode
+	p.Default = aux.Default
+	return nil
 }
 
 // PromptTarget groups routing/dispatch behaviors for a prompt when it is
@@ -217,9 +454,11 @@ func (p *PromptLoop) MaxDurationSeconds() (int, error) {
 	return int(d.Seconds()), nil
 }
 
-// ValidatePromptLoop validates the loop block's mode/default combination.
-// Returns an error for unknown mode values. Emits a non-fatal warning when default
-// is set together with mode: always (or mode absent), since the value is ignored.
+// ValidatePromptLoop validates the loop block: the mode/default combination
+// and the trigger list + per-trigger blocks (see ValidateLoopTriggers).
+// Returns an error for unknown mode values or invalid trigger configuration.
+// Emits a non-fatal warning when default is set together with mode: always
+// (or mode absent), since the value is ignored.
 func ValidatePromptLoop(promptName string, p *PromptLoop) error {
 	if p == nil {
 		return nil
@@ -230,6 +469,53 @@ func ValidatePromptLoop(promptName string, p *PromptLoop) error {
 	if p.Default != nil && p.Mode != PromptLoopModeOptional {
 		slog.Warn("prompt loop.default is ignored unless loop.mode is \"optional\"",
 			"prompt", promptName, "mode", p.Mode)
+	}
+	if err := ValidateLoopTriggers(promptName, p); err != nil {
+		return err
+	}
+	return nil
+}
+
+// ValidateLoopTriggers validates the loop.trigger list and its per-trigger
+// blocks (mitto-r6j.1):
+//   - Every entry in Trigger must be one of "schedule", "onCompletion", "onTasks".
+//   - Duplicate entries are rejected.
+//   - An empty/absent Trigger list is not an error — it defaults to ["schedule"]
+//     (see PromptLoop.Triggers), preserving pre-r6j implicit-schedule prompts.
+//   - loop.schedule.at is only valid when loop.schedule.unit is "days".
+//   - A block present for a trigger NOT listed in Trigger is inert (matches
+//     today's tolerance for inert flat fields) and only logs a warning, not an error.
+func ValidateLoopTriggers(promptName string, p *PromptLoop) error {
+	if p == nil {
+		return nil
+	}
+	seen := make(map[string]bool, len(p.Trigger))
+	for _, t := range p.Trigger {
+		if !knownLoopTriggers[t] {
+			return fmt.Errorf("prompt %q: loop.trigger %q is not valid (must be one of: schedule, onCompletion, onTasks)", promptName, t)
+		}
+		if seen[t] {
+			return fmt.Errorf("prompt %q: loop.trigger contains duplicate entry %q", promptName, t)
+		}
+		seen[t] = true
+	}
+
+	if p.Schedule != nil {
+		if !p.hasTrigger("schedule") {
+			slog.Warn("prompt loop.schedule is set but \"schedule\" is not in loop.trigger — this block is inert",
+				"prompt", promptName)
+		}
+		if p.Schedule.At != "" && p.Schedule.Unit != "days" {
+			return fmt.Errorf("prompt %q: loop.schedule.at is only valid when loop.schedule.unit is \"days\"", promptName)
+		}
+	}
+	if p.OnCompletion != nil && !p.hasTrigger("onCompletion") {
+		slog.Warn("prompt loop.onCompletion is set but \"onCompletion\" is not in loop.trigger — this block is inert",
+			"prompt", promptName)
+	}
+	if p.OnTasks != nil && !p.hasTrigger("onTasks") {
+		slog.Warn("prompt loop.onTasks is set but \"onTasks\" is not in loop.trigger — this block is inert",
+			"prompt", promptName)
 	}
 	return nil
 }
@@ -633,12 +919,11 @@ func ParsePromptFile(path string, data []byte, modTime time.Time) (*PromptFile, 
 		return nil, fmt.Errorf("prompt file %s: %w", path, err)
 	}
 
-	// Validate loop.condition CEL expression when non-empty (fail-fast, mirrors
-	// how the runtime seam is wired via session.ConditionValidator). Applies to
-	// any loop block that declares a Condition; only meaningful for trigger: onTasks.
-	if prompt.Loop != nil && prompt.Loop.Condition != "" {
-		if err := cel.ValidateCondition(prompt.Loop.Condition); err != nil {
-			return nil, fmt.Errorf("prompt file %s: loop.condition: %w", path, err)
+	// Validate loop.onTasks.condition CEL expression when non-empty (fail-fast,
+	// mirrors how the runtime seam is wired via session.ConditionValidator).
+	if cond := prompt.Loop.TasksCondition(); cond != "" {
+		if err := cel.ValidateCondition(cond); err != nil {
+			return nil, fmt.Errorf("prompt file %s: loop.onTasks.condition: %w", path, err)
 		}
 	}
 
