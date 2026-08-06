@@ -140,7 +140,8 @@ type PromptLoop struct {
 }
 
 // PromptLoopSchedule groups the frequency-based ("schedule") trigger's
-// attributes, nested under loop.schedule.
+// attributes, nested under loop.schedule. Unknown keys are rejected (see
+// UnmarshalYAML).
 type PromptLoopSchedule struct {
 	// Value is the number of time units between runs (min 1).
 	Value int `yaml:"value" json:"value"`
@@ -151,7 +152,8 @@ type PromptLoopSchedule struct {
 }
 
 // PromptLoopOnCompletion groups the "onCompletion" trigger's attributes,
-// nested under loop.onCompletion.
+// nested under loop.onCompletion. Unknown keys are rejected (see
+// UnmarshalYAML).
 type PromptLoopOnCompletion struct {
 	// Delay is the number of seconds to wait after the agent stops responding
 	// before the next run. Clamped to a global minimum (default 5s) at the
@@ -160,7 +162,7 @@ type PromptLoopOnCompletion struct {
 }
 
 // PromptLoopOnTasks groups the "onTasks" trigger's attributes, nested under
-// loop.onTasks.
+// loop.onTasks. Unknown keys are rejected (see UnmarshalYAML).
 type PromptLoopOnTasks struct {
 	// Condition is an optional CEL expression gating which beads/task changes
 	// fire the run; empty = fire on any change. Validated at parse time in
@@ -318,13 +320,56 @@ type promptLoopAux struct {
 	Default       *bool                   `yaml:"default,omitempty"`
 }
 
+// promptLoopKnownKeys enumerates the keys valid directly under loop:.
+var promptLoopKnownKeys = map[string]bool{
+	"trigger": true, "schedule": true, "onCompletion": true, "onTasks": true,
+	"maxIterations": true, "maxDuration": true, "freshContext": true,
+	"runOnStart": true, "mode": true, "default": true,
+}
+
+// promptLoopScheduleKnownKeys enumerates the keys valid under loop.schedule.
+var promptLoopScheduleKnownKeys = map[string]bool{
+	"value": true, "unit": true, "at": true,
+}
+
+// promptLoopOnCompletionKnownKeys enumerates the keys valid under loop.onCompletion.
+var promptLoopOnCompletionKnownKeys = map[string]bool{
+	"delay": true,
+}
+
+// promptLoopOnTasksKnownKeys enumerates the keys valid under loop.onTasks.
+var promptLoopOnTasksKnownKeys = map[string]bool{
+	"condition": true, "conditionPreset": true, "coalesceDuringBusy": true,
+	"settleWindow": true, "cooldown": true,
+}
+
+// rejectUnknownLoopKeys returns an error for the first key in the mapping node
+// that is absent from known. path is the dotted prefix used in the message
+// (e.g. "loop.schedule"). yaml.v3 silently ignores unknown keys, so a typo
+// would otherwise parse into a zero-valued field instead of failing loudly.
+func rejectUnknownLoopKeys(path string, node *yaml.Node, known map[string]bool) error {
+	if node.Kind != yaml.MappingNode {
+		return fmt.Errorf("%s: must be a mapping", path)
+	}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		k := node.Content[i]
+		if k.Kind != yaml.ScalarNode {
+			continue
+		}
+		if !known[k.Value] {
+			return fmt.Errorf("%s.%s is not a known key", path, k.Value)
+		}
+	}
+	return nil
+}
+
 // UnmarshalYAML implements yaml.Unmarshaler for PromptLoop. It first scans the
 // raw mapping node for any pre-r6j flat key (value/unit/at/delay/condition/...)
 // and returns a clear migration error if one is found — yaml.v3 otherwise
 // silently ignores unknown keys, which would parse a stale flat-form loop:
-// block into an all-zero grouped struct instead of failing loudly. Files that
-// go through the mitto-r6j.3 migration registry never reach this path with a
-// legacy key present.
+// block into an all-zero grouped struct instead of failing loudly. Any other
+// unrecognized key is rejected too. Files that go through the mitto-r6j.3
+// migration registry never reach this path with a legacy key present.
 func (p *PromptLoop) UnmarshalYAML(node *yaml.Node) error {
 	if node.Kind != yaml.MappingNode {
 		return fmt.Errorf("loop: must be a mapping")
@@ -337,6 +382,9 @@ func (p *PromptLoop) UnmarshalYAML(node *yaml.Node) error {
 		if newPath, ok := legacyPromptLoopFlatKeys[k.Value]; ok {
 			return fmt.Errorf("loop.%s is the pre-r6j flat schema — nest it under loop.%s, or run the prompt migration (see mitto-r6j.3)", k.Value, newPath)
 		}
+	}
+	if err := rejectUnknownLoopKeys("loop", node, promptLoopKnownKeys); err != nil {
+		return err
 	}
 
 	var aux promptLoopAux
@@ -354,6 +402,78 @@ func (p *PromptLoop) UnmarshalYAML(node *yaml.Node) error {
 	p.RunOnStart = aux.RunOnStart
 	p.Mode = aux.Mode
 	p.Default = aux.Default
+	return nil
+}
+
+// promptLoopScheduleAux mirrors PromptLoopSchedule's fields; decode target for
+// UnmarshalYAML so the strict-key pass does not recurse into itself.
+type promptLoopScheduleAux struct {
+	Value int    `yaml:"value"`
+	Unit  string `yaml:"unit"`
+	At    string `yaml:"at,omitempty"`
+}
+
+// UnmarshalYAML implements yaml.Unmarshaler for PromptLoopSchedule, rejecting
+// any key that is not part of the schedule-trigger block.
+func (s *PromptLoopSchedule) UnmarshalYAML(node *yaml.Node) error {
+	if err := rejectUnknownLoopKeys("loop.schedule", node, promptLoopScheduleKnownKeys); err != nil {
+		return err
+	}
+	var aux promptLoopScheduleAux
+	if err := node.Decode(&aux); err != nil {
+		return err
+	}
+	s.Value = aux.Value
+	s.Unit = aux.Unit
+	s.At = aux.At
+	return nil
+}
+
+// promptLoopOnCompletionAux mirrors PromptLoopOnCompletion's fields; decode
+// target for UnmarshalYAML so the strict-key pass does not recurse into itself.
+type promptLoopOnCompletionAux struct {
+	Delay int `yaml:"delay,omitempty"`
+}
+
+// UnmarshalYAML implements yaml.Unmarshaler for PromptLoopOnCompletion,
+// rejecting any key that is not part of the onCompletion-trigger block.
+func (c *PromptLoopOnCompletion) UnmarshalYAML(node *yaml.Node) error {
+	if err := rejectUnknownLoopKeys("loop.onCompletion", node, promptLoopOnCompletionKnownKeys); err != nil {
+		return err
+	}
+	var aux promptLoopOnCompletionAux
+	if err := node.Decode(&aux); err != nil {
+		return err
+	}
+	c.Delay = aux.Delay
+	return nil
+}
+
+// promptLoopOnTasksAux mirrors PromptLoopOnTasks's fields; decode target for
+// UnmarshalYAML so the strict-key pass does not recurse into itself.
+type promptLoopOnTasksAux struct {
+	Condition          string `yaml:"condition,omitempty"`
+	ConditionPreset    string `yaml:"conditionPreset,omitempty"`
+	CoalesceDuringBusy *bool  `yaml:"coalesceDuringBusy,omitempty"`
+	SettleWindow       int    `yaml:"settleWindow,omitempty"`
+	Cooldown           int    `yaml:"cooldown,omitempty"`
+}
+
+// UnmarshalYAML implements yaml.Unmarshaler for PromptLoopOnTasks, rejecting
+// any key that is not part of the onTasks-trigger block.
+func (t *PromptLoopOnTasks) UnmarshalYAML(node *yaml.Node) error {
+	if err := rejectUnknownLoopKeys("loop.onTasks", node, promptLoopOnTasksKnownKeys); err != nil {
+		return err
+	}
+	var aux promptLoopOnTasksAux
+	if err := node.Decode(&aux); err != nil {
+		return err
+	}
+	t.Condition = aux.Condition
+	t.ConditionPreset = aux.ConditionPreset
+	t.CoalesceDuringBusy = aux.CoalesceDuringBusy
+	t.SettleWindow = aux.SettleWindow
+	t.Cooldown = aux.Cooldown
 	return nil
 }
 

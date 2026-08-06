@@ -1612,6 +1612,50 @@ func TestPromptLoop_UnmarshalYAML_RejectsLegacyFlatKeys(t *testing.T) {
 	}
 }
 
+// TestPromptLoop_UnmarshalYAML_RejectsUnknownKeys pins the strict-key rule for
+// mitto-r6j.1: an unrecognized key under loop: or under any per-trigger block
+// must fail the parse rather than being silently dropped by yaml.v3.
+func TestPromptLoop_UnmarshalYAML_RejectsUnknownKeys(t *testing.T) {
+	cases := []struct {
+		name     string
+		loopYAML string
+		wantMsg  string
+	}{
+		{
+			name:     "top-level",
+			loopYAML: "  trigger: [schedule]\n  bogusTop: 3\n",
+			wantMsg:  "loop.bogusTop is not a known key",
+		},
+		{
+			name:     "schedule block",
+			loopYAML: "  trigger: [schedule]\n  schedule:\n    value: 1\n    unit: hours\n    bogus: 7\n",
+			wantMsg:  "loop.schedule.bogus is not a known key",
+		},
+		{
+			name:     "onCompletion block",
+			loopYAML: "  trigger: [onCompletion]\n  onCompletion:\n    delay: 30\n    bogus: 7\n",
+			wantMsg:  "loop.onCompletion.bogus is not a known key",
+		},
+		{
+			name:     "onTasks block",
+			loopYAML: "  trigger: [onTasks]\n  onTasks:\n    cooldown: 5\n    bogus: 7\n",
+			wantMsg:  "loop.onTasks.bogus is not a known key",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			data := []byte("name: \"Bad Loop\"\nloop:\n" + tc.loopYAML + "prompt: |\n  body\n")
+			_, err := ParsePromptFile("bad-loop.prompt.yaml", data, time.Now())
+			if err == nil {
+				t.Fatalf("ParsePromptFile should fail for unknown key, got nil error")
+			}
+			if !strings.Contains(err.Error(), tc.wantMsg) {
+				t.Errorf("error = %q, want it to contain %q", err.Error(), tc.wantMsg)
+			}
+		})
+	}
+}
+
 // TestParsePromptFile_WithLoop_MultipleTriggers verifies that a loop:
 // block can declare more than one simultaneous trigger (mitto-r6j.1), and
 // that each trigger's own nested block is parsed independently.
