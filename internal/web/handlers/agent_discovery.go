@@ -88,6 +88,35 @@ func seedACPServerDefaults(s *configPkg.ACPServerSettings, d *agents.AgentDefaul
 	s.AutoApprove = d.AutoApprove
 }
 
+// backfillACPServerEnv seeds agent metadata's default environment variables
+// onto an EXISTING ACP server settings entry whose Env is still empty. It
+// mirrors the Env branch of seedACPServerDefaults (used when a brand-new
+// entry is created), but is intentionally scoped to Env only: unlike a new
+// entry, an existing entry may already carry user customizations, and
+// seedACPServerDefaults's other fields are not all guarded the same way
+// (notably AutoApprove is unconditionally overwritten) so reapplying the
+// whole set here would risk silently clobbering settings the user already
+// configured. Returns true if Env was populated.
+//
+// See mitto-qphs: without this, an ACP server entry created before an
+// agent's metadata declared a default (or added without dir_name) stays
+// env-less forever, so its --max-old-space-size default never reaches the
+// subprocess and Node falls back to its own (lower) V8 heap cap.
+func backfillACPServerEnv(s *configPkg.ACPServerSettings, d *agents.AgentDefaults) bool {
+	if s == nil || d == nil {
+		return false
+	}
+	if len(s.Env) == 0 && len(d.Env) > 0 {
+		env := make(map[string]string, len(d.Env))
+		for k, v := range d.Env {
+			env[k] = v
+		}
+		s.Env = env
+		return true
+	}
+	return false
+}
+
 // HandleScanAgents handles POST /api/agents/scan.
 // It runs status.sh for all known agent definitions and returns the results.
 func (h *Handlers) HandleScanAgents(w http.ResponseWriter, r *http.Request) {
@@ -171,10 +200,12 @@ func (h *Handlers) HandleConfirmAgents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Build a set of existing server names to avoid duplicates
-	existing := make(map[string]bool)
-	for _, srv := range settings.ACPServers {
-		existing[strings.ToLower(srv.Name)] = true
+	// Build a name -> index map of existing servers, both to avoid duplicates
+	// and so an existing entry's defaults can be backfilled in place (see
+	// backfillACPServerEnv, mitto-qphs).
+	existingIdx := make(map[string]int, len(settings.ACPServers))
+	for i, srv := range settings.ACPServers {
+		existingIdx[strings.ToLower(srv.Name)] = i
 	}
 
 	// Build agent manager for defaults seeding; skip defaults (not a fatal error) if unavailable.
@@ -183,13 +214,23 @@ func (h *Handlers) HandleConfirmAgents(w http.ResponseWriter, r *http.Request) {
 		mgr = agents.NewManager(agentsDir, h.deps.Logger)
 	}
 
-	// Append new servers from the confirmation request
+	// Append new servers from the confirmation request; backfill env defaults
+	// onto any entry that already exists by name.
 	added := 0
+	backfilled := 0
 	for _, entry := range req.Agents {
 		if entry.Name == "" || entry.Command == "" {
 			continue
 		}
-		if existing[strings.ToLower(entry.Name)] {
+		key := strings.ToLower(entry.Name)
+		if idx, exists := existingIdx[key]; exists {
+			if mgr != nil && entry.DirName != "" {
+				if agent, err := mgr.GetAgent(entry.DirName); err == nil && agent != nil && agent.Metadata.Defaults != nil {
+					if backfillACPServerEnv(&settings.ACPServers[idx], agent.Metadata.Defaults) {
+						backfilled++
+					}
+				}
+			}
 			continue
 		}
 		srv := configPkg.ACPServerSettings{
@@ -204,11 +245,11 @@ func (h *Handlers) HandleConfirmAgents(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		settings.ACPServers = append(settings.ACPServers, srv)
-		existing[strings.ToLower(entry.Name)] = true
+		existingIdx[key] = len(settings.ACPServers) - 1
 		added++
 	}
 
-	if added == 0 {
+	if added == 0 && backfilled == 0 {
 		writeJSONOK(w, map[string]interface{}{
 			"success": true,
 			"message": "No new agents added (all already configured)",
@@ -233,8 +274,9 @@ func (h *Handlers) HandleConfirmAgents(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSONOK(w, map[string]interface{}{
-		"success": true,
-		"message": "Agents added successfully",
-		"added":   added,
+		"success":    true,
+		"message":    "Agents added successfully",
+		"added":      added,
+		"backfilled": backfilled,
 	})
 }
