@@ -6127,6 +6127,71 @@ describe("computeHeaderTriggerLabel", () => {
       computeHeaderTriggerLabel("onTasks", 30, { value: 1, unit: "hours" }),
     ).toBe("on task changes");
   });
+
+  // mitto-r6j: multi-trigger loops pass an array. A single-entry array must
+  // behave identically to the scalar form; multi-entry arrays render the
+  // first trigger's label with a compact " +N" suffix indicating how many
+  // additional triggers are armed.
+  describe("array (mitto-r6j) inputs", () => {
+    test("single-entry array behaves identically to the scalar", () => {
+      expect(
+        computeHeaderTriggerLabel(["schedule"], 0, {
+          value: 2,
+          unit: "hours",
+        }),
+      ).toBe("every 2h");
+      expect(computeHeaderTriggerLabel(["onCompletion"], 30, null)).toBe(
+        "after agent finishes · +30s",
+      );
+      expect(computeHeaderTriggerLabel(["onTasks"], 0, null)).toBe(
+        "on task changes",
+      );
+    });
+
+    test("empty array or empty scalar falls back to schedule", () => {
+      expect(
+        computeHeaderTriggerLabel([], 0, { value: 5, unit: "minutes" }),
+      ).toBe("every 5min");
+      expect(computeHeaderTriggerLabel([], 0, null)).toBeNull();
+      expect(
+        computeHeaderTriggerLabel(null, 0, { value: 1, unit: "hours" }),
+      ).toBe("every 1h");
+      expect(
+        computeHeaderTriggerLabel(undefined, 0, { value: 1, unit: "hours" }),
+      ).toBe("every 1h");
+    });
+
+    test("two triggers append ' +1' to the primary label", () => {
+      expect(
+        computeHeaderTriggerLabel(["schedule", "onCompletion"], 30, {
+          value: 1,
+          unit: "hours",
+        }),
+      ).toBe("every 1h +1");
+      expect(
+        computeHeaderTriggerLabel(["onCompletion", "onTasks"], 30, null),
+      ).toBe("after agent finishes · +30s +1");
+    });
+
+    test("three triggers append ' +2' to the primary label", () => {
+      expect(
+        computeHeaderTriggerLabel(
+          ["onTasks", "schedule", "onCompletion"],
+          15,
+          { value: 2, unit: "hours" },
+        ),
+      ).toBe("on task changes +2");
+    });
+
+    test("null/undefined entries in array are ignored", () => {
+      expect(
+        computeHeaderTriggerLabel(["schedule", null, "onTasks"], 0, {
+          value: 1,
+          unit: "hours",
+        }),
+      ).toBe("every 1h +1");
+    });
+  });
 });
 
 // =============================================================================

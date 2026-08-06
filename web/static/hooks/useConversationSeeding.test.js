@@ -549,9 +549,14 @@ describe("decideLoopAction", () => {
 // =============================================================================
 
 describe("makeLoopNow", () => {
+  // mitto-r6j: prompt.loop uses the new nested-per-trigger schema
+  // (schedule/onCompletion/onTasks blocks).
   const prompt = {
     name: "daily-standup",
-    loop: { value: 1, unit: "hours", maxIterations: 5 },
+    loop: {
+      schedule: { value: 1, unit: "hours" },
+      maxIterations: 5,
+    },
   };
 
   function makeFetchSequence(...responses) {
@@ -625,7 +630,10 @@ describe("makeLoopNow", () => {
   test("includes 'at' in frequency only for days unit", async () => {
     const promptWithDays = {
       name: "daily-report",
-      loop: { value: 1, unit: "days", at: "09:00", maxIterations: 0 },
+      loop: {
+        schedule: { value: 1, unit: "days", at: "09:00" },
+        maxIterations: 0,
+      },
     };
     const fetchImpl = makeFetchSequence(makeResp(200), makeResp(200));
     await makeLoopNow("sess-2", promptWithDays, { fetchImpl });
@@ -637,7 +645,7 @@ describe("makeLoopNow", () => {
   test("sends max_iterations:0 when prompt has no maxIterations", async () => {
     const noMaxPrompt = {
       name: "simple",
-      loop: { value: 2, unit: "hours" },
+      loop: { schedule: { value: 2, unit: "hours" } },
     };
     const fetchImpl = makeFetchSequence(makeResp(200), makeResp(200));
     await makeLoopNow("sess-3", noMaxPrompt, { fetchImpl });
@@ -908,7 +916,7 @@ describe("configureLoopSchedule — trigger/delay/maxDuration fields", () => {
     );
   }
 
-  test("includes trigger, delay_seconds, max_duration_seconds in PUT body", async () => {
+  test("includes triggers[], delay_seconds, max_duration_seconds in PUT body", async () => {
     const fetchImpl = makeFetch(200);
     await configureLoopSchedule(
       "s1",
@@ -916,19 +924,20 @@ describe("configureLoopSchedule — trigger/delay/maxDuration fields", () => {
       {
         value: 1,
         unit: "hours",
-        trigger: "onCompletion",
+        triggers: ["onCompletion"],
         delaySeconds: 10,
         maxDurationSeconds: 3600,
       },
       { fetchImpl },
     );
     const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
-    expect(body.trigger).toBe("onCompletion");
+    expect(body.triggers).toEqual(["onCompletion"]);
+    expect(body).not.toHaveProperty("trigger");
     expect(body.delay_seconds).toBe(10);
     expect(body.max_duration_seconds).toBe(3600);
   });
 
-  test("defaults trigger to 'schedule' and delay/maxDuration to 0 when absent", async () => {
+  test("defaults triggers to ['schedule'] and delay/maxDuration to 0 when absent", async () => {
     const fetchImpl = makeFetch(200);
     await configureLoopSchedule(
       "s1",
@@ -937,28 +946,46 @@ describe("configureLoopSchedule — trigger/delay/maxDuration fields", () => {
       { fetchImpl },
     );
     const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
-    expect(body.trigger).toBe("schedule");
+    expect(body.triggers).toEqual(["schedule"]);
     expect(body.delay_seconds).toBe(0);
     expect(body.max_duration_seconds).toBe(0);
   });
 
-  test("falls back to prompt.loop.trigger when loop.trigger absent", async () => {
+  test("falls back to prompt.loop.trigger (nested) when loop.triggers absent", async () => {
     const fetchImpl = makeFetch(200);
     await configureLoopSchedule(
       "s1",
-      { name: "p", loop: { trigger: "onCompletion" } },
+      { name: "p", loop: { trigger: ["onCompletion"] } },
       { value: 1, unit: "hours" },
       { fetchImpl },
     );
     const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
-    expect(body.trigger).toBe("onCompletion");
+    expect(body.triggers).toEqual(["onCompletion"]);
   });
 
-  test("falls back to prompt.loop.delay for delay_seconds when absent from loop", async () => {
+  test("accepts a legacy scalar loop.trigger and wraps it into triggers[]", async () => {
     const fetchImpl = makeFetch(200);
     await configureLoopSchedule(
       "s1",
-      { name: "p", loop: { delay: 15 } },
+      { name: "p" },
+      { value: 1, unit: "hours", trigger: "onCompletion" },
+      { fetchImpl },
+    );
+    const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
+    expect(body.triggers).toEqual(["onCompletion"]);
+  });
+
+  test("falls back to prompt.loop.onCompletion.delay for delay_seconds when absent from loop", async () => {
+    const fetchImpl = makeFetch(200);
+    await configureLoopSchedule(
+      "s1",
+      {
+        name: "p",
+        loop: {
+          trigger: ["onCompletion"],
+          onCompletion: { delay: 15 },
+        },
+      },
       { value: 1, unit: "hours" },
       { fetchImpl },
     );
@@ -989,6 +1016,24 @@ describe("configureLoopSchedule — trigger/delay/maxDuration fields", () => {
     const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
     expect(body.max_duration_seconds).toBe(300);
   });
+
+  test("multi-trigger loop sends triggers[] with all armed triggers", async () => {
+    const fetchImpl = makeFetch(200);
+    await configureLoopSchedule(
+      "s1",
+      { name: "p" },
+      {
+        value: 1,
+        unit: "hours",
+        triggers: ["schedule", "onCompletion"],
+        delaySeconds: 30,
+      },
+      { fetchImpl },
+    );
+    const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
+    expect(body.triggers).toEqual(["schedule", "onCompletion"]);
+    expect(body.delay_seconds).toBe(30);
+  });
 });
 
 // =============================================================================
@@ -1006,28 +1051,40 @@ describe("configureLoopSchedule — onTasks condition field", () => {
     );
   }
 
-  test("trigger=onTasks: falls back to prompt.loop.condition when dialog result has none", async () => {
+  test("triggers=[onTasks]: falls back to prompt.loop.onTasks.condition when dialog result has none", async () => {
     const fetchImpl = makeFetch(200);
     await configureLoopSchedule(
       "s1",
-      { name: "p", loop: { trigger: "onTasks", condition: "size(x) > 0" } },
-      { value: 1, unit: "hours", trigger: "onTasks" },
+      {
+        name: "p",
+        loop: {
+          trigger: ["onTasks"],
+          onTasks: { condition: "size(x) > 0" },
+        },
+      },
+      { value: 1, unit: "hours", triggers: ["onTasks"] },
       { fetchImpl },
     );
     const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
-    expect(body.trigger).toBe("onTasks");
+    expect(body.triggers).toEqual(["onTasks"]);
     expect(body.condition).toBe("size(x) > 0");
   });
 
-  test("trigger=onTasks: dialog loop.condition overrides the prompt default", async () => {
+  test("triggers=[onTasks]: dialog loop.condition overrides the prompt default", async () => {
     const fetchImpl = makeFetch(200);
     await configureLoopSchedule(
       "s1",
-      { name: "p", loop: { trigger: "onTasks", condition: "prompt default" } },
+      {
+        name: "p",
+        loop: {
+          trigger: ["onTasks"],
+          onTasks: { condition: "prompt default" },
+        },
+      },
       {
         value: 1,
         unit: "hours",
-        trigger: "onTasks",
+        triggers: ["onTasks"],
         condition: "dialog override",
       },
       { fetchImpl },
@@ -1040,20 +1097,26 @@ describe("configureLoopSchedule — onTasks condition field", () => {
     const fetchImpl = makeFetch(200);
     await configureLoopSchedule(
       "s1",
-      { name: "p", loop: { trigger: "onTasks", condition: "size(x) > 0" } },
-      { value: 1, unit: "hours", trigger: "schedule" },
+      {
+        name: "p",
+        loop: {
+          trigger: ["onTasks"],
+          onTasks: { condition: "size(x) > 0" },
+        },
+      },
+      { value: 1, unit: "hours", triggers: ["schedule"] },
       { fetchImpl },
     );
     const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
     expect(body).not.toHaveProperty("condition");
   });
 
-  test("trigger=onTasks with no condition anywhere: sends empty string", async () => {
+  test("triggers=[onTasks] with no condition anywhere: sends empty string", async () => {
     const fetchImpl = makeFetch(200);
     await configureLoopSchedule(
       "s1",
       { name: "p" },
-      { value: 1, unit: "hours", trigger: "onTasks" },
+      { value: 1, unit: "hours", triggers: ["onTasks"] },
       { fetchImpl },
     );
     const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
@@ -1064,13 +1127,37 @@ describe("configureLoopSchedule — onTasks condition field", () => {
     const fetchImpl = makeFetch(200);
     await configureLoopSchedule(
       "s1",
-      { name: "p", loop: { trigger: "onTasks", condition: "size(x) > 0" } },
-      { value: 1, unit: "hours", trigger: "onTasks" },
+      {
+        name: "p",
+        loop: {
+          trigger: ["onTasks"],
+          onTasks: { condition: "size(x) > 0" },
+        },
+      },
+      { value: 1, unit: "hours", triggers: ["onTasks"] },
       { fetchImpl },
     );
     const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
     expect(body).not.toHaveProperty("condition_preset");
     expect(body).not.toHaveProperty("conditionPreset");
+  });
+
+  test("multi-trigger [schedule, onTasks]: condition is sent because onTasks is armed", async () => {
+    const fetchImpl = makeFetch(200);
+    await configureLoopSchedule(
+      "s1",
+      { name: "p" },
+      {
+        value: 1,
+        unit: "hours",
+        triggers: ["schedule", "onTasks"],
+        condition: "size(x) > 0",
+      },
+      { fetchImpl },
+    );
+    const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
+    expect(body.triggers).toEqual(["schedule", "onTasks"]);
+    expect(body.condition).toBe("size(x) > 0");
   });
 });
 
@@ -1095,14 +1182,13 @@ describe("makeLoopNow — trigger/delay/maxDuration fields", () => {
     };
   }
 
-  test("includes trigger from prompt.loop in PUT body", async () => {
+  test("includes triggers[] from prompt.loop (nested schema) in PUT body", async () => {
     const prompt = {
       name: "p",
       loop: {
-        value: 1,
-        unit: "hours",
-        trigger: "onCompletion",
-        delay: 10,
+        trigger: ["onCompletion"],
+        schedule: { value: 1, unit: "hours" },
+        onCompletion: { delay: 10 },
         maxDuration: "1h",
       },
     };
@@ -1110,20 +1196,42 @@ describe("makeLoopNow — trigger/delay/maxDuration fields", () => {
     await makeLoopNow("sess-1", prompt, { fetchImpl });
 
     const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
-    expect(body.trigger).toBe("onCompletion");
+    expect(body.triggers).toEqual(["onCompletion"]);
+    expect(body).not.toHaveProperty("trigger");
     expect(body.delay_seconds).toBe(10);
     expect(body.max_duration_seconds).toBe(3600);
   });
 
-  test("defaults trigger to 'schedule' and delay/maxDuration to 0 when absent", async () => {
-    const prompt = { name: "p", loop: { value: 1, unit: "hours" } };
+  test("defaults triggers to ['schedule'] and delay/maxDuration to 0 when absent", async () => {
+    const prompt = {
+      name: "p",
+      loop: { schedule: { value: 1, unit: "hours" } },
+    };
     const fetchImpl = makeFetchSequence(makeResp(200), makeResp(200));
     await makeLoopNow("sess-1", prompt, { fetchImpl });
 
     const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
-    expect(body.trigger).toBe("schedule");
+    expect(body.triggers).toEqual(["schedule"]);
     expect(body.delay_seconds).toBe(0);
     expect(body.max_duration_seconds).toBe(0);
+  });
+
+  test("multi-trigger prompt: triggers list carried through to PUT body", async () => {
+    const prompt = {
+      name: "p",
+      loop: {
+        trigger: ["schedule", "onCompletion"],
+        schedule: { value: 2, unit: "hours" },
+        onCompletion: { delay: 15 },
+      },
+    };
+    const fetchImpl = makeFetchSequence(makeResp(200), makeResp(200));
+    await makeLoopNow("sess-1", prompt, { fetchImpl });
+
+    const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
+    expect(body.triggers).toEqual(["schedule", "onCompletion"]);
+    expect(body.frequency).toEqual({ value: 2, unit: "hours" });
+    expect(body.delay_seconds).toBe(15);
   });
 });
 
@@ -1148,21 +1256,20 @@ describe("makeLoopNow — onTasks condition field", () => {
     };
   }
 
-  test("trigger=onTasks: includes condition from prompt.loop.condition", async () => {
+  test("trigger=[onTasks]: includes condition from prompt.loop.onTasks.condition", async () => {
     const prompt = {
       name: "p",
       loop: {
-        value: 1,
-        unit: "hours",
-        trigger: "onTasks",
-        condition: "size(x) > 0",
+        trigger: ["onTasks"],
+        schedule: { value: 1, unit: "hours" },
+        onTasks: { condition: "size(x) > 0" },
       },
     };
     const fetchImpl = makeFetchSequence(makeResp(200), makeResp(200));
     await makeLoopNow("sess-1", prompt, { fetchImpl });
 
     const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
-    expect(body.trigger).toBe("onTasks");
+    expect(body.triggers).toEqual(["onTasks"]);
     expect(body.condition).toBe("size(x) > 0");
   });
 
@@ -1170,10 +1277,9 @@ describe("makeLoopNow — onTasks condition field", () => {
     const prompt = {
       name: "p",
       loop: {
-        value: 1,
-        unit: "hours",
-        trigger: "schedule",
-        condition: "size(x) > 0",
+        trigger: ["schedule"],
+        schedule: { value: 1, unit: "hours" },
+        onTasks: { condition: "size(x) > 0" },
       },
     };
     const fetchImpl = makeFetchSequence(makeResp(200), makeResp(200));
@@ -1183,10 +1289,13 @@ describe("makeLoopNow — onTasks condition field", () => {
     expect(body).not.toHaveProperty("condition");
   });
 
-  test("trigger=onTasks with no prompt condition: sends empty string", async () => {
+  test("trigger=[onTasks] with no prompt condition: sends empty string", async () => {
     const prompt = {
       name: "p",
-      loop: { value: 1, unit: "hours", trigger: "onTasks" },
+      loop: {
+        trigger: ["onTasks"],
+        schedule: { value: 1, unit: "hours" },
+      },
     };
     const fetchImpl = makeFetchSequence(makeResp(200), makeResp(200));
     await makeLoopNow("sess-1", prompt, { fetchImpl });
@@ -1433,11 +1542,17 @@ describe("configureLoopSchedule — freshContext / runOnStart / coalesceDuringBu
     expect(body).not.toHaveProperty("coalesce_during_busy");
   });
 
-  test("T4: prompt.loop.runOnStart=true and coalesceDuringBusy=false → body has both keys with correct values", async () => {
+  test("T4: prompt.loop.runOnStart=true and onTasks.coalesceDuringBusy=false → body has both keys with correct values", async () => {
     const fetchImpl = makeFetch(200);
     await configureLoopSchedule(
       "s1",
-      { name: "p", loop: { runOnStart: true, coalesceDuringBusy: false } },
+      {
+        name: "p",
+        loop: {
+          runOnStart: true,
+          onTasks: { coalesceDuringBusy: false },
+        },
+      },
       { value: 1, unit: "hours" },
       { fetchImpl },
     );

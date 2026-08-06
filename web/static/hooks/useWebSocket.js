@@ -756,6 +756,11 @@ export function useWebSocket({
                   null,
                 loop_trigger:
                   msg.data.loop_trigger ?? session.info?.loop_trigger ?? null,
+                // loop_triggers is the canonical list of armed triggers
+                // (mitto-r6j). loop_trigger stays as the legacy scalar for
+                // backward-compat consumers; new UI paths read triggers.
+                loop_triggers:
+                  msg.data.loop_triggers ?? session.info?.loop_triggers ?? null,
                 loop_delay_seconds:
                   msg.data.loop_delay_seconds ??
                   session.info?.loop_delay_seconds ??
@@ -3570,6 +3575,9 @@ export function useWebSocket({
                   loop_acknowledged_stopped_reason:
                     msg.data.loop_acknowledged_stopped_reason || null,
                   loop_trigger: msg.data.trigger ?? null,
+                  // mitto-r6j: canonical armed-triggers list. The scalar
+                  // `trigger` above stays for backward-compat readers.
+                  loop_triggers: msg.data.triggers ?? null,
                   loop_delay_seconds: msg.data.delay_seconds ?? null,
                   loop_max_duration_seconds:
                     msg.data.max_duration_seconds ?? null,
@@ -3599,6 +3607,9 @@ export function useWebSocket({
                 loop_acknowledged_stopped_reason:
                   msg.data.loop_acknowledged_stopped_reason || null,
                 loop_trigger: msg.data.trigger ?? null,
+                // mitto-r6j: canonical armed-triggers list; scalar above
+                // stays for backward-compat readers.
+                loop_triggers: msg.data.triggers ?? null,
                 loop_delay_seconds: msg.data.delay_seconds ?? null,
                 loop_max_duration_seconds:
                   msg.data.max_duration_seconds ?? null,

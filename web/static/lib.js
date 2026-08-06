@@ -424,32 +424,60 @@ export function formatLoopMaxDuration(seconds) {
 
 /**
  * Compact trigger-type label shown in the conversation-header subtitle badge next
- * to the loop status pill. "schedule" (default) shows the frequency (e.g.
- * "every 2h"); "onCompletion" shows the post-completion delay; "onTasks" shows a
- * fixed label (fires on beads/task changes, not on a cadence, so no "every N" or
- * countdown is meaningful).
- * @param {string} trigger - "schedule" | "onCompletion" | "onTasks" (falsy/other → schedule)
- * @param {number} delaySeconds - onCompletion delay in seconds (ignored otherwise)
+ * to the loop status pill. Accepts either a scalar legacy trigger ("schedule" |
+ * "onCompletion" | "onTasks") or an array of trigger names (mitto-r6j) — an
+ * array with a single entry behaves identically to the scalar form.
+ *
+ * Single-trigger loops render the trigger-specific label: "every 2h" (schedule),
+ * "after agent finishes[ · +Ns]" (onCompletion), "on task changes" (onTasks).
+ * Multi-trigger loops render the label for the FIRST trigger in the array
+ * followed by " +N" (where N is the count of additional triggers) — keeps the
+ * header subtitle short while still signalling that more than one trigger is
+ * armed. Hovering the badge (aria-label / title) can carry the full breakdown.
+ *
+ * @param {string|string[]|null|undefined} trigger - single trigger name or array of names
+ * @param {number} delaySeconds - onCompletion delay in seconds (ignored for other triggers)
  * @param {{value:number, unit:string}|null} frequency - schedule frequency (ignored for event-driven triggers)
- * @returns {string|null} the label, or null when nothing can be derived (e.g. no frequency yet)
+ * @returns {string|null} the label, or null when nothing can be derived (e.g. no triggers/frequency)
  */
 export function computeHeaderTriggerLabel(trigger, delaySeconds, frequency) {
-  if (trigger === "onCompletion") {
-    return `after agent finishes${delaySeconds > 0 ? ` · +${delaySeconds}s` : ""}`;
+  // Normalize into an ordered, non-empty list. Fall back to ["schedule"] when
+  // the caller supplied a truly empty/absent value, matching the backend's
+  // EffectiveTriggers() fallback so the badge still renders "every N" for
+  // legacy loops that never wrote a Triggers slice.
+  let list;
+  if (Array.isArray(trigger)) {
+    list = trigger.filter((t) => typeof t === "string" && t.length > 0);
+  } else if (typeof trigger === "string" && trigger.length > 0) {
+    list = [trigger];
+  } else {
+    list = [];
   }
-  if (trigger === "onTasks") {
-    return "on task changes";
-  }
-  if (frequency) {
-    const u =
-      frequency.unit === "minutes"
-        ? "min"
-        : frequency.unit === "hours"
-          ? "h"
-          : "d";
-    return `every ${frequency.value}${u}`;
-  }
-  return null;
+  if (list.length === 0) list = ["schedule"];
+
+  const labelFor = (t) => {
+    if (t === "onCompletion") {
+      return `after agent finishes${delaySeconds > 0 ? ` · +${delaySeconds}s` : ""}`;
+    }
+    if (t === "onTasks") {
+      return "on task changes";
+    }
+    if (frequency) {
+      const u =
+        frequency.unit === "minutes"
+          ? "min"
+          : frequency.unit === "hours"
+            ? "h"
+            : "d";
+      return `every ${frequency.value}${u}`;
+    }
+    return null;
+  };
+
+  const primary = labelFor(list[0]);
+  if (primary === null) return null;
+  const extras = list.length - 1;
+  return extras > 0 ? `${primary} +${extras}` : primary;
 }
 
 // =============================================================================
@@ -625,8 +653,12 @@ export function computeAllSessions(activeSessions, storedSessions) {
         // Reason the loop loop stopped (maxDuration, maxIterations, etc.); null while running
         loop_stopped_reason:
           s.loop_stopped_reason ?? stored.loop_stopped_reason ?? null,
-        // Loop glance fields (shown in the conversation-header subtitle)
+        // Loop glance fields (shown in the conversation-header subtitle).
+        // loop_trigger is the legacy scalar (primary trigger) kept for
+        // backward compat with pre-r6j code paths; loop_triggers is the
+        // canonical list of all armed triggers (mitto-r6j).
         loop_trigger: s.loop_trigger ?? stored.loop_trigger ?? null,
+        loop_triggers: s.loop_triggers ?? stored.loop_triggers ?? null,
         loop_iteration_count:
           s.loop_iteration_count ?? stored.loop_iteration_count ?? null,
         loop_max_iterations:

@@ -451,7 +451,13 @@ export function ChatInput({
   const [loopFreshContext, setLoopFreshContext] = useState(false);
   const [loopMaxIterations, setLoopMaxIterations] = useState(0);
   const [loopIterationCount, setLoopIterationCount] = useState(0);
+  // Loop trigger state (mitto-r6j). loopTriggers is the canonical armed-list;
+  // loopTrigger tracks the primary/legacy scalar and is kept for backward
+  // compat with parts of the UI (headers, badge icons) that only cared about
+  // "the trigger". Both are updated together via handleTriggerChange /
+  // handleTriggersChange from LoopFrequencyPanel.
   const [loopTrigger, setLoopTrigger] = useState("schedule");
+  const [loopTriggers, setLoopTriggers] = useState(["schedule"]);
   const [loopDelaySeconds, setLoopDelaySeconds] = useState(5);
   const [loopMaxDurationSeconds, setLoopMaxDurationSeconds] =
     useState(0);
@@ -497,6 +503,7 @@ export function ChatInput({
     setLoopMaxIterations(0);
     setLoopIterationCount(0);
     setLoopTrigger("schedule");
+    setLoopTriggers(["schedule"]);
     setLoopDelaySeconds(5);
     setLoopMaxDurationSeconds(0);
     setLoopCondition("");
@@ -546,6 +553,7 @@ export function ChatInput({
       setLoopFrequency({ value: 1, unit: "hours" });
       setLoopNextScheduledAt(null);
       setLoopTrigger("schedule");
+      setLoopTriggers(["schedule"]);
       setLoopDelaySeconds(5);
       setLoopMaxDurationSeconds(0);
       setLoopCondition("");
@@ -598,7 +606,14 @@ export function ChatInput({
         setLoopFreshContext(config.fresh_context === true);
         setLoopMaxIterations(config.max_iterations ?? 0);
         setLoopIterationCount(config.iteration_count ?? 0);
+        // mitto-r6j: prefer canonical triggers[] list; fall back to legacy
+        // scalar for backward-compat with server responses.
         setLoopTrigger(config.trigger || "schedule");
+        setLoopTriggers(
+          Array.isArray(config.triggers) && config.triggers.length > 0
+            ? config.triggers
+            : [config.trigger || "schedule"],
+        );
         setLoopDelaySeconds(config.delay_seconds ?? 5);
         setLoopMaxDurationSeconds(config.max_duration_seconds ?? 0);
         setLoopCondition(config.condition || "");
@@ -693,7 +708,14 @@ export function ChatInput({
             setLoopFreshContext(config.fresh_context === true);
             setLoopMaxIterations(config.max_iterations ?? 0);
             setLoopIterationCount(config.iteration_count ?? 0);
+            // mitto-r6j: prefer canonical triggers[] list; fall back to
+            // legacy scalar for backward-compat with server responses.
             setLoopTrigger(config.trigger || "schedule");
+            setLoopTriggers(
+              Array.isArray(config.triggers) && config.triggers.length > 0
+                ? config.triggers
+                : [config.trigger || "schedule"],
+            );
             setLoopDelaySeconds(config.delay_seconds ?? 5);
             setLoopMaxDurationSeconds(config.max_duration_seconds ?? 0);
             setLoopCondition(config.condition || "");
@@ -1109,12 +1131,14 @@ export function ChatInput({
       // frontmatter default so the LoopFrequencyPanel reflects it immediately
       // (mitto-pei). The PATCH below only sends prompt_name, so the backend's
       // stored trigger/condition are left untouched until the user explicitly
-      // saves via the panel.
-      if (
-        fullPrompt?.loop?.trigger === "onTasks" &&
-        fullPrompt?.loop?.condition
-      ) {
-        setLoopCondition(fullPrompt.loop.condition);
+      // saves via the panel. mitto-r6j: prompt.loop.trigger is now a list of
+      // armed triggers and the condition lives under loop.onTasks.condition.
+      const promptTriggers = Array.isArray(fullPrompt?.loop?.trigger)
+        ? fullPrompt.loop.trigger
+        : [];
+      const promptOnTasksCondition = fullPrompt?.loop?.onTasks?.condition;
+      if (promptTriggers.includes("onTasks") && promptOnTasksCondition) {
+        setLoopCondition(promptOnTasksCondition);
       }
 
       let missing = fullPrompt
@@ -2591,6 +2615,7 @@ ${activeUIPrompt.text || ""}</textarea
               return next;
             })}
           trigger=${loopTrigger}
+          triggers=${loopTriggers}
           delaySeconds=${loopDelaySeconds}
           maxDurationSeconds=${loopMaxDurationSeconds}
           condition=${loopCondition}
@@ -2599,6 +2624,7 @@ ${activeUIPrompt.text || ""}</textarea
           stoppedReason=${loopStoppedReason}
           minDelaySeconds=${5}
           onTriggerChange=${setLoopTrigger}
+          onTriggersChange=${setLoopTriggers}
           onDelayChange=${setLoopDelaySeconds}
           onMaxDurationChange=${setLoopMaxDurationSeconds}
           onConditionChange=${setLoopCondition}

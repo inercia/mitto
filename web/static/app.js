@@ -2715,16 +2715,25 @@ function App() {
   // Loop "glance" badges shown in the subtitle for ALL loop sessions
   // (running or stopped, schedule or onCompletion).
   const headerLoopTrigger = activeSession?.loop_trigger || null;
+  // mitto-r6j: canonical armed-triggers list. Falls back to the scalar
+  // wrapped in a single-entry array for backward-compat with older sessions.
+  const headerLoopTriggers = Array.isArray(activeSession?.loop_triggers)
+    ? activeSession.loop_triggers
+    : headerLoopTrigger
+      ? [headerLoopTrigger]
+      : null;
   const headerIterationCount = activeSession?.loop_iteration_count ?? 0;
   const headerMaxIterations = activeSession?.loop_max_iterations ?? 0;
   const headerDelaySeconds = activeSession?.loop_delay_seconds ?? 0;
   const headerMaxDurationSecs = activeSession?.loop_max_duration_seconds ?? 0;
 
   // Trigger badge: "every 2h" for schedule, "after agent finishes [· +Ns]" for
-  // onCompletion, "on task changes" for onTasks (mitto-oja.4).
+  // onCompletion, "on task changes" for onTasks (mitto-oja.4). Multi-trigger
+  // loops render "<primary label> +N" where N is the extra-trigger count
+  // (mitto-r6j).
   const headerTriggerLabel = activeSession?.loop_configured
     ? computeHeaderTriggerLabel(
-        headerLoopTrigger,
+        headerLoopTriggers ?? headerLoopTrigger,
         headerDelaySeconds,
         activeSession?.loop_frequency,
       )
@@ -3521,22 +3530,36 @@ function App() {
                           >${headerAcpServer}</span
                         >`}
                         ${headerTriggerLabel &&
-                        html`<${Fragment}>
+                        (() => {
+                          // Icon reflects the PRIMARY (first) armed trigger;
+                          // the badge label already carries "+N" when extra
+                          // triggers are armed (mitto-r6j).
+                          const primary =
+                            (headerLoopTriggers && headerLoopTriggers[0]) ||
+                            headerLoopTrigger;
+                          const iconMarkup =
+                            primary === "onCompletion"
+                              ? html`<${CheckIcon} className="w-3 h-3" />`
+                              : primary === "onTasks"
+                                ? html`<${BeadsIcon} className="w-3 h-3" />`
+                                : html`<${ClockIcon} className="w-3 h-3" />`;
+                          const fullList =
+                            (headerLoopTriggers &&
+                              headerLoopTriggers.join(", ")) ||
+                            primary ||
+                            "";
+                          return html`<${Fragment}>
                 <span class="opacity-60">·</span>
                 <span
                   class="badge badge-sm badge-ghost whitespace-nowrap inline-flex items-center gap-1"
                   data-testid="loop-trigger-badge"
-                >${
-                  headerLoopTrigger === "onCompletion"
-                    ? html`<${CheckIcon} className="w-3 h-3" />`
-                    : headerLoopTrigger === "onTasks"
-                      ? html`<${BeadsIcon} className="w-3 h-3" />`
-                      : html`<${ClockIcon} className="w-3 h-3" />`
-                }<span
+                  title=${fullList}
+                >${iconMarkup}<span
                     class="badge-collapse-label"
                     >${headerTriggerLabel}</span
                   ></span>
-              </${Fragment}>`}
+              </${Fragment}>`;
+                        })()}
                         ${headerRunCountLabel !== null &&
                         html`<${Fragment}>
                 <span class="opacity-60">·</span>
