@@ -633,6 +633,9 @@ export function useWebSocket({
         // the stored session. Needed so the beads view can detect when a
         // streaming conversation belongs to an issue (pulsing ring).
         beads_issue: data.info?.beads_issue || storedSession?.beads_issue || "",
+        // Conversation accent color (SessionItem renders it as a left stripe)
+        background_color:
+          data.info?.background_color || storedSession?.background_color || "",
       };
     });
 
@@ -643,7 +646,7 @@ export function useWebSocket({
     const fingerprint = result
       .map(
         (s) =>
-          `${s.session_id}|${s.name}|${s.working_dir}|${s.acp_server}|${s.archived}|${s.isActive}|${s.isStreaming}|${s.isWaitingForChildren}|${s.isWaitingForUserInput}|${s.status}|${s.gc_suspended}`,
+          `${s.session_id}|${s.name}|${s.working_dir}|${s.acp_server}|${s.archived}|${s.isActive}|${s.isStreaming}|${s.isWaitingForChildren}|${s.isWaitingForUserInput}|${s.status}|${s.gc_suspended}|${s.background_color}`,
       )
       .sort()
       .join("\n");
@@ -4236,6 +4239,41 @@ export function useWebSocket({
     }
   }, []);
 
+  // Set/clear a session's background color via REST API
+  const setSessionColor = useCallback(async (sessionId, color) => {
+    try {
+      const response = await secureFetch(endpoints.sessions.update(sessionId), {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ background_color: color }),
+      });
+      if (!response.ok) {
+        console.error("Failed to set session color");
+        return;
+      }
+      // Update local state for stored sessions
+      setStoredSessions((prev) =>
+        prev.map((s) =>
+          s.session_id === sessionId ? { ...s, background_color: color } : s,
+        ),
+      );
+      // Update local state for active sessions
+      setSessions((prev) => {
+        const session = prev[sessionId];
+        if (!session) return prev;
+        return {
+          ...prev,
+          [sessionId]: {
+            ...session,
+            info: { ...session.info, background_color: color },
+          },
+        };
+      });
+    } catch (err) {
+      console.error("Failed to set session color:", err);
+    }
+  }, []);
+
   // Archive/unarchive a session via REST API
   const archiveSession = useCallback(async (sessionId, archived) => {
     try {
@@ -4679,6 +4717,7 @@ export function useWebSocket({
     updateSessionName,
     renameSession,
     pinSession,
+    setSessionColor,
     archiveSession,
     removeSession,
     isStreaming,

@@ -338,11 +338,16 @@ func (h *Handlers) HandleCreateSession(w http.ResponseWriter, r *http.Request) {
 	// Persist the originating prompt's target.backgroundColor (if any) as a
 	// creation-time default (mitto-8sk). Create-only: reuse dispatches above
 	// return before reaching this point, so an existing conversation's color
-	// (including a user's manual recolor) is never overwritten.
+	// (including a user's manual recolor) is never overwritten. The
+	// empty-check inside the update closure enforces the same rule against
+	// the metadata actually on disk, so any create path that already
+	// assigned a color keeps it.
 	if targetBackgroundColor != "" {
 		if store := h.deps.Store; store != nil {
 			if err := store.UpdateMetadata(bs.GetSessionID(), func(meta *session.Metadata) {
-				meta.BackgroundColor = targetBackgroundColor
+				if meta.BackgroundColor == "" {
+					meta.BackgroundColor = targetBackgroundColor
+				}
 			}); err != nil && h.deps.Logger != nil {
 				h.deps.Logger.Warn("Failed to set background_color on new session", "error", err, "session_id", bs.GetSessionID())
 			}

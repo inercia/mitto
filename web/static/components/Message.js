@@ -578,7 +578,7 @@ function MessageImpl({ message, isLast, isStreaming, onRetry }) {
                 dangerouslySetInnerHTML=${{ __html: renderedHtml }}
               />`
             : html`<pre
-                class="whitespace-pre-wrap font-sans text-sm m-0"
+                class="markdown-content markdown-content-user whitespace-pre-wrap font-sans text-sm m-0"
                 dangerouslySetInnerHTML=${{ __html: linkedPlainText }}
               />`}
           <div class="flex items-center justify-end gap-1 mt-1">

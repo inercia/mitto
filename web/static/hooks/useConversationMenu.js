@@ -18,8 +18,12 @@ import {
   TrashIcon,
   CopyIcon,
   BroomIcon,
+  CheckIcon,
+  PaletteIcon,
+  CircleIcon,
 } from "../components/Icons.js";
 import { buildPromptGroupMenuItems } from "../components/ContextMenu.js";
+import { CONVERSATION_COLORS } from "../constants.js";
 
 export function useConversationMenu({
   session,
@@ -39,6 +43,7 @@ export function useConversationMenu({
   onCopyConversation, // optional: (session) => void — shows "Copy as Markdown" item
   flushCommand = "", // optional: when non-empty, shows "Flush context" item
   onFlushContext, // optional: (session) => void — invoked when "Flush context" is clicked
+  onSetColor, // optional: (session, hexColor) => void — shows "Change color" submenu
 }) {
   const [contextMenu, setContextMenu] = useState(null);
   // menus:conversation prompts evaluated for THIS conversation. Loaded lazily
@@ -102,8 +107,42 @@ export function useConversationMenu({
 
   const contextMenuItems = useMemo(() => {
     return [
-      // Prompt group submenus (menus:conversation prompts), e.g. "Workflow"
+      // Submenu-bearing entries are grouped at the top: first the prompt
+      // group submenus (menus:conversation prompts), e.g. "Workflow", then
+      // "Change color". Flat actions follow below.
       ...promptGroupItems,
+      // "Change color" — only shown when caller provides the callback
+      ...(onSetColor
+        ? [
+            {
+              label: "Change color",
+              icon: html`<${PaletteIcon} />`,
+              submenu: [
+                ...CONVERSATION_COLORS.map((c) => ({
+                  label: c.name,
+                  icon: html`<span
+                    class="w-4 h-4 rounded-full block border border-mitto-border-2"
+                    style="background-color: ${c.hex}"
+                  ></span>`,
+                  trailing:
+                    (session?.background_color || "").toLowerCase() ===
+                    c.hex.toLowerCase()
+                      ? html`<${CheckIcon} />`
+                      : null,
+                  onClick: () => onSetColor(session, c.hex),
+                })),
+                {
+                  label: "No color",
+                  icon: html`<${CircleIcon} />`,
+                  trailing: !session?.background_color
+                    ? html`<${CheckIcon} />`
+                    : null,
+                  onClick: () => onSetColor(session, ""),
+                },
+              ],
+            },
+          ]
+        : []),
       {
         label: "Properties",
         icon: html`<${EditIcon} />`,
@@ -197,6 +236,7 @@ export function useConversationMenu({
     onCopyConversation,
     flushCommand,
     onFlushContext,
+    onSetColor,
   ]);
 
   return {

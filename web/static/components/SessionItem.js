@@ -8,11 +8,7 @@ import {
   useConversationMenu,
   useLinkedBeadPhase,
 } from "../hooks/index.js";
-import {
-  getArchiveReasonText,
-  getGlobalWorkingDir,
-  hexToRgb,
-} from "../lib.js";
+import { getArchiveReasonText, getGlobalWorkingDir, hexToRgb } from "../lib.js";
 import {
   LOOP_PROGRESS_STYLE,
   LOOP_PROGRESS_COLORS,
@@ -135,6 +131,7 @@ export function SessionItem({
   onRename,
   onDelete,
   onArchive,
+  onSetColor, // Called with (session, hexColor) to set/clear a conversation's background color
   workspaceColor = null,
   workspaceCode = null,
   workspaceName = null,
@@ -228,8 +225,7 @@ export function SessionItem({
   // 2. The session is streaming (agent is responding - archiving would block for up to 5 minutes)
   // Direction-aware: an archived session can always be unarchived — the
   // queue/streaming preconditions only apply to the archive direction (mitto-a5p).
-  const canArchive =
-    isArchived || (!hasQueuedMessages && !isSessionStreaming);
+  const canArchive = isArchived || (!hasQueuedMessages && !isSessionStreaming);
 
   // Get the reason why archiving is blocked (for tooltip). Only surface when
   // NOT archived — unarchive has no blocking preconditions.
@@ -399,6 +395,7 @@ export function SessionItem({
     onMakeNonLoop,
     onFetchConversationPrompts,
     onSendPromptToConversation,
+    onSetColor,
   });
 
   // Handle click - only select if not swiping/revealed
@@ -570,17 +567,26 @@ export function SessionItem({
           data-session-id=${session.session_id}
           data-has-context-menu="true"
         >
+          ${accentRgb && !isActive
+            ? html`<${Fragment}>
+                <div
+                  class="absolute inset-0 z-0 pointer-events-none"
+                  style="background: rgba(${accentRgb.r}, ${accentRgb.g}, ${accentRgb.b}, ${isLightTheme
+                    ? 0.45
+                    : 0.22});"
+                  aria-hidden="true"
+                ></div>
+                <div
+                  class="absolute left-0 top-0 bottom-0 w-1 z-0 pointer-events-none"
+                  style="background: rgb(${accentRgb.r}, ${accentRgb.g}, ${accentRgb.b});"
+                  aria-hidden="true"
+                ></div>
+              <//>`
+            : ""}
           ${loopProgressBg
             ? html`<div
                 class="absolute inset-0 z-0 pointer-events-none"
                 style="background: ${loopProgressBg};"
-                aria-hidden="true"
-              ></div>`
-            : ""}
-          ${accentRgb && !isActive
-            ? html`<div
-                class="absolute left-0 top-0 bottom-0 w-1 rounded-l-lg z-0 pointer-events-none"
-                style="background: rgb(${accentRgb.r}, ${accentRgb.g}, ${accentRgb.b});"
                 aria-hidden="true"
               ></div>`
             : ""}

@@ -258,6 +258,7 @@ function App() {
     updateSessionName,
     renameSession,
     pinSession,
+    setSessionColor,
     archiveSession,
     removeSession,
     isStreaming,
@@ -2178,6 +2179,14 @@ function App() {
     await pinSession(session.session_id, pinned);
   };
 
+  const handleSetSessionColor = useCallback(
+    (session, color) => {
+      const id = session?.session_id;
+      if (id) setSessionColor(id, color);
+    },
+    [setSessionColor],
+  );
+
   const handleArchiveSession = async (session, archived) => {
     await archiveSession(session.session_id, archived);
 
@@ -2824,6 +2833,7 @@ function App() {
     onMakeNonLoop: handleMakeNonLoop,
     onFetchConversationPrompts: fetchConversationPromptsForSession,
     onSendPromptToConversation: handleSendPromptToConversation,
+    onSetColor: handleSetSessionColor,
     onCopyConversation: activeSessionId ? handleCopyConversation : undefined,
     flushCommand: sessionInfo?.context_flush_command || "",
     onFlushContext: activeSessionId ? handleFlushContext : undefined,
@@ -3908,6 +3918,7 @@ function App() {
             onRename=${handleOpenSessionProperties}
             onDelete=${handleDeleteSession}
             onArchive=${handleArchiveSession}
+            onSetColor=${handleSetSessionColor}
             onClose=${() => setShowSidebar(false)}
             workspaces=${workspaces}
             theme=${theme}

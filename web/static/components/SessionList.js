@@ -208,6 +208,7 @@ export function SessionList({
   onRename,
   onDelete,
   onArchive,
+  onSetColor, // Called with (session, hexColor) to set/clear a conversation's background color
   onClose,
   workspaces,
   theme,
@@ -1038,6 +1039,7 @@ export function SessionList({
         onRename=${onRename}
         onDelete=${onDelete}
         onArchive=${onArchive}
+        onSetColor=${onSetColor}
         workspaceColor=${workspace?.color || null}
         workspaceCode=${workspace?.code || null}
         workspaceName=${workspace?.name || null}
