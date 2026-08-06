@@ -47,16 +47,16 @@ prompt: |
 
   ## Step 1 — Find ready work
 
-  Run the following to discover claimable work (open beads with no active blockers):
+  Run the following to discover claimable work (open beads with no active blockers). A bead already claimed by an active driver intentionally stays `status=open` under the `in-flight` claim protocol (mitto-ial) — claims are label-encoded, not status-encoded — so it must be excluded by label or it will still show up here as claimable:
 
   ```bash
-  bd ready --json
+  bd ready --exclude-label in-flight --json
   ```
 
   Filter the results to **exclude any bead whose `status` is already `in_progress`** — those are already being worked on and should not be presented. If `bd ready` returns nothing (or everything is filtered out), fall back to listing open, not-in-progress beads:
 
   ```bash
-  bd list --status open --json
+  bd list --status open --exclude-label in-flight --json
   ```
 
   If after filtering there are **no ready, not-in-progress beads**, inform the user that there is nothing to start and stop.
@@ -109,13 +109,31 @@ prompt: |
 
   ## Step 3 — Claim the bead
 
-  Atomically claim the selected bead so others know it is being worked on:
+  Claim the selected bead using the **same passive `in-flight` claim protocol** the automated loop drivers use (mitto-ial), rather than a bare `bd update --claim`: flipping `status` to `in_progress` would make the bead invisible to `bd ready`/`bd list --status open` for every other consumer AND invisible to the L1 orchestrator's stale-claim reaper (which only sweeps `--status open --label in-flight`), so a crash in this conversation would strand the bead permanently. The label + metadata claim below keeps `status=open` so the reaper can recover it, and reading the existing claim first prevents this launcher from silently stealing a bead another driver already holds (a TOCTOU race is possible if the user free-texts a different bead in Step 2).
+
+  Read the existing claim before writing:
 
   ```bash
-  bd update <bead-id> --claim
+  claim_owner=$(bd show <bead-id> --json | jq -r '.[0].metadata.claimed_by // empty')
+  now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   ```
 
-  This sets the assignee to you and the status to `in_progress` (idempotent if already claimed by you).
+  - If `claim_owner` is **empty**, claim it:
+
+    ```bash
+    bd update <bead-id> --add-label in-flight \
+      --set-metadata "claimed_by={{ .Session.ID }}" \
+      --set-metadata "claimed_at=$now" \
+      --set-metadata "claim_heartbeat_at=$now"
+    ```
+
+  - If `claim_owner` is **this session** (`{{ .Session.ID }}`) — re-selecting a bead already claimed earlier in this same conversation — just refresh the heartbeat:
+
+    ```bash
+    bd update <bead-id> --set-metadata "claim_heartbeat_at=$now"
+    ```
+
+  - If `claim_owner` is any **other** value: another driver claimed this bead between Step 1's scan and now. Tell the user, and go back to Step 2 to pick a different bead — do **not** proceed with this one.
 
   ## Step 3b — Link this conversation to the chosen bead
 
@@ -210,10 +228,15 @@ prompt: |
 
   ## Step 10 — Log completion and close out
 
-  Once the work is complete and verified, record a completion comment in the bead's history, then offer to close it:
+  Once the work is complete and verified, record a completion comment in the bead's history:
 
   ```bash
   bd comment <bead-id> "Completed: <what was delivered, key changes, verification performed>."
+  ```
+
+  {{ template "beads-issues/shared/claim-clear" (dict "Target" "<bead-id>") }}
+
+  ```bash
   bd close <bead-id> --reason "<short summary of what was delivered>"
   ```
 
