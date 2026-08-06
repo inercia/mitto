@@ -706,33 +706,17 @@ func (a *AuthManager) ClearSessionCookie(w http.ResponseWriter, r *http.Request)
 }
 
 // GetSessionFromRequest retrieves the session from the request cookie.
+//
+// This does not log — the caller (AuthMiddleware) emits a single aggregated
+// DEBUG record per request that already reports the auth decision, so a
+// per-call log here would be redundant (mitto-1md).
 func (a *AuthManager) GetSessionFromRequest(r *http.Request) (*AuthSession, bool) {
-	logger := logging.Auth()
-
 	cookie, err := r.Cookie(sessionCookieName)
 	if err != nil {
-		// Log at DEBUG level - routine check on every request
-		logger.Debug("AUTH: No session cookie found",
-			"error", err,
-			"cookie_name", sessionCookieName,
-			"path", r.URL.Path,
-		)
 		return nil, false
 	}
 
 	session, valid := a.ValidateSession(cookie.Value)
-	if !valid {
-		logger.Debug("AUTH: Session cookie invalid or expired",
-			"token_prefix", cookie.Value[:min(8, len(cookie.Value))]+"...",
-			"path", r.URL.Path,
-		)
-	} else {
-		logger.Debug("AUTH: Session cookie valid",
-			"username", session.Username,
-			"expires_at", session.ExpiresAt,
-			"path", r.URL.Path,
-		)
-	}
 	return session, valid
 }
 
@@ -764,12 +748,13 @@ var publicAPIPaths = map[string]bool{
 
 // isPublicPath checks if a path is public (no auth required).
 // It checks both static paths and API paths (with the configured prefix).
+//
+// This is a pure predicate — it does not log. The caller (AuthMiddleware) emits
+// a single aggregated DEBUG record per request that already reports the outcome
+// of this check, so logging here would be redundant (mitto-1md).
 func (a *AuthManager) isPublicPath(path string) bool {
-	logger := logging.Auth()
-
 	// Check static paths (exact match) - at root level
 	if publicStaticPaths[path] {
-		logger.Debug("AUTH: isPublicPath: MATCHED static path", "path", path)
 		return true
 	}
 
@@ -777,7 +762,6 @@ func (a *AuthManager) isPublicPath(path string) bool {
 	if a.apiPrefix != "" {
 		for staticPath := range publicStaticPaths {
 			if path == a.apiPrefix+staticPath {
-				logger.Debug("AUTH: isPublicPath: MATCHED prefixed static path", "path", path)
 				return true
 			}
 		}
@@ -787,7 +771,6 @@ func (a *AuthManager) isPublicPath(path string) bool {
 	for apiPath := range publicAPIPaths {
 		fullAPIPath := a.apiPrefix + apiPath
 		if path == fullAPIPath {
-			logger.Debug("AUTH: isPublicPath: MATCHED API path", "path", path, "api_path", fullAPIPath)
 			return true
 		}
 	}
@@ -795,20 +778,9 @@ func (a *AuthManager) isPublicPath(path string) bool {
 	// Check API path prefixes for dynamic paths (callback tokens)
 	callbackPrefix := a.apiPrefix + "/api/callback/"
 	if strings.HasPrefix(path, callbackPrefix) {
-		logger.Debug("AUTH: isPublicPath: MATCHED callback prefix", "path", path)
 		return true
 	}
 
-	// Log all known public paths for debugging
-	staticPathsList := make([]string, 0, len(publicStaticPaths))
-	for p := range publicStaticPaths {
-		staticPathsList = append(staticPathsList, p)
-	}
-	logger.Debug("AUTH: isPublicPath: NO MATCH",
-		"path", path,
-		"api_prefix", a.apiPrefix,
-		"known_static_paths", staticPathsList,
-	)
 	return false
 }
 
@@ -921,6 +893,13 @@ func IsLocalhostRequest(r *http.Request) bool {
 }
 
 // AuthMiddleware returns a middleware that enforces authentication.
+//
+// Logging: emits AT MOST ONE "AUTH: request" DEBUG record per request,
+// carrying the outcome as a "decision" field (loopback|allowlist|public|
+// cf-access|authenticated|rejected) instead of the five separate per-stage
+// records this used to produce. The whole block is gated by `dbg` so nothing
+// is allocated or formatted when DEBUG logging is off (mitto-1md, following
+// the mitto-t3i pattern).
 func (a *AuthManager) AuthMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		logger := logging.Auth()
@@ -930,6 +909,8 @@ func (a *AuthManager) AuthMiddleware(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
+
+		dbg := logger.Enabled(r.Context(), slog.LevelDebug)
 
 		// Check if this connection came through the external listener.
 		// External connections ALWAYS require authentication, even from localhost.
@@ -943,25 +924,29 @@ func (a *AuthManager) AuthMiddleware(next http.Handler) http.Handler {
 		// via spoofed X-Forwarded-For headers. This function only trusts proxy headers
 		// from configured trusted proxies.
 		if !isExternal && isLoopbackIP(clientIP) {
-			logger.Debug("Auth bypass - loopback IP on internal listener",
-				"client_ip", clientIP, "path", r.URL.Path)
+			if dbg {
+				logger.Debug("AUTH: request",
+					"decision", "loopback",
+					"path", r.URL.Path,
+					"client_ip", clientIP,
+					"external", isExternal,
+				)
+			}
 			SetAuthIdentity(r, "local")
 			next.ServeHTTP(w, r)
 			return
 		}
 
-		// Log external connection attempts
-		if isExternal {
-			logger.Debug("AUTH: External connection",
-				"client_ip", clientIP,
-				"path", r.URL.Path,
-				"is_loopback", isLoopbackIP(clientIP),
-			)
-		}
-
 		// Check if client IP is in the allow list (bypass auth)
 		if a.IsIPAllowed(clientIP) {
-			logger.Debug("Auth bypass - allowed IP", "client_ip", clientIP, "path", r.URL.Path)
+			if dbg {
+				logger.Debug("AUTH: request",
+					"decision", "allowlist",
+					"path", r.URL.Path,
+					"client_ip", clientIP,
+					"external", isExternal,
+				)
+			}
 			r = r.WithContext(context.WithValue(r.Context(), ContextKeyAuthUser, "allowlist:"+clientIP))
 			SetAuthIdentity(r, "allowlist:"+clientIP)
 			next.ServeHTTP(w, r)
@@ -969,24 +954,18 @@ func (a *AuthManager) AuthMiddleware(next http.Handler) http.Handler {
 		}
 
 		// Allow public paths without authentication
-		isPublic := a.isPublicPath(r.URL.Path)
-		// Log public path checks at DEBUG level - routine checks
-		if isPublic {
-			logger.Debug("AUTH: Bypass - public path",
-				"path", r.URL.Path,
-				"raw_uri", r.RequestURI,
-				"client_ip", clientIP,
-			)
+		if a.isPublicPath(r.URL.Path) {
+			if dbg {
+				logger.Debug("AUTH: request",
+					"decision", "public",
+					"path", r.URL.Path,
+					"client_ip", clientIP,
+					"external", isExternal,
+				)
+			}
 			next.ServeHTTP(w, r)
 			return
 		}
-		// Log when we're NOT treating something as public (DEBUG - routine check)
-		logger.Debug("AUTH: Required for path",
-			"path", r.URL.Path,
-			"raw_uri", r.RequestURI,
-			"client_ip", clientIP,
-			"api_prefix", a.apiPrefix,
-		)
 
 		// Check Cloudflare Access JWT
 		if a.HasCloudflareAccess() {
@@ -1015,18 +994,19 @@ func (a *AuthManager) AuthMiddleware(next http.Handler) http.Handler {
 		// Check for valid session
 		session, valid := a.GetSessionFromRequest(r)
 		if !valid {
-			// Log the auth failure with cookie info for debugging
-			cookies := r.Cookies()
-			cookieNames := make([]string, len(cookies))
-			for i, c := range cookies {
-				cookieNames[i] = c.Name
+			if dbg {
+				reason := "invalid-cookie"
+				if _, err := r.Cookie(sessionCookieName); err != nil {
+					reason = "no-cookie"
+				}
+				logger.Debug("AUTH: request",
+					"decision", "rejected",
+					"reason", reason,
+					"path", r.URL.Path,
+					"client_ip", clientIP,
+					"external", isExternal,
+				)
 			}
-			logger.Debug("AUTH: No valid session",
-				"path", r.URL.Path,
-				"client_ip", clientIP,
-				"cookies_present", cookieNames,
-				"has_session_cookie", r.Header.Get("Cookie") != "",
-			)
 
 			// Check if this is an API request (with or without prefix)
 			// e.g., /api/events or /mitto/api/events
@@ -1044,16 +1024,19 @@ func (a *AuthManager) AuthMiddleware(next http.Handler) http.Handler {
 				return
 			}
 			// For page requests, redirect to login
-			logger.Debug("AUTH: Redirecting to auth.html", "path", r.URL.Path, "raw_uri", r.RequestURI)
 			http.Redirect(w, r, "/auth.html", http.StatusFound)
 			return
 		}
 
-		logger.Debug("AUTH: Session validated",
-			"path", r.URL.Path,
-			"client_ip", clientIP,
-			"username", session.Username,
-		)
+		if dbg {
+			logger.Debug("AUTH: request",
+				"decision", "authenticated",
+				"path", r.URL.Path,
+				"client_ip", clientIP,
+				"external", isExternal,
+				"user", session.Username,
+			)
+		}
 		r = r.WithContext(context.WithValue(r.Context(), ContextKeyAuthUser, session.Username))
 		SetAuthIdentity(r, session.Username)
 		next.ServeHTTP(w, r)
