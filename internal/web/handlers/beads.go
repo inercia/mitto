@@ -117,9 +117,13 @@ func (h *Handlers) writeBeadsError(w http.ResponseWriter, r *http.Request, err e
 }
 
 // runBeadsRead executes a read-only bd query with bounded retries on transient
-// failures. It stops retrying on context cancellation and on not-found errors,
-// since retrying either would be pointless (the former can never succeed, the
-// latter is a genuine result rather than a transient failure).
+// failures. It stops retrying on context cancellation, on not-found errors,
+// and on schema-skew failures, since retrying any of those would be pointless
+// (context cancellation can never succeed, not-found is a genuine result
+// rather than a transient failure, and a schema skew is deterministic — bd
+// will refuse identically on every attempt until the schema is reconciled
+// out-of-band, so retrying only adds latency and needlessly multiplies bd
+// spawns per request; mitto-292).
 func (h *Handlers) runBeadsRead(ctx context.Context, fn func(context.Context) ([]byte, error)) ([]byte, error) {
 	var out []byte
 	var err error
@@ -128,7 +132,7 @@ func (h *Handlers) runBeadsRead(ctx context.Context, fn func(context.Context) ([
 		if err == nil {
 			return out, nil
 		}
-		if errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil || beads.IsNotFound(err) {
+		if errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil || beads.IsNotFound(err) || beads.IsSchemaSkew(err) {
 			return out, err
 		}
 		if attempt < beadsReadRetries {

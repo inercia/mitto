@@ -436,6 +436,53 @@ func TestHandleBeadsList_SchemaSkew_JSONBlob(t *testing.T) {
 	}
 }
 
+// schemaSkewCountingClient always fails with a schema-skew error and counts
+// how many times List was invoked, used to verify runBeadsRead treats a
+// schema-version skew as terminal (non-retryable) rather than burning the
+// full retry budget on a failure that can never succeed.
+type schemaSkewCountingClient struct {
+	stubBeadsClient
+	calls int32
+}
+
+func (c *schemaSkewCountingClient) List(_ context.Context, _ string) ([]byte, error) {
+	atomic.AddInt32(&c.calls, 1)
+	return nil, &beads.CmdError{
+		Err: errors.New("bd exited with non-zero status"),
+		Stderr: "... refusing to auto-apply 4 pending schema migrations to a remote-backed database (v49 -> v53) ...\n" +
+			"Error: failed to open routed store at /Users/test/.beads-planning: schema version mismatch: database is at v49, binary expects v53 ...",
+	}
+}
+
+// TestHandleBeadsList_SchemaSkew_NoRetry verifies that runBeadsRead bails out
+// immediately on a schema-skew failure instead of retrying: the failure is
+// deterministic (bd will refuse every attempt identically until the schema
+// is reconciled out-of-band), so retrying only adds latency and needlessly
+// triples the number of bd spawns per request (mitto-292).
+func TestHandleBeadsList_SchemaSkew_NoRetry(t *testing.T) {
+	oldRetries := beadsReadRetries
+	oldBackoff := beadsRetryBackoff
+	beadsReadRetries = 2
+	beadsRetryBackoff = time.Millisecond
+	defer func() {
+		beadsReadRetries = oldRetries
+		beadsRetryBackoff = oldBackoff
+	}()
+
+	client := &schemaSkewCountingClient{}
+	s := newBeadsTestServerWithClient(client)
+	req := localhostRequest("/api/issues?working_dir=/test/workspace")
+	w := httptest.NewRecorder()
+	s.handleBeadsList(w, req)
+
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusConflict)
+	}
+	if got := atomic.LoadInt32(&client.calls); got != 1 {
+		t.Errorf("List call count = %d, want 1 (schema skew is terminal, should not retry; mitto-292)", got)
+	}
+}
+
 // listTimeoutClient is a beads.Client whose List blocks until ctx is done.
 type listTimeoutClient struct{ stubBeadsClient }
 

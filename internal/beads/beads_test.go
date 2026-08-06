@@ -251,6 +251,31 @@ func TestSchemaSkewInfo_JSONBlobLegacyFallback(t *testing.T) {
 	}
 }
 
+// TestSchemaSkewInfo_FlatErrorHintShape verifies that bd 1.1.2's flat
+// {"error","hint"} stderr shape (no remote_migrate_gate key, no legacy
+// "database is at vN" / "binary expects vM" text; versions are embedded
+// inline as "(v49 -> v53)") still yields the parsed DB/binary versions
+// instead of the zeroed-out details reported in mitto-292. The exact stderr
+// below is the one captured from the mitto-292 log line that showed
+// db_version=0 binary_version=0 despite IsSchemaSkew correctly returning
+// true (verified via the investigate-phase probe on this bead).
+func TestSchemaSkewInfo_FlatErrorHintShape(t *testing.T) {
+	stderr := `{"error": "refusing to auto-apply 4 pending schema migrations to a remote-backed database (v49 -> v53): migrating clones independently forks the schema (#4259)", "hint": "run BD_ALLOW_REMOTE_MIGRATE=1 bd migrate on the designated migrator clone"}`
+	err := &CmdError{Err: errors.New("bd exited with non-zero status: exit status 1"), Stderr: stderr, ExitCode: 1}
+
+	if !IsSchemaSkew(err) {
+		t.Fatal("IsSchemaSkew = false, want true for bd 1.1.2's flat error/hint shape")
+	}
+
+	info := SchemaSkewInfo(err)
+	if info.DBVersion != 49 {
+		t.Errorf("DBVersion = %d, want 49 (mitto-292: currently parses as 0)", info.DBVersion)
+	}
+	if info.BinaryVersion != 53 {
+		t.Errorf("BinaryVersion = %d, want 53 (mitto-292: currently parses as 0)", info.BinaryVersion)
+	}
+}
+
 // TestSchemaSkewInfo_Empty verifies that a nil error and a *CmdError with
 // empty stderr both yield a zero-value SchemaSkewDetails.
 func TestSchemaSkewInfo_Empty(t *testing.T) {

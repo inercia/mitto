@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"regexp"
 	"strings"
 )
 
@@ -160,6 +161,16 @@ func SchemaSkewInfo(err error) SchemaSkewDetails {
 			}
 		}
 	}
+	if out.DBVersion == 0 || out.BinaryVersion == 0 {
+		if db, bin, ok := parseVersionsFromArrow(stderr); ok {
+			if out.DBVersion == 0 {
+				out.DBVersion = db
+			}
+			if out.BinaryVersion == 0 {
+				out.BinaryVersion = bin
+			}
+		}
+	}
 	return out
 }
 
@@ -288,6 +299,27 @@ func parseVersionsFromText(stderr string) (int, int, bool) {
 	}
 	db := parseTrailingInt(stderr[dbIdx+len(dbMarker):])
 	bin := parseTrailingInt(stderr[binIdx+len(binMarker):])
+	if db == 0 || bin == 0 {
+		return 0, 0, false
+	}
+	return db, bin, true
+}
+
+// schemaSkewArrowVersionsRe matches bd 1.1.2's inline version shorthand, e.g.
+// "... a remote-backed database (v49 -> v53): ...", where no separate
+// "database is at vN" / "binary expects vM" text is emitted.
+var schemaSkewArrowVersionsRe = regexp.MustCompile(`\(v(\d+)\s*->\s*v(\d+)\)`)
+
+// parseVersionsFromArrow extracts "(vN -> vM)" from bd 1.1.2's flat stderr
+// shape (see schemaSkewArrowVersionsRe), returning (db, binary, true) on
+// match.
+func parseVersionsFromArrow(stderr string) (int, int, bool) {
+	m := schemaSkewArrowVersionsRe.FindStringSubmatch(stderr)
+	if m == nil {
+		return 0, 0, false
+	}
+	db := parseTrailingInt(m[1])
+	bin := parseTrailingInt(m[2])
 	if db == 0 || bin == 0 {
 		return 0, 0, false
 	}
