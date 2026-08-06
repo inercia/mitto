@@ -371,4 +371,71 @@ test.describe("Loop on-completion trigger", () => {
       page.locator('[data-testid="loop-panel-schedule"]'),
     ).toBeVisible();
   });
+
+  // mitto-r6j.6: after arming a second trigger and saving, a page reload must
+  // hydrate the panel with the full multi-trigger list from the server — both
+  // checkboxes still checked and both sub-panels still visible. Regression
+  // guard for a class of bugs where the frontend correctly PATCHes the whole
+  // list but the initial GET/hydrate on reload only keeps the primary/first
+  // trigger.
+  test("multi-trigger config survives page reload (checkboxes + sub-panels)", async ({
+    page,
+    timeouts,
+  }) => {
+    // Arm onCompletion in addition to schedule and save.
+    await page
+      .locator('[data-testid="loop-trigger-check-oncompletion"]')
+      .click();
+    await expect(
+      page.locator('[data-testid="loop-panel-oncompletion"]'),
+    ).toBeVisible({ timeout: timeouts.shortAction });
+    await page.locator('[data-testid="loop-save-button"]').click();
+
+    // Reload the page. A loop session hides the textarea (which the standard
+    // navigateAndWait helper waits on), so pin the session ID in localStorage
+    // (mirrors the loop-edit-args pattern) and reload. The frontend can still
+    // land on Dashboard rather than restoring the chat view for a loop
+    // session, so open the sidebar and click the session tile explicitly if
+    // the loop panel isn't already visible.
+    await page.evaluate((sid) => {
+      localStorage.setItem("mitto_last_session_id", sid);
+      localStorage.removeItem("mitto_conversation_filter_tab");
+    }, sessionId);
+    await page.reload();
+
+    const panel = page.locator('[data-testid="loop-frequency-panel"]');
+    // If the frontend lands on Dashboard, the "Show conversations" toggle
+    // opens the sidebar; then a data-session-id tile clicks into the loop
+    // session. Both selectors are guarded so the test is resilient to a
+    // future frontend change that restores the loop view directly.
+    if (!(await panel.isVisible().catch(() => false))) {
+      const openSidebar = page.getByText("Show conversations").first();
+      if (await openSidebar.isVisible().catch(() => false)) {
+        await openSidebar.click();
+      }
+      const sessionItem = page.locator(`[data-session-id="${sessionId}"]`);
+      await expect(sessionItem).toBeVisible({ timeout: timeouts.appReady });
+      await sessionItem.click();
+    }
+    await expect(panel).toBeVisible({ timeout: timeouts.appReady });
+
+    // Re-expand the panel — the collapsed state is UI-local.
+    await page.locator('[data-testid="loop-expand-toggle"]').click();
+
+    // Both checkboxes must be checked after reload.
+    await expect(
+      page.locator('[data-testid="loop-trigger-check-schedule"]'),
+    ).toBeChecked({ timeout: timeouts.appReady });
+    await expect(
+      page.locator('[data-testid="loop-trigger-check-oncompletion"]'),
+    ).toBeChecked({ timeout: timeouts.shortAction });
+
+    // Both sub-panels must be visible simultaneously.
+    await expect(
+      page.locator('[data-testid="loop-panel-schedule"]'),
+    ).toBeVisible({ timeout: timeouts.shortAction });
+    await expect(
+      page.locator('[data-testid="loop-panel-oncompletion"]'),
+    ).toBeVisible({ timeout: timeouts.shortAction });
+  });
 });
