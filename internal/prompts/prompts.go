@@ -691,47 +691,50 @@ func ValidatePromptTarget(promptName string, t *PromptTarget, promptSingleton bo
 }
 
 // legacyTargetReuseMigration maps each legacy flat key (removed in mitto-6b3)
-// to its new nested path. Order stable for deterministic error messages.
+// to the short field name it becomes under the nested target.reuse block,
+// plus the full dotted path for WARN messages.
 var legacyTargetReuseMigration = []struct {
-	old, new string
+	old, short, new string
 }{
-	{"reuseIssue", "target.reuse.issue"},
-	{"reuseTitle", "target.reuse.title"},
-	{"reuseCoalesce", "target.reuse.coalesce"},
+	{"reuseIssue", "issue", "target.reuse.issue"},
+	{"reuseTitle", "title", "target.reuse.title"},
+	{"reuseCoalesce", "coalesce", "target.reuse.coalesce"},
 }
 
-// rejectLegacyTargetReuseKeys scans the raw YAML for any of the three legacy
-// flat target.reuse* keys and returns a clear migration error. Runs before
-// the permissive yaml.Unmarshal into *PromptFile so an unknown key can be
-// reported at ParsePromptFile time rather than silently dropped.
+// migrateLegacyTargetReuseKeys rewrites the pre-mitto-6b3 flat target.reuse*
+// keys (reuseIssue / reuseTitle / reuseCoalesce) onto the nested target.reuse
+// block in place, logging one WARN per migrated key. Mirrors the mitto-r6j.3
+// "preserve operator data, emit a WARN, never a file-level error" precedent
+// established for the loop.* schema: a lint-class problem in one target
+// attribute must not take the whole prompt out of the registry (mitto-a4yg;
+// the earlier hard-reject here evicted the entire prompt file for a single
+// stale key).
 //
 // Uses a *yaml.Node walk so it only fires on the ONE mapping at document-root
-// target: — a document.body that happens to mention the string "reuseTitle"
-// somewhere else (prose, sample YAML in comments) does not trip the check.
-func rejectLegacyTargetReuseKeys(path string, data []byte) error {
-	var root yaml.Node
-	if err := yaml.Unmarshal(data, &root); err != nil {
-		// Malformed YAML — let the real Unmarshal below produce the canonical error.
-		return nil
+// target: — a document body that happens to mention the string "reuseTitle"
+// somewhere else (prose, sample YAML in comments) does not trip it. Returns
+// whether anything was migrated.
+func migrateLegacyTargetReuseKeys(path string, doc *yaml.Node) bool {
+	if doc == nil || doc.Kind != yaml.DocumentNode || len(doc.Content) == 0 {
+		return false
 	}
-	if root.Kind != yaml.DocumentNode || len(root.Content) == 0 {
-		return nil
+	root := doc.Content[0]
+	if root.Kind != yaml.MappingNode {
+		return false
 	}
-	doc := root.Content[0]
-	if doc.Kind != yaml.MappingNode {
-		return nil
-	}
-	// Find the top-level `target:` mapping.
 	var targetNode *yaml.Node
-	for i := 0; i+1 < len(doc.Content); i += 2 {
-		if doc.Content[i].Kind == yaml.ScalarNode && doc.Content[i].Value == "target" {
-			targetNode = doc.Content[i+1]
+	for i := 0; i+1 < len(root.Content); i += 2 {
+		if root.Content[i].Kind == yaml.ScalarNode && root.Content[i].Value == "target" {
+			targetNode = root.Content[i+1]
 			break
 		}
 	}
 	if targetNode == nil || targetNode.Kind != yaml.MappingNode {
-		return nil
+		return false
 	}
+
+	// Read-only pass: bail out (untouched) unless a legacy key is present.
+	hasLegacy := false
 	for i := 0; i+1 < len(targetNode.Content); i += 2 {
 		k := targetNode.Content[i]
 		if k.Kind != yaml.ScalarNode {
@@ -739,11 +742,52 @@ func rejectLegacyTargetReuseKeys(path string, data []byte) error {
 		}
 		for _, m := range legacyTargetReuseMigration {
 			if k.Value == m.old {
-				return fmt.Errorf("prompt file %s: target.%s is no longer supported — nest under %s instead", path, m.old, m.new)
+				hasLegacy = true
 			}
 		}
 	}
-	return nil
+	if !hasLegacy {
+		return false
+	}
+
+	// Split into "kept" (everything except an existing reuse: mapping) and
+	// the existing reuse: node (if any) so legacy keys can be merged into it.
+	var reuseKey, reuseVal *yaml.Node
+	var kept []*yaml.Node
+	for i := 0; i+1 < len(targetNode.Content); i += 2 {
+		k, v := targetNode.Content[i], targetNode.Content[i+1]
+		if k.Kind == yaml.ScalarNode && k.Value == "reuse" && v.Kind == yaml.MappingNode {
+			reuseKey, reuseVal = k, v
+			continue
+		}
+		kept = append(kept, k, v)
+	}
+	if reuseVal == nil {
+		reuseKey = &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "reuse"}
+		reuseVal = &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+	}
+
+	out := make([]*yaml.Node, 0, len(kept)+2)
+	for i := 0; i+1 < len(kept); i += 2 {
+		k, v := kept[i], kept[i+1]
+		migrated := false
+		for _, m := range legacyTargetReuseMigration {
+			if k.Value == m.old {
+				newKey := &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: m.short}
+				reuseVal.Content = append(reuseVal.Content, newKey, v)
+				slog.Warn("prompt file uses a legacy target.reuse key and was migrated in memory",
+					"path", path, "old_key", "target."+m.old, "new_key", m.new)
+				migrated = true
+				break
+			}
+		}
+		if !migrated {
+			out = append(out, k, v)
+		}
+	}
+	out = append(out, reuseKey, reuseVal)
+	targetNode.Content = out
+	return true
 }
 
 // PromptParameterCache configures value caching for a single prompt parameter.
@@ -1037,15 +1081,17 @@ func parsePromptFileData(path string, data []byte, modTime time.Time) (*PromptFi
 		FileModTime: modTime,
 	}
 
-	// Reject the legacy flat form of target.reuse* (mitto-6b3) before the
-	// permissive struct unmarshal silently drops the unknown keys. Fails at
-	// parse time so TestBuiltinPrompts + docs_sync_test catch every missed
-	// migration and every prompt-loading caller surfaces a clear message.
-	if err := rejectLegacyTargetReuseKeys(path, data); err != nil {
-		return nil, migrated, result, err
+	// Parse into a mutable node tree so the legacy target.reuse* migration
+	// below can rewrite it in memory (WARN, never a file-level error) before
+	// the struct decode — mirrors the mitto-r6j.3 loop.* migration precedent
+	// (mitto-a4yg: a lint-class field must not evict the whole prompt).
+	var doc yaml.Node
+	if err := yaml.Unmarshal(migrated, &doc); err != nil {
+		return nil, migrated, result, fmt.Errorf("failed to parse prompt file %s: %w", path, err)
 	}
+	migrateLegacyTargetReuseKeys(path, &doc)
 
-	if err := yaml.Unmarshal(migrated, prompt); err != nil {
+	if err := doc.Decode(prompt); err != nil {
 		return nil, migrated, result, fmt.Errorf("failed to parse prompt file %s: %w", path, err)
 	}
 

@@ -2077,6 +2077,110 @@ func TestLoopRunner_AutoStopPromptUnresolved_SetsStoppedReason(t *testing.T) {
 	}
 }
 
+// TestLoopRunner_PromptUnresolved_DoesNotSelfHealWhenNameResolvesAgain is the
+// reproduction test for mitto-a4yg (defect 2: "promptUnresolved is not
+// self-healing"). Once handlePromptResolveFailure has tripped the
+// MaxPromptResolveFailures tripwire and called MarkStopped(promptUnresolved),
+// the loop is Enabled=false. checkSession's "Skip if disabled" guard
+// (loop_runner.go) then means the prompt name is NEVER re-resolved again by
+// the scheduled poll loop, even after the underlying prompt file comes back
+// (e.g. once the PromptsCache reload gap that caused the original resolve
+// failures has cleared, mirroring the bead's incident timeline). There is no
+// code path anywhere that observes "the name resolves again" and clears the
+// stop — recovery today is manual-only (an explicit Update(enabled=true)).
+//
+// This test currently demonstrates the bug: it trips the auto-pause, then
+// makes the prompt resolver succeed (simulating the registry recovering) and
+// drives further RunOnce polls with the loop's NextScheduledAt forced due.
+// The loop stays disabled/stopped forever — RunOnce never even calls the
+// (now-succeeding) resolver again — proving there is no self-healing path.
+func TestLoopRunner_PromptUnresolved_DoesNotSelfHealWhenNameResolvesAgain(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	const sessionID = "self-heal-check"
+	meta := session.Metadata{SessionID: sessionID, ACPServer: "test", WorkingDir: "/tmp"}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("store.Create() error = %v", err)
+	}
+
+	loopStore := store.Loop(sessionID)
+	if err := loopStore.Set(&session.LoopPrompt{
+		PromptName: "temporarily-missing-prompt",
+		Frequency:  session.Frequency{Value: 1, Unit: session.FrequencyHours},
+		Enabled:    true,
+	}); err != nil {
+		t.Fatalf("loopStore.Set() error = %v", err)
+	}
+
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{})
+	sm.AddSessionForTest(NewMinimalBackgroundSessionPrompting(sessionID, false))
+
+	runner := NewLoopRunner(store, sm, nil)
+
+	// Simulate the incident: the resolver fails (e.g. the prompt file was
+	// evicted from PromptsCache by an unrelated schema-validation error)
+	// until the tripwire fires and auto-pauses the loop.
+	resolving := int32(0) // 0 = fails, 1 = succeeds
+	runner.SetPromptResolver(func(name, dir string) (string, error) {
+		if atomic.LoadInt32(&resolving) == 0 {
+			return "", errors.New("prompt not found")
+		}
+		return "resolved body", nil
+	})
+
+	loop, _ := loopStore.Get()
+	for i := 0; i < MaxPromptResolveFailures; i++ {
+		runner.handlePromptResolveFailure(sessionID, meta.Name, loop, loopStore, errors.New("prompt not found"))
+	}
+
+	tripped, err := loopStore.Get()
+	if err != nil {
+		t.Fatalf("loopStore.Get() after tripping: %v", err)
+	}
+	if tripped.Enabled || tripped.StoppedReason != session.StoppedReasonPromptUnresolved {
+		t.Fatalf("precondition failed: loop not auto-paused (enabled=%v reason=%q)",
+			tripped.Enabled, tripped.StoppedReason)
+	}
+
+	// The prompt is now resolvable again (registry recovered) and the poll
+	// loop keeps running with the schedule forced due, exactly as it would in
+	// production after the transient cache gap clears.
+	atomic.StoreInt32(&resolving, 1)
+	for i := 0; i < 3; i++ {
+		past := time.Now().UTC().Add(-time.Hour)
+		if err := writeTestLoopFile(store.SessionDir(sessionID)+"/loop.json", &session.LoopPrompt{
+			PromptName:      tripped.PromptName,
+			Frequency:       tripped.Frequency,
+			Enabled:         false,
+			StoppedReason:   session.StoppedReasonPromptUnresolved,
+			StoppedAt:       tripped.StoppedAt,
+			NextScheduledAt: &past,
+		}); err != nil {
+			t.Fatalf("writeTestLoopFile() error = %v", err)
+		}
+		runner.RunOnce()
+	}
+
+	// BUG (mitto-a4yg, defect 2): the loop never recovers on its own even
+	// though the prompt name is resolvable again — there is no self-healing
+	// path. This assertion documents the expected (currently unmet) recovery
+	// behavior; it FAILS today because the loop is still Enabled=false with
+	// StoppedReason=promptUnresolved.
+	final, err := loopStore.Get()
+	if err != nil {
+		t.Fatalf("loopStore.Get() final: %v", err)
+	}
+	if !final.Enabled || final.StoppedReason != "" {
+		t.Errorf("promptUnresolved loop did not self-heal after the prompt name became "+
+			"resolvable again (mitto-a4yg, defect 2): enabled=%v stoppedReason=%q, want enabled=true stoppedReason=\"\"",
+			final.Enabled, final.StoppedReason)
+	}
+}
+
 // TestLoopRunner_AutoStopPromptUnresolved_SkipsTransientCompileRace reproduces
 // mitto-8bg: the loop auto-pause tripwire fires on transient fragment
 // compile-race errors that should not count as strikes.

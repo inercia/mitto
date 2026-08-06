@@ -1563,6 +1563,40 @@ func (r *LoopRunner) checkSession(meta session.Metadata, now time.Time) (deliver
 		return 0, 0, 1
 	}
 
+	// Self-healing for a promptUnresolved auto-pause (mitto-a4yg): this is the
+	// one stop reason that is provably self-verifiable — the pause exists
+	// solely because the named prompt would not resolve, so re-resolving it
+	// on every poll tick is a cheap, safe check. Attempt it before the
+	// disabled-guard below so a transient PromptsCache reload gap does not
+	// leave the loop paused forever once the registry recovers, matching the
+	// existing ErrPromptTransientCompileRace carve-out for the same class of
+	// transient failure. Update (not Set) is used because it explicitly
+	// clears StoppedReason/StoppedAt — Set's sticky-stop guard (mitto-uun)
+	// would otherwise re-preserve the stopped state.
+	if !loop.Enabled && loop.StoppedReason == session.StoppedReasonPromptUnresolved &&
+		loop.PromptName != "" && r.promptResolver != nil {
+		if _, resolveErr := r.promptResolver(loop.PromptName, meta.WorkingDir); resolveErr == nil {
+			enabled := true
+			if updErr := loopStore.Update(session.LoopUpdate{Enabled: &enabled}); updErr != nil {
+				if r.logger != nil {
+					r.logger.Warn("Failed to self-heal promptUnresolved loop after prompt resolved again",
+						"session_id", sessionID, "prompt_name", loop.PromptName, "error", updErr)
+				}
+			} else {
+				if r.logger != nil {
+					r.logger.Info("Self-healed promptUnresolved loop after prompt name resolved again",
+						"session_id", sessionID, "prompt_name", loop.PromptName)
+				}
+				r.promptResolveFailuresMu.Lock()
+				delete(r.promptResolveFailures, sessionID)
+				r.promptResolveFailuresMu.Unlock()
+				if refreshed, gErr := loopStore.Get(); gErr == nil {
+					loop = refreshed
+				}
+			}
+		}
+	}
+
 	// Skip if disabled
 	if !loop.Enabled {
 		return 0, 0, 0

@@ -407,10 +407,14 @@ equivalent to all three off (`issue: false`, `title: false`,
 `reuse.title: true` without a `title` (a title-keyed lookup with no key),
 `reuse.coalesce: true` without any reuse mode (no target conversation
 to coalesce against), or a `backgroundColor` that is not a valid hex color.
-`ParsePromptFile` also rejects the legacy flat form
-(`target.reuseIssue` / `target.reuseTitle` / `target.reuseCoalesce`) with
-a migration error pointing at the nested equivalent — the legacy keys
-are no longer accepted (mitto-6b3, no backwards compatibility).
+`ParsePromptFile` also migrates the legacy flat form
+(`target.reuseIssue` / `target.reuseTitle` / `target.reuseCoalesce`, removed
+in mitto-6b3) onto the nested equivalent in memory, logging one WARN per
+migrated key (`migrateLegacyTargetReuseKeys`). This previously hard-failed
+the whole file — fixed by mitto-a4yg, which found that a single lint-class
+field error evicted the entire prompt (body, `enabledWhen`, everything) from
+`PromptsCache`, mirroring the same blast-radius bug already fixed for
+`loop.*` by mitto-r6j.3's migration registry.
 
 ### Find-or-route ladder
 

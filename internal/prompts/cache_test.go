@@ -652,6 +652,73 @@ prompt: |
 	}
 }
 
+// TestPromptsCache_LegacyTargetReuseKey_EvictsWholeFile is the reproduction
+// test for mitto-a4yg (defect 1: "blast radius"). A prompt file whose ONLY
+// problem is a single lint-class field — here, the pre-mitto-6b3 flat
+// target.reuseTitle key, which rejectLegacyTargetReuseKeys (prompts.go) hard-
+// rejects and which the mitto-r6j.3 migration registry does NOT rewrite —
+// causes the entire file (body, enabledWhen, everything) to disappear from
+// PromptsCache instead of just the offending field being dropped/lint-warned.
+//
+// This mirrors the incident on mitto-a4yg's bead: a schema-validation error
+// in one loop/target attribute evicted 28-29 builtin prompt files for ~9
+// minutes, which in turn starved 4 loop conversations of their named prompt
+// and tripped the (separately reproduced, see loop_runner_test.go)
+// non-self-healing promptUnresolved auto-pause.
+//
+// This test currently FAILS: prompts is len 0 (the prompt disappears) and
+// LoadErrors() reports the legacy-key rejection. Once defect 1 is fixed
+// (e.g. downgrading this class of file-level rejection to a per-field WARN,
+// as the r6j.3 migration precedent established for loop.*), the prompt must
+// still resolve by name.
+func TestPromptsCache_LegacyTargetReuseKey_EvictsWholeFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv(appdir.MittoDirEnv, tmpDir)
+	appdir.ResetCache()
+	t.Cleanup(appdir.ResetCache)
+
+	promptsDir := filepath.Join(tmpDir, appdir.PromptsDirName)
+	if err := os.MkdirAll(promptsDir, 0755); err != nil {
+		t.Fatalf("Failed to create prompts dir: %v", err)
+	}
+
+	// Only defect: target.reuseTitle is the pre-mitto-6b3 flat key (removed in
+	// favor of target.reuse.title). Everything else about the prompt is valid.
+	legacyPrompt := `name: "Legacy Target Reuse"
+target:
+  title: "Legacy Target Reuse"
+  reuseTitle: true
+prompt: |
+  Body that should still be resolvable by name.
+`
+	promptPath := filepath.Join(promptsDir, "legacy-target-reuse.prompt.yaml")
+	if err := os.WriteFile(promptPath, []byte(legacyPrompt), 0644); err != nil {
+		t.Fatalf("Failed to write legacy-target-reuse.prompt.yaml: %v", err)
+	}
+
+	cache := NewPromptsCache()
+	prompts, err := cache.Get()
+	if err != nil {
+		t.Fatalf("Get() returned top-level error: %v", err)
+	}
+
+	// BUG (mitto-a4yg, defect 1): a single lint-class field error must not
+	// take the whole prompt out of the registry. The prompt should still be
+	// resolvable by name even while the legacy key is flagged.
+	found := false
+	for _, p := range prompts {
+		if p.Name == "Legacy Target Reuse" {
+			found = true
+		}
+	}
+	if !found {
+		loadErrs := cache.LoadErrors()
+		t.Errorf("prompt %q not found in cache after a single-field legacy-key error "+
+			"(blast radius bug, mitto-a4yg): len(prompts)=%d, LoadErrors=%+v",
+			"Legacy Target Reuse", len(prompts), loadErrs)
+	}
+}
+
 // TestFragmentsNotInWebPromptDTO (mitto-g61.6 test #4) verifies the UI-facing
 // contract: fragments co-located with prompts never appear in the WebPrompt
 // list returned to the frontend, nor do they inflate the cache load-error

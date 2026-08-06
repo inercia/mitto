@@ -515,18 +515,21 @@ prompt: hi
 	}
 }
 
-// TestParsePromptFile_LegacyReuseKeysRejected pins mitto-6b3: the three
-// pre-refactor flat keys under target: — reuseIssue / reuseTitle /
-// reuseCoalesce — must fail ParsePromptFile with a migration error naming the
-// new nested path. If they were merely ignored (the permissive struct
-// unmarshal's default), a migration miss would silently degrade dispatch
-// behavior in every builtin and every user prompt.
-func TestParsePromptFile_LegacyReuseKeysRejected(t *testing.T) {
+// TestParsePromptFile_LegacyReuseKeysMigrated pins mitto-6b3 + mitto-a4yg: the
+// three pre-refactor flat keys under target: — reuseIssue / reuseTitle /
+// reuseCoalesce — must load successfully, with the value migrated onto the
+// new nested target.reuse path in memory. Earlier behavior (pre-mitto-a4yg)
+// hard-failed ParsePromptFile for these keys, which evicted the ENTIRE prompt
+// file from PromptsCache over a single lint-class field — the same blast-
+// radius bug class that mitto-r6j.3 already fixed for loop.*. A migration
+// miss must never silently degrade dispatch behavior, so this still asserts
+// the field actually lands on the new struct path, not merely that parsing
+// succeeds.
+func TestParsePromptFile_LegacyReuseKeysMigrated(t *testing.T) {
 	cases := []struct {
-		name    string
-		body    string
-		wantOld string
-		wantNew string
+		name string
+		body string
+		want func(*testing.T, *PromptTargetReuse)
 	}{
 		{
 			name: "reuseIssue",
@@ -535,8 +538,11 @@ target:
   reuseIssue: true
 prompt: hi
 `,
-			wantOld: "target.reuseIssue",
-			wantNew: "target.reuse.issue",
+			want: func(t *testing.T, r *PromptTargetReuse) {
+				if r == nil || !r.Issue {
+					t.Errorf("Target.Reuse.Issue = %+v, want true", r)
+				}
+			},
 		},
 		{
 			name: "reuseTitle",
@@ -546,33 +552,40 @@ target:
   reuseTitle: true
 prompt: hi
 `,
-			wantOld: "target.reuseTitle",
-			wantNew: "target.reuse.title",
+			want: func(t *testing.T, r *PromptTargetReuse) {
+				if r == nil || !r.Title {
+					t.Errorf("Target.Reuse.Title = %+v, want true", r)
+				}
+			},
 		},
 		{
 			name: "reuseCoalesce",
 			body: `name: "x"
 target:
+  reuseIssue: true
   reuseCoalesce: true
 prompt: hi
 `,
-			wantOld: "target.reuseCoalesce",
-			wantNew: "target.reuse.coalesce",
+			want: func(t *testing.T, r *PromptTargetReuse) {
+				if r == nil || !r.Issue {
+					t.Errorf("Target.Reuse.Issue = %+v, want true", r)
+				}
+				if r == nil || r.Coalesce == nil || !*r.Coalesce {
+					t.Errorf("Target.Reuse.Coalesce = %+v, want true", r)
+				}
+			},
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := ParsePromptFile("legacy.prompt.yaml", []byte(tc.body), time.Now())
-			if err == nil {
-				t.Fatalf("ParsePromptFile: err = nil, want migration error naming %s", tc.wantOld)
+			prompt, err := ParsePromptFile("legacy.prompt.yaml", []byte(tc.body), time.Now())
+			if err != nil {
+				t.Fatalf("ParsePromptFile: err = %v, want a successful migrate+WARN load", err)
 			}
-			msg := err.Error()
-			if !strings.Contains(msg, tc.wantOld) {
-				t.Errorf("error %q does not mention legacy key %q", msg, tc.wantOld)
+			if prompt.Target == nil {
+				t.Fatal("Target = nil, want non-nil after legacy-key migration")
 			}
-			if !strings.Contains(msg, tc.wantNew) {
-				t.Errorf("error %q does not point at new nested path %q", msg, tc.wantNew)
-			}
+			tc.want(t, prompt.Target.Reuse)
 		})
 	}
 }
