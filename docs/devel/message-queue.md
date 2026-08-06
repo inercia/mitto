@@ -132,9 +132,103 @@ The `LoopRunner` checks all active sessions for due scheduled messages on each p
 
 Scheduled messages display a ⏰ badge with a relative time string (e.g., "in 5 min", "in 2h") in the queue dropdown. The display updates every 30 seconds.
 
+## Loop Prompts: Multi-Trigger Architecture
+
+A loop prompt's `Triggers` field (`session.LoopPrompt.Triggers`, plural — see
+[docs/config/prompts.md § Loop Prompts](../config/prompts.md#loop-prompts) for
+the frontmatter shape) is a **list**, not a single value (mitto-r6j). Every
+listed trigger arms **independently** and stays armed for the lifetime of the
+loop: a `[onTasks, onCompletion]` loop is simultaneously watching for beads
+changes AND re-arming after every turn, from the moment it is enabled.
+
+### Independent arming, one dispatch slot
+
+`LoopRunner.checkSession` arms every trigger leg on each poll tick, in a fixed
+order — event-driven legs first (`onTasks` baseline bootstrap, `onCompletion`
+timer bootstrap/self-heal), then the `schedule` due-check last — which is what
+establishes the **`onTasks` > `onCompletion` > `schedule`** precedence
+described below. But arming is not the same as firing: the three trigger
+mechanisms below are otherwise independent event sources, each capable of
+calling into the same delivery path at any time:
+
+| Trigger        | Fires from                                                                 |
+| -------------- | --------------------------------------------------------------------------- |
+| `schedule`     | The poll loop's due-check (`NextScheduledAt` reached)                       |
+| `onCompletion` | A one-shot timer armed by `OnConversationIdle` when the agent stops         |
+| `onTasks`      | `OnBeadsChanged`, when a workspace-wide `BeadsWatcher` event lands           |
+
+Because these sources are independent, two of them can want to deliver a run
+in the same narrow window (e.g. the agent finishes a turn — arming
+`onCompletion` — at the same moment a beads file changes). Only **one**
+delivered run is allowed at a time per conversation: `LoopRunner.claimDispatch`
+holds a per-session, first-come-first-served slot (`dispatchInFlight`),
+claimed just before `deliverPrompt` and released in `OnComplete` (or any
+synchronous failure). A trigger that cannot claim the slot is **coalesced —
+dropped, not queued**: `ErrLoopDispatchCoalesced` short-circuits the loser
+with no retry, no schedule advance, and no failure backoff. The winning
+trigger is recorded on the delivered `PromptMeta.LoopTrigger` and surfaced to
+clients as `loop_updated.triggers` (the full armed set) alongside the
+back-compat singular `loop_updated.trigger` (the primary/first entry).
+
+```mermaid
+flowchart TB
+    subgraph Sources["Independent event sources"]
+        SCHED["Poll loop<br/>(due-check)"]
+        COMP["OnConversationIdle<br/>(agent stops → timer)"]
+        TASKS["OnBeadsChanged<br/>(BeadsWatcher fsnotify)"]
+    end
+
+    SCHED -->|"triggerNowFull(firedBy=schedule)"| CLAIM
+    COMP -->|"triggerNowFull(firedBy=onCompletion)"| CLAIM
+    TASKS -->|"triggerNowFull(firedBy=onTasks)"| CLAIM
+
+    CLAIM{{"claimDispatch(sessionID, firedBy)<br/>one slot per session"}}
+    CLAIM -->|"slot free → claimed"| DELIVER["deliverPrompt<br/>PromptMeta.LoopTrigger = firedBy"]
+    CLAIM -->|"slot held by another trigger"| DROP["ErrLoopDispatchCoalesced<br/>dropped, not queued"]
+
+    DELIVER --> AGENT[ACP Agent]
+    AGENT -->|OnComplete| RELEASE["releaseDispatch(sessionID)"]
+    RELEASE -.->|"re-arms"| Sources
+```
+
+### Shared caps, per-trigger settings
+
+`MaxIterations` and `MaxDurationSeconds` are **loop-wide**: `RecordSent`
+increments the single `IterationCount` and checks the single `FirstRunAt`
+elapsed-time anchor on every delivered run, **regardless of which trigger
+fired it**. A `[schedule, onCompletion]` loop with `maxIterations: 10` stops
+after 10 runs total, however the mix of schedule-ticks vs. post-turn
+re-arms landed. By contrast, each trigger's own settings — `schedule`'s
+`value`/`unit`/`at`, `onCompletion`'s `delay`, `onTasks`'s `condition`/
+`coalesceDuringBusy`/`settleWindow`/`cooldown` — apply only to that trigger's
+own firing decision (see [Configuration fields](#configuration-fields-sessionloopprompt) below).
+
+### Trigger-scoped guards do not cross-confuse
+
+The `onTasks` busy guard and quiescence rebase (Layer 1/Layer 2, described in
+[Loop Prompts: On-Tasks Delivery](#loop-prompts-on-tasks-delivery) below) key
+off `isTasksSubtreeBusy`, which checks whether the conversation (or a
+delegated child) is **currently prompting** — not which trigger caused that
+activity. This is deliberate: in a `[onTasks, onCompletion]` loop, a run that
+was actually fired by `onCompletion` still occupies the same "busy" slot an
+`onTasks`-fired run would, so the `onTasks` quiescence rebase correctly waits
+for it to finish and absorbs its edits into the new baseline — an
+`onCompletion`-driven turn's own beads edits never masquerade as an
+external, re-fire-worthy delta. Combined with the single dispatch-claim slot
+above (mutual exclusion across triggers, not just within one), a multi-trigger
+loop never delivers two overlapping runs, and no trigger's bookkeeping is
+corrupted by a run a sibling trigger initiated.
+
+### Testing
+
+`internal/conversation/loop_runner_test.go` (`TestBuildLoopUpdatedData_ExposesTriggerSet`,
+dispatch-claim coalescing tests) and `internal/session/loop_test.go` cover
+independent arming, the coalescing claim, and shared-cap accounting across
+trigger combinations.
+
 ## Loop Prompts: On-Completion Delivery
 
-Loop prompts normally fire on a fixed schedule (checked by the `LoopRunner` poll loop). A loop prompt may instead set `trigger: onCompletion`, which fires the next run **after the agent stops responding**, rather than on a clock.
+Loop prompts normally fire on a fixed schedule (checked by the `LoopRunner` poll loop). A loop prompt may instead arm the `onCompletion` trigger, which fires the next run **after the agent stops responding**, rather than on a clock.
 
 ### Delivery model
 
@@ -181,7 +275,7 @@ The schedule-based poll loop and the on-completion timers are independent paths 
 
 ## Loop Prompts: On-Tasks Delivery
 
-A loop prompt may set `trigger: onTasks`, which fires whenever the **beads issues in the conversation's working directory change** on disk, optionally gated by a **CEL condition** so it only fires for meaningful changes (e.g. "the open bug count increased", "an issue labelled `PR opened` was created or updated"). Like `onCompletion`, this is event-driven, not clock-driven — `Frequency` is not required and is ignored.
+A loop prompt may arm the `onTasks` trigger, which fires whenever the **beads issues in the conversation's working directory change** on disk, optionally gated by a **CEL condition** so it only fires for meaningful changes (e.g. "the open bug count increased", "an issue labelled `PR opened` was created or updated"). Like `onCompletion`, this is event-driven, not clock-driven — `Frequency` is not required and is ignored.
 
 ### Trigger semantics
 
@@ -315,8 +409,8 @@ Each entry exposes the same canonical keys the CEL condition sees: `id`, `type`,
 
 | Field             | JSON               | Meaning                                                                                                           |
 | ----------------- | ------------------ | ----------------------------------------------------------------------------------------------------------------- |
-| `Trigger`         | `trigger`          | `"onTasks"`                                                                                                       |
-| `Condition`       | `condition`        | CEL expression; empty = fire on any material beads change                                                         |
+| `Triggers`        | `triggers`         | Canonical armed-trigger list, e.g. `["onTasks"]` or `["onTasks", "onCompletion"]`. `Trigger`/`trigger` (singular) is kept in sync with `Triggers[0]` for on-disk/wire back-compat (`Normalize()`); see [EffectiveTriggers](#loop-prompts-multi-trigger-architecture). |
+| `Condition`       | `condition`        | CEL expression; empty = fire on any material beads change. Only meaningful when `onTasks` is armed.               |
 | `ConditionPreset` | `condition_preset` | Optional UI preset id that was compiled into `Condition`                                                          |
 | `CooldownSeconds` | `cooldown_seconds` | Per-conversation cooldown floor; `0` = use the global floor                                                       |
 | `CoalesceDuringBusy` | `coalesce_during_busy` | Opt-in re-fire (mitto-dmb). Nil/`true` (default) = silent absorption during busy. `false` = fire once more at quiescence with the accumulated pre-run→current delta, gated by Layer 0 and the CEL `condition`. |
@@ -324,20 +418,21 @@ Each entry exposes the same canonical keys the CEL condition sees: `id`, `type`,
 
 ### Opting in from a prompt file (`loop:` frontmatter)
 
-`config.PromptLoop` mirrors the runtime field as `coalesceDuringBusy` (camelCase, matching the other frontmatter keys such as `maxIterations` and `maxDuration`). When the prompt is instantiated as a loop via `mitto_conversation_new` / `mitto_conversation_update`, `applyPromptLoopDefaultsToStartInput` (`internal/mcpserver/prompt_loop_defaults.go`) fills `loop_coalesce_during_busy` from this field **only** when the caller did not set it explicitly — the same "explicit caller wins" rule the other frontmatter defaults follow, and honouring `loop_apply_prompt_defaults: false` to disable the whole merge. Example:
+The frontmatter mirrors the runtime field as `loop.onTasks.coalesceDuringBusy`, nested under the `onTasks` trigger block (mitto-r6j; see [docs/config/prompts.md § Loop Prompts](../config/prompts.md#loop-prompts) for the full grouped schema). When the prompt is instantiated as a loop via `mitto_conversation_new` / `mitto_conversation_update`, `applyPromptLoopDefaultsToStartInput` (`internal/mcpserver/prompt_loop_defaults.go`) fills `loop_coalesce_during_busy` from this field **only** when the caller did not set it explicitly — the same "explicit caller wins" rule the other frontmatter defaults follow, and honouring `loop_apply_prompt_defaults: false` to disable the whole merge. Example:
 
 ```yaml
 loop:
-  trigger: onTasks
-  condition: 'Changes.Touched.exists(i, i.status == "open")'
-  # Opt in to per-event re-fire: at quiescence, fire once more with the
-  # accumulated delta so newly-arrived issues get picked up promptly.
-  coalesceDuringBusy: false
+  trigger: [onTasks]
+  onTasks:
+    condition: 'Changes.Touched.exists(i, i.status == "open")'
+    # Opt in to per-event re-fire: at quiescence, fire once more with the
+    # accumulated delta so newly-arrived issues get picked up promptly.
+    coalesceDuringBusy: false
   maxIterations: 20
   maxDuration: "4h"
 ```
 
-Two builtin prompts adopt this (mitto-f9q): `beads-refine-implementation.prompt.yaml` and `beads-issue-loop-processing.prompt.yaml`. Both also render a `## Triggered by these beads changes` preamble in the prompt body using `{{ with .Trigger }}{{ with .OnTasks }}...{{ end }}{{ end }}` so the agent sees which specific beads drove the fire without re-invoking `bd`.
+Two builtin prompts adopt this (mitto-f9q): `config/prompts/builtin/beads/refine-implementation.prompt.yaml` and `config/prompts/builtin/beads-issues/loop-processing.prompt.yaml`. Both also render a `## Triggered by these beads changes` preamble in the prompt body using `{{ with .Trigger }}{{ with .OnTasks }}...{{ end }}{{ end }}` so the agent sees which specific beads drove the fire without re-invoking `bd`.
 
 ### Testing
 

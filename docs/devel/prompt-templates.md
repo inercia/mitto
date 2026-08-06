@@ -826,10 +826,11 @@ for the full field reference:
 ```yaml
 loop:
   mode: always
-  trigger: onCompletion   # fire the next run after the agent stops, not on a fixed clock
-  delay: 30               # seconds to wait after the agent finishes
-  maxIterations: 20       # hard cap on scheduled runs — a backstop, not the exit condition
-  maxDuration: "4h"       # wall-clock cap from the first run
+  trigger: [onCompletion]   # fire the next run after the agent stops, not on a fixed clock
+  onCompletion:
+    delay: 30               # seconds to wait after the agent finishes
+  maxIterations: 20         # hard cap on scheduled runs — a backstop, not the exit condition
+  maxDuration: "4h"         # wall-clock cap from the first run
 ```
 
 **This block behaves differently depending on how the conversation was
@@ -939,8 +940,9 @@ parameters:
 enabledWhen: '!Session.IsChild && CommandExists("bd") && DirExists(".beads") && Item.Status != "closed"'
 loop:
   mode: always
-  trigger: onCompletion
-  delay: 30
+  trigger: [onCompletion]
+  onCompletion:
+    delay: 30
   maxIterations: 20
   maxDuration: "4h"
 prompt: |

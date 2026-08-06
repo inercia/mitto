@@ -60,6 +60,7 @@ This directory contains technical documentation for developers working on Mitto.
 | Session settings      | [Session Management](session-management.md)            | Advanced Settings                                     |
 | Queue API             | [Message Queue](message-queue.md)                      | REST API                                              |
 | Queue titles          | [Message Queue](message-queue.md)                      | Title Generation                                      |
+| Loop multi-trigger    | [Message Queue](message-queue.md)                      | Loop Prompts: Multi-Trigger Architecture              |
 | Loop onCompletion | [Message Queue](message-queue.md)                      | Loop Prompts: On-Completion Delivery              |
 | Loop onTasks      | [Message Queue](message-queue.md)                      | Loop Prompts: On-Tasks Delivery                   |
 | Prompt menus          | [Prompt Menus & Dispatch](prompts.md)                  | The `menus` routing key                               |

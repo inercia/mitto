@@ -629,45 +629,99 @@ convert an existing conversation to loop, or send a single one-shot run (see
 
 ### Loop Fields
 
+**Schema (mitto-r6j, breaking change from the pre-existing flat form — see
+[Migrating from the flat single-trigger schema](#migrating-from-the-flat-single-trigger-schema)
+if you have prompts on the old form):** `trigger:` is a **list** of one or
+more triggers, and each trigger's own attributes are grouped under a nested
+block of the same name. A field nests under a trigger block **iff it only
+affects that trigger**; every other field is loop-wide and stays a direct
+sibling of `trigger:`.
+
 ```yaml
 loop:
-  value: 1                 # number of time units between runs (integer ≥ 1); used by trigger: schedule
-  unit: hours              # minutes | hours | days; used by trigger: schedule
-  at: "09:00"              # optional — time of day in HH:MM (local time in the UI, stored as UTC); only valid for unit: days
-  maxIterations: 10        # optional; 0/absent = unlimited scheduled runs
-  trigger: schedule        # optional — schedule (default) | onCompletion | onTasks
-  delay: 30                # optional — seconds to wait after the agent stops, before the next onCompletion run
-  maxDuration: "4h"        # optional — wall-clock cap (e.g. 30m, 4h, 1d); 0/absent = unlimited
-  condition: ''            # optional — CEL expression gating which beads/task changes fire the run; only meaningful for trigger: onTasks
-  coalesceDuringBusy: true # optional — nil/true (default) absorbs busy-window changes silently; false fires once at quiescence with the accumulated delta
-  freshContext: false      # optional — nil/false (default) preserves context across runs; true starts each run with a clean ACP session
-  runOnStart: false        # optional — nil/false (default) does not re-fire on Mitto boot; true fires once shortly after boot (anti-flap guarded)
-  mode: always             # optional — always (default) | optional
-  default: true            # optional — only meaningful for mode: optional; nil/absent = true
+  trigger: [schedule]        # list; one or more of: schedule | onCompletion | onTasks
+  schedule:                  # meaningful only when "schedule" is armed
+    value: 1                 # number of time units between runs (integer ≥ 1); required for schedule
+    unit: hours              # minutes | hours | days; required for schedule
+    at: "09:00"              # optional — HH:MM (local time in the UI, stored as UTC); only valid for unit: days
+  onCompletion:               # meaningful only when "onCompletion" is armed
+    delay: 30                 # optional — seconds to wait after the agent stops, before the next run
+  onTasks:                    # meaningful only when "onTasks" is armed
+    condition: ''              # optional — CEL expression gating which beads/task changes fire the run
+    conditionPreset: ''        # optional — UI preset id that was compiled into condition
+    coalesceDuringBusy: true   # optional — nil/true (default) absorbs busy-window changes silently; false fires once at quiescence with the accumulated delta
+    settleWindow: 0            # optional — pre-fire debounce window in seconds; 0/absent = fire on the first delta
+    cooldown: 0                # optional — per-conversation cooldown floor (seconds); 0 = use the global floor
+  # loop-wide — apply regardless of which armed trigger(s) fire
+  maxIterations: 10          # optional; 0/absent = unlimited scheduled runs, shared across every trigger
+  maxDuration: "4h"          # optional — wall-clock cap (e.g. 30m, 4h, 1d); 0/absent = unlimited
+  freshContext: false        # optional — nil/false (default) preserves context across runs; true starts each run with a clean ACP session
+  runOnStart: false          # optional — nil/false (default) does not re-fire on Mitto boot; true fires once shortly after boot (anti-flap guarded)
+  mode: always                # optional — always (default) | optional
+  default: true                # optional — only meaningful for mode: optional; nil/absent = true
 ```
+
+A block for a trigger **not** listed in `trigger:` still parses — it is
+**inert** (a load-time warning, not an error), which is useful when copying a
+loop block between prompts and pruning unused blocks later.
+
+#### Per-trigger vs. loop-wide placement
+
+| Block (or none)   | Fields                                                                    | Meaningful when            |
+| ------------------ | -------------------------------------------------------------------------- | --------------------------- |
+| *(none — loop-wide)* | `maxIterations`, `maxDuration`, `freshContext`, `runOnStart`, `mode`, `default` | Always                       |
+| `schedule`          | `value`, `unit`, `at`                                                       | `schedule` is in `trigger:`  |
+| `onCompletion`      | `delay`                                                                     | `onCompletion` is in `trigger:` |
+| `onTasks`           | `condition`, `conditionPreset`, `coalesceDuringBusy`, `settleWindow`, `cooldown` | `onTasks` is in `trigger:`   |
+
+#### `trigger:` (list)
+
+| Field     | Required | Description |
+| --------- | -------- | ----------- |
+| `trigger` | No       | List of one or more of `schedule`, `onCompletion`, `onTasks`. Each listed trigger arms **independently** — see [Triggers: independent multi-trigger arming](#triggers-independent-multi-trigger-arming). Duplicate entries are rejected. Empty/absent defaults to `[schedule]` (preserves pre-r6j implicit-schedule prompts). |
+
+#### `schedule` block
+
+| Field   | Required | Description |
+| ------- | -------- | ----------- |
+| `value` | Yes¹     | Number of time units between runs (integer ≥ 1, max 999) |
+| `unit`  | Yes¹     | `minutes`, `hours`, or `days` |
+| `at`    | No       | Time of day (`HH:MM`) for daily schedules only — only valid when `unit: days`. |
+
+¹ Required only when `schedule` is one of the armed triggers.
+
+#### `onCompletion` block
+
+| Field   | Required | Description |
+| ------- | -------- | ----------- |
+| `delay` | No       | Seconds to wait after the agent finishes before the next run. Clamped up to the global floor (`min_loop_completion_delay_seconds`, default 5). |
+
+#### `onTasks` block
 
 | Field                | Required | Description |
 | -------------------- | -------- | ----------- |
-| `value`              | Yes¹     | Number of time units between runs (integer ≥ 1, max 999) |
-| `unit`               | Yes¹     | `minutes`, `hours`, or `days` |
-| `at`                 | No       | Time of day (`HH:MM`) for daily schedules only. Ignored for other units. |
-| `maxIterations`      | No       | Cap on the number of scheduled runs (integer ≥ 0). `0` or absent means unlimited at the prompt level. See [Max iterations and auto-stop](#max-iterations-and-auto-stop). |
-| `trigger`            | No       | How runs fire: `schedule` (default — frequency-based), `onCompletion` (fire after the agent stops responding), or `onTasks` (fire when beads/tasks in the workspace change). See [Triggers](#triggers-schedule-vs-on-completion). |
-| `delay`              | No       | For `trigger: onCompletion` only — seconds to wait after the agent finishes before the next run. Clamped up to the global floor (`min_loop_completion_delay_seconds`, default 5). Ignored for `schedule`. |
-| `maxDuration`        | No       | Wall-clock cap as a duration string (`30m`, `4h`, `1d`). Once it elapses (measured from the first run), the conversation auto-stops. `0`/absent = unlimited. |
-| `condition`          | No       | For `trigger: onTasks` only — a CEL expression gating which beads/task changes fire the run. Empty/absent = fire on any change. Validated at parse time; a syntactically invalid or unknown-identifier expression fails prompt load. |
-| `coalesceDuringBusy` | No       | For `trigger: onTasks` only. Nil/absent or `true` (default) silently absorbs beads changes that arrive while the loop's subtree is busy — they are folded into the next quiescence rebase. `false` fires exactly once more at quiescence with the accumulated pre-run→current delta available as `{{ .Trigger.OnTasks.Changes.* }}`. |
-| `freshContext`       | No       | When `true`, every re-fire starts the agent with a clean context: no history injection and a new ACP session per run. Meaningful for any trigger; primarily used by stateless supervisor loops that re-hydrate from external state on every fire. Nil/absent = `false` (persistent context). |
-| `runOnStart`         | No       | When `true`, the LoopRunner fires this loop exactly once shortly after Mitto boots (after the interactive-resume startup delay, with an anti-flap window suppressing the pulse when the loop already ran very recently). Complements `onTasks` loops (which otherwise only fire on task changes) and lets `schedule` / `onCompletion` loops kick off at boot without waiting for the next tick. Nil/absent = `false`. |
-| `mode`               | No       | `always` (default — not user-toggleable) or `optional` (user-choosable per send). Unknown values are rejected at load time. See [Always / optional / never](#always--optional--never). |
-| `default`            | No       | Initial per-send toggle state when `mode: optional`. `true`/absent = on, `false` = off. Ignored (with a load-time warning) when `mode` is `always` or absent. Also honored when the prompt is spawned programmatically via `mitto_conversation_new` / `mitto_conversation_update`: `mode: optional` + `default: false` starts the loop **disabled** unless the caller passes an explicit `loop_enabled` (mitto-ydj). |
+| `condition`          | No       | A CEL expression gating which beads/task changes fire the run. Empty/absent = fire on any change. Validated at parse time; a syntactically invalid or unknown-identifier expression fails prompt load. |
+| `conditionPreset`    | No       | Optional UI preset id that was compiled into `condition`. |
+| `coalesceDuringBusy` | No       | Nil/absent or `true` (default) silently absorbs beads changes that arrive while the loop's subtree is busy — they are folded into the next quiescence rebase. `false` fires exactly once more at quiescence with the accumulated pre-run→current delta available as `{{ .Trigger.OnTasks.Changes.* }}`. |
+| `settleWindow`       | No       | Optional pre-fire debounce window in seconds. When `> 0`, a single coalesced fire is dispatched after the timer expires instead of firing on the first delta — absorbs multi-step edits (e.g. `bd create` followed by `bd update`). `0`/absent = fire on the first delta. |
+| `cooldown`           | No       | Per-conversation cooldown floor (seconds) between fires. `0` = use the global floor. |
 
-¹ Required for `trigger: schedule` (the default). Ignored for `trigger: onCompletion` and `trigger: onTasks`, which fire off events rather than a fixed period.
+#### Loop-wide fields
+
+| Field           | Required | Description |
+| --------------- | -------- | ----------- |
+| `maxIterations` | No       | Cap on the number of scheduled runs (integer ≥ 0), **shared across every armed trigger** — decremented once per delivered run regardless of which trigger fired it. `0` or absent means unlimited at the prompt level. See [Max iterations and auto-stop](#max-iterations-and-auto-stop). |
+| `maxDuration`   | No       | Wall-clock cap as a duration string (`30m`, `4h`, `1d`), also shared across every armed trigger. Once it elapses (measured from the first run), the conversation auto-stops. `0`/absent = unlimited. |
+| `freshContext`  | No       | When `true`, every re-fire starts the agent with a clean context: no history injection and a new ACP session per run. Meaningful for any trigger; primarily used by stateless supervisor loops that re-hydrate from external state on every fire. Nil/absent = `false` (persistent context). |
+| `runOnStart`    | No       | When `true`, the LoopRunner fires this loop exactly once shortly after Mitto boots (after the interactive-resume startup delay, with an anti-flap window suppressing the pulse when the loop already ran very recently). Complements `onTasks` loops (which otherwise only fire on task changes) and lets `schedule` / `onCompletion` loops kick off at boot without waiting for the next tick. Nil/absent = `false`. |
+| `mode`          | No       | `always` (default — not user-toggleable) or `optional` (user-choosable per send). Unknown values are rejected at load time. See [Always / optional / never](#always--optional--never). |
+| `default`       | No       | Initial per-send toggle state when `mode: optional`. `true`/absent = on, `false` = off. Ignored (with a load-time warning) when `mode` is `always` or absent. Also honored when the prompt is spawned programmatically via `mitto_conversation_new` / `mitto_conversation_update`: `mode: optional` + `default: false` starts the loop **disabled** unless the caller passes an explicit `loop_enabled` (mitto-ydj). |
 
 **Presence implies opt-in** — omitting the `loop:` block entirely keeps the prompt as a regular one-time prompt.
 
-The `value` / `unit` / `at` fields double as the **default period** applied
-whenever a conversation is made loop (see [Default period](#default-period)).
+The `schedule.value` / `schedule.unit` / `schedule.at` fields double as the
+**default period** applied whenever a conversation is made loop (see
+[Default period](#default-period)).
 
 #### Always / optional / never
 
@@ -680,15 +734,17 @@ Every prompt falls into one of three categories:
 ```yaml
 # Always loop (mode omitted == always)
 loop:
-  trigger: onCompletion
-  delay: 30
+  trigger: [onCompletion]
+  onCompletion:
+    delay: 30
 
 # Optionally loop, off by default
 loop:
   mode: optional
   default: false
-  trigger: onCompletion
-  delay: 30
+  trigger: [onCompletion]
+  onCompletion:
+    delay: 30
 ```
 
 ### Behavior
@@ -730,37 +786,159 @@ The binding cap depends on whether the prompt author expressed an opinion:
   backstop of `1000` still applies. This preserves the prompt-frontmatter
   contract that `maxIterations: 0` means "unlimited scheduled runs".
 
-#### Triggers: schedule vs on-completion
+### Triggers: independent multi-trigger arming
 
-The `trigger` field selects **when** a loop run fires:
+Each entry in `trigger:` **arms independently** and stays armed for the whole
+lifetime of the loop — a `trigger: [onTasks, onCompletion]` loop reacts to
+beads changes AND re-arms after every turn, simultaneously, from the moment
+it is enabled:
 
-- **`schedule`** (default) — runs fire on a fixed period defined by `value`/`unit`
-  (and optional `at` for daily). This is the classic interval behavior.
+- **`schedule`** — runs fire on a fixed period defined by `schedule.value`/`unit`
+  (and optional `schedule.at` for daily). This is the classic interval behavior.
 - **`onCompletion`** — the next run is armed **after the agent stops responding**,
-  waiting `delay` seconds first. Each delivered run's completion arms the following
-  one, so the loop is event-driven rather than clock-driven. The `delay` is clamped
-  up to the global floor (`min_loop_completion_delay_seconds`, default 5 s) to
-  prevent hot loops.
+  waiting `onCompletion.delay` seconds first. Each delivered run's completion
+  arms the following one, so this leg is event-driven rather than clock-driven.
+  `delay` is clamped up to the global floor (`min_loop_completion_delay_seconds`,
+  default 5 s) to prevent hot loops.
 - **`onTasks`** — runs fire when beads/tasks in the workspace change. An optional
-  `condition` (CEL expression) gates which changes actually fire the run; when empty
-  or absent, any change fires it. The expression is validated at prompt load time
-  and evaluated against the `Tasks`, `Prev`, and `Changes` variables at runtime.
-  Example: `condition: 'Tasks.Open > Prev.Open'` fires only when the open task
-  count grows.
+  `onTasks.condition` (CEL expression) gates which changes actually fire the run;
+  when empty or absent, any change fires it. The expression is validated at
+  prompt load time and evaluated against the `Tasks`, `Prev`, and `Changes`
+  variables at runtime. Example: `condition: 'Tasks.Open > Prev.Open'` fires
+  only when the open task count grows.
 
-`maxDuration` applies to all three triggers: it is a wall-clock cap measured from the
-first run. Once exceeded, the loop prompt is **disabled** (not deleted) on the
-next check, exactly like the [max-iterations auto-stop](#max-iterations-and-auto-stop).
-Combine `maxDuration` with `maxIterations` to bound a loop by either time or count,
+#### Coalescing and precedence
+
+Because the three trigger mechanisms are independent event sources, two of
+them can want to deliver a run in the same narrow window (e.g. the agent
+finishes a turn at the same moment a beads file changes). Mitto only ever
+delivers **one** run at a time per conversation: the first trigger to reach
+the dispatch path claims a per-conversation slot, and any other trigger that
+fires while that slot is held is **coalesced — dropped, not queued**. The
+loop is not re-run to "catch up" on the dropped fire.
+
+Precedence **within a single scheduler tick** is:
+
+```
+onTasks  >  onCompletion  >  schedule
+```
+
+— the event-driven legs are (re-)armed before the schedule due-check runs —
+but across ticks it is simply whichever trigger's event lands first. The
+conversation's `loop_updated` status (and the MCP `LoopTriggers` output field)
+report both the full armed set (`triggers`) and, for back-compat, the primary
+trigger (`trigger`, always `triggers[0]`).
+
+See
+[docs/devel/message-queue.md § Loop Prompts: Multi-Trigger Architecture](../devel/message-queue.md#loop-prompts-multi-trigger-architecture)
+for the dispatch-claim mechanics and a diagram of the full path.
+
+#### Shared caps, independent settings
+
+`maxIterations` and `maxDuration` are **loop-wide**: they are checked/incremented
+once per **delivered** run, regardless of which trigger fired it. A
+`trigger: [schedule, onCompletion]` loop with `maxIterations: 10` does not get
+10 schedule runs *plus* 10 onCompletion runs — it gets 10 runs total, however
+the mix of schedule-ticks vs. post-turn re-arms landed. Once exceeded, the
+loop prompt is **disabled** (not deleted) on the next check, exactly like the
+[max-iterations auto-stop](#max-iterations-and-auto-stop). Combine
+`maxDuration` with `maxIterations` to bound a loop by either time or count,
 whichever comes first. See
 [On-Completion Trigger and Max Duration](conversations.md#on-completion-trigger-and-max-duration)
 for the server-side floor and defaults.
 
+By contrast, each trigger's **own** settings (`schedule.value`/`unit`/`at`,
+`onCompletion.delay`, `onTasks.condition`/`coalesceDuringBusy`/`settleWindow`/
+`cooldown`) apply only to that trigger's own firing decision and never affect
+the others.
+
 **Restrictions:**
 - Loop conversations can only be **top-level** (not child) conversations. Selecting a loop prompt on a child conversation falls through to the one-shot send; the backend also returns HTTP 400 for loop-on-child.
-- The `at` field is only sent for `unit: days`; it is ignored otherwise (matches `Frequency.Validate()` on the backend).
+- `schedule.at` is only sent for `schedule.unit: days`; it is ignored otherwise (matches `Frequency.Validate()` on the backend).
 
-### Example
+### Trigger Examples
+
+#### Single-trigger equivalents
+
+The common case — one trigger, no multi-trigger complexity:
+
+```yaml
+# Fixed schedule, daily at 09:00 UTC
+loop:
+  trigger: [schedule]
+  schedule:
+    value: 1
+    unit: days
+    at: "09:00"
+
+# Fire after every turn, waiting 30s
+loop:
+  trigger: [onCompletion]
+  onCompletion:
+    delay: 30
+
+# Fire when beads change, gated by a condition
+loop:
+  trigger: [onTasks]
+  onTasks:
+    condition: 'Changes.Touched.exists(i, i.status == "open")'
+```
+
+#### Multi-trigger: reactive supervisor
+
+A supervisor that both reacts to beads changes **and** keeps re-firing after
+every turn — useful for a driver that must not go idle between beads events
+because it still has in-flight work to check on:
+
+```yaml
+name: "Beads: supervise implementation"
+menus: promptsLoop
+loop:
+  trigger: [onTasks, onCompletion]
+  onTasks:
+    condition: 'Changes.Touched.exists(i, "ready-for-review" in i.labels)'
+  onCompletion:
+    delay: 60
+  maxIterations: 0     # standing supervisor — no per-prompt cap
+  maxDuration: "0"
+  freshContext: true
+  runOnStart: true
+prompt: |
+  Check for beads labelled "ready-for-review" and advance them one step.
+```
+
+Here `onTasks` fires promptly when a bead is labelled, while `onCompletion`
+keeps the supervisor checking back in case a change landed while it was
+mid-turn (subject to the coalescing rule above — only one of the two ever
+delivers a given run).
+
+#### Multi-trigger: daily-plus-continuous
+
+A loop that runs on a fixed daily cadence but also keeps going immediately
+after each run finishes, useful for a report that should refresh itself
+continuously once started for the day:
+
+```yaml
+name: "Daily report, then keep refreshing"
+menus: promptsLoop
+loop:
+  trigger: [schedule, onCompletion]
+  schedule:
+    value: 1
+    unit: days
+    at: "09:00"
+  onCompletion:
+    delay: 300
+  maxIterations: 50
+prompt: |
+  Refresh the report with the latest data.
+```
+
+The `schedule` leg guarantees a 09:00 UTC kickoff even if the conversation has
+been idle; the `onCompletion` leg then keeps it refreshing every 5 minutes
+until `maxIterations` (shared across both legs) is reached.
+
+### Example: Behavior walkthrough
 
 ```yaml
 name: "Daily Standup"
@@ -768,9 +946,11 @@ description: "Run the daily team standup"
 group: "Workflow"
 menus: conversation, beadsIssues
 loop:
-  value: 1
-  unit: days
-  at: "09:00"
+  trigger: [schedule]
+  schedule:
+    value: 1
+    unit: days
+    at: "09:00"
 prompt: |
   You are running the daily standup. Check progress, surface blockers, and
   summarize what the team completed yesterday and plans for today.
@@ -787,9 +967,10 @@ leaving the schedule unchanged.
 ### Real-world example: auto-loop, self-terminating
 
 The builtin **"Loop until issue complete"** prompt
-(`config/prompts/builtin/beads-iterate-until-complete.prompt.yaml`) is a real
+(`config/prompts/builtin/beads-issues/loop-until-complete.prompt.yaml`) is a real
 auto-loop example: a `menus: beadsIssues` prompt with a `loop:` block
-(`trigger: onCompletion`, `delay: 30`, `maxIterations: 20`, `maxDuration: 4h`).
+(`trigger: [onCompletion]`, `onCompletion.delay: 30`, `maxIterations: 20`,
+`maxDuration: "4h"`).
 Selecting it on a beads issue or epic starts a loop conversation that, on each
 run, **delegates** one concrete increment to a child conversation (for an epic, the
 next ready child) and logs progress to the tracker; the next run fires shortly
@@ -818,6 +999,96 @@ otherwise re-fires render with an empty `.Args` and positive-match gates like
 declared in `parameters:` are **not** auto-merged into `.Args` at render time,
 so prefer default-on gates (`{{ if ne .Args.X "false" }}`) over
 default-off ones when the loop should keep working with an unset arg.
+
+### Migrating from the flat single-trigger schema
+
+Before mitto-r6j, `loop:` had a single implicit trigger and every field —
+`value`/`unit`/`at`, `delay`, `condition`/`coalesceDuringBusy` — lived as a
+flat sibling of `trigger:`. That schema was replaced by the grouped,
+multi-trigger form documented above because a loop can now arm **more than
+one** trigger at once, and a flat namespace could no longer say which trigger
+a field belonged to once two trigger blocks needed the same-shaped data
+(e.g. a hypothetical second `condition`). This is a **breaking change**: a
+`.prompt.yaml` file authored against the old schema is no longer valid input
+to `PromptLoop`'s YAML decoder on its own.
+
+**Automatic on-load rewrite.** You do not need to hand-edit existing files.
+Every prompt-file load path (`ParsePromptFile`/`LoadPromptFile`) runs a
+versioned migration registry (`internal/prompts/migrate`, migration id
+`0001-loop-grouped-triggers`) **before** schema validation, so an old-form
+file loads cleanly with a WARN instead of failing:
+
+- `LoadPromptFile` additionally **writes the migrated form back to disk** —
+  a line-splice replace of just the `loop:` block's original line span, so
+  every other byte of the file (unrelated keys, comments, blank lines, the
+  multi-line `prompt:` body) is left **byte-for-byte untouched**. Re-marshalling
+  the whole document was rejected specifically to avoid reflowing hand-authored
+  prompt bodies.
+- Comments attached to migrated keys (e.g. a `# fires daily` note on `at:`)
+  are preserved — the migration moves the original YAML node object, not just
+  its value.
+- The rewrite is **idempotent**: a file already on the grouped schema is
+  `Applies() == false` for the migration and is left with no write, no mtime
+  change.
+- A **read-only source** (the migration can't write back, e.g. a
+  permission-denied directory) degrades to "applied in memory only, with a
+  WARN" — the prompt still loads and works, it's just not persisted.
+- To **pre-run or audit** the rewrite without waiting for the next load, use
+  the CLI: `mitto prompts migrate --dry-run` (report only) or
+  `mitto prompts migrate --check` (exit non-zero if anything would change,
+  for CI) — see [CLI Commands](#cli-commands).
+
+**Before/after** — a real builtin
+(`config/prompts/builtin/beads/refine-implementation.prompt.yaml`), pre-r6j
+form on the left field names, current form on the right:
+
+```yaml
+# Before (flat, single trigger) — no longer valid input
+loop:
+  trigger: onTasks
+  condition: 'Changes.Touched.exists(i, i.status == "open" && !("implementation-refined" in i.labels))'
+  coalesceDuringBusy: false
+  mode: always
+  maxIterations: 20
+  maxDuration: "4h"
+```
+
+```yaml
+# After (grouped, multi-trigger-ready) — what mitto prompts migrate produces
+loop:
+  trigger: [onTasks]
+  onTasks:
+    condition: 'Changes.Touched.exists(i, i.status == "open" && !("implementation-refined" in i.labels))'
+    coalesceDuringBusy: false
+  mode: always
+  maxIterations: 20
+  maxDuration: "4h"
+```
+
+**`.mittorc` inline `prompts:` are not migrated.** The migrator walks
+`.prompt.yaml` **files**; a workspace's `.mittorc` `prompts:` list is inline
+YAML embedded in a different config file, which the migrator does not touch.
+A workspace with an old-form `loop:` block inside `.mittorc` still gets the
+in-memory migration + WARN on every load (so it keeps working), but never the
+on-disk rewrite — you must edit that block by hand onto the grouped schema.
+Tracked as a known limitation by mitto-opoh.
+
+**No consequence for already-running loops.** A loop conversation's *runtime*
+state lives in a separate file, `loop.json` (`session.LoopPrompt`), not in
+the prompt-file schema — no `schema_version` field and no on-read migration
+were added there. `LoopPrompt.EffectiveTriggers()`'s existing fallback chain
+(`Triggers` when set → `[]LoopTrigger{Trigger}` when the legacy singular field
+is set → `[]LoopTrigger{TriggerSchedule}` otherwise) already reads every
+shape of persisted `loop.json` correctly, so a live loop created before
+mitto-r6j is **not** reset or reconfigured by upgrading Mitto — it keeps
+running exactly as before.
+
+**Known residual (mitto-7hh0):** 21 builtin prompts still carry an inert
+`loop.onTasks.coalesceDuringBusy: true` block under `trigger: [onCompletion]`
+— a deliberate zero-semantic-change carryover from the initial migration pass
+(the block was already inert under the old schema's flat form too). It
+produces the inert-block lint WARN described above; it is cosmetic and not
+scheduled as a fix-everything cleanup.
 
 ## `target:` (find-or-route dispatch)
 
@@ -1350,7 +1621,7 @@ The following fields are available at send time. They are the **same fields used
 | `{{ .Iteration.IsFirst }}` | `true` when `Number == 0` |
 | `{{ .Iteration.IsLast }}` | `true` when `Max > 0 && Number == Max-1` |
 | `{{ .Iteration.IsUninterrupted }}` | `true` only on a scheduled, non-forced loop run that directly follows another such run — no user interjection, no forced "run now", no `freshContext`, same process lifetime. Prompt bodies branch on it to render a compact "continue" form on machine-driven continuation runs and the verbose form otherwise. |
-| `{{ .Trigger.OnTasks.Changes.Added }}` | `trigger: onTasks` only — beads/issues that appeared since the previous snapshot. `range`-able list of maps with canonical keys (`id`, `type`, `status`, `priority`, `labels`, `title`, `assignee`, `updated_at`). Nil-safe: guard the outer `.Trigger` pointer with `{{ with .Trigger }}{{ with .OnTasks }} ... {{ end }}{{ end }}`. |
+| `{{ .Trigger.OnTasks.Changes.Added }}` | Only populated on a run fired by the `onTasks` trigger — beads/issues that appeared since the previous snapshot. `range`-able list of maps with canonical keys (`id`, `type`, `status`, `priority`, `labels`, `title`, `assignee`, `updated_at`). Nil-safe: guard the outer `.Trigger` pointer with `{{ with .Trigger }}{{ with .OnTasks }} ... {{ end }}{{ end }}`. |
 | `{{ .Trigger.OnTasks.Changes.Updated }}` | Beads whose fields changed. Same shape as `Added`. |
 | `{{ .Trigger.OnTasks.Changes.Removed }}` | Beads that disappeared. Same shape. |
 | `{{ .Trigger.OnTasks.Changes.Closed }}` | Beads whose status transitioned to closed. Same shape. |
@@ -2255,6 +2526,23 @@ mitto prompts update-builtin --force
 > `update-builtin` only **writes** files; it never deletes. If a built-in prompt
 > was renamed or moved in a newer version, the stale copy stays behind and shows
 > up as a duplicate in the picker — remove it manually.
+
+Migrate `.prompt.yaml` files still on a legacy schema onto the current one —
+today this rewrites the pre-mitto-r6j flat single-trigger `loop:` block onto
+the grouped multi-trigger schema (see
+[Migrating from the flat single-trigger schema](#migrating-from-the-flat-single-trigger-schema)
+below). Loading a legacy file always migrates it in memory with a WARN
+regardless of this command; the command exists for bulk/CI use:
+
+```bash
+mitto prompts migrate               # rewrite every legacy file in place
+mitto prompts migrate --dry-run     # report what would change, write nothing
+mitto prompts migrate --check       # exit non-zero if any file would change (for CI)
+mitto prompts migrate --dir ./.mitto/prompts   # include a workspace directory
+```
+
+A file already on the current schema is left completely untouched — no write,
+no mtime change.
 
 ## Hot Reload
 

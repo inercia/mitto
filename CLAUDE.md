@@ -132,10 +132,35 @@ Per-agent `mcp-list.sh` config paths/keys are **not** interchangeable across age
 
 ## Loop Conversations
 
-**onCompletion trigger** (distinct from schedule-based loop):
+**Multi-trigger schema (mitto-r6j, breaking change)**: `loop:` frontmatter's
+`trigger:` is a **list** (`[schedule, onCompletion, onTasks]`, one or more),
+and each trigger's own fields live in a nested block of the same name
+(`schedule:`, `onCompletion:`, `onTasks:`) rather than flat siblings of
+`trigger:`. Every listed trigger **arms independently** and stays armed for
+the loop's lifetime — e.g. `[onTasks, onCompletion]` reacts to beads changes
+AND re-arms after every turn, simultaneously. When two triggers want to fire
+in the same window, exactly ONE run is delivered per conversation — the
+loser is **coalesced (dropped, not queued)** via a per-session dispatch claim
+(`LoopRunner.claimDispatch`); precedence within a tick is `onTasks >
+onCompletion > schedule`. `maxIterations`/`maxDuration` are loop-wide,
+decremented once per delivered run regardless of which trigger fired it. The
+winning trigger is recorded on `PromptMeta.LoopTrigger` and surfaced as
+`loop_updated.triggers` (full armed set) alongside the back-compat singular
+`loop_updated.trigger`. Runtime `loop.json` (`session.LoopPrompt`) was **not**
+schema-versioned or migrated — `EffectiveTriggers()`'s fallback chain already
+reads every persisted shape, so live loops from before mitto-r6j keep working
+unchanged after upgrade. A `.prompt.yaml` file on the old flat form is
+auto-migrated on load (WARN + on-disk line-splice rewrite, comments
+preserved, idempotent) by `internal/prompts/migrate`; `.mittorc` inline
+`prompts:` are NOT auto-migrated (mitto-opoh). See
+[docs/config/prompts.md § Loop Prompts](docs/config/prompts.md#loop-prompts)
+and
+[docs/devel/message-queue.md § Multi-Trigger Architecture](docs/devel/message-queue.md#loop-prompts-multi-trigger-architecture).
+
+**onCompletion trigger** (event-driven, one of the three triggers above):
 - Re-fires automatically 30s after agent finishes each turn (configurable `delay_seconds`)
 - Green "Running" pill = `loop_enabled: true`, NOT generic "agent is active" status
-- Limited by `max_iterations` and `max_duration_seconds`
+- Limited by `max_iterations` and `max_duration_seconds` (shared with any other armed trigger)
 - Free-text loop prompts NOT sent to frontend → selector can't display them (UI gap)
 - `app.js` line ~1928: `headerLoopState()` returns `{ state, label, badgeClass }` pill object
 - Issue `mitto-36nm` tracks UI clarity improvement (prompt visibility + pill disambiguation)
@@ -144,7 +169,7 @@ Per-agent `mcp-list.sh` config paths/keys are **not** interchangeable across age
 
 **Spawning loop children — `arguments` vs `loop_arguments`**: `mitto_conversation_new`'s `arguments:` fills `.Args` only on the initial prompt; `loop_arguments:` fills `.Args` on every re-fire. When the spawned child is itself a loop, MIRROR the same resolved value into both — otherwise re-fires render with empty `.Args`, so positive-match gates (`{{ if eq .Args.Commit "true" }}`) silently resolve false and default-on gates silently fall back to the default instead of the operator's choice (bug `mitto-rtdr`, fixed 25ed20d9). `TestLoopProcessingSpawns_MirrorArgumentsIntoLoopArguments` pins this on `beads-issues/loop-processing.prompt.yaml`: for each `SubmitStrategy` value (`Commit`/`Pull Request`/`None`, plus unset) every §A/§B/§C spawn block must carry both maps with the identical literal. Prefer default-on gates (`{{ if ne .Args.X "false" }}`) since parameter defaults are NOT auto-merged into `.Args` at render time.
 
-**`coalesceDuringBusy` silent-swallow**: when an `onTasks` subtree is busy, fs-watcher fires do NOT dispatch — they arm a quiescence rebase timer that silently updates the baseline on quiescence (`onTasks: baseline rebased after idle+quiescence`). Intentional coalescing, but supervisor loops can silently miss user-driven state changes for minutes until an external event re-fires the watcher.
+**`coalesceDuringBusy` silent-swallow**: when an `onTasks` subtree is busy, fs-watcher fires do NOT dispatch — they arm a quiescence rebase timer that silently updates the baseline on quiescence (`onTasks: baseline rebased after idle+quiescence`). Intentional coalescing, but supervisor loops can silently miss user-driven state changes for minutes until an external event re-fires the watcher. This is orthogonal to the multi-trigger dispatch coalescing above (which drops a *whole run* from a losing trigger); `coalesceDuringBusy` instead governs whether the `onTasks` trigger's *own* busy-window changes get folded silently into the next baseline rebase or trigger one more accumulated-delta fire.
 
 ## Tokensave Rule (Mandatory)
 

@@ -16,6 +16,61 @@ keywords:
 
 # Loop Prompt Design Patterns
 
+## Multi-Trigger Schema (mitto-r6j)
+
+`loop.trigger:` is a **list**, and each trigger's own attributes are grouped
+under a nested block of the same name. Every listed trigger arms
+**independently** — a `[onTasks, onCompletion]` loop reacts to beads changes
+AND re-arms after every turn, simultaneously, for the whole lifetime of the
+loop:
+
+```yaml
+loop:
+  trigger: [onTasks, onCompletion]
+  onTasks:
+    condition: 'Changes.Touched.exists(i, "ready-for-review" in i.labels)'
+  onCompletion:
+    delay: 30
+  maxIterations: 0
+  maxDuration: "0"
+```
+
+**Placement rule**: a field nests under a trigger key iff it only affects that
+trigger (`schedule.value`/`unit`/`at`, `onCompletion.delay`,
+`onTasks.condition`/`coalesceDuringBusy`/`settleWindow`/`cooldown`); everything
+else (`maxIterations`, `maxDuration`, `freshContext`, `runOnStart`, `mode`,
+`default`) stays a loop-wide sibling of `trigger:` since it applies regardless
+of which trigger fires. See
+[docs/config/prompts.md § Loop Prompts](../../docs/config/prompts.md#loop-prompts)
+for the full field reference and
+[docs/devel/message-queue.md § Multi-Trigger Architecture](../../docs/devel/message-queue.md#loop-prompts-multi-trigger-architecture)
+for the dispatch-claim/coalescing mechanics.
+
+**Coalescing**: when two armed triggers want to fire in the same narrow
+window, exactly ONE run is delivered — the other is **dropped, not queued**
+(`ErrLoopDispatchCoalesced`, first-come-first-served per conversation).
+Precedence within a single poll tick is `onTasks` > `onCompletion` >
+`schedule` (event-driven legs are armed before the schedule due-check), but
+across ticks it is whichever trigger's event lands first. Do not design a
+multi-trigger prompt assuming a coalesced fire will be redelivered later — if
+a run's information matters, put it in the delivered `PromptMeta`/CEL
+`condition` state (e.g. `.Trigger.OnTasks.Changes.*`), not in "the next tick
+will catch it."
+
+**Anti-pattern — inert blocks**: a `schedule`/`onCompletion`/`onTasks` block
+present for a trigger NOT listed in `trigger:` parses fine but is **inert**
+(load-time WARN, not an error). This is easy to introduce by copy-pasting a
+loop block from another prompt without pruning unused trigger sub-blocks —
+21 builtin prompts currently carry this pattern deliberately (mitto-7hh0,
+zero-semantic-change carryover from the mitto-r6j migration); avoid adding
+*new* inert blocks in prompts you author from scratch.
+
+**Anti-pattern — assuming a shared cap resets per trigger**: `maxIterations`
+and `maxDuration` are loop-wide, decremented/checked once per **delivered**
+run regardless of which trigger fired it. A `[schedule, onCompletion]` loop
+with `maxIterations: 10` does not get 10 schedule runs *plus* 10
+onCompletion runs — it gets 10 runs total, however the mix landed.
+
 ## Silent Mode vs Interactive Mode
 
 Loop prompts must detect runtime context and adapt behavior:

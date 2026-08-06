@@ -113,7 +113,7 @@ conversations:
 
 ## On-Completion Trigger and Max Duration
 
-Loop conversations can fire on a fixed schedule (the default) or **after the agent stops responding** (`trigger: onCompletion`). On-completion runs are event-driven: when the agent finishes a turn and the conversation goes idle, the next run is armed after a `delay`. Each run's completion arms the next, forming a self-sustaining loop.
+Loop conversations can fire on a fixed schedule (the default), **after the agent stops responding** (`onCompletion`), when beads/tasks change (`onTasks`), or on several of these at once — see [Loop Prompts → Triggers](prompts.md#triggers-independent-multi-trigger-arming) for the full multi-trigger schema. On-completion runs are event-driven: when the agent finishes a turn and the conversation goes idle, the next run is armed after a `delay`. Each run's completion arms the next, forming a self-sustaining loop.
 
 To prevent runaway hot loops, the on-completion `delay` is clamped up to a global floor:
 
@@ -128,7 +128,7 @@ conversations:
 
 A conversation can also be bounded by **wall-clock time** via the loop prompt's `maxDuration` (a duration string such as `30m`, `4h`, `1d`). Measured from the first run, once it elapses the conversation auto-stops (the loop prompt is **disabled**, not deleted) on the next check — for both `schedule` and `onCompletion` triggers. This complements the iteration limit above: a loop stops at whichever bound (max iterations or max duration) is reached first.
 
-See the prompt-side schema in [Loop Prompts → Triggers](prompts.md#triggers-schedule-vs-on-completion).
+See the prompt-side schema in [Loop Prompts → Triggers](prompts.md#triggers-independent-multi-trigger-arming).
 
 ## Related Documentation
 
