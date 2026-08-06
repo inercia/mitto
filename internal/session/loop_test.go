@@ -2643,6 +2643,147 @@ func TestLoopStore_Update_UnrelatedFieldDoesNotClobberTriggers(t *testing.T) {
 	}
 }
 
+// TestLoopStore_Get_LegacyOnDiskShape_FallbackViaEffectiveTriggers verifies
+// the read-side fallback path for a pre-r6j loop.json that persisted ONLY the
+// legacy scalar `trigger` field and has NO `triggers` array on disk
+// (mitto-r6j.5 acceptance: EffectiveTriggers fallback for old persisted
+// files). LoopStore.Get must return the record unchanged (no in-place
+// rewrite) and EffectiveTriggers/IsOnCompletion/IsOnTasks must resolve
+// against the legacy scalar so the runner sees the correct trigger set even
+// before any Set/Update rewrites the file.
+func TestLoopStore_Get_LegacyOnDiskShape_FallbackViaEffectiveTriggers(t *testing.T) {
+	tests := []struct {
+		name        string
+		diskJSON    string
+		wantTrigs   []LoopTrigger
+		wantPrimary LoopTrigger
+	}{
+		{
+			name: "legacy onCompletion (no triggers array)",
+			// Deliberately hand-crafted to look like a file written by pre-r6j
+			// Mitto: scalar `trigger` only, no `triggers` key. Includes the
+			// minimal fields Validate needs for an enabled loop.
+			diskJSON: `{
+  "prompt": "keep going",
+  "enabled": true,
+  "frequency": {"value": 1, "unit": "hours"},
+  "trigger": "onCompletion",
+  "delay_seconds": 30,
+  "created_at": "2025-01-01T00:00:00Z",
+  "updated_at": "2025-01-01T00:00:00Z"
+}`,
+			wantTrigs:   []LoopTrigger{TriggerOnCompletion},
+			wantPrimary: TriggerOnCompletion,
+		},
+		{
+			name: "legacy schedule (no triggers array)",
+			diskJSON: `{
+  "prompt": "poll",
+  "enabled": true,
+  "frequency": {"value": 4, "unit": "hours"},
+  "trigger": "schedule",
+  "created_at": "2025-01-01T00:00:00Z",
+  "updated_at": "2025-01-01T00:00:00Z"
+}`,
+			wantTrigs:   []LoopTrigger{TriggerSchedule},
+			wantPrimary: TriggerSchedule,
+		},
+		{
+			name: "legacy onTasks (no triggers array)",
+			diskJSON: `{
+  "prompt": "react",
+  "enabled": true,
+  "frequency": {"value": 1, "unit": "hours"},
+  "trigger": "onTasks",
+  "created_at": "2025-01-01T00:00:00Z",
+  "updated_at": "2025-01-01T00:00:00Z"
+}`,
+			wantTrigs:   []LoopTrigger{TriggerOnTasks},
+			wantPrimary: TriggerOnTasks,
+		},
+		{
+			name: "legacy record with NEITHER triggers NOR trigger falls back to schedule",
+			// A pre-r6j record that also predates the on-completion trigger:
+			// EffectiveTriggers must default to schedule.
+			diskJSON: `{
+  "prompt": "ancient",
+  "enabled": true,
+  "frequency": {"value": 1, "unit": "hours"},
+  "created_at": "2025-01-01T00:00:00Z",
+  "updated_at": "2025-01-01T00:00:00Z"
+}`,
+			wantTrigs:   []LoopTrigger{TriggerSchedule},
+			wantPrimary: TriggerSchedule,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			// Write the legacy-shape file directly — bypassing Set() so
+			// Normalize() cannot back-fill Triggers from Trigger before
+			// persisting. This is exactly the on-disk shape produced by
+			// pre-r6j versions of Mitto.
+			if err := os.WriteFile(filepath.Join(dir, loopFileName), []byte(tc.diskJSON), 0o644); err != nil {
+				t.Fatalf("write legacy loop.json: %v", err)
+			}
+
+			ps := NewLoopStore(dir)
+			got, err := ps.Get()
+			if err != nil {
+				t.Fatalf("Get() error = %v", err)
+			}
+
+			// Get must NOT rewrite Triggers on read — the on-disk file is the
+			// canonical source of truth. The fallback lives purely in
+			// EffectiveTriggers.
+			if len(got.Triggers) != 0 {
+				t.Errorf("Triggers = %v after Get() on legacy file, want empty "+
+					"(read-side fallback must not mutate the returned record)", got.Triggers)
+			}
+
+			gotTrigs := got.EffectiveTriggers()
+			if len(gotTrigs) != len(tc.wantTrigs) {
+				t.Fatalf("EffectiveTriggers() = %v, want %v", gotTrigs, tc.wantTrigs)
+			}
+			for i := range gotTrigs {
+				if gotTrigs[i] != tc.wantTrigs[i] {
+					t.Errorf("EffectiveTriggers()[%d] = %q, want %q", i, gotTrigs[i], tc.wantTrigs[i])
+				}
+			}
+			if primary := got.EffectiveTrigger(); primary != tc.wantPrimary {
+				t.Errorf("EffectiveTrigger() = %q, want %q", primary, tc.wantPrimary)
+			}
+
+			// IsOnCompletion / IsOnTasks / IsSchedule must all agree with the
+			// resolved fallback list, so the loop runner (which switches on
+			// these) picks the correct arm path for a legacy record.
+			wantOnCompletion := false
+			wantOnTasks := false
+			wantSchedule := false
+			for _, tr := range tc.wantTrigs {
+				switch tr {
+				case TriggerOnCompletion:
+					wantOnCompletion = true
+				case TriggerOnTasks:
+					wantOnTasks = true
+				case TriggerSchedule:
+					wantSchedule = true
+				}
+			}
+			if got.IsOnCompletion() != wantOnCompletion {
+				t.Errorf("IsOnCompletion() = %v, want %v", got.IsOnCompletion(), wantOnCompletion)
+			}
+			if got.IsOnTasks() != wantOnTasks {
+				t.Errorf("IsOnTasks() = %v, want %v", got.IsOnTasks(), wantOnTasks)
+			}
+			if got.IsSchedule() != wantSchedule {
+				t.Errorf("IsSchedule() = %v, want %v", got.IsSchedule(), wantSchedule)
+			}
+		})
+	}
+}
+
 // TestLoopStore_SavedSlot_PreservesMultiTriggerList verifies that Detach()
 // followed by GetSaved() round-trips a two-trigger list unchanged
 // (mitto-r6j.5 acceptance: saved-slot round-trip).
