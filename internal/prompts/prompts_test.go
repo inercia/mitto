@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/inercia/mitto/internal/cel"
 )
 
@@ -1539,8 +1541,9 @@ prompt: |
 func TestParsePromptFile_WithLoop_NoMode(t *testing.T) {
 	data := []byte(`name: "Always Loop"
 loop:
-  value: 1
-  unit: hours
+  schedule:
+    value: 1
+    unit: hours
 prompt: |
   Always runs periodically.
 `)
@@ -1578,6 +1581,247 @@ prompt: |
 	if !strings.Contains(err.Error(), "sometimes") {
 		t.Errorf("error = %q, want it to mention the invalid value 'sometimes'", err.Error())
 	}
+}
+
+// ---- mitto-r6j.1: grouped multi-trigger loop schema ----
+
+// TestPromptLoop_UnmarshalYAML_RejectsLegacyFlatKeys pins the strict
+// UnmarshalYAML added for mitto-r6j.1: every pre-r6j flat key that used to
+// live directly under loop: must now fail ParsePromptFile with an error
+// naming the offending key, its new nested path, and the migration bead —
+// yaml.v3 would otherwise silently ignore the unknown key and parse a stale
+// flat-form loop: block into an all-zero grouped struct.
+func TestPromptLoop_UnmarshalYAML_RejectsLegacyFlatKeys(t *testing.T) {
+	for legacyKey, newPath := range legacyPromptLoopFlatKeys {
+		t.Run(legacyKey, func(t *testing.T) {
+			data := []byte("name: \"Bad Loop\"\nloop:\n  mode: always\n  " + legacyKey + ": whatever\nprompt: |\n  body\n")
+			_, err := ParsePromptFile("bad-loop.prompt.yaml", data, time.Now())
+			if err == nil {
+				t.Fatalf("ParsePromptFile should fail for legacy flat key %q, got nil error", legacyKey)
+			}
+			if !strings.Contains(err.Error(), "loop."+legacyKey) {
+				t.Errorf("error = %q, want it to mention %q", err.Error(), "loop."+legacyKey)
+			}
+			if !strings.Contains(err.Error(), "loop."+newPath) {
+				t.Errorf("error = %q, want it to mention the new nested path %q", err.Error(), "loop."+newPath)
+			}
+			if !strings.Contains(err.Error(), "mitto-r6j.3") {
+				t.Errorf("error = %q, want it to mention the migration bead mitto-r6j.3", err.Error())
+			}
+		})
+	}
+}
+
+// TestParsePromptFile_WithLoop_MultipleTriggers verifies that a loop:
+// block can declare more than one simultaneous trigger (mitto-r6j.1), and
+// that each trigger's own nested block is parsed independently.
+func TestParsePromptFile_WithLoop_MultipleTriggers(t *testing.T) {
+	data := []byte(`name: "Multi Trigger"
+loop:
+  trigger: [schedule, onCompletion]
+  schedule:
+    value: 1
+    unit: hours
+  onCompletion:
+    delay: 30
+prompt: |
+  Fire on a timer AND after every turn.
+`)
+
+	prompt, err := ParsePromptFile("multi-trigger.prompt.yaml", data, time.Now())
+	if err != nil {
+		t.Fatalf("ParsePromptFile failed: %v", err)
+	}
+	if prompt.Loop == nil {
+		t.Fatal("Loop = nil, want non-nil")
+	}
+	got := prompt.Loop.Triggers()
+	if len(got) != 2 || got[0] != "schedule" || got[1] != "onCompletion" {
+		t.Errorf("Loop.Triggers() = %v, want [schedule onCompletion]", got)
+	}
+	if !prompt.Loop.hasTrigger("schedule") || !prompt.Loop.hasTrigger("onCompletion") {
+		t.Errorf("Loop.hasTrigger: want both schedule and onCompletion present, Trigger=%v", prompt.Loop.Trigger)
+	}
+	if prompt.Loop.hasTrigger("onTasks") {
+		t.Error("Loop.hasTrigger(onTasks) = true, want false (not declared)")
+	}
+	if prompt.Loop.FrequencyValue() != 1 || prompt.Loop.FrequencyUnit() != "hours" {
+		t.Errorf("Loop.Frequency = (%d, %q), want (1, hours)", prompt.Loop.FrequencyValue(), prompt.Loop.FrequencyUnit())
+	}
+	if prompt.Loop.CompletionDelay() != 30 {
+		t.Errorf("Loop.CompletionDelay() = %d, want 30", prompt.Loop.CompletionDelay())
+	}
+
+	// Must also validate cleanly — two known, non-duplicate triggers is valid.
+	if err := ValidatePromptLoop(prompt.Name, prompt.Loop); err != nil {
+		t.Errorf("ValidatePromptLoop unexpected error: %v", err)
+	}
+}
+
+// TestPromptLoop_YAMLRoundTrip pins the mitto-r6j.1 acceptance criterion
+// "new form round-trips YAML -> struct -> YAML": marshal a populated
+// PromptLoop (every trigger block set) to YAML, unmarshal it back, and
+// verify every field survives the round trip unchanged.
+func TestPromptLoop_YAMLRoundTrip(t *testing.T) {
+	settle := 10
+	coalesce := false
+	orig := &PromptLoop{
+		Trigger:  []string{"schedule", "onCompletion", "onTasks"},
+		Schedule: &PromptLoopSchedule{Value: 2, Unit: "days", At: "09:00"},
+		OnCompletion: &PromptLoopOnCompletion{
+			Delay: 45,
+		},
+		OnTasks: &PromptLoopOnTasks{
+			Condition:          `tasks.exists(t, t.status == "open")`,
+			ConditionPreset:    "any-open",
+			CoalesceDuringBusy: &coalesce,
+			SettleWindow:       settle,
+			Cooldown:           120,
+		},
+		MaxIterations: 10,
+		MaxDuration:   "4h",
+		Mode:          PromptLoopModeOptional,
+	}
+
+	raw, err := yaml.Marshal(orig)
+	if err != nil {
+		t.Fatalf("yaml.Marshal failed: %v", err)
+	}
+
+	var roundTripped PromptLoop
+	if err := yaml.Unmarshal(raw, &roundTripped); err != nil {
+		t.Fatalf("yaml.Unmarshal failed: %v\nYAML was:\n%s", err, raw)
+	}
+
+	if got := roundTripped.Triggers(); len(got) != 3 || got[0] != "schedule" || got[1] != "onCompletion" || got[2] != "onTasks" {
+		t.Errorf("Triggers() = %v, want [schedule onCompletion onTasks]", got)
+	}
+	if roundTripped.FrequencyValue() != 2 || roundTripped.FrequencyUnit() != "days" || roundTripped.FrequencyAt() != "09:00" {
+		t.Errorf("Schedule = (%d, %q, %q), want (2, days, 09:00)",
+			roundTripped.FrequencyValue(), roundTripped.FrequencyUnit(), roundTripped.FrequencyAt())
+	}
+	if roundTripped.CompletionDelay() != 45 {
+		t.Errorf("CompletionDelay() = %d, want 45", roundTripped.CompletionDelay())
+	}
+	if roundTripped.TasksCondition() != orig.OnTasks.Condition {
+		t.Errorf("TasksCondition() = %q, want %q", roundTripped.TasksCondition(), orig.OnTasks.Condition)
+	}
+	if roundTripped.TasksConditionPreset() != "any-open" {
+		t.Errorf("TasksConditionPreset() = %q, want %q", roundTripped.TasksConditionPreset(), "any-open")
+	}
+	if got := roundTripped.TasksCoalesceDuringBusy(); got == nil || *got != false {
+		t.Errorf("TasksCoalesceDuringBusy() = %v, want *false", got)
+	}
+	if roundTripped.TasksSettleWindow() != 10 {
+		t.Errorf("TasksSettleWindow() = %d, want 10", roundTripped.TasksSettleWindow())
+	}
+	if roundTripped.TasksCooldown() != 120 {
+		t.Errorf("TasksCooldown() = %d, want 120", roundTripped.TasksCooldown())
+	}
+	if roundTripped.MaxIterations != 10 {
+		t.Errorf("MaxIterations = %d, want 10", roundTripped.MaxIterations)
+	}
+	if roundTripped.MaxDuration != "4h" {
+		t.Errorf("MaxDuration = %q, want %q", roundTripped.MaxDuration, "4h")
+	}
+	if roundTripped.Mode != PromptLoopModeOptional {
+		t.Errorf("Mode = %q, want %q", roundTripped.Mode, PromptLoopModeOptional)
+	}
+
+	// Also validate cleanly.
+	if err := ValidatePromptLoop("round-trip", &roundTripped); err != nil {
+		t.Errorf("ValidatePromptLoop unexpected error: %v", err)
+	}
+}
+
+// TestValidateLoopTriggers pins every rule documented on ValidateLoopTriggers
+// (mitto-r6j.1): unknown trigger value, duplicate trigger entries, and
+// schedule.at requiring unit: days are hard errors naming the prompt and the
+// offending value; a block present for a trigger not listed in Trigger is
+// tolerated (inert, warning-only — verified by absence of an error).
+func TestValidateLoopTriggers(t *testing.T) {
+	t.Run("nil loop is OK", func(t *testing.T) {
+		if err := ValidateLoopTriggers("p", nil); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("unknown trigger value returns error naming prompt and value", func(t *testing.T) {
+		err := ValidateLoopTriggers("My Prompt", &PromptLoop{Trigger: []string{"weekly"}})
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "My Prompt") {
+			t.Errorf("error = %q, want it to mention prompt name 'My Prompt'", err.Error())
+		}
+		if !strings.Contains(err.Error(), "weekly") {
+			t.Errorf("error = %q, want it to mention the invalid value 'weekly'", err.Error())
+		}
+	})
+
+	t.Run("duplicate trigger entries return error naming the duplicate", func(t *testing.T) {
+		err := ValidateLoopTriggers("p", &PromptLoop{Trigger: []string{"schedule", "schedule"}})
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "duplicate") {
+			t.Errorf("error = %q, want it to contain 'duplicate'", err.Error())
+		}
+		if !strings.Contains(err.Error(), "schedule") {
+			t.Errorf("error = %q, want it to mention the duplicated value 'schedule'", err.Error())
+		}
+	})
+
+	t.Run("multiple distinct known triggers are OK", func(t *testing.T) {
+		err := ValidateLoopTriggers("p", &PromptLoop{Trigger: []string{"schedule", "onCompletion", "onTasks"}})
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("schedule.at without unit days is an error", func(t *testing.T) {
+		err := ValidateLoopTriggers("p", &PromptLoop{
+			Trigger:  []string{"schedule"},
+			Schedule: &PromptLoopSchedule{Value: 1, Unit: "hours", At: "09:00"},
+		})
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "schedule.at") {
+			t.Errorf("error = %q, want it to mention 'schedule.at'", err.Error())
+		}
+	})
+
+	t.Run("schedule.at with unit days is OK", func(t *testing.T) {
+		err := ValidateLoopTriggers("p", &PromptLoop{
+			Trigger:  []string{"schedule"},
+			Schedule: &PromptLoopSchedule{Value: 1, Unit: "days", At: "09:00"},
+		})
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("block present for trigger not listed is inert, not an error", func(t *testing.T) {
+		// onCompletion block declared but "onCompletion" absent from Trigger:
+		// tolerated (matches today's tolerance for inert flat fields), only
+		// logs a warning.
+		err := ValidateLoopTriggers("p", &PromptLoop{
+			Trigger:      []string{"schedule"},
+			Schedule:     &PromptLoopSchedule{Value: 1, Unit: "hours"},
+			OnCompletion: &PromptLoopOnCompletion{Delay: 10},
+		})
+		if err != nil {
+			t.Errorf("unexpected error for inert onCompletion block: %v", err)
+		}
+	})
+
+	t.Run("empty trigger list is OK (defaults to schedule)", func(t *testing.T) {
+		err := ValidateLoopTriggers("p", &PromptLoop{})
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
 }
 
 func TestValidatePromptLoop(t *testing.T) {

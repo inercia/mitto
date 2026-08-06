@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -924,6 +925,125 @@ func TestLoopPrompt_Validate_Condition(t *testing.T) {
 	if err := pEmpty.Validate(); err != nil {
 		t.Errorf("Validate() with empty condition and rejecting validator error = %v, want nil", err)
 	}
+}
+
+// ---- mitto-r6j.1: canonical Triggers list + fallback chain ----
+
+// TestLoopPrompt_EffectiveTriggers_FallbackChain pins the resolution order
+// documented on EffectiveTriggers: Triggers verbatim when non-empty, else
+// []LoopTrigger{Trigger} when the legacy singular field is set, else
+// []LoopTrigger{TriggerSchedule} when neither is set.
+func TestLoopPrompt_EffectiveTriggers_FallbackChain(t *testing.T) {
+	tests := []struct {
+		name   string
+		prompt LoopPrompt
+		want   []LoopTrigger
+	}{
+		{
+			name:   "Triggers set wins even when legacy Trigger also set",
+			prompt: LoopPrompt{Triggers: []LoopTrigger{TriggerOnCompletion, TriggerOnTasks}, Trigger: TriggerSchedule},
+			want:   []LoopTrigger{TriggerOnCompletion, TriggerOnTasks},
+		},
+		{
+			name:   "legacy Trigger used when Triggers empty",
+			prompt: LoopPrompt{Trigger: TriggerOnCompletion},
+			want:   []LoopTrigger{TriggerOnCompletion},
+		},
+		{
+			name:   "both empty falls back to schedule",
+			prompt: LoopPrompt{},
+			want:   []LoopTrigger{TriggerSchedule},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.prompt.EffectiveTriggers()
+			if len(got) != len(tt.want) {
+				t.Fatalf("EffectiveTriggers() = %v, want %v", got, tt.want)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Errorf("EffectiveTriggers()[%d] = %q, want %q", i, got[i], tt.want[i])
+				}
+			}
+			// EffectiveTrigger() always returns the first resolved entry.
+			if primary := tt.prompt.EffectiveTrigger(); primary != tt.want[0] {
+				t.Errorf("EffectiveTrigger() = %q, want %q", primary, tt.want[0])
+			}
+		})
+	}
+}
+
+// TestLoopPrompt_IsOnCompletion_IsOnTasks_MultiTrigger verifies that
+// IsOnCompletion/IsOnTasks check membership across the full resolved trigger
+// list (not just the legacy singular Trigger), so a multi-trigger config
+// with e.g. Triggers: [schedule, onCompletion] correctly reports true for
+// IsOnCompletion while still resolving EffectiveTrigger() to "schedule".
+func TestLoopPrompt_IsOnCompletion_IsOnTasks_MultiTrigger(t *testing.T) {
+	p := LoopPrompt{Triggers: []LoopTrigger{TriggerSchedule, TriggerOnCompletion, TriggerOnTasks}}
+
+	if !p.IsOnCompletion() {
+		t.Error("IsOnCompletion() = false, want true (onCompletion present in Triggers)")
+	}
+	if !p.IsOnTasks() {
+		t.Error("IsOnTasks() = false, want true (onTasks present in Triggers)")
+	}
+	if p.EffectiveTrigger() != TriggerSchedule {
+		t.Errorf("EffectiveTrigger() = %q, want %q (primary/first)", p.EffectiveTrigger(), TriggerSchedule)
+	}
+
+	// A schedule-only config reports false for both event-driven checks.
+	scheduleOnly := LoopPrompt{Triggers: []LoopTrigger{TriggerSchedule}}
+	if scheduleOnly.IsOnCompletion() {
+		t.Error("IsOnCompletion() = true, want false (schedule-only)")
+	}
+	if scheduleOnly.IsOnTasks() {
+		t.Error("IsOnTasks() = true, want false (schedule-only)")
+	}
+}
+
+// TestLoopPrompt_Validate_MultiTrigger verifies Validate()'s Triggers-list
+// checks (mitto-r6j.1): an unknown entry anywhere in the list is rejected
+// with ErrInvalidTrigger, a duplicate entry is rejected naming the
+// duplicate, and a valid multi-trigger list (e.g. schedule + onCompletion)
+// passes — including the Frequency requirement, which is only enforced when
+// the *effective* (first) trigger is schedule.
+func TestLoopPrompt_Validate_MultiTrigger(t *testing.T) {
+	validFreq := Frequency{Value: 1, Unit: FrequencyHours}
+
+	t.Run("valid multi-trigger schedule+onCompletion requires frequency (schedule is primary)", func(t *testing.T) {
+		p := LoopPrompt{Prompt: "p", Frequency: validFreq, Triggers: []LoopTrigger{TriggerSchedule, TriggerOnCompletion}}
+		if err := p.Validate(); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("valid multi-trigger onCompletion+onTasks does not require frequency", func(t *testing.T) {
+		p := LoopPrompt{Prompt: "p", Triggers: []LoopTrigger{TriggerOnCompletion, TriggerOnTasks}}
+		if err := p.Validate(); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("unknown trigger in Triggers list is rejected", func(t *testing.T) {
+		p := LoopPrompt{Prompt: "p", Triggers: []LoopTrigger{TriggerSchedule, "weekly"}}
+		err := p.Validate()
+		if !errors.Is(err, ErrInvalidTrigger) {
+			t.Errorf("Validate() error = %v, want %v", err, ErrInvalidTrigger)
+		}
+	})
+
+	t.Run("duplicate entries in Triggers list are rejected naming the duplicate", func(t *testing.T) {
+		p := LoopPrompt{Prompt: "p", Triggers: []LoopTrigger{TriggerOnCompletion, TriggerOnCompletion}}
+		err := p.Validate()
+		if !errors.Is(err, ErrInvalidTrigger) {
+			t.Errorf("Validate() error = %v, want wrapped %v", err, ErrInvalidTrigger)
+		}
+		if err == nil || !strings.Contains(err.Error(), string(TriggerOnCompletion)) {
+			t.Errorf("Validate() error = %v, want it to mention the duplicated trigger %q", err, TriggerOnCompletion)
+		}
+	})
 }
 
 func TestLoopPrompt_ClampDelay(t *testing.T) {

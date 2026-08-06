@@ -39,7 +39,29 @@ func TestDocsFrontmatterFieldsExistOnStructs(t *testing.T) {
 			name: "PromptLoop",
 			typ:  reflect.TypeOf(PromptLoop{}),
 			fields: []string{
-				"coalesceDuringBusy", "freshContext", "runOnStart",
+				"trigger", "schedule", "onCompletion", "onTasks",
+				"freshContext", "runOnStart",
+			},
+		},
+		{
+			// mitto-r6j.1: grouped schedule-trigger attributes.
+			name:   "PromptLoopSchedule",
+			typ:    reflect.TypeOf(PromptLoopSchedule{}),
+			fields: []string{"value", "unit", "at"},
+		},
+		{
+			// mitto-r6j.1: grouped onCompletion-trigger attributes.
+			name:   "PromptLoopOnCompletion",
+			typ:    reflect.TypeOf(PromptLoopOnCompletion{}),
+			fields: []string{"delay"},
+		},
+		{
+			// mitto-r6j.1: grouped onTasks-trigger attributes.
+			name: "PromptLoopOnTasks",
+			typ:  reflect.TypeOf(PromptLoopOnTasks{}),
+			fields: []string{
+				"condition", "conditionPreset", "coalesceDuringBusy",
+				"settleWindow", "cooldown",
 			},
 		},
 	}
