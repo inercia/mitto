@@ -2,12 +2,12 @@ import { testWithCleanup as test, expect } from "../fixtures/test-fixtures";
 import { apiUrl } from "../utils/selectors";
 
 /**
- * On-completion loop trigger UI tests.
+ * On-completion loop trigger UI tests (mitto-r6j: multi-trigger UI).
  *
  * Verifies that the LoopFrequencyPanel correctly handles the
- * "On completion" trigger tab: tab switching, delay input visibility,
- * delay clamping (>= minDelaySeconds), max time inputs, and that the
- * correct PATCH bodies are sent.
+ * "On completion" trigger checkbox: arming/disarming, delay-panel
+ * visibility, delay clamping (>= minDelaySeconds), max time inputs,
+ * and that the correct PATCH bodies (with a `triggers` array) are sent.
  *
  * Setup: creates a session and configures it as loop via the REST API
  * (more reliable than context-menu UI flows in beforeEach). The backend
@@ -46,6 +46,7 @@ test.describe("Loop on-completion trigger", () => {
           frequency: { value: 1, unit: "hours" },
           enabled: true,
           max_iterations: 0,
+          triggers: ["schedule"],
         },
       },
     );
@@ -60,28 +61,28 @@ test.describe("Loop on-completion trigger", () => {
       page.locator('[data-testid="loop-frequency-panel"]'),
     ).toBeVisible({ timeout: timeouts.appReady });
 
-    // Expand the settings body to show the trigger tabs and limit rows.
+    // Expand the settings body to show the trigger checkboxes and limit rows.
     await page.locator('[data-testid="loop-expand-toggle"]').click();
 
-    // Both trigger tabs should now be visible.
+    // Both baseline trigger checkboxes should now be visible.
     await expect(
-      page.locator('[data-testid="loop-trigger-tab-schedule"]'),
+      page.locator('[data-testid="loop-trigger-check-schedule"]'),
     ).toBeVisible({ timeout: timeouts.shortAction });
     await expect(
-      page.locator('[data-testid="loop-trigger-tab-oncompletion"]'),
+      page.locator('[data-testid="loop-trigger-check-oncompletion"]'),
     ).toBeVisible({ timeout: timeouts.shortAction });
   });
 
-  test("trigger tabs are visible after expanding the panel", async ({
+  test("trigger checkboxes are visible after expanding the panel", async ({
     page,
     timeouts,
   }) => {
-    // Tabs were asserted in beforeEach — confirm both are present
+    // Checkboxes were asserted in beforeEach — confirm both are present
     await expect(
-      page.locator('[data-testid="loop-trigger-tab-schedule"]'),
+      page.locator('[data-testid="loop-trigger-check-schedule"]'),
     ).toBeVisible();
     await expect(
-      page.locator('[data-testid="loop-trigger-tab-oncompletion"]'),
+      page.locator('[data-testid="loop-trigger-check-oncompletion"]'),
     ).toBeVisible();
   });
 
@@ -97,7 +98,7 @@ test.describe("Loop on-completion trigger", () => {
     ).toBeVisible();
   });
 
-  test("clicking 'On completion' tab sends PATCH with trigger=onCompletion", async ({
+  test("arming 'On completion' (only) sends PATCH with triggers=['onCompletion']", async ({
     page,
     timeouts,
   }) => {
@@ -112,8 +113,13 @@ test.describe("Loop on-completion trigger", () => {
       },
     );
 
+    // Arm onCompletion (schedule is armed by default), then disarm schedule
+    // so the resulting body carries only ["onCompletion"].
     await page
-      .locator('[data-testid="loop-trigger-tab-oncompletion"]')
+      .locator('[data-testid="loop-trigger-check-oncompletion"]')
+      .click();
+    await page
+      .locator('[data-testid="loop-trigger-check-schedule"]')
       .click();
 
     // Staged edits: changes are only persisted when the Save button is pressed.
@@ -122,24 +128,24 @@ test.describe("Loop on-completion trigger", () => {
     await expect
       .poll(() => patchBodies.length, { timeout: timeouts.shortAction })
       .toBeGreaterThan(0);
-    expect(patchBodies[0].trigger).toBe("onCompletion");
+    expect(patchBodies[0].triggers).toEqual(["onCompletion"]);
   });
 
-  test("delay input appears after switching to 'On completion'", async ({
+  test("delay panel appears after arming 'On completion'", async ({
     page,
     timeouts,
   }) => {
-    // Initially in schedule mode — delay input should not be visible
+    // Initially only schedule is armed — delay panel/input should not exist.
     await expect(
       page.locator('[data-testid="loop-delay-input"]'),
-    ).not.toBeVisible();
+    ).toHaveCount(0);
 
-    // Switch to onCompletion
+    // Arm onCompletion (multi-select: schedule stays armed too).
     await page
-      .locator('[data-testid="loop-trigger-tab-oncompletion"]')
+      .locator('[data-testid="loop-trigger-check-oncompletion"]')
       .click();
 
-    // Delay input should now appear
+    // Delay input should now appear.
     await expect(
       page.locator('[data-testid="loop-delay-input"]'),
     ).toBeVisible({ timeout: timeouts.shortAction });
@@ -149,9 +155,9 @@ test.describe("Loop on-completion trigger", () => {
     page,
     timeouts,
   }) => {
-    // Switch to onCompletion
+    // Arm onCompletion so the delay panel is visible.
     await page
-      .locator('[data-testid="loop-trigger-tab-oncompletion"]')
+      .locator('[data-testid="loop-trigger-check-oncompletion"]')
       .click();
     await expect(
       page.locator('[data-testid="loop-delay-input"]'),
@@ -224,9 +230,13 @@ test.describe("Loop on-completion trigger", () => {
       },
     );
 
-    // Switch to onCompletion (pre-fills safety limits for this new conversation).
+    // Arm onCompletion (pre-fills safety limits for this new conversation)
+    // and disarm schedule so the loop is on-completion-only.
     await page
-      .locator('[data-testid="loop-trigger-tab-oncompletion"]')
+      .locator('[data-testid="loop-trigger-check-oncompletion"]')
+      .click();
+    await page
+      .locator('[data-testid="loop-trigger-check-schedule"]')
       .click();
 
     // Clear both limits → unbounded config (dangerous for a brand-new loop).
@@ -249,7 +259,7 @@ test.describe("Loop on-completion trigger", () => {
     await expect
       .poll(() => patchBodies.length, { timeout: timeouts.shortAction })
       .toBeGreaterThan(0);
-    expect(patchBodies[0].trigger).toBe("onCompletion");
+    expect(patchBodies[0].triggers).toEqual(["onCompletion"]);
     expect(patchBodies[0].max_iterations).toBe(0);
     expect(patchBodies[0].max_duration_seconds).toBe(0);
   });
@@ -270,7 +280,10 @@ test.describe("Loop on-completion trigger", () => {
     );
 
     await page
-      .locator('[data-testid="loop-trigger-tab-oncompletion"]')
+      .locator('[data-testid="loop-trigger-check-oncompletion"]')
+      .click();
+    await page
+      .locator('[data-testid="loop-trigger-check-schedule"]')
       .click();
     await page
       .locator('[data-testid="loop-panel-max-iterations"]')
@@ -288,14 +301,74 @@ test.describe("Loop on-completion trigger", () => {
     expect(patchBodies.length).toBe(0);
   });
 
-  // The "On tasks" trigger tab (mitto-oja.4) is gated to beads-enabled
-  // workspaces. This test's session has no `.beads` directory, so the tab
-  // must stay hidden alongside the two always-visible tabs.
-  test("on-tasks trigger tab is hidden for a non-beads workspace", async ({
+  // The "On tasks" trigger checkbox (mitto-oja.4) is gated to beads-enabled
+  // workspaces. This test's session has no `.beads` directory, so the checkbox
+  // must stay hidden alongside the two always-visible checkboxes.
+  test("on-tasks trigger checkbox is hidden for a non-beads workspace", async ({
     page,
   }) => {
     await expect(
-      page.locator('[data-testid="loop-trigger-tab-ontasks"]'),
+      page.locator('[data-testid="loop-trigger-check-ontasks"]'),
     ).toHaveCount(0);
+  });
+
+  // mitto-r6j: multi-trigger loops let the user arm any non-empty subset of
+  // {schedule, onCompletion, onTasks}. Verify that arming BOTH schedule and
+  // onCompletion sends both entries in the PATCH `triggers` array and shows
+  // both per-trigger sub-panels.
+  test("arming schedule + onCompletion together sends triggers=['schedule','onCompletion']", async ({
+    page,
+    timeouts,
+  }) => {
+    const patchBodies: any[] = [];
+    await page.route(
+      `**${apiUrl(`/api/sessions/${sessionId}/loop`)}`,
+      async (route) => {
+        if (route.request().method() === "PATCH") {
+          patchBodies.push(route.request().postDataJSON());
+        }
+        await route.continue();
+      },
+    );
+
+    // Schedule is armed by default; also arm onCompletion.
+    await page
+      .locator('[data-testid="loop-trigger-check-oncompletion"]')
+      .click();
+
+    // Both sub-panels must be visible simultaneously.
+    await expect(
+      page.locator('[data-testid="loop-panel-schedule"]'),
+    ).toBeVisible({ timeout: timeouts.shortAction });
+    await expect(
+      page.locator('[data-testid="loop-panel-oncompletion"]'),
+    ).toBeVisible({ timeout: timeouts.shortAction });
+
+    await page.locator('[data-testid="loop-save-button"]').click();
+    await expect
+      .poll(() => patchBodies.length, { timeout: timeouts.shortAction })
+      .toBeGreaterThan(0);
+    expect(patchBodies[0].triggers).toEqual(["schedule", "onCompletion"]);
+  });
+
+  // mitto-r6j: the panel enforces "at least one trigger armed" — trying to
+  // uncheck the last remaining trigger must be a no-op.
+  test("cannot uncheck the last remaining trigger (invariant: >=1 armed)", async ({
+    page,
+  }) => {
+    // Only schedule is armed by default.
+    const scheduleCheckbox = page.locator(
+      '[data-testid="loop-trigger-check-schedule"]',
+    );
+    await expect(scheduleCheckbox).toBeChecked();
+
+    // Click it — the invariant must reject the uncheck.
+    await scheduleCheckbox.click();
+    await expect(scheduleCheckbox).toBeChecked();
+
+    // The schedule sub-panel must therefore stay visible.
+    await expect(
+      page.locator('[data-testid="loop-panel-schedule"]'),
+    ).toBeVisible();
   });
 });
