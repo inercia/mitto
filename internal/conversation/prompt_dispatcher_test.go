@@ -105,28 +105,29 @@ type fakePromptDeps struct {
 	recordedSessionChangeSeqs []int64
 
 	// === New in 2.5-d ===
-	lastUsageSet          *acp.Usage
-	cumulativeUsageSet    []*acp.Usage
-	accumulatedTokens     []int
-	estimatedTokenCalls   []string // messages passed to pdEstimateTokensFromMessage
-	lastAgentMessage      string   // returned by pdReadLastAgentMessage / pdReadLastAgentMessageFromStore
-	markCompleteCount     int
-	isClosed              bool
-	flushMarkdownCount    int
-	observerCount         int
-	eventCount            int
-	flushConfigCount      int
-	processNextCalled     int
-	processNextResult     bool // return value for pdProcessNextQueuedMessage
-	retryTitleCalls       []string
-	actionButtonsOn       bool
-	immediateQueue        bool
-	followUpCalls         [][]string // each element is [userMsg, agentMsg]
-	afterProcessorCalls   int
-	turnIdleCalls         int
-	selfDestructRequested bool
-	selfDestructCalls     int
-	onCompleteCallOrder   []string // records "OnComplete" / "TurnIdle" / "SelfDestruct" in order
+	lastUsageSet               *acp.Usage
+	cumulativeUsageSet         []*acp.Usage
+	accumulatedTokens          []int
+	estimatedTokenCalls        []string // messages passed to pdEstimateTokensFromMessage
+	lastAgentMessage           string   // returned by pdReadLastAgentMessage / pdReadLastAgentMessageFromStore
+	markCompleteCount          int
+	dismissActiveUIPromptCalls int
+	isClosed                   bool
+	flushMarkdownCount         int
+	observerCount              int
+	eventCount                 int
+	flushConfigCount           int
+	processNextCalled          int
+	processNextResult          bool // return value for pdProcessNextQueuedMessage
+	retryTitleCalls            []string
+	actionButtonsOn            bool
+	immediateQueue             bool
+	followUpCalls              [][]string // each element is [userMsg, agentMsg]
+	afterProcessorCalls        int
+	turnIdleCalls              int
+	selfDestructRequested      bool
+	selfDestructCalls          int
+	onCompleteCallOrder        []string // records "OnComplete" / "TurnIdle" / "SelfDestruct" in order
 
 	// === New in 2.5-e ===
 	acpDead        bool
@@ -396,6 +397,11 @@ func (f *fakePromptDeps) pdMarkPromptComplete() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.markCompleteCount++
+}
+func (f *fakePromptDeps) pdDismissActiveUIPrompt() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.dismissActiveUIPromptCalls++
 }
 func (f *fakePromptDeps) pdIsClosed() bool {
 	f.mu.Lock()

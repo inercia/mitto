@@ -1197,6 +1197,12 @@ func (bs *BackgroundSession) pdReadLastAgentMessage() string {
 	return session.GetLastAgentMessage(events)
 }
 
+// pdDismissActiveUIPrompt dismisses any active blocking UI prompt. See
+// promptDeps.pdDismissActiveUIPrompt (mitto-nisb).
+func (bs *BackgroundSession) pdDismissActiveUIPrompt() {
+	bs.DismissActiveUIPrompt()
+}
+
 func (bs *BackgroundSession) pdMarkPromptComplete() {
 	bs.promptMu.Lock()
 	bs.isPrompting = false

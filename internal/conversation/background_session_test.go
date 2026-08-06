@@ -4479,6 +4479,72 @@ func TestUIPrompt(t *testing.T) {
 	})
 }
 
+// TestFinalizeTurn_LeavesStaleUIPrompt_MittoNisb reproduces mitto-nisb: when a
+// turn ends WITHOUT the user answering a blocking mitto_ui_* prompt (e.g. the
+// agent crashed, or the inactivity watchdog fired), BackgroundSession.activePrompt
+// is never cleared. finalizeTurn is the single choke point PromptWithMeta calls
+// at the end of every turn — both the success and error branches
+// (bgsession_prompt.go: bs.promptDisp.finalizeTurn(bs, err, meta, sessionIdle)) —
+// so this is the narrowest place to prove the staleness bug without needing a
+// live ACP connection or a WebSocket client.
+//
+// A stale activePrompt is what causes internal/web/session_ws.go's
+// postLoadProcessing (load_events) and attach-after-unarchive paths to re-send
+// a dead prompt to a reconnecting client, resurrecting a panel the agent has
+// already given up waiting on.
+//
+// This test currently FAILS: GetActiveUIPrompt() is non-nil after finalizeTurn.
+func TestFinalizeTurn_LeavesStaleUIPrompt_MittoNisb(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	bs := &BackgroundSession{
+		observers:   make(map[SessionObserver]struct{}),
+		ctx:         ctx,
+		cancel:      cancel,
+		persistedID: "test-session-nisb",
+	}
+	bs.promptCond = sync.NewCond(&bs.promptMu)
+
+	promptReceived := make(chan struct{}, 1)
+	observer := &trackingObserver{
+		onUIPrompt: func(req UIPromptRequest) { promptReceived <- struct{}{} },
+	}
+	bs.AddObserver(observer)
+
+	// Simulate an MCP tool call blocking on mitto_ui_options with a long timeout
+	// (mirrors the real 300s default in internal/mcpserver/tools_ui.go).
+	go func() {
+		req := UIPromptRequest{
+			RequestID:      "nisb-request",
+			Type:           UIPromptTypeOptions,
+			Question:       "Proceed?",
+			Options:        []UIPromptOption{{ID: "yes", Label: "Yes"}},
+			TimeoutSeconds: 300,
+		}
+		bs.UIPrompt(ctx, req) //nolint:errcheck
+	}()
+
+	select {
+	case <-promptReceived:
+	case <-time.After(2 * time.Second):
+		t.Fatal("UI prompt was not received by observer")
+	}
+
+	if bs.GetActiveUIPrompt() == nil {
+		t.Fatal("expected an active UI prompt before turn finalization")
+	}
+
+	// Simulate the agent's turn ending (this is exactly what PromptWithMeta does
+	// at the end of every turn, success or error) WITHOUT the user having
+	// answered the prompt.
+	bs.promptDisp.finalizeTurn(bs, nil, PromptMeta{}, true)
+
+	if ap := bs.GetActiveUIPrompt(); ap != nil {
+		t.Fatalf("mitto-nisb: expected active UI prompt to be cleared after finalizeTurn, still active: %+v", ap)
+	}
+}
+
 // TestCancel_DismissesActiveUIPrompt tests that Cancel() properly dismisses any active UI prompt.
 // This ensures that when the user presses the Stop button, any pending MCP tool UI prompts
 // (like yes/no questions or option selections) are dismissed and the UI is cleaned up.

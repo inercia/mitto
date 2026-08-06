@@ -204,6 +204,13 @@ type promptDeps interface {
 	// Cold-start diagnostics (mitto-3mv WI-2). Nil-safe — no-op when the
 	// session's cold-start trace has not been begun or has been finalized.
 	pdColdPhase(name string, kv ...any)
+
+	// pdDismissActiveUIPrompt dismisses any active blocking mitto_ui_* prompt
+	// (MCP tool questions, permissions, etc.), if one is outstanding. No-op
+	// when there is none. Called at end-of-turn (mitto-nisb) so a prompt the
+	// agent never got an answer to (crash, watchdog, error) does not survive
+	// past the turn and get re-sent to a reconnecting client.
+	pdDismissActiveUIPrompt()
 }
 
 // promptDispatcher is a stateless collaborator holding safe synchronous chunks of
@@ -1389,6 +1396,13 @@ func (p promptDispatcher) handlePromptSuccess(
 // paths have been processed. The order is intentional: OnComplete fires first so
 // any iteration accounting is applied before idle hooks and self-destruct.
 func (p promptDispatcher) finalizeTurn(d promptDeps, err error, meta PromptMeta, sessionIdle bool) {
+	// Dismiss any UI prompt the agent left blocking when the turn ended
+	// without the user answering it (crash, watchdog cancel, error, or a
+	// clean end-of-turn where the agent simply stopped listening). Without
+	// this, BackgroundSession.activePrompt stays stale and gets re-sent to
+	// clients that reconnect later (mitto-nisb).
+	d.pdDismissActiveUIPrompt()
+
 	// Invoke OnComplete callback if set.
 	if meta.OnComplete != nil {
 		meta.OnComplete(err)
