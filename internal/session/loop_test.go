@@ -350,7 +350,7 @@ func TestLoopStore_Update(t *testing.T) {
 
 	// Update on non-existent should fail
 	enabled := true
-	err := ps.Update(nil, nil, nil, &enabled, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	err := ps.Update(LoopUpdate{Enabled: &enabled})
 	if err != ErrLoopNotFound {
 		t.Errorf("Update() on empty store error = %v, want ErrLoopNotFound", err)
 	}
@@ -367,7 +367,7 @@ func TestLoopStore_Update(t *testing.T) {
 
 	// Update only enabled field
 	disabled := false
-	if err := ps.Update(nil, nil, nil, &disabled, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
+	if err := ps.Update(LoopUpdate{Enabled: &disabled}); err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}
 
@@ -381,7 +381,7 @@ func TestLoopStore_Update(t *testing.T) {
 
 	// Update only prompt field
 	newPrompt := "New prompt text"
-	if err := ps.Update(&newPrompt, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
+	if err := ps.Update(LoopUpdate{Prompt: &newPrompt}); err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}
 
@@ -392,7 +392,7 @@ func TestLoopStore_Update(t *testing.T) {
 
 	// Update frequency
 	newFreq := Frequency{Value: 30, Unit: FrequencyMinutes}
-	if err := ps.Update(nil, nil, &newFreq, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
+	if err := ps.Update(LoopUpdate{Frequency: &newFreq}); err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}
 
@@ -416,7 +416,7 @@ func TestLoopStore_UpdateValidation(t *testing.T) {
 
 	// Update with invalid frequency should fail (value must be >= 1)
 	invalidFreq := Frequency{Value: 0, Unit: FrequencyMinutes} // Zero not allowed
-	err := ps.Update(nil, nil, &invalidFreq, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	err := ps.Update(LoopUpdate{Frequency: &invalidFreq})
 	if err == nil {
 		t.Error("Update() with invalid frequency should return error")
 	}
@@ -584,7 +584,7 @@ func TestLoopStore_NextScheduledAtWhenDisabled(t *testing.T) {
 
 	// Enable it
 	enabled := true
-	ps.Update(nil, nil, nil, &enabled, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	ps.Update(LoopUpdate{Enabled: &enabled})
 
 	got, _ = ps.Get()
 	if got.NextScheduledAt == nil {
@@ -593,7 +593,7 @@ func TestLoopStore_NextScheduledAtWhenDisabled(t *testing.T) {
 
 	// Disable again
 	disabled := false
-	ps.Update(nil, nil, nil, &disabled, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	ps.Update(LoopUpdate{Enabled: &disabled})
 
 	got, _ = ps.Get()
 	if got.NextScheduledAt != nil {
@@ -808,7 +808,7 @@ func TestLoopStore_UpdateDoesNotTouchIterationCount(t *testing.T) {
 
 	// Update via partial update — should not touch IterationCount
 	newPrompt := "Updated"
-	if err := ps.Update(&newPrompt, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
+	if err := ps.Update(LoopUpdate{Prompt: &newPrompt}); err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}
 
@@ -1189,10 +1189,10 @@ func TestLoopStore_Update_NewFields(t *testing.T) {
 	}
 
 	// Update trigger, delay, and maxDuration.
-	trig := TriggerOnCompletion
+	triggers := []LoopTrigger{TriggerOnCompletion}
 	delay := 15
 	maxDur := 3600
-	if err := ps.Update(nil, nil, nil, nil, nil, nil, &trig, &delay, &maxDur, nil, nil, nil, nil, nil, nil); err != nil {
+	if err := ps.Update(LoopUpdate{Triggers: &triggers, DelaySeconds: &delay, MaxDurationSeconds: &maxDur}); err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}
 
@@ -1211,8 +1211,8 @@ func TestLoopStore_Update_NewFields(t *testing.T) {
 		t.Errorf("Prompt = %q, want %q", got.Prompt, "Test")
 	}
 
-	// Passing nil for new fields should leave them unchanged.
-	if err := ps.Update(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
+	// Passing an empty update should leave them unchanged.
+	if err := ps.Update(LoopUpdate{}); err != nil {
 		t.Fatalf("Update() with all-nil error = %v", err)
 	}
 	got2, _ := ps.Get()
@@ -1243,7 +1243,7 @@ func TestLoopStore_Update_OnTasksFields(t *testing.T) {
 	cond := "tasks.changed()"
 	preset := "any-change"
 	cooldown := 120
-	if err := ps.Update(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, &cond, &preset, &cooldown, nil, nil); err != nil {
+	if err := ps.Update(LoopUpdate{Condition: &cond, ConditionPreset: &preset, CooldownSeconds: &cooldown}); err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}
 
@@ -1259,7 +1259,7 @@ func TestLoopStore_Update_OnTasksFields(t *testing.T) {
 	}
 
 	// Passing nil for these fields should leave them unchanged.
-	if err := ps.Update(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
+	if err := ps.Update(LoopUpdate{}); err != nil {
 		t.Fatalf("Update() with all-nil error = %v", err)
 	}
 	got2, _ := ps.Get()
@@ -1544,7 +1544,7 @@ func TestLoopStore_Update_EnableTrue_ClearsAck(t *testing.T) {
 		t.Fatalf("AcknowledgeStoppedReason() error = %v", err)
 	}
 	enabled := true
-	if err := ps.Update(nil, nil, nil, &enabled, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
+	if err := ps.Update(LoopUpdate{Enabled: &enabled}); err != nil {
 		t.Fatalf("Update(enabled=true) error = %v", err)
 	}
 	got, err := ps.Get()
@@ -1574,7 +1574,7 @@ func TestLoopStore_Update_EnableTrue_ClearsStoppedState(t *testing.T) {
 
 	// Re-enable via Update — stopped state must be cleared.
 	enabled := true
-	if err := ps.Update(nil, nil, nil, &enabled, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
+	if err := ps.Update(LoopUpdate{Enabled: &enabled}); err != nil {
 		t.Fatalf("Update(enabled=true) error = %v", err)
 	}
 
@@ -1610,7 +1610,7 @@ func TestLoopStore_Update_EnableFalse_DoesNotClearStoppedState(t *testing.T) {
 
 	// Update with enabled=false should not clear the stopped state.
 	enabled := false
-	if err := ps.Update(nil, nil, nil, &enabled, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
+	if err := ps.Update(LoopUpdate{Enabled: &enabled}); err != nil {
 		t.Fatalf("Update(enabled=false) error = %v", err)
 	}
 
@@ -1666,7 +1666,7 @@ func TestLoopStore_Update_ArgumentsPersisted(t *testing.T) {
 	}
 
 	// nil arguments → no change
-	if err := ps.Update(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
+	if err := ps.Update(LoopUpdate{}); err != nil {
 		t.Fatalf("Update(nil args) error = %v", err)
 	}
 	got, _ := ps.Get()
@@ -1676,7 +1676,7 @@ func TestLoopStore_Update_ArgumentsPersisted(t *testing.T) {
 
 	// non-nil arguments → replace
 	newArgs := map[string]string{"KEY": "updated", "NEW": "value"}
-	if err := ps.Update(nil, nil, nil, nil, nil, nil, nil, nil, nil, &newArgs, nil, nil, nil, nil, nil); err != nil {
+	if err := ps.Update(LoopUpdate{Arguments: &newArgs}); err != nil {
 		t.Fatalf("Update(newArgs) error = %v", err)
 	}
 	got, _ = ps.Get()
@@ -2019,7 +2019,7 @@ func TestLoopStore_Update_CoalesceDuringBusy(t *testing.T) {
 
 	// Set to false via Update.
 	fa := false
-	if err := ps.Update(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, &fa, nil); err != nil {
+	if err := ps.Update(LoopUpdate{CoalesceDuringBusy: &fa}); err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}
 	got1, _ := ps.Get()
@@ -2031,7 +2031,7 @@ func TestLoopStore_Update_CoalesceDuringBusy(t *testing.T) {
 	}
 
 	// A nil update must leave it unchanged.
-	if err := ps.Update(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
+	if err := ps.Update(LoopUpdate{}); err != nil {
 		t.Fatalf("Update() with all-nil error = %v", err)
 	}
 	got2, _ := ps.Get()
@@ -2041,7 +2041,7 @@ func TestLoopStore_Update_CoalesceDuringBusy(t *testing.T) {
 
 	// Flipping back to true.
 	tr := true
-	if err := ps.Update(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, &tr, nil); err != nil {
+	if err := ps.Update(LoopUpdate{CoalesceDuringBusy: &tr}); err != nil {
 		t.Fatalf("Update() re-enable error = %v", err)
 	}
 	got3, _ := ps.Get()
@@ -2077,7 +2077,7 @@ func TestLoopStore_Update_RunOnStart(t *testing.T) {
 
 	// Set to true via Update.
 	tr := true
-	if err := ps.Update(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, &tr); err != nil {
+	if err := ps.Update(LoopUpdate{RunOnStart: &tr}); err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}
 	got1, _ := ps.Get()
@@ -2089,7 +2089,7 @@ func TestLoopStore_Update_RunOnStart(t *testing.T) {
 	}
 
 	// A nil update must leave it unchanged.
-	if err := ps.Update(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
+	if err := ps.Update(LoopUpdate{}); err != nil {
 		t.Fatalf("Update() with all-nil error = %v", err)
 	}
 	got2, _ := ps.Get()
@@ -2099,7 +2099,7 @@ func TestLoopStore_Update_RunOnStart(t *testing.T) {
 
 	// Flipping back to false.
 	fa := false
-	if err := ps.Update(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, &fa); err != nil {
+	if err := ps.Update(LoopUpdate{RunOnStart: &fa}); err != nil {
 		t.Fatalf("Update() disable error = %v", err)
 	}
 	got3, _ := ps.Get()
@@ -2570,5 +2570,107 @@ func TestLoopPrompt_Validate_MultiTrigger_RequiresFrequency(t *testing.T) {
 	}
 	if err := eventOnly.Validate(); err != nil {
 		t.Errorf("Validate() error = %v for event-only triggers, want nil", err)
+	}
+}
+
+// TestLoopStore_Update_TriggersReplacesWholesaleAndSyncsLegacyScalar verifies
+// that LoopUpdate.Triggers replaces the stored trigger list wholesale and
+// that Normalize() (invoked by Update) syncs the legacy scalar Trigger field
+// to the new primary (first) entry (mitto-r6j.5).
+func TestLoopStore_Update_TriggersReplacesWholesaleAndSyncsLegacyScalar(t *testing.T) {
+	dir := t.TempDir()
+	ps := NewLoopStore(dir)
+
+	if err := ps.Set(&LoopPrompt{
+		Prompt:    "Test",
+		Triggers:  []LoopTrigger{TriggerSchedule},
+		Frequency: Frequency{Value: 1, Unit: FrequencyHours},
+		Enabled:   true,
+	}); err != nil {
+		t.Fatalf("Set() error = %v", err)
+	}
+
+	newTriggers := []LoopTrigger{TriggerOnTasks, TriggerOnCompletion}
+	if err := ps.Update(LoopUpdate{Triggers: &newTriggers}); err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+
+	got, err := ps.Get()
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if len(got.Triggers) != 2 || got.Triggers[0] != TriggerOnTasks || got.Triggers[1] != TriggerOnCompletion {
+		t.Errorf("Triggers = %v, want [onTasks onCompletion] (wholesale replace)", got.Triggers)
+	}
+	if got.Trigger != TriggerOnTasks {
+		t.Errorf("Trigger (legacy scalar) = %q, want %q (synced to Triggers[0])", got.Trigger, TriggerOnTasks)
+	}
+}
+
+// TestLoopStore_Update_UnrelatedFieldDoesNotClobberTriggers is the regression
+// test for the mitto-r6j.5 clobber bug: the pre-fix Update() collapsed a
+// multi-trigger config to a single trigger on ANY write that passed a
+// (then-scalar) trigger value. With LoopUpdate, an update that leaves
+// Triggers nil must leave a pre-existing two-trigger list fully intact.
+func TestLoopStore_Update_UnrelatedFieldDoesNotClobberTriggers(t *testing.T) {
+	dir := t.TempDir()
+	ps := NewLoopStore(dir)
+
+	if err := ps.Set(&LoopPrompt{
+		Prompt:    "Test",
+		Triggers:  []LoopTrigger{TriggerSchedule, TriggerOnCompletion},
+		Frequency: Frequency{Value: 1, Unit: FrequencyHours},
+		Enabled:   true,
+	}); err != nil {
+		t.Fatalf("Set() error = %v", err)
+	}
+
+	disabled := false
+	if err := ps.Update(LoopUpdate{Enabled: &disabled}); err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+
+	got, err := ps.Get()
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if got.Enabled {
+		t.Error("Enabled after Update() = true, want false")
+	}
+	effective := got.EffectiveTriggers()
+	if len(effective) != 2 || !got.HasTrigger(TriggerSchedule) || !got.HasTrigger(TriggerOnCompletion) {
+		t.Errorf("EffectiveTriggers() after unrelated Update() = %v, want both schedule and onCompletion preserved (clobber regression)", effective)
+	}
+}
+
+// TestLoopStore_SavedSlot_PreservesMultiTriggerList verifies that Detach()
+// followed by GetSaved() round-trips a two-trigger list unchanged
+// (mitto-r6j.5 acceptance: saved-slot round-trip).
+func TestLoopStore_SavedSlot_PreservesMultiTriggerList(t *testing.T) {
+	dir := t.TempDir()
+	ps := NewLoopStore(dir)
+
+	if err := ps.Set(&LoopPrompt{
+		Prompt:    "Test",
+		Triggers:  []LoopTrigger{TriggerSchedule, TriggerOnTasks},
+		Frequency: Frequency{Value: 2, Unit: FrequencyHours},
+		Enabled:   true,
+	}); err != nil {
+		t.Fatalf("Set() error = %v", err)
+	}
+
+	if err := ps.Detach(); err != nil {
+		t.Fatalf("Detach() error = %v", err)
+	}
+
+	saved, err := ps.GetSaved()
+	if err != nil {
+		t.Fatalf("GetSaved() error = %v", err)
+	}
+	if len(saved.Triggers) != 2 || !saved.HasTrigger(TriggerSchedule) || !saved.HasTrigger(TriggerOnTasks) {
+		t.Errorf("saved.Triggers = %v, want both schedule and onTasks preserved", saved.Triggers)
+	}
+	if saved.Trigger != TriggerSchedule {
+		t.Errorf("saved.Trigger (legacy scalar) = %q, want %q", saved.Trigger, TriggerSchedule)
 	}
 }

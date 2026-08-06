@@ -234,10 +234,15 @@ type LoopPrompt struct {
 	// Trigger controls how this loop prompt is fired.
 	// Empty or "schedule" means frequency-based; "onCompletion" means event-driven.
 	//
-	// Deprecated: retained as a legacy read-only field for on-disk
-	// backward-compatibility (loop.json written by pre-r6j Mitto versions).
-	// Triggers is now canonical; see EffectiveTriggers. Not written by Set/Update
-	// (mitto-r6j.5 owns the on-disk migration); still read as a fallback.
+	// Deprecated: retained as a legacy read/write field for on-disk and wire
+	// backward-compatibility (loop.json written by pre-r6j Mitto versions, and
+	// older API clients that only understand a single trigger). Triggers is
+	// now canonical; see EffectiveTriggers. Normalize() keeps this field in
+	// sync with Triggers[0] whenever Triggers is non-empty (called by both Set
+	// and Update before persisting), so it is never stale on disk. Never
+	// derived the other way — Triggers is never inferred from this field
+	// except by EffectiveTriggers' read-side fallback for old records that
+	// predate Triggers entirely (mitto-r6j.5).
 	Trigger LoopTrigger `json:"trigger,omitempty"`
 	// Triggers is the canonical list of triggers that arm this loop (mitto-r6j).
 	// Empty falls back to []LoopTrigger{Trigger} when Trigger is set, then to
@@ -454,10 +459,19 @@ func (p *LoopPrompt) ClampDelay(floorSeconds int) {
 
 // Normalize rewrites the legacy "(pending)" draft placeholder to an empty
 // Prompt so it is never persisted — and therefore never delivered — as a
-// literal prompt body. Callers should invoke it before Validate/persist.
+// literal prompt body. It also keeps the legacy scalar Trigger field in sync
+// with Triggers[0] whenever Triggers is non-empty, so any on-disk record
+// written by Set/Update always has an accurate Trigger for old readers
+// (mitto-r6j.5). This only ever derives Trigger FROM Triggers — Triggers is
+// never (re)derived from Trigger here; that direction is handled purely as a
+// read-side fallback by EffectiveTriggers for records that predate Triggers.
+// Callers should invoke it before Validate/persist.
 func (p *LoopPrompt) Normalize() {
 	if strings.TrimSpace(p.Prompt) == pendingPlaceholder {
 		p.Prompt = ""
+	}
+	if len(p.Triggers) > 0 {
+		p.Trigger = p.Triggers[0]
 	}
 }
 
@@ -599,10 +613,42 @@ func (ps *LoopStore) Set(p *LoopPrompt) error {
 	return nil
 }
 
+// LoopUpdate holds a partial update to a loop prompt configuration. Only
+// non-nil fields are applied by LoopStore.Update; all others are left
+// untouched. Replaces the historical 15-positional-pointer-parameter Update
+// signature (mitto-r6j.5) — the growing per-trigger field set made positional
+// params untenable and error-prone at call sites.
+type LoopUpdate struct {
+	Prompt        *string
+	PromptName    *string
+	Frequency     *Frequency
+	Enabled       *bool
+	FreshContext  *bool
+	MaxIterations *int
+	// Triggers, when non-nil, REPLACES the stored trigger list wholesale (not
+	// merged/appended). A nil pointer means "leave the trigger list
+	// unchanged" — the same pointer-presence semantics as every other field
+	// here. Update NEVER derives Triggers from a legacy scalar trigger value;
+	// Normalize() (called below) keeps the legacy Trigger field in sync with
+	// Triggers[0] purely for on-disk/wire back-compat with old readers.
+	Triggers           *[]LoopTrigger
+	DelaySeconds       *int
+	MaxDurationSeconds *int
+	Arguments          *map[string]string
+	Condition          *string
+	ConditionPreset    *string
+	CooldownSeconds    *int
+	CoalesceDuringBusy *bool
+	RunOnStart         *bool
+	// SettleWindowSeconds is a partial update for the onTasks pre-fire debounce
+	// window (mitto-r6j.5 — previously an orphan field with no write path).
+	SettleWindowSeconds *int
+}
+
 // Update applies a partial update to the loop prompt.
-// Only non-nil fields in the update are applied.
+// Only non-nil fields in u are applied.
 // IterationCount is never modified by Update — it is managed exclusively by RecordSent.
-func (ps *LoopStore) Update(prompt *string, promptName *string, frequency *Frequency, enabled *bool, freshContext *bool, maxIterations *int, trigger *LoopTrigger, delaySeconds *int, maxDurationSeconds *int, arguments *map[string]string, condition *string, conditionPreset *string, cooldownSeconds *int, coalesceDuringBusy *bool, runOnStart *bool) error {
+func (ps *LoopStore) Update(u LoopUpdate) error {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
 
@@ -611,19 +657,19 @@ func (ps *LoopStore) Update(prompt *string, promptName *string, frequency *Frequ
 		return err
 	}
 
-	if prompt != nil {
-		existing.Prompt = *prompt
+	if u.Prompt != nil {
+		existing.Prompt = *u.Prompt
 	}
-	if promptName != nil {
-		existing.PromptName = *promptName
+	if u.PromptName != nil {
+		existing.PromptName = *u.PromptName
 	}
-	if frequency != nil {
-		existing.Frequency = *frequency
+	if u.Frequency != nil {
+		existing.Frequency = *u.Frequency
 	}
-	if enabled != nil {
-		existing.Enabled = *enabled
+	if u.Enabled != nil {
+		existing.Enabled = *u.Enabled
 		// Re-enabling a stopped loop removes the badge so the UI shows a clean slate.
-		if *enabled {
+		if *u.Enabled {
 			existing.StoppedReason = ""
 			existing.StoppedAt = nil
 			// Drop any stale acknowledgment so a future error stop always
@@ -631,44 +677,46 @@ func (ps *LoopStore) Update(prompt *string, promptName *string, frequency *Frequ
 			existing.AcknowledgedStoppedReason = ""
 		}
 	}
-	if freshContext != nil {
-		existing.FreshContext = *freshContext
+	if u.FreshContext != nil {
+		existing.FreshContext = *u.FreshContext
 	}
-	if maxIterations != nil {
-		existing.MaxIterations = *maxIterations
+	if u.MaxIterations != nil {
+		existing.MaxIterations = *u.MaxIterations
 	}
-	if trigger != nil {
-		existing.Trigger = *trigger
-		// Keep Triggers in sync so EffectiveTriggers (which checks Triggers
-		// first) reflects this single-trigger update rather than a stale
-		// multi-trigger list from a prior write (mitto-r6j).
-		existing.Triggers = []LoopTrigger{*trigger}
+	if u.Triggers != nil {
+		// Replace wholesale. Normalize() (below) syncs the legacy scalar
+		// Trigger field from Triggers[0] — never the other way around.
+		existing.Triggers = *u.Triggers
 	}
-	if delaySeconds != nil {
-		existing.DelaySeconds = *delaySeconds
+	if u.DelaySeconds != nil {
+		existing.DelaySeconds = *u.DelaySeconds
 	}
-	if maxDurationSeconds != nil {
-		existing.MaxDurationSeconds = *maxDurationSeconds
+	if u.MaxDurationSeconds != nil {
+		existing.MaxDurationSeconds = *u.MaxDurationSeconds
 	}
-	if arguments != nil {
-		existing.Arguments = *arguments
+	if u.Arguments != nil {
+		existing.Arguments = *u.Arguments
 	}
-	if condition != nil {
-		existing.Condition = *condition
+	if u.Condition != nil {
+		existing.Condition = *u.Condition
 	}
-	if conditionPreset != nil {
-		existing.ConditionPreset = *conditionPreset
+	if u.ConditionPreset != nil {
+		existing.ConditionPreset = *u.ConditionPreset
 	}
-	if cooldownSeconds != nil {
-		existing.CooldownSeconds = *cooldownSeconds
+	if u.CooldownSeconds != nil {
+		existing.CooldownSeconds = *u.CooldownSeconds
 	}
-	if coalesceDuringBusy != nil {
-		v := *coalesceDuringBusy
+	if u.CoalesceDuringBusy != nil {
+		v := *u.CoalesceDuringBusy
 		existing.CoalesceDuringBusy = &v
 	}
-	if runOnStart != nil {
-		v := *runOnStart
+	if u.RunOnStart != nil {
+		v := *u.RunOnStart
 		existing.RunOnStart = &v
+	}
+	if u.SettleWindowSeconds != nil {
+		v := *u.SettleWindowSeconds
+		existing.SettleWindowSeconds = &v
 	}
 
 	existing.Normalize()
