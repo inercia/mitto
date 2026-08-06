@@ -339,6 +339,16 @@ type LoopRunner struct {
 	// the same code paths).
 	tasksRefirePending map[string]bool
 
+	// tasksRefireDeliveryFailures counts consecutive tasksRefireDeliveryFailed
+	// outcomes from maybeFireAccumulatedDelta for a session (mitto-rrq work item
+	// 3). fireTasksRebase self-heals a failed re-fire by re-arming the
+	// quiescence timer instead of rebasing the baseline (which would destroy the
+	// pending delta), but only up to maxTasksRefireDeliveryFailures — beyond
+	// that a durably-broken loop prompt would re-arm forever. Cleared on any
+	// successful re-fire dispatch and by clearTasksRefirePending. Guarded by
+	// tasksRebaseTimersMu (same lock as tasksRefirePending).
+	tasksRefireDeliveryFailures map[string]int
+
 	// tasksSettleWindow is the runner-level default pre-fire settle/debounce
 	// window applied on the idle→first-fire path of the onTasks trigger
 	// (mitto-1uv). When > 0 (or the per-loop LoopPrompt.SettleWindow() is > 0),
@@ -403,30 +413,31 @@ func NewLoopRunner(store *session.Store, sm *SessionManager, logger *slog.Logger
 		}
 	}
 	return &LoopRunner{
-		store:                      store,
-		sessionManager:             sm,
-		logger:                     logger,
-		pollInterval:               DefaultPollInterval,
-		maxLoopIterations:          config.DefaultMaxLoopIterations,
-		minCompletionDelaySeconds:  config.DefaultMinLoopCompletionDelaySeconds,
-		consecutiveFailures:        make(map[string]int),
-		promptResolveFailures:      make(map[string]int),
-		scheduleBackoffFailures:    make(map[string]int),
-		contextWindowFailures:      make(map[string]int),
-		completionTimers:           make(map[string]*time.Timer),
-		tasksEvaluator:             evaluator,
-		minTasksCooldownSeconds:    DefaultMinLoopTasksCooldownSeconds,
-		tasksQuiescenceWindow:      tasksDefaultQuiescenceWindow,
-		tasksRebaseTimers:          make(map[string]*time.Timer),
-		tasksRefirePending:         make(map[string]bool),
-		tasksSettleTimers:          make(map[string]*time.Timer),
-		autoUnarchiveEnabled:       true,
-		autoUnarchiveRetryInterval: DefaultAutoUnarchiveRetryInterval,
-		autoUnarchiveStagger:       DefaultAutoUnarchiveStaggerInterval,
-		loopWorkspaceConcurrency:   config.DefaultLoopWorkspaceConcurrency,
-		workspaceInFlight:          make(map[string]int),
-		runOnStartAntiFlapSeconds:  config.DefaultRunOnStartAntiFlapSeconds,
-		runOnStartFired:            make(map[string]bool),
+		store:                       store,
+		sessionManager:              sm,
+		logger:                      logger,
+		pollInterval:                DefaultPollInterval,
+		maxLoopIterations:           config.DefaultMaxLoopIterations,
+		minCompletionDelaySeconds:   config.DefaultMinLoopCompletionDelaySeconds,
+		consecutiveFailures:         make(map[string]int),
+		promptResolveFailures:       make(map[string]int),
+		scheduleBackoffFailures:     make(map[string]int),
+		contextWindowFailures:       make(map[string]int),
+		completionTimers:            make(map[string]*time.Timer),
+		tasksEvaluator:              evaluator,
+		minTasksCooldownSeconds:     DefaultMinLoopTasksCooldownSeconds,
+		tasksQuiescenceWindow:       tasksDefaultQuiescenceWindow,
+		tasksRebaseTimers:           make(map[string]*time.Timer),
+		tasksRefirePending:          make(map[string]bool),
+		tasksRefireDeliveryFailures: make(map[string]int),
+		tasksSettleTimers:           make(map[string]*time.Timer),
+		autoUnarchiveEnabled:        true,
+		autoUnarchiveRetryInterval:  DefaultAutoUnarchiveRetryInterval,
+		autoUnarchiveStagger:        DefaultAutoUnarchiveStaggerInterval,
+		loopWorkspaceConcurrency:    config.DefaultLoopWorkspaceConcurrency,
+		workspaceInFlight:           make(map[string]int),
+		runOnStartAntiFlapSeconds:   config.DefaultRunOnStartAntiFlapSeconds,
+		runOnStartFired:             make(map[string]bool),
 	}
 }
 

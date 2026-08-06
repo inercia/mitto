@@ -3643,6 +3643,212 @@ func TestLoopRunner_FireTasksRebase_CoalesceTrue_FsDeltaDuringBusy_ShouldReFireO
 	}
 }
 
+// --- mitto-rrq: onTasks re-fire lost on transient template compile-race ---
+//
+// The tests below drive fireTasksRebase's re-fire path (maybeFireAccumulatedDelta)
+// for a loop opted out of during-busy coalescing (CoalesceDuringBusy=false), which
+// unconditionally takes that path regardless of the sticky refirePending flag.
+
+// withStubbedTasksRetrySleep swaps tasksTransientRetrySleep for a no-op
+// recorder for the duration of a test so onTasks fire retries (mitto-rrq work
+// item 2) do not actually wait. Mirrors withStubbedRetrySleep in
+// queue_dispatcher_test.go.
+func withStubbedTasksRetrySleep(t *testing.T) *[]time.Duration {
+	t.Helper()
+	prev := tasksTransientRetrySleep
+	recorded := []time.Duration{}
+	tasksTransientRetrySleep = func(d time.Duration) {
+		recorded = append(recorded, d)
+	}
+	t.Cleanup(func() { tasksTransientRetrySleep = prev })
+	return &recorded
+}
+
+// newTasksRefireTestRunner sets up a PromptName-backed onTasks loop opted out
+// of during-busy coalescing, a registered idle BackgroundSession (so
+// triggerNowWithTasksDelta reaches deliverPrompt instead of auto-resuming),
+// and a fakeTasksBeadsClient returning a fixed post-change snapshot. Shared
+// scaffolding for the mitto-rrq regression tests below.
+func newTasksRefireTestRunner(t *testing.T, sessionID string, rawNow []byte) (*LoopRunner, *session.LoopStore) {
+	t.Helper()
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	ps := newOnTasksSession(t, store, sessionID, "/proj", "")
+	fa := false
+	promptName := "supervisor"
+	if err := ps.Update(nil, &promptName, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, &fa, nil); err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{})
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	sm.AddSessionForTest(NewTestBackgroundSessionWithCtx(sessionID, ctx, cancel))
+
+	runner := NewLoopRunner(store, sm, nil)
+	fake := &fakeTasksBeadsClient{listFn: func(string) ([]byte, error) { return rawNow, nil }}
+	runner.SetBeadsClient(fake)
+	return runner, ps
+}
+
+// TestLoopRunner_TriggerTasksFireWithRetry_TransientFailure_RetriesWithBackoff
+// pins mitto-rrq work item 2 at the retry-helper level: a transient
+// template-compile-race resolve failure on the first attempt must be retried
+// in-process (bounded backoff, mirroring mitto-omu's queueTransientRetryDelays
+// policy) rather than being surfaced on the very first failure. The resolver
+// succeeding on the second attempt is a direct proxy for "the fire was
+// re-delivered" (same convention as
+// TestLoopRunner_FireTasksRebase_CoalesceTrue_FsDeltaDuringBusy_ShouldReFireOnce)
+// — a full ACP round-trip is out of scope for this unit-level test.
+func TestLoopRunner_TriggerTasksFireWithRetry_TransientFailure_RetriesWithBackoff(t *testing.T) {
+	sleeps := withStubbedTasksRetrySleep(t)
+
+	const sessionID = "s1"
+	rawNow := mustMarshalRows(t, beadsRow("mitto-1", "open", "2026-01-01T00:00:00Z"))
+	runner, _ := newTasksRefireTestRunner(t, sessionID, rawNow)
+
+	var resolverCalls int32
+	runner.SetPromptResolver(func(name, dir string) (string, error) {
+		if atomic.AddInt32(&resolverCalls, 1) == 1 {
+			return "", fmt.Errorf("%w: prompt %q not found (load errors present)",
+				ErrPromptTransientCompileRace, name)
+		}
+		return "iterate", nil
+	})
+
+	delta := &config.TasksDelta{Added: []map[string]any{{"id": "mitto-1"}}}
+	_, exhausted := runner.triggerTasksFireWithRetry(sessionID, delta)
+
+	if got := atomic.LoadInt32(&resolverCalls); got != 2 {
+		t.Errorf("promptResolver call count = %d, want 2 (1 transient failure + 1 retry that clears the resolve step)", got)
+	}
+	if len(*sleeps) != 1 {
+		t.Errorf("retry sleeps = %d, want 1 (one backoff between the two attempts)", len(*sleeps))
+	}
+	if exhausted {
+		t.Error("exhausted = true, want false (the second attempt got past the transient resolve failure)")
+	}
+}
+
+// TestLoopRunner_FireTasksRebase_PersistentTransientFailure_BaselineUnchanged
+// is the core mitto-rrq acceptance criterion: when every retry attempt hits
+// the transient compile-race, the onTasks baseline must be left
+// byte-identical to its pre-fire value — NOT rebased to the current snapshot
+// — so the triggering delta survives to be retried instead of being silently
+// destroyed.
+func TestLoopRunner_FireTasksRebase_PersistentTransientFailure_BaselineUnchanged(t *testing.T) {
+	withStubbedTasksRetrySleep(t)
+
+	const sessionID = "s1"
+	rawBefore := mustMarshalRows(t, beadsRow("mitto-1", "open", "2026-01-01T00:00:00Z"))
+	rawNow := mustMarshalRows(t,
+		beadsRow("mitto-1", "open", "2026-01-01T00:00:00Z"),
+		beadsRow("mitto-2", "open", "2026-01-02T00:00:00Z"),
+	)
+
+	runner, ps := newTasksRefireTestRunner(t, sessionID, rawNow)
+	if err := NewTasksBaselineStore(runner.store.SessionDir(sessionID)).Set(rawBefore); err != nil {
+		t.Fatalf("Set() baseline error = %v", err)
+	}
+	// Long window so the re-armed quiescence timer does not fire in the
+	// background during the test; we drive fireTasksRebase directly.
+	runner.SetTasksQuiescenceWindow(time.Hour)
+
+	resolveErr := fmt.Errorf("%w: prompt \"supervisor\" not found (load errors present)",
+		ErrPromptTransientCompileRace)
+	var resolverCalls int32
+	runner.SetPromptResolver(func(name, dir string) (string, error) {
+		atomic.AddInt32(&resolverCalls, 1)
+		return "", resolveErr
+	})
+
+	runner.fireTasksRebase(sessionID, ps)
+
+	baseline, err := NewTasksBaselineStore(runner.store.SessionDir(sessionID)).Get()
+	if err != nil {
+		t.Fatalf("Get() baseline error = %v", err)
+	}
+	if !jsonBytesEqual(t, baseline.RawSnapshot, rawBefore) {
+		t.Errorf("baseline.RawSnapshot = %s, want %s (mitto-rrq: baseline must NOT be rebased on delivery failure)",
+			baseline.RawSnapshot, rawBefore)
+	}
+	// Self-heal (work item 3): the delivery failure must re-arm the
+	// quiescence timer and re-set the sticky pending flag, rather than
+	// silently rebasing, so the next quiescence tick retries automatically.
+	if got := countTasksRebaseTimers(runner); got != 1 {
+		t.Errorf("tasksRebaseTimers = %d, want 1 (delivery failure must re-arm for self-heal)", got)
+	}
+	if !runner.tasksRefirePendingForTest(sessionID) {
+		t.Error("tasksRefirePending must be re-set after a delivery failure so the next quiescence tick retries")
+	}
+	runner.cancelTasksRebaseTimerForTest(sessionID)
+}
+
+// TestLoopRunner_FireTasksRebase_DeliveryFailureExhausted_GivesUpWithoutRebasing
+// pins the bound on the work-item-3 self-heal loop: after
+// maxTasksRefireDeliveryFailures consecutive tasksRefireDeliveryFailed
+// outcomes for the same session, fireTasksRebase must stop re-arming — but it
+// still must NOT rebase the baseline on give-up (a durably-broken prompt must
+// not silently swallow the pending delta either).
+func TestLoopRunner_FireTasksRebase_DeliveryFailureExhausted_GivesUpWithoutRebasing(t *testing.T) {
+	withStubbedTasksRetrySleep(t)
+
+	const sessionID = "s1"
+	rawBefore := mustMarshalRows(t, beadsRow("mitto-1", "open", "2026-01-01T00:00:00Z"))
+	rawNow := mustMarshalRows(t,
+		beadsRow("mitto-1", "open", "2026-01-01T00:00:00Z"),
+		beadsRow("mitto-2", "open", "2026-01-02T00:00:00Z"),
+	)
+
+	runner, ps := newTasksRefireTestRunner(t, sessionID, rawNow)
+	if err := NewTasksBaselineStore(runner.store.SessionDir(sessionID)).Set(rawBefore); err != nil {
+		t.Fatalf("Set() baseline error = %v", err)
+	}
+	runner.SetTasksQuiescenceWindow(time.Hour)
+
+	resolveErr := fmt.Errorf("%w: prompt \"supervisor\" not found (load errors present)",
+		ErrPromptTransientCompileRace)
+	runner.SetPromptResolver(func(name, dir string) (string, error) {
+		return "", resolveErr
+	})
+
+	// Drive exactly the bound: each call simulates a quiescence tick re-firing
+	// (the sticky flag was re-set by the previous call), with the real timer
+	// cancelled in between so the test controls timing. The Nth call is the
+	// one that trips maxTasksRefireDeliveryFailures and gives up.
+	for i := 1; i <= maxTasksRefireDeliveryFailures; i++ {
+		runner.fireTasksRebase(sessionID, ps)
+		runner.cancelTasksRebaseTimerForTest(sessionID)
+	}
+
+	baseline, err := NewTasksBaselineStore(runner.store.SessionDir(sessionID)).Get()
+	if err != nil {
+		t.Fatalf("Get() baseline error = %v", err)
+	}
+	if !jsonBytesEqual(t, baseline.RawSnapshot, rawBefore) {
+		t.Errorf("baseline.RawSnapshot = %s, want %s (must never rebase on a durable delivery failure, even after giving up)",
+			baseline.RawSnapshot, rawBefore)
+	}
+	if runner.tasksRefirePendingForTest(sessionID) {
+		t.Error("tasksRefirePending must be cleared once the self-heal bound is exhausted")
+	}
+	if got := countTasksRebaseTimers(runner); got != 0 {
+		t.Errorf("tasksRebaseTimers = %d, want 0 after giving up (no further re-arm)", got)
+	}
+}
+
+// tasksRefirePendingForTest reports whether the sticky re-fire flag is set
+// for sessionID, for test assertions.
+func (r *LoopRunner) tasksRefirePendingForTest(sessionID string) bool {
+	r.tasksRebaseTimersMu.Lock()
+	defer r.tasksRebaseTimersMu.Unlock()
+	return r.tasksRefirePending[sessionID]
+}
+
 func TestLoopRunner_BootstrapTasksBaseline_CreatesWhenMissing(t *testing.T) {
 	store, err := session.NewStore(t.TempDir())
 	if err != nil {

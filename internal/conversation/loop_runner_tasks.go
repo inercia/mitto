@@ -24,6 +24,34 @@ const tasksDefaultQuiescenceWindow = 10 * time.Second
 // fetching a beads snapshot for onTasks condition evaluation.
 const tasksListTimeout = 30 * time.Second
 
+// maxTasksRefireDeliveryFailures bounds how many consecutive
+// tasksRefireDeliveryFailed self-heal cycles fireTasksRebase will re-arm (via
+// markTasksRefirePending + armTasksRebase) before giving up and logging at
+// ERROR instead (mitto-rrq work item 3). Without this bound a durably-broken
+// loop prompt (as opposed to a transient compile-race, which is already
+// absorbed by the bounded in-process retry in triggerTasksFireWithRetry)
+// could re-arm the quiescence timer forever. Mirrors the "3 consecutive
+// strikes" convention used by MaxPromptResolveFailures (mitto-8bg).
+const maxTasksRefireDeliveryFailures = 3
+
+// tasksTransientRetryDelays is the backoff schedule triggerTasksFireWithRetry
+// uses to retry an onTasks fire (triggerNowWithTasksDelta) that failed due to
+// a transient template-compile-race (mitto-rrq work item 2, mirroring the
+// mitto-omu queue-dispatcher policy — see queueTransientRetryDelays in
+// queue_dispatcher.go). Entry i is the sleep BEFORE attempt i+2, so total
+// attempts is 1 + len(tasksTransientRetryDelays). Package-var so tests can
+// override to []time.Duration{0, 0, 0} for speed.
+var tasksTransientRetryDelays = []time.Duration{
+	50 * time.Millisecond,
+	200 * time.Millisecond,
+	500 * time.Millisecond,
+}
+
+// tasksTransientRetrySleep is the sleep function used between onTasks fire
+// retry attempts. Package-var so tests can override to a no-op recorder
+// without waiting.
+var tasksTransientRetrySleep = time.Sleep
+
 // Compile-time assertion: *LoopRunner implements watcher.BeadsSubscriber.
 var _ watcher.BeadsSubscriber = (*LoopRunner)(nil)
 
@@ -347,8 +375,10 @@ func (r *LoopRunner) processTasksChange(meta session.Metadata, loop *session.Loo
 		r.clearTasksRefirePending(sessionID)
 		// Thread the computed delta through so the loop prompt body can render
 		// {{ .Trigger.OnTasks.Changes.* }} (mitto-xkn). All other TriggerNow
-		// call sites pass nil via the public TriggerNow shim.
-		if err := r.triggerNowWithTasksDelta(sessionID, true, decision.delta); err != nil {
+		// call sites pass nil via the public TriggerNow shim. mitto-rrq work
+		// item 2: bounded retry absorbs a transient template-compile-race
+		// instead of dropping the fire on the first hit.
+		if err, exhausted := r.triggerTasksFireWithRetry(sessionID, decision.delta); err != nil {
 			// Route ErrPromptResolveFailed through the shared 3-strike auto-pause
 			// logic so onTasks loops behave the same as the scheduled path when a
 			// loop_prompt_name no longer resolves (mitto-uhnc); without this
@@ -357,7 +387,12 @@ func (r *LoopRunner) processTasksChange(meta session.Metadata, loop *session.Loo
 			if errors.Is(err, ErrPromptResolveFailed) {
 				r.handlePromptResolveFailure(sessionID, meta.Name, loop, loopStore, err)
 			} else if r.logger != nil && !errors.Is(err, ErrSessionBusy) {
-				r.logger.Warn("onTasks: firing failed", "session_id", sessionID, "error", err)
+				if exhausted {
+					r.logger.Error("onTasks: firing failed after transient-race retries",
+						"session_id", sessionID, "error", err, "retries_exhausted", true)
+				} else {
+					r.logger.Warn("onTasks: firing failed", "session_id", sessionID, "error", err)
+				}
 			}
 			return
 		}
@@ -383,6 +418,40 @@ func tasksDeltaIsMaterial(delta *config.TasksDelta) bool {
 		return false
 	}
 	return len(delta.Added) > 0 || len(delta.Updated) > 0 || len(delta.Removed) > 0
+}
+
+// triggerTasksFireWithRetry wraps triggerNowWithTasksDelta with the mitto-omu
+// bounded retry policy for transient template-compile-race failures (mitto-rrq
+// work item 2). Durable errors and ErrSessionBusy — an expected, non-noisy
+// outcome the onTasks fire paths already special-case for logging — short-
+// circuit on the first attempt; only isTransientPromptCompileRace errors are
+// retried, exactly mirroring queueDispatcher.send's classification. Returns
+// the final error (nil on success) and whether every attempt was exhausted on
+// a transient error, for the retries_exhausted log marker.
+func (r *LoopRunner) triggerTasksFireWithRetry(sessionID string, delta *config.TasksDelta) (err error, exhausted bool) {
+	maxAttempts := 1 + len(tasksTransientRetryDelays)
+	var lastAttempt int
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		lastAttempt = attempt
+		err = r.triggerNowWithTasksDelta(sessionID, true, delta)
+		if err == nil || errors.Is(err, ErrSessionBusy) || !isTransientPromptCompileRace(err) {
+			return err, false
+		}
+		if attempt >= maxAttempts {
+			break
+		}
+		delay := tasksTransientRetryDelays[attempt-1]
+		if r.logger != nil {
+			r.logger.Warn("onTasks: fire hit transient prompt compile race; retrying",
+				"session_id", sessionID,
+				"error", err,
+				"attempt", attempt,
+				"next_delay", delay)
+		}
+		tasksTransientRetrySleep(delay)
+	}
+	exhausted = isTransientPromptCompileRace(err) && lastAttempt >= maxAttempts
+	return err, exhausted
 }
 
 // tasksCooldownActive returns true if firing should be skipped because the
@@ -451,11 +520,34 @@ func (r *LoopRunner) markTasksRefirePending(sessionID string) {
 // clearTasksRefirePending drops any pending re-fire flag for sessionID. Called
 // on a normal fire (tasksActionFire) because that fire already delivers the
 // accumulated delta as its payload, and on session archival/shutdown so no
-// stale entries linger.
+// stale entries linger. Also clears the tasksRefireDeliveryFailures self-heal
+// counter (mitto-rrq work item 3) — a fresh normal fire supersedes any
+// previous re-fire delivery failure for this session.
 func (r *LoopRunner) clearTasksRefirePending(sessionID string) {
 	r.tasksRebaseTimersMu.Lock()
 	defer r.tasksRebaseTimersMu.Unlock()
 	delete(r.tasksRefirePending, sessionID)
+	delete(r.tasksRefireDeliveryFailures, sessionID)
+}
+
+// bumpTasksRefireDeliveryFailure increments and returns the consecutive
+// tasksRefireDeliveryFailed counter for sessionID (mitto-rrq work item 3).
+func (r *LoopRunner) bumpTasksRefireDeliveryFailure(sessionID string) int {
+	r.tasksRebaseTimersMu.Lock()
+	defer r.tasksRebaseTimersMu.Unlock()
+	r.tasksRefireDeliveryFailures[sessionID]++
+	return r.tasksRefireDeliveryFailures[sessionID]
+}
+
+// clearTasksRefireDeliveryFailures resets the consecutive
+// tasksRefireDeliveryFailed counter for sessionID (mitto-rrq work item 3).
+// Called on any successful re-fire dispatch (and, via clearTasksRefirePending,
+// on any normal fire) so a session that recovers starts the bounded self-heal
+// counter fresh the next time a delivery failure occurs.
+func (r *LoopRunner) clearTasksRefireDeliveryFailures(sessionID string) {
+	r.tasksRebaseTimersMu.Lock()
+	defer r.tasksRebaseTimersMu.Unlock()
+	delete(r.tasksRefireDeliveryFailures, sessionID)
 }
 
 // armTasksRebase schedules a baseline rebase for sessionID after the
@@ -555,11 +647,18 @@ func (r *LoopRunner) fireTasksSettle(sessionID string, loopStore *session.LoopSt
 		// timer here — that would produce an unbounded stall as long as
 		// evaluateTasksChange keeps returning tasksActionFire.
 		r.clearTasksRefirePending(sessionID)
-		if err := r.triggerNowWithTasksDelta(sessionID, true, decision.delta); err != nil {
+		// mitto-rrq work item 2: bounded retry absorbs a transient
+		// template-compile-race instead of dropping the settled fire.
+		if err, exhausted := r.triggerTasksFireWithRetry(sessionID, decision.delta); err != nil {
 			if errors.Is(err, ErrPromptResolveFailed) {
 				r.handlePromptResolveFailure(sessionID, meta.Name, loop, loopStore, err)
 			} else if r.logger != nil && !errors.Is(err, ErrSessionBusy) {
-				r.logger.Warn("onTasks: settled firing failed", "session_id", sessionID, "error", err)
+				if exhausted {
+					r.logger.Error("onTasks: settled firing failed after transient-race retries",
+						"session_id", sessionID, "error", err, "retries_exhausted", true)
+				} else {
+					r.logger.Warn("onTasks: settled firing failed", "session_id", sessionID, "error", err)
+				}
 			}
 			return
 		}
@@ -645,10 +744,38 @@ func (r *LoopRunner) fireTasksRebase(sessionID string, loopStore *session.LoopSt
 	// evaluateAccumulatedDelta computes the delta between the pre-run baseline
 	// and the current snapshot and applies the Layer 0 guards (cooldown,
 	// maxDuration, CEL condition); if it clears them, fire once more.
+	//
+	// mitto-rrq: maybeFireAccumulatedDelta returns a tri-state outcome so a
+	// delivery failure (tasksRefireDeliveryFailed) is NEVER treated the same
+	// as "no fire warranted" (tasksRefireNotWarranted) — only the latter falls
+	// through to the plain baseline rebase below. A delivery failure instead
+	// self-heals by re-arming the quiescence timer (bounded by
+	// maxTasksRefireDeliveryFailures) so the pending delta survives to be
+	// retried, instead of being silently destroyed by an unconditional rebase.
 	if !loop.ShouldCoalesceDuringBusy() || refirePending {
-		if r.maybeFireAccumulatedDelta(sessionID, loop, loopStore, baselineStore, raw) {
+		switch r.maybeFireAccumulatedDelta(sessionID, meta, loop, loopStore, baselineStore, raw) {
+		case tasksRefireDispatched:
 			// Fire path persisted its own baseline; nothing more to do.
+			r.clearTasksRefireDeliveryFailures(sessionID)
 			return
+		case tasksRefireDeliveryFailed:
+			if r.bumpTasksRefireDeliveryFailure(sessionID) < maxTasksRefireDeliveryFailures {
+				r.markTasksRefirePending(sessionID)
+				r.armTasksRebase(sessionID, loopStore)
+				return
+			}
+			if r.logger != nil {
+				r.logger.Error("onTasks: re-fire delivery failed repeatedly; giving up self-heal without rebasing baseline",
+					"session_id", sessionID,
+					"max_attempts", maxTasksRefireDeliveryFailures,
+					"retries_exhausted", true)
+			}
+			r.clearTasksRefireDeliveryFailures(sessionID)
+			return
+		case tasksRefireNotWarranted:
+			// No pending problem to preserve — clear any stale counter and
+			// fall through to the plain baseline rebase below.
+			r.clearTasksRefireDeliveryFailures(sessionID)
 		}
 	}
 
@@ -731,23 +858,58 @@ func (r *LoopRunner) evaluateAccumulatedDelta(sessionID string, loop *session.Lo
 	return d, true
 }
 
+// tasksRefireOutcome is the outcome of maybeFireAccumulatedDelta (mitto-rrq).
+// It replaces a plain bool so the caller (fireTasksRebase) can distinguish
+// "no fire warranted" (safe to rebase the baseline) from "a fire was
+// warranted but delivery failed" (must NOT rebase — the delta must survive to
+// be retried). Collapsing these two outcomes into a single false was the root
+// cause of mitto-rrq: a transient template-compile-race resolve failure was
+// treated identically to "nothing to do" and the baseline was rebased anyway,
+// permanently destroying the triggering delta.
+type tasksRefireOutcome int
+
+const (
+	// tasksRefireNotWarranted means no material change existed, a Layer 0
+	// guard blocked firing (cooldown, maxDuration, condition-false), or a
+	// parse error occurred. Safe for the caller to fall back to a plain
+	// baseline rebase.
+	tasksRefireNotWarranted tasksRefireOutcome = iota
+	// tasksRefireDispatched means the fire was dispatched successfully; the
+	// new baseline was already persisted by maybeFireAccumulatedDelta itself.
+	tasksRefireDispatched
+	// tasksRefireDeliveryFailed means a fire was warranted (material delta +
+	// guards passed) but triggerNowWithTasksDelta failed even after the
+	// bounded transient-race retry. The caller MUST NOT rebase the baseline.
+	tasksRefireDeliveryFailed
+)
+
 // maybeFireAccumulatedDelta wires evaluateAccumulatedDelta to the firing side
-// effects: on a positive decision it fires via triggerNowWithTasksDelta and
-// persists the new baseline. Returns true only when the fire was dispatched
-// (so the caller can skip the fallback plain rebase); every "no fire" outcome
-// — including TriggerNow failing — returns false so the caller falls back to
-// a plain rebase.
-func (r *LoopRunner) maybeFireAccumulatedDelta(sessionID string, loop *session.LoopPrompt, loopStore *session.LoopStore, baselineStore *TasksBaselineStore, raw []byte) bool {
+// effects: on a positive decision it fires via triggerTasksFireWithRetry
+// (mitto-rrq work item 2 — bounded retry on a transient template-compile-race)
+// and persists the new baseline on success. meta is threaded through purely so
+// a durable ErrPromptResolveFailed can be routed to handlePromptResolveFailure
+// (mitto-rrq work item 4 — mitto-uhnc parity with the other two fire paths).
+func (r *LoopRunner) maybeFireAccumulatedDelta(sessionID string, meta session.Metadata, loop *session.LoopPrompt, loopStore *session.LoopStore, baselineStore *TasksBaselineStore, raw []byte) tasksRefireOutcome {
 	delta, shouldFire := r.evaluateAccumulatedDelta(sessionID, loop, loopStore, baselineStore, raw)
 	if !shouldFire {
-		return false
+		return tasksRefireNotWarranted
 	}
 
-	if err := r.triggerNowWithTasksDelta(sessionID, true, delta); err != nil {
-		if r.logger != nil && !errors.Is(err, ErrSessionBusy) {
-			r.logger.Warn("onTasks: re-fire failed", "session_id", sessionID, "error", err)
+	err, exhausted := r.triggerTasksFireWithRetry(sessionID, delta)
+	if err != nil {
+		if errors.Is(err, ErrPromptResolveFailed) {
+			r.handlePromptResolveFailure(sessionID, meta.Name, loop, loopStore, err)
+			return tasksRefireDeliveryFailed
 		}
-		return false
+		if r.logger != nil && !errors.Is(err, ErrSessionBusy) {
+			if exhausted {
+				r.logger.Error("onTasks: re-fire failed after transient-race retries",
+					"session_id", sessionID, "error", err, "retries_exhausted", true)
+			} else {
+				r.logger.Warn("onTasks: re-fire failed", "session_id", sessionID, "error", err)
+			}
+		}
+		return tasksRefireDeliveryFailed
 	}
 	if err := baselineStore.Set(raw); err != nil && r.logger != nil {
 		r.logger.Warn("onTasks: failed to persist baseline after re-fire",
@@ -760,7 +922,7 @@ func (r *LoopRunner) maybeFireAccumulatedDelta(sessionID string, loop *session.L
 			"updated", len(delta.Updated),
 			"removed", len(delta.Removed))
 	}
-	return true
+	return tasksRefireDispatched
 }
 
 // BootstrapTasksBaseline initializes the onTasks baseline for a session if one
