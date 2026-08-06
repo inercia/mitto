@@ -3,7 +3,11 @@
  */
 
 import { describe, test, expect } from "./testing/testGlobals.js";
-import { tildifyPath } from "./paths.js";
+import {
+  tildifyPath,
+  getRelativePathIfInWorkspace,
+  routeDroppedPaths,
+} from "./paths.js";
 
 describe("tildifyPath", () => {
   test("shortens a macOS home path", () => {
@@ -70,5 +74,77 @@ describe("tildifyPath", () => {
 
   test("handles non-ascii usernames", () => {
     expect(tildifyPath("/Users/álvaro/proj")).toBe("~/proj");
+  });
+});
+
+describe("getRelativePathIfInWorkspace", () => {
+  test("returns the relative path for a file inside the workspace", () => {
+    expect(
+      getRelativePathIfInWorkspace("/repo/src/main.go", "/repo"),
+    ).toBe("src/main.go");
+  });
+
+  test("returns null for a file outside the workspace", () => {
+    expect(
+      getRelativePathIfInWorkspace("/Users/alvaro/Downloads/GLB.md", "/repo"),
+    ).toBe(null);
+  });
+
+  test("returns null for a path that merely shares the workspace prefix", () => {
+    // "/repo-other" must not be treated as inside "/repo".
+    expect(
+      getRelativePathIfInWorkspace("/repo-other/file.txt", "/repo"),
+    ).toBe(null);
+  });
+
+  test("tolerates a trailing slash on the workspace path", () => {
+    expect(
+      getRelativePathIfInWorkspace("/repo/src/main.go", "/repo/"),
+    ).toBe("src/main.go");
+  });
+
+  test("returns null for empty/missing inputs", () => {
+    expect(getRelativePathIfInWorkspace("", "/repo")).toBe(null);
+    expect(getRelativePathIfInWorkspace("/repo/file.txt", "")).toBe(null);
+    expect(getRelativePathIfInWorkspace(null, "/repo")).toBe(null);
+  });
+});
+
+describe("routeDroppedPaths", () => {
+  test("routes an all-inside-workspace drop entirely to insertAsText", () => {
+    expect(
+      routeDroppedPaths(["/repo/a.txt", "/repo/sub/b.txt"], "/repo"),
+    ).toEqual({
+      insertAsText: ["a.txt", "sub/b.txt"],
+      uploadFromPath: [],
+    });
+  });
+
+  test("mitto-q8fx: routes an outside-workspace path to uploadFromPath instead of dropping it", () => {
+    expect(
+      routeDroppedPaths(["/Users/alvaro/Downloads/GLB.md"], "/repo"),
+    ).toEqual({
+      insertAsText: [],
+      uploadFromPath: ["/Users/alvaro/Downloads/GLB.md"],
+    });
+  });
+
+  test("splits a mixed inside/outside drop into both buckets", () => {
+    expect(
+      routeDroppedPaths(
+        ["/repo/a.txt", "/Users/alvaro/Downloads/GLB.md"],
+        "/repo",
+      ),
+    ).toEqual({
+      insertAsText: ["a.txt"],
+      uploadFromPath: ["/Users/alvaro/Downloads/GLB.md"],
+    });
+  });
+
+  test("returns empty buckets for no paths", () => {
+    expect(routeDroppedPaths([], "/repo")).toEqual({
+      insertAsText: [],
+      uploadFromPath: [],
+    });
   });
 });

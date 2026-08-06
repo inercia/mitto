@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"errors"
 	"io"
 	"net/http"
 	"os"
@@ -89,6 +90,16 @@ func (h *Handlers) handleUploadFile(w http.ResponseWriter, r *http.Request, stor
 	if err := r.ParseMultipartForm(maxFileUploadSize); err != nil {
 		if strings.Contains(err.Error(), "request body too large") {
 			writeErrorJSON(w, http.StatusRequestEntityTooLarge, "file_too_large", "File exceeds 50MB limit")
+			return
+		}
+		// mitto-q8fx: a truncated multipart body (no closing boundary) means
+		// the source application "promised" the file but its blob read never
+		// completed (observed for drag-and-drop from VSCode into WKWebView).
+		// Surface a dedicated code so the UI/logs can name the actual cause
+		// instead of the generic "Failed to parse form".
+		if errors.Is(err, io.ErrUnexpectedEOF) || strings.Contains(err.Error(), "unexpected EOF") {
+			writeErrorJSON(w, http.StatusBadRequest, "file_truncated",
+				"The file could not be read from the source application (upload was truncated)")
 			return
 		}
 		writeErrorJSON(w, http.StatusBadRequest, "", "Failed to parse form")

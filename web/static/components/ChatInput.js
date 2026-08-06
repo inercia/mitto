@@ -16,6 +16,7 @@ import { secureFetch, authFetch } from "../utils/csrf.js";
 import { apiUrl, errorMessageFromData } from "../utils/api.js";
 import { endpoints } from "../utils/index.js";
 import { getContextWindowSize } from "../utils/models.js";
+import { routeDroppedPaths } from "../utils/paths.js";
 import {
   getPromptSortMode,
   getUIPromptPanelHeight,
@@ -1673,6 +1674,20 @@ export function ChatInput({
         prev.filter((img) => !tempIds.includes(img.id)),
       );
 
+      // The from-path endpoint silently skips unreadable/oversized paths and
+      // returns only the successes — surface skipped ones instead of letting
+      // the attachment vanish without explanation (mitto-q8fx).
+      if (results.length < tempImages.length) {
+        const uploadedNames = new Set(results.map((r) => r.name));
+        const failedNames = tempImages
+          .filter((t) => !uploadedNames.has(t.filename))
+          .map((t) => t.filename);
+        if (failedNames.length > 0) {
+          setUploadError(`Failed to upload: ${failedNames.join(", ")}`);
+          setTimeout(() => setUploadError(null), 6000);
+        }
+      }
+
       for (const data of results) {
         setPendingImages((prev) => [
           ...prev,
@@ -1800,6 +1815,20 @@ export function ChatInput({
       const tempIds = tempFiles.map((t) => t.id);
       setPendingFiles((prev) => prev.filter((f) => !tempIds.includes(f.id)));
 
+      // The from-path endpoint silently skips unreadable/oversized paths and
+      // returns only the successes — surface skipped ones instead of letting
+      // the attachment vanish without explanation (mitto-q8fx).
+      if (results.length < tempFiles.length) {
+        const uploadedNames = new Set(results.map((r) => r.name));
+        const failedNames = tempFiles
+          .filter((t) => !uploadedNames.has(t.filename))
+          .map((t) => t.filename);
+        if (failedNames.length > 0) {
+          setUploadError(`Failed to upload: ${failedNames.join(", ")}`);
+          setTimeout(() => setUploadError(null), 6000);
+        }
+      }
+
       for (const data of results) {
         setPendingFiles((prev) => [
           ...prev,
@@ -1892,25 +1921,6 @@ export function ChatInput({
   };
 
   /**
-   * Check if a file path is inside the workspace directory.
-   * @param {string} filePath - Absolute file path
-   * @param {string} workspacePath - Workspace directory path
-   * @returns {string|null} Relative path if inside workspace, null otherwise
-   */
-  const getRelativePathIfInWorkspace = (filePath, workspacePath) => {
-    if (!filePath || !workspacePath) return null;
-    // Normalize paths (remove trailing slashes)
-    const normalizedFile = filePath.replace(/\/+$/, "");
-    const normalizedWorkspace = workspacePath.replace(/\/+$/, "");
-    // Check if file is inside workspace
-    if (normalizedFile.startsWith(normalizedWorkspace + "/")) {
-      // Return relative path (without leading slash)
-      return normalizedFile.slice(normalizedWorkspace.length + 1);
-    }
-    return null;
-  };
-
-  /**
    * Insert text at the current cursor position in the textarea.
    * @param {string} textToInsert - Text to insert
    */
@@ -1936,35 +1946,16 @@ export function ChatInput({
   };
 
   // Handle file drop - supports both images and other files
-  // On native macOS app, files dropped from within the workspace are inserted as relative paths
+  // On native macOS app, files dropped from within the workspace are inserted
+  // as relative paths; files dropped from outside the workspace are uploaded
+  // server-side via the from-path endpoint (routeDroppedPaths, utils/paths.js)
+  // instead of the blob-based FormData path below, which fails for source
+  // apps that only "promise" the file instead of handing over real bytes
+  // (e.g. dragging from the VSCode explorer — mitto-q8fx).
   const handleDrop = async (e) => {
     e.preventDefault();
     setIsDragOver(false);
     if (isFullyDisabled || isReadOnly || !sessionId) return;
-
-    // Smart path insertion for native macOS app
-    // When dropping files from the current workspace, insert relative path instead of uploading
-    if (isNativeApp() && workingDir) {
-      const filePaths = extractFilePathsFromDrag(e.dataTransfer);
-      if (filePaths.length > 0) {
-        // Check if all dropped files are within the workspace
-        const relativePaths = filePaths
-          .map((fp) => getRelativePathIfInWorkspace(fp, workingDir))
-          .filter(Boolean);
-
-        // If we found relative paths for ALL files, insert them as text
-        if (
-          relativePaths.length === filePaths.length &&
-          relativePaths.length > 0
-        ) {
-          // Insert relative paths, separated by spaces if multiple
-          const pathsText = relativePaths.join(" ");
-          insertTextAtCursor(pathsText);
-          return; // Don't upload, we've handled the drop
-        }
-        // If some files are outside workspace, fall through to upload behavior
-      }
-    }
 
     const files = Array.from(e.dataTransfer.files);
     if (window.console?.debug) {
@@ -1973,6 +1964,54 @@ export function ChatInput({
         files.map((f) => ({ name: f.name, type: f.type, size: f.size })),
       );
     }
+
+    if (isNativeApp() && workingDir) {
+      const filePaths = extractFilePathsFromDrag(e.dataTransfer);
+      if (filePaths.length > 0) {
+        const { insertAsText, uploadFromPath } = routeDroppedPaths(
+          filePaths,
+          workingDir,
+        );
+
+        if (uploadFromPath.length === 0) {
+          // Every dropped file resolves inside the workspace: insert
+          // relative paths as text, separated by spaces if multiple.
+          insertTextAtCursor(insertAsText.join(" "));
+          return; // Don't upload, we've handled the drop
+        }
+
+        // At least one path is outside the workspace: read it server-side
+        // via the from-path endpoint instead of falling through to the
+        // blob-based FormData upload. Match each outside path back to its
+        // dropped File by filename to classify it as an image or a plain
+        // file using the browser's detected MIME type — populated correctly
+        // even when the byte stream itself cannot be read (mitto-q8fx).
+        const imagePaths = [];
+        const otherPaths = [];
+        for (const path of uploadFromPath) {
+          const filename = path.split("/").pop();
+          const match = files.find((f) => f.name === filename);
+          if (match && match.type.startsWith("image/")) {
+            imagePaths.push(path);
+          } else {
+            otherPaths.push(path);
+          }
+        }
+        if (insertAsText.length > 0) {
+          insertTextAtCursor(insertAsText.join(" "));
+        }
+        if (imagePaths.length > 0) {
+          await uploadImagesFromPaths(imagePaths);
+        }
+        if (otherPaths.length > 0) {
+          await uploadFilesFromPaths(otherPaths);
+        }
+        return;
+      }
+      // No usable absolute paths (e.g. no text/uri-list): fall through to
+      // the blob-based upload below.
+    }
+
     const imageFiles = files.filter((f) => f.type.startsWith("image/"));
     const otherFiles = files.filter((f) => !f.type.startsWith("image/"));
 
