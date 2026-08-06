@@ -4,7 +4,10 @@
 package session
 
 // Queue returns a Queue instance for managing the message queue of a session.
-// The returned Queue is safe for concurrent use.
+// The returned Queue is safe for concurrent use, including across
+// independently-constructed *Queue values pointed at the same session
+// directory (mitto-pr0): the mutex is shared via a process-wide registry
+// keyed on the resolved session directory, see queueLockFor in queue.go.
 func (s *Store) Queue(sessionID string) *Queue {
 	return NewQueue(s.sessionDir(sessionID))
 }

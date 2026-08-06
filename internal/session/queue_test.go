@@ -342,6 +342,84 @@ func TestQueue_ConcurrentAccess(t *testing.T) {
 	}
 }
 
+// TestQueue_MultiInstanceConcurrentPop_mitto_pr0 reproduces mitto-pr0: "Queued
+// message dispatched twice on cold resume: MCP auto-resume drain races
+// SessionManager drain ('prompt already in progress')".
+//
+// Root cause: Store.Queue(sessionID) (internal/session/store_dispensers.go)
+// vends a FRESH *Queue — with a FRESH sync.Mutex — on every call. Pop()'s
+// mutex only serializes callers that share the SAME *Queue instance; it does
+// nothing to serialize two independent instances pointed at the same session
+// directory. In production, SessionManager's post-resume sweep
+// (session_manager.go:2714 go bs.TryProcessQueuedMessage()) and the MCP
+// auto-resume path (tools_prompt_dispatch.go:274 go bs.TryProcessQueuedMessage())
+// each call queueForSession(), which allocates a brand-new session.Queue per
+// call, and both race Pop() against the same on-disk queue.json. Because
+// Pop() is a plain readQueue-then-writeQueue (atomic rename) with no
+// cross-instance coordination, both instances can read the file before
+// either's write lands, so both return the SAME message — one dispatch wins,
+// the second later fails downstream with "prompt already in progress".
+//
+// This test drives many goroutines, each minting its OWN NewQueue(dir) over
+// the same directory (mirroring Store.Queue's per-call allocation), racing
+// Pop() against a single queued message. Correct behavior requires exactly
+// one non-ErrQueueEmpty result across all goroutines.
+func TestQueue_MultiInstanceConcurrentPop_mitto_pr0(t *testing.T) {
+	dir := t.TempDir()
+
+	seed := NewQueue(dir)
+	msg, err := seed.Add("only message", nil, nil, "", nil, 0, nil, "")
+	if err != nil {
+		t.Fatalf("Add() error = %v", err)
+	}
+
+	const attempts = 200
+	var wg sync.WaitGroup
+	wg.Add(attempts)
+
+	start := make(chan struct{})
+	results := make([]QueuedMessage, attempts)
+	errs := make([]error, attempts)
+
+	for i := 0; i < attempts; i++ {
+		go func(i int) {
+			defer wg.Done()
+			// Each goroutine obtains its OWN Queue instance over the SAME
+			// session directory — exactly what Store.Queue(sessionID) does
+			// on every call (no per-sessionID caching/singleton).
+			q := NewQueue(dir)
+			<-start
+			results[i], errs[i] = q.Pop()
+		}(i)
+	}
+
+	close(start)
+	wg.Wait()
+
+	successCount := 0
+	for i := 0; i < attempts; i++ {
+		switch errs[i] {
+		case nil:
+			successCount++
+			if results[i].ID != msg.ID {
+				t.Errorf("Pop() returned unexpected message ID = %q, want %q", results[i].ID, msg.ID)
+			}
+		case ErrQueueEmpty:
+			// Expected for the goroutines that lose the race.
+		default:
+			t.Errorf("Pop() unexpected error = %v", errs[i])
+		}
+	}
+
+	if successCount != 1 {
+		t.Errorf("mitto-pr0: %d goroutines popped the single queued message (message_id=%s), want exactly 1 — "+
+			"Store.Queue() vends a fresh *Queue (fresh mutex) per call, so two instances over the same "+
+			"session directory provide no mutual exclusion and both can Pop() the same entry, causing a "+
+			"duplicate dispatch (\"Sending queued message\" logged twice / \"prompt already in progress\")",
+			successCount, msg.ID)
+	}
+}
+
 func TestQueue_Persistence(t *testing.T) {
 	dir := t.TempDir()
 

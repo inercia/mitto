@@ -548,6 +548,10 @@ func (s *Store) Delete(sessionID string) error {
 		return err
 	}
 
+	// Release the shared per-directory queue lock (mitto-pr0), if any, so the
+	// process-wide registry does not retain an entry for a deleted session.
+	releaseQueueLock(sessionDir)
+
 	log.Debug("session deleted", "session_id", sessionID, "session_dir", sessionDir)
 	return nil
 }
