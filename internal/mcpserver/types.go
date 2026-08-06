@@ -426,14 +426,21 @@ type ConversationUpdateInput struct {
 	LoopEnabled        *bool             `json:"loop_enabled,omitempty"`         // Whether the loop is active (defaults to true)
 	LoopFreshContext   *bool             `json:"loop_fresh_context,omitempty"`   // Start each run with a fresh agent context (default false)
 	LoopMaxIterations  *int              `json:"loop_max_iterations,omitempty"`  // Maximum number of scheduled runs (0 = unlimited)
-	// LoopTrigger selects how the prompt fires: "schedule" (frequency-based, default),
-	// "onCompletion" (event-driven: fire after the agent stops responding + the completion delay),
-	// or "onTasks" (event-driven: fire when beads/tasks in the workspace change, optionally
-	// gated by loop_condition).
+	// LoopTrigger selects how the prompt fires. Accepts a single trigger
+	// ("schedule", "onCompletion", or "onTasks") or a comma-separated list of
+	// several ("schedule,onCompletion") to arm multiple triggers at once
+	// (mitto-r6j.5). "schedule" is frequency-based (default when unset);
+	// "onCompletion" fires after the agent stops responding + the completion
+	// delay; "onTasks" fires when beads/tasks in the workspace change,
+	// optionally gated by loop_condition.
 	LoopTrigger *string `json:"loop_trigger,omitempty"`
 	// LoopCompletionDelaySeconds is the wait (seconds) after the agent stops before the next
 	// run; only meaningful for the onCompletion trigger. Clamped to the global floor on write.
 	LoopCompletionDelaySeconds *int `json:"loop_completion_delay_seconds,omitempty"`
+	// LoopSettleWindowSeconds is an optional pre-fire debounce window (seconds)
+	// for the onTasks trigger; nil/0 = fire immediately on the first delta
+	// (default). Only meaningful when "onTasks" is among the armed triggers.
+	LoopSettleWindowSeconds *int `json:"loop_settle_window_seconds,omitempty"`
 	// LoopMaxDurationSeconds is the wall-clock cap (seconds) since iterating started (0 = unlimited).
 	LoopMaxDurationSeconds *int `json:"loop_max_duration_seconds,omitempty"`
 	// LoopCondition is a CEL expression gating onTasks firing (only meaningful when
@@ -487,12 +494,18 @@ type ConversationUpdateOutput struct {
 	LoopIterationCount int               `json:"loop_iteration_count,omitempty"`
 	LoopNextRun        string            `json:"loop_next_run,omitempty"` // RFC3339 format
 	// On-completion trigger fields (returned when configured)
-	LoopTrigger                string `json:"loop_trigger,omitempty"`
-	LoopCompletionDelaySeconds int    `json:"loop_completion_delay_seconds,omitempty"`
-	LoopMaxDurationSeconds     int    `json:"loop_max_duration_seconds,omitempty"`
+	LoopTrigger string `json:"loop_trigger,omitempty"`
+	// LoopTriggers is the full resolved trigger list (mitto-r6j.5); LoopTrigger
+	// above remains the primary/first entry for back-compat.
+	LoopTriggers               []string `json:"loop_triggers,omitempty"`
+	LoopCompletionDelaySeconds int      `json:"loop_completion_delay_seconds,omitempty"`
+	LoopMaxDurationSeconds     int      `json:"loop_max_duration_seconds,omitempty"`
 	// onTasks trigger fields (returned when configured)
 	LoopCondition       string `json:"loop_condition,omitempty"`
 	LoopConditionPreset string `json:"loop_condition_preset,omitempty"`
+	// LoopSettleWindowSeconds reflects the stored onTasks pre-fire debounce
+	// window. Nil when unset (default: fire immediately on the first delta).
+	LoopSettleWindowSeconds *int `json:"loop_settle_window_seconds,omitempty"`
 	// LoopCoalesceDuringBusy reflects the stored opt-in flag. Nil when unset
 	// (default coalesce behaviour); non-nil when the caller explicitly opted in
 	// or out.

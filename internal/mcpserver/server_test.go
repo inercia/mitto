@@ -1029,6 +1029,65 @@ func TestConversationStart_PlaceholderLoopSeed_Rejected(t *testing.T) {
 // ConversationStartInput.
 func intPtr(v int) *int { return &v }
 
+// TestConversationStart_LoopTrigger_CommaSeparatedList verifies that a
+// comma-separated loop_trigger MCP argument ("onCompletion,onTasks") arms
+// both triggers on the persisted LoopPrompt (mitto-r6j.5 flat-surface
+// fallback — MCP stays a plain string; multiple triggers are comma-joined
+// rather than a JSON array).
+func TestConversationStart_LoopTrigger_CommaSeparatedList(t *testing.T) {
+	store, srv, parentID := setupConversationStartServer(t)
+
+	ctx := context.Background()
+	_, output, err := srv.handleConversationStart(ctx, nil, ConversationStartInput{
+		SelfID:                     parentID,
+		LoopPrompt:                 "check and continue",
+		LoopTrigger:                "onCompletion,onTasks",
+		LoopCompletionDelaySeconds: intPtr(30),
+	})
+	if err != nil {
+		t.Fatalf("handleConversationStart error = %v", err)
+	}
+	if !output.LoopConfigured {
+		t.Fatal("LoopConfigured = false, want true")
+	}
+
+	loop, err := store.Loop(output.SessionID).Get()
+	if err != nil {
+		t.Fatalf("Loop().Get() error = %v", err)
+	}
+	if len(loop.Triggers) != 2 || !loop.HasTrigger(session.TriggerOnCompletion) || !loop.HasTrigger(session.TriggerOnTasks) {
+		t.Errorf("Triggers = %v, want both onCompletion and onTasks", loop.Triggers)
+	}
+}
+
+// TestConversationStart_LoopTrigger_SingleValue verifies that a single
+// loop_trigger value (no comma) still produces a one-element trigger list.
+func TestConversationStart_LoopTrigger_SingleValue(t *testing.T) {
+	store, srv, parentID := setupConversationStartServer(t)
+
+	ctx := context.Background()
+	_, output, err := srv.handleConversationStart(ctx, nil, ConversationStartInput{
+		SelfID:                     parentID,
+		LoopPrompt:                 "check and continue",
+		LoopTrigger:                "onCompletion",
+		LoopCompletionDelaySeconds: intPtr(30),
+	})
+	if err != nil {
+		t.Fatalf("handleConversationStart error = %v", err)
+	}
+	if !output.LoopConfigured {
+		t.Fatal("LoopConfigured = false, want true")
+	}
+
+	loop, err := store.Loop(output.SessionID).Get()
+	if err != nil {
+		t.Fatalf("Loop().Get() error = %v", err)
+	}
+	if len(loop.Triggers) != 1 || loop.Triggers[0] != session.TriggerOnCompletion {
+		t.Errorf("Triggers = %v, want [onCompletion]", loop.Triggers)
+	}
+}
+
 // TestConversationStart_Singleton_RoutesToExisting verifies that a second
 // mitto_conversation_new for the same singleton prompt in the same working dir
 // routes to the existing conversation (reused=true) instead of creating a
@@ -9999,6 +10058,70 @@ func TestConversationUpdate_OnCompletionLoop(t *testing.T) {
 	}
 	if out2.LoopMaxDurationSeconds != 3600 {
 		t.Errorf("patched maxDur = %d, want preserved 3600", out2.LoopMaxDurationSeconds)
+	}
+}
+
+// TestConversationUpdate_MultiTriggerCommaSeparated verifies that
+// mitto_conversation_update's flat loop_trigger argument accepts a
+// comma-separated list on both the create (isNew) and partial-update paths,
+// and that a partial update of an unrelated field does not clobber a
+// pre-existing multi-trigger list (mitto-r6j.5 clobber regression at the MCP
+// layer).
+func TestConversationUpdate_MultiTriggerCommaSeparated(t *testing.T) {
+	store, srv, parentID := setupConversationStartServer(t)
+	ctx := context.Background()
+
+	prompt := "keep iterating"
+	trigger := "onCompletion,onTasks"
+
+	// Create via the isNew path.
+	_, out, err := srv.handleConversationUpdate(ctx, nil, ConversationUpdateInput{
+		SelfID:         parentID,
+		ConversationID: parentID,
+		LoopPrompt:     &prompt,
+		LoopTrigger:    &trigger,
+	})
+	if err != nil {
+		t.Fatalf("handleConversationUpdate error: %v", err)
+	}
+	if !out.Success {
+		t.Fatalf("update not successful: %s", out.Error)
+	}
+	if len(out.LoopTriggers) != 2 || out.LoopTriggers[0] != "onCompletion" || out.LoopTriggers[1] != "onTasks" {
+		t.Errorf("output LoopTriggers = %v, want [onCompletion onTasks]", out.LoopTriggers)
+	}
+
+	stored, err := store.Loop(parentID).Get()
+	if err != nil {
+		t.Fatalf("Get loop: %v", err)
+	}
+	if len(stored.Triggers) != 2 || !stored.HasTrigger(session.TriggerOnCompletion) || !stored.HasTrigger(session.TriggerOnTasks) {
+		t.Errorf("stored.Triggers = %v, want both onCompletion and onTasks", stored.Triggers)
+	}
+
+	// Partial update of an unrelated field must not clobber the trigger list.
+	disabled := false
+	_, out2, err := srv.handleConversationUpdate(ctx, nil, ConversationUpdateInput{
+		SelfID:         parentID,
+		ConversationID: parentID,
+		LoopEnabled:    &disabled,
+	})
+	if err != nil {
+		t.Fatalf("handleConversationUpdate (patch) error: %v", err)
+	}
+	if !out2.Success {
+		t.Fatalf("patch not successful: %s", out2.Error)
+	}
+	if len(out2.LoopTriggers) != 2 || out2.LoopTriggers[0] != "onCompletion" || out2.LoopTriggers[1] != "onTasks" {
+		t.Errorf("output LoopTriggers after unrelated patch = %v, want preserved [onCompletion onTasks]", out2.LoopTriggers)
+	}
+
+	stored2, err := store.Loop(parentID).Get()
+	if err != nil {
+		t.Fatalf("Get loop after patch: %v", err)
+	}
+	if len(stored2.Triggers) != 2 || !stored2.HasTrigger(session.TriggerOnCompletion) || !stored2.HasTrigger(session.TriggerOnTasks) {
+		t.Errorf("stored.Triggers after unrelated patch = %v, want preserved (clobber regression)", stored2.Triggers)
 	}
 }
 

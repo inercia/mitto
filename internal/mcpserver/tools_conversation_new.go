@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -52,9 +53,16 @@ type ConversationStartInput struct {
 	LoopFreshContext   *bool             `json:"loop_fresh_context,omitempty"`   // Start each run with a fresh agent context (default false)
 	LoopMaxIterations  *int              `json:"loop_max_iterations,omitempty"`  // Maximum number of scheduled runs (0 = unlimited)
 	// On-completion / on-tasks trigger configuration (optional)
-	LoopTrigger                string `json:"loop_trigger,omitempty"`                  // "schedule" (default), "onCompletion", or "onTasks"
+	// LoopTrigger accepts a single trigger ("schedule", "onCompletion", or
+	// "onTasks") or a comma-separated list of several ("schedule,onCompletion")
+	// to arm multiple triggers at once (mitto-r6j.5). "schedule" is the default
+	// when unset.
+	LoopTrigger                string `json:"loop_trigger,omitempty"`
 	LoopCompletionDelaySeconds *int   `json:"loop_completion_delay_seconds,omitempty"` // Wait (s) after agent stops, onCompletion only; clamped to floor
 	LoopMaxDurationSeconds     *int   `json:"loop_max_duration_seconds,omitempty"`     // Wall-clock cap (s) since iterating started (0 = unlimited)
+	// LoopSettleWindowSeconds is an optional pre-fire debounce window (seconds)
+	// for the onTasks trigger; nil/0 = fire immediately on the first delta.
+	LoopSettleWindowSeconds *int `json:"loop_settle_window_seconds,omitempty"`
 	// LoopCondition is a CEL expression gating onTasks firing (only meaningful when
 	// loop_trigger is "onTasks"). Empty means fire on ANY beads/task change.
 	LoopCondition string `json:"loop_condition,omitempty"`
@@ -639,16 +647,18 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 	var loopConfigured bool
 	var loopNextRun string
 	if loopPromptText != "" {
-		// Resolve the trigger (default schedule). onCompletion and onTasks are
-		// event-driven and do not require a frequency.
-		trigger := session.LoopTrigger(input.LoopTrigger)
-		switch trigger {
-		case "", session.TriggerSchedule, session.TriggerOnCompletion, session.TriggerOnTasks:
-			// valid
-		default:
-			return nil, ConversationStartOutput{}, fmt.Errorf("loop_trigger must be 'schedule', 'onCompletion', or 'onTasks'")
+		// Resolve the trigger list (default [schedule]). onCompletion and
+		// onTasks are event-driven; frequency is only required when schedule
+		// is among the armed triggers (mitto-r6j.5: multi-trigger configs may
+		// list schedule alongside onCompletion/onTasks).
+		triggers, err := parseLoopTriggerList(input.LoopTrigger)
+		if err != nil {
+			return nil, ConversationStartOutput{}, err
 		}
-		skipFrequency := trigger == session.TriggerOnCompletion || trigger == session.TriggerOnTasks
+		if len(triggers) == 0 {
+			triggers = []session.LoopTrigger{session.TriggerSchedule}
+		}
+		skipFrequency := !slices.Contains(triggers, session.TriggerSchedule)
 
 		var freq session.Frequency
 		if !skipFrequency {
@@ -715,7 +725,7 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 			Enabled:            enabled,
 			FreshContext:       freshContext,
 			MaxIterations:      maxIterations,
-			Trigger:            trigger,
+			Triggers:           triggers,
 			DelaySeconds:       delaySeconds,
 			MaxDurationSeconds: maxDurationSeconds,
 			Condition:          input.LoopCondition,
@@ -728,6 +738,10 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 		if input.LoopRunOnStart != nil {
 			v := *input.LoopRunOnStart
 			loop.RunOnStart = &v
+		}
+		if input.LoopSettleWindowSeconds != nil {
+			v := *input.LoopSettleWindowSeconds
+			loop.SettleWindowSeconds = &v
 		}
 		// Clamp the on-completion delay to the global floor (no-op for schedule).
 		loop.ClampDelay(s.loopDelayFloor())

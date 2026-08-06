@@ -237,6 +237,7 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 			"Set 'loop_fresh_context' to true to start each run with a clean agent context (no history injection, new ACP session). " +
 			"Set 'loop_max_iterations' to limit the number of scheduled runs (0 = unlimited). " +
 			"Set 'loop_trigger' to 'onCompletion' to fire the next run after the agent stops responding (event-driven), or 'onTasks' to fire when beads/tasks in the workspace change (event-driven), instead of on a fixed 'schedule'; neither onCompletion nor onTasks requires a frequency. " +
+			"Several triggers can be armed at once by passing a comma-separated list (e.g. 'schedule,onCompletion') — the loop then fires whenever ANY armed trigger fires, and each trigger's own settings (frequency, completion delay, task condition) apply independently. " +
 			"For 'onCompletion', set 'loop_completion_delay_seconds' to the wait after the agent stops (clamped to the global floor). " +
 			"For 'onTasks', optionally set 'loop_condition' to a CEL expression gating which task changes fire the run (empty = fire on ANY beads/task change); 'loop_condition_preset' records an optional UI preset id compiled into the condition. " +
 			"Set 'loop_max_duration_seconds' to auto-stop the conversation after a wall-clock cap since iterating started (0 = unlimited). " +
@@ -315,6 +316,7 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 			"Set 'loop_fresh_context' to true to start each run with a clean agent context (no history injection, new ACP session). " +
 			"Set 'loop_max_iterations' to limit the number of scheduled runs (0 = unlimited). " +
 			"Set 'loop_trigger' to 'onCompletion' (event-driven: fire after the agent stops), 'onTasks' (event-driven: fire when beads/tasks in the workspace change), or 'schedule' (frequency-based, default); neither onCompletion nor onTasks requires a frequency. " +
+			"Several triggers can be armed at once by passing a comma-separated list (e.g. 'schedule,onCompletion'); the list REPLACES the currently armed set, and the loop fires whenever ANY armed trigger fires. " +
 			"For 'onCompletion', set 'loop_completion_delay_seconds' to the wait after the agent stops (clamped to the global floor). " +
 			"For 'onTasks', optionally set 'loop_condition' to a CEL expression gating which task changes fire the run (empty = fire on ANY beads/task change); 'loop_condition_preset' records an optional UI preset id compiled into the condition. " +
 			"Set 'loop_max_duration_seconds' to auto-stop the conversation after a wall-clock cap since iterating started (0 = unlimited). " +

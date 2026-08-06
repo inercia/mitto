@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/inercia/mitto/internal/config"
+	"github.com/inercia/mitto/internal/session"
 )
 
 func boolPtr(b bool) *bool { return &b }
@@ -461,6 +462,117 @@ func TestApplyPromptLoopDefaultsToUpdateInput_RunOnStart(t *testing.T) {
 		applyPromptLoopDefaultsToUpdateInput(input, pl)
 		if input.LoopRunOnStart != nil {
 			t.Errorf("opt-out should have skipped the merge, got %v", *input.LoopRunOnStart)
+		}
+	})
+}
+
+// TestParseLoopTriggerList covers the flat-MCP-surface fallback (mitto-r6j.5):
+// loop_trigger is a plain string that accepts either a single trigger or a
+// comma-separated list.
+func TestParseLoopTriggerList(t *testing.T) {
+	tests := []struct {
+		name    string
+		raw     string
+		want    []session.LoopTrigger
+		wantErr bool
+	}{
+		{name: "empty returns nil", raw: "", want: nil},
+		{name: "single trigger", raw: "schedule", want: []session.LoopTrigger{session.TriggerSchedule}},
+		{
+			name: "comma-separated list",
+			raw:  "schedule,onCompletion",
+			want: []session.LoopTrigger{session.TriggerSchedule, session.TriggerOnCompletion},
+		},
+		{
+			name: "comma-separated list with spaces",
+			raw:  "schedule, onTasks , onCompletion",
+			want: []session.LoopTrigger{session.TriggerSchedule, session.TriggerOnTasks, session.TriggerOnCompletion},
+		},
+		{
+			name: "duplicates deduped preserving first occurrence order",
+			raw:  "onTasks,schedule,onTasks",
+			want: []session.LoopTrigger{session.TriggerOnTasks, session.TriggerSchedule},
+		},
+		{name: "invalid trigger errors", raw: "not-a-trigger", wantErr: true},
+		{name: "one invalid entry in a list errors", raw: "schedule,bogus", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseLoopTriggerList(tt.raw)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("parseLoopTriggerList(%q) error = nil, want an error", tt.raw)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parseLoopTriggerList(%q) error = %v, want nil", tt.raw, err)
+			}
+			if len(got) != len(tt.want) {
+				t.Fatalf("parseLoopTriggerList(%q) = %v, want %v", tt.raw, got, tt.want)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Errorf("parseLoopTriggerList(%q)[%d] = %q, want %q", tt.raw, i, got[i], tt.want[i])
+				}
+			}
+		})
+	}
+}
+
+// TestApplyPromptLoopDefaults_MultiTriggerAndSettleWindow verifies that a
+// prompt declaring trigger: [schedule, onTasks] fills the WHOLE list (as a
+// comma-joined loop_trigger string, matching the flat MCP surface) into both
+// ConversationStartInput and ConversationUpdateInput when the caller left it
+// unset, and that onTasks.settleWindow reaches LoopSettleWindowSeconds on
+// both (mitto-r6j.5).
+func TestApplyPromptLoopDefaults_MultiTriggerAndSettleWindow(t *testing.T) {
+	pl := &config.PromptLoop{
+		Trigger:  []string{"schedule", "onTasks"},
+		Schedule: &config.PromptLoopSchedule{Value: 1, Unit: "hours"},
+		OnTasks:  &config.PromptLoopOnTasks{SettleWindow: 30},
+	}
+
+	t.Run("start input", func(t *testing.T) {
+		input := &ConversationStartInput{}
+		applyPromptLoopDefaultsToStartInput(input, pl, "seed-prompt")
+
+		triggers, err := parseLoopTriggerList(input.LoopTrigger)
+		if err != nil {
+			t.Fatalf("parseLoopTriggerList(%q) error = %v", input.LoopTrigger, err)
+		}
+		if len(triggers) != 2 || triggers[0] != session.TriggerSchedule || triggers[1] != session.TriggerOnTasks {
+			t.Errorf("resolved triggers = %v, want [schedule onTasks]", triggers)
+		}
+		if input.LoopSettleWindowSeconds == nil || *input.LoopSettleWindowSeconds != 30 {
+			t.Errorf("LoopSettleWindowSeconds = %v, want *30", input.LoopSettleWindowSeconds)
+		}
+	})
+
+	t.Run("update input", func(t *testing.T) {
+		input := &ConversationUpdateInput{}
+		applyPromptLoopDefaultsToUpdateInput(input, pl)
+
+		if input.LoopTrigger == nil {
+			t.Fatal("LoopTrigger should have been filled from frontmatter")
+		}
+		triggers, err := parseLoopTriggerList(*input.LoopTrigger)
+		if err != nil {
+			t.Fatalf("parseLoopTriggerList(%q) error = %v", *input.LoopTrigger, err)
+		}
+		if len(triggers) != 2 || triggers[0] != session.TriggerSchedule || triggers[1] != session.TriggerOnTasks {
+			t.Errorf("resolved triggers = %v, want [schedule onTasks]", triggers)
+		}
+		if input.LoopSettleWindowSeconds == nil || *input.LoopSettleWindowSeconds != 30 {
+			t.Errorf("LoopSettleWindowSeconds = %v, want *30", input.LoopSettleWindowSeconds)
+		}
+	})
+
+	t.Run("explicit caller loop_trigger wins over frontmatter on start input", func(t *testing.T) {
+		input := &ConversationStartInput{LoopTrigger: "onCompletion"}
+		applyPromptLoopDefaultsToStartInput(input, pl, "seed-prompt")
+		if input.LoopTrigger != "onCompletion" {
+			t.Errorf("LoopTrigger = %q, want caller's explicit %q preserved", input.LoopTrigger, "onCompletion")
 		}
 	})
 }

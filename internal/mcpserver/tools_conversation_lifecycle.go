@@ -6,6 +6,7 @@ package mcpserver
 import (
 	"context"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -651,7 +652,7 @@ func (s *Server) handleConversationUpdate(ctx context.Context, req *mcp.CallTool
 		input.LoopFrequencyValue != nil || input.LoopFrequencyUnit != nil || input.LoopEnabled != nil || input.LoopFreshContext != nil || input.LoopMaxIterations != nil ||
 		input.LoopTrigger != nil || input.LoopCompletionDelaySeconds != nil || input.LoopMaxDurationSeconds != nil ||
 		input.LoopCondition != nil || input.LoopConditionPreset != nil || input.LoopCoalesceDuringBusy != nil ||
-		input.LoopRunOnStart != nil {
+		input.LoopRunOnStart != nil || input.LoopSettleWindowSeconds != nil {
 		loopStore := store.Loop(input.ConversationID)
 
 		// Mutual exclusion + name resolution for a named loop prompt. Callers may set
@@ -705,22 +706,24 @@ func (s *Server) handleConversationUpdate(ctx context.Context, req *mcp.CallTool
 		isNew := existErr != nil || existing == nil
 
 		if isNew {
-			// Resolve the trigger (default schedule). onCompletion and onTasks are
-			// event-driven and do not require a frequency.
-			trigger := session.TriggerSchedule
+			// Resolve the trigger list (default [schedule]). onCompletion and
+			// onTasks are event-driven; frequency is only required when
+			// schedule is among the armed triggers (mitto-r6j.5).
+			triggerRaw := ""
 			if input.LoopTrigger != nil {
-				trigger = session.LoopTrigger(*input.LoopTrigger)
+				triggerRaw = *input.LoopTrigger
 			}
-			switch trigger {
-			case "", session.TriggerSchedule, session.TriggerOnCompletion, session.TriggerOnTasks:
-				// valid
-			default:
+			triggers, err := parseLoopTriggerList(triggerRaw)
+			if err != nil {
 				return nil, ConversationUpdateOutput{
 					Success: false,
-					Error:   "loop_trigger must be 'schedule', 'onCompletion', or 'onTasks'",
+					Error:   err.Error(),
 				}, nil
 			}
-			skipFrequency := trigger == session.TriggerOnCompletion || trigger == session.TriggerOnTasks
+			if len(triggers) == 0 {
+				triggers = []session.LoopTrigger{session.TriggerSchedule}
+			}
+			skipFrequency := !slices.Contains(triggers, session.TriggerSchedule)
 
 			// Creating new loop config — require a body via either a non-empty
 			// loop_prompt or a resolved loop_prompt_name.
@@ -824,7 +827,7 @@ func (s *Server) handleConversationUpdate(ctx context.Context, req *mcp.CallTool
 				Enabled:            enabled,
 				FreshContext:       freshContext,
 				MaxIterations:      maxIterations,
-				Trigger:            trigger,
+				Triggers:           triggers,
 				DelaySeconds:       delaySeconds,
 				MaxDurationSeconds: maxDurationSeconds,
 			}
@@ -841,6 +844,10 @@ func (s *Server) handleConversationUpdate(ctx context.Context, req *mcp.CallTool
 			if input.LoopRunOnStart != nil {
 				v := *input.LoopRunOnStart
 				loop.RunOnStart = &v
+			}
+			if input.LoopSettleWindowSeconds != nil {
+				v := *input.LoopSettleWindowSeconds
+				loop.SettleWindowSeconds = &v
 			}
 			// Clamp the on-completion delay to the global floor (no-op for schedule).
 			loop.ClampDelay(s.loopDelayFloor())
@@ -916,24 +923,36 @@ func (s *Server) handleConversationUpdate(ctx context.Context, req *mcp.CallTool
 				enabled = input.LoopEnabled
 			}
 
-			// On-completion fields (partial). Convert the trigger string to the typed pointer.
-			var trigger *session.LoopTrigger
+			// On-completion fields (partial). Parse the flat loop_trigger arg
+			// (single value or comma-separated list) into the canonical list.
+			var triggersPtr *[]session.LoopTrigger
 			if input.LoopTrigger != nil {
-				t := session.LoopTrigger(*input.LoopTrigger)
-				trigger = &t
+				ts, err := parseLoopTriggerList(*input.LoopTrigger)
+				if err != nil {
+					return nil, ConversationUpdateOutput{
+						Success: false,
+						Error:   err.Error(),
+					}, nil
+				}
+				triggersPtr = &ts
 			}
 			delaySeconds := input.LoopCompletionDelaySeconds
 
-			// Clamp the on-completion delay to the global floor on write. The effective
-			// trigger is the patched value when provided, otherwise the stored one.
+			// Clamp the on-completion delay to the global floor on write.
+			// Membership — not primacy — decides whether the clamp applies:
+			// the effective trigger set is the patched value when provided,
+			// otherwise the stored one (mitto-r6j.5: a multi-trigger config
+			// may list onCompletion alongside other triggers).
 			if delaySeconds != nil {
 				floor := s.loopDelayFloor()
 				if *delaySeconds < floor {
-					effTrigger := existing.Trigger
-					if trigger != nil {
-						effTrigger = *trigger
+					isOnCompletion := false
+					if triggersPtr != nil {
+						isOnCompletion = slices.Contains(*triggersPtr, session.TriggerOnCompletion)
+					} else {
+						isOnCompletion = existing.HasTrigger(session.TriggerOnCompletion)
 					}
-					if effTrigger == session.TriggerOnCompletion {
+					if isOnCompletion {
 						clamped := floor
 						delaySeconds = &clamped
 					}
@@ -948,7 +967,23 @@ func (s *Server) handleConversationUpdate(ctx context.Context, req *mcp.CallTool
 				a := input.LoopArguments
 				argsPtr = &a
 			}
-			if err := loopStore.Update(prompt, promptName, freq, enabled, input.LoopFreshContext, input.LoopMaxIterations, trigger, delaySeconds, input.LoopMaxDurationSeconds, argsPtr, input.LoopCondition, input.LoopConditionPreset, nil, input.LoopCoalesceDuringBusy, input.LoopRunOnStart); err != nil {
+			if err := loopStore.Update(session.LoopUpdate{
+				Prompt:              prompt,
+				PromptName:          promptName,
+				Frequency:           freq,
+				Enabled:             enabled,
+				FreshContext:        input.LoopFreshContext,
+				MaxIterations:       input.LoopMaxIterations,
+				Triggers:            triggersPtr,
+				DelaySeconds:        delaySeconds,
+				MaxDurationSeconds:  input.LoopMaxDurationSeconds,
+				Arguments:           argsPtr,
+				Condition:           input.LoopCondition,
+				ConditionPreset:     input.LoopConditionPreset,
+				CoalesceDuringBusy:  input.LoopCoalesceDuringBusy,
+				RunOnStart:          input.LoopRunOnStart,
+				SettleWindowSeconds: input.LoopSettleWindowSeconds,
+			}); err != nil {
 				return nil, ConversationUpdateOutput{
 					Success: false,
 					Error:   fmt.Sprintf("failed to update loop: %v", err),
@@ -1068,6 +1103,12 @@ func (s *Server) handleConversationUpdate(ctx context.Context, req *mcp.CallTool
 		output.LoopMaxIterations = p.MaxIterations
 		output.LoopIterationCount = p.IterationCount
 		output.LoopTrigger = string(p.EffectiveTrigger())
+		effTriggers := p.EffectiveTriggers()
+		loopTriggers := make([]string, len(effTriggers))
+		for i, t := range effTriggers {
+			loopTriggers[i] = string(t)
+		}
+		output.LoopTriggers = loopTriggers
 		output.LoopCompletionDelaySeconds = p.DelaySeconds
 		output.LoopMaxDurationSeconds = p.MaxDurationSeconds
 		output.LoopCondition = p.Condition
@@ -1079,6 +1120,10 @@ func (s *Server) handleConversationUpdate(ctx context.Context, req *mcp.CallTool
 		if p.RunOnStart != nil {
 			v := *p.RunOnStart
 			output.LoopRunOnStart = &v
+		}
+		if p.SettleWindowSeconds != nil {
+			v := *p.SettleWindowSeconds
+			output.LoopSettleWindowSeconds = &v
 		}
 		if p.NextScheduledAt != nil {
 			output.LoopNextRun = p.NextScheduledAt.Format("2006-01-02T15:04:05Z07:00")

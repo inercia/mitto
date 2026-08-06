@@ -6,8 +6,50 @@
 package mcpserver
 
 import (
+	"fmt"
+	"strings"
+
 	"github.com/inercia/mitto/internal/config"
+	"github.com/inercia/mitto/internal/session"
 )
+
+// parseLoopTriggerList parses the flat MCP loop_trigger argument into the
+// canonical trigger list. The MCP surface stays flat for agent ergonomics
+// (operator decision, mitto-r6j.5): raw may be a single trigger ("schedule")
+// or a comma-separated list ("schedule,onCompletion"). This is the chosen
+// fallback for list-capable input — the go-sdk's jsonschema generation
+// (google/jsonschema-go, reflection-only, no custom-type hook) derives a
+// tool's input schema purely from the Go field's reflect.Kind, and every
+// mitto_conversation_new/_update tool in tool_registration.go registers with
+// an auto-generated schema (no InputSchema override), so a *string field
+// always validates as a JSON string — an array argument would fail schema
+// validation before reaching this parser. A comma-separated string keeps the
+// field flat while still letting callers arm multiple triggers.
+// Empty input returns nil (caller applies its own single-trigger default).
+func parseLoopTriggerList(raw string) ([]session.LoopTrigger, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	parts := strings.Split(raw, ",")
+	seen := make(map[session.LoopTrigger]bool, len(parts))
+	triggers := make([]session.LoopTrigger, 0, len(parts))
+	for _, part := range parts {
+		t := session.LoopTrigger(strings.TrimSpace(part))
+		switch t {
+		case session.TriggerSchedule, session.TriggerOnCompletion, session.TriggerOnTasks:
+			// valid
+		default:
+			return nil, fmt.Errorf("loop_trigger must be 'schedule', 'onCompletion', 'onTasks', or a comma-separated list of these (got %q)", part)
+		}
+		if seen[t] {
+			continue
+		}
+		seen[t] = true
+		triggers = append(triggers, t)
+	}
+	return triggers, nil
+}
 
 // promptLoopDefaultEnabled reports whether a prompt's loop: frontmatter implies
 // the loop should start enabled, per pl.Mode/pl.Default (mitto-ydj). Mirrors the
@@ -48,15 +90,20 @@ func applyPromptLoopDefaultsToStartInput(input *ConversationStartInput, pl *conf
 		input.LoopPromptName = seedPromptName
 	}
 
-	// Trigger + on-completion fields. Trigger is now a list (mitto-r6j); the
-	// MCP surface stays flat/singular, so fill from the primary (first)
-	// declared trigger when the caller left loop_trigger unset.
+	// Trigger list + on-completion fields. The MCP surface stays flat
+	// (operator decision), so the WHOLE declared trigger list is joined into
+	// the comma-separated loop_trigger string when the caller left it unset
+	// (mitto-r6j.5 — previously only the primary/first trigger was filled).
 	if input.LoopTrigger == "" && len(pl.Trigger) > 0 {
-		input.LoopTrigger = pl.Trigger[0]
+		input.LoopTrigger = strings.Join(pl.Trigger, ",")
 	}
 	if input.LoopCompletionDelaySeconds == nil && pl.CompletionDelay() > 0 {
 		d := pl.CompletionDelay()
 		input.LoopCompletionDelaySeconds = &d
+	}
+	if input.LoopSettleWindowSeconds == nil && pl.TasksSettleWindow() > 0 {
+		v := pl.TasksSettleWindow()
+		input.LoopSettleWindowSeconds = &v
 	}
 
 	// Frequency (only meaningful for schedule trigger, but fill unconditionally —
@@ -129,15 +176,19 @@ func applyPromptLoopDefaultsToUpdateInput(input *ConversationUpdateInput, pl *co
 		return
 	}
 
-	// Trigger + on-completion fields. Same primary-trigger rule as the
-	// start-input helper (mitto-r6j: Trigger is now a list).
+	// Trigger list + on-completion fields. Same whole-list-join rule as the
+	// start-input helper (mitto-r6j.5).
 	if input.LoopTrigger == nil && len(pl.Trigger) > 0 {
-		t := pl.Trigger[0]
+		t := strings.Join(pl.Trigger, ",")
 		input.LoopTrigger = &t
 	}
 	if input.LoopCompletionDelaySeconds == nil && pl.CompletionDelay() > 0 {
 		d := pl.CompletionDelay()
 		input.LoopCompletionDelaySeconds = &d
+	}
+	if input.LoopSettleWindowSeconds == nil && pl.TasksSettleWindow() > 0 {
+		v := pl.TasksSettleWindow()
+		input.LoopSettleWindowSeconds = &v
 	}
 
 	// Frequency
