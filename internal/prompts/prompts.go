@@ -20,6 +20,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/inercia/mitto/internal/cel"
+	"github.com/inercia/mitto/internal/prompts/migrate"
 )
 
 // loadWarnSeen dedupes the "failed to load prompt file" WARN across reloads:
@@ -46,10 +47,16 @@ var loadWarnSeen sync.Map
 // trigger fires.
 //
 // This is a breaking change from the pre-r6j single-trigger flat schema
-// (`trigger: onCompletion` + flat `delay`/`condition`/... siblings) — see
-// mitto-r6j.3 for the migration registry that rewrites old-form prompt files,
-// and mitto-r6j.4 for the builtin prompt rewrite. A leftover flat key (e.g.
-// `delay:` outside `onCompletion:`) is a parse error naming the migration.
+// (`trigger: onCompletion` + flat `delay`/`condition`/... siblings). The
+// mitto-r6j.3 migration registry (internal/prompts/migrate, run from
+// ParsePromptFile ahead of the yaml.Unmarshal below) rewrites an old-form
+// loop: block in memory before validation, so loading one only logs a WARN
+// — LoadPromptFile additionally persists the rewritten form back to disk
+// (mitto-r6j.4 covers the one-time builtin prompt rewrite). A leftover flat
+// key that reaches this type's UnmarshalYAML directly (i.e. any caller that
+// decodes YAML into *PromptLoop without going through the migration
+// registry first) is still a parse error naming the migration, as a
+// defense-in-depth safety net against the migration being skipped or buggy.
 //
 // Example frontmatter (always loop, schedule-based):
 //
@@ -995,6 +1002,36 @@ func (p *PromptFile) HasVisibilityCondition() bool {
 //
 // The name is derived from the filename if not specified in the file.
 func ParsePromptFile(path string, data []byte, modTime time.Time) (*PromptFile, error) {
+	prompt, _, _, err := parsePromptFileData(path, data, modTime)
+	return prompt, err
+}
+
+// parsePromptFileData is the shared implementation behind ParsePromptFile and
+// LoadPromptFile. Before validating/unmarshalling, it runs data through the
+// mitto-r6j.3 prompt-file migration registry (currently just
+// "0001-loop-grouped-triggers", which rewrites the pre-r6j flat loop: schema
+// onto the grouped trigger blocks). Migration always happens in memory
+// here — a firing migration logs one WARN naming the file and the migration
+// IDs and is never a load error ("old form is a WARN, never an error" per
+// the mitto-r6j.3 decision). The migrated bytes and result are also returned
+// so LoadPromptFile can additionally persist the write-back to disk; callers
+// without a writable absolute path (embedded/inline prompts, tests,
+// read-only sources) still get a successfully parsed PromptFile.
+func parsePromptFileData(path string, data []byte, modTime time.Time) (*PromptFile, []byte, migrate.Result, error) {
+	migrated, result, migrateErr := migrate.MigrateYAML(data)
+	if migrateErr != nil {
+		// A migration bug must not break prompt loading: fall back to the
+		// original bytes and let the normal parse path below surface
+		// whatever error the (unmigrated) content produces.
+		slog.Warn("prompt file migration failed; parsing original content",
+			"path", path, "error", migrateErr)
+		migrated = data
+		result = migrate.Result{}
+	} else if result.Changed {
+		slog.Warn("prompt file uses a legacy schema and was migrated",
+			"path", path, "migrations", strings.Join(result.Fired, ","))
+	}
+
 	prompt := &PromptFile{
 		Path:        path,
 		FileModTime: modTime,
@@ -1005,11 +1042,11 @@ func ParsePromptFile(path string, data []byte, modTime time.Time) (*PromptFile, 
 	// parse time so TestBuiltinPrompts + docs_sync_test catch every missed
 	// migration and every prompt-loading caller surfaces a clear message.
 	if err := rejectLegacyTargetReuseKeys(path, data); err != nil {
-		return nil, err
+		return nil, migrated, result, err
 	}
 
-	if err := yaml.Unmarshal(data, prompt); err != nil {
-		return nil, fmt.Errorf("failed to parse prompt file %s: %w", path, err)
+	if err := yaml.Unmarshal(migrated, prompt); err != nil {
+		return nil, migrated, result, fmt.Errorf("failed to parse prompt file %s: %w", path, err)
 	}
 
 	// Derive name from filename if not specified
@@ -1025,41 +1062,46 @@ func ParsePromptFile(path string, data []byte, modTime time.Time) (*PromptFile, 
 
 	// Validate parameters block.
 	if err := ValidatePromptParameters(prompt.Menus, prompt.Parameters); err != nil {
-		return nil, fmt.Errorf("prompt file %s: %w", path, err)
+		return nil, migrated, result, fmt.Errorf("prompt file %s: %w", path, err)
 	}
 
 	// Validate loop block (mode/default combination).
 	if err := ValidatePromptLoop(prompt.Name, prompt.Loop); err != nil {
-		return nil, fmt.Errorf("prompt file %s: %w", path, err)
+		return nil, migrated, result, fmt.Errorf("prompt file %s: %w", path, err)
 	}
 
 	// Validate target block (reuseTitle requires a non-empty title;
 	// reuseCoalesce requires a reuse mode).
 	if err := ValidatePromptTarget(prompt.Name, prompt.Target, prompt.Singleton); err != nil {
-		return nil, fmt.Errorf("prompt file %s: %w", path, err)
+		return nil, migrated, result, fmt.Errorf("prompt file %s: %w", path, err)
 	}
 
 	// Validate loop.onTasks.condition CEL expression when non-empty (fail-fast,
 	// mirrors how the runtime seam is wired via session.ConditionValidator).
 	if cond := prompt.Loop.TasksCondition(); cond != "" {
 		if err := cel.ValidateCondition(cond); err != nil {
-			return nil, fmt.Errorf("prompt file %s: loop.onTasks.condition: %w", path, err)
+			return nil, migrated, result, fmt.Errorf("prompt file %s: loop.onTasks.condition: %w", path, err)
 		}
 	}
 
 	// Validate Go-template syntax + cond/when CEL literals (mitto-m7sb.6).
 	// Fast-path no-op for bodies without "{{". Fail-fast on invalid templates.
 	if err := PrecompileTemplateConds(prompt.Name, prompt.Content); err != nil {
-		return nil, fmt.Errorf("prompt file %s: %w", path, err)
+		return nil, migrated, result, fmt.Errorf("prompt file %s: %w", path, err)
 	}
 
 	// Warn (non-fatal) when the body still uses deprecated @mitto: tokens (mitto-m7sb.9).
 	WarnDeprecatedMittoVars(prompt.Name, prompt.Content)
 
-	return prompt, nil
+	return prompt, migrated, result, nil
 }
 
-// LoadPromptFile loads and parses a single prompt file.
+// LoadPromptFile loads and parses a single prompt file. If the file is on a
+// legacy schema, the mitto-r6j.3 migration registry rewrites it in memory
+// (see parsePromptFileData) and the migrated bytes are additionally written
+// back to fullPath (atomically; degrades to a WARN on a read-only source —
+// see migrate.WriteBackIfNeeded). A file already on the current schema is
+// never written to, so its mtime is untouched.
 func LoadPromptFile(promptsDir, relativePath string) (*PromptFile, error) {
 	fullPath := filepath.Join(promptsDir, relativePath)
 
@@ -1073,7 +1115,16 @@ func LoadPromptFile(promptsDir, relativePath string) (*PromptFile, error) {
 		return nil, fmt.Errorf("failed to read prompt file %s: %w", relativePath, err)
 	}
 
-	return ParsePromptFile(relativePath, data, info.ModTime())
+	prompt, migrated, result, err := parsePromptFileData(relativePath, data, info.ModTime())
+	if err != nil {
+		return nil, err
+	}
+
+	if result.Changed {
+		migrate.WriteBackIfNeeded(fullPath, migrated, result)
+	}
+
+	return prompt, nil
 }
 
 // PromptLoadError describes a single prompt file that failed to load/parse/precompile.

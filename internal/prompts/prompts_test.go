@@ -1586,18 +1586,23 @@ prompt: |
 // ---- mitto-r6j.1: grouped multi-trigger loop schema ----
 
 // TestPromptLoop_UnmarshalYAML_RejectsLegacyFlatKeys pins the strict
-// UnmarshalYAML added for mitto-r6j.1: every pre-r6j flat key that used to
-// live directly under loop: must now fail ParsePromptFile with an error
-// naming the offending key, its new nested path, and the migration bead —
-// yaml.v3 would otherwise silently ignore the unknown key and parse a stale
-// flat-form loop: block into an all-zero grouped struct.
+// UnmarshalYAML added for mitto-r6j.1 as a defense-in-depth layer: decoding
+// a loop: mapping directly into a *PromptLoop (bypassing the mitto-r6j.3
+// migration registry that now runs ahead of it in ParsePromptFile) still
+// fails with an error naming the offending key, its new nested path, and the
+// migration bead — yaml.v3 would otherwise silently ignore the unknown key
+// and parse a stale flat-form loop: block into an all-zero grouped struct.
+// The end-to-end ParsePromptFile path is covered separately by
+// TestParsePromptFile_MigratesLegacyLoopSchema, since mitto-r6j.3 made that
+// path migrate-then-WARN instead of erroring.
 func TestPromptLoop_UnmarshalYAML_RejectsLegacyFlatKeys(t *testing.T) {
 	for legacyKey, newPath := range legacyPromptLoopFlatKeys {
 		t.Run(legacyKey, func(t *testing.T) {
-			data := []byte("name: \"Bad Loop\"\nloop:\n  mode: always\n  " + legacyKey + ": whatever\nprompt: |\n  body\n")
-			_, err := ParsePromptFile("bad-loop.prompt.yaml", data, time.Now())
+			data := []byte("mode: always\n" + legacyKey + ": whatever\n")
+			var loop PromptLoop
+			err := yaml.Unmarshal(data, &loop)
 			if err == nil {
-				t.Fatalf("ParsePromptFile should fail for legacy flat key %q, got nil error", legacyKey)
+				t.Fatalf("UnmarshalYAML should fail for legacy flat key %q, got nil error", legacyKey)
 			}
 			if !strings.Contains(err.Error(), "loop."+legacyKey) {
 				t.Errorf("error = %q, want it to mention %q", err.Error(), "loop."+legacyKey)
@@ -1609,6 +1614,46 @@ func TestPromptLoop_UnmarshalYAML_RejectsLegacyFlatKeys(t *testing.T) {
 				t.Errorf("error = %q, want it to mention the migration bead mitto-r6j.3", err.Error())
 			}
 		})
+	}
+}
+
+// TestParsePromptFile_MigratesLegacyLoopSchema pins the mitto-r6j.3 behavior
+// change: ParsePromptFile now runs the migration registry ahead of
+// PromptLoop.UnmarshalYAML, so a prompt file still on the pre-r6j flat loop
+// schema loads successfully (migrated in memory) instead of hard-failing.
+func TestParsePromptFile_MigratesLegacyLoopSchema(t *testing.T) {
+	data := []byte(`name: "Legacy Loop"
+loop:
+  trigger: onCompletion
+  delay: 30
+  maxIterations: 10
+prompt: |
+  body
+`)
+
+	var logBuf bytes.Buffer
+	prevLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, nil)))
+	defer slog.SetDefault(prevLogger)
+
+	prompt, err := ParsePromptFile("legacy-loop.prompt.yaml", data, time.Now())
+	if err != nil {
+		t.Fatalf("ParsePromptFile should migrate the legacy schema, got error: %v", err)
+	}
+	if prompt.Loop == nil {
+		t.Fatal("Loop = nil, want non-nil")
+	}
+	if !prompt.Loop.hasTrigger("onCompletion") {
+		t.Errorf("Loop.Trigger = %v, want it to contain onCompletion", prompt.Loop.Trigger)
+	}
+	if prompt.Loop.CompletionDelay() != 30 {
+		t.Errorf("Loop.CompletionDelay() = %d, want 30", prompt.Loop.CompletionDelay())
+	}
+	if prompt.Loop.MaxIterations != 10 {
+		t.Errorf("Loop.MaxIterations = %d, want 10", prompt.Loop.MaxIterations)
+	}
+	if !strings.Contains(logBuf.String(), "0001-loop-grouped-triggers") {
+		t.Errorf("expected a WARN naming the migration ID, log = %q", logBuf.String())
 	}
 }
 
