@@ -98,6 +98,14 @@ func (h *Handlers) HandleUpdateSession(w http.ResponseWriter, r *http.Request, s
 				meta.ArchivedAt = time.Time{}
 				meta.ArchiveReason = ""
 				meta.AutoUnarchiveLastAttemptAt = time.Time{}
+				// mitto-wub (Defect 3): ACPStartFailureCount is only reset on a
+				// SUCCESSFUL ACP start (session_manager.go). Without also resetting it
+				// here, a session unarchived while the counter is at/near
+				// ACPStartFailureThreshold gets re-archived by the very next transient
+				// failure, before it ever gets a chance at the successful start that
+				// would normally clear it — turning a one-shot saturation hiccup into a
+				// permanent archive/unarchive flap.
+				meta.ACPStartFailureCount = 0
 			}
 		}
 	})

@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 
 	mittoAcp "github.com/inercia/mitto/internal/acp"
+	"github.com/inercia/mitto/internal/acpproc/acperrors"
 	"github.com/inercia/mitto/internal/acpproc/procstart"
 	"github.com/inercia/mitto/internal/appdir"
 	"github.com/inercia/mitto/internal/auxiliary"
@@ -2614,18 +2615,50 @@ func (sm *SessionManager) resumeSessionWithConstraint(sessionID, sessionName, wo
 	}
 
 	if err != nil {
-		// mitto-54k.6: a cold-start MCP-init timeout is TRANSIENT on a shared
-		// ACP process (warm-once barrier mitto-54k.3 succeeds on a retry once
-		// the process warms). Do NOT count it toward the hard ACP-start failure
-		// threshold and do NOT auto-archive; a later resume attempt (interactive
-		// or MCP auto-resume) will succeed. Genuine permanent failures (missing
-		// binary, broken MCP server on a WARM process, etc.) still fall through
-		// to the counter/archive logic below.
-		if mittoAcp.IsMCPInitTimeout(err) {
+		// mitto-54k.6 / mitto-wub: a cold-start MCP-init timeout, or a shared-ACP-process
+		// saturation bail (repeated RPC timeouts, mid-flight budget exhaustion, or
+		// concurrent-load shedding — internal/acpproc/acperrors.ErrSharedProcessSaturated
+		// and its ErrProcessSaturated/ErrProcessBusy/ErrMCPInitGated variants), is
+		// TRANSIENT on a shared ACP process (warm-once barrier mitto-54k.3, or the
+		// saturation cooldown, succeeds on a later retry). Do NOT count it toward the
+		// hard ACP-start failure threshold and do NOT auto-archive; a later resume
+		// attempt (interactive or MCP auto-resume) will succeed. Genuine permanent
+		// failures (missing binary, broken MCP server on a WARM process, etc.) still
+		// fall through to the counter/archive logic below.
+		if mittoAcp.IsMCPInitTimeout(err) || errors.Is(err, acperrors.ErrSharedProcessSaturated) {
 			if sm.logger != nil {
-				sm.logger.Warn("Resume hit transient cold-start MCP-init timeout; not counting as hard failure (will retry when warm)",
+				sm.logger.Warn("Resume hit transient cold-start MCP-init timeout or shared-process saturation; not counting as hard failure (will retry when warm)",
 					"session_id", sessionID,
 					"foreground", foreground)
+			}
+			signalDone(nil, err)
+			return nil, err
+		}
+		// mitto-wub (Defect 2): loop conversations are meant to live indefinitely —
+		// LoopRunner.checkAutoArchive() already exempts them from the inactivity
+		// auto-archive path (see loop_runner.go, "Skipping auto-archive for loop
+		// session"). This ACP-start-failure path had no equivalent guard, so a loop
+		// session hitting three unclassified/genuine start failures in a row would
+		// still be silently archived, defeating "loops live indefinitely" even though
+		// the saturation carve-out above narrows how often that happens. Skip the
+		// counter/archive bookkeeping entirely for loop sessions; still log so the
+		// underlying failures remain observable.
+		isLoopSession := false
+		if store != nil {
+			if _, loopErr := store.Loop(sessionID).Get(); loopErr == nil {
+				isLoopSession = true
+			} else if loopErr != session.ErrLoopNotFound && sm.logger != nil {
+				sm.logger.Error("Failed to read loop config during ACP-start failure handling",
+					"session_id", sessionID,
+					"error", loopErr)
+			}
+		}
+		if isLoopSession {
+			if sm.logger != nil {
+				sm.logger.Warn("ACP start failed for loop session; not counting toward auto-archive threshold (loop sessions are exempt)",
+					"session_id", sessionID,
+					"foreground", foreground,
+					"error", err)
 			}
 			signalDone(nil, err)
 			return nil, err

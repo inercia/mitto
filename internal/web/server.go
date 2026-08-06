@@ -1426,6 +1426,11 @@ func NewServer(config Config) (*Server, error) {
 			m.ArchivedAt = time.Time{}
 			m.ArchiveReason = ""
 			m.AutoUnarchiveLastAttemptAt = time.Time{}
+			// mitto-wub (Defect 3): mirrors the manual unarchive path in
+			// internal/web/handlers/session_update.go — reset the failure counter so
+			// the resume attempt below gets a full threshold's worth of retries
+			// instead of re-archiving on its first transient failure.
+			m.ACPStartFailureCount = 0
 		}); err != nil {
 			return err
 		}

@@ -217,6 +217,59 @@ func TestRestoreLoopOnUnarchive_NonArchivePauseStaysPaused(t *testing.T) {
 	}
 }
 
+// TestHandleUpdateSession_UnarchiveResetsACPStartFailureCount is a regression
+// test for mitto-wub: a session archived via ArchiveReasonACPFailures carries
+// a non-zero ACPStartFailureCount into the unarchive. Today
+// HandleUpdateSession's PATCH {"archived": false} path only clears
+// Archived/ArchivedAt/ArchiveReason/AutoUnarchiveLastAttemptAt — it never
+// resets ACPStartFailureCount. That means the very next transient ACP start
+// failure after unarchive re-trips the ACPStartFailureThreshold immediately
+// (count was already at/near threshold), re-archiving the session before it
+// ever gets a chance at a successful start that would normally reset the
+// counter (session_manager.go resets it only on success). This test seeds a
+// session at ACPStartFailureThreshold-1 (the same "one failure from
+// re-archiving" state seen in the bead's log excerpt: failure_count=4,
+// threshold=3, i.e. already over on the very first post-unarchive attempt)
+// and asserts the counter is back to 0 after unarchive.
+func TestHandleUpdateSession_UnarchiveResetsACPStartFailureCount(t *testing.T) {
+	sid := "test-unarchive-resets-acp-failure-count"
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	if err := store.Create(session.Metadata{
+		SessionID:  sid,
+		ACPServer:  "test-server",
+		WorkingDir: t.TempDir(),
+	}); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+	if err := store.UpdateMetadata(sid, func(m *session.Metadata) {
+		m.Archived = true
+		m.ArchiveReason = session.ArchiveReasonACPFailures
+		m.ACPStartFailureCount = 4 // mirrors the bead's reproduced log: failure_count=4, threshold=3
+	}); err != nil {
+		t.Fatalf("UpdateMetadata (seed) failed: %v", err)
+	}
+
+	h := New(Deps{Store: store})
+
+	w := unarchiveViaHandler(t, h, sid)
+	if w.Code != http.StatusOK {
+		t.Fatalf("Status = %d, want %d. Body: %s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	got, err := store.GetMetadata(sid)
+	if err != nil {
+		t.Fatalf("GetMetadata after unarchive failed: %v", err)
+	}
+	if got.ACPStartFailureCount != 0 {
+		t.Errorf("ACPStartFailureCount after unarchive = %d, want 0 (bug mitto-wub: counter carries over across archive/unarchive, so the very next transient failure immediately re-archives the session)", got.ACPStartFailureCount)
+	}
+}
+
 func TestRestoreLoopOnUnarchive_NoLoopSessionIsNoop(t *testing.T) {
 	sid := "test-no-loop-unarchive"
 	store, err := session.NewStore(t.TempDir())

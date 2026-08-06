@@ -1626,7 +1626,11 @@ func (p *SharedACPProcess) NewSession(ctx context.Context, cwd string, mcpServer
 	// draining the full retry budget on a process that is not responding — which
 	// previously surfaced as a user-visible "context deadline exceeded".
 	if p.isSaturated() {
-		return nil, fmt.Errorf("shared ACP process is saturated (repeated RPC timeouts); failing fast: %w", context.DeadlineExceeded)
+		// mitto-wub: wrap acperrors.ErrProcessSaturated alongside context.DeadlineExceeded
+		// (mirrors the acp_process_manager.go aux-session bails) so callers upstream —
+		// notably session_manager.go's ACP-start failure counter — can errors.Is for the
+		// sentinel and recognize this as transient saturation, not a hard start failure.
+		return nil, fmt.Errorf("shared ACP process is saturated (repeated RPC timeouts); failing fast: %w: %w", acperrors.ErrProcessSaturated, context.DeadlineExceeded)
 	}
 
 	// Probe mode (mitto-13ck.2): isSaturated() sets inProbe when a cooldown elapses.
@@ -1772,7 +1776,8 @@ func (p *SharedACPProcess) NewSession(ctx context.Context, cwd string, mcpServer
 				if !extendedBudget {
 					p.recordRPCBudgetBail()
 				}
-				return nil, fmt.Errorf("session/new: %s (after %d attempt(s)); failing fast: %w", reason, attempt-1, context.DeadlineExceeded)
+				// mitto-wub: see the isSaturated() bail above — wrap the sentinel too.
+				return nil, fmt.Errorf("session/new: %s (after %d attempt(s)); failing fast: %w: %w", reason, attempt-1, acperrors.ErrProcessSaturated, context.DeadlineExceeded)
 			}
 		}
 
@@ -1971,7 +1976,8 @@ func (p *SharedACPProcess) LoadSession(ctx context.Context, acpSessionID, cwd st
 	// Saturation fail-fast (mitto-13ck.2): see NewSession. A hung/overloaded shared
 	// process makes session/load hang its full deadline; fail fast instead.
 	if p.isSaturated() {
-		return nil, fmt.Errorf("shared ACP process is saturated (repeated RPC timeouts); failing fast: %w", context.DeadlineExceeded)
+		// mitto-wub: wrap acperrors.ErrProcessSaturated too (see NewSession above).
+		return nil, fmt.Errorf("shared ACP process is saturated (repeated RPC timeouts); failing fast: %w: %w", acperrors.ErrProcessSaturated, context.DeadlineExceeded)
 	}
 
 	if caps == nil || !caps.LoadSession {
@@ -2340,7 +2346,8 @@ func (p *SharedACPProcess) SetSessionModel(ctx context.Context, sessionID acp.Se
 	// NON-saturated process still gets its full per-attempt budget (mitto-f7q) — only an
 	// already-tripped saturation flag short-circuits here.
 	if p.isSaturated() {
-		return fmt.Errorf("set_model: shared ACP process is saturated (repeated RPC timeouts); failing fast: %w", context.DeadlineExceeded)
+		// mitto-wub: wrap acperrors.ErrProcessSaturated too (see NewSession above).
+		return fmt.Errorf("set_model: shared ACP process is saturated (repeated RPC timeouts); failing fast: %w: %w", acperrors.ErrProcessSaturated, context.DeadlineExceeded)
 	}
 
 	// Acquire the per-process serialisation semaphore, respecting caller ctx.
@@ -2389,7 +2396,8 @@ func (p *SharedACPProcess) SetSessionModel(ctx context.Context, sessionID acp.Se
 		// the next attempt boundary instead of draining another full 8s budget. Attempt 1
 		// always proceeds so a single slow set_model on a healthy process keeps its budget.
 		if attempt > 1 && p.isSaturated() {
-			return fmt.Errorf("set_model: shared ACP process became saturated mid-flight (after %d attempt(s)); failing fast: %w", attempt-1, context.DeadlineExceeded)
+			// mitto-wub: wrap acperrors.ErrProcessSaturated too (see NewSession above).
+			return fmt.Errorf("set_model: shared ACP process became saturated mid-flight (after %d attempt(s)); failing fast: %w: %w", attempt-1, acperrors.ErrProcessSaturated, context.DeadlineExceeded)
 		}
 
 		// Backoff between retries (skip before first attempt).
