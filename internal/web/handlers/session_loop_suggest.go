@@ -102,6 +102,11 @@ func (h *Handlers) handleSuggestLoopFromRecent(w http.ResponseWriter, r *http.Re
 
 	p := &session.LoopPrompt{PromptName: resolvedName, Enabled: false}
 	applyPromptLoopDefaultsToLoopPrompt(p, resolvedLoop, nil)
+	// Sync the legacy scalar Trigger field from Triggers[0] (mitto-r6j.5) so
+	// the returned draft's "trigger" field is accurate for old readers, same
+	// as Set/Update do on write. This suggestion path never persists (no
+	// Set/Update call), so it must call Normalize() itself.
+	p.Normalize()
 
 	if err := p.Validate(); err != nil {
 		h.debugSuggestNotFound(sessionID, "merged scaffold failed Validate()")

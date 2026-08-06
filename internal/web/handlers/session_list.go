@@ -48,9 +48,12 @@ type SessionListResponse struct {
 	// and connected browsers). The UI hides the amber warning icon when this
 	// equals LoopStoppedReason.
 	LoopAcknowledgedStoppedReason string `json:"loop_acknowledged_stopped_reason,omitempty"`
-	// LoopTrigger is "schedule" or "onCompletion" (resolved via EffectiveTrigger so schedule loops
-	// always report "schedule", never the empty-string default).
+	// LoopTrigger is the primary trigger (resolved via EffectiveTrigger so schedule loops
+	// always report "schedule", never the empty-string default). Kept as the legacy scalar;
+	// new consumers read LoopTriggers.
 	LoopTrigger string `json:"loop_trigger,omitempty"`
+	// LoopTriggers is the full armed trigger set of a multi-trigger loop (mitto-r6j).
+	LoopTriggers []string `json:"loop_triggers,omitempty"`
 	// LoopIterationCount is the number of scheduled runs delivered so far.
 	LoopIterationCount int `json:"loop_iteration_count,omitempty"`
 	// LoopMaxIterations is the per-prompt cap on scheduled runs (0 = unlimited).
@@ -119,6 +122,9 @@ func (h *Handlers) HandleListSessions(w http.ResponseWriter, r *http.Request) {
 			}
 			// Glance fields for conversation header display.
 			response[i].LoopTrigger = string(loop.EffectiveTrigger())
+			for _, t := range loop.EffectiveTriggers() {
+				response[i].LoopTriggers = append(response[i].LoopTriggers, string(t))
+			}
 			response[i].LoopIterationCount = loop.IterationCount
 			response[i].LoopMaxIterations = loop.MaxIterations
 			response[i].LoopDelaySeconds = loop.DelaySeconds

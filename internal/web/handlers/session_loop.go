@@ -16,9 +16,13 @@ type LoopPromptRequest struct {
 	Enabled       bool              `json:"enabled"`
 	FreshContext  bool              `json:"fresh_context,omitempty"`
 	MaxIterations int               `json:"max_iterations,omitempty"`
-	// Trigger selects how the prompt fires: "" or "schedule" (frequency-based, default)
-	// vs "onCompletion" (event-driven, after the agent stops + DelaySeconds).
-	Trigger session.LoopTrigger `json:"trigger,omitempty"`
+	// Triggers is the list of triggers that arm this loop: any of "schedule"
+	// (frequency-based), "onCompletion" (event-driven, after the agent stops +
+	// DelaySeconds), or "onTasks" (event-driven, on beads/task changes). Empty
+	// defaults to ["schedule"]. Replaces the legacy scalar "trigger" key, which
+	// is no longer accepted on this request DTO (mitto-r6j.5) — the response
+	// still emits both "trigger" (primary/first, back-compat) and "triggers".
+	Triggers []session.LoopTrigger `json:"triggers,omitempty"`
 	// DelaySeconds is the wait after the agent stops before the next run (onCompletion only).
 	// Clamped to the global floor on write.
 	DelaySeconds int `json:"delay_seconds,omitempty"`
@@ -44,6 +48,10 @@ type LoopPromptRequest struct {
 	// window suppressing the pulse when the loop already ran very recently).
 	// Nil or false = do not fire on start (default).
 	RunOnStart *bool `json:"run_on_start,omitempty"`
+	// SettleWindowSeconds is an optional pre-fire debounce window (seconds) for
+	// the onTasks trigger; 0/nil = fire immediately on the first delta (default).
+	// Only meaningful when "onTasks" is among Triggers.
+	SettleWindowSeconds *int `json:"settle_window_seconds,omitempty"`
 	// LoopApplyPromptDefaults, when non-nil and *false, disables auto-merging of
 	// the resolved prompt's loop: frontmatter defaults into empty request fields.
 	// Defaults to enabled (nil or *true). Mirrors the MCP tool argument of the
@@ -59,10 +67,14 @@ type LoopPromptPatchRequest struct {
 	Enabled       *bool              `json:"enabled,omitempty"`
 	FreshContext  *bool              `json:"fresh_context,omitempty"`
 	MaxIterations *int               `json:"max_iterations,omitempty"`
-	// Trigger, DelaySeconds, MaxDurationSeconds are partial updates for the on-completion fields.
-	Trigger            *session.LoopTrigger `json:"trigger,omitempty"`
-	DelaySeconds       *int                 `json:"delay_seconds,omitempty"`
-	MaxDurationSeconds *int                 `json:"max_duration_seconds,omitempty"`
+	// Triggers, DelaySeconds, MaxDurationSeconds are partial updates for the
+	// trigger list and on-completion fields. Triggers, when non-nil, REPLACES
+	// the stored trigger list wholesale (nil = leave unchanged). Replaces the
+	// legacy scalar "trigger" key, which is no longer accepted on this DTO
+	// (mitto-r6j.5).
+	Triggers           *[]session.LoopTrigger `json:"triggers,omitempty"`
+	DelaySeconds       *int                   `json:"delay_seconds,omitempty"`
+	MaxDurationSeconds *int                   `json:"max_duration_seconds,omitempty"`
 	// Arguments is a partial update for the substitution arguments map.
 	// nil = leave unchanged; non-nil = replace the entire map (including empty map to clear it).
 	Arguments *map[string]string `json:"arguments,omitempty"`
@@ -73,6 +85,9 @@ type LoopPromptPatchRequest struct {
 	CoalesceDuringBusy *bool   `json:"coalesce_during_busy,omitempty"`
 	// RunOnStart is a partial update for the boot-pulse toggle. Nil = unchanged.
 	RunOnStart *bool `json:"run_on_start,omitempty"`
+	// SettleWindowSeconds is a partial update for the onTasks pre-fire debounce
+	// window (seconds). Nil = unchanged.
+	SettleWindowSeconds *int `json:"settle_window_seconds,omitempty"`
 	// ResetCounters, when true, resets IterationCount=0, FirstRunAt=nil, and
 	// LastSentAt=nil so the elapsed iterations and elapsed time start from zero and
 	// the loop looks never-sent. Used when restoring a conversation that auto-stopped

@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/inercia/mitto/internal/session"
@@ -31,7 +32,7 @@ func (h *Handlers) handleSetLoop(w http.ResponseWriter, r *http.Request, session
 		Enabled:            req.Enabled,
 		FreshContext:       req.FreshContext,
 		MaxIterations:      req.MaxIterations,
-		Trigger:            req.Trigger,
+		Triggers:           req.Triggers,
 		DelaySeconds:       req.DelaySeconds,
 		MaxDurationSeconds: req.MaxDurationSeconds,
 	}
@@ -51,6 +52,10 @@ func (h *Handlers) handleSetLoop(w http.ResponseWriter, r *http.Request, session
 	if req.RunOnStart != nil {
 		v := *req.RunOnStart
 		p.RunOnStart = &v
+	}
+	if req.SettleWindowSeconds != nil {
+		v := *req.SettleWindowSeconds
+		p.SettleWindowSeconds = &v
 	}
 
 	// Auto-apply the seeded prompt's loop: frontmatter block (mitto-le4.1). When
@@ -121,25 +126,45 @@ func (h *Handlers) handlePatchLoop(w http.ResponseWriter, r *http.Request, sessi
 		return
 	}
 
-	// Clamp the on-completion delay to the global floor on write. The effective trigger
-	// is the patched value when provided, otherwise the currently-stored trigger.
+	// Clamp the on-completion delay to the global floor on write. Membership —
+	// not primacy — decides whether the clamp applies: the effective trigger
+	// set is the patched value when provided, otherwise the currently-stored
+	// set (mitto-r6j.5: a multi-trigger config may list onCompletion alongside
+	// other triggers).
 	if req.DelaySeconds != nil {
 		floor := h.loopDelayFloor()
 		if *req.DelaySeconds < floor {
-			effTrigger := session.LoopTrigger("")
-			if req.Trigger != nil {
-				effTrigger = *req.Trigger
+			isOnCompletion := false
+			if req.Triggers != nil {
+				isOnCompletion = slices.Contains(*req.Triggers, session.TriggerOnCompletion)
 			} else if cur, err := ps.Get(); err == nil && cur != nil {
-				effTrigger = cur.Trigger
+				isOnCompletion = cur.HasTrigger(session.TriggerOnCompletion)
 			}
-			if effTrigger == session.TriggerOnCompletion {
+			if isOnCompletion {
 				clamped := floor
 				req.DelaySeconds = &clamped
 			}
 		}
 	}
 
-	if err := ps.Update(req.Prompt, req.PromptName, req.Frequency, req.Enabled, req.FreshContext, req.MaxIterations, req.Trigger, req.DelaySeconds, req.MaxDurationSeconds, req.Arguments, req.Condition, req.ConditionPreset, req.CooldownSeconds, req.CoalesceDuringBusy, req.RunOnStart); err != nil {
+	if err := ps.Update(session.LoopUpdate{
+		Prompt:              req.Prompt,
+		PromptName:          req.PromptName,
+		Frequency:           req.Frequency,
+		Enabled:             req.Enabled,
+		FreshContext:        req.FreshContext,
+		MaxIterations:       req.MaxIterations,
+		Triggers:            req.Triggers,
+		DelaySeconds:        req.DelaySeconds,
+		MaxDurationSeconds:  req.MaxDurationSeconds,
+		Arguments:           req.Arguments,
+		Condition:           req.Condition,
+		ConditionPreset:     req.ConditionPreset,
+		CooldownSeconds:     req.CooldownSeconds,
+		CoalesceDuringBusy:  req.CoalesceDuringBusy,
+		RunOnStart:          req.RunOnStart,
+		SettleWindowSeconds: req.SettleWindowSeconds,
+	}); err != nil {
 		if err == session.ErrLoopNotFound {
 			writeErrorJSON(w, http.StatusNotFound, "", "No loop prompt configured")
 			return

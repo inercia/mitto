@@ -202,7 +202,7 @@ func TestHandleSessionLoop_OnCompletionRoundTrip(t *testing.T) {
 	got := putLoopForTest(t, h, sid, LoopPromptRequest{
 		Prompt:             "keep going",
 		Enabled:            true,
-		Trigger:            session.TriggerOnCompletion,
+		Triggers:           []session.LoopTrigger{session.TriggerOnCompletion},
 		DelaySeconds:       30,
 		MaxDurationSeconds: 3600,
 	})
@@ -233,7 +233,7 @@ func TestHandleSessionLoop_OnCompletionDelayClampedOnPut(t *testing.T) {
 	got := putLoopForTest(t, h, sid, LoopPromptRequest{
 		Prompt:       "keep going",
 		Enabled:      true,
-		Trigger:      session.TriggerOnCompletion,
+		Triggers:     []session.LoopTrigger{session.TriggerOnCompletion},
 		DelaySeconds: 1, // below the default floor (5)
 	})
 
@@ -257,7 +257,7 @@ func TestHandleSessionLoop_PatchPartialPreservesOnCompletionFields(t *testing.T)
 	putLoopForTest(t, h, sid, LoopPromptRequest{
 		Prompt:       "keep going",
 		Enabled:      true,
-		Trigger:      session.TriggerOnCompletion,
+		Triggers:     []session.LoopTrigger{session.TriggerOnCompletion},
 		DelaySeconds: 30,
 	})
 
@@ -303,7 +303,7 @@ func TestHandleSessionLoop_PatchResetCounters(t *testing.T) {
 	putLoopForTest(t, h, sid, LoopPromptRequest{
 		Prompt:             "keep going",
 		Enabled:            true,
-		Trigger:            session.TriggerOnCompletion,
+		Triggers:           []session.LoopTrigger{session.TriggerOnCompletion},
 		DelaySeconds:       30,
 		MaxDurationSeconds: 60,
 	})
@@ -370,7 +370,7 @@ func TestHandleSessionLoop_PatchDelayClamped(t *testing.T) {
 	putLoopForTest(t, h, sid, LoopPromptRequest{
 		Prompt:       "keep going",
 		Enabled:      true,
-		Trigger:      session.TriggerOnCompletion,
+		Triggers:     []session.LoopTrigger{session.TriggerOnCompletion},
 		DelaySeconds: 30,
 	})
 
@@ -878,7 +878,7 @@ func TestHandleSessionLoop_OnTasksRoundTrip(t *testing.T) {
 	got := putLoopForTest(t, h, sid, LoopPromptRequest{
 		Prompt:          "review beads changes",
 		Enabled:         true,
-		Trigger:         session.TriggerOnTasks,
+		Triggers:        []session.LoopTrigger{session.TriggerOnTasks},
 		Condition:       &cond,
 		ConditionPreset: &preset,
 		CooldownSeconds: &cooldown,
@@ -946,9 +946,9 @@ func TestHandleSessionLoop_PatchInvalidConditionRejected(t *testing.T) {
 	}
 
 	putLoopForTest(t, h, sid, LoopPromptRequest{
-		Prompt:  "review beads changes",
-		Enabled: true,
-		Trigger: session.TriggerOnTasks,
+		Prompt:   "review beads changes",
+		Enabled:  true,
+		Triggers: []session.LoopTrigger{session.TriggerOnTasks},
 	})
 
 	badCond := "not valid cel("
@@ -1176,7 +1176,7 @@ func TestHandleSessionLoop_PUT_MergesPromptDefaults_ExplicitWins(t *testing.T) {
 	got := putLoopForTest(t, h, sid, LoopPromptRequest{
 		PromptName:    "test-prompt",
 		Enabled:       true,
-		Trigger:       session.TriggerOnCompletion, // explicit, must win
+		Triggers:      []session.LoopTrigger{session.TriggerOnCompletion}, // explicit, must win
 		DelaySeconds:  30,
 		MaxIterations: 7,   // explicit, must win over frontmatter's 42
 		RunOnStart:    &fa, // explicit *false must win over frontmatter *true
@@ -1220,7 +1220,7 @@ func TestHandleSessionLoop_PUT_MergesPromptDefaults_OptOut(t *testing.T) {
 	got := putLoopForTest(t, h, sid, LoopPromptRequest{
 		PromptName:              "test-prompt",
 		Enabled:                 true,
-		Trigger:                 session.TriggerOnCompletion, // required non-schedule so no Frequency needed
+		Triggers:                []session.LoopTrigger{session.TriggerOnCompletion}, // required non-schedule so no Frequency needed
 		DelaySeconds:            30,
 		LoopApplyPromptDefaults: &fa,
 	})
@@ -1297,6 +1297,49 @@ func TestHandleSessionLoop_PUT_MergesPromptDefaults_UnknownPromptName(t *testing
 	}
 	if got.FreshContext {
 		t.Errorf("FreshContext = true, want false (unknown prompt is graceful fallback)")
+	}
+}
+
+// TestHandleSessionLoop_PUT_MergesPromptDefaults_MultiTriggerAndSettleWindow
+// (T6) verifies that a prompt declaring a multi-trigger loop: frontmatter
+// block (trigger: [schedule, onTasks]) fills the WHOLE list into Triggers —
+// not just the primary/first entry — and that onTasks.settleWindow reaches
+// SettleWindowSeconds through applyPromptLoopDefaultsToLoopPrompt
+// (mitto-r6j.5).
+func TestHandleSessionLoop_PUT_MergesPromptDefaults_MultiTriggerAndSettleWindow(t *testing.T) {
+	promptStub := func(string) []configPkg.WebPrompt {
+		return []configPkg.WebPrompt{{
+			Name: "test-prompt",
+			Loop: &configPkg.PromptLoop{
+				Trigger:  []string{"schedule", "onTasks"},
+				Schedule: &configPkg.PromptLoopSchedule{Value: 2, Unit: "hours"},
+				OnTasks:  &configPkg.PromptLoopOnTasks{SettleWindow: 45, ConditionPreset: "any-change", Cooldown: 90},
+			},
+		}}
+	}
+
+	store, h := newLoopStoreWithPrompts(t, promptStub)
+	sid := "put-merge-multitrigger-settle"
+	if err := store.Create(session.Metadata{SessionID: sid, ACPServer: "t", WorkingDir: t.TempDir()}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	got := putLoopForTest(t, h, sid, LoopPromptRequest{
+		PromptName: "test-prompt",
+		Enabled:    true,
+	})
+
+	if len(got.Triggers) != 2 || !got.HasTrigger(session.TriggerSchedule) || !got.HasTrigger(session.TriggerOnTasks) {
+		t.Errorf("Triggers = %v, want both schedule and onTasks filled from frontmatter", got.Triggers)
+	}
+	if got.SettleWindowSeconds == nil || *got.SettleWindowSeconds != 45 {
+		t.Errorf("SettleWindowSeconds = %v, want *45 (filled from frontmatter)", got.SettleWindowSeconds)
+	}
+	if got.ConditionPreset != "any-change" {
+		t.Errorf("ConditionPreset = %q, want %q (filled from frontmatter)", got.ConditionPreset, "any-change")
+	}
+	if got.CooldownSeconds != 90 {
+		t.Errorf("CooldownSeconds = %d, want 90 (filled from frontmatter)", got.CooldownSeconds)
 	}
 }
 
@@ -1409,5 +1452,96 @@ func TestHandleSessionLoop_Restore_StoppedSavedConfig_ClearsReasonAndResetsCount
 	// Mutable config fields must survive the round-trip.
 	if restored.Prompt != "keep going" {
 		t.Errorf("restored.Prompt = %q, want %q", restored.Prompt, "keep going")
+	}
+}
+
+// TestHandleSessionLoop_MultiTriggerRoundTrip verifies that PUT with a
+// multi-trigger list round-trips through GET, and that the response carries
+// both the legacy scalar "trigger" (primary/first) and the full "triggers"
+// list (mitto-r6j.5 wire contract).
+func TestHandleSessionLoop_MultiTriggerRoundTrip(t *testing.T) {
+	store, h := newLoopStore(t)
+	tmpDir := t.TempDir()
+
+	const sid = "test-multitrigger-roundtrip"
+	if err := store.Create(session.Metadata{SessionID: sid, ACPServer: "test-server", WorkingDir: tmpDir}); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	got := putLoopForTest(t, h, sid, LoopPromptRequest{
+		Prompt:    "check and continue",
+		Enabled:   true,
+		Frequency: session.Frequency{Value: 1, Unit: session.FrequencyHours},
+		Triggers:  []session.LoopTrigger{session.TriggerSchedule, session.TriggerOnCompletion},
+	})
+
+	if got.Trigger != session.TriggerSchedule {
+		t.Errorf("Trigger (primary) = %q, want %q", got.Trigger, session.TriggerSchedule)
+	}
+	if len(got.Triggers) != 2 || got.Triggers[0] != session.TriggerSchedule || got.Triggers[1] != session.TriggerOnCompletion {
+		t.Errorf("Triggers = %v, want [schedule onCompletion]", got.Triggers)
+	}
+
+	// Re-fetch via GET to confirm the same shape persists.
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions/"+sid+"/loop", nil)
+	w := httptest.NewRecorder()
+	h.HandleSessionLoop(w, req, sid, "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET loop: Status = %d, want %d. Body: %s", w.Code, http.StatusOK, w.Body.String())
+	}
+	var fetched session.LoopPrompt
+	if err := json.Unmarshal(w.Body.Bytes(), &fetched); err != nil {
+		t.Fatalf("decode GET response: %v", err)
+	}
+	if len(fetched.Triggers) != 2 {
+		t.Fatalf("GET Triggers len = %d, want 2", len(fetched.Triggers))
+	}
+	if !fetched.HasTrigger(session.TriggerSchedule) || !fetched.HasTrigger(session.TriggerOnCompletion) {
+		t.Errorf("GET Triggers = %v, want both schedule and onCompletion", fetched.Triggers)
+	}
+}
+
+// TestHandleSessionLoop_PatchDoesNotClobberTriggers is the regression test for
+// the mitto-r6j.5 clobber bug: LoopStore.Update used to collapse a
+// multi-trigger config to a single trigger on ANY write that touched the
+// (then-scalar) trigger parameter. A PATCH that does not mention triggers at
+// all must leave a pre-existing two-trigger list fully intact.
+func TestHandleSessionLoop_PatchDoesNotClobberTriggers(t *testing.T) {
+	store, h := newLoopStore(t)
+	tmpDir := t.TempDir()
+
+	const sid = "test-patch-no-clobber-triggers"
+	if err := store.Create(session.Metadata{SessionID: sid, ACPServer: "test-server", WorkingDir: tmpDir}); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	putLoopForTest(t, h, sid, LoopPromptRequest{
+		Prompt:    "check and continue",
+		Enabled:   true,
+		Frequency: session.Frequency{Value: 1, Unit: session.FrequencyHours},
+		Triggers:  []session.LoopTrigger{session.TriggerSchedule, session.TriggerOnCompletion},
+	})
+
+	// PATCH an unrelated field only.
+	disabled := false
+	patchBody, _ := json.Marshal(LoopPromptPatchRequest{Enabled: &disabled})
+	req := httptest.NewRequest(http.MethodPatch, "/api/sessions/"+sid+"/loop", bytes.NewReader(patchBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h.HandleSessionLoop(w, req, sid, "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("PATCH loop: Status = %d, want %d. Body: %s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	stored, err := store.Loop(sid).Get()
+	if err != nil {
+		t.Fatalf("Get loop after PATCH: %v", err)
+	}
+	if stored.Enabled {
+		t.Error("Enabled after PATCH = true, want false")
+	}
+	effective := stored.EffectiveTriggers()
+	if len(effective) != 2 || !stored.HasTrigger(session.TriggerSchedule) || !stored.HasTrigger(session.TriggerOnCompletion) {
+		t.Errorf("EffectiveTriggers() after unrelated PATCH = %v, want both schedule and onCompletion preserved (clobber regression)", effective)
 	}
 }

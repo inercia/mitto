@@ -36,11 +36,16 @@ func applyPromptLoopDefaultsToLoopPrompt(lp *session.LoopPrompt, pl *configPkg.P
 		return
 	}
 
-	// Trigger + on-completion fields. Trigger is now a list (mitto-r6j); this
-	// DTO's Trigger field is still singular, so fill from the primary (first)
-	// declared trigger when the caller left it unset.
-	if lp.Trigger == "" && len(pl.Trigger) > 0 {
-		lp.Trigger = session.LoopTrigger(pl.Trigger[0])
+	// Trigger list + on-completion fields. Fills the WHOLE declared trigger
+	// list (mitto-r6j.5) — not just the primary/first entry — when the caller
+	// left Triggers unset. Normalize() (called by Set/Update) keeps the legacy
+	// scalar Trigger field in sync with Triggers[0] for back-compat.
+	if len(lp.Triggers) == 0 && len(pl.Trigger) > 0 {
+		triggers := make([]session.LoopTrigger, len(pl.Trigger))
+		for i, t := range pl.Trigger {
+			triggers[i] = session.LoopTrigger(t)
+		}
+		lp.Triggers = triggers
 	}
 	if lp.DelaySeconds == 0 && pl.CompletionDelay() > 0 {
 		lp.DelaySeconds = pl.CompletionDelay()
@@ -68,9 +73,21 @@ func applyPromptLoopDefaultsToLoopPrompt(lp *session.LoopPrompt, pl *configPkg.P
 		}
 	}
 
-	// onTasks condition.
+	// onTasks condition + related fields (mitto-r6j.5 closes the
+	// ConditionPreset/CooldownSeconds/SettleWindowSeconds gaps — previously
+	// only Condition was merged here).
 	if lp.Condition == "" && pl.TasksCondition() != "" {
 		lp.Condition = pl.TasksCondition()
+	}
+	if lp.ConditionPreset == "" && pl.TasksConditionPreset() != "" {
+		lp.ConditionPreset = pl.TasksConditionPreset()
+	}
+	if lp.CooldownSeconds == 0 && pl.TasksCooldown() > 0 {
+		lp.CooldownSeconds = pl.TasksCooldown()
+	}
+	if lp.SettleWindowSeconds == nil && pl.TasksSettleWindow() > 0 {
+		v := pl.TasksSettleWindow()
+		lp.SettleWindowSeconds = &v
 	}
 
 	// *bool fields — pointer-presence semantics: both nil and *false are
