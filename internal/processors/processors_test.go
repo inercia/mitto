@@ -16,6 +16,7 @@ import (
 	"github.com/google/cel-go/common/types"
 
 	rootconfig "github.com/inercia/mitto/config"
+	"github.com/inercia/mitto/internal/acpproc/acperrors"
 	"github.com/inercia/mitto/internal/config"
 )
 
@@ -5676,6 +5677,46 @@ func TestApplyOnClose_PromptMode_GivesUpDuringSustainedSaturation(t *testing.T) 
 		t.Fatalf("dispatchWithRetry gave up after %d attempt(s) while the shared process was still saturated "+
 			"(notified=%v, lastErr=%v) — a fixed failure-agnostic retry budget cannot span a sustained "+
 			"saturation window, permanently losing close-phase work (mitto-7q2)", attempts, notified, notifiedErr)
+	}
+}
+
+// TestIsSaturationDispatchErr_MisroutesProcessBusy reproduces mitto-xhsj:
+// isSaturationDispatchErr (apply.go) classifies a purely-transient
+// acperrors.ErrProcessBusy (the proactive concurrency-cap load-shedding bail
+// in getOrCreateAuxiliarySession, cleared as soon as concurrent RPC load
+// drops — no GC recycle involved) as saturation-shaped, because
+// ErrProcessBusy wraps the umbrella acperrors.ErrSharedProcessSaturated (for
+// transition-era string-matching callers) and isSaturationDispatchErr
+// string-matches on that umbrella's literal text ("shared ACP process is
+// saturated") rather than distinguishing the granular sentinel.
+//
+// Consequence (confirmed against production logs): a close-phase processor
+// dispatch that fails with ErrProcessBusy is routed into
+// dispatchWithRetry's saturation branch — a fixed dispatchSaturationRetryInterval
+// (5s) poll for up to dispatchSaturationMaxWait (120s), waiting for GC Tier 5's
+// saturated-idle recycle. But GC Tier 5 (acp_process_gc.go) only recycles a
+// process that is BOTH saturated/gated AND has ActiveRPCs()==0 — the very
+// condition that produced ErrProcessBusy (ActiveRPCs >= threshold) fails that
+// second gate by construction, so the awaited recycle event cannot occur for
+// this class of error. The correct behavior is for a busy (not saturated)
+// process to use a fast, bounded retry — not the long saturation wait.
+//
+// This test currently fails: isSaturationDispatchErr(ErrProcessBusy) returns
+// true, when it should return false so ErrProcessBusy gets its own
+// (separately dispatched) fast-retry treatment instead of the GC-recycle wait.
+func TestIsSaturationDispatchErr_MisroutesProcessBusy(t *testing.T) {
+	// Mirrors the exact wrap chain produced by
+	// internal/acpproc/acp_process_manager.go's proactive busy bail:
+	// getOrCreateAuxiliarySession wraps acperrors.ErrProcessBusy, and the
+	// caller wraps that again with "failed to get auxiliary session: %w".
+	err := fmt.Errorf("failed to get auxiliary session: %w", acperrors.ErrProcessBusy)
+
+	if isSaturationDispatchErr(err) {
+		t.Fatalf("isSaturationDispatchErr(%v) = true, want false — a transient "+
+			"acperrors.ErrProcessBusy (concurrent RPC load-shedding, clears as soon as "+
+			"load drops) was misclassified as saturation-shaped and will be routed into "+
+			"dispatchWithRetry's 120s GC-recycle wait policy, an event that cannot occur "+
+			"while ActiveRPCs is still >= threshold (mitto-xhsj)", err)
 	}
 }
 

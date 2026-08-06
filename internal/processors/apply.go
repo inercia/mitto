@@ -2,6 +2,7 @@ package processors
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -9,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/inercia/mitto/internal/acpproc/acperrors"
 	"github.com/inercia/mitto/internal/config"
 )
 
@@ -1579,11 +1581,28 @@ func isNonRetryableDispatchErr(err error) bool {
 // the periodic GC Tier 5 recycle, so it is given its own bounded long-wait
 // retry policy (dispatchSaturationMaxWait/dispatchSaturationRetryInterval)
 // instead of counting against the normal fixed attempt budget (mitto-7q2).
-// String-matched (mirroring isNonRetryableDispatchErr) rather than
-// errors.Is(acperrors.ErrSharedProcessSaturated) to avoid a dependency from
-// internal/processors on internal/acpproc/acperrors.
+//
+// acperrors.ErrProcessBusy is excluded first via errors.Is: although it
+// wraps the ErrSharedProcessSaturated umbrella (so its Error() string also
+// contains "shared ACP process is saturated"), it is the PROACTIVE
+// concurrency-load bail — purely transient, clearing as soon as concurrent
+// RPC load drops, with no GC recycle involved. GC Tier 5 only recycles a
+// process that is both saturated/gated AND has ActiveRPCs()==0, a condition
+// ErrProcessBusy's cause (ActiveRPCs above threshold) fails by construction,
+// so routing it into the long saturation wait means waiting for an event
+// that structurally cannot happen (mitto-xhsj). Falling back to a substring
+// match on the umbrella text (mirroring isNonRetryableDispatchErr) after the
+// exclusion preserves saturation-shaped handling for the umbrella sentinel
+// itself, the other granular sentinels (ErrProcessSaturated, ErrMCPInitGated),
+// and legacy bare-string errors used by pre-existing tests (mitto-7q2).
 func isSaturationDispatchErr(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "shared ACP process is saturated")
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, acperrors.ErrProcessBusy) {
+		return false
+	}
+	return strings.Contains(err.Error(), "shared ACP process is saturated")
 }
 
 // dispatchWithRetry invokes m.promptFunc for the given name/prompt. Ordinary
