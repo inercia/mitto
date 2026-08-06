@@ -2323,7 +2323,7 @@ func TestLoopRunner_DeliverPrompt_ArgumentsForwardedAndSubstituted(t *testing.T)
 	defer cancel()
 	bs := NewTestBackgroundSessionWithCtx("arg-dispatch", ctx, cancel)
 
-	deliverErr := runner.deliverPrompt(bs, meta, loop, loopStore, false, false, nil, false)
+	deliverErr := runner.deliverPrompt(bs, meta, loop, loopStore, false, false, nil, false, session.TriggerSchedule)
 	// The resolver must have been called even though PromptWithMeta failed.
 	if !resolverCalled {
 		t.Error("promptResolver was not called; loop.PromptName not forwarded to deliverPrompt")
@@ -2407,7 +2407,7 @@ func TestLoopRunner_DeliverPrompt_EmptyPromptNotDispatched(t *testing.T) {
 			defer cancel()
 			bs := NewTestBackgroundSessionWithCtx(sid, ctx, cancel)
 
-			err = runner.deliverPrompt(bs, meta, tt.loop, store.Loop(sid), false, true, nil, false)
+			err = runner.deliverPrompt(bs, meta, tt.loop, store.Loop(sid), false, true, nil, false, session.TriggerSchedule)
 			if !errors.Is(err, ErrPromptResolveFailed) {
 				t.Errorf("deliverPrompt() error = %v, want ErrPromptResolveFailed", err)
 			}
@@ -4918,7 +4918,7 @@ func TestLoopRunner_ContextWindowFailure_OnCompletionLoop_AutoPauses(t *testing.
 	// onCompletion delivery uses (resetTimer=true, forced=false).
 	err413 := errors.New("HTTP error: 413 Request Entity Too Large")
 	for i := 1; i <= MaxLoopContextWindowFailures; i++ {
-		runner.handleDeliveryFailure(sessionID, "cgw-support", loop, loopStore, err413, true, false)
+		runner.handleDeliveryFailure(sessionID, "cgw-support", loop, loopStore, err413, true, false, session.TriggerOnCompletion)
 	}
 
 	// After MaxLoopContextWindowFailures consecutive 413 hits an onCompletion
@@ -4995,7 +4995,7 @@ func TestLoopRunner_DeliveryFailure_GenericError_AutoPausesAtCeiling(t *testing.
 
 	// Hits 1..MaxLoopDeliveryFailures-1 must NOT auto-pause yet (backoff only).
 	for i := 1; i < MaxLoopDeliveryFailures; i++ {
-		runner.handleDeliveryFailure(sessionID, "cgw-translation", loop, loopStore, genericErr, true, false)
+		runner.handleDeliveryFailure(sessionID, "cgw-translation", loop, loopStore, genericErr, true, false, session.TriggerSchedule)
 	}
 	mid, err := loopStore.Get()
 	if err != nil {
@@ -5011,7 +5011,7 @@ func TestLoopRunner_DeliveryFailure_GenericError_AutoPausesAtCeiling(t *testing.
 	}
 
 	// The Nth consecutive hit must trip the ceiling.
-	runner.handleDeliveryFailure(sessionID, "cgw-translation", loop, loopStore, genericErr, true, false)
+	runner.handleDeliveryFailure(sessionID, "cgw-translation", loop, loopStore, genericErr, true, false, session.TriggerSchedule)
 
 	final, err := loopStore.Get()
 	if err != nil {
@@ -5668,5 +5668,344 @@ func TestLoopRunner_ProcessTasksChange_RapidDeltasOnIdle_ShouldCollapseToSingleF
 
 	if got := atomic.LoadInt32(&resolverCalls); got != 1 {
 		t.Errorf("promptResolver call count = %d, want 1 (two rapid fs-watcher deltas on an idle onTasks subtree must collapse to a single fire via the pre-fire settle window)", got)
+	}
+}
+
+// =============================================================================
+// Multi-trigger dispatch (mitto-r6j.2)
+// =============================================================================
+
+// newMultiTriggerSession creates a session with an enabled loop that lists
+// several triggers at once.
+func newMultiTriggerSession(t *testing.T, store *session.Store, sessionID string, triggers []session.LoopTrigger) *session.LoopStore {
+	t.Helper()
+	meta := session.Metadata{SessionID: sessionID, ACPServer: "test", WorkingDir: "/tmp"}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("store.Create() error = %v", err)
+	}
+	ps := store.Loop(sessionID)
+	if err := ps.Set(&session.LoopPrompt{
+		Prompt:       "iterate",
+		Enabled:      true,
+		Triggers:     triggers,
+		DelaySeconds: 3600,
+		Frequency:    session.Frequency{Value: 4, Unit: session.FrequencyHours},
+	}); err != nil {
+		t.Fatalf("loopStore.Set() error = %v", err)
+	}
+	return ps
+}
+
+// TestLoopRunner_CheckSession_MultiTrigger_ArmsEveryTrigger verifies that a
+// [schedule, onCompletion] loop arms its onCompletion source AND keeps a
+// schedule anchor. Before mitto-r6j.2 checkSession returned early on the
+// onCompletion branch, so the schedule leg of such a loop was dead.
+func TestLoopRunner_CheckSession_MultiTrigger_ArmsEveryTrigger(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	ps := newMultiTriggerSession(t, store, "s1",
+		[]session.LoopTrigger{session.TriggerSchedule, session.TriggerOnCompletion})
+	// Mark the loop as already having run so the onCompletion leg goes through
+	// the stall-recovery path (which arms a timer) instead of the bootstrap
+	// path (which delivers immediately and needs an ACP session).
+	if err := ps.RecordSent(); err != nil {
+		t.Fatalf("RecordSent() error = %v", err)
+	}
+
+	runner := NewLoopRunner(store, nil, nil)
+	runner.SetMinLoopCompletionDelaySeconds(0)
+
+	// The schedule leg must have an anchor: a multi-trigger config is no longer
+	// treated as purely event-driven.
+	loop, err := ps.Get()
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if loop.NextScheduledAt == nil {
+		t.Fatal("NextScheduledAt = nil for [schedule, onCompletion]; want a scheduled anchor")
+	}
+
+	// checkSession must arm the onCompletion timer even though a schedule leg exists.
+	meta := session.Metadata{SessionID: "s1", ACPServer: "test", WorkingDir: "/tmp"}
+	runner.checkSession(meta, time.Now().UTC())
+
+	if got := countCompletionTimers(runner); got != 1 {
+		t.Errorf("completionTimers = %d, want 1 (onCompletion must be armed on a multi-trigger loop)", got)
+	}
+}
+
+// TestLoopRunner_CheckSession_MultiTrigger_BootstrapsTasksBaseline verifies the
+// onTasks leg of a [schedule, onTasks] loop still gets its baseline captured,
+// and that the schedule leg keeps its anchor.
+func TestLoopRunner_CheckSession_MultiTrigger_BootstrapsTasksBaseline(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	ps := newMultiTriggerSession(t, store, "s1",
+		[]session.LoopTrigger{session.TriggerSchedule, session.TriggerOnTasks})
+
+	runner := NewLoopRunner(store, nil, nil)
+	raw := mustMarshalRows(t, beadsRow("mitto-1", "open", "2026-01-01T00:00:00Z"))
+	runner.SetBeadsClient(&fakeTasksBeadsClient{listFn: func(string) ([]byte, error) { return raw, nil }})
+
+	loop, err := ps.Get()
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if loop.NextScheduledAt == nil {
+		t.Fatal("NextScheduledAt = nil for [schedule, onTasks]; want a scheduled anchor")
+	}
+
+	meta := session.Metadata{SessionID: "s1", ACPServer: "test", WorkingDir: "/tmp"}
+	runner.checkSession(meta, time.Now().UTC())
+
+	baseline := NewTasksBaselineStore(store.SessionDir("s1"))
+	if _, err := baseline.Get(); err != nil {
+		t.Errorf("tasks baseline not bootstrapped on a multi-trigger loop: %v", err)
+	}
+}
+
+// TestLoopRunner_ClaimDispatch_CoalescesConcurrentTriggers pins the coalescing
+// rule: the first trigger to claim a session's dispatch wins, and any other
+// trigger firing while that run is in flight is dropped (never queued).
+func TestLoopRunner_ClaimDispatch_CoalescesConcurrentTriggers(t *testing.T) {
+	runner := NewLoopRunner(nil, nil, nil)
+
+	winner, ok := runner.claimDispatch("s1", session.TriggerOnTasks)
+	if !ok || winner != session.TriggerOnTasks {
+		t.Fatalf("first claimDispatch() = (%q, %v), want (onTasks, true)", winner, ok)
+	}
+
+	// Every other trigger must lose while the first is in flight.
+	for _, losing := range []session.LoopTrigger{
+		session.TriggerSchedule, session.TriggerOnCompletion, session.TriggerOnTasks,
+	} {
+		got, ok := runner.claimDispatch("s1", losing)
+		if ok {
+			t.Errorf("claimDispatch(%q) succeeded while onTasks in flight; want dropped", losing)
+		}
+		if got != session.TriggerOnTasks {
+			t.Errorf("claimDispatch(%q) winner = %q, want onTasks", losing, got)
+		}
+	}
+
+	// A different session is unaffected.
+	if _, ok := runner.claimDispatch("s2", session.TriggerSchedule); !ok {
+		t.Error("claimDispatch() on a different session was dropped; the claim must be per-session")
+	}
+
+	// Releasing lets the next trigger through.
+	runner.releaseDispatch("s1")
+	if got, ok := runner.claimDispatch("s1", session.TriggerSchedule); !ok || got != session.TriggerSchedule {
+		t.Errorf("claimDispatch() after release = (%q, %v), want (schedule, true)", got, ok)
+	}
+
+	// releaseDispatch is idempotent.
+	runner.releaseDispatch("s1")
+	runner.releaseDispatch("s1")
+}
+
+// TestLoopRunner_DeliverPrompt_CoalescedFireIsDropped drives deliverPrompt for a
+// second trigger while a claim is held and asserts it returns
+// ErrLoopDispatchCoalesced without dispatching.
+func TestLoopRunner_DeliverPrompt_CoalescedFireIsDropped(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	const sessionID = "coalesce-drop"
+	ps := newMultiTriggerSession(t, store, sessionID,
+		[]session.LoopTrigger{session.TriggerSchedule, session.TriggerOnCompletion})
+	loop, err := ps.Get()
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+
+	runner := NewLoopRunner(store, nil, nil)
+	// onTasks already owns the dispatch.
+	if _, ok := runner.claimDispatch(sessionID, session.TriggerOnTasks); !ok {
+		t.Fatal("precondition: claimDispatch() failed")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	bs := NewTestBackgroundSessionWithCtx(sessionID, ctx, cancel)
+	meta := session.Metadata{SessionID: sessionID, ACPServer: "test", WorkingDir: "/tmp"}
+
+	err = runner.deliverPrompt(bs, meta, loop, ps, true, false, nil, false, session.TriggerSchedule)
+	if !errors.Is(err, ErrLoopDispatchCoalesced) {
+		t.Errorf("deliverPrompt() error = %v, want ErrLoopDispatchCoalesced", err)
+	}
+
+	// The losing fire must not have advanced the shared iteration counter.
+	after, err := ps.Get()
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if after.IterationCount != 0 {
+		t.Errorf("IterationCount = %d after a coalesced fire, want 0", after.IterationCount)
+	}
+}
+
+// TestLoopRunner_SharedCaps_AcrossMixedTriggers verifies that maxIterations is a
+// loop-wide cap: runs delivered by different triggers all advance the same
+// counter and the cap trips regardless of which trigger won.
+func TestLoopRunner_SharedCaps_AcrossMixedTriggers(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	const sessionID = "shared-caps"
+	meta := session.Metadata{SessionID: sessionID, ACPServer: "test", WorkingDir: "/tmp"}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	ps := store.Loop(sessionID)
+	if err := ps.Set(&session.LoopPrompt{
+		Prompt: "iterate",
+		Triggers: []session.LoopTrigger{
+			session.TriggerSchedule, session.TriggerOnCompletion, session.TriggerOnTasks,
+		},
+		Frequency:     session.Frequency{Value: 4, Unit: session.FrequencyHours},
+		MaxIterations: 3,
+		Enabled:       true,
+	}); err != nil {
+		t.Fatalf("Set() error = %v", err)
+	}
+
+	// Three deliveries, one per trigger — RecordSent is the shared commit point
+	// every trigger's OnComplete funnels through.
+	for i := 1; i <= 3; i++ {
+		if err := ps.RecordSent(); err != nil {
+			t.Fatalf("RecordSent() #%d error = %v", i, err)
+		}
+		got, err := ps.Get()
+		if err != nil {
+			t.Fatalf("Get() error = %v", err)
+		}
+		if got.IterationCount != i {
+			t.Fatalf("IterationCount after %d mixed-trigger runs = %d, want %d",
+				i, got.IterationCount, i)
+		}
+		if got.FirstRunAt == nil {
+			t.Fatal("FirstRunAt = nil; the first delivered run must anchor it regardless of trigger")
+		}
+	}
+
+	final, err := ps.Get()
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if !final.ReachedMaxIterations() {
+		t.Errorf("ReachedMaxIterations() = false after 3 mixed-trigger runs with MaxIterations=3; "+
+			"want true (caps are loop-wide, not per-trigger). IterationCount=%d", final.IterationCount)
+	}
+}
+
+// TestLoopRunner_DeliveryFailure_ScheduleBackoffIsTriggerScoped verifies that a
+// failed onCompletion-initiated run on a multi-trigger loop does NOT consume the
+// schedule leg's backoff counter, and a schedule-initiated failure does.
+func TestLoopRunner_DeliveryFailure_ScheduleBackoffIsTriggerScoped(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	const sessionID = "breaker-scope"
+	ps := newMultiTriggerSession(t, store, sessionID,
+		[]session.LoopTrigger{session.TriggerSchedule, session.TriggerOnCompletion})
+	loop, err := ps.Get()
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+
+	runner := NewLoopRunner(store, nil, nil)
+	genericErr := errors.New("transient transport failure")
+
+	// An onCompletion-initiated failure must not touch the schedule breaker.
+	runner.handleDeliveryFailure(sessionID, "n", loop, ps, genericErr, true, false, session.TriggerOnCompletion)
+	runner.scheduleBackoffFailuresMu.Lock()
+	afterOnCompletion := runner.scheduleBackoffFailures[sessionID]
+	runner.scheduleBackoffFailuresMu.Unlock()
+	if afterOnCompletion != 0 {
+		t.Errorf("scheduleBackoffFailures = %d after an onCompletion-initiated failure, want 0 "+
+			"(a cross-trigger failure must not consume the schedule breaker)", afterOnCompletion)
+	}
+
+	// A schedule-initiated failure must.
+	runner.handleDeliveryFailure(sessionID, "n", loop, ps, genericErr, true, false, session.TriggerSchedule)
+	runner.scheduleBackoffFailuresMu.Lock()
+	afterSchedule := runner.scheduleBackoffFailures[sessionID]
+	runner.scheduleBackoffFailuresMu.Unlock()
+	if afterSchedule != 1 {
+		t.Errorf("scheduleBackoffFailures = %d after a schedule-initiated failure, want 1", afterSchedule)
+	}
+}
+
+// TestLoopRunner_StopLoopForArchive_ReleasesDispatchClaim verifies stopping a
+// loop disarms every trigger, including dropping a held dispatch claim so a
+// later re-enable is not permanently coalesced.
+func TestLoopRunner_StopLoopForArchive_ReleasesDispatchClaim(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	const sessionID = "stop-releases"
+	newMultiTriggerSession(t, store, sessionID,
+		[]session.LoopTrigger{session.TriggerSchedule, session.TriggerOnTasks})
+
+	runner := NewLoopRunner(store, nil, nil)
+	if _, ok := runner.claimDispatch(sessionID, session.TriggerOnTasks); !ok {
+		t.Fatal("precondition: claimDispatch() failed")
+	}
+
+	runner.StopLoopForArchive(sessionID, session.StoppedReasonArchived)
+
+	if _, ok := runner.claimDispatch(sessionID, session.TriggerSchedule); !ok {
+		t.Error("dispatch claim still held after StopLoopForArchive; stopping must disarm all triggers")
+	}
+}
+
+// TestBuildLoopUpdatedData_ExposesTriggerSet verifies the loop status payload
+// reports the full armed trigger set while keeping the singular back-compat key.
+func TestBuildLoopUpdatedData_ExposesTriggerSet(t *testing.T) {
+	loop := &session.LoopPrompt{
+		Prompt:    "iterate",
+		Enabled:   true,
+		Triggers:  []session.LoopTrigger{session.TriggerOnTasks, session.TriggerSchedule},
+		Frequency: session.Frequency{Value: 4, Unit: session.FrequencyHours},
+	}
+
+	data := BuildLoopUpdatedData("s1", loop)
+
+	if got := data["trigger"]; got != "onTasks" {
+		t.Errorf("data[trigger] = %v, want onTasks (primary, back-compat)", got)
+	}
+	got, ok := data["triggers"].([]string)
+	if !ok {
+		t.Fatalf("data[triggers] type = %T, want []string", data["triggers"])
+	}
+	want := []string{"onTasks", "schedule"}
+	if len(got) != len(want) {
+		t.Fatalf("data[triggers] = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("data[triggers][%d] = %q, want %q", i, got[i], want[i])
+		}
 	}
 }

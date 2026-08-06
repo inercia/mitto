@@ -2388,3 +2388,187 @@ func TestLoopStore_RecordSent_OnAgentDisabledLoop_DoesNotReturnSentinel(t *testi
 		t.Errorf("RecordSent() after benign self-stop (disabledByAgent) error = %v, want nil (not a resurrection)", err)
 	}
 }
+
+// TestLoopPrompt_MultiTrigger_Membership pins the membership helpers used by the
+// multi-trigger dispatch paths (mitto-r6j.2): every listed trigger must report
+// true regardless of its position in the list, and the legacy singular field and
+// the implicit default must keep working.
+func TestLoopPrompt_MultiTrigger_Membership(t *testing.T) {
+	tests := []struct {
+		name         string
+		loop         LoopPrompt
+		schedule     bool
+		onCompletion bool
+		onTasks      bool
+		wantPrimary  LoopTrigger
+	}{
+		{
+			name:        "implicit default is schedule",
+			loop:        LoopPrompt{},
+			schedule:    true,
+			wantPrimary: TriggerSchedule,
+		},
+		{
+			name:         "legacy singular onCompletion",
+			loop:         LoopPrompt{Trigger: TriggerOnCompletion},
+			onCompletion: true,
+			wantPrimary:  TriggerOnCompletion,
+		},
+		{
+			name:         "schedule and onCompletion",
+			loop:         LoopPrompt{Triggers: []LoopTrigger{TriggerSchedule, TriggerOnCompletion}},
+			schedule:     true,
+			onCompletion: true,
+			wantPrimary:  TriggerSchedule,
+		},
+		{
+			name:        "onTasks first, schedule second",
+			loop:        LoopPrompt{Triggers: []LoopTrigger{TriggerOnTasks, TriggerSchedule}},
+			schedule:    true,
+			onTasks:     true,
+			wantPrimary: TriggerOnTasks,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.loop.IsSchedule(); got != tt.schedule {
+				t.Errorf("IsSchedule() = %v, want %v", got, tt.schedule)
+			}
+			if got := tt.loop.IsOnCompletion(); got != tt.onCompletion {
+				t.Errorf("IsOnCompletion() = %v, want %v", got, tt.onCompletion)
+			}
+			if got := tt.loop.IsOnTasks(); got != tt.onTasks {
+				t.Errorf("IsOnTasks() = %v, want %v", got, tt.onTasks)
+			}
+			if got := tt.loop.EffectiveTrigger(); got != tt.wantPrimary {
+				t.Errorf("EffectiveTrigger() = %q, want %q", got, tt.wantPrimary)
+			}
+		})
+	}
+}
+
+// TestLoopStore_ComputeNextScheduledTime_MultiTrigger verifies that a loop
+// listing schedule alongside an event-driven trigger still gets a next-run
+// anchor (mitto-r6j.2). Before the multi-trigger dispatch work the presence of
+// onTasks/onCompletion suppressed NextScheduledAt entirely, so the schedule leg
+// of such a config could never fire.
+func TestLoopStore_ComputeNextScheduledTime_MultiTrigger(t *testing.T) {
+	tests := []struct {
+		name     string
+		triggers []LoopTrigger
+		wantNext bool
+	}{
+		{"schedule only", []LoopTrigger{TriggerSchedule}, true},
+		{"schedule and onTasks", []LoopTrigger{TriggerSchedule, TriggerOnTasks}, true},
+		{"onTasks then schedule", []LoopTrigger{TriggerOnTasks, TriggerSchedule}, true},
+		{"schedule and onCompletion", []LoopTrigger{TriggerSchedule, TriggerOnCompletion}, true},
+		{"onCompletion only", []LoopTrigger{TriggerOnCompletion}, false},
+		{"onTasks only", []LoopTrigger{TriggerOnTasks}, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ps := NewLoopStore(t.TempDir())
+			loop := &LoopPrompt{
+				Prompt:    "Test",
+				Triggers:  tt.triggers,
+				Frequency: Frequency{Value: 4, Unit: FrequencyHours},
+				Enabled:   true,
+			}
+			if err := ps.Set(loop); err != nil {
+				t.Fatalf("Set() error = %v", err)
+			}
+			got, err := ps.Get()
+			if err != nil {
+				t.Fatalf("Get() error = %v", err)
+			}
+			if (got.NextScheduledAt != nil) != tt.wantNext {
+				t.Errorf("NextScheduledAt set = %v, want %v (triggers=%v)",
+					got.NextScheduledAt != nil, tt.wantNext, tt.triggers)
+			}
+		})
+	}
+}
+
+// TestLoopStore_DeferNextSchedule_MultiTrigger verifies the failure backoff
+// applies to a multi-trigger loop that has a schedule leg, and stays a no-op for
+// a purely event-driven one (mitto-r6j.2).
+func TestLoopStore_DeferNextSchedule_MultiTrigger(t *testing.T) {
+	tests := []struct {
+		name      string
+		triggers  []LoopTrigger
+		wantDefer bool
+	}{
+		{"schedule and onTasks", []LoopTrigger{TriggerSchedule, TriggerOnTasks}, true},
+		{"onTasks only", []LoopTrigger{TriggerOnTasks}, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ps := NewLoopStore(t.TempDir())
+			loop := &LoopPrompt{
+				Prompt:    "Test",
+				Triggers:  tt.triggers,
+				Frequency: Frequency{Value: 4, Unit: FrequencyHours},
+				Enabled:   true,
+			}
+			if err := ps.Set(loop); err != nil {
+				t.Fatalf("Set() error = %v", err)
+			}
+			if err := ps.DeferNextSchedule(90 * time.Minute); err != nil {
+				t.Fatalf("DeferNextSchedule() error = %v", err)
+			}
+			got, err := ps.Get()
+			if err != nil {
+				t.Fatalf("Get() error = %v", err)
+			}
+			if !tt.wantDefer {
+				if got.NextScheduledAt != nil {
+					t.Errorf("NextScheduledAt = %v, want nil (no schedule leg)", got.NextScheduledAt)
+				}
+				return
+			}
+			if got.NextScheduledAt == nil {
+				t.Fatal("NextScheduledAt = nil, want the deferred time")
+			}
+			until := time.Until(*got.NextScheduledAt)
+			if until < time.Hour || until > 2*time.Hour {
+				t.Errorf("NextScheduledAt is %v out, want ~90m (defer must apply)", until)
+			}
+		})
+	}
+}
+
+// TestLoopPrompt_Validate_MultiTrigger_RequiresFrequency verifies that listing
+// schedule anywhere in the trigger list makes the frequency mandatory
+// (mitto-r6j.2) — previously only a schedule-primary config was validated.
+func TestLoopPrompt_Validate_MultiTrigger_RequiresFrequency(t *testing.T) {
+	invalid := &LoopPrompt{
+		Prompt:   "Test",
+		Triggers: []LoopTrigger{TriggerOnTasks, TriggerSchedule},
+		Enabled:  true,
+	}
+	if err := invalid.Validate(); err == nil {
+		t.Error("Validate() = nil for [onTasks, schedule] with no frequency; want a frequency error")
+	}
+
+	valid := &LoopPrompt{
+		Prompt:    "Test",
+		Triggers:  []LoopTrigger{TriggerOnTasks, TriggerSchedule},
+		Frequency: Frequency{Value: 4, Unit: FrequencyHours},
+		Enabled:   true,
+	}
+	if err := valid.Validate(); err != nil {
+		t.Errorf("Validate() error = %v, want nil", err)
+	}
+
+	eventOnly := &LoopPrompt{
+		Prompt:   "Test",
+		Triggers: []LoopTrigger{TriggerOnTasks, TriggerOnCompletion},
+		Enabled:  true,
+	}
+	if err := eventOnly.Validate(); err != nil {
+		t.Errorf("Validate() error = %v for event-only triggers, want nil", err)
+	}
+}
