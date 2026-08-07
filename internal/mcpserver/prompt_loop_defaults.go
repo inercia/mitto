@@ -37,10 +37,10 @@ func parseLoopTriggerList(raw string) ([]session.LoopTrigger, error) {
 	for _, part := range parts {
 		t := session.LoopTrigger(strings.TrimSpace(part))
 		switch t {
-		case session.TriggerSchedule, session.TriggerOnCompletion, session.TriggerOnTasks:
+		case session.TriggerSchedule, session.TriggerOnCompletion, session.TriggerOnTasks, session.TriggerOnChild:
 			// valid
 		default:
-			return nil, fmt.Errorf("loop_trigger must be 'schedule', 'onCompletion', 'onTasks', or a comma-separated list of these (got %q)", part)
+			return nil, fmt.Errorf("loop_trigger must be 'schedule', 'onCompletion', 'onTasks', 'onChild', or a comma-separated list of these (got %q)", part)
 		}
 		if seen[t] {
 			continue
@@ -96,6 +96,11 @@ func applyPromptLoopDefaultsToStartInput(input *ConversationStartInput, pl *conf
 	// (mitto-r6j.5 — previously only the primary/first trigger was filled).
 	if input.LoopTrigger == "" && len(pl.Trigger) > 0 {
 		input.LoopTrigger = strings.Join(pl.Trigger, ",")
+	}
+	// onChild event list. Filled only when the caller left it unset; a nil
+	// slice means "unset" here, matching how LoopArguments is checked below.
+	if input.LoopChildEvents == nil && len(pl.ChildEvents()) > 0 {
+		input.LoopChildEvents = pl.ChildEvents()
 	}
 	if input.LoopCompletionDelaySeconds == nil && pl.CompletionDelay() > 0 {
 		d := pl.CompletionDelay()
@@ -181,6 +186,10 @@ func applyPromptLoopDefaultsToUpdateInput(input *ConversationUpdateInput, pl *co
 	if input.LoopTrigger == nil && len(pl.Trigger) > 0 {
 		t := strings.Join(pl.Trigger, ",")
 		input.LoopTrigger = &t
+	}
+	// onChild event list. Same nil-means-unset rule as the start-input helper.
+	if input.LoopChildEvents == nil && len(pl.ChildEvents()) > 0 {
+		input.LoopChildEvents = pl.ChildEvents()
 	}
 	if input.LoopCompletionDelaySeconds == nil && pl.CompletionDelay() > 0 {
 		d := pl.CompletionDelay()

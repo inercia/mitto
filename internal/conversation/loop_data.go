@@ -50,6 +50,12 @@ func BuildLoopUpdatedData(sessionID string, loop *session.LoopPrompt) map[string
 			triggerNames = append(triggerNames, string(t))
 		}
 		data["triggers"] = triggerNames
+		effChildEvents := loop.EffectiveChildEvents()
+		childEventNames := make([]string, 0, len(effChildEvents))
+		for _, e := range effChildEvents {
+			childEventNames = append(childEventNames, string(e))
+		}
+		data["child_events"] = childEventNames
 		data["delay_seconds"] = loop.DelaySeconds
 		data["max_duration_seconds"] = loop.MaxDurationSeconds
 		// Prompt presence flag and free-text preview for the selector UI.

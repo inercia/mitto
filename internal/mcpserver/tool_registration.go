@@ -236,11 +236,12 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 			"Set 'loop_enabled' to false to create the loop configuration in a paused state. " +
 			"Set 'loop_fresh_context' to true to start each run with a clean agent context (no history injection, new ACP session). " +
 			"Set 'loop_max_iterations' to limit the number of scheduled runs (0 = unlimited). " +
-			"Set 'loop_trigger' to 'onCompletion' to fire the next run after the agent stops responding (event-driven), or 'onTasks' to fire when beads/tasks in the workspace change (event-driven), instead of on a fixed 'schedule'; neither onCompletion nor onTasks requires a frequency. " +
-			"Several triggers can be armed at once by passing a comma-separated list (e.g. 'schedule,onCompletion') — each arms independently and stays armed for the loop's lifetime, and each trigger's own settings (frequency, completion delay, task condition) apply independently. " +
-			"If two armed triggers want to fire in the same narrow window, only ONE run is delivered — the other is dropped, not queued (precedence within a tick: onTasks > onCompletion > schedule). 'loop_max_iterations' and 'loop_max_duration_seconds' are shared across every armed trigger, decremented once per delivered run regardless of which trigger fired it. " +
+			"Set 'loop_trigger' to 'onCompletion' to fire the next run after the agent stops responding (event-driven), 'onTasks' to fire when beads/tasks in the workspace change (event-driven), or 'onChild' to fire when a child conversation of this loop finishes a response or is deleted (event-driven), instead of on a fixed 'schedule'; neither onCompletion, onTasks, nor onChild requires a frequency. 'onChild' can never be armed alone (it is purely reactive to a child's lifecycle) — arm it alongside at least one other trigger. " +
+			"Several triggers can be armed at once by passing a comma-separated list (e.g. 'schedule,onCompletion') — each arms independently and stays armed for the loop's lifetime, and each trigger's own settings (frequency, completion delay, task condition, child events) apply independently. " +
+			"If two armed triggers want to fire in the same narrow window, only ONE run is delivered — the other is dropped, not queued (precedence within a tick: onTasks > onChild > onCompletion > schedule). 'loop_max_iterations' and 'loop_max_duration_seconds' are shared across every armed trigger, decremented once per delivered run regardless of which trigger fired it. " +
 			"For 'onCompletion', set 'loop_completion_delay_seconds' to the wait after the agent stops (clamped to the global floor). " +
 			"For 'onTasks', optionally set 'loop_condition' to a CEL expression gating which task changes fire the run (empty = fire on ANY beads/task change); 'loop_condition_preset' records an optional UI preset id compiled into the condition. " +
+			"For 'onChild', optionally set 'loop_child_events' to a list of 'anyEndResponse'/'anyDeleted' to restrict which child lifecycle events fire the run (empty/absent = both). " +
 			"Set 'loop_max_duration_seconds' to auto-stop the conversation after a wall-clock cap since iterating started (0 = unlimited). " +
 			"Cannot be used together with 'acp_server'. " +
 			"Requires 'Can start conversation' flag to be enabled in Advanced Settings (disabled by default for security). " +
@@ -316,11 +317,12 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 			"To disable loop entirely, set 'loop_enabled' to false. " +
 			"Set 'loop_fresh_context' to true to start each run with a clean agent context (no history injection, new ACP session). " +
 			"Set 'loop_max_iterations' to limit the number of scheduled runs (0 = unlimited). " +
-			"Set 'loop_trigger' to 'onCompletion' (event-driven: fire after the agent stops), 'onTasks' (event-driven: fire when beads/tasks in the workspace change), or 'schedule' (frequency-based, default); neither onCompletion nor onTasks requires a frequency. " +
-			"Several triggers can be armed at once by passing a comma-separated list (e.g. 'schedule,onCompletion'); the list REPLACES the currently armed set, each arms independently, and — if two armed triggers want to fire in the same narrow window — only ONE run is delivered (the other is dropped, not queued; precedence within a tick: onTasks > onCompletion > schedule). " +
+			"Set 'loop_trigger' to 'onCompletion' (event-driven: fire after the agent stops), 'onTasks' (event-driven: fire when beads/tasks in the workspace change), 'onChild' (event-driven: fire when a child conversation of this loop finishes a response or is deleted), or 'schedule' (frequency-based, default); neither onCompletion, onTasks, nor onChild requires a frequency. 'onChild' can never be armed alone — arm it alongside at least one other trigger. " +
+			"Several triggers can be armed at once by passing a comma-separated list (e.g. 'schedule,onCompletion'); the list REPLACES the currently armed set, each arms independently, and — if two armed triggers want to fire in the same narrow window — only ONE run is delivered (the other is dropped, not queued; precedence within a tick: onTasks > onChild > onCompletion > schedule). " +
 			"'loop_max_iterations' and 'loop_max_duration_seconds' are shared across every armed trigger, decremented once per delivered run regardless of which trigger fired it. " +
 			"For 'onCompletion', set 'loop_completion_delay_seconds' to the wait after the agent stops (clamped to the global floor). " +
 			"For 'onTasks', optionally set 'loop_condition' to a CEL expression gating which task changes fire the run (empty = fire on ANY beads/task change); 'loop_condition_preset' records an optional UI preset id compiled into the condition. " +
+			"For 'onChild', optionally set 'loop_child_events' to a list of 'anyEndResponse'/'anyDeleted' to restrict which child lifecycle events fire the run (nil = unchanged, non-nil replaces the stored list wholesale; empty/absent once applied = both events). " +
 			"Set 'loop_max_duration_seconds' to auto-stop the conversation after a wall-clock cap since iterating started (0 = unlimited). " +
 			selfIDNote,
 	}, s.handleConversationUpdate)

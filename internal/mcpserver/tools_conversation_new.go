@@ -60,6 +60,12 @@ type ConversationStartInput struct {
 	LoopTrigger                string `json:"loop_trigger,omitempty"`
 	LoopCompletionDelaySeconds *int   `json:"loop_completion_delay_seconds,omitempty"` // Wait (s) after agent stops, onCompletion only; clamped to floor
 	LoopMaxDurationSeconds     *int   `json:"loop_max_duration_seconds,omitempty"`     // Wall-clock cap (s) since iterating started (0 = unlimited)
+	// LoopChildEvents lists the child-conversation lifecycle events that arm
+	// the onChild trigger: "anyEndResponse" (a child finishes a response) and/or
+	// "anyDeleted" (a child is deleted). Empty/absent defaults to both when
+	// onChild is among the armed triggers. Only meaningful when loop_trigger
+	// includes "onChild".
+	LoopChildEvents []string `json:"loop_child_events,omitempty"`
 	// LoopSettleWindowSeconds is an optional pre-fire debounce window (seconds)
 	// for the onTasks trigger; nil/0 = fire immediately on the first delta.
 	LoopSettleWindowSeconds *int `json:"loop_settle_window_seconds,omitempty"`
@@ -730,6 +736,13 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 			MaxDurationSeconds: maxDurationSeconds,
 			Condition:          input.LoopCondition,
 			ConditionPreset:    input.LoopConditionPreset,
+		}
+		if len(input.LoopChildEvents) > 0 {
+			ce := make([]session.ChildEvent, len(input.LoopChildEvents))
+			for i, e := range input.LoopChildEvents {
+				ce[i] = session.ChildEvent(e)
+			}
+			loop.ChildEvents = ce
 		}
 		if input.LoopCoalesceDuringBusy != nil {
 			v := *input.LoopCoalesceDuringBusy

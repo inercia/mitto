@@ -47,6 +47,13 @@ func applyPromptLoopDefaultsToLoopPrompt(lp *session.LoopPrompt, pl *configPkg.P
 		}
 		lp.Triggers = triggers
 	}
+	if len(lp.ChildEvents) == 0 && len(pl.ChildEvents()) > 0 {
+		events := make([]session.ChildEvent, len(pl.ChildEvents()))
+		for i, e := range pl.ChildEvents() {
+			events[i] = session.ChildEvent(e)
+		}
+		lp.ChildEvents = events
+	}
 	if lp.DelaySeconds == 0 && pl.CompletionDelay() > 0 {
 		lp.DelaySeconds = pl.CompletionDelay()
 	}

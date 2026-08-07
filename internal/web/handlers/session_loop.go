@@ -23,6 +23,10 @@ type LoopPromptRequest struct {
 	// is no longer accepted on this request DTO (mitto-r6j.5) — the response
 	// still emits both "trigger" (primary/first, back-compat) and "triggers".
 	Triggers []session.LoopTrigger `json:"triggers,omitempty"`
+	// ChildEvents lists the child-conversation lifecycle events that arm the
+	// onChild trigger: "anyEndResponse" and/or "anyDeleted". Empty defaults to
+	// both events. Only meaningful when "onChild" is among Triggers.
+	ChildEvents []session.ChildEvent `json:"child_events,omitempty"`
 	// DelaySeconds is the wait after the agent stops before the next run (onCompletion only).
 	// Clamped to the global floor on write.
 	DelaySeconds int `json:"delay_seconds,omitempty"`
@@ -72,9 +76,13 @@ type LoopPromptPatchRequest struct {
 	// the stored trigger list wholesale (nil = leave unchanged). Replaces the
 	// legacy scalar "trigger" key, which is no longer accepted on this DTO
 	// (mitto-r6j.5).
-	Triggers           *[]session.LoopTrigger `json:"triggers,omitempty"`
-	DelaySeconds       *int                   `json:"delay_seconds,omitempty"`
-	MaxDurationSeconds *int                   `json:"max_duration_seconds,omitempty"`
+	Triggers *[]session.LoopTrigger `json:"triggers,omitempty"`
+	// ChildEvents is a partial update for the onChild event list; nil = leave
+	// unchanged, non-nil REPLACES the stored list wholesale (same semantics as
+	// Triggers).
+	ChildEvents        *[]session.ChildEvent `json:"child_events,omitempty"`
+	DelaySeconds       *int                  `json:"delay_seconds,omitempty"`
+	MaxDurationSeconds *int                  `json:"max_duration_seconds,omitempty"`
 	// Arguments is a partial update for the substitution arguments map.
 	// nil = leave unchanged; non-nil = replace the entire map (including empty map to clear it).
 	Arguments *map[string]string `json:"arguments,omitempty"`

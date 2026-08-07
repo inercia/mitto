@@ -650,7 +650,7 @@ func (s *Server) handleConversationUpdate(ctx context.Context, req *mcp.CallTool
 	// Update loop configuration if any loop fields provided
 	if input.LoopPrompt != nil || input.LoopPromptName != nil || input.LoopArguments != nil ||
 		input.LoopFrequencyValue != nil || input.LoopFrequencyUnit != nil || input.LoopEnabled != nil || input.LoopFreshContext != nil || input.LoopMaxIterations != nil ||
-		input.LoopTrigger != nil || input.LoopCompletionDelaySeconds != nil || input.LoopMaxDurationSeconds != nil ||
+		input.LoopTrigger != nil || input.LoopChildEvents != nil || input.LoopCompletionDelaySeconds != nil || input.LoopMaxDurationSeconds != nil ||
 		input.LoopCondition != nil || input.LoopConditionPreset != nil || input.LoopCoalesceDuringBusy != nil ||
 		input.LoopRunOnStart != nil || input.LoopSettleWindowSeconds != nil {
 		loopStore := store.Loop(input.ConversationID)
@@ -837,6 +837,13 @@ func (s *Server) handleConversationUpdate(ctx context.Context, req *mcp.CallTool
 			if input.LoopConditionPreset != nil {
 				loop.ConditionPreset = *input.LoopConditionPreset
 			}
+			if len(input.LoopChildEvents) > 0 {
+				ce := make([]session.ChildEvent, len(input.LoopChildEvents))
+				for i, e := range input.LoopChildEvents {
+					ce[i] = session.ChildEvent(e)
+				}
+				loop.ChildEvents = ce
+			}
 			if input.LoopCoalesceDuringBusy != nil {
 				v := *input.LoopCoalesceDuringBusy
 				loop.CoalesceDuringBusy = &v
@@ -967,6 +974,16 @@ func (s *Server) handleConversationUpdate(ctx context.Context, req *mcp.CallTool
 				a := input.LoopArguments
 				argsPtr = &a
 			}
+			// LoopChildEvents follows the same nil-means-unchanged, non-nil-means-
+			// replace-wholesale convention as Triggers/Arguments above.
+			var childEventsPtr *[]session.ChildEvent
+			if input.LoopChildEvents != nil {
+				ce := make([]session.ChildEvent, len(input.LoopChildEvents))
+				for i, e := range input.LoopChildEvents {
+					ce[i] = session.ChildEvent(e)
+				}
+				childEventsPtr = &ce
+			}
 			if err := loopStore.Update(session.LoopUpdate{
 				Prompt:              prompt,
 				PromptName:          promptName,
@@ -975,6 +992,7 @@ func (s *Server) handleConversationUpdate(ctx context.Context, req *mcp.CallTool
 				FreshContext:        input.LoopFreshContext,
 				MaxIterations:       input.LoopMaxIterations,
 				Triggers:            triggersPtr,
+				ChildEvents:         childEventsPtr,
 				DelaySeconds:        delaySeconds,
 				MaxDurationSeconds:  input.LoopMaxDurationSeconds,
 				Arguments:           argsPtr,
@@ -1109,6 +1127,12 @@ func (s *Server) handleConversationUpdate(ctx context.Context, req *mcp.CallTool
 			loopTriggers[i] = string(t)
 		}
 		output.LoopTriggers = loopTriggers
+		effChildEvents := p.EffectiveChildEvents()
+		loopChildEvents := make([]string, len(effChildEvents))
+		for i, e := range effChildEvents {
+			loopChildEvents[i] = string(e)
+		}
+		output.LoopChildEvents = loopChildEvents
 		output.LoopCompletionDelaySeconds = p.DelaySeconds
 		output.LoopMaxDurationSeconds = p.MaxDurationSeconds
 		output.LoopCondition = p.Condition

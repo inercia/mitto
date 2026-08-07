@@ -33,6 +33,7 @@ func (h *Handlers) handleSetLoop(w http.ResponseWriter, r *http.Request, session
 		FreshContext:       req.FreshContext,
 		MaxIterations:      req.MaxIterations,
 		Triggers:           req.Triggers,
+		ChildEvents:        req.ChildEvents,
 		DelaySeconds:       req.DelaySeconds,
 		MaxDurationSeconds: req.MaxDurationSeconds,
 	}
@@ -79,7 +80,8 @@ func (h *Handlers) handleSetLoop(w http.ResponseWriter, r *http.Request, session
 
 	if err := ps.Set(p); err != nil {
 		if err == session.ErrInvalidFrequency || err == session.ErrPromptEmpty || err == session.ErrInvalidMaxIterations ||
-			err == session.ErrInvalidTrigger || err == session.ErrInvalidDelay || err == session.ErrInvalidMaxDuration ||
+			err == session.ErrInvalidTrigger || err == session.ErrInvalidChildEvent || err == session.ErrOnChildAlone ||
+			err == session.ErrInvalidDelay || err == session.ErrInvalidMaxDuration ||
 			isInvalidConditionErr(err) {
 			writeErrorJSON(w, http.StatusBadRequest, "", err.Error())
 			return
@@ -155,6 +157,7 @@ func (h *Handlers) handlePatchLoop(w http.ResponseWriter, r *http.Request, sessi
 		FreshContext:        req.FreshContext,
 		MaxIterations:       req.MaxIterations,
 		Triggers:            req.Triggers,
+		ChildEvents:         req.ChildEvents,
 		DelaySeconds:        req.DelaySeconds,
 		MaxDurationSeconds:  req.MaxDurationSeconds,
 		Arguments:           req.Arguments,
@@ -170,7 +173,8 @@ func (h *Handlers) handlePatchLoop(w http.ResponseWriter, r *http.Request, sessi
 			return
 		}
 		if err == session.ErrInvalidFrequency || err == session.ErrPromptEmpty || err == session.ErrInvalidMaxIterations ||
-			err == session.ErrInvalidTrigger || err == session.ErrInvalidDelay || err == session.ErrInvalidMaxDuration ||
+			err == session.ErrInvalidTrigger || err == session.ErrInvalidChildEvent || err == session.ErrOnChildAlone ||
+			err == session.ErrInvalidDelay || err == session.ErrInvalidMaxDuration ||
 			isInvalidConditionErr(err) {
 			writeErrorJSON(w, http.StatusBadRequest, "", err.Error())
 			return
