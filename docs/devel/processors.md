@@ -576,6 +576,40 @@ Stats are sent to the frontend via:
 
 Fields in WebSocket payloads: `processor_count`, `processor_activations`, `processor_last_activation`.
 
+### Per-Run Instrumentation (`RunRecorder`)
+
+Beyond the aggregate counters above, the `Manager` emits one record per individual
+processor invocation through an optional callback seam:
+
+```go
+type ProcessorRun struct {
+    Name     string        // processor name
+    Phase    string        // "before" | "after" | "close"
+    Outcome  string        // "ok" | "error" | "skipped"
+    Duration time.Duration // zero for skipped / text-mode / prompt-mode runs
+    Error    string        // short failure message when Outcome == "error"
+}
+
+type RunRecorder func(ProcessorRun)
+
+func (m *Manager) SetRunRecorder(fn RunRecorder) // nil disables recording
+```
+
+- Fired from `Apply`/`applyWithRerun` (`before`), `ApplyAfter` (`after`), and
+  `ApplyOnClose` (`close`) — one call per skip reason and per terminal outcome.
+- Called **synchronously** from the pipeline, so implementations must not block.
+- Propagated by every `CloneWith*` constructor, so workspace/override clones keep
+  emitting.
+- `internal/conversation` wires it to persist a `session.EventTypeProcessorRun`
+  event (`ProcessorRunData`) to `events.jsonl`: `BackgroundSession` for live
+  sessions, `SessionManager.ApplyOnCloseProcessors` (writing directly via the
+  store) for the close phase, since the live session is usually already gone by
+  then. Persistence failures are logged, never propagated into the pipeline.
+
+The event-log route (rather than an `internal/stats` counter) is deliberate: a
+summed counter cannot represent a percentile, and per-run durations in
+`events.jsonl` allow exact p50/p95 to be computed for any time window.
+
 ## Integration Points
 
 The unified pipeline integrates at a single point in `BackgroundSession.PromptWithMeta()`:

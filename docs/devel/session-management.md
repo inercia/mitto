@@ -141,6 +141,7 @@ See [MCP Documentation](mcp.md) for how flags control MCP server behavior.
 | `file_read`        | File read operation                  |
 | `file_write`       | File write operation                 |
 | `error`            | Error occurrence                     |
+| `processor_run`    | One processor invocation (name, phase, outcome, duration) |
 
 ## Generic Event Metadata
 
