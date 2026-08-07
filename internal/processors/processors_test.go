@@ -171,6 +171,21 @@ func TestBuildCELContext_HasMessages(t *testing.T) {
 	}
 }
 
+// TestBuildCELContext_TasksUpstream asserts that BuildCELContext copies
+// input.TasksUpstream onto ctx.Workspace.TasksUpstream (mitto-w8jp.1), and that
+// the zero value yields an empty string (fail-closed: no upstream configured).
+func TestBuildCELContext_TasksUpstream(t *testing.T) {
+	ctx := BuildCELContext(&ProcessorInput{SessionID: "s", TasksUpstream: "jira"})
+	if ctx.Workspace.TasksUpstream != "jira" {
+		t.Errorf("Workspace.TasksUpstream = %q, want %q", ctx.Workspace.TasksUpstream, "jira")
+	}
+
+	emptyCtx := BuildCELContext(&ProcessorInput{SessionID: "s"})
+	if emptyCtx.Workspace.TasksUpstream != "" {
+		t.Errorf("expected empty Workspace.TasksUpstream by default, got %q", emptyCtx.Workspace.TasksUpstream)
+	}
+}
+
 // TestBuildCELContext_ModelTags asserts that BuildCELContext copies the resolved model
 // tags and name onto the Session context (mitto-i5sr), and that an unset input yields
 // empty values (safe for Model(tag)/HasModelTag to treat as no tags).
