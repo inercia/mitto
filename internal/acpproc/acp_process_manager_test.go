@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"math/rand"
 	"reflect"
 	"strings"
@@ -1236,6 +1237,92 @@ func TestSetSessionModel_SaturatedFailsFast(t *testing.T) {
 	}
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Errorf("expected errors.Is(err, context.DeadlineExceeded)=true, got: %v", err)
+	}
+}
+
+// unresponsiveACPPeer wires a *acp.ClientSideConnection to a fake in-process
+// peer that never answers any request, so every outbound RPC times out purely
+// via the caller's context deadline — exactly like a cold/wedged agent
+// subprocess, but with no external mock-acp-server binary and no live agent.
+// It drains whatever the SDK writes (so sendMessage never blocks) and never
+// writes back (so the SDK's response wait can only end via ctx.Done()),
+// reproducing the exact client-side -32603 "context deadline exceeded"
+// *acp.RequestError described in mitto-qy0j Finding 1 (toReqErr wrapping).
+func newUnresponsiveACPPeerConn() *acp.ClientSideConnection {
+	reqR, reqW := io.Pipe()
+	respR, _ := io.Pipe() // write side deliberately never used: no response ever arrives.
+	go io.Copy(io.Discard, reqR)
+	return acp.NewClientSideConnection(NewMultiplexClient(), reqW, respR)
+}
+
+// TestSetSessionModel_ColdAgentTimeout_TripsSaturation is a reproduction test
+// for mitto-qy0j: a cold/wedged agent that never answers session/set_model
+// produces the exact client-side -32603 "context deadline exceeded"
+// *acp.RequestError described in Finding 1 (manufactured by the SDK's
+// toReqErr, NOT errors.Is(err, context.DeadlineExceeded)-compatible). Finding
+// 2 is the primary defect: SetSessionModel's timeout-accounting at the
+// call site only recognises errors.Is(err, context.DeadlineExceeded), so
+// these RPC timeouts feed ZERO saturation samples and the wedged shared
+// process is never recycled — unlike NewSession/LoadSession, which already
+// classify this exact signature via isAgentInternalDeadlineErr (mitto-y1g).
+//
+// This test asserts the EXPECTED (fixed) behavior: three consecutive
+// set_model timeouts within a single call (setSessionModelMaxAttempts=3,
+// matching sessionSaturationTimeoutThreshold=3) must trip isSaturated().
+// It currently FAILS, demonstrating the bug.
+func TestSetSessionModel_ColdAgentTimeout_TripsSaturation(t *testing.T) {
+	// Shrink the attempt schedule for the duration of this test so three
+	// real per-attempt ctx timeouts complete in well under a second instead
+	// of the production 20s/15s/8s schedule. Restored via defer so no other
+	// test (e.g. TestSetModelAttemptTimeoutSchedule) observes the override.
+	origSchedule := setSessionModelAttemptTimeouts
+	setSessionModelAttemptTimeouts = [setSessionModelMaxAttempts]time.Duration{
+		60 * time.Millisecond,
+		50 * time.Millisecond,
+		40 * time.Millisecond,
+	}
+	defer func() { setSessionModelAttemptTimeouts = origSchedule }()
+
+	p := &SharedACPProcess{
+		conn:        newUnresponsiveACPPeerConn(),
+		setModelSem: make(chan struct{}, 1),
+		// processDone left nil = process considered alive.
+	}
+
+	if p.isSaturated() {
+		t.Fatal("precondition failed: process must not be saturated before the call")
+	}
+
+	err := p.SetSessionModel(context.Background(), "session-id", "some-model")
+	if err == nil {
+		t.Fatal("expected SetSessionModel to fail against an unresponsive agent")
+	}
+
+	// Sanity: confirm this really is the client-side-manufactured -32603
+	// "context deadline exceeded" signature from Finding 1, not some other
+	// failure (e.g. a wiring mistake in the fake peer) — and confirm the
+	// falsified hypothesis that it is NOT errors.Is-compatible.
+	if errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("got errors.Is(err, context.DeadlineExceeded)=true; the whole point of Finding 1 is that the "+
+			"SDK-manufactured -32603 is NOT errors.Is-compatible — got unexpected error shape: %v", err)
+	}
+	if code, ok := rpcErrorCode(err); !ok || code != -32603 {
+		t.Fatalf("expected an *acp.RequestError with code -32603 (SDK toReqErr), got code=%d ok=%v err=%v", code, ok, err)
+	}
+	msg := strings.ToLower(err.Error())
+	if !strings.Contains(msg, "deadline exceeded") && !strings.Contains(msg, "context deadline") {
+		t.Fatalf("expected the -32603 payload to carry a deadline-exceeded message, got: %v", err)
+	}
+
+	// The actual bug: three such consecutive timeouts within this one call
+	// (== sessionSaturationTimeoutThreshold) must trip saturation, exactly as
+	// NewSession/LoadSession already do for the identical error signature via
+	// isAgentInternalDeadlineErr. Today SetSessionModel's `errors.Is(err,
+	// context.DeadlineExceeded)` gate never matches this error, so
+	// recordRPCTimeout() is never called and this assertion fails.
+	if !p.isSaturated() {
+		t.Error("expected isSaturated()=true after 3 consecutive cold-agent set_model timeouts " +
+			"(mitto-qy0j Finding 2: set_model timeouts feed zero saturation samples)")
 	}
 }
 

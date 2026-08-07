@@ -2469,7 +2469,18 @@ func (p *SharedACPProcess) SetSessionModel(ctx context.Context, sessionID acp.Se
 		}
 
 		lastErr = err
-		if errors.Is(err, context.DeadlineExceeded) {
+		// mitto-qy0j: a cold/wedged agent's own internal deadline on session/set_model
+		// surfaces as a client-side *acp.RequestError{-32603} manufactured by the SDK's
+		// toReqErr (NOT errors.Is(err, context.DeadlineExceeded)-compatible — it has no
+		// Unwrap). Without this classification these RPC timeouts fed zero saturation
+		// samples, so a wedged shared process was never recycled by GC Tier 5/6 even
+		// though NewSession/LoadSession already handle the identical signature via
+		// isAgentInternalDeadlineErr/isAgentQueryClosedErr (mitto-y1g, mitto-aoo).
+		if isAgentInternalDeadlineErr(err) {
+			p.recordRPCTimeout()
+		} else if isAgentQueryClosedErr(err) {
+			p.recordRPCWedgeFailure()
+		} else if errors.Is(err, context.DeadlineExceeded) {
 			p.recordRPCTimeout()
 		}
 		retryable := isRetryableSetModelError(err)
@@ -2512,12 +2523,23 @@ func setModelFailureIsTerminal(attempt int, retryable bool) bool {
 }
 
 // isRetryableSetModelError reports whether a set_model error is worth retrying.
-// set_model is idempotent so retrying on timeout is safe.
+// set_model is idempotent so retrying on timeout is safe. The agent's own internal
+// deadline (-32603 "context deadline exceeded", mitto-qy0j) and the "query closed
+// before response received" wedge (mitto-aoo) are treated as retryable too, mirroring
+// isRetryableCreateError, so the bounded retry loop keeps retrying — and recording
+// each attempt's timeout toward saturation via the classification above — instead of
+// relying solely on the string-Contains fallback below.
 func isRetryableSetModelError(err error) bool {
 	if err == nil {
 		return false
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	if isAgentInternalDeadlineErr(err) {
+		return true
+	}
+	if isAgentQueryClosedErr(err) {
 		return true
 	}
 	msg := strings.ToLower(err.Error())
