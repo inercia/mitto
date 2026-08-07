@@ -770,6 +770,15 @@ func (sm *SessionManager) ApplyOnCloseProcessors(sessionID string, reason string
 		})
 	})
 
+	// Wire the durable pending-dispatch spool (mitto-3421): if the saturation
+	// retry budget is exhausted, persist the undelivered batch to
+	// $MITTO_DIR/pending-processor-dispatch/<workspace>.json instead of
+	// silently discarding it. Workspace-scoped (not SessionDir) because the
+	// session directory is removed synchronously by the delete handler
+	// (internal/web/handlers/session_delete.go) well before this fire-and-
+	// forget dispatch's give-up can fire minutes later.
+	procMgr.SetPendingDispatchStore(&processors.FilePendingDispatchStore{})
+
 	input := processors.CloseProcessorInput{
 		SessionID:             sessionID,
 		SessionDir:            store.SessionDir(sessionID),

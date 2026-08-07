@@ -85,6 +85,14 @@ const (
 	// session ID). Used for `remember: conversation` mode (mitto-47y.6.2).
 	// See internal/rememberedargs.
 	RememberedArgsConversationDirName = "remembered-args-conversation"
+
+	// PendingProcessorDispatchDirName is the name of the subdirectory holding
+	// per-workspace spools of undelivered prompt-mode processor batches (one
+	// JSON file per workspace UUID). Deliberately independent of any single
+	// session's own directory, which may already be removed from disk by the
+	// time a saturated dispatch gives up (mitto-3421). See
+	// internal/processors.FilePendingDispatchStore.
+	PendingProcessorDispatchDirName = "pending-processor-dispatch"
 )
 
 var (
@@ -466,6 +474,19 @@ func RememberedArgsConversationDir() (string, error) {
 		return "", err
 	}
 	return filepath.Join(dir, RememberedArgsConversationDirName), nil
+}
+
+// PendingProcessorDispatchDir returns the directory holding per-workspace
+// spools of undelivered prompt-mode processor batches
+// ($MITTO_DIR/pending-processor-dispatch). The directory is not created here;
+// callers persist via fileutil.WriteJSONAtomic, which creates it on first
+// write. Mirrors the RememberedArgsDir pattern (mitto-3421).
+func PendingProcessorDispatchDir() (string, error) {
+	dir, err := Dir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, PendingProcessorDispatchDirName), nil
 }
 
 // ResetCache clears the cached directory path.

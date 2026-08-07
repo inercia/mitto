@@ -2,6 +2,7 @@ package processors
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -5754,6 +5755,144 @@ func TestApplyOnClose_PromptMode_GivesUpDuringSustainedSaturation(t *testing.T) 
 		t.Fatalf("dispatchWithRetry gave up after %d attempt(s) while the shared process was still saturated "+
 			"(notified=%v, lastErr=%v) — a fixed failure-agnostic retry budget cannot span a sustained "+
 			"saturation window, permanently losing close-phase work (mitto-7q2)", attempts, notified, notifiedErr)
+	}
+}
+
+// TestApplyOnClose_PromptMode_SustainedSaturation_PersistsBatchOnGiveUp
+// reproduces mitto-3421: when a shared ACP process stays saturated for the
+// entire dispatchSaturationMaxWait budget, dispatchWithRetry gives up and
+// silently discards the combined close-phase prompt — no spool, no retry.
+//
+// This is a DIFFERENT defect than mitto-7q2 (which only widened the budget)
+// and a different error than mitto-xhsj's acperrors.ErrProcessBusy (already
+// excluded from the saturation branch by a5abdc54). Here promptFunc fails
+// with the genuine acperrors.ErrProcessSaturated sentinel — the REACTIVE
+// bail in getOrCreateAuxiliarySession — for the WHOLE window, mirroring
+// production: a workspace with several concurrently-prompting sessions can
+// never satisfy GC Tier 5's idle gate (ActiveRPCs()==0, no session
+// IsPrompting, empty queues — internal/acpproc/acp_process_gc.go:774-821),
+// so the awaited recycle event structurally cannot occur and the 120s
+// budget always expires (see the mitto-3421 Investigation comment).
+//
+// Because the archived session's source events are gone by the time this
+// fires (ArchiveReason "deleted"), losing the combined prompt here is
+// PERMANENT data loss — exactly the incident logged on the bead (three
+// simultaneously-closed conversations, all five close-phase memory
+// processors dropped). The fix persists the undelivered batch to a
+// workspace-scoped spool (FilePendingDispatchStore) so it survives the
+// give-up and can be retried once the workspace becomes dispatchable again.
+//
+// NOTE on spool location (discovered during the fix, correcting the
+// reproduce-phase assumption below): input.SessionDir is NOT durable for
+// ArchiveReason "deleted" — internal/web/handlers/session_delete.go fires
+// ApplyOnCloseProcessors (which only starts this fire-and-forget goroutine)
+// and then calls store.Delete synchronously right after, which os.RemoveAll
+// the session directory within milliseconds. dispatchWithRetry's give-up can
+// take up to dispatchSaturationMaxWait (minutes in production) to fire, by
+// which point SessionDir is long gone. The persisted spool must therefore be
+// keyed by workspace, independent of any single session's own directory.
+func TestApplyOnClose_PromptMode_SustainedSaturation_PersistsBatchOnGiveUp(t *testing.T) {
+	// Test-seam: shrink the saturation budget/cadence so the test does not
+	// have to wait out the production 120s/5s values. Mirrors the override
+	// pattern used by TestApplyOnClose_PromptMode_GivesUpDuringSustainedSaturation.
+	origMaxWait := dispatchSaturationMaxWait
+	dispatchSaturationMaxWait = 50 * time.Millisecond
+	t.Cleanup(func() { dispatchSaturationMaxWait = origMaxWait })
+	origSaturationInterval := dispatchSaturationRetryInterval
+	dispatchSaturationRetryInterval = time.Millisecond
+	t.Cleanup(func() { dispatchSaturationRetryInterval = origSaturationInterval })
+
+	// SessionDir still simulates the (short-lived, in production) session
+	// directory — kept to exercise the real CloseProcessorInput shape — but
+	// the assertion below checks the durable workspace spool, not this dir.
+	sessionDir := t.TempDir()
+	spoolDir := t.TempDir()
+
+	var mu sync.Mutex
+	var notified bool
+	var notifiedErr error
+
+	const workspaceUUID = "ws-uuid-stuck"
+
+	proc := &Processor{
+		Name:   "close-memoriser-stuck",
+		When:   WhenConfig{On: PhaseConversationClosed, Match: MatchAll},
+		Prompt: "Persist for session @mitto:session_id.",
+	}
+
+	m := NewManager("", nil)
+	m.processors = []*Processor{proc}
+	m.SetPendingDispatchStore(&FilePendingDispatchStore{BaseDir: spoolDir})
+	// Always saturated — mirrors the genuine reactive bail
+	// (acp_process_manager.go:1250-1268), NOT the proactive ErrProcessBusy
+	// bail that mitto-xhsj already excluded from this retry branch.
+	m.SetPromptFunc(func(_ context.Context, _, _, _ string) error {
+		return fmt.Errorf("failed to get auxiliary session: %w", acperrors.ErrProcessSaturated)
+	})
+	m.SetNotifyFunc(func(_, _ string, lastErr error) {
+		mu.Lock()
+		notified = true
+		notifiedErr = lastErr
+		mu.Unlock()
+	})
+
+	m.ApplyOnClose(context.Background(), CloseProcessorInput{
+		SessionID:     "sess-close-stuck",
+		SessionDir:    sessionDir,
+		WorkspaceUUID: workspaceUUID,
+		WorkingDir:    "/tmp/wd",
+		ArchiveReason: "deleted",
+	})
+
+	// Dispatch is fire-and-forget; poll for the give-up notification to fire
+	// once the (shrunk) saturation budget is exhausted.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		gaveUp := notified
+		mu.Unlock()
+		if gaveUp {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	mu.Lock()
+	gaveUp := notified
+	lastErr := notifiedErr
+	mu.Unlock()
+	if !gaveUp {
+		t.Fatalf("expected dispatchWithRetry to give up and notify once the saturation budget (%s) was exhausted",
+			dispatchSaturationMaxWait)
+	}
+
+	// The whole point of mitto-3421: once the workspace cannot idle within
+	// the budget, the undelivered batch prompt must survive the give-up in a
+	// durable, workspace-scoped spool — instead of being silently discarded,
+	// which permanently loses the archived conversation's close-phase work.
+	spoolPath := filepath.Join(spoolDir, workspaceUUID+".json")
+	data, readErr := os.ReadFile(spoolPath)
+	if readErr != nil {
+		t.Fatalf("dispatchWithRetry gave up (error=%v) without persisting the undelivered close-phase batch "+
+			"to the workspace spool %s — the archived session's source events are already gone, so processor %q's "+
+			"work is permanently lost (mitto-3421): %v", lastErr, spoolPath, proc.Name, readErr)
+	}
+	var entries []PendingDispatchEntry
+	if err := json.Unmarshal(data, &entries); err != nil {
+		t.Fatalf("failed to parse persisted spool %s: %v", spoolPath, err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("spool %s: got %d entries, want 1: %+v", spoolPath, len(entries), entries)
+	}
+	got := entries[0]
+	if got.WorkspaceUUID != workspaceUUID {
+		t.Errorf("persisted entry workspace = %q, want %q", got.WorkspaceUUID, workspaceUUID)
+	}
+	if got.Name != proc.Name {
+		t.Errorf("persisted entry name = %q, want %q", got.Name, proc.Name)
+	}
+	if !strings.Contains(got.Prompt, "sess-close-stuck") {
+		t.Errorf("persisted entry prompt missing @mitto:session_id substitution: %q", got.Prompt)
 	}
 }
 

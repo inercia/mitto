@@ -319,6 +319,13 @@ type Manager struct {
 	// the session directory). Injected as MemoryStateStore in unit tests.
 	stateStore StateStore
 
+	// pendingDispatchStore persists prompt-mode batches that dispatchWithRetry
+	// could not deliver within its retry budget (mitto-3421), keyed by
+	// workspace rather than session — see FilePendingDispatchStore for why a
+	// session-scoped location is not durable enough for this. Defaults to
+	// FilePendingDispatchStore. Injected with a temp-dir BaseDir in unit tests.
+	pendingDispatchStore PendingDispatchStore
+
 	// clock returns the current time. Defaults to time.Now; overridden in tests
 	// to make time-based cadence deterministic.
 	clock func() time.Time
@@ -341,7 +348,16 @@ func NewManager(processorsDir string, logger *slog.Logger) *Manager {
 		logger:        logger,
 		rerunState:    make(map[string]*processorRunState),
 		stateStore:    &FileStateStore{},
-		clock:         time.Now,
+		// pendingDispatchStore is intentionally nil by default (mirrors the
+		// promptFunc/notifyFunc opt-in pattern): unlike stateStore (always
+		// scoped to a caller-provided session directory, a no-op when empty),
+		// FilePendingDispatchStore's default BaseDir resolves to the shared
+		// $MITTO_DIR — defaulting it here would make any test or embedding
+		// that never calls SetPendingDispatchStore silently write to the
+		// real user data directory the moment dispatchWithRetry gives up.
+		// Production wiring opts in explicitly — see
+		// SessionManager.ApplyOnCloseProcessors.
+		clock: time.Now,
 	}
 }
 
@@ -349,6 +365,14 @@ func NewManager(processorsDir string, logger *slog.Logger) *Manager {
 // Primarily used in unit tests to inject a MemoryStateStore.
 func (m *Manager) SetStateStore(s StateStore) {
 	m.stateStore = s
+}
+
+// SetPendingDispatchStore replaces the store used to persist prompt-mode
+// batches that dispatchWithRetry could not deliver within its retry budget
+// (mitto-3421). Primarily used in unit tests to inject a
+// FilePendingDispatchStore pointed at a temp directory.
+func (m *Manager) SetPendingDispatchStore(s PendingDispatchStore) {
+	m.pendingDispatchStore = s
 }
 
 // SetClock replaces the clock function used for cadence time checks.
@@ -421,16 +445,17 @@ func (m *Manager) CloneWithTextProcessors(procs []config.MessageProcessor, prior
 	m.statsMu.Unlock()
 
 	clone := &Manager{
-		processorsDir:    m.processorsDir,
-		logger:           m.logger,
-		processors:       make([]*Processor, len(m.processors)),
-		rerunState:       make(map[string]*processorRunState),
-		promptFunc:       m.promptFunc,
-		notifyFunc:       m.notifyFunc,
-		totalActivations: activations,
-		lastActivationAt: lastAt,
-		stateStore:       m.stateStore,
-		clock:            m.clock,
+		processorsDir:        m.processorsDir,
+		logger:               m.logger,
+		processors:           make([]*Processor, len(m.processors)),
+		rerunState:           make(map[string]*processorRunState),
+		promptFunc:           m.promptFunc,
+		notifyFunc:           m.notifyFunc,
+		totalActivations:     activations,
+		lastActivationAt:     lastAt,
+		stateStore:           m.stateStore,
+		pendingDispatchStore: m.pendingDispatchStore,
+		clock:                m.clock,
 	}
 	copy(clone.processors, m.processors)
 	clone.AddTextProcessors(procs, priority)
@@ -455,17 +480,18 @@ func (m *Manager) CloneWithDirProcessors(dirs []string, logger *slog.Logger) *Ma
 	m.statsMu.Unlock()
 
 	clone := &Manager{
-		processorsDir:    m.processorsDir,
-		logger:           logger,
-		processors:       make([]*Processor, len(m.processors)),
-		rerunState:       make(map[string]*processorRunState),
-		promptFunc:       m.promptFunc,
-		notifyFunc:       m.notifyFunc,
-		totalActivations: activations,
-		lastActivationAt: lastAt,
-		stateStore:       m.stateStore,
-		clock:            m.clock,
-		loadErrors:       append([]ProcessorLoadError(nil), m.loadErrors...),
+		processorsDir:        m.processorsDir,
+		logger:               logger,
+		processors:           make([]*Processor, len(m.processors)),
+		rerunState:           make(map[string]*processorRunState),
+		promptFunc:           m.promptFunc,
+		notifyFunc:           m.notifyFunc,
+		totalActivations:     activations,
+		lastActivationAt:     lastAt,
+		stateStore:           m.stateStore,
+		pendingDispatchStore: m.pendingDispatchStore,
+		clock:                m.clock,
+		loadErrors:           append([]ProcessorLoadError(nil), m.loadErrors...),
 	}
 	copy(clone.processors, m.processors)
 
@@ -553,17 +579,18 @@ func (m *Manager) CloneWithEnabledOverrides(overrides []config.ProcessorOverride
 	m.statsMu.Unlock()
 
 	clone := &Manager{
-		processorsDir:    m.processorsDir,
-		logger:           m.logger,
-		processors:       make([]*Processor, len(m.processors)),
-		rerunState:       make(map[string]*processorRunState),
-		promptFunc:       m.promptFunc,
-		notifyFunc:       m.notifyFunc,
-		totalActivations: activations,
-		lastActivationAt: lastAt,
-		stateStore:       m.stateStore,
-		clock:            m.clock,
-		loadErrors:       m.loadErrors, // read-only; safe to share
+		processorsDir:        m.processorsDir,
+		logger:               m.logger,
+		processors:           make([]*Processor, len(m.processors)),
+		rerunState:           make(map[string]*processorRunState),
+		promptFunc:           m.promptFunc,
+		notifyFunc:           m.notifyFunc,
+		totalActivations:     activations,
+		lastActivationAt:     lastAt,
+		stateStore:           m.stateStore,
+		pendingDispatchStore: m.pendingDispatchStore,
+		clock:                m.clock,
+		loadErrors:           m.loadErrors, // read-only; safe to share
 	}
 
 	// Deep-copy processor pointers so we can modify Enabled without affecting the original.
@@ -1711,12 +1738,53 @@ func (m *Manager) dispatchWithRetry(workspaceUUID, name, prompt string, timeout 
 		}
 	}
 
+	// mitto-3421: previously the combined prompt was simply dropped here — for
+	// close-phase (conversationClosed) processors the originating session's
+	// events are already gone, so silent discard on give-up was permanent
+	// data loss. Persist the undelivered batch to a workspace-scoped spool
+	// (independent of any single session directory, which may already be
+	// removed from disk — see FilePendingDispatchStore) so it survives and
+	// can be retried later, converting the loss into a delay.
+	persisted := false
+	if m.pendingDispatchStore != nil && workspaceUUID != "" {
+		entry := PendingDispatchEntry{
+			WorkspaceUUID:  workspaceUUID,
+			Name:           name,
+			Prompt:         prompt,
+			TimeoutSeconds: timeout.Seconds(),
+			SavedAt:        time.Now(),
+		}
+		if lastErr != nil {
+			entry.LastError = lastErr.Error()
+		}
+		if saveErr := m.pendingDispatchStore.Append(entry); saveErr != nil {
+			if m.logger != nil {
+				m.logger.Error(failLog+"; failed to persist undelivered batch, work is lost",
+					"name", name,
+					"attempts", totalAttempts,
+					"error", lastErr,
+					"persist_error", saveErr,
+				)
+			}
+		} else {
+			persisted = true
+		}
+	}
+
 	if m.logger != nil {
-		m.logger.Error(failLog,
-			"name", name,
-			"attempts", totalAttempts,
-			"error", lastErr,
-		)
+		if persisted {
+			m.logger.Error(failLog+"; batch persisted for later retry",
+				"name", name,
+				"attempts", totalAttempts,
+				"error", lastErr,
+			)
+		} else if m.pendingDispatchStore == nil || workspaceUUID == "" {
+			m.logger.Error(failLog+"; batch not persisted, work is lost",
+				"name", name,
+				"attempts", totalAttempts,
+				"error", lastErr,
+			)
+		}
 	}
 	if m.notifyFunc != nil {
 		m.notifyFunc(workspaceUUID, name, lastErr)
