@@ -1,0 +1,68 @@
+{{- /*
+  jira/md2jira — the reverse direction of jira2md: Markdown -> JIRA wiki markup,
+  used when composing a description for a **new** ticket on a JIRA Server/Data
+  Center instance (whose `description` field is wiki markup, not Markdown).
+  Extracted for mitto-w8jp.3 ("JIRA: push to new"), which is the first caller.
+
+  JIRA Cloud's v3 API generally renders Markdown-ish plain text acceptably, so
+  this conversion is only needed for Server/Data Center. Callers should detect
+  the instance (e.g. from `jira_get_server_info_jira` / `jira me` deploymentType,
+  or simply attempt conversion when unsure) and skip straight to using the bead
+  body unchanged when the target is Cloud.
+
+  This fragment takes no arguments — usage:
+
+      {{ template "jira/shared/md2jira" . }}
+*/ -}}
+Only convert when the target JIRA instance is **Server or Data Center** (wiki-markup
+`description` field). For **Cloud**, skip this converter entirely and pass the
+Markdown body through unchanged — Cloud's create-issue API renders Markdown-ish
+plain text acceptably. When the instance type is uncertain, attempt conversion
+anyway; a best-effort wiki-markup rendering degrades gracefully on Cloud too (worst
+case, a few literal `h1.`/`{code}` markers appear in the description).
+
+Write this **good-enough** Markdown → JIRA wiki markup converter once to a temp
+file and reuse it — it preserves the most important structure (headers and code
+blocks) and is not meant to be perfect:
+
+```python
+#!/usr/bin/env python3
+# md2jira.py — good-enough Markdown -> JIRA wiki markup (reads stdin, writes stdout)
+import re, sys
+
+def convert(s):
+    if not s:
+        return ""
+    fence = chr(96) * 3
+    mono_open = chr(123) * 2
+    mono_close = chr(125) * 2
+    s = s.replace("\r\n", "\n")
+    # Fenced code blocks ```lang ... ``` -> {code:lang} ... {code}
+    def code_repl(m):
+        lang = (m.group(1) or "").strip()
+        body = m.group(2)
+        tag = "{code:" + lang + "}" if lang else "{code}"
+        return "\n" + tag + "\n" + body + "{code}\n"
+    s = re.sub(r"(?s)" + fence + r"([A-Za-z0-9+#]*)\n(.*?)" + fence, code_repl, s)
+    # Headers: #..###### -> h1. .. h6.
+    s = re.sub(r"(?m)^(#{1,6})\s+(.*)$", lambda m: "h" + str(len(m.group(1))) + ". " + m.group(2), s)
+    # Block quotes: > text -> bq. text
+    s = re.sub(r"(?m)^>\s?(.*)$", r"bq. \1", s)
+    # Links [text](url) -> [text|url]
+    s = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r"[\1|\2]", s)
+    # Inline code `text` -> {{ "{{" }}{{ "}}" }} monospace (JIRA wiki markup)
+    s = re.sub(r"(?<!`)`([^`\n]+)`(?!`)", lambda m: mono_open + m.group(1) + mono_close, s)
+    # Bold **text** -> *text*
+    s = re.sub(r"\*\*([^*\n]+)\*\*", r"*\1*", s)
+    # Italic *text* (single, not already consumed by bold above) -> _text_
+    s = re.sub(r"(?<!\*)\*([^*\n]+)\*(?!\*)", r"_\1_", s)
+    return s
+
+if __name__ == "__main__":
+    sys.stdout.write(convert(sys.stdin.read()))
+```
+
+Use it by piping the composed Markdown description through it, e.g.
+`python3 /tmp/md2jira.py < /tmp/desc.md > /tmp/desc.jira`. If `python3` is
+unavailable, fall back to the Markdown body unchanged — never block ticket
+creation on conversion.
