@@ -24,6 +24,8 @@ import {
 } from "../components/Icons.js";
 import { buildPromptGroupMenuItems } from "../components/ContextMenu.js";
 import { CONVERSATION_COLORS } from "../constants.js";
+import { promptLoopMode } from "../utils/prompts.js";
+import { decideLoopAction } from "./useConversationSeeding.js";
 
 export function useConversationMenu({
   session,
@@ -98,17 +100,30 @@ export function useConversationMenu({
   // Exposed separately so surfaces like the conversation Toolbar can render
   // these hierarchical groups inside a dedicated dropdown while promoting the
   // fixed actions (Copy, Flush, Loop, Archive, Delete) to top-level buttons.
-  const promptGroupItems = useMemo(
-    () =>
-      onSendPromptToConversation && menuPrompts && menuPrompts.length > 0
-        ? buildPromptGroupMenuItems(
-            menuPrompts,
-            (p, opts) => onSendPromptToConversation(session, p, opts),
-            html`<${LightningIcon} />`,
-          )
-        : [],
-    [menuPrompts, onSendPromptToConversation, session],
-  );
+  const promptGroupItems = useMemo(() => {
+    if (!onSendPromptToConversation || !menuPrompts || menuPrompts.length === 0) {
+      return [];
+    }
+    // Hide loop-configuring prompts (loop.mode: "always") on conversations
+    // that are already loops (or are children) — clicking one there falls
+    // into decideLoopAction's "one-shot" branch instead of configuring/
+    // joining the loop, silently sending the prompt once (mitto-wnc8).
+    // decideLoopAction is the single existing source of truth for that
+    // classification (same field `isLoopConfigured` callers already pass in
+    // derives from), so reuse it rather than duplicating its logic here.
+    // Guard on `session` truthy so a null session (no menu prompts fetched
+    // anyway) never suppresses a populated list via decideLoopAction(null).
+    const hideLoopConfiguring =
+      !!session && decideLoopAction(session) !== "make-loop";
+    const prompts = hideLoopConfiguring
+      ? menuPrompts.filter((p) => promptLoopMode(p) !== "always")
+      : menuPrompts;
+    return buildPromptGroupMenuItems(
+      prompts,
+      (p, opts) => onSendPromptToConversation(session, p, opts),
+      html`<${LightningIcon} />`,
+    );
+  }, [menuPrompts, onSendPromptToConversation, session]);
 
   const contextMenuItems = useMemo(() => {
     return [
