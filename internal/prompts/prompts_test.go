@@ -903,6 +903,40 @@ prompt: hi
 	}
 }
 
+// TestParsePromptFile_TargetNoArchiveExplicitFalse pins mitto-yvel.1: an
+// explicit `noArchive: false` in the frontmatter parses identically to the
+// absent case (zero value, archivable), completing the present/true,
+// present/false, absent trio called out in the bead's acceptance criteria.
+func TestParsePromptFile_TargetNoArchiveExplicitFalse(t *testing.T) {
+	data := []byte(`name: "explicit-false"
+target:
+  noArchive: false
+prompt: hi
+`)
+
+	prompt, err := ParsePromptFile("explicit-false.prompt.yaml", data, time.Now())
+	if err != nil {
+		t.Fatalf("ParsePromptFile failed: %v", err)
+	}
+	if prompt.Target == nil {
+		t.Fatal("Target = nil, want non-nil")
+	}
+	if prompt.Target.NoArchive {
+		t.Errorf("Target.NoArchive = true, want false (explicit false)")
+	}
+	wp := prompt.ToWebPrompt()
+	if wp.Target == nil || wp.Target.NoArchive {
+		t.Errorf("WebPrompt.Target.NoArchive = %+v, want false", wp.Target)
+	}
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(wp); err != nil {
+		t.Fatalf("json.Encode(WebPrompt): %v", err)
+	}
+	if strings.Contains(buf.String(), "noArchive") {
+		t.Errorf("JSON body should omit noArchive key when explicitly false; got %s", buf.String())
+	}
+}
+
 // TestParsePromptFile_TargetNoArchiveFalseOmittedFromJSON pins mitto-yvel.1:
 // an explicit noArchive: false (or absent) must NOT appear in the
 // serialized JSON (omitempty), so existing /api/prompts payloads for
