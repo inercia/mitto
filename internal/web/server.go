@@ -1509,6 +1509,12 @@ func NewServer(config Config) (*Server, error) {
 		s.sessionManager.SetOnConversationIdle(s.loopRunner.OnConversationIdle)
 	}
 
+	// Wire event-driven onChild(deleted) loop firing: the store notifies the
+	// runner once per session removed by Delete (target plus any cascade
+	// descendants) so a parent armed for onChild can fire on child deletion
+	// (mitto-987y.5). Independent of sessionManager being non-nil.
+	store.SetDeleteObserver(s.loopRunner.OnChildDeleted)
+
 	s.loopRunner.Start()
 
 	// Wire up loop runner to MCP server for the run-now tool.

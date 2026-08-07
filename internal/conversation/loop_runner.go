@@ -893,18 +893,45 @@ func (r *LoopRunner) triggerNowFull(sessionID string, resetTimer bool, tasksDelt
 }
 
 // OnConversationIdle is invoked when a session's agent has stopped and the session
-// is fully idle (no queued work). For conversations configured with the onCompletion
-// trigger it arms a one-shot timer that delivers the next run after the configured
-// delay (clamped to the global minimum floor). For any other configuration it cancels
-// a possibly-stale timer and returns.
+// is fully idle (no queued work). It runs two independent legs:
+//
+//  1. onCompletion (this session's own loop): see onConversationIdleCompletion.
+//  2. onChild (mitto-987y.5): if this session is itself a child (has a
+//     ParentSessionID), notify the parent's onChild loop leg via
+//     OnChildEndResponse so a parent armed for onChild can fire. This runs
+//     regardless of whether this session is archived — archiving stops THIS
+//     session's own loop, but the parent's onChild arming is independent, and
+//     fireOnChild separately guards on the PARENT's archived state.
+//
+// Order matters: onCompletion only arms a timer, while the onChild leg
+// dispatches synchronously — running onCompletion first preserves the
+// documented onChild > onCompletion precedence (see fireOnChild).
 func (r *LoopRunner) OnConversationIdle(sessionID string) {
 	if r.store == nil {
 		return
 	}
 
-	// Never arm a timer for an archived conversation — archiving stops the loop (mitto-efnb).
 	meta, err := r.store.GetMetadata(sessionID)
-	if err != nil || meta.Archived {
+	if err != nil {
+		r.cancelCompletionTimer(sessionID)
+		return
+	}
+
+	r.onConversationIdleCompletion(sessionID, meta)
+
+	if meta.ParentSessionID != "" {
+		r.OnChildEndResponse(sessionID)
+	}
+}
+
+// onConversationIdleCompletion is the onCompletion leg of OnConversationIdle.
+// For conversations configured with the onCompletion trigger it arms a
+// one-shot timer that delivers the next run after the configured delay
+// (clamped to the global minimum floor). For any other configuration
+// (including an archived conversation — archiving stops the loop, mitto-efnb)
+// it cancels a possibly-stale timer and returns.
+func (r *LoopRunner) onConversationIdleCompletion(sessionID string, meta session.Metadata) {
+	if meta.Archived {
 		r.cancelCompletionTimer(sessionID)
 		return
 	}
