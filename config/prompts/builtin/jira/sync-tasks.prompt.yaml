@@ -199,7 +199,7 @@ prompt: |
 
   In this batch step, `<bead-id>` is `<id>` (the bead that owns the current JIRA key from the Step 4 map).
 
-  **D. High-water mark — commit `jira_updated` last** (both create and update paths). Only after Step 5.1 (body) and Step 5C (comments) succeeded for this ticket, advance the idempotency guard:
+  **D. High-water mark — commit `jira_updated` last** (both create and update paths).
 
   {{ template "jira/shared/link-bead" (dict "Phase" "commit" "Target" "<id>") }}
 

@@ -89,6 +89,19 @@ func TestJiraFragmentsRenderCorrectly(t *testing.T) {
 		byName[p.Name] = p.Content
 	}
 
+	// wantExactlyOnce guards against a caller keeping its own copy of a
+	// sentence that a fragment invocation also renders (mitto-w8jp.2 test
+	// phase caught exactly this: pull-issue Step 6.9 and sync-tasks Step 5D
+	// each kept an inline "advance the idempotency guard" sentence
+	// immediately before the `link-bead` "commit" call, which renders the
+	// same sentence itself — the reader saw it twice). Each prompt here
+	// invokes `link-bead` with `Phase: "commit"` exactly once, so its
+	// hallmark sentence must appear exactly once in the rendered output.
+	wantExactlyOnce := map[string]string{
+		"JIRA: pull issue": "High-water mark — commit `jira_updated` last.",
+		"JIRA: sync tasks": "High-water mark — commit `jira_updated` last.",
+	}
+
 	for promptName, hallmarks := range wantHallmarks {
 		body, ok := byName[promptName]
 		if !ok {
@@ -104,6 +117,11 @@ func TestJiraFragmentsRenderCorrectly(t *testing.T) {
 		for _, needle := range hallmarks {
 			if !strings.Contains(out, needle) {
 				t.Errorf("prompt %q: rendered output missing hallmark %q — fragment did not inline correctly", promptName, needle)
+			}
+		}
+		if needle, ok := wantExactlyOnce[promptName]; ok {
+			if n := strings.Count(out, needle); n != 1 {
+				t.Errorf("prompt %q: hallmark %q appeared %d times, want exactly 1 — caller likely duplicates a sentence the fragment already renders", promptName, needle, n)
 			}
 		}
 	}

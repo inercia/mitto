@@ -106,8 +106,6 @@ prompt: |
 
   ## Step 6.9 — High-water mark: commit `jira_updated` last
 
-  Only after Step 5 (body) and Step 6 (per-comment mirror loop) both succeeded for this ticket, advance the idempotency guard used by Step 4:
-
   {{ template "jira/shared/link-bead" (dict "Phase" "commit" "Target" $target) }}
 
   ## Step 6.5 — Detect a JIRA reopen after a local close
