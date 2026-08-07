@@ -17,8 +17,6 @@ loop:
   trigger: [onCompletion]
   onCompletion:
     delay: 3600
-  onTasks:
-    coalesceDuringBusy: true
   mode: optional
   default: true
   maxIterations: 30

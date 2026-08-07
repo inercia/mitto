@@ -11,8 +11,6 @@ loop:
   trigger: [onCompletion]
   onCompletion:
     delay: 60
-  onTasks:
-    coalesceDuringBusy: true
   mode: optional
   default: false
 target:

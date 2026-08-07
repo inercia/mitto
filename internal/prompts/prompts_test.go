@@ -4933,64 +4933,6 @@ func TestBuiltinPrompts_EnabledWhenCompiles(t *testing.T) {
 	t.Logf("compiled enabledWhen for %d builtin prompts", n)
 }
 
-// TestBuiltinPrompts_OnCompletionDeclaresCoalesceDuringBusy pins mitto-nfy:
-// every builtin prompt whose loop: frontmatter declares trigger: onCompletion
-// must ALSO declare coalesceDuringBusy: true in that same block. Rationale:
-// the coalescing semantic is opt-in at the LoopPrompt merge boundary and its
-// runtime default (ShouldCoalesceDuringBusy) may not cover every dispatch
-// surface (MCP spawn / UI seeding / REST PUT go through different helpers).
-// Requiring the author to spell it out makes the intent auditable at the
-// prompt-authoring layer and is defense-in-depth against the companion
-// trigger-side runaway bug where onCompletion re-fires while the agent is
-// still processing an in-flight turn.
-//
-// The list of affected drivers is not enumerated here on purpose: the test
-// walks every builtin file so newly-added onCompletion prompts are caught
-// automatically without needing to update this test.
-func TestBuiltinPrompts_OnCompletionDeclaresCoalesceDuringBusy(t *testing.T) {
-	builtinDir := filepath.Join("..", "..", "config", "prompts", "builtin")
-	if _, err := os.Stat(builtinDir); err != nil {
-		t.Skipf("builtin prompts dir not found at %s: %v", builtinDir, err)
-	}
-	checked := 0
-	walkErr := filepath.WalkDir(builtinDir, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.IsDir() || !strings.HasSuffix(d.Name(), ".prompt.yaml") {
-			return nil
-		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			t.Errorf("ReadFile(%s): %v", d.Name(), err)
-			return nil
-		}
-		prompt, err := ParsePromptFile(d.Name(), data, time.Now())
-		if err != nil {
-			return nil // parse errors already reported by TestBuiltinPromptsParseClean
-		}
-		if prompt.Loop == nil || !prompt.Loop.hasTrigger("onCompletion") {
-			return nil
-		}
-		checked++
-		if prompt.Loop.TasksCoalesceDuringBusy() == nil {
-			t.Errorf("%s: loop.trigger = onCompletion but loop.onTasks.coalesceDuringBusy is unset — must be explicitly declared as true (mitto-nfy)", d.Name())
-			return nil
-		}
-		if !*prompt.Loop.TasksCoalesceDuringBusy() {
-			t.Errorf("%s: loop.onTasks.coalesceDuringBusy = false, want true for trigger: onCompletion (mitto-nfy)", d.Name())
-		}
-		return nil
-	})
-	if walkErr != nil {
-		t.Fatalf("WalkDir(%s): %v", builtinDir, walkErr)
-	}
-	if checked == 0 {
-		t.Error("no builtin prompts with trigger: onCompletion were checked — the walk found none, which is unexpected")
-	}
-	t.Logf("checked coalesceDuringBusy on %d onCompletion builtin prompts", checked)
-}
-
 // TestParsePromptFile_UnknownFragmentFails pins mitto-g61.4: a prompt whose
 // body references an unknown fragment must fail at ParsePromptFile (load
 // time), same class of failure as an unbalanced `{{ ... }}` — not silently

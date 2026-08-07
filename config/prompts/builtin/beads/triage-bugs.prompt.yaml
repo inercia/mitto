@@ -9,8 +9,6 @@ loop:
   trigger: [onCompletion]
   onCompletion:
     delay: 30
-  onTasks:
-    coalesceDuringBusy: true
   mode: always
   maxIterations: 5
   maxDuration: "1h"

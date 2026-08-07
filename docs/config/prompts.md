@@ -1088,13 +1088,6 @@ shape of persisted `loop.json` correctly, so a live loop created before
 mitto-r6j is **not** reset or reconfigured by upgrading Mitto — it keeps
 running exactly as before.
 
-**Known residual (mitto-7hh0):** 21 builtin prompts still carry an inert
-`loop.onTasks.coalesceDuringBusy: true` block under `trigger: [onCompletion]`
-— a deliberate zero-semantic-change carryover from the initial migration pass
-(the block was already inert under the old schema's flat form too). It
-produces the inert-block lint WARN described above; it is cosmetic and not
-scheduled as a fix-everything cleanup.
-
 ## `target:` (find-or-route dispatch)
 
 When a prompt is used to **create a new conversation** — via the `beadsIssues` /
