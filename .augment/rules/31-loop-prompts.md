@@ -60,9 +60,10 @@ will catch it."
 **Anti-pattern — inert blocks**: a `schedule`/`onCompletion`/`onTasks` block
 present for a trigger NOT listed in `trigger:` parses fine but is **inert**
 (load-time WARN, not an error). This is easy to introduce by copy-pasting a
-loop block from another prompt without pruning unused trigger sub-blocks —
-21 builtin prompts currently carry this pattern deliberately (mitto-7hh0,
-zero-semantic-change carryover from the mitto-r6j migration); avoid adding
+loop block from another prompt without pruning unused trigger sub-blocks. The
+builtin set carries zero inert blocks (the 21 `onTasks` carryovers from the
+mitto-r6j migration were deleted by mitto-7hh0) and
+`TestBuiltinPrompts_NoInertLoopTriggerBlocks` keeps it that way; avoid adding
 *new* inert blocks in prompts you author from scratch.
 
 **Anti-pattern — assuming a shared cap resets per trigger**: `maxIterations`
