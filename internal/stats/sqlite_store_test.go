@@ -288,6 +288,110 @@ func TestSQLiteStore_UpsertDeltas_EmptyAndNil(t *testing.T) {
 }
 
 // -----------------------------------------------------------------------------
+// ReplaceDeltas (mitto-5rm6.1)
+// -----------------------------------------------------------------------------
+
+func TestSQLiteStore_ReplaceDeltas_EvictsStaleRow(t *testing.T) {
+	s, _ := openTestStore(t)
+	ctx := context.Background()
+	from := hourBucket(t, "2026-04-01T00:00:00Z")
+	to := hourBucket(t, "2026-04-01T02:00:00Z")
+	ts := hourBucket(t, "2026-04-01T00:00:00Z")
+
+	// First pass: one bead-opened row.
+	if err := s.ReplaceDeltas(ctx, []string{MetricBeadsOpened}, from, to, []Delta{
+		{TSBucket: ts, Metric: MetricBeadsOpened, SessionID: BeadsSentinelSessionID, Workspace: "ws-1", Value: 1},
+	}); err != nil {
+		t.Fatalf("first ReplaceDeltas: %v", err)
+	}
+	if got := countAt(t, s, ts, MetricBeadsOpened, BeadsSentinelSessionID, "ws-1"); got != 1 {
+		t.Fatalf("after first pass = %d, want 1", got)
+	}
+
+	// Second pass over the same window with NO deltas (bead deleted/moved) —
+	// the stale row must be evicted, unlike UpsertDeltas.
+	if err := s.ReplaceDeltas(ctx, []string{MetricBeadsOpened}, from, to, nil); err != nil {
+		t.Fatalf("second ReplaceDeltas: %v", err)
+	}
+	if got := countAt(t, s, ts, MetricBeadsOpened, BeadsSentinelSessionID, "ws-1"); got != 0 {
+		t.Errorf("after eviction pass = %d, want 0 (row not evicted)", got)
+	}
+}
+
+func TestSQLiteStore_ReplaceDeltas_OnlyTouchesGivenMetricsAndWindow(t *testing.T) {
+	s, _ := openTestStore(t)
+	ctx := context.Background()
+	inWindowTS := hourBucket(t, "2026-04-02T00:00:00Z")
+	outsideWindowTS := hourBucket(t, "2026-04-03T00:00:00Z")
+
+	// Seed an unrelated metric in-window and a beads_opened row outside the
+	// window we're about to replace.
+	if err := s.UpsertDeltas(ctx, []Delta{
+		{TSBucket: inWindowTS, Metric: MetricPrompts, SessionID: "s", Workspace: "ws-1", Value: 42},
+		{TSBucket: outsideWindowTS, Metric: MetricBeadsOpened, SessionID: BeadsSentinelSessionID, Workspace: "ws-1", Value: 9},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	from := hourBucket(t, "2026-04-02T00:00:00Z")
+	to := hourBucket(t, "2026-04-02T01:00:00Z")
+	if err := s.ReplaceDeltas(ctx, []string{MetricBeadsOpened}, from, to, []Delta{
+		{TSBucket: inWindowTS, Metric: MetricBeadsOpened, SessionID: BeadsSentinelSessionID, Workspace: "ws-1", Value: 3},
+	}); err != nil {
+		t.Fatalf("ReplaceDeltas: %v", err)
+	}
+
+	if got := countAt(t, s, inWindowTS, MetricBeadsOpened, BeadsSentinelSessionID, "ws-1"); got != 3 {
+		t.Errorf("beads_opened in-window = %d, want 3", got)
+	}
+	if got := countAt(t, s, inWindowTS, MetricPrompts, "s", "ws-1"); got != 42 {
+		t.Errorf("unrelated metric prompts clobbered: got %d, want 42", got)
+	}
+	if got := countAt(t, s, outsideWindowTS, MetricBeadsOpened, BeadsSentinelSessionID, "ws-1"); got != 9 {
+		t.Errorf("beads_opened outside window clobbered: got %d, want 9", got)
+	}
+}
+
+func TestSQLiteStore_ReplaceDeltas_RejectsDeltaOutsideWindow(t *testing.T) {
+	s, _ := openTestStore(t)
+	ctx := context.Background()
+	from := hourBucket(t, "2026-04-04T00:00:00Z")
+	to := hourBucket(t, "2026-04-04T01:00:00Z")
+	outside := hourBucket(t, "2026-04-04T05:00:00Z")
+
+	err := s.ReplaceDeltas(ctx, []string{MetricBeadsOpened}, from, to, []Delta{
+		{TSBucket: outside, Metric: MetricBeadsOpened, SessionID: BeadsSentinelSessionID, Workspace: "ws-1", Value: 1},
+	})
+	if err == nil {
+		t.Fatal("ReplaceDeltas with out-of-window delta returned nil error, want non-nil")
+	}
+}
+
+func TestSQLiteStore_ReplaceDeltas_RejectsEmptyMetricsAndBadRange(t *testing.T) {
+	s, _ := openTestStore(t)
+	ctx := context.Background()
+	from := hourBucket(t, "2026-04-05T00:00:00Z")
+	to := hourBucket(t, "2026-04-05T01:00:00Z")
+
+	if err := s.ReplaceDeltas(ctx, nil, from, to, nil); err == nil {
+		t.Error("ReplaceDeltas with empty metrics returned nil error, want non-nil")
+	}
+	if err := s.ReplaceDeltas(ctx, []string{MetricBeadsOpened}, to, from, nil); err == nil {
+		t.Error("ReplaceDeltas with to<=from returned nil error, want non-nil")
+	}
+}
+
+func TestSQLiteStore_ReplaceDeltas_AfterClose(t *testing.T) {
+	s, _ := openTestStore(t)
+	_ = s.Close()
+	from := hourBucket(t, "2026-04-06T00:00:00Z")
+	to := hourBucket(t, "2026-04-06T01:00:00Z")
+	if err := s.ReplaceDeltas(context.Background(), []string{MetricBeadsOpened}, from, to, nil); !errors.Is(err, ErrClosed) {
+		t.Errorf("ReplaceDeltas after Close: error = %v, want ErrClosed", err)
+	}
+}
+
+// -----------------------------------------------------------------------------
 // Cursor round trip + monotonic invariants
 // -----------------------------------------------------------------------------
 

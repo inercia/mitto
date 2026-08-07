@@ -58,7 +58,37 @@ const (
 	MetricPermissionsPrompted = "permissions_prompted"
 	// MetricErrors counts error events.
 	MetricErrors = "errors"
+	// MetricBeadsOpened counts beads (bd issues) opened (created) in the
+	// bucket, derived from a periodic `bd list` snapshot rather than an event
+	// stream (mitto-5rm6).
+	MetricBeadsOpened = "beads_opened"
+	// MetricBeadsClosed counts beads closed in the bucket, keyed by the
+	// bead's closed_at timestamp.
+	MetricBeadsClosed = "beads_closed"
+	// MetricBeadsCycleSecondsSum is the sum of per-bead cycle times (seconds)
+	// for beads closed in the bucket. Stored as a sum (not a pre-averaged
+	// value) alongside MetricBeadsCycleClosedCount so the frontend can derive
+	// sum/count averages after the handler's hour->day roll-up, which only
+	// knows how to add. Cycle time is
+	// closed_at - (metadata.work_started_at ?? metadata.claimed_at ??
+	// started_at); beads with none of the three markers are excluded
+	// entirely (no created_at lead-time fallback).
+	MetricBeadsCycleSecondsSum = "beads_cycle_seconds_sum"
+	// MetricBeadsCycleClosedCount is the count of beads contributing to
+	// MetricBeadsCycleSecondsSum in the bucket (i.e. closed beads that had at
+	// least one of the three start markers). See MetricBeadsCycleSecondsSum.
+	MetricBeadsCycleClosedCount = "beads_cycle_closed_count"
 )
+
+// BeadsSentinelSessionID is the reserved stats_events.session_id value used
+// for beads-derived rows (MetricBeadsOpened, MetricBeadsClosed,
+// MetricBeadsCycleSecondsSum, MetricBeadsCycleClosedCount). Beads are
+// workspace-level state, not attributable to any single ACP session, so
+// these rows are written with SessionID=BeadsSentinelSessionID and
+// Workspace=<workspace UUID>, Model="". No schema migration is needed: the
+// v2 primary key (ts_bucket, metric, session_id, workspace, model) already
+// treats session_id as an opaque string.
+const BeadsSentinelSessionID = "__beads__"
 
 // Bucket names the time-bucket size used by a query.
 type Bucket string
@@ -227,6 +257,18 @@ type Store interface {
 	// rows are preserved. Callers must hold no concurrent flush in flight —
 	// backfillers arrange this via the InProgress guard before calling.
 	ResetForEstimatorBump(ctx context.Context) error
+
+	// ReplaceDeltas atomically replaces every row for the given metrics whose
+	// ts_bucket falls in [from, to) with deltas, in a single transaction
+	// (DELETE then INSERT). Unlike UpsertDeltas (additive/last-write-wins per
+	// key, never evicts a stale key), ReplaceDeltas evicts rows that no
+	// longer have a corresponding delta — e.g. a bead that moved to a
+	// different hour bucket, or was reopened/deleted since the last pass.
+	// Used by periodic full-recompute sources (mitto-5rm6's beads source)
+	// rather than incremental event-stream ingest. deltas outside
+	// [from, to) are rejected with an error; deltas may be empty (pure
+	// eviction of the window).
+	ReplaceDeltas(ctx context.Context, metrics []string, from, to time.Time, deltas []Delta) error
 
 	// Close releases the underlying storage. Subsequent calls must return
 	// ErrClosed.

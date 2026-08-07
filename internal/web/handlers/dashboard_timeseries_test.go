@@ -48,7 +48,10 @@ func (f *fakeStatsStore) GetMeta(context.Context, string) (string, error) {
 }
 func (f *fakeStatsStore) SetMeta(context.Context, string, string) error { return nil }
 func (f *fakeStatsStore) ResetForEstimatorBump(context.Context) error   { return nil }
-func (f *fakeStatsStore) Close() error                                  { return nil }
+func (f *fakeStatsStore) ReplaceDeltas(context.Context, []string, time.Time, time.Time, []stats.Delta) error {
+	return nil
+}
+func (f *fakeStatsStore) Close() error { return nil }
 
 // newTimeseriesTestHandler wires a Handlers with a fresh cache pre-installed
 // (bypassing the sync.Once) so tests can control the clock via c.now.

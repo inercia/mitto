@@ -18,6 +18,15 @@ func TestNoopStore_UpsertDeltas(t *testing.T) {
 	}
 }
 
+func TestNoopStore_ReplaceDeltas(t *testing.T) {
+	store := &NoopStore{}
+	from := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
+	to := time.Date(2026, 4, 1, 1, 0, 0, 0, time.UTC)
+	if err := store.ReplaceDeltas(context.Background(), []string{MetricBeadsOpened}, from, to, nil); err != nil {
+		t.Errorf("NoopStore.ReplaceDeltas() error = %v, want nil", err)
+	}
+}
+
 func TestNoopStore_GetCursor(t *testing.T) {
 	store := &NoopStore{}
 	cur, err := store.GetCursor(context.Background(), "sess-1")
@@ -84,6 +93,9 @@ func TestNoopStore_Close(t *testing.T) {
 	if _, err := store.Prune(context.Background(), time.Now()); !errors.Is(err, ErrClosed) {
 		t.Errorf("Prune after Close: error = %v, want ErrClosed", err)
 	}
+	if err := store.ReplaceDeltas(context.Background(), []string{MetricBeadsOpened}, time.Now(), time.Now().Add(time.Hour), nil); !errors.Is(err, ErrClosed) {
+		t.Errorf("ReplaceDeltas after Close: error = %v, want ErrClosed", err)
+	}
 
 	// Close is idempotent.
 	if err := store.Close(); err != nil {
@@ -108,6 +120,11 @@ func TestConstants(t *testing.T) {
 		{"MetricMCPCalls", MetricMCPCalls, "mcp_calls"},
 		{"MetricPermissionsPrompted", MetricPermissionsPrompted, "permissions_prompted"},
 		{"MetricErrors", MetricErrors, "errors"},
+		{"MetricBeadsOpened", MetricBeadsOpened, "beads_opened"},
+		{"MetricBeadsClosed", MetricBeadsClosed, "beads_closed"},
+		{"MetricBeadsCycleSecondsSum", MetricBeadsCycleSecondsSum, "beads_cycle_seconds_sum"},
+		{"MetricBeadsCycleClosedCount", MetricBeadsCycleClosedCount, "beads_cycle_closed_count"},
+		{"BeadsSentinelSessionID", BeadsSentinelSessionID, "__beads__"},
 	}
 	for _, c := range cases {
 		if c.got != c.want {

@@ -103,6 +103,14 @@ func (n *NoopStore) ResetForEstimatorBump(ctx context.Context) error {
 	return nil
 }
 
+// ReplaceDeltas silently discards deltas, mirroring UpsertDeltas.
+func (n *NoopStore) ReplaceDeltas(ctx context.Context, metrics []string, from, to time.Time, deltas []Delta) error {
+	if n.closed.Load() {
+		return ErrClosed
+	}
+	return nil
+}
+
 // Close marks the store as closed. Subsequent method calls return ErrClosed.
 func (n *NoopStore) Close() error {
 	n.closed.Store(true)

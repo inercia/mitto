@@ -488,6 +488,98 @@ func (s *SQLiteStore) ResetForEstimatorBump(ctx context.Context) error {
 	return tx.Commit()
 }
 
+// ReplaceDeltas atomically replaces every stats_events row for the given
+// metrics whose ts_bucket falls in [from, to) with deltas: DELETE the window
+// for those metrics, then INSERT deltas, all in one transaction. Unlike
+// UpsertDeltas this evicts rows with no corresponding delta in the new pass
+// (e.g. a bead that moved buckets or was reopened since the prior pass).
+//
+// deltas outside [from, to) are rejected — callers must scope the delta list
+// to the same window they are replacing, or the deleted rows and the
+// replacement rows silently diverge. Duplicate-key deltas within the batch
+// are collapsed last-write-wins on Value, mirroring UpsertDeltas.
+func (s *SQLiteStore) ReplaceDeltas(ctx context.Context, metrics []string, from, to time.Time, deltas []Delta) error {
+	if s.closed.Load() {
+		return ErrClosed
+	}
+	if len(metrics) == 0 {
+		return errors.New("stats: ReplaceDeltas: metrics is empty")
+	}
+	if !to.After(from) {
+		return errors.New("stats: ReplaceDeltas: to must be after from")
+	}
+	fromUnix := from.UTC().Unix()
+	toUnix := to.UTC().Unix()
+	for _, d := range deltas {
+		ts := d.TSBucket.UTC().Unix()
+		if ts < fromUnix || ts >= toUnix {
+			return fmt.Errorf("stats: ReplaceDeltas: delta ts_bucket %s outside window [%s, %s)",
+				d.TSBucket.UTC(), from.UTC(), to.UTC())
+		}
+	}
+
+	// Collapse duplicate keys in-batch — last one wins.
+	type key struct {
+		ts        int64
+		metric    string
+		sessionID string
+		workspace string
+		model     string
+	}
+	dedup := make(map[key]Delta, len(deltas))
+	for _, d := range deltas {
+		if d.Value == 0 {
+			continue
+		}
+		k := key{d.TSBucket.UTC().Unix(), d.Metric, d.SessionID, d.Workspace, d.Model}
+		dedup[k] = d
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	placeholders := ""
+	args := make([]any, 0, len(metrics)+2)
+	args = append(args, fromUnix, toUnix)
+	for i, m := range metrics {
+		if i > 0 {
+			placeholders += ","
+		}
+		placeholders += "?"
+		args = append(args, m)
+	}
+	delQuery := `DELETE FROM stats_events
+		WHERE ts_bucket >= ? AND ts_bucket < ? AND metric IN (` + placeholders + `)`
+	if _, err := tx.ExecContext(ctx, delQuery, args...); err != nil {
+		return fmt.Errorf("stats: ReplaceDeltas delete: %w", err)
+	}
+
+	if len(dedup) > 0 {
+		const insQ = `INSERT INTO stats_events
+			(ts_bucket, metric, session_id, workspace, working_dir, acp_server, value, model)
+			VALUES (?, ?, ?, ?, '', '', ?, ?)
+			ON CONFLICT(ts_bucket, metric, session_id, workspace, model) DO UPDATE SET
+				value = excluded.value`
+		stmt, err := tx.PrepareContext(ctx, insQ)
+		if err != nil {
+			return err
+		}
+		defer stmt.Close()
+		for k, d := range dedup {
+			if _, err := stmt.ExecContext(ctx,
+				k.ts, k.metric, k.sessionID, k.workspace, d.Value, k.model,
+			); err != nil {
+				return fmt.Errorf("stats: ReplaceDeltas insert: %w", err)
+			}
+		}
+	}
+
+	return tx.Commit()
+}
+
 // joinAnd is a tiny helper (avoids pulling in strings just for one Join).
 func joinAnd(parts []string) string {
 	out := ""
