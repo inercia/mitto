@@ -3077,7 +3077,12 @@ function App() {
             tip: "Copy",
             ariaLabel: "Copy",
             caret: true,
-            align: "end",
+            // mitto-nmiv: NOT "end" — this trigger sits close to the sidebar's
+            // right edge, so a dropdown-end (right-aligned) menu extends left
+            // past the sidebar and is clipped by the main-content column's
+            // overflow:hidden (clipping, not a z-index/paint-order issue — see
+            // the bead's Investigation comment). Default alignment extends the
+            // w-64 menu to the right instead, staying inside the column.
             open: copyMenuOpen,
             onToggle: setCopyMenuOpen,
             closeOnOutsideClick: true,
@@ -3247,7 +3252,9 @@ function App() {
             </span>`,
             tip: `Children (${activeChildren.length})`,
             ariaLabel: `Children of this conversation (${activeChildren.length})`,
-            align: "end",
+            // mitto-nmiv: see the identical note on the Copy dropdown above —
+            // default (non-"end") alignment keeps this w-64 menu from
+            // extending left past the sidebar into the clipped region.
             className: "hidden md:block",
             open: childrenMenuOpen,
             onToggle: setChildrenMenuOpen,

@@ -288,4 +288,57 @@ test.describe("Copy as Markdown", () => {
       page.locator(selectors.headerCopyLastResponseMd),
     ).toBeEnabled();
   });
+
+  // mitto-nmiv: reproduces the geometric clipping bug directly (ground truth
+  // via document.elementFromPoint, same technique used in the bead's own
+  // report and in beads.spec.ts's dialog-covers-panel regression check).
+  // The dropdown's w-64 menu is right-aligned to a narrow icon trigger, so
+  // its left portion extends past the overflow:hidden main-content column
+  // into the sidebar's screen region and is clipped there — NOT painted
+  // under the sidebar by z-index, since clipping wins regardless of z-index.
+  // Expected once fixed: every entry's own center is hit-tested to the entry
+  // itself. Today the leftmost entries (name/ID) are clipped away and the
+  // sidebar (or whatever sits behind) is hit instead.
+  test("header Copy dropdown items are not clipped by the sidebar at desktop viewport", async ({
+    page,
+    selectors,
+    helpers,
+    timeouts,
+  }) => {
+    await helpers.sendMessageAndWait(
+      page,
+      helpers.uniqueMessage("Hit-test copy dropdown"),
+    );
+
+    await page.locator(selectors.headerCopyMarkdown).click();
+    const menu = page.locator(selectors.headerCopyMenu);
+    await expect(menu).toBeVisible({ timeout: timeouts.shortAction });
+
+    const itemSelectors = [
+      selectors.headerCopyName,
+      selectors.headerCopyId,
+      selectors.headerCopyConversationMd,
+      selectors.headerCopyLastResponseMd,
+    ];
+
+    for (const sel of itemSelectors) {
+      const item = page.locator(sel);
+      const hit = await item.evaluate((el) => {
+        const r = el.getBoundingClientRect();
+        const cx = r.left + r.width / 2;
+        const cy = r.top + r.height / 2;
+        const top = document.elementFromPoint(cx, cy);
+        return {
+          insideItem: !!top && el.contains(top),
+          topTestId: top ? top.getAttribute("data-testid") : null,
+          topClass: top ? String(top.className) : null,
+          rect: { left: r.left, top: r.top, width: r.width, height: r.height },
+        };
+      });
+      expect(
+        hit.insideItem,
+        `${sel} center (${JSON.stringify(hit.rect)}) is covered by: testid=${hit.topTestId} class=${hit.topClass}`,
+      ).toBe(true);
+    }
+  });
 });
