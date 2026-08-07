@@ -197,6 +197,7 @@ func (s *Server) buildPromptEnabledContext(sessionID string) *config.PromptEnabl
 			ctx.Workspace.UserDataSchemaJSON = string(schemaBytes)
 		}
 	}
+	ctx.Workspace.TasksUpstream = config.NormalizeTasksUpstream(config.FolderBeadsUpstream(meta.WorkingDir))
 
 	// Workspace peers (mitto-4d6): non-archived sessions sharing the same
 	// (WorkingDir, ACPServer) composite key — the identity of a workspace in
@@ -401,6 +402,7 @@ func (s *Server) applyWorkspaceNamespace(ctx *config.PromptEnabledContext, worki
 	ctx.Workspace.UUID = ""
 	ctx.Workspace.Name = ""
 	ctx.Workspace.HasUserDataSchema = false
+	ctx.Workspace.TasksUpstream = config.NormalizeTasksUpstream(config.FolderBeadsUpstream(workingDir))
 	var acpServerName string
 	if ws := s.sessionManager.GetWorkspace(workingDir); ws != nil {
 		ctx.Workspace.UUID = ws.UUID

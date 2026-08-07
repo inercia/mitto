@@ -252,6 +252,7 @@ func BuildCELContext(input *ProcessorInput) *config.PromptEnabledContext {
 	ctx.Workspace.HasUserDataSchema = input.HasUserDataSchema
 	ctx.Workspace.HasMittoRC = input.HasMittoRC
 	ctx.Workspace.HasMetadataDescription = input.HasMetadataDescription
+	ctx.Workspace.TasksUpstream = input.TasksUpstream
 	ctx.Workspace.UserDataSchemaJSON = input.UserDataSchemaJSON
 
 	// Parent context

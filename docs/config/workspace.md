@@ -161,7 +161,7 @@ mitto web --folders config/folders.yaml
 
 The **Beads** tab (folder-level) is a UI wrapper over the Beads (`bd`) issue tracker for the folder's project. It has three parts:
 
-- **Upstream tasks management** — a dropdown (`none`, `Jira`, `GitHub`, `GitLab`, `Linear`) that selects the external task system Beads syncs with. This is folder-native and persisted in `folders.json` under the `beads` subsection. When set, Pull/Push/Sync actions appear in the Beads view for the folder, and a list of recommended configuration keys for the selected system is shown for convenience.
+- **Upstream tasks management** — a dropdown (`none`, `Jira`, `GitHub`, `GitLab`, `Linear`) that selects the external task system Beads syncs with. This is folder-native and persisted in `folders.json` under the `beads` subsection. When set, Pull/Push/Sync actions appear in the Beads view for the folder, and a list of recommended configuration keys for the selected system is shown for convenience. This selection is visible to prompts and `enabledWhen` gates as `Workspace.TasksUpstream` (normalized lowercase, `none` → `""`) — see [Workspace Context](prompts.md#workspace-context-workspace) in the prompts reference.
 - **`bd config` keys** — an editor for the folder's Beads configuration (namespaced keys such as `jira.url`, `github.repository`, `gitlab.project`). These are stored in the folder's Beads database via `bd config`, not in `folders.json`. Operational/system keys are shown read-only (edit them via the `bd` CLI).
 - **Pull / Push / Sync** — buttons in the Beads view that map to the selected upstream's sync operations (`bd <system> sync` with pull-only / push-only / bidirectional). They appear only when an upstream is configured.
 

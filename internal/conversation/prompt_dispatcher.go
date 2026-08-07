@@ -665,6 +665,7 @@ func (p promptDispatcher) buildProcessorInput(d promptDeps, message string, isFi
 	var hasMittoRC bool
 	var hasMetadataDescription bool
 	var userDataSchemaJSON string
+	var tasksUpstream string
 	workingDir := d.pdWorkingDir()
 	if workingDir != "" {
 		rc, rcErr := config.LoadWorkspaceRC(workingDir)
@@ -681,6 +682,7 @@ func (p promptDispatcher) buildProcessorInput(d promptDeps, message string, isFi
 		if rcErr == nil && rc != nil && rc.Metadata != nil && rc.Metadata.Description != "" {
 			hasMetadataDescription = true
 		}
+		tasksUpstream = config.NormalizeTasksUpstream(config.FolderBeadsUpstream(workingDir))
 	}
 
 	var userDataJSON string
@@ -761,6 +763,7 @@ func (p promptDispatcher) buildProcessorInput(d promptDeps, message string, isFi
 		HasUserDataSchema:      hasUserDataSchema,
 		HasMittoRC:             hasMittoRC,
 		HasMetadataDescription: hasMetadataDescription,
+		TasksUpstream:          tasksUpstream,
 		UserDataSchemaJSON:     userDataSchemaJSON,
 		UserDataJSON:           userDataJSON,
 		UserData:               userDataMap,

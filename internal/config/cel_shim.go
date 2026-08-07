@@ -62,4 +62,5 @@ var (
 	FormatChildren             = cel.FormatChildren
 	FormatPeers                = cel.FormatPeers
 	BuildTemplateFuncMap       = cel.BuildTemplateFuncMap
+	NormalizeTasksUpstream     = cel.NormalizeTasksUpstream
 )

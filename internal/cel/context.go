@@ -184,6 +184,15 @@ type WorkspaceContext struct {
 	// UserDataSchemaJSON is the JSON representation of the workspace user data schema fields.
 	// Empty when no schema is defined. Used by the {{ .Workspace.UserDataSchemaJSON }} template accessor.
 	UserDataSchemaJSON string
+	// TasksUpstream is the folder's configured beads upstream task system (e.g.
+	// "jira", "github", "gitlab", "linear"), sourced from the folder-native
+	// `beads.upstream` setting in folders.json (see
+	// internal/workspaces.FolderBeadsUpstream). Always normalized via
+	// NormalizeTasksUpstream before being stored here: lowercased, trimmed, and
+	// "none" mapped to "". Empty when no upstream is configured or the folder is
+	// unknown. Use `Workspace.TasksUpstream == "jira"` for a specific-upstream
+	// match, or `Workspace.TasksUpstream != ""` for "any upstream configured".
+	TasksUpstream string
 	// Peers holds non-archived conversations sharing this workspace (excluding self).
 	// Used by the {{ .Workspace.Peers.* }} template namespace and Workspace.Peers.*
 	// CEL variables for orchestrator prompts that need to reason about sibling

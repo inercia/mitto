@@ -1652,6 +1652,7 @@ The following fields are available at send time. They are the **same fields used
 | `{{ .ACP.Type }}` | ACP server type |
 | `{{ .Workspace.Folder }}` | Session working directory |
 | `{{ .Workspace.UUID }}` | Workspace identifier |
+| `{{ .Workspace.TasksUpstream }}` | Folder's configured beads upstream (e.g. `"jira"`, `"github"`), normalized lowercase; empty if none configured |
 | `{{ .Parent.Name }}` | Parent conversation name |
 | `{{ .Parent.Exists }}` | `true` if this session has a parent |
 | `{{ .Children.Count }}` | Number of child conversations |
@@ -2104,11 +2105,12 @@ Information about the AI agent (ACP server) used in the current conversation.
 
 Information about the current workspace.
 
-| Variable           | Type   | Description                  |
-| ------------------ | ------ | ---------------------------- |
-| `Workspace.UUID`   | string | Unique workspace identifier  |
-| `Workspace.Folder` | string | Workspace directory path     |
-| `Workspace.Name`   | string | Display name (if configured) |
+| Variable                 | Type   | Description                  |
+| ------------------------ | ------ | ---------------------------- |
+| `Workspace.UUID`         | string | Unique workspace identifier  |
+| `Workspace.Folder`       | string | Workspace directory path     |
+| `Workspace.Name`         | string | Display name (if configured) |
+| `Workspace.TasksUpstream` | string | Folder's configured beads upstream task system (`"jira"`, `"github"`, `"gitlab"`, `"linear"`, ...), normalized lowercase with `"none"` mapped to `""`. Empty when no upstream is configured. Use `Workspace.TasksUpstream == "jira"` for a specific-upstream match, or `Workspace.TasksUpstream != ""` for "any upstream configured". |
 
 #### Session Context (`Session.*`)
 

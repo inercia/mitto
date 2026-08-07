@@ -102,6 +102,13 @@ type ProcessorInput struct {
 	// HasMetadataDescription indicates whether the workspace has metadata.description set.
 	// Used for Workspace.HasMetadataDescription CEL variable.
 	HasMetadataDescription bool `json:"-"`
+	// TasksUpstream is the folder's configured beads upstream task system
+	// (normalized: lowercased, "none" mapped to ""). Used for the
+	// Workspace.TasksUpstream CEL variable and template field. Unlike the
+	// other Workspace.Has* flags above, this is emitted to external command
+	// processors (json:"tasks_upstream") since it is non-sensitive and
+	// processors currently have no other way to learn the folder's upstream.
+	TasksUpstream string `json:"tasks_upstream,omitempty"`
 	// UserDataSchemaJSON is the JSON representation of the workspace user data schema.
 	// Used for @mitto:user_data_schema variable substitution.
 	UserDataSchemaJSON string `json:"-"`
