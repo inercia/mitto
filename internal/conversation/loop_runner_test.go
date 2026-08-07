@@ -6244,3 +6244,402 @@ func TestBuildLoopUpdatedData_ExposesTriggerSet(t *testing.T) {
 		}
 	}
 }
+
+// =============================================================================
+// onChild dispatch leg (mitto-987y.4)
+// =============================================================================
+
+// newOnChildSession creates a session with an enabled onChild loop prompt.
+// A nil/empty events list leaves ChildEvents unset (DefaultChildEvents applies:
+// both anyEndResponse and anyDeleted). onChild must never be the sole armed
+// trigger (session.ErrOnChildAlone), so it is always paired with onCompletion
+// here — a combination that has no bearing on the onChild guard chain under
+// test, since fireOnChild only checks IsOnChild()/HasChildEvent().
+func newOnChildSession(t *testing.T, store *session.Store, sessionID string, events []session.ChildEvent) *session.LoopStore {
+	t.Helper()
+	meta := session.Metadata{SessionID: sessionID, ACPServer: "test", WorkingDir: "/tmp"}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("store.Create() error = %v", err)
+	}
+	if err := store.Loop(sessionID).Set(&session.LoopPrompt{
+		Prompt:      "iterate",
+		Enabled:     true,
+		Triggers:    []session.LoopTrigger{session.TriggerOnChild, session.TriggerOnCompletion},
+		ChildEvents: events,
+	}); err != nil {
+		t.Fatalf("loopStore.Set() error = %v", err)
+	}
+	return store.Loop(sessionID)
+}
+
+// captureDebugLogger returns a logger writing to buf at Debug level, so drop
+// reasons and successful-dispatch markers are both observable.
+func captureDebugLogger() (*slog.Logger, *bytes.Buffer) {
+	var buf bytes.Buffer
+	return slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})), &buf
+}
+
+func TestLoopRunner_FireOnChild_NotArmed_TriggerMissing(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	// A loop configured for onCompletion, not onChild.
+	meta := session.Metadata{SessionID: "parent", ACPServer: "test", WorkingDir: "/tmp"}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if err := store.Loop("parent").Set(&session.LoopPrompt{
+		Prompt: "iterate", Enabled: true, Trigger: session.TriggerOnCompletion,
+	}); err != nil {
+		t.Fatalf("Set() error = %v", err)
+	}
+
+	logger, buf := captureDebugLogger()
+	runner := NewLoopRunner(store, nil, logger)
+	runner.fireOnChild("parent", session.ChildEventAnyEndResponse, "child1")
+
+	if !strings.Contains(buf.String(), "onChild: not armed for this event, dropping") {
+		t.Errorf("expected a not-armed drop log, got:\n%s", buf.String())
+	}
+	if strings.Contains(buf.String(), "Triggering immediate loop delivery") {
+		t.Error("a loop not configured for onChild must not dispatch")
+	}
+}
+
+func TestLoopRunner_FireOnChild_EventNotInWhenList(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	// Armed for onChild but only for anyDeleted.
+	newOnChildSession(t, store, "parent", []session.ChildEvent{session.ChildEventAnyDeleted})
+
+	logger, buf := captureDebugLogger()
+	runner := NewLoopRunner(store, nil, logger)
+	runner.fireOnChild("parent", session.ChildEventAnyEndResponse, "child1")
+
+	if !strings.Contains(buf.String(), "onChild: not armed for this event, dropping") {
+		t.Errorf("expected a not-armed drop log for an event outside the when list, got:\n%s", buf.String())
+	}
+}
+
+func TestLoopRunner_FireOnChild_ArchivedParent(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	newOnChildSession(t, store, "parent", nil)
+	if err := store.UpdateMetadata("parent", func(m *session.Metadata) { m.Archived = true }); err != nil {
+		t.Fatalf("UpdateMetadata() error = %v", err)
+	}
+
+	logger, buf := captureDebugLogger()
+	runner := NewLoopRunner(store, nil, logger)
+	runner.fireOnChild("parent", session.ChildEventAnyEndResponse, "child1")
+
+	if !strings.Contains(buf.String(), "onChild: parent missing or archived, dropping") {
+		t.Errorf("expected an archived-parent drop log, got:\n%s", buf.String())
+	}
+}
+
+func TestLoopRunner_FireOnChild_DisabledLoop(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	ps := newOnChildSession(t, store, "parent", nil)
+	if err := ps.Update(session.LoopUpdate{Enabled: boolPtr(false)}); err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+
+	logger, buf := captureDebugLogger()
+	runner := NewLoopRunner(store, nil, logger)
+	runner.fireOnChild("parent", session.ChildEventAnyEndResponse, "child1")
+
+	if !strings.Contains(buf.String(), "onChild: not armed for this event, dropping") {
+		t.Errorf("expected a not-armed drop log for a disabled loop, got:\n%s", buf.String())
+	}
+}
+
+func TestLoopRunner_FireOnChild_MissingParentMetadata(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	logger, buf := captureDebugLogger()
+	runner := NewLoopRunner(store, nil, logger)
+	// No session named "ghost-parent" was ever created (covers both a plain
+	// typo/race and a cascade delete that removed the parent too).
+	runner.fireOnChild("ghost-parent", session.ChildEventAnyDeleted, "child1")
+
+	if !strings.Contains(buf.String(), "onChild: parent missing or archived, dropping") {
+		t.Errorf("expected a missing-parent drop log, got:\n%s", buf.String())
+	}
+}
+
+func TestLoopRunner_FireOnChild_MaxDurationReached_AutoStops(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	newOnChildSession(t, store, "parent", nil)
+	firstRun := time.Now().Add(-2 * time.Hour)
+	if err := writeTestLoopFile(filepath.Join(store.SessionDir("parent"), "loop.json"), &session.LoopPrompt{
+		Prompt: "iterate", Enabled: true, Trigger: session.TriggerOnChild,
+		MaxDurationSeconds: 3600, FirstRunAt: &firstRun,
+	}); err != nil {
+		t.Fatalf("writeTestLoopFile() error = %v", err)
+	}
+
+	logger, buf := captureDebugLogger()
+	runner := NewLoopRunner(store, nil, logger)
+	runner.fireOnChild("parent", session.ChildEventAnyEndResponse, "child1")
+
+	got, err := store.Loop("parent").Get()
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if got.Enabled {
+		t.Error("loop should be disabled after reaching max duration")
+	}
+	if got.StoppedReason != session.StoppedReasonMaxDuration {
+		t.Errorf("StoppedReason = %q, want %q", got.StoppedReason, session.StoppedReasonMaxDuration)
+	}
+	if strings.Contains(buf.String(), "Triggering immediate loop delivery") {
+		t.Error("a max-duration-exhausted loop must not dispatch")
+	}
+}
+
+// intPtrOnChild is a local int pointer helper (loop_runner_test.go already
+// defines boolPtr; there is no shared intPtr in this package).
+func intPtrOnChild(v int) *int { return &v }
+
+func TestLoopRunner_FireOnChild_CooldownActive_SuppressesBurst(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	ps := newOnChildSession(t, store, "parent", nil)
+	recently := time.Now().Add(-1 * time.Second)
+	if err := ps.Update(session.LoopUpdate{CooldownSeconds: intPtrOnChild(300)}); err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	loop, err := ps.Get()
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	loop.LastSentAt = &recently
+	if err := writeTestLoopFile(filepath.Join(store.SessionDir("parent"), "loop.json"), loop); err != nil {
+		t.Fatalf("writeTestLoopFile() error = %v", err)
+	}
+
+	logger, buf := captureDebugLogger()
+	runner := NewLoopRunner(store, nil, logger)
+
+	// A burst of 3 child-idle events within the cooldown window: all 3 must
+	// be dropped, none may reach dispatch.
+	for i := 0; i < 3; i++ {
+		runner.fireOnChild("parent", session.ChildEventAnyEndResponse, fmt.Sprintf("child%d", i))
+	}
+
+	dropCount := strings.Count(buf.String(), "onChild: cooldown active, dropping")
+	if dropCount != 3 {
+		t.Errorf("cooldown drop count = %d, want 3 (one per burst event)", dropCount)
+	}
+	if strings.Contains(buf.String(), "Triggering immediate loop delivery") {
+		t.Error("no event in the burst should have reached dispatch while on cooldown")
+	}
+}
+
+func TestLoopRunner_FireOnChild_CoalescingLoss_LogsDebugNotWarn(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	newOnChildSession(t, store, "parent", nil)
+
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{})
+	sm.AddSessionForTest(NewMinimalBackgroundSessionPrompting("parent", false))
+
+	logger, buf := captureDebugLogger()
+	runner := NewLoopRunner(store, sm, logger)
+
+	// Another trigger already owns the in-flight dispatch for this session.
+	if _, ok := runner.claimDispatch("parent", session.TriggerOnTasks); !ok {
+		t.Fatal("precondition: claimDispatch() failed")
+	}
+
+	runner.fireOnChild("parent", session.ChildEventAnyEndResponse, "child1")
+
+	if !strings.Contains(buf.String(), "onChild: fire coalesced or session busy") {
+		t.Errorf("expected a coalesced-fire Debug log, got:\n%s", buf.String())
+	}
+	if strings.Contains(buf.String(), "level=WARN") || strings.Contains(buf.String(), "level=ERROR") {
+		t.Errorf("a coalescing loss must not log at Warn/Error, got:\n%s", buf.String())
+	}
+}
+
+// TestLoopRunner_FireOnChild_HappyPath_AnyEndResponse drives the public
+// OnChildEndResponse entry point end-to-end: it resolves the child's parent
+// from the child's own metadata and dispatches via TriggerNowFrom with
+// firedBy=onChild. There is no real ACP wiring in this test, so the assertion
+// is that the guard chain was passed (the Info log from triggerNowFull fires)
+// rather than that a turn actually completed.
+func TestLoopRunner_FireOnChild_HappyPath_AnyEndResponse(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	newOnChildSession(t, store, "parent", nil)
+	if err := store.Create(session.Metadata{
+		SessionID: "child1", ACPServer: "test", WorkingDir: "/tmp", ParentSessionID: "parent",
+	}); err != nil {
+		t.Fatalf("Create(child) error = %v", err)
+	}
+
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{})
+	sm.AddSessionForTest(NewMinimalBackgroundSessionPrompting("parent", false))
+
+	logger, buf := captureDebugLogger()
+	runner := NewLoopRunner(store, sm, logger)
+
+	runner.OnChildEndResponse("child1")
+
+	out := buf.String()
+	if !strings.Contains(out, "Triggering immediate loop delivery") || !strings.Contains(out, "fired_by=onChild") {
+		t.Errorf("expected the onChild-fired dispatch to reach triggerNowFull, got:\n%s", out)
+	}
+	for _, dropped := range []string{
+		"onChild: not armed for this event, dropping",
+		"onChild: parent missing or archived, dropping",
+		"onChild: cooldown active, dropping",
+	} {
+		if strings.Contains(out, dropped) {
+			t.Errorf("unexpected drop log %q for a fully-armed happy path:\n%s", dropped, out)
+		}
+	}
+}
+
+// TestLoopRunner_FireOnChild_HappyPath_AnyDeleted mirrors the AnyEndResponse
+// happy path but through OnChildDeleted, whose parentID is supplied directly
+// by the caller (the child's own metadata is already gone by delete time).
+func TestLoopRunner_FireOnChild_HappyPath_AnyDeleted(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	newOnChildSession(t, store, "parent", nil)
+
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{})
+	sm.AddSessionForTest(NewMinimalBackgroundSessionPrompting("parent", false))
+
+	logger, buf := captureDebugLogger()
+	runner := NewLoopRunner(store, sm, logger)
+
+	runner.OnChildDeleted("child1", "parent")
+
+	out := buf.String()
+	if !strings.Contains(out, "Triggering immediate loop delivery") || !strings.Contains(out, "fired_by=onChild") {
+		t.Errorf("expected the onChild-fired dispatch to reach triggerNowFull, got:\n%s", out)
+	}
+}
+
+func TestLoopRunner_OnChildEndResponse_NotAChild_NoOp(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	// A top-level session with no ParentSessionID.
+	if err := store.Create(session.Metadata{SessionID: "top-level", ACPServer: "test", WorkingDir: "/tmp"}); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	logger, buf := captureDebugLogger()
+	runner := NewLoopRunner(store, nil, logger)
+	runner.OnChildEndResponse("top-level")
+
+	if buf.Len() != 0 {
+		t.Errorf("OnChildEndResponse() for a non-child session should be a silent no-op, got:\n%s", buf.String())
+	}
+}
+
+func TestLoopRunner_OnChildEndResponse_UnknownChild_NoOp(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	logger, buf := captureDebugLogger()
+	runner := NewLoopRunner(store, nil, logger)
+	// GetMetadata will fail for a session that was never created; must not panic.
+	runner.OnChildEndResponse("does-not-exist")
+
+	if buf.Len() != 0 {
+		t.Errorf("OnChildEndResponse() for an unresolvable child should be a silent no-op, got:\n%s", buf.String())
+	}
+}
+
+func TestLoopRunner_OnChildDeleted_EmptyParentID_NoOp(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	logger, buf := captureDebugLogger()
+	runner := NewLoopRunner(store, nil, logger)
+	runner.OnChildDeleted("child1", "")
+
+	if buf.Len() != 0 {
+		t.Errorf("OnChildDeleted() with an empty parentID should be a silent no-op, got:\n%s", buf.String())
+	}
+}
+
+// TestLoopRunner_FireOnChild_AfterStop_NoOp is the onChild counterpart to
+// TestLoopRunner_OnBeadsChanged_AfterStopDoesNotTouchClosedStore (mitto-cbx):
+// a delete notification racing Stop() must not dispatch.
+func TestLoopRunner_FireOnChild_AfterStop_NoOp(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	newOnChildSession(t, store, "parent", nil)
+
+	logger, buf := captureDebugLogger()
+	runner := NewLoopRunner(store, nil, logger)
+	// Stop() on a never-started runner still flags `stopped` (mitto-cbx
+	// guard), without the poll-loop side effects Start() would add to buf.
+	runner.Stop()
+
+	runner.fireOnChild("parent", session.ChildEventAnyDeleted, "child1")
+
+	if buf.Len() != 0 {
+		t.Errorf("fireOnChild() after Stop() should be a silent no-op, got:\n%s", buf.String())
+	}
+}
