@@ -408,6 +408,22 @@ func (p promptDispatcher) resolveAndSubstitute(d promptDeps, message string, met
 		if d.pdHasSharedProcess() {
 			_ = d.pdCompleteDeferredHandshake()
 		}
+		// mitto-y78i: resolve (and, if needed, attempt) any per-prompt model
+		// preference NOW, before the template renders, so a tier-check
+		// fragment consuming .Session.ModelTags reflects the model this turn
+		// actually dispatches on rather than merely the one it intends to
+		// reach — applyModelPreference already knows, by the time it
+		// returns, whether the switch landed within modelSwitchSyncGrace or
+		// was deferred to the background. Skipped for FreshContext
+		// dispatches: applyModelPreference must run AFTER
+		// createFreshContextSession there (a switch applied before
+		// session/new targets the wrong session and is discarded), so those
+		// keep the pre-existing optimistic-render behavior — the later call
+		// in PromptWithMeta's goroutine still applies it post-fresh-session.
+		if !meta.FreshContext {
+			p.applyModelPreference(d, meta)
+			meta.modelPreferenceResolved = true
+		}
 		input := p.buildProcessorInput(d, message, false, meta)
 		tctx := processors.BuildCELContext(input)
 		// Wire the PromptText resolver (mitto-85y.3): resolves a workspace-prompt
@@ -695,8 +711,16 @@ func (p promptDispatcher) buildProcessorInput(d promptDeps, message string, isFi
 	var modelTags []string
 	if models := d.pdGetAgentModels(); models != nil {
 		modelID := string(models.CurrentModelId)
-		if intended := p.intendedModelID(d, meta, models); intended != "" {
-			modelID = intended
+		// mitto-y78i: once resolveAndSubstitute has already attempted the
+		// switch for this dispatch (meta.modelPreferenceResolved), models.
+		// CurrentModelId is the authoritative outcome — landed (equals the
+		// intended model) or deferred (still the prior model) — so trust it
+		// instead of intendedModelID's optimistic guess, which does not know
+		// whether the switch actually landed.
+		if !meta.modelPreferenceResolved {
+			if intended := p.intendedModelID(d, meta, models); intended != "" {
+				modelID = intended
+			}
 		}
 		modelName = ModelDisplayName(models, modelID)
 		modelTags = d.pdResolveModelTags(modelName)

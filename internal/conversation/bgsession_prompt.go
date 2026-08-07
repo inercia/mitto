@@ -210,6 +210,16 @@ type PromptMeta struct {
 	// allocations in the hot path. See prompt_dispatcher.go for the copy into
 	// ProcessorInput.TriggerOnTasksChanges (mitto-xkn).
 	Trigger *PromptTriggerContext
+	// modelPreferenceResolved is set by resolveAndSubstitute (mitto-y78i) once
+	// it has already attempted this dispatch's model-switch preference — for
+	// templated bodies, ahead of rendering — so buildProcessorInput's
+	// ModelName/ModelTags reflect the ACTUAL outcome (landed or deferred)
+	// instead of blindly trusting intendedModelID's optimistic guess, and so
+	// PromptWithMeta's later applyModelPreference call (in the background
+	// goroutine) skips re-attempting the switch and paying modelSwitchSyncGrace
+	// a second time. Left false (the pre-existing behavior) for FreshContext
+	// dispatches, whose switch must run after createFreshContextSession.
+	modelPreferenceResolved bool
 }
 
 // PromptTriggerContext holds trigger-source data threaded from the LoopRunner
@@ -596,7 +606,15 @@ retryAfterRestart:
 			return
 		}
 		freshContextSessionID := bs.promptDisp.createFreshContextSession(bs, meta, freshContextPillSeq)
-		bs.promptDisp.applyModelPreference(bs, meta)
+		// mitto-y78i: resolveAndSubstitute already attempted this dispatch's
+		// model-switch preference ahead of the template render (for
+		// non-FreshContext dispatches) — skip re-attempting it here so the
+		// prompt does not pay modelSwitchSyncGrace a second time. FreshContext
+		// dispatches never set modelPreferenceResolved, so they keep applying
+		// it here, after the fresh session is created, as before.
+		if !meta.modelPreferenceResolved {
+			bs.promptDisp.applyModelPreference(bs, meta)
+		}
 
 		// Declare all variables that are live across the retryPrompt goto target
 		// here, before the label, so that Go's "no jumping over declarations" rule

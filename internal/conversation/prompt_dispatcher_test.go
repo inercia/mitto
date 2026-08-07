@@ -2390,6 +2390,99 @@ func TestPromptDispatcher_ApplyModelPreference_ColdSlowSwitch_DoesNotBlockPrompt
 	t.Fatal("deferred model switch did not apply the override after the switch completed")
 }
 
+// TestPromptDispatcher_TierCheck_RendersOptimisticWhenSwitchDeferred pins the
+// fix for mitto-y78i: resolveAndSubstitute now attempts a templated dispatch's
+// model-switch preference (via applyModelPreference) BEFORE rendering, and
+// marks meta.modelPreferenceResolved so buildProcessorInput trusts the actual
+// post-attempt models.CurrentModelId instead of intendedModelID's optimistic
+// guess. When the set_model RPC is slower than modelSwitchSyncGrace,
+// applyModelPreference defers it to the background and the turn genuinely
+// dispatches on the OLD model (logged as "Deferring model switch to
+// background") — so the render must reflect that model, not the one the
+// dispatch merely intended to reach.
+//
+// This test drives the fixed sequence resolveAndSubstitute now performs:
+// applyModelPreference (switch attempt) happens-before buildProcessorInput
+// (render), with meta.modelPreferenceResolved set exactly as
+// resolveAndSubstitute sets it in between the two calls. Before the fix,
+// buildProcessorInput ran first and unconditionally trusted intendedModelID,
+// so a tier-check fragment consuming these fields reported "tier confirmed"
+// for a turn that actually ran degraded — a false negative in the audit
+// trail.
+func TestPromptDispatcher_TierCheck_RendersOptimisticWhenSwitchDeferred(t *testing.T) {
+	// Shrink the synchronous grace so the test is fast and deterministic.
+	origGrace := modelSwitchSyncGrace
+	modelSwitchSyncGrace = 30 * time.Millisecond
+	defer func() { modelSwitchSyncGrace = origGrace }()
+
+	p := promptDispatcher{}
+	d := newFakePromptDeps()
+	d.agentModels = &SessionModelState{
+		CurrentModelId: "m-opus",
+		AvailableModels: []ModelInfo{
+			{ModelId: "m-opus", Name: "Claude Opus"},
+			{ModelId: "m-sonnet", Name: "Claude Sonnet"},
+		},
+	}
+	d.baselineModel = "m-opus"
+	d.modelProfiles = []config.ModelProfile{
+		{Name: "Coding", Criteria: &config.ACPServerConstraint{MatchMode: "contains", Pattern: "Sonnet"}, Tags: []string{"Coding"}},
+		{Name: "Reasoning", Criteria: &config.ACPServerConstraint{MatchMode: "contains", Pattern: "Opus"}, Tags: []string{"Reasoning"}},
+	}
+	d.modelTagsByName = map[string][]string{
+		"Claude Opus":   {"Reasoning"},
+		"Claude Sonnet": {"Coding"},
+	}
+	// The set_model RPC never returns within the test's lifetime — this is the
+	// "cold/slow agent" precondition that pushes applyModelPreference past
+	// modelSwitchSyncGrace. sessionCtx must be non-nil so the background
+	// goroutine's WithTimeout(d.pdSessionCtx(), modelSwitchAsyncBudget) doesn't
+	// panic on a nil parent context.
+	d.setActiveModelGate = make(chan struct{}) // never closed in this test
+	d.sessionCtx = context.Background()
+
+	meta := PromptMeta{PreferredModels: []config.PromptPreferredModel{{ModelTag: "Coding"}}}
+
+	// Step 1: the switch path (applyModelPreference), now hoisted by
+	// resolveAndSubstitute to run BEFORE the render (bgsession_prompt.go:355's
+	// resolveAndSubstitute calls it ahead of buildProcessorInput). Because the
+	// RPC never lands within modelSwitchSyncGrace, it defers to the
+	// background, leaving the turn on the OLD model.
+	var buf bytes.Buffer
+	d.logger = slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	p.applyModelPreference(d, meta)
+
+	if !strings.Contains(buf.String(), "Deferring model switch to background") {
+		t.Fatalf("expected applyModelPreference to defer the switch (precondition of the bug), got log: %s", buf.String())
+	}
+	// The model actually active for this turn never changed.
+	if d.agentModels.CurrentModelId != "m-opus" {
+		t.Fatalf("expected CurrentModelId to remain m-opus (switch deferred, not landed), got %q", d.agentModels.CurrentModelId)
+	}
+
+	// Step 2: the render path (buildProcessorInput), with
+	// meta.modelPreferenceResolved set exactly as resolveAndSubstitute sets it
+	// after attempting the switch above.
+	meta.modelPreferenceResolved = true
+	input := p.buildProcessorInput(d, "msg", false, meta)
+
+	// FIXED (mitto-y78i): the render must reflect the ACTUAL landed model when
+	// the switch is deferred — Opus/Reasoning, matching what the turn actually
+	// dispatched on — not the intended Sonnet/Coding tier.
+	if input.ModelName == "Claude Sonnet" || (len(input.ModelTags) == 1 && input.ModelTags[0] == "Coding") {
+		t.Fatalf("tier-check renders optimistically when the model switch is deferred to the background: "+
+			"got ModelName=%q ModelTags=%v (claims the intended Coding tier), "+
+			"want the ACTUAL landed model (Claude Opus / Reasoning) since applyModelPreference deferred the switch",
+			input.ModelName, input.ModelTags)
+	}
+	if input.ModelName != "Claude Opus" {
+		t.Errorf("ModelName = %q, want %q (the actual model this turn ran on)", input.ModelName, "Claude Opus")
+	}
+	if len(input.ModelTags) != 1 || input.ModelTags[0] != "Reasoning" {
+		t.Errorf("ModelTags = %v, want [Reasoning] (the actual model's tags)", input.ModelTags)
+	}
+}
+
 // --- accumulateTokenUsage tests ---
 
 func TestPromptDispatcher_AccumulateTokenUsage_UsagePresent_SetsAndAccumulates(t *testing.T) {
