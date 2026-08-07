@@ -4357,7 +4357,7 @@ func TestBuiltinPrompts_SingletonMigratedToTargetReuseTitle(t *testing.T) {
 		"beads/group-epics.prompt.yaml",
 		"beads/overview.prompt.yaml",
 		"beads/reevaluate.prompt.yaml",
-		"beads/refine-implementation.prompt.yaml",
+		"beads/investigate-all-more.prompt.yaml",
 		"beads/status-all-inprogress.prompt.yaml",
 	}
 	for _, file := range migrated {

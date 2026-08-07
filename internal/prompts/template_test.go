@@ -550,7 +550,7 @@ func TestIterateUntilComplete_TargetResolution(t *testing.T) {
 	}
 }
 
-// TestRefineImplementation_LoopAndModes verifies the beads-refine-implementation
+// TestInvestigateAllMore_LoopAndModes verifies the beads/investigate-all-more
 // builtin prompt (mitto-mx4):
 //
 //	(a) it parses cleanly — this exercises parse-time CEL validation of the
@@ -562,10 +562,10 @@ func TestIterateUntilComplete_TargetResolution(t *testing.T) {
 //	    against the pre-mitto-pei stale template vars (.Session.IsPeriodic*).
 //
 // Loaded from the real builtin directory so it exercises the on-disk content.
-func TestRefineImplementation_LoopAndModes(t *testing.T) {
+func TestInvestigateAllMore_LoopAndModes(t *testing.T) {
 	installBuiltinFragmentsForTest(t)
 	builtinDir := "../../config/prompts/builtin"
-	name := "beads/refine-implementation.prompt.yaml"
+	name := "beads/investigate-all-more.prompt.yaml"
 	path := filepath.Join(builtinDir, name)
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -593,7 +593,7 @@ func TestRefineImplementation_LoopAndModes(t *testing.T) {
 	body := prompt.Content
 	render := func(ctx *cel.PromptEnabledContext) string {
 		funcs := cel.BuildTemplateFuncMap(ctx)
-		out, rerr := RenderPromptTemplate("beads-refine-implementation", body, ctx, funcs)
+		out, rerr := RenderPromptTemplate("beads-investigate-all-more", body, ctx, funcs)
 		if rerr != nil {
 			t.Fatalf("RenderPromptTemplate: %v", rerr)
 		}
@@ -3225,7 +3225,7 @@ func TestLoopProcessingSpawns_MirrorArgumentsIntoLoopArguments(t *testing.T) {
 // terminal-label / close events its own children produced. The opt-in re-fire
 // path (maybeFireAccumulatedDelta) only runs when CoalesceDuringBusy is *false.
 //
-// The sibling builtin beads-refine-implementation.prompt.yaml already declares
+// The sibling builtin beads/investigate-all-more.prompt.yaml already declares
 // `coalesceDuringBusy: false` in its loop block for exactly this reason
 // (mitto-dmb). This test pins that same convention onto the L1 supervisor
 // prompt. It fails until the loop frontmatter adds `coalesceDuringBusy: false`;
@@ -3254,7 +3254,7 @@ func TestIssueLoopProcessing_CoalesceDuringBusyIsFalse(t *testing.T) {
 			prompt.Loop.Trigger, "onTasks")
 	}
 	if prompt.Loop.TasksCoalesceDuringBusy() == nil {
-		t.Fatalf("loop.onTasks.coalesceDuringBusy is unset; the deployed supervisor takes the silent-swallow branch at fireTasksRebase (mitto-cwg). Declare `coalesceDuringBusy: false` in the loop.onTasks: frontmatter of %s, mirroring beads-refine-implementation.prompt.yaml", name)
+		t.Fatalf("loop.onTasks.coalesceDuringBusy is unset; the deployed supervisor takes the silent-swallow branch at fireTasksRebase (mitto-cwg). Declare `coalesceDuringBusy: false` in the loop.onTasks: frontmatter of %s, mirroring beads/investigate-all-more.prompt.yaml", name)
 	}
 	if *prompt.Loop.TasksCoalesceDuringBusy() {
 		t.Errorf("loop.onTasks.coalesceDuringBusy = true, want false (mitto-cwg): supervisor must react to its own subtree's beads mutations, not silently absorb them into a baseline rebase")

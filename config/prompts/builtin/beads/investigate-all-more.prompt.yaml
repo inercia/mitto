@@ -1,0 +1,161 @@
+icon: search
+name: Investigate ALL more
+menus: prompts, beadsList
+description: 'Run the same deep investigation as the "Investigate more" prompt, but across every open bead that has not been investigated yet: gather context, close the gaps, enrich each bead into an implementation-ready spec, label it, and defer the ones that cannot be settled without a human.'
+backgroundColor: '#C5CAE9'
+group: Tasks
+target:
+  title: "Investigate ALL more"
+  reuse:
+    title: true
+enabledWhen: CommandExists("bd") && DirExists(".beads")
+preferredModels:
+  - modelTag: Smart
+loop:
+  trigger: [onTasks]
+  onTasks:
+    condition: 'Changes.Touched.exists(i, i.status == "open" && !("implementation-refined" in i.labels))'
+    # Opt in to per-event re-fire (mitto-dmb): when beads change during a run,
+    # the accumulated delta is exposed as .Trigger.OnTasks.* on the follow-up fire
+    # so newly-arrived candidates are picked up promptly instead of waiting for
+    # the next external change.
+    coalesceDuringBusy: false
+  mode: always
+  maxIterations: 20
+  maxDuration: "4h"
+prompt: |
+  {{ template "_shared/session-context" . }}
+
+  # Beads: Investigate ALL Open Beads in Depth
+
+  Beads is a CLI issue tracker (`bd`). Issues are called "beads" and have IDs like `bd-xyz`.
+
+  This is the **bulk counterpart of the "Investigate more" prompt**: the same investigation, applied
+  to **every open bead that has not been investigated yet** instead of a single target. For each
+  bead, your job is to **deepen the understanding** of it — gather the context it is missing, clarify
+  anything vague or underspecified, and enrich it so it is genuinely ready to work on. You are
+  running on a **smart / high-reasoning model**, so leave each bead with enough concrete detail that
+  a faster, cheaper model can implement it end-to-end **without further design work**. When that is
+  not achievable, **defer** the bead so it drops out of the active queue until a human clarifies it.
+
+  The label **`implementation-refined`** is the flag that marks a bead as already investigated. A
+  bead is a candidate for this pass when it is **open**, **not deferred**, and does **not** carry
+  that label.
+
+  {{- if or .Iteration.IsUninterrupted (and .Session.IsLoop (not .Session.IsLoopForced)) }}
+  **Silent mode** (scheduled loop run — the user is not watching): act autonomously and safely. Do
+  **not** use interactive tools (`mitto_ui_options`, `mitto_ui_form`, `mitto_ui_textbox`). Report
+  outcomes and failures with `mitto_ui_notify` only. Because you cannot ask the user, any gap you
+  cannot settle from evidence goes down the **defer** path in Step 7 rather than being guessed.
+  {{- else }}
+  **Interactive mode** (forced run or first/normal send): you may summarize your findings and use
+  interactive tools where helpful, but the investigation itself should still be applied
+  autonomously — do not stop and confirm each bead.
+  {{- end }}
+
+  {{- with .Trigger }}{{ with .OnTasks }}
+
+  ## Triggered by these beads changes
+
+  This run was fired by the following beads changes since the previous baseline. Prefer these when
+  they still match the candidate filter (open, not deferred, not yet `implementation-refined`); fall
+  back to the broader candidate list from Step 1 when they don't:
+
+  {{- if .Changes.Touched }}
+  {{ range .Changes.Touched -}}
+  - `{{ .id }}` ({{ .status }}, P{{ .priority }}): {{ .title }}
+  {{ end -}}
+  {{- else }}
+  _(no touched beads reported)_
+  {{- end }}
+  {{ end }}{{ end }}
+
+  ## Step 1 — Select the beads to investigate
+
+  Load the candidate beads (open, not deferred, not yet investigated):
+
+  ```bash
+  bd list --status open --exclude-label implementation-refined -n 0 --json
+  ```
+
+  If the list is empty, there is nothing to do — skip to Step 8 and report "no uninvestigated beads".
+
+  **Cap this run at ~5 beads.** Prefer the highest-priority (lowest P number) and oldest beads first.
+  The label/defer flags below make the pass idempotent, so remaining beads are picked up on the next
+  run. Work through the selected beads **one at a time**, repeating Steps 2–7 for each.
+
+  ## Step 2 — Load the bead's full detail
+
+  {{ template "beads-issues/shared/load-context" "<bead-id>" }}
+
+  Note what is already well-specified versus what is thin, vague, or missing.
+
+  ## Step 3 — Investigate against the codebase and history
+
+  {{ template "beads-issues/shared/investigate-evidence" "<bead-id>" }}
+
+  Investigate the **actual codebase** so the plan is grounded in reality — do not guess at structure
+  you can verify with your code-search and file-reading tools.
+
+  ## Step 4 — Identify gaps and open questions
+
+  {{ template "beads-issues/shared/investigate-gaps" (dict "From" "Steps 2–3") }}
+
+  For each gap, decide honestly whether you can resolve it **from the evidence**. This pass has no
+  user to ask: a bead with a gap you cannot close from evidence is **not** implementation-ready and
+  must take the defer path in Step 7 — never invent an answer to keep a bead moving.
+
+  ## Step 5 — Produce the Investigation Report
+
+  For the bead, produce a concise **Investigation Report** with the same sections the "Investigate
+  more" prompt uses:
+
+  {{ template "beads-issues/shared/investigate-report" (dict "Target" "<bead-id>") }}
+
+  The bead is **implementation-ready** only when every section above is settled and a faster model
+  could implement it end-to-end without making a design decision of its own.
+
+  ## Step 6 — When the bead CAN be made implementation-ready
+
+  Write the report back into the bead and flag it as investigated:
+
+  {{ template "beads-issues/shared/investigate-apply" (dict
+      "Target" "<bead-id>"
+      "ExtraCommands" "bd label add implementation-refined <bead-id>"
+  ) }}
+
+  Unlike the single-bead prompt, this pass does **not** decompose beads or create sub-issues. If the
+  work is clearly too large for one reviewable unit, say so in the design notes and the audit note,
+  and leave the split to the **"Decompose issue"** prompt.
+
+  ## Step 7 — When the bead CANNOT be made implementation-ready → defer it
+
+  If, after honest analysis, gaps from Step 4 remain — **open questions**, **missing key details**,
+  requirements that are **ambiguous or contradictory**, a needed **product/human decision**, or a
+  design that cannot be pinned down — do **not** guess and do **not** add the
+  `implementation-refined` label. Record why and defer it:
+
+  ```bash
+  bd update <bead-id> --append-notes "Deferred during investigation on {{ .Session.ID }}: cannot produce an implementation-ready spec. Blockers/questions: <list the specific open questions or missing information a human must resolve>."
+  bd defer <bead-id>
+  ```
+
+  Deferred beads leave the active queue (they no longer match the open + uninvestigated filter) until
+  a human revisits them, so they will not be re-processed on the next run.
+
+  ## Step 8 — Report
+
+  Finish with a concise summary:
+
+  ### Investigated
+  For each bead you enriched: `bead-id` · title · one line on the plan you wrote.
+
+  ### Deferred
+  For each bead you deferred: `bead-id` · title · the specific open question(s) that blocked it.
+
+  {{- if or .Iteration.IsUninterrupted (and .Session.IsLoop (not .Session.IsLoopForced)) }}
+  Deliver this summary via `mitto_ui_notify` (silent mode). Use `style: "warning"` if any bead was
+  deferred or any `bd` command failed, otherwise `style: "success"`. Report failing commands verbatim.
+  {{- else }}
+  Present this summary directly. Report any `bd` command that failed and why.
+  {{- end }}

@@ -136,9 +136,11 @@ func TestBootstrapBeadsFragmentRenders(t *testing.T) {
 }
 
 // TestLoadBeadContextFragmentRenders is a smoke test for the
-// beads-issues/shared/load-context fragment: it renders each of the 3 consuming
-// prompts with a valid target bead ID and asserts that (a) each bd command
-// hallmark appears and (b) the target ID substitutes correctly.
+// beads-issues/shared/load-context fragment: it renders each of the consuming
+// prompts and asserts that (a) each bd command hallmark appears and (b) the
+// bead ID substitutes correctly — both on the `$target` runtime path and on
+// the literal `<bead-id>` placeholder path used by the multi-bead caller
+// ("Investigate ALL more").
 func TestLoadBeadContextFragmentRenders(t *testing.T) {
 	prev := CurrentFragments()
 	t.Cleanup(func() { SetCurrentFragments(prev) })
@@ -198,6 +200,28 @@ func TestLoadBeadContextFragmentRenders(t *testing.T) {
 			}
 		}
 	}
+
+	// The multi-bead caller iterates a candidate list, so it passes the
+	// literal `<bead-id>` placeholder rather than a resolved target.
+	litName := "Investigate ALL more"
+	litBody, ok := byName[litName]
+	if !ok {
+		t.Fatalf("prompt %q not found in builtin corpus", litName)
+	}
+	litOut, err := RenderPromptTemplate(litName, litBody, ctx, funcs)
+	if err != nil {
+		t.Fatalf("render %q: %v", litName, err)
+	}
+	for _, hallmark := range []string{
+		"bd show <bead-id> --long --json",
+		"bd dep tree <bead-id>",
+		"bd show <bead-id> --children --json",
+		"bd comments <bead-id>",
+	} {
+		if !strings.Contains(litOut, hallmark) {
+			t.Errorf("prompt %q: rendered output missing hallmark %q — load-context did not inline", litName, hallmark)
+		}
+	}
 }
 
 // TestLoadBeadContextMinFragmentRenders is a smoke test for the
@@ -233,7 +257,6 @@ func TestLoadBeadContextMinFragmentRenders(t *testing.T) {
 	literalConsumers := []string{
 		"Cleanup stale issues",
 		"Reevaluate all issues",
-		"Refine issue implementation details",
 		"Status ALL in-progress",
 		"Status ONE in-progress",
 	}
