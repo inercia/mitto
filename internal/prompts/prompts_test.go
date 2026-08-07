@@ -788,6 +788,49 @@ prompt: hi
 	}
 }
 
+// TestParsePromptFile_WithParameterGroup covers mitto-boio: a parameter-level
+// `group` string parses into PromptParameter.Group and survives the
+// PromptFile -> WebPrompt JSON path the frontend consumes.
+func TestParsePromptFile_WithParameterGroup(t *testing.T) {
+	data := []byte(`name: "Grouped"
+parameters:
+  - name: Message
+    type: text
+    group: "Changes Submission"
+  - name: Extra
+    type: text
+prompt: hi
+`)
+
+	prompt, err := ParsePromptFile("grouped.prompt.yaml", data, time.Now())
+	if err != nil {
+		t.Fatalf("ParsePromptFile failed: %v", err)
+	}
+	if len(prompt.Parameters) != 2 {
+		t.Fatalf("len(Parameters) = %d, want 2", len(prompt.Parameters))
+	}
+	if got := prompt.Parameters[0].Group; got != "Changes Submission" {
+		t.Errorf("Parameters[0].Group = %q, want %q", got, "Changes Submission")
+	}
+	if got := prompt.Parameters[1].Group; got != "" {
+		t.Errorf("Parameters[1].Group = %q, want empty (not declared)", got)
+	}
+
+	wp := prompt.ToWebPrompt()
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(wp); err != nil {
+		t.Fatalf("json.Encode(WebPrompt): %v", err)
+	}
+	body := buf.String()
+	if !strings.Contains(body, `"group":"Changes Submission"`) {
+		t.Errorf("JSON body missing group key for the grouped param; got %s", body)
+	}
+	// omitempty: the ungrouped param must not carry a spurious "group" key.
+	if strings.Count(body, `"group"`) != 1 {
+		t.Errorf("expected exactly one \"group\" occurrence (empty is omitted); got body %s", body)
+	}
+}
+
 func TestParsePromptFile_WithoutSingleton(t *testing.T) {
 	data := []byte(`name: "Plain Prompt"
 prompt: |
@@ -3945,6 +3988,54 @@ func TestValidatePromptParameters_Cache(t *testing.T) {
 		})
 		if err != nil {
 			t.Errorf("unexpected error: %v", err)
+		}
+	})
+}
+
+// TestValidatePromptParameters_Group covers mitto-boio: `group` is valid on
+// every parameter type (no type gate, unlike multiLine/options/dir/glob/
+// collectInnerArgs), a non-empty-but-whitespace-only value is rejected, an
+// absent/empty group is a no-op, and "General" is not a reserved name.
+func TestValidatePromptParameters_Group(t *testing.T) {
+	t.Run("absent group is OK", func(t *testing.T) {
+		err := ValidatePromptParameters("", []PromptParameter{
+			{Name: "x", Type: "text"},
+		})
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("non-empty group is OK on a non-text type", func(t *testing.T) {
+		err := ValidatePromptParameters("", []PromptParameter{
+			{Name: "Commit", Type: "boolean", Group: "Changes Submission"},
+		})
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("group: General is OK (not a reserved name)", func(t *testing.T) {
+		err := ValidatePromptParameters("", []PromptParameter{
+			{Name: "x", Type: "text", Group: "General"},
+		})
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("whitespace-only group is rejected", func(t *testing.T) {
+		err := ValidatePromptParameters("", []PromptParameter{
+			{Name: "x", Type: "text", Group: "   "},
+		})
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "group must not be empty or whitespace-only") {
+			t.Errorf("error = %q, want it to contain 'group must not be empty or whitespace-only'", err.Error())
+		}
+		if !strings.Contains(err.Error(), "\"x\"") {
+			t.Errorf("error = %q, want it to mention parameter name \"x\"", err.Error())
 		}
 	})
 }

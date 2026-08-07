@@ -29,6 +29,8 @@ import {
   fetchCachedParamNames,
   resolvePromptModelOverride,
   currentModelName,
+  groupDialogParameters,
+  unmetRequiredByGroup,
 } from "./prompts.js";
 
 // =============================================================================
@@ -769,9 +771,7 @@ describe("shouldOpenPromptDialog", () => {
 
   test("text with an empty options array is NOT an options picker — still gated by required", () => {
     const prompt = {
-      parameters: [
-        { name: "Note", type: "text", options: [], required: true },
-      ],
+      parameters: [{ name: "Note", type: "text", options: [], required: true }],
     };
     expect(shouldOpenPromptDialog(prompt, "prompts")).toBe(true);
   });
@@ -788,25 +788,23 @@ describe("shouldOpenPromptDialog", () => {
       ],
     };
     expect(shouldOpenPromptDialog(prompt, "prompts")).toBe(true);
-    expect(
-      shouldOpenPromptDialog(prompt, "prompts", new Set(["Note"])),
-    ).toBe(false);
+    expect(shouldOpenPromptDialog(prompt, "prompts", new Set(["Note"]))).toBe(
+      false,
+    );
   });
 
   test("cachedNames does not suppress a non-cacheable param", () => {
     const prompt = {
       parameters: [{ name: "Note", type: "text", required: true }],
     };
-    expect(
-      shouldOpenPromptDialog(prompt, "prompts", new Set(["Note"])),
-    ).toBe(true);
+    expect(shouldOpenPromptDialog(prompt, "prompts", new Set(["Note"]))).toBe(
+      true,
+    );
   });
 
   test("knownNames suppresses a param's contribution to the open decision", () => {
     const prompt = {
-      parameters: [
-        { name: "CHILD", type: "childSessionId", required: true },
-      ],
+      parameters: [{ name: "CHILD", type: "childSessionId", required: true }],
     };
     expect(shouldOpenPromptDialog(prompt, "conversation")).toBe(true);
     expect(
@@ -1275,9 +1273,9 @@ describe("currentModelName", () => {
 
 describe("promptMenus — exclusion token stripping", () => {
   test("strips !-prefixed tokens from the positive list", () => {
-    expect(
-      promptMenus({ menus: "prompts, !promptsLoop" }),
-    ).toEqual(["prompts"]);
+    expect(promptMenus({ menus: "prompts, !promptsLoop" })).toEqual([
+      "prompts",
+    ]);
   });
 
   test("defaults to ['prompts'] when only exclusion tokens remain", () => {
@@ -1297,9 +1295,9 @@ describe("promptMenus — exclusion token stripping", () => {
   });
 
   test("handles whitespace around ! tokens", () => {
-    expect(
-      promptMenus({ menus: "prompts , ! promptsLoop" }),
-    ).toEqual(["prompts"]);
+    expect(promptMenus({ menus: "prompts , ! promptsLoop" })).toEqual([
+      "prompts",
+    ]);
   });
 });
 
@@ -1323,9 +1321,9 @@ describe("promptMenuExcludes", () => {
   });
 
   test("returns Set of excluded menu names without leading !", () => {
-    expect(
-      promptMenuExcludes({ menus: "prompts, !promptsLoop" }),
-    ).toEqual(new Set(["promptsLoop"]));
+    expect(promptMenuExcludes({ menus: "prompts, !promptsLoop" })).toEqual(
+      new Set(["promptsLoop"]),
+    );
   });
 
   test("returns multiple excluded names", () => {
@@ -1335,9 +1333,9 @@ describe("promptMenuExcludes", () => {
   });
 
   test("handles whitespace around ! token (defensive)", () => {
-    expect(
-      promptMenuExcludes({ menus: "prompts, ! promptsLoop" }),
-    ).toEqual(new Set(["promptsLoop"]));
+    expect(promptMenuExcludes({ menus: "prompts, ! promptsLoop" })).toEqual(
+      new Set(["promptsLoop"]),
+    );
   });
 
   test("handles null prompt gracefully", () => {
@@ -1359,9 +1357,9 @@ describe("promptMenuIncludes", () => {
   });
 
   test("returns false when menu is not in the positive list", () => {
-    expect(
-      promptMenuIncludes({ menus: "conversation" }, "prompts"),
-    ).toBe(false);
+    expect(promptMenuIncludes({ menus: "conversation" }, "prompts")).toBe(
+      false,
+    );
   });
 
   test("returns false when menu is explicitly excluded", () => {
@@ -1381,9 +1379,9 @@ describe("promptMenuIncludes", () => {
   });
 
   test("returns false for promptsLoop when only !promptsLoop specified", () => {
-    expect(
-      promptMenuIncludes({ menus: "!promptsLoop" }, "promptsLoop"),
-    ).toBe(false);
+    expect(promptMenuIncludes({ menus: "!promptsLoop" }, "promptsLoop")).toBe(
+      false,
+    );
   });
 });
 
@@ -1555,9 +1553,8 @@ describe("buildPromptGroupMenuItems", () => {
       html: (strings, ...values) => ({ __htmlStub: true, strings, values }),
       useState: (initial) => [initial, () => {}],
     };
-    ({ buildPromptGroupMenuItems } = await import(
-      "../components/ContextMenu.js"
-    ));
+    ({ buildPromptGroupMenuItems } =
+      await import("../components/ContextMenu.js"));
   });
 
   const prompts = [
@@ -1714,5 +1711,147 @@ describe("loop-prompt name resolution (allPrompts fallback)", () => {
       ],
     };
     expect(promptParameters(p).length).toBe(3);
+  });
+});
+
+// =============================================================================
+// groupDialogParameters / unmetRequiredByGroup Tests (mitto-boio)
+// =============================================================================
+
+describe("groupDialogParameters", () => {
+  test("no parameter declares a group -> tabbed=false, single unnamed group preserving order", () => {
+    const params = [
+      { name: "A", type: "text" },
+      { name: "B", type: "text" },
+      { name: "C", type: "text" },
+    ];
+    const result = groupDialogParameters(params);
+    expect(result.tabbed).toBe(false);
+    expect(result.groups).toEqual([{ name: "", params }]);
+  });
+
+  test("empty/whitespace-only group values do not trigger tabbing", () => {
+    const params = [
+      { name: "A", type: "text", group: "" },
+      { name: "B", type: "text", group: "   " },
+    ];
+    const result = groupDialogParameters(params);
+    expect(result.tabbed).toBe(false);
+    expect(result.groups).toEqual([{ name: "", params }]);
+  });
+
+  test("all parameters share one explicit group -> tabbed=true with ONE named tab (not distinctGroups>1)", () => {
+    const params = [
+      { name: "A", type: "text", group: "Changes Submission" },
+      { name: "B", type: "text", group: "Changes Submission" },
+    ];
+    const result = groupDialogParameters(params);
+    expect(result.tabbed).toBe(true);
+    expect(result.groups).toEqual([{ name: "Changes Submission", params }]);
+  });
+
+  test("mixed grouped + ungrouped -> General tab first, then one tab per group in first-appearance order", () => {
+    const a = { name: "A", type: "text" }; // ungrouped
+    const b = { name: "B", type: "text", group: "Advanced" };
+    const c = { name: "C", type: "text" }; // ungrouped
+    const d = { name: "D", type: "text", group: "Changes Submission" };
+    const e = { name: "E", type: "text", group: "Advanced" };
+    const result = groupDialogParameters([a, b, c, d, e]);
+    expect(result.tabbed).toBe(true);
+    expect(result.groups.map((g) => g.name)).toEqual([
+      "General",
+      "Advanced",
+      "Changes Submission",
+    ]);
+    expect(result.groups[0].params).toEqual([a, c]);
+    expect(result.groups[1].params).toEqual([b, e]);
+    expect(result.groups[2].params).toEqual([d]);
+  });
+
+  test("explicit group: General merges with ungrouped params into the same tab", () => {
+    const a = { name: "A", type: "text" }; // ungrouped
+    const b = { name: "B", type: "text", group: "General" };
+    const result = groupDialogParameters([a, b]);
+    expect(result.tabbed).toBe(true);
+    expect(result.groups).toEqual([{ name: "General", params: [a, b] }]);
+  });
+
+  test("handles non-array/undefined input without throwing", () => {
+    expect(groupDialogParameters(undefined)).toEqual({
+      tabbed: false,
+      groups: [{ name: "", params: [] }],
+    });
+    expect(groupDialogParameters(null)).toEqual({
+      tabbed: false,
+      groups: [{ name: "", params: [] }],
+    });
+  });
+});
+
+describe("unmetRequiredByGroup", () => {
+  test("flags a group with a required, unfilled, non-boolean, non-readOnly param", () => {
+    const groups = [
+      {
+        name: "General",
+        params: [{ name: "A", type: "text", required: true }],
+      },
+    ];
+    expect(unmetRequiredByGroup(groups, {})).toEqual(new Set(["General"]));
+  });
+
+  test("does not flag a group whose required param is filled", () => {
+    const groups = [
+      {
+        name: "General",
+        params: [{ name: "A", type: "text", required: true }],
+      },
+    ];
+    expect(unmetRequiredByGroup(groups, { A: "value" })).toEqual(new Set());
+  });
+
+  test("ignores boolean params even when required and unfilled", () => {
+    const groups = [
+      {
+        name: "General",
+        params: [{ name: "Commit", type: "boolean", required: true }],
+      },
+    ];
+    expect(unmetRequiredByGroup(groups, {})).toEqual(new Set());
+  });
+
+  test("ignores readOnly params even when required and unfilled", () => {
+    const groups = [
+      {
+        name: "General",
+        params: [{ name: "A", type: "text", required: true, readOnly: true }],
+      },
+    ];
+    expect(unmetRequiredByGroup(groups, {})).toEqual(new Set());
+  });
+
+  test("ignores non-required params", () => {
+    const groups = [{ name: "General", params: [{ name: "A", type: "text" }] }];
+    expect(unmetRequiredByGroup(groups, {})).toEqual(new Set());
+  });
+
+  test("handles multiple groups independently", () => {
+    const groups = [
+      {
+        name: "General",
+        params: [{ name: "A", type: "text", required: true }],
+      },
+      {
+        name: "Advanced",
+        params: [{ name: "B", type: "text", required: true }],
+      },
+    ];
+    expect(unmetRequiredByGroup(groups, { A: "x" })).toEqual(
+      new Set(["Advanced"]),
+    );
+  });
+
+  test("handles empty/undefined groups and values without throwing", () => {
+    expect(unmetRequiredByGroup([], undefined)).toEqual(new Set());
+    expect(unmetRequiredByGroup(undefined, undefined)).toEqual(new Set());
   });
 });

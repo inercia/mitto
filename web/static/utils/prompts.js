@@ -59,8 +59,7 @@ export function promptMenuExcludes(prompt) {
  */
 export function promptMenuIncludes(prompt, menu) {
   return (
-    promptMenus(prompt).includes(menu) &&
-    !promptMenuExcludes(prompt).has(menu)
+    promptMenus(prompt).includes(menu) && !promptMenuExcludes(prompt).has(menu)
   );
 }
 
@@ -400,7 +399,9 @@ export function groupDialogParameters(parameters) {
   const namedIndex = new Map(); // trimmed name -> index into named
   for (const p of params) {
     const raw = p?.group ? p.group.trim() : "";
-    if (raw === "") {
+    // "General" is not a reserved name: an explicit `group: General` merges
+    // into the same tab as ungrouped parameters (see doc comment above).
+    if (raw === "" || raw === "General") {
       general.push(p);
       continue;
     }
@@ -471,12 +472,7 @@ export function unmetRequiredByGroup(groups, values) {
  * @param {Set|Array} [knownNames] - names already resolved outside the menu
  * @returns {boolean}
  */
-export function shouldOpenPromptDialog(
-  prompt,
-  menu,
-  cachedNames,
-  knownNames,
-) {
+export function shouldOpenPromptDialog(prompt, menu, cachedNames, knownNames) {
   const params = promptParameters(prompt);
   if (params.length === 0) return false;
   const cached =
@@ -764,7 +760,9 @@ function resolveProfileModel(profile, modelOption) {
       matched = opt;
     }
   }
-  return matched ? { value: matched.value, name: matched.name || matched.value } : null;
+  return matched
+    ? { value: matched.value, name: matched.name || matched.value }
+    : null;
 }
 
 /**
@@ -849,7 +847,9 @@ export function resolvePromptModelOverride(
       // ANY tagged profile's criteria, keep the current model (no override).
       if (
         currentName &&
-        taggedProfiles.some((p) => constraintMatchesName(p.criteria, currentName))
+        taggedProfiles.some((p) =>
+          constraintMatchesName(p.criteria, currentName),
+        )
       ) {
         return null;
       }

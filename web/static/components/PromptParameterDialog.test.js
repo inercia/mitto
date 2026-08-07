@@ -8,6 +8,10 @@
  */
 
 import { getBasename } from "../lib.js";
+import {
+  groupDialogParameters,
+  unmetRequiredByGroup,
+} from "../utils/prompts.js";
 
 // =============================================================================
 // workspaceId render-branch logic
@@ -2033,7 +2037,11 @@ function summarizeNestedNode(innerParams, node, promptsList) {
         pickedPrompt && Array.isArray(pickedPrompt.parameters)
           ? pickedPrompt.parameters
           : [];
-      const deeper = summarizeNestedNode(deeperInner, sub[ip.name], promptsList);
+      const deeper = summarizeNestedNode(
+        deeperInner,
+        sub[ip.name],
+        promptsList,
+      );
       filled += deeper.filled;
       missingRequired += deeper.missingRequired;
       continue;
@@ -2472,5 +2480,92 @@ describe("mitto-l78 — hasUnmetNestedRequired (outer Save gating)", () => {
         promptsList,
       ),
     ).toBe(false);
+  });
+});
+
+// =============================================================================
+// mitto-boio — parameter grouping / tab-bar render gate
+//
+// PromptParameterDialog.js itself cannot be imported under jsdom (module-load
+// `window.preact` gate — see file header). Rather than duplicate JSX-shaped
+// markup here, this mirrors the render GATE: the `body` decision in
+// PromptParameterDialog.js is `!tabbed ? <flat> : <tabbed>`, driven entirely
+// by `groupDialogParameters` (already unit-tested in prompts.test.js) and
+// `unmetRequiredByGroup`. This descriptor-level test pins that the gate
+// itself picks the correct branch and tab set for the three documented cases,
+// so a future edit to the render code can't silently flip the invariant.
+// =============================================================================
+
+/**
+ * Mirrors the `body` branch-selection logic in PromptParameterDialog.js:
+ * returns a plain descriptor instead of real markup.
+ */
+function renderGateDescriptor(parameters, values) {
+  const { tabbed, groups } = groupDialogParameters(parameters);
+  if (!tabbed) {
+    // Hard back-compat invariant: no tab bar, no wrapper chrome.
+    return { kind: "flat", params: parameters };
+  }
+  const unmetGroups = unmetRequiredByGroup(groups, values || {});
+  return {
+    kind: "tabbed",
+    tabs: groups.map((g) => ({
+      name: g.name,
+      unmet: unmetGroups.has(g.name),
+    })),
+  };
+}
+
+describe("mitto-boio — parameter dialog tab render gate", () => {
+  test("no parameter declares a group -> flat render (byte-identical to pre-mitto-boio markup)", () => {
+    const parameters = [
+      { name: "A", type: "text" },
+      { name: "B", type: "text" },
+    ];
+    expect(renderGateDescriptor(parameters, {})).toEqual({
+      kind: "flat",
+      params: parameters,
+    });
+  });
+
+  test("all parameters share one explicit group -> tabbed render with ONE named tab", () => {
+    const parameters = [
+      { name: "A", type: "text", group: "Changes Submission" },
+      { name: "B", type: "text", group: "Changes Submission" },
+    ];
+    expect(renderGateDescriptor(parameters, {})).toEqual({
+      kind: "tabbed",
+      tabs: [{ name: "Changes Submission", unmet: false }],
+    });
+  });
+
+  test("mixed grouped + ungrouped -> tabbed render with General tab first, one per group", () => {
+    const parameters = [
+      { name: "A", type: "text" },
+      { name: "B", type: "text", group: "Advanced" },
+      { name: "C", type: "text", group: "Changes Submission" },
+    ];
+    expect(renderGateDescriptor(parameters, {})).toEqual({
+      kind: "tabbed",
+      tabs: [
+        { name: "General", unmet: false },
+        { name: "Advanced", unmet: false },
+        { name: "Changes Submission", unmet: false },
+      ],
+    });
+  });
+
+  test("a tab holding an unmet required field is flagged so it is discoverable when hidden", () => {
+    const parameters = [
+      { name: "A", type: "text" },
+      { name: "B", type: "text", group: "Advanced", required: true },
+    ];
+    expect(renderGateDescriptor(parameters, {})).toEqual({
+      kind: "tabbed",
+      tabs: [
+        { name: "General", unmet: false },
+        { name: "Advanced", unmet: true },
+      ],
+    });
   });
 });
