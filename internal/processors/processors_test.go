@@ -6327,3 +6327,632 @@ func TestBuiltinCloseProcessors_WorkspaceUINotify(t *testing.T) {
 		})
 	}
 }
+
+// ---------------------------------------------------------------------------
+// RunRecorder seam (mitto-fm89 Stats tab)
+//
+// These tests cover the processors.RunRecorder callback contract added to
+// Manager/ApplyProcessors/applyWithRerun/ApplyAfter/ApplyOnClose: every
+// processor invocation across the three pipelines ("before"/"after"/"close")
+// must produce exactly one ProcessorRun with the correct Name/Phase/Outcome,
+// and the callback must be nil-safe and propagated by every CloneWith*
+// constructor. The BackgroundSession-side wiring (wireProcessorRunRecorder)
+// is a thin, directly-inspectable adapter exercised indirectly by the full
+// internal/conversation suite; this package owns the seam's core behavior.
+// ---------------------------------------------------------------------------
+
+// recordingRecorder is a test double for processors.RunRecorder that captures
+// every ProcessorRun it receives, safe for concurrent use (ApplyOnClose and
+// ApplyAfter's prompt-mode paths may dispatch from goroutines in production,
+// though recordRun itself is always called synchronously from the pipeline
+// goroutine in these tests).
+type recordingRecorder struct {
+	mu   sync.Mutex
+	runs []ProcessorRun
+}
+
+func (r *recordingRecorder) record(run ProcessorRun) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.runs = append(r.runs, run)
+}
+
+func (r *recordingRecorder) snapshot() []ProcessorRun {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]ProcessorRun, len(r.runs))
+	copy(out, r.runs)
+	return out
+}
+
+// byName returns the first captured run for the given processor name, or nil.
+func (r *recordingRecorder) byName(name string) *ProcessorRun {
+	for _, run := range r.snapshot() {
+		if run.Name == name {
+			run := run
+			return &run
+		}
+	}
+	return nil
+}
+
+// TestRecordRun_NilManagerSafe verifies that calling recordRun on a nil
+// *Manager never panics (defensive nil receiver check).
+func TestRecordRun_NilManagerSafe(t *testing.T) {
+	var m *Manager
+	m.recordRun(ProcessorRun{Name: "x", Phase: "before", Outcome: "ok"})
+}
+
+// TestRecordRun_NoRecorderConfiguredSafe verifies recordRun is a no-op when
+// no RunRecorder has been installed (default Manager state).
+func TestRecordRun_NoRecorderConfiguredSafe(t *testing.T) {
+	m := NewManager("", nil)
+	m.recordRun(ProcessorRun{Name: "x", Phase: "before", Outcome: "ok"})
+}
+
+// TestRecordRun_UnnamedProcessorSkipped verifies that a ProcessorRun with an
+// empty Name never reaches the recorder — anonymous/unnamed processors (e.g.
+// text-mode processors synthesized without a Name) must not pollute the
+// Stats tab.
+func TestRecordRun_UnnamedProcessorSkipped(t *testing.T) {
+	rec := &recordingRecorder{}
+	m := NewManager("", nil)
+	m.SetRunRecorder(rec.record)
+
+	m.recordRun(ProcessorRun{Name: "", Phase: "before", Outcome: "ok"})
+
+	if got := len(rec.snapshot()); got != 0 {
+		t.Errorf("expected 0 recorded runs for unnamed processor, got %d", got)
+	}
+}
+
+// TestApplyProcessors_RunRecorder_CommandOk verifies a successful command-mode
+// processor is recorded with Phase="before", Outcome="ok", and a positive
+// Duration (a real subprocess exec always takes measurable wall-clock time).
+func TestApplyProcessors_RunRecorder_CommandOk(t *testing.T) {
+	tmpDir := t.TempDir()
+	scriptPath := filepath.Join(tmpDir, "ok.sh")
+	if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\necho '{\"message\": \"done\"}'\n"), 0755); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	procs := []*Processor{{
+		Name:    "cmd-ok",
+		Command: scriptPath,
+		When:    WhenConfig{On: PhaseUserPrompt, Match: MatchAll},
+		Output:  OutputTransform,
+		HookDir: tmpDir,
+	}}
+	input := &ProcessorInput{Message: "original", WorkingDir: tmpDir}
+
+	rec := &recordingRecorder{}
+	if _, err := ApplyProcessors(context.Background(), procs, input, tmpDir, nil, rec.record); err != nil {
+		t.Fatalf("ApplyProcessors() error = %v", err)
+	}
+
+	run := rec.byName("cmd-ok")
+	if run == nil {
+		t.Fatal("expected a recorded run for cmd-ok")
+	}
+	if run.Phase != "before" {
+		t.Errorf("Phase = %q, want %q", run.Phase, "before")
+	}
+	if run.Outcome != "ok" {
+		t.Errorf("Outcome = %q, want %q", run.Outcome, "ok")
+	}
+	if run.Duration <= 0 {
+		t.Errorf("Duration = %v, want > 0 for an executed command", run.Duration)
+	}
+	if run.Error != "" {
+		t.Errorf("Error = %q, want empty", run.Error)
+	}
+}
+
+// TestApplyProcessors_RunRecorder_Skipped verifies a non-applicable processor
+// (match:first, not the first message) is recorded as skipped with zero
+// duration and no error, and its command is never executed.
+func TestApplyProcessors_RunRecorder_Skipped(t *testing.T) {
+	tmpDir := t.TempDir()
+	scriptPath := filepath.Join(tmpDir, "never-run.sh")
+	if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\nexit 1\n"), 0755); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	procs := []*Processor{{
+		Name:    "skip-me",
+		Command: scriptPath,
+		When:    WhenConfig{On: PhaseUserPrompt, Match: MatchFirst},
+		Output:  OutputDiscard,
+		HookDir: tmpDir,
+	}}
+	input := &ProcessorInput{Message: "original", IsFirstMessage: false, WorkingDir: tmpDir}
+
+	rec := &recordingRecorder{}
+	if _, err := ApplyProcessors(context.Background(), procs, input, tmpDir, nil, rec.record); err != nil {
+		t.Fatalf("ApplyProcessors() error = %v", err)
+	}
+
+	run := rec.byName("skip-me")
+	if run == nil {
+		t.Fatal("expected a recorded run for skip-me")
+	}
+	if run.Outcome != "skipped" {
+		t.Errorf("Outcome = %q, want %q", run.Outcome, "skipped")
+	}
+	if run.Duration != 0 {
+		t.Errorf("Duration = %v, want 0 for a skipped processor", run.Duration)
+	}
+}
+
+// TestApplyProcessors_RunRecorder_ErrorSkip verifies a failing command-mode
+// processor with onError:skip is recorded as an error (with a non-empty
+// Error message and positive Duration), and the pipeline continues.
+func TestApplyProcessors_RunRecorder_ErrorSkip(t *testing.T) {
+	tmpDir := t.TempDir()
+	scriptPath := filepath.Join(tmpDir, "fail.sh")
+	if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\nexit 1\n"), 0755); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	procs := []*Processor{{
+		Name:    "cmd-fail",
+		Command: scriptPath,
+		When:    WhenConfig{On: PhaseUserPrompt, Match: MatchAll},
+		Output:  OutputTransform,
+		OnError: ErrorSkip,
+		HookDir: tmpDir,
+	}}
+	input := &ProcessorInput{Message: "original", WorkingDir: tmpDir}
+
+	rec := &recordingRecorder{}
+	if _, err := ApplyProcessors(context.Background(), procs, input, tmpDir, nil, rec.record); err != nil {
+		t.Fatalf("ApplyProcessors() error = %v", err)
+	}
+
+	run := rec.byName("cmd-fail")
+	if run == nil {
+		t.Fatal("expected a recorded run for cmd-fail")
+	}
+	if run.Outcome != "error" {
+		t.Errorf("Outcome = %q, want %q", run.Outcome, "error")
+	}
+	if run.Error == "" {
+		t.Error("expected a non-empty Error message")
+	}
+	if run.Duration <= 0 {
+		t.Errorf("Duration = %v, want > 0 for an executed (failing) command", run.Duration)
+	}
+}
+
+// TestApplyProcessors_RunRecorder_ErrorFail verifies that a failing processor
+// with onError:fail is still recorded as an error before ApplyProcessors
+// returns the error that aborts the pipeline.
+func TestApplyProcessors_RunRecorder_ErrorFail(t *testing.T) {
+	tmpDir := t.TempDir()
+	scriptPath := filepath.Join(tmpDir, "fail.sh")
+	if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\nexit 1\n"), 0755); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	procs := []*Processor{{
+		Name:    "cmd-fail-hard",
+		Command: scriptPath,
+		When:    WhenConfig{On: PhaseUserPrompt, Match: MatchAll},
+		Output:  OutputTransform,
+		OnError: ErrorFail,
+		HookDir: tmpDir,
+	}}
+	input := &ProcessorInput{Message: "original", WorkingDir: tmpDir}
+
+	rec := &recordingRecorder{}
+	if _, err := ApplyProcessors(context.Background(), procs, input, tmpDir, nil, rec.record); err == nil {
+		t.Fatal("expected ApplyProcessors() to return an error with onError:fail")
+	}
+
+	run := rec.byName("cmd-fail-hard")
+	if run == nil {
+		t.Fatal("expected a recorded run even though the pipeline aborted")
+	}
+	if run.Outcome != "error" {
+		t.Errorf("Outcome = %q, want %q", run.Outcome, "error")
+	}
+}
+
+// TestApplyProcessors_RunRecorder_TextMode verifies a text-mode processor is
+// recorded as ok with zero duration (no external command runs).
+func TestApplyProcessors_RunRecorder_TextMode(t *testing.T) {
+	procs := []*Processor{{
+		Name:   "text-mode",
+		Text:   "PREFIX: ",
+		Mutate: config.ProcessorMutatePrepend,
+		When:   WhenConfig{On: PhaseUserPrompt, Match: MatchAll},
+	}}
+	input := &ProcessorInput{Message: "original"}
+
+	rec := &recordingRecorder{}
+	if _, err := ApplyProcessors(context.Background(), procs, input, "", nil, rec.record); err != nil {
+		t.Fatalf("ApplyProcessors() error = %v", err)
+	}
+
+	run := rec.byName("text-mode")
+	if run == nil {
+		t.Fatal("expected a recorded run for text-mode")
+	}
+	if run.Outcome != "ok" {
+		t.Errorf("Outcome = %q, want %q", run.Outcome, "ok")
+	}
+	if run.Duration != 0 {
+		t.Errorf("Duration = %v, want 0 for a text-mode processor", run.Duration)
+	}
+}
+
+// TestApplyProcessors_RunRecorder_PromptModeAlwaysSkipped verifies that the
+// free ApplyProcessors function (which has no PromptFunc) always records
+// prompt-mode processors as skipped — only Manager.Apply's applyWithRerun
+// path can actually dispatch prompt-mode processors.
+func TestApplyProcessors_RunRecorder_PromptModeAlwaysSkipped(t *testing.T) {
+	procs := []*Processor{{
+		Name:   "prompt-mode",
+		Prompt: "do something",
+		When:   WhenConfig{On: PhaseUserPrompt, Match: MatchAll},
+	}}
+	input := &ProcessorInput{Message: "original"}
+
+	rec := &recordingRecorder{}
+	if _, err := ApplyProcessors(context.Background(), procs, input, "", nil, rec.record); err != nil {
+		t.Fatalf("ApplyProcessors() error = %v", err)
+	}
+
+	run := rec.byName("prompt-mode")
+	if run == nil {
+		t.Fatal("expected a recorded run for prompt-mode")
+	}
+	if run.Outcome != "skipped" {
+		t.Errorf("Outcome = %q, want %q", run.Outcome, "skipped")
+	}
+}
+
+// TestApplyProcessors_RunRecorder_NilRecorderSafe verifies passing a nil
+// RunRecorder never panics across skip/ok/error branches.
+func TestApplyProcessors_RunRecorder_NilRecorderSafe(t *testing.T) {
+	tmpDir := t.TempDir()
+	okScript := filepath.Join(tmpDir, "ok.sh")
+	failScript := filepath.Join(tmpDir, "fail.sh")
+	os.WriteFile(okScript, []byte("#!/bin/sh\necho '{\"message\":\"ok\"}'\n"), 0755)
+	os.WriteFile(failScript, []byte("#!/bin/sh\nexit 1\n"), 0755)
+
+	procs := []*Processor{
+		{Name: "ok", Command: okScript, When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, Output: OutputTransform, HookDir: tmpDir},
+		{Name: "fail", Command: failScript, When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, Output: OutputTransform, OnError: ErrorSkip, HookDir: tmpDir},
+		{Name: "skip", Command: okScript, When: WhenConfig{On: PhaseUserPrompt, Match: MatchFirst}, Output: OutputTransform, HookDir: tmpDir},
+	}
+	input := &ProcessorInput{Message: "original", IsFirstMessage: false, WorkingDir: tmpDir}
+
+	if _, err := ApplyProcessors(context.Background(), procs, input, tmpDir, nil, nil); err != nil {
+		t.Fatalf("ApplyProcessors() error = %v", err)
+	}
+}
+
+// TestManagerApply_RunRecorder_NonRerunPath verifies that Manager.Apply's
+// default (non-rerun, no prompt-mode) path wires m.recordRun into
+// ApplyProcessors so processor runs are captured end-to-end via SetRunRecorder.
+func TestManagerApply_RunRecorder_NonRerunPath(t *testing.T) {
+	tmpDir := t.TempDir()
+	scriptPath := filepath.Join(tmpDir, "ok.sh")
+	os.WriteFile(scriptPath, []byte("#!/bin/sh\necho '{\"message\":\"done\"}'\n"), 0755)
+
+	m := NewManager(tmpDir, nil)
+	m.processors = []*Processor{{
+		Name:    "via-manager",
+		Command: scriptPath,
+		When:    WhenConfig{On: PhaseUserPrompt, Match: MatchAll},
+		Output:  OutputTransform,
+		HookDir: tmpDir,
+	}}
+	rec := &recordingRecorder{}
+	m.SetRunRecorder(rec.record)
+
+	if _, err := m.Apply(context.Background(), &ProcessorInput{Message: "x", WorkingDir: tmpDir}); err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+
+	run := rec.byName("via-manager")
+	if run == nil {
+		t.Fatal("expected Manager.Apply to record a run via SetRunRecorder")
+	}
+	if run.Outcome != "ok" {
+		t.Errorf("Outcome = %q, want %q", run.Outcome, "ok")
+	}
+}
+
+// TestApplyWithRerun_RunRecorder covers the applyWithRerun path (triggered by
+// the presence of a prompt-mode processor), asserting one ProcessorRun per
+// processor across text-mode/ok, prompt-mode/ok (dispatched), prompt-mode/
+// skipped (no PromptFunc), and command-mode/ok.
+func TestApplyWithRerun_RunRecorder(t *testing.T) {
+	tmpDir := t.TempDir()
+	scriptPath := filepath.Join(tmpDir, "ok.sh")
+	os.WriteFile(scriptPath, []byte("#!/bin/sh\necho '{\"message\":\"done\"}'\n"), 0755)
+
+	m := NewManager(tmpDir, nil)
+	m.processors = []*Processor{
+		{Name: "text", Text: "PREFIX: ", Mutate: config.ProcessorMutatePrepend, When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}},
+		{Name: "prompt-dispatched", Prompt: "hello", When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}},
+		{Name: "cmd", Command: scriptPath, When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, Output: OutputTransform, HookDir: tmpDir},
+	}
+	var dispatchedMu sync.Mutex
+	var dispatched int
+	m.SetPromptFunc(func(_ context.Context, _, _, _ string) error {
+		dispatchedMu.Lock()
+		dispatched++
+		dispatchedMu.Unlock()
+		return nil
+	})
+	rec := &recordingRecorder{}
+	m.SetRunRecorder(rec.record)
+
+	if _, err := m.Apply(context.Background(), &ProcessorInput{Message: "x", WorkingDir: tmpDir, IsFirstMessage: true}); err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+
+	if run := rec.byName("text"); run == nil || run.Outcome != "ok" {
+		t.Errorf("text: got %+v, want Outcome=ok", run)
+	}
+	if run := rec.byName("prompt-dispatched"); run == nil || run.Outcome != "ok" {
+		t.Errorf("prompt-dispatched: got %+v, want Outcome=ok", run)
+	}
+	if run := rec.byName("cmd"); run == nil || run.Outcome != "ok" || run.Duration <= 0 {
+		t.Errorf("cmd: got %+v, want Outcome=ok with Duration > 0", run)
+	}
+	for _, run := range rec.snapshot() {
+		if run.Phase != "before" {
+			t.Errorf("run %+v: Phase = %q, want %q", run, run.Phase, "before")
+		}
+	}
+}
+
+// TestApplyWithRerun_RunRecorder_PromptModeNoPromptFunc verifies a prompt-mode
+// processor is recorded as skipped when no PromptFunc is configured (forces
+// the applyWithRerun path via hasPromptModeProcessors, then hits the
+// no-PromptFunc branch).
+func TestApplyWithRerun_RunRecorder_PromptModeNoPromptFunc(t *testing.T) {
+	m := NewManager("", nil)
+	m.processors = []*Processor{
+		{Name: "prompt-orphan", Prompt: "hello", When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}},
+	}
+	rec := &recordingRecorder{}
+	m.SetRunRecorder(rec.record)
+
+	if _, err := m.Apply(context.Background(), &ProcessorInput{Message: "x", IsFirstMessage: true}); err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+
+	run := rec.byName("prompt-orphan")
+	if run == nil {
+		t.Fatal("expected a recorded run for prompt-orphan")
+	}
+	if run.Outcome != "skipped" {
+		t.Errorf("Outcome = %q, want %q", run.Outcome, "skipped")
+	}
+}
+
+// TestApplyWithRerun_RunRecorder_CommandError verifies a failing command-mode
+// processor inside applyWithRerun (forced onto that path by a sibling
+// prompt-mode processor) is recorded as an error with a positive duration.
+func TestApplyWithRerun_RunRecorder_CommandError(t *testing.T) {
+	tmpDir := t.TempDir()
+	failScript := filepath.Join(tmpDir, "fail.sh")
+	os.WriteFile(failScript, []byte("#!/bin/sh\nexit 1\n"), 0755)
+
+	m := NewManager(tmpDir, nil)
+	m.processors = []*Processor{
+		{Name: "prompt-sibling", Prompt: "hello", When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}},
+		{Name: "cmd-fail", Command: failScript, When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, Output: OutputTransform, OnError: ErrorSkip, HookDir: tmpDir},
+	}
+	m.SetPromptFunc(func(_ context.Context, _, _, _ string) error { return nil })
+	rec := &recordingRecorder{}
+	m.SetRunRecorder(rec.record)
+
+	if _, err := m.Apply(context.Background(), &ProcessorInput{Message: "x", WorkingDir: tmpDir, IsFirstMessage: true}); err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+
+	run := rec.byName("cmd-fail")
+	if run == nil {
+		t.Fatal("expected a recorded run for cmd-fail")
+	}
+	if run.Outcome != "error" {
+		t.Errorf("Outcome = %q, want %q", run.Outcome, "error")
+	}
+	if run.Error == "" {
+		t.Error("expected a non-empty Error message")
+	}
+	if run.Duration <= 0 {
+		t.Errorf("Duration = %v, want > 0", run.Duration)
+	}
+}
+
+// TestApplyAfter_RunRecorder covers ApplyAfter's recorder wiring across ok
+// (command executes successfully), skipped (stopReason mismatch), and error
+// (failing command) outcomes, all tagged Phase="after".
+func TestApplyAfter_RunRecorder(t *testing.T) {
+	dir := t.TempDir()
+	okScript := filepath.Join(dir, "ok.sh")
+	failScript := filepath.Join(dir, "fail.sh")
+	os.WriteFile(okScript, []byte("#!/bin/sh\necho done\n"), 0755)
+	os.WriteFile(failScript, []byte("#!/bin/sh\nexit 1\n"), 0755)
+
+	procs := []*Processor{
+		{Name: "after-ok", When: WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"end_turn"}}, Command: okScript, Output: OutputDiscard},
+		{Name: "after-skip", When: WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"max_tokens"}}, Command: okScript, Output: OutputDiscard},
+		{Name: "after-fail", When: WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"end_turn"}}, Command: failScript, Output: OutputDiscard},
+	}
+	m := makeAfterManager(procs)
+	rec := &recordingRecorder{}
+	m.SetRunRecorder(rec.record)
+
+	m.ApplyAfter(context.Background(), makeAfterInput("user", "end_turn"))
+
+	if run := rec.byName("after-ok"); run == nil || run.Outcome != "ok" || run.Phase != "after" || run.Duration <= 0 {
+		t.Errorf("after-ok: got %+v, want Phase=after Outcome=ok Duration>0", run)
+	}
+	if run := rec.byName("after-skip"); run == nil || run.Outcome != "skipped" || run.Phase != "after" {
+		t.Errorf("after-skip: got %+v, want Phase=after Outcome=skipped", run)
+	}
+	if run := rec.byName("after-fail"); run == nil || run.Outcome != "error" || run.Phase != "after" || run.Error == "" {
+		t.Errorf("after-fail: got %+v, want Phase=after Outcome=error with non-empty Error", run)
+	}
+}
+
+// TestApplyAfter_RunRecorder_DisabledSkipped verifies a disabled after-phase
+// processor is recorded as skipped without executing its command.
+func TestApplyAfter_RunRecorder_DisabledSkipped(t *testing.T) {
+	disabled := false
+	proc := &Processor{
+		Name:    "after-disabled",
+		Enabled: &disabled,
+		When:    WhenConfig{On: PhaseAgentResponded, Match: MatchAll},
+		Command: "/bin/echo",
+		Output:  OutputDiscard,
+	}
+	m := makeAfterManager([]*Processor{proc})
+	rec := &recordingRecorder{}
+	m.SetRunRecorder(rec.record)
+
+	m.ApplyAfter(context.Background(), makeAfterInput("user", "end_turn"))
+
+	run := rec.byName("after-disabled")
+	if run == nil || run.Outcome != "skipped" {
+		t.Errorf("after-disabled: got %+v, want Outcome=skipped", run)
+	}
+}
+
+// TestApplyOnClose_RunRecorder covers ApplyOnClose's recorder wiring across ok
+// (command executes successfully), skipped (disabled), and error (failing
+// command) outcomes, all tagged Phase="close".
+func TestApplyOnClose_RunRecorder(t *testing.T) {
+	dir := t.TempDir()
+	okScript := filepath.Join(dir, "ok.sh")
+	failScript := filepath.Join(dir, "fail.sh")
+	os.WriteFile(okScript, []byte("#!/bin/sh\necho done\n"), 0755)
+	os.WriteFile(failScript, []byte("#!/bin/sh\nexit 1\n"), 0755)
+
+	disabled := false
+	m := NewManager("", nil)
+	m.processors = []*Processor{
+		{Name: "close-ok", When: WhenConfig{On: PhaseConversationClosed, Match: MatchAll}, Command: okScript, Output: OutputDiscard},
+		{Name: "close-disabled", Enabled: &disabled, When: WhenConfig{On: PhaseConversationClosed, Match: MatchAll}, Command: okScript, Output: OutputDiscard},
+		{Name: "close-fail", When: WhenConfig{On: PhaseConversationClosed, Match: MatchAll}, Command: failScript, Output: OutputDiscard},
+	}
+	rec := &recordingRecorder{}
+	m.SetRunRecorder(rec.record)
+
+	m.ApplyOnClose(context.Background(), CloseProcessorInput{SessionID: "s"})
+
+	if run := rec.byName("close-ok"); run == nil || run.Outcome != "ok" || run.Phase != "close" || run.Duration <= 0 {
+		t.Errorf("close-ok: got %+v, want Phase=close Outcome=ok Duration>0", run)
+	}
+	if run := rec.byName("close-disabled"); run == nil || run.Outcome != "skipped" || run.Phase != "close" {
+		t.Errorf("close-disabled: got %+v, want Phase=close Outcome=skipped", run)
+	}
+	if run := rec.byName("close-fail"); run == nil || run.Outcome != "error" || run.Phase != "close" || run.Error == "" {
+		t.Errorf("close-fail: got %+v, want Phase=close Outcome=error with non-empty Error", run)
+	}
+}
+
+// TestApplyOnClose_RunRecorder_PromptModeDispatched verifies a dispatched
+// prompt-mode close-phase processor is recorded as ok, Phase="close".
+func TestApplyOnClose_RunRecorder_PromptModeDispatched(t *testing.T) {
+	m := NewManager("", nil)
+	m.processors = []*Processor{
+		{Name: "close-prompt", When: WhenConfig{On: PhaseConversationClosed, Match: MatchAll}, Prompt: "cleanup"},
+	}
+	m.SetPromptFunc(func(_ context.Context, _, _, _ string) error { return nil })
+	rec := &recordingRecorder{}
+	m.SetRunRecorder(rec.record)
+
+	m.ApplyOnClose(context.Background(), CloseProcessorInput{SessionID: "s"})
+
+	run := rec.byName("close-prompt")
+	if run == nil || run.Outcome != "ok" || run.Phase != "close" {
+		t.Errorf("close-prompt: got %+v, want Phase=close Outcome=ok", run)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// CloneWith* RunRecorder propagation
+// ---------------------------------------------------------------------------
+
+// TestCloneWithTextProcessors_PropagatesRunRecorder verifies the runRecorder
+// installed on the original Manager survives CloneWithTextProcessors and
+// fires for processors run through the clone.
+func TestCloneWithTextProcessors_PropagatesRunRecorder(t *testing.T) {
+	m := NewManager("", nil)
+	rec := &recordingRecorder{}
+	m.SetRunRecorder(rec.record)
+
+	clone := m.CloneWithTextProcessors([]config.MessageProcessor{
+		{When: config.ProcessorWhenBlock{On: config.ProcessorPhaseUserPrompt, Match: "all"}, Mutate: config.ProcessorMutatePrepend, Text: "P: "},
+	}, 0)
+
+	if _, err := clone.Apply(context.Background(), &ProcessorInput{Message: "x"}); err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+
+	if got := len(rec.snapshot()); got == 0 {
+		t.Fatal("expected the cloned Manager to still invoke the original runRecorder")
+	}
+}
+
+// TestCloneWithDirProcessors_PropagatesRunRecorder verifies runRecorder
+// survives CloneWithDirProcessors.
+func TestCloneWithDirProcessors_PropagatesRunRecorder(t *testing.T) {
+	wsDir := t.TempDir()
+	writeYAML(t, wsDir, "ws.yaml", `
+name: ws-proc
+enabled: true
+when:
+  on: userPrompt
+  match: all
+mutate: prepend
+text: "workspace"
+`)
+
+	m := NewManager(t.TempDir(), nil)
+	rec := &recordingRecorder{}
+	m.SetRunRecorder(rec.record)
+
+	clone := m.CloneWithDirProcessors([]string{wsDir}, nil)
+	if _, err := clone.Apply(context.Background(), &ProcessorInput{Message: "x"}); err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+
+	run := rec.byName("ws-proc")
+	if run == nil {
+		t.Fatal("expected the cloned Manager to still invoke the original runRecorder for ws-proc")
+	}
+	if run.Outcome != "ok" {
+		t.Errorf("Outcome = %q, want %q", run.Outcome, "ok")
+	}
+}
+
+// TestCloneWithEnabledOverrides_PropagatesRunRecorder verifies runRecorder
+// survives CloneWithEnabledOverrides.
+func TestCloneWithEnabledOverrides_PropagatesRunRecorder(t *testing.T) {
+	m := NewManager("", nil)
+	m.processors = []*Processor{
+		{Name: "overridden", Text: "P: ", Mutate: config.ProcessorMutatePrepend, When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}},
+	}
+	rec := &recordingRecorder{}
+	m.SetRunRecorder(rec.record)
+
+	enabled := true
+	clone := m.CloneWithEnabledOverrides([]config.ProcessorOverride{{Name: "overridden", Enabled: &enabled}})
+	if _, err := clone.Apply(context.Background(), &ProcessorInput{Message: "x"}); err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+
+	run := rec.byName("overridden")
+	if run == nil {
+		t.Fatal("expected the cloned Manager to still invoke the original runRecorder for overridden")
+	}
+	if run.Outcome != "ok" {
+		t.Errorf("Outcome = %q, want %q", run.Outcome, "ok")
+	}
+}
