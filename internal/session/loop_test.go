@@ -863,6 +863,11 @@ func TestLoopPrompt_Validate_Trigger(t *testing.T) {
 			wantErr: ErrInvalidTrigger,
 		},
 		{
+			name:    "legacy scalar onChild alone is rejected",
+			prompt:  LoopPrompt{Prompt: "p", Trigger: TriggerOnChild},
+			wantErr: ErrOnChildAlone,
+		},
+		{
 			name:    "negative DelaySeconds",
 			prompt:  LoopPrompt{Prompt: "p", Trigger: TriggerOnCompletion, DelaySeconds: -1},
 			wantErr: ErrInvalidDelay,
@@ -1042,6 +1047,47 @@ func TestLoopPrompt_Validate_MultiTrigger(t *testing.T) {
 		}
 		if err == nil || !strings.Contains(err.Error(), string(TriggerOnCompletion)) {
 			t.Errorf("Validate() error = %v, want it to mention the duplicated trigger %q", err, TriggerOnCompletion)
+		}
+	})
+
+	t.Run("valid onChild armed alongside onTasks", func(t *testing.T) {
+		p := LoopPrompt{Prompt: "p", Triggers: []LoopTrigger{TriggerOnTasks, TriggerOnChild}}
+		if err := p.Validate(); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("valid onChild with explicit ChildEvents", func(t *testing.T) {
+		p := LoopPrompt{Prompt: "p", Triggers: []LoopTrigger{TriggerOnTasks, TriggerOnChild}, ChildEvents: []ChildEvent{ChildEventAnyEndResponse}}
+		if err := p.Validate(); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("unknown child event is rejected", func(t *testing.T) {
+		p := LoopPrompt{Prompt: "p", Triggers: []LoopTrigger{TriggerOnTasks, TriggerOnChild}, ChildEvents: []ChildEvent{"bogus"}}
+		err := p.Validate()
+		if !errors.Is(err, ErrInvalidChildEvent) {
+			t.Errorf("Validate() error = %v, want %v", err, ErrInvalidChildEvent)
+		}
+		if err == nil || !strings.Contains(err.Error(), "bogus") {
+			t.Errorf("Validate() error = %v, want it to mention the offending value %q", err, "bogus")
+		}
+	})
+
+	t.Run("onChild alone in Triggers list is rejected", func(t *testing.T) {
+		p := LoopPrompt{Prompt: "p", Triggers: []LoopTrigger{TriggerOnChild}}
+		err := p.Validate()
+		if !errors.Is(err, ErrOnChildAlone) {
+			t.Errorf("Validate() error = %v, want %v", err, ErrOnChildAlone)
+		}
+	})
+
+	t.Run("duplicate onChild entries rejected as invalid trigger, not onChild-alone", func(t *testing.T) {
+		p := LoopPrompt{Prompt: "p", Triggers: []LoopTrigger{TriggerOnChild, TriggerOnChild}}
+		err := p.Validate()
+		if !errors.Is(err, ErrInvalidTrigger) {
+			t.Errorf("Validate() error = %v, want %v", err, ErrInvalidTrigger)
 		}
 	})
 }
@@ -1271,6 +1317,79 @@ func TestLoopStore_Update_OnTasksFields(t *testing.T) {
 	}
 	if got2.CooldownSeconds != cooldown {
 		t.Errorf("CooldownSeconds changed on nil update: got %d", got2.CooldownSeconds)
+	}
+}
+
+// TestLoopStore_Update_ChildEvents verifies that LoopUpdate.ChildEvents
+// round-trips through Update/Get with wholesale-replace semantics (mirroring
+// TestLoopStore_Update_OnTasksFields), and that a nil update leaves the
+// stored list unchanged.
+func TestLoopStore_Update_ChildEvents(t *testing.T) {
+	dir := t.TempDir()
+	ps := NewLoopStore(dir)
+
+	p := &LoopPrompt{
+		Prompt:  "Test",
+		Trigger: TriggerOnTasks,
+		Enabled: true,
+	}
+	if err := ps.Set(p); err != nil {
+		t.Fatalf("Set() error = %v", err)
+	}
+
+	events := []ChildEvent{ChildEventAnyEndResponse}
+	if err := ps.Update(LoopUpdate{ChildEvents: &events}); err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+
+	got, _ := ps.Get()
+	if len(got.ChildEvents) != 1 || got.ChildEvents[0] != ChildEventAnyEndResponse {
+		t.Errorf("ChildEvents = %v, want %v", got.ChildEvents, events)
+	}
+
+	// A nil ChildEvents pointer leaves the stored list unchanged.
+	if err := ps.Update(LoopUpdate{}); err != nil {
+		t.Fatalf("Update() with all-nil error = %v", err)
+	}
+	got2, _ := ps.Get()
+	if len(got2.ChildEvents) != 1 || got2.ChildEvents[0] != ChildEventAnyEndResponse {
+		t.Errorf("ChildEvents changed on nil update: got %v", got2.ChildEvents)
+	}
+
+	// A non-nil pointer to a different slice wholesale-replaces (not merges).
+	replacement := []ChildEvent{ChildEventAnyDeleted}
+	if err := ps.Update(LoopUpdate{ChildEvents: &replacement}); err != nil {
+		t.Fatalf("Update() replacement error = %v", err)
+	}
+	got3, _ := ps.Get()
+	if len(got3.ChildEvents) != 1 || got3.ChildEvents[0] != ChildEventAnyDeleted {
+		t.Errorf("ChildEvents = %v, want wholesale replacement %v", got3.ChildEvents, replacement)
+	}
+}
+
+// TestLoopPrompt_EffectiveChildEvents_HasChildEvent verifies the
+// default-vs-explicit resolution: an empty ChildEvents falls back to
+// DefaultChildEvents() (both events), while an explicit non-empty list is
+// used verbatim.
+func TestLoopPrompt_EffectiveChildEvents_HasChildEvent(t *testing.T) {
+	defaultP := LoopPrompt{}
+	eff := defaultP.EffectiveChildEvents()
+	if len(eff) != 2 {
+		t.Fatalf("EffectiveChildEvents() with no explicit list = %v, want both defaults", eff)
+	}
+	if !defaultP.HasChildEvent(ChildEventAnyEndResponse) || !defaultP.HasChildEvent(ChildEventAnyDeleted) {
+		t.Errorf("HasChildEvent() should be true for both default events on %v", defaultP)
+	}
+
+	explicitP := LoopPrompt{ChildEvents: []ChildEvent{ChildEventAnyDeleted}}
+	if got := explicitP.EffectiveChildEvents(); len(got) != 1 || got[0] != ChildEventAnyDeleted {
+		t.Errorf("EffectiveChildEvents() with explicit list = %v, want [%q]", got, ChildEventAnyDeleted)
+	}
+	if explicitP.HasChildEvent(ChildEventAnyEndResponse) {
+		t.Error("HasChildEvent(anyEndResponse) = true, want false (explicit list omits it)")
+	}
+	if !explicitP.HasChildEvent(ChildEventAnyDeleted) {
+		t.Error("HasChildEvent(anyDeleted) = false, want true (explicit list includes it)")
 	}
 }
 
