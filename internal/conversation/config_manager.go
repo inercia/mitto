@@ -165,7 +165,9 @@ type configDeps interface {
 
 	// Record a user-initiated session change to the timeline and push it live to
 	// observers (no-op when no recorder). Generic: kind discriminates the change.
-	cmRecordSessionChange(kind, value, previousValue string)
+	// Returns the recorder's persistence error (if any) so callers can avoid
+	// logging/broadcasting success when the timeline write failed (mitto-9zy1).
+	cmRecordSessionChange(kind, value, previousValue string) error
 }
 
 // configManager is a stateless collaborator owning session-config + model-baseline logic.
@@ -263,6 +265,7 @@ func (c configManager) applyConfigOptionWithOpts(d configDeps, ctx context.Conte
 	}
 	category := opt.Category
 
+	var recordErr error
 	if category == ConfigOptionCategoryMode && d.cmUsesLegacyModes() {
 		if err := d.cmSetSessionMode(ctx, value); err != nil {
 			if l := d.cmLogger(); l != nil {
@@ -288,7 +291,7 @@ func (c configManager) applyConfigOptionWithOpts(d configDeps, ctx context.Conte
 		d.cmSetBaselineAndClearOverride(value)
 		c.persistBaselineModel(d, value)
 		if recordTimeline {
-			d.cmRecordSessionChange(ConfigOptionCategoryModel, value, previousModel)
+			recordErr = d.cmRecordSessionChange(ConfigOptionCategoryModel, value, previousModel)
 		}
 	} else {
 		return fmt.Errorf("config option %s is not supported by current agent", configID)
@@ -296,6 +299,15 @@ func (c configManager) applyConfigOptionWithOpts(d configDeps, ctx context.Conte
 
 	d.cmUpdateConfigOptionValue(configID, value)
 	c.persistConfigValue(d, configID, value)
+
+	// mitto-9zy1 defect 2a: when the session-change timeline event failed to
+	// persist, do not claim success — skip the "Config option changed" INFO log
+	// and the live config-changed notification, and surface the failure to the
+	// caller instead. The RPC-applied model change and local config-option state
+	// above are still reflected; only the misleading success signal is suppressed.
+	if recordErr != nil {
+		return fmt.Errorf("failed to record session change for %s: %w", configID, recordErr)
+	}
 
 	if l := d.cmLogger(); l != nil {
 		l.Info("Config option changed", "config_id", configID, "value", value)
@@ -368,6 +380,17 @@ func (c configManager) applyConfigConstraints(d configDeps, category string) {
 }
 
 func (c configManager) flushPendingConfig(d configDeps) {
+	if d.cmIsClosed() {
+		// mitto-9zy1 defect 2b: unlike setConfigOptionWithOpts, this deferred-flush
+		// call site had no liveness gate at all, so a config change deferred while
+		// prompting could still be applied after the session was closed (e.g. from
+		// the prompt-completion tail racing teardown). Leave the pending map
+		// undrained; there is no live session left to apply it to.
+		if l := d.cmLogger(); l != nil {
+			l.Debug("Skipping deferred config flush; session is closed", "session_id", d.cmSessionID())
+		}
+		return
+	}
 	pending := d.cmDrainPendingConfig()
 	if len(pending) == 0 {
 		return

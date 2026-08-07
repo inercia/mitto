@@ -5917,3 +5917,186 @@ func TestApplySynthesizedModelsIfEmpty_UsesDefaultsWhenUserModelsEmpty(t *testin
 		t.Fatalf("expected non-empty AvailableModels from DefaultModelProfiles")
 	}
 }
+
+// ============================================================================
+// mitto-9zy1: post-close observability defects (reproduce phase)
+//
+// Three reproduction tests below pin the defects confirmed by the Investigate
+// phase (see the "Investigation [tier: Reasoning]:" bead comment). All three
+// simulate the post-close tail window identified in mitto-xlwh: the recorder
+// has stopped accepting writes (Suspend() sets started=false) and/or the
+// session is marked closed (SimulateClose()), while session-config/queue-drain
+// code paths still run synchronously from the prompt-completion tail. Each
+// test currently FAILS against the unfixed code and must pass once the
+// corresponding defect is fixed.
+// ============================================================================
+
+// TestApplyConfigOptionWithOpts_BugRepro_SwallowsRecorderErrorAndStillLogsSuccess
+// pins defect 2a: cmRecordSessionChangeWithSeq (bgsession_config.go) swallows
+// the recorder's persistence error (only logs it), so applyConfigOptionWithOpts
+// (config_manager.go) proceeds to log "Config option changed" and return a nil
+// error even though the session-change timeline event was never persisted.
+func TestApplyConfigOptionWithOpts_BugRepro_SwallowsRecorderErrorAndStillLogsSuccess(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	recorder := session.NewRecorder(store)
+	if err := recorder.Start("test-server", tmpDir, ""); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	sessionID := recorder.SessionID()
+
+	// Simulate the post-close tail window: the recorder has stopped accepting
+	// writes (mirrors what happens after Close()/End()), but session-config
+	// code still runs.
+	if err := recorder.Suspend(); err != nil {
+		t.Fatalf("Suspend failed: %v", err)
+	}
+
+	handler := &recordingHandler{}
+	shared := newFakeSharedProcess()
+	bs := &BackgroundSession{
+		recorder:      recorder,
+		persistedID:   sessionID,
+		store:         store,
+		sharedProcess: shared,
+		nextSeq:       2, // recorder.Start() already persisted session_start at seq=1
+		logger:        slog.New(handler),
+		agentModels:   &SessionModelState{CurrentModelId: "m-1"},
+		configOptions: []SessionConfigOption{
+			{
+				ID:           ConfigOptionCategoryModel,
+				Category:     ConfigOptionCategoryModel,
+				CurrentValue: "m-1",
+				Options: []SessionConfigOptionValue{
+					{Value: "m-1", Name: "Model 1"},
+					{Value: "m-2", Name: "Model 2"},
+				},
+			},
+		},
+	}
+	bs.promptCond = sync.NewCond(&bs.promptMu)
+
+	cm := configManager{}
+	applyErr := cm.applyConfigOptionWithOpts(bs, context.Background(), ConfigOptionCategoryModel, "m-2", true)
+
+	// Desired (post-fix) behavior: a failure to persist the session-change
+	// timeline event must surface as an error from applyConfigOptionWithOpts.
+	if applyErr == nil {
+		t.Fatal("mitto-9zy1 defect 2a: expected applyConfigOptionWithOpts to return an error when the " +
+			"session-change record fails, but it returned nil (recorder error was swallowed)")
+	}
+	// Desired (post-fix) behavior: the caller must not claim success ("Config
+	// option changed") when persistence of the timeline event failed.
+	if handler.hasRecord(slog.LevelInfo, "Config option changed") {
+		t.Error("mitto-9zy1 defect 2a: must not log 'Config option changed' when the session-change " +
+			"record failed")
+	}
+}
+
+// TestFlushPendingConfig_BugRepro_AppliesConfigAfterClose pins defect 2b:
+// flushPendingConfig (config_manager.go) drains the pending-config map and
+// calls applyConfigOption directly, bypassing the only cmIsClosed() liveness
+// gate in the config path (present in setConfigOptionWithOpts but not
+// reachable from the deferred-flush call site). A deferred config change can
+// therefore still be applied to a closed/closing session.
+func TestFlushPendingConfig_BugRepro_AppliesConfigAfterClose(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	recorder := session.NewRecorder(store)
+	if err := recorder.Start("test-server", tmpDir, ""); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	sessionID := recorder.SessionID()
+
+	shared := newFakeSharedProcess()
+	bs := &BackgroundSession{
+		recorder:      recorder,
+		persistedID:   sessionID,
+		store:         store,
+		sharedProcess: shared,
+		nextSeq:       2,
+		agentModels:   &SessionModelState{CurrentModelId: "m-1"},
+		configOptions: []SessionConfigOption{
+			{
+				ID:           ConfigOptionCategoryModel,
+				Category:     ConfigOptionCategoryModel,
+				CurrentValue: "m-1",
+				Options: []SessionConfigOptionValue{
+					{Value: "m-1", Name: "Model 1"},
+					{Value: "m-2", Name: "Model 2"},
+				},
+			},
+		},
+		pendingConfig: map[string]string{ConfigOptionCategoryModel: "m-2"},
+	}
+	bs.promptCond = sync.NewCond(&bs.promptMu)
+
+	// Mark the session closed BEFORE the deferred flush runs — mirrors the
+	// prompt-completion tail racing session Close() (mitto-xlwh's window).
+	bs.SimulateClose()
+
+	bs.flushPendingConfig()
+
+	// Desired (post-fix) behavior: flushPendingConfig must no-op once the
+	// session is closed, leaving the model unchanged.
+	if bs.agentModels.CurrentModelId != "m-1" {
+		t.Fatalf("mitto-9zy1 defect 2b: expected flushPendingConfig to skip applying deferred config "+
+			"after session close, but model changed to %q", bs.agentModels.CurrentModelId)
+	}
+}
+
+// TestQueueRecordErrorEvent_BugRepro_LogsErrorOnErrorAfterClose pins defect 3:
+// queueRecordErrorEvent (bgsession_queue.go) has no queueIsClosed() guard, so
+// when the recorder has already stopped (post-close tail window), the attempt
+// to persist a "failed to send queued message" error event itself fails, and
+// a second, purely diagnostic ERROR ("Failed to persist queued send error
+// event") is logged on top of the original — pure log noise during teardown.
+func TestQueueRecordErrorEvent_BugRepro_LogsErrorOnErrorAfterClose(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	recorder := session.NewRecorder(store)
+	if err := recorder.Start("test-server", tmpDir, ""); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	sessionID := recorder.SessionID()
+
+	// Simulate the post-close tail window: the recorder has stopped accepting
+	// writes.
+	if err := recorder.Suspend(); err != nil {
+		t.Fatalf("Suspend failed: %v", err)
+	}
+
+	handler := &recordingHandler{}
+	bs := &BackgroundSession{
+		recorder:    recorder,
+		persistedID: sessionID,
+		nextSeq:     2,
+		logger:      slog.New(handler),
+	}
+	bs.promptCond = sync.NewCond(&bs.promptMu)
+	bs.SimulateClose()
+
+	bs.queueRecordErrorEvent("Failed to send queued message: boom")
+
+	// Desired (post-fix) behavior: once the session is closed, queueRecordErrorEvent
+	// must not attempt (and fail) to persist, so no secondary ERROR is logged.
+	if handler.hasRecord(slog.LevelError, "Failed to persist queued send error event") {
+		t.Error("mitto-9zy1 defect 3: queueRecordErrorEvent must not log a secondary ERROR " +
+			"when the session is already closed")
+	}
+}

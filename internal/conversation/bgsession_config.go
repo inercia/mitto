@@ -285,11 +285,14 @@ func (bs *BackgroundSession) cmNotifyConfigChanged(configID, value string) {
 	}
 }
 
-func (bs *BackgroundSession) cmRecordSessionChange(kind, value, previousValue string) {
+// cmRecordSessionChange returns the recorder's persistence error (if any) so
+// callers that would otherwise log a contradictory success message (e.g.
+// applyConfigOptionWithOpts) can detect the failure (mitto-9zy1 defect 2a).
+func (bs *BackgroundSession) cmRecordSessionChange(kind, value, previousValue string) error {
 	if bs.recorder == nil {
-		return
+		return nil
 	}
-	bs.cmRecordSessionChangeWithSeq(bs.getNextSeq(), kind, value, previousValue)
+	return bs.cmRecordSessionChangeWithSeq(bs.getNextSeq(), kind, value, previousValue)
 }
 
 // cmRecordSessionChangeWithSeq is the seq-aware variant of cmRecordSessionChange
@@ -297,19 +300,25 @@ func (bs *BackgroundSession) cmRecordSessionChange(kind, value, previousValue st
 // seq (obtained from getNextSeq() upstream) and notifies observers with the same seq.
 // Used to pre-reserve a "context_cleared" pill seq BEFORE the user-prompt seq so the
 // flush pill orders before the user prompt in the persisted transcript.
-func (bs *BackgroundSession) cmRecordSessionChangeWithSeq(seq int64, kind, value, previousValue string) {
+//
+// Returns the recorder's persistence error (if any). Observers are still
+// notified unconditionally even on a persist failure (mitto-9zy1 Refinement 1):
+// mitto-c36 pre-reserves this seq before the user-prompt seq, so suppressing
+// the notify would leave a hole in the seq stream that the frontend's sync
+// layer treats as a gap.
+func (bs *BackgroundSession) cmRecordSessionChangeWithSeq(seq int64, kind, value, previousValue string) error {
 	if bs.recorder == nil {
-		return
+		return nil
 	}
 	data := session.SessionChangeData{Kind: kind, Value: value, PreviousValue: previousValue}
-	if err := bs.recorder.RecordSessionChangeWithSeq(seq, data); err != nil {
-		if bs.logger != nil {
-			bs.logger.Error("Failed to record session change", "kind", kind, "value", value, "error", err)
-		}
+	err := bs.recorder.RecordSessionChangeWithSeq(seq, data)
+	if err != nil && bs.logger != nil {
+		bs.logger.Error("Failed to record session change", "kind", kind, "value", value, "error", err)
 	}
 	bs.notifyObservers(func(o SessionObserver) {
 		if sc, ok := o.(SessionChangeObserver); ok {
 			sc.OnSessionChange(seq, data)
 		}
 	})
+	return err
 }

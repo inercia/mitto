@@ -37,8 +37,9 @@ type fakeConfigDeps struct {
 	pendingConfig map[string]string
 
 	// injected errors
-	setModeErr  error
-	setModelErr error
+	setModeErr          error
+	setModelErr         error
+	recordSessionChgErr error
 
 	// recorders
 	modeRPCCalls      []string
@@ -209,10 +210,11 @@ func (f *fakeConfigDeps) cmNotifyConfigChanged(configID, value string) {
 	defer f.mu.Unlock()
 	f.notifiedConfig = append(f.notifiedConfig, [3]string{f.sessionID, configID, value})
 }
-func (f *fakeConfigDeps) cmRecordSessionChange(kind, value, previousValue string) {
+func (f *fakeConfigDeps) cmRecordSessionChange(kind, value, previousValue string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.sessionChanges = append(f.sessionChanges, [3]string{kind, value, previousValue})
+	return f.recordSessionChgErr
 }
 
 // --- Tests ---
