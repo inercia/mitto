@@ -9,12 +9,13 @@ import (
 
 // TestJiraFragmentsRenderCorrectly is a smoke test for the mitto-g61 jira
 // fragment extraction (extended by mitto-w8jp.2 for access-method,
-// resolve-query, and link-bead): it loads the builtin fragment registry,
-// renders each of the four jira prompts that reference `jira/shared/*`
-// fragments (new-ticket, pull-issue, push-issue, sync-tasks), and asserts
-// the rendered output contains hallmarks of every extracted fragment
-// (proving the {{ template "jira/shared/..." . }} calls actually resolved
-// and inlined their bodies).
+// resolve-query, and link-bead, and by mitto-w8jp.3 for push-new/md2jira):
+// it loads the builtin fragment registry, renders each of the five jira
+// prompts that reference `jira/shared/*` fragments (new-ticket, pull-issue,
+// push-issue, push-new, sync-tasks), and asserts the rendered output
+// contains hallmarks of every extracted fragment (proving the
+// {{ template "jira/shared/..." . }} calls actually resolved and inlined
+// their bodies).
 func TestJiraFragmentsRenderCorrectly(t *testing.T) {
 	prev := CurrentFragments()
 	t.Cleanup(func() { SetCurrentFragments(prev) })
@@ -70,6 +71,15 @@ func TestJiraFragmentsRenderCorrectly(t *testing.T) {
 			"[mitto] <bd-author> @ <bd-created>:",          // from jira/shared/mirror-comments-out
 			"jira_pushed_comments",                         // from jira/shared/mirror-comments-out
 		},
+		"JIRA: push to new": {
+			"Prefer MCP tools whenever they are available",            // from jira/shared/access-method
+			"jira_get_agile_boards_jira` | `jira board list`",         // from jira/shared/access-method CLI table
+			"No \"Jira Tasks\" query is saved for this conversation.", // from jira/shared/resolve-query
+			"Link the new bead to its JIRA ticket",                    // from jira/shared/link-bead (create)
+			"High-water mark — commit `jira_updated` last.",           // from jira/shared/link-bead (commit)
+			"[mitto] <bd-author> @ <bd-created>:",                     // from jira/shared/mirror-comments-out
+			"md2jira.py",                                              // from jira/shared/md2jira
+		},
 		"JIRA: sync tasks": {
 			"Prefer MCP tools whenever they are available", // from jira/shared/access-method
 			"jira2md.py",                          // from jira/shared/jira2md
@@ -98,8 +108,9 @@ func TestJiraFragmentsRenderCorrectly(t *testing.T) {
 	// invokes `link-bead` with `Phase: "commit"` exactly once, so its
 	// hallmark sentence must appear exactly once in the rendered output.
 	wantExactlyOnce := map[string]string{
-		"JIRA: pull issue": "High-water mark — commit `jira_updated` last.",
-		"JIRA: sync tasks": "High-water mark — commit `jira_updated` last.",
+		"JIRA: pull issue":  "High-water mark — commit `jira_updated` last.",
+		"JIRA: sync tasks":  "High-water mark — commit `jira_updated` last.",
+		"JIRA: push to new": "High-water mark — commit `jira_updated` last.",
 	}
 
 	for promptName, hallmarks := range wantHallmarks {
