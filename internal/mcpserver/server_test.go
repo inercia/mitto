@@ -310,6 +310,49 @@ func TestMcpRequestLoggingMiddlewareTracksOpenSSEStreams(t *testing.T) {
 	}
 }
 
+// TestMcpStreamableHTTPOptions_SessionTimeoutConfigured is a reproduction
+// test for mitto-6cz6: every ACP session — including one-shot processor-scoped
+// auxiliary sessions (internal/acpproc/aux_mcp_transport.go,
+// PurposeProcessorPrefix) — opens its own MCP client session against Mitto's
+// Streamable HTTP endpoint and never issues an explicit DELETE to close it.
+// Without a SessionTimeout, the go-sdk's default behavior (zero value = "idle
+// sessions are never closed") lets these MCP sessions — and the long-lived SSE
+// GET stream + goroutine each one pins (openSSEStreams) — accumulate for the
+// lifetime of the Mitto process.
+//
+// Live measurement on the reporting bead: 279 concurrently open MCP sessions,
+// with a single agent process alone holding 139 TCP connections against this
+// endpoint. That per-process connection amplification saturates the AGENT's
+// own MCP client pool during a cold start / resume, which is what actually
+// fires the "MCP initialization timed out" gate reported by mitto-6cz6 — not
+// a slow Mitto handler (server-side `initialize` p50/max is <1ms across every
+// occurrence in the logs).
+//
+// This test asserts the fix precondition directly: the *mcp.StreamableHTTPOptions
+// Mitto constructs for its Streamable HTTP handler (mcpStreamableHTTPOptions,
+// extracted from startSSE for testability) must configure a non-zero
+// SessionTimeout so idle MCP sessions are reaped automatically instead of
+// living forever. It currently FAILS because SessionTimeout is never set.
+func TestMcpStreamableHTTPOptions_SessionTimeoutConfigured(t *testing.T) {
+	opts := mcpStreamableHTTPOptions()
+	if opts == nil {
+		t.Fatal("mcpStreamableHTTPOptions() returned nil")
+	}
+	if opts.SessionTimeout <= 0 {
+		t.Errorf("StreamableHTTPOptions.SessionTimeout = %v, want > 0 — a zero value "+
+			"means idle MCP sessions (one per ACP session, including every "+
+			"processor-scoped auxiliary session) are NEVER closed, letting "+
+			"open MCP sessions/SSE streams accumulate without bound (mitto-6cz6)",
+			opts.SessionTimeout)
+	}
+	// JSONResponse:true (mitto-6hr) must remain set regardless of the
+	// SessionTimeout fix — it is an orthogonal, already-verified-correct
+	// mitigation for a different wedge and must not regress.
+	if !opts.JSONResponse {
+		t.Error("StreamableHTTPOptions.JSONResponse = false, want true (mitto-6hr fix must remain in place)")
+	}
+}
+
 func TestTransportModeDefaults(t *testing.T) {
 	// Create a temporary store
 	tmpDir := t.TempDir()

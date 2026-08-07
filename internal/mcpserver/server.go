@@ -446,6 +446,45 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 }
 
+// mcpIdleSessionTimeout bounds how long a Streamable HTTP MCP session (and its
+// associated long-lived SSE GET stream, tracked by openSSEStreams) is kept
+// alive after the client stops sending it requests, before the go-sdk closes
+// it automatically (mitto-6cz6). Every ACP session — including one-shot
+// processor-scoped auxiliary sessions (internal/acpproc/aux_mcp_transport.go)
+// — opens its own MCP session against this endpoint and never explicitly
+// DELETEs it, so without an idle timeout these sessions (and the goroutine +
+// SSE stream each one pins) accumulate for the lifetime of the Mitto process:
+// 279 concurrently open in the field, one agent process alone holding 139 TCP
+// connections here, which saturates that agent's OWN MCP client pool and
+// causes its cold-start "MCP initialization timed out" gate to fire (Mitto's
+// own handler answers in <1ms throughout — this is agent-side amplification,
+// not server-side slowness). 30 minutes is comfortably longer than any single
+// ACP session's realistic lifetime while still reclaiming long-abandoned ones.
+const mcpIdleSessionTimeout = 30 * time.Minute
+
+// mcpStreamableHTTPOptions returns the *mcp.StreamableHTTPOptions used to
+// construct Mitto's Streamable HTTP handler. Extracted from startSSE so the
+// configuration is unit-testable without binding a real listener (mitto-6cz6).
+func mcpStreamableHTTPOptions() *mcp.StreamableHTTPOptions {
+	return &mcp.StreamableHTTPOptions{
+		// JSONResponse:true makes a POST's response (e.g. an agent's initialize /
+		// tools/list on cold start) resolve inline as application/json (spec
+		// §2.1.5) on the POST itself. The go-sdk default (nil opts => stateful
+		// mode) instead lets that response ride the client's standalone SSE GET
+		// stream; under concurrent MCP sessions that GET stream can stall, wedging
+		// cold-start initialize for minutes (mitto-6hr). This does NOT affect
+		// server->client interactions: Mitto's UIPrompter bridges to the UI over
+		// WebSocket, not the MCP transport, so mitto_ui_* prompts are unaffected
+		// (unlike Stateless:true, which would reject server->client requests).
+		JSONResponse: true,
+		// SessionTimeout reaps idle MCP sessions (mitto-6cz6) — see
+		// mcpIdleSessionTimeout doc for the full rationale. The go-sdk zero
+		// value never closes idle sessions, which is what allowed session
+		// count to grow unbounded in the field.
+		SessionTimeout: mcpIdleSessionTimeout,
+	}
+}
+
 // startSSE starts the MCP server in HTTP mode on the configured host.
 // Despite the name, this uses the Streamable HTTP transport (MCP spec 2025-03-26)
 // which is different from the legacy SSE transport.
@@ -478,19 +517,9 @@ func (s *Server) startSSE(ctx context.Context) error {
 	mux := http.NewServeMux()
 
 	// Create Streamable HTTP handler - this handles all MCP communication.
-	//
-	// JSONResponse:true makes a POST's response (e.g. an agent's initialize /
-	// tools/list on cold start) resolve inline as application/json (spec
-	// §2.1.5) on the POST itself. The go-sdk default (nil opts => stateful
-	// mode) instead lets that response ride the client's standalone SSE GET
-	// stream; under concurrent MCP sessions that GET stream can stall, wedging
-	// cold-start initialize for minutes (mitto-6hr). This does NOT affect
-	// server->client interactions: Mitto's UIPrompter bridges to the UI over
-	// WebSocket, not the MCP transport, so mitto_ui_* prompts are unaffected
-	// (unlike Stateless:true, which would reject server->client requests).
 	streamableHandler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
 		return s.mcpServer
-	}, &mcp.StreamableHTTPOptions{JSONResponse: true})
+	}, mcpStreamableHTTPOptions())
 
 	// Wrap with request logging so inbound MCP requests (e.g. an agent's
 	// initialize / tools/list during cold start) can be correlated with agent
