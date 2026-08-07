@@ -284,7 +284,7 @@ sequenceDiagram
     B->>C: FreshNames("cache-loop")
     C-->>B: ["CITY"]
     B-->>F: {cached:["CITY"]}
-    F->>F: effectiveMissingParams → CITY removed from missing list
+    F->>F: shouldOpenPromptDialog(cachedNames) → CITY excluded from open decision
     Note over F: Dialog skipped; dispatches directly
 
     Note over U,C: Stage 3 — second dispatch (no args supplied)
@@ -355,7 +355,7 @@ Loop conversations can only be **top-level** (not children). The `at` field
 | Backend  | `internal/conversation/prompt_arg_cache.go`       | per-conversation in-memory cache store (`Get`/`Set`/`FreshNames`, TTL) |
 | Backend  | `internal/web/handlers/session_prompt_arg_cache.go` | `GET /sessions/{id}/prompt-arg-cache` status endpoint (names only)   |
 | Backend  | `internal/session/queue.go`                       | `QueuedMessage{ PromptName, Arguments }`, `Add`/`Pop`                  |
-| Frontend | `web/static/utils/prompts.js`                     | `promptMenus`, `getMissingPromptParameters`, `fetchCachedParamNames`, `effectiveMissingParams` |
+| Frontend | `web/static/utils/prompts.js`                     | `promptMenus`, `shouldOpenPromptDialog`, `promptDialogParameters`, `fetchCachedParamNames` |
 | Frontend | `web/static/utils/promptsCache.js`                | `fetchWorkspacePromptsCached`, `invalidateWorkspacePromptsCache` (TTL + dedup + 304) |
 | Frontend | `web/static/hooks/useWorkspacePrompts.js`         | `fetchConversationPromptsForSession`                                   |
 | Frontend | `web/static/hooks/useBeadsIntegration.js`         | `fetchBeads*PromptsForWorkspace`, `handleRunBeads*Prompt`              |

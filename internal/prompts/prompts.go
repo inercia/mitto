@@ -834,14 +834,16 @@ type PromptParameter struct {
 	// supplied before the prompt is dispatched. Defaults to unset (caller decides).
 	// Declarative defaults are handled by the Arg helper in the template body, not here.
 	Required *bool `yaml:"required,omitempty" json:"required,omitempty"`
-	// Ask controls whether the parameter is rendered in the parameter dialog.
-	// Valid values (see IsValidAsk): "" or "auto" (default: rendered only when the
-	// parameter is required or is an interactive picker) and "always" (rendered
-	// whenever the dialog opens, even for an optional free-text parameter). It only
-	// affects UI collection: an optional `ask: always` field never blocks submission
-	// and never gates menu visibility. Unknown values are rejected by
+	// Show controls whether the parameter is rendered in the parameter dialog
+	// (the RENDER axis) and, for "always" only, whether its presence forces the
+	// dialog to open (the OPEN axis). Valid values (see IsValidShow): "" or
+	// "auto" (default: rendered whenever the dialog opens for any reason, but
+	// does not by itself force it open), "always" (rendered, and forces the
+	// dialog open even for an otherwise-satisfied prompt), and "never" (never
+	// rendered, never opens the dialog; the value comes from a menu, a
+	// declared default, or a cached value). Unknown values are rejected by
 	// ValidatePromptParameters.
-	Ask string `yaml:"ask,omitempty" json:"ask,omitempty"`
+	Show string `yaml:"show,omitempty" json:"show,omitempty"`
 	// Default is the default value substituted when the parameter is not explicitly
 	// supplied. Required for processor parameters (mandatory); optional for prompt-file
 	// parameters (the Arg helper in the template body also provides per-site defaults).

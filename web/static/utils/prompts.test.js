@@ -17,14 +17,16 @@ import {
   MENU_PARAM_TYPES,
   menuSatisfies,
   collectPromptArguments,
-  getMissingPromptParameters,
+  shouldOpenPromptDialog,
+  promptDialogParameters,
+  isAlwaysShownParam,
+  isNeverShownParam,
   autofillConversationMenuArgs,
   isBooleanParam,
   isInteractivePickerParam,
   isOptionsPickerParam,
   isCacheableParam,
   fetchCachedParamNames,
-  effectiveMissingParams,
   resolvePromptModelOverride,
   currentModelName,
 } from "./prompts.js";
@@ -610,79 +612,221 @@ describe("autofillConversationMenuArgs", () => {
 });
 
 // =============================================================================
-// getMissingPromptParameters Tests
+// shouldOpenPromptDialog Tests
 // =============================================================================
 
-describe("getMissingPromptParameters", () => {
-  test("prompt with no parameters returns []", () => {
-    expect(getMissingPromptParameters({}, "beadsIssues")).toEqual([]);
+describe("shouldOpenPromptDialog", () => {
+  test("prompt with no parameters does not open", () => {
+    expect(shouldOpenPromptDialog({}, "beadsIssues")).toBe(false);
   });
 
-  test("all parameters auto-filled by menu returns []", () => {
+  test("all parameters auto-filled by menu does not open", () => {
     const prompt = {
       parameters: [
         { name: "ISSUE_ID", type: "beadsId" },
         { name: "TITLE", type: "beadsTitle" },
       ],
     };
-    expect(getMissingPromptParameters(prompt, "beadsIssues")).toEqual([]);
+    expect(shouldOpenPromptDialog(prompt, "beadsIssues")).toBe(false);
   });
 
-  test("none auto-filled (text param in prompts menu) returns all params", () => {
-    const params = [{ name: "MSG", type: "text" }];
-    const prompt = { parameters: params };
-    expect(getMissingPromptParameters(prompt, "prompts")).toEqual(params);
+  test("a required text param not auto-filled by the menu opens", () => {
+    const prompt = { parameters: [{ name: "MSG", type: "text" }] };
+    expect(shouldOpenPromptDialog(prompt, "prompts")).toBe(true);
   });
 
-  test("none auto-filled in unknown menu returns all params in declared order", () => {
-    const params = [
-      { name: "ISSUE_ID", type: "beadsId" },
-      { name: "MSG", type: "text" },
-    ];
-    const prompt = { parameters: params };
-    expect(getMissingPromptParameters(prompt, "prompts")).toEqual(params);
+  test("unknown menu value treats every param as unsupplied → opens", () => {
+    const prompt = {
+      parameters: [{ name: "ISSUE_ID", type: "beadsId" }],
+    };
+    expect(shouldOpenPromptDialog(prompt, "unknownMenu")).toBe(true);
   });
 
-  test("mix of auto-filled and free params returns only free ones in order", () => {
-    const beadsIdParam = { name: "ISSUE_ID", type: "beadsId" };
-    const textParam = { name: "MSG", type: "text" };
-    const prompt = { parameters: [beadsIdParam, textParam] };
-    expect(getMissingPromptParameters(prompt, "beadsIssues")).toEqual([
-      textParam,
-    ]);
+  test("missing menu argument treats every param as unsupplied → opens", () => {
+    const prompt = { parameters: [{ name: "ISSUE_ID", type: "beadsId" }] };
+    expect(shouldOpenPromptDialog(prompt, undefined)).toBe(true);
   });
 
-  test("unknown parameter type is treated as missing", () => {
-    const param = { name: "FOO", type: "unknownType" };
-    const prompt = { parameters: [param] };
-    expect(getMissingPromptParameters(prompt, "beadsIssues")).toEqual([param]);
+  // --- Optional parameter (required: false) ---
+
+  test("optional beadsId param in conversation menu does NOT open", () => {
+    const prompt = {
+      parameters: [{ name: "ISSUE_ID", type: "beadsId", required: false }],
+    };
+    expect(shouldOpenPromptDialog(prompt, "conversation")).toBe(false);
   });
 
-  test("unknown menu value causes all params to be treated as missing", () => {
-    const params = [
-      { name: "ISSUE_ID", type: "beadsId" },
-      { name: "TITLE", type: "beadsTitle" },
-    ];
-    const prompt = { parameters: params };
-    expect(getMissingPromptParameters(prompt, "unknownMenu")).toEqual(params);
+  test("optional beadsId param in beadsIssues menu does NOT open (auto-filled)", () => {
+    const prompt = {
+      parameters: [{ name: "ISSUE_ID", type: "beadsId", required: false }],
+    };
+    expect(shouldOpenPromptDialog(prompt, "beadsIssues")).toBe(false);
   });
 
-  test("missing menu argument causes all params to be treated as missing", () => {
-    const params = [{ name: "ISSUE_ID", type: "beadsId" }];
-    const prompt = { parameters: params };
-    expect(getMissingPromptParameters(prompt, undefined)).toEqual(params);
+  test("required beadsId param in conversation menu opens", () => {
+    const prompt = {
+      parameters: [{ name: "ISSUE_ID", type: "beadsId", required: true }],
+    };
+    expect(shouldOpenPromptDialog(prompt, "conversation")).toBe(true);
   });
 
-  test("returned objects preserve the required field (required + optional)", () => {
-    const requiredParam = { name: "QUERY", type: "text", required: true };
-    const optionalParam = { name: "NOTES", type: "text" };
-    const prompt = { parameters: [requiredParam, optionalParam] };
-    const result = getMissingPromptParameters(prompt, "prompts");
-    expect(result).toHaveLength(2);
-    expect(result[0]).toBe(requiredParam);
-    expect(result[0].required).toBe(true);
-    expect(result[1]).toBe(optionalParam);
-    expect(result[1].required).toBeUndefined();
+  test("unset required (absent required field) beadsId param in conversation menu opens", () => {
+    const prompt = { parameters: [{ name: "ISSUE_ID", type: "beadsId" }] };
+    expect(shouldOpenPromptDialog(prompt, "conversation")).toBe(true);
+  });
+
+  test("mixed: dialog opens due to the required unsupplied param even though the optional one alone would not open it", () => {
+    const prompt = {
+      parameters: [
+        { name: "ISSUE_ID", type: "beadsId", required: true },
+        { name: "EXTRA", type: "text", required: false },
+      ],
+    };
+    expect(shouldOpenPromptDialog(prompt, "prompts")).toBe(true);
+  });
+
+  // --- show: always / never ---
+
+  test("optional text param with show:always opens the dialog", () => {
+    const prompt = {
+      parameters: [
+        { name: "Instructions", type: "text", required: false, show: "always" },
+      ],
+    };
+    expect(shouldOpenPromptDialog(prompt, "prompts")).toBe(true);
+    expect(shouldOpenPromptDialog(prompt, "conversation")).toBe(true);
+  });
+
+  test("optional text param with show:auto or absent show does NOT open by itself", () => {
+    for (const show of [undefined, "auto"]) {
+      const prompt = {
+        parameters: [
+          { name: "Instructions", type: "text", required: false, show },
+        ],
+      };
+      expect(shouldOpenPromptDialog(prompt, "prompts")).toBe(false);
+    }
+  });
+
+  test("show:never never opens the dialog even when required and unsupplied", () => {
+    const prompt = {
+      parameters: [
+        { name: "Secret", type: "text", required: true, show: "never" },
+      ],
+    };
+    expect(shouldOpenPromptDialog(prompt, "prompts")).toBe(false);
+  });
+
+  test("show:always on a menu-supplied param still forces the dialog open", () => {
+    const prompt = {
+      parameters: [
+        { name: "ISSUE_ID", type: "beadsId", required: false, show: "always" },
+      ],
+    };
+    expect(shouldOpenPromptDialog(prompt, "beadsIssues")).toBe(true);
+  });
+
+  test("show:always does not change menu gating", () => {
+    const prompt = {
+      parameters: [
+        { name: "ISSUE_ID", type: "beadsId", required: false, show: "always" },
+      ],
+    };
+    expect(menuSatisfies(prompt, "conversation")).toBe(true);
+  });
+
+  test("boolean param ALWAYS opens the dialog in every menu", () => {
+    const prompt = { parameters: [{ name: "Commit", type: "boolean" }] };
+    expect(shouldOpenPromptDialog(prompt, "prompts")).toBe(true);
+    expect(shouldOpenPromptDialog(prompt, "conversation")).toBe(true);
+    expect(shouldOpenPromptDialog(prompt, "beadsIssues")).toBe(true);
+  });
+
+  test("boolean param opens even when marked required:false", () => {
+    const prompt = {
+      parameters: [{ name: "Commit", type: "boolean", required: false }],
+    };
+    expect(shouldOpenPromptDialog(prompt, "conversation")).toBe(true);
+  });
+
+  test("prompts param ALWAYS opens the dialog in every menu", () => {
+    const prompt = {
+      parameters: [{ name: "P", type: "prompts", required: true }],
+    };
+    expect(shouldOpenPromptDialog(prompt, "prompts")).toBe(true);
+    expect(shouldOpenPromptDialog(prompt, "conversation")).toBe(true);
+    expect(shouldOpenPromptDialog(prompt, "beadsIssues")).toBe(true);
+  });
+
+  test("text+options param ALWAYS opens the dialog in every menu", () => {
+    const prompt = {
+      parameters: [{ name: "Mode", type: "text", options: ["a", "b"] }],
+    };
+    expect(shouldOpenPromptDialog(prompt, "prompts")).toBe(true);
+    expect(shouldOpenPromptDialog(prompt, "conversation")).toBe(true);
+    expect(shouldOpenPromptDialog(prompt, "beadsIssues")).toBe(true);
+  });
+
+  test("text with an empty options array is NOT an options picker — still gated by required", () => {
+    const prompt = {
+      parameters: [
+        { name: "Note", type: "text", options: [], required: true },
+      ],
+    };
+    expect(shouldOpenPromptDialog(prompt, "prompts")).toBe(true);
+  });
+
+  test("cachedNames suppresses a param's contribution to the open decision", () => {
+    const prompt = {
+      parameters: [
+        {
+          name: "Note",
+          type: "text",
+          required: true,
+          cache: { destination: "memory" },
+        },
+      ],
+    };
+    expect(shouldOpenPromptDialog(prompt, "prompts")).toBe(true);
+    expect(
+      shouldOpenPromptDialog(prompt, "prompts", new Set(["Note"])),
+    ).toBe(false);
+  });
+
+  test("cachedNames does not suppress a non-cacheable param", () => {
+    const prompt = {
+      parameters: [{ name: "Note", type: "text", required: true }],
+    };
+    expect(
+      shouldOpenPromptDialog(prompt, "prompts", new Set(["Note"])),
+    ).toBe(true);
+  });
+
+  test("knownNames suppresses a param's contribution to the open decision", () => {
+    const prompt = {
+      parameters: [
+        { name: "CHILD", type: "childSessionId", required: true },
+      ],
+    };
+    expect(shouldOpenPromptDialog(prompt, "conversation")).toBe(true);
+    expect(
+      shouldOpenPromptDialog(
+        prompt,
+        "conversation",
+        undefined,
+        new Set(["CHILD"]),
+      ),
+    ).toBe(false);
+  });
+});
+
+// =============================================================================
+// promptDialogParameters Tests
+// =============================================================================
+
+describe("promptDialogParameters", () => {
+  test("prompt with no parameters returns []", () => {
+    expect(promptDialogParameters({}, "beadsIssues")).toEqual([]);
   });
 
   test("preserves declared parameter order in the result", () => {
@@ -690,176 +834,88 @@ describe("getMissingPromptParameters", () => {
     const p2 = { name: "BETA", type: "sessionId" };
     const p3 = { name: "GAMMA", type: "workspaceId" };
     const prompt = { parameters: [p1, p2, p3] };
-    expect(getMissingPromptParameters(prompt, "prompts")).toEqual([p1, p2, p3]);
+    expect(promptDialogParameters(prompt, "prompts")).toEqual([p1, p2, p3]);
   });
 
-  // --- Optional parameter (required: false) missing-param tests ---
-
-  test("optional beadsId param in conversation menu is NOT missing (no form shown)", () => {
-    const prompt = {
-      parameters: [{ name: "ISSUE_ID", type: "beadsId", required: false }],
-    };
-    // conversation cannot supply beadsId, but it's optional → not missing
-    expect(getMissingPromptParameters(prompt, "conversation")).toEqual([]);
+  test("an optional free-text param renders even though it would not open the dialog by itself (mitto-9rff)", () => {
+    const required = { name: "ISSUE_ID", type: "beadsId", required: true };
+    const optional = { name: "AdditionalInstructions", type: "text" };
+    const prompt = { parameters: [required, optional] };
+    expect(promptDialogParameters(prompt, "prompts")).toEqual([
+      required,
+      optional,
+    ]);
   });
 
-  test("optional beadsId param in beadsIssues menu is NOT missing (auto-filled)", () => {
-    const prompt = {
-      parameters: [{ name: "ISSUE_ID", type: "beadsId", required: false }],
-    };
-    // beadsIssues supplies beadsId and it's optional → also not in missing list
-    expect(getMissingPromptParameters(prompt, "beadsIssues")).toEqual([]);
+  test("show:never excludes the parameter from rendering", () => {
+    const shown = { name: "Kept", type: "text" };
+    const hidden = { name: "Secret", type: "text", show: "never" };
+    const prompt = { parameters: [shown, hidden] };
+    expect(promptDialogParameters(prompt, "prompts")).toEqual([shown]);
   });
 
-  test("required beadsId param in conversation menu IS missing (form shown)", () => {
-    const param = { name: "ISSUE_ID", type: "beadsId", required: true };
-    const prompt = { parameters: [param] };
-    expect(getMissingPromptParameters(prompt, "conversation")).toEqual([param]);
-  });
-
-  test("unset required beadsId param in conversation menu IS missing (form shown)", () => {
+  test("a menu-supplied param is included but marked readOnly", () => {
     const param = { name: "ISSUE_ID", type: "beadsId" };
     const prompt = { parameters: [param] };
-    expect(getMissingPromptParameters(prompt, "conversation")).toEqual([param]);
-  });
-
-  test("mixed: only required unsupplied params appear in missing list", () => {
-    const requiredParam = { name: "ISSUE_ID", type: "beadsId", required: true };
-    const optionalParam = { name: "EXTRA", type: "text", required: false };
-    const prompt = { parameters: [requiredParam, optionalParam] };
-    // prompts menu supplies nothing; required beadsId is missing, optional text is not
-    expect(getMissingPromptParameters(prompt, "prompts")).toEqual([
-      requiredParam,
+    expect(promptDialogParameters(prompt, "beadsIssues")).toEqual([
+      { ...param, readOnly: true },
     ]);
+    // Not auto-suppliable by "prompts" → editable (no readOnly annotation).
+    expect(promptDialogParameters(prompt, "prompts")).toEqual([param]);
   });
 
-  // --- ask: always tests ---
-
-  test("optional text param with ask:always IS missing (rendered, non-blocking)", () => {
-    const param = {
-      name: "Instructions",
-      type: "text",
-      required: false,
-      ask: "always",
-    };
+  test("show:always on a menu-supplied param promotes it to editable (no readOnly)", () => {
+    const param = { name: "ISSUE_ID", type: "beadsId", show: "always" };
     const prompt = { parameters: [param] };
-    expect(getMissingPromptParameters(prompt, "prompts")).toEqual([param]);
-    expect(getMissingPromptParameters(prompt, "conversation")).toEqual([param]);
+    expect(promptDialogParameters(prompt, "beadsIssues")).toEqual([param]);
   });
 
-  test("optional text param with ask:auto or absent ask stays omitted", () => {
-    for (const ask of [undefined, "auto"]) {
-      const prompt = {
-        parameters: [
-          { name: "Instructions", type: "text", required: false, ask },
-        ],
-      };
-      expect(getMissingPromptParameters(prompt, "prompts")).toEqual([]);
-    }
-  });
-
-  test("ask:always does not override a menu-supplied type", () => {
-    const param = {
-      name: "ISSUE_ID",
-      type: "beadsId",
-      required: false,
-      ask: "always",
-    };
+  test("knownNames marks a param readOnly like a menu-supplied param", () => {
+    const param = { name: "CHILD", type: "childSessionId" };
     const prompt = { parameters: [param] };
-    // beadsIssues auto-supplies beadsId → never re-asked
-    expect(getMissingPromptParameters(prompt, "beadsIssues")).toEqual([]);
-    // conversation cannot supply it → asked
-    expect(getMissingPromptParameters(prompt, "conversation")).toEqual([param]);
+    expect(
+      promptDialogParameters(prompt, "conversation", new Set(["CHILD"])),
+    ).toEqual([{ ...param, readOnly: true }]);
   });
 
-  test("ask:always does not change menu gating", () => {
-    const prompt = {
-      parameters: [
-        { name: "ISSUE_ID", type: "beadsId", required: false, ask: "always" },
-      ],
-    };
-    expect(menuSatisfies(prompt, "conversation")).toBe(true);
-  });
-
-  test("boolean param is ALWAYS missing (collected via checkbox) in every menu", () => {
-    const param = { name: "Commit", type: "boolean" };
-    const prompt = { parameters: [param] };
-    expect(getMissingPromptParameters(prompt, "prompts")).toEqual([param]);
-    expect(getMissingPromptParameters(prompt, "conversation")).toEqual([param]);
-    expect(getMissingPromptParameters(prompt, "beadsIssues")).toEqual([param]);
-  });
-
-  test("boolean param is collected even when marked required:false", () => {
-    const param = { name: "Commit", type: "boolean", required: false };
-    const prompt = { parameters: [param] };
-    // required:false would normally suppress it, but boolean overrides that
-    expect(getMissingPromptParameters(prompt, "conversation")).toEqual([param]);
-  });
-
-  test("mixed boolean + auto-supplied param: boolean still collected, supplied one excluded", () => {
+  test("boolean, prompts, and text+options params all render normally (no readOnly) when not menu-supplied", () => {
     const boolParam = { name: "Commit", type: "boolean" };
-    const issueParam = { name: "ISSUE_ID", type: "beadsId", required: true };
-    const prompt = { parameters: [issueParam, boolParam] };
-    // beadsIssues supplies beadsId → only the boolean remains to be collected
-    expect(getMissingPromptParameters(prompt, "beadsIssues")).toEqual([
+    const promptsParam = { name: "P", type: "prompts" };
+    const optionsParam = { name: "Mode", type: "text", options: ["a", "b"] };
+    const prompt = { parameters: [boolParam, promptsParam, optionsParam] };
+    expect(promptDialogParameters(prompt, "prompts")).toEqual([
       boolParam,
+      promptsParam,
+      optionsParam,
     ]);
   });
+});
 
-  test("prompts param is ALWAYS missing (collected via picker) in every menu", () => {
-    const param = { name: "P", type: "prompts", required: true };
-    const prompt = { parameters: [param] };
-    expect(getMissingPromptParameters(prompt, "prompts")).toEqual([param]);
-    expect(getMissingPromptParameters(prompt, "conversation")).toEqual([param]);
-    expect(getMissingPromptParameters(prompt, "beadsIssues")).toEqual([param]);
+// =============================================================================
+// isAlwaysShownParam / isNeverShownParam Tests
+// =============================================================================
+
+describe("isAlwaysShownParam", () => {
+  test("true for show: always", () => {
+    expect(isAlwaysShownParam({ show: "always" })).toBe(true);
   });
-
-  test("prompts param is collected even when marked required:false", () => {
-    const param = { name: "P", type: "prompts", required: false };
-    const prompt = { parameters: [param] };
-    // required:false would normally suppress it, but prompts overrides that
-    expect(getMissingPromptParameters(prompt, "conversation")).toEqual([param]);
+  test("false for auto/never/absent", () => {
+    expect(isAlwaysShownParam({ show: "auto" })).toBe(false);
+    expect(isAlwaysShownParam({ show: "never" })).toBe(false);
+    expect(isAlwaysShownParam({})).toBe(false);
+    expect(isAlwaysShownParam(null)).toBe(false);
   });
+});
 
-  // mitto-cwz.1: a type:text param with a declared options array is
-  // collected via the dialog's dropdown, so it must ALWAYS appear in the
-  // missing list regardless of `required` or the menu's auto-supplied types
-  // — previously it was silently dropped from the form when `required: false`.
-  test("text+options param is ALWAYS missing (collected via dropdown) in every menu", () => {
-    const param = { name: "Mode", type: "text", options: ["a", "b"] };
-    const prompt = { parameters: [param] };
-    expect(getMissingPromptParameters(prompt, "prompts")).toEqual([param]);
-    expect(getMissingPromptParameters(prompt, "conversation")).toEqual([param]);
-    expect(getMissingPromptParameters(prompt, "beadsIssues")).toEqual([param]);
+describe("isNeverShownParam", () => {
+  test("true for show: never", () => {
+    expect(isNeverShownParam({ show: "never" })).toBe(true);
   });
-
-  test("text+options param is collected even when marked required:false", () => {
-    const param = {
-      name: "Mode",
-      type: "text",
-      options: ["a", "b"],
-      required: false,
-    };
-    const prompt = { parameters: [param] };
-    // required:false would normally suppress it, but text+options overrides that
-    expect(getMissingPromptParameters(prompt, "conversation")).toEqual([param]);
-  });
-
-  test("text with an empty options array is NOT an options picker — still gated by required", () => {
-    const param = { name: "Note", type: "text", options: [], required: true };
-    const prompt = { parameters: [param] };
-    expect(getMissingPromptParameters(prompt, "prompts")).toEqual([param]);
-  });
-
-  test("mixed boolean + text+options + auto-supplied param: only the auto-supplied one is excluded", () => {
-    const boolParam = { name: "Commit", type: "boolean" };
-    const modeParam = { name: "Mode", type: "text", options: ["a", "b"] };
-    const issueParam = { name: "ISSUE_ID", type: "beadsId", required: true };
-    const prompt = { parameters: [issueParam, boolParam, modeParam] };
-    expect(getMissingPromptParameters(prompt, "beadsIssues")).toEqual([
-      boolParam,
-      modeParam,
-    ]);
+  test("false for auto/always/absent", () => {
+    expect(isNeverShownParam({ show: "auto" })).toBe(false);
+    expect(isNeverShownParam({ show: "always" })).toBe(false);
+    expect(isNeverShownParam({})).toBe(false);
+    expect(isNeverShownParam(null)).toBe(false);
   });
 });
 
@@ -895,73 +951,6 @@ describe("isCacheableParam", () => {
 
   test("returns false for undefined param", () => {
     expect(isCacheableParam(undefined)).toBe(false);
-  });
-});
-
-// =============================================================================
-// effectiveMissingParams Tests
-// =============================================================================
-
-describe("effectiveMissingParams", () => {
-  const cacheableA = {
-    name: "A",
-    type: "string",
-    cache: { destination: "memory" },
-  };
-  const cacheableB = {
-    name: "B",
-    type: "string",
-    cache: { destination: "memory" },
-  };
-  const nonCacheable = { name: "C", type: "string" };
-
-  test("removes a cacheable param whose name is in the cached Set", () => {
-    const result = effectiveMissingParams(
-      [cacheableA, nonCacheable],
-      new Set(["A"]),
-    );
-    expect(result).toEqual([nonCacheable]);
-  });
-
-  test("keeps a cacheable param whose name is NOT in the cached set", () => {
-    const result = effectiveMissingParams([cacheableA], new Set(["Z"]));
-    expect(result).toEqual([cacheableA]);
-  });
-
-  test("keeps a non-cacheable param even if its name is in the cached set", () => {
-    const result = effectiveMissingParams([nonCacheable], new Set(["C"]));
-    expect(result).toEqual([nonCacheable]);
-  });
-
-  test("accepts an array for cachedNames in addition to a Set", () => {
-    const result = effectiveMissingParams([cacheableA, cacheableB], ["A"]);
-    expect(result).toEqual([cacheableB]);
-  });
-
-  test("accepts empty array for cachedNames — nothing removed", () => {
-    const result = effectiveMissingParams([cacheableA], []);
-    expect(result).toEqual([cacheableA]);
-  });
-
-  test("accepts null cachedNames — treated as empty, nothing removed", () => {
-    const result = effectiveMissingParams([cacheableA], null);
-    expect(result).toEqual([cacheableA]);
-  });
-
-  test("returns empty array when missing is empty", () => {
-    expect(effectiveMissingParams([], new Set(["A"]))).toEqual([]);
-  });
-
-  test("returns empty array when missing is null", () => {
-    expect(effectiveMissingParams(null, new Set(["A"]))).toEqual([]);
-  });
-
-  test("removes all cacheable params when all are cached", () => {
-    const result = effectiveMissingParams(
-      [cacheableA, cacheableB, nonCacheable],
-      new Set(["A", "B"]),
-    );
-    expect(result).toEqual([nonCacheable]);
   });
 });
 

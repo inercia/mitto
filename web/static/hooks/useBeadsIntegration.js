@@ -15,7 +15,8 @@ import {
   promptMenuIncludes,
   menuSatisfies,
   collectPromptArguments,
-  getMissingPromptParameters,
+  shouldOpenPromptDialog,
+  promptDialogParameters,
   promptResolveAsLoop,
 } from "../utils/prompts.js";
 import { useConversationSeeding } from "./useConversationSeeding.js";
@@ -303,7 +304,8 @@ export function useBeadsIntegration({
         beadsId: issue.id,
         beadsTitle: issue.title,
       });
-      const missing = getMissingPromptParameters(prompt, "beadsIssues");
+      const shouldOpen = shouldOpenPromptDialog(prompt, "beadsIssues");
+      const dialogParams = promptDialogParameters(prompt, "beadsIssues");
 
       // Loop prompts create a recurring conversation instead of a one-time seed.
       const asLoop = promptResolveAsLoop(prompt, opts?.asLoop);
@@ -341,14 +343,14 @@ export function useBeadsIntegration({
 
         // When the menu can't auto-fill every parameter, collect the rest first,
         // then open the loop dialog with the merged arguments.
-        if (missing.length > 0 && onOpenPromptParamDialog) {
+        if (shouldOpen && onOpenPromptParamDialog) {
           onOpenPromptParamDialog(
             prompt,
-            missing,
+            dialogParams,
             async (userArgs) => {
               launchLoop({ ...autoArgs, ...userArgs });
             },
-            { workingDir: beadsWorkingDir },
+            { workingDir: beadsWorkingDir, initialValues: autoArgs },
           );
           return;
         }
@@ -359,10 +361,10 @@ export function useBeadsIntegration({
 
       // When there are parameters the menu cannot auto-fill, open the dialog so
       // the user can supply them. The dispatch happens inside the onSubmit callback.
-      if (missing.length > 0 && onOpenPromptParamDialog) {
+      if (shouldOpen && onOpenPromptParamDialog) {
         onOpenPromptParamDialog(
           prompt,
-          missing,
+          dialogParams,
           async (userArgs) => {
             const result = await startConversationWithPrompt({
               workingDir: beadsWorkingDir,
@@ -391,7 +393,7 @@ export function useBeadsIntegration({
               }),
             );
           },
-          { workingDir: beadsWorkingDir },
+          { workingDir: beadsWorkingDir, initialValues: autoArgs },
         );
         return;
       }
@@ -463,7 +465,8 @@ export function useBeadsIntegration({
       // parameter dialog before the prompt is dispatched. Mirrors the gating
       // in handleRunBeadsPrompt so tasksList shortcut buttons don't skip the
       // dialog and dispatch with empty ${VAR} substitutions.
-      const missing = getMissingPromptParameters(prompt, "beadsList");
+      const shouldOpen = shouldOpenPromptDialog(prompt, "beadsList");
+      const dialogParams = promptDialogParameters(prompt, "beadsList");
 
       // Loop prompts create a recurring conversation instead of a one-time seed.
       const asLoop = promptResolveAsLoop(prompt, opts?.asLoop);
@@ -496,10 +499,10 @@ export function useBeadsIntegration({
           });
         };
 
-        if (missing.length > 0 && onOpenPromptParamDialog) {
+        if (shouldOpen && onOpenPromptParamDialog) {
           onOpenPromptParamDialog(
             prompt,
-            missing,
+            dialogParams,
             async (userArgs) => {
               launchLoop(userArgs);
             },
@@ -514,10 +517,10 @@ export function useBeadsIntegration({
 
       // When there are parameters the menu cannot auto-fill, open the dialog so
       // the user can supply them. The dispatch happens inside the onSubmit callback.
-      if (missing.length > 0 && onOpenPromptParamDialog) {
+      if (shouldOpen && onOpenPromptParamDialog) {
         onOpenPromptParamDialog(
           prompt,
-          missing,
+          dialogParams,
           async (userArgs) => {
             const result = await startConversationWithPrompt({
               workingDir: wd,

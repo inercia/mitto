@@ -1248,14 +1248,26 @@ parameters:
                             #   false       → optional: auto-fills when menu supplies
                             #                 it, but never hides the prompt from menus
                             #                 that cannot. No blocking form is shown.
-    ask: always             # optional — controls whether the param is rendered in
-                            #   the parameter dialog. One of:
-                            #     "" / "auto" → rendered only when required or an
-                            #                   interactive picker (default)
-                            #     "always"    → rendered whenever the dialog opens,
-                            #                   even when `required: false`. Still
-                            #                   non-blocking (Save is not gated on it).
-                            #   A param the menu auto-supplies is never re-asked.
+    show: auto              # optional — controls whether the param is rendered in
+                            #   the parameter dialog (render axis) and whether its
+                            #   presence forces the dialog open (open axis). One of:
+                            #     "" / "auto" → rendered whenever the dialog opens
+                            #                   for any reason (default). Does not
+                            #                   by itself force the dialog open.
+                            #     "always"    → rendered, AND forces the dialog open
+                            #                   even for an otherwise-satisfied
+                            #                   prompt. Still non-blocking when
+                            #                   `required: false` (Save is not gated
+                            #                   on it). On a menu-supplied param this
+                            #                   also promotes it from read-only to
+                            #                   editable.
+                            #     "never"     → never rendered and never opens the
+                            #                   dialog; the value must come from a
+                            #                   menu, a declared `default`, or a
+                            #                   `remember:`ed value.
+                            #   A param the menu auto-supplies still renders
+                            #   (read-only, prefilled) once the dialog opens for
+                            #   another reason, unless `show: never`.
     default: "..."          # optional — value pre-filled in the parameter dialog.
                             #   Overridden by a `remember:`ed value when one exists.
                             #   When `options:` is set it must be one of them.
@@ -1297,11 +1309,16 @@ absent or `true`). Parameters with `required: false` are **optional**: they auto
 the menu can supply their type, but they do not gate menu visibility and no form is shown
 if the menu cannot supply them.
 
-An optional parameter is therefore *invisible* in the dialog by default, even when the
-dialog is already open for other parameters. Add `ask: always` to render it anyway — useful
-for an optional free-text field the user should be able to review or edit (especially when
-combined with `remember:`, whose persisted value would otherwise be unreachable). `ask:
-always` never makes the field mandatory and never changes menu gating.
+An optional parameter's `required: false` only controls whether it **gates menu
+visibility and blocks Save** — it does not hide the field. By default (`show: auto`)
+every declared parameter renders whenever the dialog opens for any reason, so an
+optional free-text field the user should be able to review or edit (especially when
+combined with `remember:`, whose persisted value would otherwise be unreachable) shows
+up for free once some other parameter has already opened the dialog. Use `show: never`
+to opt a parameter out of the dialog entirely (its value must come from a menu, a
+declared `default`, or a `remember:`ed value); use `show: always` to force the dialog
+open even when every other parameter is already satisfied. Neither value makes the
+field mandatory or changes menu gating.
 
 ### YAML example
 

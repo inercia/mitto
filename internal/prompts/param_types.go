@@ -119,23 +119,29 @@ func IsValidRemember(s string) bool {
 	return false
 }
 
-// Ask* constants enumerate the accepted values of PromptParameter.Ask.
-// An empty string is treated as AskAuto (default).
+// Show* constants enumerate the accepted values of PromptParameter.Show.
+// An empty string is treated as ShowAuto (default). Show controls the
+// RENDER axis (is this field in the form once the dialog is open) and, for
+// ShowAlways only, also forces the OPEN axis (the dialog appears even if no
+// other parameter would have opened it).
 //
-//   - AskAuto: render in the parameter dialog only when the parameter is
-//     required or is an interactive picker (default)
-//   - AskAlways: always render in the parameter dialog once it opens, even for
-//     an optional free-text parameter. Still non-blocking when optional.
+//   - ShowAuto: rendered whenever the dialog opens (for any reason); does not
+//     by itself force the dialog open (default)
+//   - ShowAlways: rendered, AND its presence forces the dialog open even for
+//     an otherwise-satisfied prompt
+//   - ShowNever: never rendered and never opens the dialog; the value comes
+//     from a menu, a declared default, or a cached value
 const (
-	AskAuto   = "auto"
-	AskAlways = "always"
+	ShowAuto   = "auto"
+	ShowAlways = "always"
+	ShowNever  = "never"
 )
 
-// IsValidAsk reports whether s is an accepted value for the Ask field of a
+// IsValidShow reports whether s is an accepted value for the Show field of a
 // PromptParameter. An empty string counts as valid (means "auto").
-func IsValidAsk(s string) bool {
+func IsValidShow(s string) bool {
 	switch s {
-	case "", AskAuto, AskAlways:
+	case "", ShowAuto, ShowAlways, ShowNever:
 		return true
 	}
 	return false
@@ -268,11 +274,11 @@ func ValidatePromptParameters(menus string, params []PromptParameter) error {
 			return fmt.Errorf("parameter %q: unknown remember value %q (must be one of: %q, %q, %q, %q)",
 				param.Name, param.Remember, RememberNever, RememberFolder, RememberConversation, RememberGlobal)
 		}
-		// Validate the optional Ask field: reject unknown values so a typo
+		// Validate the optional Show field: reject unknown values so a typo
 		// fails fast instead of silently degrading to the default behaviour.
-		if !IsValidAsk(param.Ask) {
-			return fmt.Errorf("parameter %q: unknown ask value %q (must be one of: %q, %q)",
-				param.Name, param.Ask, AskAuto, AskAlways)
+		if !IsValidShow(param.Show) {
+			return fmt.Errorf("parameter %q: unknown show value %q (must be one of: %q, %q, %q)",
+				param.Name, param.Show, ShowAuto, ShowAlways, ShowNever)
 		}
 		// Validate the optional cache block.
 		if param.Cache != nil {

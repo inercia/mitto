@@ -2465,21 +2465,21 @@ func TestValidatePromptParameters(t *testing.T) {
 		}
 	})
 
-	t.Run("ask accepts empty, auto and always", func(t *testing.T) {
-		for _, ask := range []string{"", AskAuto, AskAlways} {
-			err := ValidatePromptParameters("", []PromptParameter{{Name: "x", Type: "text", Ask: ask}})
+	t.Run("show accepts empty, auto, always and never", func(t *testing.T) {
+		for _, show := range []string{"", ShowAuto, ShowAlways, ShowNever} {
+			err := ValidatePromptParameters("", []PromptParameter{{Name: "x", Type: "text", Show: show}})
 			if err != nil {
-				t.Errorf("ask=%q: unexpected error: %v", ask, err)
+				t.Errorf("show=%q: unexpected error: %v", show, err)
 			}
 		}
 	})
 
-	t.Run("ask rejects an unknown value", func(t *testing.T) {
-		err := ValidatePromptParameters("", []PromptParameter{{Name: "x", Type: "text", Ask: "sometimes"}})
+	t.Run("show rejects an unknown value", func(t *testing.T) {
+		err := ValidatePromptParameters("", []PromptParameter{{Name: "x", Type: "text", Show: "sometimes"}})
 		if err == nil {
-			t.Fatal("expected error for unknown ask value")
+			t.Fatal("expected error for unknown show value")
 		}
-		if !strings.Contains(err.Error(), "unknown ask value") {
+		if !strings.Contains(err.Error(), "unknown show value") {
 			t.Errorf("unexpected error text: %v", err)
 		}
 	})

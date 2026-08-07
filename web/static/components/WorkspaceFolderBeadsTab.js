@@ -7,7 +7,7 @@
 const { html } = window.preact;
 
 import { openExternalURL } from "../utils/index.js";
-import { promptParameters } from "../utils/prompts.js";
+import { promptDialogParameters } from "../utils/prompts.js";
 import { PlusIcon, SlidersIcon, SpinnerIcon, TrashIcon } from "./Icons.js";
 
 // Descriptors used by the Beads Config tab to render the label + config-key
@@ -198,7 +198,7 @@ export function WorkspaceFolderBeadsTab({
                       ? beadsUpstreamPrompts.find((p) => p.name === value)
                       : null;
                     const params = selectedPrompt
-                      ? promptParameters(selectedPrompt)
+                      ? promptDialogParameters(selectedPrompt)
                       : [];
                     const canEditArgs = !!value && params.length > 0;
                     const argsDisabled = !canEditArgs || beadsUpstreamSaving;

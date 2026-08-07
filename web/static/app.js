@@ -200,10 +200,10 @@ import {
 import {
   promptMenus,
   promptMenuIncludes,
-  getMissingPromptParameters,
+  shouldOpenPromptDialog,
+  promptDialogParameters,
   autofillConversationMenuArgs,
   fetchCachedParamNames,
-  effectiveMissingParams,
   promptResolveAsLoop,
 } from "./utils/prompts.js";
 
@@ -2350,15 +2350,18 @@ function App() {
         if (action === "make-loop") {
           // Regular conversation: configure it as loop now and fire the first run.
           const sessionId = session.session_id;
-          let missing = getMissingPromptParameters(prompt, "conversation");
-          if (missing.length > 0 && sessionId) {
-            const cached = await fetchCachedParamNames(sessionId, prompt.name);
-            missing = effectiveMissingParams(missing, cached);
-          }
-          if (missing.length > 0) {
+          const cached = sessionId
+            ? await fetchCachedParamNames(sessionId, prompt.name)
+            : undefined;
+          const shouldOpen = shouldOpenPromptDialog(
+            prompt,
+            "conversation",
+            cached,
+          );
+          if (shouldOpen) {
             setPromptParamDialog({
               prompt,
-              parameters: missing,
+              parameters: promptDialogParameters(prompt, "conversation"),
               hostSessionId: sessionId,
               workingDir: targetWorkingDir,
               onSubmit: async (userArgs) => {
@@ -2403,15 +2406,16 @@ function App() {
           // Already-loop or child conversation: enqueue a single run without touching config.
           const sessionId = session?.session_id;
           if (!sessionId) return;
-          let missing = getMissingPromptParameters(prompt, "conversation");
-          if (missing.length > 0 && sessionId) {
-            const cached = await fetchCachedParamNames(sessionId, prompt.name);
-            missing = effectiveMissingParams(missing, cached);
-          }
-          if (missing.length > 0) {
+          const cached = await fetchCachedParamNames(sessionId, prompt.name);
+          const shouldOpen = shouldOpenPromptDialog(
+            prompt,
+            "conversation",
+            cached,
+          );
+          if (shouldOpen) {
             setPromptParamDialog({
               prompt,
-              parameters: missing,
+              parameters: promptDialogParameters(prompt, "conversation"),
               hostSessionId: sessionId,
               workingDir: targetWorkingDir,
               onSubmit: async (userArgs) => {
@@ -2489,14 +2493,10 @@ function App() {
             },
           });
         };
-        const missingForNewLoop = getMissingPromptParameters(
-          prompt,
-          "conversation",
-        );
-        if (missingForNewLoop.length > 0) {
+        if (shouldOpenPromptDialog(prompt, "conversation")) {
           setPromptParamDialog({
             prompt,
-            parameters: missingForNewLoop,
+            parameters: promptDialogParameters(prompt, "conversation"),
             workingDir: targetWorkingDir,
             onSubmit: (userArgs) => openScheduleDialog(userArgs),
           });
@@ -2516,19 +2516,27 @@ function App() {
         sessionId,
         allSessions,
       );
-      let missing = getMissingPromptParameters(prompt, "conversation").filter(
-        (p) => autoArgs[p.name] === undefined,
+      const knownNames = new Set(
+        Object.keys(autoArgs).filter((k) => autoArgs[k] !== undefined),
       );
-      if (missing.length > 0 && sessionId) {
-        const cached = await fetchCachedParamNames(sessionId, prompt.name);
-        missing = effectiveMissingParams(missing, cached);
-      }
-      if (missing.length > 0) {
+      const cached = await fetchCachedParamNames(sessionId, prompt.name);
+      const shouldOpen = shouldOpenPromptDialog(
+        prompt,
+        "conversation",
+        cached,
+        knownNames,
+      );
+      if (shouldOpen) {
         setPromptParamDialog({
           prompt,
-          parameters: missing,
+          parameters: promptDialogParameters(
+            prompt,
+            "conversation",
+            knownNames,
+          ),
           hostSessionId: sessionId,
           workingDir: targetWorkingDir,
+          initialValues: autoArgs,
           onSubmit: async (userArgs) => {
             const result = await seedConversationWithPrompt(sessionId, prompt, {
               arguments: { ...autoArgs, ...userArgs },

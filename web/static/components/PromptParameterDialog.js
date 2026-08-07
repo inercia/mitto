@@ -9,7 +9,6 @@ import { authFetch } from "../utils/csrf.js";
 import { apiUrl } from "../utils/api.js";
 import { endpoints } from "../utils/endpoints.js";
 import { Modal } from "./Modal.js";
-import { isOptionsPickerParam } from "../utils/prompts.js";
 import { getBasename } from "../lib.js";
 import { SlidersIcon } from "./Icons.js";
 // mitto-47y.6.1: recursive nested-picker helpers live under utils/ so they can
@@ -178,7 +177,8 @@ function ParamField({
   ancestorPath = [],
   level = 0,
 }) {
-  const { name, type, description, required, multiLine, options } = param;
+  const { name, type, description, required, multiLine, options, readOnly } =
+    param;
   const hasOptions = Array.isArray(options) && options.length > 0;
 
   // mitto-l78: nested sub-dialog open state for `type: prompts` pickers.
@@ -221,6 +221,44 @@ function ParamField({
   useEffect(() => {
     if (!canOpenNested) setNestedModalOpen(false);
   }, [canOpenNested]);
+
+  // mitto-9rff: a menu-supplied (or otherwise pre-resolved) parameter renders
+  // as a disabled display of its prefilled value instead of the normal
+  // type-specific control — it shows the value the dialog opened with (from
+  // `initialValues`) without letting the user override context another
+  // surface already resolved, and it is excluded from the required-field
+  // check in PromptParameterDialog's `canSave` below. `show: always`
+  // (checked by the caller building the `parameters` array — see
+  // promptDialogParameters) promotes the param to the normal editable path,
+  // so this branch is never reached for it. Placed after all hooks above so
+  // this early return never violates the Rules of Hooks.
+  if (readOnly) {
+    const displayValue =
+      type === "boolean"
+        ? value === true || value === "true"
+          ? "Yes"
+          : "No"
+        : typeof value === "string" && value !== ""
+          ? value
+          : "—";
+    return html`
+      <fieldset class="fieldset">
+        <legend class="fieldset-legend text-mitto-text-secondary">
+          ${name}
+        </legend>
+        <input
+          type="text"
+          class="input input-sm w-full opacity-70"
+          value=${displayValue}
+          disabled
+        />
+        ${description &&
+        html`<p class="text-xs text-mitto-text-muted mt-1">
+          ${description}
+        </p>`}
+      </fieldset>
+    `;
+  }
 
   let control;
   if (type === "beadsId") {
@@ -882,13 +920,13 @@ export function PromptParameterDialog({
     // already shown. Precedence: declared default < initialValues (merged
     // next) < remembered-args (merged by the effect below via `setValues(prev
     // => ...)`, which runs after and still wins per its documented spec).
+    // mitto-9rff: seed declared `default` for every param type, not just
+    // options-pickers — the render set now includes optional params whose
+    // declared default must be visible (and agree with `values`/`canSave`)
+    // from the first render, since they are no longer conditionally hidden.
     const optionDefaults = {};
     for (const p of parameters) {
-      if (
-        isOptionsPickerParam(p) &&
-        p.default !== undefined &&
-        p.default !== null
-      ) {
+      if (p.default !== undefined && p.default !== null && p.default !== "") {
         optionDefaults[p.name] = p.default;
       }
     }
@@ -1327,13 +1365,17 @@ export function PromptParameterDialog({
 
   // Save enabled only when all required params have non-empty trimmed values.
   // Boolean params are excluded: a checkbox always has a definite answer.
+  // mitto-9rff: read-only params (menu-supplied or otherwise pre-resolved —
+  // see promptDialogParameters) are also excluded: they are filled by
+  // construction from initialValues and never user-editable, so they must
+  // never block Save.
   // mitto-l78: also blocked while any `type: prompts` picker has an unmet
   // required inner parameter (at any depth) — those fields are now hidden
   // behind the sliders sub-dialog, so Save must not silently succeed while
   // one is unset (the outer sliders button also flags this — see ParamField).
   const canSave =
     parameters
-      .filter((p) => p.required && p.type !== "boolean")
+      .filter((p) => p.required && p.type !== "boolean" && !p.readOnly)
       .every((p) => (values[p.name] || "").trim() !== "") &&
     !hasUnmetNestedRequired(parameters, values, nestedValues, promptsList);
 

@@ -33,10 +33,9 @@ import { ConfigOptionSelect } from "./ConfigOptionSelect.js";
 import { PromptsMenu } from "./PromptsMenu.js";
 import {
   flattenPrompts,
-  getMissingPromptParameters,
+  shouldOpenPromptDialog,
+  promptDialogParameters,
   fetchCachedParamNames,
-  effectiveMissingParams,
-  promptParameters,
   promptResolveAsLoop,
 } from "../utils/prompts.js";
 
@@ -1142,17 +1141,21 @@ export function ChatInput({
         setLoopCondition(promptOnTasksCondition);
       }
 
-      let missing = fullPrompt
-        ? getMissingPromptParameters(fullPrompt, "conversation")
-        : [];
-      if (missing.length > 0 && sessionId && fullPrompt) {
-        const cached = await fetchCachedParamNames(sessionId, fullPrompt.name);
-        missing = effectiveMissingParams(missing, cached);
-      }
-      if (missing.length > 0 && onOpenPromptParamDialog) {
-        onOpenPromptParamDialog(fullPrompt, missing, async (userArgs) => {
-          await doPatch(userArgs);
-        });
+      const cached =
+        fullPrompt && sessionId
+          ? await fetchCachedParamNames(sessionId, fullPrompt.name)
+          : undefined;
+      const shouldOpen =
+        !!fullPrompt &&
+        shouldOpenPromptDialog(fullPrompt, "conversation", cached);
+      if (shouldOpen && onOpenPromptParamDialog) {
+        onOpenPromptParamDialog(
+          fullPrompt,
+          promptDialogParameters(fullPrompt, "conversation"),
+          async (userArgs) => {
+            await doPatch(userArgs);
+          },
+        );
         return;
       }
 
@@ -1170,7 +1173,7 @@ export function ChatInput({
       (allPrompts || []).find((p) => p.name === loopPromptName) ||
       (loopPrompts || []).find((p) => p.name === loopPromptName);
     if (!prompt) return;
-    const params = promptParameters(prompt);
+    const params = promptDialogParameters(prompt);
     if (params.length === 0) return;
     if (!onOpenPromptParamDialog) return;
     onOpenPromptParamDialog(
@@ -1411,15 +1414,20 @@ export function ChatInput({
           setTimeout(() => setSendError(null), 10000);
         }
       };
-      let missing = getMissingPromptParameters(prompt, "prompts");
-      if (missing.length > 0 && sessionId) {
-        const cached = await fetchCachedParamNames(sessionId, prompt.name);
-        missing = effectiveMissingParams(missing, cached);
-      }
-      if (missing.length > 0 && onOpenPromptParamDialog) {
-        onOpenPromptParamDialog(prompt, missing, async (userArgs) => {
-          await enqueue(userArgs);
-        });
+      const cachedForEnqueue = sessionId
+        ? await fetchCachedParamNames(sessionId, prompt.name)
+        : undefined;
+      if (
+        shouldOpenPromptDialog(prompt, "prompts", cachedForEnqueue) &&
+        onOpenPromptParamDialog
+      ) {
+        onOpenPromptParamDialog(
+          prompt,
+          promptDialogParameters(prompt, "prompts"),
+          async (userArgs) => {
+            await enqueue(userArgs);
+          },
+        );
         return;
       }
       await enqueue(null);
@@ -1432,16 +1440,24 @@ export function ChatInput({
     // options.arguments map is passed to onSend, which routes through the queue
     // API so the backend can apply ${VAR} substitution.
     if (onSend && prompt.name) {
-      let missing = getMissingPromptParameters(prompt, "prompts");
-      if (missing.length > 0 && sessionId) {
-        const cached = await fetchCachedParamNames(sessionId, prompt.name);
-        missing = effectiveMissingParams(missing, cached);
-      }
-      if (missing.length > 0 && onOpenPromptParamDialog) {
-        onOpenPromptParamDialog(prompt, missing, async (userArgs) => {
-          lastSentPromptNameRef.current = prompt.name;
-          onSend("", [], [], { promptName: prompt.name, arguments: userArgs });
-        });
+      const cachedForSend = sessionId
+        ? await fetchCachedParamNames(sessionId, prompt.name)
+        : undefined;
+      if (
+        shouldOpenPromptDialog(prompt, "prompts", cachedForSend) &&
+        onOpenPromptParamDialog
+      ) {
+        onOpenPromptParamDialog(
+          prompt,
+          promptDialogParameters(prompt, "prompts"),
+          async (userArgs) => {
+            lastSentPromptNameRef.current = prompt.name;
+            onSend("", [], [], {
+              promptName: prompt.name,
+              arguments: userArgs,
+            });
+          },
+        );
         return;
       }
       lastSentPromptNameRef.current = prompt.name;

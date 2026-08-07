@@ -11,7 +11,7 @@ import {
   ChatBubbleIcon,
   SlidersIcon,
 } from "./Icons.js";
-import { promptParameters } from "../utils/prompts.js";
+import { promptDialogParameters } from "../utils/prompts.js";
 import { LoopPromptSelector } from "./LoopPromptSelector.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
 import { secureFetch, authFetch } from "../utils/csrf.js";
@@ -986,7 +986,7 @@ export function LoopFrequencyPanel({
       (prompts || []).find((p) => p.name === selectedPromptName)
     : null;
   const selectedPromptParams = selectedPrompt
-    ? promptParameters(selectedPrompt)
+    ? promptDialogParameters(selectedPrompt)
     : [];
   const canEditArgs = !!selectedPromptName && selectedPromptParams.length > 0;
 

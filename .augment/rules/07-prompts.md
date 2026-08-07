@@ -101,9 +101,9 @@ Frontend mirror: `KNOWN_PARAM_TYPES` in `web/static/utils/prompts.js`. Both must
 
 Prompt shown in menu **M** only when M supplies **every required** declared type. Frontend: `menuSatisfies(prompt, menu)`. Menu types: `beadsIssues` → `{beadsId, beadsTitle}`; others supply none. See `MENU_PARAM_TYPES` in `web/static/utils/prompts.js`.
 
-**Optional parameters** (`required: false`) never gate: the prompt appears in any menu regardless of whether the menu can supply the type. When the menu *can* supply it, the arg auto-fills via `collectPromptArguments`; when it cannot, the param is silently omitted and no dialog is shown (`getMissingPromptParameters` excludes optional params).
+**Optional parameters** (`required: false`) never gate: the prompt appears in any menu regardless of whether the menu can supply the type. When the menu *can* supply it, the arg auto-fills via `collectPromptArguments`; when it cannot, the param does not by itself force the dialog open (`shouldOpenPromptDialog` in `web/static/utils/prompts.js`), though it still renders — read-only if menu-supplied, editable otherwise — once the dialog opens for another reason (`promptDialogParameters`). `show: never` opts a param out of the dialog entirely; `show: always` forces it open. See mitto-9rff.
 
-**Boolean parameters** (`type: boolean`) never gate either, regardless of `required`: a checkbox always has a definite answer. They are always collected via the dialog (`getMissingPromptParameters` always includes them) and never block **Save**; the value is emitted as the string `"true"`/`"false"` (default unchecked → `"false"`).
+**Boolean parameters** (`type: boolean`) never gate either, regardless of `required`: a checkbox always has a definite answer. They always force the dialog open (`shouldOpenPromptDialog` always includes them) and never block **Save**; the value is emitted as the string `"true"`/`"false"` (default unchecked → `"false"`).
 
 **Interactive picker parameters** (`isInteractivePickerParam` in `web/static/utils/prompts.js`: `boolean`, `prompts`, `filename`, `dirname`, and `text` **with a non-empty `options` list**) are all dialog-collected and never gate menu visibility — no menu context can auto-supply them. The dialog offers each picker unconditionally; a `filename`/`dirname` param whose backing folder is empty falls back to a text input so the user can still type a path.
 
@@ -277,7 +277,7 @@ parameters:
 - `ParsedTTL()` method on `*PromptParameterCache`: `"" → (0, nil)` (conversation lifetime), `"1h" → (time.Hour, nil)`, invalid → error.
 - **Runtime dispatch** (mitto-pchx.3): inside `resolveAndSubstitute` in `prompt_dispatcher.go`, for each cacheable param BEFORE `SubstituteArguments`: (read/merge) if param is absent from `meta.Arguments` and a fresh cached value exists, it is injected; (write-back) every cacheable param present in `meta.Arguments` (including just-injected ones) is persisted with its TTL — this **refreshes** the TTL on each re-dispatch.
 - **Status endpoint**: `GET /api/sessions/{id}/prompt-arg-cache?prompt=<name>` returns `{ "cached": ["A","B"] }` — **names only**, never values. Empty array when nothing cached (never null). Handler: `internal/web/handlers/session_prompt_arg_cache.go`.
-- **Frontend dialog-skip** (mitto-pchx.5): before opening `PromptParameterDialog`, the frontend calls the status endpoint and subtracts cacheable+fresh params from the `missing` list (`fetchCachedParamNames` / `effectiveMissingParams` in `web/static/utils/prompts.js`). If nothing remains, it dispatches directly without showing the dialog.
+- **Frontend dialog-skip** (mitto-pchx.5): before opening `PromptParameterDialog`, the frontend calls the status endpoint and passes the cacheable+fresh names into `shouldOpenPromptDialog(prompt, menu, cachedNames)` (`web/static/utils/prompts.js`), which excludes them from the open decision. If nothing else forces the dialog open, it dispatches directly without showing the dialog; a cached param still renders (prefilled, editable) via `promptDialogParameters` when the dialog opens for another reason.
 
 ## Parameter Value Remembering (`remember:` field, mitto-x8v)
 

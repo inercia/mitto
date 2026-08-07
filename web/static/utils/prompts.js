@@ -178,8 +178,8 @@ export const KNOWN_PARAM_TYPES = [
  *
  * Boolean parameters are special: a checkbox always has a definite answer
  * (checked/unchecked), so they never gate menu visibility (menuSatisfies) and
- * they are always collected via the dialog (getMissingPromptParameters),
- * regardless of the menu's auto-supplied types or the `required` flag.
+ * they always force the dialog open (shouldOpenPromptDialog), regardless of
+ * the menu's auto-supplied types or the `required` flag.
  */
 export function isBooleanParam(p) {
   return p?.type === "boolean";
@@ -210,8 +210,8 @@ export function isOptionsPickerParam(p) {
  * (a workspace-prompt name, a checkbox answer, a workspace-relative
  * file/directory path, a workspace folder, or a value from a fixed option
  * list). They behave like `boolean` for gating purposes — never gating menu
- * visibility (menuSatisfies) and always included in
- * getMissingPromptParameters regardless of `required` or the menu's
+ * visibility (menuSatisfies) and always forcing the dialog open
+ * (shouldOpenPromptDialog) regardless of `required` or the menu's
  * auto-supplied types. The dialog offers the picker unconditionally.
  */
 export function isInteractivePickerParam(p) {
@@ -226,14 +226,25 @@ export function isInteractivePickerParam(p) {
 }
 
 /**
- * Returns true if the parameter declares `ask: always` — i.e. it must be
- * rendered in the parameter dialog whenever that dialog opens, even when the
- * parameter is optional free text (which the default `ask: auto` behaviour
- * would omit). It stays non-blocking: an optional `ask: always` parameter is
- * never part of the canSave check and never gates menu visibility.
+ * Returns true if the parameter declares `show: always` — i.e. its presence
+ * forces the parameter dialog open even for an otherwise-satisfied prompt,
+ * and it is rendered editable once the dialog is open (even for a
+ * menu-supplied param, which would otherwise render read-only — see
+ * promptDialogParameters). It stays non-blocking when the parameter is
+ * optional: `show: always` never gates menu visibility.
  */
-export function isAlwaysAskedParam(p) {
-  return p?.ask === "always";
+export function isAlwaysShownParam(p) {
+  return p?.show === "always";
+}
+
+/**
+ * Returns true if the parameter declares `show: never` — i.e. it is never
+ * rendered in the parameter dialog and never contributes to the open
+ * decision. Its value must come from a menu, a declared default, or a
+ * cached value.
+ */
+export function isNeverShownParam(p) {
+  return p?.show === "never";
 }
 
 /**
@@ -278,7 +289,9 @@ export const MENU_PARAM_TYPES = {
  * declares an optional `beadsId` param appears in BOTH `beadsIssues` AND
  * `conversation` menus even though `conversation` cannot auto-supply it. When
  * the menu can supply the type, the value is auto-filled; when it cannot, the
- * param is silently omitted (no blocking form shown — see getMissingPromptParameters).
+ * param does not force the dialog open (see shouldOpenPromptDialog), though it
+ * still renders (read-only or editable) once the dialog opens for another
+ * reason (see promptDialogParameters).
  *
  * Unset (`required` absent/null) or `required: true` keeps the current gating
  * behaviour, preserving all existing prompts unchanged.
@@ -303,46 +316,102 @@ export function menuSatisfies(prompt, menu) {
 }
 
 /**
- * Returns the ordered list of declared parameters whose `type` is NOT
- * auto-supplied by the given menu AND that are required (i.e. must be
- * collected via the parameter dialog before the prompt can run).
- *
- * A parameter with `required === false` is considered optional: it is never
- * included in the missing list, so no blocking form is shown for it even when
- * the menu cannot auto-supply it. Its value will simply be absent from the
- * arguments map. A parameter that declares `ask: always` opts out of that
- * omission (see isAlwaysAskedParam): it is rendered even when optional, so the
- * user can review and edit it. It remains non-blocking — the dialog's canSave
- * check only considers `required` params.
+ * Returns true if a declared parameter's type is auto-suppliable by `menu`
+ * (i.e. the menu's context already has a value for it in scope).
+ */
+function isMenuSupplied(p, menu) {
+  const provided = MENU_PARAM_TYPES[menu] || [];
+  return provided.includes(p.type);
+}
+
+/**
+ * Returns the ordered list of declared parameters to RENDER in the parameter
+ * dialog once it is open — the render axis. This is deliberately independent
+ * of whether the dialog itself should be open (see shouldOpenPromptDialog):
+ * it answers "what fields appear in the form", not "does the form appear".
  *
  * Rules:
- *   - An unknown or missing `menu` is treated as providing [] (all required params missing).
- *   - A prompt with no parameters always returns [].
- *   - An interactive picker parameter (boolean, prompts, text+options, ...) is
- *     ALWAYS included (it is rendered as a checkbox, a workspace-prompt
- *     picker, or a fixed-options dropdown and collected via the dialog; no
- *     menu can auto-supply it). See isInteractivePickerParam.
- *   - A parameter whose type IS in the menu's provided-types list is excluded
- *     (the menu auto-fills it; `ask: always` does not override this, so an
- *     explicit flag never shadows a value the menu already has in scope).
- *   - A parameter with `required === false` is excluded unless it declares
- *     `ask: always`.
- *   - Declared order is preserved.
+ *   - `show: never` is excluded — never rendered, regardless of type/required/menu.
+ *   - Every other declared parameter IS included, in declared order — this is
+ *     the fix for the historical bug where an optional free-text parameter was
+ *     silently dropped even when the dialog was already open for other
+ *     parameters (mitto-9rff): `show: auto` (the default) now renders
+ *     unconditionally once the dialog opens for any reason.
+ *   - A parameter whose type IS auto-suppliable by `menu`, OR whose name is in
+ *     `knownNames` (e.g. a childSessionId auto-filled from the host
+ *     conversation's context — see autofillConversationMenuArgs), is still
+ *     included, but marked `readOnly: true` (unless it declares `show:
+ *     always`, which promotes it to editable) so the dialog shows the value
+ *     without letting the user override context already resolved elsewhere.
  *
  * @param {Object} prompt - Prompt object with optional `parameters` array
  * @param {string} menu   - Menu key (e.g. "beadsIssues", "prompts")
- * @returns {Array}       - Subset of prompt parameters not auto-filled by menu
+ * @param {Set|Array} [knownNames] - names already resolved outside the menu
+ *   (e.g. host-conversation autofill); rendered read-only like menu-supplied
+ * @returns {Array}       - Parameters to render, each possibly annotated with `readOnly: true`
  */
-export function getMissingPromptParameters(prompt, menu) {
+export function promptDialogParameters(prompt, menu, knownNames) {
   const params = promptParameters(prompt);
   if (params.length === 0) return [];
-  const provided = MENU_PARAM_TYPES[menu] || [];
-  return params.filter(
-    (p) =>
+  const known =
+    knownNames instanceof Set ? knownNames : new Set(knownNames || []);
+  return params
+    .filter((p) => !isNeverShownParam(p))
+    .map((p) => {
+      const readOnly =
+        (isMenuSupplied(p, menu) || known.has(p.name)) &&
+        !isAlwaysShownParam(p);
+      return readOnly ? { ...p, readOnly: true } : p;
+    });
+}
+
+/**
+ * Returns true if the parameter dialog should OPEN for `prompt` under `menu`
+ * — the open axis, independent of what gets rendered (see
+ * promptDialogParameters). `cachedNames` (a Set or array of parameter names
+ * already cached for this conversation, from fetchCachedParamNames) removes
+ * their contribution to the open decision so caching keeps saving clicks;
+ * cached params still RENDER (prefilled and editable) once the dialog opens
+ * for another reason. `knownNames` behaves the same for the open decision
+ * (excluded) but renders read-only, like a menu-supplied param — see
+ * promptDialogParameters.
+ *
+ * The dialog opens when any declared parameter is, after excluding cached
+ * and known ones:
+ *   - an interactive picker (boolean, prompts, text+options, filename,
+ *     dirname, workspaceFolder — see isInteractivePickerParam), or
+ *   - required (`required !== false`) AND not auto-suppliable by `menu`, or
+ *   - declared `show: always`.
+ * `show: never` parameters never contribute to the open decision.
+ *
+ * @param {Object} prompt - Prompt object with optional `parameters` array
+ * @param {string} menu   - Menu key (e.g. "beadsIssues", "prompts")
+ * @param {Set|Array} [cachedNames] - names already cached for this conversation
+ * @param {Set|Array} [knownNames] - names already resolved outside the menu
+ * @returns {boolean}
+ */
+export function shouldOpenPromptDialog(
+  prompt,
+  menu,
+  cachedNames,
+  knownNames,
+) {
+  const params = promptParameters(prompt);
+  if (params.length === 0) return false;
+  const cached =
+    cachedNames instanceof Set ? cachedNames : new Set(cachedNames || []);
+  const known =
+    knownNames instanceof Set ? knownNames : new Set(knownNames || []);
+  return params.some((p) => {
+    if (isNeverShownParam(p)) return false;
+    if (isCacheableParam(p) && cached.has(p.name)) return false;
+    if (known.has(p.name)) return false;
+    return (
       isInteractivePickerParam(p) ||
-      (!provided.includes(p.type) &&
-        (p.required !== false || isAlwaysAskedParam(p))),
-  );
+      (p.required !== false && !isMenuSupplied(p, menu)) ||
+      isAlwaysShownParam(p)
+    );
+  });
 }
 
 /**
@@ -376,19 +445,6 @@ export async function fetchCachedParamNames(
   } catch (_err) {
     return new Set();
   }
-}
-
-/**
- * Remove from `missing` any parameter that is cacheable AND whose name is in
- * `cachedNames`. Non-cacheable params and cacheable-but-not-cached params are kept.
- * `cachedNames` may be a Set or an array.
- */
-export function effectiveMissingParams(missing, cachedNames) {
-  const cached =
-    cachedNames instanceof Set ? cachedNames : new Set(cachedNames || []);
-  return (missing || []).filter(
-    (p) => !(isCacheableParam(p) && cached.has(p.name)),
-  );
 }
 
 /**
