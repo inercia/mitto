@@ -29,6 +29,13 @@ import {
 const MIN_COMPLETION_DELAY_SECONDS = 5;
 
 /**
+ * Trigger names this panel has dedicated UI/state for, in canonical wire
+ * order. Used only to order the stable trigger list on save — NOT as an
+ * allow-list. Any other armed trigger must still be preserved (mitto-987y.7).
+ */
+const KNOWN_TRIGGERS = ["schedule", "onCompletion", "onTasks"];
+
+/**
  * Schedules that repeat more frequently than this (in seconds) are considered
  * "too frequent" for an unbounded loop conversation and trigger the
  * dangerous-config warning on save. 5 minutes.
@@ -503,10 +510,16 @@ export function LoopFrequencyPanel({
 
   // Canonical, stable-ordered list of armed triggers for the wire payload
   // (schedule → onCompletion → onTasks). Independent of user click order.
-  const toStableTriggersList = useCallback(
-    (set) => ["schedule", "onCompletion", "onTasks"].filter((t) => set.has(t)),
-    [],
-  );
+  // Any other armed trigger (e.g. a future onChild) is appended afterward
+  // instead of dropped — a non-nil `triggers` PATCH field REPLACES the
+  // stored list wholesale server-side (internal/session/loop.go), so
+  // silently filtering an unrecognized-but-armed trigger here would
+  // permanently disarm it (mitto-987y.7).
+  const toStableTriggersList = useCallback((set) => {
+    const known = KNOWN_TRIGGERS.filter((t) => set.has(t));
+    const unknown = [...set].filter((t) => !KNOWN_TRIGGERS.includes(t));
+    return [...known, ...unknown];
+  }, []);
 
   // Persist all staged settings in a single PATCH. Invoked by handleSaveAll
   // (directly, or after the dangerous-config warning is confirmed).

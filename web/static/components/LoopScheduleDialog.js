@@ -182,8 +182,14 @@ export function LoopScheduleDialog({ isOpen, prompt, onConfirm, onCancel }) {
   const handleConfirm = useCallback(() => {
     // Preserve the canonical order (schedule, onCompletion, onTasks) so the
     // wire payload is stable regardless of the click order the user chose.
+    // Any other armed trigger (e.g. a future onChild, seeded from prompt
+    // frontmatter) is appended afterward instead of dropped — a non-nil
+    // `triggers` field REPLACES the stored list wholesale server-side, so
+    // silently filtering it here would permanently disarm it (mitto-987y.7).
     const order = ["schedule", "onCompletion", "onTasks"];
-    const triggersList = order.filter((t) => triggers.has(t));
+    const known = order.filter((t) => triggers.has(t));
+    const unknown = [...triggers].filter((t) => !order.includes(t));
+    const triggersList = [...known, ...unknown];
     if (triggersList.length === 0) return; // Confirm button disabled anyway
     const result = {
       triggers: triggersList,
