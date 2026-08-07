@@ -2711,6 +2711,70 @@ func TestValidatePromptTarget(t *testing.T) {
 			t.Errorf("unexpected error: %v", err)
 		}
 	})
+
+	// --- NoArchive validation (mitto-yvel.1). Like SuppressAutoChildren, the
+	// flag is a create-time hint orthogonal to the reuse modes and to
+	// SuppressAutoChildren itself, with no cross-field requirements, so every
+	// combination must be accepted. ---
+
+	t.Run("noArchive alone is valid", func(t *testing.T) {
+		tgt := &PromptTarget{NoArchive: true}
+		if err := ValidatePromptTarget("p", tgt, false); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("noArchive with title is valid", func(t *testing.T) {
+		tgt := &PromptTarget{Title: "Cleanup", NoArchive: true}
+		if err := ValidatePromptTarget("p", tgt, false); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("noArchive with reuse.issue is valid", func(t *testing.T) {
+		tgt := &PromptTarget{
+			Reuse:     &PromptTargetReuse{Issue: true},
+			NoArchive: true,
+		}
+		if err := ValidatePromptTarget("p", tgt, false); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("noArchive with reuse.title+title is valid", func(t *testing.T) {
+		tgt := &PromptTarget{
+			Title:     "Weekly triage",
+			Reuse:     &PromptTargetReuse{Title: true},
+			NoArchive: true,
+		}
+		if err := ValidatePromptTarget("p", tgt, false); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("noArchive with suppressAutoChildren is valid", func(t *testing.T) {
+		tgt := &PromptTarget{SuppressAutoChildren: true, NoArchive: true}
+		if err := ValidatePromptTarget("p", tgt, false); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("noArchive with promptSingleton is valid", func(t *testing.T) {
+		tgt := &PromptTarget{NoArchive: true}
+		if err := ValidatePromptTarget("p", tgt, true); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("noArchive does not satisfy reuse.title's title requirement", func(t *testing.T) {
+		tgt := &PromptTarget{
+			Reuse:     &PromptTargetReuse{Title: true},
+			NoArchive: true,
+		}
+		if err := ValidatePromptTarget("p", tgt, false); err == nil {
+			t.Error("expected error for reuse.title with empty title")
+		}
+	})
 }
 
 // ---- PromptParameter / Parameters field tests ----
