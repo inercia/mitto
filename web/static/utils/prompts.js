@@ -366,6 +366,87 @@ export function promptDialogParameters(prompt, menu, knownNames) {
 }
 
 /**
+ * Splits a parameter dialog's rendered parameters (see promptDialogParameters)
+ * into tab groups. Purely presentational — never touches parameter values.
+ *
+ * Gate: `tabbed` is true when AT LEAST ONE parameter declares a non-empty
+ * (post-trim) `group`. Deliberately `parameters.some(p => p.group?.trim())`,
+ * NOT `distinctGroups.length > 1` — the two differ when every parameter
+ * shares a single explicit group name (e.g. all params in "Changes
+ * Submission"): in that case a single named tab must still be shown, because
+ * the author explicitly asked for one (see mitto-boio requester clarification).
+ *
+ * When `!tabbed`, returns a single unnamed group holding every parameter in
+ * original order — the caller uses this to render today's flat markup
+ * byte-identical to before (no tab bar, no "General" header, no wrapper).
+ *
+ * When `tabbed`, ungrouped parameters (empty/whitespace-only `group`) are
+ * collected into a "General" group placed FIRST, followed by one group per
+ * distinct trimmed `group` value in first-appearance order. "General" is not
+ * a reserved name: an explicit `group: General` merges into the same group
+ * as the ungrouped parameters.
+ *
+ * @param {Array} parameters - dialog-rendered parameters (each may have `group`)
+ * @returns {{tabbed: boolean, groups: Array<{name: string, params: Array}>}}
+ */
+export function groupDialogParameters(parameters) {
+  const params = Array.isArray(parameters) ? parameters : [];
+  const tabbed = params.some((p) => p?.group && p.group.trim() !== "");
+  if (!tabbed) {
+    return { tabbed: false, groups: [{ name: "", params }] };
+  }
+  const general = [];
+  const named = []; // [{ name, params }], first-appearance order
+  const namedIndex = new Map(); // trimmed name -> index into named
+  for (const p of params) {
+    const raw = p?.group ? p.group.trim() : "";
+    if (raw === "") {
+      general.push(p);
+      continue;
+    }
+    if (namedIndex.has(raw)) {
+      named[namedIndex.get(raw)].params.push(p);
+    } else {
+      namedIndex.set(raw, named.length);
+      named.push({ name: raw, params: [p] });
+    }
+  }
+  const groups = [];
+  if (general.length > 0) groups.push({ name: "General", params: general });
+  groups.push(...named);
+  return { tabbed: true, groups };
+}
+
+/**
+ * Returns the Set of group names (as produced by groupDialogParameters) that
+ * currently hold at least one unmet required parameter — i.e. a required,
+ * non-boolean, non-readOnly parameter whose trimmed value is empty. Mirrors
+ * the predicate PromptParameterDialog's canSave already applies to the flat
+ * parameter list (kept in one place conceptually), used here only to flag
+ * which TAB to visually mark so a required field hidden on an inactive tab
+ * is discoverable as the reason Save is disabled. Never gates Save itself.
+ *
+ * @param {Array<{name: string, params: Array}>} groups - from groupDialogParameters
+ * @param {Object} values - current { [paramName]: value } map
+ * @returns {Set<string>} group names with at least one unmet required field
+ */
+export function unmetRequiredByGroup(groups, values) {
+  const result = new Set();
+  const vals = values || {};
+  for (const g of groups || []) {
+    for (const p of g.params || []) {
+      if (!p || !p.required || p.readOnly || isBooleanParam(p)) continue;
+      const v = vals[p.name];
+      if (typeof v !== "string" || v.trim() === "") {
+        result.add(g.name);
+        break;
+      }
+    }
+  }
+  return result;
+}
+
+/**
  * Returns true if the parameter dialog should OPEN for `prompt` under `menu`
  * — the open axis, independent of what gets rendered (see
  * promptDialogParameters). `cachedNames` (a Set or array of parameter names

@@ -22,6 +22,13 @@ import {
   buildInnerArgs,
   collectPickedPaths,
 } from "../utils/promptNestedArgs.js";
+// mitto-boio: pure grouping helpers live in utils/ so they are unit-tested
+// without hitting the `window.preact` module-load import gate — see
+// groupDialogParameters' doc comment for the tab gate/ordering contract.
+import {
+  groupDialogParameters,
+  unmetRequiredByGroup,
+} from "../utils/prompts.js";
 
 /**
  * Render one parameter field based on its type.
@@ -904,6 +911,9 @@ export function PromptParameterDialog({
   // never collide when two pickers at different depths share a name.
   const [nestedValues, setNestedValues] = useState({});
   const [loadingRememberedByPath, setLoadingRememberedByPath] = useState({});
+  // mitto-boio: which tab is active when the dialog renders a tab bar (see
+  // groupDialogParameters). Unused (and irrelevant) when !tabbed.
+  const [activeTab, setActiveTab] = useState("");
 
   // Reset state each time the dialog opens; seed from initialValues when provided.
   // Seeds on the open transition only — initialValues is intentionally NOT a
@@ -950,6 +960,25 @@ export function PromptParameterDialog({
     setLoadingWorkspaces(false);
     setLoadingPrompts(false);
   }, [isOpen]);
+
+  // mitto-boio: recompute tab groups from the (possibly readOnly-annotated)
+  // rendered parameters. Recomputed every render — cheap for a parameter
+  // dialog's small list, and keeps it correct if `parameters` prop changes
+  // while the dialog stays open (e.g. a menu re-resolves readOnly flags).
+  const { tabbed, groups } = groupDialogParameters(parameters);
+
+  // Reset the active tab to the first group whenever the dialog (re)opens or
+  // the set of group names changes (e.g. a different prompt's dialog reuses
+  // this component instance). Keyed on the joined group-name list rather than
+  // `groups` itself, since `groups` is a fresh array every render.
+  const groupNamesKey = groups.map((g) => g.name).join("\u0000");
+  useEffect(() => {
+    if (!isOpen) return;
+    setActiveTab(groups.length > 0 ? groups[0].name : "");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen, groupNamesKey]);
+
+  const unmetGroups = unmetRequiredByGroup(groups, values);
 
   // mitto-x8v: when the dialog opens for a prompt that declares any
   // `remember: folder` parameter, fetch previously-remembered values for the
@@ -1399,6 +1428,81 @@ export function PromptParameterDialog({
     </button>
   `;
 
+  // mitto-boio: single shared render call site for a parameter field, used by
+  // both the flat and tabbed layouts below so they never drift.
+  const renderField = (param) => html`
+    <${ParamField}
+      key=${param.name}
+      param=${param}
+      value=${values[param.name] || ""}
+      onChange=${handleFieldChange}
+      beadsIssues=${beadsIssues}
+      loadingBeads=${loadingBeads}
+      sessions=${sessions}
+      loadingSessions=${loadingSessions}
+      workspaces=${workspaces}
+      loadingWorkspaces=${loadingWorkspaces}
+      workingDir=${workingDir}
+      acpServers=${acpServers}
+      hostSessionId=${hostSessionId}
+      promptsList=${promptsList}
+      loadingPrompts=${loadingPrompts}
+      filesByParam=${filesByParam}
+      loadingFilesByParam=${loadingFilesByParam}
+      dirsByParam=${dirsByParam}
+      loadingDirsByParam=${loadingDirsByParam}
+      nestedNode=${nestedValues[param.name]}
+      onNestedTreeChange=${handleNestedTreeChange}
+      loadingRememberedByPath=${loadingRememberedByPath}
+      ancestorPath=${[]}
+      level=${0}
+    />
+  `;
+
+  // mitto-boio hard back-compat invariant: when no parameter declares a
+  // `group`, render TODAY'S markup verbatim — no tab bar, no "General"
+  // header, no wrapper chrome. This is an early branch, not a degenerate
+  // case of the tabbed layout below (see groupDialogParameters doc comment).
+  const body = !tabbed
+    ? html`<div class="space-y-4">${parameters.map(renderField)}</div>`
+    : html`
+        <div role="tablist" class="tabs tabs-border px-1 shrink-0">
+          ${groups.map((g) => {
+            const unmet = unmetGroups.has(g.name);
+            const label = unmet ? `${g.name} *` : g.name;
+            return html`
+              <input
+                key=${g.name}
+                type="radio"
+                name="prompt-param-tabs"
+                role="tab"
+                aria-label=${label}
+                data-testid=${`prompt-param-tab-${g.name}`}
+                data-unmet=${unmet ? "true" : undefined}
+                checked=${activeTab === g.name}
+                onChange=${() => setActiveTab(g.name)}
+                class="tab ${activeTab === g.name
+                  ? "tab-active text-mitto-accent"
+                  : ""}"
+              />
+            `;
+          })}
+        </div>
+        <div class="pt-4">
+          ${groups.map(
+            (g) => html`
+              <div
+                key=${g.name}
+                class="space-y-4"
+                hidden=${activeTab !== g.name}
+              >
+                ${g.params.map(renderField)}
+              </div>
+            `,
+          )}
+        </div>
+      `;
+
   return html`
     <${Fragment}>
       <${Modal}
@@ -1410,37 +1514,7 @@ export function PromptParameterDialog({
         backdropTestid="prompt-param-dialog-backdrop"
         footer=${footer}
       >
-        <div class="space-y-4">
-          ${parameters.map(
-            (param) =>
-              html`<${ParamField}
-                key=${param.name}
-                param=${param}
-                value=${values[param.name] || ""}
-                onChange=${handleFieldChange}
-                beadsIssues=${beadsIssues}
-                loadingBeads=${loadingBeads}
-                sessions=${sessions}
-                loadingSessions=${loadingSessions}
-                workspaces=${workspaces}
-                loadingWorkspaces=${loadingWorkspaces}
-                workingDir=${workingDir}
-                acpServers=${acpServers}
-                hostSessionId=${hostSessionId}
-                promptsList=${promptsList}
-                loadingPrompts=${loadingPrompts}
-                filesByParam=${filesByParam}
-                loadingFilesByParam=${loadingFilesByParam}
-                dirsByParam=${dirsByParam}
-                loadingDirsByParam=${loadingDirsByParam}
-                nestedNode=${nestedValues[param.name]}
-                onNestedTreeChange=${handleNestedTreeChange}
-                loadingRememberedByPath=${loadingRememberedByPath}
-                ancestorPath=${[]}
-                level=${0}
-              />`,
-          )}
-        </div>
+        ${body}
       </${Modal}>
     </${Fragment}>
   `;

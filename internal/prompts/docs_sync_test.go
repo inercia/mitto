@@ -64,6 +64,18 @@ func TestDocsFrontmatterFieldsExistOnStructs(t *testing.T) {
 				"settleWindow", "cooldown",
 			},
 		},
+		{
+			// mitto-boio: closes a docs-sync coverage gap for the parameters:
+			// entry schema documented under "parameters (Typed Inputs &
+			// Type-Based Gating)" — this struct had no case here before.
+			name: "PromptParameter",
+			typ:  reflect.TypeOf(PromptParameter{}),
+			fields: []string{
+				"name", "type", "description", "required", "show", "default",
+				"dir", "glob", "multiLine", "options", "remember",
+				"collectInnerArgs", "group",
+			},
+		},
 	}
 
 	for _, c := range cases {

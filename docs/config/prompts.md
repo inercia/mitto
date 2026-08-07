@@ -264,7 +264,7 @@ prompt: |
 | `description`     | No       | string   | Tooltip text shown on hover                                                                  |
 | `group`           | No       | string   | Group name for organizing prompts in the menu (e.g., `"Git"`, `"Testing"`)                   |
 | `menus`           | No       | string   | Comma-separated list of menus the prompt appears in: `prompts` (ChatInput dropup), `promptsLoop` (loop prompt selector), `conversation` (per-conversation context menu), `beadsIssues` (per-issue context menu in the Beads list), and/or `beadsList` (list-level prompts button in the Beads list footer). Defaults to `prompts` if omitted. See [below](#menus). |
-| `parameters`      | No       | list     | Typed input declarations. Each entry: `{ name, type, description?, required?, ask?, default?, multiLine?, options?, dir?, glob?, remember?, cache?, collectInnerArgs? }`. The menu must supply every declared **required** type or the prompt is hidden. See [below](#parameters-typed-inputs--type-based-gating). |
+| `parameters`      | No       | list     | Typed input declarations. Each entry: `{ name, type, description?, required?, ask?, default?, multiLine?, options?, dir?, glob?, remember?, cache?, collectInnerArgs?, group? }`. The menu must supply every declared **required** type or the prompt is hidden. See [below](#parameters-typed-inputs--type-based-gating). |
 | `backgroundColor` | No       | string   | Hex color for the button (e.g., `"#E8F5E9"`)                                                 |
 | `icon`            | No       | string   | Icon name shown next to the prompt in menus. See [valid names](#icon-names). Unknown names fall back to the default icon. |
 | `tags`            | No       | string[] | Categorization tags (reserved for future use)                                                |
@@ -1302,6 +1302,10 @@ parameters:
                             #   prompt's own parameter values are never consumed —
                             #   the sub-dialog button is disabled and no `_Args`
                             #   companion is collected or sent.
+    group: "Changes Submission" # optional string — purely presentational, valid
+                            #   on every type. Clusters related parameters under
+                            #   a shared tab in the parameter dialog. See
+                            #   "Grouping into tabs" below.
 ```
 
 Multiple parameters may be listed; the menu must supply all **required** ones (`required`
@@ -1319,6 +1323,29 @@ to opt a parameter out of the dialog entirely (its value must come from a menu, 
 declared `default`, or a `remember:`ed value); use `show: always` to force the dialog
 open even when every other parameter is already satisfied. Neither value makes the
 field mandatory or changes menu gating.
+
+### Grouping parameters into tabs
+
+`group` is a purely presentational string, valid on every parameter type, that
+clusters related parameters under a shared tab in the parameter dialog:
+
+- **No parameter declares `group`.** The dialog renders exactly as it always
+  has — a single flat list, no tab bar. This is a hard back-compat guarantee:
+  existing prompts are visually unaffected.
+- **Every parameter shares one explicit `group` value** (e.g. all params set
+  `group: "Changes Submission"`). The dialog shows a **single named tab** with
+  that label — the tab still appears even though there is only one, because the
+  author explicitly asked for it.
+- **Some parameters declare `group`, others don't.** Ungrouped parameters are
+  collected into a **"General"** tab shown first, followed by one tab per
+  distinct `group` value in first-declared order. `"General"` is not a
+  reserved name — an explicit `group: General` merges into the same tab as
+  the ungrouped parameters.
+
+Grouping never affects the collected argument values or `.Args` — it is a
+layout hint only. A tab holding an unmet required field is marked so it is
+discoverable even while another tab is active; Save remains disabled exactly
+as it would for an ungrouped required field.
 
 ### YAML example
 

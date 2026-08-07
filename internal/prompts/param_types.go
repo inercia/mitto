@@ -280,6 +280,14 @@ func ValidatePromptParameters(menus string, params []PromptParameter) error {
 			return fmt.Errorf("parameter %q: unknown show value %q (must be one of: %q, %q, %q)",
 				param.Name, param.Show, ShowAuto, ShowAlways, ShowNever)
 		}
+		// Group is valid on every parameter type (unlike multiLine/options/
+		// dir/glob/collectInnerArgs, which are type-gated); it is purely
+		// presentational, gating the parameter dialog's tab bar. Reject a
+		// declared-but-whitespace-only value so a typo like `group: " "`
+		// fails fast instead of silently producing an unlabeled tab.
+		if param.Group != "" && strings.TrimSpace(param.Group) == "" {
+			return fmt.Errorf("parameter %q: group must not be empty or whitespace-only", param.Name)
+		}
 		// Validate the optional cache block.
 		if param.Cache != nil {
 			if !KnownPromptCacheDestinations[param.Cache.Destination] {

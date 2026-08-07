@@ -884,6 +884,19 @@ type PromptParameter struct {
 	// wasted interaction (mitto-48c). Only valid for type "prompts"; rejected
 	// by ValidatePromptParameters elsewhere.
 	CollectInnerArgs *bool `yaml:"collectInnerArgs,omitempty" json:"collectInnerArgs,omitempty"`
+	// Group is an optional, purely presentational label used to cluster
+	// related parameters under a shared tab in the parameter dialog. Valid on
+	// every parameter type. When at least one declared parameter has a
+	// non-empty Group, the dialog renders a tab bar: ungrouped parameters
+	// (empty Group) are collected into a "General" tab, and each distinct
+	// Group value gets its own tab, in first-appearance order. "General" is
+	// not a reserved name — an explicit `group: General` merges into the
+	// same tab as the ungrouped parameters. When no parameter declares a
+	// Group, the dialog renders the flat, untabbed list exactly as before
+	// (back-compat invariant; see ValidatePromptParameters for the
+	// whitespace-only rejection). Grouping never affects the collected
+	// argument values themselves.
+	Group string `yaml:"group,omitempty" json:"group,omitempty"`
 }
 
 // ShouldCollectInnerArgs reports whether a "prompts" picker parameter should
