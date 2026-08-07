@@ -975,7 +975,6 @@ export function PromptParameterDialog({
   useEffect(() => {
     if (!isOpen) return;
     setActiveTab(groups.length > 0 ? groups[0].name : "");
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen, groupNamesKey]);
 
   const unmetGroups = unmetRequiredByGroup(groups, values);
