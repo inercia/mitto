@@ -1,7 +1,7 @@
 icon: refresh
 name: Reevaluate all issues
 menus: prompts, beadsList, !promptsLoop
-description: Reevaluate priority, dependencies, and importance of all beads — close any already-completed ones, delegate deeper evaluation to child conversations when needed — then propose changes and surface what to do now
+description: Reevaluate priority, dependencies, grouping and importance of all beads — close any already-completed ones, delegate deeper evaluation to child conversations when needed — then propose changes and surface what to do now
 backgroundColor: '#FFCC80'
 group: Tasks
 target:
@@ -22,8 +22,8 @@ prompt: |
   Beads is a CLI issue tracker (`bd`). Issues are called "beads" and have IDs like `bd-xyz`.
 
   Your job is to take a fresh, critical look at **every** open bead in this repo and reassess
-  its **priority**, **dependencies**, and **importance** — and check whether any open or
-  in-progress beads are **already completed** and can be closed — then propose corrections where
+  its **priority**, **dependencies**, **grouping** and **importance** — and check whether any open
+  or in-progress beads are **already completed** and can be closed — then propose corrections where
   the current state no longer reflects reality.
 
   ## Step 1 — Gather the full picture
@@ -34,6 +34,7 @@ prompt: |
   bd list --json                  # every bead (all statuses)
   bd ready --json                 # beads with no active blockers (claimable now)
   bd dep cycles                   # detect dependency cycles
+  bd list --type epic --all --json  # existing epics (parents) and their state
   ```
 
   For any bead whose scope, blockers, or rationale is unclear, fetch its full detail and
@@ -50,7 +51,7 @@ prompt: |
 
   ## Step 2 — Reevaluate every open bead
 
-  For each non-closed bead, reason carefully across four axes:
+  For each non-closed bead, reason carefully across five axes:
 
   - **Priority (P0–P4)**: Does the assigned priority still match the bead's real impact and
     urgency? Look for under-prioritised work (high user/blocking impact at low priority) and
@@ -66,6 +67,13 @@ prompt: |
     are already satisfied should be **closed** rather than left lingering. Be conservative — only
     treat a bead as complete when there is concrete evidence the work is actually finished, and do
     not close an `in_progress` bead with active work unless it is a clear duplicate.
+  - **Grouping (epic hierarchy)**: Beads supports first-class parent/child hierarchy — an **epic**
+    is a parent bead grouping related children. Assess whether the current hierarchy still holds:
+    a bead that clearly belongs to an **existing** open epic but has no `parent`; a bead parented
+    under an epic whose theme it no longer shares; and clusters of two or more ungrouped beads
+    that share a genuinely specific objective and would warrant a **new** epic. Apply a
+    **high-confidence bar** — shared type, priority, or broad area (e.g. "both touch the frontend")
+    is **not** a shared objective, and leaving beads ungrouped is usually the right answer.
 
   ## Step 3 — Delegate deep evaluation where needed
 
@@ -118,6 +126,13 @@ prompt: |
   - **Already completed** — `open`/`in_progress` beads whose work is already implemented (per the
     codebase, commits, or merged branches) and can now be closed.
   - **Orphans / duplicates** — beads that overlap heavily or appear abandoned.
+  - **Misplaced in the hierarchy** — a bead that clearly belongs to an existing open epic but has
+    no `parent`, or a child whose parent epic no longer matches its theme.
+  - **Epic-worthy clusters** — two or more ungrouped beads sharing a specific objective that has
+    no epic yet.
+  - **Empty / completed epics** — epics whose children are all closed (the epic itself can be
+    closed), or epics left with fewer than two open children (the grouping no longer earns its
+    keep).
 
   ## Step 5 — Compose a proposal
 
@@ -129,6 +144,11 @@ prompt: |
   | `bd-2` | `<title>` | Add dep | — → blocked by `bd-9` | Needs schema first |
   | `bd-3` | `<title>` | Remove dep | blocked by `bd-7` (closed) | Blocker already done |
   | `bd-4` | `<title>` | Close | open → closed | Already implemented in `abc1234` / `path/to/file` |
+  | `bd-5` | `<title>` | Reparent | — → child of epic `bd-3` | Same objective as that epic |
+  | `bd-6` | `<title>` | New epic | `bd-6`, `bd-8` → new epic "<name>" | Shared objective: <specific theme> |
+
+  For a **New epic** row, also state the proposed epic name, a one-line description of the shared
+  objective, and every member bead — the user is approving the epic's shape, not just its existence.
 
   If, after analysis, **no changes are warranted**, say so clearly and skip Steps 6–7 — but
   still produce the final summary in Step 8.
@@ -155,7 +175,17 @@ prompt: |
   bd dep add <blocked-id> <blocker-id>          # add a blocking dependency
   bd dep remove <blocked-id> <blocker-id>       # remove a stale dependency
   bd close <bead-id> --reason "<why, e.g. 'Already implemented in abc1234; acceptance criteria met'>"   # close an already-completed bead
+  bd update <bead-id> --parent <epic-id>        # move a bead under an existing epic
+  bd create "<epic name>" --type epic --body-file /tmp/epic-desc.md   # create a new epic, then --parent its members
   ```
+
+  When creating a new epic, write its description to a temporary file and pass it via `--body-file`
+  to preserve formatting, capture the new epic's ID from the output, then reparent each approved
+  member with `bd update <member-id> --parent <epic-id>`. Skip any approved epic that ends up with
+  fewer than two members.
+
+  If a full grouping pass is warranted rather than the few clear-cut moves found here, point the
+  user at the dedicated **"Group issues in Epics"** prompt instead of expanding this run.
 
   For each bead you change but do **not** close, append an audit note recording what changed and
   why (closed beads already carry their rationale in the `--reason` above):
@@ -164,10 +194,11 @@ prompt: |
   bd update <bead-id> --append-notes "Reevaluation: <what changed — e.g. priority P2→P1, added blocker bd-12> — <why, from the assessment above>."
   ```
 
-  After wiring dependencies, verify integrity:
+  After wiring dependencies and hierarchy, verify integrity:
 
   ```bash
   bd dep cycles
+  bd dep tree <epic-id>   # for each epic you created or reparented into
   ```
 
   Report any command that failed and why.
@@ -178,13 +209,18 @@ prompt: |
 
   ### Changes
   A bullet summary of what was **actually changed** (or, if the user declined, what was
-  **proposed** but not applied). Group by type: priority changes, dependency changes, beads closed
+  **proposed** but not applied). Group by type: priority changes, dependency changes, epic/hierarchy
+  changes (epics created, beads reparented, epics closed), beads closed
   as already-completed, other.
 
   ### Most important things to do now
   A short, ranked list (top ~3–5) of the beads that matter most to tackle next, based on your
   reevaluation — favouring high-priority, ready (unblocked) work that unblocks the most other
   beads. For each, give the bead ID, title, and a one-line justification.
+
+  ## Step 9 — Clean up the deep-evaluation children
+
+  {{ template "_shared/cleanup-child-conversations" . }}
 
   ## Final step — Offer to delete this conversation
 

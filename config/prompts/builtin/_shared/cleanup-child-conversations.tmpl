@@ -1,0 +1,17 @@
+{{/*
+  cleanup-child-conversations — the standard block emitted by prompts that spawn
+  child conversations, telling the agent to reap the finished ones before the
+  `_shared/offer-delete-conversation` final step runs.
+
+  This matters because self-destructing cascade-deletes the children implicitly:
+  without an explicit reap, a child that is still working is torn down without
+  a chance to report. The "leave still-working children alone" clause is the
+  safety invariant that must stay identical across callers.
+
+  Usage — immediately before the final self-delete step:
+
+      {{ template "_shared/cleanup-child-conversations" . }}
+*/}}
+Clean up any child conversations that have reported back and are no longer needed with
+`mitto_conversation_delete_mitto(self_id: "{{ .Session.ID }}", conversation_id: "<child-id>")`.
+Leave any child that is still working, or that you did not spawn, untouched.

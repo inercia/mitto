@@ -30,7 +30,6 @@ when:
     afterTokens: 80000
 mutate: append
 priority: 94
-
 text: |
   ---
   [Beads Ready Tasks Reminder]

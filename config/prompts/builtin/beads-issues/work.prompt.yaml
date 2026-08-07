@@ -215,9 +215,9 @@ prompt: |
 
   ## Step 8 — Log completion and close out
 
-  Once the work is complete and verified, clean up any finished child conversations that are no
-  longer needed with
-  `mitto_conversation_delete_mitto(self_id: "{{ .Session.ID }}", conversation_id: "<child-id>")`.
+  Once the work is complete and verified, tidy up the child conversations:
+
+  {{ template "_shared/cleanup-child-conversations" . }}
   {{ if $target -}}
   Also record a completion comment in the bead's history, then offer to close it:
 

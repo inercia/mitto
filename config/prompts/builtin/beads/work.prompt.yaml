@@ -240,7 +240,9 @@ prompt: |
   bd close <bead-id> --reason "<short summary of what was delivered>"
   ```
 
-  After closing, clean up any finished child conversations that are no longer needed with `mitto_conversation_delete_mitto(self_id: "{{ .Session.ID }}", conversation_id: "<child-id>")`.
+  After closing, tidy up the child conversations:
+
+  {{ template "_shared/cleanup-child-conversations" . }}
 
   ## Final step — Offer to delete this conversation
 

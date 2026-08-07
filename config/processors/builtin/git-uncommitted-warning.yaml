@@ -31,7 +31,6 @@ when:
     afterTokens: 80000
 mutate: prepend
 priority: 15
-
 text: |
   [Uncommitted Changes Warning]
   The working tree has uncommitted changes:
