@@ -41,6 +41,11 @@ export function useConversationMenu({
   onFetchConversationPrompts, // async (session, workingDir) => menus:conversation prompts
   onSendPromptToConversation, // (session, prompt) when a context-menu prompt is clicked
   onCopyConversation, // optional: (session) => void — shows "Copy as Markdown" item
+  onCopyConversationName, // optional: (session) => void — adds "Copy conversation name" to the Copy submenu
+  onCopyConversationId, // optional: (session) => void — adds "Copy conversation ID" to the Copy submenu
+  onCopyLastResponse, // optional: (session) => void — adds "Copy last response as Markdown" to the Copy submenu
+  hasConversationMarkdown = true, // whether the conversation has copyable content (disables the full-Markdown submenu entry when false)
+  hasLastResponseMarkdown = true, // whether there is a copyable last agent response (disables that submenu entry when false)
   flushCommand = "", // optional: when non-empty, shows "Flush context" item
   onFlushContext, // optional: (session) => void — invoked when "Flush context" is clicked
   onSetColor, // optional: (session, hexColor) => void — shows "Change color" submenu
@@ -148,15 +153,53 @@ export function useConversationMenu({
         icon: html`<${EditIcon} />`,
         onClick: () => onRename && onRename(session),
       },
-      // "Copy as Markdown" — only shown when caller provides the callback
+      // "Copy" — only shown when caller provides at least one copy callback.
+      // When any of the three sibling callbacks are supplied (mitto-a6v1),
+      // this becomes a "Copy" entry with a 4-action submenu (same shape as
+      // "Change color" above); otherwise it stays the original flat
+      // "Copy as Markdown" entry so existing callers (none pass siblings
+      // today) are unaffected.
       ...(onCopyConversation
-        ? [
-            {
-              label: "Copy as Markdown",
-              icon: html`<${CopyIcon} />`,
-              onClick: () => onCopyConversation(session),
-            },
-          ]
+        ? onCopyConversationName || onCopyConversationId || onCopyLastResponse
+          ? [
+              {
+                label: "Copy",
+                icon: html`<${CopyIcon} />`,
+                submenu: [
+                  {
+                    label: "Copy conversation name",
+                    disabled: !session?.name,
+                    onClick: () =>
+                      onCopyConversationName &&
+                      onCopyConversationName(session),
+                  },
+                  {
+                    label: "Copy conversation ID",
+                    disabled: !session?.session_id,
+                    onClick: () =>
+                      onCopyConversationId && onCopyConversationId(session),
+                  },
+                  {
+                    label: "Copy full contents as Markdown",
+                    disabled: !hasConversationMarkdown,
+                    onClick: () => onCopyConversation(session),
+                  },
+                  {
+                    label: "Copy last response as Markdown",
+                    disabled: !hasLastResponseMarkdown,
+                    onClick: () =>
+                      onCopyLastResponse && onCopyLastResponse(session),
+                  },
+                ],
+              },
+            ]
+          : [
+              {
+                label: "Copy as Markdown",
+                icon: html`<${CopyIcon} />`,
+                onClick: () => onCopyConversation(session),
+              },
+            ]
         : []),
       // "Flush context" — only shown when the conversation's ACP server has a
       // context-flush command configured and the caller provides the callback.
@@ -234,6 +277,11 @@ export function useConversationMenu({
     onArchive,
     onDelete,
     onCopyConversation,
+    onCopyConversationName,
+    onCopyConversationId,
+    onCopyLastResponse,
+    hasConversationMarkdown,
+    hasLastResponseMarkdown,
     flushCommand,
     onFlushContext,
     onSetColor,

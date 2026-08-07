@@ -110,8 +110,14 @@ export const selectors = {
   copyMessageMarkdown: '[data-testid="copy-message-markdown"]',
   // Header toolbar button that opens the conversation prompt-groups menu
   headerConversationMenu: '[data-testid="header-conversation-prompts"]',
-  // Header toolbar button: copy the whole conversation as Markdown
+  // Header toolbar "Copy" dropdown trigger (mitto-a6v1)
   headerCopyMarkdown: '[data-testid="header-copy-markdown"]',
+  // Header "Copy" dropdown menu entries
+  headerCopyMenu: '[data-testid="header-copy-markdown-menu"]',
+  headerCopyName: '[data-testid="header-copy-name"]',
+  headerCopyId: '[data-testid="header-copy-id"]',
+  headerCopyConversationMd: '[data-testid="header-copy-conversation-md"]',
+  headerCopyLastResponseMd: '[data-testid="header-copy-last-response-md"]',
   // Fixed-position daisyUI context menu rendered by the ContextMenu component
   // (shared by the conversation header menu and the sidebar row menu).
   contextMenu: '.menu.fixed.z-50.shadow-xl',

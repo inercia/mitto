@@ -30,7 +30,9 @@ import {
   cleanupExpiredPrompts,
   getArchiveReasonText,
   conversationToMarkdown,
+  messageToMarkdown,
   copyToClipboard,
+  ROLE_AGENT,
   LOOP_STOPPED_LABELS,
   formatLoopMaxDuration,
   computeHeaderTriggerLabel,
@@ -355,6 +357,11 @@ function App() {
   // when the user clicks outside or presses Escape, and so clicking a child
   // entry closes the menu before switching sessions.
   const [childrenMenuOpen, setChildrenMenuOpen] = useState(false);
+
+  // Open/close state for the conversation-header "Copy" dropdown (mitto-a6v1).
+  // Mirrors childrenMenuOpen above: driven by the Toolbar dropdown's
+  // open/onToggle + closeOnOutsideClick props.
+  const [copyMenuOpen, setCopyMenuOpen] = useState(false);
 
   // Close the mobile left sidebar when the user clicks outside of it (e.g. on the
   // conversation peek to its right). Below the md breakpoint the sidebar's
@@ -2777,23 +2784,72 @@ function App() {
     ? "badge-error badge-soft"
     : "badge-ghost";
 
+  // Shared "copy text, then toast the outcome" helper backing all four Copy
+  // dropdown entries (mitto-a6v1). Kept as a single useCallback so each entry
+  // handler below is a thin wrapper with its own text source + toast titles.
+  const copyWithToast = useCallback(
+    async (text, okTitle, failTitle) => {
+      const ok = await copyToClipboard(text);
+      showToast({
+        style: ok ? "success" : "error",
+        title: ok ? okTitle : failTitle,
+        duration: ok ? 3000 : 4000,
+      });
+    },
+    [showToast],
+  );
+
+  // Full-conversation Markdown, memoized so both the copy handler and the
+  // dropdown's disabled state (no copyable messages yet) share one computation.
+  const headerConversationMarkdown = useMemo(
+    () => conversationToMarkdown(messages),
+    [messages],
+  );
+
   const handleCopyConversation = useCallback(async () => {
-    const md = conversationToMarkdown(messages);
-    const ok = await copyToClipboard(md);
-    if (ok) {
-      showToast({
-        style: "success",
-        title: "Conversation copied as Markdown",
-        duration: 3000,
-      });
-    } else {
-      showToast({
-        style: "error",
-        title: "Failed to copy conversation",
-        duration: 3000,
-      });
+    await copyWithToast(
+      headerConversationMarkdown,
+      "Conversation copied as Markdown",
+      "Failed to copy conversation",
+    );
+  }, [headerConversationMarkdown, copyWithToast]);
+
+  const handleCopyConversationName = useCallback(async () => {
+    await copyWithToast(
+      sessionInfo?.name || "",
+      "Conversation name copied",
+      "Failed to copy conversation name",
+    );
+  }, [sessionInfo?.name, copyWithToast]);
+
+  const handleCopyConversationId = useCallback(async () => {
+    await copyWithToast(
+      activeSessionId || "",
+      "Conversation ID copied",
+      "Failed to copy conversation ID",
+    );
+  }, [activeSessionId, copyWithToast]);
+
+  // Last agent (assistant) message in the conversation, rendered to Markdown.
+  // Empty string when there is no copyable agent message yet — used to
+  // disable the "Copy last response" entry rather than hide it.
+  const headerLastAgentMarkdown = useMemo(() => {
+    if (!messages || messages.length === 0) return "";
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i]?.role !== ROLE_AGENT) continue;
+      const md = messageToMarkdown(messages[i]);
+      if (md) return md;
     }
-  }, [messages, showToast]);
+    return "";
+  }, [messages]);
+
+  const handleCopyLastResponse = useCallback(async () => {
+    await copyWithToast(
+      headerLastAgentMarkdown,
+      "Last response copied as Markdown",
+      "Failed to copy last response",
+    );
+  }, [headerLastAgentMarkdown, copyWithToast]);
 
   // Flush the agent's conversation context by sending the configured
   // context-flush command (e.g. "/clear") to the active conversation. The
@@ -2852,6 +2908,15 @@ function App() {
     onSendPromptToConversation: handleSendPromptToConversation,
     onSetColor: handleSetSessionColor,
     onCopyConversation: activeSessionId ? handleCopyConversation : undefined,
+    onCopyConversationName: activeSessionId
+      ? handleCopyConversationName
+      : undefined,
+    onCopyConversationId: activeSessionId
+      ? handleCopyConversationId
+      : undefined,
+    onCopyLastResponse: activeSessionId ? handleCopyLastResponse : undefined,
+    hasConversationMarkdown: !!headerConversationMarkdown,
+    hasLastResponseMarkdown: !!headerLastAgentMarkdown,
     flushCommand: sessionInfo?.context_flush_command || "",
     onFlushContext: activeSessionId ? handleFlushContext : undefined,
   });
@@ -3012,12 +3077,79 @@ function App() {
             onClick: handleHeaderMenuButtonClick,
           },
           {
-            kind: "button",
+            kind: "dropdown",
             testId: "header-copy-markdown",
             icon: html`<${CopyIcon} className="w-4 h-4" />`,
-            tip: "Copy as Markdown",
-            ariaLabel: "Copy as Markdown",
-            onClick: handleCopyConversation,
+            tip: "Copy",
+            ariaLabel: "Copy",
+            caret: true,
+            align: "end",
+            open: copyMenuOpen,
+            onToggle: setCopyMenuOpen,
+            closeOnOutsideClick: true,
+            menu: html`
+              <ul
+                class="dropdown-content menu menu-sm bg-mitto-surface-2 rounded-box z-10 mt-1 w-64 p-2 shadow border border-mitto-border-1"
+                data-testid="header-copy-markdown-menu"
+              >
+                <li class=${!sessionInfo?.name ? "menu-disabled" : ""}>
+                  <button
+                    type="button"
+                    data-testid="header-copy-name"
+                    disabled=${!sessionInfo?.name}
+                    onClick=${() => {
+                      setCopyMenuOpen(false);
+                      handleCopyConversationName();
+                    }}
+                  >
+                    <span class="flex-1">Copy conversation name</span>
+                  </button>
+                </li>
+                <li class=${!activeSessionId ? "menu-disabled" : ""}>
+                  <button
+                    type="button"
+                    data-testid="header-copy-id"
+                    disabled=${!activeSessionId}
+                    onClick=${() => {
+                      setCopyMenuOpen(false);
+                      handleCopyConversationId();
+                    }}
+                  >
+                    <span class="flex-1">Copy conversation ID</span>
+                  </button>
+                </li>
+                <li
+                  class=${!headerConversationMarkdown ? "menu-disabled" : ""}
+                >
+                  <button
+                    type="button"
+                    data-testid="header-copy-conversation-md"
+                    disabled=${!headerConversationMarkdown}
+                    onClick=${() => {
+                      setCopyMenuOpen(false);
+                      handleCopyConversation();
+                    }}
+                  >
+                    <span class="flex-1">Copy full contents as Markdown</span>
+                  </button>
+                </li>
+                <li
+                  class=${!headerLastAgentMarkdown ? "menu-disabled" : ""}
+                >
+                  <button
+                    type="button"
+                    data-testid="header-copy-last-response-md"
+                    disabled=${!headerLastAgentMarkdown}
+                    onClick=${() => {
+                      setCopyMenuOpen(false);
+                      handleCopyLastResponse();
+                    }}
+                  >
+                    <span class="flex-1">Copy last response as Markdown</span>
+                  </button>
+                </li>
+              </ul>
+            `,
           },
           ...(conversationHasFlush
             ? [

@@ -7,8 +7,10 @@ import { test, expect } from "../fixtures/test-fixtures";
  *   1. Per-message hover button on a USER bubble (copies the raw text).
  *   2. Per-message hover button on an AGENT bubble (serializes the rendered
  *      HTML back to Markdown via htmlToMarkdown).
- *   3. The conversation header three-dot menu → "Copy as Markdown", which
- *      copies the whole conversation (role headers + `---` separators).
+ *   3. The conversation header "Copy" dropdown (mitto-a6v1), with four
+ *      entries: conversation name, conversation ID, full contents as
+ *      Markdown (role headers + `---` separators), and last response as
+ *      Markdown.
  *
  * Clipboard strategy: instead of relying on the headless browser's clipboard
  * permissions/focus (which are flaky), we override navigator.clipboard.writeText
@@ -128,7 +130,7 @@ test.describe("Copy as Markdown", () => {
     expect(copied).not.toContain("</p>");
   });
 
-  test("copies the whole conversation from the header menu", async ({
+  test("copies the whole conversation from the header Copy dropdown", async ({
     page,
     selectors,
     helpers,
@@ -137,11 +139,16 @@ test.describe("Copy as Markdown", () => {
     const msg = helpers.uniqueMessage("Convo copy");
     await helpers.sendMessageAndWait(page, msg);
 
-    // "Copy as Markdown" is now a dedicated button in the conversation toolbar
-    // pill (previously it lived inside the "…" conversation-actions menu).
-    const copyItem = page.locator(selectors.headerCopyMarkdown);
-    await expect(copyItem).toBeVisible({ timeout: timeouts.shortAction });
-    await copyItem.click();
+    // "Copy as Markdown" is now a "Copy" dropdown in the conversation toolbar
+    // pill (previously a single-action button; before that, the "…"
+    // conversation-actions menu). Open the trigger, then the full-contents
+    // entry (mitto-a6v1).
+    const copyTrigger = page.locator(selectors.headerCopyMarkdown);
+    await expect(copyTrigger).toBeVisible({ timeout: timeouts.shortAction });
+    await copyTrigger.click();
+    const copyMenu = page.locator(selectors.headerCopyMenu);
+    await expect(copyMenu).toBeVisible({ timeout: timeouts.shortAction });
+    await page.locator(selectors.headerCopyConversationMd).click();
 
     // Success toast appears and no context menu is left open.
     await expect(page.getByText("Conversation copied as Markdown")).toBeVisible({
@@ -157,5 +164,59 @@ test.describe("Copy as Markdown", () => {
     expect(copied).toContain(msg);
     expect(copied).toContain("## 🤖 Assistant");
     expect(copied).toContain("---");
+  });
+
+  test("copies the conversation name and ID from the header Copy dropdown", async ({
+    page,
+    selectors,
+    helpers,
+    timeouts,
+  }) => {
+    await helpers.sendMessageAndWait(page, helpers.uniqueMessage("Name/ID copy"));
+
+    await page.locator(selectors.headerCopyMarkdown).click();
+    await expect(page.locator(selectors.headerCopyMenu)).toBeVisible({
+      timeout: timeouts.shortAction,
+    });
+    await page.locator(selectors.headerCopyId).click();
+    await expect(page.getByText("Conversation ID copied")).toBeVisible({
+      timeout: timeouts.appReady,
+    });
+    const copiedId = await lastCopied(page);
+    expect(copiedId).toBeTruthy();
+
+    await page.locator(selectors.headerCopyMarkdown).click();
+    await expect(page.locator(selectors.headerCopyMenu)).toBeVisible({
+      timeout: timeouts.shortAction,
+    });
+    await page.locator(selectors.headerCopyName).click();
+    await expect(page.getByText("Conversation name copied")).toBeVisible({
+      timeout: timeouts.appReady,
+    });
+  });
+
+  test("copies the last response from the header Copy dropdown", async ({
+    page,
+    selectors,
+    helpers,
+    timeouts,
+  }) => {
+    const msg = helpers.uniqueMessage("Last response copy");
+    await helpers.sendMessageAndWait(page, msg);
+
+    await page.locator(selectors.headerCopyMarkdown).click();
+    await expect(page.locator(selectors.headerCopyMenu)).toBeVisible({
+      timeout: timeouts.shortAction,
+    });
+    await page.locator(selectors.headerCopyLastResponseMd).click();
+
+    await expect(
+      page.getByText("Last response copied as Markdown"),
+    ).toBeVisible({ timeout: timeouts.appReady });
+
+    const copied = await lastCopied(page);
+    expect(copied).toBeTruthy();
+    expect(copied).not.toContain("## 🧑 User");
+    expect(copied).not.toContain(msg);
   });
 });
