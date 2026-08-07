@@ -10034,7 +10034,7 @@ func TestConversationUpdate_OnCompletionLoop(t *testing.T) {
 		t.Fatalf("Get loop: %v", err)
 	}
 	if !stored.IsOnCompletion() {
-		t.Errorf("stored trigger = %q, want onCompletion", stored.Trigger)
+		t.Errorf("stored trigger = %q, want onCompletion", stored.EffectiveTriggers())
 	}
 	if stored.DelaySeconds != 30 || stored.MaxDurationSeconds != 3600 {
 		t.Errorf("stored delay/maxDur = %d/%d, want 30/3600", stored.DelaySeconds, stored.MaxDurationSeconds)
@@ -10239,7 +10239,7 @@ func TestConversationStart_OnTasksLoop(t *testing.T) {
 		t.Fatalf("Get loop: %v", err)
 	}
 	if !stored.IsOnTasks() {
-		t.Errorf("stored trigger = %q, want onTasks", stored.Trigger)
+		t.Errorf("stored trigger = %q, want onTasks", stored.EffectiveTriggers())
 	}
 	if stored.Condition != cond {
 		t.Errorf("stored condition = %q, want %q", stored.Condition, cond)
@@ -10286,7 +10286,7 @@ func TestConversationUpdate_OnTasksLoop(t *testing.T) {
 		t.Fatalf("Get loop: %v", err)
 	}
 	if !stored.IsOnTasks() {
-		t.Errorf("stored trigger = %q, want onTasks", stored.Trigger)
+		t.Errorf("stored trigger = %q, want onTasks", stored.EffectiveTriggers())
 	}
 	if stored.Condition != cond {
 		t.Errorf("stored condition = %q, want %q", stored.Condition, cond)
@@ -10587,7 +10587,7 @@ func TestConversationStart_LoopPromptName_WithOnCompletion(t *testing.T) {
 		t.Fatalf("Loop.Get error: %v", err)
 	}
 	if !stored.IsOnCompletion() {
-		t.Errorf("stored trigger = %q, want onCompletion", stored.Trigger)
+		t.Errorf("stored trigger = %q, want onCompletion", stored.EffectiveTriggers())
 	}
 	if stored.PromptName != "Loop body" {
 		t.Errorf("stored PromptName = %q, want %q", stored.PromptName, "Loop body")
@@ -10759,7 +10759,7 @@ func TestConversationStart_PromptName_AutoAppliesLoopFrontmatter(t *testing.T) {
 		t.Fatalf("Loop.Get error: %v", err)
 	}
 	if !stored.IsOnCompletion() {
-		t.Errorf("stored trigger = %q, want onCompletion", stored.Trigger)
+		t.Errorf("stored trigger = %q, want onCompletion", stored.EffectiveTriggers())
 	}
 	if stored.DelaySeconds != 30 {
 		t.Errorf("stored DelaySeconds = %d, want 30 (from frontmatter)", stored.DelaySeconds)
@@ -10941,7 +10941,7 @@ func TestConversationStart_PromptName_LoopDefaults_OptionalDefaultFalse(t *testi
 	}
 	// The rest of the frontmatter must still have been applied normally.
 	if !stored.IsOnCompletion() {
-		t.Errorf("stored trigger = %q, want onCompletion", stored.Trigger)
+		t.Errorf("stored trigger = %q, want onCompletion", stored.EffectiveTriggers())
 	}
 	if stored.MaxIterations != 20 {
 		t.Errorf("stored MaxIterations = %d, want 20 (from frontmatter)", stored.MaxIterations)
@@ -11101,7 +11101,7 @@ func TestConversationUpdate_LoopPromptName_AutoAppliesLoopFrontmatter(t *testing
 		t.Fatalf("Loop.Get error: %v", err)
 	}
 	if !stored.IsOnCompletion() {
-		t.Errorf("stored trigger = %q, want onCompletion", stored.Trigger)
+		t.Errorf("stored trigger = %q, want onCompletion", stored.EffectiveTriggers())
 	}
 	if stored.DelaySeconds != 30 {
 		t.Errorf("stored DelaySeconds = %d, want 30 (from frontmatter)", stored.DelaySeconds)

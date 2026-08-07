@@ -777,11 +777,7 @@ func (a *AuthManager) isPublicPath(path string) bool {
 
 	// Check API path prefixes for dynamic paths (callback tokens)
 	callbackPrefix := a.apiPrefix + "/api/callback/"
-	if strings.HasPrefix(path, callbackPrefix) {
-		return true
-	}
-
-	return false
+	return strings.HasPrefix(path, callbackPrefix)
 }
 
 // isLoopbackIP checks if the given IP address is a loopback address.

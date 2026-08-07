@@ -167,6 +167,9 @@ func TestHandleSuggestLoopFromRecent(t *testing.T) {
 		if got.Enabled {
 			t.Errorf("Enabled = true, want false (draft must land paused)")
 		}
+		// SA1019: intentionally verifying the legacy Trigger field stays in
+		// sync with Triggers[0] via Normalize() (back-compat contract).
+		//nolint:staticcheck
 		if got.Trigger != session.TriggerOnCompletion {
 			t.Errorf("Trigger = %q, want %q", got.Trigger, session.TriggerOnCompletion)
 		}
@@ -278,6 +281,9 @@ func TestHandleSuggestLoopFromRecent(t *testing.T) {
 		if got.PromptName != "newer-prompt" {
 			t.Errorf("PromptName = %q, want %q (newest reverse-order named prompt)", got.PromptName, "newer-prompt")
 		}
+		// SA1019: intentionally verifying the legacy Trigger field stays in
+		// sync with Triggers[0] via Normalize() (back-compat contract).
+		//nolint:staticcheck
 		if got.Trigger != session.TriggerOnCompletion {
 			t.Errorf("Trigger = %q, want onCompletion (from newer-prompt)", got.Trigger)
 		}

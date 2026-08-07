@@ -207,6 +207,9 @@ func TestHandleSessionLoop_OnCompletionRoundTrip(t *testing.T) {
 		MaxDurationSeconds: 3600,
 	})
 
+	// SA1019: intentionally verifying the legacy Trigger field stays in
+	// sync with Triggers[0] via Normalize() (back-compat contract).
+	//nolint:staticcheck
 	if got.Trigger != session.TriggerOnCompletion {
 		t.Errorf("Trigger = %q, want %q", got.Trigger, session.TriggerOnCompletion)
 	}
@@ -276,6 +279,9 @@ func TestHandleSessionLoop_PatchPartialPreservesOnCompletionFields(t *testing.T)
 	if err != nil {
 		t.Fatalf("Get loop after PATCH: %v", err)
 	}
+	// SA1019: intentionally verifying the legacy Trigger field stays in
+	// sync with Triggers[0] via Normalize() (back-compat contract).
+	//nolint:staticcheck
 	if stored.Trigger != session.TriggerOnCompletion {
 		t.Errorf("Trigger after PATCH = %q, want %q (must not be clobbered)", stored.Trigger, session.TriggerOnCompletion)
 	}
@@ -884,6 +890,9 @@ func TestHandleSessionLoop_OnTasksRoundTrip(t *testing.T) {
 		CooldownSeconds: &cooldown,
 	})
 
+	// SA1019: intentionally verifying the legacy Trigger field stays in
+	// sync with Triggers[0] via Normalize() (back-compat contract).
+	//nolint:staticcheck
 	if got.Trigger != session.TriggerOnTasks {
 		t.Errorf("Trigger = %q, want %q", got.Trigger, session.TriggerOnTasks)
 	}
@@ -922,7 +931,7 @@ func TestHandleSessionLoop_OnTasksRoundTrip(t *testing.T) {
 		t.Errorf("CooldownSeconds after PATCH = %d, want preserved %d", stored.CooldownSeconds, cooldown)
 	}
 	if !stored.IsOnTasks() {
-		t.Errorf("Trigger after PATCH = %q, want onTasks (must not be clobbered)", stored.Trigger)
+		t.Errorf("Trigger after PATCH = %q, want onTasks (must not be clobbered)", stored.EffectiveTriggers())
 	}
 }
 
@@ -1134,6 +1143,9 @@ func TestHandleSessionLoop_PUT_MergesPromptDefaults_Baseline(t *testing.T) {
 		Enabled:    true,
 	})
 
+	// SA1019: intentionally verifying the legacy Trigger field stays in
+	// sync with Triggers[0] via Normalize() (back-compat contract).
+	//nolint:staticcheck
 	if got.Trigger != session.TriggerOnTasks {
 		t.Errorf("Trigger = %q, want %q", got.Trigger, session.TriggerOnTasks)
 	}
@@ -1182,6 +1194,9 @@ func TestHandleSessionLoop_PUT_MergesPromptDefaults_ExplicitWins(t *testing.T) {
 		RunOnStart:    &fa, // explicit *false must win over frontmatter *true
 	})
 
+	// SA1019: intentionally verifying the legacy Trigger field stays in
+	// sync with Triggers[0] via Normalize() (back-compat contract).
+	//nolint:staticcheck
 	if got.Trigger != session.TriggerOnCompletion {
 		t.Errorf("Trigger = %q, want %q (explicit request wins)", got.Trigger, session.TriggerOnCompletion)
 	}
@@ -1225,6 +1240,9 @@ func TestHandleSessionLoop_PUT_MergesPromptDefaults_OptOut(t *testing.T) {
 		LoopApplyPromptDefaults: &fa,
 	})
 
+	// SA1019: intentionally verifying the legacy Trigger field stays in
+	// sync with Triggers[0] via Normalize() (back-compat contract).
+	//nolint:staticcheck
 	if got.Trigger != session.TriggerOnCompletion {
 		t.Errorf("Trigger = %q, want %q", got.Trigger, session.TriggerOnCompletion)
 	}
@@ -1263,6 +1281,9 @@ func TestHandleSessionLoop_PUT_MergesPromptDefaults_NoPromptName(t *testing.T) {
 	if got.Prompt != "free-text body" {
 		t.Errorf("Prompt = %q, want %q", got.Prompt, "free-text body")
 	}
+	// SA1019: intentionally verifying the legacy Trigger field stays empty
+	// (no merge occurred) — back-compat contract.
+	//nolint:staticcheck
 	if got.Trigger != "" {
 		t.Errorf("Trigger = %q, want empty (no merge)", got.Trigger)
 	}
@@ -1292,6 +1313,9 @@ func TestHandleSessionLoop_PUT_MergesPromptDefaults_UnknownPromptName(t *testing
 	if got.PromptName != "does-not-exist" {
 		t.Errorf("PromptName = %q, want %q", got.PromptName, "does-not-exist")
 	}
+	// SA1019: intentionally verifying the legacy Trigger field stays empty
+	// (graceful fallback) — back-compat contract.
+	//nolint:staticcheck
 	if got.Trigger != "" {
 		t.Errorf("Trigger = %q, want empty (unknown prompt is graceful fallback)", got.Trigger)
 	}
@@ -1475,6 +1499,9 @@ func TestHandleSessionLoop_MultiTriggerRoundTrip(t *testing.T) {
 		Triggers:  []session.LoopTrigger{session.TriggerSchedule, session.TriggerOnCompletion},
 	})
 
+	// SA1019: intentionally verifying the legacy Trigger field mirrors
+	// Triggers[0] (primary trigger) — back-compat contract.
+	//nolint:staticcheck
 	if got.Trigger != session.TriggerSchedule {
 		t.Errorf("Trigger (primary) = %q, want %q", got.Trigger, session.TriggerSchedule)
 	}

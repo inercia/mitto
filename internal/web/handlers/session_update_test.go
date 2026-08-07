@@ -87,6 +87,9 @@ func TestRestoreLoopOnUnarchive_RoundTripsOriginalConfig(t *testing.T) {
 	if got.Arguments["foo"] != original.Arguments["foo"] {
 		t.Errorf("Arguments = %v, want %v", got.Arguments, original.Arguments)
 	}
+	// SA1019: intentionally verifying the legacy Trigger field is preserved
+	// across an update that doesn't touch loop config (back-compat contract).
+	//nolint:staticcheck
 	if got.Trigger != original.Trigger {
 		t.Errorf("Trigger = %q, want %q", got.Trigger, original.Trigger)
 	}
