@@ -705,11 +705,14 @@ function serializeBooleanArg(value) {
 
 /**
  * Mirrors the canSave filter: required params count toward Save-enablement
- * EXCEPT booleans (a checkbox always has a definite answer).
+ * EXCEPT booleans (a checkbox always has a definite answer) and, per
+ * mitto-9rff, readOnly params — a menu/context-supplied value is filled by
+ * construction from initialValues and never user-editable, so it must never
+ * block Save regardless of its current value.
  */
 function canSave(parameters, values) {
   return parameters
-    .filter((p) => p.required && p.type !== "boolean")
+    .filter((p) => p.required && p.type !== "boolean" && !p.readOnly)
     .every((p) => (values[p.name] || "").trim() !== "");
 }
 
@@ -783,6 +786,46 @@ describe("canSave with boolean params", () => {
     const parameters = [{ name: "F", type: "filename", required: false }];
     expect(canSave(parameters, {})).toBe(true);
     expect(canSave(parameters, { F: "" })).toBe(true);
+  });
+});
+
+// mitto-9rff: readOnly params (menu-supplied or otherwise pre-resolved — see
+// promptDialogParameters in utils/prompts.js) are rendered as a disabled
+// prefilled display (see "readOnly display value" below) and must never
+// block Save, even if required and even if their value happens to be empty.
+describe("canSave with readOnly params (mitto-9rff)", () => {
+  test("a required readOnly param does NOT block Save when unset", () => {
+    const parameters = [
+      { name: "ISSUE_ID", type: "beadsId", required: true, readOnly: true },
+    ];
+    expect(canSave(parameters, {})).toBe(true);
+  });
+
+  test("a required readOnly param does NOT block Save when its value is an empty string", () => {
+    const parameters = [
+      { name: "ISSUE_ID", type: "beadsId", required: true, readOnly: true },
+    ];
+    expect(canSave(parameters, { ISSUE_ID: "" })).toBe(true);
+  });
+
+  test("a required, non-readOnly param alongside a readOnly one still blocks Save until filled", () => {
+    const parameters = [
+      { name: "ISSUE_ID", type: "beadsId", required: true, readOnly: true },
+      { name: "Note", type: "text", required: true },
+    ];
+    expect(canSave(parameters, {})).toBe(false);
+    expect(canSave(parameters, { Note: "hello" })).toBe(true);
+  });
+
+  test("show:always promotes a param out of readOnly, so it blocks Save like any other required field", () => {
+    // promptDialogParameters never attaches readOnly when show:always is set
+    // (see prompts.test.js) — this pins that canSave alone, given a param
+    // object with no readOnly marker, behaves like the non-readOnly case.
+    const parameters = [
+      { name: "ISSUE_ID", type: "beadsId", required: true, show: "always" },
+    ];
+    expect(canSave(parameters, {})).toBe(false);
+    expect(canSave(parameters, { ISSUE_ID: "mitto-9rff" })).toBe(true);
   });
 });
 
@@ -879,42 +922,36 @@ describe("initialValues seeding", () => {
 });
 
 // =============================================================================
-// options-picker default seeding (mitto-cwz.1)
-// Mirrors isOptionsPickerParam (utils/prompts.js) and the updated open-effect
-// in PromptParameterDialog.js: a type:text param with a non-empty options
-// array is seeded from its declared `default` on open, merged UNDER
-// initialValues (initialValues wins when both are present).
+// declared-default seeding (mitto-cwz.1, broadened by mitto-9rff)
+// Mirrors the open-transition effect in PromptParameterDialog.js: a declared
+// `default` is seeded on open, merged UNDER initialValues (initialValues
+// wins when both are present). Originally scoped to type:text params with a
+// non-empty `options` array (mitto-cwz.1); mitto-9rff broadened it to EVERY
+// parameter type, because the render set now includes optional params whose
+// declared default must display correctly (and agree with `values`/
+// `canSave`) from the first render, since they are no longer conditionally
+// hidden.
 // =============================================================================
 
 /**
- * Duplicated from utils/prompts.js — keep in sync (see also prompts.test.js).
- */
-function isOptionsPickerParam(p) {
-  return p?.type === "text" && Array.isArray(p.options) && p.options.length > 0;
-}
-
-/**
- * Mirrors the updated open-transition effect: builds optionDefaults from
- * declared `default`s for options params, then merges initialValues on top.
+ * Mirrors the open-transition effect: builds declaredDefaults from every
+ * param's declared `default` (skipping undefined/null/empty-string,
+ * regardless of type), then merges initialValues on top.
  */
 function seedInitialValues(parameters, initialValues) {
-  const optionDefaults = {};
+  const declaredDefaults = {};
   for (const p of parameters || []) {
-    if (
-      isOptionsPickerParam(p) &&
-      p.default !== undefined &&
-      p.default !== null
-    ) {
-      optionDefaults[p.name] = p.default;
+    if (p.default !== undefined && p.default !== null && p.default !== "") {
+      declaredDefaults[p.name] = p.default;
     }
   }
   return {
-    ...optionDefaults,
+    ...declaredDefaults,
     ...(initialValues ? { ...initialValues } : {}),
   };
 }
 
-describe("options-picker default seeding", () => {
+describe("declared-default seeding (mitto-9rff: every param type)", () => {
   test("a required options param with a declared default is seeded and Save is enabled on open", () => {
     const parameters = [
       {
@@ -958,19 +995,16 @@ describe("options-picker default seeding", () => {
     expect(seeded).toEqual({ Mode: "Cleanup" });
   });
 
-  test("a plain text param's default is NOT auto-seeded (only options params are)", () => {
-    // Regression pin: this fix is scoped to type:text WITH options; a bare
-    // text param's `default` (if ever declared) must not start being seeded
-    // as a side effect, since ParamField's plain-input branch never reads it.
+  test("a plain text param's default IS auto-seeded (mitto-9rff broadened this beyond options pickers)", () => {
     const parameters = [
       { name: "Note", type: "text", required: true, default: "hello" },
     ];
     const seeded = seedInitialValues(parameters, null);
-    expect(seeded).toEqual({});
-    expect(canSave(parameters, seeded)).toBe(false);
+    expect(seeded).toEqual({ Note: "hello" });
+    expect(canSave(parameters, seeded)).toBe(true);
   });
 
-  test("text with an empty options array is not an options picker — default is not seeded", () => {
+  test("a text param with an empty options array still gets its default seeded (seeding no longer keys off options at all)", () => {
     const parameters = [
       {
         name: "Mode",
@@ -979,6 +1013,24 @@ describe("options-picker default seeding", () => {
         required: true,
         default: "Simplification",
       },
+    ];
+    expect(seedInitialValues(parameters, null)).toEqual({
+      Mode: "Simplification",
+    });
+  });
+
+  test("a filename param's declared default is seeded like any other type", () => {
+    const parameters = [
+      { name: "F", type: "filename", required: true, default: "docs/a.md" },
+    ];
+    const seeded = seedInitialValues(parameters, null);
+    expect(seeded).toEqual({ F: "docs/a.md" });
+    expect(canSave(parameters, seeded)).toBe(true);
+  });
+
+  test("an empty-string default is not seeded (falls through to unset)", () => {
+    const parameters = [
+      { name: "Note", type: "text", required: true, default: "" },
     ];
     expect(seedInitialValues(parameters, null)).toEqual({});
   });
@@ -1009,6 +1061,62 @@ describe("options-picker default seeding", () => {
       { name: "Mode", type: "text", options: ["A", "B"], default: null },
     ];
     expect(seedInitialValues(parameters, null)).toEqual({});
+  });
+});
+
+// =============================================================================
+// readOnly display value (mitto-9rff)
+// Mirrors the readOnly early-return branch of ParamField in
+// PromptParameterDialog.js: a menu/context-supplied parameter (or a param
+// otherwise excluded from editing — see promptDialogParameters in
+// utils/prompts.js) renders a disabled display of its resolved value instead
+// of the normal type-specific control. Booleans display "Yes"/"No"; every
+// other type displays the value verbatim, or an em dash when unset/empty.
+// =============================================================================
+
+/**
+ * Duplicated from the `if (readOnly)` branch of ParamField — keep in sync.
+ */
+function readOnlyDisplayValue(type, value) {
+  return type === "boolean"
+    ? value === true || value === "true"
+      ? "Yes"
+      : "No"
+    : typeof value === "string" && value !== ""
+      ? value
+      : "—";
+}
+
+describe("readOnly display value (mitto-9rff)", () => {
+  test("text type displays the seeded value verbatim", () => {
+    expect(readOnlyDisplayValue("text", "hello")).toBe("hello");
+  });
+
+  test("beadsId type displays the menu-supplied id verbatim", () => {
+    expect(readOnlyDisplayValue("beadsId", "mitto-9rff")).toBe("mitto-9rff");
+  });
+
+  test("displays an em dash when the value is an empty string", () => {
+    expect(readOnlyDisplayValue("text", "")).toBe("—");
+  });
+
+  test("displays an em dash when the value is undefined", () => {
+    expect(readOnlyDisplayValue("text", undefined)).toBe("—");
+  });
+
+  test("displays an em dash when the value is not a string (e.g. null)", () => {
+    expect(readOnlyDisplayValue("text", null)).toBe("—");
+  });
+
+  test("boolean type displays 'Yes' for JS true or the string \"true\"", () => {
+    expect(readOnlyDisplayValue("boolean", true)).toBe("Yes");
+    expect(readOnlyDisplayValue("boolean", "true")).toBe("Yes");
+  });
+
+  test("boolean type displays 'No' for false, unset, or any other value", () => {
+    expect(readOnlyDisplayValue("boolean", false)).toBe("No");
+    expect(readOnlyDisplayValue("boolean", undefined)).toBe("No");
+    expect(readOnlyDisplayValue("boolean", "false")).toBe("No");
   });
 });
 

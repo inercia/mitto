@@ -2282,6 +2282,80 @@ prompt: |
 	}
 }
 
+// TestParsePromptFile_ShowField pins the `show:` YAML key onto
+// PromptParameter.Show end-to-end (mitto-9rff) — a plain struct-field-copy
+// unit test (TestParsePromptFile_WithParameters) doesn't exercise this field
+// at all, and it is the headline schema change of this bead (`ask:` renamed
+// and re-scoped to `show:`).
+func TestParsePromptFile_ShowField(t *testing.T) {
+	data := []byte(`name: "Show Prompt"
+parameters:
+  - name: Secret
+    type: text
+    show: never
+  - name: Instructions
+    type: text
+    show: always
+  - name: Note
+    type: text
+    show: auto
+  - name: Default
+    type: text
+prompt: |
+  body
+`)
+
+	prompt, err := ParsePromptFile("show.prompt.yaml", data, time.Now())
+	if err != nil {
+		t.Fatalf("ParsePromptFile failed: %v", err)
+	}
+	if len(prompt.Parameters) != 4 {
+		t.Fatalf("len(Parameters) = %d, want 4", len(prompt.Parameters))
+	}
+	wantShow := map[string]string{
+		"Secret":       ShowNever,
+		"Instructions": ShowAlways,
+		"Note":         ShowAuto,
+		"Default":      "", // absent show: key parses as the empty string, treated as ShowAuto.
+	}
+	for _, p := range prompt.Parameters {
+		want, ok := wantShow[p.Name]
+		if !ok {
+			t.Fatalf("unexpected parameter %q in parsed prompt", p.Name)
+		}
+		if p.Show != want {
+			t.Errorf("Parameters[%q].Show = %q, want %q", p.Name, p.Show, want)
+		}
+	}
+
+	// The field also survives the ToWebPrompt DTO conversion (a direct slice
+	// copy today, but this pins the contract so a future refactor that adds
+	// per-field copying can't silently drop Show).
+	wp := prompt.ToWebPrompt()
+	if len(wp.Parameters) != 4 || wp.Parameters[0].Show != ShowNever || wp.Parameters[1].Show != ShowAlways {
+		t.Fatalf("ToWebPrompt did not preserve Show: %+v", wp.Parameters)
+	}
+}
+
+func TestParsePromptFile_InvalidShowValue(t *testing.T) {
+	data := []byte(`name: "Bad Show Prompt"
+parameters:
+  - name: foo
+    type: text
+    show: sometimes
+prompt: |
+  body
+`)
+
+	_, err := ParsePromptFile("bad-show.prompt.yaml", data, time.Now())
+	if err == nil {
+		t.Fatal("ParsePromptFile should fail for unknown show value, got nil error")
+	}
+	if !strings.Contains(err.Error(), "unknown show value") {
+		t.Errorf("error = %q, want it to mention 'unknown show value'", err.Error())
+	}
+}
+
 func TestToWebPrompt_RoundTripsParameters(t *testing.T) {
 	req := true
 	pf := &PromptFile{
