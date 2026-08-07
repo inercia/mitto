@@ -66,6 +66,20 @@ type GCConfig struct {
 	MemoryRecycleThreshold uint64
 }
 
+// descendantRatchetStreak is the number of consecutive Tier 4 GC cycles a
+// workspace's descendant process count must strictly increase before a WARN
+// is emitted for an unbounded climb (mitto-52mt). This check is independent
+// of MemoryRecycleThreshold: a V8 heap-OOM inside a descendant MCP process is
+// a per-process cap decoupled from tree RSS, so RSS alone cannot see it.
+const descendantRatchetStreak = 3
+
+// descendantCountEntry tracks the descendant (MCP-child) process count
+// history for a single workspace across Tier 4 GC cycles (mitto-52mt).
+type descendantCountEntry struct {
+	lastCount int
+	streak    int // consecutive cycles with a strict increase over lastCount
+}
+
 // SessionQueryFunc returns running sessions grouped by workspace UUID.
 // Used by the GC to determine which processes still have active sessions.
 type SessionQueryFunc func() map[string][]conversation.SessionInfo
@@ -659,6 +673,12 @@ gcTier1:
 			parentRSS, descendantRSS, descendantCount, breakdownErr := breakdownSampler(p)
 			if breakdownErr != nil {
 				parentRSS, descendantRSS, descendantCount = 0, 0, 0
+			} else {
+				// Independent of the RSS predicate below (mitto-52mt): warn
+				// once the descendant count has climbed for
+				// descendantRatchetStreak consecutive cycles, regardless of
+				// whether tree RSS is over or under threshold.
+				m.checkDescendantCountRatchet(workspaceUUID, descendantCount)
 			}
 			if rss <= m.gcConfig.MemoryRecycleThreshold {
 				if m.logger != nil {
@@ -697,6 +717,7 @@ gcTier1:
 			// Keep sessionless bookkeeping consistent.
 			m.gcMu.Lock()
 			delete(m.lastSessionSeen, workspaceUUID)
+			delete(m.descendantCountHistory, workspaceUUID)
 			m.gcMu.Unlock()
 			// Notify clients so they can surface a toast. Affected conversations
 			// resume transparently on next focus.
@@ -981,4 +1002,41 @@ gcTier1:
 	// Tier 3: clean up idle auxiliary sessions
 	// ----------------------------------------------------------------
 	m.CleanupStaleAuxiliarySessions(m.gcConfig.AuxIdleTimeout)
+}
+
+// checkDescendantCountRatchet updates the per-workspace descendant-count
+// history and emits a WARN once the count has strictly increased for
+// descendantRatchetStreak consecutive Tier 4 GC cycles (mitto-52mt). This is
+// Tier 4's only descendant-sprawl signal that does not depend on aggregate
+// RSS: a V8 heap-OOM inside a descendant MCP process is a per-process cap
+// decoupled from tree RSS, so a process can crash from unbounded descendant
+// growth while comfortably under MemoryRecycleThreshold. The first sample
+// observed for a workspace only seeds the baseline — there is nothing yet to
+// compare it against.
+func (m *ACPProcessManager) checkDescendantCountRatchet(workspaceUUID string, descendantCount int) {
+	m.gcMu.Lock()
+	if m.descendantCountHistory == nil {
+		m.descendantCountHistory = make(map[string]*descendantCountEntry)
+	}
+	entry, ok := m.descendantCountHistory[workspaceUUID]
+	if !ok {
+		m.descendantCountHistory[workspaceUUID] = &descendantCountEntry{lastCount: descendantCount}
+		m.gcMu.Unlock()
+		return
+	}
+	if descendantCount > entry.lastCount {
+		entry.streak++
+	} else {
+		entry.streak = 0
+	}
+	entry.lastCount = descendantCount
+	streak := entry.streak
+	m.gcMu.Unlock()
+
+	if streak >= descendantRatchetStreak && m.logger != nil {
+		m.logger.Warn("GC: descendant count climbing without bound",
+			"workspace_uuid", workspaceUUID,
+			"descendant_count", descendantCount,
+			"consecutive_increases", streak)
+	}
 }

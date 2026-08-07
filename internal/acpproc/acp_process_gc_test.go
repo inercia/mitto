@@ -2393,3 +2393,100 @@ func installBreakdownSampler(m *ACPProcessManager, parentRSS, descendantRSS uint
 		return parentRSS, descendantRSS, descendantCount, nil
 	}
 }
+
+// TestGCTier4_DescendantCountRatchet_MITTO52MT is the failing reproduction for
+// mitto-52mt: an auggie ACP process aborted with a V8 "JavaScript heap out of
+// memory" fatal error after its descendant (MCP-child) process count ratcheted
+// monotonically from 82 to 98 over ~2 hours, while combined tree RSS stayed
+// pinned at ~2.16 GB -- well under the configured 6 GB MemoryRecycleThreshold.
+//
+// Root cause (see the mitto-52mt Investigation comment): Tier 4's only recycle
+// predicate is `rss <= MemoryRecycleThreshold` (acp_process_gc.go). The
+// descendantCount returned by the breakdown sampler is sampled every cycle but
+// used ONLY as a log attribute on the Debug-level "GC: memory recycle below
+// threshold" line -- it never drives a decision. The V8 heap abort is a
+// per-process cap decoupled from tree RSS (the parent held only ~204 MB at the
+// moment of the abort), so no RSS threshold can ever see this failure mode.
+//
+// This test replays the incident's exact descendant-count ratchet (82 -> 88 ->
+// 92 -> 98) across four successive GC cycles while RSS is held fixed at the
+// incident's reported values (parent ~204 MB, descendants ~1.95 GB), all far
+// below a 6 GB threshold so Tier 4's RSS predicate never fires. It asserts a
+// WARN-level log record surfaces the unbounded climb before the fix; today no
+// such record is ever emitted, so this test FAILS. After the fix adds a
+// count-based ratchet signal to Tier 4, it must PASS.
+func TestGCTier4_DescendantCountRatchet_MITTO52MT(t *testing.T) {
+	workspaceUUID := "ws-oncall-3d1c815e"
+	proc := newTestSharedProcess()
+
+	sessions := map[string][]conversation.SessionInfo{
+		workspaceUUID: {
+			{SessionID: "s1", WorkspaceUUID: workspaceUUID, HasObservers: true},
+		},
+	}
+
+	m := newTestGCManager(
+		func() map[string][]conversation.SessionInfo { return sessions },
+		func(id string) {},
+	)
+	cap := &captureHandler{}
+	m.logger = slog.New(cap)
+	m.mu.Lock()
+	m.processes[workspaceUUID] = proc
+	m.mu.Unlock()
+
+	// Mirrors the reported incident values: parent_rss_bytes=204390400,
+	// descendant_rss_bytes=1953677312, threshold_bytes=6442450944 (6 GiB).
+	const (
+		parentRSS     uint64 = 204390400
+		descendantRSS uint64 = 1953677312
+		threshold     uint64 = 6 * 1024 * 1024 * 1024
+	)
+	total := parentRSS + descendantRSS
+	if total >= threshold {
+		t.Fatalf("test setup: synthetic total %d must stay below threshold %d (matching the incident)", total, threshold)
+	}
+	m.gcConfig.MemoryRecycleThreshold = threshold
+	m.rssSampler = func(p *SharedACPProcess) (uint64, error) { return total, nil }
+
+	// Descendant count ratchets monotonically across successive GC cycles,
+	// exactly mirroring the incident timeline (14:23 -> 82, 15:08 -> 88,
+	// 16:11 -> 92, 17:08 -> 98), never shrinking, while RSS stays fixed and
+	// far below threshold throughout.
+	counts := []int{82, 88, 92, 98}
+	idx := 0
+	m.rssBreakdownSampler = func(p *SharedACPProcess) (uint64, uint64, int, error) {
+		c := counts[idx]
+		if idx < len(counts)-1 {
+			idx++
+		}
+		return parentRSS, descendantRSS, c, nil
+	}
+
+	for range counts {
+		m.RunGCOnce()
+	}
+
+	// Sanity: the process must survive every cycle -- RSS never crosses the
+	// threshold, so Tier 4's RSS-based recycle correctly never fires. If this
+	// fails, the test setup itself (not the ratchet-detection bug) is wrong.
+	m.mu.RLock()
+	_, exists := m.processes[workspaceUUID]
+	m.mu.RUnlock()
+	if !exists {
+		t.Fatal("test setup: process should not have been RSS-recycled (RSS stays below threshold throughout)")
+	}
+
+	// The bug: an unbounded, monotonically climbing descendant count is
+	// invisible today -- no WARN is ever emitted for it.
+	rec := cap.findRecord("GC: descendant count climbing without bound")
+	if rec == nil {
+		t.Fatalf("expected a WARN log once the descendant count ratchets %v while RSS stays below threshold (mitto-52mt), got none; captured=%d records", counts, len(cap.records))
+	}
+	if got, ok := attrInt64(rec, "descendant_count"); !ok || got != int64(counts[len(counts)-1]) {
+		t.Errorf("descendant_count: want %d, got %d (ok=%v)", counts[len(counts)-1], got, ok)
+	}
+	if got := attrValue(rec, "workspace_uuid"); got != workspaceUUID {
+		t.Errorf("workspace_uuid: want %q, got %v", workspaceUUID, got)
+	}
+}

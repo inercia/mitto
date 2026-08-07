@@ -100,7 +100,15 @@ type ACPProcessManager struct {
 	lastSessionSeen map[string]time.Time // per workspace UUID, when sessions were last present
 	sessionQuery    SessionQueryFunc
 	sessionClose    SessionCloseFunc
-	gcMu            sync.Mutex // protects lastSessionSeen and gc lifecycle fields
+	gcMu            sync.Mutex // protects lastSessionSeen, descendantCountHistory, and gc lifecycle fields
+	// descendantCountHistory tracks, per workspace UUID, the descendant
+	// (MCP-child) process count observed on the previous Tier 4 GC cycle and
+	// how many consecutive cycles it has strictly increased. Used to detect
+	// an unbounded climb (mitto-52mt) that the RSS-based Tier 4 predicate
+	// cannot see: a V8 heap-OOM inside a descendant is a per-process cap
+	// decoupled from tree RSS, so a process can crash from descendant
+	// sprawl while comfortably under MemoryRecycleThreshold.
+	descendantCountHistory map[string]*descendantCountEntry
 
 	// rssSampler samples the RSS (in bytes) of a shared process tree for the GC's
 	// memory-recycle tier. It defaults to (*SharedACPProcess).RSSBytes; tests
