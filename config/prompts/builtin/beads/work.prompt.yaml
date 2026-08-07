@@ -5,14 +5,6 @@ description: Review ready (not-in-progress) beads, present a prioritized recomme
 backgroundColor: '#B2DFDB'
 group: Tasks
 enabledWhen: '!Session.IsChild && CommandExists("bd") && DirExists(".beads") && Permissions.CanStartConversation'
-loop:
-  trigger: [onCompletion]
-  onCompletion:
-    delay: 60
-  onTasks:
-    coalesceDuringBusy: true
-  mode: optional
-  default: false
 target:
   title: 'Start working on ready'
   reuse:

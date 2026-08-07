@@ -2814,14 +2814,13 @@ func TestBuiltinPromptLoopModes(t *testing.T) {
 		"github/sync-tasks.prompt.yaml":            {mode: "optional", def: boolPtr(true)},
 		"jira/sync-tasks.prompt.yaml":              {mode: "optional", def: boolPtr(true)},
 
-		// Group C — optional / default:false (11).
+		// Group C — optional / default:false (10).
 		"ci/check-ci.prompt.yaml":                 {mode: "optional", def: boolPtr(false)},
 		"misc/continue.prompt.yaml":               {mode: "optional", def: boolPtr(false)},
 		"ci/fix-ci.prompt.yaml":                   {mode: "optional", def: boolPtr(false)},
 		"testing/run-tests.prompt.yaml":           {mode: "optional", def: boolPtr(false)},
 		"ci/analyze-logs.prompt.yaml":             {mode: "optional", def: boolPtr(false)},
 		"docs/architectural-analysis.prompt.yaml": {mode: "optional", def: boolPtr(false)},
-		"beads/work.prompt.yaml":                  {mode: "optional", def: boolPtr(false)},
 		"github/review-slack-prs.prompt.yaml":     {mode: "optional", def: boolPtr(false)},
 		"jira/status-all-inprogress.prompt.yaml":  {mode: "optional", def: boolPtr(false)},
 		"jira/status-one-inprogress.prompt.yaml":  {mode: "optional", def: boolPtr(false)},
@@ -2880,6 +2879,10 @@ func TestBuiltinPromptLoopModes(t *testing.T) {
 		"beads/status-one-inprogress.prompt.yaml",
 		"beads-issues/status.prompt.yaml",
 		"beads-issues/work.prompt.yaml",
+		// Interactive-only: body blocks on mitto_ui_options for prior-bead
+		// disambiguation, ranked pick, and plan approval — already covered
+		// unattended by the "Loop processing tasks" prompt (mitto-qaej).
+		"beads/work.prompt.yaml",
 	}
 
 	for _, file := range neverFiles {
