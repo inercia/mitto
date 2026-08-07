@@ -3711,6 +3711,100 @@ prompt: |
 	}
 }
 
+// knownMenuTokens mirrors the frontend menu registry (MENU_PARAM_TYPES in
+// web/static/utils/prompts.js) plus the "internal" token, which is used
+// throughout the builtin tree to mark a prompt as dispatch-only (never shown
+// in any UI menu) but is intentionally NOT part of MENU_PARAM_TYPES.
+//
+// Go has no compile-time link to the JS registry, so this list must be kept
+// in sync by hand if a new menu is ever added on the frontend.
+var knownMenuTokens = map[string]bool{
+	"prompts":      true,
+	"promptsLoop":  true,
+	"conversation": true,
+	"beadsIssues":  true,
+	"beadsList":    true,
+	"internal":     true,
+}
+
+// TestBuiltinPrompts_MenusTokensRecognized walks every .prompt.yaml in
+// config/prompts/builtin/ and asserts that each comma-separated token in its
+// `menus:` field is a recognised menu name (see knownMenuTokens above). A
+// token may be prefixed with "!" (exclusion) — the prefix is stripped before
+// comparison.
+//
+// This is a regression guard for mitto-kazd: `menus: prompts, conversations`
+// (plural, unrecognised) in babysit-this-pr.prompt.yaml silently dropped the
+// prompt from the conversation context menu with no error anywhere in the
+// pipeline, because neither ParsePromptFile nor ValidatePromptParameters
+// inspects the menus string's tokens — only the frontend does an exact-match
+// filter, so an unknown token fails silently rather than loudly.
+func TestBuiltinPrompts_MenusTokensRecognized(t *testing.T) {
+	builtinDir := filepath.Join("..", "..", "config", "prompts", "builtin")
+	if _, err := os.Stat(builtinDir); err != nil {
+		t.Skipf("builtin prompts dir not found at %s: %v", builtinDir, err)
+	}
+
+	// Install the on-disk fragment registry so ParsePromptFile can resolve
+	// `{{ template "name" . }}` refs at parse-time precompile (mirrors
+	// TestBuiltinPromptsParseClean). Without this, most builtin prompts fail
+	// to parse and get silently skipped below, which is exactly how this
+	// test almost missed the mitto-kazd regression during development.
+	prev := CurrentFragments()
+	t.Cleanup(func() { SetCurrentFragments(prev) })
+	reg, loadErrs, ferr := LoadFragmentsFromDir(builtinDir)
+	if ferr != nil {
+		t.Fatalf("LoadFragmentsFromDir(builtin): %v", ferr)
+	}
+	if len(loadErrs) != 0 {
+		t.Fatalf("LoadFragmentsFromDir(builtin) per-file errors: %+v", loadErrs)
+	}
+	SetCurrentFragments(reg)
+
+	checked := 0
+	walkErr := filepath.WalkDir(builtinDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() || !strings.HasSuffix(d.Name(), ".prompt.yaml") {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Errorf("ReadFile(%s): %v", d.Name(), err)
+			return nil
+		}
+		prompt, err := ParsePromptFile(d.Name(), data, time.Now())
+		if err != nil {
+			// Parse errors are reported by TestBuiltinPromptsParseClean.
+			return nil
+		}
+		if prompt.Menus == "" {
+			return nil
+		}
+		for _, raw := range strings.Split(prompt.Menus, ",") {
+			token := strings.TrimSpace(raw)
+			token = strings.TrimPrefix(token, "!")
+			if token == "" {
+				continue
+			}
+			if !knownMenuTokens[token] {
+				t.Errorf("%s: menus %q contains unrecognised token %q (known: prompts, promptsLoop, conversation, beadsIssues, beadsList, internal)",
+					d.Name(), prompt.Menus, token)
+			}
+		}
+		checked++
+		return nil
+	})
+	if walkErr != nil {
+		t.Fatalf("WalkDir(%s): %v", builtinDir, walkErr)
+	}
+	if checked == 0 {
+		t.Error("no builtin prompt files found — something is wrong with the path")
+	}
+	t.Logf("validated menus tokens on %d builtin prompt files", checked)
+}
+
 func TestToWebPrompt_RoundTripsCacheBlock(t *testing.T) {
 	pf := &PromptFile{
 		Name:    "Cached Param Prompt",

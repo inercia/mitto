@@ -1,6 +1,6 @@
 icon: globe
 name: 'GitHub: babysit this PR'
-menus: prompts, conversations
+menus: prompts, conversation
 parameters:
   - name: Pr
     type: text
