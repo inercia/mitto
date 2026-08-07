@@ -63,9 +63,10 @@ type PendingDispatchStore interface {
 	// Append adds one undelivered batch to the workspace's pending spool.
 	Append(entry PendingDispatchEntry) error
 	// Load returns the workspace's currently spooled entries, oldest first.
-	// Entries older than pendingDispatchMaxAge are dropped (with a WARN by
-	// the caller) and never returned. Returns a nil/empty slice (not an
-	// error) when there is no spool file for the workspace.
+	// Entries older than pendingDispatchMaxAge are dropped and never
+	// returned; the pruned set is persisted so an all-stale spool is
+	// reclaimed rather than lingering forever. Returns a nil/empty slice
+	// (not an error) when there is no spool file for the workspace.
 	Load(workspaceUUID string) ([]PendingDispatchEntry, error)
 	// Replace atomically overwrites the workspace's spool with entries. An
 	// empty/nil entries removes the spool file entirely. Used by
@@ -137,9 +138,11 @@ func (s *FilePendingDispatchStore) Append(entry PendingDispatchEntry) error {
 }
 
 // Load implements PendingDispatchStore. Entries older than
-// pendingDispatchMaxAge are silently dropped from the returned slice (they
-// are not written back here — FlushPendingDispatches' Replace call, not
-// Load, is responsible for persisting the pruned set).
+// pendingDispatchMaxAge are dropped from the returned slice and the pruned
+// set is written back under the same lock — otherwise a spool whose entries
+// have all aged out is never returned to (and never claimed by)
+// FlushPendingDispatches, so its file would linger on disk indefinitely
+// despite the age cap.
 func (s *FilePendingDispatchStore) Load(workspaceUUID string) ([]PendingDispatchEntry, error) {
 	if workspaceUUID == "" {
 		return nil, fmt.Errorf("pending dispatch load missing workspace UUID")
@@ -163,12 +166,19 @@ func (s *FilePendingDispatchStore) Load(workspaceUUID string) ([]PendingDispatch
 	}
 
 	cutoff := time.Now().Add(-pendingDispatchMaxAge)
+	total := len(entries)
 	fresh := entries[:0]
 	for _, e := range entries {
 		if e.SavedAt.Before(cutoff) {
 			continue
 		}
 		fresh = append(fresh, e)
+	}
+	// Persist the pruned set best-effort: a write failure only means the
+	// stale entries are re-pruned on the next Load, never that a fresh
+	// entry is lost, so the caller still gets the fresh set.
+	if len(fresh) != total {
+		_ = s.writeLocked(path, fresh)
 	}
 	return fresh, nil
 }
@@ -190,6 +200,12 @@ func (s *FilePendingDispatchStore) Replace(workspaceUUID string, entries []Pendi
 	}
 	path := filepath.Join(dir, workspaceUUID+".json")
 
+	return s.writeLocked(path, entries)
+}
+
+// writeLocked persists entries to path, removing the file entirely when
+// there is nothing left to keep. Callers must hold s.mu.
+func (s *FilePendingDispatchStore) writeLocked(path string, entries []PendingDispatchEntry) error {
 	if len(entries) == 0 {
 		if rmErr := os.Remove(path); rmErr != nil && !os.IsNotExist(rmErr) {
 			return fmt.Errorf("failed to remove pending dispatch spool: %w", rmErr)

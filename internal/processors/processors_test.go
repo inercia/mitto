@@ -19,6 +19,7 @@ import (
 	rootconfig "github.com/inercia/mitto/config"
 	"github.com/inercia/mitto/internal/acpproc/acperrors"
 	"github.com/inercia/mitto/internal/config"
+	"github.com/inercia/mitto/internal/fileutil"
 )
 
 func TestBuildCELContext_ArgsAndLoopForced(t *testing.T) {
@@ -6980,6 +6981,43 @@ func TestFilePendingDispatchStore_Load_DropsStaleEntries(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].Name != "fresh" {
 		t.Fatalf("Load() = %+v, want only the fresh entry (stale entry older than pendingDispatchMaxAge must be dropped)", got)
+	}
+
+	// The pruned set must be persisted, not just filtered in memory.
+	var onDisk []PendingDispatchEntry
+	if readErr := fileutil.ReadJSON(filepath.Join(dir, wsUUID+".json"), &onDisk); readErr != nil {
+		t.Fatalf("ReadJSON() error = %v", readErr)
+	}
+	if len(onDisk) != 1 || onDisk[0].Name != "fresh" {
+		t.Fatalf("on-disk spool = %+v, want the stale entry pruned and written back", onDisk)
+	}
+}
+
+// TestFilePendingDispatchStore_Load_RemovesAllStaleSpool verifies that a
+// spool whose entries have all aged out is reclaimed from disk by Load
+// rather than lingering forever: FlushPendingDispatches never sees an empty
+// result set, so nothing else would ever delete the file.
+func TestFilePendingDispatchStore_Load_RemovesAllStaleSpool(t *testing.T) {
+	dir := t.TempDir()
+	store := &FilePendingDispatchStore{BaseDir: dir}
+	const wsUUID = "ws-all-stale"
+
+	stale := PendingDispatchEntry{WorkspaceUUID: wsUUID, Name: "stale", Prompt: "p", SavedAt: time.Now().Add(-48 * time.Hour)}
+	if err := store.Replace(wsUUID, []PendingDispatchEntry{stale}); err != nil {
+		t.Fatalf("Replace() error = %v", err)
+	}
+
+	got, err := store.Load(wsUUID)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("Load() = %+v, want no entries", got)
+	}
+
+	spoolPath := filepath.Join(dir, wsUUID+".json")
+	if _, statErr := os.Stat(spoolPath); !os.IsNotExist(statErr) {
+		t.Fatalf("expected the fully-stale spool file to be removed, stat err = %v", statErr)
 	}
 }
 
