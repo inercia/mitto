@@ -151,8 +151,9 @@ schema-versioned or migrated — `EffectiveTriggers()`'s fallback chain already
 reads every persisted shape, so live loops from before mitto-r6j keep working
 unchanged after upgrade. A `.prompt.yaml` file on the old flat form is
 auto-migrated on load (WARN + on-disk line-splice rewrite, comments
-preserved, idempotent) by `internal/prompts/migrate`; `.mittorc` inline
-`prompts:` are NOT auto-migrated (mitto-opoh). See
+preserved, idempotent) by `internal/prompts/migrate`; inline `prompts:` blocks
+(`.mittorc`, `settings.yaml`, per-ACP-server) are migrated **in memory only**
+via `prompts.DecodeInlineLoop` — WARN, no on-disk rewrite (mitto-opoh). See
 [docs/config/prompts.md § Loop Prompts](docs/config/prompts.md#loop-prompts)
 and
 [docs/devel/message-queue.md § Multi-Trigger Architecture](docs/devel/message-queue.md#loop-prompts-multi-trigger-architecture).
