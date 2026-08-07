@@ -99,7 +99,15 @@ var (
 	// ErrInvalidMaxIterations is returned when max_iterations is negative.
 	ErrInvalidMaxIterations = errors.New("invalid max_iterations: must be >= 0")
 	// ErrInvalidTrigger is returned when the trigger value is not recognised.
-	ErrInvalidTrigger = errors.New("invalid trigger: must be empty, schedule, onCompletion, or onTasks")
+	ErrInvalidTrigger = errors.New("invalid trigger: must be empty, schedule, onCompletion, onTasks, or onChild")
+	// ErrInvalidChildEvent is returned when a child_events entry is not one of
+	// the recognised onChild event names.
+	ErrInvalidChildEvent = errors.New("invalid child event: must be anyEndResponse or anyDeleted")
+	// ErrOnChildAlone is returned when onChild is the only armed trigger. The
+	// onChild leg is purely reactive to a child's lifecycle, so a loop armed
+	// with nothing else would never fire on its own for a conversation that has
+	// no children yet.
+	ErrOnChildAlone = errors.New("invalid trigger: onChild cannot be the only trigger")
 	// ErrInvalidDelay is returned when delay_seconds is negative.
 	ErrInvalidDelay = errors.New("invalid delay_seconds: must be >= 0")
 	// ErrInvalidMaxDuration is returned when max_duration_seconds is negative.
@@ -122,7 +130,31 @@ const (
 	// TriggerOnTasks fires when beads/tasks in the workspace change, optionally
 	// gated by a CEL Condition (event-driven).
 	TriggerOnTasks LoopTrigger = "onTasks"
+	// TriggerOnChild fires when a child conversation of the loop conversation
+	// reaches one of the lifecycle events listed in ChildEvents (event-driven).
+	// It is an additive trigger only: it cannot be armed on its own (see
+	// ErrOnChildAlone).
+	TriggerOnChild LoopTrigger = "onChild"
 )
+
+// ChildEvent names a child-conversation lifecycle event that arms the onChild
+// trigger.
+type ChildEvent string
+
+const (
+	// ChildEventAnyEndResponse fires when any child of the loop conversation
+	// finishes an agent response and goes idle.
+	ChildEventAnyEndResponse ChildEvent = "anyEndResponse"
+	// ChildEventAnyDeleted fires when any child of the loop conversation is
+	// deleted.
+	ChildEventAnyDeleted ChildEvent = "anyDeleted"
+)
+
+// DefaultChildEvents is the event set applied when onChild is armed without an
+// explicit ChildEvents list: both recognised events.
+func DefaultChildEvents() []ChildEvent {
+	return []ChildEvent{ChildEventAnyEndResponse, ChildEventAnyDeleted}
+}
 
 // ConditionValidator is an optional package-level seam that compile-validates a
 // CEL Condition expression. It is nil by default; the config package wires it up
@@ -304,6 +336,24 @@ type LoopPrompt struct {
 	// state. 0 or nil = disabled (current fire-on-first-delta behaviour). Only
 	// meaningful when Trigger is onTasks (mitto-1uv).
 	SettleWindowSeconds *int `json:"settle_window_seconds,omitempty"`
+	// ChildEvents lists the child-conversation lifecycle events that fire this
+	// loop. Empty falls back to DefaultChildEvents() (both events). Only
+	// meaningful when onChild is among the armed triggers.
+	ChildEvents []ChildEvent `json:"child_events,omitempty"`
+}
+
+// EffectiveChildEvents returns the resolved onChild event set: ChildEvents
+// verbatim when non-empty, otherwise DefaultChildEvents().
+func (p *LoopPrompt) EffectiveChildEvents() []ChildEvent {
+	if len(p.ChildEvents) > 0 {
+		return p.ChildEvents
+	}
+	return DefaultChildEvents()
+}
+
+// HasChildEvent reports whether the resolved onChild event set includes e.
+func (p *LoopPrompt) HasChildEvent(e ChildEvent) bool {
+	return slices.Contains(p.EffectiveChildEvents(), e)
 }
 
 // ShouldCoalesceDuringBusy reports whether the onTasks trigger should silently
@@ -384,6 +434,11 @@ func (p *LoopPrompt) IsOnCompletion() bool {
 // IsOnTasks returns true when this loop prompt's trigger list includes onTasks.
 func (p *LoopPrompt) IsOnTasks() bool {
 	return p.HasTrigger(TriggerOnTasks)
+}
+
+// IsOnChild returns true when this loop prompt's trigger list includes onChild.
+func (p *LoopPrompt) IsOnChild() bool {
+	return p.HasTrigger(TriggerOnChild)
 }
 
 // pendingPlaceholder is a legacy draft placeholder written by older frontends
@@ -487,7 +542,7 @@ func (p *LoopPrompt) Validate() error {
 		return ErrInvalidMaxIterations
 	}
 	switch p.Trigger {
-	case "", TriggerSchedule, TriggerOnCompletion, TriggerOnTasks:
+	case "", TriggerSchedule, TriggerOnCompletion, TriggerOnTasks, TriggerOnChild:
 		// valid
 	default:
 		return ErrInvalidTrigger
@@ -495,7 +550,7 @@ func (p *LoopPrompt) Validate() error {
 	seenTriggers := make(map[LoopTrigger]bool, len(p.Triggers))
 	for _, t := range p.Triggers {
 		switch t {
-		case TriggerSchedule, TriggerOnCompletion, TriggerOnTasks:
+		case TriggerSchedule, TriggerOnCompletion, TriggerOnTasks, TriggerOnChild:
 			// valid
 		default:
 			return ErrInvalidTrigger
@@ -504,6 +559,23 @@ func (p *LoopPrompt) Validate() error {
 			return fmt.Errorf("%w: duplicate trigger %q", ErrInvalidTrigger, t)
 		}
 		seenTriggers[t] = true
+	}
+	// Reject unknown child_events entries. Validated against the raw slice, not
+	// EffectiveChildEvents() — the defaults are valid by construction, so
+	// validating the effective set would waste work and mask nothing.
+	for _, e := range p.ChildEvents {
+		switch e {
+		case ChildEventAnyEndResponse, ChildEventAnyDeleted:
+			// valid
+		default:
+			return fmt.Errorf("%w: %q", ErrInvalidChildEvent, e)
+		}
+	}
+	// onChild is purely reactive to a child's lifecycle, so it must never be
+	// the only armed trigger. Evaluated against EffectiveTriggers() so this
+	// also catches the legacy scalar form (Trigger: onChild alone).
+	if eff := p.EffectiveTriggers(); len(eff) == 1 && eff[0] == TriggerOnChild {
+		return ErrOnChildAlone
 	}
 	if p.DelaySeconds < 0 {
 		return ErrInvalidDelay
@@ -631,7 +703,11 @@ type LoopUpdate struct {
 	// here. Update NEVER derives Triggers from a legacy scalar trigger value;
 	// Normalize() (called below) keeps the legacy Trigger field in sync with
 	// Triggers[0] purely for on-disk/wire back-compat with old readers.
-	Triggers           *[]LoopTrigger
+	Triggers *[]LoopTrigger
+	// ChildEvents, when non-nil, REPLACES the stored child-event list
+	// wholesale (same semantics as Triggers). A nil pointer means "leave the
+	// child-event list unchanged".
+	ChildEvents        *[]ChildEvent
 	DelaySeconds       *int
 	MaxDurationSeconds *int
 	Arguments          *map[string]string
@@ -687,6 +763,10 @@ func (ps *LoopStore) Update(u LoopUpdate) error {
 		// Replace wholesale. Normalize() (below) syncs the legacy scalar
 		// Trigger field from Triggers[0] — never the other way around.
 		existing.Triggers = *u.Triggers
+	}
+	if u.ChildEvents != nil {
+		// Replace wholesale, same as Triggers.
+		existing.ChildEvents = *u.ChildEvents
 	}
 	if u.DelaySeconds != nil {
 		existing.DelaySeconds = *u.DelaySeconds
