@@ -1,0 +1,27 @@
+{{/*
+  investigate-gaps — the canonical taxonomy of "what is unclear or
+  underspecified" used by both investigation prompts
+  (beads-issues/investigate and beads/investigate-all-more ("Investigate
+  ALL more")). Keeping the taxonomy in one place means both prompts look for
+  the same classes of gap.
+
+  Parameters (dict):
+    From — the back-reference to the steps that produced the evidence,
+           e.g. "Steps 1–2" / "Steps 2–3". Defaults to "the steps above".
+
+      {{ template "beads-issues/shared/investigate-gaps" (dict "From" "Steps 1–2") }}
+
+  The fragment emits only the lead-in and the bullet list — each caller
+  appends its own sentence about how unresolved gaps are handled (ask the
+  user, or defer the bead in an unattended pass).
+*/}}
+{{- $from := "the steps above" -}}
+{{- with .From }}{{ $from = . }}{{ end -}}
+From {{ $from }}, list precisely what is unclear or underspecified about the bead or current problem, e.g.:
+
+- Vague or overly broad scope; unclear problem statement
+- Missing or untestable **acceptance criteria**
+- Undefined **edge cases**, error handling, or non-functional requirements
+- No **design/approach** where one is needed; unknown technical trade-offs
+- Unstated **dependencies** on other beads or systems
+- Ambiguous priority or type

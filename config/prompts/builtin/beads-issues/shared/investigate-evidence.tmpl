@@ -1,0 +1,30 @@
+{{/*
+  investigate-evidence — the "gather hard evidence against the codebase and
+  history" block shared by the two investigation prompts: the single-bead
+  deep dive (beads-issues/investigate) and the all-open-beads pass
+  (beads/investigate-all-more ("Investigate ALL more")).
+
+  The template argument (`.` inside the fragment) is the bead ID as a plain
+  string, following the same convention as
+  `beads-issues/shared/load-context`. Pass an empty string when there is no
+  bead (the conversation-topic fallback): the bead-scoped commands are then
+  omitted and only the generic history scan remains. Multi-bead callers pass
+  the literal `<bead-id>` placeholder.
+
+      {{ template "beads-issues/shared/investigate-evidence" $target }}
+      {{ template "beads-issues/shared/investigate-evidence" "<bead-id>" }}
+*/}}
+Do **not** rely on the bead or current problem statement alone. Gather hard evidence to flesh it out:
+
+- **Codebase**: locate the files, symbols, APIs, UI, or config the bead or current problem concerns.
+  Understand the current behaviour, the relevant constraints, and what a solution would realistically touch.
+- **Related beads**: search for beads that overlap, block, or inform this one.
+- **History**: prior or in-flight work that affects scope.
+
+```bash
+{{ if . -}}
+git log --oneline --all | grep -i "{{ . }}"   # commits referencing this bead
+bd list --json                                      # scan for related beads by topic
+{{ end -}}
+git log --oneline -200                              # recent work that touches the area
+```

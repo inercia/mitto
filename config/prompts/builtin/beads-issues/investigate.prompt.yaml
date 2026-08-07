@@ -39,31 +39,11 @@ prompt: |
 
   ## Step 2 — Investigate against the codebase and history
 
-  Do **not** rely on the bead or current problem statement alone. Gather hard evidence to flesh it out:
-
-  - **Codebase**: locate the files, symbols, APIs, UI, or config the bead or current problem concerns.
-    Understand the current behaviour, the relevant constraints, and what a solution would realistically touch.
-  - **Related beads**: search for beads that overlap, block, or inform this one.
-  - **History**: prior or in-flight work that affects scope.
-
-  ```bash
-  {{ if $target -}}
-  git log --oneline --all | grep -i "{{ $target }}"   # commits referencing this bead
-  bd list --json                                      # scan for related beads by topic
-  {{ end -}}
-  git log --oneline -200                              # recent work that touches the area
-  ```
+  {{ template "beads-issues/shared/investigate-evidence" $target }}
 
   ## Step 3 — Identify gaps and open questions
 
-  From Steps 1–2, list precisely what is unclear or underspecified about the bead or current problem, e.g.:
-
-  - Vague or overly broad scope; unclear problem statement
-  - Missing or untestable **acceptance criteria**
-  - Undefined **edge cases**, error handling, or non-functional requirements
-  - No **design/approach** where one is needed; unknown technical trade-offs
-  - Unstated **dependencies** on other beads or systems
-  - Ambiguous priority or type
+  {{ template "beads-issues/shared/investigate-gaps" (dict "From" "Steps 1–2") }}
 
   For each gap, note whether you can resolve it from the evidence or need the user to decide.
 
@@ -89,20 +69,7 @@ prompt: |
 
   Produce a concise **Investigation Report** and the concrete updates you propose:
 
-  {{ if $target -}}
-  ### Bead: `{{ $target }}` — `<Title>`
-  {{- else -}}
-  ### Current problem — `<Topic>`
-  {{- end }}
-
-  - **Clarified problem & scope**: a tightened statement of what this bead or current problem covers.
-  - **Findings & code locations**: key files/symbols and current behaviour, with evidence.
-  - **Refined acceptance criteria**: specific, testable conditions for "done".
-  - **Design notes**: the recommended approach, trade-offs, and constraints (if applicable).
-  - **Edge cases & risks**: what could break or is easy to miss.
-  - **Resolved questions**: the answers settled in Step 4.
-  - **Recommended sub-issues** (only if Step 5 says split): for each, a **title**, one-line scope,
-    type/priority, and any dependency on a sibling.
+  {{ template "beads-issues/shared/investigate-report" (dict "Target" $target "SubIssues" true) }}
 
   {{ if $target -}}
   ## Step 7 — Confirm before writing
@@ -120,25 +87,7 @@ prompt: |
 
   ## Step 8 — Apply the approved changes
 
-  Enrich the bead (only the fields that changed). Write longer text to a temp file and pass it via a
-  `*-file` flag to preserve Markdown:
-
-  ```bash
-  bd update {{ $target }} --body-file /tmp/bead-desc.md     # enriched description
-  bd update {{ $target }} --acceptance "<testable criteria>"
-  bd update {{ $target }} --design-file /tmp/bead-design.md # design/approach notes
-  # Record the investigation in the bead's history for future reference — write the Investigation
-  # Report from Step 6 (findings, code locations, design notes, resolved questions) to a temp file
-  # and post it as a comment:
-  bd comment {{ $target }} --file /tmp/investigation-report.md
-  # Audit note (always) — what changed and why, in plain language:
-  bd update {{ $target }} --append-notes "<what changed and why — e.g. 'After deeper investigation, the bug stems from <root cause>; updated the description and acceptance criteria accordingly.'>"
-  # Optional: --add-label <l>, -p <0-4>, -t <type> if the investigation changed them
-  ```
-
-  **Always** append the audit note above whenever you change any field — record *what changed and
-  why* in plain language, even for small edits, so the bead carries its own history. The `bd comment`
-  posts the fuller investigation findings as a durable work artifact in the bead's discussion.
+  {{ template "beads-issues/shared/investigate-apply" (dict "Target" $target) }}
 
   Create approved **sub-issues** as children, then wire any dependencies:
 
