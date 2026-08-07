@@ -4933,6 +4933,85 @@ func TestBuiltinPrompts_EnabledWhenCompiles(t *testing.T) {
 	t.Logf("compiled enabledWhen for %d builtin prompts", n)
 }
 
+// TestBuiltinPrompts_NoInertLoopTriggerBlocks pins mitto-7hh0: no builtin
+// prompt may declare a per-trigger loop block (loop.schedule, loop.onCompletion,
+// loop.onTasks, loop.onChild) for a trigger that isn't listed in loop.trigger.
+// Such a block is inert — ValidateLoopTriggers only WARNs on it (fields are
+// tolerated so hand-authored/migrated prompts don't hard-fail), but a
+// well-maintained builtin fixture should never ship dead configuration. This
+// is the Go-test equivalent of `mitto prompts verify`'s "this block is inert"
+// warning and is what mitto-7hh0's acceptance criterion ("mitto prompts
+// verify emits zero inert-block warnings") reduces to at the unit level.
+//
+// The list of affected prompts is intentionally not enumerated: the test
+// walks every builtin file so a future prompt that reintroduces an inert
+// block (e.g. a copy-paste of an old loop: stanza, or a migration that nests
+// a field under the wrong trigger block) is caught automatically.
+func TestBuiltinPrompts_NoInertLoopTriggerBlocks(t *testing.T) {
+	builtinDir := filepath.Join("..", "..", "config", "prompts", "builtin")
+	if _, err := os.Stat(builtinDir); err != nil {
+		t.Skipf("builtin prompts dir not found at %s: %v", builtinDir, err)
+	}
+	// Install the on-disk fragment registry so ParsePromptFile can resolve
+	// `{{ template "name" . }}` refs at parse-time precompile (mitto-g61.4);
+	// otherwise most builtin prompts fail to parse and are silently skipped
+	// below, undercounting this sweep. Mirrors TestBuiltinPromptsParseClean.
+	prevFrags := CurrentFragments()
+	t.Cleanup(func() { SetCurrentFragments(prevFrags) })
+	reg, loadErrs, ferr := LoadFragmentsFromDir(builtinDir)
+	if ferr != nil {
+		t.Fatalf("LoadFragmentsFromDir(builtin): %v", ferr)
+	}
+	if len(loadErrs) != 0 {
+		t.Fatalf("LoadFragmentsFromDir(builtin) per-file errors: %+v", loadErrs)
+	}
+	SetCurrentFragments(reg)
+	checkedWithLoop := 0
+	walkErr := filepath.WalkDir(builtinDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() || !strings.HasSuffix(d.Name(), ".prompt.yaml") {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Errorf("ReadFile(%s): %v", d.Name(), err)
+			return nil
+		}
+		prompt, err := ParsePromptFile(d.Name(), data, time.Now())
+		if err != nil {
+			t.Errorf("ParsePromptFile(%s): %v", d.Name(), err) // should never fail here; TestBuiltinPromptsParseClean also pins this
+			return nil
+		}
+		if prompt.Loop == nil {
+			return nil
+		}
+		checkedWithLoop++
+		loop := prompt.Loop
+		if loop.Schedule != nil && !loop.hasTrigger("schedule") {
+			t.Errorf("%s: loop.schedule is set but %q is not in loop.trigger %v — this block is inert", d.Name(), "schedule", loop.Trigger)
+		}
+		if loop.OnCompletion != nil && !loop.hasTrigger("onCompletion") {
+			t.Errorf("%s: loop.onCompletion is set but %q is not in loop.trigger %v — this block is inert", d.Name(), "onCompletion", loop.Trigger)
+		}
+		if loop.OnTasks != nil && !loop.hasTrigger("onTasks") {
+			t.Errorf("%s: loop.onTasks is set but %q is not in loop.trigger %v — this block is inert", d.Name(), "onTasks", loop.Trigger)
+		}
+		if loop.OnChild != nil && !loop.hasTrigger("onChild") {
+			t.Errorf("%s: loop.onChild is set but %q is not in loop.trigger %v — this block is inert", d.Name(), "onChild", loop.Trigger)
+		}
+		return nil
+	})
+	if walkErr != nil {
+		t.Fatalf("WalkDir(%s): %v", builtinDir, walkErr)
+	}
+	if checkedWithLoop == 0 {
+		t.Error("no builtin prompts with a loop: block were checked — the walk found none, which is unexpected")
+	}
+	t.Logf("checked %d builtin prompts with a loop: block for inert trigger sub-blocks", checkedWithLoop)
+}
+
 // TestParsePromptFile_UnknownFragmentFails pins mitto-g61.4: a prompt whose
 // body references an unknown fragment must fail at ParsePromptFile (load
 // time), same class of failure as an unbalanced `{{ ... }}` — not silently
