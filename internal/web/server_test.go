@@ -31,6 +31,39 @@ func TestConfig_GetWorkspaces_WithWorkspaces(t *testing.T) {
 	}
 }
 
+// TestServer_beadsStatsWorkspaces pins the mitto-5rm6.3 BeadsWorkspaceLister
+// wiring: empty WorkingDir is skipped, and two workspace entries sharing a
+// WorkingDir (e.g. different ACP servers) are deduped to one BeadsWorkspace,
+// mirroring getBeadsWatchDirs' dedup semantics.
+func TestServer_beadsStatsWorkspaces(t *testing.T) {
+	sm := conversation.NewSessionManager("", "", false, nil)
+	sm.SetWorkspaces([]config.WorkspaceSettings{
+		{UUID: "ws-1", WorkingDir: "/a", ACPServer: "server1"},
+		{UUID: "ws-2", WorkingDir: "/b", ACPServer: "server1"},
+		{UUID: "ws-3", WorkingDir: "/b", ACPServer: "server2"}, // dup dir -> deduped
+		{UUID: "ws-4", WorkingDir: ""},                         // empty dir -> skipped
+	})
+	s := &Server{sessionManager: sm}
+
+	got := s.beadsStatsWorkspaces()
+	if len(got) != 2 {
+		t.Fatalf("beadsStatsWorkspaces() returned %d entries, want 2: %+v", len(got), got)
+	}
+	byDir := make(map[string]string, len(got))
+	for _, ws := range got {
+		byDir[ws.Dir] = ws.UUID
+	}
+	if byDir["/a"] != "ws-1" {
+		t.Errorf("byDir[/a] = %q, want ws-1", byDir["/a"])
+	}
+	if byDir["/b"] != "ws-2" {
+		t.Errorf("byDir[/b] = %q, want ws-2 (first entry for a duplicated dir wins)", byDir["/b"])
+	}
+	if _, ok := byDir[""]; ok {
+		t.Error("beadsStatsWorkspaces() should skip empty WorkingDir")
+	}
+}
+
 func TestConfig_GetWorkspaces_LegacyFields(t *testing.T) {
 	cfg := &Config{
 		ACPServer:         "legacy-server",

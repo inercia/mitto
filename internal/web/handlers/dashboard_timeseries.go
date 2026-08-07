@@ -27,6 +27,10 @@ var v1MetricSet = []string{
 	stats.MetricMCPCalls,
 	stats.MetricPermissionsPrompted,
 	stats.MetricErrors,
+	stats.MetricBeadsOpened,
+	stats.MetricBeadsClosed,
+	stats.MetricBeadsCycleSecondsSum,
+	stats.MetricBeadsCycleClosedCount,
 }
 
 // tsPoint is one (unix-seconds, value) datum in a series.

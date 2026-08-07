@@ -303,6 +303,12 @@ type Server struct {
 	statsStore      stats.Store
 	statsAggregator stats.Aggregator
 	statsBackfiller stats.Backfiller
+	// statsBeadsSource (mitto-5rm6.3) periodically re-derives the beads_*
+	// throughput/cycle-time metrics from `bd list` snapshots, independently
+	// of statsBackfiller/statsAggregator (beads are state, not an event
+	// stream — see internal/stats/beads_source.go's package doc). Nil when
+	// the stats subsystem was not wired.
+	statsBeadsSource *stats.BeadsSource
 	// statsRetention (mitto-a86b.9) runs the nightly prune + weekly Sunday
 	// VACUUM against statsStore. Nil when the subsystem was not wired.
 	statsRetention *stats.RetentionWorker
@@ -1141,6 +1147,18 @@ func NewServer(config Config) (*Server, error) {
 	})
 	s.statsBackfiller.Start(context.Background())
 
+	// BeadsSource (mitto-5rm6.3): periodic full re-derivation of the beads_*
+	// metrics from a `bd list` snapshot per workspace. Uses s.beads (the
+	// injectable Client — possibly wrapped by beads.NewCachingClient and/or
+	// the watcher-suppression runner set up above) as the BeadsLister; its
+	// List(ctx, dir) signature matches stats.BeadsLister exactly. Workspace
+	// enumeration reuses the same source/dedup as getBeadsWatchDirs so both
+	// subsystems agree on which directories are in scope.
+	s.statsBeadsSource = stats.NewBeadsSource(s.statsStore, s.beads, s.beadsStatsWorkspaces, stats.BeadsSourceOptions{
+		Logger: logger,
+	})
+	s.statsBeadsSource.Start(context.Background())
+
 	// Retention worker (mitto-a86b.9): nightly prune of hourly rows past the
 	// configured retention window (default 90d) + weekly Sunday VACUUM.
 	// Reads retention nil-safe from MittoConfig.Stats so unconfigured
@@ -1546,6 +1564,11 @@ func NewServer(config Config) (*Server, error) {
 			s.beadsCacheSubscriber = &beadsCacheWatcherSubscriber{cache: s.beadsCache}
 			s.beadsWatcher.Subscribe(s.beadsCacheSubscriber, s.getBeadsWatchDirs())
 		}
+		// mitto-5rm6.3: refresh the beads_* dashboard metrics on external
+		// bd mutations too, not just on the periodic timer.
+		if s.statsBeadsSource != nil {
+			s.beadsWatcher.Subscribe(&statsBeadsSourceWatcherSubscriber{source: s.statsBeadsSource, logger: logger}, s.getBeadsWatchDirs())
+		}
 		s.beadsWatcher.Start()
 		logger.Info("Beads watcher started", "dirs", s.getBeadsWatchDirs())
 	}
@@ -1744,16 +1767,21 @@ func (s *Server) Shutdown() error {
 		s.store.Close()
 	}
 
-	// Close stats subsystem in retention→backfiller→aggregator→store order:
-	// stop the retention worker first so a mid-run VACUUM cannot observe a
-	// closed DB; then stop the backfiller (no more agg.Ingest) before the
-	// aggregator flushes any pending deltas, and the store stays alive until
-	// after that final flush so no deltas are lost.
+	// Close stats subsystem in retention→backfiller→beadsSource→aggregator→
+	// store order: stop the retention worker first so a mid-run VACUUM
+	// cannot observe a closed DB; then stop the backfiller and beads source
+	// (no more agg.Ingest / ReplaceDeltas writes — the two are independent
+	// of each other and can close in either order) before the aggregator
+	// flushes any pending deltas, and the store stays alive until after
+	// that final flush so no deltas are lost.
 	if s.statsRetention != nil {
 		_ = s.statsRetention.Close()
 	}
 	if s.statsBackfiller != nil {
 		_ = s.statsBackfiller.Close()
+	}
+	if s.statsBeadsSource != nil {
+		_ = s.statsBeadsSource.Close()
 	}
 	if s.statsAggregator != nil {
 		_ = s.statsAggregator.Close()
@@ -2800,6 +2828,31 @@ func (s *Server) beadsCacheMetricsCallback() func() beads.CacheMetrics {
 	return func() beads.CacheMetrics { return s.beadsCache.Metrics() }
 }
 
+// statsBeadsSourceWatcherSubscriber adapts *stats.BeadsSource to
+// watcher.BeadsSubscriber so a debounced .beads/ change event triggers an
+// out-of-band Run pass, keeping the dashboard's beads_* metrics fresh
+// between the periodic (default 6h) passes. Runs Run in its own goroutine
+// so a bd-list-heavy pass never blocks BeadsWatcher's synchronous
+// subscriber fan-out (other subscribers, e.g. the loop runner, must not
+// wait on it); Run's own runMu/inProgress guard already serializes and
+// coalesces overlapping passes, so no additional debouncing is needed here.
+// mitto-5rm6.3.
+type statsBeadsSourceWatcherSubscriber struct {
+	source *stats.BeadsSource
+	logger *slog.Logger
+}
+
+func (b *statsBeadsSourceWatcherSubscriber) OnBeadsChanged(_ watcher.BeadsChangeEvent) {
+	if b == nil || b.source == nil {
+		return
+	}
+	go func() {
+		if err := b.source.Run(context.Background()); err != nil && b.logger != nil {
+			b.logger.Warn("stats: beads source watcher-triggered refresh failed", "error", err)
+		}
+	}()
+}
+
 // OnBeadsChanged is called by the BeadsWatcher when .beads/ directories change.
 // It broadcasts the change to all connected clients via the global events WebSocket.
 func (s *Server) OnBeadsChanged(event watcher.BeadsChangeEvent) {
@@ -2855,6 +2908,29 @@ func (s *Server) getBeadsWatchDirs() []string {
 		dirs = append(dirs, d)
 	}
 	return dirs
+}
+
+// beadsStatsWorkspaces implements stats.BeadsWorkspaceLister for
+// statsBeadsSource: the same workspace enumeration + working-dir dedup as
+// getBeadsWatchDirs, but returning each workspace's UUID alongside its
+// directory (needed to attribute beads_* deltas per workspace) rather than
+// the derived .beads/ watch path. Deduped by WorkingDir, not UUID, to match
+// getBeadsWatchDirs' semantics (two workspace entries sharing one directory,
+// e.g. different ACP servers, must not double-count the same bd snapshot).
+func (s *Server) beadsStatsWorkspaces() []stats.BeadsWorkspace {
+	seen := make(map[string]struct{})
+	var out []stats.BeadsWorkspace
+	for _, ws := range s.sessionManager.GetWorkspaces() {
+		if ws.WorkingDir == "" {
+			continue
+		}
+		if _, ok := seen[ws.WorkingDir]; ok {
+			continue
+		}
+		seen[ws.WorkingDir] = struct{}{}
+		out = append(out, stats.BeadsWorkspace{UUID: ws.UUID, Dir: ws.WorkingDir})
+	}
+	return out
 }
 
 // resolvePromptByName resolves a prompt name to its full text for a given working directory.
