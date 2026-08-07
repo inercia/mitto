@@ -165,11 +165,19 @@ export function MessageList({
           isLast=${i === 0}
           isStreaming=${isStreaming}
           onRetry=${retryHandler}
+          workspaceUUID=${sessionInfo?.workspace_uuid}
+          workspacePath=${sessionInfo?.working_dir}
         />
       `;
       return dateSeparator ? [dateSeparator, msgEl] : [msgEl];
     });
-  }, [displayMessages, isStreaming, onRetry]);
+  }, [
+    displayMessages,
+    isStreaming,
+    onRetry,
+    sessionInfo?.workspace_uuid,
+    sessionInfo?.working_dir,
+  ]);
 
   return html`
     <${Fragment}>

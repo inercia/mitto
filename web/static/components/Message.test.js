@@ -4,7 +4,12 @@
  * Tests cover:
  * - isModelErrorThought detection patterns
  * - False positive avoidance for normal thinking text
+ * - Tool-title viewer URL workspace resolution
  */
+
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 
 // =============================================================================
 // Model Error Thought Detection Tests
@@ -537,9 +542,9 @@ describe("sessionChangeText", () => {
   });
 
   test("context_cleared with value 'flush' renders the in-place-flush pill (mitto-so19)", () => {
-    expect(
-      sessionChangeText({ kind: "context_cleared", value: "flush" }),
-    ).toBe("🧹 Context cleared for fresh loop iteration");
+    expect(sessionChangeText({ kind: "context_cleared", value: "flush" })).toBe(
+      "🧹 Context cleared for fresh loop iteration",
+    );
   });
 
   test("context_cleared with value 'new_session' renders the fresh-session pill (mitto-so19)", () => {
@@ -552,5 +557,113 @@ describe("sessionChangeText", () => {
     expect(sessionChangeText({ kind: "context_cleared" })).toBe(
       "🧹 Context cleared",
     );
+  });
+});
+
+// =============================================================================
+// Tool-title file link URL Tests
+// =============================================================================
+
+/**
+ * Build the viewer URL for a file path found in a tool-call title.
+ * Duplicated from Message.js `renderTitle` for testing (the component imports
+ * window.preact globals). The source-scan guard below asserts the production
+ * code still prefers the props over the window globals.
+ */
+function buildToolTitleViewerURL(
+  pathValue,
+  { apiPrefix, workspaceUUID, workspacePath, globals },
+) {
+  const wsUUID = workspaceUUID || globals.mittoCurrentWorkspaceUUID || "";
+  const wsPath = workspacePath || globals.mittoCurrentWorkspace || "";
+  const relativePath = pathValue.replace(/^\.\//, "");
+  let viewerUrl = null;
+  if (wsUUID) {
+    viewerUrl = `${apiPrefix}/viewer.html?ws=${encodeURIComponent(wsUUID)}&path=${encodeURIComponent(relativePath)}`;
+    if (wsPath) {
+      viewerUrl += `&ws_path=${encodeURIComponent(wsPath)}`;
+    }
+  }
+  return viewerUrl;
+}
+
+describe("tool-title viewer URL workspace resolution", () => {
+  // The window globals track the most recently activated conversation, so they
+  // point at the wrong workspace for messages rendered from another one.
+  const globals = {
+    mittoCurrentWorkspaceUUID: "4abb5d84-global-mitto",
+    mittoCurrentWorkspace: "/Users/x/mitto",
+  };
+
+  test("uses the passed-in workspaceUUID/workspacePath instead of the globals", () => {
+    expect(
+      buildToolTitleViewerURL("docs/IMS/GLB-testing.md", {
+        apiPrefix: "/mitto",
+        workspaceUUID: "f8a510bc-go-adobe-apis",
+        workspacePath: "/Users/x/go-adobe-apis",
+        globals,
+      }),
+    ).toBe(
+      "/mitto/viewer.html?ws=f8a510bc-go-adobe-apis&path=docs%2FIMS%2FGLB-testing.md&ws_path=%2FUsers%2Fx%2Fgo-adobe-apis",
+    );
+  });
+
+  test("falls back to the globals when no workspace props are passed", () => {
+    expect(
+      buildToolTitleViewerURL("docs/IMS/GLB-testing.md", {
+        apiPrefix: "/mitto",
+        workspaceUUID: undefined,
+        workspacePath: undefined,
+        globals,
+      }),
+    ).toBe(
+      "/mitto/viewer.html?ws=4abb5d84-global-mitto&path=docs%2FIMS%2FGLB-testing.md&ws_path=%2FUsers%2Fx%2Fmitto",
+    );
+  });
+
+  test("strips a leading ./ from the path", () => {
+    expect(
+      buildToolTitleViewerURL("./README.md", {
+        apiPrefix: "",
+        workspaceUUID: "ws-1",
+        workspacePath: "",
+        globals: {},
+      }),
+    ).toBe("/viewer.html?ws=ws-1&path=README.md");
+  });
+
+  test("returns null when no workspace UUID is resolvable", () => {
+    expect(
+      buildToolTitleViewerURL("README.md", {
+        apiPrefix: "/mitto",
+        workspaceUUID: undefined,
+        workspacePath: "/Users/x/mitto",
+        globals: {},
+      }),
+    ).toBe(null);
+  });
+});
+
+describe("source-scan guard — Message.js prefers workspace props over globals", () => {
+  test("renderTitle resolves wsUUID/wsPath from props first", () => {
+    const src = readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), "Message.js"),
+      "utf8",
+    );
+    expect(src).toMatch(
+      /const wsUUID =\s*workspaceUUID \|\| window\.mittoCurrentWorkspaceUUID \|\| "";/,
+    );
+    expect(src).toMatch(
+      /const wsPath =\s*workspacePath \|\| window\.mittoCurrentWorkspace \|\| "";/,
+    );
+  });
+
+  test("MessageList.js passes the conversation's workspace into Message", () => {
+    const src = readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), "MessageList.js"),
+      "utf8",
+    );
+    expect(src).toMatch(/workspaceUUID=\$\{sessionInfo\?\.workspace_uuid\}/);
+    expect(src).toMatch(/workspacePath=\$\{sessionInfo\?\.working_dir\}/);
   });
 });

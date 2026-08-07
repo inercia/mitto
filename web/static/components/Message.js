@@ -278,8 +278,17 @@ function ThoughtBubble({ message, isLast, isStreaming }) {
  * @param {boolean} props.isLast - Whether this is the last message
  * @param {boolean} props.isStreaming - Whether the session is currently streaming
  * @param {Function} [props.onRetry] - Optional callback to retry (resend last prompt). Shown on error messages.
+ * @param {string} [props.workspaceUUID] - UUID of the workspace this message's conversation belongs to
+ * @param {string} [props.workspacePath] - Working directory of the workspace this message's conversation belongs to
  */
-function MessageImpl({ message, isLast, isStreaming, onRetry }) {
+function MessageImpl({
+  message,
+  isLast,
+  isStreaming,
+  onRetry,
+  workspaceUUID,
+  workspacePath,
+}) {
   const isUser = message.role === ROLE_USER;
   const isAgent = message.role === ROLE_AGENT;
   const isThought = message.role === ROLE_THOUGHT;
@@ -367,14 +376,18 @@ function MessageImpl({ message, isLast, isStreaming, onRetry }) {
     const renderTitle = () => {
       return titleSegments.map((segment, index) => {
         if (segment.type === "path") {
-          // Build viewer URL for this file path
+          // Build viewer URL for this file path. Prefer the workspace of the
+          // conversation this message belongs to — the window globals track the
+          // most recently activated conversation, which resolves to the wrong
+          // workspace (and a 404 in the viewer) for messages rendered from a
+          // different conversation.
           const apiPrefix = getAPIPrefix();
-          const workspaceUUID = window.mittoCurrentWorkspaceUUID || "";
-          const wsPath = window.mittoCurrentWorkspace || "";
+          const wsUUID = workspaceUUID || window.mittoCurrentWorkspaceUUID || "";
+          const wsPath = workspacePath || window.mittoCurrentWorkspace || "";
           const relativePath = segment.value.replace(/^\.\//, "");
           let viewerUrl = null;
-          if (workspaceUUID) {
-            viewerUrl = `${apiPrefix}/viewer.html?ws=${encodeURIComponent(workspaceUUID)}&path=${encodeURIComponent(relativePath)}`;
+          if (wsUUID) {
+            viewerUrl = `${apiPrefix}/viewer.html?ws=${encodeURIComponent(wsUUID)}&path=${encodeURIComponent(relativePath)}`;
             if (wsPath) {
               viewerUrl += `&ws_path=${encodeURIComponent(wsPath)}`;
             }
@@ -748,6 +761,7 @@ function MessageImpl({ message, isLast, isStreaming, onRetry }) {
  *   isLast          — affects showCursor / timestamp visibility
  *   isStreaming      — drives the streaming cursor
  *   onRetry         — error-message retry callback reference
+ *   workspaceUUID / workspacePath — target workspace for tool-title file links
  *
  * The actively streaming message always updates message.html on every chunk,
  * so it will never be memoized away — the comparator naturally returns false.
@@ -762,7 +776,9 @@ export function messagePropsAreEqual(prev, next) {
     prev.message.complete === next.message.complete &&
     prev.isLast === next.isLast &&
     prev.isStreaming === next.isStreaming &&
-    prev.onRetry === next.onRetry
+    prev.onRetry === next.onRetry &&
+    prev.workspaceUUID === next.workspaceUUID &&
+    prev.workspacePath === next.workspacePath
   );
 }
 
