@@ -47,6 +47,10 @@ type Store struct {
 // had none). It is invoked after the store's internal lock has been released,
 // so the callback may safely call back into other Store methods (e.g.
 // GetMetadata, Exists) without deadlocking. Pass nil to clear the observer.
+//
+// Only Delete notifies: retention-driven removal of archived sessions
+// (CleanupArchivedSessions) deliberately does not, since it reclaims disk for
+// sessions already archived rather than acting on a user-visible deletion.
 func (s *Store) SetDeleteObserver(fn func(sessionID, parentSessionID string)) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
