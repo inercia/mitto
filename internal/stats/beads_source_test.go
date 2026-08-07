@@ -181,3 +181,60 @@ func TestBeadsSource_SkipsEmptyWorkspaceDir(t *testing.T) {
 		t.Errorf("List called %d times for an empty-Dir workspace, want 0", lister.calls)
 	}
 }
+
+// TestBeadsSource_NonStringMetadataValueDoesNotAbortPass reproduces mitto-049d:
+// bd stores metadata values with their native JSON type (bd's own JIRA-sync
+// prompts write jira_synced_comments as an integer), but beadsItem.Metadata
+// is declared map[string]string, so json.Unmarshal fails on ANY non-string
+// metadata value anywhere in the workspace snapshot. Because Run is
+// all-or-nothing (see the package doc comment), this one bad bead aborts the
+// ENTIRE pass -- including workspaces with no bad data at all -- which is
+// the reported "469 WARN storm in 6h, agentgateway workspace excluded from
+// stats" symptom (in production the storm comes from a debounced watcher
+// re-running Run against the same permanently-bad snapshot).
+//
+// This test asserts the bug is worse than "one workspace excluded": a SECOND,
+// perfectly clean workspace's opened count is also silently dropped by the
+// same aborted pass. It also asserts the fix must not simply drop the
+// Metadata field: the bad bead's own claimed_at cycle-time marker must still
+// resolve once the parse tolerates the sibling numeric value.
+func TestBeadsSource_NonStringMetadataValueDoesNotAbortPass(t *testing.T) {
+	s, _ := openTestStore(t)
+	now := hourBucket(t, "2026-04-16T12:00:00Z")
+
+	// Mirrors the reported production shape: jira_synced_comments as a bare
+	// JSON number sitting alongside the string claimed_at marker.
+	badPayload := []byte(`[{"id":"g-1","status":"closed","created_at":"2026-04-16T00:00:00Z","closed_at":"2026-04-16T02:00:00Z","metadata":{"jira_synced_comments":55011457,"claimed_at":"2026-04-16T01:00:00Z"}}]`)
+	// A second, unrelated workspace with clean data -- proves the blast
+	// radius spans every workspace in the pass, not just the offending one.
+	cleanPayload := []byte(`[{"id":"c-1","status":"open","created_at":"2026-04-16T01:00:00Z"}]`)
+
+	lister := &fakeBeadsLister{payloads: map[string][]byte{
+		"/ws/g": badPayload,
+		"/ws/c": cleanPayload,
+	}}
+	src := newBeadsTestSource(t, s, lister, wsLister(
+		BeadsWorkspace{UUID: "ws-g", Dir: "/ws/g"},
+		BeadsWorkspace{UUID: "ws-c", Dir: "/ws/c"},
+	), now)
+
+	if err := src.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v (mitto-049d: a numeric metadata value must not abort the whole pass)", err)
+	}
+
+	closedBucket := hourBucket(t, "2026-04-16T02:00:00Z")
+	if got := countAt(t, s, closedBucket, MetricBeadsClosed, BeadsSentinelSessionID, "ws-g"); got != 1 {
+		t.Errorf("beads_closed @ws-g = %d, want 1", got)
+	}
+	// claimed_at (01:00) -> closed_at (02:00) = 1h = 3600s. Asserted so a
+	// naive fix that just deletes the Metadata field (losing the work-start
+	// marker) does not pass this test.
+	if got := countAt(t, s, closedBucket, MetricBeadsCycleSecondsSum, BeadsSentinelSessionID, "ws-g"); got != 3600 {
+		t.Errorf("beads_cycle_seconds_sum @ws-g = %d, want 3600 (claimed_at marker must still resolve)", got)
+	}
+
+	openedBucket := hourBucket(t, "2026-04-16T01:00:00Z")
+	if got := countAt(t, s, openedBucket, MetricBeadsOpened, BeadsSentinelSessionID, "ws-c"); got != 1 {
+		t.Errorf("beads_opened @ws-c = %d, want 1 (unrelated workspace must not be silently dropped by ws-g's bad metadata)", got)
+	}
+}

@@ -78,13 +78,41 @@ type BeadsWorkspaceLister func() []BeadsWorkspace
 
 // beadsItem is the minimal shape read from `bd list --json --all` (see
 // internal/beads/cli.go's List) needed for the throughput/cycle-time fold.
+//
+// Metadata is bd-controlled arbitrary JSON (mitto-049d): bd is free to write
+// non-string values (e.g. an integer jira_synced_comments counter) alongside
+// the string RFC3339 markers this fold actually reads, so the field is typed
+// as map[string]json.RawMessage rather than map[string]string — a
+// map[string]string decode fails the ENTIRE json.Unmarshal of the workspace
+// snapshot the moment any single bead anywhere carries a non-string value.
+// Use metadataString to read a key as a string, degrading to "" (no marker)
+// for absent/null/non-string values instead of aborting the parse.
 type beadsItem struct {
-	ID        string            `json:"id"`
-	Status    string            `json:"status"`
-	CreatedAt string            `json:"created_at"`
-	ClosedAt  string            `json:"closed_at,omitempty"`
-	StartedAt string            `json:"started_at,omitempty"`
-	Metadata  map[string]string `json:"metadata,omitempty"`
+	ID        string                     `json:"id"`
+	Status    string                     `json:"status"`
+	CreatedAt string                     `json:"created_at"`
+	ClosedAt  string                     `json:"closed_at,omitempty"`
+	StartedAt string                     `json:"started_at,omitempty"`
+	Metadata  map[string]json.RawMessage `json:"metadata,omitempty"`
+}
+
+// metadataString returns m[key] decoded as a JSON string, or "" for every
+// other case: absent key, nil map, JSON null, or a non-string JSON value
+// (number/bool/object/array). Deliberately does not use fmt.Sprint on the
+// raw value, which would coerce a number like 55011457 into "5.5011457e+07"-
+// style garbage; the two callers (work_started_at / claimed_at) only ever
+// expect RFC3339 strings, so any other shape should read the same as "no
+// marker" (see foldItem's exclude-from-cycle-time path).
+func metadataString(m map[string]json.RawMessage, key string) string {
+	raw, ok := m[key]
+	if !ok {
+		return ""
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return ""
+	}
+	return s
 }
 
 // BeadsSourceOptions configures NewBeadsSource. Zero-valued fields fall back
@@ -341,9 +369,9 @@ func (s *BeadsSource) foldItem(it beadsItem, workspace string, agg map[beadsBuck
 	a := beadsBucketFor(agg, closed, workspace)
 	a.closed++
 
-	startStr := it.Metadata["work_started_at"]
+	startStr := metadataString(it.Metadata, "work_started_at")
 	if startStr == "" {
-		startStr = it.Metadata["claimed_at"]
+		startStr = metadataString(it.Metadata, "claimed_at")
 	}
 	if startStr == "" {
 		startStr = it.StartedAt

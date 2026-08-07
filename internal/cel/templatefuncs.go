@@ -798,10 +798,33 @@ func hasBeads(folder, labels, statuses string) bool {
 // map (nil / absent / null all decode as nil, which is safe to index) — used
 // today by BeadMetadata(id, key) to resolve per-bead render-time values such as
 // the Slack channel ID on a support question.
+//
+// Metadata is typed as map[string]json.RawMessage, not map[string]string
+// (mitto-049d): bd is free to write non-string values (e.g. an integer
+// jira_synced_comments counter) alongside string keys like slack_channel, and
+// a map[string]string decode fails the whole json.Unmarshal the moment ANY
+// key anywhere in the record is non-string. beadMetadata reads a key via
+// bdBeadMetadataString, degrading to "" (fail-open) for a non-string value
+// instead of the parse aborting.
 type bdBead struct {
-	Labels   []string          `json:"labels"`
-	Status   string            `json:"status"`
-	Metadata map[string]string `json:"metadata"`
+	Labels   []string                   `json:"labels"`
+	Status   string                     `json:"status"`
+	Metadata map[string]json.RawMessage `json:"metadata"`
+}
+
+// bdBeadMetadataString returns m[key] decoded as a JSON string, or "" for
+// every other case: absent key, nil map, JSON null, or a non-string JSON
+// value. See bdBead's Metadata field doc for why this indirection exists.
+func bdBeadMetadataString(m map[string]json.RawMessage, key string) string {
+	raw, ok := m[key]
+	if !ok {
+		return ""
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return ""
+	}
+	return s
 }
 
 // parseBdShow parses the stdout of `bd show <id> --json`, tolerating BOTH shapes
@@ -985,7 +1008,7 @@ func beadMetadata(folder, id, key string) string {
 	if !ok {
 		return "" // fail-open
 	}
-	return bead.Metadata[key] // nil map indexes to ""
+	return bdBeadMetadataString(bead.Metadata, key) // nil map / non-string value -> ""
 }
 
 // InvalidateBeadsCache drops every memoised beadsCount/showBead cache entry
