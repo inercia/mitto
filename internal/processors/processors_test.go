@@ -6956,3 +6956,281 @@ func TestCloneWithEnabledOverrides_PropagatesRunRecorder(t *testing.T) {
 		t.Errorf("Outcome = %q, want %q", run.Outcome, "ok")
 	}
 }
+
+// --- mitto-yfv8: FlushPendingDispatches / PendingDispatchStore age cap ---
+
+// TestFilePendingDispatchStore_Load_DropsStaleEntries verifies the
+// pendingDispatchMaxAge cutoff (mitto-yfv8): an entry older than the cap is
+// silently excluded from Load's result, while a fresh entry in the same
+// spool file is kept.
+func TestFilePendingDispatchStore_Load_DropsStaleEntries(t *testing.T) {
+	dir := t.TempDir()
+	store := &FilePendingDispatchStore{BaseDir: dir}
+	const wsUUID = "ws-age-test"
+
+	stale := PendingDispatchEntry{WorkspaceUUID: wsUUID, Name: "stale", Prompt: "p-stale", SavedAt: time.Now().Add(-48 * time.Hour)}
+	fresh := PendingDispatchEntry{WorkspaceUUID: wsUUID, Name: "fresh", Prompt: "p-fresh", SavedAt: time.Now()}
+	if err := store.Replace(wsUUID, []PendingDispatchEntry{stale, fresh}); err != nil {
+		t.Fatalf("Replace() error = %v", err)
+	}
+
+	got, err := store.Load(wsUUID)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(got) != 1 || got[0].Name != "fresh" {
+		t.Fatalf("Load() = %+v, want only the fresh entry (stale entry older than pendingDispatchMaxAge must be dropped)", got)
+	}
+}
+
+// TestFlushPendingDispatches_DeliversEntriesAndClearsSpool verifies the core
+// consumer behavior (mitto-yfv8): entries spooled by an earlier saturated
+// dispatchWithRetry give-up (mitto-3421) are re-dispatched via
+// FlushPendingDispatches once the workspace is dispatchable again, and the
+// spool file is removed once every entry has been delivered.
+func TestFlushPendingDispatches_DeliversEntriesAndClearsSpool(t *testing.T) {
+	spoolDir := t.TempDir()
+	const wsUUID = "ws-flush-deliver"
+	store := &FilePendingDispatchStore{BaseDir: spoolDir}
+	entries := []PendingDispatchEntry{
+		{WorkspaceUUID: wsUUID, Name: "batch-a", Prompt: "prompt-a", TimeoutSeconds: 1, SavedAt: time.Now(), Attempts: 1},
+		{WorkspaceUUID: wsUUID, Name: "batch-b", Prompt: "prompt-b", TimeoutSeconds: 1, SavedAt: time.Now(), Attempts: 1},
+	}
+	if err := store.Replace(wsUUID, entries); err != nil {
+		t.Fatalf("Replace() error = %v", err)
+	}
+
+	var mu sync.Mutex
+	var dispatched []string
+
+	m := NewManager("", nil)
+	m.SetPendingDispatchStore(store)
+	m.SetPromptFunc(func(_ context.Context, _, name, _ string) error {
+		mu.Lock()
+		dispatched = append(dispatched, name)
+		mu.Unlock()
+		return nil
+	})
+
+	m.FlushPendingDispatches(context.Background(), wsUUID)
+
+	mu.Lock()
+	got := append([]string(nil), dispatched...)
+	mu.Unlock()
+	if len(got) != 2 || got[0] != "batch-a" || got[1] != "batch-b" {
+		t.Fatalf("dispatched = %v, want [batch-a batch-b] delivered sequentially in spool order", got)
+	}
+
+	spoolPath := filepath.Join(spoolDir, wsUUID+".json")
+	if _, statErr := os.Stat(spoolPath); !os.IsNotExist(statErr) {
+		t.Fatalf("expected spool file %s to be removed after full delivery, stat err = %v", spoolPath, statErr)
+	}
+}
+
+// TestFlushPendingDispatches_FailingEntryDoesNotBlockFollowingEntry verifies
+// the sequential-flush design goal (mitto-yfv8 plan point 3/4): a batch that
+// keeps failing must not prevent a later, healthy batch in the same flush
+// from being delivered. The failing entry is requeued with an incremented
+// Attempts (still under the cap) instead of being dropped or notified.
+func TestFlushPendingDispatches_FailingEntryDoesNotBlockFollowingEntry(t *testing.T) {
+	origMaxRetries := dispatchPromptMaxRetries
+	dispatchPromptMaxRetries = 0 // single RPC attempt per entry, for a fast test
+	t.Cleanup(func() { dispatchPromptMaxRetries = origMaxRetries })
+	origBaseDelay := dispatchPromptRetryBaseDelay
+	dispatchPromptRetryBaseDelay = time.Millisecond
+	t.Cleanup(func() { dispatchPromptRetryBaseDelay = origBaseDelay })
+
+	spoolDir := t.TempDir()
+	const wsUUID = "ws-flush-partial-fail"
+	store := &FilePendingDispatchStore{BaseDir: spoolDir}
+	entries := []PendingDispatchEntry{
+		{WorkspaceUUID: wsUUID, Name: "bad-batch", Prompt: "p-bad", TimeoutSeconds: 1, SavedAt: time.Now(), Attempts: 1},
+		{WorkspaceUUID: wsUUID, Name: "good-batch", Prompt: "p-good", TimeoutSeconds: 1, SavedAt: time.Now(), Attempts: 1},
+	}
+	if err := store.Replace(wsUUID, entries); err != nil {
+		t.Fatalf("Replace() error = %v", err)
+	}
+
+	var mu sync.Mutex
+	var delivered []string
+	var notifiedCount int
+
+	m := NewManager("", nil)
+	m.SetPendingDispatchStore(store)
+	m.SetPromptFunc(func(_ context.Context, _, name, _ string) error {
+		if name == "bad-batch" {
+			return fmt.Errorf("permanent failure dispatching %s", name)
+		}
+		mu.Lock()
+		delivered = append(delivered, name)
+		mu.Unlock()
+		return nil
+	})
+	m.SetNotifyFunc(func(_, _ string, _ error) {
+		mu.Lock()
+		notifiedCount++
+		mu.Unlock()
+	})
+
+	m.FlushPendingDispatches(context.Background(), wsUUID)
+
+	mu.Lock()
+	got := append([]string(nil), delivered...)
+	nCount := notifiedCount
+	mu.Unlock()
+	if len(got) != 1 || got[0] != "good-batch" {
+		t.Fatalf("delivered = %v, want [good-batch] — a failing entry must not block a later good entry in the same flush", got)
+	}
+	if nCount != 0 {
+		t.Errorf("notifyFunc called %d times, want 0 (bad-batch has not exceeded pendingDispatchMaxAttempts yet)", nCount)
+	}
+
+	remaining, err := store.Load(wsUUID)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(remaining) != 1 || remaining[0].Name != "bad-batch" {
+		t.Fatalf("remaining spool = %+v, want exactly the requeued bad-batch entry", remaining)
+	}
+	if remaining[0].Attempts != 2 {
+		t.Errorf("requeued Attempts = %d, want 2 (started at 1, incremented once on re-failure)", remaining[0].Attempts)
+	}
+}
+
+// TestFlushPendingDispatches_DropsEntryAtMaxAttempts verifies the poison-entry
+// protection (mitto-yfv8 plan point 4): an entry that has already reached
+// pendingDispatchMaxAttempts is dropped up front — without even attempting a
+// dispatch — so it cannot block the rest of the spool.
+func TestFlushPendingDispatches_DropsEntryAtMaxAttempts(t *testing.T) {
+	spoolDir := t.TempDir()
+	const wsUUID = "ws-flush-poison"
+	store := &FilePendingDispatchStore{BaseDir: spoolDir}
+	entries := []PendingDispatchEntry{
+		{WorkspaceUUID: wsUUID, Name: "poison-batch", Prompt: "p-poison", TimeoutSeconds: 1, SavedAt: time.Now(), Attempts: pendingDispatchMaxAttempts},
+		{WorkspaceUUID: wsUUID, Name: "good-batch", Prompt: "p-good", TimeoutSeconds: 1, SavedAt: time.Now(), Attempts: 1},
+	}
+	if err := store.Replace(wsUUID, entries); err != nil {
+		t.Fatalf("Replace() error = %v", err)
+	}
+
+	var mu sync.Mutex
+	var dispatchedNames []string
+
+	m := NewManager("", nil)
+	m.SetPendingDispatchStore(store)
+	m.SetPromptFunc(func(_ context.Context, _, name, _ string) error {
+		mu.Lock()
+		dispatchedNames = append(dispatchedNames, name)
+		mu.Unlock()
+		return nil
+	})
+
+	m.FlushPendingDispatches(context.Background(), wsUUID)
+
+	mu.Lock()
+	got := append([]string(nil), dispatchedNames...)
+	mu.Unlock()
+	if len(got) != 1 || got[0] != "good-batch" {
+		t.Fatalf("promptFunc invoked for %v, want only [good-batch] — an entry already at the max-attempts cap must be dropped without retrying", got)
+	}
+
+	spoolPath := filepath.Join(spoolDir, wsUUID+".json")
+	if _, statErr := os.Stat(spoolPath); !os.IsNotExist(statErr) {
+		t.Fatalf("expected spool file to be removed (poison entry dropped, good entry delivered), stat err = %v", statErr)
+	}
+}
+
+// TestFlushPendingDispatches_LateDeliveryFuncFiresOnceWithAllDelivered
+// verifies the late-delivery notification seam (mitto-yfv8 plan point 6):
+// when a flush delivers one or more previously-spooled batches,
+// lateDeliveryFunc fires exactly once, listing every delivered name.
+func TestFlushPendingDispatches_LateDeliveryFuncFiresOnceWithAllDelivered(t *testing.T) {
+	spoolDir := t.TempDir()
+	const wsUUID = "ws-flush-late-delivery"
+	store := &FilePendingDispatchStore{BaseDir: spoolDir}
+	entries := []PendingDispatchEntry{
+		{WorkspaceUUID: wsUUID, Name: "batch-a", Prompt: "p-a", TimeoutSeconds: 1, SavedAt: time.Now(), Attempts: 1},
+		{WorkspaceUUID: wsUUID, Name: "batch-b", Prompt: "p-b", TimeoutSeconds: 1, SavedAt: time.Now(), Attempts: 1},
+	}
+	if err := store.Replace(wsUUID, entries); err != nil {
+		t.Fatalf("Replace() error = %v", err)
+	}
+
+	m := NewManager("", nil)
+	m.SetPendingDispatchStore(store)
+	m.SetPromptFunc(func(_ context.Context, _, _, _ string) error { return nil })
+
+	var mu sync.Mutex
+	var calls int
+	var gotWorkspace string
+	var gotNames []string
+	m.SetLateDeliveryFunc(func(wsUUID string, names []string) {
+		mu.Lock()
+		calls++
+		gotWorkspace = wsUUID
+		gotNames = append([]string(nil), names...)
+		mu.Unlock()
+	})
+
+	m.FlushPendingDispatches(context.Background(), wsUUID)
+
+	mu.Lock()
+	nCalls := calls
+	ws := gotWorkspace
+	names := gotNames
+	mu.Unlock()
+	if nCalls != 1 {
+		t.Fatalf("lateDeliveryFunc called %d times, want exactly 1", nCalls)
+	}
+	if ws != wsUUID {
+		t.Errorf("lateDeliveryFunc workspace = %q, want %q", ws, wsUUID)
+	}
+	if len(names) != 2 || names[0] != "batch-a" || names[1] != "batch-b" {
+		t.Errorf("lateDeliveryFunc names = %v, want [batch-a batch-b]", names)
+	}
+}
+
+// TestFlushPendingDispatches_LateDeliveryFuncNotCalledWhenNothingDelivered
+// verifies lateDeliveryFunc is not invoked when a flush delivers zero
+// entries (the sole entry fails and is requeued instead).
+func TestFlushPendingDispatches_LateDeliveryFuncNotCalledWhenNothingDelivered(t *testing.T) {
+	origMaxRetries := dispatchPromptMaxRetries
+	dispatchPromptMaxRetries = 0
+	t.Cleanup(func() { dispatchPromptMaxRetries = origMaxRetries })
+	origBaseDelay := dispatchPromptRetryBaseDelay
+	dispatchPromptRetryBaseDelay = time.Millisecond
+	t.Cleanup(func() { dispatchPromptRetryBaseDelay = origBaseDelay })
+
+	spoolDir := t.TempDir()
+	const wsUUID = "ws-flush-no-delivery"
+	store := &FilePendingDispatchStore{BaseDir: spoolDir}
+	entries := []PendingDispatchEntry{
+		{WorkspaceUUID: wsUUID, Name: "bad-batch", Prompt: "p-bad", TimeoutSeconds: 1, SavedAt: time.Now(), Attempts: 1},
+	}
+	if err := store.Replace(wsUUID, entries); err != nil {
+		t.Fatalf("Replace() error = %v", err)
+	}
+
+	m := NewManager("", nil)
+	m.SetPendingDispatchStore(store)
+	m.SetPromptFunc(func(_ context.Context, _, _, _ string) error {
+		return fmt.Errorf("still failing")
+	})
+
+	var mu sync.Mutex
+	var calls int
+	m.SetLateDeliveryFunc(func(string, []string) {
+		mu.Lock()
+		calls++
+		mu.Unlock()
+	})
+
+	m.FlushPendingDispatches(context.Background(), wsUUID)
+
+	mu.Lock()
+	nCalls := calls
+	mu.Unlock()
+	if nCalls != 0 {
+		t.Errorf("lateDeliveryFunc called %d times, want 0 (nothing was delivered)", nCalls)
+	}
+}
