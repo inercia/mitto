@@ -21,7 +21,7 @@ import (
 func TestApplyPromptLoopDefaultsToLoopPrompt_SyncGuard(t *testing.T) {
 	// Exhaustive fixture matches internal/mcpserver's TestApplyPromptLoopDefaults_SyncGuard.
 	pl := &configPkg.PromptLoop{
-		Trigger:      []string{"schedule", "onCompletion", "onTasks"},
+		Trigger:      []string{"schedule", "onCompletion", "onTasks", "onChild"},
 		Schedule:     &configPkg.PromptLoopSchedule{Value: 7, Unit: "hours", At: ""},
 		OnCompletion: &configPkg.PromptLoopOnCompletion{Delay: 45},
 		OnTasks: &configPkg.PromptLoopOnTasks{
@@ -31,6 +31,7 @@ func TestApplyPromptLoopDefaultsToLoopPrompt_SyncGuard(t *testing.T) {
 			SettleWindow:       33,
 			CoalesceDuringBusy: boolPtr(false),
 		},
+		OnChild:       &configPkg.PromptLoopOnChild{When: []string{"anyDeleted"}},
 		MaxIterations: 11,
 		MaxDuration:   "2h",
 		FreshContext:  boolPtr(true),
@@ -41,11 +42,15 @@ func TestApplyPromptLoopDefaultsToLoopPrompt_SyncGuard(t *testing.T) {
 	applyPromptLoopDefaultsToLoopPrompt(lp, pl, nil)
 
 	// Triggers: whole list is filled (not just primary).
-	if len(lp.Triggers) != 3 ||
+	if len(lp.Triggers) != 4 ||
 		lp.Triggers[0] != session.TriggerSchedule ||
 		lp.Triggers[1] != session.TriggerOnCompletion ||
-		lp.Triggers[2] != session.TriggerOnTasks {
-		t.Errorf("Triggers = %v, want [schedule onCompletion onTasks]", lp.Triggers)
+		lp.Triggers[2] != session.TriggerOnTasks ||
+		lp.Triggers[3] != session.TriggerOnChild {
+		t.Errorf("Triggers = %v, want [schedule onCompletion onTasks onChild]", lp.Triggers)
+	}
+	if len(lp.ChildEvents) != 1 || lp.ChildEvents[0] != session.ChildEventAnyDeleted {
+		t.Errorf("ChildEvents = %v, want [anyDeleted]", lp.ChildEvents)
 	}
 	if lp.DelaySeconds != 45 {
 		t.Errorf("DelaySeconds = %d, want 45", lp.DelaySeconds)

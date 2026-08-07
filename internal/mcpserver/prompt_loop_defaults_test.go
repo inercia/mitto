@@ -466,6 +466,118 @@ func TestApplyPromptLoopDefaultsToUpdateInput_RunOnStart(t *testing.T) {
 	})
 }
 
+// TestApplyPromptLoopDefaultsToStartInput_ChildEvents covers the mitto-987y.6
+// merge: when the seeded prompt carries loop.onChild.when in its frontmatter
+// and the caller did not set loop_child_events, the value flows through to
+// ConversationStartInput. Mirrors the CoalesceDuringBusy/FreshContext tests.
+func TestApplyPromptLoopDefaultsToStartInput_ChildEvents(t *testing.T) {
+	t.Run("frontmatter fills unset caller", func(t *testing.T) {
+		input := &ConversationStartInput{}
+		pl := &config.PromptLoop{
+			Trigger: []string{"onTasks", "onChild"},
+			OnChild: &config.PromptLoopOnChild{When: []string{"anyDeleted"}},
+		}
+		applyPromptLoopDefaultsToStartInput(input, pl, "seed-prompt")
+		if len(input.LoopChildEvents) != 1 || input.LoopChildEvents[0] != "anyDeleted" {
+			t.Errorf("LoopChildEvents = %v, want [anyDeleted]", input.LoopChildEvents)
+		}
+	})
+
+	t.Run("explicit caller wins over frontmatter", func(t *testing.T) {
+		input := &ConversationStartInput{LoopChildEvents: []string{"anyEndResponse"}}
+		pl := &config.PromptLoop{
+			Trigger: []string{"onTasks", "onChild"},
+			OnChild: &config.PromptLoopOnChild{When: []string{"anyDeleted"}},
+		}
+		applyPromptLoopDefaultsToStartInput(input, pl, "seed-prompt")
+		if len(input.LoopChildEvents) != 1 || input.LoopChildEvents[0] != "anyEndResponse" {
+			t.Errorf("caller's explicit value should have been preserved, got %v", input.LoopChildEvents)
+		}
+	})
+
+	t.Run("nil frontmatter leaves caller nil", func(t *testing.T) {
+		input := &ConversationStartInput{}
+		pl := &config.PromptLoop{Trigger: []string{"onTasks", "onChild"}} // OnChild unset
+		applyPromptLoopDefaultsToStartInput(input, pl, "seed-prompt")
+		if input.LoopChildEvents != nil {
+			t.Errorf("LoopChildEvents should remain nil when frontmatter is silent, got %v", input.LoopChildEvents)
+		}
+	})
+
+	t.Run("opt-out disables the whole merge", func(t *testing.T) {
+		input := &ConversationStartInput{LoopApplyPromptDefaults: boolPtr(false)}
+		pl := &config.PromptLoop{
+			Trigger: []string{"onTasks", "onChild"},
+			OnChild: &config.PromptLoopOnChild{When: []string{"anyDeleted"}},
+		}
+		applyPromptLoopDefaultsToStartInput(input, pl, "seed-prompt")
+		if input.LoopChildEvents != nil {
+			t.Errorf("opt-out should have skipped the merge, got %v", input.LoopChildEvents)
+		}
+	})
+}
+
+// TestApplyPromptLoopDefaultsToUpdateInput_ChildEvents is the update-tool
+// equivalent; the semantics mirror the start-input helper exactly (both
+// LoopChildEvents fields are []string, so the nil-check is identical).
+func TestApplyPromptLoopDefaultsToUpdateInput_ChildEvents(t *testing.T) {
+	t.Run("frontmatter fills unset caller", func(t *testing.T) {
+		input := &ConversationUpdateInput{}
+		pl := &config.PromptLoop{
+			Trigger: []string{"onTasks", "onChild"},
+			OnChild: &config.PromptLoopOnChild{When: []string{"anyDeleted"}},
+		}
+		applyPromptLoopDefaultsToUpdateInput(input, pl)
+		if len(input.LoopChildEvents) != 1 || input.LoopChildEvents[0] != "anyDeleted" {
+			t.Errorf("LoopChildEvents = %v, want [anyDeleted]", input.LoopChildEvents)
+		}
+	})
+
+	t.Run("explicit caller wins over frontmatter", func(t *testing.T) {
+		input := &ConversationUpdateInput{LoopChildEvents: []string{"anyEndResponse"}}
+		pl := &config.PromptLoop{
+			Trigger: []string{"onTasks", "onChild"},
+			OnChild: &config.PromptLoopOnChild{When: []string{"anyDeleted"}},
+		}
+		applyPromptLoopDefaultsToUpdateInput(input, pl)
+		if len(input.LoopChildEvents) != 1 || input.LoopChildEvents[0] != "anyEndResponse" {
+			t.Errorf("caller's explicit value should have been preserved, got %v", input.LoopChildEvents)
+		}
+	})
+
+	t.Run("opt-out disables the whole merge", func(t *testing.T) {
+		input := &ConversationUpdateInput{LoopApplyPromptDefaults: boolPtr(false)}
+		pl := &config.PromptLoop{
+			Trigger: []string{"onTasks", "onChild"},
+			OnChild: &config.PromptLoopOnChild{When: []string{"anyDeleted"}},
+		}
+		applyPromptLoopDefaultsToUpdateInput(input, pl)
+		if input.LoopChildEvents != nil {
+			t.Errorf("opt-out should have skipped the merge, got %v", input.LoopChildEvents)
+		}
+	})
+}
+
+// TestParseLoopTriggerList_OnChild pins the mitto-987y.6 whitelist fix:
+// parseLoopTriggerList must accept "onChild" (previously rejected — see the
+// switch statement's pre-fix omission) both alone in a list with another
+// trigger and combined with others.
+func TestParseLoopTriggerList_OnChild(t *testing.T) {
+	got, err := parseLoopTriggerList("onTasks,onChild")
+	if err != nil {
+		t.Fatalf("parseLoopTriggerList(%q) error = %v, want nil", "onTasks,onChild", err)
+	}
+	want := []session.LoopTrigger{session.TriggerOnTasks, session.TriggerOnChild}
+	if len(got) != len(want) {
+		t.Fatalf("parseLoopTriggerList(%q) = %v, want %v", "onTasks,onChild", got, want)
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			t.Errorf("parseLoopTriggerList(%q)[%d] = %q, want %q", "onTasks,onChild", i, got[i], want[i])
+		}
+	}
+}
+
 // TestParseLoopTriggerList covers the flat-MCP-surface fallback (mitto-r6j.5):
 // loop_trigger is a plain string that accepts either a single trigger or a
 // comma-separated list.
@@ -598,7 +710,7 @@ func TestApplyPromptLoopDefaults_SyncGuard(t *testing.T) {
 	// merge, with distinguishable non-zero values so an assertion can pin
 	// exactly which field was mis-merged.
 	pl := &config.PromptLoop{
-		Trigger:      []string{"schedule", "onCompletion", "onTasks"},
+		Trigger:      []string{"schedule", "onCompletion", "onTasks", "onChild"},
 		Schedule:     &config.PromptLoopSchedule{Value: 7, Unit: "hours", At: ""},
 		OnCompletion: &config.PromptLoopOnCompletion{Delay: 45},
 		OnTasks: &config.PromptLoopOnTasks{
@@ -608,6 +720,7 @@ func TestApplyPromptLoopDefaults_SyncGuard(t *testing.T) {
 			SettleWindow:       33,
 			CoalesceDuringBusy: boolPtr(false),
 		},
+		OnChild:       &config.PromptLoopOnChild{When: []string{"anyDeleted"}},
 		MaxIterations: 11,
 		MaxDuration:   "2h",
 		FreshContext:  boolPtr(true),
@@ -619,7 +732,7 @@ func TestApplyPromptLoopDefaults_SyncGuard(t *testing.T) {
 		applyPromptLoopDefaultsToStartInput(in, pl, "seed")
 
 		// Trigger: whole list, comma-joined (mitto-r6j.5).
-		if in.LoopTrigger != "schedule,onCompletion,onTasks" {
+		if in.LoopTrigger != "schedule,onCompletion,onTasks,onChild" {
 			t.Errorf("LoopTrigger = %q, want the whole comma-joined list", in.LoopTrigger)
 		}
 		if in.LoopCompletionDelaySeconds == nil || *in.LoopCompletionDelaySeconds != 45 {
@@ -652,13 +765,16 @@ func TestApplyPromptLoopDefaults_SyncGuard(t *testing.T) {
 		if in.LoopRunOnStart == nil || *in.LoopRunOnStart != true {
 			t.Errorf("LoopRunOnStart = %v, want *true", in.LoopRunOnStart)
 		}
+		if len(in.LoopChildEvents) != 1 || in.LoopChildEvents[0] != "anyDeleted" {
+			t.Errorf("LoopChildEvents = %v, want [anyDeleted]", in.LoopChildEvents)
+		}
 	})
 
 	t.Run("update input merges every field", func(t *testing.T) {
 		in := &ConversationUpdateInput{}
 		applyPromptLoopDefaultsToUpdateInput(in, pl)
 
-		if in.LoopTrigger == nil || *in.LoopTrigger != "schedule,onCompletion,onTasks" {
+		if in.LoopTrigger == nil || *in.LoopTrigger != "schedule,onCompletion,onTasks,onChild" {
 			t.Errorf("LoopTrigger = %v, want the whole comma-joined list", in.LoopTrigger)
 		}
 		if in.LoopCompletionDelaySeconds == nil || *in.LoopCompletionDelaySeconds != 45 {
@@ -690,6 +806,9 @@ func TestApplyPromptLoopDefaults_SyncGuard(t *testing.T) {
 		}
 		if in.LoopRunOnStart == nil || *in.LoopRunOnStart != true {
 			t.Errorf("LoopRunOnStart = %v, want *true", in.LoopRunOnStart)
+		}
+		if len(in.LoopChildEvents) != 1 || in.LoopChildEvents[0] != "anyDeleted" {
+			t.Errorf("LoopChildEvents = %v, want [anyDeleted]", in.LoopChildEvents)
 		}
 	})
 }

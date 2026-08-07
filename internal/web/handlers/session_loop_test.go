@@ -935,6 +935,173 @@ func TestHandleSessionLoop_OnTasksRoundTrip(t *testing.T) {
 	}
 }
 
+// TestHandleSessionLoop_OnChildRoundTrip verifies that the onChild trigger and
+// its child_events field round-trip through PUT and PATCH (mitto-987y.6).
+// onChild must be armed alongside another trigger (see
+// TestHandleSessionLoop_OnChildAloneRejected), so this seeds [onTasks, onChild].
+func TestHandleSessionLoop_OnChildRoundTrip(t *testing.T) {
+	store, h := newLoopStore(t)
+	tmpDir := t.TempDir()
+
+	const sid = "test-onchild-roundtrip"
+	if err := store.Create(session.Metadata{SessionID: sid, ACPServer: "test-server", WorkingDir: tmpDir}); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	got := putLoopForTest(t, h, sid, LoopPromptRequest{
+		Prompt:      "react to child",
+		Enabled:     true,
+		Triggers:    []session.LoopTrigger{session.TriggerOnTasks, session.TriggerOnChild},
+		ChildEvents: []session.ChildEvent{session.ChildEventAnyDeleted},
+	})
+
+	if !got.HasTrigger(session.TriggerOnChild) {
+		t.Errorf("Triggers = %v, want onChild included", got.Triggers)
+	}
+	if len(got.ChildEvents) != 1 || got.ChildEvents[0] != session.ChildEventAnyDeleted {
+		t.Errorf("ChildEvents = %v, want [anyDeleted]", got.ChildEvents)
+	}
+
+	// PATCH: replace child_events wholesale.
+	newEvents := []session.ChildEvent{session.ChildEventAnyEndResponse, session.ChildEventAnyDeleted}
+	patchBody, _ := json.Marshal(LoopPromptPatchRequest{ChildEvents: &newEvents})
+	req := httptest.NewRequest(http.MethodPatch, "/api/sessions/"+sid+"/loop", bytes.NewReader(patchBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h.HandleSessionLoop(w, req, sid, "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("PATCH loop: Status = %d, want %d. Body: %s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	stored, err := store.Loop(sid).Get()
+	if err != nil {
+		t.Fatalf("Get loop after PATCH: %v", err)
+	}
+	if len(stored.ChildEvents) != 2 {
+		t.Errorf("ChildEvents after PATCH = %v, want both events", stored.ChildEvents)
+	}
+	if !stored.IsOnChild() {
+		t.Errorf("Triggers after PATCH = %v, want onChild preserved (must not be clobbered)", stored.Triggers)
+	}
+
+	// PATCH with a nil ChildEvents must leave the stored list unchanged.
+	patchBody2, _ := json.Marshal(LoopPromptPatchRequest{}) // nil ChildEvents
+	req2 := httptest.NewRequest(http.MethodPatch, "/api/sessions/"+sid+"/loop", bytes.NewReader(patchBody2))
+	req2.Header.Set("Content-Type", "application/json")
+	w2 := httptest.NewRecorder()
+	h.HandleSessionLoop(w2, req2, sid, "")
+	if w2.Code != http.StatusOK {
+		t.Fatalf("PATCH (nil child_events) loop: Status = %d, want %d. Body: %s", w2.Code, http.StatusOK, w2.Body.String())
+	}
+	stored2, err := store.Loop(sid).Get()
+	if err != nil {
+		t.Fatalf("Get loop after nil-PATCH: %v", err)
+	}
+	if len(stored2.ChildEvents) != 2 {
+		t.Errorf("nil PATCH should not clear ChildEvents; got %v", stored2.ChildEvents)
+	}
+}
+
+// TestHandleSessionLoop_OnChildAloneRejected verifies that arming onChild
+// without another trigger is rejected with 400 (session.ErrOnChildAlone),
+// both on PUT and on a PATCH that would leave onChild as the sole trigger.
+func TestHandleSessionLoop_OnChildAloneRejected(t *testing.T) {
+	store, h := newLoopStore(t)
+	tmpDir := t.TempDir()
+
+	const sid = "test-onchild-alone"
+	if err := store.Create(session.Metadata{SessionID: sid, ACPServer: "test-server", WorkingDir: tmpDir}); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	body, _ := json.Marshal(LoopPromptRequest{
+		Prompt:   "react to child",
+		Enabled:  true,
+		Triggers: []session.LoopTrigger{session.TriggerOnChild},
+	})
+	req := httptest.NewRequest(http.MethodPut, "/api/sessions/"+sid+"/loop", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h.HandleSessionLoop(w, req, sid, "")
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("PUT onChild alone: Status = %d, want %d. Body: %s", w.Code, http.StatusBadRequest, w.Body.String())
+	}
+
+	// The rejected config must not have been persisted.
+	if _, err := store.Loop(sid).Get(); err == nil {
+		t.Error("Get after rejected PUT: expected no config to be stored")
+	}
+
+	// Seed a valid multi-trigger loop, then PATCH to drop everything but onChild.
+	putLoopForTest(t, h, sid, LoopPromptRequest{
+		Prompt:   "react to child",
+		Enabled:  true,
+		Triggers: []session.LoopTrigger{session.TriggerOnTasks, session.TriggerOnChild},
+	})
+	onlyOnChild := []session.LoopTrigger{session.TriggerOnChild}
+	patchBody, _ := json.Marshal(LoopPromptPatchRequest{Triggers: &onlyOnChild})
+	req2 := httptest.NewRequest(http.MethodPatch, "/api/sessions/"+sid+"/loop", bytes.NewReader(patchBody))
+	req2.Header.Set("Content-Type", "application/json")
+	w2 := httptest.NewRecorder()
+	h.HandleSessionLoop(w2, req2, sid, "")
+	if w2.Code != http.StatusBadRequest {
+		t.Errorf("PATCH to onChild-alone: Status = %d, want %d. Body: %s", w2.Code, http.StatusBadRequest, w2.Body.String())
+	}
+	// The prior valid config must survive the rejected PATCH.
+	stored, err := store.Loop(sid).Get()
+	if err != nil {
+		t.Fatalf("Get loop after rejected PATCH: %v", err)
+	}
+	if !stored.HasTrigger(session.TriggerOnTasks) {
+		t.Errorf("Triggers after rejected PATCH = %v, want onTasks preserved (not clobbered)", stored.Triggers)
+	}
+}
+
+// TestHandleSessionLoop_InvalidChildEventRejected verifies that an unknown
+// child_events entry is classified as a 400 Bad Request (session.ErrInvalidChildEvent),
+// both on PUT and on PATCH.
+func TestHandleSessionLoop_InvalidChildEventRejected(t *testing.T) {
+	store, h := newLoopStore(t)
+	tmpDir := t.TempDir()
+
+	const sid = "test-invalid-child-event"
+	if err := store.Create(session.Metadata{SessionID: sid, ACPServer: "test-server", WorkingDir: tmpDir}); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	body, _ := json.Marshal(LoopPromptRequest{
+		Prompt:      "react to child",
+		Enabled:     true,
+		Triggers:    []session.LoopTrigger{session.TriggerOnTasks, session.TriggerOnChild},
+		ChildEvents: []session.ChildEvent{"bogus"},
+	})
+	req := httptest.NewRequest(http.MethodPut, "/api/sessions/"+sid+"/loop", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h.HandleSessionLoop(w, req, sid, "")
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("PUT invalid child_events: Status = %d, want %d. Body: %s", w.Code, http.StatusBadRequest, w.Body.String())
+	}
+
+	// Seed a valid loop, then PATCH with an unknown event.
+	putLoopForTest(t, h, sid, LoopPromptRequest{
+		Prompt:   "react to child",
+		Enabled:  true,
+		Triggers: []session.LoopTrigger{session.TriggerOnTasks, session.TriggerOnChild},
+	})
+	bogus := []session.ChildEvent{"bogus"}
+	patchBody, _ := json.Marshal(LoopPromptPatchRequest{ChildEvents: &bogus})
+	req2 := httptest.NewRequest(http.MethodPatch, "/api/sessions/"+sid+"/loop", bytes.NewReader(patchBody))
+	req2.Header.Set("Content-Type", "application/json")
+	w2 := httptest.NewRecorder()
+	h.HandleSessionLoop(w2, req2, sid, "")
+	if w2.Code != http.StatusBadRequest {
+		t.Errorf("PATCH invalid child_events: Status = %d, want %d. Body: %s", w2.Code, http.StatusBadRequest, w2.Body.String())
+	}
+}
+
 // TestHandleSessionLoop_PatchInvalidConditionRejected verifies that an invalid CEL
 // condition is rejected with a 400 Bad Request when session.ConditionValidator is wired.
 // The real wiring (config.ValidateCondition) is owned by a sibling worker, so this test

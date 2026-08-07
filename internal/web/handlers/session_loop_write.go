@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"errors"
 	"net/http"
 	"slices"
 	"strings"
@@ -79,9 +80,12 @@ func (h *Handlers) handleSetLoop(w http.ResponseWriter, r *http.Request, session
 	p.ClampDelay(h.loopDelayFloor())
 
 	if err := ps.Set(p); err != nil {
-		if err == session.ErrInvalidFrequency || err == session.ErrPromptEmpty || err == session.ErrInvalidMaxIterations ||
-			err == session.ErrInvalidTrigger || err == session.ErrInvalidChildEvent || err == session.ErrOnChildAlone ||
-			err == session.ErrInvalidDelay || err == session.ErrInvalidMaxDuration ||
+		// errors.Is, not ==: Validate() wraps ErrInvalidTrigger (duplicate trigger)
+		// and ErrInvalidChildEvent (unknown event) with %w + context, so a direct
+		// equality check would miss them and fall through to the generic 500 below.
+		if errors.Is(err, session.ErrInvalidFrequency) || errors.Is(err, session.ErrPromptEmpty) || errors.Is(err, session.ErrInvalidMaxIterations) ||
+			errors.Is(err, session.ErrInvalidTrigger) || errors.Is(err, session.ErrInvalidChildEvent) || errors.Is(err, session.ErrOnChildAlone) ||
+			errors.Is(err, session.ErrInvalidDelay) || errors.Is(err, session.ErrInvalidMaxDuration) ||
 			isInvalidConditionErr(err) {
 			writeErrorJSON(w, http.StatusBadRequest, "", err.Error())
 			return
@@ -168,13 +172,14 @@ func (h *Handlers) handlePatchLoop(w http.ResponseWriter, r *http.Request, sessi
 		RunOnStart:          req.RunOnStart,
 		SettleWindowSeconds: req.SettleWindowSeconds,
 	}); err != nil {
-		if err == session.ErrLoopNotFound {
+		if errors.Is(err, session.ErrLoopNotFound) {
 			writeErrorJSON(w, http.StatusNotFound, "", "No loop prompt configured")
 			return
 		}
-		if err == session.ErrInvalidFrequency || err == session.ErrPromptEmpty || err == session.ErrInvalidMaxIterations ||
-			err == session.ErrInvalidTrigger || err == session.ErrInvalidChildEvent || err == session.ErrOnChildAlone ||
-			err == session.ErrInvalidDelay || err == session.ErrInvalidMaxDuration ||
+		// errors.Is, not ==: see the matching comment in handleSetLoop above.
+		if errors.Is(err, session.ErrInvalidFrequency) || errors.Is(err, session.ErrPromptEmpty) || errors.Is(err, session.ErrInvalidMaxIterations) ||
+			errors.Is(err, session.ErrInvalidTrigger) || errors.Is(err, session.ErrInvalidChildEvent) || errors.Is(err, session.ErrOnChildAlone) ||
+			errors.Is(err, session.ErrInvalidDelay) || errors.Is(err, session.ErrInvalidMaxDuration) ||
 			isInvalidConditionErr(err) {
 			writeErrorJSON(w, http.StatusBadRequest, "", err.Error())
 			return
