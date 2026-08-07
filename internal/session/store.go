@@ -34,6 +34,23 @@ type Store struct {
 	baseDir string
 	mu      sync.RWMutex
 	closed  bool
+
+	// deleteObserver, when set, is invoked once per session removed by Delete
+	// (the target session itself plus any cascade-deleted descendants), after
+	// s.mu has been released. Guarded by s.mu; see SetDeleteObserver.
+	deleteObserver func(sessionID, parentSessionID string)
+}
+
+// SetDeleteObserver registers a callback invoked once per session removed by
+// Delete (target plus any cascade-deleted descendants). The callback receives
+// the deleted session's ID and its immediate parent's ID (empty string if it
+// had none). It is invoked after the store's internal lock has been released,
+// so the callback may safely call back into other Store methods (e.g.
+// GetMetadata, Exists) without deadlocking. Pass nil to clear the observer.
+func (s *Store) SetDeleteObserver(fn func(sessionID, parentSessionID string)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.deleteObserver = fn
 }
 
 // NewStore creates a new session store with the given base directory.
@@ -524,36 +541,70 @@ func (s *Store) List() ([]Metadata, error) {
 // auto-children (IsAutoChild=true) are cascade deleted while MCP-children
 // (IsAutoChild=false) are orphaned (ParentSessionID cleared).
 func (s *Store) Delete(sessionID string) error {
+	deleted, observer, err := s.deleteLocked(sessionID)
+	if err != nil {
+		return err
+	}
+
+	// Notify the delete observer, if any, only after the lock has been
+	// released so an observer that calls back into the Store cannot
+	// deadlock. Order matches removal order: cascade descendants first,
+	// then the target session itself.
+	if observer != nil {
+		for _, d := range deleted {
+			observer(d.ID, d.ParentID)
+		}
+	}
+
+	return nil
+}
+
+// deleteLocked performs the actual deletion under s.mu and returns the list
+// of sessions removed (cascade descendants followed by the target session),
+// along with a snapshot of the delete observer captured under the lock. It
+// does not invoke the observer itself - that is the caller's (Delete's)
+// responsibility, done after the lock is released.
+func (s *Store) deleteLocked(sessionID string) ([]deletedSession, func(string, string), error) {
 	log := logging.Session()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if s.closed {
-		return ErrStoreClosed
+		return nil, nil, ErrStoreClosed
 	}
 
 	sessionDir := s.sessionDir(sessionID)
 	if _, err := os.Stat(sessionDir); os.IsNotExist(err) {
-		return ErrSessionNotFound
+		return nil, nil, ErrSessionNotFound
+	}
+
+	// Capture the target session's own parent before removing its metadata,
+	// so it can be reported to the delete observer below.
+	var parentID string
+	if meta, err := s.readMetadata(sessionID); err == nil {
+		parentID = meta.ParentSessionID
 	}
 
 	// Before deleting, find and clean up any child sessions that reference this parent.
 	// Auto-children are cascade deleted; MCP-children are orphaned.
-	if _, err := s.handleChildSessionsOnParentDelete(sessionID, nil); err != nil {
+	deleted, err := s.handleChildSessionsOnParentDelete(sessionID, nil)
+	if err != nil {
 		log.Error("failed to handle child sessions on parent delete", "error", err, "session_id", sessionID)
 		// Continue with deletion even if cleanup fails - we don't want to block deletion
 	}
 
 	if err := os.RemoveAll(sessionDir); err != nil {
-		return err
+		return nil, nil, err
 	}
 
 	// Release the shared per-directory queue lock (mitto-pr0), if any, so the
 	// process-wide registry does not retain an entry for a deleted session.
 	releaseQueueLock(sessionDir)
 
+	deleted = append(deleted, deletedSession{ID: sessionID, ParentID: parentID})
+
 	log.Debug("session deleted", "session_id", sessionID, "session_dir", sessionDir)
-	return nil
+	return deleted, s.deleteObserver, nil
 }
 
 // Exists checks if a session exists.
