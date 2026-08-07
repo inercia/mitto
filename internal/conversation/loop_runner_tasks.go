@@ -277,7 +277,7 @@ func (r *LoopRunner) evaluateTasksChange(meta session.Metadata, loop *session.Lo
 	}
 
 	// Layer 0 (hard backstop): per-conversation cooldown floor.
-	if r.tasksCooldownActive(loop) {
+	if r.eventCooldownActive(loop) {
 		return tasksDecision{action: tasksActionSkip}
 	}
 
@@ -454,10 +454,19 @@ func (r *LoopRunner) triggerTasksFireWithRetry(sessionID string, delta *config.T
 	return err, exhausted
 }
 
-// tasksCooldownActive returns true if firing should be skipped because the
+// eventCooldownActive returns true if firing should be skipped because the
 // per-conversation cooldown (clamped to the global floor) has not elapsed
-// since the last delivery.
-func (r *LoopRunner) tasksCooldownActive(loop *session.LoopPrompt) bool {
+// since the last delivery. Despite the "tasks"-flavoured floor knobs it reads
+// (minTasksCooldownSeconds et al.), this checks loop.LastSentAt — a
+// per-conversation, trigger-agnostic timestamp updated on every delivery
+// regardless of which trigger fired it — so it is shared, unmodified, by both
+// event-driven triggers: onTasks (evaluateTasksChange, evaluateAccumulatedDelta)
+// and onChild (fireOnChild, loop_runner_child.go). This was named
+// tasksCooldownActive before mitto-987y.4 generalised its call sites; the
+// floor field/knob names were deliberately left alone (config-wired, and
+// referenced by existing tests) since only the cooldown check itself needed
+// to be trigger-neutral.
+func (r *LoopRunner) eventCooldownActive(loop *session.LoopPrompt) bool {
 	if loop.LastSentAt == nil {
 		return false
 	}
@@ -834,7 +843,7 @@ func (r *LoopRunner) evaluateAccumulatedDelta(sessionID string, loop *session.Lo
 	if r.autoStopIfMaxDurationReached(sessionID, loop, loopStore, time.Now()) {
 		return d, false
 	}
-	if r.tasksCooldownActive(loop) {
+	if r.eventCooldownActive(loop) {
 		return d, false
 	}
 

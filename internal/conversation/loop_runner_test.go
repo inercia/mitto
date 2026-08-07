@@ -3025,21 +3025,21 @@ func TestLoopRunner_TasksCooldownActive(t *testing.T) {
 
 	// Never sent — never on cooldown.
 	p := &session.LoopPrompt{Trigger: session.TriggerOnTasks}
-	if runner.tasksCooldownActive(p) {
+	if runner.eventCooldownActive(p) {
 		t.Error("never-sent prompt should not be on cooldown")
 	}
 
 	// Sent 1s ago, floor 60s => active.
 	recently := time.Now().Add(-1 * time.Second)
 	p.LastSentAt = &recently
-	if !runner.tasksCooldownActive(p) {
+	if !runner.eventCooldownActive(p) {
 		t.Error("prompt sent 1s ago with a 60s floor should be on cooldown")
 	}
 
 	// Sent 2 minutes ago, floor 60s => not active.
 	longAgo := time.Now().Add(-2 * time.Minute)
 	p.LastSentAt = &longAgo
-	if runner.tasksCooldownActive(p) {
+	if runner.eventCooldownActive(p) {
 		t.Error("prompt sent 2 minutes ago with a 60s floor should not be on cooldown")
 	}
 
@@ -3047,7 +3047,7 @@ func TestLoopRunner_TasksCooldownActive(t *testing.T) {
 	p.CooldownSeconds = 300
 	recent := time.Now().Add(-90 * time.Second)
 	p.LastSentAt = &recent
-	if !runner.tasksCooldownActive(p) {
+	if !runner.eventCooldownActive(p) {
 		t.Error("per-conversation cooldown of 300s should still be active after 90s")
 	}
 }
