@@ -378,3 +378,141 @@ describe("ChatInput composition-area visibility during MCP UI prompts (mitto-9l8
     });
   });
 });
+
+// =============================================================================
+// mitto-7c98: follow-up suggestion buttons use a single-row horizontal
+// scroll (carousel) instead of wrapping.
+// Duplicated from ChatInput.js:2691-2728 (render gate + container class) and
+// ChatInput.js:2178-2196 (handleActionButtonClick) — keep in sync with the
+// source, per the file-level note above.
+// =============================================================================
+
+// Render gate: ChatInput.js:2691-2696.
+//   ${hasActionButtons && !isStreaming && !isReadOnly && !noSession &&
+//     !loopConfigured && !isResuming && html`...`}
+function shouldRenderActionButtonsCarousel({
+  actionButtons = [],
+  isStreaming = false,
+  isReadOnly = false,
+  noSession = false,
+  loopConfigured = false,
+  isResuming = false,
+}) {
+  const hasActionButtons = actionButtons && actionButtons.length > 0;
+  return (
+    hasActionButtons &&
+    !isStreaming &&
+    !isReadOnly &&
+    !noSession &&
+    !loopConfigured &&
+    !isResuming
+  );
+}
+
+// Container class: ChatInput.js:2699. `.mitto-carousel` (styles.css) supplies
+// single-row nowrap flex + horizontal scroll/snap; `py-0.5` prevents a
+// focused button's ring from being clipped by the carousel's
+// `overflow-y: hidden`.
+const ACTION_BUTTONS_CAROUSEL_CLASS = "mitto-carousel gap-2 py-0.5";
+
+// Click handler: ChatInput.js:2178-2196. Only the synchronous, directly
+// observable part (populating the composer text) is duplicated here; the
+// requestAnimationFrame-deferred focus/height adjustment is DOM-only and not
+// under test in this jsdom-free suite.
+function handleActionButtonClick(setText, response) {
+  setText(response);
+}
+
+describe("ChatInput follow-up suggestion buttons carousel (mitto-7c98)", () => {
+  describe("visibility (shouldRenderActionButtonsCarousel)", () => {
+    test("renders when action buttons are present and no gate is active", () => {
+      expect(
+        shouldRenderActionButtonsCarousel({
+          actionButtons: [{ label: "Yes", response: "Yes" }],
+        }),
+      ).toBe(true);
+    });
+
+    test("does not render when actionButtons is empty", () => {
+      expect(
+        shouldRenderActionButtonsCarousel({ actionButtons: [] }),
+      ).toBe(false);
+    });
+
+    test("does not render while streaming", () => {
+      expect(
+        shouldRenderActionButtonsCarousel({
+          actionButtons: [{ label: "Yes", response: "Yes" }],
+          isStreaming: true,
+        }),
+      ).toBe(false);
+    });
+
+    test("does not render when read-only", () => {
+      expect(
+        shouldRenderActionButtonsCarousel({
+          actionButtons: [{ label: "Yes", response: "Yes" }],
+          isReadOnly: true,
+        }),
+      ).toBe(false);
+    });
+
+    test("does not render when there is no session", () => {
+      expect(
+        shouldRenderActionButtonsCarousel({
+          actionButtons: [{ label: "Yes", response: "Yes" }],
+          noSession: true,
+        }),
+      ).toBe(false);
+    });
+
+    test("does not render when a loop is configured", () => {
+      expect(
+        shouldRenderActionButtonsCarousel({
+          actionButtons: [{ label: "Yes", response: "Yes" }],
+          loopConfigured: true,
+        }),
+      ).toBe(false);
+    });
+
+    test("does not render while resuming", () => {
+      expect(
+        shouldRenderActionButtonsCarousel({
+          actionButtons: [{ label: "Yes", response: "Yes" }],
+          isResuming: true,
+        }),
+      ).toBe(false);
+    });
+  });
+
+  describe("container class (mitto-carousel single-row scroll)", () => {
+    test("uses the mitto-carousel utility instead of wrapping flexbox", () => {
+      expect(ACTION_BUTTONS_CAROUSEL_CLASS).toContain("mitto-carousel");
+      expect(ACTION_BUTTONS_CAROUSEL_CLASS).not.toContain("flex-wrap");
+    });
+
+    test("preserves the gap-2 spacing between buttons", () => {
+      expect(ACTION_BUTTONS_CAROUSEL_CLASS).toContain("gap-2");
+    });
+
+    test("adds py-0.5 so a focused button's ring is not clipped by the carousel's overflow-y: hidden", () => {
+      expect(ACTION_BUTTONS_CAROUSEL_CLASS).toContain("py-0.5");
+    });
+  });
+
+  describe("click behavior (handleActionButtonClick)", () => {
+    test("populates the composer with the button's response text", () => {
+      const setText = jest.fn();
+      handleActionButtonClick(setText, "Yes, proceed");
+      expect(setText).toHaveBeenCalledWith("Yes, proceed");
+    });
+
+    test("still works with multiple buttons scrolled into a single row (last click wins)", () => {
+      const setText = jest.fn();
+      handleActionButtonClick(setText, "Option A");
+      handleActionButtonClick(setText, "Option B");
+      expect(setText).toHaveBeenCalledTimes(2);
+      expect(setText).toHaveBeenLastCalledWith("Option B");
+    });
+  });
+});
