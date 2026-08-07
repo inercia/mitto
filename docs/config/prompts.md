@@ -1065,13 +1065,18 @@ loop:
   maxDuration: "4h"
 ```
 
-**`.mittorc` inline `prompts:` are not migrated.** The migrator walks
-`.prompt.yaml` **files**; a workspace's `.mittorc` `prompts:` list is inline
-YAML embedded in a different config file, which the migrator does not touch.
-A workspace with an old-form `loop:` block inside `.mittorc` still gets the
-in-memory migration + WARN on every load (so it keeps working), but never the
-on-disk rewrite — you must edit that block by hand onto the grouped schema.
-Tracked as a known limitation by mitto-opoh.
+**`.mittorc` (and settings.yaml/ACP-server) inline `prompts:` are never
+rewritten on disk, but do load.** The migrator walks `.prompt.yaml` **files**;
+an inline `prompts:` list embedded in a different config file (workspace
+`.mittorc`, global `settings.yaml`, or a per-ACP-server `prompts:` block) is
+never touched by the file-based migrator or its on-disk write-back. Instead,
+each inline `loop:` block is decoded as a raw YAML node and run through the
+same migration registry **in memory** (`DecodeInlineLoop`, mitto-opoh) before
+being validated — so an old-form block there still loads and works, logging a
+WARN naming the prompt, but you must edit that block by hand onto the grouped
+schema to make the WARN go away. An inline `loop:` block that fails
+validation even after migration (e.g. an unknown `mode`) only drops that
+prompt's loop config, not the whole prompt or the file.
 
 **No consequence for already-running loops.** A loop conversation's *runtime*
 state lives in a separate file, `loop.json` (`session.LoopPrompt`), not in

@@ -72,6 +72,7 @@ var (
 	RenderPromptTemplate                      = prompts.RenderPromptTemplate
 	ValidatePromptLoop                        = prompts.ValidatePromptLoop
 	ValidateLoopTriggers                      = prompts.ValidateLoopTriggers
+	DecodeInlineLoop                          = prompts.DecodeInlineLoop
 	ValidatePromptTarget                      = prompts.ValidatePromptTarget
 	ParsePromptFile                           = prompts.ParsePromptFile
 	LoadPromptFile                            = prompts.LoadPromptFile

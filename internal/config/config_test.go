@@ -423,6 +423,64 @@ web:
 	}
 }
 
+// TestParse_InlineLoop_FlatSchemaMigratedInMemory pins mitto-opoh: prior to
+// the fix, a global or per-server inline prompt's pre-r6j flat loop: block
+// decoded straight into *PromptLoop and hit PromptLoop.UnmarshalYAML's
+// strict rejection, hard-failing the ENTIRE settings.yaml Parse call. It
+// must now migrate in memory (via DecodeInlineLoop) instead.
+func TestParse_InlineLoop_FlatSchemaMigratedInMemory(t *testing.T) {
+	yaml := `
+acp:
+  - auggie:
+      command: "auggie --acp"
+      prompts:
+        - name: "Server Loop"
+          prompt: "do something"
+          loop:
+            trigger: onCompletion
+            delay: 20
+prompts:
+  - name: "Global Loop"
+    prompt: "do something else"
+    loop:
+      trigger: onCompletion
+      delay: 30
+      maxIterations: 10
+`
+	cfg, err := Parse([]byte(yaml))
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	if len(cfg.Prompts) != 1 {
+		t.Fatalf("Prompts count = %d, want 1", len(cfg.Prompts))
+	}
+	loop := cfg.Prompts[0].Loop
+	if loop == nil {
+		t.Fatal("global prompt Loop = nil, want migrated PromptLoop")
+	}
+	if len(loop.Trigger) != 1 || loop.Trigger[0] != "onCompletion" {
+		t.Errorf("global Trigger = %v, want [onCompletion]", loop.Trigger)
+	}
+	if loop.OnCompletion == nil || loop.OnCompletion.Delay != 30 {
+		t.Errorf("global OnCompletion = %+v, want Delay=30", loop.OnCompletion)
+	}
+	if loop.MaxIterations != 10 {
+		t.Errorf("global MaxIterations = %d, want 10", loop.MaxIterations)
+	}
+
+	if len(cfg.ACPServers) != 1 || len(cfg.ACPServers[0].Prompts) != 1 {
+		t.Fatalf("ACPServers = %+v, want 1 server with 1 prompt", cfg.ACPServers)
+	}
+	serverLoop := cfg.ACPServers[0].Prompts[0].Loop
+	if serverLoop == nil {
+		t.Fatal("server prompt Loop = nil, want migrated PromptLoop")
+	}
+	if serverLoop.OnCompletion == nil || serverLoop.OnCompletion.Delay != 20 {
+		t.Errorf("server OnCompletion = %+v, want Delay=20", serverLoop.OnCompletion)
+	}
+}
+
 func TestParse_PromptBackgroundColor(t *testing.T) {
 	yaml := `
 acp:

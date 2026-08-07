@@ -4,6 +4,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -13,6 +14,34 @@ import (
 
 	"gopkg.in/yaml.v3"
 )
+
+// decodeConfigInlineLoop decodes an inline prompts: entry's loop: node (from
+// settings.yaml's top-level "prompts:" or an ACP server's "prompts:") into a
+// *PromptLoop, migrating a legacy flat-schema block in memory via
+// DecodeInlineLoop instead of letting PromptLoop.UnmarshalYAML's strict
+// rejection hard-fail the whole settings load (mitto-opoh). node is a value
+// (not *yaml.Node) because yaml.v3 does not populate a *yaml.Node struct
+// field on Decode; absence is detected via IsZero(). Returns nil (and logs a
+// WARN) if node is absent or fails to decode/validate even after migration,
+// so a bad loop: block only drops that prompt's loop config rather than the
+// prompt or the file.
+func decodeConfigInlineLoop(promptName string, node yaml.Node) *PromptLoop {
+	if node.IsZero() {
+		return nil
+	}
+	loop, migrated, err := DecodeInlineLoop(&node)
+	if err != nil {
+		slog.Warn("prompt has an invalid loop: block; dropping loop config",
+			"prompt", promptName, "error", err)
+		return nil
+	}
+	if migrated.Changed {
+		slog.Warn("prompt loop: block uses the pre-r6j flat schema; applied in memory only — "+
+			"edit the config file by hand onto the grouped schema",
+			"prompt", promptName, "migrations", migrated.Fired)
+	}
+	return loop
+}
 
 // ModelProfile is a named model profile pairing a selection criteria with tags.
 // Profiles let users tag models by capability (e.g. "Smart", "Cheap") independently
@@ -1319,20 +1348,26 @@ type rawACPServerConfig struct {
 	Env     map[string]string `yaml:"env"`  // Environment variables to set when starting the server
 	Tags    []string          `yaml:"tags"` // Optional categorization tags
 	Prompts []struct {
-		Name            string            `yaml:"name"`
-		Prompt          string            `yaml:"prompt"`
-		BackgroundColor string            `yaml:"backgroundColor"`
-		Icon            string            `yaml:"icon"`
-		Description     string            `yaml:"description"`
-		Group           string            `yaml:"group"`
-		Menus           string            `yaml:"menus"`
-		Enabled         *bool             `yaml:"enabled"`
-		EnabledWhen     string            `yaml:"enabledWhen"`
-		Loop            *PromptLoop       `yaml:"loop,omitempty"`
-		Parameters      []PromptParameter `yaml:"parameters"`
-		Tags            []string          `yaml:"tags"`
-		Singleton       bool              `yaml:"singleton"`
-		Target          *PromptTarget     `yaml:"target,omitempty"`
+		Name            string `yaml:"name"`
+		Prompt          string `yaml:"prompt"`
+		BackgroundColor string `yaml:"backgroundColor"`
+		Icon            string `yaml:"icon"`
+		Description     string `yaml:"description"`
+		Group           string `yaml:"group"`
+		Menus           string `yaml:"menus"`
+		Enabled         *bool  `yaml:"enabled"`
+		EnabledWhen     string `yaml:"enabledWhen"`
+		// Loop is decoded as a raw node (not *PromptLoop) so a pre-r6j flat
+		// loop: block runs through the mitto-r6j.3 migration registry in
+		// memory (via DecodeInlineLoop) instead of hard-failing the whole
+		// settings load via PromptLoop.UnmarshalYAML's strict rejection
+		// (mitto-opoh). Deliberately a non-pointer yaml.Node; see the
+		// matching field doc on rawWorkspaceRC.Prompts.
+		Loop       yaml.Node         `yaml:"loop,omitempty"`
+		Parameters []PromptParameter `yaml:"parameters"`
+		Tags       []string          `yaml:"tags"`
+		Singleton  bool              `yaml:"singleton"`
+		Target     *PromptTarget     `yaml:"target,omitempty"`
 	} `yaml:"prompts"`
 	RestrictedRunners   map[string]*WorkspaceRunnerConfig `yaml:"restricted_runners"`
 	ContextFlushCommand string                            `yaml:"contextFlushCommand"`
@@ -1345,20 +1380,22 @@ type rawConfig struct {
 	Models []rawModelProfile `yaml:"models"`
 	// Prompts is the top-level prompts section for global prompts
 	Prompts []struct {
-		Name            string            `yaml:"name"`
-		Prompt          string            `yaml:"prompt"`
-		BackgroundColor string            `yaml:"backgroundColor"`
-		Icon            string            `yaml:"icon"`
-		Description     string            `yaml:"description"`
-		Group           string            `yaml:"group"`
-		Menus           string            `yaml:"menus"`
-		Enabled         *bool             `yaml:"enabled"`
-		EnabledWhen     string            `yaml:"enabledWhen"`
-		Loop            *PromptLoop       `yaml:"loop,omitempty"`
-		Parameters      []PromptParameter `yaml:"parameters"`
-		Tags            []string          `yaml:"tags"`
-		Singleton       bool              `yaml:"singleton"`
-		Target          *PromptTarget     `yaml:"target,omitempty"`
+		Name            string `yaml:"name"`
+		Prompt          string `yaml:"prompt"`
+		BackgroundColor string `yaml:"backgroundColor"`
+		Icon            string `yaml:"icon"`
+		Description     string `yaml:"description"`
+		Group           string `yaml:"group"`
+		Menus           string `yaml:"menus"`
+		Enabled         *bool  `yaml:"enabled"`
+		EnabledWhen     string `yaml:"enabledWhen"`
+		// Loop is decoded as a raw node (not *PromptLoop); see the identical
+		// field doc on rawACPServerConfig.Prompts above (mitto-opoh).
+		Loop       yaml.Node         `yaml:"loop,omitempty"`
+		Parameters []PromptParameter `yaml:"parameters"`
+		Tags       []string          `yaml:"tags"`
+		Singleton  bool              `yaml:"singleton"`
+		Target     *PromptTarget     `yaml:"target,omitempty"`
 	} `yaml:"prompts"`
 	// PromptsDirs is a list of additional directories to search for prompt files
 	PromptsDirs []string `yaml:"prompts_dirs"`
@@ -1585,6 +1622,7 @@ func Parse(data []byte) (*Config, error) {
 				if p.Enabled != nil && !*p.Enabled {
 					continue
 				}
+				loop := decodeConfigInlineLoop(p.Name, p.Loop)
 				wp := WebPrompt{
 					Name:            p.Name,
 					Prompt:          p.Prompt,
@@ -1597,7 +1635,7 @@ func Parse(data []byte) (*Config, error) {
 					Target:          p.Target,
 					Tags:            p.Tags,
 					EnabledWhen:     p.EnabledWhen,
-					Loop:            p.Loop,
+					Loop:            loop,
 					Parameters:      p.Parameters,
 				}
 				acpServer.Prompts = append(acpServer.Prompts, wp)
@@ -1639,6 +1677,7 @@ func Parse(data []byte) (*Config, error) {
 		if err := ValidatePromptParameters(p.Menus, p.Parameters); err != nil {
 			continue
 		}
+		loop := decodeConfigInlineLoop(p.Name, p.Loop)
 		wp := WebPrompt{
 			Name:            p.Name,
 			Prompt:          p.Prompt,
@@ -1652,7 +1691,7 @@ func Parse(data []byte) (*Config, error) {
 			Tags:            p.Tags,
 			EnabledWhen:     p.EnabledWhen,
 			Enabled:         p.Enabled,
-			Loop:            p.Loop,
+			Loop:            loop,
 			Parameters:      p.Parameters,
 		}
 		cfg.Prompts = append(cfg.Prompts, wp)
