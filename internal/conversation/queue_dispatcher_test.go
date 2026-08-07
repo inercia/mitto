@@ -291,6 +291,38 @@ func TestQueueDispatcher_ProcessNext(t *testing.T) {
 		}
 	})
 
+	// TestQueueDispatcher_ProcessNext_ClosedSession_ShouldNotDispatch reproduces
+	// mitto-xlwh (defect 1): unlike tryProcess (which checks queueIsClosed()),
+	// processNext — the path the prompt-completion tail actually calls via
+	// pdProcessNextQueuedMessage → processNextQueuedMessage — has NO
+	// closed-session guard at all. A message popped here while the session is
+	// closed/deleted is dispatched via promptWithMeta (which will itself fail
+	// with "session is closed"), and Pop() has already destroyed the message
+	// from the durable queue by the time that failure is observed — the
+	// message is silently lost. This test currently FAILS because processNext
+	// dispatches even when closed=true; after the fix it must return false and
+	// leave promptWithMeta uncalled.
+	t.Run("closed session → must not pop/dispatch (mitto-xlwh)", func(t *testing.T) {
+		q := newTestQueue(t)
+		if _, err := q.Add("queued msg", nil, nil, "", nil, 0, nil, ""); err != nil {
+			t.Fatalf("Add: %v", err)
+		}
+		d := &fakeQueueDeps{enabled: true, queue: q, delaySeconds: 0, closed: true}
+		if qd.processNext(d) {
+			t.Fatal("expected processNext to return false when session is closed")
+		}
+		if len(d.promptWithMetaMsgs) != 0 {
+			t.Fatalf("expected promptWithMeta NOT to be called on a closed session, got %v", d.promptWithMetaMsgs)
+		}
+		queueLen, err := q.Len()
+		if err != nil {
+			t.Fatalf("Len: %v", err)
+		}
+		if queueLen != 1 {
+			t.Fatalf("expected the queued message to remain (not popped) on a closed session, queue len = %d", queueLen)
+		}
+	})
+
 	t.Run("happy path with delay=0 → sets inProgress, sends, returns true", func(t *testing.T) {
 		q := newTestQueue(t)
 		if _, err := q.Add("queued msg", nil, nil, "", nil, 0, nil, ""); err != nil {

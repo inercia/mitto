@@ -92,6 +92,17 @@ func (qd queueDispatcher) processNext(d queueDeps) bool {
 		d.restoreBaselineIfOverride()
 		return false
 	}
+	// mitto-xlwh: unlike tryProcess, processNext is reached synchronously from
+	// the prompt-completion tail (pdProcessNextQueuedMessage), which can run
+	// after the session has been closed/deleted (WaitForResponseComplete only
+	// waits on isPrompting, not on tail completion). Without this guard,
+	// queue.Pop() below destroys the message from the durable queue before
+	// the resulting "session is closed" promptWithMeta failure is observed,
+	// silently losing the queued prompt.
+	if d.queueIsClosed() {
+		d.restoreBaselineIfOverride()
+		return false
+	}
 	queue := d.queueForSession()
 	if queue == nil {
 		d.restoreBaselineIfOverride()
