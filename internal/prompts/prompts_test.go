@@ -808,6 +808,127 @@ prompt: hi
 	}
 }
 
+// TestParsePromptFile_WithTargetNoArchive pins mitto-yvel.1: the new
+// target.noArchive key parses under target: as a peer of title / reuse /
+// suppressAutoChildren, and survives the round-trip through ToWebPrompt so
+// HTTP handlers can resolve it without re-parsing the file.
+func TestParsePromptFile_WithTargetNoArchive(t *testing.T) {
+	data := []byte(`name: "no-archive"
+target:
+  noArchive: true
+prompt: hi
+`)
+
+	prompt, err := ParsePromptFile("no-archive.prompt.yaml", data, time.Now())
+	if err != nil {
+		t.Fatalf("ParsePromptFile failed: %v", err)
+	}
+	if prompt.Target == nil {
+		t.Fatal("Target = nil, want non-nil")
+	}
+	if !prompt.Target.NoArchive {
+		t.Errorf("Target.NoArchive = false, want true")
+	}
+	// Round-trips through ToWebPrompt so the resolver can read it off the
+	// merged WebPrompt list without re-parsing.
+	wp := prompt.ToWebPrompt()
+	if wp.Target == nil {
+		t.Fatal("WebPrompt.Target = nil, want non-nil")
+	}
+	if !wp.Target.NoArchive {
+		t.Errorf("WebPrompt.Target.NoArchive = false, want true")
+	}
+}
+
+// TestParsePromptFile_TargetNoArchiveAbsentDefaultsFalse pins mitto-yvel.1:
+// absent noArchive must decode to the zero value (false), so existing
+// prompts that only declare target.title or target.reuse.* keep unchanged
+// (archivable) behavior.
+func TestParsePromptFile_TargetNoArchiveAbsentDefaultsFalse(t *testing.T) {
+	data := []byte(`name: "titled"
+target:
+  title: "Only a title"
+prompt: hi
+`)
+
+	prompt, err := ParsePromptFile("titled.prompt.yaml", data, time.Now())
+	if err != nil {
+		t.Fatalf("ParsePromptFile failed: %v", err)
+	}
+	if prompt.Target == nil {
+		t.Fatal("Target = nil, want non-nil")
+	}
+	if prompt.Target.NoArchive {
+		t.Errorf("Target.NoArchive = true, want false (absent must default to false)")
+	}
+	wp := prompt.ToWebPrompt()
+	if wp.Target == nil || wp.Target.NoArchive {
+		t.Errorf("WebPrompt.Target.NoArchive = %+v, want false", wp.Target)
+	}
+}
+
+// TestParsePromptFile_TargetNoArchiveJSONRoundTrip pins mitto-yvel.1: the
+// flag survives a JSON round-trip through WebPrompt so callers that receive
+// the merged prompt list (frontend, resolver, MCP tool-list handlers) see it
+// under the "noArchive" JSON key, and is omitted entirely (omitempty) when
+// false so existing prompts serialize unchanged.
+func TestParsePromptFile_TargetNoArchiveJSONRoundTrip(t *testing.T) {
+	data := []byte(`name: "no-archive"
+target:
+  noArchive: true
+prompt: hi
+`)
+
+	prompt, err := ParsePromptFile("no-archive.prompt.yaml", data, time.Now())
+	if err != nil {
+		t.Fatalf("ParsePromptFile failed: %v", err)
+	}
+	wp := prompt.ToWebPrompt()
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(wp); err != nil {
+		t.Fatalf("json.Encode(WebPrompt): %v", err)
+	}
+	body := buf.String()
+	if !strings.Contains(body, `"noArchive":true`) {
+		t.Errorf("JSON body missing noArchive:true key; got %s", body)
+	}
+
+	var round WebPrompt
+	if err := json.NewDecoder(bytes.NewReader(buf.Bytes())).Decode(&round); err != nil {
+		t.Fatalf("json.Decode(WebPrompt): %v", err)
+	}
+	if round.Target == nil || !round.Target.NoArchive {
+		t.Errorf("round-tripped WebPrompt.Target.NoArchive = %+v, want true", round.Target)
+	}
+}
+
+// TestParsePromptFile_TargetNoArchiveFalseOmittedFromJSON pins mitto-yvel.1:
+// an explicit noArchive: false (or absent) must NOT appear in the
+// serialized JSON (omitempty), so existing /api/prompts payloads for
+// prompts that don't use this flag are byte-identical to before.
+func TestParsePromptFile_TargetNoArchiveFalseOmittedFromJSON(t *testing.T) {
+	data := []byte(`name: "titled"
+target:
+  title: "Only a title"
+prompt: hi
+`)
+
+	prompt, err := ParsePromptFile("titled.prompt.yaml", data, time.Now())
+	if err != nil {
+		t.Fatalf("ParsePromptFile failed: %v", err)
+	}
+	wp := prompt.ToWebPrompt()
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(wp); err != nil {
+		t.Fatalf("json.Encode(WebPrompt): %v", err)
+	}
+	if strings.Contains(buf.String(), "noArchive") {
+		t.Errorf("JSON body should omit noArchive key when false; got %s", buf.String())
+	}
+}
+
 // TestParsePromptFile_CollectInnerArgs pins mitto-48c: a `type: prompts`
 // picker's collectInnerArgs opt-out parses to a non-nil pointer, defaults to
 // nil (=> ShouldCollectInnerArgs() true) when absent, and survives the

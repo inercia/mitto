@@ -597,6 +597,15 @@ type PromptTarget struct {
 	// are already gated to top-level sessions in the session manager
 	// (mitto-nlx).
 	SuppressAutoChildren bool `yaml:"suppressAutoChildren,omitempty" json:"suppressAutoChildren,omitempty"`
+
+	// NoArchive, when true, marks the conversation this prompt creates as
+	// non-archivable (mitto-yvel). Create-time only; orthogonal to the
+	// Reuse modes and to SuppressAutoChildren. This field only carries the
+	// flag through frontmatter parsing — resolving it onto the created
+	// conversation and enforcing it at archive entry points is done by
+	// downstream work (mitto-yvel.2, mitto-yvel.3). Defaults to false
+	// (unchanged behavior: the conversation remains archivable).
+	NoArchive bool `yaml:"noArchive,omitempty" json:"noArchive,omitempty"`
 }
 
 // PromptTargetReuse groups reuse-mode routing keys under target.reuse. Split

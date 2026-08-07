@@ -27,7 +27,7 @@ func TestDocsFrontmatterFieldsExistOnStructs(t *testing.T) {
 		{
 			name:   "PromptTarget",
 			typ:    reflect.TypeOf(PromptTarget{}),
-			fields: []string{"title", "reuse"},
+			fields: []string{"title", "reuse", "noArchive"},
 		},
 		{
 			// mitto-6b3: nested reuse block under target.reuse.
