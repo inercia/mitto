@@ -1820,6 +1820,17 @@ a.mailto-link:hover {
   min-width: 0;
 }
 
+/* daisyUI 5's `.fieldset` also sets `font-size: .75rem` (12px), which is below
+   the 14px body baseline in styles-v2.css. Since Tailwind's preflight makes
+   form controls inherit their font, every label, input, select and textarea
+   inside a fieldset renders 2px smaller than the surrounding UI — most visibly
+   in dialogs (PromptParameterDialog, SavePromptDialog, SettingsDialog,
+   WorkspaceFolderEditor, ShortcutsEditor). Align the fieldset with the body
+   baseline; explicit `text-xs` helper text keeps its smaller size. */
+.fieldset {
+  font-size: 0.875rem;
+}
+
 /* Beads issue list (daisyUI .list): render each issue as a self-contained
    card — matching the ACP Servers / Runners lists — instead of daisyUI's
    faint full-width row dividers. The per-card border is applied as Tailwind

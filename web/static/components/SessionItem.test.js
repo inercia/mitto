@@ -12,50 +12,81 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
-import { hexToRgb } from "../lib.js";
+import { getConversationAccentStyles, rgbToHsl } from "../lib.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const sessionItemJs = readFileSync(resolve(__dirname, "SessionItem.js"), "utf8");
 
 describe("SessionItem.js: conversation accent color (mitto-8sk)", () => {
-  test("imports hexToRgb from lib.js", () => {
-    expect(sessionItemJs).toMatch(/import\s*{[^}]*hexToRgb[^}]*}\s*from\s*["']\.\.\/lib\.js["']/s);
-  });
-
-  test("derives accentRgb from session.background_color", () => {
+  test("imports getConversationAccentStyles from lib.js", () => {
     expect(sessionItemJs).toMatch(
-      /const accentRgb = useMemo\(\s*\(\)\s*=>\s*hexToRgb\(session\.background_color\)/,
+      /import\s*{[^}]*getConversationAccentStyles[^}]*}\s*from\s*["']\.\.\/lib\.js["']/s,
     );
   });
 
-  test("renders a left accent stripe using accentRgb, suppressed when isActive", () => {
-    // The stripe is only rendered when accentRgb is truthy AND the row is
-    // NOT active (bg-mitto-accent already owns the active row's background).
-    expect(sessionItemJs).toMatch(/\$\{accentRgb && !isActive/);
-    // The stripe itself: a thin, non-interactive, rounded-left bar pinned to
-    // the left edge — never a full row fill (would risk text contrast).
+  test("derives accentStyles from session.background_color and the active theme", () => {
     expect(sessionItemJs).toMatch(
-      /class="absolute left-0 top-0 bottom-0 w-1 rounded-l-lg z-0 pointer-events-none"/,
+      /const accentStyles = useMemo\(\s*\(\)\s*=>\s*getConversationAccentStyles\(\s*session\.background_color,\s*isLightTheme,?\s*\)/,
     );
+    // The theme must be a dependency, otherwise toggling light/dark leaves the
+    // previously derived colors in place.
     expect(sessionItemJs).toMatch(
-      /style="background: rgb\(\$\{accentRgb\.r\}, \$\{accentRgb\.g\}, \$\{accentRgb\.b\}\);"/,
+      /\[session\.background_color, isLightTheme\],/,
     );
   });
 
-  test("the accent stripe div is a sibling of the loopProgressBg overlay (same z-0 layer)", () => {
+  test("renders a row tint plus a left accent stripe, suppressed when isActive", () => {
+    // Rendered only when a color is set AND the row is NOT active
+    // (bg-mitto-accent already owns the active row's background).
+    expect(sessionItemJs).toMatch(/\$\{accentStyles && !isActive/);
+    expect(sessionItemJs).toMatch(
+      /class="absolute inset-0 z-0 pointer-events-none"\s*\n\s*style="background: \$\{accentStyles\.tint\};"/,
+    );
+    // The stripe itself: a thin, non-interactive bar pinned to the left edge.
+    expect(sessionItemJs).toMatch(
+      /class="absolute left-0 top-0 bottom-0 w-1 z-0 pointer-events-none"\s*\n\s*style="background: \$\{accentStyles\.stripe\};"/,
+    );
+  });
+
+  test("the accent overlays sit before the loopProgressBg overlay (same z-0 layer)", () => {
     const loopIdx = sessionItemJs.indexOf("${loopProgressBg");
-    const accentIdx = sessionItemJs.indexOf("${accentRgb && !isActive");
-    expect(loopIdx).toBeGreaterThan(-1);
-    expect(accentIdx).toBeGreaterThan(loopIdx);
+    const accentIdx = sessionItemJs.indexOf("${accentStyles && !isActive");
+    expect(accentIdx).toBeGreaterThan(-1);
+    expect(loopIdx).toBeGreaterThan(accentIdx);
   });
 });
 
-describe("hexToRgb wiring used by the accent stripe", () => {
-  test("a valid #RRGGBB target.backgroundColor resolves to an rgb triple", () => {
-    expect(hexToRgb("#E1BEE7")).toEqual({ r: 225, g: 190, b: 231 });
+describe("getConversationAccentStyles", () => {
+  test("an unset background_color resolves to null (no accent at all)", () => {
+    expect(getConversationAccentStyles(undefined, false)).toBeNull();
+    expect(getConversationAccentStyles("", true)).toBeNull();
   });
 
-  test("an unset background_color (undefined) resolves to null (no stripe)", () => {
-    expect(hexToRgb(undefined)).toBeNull();
+  test("light theme keeps the pastel itself (translucent tint, solid stripe)", () => {
+    expect(getConversationAccentStyles("#E1BEE7", true)).toEqual({
+      tint: "rgba(225, 190, 231, 0.45)",
+      stripe: "rgb(225, 190, 231)",
+    });
+  });
+
+  test("dark theme rebuilds the color from its hue: dark tint, bright stripe", () => {
+    const styles = getConversationAccentStyles("#C5CAE9", false);
+    const { h } = rgbToHsl(197, 202, 233);
+    const hue = Math.round(h);
+    expect(styles.tint).toBe(`hsla(${hue}, 55%, 22%, 0.85)`);
+    expect(styles.stripe).toBe(`hsl(${hue}, 60%, 62%)`);
+  });
+
+  test("dark theme keeps distinct hues distinguishable across the palette", () => {
+    const hues = ["#FFCDD2", "#C8E6C9", "#B3E5FC", "#E1BEE7"].map(
+      (hex) => getConversationAccentStyles(hex, false).tint,
+    );
+    expect(new Set(hues).size).toBe(hues.length);
+  });
+
+  test("the achromatic Grey swatch stays grey on dark (never clamped to red)", () => {
+    const styles = getConversationAccentStyles("#E0E0E0", false);
+    expect(styles.tint).toBe("hsla(0, 0%, 22%, 0.85)");
+    expect(styles.stripe).toBe("hsl(0, 0%, 62%)");
   });
 });

@@ -636,6 +636,15 @@ export function useWebSocket({
         // Conversation accent color (SessionItem renders it as a left stripe)
         background_color:
           data.info?.background_color || storedSession?.background_color || "",
+        // Parent-child hierarchy. Sourced from the `connected` message first so
+        // a child reconnecting before fetchStoredSessions() resolves still nests
+        // under its parent instead of being hoisted to the sidebar root.
+        parent_session_id:
+          data.info?.parent_session_id ||
+          storedSession?.parent_session_id ||
+          null,
+        child_origin:
+          data.info?.child_origin || storedSession?.child_origin || null,
       };
     });
 
@@ -646,7 +655,7 @@ export function useWebSocket({
     const fingerprint = result
       .map(
         (s) =>
-          `${s.session_id}|${s.name}|${s.working_dir}|${s.acp_server}|${s.archived}|${s.isActive}|${s.isStreaming}|${s.isWaitingForChildren}|${s.isWaitingForUserInput}|${s.status}|${s.gc_suspended}|${s.background_color}`,
+          `${s.session_id}|${s.name}|${s.working_dir}|${s.acp_server}|${s.archived}|${s.isActive}|${s.isStreaming}|${s.isWaitingForChildren}|${s.isWaitingForUserInput}|${s.status}|${s.gc_suspended}|${s.background_color}|${s.parent_session_id || ""}|${s.child_origin || ""}`,
       )
       .sort()
       .join("\n");
@@ -741,6 +750,16 @@ export function useWebSocket({
                   msg.data.archived_at ?? session.info?.archived_at ?? null,
                 // Preserve archive_pending flag from existing session info
                 archive_pending: session.info?.archive_pending || false,
+                // Parent-child hierarchy (sent by the server in `connected`).
+                // Kept on info so activeSessions can surface it before
+                // fetchStoredSessions() has populated storedSessions —
+                // otherwise a reconnecting child renders as a root.
+                parent_session_id:
+                  msg.data.parent_session_id ??
+                  session.info?.parent_session_id ??
+                  null,
+                child_origin:
+                  msg.data.child_origin ?? session.info?.child_origin ?? null,
                 // Loop state from server:
                 // loop_configured: config exists → drives editor UI + reconnect long-lived check
                 // loop_enabled: runs active → drives sidebar category + clock icon
