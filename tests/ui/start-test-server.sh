@@ -40,6 +40,25 @@ EOF
 
 echo "Created test settings at $MITTO_DIR/settings.json"
 
+# Pin the project-alpha folder so its sidebar row (and the per-folder "New
+# conversation" button) is visible even before any session exists. Without
+# this, a fresh test environment shows "No conversations yet" with zero
+# folder rows -- the sidebar's global "New Conversation" button was removed
+# in favor of a per-folder button, which only renders once its folder is
+# either session-derived or pinned (mitto-vmnh).
+WORKSPACE_DIR="${PROJECT_ROOT}/tests/fixtures/workspaces/project-alpha"
+cat > "$MITTO_DIR/folders.json" << EOF
+{
+  "folders": {
+    "${WORKSPACE_DIR}": {
+      "pinned": true
+    }
+  }
+}
+EOF
+
+echo "Created test folders at $MITTO_DIR/folders.json"
+
 # Start mitto web server
 exec ./mitto web --port 8089 --dir mock-acp:tests/fixtures/workspaces/project-alpha
 

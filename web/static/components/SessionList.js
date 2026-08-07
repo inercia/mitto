@@ -1324,6 +1324,7 @@ export function SessionList({
                   );
                   return html`<button
                     type="button"
+                    data-testid="new-conversation-btn"
                     onClick=${(e) => {
                       e.preventDefault();
                       e.stopPropagation();
