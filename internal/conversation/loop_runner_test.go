@@ -6177,12 +6177,9 @@ func TestLoopRunner_CheckSession_Precedence_OnCompletionWinsOverSchedule(t *test
 		time.Sleep(5 * time.Millisecond)
 	}
 
+	runner.dispatchInFlightMu.Lock()
 	winner, held := runner.dispatchInFlight[sessionID]
-	if !held {
-		runner.dispatchInFlightMu.Lock()
-		winner, held = runner.dispatchInFlight[sessionID]
-		runner.dispatchInFlightMu.Unlock()
-	}
+	runner.dispatchInFlightMu.Unlock()
 	if !held || winner != session.TriggerOnCompletion {
 		t.Fatalf("dispatchInFlight[%q] = (%q, %v), want (onCompletion, true) — onCompletion must claim the dispatch before the schedule due-check runs", sessionID, winner, held)
 	}

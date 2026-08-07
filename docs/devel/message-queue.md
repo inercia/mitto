@@ -225,6 +225,17 @@ corrupted by a run a sibling trigger initiated.
 dispatch-claim coalescing tests) and `internal/session/loop_test.go` cover
 independent arming, the coalescing claim, and shared-cap accounting across
 trigger combinations.
+`TestLoopRunner_CheckSession_Precedence_OnCompletionWinsOverSchedule` additionally
+pins the precedence *ordering* through `checkSession` itself rather than the
+generic claim: with both legs simultaneously eligible, the event-driven leg takes
+the claim and the schedule fire is coalesced without advancing `NextScheduledAt`.
+Note that `onTasks` is dispatched from `OnBeadsChanged`, not from `checkSession`
+(which only bootstraps its baseline), so its precedence over the other triggers
+reduces to the same first-caller-wins claim.
+On the parsing side, `internal/prompts` covers the trigger-list validation matrix
+(including inert per-trigger blocks) and `TestLoadPromptFile_MigratesLegacyLoopSchema_WritesBackToDisk`
+joins the in-memory legacy-schema migration with its on-disk write-back through
+`LoadPromptFile`.
 
 ## Loop Prompts: On-Completion Delivery
 
