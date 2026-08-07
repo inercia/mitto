@@ -30,9 +30,8 @@ import {
   cleanupExpiredPrompts,
   getArchiveReasonText,
   conversationToMarkdown,
-  messageToMarkdown,
+  lastAgentMarkdown,
   copyToClipboard,
-  ROLE_AGENT,
   LOOP_STOPPED_LABELS,
   formatLoopMaxDuration,
   computeHeaderTriggerLabel,
@@ -2833,15 +2832,10 @@ function App() {
   // Last agent (assistant) message in the conversation, rendered to Markdown.
   // Empty string when there is no copyable agent message yet — used to
   // disable the "Copy last response" entry rather than hide it.
-  const headerLastAgentMarkdown = useMemo(() => {
-    if (!messages || messages.length === 0) return "";
-    for (let i = messages.length - 1; i >= 0; i--) {
-      if (messages[i]?.role !== ROLE_AGENT) continue;
-      const md = messageToMarkdown(messages[i]);
-      if (md) return md;
-    }
-    return "";
-  }, [messages]);
+  const headerLastAgentMarkdown = useMemo(
+    () => lastAgentMarkdown(messages),
+    [messages],
+  );
 
   const handleCopyLastResponse = useCallback(async () => {
     await copyWithToast(

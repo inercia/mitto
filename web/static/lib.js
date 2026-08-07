@@ -1397,6 +1397,89 @@ export function hslToHex(h, s, l) {
 }
 
 /**
+ * Converts RGB components to HSL.
+ * @param {number} r - Red (0-255)
+ * @param {number} g - Green (0-255)
+ * @param {number} b - Blue (0-255)
+ * @returns {object} { h, s, l } with h in 0-360 and s/l in 0-100
+ */
+export function rgbToHsl(r, g, b) {
+  const rn = r / 255;
+  const gn = g / 255;
+  const bn = b / 255;
+  const max = Math.max(rn, gn, bn);
+  const min = Math.min(rn, gn, bn);
+  const l = (max + min) / 2;
+  const d = max - min;
+  if (d === 0) return { h: 0, s: 0, l: l * 100 };
+  const s = d / (1 - Math.abs(2 * l - 1));
+  let h;
+  if (max === rn) h = ((gn - bn) / d) % 6;
+  else if (max === gn) h = (bn - rn) / d + 2;
+  else h = (rn - gn) / d + 4;
+  h *= 60;
+  if (h < 0) h += 360;
+  return { h, s: s * 100, l: l * 100 };
+}
+
+// Dark-theme accent tuning. The conversation palette (CONVERSATION_COLORS) is
+// made of Material 100/200 pastels: high lightness, modest saturation. Blending
+// those over the dark sidebar collapses every hue into near-identical greys, so
+// on dark the color is rebuilt from its hue with a saturation floor and a low
+// lightness instead of tinting with the raw pastel.
+const ACCENT_DARK_TINT_LIGHTNESS = 22;
+const ACCENT_DARK_TINT_ALPHA = 0.85;
+const ACCENT_DARK_STRIPE_LIGHTNESS = 62;
+const ACCENT_DARK_SAT_MIN = 55;
+const ACCENT_DARK_SAT_MAX = 90;
+const ACCENT_DARK_STRIPE_SAT_MIN = 60;
+const ACCENT_DARK_STRIPE_SAT_MAX = 95;
+// Below this saturation a palette entry is treated as achromatic (the "Grey"
+// swatch) and must stay grey — clamping it to the saturation floor would turn
+// it into a red row.
+const ACCENT_ACHROMATIC_SAT = 10;
+
+/**
+ * Derives the sidebar accent styles for a conversation's background color.
+ *
+ * Light theme keeps the pastel itself (translucent row tint + solid stripe).
+ * Dark theme re-derives a hue-preserving dark tint and a brightened stripe so
+ * the palette stays distinguishable against the dark sidebar.
+ *
+ * @param {string} hexColor - Conversation color (e.g. "#C5CAE9"), may be empty
+ * @param {boolean} isLight - Whether the light theme is active
+ * @returns {object|null} { tint, stripe } CSS colors, or null when unset/invalid
+ */
+export function getConversationAccentStyles(hexColor, isLight) {
+  const rgb = hexToRgb(hexColor);
+  if (!rgb) return null;
+
+  if (isLight) {
+    return {
+      tint: `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, 0.45)`,
+      stripe: `rgb(${rgb.r}, ${rgb.g}, ${rgb.b})`,
+    };
+  }
+
+  const { h, s } = rgbToHsl(rgb.r, rgb.g, rgb.b);
+  const achromatic = s < ACCENT_ACHROMATIC_SAT;
+  const tintSat = achromatic
+    ? 0
+    : Math.min(Math.max(s, ACCENT_DARK_SAT_MIN), ACCENT_DARK_SAT_MAX);
+  const stripeSat = achromatic
+    ? 0
+    : Math.min(
+        Math.max(s, ACCENT_DARK_STRIPE_SAT_MIN),
+        ACCENT_DARK_STRIPE_SAT_MAX,
+      );
+  const hue = Math.round(h);
+  return {
+    tint: `hsla(${hue}, ${Math.round(tintSat)}%, ${ACCENT_DARK_TINT_LIGHTNESS}%, ${ACCENT_DARK_TINT_ALPHA})`,
+    stripe: `hsl(${hue}, ${Math.round(stripeSat)}%, ${ACCENT_DARK_STRIPE_LIGHTNESS}%)`,
+  };
+}
+
+/**
  * Generates a deterministic color for a workspace based on its path.
  * Uses HSL color space for better control over saturation and lightness.
  *
@@ -2053,6 +2136,25 @@ export function conversationToMarkdown(messages) {
     parts.push(header + "\n\n" + md);
   }
   return parts.join("\n\n---\n\n");
+}
+
+/**
+ * Finds the most recent copyable agent (assistant) message in a conversation
+ * and returns it as Markdown. Scans from the end; skips any non-agent message
+ * (user, thought, tool, error, system) and any agent message that yields no
+ * Markdown yet (e.g. a streaming message with no HTML accumulated so far),
+ * falling back to an earlier agent message when one exists.
+ * @param {Array} messages
+ * @returns {string} Markdown of the last copyable agent message, or "" when none
+ */
+export function lastAgentMarkdown(messages) {
+  if (!messages || messages.length === 0) return "";
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i]?.role !== ROLE_AGENT) continue;
+    const md = messageToMarkdown(messages[i]);
+    if (md) return md;
+  }
+  return "";
 }
 
 /**

@@ -65,6 +65,7 @@ import {
   htmlToMarkdown,
   messageToMarkdown,
   conversationToMarkdown,
+  lastAgentMarkdown,
   LOOP_STOPPED_LABELS,
   isLoopErrorStop,
   formatLoopMaxDuration,
@@ -5671,6 +5672,61 @@ describe("conversationToMarkdown", () => {
     const thirdIdx = result.indexOf("Third");
     expect(firstIdx).toBeLessThan(secondIdx);
     expect(secondIdx).toBeLessThan(thirdIdx);
+  });
+});
+
+// =============================================================================
+// lastAgentMarkdown Tests
+// =============================================================================
+
+describe("lastAgentMarkdown", () => {
+  test("returns empty string for empty/null input", () => {
+    expect(lastAgentMarkdown([])).toBe("");
+    expect(lastAgentMarkdown(null)).toBe("");
+  });
+
+  test("returns empty string when there is no agent message", () => {
+    const msgs = [
+      { role: ROLE_USER, text: "Hello" },
+      { role: ROLE_USER, text: "Anyone there?" },
+    ];
+    expect(lastAgentMarkdown(msgs)).toBe("");
+  });
+
+  test("agent message followed by a user message still returns the agent one", () => {
+    const msgs = [
+      { role: ROLE_USER, text: "Question" },
+      { role: ROLE_AGENT, html: "<p>Answer</p>" },
+      { role: ROLE_USER, text: "Thanks" },
+    ];
+    expect(lastAgentMarkdown(msgs)).toBe("Answer");
+  });
+
+  test("streaming agent message with partial html is returned, not excluded", () => {
+    const msgs = [
+      { role: ROLE_USER, text: "Question" },
+      { role: ROLE_AGENT, html: "<p>Partial resp" },
+    ];
+    expect(lastAgentMarkdown(msgs)).toBe("Partial resp");
+  });
+
+  test("agent message with empty html falls back to the previous non-empty agent message", () => {
+    const msgs = [
+      { role: ROLE_AGENT, html: "<p>First answer</p>" },
+      { role: ROLE_USER, text: "Follow-up" },
+      { role: ROLE_AGENT, html: "" },
+    ];
+    expect(lastAgentMarkdown(msgs)).toBe("First answer");
+  });
+
+  test("non-agent roles (thought, tool, error) are skipped", () => {
+    const msgs = [
+      { role: ROLE_AGENT, html: "<p>Earlier answer</p>" },
+      { role: ROLE_THOUGHT, text: "thinking..." },
+      { role: ROLE_TOOL, title: "Edit file.js" },
+      { role: ROLE_ERROR, text: "oops" },
+    ];
+    expect(lastAgentMarkdown(msgs)).toBe("Earlier answer");
   });
 });
 
