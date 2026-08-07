@@ -300,6 +300,15 @@ type Processor struct {
 	// Example: 'ACP.Tags.exists(t, t == "reasoning")' — only apply for reasoning models.
 	EnabledWhen string `yaml:"enabledWhen,omitempty" json:"enabled_when,omitempty"`
 
+	// RunOnCascadedClose opts a conversationClosed prompt-mode processor into
+	// firing again when a session is closed as part of a cascade delete
+	// (ArchiveReason "parent_deleted"). By default such closes are skipped for
+	// prompt-mode processors because they analyze the whole conversation tree,
+	// so the parent-level close already covers descendants (mitto-ce3b); set
+	// this to true only if the processor genuinely needs per-child context.
+	// Ignored for command-mode processors, which always run per session.
+	RunOnCascadedClose bool `yaml:"runOnCascadedClose,omitempty" json:"run_on_cascaded_close,omitempty"`
+
 	// FilePath is the path to the processor's YAML file (set internally).
 	FilePath string `yaml:"-" json:"-"`
 	// HookDir is the directory containing the processor file (set internally).

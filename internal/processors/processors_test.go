@@ -5499,6 +5499,83 @@ func TestApplyOnClose_PromptMode_Dispatched(t *testing.T) {
 	}
 }
 
+// TestApplyOnClose_PromptMode_SkipsForParentDeletedReason reproduces mitto-ce3b:
+// cascade delete runs the close-phase memory processors twice. When a parent
+// session is deleted, HandleDeleteSession (internal/web/handlers/session_delete.go)
+// calls SessionManager.ApplyOnCloseProcessors once for the parent (archive_reason
+// "deleted") and once more for EVERY cascaded child (archive_reason
+// "parent_deleted"). Because the conversationClosed memory processors analyze
+// the whole conversation tree, the parent-level run already covers the
+// descendants — the per-child runs are pure duplicate LLM work.
+//
+// ApplyOnClose has no awareness of the cascade: it treats "parent_deleted" like
+// any other archive reason and dispatches the full prompt-mode batch again. This
+// test simulates the cascade at the Manager level — one ApplyOnClose call per
+// session sharing the same promptFunc spy, mirroring what
+// SessionManager.ApplyOnCloseProcessors does per-session in the real cascade —
+// and asserts that a "parent_deleted" close must NOT trigger a second
+// prompt-mode dispatch once a "deleted" close has already fired for the tree.
+// Today this fails: both calls dispatch, so dispatched ends up 2, not 1.
+func TestApplyOnClose_PromptMode_SkipsForParentDeletedReason(t *testing.T) {
+	var mu sync.Mutex
+	var dispatched []string
+
+	proc := &Processor{
+		Name:   "close-memoriser",
+		When:   WhenConfig{On: PhaseConversationClosed, Match: MatchAll},
+		Prompt: "Persist for session @mitto:session_id.",
+	}
+
+	m := NewManager("", nil)
+	m.processors = []*Processor{proc}
+	m.SetPromptFunc(func(_ context.Context, _, _, prompt string) error {
+		mu.Lock()
+		defer mu.Unlock()
+		dispatched = append(dispatched, prompt)
+		return nil
+	})
+
+	// Parent close: dispatches the batch for the whole tree.
+	m.ApplyOnClose(context.Background(), CloseProcessorInput{
+		SessionID:     "parent-1",
+		WorkspaceUUID: "ws-uuid",
+		WorkingDir:    "/tmp/wd",
+		ArchiveReason: "deleted",
+	})
+
+	// Cascaded child close: should NOT re-dispatch the same memory processor
+	// batch, since the parent-level run already covers this subtree.
+	m.ApplyOnClose(context.Background(), CloseProcessorInput{
+		SessionID:     "child-1",
+		WorkspaceUUID: "ws-uuid",
+		WorkingDir:    "/tmp/wd",
+		ArchiveReason: "parent_deleted",
+	})
+
+	// Both dispatches are fire-and-forget goroutines; wait for at least one to
+	// land, then allow a brief extra window for a duplicate to land too (if the
+	// bug is present) before asserting the final count.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		n := len(dispatched)
+		mu.Unlock()
+		if n > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	time.Sleep(200 * time.Millisecond)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(dispatched) != 1 {
+		t.Fatalf("expected exactly 1 prompt-mode dispatch across the parent+child cascade close "+
+			"(archive_reason=parent_deleted should suppress the duplicate batch), got %d dispatch(es): %v — "+
+			"cascade delete runs close-phase memory processors twice (mitto-ce3b)", len(dispatched), dispatched)
+	}
+}
+
 // TestApplyOnClose_PromptMode_RetriesOnTransientFailure reproduces mitto-exr:
 // close-phase prompt-mode dispatch failures are silent (no toast, no retry,
 // work lost). A transient promptFunc error (e.g. "shared ACP process is

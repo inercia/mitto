@@ -19,6 +19,14 @@ const (
 	userRequestCloseTag = "\n</user_request>"
 )
 
+// archiveReasonParentDeleted mirrors the bare string literal used by
+// internal/web/handlers/session_delete.go (HandleDeleteSession) and
+// acp_server_delete.go when cascading a delete/close down to a session's
+// descendants. It is not one of the session.ArchiveReason constants — see
+// mitto-ce3b — and is used here purely to gate duplicate prompt-mode
+// close-phase dispatch during a cascade delete.
+const archiveReasonParentDeleted = "parent_deleted"
+
 // wrapUserRequest wraps the user's original message in an explicit delimiter so
 // that processor-injected prepend/append text (e.g. session-context, reminders)
 // cannot cause the agent to misclassify the real request as boilerplate setup
@@ -1425,6 +1433,24 @@ func (m *Manager) ApplyOnClose(ctx context.Context, input CloseProcessorInput) {
 		)
 
 		if proc.IsPromptMode() {
+			// mitto-ce3b: a cascade delete fires ApplyOnClose once for the parent
+			// (ArchiveReason "deleted") and once more for every descendant
+			// (ArchiveReason "parent_deleted") — see
+			// internal/web/handlers/session_delete.go's HandleDeleteSession. Prompt-mode
+			// close processors analyze the whole conversation tree, so the parent-level
+			// run already covers the descendants; per-child runs are pure duplicate LLM
+			// work. Skip prompt-mode collection for cascaded-child closes unless the
+			// processor explicitly opts in (it may genuinely need per-child context).
+			// Command-mode processors are unaffected — they may still want to run
+			// per-session side effects (e.g. cleanup) for every closed session.
+			if input.ArchiveReason == archiveReasonParentDeleted && !proc.RunOnCascadedClose {
+				m.logger.Debug("close-phase prompt-mode processor skipped",
+					"name", proc.Name, "reason", "cascaded_child_close")
+				applied--
+				skipped++
+				continue
+			}
+
 			if m.promptFunc == nil {
 				m.logger.Warn("close-phase prompt-mode processor skipped: no PromptFunc configured",
 					"name", proc.Name)
