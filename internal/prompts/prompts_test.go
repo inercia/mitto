@@ -445,6 +445,92 @@ prompt: |
 	}
 }
 
+// TestParsePromptFile_WithLoop_OnChild pins the mitto-987y.2 acceptance
+// criteria: loop.onChild parses, its When list round-trips through
+// (*PromptLoop).ChildEvents(), and ToWebPrompt carries the block through.
+func TestParsePromptFile_WithLoop_OnChild(t *testing.T) {
+	data := []byte(`name: "On Child"
+loop:
+  trigger: [onChild, onCompletion]
+  onChild:
+    when: [anyEndResponse, anyDeleted]
+  onCompletion:
+    delay: 30
+prompt: |
+  Fire when a child conversation ends or is deleted.
+`)
+
+	prompt, err := ParsePromptFile("on-child.prompt.yaml", data, time.Now())
+	if err != nil {
+		t.Fatalf("ParsePromptFile failed: %v", err)
+	}
+	if prompt.Loop == nil {
+		t.Fatal("Loop = nil, want non-nil")
+	}
+	if !prompt.Loop.hasTrigger("onChild") {
+		t.Errorf("Loop.Trigger = %v, want to include %q", prompt.Loop.Trigger, "onChild")
+	}
+	if got := prompt.Loop.ChildEvents(); len(got) != 2 || got[0] != "anyEndResponse" || got[1] != "anyDeleted" {
+		t.Errorf("Loop.ChildEvents() = %v, want [anyEndResponse anyDeleted]", got)
+	}
+
+	// Verify ToWebPrompt carries the onChild block through.
+	wp := prompt.ToWebPrompt()
+	if wp.Loop == nil {
+		t.Fatal("WebPrompt.Loop = nil, want non-nil after ToWebPrompt()")
+	}
+	if !wp.Loop.hasTrigger("onChild") {
+		t.Errorf("WebPrompt.Loop.Trigger = %v, want to include %q", wp.Loop.Trigger, "onChild")
+	}
+	if got := wp.Loop.ChildEvents(); len(got) != 2 || got[0] != "anyEndResponse" || got[1] != "anyDeleted" {
+		t.Errorf("WebPrompt.Loop.ChildEvents() = %v, want [anyEndResponse anyDeleted]", got)
+	}
+}
+
+// TestParsePromptFile_WithLoop_OnChildAlone_Errors pins the "onChild cannot
+// be the sole trigger" rule (mitto-987y.2, mirrors session.ErrOnChildAlone) at
+// the ParsePromptFile level, exercising ValidatePromptLoop's plumbing end to
+// end rather than calling ValidateLoopTriggers directly.
+func TestParsePromptFile_WithLoop_OnChildAlone_Errors(t *testing.T) {
+	data := []byte(`name: "Only Child"
+loop:
+  trigger: [onChild]
+  onChild:
+    when: [anyEndResponse]
+prompt: |
+  Broken: onChild alone.
+`)
+
+	_, err := ParsePromptFile("only-child.prompt.yaml", data, time.Now())
+	if err == nil {
+		t.Fatal("ParsePromptFile succeeded, want error for onChild as sole trigger")
+	}
+	if !strings.Contains(err.Error(), "onChild cannot be the only trigger") {
+		t.Errorf("error = %q, want it to mention onChild cannot be the only trigger", err.Error())
+	}
+}
+
+// TestParsePromptFile_WithLoop_OnChild_InvalidWhenEntry pins the
+// loop.onChild.when validation rule: an unknown event name is rejected.
+func TestParsePromptFile_WithLoop_OnChild_InvalidWhenEntry(t *testing.T) {
+	data := []byte(`name: "Bad Child Event"
+loop:
+  trigger: [onChild, schedule]
+  onChild:
+    when: [anyStarted]
+prompt: |
+  Broken: unknown child event.
+`)
+
+	_, err := ParsePromptFile("bad-child-event.prompt.yaml", data, time.Now())
+	if err == nil {
+		t.Fatal("ParsePromptFile succeeded, want error for invalid onChild.when entry")
+	}
+	if !strings.Contains(err.Error(), "onChild.when") || !strings.Contains(err.Error(), "anyStarted") {
+		t.Errorf("error = %q, want it to mention onChild.when and anyStarted", err.Error())
+	}
+}
+
 func TestParsePromptFile_WithLoop_InvalidCondition(t *testing.T) {
 	data := []byte(`name: "Bad Condition"
 loop:
@@ -1827,6 +1913,11 @@ func TestPromptLoop_UnmarshalYAML_RejectsUnknownKeys(t *testing.T) {
 			loopYAML: "  trigger: [onTasks]\n  onTasks:\n    cooldown: 5\n    bogus: 7\n",
 			wantMsg:  "loop.onTasks.bogus is not a known key",
 		},
+		{
+			name:     "onChild block",
+			loopYAML: "  trigger: [onChild, schedule]\n  onChild:\n    when: [anyEndResponse]\n    bogus: 7\n",
+			wantMsg:  "loop.onChild.bogus is not a known key",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1896,7 +1987,7 @@ func TestPromptLoop_YAMLRoundTrip(t *testing.T) {
 	settle := 10
 	coalesce := false
 	orig := &PromptLoop{
-		Trigger:  []string{"schedule", "onCompletion", "onTasks"},
+		Trigger:  []string{"schedule", "onCompletion", "onTasks", "onChild"},
 		Schedule: &PromptLoopSchedule{Value: 2, Unit: "days", At: "09:00"},
 		OnCompletion: &PromptLoopOnCompletion{
 			Delay: 45,
@@ -1907,6 +1998,9 @@ func TestPromptLoop_YAMLRoundTrip(t *testing.T) {
 			CoalesceDuringBusy: &coalesce,
 			SettleWindow:       settle,
 			Cooldown:           120,
+		},
+		OnChild: &PromptLoopOnChild{
+			When: []string{"anyEndResponse", "anyDeleted"},
 		},
 		MaxIterations: 10,
 		MaxDuration:   "4h",
@@ -1923,8 +2017,8 @@ func TestPromptLoop_YAMLRoundTrip(t *testing.T) {
 		t.Fatalf("yaml.Unmarshal failed: %v\nYAML was:\n%s", err, raw)
 	}
 
-	if got := roundTripped.Triggers(); len(got) != 3 || got[0] != "schedule" || got[1] != "onCompletion" || got[2] != "onTasks" {
-		t.Errorf("Triggers() = %v, want [schedule onCompletion onTasks]", got)
+	if got := roundTripped.Triggers(); len(got) != 4 || got[0] != "schedule" || got[1] != "onCompletion" || got[2] != "onTasks" || got[3] != "onChild" {
+		t.Errorf("Triggers() = %v, want [schedule onCompletion onTasks onChild]", got)
 	}
 	if roundTripped.FrequencyValue() != 2 || roundTripped.FrequencyUnit() != "days" || roundTripped.FrequencyAt() != "09:00" {
 		t.Errorf("Schedule = (%d, %q, %q), want (2, days, 09:00)",
@@ -1947,6 +2041,9 @@ func TestPromptLoop_YAMLRoundTrip(t *testing.T) {
 	}
 	if roundTripped.TasksCooldown() != 120 {
 		t.Errorf("TasksCooldown() = %d, want 120", roundTripped.TasksCooldown())
+	}
+	if got := roundTripped.ChildEvents(); len(got) != 2 || got[0] != "anyEndResponse" || got[1] != "anyDeleted" {
+		t.Errorf("ChildEvents() = %v, want [anyEndResponse anyDeleted]", got)
 	}
 	if roundTripped.MaxIterations != 10 {
 		t.Errorf("MaxIterations = %d, want 10", roundTripped.MaxIterations)
@@ -2096,6 +2193,84 @@ func TestValidateLoopTriggers(t *testing.T) {
 		err := ValidateLoopTriggers("p", &PromptLoop{})
 		if err != nil {
 			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	// mitto-987y.2: onChild trigger and its When-list validation.
+
+	t.Run("onChild with a co-armed trigger and valid when entries is OK", func(t *testing.T) {
+		err := ValidateLoopTriggers("p", &PromptLoop{
+			Trigger: []string{"schedule", "onChild"},
+			OnChild: &PromptLoopOnChild{When: []string{"anyEndResponse", "anyDeleted"}},
+		})
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("onChild with empty when list is OK (defaults at the session layer)", func(t *testing.T) {
+		err := ValidateLoopTriggers("p", &PromptLoop{
+			Trigger: []string{"schedule", "onChild"},
+			OnChild: &PromptLoopOnChild{},
+		})
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("onChild.when unknown entry returns error naming the entry", func(t *testing.T) {
+		err := ValidateLoopTriggers("My Prompt", &PromptLoop{
+			Trigger: []string{"schedule", "onChild"},
+			OnChild: &PromptLoopOnChild{When: []string{"anyStarted"}},
+		})
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "onChild.when") {
+			t.Errorf("error = %q, want it to mention 'onChild.when'", err.Error())
+		}
+		if !strings.Contains(err.Error(), "anyStarted") {
+			t.Errorf("error = %q, want it to mention the invalid value 'anyStarted'", err.Error())
+		}
+	})
+
+	t.Run("onChild as the sole trigger is an error", func(t *testing.T) {
+		err := ValidateLoopTriggers("My Prompt", &PromptLoop{
+			Trigger: []string{"onChild"},
+			OnChild: &PromptLoopOnChild{When: []string{"anyEndResponse"}},
+		})
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "onChild cannot be the only trigger") {
+			t.Errorf("error = %q, want it to mention onChild cannot be the only trigger", err.Error())
+		}
+	})
+
+	t.Run("inert onChild block not listed in Trigger is tolerated", func(t *testing.T) {
+		err := ValidateLoopTriggers("p", &PromptLoop{
+			Trigger:  []string{"schedule"},
+			Schedule: &PromptLoopSchedule{Value: 1, Unit: "hours"},
+			OnChild:  &PromptLoopOnChild{When: []string{"anyEndResponse"}},
+		})
+		if err != nil {
+			t.Errorf("unexpected error for inert onChild block: %v", err)
+		}
+	})
+
+	t.Run("inert onChild block still validates its when entries", func(t *testing.T) {
+		// Even though the block is inert (onChild not armed), a malformed
+		// when entry is still a hard error — validated unconditionally.
+		err := ValidateLoopTriggers("p", &PromptLoop{
+			Trigger:  []string{"schedule"},
+			Schedule: &PromptLoopSchedule{Value: 1, Unit: "hours"},
+			OnChild:  &PromptLoopOnChild{When: []string{"bogus"}},
+		})
+		if err == nil {
+			t.Fatal("expected error for invalid when entry even in an inert block, got nil")
+		}
+		if !strings.Contains(err.Error(), "bogus") {
+			t.Errorf("error = %q, want it to mention the invalid value 'bogus'", err.Error())
 		}
 	})
 }

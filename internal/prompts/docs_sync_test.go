@@ -39,7 +39,7 @@ func TestDocsFrontmatterFieldsExistOnStructs(t *testing.T) {
 			name: "PromptLoop",
 			typ:  reflect.TypeOf(PromptLoop{}),
 			fields: []string{
-				"trigger", "schedule", "onCompletion", "onTasks",
+				"trigger", "schedule", "onCompletion", "onTasks", "onChild",
 				"freshContext", "runOnStart",
 			},
 		},
@@ -63,6 +63,12 @@ func TestDocsFrontmatterFieldsExistOnStructs(t *testing.T) {
 				"condition", "conditionPreset", "coalesceDuringBusy",
 				"settleWindow", "cooldown",
 			},
+		},
+		{
+			// mitto-987y.2: grouped onChild-trigger attributes.
+			name:   "PromptLoopOnChild",
+			typ:    reflect.TypeOf(PromptLoopOnChild{}),
+			fields: []string{"when"},
 		},
 		{
 			// mitto-boio: closes a docs-sync coverage gap for the parameters:
