@@ -1670,6 +1670,91 @@ prompt: |
 	}
 }
 
+// TestLoadPromptFile_MigratesLegacyLoopSchema_WritesBackToDisk closes the gap
+// between TestParsePromptFile_MigratesLegacyLoopSchema (in-memory parse only)
+// and migrate's own WriteBackIfNeeded tests (isolated from the load path): it
+// drives a legacy flat-schema prompt file through LoadPromptFile end-to-end
+// and asserts the on-disk bytes are actually rewritten to the grouped form,
+// a second load is a no-op (idempotent, mtime untouched), and an
+// already-grouped file is never written to (mitto-p10q).
+func TestLoadPromptFile_MigratesLegacyLoopSchema_WritesBackToDisk(t *testing.T) {
+	dir := t.TempDir()
+	const relPath = "legacy-loop.prompt.yaml"
+	fullPath := filepath.Join(dir, relPath)
+
+	original := []byte(`name: "Legacy Loop"
+loop:
+  # a hand-written comment on the trigger line
+  trigger: onCompletion
+  delay: 30
+  maxIterations: 10
+prompt: |
+  body
+`)
+	if err := os.WriteFile(fullPath, original, 0644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	prompt, err := LoadPromptFile(dir, relPath)
+	if err != nil {
+		t.Fatalf("LoadPromptFile() error = %v", err)
+	}
+	if prompt.Loop == nil {
+		t.Fatal("Loop = nil, want non-nil")
+	}
+	if !prompt.Loop.hasTrigger("onCompletion") {
+		t.Errorf("Loop.Trigger = %v, want it to contain onCompletion", prompt.Loop.Trigger)
+	}
+
+	rewritten, err := os.ReadFile(fullPath)
+	if err != nil {
+		t.Fatalf("ReadFile() after load error = %v", err)
+	}
+	if bytes.Equal(rewritten, original) {
+		t.Error("on-disk bytes unchanged after loading a legacy-schema file; want the loop: block rewritten to the grouped form")
+	}
+	if !bytes.Contains(rewritten, []byte(`trigger: [onCompletion]`)) || !bytes.Contains(rewritten, []byte(`onCompletion:`)) {
+		t.Errorf("rewritten bytes do not look like the grouped trigger-list form:\n%s", rewritten)
+	}
+	if !bytes.Contains(rewritten, []byte("a hand-written comment on the trigger line")) {
+		t.Errorf("rewritten bytes lost the hand-written comment:\n%s", rewritten)
+	}
+	if !bytes.Contains(rewritten, []byte(`name: "Legacy Loop"`)) || !bytes.Contains(rewritten, []byte("body")) {
+		t.Errorf("rewritten bytes lost unrelated top-level content:\n%s", rewritten)
+	}
+
+	info1, err := os.Stat(fullPath)
+	if err != nil {
+		t.Fatalf("Stat() after first load error = %v", err)
+	}
+
+	// Second load: the file is now already on the grouped schema, so this
+	// must be a true no-op — same bytes, mtime untouched.
+	prompt2, err := LoadPromptFile(dir, relPath)
+	if err != nil {
+		t.Fatalf("LoadPromptFile() second load error = %v", err)
+	}
+	if !prompt2.Loop.hasTrigger("onCompletion") {
+		t.Errorf("second load: Loop.Trigger = %v, want it to contain onCompletion", prompt2.Loop.Trigger)
+	}
+
+	afterSecondLoad, err := os.ReadFile(fullPath)
+	if err != nil {
+		t.Fatalf("ReadFile() after second load error = %v", err)
+	}
+	if !bytes.Equal(afterSecondLoad, rewritten) {
+		t.Errorf("second load rewrote an already-grouped file:\nbefore=%s\nafter=%s", rewritten, afterSecondLoad)
+	}
+
+	info2, err := os.Stat(fullPath)
+	if err != nil {
+		t.Fatalf("Stat() after second load error = %v", err)
+	}
+	if !info1.ModTime().Equal(info2.ModTime()) {
+		t.Errorf("mtime changed on an already-grouped file: before=%v after=%v", info1.ModTime(), info2.ModTime())
+	}
+}
+
 // TestPromptLoop_UnmarshalYAML_RejectsUnknownKeys pins the strict-key rule for
 // mitto-r6j.1: an unrecognized key under loop: or under any per-trigger block
 // must fail the parse rather than being silently dropped by yaml.v3.
@@ -1915,6 +2000,52 @@ func TestValidateLoopTriggers(t *testing.T) {
 		})
 		if err != nil {
 			t.Errorf("unexpected error for inert onCompletion block: %v", err)
+		}
+	})
+
+	t.Run("inert schedule block not listed in Trigger is tolerated", func(t *testing.T) {
+		err := ValidateLoopTriggers("p", &PromptLoop{
+			Trigger:  []string{"onCompletion"},
+			Schedule: &PromptLoopSchedule{Value: 1, Unit: "hours"},
+		})
+		if err != nil {
+			t.Errorf("unexpected error for inert schedule block: %v", err)
+		}
+	})
+
+	t.Run("inert onTasks block not listed in Trigger is tolerated", func(t *testing.T) {
+		err := ValidateLoopTriggers("p", &PromptLoop{
+			Trigger:  []string{"schedule"},
+			Schedule: &PromptLoopSchedule{Value: 1, Unit: "hours"},
+			OnTasks:  &PromptLoopOnTasks{Condition: "true"},
+		})
+		if err != nil {
+			t.Errorf("unexpected error for inert onTasks block: %v", err)
+		}
+	})
+
+	t.Run("multiple inert blocks at once are all tolerated", func(t *testing.T) {
+		err := ValidateLoopTriggers("p", &PromptLoop{
+			Trigger:      []string{"schedule"},
+			Schedule:     &PromptLoopSchedule{Value: 1, Unit: "hours"},
+			OnCompletion: &PromptLoopOnCompletion{Delay: 10},
+			OnTasks:      &PromptLoopOnTasks{Condition: "true"},
+		})
+		if err != nil {
+			t.Errorf("unexpected error for multiple inert blocks: %v", err)
+		}
+	})
+
+	t.Run("mixed list with one valid and one unknown trigger errors naming the unknown one", func(t *testing.T) {
+		err := ValidateLoopTriggers("My Prompt", &PromptLoop{Trigger: []string{"schedule", "hourly"}})
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "hourly") {
+			t.Errorf("error = %q, want it to mention the invalid value 'hourly'", err.Error())
+		}
+		if strings.Contains(err.Error(), `"schedule"`) {
+			t.Errorf("error = %q, should not name the valid entry 'schedule' as invalid", err.Error())
 		}
 	})
 

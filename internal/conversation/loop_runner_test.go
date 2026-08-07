@@ -6084,6 +6084,140 @@ func TestLoopRunner_StopLoopForArchive_ReleasesDispatchClaim(t *testing.T) {
 	}
 }
 
+// TestLoopRunner_CheckSession_Precedence_OnCompletionWinsOverSchedule pins the
+// onTasks > onCompletion > schedule precedence documented on checkSession
+// (loop_runner.go): for a loop listing BOTH onCompletion and schedule, and
+// both simultaneously eligible (onCompletion never bootstrapped yet AND the
+// schedule leg already due), the event-driven onCompletion leg must win the
+// dispatch claim because checkSession arms it before running the schedule
+// due-check — the losing schedule fire must be coalesced, not delivered.
+func TestLoopRunner_CheckSession_Precedence_OnCompletionWinsOverSchedule(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	const sessionID = "prec-oncompletion-schedule"
+	meta := session.Metadata{SessionID: sessionID, ACPServer: "test", WorkingDir: "/tmp"}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("store.Create() error = %v", err)
+	}
+	ps := store.Loop(sessionID)
+	if err := ps.Set(&session.LoopPrompt{
+		Prompt:  "iterate",
+		Enabled: true,
+		Triggers: []session.LoopTrigger{
+			session.TriggerOnCompletion, session.TriggerSchedule,
+		},
+		DelaySeconds: 3600,
+		Frequency:    session.Frequency{Value: 1, Unit: session.FrequencyHours},
+	}); err != nil {
+		t.Fatalf("loopStore.Set() error = %v", err)
+	}
+	// Force the schedule leg due NOW, so both the onCompletion bootstrap (first
+	// run, delivered synchronously by checkSession) and the schedule due-check
+	// are simultaneously eligible on this single tick.
+	loop, err := ps.Get()
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	past := time.Now().UTC().Add(-1 * time.Hour)
+	loop.NextScheduledAt = &past
+	if err := writeTestLoopFile(store.SessionDir(sessionID)+"/loop.json", loop); err != nil {
+		t.Fatalf("writeTestLoopFile() error = %v", err)
+	}
+
+	// A real (blocking-until-released) shared-process transport so the
+	// onCompletion bootstrap's dispatch claim is still held by the time
+	// checkSession reaches the schedule due-check later in the same call.
+	shared := newFakeSharedProcess()
+	shared.promptBlock = make(chan struct{})
+
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	bs := &BackgroundSession{
+		ctx:           ctx,
+		cancel:        cancel,
+		observers:     make(map[SessionObserver]struct{}),
+		store:         store,
+		persistedID:   sessionID,
+		workingDir:    "/tmp",
+		sharedProcess: shared,
+		acpID:         "acp-sess-1",
+		pendingConfig: make(map[string]string),
+	}
+	bs.promptCond = sync.NewCond(&bs.promptMu)
+	sm.AddSessionForTest(bs)
+
+	runner := NewLoopRunner(store, sm, nil)
+	runner.SetMinLoopCompletionDelaySeconds(0)
+	runner.SetPromptResolver(func(name, dir string) (string, error) { return "iterate", nil })
+
+	runner.checkSession(meta, time.Now().UTC())
+
+	// The onCompletion bootstrap must have won the claim and still hold it
+	// (its async Prompt() call is blocked on shared.promptBlock).
+	if got := countCompletionTimers(runner); got != 0 {
+		t.Errorf("completionTimers = %d, want 0 (bootstrap delivers immediately, does not arm a timer)", got)
+	}
+	// Give the async dispatch goroutine a moment to reach claimDispatch/Prompt.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		shared.mu.Lock()
+		n := len(shared.promptCalls)
+		shared.mu.Unlock()
+		if n > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for the onCompletion bootstrap to dispatch")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	winner, held := runner.dispatchInFlight[sessionID]
+	if !held {
+		runner.dispatchInFlightMu.Lock()
+		winner, held = runner.dispatchInFlight[sessionID]
+		runner.dispatchInFlightMu.Unlock()
+	}
+	if !held || winner != session.TriggerOnCompletion {
+		t.Fatalf("dispatchInFlight[%q] = (%q, %v), want (onCompletion, true) — onCompletion must claim the dispatch before the schedule due-check runs", sessionID, winner, held)
+	}
+
+	// Now the schedule leg's due-check runs (still inside the same checkSession
+	// call above) — deliverPrompt must have been attempted and coalesced
+	// against the still-held onCompletion claim, so NextScheduledAt is left
+	// untouched (never advanced) and no failure backoff was recorded.
+	afterLoop, err := ps.Get()
+	if err != nil {
+		t.Fatalf("Get() after checkSession error = %v", err)
+	}
+	if afterLoop.NextScheduledAt == nil || !afterLoop.NextScheduledAt.Equal(past) {
+		t.Errorf("NextScheduledAt = %v, want unchanged %v (coalesced schedule fire must not advance the schedule)", afterLoop.NextScheduledAt, past)
+	}
+
+	// Release the blocked onCompletion prompt and wait for its OnComplete to
+	// run (releases the dispatch claim) before the test's store.Close() runs,
+	// so the async turn's background writes don't race the temp-dir cleanup.
+	close(shared.promptBlock)
+	releaseDeadline := time.Now().Add(2 * time.Second)
+	for {
+		runner.dispatchInFlightMu.Lock()
+		_, stillHeld := runner.dispatchInFlight[sessionID]
+		runner.dispatchInFlightMu.Unlock()
+		if !stillHeld {
+			break
+		}
+		if time.Now().After(releaseDeadline) {
+			t.Fatal("timed out waiting for the onCompletion dispatch claim to release")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 // TestBuildLoopUpdatedData_ExposesTriggerSet verifies the loop status payload
 // reports the full armed trigger set while keeping the singular back-compat key.
 func TestBuildLoopUpdatedData_ExposesTriggerSet(t *testing.T) {
