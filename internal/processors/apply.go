@@ -81,10 +81,46 @@ type ProcessorResult struct {
 	AppliedNames []string `json:"-"`
 }
 
+// ProcessorRun captures a single processor invocation for the conversation
+// Stats tab (mitto-fm89). Manager records one of these per processor per
+// pipeline pass and forwards it (via RunRecorder) to a session.EventTypeProcessorRun
+// event, so exact run/error/skip counts and p50/p95 durations can be computed by
+// scanning events.jsonl — a summed stats-DB counter cannot represent a percentile.
+type ProcessorRun struct {
+	// Name is the processor's Name.
+	Name string
+	// Phase identifies which pipeline ran the processor: "before" (userPrompt),
+	// "after" (agentResponded/agentIdle), or "close" (conversationClosed).
+	Phase string
+	// Outcome is "ok", "error", or "skipped".
+	Outcome string
+	// Duration is the wall-clock execution time. Zero for skipped runs and for
+	// text-mode/prompt-mode processors (no external command is executed).
+	Duration time.Duration
+	// Error is the short failure message when Outcome == "error".
+	Error string
+}
+
+// RunRecorder receives one ProcessorRun per processor invocation. Called
+// synchronously from the Apply*/ApplyOnClose pipelines, so implementations
+// must not block — the wiring in internal/conversation appends a
+// session.Event and returns immediately. nil is a valid no-op value.
+type RunRecorder func(ProcessorRun)
+
+// recordRun forwards run to m's RunRecorder if one is configured. Safe to
+// call with a nil Manager or an unnamed processor (no-ops in both cases).
+func (m *Manager) recordRun(run ProcessorRun) {
+	if m == nil || m.runRecorder == nil || run.Name == "" {
+		return
+	}
+	m.runRecorder(run)
+}
+
 // ApplyProcessors applies all applicable processors to a message.
 // Processors are applied in priority order (lower priority first).
-// Returns the transformed message, attachments, and any error.
-func ApplyProcessors(ctx context.Context, procs []*Processor, input *ProcessorInput, processorsDir string, logger *slog.Logger) (*ProcessorResult, error) {
+// recorder, if non-nil, receives one ProcessorRun per evaluated processor
+// (phase "before"). Returns the transformed message, attachments, and any error.
+func ApplyProcessors(ctx context.Context, procs []*Processor, input *ProcessorInput, processorsDir string, logger *slog.Logger, recorder RunRecorder) (*ProcessorResult, error) {
 	if len(procs) == 0 {
 		return &ProcessorResult{Message: input.Message}, nil
 	}
@@ -108,6 +144,15 @@ func ApplyProcessors(ctx context.Context, procs []*Processor, input *ProcessorIn
 	applied := 0
 	skipped := 0
 
+	// record forwards a ProcessorRun to recorder (mitto-fm89 Stats tab). No-op
+	// when recorder is nil (default, unless Manager.Apply wired one).
+	record := func(name, outcome string, dur time.Duration, errMsg string) {
+		if recorder == nil {
+			return
+		}
+		recorder(ProcessorRun{Name: name, Phase: "before", Outcome: outcome, Duration: dur, Error: errMsg})
+	}
+
 	// appendBuf accumulates all append contributions so they can be wrapped once
 	// in <mitto_system_notes> on first-message assemblies.
 	var appendBuf strings.Builder
@@ -117,6 +162,7 @@ func ApplyProcessors(ctx context.Context, procs []*Processor, input *ProcessorIn
 		shouldApply, skipReason := proc.ShouldApply(input.IsFirstMessage, input)
 		if !shouldApply {
 			skipped++
+			record(proc.Name, "skipped", 0, "")
 			logger.Debug("processor skipped",
 				"name", proc.Name,
 				"reason", string(skipReason),
@@ -161,6 +207,7 @@ func ApplyProcessors(ctx context.Context, procs []*Processor, input *ProcessorIn
 			case config.ProcessorMutateAppend:
 				appendBuf.WriteString(text)
 			}
+			record(proc.Name, "ok", 0, "")
 			logger.Info("text-mode processor applied",
 				"name", proc.Name,
 				"mutate", proc.GetMutate(),
@@ -176,6 +223,7 @@ func ApplyProcessors(ctx context.Context, procs []*Processor, input *ProcessorIn
 			logger.Warn("prompt-mode processor skipped: use Manager.Apply for prompt-mode processors",
 				"name", proc.Name,
 			)
+			record(proc.Name, "skipped", 0, "")
 			continue
 		}
 
@@ -193,12 +241,15 @@ func ApplyProcessors(ctx context.Context, procs []*Processor, input *ProcessorIn
 		}
 
 		// Execute processor
+		execStart := time.Now()
 		output, err := executor.Execute(ctx, proc, procInput)
+		execDur := time.Since(execStart)
 		if err != nil {
 			logger.Warn("processor execution failed",
 				"name", proc.Name,
 				"error", err,
 			)
+			record(proc.Name, "error", execDur, err.Error())
 
 			// Handle error based on processor configuration
 			if proc.GetOnError() == ErrorFail {
@@ -214,6 +265,7 @@ func ApplyProcessors(ctx context.Context, procs []*Processor, input *ProcessorIn
 				"name", proc.Name,
 				"error", output.Error,
 			)
+			record(proc.Name, "error", execDur, output.Error)
 
 			if proc.GetOnError() == ErrorFail {
 				return nil, fmt.Errorf("processor %q returned error: %s", proc.Name, output.Error)
@@ -224,6 +276,8 @@ func ApplyProcessors(ctx context.Context, procs []*Processor, input *ProcessorIn
 			}
 			continue
 		}
+
+		record(proc.Name, "ok", execDur, "")
 
 		// Apply output based on output type
 		switch proc.GetOutput() {
@@ -329,6 +383,13 @@ type Manager struct {
 	// clock returns the current time. Defaults to time.Now; overridden in tests
 	// to make time-based cadence deterministic.
 	clock func() time.Time
+
+	// runRecorder, if set, receives one ProcessorRun per processor invocation
+	// across Apply/applyWithRerun/ApplyAfter/ApplyOnClose (mitto-fm89 Stats
+	// tab). nil by default — SessionManager wires it via SetRunRecorder to
+	// append a session.EventTypeProcessorRun event. Must be propagated by
+	// every CloneWith* constructor so workspace/override clones keep emitting.
+	runRecorder RunRecorder
 }
 
 // processorRunState tracks when a processor last ran, for rerun scheduling.
@@ -379,6 +440,12 @@ func (m *Manager) SetPendingDispatchStore(s PendingDispatchStore) {
 // Primarily used in unit tests to make time-based cadence deterministic.
 func (m *Manager) SetClock(fn func() time.Time) {
 	m.clock = fn
+}
+
+// SetRunRecorder installs the callback that receives one ProcessorRun per
+// processor invocation (mitto-fm89 Stats tab). nil disables recording.
+func (m *Manager) SetRunRecorder(fn RunRecorder) {
+	m.runRecorder = fn
 }
 
 // AddTextProcessors converts config.MessageProcessor entries into unified Processor
@@ -456,6 +523,7 @@ func (m *Manager) CloneWithTextProcessors(procs []config.MessageProcessor, prior
 		stateStore:           m.stateStore,
 		pendingDispatchStore: m.pendingDispatchStore,
 		clock:                m.clock,
+		runRecorder:          m.runRecorder,
 	}
 	copy(clone.processors, m.processors)
 	clone.AddTextProcessors(procs, priority)
@@ -491,6 +559,7 @@ func (m *Manager) CloneWithDirProcessors(dirs []string, logger *slog.Logger) *Ma
 		stateStore:           m.stateStore,
 		pendingDispatchStore: m.pendingDispatchStore,
 		clock:                m.clock,
+		runRecorder:          m.runRecorder,
 		loadErrors:           append([]ProcessorLoadError(nil), m.loadErrors...),
 	}
 	copy(clone.processors, m.processors)
@@ -590,6 +659,7 @@ func (m *Manager) CloneWithEnabledOverrides(overrides []config.ProcessorOverride
 		stateStore:           m.stateStore,
 		pendingDispatchStore: m.pendingDispatchStore,
 		clock:                m.clock,
+		runRecorder:          m.runRecorder,
 		loadErrors:           m.loadErrors, // read-only; safe to share
 	}
 
@@ -661,7 +731,7 @@ func (m *Manager) Apply(ctx context.Context, input *ProcessorInput) (*ProcessorR
 		return m.applyWithRerun(ctx, input, origIsFirst, rerunOverrides)
 	}
 
-	result, err := ApplyProcessors(ctx, m.processors, input, m.processorsDir, m.logger)
+	result, err := ApplyProcessors(ctx, m.processors, input, m.processorsDir, m.logger, m.recordRun)
 
 	// Track pipeline activation
 	m.statsMu.Lock()
@@ -783,6 +853,7 @@ func (m *Manager) applyWithRerun(ctx context.Context, input *ProcessorInput, ori
 		shouldApply, skipReason := proc.ShouldApply(effectiveIsFirst, input)
 		if !shouldApply {
 			skipped++
+			m.recordRun(ProcessorRun{Name: proc.Name, Phase: "before", Outcome: "skipped"})
 			m.logger.Debug("processor skipped",
 				"name", proc.Name,
 				"reason", string(skipReason),
@@ -829,12 +900,14 @@ func (m *Manager) applyWithRerun(ctx context.Context, input *ProcessorInput, ori
 			case config.ProcessorMutateAppend:
 				appendBuf.WriteString(text)
 			}
+			m.recordRun(ProcessorRun{Name: proc.Name, Phase: "before", Outcome: "ok"})
 		} else if proc.IsPromptMode() {
 			// Prompt-mode: collect for batched dispatch after loop.
 			if m.promptFunc == nil {
 				m.logger.Warn("prompt-mode processor skipped: no PromptFunc configured",
 					"name", proc.Name,
 				)
+				m.recordRun(ProcessorRun{Name: proc.Name, Phase: "before", Outcome: "skipped"})
 				continue
 			}
 
@@ -855,6 +928,7 @@ func (m *Manager) applyWithRerun(ctx context.Context, input *ProcessorInput, ori
 			// which case there is nothing to send to the auxiliary session.
 			if strings.TrimSpace(assembledPrompt) == "" {
 				m.logger.Debug("prompt-mode processor skipped: rendered prompt is empty", "name", proc.Name)
+				m.recordRun(ProcessorRun{Name: proc.Name, Phase: "before", Outcome: "skipped"})
 				continue
 			}
 			procTimeout := proc.GetTimeout().Duration()
@@ -877,6 +951,7 @@ func (m *Manager) applyWithRerun(ctx context.Context, input *ProcessorInput, ori
 			m.rerunState[proc.Name].messagesSince = 0
 			m.rerunState[proc.Name].tokensSince = 0
 
+			m.recordRun(ProcessorRun{Name: proc.Name, Phase: "before", Outcome: "ok"})
 			m.logger.Info("prompt-mode processor collected for dispatch",
 				"name", proc.Name,
 				"prompt_len", len(assembledPrompt),
@@ -896,8 +971,11 @@ func (m *Manager) applyWithRerun(ctx context.Context, input *ProcessorInput, ori
 				AvailableACPServers: input.AvailableACPServers,
 				ChildSessions:       input.ChildSessions,
 			}
+			execStart := time.Now()
 			output, err := executor.Execute(ctx, proc, procInput)
+			execDur := time.Since(execStart)
 			if err != nil {
+				m.recordRun(ProcessorRun{Name: proc.Name, Phase: "before", Outcome: "error", Duration: execDur, Error: err.Error()})
 				if proc.GetOnError() == ErrorFail {
 					return nil, fmt.Errorf("processor %s failed: %w", proc.Name, err)
 				}
@@ -905,6 +983,7 @@ func (m *Manager) applyWithRerun(ctx context.Context, input *ProcessorInput, ori
 					"name", proc.Name, "error", err)
 				continue
 			}
+			m.recordRun(ProcessorRun{Name: proc.Name, Phase: "before", Outcome: "ok", Duration: execDur})
 			switch proc.GetOutput() {
 			case OutputTransform:
 				if output.Message != "" {
@@ -1079,6 +1158,7 @@ func (m *Manager) ApplyAfter(ctx context.Context, input AfterProcessorInput) App
 		// Enabled check
 		if !proc.IsEnabled() {
 			skipped++
+			m.recordRun(ProcessorRun{Name: proc.Name, Phase: "after", Outcome: "skipped"})
 			m.logger.Debug("after-phase processor skipped",
 				"name", proc.Name, "reason", "disabled")
 			continue
@@ -1095,6 +1175,7 @@ func (m *Manager) ApplyAfter(ctx context.Context, input AfterProcessorInput) App
 			}
 			if !matched {
 				skipped++
+				m.recordRun(ProcessorRun{Name: proc.Name, Phase: "after", Outcome: "skipped"})
 				m.logger.Debug("after-phase processor skipped",
 					"name", proc.Name, "reason", "stopReason_mismatch",
 					"stop_reason", input.StopReason, "allowed", proc.When.StopReasons)
@@ -1113,6 +1194,7 @@ func (m *Manager) ApplyAfter(ctx context.Context, input AfterProcessorInput) App
 			}
 			if excluded {
 				skipped++
+				m.recordRun(ProcessorRun{Name: proc.Name, Phase: "after", Outcome: "skipped"})
 				m.logger.Debug("after-phase processor skipped",
 					"name", proc.Name, "reason", "origin_excluded",
 					"origin", input.Origin)
@@ -1125,6 +1207,7 @@ func (m *Manager) ApplyAfter(ctx context.Context, input AfterProcessorInput) App
 		case MatchFirst:
 			if !isFirstAgentResponse {
 				skipped++
+				m.recordRun(ProcessorRun{Name: proc.Name, Phase: "after", Outcome: "skipped"})
 				m.logger.Debug("after-phase processor skipped",
 					"name", proc.Name, "reason", "match=first_not_first_response")
 				continue
@@ -1134,12 +1217,14 @@ func (m *Manager) ApplyAfter(ctx context.Context, input AfterProcessorInput) App
 		case MatchAllExceptFirst:
 			if isFirstAgentResponse {
 				skipped++
+				m.recordRun(ProcessorRun{Name: proc.Name, Phase: "after", Outcome: "skipped"})
 				m.logger.Debug("after-phase processor skipped",
 					"name", proc.Name, "reason", "match=allExceptFirst_is_first_response")
 				continue
 			}
 		default:
 			skipped++
+			m.recordRun(ProcessorRun{Name: proc.Name, Phase: "after", Outcome: "skipped"})
 			m.logger.Warn("after-phase processor skipped: unknown match value",
 				"name", proc.Name, "match", proc.When.Match)
 			continue
@@ -1195,6 +1280,7 @@ func (m *Manager) ApplyAfter(ctx context.Context, input AfterProcessorInput) App
 
 			if !gatePassed {
 				skipped++
+				m.recordRun(ProcessorRun{Name: proc.Name, Phase: "after", Outcome: "skipped"})
 				continue
 			}
 		}
@@ -1206,6 +1292,7 @@ func (m *Manager) ApplyAfter(ctx context.Context, input AfterProcessorInput) App
 		// are intentionally NOT reset here — they persist until the processor actually fires.
 		if proc.When.On == PhaseAgentIdle && !input.SessionIdle {
 			skipped++
+			m.recordRun(ProcessorRun{Name: proc.Name, Phase: "after", Outcome: "skipped"})
 			m.logger.Debug("after-phase processor skipped",
 				"name", proc.Name, "reason", "agentIdle_session_busy")
 			continue
@@ -1229,6 +1316,7 @@ func (m *Manager) ApplyAfter(ctx context.Context, input AfterProcessorInput) App
 				)
 				skipped++
 				applied-- // undo the applied++ above
+				m.recordRun(ProcessorRun{Name: proc.Name, Phase: "after", Outcome: "skipped"})
 				continue
 			}
 
@@ -1255,6 +1343,7 @@ func (m *Manager) ApplyAfter(ctx context.Context, input AfterProcessorInput) App
 				m.logger.Debug("after-phase prompt-mode processor skipped: rendered prompt is empty", "name", proc.Name)
 				skipped++
 				applied-- // undo the applied++ above
+				m.recordRun(ProcessorRun{Name: proc.Name, Phase: "after", Outcome: "skipped"})
 				continue
 			}
 			procTimeout := proc.GetTimeout().Duration()
@@ -1276,6 +1365,7 @@ func (m *Manager) ApplyAfter(ctx context.Context, input AfterProcessorInput) App
 				cs.LastFiredAt = now
 			}
 
+			m.recordRun(ProcessorRun{Name: proc.Name, Phase: "after", Outcome: "ok"})
 			m.logger.Info("after-phase prompt-mode processor collected for dispatch",
 				"name", proc.Name,
 				"prompt_len", len(assembledPrompt),
@@ -1284,7 +1374,9 @@ func (m *Manager) ApplyAfter(ctx context.Context, input AfterProcessorInput) App
 		}
 
 		// Command mode (text mode is forbidden for agentResponded by the loader).
+		afterExecStart := time.Now()
 		stdout, execErr := executeAfterCommand(ctx, proc, m.processorsDir, input, m.logger)
+		afterExecDur := time.Since(afterExecStart)
 
 		if execErr != nil {
 			m.logger.Warn("after-phase processor execution failed",
@@ -1293,6 +1385,7 @@ func (m *Manager) ApplyAfter(ctx context.Context, input AfterProcessorInput) App
 				ProcessorName: proc.Name,
 				Error:         execErr.Error(),
 			})
+			m.recordRun(ProcessorRun{Name: proc.Name, Phase: "after", Outcome: "error", Duration: afterExecDur, Error: execErr.Error()})
 			continue
 		}
 
@@ -1328,6 +1421,7 @@ func (m *Manager) ApplyAfter(ctx context.Context, input AfterProcessorInput) App
 					ProcessorName: proc.Name,
 					Error:         parseErr.Error(),
 				})
+				m.recordRun(ProcessorRun{Name: proc.Name, Phase: "after", Outcome: "error", Duration: afterExecDur, Error: parseErr.Error()})
 				continue
 			}
 			result.Notifications = append(result.Notifications, notifs...)
@@ -1341,6 +1435,7 @@ func (m *Manager) ApplyAfter(ctx context.Context, input AfterProcessorInput) App
 					ProcessorName: proc.Name,
 					Error:         parseErr.Error(),
 				})
+				m.recordRun(ProcessorRun{Name: proc.Name, Phase: "after", Outcome: "error", Duration: afterExecDur, Error: parseErr.Error()})
 				continue
 			}
 			result.ActionButtons = append(result.ActionButtons, buttons...)
@@ -1354,6 +1449,7 @@ func (m *Manager) ApplyAfter(ctx context.Context, input AfterProcessorInput) App
 					ProcessorName: proc.Name,
 					Error:         parseErr.Error(),
 				})
+				m.recordRun(ProcessorRun{Name: proc.Name, Phase: "after", Outcome: "error", Duration: afterExecDur, Error: parseErr.Error()})
 				continue
 			}
 			if len(patch) > 0 {
@@ -1366,6 +1462,7 @@ func (m *Manager) ApplyAfter(ctx context.Context, input AfterProcessorInput) App
 			}
 		}
 
+		m.recordRun(ProcessorRun{Name: proc.Name, Phase: "after", Outcome: "ok", Duration: afterExecDur})
 		m.logger.Info("after-phase processor applied",
 			"name", proc.Name, "output_type", outputType)
 	}
@@ -1432,6 +1529,7 @@ func (m *Manager) ApplyOnClose(ctx context.Context, input CloseProcessorInput) {
 
 		if !proc.IsEnabled() {
 			skipped++
+			m.recordRun(ProcessorRun{Name: proc.Name, Phase: "close", Outcome: "skipped"})
 			m.logger.Debug("close-phase processor skipped",
 				"name", proc.Name, "reason", "disabled")
 			continue
@@ -1447,6 +1545,7 @@ func (m *Manager) ApplyOnClose(ctx context.Context, input CloseProcessorInput) {
 			}
 			if !evaluateEnabledWhen(proc, procInput, m.logger) {
 				skipped++
+				m.recordRun(ProcessorRun{Name: proc.Name, Phase: "close", Outcome: "skipped"})
 				m.logger.Debug("close-phase processor skipped",
 					"name", proc.Name, "reason", "enabledWhen_false")
 				continue
@@ -1475,6 +1574,7 @@ func (m *Manager) ApplyOnClose(ctx context.Context, input CloseProcessorInput) {
 					"name", proc.Name, "reason", "cascaded_child_close")
 				applied--
 				skipped++
+				m.recordRun(ProcessorRun{Name: proc.Name, Phase: "close", Outcome: "skipped"})
 				continue
 			}
 
@@ -1483,6 +1583,7 @@ func (m *Manager) ApplyOnClose(ctx context.Context, input CloseProcessorInput) {
 					"name", proc.Name)
 				applied--
 				skipped++
+				m.recordRun(ProcessorRun{Name: proc.Name, Phase: "close", Outcome: "skipped"})
 				continue
 			}
 
@@ -1505,6 +1606,7 @@ func (m *Manager) ApplyOnClose(ctx context.Context, input CloseProcessorInput) {
 					"name", proc.Name)
 				applied--
 				skipped++
+				m.recordRun(ProcessorRun{Name: proc.Name, Phase: "close", Outcome: "skipped"})
 				continue
 			}
 			pendingPrompts = append(pendingPrompts, pendingPromptDispatch{
@@ -1512,6 +1614,7 @@ func (m *Manager) ApplyOnClose(ctx context.Context, input CloseProcessorInput) {
 				prompt:  assembledPrompt,
 				timeout: proc.GetTimeout().Duration(),
 			})
+			m.recordRun(ProcessorRun{Name: proc.Name, Phase: "close", Outcome: "ok"})
 			m.logger.Info("close-phase prompt-mode processor collected for dispatch",
 				"name", proc.Name,
 				"prompt_len", len(assembledPrompt),
@@ -1520,10 +1623,16 @@ func (m *Manager) ApplyOnClose(ctx context.Context, input CloseProcessorInput) {
 		}
 
 		// Command mode (text mode is forbidden by the loader).
-		if err := executeCloseCommand(ctx, proc, m.processorsDir, input, m.logger); err != nil {
+		closeExecStart := time.Now()
+		closeErr := executeCloseCommand(ctx, proc, m.processorsDir, input, m.logger)
+		closeExecDur := time.Since(closeExecStart)
+		if closeErr != nil {
 			m.logger.Warn("close-phase processor execution failed",
-				"name", proc.Name, "error", err)
+				"name", proc.Name, "error", closeErr)
+			m.recordRun(ProcessorRun{Name: proc.Name, Phase: "close", Outcome: "error", Duration: closeExecDur, Error: closeErr.Error()})
+			continue
 		}
+		m.recordRun(ProcessorRun{Name: proc.Name, Phase: "close", Outcome: "ok", Duration: closeExecDur})
 	}
 
 	if len(pendingPrompts) > 0 {

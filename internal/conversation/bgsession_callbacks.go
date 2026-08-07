@@ -12,6 +12,7 @@ import (
 	"github.com/coder/acp-go-sdk"
 
 	"github.com/inercia/mitto/internal/config"
+	"github.com/inercia/mitto/internal/processors"
 	"github.com/inercia/mitto/internal/session"
 )
 
@@ -123,6 +124,33 @@ func (bs *BackgroundSession) cbHasObservers() bool { return bs.HasObservers() }
 // cbRecordEventWithSeq persists an event with a pre-assigned sequence number.
 func (bs *BackgroundSession) cbRecordEventWithSeq(event session.Event, kind string) {
 	recordEventWithSeqHelper(bs.recorder, bs.logger, event, kind)
+}
+
+// wireProcessorRunRecorder installs a processors.RunRecorder on this session's
+// processorManager (if any) that appends each processor invocation as a
+// session.EventTypeProcessorRun event (mitto-fm89 Stats tab). No-op if there
+// is no processor manager. Safe to call multiple times (idempotent overwrite);
+// callers invoke it once per BackgroundSession construction/resume, after the
+// recorder is set up, so seq assignment and persistence are both available.
+func (bs *BackgroundSession) wireProcessorRunRecorder() {
+	if bs.processorManager == nil {
+		return
+	}
+	bs.processorManager.SetRunRecorder(func(run processors.ProcessorRun) {
+		seq := bs.getNextSeq()
+		recordEventWithSeqHelper(bs.recorder, bs.logger, session.Event{
+			Seq:       seq,
+			Type:      session.EventTypeProcessorRun,
+			Timestamp: time.Now(),
+			Data: session.ProcessorRunData{
+				Name:       run.Name,
+				Phase:      run.Phase,
+				Outcome:    run.Outcome,
+				DurationMs: run.Duration.Milliseconds(),
+				Error:      run.Error,
+			},
+		}, "processor run")
+	})
 }
 
 // cbRecordPermission records a permission decision via the recorder.

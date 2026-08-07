@@ -779,6 +779,28 @@ func (sm *SessionManager) ApplyOnCloseProcessors(sessionID string, reason string
 	// forget dispatch's give-up can fire minutes later.
 	procMgr.SetPendingDispatchStore(&processors.FilePendingDispatchStore{})
 
+	// Wire processor-run instrumentation (mitto-fm89 Stats tab). The live
+	// BackgroundSession is typically already gone by close time, so this
+	// appends directly via the store (which auto-assigns Seq) rather than
+	// through a *session.Recorder. Best-effort: a write failure here must
+	// never block the close pipeline.
+	procMgr.SetRunRecorder(func(run processors.ProcessorRun) {
+		if err := store.AppendEvent(sessionID, session.Event{
+			Type:      session.EventTypeProcessorRun,
+			Timestamp: time.Now(),
+			Data: session.ProcessorRunData{
+				Name:       run.Name,
+				Phase:      run.Phase,
+				Outcome:    run.Outcome,
+				DurationMs: run.Duration.Milliseconds(),
+				Error:      run.Error,
+			},
+		}); err != nil && logger != nil {
+			logger.Debug("close-phase: failed to persist processor_run event",
+				"session_id", sessionID, "processor", run.Name, "error", err)
+		}
+	})
+
 	input := processors.CloseProcessorInput{
 		SessionID:             sessionID,
 		SessionDir:            store.SessionDir(sessionID),

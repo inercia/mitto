@@ -1605,7 +1605,7 @@ func TestApplyProcessorsEmpty(t *testing.T) {
 	ctx := context.Background()
 	input := &ProcessorInput{Message: "original"}
 
-	result, err := ApplyProcessors(ctx, nil, input, "", nil)
+	result, err := ApplyProcessors(ctx, nil, input, "", nil, nil)
 	if err != nil {
 		t.Fatalf("ApplyProcessors() error = %v", err)
 	}
@@ -1649,7 +1649,7 @@ echo '{"message": "transformed message"}'
 		WorkingDir:     tmpDir,
 	}
 
-	result, err := ApplyProcessors(ctx, hooks, input, tmpDir, nil)
+	result, err := ApplyProcessors(ctx, hooks, input, tmpDir, nil, nil)
 	if err != nil {
 		t.Fatalf("ApplyProcessors() error = %v", err)
 	}
@@ -1687,7 +1687,7 @@ echo '{"text": "PREFIX: "}'
 		WorkingDir:     tmpDir,
 	}
 
-	result, err := ApplyProcessors(ctx, hooks, input, tmpDir, nil)
+	result, err := ApplyProcessors(ctx, hooks, input, tmpDir, nil, nil)
 	if err != nil {
 		t.Fatalf("ApplyProcessors() error = %v", err)
 	}
@@ -1726,7 +1726,7 @@ echo '{"text": " :SUFFIX"}'
 		WorkingDir:     tmpDir,
 	}
 
-	result, err := ApplyProcessors(ctx, hooks, input, tmpDir, nil)
+	result, err := ApplyProcessors(ctx, hooks, input, tmpDir, nil, nil)
 	if err != nil {
 		t.Fatalf("ApplyProcessors() error = %v", err)
 	}
@@ -1766,7 +1766,7 @@ echo '{"message": "this should be ignored"}'
 		WorkingDir:     tmpDir,
 	}
 
-	result, err := ApplyProcessors(ctx, hooks, input, tmpDir, nil)
+	result, err := ApplyProcessors(ctx, hooks, input, tmpDir, nil, nil)
 	if err != nil {
 		t.Fatalf("ApplyProcessors() error = %v", err)
 	}
@@ -1805,7 +1805,7 @@ echo '{"message": "first message only"}'
 		WorkingDir:     tmpDir,
 	}
 
-	result, err := ApplyProcessors(ctx, hooks, input, tmpDir, nil)
+	result, err := ApplyProcessors(ctx, hooks, input, tmpDir, nil, nil)
 	if err != nil {
 		t.Fatalf("ApplyProcessors() error = %v", err)
 	}
@@ -1845,7 +1845,7 @@ exit 1
 		WorkingDir:     tmpDir,
 	}
 
-	result, err := ApplyProcessors(ctx, hooks, input, tmpDir, nil)
+	result, err := ApplyProcessors(ctx, hooks, input, tmpDir, nil, nil)
 	if err != nil {
 		t.Fatalf("ApplyProcessors() should not error with ErrorSkip, got: %v", err)
 	}
@@ -1884,7 +1884,7 @@ exit 1
 		WorkingDir:     tmpDir,
 	}
 
-	_, err := ApplyProcessors(ctx, hooks, input, tmpDir, nil)
+	_, err := ApplyProcessors(ctx, hooks, input, tmpDir, nil, nil)
 	if err == nil {
 		t.Fatal("ApplyProcessors() should error with ErrorFail")
 	}
@@ -1906,7 +1906,7 @@ func TestApplyProcessorsTextModePrepend(t *testing.T) {
 		IsFirstMessage: true,
 	}
 
-	result, err := ApplyProcessors(ctx, procs, input, "", nil)
+	result, err := ApplyProcessors(ctx, procs, input, "", nil, nil)
 	if err != nil {
 		t.Fatalf("ApplyProcessors() error = %v", err)
 	}
@@ -1931,7 +1931,7 @@ func TestApplyProcessorsTextModeAppend(t *testing.T) {
 		IsFirstMessage: true,
 	}
 
-	result, err := ApplyProcessors(ctx, procs, input, "", nil)
+	result, err := ApplyProcessors(ctx, procs, input, "", nil, nil)
 	if err != nil {
 		t.Fatalf("ApplyProcessors() error = %v", err)
 	}
@@ -1963,7 +1963,7 @@ func TestApplyProcessorsTextModeChained(t *testing.T) {
 		IsFirstMessage: true,
 	}
 
-	result, err := ApplyProcessors(ctx, procs, input, "", nil)
+	result, err := ApplyProcessors(ctx, procs, input, "", nil, nil)
 	if err != nil {
 		t.Fatalf("ApplyProcessors() error = %v", err)
 	}
@@ -1987,7 +1987,7 @@ func TestApplyProcessorsTextModeFirstOnly(t *testing.T) {
 
 	// First message — should apply
 	input := &ProcessorInput{Message: "msg", IsFirstMessage: true}
-	result, err := ApplyProcessors(ctx, procs, input, "", nil)
+	result, err := ApplyProcessors(ctx, procs, input, "", nil, nil)
 	if err != nil {
 		t.Fatalf("ApplyProcessors() error = %v", err)
 	}
@@ -1997,7 +1997,7 @@ func TestApplyProcessorsTextModeFirstOnly(t *testing.T) {
 
 	// Subsequent message — should NOT apply
 	input2 := &ProcessorInput{Message: "msg", IsFirstMessage: false}
-	result2, err := ApplyProcessors(ctx, procs, input2, "", nil)
+	result2, err := ApplyProcessors(ctx, procs, input2, "", nil, nil)
 	if err != nil {
 		t.Fatalf("ApplyProcessors() error = %v", err)
 	}
@@ -2037,7 +2037,7 @@ func TestApplyProcessors_FirstMessageWrapsUserRequest(t *testing.T) {
 
 	// First message: user request should be delimited.
 	input := &ProcessorInput{Message: msg, IsFirstMessage: true}
-	result, err := ApplyProcessors(ctx, procs, input, "", nil)
+	result, err := ApplyProcessors(ctx, procs, input, "", nil, nil)
 	if err != nil {
 		t.Fatalf("ApplyProcessors() error = %v", err)
 	}
@@ -2073,7 +2073,7 @@ func TestApplyProcessors_FirstMessageWrapsUserRequest(t *testing.T) {
 
 	// Negative case: non-first message must NOT be wrapped with either tag.
 	input2 := &ProcessorInput{Message: msg, IsFirstMessage: false}
-	result2, err := ApplyProcessors(ctx, procs, input2, "", nil)
+	result2, err := ApplyProcessors(ctx, procs, input2, "", nil, nil)
 	if err != nil {
 		t.Fatalf("ApplyProcessors() (non-first) error = %v", err)
 	}
@@ -2114,7 +2114,7 @@ func TestApplyProcessorsWithVariableSubstitution(t *testing.T) {
 	}
 
 	// Step 1: Apply processors (text-mode prepend/append)
-	result, err := ApplyProcessors(ctx, procs, input, "", nil)
+	result, err := ApplyProcessors(ctx, procs, input, "", nil, nil)
 	if err != nil {
 		t.Fatalf("ApplyProcessors() error = %v", err)
 	}
@@ -2179,7 +2179,7 @@ func TestApplyProcessors_TextModeTemplateRendering(t *testing.T) {
 		},
 	}
 
-	result, err := ApplyProcessors(ctx, procs, input, "", nil)
+	result, err := ApplyProcessors(ctx, procs, input, "", nil, nil)
 	if err != nil {
 		t.Fatalf("ApplyProcessors() error = %v", err)
 	}
@@ -2237,7 +2237,7 @@ func TestApplyProcessors_ChildrenQueuedCountTemplateAccessor(t *testing.T) {
 		},
 	}
 
-	result, err := ApplyProcessors(ctx, procs, input, "", nil)
+	result, err := ApplyProcessors(ctx, procs, input, "", nil, nil)
 	if err != nil {
 		t.Fatalf("ApplyProcessors() error = %v", err)
 	}
@@ -2276,7 +2276,7 @@ func TestApplyProcessorsVariablesInUserMessage(t *testing.T) {
 		ParentSessionID: "parent-session",
 	}
 
-	result, err := ApplyProcessors(ctx, nil, input, "", nil)
+	result, err := ApplyProcessors(ctx, nil, input, "", nil, nil)
 	if err != nil {
 		t.Fatalf("ApplyProcessors() error = %v", err)
 	}
@@ -2310,7 +2310,7 @@ func TestApplyProcessorsVariablesEmptyValues(t *testing.T) {
 		ParentSessionID: "", // No parent
 	}
 
-	result, err := ApplyProcessors(ctx, procs, input, "", nil)
+	result, err := ApplyProcessors(ctx, procs, input, "", nil, nil)
 	if err != nil {
 		t.Fatalf("ApplyProcessors() error = %v", err)
 	}
@@ -2347,7 +2347,7 @@ func TestApplyProcessorsVariablesWithAvailableServers(t *testing.T) {
 		},
 	}
 
-	result, err := ApplyProcessors(ctx, procs, input, "", nil)
+	result, err := ApplyProcessors(ctx, procs, input, "", nil, nil)
 	if err != nil {
 		t.Fatalf("ApplyProcessors() error = %v", err)
 	}

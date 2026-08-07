@@ -91,6 +91,7 @@ const (
 	EventTypeSessionEnd     EventType = "session_end"
 	EventTypeUIPromptAnswer EventType = "ui_prompt_answer"
 	EventTypeSessionChange  EventType = "session_change"
+	EventTypeProcessorRun   EventType = "processor_run"
 )
 
 // SessionStatus represents the status of a session.
@@ -171,6 +172,30 @@ type ToolCallData struct {
 	Kind       string `json:"kind,omitempty"`
 	RawInput   any    `json:"raw_input,omitempty"`
 	RawOutput  any    `json:"raw_output,omitempty"`
+}
+
+// ProcessorRunData contains data for a single processor invocation, recorded
+// once per (processor, phase) run so the Stats tab (mitto-fm89) can compute
+// exact run/error/skip counts and p50/p95 durations by scanning events.jsonl.
+// A summed stats-DB counter cannot represent a percentile, so this is
+// deliberately an event-log entry rather than an internal/stats metric.
+type ProcessorRunData struct {
+	// Name is the processor's Name field (internal/processors.Processor.Name).
+	Name string `json:"name"`
+	// Phase identifies which pipeline ran the processor: "before" (userPrompt,
+	// Manager.Apply), "after" (agentResponded/agentIdle, Manager.ApplyAfter),
+	// or "close" (conversationClosed, Manager.ApplyOnClose).
+	Phase string `json:"phase"`
+	// Outcome is "ok", "error", or "skipped".
+	Outcome string `json:"outcome"`
+	// DurationMs is the wall-clock execution time in milliseconds. Zero for
+	// skipped runs and for text-mode/prompt-mode processors (no external
+	// command is executed, so there is no duration to record).
+	DurationMs int64 `json:"duration_ms,omitempty"`
+	// Error is the short failure message (ProcessorError.Error) when
+	// Outcome=="error". Never includes stdout/stderr or argument values —
+	// see the Meta sensitivity policy on Event.
+	Error string `json:"error,omitempty"`
 }
 
 // ToolCallUpdateData contains data for a tool call update event.

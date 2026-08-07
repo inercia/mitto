@@ -791,6 +791,11 @@ func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, erro
 		bs.nextSeq = 1
 	}
 
+	// Wire processor-run instrumentation (mitto-fm89 Stats tab): every
+	// processor invocation is appended as a session.EventTypeProcessorRun event.
+	// Placed after the recorder is set up above so the wiring can persist events.
+	bs.wireProcessorRunRecorder()
+
 	// Log runner information
 	if bs.logger != nil {
 		runnerType := "exec"
@@ -1000,6 +1005,11 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 		// No store - initialize nextSeq to 1 to prevent seq=0 errors
 		bs.nextSeq = 1
 	}
+
+	// Wire processor-run instrumentation (mitto-fm89 Stats tab): every
+	// processor invocation is appended as a session.EventTypeProcessorRun event.
+	// Placed after the recorder is resumed above so the wiring can persist events.
+	bs.wireProcessorRunRecorder()
 
 	// Log runner information
 	if bs.logger != nil {
