@@ -149,3 +149,42 @@ func TestPrecompileTemplateConds_KnownFragmentSucceedsWithPopulatedRegistry(t *t
 		t.Fatalf("expected nil for fragment ref with populated registry, got: %v", err)
 	}
 }
+
+// TestPrecompileTemplateConds_UnknownWorkspaceField is the reproduction for
+// mitto-cubg: a prompt template referencing a field that does not exist on
+// cel.WorkspaceContext (e.g. the real-world
+// .mitto/prompts/profile-ui-with-playwright.prompt.yaml, which used
+// "{{ .Workspace.WorkingDir }}" instead of the actual field "Folder") must
+// fail PrecompileTemplateConds at load time with a "can't evaluate field"
+// error naming the bad field — causing LoadPromptFile to reject the file and
+// the prompt to be dropped from mitto_prompt_list, exactly as observed for
+// "Profile UI with Playwright" in this workspace.
+//
+// This pins the failure at the smallest surface (PrecompileTemplateConds
+// itself, no LoadPromptFile/LoadPromptsFromDirWithErrors envelope) so the fix
+// (rewriting the prompt body to use ".Workspace.Folder") can be verified by
+// asserting the corrected body precompiles cleanly.
+func TestPrecompileTemplateConds_UnknownWorkspaceField(t *testing.T) {
+	badBody := `import from "{{ .Workspace.WorkingDir }}/node_modules/playwright/index.mjs";`
+	err := PrecompileTemplateConds("profile-ui-with-playwright", badBody)
+	if err == nil {
+		t.Fatal("expected non-nil error for unknown .Workspace.WorkingDir field, got nil")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "WorkingDir") {
+		t.Errorf("error %q should name the missing field %q", msg, "WorkingDir")
+	}
+	if !strings.Contains(msg, "can't evaluate field") {
+		t.Errorf("error %q should be a struct-field-evaluation error (\"can't evaluate field\")", msg)
+	}
+	if !strings.Contains(msg, "profile-ui-with-playwright") {
+		t.Errorf("error %q should name the prompt", msg)
+	}
+
+	// The corrected accessor (the real field on cel.WorkspaceContext) must
+	// precompile cleanly — proves the fix direction, not just the bug.
+	goodBody := `import from "{{ .Workspace.Folder }}/node_modules/playwright/index.mjs";`
+	if err := PrecompileTemplateConds("profile-ui-with-playwright", goodBody); err != nil {
+		t.Errorf("expected nil for corrected .Workspace.Folder field, got: %v", err)
+	}
+}
