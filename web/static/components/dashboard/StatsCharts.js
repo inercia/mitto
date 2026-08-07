@@ -17,7 +17,8 @@ const RANGE_VALUES = ["24h", "7d", "30d"];
 const DEFAULT_RANGE = "24h";
 
 // Metric list mirrors internal/web/handlers/dashboard_timeseries.go v1MetricSet
-// order. We only request the six the UI actually uses so payloads are lean.
+// order. We only request the ten the UI actually uses so payloads are lean
+// (permissions_prompted and errors are omitted — no chart consumes them yet).
 const REQUESTED_METRICS = [
   "input_tokens_est",
   "output_tokens_est",
@@ -25,6 +26,10 @@ const REQUESTED_METRICS = [
   "agent_turns_completed",
   "tool_calls_total",
   "mcp_calls",
+  "beads_opened",
+  "beads_closed",
+  "beads_cycle_seconds_sum",
+  "beads_cycle_closed_count",
 ];
 
 // Metrics summed per model for the "Model usage" card. Kept in sync with the
@@ -325,12 +330,79 @@ function buildChartSpecs(u) {
         ],
       }),
     },
+    {
+      id: "beads_activity",
+      title: "Beads opened vs closed",
+      metrics: ["beads_opened", "beads_closed"],
+      opts: (w, h) => ({
+        ...commonOpts(w, h),
+        scales: { x: { time: true }, y: yScale },
+        axes: [xAxis, yAxis],
+        series: [
+          { label: "time" },
+          {
+            label: "opened",
+            stroke: stroke("#0ea5e9"),
+            paths: u && u.paths && u.paths.bars ? u.paths.bars({ size: [0.5, 30] }) : undefined,
+          },
+          {
+            label: "closed",
+            stroke: stroke("#22c55e"),
+            paths: u && u.paths && u.paths.bars ? u.paths.bars({ size: [0.5, 30] }) : undefined,
+          },
+        ],
+      }),
+    },
+    {
+      id: "beads_cycle_time",
+      title: "Beads: cycle time (claim → close)",
+      // Raw metrics are a sum+count pair (see stats.MetricBeadsCycleSecondsSum);
+      // transform below derives the per-bucket average (hours) and keeps the
+      // sample count as a second series on its own scale, so a bucket with
+      // only one or two closed beads visibly reads as a thin/sparse sample
+      // instead of implying a confident average (plan's non-negotiable
+      // "thin series reads as thin" requirement).
+      metrics: ["beads_cycle_seconds_sum", "beads_cycle_closed_count"],
+      transform: (rows) => {
+        const [xs, sums, counts] = rows;
+        const avgHours = sums.map((s, i) => {
+          const c = counts[i] || 0;
+          return c > 0 ? s / c / 3600 : 0;
+        });
+        return [xs, avgHours, counts];
+      },
+      opts: (w, h) => ({
+        ...commonOpts(w, h),
+        scales: {
+          x: { time: true },
+          y: yScale,
+          count: {
+            range: (_u, _min, max) => [0, Math.max(1, max * 1.2)],
+          },
+        },
+        axes: [
+          xAxis,
+          { ...yAxis, scale: "y" },
+          { ...yAxis, scale: "count", side: 1, grid: { show: false } },
+        ],
+        series: [
+          { label: "time" },
+          { label: "avg cycle (h)", scale: "y", stroke: stroke("#f97316"), fill: "rgba(249,115,22,0.15)" },
+          {
+            label: "closed count",
+            scale: "count",
+            stroke: stroke("#94a3b8"),
+            paths: u && u.paths && u.paths.bars ? u.paths.bars({ size: [0.4, 20] }) : undefined,
+          },
+        ],
+      }),
+    },
   ];
 }
 
 // --- Single-chart card component -------------------------------------------
 
-function ChartCard({ title, metrics, optsFor, data, uplot, empty }) {
+function ChartCard({ title, metrics, optsFor, data, uplot, empty, transform }) {
   const containerRef = useRef(null);
   const chartRef = useRef(null);
   const roRef = useRef(null);
@@ -348,7 +420,11 @@ function ChartCard({ title, metrics, optsFor, data, uplot, empty }) {
     if (empty) return undefined;
     const el = containerRef.current;
     const width = Math.max(120, el.clientWidth || 300);
-    const rows = toUplotData(data, metrics);
+    const rawRows = toUplotData(data, metrics);
+    // Some specs (e.g. beads_cycle_time) request raw sum/count metrics and
+    // derive a plotted series (average, sample count) from them — see the
+    // `transform` field on the spec in buildChartSpecs.
+    const rows = transform ? transform(rawRows) : rawRows;
     const opts = optsFor(width, CHART_HEIGHT);
     // Guard against a zero-length x-axis (uPlot throws on empty data).
     if (!rows[0] || rows[0].length === 0) {
@@ -387,7 +463,7 @@ function ChartCard({ title, metrics, optsFor, data, uplot, empty }) {
         chartRef.current = null;
       }
     };
-  }, [uplot, data, metrics, optsFor, empty]);
+  }, [uplot, data, metrics, optsFor, empty, transform]);
 
   return html`
     <!-- Carousel item: fixed basis so cards keep a readable width while the
@@ -765,6 +841,7 @@ export function StatsCharts({ showToast }) {
                 data=${data}
                 uplot=${uplot}
                 empty=${empty}
+                transform=${s.transform}
               />`,
             )}
         ${modelUsageVisible

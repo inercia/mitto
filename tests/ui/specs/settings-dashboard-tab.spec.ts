@@ -24,7 +24,13 @@ import type { Page } from "@playwright/test";
  */
 
 const DASHBOARD_KEY = "mitto-dashboard-hidden-charts";
-const CHART_IDS = ["tokens", "tool_calls", "prompts_vs_turns"] as const;
+const CHART_IDS = [
+  "tokens",
+  "tool_calls",
+  "prompts_vs_turns",
+  "beads_activity",
+  "beads_cycle_time",
+] as const;
 
 const dialog = (page: Page) => page.locator('[data-testid="settings-dialog"]');
 const chart = (page: Page, id: string) =>
@@ -89,25 +95,28 @@ test.describe("Settings › Dashboard tab (mitto-w6b)", () => {
 
   test("refuses to hide the last visible chart", async ({ page }) => {
     await openDashboardTab(page);
-    // Hide two of the three; the third must remain visible.
-    await chart(page, "tokens").uncheck();
-    await chart(page, "tool_calls").uncheck();
+    // Hide all but the last of the five; the last must remain visible.
+    const allButLast = CHART_IDS.slice(0, -1);
+    const last = CHART_IDS[CHART_IDS.length - 1];
+    for (const id of allButLast) {
+      await chart(page, id).uncheck();
+    }
     await expect
       .poll(() => readHiddenCharts(page), { timeout: 2000 })
-      .toEqual(["tokens", "tool_calls"]);
+      .toEqual(allButLast);
 
     // Attempt to uncheck the last one — must be refused.
-    await chart(page, "prompts_vs_turns").uncheck();
+    await chart(page, last).uncheck();
 
     // Guard message appears.
     await expect(guard(page)).toBeVisible();
     await expect(guard(page)).toContainText("At least one chart");
 
     // Checkbox snaps back to checked (the guard rejects the state change).
-    await expect(chart(page, "prompts_vs_turns")).toBeChecked();
+    await expect(chart(page, last)).toBeChecked();
 
     // localStorage is NOT mutated into an all-hidden list.
-    expect(await readHiddenCharts(page)).toEqual(["tokens", "tool_calls"]);
+    expect(await readHiddenCharts(page)).toEqual(allButLast);
   });
 
   test("adopts external change events without a reload", async ({ page }) => {

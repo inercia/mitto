@@ -44,6 +44,10 @@ const REQUESTED_METRICS = [
   "agent_turns_completed",
   "tool_calls_total",
   "mcp_calls",
+  "beads_opened",
+  "beads_closed",
+  "beads_cycle_seconds_sum",
+  "beads_cycle_closed_count",
 ];
 
 // Duplicated from StatsCharts.js for testing (mitto-8wj). Keep in sync.
@@ -75,7 +79,32 @@ function chartSpecMetrics() {
       title: "Prompts vs agent turns",
       metrics: ["prompts", "agent_turns_completed"],
     },
+    {
+      id: "beads_activity",
+      title: "Beads opened vs closed",
+      metrics: ["beads_opened", "beads_closed"],
+    },
+    {
+      id: "beads_cycle_time",
+      title: "Beads: cycle time (claim → close)",
+      metrics: ["beads_cycle_seconds_sum", "beads_cycle_closed_count"],
+      transform: beadsCycleTimeTransform,
+    },
   ];
+}
+
+// Duplicated from the beads_cycle_time spec's `transform` in StatsCharts.js
+// (mitto-5rm6.4). Keep in sync. Converts the raw [xs, sum, count] rows into
+// [xs, avgHours, count]: the average is only meaningful where count > 0 (a
+// zero-count bucket must not divide-by-zero into NaN/Infinity, which would
+// break uPlot's y-scale range calc).
+function beadsCycleTimeTransform(rows) {
+  const [xs, sums, counts] = rows;
+  const avgHours = sums.map((s, i) => {
+    const c = counts[i] || 0;
+    return c > 0 ? s / c / 3600 : 0;
+  });
+  return [xs, avgHours, counts];
 }
 
 // Duplicated visibility filter from StatsCharts.js (mitto-4t8). Keep in sync.
@@ -301,6 +330,38 @@ describe("toUplotData", () => {
   });
 });
 
+describe("beadsCycleTimeTransform (mitto-5rm6.4)", () => {
+  test("derives per-bucket average hours from sum/count", () => {
+    // Bucket 1: 2 beads closed, 7200s total -> 1h avg. Bucket 2: 1 bead,
+    // 10800s -> 3h avg.
+    const rows = [
+      [100, 200],
+      [7200, 10800],
+      [2, 1],
+    ];
+    const out = beadsCycleTimeTransform(rows);
+    expect(out[0]).toEqual([100, 200]);
+    expect(out[1]).toEqual([1, 3]);
+    expect(out[2]).toEqual([2, 1]);
+  });
+
+  test("zero-count bucket yields a zero average, not NaN/Infinity", () => {
+    const rows = [[100], [0], [0]];
+    const out = beadsCycleTimeTransform(rows);
+    expect(out[1]).toEqual([0]);
+    expect(Number.isFinite(out[1][0])).toBe(true);
+  });
+
+  test("thin sample (count=1) still reports its true average, count passed through untouched", () => {
+    // The chart renders count as its own series specifically so a
+    // one-sample average doesn't visually masquerade as a confident trend.
+    const rows = [[100], [3600], [1]];
+    const out = beadsCycleTimeTransform(rows);
+    expect(out[1]).toEqual([1]);
+    expect(out[2]).toEqual([1]);
+  });
+});
+
 // =============================================================================
 // Endpoint / URL builder — acceptance: "Charts render at 24h/7d/30d"
 // =============================================================================
@@ -380,11 +441,11 @@ describe("chart specs vs requested metrics", () => {
     }
   });
 
-  test("three cards, each with a unique non-empty title", () => {
+  test("five cards, each with a unique non-empty title", () => {
     const specs = chartSpecMetrics();
-    expect(specs).toHaveLength(3);
+    expect(specs).toHaveLength(5);
     const titles = specs.map((s) => s.title);
-    expect(new Set(titles).size).toBe(3);
+    expect(new Set(titles).size).toBe(5);
     for (const t of titles)
       expect(typeof t === "string" && t.length > 0).toBe(true);
   });
@@ -734,6 +795,8 @@ const KNOWN_DASHBOARD_CHART_IDS = [
   "tool_calls",
   "prompts_vs_turns",
   "model_usage",
+  "beads_activity",
+  "beads_cycle_time",
 ];
 
 describe("buildChartSpecs canonical ids (mitto-4t8)", () => {
@@ -757,8 +820,8 @@ describe("buildChartSpecs canonical ids (mitto-4t8)", () => {
   });
 
   test("every non-model_usage known id maps to a spec", () => {
-    // KNOWN_DASHBOARD_CHART_IDS is the source of truth; the three carousel
-    // specs must cover every id except `model_usage` (which is rendered as a
+    // KNOWN_DASHBOARD_CHART_IDS is the source of truth; the carousel specs
+    // must cover every id except `model_usage` (which is rendered as a
     // sibling ModelUsageCard). This catches a regression where a new id is
     // added to the registry but not annotated on `buildChartSpecs`.
     const carouselIds = new Set(chartSpecMetrics().map((s) => s.id));
@@ -777,7 +840,12 @@ describe("visibleSpecs (carousel filter)", () => {
 
   test("hides only the specs whose id is in the hidden set", () => {
     const specs = chartSpecMetrics();
-    const out = visibleSpecs(specs, ["tokens", "prompts_vs_turns"]);
+    const out = visibleSpecs(specs, [
+      "tokens",
+      "prompts_vs_turns",
+      "beads_activity",
+      "beads_cycle_time",
+    ]);
     expect(out.map((s) => s.id)).toEqual(["tool_calls"]);
   });
 

@@ -13,4 +13,6 @@ export const DASHBOARD_CHARTS = [
   { id: "tool_calls", label: "Tool calls" },
   { id: "prompts_vs_turns", label: "Prompts vs agent turns" },
   // { id: "model_usage",      label: "Model usage" },  // Uncomment once mitto-8wj Phase 3 lands.
+  { id: "beads_activity", label: "Beads opened vs closed" },
+  { id: "beads_cycle_time", label: "Beads: cycle time (claim → close)" },
 ];

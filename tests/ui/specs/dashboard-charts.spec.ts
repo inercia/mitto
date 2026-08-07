@@ -6,11 +6,12 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 /**
- * Dashboard Stats Charts (mitto-a86b.10) UI tests.
+ * Dashboard Stats Charts (mitto-a86b.10, mitto-5rm6.4) UI tests.
  *
- * Verifies the three uPlot charts on the global Dashboard render, react to the
- * range toolbar (24h/7d/30d), show the empty-state placeholder, and show the
- * backfill-in-progress badge.
+ * Verifies the five uPlot charts on the global Dashboard render (tokens, tool
+ * calls, prompts vs turns, beads opened/closed, beads cycle time), react to
+ * the range toolbar (24h/7d/30d), show the empty-state placeholder, and show
+ * the backfill-in-progress badge.
  *
  * Strategy:
  *   - Mock GET /api/dashboard and /api/dashboard/timeseries via page.route so
@@ -52,6 +53,10 @@ const METRIC_KEYS = [
   "agent_turns_completed",
   "tool_calls_total",
   "mcp_calls",
+  "beads_opened",
+  "beads_closed",
+  "beads_cycle_seconds_sum",
+  "beads_cycle_closed_count",
 ];
 
 // Build a tsResponse mirroring internal/web/handlers/dashboard_timeseries.go.
@@ -172,7 +177,7 @@ testWithCleanup.describe("Dashboard Stats Charts", () => {
   });
 
   testWithCleanup(
-    "renders three chart cards with titles and range toolbar",
+    "renders five chart cards with titles and range toolbar",
     async ({ page, timeouts, helpers }) => {
       // Populated 24h response so charts are not empty.
       await page.route(/\/api\/dashboard\/timeseries/, async (route) => {
@@ -189,13 +194,19 @@ testWithCleanup.describe("Dashboard Stats Charts", () => {
       const activity = page.locator("text=Activity").first();
       await expect(activity).toBeVisible({ timeout: timeouts.shortAction });
 
-      // Three chart card titles.
+      // Five chart card titles.
       await expect(
         page.locator("text=Tokens (input + output)"),
       ).toBeVisible();
       await expect(page.locator("text=Tool calls")).toBeVisible();
       await expect(
         page.locator("text=Prompts vs agent turns"),
+      ).toBeVisible();
+      await expect(
+        page.locator("text=Beads opened vs closed"),
+      ).toBeVisible();
+      await expect(
+        page.locator("text=Beads: cycle time (claim → close)"),
       ).toBeVisible();
 
       // Range toolbar buttons via data-testid (stable per StatsCharts.js).
@@ -209,9 +220,9 @@ testWithCleanup.describe("Dashboard Stats Charts", () => {
         page.locator('[data-testid="stats-range-30d"]'),
       ).toBeVisible();
 
-      // Stub inserted a canvas per card (three cards → three canvases).
+      // Stub inserted a canvas per card (five cards → five canvases).
       await expect(page.locator("canvas[data-mitto-uplot-stub]")).toHaveCount(
-        3,
+        5,
       );
 
       // Note about length-based estimates rendered under the charts.
@@ -247,7 +258,7 @@ testWithCleanup.describe("Dashboard Stats Charts", () => {
       // "primed" — anything after this is a range-change refetch.
       await expect(
         page.locator("canvas[data-mitto-uplot-stub]"),
-      ).toHaveCount(3, { timeout: timeouts.shortAction });
+      ).toHaveCount(5, { timeout: timeouts.shortAction });
 
       // Set up the waitForRequest BEFORE clicking so we do not miss it.
       const req = page.waitForRequest(
@@ -276,7 +287,7 @@ testWithCleanup.describe("Dashboard Stats Charts", () => {
       await openDashboard(page, timeouts);
 
       // The placeholder is rendered inside every chart card when empty=true.
-      // Three cards → at least one visible instance; assert on the first.
+      // Five cards → at least one visible instance; assert on the first.
       await expect(
         page.locator("text=No activity in this range").first(),
       ).toBeVisible({ timeout: timeouts.shortAction });

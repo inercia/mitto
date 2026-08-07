@@ -712,6 +712,8 @@ const KNOWN_DASHBOARD_CHART_IDS = [
   "tool_calls",
   "prompts_vs_turns",
   "model_usage",
+  "beads_activity",
+  "beads_cycle_time",
 ];
 
 // Accordion mode: when enabled, only one group can be expanded at a time
