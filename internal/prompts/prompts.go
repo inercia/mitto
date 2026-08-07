@@ -86,6 +86,16 @@ var loadWarnSeen sync.Map
 //	  maxIterations: 20
 //	  maxDuration: "4h"
 //
+// Example frontmatter (on-child trigger, fires when a child conversation
+// reaches a lifecycle event):
+//
+//	loop:
+//	  trigger: [onChild, onCompletion]
+//	  onChild:
+//	    when: [anyEndResponse, anyDeleted]   # optional; absent = both events
+//	  onCompletion:
+//	    delay: 30
+//
 // Example frontmatter (multiple simultaneous triggers):
 //
 //	loop:
@@ -106,9 +116,10 @@ var loadWarnSeen sync.Map
 //	    delay: 30
 type PromptLoop struct {
 	// Trigger is the list of triggers that arm this loop; each entry must be
-	// one of "schedule", "onCompletion", or "onTasks". Duplicates are rejected.
-	// Empty/absent defaults to ["schedule"] (preserves pre-r6j implicit-schedule
-	// prompts). Validated by ValidatePromptLoop / ValidateLoopTriggers.
+	// one of "schedule", "onCompletion", "onTasks", or "onChild". Duplicates
+	// are rejected. Empty/absent defaults to ["schedule"] (preserves pre-r6j
+	// implicit-schedule prompts). Validated by ValidatePromptLoop /
+	// ValidateLoopTriggers.
 	Trigger []string `yaml:"trigger,omitempty" json:"trigger,omitempty"`
 	// Schedule groups the frequency-based trigger's attributes. Meaningful only
 	// when "schedule" is present in Trigger.
@@ -120,6 +131,10 @@ type PromptLoop struct {
 	// OnTasks groups the event-driven "fire when beads/tasks change" trigger's
 	// attributes. Meaningful only when "onTasks" is present in Trigger.
 	OnTasks *PromptLoopOnTasks `yaml:"onTasks,omitempty" json:"onTasks,omitempty"`
+	// OnChild groups the event-driven "fire when a child conversation reaches
+	// a lifecycle event" trigger's attributes. Meaningful only when "onChild"
+	// is present in Trigger.
+	OnChild *PromptLoopOnChild `yaml:"onChild,omitempty" json:"onChild,omitempty"`
 	// MaxIterations caps the number of scheduled runs when the conversation is made loop (0 / absent = unlimited).
 	MaxIterations int `yaml:"maxIterations,omitempty" json:"maxIterations,omitempty"`
 	// MaxDuration is an optional wall-clock cap (e.g. "2h", "30m"); 0/absent = unlimited.
@@ -192,11 +207,35 @@ type PromptLoopOnTasks struct {
 	Cooldown int `yaml:"cooldown,omitempty" json:"cooldown,omitempty"`
 }
 
+// PromptLoopOnChild groups the "onChild" trigger's attributes, nested under
+// loop.onChild. Unknown keys are rejected (see UnmarshalYAML).
+type PromptLoopOnChild struct {
+	// When lists the child-conversation lifecycle events that arm this
+	// trigger; each entry must be one of "anyEndResponse" or "anyDeleted"
+	// (mirrors internal/session/loop.go's ChildEventAnyEndResponse /
+	// ChildEventAnyDeleted — internal/prompts does not import internal/session,
+	// so this list is validated against a local copy; keep the two in sync).
+	// Empty/absent defaults to both events at the session-layer consumption
+	// boundary (session.LoopPrompt.EffectiveChildEvents); this field returns
+	// the authored list verbatim and does not apply that default itself.
+	When []string `yaml:"when,omitempty" json:"when,omitempty"`
+}
+
 // knownLoopTriggers enumerates valid PromptLoop.Trigger entries.
 var knownLoopTriggers = map[string]bool{
 	"schedule":     true,
 	"onCompletion": true,
 	"onTasks":      true,
+	"onChild":      true,
+}
+
+// knownPromptLoopChildEvents enumerates valid PromptLoopOnChild.When entries.
+// Local copy of internal/session/loop.go's ChildEventAnyEndResponse /
+// ChildEventAnyDeleted (mitto-987y.1) — internal/prompts must not import
+// internal/session, so keep this in sync with that file if it changes.
+var knownPromptLoopChildEvents = map[string]bool{
+	"anyEndResponse": true,
+	"anyDeleted":     true,
 }
 
 // Triggers returns the effective, resolved trigger list: p.Trigger verbatim
@@ -217,6 +256,18 @@ func (p *PromptLoop) hasTrigger(name string) bool {
 		}
 	}
 	return false
+}
+
+// ChildEvents returns the authored loop.onChild.when list verbatim, or nil
+// when unset/nil (nil-safe on a nil receiver or nil OnChild). It does NOT
+// default to both events — session.LoopPrompt.EffectiveChildEvents already
+// owns that defaulting at the consumption boundary; duplicating it here would
+// fork the semantics between the two layers.
+func (p *PromptLoop) ChildEvents() []string {
+	if p == nil || p.OnChild == nil {
+		return nil
+	}
+	return p.OnChild.When
 }
 
 // FrequencyValue returns loop.schedule.value, or 0 when unset/nil.
@@ -319,6 +370,7 @@ type promptLoopAux struct {
 	Schedule      *PromptLoopSchedule     `yaml:"schedule,omitempty"`
 	OnCompletion  *PromptLoopOnCompletion `yaml:"onCompletion,omitempty"`
 	OnTasks       *PromptLoopOnTasks      `yaml:"onTasks,omitempty"`
+	OnChild       *PromptLoopOnChild      `yaml:"onChild,omitempty"`
 	MaxIterations int                     `yaml:"maxIterations,omitempty"`
 	MaxDuration   string                  `yaml:"maxDuration,omitempty"`
 	FreshContext  *bool                   `yaml:"freshContext,omitempty"`
@@ -330,8 +382,8 @@ type promptLoopAux struct {
 // promptLoopKnownKeys enumerates the keys valid directly under loop:.
 var promptLoopKnownKeys = map[string]bool{
 	"trigger": true, "schedule": true, "onCompletion": true, "onTasks": true,
-	"maxIterations": true, "maxDuration": true, "freshContext": true,
-	"runOnStart": true, "mode": true, "default": true,
+	"onChild": true, "maxIterations": true, "maxDuration": true,
+	"freshContext": true, "runOnStart": true, "mode": true, "default": true,
 }
 
 // promptLoopScheduleKnownKeys enumerates the keys valid under loop.schedule.
@@ -348,6 +400,11 @@ var promptLoopOnCompletionKnownKeys = map[string]bool{
 var promptLoopOnTasksKnownKeys = map[string]bool{
 	"condition": true, "conditionPreset": true, "coalesceDuringBusy": true,
 	"settleWindow": true, "cooldown": true,
+}
+
+// promptLoopOnChildKnownKeys enumerates the keys valid under loop.onChild.
+var promptLoopOnChildKnownKeys = map[string]bool{
+	"when": true,
 }
 
 // rejectUnknownLoopKeys returns an error for the first key in the mapping node
@@ -403,6 +460,7 @@ func (p *PromptLoop) UnmarshalYAML(node *yaml.Node) error {
 	p.Schedule = aux.Schedule
 	p.OnCompletion = aux.OnCompletion
 	p.OnTasks = aux.OnTasks
+	p.OnChild = aux.OnChild
 	p.MaxIterations = aux.MaxIterations
 	p.MaxDuration = aux.MaxDuration
 	p.FreshContext = aux.FreshContext
@@ -481,6 +539,26 @@ func (t *PromptLoopOnTasks) UnmarshalYAML(node *yaml.Node) error {
 	t.CoalesceDuringBusy = aux.CoalesceDuringBusy
 	t.SettleWindow = aux.SettleWindow
 	t.Cooldown = aux.Cooldown
+	return nil
+}
+
+// promptLoopOnChildAux mirrors PromptLoopOnChild's fields; decode target for
+// UnmarshalYAML so the strict-key pass does not recurse into itself.
+type promptLoopOnChildAux struct {
+	When []string `yaml:"when,omitempty"`
+}
+
+// UnmarshalYAML implements yaml.Unmarshaler for PromptLoopOnChild, rejecting
+// any key that is not part of the onChild-trigger block.
+func (c *PromptLoopOnChild) UnmarshalYAML(node *yaml.Node) error {
+	if err := rejectUnknownLoopKeys("loop.onChild", node, promptLoopOnChildKnownKeys); err != nil {
+		return err
+	}
+	var aux promptLoopOnChildAux
+	if err := node.Decode(&aux); err != nil {
+		return err
+	}
+	c.When = aux.When
 	return nil
 }
 
@@ -604,12 +682,16 @@ func ValidatePromptLoop(promptName string, p *PromptLoop) error {
 }
 
 // ValidateLoopTriggers validates the loop.trigger list and its per-trigger
-// blocks (mitto-r6j.1):
-//   - Every entry in Trigger must be one of "schedule", "onCompletion", "onTasks".
+// blocks (mitto-r6j.1, mitto-987y.2):
+//   - Every entry in Trigger must be one of "schedule", "onCompletion",
+//     "onTasks", "onChild".
 //   - Duplicate entries are rejected.
 //   - An empty/absent Trigger list is not an error — it defaults to ["schedule"]
 //     (see PromptLoop.Triggers), preserving pre-r6j implicit-schedule prompts.
 //   - loop.schedule.at is only valid when loop.schedule.unit is "days".
+//   - loop.onChild.when entries must be one of "anyEndResponse", "anyDeleted".
+//   - onChild can never be the only armed trigger (purely reactive to a
+//     child's lifecycle; mirrors session.ErrOnChildAlone).
 //   - A block present for a trigger NOT listed in Trigger is inert (matches
 //     today's tolerance for inert flat fields) and only logs a warning, not an error.
 func ValidateLoopTriggers(promptName string, p *PromptLoop) error {
@@ -619,7 +701,7 @@ func ValidateLoopTriggers(promptName string, p *PromptLoop) error {
 	seen := make(map[string]bool, len(p.Trigger))
 	for _, t := range p.Trigger {
 		if !knownLoopTriggers[t] {
-			return fmt.Errorf("prompt %q: loop.trigger %q is not valid (must be one of: schedule, onCompletion, onTasks)", promptName, t)
+			return fmt.Errorf("prompt %q: loop.trigger %q is not valid (must be one of: schedule, onCompletion, onTasks, onChild)", promptName, t)
 		}
 		if seen[t] {
 			return fmt.Errorf("prompt %q: loop.trigger contains duplicate entry %q", promptName, t)
@@ -643,6 +725,25 @@ func ValidateLoopTriggers(promptName string, p *PromptLoop) error {
 	if p.OnTasks != nil && !p.hasTrigger("onTasks") {
 		slog.Warn("prompt loop.onTasks is set but \"onTasks\" is not in loop.trigger — this block is inert",
 			"prompt", promptName)
+	}
+	if p.OnChild != nil {
+		if !p.hasTrigger("onChild") {
+			slog.Warn("prompt loop.onChild is set but \"onChild\" is not in loop.trigger — this block is inert",
+				"prompt", promptName)
+		}
+		for _, e := range p.OnChild.When {
+			if !knownPromptLoopChildEvents[e] {
+				return fmt.Errorf("prompt %q: loop.onChild.when %q is not valid (must be one of: anyEndResponse, anyDeleted)", promptName, e)
+			}
+		}
+	}
+	// onChild is purely reactive to a child conversation's lifecycle, so it
+	// must never be the sole armed trigger (mirrors session.ErrOnChildAlone,
+	// internal/session/loop.go). p.Triggers() defaults an empty/absent
+	// Trigger to ["schedule"], so this can only trip on an explicitly
+	// authored onChild-only list (including the legacy scalar form).
+	if eff := p.Triggers(); len(eff) == 1 && eff[0] == "onChild" {
+		return fmt.Errorf("prompt %q: loop.trigger onChild cannot be the only trigger", promptName)
 	}
 	return nil
 }

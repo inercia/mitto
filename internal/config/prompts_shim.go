@@ -18,6 +18,7 @@ type PromptLoop = prompts.PromptLoop
 type PromptLoopSchedule = prompts.PromptLoopSchedule
 type PromptLoopOnCompletion = prompts.PromptLoopOnCompletion
 type PromptLoopOnTasks = prompts.PromptLoopOnTasks
+type PromptLoopOnChild = prompts.PromptLoopOnChild
 type PromptTarget = prompts.PromptTarget
 type PromptParameterCache = prompts.PromptParameterCache
 type PromptParameter = prompts.PromptParameter
