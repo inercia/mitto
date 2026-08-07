@@ -219,4 +219,64 @@ test.describe("Copy as Markdown", () => {
     expect(copied).not.toContain("## 🧑 User");
     expect(copied).not.toContain(msg);
   });
+
+  test("header Copy dropdown lists four entries and enables 'last response' only after an agent reply", async ({
+    page,
+    selectors,
+    helpers,
+    timeouts,
+  }) => {
+    // Guaranteed-empty conversation: ensureActiveSession (used by beforeEach)
+    // may reuse an existing session with prior messages, which would make the
+    // "before any reply" assertions below flaky.
+    await helpers.createFreshSession(page);
+
+    // Before any reply: all four entries are present in one open of the
+    // dropdown, and "Copy last response as Markdown" is disabled while
+    // "Copy conversation ID" (always available once a session exists) is
+    // enabled — disabled entries are greyed out, not hidden.
+    await page.locator(selectors.headerCopyMarkdown).click();
+    await expect(page.locator(selectors.headerCopyMenu)).toBeVisible({
+      timeout: timeouts.shortAction,
+    });
+    await expect(page.locator(selectors.headerCopyName)).toBeVisible();
+    await expect(page.locator(selectors.headerCopyId)).toBeVisible();
+    await expect(
+      page.locator(selectors.headerCopyConversationMd),
+    ).toBeVisible();
+    await expect(
+      page.locator(selectors.headerCopyLastResponseMd),
+    ).toBeVisible();
+
+    await expect(page.locator(selectors.headerCopyId)).toBeEnabled();
+    await expect(
+      page.locator(selectors.headerCopyLastResponseMd),
+    ).toBeDisabled();
+    // Bonus: with no conversation content yet, the full-Markdown entry is
+    // disabled too.
+    await expect(
+      page.locator(selectors.headerCopyConversationMd),
+    ).toBeDisabled();
+
+    // Close the dropdown without clicking a disabled entry.
+    await page.keyboard.press("Escape");
+    await expect(page.locator(selectors.headerCopyMenu)).toBeHidden({
+      timeout: timeouts.shortAction,
+    });
+
+    // After a reply: reopen and confirm "Copy last response as Markdown" is
+    // now enabled.
+    await helpers.sendMessageAndWait(
+      page,
+      helpers.uniqueMessage("Dropdown state"),
+    );
+
+    await page.locator(selectors.headerCopyMarkdown).click();
+    await expect(page.locator(selectors.headerCopyMenu)).toBeVisible({
+      timeout: timeouts.shortAction,
+    });
+    await expect(
+      page.locator(selectors.headerCopyLastResponseMd),
+    ).toBeEnabled();
+  });
 });
