@@ -21,6 +21,7 @@ import {
   expect,
   beforeAll,
 } from "../utils/testing/testGlobals.js";
+import { CONVERSATION_COLORS } from "../constants.js";
 
 global.window = global.window || {};
 window.preact = window.preact || {};
@@ -312,5 +313,80 @@ describe("useConversationMenu — hide loop-configuring prompts on loop conversa
         ]);
       },
     );
+  });
+});
+
+describe("useConversationMenu — Change color submenu (mitto-eazf)", () => {
+  test("no onSetColor → no 'Change color' entry", () => {
+    const { contextMenuItems } = useConversationMenu({ session: SESSION });
+    expect(findItem(contextMenuItems, "Change color")).toBeUndefined();
+  });
+
+  test("onSetColor present → 'Change color' entry with one row per palette color plus 'No color'", () => {
+    const { contextMenuItems } = useConversationMenu({
+      session: SESSION,
+      onSetColor: () => {},
+    });
+    const changeColor = findItem(contextMenuItems, "Change color");
+    expect(changeColor).toBeDefined();
+    expect(changeColor.submenu).toHaveLength(CONVERSATION_COLORS.length + 1);
+    expect(changeColor.submenu.map((s) => s.label)).toEqual([
+      ...CONVERSATION_COLORS.map((c) => c.name),
+      "No color",
+    ]);
+  });
+
+  test("each palette row's onClick calls onSetColor with the session and that row's hex", () => {
+    const calls = [];
+    const { contextMenuItems } = useConversationMenu({
+      session: SESSION,
+      onSetColor: (session, hex) => calls.push([session, hex]),
+    });
+    const changeColor = findItem(contextMenuItems, "Change color");
+    for (const c of CONVERSATION_COLORS) {
+      findSub(changeColor, c.name).onClick();
+    }
+    expect(calls).toEqual(CONVERSATION_COLORS.map((c) => [SESSION, c.hex]));
+  });
+
+  test("'No color' row's onClick calls onSetColor with the session and an empty string", () => {
+    const calls = [];
+    const { contextMenuItems } = useConversationMenu({
+      session: SESSION,
+      onSetColor: (session, hex) => calls.push([session, hex]),
+    });
+    const changeColor = findItem(contextMenuItems, "Change color");
+    findSub(changeColor, "No color").onClick();
+    expect(calls).toEqual([[SESSION, ""]]);
+  });
+
+  test("trailing check mark lands on the palette row matching session.background_color, case-insensitively", () => {
+    const target = CONVERSATION_COLORS[3]; // arbitrary mid-palette entry
+    const { contextMenuItems } = useConversationMenu({
+      session: { ...SESSION, background_color: target.hex.toLowerCase() },
+      onSetColor: () => {},
+    });
+    const changeColor = findItem(contextMenuItems, "Change color");
+    for (const c of CONVERSATION_COLORS) {
+      const row = findSub(changeColor, c.name);
+      if (c.hex === target.hex) {
+        expect(row.trailing).not.toBeNull();
+      } else {
+        expect(row.trailing).toBeNull();
+      }
+    }
+    expect(findSub(changeColor, "No color").trailing).toBeNull();
+  });
+
+  test("'No color' row is checked when session.background_color is empty/absent; no palette row is checked", () => {
+    const { contextMenuItems } = useConversationMenu({
+      session: SESSION, // no background_color field at all
+      onSetColor: () => {},
+    });
+    const changeColor = findItem(contextMenuItems, "Change color");
+    expect(findSub(changeColor, "No color").trailing).not.toBeNull();
+    for (const c of CONVERSATION_COLORS) {
+      expect(findSub(changeColor, c.name).trailing).toBeNull();
+    }
   });
 });
