@@ -198,8 +198,52 @@ func (c *PromptsCache) reload() ([]*PromptFile, error) {
 	// value cached — needsReload() will then re-fire on the next Get().
 	fragmentsGen := CurrentFragmentsGeneration()
 
-	// Load prompts from all directories, merging by name
-	// Later directories override earlier ones
+	promptsByName, newModTimes, newLoadErrors := c.loadPromptsOnce(dirs)
+
+	// Retry once after refreshing fragments from disk (mitto-aczx): a load
+	// failure here may be the fragment/prompt load-order race — a deploy
+	// that writes a new *.tmpl fragment alongside its *.prompt.yaml consumer
+	// in the same burst can land in this lazy, on-demand reload path before
+	// the fs-watcher subscriber (internal/web/server.go OnPromptsChanged)
+	// has refreshed the process-wide fragment registry for its own trigger.
+	// Unlike that subscriber, this path never calls ReloadFragmentsFromDirs
+	// on its own, so it previously reloaded prompts against whatever
+	// CurrentFragments() happened to hold at that instant. Refreshing from
+	// disk ourselves and retrying once mirrors the fs-watcher's "fragments
+	// before prompts" ordering guarantee for this path too, so a prompt
+	// referencing a fragment that already exists on disk is never evicted
+	// just because this reload raced the watcher's debounce window.
+	if len(newLoadErrors) > 0 && c.refreshFragmentsFromDisk(dirs) {
+		fragmentsGen = CurrentFragmentsGeneration()
+		promptsByName, newModTimes, newLoadErrors = c.loadPromptsOnce(dirs)
+	}
+
+	// Convert map to slice, filtering out disabled prompts.
+	// Disabled prompts have already served their purpose of suppressing
+	// same-named prompts from lower-priority directories during merge.
+	prompts := make([]*PromptFile, 0, len(promptsByName))
+	for _, p := range promptsByName {
+		if p.IsEnabled() {
+			prompts = append(prompts, p)
+		}
+	}
+
+	c.prompts = prompts
+	c.webPrompts = PromptsToWebPrompts(prompts)
+	c.loadedAt = time.Now()
+	c.dirModTimes = newModTimes
+	c.loadErrors = newLoadErrors
+	c.fragmentsGen = fragmentsGen
+
+	return prompts, nil
+}
+
+// loadPromptsOnce loads prompts from all directories, merging by name (later
+// directories override earlier ones), and returns the merged map alongside
+// the observed per-directory modtimes and any per-file load errors. Pure
+// helper factored out of reload() so the fragment-refresh retry (mitto-aczx)
+// can invoke it twice without duplicating the directory-walk loop.
+func (c *PromptsCache) loadPromptsOnce(dirs []string) (map[string]*PromptFile, map[string]time.Time, []PromptLoadError) {
 	promptsByName := make(map[string]*PromptFile)
 	newModTimes := make(map[string]time.Time)
 	var newLoadErrors []PromptLoadError
@@ -222,24 +266,32 @@ func (c *PromptsCache) reload() ([]*PromptFile, error) {
 		}
 	}
 
-	// Convert map to slice, filtering out disabled prompts.
-	// Disabled prompts have already served their purpose of suppressing
-	// same-named prompts from lower-priority directories during merge.
-	prompts := make([]*PromptFile, 0, len(promptsByName))
-	for _, p := range promptsByName {
-		if p.IsEnabled() {
-			prompts = append(prompts, p)
-		}
+	return promptsByName, newModTimes, newLoadErrors
+}
+
+// refreshFragmentsFromDisk re-scans the same directory set for *.tmpl
+// fragments and installs the merged result as the process-wide fragment
+// registry, mirroring what the fs-watcher subscriber (internal/web/server.go
+// OnPromptsChanged) does before it reloads prompts. Returns true if a new
+// registry was installed (so the caller should retry the prompt load),
+// false on a top-level walk failure (in which case the previous registry —
+// and the load errors already collected against it — are left untouched,
+// matching the fs-watcher's "keep previous registry on failure" policy).
+//
+// dirs is the PromptsCache's own directory list (default/additional/
+// workspace), not internal/web's getFragmentScanDirs() — internal/prompts
+// must not import internal/web. In practice the two lists mostly overlap
+// (both include MITTO_DIR/prompts/); the builtin subdirectory the web layer
+// additionally scans is itself a subdirectory of MITTO_DIR/prompts/, so
+// LoadFragmentsFromDir's recursive walk already picks up fragments placed
+// there when the default dir is included in dirs.
+func (c *PromptsCache) refreshFragmentsFromDisk(dirs []string) bool {
+	reg, _, err := ReloadFragmentsFromDirs(dirs)
+	if err != nil {
+		return false
 	}
-
-	c.prompts = prompts
-	c.webPrompts = PromptsToWebPrompts(prompts)
-	c.loadedAt = time.Now()
-	c.dirModTimes = newModTimes
-	c.loadErrors = newLoadErrors
-	c.fragmentsGen = fragmentsGen
-
-	return prompts, nil
+	SetCurrentFragments(reg)
+	return true
 }
 
 // LoadErrors returns the per-file load errors from the most recent reload.
