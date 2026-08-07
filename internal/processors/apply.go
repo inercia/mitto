@@ -380,6 +380,13 @@ type Manager struct {
 	// FilePendingDispatchStore. Injected with a temp-dir BaseDir in unit tests.
 	pendingDispatchStore PendingDispatchStore
 
+	// lateDeliveryFunc is an optional callback invoked by
+	// FlushPendingDispatches when it successfully delivers one or more
+	// previously-spooled batches (mitto-yfv8). Set by the web layer via
+	// SetLateDeliveryFunc to surface an informational toast, distinct from
+	// notifyFunc's failure toast.
+	lateDeliveryFunc LateDeliveryFunc
+
 	// clock returns the current time. Defaults to time.Now; overridden in tests
 	// to make time-based cadence deterministic.
 	clock func() time.Time
@@ -434,6 +441,14 @@ func (m *Manager) SetStateStore(s StateStore) {
 // FilePendingDispatchStore pointed at a temp directory.
 func (m *Manager) SetPendingDispatchStore(s PendingDispatchStore) {
 	m.pendingDispatchStore = s
+}
+
+// SetLateDeliveryFunc sets the callback invoked when FlushPendingDispatches
+// successfully delivers one or more previously-spooled batches for a
+// workspace (mitto-yfv8). Injected by the web layer to surface an
+// informational UI toast, distinct from SetNotifyFunc's failure toast.
+func (m *Manager) SetLateDeliveryFunc(fn LateDeliveryFunc) {
+	m.lateDeliveryFunc = fn
 }
 
 // SetClock replaces the clock function used for cadence time checks.
@@ -1784,68 +1799,21 @@ func isSaturationDispatchErr(err error) bool {
 // outcomes, letting single vs batched dispatch keep their previously
 // distinct wording.
 func (m *Manager) dispatchWithRetry(workspaceUUID, name, prompt string, timeout time.Duration, skipLog, failLog string) {
-	var lastErr error
-	var saturationDeadline time.Time // zero until the first saturation error is observed
-	normalRetries := 0               // count of non-saturation failures, bounded by dispatchPromptMaxRetries
-	totalAttempts := 0
-
-	for {
-		if totalAttempts > 0 {
-			if isSaturationDispatchErr(lastErr) {
-				time.Sleep(dispatchSaturationRetryInterval)
-			} else {
-				delay := dispatchPromptRetryBaseDelay * time.Duration(uint(1)<<uint(normalRetries-1))
-				time.Sleep(delay)
-			}
-		}
-
-		bgCtx, cancel := context.WithTimeout(context.Background(), timeout)
-		lastErr = m.promptFunc(bgCtx, workspaceUUID, name, prompt)
-		cancel()
-		totalAttempts++
-
-		if lastErr == nil {
-			return
-		}
-
-		if isNonRetryableDispatchErr(lastErr) {
-			if m.logger != nil {
-				m.logger.Warn(skipLog, "name", name, "error", lastErr)
-			}
-			return
-		}
-
-		if isSaturationDispatchErr(lastErr) {
-			if saturationDeadline.IsZero() {
-				saturationDeadline = time.Now().Add(dispatchSaturationMaxWait)
-			}
-			if time.Now().Before(saturationDeadline) {
-				if m.logger != nil {
-					m.logger.Warn("prompt-mode processor dispatch attempt failed; shared process saturated, waiting for GC recycle",
-						"name", name,
-						"attempt", totalAttempts,
-						"error", lastErr,
-					)
-				}
-				continue
-			}
-			// Bounded saturation wait exhausted; give up below.
-			break
-		}
-
-		normalRetries++
-		if normalRetries > dispatchPromptMaxRetries {
-			break
-		}
-		if m.logger != nil {
-			m.logger.Warn("prompt-mode processor dispatch attempt failed; will retry",
-				"name", name,
-				"attempt", totalAttempts,
-				"max_attempts", dispatchPromptMaxRetries+1,
-				"error", lastErr,
-			)
-		}
+	lastErr, totalAttempts := m.runDispatchRetryLoop(workspaceUUID, name, prompt, timeout, skipLog)
+	if lastErr == nil {
+		return
 	}
+	if isNonRetryableDispatchErr(lastErr) {
+		// Already logged (at WARN) and abandoned by runDispatchRetryLoop;
+		// nothing further to persist or notify.
+		return
+	}
+
+	// This is the first time this batch has ever been spooled (as opposed
+	// to a re-failure during FlushPendingDispatches, mitto-yfv8), so its
+	// PendingDispatchEntry.Attempts starts at 1 regardless of how many RPC
+	// attempts (totalAttempts, used only for logging here) it took.
+	spoolAttempts := 1
 
 	// mitto-3421: previously the combined prompt was simply dropped here — for
 	// close-phase (conversationClosed) processors the originating session's
@@ -1862,6 +1830,7 @@ func (m *Manager) dispatchWithRetry(workspaceUUID, name, prompt string, timeout 
 			Prompt:         prompt,
 			TimeoutSeconds: timeout.Seconds(),
 			SavedAt:        time.Now(),
+			Attempts:       spoolAttempts,
 		}
 		if lastErr != nil {
 			entry.LastError = lastErr.Error()
@@ -1897,6 +1866,212 @@ func (m *Manager) dispatchWithRetry(workspaceUUID, name, prompt string, timeout 
 	}
 	if m.notifyFunc != nil {
 		m.notifyFunc(workspaceUUID, name, lastErr)
+	}
+}
+
+// runDispatchRetryLoop performs the actual retry/backoff loop against
+// m.promptFunc: ordinary transient failures are retried up to
+// dispatchPromptMaxRetries additional times with exponential backoff, and
+// shared-process-saturation failures are retried on a fixed
+// dispatchSaturationRetryInterval cadence up to dispatchSaturationMaxWait
+// without consuming the normal attempt budget (mitto-7q2). Returns (nil,
+// attempts) on success, or (the final error, attempts) once retrying is
+// exhausted or the non-retryable "no shared process for workspace" sentinel
+// is seen (in which case skipLog has already been logged at WARN and the
+// error should not be persisted or notified by the caller). attempts is the
+// number of RPC attempts made in this call, for caller logging.
+func (m *Manager) runDispatchRetryLoop(workspaceUUID, name, prompt string, timeout time.Duration, skipLog string) (error, int) {
+	var lastErr error
+	var saturationDeadline time.Time // zero until the first saturation error is observed
+	normalRetries := 0               // count of non-saturation failures, bounded by dispatchPromptMaxRetries
+	totalAttempts := 0
+
+	for {
+		if totalAttempts > 0 {
+			if isSaturationDispatchErr(lastErr) {
+				time.Sleep(dispatchSaturationRetryInterval)
+			} else {
+				delay := dispatchPromptRetryBaseDelay * time.Duration(uint(1)<<uint(normalRetries-1))
+				time.Sleep(delay)
+			}
+		}
+
+		bgCtx, cancel := context.WithTimeout(context.Background(), timeout)
+		lastErr = m.promptFunc(bgCtx, workspaceUUID, name, prompt)
+		cancel()
+		totalAttempts++
+
+		if lastErr == nil {
+			return nil, totalAttempts
+		}
+
+		if isNonRetryableDispatchErr(lastErr) {
+			if m.logger != nil {
+				m.logger.Warn(skipLog, "name", name, "error", lastErr)
+			}
+			return lastErr, totalAttempts
+		}
+
+		if isSaturationDispatchErr(lastErr) {
+			if saturationDeadline.IsZero() {
+				saturationDeadline = time.Now().Add(dispatchSaturationMaxWait)
+			}
+			if time.Now().Before(saturationDeadline) {
+				if m.logger != nil {
+					m.logger.Warn("prompt-mode processor dispatch attempt failed; shared process saturated, waiting for GC recycle",
+						"name", name,
+						"attempt", totalAttempts,
+						"error", lastErr,
+					)
+				}
+				continue
+			}
+			// Bounded saturation wait exhausted; give up below.
+			break
+		}
+
+		normalRetries++
+		if normalRetries > dispatchPromptMaxRetries {
+			break
+		}
+		if m.logger != nil {
+			m.logger.Warn("prompt-mode processor dispatch attempt failed; will retry",
+				"name", name,
+				"attempt", totalAttempts,
+				"max_attempts", dispatchPromptMaxRetries+1,
+				"error", lastErr,
+			)
+		}
+	}
+
+	return lastErr, totalAttempts
+}
+
+// FlushPendingDispatches loads any prompt-mode batches previously spooled
+// for workspaceUUID (because dispatchWithRetry exhausted its saturation
+// retry budget — mitto-3421) and retries them now that the workspace is
+// believed dispatchable, converting the earlier delay into delivery
+// (mitto-yfv8).
+//
+// Best-effort and side-effect free when not wired: a no-op if there is no
+// pendingDispatchStore, no promptFunc, or an empty workspaceUUID. Entries
+// are retried sequentially (not concurrently) so a flush of several stale
+// batches cannot itself re-saturate the shared process — the same condition
+// that produced the spool in the first place. The spool is claimed
+// up-front (Replace with nil) so a crash mid-flush cannot duplicate work
+// beyond what dispatchWithRetry's own re-append already tolerates; entries
+// that fail again are written back with an incremented Attempts, and any
+// entry whose Attempts exceeds pendingDispatchMaxAttempts is dropped
+// instead of blocking the rest of the spool. When one or more entries are
+// delivered, lateDeliveryFunc (if set) is invoked once with all delivered
+// names.
+func (m *Manager) FlushPendingDispatches(ctx context.Context, workspaceUUID string) {
+	if m == nil || m.pendingDispatchStore == nil || m.promptFunc == nil || workspaceUUID == "" {
+		return
+	}
+
+	entries, err := m.pendingDispatchStore.Load(workspaceUUID)
+	if err != nil {
+		if m.logger != nil {
+			m.logger.Warn("pending-dispatch flush: failed to load spool",
+				"workspace_uuid", workspaceUUID, "error", err)
+		}
+		return
+	}
+	if len(entries) == 0 {
+		return
+	}
+
+	// Claim the spool now: entries that still fail below are re-persisted
+	// below with an incremented Attempts, so this cannot lose work beyond
+	// the existing at-least-once semantics of the spool itself.
+	if err := m.pendingDispatchStore.Replace(workspaceUUID, nil); err != nil {
+		if m.logger != nil {
+			m.logger.Warn("pending-dispatch flush: failed to claim spool; skipping this cycle",
+				"workspace_uuid", workspaceUUID, "error", err)
+		}
+		return
+	}
+
+	var delivered []string
+	var requeue []PendingDispatchEntry
+
+	for i, entry := range entries {
+		if ctx.Err() != nil {
+			// Out of time — requeue this and all remaining entries unchanged
+			// (does not count as a further attempt).
+			requeue = append(requeue, entries[i:]...)
+			break
+		}
+
+		if entry.Attempts >= pendingDispatchMaxAttempts {
+			if m.logger != nil {
+				m.logger.Error("pending-dispatch flush: dropping entry after exceeding max attempts",
+					"workspace_uuid", workspaceUUID,
+					"name", entry.Name,
+					"attempts", entry.Attempts,
+				)
+			}
+			continue
+		}
+
+		timeout := time.Duration(entry.TimeoutSeconds * float64(time.Second))
+		if timeout <= 0 {
+			timeout = DefaultTimeout
+		}
+
+		lastErr, _ := m.runDispatchRetryLoop(workspaceUUID, entry.Name, entry.Prompt, timeout,
+			"pending-dispatch flush skipped: shared ACP process not available")
+		if lastErr == nil {
+			delivered = append(delivered, entry.Name)
+			if m.logger != nil {
+				m.logger.Info("pending-dispatch flush: delivered spooled batch",
+					"workspace_uuid", workspaceUUID,
+					"name", entry.Name,
+					"prior_attempts", entry.Attempts,
+				)
+			}
+			continue
+		}
+
+		if isNonRetryableDispatchErr(lastErr) {
+			// Workspace stopped being dispatchable mid-flush; requeue this
+			// and all remaining entries unchanged (does not count as a
+			// further attempt) and stop — later entries would fail the
+			// same way.
+			requeue = append(requeue, entries[i:]...)
+			break
+		}
+
+		entry.Attempts++
+		entry.LastError = lastErr.Error()
+		entry.SavedAt = time.Now()
+		if entry.Attempts >= pendingDispatchMaxAttempts {
+			if m.logger != nil {
+				m.logger.Error("pending-dispatch flush: entry failed again and exceeded max attempts; dropping",
+					"workspace_uuid", workspaceUUID,
+					"name", entry.Name,
+					"attempts", entry.Attempts,
+					"error", lastErr,
+				)
+			}
+			if m.notifyFunc != nil {
+				m.notifyFunc(workspaceUUID, entry.Name, lastErr)
+			}
+			continue
+		}
+		requeue = append(requeue, entry)
+	}
+
+	if len(requeue) > 0 {
+		if err := m.pendingDispatchStore.Replace(workspaceUUID, requeue); err != nil && m.logger != nil {
+			m.logger.Error("pending-dispatch flush: failed to write back unresolved entries, work may be lost",
+				"workspace_uuid", workspaceUUID, "error", err, "count", len(requeue))
+		}
+	}
+
+	if len(delivered) > 0 && m.lateDeliveryFunc != nil {
+		m.lateDeliveryFunc(workspaceUUID, delivered)
 	}
 }
 

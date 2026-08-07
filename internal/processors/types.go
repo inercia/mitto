@@ -135,6 +135,15 @@ type PromptFunc func(ctx context.Context, workspaceUUID, processorName, prompt s
 // processors, whose originating session has already been archived.
 type NotifyFunc func(workspaceUUID, name string, lastErr error)
 
+// LateDeliveryFunc is a callback invoked when Manager.FlushPendingDispatches
+// successfully delivers one or more previously-spooled batches for a
+// workspace (mitto-yfv8). Distinct from NotifyFunc (which reports failure):
+// this reports a deferred success, so the user knows earlier "lost" work
+// eventually landed. names lists the processor name(s) of every entry that
+// was delivered in this flush. Injected by the web layer via
+// Manager.SetLateDeliveryFunc; nil means late deliveries are only logged.
+type LateDeliveryFunc func(workspaceUUID string, names []string)
+
 // Phase defines when in the conversation lifecycle a processor fires.
 type Phase string
 

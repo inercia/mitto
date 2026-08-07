@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -779,6 +780,18 @@ func (sm *SessionManager) ApplyOnCloseProcessors(sessionID string, reason string
 	// forget dispatch's give-up can fire minutes later.
 	procMgr.SetPendingDispatchStore(&processors.FilePendingDispatchStore{})
 
+	// Wire the late-delivery notify seam (mitto-yfv8): when
+	// FlushPendingDispatches (below) successfully delivers one or more
+	// previously-spooled batches, surface an informational toast so the
+	// user knows earlier "lost" work eventually landed.
+	procMgr.SetLateDeliveryFunc(func(wsUUID string, names []string) {
+		sm.BroadcastWorkspaceUINotify(wsUUID, workspaceName, workingDir, UINotifyRequest{
+			Title:   "Deferred close-phase work delivered",
+			Message: fmt.Sprintf("%d previously undelivered batch(es) were dispatched: %s", len(names), strings.Join(names, ", ")),
+			Style:   "info",
+		})
+	})
+
 	// Wire processor-run instrumentation (mitto-fm89 Stats tab). The live
 	// BackgroundSession is typically already gone by close time, so this
 	// appends directly via the store (which auto-assigns Seq) rather than
@@ -828,6 +841,17 @@ func (sm *SessionManager) ApplyOnCloseProcessors(sessionID string, reason string
 		// individual processor still enforces its own configured timeout.
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 		defer cancel()
+
+		// Flush any batches spooled by an earlier saturated close (mitto-3421)
+		// before running this close's own processors, so older deferred work
+		// is retried first (mitto-yfv8). This is the workspace's first proven
+		// dispatchable moment since the spool was written (the HasLiveProcess
+		// pre-check above already confirmed it) and inherits the same
+		// PinWorkspace/promptFunc/notifyFunc wiring as ApplyOnClose below.
+		if workspaceUUID != "" {
+			procMgr.FlushPendingDispatches(ctx, workspaceUUID)
+		}
+
 		procMgr.ApplyOnClose(ctx, input)
 	}()
 }

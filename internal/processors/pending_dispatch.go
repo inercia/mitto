@@ -11,6 +11,23 @@ import (
 	"github.com/inercia/mitto/internal/fileutil"
 )
 
+// pendingDispatchMaxAttempts caps how many times a single spooled entry may
+// be re-appended after a failed retry (mitto-yfv8). Sequential flushing
+// (FlushPendingDispatches) means a poison entry that fails every time still
+// costs at most its own dispatchWithRetry budget per flush before this cap
+// drops it, instead of blocking other entries indefinitely.
+const pendingDispatchMaxAttempts = 3
+
+// pendingDispatchMaxAge bounds how old a spooled entry may be before it is
+// discarded at load time (mitto-yfv8). A close-phase batch (e.g. memory
+// extraction) that is now this stale is no longer worth re-running.
+const pendingDispatchMaxAge = 24 * time.Hour
+
+// pendingDispatchMaxEntries caps the number of entries retained per
+// workspace spool (mitto-yfv8). Append drops the oldest entries first once
+// the cap is exceeded, bounding spool growth independent of the age cap.
+const pendingDispatchMaxEntries = 32
+
 // PendingDispatchEntry captures one undelivered prompt-mode processor batch
 // that could not be dispatched within dispatchWithRetry's retry budget.
 // Persisted so the work is retried later instead of permanently lost
@@ -29,6 +46,11 @@ type PendingDispatchEntry struct {
 	SavedAt time.Time `json:"saved_at"`
 	// LastError is the final dispatch error's message, for diagnostics.
 	LastError string `json:"last_error,omitempty"`
+	// Attempts counts how many times this entry has been spooled (i.e. how
+	// many flush-and-retry cycles have failed for it), starting at 1 when
+	// first persisted. FlushPendingDispatches drops an entry once this
+	// exceeds pendingDispatchMaxAttempts (mitto-yfv8).
+	Attempts int `json:"attempts,omitempty"`
 }
 
 // PendingDispatchStore persists undelivered prompt-mode batches keyed by
@@ -40,6 +62,16 @@ type PendingDispatchEntry struct {
 type PendingDispatchStore interface {
 	// Append adds one undelivered batch to the workspace's pending spool.
 	Append(entry PendingDispatchEntry) error
+	// Load returns the workspace's currently spooled entries, oldest first.
+	// Entries older than pendingDispatchMaxAge are dropped (with a WARN by
+	// the caller) and never returned. Returns a nil/empty slice (not an
+	// error) when there is no spool file for the workspace.
+	Load(workspaceUUID string) ([]PendingDispatchEntry, error)
+	// Replace atomically overwrites the workspace's spool with entries. An
+	// empty/nil entries removes the spool file entirely. Used by
+	// FlushPendingDispatches to claim the spool before retrying it, and to
+	// write back only the entries that failed again.
+	Replace(workspaceUUID string, entries []PendingDispatchEntry) error
 }
 
 // FilePendingDispatchStore persists entries under
@@ -78,6 +110,9 @@ func (s *FilePendingDispatchStore) Append(entry PendingDispatchEntry) error {
 	if entry.WorkspaceUUID == "" {
 		return fmt.Errorf("pending dispatch entry missing workspace UUID")
 	}
+	if entry.Attempts < 1 {
+		entry.Attempts = 1
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -93,5 +128,73 @@ func (s *FilePendingDispatchStore) Append(entry PendingDispatchEntry) error {
 		return fmt.Errorf("failed to read existing pending dispatch spool: %w", readErr)
 	}
 	entries = append(entries, entry)
+	// Bound spool growth: drop the oldest entries first once over the cap
+	// (mitto-yfv8), independent of the age cap applied at Load time.
+	if len(entries) > pendingDispatchMaxEntries {
+		entries = entries[len(entries)-pendingDispatchMaxEntries:]
+	}
+	return fileutil.WriteJSONAtomic(path, &entries, 0644)
+}
+
+// Load implements PendingDispatchStore. Entries older than
+// pendingDispatchMaxAge are silently dropped from the returned slice (they
+// are not written back here — FlushPendingDispatches' Replace call, not
+// Load, is responsible for persisting the pruned set).
+func (s *FilePendingDispatchStore) Load(workspaceUUID string) ([]PendingDispatchEntry, error) {
+	if workspaceUUID == "" {
+		return nil, fmt.Errorf("pending dispatch load missing workspace UUID")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	dir, err := s.baseDir()
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve pending dispatch directory: %w", err)
+	}
+	path := filepath.Join(dir, workspaceUUID+".json")
+
+	var entries []PendingDispatchEntry
+	if readErr := fileutil.ReadJSON(path, &entries); readErr != nil {
+		if os.IsNotExist(readErr) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to read pending dispatch spool: %w", readErr)
+	}
+
+	cutoff := time.Now().Add(-pendingDispatchMaxAge)
+	fresh := entries[:0]
+	for _, e := range entries {
+		if e.SavedAt.Before(cutoff) {
+			continue
+		}
+		fresh = append(fresh, e)
+	}
+	return fresh, nil
+}
+
+// Replace implements PendingDispatchStore. An empty/nil entries removes the
+// spool file entirely rather than writing an empty JSON array, keeping an
+// idle workspace's spool directory clean.
+func (s *FilePendingDispatchStore) Replace(workspaceUUID string, entries []PendingDispatchEntry) error {
+	if workspaceUUID == "" {
+		return fmt.Errorf("pending dispatch replace missing workspace UUID")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	dir, err := s.baseDir()
+	if err != nil {
+		return fmt.Errorf("failed to resolve pending dispatch directory: %w", err)
+	}
+	path := filepath.Join(dir, workspaceUUID+".json")
+
+	if len(entries) == 0 {
+		if rmErr := os.Remove(path); rmErr != nil && !os.IsNotExist(rmErr) {
+			return fmt.Errorf("failed to remove pending dispatch spool: %w", rmErr)
+		}
+		return nil
+	}
 	return fileutil.WriteJSONAtomic(path, &entries, 0644)
 }
