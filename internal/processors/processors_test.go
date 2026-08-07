@@ -1674,6 +1674,51 @@ echo '{"message": "transformed message"}'
 	}
 }
 
+// TestApplyProcessorsEmitsTasksUpstream is the mitto-w8jp.1 regression test for
+// the review-phase gap: ApplyProcessors rebuilds a reduced per-iteration
+// ProcessorInput for command-mode execution, so a field added to ProcessorInput
+// is silently dropped unless it is copied there too. The script echoes back the
+// tasks_upstream value it received on stdin, proving the json:"tasks_upstream"
+// tag actually reaches external command processors as documented.
+func TestApplyProcessorsEmitsTasksUpstream(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	scriptPath := filepath.Join(tmpDir, "echo-upstream.sh")
+	scriptContent := `#!/bin/sh
+upstream=$(sed -n 's/.*"tasks_upstream":"\([^"]*\)".*/\1/p')
+echo "{\"message\": \"upstream=${upstream}\"}"
+`
+	if err := os.WriteFile(scriptPath, []byte(scriptContent), 0755); err != nil {
+		t.Fatalf("Failed to write script: %v", err)
+	}
+
+	procs := []*Processor{
+		{
+			Name:    "echo-upstream",
+			Command: scriptPath,
+			When:    WhenConfig{On: PhaseUserPrompt, Match: MatchAll},
+			Output:  OutputTransform,
+			Input:   InputConversation,
+			HookDir: tmpDir,
+		},
+	}
+
+	input := &ProcessorInput{
+		Message:       "original message",
+		SessionID:     "test-session",
+		WorkingDir:    tmpDir,
+		TasksUpstream: "jira",
+	}
+
+	result, err := ApplyProcessors(context.Background(), procs, input, tmpDir, nil, nil)
+	if err != nil {
+		t.Fatalf("ApplyProcessors() error = %v", err)
+	}
+	if result.Message != "upstream=jira" {
+		t.Errorf("ApplyProcessors() = %q, want %q (tasks_upstream must reach the command processor)", result.Message, "upstream=jira")
+	}
+}
+
 func TestApplyProcessorsPrepend(t *testing.T) {
 	tmpDir := t.TempDir()
 
