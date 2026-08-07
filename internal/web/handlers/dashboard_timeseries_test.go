@@ -172,6 +172,92 @@ func TestTimeseries_MetricsFilterAndAllowlist(t *testing.T) {
 	}
 }
 
+// TestTimeseries_DefaultMetricSetIncludesBeadsMetrics asserts the four beads
+// metrics (mitto-5rm6) are part of v1MetricSet's default (no ?metrics= param)
+// response, alongside the pre-existing conversation metrics. A regression
+// that drops one of them from v1MetricSet would silently break the
+// beads_activity / beads_cycle_time dashboard charts, which request all four
+// with no explicit ?metrics= filter.
+func TestTimeseries_DefaultMetricSetIncludesBeadsMetrics(t *testing.T) {
+	h, _ := newTimeseriesTestHandler(&fakeStatsStore{}, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/dashboard/timeseries", nil)
+	w := httptest.NewRecorder()
+	h.HandleDashboardTimeseries(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	body := decodeTimeseriesBody(t, w)
+	for _, m := range []string{
+		stats.MetricBeadsOpened,
+		stats.MetricBeadsClosed,
+		stats.MetricBeadsCycleSecondsSum,
+		stats.MetricBeadsCycleClosedCount,
+	} {
+		if _, ok := body.Series[m]; !ok {
+			t.Errorf("default response missing beads metric %q; got keys=%v", m, keys(body.Series))
+		}
+	}
+}
+
+// TestTimeseries_BeadsMetricsFilterAndValues asserts the four beads metrics
+// (mitto-5rm6) can be requested explicitly via ?metrics= and round-trip
+// store values unchanged. The handler must NOT pre-average
+// beads_cycle_seconds_sum / beads_cycle_closed_count — the sum+count pair is
+// returned as-is so the frontend can derive sum/count per bucket (the plan's
+// "thin series reads as thin" requirement needs the raw count, not a
+// collapsed average).
+func TestTimeseries_BeadsMetricsFilterAndValues(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Hour)
+	windowStart := now.Add(-24 * time.Hour)
+	ts := windowStart.Add(4 * time.Hour)
+	store := &fakeStatsStore{points: []stats.Point{
+		{TS: ts, Metric: stats.MetricBeadsOpened, Value: 3},
+		{TS: ts, Metric: stats.MetricBeadsClosed, Value: 2},
+		{TS: ts, Metric: stats.MetricBeadsCycleSecondsSum, Value: 7200},
+		{TS: ts, Metric: stats.MetricBeadsCycleClosedCount, Value: 2},
+	}}
+	h, _ := newTimeseriesTestHandler(store, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/dashboard/timeseries?metrics=beads_opened,beads_closed,beads_cycle_seconds_sum,beads_cycle_closed_count", nil)
+	w := httptest.NewRecorder()
+	h.HandleDashboardTimeseries(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	body := decodeTimeseriesBody(t, w)
+	if len(body.Series) != 4 {
+		t.Fatalf("series count = %d, want 4; got keys=%v", len(body.Series), keys(body.Series))
+	}
+	wantAt := map[string]int64{
+		stats.MetricBeadsOpened:           3,
+		stats.MetricBeadsClosed:           2,
+		stats.MetricBeadsCycleSecondsSum:  7200,
+		stats.MetricBeadsCycleClosedCount: 2,
+	}
+	for metric, want := range wantAt {
+		pts, ok := body.Series[metric]
+		if !ok {
+			t.Fatalf("missing series %q; got keys=%v", metric, keys(body.Series))
+		}
+		if len(pts) != 24 {
+			t.Fatalf("series[%s] length = %d, want 24 (dense zero-fill)", metric, len(pts))
+		}
+		found := false
+		for _, p := range pts {
+			if p.T == ts.Unix() {
+				found = true
+				if p.V != want {
+					t.Errorf("series[%s] at bucket = %d, want %d", metric, p.V, want)
+				}
+			} else if p.V != 0 {
+				t.Errorf("series[%s] at %d = %d, want 0 (zero-filled)", metric, p.T, p.V)
+			}
+		}
+		if !found {
+			t.Errorf("series[%s] never contained the seeded bucket %d", metric, ts.Unix())
+		}
+	}
+}
+
 func TestTimeseries_WorkspaceIsForwardedToStore(t *testing.T) {
 	store := &fakeStatsStore{}
 	h, _ := newTimeseriesTestHandler(store, nil)

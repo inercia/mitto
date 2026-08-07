@@ -662,6 +662,21 @@ describe("getDashboardHiddenCharts", () => {
     // safe fallback (empty array = everything visible).
     expect(getDashboardHiddenCharts()).toEqual([]);
   });
+
+  test("accepts the beads_activity / beads_cycle_time ids (mitto-5rm6)", () => {
+    // Pins that KNOWN_DASHBOARD_CHART_IDS was actually extended for the
+    // beads throughput charts, not just claimed in a commit message — a
+    // dropped mirror entry would otherwise silently un-hide-able these two
+    // charts (getDashboardHiddenCharts filters unknown ids out on read).
+    localStorageMock.setItem(
+      DASHBOARD_HIDDEN_CHARTS_KEY,
+      JSON.stringify(["beads_activity", "beads_cycle_time"]),
+    );
+    expect(getDashboardHiddenCharts()).toEqual([
+      "beads_activity",
+      "beads_cycle_time",
+    ]);
+  });
 });
 
 describe("setDashboardHiddenCharts", () => {
