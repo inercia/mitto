@@ -962,14 +962,14 @@ func NewServer(config Config) (*Server, error) {
 		}
 		s.BroadcastMCPInitializing(workspaceUUID, workspaceName, workingDir)
 	})
-	acpProcessMgr.SetOnMCPInitTimedOut(func(workspaceUUID string) {
+	acpProcessMgr.SetOnMCPInitTimedOut(func(workspaceUUID string, servers []string) {
 		workspaceName := ""
 		workingDir := ""
 		if ws := sessionMgr.GetWorkspaceByUUID(workspaceUUID); ws != nil {
 			workspaceName = ws.Name
 			workingDir = ws.WorkingDir
 		}
-		s.BroadcastMCPInitTimedOut(workspaceUUID, workspaceName, workingDir)
+		s.BroadcastMCPInitTimedOut(workspaceUUID, workspaceName, workingDir, servers)
 	})
 
 	// Adaptive pre-warming (mitto-mw0): expose the global PrewarmConfig to the
@@ -2305,16 +2305,21 @@ func (s *Server) BroadcastMCPInitializing(workspaceUUID, workspaceName, workingD
 
 // BroadcastMCPInitTimedOut notifies all connected clients that the agent's MCP-init
 // wait elapsed before every MCP server finished handshake (mitto-8ul.1). The pending
-// session/new has been aborted with an actionable error.
-func (s *Server) BroadcastMCPInitTimedOut(workspaceUUID, workspaceName, workingDir string) {
+// session/new has been aborted with an actionable error. servers carries the names
+// of the MCP server(s) the agent reported as timed out (extracted from the same
+// stderr chunk), or nil/empty if the agent's stderr did not include a per-server
+// status line — callers fall back to naming only the workspace (mitto-m8nx AC2).
+func (s *Server) BroadcastMCPInitTimedOut(workspaceUUID, workspaceName, workingDir string, servers []string) {
 	s.eventsManager.Broadcast(WSMsgTypeMCPInitTimedOut, map[string]interface{}{
 		"workspace_uuid": workspaceUUID,
 		"workspace_name": workspaceName,
 		"working_dir":    workingDir,
+		"mcp_servers":    servers,
 	})
 	if s.logger != nil {
 		s.logger.Warn("Broadcast MCP init timed out",
 			"workspace_uuid", workspaceUUID,
+			"mcp_servers", servers,
 			"clients", s.eventsManager.ClientCount())
 	}
 }

@@ -51,7 +51,7 @@ func TestStartStderrMonitor_MCPInitProgress_TriggersCallback(t *testing.T) {
 
 	var progressCalls atomic.Int32
 	onProgress := func() { progressCalls.Add(1) }
-	onTimeout := func() { t.Fatal("MCP timeout should not fire on progress lines") }
+	onTimeout := func(_ []string) { t.Fatal("MCP timeout should not fire on progress lines") }
 
 	StartStderrMonitor(pr, collector, nil, nil, onProgress, onTimeout, nil, nil)
 
@@ -77,7 +77,7 @@ func TestStartStderrMonitor_MCPInitTimeout_TriggersCallback(t *testing.T) {
 	collector := NewStderrCollector(8192, nil)
 
 	var timeoutCalls atomic.Int32
-	onTimeout := func() { timeoutCalls.Add(1) }
+	onTimeout := func(_ []string) { timeoutCalls.Add(1) }
 
 	StartStderrMonitor(pr, collector, nil, nil, nil, onTimeout, nil, nil)
 
@@ -90,6 +90,35 @@ func TestStartStderrMonitor_MCPInitTimeout_TriggersCallback(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 	if got := timeoutCalls.Load(); got != 1 {
 		t.Fatalf("expected onMCPInitTimeout to be called exactly once, got %d", got)
+	}
+}
+
+// TestStartStderrMonitor_MCPInitTimeout_PassesServerNames is a regression test
+// for mitto-m8nx (AC2): when the agent's stderr chunk carries a per-server
+// "⏳ <name> (timed out)" line alongside the generic timeout tail, the monitor
+// must pass the extracted server name(s) to onMCPInitTimeout so downstream UI
+// notifications can name the offending server.
+func TestStartStderrMonitor_MCPInitTimeout_PassesServerNames(t *testing.T) {
+	pr, pw := io.Pipe()
+	collector := NewStderrCollector(8192, nil)
+
+	serversCh := make(chan []string, 1)
+	onTimeout := func(servers []string) { serversCh <- servers }
+
+	StartStderrMonitor(pr, collector, nil, nil, nil, onTimeout, nil, nil)
+
+	go func() {
+		_, _ = pw.Write([]byte("   ⏳ yahoo-finance (timed out)\n⚠️ MCP initialization timed out after 178s\n"))
+		_ = pw.Close()
+	}()
+
+	select {
+	case servers := <-serversCh:
+		if len(servers) != 1 || servers[0] != "yahoo-finance" {
+			t.Fatalf("onMCPInitTimeout servers = %v, want [yahoo-finance]", servers)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected onMCPInitTimeout to be invoked")
 	}
 }
 

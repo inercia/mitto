@@ -172,11 +172,18 @@ export function useBackgroundNotifications({
         data.workspace_name ||
         (data.working_dir ? data.working_dir.split("/").pop() : "") ||
         "a workspace";
+      // mitto-m8nx (AC2): name the offending MCP server(s) when the agent's
+      // stderr included a per-server status line; fall back to the generic
+      // workspace-only message when it did not.
+      const servers = Array.isArray(data.mcp_servers) ? data.mcp_servers : [];
+      const message =
+        servers.length > 0
+          ? `The following MCP server(s) did not start in time: ${servers.join(", ")}. Check that they are reachable or remove them from the workspace configuration.`
+          : "The agent could not start all configured MCP servers. Check that every MCP server is reachable or remove it from the workspace configuration.";
       showToast({
         style: "error",
         title: `MCP initialization timed out: ${name}`,
-        message:
-          "The agent could not start all configured MCP servers. Check that every MCP server is reachable or remove it from the workspace configuration.",
+        message,
         duration: 30000,
       });
     };

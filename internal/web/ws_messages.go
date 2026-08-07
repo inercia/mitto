@@ -268,7 +268,9 @@ const (
 	// elapsed before all MCP servers finished handshake (mitto-8ul.1). The pending
 	// session/new (or session/load) call has been aborted with an actionable error. The
 	// UI can use this to display a persistent notification pointing at MCP configuration.
-	// Data: { "workspace_uuid": string, "workspace_name": string, "working_dir": string }.
+	// Data: { "workspace_uuid": string, "workspace_name": string, "working_dir": string,
+	// "mcp_servers": []string (nil/empty when the agent's stderr carried no per-server
+	// status line — mitto-m8nx AC2) }.
 	WSMsgTypeMCPInitTimedOut = "mcp_init_timed_out"
 
 	// WSMsgTypePrewarmPinAlert notifies that the adaptive pre-warming controller

@@ -23,8 +23,11 @@ var mcpInitProgressPattern = regexp.MustCompile(`(?i)waiting for .* mcp server`)
 // waiting for MCP servers (re-fires per handshake episode; callers must dedup if
 // needed — mitto-29q). If onMCPInitTimeout is non-nil, it is called (at most once)
 // when the agent reports its MCP-init wait has timed out — callers use this to abort
-// the pending session/new promptly with an actionable error (mitto-8ul.1). Neither
-// MCP signal contributes to crash detection.
+// the pending session/new promptly with an actionable error (mitto-8ul.1). The
+// []string argument carries the per-server names extracted from the same chunk via
+// mittoAcp.ExtractMCPTimedOutServers (mitto-m8nx AC2); it is nil when the chunk only
+// carries the generic tail line with no per-server status. Neither MCP signal
+// contributes to crash detection.
 //
 // If onDegraded is non-nil, it is called every time a stderr chunk matches a
 // per-agent Degraded regex (mitto-k6h). Unlike onCrashDetected, onDegraded is
@@ -46,7 +49,7 @@ func StartStderrMonitor(
 	onCrashDetected func(),
 	onFirstActivity func(),
 	onMCPInitProgress func(),
-	onMCPInitTimeout func(),
+	onMCPInitTimeout func(servers []string),
 	onDegraded func(),
 	perAgent *CompiledStderrPatterns,
 ) {
@@ -119,7 +122,7 @@ func StartStderrMonitor(
 					}
 					if !mcpTimeoutSignaled && onMCPInitTimeout != nil && mittoAcp.MCPInitTimeoutPattern.MatchString(chunkStr) {
 						mcpTimeoutSignaled = true
-						onMCPInitTimeout()
+						onMCPInitTimeout(mittoAcp.ExtractMCPTimedOutServers(chunkStr))
 					}
 				}
 			}

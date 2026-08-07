@@ -300,8 +300,10 @@ type SharedACPProcessConfig struct {
 	// OnMCPInitTimeout is called at most once when the agent reports its internal
 	// MCP-init wait has timed out. The pending session/new should then be aborted with
 	// an actionable error rather than waiting for the RPC deadline to elapse
-	// (mitto-8ul.1). Optional.
-	OnMCPInitTimeout func()
+	// (mitto-8ul.1). The []string argument carries the names of the MCP servers the
+	// agent reported as timed out on the same stderr chunk, or nil if the chunk
+	// carried no per-server status line (mitto-m8nx AC2). Optional.
+	OnMCPInitTimeout func(servers []string)
 	// StderrPatterns holds per-agent compiled stderr regex patterns (mitto-k6h).
 	// Nil means only the hardcoded baseline crash patterns apply. Compiled once
 	// by the caller from the agent's metadata.yaml. Kept as a pointer to
@@ -652,11 +654,12 @@ func (p *SharedACPProcess) doStartProcess() (string, error) {
 			cb()
 		}
 	}
-	onMCPInitTimeout := func() {
+	onMCPInitTimeout := func(servers []string) {
 		p.mcpInitTimedOut.Store(true)
 		if p.logger != nil {
 			p.logger.Warn("ACP agent reports MCP initialization timed out",
-				"acp_server", p.config.ACPServer)
+				"acp_server", p.config.ACPServer,
+				"mcp_servers", servers)
 		}
 		p.mcpInitMu.Lock()
 		ch := p.mcpInitTimeoutCh
@@ -670,7 +673,7 @@ func (p *SharedACPProcess) doStartProcess() (string, error) {
 			}
 		}
 		if cb := p.config.OnMCPInitTimeout; cb != nil {
-			cb()
+			cb(servers)
 		}
 	}
 

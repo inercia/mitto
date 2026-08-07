@@ -257,6 +257,32 @@ func FormatClassifiedError(classified *ACPClassifiedError) string {
 // ready. Matched tolerantly so we don't couple to the exact suffix (mitto-8ul.1).
 var MCPInitTimeoutPattern = regexp.MustCompile(`(?i)mcp initialization timed out`)
 
+// mcpTimedOutServerLinePattern matches a per-server status line the agent emits
+// on the same stderr chunk as the generic MCP-init-timeout message, e.g.
+// "   ⏳ yahoo-finance (timed out)". Captures the server name (mitto-m8nx AC2).
+var mcpTimedOutServerLinePattern = regexp.MustCompile(`⏳\s*(\S+)\s*\(timed out\)`)
+
+// ExtractMCPTimedOutServers scans a stderr chunk for per-server "⏳ <name> (timed
+// out)" lines and returns the names of every server that failed to initialize in
+// time, in the order they appear. Returns nil if no such line is present — this is
+// the common case for older agents (or a stderr read-buffer boundary split) that
+// only emit the generic "MCP initialization timed out" tail matched by
+// MCPInitTimeoutPattern; callers must fall back to a workspace-only message in
+// that case (mitto-m8nx AC2).
+func ExtractMCPTimedOutServers(chunk string) []string {
+	matches := mcpTimedOutServerLinePattern.FindAllStringSubmatch(chunk, -1)
+	if len(matches) == 0 {
+		return nil
+	}
+	servers := make([]string, 0, len(matches))
+	for _, m := range matches {
+		if len(m) > 1 {
+			servers = append(servers, m[1])
+		}
+	}
+	return servers
+}
+
 // IsMCPInitTimeout reports whether err (possibly wrapped in *ACPClassifiedError)
 // carries the agent's "MCP initialization timed out" signal. This is TRANSIENT
 // on a cold shared ACP process — once the process warms (mitto-54k.3 warm-once

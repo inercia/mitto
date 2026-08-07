@@ -180,11 +180,13 @@ type ACPProcessManager struct {
 
 	// onMCPInitializing, if set, is called (at most once per process) from the
 	// stderr-monitor goroutine when the agent reports it is blocked waiting for
-	// MCP servers to initialize. onMCPInitTimeout is called (at most once per
-	// process) when the agent reports its internal MCP-init wait budget elapsed.
-	// Used by the web layer to broadcast UI notifications (mitto-8ul.1).
+	// MCP servers to initialize. onMCPInitTimedOut is called (at most once per
+	// process) when the agent reports its internal MCP-init wait budget elapsed;
+	// the servers argument carries the per-server names extracted from the same
+	// stderr chunk, or nil if none were present (mitto-m8nx AC2). Used by the web
+	// layer to broadcast UI notifications (mitto-8ul.1).
 	onMCPInitializing func(workspaceUUID string)
-	onMCPInitTimedOut func(workspaceUUID string)
+	onMCPInitTimedOut func(workspaceUUID string, servers []string)
 
 	// Adaptive pre-warming pin state (mitto-mw0). One entry per pinned
 	// workspace. Guarded by pinMu. A pinned workspace exempts its
@@ -397,8 +399,10 @@ func (m *ACPProcessManager) SetOnMCPInitializing(fn func(workspaceUUID string)) 
 }
 
 // SetOnMCPInitTimedOut registers the callback invoked (at most once per process)
-// when the agent reports its MCP-init wait has timed out (mitto-8ul.1).
-func (m *ACPProcessManager) SetOnMCPInitTimedOut(fn func(workspaceUUID string)) {
+// when the agent reports its MCP-init wait has timed out (mitto-8ul.1). The
+// servers argument carries the per-server names extracted from the stderr chunk,
+// or nil if none were present (mitto-m8nx AC2).
+func (m *ACPProcessManager) SetOnMCPInitTimedOut(fn func(workspaceUUID string, servers []string)) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.onMCPInitTimedOut = fn
@@ -706,9 +710,9 @@ func (m *ACPProcessManager) GetOrCreateProcess(workspace *config.WorkspaceSettin
 	if initCb != nil {
 		onMCPInitProgress = func() { initCb(wsUUID) }
 	}
-	var onMCPInitTimeout func()
+	var onMCPInitTimeout func(servers []string)
 	if timeoutCb != nil {
-		onMCPInitTimeout = func() { timeoutCb(wsUUID) }
+		onMCPInitTimeout = func(servers []string) { timeoutCb(wsUUID, servers) }
 	}
 
 	// Resolve per-agent stderr patterns for this ACP server (mitto-k6h). Nil is
