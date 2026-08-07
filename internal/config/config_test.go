@@ -481,6 +481,48 @@ prompts:
 	}
 }
 
+// TestParse_InlineLoop_InvalidDropsLoopKeepsPrompt pins mitto-opoh's other
+// settings.yaml/ACP-server graceful-degradation guarantee: an inline loop:
+// block that still fails validation after migration (e.g. an unknown mode)
+// must only drop that prompt's loop config, not the prompt itself, and must
+// not fail the whole Parse call — for both the global prompts: list and a
+// per-ACP-server prompts: list.
+func TestParse_InlineLoop_InvalidDropsLoopKeepsPrompt(t *testing.T) {
+	yaml := `
+acp:
+  - auggie:
+      command: "auggie --acp"
+      prompts:
+        - name: "Bad Server Loop"
+          prompt: "do something"
+          loop:
+            mode: bogus
+prompts:
+  - name: "Bad Global Loop"
+    prompt: "do something else"
+    loop:
+      mode: bogus
+`
+	cfg, err := Parse([]byte(yaml))
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	if len(cfg.Prompts) != 1 {
+		t.Fatalf("Prompts count = %d, want 1 (prompt kept despite bad loop)", len(cfg.Prompts))
+	}
+	if cfg.Prompts[0].Loop != nil {
+		t.Errorf("global Loop = %+v, want nil for invalid mode", cfg.Prompts[0].Loop)
+	}
+
+	if len(cfg.ACPServers) != 1 || len(cfg.ACPServers[0].Prompts) != 1 {
+		t.Fatalf("ACPServers = %+v, want 1 server with 1 prompt kept despite bad loop", cfg.ACPServers)
+	}
+	if cfg.ACPServers[0].Prompts[0].Loop != nil {
+		t.Errorf("server Loop = %+v, want nil for invalid mode", cfg.ACPServers[0].Prompts[0].Loop)
+	}
+}
+
 func TestParse_PromptBackgroundColor(t *testing.T) {
 	yaml := `
 acp:
