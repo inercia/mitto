@@ -1176,6 +1176,144 @@ func TestLoopRunner_OnConversationIdle_NilStore(t *testing.T) {
 	runner.fireOnCompletion("x")
 }
 
+// TestLoopRunner_OnConversationIdle_FiresOnChildLeg is the mitto-987y.5 happy
+// path: a child conversation with no loop of its own goes idle, and its
+// parent (armed for onChild/anyEndResponse) is fired via the child leg of
+// OnConversationIdle. Mirrors TestLoopRunner_FireOnChild_HappyPath_AnyEndResponse
+// but drives the higher-level OnConversationIdle entry point end-to-end.
+func TestLoopRunner_OnConversationIdle_FiresOnChildLeg(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	newOnChildSession(t, store, "parent", nil) // nil events = both armed (default)
+	if err := store.Create(session.Metadata{
+		SessionID: "child1", ACPServer: "test", WorkingDir: "/tmp", ParentSessionID: "parent",
+	}); err != nil {
+		t.Fatalf("Create(child) error = %v", err)
+	}
+
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{})
+	sm.AddSessionForTest(NewMinimalBackgroundSessionPrompting("parent", false))
+
+	logger, buf := captureDebugLogger()
+	runner := NewLoopRunner(store, sm, logger)
+
+	runner.OnConversationIdle("child1")
+
+	out := buf.String()
+	if !strings.Contains(out, "Triggering immediate loop delivery") || !strings.Contains(out, "fired_by=onChild") {
+		t.Errorf("expected OnConversationIdle on a child to fire the parent's onChild leg, got:\n%s", out)
+	}
+}
+
+// TestLoopRunner_OnConversationIdle_ParentlessNoOnChildFire verifies that a
+// top-level session (no ParentSessionID) going idle does not attempt any
+// onChild dispatch — only its own onCompletion leg runs.
+func TestLoopRunner_OnConversationIdle_ParentlessNoOnChildFire(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	// Long delay so the onCompletion timer does not fire during the test.
+	newOnCompletionSession(t, store, "s1", 3600)
+
+	logger, buf := captureDebugLogger()
+	runner := NewLoopRunner(store, nil, logger)
+	defer runner.cancelCompletionTimer("s1")
+
+	runner.OnConversationIdle("s1")
+
+	if got := countCompletionTimers(runner); got != 1 {
+		t.Fatalf("completionTimers = %d, want 1 (onCompletion leg must still run)", got)
+	}
+	if strings.Contains(buf.String(), "onChild") {
+		t.Errorf("parentless session must not attempt any onChild dispatch, got:\n%s", buf.String())
+	}
+}
+
+// TestLoopRunner_OnConversationIdle_ArchivedChildStillNotifiesParent verifies
+// the mitto-987y.5 design decision: archiving a child stops ONLY that child's
+// own onCompletion timer; it must not suppress the onChild notification to
+// the parent (fireOnChild separately guards on the PARENT's archived state).
+func TestLoopRunner_OnConversationIdle_ArchivedChildStillNotifiesParent(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	newOnChildSession(t, store, "parent", nil)
+	if err := store.Create(session.Metadata{
+		SessionID: "child1", ACPServer: "test", WorkingDir: "/tmp", ParentSessionID: "parent",
+		Archived: true,
+	}); err != nil {
+		t.Fatalf("Create(child) error = %v", err)
+	}
+
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{})
+	sm.AddSessionForTest(NewMinimalBackgroundSessionPrompting("parent", false))
+
+	logger, buf := captureDebugLogger()
+	runner := NewLoopRunner(store, sm, logger)
+
+	runner.OnConversationIdle("child1")
+
+	out := buf.String()
+	if !strings.Contains(out, "Triggering immediate loop delivery") || !strings.Contains(out, "fired_by=onChild") {
+		t.Errorf("an archived child must still notify its parent's onChild leg, got:\n%s", out)
+	}
+	if got := countCompletionTimers(runner); got != 0 {
+		t.Errorf("completionTimers = %d, want 0 (archived child's own onCompletion leg must not arm)", got)
+	}
+}
+
+// TestLoopRunner_OnConversationIdle_DualLeg verifies both legs run in a
+// single call when a session is itself an onCompletion loop AND a child of a
+// parent armed for onChild: its own timer is armed, and the parent still
+// receives the onChild fire.
+func TestLoopRunner_OnConversationIdle_DualLeg(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	newOnChildSession(t, store, "parent", nil)
+	// "child1" is itself an onCompletion loop AND has ParentSessionID=parent.
+	if err := store.Create(session.Metadata{
+		SessionID: "child1", ACPServer: "test", WorkingDir: "/tmp", ParentSessionID: "parent",
+	}); err != nil {
+		t.Fatalf("Create(child) error = %v", err)
+	}
+	if err := store.Loop("child1").Set(&session.LoopPrompt{
+		Prompt: "iterate", Enabled: true, Trigger: session.TriggerOnCompletion, DelaySeconds: 3600,
+	}); err != nil {
+		t.Fatalf("loopStore.Set() error = %v", err)
+	}
+
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{})
+	sm.AddSessionForTest(NewMinimalBackgroundSessionPrompting("parent", false))
+
+	logger, buf := captureDebugLogger()
+	runner := NewLoopRunner(store, sm, logger)
+	defer runner.cancelCompletionTimer("child1")
+
+	runner.OnConversationIdle("child1")
+
+	if got := countCompletionTimers(runner); got != 1 {
+		t.Errorf("completionTimers = %d, want 1 (child's own onCompletion leg must arm)", got)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "Triggering immediate loop delivery") || !strings.Contains(out, "fired_by=onChild") {
+		t.Errorf("expected the parent's onChild leg to also fire, got:\n%s", out)
+	}
+}
+
 // newDurationCappedSession creates a session with an enabled onCompletion loop
 // prompt anchored at firstRunAt, with the given maxDuration (seconds) and maxIterations.
 // firstRunAt may be nil to model a prompt that has not yet run (not yet anchored).
