@@ -5897,6 +5897,90 @@ func TestApplyOnClose_PromptMode_SustainedSaturation_PersistsBatchOnGiveUp(t *te
 	}
 }
 
+// TestApplyAfter_PromptMode_SustainedSaturation_PersistsBatchOnGiveUp covers
+// mitto-q95p: the mitto-3421 pending-dispatch spool (plus the mitto-exr
+// failure-notify seam) used to be wired only in
+// SessionManager.ApplyOnCloseProcessors, on a manager it builds locally for
+// the close path. The manager handed to a live BackgroundSession — which is
+// what ApplyAfter (agentResponded/agentIdle) runs on — never got
+// SetPendingDispatchStore or SetNotifyFunc called on it (only SetPromptFunc
+// and SetRunRecorder were wired), so when an after-phase prompt-mode
+// processor's dispatch exhausted the saturation retry budget,
+// dispatchWithRetry's give-up branch found m.pendingDispatchStore == nil and
+// m.notifyFunc == nil: the batch was neither spooled for later retry nor
+// surfaced to the user — it was simply gone, with only an ERROR log line as
+// a trace.
+//
+// The fix hoists this wiring into internal/conversation
+// (BackgroundSession.wireProcessorPendingDispatch, called from both
+// NewBackgroundSession and ResumeBackgroundSession) so every live session's
+// processor manager gets the same SetPendingDispatchStore/SetNotifyFunc/
+// SetLateDeliveryFunc wiring the close-phase manager already had. This test
+// mirrors TestApplyOnClose_PromptMode_SustainedSaturation_PersistsBatchOnGiveUp
+// exactly, but drives ApplyAfter instead of ApplyOnClose and wires the
+// manager the way wireProcessorPendingDispatch now does, proving the shared
+// dispatchWithRetry give-up mechanics persist the batch correctly for the
+// after-phase too, not just for ApplyOnClose.
+func TestApplyAfter_PromptMode_SustainedSaturation_PersistsBatchOnGiveUp(t *testing.T) {
+	// Test-seam: shrink the saturation budget/cadence so the test does not
+	// have to wait out the production 120s/5s values.
+	origMaxWait := dispatchSaturationMaxWait
+	dispatchSaturationMaxWait = 50 * time.Millisecond
+	t.Cleanup(func() { dispatchSaturationMaxWait = origMaxWait })
+	origSaturationInterval := dispatchSaturationRetryInterval
+	dispatchSaturationRetryInterval = time.Millisecond
+	t.Cleanup(func() { dispatchSaturationRetryInterval = origSaturationInterval })
+
+	spoolDir := t.TempDir()
+	const workspaceUUID = "ws-uuid-after-stuck"
+
+	proc := &Processor{
+		Name:   "identify-user-data",
+		When:   WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"end_turn"}},
+		Prompt: "Persist for session @mitto:session_id.",
+	}
+
+	m := makeAfterManager([]*Processor{proc})
+	// Post-fix live-session wiring (internal/conversation/bgsession_callbacks.go
+	// wireProcessorPendingDispatch): SetPromptFunc, SetPendingDispatchStore and
+	// SetNotifyFunc are all wired on the per-session processor manager now.
+	m.SetPromptFunc(func(_ context.Context, _, _, _ string) error {
+		// Always saturated — mirrors the genuine reactive bail
+		// (acp_process_manager.go), same as the close-phase test above.
+		return fmt.Errorf("failed to get auxiliary session: %w", acperrors.ErrProcessSaturated)
+	})
+	m.SetPendingDispatchStore(&FilePendingDispatchStore{BaseDir: spoolDir})
+
+	input := makeAfterInput("user", "end_turn")
+	input.WorkspaceUUID = workspaceUUID
+	m.ApplyAfter(context.Background(), input)
+
+	// Dispatch is fire-and-forget; give dispatchWithRetry's shrunk saturation
+	// budget time to expire and give up.
+	time.Sleep(300 * time.Millisecond)
+
+	// The whole point of mitto-3421 (and mitto-q95p extending it to the after
+	// phase): once the workspace cannot idle within the budget, the
+	// undelivered batch prompt must survive the give-up in a durable,
+	// workspace-scoped spool — instead of being silently discarded.
+	spoolPath := filepath.Join(spoolDir, workspaceUUID+".json")
+	data, readErr := os.ReadFile(spoolPath)
+	if readErr != nil {
+		t.Fatalf("after-phase prompt-mode processor %q gave up on a saturated dispatch without persisting the "+
+			"undelivered batch to the workspace spool %s (mitto-q95p): %v", proc.Name, spoolPath, readErr)
+	}
+	var entries []PendingDispatchEntry
+	if err := json.Unmarshal(data, &entries); err != nil {
+		t.Fatalf("failed to parse persisted spool %s: %v", spoolPath, err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("spool %s: got %d entries, want 1: %+v", spoolPath, len(entries), entries)
+	}
+	if entries[0].Name != proc.Name {
+		t.Errorf("persisted entry name = %q, want %q", entries[0].Name, proc.Name)
+	}
+}
+
 // TestIsSaturationDispatchErr_MisroutesProcessBusy reproduces mitto-xhsj:
 // isSaturationDispatchErr (apply.go) classifies a purely-transient
 // acperrors.ErrProcessBusy (the proactive concurrency-cap load-shedding bail

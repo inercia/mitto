@@ -13,6 +13,7 @@ import (
 	"github.com/coder/acp-go-sdk"
 
 	mittoAcp "github.com/inercia/mitto/internal/acp"
+	"github.com/inercia/mitto/internal/appdir"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/processors"
 	"github.com/inercia/mitto/internal/session"
@@ -477,6 +478,90 @@ func TestFlushContext_BugRepro_SendsExactCommand_NotProcessorPolluted(t *testing
 	// as if it were a real user prompt.
 	if msgs := obs.getUserPromptMessages(); len(msgs) != 0 {
 		t.Errorf("FlushContext must not broadcast OnUserPrompt, got: %v", msgs)
+	}
+}
+
+// TestWireProcessorPendingDispatch_DeliversPreviouslySpooledBatch verifies
+// the mitto-q95p fix: wireProcessorPendingDispatch (called from both
+// NewBackgroundSession and ResumeBackgroundSession) wires the mitto-3421
+// pending-dispatch spool onto a LIVE session's processor manager — not just
+// the close-phase manager SessionManager.ApplyOnCloseProcessors builds
+// locally — and opportunistically flushes any batch a prior saturated
+// dispatch already spooled for this workspace (mitto-yfv8). Before the fix,
+// a live session's processorManager never had SetPendingDispatchStore or
+// FlushPendingDispatches wired at all, so a previously-spooled batch would
+// sit undelivered until the workspace happened to close.
+//
+// This seeds a batch via the same FilePendingDispatchStore production uses
+// (BaseDir resolved from $MITTO_DIR, redirected to a temp dir for the test),
+// then confirms that calling wireProcessorPendingDispatch on a minimal live
+// BackgroundSession flushes and delivers it through the wired PromptFunc.
+func TestWireProcessorPendingDispatch_DeliversPreviouslySpooledBatch(t *testing.T) {
+	t.Setenv(appdir.MittoDirEnv, t.TempDir())
+	appdir.ResetCache()
+	t.Cleanup(appdir.ResetCache)
+
+	const workspaceUUID = "ws-uuid-live-flush"
+
+	// Seed a batch as if an earlier saturated dispatch (e.g. before this
+	// session existed) had already spooled it.
+	seedStore := &processors.FilePendingDispatchStore{}
+	if err := seedStore.Append(processors.PendingDispatchEntry{
+		WorkspaceUUID:  workspaceUUID,
+		Name:           "identify-user-data",
+		Prompt:         "Persist for session sess-live-flush.",
+		TimeoutSeconds: 30,
+		SavedAt:        time.Now(),
+	}); err != nil {
+		t.Fatalf("failed to seed pending-dispatch spool: %v", err)
+	}
+
+	var mu sync.Mutex
+	var delivered []string
+	procMgr := processors.NewManager("", nil)
+	procMgr.SetPromptFunc(func(_ context.Context, _, name, _ string) error {
+		mu.Lock()
+		delivered = append(delivered, name)
+		mu.Unlock()
+		return nil
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	bs := &BackgroundSession{
+		ctx:              ctx,
+		cancel:           cancel,
+		observers:        make(map[SessionObserver]struct{}),
+		processorManager: procMgr,
+		workspaceUUID:    workspaceUUID,
+		pendingConfig:    make(map[string]string),
+	}
+	bs.promptCond = sync.NewCond(&bs.promptMu)
+
+	// This is the fix under test: production calls this once from both
+	// NewBackgroundSession and ResumeBackgroundSession.
+	bs.wireProcessorPendingDispatch()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		mu.Lock()
+		n := len(delivered)
+		mu.Unlock()
+		if n > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for wireProcessorPendingDispatch's flush to deliver the previously-spooled " +
+				"batch — the live session's processor manager never had SetPendingDispatchStore wired / " +
+				"FlushPendingDispatches invoked (mitto-q95p)")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(delivered) != 1 || delivered[0] != "identify-user-data" {
+		t.Fatalf("delivered = %v, want [identify-user-data]", delivered)
 	}
 }
 

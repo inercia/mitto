@@ -796,6 +796,12 @@ func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, erro
 	// Placed after the recorder is set up above so the wiring can persist events.
 	bs.wireProcessorRunRecorder()
 
+	// Wire the mitto-3421 pending-dispatch spool and mitto-exr/mitto-yfv8
+	// notify seams on this live session's processor manager, so an after-phase
+	// prompt-mode processor that exhausts its saturation retry budget is
+	// spooled for later retry instead of silently lost (mitto-q95p).
+	bs.wireProcessorPendingDispatch()
+
 	// Log runner information
 	if bs.logger != nil {
 		runnerType := "exec"
@@ -1010,6 +1016,12 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 	// processor invocation is appended as a session.EventTypeProcessorRun event.
 	// Placed after the recorder is resumed above so the wiring can persist events.
 	bs.wireProcessorRunRecorder()
+
+	// Wire the mitto-3421 pending-dispatch spool and mitto-exr/mitto-yfv8
+	// notify seams on this live session's processor manager, so an after-phase
+	// prompt-mode processor that exhausts its saturation retry budget is
+	// spooled for later retry instead of silently lost (mitto-q95p).
+	bs.wireProcessorPendingDispatch()
 
 	// Log runner information
 	if bs.logger != nil {

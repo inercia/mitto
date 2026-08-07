@@ -6,7 +6,9 @@ package conversation
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/coder/acp-go-sdk"
@@ -151,6 +153,53 @@ func (bs *BackgroundSession) wireProcessorRunRecorder() {
 			},
 		}, "processor run")
 	})
+}
+
+// wireProcessorPendingDispatch installs the mitto-3421 durable pending-dispatch
+// spool plus the mitto-exr/mitto-yfv8 notify seams on this session's
+// processorManager (if any), mirroring the wiring
+// SessionManager.ApplyOnCloseProcessors already does for the close-phase
+// manager it builds locally. Without this, a LIVE session's after-phase
+// (agentResponded/agentIdle) prompt-mode processor — driven by ApplyAfter,
+// see fuApplyAfterProcessors — has nowhere to persist an undelivered batch
+// once dispatchWithRetry exhausts its saturation retry budget: the batch is
+// neither spooled for later retry nor surfaced to the user, it is simply
+// gone (mitto-q95p). No-op if there is no processor manager. Safe to call
+// multiple times (idempotent overwrite); callers invoke it once per
+// BackgroundSession construction/resume, alongside wireProcessorRunRecorder.
+//
+// Also opportunistically flushes any batches spooled by an earlier saturated
+// dispatch for this session's workspace (mitto-yfv8), fire-and-forget, so
+// work stranded before this session existed (or during a prior saturation
+// window on this same session) is retried as soon as a live session is
+// available again instead of waiting for the workspace to close.
+func (bs *BackgroundSession) wireProcessorPendingDispatch() {
+	if bs.processorManager == nil {
+		return
+	}
+	bs.processorManager.SetPendingDispatchStore(&processors.FilePendingDispatchStore{})
+	bs.processorManager.SetNotifyFunc(func(_, name string, lastErr error) {
+		_ = bs.UINotify(UINotifyRequest{
+			Title:   "After-phase processor failed",
+			Message: fmt.Sprintf("%q could not be dispatched after retries: %v", name, lastErr),
+			Style:   "warning",
+		})
+	})
+	bs.processorManager.SetLateDeliveryFunc(func(_ string, names []string) {
+		_ = bs.UINotify(UINotifyRequest{
+			Title:   "Deferred processor work delivered",
+			Message: fmt.Sprintf("%d previously undelivered batch(es) were dispatched: %s", len(names), strings.Join(names, ", ")),
+			Style:   "info",
+		})
+	})
+
+	if bs.workspaceUUID != "" {
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+			defer cancel()
+			bs.processorManager.FlushPendingDispatches(ctx, bs.workspaceUUID)
+		}()
+	}
 }
 
 // cbRecordPermission records a permission decision via the recorder.
