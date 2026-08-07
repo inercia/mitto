@@ -206,16 +206,29 @@ prompt: |
   parent epics.
 
   For each bead closed here, strip the `in-flight` label + `claimed_*` metadata
-  before `bd close` (mitto-ial: ghost claims must not survive into archives):
+  before `bd close` (mitto-ial: ghost claims must not survive into archives).
+  Promote `claimed_at` into `work_started_at` first, guarded on
+  `work_started_at` being absent (earliest-start semantics), since
+  `claimed_at` carries no liveness meaning but is the only work-start signal
+  available on a closed bead (mitto-v3en):
 
   ```bash
   closed_this_pass=()
   {{ if ne .Args.FixBugs "false" -}}
   for id in $(bd list --type bug --status open --label fixed --json | jq -r '.[].id'); do
     bd comment "$id" "Orchestrator: terminal label=fixed; closing."
-    bd update "$id" --remove-label in-flight \
-      --unset-metadata claimed_by --unset-metadata claimed_at \
-      --unset-metadata claim_heartbeat_at
+    started=$(bd show "$id" --json | jq -r '.[0].metadata.claimed_at // empty')
+    prior=$(bd show "$id" --json | jq -r '.[0].metadata.work_started_at // empty')
+    if [ -n "$started" ] && [ -z "$prior" ]; then
+      bd update "$id" --remove-label in-flight \
+        --unset-metadata claimed_by --unset-metadata claimed_at \
+        --unset-metadata claim_heartbeat_at \
+        --set-metadata "work_started_at=$started"
+    else
+      bd update "$id" --remove-label in-flight \
+        --unset-metadata claimed_by --unset-metadata claimed_at \
+        --unset-metadata claim_heartbeat_at
+    fi
     bd close "$id"
     closed_this_pass+=("$id")
   done
@@ -223,9 +236,18 @@ prompt: |
   {{- if ne .Args.WorkOnFeatures "false" }}
   for id in $(bd list --type feature --status open --label verified --json | jq -r '.[].id'); do
     bd comment "$id" "Orchestrator: terminal label=verified; closing."
-    bd update "$id" --remove-label in-flight \
-      --unset-metadata claimed_by --unset-metadata claimed_at \
-      --unset-metadata claim_heartbeat_at
+    started=$(bd show "$id" --json | jq -r '.[0].metadata.claimed_at // empty')
+    prior=$(bd show "$id" --json | jq -r '.[0].metadata.work_started_at // empty')
+    if [ -n "$started" ] && [ -z "$prior" ]; then
+      bd update "$id" --remove-label in-flight \
+        --unset-metadata claimed_by --unset-metadata claimed_at \
+        --unset-metadata claim_heartbeat_at \
+        --set-metadata "work_started_at=$started"
+    else
+      bd update "$id" --remove-label in-flight \
+        --unset-metadata claimed_by --unset-metadata claimed_at \
+        --unset-metadata claim_heartbeat_at
+    fi
     bd close "$id"
     closed_this_pass+=("$id")
   done
@@ -326,13 +348,26 @@ prompt: |
   Decide via the table above. On **REAP** — one bead comment, then clear the
   claim (the bead itself remains open; it becomes eligible again on the next
   pass's §B/§C enumeration — releasing and re-picking in the same pass would
-  race the reaper's own writes):
+  race the reaper's own writes). Promote `claimed_at` into `work_started_at`
+  first, guarded on `work_started_at` being absent (earliest-start
+  semantics) — the reaped bead stays open and may be re-claimed later, and
+  an unguarded promote at eventual close would overwrite this first
+  attempt's start time (mitto-v3en):
 
   ```bash
   bd comment <id> "Orchestrator reaper: releasing stale in-flight claim (claimer=<claimer>, last heartbeat=<heartbeat>, reason=<conversation_gone|silent_conversation|wedged_but_ticking>). Bead is back in the normal work queue."
-  bd update <id> --remove-label in-flight \
-    --unset-metadata claimed_by --unset-metadata claimed_at \
-    --unset-metadata claim_heartbeat_at
+  started=$(bd show <id> --json | jq -r '.[0].metadata.claimed_at // empty')
+  prior=$(bd show <id> --json | jq -r '.[0].metadata.work_started_at // empty')
+  if [ -n "$started" ] && [ -z "$prior" ]; then
+    bd update <id> --remove-label in-flight \
+      --unset-metadata claimed_by --unset-metadata claimed_at \
+      --unset-metadata claim_heartbeat_at \
+      --set-metadata "work_started_at=$started"
+  else
+    bd update <id> --remove-label in-flight \
+      --unset-metadata claimed_by --unset-metadata claimed_at \
+      --unset-metadata claim_heartbeat_at
+  fi
   ```
 
   On **SKIP** / **SKIP-with-warn** — one bead comment only, do NOT clear the

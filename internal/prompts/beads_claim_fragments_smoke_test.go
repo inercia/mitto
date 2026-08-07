@@ -324,3 +324,99 @@ func TestLoopProcessingReaperRenders(t *testing.T) {
 		t.Errorf("Loop processing tasks: rendered output does not mention the in-flight label anywhere — §B/§C exclusion vanished")
 	}
 }
+
+// TestClaimClearPromotesClaimedAtToWorkStartedAt is a regression test for
+// mitto-v3en: claim-clear deletes `claimed_at` unconditionally, destroying
+// the only work-start signal on closed beads (bd exposes no `started_at`
+// field on either JSON surface — metadata is the sole channel, confirmed
+// during investigation). The fix must promote `claimed_at` into a
+// `work_started_at` metadata key BEFORE unsetting `claimed_at`, while still
+// unsetting `claimed_by` and `claim_heartbeat_at` unconditionally (the
+// liveness invariant mitto-ial cares about, which must not regress).
+//
+// This currently FAILS: claim-clear.tmpl (and the three inline copies in
+// loop-processing.prompt.yaml at the bug sweep, feature sweep, and Step 2R
+// reaper REAP branch) only ever unset claimed_at, with no promotion logic.
+//
+// Also pins the zsh hazard found during investigation: the naive
+// `${started:+--set-metadata "work_started_at=$started"}` conditional-flag
+// idiom does NOT field-split under zsh (this project's agent shell — measured
+// argc=1 vs bash/sh's argc=2) and must not be (re)introduced; the fix must
+// use an explicit if/else branch instead.
+func TestClaimClearPromotesClaimedAtToWorkStartedAt(t *testing.T) {
+	prev := CurrentFragments()
+	t.Cleanup(func() { SetCurrentFragments(prev) })
+
+	builtinDir := "../../config/prompts/builtin"
+	reg, loadErrs, err := LoadFragmentsFromDir(builtinDir)
+	if err != nil {
+		t.Fatalf("LoadFragmentsFromDir(builtin): %v", err)
+	}
+	if len(loadErrs) != 0 {
+		t.Fatalf("LoadFragmentsFromDir(builtin) per-file errors: %+v", loadErrs)
+	}
+	SetCurrentFragments(reg)
+
+	ctx := &cel.PromptEnabledContext{
+		Session: cel.SessionContext{ID: "sess-42", Name: "N", HasMessages: true},
+	}
+	funcs := cel.BuildTemplateFuncMap(ctx)
+
+	// 1. The shared fragment itself, via a synthetic caller (mirrors
+	//    TestClaimHeartbeatFragmentRenders' pattern for exercising a fragment
+	//    directly without needing a live consumer prompt).
+	body := `{{ template "beads-issues/shared/claim-clear" (dict "Target" "mitto-abc") }}`
+	out, err := RenderPromptTemplate("claim-clear-promote-smoke", body, ctx, funcs)
+	if err != nil {
+		t.Fatalf("render synthetic caller: %v", err)
+	}
+
+	if !strings.Contains(out, "work_started_at") {
+		t.Errorf("claim-clear: rendered output does not mention work_started_at — claimed_at is discarded with no promotion, destroying the only work-start signal (mitto-v3en)")
+	}
+	// The liveness invariant must not regress: claimed_by and
+	// claim_heartbeat_at still get unset unconditionally.
+	for _, h := range []string{"--unset-metadata claimed_by", "--unset-metadata claim_heartbeat_at"} {
+		if !strings.Contains(out, h) {
+			t.Errorf("claim-clear: rendered output missing %q — liveness clear must not regress", h)
+		}
+	}
+	// Regression guard for the zsh hazard found during investigation: the
+	// conditional-flag idiom collapses to a single argv word under zsh and
+	// must not be (re)introduced.
+	if strings.Contains(out, `:+--set-metadata`) {
+		t.Errorf("claim-clear: rendered output uses the zsh-unsafe ${var:+--flag ...} idiom — zsh does not field-split unquoted parameter expansions (measured argc=1); use an explicit if/else branch instead")
+	}
+
+	// 2. The three inline copies in loop-processing.prompt.yaml (bug sweep,
+	//    feature sweep, Step 2R reaper REAP branch) must ALL gain the same
+	//    promotion — per the investigation comment, these are inline copies
+	//    that do not go through the shared fragment.
+	list, err := LoadPromptsFromDir(builtinDir)
+	if err != nil {
+		t.Fatalf("LoadPromptsFromDir(builtin): %v", err)
+	}
+	byName := map[string]string{}
+	for _, p := range list {
+		byName[p.Name] = p.Content
+	}
+	lpBody, ok := byName["Loop processing tasks"]
+	if !ok {
+		t.Fatalf("prompt \"Loop processing tasks\" not found in builtin corpus")
+	}
+	orchCtx := &cel.PromptEnabledContext{
+		Session: cel.SessionContext{ID: "sess-orchestrator", Name: "N", HasMessages: true},
+		Args:    map[string]string{},
+	}
+	orchFuncs := cel.BuildTemplateFuncMap(orchCtx)
+	lpOut, err := RenderPromptTemplate("Loop processing tasks", lpBody, orchCtx, orchFuncs)
+	if err != nil {
+		t.Fatalf("render \"Loop processing tasks\": %v", err)
+	}
+	if got := strings.Count(lpOut, "work_started_at"); got < 3 {
+		t.Errorf("Loop processing tasks: expected work_started_at promotion at all 3 inline claim-clear sites (bug sweep, feature sweep, Step 2R reaper REAP branch), found %d occurrence(s)", got)
+	}
+	if strings.Contains(lpOut, `:+--set-metadata`) {
+		t.Errorf("Loop processing tasks: rendered output uses the zsh-unsafe ${var:+--flag ...} idiom in an inline claim-clear copy")
+	}
+}

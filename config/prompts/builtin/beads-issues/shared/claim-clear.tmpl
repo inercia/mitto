@@ -1,10 +1,14 @@
 {{/*
-  claim-clear — pre-close cleanup block that strips the `in-flight` label
-  and unsets the three claim metadata keys (`claimed_by`, `claimed_at`,
-  `claim_heartbeat_at`). Invoked immediately BEFORE every `bd close`
-  written by an L2 driver's Done branch or the L1 orchestrator's
-  terminal-label sweep — otherwise closed beads carry ghost claims into
-  archives / JIRA sync (mitto-ial bead description note).
+  claim-clear — pre-close cleanup block that strips the `in-flight` label,
+  unsets the two pure-liveness claim metadata keys (`claimed_by`,
+  `claim_heartbeat_at`), and promotes `claimed_at` into `work_started_at`
+  before unsetting it (mitto-v3en: `claimed_at` is the only available
+  work-start signal on a closed bead — `bd` exposes no `started_at` field —
+  so deleting it unconditionally, as this fragment used to do, destroyed
+  that signal). Invoked immediately BEFORE every `bd close` written by an
+  L2 driver's Done branch or the L1 orchestrator's terminal-label sweep —
+  otherwise closed beads carry ghost claims into archives / JIRA sync
+  (mitto-ial bead description note).
 
   Usage — one line above the `bd close` command:
 
@@ -21,16 +25,32 @@
   and `--unset-metadata` on a key that is not set, are both no-ops in
   `bd`, so this template is safe to invoke even when the driver never
   actually claimed the bead (e.g. a Done branch reached on the very
-  first iteration before Step 0 wrote the claim).
+  first iteration before Step 0 wrote the claim). The `work_started_at`
+  promotion is additionally guarded on absence — a bead re-claimed after
+  being reaped (Step 2R) keeps the earliest recorded start time rather
+  than having it overwritten on a later close.
 */}}
 {{- if .Target }}
 Clear the passive claim before closing (see mitto-ial — ghost claims must
-not survive into archives):
+not survive into archives). Promote `claimed_at` into `work_started_at`
+first, guarded on `work_started_at` being absent (earliest-start
+semantics), since `claimed_at` carries no liveness meaning but is the only
+work-start signal available (mitto-v3en):
 
 ```bash
-bd update {{ .Target }} --remove-label in-flight \
-  --unset-metadata claimed_by \
-  --unset-metadata claimed_at \
-  --unset-metadata claim_heartbeat_at
+started=$(bd show {{ .Target }} --json | jq -r '.[0].metadata.claimed_at // empty')
+prior=$(bd show {{ .Target }} --json | jq -r '.[0].metadata.work_started_at // empty')
+if [ -n "$started" ] && [ -z "$prior" ]; then
+  bd update {{ .Target }} --remove-label in-flight \
+    --unset-metadata claimed_by \
+    --unset-metadata claimed_at \
+    --unset-metadata claim_heartbeat_at \
+    --set-metadata "work_started_at=$started"
+else
+  bd update {{ .Target }} --remove-label in-flight \
+    --unset-metadata claimed_by \
+    --unset-metadata claimed_at \
+    --unset-metadata claim_heartbeat_at
+fi
 ```
 {{- end }}
