@@ -1,0 +1,57 @@
+{{- /*
+  jira/link-bead — canonical bead↔JIRA linkage invariant, split into the two
+  phases every caller already separates with a comment-mirror loop in
+  between: the create-time linkage flags, and the `jira_updated` high-water
+  mark commit. Extracted per mitto-w8jp.2 from sync-tasks Step 5A (create)
+  / Step 5D (commit) and pull-issue Step 6.9 (commit); the new "JIRA: push to
+  new" prompt is a second `create` caller.
+
+  Callers pass a dict:
+    "Phase"  — "create" or "commit". Required.
+    "Target" — the bead-id placeholder text the caller's surrounding prose
+               uses (e.g. "<id>" for the sync-tasks batch loop, or
+               "{{ $target }}" for a per-bead prompt). Required.
+    "Key"    — the JIRA-key placeholder text (e.g. "<KEY>" or "<key>").
+               Only used by "create". Optional, defaults to "<KEY>".
+
+  Usage:
+
+      {{ template "jira/shared/link-bead" (dict "Phase" "create" "Target" "<id>") }}
+      ...caller's own `bd create`/`bd update` command, and the comment-mirror
+      loop, happen here...
+      {{ template "jira/shared/link-bead" (dict "Phase" "commit" "Target" "<id>") }}
+*/ -}}
+{{- $phase := .Phase -}}
+{{- $target := .Target -}}
+{{- $key := "<KEY>" -}}{{- if .Key }}{{ $key = .Key }}{{ end -}}
+{{- if eq $phase "create" -}}
+Link the new bead to its JIRA ticket so the rest of the JIRA suite (`JIRA: pull issue`,
+`JIRA: push issue`, `JIRA: sync tasks`) can find it again — whether via `bd create`'s
+own `--external-ref`/`--labels` flags or a follow-up `bd update {{ $target }}`:
+
+- Set `external_ref` to `jira-<key-lower>` — the **lowercase** JIRA key prefixed
+  with `jira-` (e.g. key `{{ $key }}` → `external_ref = "jira-{{ Lower $key }}"`,
+  concretely `jira-abc-123` for `ABC-123`). This is the exact form `JIRA: push issue`
+  Step 1 and `JIRA: pull issue` Step 1 parse back out — strip the `jira-` prefix and
+  uppercase the remainder to recover the JIRA key.
+- Add the **`jira-sync`** label — the single gating label the whole JIRA suite (pull,
+  push, sync) checks before touching this bead.
+
+Do **not** write `metadata.jira_updated` at this point — see the "commit" phase
+below; writing it now would poison the very idempotency guard it exists to provide,
+since the body and comments have not been mirrored yet.
+{{- else if eq $phase "commit" -}}
+**High-water mark — commit `jira_updated` last.** Only after the body update and
+every per-comment mirror append have both succeeded for this ticket, advance the
+idempotency guard:
+
+```bash
+bd update {{ $target }} --set-metadata jira_updated="<ticket.updated>"
+```
+
+If either the body update or any per-comment append failed, **skip this write** —
+leaving `jira_updated` behind lets a future run retry the missing pieces. Never
+advance `jira_updated` past unmirrored data: bumping it early poisons the "already
+up to date" short-circuit, so a missed comment becomes permanently unreachable
+until some other JIRA event ticks `updated` again.
+{{- end -}}

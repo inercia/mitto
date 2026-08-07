@@ -95,111 +95,11 @@ prompt: |
 
   ## Access Method
 
-  This prompt talks to JIRA in one of two ways: **JIRA MCP tools** (e.g.
-  `jira_search_jira`, `jira_get_filter`, `jira_get_transitions`,
-  `jira_transition_issue`, `jira_add_comment`) or the **`jira` CLI**
-  (ankitpokhrel/jira-cli). **Prefer MCP tools whenever they are available** —
-  they return structured JSON, avoid a subprocess round-trip, and do not depend
-  on the user's local `jira` config. Fall back to the CLI only when the
-  matching MCP tool is not present.
-  {{- if Cond "Tools.Names.exists(n, n.matches('(?i)jira'))" }}
-
-  **This run has JIRA MCP tools available** (a tool whose name contains
-  `jira` — e.g. `jira_search_jira` or `mcp__corp-jira__search` — is
-  reachable). Every JIRA read/write below should go through the MCP tool
-  named in the step (e.g. the JIRA search tool in Step 3, the transitions /
-  transition-issue tools in Step 8A, the add-comment tool in Step 8B).
-  Names may be namespaced by the client (`mcp__<server>__<op>`); prefer
-  whichever exact name is exposed to you. Use the CLI only for a specific
-  operation whose MCP counterpart genuinely is not exposed by this
-  workspace's server; do not mix the two for the same call.
-  {{- else }}
-
-  **This run has no JIRA MCP tools** (no tool name contains `jira`) but
-  the `jira` command is on PATH — use it as the fallback. Wherever a step
-  names an MCP tool, run the CLI equivalent instead. For the search in Step 3:
-
-  ```bash
-  jira issue list -q "<the saved JQL>" --raw --paginate 500
-  ```
-
-  CLI notes:
-  - `--raw` returns JSON with most fields (key, summary, status, priority, issue type, labels, assignee, `updated`, `issuelinks`). Use `--plain --no-headers` if you only need columns.
-  - Comment bodies may be omitted from list `--raw`; fetch them per ticket with `jira issue view <KEY> --comments <N>` (set `PAGER=cat`), then feed each raw body through the Step 5.0 converter.
-  - Raise the result cap with `--paginate <N>` (the `from` offset is unsupported on Jira Cloud v3, so narrow the JQL rather than paging by offset).
-  - For transitions (Step 8A): `jira issue transitions <KEY>` to list, then `jira issue move <KEY> "<name>"` to apply.
-  - For comments (Step 5C mirror-out / Step 8B): `jira issue comment add <KEY> --body-file <path>`.
-  - Everything else — the Step 5.0 wiki→Markdown converter, beads create/update, comment mirroring, dependency wiring — is unchanged.
-  {{- end }}
+  {{ template "jira/shared/access-method" (dict "Note" "the search tool in Step 3, the transitions / transition-issue tools in Step 8A, and the add-comment tool in Step 8B") }}
 
   ## Step 1 — Get the "Jira Tasks" query
 
-  {{ if .Args.Query -}}
-  A per-run **Query override** was supplied for this invocation:
-
-  > `{{ .Args.Query }}`
-
-  Resolve it to a JQL string, then use that as the JQL for Step 3 (this value is
-  used for **this run only** — do **not** persist it to the conversation's user
-  data). Detect the shape and act accordingly:
-
-  - **Raw JQL** — the value does **not** start with `http://` or `https://`. Use it
-    verbatim as the JQL query and continue to Step 2.
-  - **JIRA URL** — the value starts with `http://` or `https://`. Parse the URL and
-    convert it into an equivalent JQL string using the query string parameters and
-    (when needed) the JIRA MCP tools / `jira` CLI:
-    - `.../issues/?filter=<ID>` or `.../issues/?jql=<ENCODED_JQL>` — use `jql`
-      directly (URL-decoded) or resolve the saved filter (`jira_get_filter` if
-      available; otherwise `jira filter view <ID>`) and use its JQL.
-    - `.../secure/RapidBoard.jspa?rapidView=<BOARD_ID>[&quickFilter=<QF_ID>]` — the
-      board's underlying filter is its JQL. Fetch the board (`jira_get_agile_board`
-      / `jira_get_board_filter` if available; otherwise `jira board list --raw`
-      + `jira filter view`) and use the board filter's JQL. If a `quickFilter` id
-      is present, AND its clause into the board JQL as well (quick-filter clauses
-      are stored on the board configuration).
-    - `.../browse/<KEY>` — single-ticket link; use `issuekey = <KEY>` as the JQL.
-    - Any `selectedIssue=<KEY>` query parameter (e.g. from a RapidBoard link) is a
-      UI cursor and must be **ignored** — do not narrow the query to a single issue
-      unless the URL is a `.../browse/<KEY>` link.
-    - If the URL cannot be resolved (unknown host/shape, missing filter permission,
-      MCP tool unavailable), fall back to the saved-query path below in interactive
-      mode, or notify-and-stop in silent mode. Never guess.
-
-  Once you have a JQL string, continue to Step 2.
-  {{- else if UserData "Jira Tasks" -}}
-  The saved JQL query for this conversation is:
-
-  > `{{ UserData "Jira Tasks" }}`
-
-  Use this as the JQL query and continue to Step 2.
-  {{- else }}
-
-  No "Jira Tasks" query is saved for this conversation.
-
-  - **Silent mode** (scheduled loop run): the query cannot be requested unattended. Send one `mitto_ui_notify` explaining the project has no "Jira Tasks" query configured, then **stop**.
-
-  - **Interactive mode**: ask the user for the JQL query with `mitto_ui_form` (a single text field for the query, e.g. `project = ABC AND statusCategory != Done`). Once you have a non-empty value, persist it to the conversation's user data so future runs (including scheduled ones) reuse it:
-
-    ```
-    mitto_conversation_update(self_id: "{{ .Session.ID }}",
-      conversation_id: "{{ .Session.ID }}",
-      user_data: [{"name": "Jira Tasks", "value": "<the JQL the user provided>"}])
-    ```
-
-    **Ensure the schema allows the attribute first.** User data is validated against the workspace's user-data **schema** (in `.mittorc`). If that schema does not define a **"Jira Tasks"** field, the `mitto_conversation_update` above will be **rejected** (e.g. `unknown attribute "Jira Tasks": not defined in schema`, or `no user data schema defined for this workspace`). To make the save succeed, add the field to the schema with `mitto_workspace_update` (this edits the workspace `.mittorc`), then retry the conversation update:
-
-    ```
-    mitto_workspace_update(self_id: "{{ .Session.ID }}",
-      user_data_schema: [{"name": "Jira Tasks",
-                          "description": "JQL query selecting the JIRA tickets to mirror into beads",
-                          "type": "string"}],
-      user_data_schema_merge: true)
-    ```
-
-    `user_data_schema_merge: true` (the default) merges this field into the existing schema by name, so it **adds** "Jira Tasks" without disturbing other defined fields. Practically: attempt the `mitto_conversation_update` first; if it fails with a schema/unknown-attribute error, call `mitto_workspace_update` to register the field, then repeat the `mitto_conversation_update`. (Proactively calling `mitto_workspace_update` before the first save is also fine, since the merge is idempotent.)
-
-    Then use that JQL query for this run and continue to Step 2.
-  {{- end }}
+  {{ template "jira/shared/resolve-query" (dict "Ctx" . "Next" "continue to Step 2") }}
 
   ## Step 2 — Ensure beads is ready
 
@@ -268,7 +168,7 @@ prompt: |
     --body-file /tmp/jira-<key>.md
   ```
 
-  Capture the new bead ID. Do **not** write `jira_updated` here — that high-water mark is written at the end of Step 5D, only after comments are mirrored (see Guidelines "high-water mark").
+  {{ template "jira/shared/link-bead" (dict "Phase" "create" "Target" "<id>") }} Capture the new bead ID.
 
   **B. A matching bead exists** → detect changes and update:
 
@@ -301,11 +201,7 @@ prompt: |
 
   **D. High-water mark — commit `jira_updated` last** (both create and update paths). Only after Step 5.1 (body) and Step 5C (comments) succeeded for this ticket, advance the idempotency guard:
 
-  ```bash
-  bd update <id> --set-metadata jira_updated="<ticket.updated>"
-  ```
-
-  If either the body update or any per-comment append in Step 5C failed, **skip this write** — leaving `jira_updated` behind lets the next run retry the missing pieces. Never advance `jira_updated` past unmirrored data (see Guidelines "high-water mark").
+  {{ template "jira/shared/link-bead" (dict "Phase" "commit" "Target" "<id>") }}
 
   ## Step 6 — Mirror blocking relationships (dependencies)
 

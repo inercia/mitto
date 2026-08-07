@@ -35,14 +35,7 @@ prompt: |
 
   ## Access Method
 
-  This prompt talks to JIRA in one of two ways: **JIRA MCP tools** (e.g. `jira_get_transitions`, `jira_transition_issue`, `jira_add_comment`) or the **`jira` CLI** (ankitpokhrel/jira-cli). **Prefer MCP tools whenever they are available** — they return structured JSON, avoid a subprocess round-trip, and do not depend on the user's local `jira` config. Fall back to the CLI only when the matching MCP tool is not present.
-  {{- if Cond "Tools.Names.exists(n, n.matches('(?i)jira'))" }}
-
-  **This run has JIRA MCP tools available** (a tool whose name contains `jira` is reachable). Every JIRA write below should go through the MCP tool named in the step (the transitions / transition-issue tools in Step 3, the add-comment tool in Step 4). Names may be namespaced by the client (`mcp__<server>__<op>`); prefer whichever exact name is exposed to you.
-  {{- else }}
-
-  **This run has no JIRA MCP tools** (no tool name contains `jira`) but the `jira` command is on PATH — use it as the fallback. Wherever a step names an MCP tool, run the CLI equivalent instead.
-  {{- end }}
+  {{ template "jira/shared/access-method" (dict "Note" "the transitions tools in Step 3 and the add-comment tool in Step 4") }}
 
   ## Step 1 — Load the bead and extract the JIRA key
 

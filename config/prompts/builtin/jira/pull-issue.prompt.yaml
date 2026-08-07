@@ -35,14 +35,7 @@ prompt: |
 
   ## Access Method
 
-  This prompt talks to JIRA in one of two ways: **JIRA MCP tools** (e.g. `jira_get_issue_jira`, `jira_search_jira`) or the **`jira` CLI** (ankitpokhrel/jira-cli). **Prefer MCP tools whenever they are available** — they return structured JSON, avoid a subprocess round-trip, and do not depend on the user's local `jira` config. Fall back to the CLI only when the matching MCP tool is not present.
-  {{- if Cond "Tools.Names.exists(n, n.matches('(?i)jira'))" }}
-
-  **This run has JIRA MCP tools available** (a tool whose name contains `jira` is reachable). Every JIRA read below should go through the MCP tool named in the step (e.g. `jira_get_issue_jira` in Step 2). Names may be namespaced by the client (`mcp__<server>__<op>`); prefer whichever exact name is exposed to you.
-  {{- else }}
-
-  **This run has no JIRA MCP tools** (no tool name contains `jira`) but the `jira` command is on PATH — use it as the fallback. Wherever a step names an MCP tool, run the CLI equivalent instead. Set `PAGER=cat` before `jira issue view` to bypass the pager.
-  {{- end }}
+  {{ template "jira/shared/access-method" (dict "Note" "jira_get_issue_jira in Step 2") }}
 
   ## Step 1 — Load the bead and extract the JIRA key
 
@@ -115,11 +108,7 @@ prompt: |
 
   Only after Step 5 (body) and Step 6 (per-comment mirror loop) both succeeded for this ticket, advance the idempotency guard used by Step 4:
 
-  ```bash
-  bd update {{ $target }} --set-metadata jira_updated="<ticket.updated>"
-  ```
-
-  If either the body update or any per-comment append in Step 6 failed, **skip this write** — leaving `jira_updated` behind lets a future run retry the missing pieces. Never advance `jira_updated` past unmirrored data (see Guidelines "high-water mark").
+  {{ template "jira/shared/link-bead" (dict "Phase" "commit" "Target" $target) }}
 
   ## Step 6.5 — Detect a JIRA reopen after a local close
 
