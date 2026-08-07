@@ -1257,10 +1257,16 @@ func (r *LoopRunner) fireOnStartPulses() {
 //   - the session is not currently prompting; an in-flight turn will re-arm
 //     itself on completion, and if it misses (the bug) the next poll recovers it.
 //
-// When those hold it re-arms via OnConversationIdle, which re-reads the config
-// and arms the timer with the floor-clamped delay. The downstream
+// When those hold it re-arms via onConversationIdleCompletion, which re-reads
+// the config and arms the timer with the floor-clamped delay. The downstream
 // fireOnCompletion auto-resumes a non-running session and enforces caps, so this
 // also self-heals after a process restart (in-memory timers do not survive one).
+//
+// It deliberately calls the onCompletion leg directly rather than the full
+// OnConversationIdle: this is a poll-driven repair, not a real end-of-turn, so
+// it must NOT run the onChild leg (mitto-987y.5). Otherwise the first poll after
+// a restart — when no in-memory timer exists for any session — would fire a
+// spurious anyEndResponse at the parent of every onCompletion child.
 func (r *LoopRunner) recoverStalledOnCompletion(meta session.Metadata, loop *session.LoopPrompt) {
 	if loop == nil {
 		return
@@ -1305,8 +1311,9 @@ func (r *LoopRunner) recoverStalledOnCompletion(meta session.Metadata, loop *ses
 			"iteration_count", loop.IterationCount)
 	}
 
-	// Re-read config and arm the timer with the floor-clamped delay.
-	r.OnConversationIdle(meta.SessionID)
+	// Re-read config and arm the timer with the floor-clamped delay. Only the
+	// onCompletion leg — see the doc comment on why the onChild leg is skipped.
+	r.onConversationIdleCompletion(meta.SessionID, meta)
 }
 
 // fireOnCompletion delivers the next onCompletion loop run. It re-validates the

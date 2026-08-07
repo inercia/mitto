@@ -1920,6 +1920,54 @@ func TestLoopRunner_RecoverStalledOnCompletion_ReArmsStalledLoop(t *testing.T) {
 	}
 }
 
+// TestLoopRunner_RecoverStalledOnCompletion_ChildDoesNotFireOnChild pins the
+// mitto-987y.5 invariant that poll-driven recovery is NOT an end-of-turn: a
+// stalled onCompletion loop that is also a child must re-arm its own timer
+// WITHOUT notifying its parent's onChild leg. Otherwise the first poll after a
+// restart (when no in-memory timer exists for any session) would fire a
+// spurious anyEndResponse at the parent of every onCompletion child.
+func TestLoopRunner_RecoverStalledOnCompletion_ChildDoesNotFireOnChild(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	newOnChildSession(t, store, "parent", nil)
+	ps := newOnCompletionSessionWithRan(t, store, "child1", 3600)
+	// The persisted metadata must also record the parent link, so the test
+	// fails if recovery ever routes through the metadata-re-reading
+	// OnConversationIdle instead of the onCompletion leg directly.
+	if err := store.UpdateMetadata("child1", func(m *session.Metadata) {
+		m.ParentSessionID = "parent"
+	}); err != nil {
+		t.Fatalf("UpdateMetadata() error = %v", err)
+	}
+
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{})
+	sm.AddSessionForTest(NewMinimalBackgroundSessionPrompting("parent", false))
+
+	logger, buf := captureDebugLogger()
+	runner := NewLoopRunner(store, sm, logger)
+	runner.SetMinLoopCompletionDelaySeconds(0)
+
+	meta := session.Metadata{SessionID: "child1", ParentSessionID: "parent"}
+	loop, err := ps.Get()
+	if err != nil {
+		t.Fatalf("ps.Get() error = %v", err)
+	}
+
+	runner.recoverStalledOnCompletion(meta, loop)
+	defer runner.cancelCompletionTimer("child1")
+
+	if got := countCompletionTimers(runner); got != 1 {
+		t.Errorf("completionTimers = %d, want 1 (stalled loop must still be re-armed)", got)
+	}
+	if strings.Contains(buf.String(), "onChild") {
+		t.Errorf("poll-driven recovery must not run the onChild leg, got:\n%s", buf.String())
+	}
+}
+
 // TestLoopRunner_RecoverStalledOnCompletion_TimerPending_Noop verifies that
 // recoverStalledOnCompletion is a no-op when a timer is already pending, i.e. the
 // loop is healthy and does not need recovery.
