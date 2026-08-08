@@ -616,6 +616,14 @@ func NewServer(config Config) (*Server, error) {
 	// Set API prefix on CSRF manager for exempt path matching
 	csrfMgr.SetAPIPrefix(apiPrefix)
 
+	// Let CSRF exempt requests carrying a valid shared bearer token (mitto-7gta.26).
+	// CSRF wraps OUTSIDE auth (see the handler chain below), so it cannot read an
+	// auth decision from context; ValidateBearerRequest lets it validate the token
+	// independently instead of merely detecting the Authorization header.
+	if authMgr != nil {
+		csrfMgr.SetTokenAuthChecker(authMgr.ValidateBearerRequest)
+	}
+
 	// Initialize access logger (nil if disabled)
 	var accessLogger *AccessLogger
 	if config.AccessLog.Path != "" {

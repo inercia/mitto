@@ -12,6 +12,9 @@ const ServiceName = "Mitto"
 const (
 	// AccountExternalAccess is the account name for external access credentials.
 	AccountExternalAccess = "external-access"
+	// AccountSharedToken is the account name for the shared bearer token used
+	// by programmatic clients (SDK, CLI).
+	AccountSharedToken = "shared-token"
 )
 
 // ErrNotFound is returned when a credential is not found in the store.
@@ -88,4 +91,20 @@ func SetExternalAccessPassword(password string) error {
 // DeleteExternalAccessPassword removes the external access password from the secret store.
 func DeleteExternalAccessPassword() error {
 	return Delete(ServiceName, AccountExternalAccess)
+}
+
+// GetSharedToken retrieves the shared bearer token from the secret store.
+// Returns ErrNotFound if not stored in the secret store.
+func GetSharedToken() (string, error) {
+	return Get(ServiceName, AccountSharedToken)
+}
+
+// SetSharedToken stores the shared bearer token in the secret store.
+func SetSharedToken(token string) error {
+	return Set(ServiceName, AccountSharedToken, token)
+}
+
+// DeleteSharedToken removes the shared bearer token from the secret store.
+func DeleteSharedToken() error {
+	return Delete(ServiceName, AccountSharedToken)
 }

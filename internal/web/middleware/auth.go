@@ -567,6 +567,52 @@ func (a *AuthManager) ValidateCredentials(username, password string) bool {
 	return usernameMatch && passwordMatch
 }
 
+// HasSharedToken returns true if a shared bearer token is configured
+// (mitto-7gta.26). This is an additional accepted credential for programmatic
+// clients (SDK, CLI); it does NOT by itself enable authentication — see IsEnabled.
+func (a *AuthManager) HasSharedToken() bool {
+	return a.config != nil && a.config.SharedToken != ""
+}
+
+// ValidateSharedToken checks tok against the configured shared bearer token
+// using a constant-time comparison to prevent timing attacks. Always returns
+// false when no token is configured or tok is empty, so an absent header can
+// never match an unset/empty configured token.
+func (a *AuthManager) ValidateSharedToken(tok string) bool {
+	if !a.HasSharedToken() || tok == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(tok), []byte(a.config.SharedToken)) == 1
+}
+
+// extractBearerToken extracts the token from an "Authorization: Bearer <token>"
+// header. The "Bearer" scheme is matched case-insensitively; returns "" if the
+// header is absent or does not use the Bearer scheme. No other header or query
+// parameter is checked (mitto-7gta.26 plan decision): both intended clients can
+// set the Authorization header on REST calls and the WebSocket handshake, and a
+// query parameter would leak the secret into URLs and logs.
+func extractBearerToken(r *http.Request) string {
+	auth := r.Header.Get("Authorization")
+	const prefix = "bearer "
+	if len(auth) <= len(prefix) || !strings.EqualFold(auth[:len(prefix)], prefix) {
+		return ""
+	}
+	return strings.TrimSpace(auth[len(prefix):])
+}
+
+// ValidateBearerRequest reports whether r carries a valid shared-token bearer
+// credential. It performs a pure validation (no rate-limiter bookkeeping), so
+// it is safe to call from contexts that only need a read-only check — notably
+// the CSRF middleware, which runs BEFORE AuthMiddleware and cannot read an auth
+// decision from the request context. It must validate the token, not merely
+// detect the header, since "header present" would be a CSRF bypass.
+func (a *AuthManager) ValidateBearerRequest(r *http.Request) bool {
+	if !a.HasSharedToken() {
+		return false
+	}
+	return a.ValidateSharedToken(extractBearerToken(r))
+}
+
 // CreateSession creates a new authenticated session for the user.
 // If the user has too many sessions, the oldest ones are evicted.
 func (a *AuthManager) CreateSession(username string) (*AuthSession, error) {
@@ -961,6 +1007,69 @@ func (a *AuthManager) AuthMiddleware(next http.Handler) http.Handler {
 			}
 			next.ServeHTTP(w, r)
 			return
+		}
+
+		// Check for a shared bearer token (mitto-7gta.26). This is an ADDITIONAL
+		// accepted credential for programmatic clients (SDK, CLI) — it does not
+		// itself enable auth (see IsEnabled); it is only consulted here because
+		// auth is already known to be enabled via Simple or Cloudflare. An absent
+		// header, or no token configured, falls through unchanged to the existing
+		// Cloudflare/session-cookie checks below (zero behaviour change).
+		if a.HasSharedToken() {
+			if tok := extractBearerToken(r); tok != "" {
+				parsedIP := parseClientIP(clientIP)
+				ipKey := clientIP
+				if parsedIP != nil {
+					ipKey = parsedIP.String()
+				}
+
+				// Share the rate limiter with password login so token brute force
+				// and password brute force cannot be used to sidestep each other's
+				// lockout.
+				if blocked, remaining := a.rateLimiter.IsBlocked(ipKey); blocked {
+					retryAfter := int(remaining.Seconds()) + 1
+					if dbg {
+						logger.Debug("AUTH: request",
+							"decision", "rate_limited",
+							"path", r.URL.Path,
+							"client_ip", clientIP,
+							"external", isExternal,
+						)
+					}
+					w.Header().Set("Retry-After", fmt.Sprintf("%d", retryAfter))
+					writeErrorJSON(w, http.StatusTooManyRequests, "", "Too many failed attempts. Please try again later.")
+					return
+				}
+
+				if a.ValidateSharedToken(tok) {
+					if dbg {
+						logger.Debug("AUTH: request",
+							"decision", "shared-token",
+							"path", r.URL.Path,
+							"client_ip", clientIP,
+							"external", isExternal,
+						)
+					}
+					a.rateLimiter.RecordSuccess(ipKey)
+					r = r.WithContext(context.WithValue(r.Context(), ContextKeyAuthUser, "token:shared"))
+					SetAuthIdentity(r, "token:shared")
+					next.ServeHTTP(w, r)
+					return
+				}
+
+				// Invalid token: record the failure but degrade to the existing
+				// checks below rather than rejecting outright — never log the
+				// token itself, not even a prefix or length.
+				a.rateLimiter.RecordFailure(ipKey)
+				if dbg {
+					logger.Debug("AUTH: request",
+						"decision", "shared-token-invalid",
+						"path", r.URL.Path,
+						"client_ip", clientIP,
+						"external", isExternal,
+					)
+				}
+			}
 		}
 
 		// Check Cloudflare Access JWT

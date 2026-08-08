@@ -325,6 +325,12 @@ type WebAuth struct {
 	Cloudflare *CloudflareAuth `json:"cloudflare,omitempty" yaml:"cloudflare,omitempty"`
 	// Allow contains IP addresses/CIDR ranges that bypass authentication
 	Allow *AuthAllow `json:"allow,omitempty" yaml:"allow,omitempty"`
+	// SharedToken, when set, is an additional accepted credential for programmatic
+	// clients (SDK, CLI): a request carrying "Authorization: Bearer <token>" that
+	// matches this value is authenticated without a session cookie or CSRF token.
+	// It does NOT by itself enable authentication (see AuthManager.IsEnabled) — it
+	// is only consulted once auth is already enabled via Simple or Cloudflare.
+	SharedToken string `json:"shared_token,omitempty" yaml:"shared_token,omitempty"`
 }
 
 // HasCloudflareAuth returns true if Cloudflare Access authentication is configured and valid.
@@ -1431,6 +1437,7 @@ type rawConfig struct {
 			Allow *struct {
 				IPs []string `yaml:"ips"`
 			} `yaml:"allow"`
+			SharedToken string `yaml:"shared_token"`
 		} `yaml:"auth"`
 		Security *struct {
 			TrustedProxies   []string `yaml:"trusted_proxies"`
@@ -1744,6 +1751,7 @@ func Parse(data []byte) (*Config, error) {
 				IPs: raw.Web.Auth.Allow.IPs,
 			}
 		}
+		cfg.Web.Auth.SharedToken = raw.Web.Auth.SharedToken
 	}
 
 	// Populate security config

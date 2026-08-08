@@ -980,6 +980,34 @@ func LoadSettings() (*Config, error) {
 		}
 	}
 
+	// Handle the shared bearer token (mitto-7gta.26), used by programmatic clients
+	// (SDK, CLI) as an additional credential accepted alongside Simple/Cloudflare auth.
+	// Resolution order: env var MITTO_SHARED_TOKEN (headless/CI, wins outright, never
+	// persisted) -> settings.json value (migrated to keychain, then blanked on disk)
+	// -> keychain.
+	if envToken := os.Getenv("MITTO_SHARED_TOKEN"); envToken != "" {
+		if cfg.Web.Auth == nil {
+			cfg.Web.Auth = &WebAuth{}
+		}
+		cfg.Web.Auth.SharedToken = envToken
+	} else if cfg.Web.Auth != nil && secrets.IsSupported() {
+		if cfg.Web.Auth.SharedToken != "" {
+			// Token found in settings.json - migrate it to keychain
+			if err := migrateSharedTokenToKeychain(&settings, cfg); err != nil {
+				// Log warning but don't fail - token still works from settings
+				// The migration will be attempted again on next load
+				_ = err // Ignore migration error, token is still usable
+			}
+		} else {
+			// No token in settings.json - try to load from keychain
+			token, err := secrets.GetSharedToken()
+			if err == nil && token != "" {
+				cfg.Web.Auth.SharedToken = token
+			}
+			// If token not found in Keychain either, leave it empty (feature off)
+		}
+	}
+
 	return cfg, nil
 }
 
@@ -1111,6 +1139,29 @@ func migratePasswordToKeychain(settings *Settings, cfg *Config) error {
 	settings.Web.Auth.Simple.Password = ""
 	if err := SaveSettings(settings); err != nil {
 		// Password is in keychain but settings.json still has the old password
+		// This is not ideal but not critical - next load will try again
+		return fmt.Errorf("failed to update settings after keychain migration: %w", err)
+	}
+
+	return nil
+}
+
+// migrateSharedTokenToKeychain moves the shared bearer token from settings.json
+// to the system keychain, mirroring migratePasswordToKeychain above.
+func migrateSharedTokenToKeychain(settings *Settings, cfg *Config) error {
+	token := cfg.Web.Auth.SharedToken
+
+	// Save token to keychain
+	if err := secrets.SetSharedToken(token); err != nil {
+		return fmt.Errorf("failed to save shared token to keychain: %w", err)
+	}
+
+	// Clear token from settings and save
+	if settings.Web.Auth != nil {
+		settings.Web.Auth.SharedToken = ""
+	}
+	if err := SaveSettings(settings); err != nil {
+		// Token is in keychain but settings.json still has the old token
 		// This is not ideal but not critical - next load will try again
 		return fmt.Errorf("failed to update settings after keychain migration: %w", err)
 	}

@@ -151,6 +151,34 @@ web:
         - 192.168.0.0/24 # local network
 ```
 
+### Shared Token (Bearer) Authentication
+
+For programmatic clients (SDK, CLI) that cannot do interactive login, configure a
+shared bearer token as an **additional** accepted credential:
+
+```yaml
+web:
+  auth:
+    simple:
+      username: admin
+      password: your-secure-password
+    shared_token: your-shared-secret
+```
+
+Clients authenticate by sending `Authorization: Bearer <token>` on REST requests
+and the WebSocket handshake. Notes:
+
+- A shared token alone does **not** enable authentication — it is only consulted
+  once auth is already enabled via `simple` or `cloudflare`.
+- Successful token auth needs no session cookie or CSRF token.
+- Failed attempts share the same rate limiter as password login.
+- The token can also be set via the `MITTO_SHARED_TOKEN` environment variable
+  (takes precedence over the config value and is never persisted to disk), or
+  loaded from the system Keychain on macOS, mirroring the external-access
+  password.
+- Rotating the token invalidates every client immediately; there is no
+  per-client revocation or grace window.
+
 ### Rate Limiting
 
 Authentication includes automatic rate limiting:

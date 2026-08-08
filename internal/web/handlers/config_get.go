@@ -41,9 +41,10 @@ func SanitizeEnvVars(env map[string]string) map[string]string {
 	return out
 }
 
-// SanitizeWebConfig returns a deep copy of WebConfig with the auth password redacted.
-// The password must never be sent to the client — not even to an authenticated user —
-// because it could be exfiltrated via XSS, screen-sharing, or developer tools.
+// SanitizeWebConfig returns a deep copy of WebConfig with the auth password and
+// shared bearer token redacted. Neither secret must ever be sent to the client —
+// not even to an authenticated user — because it could be exfiltrated via XSS,
+// screen-sharing, or developer tools.
 func SanitizeWebConfig(cfg configPkg.WebConfig) configPkg.WebConfig {
 	sanitized := cfg
 	if cfg.Auth != nil {
@@ -53,6 +54,7 @@ func SanitizeWebConfig(cfg configPkg.WebConfig) configPkg.WebConfig {
 			simpleCopy.Password = "" // Never return the password to the client
 			authCopy.Simple = &simpleCopy
 		}
+		authCopy.SharedToken = "" // Never return the shared bearer token to the client
 		sanitized.Auth = &authCopy
 	}
 	return sanitized
