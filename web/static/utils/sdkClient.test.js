@@ -40,6 +40,11 @@ describe("sdkClient", () => {
       expect(client.config.apiPrefix).toBe("/mitto");
     });
 
+    test("apiPrefix defaults to empty string when window.mittoApiPrefix is unset", () => {
+      const client = getSdkClient();
+      expect(client.config.apiPrefix).toBe("");
+    });
+
     test("baseUrl is relative (empty string)", () => {
       const client = getSdkClient();
       expect(client.config.baseUrl).toBe("");
@@ -54,11 +59,58 @@ describe("sdkClient", () => {
       document.cookie =
         "mitto_csrf=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT";
     });
+
+    test("auth adapter omits the CSRF header on GET (safe method)", async () => {
+      document.cookie = "mitto_csrf=seam-test-token-2; path=/";
+      const client = getSdkClient();
+      const patch = await client.config.auth.authorize({ method: "GET" });
+      expect(patch.credentials).toBe("include");
+      expect(patch.headers).toBeUndefined();
+      document.cookie =
+        "mitto_csrf=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT";
+    });
+
+    test("auth adapter fetches a fresh token via the CURRENT global fetch when no cookie exists, hitting endpoints.misc.csrfToken()", async () => {
+      window.mittoApiPrefix = "/mitto";
+      const seenUrls = [];
+      const originalFetch = globalThis.fetch;
+      // Installed after getSdkClient() below (via afterEach's reset), proving
+      // the adapter binds `fetch` lazily rather than snapshotting it at
+      // client-construction time (see sdkClient.js's late-bound comment).
+      globalThis.fetch = async (url) => {
+        seenUrls.push(String(url));
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ token: "fetched-token" }),
+        };
+      };
+      let patch;
+      try {
+        const client = getSdkClient();
+        patch = await client.config.auth.authorize({ method: "POST" });
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+      expect(seenUrls).toEqual(["/mitto/api/csrf-token"]);
+      expect(patch.headers["X-CSRF-Token"]).toBe("fetched-token");
+    });
   });
 
   describe("getSdkWsBaseUrl", () => {
     test("derives ws:// from http: page origin", () => {
       expect(getSdkWsBaseUrl()).toBe(`ws://${window.location.host}`);
+    });
+
+    test("derives wss:// from https: page origin", () => {
+      const original = window.location.protocol;
+      // happy-dom allows reassigning location.protocol; guard by restoring after.
+      window.location.protocol = "https:";
+      try {
+        expect(getSdkWsBaseUrl()).toBe(`wss://${window.location.host}`);
+      } finally {
+        window.location.protocol = original;
+      }
     });
   });
 
