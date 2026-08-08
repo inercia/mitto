@@ -2965,7 +2965,7 @@ func TestBuiltinPromptsNoArchivePolicy(t *testing.T) {
 			gotNoArchive[relPath] = true
 		}
 
-		if prompt.Loop == nil || prompt.Target == nil {
+		if prompt.Loop == nil {
 			return nil
 		}
 		unconditional := prompt.Loop.Mode == "" || prompt.Loop.Mode == PromptLoopModeAlways
@@ -2978,8 +2978,11 @@ func TestBuiltinPromptsNoArchivePolicy(t *testing.T) {
 			return nil
 		}
 		unbounded := prompt.Loop.MaxIterations == 0 && maxDurationSeconds == 0
-		if unconditional && unbounded && !prompt.Target.NoArchive {
-			t.Errorf("%s: unconditional (mode=%q) + unbounded (maxIterations=0, maxDuration=0) loop with a target but Target.NoArchive = false — a standing supervisor that can never self-terminate must set target.noArchive: true", relPath, prompt.Loop.Mode)
+		// A missing target: block is NOT an exemption — that was exactly
+		// loop-processing's own state before mitto-yvel.5, so skipping it
+		// would leave the hole this invariant exists to close.
+		if unbounded && (prompt.Target == nil || !prompt.Target.NoArchive) {
+			t.Errorf("%s: unconditional (mode=%q) + unbounded (maxIterations=0, maxDuration=0) loop but Target.NoArchive = false/absent — a standing supervisor that can never self-terminate must declare a target: block with noArchive: true", relPath, prompt.Loop.Mode)
 		}
 		return nil
 	})
