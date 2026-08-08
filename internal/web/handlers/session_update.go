@@ -52,7 +52,7 @@ func (h *Handlers) HandleUpdateSession(w http.ResponseWriter, r *http.Request, s
 			}
 			if !meta.IsArchivable() {
 				writeErrorJSON(w, http.StatusConflict, "conflict",
-					"Conversation is marked non-archivable and cannot be archived; delete it instead")
+					session.ErrSessionNoArchive.Error())
 				return
 			}
 		}

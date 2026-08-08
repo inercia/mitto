@@ -424,7 +424,9 @@ func (h *Handlers) HandleACPServerReassignAndDelete(w http.ResponseWriter, r *ht
 // reassignFolder archives + rewrites metadata for every non-archived
 // conversation in dir bound to oldServer, clears ACPSessionID so unarchive
 // resumes fresh on the new agent, and rewrites the workspace config's
-// ACPServer field. Never deletes conversations.
+// ACPServer field. Never deletes conversations. A conversation marked
+// non-archivable (mitto-yvel.3) is still reassigned and closed, but is left
+// unarchived so it resumes directly on the new agent.
 func (h *Handlers) reassignFolder(dir, oldServer, newServer string, metas []session.Metadata, resp *ACPServerReassignAndDeleteResponse) error {
 	sm := h.deps.SessionManager
 	store := h.deps.Store
@@ -447,22 +449,25 @@ func (h *Handlers) reassignFolder(dir, oldServer, newServer string, metas []sess
 		// (agent-specific, invalid under a different agent — same rationale as
 		// hsClearPersistedACPSessionID / mitto-y1g). Also drop the persisted
 		// current mode; it is agent-specific.
+		var archived bool
 		if err := store.UpdateMetadata(meta.SessionID, func(m *session.Metadata) {
 			m.ACPServer = newServer
 			m.ACPSessionID = ""
 			m.CurrentModeID = ""
-			if !m.Archived {
+			if !m.Archived && m.IsArchivable() {
 				m.Archived = true
 				m.ArchivedAt = time.Now()
 				m.ArchiveReason = session.ArchiveReasonManual
+				archived = true
 			}
 		}); err != nil {
 			return err
 		}
 		resp.ReassignedConversations = append(resp.ReassignedConversations, meta.SessionID)
 		// Broadcast archived state so clients update the sidebar even though
-		// the archive was implicit here.
-		if h.deps.BroadcastSessionArchived != nil {
+		// the archive was implicit here. Skipped for a non-archivable
+		// conversation, which stays active on the new agent.
+		if archived && h.deps.BroadcastSessionArchived != nil {
 			h.deps.BroadcastSessionArchived(meta.SessionID, true, session.ArchiveReasonManual)
 		}
 	}

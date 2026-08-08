@@ -209,7 +209,7 @@ func (s *Server) handleArchiveConversation(ctx context.Context, req *mcp.CallToo
 		return nil, ArchiveConversationOutput{
 			Success:        false,
 			ConversationID: input.ConversationID,
-			Error:          "conversation is marked non-archivable and cannot be archived; delete it instead",
+			Error:          session.ErrSessionNoArchive.Error(),
 		}, nil
 	}
 

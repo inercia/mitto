@@ -24,10 +24,11 @@ var (
 	ErrSessionNotFound = errors.New("session not found")
 	ErrSessionLocked   = errors.New("session is locked by another process")
 	ErrStoreClosed     = errors.New("store is closed")
-	// ErrSessionNoArchive is returned by archive entry points when the target
-	// conversation's Metadata.NoArchive flag is set (mitto-yvel.3). Deletion
-	// is unaffected by this flag and must never check it.
-	ErrSessionNoArchive = errors.New("conversation is marked non-archivable")
+	// ErrSessionNoArchive is the canonical rejection reported by every archive
+	// entry point when the target conversation's Metadata.NoArchive flag is set
+	// (mitto-yvel.3), so REST and MCP surface the same wording. Deletion is
+	// unaffected by this flag and must never check it.
+	ErrSessionNoArchive = errors.New("conversation is marked non-archivable and cannot be archived; delete it instead")
 )
 
 // Verify Store implements SessionStore at compile time.

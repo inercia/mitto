@@ -276,6 +276,102 @@ func TestHandleACPServerReassignAndDelete_ReassignFolder(t *testing.T) {
 	}
 }
 
+// A NoArchive conversation caught up in an ACP-server reassignment is still
+// reassigned to the new server (and has its agent-specific ids cleared), but is
+// never archived by that path (mitto-yvel.3) — otherwise deleting an ACP server
+// would silently reap a protected supervisor loop.
+func TestHandleACPServerReassignAndDelete_ReassignSkipsArchiveForNoArchive(t *testing.T) {
+	setupSettingsFile(t, []config.ACPServerSettings{
+		{Name: "old", Command: "old-cmd"},
+		{Name: "new", Command: "new-cmd"},
+	})
+
+	store, err := session.NewStore(filepath.Join(t.TempDir(), "sessions"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+	must(t, store.Create(session.Metadata{
+		SessionID: "conv-plain", ACPServer: "old", WorkingDir: "/dir1",
+		ACPSessionID: "acp-old-1",
+	}))
+	must(t, store.Create(session.Metadata{
+		SessionID: "conv-protected", ACPServer: "old", WorkingDir: "/dir1",
+		ACPSessionID: "acp-old-2", NoArchive: true,
+	}))
+
+	var archivedBroadcasts []string
+	sm := conversation.NewSessionManager("", "", false, nil)
+	sm.SetWorkspaces([]config.WorkspaceSettings{
+		{UUID: "ws-1", WorkingDir: "/dir1", ACPServer: "old"},
+		{UUID: "ws-2", WorkingDir: "/dir1", ACPServer: "new"},
+	})
+	cfg := &config.Config{ACPServers: []config.ACPServer{
+		{Name: "old", Command: "old-cmd"},
+		{Name: "new", Command: "new-cmd"},
+	}}
+	h := New(Deps{
+		SessionManager:       sm,
+		MittoConfig:          cfg,
+		Store:                store,
+		SyncConfigWorkspaces: func() {},
+		BroadcastSessionArchived: func(id string, _ bool, _ ...session.ArchiveReason) {
+			archivedBroadcasts = append(archivedBroadcasts, id)
+		},
+		BroadcastSessionDeleted: func(string) {},
+		BroadcastACPStopped:     func(string, string) {},
+	})
+
+	body := strings.NewReader(`{"folders":{"/dir1":"new"}}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/acp-servers/old/reassign-and-delete", body)
+	req.SetPathValue("name", "old")
+	w := httptest.NewRecorder()
+	h.HandleACPServerReassignAndDelete(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", w.Code, w.Body.String())
+	}
+
+	// Both are reassigned and have the agent-specific id cleared...
+	for _, id := range []string{"conv-plain", "conv-protected"} {
+		m, err := store.GetMetadata(id)
+		if err != nil {
+			t.Fatalf("GetMetadata(%s): %v", id, err)
+		}
+		if m.ACPServer != "new" {
+			t.Errorf("%s ACPServer = %q, want new", id, m.ACPServer)
+		}
+		if m.ACPSessionID != "" {
+			t.Errorf("%s ACPSessionID = %q, want cleared", id, m.ACPSessionID)
+		}
+	}
+	// ...but only the unprotected one is archived.
+	plain, err := store.GetMetadata("conv-plain")
+	if err != nil {
+		t.Fatalf("GetMetadata(conv-plain): %v", err)
+	}
+	if !plain.Archived {
+		t.Errorf("conv-plain Archived = false, want true")
+	}
+	protected, err := store.GetMetadata("conv-protected")
+	if err != nil {
+		t.Fatalf("GetMetadata(conv-protected): %v", err)
+	}
+	if protected.Archived {
+		t.Errorf("conv-protected Archived = true, want false (NoArchive)")
+	}
+	if !protected.ArchivedAt.IsZero() || protected.ArchiveReason != "" {
+		t.Errorf("conv-protected archive fields set: at=%v reason=%q",
+			protected.ArchivedAt, protected.ArchiveReason)
+	}
+	// No archived broadcast for the protected conversation.
+	for _, id := range archivedBroadcasts {
+		if id == "conv-protected" {
+			t.Errorf("BroadcastSessionArchived fired for the NoArchive conversation")
+		}
+	}
+}
+
 func TestHandleACPServerReassignAndDelete_NoReplacementDeletesFolder(t *testing.T) {
 	setupSettingsFile(t, []config.ACPServerSettings{{Name: "solo", Command: "solo-cmd"}})
 
