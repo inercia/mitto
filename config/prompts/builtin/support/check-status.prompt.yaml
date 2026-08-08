@@ -24,9 +24,11 @@ preferredModels:
   - modelTag: Cheap
   - modelTag: Coding
 prompt: |-
+  {{- $bead := .Session.BeadsIssue -}}
+  {{- if eq $bead "" -}}{{ $bead = Arg "IssueID" "" }}{{- end -}}
   {{- $channel := Arg "SlackChannelID" "" -}}
   {{- if eq $channel "" -}}
-  {{-   $channel = BeadMetadata (Arg "IssueID" "") "slack_channel" -}}
+  {{-   $channel = BeadMetadata $bead "slack_channel" -}}
   {{- end -}}
   # Support — Check Status
 

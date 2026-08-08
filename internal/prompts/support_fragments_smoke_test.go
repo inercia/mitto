@@ -1064,6 +1064,48 @@ func TestBeadMetadataFallbackResolvesChannel_UIInvoked(t *testing.T) {
 	}
 }
 
+// TestBeadMetadataFallbackResolvesChannel_SessionBead covers the OTHER
+// UI-invoked launch shape: the prompt is started from the conversation menu
+// (or the beads-issue menu on a session already linked to a bead), so the bead
+// arrives on `.Session.BeadsIssue` and NOT as an `IssueID` argument.
+//
+// `support/shared/target-bead-picker` already resolves the target from either
+// source, but the `$channel` derivation stanza at the top of each prompt used
+// to read `Arg "IssueID"` only — so this launch shape derived an empty channel
+// and every channel fragment (including `post-<phase>.md`) silently degraded
+// to the runtime-read fallback instead of being inlined.
+func TestBeadMetadataFallbackResolvesChannel_SessionBead(t *testing.T) {
+	installFakeBdForRender(t, `[{"id":"mitto-1","status":"open","labels":["support-question"],"metadata":{"slack_channel":"C0DERIVED"}}]`)
+	tmpDir := t.TempDir()
+
+	ctx := &cel.PromptEnabledContext{
+		Session: cel.SessionContext{
+			ID: "s", Name: "N", HasMessages: true,
+			HasBeadsIssue: true, BeadsIssue: "mitto-1",
+		},
+		Workspace: cel.WorkspaceContext{Folder: tmpDir},
+		// Conversation-menu shape: no IssueID argument at all.
+		Args: map[string]string{},
+	}
+	consumers := []string{
+		"Support: check status",
+		"Support: reply to user",
+		"Support: gather more information",
+		"Support: investigate",
+	}
+	for _, name := range consumers {
+		t.Run(name, func(t *testing.T) {
+			out := renderSupportPrompt(t, name, ctx)
+			if !strings.Contains(out, "C0DERIVED") {
+				t.Errorf("derived channel id C0DERIVED not present in render — the session-linked bead did not feed BeadMetadata")
+			}
+			if strings.Contains(out, "runtime read fallback") {
+				t.Errorf("render unexpectedly contains 'runtime read fallback' — $channel was empty despite a session-linked bead")
+			}
+		})
+	}
+}
+
 // TestBeadMetadataFallbackLegacyBeadStillReadsAtRuntime (mitto-09k) is the
 // zero-regression guard for acceptance criterion #4: a bead WITHOUT a
 // `metadata.slack_channel` value (older beads, or beads created outside the
@@ -1155,32 +1197,45 @@ func TestBeadMetadataFallbackExplicitSlackChannelIDWins(t *testing.T) {
 }
 
 // TestBeadMetadataFallbackNotWiredIntoLoopSpawnedPrompts (mitto-09k) is a
-// scope-creep guard: the plan explicitly leaves `continue-conversation` and
-// `investigate` untouched because they always receive `SlackChannelID`
-// explicitly from their loop parent. Verify the fallback stanza was NOT
-// mistakenly added to those two prompt bodies. Uses a raw source scan (not
-// render) so we can pinpoint the exact prompt bodies, independent of fragment
-// composition.
+// scope-creep guard: `continue-conversation` is driven only by its loop parent
+// and always receives `SlackChannelID` explicitly, so it must NOT carry the
+// bead-derived channel fallback. Uses a raw source scan (not render) so we can
+// pinpoint the exact prompt bodies, independent of fragment composition.
+//
+// `investigate` was originally in this guarded set for the same reason, but it
+// also appears in the `beadsIssues` / `conversation` menus, so it now carries
+// the fallback like the other UI-invoked support prompts.
 func TestBeadMetadataFallbackNotWiredIntoLoopSpawnedPrompts(t *testing.T) {
 	builtinDir := "../../config/prompts/builtin"
+	reg, _, err := LoadFragmentsFromDir(builtinDir)
+	if err != nil {
+		t.Fatalf("LoadFragmentsFromDir(builtin): %v", err)
+	}
+	prev := CurrentFragments()
+	t.Cleanup(func() { SetCurrentFragments(prev) })
+	SetCurrentFragments(reg)
+
 	list, err := LoadPromptsFromDir(builtinDir)
 	if err != nil {
 		t.Fatalf("LoadPromptsFromDir(builtin): %v", err)
 	}
-	// The exact stanza the Implement phase added to the three UI-invoked
-	// prompt bodies. The plan pins this to only those three; the loop-spawned
-	// prompts must not carry it.
-	fallbackStanza := `BeadMetadata (Arg "IssueID" "") "slack_channel"`
+	fallbackStanza := `BeadMetadata $bead "slack_channel"`
 	scopeGuarded := map[string]bool{
 		"Support: continue conversation": true,
-		"Support: investigate":           true,
 	}
+	seen := map[string]bool{}
 	for _, p := range list {
 		if !scopeGuarded[p.Name] {
 			continue
 		}
+		seen[p.Name] = true
 		if strings.Contains(p.Content, fallbackStanza) {
-			t.Errorf("prompt %q: unexpectedly contains the BeadMetadata fallback stanza — the plan explicitly excluded this loop-spawned prompt (it always receives SlackChannelID from its spawner)", p.Name)
+			t.Errorf("prompt %q: unexpectedly contains the BeadMetadata fallback stanza — this loop-spawned prompt always receives SlackChannelID from its spawner", p.Name)
+		}
+	}
+	for name := range scopeGuarded {
+		if !seen[name] {
+			t.Errorf("guarded prompt %q was never loaded — the guard is vacuous", name)
 		}
 	}
 }

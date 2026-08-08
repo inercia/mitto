@@ -21,9 +21,11 @@ parameters:
     required: false
     description: 'The Slack channel ID (e.g. C0XXXXXXX). Optional; when set at spawn time it is used to inline channel playbook fragments at render time. When omitted, the prompt auto-derives it from the linked bead''s `metadata.slack_channel` field (via `BeadMetadata`); if that is also empty, the fragment reader falls back to instructing the agent to read the file at runtime.'
 prompt: |-
+  {{- $bead := .Session.BeadsIssue -}}
+  {{- if eq $bead "" -}}{{ $bead = Arg "IssueID" "" }}{{- end -}}
   {{- $channel := Arg "SlackChannelID" "" -}}
   {{- if eq $channel "" -}}
-  {{-   $channel = BeadMetadata (Arg "IssueID" "") "slack_channel" -}}
+  {{-   $channel = BeadMetadata $bead "slack_channel" -}}
   {{- end -}}
   # Support — Gather More Information
 
