@@ -277,7 +277,7 @@ prompt: |
 
   ```
   mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", loop_enabled: false)
-  mitto_ui_notify(self_id: "{{ .Session.ID }}", title: "Iterate implementing feature — done", message: "<what was planned/implemented/tested/verified across runs>", style: "success")
+  mitto_ui_notify(self_id: "{{ .Session.ID }}", title: "Loop implementing feature — done", message: "<what was planned/implemented/tested/verified across runs>", style: "success")
   ```
 
   After stopping, do nothing further this run.

@@ -31,7 +31,7 @@ prompt: |
 
   This is the **test** stage of the label-encoded feature-implementation state machine
   (`planned` → `implemented` → `tested` → `verified`). It is normally invoked by name
-  from the `Iterate implementing feature` driver (or by a list orchestrator), which
+  from the `Loop implementing feature` driver (or by a list orchestrator), which
   selects this phase when the target bead carries `implemented` but not yet `tested`.
 
   {{ $target := "" -}}

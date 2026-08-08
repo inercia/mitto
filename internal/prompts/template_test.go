@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"text/template"
@@ -1706,6 +1707,70 @@ func TestRenderPromptTemplate_Iteration(t *testing.T) {
 	}
 	if gotVerbose != "verbose" {
 		t.Errorf("IsUninterrupted=false: got %q, want %q", gotVerbose, "verbose")
+	}
+}
+
+// TestBeadsIssuesPrompts_NoStaleIterateDriverNames is the static reproduction
+// test for mitto-k20a. The "Iterate -> Loop" rename (commit 9403463f,
+// 2026-07-05) updated frontmatter `name:` and filenames but left free-text
+// driver-name cross-references in sibling prompt bodies untouched. The real
+// builtin driver names today are "Loop fixing bug" and "Loop implementing
+// feature" (see beads-issues/loop-fixing-bug.prompt.yaml and
+// beads-issues/loop-implementing-feature.prompt.yaml); no builtin prompt is
+// named "Iterate fixing bug" or "Iterate implementing feature" anymore.
+//
+// A phase agent learns its driver's name ONLY from this prose, then copies it
+// verbatim when dispatching back via mitto_conversation_send_prompt.
+// Resolution is deferred to dequeue time (internal/conversation/queue_dispatcher.go),
+// so a stale name enqueues successfully and then fails silently — no retry
+// (the failure is permanent, not transient) and no user-visible surface
+// beyond one ERROR log line. This test scans every builtin prompt file for
+// the two stale substrings and fails, listing every offending file:line, if
+// any survive.
+//
+// Currently RED: 9 occurrences survive across 8 files (5 "Iterate implementing
+// feature" refs in the Feature family, 4 "Iterate fixing bug" refs in the
+// Bug-fix family). It turns GREEN once the fix phase rewrites the prose to the
+// current driver names.
+func TestBeadsIssuesPrompts_NoStaleIterateDriverNames(t *testing.T) {
+	builtinDir := "../../config/prompts/builtin"
+	staleNames := []string{"Iterate fixing bug", "Iterate implementing feature"}
+
+	var offenders []string
+	walkErr := filepath.WalkDir(builtinDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() || !strings.HasSuffix(d.Name(), ".prompt.yaml") {
+			return nil
+		}
+		data, rerr := os.ReadFile(path)
+		if rerr != nil {
+			t.Errorf("ReadFile(%s): %v", path, rerr)
+			return nil
+		}
+		relPath, _ := filepath.Rel(builtinDir, path)
+		relPath = filepath.ToSlash(relPath)
+		content := string(data)
+		for _, stale := range staleNames {
+			if strings.Contains(content, stale) {
+				for lineNo, line := range strings.Split(content, "\n") {
+					if strings.Contains(line, stale) {
+						offenders = append(offenders, fmt.Sprintf("%s:%d: contains stale driver-name reference %q", relPath, lineNo+1, stale))
+					}
+				}
+			}
+		}
+		return nil
+	})
+	if walkErr != nil {
+		t.Fatalf("WalkDir(%s): %v", builtinDir, walkErr)
+	}
+
+	if len(offenders) > 0 {
+		sort.Strings(offenders)
+		t.Errorf("found %d stale \"Iterate ...\" driver-name reference(s) (mitto-k20a) — the real, post-rename builtin driver names are \"Loop fixing bug\" and \"Loop implementing feature\":\n%s",
+			len(offenders), strings.Join(offenders, "\n"))
 	}
 }
 

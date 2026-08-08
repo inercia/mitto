@@ -27,7 +27,7 @@ prompt: |
 
   This is the **investigate** stage of the label-encoded bug-fix state machine
   (`researched` → `reproduced` → `fixed`). It is normally invoked by name from the
-  `Iterate fixing bug` driver (or by a list orchestrator), which selects this phase
+  `Loop fixing bug` driver (or by a list orchestrator), which selects this phase
   because the target bead has none of `researched`/`reproduced`/`fixed` yet.
 
   {{ $target := "" -}}

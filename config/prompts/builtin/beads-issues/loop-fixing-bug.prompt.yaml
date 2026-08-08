@@ -254,7 +254,7 @@ prompt: |
 
   ```
   mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", loop_enabled: false)
-  mitto_ui_notify(self_id: "{{ .Session.ID }}", title: "Iterate fixing bug — done", message: "<what was investigated/reproduced/fixed across runs>", style: "success")
+  mitto_ui_notify(self_id: "{{ .Session.ID }}", title: "Loop fixing bug — done", message: "<what was investigated/reproduced/fixed across runs>", style: "success")
   ```
 
   After stopping, do nothing further this run.
