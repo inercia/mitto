@@ -127,4 +127,41 @@ describe("EVENTS / COMMANDS / LEGACY_EVENTS shape", () => {
     expect(isCommandType(LEGACY_EVENTS.SYNC_SESSION)).toBe(true);
     expect(isCommandType("not_a_real_type")).toBe(false);
   });
+
+  test("isKnownEventType / isCommandType do not cross-recognize non-legacy values", () => {
+    // A command-only value (never emitted server->client) must not read as a
+    // known *event*, and an event-only value (never sent client->server)
+    // must not read as a known *command* — otherwise a host could route a
+    // request type through response-handling logic (or vice versa) without
+    // either predicate catching it.
+    for (const value of Object.values(COMMANDS)) {
+      expect(isKnownEventType(value)).toBe(false);
+    }
+    for (const value of Object.values(EVENTS)) {
+      expect(isCommandType(value)).toBe(false);
+    }
+  });
+
+  test("no key collisions between EVENTS, COMMANDS, and LEGACY_EVENTS", () => {
+    const keySets = [Object.keys(EVENTS), Object.keys(COMMANDS), Object.keys(LEGACY_EVENTS)];
+    const allKeys = keySets.flat();
+    expect(new Set(allKeys).size).toBe(allKeys.length);
+  });
+
+  test("every key is the SCREAMING_SNAKE_CASE form of its own value", () => {
+    // Guards against copy-paste drift where a value is updated but the key
+    // is left stale (or vice versa), which would silently break the
+    // predictable key<->wire-string mapping hosts rely on for autocomplete.
+    const toKey = (value) => value.toUpperCase();
+    for (const [maps, name] of [
+      [EVENTS, "EVENTS"],
+      [COMMANDS, "COMMANDS"],
+      [LEGACY_EVENTS, "LEGACY_EVENTS"],
+    ]) {
+      const mismatches = Object.entries(maps)
+        .filter(([key, value]) => key !== toKey(value))
+        .map(([key, value]) => `${name}.${key} = "${value}"`);
+      expect(mismatches).toEqual([]);
+    }
+  });
 });
