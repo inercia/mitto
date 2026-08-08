@@ -95,6 +95,42 @@ describe("request — body encoding", () => {
     expect(seenInit.headers["Content-Type"]).toBeUndefined();
   });
 
+  test("passes an ArrayBuffer body through untouched with no Content-Type", async () => {
+    let seenInit;
+    const buffer = new ArrayBuffer(4);
+    const config = configWithFetch(async (url, init) => {
+      seenInit = init;
+      return fakeResponse({ status: 204 });
+    });
+    await request(config, { method: "PUT", path: "/x", body: buffer });
+    expect(seenInit.body).toBe(buffer);
+    expect(seenInit.headers["Content-Type"]).toBeUndefined();
+  });
+
+  test("passes a TypedArray body through untouched instead of JSON-stringifying it", async () => {
+    let seenInit;
+    const bytes = new Uint8Array([1, 2, 3]);
+    const config = configWithFetch(async (url, init) => {
+      seenInit = init;
+      return fakeResponse({ status: 204 });
+    });
+    await request(config, { method: "PUT", path: "/x", body: bytes });
+    expect(seenInit.body).toBe(bytes);
+    expect(seenInit.headers["Content-Type"]).toBeUndefined();
+  });
+
+  test("passes a URLSearchParams body through untouched with no Content-Type", async () => {
+    let seenInit;
+    const params = new URLSearchParams({ a: "1" });
+    const config = configWithFetch(async (url, init) => {
+      seenInit = init;
+      return fakeResponse({ status: 204 });
+    });
+    await request(config, { method: "POST", path: "/x", body: params });
+    expect(seenInit.body).toBe(params);
+    expect(seenInit.headers["Content-Type"]).toBeUndefined();
+  });
+
   test("no body means no Content-Type header", async () => {
     let seenInit;
     const config = configWithFetch(async (url, init) => {

@@ -54,8 +54,12 @@ function isPassthroughBody(body) {
   if (typeof body === "string") return true;
   if (typeof FormData !== "undefined" && body instanceof FormData) return true;
   if (typeof Blob !== "undefined" && body instanceof Blob) return true;
-  if (typeof ArrayBuffer !== "undefined" && body instanceof ArrayBuffer)
-    return true;
+  if (typeof ArrayBuffer !== "undefined") {
+    // `isView` also covers TypedArrays and DataView, which are valid
+    // BodyInit values but are NOT `instanceof ArrayBuffer` — without this
+    // they would be JSON-stringified into `{"0":1,...}`.
+    if (body instanceof ArrayBuffer || ArrayBuffer.isView(body)) return true;
+  }
   if (typeof URLSearchParams !== "undefined" && body instanceof URLSearchParams)
     return true;
   // Duck-typed fallback for environments/mocks without the globals above.
