@@ -28,6 +28,8 @@ This directory contains technical documentation for developers working on Mitto.
 
 - **[Callbacks](callbacks.md)** — HTTP callback endpoints for triggering loop conversations on-demand, token management, security model
 
+- **[JavaScript Client Library](js-client-library.md)** — SDK design decision record: package layout, distribution via `go:embed`, environment-agnostic contract, public/internal boundary, semver policy, and stability promise
+
 ### Infrastructure
 
 - **[ACP Architecture](acp.md)** — Shared process model, concurrent RPC handling, MultiplexClient routing, auxiliary sessions, content blocks, multi-tier process GC (loop suspend, memory-bloat recycling), and the prompt inactivity watchdog
@@ -75,6 +77,7 @@ This directory contains technical documentation for developers working on Mitto.
 | Workspace API         | [Workspaces](workspaces.md)                            | Workspace REST API                                    |
 | Action buttons        | [Follow-up Suggestions](follow-up-suggestions.md)      | Persistence, Lifecycle                                |
 | Callback endpoints    | [Callbacks](callbacks.md)                              | Public API, Token Lifecycle, Security                 |
+| SDK design            | [JS Client Library](js-client-library.md)              | Layout, Distribution, Contract, Stability Promise      |
 | MCP debugging         | [MCP Servers](mcp.md)                                  | Global Debug Server                                   |
 | Session MCP           | [MCP Servers](mcp.md)                                  | Per-Session MCP Servers                               |
 | Settings API          | [MCP Servers](mcp.md)                                  | Advanced Settings API                                 |
