@@ -51,6 +51,29 @@ func TestConstants(t *testing.T) {
 	if AccountExternalAccess != "external-access" {
 		t.Errorf("AccountExternalAccess = %q, want %q", AccountExternalAccess, "external-access")
 	}
+	if AccountSharedToken != "shared-token" {
+		t.Errorf("AccountSharedToken = %q, want %q", AccountSharedToken, "shared-token")
+	}
+}
+
+// TestNoopStore_SharedTokenWrappers verifies the GetSharedToken/SetSharedToken/
+// DeleteSharedToken package-level convenience wrappers (mitto-7gta.26) delegate
+// to the same account/service pair on an unsupported-platform (NoopStore)
+// backend, without touching any real credential store.
+func TestNoopStore_SharedTokenWrappers(t *testing.T) {
+	prev := store
+	defer func() { store = prev }()
+	store = &NoopStore{}
+
+	if _, err := GetSharedToken(); err != ErrNotSupported {
+		t.Errorf("GetSharedToken() error = %v, want %v", err, ErrNotSupported)
+	}
+	if err := SetSharedToken("tok"); err != ErrNotSupported {
+		t.Errorf("SetSharedToken() error = %v, want %v", err, ErrNotSupported)
+	}
+	if err := DeleteSharedToken(); err != ErrNotSupported {
+		t.Errorf("DeleteSharedToken() error = %v, want %v", err, ErrNotSupported)
+	}
 }
 
 func TestErrors(t *testing.T) {

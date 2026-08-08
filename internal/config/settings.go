@@ -980,35 +980,51 @@ func LoadSettings() (*Config, error) {
 		}
 	}
 
-	// Handle the shared bearer token (mitto-7gta.26), used by programmatic clients
-	// (SDK, CLI) as an additional credential accepted alongside Simple/Cloudflare auth.
-	// Resolution order: env var MITTO_SHARED_TOKEN (headless/CI, wins outright, never
-	// persisted) -> settings.json value (migrated to keychain, then blanked on disk)
-	// -> keychain.
+	// Handle the shared bearer token (mitto-7gta.26). See resolveSharedToken.
+	resolveSharedToken(cfg, &settings)
+
+	return cfg, nil
+}
+
+// resolveSharedToken resolves the shared bearer token (mitto-7gta.26), used by
+// programmatic clients (SDK, CLI) as an additional credential accepted
+// alongside Simple/Cloudflare auth. It mutates cfg.Web.Auth.SharedToken.
+//
+// Resolution order: env var MITTO_SHARED_TOKEN (headless/CI, wins outright,
+// never persisted) -> settings.json value (migrated to keychain, then blanked
+// on disk) -> keychain. settings is the on-disk-backed struct used to persist
+// the blank-out after a settings.json->keychain migration; it must be the
+// same Settings value cfg was derived from (via ToConfig()) so the migration
+// helper can save it.
+func resolveSharedToken(cfg *Config, settings *Settings) {
 	if envToken := os.Getenv("MITTO_SHARED_TOKEN"); envToken != "" {
 		if cfg.Web.Auth == nil {
 			cfg.Web.Auth = &WebAuth{}
 		}
 		cfg.Web.Auth.SharedToken = envToken
-	} else if cfg.Web.Auth != nil && secrets.IsSupported() {
-		if cfg.Web.Auth.SharedToken != "" {
-			// Token found in settings.json - migrate it to keychain
-			if err := migrateSharedTokenToKeychain(&settings, cfg); err != nil {
-				// Log warning but don't fail - token still works from settings
-				// The migration will be attempted again on next load
-				_ = err // Ignore migration error, token is still usable
-			}
-		} else {
-			// No token in settings.json - try to load from keychain
-			token, err := secrets.GetSharedToken()
-			if err == nil && token != "" {
-				cfg.Web.Auth.SharedToken = token
-			}
-			// If token not found in Keychain either, leave it empty (feature off)
-		}
+		return
 	}
 
-	return cfg, nil
+	if cfg.Web.Auth == nil || !secrets.IsSupported() {
+		return
+	}
+
+	if cfg.Web.Auth.SharedToken != "" {
+		// Token found in settings.json - migrate it to keychain
+		if err := migrateSharedTokenToKeychain(settings, cfg); err != nil {
+			// Log warning but don't fail - token still works from settings
+			// The migration will be attempted again on next load
+			_ = err // Ignore migration error, token is still usable
+		}
+		return
+	}
+
+	// No token in settings.json - try to load from keychain
+	token, err := secrets.GetSharedToken()
+	if err == nil && token != "" {
+		cfg.Web.Auth.SharedToken = token
+	}
+	// If token not found in Keychain either, leave it empty (feature off)
 }
 
 // migrateSettingsFileIfNeeded performs a one-time, idempotent rewrite of legacy
@@ -1156,6 +1172,17 @@ func migrateSharedTokenToKeychain(settings *Settings, cfg *Config) error {
 		return fmt.Errorf("failed to save shared token to keychain: %w", err)
 	}
 
+	// cfg.Web.Auth and settings.Web.Auth alias the SAME *WebAuth when cfg was
+	// derived via settings.ToConfig() (ToConfig copies the WebConfig struct by
+	// value, but Auth is a pointer field). Detach cfg's copy BEFORE blanking
+	// settings' copy below, so the in-memory cfg returned to the caller keeps
+	// the token for this process's lifetime -- only the on-disk settings.json
+	// copy must lose the secret.
+	if cfg.Web.Auth == settings.Web.Auth {
+		authCopy := *cfg.Web.Auth
+		cfg.Web.Auth = &authCopy
+	}
+
 	// Clear token from settings and save
 	if settings.Web.Auth != nil {
 		settings.Web.Auth.SharedToken = ""
@@ -1290,6 +1317,14 @@ func loadSettingsWithFallback(withKeychain bool) (*LoadResult, error) {
 			// Non-fatal, just log and continue
 			_ = err
 		}
+		// Resolve the shared bearer token (mitto-7gta.26) the same way as
+		// LoadSettings. This MUST happen here too -- LoadSettingsWithFallback
+		// (not LoadSettings) is the function actually used by the CLI/app at
+		// startup (internal/cmd/root.go, cmd/mitto-app/main.go), so without
+		// this call MITTO_SHARED_TOKEN and the settings.json/keychain fallback
+		// would never be resolved in production. Skipped when !withKeychain,
+		// mirroring the password skip for headless non-web commands.
+		resolveSharedToken(settingsCfg, &settings)
 	}
 
 	// If no RC file, return settings-only config

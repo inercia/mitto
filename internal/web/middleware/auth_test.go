@@ -6,6 +6,7 @@ package middleware
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -1177,6 +1178,393 @@ func TestAuthManager_CleanupExpiredSessions(t *testing.T) {
 	_, valid = am.ValidateSession(session.Token)
 	if !valid {
 		t.Error("Session should still be valid after cleanup")
+	}
+}
+
+// --- Shared bearer token tests (mitto-7gta.26) ---
+
+func TestAuthManager_HasSharedToken(t *testing.T) {
+	tests := []struct {
+		name   string
+		config *config.WebAuth
+		want   bool
+	}{
+		{"nil config", nil, false},
+		{"no token configured", &config.WebAuth{Simple: &config.SimpleAuth{Username: "u", Password: "p"}}, false},
+		{"empty token string", &config.WebAuth{SharedToken: ""}, false},
+		{"token configured", &config.WebAuth{SharedToken: "s3cr3t"}, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			am := NewAuthManager(tt.config)
+			defer am.Close()
+			if got := am.HasSharedToken(); got != tt.want {
+				t.Errorf("HasSharedToken() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestAuthManager_ValidateSharedToken(t *testing.T) {
+	tests := []struct {
+		name   string
+		config *config.WebAuth
+		tok    string
+		want   bool
+	}{
+		{"valid token", &config.WebAuth{SharedToken: "s3cr3t"}, "s3cr3t", true},
+		{"wrong token", &config.WebAuth{SharedToken: "s3cr3t"}, "wrong", false},
+		{"empty tok against configured token", &config.WebAuth{SharedToken: "s3cr3t"}, "", false},
+		{"no token configured", &config.WebAuth{}, "s3cr3t", false},
+		// An empty configured token must never match an empty presented token.
+		{"empty configured token, empty presented", &config.WebAuth{SharedToken: ""}, "", false},
+		{"nil config", nil, "anything", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			am := NewAuthManager(tt.config)
+			defer am.Close()
+			if got := am.ValidateSharedToken(tt.tok); got != tt.want {
+				t.Errorf("ValidateSharedToken(%q) = %v, want %v", tt.tok, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestExtractBearerToken(t *testing.T) {
+	tests := []struct {
+		name   string
+		header string
+		want   string
+	}{
+		{"valid bearer token", "Bearer abc123", "abc123"},
+		{"lowercase scheme", "bearer abc123", "abc123"},
+		{"mixed case scheme", "BeArEr abc123", "abc123"},
+		{"no header", "", ""},
+		{"wrong scheme", "Basic abc123", ""},
+		{"bearer with no token", "Bearer ", ""},
+		{"bearer with only whitespace token", "Bearer    ", ""},
+		{"extra whitespace around token", "Bearer  abc123  ", "abc123"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest("GET", "/", nil)
+			if tt.header != "" {
+				req.Header.Set("Authorization", tt.header)
+			}
+			if got := extractBearerToken(req); got != tt.want {
+				t.Errorf("extractBearerToken(%q) = %q, want %q", tt.header, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestAuthManager_ValidateBearerRequest(t *testing.T) {
+	am := NewAuthManager(&config.WebAuth{SharedToken: "s3cr3t"})
+	defer am.Close()
+
+	tests := []struct {
+		name   string
+		header string
+		want   bool
+	}{
+		{"valid token", "Bearer s3cr3t", true},
+		{"invalid token", "Bearer wrong", false},
+		{"no header", "", false},
+		{"wrong scheme", "Basic s3cr3t", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest("POST", "/api/test", nil)
+			if tt.header != "" {
+				req.Header.Set("Authorization", tt.header)
+			}
+			if got := am.ValidateBearerRequest(req); got != tt.want {
+				t.Errorf("ValidateBearerRequest() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+
+	// No token configured at all: ValidateBearerRequest must return false even
+	// with a well-formed header, and must not panic on a nil-Simple config.
+	amNoToken := NewAuthManager(&config.WebAuth{Simple: &config.SimpleAuth{Username: "u", Password: "p"}})
+	defer amNoToken.Close()
+	req := httptest.NewRequest("POST", "/api/test", nil)
+	req.Header.Set("Authorization", "Bearer whatever")
+	if amNoToken.ValidateBearerRequest(req) {
+		t.Error("ValidateBearerRequest() = true when no shared token is configured, want false")
+	}
+}
+
+// TestAuthMiddleware_SharedToken_ValidGrantsAccess verifies that a valid bearer
+// token is accepted by AuthMiddleware even without a session cookie, sets the
+// "token:shared" identity, and requires no CSRF/session state.
+func TestAuthMiddleware_SharedToken_ValidGrantsAccess(t *testing.T) {
+	am := NewAuthManager(&config.WebAuth{
+		Simple:      &config.SimpleAuth{Username: "admin", Password: "password"},
+		SharedToken: "s3cr3t-token",
+	})
+	defer am.Close()
+	am.SetAPIPrefix("")
+
+	var gotUser any
+	testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotUser = r.Context().Value(ContextKeyAuthUser)
+		w.WriteHeader(http.StatusOK)
+	})
+	middleware := am.AuthMiddleware(testHandler)
+
+	req := httptest.NewRequest("GET", "/api/sessions", nil)
+	req.RemoteAddr = "203.0.113.1:54321"
+	req.Header.Set("Authorization", "Bearer s3cr3t-token")
+	req = req.WithContext(context.WithValue(req.Context(), ContextKeyExternalConnection, true))
+
+	w := httptest.NewRecorder()
+	middleware.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body = %s", w.Code, http.StatusOK, w.Body.String())
+	}
+	if gotUser != "token:shared" {
+		t.Errorf("ContextKeyAuthUser = %v, want %q", gotUser, "token:shared")
+	}
+}
+
+// TestAuthMiddleware_SharedToken_InvalidFallsThroughToUnauthorized verifies an
+// invalid bearer token does not grant access and degrades to the existing
+// session/Cloudflare checks, which reject the unauthenticated request.
+func TestAuthMiddleware_SharedToken_InvalidFallsThroughToUnauthorized(t *testing.T) {
+	am := NewAuthManager(&config.WebAuth{
+		Simple:      &config.SimpleAuth{Username: "admin", Password: "password"},
+		SharedToken: "s3cr3t-token",
+	})
+	defer am.Close()
+	am.SetAPIPrefix("")
+
+	handlerCalled := false
+	testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handlerCalled = true
+		w.WriteHeader(http.StatusOK)
+	})
+	middleware := am.AuthMiddleware(testHandler)
+
+	req := httptest.NewRequest("GET", "/api/sessions", nil)
+	req.RemoteAddr = "203.0.113.1:54321"
+	req.Header.Set("Authorization", "Bearer wrong-token")
+	req = req.WithContext(context.WithValue(req.Context(), ContextKeyExternalConnection, true))
+
+	w := httptest.NewRecorder()
+	middleware.ServeHTTP(w, req)
+
+	if handlerCalled {
+		t.Error("AuthMiddleware should NOT call handler for an invalid bearer token")
+	}
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusUnauthorized)
+	}
+}
+
+// TestAuthMiddleware_SharedToken_AbsentHeaderUnchangedBehaviour verifies that
+// when no Authorization header is present at all, behaviour is identical to
+// before the shared-token feature existed (zero behaviour change).
+func TestAuthMiddleware_SharedToken_AbsentHeaderUnchangedBehaviour(t *testing.T) {
+	am := NewAuthManager(&config.WebAuth{
+		Simple:      &config.SimpleAuth{Username: "admin", Password: "password"},
+		SharedToken: "s3cr3t-token",
+	})
+	defer am.Close()
+	am.SetAPIPrefix("")
+
+	testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	middleware := am.AuthMiddleware(testHandler)
+
+	req := httptest.NewRequest("GET", "/api/sessions", nil)
+	req.RemoteAddr = "203.0.113.1:54321"
+	req = req.WithContext(context.WithValue(req.Context(), ContextKeyExternalConnection, true))
+
+	w := httptest.NewRecorder()
+	middleware.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusUnauthorized)
+	}
+}
+
+// TestAuthMiddleware_SharedToken_NotConfiguredIgnoresHeader verifies that when
+// no shared token is configured at all, a bearer header is simply ignored
+// (the token-only-config-must-not-enable-auth requirement).
+func TestAuthMiddleware_SharedToken_NotConfiguredIgnoresHeader(t *testing.T) {
+	am := NewAuthManager(&config.WebAuth{
+		Simple: &config.SimpleAuth{Username: "admin", Password: "password"},
+		// SharedToken intentionally left empty.
+	})
+	defer am.Close()
+	am.SetAPIPrefix("")
+
+	handlerCalled := false
+	testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handlerCalled = true
+		w.WriteHeader(http.StatusOK)
+	})
+	middleware := am.AuthMiddleware(testHandler)
+
+	req := httptest.NewRequest("GET", "/api/sessions", nil)
+	req.RemoteAddr = "203.0.113.1:54321"
+	req.Header.Set("Authorization", "Bearer whatever")
+	req = req.WithContext(context.WithValue(req.Context(), ContextKeyExternalConnection, true))
+
+	w := httptest.NewRecorder()
+	middleware.ServeHTTP(w, req)
+
+	if handlerCalled {
+		t.Error("AuthMiddleware should NOT call handler when no shared token is configured")
+	}
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusUnauthorized)
+	}
+}
+
+// TestAuthMiddleware_SharedToken_TokenOnlyDoesNotEnableAuth verifies that a
+// configured shared token, on its own (no Simple/Cloudflare), does not flip
+// IsEnabled() -- a token alone must not arm the external listener.
+func TestAuthMiddleware_SharedToken_TokenOnlyDoesNotEnableAuth(t *testing.T) {
+	am := NewAuthManager(&config.WebAuth{SharedToken: "s3cr3t-token"})
+	defer am.Close()
+
+	if am.IsEnabled() {
+		t.Error("IsEnabled() = true with only a shared token configured, want false")
+	}
+}
+
+// TestAuthMiddleware_SharedToken_RateLimiting verifies repeated invalid bearer
+// tokens trip the SAME per-IP rate limiter used by password login, and that a
+// valid token is rejected once the lockout engages (shared lockout, not a
+// separate counter that could be used to sidestep password lockout).
+func TestAuthMiddleware_SharedToken_RateLimiting(t *testing.T) {
+	am := NewAuthManager(&config.WebAuth{
+		Simple:      &config.SimpleAuth{Username: "admin", Password: "password"},
+		SharedToken: "s3cr3t-token",
+	})
+	defer am.Close()
+	am.SetAPIPrefix("")
+
+	// Shorter settings for a fast, deterministic test.
+	am.rateLimiter.Close()
+	am.rateLimiter = NewAuthRateLimiterWithConfig(3, time.Minute, 5*time.Minute)
+
+	testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	middleware := am.AuthMiddleware(testHandler)
+
+	const ip = "203.0.113.50:12345"
+
+	// Unlike HandleLogin (which checks RecordFailure's return value and
+	// returns 429 on the very request that reaches maxFailures), the
+	// AuthMiddleware bearer-token branch gates on IsBlocked() BEFORE
+	// validating and only calls RecordFailure() afterwards without
+	// inspecting its return. So the 3 failing attempts that reach
+	// maxFailures=3 each fall through to the downstream 401, and the
+	// lockout set by the 3rd failure is only observed starting with the
+	// NEXT (4th) request. This is a real, intentional-looking asymmetry
+	// with the login path (recorded here rather than "fixed" in the Test
+	// phase); see the accompanying bd comment.
+	for i := 0; i < 3; i++ {
+		req := httptest.NewRequest("GET", "/api/sessions", nil)
+		req.RemoteAddr = ip
+		req.Header.Set("Authorization", "Bearer wrong-token")
+		req = req.WithContext(context.WithValue(req.Context(), ContextKeyExternalConnection, true))
+		w := httptest.NewRecorder()
+		middleware.ServeHTTP(w, req)
+
+		if w.Code != http.StatusUnauthorized {
+			t.Errorf("attempt %d: status = %d, want %d", i+1, w.Code, http.StatusUnauthorized)
+		}
+	}
+
+	// The 4th request observes the lockout set by the 3rd failure.
+	reqBlocked := httptest.NewRequest("GET", "/api/sessions", nil)
+	reqBlocked.RemoteAddr = ip
+	reqBlocked.Header.Set("Authorization", "Bearer wrong-token")
+	reqBlocked = reqBlocked.WithContext(context.WithValue(reqBlocked.Context(), ContextKeyExternalConnection, true))
+	wBlocked := httptest.NewRecorder()
+	middleware.ServeHTTP(wBlocked, reqBlocked)
+
+	if wBlocked.Code != http.StatusTooManyRequests {
+		t.Errorf("4th attempt: status = %d, want %d", wBlocked.Code, http.StatusTooManyRequests)
+	}
+	if wBlocked.Header().Get("Retry-After") == "" {
+		t.Error("missing Retry-After header on rate-limited response")
+	}
+
+	// Now even a VALID token from the same IP is rejected while locked out.
+	req := httptest.NewRequest("GET", "/api/sessions", nil)
+	req.RemoteAddr = ip
+	req.Header.Set("Authorization", "Bearer s3cr3t-token")
+	req = req.WithContext(context.WithValue(req.Context(), ContextKeyExternalConnection, true))
+	w := httptest.NewRecorder()
+	middleware.ServeHTTP(w, req)
+
+	if w.Code != http.StatusTooManyRequests {
+		t.Errorf("valid token during lockout: status = %d, want %d", w.Code, http.StatusTooManyRequests)
+	}
+
+	// A different IP is unaffected and the valid token still works.
+	req2 := httptest.NewRequest("GET", "/api/sessions", nil)
+	req2.RemoteAddr = "203.0.113.99:12345"
+	req2.Header.Set("Authorization", "Bearer s3cr3t-token")
+	req2 = req2.WithContext(context.WithValue(req2.Context(), ContextKeyExternalConnection, true))
+	w2 := httptest.NewRecorder()
+	middleware.ServeHTTP(w2, req2)
+
+	if w2.Code != http.StatusOK {
+		t.Errorf("different IP with valid token: status = %d, want %d", w2.Code, http.StatusOK)
+	}
+}
+
+// TestAuthMiddleware_SharedToken_NeverLogsTokenValue captures slog output
+// during valid and invalid bearer-token requests and asserts the raw token
+// value never appears in any log line, only client_ip/path/decision.
+func TestAuthMiddleware_SharedToken_NeverLogsTokenValue(t *testing.T) {
+	const secretToken = "super-secret-do-not-log-xyz789"
+
+	am := NewAuthManager(&config.WebAuth{
+		Simple:      &config.SimpleAuth{Username: "admin", Password: "password"},
+		SharedToken: secretToken,
+	})
+	defer am.Close()
+	am.SetAPIPrefix("")
+
+	testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	middleware := am.AuthMiddleware(testHandler)
+
+	// logging.Auth() resolves to slog.Default() whenever logging.Initialize has
+	// not set a global logger (the case in this test binary), so redirecting
+	// the process-wide default captures everything AuthMiddleware logs.
+	var buf strings.Builder
+	prevDefault := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	defer slog.SetDefault(prevDefault)
+
+	for _, hdr := range []string{"Bearer " + secretToken, "Bearer wrong-" + secretToken} {
+		req := httptest.NewRequest("GET", "/api/sessions", nil)
+		req.RemoteAddr = "203.0.113.1:54321"
+		req.Header.Set("Authorization", hdr)
+		req = req.WithContext(context.WithValue(req.Context(), ContextKeyExternalConnection, true))
+		w := httptest.NewRecorder()
+		middleware.ServeHTTP(w, req)
+	}
+
+	if strings.Contains(buf.String(), secretToken) {
+		t.Errorf("log output leaked the shared token value:\n%s", buf.String())
 	}
 }
 
