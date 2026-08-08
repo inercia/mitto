@@ -476,7 +476,8 @@ prompt menus field contains unrecognised token(s); prompt will not appear in the
   same prompt does not repeat it.
 - Implemented in `internal/prompts/menus.go` (`KnownMenuTokens`,
   `WarnUnknownMenus`), wired into prompt-file loading (`ParsePromptFile`) and
-  both inline-prompt config paths (`settings.json`/`.yaml`, `.mittorc`).
+  all three inline-prompt config paths (top-level `settings.json`/`.yaml`
+  prompts, per-ACP-server `prompts:` blocks, and `.mittorc`).
 - A guard test, `TestBuiltinPrompts_MenusTokensRecognized`, fails the build if
   any builtin prompt under `config/prompts/builtin/` uses an unrecognised
   token. `TestMenus_KnownMenusMatchesFrontendRegistry` keeps this list in sync

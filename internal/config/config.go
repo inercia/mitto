@@ -1622,6 +1622,10 @@ func Parse(data []byte) (*Config, error) {
 				if p.Enabled != nil && !*p.Enabled {
 					continue
 				}
+				// Warn (non-fatal) when menus contains an unrecognised token (mitto-rjg6).
+				// The source label names the owning ACP server: no real on-disk path is
+				// threaded through this call site (per-ACP-server inline prompts).
+				WarnUnknownMenus(p.Name, "settings acp:"+name, p.Menus)
 				loop := decodeConfigInlineLoop(p.Name, p.Loop)
 				wp := WebPrompt{
 					Name:            p.Name,

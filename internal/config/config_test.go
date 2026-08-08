@@ -1,7 +1,9 @@
 package config
 
 import (
+	"bytes"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -420,6 +422,62 @@ web:
 	// Check global prompts are still parsed
 	if len(cfg.Prompts) != 1 {
 		t.Errorf("Prompts count = %d, want 1", len(cfg.Prompts))
+	}
+}
+
+// TestParse_InlineMenus_WarnsOnUnknownTokenOnEveryPath pins mitto-rjg6 across
+// all THREE inline-prompt sources Parse handles: the top-level prompts: block
+// and the per-ACP-server prompts: block (the latter was initially missed —
+// only the top-level and .mittorc paths were wired). Each must emit a WARN
+// naming the prompt and the offending token while still loading the prompt.
+func TestParse_InlineMenus_WarnsOnUnknownTokenOnEveryPath(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+
+	yaml := `
+acp:
+  - auggie:
+      command: "auggie --acp"
+      prompts:
+        - name: "Per Server Typo"
+          prompt: "body"
+          menus: "prompts, conversations"
+        - name: "Per Server Valid"
+          prompt: "body"
+          menus: "internal"
+prompts:
+  - name: "Top Level Typo"
+    prompt: "body"
+    menus: "prompts, beadsIssue"
+  - name: "Top Level Valid"
+    prompt: "body"
+    menus: "prompts, !promptsLoop"
+`
+	cfg, err := Parse([]byte(yaml))
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	// Non-fatal: every prompt still loads, typo or not.
+	if got := len(cfg.ACPServers[0].Prompts); got != 2 {
+		t.Errorf("per-server prompts count = %d, want 2 (warning must not drop prompts)", got)
+	}
+	if got := len(cfg.Prompts); got != 2 {
+		t.Errorf("top-level prompts count = %d, want 2 (warning must not drop prompts)", got)
+	}
+
+	out := buf.String()
+	for _, want := range []string{"Per Server Typo", "conversations", "Top Level Typo", "beadsIssue"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("Parse did not warn as expected; missing %q in log: %s", want, out)
+		}
+	}
+	for _, unwanted := range []string{"Per Server Valid", "Top Level Valid"} {
+		if strings.Contains(out, unwanted) {
+			t.Errorf("Parse warned for a valid menus value (%s); log: %s", unwanted, out)
+		}
 	}
 }
 
