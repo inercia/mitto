@@ -662,3 +662,48 @@ func TestIsMCPInitTimeout(t *testing.T) {
 		})
 	}
 }
+
+// TestIsContextTooLargeError_mitto_2efc_UncorroboratedInvalidArgument
+// reproduces mitto-2efc: IsContextTooLargeError's mitto-k4x pair-match on
+// `"httpStatus":400` + `"apiStatus":"invalidArgument"` is unconditional, with
+// no requirement that the payload actually mention a token/length overflow.
+// This misclassifies ANY upstream 400 invalidArgument (e.g. a deferred
+// model-switch race, or any other malformed-request 400) as
+// contextWindowExceeded, sending the loop runner down the wrong recovery path
+// (3-strike context-window ceiling instead of the generic 8-strike delivery
+// failure ceiling) and producing a misleading stopped_reason on the bead.
+//
+// This test is expected to FAIL until IsContextTooLargeError requires
+// corroborating evidence (a token/length signal in the payload) before
+// classifying an uncorroborated 400/invalidArgument as context-too-large.
+func TestIsContextTooLargeError_mitto_2efc_UncorroboratedInvalidArgument(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{
+			name: "uncorroborated 400 invalidArgument (no token/length signal) is NOT context-too-large",
+			err:  fmt.Errorf(`{"code":-32603,"message":"Internal error","data":{"httpStatus":400,"apiStatus":"invalidArgument","details":"model claude-opus-5 is not yet available for this account"}}`),
+			want: false,
+		},
+		{
+			name: "400 invalidArgument corroborated by a token/length phrase IS still context-too-large",
+			err:  fmt.Errorf(`{"code":-32603,"message":"Internal error","data":{"httpStatus":400,"apiStatus":"invalidArgument","details":"request exceeds maximum token length"}}`),
+			want: true,
+		},
+		{
+			name: "HTTP 413 is unaffected by the corroboration requirement",
+			err:  fmt.Errorf(`HTTP error: 413 Payload Too Large`),
+			want: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsContextTooLargeError(tt.err); got != tt.want {
+				t.Errorf("IsContextTooLargeError(%v) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
+	}
+}

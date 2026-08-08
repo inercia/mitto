@@ -374,22 +374,44 @@ var status413Regex = regexp.MustCompile(`(?i)(?:HTTP error:\s*|"?(?:http)?status
 // mitto-k4x: Augment's chat-stream endpoint returns HTTP 400 with
 // apiStatus="invalidArgument" for oversized/malformed context-flush payloads
 // (not HTTP 413). Both substrings are required so unrelated 400s do not match.
+//
+// mitto-2efc: that pair-match alone is too broad — ANY upstream 400
+// invalidArgument (e.g. a deferred model-switch race, or any other
+// malformed-request 400 unrelated to context size) was being classified as
+// context-too-large. The 400/invalidArgument pair must now ALSO be
+// corroborated by an actual token/length overflow signal somewhere in the
+// payload before it is treated as context-too-large; otherwise the error is
+// reported verbatim (via the generic delivery-failure path) instead of
+// masquerading as contextWindowExceeded.
 func IsContextTooLargeError(err error) bool {
 	if err == nil {
 		return false
 	}
 	errMsg := err.Error()
 	errMsgLower := strings.ToLower(errMsg)
-	return status413Regex.MatchString(errMsg) ||
+	if status413Regex.MatchString(errMsg) ||
 		strings.Contains(errMsgLower, "context too large") ||
 		strings.Contains(errMsgLower, "context_too_long") ||
 		strings.Contains(errMsgLower, "context_length_exceeded") ||
 		strings.Contains(errMsgLower, "context window is full") ||
 		strings.Contains(errMsgLower, "prompt is too long") ||
 		strings.Contains(errMsgLower, "maximum context length") ||
-		strings.Contains(errMsgLower, "context too large for model") ||
-		(strings.Contains(errMsgLower, `"httpstatus":400`) &&
-			strings.Contains(errMsgLower, `"apistatus":"invalidargument"`))
+		strings.Contains(errMsgLower, "context too large for model") {
+		return true
+	}
+	if strings.Contains(errMsgLower, `"httpstatus":400`) &&
+		strings.Contains(errMsgLower, `"apistatus":"invalidargument"`) {
+		// Require corroborating evidence of a token/length overflow before
+		// treating a generic 400/invalidArgument as context-too-large
+		// (mitto-2efc).
+		return strings.Contains(errMsgLower, "token") ||
+			strings.Contains(errMsgLower, "too long") ||
+			strings.Contains(errMsgLower, "maximum length") ||
+			strings.Contains(errMsgLower, "length exceeds") ||
+			strings.Contains(errMsgLower, "too large") ||
+			strings.Contains(errMsgLower, "context")
+	}
+	return false
 }
 
 // isAgentBusyError reports whether err is a saturated/overloaded shared ACP

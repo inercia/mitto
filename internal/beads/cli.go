@@ -418,6 +418,9 @@ func (c *cliClient) Update(ctx context.Context, dir string, p UpdateParams) erro
 	if p.Notes != nil {
 		args = append(args, "--notes", *p.Notes)
 	}
+	for _, key := range p.UnsetMetadata {
+		args = append(args, "--unset-metadata", key)
+	}
 	_, err := c.runRaw(ctx, defaultTimeout, dir, args...)
 	return err
 }

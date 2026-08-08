@@ -78,16 +78,20 @@ type fakePromptDeps struct {
 	// completeHandshakeOrAbort watchdog test (mitto-f51).
 	handshakeBlock chan struct{}
 	// handshakeDeadline is returned by pdRecommendedHandshakeDeadline (mitto-f51).
-	handshakeDeadline      time.Duration
-	hasRecorder            bool
-	recordedErrorEvents    []string
-	nextSeq                int64
-	refreshSeqCalls        int
-	promptingResetCalls    int
-	streamingChanges       []bool
-	hasACPConn             bool
-	acpNewSessionID        string
-	acpNewSessionErr       error
+	handshakeDeadline   time.Duration
+	hasRecorder         bool
+	recordedErrorEvents []string
+	nextSeq             int64
+	refreshSeqCalls     int
+	promptingResetCalls int
+	streamingChanges    []bool
+	hasACPConn          bool
+	acpNewSessionID     string
+	acpNewSessionErr    error
+	// acpNewSessionCalls counts pdACPConnNewSession invocations (mitto-2efc:
+	// asserts the new-session fallback is/isn't reached after an in-place
+	// context-flush failure).
+	acpNewSessionCalls     int
 	agentModels            *SessionModelState
 	resolvedModelTags      []string
 	modelTagsByName        map[string][]string // when set, pdResolveModelTags keys off the model name
@@ -291,6 +295,9 @@ func (f *fakePromptDeps) pdNotifyStreamingStateChanged(active bool) {
 }
 func (f *fakePromptDeps) pdHasACPConn() bool { return f.hasACPConn }
 func (f *fakePromptDeps) pdACPConnNewSession(_ context.Context, _ string) (string, error) {
+	f.mu.Lock()
+	f.acpNewSessionCalls++
+	f.mu.Unlock()
 	return f.acpNewSessionID, f.acpNewSessionErr
 }
 func (f *fakePromptDeps) pdGetAgentModels() *SessionModelState { return f.agentModels }
@@ -1862,10 +1869,15 @@ func TestPromptDispatcher_CreateFreshContextSession_FlushErrorDoesNotAbort(t *te
 	d := newFakePromptDeps()
 	d.contextFlushCommand = "/clear"
 	d.flushContextInPlaceErr = errors.New("flush failed")
+	// hasACPConn defaults to false — the new-session fallback (mitto-2efc) is
+	// unreachable here, so the observable behavior (return "") is unchanged
+	// from before the fix. See TestPromptDispatcher_CreateFreshContextSession_FlushError_FallsBackToNewSession
+	// for the case where the fallback IS available.
 
 	id := p.createFreshContextSession(d, PromptMeta{FreshContext: true}, 0)
 
-	// Must still return "" (continue on existing session) even on flush error.
+	// Must still return "" (continue on existing session) even on flush error,
+	// since no ACP connection is available to create a fresh session.
 	if id != "" {
 		t.Fatalf("expected empty id even on flush error, got %q", id)
 	}
@@ -1875,6 +1887,67 @@ func TestPromptDispatcher_CreateFreshContextSession_FlushErrorDoesNotAbort(t *te
 	// mitto-so19: no pill should be recorded when the flush command failed.
 	if len(d.recordedSessionChanges) != 0 {
 		t.Fatalf("expected no session change on flush error, got %v", d.recordedSessionChanges)
+	}
+}
+
+// TestPromptDispatcher_CreateFreshContextSession_FlushError_FallsBackToNewSession
+// reproduces the fix for mitto-2efc defect 3: when the in-place context flush
+// fails AND a direct ACP connection is available, createFreshContextSession
+// must fall through to the new-ACP-session fallback instead of unconditionally
+// returning "" and leaving the (possibly wedged) session in place.
+func TestPromptDispatcher_CreateFreshContextSession_FlushError_FallsBackToNewSession(t *testing.T) {
+	p := promptDispatcher{}
+	d := newFakePromptDeps()
+	d.contextFlushCommand = "/clear"
+	d.flushContextInPlaceErr = errors.New("flush failed")
+	d.hasACPConn = true
+	d.acpNewSessionID = "fresh-after-flush-fail"
+
+	id := p.createFreshContextSession(d, PromptMeta{FreshContext: true}, 0)
+
+	if id != "fresh-after-flush-fail" {
+		t.Fatalf("expected new-session fallback id, got %q", id)
+	}
+	if !d.flushContextCalled {
+		t.Fatal("expected pdFlushContextInPlace to be called")
+	}
+	if d.acpNewSessionCalls != 1 {
+		t.Fatalf("acpNewSessionCalls = %d, want 1 (fallback must be invoked)", d.acpNewSessionCalls)
+	}
+	if len(d.recordedSessionChanges) != 1 {
+		t.Fatalf("expected 1 context_cleared pill on fallback success, got %d: %v", len(d.recordedSessionChanges), d.recordedSessionChanges)
+	}
+	if sc := d.recordedSessionChanges[0]; sc.Kind != "context_cleared" || sc.Value != "new_session" {
+		t.Fatalf("unexpected pill: %+v", sc)
+	}
+}
+
+// TestPromptDispatcher_CreateFreshContextSession_FlushSuccess_NoNewSessionFallback
+// asserts the inverse of the above: a successful in-place flush must NOT reach
+// the new-session fallback, even when an ACP connection is available.
+func TestPromptDispatcher_CreateFreshContextSession_FlushSuccess_NoNewSessionFallback(t *testing.T) {
+	p := promptDispatcher{}
+	d := newFakePromptDeps()
+	d.contextFlushCommand = "/clear"
+	d.hasACPConn = true
+	d.acpNewSessionID = "should-not-be-used"
+
+	id := p.createFreshContextSession(d, PromptMeta{FreshContext: true}, 0)
+
+	if id != "" {
+		t.Fatalf("expected empty id (in-place path succeeded), got %q", id)
+	}
+	if !d.flushContextCalled {
+		t.Fatal("expected pdFlushContextInPlace to be called")
+	}
+	if d.acpNewSessionCalls != 0 {
+		t.Fatalf("acpNewSessionCalls = %d, want 0 (fallback must NOT be invoked on flush success)", d.acpNewSessionCalls)
+	}
+	if len(d.recordedSessionChanges) != 1 {
+		t.Fatalf("expected 1 context_cleared pill on flush success, got %d: %v", len(d.recordedSessionChanges), d.recordedSessionChanges)
+	}
+	if sc := d.recordedSessionChanges[0]; sc.Kind != "context_cleared" || sc.Value != "flush" {
+		t.Fatalf("unexpected pill: %+v", sc)
 	}
 }
 

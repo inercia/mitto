@@ -3702,11 +3702,23 @@ func TestIsContextTooLargeError(t *testing.T) {
 		// for oversized context-flush payloads (not HTTP 413). The classifier must
 		// recognize the httpStatus:400 + apiStatus:"invalidArgument" substring pair
 		// so the loop-runner's auto-pause guard fires (handleDeliveryFailure at
-		// internal/conversation/loop_runner.go:1772 gates the counter on this).
+		// internal/conversation/loop_runner.go:1772 gates the counter on this) —
+		// but ONLY when corroborated by a token/length overflow signal (mitto-2efc
+		// narrowed this: an uncorroborated 400/invalidArgument is a generic
+		// upstream rejection, not necessarily a too-large context).
 		{
-			name:     "HTTP 400 invalidArgument from chat-stream (mitto-k4x)",
-			errMsg:   `-32603 Internal error: HTTP error: 400 Bad Request {"apiStatus":"invalidArgument","httpStatus":400,"httpUrl":"https://xlb.api.augmentcode.com/chat-stream"}`,
+			name:     "HTTP 400 invalidArgument from chat-stream, corroborated by a length signal (mitto-k4x)",
+			errMsg:   `-32603 Internal error: HTTP error: 400 Bad Request {"apiStatus":"invalidArgument","httpStatus":400,"httpUrl":"https://xlb.api.augmentcode.com/chat-stream","details":"context length exceeds the maximum allowed"}`,
 			wantTrue: true,
+		},
+		// mitto-2efc: an uncorroborated 400/invalidArgument (no token/length
+		// signal in the payload) must NOT be classified as context-too-large —
+		// it is a generic upstream rejection (e.g. a deferred model-switch race)
+		// and should instead flow through the generic delivery-failure path.
+		{
+			name:     "HTTP 400 invalidArgument uncorroborated (mitto-2efc)",
+			errMsg:   `-32603 Internal error: HTTP error: 400 Bad Request {"apiStatus":"invalidArgument","httpStatus":400,"httpUrl":"https://xlb.api.augmentcode.com/chat-stream"}`,
+			wantTrue: false,
 		},
 		{name: "rate limit is not context too large", errMsg: "rate limit exceeded", wantTrue: false},
 		{name: "generic internal error", errMsg: `{"code":-32603,"message":"Internal error","data":{"details":"unknown"}}`, wantTrue: false},

@@ -1,6 +1,7 @@
 package conversation
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -2085,6 +2086,62 @@ func (r *LoopRunner) handlePromptResolveFailure(sessionID, sessionName string, l
 	r.promptResolveFailuresMu.Unlock()
 }
 
+// releaseBeadClaim best-effort releases an automated-driver claim on the bead
+// linked to sessionID (via session.Metadata.BeadsIssue) when a loop auto-stops
+// for a non-benign reason (mitto-2efc). Without this, an auto-paused driver
+// leaves the "in-flight" label plus claimed_by/claimed_at/claim_heartbeat_at
+// metadata set forever, hiding the bead from "bd ready --exclude-label
+// in-flight" indefinitely even though no driver is actually working it
+// anymore. Best-effort and non-blocking: any failure (missing store, no
+// linked bead, bd CLI error) is logged at WARN and swallowed — releasing the
+// claim must never fail or delay the auto-stop it is called from. Callers
+// must NOT call this for benign stops (pausedByUser, maxIterations,
+// maxDuration) where the driver's work is simply complete/paused by choice,
+// not because it got stuck.
+func (r *LoopRunner) releaseBeadClaim(sessionID, sessionName string) {
+	if r.store == nil {
+		return
+	}
+	meta, err := r.store.GetMetadata(sessionID)
+	if err != nil || meta.BeadsIssue == "" {
+		return
+	}
+	client := r.beadsClientOrDefault()
+	if client == nil {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), tasksListTimeout)
+	defer cancel()
+
+	if labelErr := client.Label(ctx, meta.WorkingDir, beads.LabelParams{
+		ID:     meta.BeadsIssue,
+		Label:  "in-flight",
+		Action: "remove",
+	}); labelErr != nil {
+		if r.logger != nil {
+			r.logger.Warn("Failed to release in-flight label on loop auto-stop",
+				"session_id", sessionID,
+				"session_name", sessionName,
+				"beads_issue", meta.BeadsIssue,
+				"error", labelErr)
+		}
+	}
+
+	if updateErr := client.Update(ctx, meta.WorkingDir, beads.UpdateParams{
+		ID:            meta.BeadsIssue,
+		UnsetMetadata: []string{"claimed_by", "claimed_at", "claim_heartbeat_at"},
+	}); updateErr != nil {
+		if r.logger != nil {
+			r.logger.Warn("Failed to unset bead claim metadata on loop auto-stop",
+				"session_id", sessionID,
+				"session_name", sessionName,
+				"beads_issue", meta.BeadsIssue,
+				"error", updateErr)
+		}
+	}
+}
+
 // handleContextWindowFailure processes a context-window (HTTP 413 / augmentTooLarge)
 // delivery failure for a scheduled loop. It bumps the per-session counter; when the
 // counter reaches MaxLoopContextWindowFailures the loop is auto-paused with
@@ -2121,6 +2178,7 @@ func (r *LoopRunner) handleContextWindowFailure(sessionID, sessionName string, l
 		// Do not clear the counter so a subsequent retry can try again.
 		return false
 	}
+	r.releaseBeadClaim(sessionID, sessionName)
 	if r.logger != nil {
 		r.logger.Warn("Auto-paused loop conversation after repeated context-window failures",
 			"session_id", sessionID,
@@ -2192,6 +2250,7 @@ func (r *LoopRunner) handleDeliveryFailure(sessionID, sessionName string, loop *
 				// Do not clear the counter so a subsequent retry can try again.
 				return
 			}
+			r.releaseBeadClaim(sessionID, sessionName)
 			if r.logger != nil {
 				r.logger.Warn("Auto-paused loop conversation after repeated delivery failures",
 					"session_id", sessionID,

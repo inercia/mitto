@@ -1021,15 +1021,19 @@ func (p promptDispatcher) createFreshContextSession(d promptDeps, meta PromptMet
 			}
 			// Surface the context clear in the conversation timeline (mitto-so19).
 			recordPill("flush")
-		} else {
-			if l := d.pdLogger(); l != nil {
-				l.Warn("In-place context flush failed, continuing with main prompt",
-					"error", err,
-					"session_id", d.pdSessionID())
-			}
+			// Main prompt continues on the existing (now-flushed) session.
+			return ""
 		}
-		// Always return "" — main prompt continues on the existing session.
-		return ""
+		if l := d.pdLogger(); l != nil {
+			l.Warn("In-place context flush failed, falling back to a fresh ACP session",
+				"error", err,
+				"session_id", d.pdSessionID())
+		}
+		// mitto-2efc: do NOT return "" here unconditionally — a session whose
+		// /clear itself fails (e.g. the ACP session is wedged, returning the
+		// same upstream error on every RPC) cannot be recovered by continuing
+		// on the same session. Fall through to the new-ACP-session fallback
+		// below so FreshContext can still escalate to a clean session.
 	}
 
 	// Fallback: create a new ACP session (direct-conn only).

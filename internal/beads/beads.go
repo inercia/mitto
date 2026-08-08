@@ -366,6 +366,10 @@ type UpdateParams struct {
 	Priority    *int
 	Assignee    *string
 	Notes       *string
+	// UnsetMetadata lists metadata keys to remove via "bd update --unset-metadata
+	// <key>" (repeatable flag; mitto-2efc). Used e.g. to release a bead claim's
+	// claimed_by/claimed_at/claim_heartbeat_at keys on loop auto-stop.
+	UnsetMetadata []string
 }
 
 // DepParams carries the fields for Client.Dep.

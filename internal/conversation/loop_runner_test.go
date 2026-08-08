@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -3286,8 +3287,10 @@ func TestLoopScheduleBackoff_MonotonicAndCapped(t *testing.T) {
 type fakeTasksBeadsClient struct {
 	listFn func(dir string) ([]byte, error)
 
-	mu        sync.Mutex
-	listCalls []string
+	mu          sync.Mutex
+	listCalls   []string
+	labelCalls  []beads.LabelParams
+	updateCalls []beads.UpdateParams
 }
 
 func (c *fakeTasksBeadsClient) List(_ context.Context, dir string) ([]byte, error) {
@@ -3327,13 +3330,34 @@ func (c *fakeTasksBeadsClient) Statuses(context.Context, string, []string) (map[
 }
 func (c *fakeTasksBeadsClient) DeleteIDs(context.Context, string, []string) error       { return nil }
 func (c *fakeTasksBeadsClient) SetStatus(context.Context, string, string, string) error { return nil }
-func (c *fakeTasksBeadsClient) Update(context.Context, string, beads.UpdateParams) error {
+func (c *fakeTasksBeadsClient) Update(_ context.Context, _ string, p beads.UpdateParams) error {
+	c.mu.Lock()
+	c.updateCalls = append(c.updateCalls, p)
+	c.mu.Unlock()
 	return nil
 }
 func (c *fakeTasksBeadsClient) Comment(context.Context, string, string, string) error { return nil }
 func (c *fakeTasksBeadsClient) Dep(context.Context, string, beads.DepParams) error    { return nil }
-func (c *fakeTasksBeadsClient) Label(context.Context, string, beads.LabelParams) error {
+func (c *fakeTasksBeadsClient) Label(_ context.Context, _ string, p beads.LabelParams) error {
+	c.mu.Lock()
+	c.labelCalls = append(c.labelCalls, p)
+	c.mu.Unlock()
 	return nil
+}
+
+// labelCallCount and updateCallCount return the number of Label/Update calls
+// recorded so far, for tests asserting bead-claim release behavior
+// (mitto-2efc).
+func (c *fakeTasksBeadsClient) labelCallCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.labelCalls)
+}
+
+func (c *fakeTasksBeadsClient) updateCallCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.updateCalls)
 }
 func (c *fakeTasksBeadsClient) ListAllLabels(context.Context, string) ([]byte, error) {
 	return []byte(`[]`), nil
@@ -5511,6 +5535,181 @@ func TestLoopRunner_DeliveryFailure_GenericError_AutoPausesAtCeiling(t *testing.
 	if autoStopCalls != 1 {
 		t.Errorf("onLoopAutoStopped invocation count = %d after %d consecutive generic "+
 			"delivery failures; want 1", autoStopCalls, MaxLoopDeliveryFailures)
+	}
+}
+
+// TestLoopRunner_ReleaseBeadClaim_OnNonBenignAutoStop reproduces the fix for
+// mitto-2efc defect 2: a loop that auto-pauses for a non-benign reason
+// (context-window exceeded / repeated delivery failures) must release any
+// bead claim it holds — remove the "in-flight" label and unset the
+// claimed_by/claimed_at/claim_heartbeat_at metadata — so the bead is not
+// hidden from "bd ready --exclude-label in-flight" forever.
+func TestLoopRunner_ReleaseBeadClaim_OnNonBenignAutoStop(t *testing.T) {
+	t.Run("context window failure", func(t *testing.T) {
+		store, err := session.NewStore(t.TempDir())
+		if err != nil {
+			t.Fatalf("NewStore() error = %v", err)
+		}
+		defer store.Close()
+
+		const sessionID = "cw-claim-1"
+		meta := session.Metadata{
+			SessionID:  sessionID,
+			ACPServer:  "auggie",
+			WorkingDir: "/tmp",
+			BeadsIssue: "mitto-txse",
+		}
+		if err := store.Create(meta); err != nil {
+			t.Fatalf("Create() error = %v", err)
+		}
+		loopStore := store.Loop(sessionID)
+		if err := loopStore.Set(&session.LoopPrompt{
+			Prompt:    "Test",
+			Frequency: session.Frequency{Value: 1, Unit: session.FrequencyHours},
+			Enabled:   true,
+		}); err != nil {
+			t.Fatalf("loopStore.Set() error = %v", err)
+		}
+
+		runner := NewLoopRunner(store, nil, nil)
+		fake := &fakeTasksBeadsClient{}
+		runner.SetBeadsClient(fake)
+
+		// Under threshold — no beads calls yet.
+		for i := 1; i < MaxLoopContextWindowFailures; i++ {
+			runner.handleContextWindowFailure(sessionID, "test", loopStore)
+		}
+		if fake.labelCallCount() != 0 || fake.updateCallCount() != 0 {
+			t.Fatalf("beads client called before threshold reached: label=%d update=%d",
+				fake.labelCallCount(), fake.updateCallCount())
+		}
+
+		if stopped := runner.handleContextWindowFailure(sessionID, "test", loopStore); !stopped {
+			t.Fatal("handleContextWindowFailure final hit returned false; want true")
+		}
+
+		if got := fake.labelCallCount(); got != 1 {
+			t.Fatalf("labelCallCount() = %d, want 1", got)
+		}
+		lbl := fake.labelCalls[0]
+		if lbl.ID != "mitto-txse" || lbl.Label != "in-flight" || lbl.Action != "remove" {
+			t.Errorf("Label call = %+v, want {ID:mitto-txse Label:in-flight Action:remove}", lbl)
+		}
+		if got := fake.updateCallCount(); got != 1 {
+			t.Fatalf("updateCallCount() = %d, want 1", got)
+		}
+		upd := fake.updateCalls[0]
+		if upd.ID != "mitto-txse" {
+			t.Errorf("Update call ID = %q, want mitto-txse", upd.ID)
+		}
+		wantKeys := []string{"claimed_by", "claimed_at", "claim_heartbeat_at"}
+		if !reflect.DeepEqual(upd.UnsetMetadata, wantKeys) {
+			t.Errorf("Update.UnsetMetadata = %v, want %v", upd.UnsetMetadata, wantKeys)
+		}
+	})
+
+	t.Run("delivery failure ceiling", func(t *testing.T) {
+		store, err := session.NewStore(t.TempDir())
+		if err != nil {
+			t.Fatalf("NewStore() error = %v", err)
+		}
+		defer store.Close()
+
+		const sessionID = "delivery-claim-1"
+		meta := session.Metadata{
+			SessionID:  sessionID,
+			ACPServer:  "auggie",
+			WorkingDir: "/tmp",
+			BeadsIssue: "mitto-txse",
+		}
+		if err := store.Create(meta); err != nil {
+			t.Fatalf("Create() error = %v", err)
+		}
+		loopStore := store.Loop(sessionID)
+		loop := &session.LoopPrompt{
+			Prompt:    "Test",
+			Trigger:   session.TriggerSchedule,
+			Frequency: session.Frequency{Value: 4, Unit: session.FrequencyHours},
+			Enabled:   true,
+		}
+		if err := loopStore.Set(loop); err != nil {
+			t.Fatalf("loopStore.Set() error = %v", err)
+		}
+
+		runner := NewLoopRunner(store, nil, nil)
+		fake := &fakeTasksBeadsClient{}
+		runner.SetBeadsClient(fake)
+
+		genericErr := errors.New("Internal error: HTTP error: 404 Not Found: The selected model is not available for this session.")
+		for i := 1; i < MaxLoopDeliveryFailures; i++ {
+			runner.handleDeliveryFailure(sessionID, "test", loop, loopStore, genericErr, true, false, session.TriggerSchedule)
+		}
+		if fake.labelCallCount() != 0 || fake.updateCallCount() != 0 {
+			t.Fatalf("beads client called before threshold reached: label=%d update=%d",
+				fake.labelCallCount(), fake.updateCallCount())
+		}
+
+		runner.handleDeliveryFailure(sessionID, "test", loop, loopStore, genericErr, true, false, session.TriggerSchedule)
+
+		if got := fake.labelCallCount(); got != 1 {
+			t.Fatalf("labelCallCount() = %d, want 1", got)
+		}
+		if got := fake.updateCallCount(); got != 1 {
+			t.Fatalf("updateCallCount() = %d, want 1", got)
+		}
+	})
+}
+
+// TestLoopRunner_ReleaseBeadClaim_NotCalledOnBenignStop asserts that a benign
+// loop stop (paused by the user, or the normal max-iterations completion)
+// does NOT touch beads — only the non-benign auto-stop paths
+// (handleContextWindowFailure / handleDeliveryFailure) release a bead claim
+// (mitto-2efc).
+func TestLoopRunner_ReleaseBeadClaim_NotCalledOnBenignStop(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	const sessionID = "benign-claim-1"
+	meta := session.Metadata{
+		SessionID:  sessionID,
+		ACPServer:  "auggie",
+		WorkingDir: "/tmp",
+		BeadsIssue: "mitto-txse",
+	}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	loopStore := store.Loop(sessionID)
+	if err := loopStore.Set(&session.LoopPrompt{
+		Prompt:    "Test",
+		Frequency: session.Frequency{Value: 1, Unit: session.FrequencyHours},
+		Enabled:   true,
+	}); err != nil {
+		t.Fatalf("loopStore.Set() error = %v", err)
+	}
+
+	runner := NewLoopRunner(store, nil, nil)
+	fake := &fakeTasksBeadsClient{}
+	runner.SetBeadsClient(fake)
+
+	// Benign stop paths call loopStore.MarkStopped directly, never going
+	// through handleContextWindowFailure/handleDeliveryFailure — so they must
+	// never invoke releaseBeadClaim.
+	if err := loopStore.MarkStopped(session.StoppedReasonPausedByUser); err != nil {
+		t.Fatalf("MarkStopped(pausedByUser) error = %v", err)
+	}
+	if err := loopStore.MarkStopped(session.StoppedReasonMaxIterations); err != nil {
+		t.Fatalf("MarkStopped(maxIterations) error = %v", err)
+	}
+
+	if got := fake.labelCallCount(); got != 0 {
+		t.Errorf("labelCallCount() = %d after benign stops, want 0", got)
+	}
+	if got := fake.updateCallCount(); got != 0 {
+		t.Errorf("updateCallCount() = %d after benign stops, want 0", got)
 	}
 }
 
