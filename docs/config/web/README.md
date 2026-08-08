@@ -179,6 +179,12 @@ and the WebSocket handshake. Notes:
 - Rotating the token invalidates every client immediately; there is no
   per-client revocation or grace window.
 
+The token is a single point of compromise: it grants the same access as the
+external-access password, and there is no per-client revocation, scoping, or
+expiry. Keep it out of shell history and process arguments — pass it to clients
+through an environment file or a secret store rather than a command-line flag,
+and never place it in a URL or query string.
+
 ### Rate Limiting
 
 Authentication includes automatic rate limiting:
