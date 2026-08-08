@@ -1,0 +1,130 @@
+/**
+ * Drift-detection tests for web/static/sdk/realtime/events.js (mitto-7gta.16).
+ *
+ * Reads the Go WSMsgType* constant registry and the protocol spec's
+ * markdown headings straight from disk (same pattern as
+ * session-stream.test.js's whole-directory purity scan) and asserts this
+ * file's EVENTS/COMMANDS/LEGACY_EVENTS never silently diverge from either.
+ */
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import {
+  EVENTS,
+  COMMANDS,
+  LEGACY_EVENTS,
+  isKnownEventType,
+  isCommandType,
+} from "./events.js";
+
+const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..");
+
+const GO_CONSTANT_FILES = [
+  join(REPO_ROOT, "internal", "web", "ws_messages.go"),
+  join(REPO_ROOT, "internal", "conversation", "ws_events.go"),
+];
+
+const SPEC_FILE = join(REPO_ROOT, "docs", "devel", "websockets", "protocol-spec.md");
+
+/** Every `WSMsgTypeXxx = "..."` string value declared in the Go registry. */
+function goConstantValues() {
+  const values = new Set();
+  for (const file of GO_CONSTANT_FILES) {
+    const src = readFileSync(file, "utf8");
+    const re = /WSMsgType[A-Za-z]+\s*=\s*"([a-z_]+)"/g;
+    let m;
+    while ((m = re.exec(src))) values.add(m[1]);
+  }
+  return values;
+}
+
+/**
+ * Every backtick-quoted `type` string in a `###`/`####` heading of the
+ * protocol spec, e.g. `#### \`session_archive_pending\` — ...` or
+ * `#### \`file_read\` / \`file_write\` — ...` (both backtick tokens count).
+ */
+function specHeadingTypes() {
+  const src = readFileSync(SPEC_FILE, "utf8");
+  const types = new Set();
+  for (const line of src.split("\n")) {
+    if (!/^#{3,4}\s/.test(line)) continue;
+    const re = /`([a-z_]+)`/g;
+    let m;
+    while ((m = re.exec(line))) types.add(m[1]);
+  }
+  return types;
+}
+
+/**
+ * All values this SDK recognizes as valid wire types. Includes
+ * LEGACY_EVENTS: the four aliases (permission, permission_answer,
+ * sync_session, session_sync) still have live Go constants and are still
+ * handled by the frontend switch for back-compat, so they must count for
+ * the Go-registry comparison even though the spec documents them only in
+ * the "Legacy Messages" table, not as their own `###`/`####` heading.
+ */
+function sdkValues() {
+  return new Set([
+    ...Object.values(EVENTS),
+    ...Object.values(COMMANDS),
+    ...Object.values(LEGACY_EVENTS),
+  ]);
+}
+
+describe("events.js vs Go WSMsgType* constants (source of truth)", () => {
+  test("every Go constant value is a known SDK event or command", () => {
+    const go = goConstantValues();
+    const sdk = sdkValues();
+    const missing = [...go].filter((v) => !sdk.has(v));
+    expect(missing).toEqual([]);
+  });
+
+  test("every SDK event/command value has a matching Go constant", () => {
+    const go = goConstantValues();
+    const sdk = sdkValues();
+    const extra = [...sdk].filter((v) => !go.has(v));
+    expect(extra).toEqual([]);
+  });
+
+  test("Go registry is non-trivial (sanity check the parser found something)", () => {
+    expect(goConstantValues().size).toBeGreaterThan(50);
+  });
+});
+
+describe("events.js vs docs/devel/websockets/protocol-spec.md", () => {
+  test("every documented heading type is a known SDK type", () => {
+    const spec = specHeadingTypes();
+    const known = sdkValues();
+    const undocumentedInSdk = [...spec].filter((v) => !known.has(v));
+    expect(undocumentedInSdk).toEqual([]);
+  });
+
+  test("every non-legacy SDK event is documented in the spec", () => {
+    const spec = specHeadingTypes();
+    const undocumented = Object.values(EVENTS).filter((v) => !spec.has(v));
+    expect(undocumented).toEqual([]);
+  });
+});
+
+describe("EVENTS / COMMANDS / LEGACY_EVENTS shape", () => {
+  test("no duplicate values within or across EVENTS and COMMANDS", () => {
+    const all = [...Object.values(EVENTS), ...Object.values(COMMANDS)];
+    expect(new Set(all).size).toBe(all.length);
+  });
+
+  test("EVENTS, COMMANDS, and LEGACY_EVENTS are frozen", () => {
+    expect(Object.isFrozen(EVENTS)).toBe(true);
+    expect(Object.isFrozen(COMMANDS)).toBe(true);
+    expect(Object.isFrozen(LEGACY_EVENTS)).toBe(true);
+  });
+
+  test("isKnownEventType / isCommandType recognize current and legacy types", () => {
+    expect(isKnownEventType(EVENTS.AGENT_MESSAGE)).toBe(true);
+    expect(isKnownEventType(LEGACY_EVENTS.PERMISSION)).toBe(true);
+    expect(isKnownEventType("not_a_real_type")).toBe(false);
+
+    expect(isCommandType(COMMANDS.PROMPT)).toBe(true);
+    expect(isCommandType(LEGACY_EVENTS.SYNC_SESSION)).toBe(true);
+    expect(isCommandType("not_a_real_type")).toBe(false);
+  });
+});

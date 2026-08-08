@@ -441,6 +441,20 @@ const (
 	// prompt ends, or the agent dies.
 	// Data: { "session_id": string, "idle_ms": int64, "tool_title": string (optional), "is_prompting": true }
 	WSMsgTypeAgentWorking = "agent_working"
+
+	// WSMsgTypeSessionArchivePending is RESERVED: it is documented in
+	// docs/devel/websockets/protocol-spec.md (the archive state diagram) and
+	// handled by the frontend's global-events switch, but no server code
+	// path emits it today (mitto-7gta.16 audit: confirmed via `git log -S`
+	// there is no prior emitter either — this was spec/frontend-only from
+	// the start). Declared here purely so the string is not a magic literal
+	// on the frontend and the SDK's Go<->spec drift test
+	// (web/static/sdk/realtime/events.test.js) has a symbol to match on both
+	// sides. Wire it up to an actual Broadcast() call when the archive-
+	// pending UI state is implemented server-side; until then no code should
+	// reference this constant to broadcast.
+	// Data: { "session_id": string, "archive_pending": bool }
+	WSMsgTypeSessionArchivePending = "session_archive_pending"
 )
 
 // =============================================================================

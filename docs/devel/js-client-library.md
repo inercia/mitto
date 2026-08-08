@@ -25,7 +25,7 @@ web/static/sdk/
   env/                 # explicit opt-in environment presets (e.g. browser) — .2
   auth/                # browser cookie+CSRF, shared bearer token, none — .5
   resources/           # one module per REST resource — .7–.12
-  realtime/            # SessionStream, EventsStream, sync, typed events — .13–.16
+  realtime/            # SessionStream, EventsStream, sync, typed events (events.js) — .13–.16
   endpoints.js         # canonical URL registry, adopted from utils/endpoints.js — .6
   types/               # generated .d.ts, not hand-written — .20
 ```

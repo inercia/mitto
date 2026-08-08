@@ -16,6 +16,13 @@ import {
 import { createSessionStream } from "./realtime/session-stream.js";
 import { createEventsStream } from "./realtime/events-stream.js";
 import {
+  EVENTS,
+  COMMANDS,
+  LEGACY_EVENTS,
+  isKnownEventType,
+  isCommandType,
+} from "./realtime/events.js";
+import {
   createSeqTracker,
   isSeqDuplicate,
   markSeqSeen,
@@ -68,3 +75,4 @@ export {
   createStorageSeqStore,
 };
 export { generatePromptId, createMemoryPendingPromptStore, createStoragePendingPromptStore };
+export { EVENTS, COMMANDS, LEGACY_EVENTS, isKnownEventType, isCommandType };

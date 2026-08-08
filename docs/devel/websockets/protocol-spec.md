@@ -192,6 +192,27 @@ Sent from frontend when user confirms running a suggested MCP installation comma
 }
 ```
 
+### `sync_session` — ⚠️ Legacy: incremental sync
+
+> **Deprecated.** Use `load_events` with `after_seq` instead.
+
+Requests incremental sync of events missed while disconnected. Used by mobile
+clients that may have been suspended.
+
+```json
+{ "type": "sync_session", "data": { "session_id": "...", "after_seq": 120 } }
+```
+
+### `ensure_resumed` — Ensure ACP connection is running
+
+Sent by the frontend when the user focuses or navigates to a conversation. If the
+session is not running and not archived, the server resumes it immediately,
+bypassing any startup stagger delay.
+
+```json
+{ "type": "ensure_resumed", "data": {} }
+```
+
 ---
 
 ## Backend → Frontend Messages (Session WebSocket)
@@ -263,6 +284,69 @@ Sent after a `force_reset` message is processed.
 ```json
 { "type": "session_reset", "data": { "session_id": "..." } }
 ```
+
+#### `session_loaded` — Session load confirmed
+
+Confirms a session was loaded successfully, echoing its events.
+
+```json
+{
+  "type": "session_loaded",
+  "data": { "session_id": "...", "events": [] }
+}
+```
+
+#### `session_switched` — Session switch confirmed
+
+```json
+{ "type": "session_switched", "data": { "session_id": "..." } }
+```
+
+#### `session_ui_prompt` — Background UI-prompt waiting state changed
+
+Broadcast on `/api/events` when a session's "waiting for a UI prompt answer"
+sidebar indicator should change, or to acknowledge that the user dismissed it.
+
+```json
+{
+  "type": "session_ui_prompt",
+  "data": { "session_id": "...", "is_waiting": true, "acked_request_id": "req-1" }
+}
+```
+
+`acked_request_id` is present only on acknowledgment broadcasts.
+
+#### `session_waiting` — Session waiting-for-children state changed
+
+Broadcast on `/api/events` when a session starts or stops blocking on
+`mitto_children_tasks_wait`.
+
+```json
+{ "type": "session_waiting", "data": { "session_id": "...", "is_waiting": true } }
+```
+
+#### `session_change` — Generic session timeline event
+
+Kind-agnostic session-socket event covering miscellaneous timeline entries (e.g.
+config/model changes) without needing a new message type per kind.
+
+```json
+{
+  "type": "session_change",
+  "data": {
+    "seq": 60,
+    "max_seq": 60,
+    "session_id": "...",
+    "kind": "model_change",
+    "label": "Model",
+    "value": "Claude Sonnet 5",
+    "previous_value": "Claude Opus 5"
+  }
+}
+```
+
+`label`, `value`, `previous_value`, and `items` are populated only when relevant to
+`kind`.
 
 #### `session_renamed` — Session name changed
 
@@ -419,6 +503,38 @@ All streaming events include `seq` and `max_seq` for ordering and gap detection.
 }
 ```
 
+#### `context_usage_update` — Context window usage changed
+
+Sent when the agent reports a context-window usage update.
+
+```json
+{
+  "type": "context_usage_update",
+  "data": { "session_id": "...", "size": 200000, "used": 84213 }
+}
+```
+
+#### `agent_working` — Agent still working (silent-stretch heartbeat)
+
+Transient heartbeat sent during a prolonged silent stretch of a prompt (e.g. a long
+tool call that streams no output), so the UI shows honest progress instead of an
+indefinite frozen spinner. Not persisted; stops when activity resumes, the prompt
+ends, or the agent dies.
+
+```json
+{
+  "type": "agent_working",
+  "data": {
+    "session_id": "...",
+    "idle_ms": 15000,
+    "tool_title": "Running tests",
+    "is_prompting": true
+  }
+}
+```
+
+`tool_title` is omitted when no tool call is in flight.
+
 ### Prompt Lifecycle
 
 ```mermaid
@@ -519,6 +635,14 @@ Broadcast to all clients on the session. The sender sees `is_mine: true`.
 | `file_write`    | File write operation                               |
 | `plan`          | Agent plan                                         |
 | `session_end`   | Session completion record (internal, not streamed) |
+
+#### `session_sync` — ⚠️ Legacy: response to `sync_session`
+
+> **Deprecated.** Use `events_loaded` instead.
+
+```json
+{ "type": "session_sync", "data": { "session_id": "...", "events": [] } }
+```
 
 ### Keepalive & State Sync
 
@@ -845,8 +969,13 @@ stateDiagram-v2
 
 #### `session_archived` / `session_archive_pending`
 
+> **`session_archive_pending` is reserved.** It has a Go constant
+> (`WSMsgTypeSessionArchivePending`) and a frontend handler, but no server code path
+> emits it today (mitto-7gta.16 audit). Do not build new logic around it actually
+> arriving until a server-side emitter is added.
+
 ```json
-{ "type": "session_archive_pending", "data": { "session_id": "..." } }
+{ "type": "session_archive_pending", "data": { "session_id": "...", "archive_pending": true } }
 { "type": "session_archived", "data": { "session_id": "...", "archived": true } }
 ```
 
@@ -935,6 +1064,210 @@ beads issue. An empty `beads_issue` value indicates the link was cleared.
   "data": {
     "changed_dirs": ["/project/.mitto/prompts"],
     "timestamp": "2026-02-01T12:00:00Z"
+  }
+}
+```
+
+### Diagnostic & Lifecycle Events
+
+Broadcast on `/api/events` to all connected clients. Mostly informational — the UI
+surfaces these as toasts/badges rather than blocking on them.
+
+#### `notification` — Fire-and-forget notification
+
+Triggered by the `mitto_ui_notify` MCP tool. No response is expected.
+
+```json
+{
+  "type": "notification",
+  "data": {
+    "session_id": "...",
+    "title": "Build finished",
+    "message": "All tests passed",
+    "style": "success",
+    "sound": false,
+    "native": false,
+    "sticky": false
+  }
+}
+```
+
+`style` is one of `info`, `success`, `warning`, `error`.
+
+#### `permission` — ⚠️ Legacy: permission request
+
+> **Deprecated.** Superseded by `ui_prompt` with `prompt_type: "permission"`.
+
+```json
+{
+  "type": "permission",
+  "data": { "request_id": "id", "title": "...", "description": "..." }
+}
+```
+
+#### `beads_changed` — Beads issues changed on disk
+
+Sent when another agent or CLI (`bd`, `git pull`, `bd dolt pull`) modifies a
+workspace's `.beads/` directory. Clients should refresh their tasks/issues view.
+
+```json
+{
+  "type": "beads_changed",
+  "data": {
+    "working_dirs": ["/project"],
+    "changed_dirs": ["/project/.beads"],
+    "timestamp": "2026-02-01T12:00:00Z"
+  }
+}
+```
+
+#### `beads_cleanup_progress` — Bulk closed-issue cleanup progress
+
+Reports progress of a background cleanup started via `POST /api/issues/cleanup`.
+Sent repeatedly as batches complete, plus a final message with `done: true` (or
+`error` set).
+
+```json
+{
+  "type": "beads_cleanup_progress",
+  "data": { "working_dir": "/project", "deleted": 40, "total": 120, "done": false }
+}
+```
+
+#### `mcp_tools_available` — MCP tools fetched for a workspace
+
+```json
+{
+  "type": "mcp_tools_available",
+  "data": { "workspace_uuid": "...", "tools": [] }
+}
+```
+
+#### `background_ui_prompt_timeout` — Background UI prompt timed out
+
+Sent when a blocking UI prompt in a background (unfocused) session times out
+waiting for a user response.
+
+```json
+{
+  "type": "background_ui_prompt_timeout",
+  "data": { "session_id": "...", "request_id": "req-1" }
+}
+```
+
+#### `memory_recycled` — Idle memory-bloated process recycled
+
+Notifies that the GC's memory-recycle tier stopped a memory-bloated idle shared ACP
+process to reclaim memory. Affected conversations resume transparently on next
+focus.
+
+```json
+{
+  "type": "memory_recycled",
+  "data": {
+    "workspace_uuid": "...",
+    "workspace_name": "...",
+    "working_dir": "...",
+    "rss_bytes": 900000000,
+    "threshold_bytes": 800000000,
+    "session_count": 3
+  }
+}
+```
+
+#### `agent_recycled` — Degraded process recycled
+
+Notifies that the GC's health-recycle tiers stopped a shared ACP process that had
+stopped completing `session/new` or `session/load` RPCs.
+
+```json
+{
+  "type": "agent_recycled",
+  "data": {
+    "workspace_uuid": "...",
+    "workspace_name": "...",
+    "working_dir": "...",
+    "reason": "saturated_idle",
+    "saturation_level": 3,
+    "session_count": 2
+  }
+}
+```
+
+`reason` is one of `saturated_idle`, `confirmed_degraded`.
+
+#### `agent_degraded` — Workspace agent entered/recovered from degraded state
+
+Fired as soon as a degraded predicate (saturated by RPC timeouts, or gated/wedged
+in MCP-init) is detected — before the process is necessarily stopped.
+
+```json
+{
+  "type": "agent_degraded",
+  "data": {
+    "workspace_uuid": "...",
+    "workspace_name": "...",
+    "working_dir": "...",
+    "state": "mcp_init_wedged",
+    "degraded": true
+  }
+}
+```
+
+`state` is one of `process_saturated`, `mcp_init_gated`, `mcp_init_wedged`, or `""`.
+
+#### `mcp_initializing` — Agent blocked on MCP server startup
+
+Informational "session/new may take longer than usual" hint; not an error.
+
+```json
+{
+  "type": "mcp_initializing",
+  "data": { "workspace_uuid": "...", "workspace_name": "...", "working_dir": "..." }
+}
+```
+
+#### `mcp_init_timed_out` — MCP-init wait budget elapsed
+
+The pending `session/new`/`session/load` call was aborted with an actionable error.
+
+```json
+{
+  "type": "mcp_init_timed_out",
+  "data": {
+    "workspace_uuid": "...",
+    "workspace_name": "...",
+    "working_dir": "...",
+    "mcp_servers": ["jira", "slack"]
+  }
+}
+```
+
+#### `prewarm_pin_alert` — Workspace pinned due to slow/broken MCP init
+
+```json
+{
+  "type": "prewarm_pin_alert",
+  "data": {
+    "workspace_uuid": "...",
+    "workspace_name": "...",
+    "working_dir": "...",
+    "reason": "mcp_init_timeout",
+    "expired": false
+  }
+}
+```
+
+#### `required_tools_status` — Required tool pattern availability
+
+Sent progressively as retries discover newly-available tools.
+
+```json
+{
+  "type": "required_tools_status",
+  "data": {
+    "workspace_uuid": "...",
+    "patterns": { "jira_*": true, "slack_*": false }
   }
 }
 ```
