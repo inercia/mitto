@@ -40,6 +40,9 @@ export function useSwipeToAction(options = {}) {
   const isSwipingRef = useRef(false);
   // Track action timeout for cleanup
   const actionTimeoutRef = useRef(null);
+  // Cleanup for a pending one-shot trailing-click suppressor (see
+  // installClickSuppressor / handleMouseUp, mitto-mzvc)
+  const suppressClickCleanupRef = useRef(null);
 
   // Reset the swipe state
   const reset = useCallback(() => {
@@ -183,6 +186,40 @@ export function useSwipeToAction(options = {}) {
     }
   }, [isSwiping, swipeOffset, threshold, revealWidth, triggerAction, reset]);
 
+  // Install a one-shot capture-phase click suppressor on document. A
+  // confirmed mouse swipe that ends over the same element is always followed
+  // by a synthetic trailing `click` there; this consumes exactly that click
+  // so it never reaches Preact's onClick handler (mitto-mzvc). Capture phase
+  // is required because Preact delegates onClick at the app root, so a
+  // bubble-phase suppressor here would run too late. A short fallback
+  // timeout removes the listener if no click ever arrives, so we never leak
+  // it or suppress an unrelated future click.
+  const installClickSuppressor = useCallback(() => {
+    // Defensive: replace any still-pending suppressor rather than stacking listeners.
+    if (suppressClickCleanupRef.current) {
+      suppressClickCleanupRef.current();
+    }
+
+    const suppressClick = (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+      cleanup();
+    };
+
+    const fallbackId = setTimeout(cleanup, 300);
+
+    function cleanup() {
+      document.removeEventListener("click", suppressClick, true);
+      clearTimeout(fallbackId);
+      if (suppressClickCleanupRef.current === cleanup) {
+        suppressClickCleanupRef.current = null;
+      }
+    }
+
+    document.addEventListener("click", suppressClick, true);
+    suppressClickCleanupRef.current = cleanup;
+  }, []);
+
   // Mouse event handlers
   const handleMouseDown = useCallback(
     (e) => {
@@ -206,8 +243,18 @@ export function useSwipeToAction(options = {}) {
   );
 
   const handleMouseUp = useCallback(() => {
+    // Capture BEFORE handleDragEnd, which synchronously clears
+    // swipeConfirmedRef as part of its reveal/snap-back branches. A confirmed
+    // swipe is always followed by a trailing native `click` on the same
+    // element once the mouse button is released over it; without suppressing
+    // that click, its handler sees stale guard state (isSwipingRef already
+    // false) and runs as if it were a genuine tap (mitto-mzvc).
+    const wasConfirmedSwipe = swipeConfirmedRef.current;
     handleDragEnd();
-  }, [handleDragEnd]);
+    if (wasConfirmedSwipe) {
+      installClickSuppressor();
+    }
+  }, [handleDragEnd, installClickSuppressor]);
 
   // Touch event handlers
   const handleTouchStart = useCallback(
@@ -333,11 +380,14 @@ export function useSwipeToAction(options = {}) {
     };
   }, [isRevealed, reset]);
 
-  // Cleanup action timeout on unmount
+  // Cleanup action timeout and any pending click suppressor on unmount
   useEffect(() => {
     return () => {
       if (actionTimeoutRef.current) {
         clearTimeout(actionTimeoutRef.current);
+      }
+      if (suppressClickCleanupRef.current) {
+        suppressClickCleanupRef.current();
       }
     };
   }, []);
