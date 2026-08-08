@@ -115,7 +115,9 @@ export function errorCodeForStatus(status) {
  * Mirrors the precedence in `web/static/utils/api.js` `errorMessageFromData`:
  * the canonical nested envelope (`{"error":{"message"}}`), the legacy flat
  * shape (`{"error":"..."}`, e.g. `/api/callback/{token}`), a top-level
- * `{"message":"..."}`, and finally the caller-supplied fallback.
+ * `{"message":"..."}`, and finally the caller-supplied fallback. Kept
+ * byte-compatible with the UI helper so both agree; `errorFromResponse`
+ * deliberately uses a different precedence (see its docstring).
  * @param {*} body - The parsed response body (object, or anything).
  * @param {string} fallback - Message to use when none can be extracted.
  * @returns {string}
@@ -132,6 +134,14 @@ export function errorMessageFromBody(body, fallback) {
 /**
  * Builds a typed `MittoApiError` (or `MittoAuthError` for 401/403) from a
  * non-2xx HTTP response. Never throws, even on a malformed/empty body.
+ *
+ * Message precedence differs deliberately from `errorMessageFromBody`: the
+ * legacy flat shape carries the code in `error` and the human sentence in a
+ * sibling `message` (e.g. `/api/callback/{token}` answers
+ * `{"error":"missing_token","message":"Callback token is required"}`). Since
+ * the code is surfaced separately as `.code` here, the sibling `message` is
+ * preferred over echoing the code, and the code string is only used as a
+ * message of last resort.
  * @param {{status: number, body: *}} response
  * @returns {MittoApiError}
  */
@@ -141,12 +151,14 @@ export function errorFromResponse({ status, body }) {
     isObjectBody && body.error !== null && typeof body.error === "object"
       ? body.error
       : undefined;
-  const code =
-    nestedError?.code ||
-    (isObjectBody && typeof body.error === "string" ? body.error : undefined) ||
-    errorCodeForStatus(status);
+  const flatErrorCode = isObjectBody && typeof body.error === "string" ? body.error : undefined;
+  const code = nestedError?.code || flatErrorCode || errorCodeForStatus(status);
   const details = nestedError?.details;
-  const message = errorMessageFromBody(body, `Request failed with status ${status}`);
+  const message =
+    nestedError?.message ||
+    (isObjectBody ? body.message : undefined) ||
+    flatErrorCode ||
+    `Request failed with status ${status}`;
 
   const ErrorClass = status === 401 || status === 403 ? MittoAuthError : MittoApiError;
   return new ErrorClass(message, { status, code, details, body });

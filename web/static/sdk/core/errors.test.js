@@ -132,11 +132,29 @@ describe("errorFromResponse", () => {
   });
 
   test("builds a MittoApiError from the legacy flat envelope (e.g. /api/callback/{token})", () => {
-    const body = { error: "invalid_token" };
+    // The exact shape written by writeCallbackError in
+    // internal/web/handlers/callback.go: code in `error`, sentence in `message`.
+    const body = { error: "missing_token", message: "Callback token is required" };
     const e = errorFromResponse({ status: 400, body });
     expect(e).toBeInstanceOf(MittoApiError);
+    expect(e.code).toBe("missing_token");
+    expect(e.message).toBe("Callback token is required");
+  });
+
+  test("falls back to the flat error code as the message when no sibling message exists", () => {
+    const e = errorFromResponse({ status: 400, body: { error: "invalid_token" } });
     expect(e.code).toBe("invalid_token");
     expect(e.message).toBe("invalid_token");
+  });
+
+  test("prefers a sibling top-level message over the flat error code (diverges from errorMessageFromBody)", () => {
+    // errorMessageFromBody mirrors utils/api.js, where the flat `error` string
+    // wins; errorFromResponse deliberately inverts that because the code is
+    // already exposed as `.code`, so echoing it as the message loses the
+    // human-readable sentence.
+    const body = { error: "missing_token", message: "Callback token is required" };
+    expect(errorMessageFromBody(body, "fallback")).toBe("missing_token");
+    expect(errorFromResponse({ status: 400, body }).message).toBe("Callback token is required");
   });
 
   test("derives the code from status when the body has none", () => {
