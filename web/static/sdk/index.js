@@ -14,6 +14,21 @@ import {
   MittoNetworkError,
 } from "./core/errors.js";
 import { createSessionStream } from "./realtime/session-stream.js";
+import {
+  createSeqTracker,
+  isSeqDuplicate,
+  markSeqSeen,
+  getMaxSeq,
+  isStaleClientState,
+  isTerminalSessionError,
+  createMemorySeqStore,
+  createStorageSeqStore,
+} from "./realtime/seq.js";
+import {
+  generatePromptId,
+  createMemoryPendingPromptStore,
+  createStoragePendingPromptStore,
+} from "./realtime/pending-prompts.js";
 
 /**
  * The embedded copy ships lockstep with the server (§6): its version is the
@@ -37,3 +52,14 @@ export function createClient(options = {}) {
 export { MittoError, ConfigError, MittoApiError, MittoAuthError, MittoNetworkError };
 export { browserEnv } from "./env/browser.js";
 export { createSessionStream, SessionStream } from "./realtime/session-stream.js";
+export {
+  createSeqTracker,
+  isSeqDuplicate,
+  markSeqSeen,
+  getMaxSeq,
+  isStaleClientState,
+  isTerminalSessionError,
+  createMemorySeqStore,
+  createStorageSeqStore,
+};
+export { generatePromptId, createMemoryPendingPromptStore, createStoragePendingPromptStore };
