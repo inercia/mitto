@@ -56,6 +56,43 @@ describe("SessionItem.js: conversation accent color (mitto-8sk)", () => {
   });
 });
 
+describe("SessionItem.js: protected-conversation archive suppression (mitto-yvel.4)", () => {
+  test("derives isProtected from session.no_archive", () => {
+    expect(sessionItemJs).toMatch(
+      /const isProtected = !!session\.no_archive;/,
+    );
+  });
+
+  test("canArchive is direction-aware: protection blocks archive only, never unarchive", () => {
+    expect(sessionItemJs).toMatch(
+      /const canArchive =\s*\n\s*isArchived \|\| \(!isProtected && !hasQueuedMessages && !isSessionStreaming\);/,
+    );
+  });
+
+  test("archiveBlockedReason surfaces the protected reason first, only when not archived", () => {
+    const idx = sessionItemJs.indexOf("const archiveBlockedReason =");
+    expect(idx).toBeGreaterThan(-1);
+    const snippet = sessionItemJs.slice(idx, idx + 400);
+    expect(snippet).toMatch(
+      /!isArchived && isProtected\s*\n\s*\? "This conversation is protected from archiving"/,
+    );
+    // The protected check must come before the queued/streaming checks so its
+    // reason wins when a conversation is both protected and queued/streaming.
+    const protectedIdx = snippet.indexOf("isProtected");
+    const queuedIdx = snippet.indexOf("hasQueuedMessages");
+    expect(protectedIdx).toBeGreaterThan(-1);
+    expect(queuedIdx).toBeGreaterThan(protectedIdx);
+  });
+
+  test("swipe-to-action is disabled for protected sessions, but only in the archive direction", () => {
+    // Swipe-to-delete (archived tab / spawned children) must stay enabled even
+    // when isProtected is true — protection only suppresses swipe-to-archive.
+    expect(sessionItemJs).toMatch(
+      /disabled: !isSwipeToDelete && isProtected,/,
+    );
+  });
+});
+
 describe("getConversationAccentStyles", () => {
   test("an unset background_color resolves to null (no accent at all)", () => {
     expect(getConversationAccentStyles(undefined, false)).toBeNull();

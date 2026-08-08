@@ -1545,3 +1545,73 @@ func TestComputeEventStats(t *testing.T) {
 		})
 	}
 }
+
+// TestSendSessionConnected_NoArchive pins the mitto-yvel.4 WebSocket transport
+// requirement: the "connected" message always carries "no_archive" (mirroring
+// meta.NoArchive), regardless of its value, so the frontend's `??` fallback
+// chains in useWebSocket.js resolve deterministically instead of silently
+// inheriting a stale value from a prior connected message.
+func TestSendSessionConnected_NoArchive(t *testing.T) {
+	tests := []struct {
+		name          string
+		noArchive     bool
+		wantNoArchive bool
+	}{
+		{name: "protected session reports no_archive=true", noArchive: true, wantNoArchive: true},
+		{name: "unprotected session reports no_archive=false (key still present)", noArchive: false, wantNoArchive: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			store, err := session.NewStore(tmpDir)
+			if err != nil {
+				t.Fatalf("NewStore: %v", err)
+			}
+			defer store.Close()
+
+			sessionID := "test-no-archive-" + tt.name
+			if err := store.Create(session.Metadata{
+				SessionID: sessionID,
+				ACPServer: "test-server",
+				NoArchive: tt.noArchive,
+			}); err != nil {
+				t.Fatalf("store.Create: %v", err)
+			}
+
+			mockWS := newMockWSConn()
+			server := &Server{config: Config{ACPServer: "test-server"}}
+			client := &SessionWSClient{
+				sessionID: sessionID,
+				server:    server,
+				wsConn:    &WSConn{send: mockWS.send},
+				store:     store,
+			}
+
+			client.sendSessionConnected(nil)
+
+			select {
+			case msgBytes := <-mockWS.send:
+				var msg struct {
+					Type string                 `json:"type"`
+					Data map[string]interface{} `json:"data"`
+				}
+				if err := json.Unmarshal(msgBytes, &msg); err != nil {
+					t.Fatalf("unmarshal: %v", err)
+				}
+				if msg.Type != WSMsgTypeConnected {
+					t.Errorf("message type = %q, want %q", msg.Type, WSMsgTypeConnected)
+				}
+				got, present := msg.Data["no_archive"]
+				if !present {
+					t.Fatal("expected \"no_archive\" key to always be present in the connected message")
+				}
+				if got != tt.wantNoArchive {
+					t.Errorf("no_archive = %v, want %v", got, tt.wantNoArchive)
+				}
+			case <-time.After(100 * time.Millisecond):
+				t.Fatal("expected connected message on send channel, got none")
+			}
+		})
+	}
+}
