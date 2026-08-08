@@ -35,9 +35,9 @@ import {
  * Single global-bus WebSocket transport. Receive-only: the server does not
  * act on any client-sent frame, so no send()/sendPrompt() is exposed.
  *
- * States: "idle" -> "connecting" -> "open" -> "closed", plus the terminal
- * "stopped" reached via explicit close() or the reconnect-attempt cap.
- * Explicit close() never schedules a reconnect.
+ * States: "idle" -> "connecting" -> "open" -> "closing"/"closed", plus the
+ * terminal "stopped" reached via explicit close() or the reconnect-attempt
+ * cap. Explicit close() never schedules a reconnect.
  *
  * Events (via `.on(event, handler) -> unsubscribe`):
  *   "open" ({ isReconnect }), "connected" (server's `connected` payload),
