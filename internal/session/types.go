@@ -337,6 +337,16 @@ type Metadata struct {
 	AutoUnarchiveLastAttemptAt time.Time `json:"auto_unarchive_last_attempt_at,omitempty"`
 }
 
+// IsArchivable reports whether this conversation may be archived. It returns
+// false only when NoArchive is set (mitto-yvel.3); every archive entry point
+// (REST PATCH, MCP mitto_conversation_archive, auto-archive for inactivity or
+// repeated ACP start/resume failures) must check this before mutating
+// Archived/ArchivedAt/ArchiveReason. Deletion is never gated by this — a
+// protected conversation must still be deletable (epic decision 3).
+func (m Metadata) IsArchivable() bool {
+	return !m.NoArchive
+}
+
 // ChildOrigin represents how a child conversation was created.
 type ChildOrigin string
 

@@ -2719,22 +2719,31 @@ func (sm *SessionManager) resumeSessionWithConstraint(sessionID, sessionName, wo
 			return nil, err
 		}
 		// Persist the failure count and auto-archive if threshold is reached.
+		// A NoArchive conversation (mitto-yvel.3) still has its failure count
+		// tracked, but is never auto-archived — a supervisor loop that keeps
+		// failing to start must not be reaped.
 		if store != nil {
 			var failureCount int
+			var archived, skippedNoArchive bool
 			updateErr := store.UpdateMetadata(sessionID, func(m *session.Metadata) {
 				m.ACPStartFailureCount++
 				failureCount = m.ACPStartFailureCount
 				if failureCount >= ACPStartFailureThreshold {
-					m.Archived = true
-					m.ArchivedAt = time.Now()
-					m.ArchiveReason = session.ArchiveReasonACPFailures
+					if m.IsArchivable() {
+						m.Archived = true
+						m.ArchivedAt = time.Now()
+						m.ArchiveReason = session.ArchiveReasonACPFailures
+						archived = true
+					} else {
+						skippedNoArchive = true
+					}
 				}
 			})
 			if updateErr != nil && sm.logger != nil {
 				sm.logger.Warn("Failed to update ACP start failure count",
 					"session_id", sessionID,
 					"error", updateErr)
-			} else if failureCount >= ACPStartFailureThreshold {
+			} else if archived {
 				if sm.logger != nil {
 					sm.logger.Warn("Session auto-archived after repeated ACP start failures",
 						"session_id", sessionID,
@@ -2742,6 +2751,13 @@ func (sm *SessionManager) resumeSessionWithConstraint(sessionID, sessionName, wo
 						"threshold", ACPStartFailureThreshold)
 				}
 				sm.BroadcastSessionArchived(sessionID, true, session.ArchiveReasonACPFailures)
+			} else if skippedNoArchive {
+				if sm.logger != nil {
+					sm.logger.Warn("Skipping auto-archive after repeated ACP start failures: conversation is non-archivable",
+						"session_id", sessionID,
+						"failure_count", failureCount,
+						"threshold", ACPStartFailureThreshold)
+				}
 			} else if sm.logger != nil {
 				sm.logger.Warn("ACP start failed, incremented failure count",
 					"session_id", sessionID,

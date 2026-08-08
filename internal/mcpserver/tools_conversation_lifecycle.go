@@ -202,6 +202,17 @@ func (s *Server) handleArchiveConversation(ctx context.Context, req *mcp.CallToo
 		}, nil
 	}
 
+	// Reject archiving a NoArchive conversation (mitto-yvel.3). Checked after the
+	// child-delegation block above so a protected child remains deletable via that
+	// path (deletion is always allowed per epic decision 3; only archiving is gated).
+	if archived && !meta.IsArchivable() {
+		return nil, ArchiveConversationOutput{
+			Success:        false,
+			ConversationID: input.ConversationID,
+			Error:          "conversation is marked non-archivable and cannot be archived; delete it instead",
+		}, nil
+	}
+
 	// Check if already in the desired state
 	if meta.Archived == archived {
 		state := "archived"

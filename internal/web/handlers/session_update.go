@@ -34,17 +34,27 @@ func (h *Handlers) HandleUpdateSession(w http.ResponseWriter, r *http.Request, s
 		return
 	}
 
-	// When archiving a child session, delete it instead (children should never be archived)
+	// When archiving a child session, delete it instead (children should never be archived).
+	// Reject archiving a NoArchive conversation (mitto-yvel.3) — checked after the child
+	// redirect so a protected child remains deletable via that path (deletion is always
+	// allowed per epic decision 3; only archiving is gated).
 	if req.Archived != nil && *req.Archived {
 		meta, err := store.GetMetadata(sessionID)
-		if err == nil && meta.ParentSessionID != "" {
-			if h.deps.Logger != nil {
-				h.deps.Logger.Info("Converting child archive to delete",
-					"session_id", sessionID,
-					"parent_session_id", meta.ParentSessionID)
+		if err == nil {
+			if meta.ParentSessionID != "" {
+				if h.deps.Logger != nil {
+					h.deps.Logger.Info("Converting child archive to delete",
+						"session_id", sessionID,
+						"parent_session_id", meta.ParentSessionID)
+				}
+				h.HandleDeleteSession(w, sessionID)
+				return
 			}
-			h.HandleDeleteSession(w, sessionID)
-			return
+			if !meta.IsArchivable() {
+				writeErrorJSON(w, http.StatusConflict, "conflict",
+					"Conversation is marked non-archivable and cannot be archived; delete it instead")
+				return
+			}
 		}
 	}
 

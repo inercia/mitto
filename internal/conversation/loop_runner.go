@@ -1741,17 +1741,10 @@ func (r *LoopRunner) checkSession(meta session.Metadata, now time.Time) (deliver
 			// After too many consecutive failures, archive the session
 			// to stop the retry storm. The user can unarchive it manually.
 			if failures >= MaxLoopResumeFailures {
-				if r.logger != nil {
-					r.logger.Warn("Archiving session after repeated ACP resume failures",
-						"session_id", sessionID,
-						"session_name", meta.Name,
-						"consecutive_failures", failures)
-				}
-
-				// Note: the session is NOT running (resume failed), so no need to close it gracefully.
-
-				// Persist the stopped reason before archiving so it survives even though
-				// the session leaves the active view. Failures are non-fatal — archiving proceeds.
+				// Persist the stopped reason so it survives even when the session
+				// leaves the active view. Done unconditionally (even for a
+				// non-archivable conversation, mitto-yvel.3) so the loop stops
+				// retrying regardless of whether the archive itself proceeds.
 				loopStore := r.store.Loop(sessionID)
 				if markErr := loopStore.MarkStopped(session.StoppedReasonResumeFailures); markErr != nil {
 					if r.logger != nil {
@@ -1763,40 +1756,67 @@ func (r *LoopRunner) checkSession(meta session.Metadata, now time.Time) (deliver
 				// Cancel any pending on-completion timer so it cannot fire after archiving (mitto-efnb).
 				r.cancelCompletionTimer(sessionID)
 
-				// Update metadata to mark as archived
-				if updateErr := r.store.UpdateMetadata(sessionID, func(m *session.Metadata) {
-					m.Archived = true
-					m.ArchivedAt = time.Now()
-					m.ArchiveReason = session.ArchiveReasonACPFailures
-				}); updateErr != nil {
+				if !meta.IsArchivable() {
+					// Skip archiving a non-archivable conversation (mitto-yvel.3):
+					// a supervisor loop that goes quiet must not be reaped. The
+					// loop is already stopped above, so no retry storm results.
 					if r.logger != nil {
-						r.logger.Error("Failed to archive session after ACP failures",
+						r.logger.Warn("Skipping auto-archive after repeated ACP resume failures: conversation is non-archivable",
 							"session_id", sessionID,
-							"error", updateErr)
+							"session_name", meta.Name,
+							"consecutive_failures", failures)
 					}
-				} else {
-					// Notify via callback (broadcasts to WebSocket clients)
-					if r.onAutoArchive != nil {
-						r.onAutoArchive(sessionID)
-					}
-					// Delete child sessions (async, same as manual archive)
-					go r.sessionManager.DeleteChildSessions(sessionID)
-
-					// Broadcast the loop disable so the UI badge reflects reality (mitto-efnb).
 					if r.onLoopAutoStopped != nil {
 						if final, gErr := loopStore.Get(); gErr == nil {
 							r.onLoopAutoStopped(sessionID, final)
 						}
 					}
-
+				} else {
 					if r.logger != nil {
-						r.logger.Info("Session archived after repeated ACP resume failures",
+						r.logger.Warn("Archiving session after repeated ACP resume failures",
 							"session_id", sessionID,
-							"session_name", meta.Name)
+							"session_name", meta.Name,
+							"consecutive_failures", failures)
+					}
+
+					// Note: the session is NOT running (resume failed), so no need to close it gracefully.
+
+					// Update metadata to mark as archived
+					if updateErr := r.store.UpdateMetadata(sessionID, func(m *session.Metadata) {
+						m.Archived = true
+						m.ArchivedAt = time.Now()
+						m.ArchiveReason = session.ArchiveReasonACPFailures
+					}); updateErr != nil {
+						if r.logger != nil {
+							r.logger.Error("Failed to archive session after ACP failures",
+								"session_id", sessionID,
+								"error", updateErr)
+						}
+					} else {
+						// Notify via callback (broadcasts to WebSocket clients)
+						if r.onAutoArchive != nil {
+							r.onAutoArchive(sessionID)
+						}
+						// Delete child sessions (async, same as manual archive)
+						go r.sessionManager.DeleteChildSessions(sessionID)
+
+						// Broadcast the loop disable so the UI badge reflects reality (mitto-efnb).
+						if r.onLoopAutoStopped != nil {
+							if final, gErr := loopStore.Get(); gErr == nil {
+								r.onLoopAutoStopped(sessionID, final)
+							}
+						}
+
+						if r.logger != nil {
+							r.logger.Info("Session archived after repeated ACP resume failures",
+								"session_id", sessionID,
+								"session_name", meta.Name)
+						}
 					}
 				}
 
-				// Reset counter after archiving
+				// Reset counter after handling (archived or skipped) so we don't
+				// re-trigger this branch on every subsequent tick.
 				r.consecutiveFailuresMu.Lock()
 				delete(r.consecutiveFailures, sessionID)
 				r.consecutiveFailuresMu.Unlock()
@@ -2491,6 +2511,17 @@ func (r *LoopRunner) checkAutoArchive(sessions []session.Metadata, now time.Time
 		if err == nil {
 			if r.logger != nil {
 				r.logger.Debug("Skipping auto-archive for loop session",
+					"session_id", meta.SessionID,
+					"session_name", meta.Name)
+			}
+			continue
+		}
+
+		// Skip conversations marked non-archivable (mitto-yvel.3) — a supervisor
+		// loop that goes quiet must not be reaped.
+		if !meta.IsArchivable() {
+			if r.logger != nil {
+				r.logger.Debug("Skipping auto-archive: conversation is non-archivable",
 					"session_id", meta.SessionID,
 					"session_name", meta.Name)
 			}
