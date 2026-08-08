@@ -4464,8 +4464,7 @@ export function useWebSocket({
   useEffect(() => {
     connectToEventsRef.current?.();
     return () => {
-      if (reconnectRef.current) clearTimeout(reconnectRef.current);
-      if (eventsWsRef.current) eventsWsRef.current.close();
+      if (eventsStreamRef.current) eventsStreamRef.current.close();
       // Clear all session reconnect timers
       for (const timerId of Object.values(sessionReconnectRefs.current)) {
         clearTimeout(timerId);
@@ -4623,8 +4622,7 @@ export function useWebSocket({
     sessionReconnectAttemptsRef,
     keepaliveRef,
     serverShuttingDownRef,
-    eventsWsRef,
-    reconnectRef,
+    eventsStreamRef,
     staggeredBackgroundTimersRef,
   } = connection;
   // Populate forward-refs so the composer callbacks declared earlier (which

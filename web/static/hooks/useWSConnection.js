@@ -28,6 +28,13 @@
 // staleRecoveryCooldownRef is owned by useWSMobileResilience (mitto-90f.6.1)
 // and passed in as a prop; the session onclose handler clears its entry when
 // the connection drops.
+//
+// connectToEvents (S2, mitto-7gta.18) is backed by the SDK's EventsStream
+// (sdk/realtime/events-stream.js) instead of a raw WebSocket: the stream owns
+// its own reconnect/backoff loop internally, so this hook only needs to
+// create it once (lazily, cached in eventsStreamRef) and call .connect().
+// The auth-redirect / server-shutdown reconnect veto is passed in as the
+// stream's `shouldReconnect` option — see connectToEvents below.
 // =============================================================================
 
 const { useCallback, useEffect, useRef, useState } = window.preact;
@@ -35,6 +42,7 @@ const { useCallback, useEffect, useRef, useState } = window.preact;
 import { ROLE_ERROR, INITIAL_EVENTS_LIMIT, limitMessages, getMaxSeq } from "../lib.js";
 import { setLastActiveSessionId, getLastActiveSessionId, getLastSeenSeq } from "../utils/storage.js";
 import { endpoints } from "../utils/index.js";
+import { getSdkClient, getSdkWsBaseUrl } from "../utils/sdkClient.js";
 import {
   calculateReconnectDelay,
   createReconnectDebounceTracker,
@@ -79,13 +87,13 @@ export function useWSConnection({
   // ---- Owned state ----
   const [eventsConnected, setEventsConnected] = useState(false);
 
-  const eventsWsRef = useRef(null);
-  const reconnectRef = useRef(null);
+  // Lazily-created SDK EventsStream instance backing connectToEvents (S2,
+  // mitto-7gta.18) — the stream owns its own reconnect/backoff loop, so this
+  // hook only creates it once and calls .connect()/.close() on it.
+  const eventsStreamRef = useRef(null);
   const sessionWsRefs = useRef({});                   // { sessionId: WebSocket }
   const sessionReconnectRefs = useRef({});            // { sessionId: timeoutId }
   const sessionReconnectAttemptsRef = useRef({});
-  const eventsReconnectAttemptRef = useRef(0);
-  const wasConnectedRef = useRef(false);
   const reconnectDebounceRef = useRef(createReconnectDebounceTracker());
   const serverShuttingDownRef = useRef(false);
   const staggeredBackgroundTimersRef = useRef({});
@@ -463,16 +471,44 @@ export function useWSConnection({
     return false;
   }, []);
 
-  // Connect to global events WebSocket
+  // Connect to the global events bus via the SDK's EventsStream (S2,
+  // mitto-7gta.18). The stream is created lazily on first call and reused on
+  // subsequent calls (its own internal reconnect loop handles drops — this
+  // function only needs to call .connect() once per app lifetime).
+  //
+  // shouldReconnect mirrors the previous inline onclose gate: an auth check
+  // (redirect-to-login on 401) followed by a "server shutting down" veto.
+  // EventsStream awaits whatever this returns before scheduling its next
+  // reconnect attempt.
   const connectToEvents = useCallback(() => {
-    const socket = new WebSocket(endpoints.events.ws());
+    if (eventsStreamRef.current) {
+      eventsStreamRef.current.connect();
+      return;
+    }
 
-    socket.onopen = () => {
+    const stream = getSdkClient().eventsStream({
+      wsBaseUrl: getSdkWsBaseUrl(),
+      shouldReconnect: async () => {
+        // Before reconnecting, check if the close was due to auth failure.
+        // WebSocket doesn't provide HTTP status codes, so we make a quick
+        // auth check first.
+        const isAuthenticated = await checkAuthOrRedirect();
+        if (!isAuthenticated) {
+          // checkAuthOrRedirect already redirected to login if 401.
+          return false;
+        }
+        if (serverShuttingDownRef.current) {
+          console.log(
+            "Server is shutting down, not reconnecting global events WebSocket",
+          );
+          return false;
+        }
+        return true;
+      },
+    });
+
+    stream.on("open", ({ isReconnect }) => {
       setEventsConnected(true);
-      // M2: Reset reconnection attempt counter on successful connection
-      eventsReconnectAttemptRef.current = 0;
-
-      const isReconnect = wasConnectedRef.current;
       console.log(
         "Global events WebSocket connected",
         isReconnect ? "(reconnect)" : "(initial)",
@@ -529,71 +565,32 @@ export function useWSConnection({
           }
         });
       }
-    };
+    });
 
-    socket.onmessage = (event) => {
-      try {
-        const msg = JSON.parse(event.data);
-        handleGlobalEvent(msg);
-      } catch (err) {
-        console.error(
-          "Failed to parse global events message:",
-          err,
-          event.data,
-        );
-      }
-    };
+    // EventsStream splits the raw "connected" frame out into its own
+    // "connected" event (payload already unwrapped to `msg.data`); every
+    // other frame is re-emitted as "event" ({type, data}). handleGlobalEvent
+    // switches on msg.type (including a "connected" case), so both are
+    // routed through it re-wrapped into the original {type, data} shape to
+    // preserve behaviour identically to the raw-WebSocket implementation.
+    stream.on("connected", (data) => handleGlobalEvent({ type: "connected", data }));
+    stream.on("event", (msg) => handleGlobalEvent(msg));
 
-    socket.onclose = async (event) => {
+    stream.on("close", (event) => {
       console.log("Global events WebSocket closed", {
-        code: event.code,
-        reason: event.reason,
-        wasClean: event.wasClean,
+        code: event?.code,
+        reason: event?.reason,
+        wasClean: event?.wasClean,
       });
-      if (eventsWsRef.current) {
-        wasConnectedRef.current = true;
-      }
       setEventsConnected(false);
-      eventsWsRef.current = null;
+    });
 
-      // Before reconnecting, check if the close was due to auth failure
-      // WebSocket doesn't provide HTTP status codes, so we make a quick auth check
-      const isAuthenticated = await checkAuthOrRedirect();
-      if (!isAuthenticated) {
-        // checkAuthOrRedirect already redirected to login if 401
-        return;
-      }
+    stream.on("error", (err) => {
+      console.error("Global events WebSocket error:", err);
+    });
 
-      // Don't reconnect if the server is shutting down
-      if (serverShuttingDownRef.current) {
-        console.log(
-          "Server is shutting down, not reconnecting global events WebSocket",
-        );
-        return;
-      }
-
-      // M2: Use exponential backoff for reconnection
-      const attempt = eventsReconnectAttemptRef.current;
-      const delay = calculateReconnectDelay(attempt);
-      console.log(
-        `Scheduling global events reconnect (attempt ${attempt + 1}, delay ${delay}ms)`,
-      );
-      eventsReconnectAttemptRef.current = attempt + 1;
-      reconnectRef.current = setTimeout(connectToEvents, delay);
-    };
-
-    socket.onerror = (err) => {
-      console.error("Global events WebSocket error:", {
-        type: err.type,
-        readyState: socket.readyState,
-        url: socket.url,
-        bufferedAmount: socket.bufferedAmount,
-        timestamp: new Date().toISOString(),
-      });
-      socket.close();
-    };
-
-    eventsWsRef.current = socket;
+    eventsStreamRef.current = stream;
+    stream.connect();
   }, [fetchStoredSessions, handleGlobalEvent, switchSession]);
 
   // Timeout for waiting for WebSocket to connect (in milliseconds)
@@ -993,8 +990,7 @@ export function useWSConnection({
     sessionReconnectAttemptsRef,
     keepaliveRef,
     serverShuttingDownRef,
-    eventsWsRef,
-    reconnectRef,
+    eventsStreamRef,
     staggeredBackgroundTimersRef,
   };
 }
