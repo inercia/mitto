@@ -751,7 +751,7 @@ describe("SessionStream: stale-client detection (keepalive_ack)", () => {
     ws.onmessage({ data: JSON.stringify({ type: "keepalive_ack", data: { max_seq: 10 } }) }); // sets sync in flight
     const countBefore = h.instances.length;
     h.clock.advance(SESSION_STREAM_CONSTANTS.STALE_RECOVERY_COOLDOWN_MS); // also satisfies forceReconnect's debounce window
-    h.clock.advance(30000); // SYNC_TIMEOUT_MS
+    h.clock.advance(SESSION_STREAM_CONSTANTS.SYNC_TIMEOUT_MS);
     expect(h.instances.length).toBeGreaterThan(countBefore);
   });
 });

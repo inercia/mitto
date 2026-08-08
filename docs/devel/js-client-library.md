@@ -93,6 +93,22 @@ Two concrete couplings from today's code are explicitly displaced:
   typed `MittoAuthError` (a `MittoApiError` specialization, `.3`), and the
   browser host wires the redirect via the `onUnauthorized` hook. Auth
   adapters themselves (cookie+CSRF, shared bearer token, none) are `.5`.
+- The seq watermark and pending-prompt queues that `utils/storage.js` keeps
+  in `localStorage` (`mitto_last_seen_seq:*`, `mitto_pending_prompts`) →
+  become the injected `seqStore` / `pendingPromptStore` adapters accepted by
+  `SessionStream` (`.14`). Both default to in-memory implementations;
+  `createStorageSeqStore(storage)` and
+  `createStoragePendingPromptStore(storage)` build persistent variants on
+  the same injected `storage` contract, so the SDK still never touches
+  `localStorage`.
+
+Deduplication inside `SessionStream` is **non-destructive by default**: a
+duplicate seq is annotated (`{ duplicate: true }` on the `message` event)
+rather than dropped, because dropping unconditionally at transport level
+races with `events_loaded` and silently swallows legitimate messages (see
+[.augment/rules/24-web-frontend-sync.md](../../.augment/rules/24-web-frontend-sync.md)).
+Hosts that want the older drop behavior opt in via `dropDuplicates: true`
+and listen for the separate `duplicate` event.
 
 ## 5. Public vs internal boundary
 
