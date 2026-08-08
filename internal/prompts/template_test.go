@@ -2903,6 +2903,102 @@ func TestBuiltinPromptLoopModes(t *testing.T) {
 	}
 }
 
+// TestBuiltinPromptsNoArchivePolicy pins the mitto-yvel.5 audit of the
+// builtin corpus: exactly one prompt — the unified standing supervisor
+// "Loop processing tasks" — declares target.noArchive: true, and the
+// underlying rule (any builtin whose loop is both unconditional and
+// unbounded must be protected) is enforced mechanically so a future
+// unbounded supervisor cannot be added without also setting the flag.
+//
+// "Unconditional" means loop.mode is absent or "always" (mode: optional
+// lets the operator dispatch the same prompt as a one-shot, so a static
+// create-time flag would also make every one-shot send unarchivable — see
+// the bead's audit notes for the deliberately-deferred optional-loop
+// schedulers). "Unbounded" means both maxIterations and maxDuration are
+// 0/absent (the loop never self-terminates).
+func TestBuiltinPromptsNoArchivePolicy(t *testing.T) {
+	builtinDir := "../../config/prompts/builtin"
+
+	prev := CurrentFragments()
+	t.Cleanup(func() { SetCurrentFragments(prev) })
+	reg, loadErrs, err := LoadFragmentsFromDir(builtinDir)
+	if err != nil {
+		t.Fatalf("LoadFragmentsFromDir(builtin): %v", err)
+	}
+	if len(loadErrs) != 0 {
+		t.Fatalf("LoadFragmentsFromDir(builtin) per-file errors: %+v", loadErrs)
+	}
+	SetCurrentFragments(reg)
+
+	// Exact allowlist: fails loudly both if the flag is dropped from the
+	// standing supervisor and if it is sprayed onto new prompts without
+	// review updating this list.
+	wantNoArchive := map[string]bool{
+		"beads-issues/loop-processing.prompt.yaml": true,
+	}
+	gotNoArchive := map[string]bool{}
+
+	walkErr := filepath.WalkDir(builtinDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() || !strings.HasSuffix(d.Name(), ".prompt.yaml") {
+			return nil
+		}
+		relPath, err := filepath.Rel(builtinDir, path)
+		if err != nil {
+			return err
+		}
+		relPath = filepath.ToSlash(relPath)
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Errorf("ReadFile(%s): %v", relPath, err)
+			return nil
+		}
+		prompt, err := ParsePromptFile(relPath, data, time.Now())
+		if err != nil {
+			// Parse errors are already reported by TestBuiltinPromptsParseClean.
+			return nil
+		}
+
+		if prompt.Target != nil && prompt.Target.NoArchive {
+			gotNoArchive[relPath] = true
+		}
+
+		if prompt.Loop == nil || prompt.Target == nil {
+			return nil
+		}
+		unconditional := prompt.Loop.Mode == "" || prompt.Loop.Mode == PromptLoopModeAlways
+		if !unconditional {
+			return nil
+		}
+		maxDurationSeconds, err := prompt.Loop.MaxDurationSeconds()
+		if err != nil {
+			t.Errorf("%s: MaxDurationSeconds: %v", relPath, err)
+			return nil
+		}
+		unbounded := prompt.Loop.MaxIterations == 0 && maxDurationSeconds == 0
+		if unconditional && unbounded && !prompt.Target.NoArchive {
+			t.Errorf("%s: unconditional (mode=%q) + unbounded (maxIterations=0, maxDuration=0) loop with a target but Target.NoArchive = false — a standing supervisor that can never self-terminate must set target.noArchive: true", relPath, prompt.Loop.Mode)
+		}
+		return nil
+	})
+	if walkErr != nil {
+		t.Fatalf("WalkDir(%s): %v", builtinDir, walkErr)
+	}
+
+	for file := range wantNoArchive {
+		if !gotNoArchive[file] {
+			t.Errorf("%s: expected Target.NoArchive = true, got false/absent", file)
+		}
+	}
+	for file := range gotNoArchive {
+		if !wantNoArchive[file] {
+			t.Errorf("%s: Target.NoArchive = true but not in the reviewed allowlist — update wantNoArchive if this is intentional", file)
+		}
+	}
+}
+
 // TestMentionDriver_RendersForRepresentativeContexts renders
 // beads-issue-mention-driver.prompt.yaml (mitto-91wk) for representative
 // contexts and asserts it renders without error and picks the right branch:

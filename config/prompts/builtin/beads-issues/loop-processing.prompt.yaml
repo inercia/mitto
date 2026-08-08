@@ -46,6 +46,10 @@ target:
   reuse:
     title: true
     coalesce: true
+  # Standing supervisor with maxIterations/maxDuration = 0 (see loop: above) —
+  # archiving this conversation silently stops all task processing for the
+  # workspace, with no signal to the operator. Protect it (mitto-yvel.5).
+  noArchive: true
 # Pure procedural orchestration (enumerate → decide → dispatch → yield); real
 # reasoning is delegated to §A/§B/§C driver children which switch tier themselves.
 # Coding tier pin prevents inheriting the seeding conversation's model.
