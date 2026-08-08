@@ -26,6 +26,28 @@ const GO_CONSTANT_FILES = [
 
 const SPEC_FILE = join(REPO_ROOT, "docs", "devel", "websockets", "protocol-spec.md");
 
+const EVENTS_FILE = join(dirname(fileURLToPath(import.meta.url)), "events.js");
+
+/** Every `@typedef {...} XxxPayload` name declared in events.js. */
+function declaredPayloadTypedefs() {
+  const src = readFileSync(EVENTS_FILE, "utf8");
+  const names = new Set();
+  const re = /@typedef\s+\{[^}]*\}\s+([A-Za-z0-9_]+Payload)\b/g;
+  let m;
+  while ((m = re.exec(src))) names.add(m[1]);
+  return names;
+}
+
+/** `session_ui_prompt` -> `SessionUiPromptPayload`. */
+function payloadTypedefName(value) {
+  return (
+    value
+      .split("_")
+      .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+      .join("") + "Payload"
+  );
+}
+
 /** Every `WSMsgTypeXxx = "..."` string value declared in the Go registry. */
 function goConstantValues() {
   const values = new Set();
@@ -163,5 +185,21 @@ describe("EVENTS / COMMANDS / LEGACY_EVENTS shape", () => {
         .map(([key, value]) => `${name}.${key} = "${value}"`);
       expect(mismatches).toEqual([]);
     }
+  });
+});
+
+describe("payload typedefs", () => {
+  test("every event, command, and legacy type has a payload typedef", () => {
+    const declared = declaredPayloadTypedefs();
+    const missing = [...sdkValues()]
+      .map(payloadTypedefName)
+      .filter((name) => !declared.has(name));
+    expect(missing).toEqual([]);
+  });
+
+  test("every payload typedef corresponds to a known wire type", () => {
+    const expected = new Set([...sdkValues()].map(payloadTypedefName));
+    const orphaned = [...declaredPayloadTypedefs()].filter((name) => !expected.has(name));
+    expect(orphaned).toEqual([]);
   });
 });
