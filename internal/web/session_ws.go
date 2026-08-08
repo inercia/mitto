@@ -530,6 +530,10 @@ func (c *SessionWSClient) sendSessionConnected(bs *conversation.BackgroundSessio
 			data["runner_type"] = meta.RunnerType
 			data["runner_restricted"] = meta.RunnerRestricted
 			data["archived"] = meta.Archived
+			// Protected-conversation flag (mitto-yvel.4): always present so the
+			// frontend's ?? fallback chains resolve deterministically instead of
+			// silently inheriting a stale value from a prior connected message.
+			data["no_archive"] = meta.NoArchive
 			if meta.Archived {
 				// Archived sessions don't have ACP connections, so mark as "ready"
 				// to prevent the "Reconnecting to AI agent..." banner

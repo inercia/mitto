@@ -1474,6 +1474,20 @@ function App() {
       const isArchived =
         currentSession.archived || currentSession.info?.archived;
 
+      // Protected conversations (mitto-yvel.4) cannot be archived — this native
+      // shortcut bypasses every button, so it needs its own guard. Unarchive
+      // stays allowed.
+      const isProtected =
+        currentSession.no_archive || currentSession.info?.no_archive;
+      if (!isArchived && isProtected) {
+        showToast({
+          style: "warning",
+          title: "This conversation is protected from archiving",
+          duration: 4000,
+        });
+        return;
+      }
+
       // Toggle archive state
       await archiveSession(activeSessionId, !isArchived);
 
@@ -2663,17 +2677,24 @@ function App() {
 
   // Only the active conversation can have queued messages; streaming state comes
   // from the live socket. Both block archiving (matches SessionItem logic).
-  // Direction-aware: an archived session can always be unarchived — the
-  // queue/streaming preconditions only apply to the archive direction (mitto-a5p).
+  // Protected-conversation flag (mitto-yvel.4): suppresses the archive
+  // direction only — unarchive stays available (mitto-a5p direction-aware shape).
   const headerHasQueued = queueLength > 0;
+  const headerIsProtected = !!(
+    activeSession?.no_archive || sessionInfo?.no_archive
+  );
   const headerCanArchive =
-    headerIsArchived || (!headerHasQueued && !isStreaming);
-  const headerArchiveBlockedReason =
-    !headerIsArchived && headerHasQueued
-      ? "Clear queue before archiving"
-      : !headerIsArchived && isStreaming
-        ? "Wait for response to complete"
-        : null;
+    headerIsArchived ||
+    (!headerIsProtected && !headerHasQueued && !isStreaming);
+  const headerArchiveBlockedReason = !headerIsArchived
+    ? headerIsProtected
+      ? "This conversation is protected from archiving"
+      : headerHasQueued
+        ? "Clear queue before archiving"
+        : isStreaming
+          ? "Wait for response to complete"
+          : null
+    : null;
   const headerWorkingDir =
     activeSession?.working_dir || sessionInfo?.working_dir || "";
 

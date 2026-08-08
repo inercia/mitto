@@ -627,6 +627,10 @@ export function useWebSocket({
         isWaitingForUserInput: data.isWaitingForUserInput || false,
         messageCount: data.messages?.length || 0,
         archived: isArchived,
+        // Protected-conversation flag (mitto-yvel.4): sourced from the
+        // connected-message metadata or the stored session, mirroring the
+        // archived flag's fallback shape above.
+        no_archive: data.info?.no_archive || storedSession?.no_archive || false,
         archive_pending: isArchivePending,
         gc_suspended: data.info?.gc_suspended || false,
         // Linked beads issue ID — sourced from the connected-message metadata or
@@ -655,7 +659,7 @@ export function useWebSocket({
     const fingerprint = result
       .map(
         (s) =>
-          `${s.session_id}|${s.name}|${s.working_dir}|${s.acp_server}|${s.archived}|${s.isActive}|${s.isStreaming}|${s.isWaitingForChildren}|${s.isWaitingForUserInput}|${s.status}|${s.gc_suspended}|${s.background_color}|${s.parent_session_id || ""}|${s.child_origin || ""}`,
+          `${s.session_id}|${s.name}|${s.working_dir}|${s.acp_server}|${s.archived}|${s.no_archive}|${s.isActive}|${s.isStreaming}|${s.isWaitingForChildren}|${s.isWaitingForUserInput}|${s.status}|${s.gc_suspended}|${s.background_color}|${s.parent_session_id || ""}|${s.child_origin || ""}`,
       )
       .sort()
       .join("\n");
@@ -744,6 +748,11 @@ export function useWebSocket({
                   msg.data.runner_restricted ?? session.info?.runner_restricted,
                 // Use server-sent archived flag, falling back to existing session info
                 archived: msg.data.archived ?? session.info?.archived ?? false,
+                // Protected-conversation flag (mitto-yvel.4): suppresses archive
+                // affordances everywhere. Always sent by the server, so no
+                // stale-value risk from the ?? fallback chain.
+                no_archive:
+                  msg.data.no_archive ?? session.info?.no_archive ?? false,
                 archive_reason:
                   msg.data.archive_reason ?? session.info?.archive_reason ?? "",
                 archived_at:

@@ -227,21 +227,32 @@ export function SessionItem({
     [session.background_color, isLightTheme],
   );
 
+  // Protected-conversation flag (mitto-yvel.4): a session created with
+  // no_archive suppresses the archive direction only — unarchive stays
+  // available so a conversation archived before enforcement (or via a path
+  // predating the flag) remains recoverable.
+  const isProtected = !!session.no_archive;
+
   // Archive button should be disabled if:
   // 1. There are queued messages (can't archive with pending messages)
   // 2. The session is streaming (agent is responding - archiving would block for up to 5 minutes)
+  // 3. The conversation is protected from archiving (mitto-yvel.4)
   // Direction-aware: an archived session can always be unarchived — the
-  // queue/streaming preconditions only apply to the archive direction (mitto-a5p).
-  const canArchive = isArchived || (!hasQueuedMessages && !isSessionStreaming);
+  // queue/streaming/protected preconditions only apply to the archive
+  // direction (mitto-a5p).
+  const canArchive =
+    isArchived || (!isProtected && !hasQueuedMessages && !isSessionStreaming);
 
   // Get the reason why archiving is blocked (for tooltip). Only surface when
   // NOT archived — unarchive has no blocking preconditions.
   const archiveBlockedReason =
-    !isArchived && hasQueuedMessages
-      ? "Clear queue before archiving"
-      : !isArchived && isSessionStreaming
-        ? "Wait for response to complete"
-        : null;
+    !isArchived && isProtected
+      ? "This conversation is protected from archiving"
+      : !isArchived && hasQueuedMessages
+        ? "Clear queue before archiving"
+        : !isArchived && isSessionStreaming
+          ? "Wait for response to complete"
+          : null;
 
   // Get working_dir from session, or fall back to global map
   const workingDir =
@@ -375,7 +386,10 @@ export function SessionItem({
     onAction: handleSwipeAction,
     threshold: 0.5,
     revealWidth: 80,
-    disabled: false,
+    // Protected conversations (mitto-yvel.4) must not reveal the swipe-to-archive
+    // affordance. Swipe-to-delete (archived tab / spawned children) stays enabled —
+    // protection only suppresses the archive direction.
+    disabled: !isSwipeToDelete && isProtected,
   });
 
   // Per-conversation actions menu (shared with the chat header). Provides the
