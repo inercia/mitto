@@ -139,5 +139,6 @@ than duplicated here.
 `.2` core config/env · `.3` typed errors · `.4` transport · `.5` auth
 adapters · `.6` endpoints.js adoption · `.7`–`.12` REST resource modules ·
 `.13`–`.16` realtime · `.17`–`.18` UI migration · `.19` lint/CI enforcement ·
-`.20` typings · `.23`–`.25` testing · `.26` shared-token backend auth · `.27`
-CORS/origin policy · `.28` API stability tiers.
+`.20` typings · `.21` `docs/api/` reference · `.22` browser/CLI examples ·
+`.23`–`.25` testing · `.26` shared-token backend auth · `.27` CORS/origin
+policy · `.28` API stability tiers.
