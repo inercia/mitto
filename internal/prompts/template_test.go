@@ -2999,6 +2999,87 @@ func TestBuiltinPromptsNoArchivePolicy(t *testing.T) {
 	}
 }
 
+// TestBuiltinPromptsNoArchivePolicy_AuditedCandidatesNotProtected pins the
+// mitto-yvel.5 audit outcome for the specific candidates the bead description
+// called out for review (bounded `always` drivers and `optional` schedulers)
+// with named subtests, so a reviewer can see *why* each is excluded — not
+// just that the mechanical invariant in TestBuiltinPromptsNoArchivePolicy
+// happens to pass for it. Each case documents its own discriminator:
+//
+//   - bounded: mode is absent/"always" but maxIterations/maxDuration are set,
+//     so the loop self-terminates — archiving after that is expected cleanup,
+//     not silent task-processing loss.
+//   - optional: mode is "optional", so the same prompt can be dispatched as a
+//     one-shot; a static create-time noArchive would also make every
+//     one-shot send unarchivable.
+func TestBuiltinPromptsNoArchivePolicy_AuditedCandidatesNotProtected(t *testing.T) {
+	builtinDir := "../../config/prompts/builtin"
+
+	prev := CurrentFragments()
+	t.Cleanup(func() { SetCurrentFragments(prev) })
+	reg, loadErrs, err := LoadFragmentsFromDir(builtinDir)
+	if err != nil {
+		t.Fatalf("LoadFragmentsFromDir(builtin): %v", err)
+	}
+	if len(loadErrs) != 0 {
+		t.Fatalf("LoadFragmentsFromDir(builtin) per-file errors: %+v", loadErrs)
+	}
+	SetCurrentFragments(reg)
+
+	type discriminator string
+	const (
+		bounded  discriminator = "bounded"  // unconditional but self-terminating
+		optional discriminator = "optional" // dispatchable as a one-shot
+	)
+
+	cases := map[string]discriminator{
+		"beads-issues/loop-fixing-bug.prompt.yaml":           bounded,
+		"beads-issues/loop-implementing-feature.prompt.yaml": bounded,
+		"beads-issues/loop-until-complete.prompt.yaml":       bounded,
+		"beads-issues/mention-driver.prompt.yaml":            bounded,
+		"ci/check-ci.prompt.yaml":                            optional,
+		"docs/architectural-analysis.prompt.yaml":            optional,
+	}
+
+	for file, disc := range cases {
+		t.Run(file, func(t *testing.T) {
+			path := filepath.Join(builtinDir, file)
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("ReadFile(%s): %v", file, err)
+			}
+			prompt, err := ParsePromptFile(file, data, time.Now())
+			if err != nil {
+				t.Fatalf("ParsePromptFile(%s): %v", file, err)
+			}
+			if prompt.Loop == nil {
+				t.Fatalf("%s: Loop = nil, want non-nil (audit candidate must carry a loop: block)", file)
+			}
+			if prompt.Target != nil && prompt.Target.NoArchive {
+				t.Errorf("%s: Target.NoArchive = true, want false (deliberately excluded: %s)", file, disc)
+			}
+
+			switch disc {
+			case bounded:
+				if prompt.Loop.Mode != "" && prompt.Loop.Mode != PromptLoopModeAlways {
+					t.Errorf("%s: Loop.Mode = %q, want \"\"/%q for the bounded discriminator to apply", file, prompt.Loop.Mode, PromptLoopModeAlways)
+				}
+				maxDurationSeconds, err := prompt.Loop.MaxDurationSeconds()
+				if err != nil {
+					t.Fatalf("%s: MaxDurationSeconds: %v", file, err)
+				}
+				if prompt.Loop.MaxIterations == 0 && maxDurationSeconds == 0 {
+					t.Errorf("%s: MaxIterations=0 and MaxDuration=0, want at least one bound set for the bounded discriminator to apply", file)
+				}
+			case optional:
+				if prompt.Loop.Mode != PromptLoopModeOptional {
+					t.Errorf("%s: Loop.Mode = %q, want %q for the optional discriminator to apply", file, prompt.Loop.Mode, PromptLoopModeOptional)
+				}
+			}
+		})
+	}
+}
+
 // TestMentionDriver_RendersForRepresentativeContexts renders
 // beads-issue-mention-driver.prompt.yaml (mitto-91wk) for representative
 // contexts and asserts it renders without error and picks the right branch:
