@@ -11,6 +11,7 @@
  * object to simulate a runtime with no ambient browser globals).
  */
 import { ConfigError } from "./errors.js";
+import { noneAuth } from "../auth/none.js";
 
 const ALLOWED_KEYS = new Set([
   "baseUrl",
@@ -60,15 +61,6 @@ function createMemoryStorage() {
 function createNoopLogger() {
   const noop = () => {};
   return { debug: noop, info: noop, warn: noop, error: noop };
-}
-
-/** No-op passthrough auth adapter; concrete adapters are `.5`'s scope. */
-function createNoopAuth() {
-  return {
-    async authorize(_request) {
-      return {};
-    },
-  };
 }
 
 function resolveFetch(injected, globals) {
@@ -126,7 +118,7 @@ export function resolveConfig(options = {}, globals = globalThis) {
     fetch: fetchImpl,
     getWebSocket: resolveWebSocketThunk(options.WebSocket, globals),
     storage: options.storage || createMemoryStorage(),
-    auth: options.auth || createNoopAuth(),
+    auth: options.auth || noneAuth(),
     logger: options.logger || createNoopLogger(),
     onUnauthorized: options.onUnauthorized || (() => {}),
   };

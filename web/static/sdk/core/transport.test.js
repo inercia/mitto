@@ -382,6 +382,42 @@ describe("request — errors", () => {
     expect(received).toBeInstanceOf(MittoAuthError);
   });
 
+  test("401 calls auth.onUnauthorized before config.onUnauthorized (mitto-7gta.5)", async () => {
+    const order = [];
+    const config = configWithFetch(
+      async () => fakeResponse({ status: 401, text: "" }),
+      {
+        auth: {
+          async authorize() {
+            return {};
+          },
+          onUnauthorized: () => order.push("auth"),
+        },
+        onUnauthorized: () => order.push("config"),
+      },
+    );
+    await expect(
+      request(config, { method: "GET", path: "/x" }),
+    ).rejects.toBeInstanceOf(MittoAuthError);
+    expect(order).toEqual(["auth", "config"]);
+  });
+
+  test("401 does not throw when the auth adapter has no onUnauthorized", async () => {
+    const config = configWithFetch(
+      async () => fakeResponse({ status: 401, text: "" }),
+      {
+        auth: {
+          async authorize() {
+            return {};
+          },
+        },
+      },
+    );
+    await expect(
+      request(config, { method: "GET", path: "/x" }),
+    ).rejects.toBeInstanceOf(MittoAuthError);
+  });
+
   test("403 throws a MittoAuthError but does not fire onUnauthorized", async () => {
     let calls = 0;
     const config = configWithFetch(

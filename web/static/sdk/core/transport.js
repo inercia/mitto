@@ -160,7 +160,10 @@ export async function request(config, options = {}) {
       status: response.status,
       body: responseBody,
     });
-    if (response.status === 401) config.onUnauthorized(error);
+    if (response.status === 401) {
+      config.auth.onUnauthorized?.(error);
+      config.onUnauthorized(error);
+    }
     throw error;
   }
 

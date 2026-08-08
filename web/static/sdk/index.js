@@ -29,6 +29,7 @@ import {
   createMemoryPendingPromptStore,
   createStoragePendingPromptStore,
 } from "./realtime/pending-prompts.js";
+import { noneAuth, sharedTokenAuth, browserCookieAuth } from "./auth/index.js";
 
 /**
  * The embedded copy ships lockstep with the server (§6): its version is the
@@ -50,7 +51,8 @@ export function createClient(options = {}) {
 }
 
 export { MittoError, ConfigError, MittoApiError, MittoAuthError, MittoNetworkError };
-export { browserEnv } from "./env/browser.js";
+export { browserEnv, browserCookieReader } from "./env/browser.js";
+export { noneAuth, sharedTokenAuth, browserCookieAuth };
 export { createSessionStream, SessionStream } from "./realtime/session-stream.js";
 export {
   createSeqTracker,

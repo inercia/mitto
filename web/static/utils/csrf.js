@@ -1,73 +1,33 @@
 // Mitto Web Interface - CSRF Protection Utilities
-// Handles CSRF token management and secure fetch operations
-//
-// Uses the double-submit cookie pattern:
-// 1. Server sets a CSRF token in a cookie (readable by JavaScript)
-// 2. Frontend reads the cookie and sends the same value in a header
-// 3. Server verifies header matches cookie
-//
-// This is stateless - the server doesn't need to store tokens.
-// Security comes from the fact that an attacker cannot read the cookie
-// value due to same-origin policy, so they cannot set the correct header.
+// Thin shim over sdk/auth/browser-cookie.js (mitto-7gta.5) preserving this
+// module's original call sites (17 importers) during the SDK migration
+// (.17/.18). The double-submit-cookie protocol itself — server sets a CSRF
+// token in a cookie readable by JavaScript, the frontend echoes it in a
+// header, the server verifies header matches cookie — now lives in the SDK
+// adapter; this file only supplies the browser globals (document.cookie,
+// window.location, fetch) the SDK never touches directly, and the
+// redirect-to-login 401 policy the SDK deliberately keeps out of its core.
 
 import { endpoints } from "./endpoints.js";
+import { browserCookieAuth } from "../sdk/auth/browser-cookie.js";
+import { browserCookieReader } from "../sdk/env/browser.js";
 
-const CSRF_COOKIE_NAME = "mitto_csrf";
 const CSRF_HEADER_NAME = "X-CSRF-Token";
 
-// Track if we're currently fetching a token to avoid duplicate requests
-let tokenPromise = null;
-
-/**
- * Get the CSRF token from the cookie
- * @returns {string|null} The token or null if not found
- */
-function getTokenFromCookie() {
-  const match = document.cookie.match(
-    new RegExp("(^| )" + CSRF_COOKIE_NAME + "=([^;]+)"),
-  );
-  return match ? match[2] : null;
-}
-
-/**
- * Fetch a new CSRF token from the server (sets the cookie)
- * @returns {Promise<string>} The CSRF token
- */
-async function fetchCSRFToken() {
-  const response = await fetch(endpoints.misc.csrfToken(), {
-    credentials: "include", // Include cookies for cross-origin requests (external access via Tailscale)
-  });
-  if (!response.ok) {
-    throw new Error("Failed to fetch CSRF token");
-  }
-  const data = await response.json();
-  return data.token;
-}
+const auth = browserCookieAuth({
+  getCookie: browserCookieReader(),
+  fetch,
+  csrfTokenUrl: endpoints.misc.csrfToken(),
+  headerName: CSRF_HEADER_NAME,
+});
 
 /**
  * Get a valid CSRF token, fetching from server if no cookie exists.
  * @returns {Promise<string>} The CSRF token
  */
 export async function getCSRFToken() {
-  // Check if we have a token in the cookie
-  const cookieToken = getTokenFromCookie();
-  if (cookieToken) {
-    return cookieToken;
-  }
-
-  // No cookie - need to fetch a token from the server
-  // If we're already fetching, wait for that request
-  if (tokenPromise) {
-    return tokenPromise;
-  }
-
-  // Fetch a new token (this will set the cookie)
-  tokenPromise = fetchCSRFToken();
-  try {
-    return await tokenPromise;
-  } finally {
-    tokenPromise = null;
-  }
+  const patch = await auth.authorize({ method: "POST" });
+  return patch.headers[CSRF_HEADER_NAME];
 }
 
 /**
@@ -75,17 +35,7 @@ export async function getCSRFToken() {
  * Note: This doesn't clear the cookie, just any in-memory state
  */
 export function clearCSRFToken() {
-  tokenPromise = null;
-}
-
-/**
- * Check if a request method requires CSRF protection
- * @param {string} method - The HTTP method
- * @returns {boolean} True if CSRF protection is required
- */
-function needsCSRFProtection(method) {
-  const upperMethod = method?.toUpperCase() || "GET";
-  return ["POST", "PUT", "PATCH", "DELETE"].includes(upperMethod);
+  auth.onUnauthorized();
 }
 
 /**
@@ -125,33 +75,18 @@ function handleUnauthorized(response) {
  */
 export async function secureFetch(url, options = {}) {
   const method = options.method || "GET";
+  const patch = await auth.authorize({ method });
 
-  // Always include credentials for session cookie handling
-  // Use "include" instead of "same-origin" to support cross-origin requests
-  // (e.g., external access via Tailscale or ngrok)
-  const fetchOptions = {
-    ...options,
-    credentials: "include",
-  };
-
-  let response;
-
-  // Only add CSRF token for state-changing methods
-  if (needsCSRFProtection(method)) {
-    const token = await getCSRFToken();
-
-    // Create a copy of headers to avoid mutating the original
-    const headers = new Headers(options.headers || {});
-    headers.set(CSRF_HEADER_NAME, token);
-
-    response = await fetch(url, {
-      ...fetchOptions,
-      headers,
-    });
-  } else {
-    // For safe methods, just use regular fetch with credentials
-    response = await fetch(url, fetchOptions);
+  const headers = new Headers(options.headers || {});
+  if (patch.headers) {
+    for (const [k, v] of Object.entries(patch.headers)) headers.set(k, v);
   }
+
+  const response = await fetch(url, {
+    ...options,
+    headers,
+    credentials: patch.credentials || "include",
+  });
 
   // Check for 401 and redirect to login if needed
   return handleUnauthorized(response);

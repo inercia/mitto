@@ -288,7 +288,36 @@ export class SessionStream {
     this._state = "connecting";
     const WebSocketImpl = this._config.getWebSocket();
     const url = sessionWsUrl(this._config, this._sessionId, { wsBaseUrl: this._wsBaseUrl });
-    const ws = new WebSocketImpl(url);
+
+    // WebSocket auth (mitto-7gta.5): browsers cannot set custom headers on
+    // the handshake, so a browser-facing adapter (noneAuth, browserCookieAuth)
+    // simply omits `authorizeWebSocket` and the socket opens synchronously,
+    // exactly as before. Non-browser WebSocket implementations (e.g. Node's
+    // `ws`, which honours a `{ headers }` third constructor argument) get it
+    // via `sharedTokenAuth.authorizeWebSocket()` — the only case that defers
+    // socket creation by a microtask. No query-param fallback is used or
+    // invented here — see auth/shared-token.js.
+    const authorizeWebSocket = this._config.auth.authorizeWebSocket;
+    if (typeof authorizeWebSocket !== "function") {
+      this._openSocket(WebSocketImpl, url, {});
+      return;
+    }
+    Promise.resolve(authorizeWebSocket.call(this._config.auth, { url })).then(
+      (wsAuth) => {
+        if (this._state !== "connecting") return; // superseded while awaiting
+        this._openSocket(WebSocketImpl, url, wsAuth || {});
+      },
+      (err) => {
+        this._config.logger.error("SessionStream: authorizeWebSocket failed", err);
+        if (this._state !== "connecting") return;
+        this._emitter.emit("error", err);
+        this._handleConnectFailure();
+      },
+    );
+  }
+
+  _openSocket(WebSocketImpl, url, wsAuth) {
+    const ws = new WebSocketImpl(url, wsAuth.protocols, wsAuth.options);
     this._ws = ws;
 
     ws.onopen = () => this._handleOpen(ws);
@@ -515,7 +544,20 @@ export class SessionStream {
     this._clearSyncInFlight();
     this._state = "closed";
     this._emitter.emit("close", event);
+    this._reconnectOrStop();
+  }
 
+  /**
+   * Reached when `authorizeWebSocket()` rejects before a socket was ever
+   * created (no `ws`/`close` event to key off of) — applies the same
+   * explicit-close / reconnect-limit / backoff decision as `_handleClose`.
+   */
+  _handleConnectFailure() {
+    this._state = "closed";
+    this._reconnectOrStop();
+  }
+
+  _reconnectOrStop() {
     if (this._explicitlyClosed || this._terminal) {
       this._state = "stopped";
       return;

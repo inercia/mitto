@@ -44,3 +44,32 @@ export function browserEnv(globals = globalThis) {
     logger: createConsoleLogger(globals),
   };
 }
+
+/**
+ * Returns a `getCookie(name)` reader backed by `globals.document.cookie` —
+ * the injectable seam `sdk/auth/browser-cookie.js`'s `browserCookieAuth`
+ * requires so it never touches `document` itself (mitto-7gta.5). This is
+ * the only place under `sdk/` (besides this file's `localStorage`/`console`
+ * wiring above) allowed to reference `document`.
+ *
+ * Not bundled into `browserEnv()`'s output: `browserCookieAuth` also needs
+ * `fetch` and a `csrfTokenUrl` the preset cannot know, so callers wire it
+ * explicitly, e.g.:
+ *
+ *   import { browserCookieAuth } from "@mitto/sdk/auth/browser-cookie.js";
+ *   createClient({
+ *     ...browserEnv(),
+ *     baseUrl: "/api",
+ *     auth: browserCookieAuth({
+ *       getCookie: browserCookieReader(),
+ *       fetch: window.fetch.bind(window),
+ *       csrfTokenUrl: "/api/csrf-token",
+ *     }),
+ *   })
+ */
+export function browserCookieReader(globals = globalThis) {
+  return function getCookie(name) {
+    const match = globals.document.cookie.match(new RegExp("(^| )" + name + "=([^;]+)"));
+    return match ? match[2] : null;
+  };
+}

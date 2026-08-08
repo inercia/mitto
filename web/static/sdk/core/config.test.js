@@ -14,6 +14,7 @@ import { resolveConfig } from "./config.js";
 import { ConfigError } from "./errors.js";
 
 const CORE_DIR = dirname(fileURLToPath(import.meta.url));
+const AUTH_DIR = join(CORE_DIR, "..", "auth");
 
 describe("resolveConfig", () => {
   describe("defaults under fully injected env", () => {
@@ -215,16 +216,21 @@ describe("resolveConfig", () => {
 
     /** Strip /* block *\/ and // line comments so doc mentions of the
      *  forbidden words (e.g. this very file's header comments) don't
-     *  false-positive the scan below — only actual source code is checked. */
+     *  false-positive the scan below — only actual source code is checked.
+     *  Also strips string-literal contents so e.g. an import path like
+     *  "./browser-cookie.js" doesn't false-positive on the bare word
+     *  "cookie" — the scan cares about identifier usage, not filenames. */
     function stripComments(src) {
       return src
         .replace(/\/\*[\s\S]*?\*\//g, "")
-        .replace(/(^|[^:])\/\/.*$/gm, "$1");
+        .replace(/(^|[^:])\/\/.*$/gm, "$1")
+        .replace(/"(?:[^"\\]|\\.)*"/g, '""')
+        .replace(/'(?:[^'\\]|\\.)*'/g, "''");
     }
 
-    test("no forbidden browser-global identifiers appear under sdk/core/", () => {
+    function scan(dir) {
       const offenders = [];
-      for (const file of jsFilesUnder(CORE_DIR)) {
+      for (const file of jsFilesUnder(dir)) {
         const src = stripComments(readFileSync(file, "utf8"));
         for (const token of FORBIDDEN) {
           // Word-boundary match so e.g. "windowSize" doesn't false-positive.
@@ -233,7 +239,18 @@ describe("resolveConfig", () => {
         }
         if (/\bconsole\s*\./.test(src)) offenders.push(`${file}: console.*`);
       }
-      expect(offenders).toEqual([]);
+      return offenders;
+    }
+
+    test("no forbidden browser-global identifiers appear under sdk/core/", () => {
+      expect(scan(CORE_DIR)).toEqual([]);
+    });
+
+    // sdk/auth/ (mitto-7gta.5) carries the same purity requirement as
+    // sdk/core/: browserCookieAuth takes every browser global injected
+    // (getCookie/fetch), never reads document/localStorage/console itself.
+    test("no forbidden browser-global identifiers appear under sdk/auth/", () => {
+      expect(scan(AUTH_DIR)).toEqual([]);
     });
   });
 });
