@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestParseMenuTokens(t *testing.T) {
@@ -175,6 +176,108 @@ func TestMenus_KnownMenusMatchesFrontendRegistry(t *testing.T) {
 	for _, k := range jsKeys {
 		if k == MenuInternal {
 			t.Errorf("MENU_PARAM_TYPES unexpectedly contains %q; it is a Go-only dispatch sentinel with no frontend menu surface", MenuInternal)
+		}
+	}
+}
+
+// TestParsePromptFile_WithUnknownMenuToken_WarnsButLoads is an end-to-end
+// check of acceptance criterion #1 for mitto-rjg6: a prompt file with an
+// unrecognised menus token (the mitto-kazd plural typo) must still parse
+// successfully (non-fatal) while ParsePromptFile emits a WARN naming the
+// prompt, its file path, and the offending token.
+func TestParsePromptFile_WithUnknownMenuToken_WarnsButLoads(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+
+	data := []byte(`name: "Typo Menu Prompt"
+menus: prompts, conversations
+prompt: |
+  Body.
+`)
+	path := "typo-menu.prompt.yaml"
+	prompt, err := ParsePromptFile(path, data, time.Now())
+	if err != nil {
+		t.Fatalf("ParsePromptFile failed for an unrecognised (but non-fatal) menus token: %v", err)
+	}
+	if prompt.Name != "Typo Menu Prompt" {
+		t.Errorf("Name = %q, want %q (prompt must still load)", prompt.Name, "Typo Menu Prompt")
+	}
+	if prompt.Menus != "prompts, conversations" {
+		t.Errorf("Menus = %q, want the raw string preserved verbatim", prompt.Menus)
+	}
+
+	out := buf.String()
+	for _, want := range []string{"Typo Menu Prompt", path, "conversations"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("ParsePromptFile did not warn as expected; missing %q in log: %s", want, out)
+		}
+	}
+}
+
+// TestParsePromptFile_WithInternalMenu_NoWarning and the exclusion-token case
+// cover acceptance criteria #2/#3 through the real ParsePromptFile entry
+// point (not just the WarnUnknownMenus unit tested above).
+func TestParsePromptFile_WithInternalMenu_NoWarning(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		menus string
+	}{
+		{"internal sentinel", "internal"},
+		{"valid exclusion", "prompts, !promptsLoop"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			prev := slog.Default()
+			slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+			t.Cleanup(func() { slog.SetDefault(prev) })
+
+			data := []byte("name: \"Valid Menu Prompt\"\nmenus: " + tc.menus + "\nprompt: |\n  Body.\n")
+			if _, err := ParsePromptFile("valid-menu.prompt.yaml", data, time.Now()); err != nil {
+				t.Fatalf("ParsePromptFile failed: %v", err)
+			}
+			if buf.Len() != 0 {
+				t.Errorf("ParsePromptFile(menus=%q) warned unexpectedly: %s", tc.menus, buf.String())
+			}
+		})
+	}
+}
+
+// docsPromptsMdMenusMarkers pins the mitto-rjg6 documentation increment in
+// docs/config/prompts.md against silent drift: the `internal` sentinel and
+// the "Menu Token Validation" section (heading, warning behaviour, and the
+// two guardian-test callouts) must all remain present. Same docs↔code sync
+// convention as TestDocsFragmentsSectionExists (docs_fragments_sync_test.go)
+// and internal/web/webinterface_docs_sync_test.go.
+func TestDocsMenusSection_DocumentsInternalSentinelAndValidation(t *testing.T) {
+	root := repoRootForTest(t)
+	doc := readFileForTest(t, filepath.Join(root, "docs", "config", "prompts.md"))
+
+	const wantHeading = "### Menu Token Validation"
+	if !strings.Contains(doc, wantHeading) {
+		t.Errorf("docs/config/prompts.md: missing heading %q", wantHeading)
+	}
+
+	for _, marker := range []string{
+		// The internal sentinel, documented as a Go-only token.
+		"`internal`",
+		"Go-only sentinel",
+		// Warning behaviour and its non-fatal nature.
+		"unrecognised token(s); prompt will not appear in the intended menu",
+		"does **not** fail prompt loading",
+		// Source-of-truth pointers.
+		"internal/prompts/menus.go",
+		"KnownMenuTokens",
+		"WarnUnknownMenus",
+		// Guardian-test callouts, mirroring the code comments on the tests
+		// themselves (menus_test.go / prompts_test.go).
+		"TestBuiltinPrompts_MenusTokensRecognized",
+		"TestMenus_KnownMenusMatchesFrontendRegistry",
+		"MENU_PARAM_TYPES",
+	} {
+		if !strings.Contains(doc, marker) {
+			t.Errorf("docs/config/prompts.md §Menu Token Validation: missing marker %q", marker)
 		}
 	}
 }

@@ -374,6 +374,12 @@ prompt appears in. The available menu values are:
 | `beadsIssues`     | The **per-issue context menu** — shown when you right-click an issue in the Beads list view.        |
 | `beadsList`       | The **list-level prompts button** — the dropdown next to the `+` button in the Beads list footer.   |
 
+There is also a Go-only sentinel, not part of the frontend registry above:
+
+| Token      | Where it appears                                                                                  |
+| ---------- | -------------------------------------------------------------------------------------------------- |
+| `internal` | **Nowhere.** Hides the prompt from every UI menu. Used for dispatch-only prompts (e.g. the beads driver/phase prompts) that are only ever invoked by name via `mitto_conversation_send_prompt`, never picked from a menu. |
+
 If a prompt has **no `menus` attribute**, it defaults to `prompts` (the ChatInput
 dropup only). To make a prompt appear in both menus, list both values:
 
@@ -444,7 +450,37 @@ loop prompt selector (`!promptsLoop`).
 - Exclusions take precedence over inclusions and union rules.
 - If all non-`!` tokens are stripped and nothing positive remains, `menus`
   defaults to `["prompts"]` (the prompt still appears in the dropup).
-- Exclusion tokens are ignored by backend validation and never treated as target menu names.
+- Exclusion tokens are ignored by the `childSessionId`-parameter menu-targeting
+  check (they never count as a "target menu" for that rule — see
+  [parameters](#parameters-typed-inputs--type-based-gating)). They are,
+  however, checked for token *recognition* exactly like included tokens — see
+  [Menu Token Validation](#menu-token-validation) below.
+
+### Menu Token Validation
+
+Every token in `menus` — bare or `!`-excluded — is checked against the known
+set: the five real menus in the table above, plus the `internal` sentinel. An
+unrecognized token does **not** fail prompt loading; historically it silently
+dropped the prompt from its intended menu with no error anywhere (e.g. the
+plural typo `menus: prompts, conversations`), which is easy to miss. Prompt
+loading now logs a `WARN` naming the prompt, its file path, and the offending
+token(s):
+
+```
+prompt menus field contains unrecognised token(s); prompt will not appear in the intended menu
+    prompt=<name> path=<file> menus=<raw string> unknown=[conversations] known=[prompts promptsLoop conversation beadsIssues beadsList internal]
+```
+
+- `menus: internal` and `menus: prompts, !promptsLoop` are valid and never warn.
+- The warning is deduplicated per `(prompt, path, tokens)` — reloading the
+  same prompt does not repeat it.
+- Implemented in `internal/prompts/menus.go` (`KnownMenuTokens`,
+  `WarnUnknownMenus`), wired into prompt-file loading (`ParsePromptFile`) and
+  both inline-prompt config paths (`settings.json`/`.yaml`, `.mittorc`).
+- A guard test, `TestBuiltinPrompts_MenusTokensRecognized`, fails the build if
+  any builtin prompt under `config/prompts/builtin/` uses an unrecognised
+  token. `TestMenus_KnownMenusMatchesFrontendRegistry` keeps this list in sync
+  with `MENU_PARAM_TYPES` in `web/static/utils/prompts.js`.
 
 ### Conversation Context Menu
 
