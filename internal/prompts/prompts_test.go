@@ -4148,22 +4148,6 @@ prompt: |
 	}
 }
 
-// knownMenuTokens mirrors the frontend menu registry (MENU_PARAM_TYPES in
-// web/static/utils/prompts.js) plus the "internal" token, which is used
-// throughout the builtin tree to mark a prompt as dispatch-only (never shown
-// in any UI menu) but is intentionally NOT part of MENU_PARAM_TYPES.
-//
-// Go has no compile-time link to the JS registry, so this list must be kept
-// in sync by hand if a new menu is ever added on the frontend.
-var knownMenuTokens = map[string]bool{
-	"prompts":      true,
-	"promptsLoop":  true,
-	"conversation": true,
-	"beadsIssues":  true,
-	"beadsList":    true,
-	"internal":     true,
-}
-
 // TestBuiltinPrompts_MenusTokensRecognized walks every .prompt.yaml in
 // config/prompts/builtin/ and asserts that each comma-separated token in its
 // `menus:` field is a recognised menu name (see knownMenuTokens above). A
@@ -4173,9 +4157,11 @@ var knownMenuTokens = map[string]bool{
 // This is a regression guard for mitto-kazd: `menus: prompts, conversations`
 // (plural, unrecognised) in babysit-this-pr.prompt.yaml silently dropped the
 // prompt from the conversation context menu with no error anywhere in the
-// pipeline, because neither ParsePromptFile nor ValidatePromptParameters
-// inspects the menus string's tokens — only the frontend does an exact-match
-// filter, so an unknown token fails silently rather than loudly.
+// pipeline. ParsePromptFile now warns on unknown tokens via WarnUnknownMenus
+// (mitto-rjg6), but this test still guards the builtin tree specifically so a
+// future typo cannot ship even if warnings go unnoticed. Uses the production
+// KnownMenuTokens registry (menus.go) so the guard and the runtime warning
+// can never disagree.
 func TestBuiltinPrompts_MenusTokensRecognized(t *testing.T) {
 	builtinDir := filepath.Join("..", "..", "config", "prompts", "builtin")
 	if _, err := os.Stat(builtinDir); err != nil {
@@ -4225,7 +4211,7 @@ func TestBuiltinPrompts_MenusTokensRecognized(t *testing.T) {
 			if token == "" {
 				continue
 			}
-			if !knownMenuTokens[token] {
+			if !KnownMenuTokens[token] {
 				t.Errorf("%s: menus %q contains unrecognised token %q (known: prompts, promptsLoop, conversation, beadsIssues, beadsList, internal)",
 					d.Name(), prompt.Menus, token)
 			}

@@ -812,6 +812,10 @@ func parseWorkspaceRC(data []byte) (*WorkspaceRC, error) {
 		if err := ValidatePromptParameters(p.Menus, p.Parameters); err != nil {
 			continue
 		}
+		// Warn (non-fatal) when menus contains an unrecognised token (mitto-rjg6).
+		// ".mittorc" is a fixed source label: no real on-disk path is threaded
+		// through this call site (workspace-level inline prompts).
+		WarnUnknownMenus(p.Name, ".mittorc", p.Menus)
 		var loop *PromptLoop
 		if !p.Loop.IsZero() {
 			decoded, migrated, err := DecodeInlineLoop(&p.Loop)

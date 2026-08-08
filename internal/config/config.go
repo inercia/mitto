@@ -1677,6 +1677,10 @@ func Parse(data []byte) (*Config, error) {
 		if err := ValidatePromptParameters(p.Menus, p.Parameters); err != nil {
 			continue
 		}
+		// Warn (non-fatal) when menus contains an unrecognised token (mitto-rjg6).
+		// "settings" is a fixed source label: no real on-disk path is threaded
+		// through this call site (settings.json/settings.yaml inline prompts).
+		WarnUnknownMenus(p.Name, "settings", p.Menus)
 		loop := decodeConfigInlineLoop(p.Name, p.Loop)
 		wp := WebPrompt{
 			Name:            p.Name,

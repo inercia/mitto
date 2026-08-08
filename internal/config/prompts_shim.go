@@ -57,7 +57,12 @@ const (
 var (
 	KnownPromptParameterTypes    = prompts.KnownPromptParameterTypes
 	KnownPromptCacheDestinations = prompts.KnownPromptCacheDestinations
+	KnownMenus                   = prompts.KnownMenus
+	KnownMenuTokens              = prompts.KnownMenuTokens
 )
+
+// --- Constants (menus.go, mitto-rjg6) ---
+const MenuInternal = prompts.MenuInternal
 
 // --- Functions as var-delegates ---
 var (
@@ -66,6 +71,9 @@ var (
 	DeprecatedMittoVars                       = prompts.DeprecatedMittoVars
 	DeprecatedMittoVarReplacement             = prompts.DeprecatedMittoVarReplacement
 	WarnDeprecatedMittoVars                   = prompts.WarnDeprecatedMittoVars
+	ParseMenuTokens                           = prompts.ParseMenuTokens
+	UnknownMenuTokens                         = prompts.UnknownMenuTokens
+	WarnUnknownMenus                          = prompts.WarnUnknownMenus
 	HasTemplateSyntax                         = prompts.HasTemplateSyntax
 	PrecompileTemplateConds                   = prompts.PrecompileTemplateConds
 	ValidatePromptTemplateSyntax              = prompts.ValidatePromptTemplateSyntax

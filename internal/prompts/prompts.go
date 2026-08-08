@@ -1264,6 +1264,9 @@ func parsePromptFileData(path string, data []byte, modTime time.Time) (*PromptFi
 	// Warn (non-fatal) when the body still uses deprecated @mitto: tokens (mitto-m7sb.9).
 	WarnDeprecatedMittoVars(prompt.Name, prompt.Content)
 
+	// Warn (non-fatal) when menus contains an unrecognised token (mitto-rjg6).
+	WarnUnknownMenus(prompt.Name, path, prompt.Menus)
+
 	return prompt, migrated, result, nil
 }
 

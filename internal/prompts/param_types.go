@@ -307,13 +307,7 @@ func ValidatePromptParameters(menus string, params []PromptParameter) error {
 		if param.Type != "childSessionId" {
 			continue
 		}
-		parts := strings.Split(menus, ",")
-		var menuList []string
-		for _, m := range parts {
-			if m = strings.TrimSpace(m); m != "" && !strings.HasPrefix(m, "!") {
-				menuList = append(menuList, m)
-			}
-		}
+		menuList, _ := ParseMenuTokens(menus)
 		if len(menuList) == 0 {
 			// Empty menus treated as "prompts" — allowed.
 			return nil
