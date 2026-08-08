@@ -262,6 +262,65 @@ func TestPrewarmPin_CleanupStaleAuxSkipsPinnedKeepalive(t *testing.T) {
 	}
 }
 
+// TestProbePrewarmHealth_SaturationBailDoesNotPin is the mitto-xetv
+// reproduction: probePrewarmHealth's ONLY signal is the error returned by
+// getOrCreateAuxiliarySession(PurposeKeepAlive). When the shared process is
+// already flagged saturated, getOrCreateAuxiliarySession fails fast with
+// acperrors.ErrProcessSaturated (wrapping the umbrella
+// acperrors.ErrSharedProcessSaturated) WITHOUT issuing a session/new RPC —
+// i.e. the probe measured nothing about the process's steady-state health.
+//
+// probePrewarmHealth currently collapses every non-nil error into reason
+// "session_new_failed" and pins the workspace on it (acp_process_manager.go
+// L1916-1925, L1951). That is backwards: the probe failed *because* the
+// process is already refusing work, and pinning it only feeds the keep-warm
+// machinery more re-probes against a process that is drowning, while
+// occupying a max_pinned slot that a genuinely slow (mcp_timeout) workspace
+// could have used instead.
+//
+// This test installs a saturated shared process for a workspace that starts
+// unpinned, runs one probePrewarmHealth round, and asserts the workspace is
+// NOT pinned as a result. It FAILS today because probePrewarmHealth pins on
+// every non-nil error, saturation included.
+func TestProbePrewarmHealth_SaturationBailDoesNotPin(t *testing.T) {
+	m := NewACPProcessManager(context.Background(), nil)
+	defer m.Close()
+
+	const wsUUID = "ws-saturated-probe"
+
+	// Force the shared process into the saturated state (same technique as
+	// TestGetOrCreateAuxiliarySession_SaturatedBails) so the probe's aux
+	// session creation bails via the reactive IsSaturated() guard instead of
+	// attempting a real session/new RPC.
+	proc := newTestSharedProcess()
+	proc.saturationMu.Lock()
+	proc.saturatedUntil = time.Now().Add(30 * time.Second)
+	proc.saturationLevel = 1
+	proc.saturationMu.Unlock()
+
+	if !proc.IsSaturated() {
+		t.Fatal("test setup: expected process to report IsSaturated()=true")
+	}
+
+	m.mu.Lock()
+	m.processes[wsUUID] = proc
+	m.mu.Unlock()
+
+	if m.IsPinned(wsUUID) {
+		t.Fatal("test setup: workspace unexpectedly pinned before the probe")
+	}
+
+	m.probePrewarmHealth(wsUUID, nil)
+
+	if m.IsPinned(wsUUID) {
+		t.Error("probePrewarmHealth pinned a workspace whose only signal was " +
+			"a saturation bail (ErrProcessSaturated) — the probe measured " +
+			"nothing about the process's health and must not pin on it " +
+			"(mitto-xetv: saturation-induced probe failure must not be " +
+			"treated the same as a genuine session_new_failed)")
+	}
+}
+
 // TestPrewarmPin_UncappedPinNoExpiry verifies that a pin applied without a
 // max-duration cap does not expire on its own — it must stay pinned until
 // unpinned explicitly.

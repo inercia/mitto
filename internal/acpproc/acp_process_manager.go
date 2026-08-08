@@ -2,6 +2,7 @@ package acpproc
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -1914,6 +1915,16 @@ func (m *ACPProcessManager) probePrewarmHealth(workspaceUUID string, logger *slo
 
 	reason := ""
 	switch {
+	case err != nil && errors.Is(err, ErrSharedProcessSaturated):
+		// mitto-xetv: getOrCreateAuxiliarySession's saturation-family bails
+		// (ErrProcessSaturated / ErrProcessBusy / ErrMCPInitGated, all
+		// wrapping the umbrella ErrSharedProcessSaturated) return WITHOUT
+		// attempting the session/new RPC — the probe measured nothing about
+		// the process's steady-state health. Collapsing this into
+		// "session_new_failed" pinned an already-drowning process, which
+		// only adds re-probe load to it and occupies a max_pinned slot that
+		// a genuine mcp_timeout/slow_session_new pin could have used.
+		reason = "probe_shed"
 	case err != nil:
 		reason = "session_new_failed"
 	case mcpTimedOut:
@@ -1942,6 +1953,14 @@ func (m *ACPProcessManager) probePrewarmHealth(workspaceUUID string, logger *slo
 		// hysteresis (unpins after N consecutive healthy probes; no-op if
 		// not pinned) and return without pinning.
 		m.RecordPrewarmProbeResult(workspaceUUID, true, pc.GetHealthyProbesToUnpin())
+		return
+	}
+
+	if reason == "probe_shed" {
+		// mitto-xetv: a shed probe measured nothing, so it must feed
+		// neither the pin path nor the unpin hysteresis (a shed is not a
+		// "bad health" signal that should reset progress toward unpinning
+		// an otherwise slow-but-alive workspace).
 		return
 	}
 
