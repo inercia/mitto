@@ -142,6 +142,43 @@ type Server struct {
 	// cannot both miss the scan and create duplicate conversations. Mirrors
 	// the HTTP handler's reuseTitleLocks. See lockReuseTitle.
 	reuseTitleLocks map[string]*sync.Mutex
+
+	// --- Idle MCP session reaper (mitto-txse) ---
+	// reaperMu guards every field in this block. Purpose-scoped, per this
+	// file's convention of dedicated mutexes for independent state (compare
+	// sessionsMu, mcpSessionMapMu) — never reuse s.mu, which guards lifecycle
+	// fields (running/shutdown/listener/httpSrv).
+	reaperMu sync.Mutex
+	// lastActivity maps an MCP protocol session id (Mcp-Session-Id) to the
+	// time of its most recent request of ANY kind — GET, POST, or DELETE.
+	// This is Mitto's own idle clock, replacing the go-sdk's POST-only one
+	// (see mcpIdleSessionTimeout doc for why). Populated by
+	// mcpRequestLoggingMiddleware, consumed by reapIdleMCPSessions.
+	lastActivity map[string]time.Time
+	// openStreamsBySession counts currently-open long-lived GET (keepalive)
+	// streams per MCP session id. A session with a nonzero count here is by
+	// definition live and is never reaped, regardless of idle time.
+	openStreamsBySession map[string]int
+	// streamableHandler is the raw *mcp.StreamableHTTPHandler (NOT the
+	// logging-wrapped handler mounted on the mux) used by reapIdleMCPSessions
+	// to issue synthetic DELETE requests. Serving reap requests against the
+	// unwrapped handler avoids logging them as inbound agent traffic. Set
+	// once in startSSE; nil (and the reaper inert) in STDIO mode.
+	streamableHandler *mcp.StreamableHTTPHandler
+	// reaperTimeout is the idle duration after which a session with no open
+	// stream is reaped. Defaults to mcpIdleSessionTimeout when zero;
+	// overridable in tests so they don't need to sleep 30 minutes.
+	reaperTimeout time.Duration
+	// reaperNow, when non-nil, is used instead of time.Now() for both
+	// recording activity and evaluating idle duration. Test-only seam.
+	reaperNow func() time.Time
+	// reaperStopCh, when non-nil, signals the background reaper goroutine
+	// (started in startSSE) to exit. Closed exactly once, in Stop().
+	reaperStopCh chan struct{}
+	// reaperWG tracks the background reaper goroutine so Stop() can be
+	// certain it has exited before returning (mirrors the graceful-shutdown
+	// discipline of the rest of Stop()).
+	reaperWG sync.WaitGroup
 }
 
 // registeredSession holds information about a registered session.
@@ -446,20 +483,24 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 }
 
-// mcpIdleSessionTimeout bounds how long a Streamable HTTP MCP session (and its
-// associated long-lived SSE GET stream, tracked by openSSEStreams) is kept
-// alive after the client stops sending it requests, before the go-sdk closes
-// it automatically (mitto-6cz6). Every ACP session — including one-shot
-// processor-scoped auxiliary sessions (internal/acpproc/aux_mcp_transport.go)
-// — opens its own MCP session against this endpoint and never explicitly
-// DELETEs it, so without an idle timeout these sessions (and the goroutine +
-// SSE stream each one pins) accumulate for the lifetime of the Mitto process:
-// 279 concurrently open in the field, one agent process alone holding 139 TCP
-// connections here, which saturates that agent's OWN MCP client pool and
-// causes its cold-start "MCP initialization timed out" gate to fire (Mitto's
-// own handler answers in <1ms throughout — this is agent-side amplification,
-// not server-side slowness). 30 minutes is comfortably longer than any single
-// ACP session's realistic lifetime while still reclaiming long-abandoned ones.
+// mcpIdleSessionTimeout bounds how long a Streamable HTTP MCP session is kept
+// alive after Mitto has observed NO request of any kind — GET (including
+// keepalive), POST, or DELETE — bearing that session's id, before Mitto's own
+// reaper (reapIdleMCPSessions) closes it. Every ACP session — including
+// one-shot processor-scoped auxiliary sessions
+// (internal/acpproc/aux_mcp_transport.go) — opens its own MCP session against
+// this endpoint and never explicitly DELETEs it, so without an idle timeout
+// these sessions (and the goroutine + SSE stream each one pins) accumulate
+// for the lifetime of the Mitto process: 279 concurrently open in the field,
+// one agent process alone holding 139 TCP connections here, which saturates
+// that agent's OWN MCP client pool and causes its cold-start "MCP
+// initialization timed out" gate to fire (Mitto's own handler answers in
+// <1ms throughout — this is agent-side amplification, not server-side
+// slowness) — this is the mitto-6cz6 regression this timeout must keep
+// fixed. 30 minutes of TRULY no activity at all — not even a keepalive,
+// whose interval is ~5 minutes — already means the client is gone, so the
+// value is unchanged from mitto-6cz6; what changed (mitto-txse) is which
+// activity resets the clock and who owns enforcing it.
 const mcpIdleSessionTimeout = 30 * time.Minute
 
 // mcpStreamableHTTPOptions returns the *mcp.StreamableHTTPOptions used to
@@ -477,11 +518,23 @@ func mcpStreamableHTTPOptions() *mcp.StreamableHTTPOptions {
 		// WebSocket, not the MCP transport, so mitto_ui_* prompts are unaffected
 		// (unlike Stateless:true, which would reject server->client requests).
 		JSONResponse: true,
-		// SessionTimeout reaps idle MCP sessions (mitto-6cz6) — see
-		// mcpIdleSessionTimeout doc for the full rationale. The go-sdk zero
-		// value never closes idle sessions, which is what allowed session
-		// count to grow unbounded in the field.
-		SessionTimeout: mcpIdleSessionTimeout,
+		// SessionTimeout is intentionally left at its zero value (never
+		// auto-close) — the go-sdk's own idle clock only resets on POST
+		// (sessionInfo.startPOST/endPOST in mcp/streamable.go are called from
+		// ServeHTTP only `if req.Method == http.MethodPost`), so a client that
+		// faithfully holds its standalone SSE GET keepalive open but goes
+		// >mcpIdleSessionTimeout between *tool calls* has that GET rejected
+		// and, if unlucky, a `tools/call` land mid-reap and 404 — a session
+		// that was demonstrably still alive (mitto-txse: 22 sessions reaped
+		// at exactly 30.0 min after last POST, 44 rejected keepalive GETs, 1
+		// real tool call lost). The go-sdk exposes no hook to make its clock
+		// GET-aware (sessionInfo is unexported), so Mitto owns the reap
+		// policy instead: see reapIdleMCPSessions, which treats any request
+		// bearing the session id as activity and additionally exempts a
+		// session with a currently-open GET stream outright. The mitto-6cz6
+		// accumulation problem this SDK option originally addressed is still
+		// covered by that Mitto-owned reaper.
+		SessionTimeout: 0,
 	}
 }
 
@@ -536,6 +589,10 @@ func (s *Server) startSSE(ctx context.Context) error {
 
 	s.httpSrv = &http.Server{Handler: mux}
 
+	// Start Mitto's own idle-session reaper (mitto-txse). HTTP mode only —
+	// startSTDIO never calls this, so the reaper does not exist in STDIO mode.
+	s.startMCPSessionReaper(streamableHandler)
+
 	go func() {
 		if err := s.httpSrv.Serve(listener); err != nil && err != http.ErrServerClosed {
 			s.logger.Error("MCP server error", "error", err)
@@ -580,6 +637,13 @@ func (r *mcpStatusRecorder) Flush() {
 // tools/list) are tiny; this bound protects against a large tools/call payload.
 const maxMCPBodyPeek = 8 * 1024
 
+// mcpSessionIDHeader is the MCP Streamable HTTP session header name, mirrored
+// from the unexported sessionIDHeader constant in mcp/streamable.go. The
+// go-sdk sets this on the response of a session-creating `initialize` POST
+// (which carries no inbound session id of its own) as well as expecting it on
+// every subsequent request.
+const mcpSessionIDHeader = "Mcp-Session-Id"
+
 // mcpRequestLoggingMiddleware logs each inbound MCP HTTP request so that an
 // agent's requests (initialize / tools/list / tools/call) can be correlated
 // with agent stderr and the rest of mitto.log. This is critical for diagnosing
@@ -601,7 +665,7 @@ const maxMCPBodyPeek = 8 * 1024
 func (s *Server) mcpRequestLoggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		reqID := uuid.NewString()[:8]
-		mcpSessionID := r.Header.Get("Mcp-Session-Id")
+		mcpSessionID := r.Header.Get(mcpSessionIDHeader)
 
 		// Peek the JSON-RPC method/id from the body without consuming it.
 		var rpcMethod, rpcID string
@@ -648,11 +712,47 @@ func (s *Server) mcpRequestLoggingMiddleware(next http.Handler) http.Handler {
 			defer s.openSSEStreams.Add(-1)
 		}
 
+		// Idle-session reaper bookkeeping (mitto-txse): record activity for
+		// any request bearing a known session id — GET (including keepalive),
+		// POST, and DELETE alike — and separately track open GET streams so a
+		// session with a live keepalive is exempt from reaping regardless of
+		// idle time. See reapIdleMCPSessions.
+		if mcpSessionID != "" {
+			s.reaperTouch(mcpSessionID)
+		}
+		if r.Method == http.MethodGet && mcpSessionID != "" {
+			s.reaperStreamOpened(mcpSessionID)
+			defer s.reaperStreamClosed(mcpSessionID)
+		}
+
 		rec := &mcpStatusRecorder{ResponseWriter: w}
 		start := time.Now()
 		next.ServeHTTP(rec, r)
 		if rec.status == 0 {
 			rec.status = http.StatusOK
+		}
+
+		// Resolve the effective session id for post-request bookkeeping: a
+		// session-creating `initialize` POST carries no inbound session id,
+		// but the go-sdk assigns one and returns it on the response — track
+		// it from creation so a session that never issues a single
+		// follow-up request is still eligible for reaping instead of
+		// leaking forever (the mitto-6cz6 regression this must not reopen).
+		effSessionID := mcpSessionID
+		if effSessionID == "" {
+			effSessionID = rec.Header().Get(mcpSessionIDHeader)
+		}
+		switch {
+		case effSessionID == "":
+			// No session involved (e.g. a malformed request) — nothing to track.
+		case r.Method == http.MethodDelete, rec.status == http.StatusNotFound:
+			// Explicit client teardown, or the session is already gone
+			// server-side — stop tracking so the maps don't grow unbounded.
+			s.reaperForget(effSessionID)
+		default:
+			// Touch again on completion so a long-lived GET keepalive that
+			// just closed counts as fresh activity, not stale-since-open.
+			s.reaperTouch(effSessionID)
 		}
 
 		s.logger.Log(r.Context(), level, "MCP request completed",
@@ -663,6 +763,230 @@ func (s *Server) mcpRequestLoggingMiddleware(next http.Handler) http.Handler {
 			"duration_ms", time.Since(start).Milliseconds(),
 		)
 	})
+}
+
+// --- Idle MCP session reaper (mitto-txse) ---
+
+// mcpSessionReaperInterval is how often the background reaper goroutine scans
+// tracked MCP sessions for idle ones to reap. Short relative to
+// mcpIdleSessionTimeout so a reaped session's staleness at the moment it is
+// actually reaped is bounded to within this interval.
+const mcpSessionReaperInterval = 1 * time.Minute
+
+// reaperClockNow returns the current time, using the injectable reaperNow
+// seam if set (tests) or time.Now() otherwise.
+func (s *Server) reaperClockNow() time.Time {
+	s.reaperMu.Lock()
+	now := s.reaperNow
+	s.reaperMu.Unlock()
+	if now != nil {
+		return now()
+	}
+	return time.Now()
+}
+
+// reaperTouch records sessionID as having had activity right now. Called for
+// any request bearing a known session id, on both receipt and completion —
+// see mcpRequestLoggingMiddleware.
+func (s *Server) reaperTouch(sessionID string) {
+	if sessionID == "" {
+		return
+	}
+	now := s.reaperClockNow()
+	s.reaperMu.Lock()
+	if s.lastActivity == nil {
+		s.lastActivity = make(map[string]time.Time)
+	}
+	s.lastActivity[sessionID] = now
+	s.reaperMu.Unlock()
+}
+
+// reaperStreamOpened increments the open-GET-stream count for sessionID.
+// Pair with reaperStreamClosed (typically via defer).
+func (s *Server) reaperStreamOpened(sessionID string) {
+	if sessionID == "" {
+		return
+	}
+	s.reaperMu.Lock()
+	if s.openStreamsBySession == nil {
+		s.openStreamsBySession = make(map[string]int)
+	}
+	s.openStreamsBySession[sessionID]++
+	s.reaperMu.Unlock()
+}
+
+// reaperStreamClosed decrements the open-GET-stream count for sessionID,
+// removing the entry once it reaches zero.
+func (s *Server) reaperStreamClosed(sessionID string) {
+	if sessionID == "" {
+		return
+	}
+	s.reaperMu.Lock()
+	if n := s.openStreamsBySession[sessionID]; n > 1 {
+		s.openStreamsBySession[sessionID] = n - 1
+	} else {
+		delete(s.openStreamsBySession, sessionID)
+	}
+	s.reaperMu.Unlock()
+}
+
+// reaperForget stops tracking sessionID entirely: called on an observed real
+// DELETE (voluntary client teardown) and on a 404 response (the session is
+// already gone server-side), so the tracking maps do not grow unbounded.
+func (s *Server) reaperForget(sessionID string) {
+	if sessionID == "" {
+		return
+	}
+	s.reaperMu.Lock()
+	delete(s.lastActivity, sessionID)
+	delete(s.openStreamsBySession, sessionID)
+	s.reaperMu.Unlock()
+}
+
+// startMCPSessionReaper stores the raw streamable handler and starts the
+// background goroutine that periodically calls reapIdleMCPSessions. HTTP mode
+// only — startSTDIO never calls this. Stop() signals reaperStopCh to exit it.
+func (s *Server) startMCPSessionReaper(handler *mcp.StreamableHTTPHandler) {
+	s.reaperMu.Lock()
+	s.streamableHandler = handler
+	timeout := s.reaperTimeout
+	if timeout <= 0 {
+		timeout = mcpIdleSessionTimeout
+		s.reaperTimeout = timeout
+	}
+	stopCh := make(chan struct{})
+	s.reaperStopCh = stopCh
+	s.reaperMu.Unlock()
+
+	s.reaperWG.Add(1)
+	go func() {
+		defer s.reaperWG.Done()
+		ticker := time.NewTicker(mcpSessionReaperInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stopCh:
+				return
+			case <-ticker.C:
+				s.reapIdleMCPSessions()
+			}
+		}
+	}()
+}
+
+// stopMCPSessionReaper signals the background reaper goroutine to exit and
+// waits for it to do so. Idempotent: safe to call when the reaper was never
+// started (e.g. STDIO mode) or has already been stopped.
+func (s *Server) stopMCPSessionReaper() {
+	s.reaperMu.Lock()
+	stopCh := s.reaperStopCh
+	s.reaperStopCh = nil
+	s.reaperMu.Unlock()
+
+	if stopCh == nil {
+		return
+	}
+	close(stopCh)
+	s.reaperWG.Wait()
+}
+
+// reapIdleMCPSessions scans tracked MCP sessions and reaps — via a synthetic
+// DELETE served directly against the raw streamable handler — any session
+// that has zero currently-open GET (keepalive) streams AND has seen no
+// request of any kind for longer than reaperTimeout. A session with an open
+// stream is exempt outright, regardless of idle time: this is the fix for
+// mitto-txse, where the go-sdk's own POST-only idle clock reaped sessions
+// that were demonstrably still alive.
+func (s *Server) reapIdleMCPSessions() {
+	s.reaperMu.Lock()
+	handler := s.streamableHandler
+	timeout := s.reaperTimeout
+	if timeout <= 0 {
+		timeout = mcpIdleSessionTimeout
+	}
+	now := s.reaperNow
+	s.reaperMu.Unlock()
+
+	nowT := time.Now()
+	if now != nil {
+		nowT = now()
+	}
+
+	type candidate struct {
+		sessionID string
+		idle      time.Duration
+	}
+	var toReap []candidate
+
+	s.reaperMu.Lock()
+	for sid, last := range s.lastActivity {
+		if s.openStreamsBySession[sid] > 0 {
+			continue
+		}
+		if idle := nowT.Sub(last); idle > timeout {
+			toReap = append(toReap, candidate{sessionID: sid, idle: idle})
+		}
+	}
+	s.reaperMu.Unlock()
+
+	if len(toReap) == 0 {
+		return
+	}
+	if handler == nil {
+		s.logger.Warn("mcp reaper: sessions past idle timeout but no streamable handler set, skipping",
+			"count", len(toReap))
+		return
+	}
+
+	for _, c := range toReap {
+		req, err := http.NewRequest(http.MethodDelete, "/mcp", nil)
+		if err != nil {
+			s.logger.Error("mcp reaper: failed to build synthetic DELETE",
+				"mcp_session_id", c.sessionID, "error", err)
+			continue
+		}
+		req.Header.Set(mcpSessionIDHeader, c.sessionID)
+
+		w := newDiscardResponseWriter()
+		handler.ServeHTTP(w, req)
+		status := w.status
+		if status == 0 {
+			status = http.StatusOK
+		}
+
+		s.logger.Info("mcp reaper: reaped idle MCP session",
+			"mcp_session_id", c.sessionID,
+			"idle_seconds", int(c.idle.Seconds()),
+			"status", status,
+		)
+
+		s.reaperForget(c.sessionID)
+	}
+}
+
+// discardResponseWriter is a minimal http.ResponseWriter used to serve the
+// reaper's synthetic DELETE requests without a real network connection.
+// Response bytes are discarded; only the status code is retained for logging.
+type discardResponseWriter struct {
+	header http.Header
+	status int
+}
+
+func newDiscardResponseWriter() *discardResponseWriter {
+	return &discardResponseWriter{header: make(http.Header)}
+}
+
+func (w *discardResponseWriter) Header() http.Header { return w.header }
+
+func (w *discardResponseWriter) Write(b []byte) (int, error) {
+	if w.status == 0 {
+		w.status = http.StatusOK
+	}
+	return len(b), nil
+}
+
+func (w *discardResponseWriter) WriteHeader(status int) {
+	w.status = status
 }
 
 // parseJSONRPCEnvelope extracts the "method" and "id" fields from a JSON-RPC
@@ -761,6 +1085,10 @@ func (s *Server) Stop() error {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+
+	// Stop the idle-session reaper goroutine (mitto-txse). No-op in STDIO
+	// mode or if it was never started.
+	s.stopMCPSessionReaper()
 
 	// Stop SSE mode resources
 	if s.httpSrv != nil {

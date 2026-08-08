@@ -1,6 +1,7 @@
 package mcpserver
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -310,46 +311,202 @@ func TestMcpRequestLoggingMiddlewareTracksOpenSSEStreams(t *testing.T) {
 	}
 }
 
-// TestMcpStreamableHTTPOptions_SessionTimeoutConfigured is a reproduction
-// test for mitto-6cz6: every ACP session — including one-shot processor-scoped
-// auxiliary sessions (internal/acpproc/aux_mcp_transport.go,
-// PurposeProcessorPrefix) — opens its own MCP client session against Mitto's
-// Streamable HTTP endpoint and never issues an explicit DELETE to close it.
-// Without a SessionTimeout, the go-sdk's default behavior (zero value = "idle
-// sessions are never closed") lets these MCP sessions — and the long-lived SSE
-// GET stream + goroutine each one pins (openSSEStreams) — accumulate for the
-// lifetime of the Mitto process.
+// TestMcpStreamableHTTPOptions_SessionTimeoutConfigured pins the mitto-txse
+// fix: the go-sdk's own SessionTimeout is now intentionally left at its zero
+// value ("never auto-close"), because its idle clock is refreshed ONLY by
+// POSTs (sessionInfo.startPOST/endPOST in mcp/streamable.go are invoked from
+// ServeHTTP only `if req.Method == http.MethodPost`) and never by the client's
+// long-lived standalone SSE GET keepalive. A conversation that goes
+// mcpIdleSessionTimeout between MCP *tool calls* — while faithfully keeping
+// its keepalive open — had its session silently deleted by the SDK, and the
+// next tools/call landed a 404 mid-turn (field evidence: 22 sessions reaped
+// at exactly 30.0 min after last POST, 44 keepalive GETs rejected, 1 real
+// tool call lost).
 //
-// Live measurement on the reporting bead: 279 concurrently open MCP sessions,
-// with a single agent process alone holding 139 TCP connections against this
-// endpoint. That per-process connection amplification saturates the AGENT's
-// own MCP client pool during a cold start / resume, which is what actually
-// fires the "MCP initialization timed out" gate reported by mitto-6cz6 — not
-// a slow Mitto handler (server-side `initialize` p50/max is <1ms across every
-// occurrence in the logs).
+// Mitto now owns the idle-reap policy instead (reapIdleMCPSessions,
+// startMCPSessionReaper): activity is any request bearing the session id
+// (GET/POST/DELETE), and a session with a currently-open GET stream is exempt
+// from reaping outright regardless of idle time. This assertion is inverted
+// from the original mitto-6cz6 test by design — see the sibling
+// TestReapIdleMCPSessions_* tests below for the reaper's own behavior.
 //
-// This test asserts the fix precondition directly: the *mcp.StreamableHTTPOptions
-// Mitto constructs for its Streamable HTTP handler (mcpStreamableHTTPOptions,
-// extracted from startSSE for testability) must configure a non-zero
-// SessionTimeout so idle MCP sessions are reaped automatically instead of
-// living forever. It currently FAILS because SessionTimeout is never set.
+// The mitto-6cz6 rationale (every ACP session, including one-shot
+// processor-scoped auxiliary sessions, opens its own MCP session and never
+// explicitly DELETEs it, so without SOME idle reap policy these sessions
+// accumulate for the lifetime of the Mitto process — 279 concurrently open in
+// the field, one agent process alone holding 139 TCP connections) still
+// holds; it is now enforced by Mitto's own reaper rather than the SDK option.
 func TestMcpStreamableHTTPOptions_SessionTimeoutConfigured(t *testing.T) {
 	opts := mcpStreamableHTTPOptions()
 	if opts == nil {
 		t.Fatal("mcpStreamableHTTPOptions() returned nil")
 	}
-	if opts.SessionTimeout <= 0 {
-		t.Errorf("StreamableHTTPOptions.SessionTimeout = %v, want > 0 — a zero value "+
-			"means idle MCP sessions (one per ACP session, including every "+
-			"processor-scoped auxiliary session) are NEVER closed, letting "+
-			"open MCP sessions/SSE streams accumulate without bound (mitto-6cz6)",
+	if opts.SessionTimeout != 0 {
+		t.Errorf("StreamableHTTPOptions.SessionTimeout = %v, want 0 — the go-sdk's "+
+			"idle clock only resets on POST and never on the client's long-lived "+
+			"SSE GET keepalive, so a nonzero value here reaps sessions that are "+
+			"demonstrably still alive (mitto-txse). Mitto owns idle-reaping instead "+
+			"via reapIdleMCPSessions, which treats any request (including GET "+
+			"keepalives) as activity and exempts sessions with an open stream.",
 			opts.SessionTimeout)
 	}
 	// JSONResponse:true (mitto-6hr) must remain set regardless of the
-	// SessionTimeout fix — it is an orthogonal, already-verified-correct
+	// SessionTimeout change — it is an orthogonal, already-verified-correct
 	// mitigation for a different wedge and must not regress.
 	if !opts.JSONResponse {
 		t.Error("StreamableHTTPOptions.JSONResponse = false, want true (mitto-6hr fix must remain in place)")
+	}
+}
+
+// newReaperTestServer builds a minimal *Server suitable for exercising the
+// idle-session reaper (mitto-txse) without binding a real listener.
+func newReaperTestServer(t *testing.T) *Server {
+	t.Helper()
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	srv, err := NewServer(Config{Port: 0}, Dependencies{Store: store})
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+	return srv
+}
+
+// TestReapIdleMCPSessions_GETKeepaliveOnlyActivityNotReaped is the exact
+// mitto-txse regression: a session that only ever sees GET keepalive requests
+// (no POST) must NOT be reaped as long as those keepalives keep arriving
+// within reaperTimeout of each other, even though the total elapsed time
+// since the last POST (there was none) vastly exceeds the timeout.
+func TestReapIdleMCPSessions_GETKeepaliveOnlyActivityNotReaped(t *testing.T) {
+	srv := newReaperTestServer(t)
+
+	clock := time.Now()
+	srv.reaperNow = func() time.Time { return clock }
+	srv.reaperTimeout = 30 * time.Minute
+
+	const sid = "sess-get-keepalive-only"
+	wrapped := srv.mcpRequestLoggingMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+
+	// Seven keepalive GETs, five minutes apart (matches the field evidence's
+	// observed ~5min keepalive interval), no POST at all — total elapsed 35
+	// minutes, well past reaperTimeout, but each GET refreshes the clock.
+	for i := 0; i < 7; i++ {
+		clock = clock.Add(5 * time.Minute)
+		req := httptest.NewRequest(http.MethodGet, "/mcp", nil)
+		req.Header.Set(mcpSessionIDHeader, sid)
+		wrapped.ServeHTTP(httptest.NewRecorder(), req)
+	}
+
+	srv.reapIdleMCPSessions()
+
+	srv.reaperMu.Lock()
+	_, tracked := srv.lastActivity[sid]
+	srv.reaperMu.Unlock()
+	if !tracked {
+		t.Error("session with only periodic GET keepalive activity was reaped (tracking entry removed) — " +
+			"GET requests must count as activity, not just POST (mitto-txse)")
+	}
+}
+
+// TestReapIdleMCPSessions_OpenStreamExemptPastTimeout pins that a session
+// with a currently-open GET stream is never reaped, regardless of how idle
+// its lastActivity timestamp is.
+func TestReapIdleMCPSessions_OpenStreamExemptPastTimeout(t *testing.T) {
+	srv := newReaperTestServer(t)
+
+	clock := time.Now()
+	srv.reaperNow = func() time.Time { return clock }
+	srv.reaperTimeout = 30 * time.Minute
+
+	const sid = "sess-open-stream"
+	srv.reaperTouch(sid)
+	srv.reaperStreamOpened(sid)
+	defer srv.reaperStreamClosed(sid)
+
+	// Advance well past the timeout with no further activity at all.
+	clock = clock.Add(31 * time.Minute)
+
+	srv.reapIdleMCPSessions()
+
+	srv.reaperMu.Lock()
+	_, tracked := srv.lastActivity[sid]
+	openCount := srv.openStreamsBySession[sid]
+	srv.reaperMu.Unlock()
+	if !tracked || openCount != 1 {
+		t.Errorf("session with an open GET stream was reaped past the idle timeout "+
+			"(tracked=%v, openCount=%d) — an open stream must exempt a session "+
+			"regardless of idle time (mitto-txse)", tracked, openCount)
+	}
+}
+
+// TestReapIdleMCPSessions_NoActivityNoStreamIsReapedAndLogged pins the
+// mitto-6cz6 non-regression: a session with no activity at all and no open
+// stream, past the idle timeout, IS reaped — via a synthetic DELETE served
+// against the real streamable handler, provably removing the session
+// server-side — and the reap is logged at INFO with the session id and idle
+// duration so a subsequent 404 is attributable.
+func TestReapIdleMCPSessions_NoActivityNoStreamIsReapedAndLogged(t *testing.T) {
+	srv := newReaperTestServer(t)
+
+	var logBuf bytes.Buffer
+	srv.logger = slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
+		return srv.mcpServer
+	}, mcpStreamableHTTPOptions())
+	srv.streamableHandler = handler
+
+	ts := httptest.NewServer(handler)
+	defer ts.Close()
+
+	// DisableStandaloneSSE so the client opens no GET stream of its own —
+	// isolates this test to the "truly idle" scenario.
+	transport := &mcp.StreamableClientTransport{Endpoint: ts.URL, DisableStandaloneSSE: true}
+	client := mcp.NewClient(&mcp.Implementation{Name: "mitto-reaper-test", Version: "1.0.0"}, nil)
+	ctx := context.Background()
+	clientSess, err := client.Connect(ctx, transport, nil)
+	if err != nil {
+		t.Fatalf("mcp client Connect (initialize) failed: %v", err)
+	}
+	sid := clientSess.ID()
+	if sid == "" {
+		t.Fatal("client session has no id after Connect")
+	}
+
+	clock := time.Now()
+	srv.reaperNow = func() time.Time { return clock }
+	srv.reaperTimeout = 30 * time.Minute
+	srv.reaperTouch(sid)
+	clock = clock.Add(31 * time.Minute)
+
+	srv.reapIdleMCPSessions()
+
+	srv.reaperMu.Lock()
+	_, tracked := srv.lastActivity[sid]
+	srv.reaperMu.Unlock()
+	if tracked {
+		t.Error("idle session with no open stream was not reaped (tracking entry still present)")
+	}
+
+	// Verify the session was actually removed server-side: a subsequent call
+	// over the now-stale session must fail (the server no longer knows it).
+	if _, err := clientSess.ListTools(ctx, &mcp.ListToolsParams{}); err == nil {
+		t.Error("expected ListTools to fail after reaping, but it succeeded — session was not actually removed server-side")
+	}
+
+	logs := logBuf.String()
+	if !strings.Contains(logs, "reaped idle MCP session") {
+		t.Errorf("expected an INFO log recording the reap, got logs:\n%s", logs)
+	}
+	if !strings.Contains(logs, sid) {
+		t.Errorf("expected the reap log to include the session id %q, got logs:\n%s", sid, logs)
+	}
+	if !strings.Contains(logs, "idle_seconds") {
+		t.Errorf("expected the reap log to include idle_seconds, got logs:\n%s", logs)
 	}
 }
 
