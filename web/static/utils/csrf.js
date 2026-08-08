@@ -16,7 +16,11 @@ const CSRF_HEADER_NAME = "X-CSRF-Token";
 
 const auth = browserCookieAuth({
   getCookie: browserCookieReader(),
-  fetch,
+  // Late-bound on purpose: the original module called the global `fetch`
+  // inside fetchCSRFToken(), so a host (or test) replacing globalThis.fetch
+  // after import still applied. Passing the bare identifier would snapshot
+  // the binding at module-load time and silently change that.
+  fetch: (...args) => fetch(...args),
   csrfTokenUrl: endpoints.misc.csrfToken(),
   headerName: CSRF_HEADER_NAME,
 });

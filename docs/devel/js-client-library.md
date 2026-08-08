@@ -102,6 +102,19 @@ Two concrete couplings from today's code are explicitly displaced:
   the same injected `storage` contract, so the SDK still never touches
   `localStorage`.
 
+The `auth` adapter (`sdk/auth/`, `.5`) implements up to three methods:
+`authorize({ method, url, headers })` returning a `{ headers?, credentials? }`
+patch merged into every request; the optional `authorizeWebSocket({ url })`
+returning `{ protocols?, options? }` passed to the `WebSocket` constructor;
+and the optional `onUnauthorized(error)` called on every 401 before the
+host-level `onUnauthorized` hook. Three implementations ship:
+`browserCookieAuth` (double-submit cookie + `X-CSRF-Token` on state-changing
+methods, cookie read injected via `browserCookieReader()`), `sharedTokenAuth`
+(`Authorization: Bearer <token>` from a lazy token supplier — never a string,
+never logged, never in a URL or query string; the WS handshake is
+header-only, so it applies to non-browser `WebSocket` implementations only),
+and `noneAuth` (the default, adds nothing).
+
 Deduplication inside `SessionStream` is **non-destructive by default**: a
 duplicate seq is annotated (`{ duplicate: true }` on the `message` event)
 rather than dropped, because dropping unconditionally at transport level

@@ -13,7 +13,8 @@ function setCsrfCookie(value) {
 }
 
 function clearCsrfCookie() {
-  document.cookie = "mitto_csrf=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT";
+  document.cookie =
+    "mitto_csrf=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT";
 }
 
 describe("utils/csrf.js shim (browserCookieAuth-backed)", () => {
@@ -67,6 +68,45 @@ describe("utils/csrf.js shim (browserCookieAuth-backed)", () => {
       globalThis.fetch = originalFetch;
     }
     expect(capturedOpts.credentials).toBe("include");
+  });
+
+  test("secureFetch fetches a token via the CURRENT global fetch when no cookie exists", async () => {
+    clearCsrfCookie();
+    const seenUrls = [];
+    const originalFetch = globalThis.fetch;
+    // Installed after import: the shim must call the global lazily, not the
+    // binding captured when the module was first evaluated.
+    globalThis.fetch = async (url, opts) => {
+      seenUrls.push(String(url));
+      if (String(url).includes("csrf")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ token: "fetched-token" }),
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        headers: opts?.headers,
+        json: async () => ({}),
+      };
+    };
+    let capturedHeaders;
+    try {
+      globalThis.fetch = new Proxy(globalThis.fetch, {
+        apply: (target, thisArg, args) => {
+          if (!String(args[0]).includes("csrf"))
+            capturedHeaders = args[1]?.headers;
+          return Reflect.apply(target, thisArg, args);
+        },
+      });
+      await secureFetch("/api/x", { method: "POST" });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+    expect(seenUrls.some((u) => u.includes("csrf"))).toBe(true);
+    expect(capturedHeaders.get("X-CSRF-Token")).toBe("fetched-token");
   });
 
   test("checkAuth on a 401 response redirects to the login page", () => {
