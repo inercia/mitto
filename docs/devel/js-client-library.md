@@ -90,9 +90,9 @@ Two concrete couplings from today's code are explicitly displaced:
   `baseUrl`. The SDK never reads the global itself.
 - The 401 → `redirectToLogin()` side effect in `utils/csrf.js` is **policy,
   not transport**, and does **not** move into the SDK: the SDK raises a
-  typed `UnauthorizedError`, and the browser host wires the redirect via the
-  `onUnauthorized` hook. Auth adapters themselves (cookie+CSRF, shared
-  bearer token, none) are `.5`.
+  typed `MittoAuthError` (a `MittoApiError` specialization, `.3`), and the
+  browser host wires the redirect via the `onUnauthorized` hook. Auth
+  adapters themselves (cookie+CSRF, shared bearer token, none) are `.5`.
 
 ## 5. Public vs internal boundary
 
@@ -127,7 +127,10 @@ the shape of an error's `details` payload, anything not re-exported from
 signatures, error class names and `code` values (aligned with the error
 envelope in
 [REST API Conventions §4](rest-api-conventions.md#4-error-envelope)),
-realtime event names.
+realtime event names. The pinned error taxonomy (`.3`): `MittoError` (base),
+`ConfigError` (`code: "invalid_config"`), `MittoApiError`, `MittoAuthError`
+(401/403 specialization of `MittoApiError`), `MittoNetworkError`
+(`code: "network_error"`).
 
 Endpoint-level stability tiers and deprecation windows (e.g. the
 `external-stable` exception list in

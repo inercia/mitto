@@ -6,7 +6,13 @@
  * may change without notice in any release.
  */
 import { resolveConfig } from "./core/config.js";
-import { ConfigError } from "./core/errors.js";
+import {
+  MittoError,
+  ConfigError,
+  MittoApiError,
+  MittoAuthError,
+  MittoNetworkError,
+} from "./core/errors.js";
 
 /**
  * The embedded copy ships lockstep with the server (§6): its version is the
@@ -23,5 +29,5 @@ export function createClient(options = {}) {
   return { config };
 }
 
-export { ConfigError };
+export { MittoError, ConfigError, MittoApiError, MittoAuthError, MittoNetworkError };
 export { browserEnv } from "./env/browser.js";
