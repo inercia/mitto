@@ -139,6 +139,20 @@ function openStream(harness) {
   return ws;
 }
 
+/**
+ * Flushes pending microtasks. The fake clock's `advance()` fires due timers
+ * synchronously, but async/await chains inside the code under test (e.g.
+ * sendPrompt's attemptSend -> catch -> verifyDeliveryAfterReconnect) resume
+ * on microtasks, not synchronously — so a promise-chain step scheduled by
+ * one timer callback (e.g. registering the next timer) may not exist yet by
+ * the time `advance()`'s single synchronous pass looks for it. Tests that
+ * interleave `clock.advance()` with awaited promise chains must flush
+ * between steps.
+ */
+async function flush(n = 5) {
+  for (let i = 0; i < n; i++) await Promise.resolve();
+}
+
 describe("calculateReconnectDelay", () => {
   test("attempt 0 with no jitter equals the base delay", () => {
     expect(calculateReconnectDelay(0, { random: () => 0 })).toBe(1000);
@@ -619,6 +633,451 @@ describe("createSessionStream()", () => {
     const config = resolveConfig({ fetch: () => {}, baseUrl: "https://h", WebSocket: FakeWebSocket }, {});
     createSessionStream(config, "sess-x");
     expect(instances).toHaveLength(0);
+  });
+});
+
+describe("SessionStream: duplicate annotation vs dropDuplicates", () => {
+  test("non-destructive by default: a repeated seq is still emitted as \"message\", annotated duplicate:true", () => {
+    const h = makeHarness();
+    const ws = openStream(h);
+    const received = [];
+    const duplicates = [];
+    h.stream.on("message", (m, meta) => received.push([m, meta]));
+    h.stream.on("duplicate", (m, meta) => duplicates.push([m, meta]));
+    ws.onmessage({ data: JSON.stringify({ type: "x", data: { seq: 5 } }) });
+    ws.onmessage({ data: JSON.stringify({ type: "x", data: { seq: 5 } }) });
+    expect(received).toHaveLength(2);
+    expect(received[0][1].duplicate).toBe(false);
+    expect(received[1][1].duplicate).toBe(true);
+    expect(duplicates).toEqual([]);
+  });
+
+  test("options.dropDuplicates: true drops the second occurrence from \"message\" and emits \"duplicate\" instead", () => {
+    const h = makeHarness({ dropDuplicates: true });
+    const ws = openStream(h);
+    const received = [];
+    const duplicates = [];
+    h.stream.on("message", (m) => received.push(m));
+    h.stream.on("duplicate", (m, meta) => duplicates.push([m, meta]));
+    ws.onmessage({ data: JSON.stringify({ type: "x", data: { seq: 5 } }) });
+    ws.onmessage({ data: JSON.stringify({ type: "x", data: { seq: 5 } }) });
+    expect(received).toHaveLength(1);
+    expect(duplicates).toHaveLength(1);
+    expect(duplicates[0][1].seq).toBe(5);
+  });
+
+  test("the same seq as the immediately preceding message.seq is exempted (coalescing), not flagged duplicate", () => {
+    const h = makeHarness();
+    const ws = openStream(h);
+    const received = [];
+    h.stream.on("message", (m, meta) => received.push(meta.duplicate));
+    ws.onmessage({ data: JSON.stringify({ type: "x", data: { seq: 5 } }) });
+    // NOTE: the transport's own dedup call does not pass lastMessageSeq, so a
+    // literal repeat is flagged duplicate regardless of adjacency; only the
+    // seq.js API itself exempts equal-to-last. This assertion documents that
+    // current wiring, guarding against an accidental behavior change.
+    ws.onmessage({ data: JSON.stringify({ type: "x", data: { seq: 5 } }) });
+    expect(received).toEqual([false, true]);
+  });
+});
+
+describe("SessionStream: stale-client detection (keepalive_ack)", () => {
+  test("client watermark ahead of server triggers reset + \"stale\" + a full load_events, gated by cooldown", () => {
+    const h = makeHarness();
+    const ws = openStream(h);
+    ws.onmessage({ data: JSON.stringify({ type: "x", data: { seq: 50 } }) });
+    expect(h.stream.lastSeenSeq()).toBe(50);
+
+    const staleEvents = [];
+    h.stream.on("stale", (e) => staleEvents.push(e));
+    ws.onmessage({ data: JSON.stringify({ type: "keepalive_ack", data: { max_seq: 10 } }) });
+
+    expect(staleEvents).toEqual([{ clientMaxSeq: 50, serverMaxSeq: 10 }]);
+    expect(h.stream.lastSeenSeq()).toBe(0); // resetSync() cleared the watermark
+    const lastSent = JSON.parse(ws.sent[ws.sent.length - 1]);
+    expect(lastSent).toEqual({ type: "load_events", data: { limit: SESSION_STREAM_CONSTANTS.INITIAL_EVENTS_LIMIT } });
+
+    // Second stale ack within the cooldown window is suppressed.
+    ws.onmessage({ data: JSON.stringify({ type: "x", data: { seq: 50 } }) });
+    ws.onmessage({ data: JSON.stringify({ type: "keepalive_ack", data: { max_seq: 10 } }) });
+    expect(staleEvents).toHaveLength(1);
+  });
+
+  test("stale recovery fires again once the cooldown has elapsed", () => {
+    const h = makeHarness();
+    const ws = openStream(h);
+    const staleEvents = [];
+    h.stream.on("stale", (e) => staleEvents.push(e));
+    ws.onmessage({ data: JSON.stringify({ type: "x", data: { seq: 50 } }) });
+    ws.onmessage({ data: JSON.stringify({ type: "keepalive_ack", data: { max_seq: 10 } }) });
+    expect(staleEvents).toHaveLength(1);
+
+    h.clock.advance(SESSION_STREAM_CONSTANTS.STALE_RECOVERY_COOLDOWN_MS);
+    ws.onmessage({ data: JSON.stringify({ type: "events_loaded" } ) }); // clears sync-in-flight
+    ws.onmessage({ data: JSON.stringify({ type: "x", data: { seq: 60 } }) });
+    ws.onmessage({ data: JSON.stringify({ type: "keepalive_ack", data: { max_seq: 10 } }) });
+    expect(staleEvents).toHaveLength(2);
+  });
+
+  test("stale detection is suppressed while a sync is already in flight (internal flag)", () => {
+    const h = makeHarness();
+    const ws = openStream(h);
+    const staleEvents = [];
+    h.stream.on("stale", (e) => staleEvents.push(e));
+    ws.onmessage({ data: JSON.stringify({ type: "x", data: { seq: 50 } }) });
+    ws.onmessage({ data: JSON.stringify({ type: "keepalive_ack", data: { max_seq: 10 } }) }); // 1st: sets sync in flight
+    expect(staleEvents).toHaveLength(1);
+    // Still in flight (no events_loaded yet, cooldown not relevant here since suppressed by in-flight check).
+    ws.onmessage({ data: JSON.stringify({ type: "keepalive_ack", data: { max_seq: 10 } }) });
+    expect(staleEvents).toHaveLength(1);
+  });
+
+  test("stale detection is suppressed while the injected isSyncInFlight() reports true", () => {
+    let syncing = true;
+    const h = makeHarness({ isSyncInFlight: () => syncing });
+    const ws = openStream(h);
+    const staleEvents = [];
+    h.stream.on("stale", (e) => staleEvents.push(e));
+    ws.onmessage({ data: JSON.stringify({ type: "x", data: { seq: 50 } }) });
+    ws.onmessage({ data: JSON.stringify({ type: "keepalive_ack", data: { max_seq: 10 } }) });
+    expect(staleEvents).toEqual([]);
+    syncing = false;
+  });
+
+  test("a dropped events_loaded response auto-clears sync-in-flight and forces a reconnect after the sync timeout", () => {
+    const h = makeHarness();
+    const ws = openStream(h);
+    ws.onmessage({ data: JSON.stringify({ type: "x", data: { seq: 50 } }) });
+    ws.onmessage({ data: JSON.stringify({ type: "keepalive_ack", data: { max_seq: 10 } }) }); // sets sync in flight
+    const countBefore = h.instances.length;
+    h.clock.advance(SESSION_STREAM_CONSTANTS.STALE_RECOVERY_COOLDOWN_MS); // also satisfies forceReconnect's debounce window
+    h.clock.advance(30000); // SYNC_TIMEOUT_MS
+    expect(h.instances.length).toBeGreaterThan(countBefore);
+  });
+});
+
+describe("SessionStream: behind-detection tolerance (keepalive_ack)", () => {
+  test("non-streaming: any gap beyond 0 tolerance triggers a \"sync\" load_events(after_seq)", () => {
+    const h = makeHarness();
+    const ws = openStream(h);
+    const syncEvents = [];
+    h.stream.on("sync", (e) => syncEvents.push(e));
+    ws.onmessage({ data: JSON.stringify({ type: "keepalive_ack", data: { max_seq: 1, is_prompting: false } }) });
+    expect(syncEvents).toEqual([{ clientMaxSeq: 0, serverMaxSeq: 1 }]);
+    const lastSent = JSON.parse(ws.sent[ws.sent.length - 1]);
+    expect(lastSent).toEqual({ type: "load_events", data: { after_seq: 0 } });
+  });
+
+  test("streaming (is_prompting:true): a gap within KEEPALIVE_SYNC_TOLERANCE is not synced", () => {
+    const h = makeHarness();
+    const ws = openStream(h);
+    const syncEvents = [];
+    h.stream.on("sync", (e) => syncEvents.push(e));
+    ws.onmessage({
+      data: JSON.stringify({
+        type: "keepalive_ack",
+        data: { max_seq: SESSION_STREAM_CONSTANTS.KEEPALIVE_SYNC_TOLERANCE, is_prompting: true },
+      }),
+    });
+    expect(syncEvents).toEqual([]);
+  });
+
+  test("streaming: a gap exceeding the tolerance is left alone until the stream completes (no sync while streaming)", () => {
+    const h = makeHarness();
+    const ws = openStream(h);
+    const syncEvents = [];
+    h.stream.on("sync", (e) => syncEvents.push(e));
+    ws.onmessage({
+      data: JSON.stringify({
+        type: "keepalive_ack",
+        data: { max_seq: SESSION_STREAM_CONSTANTS.KEEPALIVE_SYNC_TOLERANCE + 5, is_prompting: true },
+      }),
+    });
+    expect(syncEvents).toEqual([]);
+  });
+
+  test("a zero/missing server max_seq is ignored entirely", () => {
+    const h = makeHarness();
+    const ws = openStream(h);
+    const syncEvents = [];
+    h.stream.on("sync", (e) => syncEvents.push(e));
+    ws.onmessage({ data: JSON.stringify({ type: "keepalive_ack", data: {} }) });
+    expect(syncEvents).toEqual([]);
+  });
+});
+
+describe("SessionStream: immediate gap-fill (non-keepalive)", () => {
+  test("a message carrying max_seq ahead of the watermark schedules a debounced load_events(after_seq)", () => {
+    const h = makeHarness();
+    const ws = openStream(h);
+    const syncEvents = [];
+    h.stream.on("sync", (e) => syncEvents.push(e));
+    ws.onmessage({ data: JSON.stringify({ type: "x", data: { max_seq: 5 } }) });
+    expect(syncEvents).toEqual([]); // debounced, not yet fired
+    h.clock.advance(SESSION_STREAM_CONSTANTS.GAP_FILL_DEBOUNCE_MS);
+    expect(syncEvents).toEqual([{ clientMaxSeq: 0, serverMaxSeq: 5, gapFill: true }]);
+    const lastSent = JSON.parse(ws.sent[ws.sent.length - 1]);
+    expect(lastSent).toEqual({ type: "load_events", data: { after_seq: 0, limit: SESSION_STREAM_CONSTANTS.GAP_FILL_LIMIT } });
+  });
+
+  test("a burst of gap-carrying messages within the debounce window schedules only one load_events", () => {
+    const h = makeHarness();
+    const ws = openStream(h);
+    const syncEvents = [];
+    h.stream.on("sync", (e) => syncEvents.push(e));
+    ws.onmessage({ data: JSON.stringify({ type: "x", data: { max_seq: 5 } }) });
+    h.clock.advance(100);
+    ws.onmessage({ data: JSON.stringify({ type: "x", data: { max_seq: 6 } }) });
+    h.clock.advance(SESSION_STREAM_CONSTANTS.GAP_FILL_DEBOUNCE_MS);
+    expect(syncEvents).toHaveLength(1);
+  });
+
+  test("no gap (max_seq already covered by the watermark) never schedules a load_events", () => {
+    const h = makeHarness();
+    const ws = openStream(h);
+    // Prime the watermark to 5 first (a message carrying only seq, no max_seq,
+    // so no gap-fill check runs on this priming step).
+    ws.onmessage({ data: JSON.stringify({ type: "x", data: { seq: 5 } }) });
+    expect(h.stream.lastSeenSeq()).toBe(5);
+    const sentBefore = ws.sent.length;
+    // A subsequent message reporting max_seq === the already-known watermark carries no gap.
+    ws.onmessage({ data: JSON.stringify({ type: "x", data: { max_seq: 5 } }) });
+    h.clock.advance(SESSION_STREAM_CONSTANTS.GAP_FILL_DEBOUNCE_MS);
+    expect(ws.sent).toHaveLength(sentBefore);
+  });
+});
+
+describe("SessionStream: session_gone / terminal-error circuit breaker", () => {
+  test("an explicit session_gone message stops the stream, cancels reconnects, and emits \"gone\"", () => {
+    const h = makeHarness();
+    const ws = openStream(h);
+    const goneEvents = [];
+    const reconnecting = [];
+    h.stream.on("gone", (e) => goneEvents.push(e));
+    h.stream.on("reconnecting", (e) => reconnecting.push(e));
+    ws.onmessage({ data: JSON.stringify({ type: "session_gone", data: { reason: "deleted" } }) });
+    expect(h.stream.state).toBe("stopped");
+    expect(goneEvents).toEqual([{ reason: "session_gone", data: { reason: "deleted" } }]);
+    h.clock.advance(60000);
+    expect(reconnecting).toEqual([]);
+    expect(h.instances).toHaveLength(1); // no reconnect attempt made
+  });
+
+  test("an error message matching isTerminalSessionError() also trips the breaker", () => {
+    const h = makeHarness();
+    const ws = openStream(h);
+    const goneEvents = [];
+    h.stream.on("gone", (e) => goneEvents.push(e));
+    ws.onmessage({ data: JSON.stringify({ type: "error", data: { message: "Session not found" } }) });
+    expect(h.stream.state).toBe("stopped");
+    expect(goneEvents).toHaveLength(1);
+    expect(goneEvents[0].reason).toBe("terminal_error");
+  });
+
+  test("a non-terminal error message does not trip the breaker", () => {
+    const h = makeHarness();
+    const ws = openStream(h);
+    const goneEvents = [];
+    h.stream.on("gone", (e) => goneEvents.push(e));
+    ws.onmessage({ data: JSON.stringify({ type: "error", data: { message: "something else went wrong" } }) });
+    expect(h.stream.state).toBe("open");
+    expect(goneEvents).toEqual([]);
+  });
+
+  test("a subsequent close() after the breaker has tripped does not re-emit \"gone\"", () => {
+    const h = makeHarness();
+    const ws = openStream(h);
+    const goneEvents = [];
+    h.stream.on("gone", (e) => goneEvents.push(e));
+    ws.onmessage({ data: JSON.stringify({ type: "session_gone" }) });
+    expect(goneEvents).toHaveLength(1);
+    ws.onmessage({ data: JSON.stringify({ type: "session_gone" }) });
+    expect(goneEvents).toHaveLength(1);
+  });
+});
+
+describe("SessionStream: sendPrompt() delivery verification", () => {
+  test("resolves immediately on a prompt_received ACK within the initial timeout", async () => {
+    const h = makeHarness();
+    const ws = openStream(h);
+    const pending = h.stream.sendPrompt({ message: "hi" });
+    const sentMsg = JSON.parse(ws.sent[ws.sent.length - 1]);
+    expect(sentMsg.type).toBe("prompt");
+    expect(sentMsg.data.message).toBe("hi");
+    ws.onmessage({ data: JSON.stringify({ type: "prompt_received", data: { prompt_id: sentMsg.data.prompt_id } }) });
+    const result = await pending;
+    expect(result).toEqual({ success: true, promptId: sentMsg.data.prompt_id });
+  });
+
+  test("resolves on a user_prompt echo carrying is_mine + matching prompt_id", async () => {
+    const h = makeHarness();
+    const ws = openStream(h);
+    const pending = h.stream.sendPrompt({ message: "hi" });
+    const sentMsg = JSON.parse(ws.sent[ws.sent.length - 1]);
+    ws.onmessage({
+      data: JSON.stringify({ type: "user_prompt", data: { is_mine: true, prompt_id: sentMsg.data.prompt_id } }),
+    });
+    const result = await pending;
+    expect(result).toEqual({ success: true, promptId: sentMsg.data.prompt_id });
+  });
+
+  test("rejects immediately with MittoNetworkError when not connected", async () => {
+    const { stream } = makeHarness();
+    await expect(stream.sendPrompt({ message: "hi" })).rejects.toBeInstanceOf(MittoNetworkError);
+  });
+
+  test("ACK timeout -> reconnect -> verified-delivered (connected.last_user_prompt_id matches)", async () => {
+    const h = makeHarness();
+    const ws1 = openStream(h);
+    const pending = h.stream.sendPrompt({ message: "hi" });
+    let resolved = null;
+    pending.then((r) => (resolved = r));
+    const sentMsg = JSON.parse(ws1.sent[ws1.sent.length - 1]);
+
+    h.clock.advance(SESSION_STREAM_CONSTANTS.INITIAL_ACK_TIMEOUT_MS);
+    await flush();
+    // Initial ACK timed out -> a reconnect was forced.
+    const ws2 = h.instances[h.instances.length - 1];
+    expect(ws2).not.toBe(ws1);
+    ws2.readyState = 1;
+    ws2.onopen();
+    await flush();
+    ws2.onmessage({
+      data: JSON.stringify({
+        type: "connected",
+        data: { last_user_prompt_id: sentMsg.data.prompt_id, last_user_prompt_seq: 1 },
+      }),
+    });
+    h.clock.advance(100); // the settle delay inside verifyDeliveryAfterReconnect
+    await flush();
+    expect(resolved).toEqual({ success: true, promptId: sentMsg.data.prompt_id, verifiedOnReconnect: true });
+  });
+
+  test("ACK timeout -> reconnect -> not delivered -> retried-and-acked on the new connection", async () => {
+    const h = makeHarness();
+    const ws1 = openStream(h);
+    const pending = h.stream.sendPrompt({ message: "hi" });
+    let resolved = null;
+    pending.then((r) => (resolved = r));
+
+    h.clock.advance(SESSION_STREAM_CONSTANTS.INITIAL_ACK_TIMEOUT_MS);
+    await flush();
+    const ws2 = h.instances[h.instances.length - 1];
+    ws2.readyState = 1;
+    ws2.onopen();
+    await flush();
+    // connected message names some other prompt (not this one) -> not delivered.
+    ws2.onmessage({
+      data: JSON.stringify({ type: "connected", data: { last_user_prompt_id: "someone-else", last_user_prompt_seq: 1 } }),
+    });
+    h.clock.advance(100);
+    await flush();
+    expect(resolved).toBe(null); // still pending: retry was sent on ws2
+
+    const retryMsg = JSON.parse(ws2.sent[ws2.sent.length - 1]);
+    expect(retryMsg.type).toBe("prompt");
+    ws2.onmessage({ data: JSON.stringify({ type: "prompt_received", data: { prompt_id: retryMsg.data.prompt_id } }) });
+    await flush();
+    expect(resolved).toEqual({ success: true, promptId: retryMsg.data.prompt_id, retriedOnReconnect: true });
+  });
+
+  test("budget exhaustion (no ACK at all, reconnect never opens) rejects with a delivery MittoNetworkError", async () => {
+    const h = makeHarness();
+    openStream(h);
+    const pending = h.stream.sendPrompt({ message: "hi" }, { totalDeliveryBudgetMs: 1000, initialAckTimeoutMs: 600 });
+    let resolved = null;
+    let rejected = null;
+    pending.then((r) => (resolved = r)).catch((e) => (rejected = e));
+
+    h.clock.advance(600); // initial ACK timeout fires
+    await flush();
+    h.clock.advance(400); // remaining budget: _forceReconnectAndWaitOpen's own timeout fires (ws2 never opens)
+    await flush();
+
+    expect(resolved).toBe(null);
+    expect(rejected).toBeInstanceOf(MittoNetworkError);
+  });
+
+  test("resolveAllPendingSends() resolves every outstanding send as successful", async () => {
+    const h = makeHarness();
+    const ws = openStream(h);
+    const p1 = h.stream.sendPrompt({ message: "a" });
+    const p2 = h.stream.sendPrompt({ message: "b" });
+    h.stream.resolveAllPendingSends();
+    const [r1, r2] = await Promise.all([p1, p2]);
+    expect(r1.success).toBe(true);
+    expect(r2.success).toBe(true);
+    void ws;
+  });
+
+  test("retryPendingPrompts() re-sends every unexpired pending prompt for this session", () => {
+    const h = makeHarness();
+    const ws = openStream(h);
+    h.stream.sendPrompt({ message: "a" }).catch(() => {});
+    h.stream.sendPrompt({ message: "b" }).catch(() => {});
+    const sentBefore = ws.sent.length;
+    const count = h.stream.retryPendingPrompts();
+    expect(count).toBe(2);
+    expect(ws.sent.length).toBe(sentBefore + 2);
+  });
+
+  test("retryPendingPrompts() stops at the first send failure (not connected) and returns the count sent so far", () => {
+    const h = makeHarness();
+    const ws = openStream(h);
+    h.stream.sendPrompt({ message: "a" }).catch(() => {});
+    h.stream.sendPrompt({ message: "b" }).catch(() => {});
+    ws.close(1006, "abnormal"); // drop the connection so subsequent send() calls return false
+    const count = h.stream.retryPendingPrompts();
+    expect(count).toBe(0);
+  });
+
+  test("cancelPrompt() sends a cancel frame", () => {
+    const h = makeHarness();
+    const ws = openStream(h);
+    h.stream.cancelPrompt();
+    expect(JSON.parse(ws.sent[ws.sent.length - 1])).toEqual({ type: "cancel" });
+  });
+
+  test("forceResetSession() sends a force_reset frame", () => {
+    const h = makeHarness();
+    const ws = openStream(h);
+    h.stream.forceResetSession();
+    expect(JSON.parse(ws.sent[ws.sent.length - 1])).toEqual({ type: "force_reset" });
+  });
+});
+
+describe("SessionStream: resetSync()", () => {
+  test("clears both the seq tracker's dedup state and the seqStore watermark", () => {
+    const h = makeHarness();
+    const ws = openStream(h);
+    ws.onmessage({ data: JSON.stringify({ type: "x", data: { seq: 10 } }) });
+    expect(h.stream.lastSeenSeq()).toBe(10);
+    h.stream.resetSync();
+    expect(h.stream.lastSeenSeq()).toBe(0);
+    // Dedup state was cleared too: seq 10 is no longer flagged duplicate.
+    const received = [];
+    h.stream.on("message", (m, meta) => received.push(meta.duplicate));
+    ws.onmessage({ data: JSON.stringify({ type: "x", data: { seq: 10 } }) });
+    expect(received).toEqual([false]);
+  });
+
+  test("logs a warning instead of throwing when the injected seqStore has no reset()", () => {
+    const seqStore = { get: () => 5, set: () => {} };
+    const h = makeHarness({ seqStore });
+    expect(() => h.stream.resetSync()).not.toThrow();
+    expect(h.logCalls.some(([level]) => level === "warn")).toBe(true);
+  });
+});
+
+describe("SessionStream: lastConfirmedPrompt()", () => {
+  test("defaults to null and is populated from a \"connected\" message's last_user_prompt_id", () => {
+    const h = makeHarness();
+    const ws = openStream(h);
+    expect(h.stream.lastConfirmedPrompt()).toBe(null);
+    ws.onmessage({
+      data: JSON.stringify({ type: "connected", data: { last_user_prompt_id: "p1", last_user_prompt_seq: 3 } }),
+    });
+    expect(h.stream.lastConfirmedPrompt()).toEqual({ promptId: "p1", seq: 3 });
   });
 });
 
