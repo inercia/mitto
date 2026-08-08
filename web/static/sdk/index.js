@@ -14,6 +14,7 @@ import {
   MittoNetworkError,
 } from "./core/errors.js";
 import { createSessionStream } from "./realtime/session-stream.js";
+import { createEventsStream } from "./realtime/events-stream.js";
 import {
   createSeqTracker,
   isSeqDuplicate,
@@ -47,6 +48,7 @@ export function createClient(options = {}) {
     config,
     sessionStream: (sessionId, streamOptions) =>
       createSessionStream(config, sessionId, streamOptions),
+    eventsStream: (streamOptions) => createEventsStream(config, streamOptions),
   };
 }
 
@@ -54,6 +56,7 @@ export { MittoError, ConfigError, MittoApiError, MittoAuthError, MittoNetworkErr
 export { browserEnv, browserCookieReader } from "./env/browser.js";
 export { noneAuth, sharedTokenAuth, browserCookieAuth };
 export { createSessionStream, SessionStream } from "./realtime/session-stream.js";
+export { createEventsStream, EventsStream } from "./realtime/events-stream.js";
 export {
   createSeqTracker,
   isSeqDuplicate,

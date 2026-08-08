@@ -21,7 +21,7 @@
  *   - multi-session fan-out, staggering, background-disconnect grace,
  *     window.__debug, redirect-to-login on 401 (.17/.18, host/UI concerns)
  */
-import { ConfigError, MittoNetworkError } from "../core/errors.js";
+import { MittoNetworkError } from "../core/errors.js";
 import {
   createSeqTracker,
   isSeqDuplicate,
@@ -31,12 +31,18 @@ import {
   createMemorySeqStore,
 } from "./seq.js";
 import { generatePromptId, createMemoryPendingPromptStore } from "./pending-prompts.js";
+import {
+  RECONNECT_BASE_DELAY_MS,
+  RECONNECT_MAX_DELAY_MS,
+  RECONNECT_JITTER_FACTOR,
+  RECONNECT_DEBOUNCE_MS,
+  MAX_RECONNECT_ATTEMPTS,
+  calculateReconnectDelay,
+  isReconnectLimitReached,
+  wsUrlFor,
+  createEmitter,
+} from "./ws-transport.js";
 
-const RECONNECT_BASE_DELAY_MS = 1000;
-const RECONNECT_MAX_DELAY_MS = 30000;
-const RECONNECT_JITTER_FACTOR = 0.3;
-const RECONNECT_DEBOUNCE_MS = 3000;
-const MAX_RECONNECT_ATTEMPTS = 15;
 const KEEPALIVE_INTERVAL_MS = 10000;
 const KEEPALIVE_MAX_MISSED_DEFAULT = 2;
 const KEEPALIVE_MAX_MISSED_LARGE_SESSION = 4;
@@ -70,72 +76,24 @@ const SYNC_TIMEOUT_MS = 30000;
 /** Internal-only marker so sendPrompt() can distinguish an ACK timeout from a send failure. */
 class AckTimeoutError extends Error {}
 
-/** Exponential backoff with jitter. Exported for deterministic unit tests. */
-export function calculateReconnectDelay(attempt, options = {}) {
-  const baseDelay = options.baseDelay ?? RECONNECT_BASE_DELAY_MS;
-  const maxDelay = options.maxDelay ?? RECONNECT_MAX_DELAY_MS;
-  const jitterFactor = options.jitterFactor ?? RECONNECT_JITTER_FACTOR;
-  const random = options.random ?? Math.random;
-  const exponentialDelay = Math.min(baseDelay * Math.pow(2, attempt), maxDelay);
-  const jitter = exponentialDelay * jitterFactor * random();
-  return Math.floor(exponentialDelay + jitter);
-}
+// calculateReconnectDelay, isReconnectLimitReached, createEmitter now live in
+// ws-transport.js (shared with EventsStream, .15) and are re-exported below
+// unchanged so existing imports (this file's tests, sdk/index.js) keep
+// working with zero edits.
+export { calculateReconnectDelay, isReconnectLimitReached };
 
 /**
  * Builds the session WebSocket URL from injected config. Unlike
- * utils/api.js's `wsUrl`, this never reads `window.location` — an absolute
- * `config.baseUrl` maps its http(s) scheme to ws(s); a relative/empty
- * `baseUrl` requires an explicit `options.wsBaseUrl` (e.g. "ws://host:1234").
- * TODO(mitto-7gta.6): once endpoints.js is the canonical URL registry, source
- * this from there instead of hand-building it here.
+ * utils/api.js's `wsUrl`, this never reads `window.location` — see
+ * `wsUrlFor()` in ws-transport.js for the scheme-mapping details.
  */
 function sessionWsUrl(config, sessionId, options) {
-  const base = options.wsBaseUrl ?? config.baseUrl;
-  if (!base) {
-    throw new ConfigError(
-      "SessionStream: cannot derive a WebSocket URL from an empty baseUrl; " +
-        "pass options.wsBaseUrl explicitly (e.g. 'ws://host:1234').",
-    );
-  }
-  let wsBase;
-  if (/^https:\/\//i.test(base)) {
-    wsBase = base.replace(/^https:\/\//i, "wss://");
-  } else if (/^http:\/\//i.test(base)) {
-    wsBase = base.replace(/^http:\/\//i, "ws://");
-  } else if (/^wss?:\/\//i.test(base)) {
-    wsBase = base;
-  } else {
-    throw new ConfigError(
-      `SessionStream: unrecognized baseUrl scheme "${base}"; expected an ` +
-        "absolute http(s):// or ws(s):// URL.",
-    );
-  }
-  const prefix = config.apiPrefix || "";
-  return `${wsBase}${prefix}/api/sessions/${encodeURIComponent(sessionId)}/ws`;
-}
-
-/** Minimal zero-dependency emitter. No DOM EventTarget (§4: no DOM). */
-function createEmitter() {
-  const handlers = new Map();
-  return {
-    on(event, handler) {
-      if (!handlers.has(event)) handlers.set(event, new Set());
-      handlers.get(event).add(handler);
-      return () => handlers.get(event)?.delete(handler);
-    },
-    once(event, handler) {
-      const off = this.on(event, (...args) => {
-        off();
-        handler(...args);
-      });
-      return off;
-    },
-    emit(event, ...args) {
-      for (const handler of handlers.get(event) || []) {
-        handler(...args);
-      }
-    },
-  };
+  return wsUrlFor(
+    config,
+    `/api/sessions/${encodeURIComponent(sessionId)}/ws`,
+    options,
+    "SessionStream",
+  );
 }
 
 export const SESSION_STREAM_CONSTANTS = {
@@ -845,12 +803,6 @@ export class SessionStream {
       this._state = "stopped";
     }
   }
-}
-
-/** Whether the reconnect attempt count has exceeded the configured maximum. */
-export function isReconnectLimitReached(attempt, options = {}) {
-  const max = options.maxAttempts ?? MAX_RECONNECT_ATTEMPTS;
-  return attempt >= max;
 }
 
 /**
