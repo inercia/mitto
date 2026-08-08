@@ -6246,6 +6246,72 @@ func TestSendPrompt_AutoResumesStoredSession(t *testing.T) {
 	}
 }
 
+// mitto-j66p: conversation_id "self" must resolve to the caller's own
+// conversation instead of failing with "conversation not found: self".
+func TestSendPrompt_SelfTarget_EnqueuesOnCaller(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	callerID := session.GenerateSessionID()
+	callerMeta := session.Metadata{
+		SessionID:  callerID,
+		Name:       "Self Dispatcher",
+		ACPServer:  "test-server",
+		WorkingDir: "/test/dir",
+		AdvancedSettings: map[string]bool{
+			session.FlagCanSendPrompt: true,
+		},
+	}
+	if err := store.Create(callerMeta); err != nil {
+		t.Fatalf("Failed to create caller session: %v", err)
+	}
+
+	sm := &mockSessionManagerForAutoResume{
+		sessions: map[string]BackgroundSession{
+			callerID: &mockBackgroundSessionForAutoResume{},
+		},
+	}
+
+	srv, err := NewServer(Config{Port: 0}, Dependencies{Store: store, SessionManager: sm})
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	if err := srv.RegisterSession(callerID, nil, logger); err != nil {
+		t.Fatalf("Failed to register caller session: %v", err)
+	}
+
+	ctx := context.Background()
+	_, output, err := srv.handleSendPromptToConversation(ctx, nil, SendPromptToConversationInput{
+		SelfID:         callerID,
+		ConversationID: "self",
+		Prompt:         "Next phase, please",
+	})
+	if err != nil {
+		t.Fatalf("handleSendPromptToConversation returned error: %v", err)
+	}
+	if !output.Success {
+		t.Fatalf("Expected success for self-target, got error: %s", output.Error)
+	}
+
+	queueLen, _ := store.Queue(callerID).Len()
+	if queueLen != 1 {
+		t.Errorf("Expected 1 message in caller's own queue, got %d", queueLen)
+	}
+
+	// A self-dispatch must never resume anything: the caller is already running.
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	if len(sm.resumeCalls) != 0 {
+		t.Errorf("Expected no ResumeSession calls for self-target, got %d", len(sm.resumeCalls))
+	}
+}
+
 func TestSendPrompt_DoesNotResumeArchivedSession(t *testing.T) {
 	tmpDir := t.TempDir()
 	store, err := session.NewStore(tmpDir)

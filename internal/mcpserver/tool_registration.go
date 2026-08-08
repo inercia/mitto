@@ -114,6 +114,7 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 		Description: "Send a message/prompt to an EXISTING conversation (identified by conversation_id). " +
 			"The prompt is added to that conversation's queue and will be processed when the target agent becomes idle. " +
 			"Use 'mitto_conversation_list' first to find existing conversation IDs, or use an ID returned by 'mitto_conversation_new'. " +
+			"To enqueue on YOUR OWN conversation (self-dispatch, e.g. queueing your next phase), pass \"self\" (or your own conversation ID) as conversation_id. " +
 			"Optionally specify a 'workspace' UUID when sending to a conversation in a different workspace (requires user confirmation). " +
 			"Optionally provide a 'schedule_time' parameter (ISO 8601 / RFC 3339 timestamp) to schedule the message for future delivery instead of immediate processing. " +
 			"Supports both absolute timestamps (e.g., '2024-01-15T10:30:00Z') and relative durations from now (e.g., '5m', '1h', '2h30m'). " +

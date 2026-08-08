@@ -263,12 +263,12 @@ Returns (same `ConversationDetails` as `mitto_conversation_get_current`):
 
 #### `mitto_conversation_send_prompt`
 
-Send a prompt to another conversation's queue. Requires `can_send_prompt` flag on the source session.
+Send a prompt to another conversation's queue. Requires `can_send_prompt` flag on the source session. Pass `"self"` (or your own conversation ID) as `conversation_id` to enqueue on your own conversation — the self-dispatch pattern used by loop drivers to queue their next phase.
 
 | Parameter         | Type   | Required | Description                                                                                                                                                              |
 | ----------------- | ------ | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `self_id`         | string | Yes      | YOUR session ID (the caller)                                                                                                                                             |
-| `conversation_id` | string | Yes      | Target conversation ID                                                                                                                                                   |
+| `conversation_id` | string | Yes      | Target conversation ID, or `"self"` / your own ID to enqueue on yourself                                                                                                 |
 | `prompt`          | string | Yes      | The prompt text to send                                                                                                                                                  |
 | `workspace`       | string | No       | Optional workspace UUID. When provided, validates the target conversation belongs to the specified workspace and triggers user confirmation for cross-workspace access. |
 

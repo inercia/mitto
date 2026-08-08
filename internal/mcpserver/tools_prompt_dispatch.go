@@ -67,6 +67,15 @@ func (s *Server) handleSendPromptToConversation(ctx context.Context, req *mcp.Ca
 	if input.ConversationID == "" {
 		return nil, SendPromptOutput{Success: false, Error: "conversation_id is required"}, nil
 	}
+
+	// Self-targeting (mitto-j66p): agents may pass "self" to enqueue on their OWN
+	// conversation (e.g. a loop driver dispatching its next phase). The builtin
+	// prompt suite uses this convention uniformly, and the sibling lifecycle tools
+	// (delete/update/wait) already accept it, so resolve the alias before the
+	// metadata lookup instead of failing with "conversation not found: self".
+	if input.ConversationID == "self" {
+		input.ConversationID = realSessionID
+	}
 	if strings.TrimSpace(input.Prompt) == "" && strings.TrimSpace(input.PromptName) == "" {
 		return nil, SendPromptOutput{Success: false, Error: "either 'prompt' or 'prompt_name' is required"}, nil
 	}
