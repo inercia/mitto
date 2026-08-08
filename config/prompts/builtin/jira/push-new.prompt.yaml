@@ -104,7 +104,7 @@ prompt: |
 
   If creation fails (invalid project key, unknown component, permission error), report the error and **stop** without retrying — do not fall back to a degraded ticket.
 
-  ## Step 7a — Link the bead (create phase)
+  ## Step 7 — Link the bead (create phase)
 
   {{ template "jira/shared/link-bead" (dict "Phase" "create" "Target" $target) }}
 
@@ -116,11 +116,11 @@ prompt: |
 
   In this prompt, `<bead-id>` is `{{ $target }}`.
 
-  ## Step 7b — Link the bead (commit phase)
+  ## Step 9 — Link the bead (commit phase)
 
   {{ template "jira/shared/link-bead" (dict "Phase" "commit" "Target" $target) }}
 
-  ## Step 9 — Summary
+  ## Step 10 — Summary
 
   Render a **markdown summary table**:
 
@@ -140,5 +140,5 @@ prompt: |
 
   - **Create-only**: this prompt only creates a new JIRA ticket and links the bead to it. It never closes the bead, never transitions or edits an existing JIRA ticket, and never deletes anything. Use `JIRA: push issue` once a bead is linked, or `JIRA: sync tasks` for a full batch sync.
   - **Never invent field values**: only set a field when the Step 3 sample supports it with a consistent value/shape.
-  - **High-water mark**: `metadata.jira_updated` is written only after the ticket exists and every eligible comment has been mirrored (Step 7b) — never earlier.
+  - **High-water mark**: `metadata.jira_updated` is written only after the ticket exists and every eligible comment has been mirrored (Step 9) — never earlier.
   - **Idempotent guard**: Step 1's already-linked check prevents this prompt from ever double-creating a ticket for the same bead.
