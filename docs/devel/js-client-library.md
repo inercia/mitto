@@ -22,6 +22,7 @@ web/static/sdk/
   index.js            # the ONLY public entrypoint (see §5)
   package.json        # type: "module", npm metadata (see §3)
   core/                # config, injectable environment, errors, transport — .2/.3/.4
+  env/                 # explicit opt-in environment presets (e.g. browser) — .2
   auth/                # browser cookie+CSRF, shared bearer token, none — .5
   resources/           # one module per REST resource — .7–.12
   realtime/            # SessionStream, EventsStream, sync, typed events — .13–.16

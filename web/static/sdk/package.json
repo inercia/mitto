@@ -1,0 +1,10 @@
+{
+  "name": "@mitto/sdk",
+  "version": "0.3.0",
+  "description": "Mitto JavaScript client SDK",
+  "type": "module",
+  "private": true,
+  "exports": {
+    ".": "./index.js"
+  }
+}
