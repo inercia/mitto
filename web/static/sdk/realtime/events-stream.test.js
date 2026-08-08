@@ -52,8 +52,10 @@ function createFakeClock(startTime = 1) {
 
 function makeFakeWebSocketClass(instances) {
   return class FakeWebSocket {
-    constructor(url) {
+    constructor(url, protocols, options) {
       this.url = url;
+      this.protocols = protocols;
+      this.options = options;
       this.readyState = 0;
       this.sent = [];
       instances.push(this);
@@ -200,6 +202,59 @@ describe("EventsStream: open / message lifecycle", () => {
     const ws = openStream(h);
     h.clock.advance(120000);
     expect(ws.sent).toEqual([]);
+  });
+});
+
+describe("EventsStream: authorizeWebSocket", () => {
+  test("a resolved authorizeWebSocket() passes protocols/options through to the WebSocket constructor", async () => {
+    const authorizeWebSocket = async ({ url }) => ({
+      protocols: ["mitto-v1"],
+      options: { headers: { Authorization: "Bearer tok", url } },
+    });
+    const h = makeHarness({}, { auth: { authorize: async () => ({}), authorizeWebSocket } });
+    h.stream.connect();
+    expect(h.instances).toHaveLength(0); // deferred until the promise resolves
+    await Promise.resolve().then(() => Promise.resolve());
+    expect(h.instances).toHaveLength(1);
+    const ws = h.instances[0];
+    expect(ws.protocols).toEqual(["mitto-v1"]);
+    expect(ws.options).toEqual({ headers: { Authorization: "Bearer tok", url: ws.url } });
+  });
+
+  test("a rejected authorizeWebSocket() emits \"error\" and follows the normal reconnect path", async () => {
+    const boom = new Error("no credentials");
+    let callCount = 0;
+    const authorizeWebSocket = async () => {
+      callCount++;
+      if (callCount === 1) throw boom;
+      return {}; // subsequent (reconnect) attempt succeeds
+    };
+    const h = makeHarness({}, { auth: { authorize: async () => ({}), authorizeWebSocket } });
+    const errors = [];
+    const reconnecting = [];
+    h.stream.on("error", (e) => errors.push(e));
+    h.stream.on("reconnecting", (e) => reconnecting.push(e));
+    h.stream.connect();
+    await Promise.resolve().then(() => Promise.resolve());
+    expect(errors).toEqual([boom]);
+    expect(h.instances).toHaveLength(0); // no socket was ever created
+    expect(reconnecting).toEqual([{ attempt: 1, delayMs: 1000 }]);
+    h.clock.advance(1000);
+    await Promise.resolve().then(() => Promise.resolve());
+    expect(h.instances).toHaveLength(1); // reconnect's authorizeWebSocket call succeeded this time
+    expect(callCount).toBe(2);
+  });
+
+  test("a resolution/rejection arriving after the stream moved on (e.g. explicit close) is ignored", async () => {
+    let resolveAuth;
+    const authorizeWebSocket = () => new Promise((resolve) => (resolveAuth = resolve));
+    const h = makeHarness({}, { auth: { authorize: async () => ({}), authorizeWebSocket } });
+    h.stream.connect();
+    h.stream.close();
+    resolveAuth({});
+    await Promise.resolve().then(() => Promise.resolve());
+    expect(h.instances).toHaveLength(0);
+    expect(h.stream.state).toBe("stopped");
   });
 });
 
