@@ -1390,6 +1390,21 @@ func TestSetModelFailureIsTerminal(t *testing.T) {
 	}
 }
 
+// TestIsRetryableSetModelError_UpstreamUnavailableIsNotRetryable verifies
+// mitto-gbf5: an upstream connect-timeout brownout (UND_ERR_CONNECT_TIMEOUT /
+// apiStatus=unavailable) must NOT be retried by SetSessionModel's bounded
+// loop. Unlike a local slow RPC it will not resolve within the next
+// attempt's budget, so retrying only burns the full retry budget instead of
+// surfacing the real condition promptly. This is checked ahead of the
+// generic "timeout" substring fallback, which would otherwise classify it
+// retryable (the raw error text contains "Connect Timeout Error").
+func TestIsRetryableSetModelError_UpstreamUnavailableIsNotRetryable(t *testing.T) {
+	err := fmt.Errorf(`{"code":-32603,"message":"Internal error: fetch failed (UND_ERR_CONNECT_TIMEOUT: Connect Timeout Error (attempted address: xlb.api.augmentcode.com:443, timeout: 10000ms))","data":{"apiStatus":"unavailable"}}`)
+	if isRetryableSetModelError(err) {
+		t.Errorf("isRetryableSetModelError(upstream connect-timeout) = true, want false")
+	}
+}
+
 // TestLoadSession_ExpiredContextNoSaturation verifies that LoadSession's entry guard
 // (mitto-13ck.2) returns fast without incrementing the saturation counter when the
 // caller's context is already cancelled on entry.

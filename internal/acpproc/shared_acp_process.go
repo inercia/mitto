@@ -2532,8 +2532,18 @@ func setModelFailureIsTerminal(attempt int, retryable bool) bool {
 // isRetryableCreateError, so the bounded retry loop keeps retrying — and recording
 // each attempt's timeout toward saturation via the classification above — instead of
 // relying solely on the string-Contains fallback below.
+//
+// mitto-gbf5: an upstream connect-timeout brownout (UND_ERR_CONNECT_TIMEOUT /
+// apiStatus=unavailable) is checked BEFORE the generic "timeout" substring
+// fallback and is deliberately NOT retryable here. Unlike a local slow RPC,
+// the upstream API being unreachable will not resolve within the next
+// attempt's budget, so retrying just burns the full setSessionModelMaxAttempts
+// budget (~43s) for no benefit and delays surfacing the real condition.
 func isRetryableSetModelError(err error) bool {
 	if err == nil {
+		return false
+	}
+	if mittoAcp.IsUpstreamUnavailableError(err) {
 		return false
 	}
 	if errors.Is(err, context.DeadlineExceeded) {

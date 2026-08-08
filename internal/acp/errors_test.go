@@ -483,6 +483,30 @@ func TestFormatACPError_IsZeroHintWrapperAroundFormatACPErrorWithContext(t *test
 	}
 }
 
+// TestFormatACPErrorWithContext_UpstreamConnectTimeout_mitto_gbf5 reproduces
+// mitto-gbf5: an upstream connect-timeout brownout to xlb.api.augmentcode.com
+// (data.apiStatus == "unavailable", UND_ERR_CONNECT_TIMEOUT) currently falls
+// through to the generic -32603 "internal error" branch of
+// FormatACPErrorWithContext because extractHTTPStatus finds no HTTP status in
+// the envelope. The condition should instead be named for the user (e.g.
+// "unreachable"/"unavailable") so it is distinguishable from an unrelated
+// agent-side internal error. This test is expected to FAIL until a dedicated
+// upstream-unavailable classifier is added ahead of the generic -32603 branch.
+func TestFormatACPErrorWithContext_UpstreamConnectTimeout_mitto_gbf5(t *testing.T) {
+	// Exact payload observed in the 2026-08-08 11:38-11:41 brownout (see
+	// mitto-gbf5 description / Investigation comment).
+	err := fmt.Errorf(`{"code":-32603,"message":"Internal error: fetch failed (UND_ERR_CONNECT_TIMEOUT: Connect Timeout Error (attempted address: xlb.api.augmentcode.com:443, timeout: 10000ms))","data":{"apiStatus":"unavailable"}}`)
+
+	got := FormatACPErrorWithContext(err, FormatErrorHints{})
+
+	if containsIgnoreCase(got, "encountered an internal error") {
+		t.Errorf("FormatACPErrorWithContext(err) = %q; upstream connect-timeout brownout must not be shaped as a generic internal error", got)
+	}
+	if !containsIgnoreCase(got, "unreachable") && !containsIgnoreCase(got, "unavailable") {
+		t.Errorf("FormatACPErrorWithContext(err) = %q; want a message naming the upstream-unreachable condition (mitto-gbf5)", got)
+	}
+}
+
 // TestIsHandshakeQueryClosedError is the classifier truth table for the
 // string-based predicate extracted in mitto-biu, mirroring the structured twin
 // acperrors.IsAgentQueryClosedErr (internal/acpproc/acperrors/acperrors_test.go).

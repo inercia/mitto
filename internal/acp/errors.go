@@ -476,6 +476,28 @@ const (
 	ProcessHistoryWarm
 )
 
+// IsUpstreamUnavailableError reports whether err indicates the agent's
+// upstream API (e.g. xlb.api.augmentcode.com) was unreachable at the network
+// level — a connect-timeout brownout — rather than an application-level
+// error. Node's undici HTTP client surfaces this as
+// `UND_ERR_CONNECT_TIMEOUT` / "Connect Timeout Error" wrapped in a "fetch
+// failed" JSON-RPC -32603 envelope whose `data.apiStatus` is "unavailable".
+// The envelope carries no HTTP status code, so extractHTTPStatus finds
+// nothing and the generic -32603 branch would otherwise misreport this as an
+// opaque "internal error" (mitto-gbf5).
+func IsUpstreamUnavailableError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errMsgLower := strings.ToLower(err.Error())
+	if strings.Contains(errMsgLower, "und_err_connect_timeout") ||
+		strings.Contains(errMsgLower, "connect timeout error") {
+		return true
+	}
+	return strings.Contains(errMsgLower, "fetch failed") &&
+		strings.Contains(errMsgLower, `"apistatus":"unavailable"`)
+}
+
 // FormatErrorHints carries optional corroborating context that lets
 // FormatACPErrorWithContext refine its message beyond what the raw error
 // string alone can tell. Zero value means "no additional context" and
@@ -545,6 +567,17 @@ func FormatACPErrorWithContext(err error, hints FormatErrorHints) string {
 	// misleading "request was cancelled" message.
 	if isAgentBusyError(err) {
 		return "The agent is busy — please try again in a moment."
+	}
+
+	// Upstream API unreachable (network-level connect-timeout brownout, e.g.
+	// UND_ERR_CONNECT_TIMEOUT to xlb.api.augmentcode.com). Checked before the
+	// generic context-cancelled and -32603 branches so this is named for the
+	// user instead of surfacing as an opaque "internal error" or "request was
+	// cancelled" (mitto-gbf5).
+	if IsUpstreamUnavailableError(err) {
+		return "The AI agent's API is unreachable right now (upstream connection " +
+			"timed out). This is usually a transient outage — please try again in " +
+			"a moment."
 	}
 
 	// Context cancelled (user cancelled or session closed)
