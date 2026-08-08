@@ -167,6 +167,19 @@ testWithCleanup.describe("No-archive affordance suppression", () => {
   // row's 50%-width auto-trigger threshold (but above `revealWidth`=80px) so
   // a successful swipe only reveals the affordance rather than firing the
   // archive/delete action as a side effect.
+  //
+  // The final move steps off the row (large vertical offset) before mouseup:
+  // on real touch devices a drag of this magnitude naturally suppresses the
+  // trailing tap, but a mouse-driven release on the *same* element the press
+  // started on still gets a synthetic browser `click` right after `mouseup`.
+  // By the time that click fires, the swipe hook has already cleared its
+  // "was swiping" ref (matching the state the real touch path leaves things
+  // in via its own `touchend` stopPropagation guard), so the click falls
+  // through to `handleClick`'s `isRevealed` branch and immediately calls
+  // `reset()` — collapsing the just-revealed affordance back to rest. Ending
+  // the gesture over a different element (so mousedown/mouseup targets
+  // differ) keeps the browser from synthesizing that click at all, which is
+  // what the equivalent real touch gesture achieves natively.
   async function swipeLeft(page, content) {
     const box = await content.boundingBox();
     if (!box) throw new Error("session row has no bounding box");
@@ -177,6 +190,7 @@ testWithCleanup.describe("No-archive affordance suppression", () => {
     for (const dx of [20, 60, 100, 140]) {
       await page.mouse.move(startX - dx, y);
     }
+    await page.mouse.move(startX - 140, y + 200);
     await page.mouse.up();
   }
 
