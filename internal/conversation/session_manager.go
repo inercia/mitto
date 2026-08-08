@@ -796,7 +796,13 @@ func (sm *SessionManager) ApplyOnCloseProcessors(sessionID string, reason string
 	// BackgroundSession is typically already gone by close time, so this
 	// appends directly via the store (which auto-assigns Seq) rather than
 	// through a *session.Recorder. Best-effort: a write failure here must
-	// never block the close pipeline.
+	// never block the close pipeline. Persist failures share the same
+	// message/level as the after-phase Recorder-based writer
+	// (recordEventWithSeqHelper / logPersistFailure in acp_callback_sink.go)
+	// so a log scan for "Failed to persist processor run" is exhaustive
+	// (mitto-hk6k) — most commonly this fires with session.ErrSessionNotFound
+	// when the session was deleted, since store.Delete races ahead of this
+	// fire-and-forget pipeline (see session_delete.go).
 	procMgr.SetRunRecorder(func(run processors.ProcessorRun) {
 		if err := store.AppendEvent(sessionID, session.Event{
 			Type:      session.EventTypeProcessorRun,
@@ -808,9 +814,9 @@ func (sm *SessionManager) ApplyOnCloseProcessors(sessionID string, reason string
 				DurationMs: run.Duration.Milliseconds(),
 				Error:      run.Error,
 			},
-		}); err != nil && logger != nil {
-			logger.Debug("close-phase: failed to persist processor_run event",
-				"session_id", sessionID, "processor", run.Name, "error", err)
+		}); err != nil {
+			logPersistFailure(logger, "processor run", err,
+				"session_id", sessionID, "processor", run.Name)
 		}
 	})
 

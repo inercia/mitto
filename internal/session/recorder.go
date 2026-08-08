@@ -4,12 +4,20 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
 
 	"github.com/inercia/mitto/internal/logging"
 )
+
+// ErrSessionNotStarted is returned by Recorder.recordEvent/RecordEventWithSeq
+// when an event is recorded after the recorder has been stopped/suspended (or
+// before it started). It is a sentinel (mirroring ErrSessionNotFound) so
+// callers can classify it with errors.Is instead of matching on the error
+// string (mitto-hk6k).
+var ErrSessionNotStarted = errors.New("session not started")
 
 // MaxMetaBytes is the maximum allowed size (in bytes) of a JSON-encoded event
 // metadata bag. If the bag exceeds this cap, it is dropped in its entirety
@@ -429,7 +437,7 @@ func (r *Recorder) recordEvent(event Event) error {
 	defer r.mu.Unlock()
 
 	if !r.started {
-		return fmt.Errorf("session not started")
+		return ErrSessionNotStarted
 	}
 
 	if err := r.store.AppendEvent(r.sessionID, event); err != nil {
@@ -458,7 +466,7 @@ func (r *Recorder) RecordEventWithSeq(event Event) error {
 	defer r.mu.Unlock()
 
 	if !r.started {
-		return fmt.Errorf("session not started")
+		return ErrSessionNotStarted
 	}
 
 	if err := r.store.RecordEvent(r.sessionID, event); err != nil {

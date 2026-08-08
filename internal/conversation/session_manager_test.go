@@ -2,12 +2,16 @@ package conversation
 
 import (
 	"context"
+	"errors"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/inercia/mitto/internal/appdir"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/processors"
 	"github.com/inercia/mitto/internal/runner"
@@ -2396,6 +2400,133 @@ func TestApplyOnCloseProcessors_SkipsWhenSharedProcessReaped(t *testing.T) {
 	// The pre-check must short-circuit BEFORE PinWorkspace is called.
 	if calls := pm.pinCallsSnapshot(); len(calls) != 0 {
 		t.Fatalf("PinWorkspace should not fire when shared process is reaped, got %+v", calls)
+	}
+}
+
+// TestApplyOnCloseProcessors_RunRecorder_LostAfterSessionDeleted reproduces
+// mitto-hk6k: when a session is deleted (mirroring
+// internal/web/handlers/session_delete.go, which fires ApplyOnCloseProcessors
+// BEFORE store.Delete but does not wait for the fire-and-forget close pipeline
+// to finish), every processor_run event the close-phase RunRecorder tries to
+// persist after the deletion completes is silently lost — store.AppendEvent
+// returns session.ErrSessionNotFound because the session directory is already
+// gone. This is deterministic, not a timing race: the metadata read in
+// ApplyOnCloseProcessors happens synchronously before the goroutine spawns,
+// so it always wins against the caller's immediately-following store.Delete;
+// every AppendEvent from inside that goroutine always loses.
+//
+// mitto-hk6k's acceptance criteria require the after-phase persist-failure
+// path (internal/conversation/acp_callback_sink.go recordEventWithSeqHelper,
+// which logs WARN "Failed to persist processor run" on a "session not
+// started" error) and this close-phase path to "share a message and level".
+// Today they do not: the close-phase wiring in
+// SessionManager.ApplyOnCloseProcessors logs a DIFFERENT message
+// ("close-phase: failed to persist processor_run event") at DEBUG instead of
+// WARN. This test asserts the unified, expected behavior and therefore FAILS
+// against the current code — it will pass once the fix routes both paths
+// through a shared helper with one message and level.
+func TestApplyOnCloseProcessors_RunRecorder_LostAfterSessionDeleted(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	const (
+		sid       = "sess-deleted-close"
+		acpServer = "test-server"
+	)
+	workingDir := t.TempDir()
+
+	if err := store.Create(session.Metadata{
+		SessionID:  sid,
+		ACPServer:  acpServer,
+		WorkingDir: workingDir,
+	}); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	// A slow close-phase command-mode processor: the delay gives the test time
+	// to delete the session out from under the in-flight pipeline, mirroring
+	// how session_delete.go's store.Delete races ahead of the fire-and-forget
+	// goroutine spawned by ApplyOnCloseProcessors. Written under the
+	// workspace's default .mitto/processors/ dir (appdir.WorkspaceProcessorsDir)
+	// so loadWorkspaceProcessors picks it up, since Manager.processors is
+	// unexported and cannot be set directly from this package.
+	scriptDir := t.TempDir()
+	slowScript := filepath.Join(scriptDir, "slow.sh")
+	if err := os.WriteFile(slowScript, []byte("#!/bin/sh\nsleep 0.3\necho done\n"), 0o755); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	processorsDir := appdir.WorkspaceProcessorsDir(workingDir)
+	if err := os.MkdirAll(processorsDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll failed: %v", err)
+	}
+	processorYAML := "name: slow-close-processor\n" +
+		"when:\n  on: conversationClosed\n  match: all\n" +
+		"command: " + slowScript + "\n" +
+		"output: discard\n"
+	if err := os.WriteFile(filepath.Join(processorsDir, "slow.yaml"), []byte(processorYAML), 0o644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	handler := &recordingHandler{}
+	logger := slog.New(handler)
+
+	sm := NewSessionManager("echo test", acpServer, true, logger)
+	sm.SetStore(store)
+	sm.SetProcessorManager(processors.NewManager("", logger))
+	pm := newFakeProcessManager()
+	sm.SetACPProcessManager(pm)
+
+	sm.ApplyOnCloseProcessors(sid, "deleted")
+
+	// Delete the session immediately, exactly as session_delete.go does right
+	// after firing ApplyOnCloseProcessors (it does not wait for the pipeline).
+	if err := store.Delete(sid); err != nil {
+		t.Fatalf("Delete failed: %v", err)
+	}
+
+	// Give the close-phase pipeline goroutine time to run its (slow) processor
+	// and attempt to persist the processor_run event against the now-deleted
+	// session. Poll for ANY log record mentioning the persist failure, at
+	// either message/level, so this works both pre-fix and post-fix.
+	const afterPhaseSharedMessage = "Failed to persist processor run"
+	sawPersistFailure := func() bool {
+		return handler.hasRecord(slog.LevelWarn, afterPhaseSharedMessage) ||
+			handler.hasRecord(slog.LevelDebug, "close-phase: failed to persist processor_run event")
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if sawPersistFailure() {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !sawPersistFailure() {
+		t.Fatal("expected the close-phase RunRecorder to fail persisting processor_run after the session was deleted")
+	}
+
+	// Confirm the event was truly never persisted anywhere recoverable —
+	// ReadEvents on the deleted session must fail with ErrSessionNotFound (the
+	// directory is gone), so the processor_run marker for
+	// "slow-close-processor" is unrecoverable regardless of how it is logged.
+	if _, err := store.ReadEvents(sid); !errors.Is(err, session.ErrSessionNotFound) {
+		t.Fatalf("expected ErrSessionNotFound reading events for deleted session, got: %v", err)
+	}
+
+	// mitto-hk6k acceptance criterion: "The after-phase and close-phase
+	// persist failures share a message and level." Today the close-phase path
+	// logs a DIFFERENT message ("close-phase: failed to persist processor_run
+	// event") at DEBUG instead of the after-phase's WARN
+	// ("Failed to persist processor run") — this assertion currently FAILS,
+	// reproducing the bug. It will pass once both paths are unified.
+	if !handler.hasRecord(slog.LevelWarn, afterPhaseSharedMessage) {
+		t.Fatalf("expected close-phase persist failure to share the after-phase's WARN %q message, but it did not (mitto-hk6k: divergent message/level between the two persist-failure paths)", afterPhaseSharedMessage)
+	}
+	if handler.hasRecord(slog.LevelDebug, "close-phase: failed to persist processor_run event") {
+		t.Fatal("close-phase persist failure still logs its own distinct DEBUG message instead of sharing the after-phase's WARN message (mitto-hk6k)")
 	}
 }
 

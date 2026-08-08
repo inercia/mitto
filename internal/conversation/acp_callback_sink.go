@@ -7,9 +7,9 @@ package conversation
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/coder/acp-go-sdk"
@@ -659,11 +659,29 @@ func recordEventWithSeqHelper(rec *session.Recorder, lg *slog.Logger, event sess
 	if rec == nil {
 		return
 	}
-	if err := rec.RecordEventWithSeq(event); err != nil && lg != nil {
-		if strings.Contains(err.Error(), "session not started") {
-			lg.Warn("Failed to persist "+kind, "seq", event.Seq, "error", err)
-		} else {
-			lg.Error("Failed to persist "+kind, "seq", event.Seq, "error", err)
-		}
+	if err := rec.RecordEventWithSeq(event); err != nil {
+		logPersistFailure(lg, kind, err, "seq", event.Seq)
 	}
+}
+
+// logPersistFailure logs a session-event persistence failure with a single
+// message and level shared across every writer (mitto-hk6k). Before this,
+// the after-phase Recorder path (recordEventWithSeqHelper, above) and the
+// close-phase Store path (SessionManager.ApplyOnCloseProcessors) each chose
+// their own wording and level independently, so a log scan for one
+// under-reported the other. Expected session-lifecycle errors — the
+// recorder already stopped/suspended (session.ErrSessionNotStarted), or the
+// session directory already gone (session.ErrSessionNotFound, e.g. a
+// deleted session racing a fire-and-forget close-phase writer) — are logged
+// at WARN; anything else is unexpected and logged at ERROR.
+func logPersistFailure(lg *slog.Logger, kind string, err error, attrs ...any) {
+	if lg == nil || err == nil {
+		return
+	}
+	level := slog.LevelError
+	if errors.Is(err, session.ErrSessionNotStarted) || errors.Is(err, session.ErrSessionNotFound) {
+		level = slog.LevelWarn
+	}
+	args := append(append([]any{}, attrs...), "error", err)
+	lg.Log(context.Background(), level, "Failed to persist "+kind, args...)
 }
