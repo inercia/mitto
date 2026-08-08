@@ -3481,6 +3481,7 @@ func (s *Server) resolvePromptTargetByPromptName(promptName, workingDir string, 
 				Title:           title,
 				ReuseTitle:      p.Target.Reuse != nil && p.Target.Reuse.Title,
 				BackgroundColor: p.Target.BackgroundColor,
+				NoArchive:       p.Target.NoArchive,
 			}, nil
 		}
 	}

@@ -336,20 +336,25 @@ func (h *Handlers) HandleCreateSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Persist the originating prompt's target.backgroundColor (if any) as a
-	// creation-time default (mitto-8sk). Create-only: reuse dispatches above
-	// return before reaching this point, so an existing conversation's color
-	// (including a user's manual recolor) is never overwritten. The
-	// empty-check inside the update closure enforces the same rule against
-	// the metadata actually on disk, so any create path that already
-	// assigned a color keeps it.
-	if targetBackgroundColor != "" {
+	// creation-time default (mitto-8sk), and target.noArchive (if set) as a
+	// permanent non-archivable flag (mitto-yvel.2). Create-only: reuse
+	// dispatches above return before reaching this point, so an existing
+	// conversation's color (including a user's manual recolor) or NoArchive
+	// value is never overwritten. The empty-check inside the update closure
+	// enforces the same rule against the metadata actually on disk for the
+	// color; NoArchive is set-only (never cleared) since it is immutable
+	// after creation.
+	if targetBackgroundColor != "" || resolvedTarget.NoArchive {
 		if store := h.deps.Store; store != nil {
 			if err := store.UpdateMetadata(bs.GetSessionID(), func(meta *session.Metadata) {
-				if meta.BackgroundColor == "" {
+				if targetBackgroundColor != "" && meta.BackgroundColor == "" {
 					meta.BackgroundColor = targetBackgroundColor
 				}
+				if resolvedTarget.NoArchive {
+					meta.NoArchive = true
+				}
 			}); err != nil && h.deps.Logger != nil {
-				h.deps.Logger.Warn("Failed to set background_color on new session", "error", err, "session_id", bs.GetSessionID())
+				h.deps.Logger.Warn("Failed to set background_color/no_archive on new session", "error", err, "session_id", bs.GetSessionID())
 			}
 		}
 	}
@@ -378,6 +383,7 @@ func (h *Handlers) HandleCreateSession(w http.ResponseWriter, r *http.Request) {
 		"beads_issue":        req.BeadsIssue,
 		"origin_prompt_name": originPromptName,
 		"background_color":   targetBackgroundColor,
+		"no_archive":         resolvedTarget.NoArchive,
 	}
 	if h.deps.BroadcastSessionCreated != nil {
 		h.deps.BroadcastSessionCreated(sessionData)

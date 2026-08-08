@@ -205,6 +205,11 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 	// new conversation, from target.backgroundColor (mitto-8sk). Only
 	// applied on the create branch below; reuse hits never re-apply it.
 	promptTargetBackgroundColor := ""
+	// promptTargetNoArchive: marks the new conversation as non-archivable,
+	// from target.noArchive (mitto-yvel.2). Only applied on the create
+	// branch below; reuse hits never re-apply it, and it is immutable
+	// afterwards (no mutation path in mitto_conversation_update).
+	promptTargetNoArchive := false
 	// promptReuseCoalesce: when true, a duplicate (same PromptName + Arguments)
 	// dispatch onto an already-in-flight or queued conversation is a no-op
 	// (mitto-djs1). Only consulted after a reuse hit resolves to existingID.
@@ -241,6 +246,7 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 		if p.Target != nil {
 			promptTargetTitle = p.Target.Title
 			promptTargetBackgroundColor = p.Target.BackgroundColor
+			promptTargetNoArchive = p.Target.NoArchive
 			if p.Target.Reuse != nil {
 				promptReuseIssue = p.Target.Reuse.Issue
 				promptReuseTitle = p.Target.Reuse.Title
@@ -598,6 +604,7 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 		BeadsIssue:       input.BeadsIssue,
 		OriginPromptName: originPromptName,            // Track originating prompt for singleton find-or-route
 		BackgroundColor:  promptTargetBackgroundColor, // Creation-time default from target.backgroundColor (mitto-8sk)
+		NoArchive:        promptTargetNoArchive,       // Creation-time, immutable, from target.noArchive (mitto-yvel.2)
 	}
 
 	// Create the session

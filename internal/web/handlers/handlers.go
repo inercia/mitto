@@ -39,6 +39,10 @@ type ResolvedPromptTarget struct {
 	// default color for the conversation this prompt creates. Empty when
 	// unset. Never re-applied on a reuse dispatch.
 	BackgroundColor string
+	// NoArchive mirrors target.noArchive: marks the conversation this
+	// prompt creates as non-archivable (mitto-yvel). Create-time only,
+	// like BackgroundColor — never re-applied on a reuse dispatch.
+	NoArchive bool
 }
 
 // Deps holds the dependencies that REST handlers need from the web server.

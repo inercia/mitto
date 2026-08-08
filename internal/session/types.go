@@ -286,16 +286,24 @@ type Metadata struct {
 	MaxSeq            int64         `json:"max_seq,omitempty"` // Highest sequence number persisted (for immediate persistence)
 	Status            SessionStatus `json:"status"`
 	Description       string        `json:"description,omitempty"`
-	Pinned            bool          `json:"pinned,omitempty"`             // Deprecated: use Archived instead. If true, session cannot be deleted
-	Archived          bool          `json:"archived,omitempty"`           // If true, session is archived (hidden from main list by default)
-	ArchivedAt        time.Time     `json:"archived_at,omitempty"`        // Time when session was archived (cleared when unarchived)
-	ArchiveReason     ArchiveReason `json:"archived_reason,omitempty"`    // Reason why the session was archived (cleared when unarchived)
-	RunnerType        string        `json:"runner_type,omitempty"`        // Type of runner used (exec, sandbox-exec, firejail, docker)
-	RunnerRestricted  bool          `json:"runner_restricted,omitempty"`  // Whether the runner has restrictions enabled
-	CurrentModeID     string        `json:"current_mode_id,omitempty"`    // Current session mode ID (e.g., "ask", "code", "architect")
-	BaselineModel     string        `json:"baseline_model,omitempty"`     // User's intended model; never mutated by per-prompt overrides
-	BeadsIssue        string        `json:"beads_issue,omitempty"`        // Linked beads issue ID (e.g. "mitto-123"), empty if none
-	OriginPromptName  string        `json:"origin_prompt_name,omitempty"` // Name of the prompt that originated this conversation (singleton scope: WorkingDir+OriginPromptName)
+	Pinned            bool          `json:"pinned,omitempty"`          // Deprecated: use Archived instead. If true, session cannot be deleted
+	Archived          bool          `json:"archived,omitempty"`        // If true, session is archived (hidden from main list by default)
+	ArchivedAt        time.Time     `json:"archived_at,omitempty"`     // Time when session was archived (cleared when unarchived)
+	ArchiveReason     ArchiveReason `json:"archived_reason,omitempty"` // Reason why the session was archived (cleared when unarchived)
+	// NoArchive marks this conversation as never-archivable (mitto-yvel).
+	// Resolved once from the originating prompt's target.noArchive at
+	// creation time (see ResolvedPromptTarget.NoArchive) and never
+	// mutated afterwards: reuse dispatches into an existing conversation
+	// leave it unchanged, and PATCH /api/sessions/{id} /
+	// mitto_conversation_update do not accept it. Enforcement at archive
+	// entry points is done by downstream work (mitto-yvel.3).
+	NoArchive        bool   `json:"no_archive,omitempty"`
+	RunnerType       string `json:"runner_type,omitempty"`        // Type of runner used (exec, sandbox-exec, firejail, docker)
+	RunnerRestricted bool   `json:"runner_restricted,omitempty"`  // Whether the runner has restrictions enabled
+	CurrentModeID    string `json:"current_mode_id,omitempty"`    // Current session mode ID (e.g., "ask", "code", "architect")
+	BaselineModel    string `json:"baseline_model,omitempty"`     // User's intended model; never mutated by per-prompt overrides
+	BeadsIssue       string `json:"beads_issue,omitempty"`        // Linked beads issue ID (e.g. "mitto-123"), empty if none
+	OriginPromptName string `json:"origin_prompt_name,omitempty"` // Name of the prompt that originated this conversation (singleton scope: WorkingDir+OriginPromptName)
 	// BackgroundColor is a creation-time default color (hex, e.g. "#E1BEE7")
 	// applied from the originating prompt's target.backgroundColor
 	// (mitto-8sk), rendered by the sidebar as a left accent stripe. Also
