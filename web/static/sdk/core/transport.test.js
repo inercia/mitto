@@ -122,6 +122,73 @@ describe("request — body encoding", () => {
       "application/merge-patch+json",
     );
   });
+
+  test("a lowercase caller-supplied content-type header also blocks the inferred one", async () => {
+    let seenInit;
+    const config = configWithFetch(async (url, init) => {
+      seenInit = init;
+      return fakeResponse({ status: 204 });
+    });
+    await request(config, {
+      method: "POST",
+      path: "/x",
+      body: { a: 1 },
+      headers: { "content-type": "application/merge-patch+json" },
+    });
+    expect(seenInit.headers["Content-Type"]).toBeUndefined();
+    expect(seenInit.headers["content-type"]).toBe(
+      "application/merge-patch+json",
+    );
+  });
+});
+
+describe("request — method handling", () => {
+  test("defaults to GET when no method is given", async () => {
+    let seenInit;
+    const config = configWithFetch(async (url, init) => {
+      seenInit = init;
+      return fakeResponse({ status: 204 });
+    });
+    await request(config, { path: "/x" });
+    expect(seenInit.method).toBe("GET");
+  });
+
+  test("uppercases a lowercase method", async () => {
+    let seenInit;
+    const config = configWithFetch(async (url, init) => {
+      seenInit = init;
+      return fakeResponse({ status: 204 });
+    });
+    await request(config, { method: "post", path: "/x" });
+    expect(seenInit.method).toBe("POST");
+  });
+});
+
+describe("request — AbortSignal", () => {
+  test("forwards the caller's signal to fetch untouched", async () => {
+    let seenInit;
+    const controller = new AbortController();
+    const config = configWithFetch(async (url, init) => {
+      seenInit = init;
+      return fakeResponse({ status: 204 });
+    });
+    await request(config, {
+      method: "GET",
+      path: "/x",
+      signal: controller.signal,
+    });
+    expect(seenInit.signal).toBe(controller.signal);
+  });
+
+  test("omits signal from fetch init when none is given", async () => {
+    let seenInit;
+    const config = configWithFetch(async (url, init) => {
+      seenInit = init;
+      return fakeResponse({ status: 204 });
+    });
+    await request(config, { method: "GET", path: "/x" });
+    expect(seenInit.signal).toBeUndefined();
+  });
 });
 
 describe("request — auth adapter", () => {
@@ -199,6 +266,19 @@ describe("request — response decoding", () => {
       fakeResponse({
         status: 200,
         headers: { "content-type": "application/json" },
+        text: JSON.stringify({ ok: true }),
+      }),
+    );
+    expect(await request(config, { method: "GET", path: "/x" })).toEqual({
+      ok: true,
+    });
+  });
+
+  test("a json content-type with a charset parameter is still parsed as JSON", async () => {
+    const config = configWithFetch(async () =>
+      fakeResponse({
+        status: 200,
+        headers: { "content-type": "application/json; charset=utf-8" },
         text: JSON.stringify({ ok: true }),
       }),
     );
