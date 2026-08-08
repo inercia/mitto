@@ -42,6 +42,16 @@ describe("sharedTokenAuth", () => {
       current = "second";
       expect(await auth.authorize({})).toEqual({ headers: { Authorization: "Bearer second" } });
     });
+
+    test.each(["GET", "POST", "PUT", "PATCH", "DELETE"])(
+      "%s never adds an X-CSRF-Token header — no CSRF fetch for a bearer-authenticated adapter",
+      async (method) => {
+        const auth = sharedTokenAuth({ getToken: () => "s3cr3t" });
+        const patch = await auth.authorize({ method, url: "/x", headers: {} });
+        expect(patch.headers).toEqual({ Authorization: "Bearer s3cr3t" });
+        expect(patch.headers["X-CSRF-Token"]).toBeUndefined();
+      },
+    );
   });
 
   describe("authorizeWebSocket()", () => {

@@ -16,6 +16,15 @@ describe("noneAuth", () => {
     await expect(auth.authorize({})).resolves.toEqual({});
   });
 
+  test.each(["GET", "POST", "PUT", "PATCH", "DELETE"])(
+    "%s never adds a CSRF header or credentials — unauthenticated deployments send no auth at all",
+    async (method) => {
+      const auth = noneAuth();
+      const patch = await auth.authorize({ method, url: "/x", headers: {} });
+      expect(patch).toEqual({});
+    },
+  );
+
   test("does not implement authorizeWebSocket or onUnauthorized", () => {
     const auth = noneAuth();
     expect(auth.authorizeWebSocket).toBeUndefined();
