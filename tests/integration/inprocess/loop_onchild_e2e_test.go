@@ -4,6 +4,7 @@
 package inprocess
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -78,8 +79,11 @@ func waitOnChildIterationCount(t *testing.T, ts *TestServer, sessionID string, w
 // from the SessionManager idle bridge) and a child being deleted (through the
 // REAL session.Store.Delete, exercising the Store.SetDeleteObserver seam wired
 // in internal/web/server.go to LoopRunner.OnChildDeleted — the one path no
-// unit test covers) both fire the parent's loop, and a cooldown floor
-// collapses a burst of child-idle events into a single delivery.
+// unit test covers) both fire the parent's loop, a cooldown floor collapses a
+// burst of child-idle events into a single delivery, and the additive-only
+// constraint (onChild may never be the sole armed trigger) is enforced by the
+// real session.Store.Loop(...).Set path — not just the REST handler layer
+// already covered by TestHandleSessionLoop_OnChildAloneRejected.
 func TestLoopOnChildE2E(t *testing.T) {
 	ts := SetupTestServer(t)
 	runner := ts.Server.LoopRunner()
@@ -111,6 +115,24 @@ func TestLoopOnChildE2E(t *testing.T) {
 		}
 		waitOnChildIterationCount(t, ts, parent.SessionID, 2)
 		waitOnTasksSessionIdle(t, ts, parent.SessionID)
+	})
+
+	t.Run("onchild_alone_rejected_via_store", func(t *testing.T) {
+		// Validate() runs (and can fail) before LoopStore.Set acquires its
+		// lock or writes anything, so calling it with an invalid config on
+		// the shared parent is side-effect-free — it does not disturb the
+		// iteration_count the other subtests depend on.
+		err := ts.Store.Loop(parent.SessionID).Set(&session.LoopPrompt{
+			Prompt:    "iterate",
+			Enabled:   true,
+			Triggers:  []session.LoopTrigger{session.TriggerOnChild},
+			Frequency: session.Frequency{Value: 999, Unit: session.FrequencyDays},
+		})
+		if !errors.Is(err, session.ErrOnChildAlone) {
+			t.Fatalf("Loop(%s).Set({Triggers: [onChild]}) error = %v, want ErrOnChildAlone", parent.SessionID, err)
+		}
+		// Config from the previous subtests must be untouched.
+		waitOnChildIterationCount(t, ts, parent.SessionID, 2)
 	})
 
 	t.Run("cooldown_collapses_child_idle_burst", func(t *testing.T) {
