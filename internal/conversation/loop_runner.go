@@ -28,6 +28,26 @@ const (
 	// failures after which the loop config is auto-paused (disabled).
 	MaxPromptResolveFailures = 3
 
+	// MaxTransientCompileRaceFailures bounds how many consecutive
+	// ErrPromptTransientCompileRace classifications a session may accumulate
+	// within transientCompileRaceWindow before the carve-out (mitto-8bg) is
+	// treated as exhausted and the failure falls through to the normal
+	// MaxPromptResolveFailures strike path (mitto-uvsn). A genuine sub-second
+	// fragment-registry reload race clears well under this bound; a
+	// persistent prompt-cache hole (e.g. a boot-time compile failure that
+	// never resolves) would otherwise retry forever without ever tripping
+	// the auto-pause tripwire.
+	MaxTransientCompileRaceFailures = 3
+
+	// transientCompileRaceWindow bounds the wall-clock span over which
+	// MaxTransientCompileRaceFailures consecutive transient classifications
+	// are counted (mitto-uvsn). If the window elapses before the count is
+	// reached, the next transient classification still escalates — this
+	// caps how long a stalled loop can silently retry even when fires are
+	// spaced further apart than the default poll interval (e.g. a
+	// longer-frequency schedule or onTasks trigger).
+	transientCompileRaceWindow = 60 * time.Second
+
 	// MaxLoopContextWindowFailures is the number of consecutive `augmentTooLarge`
 	// (HTTP 413 / context window exceeded) failures after which the loop is
 	// auto-paused with StoppedReasonContextWindowExceeded. The loop is retried
@@ -152,6 +172,15 @@ var (
 	// delivery failure.
 	ErrLoopDispatchCoalesced = errors.New("loop dispatch coalesced: another trigger is already in flight")
 )
+
+// transientRaceState tracks a session's consecutive ErrPromptTransientCompileRace
+// classifications so handlePromptResolveFailure can bound the mitto-8bg
+// carve-out (see MaxTransientCompileRaceFailures / transientCompileRaceWindow,
+// mitto-uvsn).
+type transientRaceState struct {
+	count     int
+	firstSeen time.Time
+}
 
 // isTransientPromptCompileRace reports whether err represents a transient
 // template-fragment compile-race — i.e. a prompt-name resolution failure caused
@@ -278,6 +307,15 @@ type LoopRunner struct {
 	// auto-paused (disabled) to stop the retry storm.
 	promptResolveFailures   map[string]int
 	promptResolveFailuresMu sync.Mutex
+
+	// transientCompileRaceFailures tracks, per session, how many consecutive
+	// ErrPromptTransientCompileRace classifications have been seen and when
+	// the streak started. Once MaxTransientCompileRaceFailures is reached
+	// within transientCompileRaceWindow, the carve-out is exhausted and the
+	// failure escalates into the normal promptResolveFailures strike path
+	// (mitto-uvsn) instead of retrying silently forever.
+	transientCompileRaceFailures   map[string]*transientRaceState
+	transientCompileRaceFailuresMu sync.Mutex
 
 	// scheduleBackoffFailures tracks consecutive delivery failures for scheduled
 	// loop prompts. It drives an exponential backoff on NextScheduledAt so a
@@ -429,32 +467,33 @@ func NewLoopRunner(store *session.Store, sm *SessionManager, logger *slog.Logger
 		}
 	}
 	return &LoopRunner{
-		store:                       store,
-		sessionManager:              sm,
-		logger:                      logger,
-		pollInterval:                DefaultPollInterval,
-		maxLoopIterations:           config.DefaultMaxLoopIterations,
-		minCompletionDelaySeconds:   config.DefaultMinLoopCompletionDelaySeconds,
-		consecutiveFailures:         make(map[string]int),
-		promptResolveFailures:       make(map[string]int),
-		scheduleBackoffFailures:     make(map[string]int),
-		contextWindowFailures:       make(map[string]int),
-		completionTimers:            make(map[string]*time.Timer),
-		tasksEvaluator:              evaluator,
-		minTasksCooldownSeconds:     DefaultMinLoopTasksCooldownSeconds,
-		tasksQuiescenceWindow:       tasksDefaultQuiescenceWindow,
-		tasksRebaseTimers:           make(map[string]*time.Timer),
-		tasksRefirePending:          make(map[string]bool),
-		tasksRefireDeliveryFailures: make(map[string]int),
-		tasksSettleTimers:           make(map[string]*time.Timer),
-		autoUnarchiveEnabled:        true,
-		autoUnarchiveRetryInterval:  DefaultAutoUnarchiveRetryInterval,
-		autoUnarchiveStagger:        DefaultAutoUnarchiveStaggerInterval,
-		loopWorkspaceConcurrency:    config.DefaultLoopWorkspaceConcurrency,
-		workspaceInFlight:           make(map[string]int),
-		dispatchInFlight:            make(map[string]session.LoopTrigger),
-		runOnStartAntiFlapSeconds:   config.DefaultRunOnStartAntiFlapSeconds,
-		runOnStartFired:             make(map[string]bool),
+		store:                        store,
+		sessionManager:               sm,
+		logger:                       logger,
+		pollInterval:                 DefaultPollInterval,
+		maxLoopIterations:            config.DefaultMaxLoopIterations,
+		minCompletionDelaySeconds:    config.DefaultMinLoopCompletionDelaySeconds,
+		consecutiveFailures:          make(map[string]int),
+		promptResolveFailures:        make(map[string]int),
+		transientCompileRaceFailures: make(map[string]*transientRaceState),
+		scheduleBackoffFailures:      make(map[string]int),
+		contextWindowFailures:        make(map[string]int),
+		completionTimers:             make(map[string]*time.Timer),
+		tasksEvaluator:               evaluator,
+		minTasksCooldownSeconds:      DefaultMinLoopTasksCooldownSeconds,
+		tasksQuiescenceWindow:        tasksDefaultQuiescenceWindow,
+		tasksRebaseTimers:            make(map[string]*time.Timer),
+		tasksRefirePending:           make(map[string]bool),
+		tasksRefireDeliveryFailures:  make(map[string]int),
+		tasksSettleTimers:            make(map[string]*time.Timer),
+		autoUnarchiveEnabled:         true,
+		autoUnarchiveRetryInterval:   DefaultAutoUnarchiveRetryInterval,
+		autoUnarchiveStagger:         DefaultAutoUnarchiveStaggerInterval,
+		loopWorkspaceConcurrency:     config.DefaultLoopWorkspaceConcurrency,
+		workspaceInFlight:            make(map[string]int),
+		dispatchInFlight:             make(map[string]session.LoopTrigger),
+		runOnStartAntiFlapSeconds:    config.DefaultRunOnStartAntiFlapSeconds,
+		runOnStartFired:              make(map[string]bool),
 	}
 }
 
@@ -1624,6 +1663,9 @@ func (r *LoopRunner) checkSession(meta session.Metadata, now time.Time) (deliver
 				r.promptResolveFailuresMu.Lock()
 				delete(r.promptResolveFailures, sessionID)
 				r.promptResolveFailuresMu.Unlock()
+				r.transientCompileRaceFailuresMu.Lock()
+				delete(r.transientCompileRaceFailures, sessionID)
+				r.transientCompileRaceFailuresMu.Unlock()
 				if refreshed, gErr := loopStore.Get(); gErr == nil {
 					loop = refreshed
 				}
@@ -1888,6 +1930,9 @@ func (r *LoopRunner) checkSession(meta session.Metadata, now time.Time) (deliver
 	r.promptResolveFailuresMu.Lock()
 	delete(r.promptResolveFailures, sessionID)
 	r.promptResolveFailuresMu.Unlock()
+	r.transientCompileRaceFailuresMu.Lock()
+	delete(r.transientCompileRaceFailures, sessionID)
+	r.transientCompileRaceFailuresMu.Unlock()
 
 	return 1, 0, 0
 }
@@ -1940,16 +1985,55 @@ func (r *LoopRunner) handlePromptResolveFailure(sessionID, sessionName string, l
 	// mitto-8bg: a transient template fragment compile-race must not count as a
 	// strike toward the auto-pause tripwire. The resolver wraps such misses with
 	// ErrPromptTransientCompileRace; the failure will clear itself on the next
-	// reload. We do NOT reset the counter here — a subsequent genuine "not found"
-	// still trips the tripwire as before.
+	// reload. We do NOT reset the promptResolveFailures counter here — a
+	// subsequent genuine "not found" still trips the tripwire as before.
+	//
+	// mitto-uvsn: the carve-out above was unbounded — every classification
+	// returned unconditionally, with no counter, no time bound, and no
+	// escalation. A persistent prompt-cache hole (e.g. the resolver in
+	// internal/web/server.go wraps ANY prompt-not-found as transient
+	// whenever PromptsCache holds ANY unrelated compile error) made this
+	// carve-out fire forever, silently stalling loops for hours. Bound it:
+	// once a session accumulates MaxTransientCompileRaceFailures consecutive
+	// classifications within transientCompileRaceWindow, treat the carve-out
+	// as exhausted and fall through to the normal strike path below so the
+	// loop eventually auto-pauses and surfaces the amber warning, same as
+	// any other unresolved prompt.
 	if errors.Is(err, ErrPromptTransientCompileRace) {
+		r.transientCompileRaceFailuresMu.Lock()
+		state := r.transientCompileRaceFailures[sessionID]
+		now := time.Now()
+		if state == nil || now.Sub(state.firstSeen) >= transientCompileRaceWindow {
+			state = &transientRaceState{firstSeen: now}
+			r.transientCompileRaceFailures[sessionID] = state
+		}
+		state.count++
+		exhausted := state.count >= MaxTransientCompileRaceFailures
+		if exhausted {
+			delete(r.transientCompileRaceFailures, sessionID)
+		}
+		r.transientCompileRaceFailuresMu.Unlock()
+
+		if !exhausted {
+			if r.logger != nil {
+				r.logger.Debug("Loop prompt transiently unresolved (template compile race); not counting as strike",
+					"session_id", sessionID,
+					"prompt_name", loop.PromptName,
+					"consecutive_transient_failures", state.count,
+					"error", err)
+			}
+			return
+		}
+
 		if r.logger != nil {
-			r.logger.Debug("Loop prompt transiently unresolved (template compile race); not counting as strike",
+			r.logger.Warn("Loop prompt transient compile-race carve-out exhausted; escalating to strike path",
 				"session_id", sessionID,
 				"prompt_name", loop.PromptName,
+				"consecutive_transient_failures", state.count,
+				"window", transientCompileRaceWindow,
 				"error", err)
 		}
-		return
+		// Fall through to the normal strike-counting path below.
 	}
 
 	r.promptResolveFailuresMu.Lock()

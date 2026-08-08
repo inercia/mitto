@@ -2480,6 +2480,84 @@ func TestLoopRunner_AutoStopPromptUnresolved_SkipsTransientCompileRace(t *testin
 	}
 }
 
+// TestLoopRunner_TransientCompileRace_EscalatesAfterThreshold reproduces
+// mitto-uvsn: "Loop 'transient compile race' never escalates: 4 loops
+// silently stalled 4h41m on a persistent prompt-cache hole".
+//
+// handlePromptResolveFailure's ErrPromptTransientCompileRace branch
+// (loop_runner.go ~1945-1953) returns unconditionally on every call, with no
+// counter, no time bound, and no escalation path. In production this
+// classification is itself over-broad (internal/web/server.go wraps ANY
+// prompt-not-found as transient whenever the PromptsCache holds ANY
+// unrelated "template ... not defined" load error), so a persistent
+// prompt-cache hole causes this branch to fire forever: the loop keeps
+// retrying 2-3x/minute, never counts a strike, never auto-pauses, and never
+// surfaces the amber StoppedReasonPromptUnresolved warning to the user.
+//
+// This test drives handlePromptResolveFailure with a wrapped
+// ErrPromptTransientCompileRace far beyond MaxPromptResolveFailures
+// consecutive calls (simulating the observed 4h41m outage) and asserts the
+// loop eventually escalates to the standard auto-pause tripwire. It FAILS
+// against today's code (the loop stays Enabled=true / StoppedReason=""
+// forever, matching the reported bug) and will pass once the fix adds a
+// bounded per-session transient-failure tracker that falls through to the
+// existing strike path once a count/time threshold is crossed.
+func TestLoopRunner_TransientCompileRace_EscalatesAfterThreshold(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	meta := session.Metadata{SessionID: "compile-race-stall", ACPServer: "test", WorkingDir: "/tmp"}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("store.Create() error = %v", err)
+	}
+
+	loopStore := store.Loop("compile-race-stall")
+	if err := loopStore.Set(&session.LoopPrompt{
+		PromptName: "consumer-prompt",
+		Frequency:  session.Frequency{Value: 1, Unit: session.FrequencyMinutes},
+		Enabled:    true,
+	}); err != nil {
+		t.Fatalf("loopStore.Set() error = %v", err)
+	}
+
+	runner := NewLoopRunner(store, nil, nil)
+
+	resolveErr := fmt.Errorf("%w: %q: %w",
+		ErrPromptResolveFailed,
+		"consumer-prompt",
+		fmt.Errorf("%w: prompt %q not found (load errors present)",
+			ErrPromptTransientCompileRace, "consumer-prompt"))
+
+	loop, _ := loopStore.Get()
+
+	// Simulate a persistent prompt-cache hole firing this classification on
+	// every tick for far longer than the reported 4h41m outage (2-3/min ==>
+	// hundreds of calls). With today's unconditional early-return, none of
+	// these ever count as a strike, so the loop must still be running.
+	const stallSimulatedCalls = 500
+	for i := 0; i < stallSimulatedCalls; i++ {
+		runner.handlePromptResolveFailure("compile-race-stall", meta.Name, loop, loopStore, resolveErr)
+	}
+
+	final, err := loopStore.Get()
+	if err != nil {
+		t.Fatalf("loopStore.Get() error = %v", err)
+	}
+	if final.Enabled {
+		t.Errorf("bug reproduced (mitto-uvsn): loop is still Enabled=true after %d consecutive "+
+			"transient-compile-race resolve failures; want the loop to eventually escalate to the "+
+			"standard auto-pause tripwire (Enabled=false)", stallSimulatedCalls)
+	}
+	if final.StoppedReason != session.StoppedReasonPromptUnresolved {
+		t.Errorf("bug reproduced (mitto-uvsn): StoppedReason = %q after %d consecutive transient-compile-race "+
+			"resolve failures; want %q (never escalates, so the amber warning never surfaces)",
+			final.StoppedReason, stallSimulatedCalls, session.StoppedReasonPromptUnresolved)
+	}
+}
+
 // TestLoopRunner_AutoStopResumeFailures_SetsStoppedReason verifies that the
 // resume-failures path persists StoppedReason=resumeFailures before archiving.
 func TestLoopRunner_AutoStopResumeFailures_SetsStoppedReason(t *testing.T) {
