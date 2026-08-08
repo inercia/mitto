@@ -39,10 +39,17 @@ export function useSwipeNavigation(
     /**
      * Check if an element or its ancestors have horizontal scroll capability.
      * This is used to prevent swipe navigation when the user is scrolling a table.
+     *
+     * Elements marked with data-mitto-no-swipe always opt out, even when they
+     * are not currently overflowing (e.g. the follow-up suggestion carousel
+     * with only a couple of buttons).
      */
     const isInsideHorizontallyScrollable = (target) => {
       let el = target;
       while (el && el !== element) {
+        if (el.hasAttribute && el.hasAttribute("data-mitto-no-swipe")) {
+          return true;
+        }
         // Check if element has horizontal overflow and actual scrollable content
         const style = window.getComputedStyle(el);
         const overflowX = style.overflowX;

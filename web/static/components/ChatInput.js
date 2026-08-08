@@ -2696,7 +2696,7 @@ ${activeUIPrompt.text || ""}</textarea
       !isResuming &&
       html`
         <div class="max-w-4xl mx-auto mb-3">
-          <div class="mitto-carousel gap-2 py-0.5">
+          <div class="mitto-carousel gap-2 py-0.5" data-mitto-no-swipe>
             ${actionButtons.map(
               (btn, idx) => html`
                 <button

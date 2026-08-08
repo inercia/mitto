@@ -123,8 +123,8 @@ Durations: info/success=5s, warning=10s. `error` toasts NEVER auto-dismiss — t
 
 ## useResizeHandle / useSwipeNavigation
 
-- `useResizeHandle`: drag to resize. ChatInput uses two instances (QueueDropdown + textarea; max-height in `mitto_ui_textarea_max_height` key)
-- `useSwipeNavigation`: swipe left/right with threshold, 500ms window
+- `useResizeHandle`: drag to resize. ChatInput uses two instances (QueueDropdown + textarea; max-height in `mitto_ui_textarea_max_height` key).
+- `useSwipeNavigation`: swipe left/right with threshold, 500ms window. **Two independent swipe-nav entry points exist — any fix must land in BOTH**: touch/mobile via `isInsideHorizontallyScrollable()` in `hooks/useSwipeNavigation.js`, and macOS trackpad via `isOverHorizontallyScrollable()` in `utils/globalHandlers.js` (called from `menu_darwin.m` → `window.mittoNextConversation()`). Both guards use the `overflow-x` + `scrollWidth > clientWidth` heuristic, which is false for non-overflowing strips (and jsdom reports both as 0). For regions that must absorb horizontal swipes even when not overflowing (e.g. `.mitto-carousel` in `ChatInput.js`), set `data-mitto-no-swipe` on the container — both guards short-circuit on it in the ancestor walk.
 
 ## daisyUI Tabs (Radio-based + State-Driven)
 

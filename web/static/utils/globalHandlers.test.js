@@ -25,7 +25,7 @@ import {
   afterEach,
   jest,
 } from "./testing/testGlobals.js";
-import "./globalHandlers.js";
+import { isOverHorizontallyScrollable } from "./globalHandlers.js";
 
 describe("globalHandlers viewer.html click handler — missing ws_path fallback (mitto-tac5)", () => {
   let openSpy;
@@ -118,5 +118,49 @@ describe("globalHandlers viewer.html click handler — missing ws_path fallback 
       ([url]) => typeof url === "string" && url.includes("/viewer.html"),
     );
     expect(viewerCall).toBeUndefined();
+  });
+});
+
+describe("isOverHorizontallyScrollable — data-mitto-no-swipe opt-out (mitto-7c98)", () => {
+  let fromPointSpy;
+
+  beforeEach(() => {
+    document.body.innerHTML = "";
+  });
+
+  afterEach(() => {
+    fromPointSpy?.mockRestore();
+  });
+
+  // The cursor tracker only updates on mousemove, so point the hit-test at a
+  // chosen element directly instead of simulating pointer coordinates.
+  function hitTest(el) {
+    fromPointSpy = jest
+      .spyOn(document, "elementFromPoint")
+      .mockImplementation(() => el);
+    return isOverHorizontallyScrollable();
+  }
+
+  test("returns true for an element inside a data-mitto-no-swipe container", () => {
+    // jsdom reports scrollWidth === clientWidth === 0, so the overflow
+    // heuristic alone cannot detect this container — the marker must.
+    document.body.innerHTML = `
+      <div data-mitto-no-swipe><button id="btn">Suggestion</button></div>
+    `;
+    expect(hitTest(document.getElementById("btn"))).toBe(true);
+  });
+
+  test("returns true when the marked element itself is under the cursor", () => {
+    document.body.innerHTML = `<div id="strip" data-mitto-no-swipe></div>`;
+    expect(hitTest(document.getElementById("strip"))).toBe(true);
+  });
+
+  test("returns false for unmarked, non-overflowing content", () => {
+    document.body.innerHTML = `<div><button id="btn">Plain</button></div>`;
+    expect(hitTest(document.getElementById("btn"))).toBe(false);
+  });
+
+  test("returns false when nothing is under the cursor", () => {
+    expect(hitTest(null)).toBe(false);
   });
 });
