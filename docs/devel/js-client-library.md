@@ -66,7 +66,15 @@ The SDK assumes only ESM plus a `fetch`-shaped and `WebSocket`-shaped API.
 Everything environment-specific is **injected** through one config object:
 
 ```js
-createClient({ baseUrl, fetch, WebSocket, storage, auth, logger, onUnauthorized });
+createClient({
+  baseUrl,
+  fetch,
+  WebSocket,
+  storage,
+  auth,
+  logger,
+  onUnauthorized,
+});
 ```
 
 Forbidden inside `sdk/`: `window`, `document`, `document.cookie`,
@@ -100,7 +108,7 @@ Mitto has **no compiled-in version string** today (`Makefile` `LDFLAGS` is
 only `-s -w`; there is no `internal/version` package) — releases are git
 tags only (latest `v0.3.0` at the time of this record).
 
-- **Embedded copy**: lockstep with the server. Its version *is* the Mitto
+- **Embedded copy**: lockstep with the server. Its version _is_ the Mitto
   release tag it ships inside; there is no compatibility matrix to maintain
   because it is always served by the exact server it targets.
 - **npm copy** (future): its own independent semver, cut from a specific
