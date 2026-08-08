@@ -146,16 +146,17 @@ changes AND re-arming after every turn, from the moment it is enabled.
 `LoopRunner.checkSession` arms every trigger leg on each poll tick, in a fixed
 order — event-driven legs first (`onTasks` baseline bootstrap, `onCompletion`
 timer bootstrap/self-heal), then the `schedule` due-check last — which is what
-establishes the **`onTasks` > `onCompletion` > `schedule`** precedence
-described below. But arming is not the same as firing: the three trigger
-mechanisms below are otherwise independent event sources, each capable of
-calling into the same delivery path at any time:
+establishes the **`onTasks` > `onChild` > `onCompletion` > `schedule`**
+precedence described below. But arming is not the same as firing: the four
+trigger mechanisms below are otherwise independent event sources, each
+capable of calling into the same delivery path at any time:
 
 | Trigger        | Fires from                                                                 |
 | -------------- | --------------------------------------------------------------------------- |
 | `schedule`     | The poll loop's due-check (`NextScheduledAt` reached)                       |
 | `onCompletion` | A one-shot timer armed by `OnConversationIdle` when the agent stops         |
 | `onTasks`      | `OnBeadsChanged`, when a workspace-wide `BeadsWatcher` event lands           |
+| `onChild`      | `OnConversationIdle`'s child leg (→ `OnChildEndResponse`) for `anyEndResponse`, and the `session.Store` delete observer (→ `OnChildDeleted`) for `anyDeleted` |
 
 Because these sources are independent, two of them can want to deliver a run
 in the same narrow window (e.g. the agent finishes a turn — arming
@@ -176,11 +177,13 @@ flowchart TB
         SCHED["Poll loop<br/>(due-check)"]
         COMP["OnConversationIdle<br/>(agent stops → timer)"]
         TASKS["OnBeadsChanged<br/>(BeadsWatcher fsnotify)"]
+        CHILD["Child idle / child deleted<br/>(OnChildEndResponse / OnChildDeleted)"]
     end
 
     SCHED -->|"triggerNowFull(firedBy=schedule)"| CLAIM
     COMP -->|"triggerNowFull(firedBy=onCompletion)"| CLAIM
     TASKS -->|"triggerNowFull(firedBy=onTasks)"| CLAIM
+    CHILD -->|"triggerNowFull(firedBy=onChild)"| CLAIM
 
     CLAIM{{"claimDispatch(sessionID, firedBy)<br/>one slot per session"}}
     CLAIM -->|"slot free → claimed"| DELIVER["deliverPrompt<br/>PromptMeta.LoopTrigger = firedBy"]
@@ -190,6 +193,19 @@ flowchart TB
     AGENT -->|OnComplete| RELEASE["releaseDispatch(sessionID)"]
     RELEASE -.->|"re-arms"| Sources
 ```
+
+`onChild`'s two event sources are wired at different layers: `anyEndResponse`
+rides the same `OnConversationIdle` callback that arms `onCompletion` (see
+[Loop Prompts: On-Completion Delivery](#loop-prompts-on-completion-delivery)
+below) — it resolves the child's parent from the child's own metadata (still
+present at idle time) and forwards to `fireOnChild`. `anyDeleted` is wired
+through `session.Store.SetDeleteObserver` (`internal/session/store.go`),
+invoked once per removed session **after** the store's internal lock is
+released (so an observer calling back into the store cannot deadlock), and
+registered in `internal/web/server.go` as `store.SetDeleteObserver(s.loopRunner.OnChildDeleted)`.
+Unlike the idle path, `OnChildDeleted` receives the parent session ID as an
+explicit argument from the caller — by observer time the child's own metadata
+is already gone, so it cannot be resolved from the child side.
 
 ### Shared caps, per-trigger settings
 
@@ -236,6 +252,13 @@ On the parsing side, `internal/prompts` covers the trigger-list validation matri
 (including inert per-trigger blocks) and `TestLoadPromptFile_MigratesLegacyLoopSchema_WritesBackToDisk`
 joins the in-memory legacy-schema migration with its on-disk write-back through
 `LoadPromptFile`.
+The `onChild` leg's guard chain (armed/event-membership/archived-parent/cooldown/
+coalescing) is unit-tested in `internal/conversation/loop_runner_test.go`
+(`TestLoopRunner_FireOnChild_*`, `TestLoopRunner_OnChildEndResponse_*`,
+`TestLoopRunner_OnChildDeleted_*`). `tests/integration/inprocess/loop_onchild_e2e_test.go`
+(`TestLoopOnChildE2E`) covers it end-to-end against the mock ACP server,
+including the one seam no unit test reaches: a real `session.Store.Delete`
+call flowing through the wired `SetDeleteObserver` seam into a live delivery.
 
 ## Loop Prompts: On-Completion Delivery
 

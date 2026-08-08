@@ -639,7 +639,7 @@ sibling of `trigger:`.
 
 ```yaml
 loop:
-  trigger: [schedule]        # list; one or more of: schedule | onCompletion | onTasks
+  trigger: [schedule]        # list; one or more of: schedule | onCompletion | onTasks | onChild
   schedule:                  # meaningful only when "schedule" is armed
     value: 1                 # number of time units between runs (integer ≥ 1); required for schedule
     unit: hours              # minutes | hours | days; required for schedule
@@ -652,6 +652,8 @@ loop:
     coalesceDuringBusy: true   # optional — nil/true (default) absorbs busy-window changes silently; false fires once at quiescence with the accumulated delta
     settleWindow: 0            # optional — pre-fire debounce window in seconds; 0/absent = fire on the first delta
     cooldown: 0                # optional — per-conversation cooldown floor (seconds); 0 = use the global floor
+  onChild:                    # meaningful only when "onChild" is armed
+    when: [anyEndResponse, anyDeleted]   # optional — child-conversation lifecycle events; absent = both
   # loop-wide — apply regardless of which armed trigger(s) fire
   maxIterations: 10          # optional; 0/absent = unlimited scheduled runs, shared across every trigger
   maxDuration: "4h"          # optional — wall-clock cap (e.g. 30m, 4h, 1d); 0/absent = unlimited
@@ -673,12 +675,13 @@ loop block between prompts and pruning unused blocks later.
 | `schedule`          | `value`, `unit`, `at`                                                       | `schedule` is in `trigger:`  |
 | `onCompletion`      | `delay`                                                                     | `onCompletion` is in `trigger:` |
 | `onTasks`           | `condition`, `conditionPreset`, `coalesceDuringBusy`, `settleWindow`, `cooldown` | `onTasks` is in `trigger:`   |
+| `onChild`           | `when`                                                                       | `onChild` is in `trigger:`   |
 
 #### `trigger:` (list)
 
 | Field     | Required | Description |
 | --------- | -------- | ----------- |
-| `trigger` | No       | List of one or more of `schedule`, `onCompletion`, `onTasks`. Each listed trigger arms **independently** — see [Triggers: independent multi-trigger arming](#triggers-independent-multi-trigger-arming). Duplicate entries are rejected. Empty/absent defaults to `[schedule]` (preserves pre-r6j implicit-schedule prompts). |
+| `trigger` | No       | List of one or more of `schedule`, `onCompletion`, `onTasks`, `onChild`. Each listed trigger arms **independently** — see [Triggers: independent multi-trigger arming](#triggers-independent-multi-trigger-arming). Duplicate entries are rejected. Empty/absent defaults to `[schedule]` (preserves pre-r6j implicit-schedule prompts). `onChild` is **additive-only**: it can never be the sole armed trigger (it is purely reactive to a child conversation's lifecycle, so a loop armed with nothing else would never fire for a conversation that has no children yet) — it must accompany `schedule`, `onCompletion`, and/or `onTasks`. |
 
 #### `schedule` block
 
@@ -705,6 +708,17 @@ loop block between prompts and pruning unused blocks later.
 | `coalesceDuringBusy` | No       | Nil/absent or `true` (default) silently absorbs beads changes that arrive while the loop's subtree is busy — they are folded into the next quiescence rebase. `false` fires exactly once more at quiescence with the accumulated pre-run→current delta available as `{{ .Trigger.OnTasks.Changes.* }}`. |
 | `settleWindow`       | No       | Optional pre-fire debounce window in seconds. When `> 0`, a single coalesced fire is dispatched after the timer expires instead of firing on the first delta — absorbs multi-step edits (e.g. `bd create` followed by `bd update`). `0`/absent = fire on the first delta. |
 | `cooldown`           | No       | Per-conversation cooldown floor (seconds) between fires. `0` = use the global floor. |
+
+#### `onChild` block
+
+| Field  | Required | Description |
+| ------ | -------- | ----------- |
+| `when` | No       | Child-conversation lifecycle events that fire this loop: `anyEndResponse` (a child finished an agent response and went idle) and/or `anyDeleted` (a child was deleted). Empty/absent = both. Unknown entries fail prompt load. |
+
+`when` is the only key under `onChild:` — the per-conversation cooldown that
+also governs a burst of child events is a loop-wide runtime setting (see
+[Triggers: independent multi-trigger arming](#triggers-independent-multi-trigger-arming)
+below), authored via `onTasks.cooldown`; there is no separate `onChild.cooldown` key.
 
 #### Loop-wide fields
 
@@ -806,12 +820,27 @@ it is enabled:
   prompt load time and evaluated against the `Tasks`, `Prev`, and `Changes`
   variables at runtime. Example: `condition: 'Tasks.Open > Prev.Open'` fires
   only when the open task count grows.
+- **`onChild`** — runs fire on a **child conversation's** lifecycle event, never
+  on the loop conversation's own turn ending (that is `onCompletion`).
+  `onChild.when: [anyEndResponse]` fires when any child finishes an agent
+  response and goes idle; `anyDeleted` fires when any child is deleted. Both
+  are armed by default. A cascade delete that also removes the parent itself
+  is a silent no-op (there is no longer a parent loop to fire). `onChild` is
+  **additive-only** — it can never be the only armed trigger — since it never
+  fires on its own for a conversation that has no children yet.
+
+`onChild` honours the **same per-conversation cooldown** the `onTasks` leg
+uses: a burst of child completions or deletions within the cooldown window
+collapses into a single run (`loop.CooldownSeconds`, clamped to the global
+floor). This is a loop-wide runtime behavior — see the `onChild` block note
+above for why it is authored via `onTasks.cooldown` rather than a separate key.
 
 #### Coalescing and precedence
 
-Because the three trigger mechanisms are independent event sources, two of
-them can want to deliver a run in the same narrow window (e.g. the agent
-finishes a turn at the same moment a beads file changes). Mitto only ever
+Because the four trigger mechanisms are independent event sources, more than
+one of them can want to deliver a run in the same narrow window (e.g. the
+agent finishes a turn at the same moment a beads file changes, or a child
+conversation goes idle right as the parent's own turn ends). Mitto only ever
 delivers **one** run at a time per conversation: the first trigger to reach
 the dispatch path claims a per-conversation slot, and any other trigger that
 fires while that slot is held is **coalesced — dropped, not queued**. The
@@ -820,12 +849,17 @@ loop is not re-run to "catch up" on the dropped fire.
 Precedence **within a single scheduler tick** is:
 
 ```
-onTasks  >  onCompletion  >  schedule
+onTasks  >  onChild  >  onCompletion  >  schedule
 ```
 
-— the event-driven legs are (re-)armed before the schedule due-check runs —
-but across ticks it is simply whichever trigger's event lands first. The
-conversation's `loop_updated` status (and the MCP `LoopTriggers` output field)
+`onChild` beats `onCompletion` because of the deliberate ordering inside
+`OnConversationIdle`: when a session goes idle, its own `onCompletion` leg
+only *arms a timer* first, while the `onChild` leg (notifying that session's
+*parent*, if any) dispatches **synchronously** right after — ahead of the
+`onCompletion` timer floor and the `schedule` poll tick. `onChild` loses to
+an already-in-flight `onTasks` dispatch via the same single-slot coalescing
+described above. Otherwise, precedence across ticks is simply whichever
+trigger's event lands first. The conversation's `loop_updated` status (and the MCP `LoopTriggers` output field)
 report both the full armed set (`triggers`) and, for back-compat, the primary
 trigger (`trigger`, always `triggers[0]`).
 
@@ -853,7 +887,7 @@ By contrast, each trigger's **own** settings (`schedule.value`/`unit`/`at`,
 the others.
 
 **Restrictions:**
-- Loop conversations can only be **top-level** (not child) conversations. Selecting a loop prompt on a child conversation falls through to the one-shot send; the backend also returns HTTP 400 for loop-on-child.
+- Loop conversations can only be **top-level** (not child) conversations. Selecting a loop prompt on a child conversation falls through to the one-shot send; the backend also returns HTTP 400 for loop-on-child. This is also why `onChild` is always configured on the **parent** — a child conversation cannot itself be a loop that reacts to its own children.
 - `schedule.at` is only sent for `schedule.unit: days`; it is ignored otherwise (matches `Frequency.Validate()` on the backend).
 
 ### Trigger Examples
@@ -937,6 +971,34 @@ prompt: |
 The `schedule` leg guarantees a 09:00 UTC kickoff even if the conversation has
 been idle; the `onCompletion` leg then keeps it refreshing every 5 minutes
 until `maxIterations` (shared across both legs) is reached.
+
+#### Multi-trigger: reactive supervisor over delegated children
+
+A supervisor that both reacts to beads changes **and** wakes up whenever a
+child conversation it delegated work to finishes a response — useful for a
+driver that spawns child conversations to do the actual work and must check
+back in as soon as any of them go idle:
+
+```yaml
+name: "Beads: supervise delegated children"
+menus: promptsLoop
+loop:
+  trigger: [onTasks, onChild]
+  onTasks:
+    condition: 'Changes.Touched.exists(i, "ready-for-review" in i.labels)'
+  onChild:
+    when: [anyEndResponse]
+  maxIterations: 0     # standing supervisor — no per-prompt cap
+  maxDuration: "0"
+prompt: |
+  Check for beads labelled "ready-for-review" and for any child conversation
+  that just finished a response, and advance the corresponding work one step.
+```
+
+Here `onTasks` fires when a bead is labelled, while `onChild` fires the
+moment any delegated child goes idle — both keep the supervisor from having
+to poll on a fixed schedule (subject to the same coalescing rule: only one
+of the two ever delivers a given run).
 
 ### Example: Behavior walkthrough
 
