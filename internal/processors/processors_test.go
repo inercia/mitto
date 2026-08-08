@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -6078,6 +6079,161 @@ func TestIsSaturationDispatchErr_MisroutesProcessBusy(t *testing.T) {
 			"load drops) was misclassified as saturation-shaped and will be routed into "+
 			"dispatchWithRetry's 120s GC-recycle wait policy, an event that cannot occur "+
 			"while ActiveRPCs is still >= threshold (mitto-xhsj)", err)
+	}
+}
+
+// capturedLogRecord is a minimal snapshot of an slog.Record used by
+// recordingLogHandler below to assert on log level/message/attribute shape
+// without depending on any particular slog output format.
+type capturedLogRecord struct {
+	Level   slog.Level
+	Message string
+	Attrs   map[string]any
+}
+
+// recordingLogHandler is a minimal slog.Handler that captures every record
+// passed to it (at any level, since Enabled always returns true) into an
+// in-memory, mutex-protected slice. Used by the saturation-logging tests
+// below (mitto-nnte) to assert on WARN-vs-DEBUG log volume and attributes
+// without parsing text/JSON log output.
+type recordingLogHandler struct {
+	mu      sync.Mutex
+	records []capturedLogRecord
+}
+
+func (h *recordingLogHandler) Enabled(context.Context, slog.Level) bool { return true }
+
+func (h *recordingLogHandler) Handle(_ context.Context, r slog.Record) error {
+	attrs := make(map[string]any, r.NumAttrs())
+	r.Attrs(func(a slog.Attr) bool {
+		attrs[a.Key] = a.Value.Any()
+		return true
+	})
+	h.mu.Lock()
+	h.records = append(h.records, capturedLogRecord{Level: r.Level, Message: r.Message, Attrs: attrs})
+	h.mu.Unlock()
+	return nil
+}
+
+func (h *recordingLogHandler) WithAttrs(_ []slog.Attr) slog.Handler { return h }
+func (h *recordingLogHandler) WithGroup(_ string) slog.Handler      { return h }
+
+func (h *recordingLogHandler) snapshot() []capturedLogRecord {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	out := make([]capturedLogRecord, len(h.records))
+	copy(out, h.records)
+	return out
+}
+
+// TestRunDispatchRetryLoop_SaturationLogging_FirstWarnThenDebug covers the
+// mitto-nnte fix: a sustained saturation window used to log a WARN on every
+// single poll — up to dispatchSaturationMaxWait/dispatchSaturationRetryInterval
+// (~24 near-duplicate lines per occurrence in production). Only the FIRST
+// saturation observation should log at WARN (carrying max_wait/deadline
+// attributes for triage); every subsequent poll while still waiting on the
+// same GC recycle window should log at DEBUG, with identical message text.
+func TestRunDispatchRetryLoop_SaturationLogging_FirstWarnThenDebug(t *testing.T) {
+	origSaturationInterval := dispatchSaturationRetryInterval
+	dispatchSaturationRetryInterval = time.Millisecond
+	t.Cleanup(func() { dispatchSaturationRetryInterval = origSaturationInterval })
+
+	const attemptsNeededToClearSaturation = 5 // 4 saturated polls, then success
+	const saturationMsg = "prompt-mode processor dispatch attempt failed; shared process saturated, waiting for GC recycle"
+
+	handler := &recordingLogHandler{}
+	m := NewManager("", slog.New(handler))
+
+	var attempts int
+	m.SetPromptFunc(func(_ context.Context, _, _, _ string) error {
+		attempts++
+		if attempts < attemptsNeededToClearSaturation {
+			return fmt.Errorf("failed to get auxiliary session: shared ACP process is saturated")
+		}
+		return nil
+	})
+
+	totalAttempts, _, err := m.runDispatchRetryLoop("ws-uuid", "proc", "prompt", time.Second, "skip")
+	if err != nil {
+		t.Fatalf("runDispatchRetryLoop returned error %v, want nil (should succeed on attempt %d)", err, attemptsNeededToClearSaturation)
+	}
+	if totalAttempts != attemptsNeededToClearSaturation {
+		t.Fatalf("totalAttempts = %d, want %d", totalAttempts, attemptsNeededToClearSaturation)
+	}
+
+	var warns, debugs []capturedLogRecord
+	for _, rec := range handler.snapshot() {
+		if rec.Message != saturationMsg {
+			continue
+		}
+		switch rec.Level {
+		case slog.LevelWarn:
+			warns = append(warns, rec)
+		case slog.LevelDebug:
+			debugs = append(debugs, rec)
+		default:
+			t.Errorf("unexpected level %v for saturation-wait log: %+v", rec.Level, rec)
+		}
+	}
+
+	if len(warns) != 1 {
+		t.Fatalf("got %d WARN saturation-wait log(s), want exactly 1 (attempts=%d): %+v", len(warns), attempts, warns)
+	}
+	wantDebugs := attemptsNeededToClearSaturation - 2 // saturated polls minus the first (WARN)
+	if len(debugs) != wantDebugs {
+		t.Fatalf("got %d DEBUG saturation-wait log(s), want %d (attempts=%d): %+v", len(debugs), wantDebugs, attempts, debugs)
+	}
+
+	if _, ok := warns[0].Attrs["max_wait"]; !ok {
+		t.Errorf("first (WARN) saturation-wait log missing \"max_wait\" attribute: %+v", warns[0].Attrs)
+	}
+	if _, ok := warns[0].Attrs["deadline"]; !ok {
+		t.Errorf("first (WARN) saturation-wait log missing \"deadline\" attribute: %+v", warns[0].Attrs)
+	}
+}
+
+// TestDispatchWithRetry_GiveUp_LogsWaitedDuration covers the mitto-nnte
+// addition of a "waited" (total wall-clock time spent retrying) attribute on
+// dispatchWithRetry's terminal ERROR log when the saturation retry budget is
+// exhausted — previously only "attempts" was logged, with no indication of
+// how long the caller had actually waited before giving up.
+func TestDispatchWithRetry_GiveUp_LogsWaitedDuration(t *testing.T) {
+	origMaxWait := dispatchSaturationMaxWait
+	dispatchSaturationMaxWait = 30 * time.Millisecond
+	t.Cleanup(func() { dispatchSaturationMaxWait = origMaxWait })
+	origSaturationInterval := dispatchSaturationRetryInterval
+	dispatchSaturationRetryInterval = time.Millisecond
+	t.Cleanup(func() { dispatchSaturationRetryInterval = origSaturationInterval })
+
+	handler := &recordingLogHandler{}
+	m := NewManager("", slog.New(handler))
+	m.SetPromptFunc(func(_ context.Context, _, _, _ string) error {
+		// Always saturated — mirrors the genuine reactive bail, same as
+		// TestApplyOnClose_PromptMode_SustainedSaturation_PersistsBatchOnGiveUp.
+		return fmt.Errorf("failed to get auxiliary session: %w", acperrors.ErrProcessSaturated)
+	})
+
+	// No pendingDispatchStore/workspaceUUID wired, so this exercises the
+	// "batch not persisted, work is lost" terminal ERROR branch.
+	m.dispatchWithRetry("", "proc", "prompt", time.Second, "skip", "give up")
+
+	var errRecs []capturedLogRecord
+	for _, rec := range handler.snapshot() {
+		if rec.Level == slog.LevelError {
+			errRecs = append(errRecs, rec)
+		}
+	}
+	if len(errRecs) != 1 {
+		t.Fatalf("got %d ERROR log(s) on give-up, want exactly 1: %+v", len(errRecs), errRecs)
+	}
+
+	waited, ok := errRecs[0].Attrs["waited"].(time.Duration)
+	if !ok {
+		t.Fatalf("terminal ERROR log missing a time.Duration \"waited\" attribute: %+v", errRecs[0].Attrs)
+	}
+	if waited < dispatchSaturationMaxWait {
+		t.Errorf("waited = %v, want >= dispatchSaturationMaxWait (%v) since the saturation budget was fully exhausted",
+			waited, dispatchSaturationMaxWait)
 	}
 }
 
