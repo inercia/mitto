@@ -6733,6 +6733,223 @@ func TestArchiveConversation_ChildNonParentRejected(t *testing.T) {
 	}
 }
 
+// TestArchiveConversation_NoArchiveRejected pins mitto-yvel.3: archiving a
+// top-level (non-child) NoArchive conversation via MCP is rejected with a
+// structured Success:false error and the conversation's Archived state is
+// left untouched.
+func TestArchiveConversation_NoArchiveRejected(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	defer store.Close()
+
+	callerID := session.GenerateSessionID()
+	if err := store.Create(session.Metadata{
+		SessionID:  callerID,
+		Name:       "Caller",
+		ACPServer:  "test-server",
+		WorkingDir: "/test/dir",
+	}); err != nil {
+		t.Fatalf("Failed to create caller: %v", err)
+	}
+
+	targetID := session.GenerateSessionID()
+	if err := store.Create(session.Metadata{
+		SessionID:  targetID,
+		Name:       "Protected",
+		ACPServer:  "test-server",
+		WorkingDir: "/test/dir",
+		NoArchive:  true,
+	}); err != nil {
+		t.Fatalf("Failed to create target: %v", err)
+	}
+
+	srv, err := NewServer(Config{Port: 0}, Dependencies{Store: store})
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	if err := srv.RegisterSession(callerID, nil, logger); err != nil {
+		t.Fatalf("Failed to register caller: %v", err)
+	}
+
+	ctx := context.Background()
+	archived := true
+	_, output, err := srv.handleArchiveConversation(ctx, nil, ArchiveConversationInput{
+		SelfID:         callerID,
+		ConversationID: targetID,
+		Archived:       &archived,
+	})
+	if err != nil {
+		t.Fatalf("handleArchiveConversation returned error: %v", err)
+	}
+	if output.Success {
+		t.Error("Expected failure when archiving a NoArchive conversation")
+	}
+	if !strings.Contains(output.Error, "non-archivable") {
+		t.Errorf("Expected 'non-archivable' error, got: %s", output.Error)
+	}
+
+	updated, err := store.GetMetadata(targetID)
+	if err != nil {
+		t.Fatalf("GetMetadata failed: %v", err)
+	}
+	if updated.Archived {
+		t.Error("Archived = true after rejected archive request, want unchanged false")
+	}
+}
+
+// TestArchiveConversation_NoArchiveUnarchiveStillAllowed pins mitto-yvel.3:
+// unarchiving a NoArchive conversation via MCP is unaffected by the archive
+// guard (only archived:true is gated).
+func TestArchiveConversation_NoArchiveUnarchiveStillAllowed(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	defer store.Close()
+
+	callerID := session.GenerateSessionID()
+	if err := store.Create(session.Metadata{
+		SessionID:  callerID,
+		Name:       "Caller",
+		ACPServer:  "test-server",
+		WorkingDir: "/test/dir",
+	}); err != nil {
+		t.Fatalf("Failed to create caller: %v", err)
+	}
+
+	targetID := session.GenerateSessionID()
+	if err := store.Create(session.Metadata{
+		SessionID:  targetID,
+		Name:       "Protected",
+		ACPServer:  "test-server",
+		WorkingDir: "/test/dir",
+		NoArchive:  true,
+	}); err != nil {
+		t.Fatalf("Failed to create target: %v", err)
+	}
+	// Pre-condition: pretend the conversation somehow ended up archived (e.g.
+	// legacy data predating this guard) — unarchive must still clear it.
+	if err := store.UpdateMetadata(targetID, func(m *session.Metadata) {
+		m.Archived = true
+		m.ArchiveReason = session.ArchiveReasonManual
+	}); err != nil {
+		t.Fatalf("UpdateMetadata (seed archived) failed: %v", err)
+	}
+
+	srv, err := NewServer(Config{Port: 0}, Dependencies{Store: store})
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	if err := srv.RegisterSession(callerID, nil, logger); err != nil {
+		t.Fatalf("Failed to register caller: %v", err)
+	}
+
+	ctx := context.Background()
+	archived := false
+	_, output, err := srv.handleArchiveConversation(ctx, nil, ArchiveConversationInput{
+		SelfID:         callerID,
+		ConversationID: targetID,
+		Archived:       &archived,
+	})
+	if err != nil {
+		t.Fatalf("handleArchiveConversation returned error: %v", err)
+	}
+	if !output.Success {
+		t.Errorf("Expected success when unarchiving a NoArchive conversation, got error: %s", output.Error)
+	}
+
+	updated, err := store.GetMetadata(targetID)
+	if err != nil {
+		t.Fatalf("GetMetadata failed: %v", err)
+	}
+	if updated.Archived {
+		t.Error("Archived = true after unarchive request, want false")
+	}
+}
+
+// TestArchiveConversation_NoArchiveChildStillDeletesViaRedirect pins
+// mitto-yvel.3: archiving a NoArchive CHILD conversation still delegates to
+// delete (the child-delegation block runs before the NoArchive guard), so
+// deletion of a protected conversation remains fully allowed (epic decision 3).
+func TestArchiveConversation_NoArchiveChildStillDeletesViaRedirect(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	defer store.Close()
+
+	parentID := session.GenerateSessionID()
+	if err := store.Create(session.Metadata{
+		SessionID:  parentID,
+		Name:       "Parent",
+		ACPServer:  "test-server",
+		WorkingDir: "/test/dir",
+	}); err != nil {
+		t.Fatalf("Failed to create parent: %v", err)
+	}
+
+	childID := session.GenerateSessionID()
+	if err := store.Create(session.Metadata{
+		SessionID:       childID,
+		Name:            "Child",
+		ACPServer:       "test-server",
+		WorkingDir:      "/test/dir",
+		ParentSessionID: parentID,
+		NoArchive:       true,
+	}); err != nil {
+		t.Fatalf("Failed to create child: %v", err)
+	}
+
+	mockSM := &mockSessionManager{
+		workspacesForFolder: []config.WorkspaceSettings{
+			{ACPServer: "test-server", WorkingDir: "/test/dir"},
+		},
+	}
+
+	srv, err := NewServer(Config{Port: 0}, Dependencies{
+		Store:          store,
+		SessionManager: mockSM,
+	})
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	if err := srv.RegisterSession(parentID, nil, logger); err != nil {
+		t.Fatalf("Failed to register parent: %v", err)
+	}
+
+	ctx := context.Background()
+	archived := true
+	_, output, err := srv.handleArchiveConversation(ctx, nil, ArchiveConversationInput{
+		SelfID:         parentID,
+		ConversationID: childID,
+		Archived:       &archived,
+	})
+	if err != nil {
+		t.Fatalf("handleArchiveConversation returned error: %v", err)
+	}
+	if !output.Success {
+		t.Errorf("Expected success when parent archives its NoArchive child (redirected to delete), got error: %s", output.Error)
+	}
+
+	// Verify child is permanently deleted (delegated to delete handler),
+	// NOT merely left un-archived by the guard.
+	_, err = store.GetMetadata(childID)
+	if err == nil {
+		t.Error("Expected NoArchive child to be permanently deleted via the archive-to-delete redirect, but it still exists")
+	}
+}
+
 // mockUIPrompter is a mock UIPrompter for testing handleUIOptions.
 type mockUIPrompter struct {
 	mu          sync.Mutex

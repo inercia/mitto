@@ -1841,6 +1841,49 @@ func TestSessionManager_DeleteChildSessions(t *testing.T) {
 	}
 }
 
+// TestSessionManager_DeleteChildSessions_NoArchiveChildStillDeleted pins
+// mitto-yvel.3 epic decision 3: deleting protected (NoArchive) children along
+// with an archived parent is unaffected by the archive guard — the parent
+// cascade is pure deletion, never archiving, so NoArchive children are
+// deleted exactly like any other child.
+func TestSessionManager_DeleteChildSessions_NoArchiveChildStillDeleted(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	if err := store.Create(session.Metadata{
+		SessionID:  "cascade-parent",
+		ACPServer:  "test-server",
+		WorkingDir: tmpDir,
+		Name:       "Parent",
+	}); err != nil {
+		t.Fatalf("Create parent failed: %v", err)
+	}
+
+	if err := store.Create(session.Metadata{
+		SessionID:       "cascade-protected-child",
+		ACPServer:       "test-server",
+		WorkingDir:      tmpDir,
+		Name:            "Protected Child",
+		ParentSessionID: "cascade-parent",
+		NoArchive:       true,
+	}); err != nil {
+		t.Fatalf("Create protected child failed: %v", err)
+	}
+
+	sm := NewSessionManager("", "", false, nil)
+	sm.SetStore(store)
+
+	sm.DeleteChildSessions("cascade-parent")
+
+	if store.Exists("cascade-protected-child") {
+		t.Error("NoArchive child should still be deleted by the parent cascade (deletion is always allowed, epic decision 3)")
+	}
+}
+
 // TestSessionManager_DeleteSessionAndChildren tests that deleteSessionAndChildren
 // (used by the self-destruct path) permanently removes the target session and all
 // of its descendants while leaving unrelated sessions intact.
@@ -2619,5 +2662,60 @@ func TestSessionManager_ResumeSession_FinalRetry_SkipsACPSessionResume(t *testin
 	}
 	if updated.ACPSessionID != "acp-abc" {
 		t.Errorf("expected persisted ACPSessionID to remain %q after final-retry local clear, got %q", "acp-abc", updated.ACPSessionID)
+	}
+}
+
+// TestSessionManager_ResumeSession_ACPStartFailureThreshold_SkipsArchiveForNoArchive
+// pins mitto-yvel.3: a NoArchive conversation that reaches
+// ACPStartFailureThreshold consecutive genuine ACP start failures still has
+// its ACPStartFailureCount incremented (so the counter itself keeps working)
+// but must NOT be archived — a supervisor loop that keeps failing to start
+// must not be reaped.
+func TestSessionManager_ResumeSession_ACPStartFailureThreshold_SkipsArchiveForNoArchive(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{
+		Workspaces: []config.WorkspaceSettings{
+			{WorkingDir: "/tmp", ACPServer: "agent-a"},
+		},
+	})
+	sm.SetStore(store)
+
+	sm.SetMittoConfig(&config.Config{
+		ACPServers: []config.ACPServer{
+			{Name: "agent-a", Command: "echo hello"},
+		},
+	})
+
+	meta := session.Metadata{
+		SessionID:            "no-archive-threshold-session",
+		ACPServer:            "agent-a",
+		WorkingDir:           "/tmp",
+		Name:                 "No Archive Threshold",
+		ACPStartFailureCount: ACPStartFailureThreshold - 1,
+		NoArchive:            true,
+	}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	// This resume attempt pushes the failure count to ACPStartFailureThreshold,
+	// which would normally trigger auto-archive.
+	_, _ = sm.ResumeSession("no-archive-threshold-session", "No Archive Threshold", "/tmp")
+
+	updated, err := store.GetMetadata("no-archive-threshold-session")
+	if err != nil {
+		t.Fatalf("GetMetadata after resume failed: %v", err)
+	}
+	if updated.ACPStartFailureCount < ACPStartFailureThreshold {
+		t.Errorf("ACPStartFailureCount = %d, want >= %d (counter must still be tracked)", updated.ACPStartFailureCount, ACPStartFailureThreshold)
+	}
+	if updated.Archived {
+		t.Error("NoArchive session should NOT be auto-archived after reaching ACPStartFailureThreshold")
 	}
 }

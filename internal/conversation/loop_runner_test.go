@@ -623,6 +623,45 @@ func TestLoopRunner_AutoArchiveSkipsPausedLoopSessions(t *testing.T) {
 	}
 }
 
+// TestLoopRunner_AutoArchiveSkipsNoArchiveSessions pins mitto-yvel.3: an
+// inactive session with no loop config is normally auto-archived (see
+// TestLoopRunner_AutoArchiveNoLoopConfig below), but a NoArchive conversation
+// must be skipped — a supervisor loop that goes quiet must not be reaped.
+func TestLoopRunner_AutoArchiveSkipsNoArchiveSessions(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	// Create an inactive, NoArchive session with no loop config.
+	oldTime := time.Now().UTC().Add(-48 * time.Hour)
+	meta := session.Metadata{
+		SessionID:  "no-archive-session",
+		ACPServer:  "test",
+		WorkingDir: "/tmp",
+		NoArchive:  true,
+	}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	setSessionUpdatedAt(t, store, "no-archive-session", oldTime)
+
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{})
+	runner := NewLoopRunner(store, sm, nil)
+	runner.SetAutoArchiveAfter(24 * time.Hour)
+
+	runner.RunOnce()
+
+	updatedMeta, err := store.GetMetadata("no-archive-session")
+	if err != nil {
+		t.Fatalf("GetMetadata() error = %v", err)
+	}
+	if updatedMeta.Archived {
+		t.Error("NoArchive session should NOT be auto-archived even when inactive")
+	}
+}
+
 func TestLoopRunner_AutoArchiveNoLoopConfig(t *testing.T) {
 	store, err := session.NewStore(t.TempDir())
 	if err != nil {
@@ -2475,6 +2514,81 @@ func TestLoopRunner_AutoStopResumeFailures_SetsStoppedReason(t *testing.T) {
 	}
 	if final.StoppedAt == nil {
 		t.Error("StoppedAt should be non-nil after resumeFailures stop")
+	}
+}
+
+// TestLoopRunner_AutoStopResumeFailures_NoArchiveSkipsArchive pins
+// mitto-yvel.3: a loop conversation marked NoArchive that hits
+// MaxLoopResumeFailures consecutive ACP resume failures must still have its
+// loop stopped (MarkStopped(resumeFailures), Enabled=false — so the retry
+// storm ends) but must NOT be archived.
+func TestLoopRunner_AutoStopResumeFailures_NoArchiveSkipsArchive(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	meta := session.Metadata{
+		SessionID:  "no-archive-resume-fail",
+		ACPServer:  "test",
+		WorkingDir: "/tmp",
+		NoArchive:  true,
+	}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("store.Create() error = %v", err)
+	}
+
+	loopStore := store.Loop("no-archive-resume-fail")
+	if err := loopStore.Set(&session.LoopPrompt{
+		Prompt:    "Test prompt",
+		Frequency: session.Frequency{Value: 5, Unit: session.FrequencyMinutes},
+		Enabled:   true,
+	}); err != nil {
+		t.Fatalf("loopStore.Set() error = %v", err)
+	}
+	// Force the loop due now (Set computes a future NextScheduledAt).
+	got, _ := loopStore.Get()
+	past := time.Now().UTC().Add(-1 * time.Hour)
+	got.NextScheduledAt = &past
+	loopPath := store.SessionDir("no-archive-resume-fail") + "/loop.json"
+	if err := writeTestLoopFile(loopPath, got); err != nil {
+		t.Fatalf("writeTestLoopFile() error = %v", err)
+	}
+
+	// No ACP command configured, so every resume attempt fails — and a
+	// failed resume never advances NextScheduledAt, so the loop stays due
+	// across repeated RunOnce() calls.
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{})
+	runner := NewLoopRunner(store, sm, nil)
+
+	var stopped bool
+	runner.SetOnLoopAutoStopped(func(_ string, _ *session.LoopPrompt) { stopped = true })
+
+	for i := 0; i < MaxLoopResumeFailures; i++ {
+		runner.RunOnce()
+	}
+
+	updatedMeta, err := store.GetMetadata("no-archive-resume-fail")
+	if err != nil {
+		t.Fatalf("GetMetadata() error = %v", err)
+	}
+	if updatedMeta.Archived {
+		t.Error("NoArchive session should NOT be auto-archived after repeated ACP resume failures")
+	}
+
+	finalLoop, err := loopStore.Get()
+	if err != nil {
+		t.Fatalf("loopStore.Get() error = %v", err)
+	}
+	if finalLoop.Enabled {
+		t.Error("Loop should be stopped (Enabled=false) after repeated resume failures, even though archiving is skipped")
+	}
+	if finalLoop.StoppedReason != session.StoppedReasonResumeFailures {
+		t.Errorf("StoppedReason = %q, want %q", finalLoop.StoppedReason, session.StoppedReasonResumeFailures)
+	}
+	if !stopped {
+		t.Error("onLoopAutoStopped callback should still fire so the UI badge reflects the loop being stopped")
 	}
 }
 
