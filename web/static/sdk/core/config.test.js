@@ -191,7 +191,10 @@ describe("resolveConfig", () => {
     const FORBIDDEN = [
       "window",
       "document",
+      "cookie",
       "localStorage",
+      "sessionStorage",
+      "navigator",
       "location",
       "native.js",
     ];
