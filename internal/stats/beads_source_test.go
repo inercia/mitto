@@ -3,6 +3,8 @@ package stats
 import (
 	"context"
 	"errors"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -236,5 +238,99 @@ func TestBeadsSource_NonStringMetadataValueDoesNotAbortPass(t *testing.T) {
 	openedBucket := hourBucket(t, "2026-04-16T01:00:00Z")
 	if got := countAt(t, s, openedBucket, MetricBeadsOpened, BeadsSentinelSessionID, "ws-c"); got != 1 {
 		t.Errorf("beads_opened @ws-c = %d, want 1 (unrelated workspace must not be silently dropped by ws-g's bad metadata)", got)
+	}
+}
+
+// blockingBeadsLister lets a test hold one Run pass "in flight" (blocked
+// inside List) while other concurrent Run calls pile up, so the test can
+// deterministically observe how many full passes actually execute.
+type blockingBeadsLister struct {
+	calls   atomic.Int64
+	entered chan struct{} // closed-once signal: at least one caller is blocked in List
+	once    sync.Once
+	release chan struct{} // closed by the test to unblock every blocked/future caller
+}
+
+func newBlockingBeadsLister() *blockingBeadsLister {
+	return &blockingBeadsLister{
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+}
+
+func (b *blockingBeadsLister) List(ctx context.Context, dir string) ([]byte, error) {
+	b.calls.Add(1)
+	b.once.Do(func() { close(b.entered) })
+	select {
+	case <-b.release:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	return []byte(`[]`), nil
+}
+
+// TestBeadsSource_Run_ConcurrentTriggersDoNotCoalesce reproduces mitto-2o5e:
+// BeadsSource.Run's inProgress.CompareAndSwap guard is checked AFTER runMu is
+// already held (see the package doc + Run's comment claiming "Concurrent Run
+// calls serialise on runMu"), so by the time a waiter acquires runMu the
+// previous holder has already reset inProgress to false in its own deferred
+// cleanup (Store(false) runs before Unlock(), since defers execute LIFO).
+// The guard therefore never observes "true" and never actually coalesces:
+// every one of N concurrent triggers runs its own full pass back-to-back,
+// which is exactly the "26 full 22-workspace stats passes" storm reported on
+// the bead (internal/web/server.go's watcher subscriber fires one goroutine
+// per debounced fs event with no additional rate limiting, relying entirely
+// on this guard to collapse overlapping triggers).
+//
+// A working coalescing guard would collapse N overlapping triggers into at
+// most 2 executions (the one already in flight, plus at most one more
+// representing every request that arrived while it ran). This test starts 5
+// concurrent Run calls against a lister blocked on the first pass, releases
+// them once all 5 have had a chance to queue up, and asserts at most 2
+// List invocations occurred. On the current buggy guard this fails with 5.
+func TestBeadsSource_Run_ConcurrentTriggersDoNotCoalesce(t *testing.T) {
+	s, _ := openTestStore(t)
+	now := hourBucket(t, "2026-08-08T00:00:00Z")
+	lister := newBlockingBeadsLister()
+	src := newBeadsTestSource(t, s, lister, wsLister(BeadsWorkspace{UUID: "ws-x", Dir: "/ws/x"}), now)
+
+	const triggers = 5
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(triggers)
+	for i := 0; i < triggers; i++ {
+		go func() {
+			defer wg.Done()
+			<-start
+			_ = src.Run(context.Background())
+		}()
+	}
+	close(start)
+
+	// Wait for the first goroutine to actually be blocked inside List.
+	select {
+	case <-lister.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("no Run call entered List within 2s")
+	}
+	// Give the remaining goroutines a moment to queue up behind runMu before
+	// releasing the first pass — this is what makes the triggers genuinely
+	// overlapping/concurrent rather than accidentally sequential.
+	time.Sleep(100 * time.Millisecond)
+	close(lister.release)
+
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("concurrent Run calls did not complete within 5s")
+	}
+
+	if got := lister.calls.Load(); got > 2 {
+		t.Errorf("mitto-2o5e: List invoked %d times for %d concurrent overlapping Run triggers, want <= 2 (inProgress CompareAndSwap is checked after runMu is acquired, so it never observes an in-flight pass and never coalesces — every trigger runs its own full pass)", got, triggers)
 	}
 }

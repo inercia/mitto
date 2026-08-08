@@ -149,17 +149,18 @@ func (o BeadsSourceOptions) withDefaults() BeadsSourceOptions {
 }
 
 // BeadsSource periodically re-derives beads throughput/cycle-time stats from
-// a full bd list snapshot per workspace. Thread-safe: Run serialises on
-// runMu so startup + periodic + watcher-debounced invocations (mitto-5rm6.3)
-// never overlap.
+// a full bd list snapshot per workspace. Thread-safe: Run coalesces
+// concurrent/overlapping calls (startup, periodic, and watcher-debounced
+// invocations, mitto-5rm6.3) so a burst of triggers costs at most two full
+// passes instead of one per trigger (mitto-2o5e). See Run's doc comment.
 type BeadsSource struct {
 	store      Store
 	lister     BeadsLister
 	workspaces BeadsWorkspaceLister
 	opts       BeadsSourceOptions
 
-	runMu      sync.Mutex
 	inProgress atomic.Bool
+	pending    atomic.Bool
 
 	closeOnce sync.Once
 	closed    chan struct{}
@@ -264,23 +265,54 @@ type beadsBucketAgg struct {
 	cycleClosedCount int64
 }
 
-// Run performs one full pass: list every workspace's current bd snapshot,
-// fold each bead into hourly buckets, and replace the entire beadsMetrics
-// window in one Store.ReplaceDeltas call. Concurrent Run calls serialise on
-// runMu.
+// Run performs one or more full passes, each of which lists every
+// workspace's current bd snapshot, folds every bead into hourly buckets, and
+// replaces the entire beadsMetrics window in one Store.ReplaceDeltas call.
 //
-// All-or-nothing: if any workspace's List or JSON parse fails, Run returns
-// that error immediately WITHOUT calling ReplaceDeltas, so a transient
-// failure never wipes previously-good data for an unrelated workspace (see
-// the package doc comment for why a partial write is unsafe here).
+// Coalescing guard (mitto-2o5e): the CompareAndSwap on inProgress is taken
+// BEFORE any work begins, not after acquiring a mutex. The previous
+// implementation locked a mutex first and only then checked/set inProgress,
+// which meant every waiter acquired the mutex only after the prior holder's
+// deferred inProgress.Store(false) had already run (defers execute LIFO, so
+// Store(false) always precedes Unlock) — the CAS could therefore never
+// observe "true", the guard never coalesced anything, and N overlapping
+// triggers ran N full sequential passes. Here, a caller that loses the CAS
+// simply records `pending` and returns immediately without touching the
+// lister/store at all; the winning caller, after each pass, checks pending
+// and loops for exactly one more pass if anything arrived while it was
+// running. A burst of N overlapping triggers therefore costs at most two
+// full passes — the one already in flight, plus one more that captures
+// everything queued up behind it — instead of N. (There is a small
+// unavoidable race where a trigger arriving in the narrow window between the
+// final pending check and inProgress being cleared is missed; the periodic
+// ticker and/or the next watcher event are the backstop for that case.)
 func (s *BeadsSource) Run(ctx context.Context) error {
-	s.runMu.Lock()
-	defer s.runMu.Unlock()
 	if !s.inProgress.CompareAndSwap(false, true) {
+		s.pending.Store(true)
 		return nil
 	}
 	defer s.inProgress.Store(false)
 
+	for {
+		s.pending.Store(false)
+		if err := s.runOnce(ctx); err != nil {
+			return err
+		}
+		if !s.pending.Load() {
+			return nil
+		}
+	}
+}
+
+// runOnce performs exactly one full pass. Split out of Run so the
+// coalescing loop there can re-invoke it without re-running the CAS gate.
+//
+// All-or-nothing: if any workspace's List or JSON parse fails, runOnce
+// returns that error immediately WITHOUT calling ReplaceDeltas, so a
+// transient failure never wipes previously-good data for an unrelated
+// workspace (see the package doc comment for why a partial write is unsafe
+// here).
+func (s *BeadsSource) runOnce(ctx context.Context) error {
 	workspaces := s.workspaces()
 	s.logInfo("beads source pass starting", "workspaces", len(workspaces))
 

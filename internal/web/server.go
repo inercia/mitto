@@ -2840,8 +2840,9 @@ func (s *Server) beadsCacheMetricsCallback() func() beads.CacheMetrics {
 // between the periodic (default 6h) passes. Runs Run in its own goroutine
 // so a bd-list-heavy pass never blocks BeadsWatcher's synchronous
 // subscriber fan-out (other subscribers, e.g. the loop runner, must not
-// wait on it); Run's own runMu/inProgress guard already serializes and
-// coalesces overlapping passes, so no additional debouncing is needed here.
+// wait on it); Run's own inProgress/pending guard already coalesces
+// overlapping passes (mitto-2o5e: a burst of N triggers costs at most two
+// full passes, not N), so no additional debouncing is needed here.
 // mitto-5rm6.3.
 type statsBeadsSourceWatcherSubscriber struct {
 	source *stats.BeadsSource
