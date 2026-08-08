@@ -1801,7 +1801,7 @@ func isSaturationDispatchErr(err error) bool {
 // outcomes, letting single vs batched dispatch keep their previously
 // distinct wording.
 func (m *Manager) dispatchWithRetry(workspaceUUID, name, prompt string, timeout time.Duration, skipLog, failLog string) {
-	totalAttempts, lastErr := m.runDispatchRetryLoop(workspaceUUID, name, prompt, timeout, skipLog)
+	totalAttempts, waited, lastErr := m.runDispatchRetryLoop(workspaceUUID, name, prompt, timeout, skipLog)
 	if lastErr == nil {
 		return
 	}
@@ -1842,6 +1842,7 @@ func (m *Manager) dispatchWithRetry(workspaceUUID, name, prompt string, timeout 
 				m.logger.Error(failLog+"; failed to persist undelivered batch, work is lost",
 					"name", name,
 					"attempts", totalAttempts,
+					"waited", waited,
 					"error", lastErr,
 					"persist_error", saveErr,
 				)
@@ -1856,12 +1857,14 @@ func (m *Manager) dispatchWithRetry(workspaceUUID, name, prompt string, timeout 
 			m.logger.Error(failLog+"; batch persisted for later retry",
 				"name", name,
 				"attempts", totalAttempts,
+				"waited", waited,
 				"error", lastErr,
 			)
 		} else if m.pendingDispatchStore == nil || workspaceUUID == "" {
 			m.logger.Error(failLog+"; batch not persisted, work is lost",
 				"name", name,
 				"attempts", totalAttempts,
+				"waited", waited,
 				"error", lastErr,
 			)
 		}
@@ -1877,12 +1880,24 @@ func (m *Manager) dispatchWithRetry(workspaceUUID, name, prompt string, timeout 
 // shared-process-saturation failures are retried on a fixed
 // dispatchSaturationRetryInterval cadence up to dispatchSaturationMaxWait
 // without consuming the normal attempt budget (mitto-7q2). Returns (attempts,
-// nil) on success, or (attempts, the final error) once retrying is
-// exhausted or the non-retryable "no shared process for workspace" sentinel
-// is seen (in which case skipLog has already been logged at WARN and the
-// error should not be persisted or notified by the caller). attempts is the
-// number of RPC attempts made in this call, for caller logging.
-func (m *Manager) runDispatchRetryLoop(workspaceUUID, name, prompt string, timeout time.Duration, skipLog string) (int, error) {
+// waited, nil) on success, or (attempts, waited, the final error) once
+// retrying is exhausted or the non-retryable "no shared process for
+// workspace" sentinel is seen (in which case skipLog has already been logged
+// at WARN and the error should not be persisted or notified by the caller).
+// attempts is the number of RPC attempts made in this call and waited is the
+// total wall-clock time spent in this call (including sleeps), both for
+// caller logging.
+//
+// Saturation-wait logging (mitto-nnte): only the FIRST saturation
+// observation for a given call is logged at WARN (it carries max_wait and
+// the computed deadline, enough context to triage on its own); every
+// subsequent poll while still waiting for the same GC recycle is logged at
+// DEBUG instead, since it is a near-duplicate of the initial WARN and a
+// sustained saturation window previously produced up to
+// dispatchSaturationMaxWait/dispatchSaturationRetryInterval (~24) WARNs per
+// occurrence. The message text is unchanged across both levels.
+func (m *Manager) runDispatchRetryLoop(workspaceUUID, name, prompt string, timeout time.Duration, skipLog string) (int, time.Duration, error) {
+	start := time.Now()
 	var lastErr error
 	var saturationDeadline time.Time // zero until the first saturation error is observed
 	normalRetries := 0               // count of non-saturation failures, bounded by dispatchPromptMaxRetries
@@ -1904,27 +1919,38 @@ func (m *Manager) runDispatchRetryLoop(workspaceUUID, name, prompt string, timeo
 		totalAttempts++
 
 		if lastErr == nil {
-			return totalAttempts, nil
+			return totalAttempts, time.Since(start), nil
 		}
 
 		if isNonRetryableDispatchErr(lastErr) {
 			if m.logger != nil {
 				m.logger.Warn(skipLog, "name", name, "error", lastErr)
 			}
-			return totalAttempts, lastErr
+			return totalAttempts, time.Since(start), lastErr
 		}
 
 		if isSaturationDispatchErr(lastErr) {
-			if saturationDeadline.IsZero() {
+			firstSaturationObservation := saturationDeadline.IsZero()
+			if firstSaturationObservation {
 				saturationDeadline = time.Now().Add(dispatchSaturationMaxWait)
 			}
 			if time.Now().Before(saturationDeadline) {
 				if m.logger != nil {
-					m.logger.Warn("prompt-mode processor dispatch attempt failed; shared process saturated, waiting for GC recycle",
-						"name", name,
-						"attempt", totalAttempts,
-						"error", lastErr,
-					)
+					if firstSaturationObservation {
+						m.logger.Warn("prompt-mode processor dispatch attempt failed; shared process saturated, waiting for GC recycle",
+							"name", name,
+							"attempt", totalAttempts,
+							"max_wait", dispatchSaturationMaxWait,
+							"deadline", saturationDeadline,
+							"error", lastErr,
+						)
+					} else {
+						m.logger.Debug("prompt-mode processor dispatch attempt failed; shared process saturated, waiting for GC recycle",
+							"name", name,
+							"attempt", totalAttempts,
+							"error", lastErr,
+						)
+					}
 				}
 				continue
 			}
@@ -1946,7 +1972,7 @@ func (m *Manager) runDispatchRetryLoop(workspaceUUID, name, prompt string, timeo
 		}
 	}
 
-	return totalAttempts, lastErr
+	return totalAttempts, time.Since(start), lastErr
 }
 
 // FlushPendingDispatches loads any prompt-mode batches previously spooled
@@ -2022,7 +2048,7 @@ func (m *Manager) FlushPendingDispatches(ctx context.Context, workspaceUUID stri
 			timeout = DefaultTimeout
 		}
 
-		_, lastErr := m.runDispatchRetryLoop(workspaceUUID, entry.Name, entry.Prompt, timeout,
+		_, _, lastErr := m.runDispatchRetryLoop(workspaceUUID, entry.Name, entry.Prompt, timeout,
 			"pending-dispatch flush skipped: shared ACP process not available")
 		if lastErr == nil {
 			delivered = append(delivered, entry.Name)
