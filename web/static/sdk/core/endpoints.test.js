@@ -230,6 +230,8 @@ describe("endpoints registry", () => {
       ));
     test("images", () =>
       expect(endpoints.sessions.images("s1")).toBe("/api/sessions/s1/images"));
+    test("prune", () =>
+      expect(endpoints.sessions.prune("s1")).toBe("/api/sessions/s1/prune"));
     test("image(id, imageId)", () =>
       expect(endpoints.sessions.image("s1", "img1")).toBe(
         "/api/sessions/s1/images/img1",

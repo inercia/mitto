@@ -78,6 +78,7 @@ export function createEndpoints(config, options = {}) {
       ws: (id) => ws(`/api/sessions/${enc(id)}/ws`, "endpoints.sessions.ws"),
       changes: (id) => url(`/api/sessions/${enc(id)}/changes`),
       settings: (id) => url(`/api/sessions/${enc(id)}/settings`),
+      prune: (id) => url(`/api/sessions/${enc(id)}/prune`),
       loop: (id) => url(`/api/sessions/${enc(id)}/loop`),
       loopRunNow: (id) => url(`/api/sessions/${enc(id)}/loop/run-now`),
       loopRestore: (id) => url(`/api/sessions/${enc(id)}/loop/restore`),

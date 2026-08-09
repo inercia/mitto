@@ -39,6 +39,7 @@ import {
   createStoragePendingPromptStore,
 } from "./realtime/pending-prompts.js";
 import { noneAuth, sharedTokenAuth, browserCookieAuth } from "./auth/index.js";
+import { createSessionsResource } from "./resources/sessions.js";
 
 /**
  * The embedded copy ships lockstep with the server (§6): its version is the
@@ -58,6 +59,7 @@ export function createClient(options = {}) {
     // when `config.baseUrl` is relative and a ws(s):// URL is needed (e.g.
     // a same-origin browser client) — this default has no wsBaseUrl.
     endpoints: createEndpoints(config),
+    sessions: createSessionsResource(config),
     sessionStream: (sessionId, streamOptions) =>
       createSessionStream(config, sessionId, streamOptions),
     eventsStream: (streamOptions) => createEventsStream(config, streamOptions),
