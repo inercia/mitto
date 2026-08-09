@@ -4,36 +4,13 @@
  * Mirrors sessions.test.js's style: every call is driven by an injected
  * `config.fetch` stub — never global fetch.
  */
-import { resolveConfig } from "../core/config.js";
 import { MittoApiError } from "../core/errors.js";
+import { fakeResponse, mountResource } from "../testing/fake-server.js";
 import { createFilesResource } from "./files.js";
 
-function fakeResponse({ status = 200, body } = {}) {
-  const hasBody = body !== undefined;
-  return {
-    ok: status >= 200 && status < 300,
-    status,
-    headers: {
-      get: (name) =>
-        hasBody && name.toLowerCase() === "content-type" ? "application/json" : null,
-    },
-    text: async () => (hasBody ? JSON.stringify(body) : ""),
-  };
-}
-
 function mk(extra = {}) {
-  const calls = [];
-  let next = () => fakeResponse({ status: 204 });
-  const fetchImpl = async (url, init) => {
-    calls.push({ url, init });
-    return next();
-  };
-  const config = resolveConfig({ fetch: fetchImpl, ...extra }, {});
-  return {
-    files: createFilesResource(config),
-    calls,
-    respondWith: (fn) => (next = fn),
-  };
+  const { resource: files, calls, respondWith } = mountResource(createFilesResource, extra);
+  return { files, calls, respondWith };
 }
 
 describe("files resource", () => {

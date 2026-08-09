@@ -10,37 +10,17 @@
  * non-2xx -> MittoApiError, 204 -> null, AbortSignal forwarding, and the
  * double-prefixing guard (apiPrefix must appear exactly once in the URL).
  */
-import { resolveConfig } from "../core/config.js";
 import { MittoApiError } from "../core/errors.js";
+import { fakeResponse, mountResource } from "../testing/fake-server.js";
 import { createSessionsResource } from "./sessions.js";
-
-function fakeResponse({ status = 200, body } = {}) {
-  const hasBody = body !== undefined;
-  return {
-    ok: status >= 200 && status < 300,
-    status,
-    headers: {
-      get: (name) =>
-        hasBody && name.toLowerCase() === "content-type" ? "application/json" : null,
-    },
-    text: async () => (hasBody ? JSON.stringify(body) : ""),
-  };
-}
 
 /** @returns {{sessions: object, calls: Array, respondWith: Function}} */
 function mk(extra = {}) {
-  const calls = [];
-  let next = () => fakeResponse({ status: 204 });
-  const fetchImpl = async (url, init) => {
-    calls.push({ url, init });
-    return next();
-  };
-  const config = resolveConfig({ fetch: fetchImpl, ...extra }, {});
-  return {
-    sessions: createSessionsResource(config),
-    calls,
-    respondWith: (fn) => (next = fn),
-  };
+  const { resource: sessions, calls, respondWith } = mountResource(
+    createSessionsResource,
+    extra,
+  );
+  return { sessions, calls, respondWith };
 }
 
 describe("sessions resource", () => {
