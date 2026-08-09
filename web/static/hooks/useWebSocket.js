@@ -38,10 +38,10 @@ import {
 
 import { playAgentCompletedSound } from "../utils/audio.js";
 
-import { secureFetch, authFetch, checkAuth } from "../utils/csrf.js";
-
 import { getApiPrefix } from "../utils/api.js";
 import { endpoints } from "../utils/index.js";
+import { getSdkClient } from "../utils/sdkClient.js";
+import { errorStatus, errorMessage } from "../utils/sdkErrors.js";
 
 // Import WebSocket utilities (M1, M2 implementations)
 // Reconnect backoff/debounce, keepalive tuning, and the raw stale/behind-seq
@@ -2522,7 +2522,9 @@ export function useWebSocket({
             session.info?.processor_last_activation ??
             null,
           processor_last_names:
-            data.processor_last_names ?? session.info?.processor_last_names ?? null,
+            data.processor_last_names ??
+            session.info?.processor_last_names ??
+            null,
         };
         // Only update if something changed to avoid unnecessary re-renders
         if (
@@ -2543,7 +2545,10 @@ export function useWebSocket({
 
     // Sync queue length from keepalive (for multi-tab sync and mobile wake recovery)
     // Only update if this is the active session to avoid unnecessary state updates
-    if (data?.queue_length !== undefined && sessionId === activeSessionIdRef.current) {
+    if (
+      data?.queue_length !== undefined &&
+      sessionId === activeSessionIdRef.current
+    ) {
       setQueueLength((prev) => {
         if (prev !== data.queue_length) {
           console.log(
@@ -2611,8 +2616,7 @@ export function useWebSocket({
   // Fetch stored sessions
   const fetchStoredSessions = useCallback(async () => {
     try {
-      const res = await authFetch(endpoints.sessions.list());
-      const data = await res.json();
+      const data = await getSdkClient().sessions.list();
       // Update global working_dir map for each session
       (data || []).forEach((s) => {
         if (s.session_id && s.working_dir) {
@@ -2813,8 +2817,9 @@ export function useWebSocket({
       // Load session events from API (with limit for faster initial load)
       try {
         // Get session metadata first to know total event count and working_dir
-        const metaResponse = await authFetch(endpoints.sessions.get(sessionId));
-        const meta = metaResponse.ok ? await metaResponse.json() : {};
+        const meta = await getSdkClient()
+          .sessions.get(sessionId)
+          .catch(() => ({}));
 
         // If we already have messages, just update the info with working_dir
         if (hasLoadedMessages) {
@@ -3571,166 +3576,110 @@ export function useWebSocket({
   //   { error, errorCode } for other failures
   // When an auto-retry eventually succeeds, setActiveSessionId fires and the session
   // appears in the sidebar (the original caller has already returned).
-  const createNewSession = useCallback(
-    async (options = {}) => {
-      // Cancel any pending auto-retry — a fresh manual click supersedes it.
-      if (_sessionCreationRetryTimer !== null) {
-        clearTimeout(_sessionCreationRetryTimer);
-        _sessionCreationRetryTimer = null;
+  const createNewSession = useCallback(async (options = {}) => {
+    // Cancel any pending auto-retry — a fresh manual click supersedes it.
+    if (_sessionCreationRetryTimer !== null) {
+      clearTimeout(_sessionCreationRetryTimer);
+      _sessionCreationRetryTimer = null;
+    }
+
+    // Support both old (name string) and new (options object) signatures
+    const opts = typeof options === "string" ? { name: options } : options;
+    // Capture the working dir early so all clear sites use the same value.
+    const wd = opts.workingDir || "";
+
+    // Mark creation as in-flight so the targeted folder button shows a spinner.
+    setCreatingWorkingDirs((prev) => {
+      const s = new Set(prev);
+      s.add(wd);
+      return s;
+    });
+
+    try {
+      const sessionBody = {
+        name: opts.name || "",
+        working_dir: wd,
+        acp_server: opts.acpServer || "",
+        beads_issue: opts.beadsIssue || "",
+        origin_prompt_name: opts.originPromptName || "",
+        initial_prompt_name: opts.initialPromptName || "",
+      };
+      if (opts.arguments && Object.keys(opts.arguments).length > 0) {
+        sessionBody.arguments = opts.arguments;
       }
+      const data = await getSdkClient().sessions.create(sessionBody);
 
-      // Support both old (name string) and new (options object) signatures
-      const opts = typeof options === "string" ? { name: options } : options;
-      // Capture the working dir early so all clear sites use the same value.
-      const wd = opts.workingDir || "";
-
-      // Mark creation as in-flight so the targeted folder button shows a spinner.
+      // Success — reset all retry state and clear busy indicator.
+      _sessionCreationRetryCount = 0;
+      _sessionCreationPendingOpts = null;
       setCreatingWorkingDirs((prev) => {
         const s = new Set(prev);
-        s.add(wd);
+        s.delete(wd);
         return s;
       });
 
-      try {
-        const sessionBody = {
-          name: opts.name || "",
-          working_dir: wd,
-          acp_server: opts.acpServer || "",
-          beads_issue: opts.beadsIssue || "",
-          origin_prompt_name: opts.originPromptName || "",
-          initial_prompt_name: opts.initialPromptName || "",
-        };
-        if (opts.arguments && Object.keys(opts.arguments).length > 0) {
-          sessionBody.arguments = opts.arguments;
-        }
-        const response = await secureFetch(endpoints.sessions.create(), {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(sessionBody),
-        });
+      const sessionId = data.session_id;
 
-        if (!response.ok) {
-          // Parse structured error response when available
-          const contentType = response.headers.get("content-type");
-          let errorCode, errorMessage;
-          if (contentType && contentType.includes("application/json")) {
-            const errorData = await response.json();
-            console.error("Failed to create session:", errorData);
-            errorCode = errorData.error?.code;
-            errorMessage =
-              errorData.error?.message || "Failed to create session";
-          } else {
-            const errorText = await response.text();
-            console.error("Failed to create session:", errorText);
-            errorMessage = errorText || "Failed to create session";
-          }
-
-          // Agent is busy (503 session_creation_timeout) — schedule auto-retry
-          // instead of silently backing off. isCreatingSession stays true so the
-          // button remains in spinner state until the retry succeeds or is exhausted.
-          if (
-            errorCode === "session_creation_timeout" &&
-            _sessionCreationRetryCount < SESSION_CREATION_MAX_RETRIES
-          ) {
-            _sessionCreationRetryCount++;
-            _sessionCreationPendingOpts = opts;
-            console.warn(
-              `[createNewSession] Agent busy — scheduling retry ${_sessionCreationRetryCount}/${SESSION_CREATION_MAX_RETRIES} in ${SESSION_CREATION_RETRY_DELAY_MS}ms`,
-            );
-            _sessionCreationRetryTimer = setTimeout(() => {
-              const pendingOpts = _sessionCreationPendingOpts;
-              _sessionCreationRetryTimer = null;
-              if (pendingOpts) {
-                // Use ref to always call the latest version of createNewSession
-                createNewSessionRef.current?.(pendingOpts);
-              }
-            }, SESSION_CREATION_RETRY_DELAY_MS);
-            // Return immediately so the caller can show a toast; isCreatingSession
-            // remains true while the retry is pending.
-            return {
-              error: "Agent is busy — retrying automatically\u2026",
-              errorCode: "session_creation_timeout",
-              retrying: true,
-            };
-          }
-
-          // Other errors, or retry limit exhausted — clear busy state.
-          _sessionCreationRetryCount = 0;
-          _sessionCreationPendingOpts = null;
-          setCreatingWorkingDirs((prev) => {
-            const s = new Set(prev);
-            s.delete(wd);
-            return s;
-          });
-          return { error: errorMessage, errorCode };
-        }
-
-        // Success — reset all retry state and clear busy indicator.
-        _sessionCreationRetryCount = 0;
-        _sessionCreationPendingOpts = null;
-        setCreatingWorkingDirs((prev) => {
-          const s = new Set(prev);
-          s.delete(wd);
-          return s;
-        });
-
-        const data = await response.json();
-        const sessionId = data.session_id;
-
-        // Singleton find-or-route: backend routed this create to an EXISTING
-        // conversation. Do NOT seed placeholder state — that would clobber the
-        // already-loaded messages/info and flash "Start chatting with undefined".
-        // Focus it instead; connect/sync restores/loads its real state. (mitto-4mb.10)
-        if (isReusedConversationResponse(data)) {
-          const existing = sessionsRef.current[sessionId];
-          const wdForGroup = existing?.info?.working_dir || wd;
-          const acpForGroup =
-            existing?.info?.acp_server || opts.acpServer || "";
-          expandGroupForSession(sessionId, wdForGroup, acpForGroup);
-          connectToSessionRef.current?.(sessionId);
-          setActiveSessionId(sessionId);
-          return { sessionId, reused: true };
-        }
-
-        // Build system message with workspace info
-        let systemMsg = `Start chatting with ${data.acp_server}`;
-        if (data.working_dir) {
-          systemMsg += ` to work on ${data.working_dir}`;
-        }
-
-        // Initialize session state
-        setSessions((prev) => ({
-          ...prev,
-          [sessionId]: {
-            messages: [
-              {
-                role: ROLE_SYSTEM,
-                text: systemMsg,
-                timestamp: Date.now(),
-              },
-            ],
-            info: {
-              session_id: sessionId,
-              name: data.name || "New conversation",
-              acp_server: data.acp_server,
-              working_dir: data.working_dir,
-              status: "active",
-              archived: false,
-            },
-            isStreaming: false,
-          },
-        }));
-
-        // In accordion mode, expand the group containing this new session
-        // (and collapse all other groups) - reuse expandGroupForSession helper
-        expandGroupForSession(sessionId, data.working_dir, data.acp_server);
-
-        // Connect to the session WebSocket
+      // Singleton find-or-route: backend routed this create to an EXISTING
+      // conversation. Do NOT seed placeholder state — that would clobber the
+      // already-loaded messages/info and flash "Start chatting with undefined".
+      // Focus it instead; connect/sync restores/loads its real state. (mitto-4mb.10)
+      if (isReusedConversationResponse(data)) {
+        const existing = sessionsRef.current[sessionId];
+        const wdForGroup = existing?.info?.working_dir || wd;
+        const acpForGroup = existing?.info?.acp_server || opts.acpServer || "";
+        expandGroupForSession(sessionId, wdForGroup, acpForGroup);
         connectToSessionRef.current?.(sessionId);
         setActiveSessionId(sessionId);
+        return { sessionId, reused: true };
+      }
 
-        return { sessionId, reused: data.reused === true };
-      } catch (err) {
+      // Build system message with workspace info
+      let systemMsg = `Start chatting with ${data.acp_server}`;
+      if (data.working_dir) {
+        systemMsg += ` to work on ${data.working_dir}`;
+      }
+
+      // Initialize session state
+      setSessions((prev) => ({
+        ...prev,
+        [sessionId]: {
+          messages: [
+            {
+              role: ROLE_SYSTEM,
+              text: systemMsg,
+              timestamp: Date.now(),
+            },
+          ],
+          info: {
+            session_id: sessionId,
+            name: data.name || "New conversation",
+            acp_server: data.acp_server,
+            working_dir: data.working_dir,
+            status: "active",
+            archived: false,
+          },
+          isStreaming: false,
+        },
+      }));
+
+      // In accordion mode, expand the group containing this new session
+      // (and collapse all other groups) - reuse expandGroupForSession helper
+      expandGroupForSession(sessionId, data.working_dir, data.acp_server);
+
+      // Connect to the session WebSocket
+      connectToSessionRef.current?.(sessionId);
+      setActiveSessionId(sessionId);
+
+      return { sessionId, reused: data.reused === true };
+    } catch (err) {
+      // The SDK throws for both HTTP-level failures (mirrors the old
+      // `!response.ok` branch, which ran inside the try) and true
+      // network/fetch failures (the old outer catch) — errorStatus(err)
+      // distinguishes them: defined for a MittoApiError, undefined for a
+      // MittoNetworkError.
+      const status = errorStatus(err);
+      if (status === undefined) {
         // Network/fetch error — clear busy state
         _sessionCreationRetryCount = 0;
         _sessionCreationPendingOpts = null;
@@ -3742,9 +3691,53 @@ export function useWebSocket({
         console.error(`[createNewSession] Network error:`, err);
         return { error: err.message || "Network error" };
       }
-    },
-    [],
-  );
+
+      console.error("Failed to create session:", err);
+      const errorCode = err.code;
+
+      // Agent is busy (503 session_creation_timeout) — schedule auto-retry
+      // instead of silently backing off. isCreatingSession stays true so the
+      // button remains in spinner state until the retry succeeds or is exhausted.
+      if (
+        errorCode === "session_creation_timeout" &&
+        _sessionCreationRetryCount < SESSION_CREATION_MAX_RETRIES
+      ) {
+        _sessionCreationRetryCount++;
+        _sessionCreationPendingOpts = opts;
+        console.warn(
+          `[createNewSession] Agent busy — scheduling retry ${_sessionCreationRetryCount}/${SESSION_CREATION_MAX_RETRIES} in ${SESSION_CREATION_RETRY_DELAY_MS}ms`,
+        );
+        _sessionCreationRetryTimer = setTimeout(() => {
+          const pendingOpts = _sessionCreationPendingOpts;
+          _sessionCreationRetryTimer = null;
+          if (pendingOpts) {
+            // Use ref to always call the latest version of createNewSession
+            createNewSessionRef.current?.(pendingOpts);
+          }
+        }, SESSION_CREATION_RETRY_DELAY_MS);
+        // Return immediately so the caller can show a toast; isCreatingSession
+        // remains true while the retry is pending.
+        return {
+          error: "Agent is busy — retrying automatically\u2026",
+          errorCode: "session_creation_timeout",
+          retrying: true,
+        };
+      }
+
+      // Other errors, or retry limit exhausted — clear busy state.
+      _sessionCreationRetryCount = 0;
+      _sessionCreationPendingOpts = null;
+      setCreatingWorkingDirs((prev) => {
+        const s = new Set(prev);
+        s.delete(wd);
+        return s;
+      });
+      return {
+        error: errorMessage(err, "Failed to create session"),
+        errorCode,
+      };
+    }
+  }, []);
 
   // Keep ref current so the retry timer always calls the latest createNewSession
   // (connectToSession may change between retries, recreating the callback).
@@ -3786,7 +3779,6 @@ export function useWebSocket({
   // pendingSendsRef and lastConfirmedPromptRef ownership because
   // handleSessionMessage reads/writes them at ~10 sites; both are passed
   // in as props to C2.
-
 
   const newSession = useCallback(
     async (options) => {
@@ -3878,18 +3870,7 @@ export function useWebSocket({
   const renameSession = useCallback(
     async (sessionId, name) => {
       try {
-        const response = await secureFetch(
-          endpoints.sessions.update(sessionId),
-          {
-            method: "PATCH",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ name }),
-          },
-        );
-        if (!response.ok) {
-          console.error("Failed to rename session");
-          return;
-        }
+        await getSdkClient().sessions.update(sessionId, { name });
         // Update local state
         updateSessionName(sessionId, name);
         // Update stored sessions
@@ -3906,15 +3887,7 @@ export function useWebSocket({
   // Pin/unpin a session via REST API
   const pinSession = useCallback(async (sessionId, pinned) => {
     try {
-      const response = await secureFetch(endpoints.sessions.update(sessionId), {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ pinned }),
-      });
-      if (!response.ok) {
-        console.error("Failed to pin/unpin session");
-        return;
-      }
+      await getSdkClient().sessions.update(sessionId, { pinned });
       // Update local state for stored sessions
       setStoredSessions((prev) =>
         prev.map((s) => (s.session_id === sessionId ? { ...s, pinned } : s)),
@@ -3939,15 +3912,9 @@ export function useWebSocket({
   // Set/clear a session's background color via REST API
   const setSessionColor = useCallback(async (sessionId, color) => {
     try {
-      const response = await secureFetch(endpoints.sessions.update(sessionId), {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ background_color: color }),
+      await getSdkClient().sessions.update(sessionId, {
+        background_color: color,
       });
-      if (!response.ok) {
-        console.error("Failed to set session color");
-        return;
-      }
       // Update local state for stored sessions
       setStoredSessions((prev) =>
         prev.map((s) =>
@@ -3974,15 +3941,7 @@ export function useWebSocket({
   // Archive/unarchive a session via REST API
   const archiveSession = useCallback(async (sessionId, archived) => {
     try {
-      const response = await secureFetch(endpoints.sessions.update(sessionId), {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ archived }),
-      });
-      if (!response.ok) {
-        console.error("Failed to archive/unarchive session");
-        return;
-      }
+      await getSdkClient().sessions.update(sessionId, { archived });
       // Update local state for stored sessions
       setStoredSessions((prev) =>
         prev.map((s) => (s.session_id === sessionId ? { ...s, archived } : s)),
@@ -4050,9 +4009,7 @@ export function useWebSocket({
 
       // Delete from server first
       try {
-        await secureFetch(endpoints.sessions.remove(sessionId), {
-          method: "DELETE",
-        });
+        await getSdkClient().sessions.remove(sessionId);
       } catch (err) {
         console.error("Failed to delete session:", err);
       }

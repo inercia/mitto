@@ -64,11 +64,7 @@ import {
   isNativeApp,
   getLastActiveSessionId,
   setLastActiveSessionId,
-  secureFetch,
   initCSRF,
-  apiUrl,
-  authFetch,
-  endpoints,
   fixViewerURLIfNeeded,
   getGroupingMode,
   cycleGroupingMode,
@@ -703,15 +699,9 @@ function App() {
     let cancelled = false;
     (async () => {
       try {
-        const res = await authFetch(
-          endpoints.issues.show(issueId, { working_dir: workingDir }),
-        );
-        if (!res.ok) {
-          if (res.status === 404) markGone(workingDir, issueId);
-          if (!cancelled) setHeaderBeadsStatus(null);
-          return;
-        }
-        const data = await res.json();
+        const data = await getSdkClient().issues.show(issueId, {
+          working_dir: workingDir,
+        });
         if (cancelled) return;
         const issueObj = Array.isArray(data) ? data[0] : data;
         if (issueObj && !issueObj.error && issueObj.status) {
@@ -719,7 +709,8 @@ function App() {
         } else {
           setHeaderBeadsStatus(null);
         }
-      } catch (_err) {
+      } catch (err) {
+        if (isNotFoundError(err)) markGone(workingDir, issueId);
         if (!cancelled) setHeaderBeadsStatus(null);
       }
     })();
@@ -1876,32 +1867,18 @@ function App() {
       if (!badgeClickEnabled || !workspacePath) return;
 
       try {
-        const res = await authFetch(apiUrl("/api/badge-click"), {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            workspace_path: workspacePath,
-            action: "open",
-            target_id: "finder",
-          }),
+        const data = await getSdkClient().misc.badgeClick({
+          workspace_path: workspacePath,
+          action: "open",
+          target_id: "finder",
         });
-
-        if (!res.ok) {
-          const data = await res.json().catch(() => ({}));
-          showToast({
-            style: "error",
-            title: data.error?.message || data.error || "Failed to open folder",
-          });
-        } else {
-          const data = await res.json();
-          if (!data.success && data.error) {
-            showToast({ style: "error", title: data.error });
-          }
+        if (!data.success && data.error) {
+          showToast({ style: "error", title: data.error });
         }
       } catch (err) {
         showToast({
           style: "error",
-          title: "Failed to open folder: " + err.message,
+          title: errorMessage(err, "Failed to open folder"),
         });
       }
     },
@@ -1917,32 +1894,18 @@ function App() {
       if (!workspacePath || !targetId) return;
 
       try {
-        const res = await authFetch(apiUrl("/api/badge-click"), {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            workspace_path: workspacePath,
-            action: "open",
-            target_id: targetId,
-          }),
+        const data = await getSdkClient().misc.badgeClick({
+          workspace_path: workspacePath,
+          action: "open",
+          target_id: targetId,
         });
-
-        if (!res.ok) {
-          const data = await res.json().catch(() => ({}));
-          showToast({
-            style: "error",
-            title: data.error?.message || data.error || "Failed to open target",
-          });
-        } else {
-          const data = await res.json();
-          if (!data.success && data.error) {
-            showToast({ style: "error", title: data.error });
-          }
+        if (!data.success && data.error) {
+          showToast({ style: "error", title: data.error });
         }
       } catch (err) {
         showToast({
           style: "error",
-          title: "Failed to open target: " + err.message,
+          title: errorMessage(err, "Failed to open target"),
         });
       }
     },
@@ -1962,25 +1925,7 @@ function App() {
         return;
       }
       try {
-        const res = await secureFetch(
-          apiUrl(`/api/workspaces/${encodeURIComponent(uuid)}/folder-group`),
-          {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ group: group || "" }),
-          },
-        );
-        if (!res.ok) {
-          let msg = "Failed to move folder to group";
-          try {
-            const data = await res.json();
-            msg = data.error?.message || msg;
-          } catch (_) {
-            /* keep default */
-          }
-          showToast({ style: "error", title: msg });
-          return;
-        }
+        await getSdkClient().workspaces.setFolderGroup(uuid, group || "");
         invalidateConfigCache();
         refreshWorkspaces();
         const trimmed = (group || "").trim();
@@ -1991,7 +1936,7 @@ function App() {
       } catch (err) {
         showToast({
           style: "error",
-          title: "Failed to move folder to group: " + err.message,
+          title: errorMessage(err, "Failed to move folder to group"),
         });
       }
     },
@@ -2006,25 +1951,10 @@ function App() {
     async (workingDir) => {
       if (!workingDir) return;
       try {
-        const res = await secureFetch(
-          endpoints.folders.pin({ working_dir: workingDir }),
-          {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ pinned: false }),
-          },
+        await getSdkClient().misc.folderPin.set(
+          { working_dir: workingDir },
+          { pinned: false },
         );
-        if (!res.ok) {
-          let msg = "Failed to remove folder from sidebar";
-          try {
-            const data = await res.json();
-            msg = data.error?.message || msg;
-          } catch (_) {
-            /* keep default */
-          }
-          showToast({ style: "error", title: msg });
-          return;
-        }
         invalidateConfigCache();
         refreshWorkspaces();
         showToast({
@@ -2034,7 +1964,7 @@ function App() {
       } catch (err) {
         showToast({
           style: "error",
-          title: "Failed to remove folder from sidebar: " + err.message,
+          title: errorMessage(err, "Failed to remove folder from sidebar"),
         });
       }
     },
@@ -2048,25 +1978,10 @@ function App() {
     async (workingDir) => {
       if (!workingDir) return;
       try {
-        const res = await secureFetch(
-          endpoints.folders.pin({ working_dir: workingDir }),
-          {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ pinned: true }),
-          },
+        await getSdkClient().misc.folderPin.set(
+          { working_dir: workingDir },
+          { pinned: true },
         );
-        if (!res.ok) {
-          let msg = "Failed to add folder to sidebar";
-          try {
-            const data = await res.json();
-            msg = data.error?.message || msg;
-          } catch (_) {
-            /* keep default */
-          }
-          showToast({ style: "error", title: msg });
-          return;
-        }
         invalidateConfigCache();
         refreshWorkspaces();
         showToast({
@@ -2076,7 +1991,7 @@ function App() {
       } catch (err) {
         showToast({
           style: "error",
-          title: "Failed to add folder to sidebar: " + err.message,
+          title: errorMessage(err, "Failed to add folder to sidebar"),
         });
       }
     },
@@ -2952,14 +2867,12 @@ function App() {
       try {
         // Merge global + folder shortcuts for the conversations section. Global
         // buttons come first; folder buttons duplicating a global prompt drop out.
-        const [folderRes, globalRes] = await Promise.all([
-          authFetch(endpoints.folders.shortcuts({ working_dir: wd })),
-          authFetch(endpoints.global.shortcuts()).catch(() => null),
+        const [data, globalData] = await Promise.all([
+          getSdkClient().shortcuts.getFolder({ working_dir: wd }),
+          getSdkClient()
+            .shortcuts.getGlobal()
+            .catch(() => ({})),
         ]);
-        const data = await folderRes.json().catch(() => ({}));
-        const globalData = globalRes
-          ? await globalRes.json().catch(() => ({}))
-          : {};
         const globalList = globalData?.sections?.conversations || [];
         const folderList = data?.sections?.conversations || [];
         const globalNames = new Set(globalList.map((s) => s.prompt));

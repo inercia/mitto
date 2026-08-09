@@ -50,24 +50,28 @@ describe("useWSConnection.js: connectToEvents backed by EventsStream (mitto-7gta
     );
   });
 
-  test("\"open\" handler branches on isReconnect exactly like the old onopen handler", () => {
+  test('"open" handler branches on isReconnect exactly like the old onopen handler', () => {
     expect(useWSConnectionJs).toMatch(
       /stream\.on\("open", \(\{ isReconnect \}\) => \{\s*\n\s*setEventsConnected\(true\);/,
     );
-    expect(useWSConnectionJs).toMatch(/if \(isReconnect\) \{\s*\n[\s\S]*?fetchStoredSessions\(\);/);
+    expect(useWSConnectionJs).toMatch(
+      /if \(isReconnect\) \{\s*\n[\s\S]*?fetchStoredSessions\(\);/,
+    );
     expect(useWSConnectionJs).toMatch(
       /\} else \{[\s\S]*?fetchStoredSessions\(\)\.then\(\(storedSessionsList\) => \{/,
     );
   });
 
-  test("both \"connected\" and \"event\" emissions are re-wrapped into {type, data} and routed through the single handleGlobalEvent entrypoint", () => {
+  test('both "connected" and "event" emissions are re-wrapped into {type, data} and routed through the single handleGlobalEvent entrypoint', () => {
     expect(useWSConnectionJs).toMatch(
       /stream\.on\("connected", \(data\) => handleGlobalEvent\(\{ type: "connected", data \}\)\);/,
     );
-    expect(useWSConnectionJs).toMatch(/stream\.on\("event", \(msg\) => handleGlobalEvent\(msg\)\);/);
+    expect(useWSConnectionJs).toMatch(
+      /stream\.on\("event", \(msg\) => handleGlobalEvent\(msg\)\);/,
+    );
   });
 
-  test("\"close\" clears eventsConnected", () => {
+  test('"close" clears eventsConnected', () => {
     expect(useWSConnectionJs).toMatch(
       /stream\.on\("close", \(event\) => \{[\s\S]*?setEventsConnected\(false\);\s*\n\s*\}\);/,
     );
@@ -82,7 +86,9 @@ describe("useWSConnection.js: connectToEvents backed by EventsStream (mitto-7gta
   test("the return bag exposes eventsStreamRef, not the deleted raw-WebSocket refs", () => {
     // keepaliveRef was also removed from the return bag by mitto-7gta.30 (S1):
     // SessionStream owns keepalive/zombie detection internally per session.
-    expect(useWSConnectionJs).toMatch(/sessionWsRefs,\s*\n\s*serverShuttingDownRef,\s*\n\s*eventsStreamRef,\s*\n\s*staggeredBackgroundTimersRef,\s*\n\s*\};\s*\n\}/);
+    expect(useWSConnectionJs).toMatch(
+      /sessionWsRefs,\s*\n\s*serverShuttingDownRef,\s*\n\s*eventsStreamRef,\s*\n\s*staggeredBackgroundTimersRef,\s*\n\s*\};\s*\n\}/,
+    );
   });
 
   test("no leftover references to the deleted raw-WebSocket refs in either hook", () => {
@@ -187,8 +193,10 @@ describe("useWSConnection.js: session sockets backed by SessionStream (mitto-7gt
     );
   });
 
-  test("waitForSessionConnection checks stream.state (not readyState) and resolves via stream.once(\"open\", ...)", () => {
-    expect(useWSConnectionJs).toMatch(/if \(stream\.state === "open"\) \{\s*\n\s*resolve\(stream\);/);
+  test('waitForSessionConnection checks stream.state (not readyState) and resolves via stream.once("open", ...)', () => {
+    expect(useWSConnectionJs).toMatch(
+      /if \(stream\.state === "open"\) \{\s*\n\s*resolve\(stream\);/,
+    );
     expect(useWSConnectionJs).toMatch(
       /stream\.once\("open", \(\) => \{\s*\n\s*clearTimeout\(timeoutId\);\s*\n\s*resolve\(stream\);/,
     );
@@ -216,7 +224,9 @@ describe("useWSConnection.js: session sockets backed by SessionStream (mitto-7gt
 
 describe("useWebSocket.js: keepalive_ack UI bookkeeping split from SessionStream (mitto-7gta.30)", () => {
   test("handleSessionKeepaliveAckRef is declared and populated with handleSessionKeepaliveAck", () => {
-    expect(useWebSocketJs).toMatch(/const handleSessionKeepaliveAckRef = useRef\(null\);/);
+    expect(useWebSocketJs).toMatch(
+      /const handleSessionKeepaliveAckRef = useRef\(null\);/,
+    );
     expect(useWebSocketJs).toMatch(
       /handleSessionKeepaliveAckRef\.current = handleSessionKeepaliveAck;/,
     );
@@ -226,11 +236,15 @@ describe("useWebSocket.js: keepalive_ack UI bookkeeping split from SessionStream
     expect(useWebSocketJs).toMatch(
       /const handleSessionKeepaliveAck = useCallback\(\(sessionId, data\) => \{/,
     );
-    expect(useWebSocketJs).toMatch(/const serverIsPrompting = data\?\.is_prompting \|\| false;/);
     expect(useWebSocketJs).toMatch(
-      /if \(data\?\.queue_length !== undefined && sessionId === activeSessionIdRef\.current\) \{/,
+      /const serverIsPrompting = data\?\.is_prompting \|\| false;/,
     );
-    expect(useWebSocketJs).toMatch(/const serverIsRunning = data\?\.is_running \?\? true;/);
+    expect(useWebSocketJs).toMatch(
+      /if \(\s*data\?\.queue_length !== undefined &&\s*sessionId === activeSessionIdRef\.current\s*\) \{/,
+    );
+    expect(useWebSocketJs).toMatch(
+      /const serverIsRunning = data\?\.is_running \?\? true;/,
+    );
   });
 
   test("handleSessionKeepaliveAckRef is passed into useWSConnection alongside handleSessionMessageRef", () => {
@@ -239,13 +253,17 @@ describe("useWebSocket.js: keepalive_ack UI bookkeeping split from SessionStream
     );
   });
 
-  test("all remaining sessionWsRefs call sites use the SessionStream API (.state===\"open\" / .send(obj)), not the raw WebSocket API", () => {
+  test('all remaining sessionWsRefs call sites use the SessionStream API (.state==="open" / .send(obj)), not the raw WebSocket API', () => {
     // Every `.send(` on a sessionWsRefs-derived stream variable must pass a plain
     // object literal (not JSON.stringify(...)) — count must match across both files.
-    const sendCalls = [...useWebSocketJs.matchAll(/\b(?:ws|currentWs)\.send\(/g)];
+    const sendCalls = [
+      ...useWebSocketJs.matchAll(/\b(?:ws|currentWs)\.send\(/g),
+    ];
     expect(sendCalls.length).toBeGreaterThan(0);
     for (const _ of sendCalls) {
-      expect(useWebSocketJs).not.toMatch(/(?:ws|currentWs)\.send\(\s*JSON\.stringify/);
+      expect(useWebSocketJs).not.toMatch(
+        /(?:ws|currentWs)\.send\(\s*JSON\.stringify/,
+      );
     }
     // `.state === "open"` guards replace every former `.readyState === WebSocket.OPEN` guard.
     const stateChecks = [...useWebSocketJs.matchAll(/\.state === "open"/g)];

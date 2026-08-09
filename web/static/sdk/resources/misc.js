@@ -27,13 +27,15 @@ import { request } from "../core/transport.js";
  * @returns {object} the misc resource
  */
 export function createMiscResource(config, configResource) {
-  const call = (method, path, opts = {}) => request(config, { method, path, ...opts });
+  const call = (method, path, opts = {}) =>
+    request(config, { method, path, ...opts });
 
   return {
     uiPreferences: {
       get: (opts) => call("GET", "/api/ui-preferences", opts),
       /** @param {object} prefs - see UIPreferences in ui_preferences.go */
-      save: (prefs, opts) => call("PUT", "/api/ui-preferences", { body: prefs, ...opts }),
+      save: (prefs, opts) =>
+        call("PUT", "/api/ui-preferences", { body: prefs, ...opts }),
     },
 
     /** GET /api/csrf-token. */
@@ -50,7 +52,10 @@ export function createMiscResource(config, configResource) {
      *  @param {string} path - absolute file path
      *  @param {string} content */
     saveFileToPath: (path, content, opts) =>
-      call("POST", "/api/save-file-to-path", { body: { path, content }, ...opts }),
+      call("POST", "/api/save-file-to-path", {
+        body: { path, content },
+        ...opts,
+      }),
 
     /** POST /api/aux/improve-prompt. May answer 503 while the auxiliary
      *  session warms up — surfaced as `MittoApiError`, no client-side
@@ -63,6 +68,29 @@ export function createMiscResource(config, configResource) {
         body: { prompt, workspace_uuid: workspaceUUID },
         ...opts,
       }),
+
+    /** POST /api/badge-click — localhost-only server-side (native macOS app).
+     *  Executes a configured OpenTarget's shell command for the given
+     *  workspace. Rejected with 403 from a non-loopback client.
+     *  @param {object} body - {workspace_path, action: "open", target_id} */
+    badgeClick: (body, opts) =>
+      call("POST", "/api/badge-click", { body, ...opts }),
+
+    /** Folder-native sidebar pin flag (folders.json), scoped by `working_dir`
+     *  (not a workspace uuid — a folder may hold several workspaces). */
+    folderPin: {
+      /** GET /api/folders/pin?working_dir=...
+       *  @param {object} params - {working_dir}
+       *  @returns {Promise<{pinned: boolean}>} */
+      get: (params, opts) =>
+        call("GET", "/api/folders/pin", { query: params, ...opts }),
+      /** PUT /api/folders/pin?working_dir=...
+       *  @param {object} params - {working_dir}
+       *  @param {object} body - {pinned}
+       *  @returns {Promise<{pinned: boolean}>} */
+      set: (params, body, opts) =>
+        call("PUT", "/api/folders/pin", { query: params, body, ...opts }),
+    },
 
     // Delegated discovery endpoints (mitto-7gta.10, resources/config.js) —
     // same function objects, not reimplementations.

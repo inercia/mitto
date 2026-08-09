@@ -6,8 +6,9 @@
  */
 
 import { getLastSeenSeq, setLastSeenSeq } from "./storage.js";
-import { authFetch, redirectToLogin } from "./csrf.js";
-import { endpoints } from "./index.js";
+import { redirectToLogin } from "./csrf.js";
+import { getSdkClient } from "./sdkClient.js";
+import { errorStatus } from "./sdkErrors.js";
 import { isNativeApp } from "./native.js";
 
 // =============================================================================
@@ -413,10 +414,25 @@ export async function checkAuthOrRedirect() {
   // Deduplicate: if an auth check is already in-flight, share that Promise
   // rather than firing a fresh HTTP request for each concurrent caller.
   if (!_authCheckInflight) {
-    // authFetch sends credentials: "include" (cross-origin / Tailscale safe) and
-    // routes 401s through the shared handleUnauthorized → redirectToLogin().
-    _authCheckInflight = authFetch(endpoints.config.get())
-      .then((res) => ({ status: res.status, ok: res.ok }))
+    // getSdkClient() sends credentials via its browser-cookie auth adapter and
+    // routes 401s through its onUnauthorized hook → redirectToLogin() (see
+    // sdkClient.js). The SDK throws on any non-2xx instead of returning a
+    // Response, so the .catch below normalizes back to a {status, ok} shape.
+    // A 401 resolves to a never-resolving promise instead of {status: 401}
+    // (matching authFetch's old handleUnauthorized, which also never resolved
+    // on 401) so the `if (status === 401)` branch below stays unreachable —
+    // exactly as unreachable as it was pre-migration. A network error
+    // (no HTTP status, e.g. MittoNetworkError) is rethrown so it still
+    // rejects `_authCheckInflight`, matching authFetch's fetch()-throws path.
+    _authCheckInflight = getSdkClient()
+      .serverConfig.get()
+      .then(() => ({ status: 200, ok: true }))
+      .catch((err) => {
+        const status = errorStatus(err);
+        if (status === undefined) throw err;
+        if (status === 401) return new Promise(() => {});
+        return { status, ok: false };
+      })
       .finally(() => {
         _authCheckInflight = null;
       });
@@ -463,42 +479,44 @@ export async function checkAuthOrRedirect() {
 export async function checkAuthWithRetry(maxRetries = 3, retryDelay = 500) {
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
-      // authFetch sends credentials: "include" (cross-origin / Tailscale safe) and
-      // routes 401s through the shared handleUnauthorized → redirectToLogin().
-      const response = await authFetch(endpoints.config.get());
+      // getSdkClient() sends credentials via its browser-cookie auth adapter
+      // and routes 401s through its onUnauthorized hook → redirectToLogin()
+      // (see sdkClient.js). Unlike authFetch it throws instead of returning a
+      // Response, so success/failure is now branched via try/catch below.
+      await getSdkClient().serverConfig.get();
+      return { authenticated: true, networkError: false };
+    } catch (err) {
+      const status = errorStatus(err);
 
-      // Got a response - check if authenticated
-      if (response.status === 401) {
+      // authFetch's old handleUnauthorized never resolved on 401 (it
+      // returned a never-resolving promise after redirecting), so this
+      // branch was unreachable dead code even pre-migration — kept
+      // unreachable here too: onUnauthorized already redirected via the
+      // sdkClient.js wiring, so stall forever instead of returning.
+      if (status === 401) {
         console.log(
           "Auth check: session expired or invalid (401), redirecting to login",
         );
         redirectToLogin();
-        return { authenticated: false, networkError: false };
+        return new Promise(() => {});
       }
 
-      if (response.ok) {
-        return { authenticated: true, networkError: false };
+      if (status !== undefined) {
+        // Other error status - treat as auth failure if persistent
+        console.warn(`Auth check returned status ${status}`);
+      } else {
+        // Network error - retry if we have attempts left
+        console.warn(
+          `Auth check network error (attempt ${attempt + 1}/${maxRetries + 1}):`,
+          err.message,
+        );
       }
-
-      // Other error status - treat as auth failure if persistent
-      console.warn(`Auth check returned status ${response.status}`);
-      if (attempt < maxRetries) {
-        await new Promise((r) => setTimeout(r, retryDelay));
-        continue;
-      }
-      return { authenticated: false, networkError: false };
-    } catch (err) {
-      // Network error - retry if we have attempts left
-      console.warn(
-        `Auth check network error (attempt ${attempt + 1}/${maxRetries + 1}):`,
-        err.message,
-      );
       if (attempt < maxRetries) {
         await new Promise((r) => setTimeout(r, retryDelay));
         continue;
       }
       // All retries exhausted
-      return { authenticated: false, networkError: true };
+      return { authenticated: false, networkError: status === undefined };
     }
   }
   // Should not reach here

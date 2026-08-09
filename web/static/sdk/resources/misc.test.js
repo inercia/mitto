@@ -60,7 +60,9 @@ describe("misc resource", () => {
           body: { error: { code: "forbidden", message: "Forbidden" } },
         }),
       );
-      await expect(misc.checkFileExists("/tmp/a.txt")).rejects.toThrow(MittoApiError);
+      await expect(misc.checkFileExists("/tmp/a.txt")).rejects.toThrow(
+        MittoApiError,
+      );
     });
   });
 
@@ -95,7 +97,67 @@ describe("misc resource", () => {
           body: { error: { code: "unavailable", message: "starting up" } },
         }),
       );
-      await expect(misc.improvePrompt("do it", "ws-1")).rejects.toThrow(MittoApiError);
+      await expect(misc.improvePrompt("do it", "ws-1")).rejects.toThrow(
+        MittoApiError,
+      );
+    });
+  });
+
+  describe("badgeClick", () => {
+    test("POSTs the body untouched", async () => {
+      const { misc, calls, respondWith } = mk();
+      respondWith(() => fakeResponse({ body: { success: true } }));
+      const body = {
+        workspace_path: "/tmp/ws",
+        action: "open",
+        target_id: "finder",
+      };
+      const result = await misc.badgeClick(body);
+      expect(calls[0].url).toBe("/api/badge-click");
+      expect(calls[0].init.method).toBe("POST");
+      expect(calls[0].init.body).toBe(JSON.stringify(body));
+      expect(result).toEqual({ success: true });
+    });
+
+    test("a 403 from a non-loopback client surfaces as MittoApiError", async () => {
+      const { misc, respondWith } = mk();
+      respondWith(() =>
+        fakeResponse({
+          status: 403,
+          body: { error: { code: "forbidden", message: "localhost only" } },
+        }),
+      );
+      await expect(
+        misc.badgeClick({
+          workspace_path: "/tmp/ws",
+          action: "open",
+          target_id: "finder",
+        }),
+      ).rejects.toThrow(MittoApiError);
+    });
+  });
+
+  describe("folderPin", () => {
+    test("get() builds ?working_dir=", async () => {
+      const { misc, calls, respondWith } = mk();
+      respondWith(() => fakeResponse({ body: { pinned: true } }));
+      const result = await misc.folderPin.get({ working_dir: "/tmp/ws" });
+      expect(calls[0].url).toBe("/api/folders/pin?working_dir=%2Ftmp%2Fws");
+      expect(calls[0].init.method).toBe("GET");
+      expect(result).toEqual({ pinned: true });
+    });
+
+    test("set() PUTs {pinned} with ?working_dir=", async () => {
+      const { misc, calls, respondWith } = mk();
+      respondWith(() => fakeResponse({ body: { pinned: false } }));
+      const result = await misc.folderPin.set(
+        { working_dir: "/tmp/ws" },
+        { pinned: false },
+      );
+      expect(calls[0].url).toBe("/api/folders/pin?working_dir=%2Ftmp%2Fws");
+      expect(calls[0].init.method).toBe("PUT");
+      expect(calls[0].init.body).toBe(JSON.stringify({ pinned: false }));
+      expect(result).toEqual({ pinned: false });
     });
   });
 

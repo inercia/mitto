@@ -8,8 +8,8 @@
 const { html, useState, useEffect, useMemo, useRef, useCallback } =
   window.preact;
 
-import { authFetch } from "../utils/csrf.js";
-import { endpoints } from "../utils/endpoints.js";
+import { getSdkClient } from "../utils/sdkClient.js";
+import { errorMessage } from "../utils/sdkErrors.js";
 import { getBasename } from "../lib.js";
 import { FolderIcon, MenuIcon } from "./Icons.js";
 import { StatsCharts } from "./dashboard/StatsCharts.js";
@@ -111,10 +111,7 @@ export function Dashboard({
   // mountedRef — the state it would set is idempotent (setData(json)).
   const fetchDashboard = useCallback(async () => {
     try {
-      const res = await authFetch(endpoints.misc.dashboard());
-      if (!mountedRef.current) return;
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const json = await res.json();
+      const json = await getSdkClient().dashboard.summary();
       if (!mountedRef.current) return;
       setData(json);
     } catch (err) {
@@ -123,7 +120,7 @@ export function Dashboard({
         showToast({
           style: "error",
           title: "Dashboard refresh failed",
-          message: err && err.message ? err.message : String(err),
+          message: errorMessage(err, String(err)),
         });
       }
     }

@@ -5,8 +5,8 @@
 // preact-loader.js); charts silently degrade when the CDN is unreachable.
 const { html, useEffect, useMemo, useRef, useState } = window.preact;
 
-import { authFetch } from "../../utils/csrf.js";
-import { endpoints } from "../../utils/endpoints.js";
+import { getSdkClient } from "../../utils/sdkClient.js";
+import { errorMessage } from "../../utils/sdkErrors.js";
 import { modelColor, UNKNOWN_MODEL_NAME } from "../../utils/palette.js";
 import { CDN_URLS } from "../../vendor/config.js";
 import { useDashboardHiddenCharts } from "../../hooks/useDashboardHiddenCharts.js";
@@ -35,7 +35,10 @@ const REQUESTED_METRICS = [
 // Metrics summed per model for the "Model usage" card. Kept in sync with the
 // composite series keys "<metric>:<model>" produced by
 // internal/web/handlers/dashboard_timeseries.go when groupBy=model.
-export const REQUESTED_MODEL_METRICS = ["input_tokens_est", "output_tokens_est"];
+export const REQUESTED_MODEL_METRICS = [
+  "input_tokens_est",
+  "output_tokens_est",
+];
 
 // Chart height in px (fixed so narrow viewports do not collapse). Kept as a
 // number so uPlot can size its canvas directly.
@@ -163,10 +166,11 @@ let uplotLoadPromise = null;
 
 /** Load uPlot (CSS + IIFE) from the CDN once; resolves to window.uPlot. */
 function loadUplot() {
-  if (typeof window !== "undefined" && window.uPlot) return Promise.resolve(window.uPlot);
+  if (typeof window !== "undefined" && window.uPlot)
+    return Promise.resolve(window.uPlot);
   if (uplotLoadPromise) return uplotLoadPromise;
   uplotLoadPromise = new Promise((resolve, reject) => {
-    if (!document.querySelector('link[data-mitto-uplot]')) {
+    if (!document.querySelector("link[data-mitto-uplot]")) {
       const link = document.createElement("link");
       link.rel = "stylesheet";
       link.href = CDN_URLS.uplotCss;
@@ -186,7 +190,6 @@ function loadUplot() {
   return uplotLoadPromise;
 }
 
-
 // --- Chart specs -----------------------------------------------------------
 
 // Read a CSS custom property from :root, with a fallback. uPlot draws on a
@@ -195,7 +198,9 @@ function loadUplot() {
 // in ChartCard). Function-form so uPlot re-invokes on every redraw.
 function cssVar(name, fallback) {
   if (typeof document === "undefined") return fallback;
-  const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  const v = getComputedStyle(document.documentElement)
+    .getPropertyValue(name)
+    .trim();
   return v || fallback;
 }
 const axisStroke = () => cssVar("--mitto-text-muted", "#71717a");
@@ -283,8 +288,16 @@ function buildChartSpecs(u) {
         axes: [xAxis, yAxis],
         series: [
           { label: "time" },
-          { label: "input", stroke: stroke("#38bdf8"), fill: "rgba(56,189,248,0.15)" },
-          { label: "output", stroke: stroke("#a78bfa"), fill: "rgba(167,139,250,0.15)" },
+          {
+            label: "input",
+            stroke: stroke("#38bdf8"),
+            fill: "rgba(56,189,248,0.15)",
+          },
+          {
+            label: "output",
+            stroke: stroke("#a78bfa"),
+            fill: "rgba(167,139,250,0.15)",
+          },
         ],
       }),
     },
@@ -301,7 +314,10 @@ function buildChartSpecs(u) {
           {
             label: "all tools",
             stroke: stroke("#22c55e"),
-            paths: u && u.paths && u.paths.bars ? u.paths.bars({ size: [0.7, 40] }) : undefined,
+            paths:
+              u && u.paths && u.paths.bars
+                ? u.paths.bars({ size: [0.7, 40] })
+                : undefined,
           },
           { label: "mcp", stroke: stroke("#f59e0b") },
         ],
@@ -320,12 +336,18 @@ function buildChartSpecs(u) {
           {
             label: "prompts",
             stroke: stroke("#0ea5e9"),
-            paths: u && u.paths && u.paths.bars ? u.paths.bars({ size: [0.5, 30] }) : undefined,
+            paths:
+              u && u.paths && u.paths.bars
+                ? u.paths.bars({ size: [0.5, 30] })
+                : undefined,
           },
           {
             label: "agent turns",
             stroke: stroke("#f472b6"),
-            paths: u && u.paths && u.paths.bars ? u.paths.bars({ size: [0.5, 30] }) : undefined,
+            paths:
+              u && u.paths && u.paths.bars
+                ? u.paths.bars({ size: [0.5, 30] })
+                : undefined,
           },
         ],
       }),
@@ -343,12 +365,18 @@ function buildChartSpecs(u) {
           {
             label: "opened",
             stroke: stroke("#0ea5e9"),
-            paths: u && u.paths && u.paths.bars ? u.paths.bars({ size: [0.5, 30] }) : undefined,
+            paths:
+              u && u.paths && u.paths.bars
+                ? u.paths.bars({ size: [0.5, 30] })
+                : undefined,
           },
           {
             label: "closed",
             stroke: stroke("#22c55e"),
-            paths: u && u.paths && u.paths.bars ? u.paths.bars({ size: [0.5, 30] }) : undefined,
+            paths:
+              u && u.paths && u.paths.bars
+                ? u.paths.bars({ size: [0.5, 30] })
+                : undefined,
           },
         ],
       }),
@@ -387,12 +415,20 @@ function buildChartSpecs(u) {
         ],
         series: [
           { label: "time" },
-          { label: "avg cycle (h)", scale: "y", stroke: stroke("#f97316"), fill: "rgba(249,115,22,0.15)" },
+          {
+            label: "avg cycle (h)",
+            scale: "y",
+            stroke: stroke("#f97316"),
+            fill: "rgba(249,115,22,0.15)",
+          },
           {
             label: "closed count",
             scale: "count",
             stroke: stroke("#94a3b8"),
-            paths: u && u.paths && u.paths.bars ? u.paths.bars({ size: [0.4, 20] }) : undefined,
+            paths:
+              u && u.paths && u.paths.bars
+                ? u.paths.bars({ size: [0.4, 20] })
+                : undefined,
           },
         ],
       }),
@@ -489,7 +525,9 @@ function ChartCard({ title, metrics, optsFor, data, uplot, empty, transform }) {
         style=${`height: ${CHART_HEIGHT}px; min-height: ${CHART_HEIGHT}px;`}
       >
         ${empty
-          ? html`<div class="w-full h-full flex items-center justify-center text-xs text-mitto-text-muted">
+          ? html`<div
+              class="w-full h-full flex items-center justify-center text-xs text-mitto-text-muted"
+            >
               No activity in this range
             </div>`
           : null}
@@ -540,7 +578,8 @@ function ModelUsageCard({ modelData, uplot, empty, hidden, onToggleModel }) {
         }
         const span = dataMax - dataMin;
         const topPad = span * 0.08;
-        if (dataMin >= 0 && dataMin <= span * 0.05) return [0, dataMax + topPad];
+        if (dataMin >= 0 && dataMin <= span * 0.05)
+          return [0, dataMax + topPad];
         return [dataMin - span * 0.05, dataMax + topPad];
       },
     };
@@ -603,7 +642,8 @@ function ModelUsageCard({ modelData, uplot, empty, hidden, onToggleModel }) {
       const seriesIdx = i + 1; // series[0] is the x/time series.
       const shouldShow = !hidden[m.name];
       const cur = chart.series[seriesIdx];
-      if (cur && cur.show !== shouldShow) chart.setSeries(seriesIdx, { show: shouldShow });
+      if (cur && cur.show !== shouldShow)
+        chart.setSeries(seriesIdx, { show: shouldShow });
     });
   }, [hidden, modelData]);
 
@@ -613,36 +653,49 @@ function ModelUsageCard({ modelData, uplot, empty, hidden, onToggleModel }) {
       class="rounded-lg shadow bg-mitto-surface-2 p-3 flex flex-col gap-2"
       style="width: min(360px, 100%); flex: 0 0 auto;"
     >
-      <div class="text-xs text-mitto-text-muted truncate">Model usage (total tokens)</div>
+      <div class="text-xs text-mitto-text-muted truncate">
+        Model usage (total tokens)
+      </div>
       <div
         ref=${containerRef}
         class="w-full overflow-hidden shrink-0 relative"
         style=${`height: ${CHART_HEIGHT}px; min-height: ${CHART_HEIGHT}px;`}
       >
         ${empty
-          ? html`<div class="w-full h-full flex flex-col items-center justify-center gap-1 text-xs text-mitto-text-muted">
+          ? html`<div
+              class="w-full h-full flex flex-col items-center justify-center gap-1 text-xs text-mitto-text-muted"
+            >
               <div>No activity in this range</div>
-              <div class="opacity-70">No model usage recorded yet — this appears after your next agent turn.</div>
+              <div class="opacity-70">
+                No model usage recorded yet — this appears after your next agent
+                turn.
+              </div>
             </div>`
           : null}
       </div>
       ${!empty && models.length > 0
-        ? html`<div class="flex flex-wrap gap-2 text-xs" data-testid="model-usage-legend">
+        ? html`<div
+            class="flex flex-wrap gap-2 text-xs"
+            data-testid="model-usage-legend"
+          >
             ${models.map(
-              (m) => html`<button
-                key=${m.name}
-                type="button"
-                class=${`flex items-center gap-1 px-1.5 py-0.5 rounded ${hidden[m.name] ? "opacity-40" : ""}`}
-                aria-pressed=${!hidden[m.name]}
-                onClick=${() => onToggleModel(m.name)}
-              >
-                <span
-                  class="inline-block w-2 h-2 rounded-sm"
-                  style=${`background: ${modelColor(m.name)};`}
-                ></span>
-                <span class="text-mitto-text-strong">${m.name}</span>
-                <span class="text-mitto-text-muted">${m.total.toLocaleString()}</span>
-              </button>`,
+              (m) =>
+                html`<button
+                  key=${m.name}
+                  type="button"
+                  class=${`flex items-center gap-1 px-1.5 py-0.5 rounded ${hidden[m.name] ? "opacity-40" : ""}`}
+                  aria-pressed=${!hidden[m.name]}
+                  onClick=${() => onToggleModel(m.name)}
+                >
+                  <span
+                    class="inline-block w-2 h-2 rounded-sm"
+                    style=${`background: ${modelColor(m.name)};`}
+                  ></span>
+                  <span class="text-mitto-text-strong">${m.name}</span>
+                  <span class="text-mitto-text-muted"
+                    >${m.total.toLocaleString()}</span
+                  >
+                </button>`,
             )}
           </div>`
         : null}
@@ -683,7 +736,9 @@ export function StatsCharts({ showToast }) {
           showToast({
             style: "error",
             title: "Charts unavailable",
-            message: "Failed to load uPlot from CDN: " + (err && err.message ? err.message : String(err)),
+            message:
+              "Failed to load uPlot from CDN: " +
+              (err && err.message ? err.message : String(err)),
           });
         }
       },
@@ -701,24 +756,24 @@ export function StatsCharts({ showToast }) {
     const controller = new AbortController();
     (async () => {
       try {
-        const url = endpoints.misc.dashboardTimeseries({
-          range,
-          metrics: REQUESTED_METRICS.join(","),
-        });
-        const res = await authFetch(url, { signal: controller.signal });
-        if (!mountedRef.current) return;
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const json = await res.json();
+        const json = await getSdkClient().dashboard.timeseries(
+          { range, metrics: REQUESTED_METRICS },
+          { signal: controller.signal },
+        );
         if (!mountedRef.current) return;
         setData(json);
       } catch (err) {
-        if (err && err.name === "AbortError") return;
+        // The SDK wraps an aborted fetch in a MittoNetworkError whose
+        // `.cause` is the original AbortError (sdk/core/errors.js), so check
+        // both the outer and the wrapped name.
+        if (err?.name === "AbortError" || err?.cause?.name === "AbortError")
+          return;
         if (!mountedRef.current) return;
         if (showToast) {
           showToast({
             style: "error",
             title: "Timeseries fetch failed",
-            message: err && err.message ? err.message : String(err),
+            message: errorMessage(err, String(err)),
           });
         }
       }
@@ -738,25 +793,24 @@ export function StatsCharts({ showToast }) {
     let cancelled = false;
     (async () => {
       try {
-        const url = endpoints.misc.dashboardTimeseries({
-          range,
-          metrics: REQUESTED_MODEL_METRICS.join(","),
-          groupBy: "model",
-        });
-        const res = await authFetch(url, { signal: controller.signal });
-        if (cancelled) return;
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const json = await res.json();
+        const json = await getSdkClient().dashboard.timeseries(
+          { range, metrics: REQUESTED_MODEL_METRICS, groupBy: "model" },
+          { signal: controller.signal },
+        );
         if (cancelled) return;
         setModelDataRaw(json);
       } catch (err) {
-        if (err && err.name === "AbortError") return;
+        // The SDK wraps an aborted fetch in a MittoNetworkError whose
+        // `.cause` is the original AbortError (sdk/core/errors.js), so check
+        // both the outer and the wrapped name.
+        if (err?.name === "AbortError" || err?.cause?.name === "AbortError")
+          return;
         if (cancelled) return;
         if (showToast) {
           showToast({
             style: "error",
             title: "Model usage fetch failed",
-            message: err && err.message ? err.message : String(err),
+            message: errorMessage(err, String(err)),
           });
         }
       }
@@ -779,7 +833,10 @@ export function StatsCharts({ showToast }) {
     [specs, hiddenCharts],
   );
   const modelUsageVisible = !hiddenCharts.includes("model_usage");
-  const modelData = useMemo(() => toModelUplotData(modelDataRaw), [modelDataRaw]);
+  const modelData = useMemo(
+    () => toModelUplotData(modelDataRaw),
+    [modelDataRaw],
+  );
   const modelEmpty = modelData.models.length === 0;
   const backfill = data && data.meta && data.meta.backfill_in_progress;
   const note = (data && data.meta && data.meta.note) || "";
@@ -805,7 +862,9 @@ export function StatsCharts({ showToast }) {
       <div class="flex items-center gap-2">
         <span class="text-sm font-medium text-mitto-text-strong">Activity</span>
         ${backfill
-          ? html`<span class="badge badge-xs badge-warning">Backfilling history…</span>`
+          ? html`<span class="badge badge-xs badge-warning"
+              >Backfilling history…</span
+            >`
           : null}
         <span class="flex-1"></span>
         <${Toolbar}
@@ -830,19 +889,21 @@ export function StatsCharts({ showToast }) {
       <div class="mitto-carousel shrink-0 gap-3 w-full items-start">
         ${visibleSpecs.length === 0 && !modelUsageVisible
           ? html`<div class="text-xs text-mitto-text-muted italic p-3">
-              All charts are hidden. Enable at least one in Settings ▸ Dashboard.
+              All charts are hidden. Enable at least one in Settings ▸
+              Dashboard.
             </div>`
           : visibleSpecs.map(
-              (s) => html`<${ChartCard}
-                key=${s.title}
-                title=${s.title}
-                metrics=${s.metrics}
-                optsFor=${s.opts}
-                data=${data}
-                uplot=${uplot}
-                empty=${empty}
-                transform=${s.transform}
-              />`,
+              (s) =>
+                html`<${ChartCard}
+                  key=${s.title}
+                  title=${s.title}
+                  metrics=${s.metrics}
+                  optsFor=${s.opts}
+                  data=${data}
+                  uplot=${uplot}
+                  empty=${empty}
+                  transform=${s.transform}
+                />`,
             )}
         ${modelUsageVisible
           ? html`<${ModelUsageCard}

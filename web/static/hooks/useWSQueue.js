@@ -8,8 +8,8 @@
 
 const { useState, useEffect, useCallback } = window.preact;
 
-import { secureFetch, authFetch } from "../utils/csrf.js";
-import { endpoints } from "../utils/index.js";
+import { getSdkClient } from "../utils/sdkClient.js";
+import { errorStatus } from "../utils/sdkErrors.js";
 
 export function useWSQueue(activeSessionId) {
   // Queue length for the active session
@@ -34,14 +34,9 @@ export function useWSQueue(activeSessionId) {
       return;
     }
     try {
-      const response = await authFetch(
-        endpoints.sessions.queue(activeSessionId),
-      );
-      if (response.ok) {
-        const data = await response.json();
-        setQueueMessages(data.messages || []);
-        setQueueLength(data.count || 0);
-      }
+      const data = await getSdkClient().sessions.queue.list(activeSessionId);
+      setQueueMessages(data.messages || []);
+      setQueueLength(data.count || 0);
     } catch (err) {
       console.error("Failed to fetch queue messages:", err);
     }
@@ -63,19 +58,15 @@ export function useWSQueue(activeSessionId) {
     async (messageId) => {
       if (!activeSessionId || !messageId) return false;
       try {
-        const response = await secureFetch(
-          endpoints.sessions.queueMsg(activeSessionId, messageId),
-          { method: "DELETE" },
-        );
-        if (response.ok || response.status === 204) {
-          // Refresh queue messages after deletion
-          await fetchQueueMessages();
-          return true;
-        }
-        console.error("Failed to delete queue message:", response.status);
-        return false;
+        await getSdkClient().sessions.queue.remove(activeSessionId, messageId);
+        // Refresh queue messages after deletion
+        await fetchQueueMessages();
+        return true;
       } catch (err) {
-        console.error("Failed to delete queue message:", err);
+        console.error(
+          "Failed to delete queue message:",
+          errorStatus(err) ?? err,
+        );
         return false;
       }
     },
@@ -101,33 +92,22 @@ export function useWSQueue(activeSessionId) {
         if (promptArgs && Object.keys(promptArgs).length > 0) {
           body.arguments = promptArgs;
         }
-        const response = await secureFetch(
-          endpoints.sessions.queue(activeSessionId),
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(body),
-          },
+        const data = await getSdkClient().sessions.queue.add(
+          activeSessionId,
+          body,
         );
-        if (response.ok || response.status === 201) {
-          // Parse response to get the message ID
-          const data = await response.json().catch(() => ({}));
-          // Refresh queue messages after addition
-          await fetchQueueMessages();
-          return { success: true, messageId: data.id };
-        }
+        // Refresh queue messages after addition
+        await fetchQueueMessages();
+        return { success: true, messageId: data.id };
+      } catch (err) {
         // Handle queue full error
-        if (response.status === 409) {
-          const data = await response.json().catch(() => ({}));
+        if (errorStatus(err) === 409) {
           return {
             success: false,
-            error: data.error?.code || data.error || "queue_full",
-            message: data.error?.message || data.message,
+            error: err.code || "queue_full",
+            message: err.message,
           };
         }
-        console.error("Failed to add to queue:", response.status);
-        return { success: false, error: "request_failed" };
-      } catch (err) {
         console.error("Failed to add to queue:", err);
         return { success: false, error: "request_failed" };
       }
@@ -141,23 +121,15 @@ export function useWSQueue(activeSessionId) {
       if (!activeSessionId || !messageId) return false;
       if (direction !== "up" && direction !== "down") return false;
       try {
-        const response = await secureFetch(
-          endpoints.sessions.queueMove(activeSessionId, messageId),
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ direction }),
-          },
+        // The response contains the updated queue, update local state
+        const data = await getSdkClient().sessions.queue.move(
+          activeSessionId,
+          messageId,
+          direction,
         );
-        if (response.ok) {
-          // The response contains the updated queue, update local state
-          const data = await response.json();
-          setQueueMessages(data.messages || []);
-          setQueueLength(data.count || 0);
-          return true;
-        }
-        console.error("Failed to move queue message:", response.status);
-        return false;
+        setQueueMessages(data.messages || []);
+        setQueueLength(data.count || 0);
+        return true;
       } catch (err) {
         console.error("Failed to move queue message:", err);
         return false;
