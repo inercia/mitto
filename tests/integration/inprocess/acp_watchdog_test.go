@@ -14,10 +14,10 @@ import (
 	"time"
 
 	"github.com/inercia/mitto/internal/appdir"
-	"github.com/inercia/mitto/internal/client"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/session"
 	"github.com/inercia/mitto/internal/web"
+	"github.com/inercia/mitto/pkg/api"
 )
 
 // capturingHandler is a thread-safe slog.Handler that collects log records.

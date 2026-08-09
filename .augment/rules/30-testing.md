@@ -5,7 +5,7 @@ globs:
   - "tests/integration/**/*"
   - "tests/mocks/**/*"
   - "tests/smoke/**/*"
-  - "internal/client/**/*"
+  - "pkg/api/**/*"
   - "web/static/**/*.test.js"
   - "web/static/lib.js"
   - "package.json"
@@ -79,7 +79,7 @@ func TestSomething(t *testing.T) {
 
 **Mock ACP**: `make build-mock-acp` always before integration tests. Scenario matching via regex in `tests/fixtures/responses/*.json`.
 
-**Setup**: `SetupTestServer(t)` in `internal/client/test_helpers.go` — isolates temp dir + resets appdir cache.
+**Setup**: `SetupTestServer(t)` in `tests/integration/inprocess/setup_test.go` — isolates temp dir + resets appdir cache.
 
 **Run**: `go test -tags integration ./tests/integration/inprocess`
 

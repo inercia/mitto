@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/inercia/mitto/internal/client"
+	"github.com/inercia/mitto/pkg/api"
 )
 
 // minimalPNG is a valid 1x1 pixel red PNG image (67 bytes).

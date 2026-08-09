@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/inercia/mitto/internal/client"
 	"github.com/inercia/mitto/internal/session"
+	"github.com/inercia/mitto/pkg/api"
 )
 
 // TestLoopMultiTriggerRunOnStartE2E pins the mitto-r6j.2/.5 acceptance

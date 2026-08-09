@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/inercia/mitto/internal/client"
+	"github.com/inercia/mitto/pkg/api"
 )
 
 // TestLoopRunOnStartE2E verifies the mitto-ystk boot-pulse trigger end-to-end

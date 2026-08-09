@@ -9,10 +9,10 @@ import (
 	"net/url"
 	"testing"
 
-	"github.com/inercia/mitto/internal/client"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/prompts"
 	"github.com/inercia/mitto/internal/web"
+	"github.com/inercia/mitto/pkg/api"
 )
 
 // TestRememberedArgs_EnqueueThenGET is the end-to-end regression test for the

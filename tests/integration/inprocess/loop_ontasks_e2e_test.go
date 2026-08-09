@@ -16,9 +16,9 @@ import (
 
 	"github.com/inercia/mitto/internal/beads"
 	"github.com/inercia/mitto/internal/beads/watcher"
-	"github.com/inercia/mitto/internal/client"
 	"github.com/inercia/mitto/internal/conversation"
 	"github.com/inercia/mitto/internal/session"
+	"github.com/inercia/mitto/pkg/api"
 )
 
 // fakeOnTasksBeadsClient is a minimal beads.Client fake that lets the test

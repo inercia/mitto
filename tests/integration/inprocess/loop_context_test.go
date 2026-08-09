@@ -6,7 +6,7 @@ package inprocess
 import (
 	"testing"
 
-	"github.com/inercia/mitto/internal/client"
+	"github.com/inercia/mitto/pkg/api"
 )
 
 // TestLoopContextSemantics verifies the three context-aware loop send cases:

@@ -5,7 +5,7 @@ package inprocess
 import (
 	"testing"
 
-	"github.com/inercia/mitto/internal/client"
+	"github.com/inercia/mitto/pkg/api"
 )
 
 // TestQueueOperations tests basic queue operations.

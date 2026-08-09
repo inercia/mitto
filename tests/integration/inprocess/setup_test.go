@@ -12,10 +12,10 @@ import (
 	"testing"
 
 	"github.com/inercia/mitto/internal/appdir"
-	"github.com/inercia/mitto/internal/client"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/session"
 	"github.com/inercia/mitto/internal/web"
+	"github.com/inercia/mitto/pkg/api"
 )
 
 // TestServer wraps a web.Server with test utilities.

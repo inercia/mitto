@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/inercia/mitto/internal/client"
+	"github.com/inercia/mitto/pkg/api"
 )
 
 // TestLoopOnCompletionE2E verifies the on-completion loop trigger and

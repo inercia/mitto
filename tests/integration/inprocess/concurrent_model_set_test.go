@@ -13,10 +13,10 @@ import (
 	"time"
 
 	"github.com/inercia/mitto/internal/appdir"
-	"github.com/inercia/mitto/internal/client"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/conversation"
 	"github.com/inercia/mitto/internal/web"
+	"github.com/inercia/mitto/pkg/api"
 )
 
 // setupTestServerWithModelConstraintAndEnv is like setupTestServerWithModelConstraint

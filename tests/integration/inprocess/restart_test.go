@@ -11,7 +11,7 @@ import (
 	"time"
 
 	mittoAcp "github.com/inercia/mitto/internal/acp"
-	"github.com/inercia/mitto/internal/client"
+	"github.com/inercia/mitto/pkg/api"
 )
 
 // safeErrorCollector is a thread-safe error message collector for tests.

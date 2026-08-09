@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/inercia/mitto/internal/client"
 	"github.com/inercia/mitto/internal/conversation"
+	"github.com/inercia/mitto/pkg/api"
 )
 
 // TestAtomicCreateSeed verifies that a single POST /api/sessions with

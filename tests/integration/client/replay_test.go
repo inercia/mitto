@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/inercia/mitto/internal/client"
+	"github.com/inercia/mitto/pkg/api"
 )
 
 // =============================================================================

@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/inercia/mitto/internal/client"
+	"github.com/inercia/mitto/pkg/api"
 )
 
 // TestSleepWake_Basic verifies the fundamental sleep/wake reconnection scenario:

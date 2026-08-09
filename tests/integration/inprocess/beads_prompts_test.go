@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/inercia/mitto/internal/client"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/web"
+	"github.com/inercia/mitto/pkg/api"
 )
 
 // TestWorkspacePrompts_BeadsDirGatesUseDirParamNotSession is an end-to-end

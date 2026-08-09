@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/inercia/mitto/internal/client"
+	"github.com/inercia/mitto/pkg/api"
 )
 
 // TestObserverRegistrationRace_EventsDuringLoadEvents tests the race window

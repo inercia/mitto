@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/inercia/mitto/internal/client"
 	"github.com/inercia/mitto/internal/session"
+	"github.com/inercia/mitto/pkg/api"
 )
 
 // TestDeferredHandshakePermanentFailure verifies that when session/new always fails,

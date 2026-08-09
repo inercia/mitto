@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/inercia/mitto/internal/client"
+	"github.com/inercia/mitto/pkg/api"
 )
 
 // TestSlowClient_BackpressureDisconnectAndRecovery validates the reconnect +

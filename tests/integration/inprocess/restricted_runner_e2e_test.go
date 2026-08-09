@@ -17,9 +17,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/inercia/mitto/internal/client"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/web"
+	"github.com/inercia/mitto/pkg/api"
 )
 
 // expectedRunnerType returns the runner type to request for this platform.

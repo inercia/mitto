@@ -32,7 +32,6 @@ internal/cmd/         → CLI commands (Cobra-based)
 internal/acp/         → ACP protocol client (SDK wrapper)
 internal/agents/      → Agent definitions (metadata, commands, mcp-list); Manager looks up agents by acpId
 internal/auxiliary/   → Hidden ACP session for utility tasks
-internal/client/      → Go client for Mitto REST API + WebSocket (used in tests)
 internal/config/      → Configuration loading (YAML/JSON)
 internal/conversion/  → Markdown-to-HTML conversion, file link detection
 internal/defense/     → Scanner defense, blocklist, IP metrics (used by web middleware)
@@ -45,6 +44,7 @@ internal/session/     → Session persistence (Store/Recorder/Player/Lock/Queue/
 internal/stats/       → Dashboard time-series stats skeleton (interfaces + NoopStore, filled in by stats.2–stats.10); no internal/web / internal/conversation imports
 internal/conversation/→ Runtime conversation domain: BackgroundSession, SessionManager, QueueTitleWorker, streaming buffers, domain interfaces (never imports internal/web)
 internal/web/         → HTTP/WebSocket delivery + infrastructure layer; wires and serves the conversation domain (depends on internal/conversation)
+pkg/api/              → Go client SDK for Mitto REST API + WebSocket (public; package client, import path pkg/api — repo's first pkg/ directory)
 web/static/           → Frontend (Preact/HTM)
   ├── components/     → UI components (ChatInput, QueueDropdown, Message, etc.)
   ├── hooks/          → Custom hooks (useWebSocket, useSwipeNavigation, useResizeHandle)

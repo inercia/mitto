@@ -12,10 +12,10 @@ import (
 	"time"
 
 	"github.com/inercia/mitto/internal/appdir"
-	"github.com/inercia/mitto/internal/client"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/session"
 	"github.com/inercia/mitto/internal/web"
+	"github.com/inercia/mitto/pkg/api"
 )
 
 // setupTestServerWithModelConstraint creates a test server whose mock-acp server

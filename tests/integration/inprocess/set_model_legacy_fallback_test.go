@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/inercia/mitto/internal/client"
 	"github.com/inercia/mitto/internal/conversation"
+	"github.com/inercia/mitto/pkg/api"
 )
 
 // TestSetSessionModel_LegacyFallback_PreSchema013 is the mitto-vd5 regression:

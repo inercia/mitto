@@ -1,8 +1,8 @@
-// Package client provides a Go client for connecting to the Mitto backend.
+// Package client (import path github.com/inercia/mitto/pkg/api) provides a Go
+// client for connecting to the Mitto backend.
 //
-// This client is designed for internal use (no authentication) and is useful
-// for integration testing and CLI tools that need to connect to a running
-// Mitto server.
+// The client is unauthenticated today and is useful for integration testing
+// and CLI tools that need to connect to a running Mitto server.
 //
 // # Basic Usage
 //

@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/inercia/mitto/internal/client"
 	"github.com/inercia/mitto/internal/session"
+	"github.com/inercia/mitto/pkg/api"
 )
 
 // createOnChildParentSession creates a top-level session rooted at workingDir

@@ -24,10 +24,10 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/inercia/mitto/internal/client"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/session"
 	"github.com/inercia/mitto/internal/web"
+	"github.com/inercia/mitto/pkg/api"
 )
 
 // TestMCPInitTimeout_FailsFastOnStderrSignal verifies that a mock agent whose

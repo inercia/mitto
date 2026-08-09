@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/inercia/mitto/internal/client"
+	"github.com/inercia/mitto/pkg/api"
 )
 
 // TestStaleClient_OffByOneRecovery verifies that when a client sends load_events

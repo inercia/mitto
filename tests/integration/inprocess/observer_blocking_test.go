@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/inercia/mitto/internal/client"
+	"github.com/inercia/mitto/pkg/api"
 )
 
 // TestObserverBlocking_SlowClientDoesNotDegradeOthers verifies the key invariant:

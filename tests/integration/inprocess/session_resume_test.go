@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/inercia/mitto/internal/client"
+	"github.com/inercia/mitto/pkg/api"
 )
 
 // TestSessionResume_PreferResumeOverLoad tests that when resume capability
