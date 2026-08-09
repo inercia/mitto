@@ -69,7 +69,6 @@ import {
   apiUrl,
   authFetch,
   endpoints,
-  errorMessageFromData,
   fixViewerURLIfNeeded,
   getGroupingMode,
   cycleGroupingMode,
