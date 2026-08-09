@@ -331,9 +331,9 @@ export function useWebSocket({
   /**
    * Set the in-flight sync flag for a session and start a 30s auto-clear timeout.
    * If events_loaded never arrives (server error, WebSocket drop), the flag is
-   * cleared automatically and the WebSocket is force-closed to trigger an immediate
-   * reconnect — eliminating the extra 5-20s that would otherwise be wasted waiting
-   * for keepalive miss-counting to reach the threshold.
+   * cleared automatically and the stream is force-reconnected — eliminating the
+   * extra 5-20s that would otherwise be wasted waiting for keepalive
+   * miss-counting to reach the threshold.
    *
    * @param {string} sessionId - The session ID
    */
@@ -353,16 +353,14 @@ export function useWebSocket({
           console.warn(
             `[sync] Sync timeout for session ${sessionId} — events_loaded did not arrive within ${SYNC_TIMEOUT_MS}ms. Forcing reconnect.`,
           );
-          // Force-close the WebSocket immediately instead of waiting for keepalive
-          // miss-counting to fire (which would add another 10-20s of dead time).
-          // If events_loaded took >30s, the connection is almost certainly a zombie.
-          // Use the force-reconnect pattern: delete ref BEFORE closing so that onclose
-          // does not schedule a duplicate reconnect timer on top of ours.
-          const ws = sessionWsRefs.current[sessionId];
-          if (ws) {
-            delete sessionWsRefs.current[sessionId];
-            ws.close(); // onclose will schedule reconnect via connectToSession
-          }
+          // Reconnect immediately instead of waiting for keepalive miss-counting
+          // to fire (which would add another 10-20s of dead time). If
+          // events_loaded took >30s, the connection is almost certainly a zombie.
+          // Use SessionStream.forceReconnect() — it closes and reopens internally
+          // and is debounced against concurrent triggers (mitto-7gta.30).
+          // NOTE: close() must NOT be used here — it marks the stream explicitly
+          // closed, which permanently suppresses reconnection.
+          sessionWsRefs.current[sessionId]?.forceReconnect();
         }
       }, SYNC_TIMEOUT_MS);
     },
@@ -2261,20 +2259,18 @@ export function useWebSocket({
         );
 
         // When the server is shutting down, suppress reconnection.
-        // Close the WebSocket preemptively so onclose doesn't trigger reconnect.
+        // Close the stream preemptively so it doesn't try to reconnect.
         if (msg.data?.reason === "server_shutdown") {
           serverShuttingDownRef.current = true;
           console.log(
             `Server shutdown detected for session ${sessionId}, suppressing reconnect`,
           );
-          const ws = sessionWsRefs.current[sessionId];
-          if (ws) {
-            // Delete ref BEFORE closing so onclose sees no ref and skips reconnect
-            delete sessionWsRefs.current[sessionId];
-            ws.close();
-          }
-          // Reconnect suppression on server shutdown is now handled inside
-          // SessionStream (mitto-7gta.30) via serverShuttingDownRef.
+          // SessionStream.close() marks the stream explicitly closed, which
+          // suppresses reconnection on its own — the ref is kept so a later
+          // connect() reuses the same stream (mitto-7gta.30). Reconnect
+          // suppression is also enforced by the stream's shouldReconnect veto
+          // via serverShuttingDownRef.
+          sessionWsRefs.current[sessionId]?.close();
           break; // Skip the delayed sync — server is going away
         }
 
@@ -2784,15 +2780,17 @@ export function useWebSocket({
         // Session already has messages and working_dir, just set it active
         setActiveSessionId(sessionId);
 
-        // Ensure WebSocket is connected and synced
-        // On mobile, the WebSocket may have died while the phone slept
-        // If not connected, connect now - the onopen handler will sync events
+        // Ensure the session stream is connected and synced.
+        // On mobile, the connection may have died while the phone slept.
+        // If not connected, connect now — the stream's "open" handler syncs events.
         const existingWs = sessionWsRefs.current[sessionId];
         if (!existingWs || existingWs.state !== "open") {
           console.log(
             `Session ${sessionId} has messages but WebSocket is not connected, reconnecting...`,
           );
-          // Remove stale WebSocket reference if any
+          // Discard the stale stream entirely (it may be stuck in "connecting")
+          // so connectToSession builds a fresh one — dropping the ref BEFORE
+          // close() so the closed stream is never reused (mitto-7gta.30).
           if (existingWs) {
             delete sessionWsRefs.current[sessionId];
             existingWs.close();

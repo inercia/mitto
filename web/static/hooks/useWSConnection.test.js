@@ -252,3 +252,32 @@ describe("useWebSocket.js: keepalive_ack UI bookkeeping split from SessionStream
     expect(stateChecks.length).toBeGreaterThanOrEqual(4);
   });
 });
+
+describe("useWebSocket.js: close() vs forceReconnect() semantics (mitto-7gta.30)", () => {
+  test("the sync timeout force-reconnects the stream instead of close()-ing it", () => {
+    // SessionStream.close() sets _explicitlyClosed, which makes _reconnectOrStop
+    // go straight to "stopped" — using it here would leave the session offline
+    // forever after a sync timeout. forceReconnect() closes and reopens instead.
+    expect(useWebSocketJs).toMatch(
+      /Sync timeout for session[\s\S]{0,900}?sessionWsRefs\.current\[sessionId\]\?\.forceReconnect\(\);/,
+    );
+    expect(useWebSocketJs).not.toMatch(
+      /Sync timeout for session[\s\S]{0,900}?delete sessionWsRefs\.current\[sessionId\];/,
+    );
+  });
+
+  test("server_shutdown closes the stream without dropping the ref (close() suppresses reconnect on its own)", () => {
+    expect(useWebSocketJs).toMatch(
+      /Server shutdown detected for session[\s\S]{0,500}?sessionWsRefs\.current\[sessionId\]\?\.close\(\);/,
+    );
+    expect(useWebSocketJs).not.toMatch(
+      /Server shutdown detected for session[\s\S]{0,500}?delete sessionWsRefs\.current\[sessionId\];/,
+    );
+  });
+
+  test("switchSession discards a non-open stream by dropping the ref BEFORE close() so connectToSession builds a fresh one", () => {
+    expect(useWebSocketJs).toMatch(
+      /if \(existingWs\) \{\s*\n\s*delete sessionWsRefs\.current\[sessionId\];\s*\n\s*existingWs\.close\(\);\s*\n\s*\}\s*\n\s*connectToSessionRef\.current\?\.\(sessionId\);/,
+    );
+  });
+});
