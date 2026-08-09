@@ -157,6 +157,12 @@ export class SessionStream {
     this._initialAckTimeoutMs = options.initialAckTimeoutMs ?? INITIAL_ACK_TIMEOUT_MS;
     this._reconnectVerifyTimeoutMs = options.reconnectVerifyTimeoutMs ?? RECONNECT_VERIFY_TIMEOUT_MS;
     this._syncTimeoutMs = options.syncTimeoutMs ?? SYNC_TIMEOUT_MS;
+    // Injectable veto for a host-specific reconnect gate (e.g. the browser's
+    // checkAuthOrRedirect()/"server shutting down" check) — added symmetrically
+    // with EventsStream's option of the same name (.15/.18) so useWSConnection.js
+    // can wire the same auth-redirect gate onto both streams. Defaults to
+    // always allowing reconnect.
+    this._shouldReconnect = options.shouldReconnect ?? (() => true);
     this._backoffOptions = {
       baseDelay: options.reconnectBaseDelayMs,
       maxDelay: options.reconnectMaxDelayMs,
@@ -525,7 +531,24 @@ export class SessionStream {
       this._emitter.emit("error", new MittoNetworkError("SessionStream: reconnect attempt limit reached"));
       return;
     }
-    this._scheduleReconnect();
+
+    // Fast path: a synchronous `true` (the default) schedules the reconnect
+    // immediately, matching the pre-veto behavior exactly. Only a genuinely
+    // async/false result takes the microtask detour — see EventsStream's
+    // identical _reconnectOrStop (.15/.18) for the shared rationale.
+    const decision = this._shouldReconnect();
+    if (decision === true) {
+      this._scheduleReconnect();
+      return;
+    }
+    Promise.resolve(decision).then((allowed) => {
+      if (this._state !== "closed") return; // superseded (e.g. reconnected/closed meanwhile)
+      if (!allowed) {
+        this._state = "stopped";
+        return;
+      }
+      this._scheduleReconnect();
+    });
   }
 
   _scheduleReconnect() {

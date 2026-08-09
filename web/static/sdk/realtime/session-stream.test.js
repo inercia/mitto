@@ -429,6 +429,83 @@ describe("SessionStream: forceReconnect debounce", () => {
   });
 });
 
+describe("SessionStream: shouldReconnect veto", () => {
+  test("defaults to always reconnecting when no shouldReconnect is supplied", () => {
+    const h = makeHarness();
+    const reconnecting = [];
+    h.stream.on("reconnecting", (e) => reconnecting.push(e));
+    const ws = openStream(h);
+    ws.onclose({ code: 1006, reason: "", wasClean: false });
+    expect(reconnecting).toEqual([{ attempt: 1, delayMs: 1000 }]);
+  });
+
+  test("a synchronous true schedules the reconnect immediately (no microtask detour)", () => {
+    const h = makeHarness({ shouldReconnect: () => true });
+    const reconnecting = [];
+    h.stream.on("reconnecting", (e) => reconnecting.push(e));
+    const ws = openStream(h);
+    ws.onclose({ code: 1006, reason: "", wasClean: false });
+    // Synchronous — no flush() needed before the reconnect is scheduled.
+    expect(reconnecting).toEqual([{ attempt: 1, delayMs: 1000 }]);
+  });
+
+  test("() => false suppresses the reconnect and lands on \"stopped\"", async () => {
+    const h = makeHarness({ shouldReconnect: () => false });
+    const ws = openStream(h);
+    ws.onclose({ code: 1006, reason: "", wasClean: false });
+    await flush();
+    expect(h.stream.state).toBe("stopped");
+    h.clock.advance(60000);
+    expect(h.instances).toHaveLength(1);
+  });
+
+  test("an async false (Promise) suppresses the reconnect", async () => {
+    const h = makeHarness({ shouldReconnect: () => Promise.resolve(false) });
+    const ws = openStream(h);
+    ws.onclose({ code: 1006, reason: "", wasClean: false });
+    await flush();
+    expect(h.stream.state).toBe("stopped");
+    h.clock.advance(60000);
+    expect(h.instances).toHaveLength(1);
+  });
+
+  test("an async true (Promise) allows the reconnect after the microtask resolves", async () => {
+    const h = makeHarness({ shouldReconnect: () => Promise.resolve(true) });
+    const reconnecting = [];
+    h.stream.on("reconnecting", (e) => reconnecting.push(e));
+    const ws = openStream(h);
+    ws.onclose({ code: 1006, reason: "", wasClean: false });
+    expect(reconnecting).toEqual([]); // not yet — awaiting the promise
+    await flush();
+    expect(reconnecting).toEqual([{ attempt: 1, delayMs: 1000 }]);
+  });
+
+  test("a superseded close (state moved on before the promise resolves) is ignored", async () => {
+    const h = makeHarness({ shouldReconnect: () => Promise.resolve(true) });
+    const reconnecting = [];
+    h.stream.on("reconnecting", (e) => reconnecting.push(e));
+    const ws = openStream(h);
+    ws.onclose({ code: 1006, reason: "", wasClean: false });
+    // Explicit close() while the veto's promise is still in flight.
+    h.stream.close();
+    await flush();
+    expect(reconnecting).toEqual([]);
+    expect(h.stream.state).toBe("stopped");
+  });
+
+  test("shouldReconnect also gates a connect failure surfaced via _handleConnectFailure", async () => {
+    // authorizeWebSocket rejecting before a socket is ever created routes
+    // through _handleConnectFailure -> _reconnectOrStop, same veto path.
+    const h = makeHarness(
+      { shouldReconnect: () => false },
+      { auth: { authorizeWebSocket: () => Promise.reject(new Error("nope")) } },
+    );
+    h.stream.connect();
+    await flush();
+    expect(h.stream.state).toBe("stopped");
+  });
+});
+
 describe("SessionStream: keepalive and zombie detection", () => {
   test("sends a keepalive frame carrying last_seen_seq every keepaliveIntervalMs", () => {
     const h = makeHarness({ keepaliveIntervalMs: 1000 });
