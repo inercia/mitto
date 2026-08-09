@@ -88,18 +88,25 @@ func CreateSecureUpgrader(config WebSocketSecurityConfig, logger OriginCheckLogg
 	}
 }
 
-// createOriginChecker returns a function that validates WebSocket origins.
-func createOriginChecker(allowedOrigins []string, logger OriginCheckLogger, externalChecker ExternalConnectionChecker) func(*http.Request) bool {
-	// Build a set of allowed origins for fast lookup
-	allowedSet := make(map[string]bool)
-	allowAll := false
+// buildOriginAllowlist parses a WebSecurity.AllowedOrigins list into a
+// lowercase lookup set plus an "allow all" flag. Shared by the WebSocket
+// origin checker (createOriginChecker) and the REST CORS middleware
+// (CORSMiddleware, cors.go) so both interpret the same configuration
+// identically. A "*" entry short-circuits to allowAll=true.
+func buildOriginAllowlist(allowedOrigins []string) (set map[string]bool, allowAll bool) {
+	set = make(map[string]bool)
 	for _, origin := range allowedOrigins {
 		if origin == "*" {
-			allowAll = true
-			break
+			return set, true
 		}
-		allowedSet[strings.ToLower(origin)] = true
+		set[strings.ToLower(origin)] = true
 	}
+	return set, false
+}
+
+// createOriginChecker returns a function that validates WebSocket origins.
+func createOriginChecker(allowedOrigins []string, logger OriginCheckLogger, externalChecker ExternalConnectionChecker) func(*http.Request) bool {
+	allowedSet, allowAll := buildOriginAllowlist(allowedOrigins)
 
 	return func(r *http.Request) bool {
 		origin := r.Header.Get("Origin")

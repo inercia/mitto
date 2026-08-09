@@ -2,6 +2,8 @@
 
 This document defines the canonical conventions for Mitto's `internal/web` HTTP REST API and provides a complete **current → target** endpoint mapping. It is the keystone decision for the `mitto-ank` REST API coherence epic.
 
+> **Cross-origin / non-browser clients:** see [CORS and Cross-Origin Access](../config/web/README.md#cors-and-cross-origin-access) for the origin allowlist and [Shared Token (Bearer) Authentication](../config/web/README.md#shared-token-bearer-authentication) for programmatic auth — both required for a browser-based client on a different origin to call this API.
+
 ---
 
 ## 1. Resource Hierarchy

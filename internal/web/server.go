@@ -605,6 +605,14 @@ func NewServer(config Config) (*Server, error) {
 		}
 	}
 
+	// Initialize REST CORS config from the same allowlist used for WebSocket
+	// origins (mitto-7gta.27) — one allowlist governs cross-origin browser
+	// access for both transports. Empty by default: no CORS headers emitted.
+	corsConfig := middleware.DefaultCORSConfig()
+	if securityCfg != nil && len(securityCfg.AllowedOrigins) > 0 {
+		corsConfig.AllowedOrigins = securityCfg.AllowedOrigins
+	}
+
 	// Initialize CSRF manager
 	csrfMgr := middleware.NewCSRFManager()
 
@@ -1656,6 +1664,15 @@ func NewServer(config Config) (*Server, error) {
 	// Wrap with CSRF middleware (applies after auth, before request processing)
 	// This protects all state-changing API requests (POST, PUT, PATCH, DELETE)
 	handler = csrfMgr.CSRFMiddleware(handler)
+
+	// Wrap with CORS middleware (mitto-7gta.27), just outside CSRF/Auth.
+	// A preflight (OPTIONS) request carries no cookie/CSRF token, so it must
+	// terminate here rather than reach CSRF (which would 403 it) or Auth
+	// (which would 401/redirect it). Non-preflight requests fall through to
+	// the existing chain unchanged; only response headers are added. Stays
+	// inside rate limiting and request-size limiting below so preflights
+	// remain a metered, bounded surface. No-op when AllowedOrigins is empty.
+	handler = middleware.CORSMiddleware(corsConfig)(handler)
 
 	// Wrap with security middlewares (applied in reverse order)
 	// 1. Request size limit (1MB max for request bodies)

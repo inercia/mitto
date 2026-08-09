@@ -346,9 +346,14 @@ type WebSecurity struct {
 	// Examples: "127.0.0.1", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"
 	TrustedProxies []string `json:"trusted_proxies,omitempty"`
 
-	// AllowedOrigins is a list of allowed origins for WebSocket connections.
-	// If empty, only same-origin requests are allowed.
-	// Use "*" to allow all origins (not recommended for production).
+	// AllowedOrigins is a list of allowed origins for cross-origin browser
+	// access — both WebSocket connections and REST CORS headers (mitto-7gta.27)
+	// share this single allowlist. If empty, only same-origin requests are
+	// allowed (and no CORS headers are emitted at all). Use "*" to allow all
+	// origins; this is safe for REST because Access-Control-Allow-Credentials
+	// is never emitted, so cross-origin browser access always requires the
+	// shared bearer token (see WebAuth.SharedToken), never the ambient
+	// session cookie.
 	AllowedOrigins []string `json:"allowed_origins,omitempty"`
 
 	// RateLimitRPS is the rate limit for API requests per second per IP.

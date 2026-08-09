@@ -14,6 +14,7 @@ This document covers web server settings, authentication, security, and deployme
 - [Predefined Prompts](#predefined-prompts)
 - [Authentication](#authentication)
 - [Security Configuration](#security-configuration)
+  - [CORS and Cross-Origin Access](#cors-and-cross-origin-access)
   - [Scanner Defense](#scanner-defense)
 - [Lifecycle Hooks](#lifecycle-hooks)
 - [Multi-Workspace Support](#multi-workspace-support)
@@ -211,7 +212,9 @@ web:
 
 ### WebSocket Origin Validation
 
-Allow WebSocket connections from specific origins:
+Allow WebSocket connections from specific origins. This same list also gates
+REST CORS — see [CORS and Cross-Origin Access](#cors-and-cross-origin-access)
+below:
 
 ```yaml
 web:
@@ -220,6 +223,43 @@ web:
       - https://your-domain.com
       - https://abc123.ngrok.io
 ```
+
+### CORS and Cross-Origin Access
+
+The same `allowed_origins` list above also governs **CORS** (Cross-Origin
+Resource Sharing) for REST requests, so cross-origin browser clients (a web
+app on a different domain, an ngrok/tunnel front-end, etc.) can call the API:
+
+```yaml
+web:
+  security:
+    allowed_origins:
+      - https://your-domain.com
+      - https://abc123.ngrok.io
+```
+
+Notes:
+
+- **Empty by default.** If `allowed_origins` is unset, no CORS headers are
+  emitted at all — same-origin browsers work exactly as before, and
+  non-browser clients (curl, the Node/Bun SDK) are unaffected, since CORS is
+  a browser-only mechanism.
+- **Cookies are never sent cross-origin.** `Access-Control-Allow-Credentials`
+  is never emitted, so a cross-origin browser request can never carry the
+  session cookie. Cross-origin browser access must instead use the
+  [shared bearer token](#shared-token-bearer-authentication) — this is what
+  keeps CORS from weakening CSRF protection.
+- **`"*"` is safe here** precisely because credentials are never allowed —
+  it permits public, token-authenticated reads from any origin without
+  exposing cookie-authenticated sessions.
+- **A disallowed origin is not rejected** — the `Access-Control-Allow-Origin`
+  header is simply omitted (mirroring the WebSocket origin check above), so
+  the browser blocks the response from being read by script. Presence or
+  absence of an `Origin` header is never treated as an authentication
+  signal; requests without one pass through untouched.
+- Preflight (`OPTIONS`) requests are answered before reaching CSRF/Auth
+  (they carry neither a cookie nor a CSRF token), but still pass through
+  rate limiting and scanner defense like any other request.
 
 ### Rate Limiting
 
