@@ -167,6 +167,25 @@ function saveUIPreferencesToServer(prefs) {
 }
 
 /**
+ * Test-only: resets the module-level UI-preferences sync state
+ * (`initUIPreferences()`'s cached promise/result, registered
+ * `onUIPreferencesLoaded` listeners, and any pending debounced save timer)
+ * so each test can exercise `initUIPreferences()`/`saveUIPreferencesToServer`
+ * from a clean slate. Mirrors the `_resetBeadsGoneCache`/
+ * `_resetBeadsPreloadCache`/`_resetSdkClientForTests` test-only reset
+ * convention used elsewhere in `web/static/utils/`.
+ */
+export function _resetUIPreferencesStateForTests() {
+  if (saveTimeout) {
+    clearTimeout(saveTimeout);
+    saveTimeout = null;
+  }
+  uiPreferencesCache = null;
+  uiPreferencesSyncPromise = null;
+  uiPreferencesLoadedCallbacks = [];
+}
+
+/**
  * Get current UI preferences for saving to server.
  * @returns {Object}
  */
