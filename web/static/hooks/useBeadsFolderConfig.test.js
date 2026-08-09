@@ -29,12 +29,7 @@
  * assertions currently fail — that is the reproduction.
  */
 
-import {
-  describe,
-  test,
-  expect,
-  jest,
-} from "../utils/testing/testGlobals.js";
+import { describe, test, expect, jest } from "../utils/testing/testGlobals.js";
 
 // Minimal environment for the module and the transitive utils barrel it pulls in.
 global.window = global.window || {};
@@ -87,6 +82,24 @@ window.preact = {
     return ref;
   },
 };
+
+/** A successful JSON response shaped for sdk/core/transport.js's decodeBody()
+ * (reads .text() + a content-type header) and, on the CSRF pre-flight fetch
+ * sdk/auth/browser-cookie.js's browserCookieAuth issues when no cookie is
+ * present yet, .json() as well. Mirrors utils/storage.test.js's helper of
+ * the same name (mitto-7gta.17 slice S2). */
+function jsonResponse(data, status = 200) {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    headers: {
+      get: (name) =>
+        name.toLowerCase() === "content-type" ? "application/json" : null,
+    },
+    text: () => Promise.resolve(JSON.stringify(data)),
+    json: () => Promise.resolve(data),
+  };
+}
 
 async function loadHook() {
   currentSetters = [];
@@ -279,11 +292,7 @@ describe("saveBeadsPromptName / saveBeadsUpstream / saveBeadsPromptArgs read fro
       const method = (opts && opts.method) || "GET";
       if (method === "PUT") {
         putCalls.push({ url, body: opts && opts.body });
-        return Promise.resolve({
-          ok: true,
-          status: 200,
-          json: async () => ({ upstream: "prompts" }),
-        });
+        return Promise.resolve(jsonResponse({ upstream: "prompts" }));
       }
       // Never-resolving GET simulates the pre-fix race where the initial
       // reloadBeadsUpstream has not yet populated state at the time of PUT.
@@ -312,16 +321,14 @@ describe("saveBeadsPromptName / saveBeadsUpstream / saveBeadsPromptArgs read fro
     global.fetch = jest.fn((url, opts) => {
       if (opts && opts.method === "PUT") {
         putCalls.push({ url, body: opts.body });
-        return Promise.resolve({
-          ok: true,
-          status: 200,
-          json: async () => ({
+        return Promise.resolve(
+          jsonResponse({
             upstream: "prompts",
             pull_prompt: "PullOne",
             push_prompt: "PushOne",
             sync_prompt: "SyncOne",
           }),
-        });
+        );
       }
       return new Promise(() => {});
     });
@@ -343,11 +350,7 @@ describe("saveBeadsPromptName / saveBeadsUpstream / saveBeadsPromptArgs read fro
     global.fetch = jest.fn((url, opts) => {
       if (opts && opts.method === "PUT") {
         putCalls.push({ url, body: opts.body });
-        return Promise.resolve({
-          ok: true,
-          status: 200,
-          json: async () => ({ upstream: "prompts" }),
-        });
+        return Promise.resolve(jsonResponse({ upstream: "prompts" }));
       }
       return new Promise(() => {});
     });
@@ -374,11 +377,7 @@ describe("saveBeadsPromptName / saveBeadsUpstream / saveBeadsPromptArgs read fro
     global.fetch = jest.fn((url, opts) => {
       if (opts && opts.method === "PUT") {
         putCalls.push({ url, body: opts.body });
-        return Promise.resolve({
-          ok: true,
-          status: 200,
-          json: async () => ({ upstream: "prompts" }),
-        });
+        return Promise.resolve(jsonResponse({ upstream: "prompts" }));
       }
       return new Promise(() => {});
     });

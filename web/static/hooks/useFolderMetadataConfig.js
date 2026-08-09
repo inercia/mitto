@@ -25,12 +25,8 @@
 
 const { useState, useEffect, useRef } = window.preact;
 
-import {
-  authFetch,
-  secureFetch,
-  endpoints,
-  errorMessageFromData,
-} from "../utils/index.js";
+import { getSdkClient } from "../utils/sdkClient.js";
+import { errorMessage } from "../utils/sdkErrors.js";
 
 /**
  * useFolderMetadataConfig — cohesive state/handler bundle for the folder
@@ -90,8 +86,8 @@ export function useFolderMetadataConfig({ selectedFolder, groupedWorkspaces }) {
     setEditUserDataFields([]);
     if (firstWs.uuid) {
       setMetadataLoading(true);
-      authFetch(endpoints.workspaces.metadata(firstWs.uuid))
-        .then((r) => r.json())
+      getSdkClient()
+        .workspaces.getMetadata(firstWs.uuid)
         .then((data) => {
           setFolderMetadata(data || null);
           setEditMetaDescription(data?.description || "");
@@ -127,20 +123,14 @@ export function useFolderMetadataConfig({ selectedFolder, groupedWorkspaces }) {
     if (!editMetaDescription && !editMetaUrl && !editMetaGroup) return;
     const folderWsUuid = getFolderUuid();
     if (!folderWsUuid) return;
-    const res = await secureFetch(endpoints.workspaces.metadata(folderWsUuid), {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
+    try {
+      await getSdkClient().workspaces.setMetadata(folderWsUuid, {
         description: editMetaDescription,
         url: editMetaUrl,
         group: editMetaGroup,
-      }),
-    });
-    if (!res.ok) {
-      const errData = await res.json().catch(() => ({}));
-      throw new Error(
-        errorMessageFromData(errData, "Failed to save workspace metadata"),
-      );
+      });
+    } catch (err) {
+      throw new Error(errorMessage(err, "Failed to save workspace metadata"));
     }
   };
 
@@ -153,19 +143,12 @@ export function useFolderMetadataConfig({ selectedFolder, groupedWorkspaces }) {
     const folderWsUuid = getFolderUuid();
     if (!folderWsUuid) return;
     const validFields = editUserDataFields.filter((f) => f.name.trim() !== "");
-    const res = await secureFetch(
-      endpoints.workspaces.userDataSchema(folderWsUuid),
-      {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ fields: validFields }),
-      },
-    );
-    if (!res.ok) {
-      const errData = await res.json().catch(() => ({}));
-      throw new Error(
-        errorMessageFromData(errData, "Failed to save user data schema"),
-      );
+    try {
+      await getSdkClient().workspaces.setUserDataSchema(folderWsUuid, {
+        fields: validFields,
+      });
+    } catch (err) {
+      throw new Error(errorMessage(err, "Failed to save user data schema"));
     }
   };
 

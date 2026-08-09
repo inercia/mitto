@@ -14,18 +14,8 @@
 
 const { useState, useEffect, useRef } = window.preact;
 
-import { authFetch, secureFetch, endpoints } from "../utils/index.js";
-
-// Flatten the canonical nested error envelope {error:{code,message,details}} to a
-// flat message string. Returns "" when there is no error. Also accepts the legacy
-// flat {error:"..."} shape (the HTTP-200 bd-failure path) unchanged.
-function beadsErrorMessage(data) {
-  if (!data || !data.error) return "";
-  if (typeof data.error === "object") {
-    return (data.error && data.error.message) || "Request failed";
-  }
-  return data.error;
-}
+import { getSdkClient } from "../utils/sdkClient.js";
+import { errorMessage } from "../utils/sdkErrors.js";
 
 /**
  * useBeadsFolderConfig — cohesive state/handler bundle for the folder Beads tab.
@@ -107,23 +97,15 @@ export function useBeadsFolderConfig({
     setBeadsConfigLoading(true);
     setBeadsConfigError("");
     try {
-      const res = await authFetch(
-        endpoints.issues.config({ working_dir: workingDir }),
-      );
-      const data = await res.json();
+      const data = await getSdkClient().issues.config({
+        working_dir: workingDir,
+      });
       if (token !== configLoadTokenRef.current) return;
-      const errMsg = beadsErrorMessage(data);
-      if (errMsg) {
-        // bd missing or not initialized in this folder, or a validation error.
-        setBeadsConfig(null);
-        setBeadsConfigError(errMsg);
-      } else {
-        setBeadsConfig(data || {});
-      }
+      setBeadsConfig(data || {});
     } catch (err) {
       if (token !== configLoadTokenRef.current) return;
       setBeadsConfig(null);
-      setBeadsConfigError(err.message || "Failed to load beads config");
+      setBeadsConfigError(errorMessage(err, "Failed to load beads config"));
     } finally {
       if (token === configLoadTokenRef.current) {
         setBeadsConfigLoading(false);
@@ -138,22 +120,13 @@ export function useBeadsFolderConfig({
     setBeadsConfigSaving(true);
     setBeadsConfigError("");
     try {
-      const res = await secureFetch(
-        endpoints.issues.config({ working_dir: workingDir }),
-        {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ key, value }),
-        },
+      await getSdkClient().issues.setConfig(
+        { working_dir: workingDir },
+        { key, value },
       );
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok)
-        throw new Error(beadsErrorMessage(data) || "Failed to set config");
-      if (data && data.error)
-        throw new Error(data.stderr || beadsErrorMessage(data));
       await reloadBeadsConfig(workingDir);
     } catch (err) {
-      setBeadsConfigError(err.message || "Failed to set config");
+      setBeadsConfigError(errorMessage(err, "Failed to set config"));
     } finally {
       setBeadsConfigSaving(false);
     }
@@ -166,18 +139,13 @@ export function useBeadsFolderConfig({
     setBeadsConfigSaving(true);
     setBeadsConfigError("");
     try {
-      const res = await secureFetch(
-        endpoints.issues.config({ working_dir: workingDir, key }),
-        { method: "DELETE" },
-      );
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok)
-        throw new Error(beadsErrorMessage(data) || "Failed to delete config");
-      if (data && data.error)
-        throw new Error(data.stderr || beadsErrorMessage(data));
+      await getSdkClient().issues.deleteConfig({
+        working_dir: workingDir,
+        key,
+      });
       await reloadBeadsConfig(workingDir);
     } catch (err) {
-      setBeadsConfigError(err.message || "Failed to delete config");
+      setBeadsConfigError(errorMessage(err, "Failed to delete config"));
     } finally {
       setBeadsConfigSaving(false);
     }
@@ -187,10 +155,9 @@ export function useBeadsFolderConfig({
   const reloadBeadsUpstream = async (workingDir) => {
     const token = ++upstreamLoadTokenRef.current;
     try {
-      const res = await authFetch(
-        endpoints.issues.upstream({ working_dir: workingDir }),
-      );
-      const data = await res.json().catch(() => ({}));
+      const data = await getSdkClient().issues.upstream({
+        working_dir: workingDir,
+      });
       if (token !== upstreamLoadTokenRef.current) return;
       const pull = (data && data.pull_prompt) || "";
       const push = (data && data.push_prompt) || "";
@@ -225,13 +192,10 @@ export function useBeadsFolderConfig({
     const token = ++upstreamPromptsLoadTokenRef.current;
     setBeadsUpstreamPromptsLoading(true);
     try {
-      const res = await authFetch(
-        endpoints.workspacePrompts.list({
-          working_dir: workingDir,
-          include_global: true,
-        }),
-      );
-      const data = await res.json().catch(() => ({}));
+      const data = await getSdkClient().prompts.list({
+        working_dir: workingDir,
+        include_global: true,
+      });
       if (token !== upstreamPromptsLoadTokenRef.current) return;
       const all = (data && data.prompts) || [];
       setBeadsUpstreamPrompts(all.filter((p) => p.enabled !== false));
@@ -265,18 +229,10 @@ export function useBeadsFolderConfig({
         body.push_prompt_args = beadsPushPromptArgsRef.current;
         body.sync_prompt_args = beadsSyncPromptArgsRef.current;
       }
-      const res = await secureFetch(
-        endpoints.issues.upstream({ working_dir: workingDir }),
-        {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
-        },
+      const data = await getSdkClient().issues.setUpstream(
+        { working_dir: workingDir },
+        body,
       );
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok)
-        throw new Error(beadsErrorMessage(data) || "Failed to set upstream");
-      if (data && data.error) throw new Error(beadsErrorMessage(data));
       const rPull = (data && data.pull_prompt) || "";
       const rPush = (data && data.push_prompt) || "";
       const rSync = (data && data.sync_prompt) || "";
@@ -298,7 +254,7 @@ export function useBeadsFolderConfig({
       beadsSyncPromptArgsRef.current = rSyncArgs;
     } catch (err) {
       setBeadsUpstream(prev); // revert on failure
-      setBeadsConfigError(err.message || "Failed to set upstream");
+      setBeadsConfigError(errorMessage(err, "Failed to set upstream"));
     } finally {
       setBeadsUpstreamSaving(false);
     }
@@ -326,32 +282,24 @@ export function useBeadsFolderConfig({
     ref.current = value; // keep refs in sync with optimistic state
     setBeadsUpstreamSaving(true);
     try {
-      const res = await secureFetch(
-        endpoints.issues.upstream({ working_dir: workingDir }),
+      await getSdkClient().issues.setUpstream(
+        { working_dir: workingDir },
         {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            upstream: "prompts",
-            // Read from refs, not closure — see ref declarations for the
-            // race that leaves the untouched fields as "" and wipes them.
-            pull_prompt: beadsPullPromptRef.current,
-            push_prompt: beadsPushPromptRef.current,
-            sync_prompt: beadsSyncPromptRef.current,
-            pull_prompt_args: beadsPullPromptArgsRef.current,
-            push_prompt_args: beadsPushPromptArgsRef.current,
-            sync_prompt_args: beadsSyncPromptArgsRef.current,
-          }),
+          upstream: "prompts",
+          // Read from refs, not closure — see ref declarations for the
+          // race that leaves the untouched fields as "" and wipes them.
+          pull_prompt: beadsPullPromptRef.current,
+          push_prompt: beadsPushPromptRef.current,
+          sync_prompt: beadsSyncPromptRef.current,
+          pull_prompt_args: beadsPullPromptArgsRef.current,
+          push_prompt_args: beadsPushPromptArgsRef.current,
+          sync_prompt_args: beadsSyncPromptArgsRef.current,
         },
       );
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok)
-        throw new Error(beadsErrorMessage(data) || "Failed to save prompt");
-      if (data && data.error) throw new Error(beadsErrorMessage(data));
     } catch (err) {
       setter(prev); // revert on failure
       ref.current = prev;
-      setBeadsConfigError(err.message || "Failed to save prompt");
+      setBeadsConfigError(errorMessage(err, "Failed to save prompt"));
     } finally {
       setBeadsUpstreamSaving(false);
     }
@@ -381,31 +329,23 @@ export function useBeadsFolderConfig({
     ref.current = args; // keep refs in sync with optimistic state
     setBeadsUpstreamSaving(true);
     try {
-      const res = await secureFetch(
-        endpoints.issues.upstream({ working_dir: workingDir }),
+      await getSdkClient().issues.setUpstream(
+        { working_dir: workingDir },
         {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            upstream: "prompts",
-            // Read from refs, not closure — same rationale as saveBeadsPromptName.
-            pull_prompt: beadsPullPromptRef.current,
-            push_prompt: beadsPushPromptRef.current,
-            sync_prompt: beadsSyncPromptRef.current,
-            pull_prompt_args: beadsPullPromptArgsRef.current,
-            push_prompt_args: beadsPushPromptArgsRef.current,
-            sync_prompt_args: beadsSyncPromptArgsRef.current,
-          }),
+          upstream: "prompts",
+          // Read from refs, not closure — same rationale as saveBeadsPromptName.
+          pull_prompt: beadsPullPromptRef.current,
+          push_prompt: beadsPushPromptRef.current,
+          sync_prompt: beadsSyncPromptRef.current,
+          pull_prompt_args: beadsPullPromptArgsRef.current,
+          push_prompt_args: beadsPushPromptArgsRef.current,
+          sync_prompt_args: beadsSyncPromptArgsRef.current,
         },
       );
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok)
-        throw new Error(beadsErrorMessage(data) || "Failed to save arguments");
-      if (data && data.error) throw new Error(beadsErrorMessage(data));
     } catch (err) {
       setter(prev); // revert on failure
       ref.current = prev;
-      setBeadsConfigError(err.message || "Failed to save arguments");
+      setBeadsConfigError(errorMessage(err, "Failed to save arguments"));
     } finally {
       setBeadsUpstreamSaving(false);
     }
