@@ -40,6 +40,11 @@ import {
 } from "./realtime/pending-prompts.js";
 import { noneAuth, sharedTokenAuth, browserCookieAuth } from "./auth/index.js";
 import { createSessionsResource } from "./resources/sessions.js";
+import { createPromptsResource } from "./resources/prompts.js";
+import { createProcessorsResource } from "./resources/processors.js";
+import { createShortcutsResource } from "./resources/shortcuts.js";
+import { createConfigResource } from "./resources/config.js";
+import { createTtlCache, keyForParams } from "./cache/ttl-cache.js";
 
 /**
  * The embedded copy ships lockstep with the server (§6): its version is the
@@ -60,6 +65,13 @@ export function createClient(options = {}) {
     // a same-origin browser client) — this default has no wsBaseUrl.
     endpoints: createEndpoints(config),
     sessions: createSessionsResource(config),
+    prompts: createPromptsResource(config),
+    processors: createProcessorsResource(config),
+    shortcuts: createShortcutsResource(config),
+    // Named `serverConfig`, not `config`, because `client.config` is already
+    // the resolved internal SDK config object (see `config` above and
+    // utils/sdkClient.js's `getSdkClient().config.storage` call site).
+    serverConfig: createConfigResource(config),
     sessionStream: (sessionId, streamOptions) =>
       createSessionStream(config, sessionId, streamOptions),
     eventsStream: (streamOptions) => createEventsStream(config, streamOptions),
@@ -83,3 +95,4 @@ export {
 };
 export { generatePromptId, createMemoryPendingPromptStore, createStoragePendingPromptStore };
 export { EVENTS, COMMANDS, LEGACY_EVENTS, isKnownEventType, isCommandType };
+export { createTtlCache, keyForParams };

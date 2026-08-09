@@ -343,6 +343,47 @@ describe("request — response decoding", () => {
   });
 });
 
+describe("request — allowStatus (mitto-7gta.10)", () => {
+  test("a status in allowStatus does not throw, even though it is non-2xx", async () => {
+    const response = fakeResponse({ status: 304, text: "" });
+    const config = configWithFetch(async () => response);
+    await expect(
+      request(config, { method: "GET", path: "/x", allowStatus: [304] }),
+    ).resolves.toBeNull();
+  });
+
+  test("raw + allowStatus together resolve with the untouched allow-listed Response", async () => {
+    const response = fakeResponse({ status: 304, text: "" });
+    const config = configWithFetch(async () => response);
+    expect(
+      await request(config, {
+        method: "GET",
+        path: "/x",
+        raw: true,
+        allowStatus: [304],
+      }),
+    ).toBe(response);
+  });
+
+  test("a status not in allowStatus still throws", async () => {
+    const config = configWithFetch(async () =>
+      fakeResponse({ status: 500, text: "" }),
+    );
+    await expect(
+      request(config, { method: "GET", path: "/x", allowStatus: [304] }),
+    ).rejects.toMatchObject({ status: 500 });
+  });
+
+  test("omitting allowStatus preserves prior behavior (304 still throws)", async () => {
+    const config = configWithFetch(async () =>
+      fakeResponse({ status: 304, text: "" }),
+    );
+    await expect(
+      request(config, { method: "GET", path: "/x" }),
+    ).rejects.toMatchObject({ status: 304 });
+  });
+});
+
 describe("request — errors", () => {
   test("a non-2xx response throws a MittoApiError built from the body", async () => {
     const config = configWithFetch(async () =>

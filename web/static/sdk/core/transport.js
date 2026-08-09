@@ -121,6 +121,12 @@ async function decodeBody(response) {
  * @param {AbortSignal} [options.signal]
  * @param {boolean} [options.raw] - when true, resolve with the untouched
  *   `Response` instead of a decoded body (for streaming/blob callers)
+ * @param {number[]} [options.allowStatus] - HTTP statuses to exclude from the
+ *   error path (in addition to the normal 2xx range), e.g. `[304]` so a
+ *   cache decorator can observe a conditional-request "Not Modified" response
+ *   itself instead of it always being thrown as a `MittoApiError`. Implies
+ *   `raw: true` handling for the allow-listed status is left to the caller —
+ *   pass `raw: true` alongside this to get the untouched `Response`.
  * @returns {Promise<*>}
  */
 export async function request(config, options = {}) {
@@ -156,7 +162,8 @@ export async function request(config, options = {}) {
     });
   }
 
-  if (!response.ok) {
+  const allowed = response.ok || (options.allowStatus || []).includes(response.status);
+  if (!allowed) {
     const responseBody = await decodeBody(response);
     const error = errorFromResponse({
       status: response.status,
