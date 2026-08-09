@@ -1541,6 +1541,18 @@ func (sm *SessionManager) DeleteChildSessions(parentID string) {
 		// so we need their IDs now to close their ACP processes and broadcast deletions.
 		grandchildIDs, _ := store.FindAllChildrenRecursive(childID)
 
+		// Fire the conversationClosed processor pipeline for the child and every
+		// auto-grandchild BEFORE closing ACP processes / deleting from the store,
+		// so processors can still read session metadata via the store
+		// (mitto-sj6v). All use "parent_deleted" to match the REST delete
+		// path's cascade-suppression contract (archiveReasonParentDeleted in
+		// internal/processors/apply.go) since these are all cascade closes
+		// triggered by the parent's archive, not the parent's own close.
+		sm.ApplyOnCloseProcessors(childID, "parent_deleted")
+		for _, gcID := range grandchildIDs {
+			sm.ApplyOnCloseProcessors(gcID, "parent_deleted")
+		}
+
 		// Gracefully close ACP process for the child
 		if !sm.CloseSessionGracefully(childID, "parent_archived", childArchiveTimeout) {
 			sm.CloseSession(childID, "parent_archived_timeout")
@@ -1599,6 +1611,19 @@ func (sm *SessionManager) deleteSessionAndChildren(sessionID, reason string) {
 		sm.logger.Warn("Failed to find descendants for self-destruct deletion",
 			"session_id", sessionID,
 			"error", err)
+	}
+
+	// Fire the conversationClosed processor pipeline for the session and every
+	// descendant BEFORE closing ACP processes / deleting from the store, so
+	// processors can still read session metadata via the store (mitto-sj6v).
+	// Descendants use "parent_deleted" (not "ancestor_self_destructed") to
+	// keep parity with the REST delete path's cascade-suppression contract
+	// (internal/processors/apply.go archiveReasonParentDeleted) — any other
+	// reason string would make every descendant run the full prompt-mode
+	// close pipeline instead of being suppressed.
+	sm.ApplyOnCloseProcessors(sessionID, reason)
+	for _, descendantID := range descendantIDs {
+		sm.ApplyOnCloseProcessors(descendantID, "parent_deleted")
 	}
 
 	// Close ACP processes for the session and all descendants.

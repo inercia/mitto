@@ -252,6 +252,15 @@ type SessionManager interface {
 	BroadcastWaitingForChildren(sessionID string, isWaiting bool)
 	// DeleteChildSessions permanently deletes all child sessions when a parent is archived.
 	DeleteChildSessions(parentID string)
+	// ApplyOnCloseProcessors runs the conversationClosed processor pipeline for a
+	// session being closed (deleted via MCP or self-destructed). Fire-and-forget;
+	// callers must invoke it BEFORE removing the session from the store, since
+	// processors read session metadata via the store. Descendants of a cascade
+	// delete must be passed reason "parent_deleted" to match the REST delete
+	// path's cascade-suppression contract (internal/processors/apply.go,
+	// mitto-ce3b) — any other reason string causes every descendant to run the
+	// full prompt-mode close pipeline instead of being suppressed (mitto-sj6v).
+	ApplyOnCloseProcessors(sessionID string, reason string)
 	// GetWorkspaces returns all configured workspaces.
 	GetWorkspaces() []config.WorkspaceSettings
 	// GetWorkspaceByUUID returns the workspace with the given UUID.

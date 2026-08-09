@@ -135,6 +135,7 @@ func (m *mockSessionManagerForModelTag) BroadcastSessionArchived(string, bool, .
 func (m *mockSessionManagerForModelTag) BroadcastSessionDeleted(string)            {}
 func (m *mockSessionManagerForModelTag) BroadcastWaitingForChildren(string, bool)  {}
 func (m *mockSessionManagerForModelTag) DeleteChildSessions(string)                {}
+func (m *mockSessionManagerForModelTag) ApplyOnCloseProcessors(string, string)     {}
 func (m *mockSessionManagerForModelTag) GetWorkspaces() []config.WorkspaceSettings { return nil }
 func (m *mockSessionManagerForModelTag) GetWorkspaceByUUID(string) *config.WorkspaceSettings {
 	return nil

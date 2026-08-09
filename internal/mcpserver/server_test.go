@@ -1460,6 +1460,7 @@ func (m *mockSessionManager) BroadcastSessionArchived(sessionID string, archived
 func (m *mockSessionManager) BroadcastSessionDeleted(sessionID string)                     {}
 func (m *mockSessionManager) BroadcastWaitingForChildren(sessionID string, isWaiting bool) {}
 func (m *mockSessionManager) DeleteChildSessions(parentID string)                          {}
+func (m *mockSessionManager) ApplyOnCloseProcessors(sessionID string, reason string)       {}
 func (m *mockSessionManager) GetWorkspaces() []config.WorkspaceSettings                    { return nil }
 func (m *mockSessionManager) GetWorkspaceByUUID(uuid string) *config.WorkspaceSettings     { return nil }
 func (m *mockSessionManager) BroadcastSessionRenamed(sessionID string, newName string)     {}
@@ -3669,6 +3670,8 @@ func (m *mockSessionManagerForWorkspaces) BroadcastSessionDeleted(sessionID stri
 func (m *mockSessionManagerForWorkspaces) BroadcastWaitingForChildren(sessionID string, isWaiting bool) {
 }
 func (m *mockSessionManagerForWorkspaces) DeleteChildSessions(parentID string) {}
+func (m *mockSessionManagerForWorkspaces) ApplyOnCloseProcessors(sessionID string, reason string) {
+}
 func (m *mockSessionManagerForWorkspaces) GetWorkspaces() []config.WorkspaceSettings {
 	return m.workspaces
 }
@@ -4022,6 +4025,7 @@ func (m *mockSessionManagerForWorkspaceUpdate) BroadcastSessionArchived(string, 
 func (m *mockSessionManagerForWorkspaceUpdate) BroadcastSessionDeleted(string)           {}
 func (m *mockSessionManagerForWorkspaceUpdate) BroadcastWaitingForChildren(string, bool) {}
 func (m *mockSessionManagerForWorkspaceUpdate) DeleteChildSessions(string)               {}
+func (m *mockSessionManagerForWorkspaceUpdate) ApplyOnCloseProcessors(string, string)    {}
 func (m *mockSessionManagerForWorkspaceUpdate) GetWorkspaces() []config.WorkspaceSettings {
 	return m.workspaces
 }
@@ -4396,6 +4400,7 @@ func (m *mockSessionManagerForWait) BroadcastSessionArchived(string, bool, ...se
 func (m *mockSessionManagerForWait) BroadcastSessionDeleted(string)                      {}
 func (m *mockSessionManagerForWait) BroadcastWaitingForChildren(string, bool)            {}
 func (m *mockSessionManagerForWait) DeleteChildSessions(string)                          {}
+func (m *mockSessionManagerForWait) ApplyOnCloseProcessors(string, string)               {}
 func (m *mockSessionManagerForWait) GetWorkspaces() []config.WorkspaceSettings           { return nil }
 func (m *mockSessionManagerForWait) GetWorkspaceByUUID(string) *config.WorkspaceSettings { return nil }
 func (m *mockSessionManagerForWait) BroadcastSessionRenamed(string, string)              {}
@@ -5424,6 +5429,7 @@ func (m *mockSessionManagerForChildren) BroadcastSessionArchived(string, bool, .
 func (m *mockSessionManagerForChildren) BroadcastSessionDeleted(string)            {}
 func (m *mockSessionManagerForChildren) BroadcastWaitingForChildren(string, bool)  {}
 func (m *mockSessionManagerForChildren) DeleteChildSessions(string)                {}
+func (m *mockSessionManagerForChildren) ApplyOnCloseProcessors(string, string)     {}
 func (m *mockSessionManagerForChildren) GetWorkspaces() []config.WorkspaceSettings { return nil }
 func (m *mockSessionManagerForChildren) GetWorkspaceByUUID(string) *config.WorkspaceSettings {
 	return nil
@@ -5620,6 +5626,7 @@ func (m *mockSessionManagerForChildrenMutable) BroadcastSessionArchived(string, 
 func (m *mockSessionManagerForChildrenMutable) BroadcastSessionDeleted(string)           {}
 func (m *mockSessionManagerForChildrenMutable) BroadcastWaitingForChildren(string, bool) {}
 func (m *mockSessionManagerForChildrenMutable) DeleteChildSessions(string)               {}
+func (m *mockSessionManagerForChildrenMutable) ApplyOnCloseProcessors(string, string)    {}
 func (m *mockSessionManagerForChildrenMutable) GetWorkspaces() []config.WorkspaceSettings {
 	return nil
 }
@@ -6280,6 +6287,7 @@ func (m *mockSessionManagerForAutoResume) BroadcastSessionArchived(string, bool,
 func (m *mockSessionManagerForAutoResume) BroadcastSessionDeleted(string)            {}
 func (m *mockSessionManagerForAutoResume) BroadcastWaitingForChildren(string, bool)  {}
 func (m *mockSessionManagerForAutoResume) DeleteChildSessions(string)                {}
+func (m *mockSessionManagerForAutoResume) ApplyOnCloseProcessors(string, string)     {}
 func (m *mockSessionManagerForAutoResume) GetWorkspaces() []config.WorkspaceSettings { return nil }
 func (m *mockSessionManagerForAutoResume) GetWorkspaceByUUID(string) *config.WorkspaceSettings {
 	return nil
@@ -8053,6 +8061,7 @@ func (m *mockSessionManagerCrossWorkspace) BroadcastSessionArchived(string, bool
 func (m *mockSessionManagerCrossWorkspace) BroadcastSessionDeleted(string)           {}
 func (m *mockSessionManagerCrossWorkspace) BroadcastWaitingForChildren(string, bool) {}
 func (m *mockSessionManagerCrossWorkspace) DeleteChildSessions(string)               {}
+func (m *mockSessionManagerCrossWorkspace) ApplyOnCloseProcessors(string, string)    {}
 
 func (m *mockSessionManagerCrossWorkspace) GetWorkspaces() []config.WorkspaceSettings {
 	var result []config.WorkspaceSettings

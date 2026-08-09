@@ -406,6 +406,19 @@ func (s *Server) handleDeleteConversation(ctx context.Context, req *mcp.CallTool
 			"error", findErr)
 	}
 
+	// Fire the conversationClosed processor pipeline for the child and every
+	// cascaded descendant BEFORE closing ACP processes / deleting from the
+	// store, so processors can still read session metadata via the store
+	// (mitto-sj6v). Descendants use "parent_deleted" (not
+	// "ancestor_deleted_via_mcp") to match the REST delete path's
+	// cascade-suppression contract — see the ApplyOnCloseProcessors doc comment.
+	if sessionManager != nil {
+		sessionManager.ApplyOnCloseProcessors(input.ConversationID, "deleted")
+		for _, descendantID := range allDescendantIDs {
+			sessionManager.ApplyOnCloseProcessors(descendantID, "parent_deleted")
+		}
+	}
+
 	// Gracefully stop the child and all its descendants
 	if sessionManager != nil {
 		reason := "deleted_by_parent_via_mcp"

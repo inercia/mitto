@@ -1961,6 +1961,64 @@ func TestSessionManager_DeleteSessionAndChildren(t *testing.T) {
 	}
 }
 
+// TestSessionManager_DeleteSessionAndChildren_FiresApplyOnCloseProcessors
+// reproduces mitto-sj6v: deleteSessionAndChildren (the self-destruct path,
+// reached via BackgroundSession.RequestSelfDestruct -> OnSelfDestruct at
+// session_manager.go:2048/:2663) never invokes ApplyOnCloseProcessors, so a
+// self-destructing conversation silently skips the entire conversationClosed
+// processor pipeline (memory extraction, preference memorization, rules
+// updates, ...). Contrast with the REST DELETE path
+// (internal/web/handlers/session_delete.go), covered by
+// TestHandleDeleteSession_FiresApplyOnCloseProcessors, which DOES fire the
+// pipeline via the "close-phase processor pipeline starting" log line
+// (internal/processors/apply.go ApplyOnClose). This test currently FAILS:
+// the close-phase pipeline never starts for the self-destruct path.
+func TestSessionManager_DeleteSessionAndChildren_FiresApplyOnCloseProcessors(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	const sid = "selfdestruct-close-repro"
+	workingDir := t.TempDir()
+
+	if err := store.Create(session.Metadata{
+		SessionID:  sid,
+		ACPServer:  "test-server",
+		WorkingDir: workingDir,
+	}); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	handler := &recordingHandler{}
+	logger := slog.New(handler)
+
+	sm := NewSessionManager("echo test", "test-server", true, logger)
+	sm.SetStore(store)
+	sm.SetProcessorManager(processors.NewManager("", logger))
+
+	sm.deleteSessionAndChildren(sid, "self_destructed")
+
+	// ApplyOnClose logs this line unconditionally (even with zero configured
+	// processors) as the very first action of the close-phase pipeline, from
+	// a fire-and-forget goroutine spawned by ApplyOnCloseProcessors — poll
+	// briefly to avoid a race against that goroutine.
+	const startMsg = "close-phase processor pipeline starting"
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if handler.hasRecord(slog.LevelInfo, startMsg) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if !handler.hasRecord(slog.LevelInfo, startMsg) {
+		t.Fatalf("close-phase processor pipeline never started for self-destructed session %q "+
+			"(mitto-sj6v: deleteSessionAndChildren does not call ApplyOnCloseProcessors)", sid)
+	}
+}
+
 // TestBuildProcessorArgOverrides verifies the helper that converts []ProcessorOverride
 // into the map[procName]map[argName]value form (mitto-5g2v.2 wiring).
 func TestBuildProcessorArgOverrides(t *testing.T) {

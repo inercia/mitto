@@ -2553,6 +2553,12 @@ func (a *sessionManagerAdapter) DeleteChildSessions(parentID string) {
 	a.sm.DeleteChildSessions(parentID)
 }
 
+// ApplyOnCloseProcessors runs the conversationClosed processor pipeline for a
+// session being closed (mitto-sj6v).
+func (a *sessionManagerAdapter) ApplyOnCloseProcessors(sessionID string, reason string) {
+	a.sm.ApplyOnCloseProcessors(sessionID, reason)
+}
+
 // GetWorkspaces returns all configured workspaces.
 func (a *sessionManagerAdapter) GetWorkspaces() []configPkg.WorkspaceSettings {
 	return a.sm.GetWorkspaces()
