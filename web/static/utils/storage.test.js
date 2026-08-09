@@ -149,9 +149,11 @@ describe("initUIPreferences", () => {
     expect(capturedMethod).toBe("GET");
     expect(capturedUrl).toContain("/api/ui-preferences");
     expect(mockStore["mitto_conversation_grouping_mode"]).toBe("workspace");
-    expect(JSON.parse(mockStore["mitto_conversation_expanded_groups"])).toEqual({
-      foo: true,
-    });
+    expect(JSON.parse(mockStore["mitto_conversation_expanded_groups"])).toEqual(
+      {
+        foo: true,
+      },
+    );
     expect(mockStore["mitto_prompt_sort_mode"]).toBe("name");
     expect(mockStore["mitto-font-size"]).toBe("large");
     expect(mockStore["mitto-theme"]).toBe("dark");

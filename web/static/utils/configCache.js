@@ -46,7 +46,8 @@ const configTtlCache = createTtlCache({
 const fetchConfigCached = configTtlCache.wrap(
   async (acpServer, sessionId, revalidationHeader) => {
     const headers = {};
-    if (revalidationHeader) headers[revalidationHeader.name] = revalidationHeader.value;
+    if (revalidationHeader)
+      headers[revalidationHeader.name] = revalidationHeader.value;
     const response = await getSdkClient().serverConfig.get(
       { acp_server: acpServer, session_id: sessionId },
       { headers, raw: true, allowStatus: [304] },

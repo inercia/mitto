@@ -70,7 +70,8 @@ const promptsTtlCache = createTtlCache({
 const fetchWorkspacePromptsRaw = promptsTtlCache.wrap(
   async (params, revalidationHeader) => {
     const headers = {};
-    if (revalidationHeader) headers[revalidationHeader.name] = revalidationHeader.value;
+    if (revalidationHeader)
+      headers[revalidationHeader.name] = revalidationHeader.value;
     const response = await getSdkClient().prompts.list(params, {
       headers,
       raw: true,
