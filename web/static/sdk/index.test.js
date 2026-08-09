@@ -9,7 +9,7 @@
  * (`client.sessions`, streams, etc.) predates this bead and is out of scope
  * here.
  */
-import { createClient, createTtlCache, keyForParams } from "./index.js";
+import { createClient, createTtlCache, keyForParams, withIssueCaches } from "./index.js";
 
 function noopFetch() {
   return Promise.resolve({
@@ -55,6 +55,30 @@ describe("createClient() wiring (mitto-7gta.10)", () => {
     expect(typeof client.serverConfig.runnerDefaults).toBe("function");
   });
 
+  test("exposes client.issues with the full resource surface (mitto-7gta.11)", () => {
+    const client = createClient({ fetch: noopFetch });
+    for (const method of [
+      "list",
+      "stats",
+      "show",
+      "create",
+      "update",
+      "remove",
+      "status",
+      "comments",
+      "dependencies",
+      "labels",
+      "labelsAll",
+      "cleanup",
+      "config",
+      "upstream",
+      "sync",
+      "migrate",
+    ]) {
+      expect(typeof client.issues[method]).toBe("function");
+    }
+  });
+
   test("client.config remains the resolved SDK config, distinct from client.serverConfig (naming-collision regression guard)", () => {
     const client = createClient({ fetch: noopFetch, baseUrl: "http://x" });
     expect(client.config.baseUrl).toBe("http://x");
@@ -81,5 +105,16 @@ describe("createTtlCache / keyForParams public export (mitto-7gta.10)", () => {
 
   test("keyForParams is re-exported and usable from the public entry point", () => {
     expect(keyForParams({ b: "2", a: "1" })).toBe("a=1&b=2");
+  });
+});
+
+describe("withIssueCaches public export (mitto-7gta.11)", () => {
+  test("withIssueCaches is re-exported and decorates client.issues without mutating it", () => {
+    const client = createClient({ fetch: noopFetch });
+    const wrapped = withIssueCaches(client.issues, {});
+    expect(typeof wrapped.show).toBe("function");
+    expect(typeof wrapped.preload).toBe("function");
+    expect(wrapped).not.toBe(client.issues);
+    expect(client.issues.preload).toBeUndefined();
   });
 });
