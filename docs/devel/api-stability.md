@@ -22,7 +22,7 @@ rules for deprecating and removing it.
 
 | Tier           | Meaning                                                                                                                            |
 | -------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| `stable`       | Public contract. Breaking changes require the deprecation window (§3).                                                             |
+| `stable`       | Public contract. Breaking changes require the deprecation window (§4).                                                             |
 | `experimental` | Opt-in, may change or be removed without the full window. Must be explicitly listed with an expiry date; not covered unless named. |
 | `internal`     | Everything else. No stability promise. **This is the default.**                                                                    |
 
@@ -36,10 +36,10 @@ lists 11 endpoints called by callers that bypass any SDK entirely (the native
 macOS app, load balancers, viewer pages, webhook callers). Those endpoints
 are `stable`, plus the extra constraint that their **path cannot even be
 renamed** — normal `stable` entries may be renamed with a deprecation window
-(old path returns the §6 headers pointing at the new one); `external-stable`
+(old path returns the §5 headers pointing at the new one); `external-stable`
 entries may not, because there is no SDK indirection to redirect through.
 Removal of an `external-stable` endpoint requires a major version, not just
-the standard window (§3).
+the standard window (§4).
 
 ## 3. Tier is derived, not enumerated
 
@@ -100,8 +100,12 @@ may only happen in a minor or major release per semver (never a patch).
 
 ## 6. Deprecation register
 
-The normative list of everything currently deprecated, across all surfaces.
-Nothing may be deprecated, promoted, or removed without a row here.
+The normative list of everything currently deprecated across the four API
+surfaces in scope for this record (REST, WebSocket, JS SDK, Go SDK).
+Nothing on those surfaces may be deprecated, promoted, or removed without a
+row here. Deprecations outside those surfaces — e.g. the `@mitto:` prompt
+substitution syntax in [prompts.md](../config/prompts.md) — are not API
+deprecations and are not tracked here.
 
 | Surface   | Identifier          | Tier     | Deprecated in | Sunset | Replacement                                  |
 | --------- | ------------------- | -------- | ------------- | ------ | -------------------------------------------- |
