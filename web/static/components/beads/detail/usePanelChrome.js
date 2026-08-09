@@ -38,7 +38,7 @@
 const { html, useState, useEffect, useCallback, useMemo, useRef } =
   window.preact;
 
-import { authFetch, endpoints } from "../../../utils/index.js";
+import { getSdkClient } from "../../../utils/sdkClient.js";
 import { buildPromptGroupMenuItems } from "../../ContextMenu.js";
 import {
   PlusIcon,
@@ -259,14 +259,12 @@ export function usePanelChrome({
       try {
         // Merge global + folder shortcuts for the beadsIssue section. Global
         // buttons come first; folder buttons duplicating a global prompt drop out.
-        const [folderRes, globalRes] = await Promise.all([
-          authFetch(endpoints.folders.shortcuts({ working_dir: workingDir })),
-          authFetch(endpoints.global.shortcuts()).catch(() => null),
+        const [cfg, globalData] = await Promise.all([
+          getSdkClient().shortcuts.getFolder({ working_dir: workingDir }),
+          getSdkClient()
+            .shortcuts.getGlobal()
+            .catch(() => ({})),
         ]);
-        const cfg = await folderRes.json().catch(() => ({}));
-        const globalData = globalRes
-          ? await globalRes.json().catch(() => ({}))
-          : {};
         const globalList = globalData?.sections?.beadsIssue || [];
         const folderList = cfg?.sections?.beadsIssue || [];
         const globalNames = new Set(globalList.map((s) => s.prompt));

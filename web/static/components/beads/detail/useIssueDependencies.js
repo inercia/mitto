@@ -24,8 +24,8 @@
 
 const { useState, useCallback } = window.preact;
 
-import { authFetch, secureFetch, endpoints } from "../../../utils/index.js";
-import { readBeadsResponse } from "../../../utils/beads.js";
+import { getSdkClient } from "../../../utils/sdkClient.js";
+import { errorMessage } from "../../../utils/sdkErrors.js";
 
 export function useIssueDependencies({
   data,
@@ -59,42 +59,38 @@ export function useIssueDependencies({
       if (!workingDir || !data || !data.id) return;
       setDepsLoading(true);
       try {
-        const res = await authFetch(
-          endpoints.issues.show(data.id, { working_dir: workingDir }),
-        );
-        const respData = await readBeadsResponse(res);
-        if (!res.ok || respData.error) {
-          setDeps([]);
-          setLabels([]);
-          setComments([]);
-          setNotes("");
-          if (seedDraftNotes)
-            setViewDraft((prev) => ({ ...prev, notes: "" }));
-        } else {
-          const issueObj = Array.isArray(respData) ? respData[0] : respData;
-          setDeps((issueObj && issueObj.dependencies) || []);
-          setLabels((issueObj && issueObj.labels) || []);
-          setComments((issueObj && issueObj.comments) || []);
-          const fetchedNotes = (issueObj && issueObj.notes) || "";
-          setNotes(fetchedNotes);
-          if (seedDraftNotes)
-            setViewDraft((prev) => ({
-              ...prev,
-              notes: fetchedNotes,
-            }));
-        }
+        const respData = await getSdkClient().issues.show(data.id, {
+          working_dir: workingDir,
+        });
+        const issueObj = Array.isArray(respData) ? respData[0] : respData;
+        setDeps((issueObj && issueObj.dependencies) || []);
+        setLabels((issueObj && issueObj.labels) || []);
+        setComments((issueObj && issueObj.comments) || []);
+        const fetchedNotes = (issueObj && issueObj.notes) || "";
+        setNotes(fetchedNotes);
+        if (seedDraftNotes)
+          setViewDraft((prev) => ({
+            ...prev,
+            notes: fetchedNotes,
+          }));
       } catch (_err) {
         setDeps([]);
         setLabels([]);
         setComments([]);
         setNotes("");
-        if (seedDraftNotes)
-          setViewDraft((prev) => ({ ...prev, notes: "" }));
+        if (seedDraftNotes) setViewDraft((prev) => ({ ...prev, notes: "" }));
       } finally {
         setDepsLoading(false);
       }
     },
-    [workingDir, data && data.id, setLabels, setComments, setNotes, setViewDraft],
+    [
+      workingDir,
+      data && data.id,
+      setLabels,
+      setComments,
+      setNotes,
+      setViewDraft,
+    ],
   );
 
   // Wire the fetchDepsRef forward-reference bridge used by useIssueLabels and
@@ -111,23 +107,11 @@ export function useIssueDependencies({
       try {
         const body = { depends_on: dependsOn, action };
         if (action === "add") body.type = depType || "blocks";
-        const res = await secureFetch(
-          endpoints.issues.dependencies(data.id, { working_dir: workingDir }),
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(body),
-          },
+        await getSdkClient().issues.dependencies(
+          data.id,
+          { working_dir: workingDir },
+          body,
         );
-        const respData = await readBeadsResponse(res);
-        if (!res.ok || respData.error) {
-          showToast &&
-            showToast({
-              style: "error",
-              title: respData.error || `Failed to ${action} dependency`,
-            });
-          return false;
-        }
         showToast &&
           showToast({
             style: "success",
@@ -143,7 +127,7 @@ export function useIssueDependencies({
         showToast &&
           showToast({
             style: "error",
-            title: err.message || `Failed to ${action} dependency`,
+            title: errorMessage(err, `Failed to ${action} dependency`),
           });
         return false;
       } finally {
@@ -169,41 +153,33 @@ export function useIssueDependencies({
       setDepsBusy(true);
       try {
         const post = (body) =>
-          secureFetch(
-            endpoints.issues.dependencies(data.id, { working_dir: workingDir }),
-            {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(body),
-            },
+          getSdkClient().issues.dependencies(
+            data.id,
+            { working_dir: workingDir },
+            body,
           );
-        let res = await post({ depends_on: dependsOn, action: "remove" });
-        let respData = await readBeadsResponse(res);
-        if (!res.ok || respData.error) {
+        try {
+          await post({ depends_on: dependsOn, action: "remove" });
+        } catch (err) {
           showToast &&
             showToast({
               style: "error",
-              title: respData.error || "Failed to change dependency type",
+              title: errorMessage(err, "Failed to change dependency type"),
             });
           return;
         }
-        res = await post({
-          depends_on: dependsOn,
-          type: nextType,
-          action: "add",
-        });
-        respData = await readBeadsResponse(res);
-        if (!res.ok || respData.error) {
-          showToast &&
-            showToast({
-              style: "error",
-              title: respData.error || "Failed to change dependency type",
-            });
-        } else {
+        try {
+          await post({ depends_on: dependsOn, type: nextType, action: "add" });
           showToast &&
             showToast({
               style: "success",
               title: `Changed ${dependsOn} to ${nextType}`,
+            });
+        } catch (err) {
+          showToast &&
+            showToast({
+              style: "error",
+              title: errorMessage(err, "Failed to change dependency type"),
             });
         }
         await fetchDeps(false);
@@ -212,7 +188,7 @@ export function useIssueDependencies({
         showToast &&
           showToast({
             style: "error",
-            title: err.message || "Failed to change dependency type",
+            title: errorMessage(err, "Failed to change dependency type"),
           });
       } finally {
         setDepsBusy(false);

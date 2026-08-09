@@ -6,9 +6,6 @@ const { html, useState, useEffect, useCallback, useMemo, useRef, Fragment } =
 
 import {
   apiUrl,
-  authFetch,
-  secureFetch,
-  endpoints,
   getBeadsFilters,
   setBeadsFilters,
   getBeadsGrouping,
@@ -16,8 +13,13 @@ import {
   getBeadsSort,
   setBeadsSort,
 } from "../utils/index.js";
+import { getSdkClient } from "../utils/sdkClient.js";
 import {
-  readBeadsResponse,
+  beadsErrorFrom,
+  errorMessage,
+  isNotFoundError,
+} from "../utils/sdkErrors.js";
+import {
   matchesSearch,
   cmpBySort,
   computeEffectiveStreamingSet,
@@ -288,12 +290,18 @@ export function BeadsDetailPanel({
  * Extracted for direct unit-testing: the surrounding component reads
  * `window.preact` at module load and cannot be imported under jsdom.
  */
-export function computePopstateAction(newState, ourKey, currentPos, historyLen) {
+export function computePopstateAction(
+  newState,
+  ourKey,
+  currentPos,
+  historyLen,
+) {
   if (!newState || newState.__mittoBeadsKey !== ourKey) {
     return { kind: "close" };
   }
   const raw = newState.__mittoBeadsPos;
-  const numeric = typeof raw === "number" && Number.isFinite(raw) ? raw : currentPos;
+  const numeric =
+    typeof raw === "number" && Number.isFinite(raw) ? raw : currentPos;
   const upper = historyLen > 0 ? historyLen - 1 : 0;
   const clamped = Math.max(0, Math.min(upper, numeric));
   const delta = clamped - currentPos;
@@ -516,16 +524,20 @@ export function BeadsIssueView({
     let cancelled = false;
     (async () => {
       try {
-        const res = await authFetch(
-          endpoints.issues.show(currentIssueId, { working_dir: workingDir }),
-        );
+        const data = await getSdkClient().issues.show(currentIssueId, {
+          working_dir: workingDir,
+        });
+        if (cancelled) return;
+        const issueObj = Array.isArray(data) ? data[0] : data;
+        setIssue(issueObj || null);
+      } catch (err) {
         if (cancelled) return;
         // mitto-9vh: distinguish 404 (issue was deleted externally) from
         // transient errors. Mark the id gone so future refreshNonce bumps do
         // not re-issue the same 404, and suppress the toast — external
         // deletion by an agent / CLI / git pull is expected and should not
         // spam every connected client.
-        if (res.status === 404) {
+        if (isNotFoundError(err)) {
           goneIdsRef.current.add(currentIssueId);
           setLoadError({
             message: "This issue no longer exists.",
@@ -533,22 +545,9 @@ export function BeadsIssueView({
           });
           return;
         }
-        const data = await readBeadsResponse(res);
-        if (cancelled) return;
-        if (!res.ok || data.error) {
-          const msg = data.error || "Failed to load issue";
-          setLoadError(msg);
-          showToast && showToast({ style: "error", title: msg });
-        } else {
-          const issueObj = Array.isArray(data) ? data[0] : data;
-          setIssue(issueObj || null);
-        }
-      } catch (_err) {
-        if (!cancelled) {
-          const msg = "Failed to load issue";
-          setLoadError(msg);
-          showToast && showToast({ style: "error", title: msg });
-        }
+        const msg = beadsErrorFrom(err, "Failed to load issue").error;
+        setLoadError(msg);
+        showToast && showToast({ style: "error", title: msg });
       }
     })();
     return () => {
@@ -582,12 +581,11 @@ export function BeadsIssueView({
     let cancelled = false;
     (async () => {
       try {
-        const res = await authFetch(
-          endpoints.issues.list({ working_dir: workingDir }),
-        );
-        const data = await readBeadsResponse(res);
+        const data = await getSdkClient().issues.list({
+          working_dir: workingDir,
+        });
         if (cancelled) return;
-        if (res.ok && !data.error && Array.isArray(data)) {
+        if (Array.isArray(data)) {
           setListIssues(data);
         }
       } catch (_err) {
@@ -666,43 +664,28 @@ export function BeadsIssueView({
       const action = iss.status === "closed" ? "reopen" : "close";
       setStatusBusy(true);
       try {
-        const res = await secureFetch(
-          endpoints.issues.status(iss.id, { working_dir: workingDir }),
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ action }),
-          },
+        await getSdkClient().issues.status(
+          iss.id,
+          { working_dir: workingDir },
+          { action },
         );
-        const data = await readBeadsResponse(res);
-        if (!res.ok || data.error) {
-          // mitto-n5mw: HTTP 409 beads_schema_skew must open the
-          // SchemaSkewDialog instead of a generic error toast — otherwise the
-          // user sees "nothing happened" on a schema-behind clone.
-          if (isBeadsSchemaSkew(data)) {
-            onSchemaSkew(data);
-            return;
-          }
-          showToast &&
-            showToast({
-              style: "error",
-              title: data.error || `Failed to ${action} issue`,
-            });
-        } else {
-          showToast &&
-            showToast({
-              style: "success",
-              title:
-                action === "close" ? `Closed ${iss.id}` : `Reopened ${iss.id}`,
-            });
-          refresh();
-        }
-      } catch (err) {
         showToast &&
           showToast({
-            style: "error",
-            title: err.message || `Failed to ${action} issue`,
+            style: "success",
+            title:
+              action === "close" ? `Closed ${iss.id}` : `Reopened ${iss.id}`,
           });
+        refresh();
+      } catch (err) {
+        // mitto-n5mw: HTTP 409 beads_schema_skew must open the
+        // SchemaSkewDialog instead of a generic error toast — otherwise the
+        // user sees "nothing happened" on a schema-behind clone.
+        const data = beadsErrorFrom(err, `Failed to ${action} issue`);
+        if (isBeadsSchemaSkew(data)) {
+          onSchemaSkew(data);
+          return;
+        }
+        showToast && showToast({ style: "error", title: data.error });
       } finally {
         setStatusBusy(false);
       }
@@ -716,43 +699,28 @@ export function BeadsIssueView({
       const action = iss.status === "deferred" ? "undefer" : "defer";
       setStatusBusy(true);
       try {
-        const res = await secureFetch(
-          endpoints.issues.status(iss.id, { working_dir: workingDir }),
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ action }),
-          },
+        await getSdkClient().issues.status(
+          iss.id,
+          { working_dir: workingDir },
+          { action },
         );
-        const data = await readBeadsResponse(res);
-        if (!res.ok || data.error) {
-          // mitto-n5mw: schema-skew branch (see handleToggleStatus above).
-          if (isBeadsSchemaSkew(data)) {
-            onSchemaSkew(data);
-            return;
-          }
-          showToast &&
-            showToast({
-              style: "error",
-              title: data.error || `Failed to ${action} issue`,
-            });
-        } else {
-          showToast &&
-            showToast({
-              style: "success",
-              title:
-                action === "defer"
-                  ? `Deferred ${iss.id}`
-                  : `Undeferred ${iss.id}`,
-            });
-          refresh();
-        }
-      } catch (err) {
         showToast &&
           showToast({
-            style: "error",
-            title: err.message || `Failed to ${action} issue`,
+            style: "success",
+            title:
+              action === "defer"
+                ? `Deferred ${iss.id}`
+                : `Undeferred ${iss.id}`,
           });
+        refresh();
+      } catch (err) {
+        // mitto-n5mw: schema-skew branch (see handleToggleStatus above).
+        const data = beadsErrorFrom(err, `Failed to ${action} issue`);
+        if (isBeadsSchemaSkew(data)) {
+          onSchemaSkew(data);
+          return;
+        }
+        showToast && showToast({ style: "error", title: data.error });
       } finally {
         setStatusBusy(false);
       }
@@ -765,34 +733,17 @@ export function BeadsIssueView({
     const id = deleteTarget.id;
     setDeletingIssue(true);
     try {
-      const res = await secureFetch(
-        endpoints.issues.remove(id, { working_dir: workingDir }),
-        {
-          method: "DELETE",
-        },
-      );
-      const data = await readBeadsResponse(res);
-      if (!res.ok || data.error) {
-        // mitto-n5mw: schema-skew branch (see handleToggleStatus above).
-        if (isBeadsSchemaSkew(data)) {
-          onSchemaSkew(data);
-          return;
-        }
-        showToast &&
-          showToast({
-            style: "error",
-            title: data.error || "Failed to delete issue",
-          });
-      } else {
-        showToast && showToast({ style: "success", title: `Deleted ${id}` });
-        onReturnToConversation && onReturnToConversation();
-      }
+      await getSdkClient().issues.remove(id, { working_dir: workingDir });
+      showToast && showToast({ style: "success", title: `Deleted ${id}` });
+      onReturnToConversation && onReturnToConversation();
     } catch (err) {
-      showToast &&
-        showToast({
-          style: "error",
-          title: err.message || "Failed to delete issue",
-        });
+      // mitto-n5mw: schema-skew branch (see handleToggleStatus above).
+      const data = beadsErrorFrom(err, "Failed to delete issue");
+      if (isBeadsSchemaSkew(data)) {
+        onSchemaSkew(data);
+        return;
+      }
+      showToast && showToast({ style: "error", title: data.error });
     } finally {
       setDeletingIssue(false);
       setDeleteTarget(null);
@@ -1039,29 +990,17 @@ function SchemaSkewDialog({
     setIsRunning(true);
     setErrorMsg("");
     try {
-      const res = await secureFetch(endpoints.beads.migrate(), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ working_dir: workingDir, mode }),
-      });
-      const data = await readBeadsResponse(res);
-      if (!res.ok || data.error) {
-        if (data.code === "migrate_from_ui_disabled") {
-          setErrorMsg(
-            "UI-initiated beads migrations have been disabled by the administrator on this Mitto instance (web.beads.allow_migrate_from_ui: false). Run the migration from a terminal on the designated clone.",
-          );
-        } else {
-          setErrorMsg(
-            data.error || data.message || `Migration failed (HTTP ${res.status})`,
-          );
-        }
-        setIsRunning(false);
-        return;
-      }
+      await getSdkClient().issues.migrate({ working_dir: workingDir, mode });
       // Success: parent handles toast + refresh + close.
       onSuccess?.();
     } catch (err) {
-      setErrorMsg(err?.message || "Migration request failed");
+      if (err?.code === "migrate_from_ui_disabled") {
+        setErrorMsg(
+          "UI-initiated beads migrations have been disabled by the administrator on this Mitto instance (web.beads.allow_migrate_from_ui: false). Run the migration from a terminal on the designated clone.",
+        );
+      } else {
+        setErrorMsg(beadsErrorFrom(err, "Migration request failed").error);
+      }
       setIsRunning(false);
     }
   };
@@ -1084,81 +1023,93 @@ function SchemaSkewDialog({
       onCancel=${onCancel}
     >
       <div class="mt-3 space-y-3" data-testid="schema-skew-dialog-body">
-        ${dbPath &&
-        html`<div
-          class="text-xs font-mono break-all text-mitto-text-secondary"
-        >
-          ${dbPath}
-        </div>`}
-        ${hint &&
-        html`<div class="text-xs text-mitto-text-secondary">${hint}</div>`}
-        ${hasOptions &&
-        html`
-          <div class="space-y-2">
-            ${options.map(
-              (opt) => html`
-                <label
-                  class="flex items-start gap-3 cursor-pointer select-none"
-                >
-                  <input
-                    type="radio"
-                    name="schema-skew-mode"
-                    value=${opt.mode}
-                    checked=${mode === opt.mode}
-                    disabled=${isRunning}
-                    onChange=${() => setMode(opt.mode)}
-                    class="radio radio-sm mt-0.5"
-                  />
-                  <span class="text-sm text-mitto-text-secondary">
-                    <span class="font-medium">${opt.mode}</span>
-                    ${opt.description
-                      ? html` — ${opt.description}`
-                      : opt.command
-                        ? html` — <code class="text-xs">${opt.command}</code>`
-                        : null}
-                  </span>
-                </label>
-              `,
-            )}
-          </div>
-        `}
-        ${mode === "migrate" &&
-        html`
-          <label
-            class="flex items-start gap-3 cursor-pointer select-none text-amber-400 border border-amber-500 bg-amber-500/10 rounded p-2"
+        ${
+          dbPath &&
+          html`<div
+            class="text-xs font-mono break-all text-mitto-text-secondary"
           >
-            <input
-              type="checkbox"
-              checked=${ackChecked}
-              disabled=${isRunning}
-              onChange=${(e) => setAckChecked(e.target.checked)}
-              class="checkbox checkbox-sm mt-0.5"
-              data-testid="schema-skew-ack-checkbox"
-            />
-            <span class="text-xs">
-              I understand this is the designated migrator clone for this
-              remote-backed database. Running migrate on any other clone will
-              fork the schema (upstream bug #4259).
-            </span>
-          </label>
-        `}
-        ${errorMsg &&
-        html`
-          <div
-            class="text-xs text-red-400 break-all"
-            data-testid="schema-skew-dialog-error"
-          >
-            ${errorMsg}
-          </div>
-        `}
-        ${!canConfirm &&
-        !errorMsg &&
-        html`
-          <div class="text-xs text-mitto-text-muted">
-            Check the acknowledgement above to enable
-            <span class="italic">Yes, run migration</span>.
-          </div>
-        `}
+            ${dbPath}
+          </div>`
+        }
+        ${
+          hint &&
+          html`<div class="text-xs text-mitto-text-secondary">${hint}</div>`
+        }
+        ${
+          hasOptions &&
+          html`
+            <div class="space-y-2">
+              ${options.map(
+                (opt) => html`
+                  <label
+                    class="flex items-start gap-3 cursor-pointer select-none"
+                  >
+                    <input
+                      type="radio"
+                      name="schema-skew-mode"
+                      value=${opt.mode}
+                      checked=${mode === opt.mode}
+                      disabled=${isRunning}
+                      onChange=${() => setMode(opt.mode)}
+                      class="radio radio-sm mt-0.5"
+                    />
+                    <span class="text-sm text-mitto-text-secondary">
+                      <span class="font-medium">${opt.mode}</span>
+                      ${opt.description
+                        ? html` — ${opt.description}`
+                        : opt.command
+                          ? html` — <code class="text-xs">${opt.command}</code>`
+                          : null}
+                    </span>
+                  </label>
+                `,
+              )}
+            </div>
+          `
+        }
+        ${
+          mode === "migrate" &&
+          html`
+            <label
+              class="flex items-start gap-3 cursor-pointer select-none text-amber-400 border border-amber-500 bg-amber-500/10 rounded p-2"
+            >
+              <input
+                type="checkbox"
+                checked=${ackChecked}
+                disabled=${isRunning}
+                onChange=${(e) => setAckChecked(e.target.checked)}
+                class="checkbox checkbox-sm mt-0.5"
+                data-testid="schema-skew-ack-checkbox"
+              />
+              <span class="text-xs">
+                I understand this is the designated migrator clone for this
+                remote-backed database. Running migrate on any other clone will
+                fork the schema (upstream bug #4259).
+              </span>
+            </label>
+          `
+        }
+        ${
+          errorMsg &&
+          html`
+            <div
+              class="text-xs text-red-400 break-all"
+              data-testid="schema-skew-dialog-error"
+            >
+              ${errorMsg}
+            </div>
+          `
+        }
+        ${
+          !canConfirm &&
+          !errorMsg &&
+          html`
+            <div class="text-xs text-mitto-text-muted">
+              Check the acknowledgement above to enable
+              <span class="italic">Yes, run migration</span>.
+            </div>
+          `
+        }
       </div>
     </${ConfirmDialog}>
   `;
@@ -1386,33 +1337,20 @@ export function BeadsView({
     setLoading(true);
     setError(null);
     try {
-      const res = await authFetch(
-        endpoints.issues.list({ working_dir: workingDir }),
-      );
-      const data = await readBeadsResponse(res);
-      if (!res.ok || data.error) {
-        if (data.code === "beads_schema_skew") {
-          setSchemaSkew({
-            message: data.error,
-            dbPath: (data.details && data.details.db_path) || "",
-            hint: (data.details && data.details.hint) || "",
-            options:
-              (data.details && Array.isArray(data.details.options)
-                ? data.details.options
-                : []) || [],
-          });
-        } else {
-          setSchemaSkew(null);
-        }
-        setError(data.error || data.message || "Failed to load issues");
-        setIssues([]);
+      const data = await getSdkClient().issues.list({
+        working_dir: workingDir,
+      });
+      setSchemaSkew(null);
+      setIssues(Array.isArray(data) ? data : []);
+    } catch (err) {
+      const data = beadsErrorFrom(err, "Failed to load issues");
+      if (isBeadsSchemaSkew(data)) {
+        setSchemaSkew(toSchemaSkewState(data));
       } else {
         setSchemaSkew(null);
-        setIssues(Array.isArray(data) ? data : []);
       }
-    } catch (err) {
-      setSchemaSkew(null);
-      setError(err.message || "Failed to load issues");
+      setError(data.error);
+      setIssues([]);
     } finally {
       setLoading(false);
     }
@@ -1443,10 +1381,9 @@ export function BeadsView({
     let cancelled = false;
     (async () => {
       try {
-        const res = await authFetch(
-          endpoints.issues.upstream({ working_dir: workingDir }),
-        );
-        const data = await readBeadsResponse(res);
+        const data = await getSdkClient().issues.upstream({
+          working_dir: workingDir,
+        });
         if (!cancelled) {
           setUpstream((data && data.upstream) || "none");
           setPullPromptName((data && data.pull_prompt) || "");
@@ -1481,14 +1418,12 @@ export function BeadsView({
         // Merge global (settings.json) + folder (folders.json) shortcuts for the
         // tasksList section. Global buttons come first; folder buttons that
         // duplicate a global prompt are dropped.
-        const [folderRes, globalRes] = await Promise.all([
-          authFetch(endpoints.folders.shortcuts({ working_dir: workingDir })),
-          authFetch(endpoints.global.shortcuts()).catch(() => null),
+        const [folderData, globalData] = await Promise.all([
+          getSdkClient().shortcuts.getFolder({ working_dir: workingDir }),
+          getSdkClient()
+            .shortcuts.getGlobal()
+            .catch(() => ({})),
         ]);
-        const folderData = await folderRes.json().catch(() => ({}));
-        const globalData = globalRes
-          ? await globalRes.json().catch(() => ({}))
-          : {};
         const globalList = globalData?.sections?.tasksList || [];
         const folderList = folderData?.sections?.tasksList || [];
         const globalNames = new Set(globalList.map((s) => s.prompt));
@@ -1566,41 +1501,29 @@ export function BeadsView({
       if (!workingDir || syncAction) return;
       setSyncAction(action);
       try {
-        const res = await secureFetch(
-          endpoints.issues.sync({ working_dir: workingDir }),
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ action }),
-          },
+        await getSdkClient().issues.sync(
+          { working_dir: workingDir },
+          { action },
         );
-        const data = await readBeadsResponse(res);
-        if (!res.ok || data.error) {
-          showToast &&
-            showToast({
-              style: "error",
-              title: data.error || `Failed to ${action}`,
-              message: data.stderr,
-            });
-        } else {
-          const verb =
-            action === "pull"
-              ? "Pulled"
-              : action === "push"
-                ? "Pushed"
-                : "Synced";
-          showToast &&
-            showToast({
-              style: "success",
-              title: `${verb} with ${UPSTREAM_LABELS[upstream] || upstream}`,
-            });
-          fetchList();
-        }
+        const verb =
+          action === "pull"
+            ? "Pulled"
+            : action === "push"
+              ? "Pushed"
+              : "Synced";
+        showToast &&
+          showToast({
+            style: "success",
+            title: `${verb} with ${UPSTREAM_LABELS[upstream] || upstream}`,
+          });
+        fetchList();
       } catch (err) {
+        const data = beadsErrorFrom(err, `Failed to ${action}`);
         showToast &&
           showToast({
             style: "error",
-            title: err.message || `Failed to ${action}`,
+            title: data.error,
+            message: data.stderr,
           });
       } finally {
         setSyncAction(null);
@@ -1992,30 +1915,9 @@ export function BeadsView({
     setCleanupProgress(null);
     setShowCleanupConfirm(false);
     try {
-      const res = await secureFetch(
-        endpoints.issues.cleanup({ working_dir: workingDir }),
-        {
-          method: "POST",
-        },
-      );
-      const data = await readBeadsResponse(res);
-      if (!res.ok || data.error) {
-        // mitto-n5mw: HTTP 409 beads_schema_skew must open the
-        // SchemaSkewDialog instead of a generic error toast.
-        if (isBeadsSchemaSkew(data)) {
-          setSchemaSkew(toSchemaSkewState(data));
-          setShowMigrateDialog(true);
-          setCleaningUp(false);
-          return;
-        }
-        showToast &&
-          showToast({
-            style: "error",
-            title: data.error || "Failed to clean up issues",
-          });
-        setCleaningUp(false);
-        return;
-      }
+      const data = await getSdkClient().issues.cleanup({
+        working_dir: workingDir,
+      });
       if (!data.started) {
         if (data.already_running) {
           showToast &&
@@ -2044,11 +1946,15 @@ export function BeadsView({
           })
         : null;
     } catch (err) {
-      showToast &&
-        showToast({
-          style: "error",
-          title: err.message || "Failed to clean up issues",
-        });
+      // mitto-n5mw: HTTP 409 beads_schema_skew must open the
+      // SchemaSkewDialog instead of a generic error toast.
+      const data = beadsErrorFrom(err, "Failed to clean up issues");
+      if (isBeadsSchemaSkew(data)) {
+        setSchemaSkew(toSchemaSkewState(data));
+        setShowMigrateDialog(true);
+      } else {
+        showToast && showToast({ style: "error", title: data.error });
+      }
       setCleaningUp(false);
     }
   }, [workingDir, showToast]);
@@ -2139,25 +2045,20 @@ export function BeadsView({
       if (childAction === "close") {
         for (const { issue: child } of deleteTargetOpenDescendants) {
           try {
-            const cres = await secureFetch(
-              endpoints.issues.status(child.id, { working_dir: workingDir }),
-              {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ action: "close" }),
-              },
+            await getSdkClient().issues.status(
+              child.id,
+              { working_dir: workingDir },
+              { action: "close" },
             );
-            const cdata = await readBeadsResponse(cres);
-            if (!cres.ok || cdata.error) {
-              // mitto-n5mw: bail out of the loop on schema-skew so a long epic
-              // does not fire N identical 409s before surfacing the dialog.
-              if (isBeadsSchemaSkew(cdata)) {
-                schemaSkewData = cdata;
-                break;
-              }
-              closeFailed++;
-            } else closedCount++;
+            closedCount++;
           } catch (err) {
+            // mitto-n5mw: bail out of the loop on schema-skew so a long epic
+            // does not fire N identical 409s before surfacing the dialog.
+            const cdata = beadsErrorFrom(err);
+            if (isBeadsSchemaSkew(cdata)) {
+              schemaSkewData = cdata;
+              break;
+            }
             closeFailed++;
           }
         }
@@ -2168,22 +2069,17 @@ export function BeadsView({
         );
         for (const { issue: child } of ordered) {
           try {
-            const cres = await secureFetch(
-              endpoints.issues.remove(child.id, { working_dir: workingDir }),
-              {
-                method: "DELETE",
-              },
-            );
-            const cdata = await readBeadsResponse(cres);
-            if (!cres.ok || cdata.error) {
-              // mitto-n5mw: bail out of the loop on schema-skew (see above).
-              if (isBeadsSchemaSkew(cdata)) {
-                schemaSkewData = cdata;
-                break;
-              }
-              childDeleteFailed++;
-            } else childDeletedCount++;
+            await getSdkClient().issues.remove(child.id, {
+              working_dir: workingDir,
+            });
+            childDeletedCount++;
           } catch (err) {
+            // mitto-n5mw: bail out of the loop on schema-skew (see above).
+            const cdata = beadsErrorFrom(err);
+            if (isBeadsSchemaSkew(cdata)) {
+              schemaSkewData = cdata;
+              break;
+            }
             childDeleteFailed++;
           }
         }
@@ -2197,51 +2093,43 @@ export function BeadsView({
         return;
       }
 
-      const res = await secureFetch(
-        endpoints.issues.remove(id, { working_dir: workingDir }),
-        {
-          method: "DELETE",
-        },
-      );
-      const data = await readBeadsResponse(res);
-      if (!res.ok || data.error) {
+      try {
+        await getSdkClient().issues.remove(id, { working_dir: workingDir });
+      } catch (err) {
         // mitto-n5mw: schema-skew on the parent delete opens the dialog.
+        const data = beadsErrorFrom(err, "Failed to delete issue");
         if (isBeadsSchemaSkew(data)) {
           setSchemaSkew(toSchemaSkewState(data));
           setShowMigrateDialog(true);
           return;
         }
+        showToast && showToast({ style: "error", title: data.error });
+        return;
+      }
+      let title = `Deleted ${id}`;
+      if (closedCount > 0) {
+        title += ` and closed ${closedCount} child issue${closedCount === 1 ? "" : "s"}`;
+      }
+      if (childDeletedCount > 0) {
+        title += ` and deleted ${childDeletedCount} child issue${childDeletedCount === 1 ? "" : "s"}`;
+      }
+      const failedTotal = closeFailed + childDeleteFailed;
+      if (failedTotal > 0) {
+        const verb = childAction === "delete" ? "delete" : "close";
         showToast &&
           showToast({
-            style: "error",
-            title: data.error || "Failed to delete issue",
+            style: "warning",
+            title: `${title} (${failedTotal} child issue${failedTotal === 1 ? "" : "s"} failed to ${verb})`,
           });
       } else {
-        let title = `Deleted ${id}`;
-        if (closedCount > 0) {
-          title += ` and closed ${closedCount} child issue${closedCount === 1 ? "" : "s"}`;
-        }
-        if (childDeletedCount > 0) {
-          title += ` and deleted ${childDeletedCount} child issue${childDeletedCount === 1 ? "" : "s"}`;
-        }
-        const failedTotal = closeFailed + childDeleteFailed;
-        if (failedTotal > 0) {
-          const verb = childAction === "delete" ? "delete" : "close";
-          showToast &&
-            showToast({
-              style: "warning",
-              title: `${title} (${failedTotal} child issue${failedTotal === 1 ? "" : "s"} failed to ${verb})`,
-            });
-        } else {
-          showToast && showToast({ style: "success", title });
-        }
-        fetchList();
+        showToast && showToast({ style: "success", title });
       }
+      fetchList();
     } catch (err) {
       showToast &&
         showToast({
           style: "error",
-          title: err.message || "Failed to delete issue",
+          title: errorMessage(err, "Failed to delete issue"),
         });
     } finally {
       setDeletingIssue(false);
@@ -2264,45 +2152,30 @@ export function BeadsView({
       const action = issue.status === "closed" ? "reopen" : "close";
       setStatusBusy(true);
       try {
-        const res = await secureFetch(
-          endpoints.issues.status(issue.id, { working_dir: workingDir }),
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ action }),
-          },
+        await getSdkClient().issues.status(
+          issue.id,
+          { working_dir: workingDir },
+          { action },
         );
-        const data = await readBeadsResponse(res);
-        if (!res.ok || data.error) {
-          // mitto-n5mw: schema-skew opens the SchemaSkewDialog directly
-          // (main-view has setSchemaSkew / setShowMigrateDialog in scope).
-          if (isBeadsSchemaSkew(data)) {
-            setSchemaSkew(toSchemaSkewState(data));
-            setShowMigrateDialog(true);
-            return;
-          }
-          showToast &&
-            showToast({
-              style: "error",
-              title: data.error || `Failed to ${action} issue`,
-            });
-        } else {
-          showToast &&
-            showToast({
-              style: "success",
-              title:
-                action === "close"
-                  ? `Closed ${issue.id}`
-                  : `Reopened ${issue.id}`,
-            });
-          fetchList();
-        }
-      } catch (err) {
         showToast &&
           showToast({
-            style: "error",
-            title: err.message || `Failed to ${action} issue`,
+            style: "success",
+            title:
+              action === "close"
+                ? `Closed ${issue.id}`
+                : `Reopened ${issue.id}`,
           });
+        fetchList();
+      } catch (err) {
+        // mitto-n5mw: schema-skew opens the SchemaSkewDialog directly
+        // (main-view has setSchemaSkew / setShowMigrateDialog in scope).
+        const data = beadsErrorFrom(err, `Failed to ${action} issue`);
+        if (isBeadsSchemaSkew(data)) {
+          setSchemaSkew(toSchemaSkewState(data));
+          setShowMigrateDialog(true);
+          return;
+        }
+        showToast && showToast({ style: "error", title: data.error });
       } finally {
         setStatusBusy(false);
       }
@@ -2319,44 +2192,29 @@ export function BeadsView({
       const action = issue.status === "deferred" ? "undefer" : "defer";
       setStatusBusy(true);
       try {
-        const res = await secureFetch(
-          endpoints.issues.status(issue.id, { working_dir: workingDir }),
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ action }),
-          },
+        await getSdkClient().issues.status(
+          issue.id,
+          { working_dir: workingDir },
+          { action },
         );
-        const data = await readBeadsResponse(res);
-        if (!res.ok || data.error) {
-          // mitto-n5mw: schema-skew branch (see handleToggleStatus above).
-          if (isBeadsSchemaSkew(data)) {
-            setSchemaSkew(toSchemaSkewState(data));
-            setShowMigrateDialog(true);
-            return;
-          }
-          showToast &&
-            showToast({
-              style: "error",
-              title: data.error || `Failed to ${action} issue`,
-            });
-        } else {
-          showToast &&
-            showToast({
-              style: "success",
-              title:
-                action === "defer"
-                  ? `Deferred ${issue.id}`
-                  : `Undeferred ${issue.id}`,
-            });
-          fetchList();
-        }
-      } catch (err) {
         showToast &&
           showToast({
-            style: "error",
-            title: err.message || `Failed to ${action} issue`,
+            style: "success",
+            title:
+              action === "defer"
+                ? `Deferred ${issue.id}`
+                : `Undeferred ${issue.id}`,
           });
+        fetchList();
+      } catch (err) {
+        // mitto-n5mw: schema-skew branch (see handleToggleStatus above).
+        const data = beadsErrorFrom(err, `Failed to ${action} issue`);
+        if (isBeadsSchemaSkew(data)) {
+          setSchemaSkew(toSchemaSkewState(data));
+          setShowMigrateDialog(true);
+          return;
+        }
+        showToast && showToast({ style: "error", title: data.error });
       } finally {
         setStatusBusy(false);
       }
@@ -2375,48 +2233,33 @@ export function BeadsView({
       const id = direction === "blocks" ? other.id : issue.id;
       const dependsOn = direction === "blocks" ? issue.id : other.id;
       try {
-        const res = await secureFetch(
-          endpoints.issues.dependencies(id, { working_dir: workingDir }),
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              depends_on: dependsOn,
-              type: "blocks",
-              action: "add",
-            }),
-          },
+        await getSdkClient().issues.dependencies(
+          id,
+          { working_dir: workingDir },
+          { depends_on: dependsOn, type: "blocks", action: "add" },
         );
-        const data = await readBeadsResponse(res);
-        if (!res.ok || data.error) {
-          // mitto-n5mw: schema-skew branch (see handleToggleStatus above).
-          if (isBeadsSchemaSkew(data)) {
-            setSchemaSkew(toSchemaSkewState(data));
-            setShowMigrateDialog(true);
-            return;
-          }
-          showToast &&
-            showToast({
-              style: "error",
-              title: data.error || "Failed to add dependency",
-              message: data.stderr,
-            });
-        } else {
-          showToast &&
-            showToast({
-              style: "success",
-              title:
-                direction === "blocks"
-                  ? `${issue.id} now blocks ${other.id}`
-                  : `${issue.id} now depends on ${other.id}`,
-            });
-          fetchList();
-        }
+        showToast &&
+          showToast({
+            style: "success",
+            title:
+              direction === "blocks"
+                ? `${issue.id} now blocks ${other.id}`
+                : `${issue.id} now depends on ${other.id}`,
+          });
+        fetchList();
       } catch (err) {
+        // mitto-n5mw: schema-skew branch (see handleToggleStatus above).
+        const data = beadsErrorFrom(err, "Failed to add dependency");
+        if (isBeadsSchemaSkew(data)) {
+          setSchemaSkew(toSchemaSkewState(data));
+          setShowMigrateDialog(true);
+          return;
+        }
         showToast &&
           showToast({
             style: "error",
-            title: err.message || "Failed to add dependency",
+            title: data.error,
+            message: data.stderr,
           });
       }
     },

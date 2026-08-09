@@ -12,8 +12,8 @@
 // on the existing `mitto:beads_changed` broadcast (no new backend event).
 
 const { useEffect, useState } = window.preact;
-import { authFetch } from "../utils/csrf.js";
-import { endpoints } from "../utils/endpoints.js";
+import { getSdkClient } from "../utils/sdkClient.js";
+import { withIssueCaches } from "../sdk/index.js";
 import { derivePhaseState } from "../utils/phaseState.js";
 import { isGone, markGone } from "../utils/beadsGoneCache.js";
 
@@ -26,20 +26,20 @@ function cacheKey(workingDir, issueId) {
 }
 
 async function fetchIssue(workingDir, issueId) {
-  const res = await authFetch(
-    endpoints.issues.show(issueId, { working_dir: workingDir }),
-  );
-  if (!res.ok) {
-    // mitto-msv: any 404 means the bead has been deleted (or never existed);
-    // record it in the shared negative cache so subsequent polls from any
-    // surface (this hook, header status effect, side-panel effect) skip the
-    // network entirely. The verdict outlives cache invalidations by design.
-    if (res.status === 404) markGone(workingDir, issueId);
+  // mitto-msv: markGone records any 404 in the shared negative cache so
+  // subsequent polls from any surface (this hook, header status effect,
+  // side-panel effect) skip the network entirely. The verdict outlives cache
+  // invalidations by design. withIssueCaches' show() calls markGone itself
+  // when the SDK throws a 404 MittoApiError.
+  const issues = withIssueCaches(getSdkClient().issues, { markGone });
+  let data;
+  try {
+    data = await issues.show(issueId, { working_dir: workingDir });
+  } catch (_err) {
     return null;
   }
-  const data = await res.json();
   const issueObj = Array.isArray(data) ? data[0] : data;
-  if (!issueObj || issueObj.error) return null;
+  if (!issueObj) return null;
   return {
     issue_type: issueObj.issue_type,
     labels: Array.isArray(issueObj.labels) ? issueObj.labels : [],
