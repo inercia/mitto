@@ -16,7 +16,10 @@ import { LoopPromptSelector } from "./LoopPromptSelector.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
 import { apiUrl } from "../utils/api.js";
 import { getSdkClient } from "../utils/sdkClient.js";
-import { errorStatus, errorMessage as sdkErrorMessage } from "../utils/sdkErrors.js";
+import {
+  errorStatus,
+  errorMessage as sdkErrorMessage,
+} from "../utils/sdkErrors.js";
 import { PortalTooltip } from "./ContextMenu.js";
 import {
   CONDITION_PRESETS,
