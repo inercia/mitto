@@ -463,6 +463,47 @@ func TestClient_List_DoltBackend_RunsBd(t *testing.T) {
 	}
 }
 
+// TestClient_ListAllLabels_DoesNotUseSlowSubcommand is a REPRODUCTION test for
+// mitto-i2ep ("bd label list-all takes 30-37s and blocks ALL concurrent bd
+// reads").
+//
+// Root cause under test: cliClient.ListAllLabels (cli.go) shells out to
+// "bd label list-all --json", which was measured (investigation comment on
+// mitto-i2ep) to take ~30s on a 374-issue Dolt-backed repo — CPU-bound, and
+// for the full duration it holds bd's exclusive Dolt "noms/LOCK", blocking
+// every other concurrent bd invocation (show/list/ready/status, and writes)
+// in the same repo. The same investigation proved "bd list --all --json"
+// (already used elsewhere in this file, ~0.8s) yields byte-identical
+// {label,count} aggregates.
+//
+// Expected behavior (post-fix): ListAllLabels must NOT invoke the
+// "label list-all" subcommand at all; it should derive the label/count
+// aggregate from "bd list --all --json" instead, avoiding the long-held
+// exclusive lock.
+//
+// This test is expected to FAIL against the current implementation (which
+// calls "bd label list-all") and to PASS once ListAllLabels is switched to
+// derive its result from "bd list --all --json".
+func TestClient_ListAllLabels_DoesNotUseSlowSubcommand(t *testing.T) {
+	dir := initializedDir(t)
+	r := &recordingRunner{responses: []runnerResp{
+		{stdout: []byte(`[{"id":"x-1","labels":["a","b"]},{"id":"x-2","labels":["a"]}]`)},
+	}}
+	c := newClient(r)
+
+	if _, err := c.ListAllLabels(context.Background(), dir); err != nil {
+		t.Fatalf("ListAllLabels() error: %v", err)
+	}
+	if len(r.calls) != 1 {
+		t.Fatalf("expected exactly 1 runner call, got %d: %+v", len(r.calls), r.calls)
+	}
+	args := r.calls[0].args
+	if len(args) >= 2 && args[0] == "label" && args[1] == "list-all" {
+		t.Errorf("ListAllLabels invoked the slow, lock-holding %q subcommand (args=%v); "+
+			"it should derive labels from \"bd list --all --json\" instead (mitto-i2ep)", "label list-all", args)
+	}
+}
+
 // TestClient_Create_NotInitialized_RunsInitThenCreate verifies that creating a
 // task in an uninitialized folder first runs "bd init" and then "bd create".
 func TestClient_Create_NotInitialized_RunsInitThenCreate(t *testing.T) {

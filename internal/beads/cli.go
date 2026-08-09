@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -473,13 +474,57 @@ func (c *cliClient) Label(ctx context.Context, dir string, p LabelParams) error 
 	return err
 }
 
-// ListAllLabels returns the JSON array produced by "bd label list-all --json":
-// a list of {"label","count"} objects for every unique label in the database.
-// An uninitialized folder has no label database, so an empty JSON array is
-// returned rather than letting bd fail.
+// listLabelsItem is the minimal shape needed to aggregate per-label counts
+// from "bd list --all --json".
+type listLabelsItem struct {
+	Labels []string `json:"labels"`
+}
+
+// labelCount mirrors the {"label","count"} shape "bd label list-all --json"
+// produces, so ListAllLabels's callers (HandleBeadsLabelsAll, the frontend's
+// label-suggestion datalist) see an unchanged response format.
+type labelCount struct {
+	Label string `json:"label"`
+	Count int    `json:"count"`
+}
+
+// ListAllLabels returns a list of {"label","count"} objects for every unique
+// label in the database. An uninitialized folder has no issue database, so an
+// empty JSON array is returned rather than letting bd fail.
+//
+// This deliberately derives the aggregate from "bd list --all --json" instead
+// of running "bd label list-all --json": the latter was measured (mitto-i2ep)
+// to take 30-37s on a real-world repo and to hold bd's exclusive Dolt
+// noms/LOCK for the full duration, blocking every other concurrent bd
+// invocation (show/list/ready/status, and writes) in the same repo. "bd list
+// --all --json" returns the same per-issue label data in well under a second
+// and was verified to produce byte-identical label/count aggregates.
 func (c *cliClient) ListAllLabels(ctx context.Context, dir string) ([]byte, error) {
 	if !isInitialized(dir) {
 		return []byte("[]"), nil
 	}
-	return c.runJSONRead(ctx, dir, "label", "list-all", "--json")
+	out, err := c.runJSONRead(ctx, dir, "list", "--json", "--all", "-n", "0")
+	if err != nil {
+		return nil, err
+	}
+	var items []listLabelsItem
+	if jsonErr := json.Unmarshal(out, &items); jsonErr != nil {
+		return nil, &CmdError{Err: errors.New("failed to parse bd list output")}
+	}
+	counts := make(map[string]int)
+	order := make([]string, 0)
+	for _, it := range items {
+		for _, label := range it.Labels {
+			if _, seen := counts[label]; !seen {
+				order = append(order, label)
+			}
+			counts[label]++
+		}
+	}
+	sort.Strings(order)
+	result := make([]labelCount, 0, len(order))
+	for _, label := range order {
+		result = append(result, labelCount{Label: label, Count: counts[label]})
+	}
+	return json.Marshal(result)
 }
