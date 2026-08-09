@@ -48,6 +48,9 @@ import { createIssuesResource, withIssueCaches } from "./resources/issues.js";
 import { createFilesResource } from "./resources/files.js";
 import { createDashboardResource } from "./resources/dashboard.js";
 import { createMiscResource } from "./resources/misc.js";
+import { createWorkspacesResource } from "./resources/workspaces.js";
+import { createAcpServersResource } from "./resources/acp-servers.js";
+import { createAgentsResource } from "./resources/agents.js";
 import { createTtlCache, keyForParams } from "./cache/ttl-cache.js";
 
 /**
@@ -88,6 +91,9 @@ export function createClient(options = {}) {
     // Delegates its discovery methods to `serverConfig` (mitto-7gta.10) —
     // same function objects, see resources/misc.js's header comment.
     misc: createMiscResource(config, serverConfig),
+    workspaces: createWorkspacesResource(config),
+    acpServers: createAcpServersResource(config),
+    agents: createAgentsResource(config),
     sessionStream: (sessionId, streamOptions) =>
       createSessionStream(config, sessionId, streamOptions),
     eventsStream: (streamOptions) => createEventsStream(config, streamOptions),

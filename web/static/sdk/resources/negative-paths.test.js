@@ -25,6 +25,9 @@ import { createProcessorsResource } from "./processors.js";
 import { createPromptsResource } from "./prompts.js";
 import { createSessionsResource } from "./sessions.js";
 import { createShortcutsResource } from "./shortcuts.js";
+import { createWorkspacesResource } from "./workspaces.js";
+import { createAcpServersResource } from "./acp-servers.js";
+import { createAgentsResource } from "./agents.js";
 
 /**
  * One representative, no-required-args (or trivially-satisfiable) call per
@@ -47,6 +50,9 @@ const MODULES = [
   { name: "prompts", build: createPromptsResource, call: (r, opts) => r.list(undefined, opts) },
   { name: "sessions", build: createSessionsResource, call: (r, opts) => r.list(opts) },
   { name: "shortcuts", build: createShortcutsResource, call: (r, opts) => r.getGlobal(undefined, opts) },
+  { name: "workspaces", build: createWorkspacesResource, call: (r, opts) => r.list(undefined, opts) },
+  { name: "acpServers", build: createAcpServersResource, call: (r, opts) => r.prepareDelete("srv", opts) },
+  { name: "agents", build: createAgentsResource, call: (r, opts) => r.types(opts) },
 ];
 
 describe.each(MODULES)("$name resource — negative paths", ({ build, call }) => {
