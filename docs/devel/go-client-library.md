@@ -121,9 +121,32 @@ error, avoiding a fan-out race); a caller may still set callbacks for events
 the stream does not model; the internal buffer is bounded, and overflow
 terminates the sequence with `ErrSlowConsumer` rather than silently
 dropping events; both `ctx` cancellation and disconnect terminate the
-sequence with a non-nil error. Resilience — reconnect/backoff, keepalive,
-sequence resync (`.5`) — is opt-in and **off by default**, so existing
-deterministic tests are unaffected.
+sequence with a non-nil error.
+
+**Resilience (`.5`, delivered)** is opt-in via variadic `SessionOption`
+values on the existing `Connect` — no second constructor, so all in-repo
+call sites and the deterministic integration suite are unaffected by
+default. `WithReconnect(ReconnectConfig)` turns `readLoop` into a
+supervisor: dial → read until error → classify → terminate (explicit
+`Close()`, `ctx` cancellation, or the `session_gone` circuit breaker) or
+back off and redial, using the same backoff constants as the browser client
+(base 1s, max 30s, 30% jitter — a pure `reconnectDelay(attempt, cfg)`
+function, unit-tested without sleeping). On every successful redial the
+session resyncs via `load_events{after_seq: watermark}`. The watermark is
+parsed from the `seq`/`max_seq` envelope fields already present on every
+streaming message, and persisted through a pluggable `SeqStore` interface
+(`WithSeqStore`, in-memory by default) mirroring the browser's
+ref+localStorage tiering. `WithSeqDedup(true)` drops events whose sequence
+number was already delivered while still allowing same-seq chunks through
+for streaming coalescing; on `events_loaded`, if the client's watermark
+exceeds the server's reported total, the client is stale and resets its
+watermark/dedup window rather than trying to correct the server.
+`WithKeepalive(KeepaliveConfig)` sends periodic `keepalive` messages and
+force-closes the connection (driving the normal reconnect path) after
+`MaxMissed` consecutive un-acked sends, and also reacts to `max_seq`
+piggybacked on `keepalive_ack` for immediate gap detection. New optional
+callbacks (`OnReconnecting`, `OnReconnected`, `OnKeepaliveAck`) are additive;
+existing callbacks keep their signatures and firing semantics.
 
 Concurrency: `Client` and `Session` are safe for concurrent use; callbacks
 (and the streaming adapter) are invoked serially from the single read-loop

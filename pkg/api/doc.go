@@ -89,7 +89,32 @@
 // The Client and Session types are safe for concurrent use from multiple
 // goroutines. However, the SessionCallbacks are invoked from a single
 // goroutine (the WebSocket read loop), so callback implementations must
-// be thread-safe if they access shared state.
+// be thread-safe if they access shared state; a slow callback blocks
+// delivery of subsequent events to that Session.
+//
+// # Resilient Realtime (opt-in)
+//
+// By default Connect behaves as shown above: one dial, one read loop, and
+// a dropped connection is reported via OnDisconnected/OnClosed without
+// being retried. Pass SessionOption values to Connect to opt into the same
+// resilience the browser client has (see
+// docs/devel/websockets/{sequence-numbers,synchronization}.md):
+//
+//	sess, err := c.Connect(ctx, sessionID, callbacks,
+//	    client.WithReconnect(client.ReconnectConfig{}),   // exp. backoff, defaults 1s/30s/30% jitter
+//	    client.WithKeepalive(client.KeepaliveConfig{}),   // zombie-connection detection, defaults 10s/2 missed
+//	    client.WithSeqDedup(true),                        // drop duplicate events by seq
+//	)
+//
+// WithReconnect redials on any non-terminal disconnect and resyncs from the
+// last-seen sequence number via load_events{after_seq}; a session_gone
+// message or an explicit Close() is always terminal and never retried.
+// WithSeqDedup drops events whose sequence number was already delivered,
+// while still allowing same-seq chunks through for streaming coalescing.
+// The reconnection watermark is held in memory by default; supply
+// WithSeqStore(store) with a SeqStore implementation to persist it across
+// process restarts. All of the above is off by default, so existing
+// deterministic tests and call sites are unaffected.
 //
 // # Errors
 //

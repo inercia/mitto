@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -105,6 +106,24 @@ type SessionCallbacks struct {
 	// OnRawMessage is called for every WebSocket message received (for debugging).
 	// If set, this is called before any other callback.
 	OnRawMessage func(msgType string, data []byte)
+
+	// OnReconnecting is called when the supervisor is about to attempt a
+	// reconnect after an unexpected disconnect. attempt is 0-based (the
+	// first retry is attempt 0); delay is how long the supervisor will wait
+	// before dialing. Only fires when WithReconnect is enabled.
+	OnReconnecting func(attempt int, delay time.Duration)
+
+	// OnReconnected is called after a reconnect attempt successfully
+	// re-establishes the WebSocket connection (a fresh "connected" message
+	// has not necessarily arrived yet). Only fires when WithReconnect is
+	// enabled.
+	OnReconnected func()
+
+	// OnKeepaliveAck is called when a keepalive_ack response is received.
+	// maxSeq is the server's current highest sequence number for the
+	// session, isPrompting reports whether the agent is currently
+	// responding. Only fires when WithKeepalive is enabled.
+	OnKeepaliveAck func(maxSeq int64, isPrompting bool)
 }
 
 // SyncEvent represents an event returned from a sync request.
@@ -122,14 +141,22 @@ type Session struct {
 	client    *Client
 	sessionID string
 	clientID  string
-	conn      *websocket.Conn
 	callbacks SessionCallbacks
 
 	ctx    context.Context
 	cancel context.CancelFunc
 
+	// mu guards conn, closed and clientID. conn is mutable when the
+	// reconnect supervisor is enabled (WithReconnect): a redial swaps it
+	// out from under any concurrent sendMessage call.
 	mu     sync.Mutex
+	conn   *websocket.Conn
 	closed bool
+
+	// writeMu serializes writes to conn, independent of mu, so a redial
+	// (which holds mu only briefly to swap the pointer) never blocks on a
+	// slow in-flight write and vice versa.
+	writeMu sync.Mutex
 
 	// SentMessages records all outgoing WebSocket messages (for test assertions).
 	// Only populated when recording is enabled via EnableMessageRecording().
@@ -137,7 +164,32 @@ type Session struct {
 
 	// recordMessages controls whether outgoing messages are recorded.
 	recordMessages bool
+
+	// resilience holds the opt-in reconnect/keepalive/seq-sync configuration
+	// built from the SessionOption values passed to Connect. Its zero value
+	// disables every feature below, so a Session created with no options
+	// behaves exactly as before this feature was added.
+	resilience resilienceConfig
+
+	// dial reconnects the underlying WebSocket using the same URL/headers
+	// as the initial Connect. Only used when resilience.reconnect.Enabled.
+	dial func(ctx context.Context) (*websocket.Conn, error)
+
+	// seqMu guards lastSeenSeq and seenSeqs, used for the watermark and
+	// dedup features.
+	seqMu       sync.Mutex
+	lastSeenSeq int64
+	seenSeqs    map[int64]struct{}
+	seenOrder   []int64
+
+	// keepaliveMissed counts consecutive un-acked keepalives, reset on any
+	// keepalive_ack. Guarded by seqMu for simplicity (low contention).
+	keepaliveMissed int
 }
+
+// maxSeenSeqs bounds the client-side dedup sliding window so a long-lived
+// session cannot grow it unboundedly.
+const maxSeenSeqs = 4096
 
 // Connect establishes a WebSocket connection to a session.
 //
@@ -146,50 +198,83 @@ type Session struct {
 // header on the upgrade request, and a cookie-login session is sent as a
 // Cookie header sourced from the Client's cookie jar. In no case is a token
 // or session credential placed in the ws(s):// URL or query string.
-func (c *Client) Connect(ctx context.Context, sessionID string, callbacks SessionCallbacks) (*Session, error) {
-	// Build WebSocket URL
-	u, err := url.Parse(c.baseURL)
+//
+// By default, a dropped connection is reported via OnDisconnected/OnClosed
+// and not retried, matching historical behavior. Pass SessionOption values
+// (WithReconnect, WithKeepalive, WithSeqStore, WithSeqDedup) to opt into
+// automatic reconnection with exponential backoff, sequence-number resync,
+// zombie-connection detection via keepalives, and client-side
+// deduplication. See docs/devel/go-client-library.md §6 and
+// docs/devel/websockets/{sequence-numbers,synchronization}.md for the
+// contract this mirrors from the browser client.
+func (c *Client) Connect(ctx context.Context, sessionID string, callbacks SessionCallbacks, opts ...SessionOption) (*Session, error) {
+	var rc resilienceConfig
+	for _, opt := range opts {
+		opt(&rc)
+	}
+	if rc.seqStore == nil {
+		rc.seqStore = NewMemorySeqStore()
+	}
+
+	dial := func(dialCtx context.Context) (*websocket.Conn, error) {
+		u, err := url.Parse(c.baseURL)
+		if err != nil {
+			return nil, fmt.Errorf("parse base URL: %w", err)
+		}
+		switch u.Scheme {
+		case "http":
+			u.Scheme = "ws"
+		case "https":
+			u.Scheme = "wss"
+		}
+		u.Path = c.apiPrefix + "/api/sessions/" + url.PathEscape(sessionID) + "/ws"
+
+		handshakeHeader := http.Header{}
+		if err := c.currentAuth().applyWS(handshakeHeader); err != nil {
+			return nil, fmt.Errorf("websocket connect: %w", err)
+		}
+
+		dialer := websocket.Dialer{
+			HandshakeTimeout: websocket.DefaultDialer.HandshakeTimeout,
+			Jar:              c.httpClient.Jar,
+		}
+
+		conn, _, err := dialer.DialContext(dialCtx, u.String(), handshakeHeader)
+		if err != nil {
+			return nil, fmt.Errorf("websocket connect: %w", err)
+		}
+		return conn, nil
+	}
+
+	conn, err := dial(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("parse base URL: %w", err)
-	}
-
-	// Convert http(s) to ws(s)
-	switch u.Scheme {
-	case "http":
-		u.Scheme = "ws"
-	case "https":
-		u.Scheme = "wss"
-	}
-	u.Path = c.apiPrefix + "/api/sessions/" + url.PathEscape(sessionID) + "/ws"
-
-	handshakeHeader := http.Header{}
-	if err := c.currentAuth().applyWS(handshakeHeader); err != nil {
-		return nil, fmt.Errorf("websocket connect: %w", err)
-	}
-
-	dialer := websocket.Dialer{
-		HandshakeTimeout: websocket.DefaultDialer.HandshakeTimeout,
-		Jar:              c.httpClient.Jar,
-	}
-
-	// Connect
-	conn, _, err := dialer.DialContext(ctx, u.String(), handshakeHeader)
-	if err != nil {
-		return nil, fmt.Errorf("websocket connect: %w", err)
+		return nil, err
 	}
 
 	sessCtx, cancel := context.WithCancel(ctx)
 	s := &Session{
-		client:    c,
-		sessionID: sessionID,
-		conn:      conn,
-		callbacks: callbacks,
-		ctx:       sessCtx,
-		cancel:    cancel,
+		client:     c,
+		sessionID:  sessionID,
+		conn:       conn,
+		callbacks:  callbacks,
+		ctx:        sessCtx,
+		cancel:     cancel,
+		resilience: rc,
+		dial:       dial,
+	}
+	if rc.dedup {
+		s.seenSeqs = make(map[int64]struct{})
+	}
+	if seq, err := rc.seqStore.Load(sessionID); err == nil {
+		s.lastSeenSeq = seq
 	}
 
 	// Start reading messages
 	go s.readLoop()
+
+	if rc.keepalive.Enabled {
+		go s.keepaliveLoop()
+	}
 
 	return s, nil
 }
@@ -283,7 +368,8 @@ func (s *Session) SendKeepalive(clientSeq int64) error {
 	})
 }
 
-// Close closes the WebSocket connection.
+// Close closes the WebSocket connection. This is always terminal: even
+// when WithReconnect is enabled, a Close() call never triggers a reconnect.
 func (s *Session) Close() error {
 	s.mu.Lock()
 	if s.closed {
@@ -291,10 +377,11 @@ func (s *Session) Close() error {
 		return nil
 	}
 	s.closed = true
+	conn := s.conn
 	s.mu.Unlock()
 
 	s.cancel()
-	return s.conn.Close()
+	return conn.Close()
 }
 
 // EnableMessageRecording enables recording of all outgoing WebSocket messages.
@@ -354,47 +441,132 @@ func (s *Session) sendMessage(msgType string, data map[string]interface{}) error
 	}
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.closed {
-		return fmt.Errorf("session closed")
-	}
-
-	if s.recordMessages {
+	closed := s.closed
+	conn := s.conn
+	if !closed && s.recordMessages {
 		if msgBytes, err := json.Marshal(msg); err == nil {
 			s.SentMessages = append(s.SentMessages, json.RawMessage(msgBytes))
 		}
 	}
+	s.mu.Unlock()
 
-	return s.conn.WriteJSON(msg)
+	if closed {
+		return fmt.Errorf("session closed")
+	}
+
+	// writeMu serializes writes against conn independently of mu, so a
+	// concurrent redial (which only briefly holds mu to swap the pointer)
+	// cannot interleave with an in-flight WriteJSON on the old conn.
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	return conn.WriteJSON(msg)
 }
 
-// wsMessage represents a WebSocket message from the server.
+// wsMessage represents a WebSocket message from the server. Seq and MaxSeq
+// are top-level envelope fields on every streaming message (see
+// internal/web/session_ws.go and docs/devel/websockets/sequence-numbers.md);
+// they are parsed here regardless of whether resilience features are
+// enabled, but are only acted upon (watermark tracking, dedup) when
+// WithReconnect/WithSeqDedup are set.
 type wsMessage struct {
-	Type string          `json:"type"`
-	Data json.RawMessage `json:"data"`
+	Type   string          `json:"type"`
+	Data   json.RawMessage `json:"data"`
+	Seq    int64           `json:"seq"`
+	MaxSeq int64           `json:"max_seq"`
 }
 
-// readLoop reads messages from the WebSocket connection.
-func (s *Session) readLoop() {
-	defer func() {
-		s.mu.Lock()
-		s.closed = true
-		s.mu.Unlock()
-	}()
+// isSessionGone reports whether msg is the terminal session_gone circuit
+// breaker (docs/devel/websockets/synchronization.md "Circuit Breaker:
+// Terminal Session Errors"). It must never be retried by the reconnect
+// supervisor.
+func isSessionGone(msg wsMessage) bool {
+	return msg.Type == "session_gone"
+}
 
+// readLoop supervises the WebSocket connection: it reads messages until an
+// error occurs, then either terminates (Close(), ctx cancellation,
+// session_gone, or reconnection disabled/exhausted) or, when WithReconnect
+// is enabled, backs off and redials before resuming reads. This mirrors the
+// browser client's ws.onclose reconnection flow
+// (docs/devel/websockets/synchronization.md).
+func (s *Session) readLoop() {
+	attempt := 0
+	for {
+		gone := s.readUntilError()
+
+		s.mu.Lock()
+		closed := s.closed
+		s.mu.Unlock()
+
+		// Terminal: explicit Close(), ctx cancellation, session_gone, or
+		// reconnect not enabled.
+		if closed || gone || s.ctx.Err() != nil || !s.resilience.reconnect.Enabled {
+			s.mu.Lock()
+			s.closed = true
+			s.mu.Unlock()
+			return
+		}
+
+		delay := reconnectDelay(attempt, s.resilience.reconnect)
+		if s.callbacks.OnReconnecting != nil {
+			s.callbacks.OnReconnecting(attempt, delay)
+		}
+
+		select {
+		case <-s.ctx.Done():
+			s.mu.Lock()
+			s.closed = true
+			s.mu.Unlock()
+			return
+		case <-time.After(delay):
+		}
+
+		conn, err := s.dial(s.ctx)
+		if err != nil {
+			attempt++
+			continue
+		}
+
+		s.mu.Lock()
+		s.conn = conn
+		s.mu.Unlock()
+		attempt = 0
+
+		if s.callbacks.OnReconnected != nil {
+			s.callbacks.OnReconnected()
+		}
+
+		// Resync from the watermark, mirroring ws.onopen in
+		// docs/devel/websockets/synchronization.md. A zero watermark means
+		// no prior events were seen; the caller is responsible for the
+		// initial load in that case, as before this feature existed.
+		if watermark := s.Watermark(); watermark > 0 {
+			_ = s.LoadEvents(0, watermark, 0)
+		}
+	}
+}
+
+// readUntilError reads messages from the current connection until an error
+// occurs (returning false) or a terminal session_gone message is received
+// (returning true). OnDisconnected/OnClosed fire on every drop, exactly as
+// before reconnection support was added.
+func (s *Session) readUntilError() (gone bool) {
 	for {
 		select {
 		case <-s.ctx.Done():
-			return
+			return false
 		default:
 		}
 
+		s.mu.Lock()
+		conn := s.conn
+		s.mu.Unlock()
+
 		var msg wsMessage
-		err := s.conn.ReadJSON(&msg)
+		err := conn.ReadJSON(&msg)
 		if err != nil {
-			// Check if the server sent a WebSocket close frame with a specific code.
-			if closeErr, ok := err.(*websocket.CloseError); ok {
+			var closeErr *websocket.CloseError
+			if errors.As(err, &closeErr) {
 				if s.callbacks.OnClosed != nil {
 					s.callbacks.OnClosed(closeErr.Code, closeErr.Text)
 				}
@@ -402,7 +574,12 @@ func (s *Session) readLoop() {
 			if s.callbacks.OnDisconnected != nil {
 				s.callbacks.OnDisconnected(err)
 			}
-			return
+			return false
+		}
+
+		if isSessionGone(msg) {
+			s.handleMessage(msg)
+			return true
 		}
 
 		s.handleMessage(msg)
@@ -414,6 +591,18 @@ func (s *Session) handleMessage(msg wsMessage) {
 	// Call debug callback if set
 	if s.callbacks.OnRawMessage != nil {
 		s.callbacks.OnRawMessage(msg.Type, msg.Data)
+	}
+
+	// Track the reconnection watermark and, if enabled, drop duplicates.
+	// msg.Seq is 0 for envelope types that don't carry a sequence number
+	// (connected, error, session_gone, acp_started, queue_*), which always
+	// pass through. See docs/devel/websockets/sequence-numbers.md for the
+	// coalescing rule (same seq as the last delivered message is always
+	// allowed through, for streaming continuation).
+	if msg.Seq > 0 {
+		if !s.observeSeq(msg.Seq) {
+			return
+		}
 	}
 
 	switch msg.Type {
@@ -544,6 +733,22 @@ func (s *Session) handleMessage(msg wsMessage) {
 			TotalCount  int         `json:"total_count"`
 		}
 		if json.Unmarshal(msg.Data, &data) == nil {
+			// Server authority: if our watermark exceeds what the server
+			// reports it has, our state is stale. Reset the dedup window
+			// and watermark before delivering, so the fresh events below
+			// are never rejected as duplicates
+			// (docs/devel/websockets/sequence-numbers.md "Stale Client
+			// Reset"). Never attempt to correct the server.
+			if s.resilience.reconnect.Enabled || s.resilience.dedup {
+				if s.Watermark() > int64(data.TotalCount) {
+					s.resetWatermark()
+				}
+			}
+			for _, ev := range data.Events {
+				if ev.Seq > 0 {
+					s.observeSeq(ev.Seq)
+				}
+			}
 			if s.callbacks.OnEventsLoaded != nil {
 				s.callbacks.OnEventsLoaded(data.Events, data.HasMore, data.IsPrompting)
 			}
@@ -614,6 +819,135 @@ func (s *Session) handleMessage(msg wsMessage) {
 		}
 		if json.Unmarshal(msg.Data, &data) == nil && s.callbacks.OnSessionGone != nil {
 			s.callbacks.OnSessionGone(data.SessionID)
+		}
+
+	case "keepalive_ack":
+		var data struct {
+			MaxSeq      int64 `json:"max_seq"`
+			IsPrompting bool  `json:"is_prompting"`
+		}
+		if json.Unmarshal(msg.Data, &data) == nil {
+			s.seqMu.Lock()
+			s.keepaliveMissed = 0
+			s.seqMu.Unlock()
+			if s.callbacks.OnKeepaliveAck != nil {
+				s.callbacks.OnKeepaliveAck(data.MaxSeq, data.IsPrompting)
+			}
+			// Immediate gap detection via max_seq piggybacking
+			// (docs/devel/websockets/synchronization.md): if the server is
+			// ahead of our watermark, request the missing events.
+			if s.resilience.reconnect.Enabled || s.resilience.dedup {
+				if watermark := s.Watermark(); data.MaxSeq > watermark {
+					_ = s.LoadEvents(0, watermark, 0)
+				}
+			}
+		}
+	}
+}
+
+// observeSeq records seq as seen and advances the watermark. It returns
+// false when seq is a duplicate that must be dropped (dedup enabled, seq
+// already observed, and seq differs from the last-seen seq — same-seq is
+// always allowed through for streaming coalescing per
+// docs/devel/websockets/sequence-numbers.md). When dedup is disabled, it
+// still advances the watermark (needed for resync after reconnect) and
+// always returns true.
+func (s *Session) observeSeq(seq int64) bool {
+	s.seqMu.Lock()
+	defer s.seqMu.Unlock()
+
+	isDuplicate := false
+	if s.resilience.dedup {
+		if _, seen := s.seenSeqs[seq]; seen && seq != s.lastSeenSeq {
+			isDuplicate = true
+		}
+	}
+
+	if seq > s.lastSeenSeq {
+		s.lastSeenSeq = seq
+		if s.resilience.seqStore != nil {
+			_ = s.resilience.seqStore.Store(s.sessionID, seq)
+		}
+	}
+
+	if s.resilience.dedup && !isDuplicate {
+		if _, seen := s.seenSeqs[seq]; !seen {
+			s.seenSeqs[seq] = struct{}{}
+			s.seenOrder = append(s.seenOrder, seq)
+			if len(s.seenOrder) > maxSeenSeqs {
+				oldest := s.seenOrder[0]
+				s.seenOrder = s.seenOrder[1:]
+				delete(s.seenSeqs, oldest)
+			}
+		}
+	}
+
+	return !isDuplicate
+}
+
+// Watermark returns the highest sequence number seen so far on this
+// Session, used to resume a reconnect via load_events{after_seq}.
+func (s *Session) Watermark() int64 {
+	s.seqMu.Lock()
+	defer s.seqMu.Unlock()
+	return s.lastSeenSeq
+}
+
+// resetWatermark clears the watermark, the dedup window and the SeqStore
+// entry for this session. Called when the server reports our state is
+// stale (docs/devel/websockets/sequence-numbers.md "Stale Client Reset").
+func (s *Session) resetWatermark() {
+	s.seqMu.Lock()
+	s.lastSeenSeq = 0
+	if s.resilience.dedup {
+		s.seenSeqs = make(map[int64]struct{})
+		s.seenOrder = nil
+	}
+	s.seqMu.Unlock()
+	if s.resilience.seqStore != nil {
+		_ = s.resilience.seqStore.Store(s.sessionID, 0)
+	}
+}
+
+// keepaliveLoop periodically sends application-level keepalives and forces
+// a reconnect (by closing the connection, which readLoop's error path
+// picks up) after MaxMissed consecutive un-acked sends. Only started when
+// WithKeepalive is enabled. Mirrors the zombie-connection detection in
+// docs/devel/websockets/synchronization.md.
+func (s *Session) keepaliveLoop() {
+	cfg := s.resilience.keepalive.withDefaults()
+	ticker := time.NewTicker(cfg.Interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-s.ctx.Done():
+			return
+		case <-ticker.C:
+			s.mu.Lock()
+			closed := s.closed
+			conn := s.conn
+			s.mu.Unlock()
+			if closed {
+				return
+			}
+
+			s.seqMu.Lock()
+			s.keepaliveMissed++
+			missed := s.keepaliveMissed
+			s.seqMu.Unlock()
+
+			if missed >= cfg.MaxMissed {
+				// Zombie connection: force-close so readLoop's error path
+				// drives the normal reconnect flow.
+				_ = conn.Close()
+				s.seqMu.Lock()
+				s.keepaliveMissed = 0
+				s.seqMu.Unlock()
+				continue
+			}
+
+			_ = s.SendKeepalive(s.Watermark())
 		}
 	}
 }
