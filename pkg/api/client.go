@@ -94,8 +94,7 @@ func (c *Client) ListSessions() ([]SessionInfo, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("list sessions: status %d: %s", resp.StatusCode, string(body))
+		return nil, c.apiError("list sessions", resp)
 	}
 
 	var sessions []SessionInfo
@@ -119,8 +118,7 @@ func (c *Client) CreateSession(req CreateSessionRequest) (*SessionInfo, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("create session: status %d: %s", resp.StatusCode, string(respBody))
+		return nil, c.apiError("create session", resp)
 	}
 
 	var session SessionInfo
@@ -139,11 +137,10 @@ func (c *Client) GetSession(sessionID string) (*SessionInfo, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusNotFound {
-		return nil, fmt.Errorf("session not found: %s", sessionID)
+		return nil, sessionNotFoundError("get session", sessionID)
 	}
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("get session: status %d: %s", resp.StatusCode, string(body))
+		return nil, c.apiError("get session", resp)
 	}
 
 	var session SessionInfo
@@ -167,8 +164,7 @@ func (c *Client) DeleteSession(sessionID string) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("delete session: status %d: %s", resp.StatusCode, string(body))
+		return c.apiError("delete session", resp)
 	}
 	return nil
 }
@@ -195,8 +191,7 @@ func (c *Client) ArchiveSession(sessionID string, archive bool) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("archive session: status %d: %s", resp.StatusCode, string(respBody))
+		return c.apiError("archive session", resp)
 	}
 	return nil
 }
@@ -243,8 +238,7 @@ func (c *Client) UploadImage(sessionID string, filename string, mimeType string,
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("upload image: status %d: %s", resp.StatusCode, string(body))
+		return nil, c.apiError("upload image", resp)
 	}
 
 	var info ImageInfo
@@ -289,11 +283,10 @@ func (c *Client) ListQueue(sessionID string) (*QueueListResponse, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusNotFound {
-		return nil, fmt.Errorf("session not found: %s", sessionID)
+		return nil, sessionNotFoundError("list queue", sessionID)
 	}
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("list queue: status %d: %s", resp.StatusCode, string(body))
+		return nil, c.apiError("list queue", resp)
 	}
 
 	var result QueueListResponse
@@ -330,15 +323,14 @@ func (c *Client) AddToQueueWithImages(sessionID, message string, imageIDs []stri
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusNotFound {
-		return nil, fmt.Errorf("session not found: %s", sessionID)
+		return nil, sessionNotFoundError("add to queue", sessionID)
 	}
 	if resp.StatusCode == http.StatusConflict {
-		respBody, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("queue full: %s", string(respBody))
+		body, _ := io.ReadAll(resp.Body)
+		return nil, errorFromResponse("add to queue", resp.StatusCode, body)
 	}
 	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("add to queue: status %d: %s", resp.StatusCode, string(respBody))
+		return nil, c.apiError("add to queue", resp)
 	}
 
 	var msg QueuedMessage
@@ -357,11 +349,12 @@ func (c *Client) GetQueueMessage(sessionID, messageID string) (*QueuedMessage, e
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusNotFound {
-		return nil, fmt.Errorf("message not found: %s", messageID)
+		return nil, &APIError{Op: "get queue message", Status: http.StatusNotFound, Code: CodeNotFound,
+			Message: fmt.Sprintf("message not found: %s", messageID),
+			Details: map[string]any{"message_id": messageID}}
 	}
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("get queue message: status %d: %s", resp.StatusCode, string(body))
+		return nil, c.apiError("get queue message", resp)
 	}
 
 	var msg QueuedMessage
@@ -385,11 +378,12 @@ func (c *Client) RemoveFromQueue(sessionID, messageID string) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusNotFound {
-		return fmt.Errorf("message not found: %s", messageID)
+		return &APIError{Op: "remove from queue", Status: http.StatusNotFound, Code: CodeNotFound,
+			Message: fmt.Sprintf("message not found: %s", messageID),
+			Details: map[string]any{"message_id": messageID}}
 	}
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("remove from queue: status %d: %s", resp.StatusCode, string(body))
+		return c.apiError("remove from queue", resp)
 	}
 	return nil
 }
@@ -408,8 +402,7 @@ func (c *Client) ClearQueue(sessionID string) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("clear queue: status %d: %s", resp.StatusCode, string(body))
+		return c.apiError("clear queue", resp)
 	}
 	return nil
 }
@@ -436,11 +429,10 @@ func (c *Client) AddToQueueNamed(sessionID, promptName string) (*QueuedMessage, 
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusNotFound {
-		return nil, fmt.Errorf("session not found: %s", sessionID)
+		return nil, sessionNotFoundError("add named to queue", sessionID)
 	}
 	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("add named to queue: status %d: %s", resp.StatusCode, string(respBody))
+		return nil, c.apiError("add named to queue", resp)
 	}
 
 	var msg QueuedMessage
@@ -473,11 +465,10 @@ func (c *Client) AddToQueueNamedWithArgs(sessionID, promptName string, args map[
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusNotFound {
-		return nil, fmt.Errorf("session not found: %s", sessionID)
+		return nil, sessionNotFoundError("add named+args to queue", sessionID)
 	}
 	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("add named+args to queue: status %d: %s", resp.StatusCode, string(respBody))
+		return nil, c.apiError("add named+args to queue", resp)
 	}
 
 	var msg QueuedMessage
@@ -500,11 +491,10 @@ func (c *Client) GetPromptArgCache(sessionID, promptName string) ([]string, erro
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusNotFound {
-		return nil, fmt.Errorf("session not found: %s", sessionID)
+		return nil, sessionNotFoundError("get prompt-arg-cache", sessionID)
 	}
 	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("get prompt-arg-cache: status %d: %s", resp.StatusCode, string(respBody))
+		return nil, c.apiError("get prompt-arg-cache", resp)
 	}
 
 	var result struct {
@@ -592,8 +582,7 @@ func (c *Client) SetLoop(sessionID string, req SetLoopRequest) (*LoopConfig, err
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("set loop: status %d: %s", resp.StatusCode, string(respBody))
+		return nil, c.apiError("set loop", resp)
 	}
 
 	var config LoopConfig
@@ -612,11 +601,12 @@ func (c *Client) GetLoop(sessionID string) (*LoopConfig, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusNotFound {
-		return nil, fmt.Errorf("loop not configured for session: %s", sessionID)
+		return nil, &APIError{Op: "get loop", Status: http.StatusNotFound, Code: CodeNotFound,
+			Message: fmt.Sprintf("loop not configured for session: %s", sessionID),
+			Details: map[string]any{"session_id": sessionID}}
 	}
 	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("get loop: status %d: %s", resp.StatusCode, string(respBody))
+		return nil, c.apiError("get loop", resp)
 	}
 
 	var config LoopConfig
@@ -648,8 +638,7 @@ func (c *Client) RunLoopNow(sessionID string, resetTimer bool) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
-		respBody, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("run loop now: status %d: %s", resp.StatusCode, string(respBody))
+		return c.apiError("run loop now", resp)
 	}
 	return nil
 }
