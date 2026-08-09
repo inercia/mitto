@@ -107,13 +107,17 @@ mitto auth status
 mitto auth rotate
 ```
 
-| Flag             | Description                                                    |
-| ---------------- | -------------------------------------------------------------- |
-| `--url <url>`    | Server URL (default: from `instance.json`, or `MITTO_URL`)     |
-| `--token <tok>`  | Bearer token (default: from `instance.json`, or `MITTO_TOKEN`) |
-| `--timeout <d>`  | Request timeout                                                |
-| `--output <fmt>` | `table` (default), `json`, or `yaml`                           |
-| `--no-color`     | Disable ANSI styling (also respects `NO_COLOR`)                |
+| Flag               | Description                                                |
+| ------------------ | ---------------------------------------------------------- |
+| `--url <url>`      | Server URL (else `MITTO_URL`, else `instance.json`)        |
+| `--token <tok>`    | Bearer token (else `MITTO_TOKEN`, else `instance.json`)    |
+| `--api-prefix <p>` | API prefix (else `MITTO_API_PREFIX`, else `instance.json`) |
+| `--timeout <d>`    | Request timeout                                            |
+| `--output <fmt>`   | `table` (default), `json`, or `yaml`                       |
+| `--no-color`       | Disable ANSI styling (also respects `NO_COLOR`)            |
+
+Each setting resolves as: explicit flag > environment variable >
+`instance.json` (written by `mitto web`) > error.
 
 See [CLI Conversation Commands — Design Decision Record](devel/cli-conversation.md)
 for the full command tree, output contract and exit-code mapping.

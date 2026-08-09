@@ -66,11 +66,18 @@ same issue's `ListSessions` filter arguments.
 ## 3. `PersistentPreRunE` must be skipped
 
 `rootCmd.PersistentPreRunE` loads local `settings.json` and touches the
-macOS Keychain. The `conversation` and `auth` subtrees skip it the same
-way `mcp` and `prompt` already do (`internal/cmd/root.go`): a
+macOS Keychain. The `conversation` and `auth` subtrees must skip it: a
 server-touching command must not require local config and must never
 block on a Keychain prompt when run non-interactively (e.g. from a script
 or CI).
+
+Skip on the **parent** name, not the command name. `internal/cmd/root.go`
+has two skip mechanisms and only one of them works here: `mcp` and
+`prompt` are leaf commands skipped by `cmd.Name()`, whereas `prompts`,
+`processors` and `agents` are parents skipped by `cmd.Parent().Name()`.
+`conversation` and `auth` are parents, so `mitto-pscc.4` must extend the
+`cmd.Parent().Name()` branch — a `cmd.Name() == "conversation"` check
+would never fire for `conversation get`.
 
 ## 4. Output contract
 
