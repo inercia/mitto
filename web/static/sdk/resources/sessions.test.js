@@ -384,7 +384,8 @@ describe("sessions resource", () => {
         prompt: "p",
         frequency: { value: 1, unit: "hours" },
         enabled: true,
-        triggers: [{ type: "schedule" }, { type: "onCompletion", delay_seconds: 30 }],
+        triggers: ["schedule", "onCompletion"],
+        delay_seconds: 30,
       };
       await sessions.loop.set("s1", body);
       expect(calls[0].url).toBe("/api/sessions/s1/loop");

@@ -167,13 +167,16 @@ export function createSessionsResource(config) {
        *   frequency, enabled, fresh_context?, max_iterations?, triggers?,
        *   child_events?, delay_seconds?, max_duration_seconds?, arguments?,
        *   condition?, condition_preset?, cooldown_seconds?,
-       *   coalesce_during_busy?, run_on_start?, settle_window_seconds?}.
+       *   coalesce_during_busy?, run_on_start?, settle_window_seconds?,
+       *   loop_apply_prompt_defaults?}.
        *   Full replace (PUT). The legacy scalar "trigger" key is not
        *   accepted — use "triggers" (mitto-r6j.5). */
       set: (id, body, opts) => call("PUT", `/api/sessions/${enc(id)}/loop`, { body, ...opts }),
-      /** @param {object} patch - LoopPromptPatchRequest, same fields as
-       *   `set()` but all optional; a field is only changed when present
-       *   (partial update, PATCH). `reset_counters: true` zeroes the
+      /** @param {object} patch - LoopPromptPatchRequest: the same fields as
+       *   `set()` (minus `loop_apply_prompt_defaults`) but all optional; a
+       *   field is only changed when present (partial update, PATCH).
+       *   `triggers` and `child_events`, when present, REPLACE the stored
+       *   lists wholesale. `reset_counters: true` zeroes the
        *   iteration/elapsed-time counters. */
       update: (id, patch, opts) =>
         call("PATCH", `/api/sessions/${enc(id)}/loop`, { body: patch, ...opts }),
