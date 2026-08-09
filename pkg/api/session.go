@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"net/url"
 	"sync"
 	"time"
@@ -139,6 +140,12 @@ type Session struct {
 }
 
 // Connect establishes a WebSocket connection to a session.
+//
+// The handshake is decorated with the Client's configured authentication
+// (see authProvider): a shared bearer token is sent as an Authorization
+// header on the upgrade request, and a cookie-login session is sent as a
+// Cookie header sourced from the Client's cookie jar. In no case is a token
+// or session credential placed in the ws(s):// URL or query string.
 func (c *Client) Connect(ctx context.Context, sessionID string, callbacks SessionCallbacks) (*Session, error) {
 	// Build WebSocket URL
 	u, err := url.Parse(c.baseURL)
@@ -155,8 +162,18 @@ func (c *Client) Connect(ctx context.Context, sessionID string, callbacks Sessio
 	}
 	u.Path = c.apiPrefix + "/api/sessions/" + url.PathEscape(sessionID) + "/ws"
 
+	handshakeHeader := http.Header{}
+	if err := c.auth.applyWS(handshakeHeader); err != nil {
+		return nil, fmt.Errorf("websocket connect: %w", err)
+	}
+
+	dialer := websocket.Dialer{
+		HandshakeTimeout: websocket.DefaultDialer.HandshakeTimeout,
+		Jar:              c.httpClient.Jar,
+	}
+
 	// Connect
-	conn, _, err := websocket.DefaultDialer.DialContext(ctx, u.String(), nil)
+	conn, _, err := dialer.DialContext(ctx, u.String(), handshakeHeader)
 	if err != nil {
 		return nil, fmt.Errorf("websocket connect: %w", err)
 	}

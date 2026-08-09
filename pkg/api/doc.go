@@ -1,8 +1,9 @@
 // Package client (import path github.com/inercia/mitto/pkg/api) provides a Go
 // client for connecting to the Mitto backend.
 //
-// The client is unauthenticated today and is useful for integration testing
-// and CLI tools that need to connect to a running Mitto server.
+// By default the client is unauthenticated, which is useful for integration
+// testing and for CLI tools talking to a server with no auth configured. See
+// # Authentication below for the shared-token and interactive login modes.
 //
 // # Basic Usage
 //
@@ -53,6 +54,35 @@
 //
 //	fmt.Printf("Got %d messages, %d tool calls\n",
 //	    len(result.Messages), len(result.ToolCalls))
+//
+// # Authentication
+//
+// Three modes are supported, matching the backend's authentication options
+// (internal/web/middleware/auth.go):
+//
+//   - None (default): zero-config, used by every existing test. Do nothing.
+//
+//   - Shared token: authenticate every REST request and the WebSocket
+//     handshake with "Authorization: Bearer <token>", matching the
+//     deployment-wide shared token the operator configures on the server.
+//     Use WithBearerToken for a fixed token, or WithTokenSupplier to source
+//     it lazily (environment variable, keychain, config file) and support
+//     rotation without reconstructing the Client:
+//
+//     c := client.New(baseURL, client.WithTokenSupplier(func() (string, error) {
+//     return os.Getenv("MITTO_TOKEN"), nil
+//     }))
+//
+//   - Cookie login: for parity with the browser, call Login with a
+//     username/password to obtain a session cookie plus CSRF token, used
+//     automatically on subsequent REST requests and WebSocket connections:
+//
+//     c := client.New(baseURL)
+//     if err := c.Login(ctx, "user", "pass"); err != nil { ... }
+//     defer c.Logout(ctx)
+//
+// In every mode, the token/session credential is never logged and never
+// placed in a URL or query string.
 //
 // # Thread Safety
 //

@@ -1,10 +1,14 @@
 // Package client provides a Go client for connecting to the Mitto backend.
-// This client is designed for internal use (no authentication) and is useful
-// for integration testing and CLI tools.
+//
+// Authentication is optional: by default the client is unauthenticated
+// (zero-config), matching every existing integration-test consumer. See
+// WithBearerToken, WithTokenSupplier and (*Client).Login for the shared-token
+// and interactive cookie-login modes; both are documented in doc.go.
 package client
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -22,6 +26,16 @@ type Client struct {
 	baseURL    string
 	apiPrefix  string // API prefix (e.g., "/mitto")
 	httpClient *http.Client
+
+	// auth decorates outgoing REST requests and WebSocket handshakes with
+	// credentials. Defaults to noAuth{} (no-op), so New(baseURL) keeps the
+	// historical zero-config, unauthenticated behaviour.
+	auth authProvider
+
+	// csrfToken holds the CSRF token obtained during Login, for cookieAuth
+	// to attach to subsequent state-changing requests. Empty outside of
+	// cookie-login mode.
+	csrfToken string
 }
 
 // Option configures the client.
@@ -34,8 +48,33 @@ func WithTimeout(d time.Duration) Option {
 	}
 }
 
+// WithBearerToken configures the client to authenticate every request with
+// a fixed "Authorization: Bearer <token>" header, matching the backend's
+// shared-token authentication (mitto-7gta.26). For a token that can change
+// over the client's lifetime (env var, keychain, config reload), use
+// WithTokenSupplier instead. The token is never logged and never placed in
+// a URL or query string.
+func WithBearerToken(token string) Option {
+	return WithTokenSupplier(func() (string, error) { return token, nil })
+}
+
+// WithTokenSupplier configures the client to authenticate every request with
+// an "Authorization: Bearer <token>" header, where the token is resolved by
+// calling supplier immediately before each request. This allows callers to
+// source the token lazily (environment variable, keychain, config file) and
+// to rotate it without reconstructing the Client. A supplier error fails the
+// request with a wrapped error; the token itself is never included in that
+// error, logged, or placed in a URL or query string.
+func WithTokenSupplier(supplier func() (string, error)) Option {
+	return func(client *Client) {
+		client.auth = bearerAuth{supplier: supplier}
+	}
+}
+
 // New creates a new Mitto client.
 // baseURL should be the Mitto server address (e.g., "http://localhost:8080").
+// By default the client is unauthenticated; see WithBearerToken,
+// WithTokenSupplier and Login for the available authentication modes.
 func New(baseURL string, opts ...Option) *Client {
 	c := &Client{
 		baseURL:   baseURL,
@@ -43,6 +82,7 @@ func New(baseURL string, opts ...Option) *Client {
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
+		auth: noAuth{},
 	}
 	for _, opt := range opts {
 		opt(c)
@@ -55,9 +95,122 @@ func (c *Client) apiURL(path string) string {
 	return c.baseURL + c.apiPrefix + path
 }
 
+// Login performs the interactive password login flow, for parity with the
+// browser: it fetches a CSRF token, then posts credentials to obtain a
+// mitto_session cookie. On success, subsequent requests (REST and
+// WebSocket) made through this Client are authenticated via that cookie
+// plus the CSRF token, until Logout is called or the session expires.
+//
+// Login lazily installs a cookie jar on the Client's http.Client if one is
+// not already present, so a Client created with New(baseURL) and never
+// logged in keeps its zero-config, jar-less default.
+func (c *Client) Login(ctx context.Context, username, password string) error {
+	if err := c.ensureJar(); err != nil {
+		return fmt.Errorf("login: %w", err)
+	}
+
+	csrfReq, err := http.NewRequestWithContext(ctx, http.MethodGet, c.apiURL("/api/csrf-token"), nil)
+	if err != nil {
+		return fmt.Errorf("login: build csrf request: %w", err)
+	}
+	csrfResp, err := c.httpClient.Do(csrfReq)
+	if err != nil {
+		return fmt.Errorf("login: fetch csrf token: %w", err)
+	}
+	defer csrfResp.Body.Close()
+	if csrfResp.StatusCode != http.StatusOK {
+		return fmt.Errorf("login: %w", c.apiError("fetch csrf token", csrfResp))
+	}
+	var csrfBody struct {
+		Token string `json:"token"`
+	}
+	if err := json.NewDecoder(csrfResp.Body).Decode(&csrfBody); err != nil {
+		return fmt.Errorf("login: decode csrf token: %w", err)
+	}
+
+	body, err := json.Marshal(map[string]string{"username": username, "password": password})
+	if err != nil {
+		return fmt.Errorf("login: marshal: %w", err)
+	}
+	loginReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.apiURL("/api/login"), bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("login: build request: %w", err)
+	}
+	loginReq.Header.Set("Content-Type", "application/json")
+	loginReq.Header.Set(csrfTokenHeaderClient, csrfBody.Token)
+
+	loginResp, err := c.httpClient.Do(loginReq)
+	if err != nil {
+		return fmt.Errorf("login: %w", err)
+	}
+	defer loginResp.Body.Close()
+	if loginResp.StatusCode != http.StatusOK {
+		return fmt.Errorf("login: %w", c.apiError("login", loginResp))
+	}
+
+	// Cookies (mitto_session, mitto_csrf) are now in the jar. Keep the CSRF
+	// token for cookieAuth to attach to subsequent state-changing requests.
+	c.csrfToken = csrfBody.Token
+	c.auth = cookieAuth{client: c}
+	return nil
+}
+
+// Logout invalidates the current cookie-login session, if any, by posting
+// to /api/logout. It is a no-op (returns nil) if the client is not
+// currently in cookie-login mode. After Logout, the client reverts to
+// whatever auth mode was configured before Login (or noAuth if none).
+func (c *Client) Logout(ctx context.Context) error {
+	if _, ok := c.auth.(cookieAuth); !ok {
+		return nil
+	}
+	req, err := c.newRequest(http.MethodPost, c.apiURL("/api/logout"), "", nil)
+	if err != nil {
+		return fmt.Errorf("logout: %w", err)
+	}
+	req = req.WithContext(ctx)
+	resp, err := c.do(req)
+	if err != nil {
+		return fmt.Errorf("logout: %w", err)
+	}
+	defer resp.Body.Close()
+
+	c.auth = noAuth{}
+	c.csrfToken = ""
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("logout: %w", c.apiError("logout", resp))
+	}
+	return nil
+}
+
 // BaseURL returns the base URL of the client.
 func (c *Client) BaseURL() string {
 	return c.baseURL
+}
+
+// newRequest builds an HTTP request against the Mitto API and decorates it
+// with the client's configured authentication (see authProvider). All REST
+// call sites in this package must go through newRequest+do rather than
+// c.httpClient directly, so authentication is applied consistently.
+// contentType may be empty (e.g. for GET/DELETE); when non-empty it is set
+// as the Content-Type header.
+func (c *Client) newRequest(method, fullURL, contentType string, body io.Reader) (*http.Request, error) {
+	req, err := http.NewRequest(method, fullURL, body)
+	if err != nil {
+		return nil, err
+	}
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
+	}
+	if err := c.auth.applyREST(req); err != nil {
+		return nil, err
+	}
+	return req, nil
+}
+
+// do executes a request built by newRequest.
+func (c *Client) do(req *http.Request) (*http.Response, error) {
+	return c.httpClient.Do(req)
 }
 
 // SessionInfo represents information about a session.
@@ -87,7 +240,11 @@ type CreateSessionRequest struct {
 
 // ListSessions returns all sessions.
 func (c *Client) ListSessions() ([]SessionInfo, error) {
-	resp, err := c.httpClient.Get(c.apiURL("/api/sessions"))
+	req, err := c.newRequest(http.MethodGet, c.apiURL("/api/sessions"), "", nil)
+	if err != nil {
+		return nil, fmt.Errorf("list sessions: %w", err)
+	}
+	resp, err := c.do(req)
 	if err != nil {
 		return nil, fmt.Errorf("list sessions: %w", err)
 	}
@@ -111,7 +268,11 @@ func (c *Client) CreateSession(req CreateSessionRequest) (*SessionInfo, error) {
 		return nil, fmt.Errorf("create session: marshal: %w", err)
 	}
 
-	resp, err := c.httpClient.Post(c.apiURL("/api/sessions"), "application/json", bytes.NewReader(body))
+	httpReq, err := c.newRequest(http.MethodPost, c.apiURL("/api/sessions"), "application/json", bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("create session: %w", err)
+	}
+	resp, err := c.do(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("create session: %w", err)
 	}
@@ -130,7 +291,11 @@ func (c *Client) CreateSession(req CreateSessionRequest) (*SessionInfo, error) {
 
 // GetSession returns information about a specific session.
 func (c *Client) GetSession(sessionID string) (*SessionInfo, error) {
-	resp, err := c.httpClient.Get(c.apiURL("/api/sessions/" + url.PathEscape(sessionID)))
+	req, err := c.newRequest(http.MethodGet, c.apiURL("/api/sessions/"+url.PathEscape(sessionID)), "", nil)
+	if err != nil {
+		return nil, fmt.Errorf("get session: %w", err)
+	}
+	resp, err := c.do(req)
 	if err != nil {
 		return nil, fmt.Errorf("get session: %w", err)
 	}
@@ -152,12 +317,12 @@ func (c *Client) GetSession(sessionID string) (*SessionInfo, error) {
 
 // DeleteSession deletes a session.
 func (c *Client) DeleteSession(sessionID string) error {
-	req, err := http.NewRequest(http.MethodDelete, c.apiURL("/api/sessions/"+url.PathEscape(sessionID)), nil)
+	req, err := c.newRequest(http.MethodDelete, c.apiURL("/api/sessions/"+url.PathEscape(sessionID)), "", nil)
 	if err != nil {
 		return fmt.Errorf("delete session: %w", err)
 	}
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
 		return fmt.Errorf("delete session: %w", err)
 	}
@@ -178,13 +343,12 @@ func (c *Client) ArchiveSession(sessionID string, archive bool) error {
 		return fmt.Errorf("archive session: marshal: %w", err)
 	}
 
-	req, err := http.NewRequest(http.MethodPatch, c.apiURL("/api/sessions/"+url.PathEscape(sessionID)), bytes.NewReader(body))
+	req, err := c.newRequest(http.MethodPatch, c.apiURL("/api/sessions/"+url.PathEscape(sessionID)), "application/json", bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("archive session: %w", err)
 	}
-	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
 		return fmt.Errorf("archive session: %w", err)
 	}
@@ -227,11 +391,15 @@ func (c *Client) UploadImage(sessionID string, filename string, mimeType string,
 		return nil, fmt.Errorf("upload image: close writer: %w", err)
 	}
 
-	resp, err := c.httpClient.Post(
+	req, err := c.newRequest(http.MethodPost,
 		c.apiURL("/api/sessions/"+url.PathEscape(sessionID)+"/images"),
 		writer.FormDataContentType(),
 		&buf,
 	)
+	if err != nil {
+		return nil, fmt.Errorf("upload image: %w", err)
+	}
+	resp, err := c.do(req)
 	if err != nil {
 		return nil, fmt.Errorf("upload image: %w", err)
 	}
@@ -276,7 +444,11 @@ type QueueAddRequest struct {
 
 // ListQueue returns all queued messages for a session.
 func (c *Client) ListQueue(sessionID string) (*QueueListResponse, error) {
-	resp, err := c.httpClient.Get(c.apiURL("/api/sessions/" + url.PathEscape(sessionID) + "/queue"))
+	req, err := c.newRequest(http.MethodGet, c.apiURL("/api/sessions/"+url.PathEscape(sessionID)+"/queue"), "", nil)
+	if err != nil {
+		return nil, fmt.Errorf("list queue: %w", err)
+	}
+	resp, err := c.do(req)
 	if err != nil {
 		return nil, fmt.Errorf("list queue: %w", err)
 	}
@@ -312,11 +484,15 @@ func (c *Client) AddToQueueWithImages(sessionID, message string, imageIDs []stri
 		return nil, fmt.Errorf("add to queue: marshal: %w", err)
 	}
 
-	resp, err := c.httpClient.Post(
+	req, err := c.newRequest(http.MethodPost,
 		c.apiURL("/api/sessions/"+url.PathEscape(sessionID)+"/queue"),
 		"application/json",
 		bytes.NewReader(body),
 	)
+	if err != nil {
+		return nil, fmt.Errorf("add to queue: %w", err)
+	}
+	resp, err := c.do(req)
 	if err != nil {
 		return nil, fmt.Errorf("add to queue: %w", err)
 	}
@@ -342,7 +518,11 @@ func (c *Client) AddToQueueWithImages(sessionID, message string, imageIDs []stri
 
 // GetQueueMessage returns a specific queued message.
 func (c *Client) GetQueueMessage(sessionID, messageID string) (*QueuedMessage, error) {
-	resp, err := c.httpClient.Get(c.apiURL("/api/sessions/" + url.PathEscape(sessionID) + "/queue/" + url.PathEscape(messageID)))
+	req, err := c.newRequest(http.MethodGet, c.apiURL("/api/sessions/"+url.PathEscape(sessionID)+"/queue/"+url.PathEscape(messageID)), "", nil)
+	if err != nil {
+		return nil, fmt.Errorf("get queue message: %w", err)
+	}
+	resp, err := c.do(req)
 	if err != nil {
 		return nil, fmt.Errorf("get queue message: %w", err)
 	}
@@ -366,12 +546,12 @@ func (c *Client) GetQueueMessage(sessionID, messageID string) (*QueuedMessage, e
 
 // RemoveFromQueue removes a message from the session's queue.
 func (c *Client) RemoveFromQueue(sessionID, messageID string) error {
-	req, err := http.NewRequest(http.MethodDelete, c.apiURL("/api/sessions/"+url.PathEscape(sessionID)+"/queue/"+url.PathEscape(messageID)), nil)
+	req, err := c.newRequest(http.MethodDelete, c.apiURL("/api/sessions/"+url.PathEscape(sessionID)+"/queue/"+url.PathEscape(messageID)), "", nil)
 	if err != nil {
 		return fmt.Errorf("remove from queue: %w", err)
 	}
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
 		return fmt.Errorf("remove from queue: %w", err)
 	}
@@ -390,12 +570,12 @@ func (c *Client) RemoveFromQueue(sessionID, messageID string) error {
 
 // ClearQueue removes all messages from the session's queue.
 func (c *Client) ClearQueue(sessionID string) error {
-	req, err := http.NewRequest(http.MethodDelete, c.apiURL("/api/sessions/"+url.PathEscape(sessionID)+"/queue"), nil)
+	req, err := c.newRequest(http.MethodDelete, c.apiURL("/api/sessions/"+url.PathEscape(sessionID)+"/queue"), "", nil)
 	if err != nil {
 		return fmt.Errorf("clear queue: %w", err)
 	}
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
 		return fmt.Errorf("clear queue: %w", err)
 	}
@@ -418,11 +598,15 @@ func (c *Client) AddToQueueNamed(sessionID, promptName string) (*QueuedMessage, 
 		return nil, fmt.Errorf("add named to queue: marshal: %w", err)
 	}
 
-	resp, err := c.httpClient.Post(
+	req, err := c.newRequest(http.MethodPost,
 		c.apiURL("/api/sessions/"+url.PathEscape(sessionID)+"/queue"),
 		"application/json",
 		bytes.NewReader(body),
 	)
+	if err != nil {
+		return nil, fmt.Errorf("add named to queue: %w", err)
+	}
+	resp, err := c.do(req)
 	if err != nil {
 		return nil, fmt.Errorf("add named to queue: %w", err)
 	}
@@ -454,11 +638,15 @@ func (c *Client) AddToQueueNamedWithArgs(sessionID, promptName string, args map[
 		return nil, fmt.Errorf("add named+args to queue: marshal: %w", err)
 	}
 
-	resp, err := c.httpClient.Post(
+	req, err := c.newRequest(http.MethodPost,
 		c.apiURL("/api/sessions/"+url.PathEscape(sessionID)+"/queue"),
 		"application/json",
 		bytes.NewReader(body),
 	)
+	if err != nil {
+		return nil, fmt.Errorf("add named+args to queue: %w", err)
+	}
+	resp, err := c.do(req)
 	if err != nil {
 		return nil, fmt.Errorf("add named+args to queue: %w", err)
 	}
@@ -484,7 +672,11 @@ func (c *Client) AddToQueueNamedWithArgs(sessionID, promptName string, args map[
 func (c *Client) GetPromptArgCache(sessionID, promptName string) ([]string, error) {
 	qp := url.Values{"prompt": {promptName}}
 	reqURL := c.apiURL("/api/sessions/"+url.PathEscape(sessionID)+"/prompt-arg-cache") + "?" + qp.Encode()
-	resp, err := c.httpClient.Get(reqURL)
+	req, err := c.newRequest(http.MethodGet, reqURL, "", nil)
+	if err != nil {
+		return nil, fmt.Errorf("get prompt-arg-cache: %w", err)
+	}
+	resp, err := c.do(req)
 	if err != nil {
 		return nil, fmt.Errorf("get prompt-arg-cache: %w", err)
 	}
@@ -566,16 +758,16 @@ func (c *Client) SetLoop(sessionID string, req SetLoopRequest) (*LoopConfig, err
 		return nil, fmt.Errorf("set loop: marshal: %w", err)
 	}
 
-	httpReq, err := http.NewRequest(http.MethodPut,
+	httpReq, err := c.newRequest(http.MethodPut,
 		c.apiURL("/api/sessions/"+url.PathEscape(sessionID)+"/loop"),
+		"application/json",
 		bytes.NewReader(body),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("set loop: build request: %w", err)
 	}
-	httpReq.Header.Set("Content-Type", "application/json")
 
-	resp, err := c.httpClient.Do(httpReq)
+	resp, err := c.do(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("set loop: %w", err)
 	}
@@ -594,7 +786,11 @@ func (c *Client) SetLoop(sessionID string, req SetLoopRequest) (*LoopConfig, err
 
 // GetLoop returns the loop configuration for a session.
 func (c *Client) GetLoop(sessionID string) (*LoopConfig, error) {
-	resp, err := c.httpClient.Get(c.apiURL("/api/sessions/" + url.PathEscape(sessionID) + "/loop"))
+	req, err := c.newRequest(http.MethodGet, c.apiURL("/api/sessions/"+url.PathEscape(sessionID)+"/loop"), "", nil)
+	if err != nil {
+		return nil, fmt.Errorf("get loop: %w", err)
+	}
+	resp, err := c.do(req)
 	if err != nil {
 		return nil, fmt.Errorf("get loop: %w", err)
 	}
@@ -627,11 +823,15 @@ func (c *Client) RunLoopNow(sessionID string, resetTimer bool) error {
 		return fmt.Errorf("run loop now: marshal: %w", err)
 	}
 
-	resp, err := c.httpClient.Post(
+	req, err := c.newRequest(http.MethodPost,
 		c.apiURL("/api/sessions/"+url.PathEscape(sessionID)+"/loop/run-now"),
 		"application/json",
 		bytes.NewReader(body),
 	)
+	if err != nil {
+		return fmt.Errorf("run loop now: %w", err)
+	}
+	resp, err := c.do(req)
 	if err != nil {
 		return fmt.Errorf("run loop now: %w", err)
 	}
