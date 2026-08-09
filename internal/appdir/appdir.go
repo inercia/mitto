@@ -31,6 +31,12 @@ const (
 	// FoldersFileName is the name of the folders file.
 	FoldersFileName = "folders.json"
 
+	// InstanceFileName is the name of the running-instance discovery file
+	// (mitto-pscc.2). It records how to reach the currently running `mitto
+	// web` / macOS app server (URL, API prefix, bearer token) so local
+	// clients such as the CLI can find it without extra configuration.
+	InstanceFileName = "instance.json"
+
 	// SessionsDirName is the name of the sessions subdirectory.
 	SessionsDirName = "sessions"
 
@@ -312,6 +318,19 @@ func FoldersPath() (string, error) {
 		return "", err
 	}
 	return filepath.Join(dir, FoldersFileName), nil
+}
+
+// InstancePath returns the full path to the instance.json file.
+// This file records the currently running server's connection details
+// (url, api_prefix, external_url, token, pid, started_at) so local clients
+// (e.g. the CLI) can discover a running `mitto web` / macOS app instance
+// without extra configuration. See internal/instancefile for the reader/writer.
+func InstancePath() (string, error) {
+	dir, err := Dir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, InstanceFileName), nil
 }
 
 // SessionsDir returns the full path to the sessions directory.

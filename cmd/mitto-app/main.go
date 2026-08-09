@@ -301,6 +301,7 @@ import (
 	"github.com/inercia/mitto/internal/appdir"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/hooks"
+	"github.com/inercia/mitto/internal/instancefile"
 	"github.com/inercia/mitto/internal/logging"
 	"github.com/inercia/mitto/internal/web"
 )
@@ -1308,6 +1309,29 @@ func run() error {
 		// Note: StartExternalListener already logs success
 	}
 
+	// Write instance.json (mitto-pscc.2) now that the real port(s) are known,
+	// so local clients (e.g. the CLI) can discover this running instance.
+	// Best-effort: a write failure is a discoverability inconvenience, not a
+	// reason to abort startup.
+	apiPrefix := config.DefaultAPIPrefix
+	if cfg != nil && cfg.Web.APIPrefix != "" {
+		apiPrefix = cfg.Web.APIPrefix
+	}
+	externalURL := ""
+	if cfg != nil && cfg.Web.Hooks.ExternalAddress != "" {
+		externalURL = cfg.Web.Hooks.ExternalAddress
+	} else if actualExternalPort > 0 {
+		externalURL = fmt.Sprintf("http://0.0.0.0:%d", actualExternalPort)
+	}
+	if err := instancefile.Write(&instancefile.Instance{
+		PID:         os.Getpid(),
+		URL:         url,
+		APIPrefix:   apiPrefix,
+		ExternalURL: externalURL,
+	}); err != nil {
+		slog.Warn("Failed to write instance file", "error", err)
+	}
+
 	// Run the up hook if configured
 	// Use external port if available (for tunneling services like Tailscale/ngrok),
 	// otherwise fall back to local port
@@ -1579,6 +1603,11 @@ func run() error {
 		// normal power management.
 		stopNetworkPowerAssertion()
 		srv.Shutdown()
+	})
+	shutdown.AddCleanup(func(reason string) {
+		if err := instancefile.Remove(); err != nil {
+			slog.Warn("Failed to remove instance file", "error", err)
+		}
 	})
 
 	// Set the UI termination callback - this will be called after all cleanup
