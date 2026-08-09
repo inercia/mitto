@@ -44,6 +44,7 @@ import { createPromptsResource } from "./resources/prompts.js";
 import { createProcessorsResource } from "./resources/processors.js";
 import { createShortcutsResource } from "./resources/shortcuts.js";
 import { createConfigResource } from "./resources/config.js";
+import { createIssuesResource, withIssueCaches } from "./resources/issues.js";
 import { createTtlCache, keyForParams } from "./cache/ttl-cache.js";
 
 /**
@@ -68,6 +69,7 @@ export function createClient(options = {}) {
     prompts: createPromptsResource(config),
     processors: createProcessorsResource(config),
     shortcuts: createShortcutsResource(config),
+    issues: createIssuesResource(config),
     // Named `serverConfig`, not `config`, because `client.config` is already
     // the resolved internal SDK config object (see `config` above and
     // utils/sdkClient.js's `getSdkClient().config.storage` call site).
@@ -96,3 +98,4 @@ export {
 export { generatePromptId, createMemoryPendingPromptStore, createStoragePendingPromptStore };
 export { EVENTS, COMMANDS, LEGACY_EVENTS, isKnownEventType, isCommandType };
 export { createTtlCache, keyForParams };
+export { withIssueCaches };
