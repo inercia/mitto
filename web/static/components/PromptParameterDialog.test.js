@@ -7,6 +7,10 @@
  * BeadsView.test.js and Message.test.js.
  */
 
+// Jest is not injected as a global under --experimental-vm-modules (ESM); we
+// must import it explicitly. testGlobals.js re-exports the lifecycle globals
+// and `jest` from whichever runner is active (Jest or bun:test).
+import { describe, test, expect, jest } from "../utils/testing/testGlobals.js";
 import { getBasename } from "../lib.js";
 import {
   groupDialogParameters,
@@ -2567,5 +2571,160 @@ describe("mitto-boio — parameter dialog tab render gate", () => {
         { name: "Advanced", unmet: true },
       ],
     });
+  });
+});
+
+// =============================================================================
+// SDK migration coverage (mitto-7gta.17 slice S5): the filename/dirname
+// per-param fetch effects now call getSdkClient().files.workspaceFiles.list()
+// / .workspaceDirs.list() instead of authFetch(endpoints...). Duplicated from
+// PromptParameterDialog.js:1114-1197 — keep in sync.
+// =============================================================================
+
+/** Mirrors the `params` object built for each filename/dirname param
+ *  (PromptParameterDialog.js:1128-1137 / 1172-1179 — identical shape for
+ *  both). `p` is a single dialog parameter descriptor; `workingDir` is the
+ *  dialog's working directory. */
+function buildWorkspaceListParams(p, workingDir) {
+  const params = { working_dir: workingDir };
+  if (p.dir) params.dir = p.dir;
+  // mitto-ebb: glob is a list on the wire (repeated ?glob=…). A defensive
+  // scalar branch survives an old payload slipping through.
+  if (p.glob) {
+    if (Array.isArray(p.glob) ? p.glob.length : String(p.glob))
+      params.glob = p.glob;
+  }
+  return params;
+}
+
+/** Mirrors the per-param fetch-then-store flow shared by the filename
+ *  (`files.workspaceFiles.list`) and dirname (`files.workspaceDirs.list`)
+ *  effects: on success, store `data[resultKey]` (or `[]` if not an array);
+ *  on failure, degrade to `[]` rather than throwing (the dialog falls back
+ *  to a text input via the ParamField render branch either way). */
+async function fetchWorkspaceListForParam({
+  listFn,
+  params,
+  resultKey,
+  paramName,
+  setByParam,
+}) {
+  try {
+    const data = await listFn(params);
+    setByParam((prev) => ({
+      ...prev,
+      [paramName]: Array.isArray(data?.[resultKey]) ? data[resultKey] : [],
+    }));
+  } catch (_err) {
+    setByParam((prev) => ({ ...prev, [paramName]: [] }));
+  }
+}
+
+describe("workspace files/dirs per-param fetch params (mitto-ebb / mitto-7gta.17 S5)", () => {
+  test("bare param: only working_dir is sent", () => {
+    expect(buildWorkspaceListParams({ name: "f" }, "/repo")).toEqual({
+      working_dir: "/repo",
+    });
+  });
+
+  test("dir is forwarded when declared", () => {
+    expect(
+      buildWorkspaceListParams({ name: "f", dir: "src" }, "/repo"),
+    ).toEqual({ working_dir: "/repo", dir: "src" });
+  });
+
+  test("glob as a non-empty array is forwarded as-is", () => {
+    expect(
+      buildWorkspaceListParams({ name: "f", glob: ["*.go", "*.js"] }, "/repo"),
+    ).toEqual({ working_dir: "/repo", glob: ["*.go", "*.js"] });
+  });
+
+  test("glob as an empty array is dropped (falls back to no filter)", () => {
+    expect(buildWorkspaceListParams({ name: "f", glob: [] }, "/repo")).toEqual({
+      working_dir: "/repo",
+    });
+  });
+
+  test("glob as a non-empty scalar string (defensive legacy-payload branch) is forwarded", () => {
+    expect(
+      buildWorkspaceListParams({ name: "f", glob: "*.md" }, "/repo"),
+    ).toEqual({ working_dir: "/repo", glob: "*.md" });
+  });
+
+  test("glob as an empty string is dropped", () => {
+    expect(buildWorkspaceListParams({ name: "f", glob: "" }, "/repo")).toEqual({
+      working_dir: "/repo",
+    });
+  });
+});
+
+describe("workspace files/dirs per-param fetch flow (getSdkClient migration)", () => {
+  test("files.workspaceFiles.list success stores data.files keyed by param name", async () => {
+    const listFn = jest.fn(async () => ({ files: [{ path: "a.go" }] }));
+    const setByParam = jest.fn();
+
+    await fetchWorkspaceListForParam({
+      listFn,
+      params: { working_dir: "/repo" },
+      resultKey: "files",
+      paramName: "myFile",
+      setByParam,
+    });
+
+    expect(listFn).toHaveBeenCalledWith({ working_dir: "/repo" });
+    const updater = setByParam.mock.calls[0][0];
+    expect(updater({})).toEqual({ myFile: [{ path: "a.go" }] });
+  });
+
+  test("files.workspaceDirs.list success stores data.dirs keyed by param name", async () => {
+    const listFn = jest.fn(async () => ({ dirs: ["src", "web"] }));
+    const setByParam = jest.fn();
+
+    await fetchWorkspaceListForParam({
+      listFn,
+      params: { working_dir: "/repo" },
+      resultKey: "dirs",
+      paramName: "myDir",
+      setByParam,
+    });
+
+    const updater = setByParam.mock.calls[0][0];
+    expect(updater({})).toEqual({ myDir: ["src", "web"] });
+  });
+
+  test("a non-array result key degrades to an empty list rather than throwing", async () => {
+    const listFn = jest.fn(async () => ({ files: null }));
+    const setByParam = jest.fn();
+
+    await fetchWorkspaceListForParam({
+      listFn,
+      params: {},
+      resultKey: "files",
+      paramName: "p",
+      setByParam,
+    });
+
+    const updater = setByParam.mock.calls[0][0];
+    expect(updater({})).toEqual({ p: [] });
+  });
+
+  test("a rejected list() call (MittoApiError/MittoNetworkError) degrades to an empty list", async () => {
+    const listFn = jest.fn(async () => {
+      throw new Error("boom");
+    });
+    const setByParam = jest.fn();
+
+    await expect(
+      fetchWorkspaceListForParam({
+        listFn,
+        params: {},
+        resultKey: "files",
+        paramName: "p",
+        setByParam,
+      }),
+    ).resolves.toBeUndefined();
+
+    const updater = setByParam.mock.calls[0][0];
+    expect(updater({ other: [1] })).toEqual({ other: [1], p: [] });
   });
 });

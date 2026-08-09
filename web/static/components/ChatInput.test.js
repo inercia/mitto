@@ -372,9 +372,7 @@ describe("ChatInput composition-area visibility during MCP UI prompts (mitto-9l8
       //    the same requestId (so the auto-collapse effect never re-fires),
       //    that no longer matters for visibility: the hard gate already
       //    keeps the composer hidden without relying on the effect.
-      expect(isDuplicateUIPrompt(activeUIPrompt.requestId, "req-1")).toBe(
-        true,
-      );
+      expect(isDuplicateUIPrompt(activeUIPrompt.requestId, "req-1")).toBe(true);
     });
   });
 });
@@ -434,9 +432,9 @@ describe("ChatInput follow-up suggestion buttons carousel (mitto-7c98)", () => {
     });
 
     test("does not render when actionButtons is empty", () => {
-      expect(
-        shouldRenderActionButtonsCarousel({ actionButtons: [] }),
-      ).toBe(false);
+      expect(shouldRenderActionButtonsCarousel({ actionButtons: [] })).toBe(
+        false,
+      );
     });
 
     test("does not render while streaming", () => {
@@ -514,5 +512,187 @@ describe("ChatInput follow-up suggestion buttons carousel (mitto-7c98)", () => {
       expect(setText).toHaveBeenCalledTimes(2);
       expect(setText).toHaveBeenLastCalledWith("Option B");
     });
+  });
+});
+
+// =============================================================================
+// SDK migration coverage (mitto-7gta.17 slice S5): loop lock/unlock and
+// improve-prompt now go through getSdkClient() instead of secureFetch.
+// Handlers are duplicated (with dependencies injected) per this file's
+// established convention — ChatInput.js cannot be imported under jsdom.
+// =============================================================================
+
+/**
+ * Mirrors `handleLockLoopPrompt` (ChatInput.js ~L1009): PATCHes the loop
+ * prompt via `loopClient.update(id, {prompt, enabled: true})` and, on
+ * success, records the server-echoed `next_scheduled_at`.
+ */
+function makeHandleLockLoopPrompt({
+  sessionId,
+  text,
+  loopClient,
+  setLoopPrompt = () => {},
+  setIsLoopLocked = () => {},
+  setLoopNextScheduledAt = () => {},
+}) {
+  return async function handleLockLoopPrompt() {
+    if (!sessionId || !text.trim()) return;
+    try {
+      const data = await loopClient.update(sessionId, {
+        prompt: text.trim(),
+        enabled: true,
+      });
+      setLoopPrompt(text.trim());
+      setIsLoopLocked(true);
+      if (data.next_scheduled_at) {
+        setLoopNextScheduledAt(data.next_scheduled_at);
+      }
+    } catch (_err) {
+      // Non-fatal in this duplicated handler; the real component logs it.
+    }
+  };
+}
+
+/**
+ * Mirrors `handleUnlockLoopPrompt` (ChatInput.js ~L1032): PATCHes
+ * `{enabled: false}` via `loopClient.update` and clears the local lock
+ * state on success.
+ */
+function makeHandleUnlockLoopPrompt({
+  sessionId,
+  loopClient,
+  setIsLoopLocked = () => {},
+  setLoopNextScheduledAt = () => {},
+}) {
+  return async function handleUnlockLoopPrompt() {
+    if (!sessionId) return;
+    try {
+      await loopClient.update(sessionId, { enabled: false });
+      setIsLoopLocked(false);
+      setLoopNextScheduledAt(null);
+    } catch (_err) {
+      // Non-fatal in this duplicated handler; the real component logs it.
+    }
+  };
+}
+
+describe("handleLockLoopPrompt / handleUnlockLoopPrompt (SDK migration)", () => {
+  test("lock: PATCHes {prompt, enabled: true} and stores next_scheduled_at", async () => {
+    const loopClient = {
+      update: jest.fn(async () => ({
+        next_scheduled_at: "2026-01-01T00:00:00Z",
+      })),
+    };
+    const setLoopPrompt = jest.fn();
+    const setIsLoopLocked = jest.fn();
+    const setLoopNextScheduledAt = jest.fn();
+
+    const handler = makeHandleLockLoopPrompt({
+      sessionId: "s1",
+      text: "  Do the thing  ",
+      loopClient,
+      setLoopPrompt,
+      setIsLoopLocked,
+      setLoopNextScheduledAt,
+    });
+    await handler();
+
+    expect(loopClient.update).toHaveBeenCalledWith("s1", {
+      prompt: "Do the thing",
+      enabled: true,
+    });
+    expect(setLoopPrompt).toHaveBeenCalledWith("Do the thing");
+    expect(setIsLoopLocked).toHaveBeenCalledWith(true);
+    expect(setLoopNextScheduledAt).toHaveBeenCalledWith("2026-01-01T00:00:00Z");
+  });
+
+  test("lock: no-op when text is blank", async () => {
+    const loopClient = { update: jest.fn() };
+    const handler = makeHandleLockLoopPrompt({
+      sessionId: "s1",
+      text: "   ",
+      loopClient,
+    });
+    await handler();
+    expect(loopClient.update).not.toHaveBeenCalled();
+  });
+
+  test("lock: a rejected update() (MittoApiError) is caught, not thrown", async () => {
+    const loopClient = {
+      update: jest.fn(async () => {
+        throw new Error("boom");
+      }),
+    };
+    const setIsLoopLocked = jest.fn();
+    const handler = makeHandleLockLoopPrompt({
+      sessionId: "s1",
+      text: "hi",
+      loopClient,
+      setIsLoopLocked,
+    });
+    await expect(handler()).resolves.toBeUndefined();
+    expect(setIsLoopLocked).not.toHaveBeenCalled();
+  });
+
+  test("unlock: PATCHes {enabled: false} and clears lock state + schedule", async () => {
+    const loopClient = { update: jest.fn(async () => ({})) };
+    const setIsLoopLocked = jest.fn();
+    const setLoopNextScheduledAt = jest.fn();
+
+    const handler = makeHandleUnlockLoopPrompt({
+      sessionId: "s1",
+      loopClient,
+      setIsLoopLocked,
+      setLoopNextScheduledAt,
+    });
+    await handler();
+
+    expect(loopClient.update).toHaveBeenCalledWith("s1", { enabled: false });
+    expect(setIsLoopLocked).toHaveBeenCalledWith(false);
+    expect(setLoopNextScheduledAt).toHaveBeenCalledWith(null);
+  });
+});
+
+// =============================================================================
+// handleImprovePrompt's AbortError detection (mitto-7gta.17 slice S5 fix):
+// the SDK wraps an aborted fetch in a MittoNetworkError whose `.cause` is
+// the original AbortError, so timeout-detection must check both
+// `err.name` (bare AbortError, e.g. from an unwrapped native fetch) and
+// `err.cause?.name` (SDK-wrapped). Duplicated from ChatInput.js:1464-1480.
+// =============================================================================
+
+function isImprovePromptTimeout(err) {
+  return err.name === "AbortError" || err.cause?.name === "AbortError";
+}
+
+describe("handleImprovePrompt — AbortError detection through SDK wrapping", () => {
+  test("bare AbortError (unwrapped) is detected as a timeout", () => {
+    const err = new Error("aborted");
+    err.name = "AbortError";
+    expect(isImprovePromptTimeout(err)).toBe(true);
+  });
+
+  test("SDK-wrapped MittoNetworkError with an AbortError cause is detected as a timeout", () => {
+    const abortErr = new Error("The operation was aborted");
+    abortErr.name = "AbortError";
+    const wrapped = new Error("network error");
+    wrapped.name = "MittoNetworkError";
+    wrapped.cause = abortErr;
+    expect(isImprovePromptTimeout(wrapped)).toBe(true);
+  });
+
+  test("a non-abort error (e.g. MittoApiError) is NOT treated as a timeout", () => {
+    const err = new Error("bad request");
+    err.name = "MittoApiError";
+    expect(isImprovePromptTimeout(err)).toBe(false);
+  });
+
+  test("a MittoNetworkError wrapping a non-abort cause is NOT treated as a timeout", () => {
+    const cause = new Error("ECONNRESET");
+    cause.name = "TypeError";
+    const wrapped = new Error("network error");
+    wrapped.name = "MittoNetworkError";
+    wrapped.cause = cause;
+    expect(isImprovePromptTimeout(wrapped)).toBe(false);
   });
 });
