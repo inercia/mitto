@@ -64,3 +64,71 @@ describe("app.js: protected-conversation archive suppression (mitto-yvel.4)", ()
     expect(queuedIdx).toBeGreaterThan(protectedIdx);
   });
 });
+
+describe("app.js: SDK migration — session loop/flush handlers (mitto-7gta.17 slice S4)", () => {
+  test("imports getSdkClient/isNotFoundError; the session-domain handlers no longer use authFetch/secureFetch", () => {
+    expect(appJs).toMatch(
+      /import \{ getSdkClient \} from "\.\/utils\/sdkClient\.js";/,
+    );
+    expect(appJs).toMatch(
+      /import \{ errorMessage, isNotFoundError \} from "\.\/utils\/sdkErrors\.js";/,
+    );
+  });
+
+  test("handleMakeLoop: restore -> (404 falls through, other errors rethrow) -> suggestFromRecent+set draft -> blank-draft set", () => {
+    const idx = appJs.indexOf("const handleMakeLoop = useCallback(");
+    expect(idx).toBeGreaterThan(-1);
+    const snippet = appJs.slice(idx, idx + 2200);
+
+    // Step 1: restore; a 404 falls through (does not rethrow), anything else rethrows.
+    const restoreIdx = snippet.indexOf(
+      "await getSdkClient().sessions.loop.restore(sessionId);",
+    );
+    expect(restoreIdx).toBeGreaterThan(-1);
+    expect(snippet).toMatch(
+      /catch \(err\) \{\s*\n\s*if \(!isNotFoundError\(err\)\) throw err;\s*\n\s*\}/,
+    );
+
+    // Step 2: suggestFromRecent feeds set(..., { enabled: false }); any failure
+    // here falls through silently (no rethrow) to the blank-draft step.
+    const suggestIdx = snippet.indexOf(
+      "await getSdkClient().sessions.loop.suggestFromRecent(sessionId);",
+    );
+    expect(suggestIdx).toBeGreaterThan(restoreIdx);
+    const suggestSetIdx = snippet.indexOf(
+      "await getSdkClient().sessions.loop.set(sessionId, {\n            ...suggestion,\n            enabled: false,\n          });",
+    );
+    expect(suggestSetIdx).toBeGreaterThan(suggestIdx);
+    expect(snippet).toMatch(
+      /\} catch \(_\) \{\s*\n\s*\/\/ Fall through to blank-draft PUT on any suggest\/PUT failure\.\s*\n\s*\}/,
+    );
+
+    // Step 3: blank draft, enabled: false so nothing is scheduled yet.
+    const draftMatch = snippet.match(
+      /await getSdkClient\(\)\.sessions\.loop\.set\(sessionId, \{\s*\n\s*prompt: "",\s*\n\s*frequency: \{ value: 1, unit: "hours" \},\s*\n\s*enabled: false,\s*\n\s*\}\);/,
+    );
+    expect(draftMatch).not.toBeNull();
+    expect(draftMatch.index).toBeGreaterThan(suggestSetIdx);
+  });
+
+  test("handleMakeNonLoop: getSdkClient().sessions.loop.detach(sessionId)", () => {
+    const idx = appJs.indexOf("const handleMakeNonLoop = useCallback(");
+    expect(idx).toBeGreaterThan(-1);
+    const snippet = appJs.slice(idx, idx + 400);
+    expect(snippet).toMatch(
+      /await getSdkClient\(\)\.sessions\.loop\.detach\(sessionId\);/,
+    );
+  });
+
+  test("handleFlushContext: getSdkClient().sessions.flush(sessionId), errors surfaced via errorMessage()", () => {
+    const idx = appJs.indexOf("const handleFlushContext = useCallback(");
+    expect(idx).toBeGreaterThan(-1);
+    const snippet = appJs.slice(idx, idx + 700);
+    expect(snippet).toMatch(
+      /await getSdkClient\(\)\.sessions\.flush\(sessionId\);/,
+    );
+    expect(snippet).toMatch(
+      /title: errorMessage\(err, "Failed to flush context"\),/,
+    );
+  });
+});
