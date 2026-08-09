@@ -116,6 +116,32 @@
 // process restarts. All of the above is off by default, so existing
 // deterministic tests and call sites are unaffected.
 //
+// # Streaming (channel/iterator)
+//
+// SessionCallbacks remains the only delivery mechanism; Events/EventsChan
+// are a thin adapter registered over the same read loop, not a second
+// transport, so both can be used against the same Session without racing
+// (callbacks are invoked first, then the stream, for each message).
+//
+//	for ev, err := range sess.Events(ctx) {
+//	    if err != nil {
+//	        log.Fatal(err) // ctx cancelled, disconnected, or ErrSlowConsumer
+//	    }
+//	    if ev.Kind == client.EventAgentMessage {
+//	        fmt.Print(ev.HTML)
+//	    }
+//	    if ev.Kind == client.EventPromptComplete {
+//	        break
+//	    }
+//	}
+//
+// At most one stream may be active per Session; a second concurrent call
+// returns ErrStreamActive. The internal buffer is bounded (256 by default,
+// override with WithStreamBuffer); a consumer slower than the producer
+// terminates the stream with ErrSlowConsumer instead of blocking the read
+// loop or silently dropping events. EventsChan offers the same semantics
+// for select-based callers that prefer channels over range-over-func.
+//
 // # Errors
 //
 // Non-2xx HTTP responses are returned as *APIError, which carries the

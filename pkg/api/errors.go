@@ -2,6 +2,7 @@ package client
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -39,6 +40,27 @@ var (
 	ErrRateLimited     = &APIError{Status: http.StatusTooManyRequests, Code: CodeRateLimited}
 	ErrUnavailable     = &APIError{Status: http.StatusServiceUnavailable, Code: CodeUnavailable}
 	ErrServerError     = &APIError{Status: http.StatusInternalServerError, Code: CodeServerError}
+)
+
+// Sentinel errors for the streaming API (Session.Events/EventsChan, see
+// stream.go). These are plain errors.New values, distinct from the *APIError
+// envelope above, since they describe local stream-adapter conditions rather
+// than an HTTP response.
+var (
+	// ErrStreamActive is returned when Events or EventsChan is called while
+	// another stream is already active on the same Session. At most one
+	// stream may be active at a time (docs/devel/go-client-library.md §6).
+	ErrStreamActive = errors.New("client: a stream is already active on this session")
+
+	// ErrSlowConsumer terminates a stream when the consumer falls behind and
+	// the bounded internal buffer overflows. Events are never silently
+	// dropped: overflow always ends the stream with this error instead.
+	ErrSlowConsumer = errors.New("client: stream consumer too slow, buffer overflowed")
+
+	// ErrDisconnected terminates a stream when the underlying WebSocket
+	// connection is dropped (and not automatically recovered, e.g.
+	// WithReconnect is not enabled or reconnection is exhausted/terminal).
+	ErrDisconnected = errors.New("client: session disconnected")
 )
 
 // APIError represents a non-2xx HTTP response from the Mitto REST API.

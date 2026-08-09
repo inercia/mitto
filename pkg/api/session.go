@@ -185,6 +185,11 @@ type Session struct {
 	// keepaliveMissed counts consecutive un-acked keepalives, reset on any
 	// keepalive_ack. Guarded by seqMu for simplicity (low contention).
 	keepaliveMissed int
+
+	// streamMu guards stream, the at-most-one-active channel/iterator
+	// adapter registered via Events/EventsChan (see stream.go).
+	streamMu sync.Mutex
+	stream   *eventStream
 }
 
 // maxSeenSeqs bounds the client-side dedup sliding window so a long-lived
@@ -561,6 +566,7 @@ func (s *Session) readUntilError() (gone bool) {
 	for {
 		select {
 		case <-s.ctx.Done():
+			s.terminateActiveStream(ErrDisconnected)
 			return false
 		default:
 		}
@@ -581,11 +587,17 @@ func (s *Session) readUntilError() (gone bool) {
 			if s.callbacks.OnDisconnected != nil {
 				s.callbacks.OnDisconnected(err)
 			}
+			// Any disconnect terminates an active stream with a non-nil
+			// error, regardless of whether WithReconnect will redial
+			// afterward (docs/devel/go-client-library.md §6): a streaming
+			// consumer must not block forever waiting on a dead connection.
+			s.terminateActiveStream(fmt.Errorf("%w: %v", ErrDisconnected, err))
 			return false
 		}
 
 		if isSessionGone(msg) {
 			s.handleMessage(msg)
+			s.terminateActiveStream(ErrDisconnected)
 			return true
 		}
 
@@ -850,6 +862,13 @@ func (s *Session) handleMessage(msg wsMessage) {
 			}
 		}
 	}
+
+	// Feed the channel/iterator streaming adapter (stream.go), if a stream
+	// is currently active. This runs after every callback dispatch above
+	// and after the dedup gate at the top of this function, so the stream
+	// inherits watermark/dedup semantics for free and never affects
+	// SessionCallbacks delivery.
+	s.emitStream(msg)
 }
 
 // observeSeq records seq as seen and advances the watermark. It returns

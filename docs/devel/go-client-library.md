@@ -111,17 +111,36 @@ stays reviewable on its own. `Session` keeps the lifetime `ctx` supplied to
 ## 6. Realtime: streaming API coexists with `SessionCallbacks` (`.5`/`.6`)
 
 `SessionCallbacks` remains the low-level primitive and the **only** delivery
-mechanism — the existing test suite depends on it. The streaming API is a
-thin adapter registered over the same read loop, not a second transport.
-Go 1.25 is in `go.mod`, so `Session.Events(ctx) iter.Seq2[Event, error]` is
-the primary form, plus a `<-chan Event` variant for select-based callers.
+mechanism — the existing test suite depends on it. The streaming API
+(delivered, `.6`) is a thin adapter registered over the same read loop, not a
+second transport: `(*Session).emitStream` is called once, at the tail of
+`handleMessage`, after every `SessionCallbacks` dispatch and after the
+`observeSeq` dedup gate, so the stream inherits watermark/dedup semantics for
+free and none of the existing per-message-type branches change. Go 1.25 is in
+`go.mod`, so `Session.Events(ctx) iter.Seq2[Event, error]` is the primary
+form; `Session.EventsChan(ctx) (<-chan Event, <-chan error, error)` is the
+select-based variant over the same buffer.
 
-Rules: at most **one** active stream per `Session` (a second call returns an
-error, avoiding a fan-out race); a caller may still set callbacks for events
-the stream does not model; the internal buffer is bounded, and overflow
-terminates the sequence with `ErrSlowConsumer` rather than silently
-dropping events; both `ctx` cancellation and disconnect terminate the
-sequence with a non-nil error.
+`Event` is a flat typed record (`Kind EventKind` plus the union of fields
+across modelled message types, `Raw json.RawMessage` for anything else) —
+chosen over a sum type because Go has no unions and a flat struct keeps a
+`range`-based consumer switch-free for the canonical case. Only the message
+types meaningful to a streaming consumer are modelled (`connected`,
+`agent_message`, `agent_thought`, `tool_call`, `tool_update`, `file_read`,
+`file_write`, `permission`, `prompt_received`, `prompt_complete`,
+`user_prompt`, `error`, `acp_stopped`, `acp_started`, `session_gone`);
+`session_sync`, `events_loaded`, `queue_*` and `keepalive_ack` stay
+callback-only.
+
+Rules: at most **one** active stream per `Session` — a second `Events`/
+`EventsChan` call while one is active returns `ErrStreamActive`; a caller may
+still set callbacks for events the stream does not model; the internal
+buffer is bounded (256 by default, `WithStreamBuffer(n)` to override), and a
+non-blocking send on overflow terminates the stream with `ErrSlowConsumer`
+rather than blocking the read loop or silently dropping events; both `ctx`
+cancellation and disconnect (read error, `session_gone`, or session `ctx`
+cancellation) terminate the sequence with a non-nil `ErrDisconnected`-wrapped
+error via `terminateActiveStream`.
 
 **Resilience (`.5`, delivered)** is opt-in via variadic `SessionOption`
 values on the existing `Connect` — no second constructor, so all in-repo

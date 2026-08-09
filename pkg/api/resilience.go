@@ -143,13 +143,19 @@ func (m *memorySeqStore) Store(sessionID string, seq int64) error {
 	return nil
 }
 
+// defaultStreamBuffer is the default bounded capacity of the internal
+// channel feeding Session.Events/EventsChan (see stream.go). Overridable
+// via WithStreamBuffer.
+const defaultStreamBuffer = 256
+
 // resilienceConfig aggregates all SessionOption settings. The zero value
 // disables every resilience feature, preserving today's Connect behavior.
 type resilienceConfig struct {
-	reconnect ReconnectConfig
-	keepalive KeepaliveConfig
-	seqStore  SeqStore
-	dedup     bool
+	reconnect    ReconnectConfig
+	keepalive    KeepaliveConfig
+	seqStore     SeqStore
+	dedup        bool
+	streamBuffer int
 }
 
 // SessionOption configures optional resilience behavior on Connect. Options
@@ -184,4 +190,18 @@ func WithSeqStore(store SeqStore) SessionOption {
 // with WithReconnect so re-delivered events after a resync are dropped.
 func WithSeqDedup(enabled bool) SessionOption {
 	return func(rc *resilienceConfig) { rc.dedup = enabled }
+}
+
+// WithStreamBuffer overrides the bounded capacity of the internal channel
+// feeding Session.Events/EventsChan (default 256, see defaultStreamBuffer).
+// A non-positive size is ignored (the default is kept). Sizing this too
+// small increases the chance of ErrSlowConsumer for bursty producers; it
+// does not affect SessionCallbacks delivery, which is unbuffered/blocking
+// as before.
+func WithStreamBuffer(size int) SessionOption {
+	return func(rc *resilienceConfig) {
+		if size > 0 {
+			rc.streamBuffer = size
+		}
+	}
 }
