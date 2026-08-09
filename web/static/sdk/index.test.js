@@ -118,6 +118,41 @@ describe("createClient() wiring (mitto-7gta.10)", () => {
     expect(typeof client.dashboard.timeseries).toBe("function");
   });
 
+  test("exposes client.workspaces with the full resource surface (mitto-7gta.9)", () => {
+    const client = createClient({ fetch: noopFetch });
+    for (const method of [
+      "list",
+      "create",
+      "remove",
+      "getMetadata",
+      "setMetadata",
+      "getUserDataSchema",
+      "setUserDataSchema",
+      "getEffectiveRunnerConfig",
+      "getAcpStatus",
+      "restartAcp",
+      "setFolderGroup",
+      "listMcpTools",
+      "installMcpTool",
+      "removeMcpTool",
+    ]) {
+      expect(typeof client.workspaces[method]).toBe("function");
+    }
+  });
+
+  test("exposes client.acpServers with the full resource surface (mitto-7gta.9)", () => {
+    const client = createClient({ fetch: noopFetch });
+    expect(typeof client.acpServers.prepareDelete).toBe("function");
+    expect(typeof client.acpServers.reassignAndDelete).toBe("function");
+  });
+
+  test("exposes client.agents with the full resource surface (mitto-7gta.9)", () => {
+    const client = createClient({ fetch: noopFetch });
+    expect(typeof client.agents.types).toBe("function");
+    expect(typeof client.agents.scan).toBe("function");
+    expect(typeof client.agents.confirm).toBe("function");
+  });
+
   test("exposes client.misc with the full resource surface, delegating discovery endpoints to client.serverConfig (mitto-7gta.12)", () => {
     const client = createClient({ fetch: noopFetch });
     expect(typeof client.misc.uiPreferences.get).toBe("function");
