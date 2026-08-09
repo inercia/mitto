@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 
 	"github.com/spf13/cobra"
 
@@ -302,9 +303,17 @@ func runWeb(cmd *cobra.Command, args []string) error {
 	} else if actualExternalPort > 0 {
 		externalURL = fmt.Sprintf("http://0.0.0.0:%d", actualExternalPort)
 	}
+	// The recorded URL must be reachable by a local client: a wildcard bind
+	// is not a valid destination, so it is reported as loopback; any other
+	// explicit --host is recorded verbatim.
+	instanceHost := webHost
+	switch instanceHost {
+	case "", "0.0.0.0", "::", "[::]":
+		instanceHost = "127.0.0.1"
+	}
 	if err := instancefile.Write(&instancefile.Instance{
 		PID:         os.Getpid(),
-		URL:         fmt.Sprintf("http://127.0.0.1:%d", actualPort),
+		URL:         "http://" + net.JoinHostPort(instanceHost, strconv.Itoa(actualPort)),
 		APIPrefix:   apiPrefix,
 		ExternalURL: externalURL,
 	}); err != nil {
