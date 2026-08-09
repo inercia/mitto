@@ -7,12 +7,7 @@
  * include only non-empty fields, with `env` included only when it has keys.
  */
 
-import {
-  describe,
-  test,
-  expect,
-  jest,
-} from "../utils/testing/testGlobals.js";
+import { describe, test, expect, jest } from "../utils/testing/testGlobals.js";
 
 /**
  * Duplicated from WorkspacesDialog.js for testing (the component imports
@@ -294,12 +289,9 @@ function buildSavePromptArgsBody(field, args, state) {
     pull_prompt: state.pullPrompt,
     push_prompt: state.pushPrompt,
     sync_prompt: state.syncPrompt,
-    pull_prompt_args:
-      field === "pull_prompt" ? args : state.pullPromptArgs,
-    push_prompt_args:
-      field === "push_prompt" ? args : state.pushPromptArgs,
-    sync_prompt_args:
-      field === "sync_prompt" ? args : state.syncPromptArgs,
+    pull_prompt_args: field === "pull_prompt" ? args : state.pullPromptArgs,
+    push_prompt_args: field === "push_prompt" ? args : state.pushPromptArgs,
+    sync_prompt_args: field === "sync_prompt" ? args : state.syncPromptArgs,
   };
 }
 
@@ -543,5 +535,68 @@ describe("args-button onClick (dispatchArgsButtonClick)", () => {
     });
     const [, , , opts] = spy.mock.calls[0];
     expect(opts).toEqual({ initialValues: {} });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Effective-runner-config load effect (mitto-7gta.17 slice S6) — the 1
+// authFetch/secureFetch->getSdkClient() call site migrated in this slice's
+// Implementation phase. Duplicated from the [selectedWorkspaceKey] effect
+// body (getSdkClient().workspaces.getEffectiveRunnerConfig(uuid)
+// .then(setEffectiveConfig).catch(() => {})) for jsdom-friendly unit tests.
+// ---------------------------------------------------------------------------
+
+async function loadEffectiveRunnerConfig(client, uuid, setEffectiveConfig) {
+  setEffectiveConfig(null);
+  if (!uuid) return;
+  try {
+    const data = await client.workspaces.getEffectiveRunnerConfig(uuid);
+    setEffectiveConfig(data);
+  } catch {
+    // Best-effort: a failed refetch silently leaves effectiveConfig null,
+    // matching the pre-migration `.catch(() => {})`.
+  }
+}
+
+describe("effective-runner-config load effect (loadEffectiveRunnerConfig)", () => {
+  test("resets to null, then applies the fetched config on success", async () => {
+    const client = {
+      workspaces: {
+        getEffectiveRunnerConfig: jest.fn(() =>
+          Promise.resolve({ runner: "docker" }),
+        ),
+      },
+    };
+    const setEffectiveConfig = jest.fn();
+    await loadEffectiveRunnerConfig(client, "uuid-1", setEffectiveConfig);
+    expect(setEffectiveConfig.mock.calls[0]).toEqual([null]);
+    expect(setEffectiveConfig.mock.calls[1]).toEqual([{ runner: "docker" }]);
+    expect(client.workspaces.getEffectiveRunnerConfig).toHaveBeenCalledWith(
+      "uuid-1",
+    );
+  });
+
+  test("a rejected fetch is swallowed: effectiveConfig stays at null", async () => {
+    const client = {
+      workspaces: {
+        getEffectiveRunnerConfig: jest.fn(() =>
+          Promise.reject(new Error("offline")),
+        ),
+      },
+    };
+    const setEffectiveConfig = jest.fn();
+    await loadEffectiveRunnerConfig(client, "uuid-1", setEffectiveConfig);
+    expect(setEffectiveConfig).toHaveBeenCalledTimes(1);
+    expect(setEffectiveConfig).toHaveBeenCalledWith(null);
+  });
+
+  test("no uuid: resets to null without calling the SDK", async () => {
+    const client = {
+      workspaces: { getEffectiveRunnerConfig: jest.fn() },
+    };
+    const setEffectiveConfig = jest.fn();
+    await loadEffectiveRunnerConfig(client, null, setEffectiveConfig);
+    expect(setEffectiveConfig).toHaveBeenCalledTimes(1);
+    expect(client.workspaces.getEffectiveRunnerConfig).not.toHaveBeenCalled();
   });
 });

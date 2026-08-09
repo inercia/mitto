@@ -58,7 +58,9 @@ const normalizeModelProfile = (p) => ({
  * no tags — these are dropped silently rather than saved.
  */
 const isEmptyNormalizedProfile = (normalized) =>
-  normalized.name === "" && !normalized.criteria && normalized.tags.length === 0;
+  normalized.name === "" &&
+  !normalized.criteria &&
+  normalized.tags.length === 0;
 
 /**
  * Duplicated from SettingsDialog.js (handleSave validation, ~lines 1742-1753).
@@ -68,7 +70,9 @@ const isEmptyNormalizedProfile = (normalized) =>
 const hasBlankNamedProfile = (profiles) =>
   profiles.some((p) => {
     const name = (p.name || "").trim();
-    const tags = Array.isArray(p.tags) ? p.tags.filter((t) => t && t.trim()) : [];
+    const tags = Array.isArray(p.tags)
+      ? p.tags.filter((t) => t && t.trim())
+      : [];
     return name === "" && (!!p.criteria || tags.length > 0);
   });
 
@@ -240,7 +244,6 @@ describe("hasBlankNamedProfile", () => {
     ).toBe(true);
   });
 });
-
 
 /**
  * mitto-9tl — Conversation font settings group.
@@ -434,3 +437,532 @@ describe("mitto-9tl: conversation font — save payload shape", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// mitto-7gta.17 slice S6 — the 12 authFetch/secureFetch->getSdkClient() call
+// sites migrated in this slice's Implementation phase. Duplicated from the
+// implementation (the component reads window.preact globals at module load
+// and cannot be imported directly under jsdom, per this file's header
+// comment and the S4/S5 Test-phase precedent) with the SDK client and
+// setters injected as arguments.
+// ---------------------------------------------------------------------------
+
+/** Mirrors sdkErrors.js's errorStatus/errorMessage for these duplicated fns. */
+function errorStatus(err) {
+  return typeof err?.status === "number" ? err.status : undefined;
+}
+function errorMessage(err, fallback) {
+  return (err && err.message) || fallback;
+}
+
+/** Duplicated from ACPServerDeleteWizard's executeDelete (~line 1438). */
+async function executeDelete(client, serverName, foldersPayload, setters) {
+  const { setExecResult, setStep, setActiveRefusal, setExecError } = setters;
+  try {
+    const data = await client.acpServers.reassignAndDelete(serverName, {
+      folders: foldersPayload,
+    });
+    setExecResult(data);
+    setStep("success");
+  } catch (err) {
+    const activeIds =
+      errorStatus(err) === 409 && Array.isArray(err.details?.active_session_ids)
+        ? err.details.active_session_ids
+        : null;
+    if (activeIds && activeIds.length > 0) {
+      setActiveRefusal(activeIds.map((sid) => ({ session_id: sid })));
+      setStep("error");
+      return;
+    }
+    setExecError(errorMessage(err, `Failed to delete "${serverName}"`));
+    setStep("error");
+  }
+}
+
+describe("ACPServerDeleteWizard.executeDelete", () => {
+  test("a 409 with active_session_ids opens the refusal list instead of an error message", async () => {
+    const err = Object.assign(new Error("conflict"), {
+      status: 409,
+      details: { active_session_ids: ["s1", "s2"] },
+    });
+    const client = {
+      acpServers: { reassignAndDelete: jest.fn(() => Promise.reject(err)) },
+    };
+    const setActiveRefusal = jest.fn();
+    const setStep = jest.fn();
+    const setExecError = jest.fn();
+    await executeDelete(
+      client,
+      "auggie",
+      {},
+      {
+        setExecResult: jest.fn(),
+        setStep,
+        setActiveRefusal,
+        setExecError,
+      },
+    );
+    expect(setActiveRefusal).toHaveBeenCalledWith([
+      { session_id: "s1" },
+      { session_id: "s2" },
+    ]);
+    expect(setStep).toHaveBeenCalledWith("error");
+    expect(setExecError).not.toHaveBeenCalled();
+  });
+
+  test("a non-409 failure sets the execError banner instead", async () => {
+    const client = {
+      acpServers: {
+        reassignAndDelete: jest.fn(() =>
+          Promise.reject(Object.assign(new Error("boom"), { status: 500 })),
+        ),
+      },
+    };
+    const setExecError = jest.fn();
+    await executeDelete(
+      client,
+      "auggie",
+      {},
+      {
+        setExecResult: jest.fn(),
+        setStep: jest.fn(),
+        setActiveRefusal: jest.fn(),
+        setExecError,
+      },
+    );
+    expect(setExecError).toHaveBeenCalledWith("boom");
+  });
+
+  test("success stores the result and advances to the success step", async () => {
+    const client = {
+      acpServers: {
+        reassignAndDelete: jest.fn(() =>
+          Promise.resolve({ reassigned_conversation_count: 2 }),
+        ),
+      },
+    };
+    const setExecResult = jest.fn();
+    const setStep = jest.fn();
+    await executeDelete(
+      client,
+      "auggie",
+      { "/tmp/a": "other" },
+      {
+        setExecResult,
+        setStep,
+        setActiveRefusal: jest.fn(),
+        setExecError: jest.fn(),
+      },
+    );
+    expect(client.acpServers.reassignAndDelete).toHaveBeenCalledWith("auggie", {
+      folders: { "/tmp/a": "other" },
+    });
+    expect(setExecResult).toHaveBeenCalledWith({
+      reassigned_conversation_count: 2,
+    });
+    expect(setStep).toHaveBeenCalledWith("success");
+  });
+});
+
+/** Duplicated from SettingsDialog.js's removeServer (~line 3228). */
+async function removeServer(client, serverName, acpServersCount, setters) {
+  const {
+    setError,
+    removeServerFromState,
+    setDeleteBlockedInfo,
+    setDeleteWizardName,
+    setDeleteWizardPlan,
+  } = setters;
+  if (acpServersCount <= 1) {
+    setError("At least one ACP server is required");
+    return;
+  }
+  setError("");
+  try {
+    const data = await client.acpServers.prepareDelete(serverName);
+    if (data?.has_active === true) {
+      setDeleteBlockedInfo({
+        kind: "active",
+        serverName,
+        activeConversations: Array.isArray(data.active_conversations)
+          ? data.active_conversations
+          : [],
+      });
+      return;
+    }
+    setDeleteWizardName(serverName);
+    setDeleteWizardPlan(data);
+  } catch (err) {
+    if (errorStatus(err) === 404) {
+      removeServerFromState(serverName);
+      return;
+    }
+    if (errorStatus(err) === 403) {
+      const msg = errorMessage(
+        err,
+        `Cannot delete "${serverName}": configuration is read-only.`,
+      );
+      const isRC = /RC file|\.mittorc/i.test(msg);
+      setDeleteBlockedInfo({
+        kind: isRC ? "rcfile" : "readonly",
+        serverName,
+        message: msg,
+      });
+      return;
+    }
+    setError(
+      errorMessage(err, `Failed to prepare deletion of "${serverName}"`),
+    );
+  }
+}
+
+describe("SettingsDialog.removeServer", () => {
+  test("a 404 treats the server as already-gone: removes it from local state", async () => {
+    const client = {
+      acpServers: {
+        prepareDelete: jest.fn(() =>
+          Promise.reject(
+            Object.assign(new Error("not found"), { status: 404 }),
+          ),
+        ),
+      },
+    };
+    const removeServerFromState = jest.fn();
+    await removeServer(client, "ghost-server", 2, {
+      setError: jest.fn(),
+      removeServerFromState,
+      setDeleteBlockedInfo: jest.fn(),
+      setDeleteWizardName: jest.fn(),
+      setDeleteWizardPlan: jest.fn(),
+    });
+    expect(removeServerFromState).toHaveBeenCalledWith("ghost-server");
+  });
+
+  test("a 403 with an RC-file message opens the rcfile-kind blocked-info modal", async () => {
+    const client = {
+      acpServers: {
+        prepareDelete: jest.fn(() =>
+          Promise.reject(
+            Object.assign(new Error('defined in RC file "/repo/.mittorc"'), {
+              status: 403,
+            }),
+          ),
+        ),
+      },
+    };
+    const setDeleteBlockedInfo = jest.fn();
+    await removeServer(client, "rc-server", 2, {
+      setError: jest.fn(),
+      removeServerFromState: jest.fn(),
+      setDeleteBlockedInfo,
+      setDeleteWizardName: jest.fn(),
+      setDeleteWizardPlan: jest.fn(),
+    });
+    expect(setDeleteBlockedInfo).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "rcfile", serverName: "rc-server" }),
+    );
+  });
+
+  test("a 403 without an RC-file message opens the readonly-kind blocked-info modal", async () => {
+    const client = {
+      acpServers: {
+        prepareDelete: jest.fn(() =>
+          Promise.reject(
+            Object.assign(new Error("config is read-only"), { status: 403 }),
+          ),
+        ),
+      },
+    };
+    const setDeleteBlockedInfo = jest.fn();
+    await removeServer(client, "ro-server", 2, {
+      setError: jest.fn(),
+      removeServerFromState: jest.fn(),
+      setDeleteBlockedInfo,
+      setDeleteWizardName: jest.fn(),
+      setDeleteWizardPlan: jest.fn(),
+    });
+    expect(setDeleteBlockedInfo).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "readonly", serverName: "ro-server" }),
+    );
+  });
+
+  test("has_active:true opens the active-conversations blocked-info modal, not the wizard", async () => {
+    const client = {
+      acpServers: {
+        prepareDelete: jest.fn(() =>
+          Promise.resolve({
+            has_active: true,
+            active_conversations: [{ id: "c1" }],
+          }),
+        ),
+      },
+    };
+    const setDeleteBlockedInfo = jest.fn();
+    const setDeleteWizardPlan = jest.fn();
+    await removeServer(client, "busy-server", 2, {
+      setError: jest.fn(),
+      removeServerFromState: jest.fn(),
+      setDeleteBlockedInfo,
+      setDeleteWizardName: jest.fn(),
+      setDeleteWizardPlan,
+    });
+    expect(setDeleteBlockedInfo).toHaveBeenCalledWith({
+      kind: "active",
+      serverName: "busy-server",
+      activeConversations: [{ id: "c1" }],
+    });
+    expect(setDeleteWizardPlan).not.toHaveBeenCalled();
+  });
+
+  test("has_active:false opens the wizard with the returned plan", async () => {
+    const plan = { has_active: false, folders: [] };
+    const client = {
+      acpServers: { prepareDelete: jest.fn(() => Promise.resolve(plan)) },
+    };
+    const setDeleteWizardName = jest.fn();
+    const setDeleteWizardPlan = jest.fn();
+    await removeServer(client, "free-server", 2, {
+      setError: jest.fn(),
+      removeServerFromState: jest.fn(),
+      setDeleteBlockedInfo: jest.fn(),
+      setDeleteWizardName,
+      setDeleteWizardPlan,
+    });
+    expect(setDeleteWizardName).toHaveBeenCalledWith("free-server");
+    expect(setDeleteWizardPlan).toHaveBeenCalledWith(plan);
+  });
+
+  test("blocks deletion locally when it is the last remaining ACP server", async () => {
+    const client = { acpServers: { prepareDelete: jest.fn() } };
+    const setError = jest.fn();
+    await removeServer(client, "only-server", 1, {
+      setError,
+      removeServerFromState: jest.fn(),
+      setDeleteBlockedInfo: jest.fn(),
+      setDeleteWizardName: jest.fn(),
+      setDeleteWizardPlan: jest.fn(),
+    });
+    expect(client.acpServers.prepareDelete).not.toHaveBeenCalled();
+    expect(setError).toHaveBeenCalledWith(
+      "At least one ACP server is required",
+    );
+  });
+});
+
+/** Duplicated from persistGlobalShortcuts (~line 2001). */
+async function persistGlobalShortcuts(
+  client,
+  shortcutsLoaded,
+  sections,
+  dispatchEvent,
+) {
+  if (!shortcutsLoaded) return;
+  try {
+    const data = await client.shortcuts.setGlobal({ sections });
+    dispatchEvent.set(data.sections || {});
+    dispatchEvent.notify();
+  } catch (err) {
+    throw new Error(errorMessage(err, "Failed to save global shortcuts"));
+  }
+}
+
+describe("SettingsDialog.persistGlobalShortcuts", () => {
+  test("no-ops when the Shortcuts tab was never opened (shortcutsLoaded false)", async () => {
+    const client = { shortcuts: { setGlobal: jest.fn() } };
+    await persistGlobalShortcuts(
+      client,
+      false,
+      {},
+      { set: jest.fn(), notify: jest.fn() },
+    );
+    expect(client.shortcuts.setGlobal).not.toHaveBeenCalled();
+  });
+
+  test("success: saves the sections and dispatches the refresh event", async () => {
+    const client = {
+      shortcuts: {
+        setGlobal: jest.fn(() => Promise.resolve({ sections: { tasks: [] } })),
+      },
+    };
+    const set = jest.fn();
+    const notify = jest.fn();
+    await persistGlobalShortcuts(client, true, { tasks: [] }, { set, notify });
+    expect(client.shortcuts.setGlobal).toHaveBeenCalledWith({
+      sections: { tasks: [] },
+    });
+    expect(set).toHaveBeenCalledWith({ tasks: [] });
+    expect(notify).toHaveBeenCalledTimes(1);
+  });
+
+  test("a rejected save re-throws wrapped in errorMessage(), skipping the event dispatch", async () => {
+    const client = {
+      shortcuts: {
+        setGlobal: jest.fn(() => Promise.reject(new Error("too many rows"))),
+      },
+    };
+    const notify = jest.fn();
+    await expect(
+      persistGlobalShortcuts(client, true, {}, { set: jest.fn(), notify }),
+    ).rejects.toThrow("too many rows");
+    expect(notify).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * Duplicated from loadSupportedRunners (~line 2364): the errorStatus(err)
+ * === undefined split that keeps a silently-skipped non-2xx (mirrors the
+ * old `if (res.ok)` guard) distinct from a logged network-level failure.
+ */
+async function loadSupportedRunners(client, setSupportedRunners, log) {
+  try {
+    const runners = await client.serverConfig.supportedRunners();
+    setSupportedRunners(runners || []);
+  } catch (err) {
+    if (errorStatus(err) === undefined) {
+      log(err);
+      setSupportedRunners([
+        { type: "exec", label: "exec (no restrictions)", supported: true },
+        {
+          type: "sandbox-exec",
+          label: "sandbox-exec (macOS)",
+          supported: false,
+        },
+        { type: "firejail", label: "firejail (Linux)", supported: false },
+        { type: "docker", label: "docker (all platforms)", supported: true },
+      ]);
+    }
+  }
+}
+
+describe("SettingsDialog.loadSupportedRunners", () => {
+  test("a non-2xx status is silently skipped: setSupportedRunners is never called", async () => {
+    const client = {
+      serverConfig: {
+        supportedRunners: jest.fn(() =>
+          Promise.reject(
+            Object.assign(new Error("forbidden"), { status: 403 }),
+          ),
+        ),
+      },
+    };
+    const setSupportedRunners = jest.fn();
+    const log = jest.fn();
+    await loadSupportedRunners(client, setSupportedRunners, log);
+    expect(setSupportedRunners).not.toHaveBeenCalled();
+    expect(log).not.toHaveBeenCalled();
+  });
+
+  test("a network failure logs and falls back to the default 4-runner list", async () => {
+    const client = {
+      serverConfig: {
+        supportedRunners: jest.fn(() => Promise.reject(new Error("offline"))),
+      },
+    };
+    const setSupportedRunners = jest.fn();
+    const log = jest.fn();
+    await loadSupportedRunners(client, setSupportedRunners, log);
+    expect(log).toHaveBeenCalled();
+    expect(setSupportedRunners).toHaveBeenCalledWith([
+      { type: "exec", label: "exec (no restrictions)", supported: true },
+      { type: "sandbox-exec", label: "sandbox-exec (macOS)", supported: false },
+      { type: "firejail", label: "firejail (Linux)", supported: false },
+      { type: "docker", label: "docker (all platforms)", supported: true },
+    ]);
+  });
+
+  test("success stores the server-reported list verbatim", async () => {
+    const runners = [{ type: "docker", supported: true }];
+    const client = {
+      serverConfig: {
+        supportedRunners: jest.fn(() => Promise.resolve(runners)),
+      },
+    };
+    const setSupportedRunners = jest.fn();
+    await loadSupportedRunners(client, setSupportedRunners, jest.fn());
+    expect(setSupportedRunners).toHaveBeenCalledWith(runners);
+  });
+});
+
+/** Duplicated from handleSave's config-save + errorMessage catch (~line 2983/3081). */
+async function saveConfig(client, config, setError) {
+  try {
+    await client.serverConfig.save(config);
+  } catch (err) {
+    setError(errorMessage(err, "Failed to save configuration"));
+    return false;
+  }
+  return true;
+}
+
+describe("SettingsDialog.handleSave — serverConfig.save() error handling", () => {
+  test("a rejected save sets the error banner via errorMessage() and does not throw", async () => {
+    const client = {
+      serverConfig: {
+        save: jest.fn(() => Promise.reject(new Error("invalid mcp port"))),
+      },
+    };
+    const setError = jest.fn();
+    const ok = await saveConfig(client, {}, setError);
+    expect(ok).toBe(false);
+    expect(setError).toHaveBeenCalledWith("invalid mcp port");
+  });
+
+  test("success returns true without touching the error banner", async () => {
+    const client = {
+      serverConfig: { save: jest.fn(() => Promise.resolve({ applied: {} })) },
+    };
+    const setError = jest.fn();
+    const ok = await saveConfig(client, { workspaces: [] }, setError);
+    expect(ok).toBe(true);
+    expect(setError).not.toHaveBeenCalled();
+    expect(client.serverConfig.save).toHaveBeenCalledWith({ workspaces: [] });
+  });
+});
+
+/**
+ * Duplicated from the ACPServerDeleteWizard's onSuccess post-delete
+ * workspaces refresh (~line 6394): best-effort — a rejected
+ * workspaces.list() is swallowed since local state was already updated.
+ */
+async function refreshWorkspacesAfterDelete(client, setWorkspaces) {
+  try {
+    const wsData = await client.workspaces.list();
+    if (Array.isArray(wsData?.workspaces)) {
+      setWorkspaces(wsData.workspaces);
+    }
+  } catch {
+    // Best-effort refresh; the local state was updated already.
+  }
+}
+
+describe("SettingsDialog post-delete workspaces refresh", () => {
+  test("success applies the refreshed workspaces list", async () => {
+    const client = {
+      workspaces: {
+        list: jest.fn(() =>
+          Promise.resolve({ workspaces: [{ working_dir: "/a" }] }),
+        ),
+      },
+    };
+    const setWorkspaces = jest.fn();
+    await refreshWorkspacesAfterDelete(client, setWorkspaces);
+    expect(setWorkspaces).toHaveBeenCalledWith([{ working_dir: "/a" }]);
+  });
+
+  test("a rejected refresh is silently swallowed", async () => {
+    const client = {
+      workspaces: { list: jest.fn(() => Promise.reject(new Error("offline"))) },
+    };
+    const setWorkspaces = jest.fn();
+    await expect(
+      refreshWorkspacesAfterDelete(client, setWorkspaces),
+    ).resolves.toBeUndefined();
+    expect(setWorkspaces).not.toHaveBeenCalled();
+  });
+
+  test("a malformed (non-array) response is ignored", async () => {
+    const client = { workspaces: { list: jest.fn(() => Promise.resolve({})) } };
+    const setWorkspaces = jest.fn();
+    await refreshWorkspacesAfterDelete(client, setWorkspaces);
+    expect(setWorkspaces).not.toHaveBeenCalled();
+  });
+});
