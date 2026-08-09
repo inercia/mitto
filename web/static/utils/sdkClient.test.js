@@ -13,6 +13,7 @@ import {
   _resetSdkClientForTests,
 } from "./sdkClient.js";
 import { getLastSeenSeq, setLastSeenSeq } from "./storage.js";
+import { MittoAuthError } from "../sdk/index.js";
 
 describe("sdkClient", () => {
   afterEach(() => {
@@ -96,6 +97,33 @@ describe("sdkClient", () => {
         client.config.onUnauthorized();
         expect(window.location.href).toContain("/auth.html");
       } finally {
+        window.location.href = originalHref;
+      }
+    });
+
+    test("a real 401 through a resource call redirects via onUnauthorized AND still rejects (documented delta from authFetch's never-resolving promise)", async () => {
+      const originalHref = window.location.href;
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = async () => ({
+        ok: false,
+        status: 401,
+        headers: { get: (name) => (name.toLowerCase() === "content-type" ? "application/json" : null) },
+        text: async () =>
+          JSON.stringify({
+            error: { code: "unauthenticated", message: "Authentication required" },
+          }),
+      });
+      try {
+        const client = getSdkClient();
+        // GET is a "safe" method for browserCookieAuth's authorize(), so no
+        // CSRF-token fetch is triggered first — the stub above only ever
+        // needs to answer the one request this call makes.
+        await expect(client.serverConfig.get()).rejects.toBeInstanceOf(
+          MittoAuthError,
+        );
+        expect(window.location.href).toContain("/auth.html");
+      } finally {
+        globalThis.fetch = originalFetch;
         window.location.href = originalHref;
       }
     });
