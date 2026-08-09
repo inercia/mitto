@@ -257,6 +257,13 @@ describe("sessions resource", () => {
       expect(calls.length).toBe(0);
     });
 
+    test("url(id, imageId) applies baseUrl and apiPrefix like every other method", () => {
+      const { sessions } = mk({ baseUrl: "http://host", apiPrefix: "/mitto" });
+      expect(sessions.images.url("s1", "img1")).toBe(
+        "http://host/mitto/api/sessions/s1/images/img1",
+      );
+    });
+
     test("fetchImage(id, imageId) resolves with the raw Response (raw: true)", async () => {
       const { sessions, calls, respondWith } = mk();
       const raw = fakeResponse({ body: "binarydata-stub" });

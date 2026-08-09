@@ -19,7 +19,7 @@
  * mitto-7gta.8; files/dashboard/misc are mitto-7gta.12. Images are in scope
  * here per this bead's description.
  */
-import { request } from "../core/transport.js";
+import { buildUrl, request } from "../core/transport.js";
 
 const enc = encodeURIComponent;
 
@@ -99,8 +99,11 @@ export function createSessionsResource(config) {
           ...opts,
         }),
       /** Returns the browser-usable URL for an image (e.g. <img src>); does
-       *  not fetch bytes. Use `fetchImage()` to retrieve the raw Response. */
-      url: (id, imageId) => `/api/sessions/${enc(id)}/images/${enc(imageId)}`,
+       *  not fetch bytes. Use `fetchImage()` to retrieve the raw Response.
+       *  Unlike the other methods it never reaches `request()`, so it applies
+       *  `buildUrl()` itself to pick up `baseUrl`/`apiPrefix`. */
+      url: (id, imageId) =>
+        buildUrl(config, `/api/sessions/${enc(id)}/images/${enc(imageId)}`),
       /** @returns {Promise<Response>} the raw, undecoded image response. */
       fetchImage: (id, imageId, opts) =>
         call("GET", `/api/sessions/${enc(id)}/images/${enc(imageId)}`, {
