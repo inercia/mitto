@@ -18,6 +18,13 @@
  * Scope (per the mitto-7gta.7 plan comment): queue/loop sub-resources are
  * mitto-7gta.8; files/dashboard/misc are mitto-7gta.12. Images are in scope
  * here per this bead's description.
+ *
+ * queue/loop (mitto-7gta.8): mirror internal/web/handlers/queue.go and
+ * session_loop*.go 1:1. Request bodies are passed through verbatim (no
+ * client-side field whitelisting, no legacy-key rewriting, no pre-validation
+ * of server-enforced invariants like queue-full or the multi-trigger
+ * `triggers` list) — the server is the single source of truth and any
+ * rejection surfaces as `MittoApiError`.
  */
 import { buildUrl, request } from "../core/transport.js";
 
@@ -112,6 +119,90 @@ export function createSessionsResource(config) {
         }),
       remove: (id, imageId, opts) =>
         call("DELETE", `/api/sessions/${enc(id)}/images/${enc(imageId)}`, opts),
+    },
+
+    queue: {
+      /** @returns {Promise<{messages: object[], count: number}>} */
+      list: (id, opts) => call("GET", `/api/sessions/${enc(id)}/queue`, opts),
+      /** @param {object} body - {message?, image_ids?, file_ids?,
+       *   scheduled_time?, arguments?, prompt_name?}. `message` or
+       *   `prompt_name` is required (server rejects both empty). */
+      add: (id, body, opts) => call("POST", `/api/sessions/${enc(id)}/queue`, { body, ...opts }),
+      /** Sugar over `add()` for enqueuing a named workspace prompt.
+       *  @param {string} promptName
+       *  @param {object} [args] - values for the prompt's .Args placeholders
+       *  @param {object} [extra] - additional QueueAddRequest fields
+       *   (image_ids, file_ids, scheduled_time) merged into the body */
+      addNamed: (id, promptName, args, extra, opts) =>
+        call("POST", `/api/sessions/${enc(id)}/queue`, {
+          body: { prompt_name: promptName, arguments: args, ...extra },
+          ...opts,
+        }),
+      get: (id, msgId, opts) =>
+        call("GET", `/api/sessions/${enc(id)}/queue/${enc(msgId)}`, opts),
+      remove: (id, msgId, opts) =>
+        call("DELETE", `/api/sessions/${enc(id)}/queue/${enc(msgId)}`, opts),
+      /** Clears the entire queue (DELETE with no message id). */
+      clear: (id, opts) => call("DELETE", `/api/sessions/${enc(id)}/queue`, opts),
+      /** @param {"up"|"down"} direction */
+      move: (id, msgId, direction, opts) =>
+        call("POST", `/api/sessions/${enc(id)}/queue/${enc(msgId)}/move`, {
+          body: { direction },
+          ...opts,
+        }),
+      /** Queue behavior ({enabled, delay_seconds, max_size,
+       *  auto_generate_titles}) is global/workspace-scoped, NOT per-session
+       *  (docs/devel/message-queue.md §Configuration Scope) — there is no
+       *  per-session queue-config route. Reads it from the `conversations`
+       *  section of GET /api/config; `id` is accepted for call-site symmetry
+       *  with the rest of this resource but is otherwise unused. Returns
+       *  `undefined` when the server config has no queue section (not
+       *  synthesized client-side). */
+      config: async (id, opts) => (await call("GET", "/api/config", opts))?.conversations?.queue,
+    },
+
+    loop: {
+      get: (id, opts) => call("GET", `/api/sessions/${enc(id)}/loop`, opts),
+      /** @param {object} body - LoopPromptRequest: {prompt, prompt_name?,
+       *   frequency, enabled, fresh_context?, max_iterations?, triggers?,
+       *   child_events?, delay_seconds?, max_duration_seconds?, arguments?,
+       *   condition?, condition_preset?, cooldown_seconds?,
+       *   coalesce_during_busy?, run_on_start?, settle_window_seconds?}.
+       *   Full replace (PUT). The legacy scalar "trigger" key is not
+       *   accepted — use "triggers" (mitto-r6j.5). */
+      set: (id, body, opts) => call("PUT", `/api/sessions/${enc(id)}/loop`, { body, ...opts }),
+      /** @param {object} patch - LoopPromptPatchRequest, same fields as
+       *   `set()` but all optional; a field is only changed when present
+       *   (partial update, PATCH). `reset_counters: true` zeroes the
+       *   iteration/elapsed-time counters. */
+      update: (id, patch, opts) =>
+        call("PATCH", `/api/sessions/${enc(id)}/loop`, { body: patch, ...opts }),
+      /** Detaches the loop (preserving its settings for `restore()`).
+       *  Resolves to `null` (204 No Content). */
+      detach: (id, opts) => call("DELETE", `/api/sessions/${enc(id)}/loop`, opts),
+      /** Restores the most recently detached loop settings. 409s
+       *  (-> MittoApiError) if a loop is already configured. */
+      restore: (id, opts) => call("POST", `/api/sessions/${enc(id)}/loop/restore`, opts),
+      /** Triggers an immediate run, bypassing the schedule.
+       *  @param {boolean} [resetTimer] - when omitted, no body is sent and
+       *   the server defaults to true (reset the countdown). */
+      runNow: (id, resetTimer, opts) =>
+        call("POST", `/api/sessions/${enc(id)}/loop/run-now`, {
+          body: resetTimer === undefined ? undefined : { reset_timer: resetTimer },
+          ...opts,
+        }),
+      /** Read-only: a LoopPrompt draft pre-filled from the most recent named
+       *  prompt's `loop:` frontmatter. Never writes session state. */
+      suggestFromRecent: (id, opts) =>
+        call("GET", `/api/sessions/${enc(id)}/loop/suggest-from-recent`, opts),
+      acknowledgeStoppedReason: (id, opts) =>
+        call("POST", `/api/sessions/${enc(id)}/loop/acknowledge-stopped-reason`, opts),
+      /** Sugar over `update()` — toggles `enabled` without touching other
+       *  fields (the only two ways the backend pauses/resumes a loop). */
+      enable: (id, opts) =>
+        call("PATCH", `/api/sessions/${enc(id)}/loop`, { body: { enabled: true }, ...opts }),
+      disable: (id, opts) =>
+        call("PATCH", `/api/sessions/${enc(id)}/loop`, { body: { enabled: false }, ...opts }),
     },
   };
 }
