@@ -3,17 +3,15 @@ const { useState, useEffect, useMemo, useRef, html } = window.preact;
 
 // Import utilities
 import {
-  secureFetch,
-  authFetch,
   apiUrl,
-  errorMessageFromData,
   hasNativeFolderPicker,
   pickFolder,
   openExternalURL,
   fetchConfig,
   invalidateConfigCache,
-  endpoints,
 } from "../utils/index.js";
+import { getSdkClient } from "../utils/sdkClient.js";
+import { errorMessage, errorStatus } from "../utils/sdkErrors.js";
 import {
   setPromptSortMode as savePromptSortMode,
   getDashboardHiddenCharts,
@@ -1448,38 +1446,27 @@ function ACPServerDeleteWizard({
       folders.forEach((f, i) => {
         foldersPayload[f.working_dir] = choices[i]?.newServer || "";
       });
-      const res = await secureFetch(
-        endpoints.acpServers.reassignAndDelete(serverName),
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ folders: foldersPayload }),
-        },
+      const data = await getSdkClient().acpServers.reassignAndDelete(
+        serverName,
+        { folders: foldersPayload },
       );
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        // 409 arrives as an errorEnvelope: {error: {code, message, details:
-        // {active_session_ids: [...]}}}. Surface a refusal list from that.
-        const activeIds =
-          res.status === 409 &&
-          Array.isArray(data?.error?.details?.active_session_ids)
-            ? data.error.details.active_session_ids
-            : null;
-        if (activeIds && activeIds.length > 0) {
-          setActiveRefusal(activeIds.map((sid) => ({ session_id: sid })));
-          setStep("error");
-          return;
-        }
-        setExecError(
-          errorMessageFromData(data, `Failed to delete "${serverName}"`),
-        );
-        setStep("error");
-        return;
-      }
       setExecResult(data);
       setStep("success");
     } catch (err) {
-      setExecError(err?.message || String(err));
+      // 409 arrives as a MittoApiError whose `.details` carries
+      // {active_session_ids: [...]} (see sdk/core/errors.js). Surface a
+      // refusal list from that.
+      const activeIds =
+        errorStatus(err) === 409 &&
+        Array.isArray(err.details?.active_session_ids)
+          ? err.details.active_session_ids
+          : null;
+      if (activeIds && activeIds.length > 0) {
+        setActiveRefusal(activeIds.map((sid) => ({ session_id: sid })));
+        setStep("error");
+        return;
+      }
+      setExecError(errorMessage(err, `Failed to delete "${serverName}"`));
       setStep("error");
     }
   };
@@ -1943,8 +1930,8 @@ export function SettingsDialog({
     if (!isOpen || activeTab !== "shortcuts" || shortcutsLoaded) return;
     setShortcutsLoading(true);
     setShortcutsError("");
-    authFetch(endpoints.global.shortcuts({ include_prompts: true }))
-      .then((r) => r.json())
+    getSdkClient()
+      .shortcuts.getGlobal({ include_prompts: true })
       .then((data) => {
         setShortcutsSections(data.sections || {});
         const all = data.prompts || [];
@@ -2019,20 +2006,15 @@ export function SettingsDialog({
         .filter((r) => r.prompt)
         .slice(0, 10);
     }
-    const res = await secureFetch(endpoints.global.shortcuts(), {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sections }),
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok)
-      throw new Error(
-        errorMessageFromData(data, "Failed to save global shortcuts"),
-      );
-    setShortcutsSections(data.sections || {});
-    // Notify open Tasks lists / conversation toolbars so their merged shortcut
-    // buttons refresh immediately, without a full page reload.
-    window.dispatchEvent(new CustomEvent("mitto:global_shortcuts_updated"));
+    try {
+      const data = await getSdkClient().shortcuts.setGlobal({ sections });
+      setShortcutsSections(data.sections || {});
+      // Notify open Tasks lists / conversation toolbars so their merged
+      // shortcut buttons refresh immediately, without a full page reload.
+      window.dispatchEvent(new CustomEvent("mitto:global_shortcuts_updated"));
+    } catch (err) {
+      throw new Error(errorMessage(err, "Failed to save global shortcuts"));
+    }
   };
 
   // Configuration state
@@ -2372,8 +2354,8 @@ export function SettingsDialog({
 
   // Fetch available agent types for the type dropdown
   useEffect(() => {
-    authFetch(endpoints.agents.types())
-      .then((r) => r.json())
+    getSdkClient()
+      .agents.types()
       .then((data) => setAgentTypes(data.agent_types || []))
       .catch(() => setAgentTypes([]));
   }, []);
@@ -2381,37 +2363,38 @@ export function SettingsDialog({
   // Load supported runners from server
   const loadSupportedRunners = async () => {
     try {
-      const res = await fetch(endpoints.runners.supported(), {
-        credentials: "same-origin",
-      });
-      if (res.ok) {
-        const runners = await res.json();
-        setSupportedRunners(runners || []);
-      }
+      const runners = await getSdkClient().serverConfig.supportedRunners();
+      setSupportedRunners(runners || []);
     } catch (err) {
-      console.error("Failed to load supported runners:", err);
-      // Fallback to all runners if fetch fails
-      setSupportedRunners([
-        { type: "exec", label: "exec (no restrictions)", supported: true },
-        {
-          type: "sandbox-exec",
-          label: "sandbox-exec (macOS)",
-          supported: false,
-        },
-        { type: "firejail", label: "firejail (Linux)", supported: false },
-        { type: "docker", label: "docker (all platforms)", supported: true },
-      ]);
+      // A non-2xx status is silently skipped (mirrors the old `if (res.ok)`
+      // guard); only a network-level failure gets the fallback list.
+      if (errorStatus(err) === undefined) {
+        console.error("Failed to load supported runners:", err);
+        setSupportedRunners([
+          { type: "exec", label: "exec (no restrictions)", supported: true },
+          {
+            type: "sandbox-exec",
+            label: "sandbox-exec (macOS)",
+            supported: false,
+          },
+          { type: "firejail", label: "firejail (Linux)", supported: false },
+          {
+            type: "docker",
+            label: "docker (all platforms)",
+            supported: true,
+          },
+        ]);
+      }
     }
 
     // Also load runner defaults
     try {
-      const res = await authFetch(endpoints.runners.defaults());
-      if (res.ok) {
-        const defaults = await res.json();
-        setRunnerDefaults(defaults || {});
-      }
+      const defaults = await getSdkClient().serverConfig.runnerDefaults();
+      setRunnerDefaults(defaults || {});
     } catch (err) {
-      console.error("Failed to load runner defaults:", err);
+      if (errorStatus(err) === undefined) {
+        console.error("Failed to load runner defaults:", err);
+      }
     }
   };
 
@@ -2421,14 +2404,21 @@ export function SettingsDialog({
     try {
       // Fetch config and external status in parallel.
       // force=true ensures the settings dialog always shows the latest saved config.
-      const [config, externalStatusRes] = await Promise.all([
+      const [config, externalStatus] = await Promise.all([
         fetchConfig(null, /* force */ true),
-        authFetch(endpoints.misc.externalStatus()),
+        // A non-2xx status is silently skipped (mirrors the old `if
+        // (externalStatusRes.ok)` guard); only a network-level failure
+        // propagates to the outer catch below, same as authFetch's reject.
+        getSdkClient()
+          .serverConfig.externalStatus()
+          .catch((err) => {
+            if (errorStatus(err) === undefined) throw err;
+            return null;
+          }),
       ]);
 
       // Load external status
-      if (externalStatusRes.ok) {
-        const externalStatus = await externalStatusRes.json();
+      if (externalStatus) {
         setExternalEnabled(externalStatus.enabled);
         setCurrentExternalPort(externalStatus.port || null);
       }
@@ -2647,14 +2637,13 @@ export function SettingsDialog({
 
       // Load available flags and configured default flags
       try {
-        const flagsRes = await authFetch(endpoints.misc.advancedFlags());
-        if (flagsRes.ok) {
-          const flagsData = await flagsRes.json();
-          setAvailableFlags(flagsData.flags || []);
-          setDefaultFlags(flagsData.configured_defaults || {});
-        }
+        const flagsData = await getSdkClient().serverConfig.advancedFlags();
+        setAvailableFlags(flagsData.flags || []);
+        setDefaultFlags(flagsData.configured_defaults || {});
       } catch (err) {
-        console.warn("Failed to load advanced flags:", err);
+        if (errorStatus(err) === undefined) {
+          console.warn("Failed to load advanced flags:", err);
+        }
       }
     } catch (err) {
       setError("Failed to load configuration: " + err.message);
@@ -2991,24 +2980,7 @@ export function SettingsDialog({
       console.log("DEBUG: Saving config:", JSON.stringify(config.ui, null, 2));
       console.log("DEBUG: nativeNotifications state:", nativeNotifications);
 
-      const res = await secureFetch(endpoints.config.update(), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(config),
-      });
-
-      if (!res.ok) {
-        let errData = null;
-        try {
-          errData = await res.json();
-        } catch (_e) {
-          /* non-JSON error body */
-        }
-        throw new Error(
-          errorMessageFromData(errData, "Failed to save configuration"),
-        );
-      }
-      const result = await res.json();
+      const result = await getSdkClient().serverConfig.save(config);
 
       // Config changed on disk — invalidate cache so next read is fresh.
       invalidateConfigCache();
@@ -3049,15 +3021,16 @@ export function SettingsDialog({
       // Hoist activeExternalPort so it is visible at the toast-building site below.
       let activeExternalPort = null;
       try {
-        const statusRes = await authFetch(endpoints.misc.externalStatus());
-        if (statusRes.ok) {
-          const status = await statusRes.json();
-          setExternalEnabled(status.enabled);
-          setCurrentExternalPort(status.port || null);
-          activeExternalPort = status.port || null;
-        }
+        const status = await getSdkClient().serverConfig.externalStatus();
+        setExternalEnabled(status.enabled);
+        setCurrentExternalPort(status.port || null);
+        activeExternalPort = status.port || null;
       } catch (e) {
-        console.error("Failed to fetch external status:", e);
+        // A non-2xx status is silently skipped (mirrors the old `if
+        // (statusRes.ok)` guard); only a network-level failure is logged.
+        if (errorStatus(e) === undefined) {
+          console.error("Failed to fetch external status:", e);
+        }
       }
 
       // If the save tore down the external listener (e.g. incomplete credentials),
@@ -3105,7 +3078,7 @@ export function SettingsDialog({
 
       onSave?.();
     } catch (err) {
-      setError(err.message);
+      setError(errorMessage(err, "Failed to save configuration"));
     } finally {
       const elapsed = Date.now() - saveStartTime;
       const remaining = Math.max(0, 1000 - elapsed);
@@ -3259,41 +3232,7 @@ export function SettingsDialog({
     }
     setError("");
     try {
-      const res = await authFetch(
-        endpoints.acpServers.prepareDelete(serverName),
-      );
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        if (res.status === 404) {
-          // Server unknown to the backend — treat as already-gone.
-          removeServerFromState(serverName);
-          return;
-        }
-        if (res.status === 403) {
-          // The prepare-delete handler does not distinguish RC-file vs
-          // config-read-only, but reassign-and-delete does (via 403 with
-          // "defined in RC file" in the message). Treat both here as a
-          // read-only refusal shown in the blocking modal.
-          const msg = errorMessageFromData(
-            data,
-            `Cannot delete "${serverName}": configuration is read-only.`,
-          );
-          const isRC = /RC file|\.mittorc/i.test(msg);
-          setDeleteBlockedInfo({
-            kind: isRC ? "rcfile" : "readonly",
-            serverName,
-            message: msg,
-          });
-          return;
-        }
-        setError(
-          errorMessageFromData(
-            data,
-            `Failed to prepare deletion of "${serverName}"`,
-          ),
-        );
-        return;
-      }
+      const data = await getSdkClient().acpServers.prepareDelete(serverName);
       if (data?.has_active === true) {
         setDeleteBlockedInfo({
           kind: "active",
@@ -3311,7 +3250,31 @@ export function SettingsDialog({
       setDeleteWizardName(serverName);
       setDeleteWizardPlan(data);
     } catch (err) {
-      setError(err?.message || String(err));
+      if (errorStatus(err) === 404) {
+        // Server unknown to the backend — treat as already-gone.
+        removeServerFromState(serverName);
+        return;
+      }
+      if (errorStatus(err) === 403) {
+        // The prepare-delete handler does not distinguish RC-file vs
+        // config-read-only, but reassign-and-delete does (via 403 with
+        // "defined in RC file" in the message). Treat both here as a
+        // read-only refusal shown in the blocking modal.
+        const msg = errorMessage(
+          err,
+          `Cannot delete "${serverName}": configuration is read-only.`,
+        );
+        const isRC = /RC file|\.mittorc/i.test(msg);
+        setDeleteBlockedInfo({
+          kind: isRC ? "rcfile" : "readonly",
+          serverName,
+          message: msg,
+        });
+        return;
+      }
+      setError(
+        errorMessage(err, `Failed to prepare deletion of "${serverName}"`),
+      );
     }
   };
 
@@ -6428,12 +6391,9 @@ export function SettingsDialog({
         // Workspaces tab immediately (matches the backend's authoritative
         // view of workspace configs after the reassign-and-delete call).
         try {
-          const res = await authFetch(endpoints.workspaces.list());
-          if (res.ok) {
-            const wsData = await res.json().catch(() => ({}));
-            if (Array.isArray(wsData?.workspaces)) {
-              setWorkspaces(wsData.workspaces);
-            }
+          const wsData = await getSdkClient().workspaces.list();
+          if (Array.isArray(wsData?.workspaces)) {
+            setWorkspaces(wsData.workspaces);
           }
         } catch (_err) {
           // Best-effort refresh; the local state was updated already.

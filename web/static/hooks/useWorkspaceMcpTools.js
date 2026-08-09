@@ -8,7 +8,20 @@
 //   - MCP tab load effect
 const { useState, useEffect, useCallback } = window.preact;
 
-import { authFetch, endpoints, errorMessageFromData } from "../utils/index.js";
+import { getSdkClient } from "../utils/sdkClient.js";
+import { errorMessage } from "../utils/sdkErrors.js";
+
+// The MCP tools endpoint occasionally answers a non-JSON error body (e.g. a
+// plain-text 500 from a proxy); the SDK's MittoApiError still carries that
+// raw text on `.body` (sdk/core/errors.js's `errorFromResponse` decodes
+// whatever the response actually was), so prefer it over the generic
+// SDK-computed `.message` to match the old ct.includes("application/json")
+// branching that used to read the raw text via `res.text()`.
+function mcpRequestErrorMessage(err, fallback) {
+  return typeof err?.body === "string" && err.body
+    ? err.body
+    : errorMessage(err, fallback);
+}
 
 export function useWorkspaceMcpTools({
   activeTab,
@@ -33,24 +46,19 @@ export function useWorkspaceMcpTools({
       return;
     }
     try {
-      const res = await authFetch(
-        endpoints.workspaces.mcpTools(uuid, { acp_server: acpServer }),
+      const data = await getSdkClient().workspaces.listMcpTools(
+        uuid,
+        acpServer,
       );
-      if (!res.ok) {
-        const ct = res.headers.get("content-type");
-        if (ct && ct.includes("application/json")) {
-          const ed = await res.json();
-          throw new Error(errorMessageFromData(ed, "request failed"));
-        }
-        throw new Error(await res.text());
-      }
-      const data = await res.json();
       if (data.error) {
         setMcpToolsError(data.error);
       }
       setMcpTools(data);
     } catch (err) {
-      setMcpToolsError("Failed to load MCP tools: " + err.message);
+      setMcpToolsError(
+        "Failed to load MCP tools: " +
+          mcpRequestErrorMessage(err, "request failed"),
+      );
       setMcpTools({ servers: [], agent_name: "" });
     } finally {
       setMcpToolsLoading(false);
@@ -63,11 +71,7 @@ export function useWorkspaceMcpTools({
   const checkLiveAcpForWorkspace = useCallback(async (workspaceUUID) => {
     if (!workspaceUUID) return false;
     try {
-      const res = await authFetch(
-        endpoints.workspaces.acpStatus(workspaceUUID),
-      );
-      if (!res.ok) return false;
-      const data = await res.json();
+      const data = await getSdkClient().workspaces.getAcpStatus(workspaceUUID);
       return !!data.alive;
     } catch {
       return false;

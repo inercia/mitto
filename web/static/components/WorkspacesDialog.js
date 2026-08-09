@@ -2,7 +2,7 @@
 const { useState, useEffect, useMemo, useCallback, useRef, html } =
   window.preact;
 
-import { authFetch, endpoints } from "../utils/index.js";
+import { getSdkClient } from "../utils/sdkClient.js";
 
 import { getBasename } from "../lib.js";
 
@@ -572,10 +572,8 @@ export function WorkspacesDialog({
     setEffectiveConfig(null);
     setActiveTab("general");
     if (selectedWorkspace.uuid) {
-      authFetch(
-        endpoints.workspaces.effectiveRunnerConfig(selectedWorkspace.uuid),
-      )
-        .then((r) => (r.ok ? r.json() : null))
+      getSdkClient()
+        .workspaces.getEffectiveRunnerConfig(selectedWorkspace.uuid)
         .then((data) => setEffectiveConfig(data))
         .catch(() => {});
     }

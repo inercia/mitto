@@ -9,14 +9,22 @@
 // setConfirmDialog + setError are shell-owned and passed in as args.
 const { useState, useCallback, useRef } = window.preact;
 
-import {
-  secureFetch,
-  authFetch,
-  endpoints,
-  errorMessageFromData,
-} from "../utils/index.js";
+import { getSdkClient } from "../utils/sdkClient.js";
+import { errorMessage } from "../utils/sdkErrors.js";
 
 const { html } = window.preact;
+
+// The MCP install/remove endpoints occasionally answer a non-JSON error body
+// (e.g. a plain-text 500 from a proxy); the SDK's MittoApiError still carries
+// that raw text on `.body` (sdk/core/errors.js's `errorFromResponse` decodes
+// whatever the response actually was), so prefer it over the generic
+// SDK-computed `.message` to match the old ct.includes("application/json")
+// branching that used to read the raw text via `res.text()`.
+function mcpRequestErrorMessage(err, fallback) {
+  return typeof err?.body === "string" && err.body
+    ? err.body
+    : errorMessage(err, fallback);
+}
 
 export function useWorkspaceMcpActions({
   selectedWorkspace,
@@ -50,25 +58,12 @@ export function useWorkspaceMcpActions({
     if (!selectedWorkspace?.uuid) return;
     setRestarting(true);
     try {
-      const res = await secureFetch(
-        endpoints.workspaces.restartAcp(selectedWorkspace.uuid),
-        {
-          method: "POST",
-        },
-      );
-      if (!res.ok) {
-        let msg = "Failed to restart ACP";
-        try {
-          const data = await res.json();
-          msg = errorMessageFromData(data, msg);
-        } catch (_) {
-          /* keep default */
-        }
-        throw new Error(msg);
-      }
+      await getSdkClient().workspaces.restartAcp(selectedWorkspace.uuid);
       setNeedsRestart(false);
     } catch (err) {
-      setError("Failed to restart ACP: " + err.message);
+      setError(
+        "Failed to restart ACP: " + errorMessage(err, "Failed to restart ACP"),
+      );
     } finally {
       setRestarting(false);
     }
@@ -81,14 +76,11 @@ export function useWorkspaceMcpActions({
     if (!uuid) return;
     let affected = 0;
     try {
-      const res = await authFetch(endpoints.sessions.running());
-      if (res.ok) {
-        const data = await res.json();
-        const list = Array.isArray(data?.sessions) ? data.sessions : [];
-        affected = list.filter(
-          (s) => s.workspace_uuid === uuid && s.is_prompting,
-        ).length;
-      }
+      const data = await getSdkClient().sessions.running();
+      const list = Array.isArray(data?.sessions) ? data.sessions : [];
+      affected = list.filter(
+        (s) => s.workspace_uuid === uuid && s.is_prompting,
+      ).length;
     } catch {
       // Best-effort detection: on error, fall through to a direct restart.
     }
@@ -173,29 +165,14 @@ export function useWorkspaceMcpActions({
 
     try {
       const acpServer = editAcpServer || selectedWorkspace?.acp_server;
-      const res = await secureFetch(
-        endpoints.workspaces.mcpToolsInstall(selectedWorkspace.uuid),
+      const data = await getSdkClient().workspaces.installMcpTool(
+        selectedWorkspace.uuid,
         {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            acp_server: acpServer,
-            scope: mcpInstallScope,
-            definition: parsed,
-          }),
+          acp_server: acpServer,
+          scope: mcpInstallScope,
+          definition: parsed,
         },
       );
-
-      if (!res.ok) {
-        const ct = res.headers.get("content-type");
-        if (ct && ct.includes("application/json")) {
-          const ed = await res.json();
-          throw new Error(errorMessageFromData(ed, "request failed"));
-        }
-        throw new Error(await res.text());
-      }
-
-      const data = await res.json();
       const results = data.results || [];
       const failed = results.filter((r) => !r.success);
 
@@ -223,7 +200,9 @@ export function useWorkspaceMcpActions({
         }, 1500);
       }
     } catch (err) {
-      setMcpInstallError("Installation failed: " + err.message);
+      setMcpInstallError(
+        "Installation failed: " + mcpRequestErrorMessage(err, "request failed"),
+      );
     } finally {
       setMcpInstallLoading(false);
     }
@@ -242,27 +221,14 @@ export function useWorkspaceMcpActions({
       setMcpRemoveLoading(true);
       try {
         const acpServer = editAcpServer || selectedWorkspace?.acp_server;
-        const res = await secureFetch(
-          endpoints.workspaces.mcpToolsRemove(selectedWorkspace.uuid),
+        const data = await getSdkClient().workspaces.removeMcpTool(
+          selectedWorkspace.uuid,
           {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              acp_server: acpServer,
-              scope: scope || mcpTools?.mcp_scopes?.[0] || "",
-              name: serverName,
-            }),
+            acp_server: acpServer,
+            scope: scope || mcpTools?.mcp_scopes?.[0] || "",
+            name: serverName,
           },
         );
-        if (!res.ok) {
-          const ct = res.headers.get("content-type");
-          if (ct && ct.includes("application/json")) {
-            const ed = await res.json();
-            throw new Error(errorMessageFromData(ed, "request failed"));
-          }
-          throw new Error(await res.text());
-        }
-        const data = await res.json();
         if (!data.success) {
           setMcpToolsError(data.message || "Failed to remove MCP server");
         } else {
@@ -277,7 +243,10 @@ export function useWorkspaceMcpActions({
         // Refresh the MCP tools list
         await loadMcpTools(acpServer, selectedWorkspace?.uuid);
       } catch (err) {
-        setMcpToolsError("Failed to remove MCP server: " + err.message);
+        setMcpToolsError(
+          "Failed to remove MCP server: " +
+            mcpRequestErrorMessage(err, "request failed"),
+        );
       } finally {
         setMcpRemoveLoading(false);
       }
@@ -307,27 +276,14 @@ export function useWorkspaceMcpActions({
     }
     try {
       const acpServer = editAcpServer || selectedWorkspace?.acp_server;
-      const res = await secureFetch(
-        endpoints.workspaces.mcpToolsInstall(selectedWorkspace.uuid),
+      const data = await getSdkClient().workspaces.installMcpTool(
+        selectedWorkspace.uuid,
         {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            acp_server: acpServer,
-            scope,
-            definition: { mcpServers: { mitto: { url: mcpUrl } } },
-          }),
+          acp_server: acpServer,
+          scope,
+          definition: { mcpServers: { mitto: { url: mcpUrl } } },
         },
       );
-      if (!res.ok) {
-        const ct = res.headers.get("content-type");
-        if (ct && ct.includes("application/json")) {
-          const ed = await res.json();
-          throw new Error(errorMessageFromData(ed, "request failed"));
-        }
-        throw new Error(await res.text());
-      }
-      const data = await res.json();
       const results = data.results || [];
       const failed = results.filter((r) => !r.success);
       if (failed.length > 0) {
@@ -344,7 +300,9 @@ export function useWorkspaceMcpActions({
         await loadMcpTools(acpServer, selectedWorkspace?.uuid);
       }
     } catch (err) {
-      setMcpInstallError("Installation failed: " + err.message);
+      setMcpInstallError(
+        "Installation failed: " + mcpRequestErrorMessage(err, "request failed"),
+      );
     } finally {
       setMcpInstallLoading(false);
     }
