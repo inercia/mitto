@@ -9,8 +9,8 @@
 // dedup with a short TTL so a bead mentioned repeatedly triggers one preload
 // per TTL window, not one per mention.
 
-import { authFetch } from "./csrf.js";
-import { endpoints } from "./endpoints.js";
+import { getSdkClient } from "./sdkClient.js";
+import { withIssueCaches } from "../sdk/index.js";
 import { isGone } from "./beadsGoneCache.js";
 
 const TTL_MS = 30_000;
@@ -29,28 +29,25 @@ export function preloadBeadsIssues(ids, workingDir) {
   if (!workingDir) return;
   if (!Array.isArray(ids) || ids.length === 0) return;
 
-  const now = Date.now();
-  let bucket = preloaded.get(workingDir);
-  if (!bucket) {
-    bucket = new Map();
-    preloaded.set(workingDir, bucket);
-  }
-
-  for (const id of ids) {
-    if (!id) continue;
-    // mitto-msv: skip ids already known to 404 — preload can't warm a missing
-    // bead and would just add to the storm.
-    if (isGone(workingDir, id)) continue;
-    const last = bucket.get(id);
-    if (last !== undefined && now - last < TTL_MS) continue;
-    bucket.set(id, now);
-    // Fire and forget; response body is discarded. authFetch handles auth
-    // and unified 401 handling. Failures are swallowed silently — this is a
-    // best-effort cache warmer.
-    authFetch(endpoints.issues.show(id, { working_dir: workingDir })).catch(
-      () => {},
-    );
-  }
+  // withIssueCaches' preload() already fires-and-forgets each show() call and
+  // swallows errors (best-effort cache warmer); isGone/shouldPreload here
+  // reproduce this module's original TTL-dedup + negative-cache skip exactly.
+  const issues = withIssueCaches(getSdkClient().issues, {
+    isGone,
+    shouldPreload: (wd, id) => {
+      const now = Date.now();
+      let bucket = preloaded.get(wd);
+      if (!bucket) {
+        bucket = new Map();
+        preloaded.set(wd, bucket);
+      }
+      const last = bucket.get(id);
+      if (last !== undefined && now - last < TTL_MS) return false;
+      bucket.set(id, now);
+      return true;
+    },
+  });
+  issues.preload(ids, { working_dir: workingDir });
 }
 
 /**

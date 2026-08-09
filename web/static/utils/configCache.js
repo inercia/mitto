@@ -10,26 +10,51 @@
 //      ETag and the server returns 304 Not Modified when the payload is unchanged.
 //      This cuts the ~35 KB body transfer to a ~300-byte round-trip for unchanged config.
 
-import { authFetch } from "./csrf.js";
-import { endpoints } from "./endpoints.js";
+import { getSdkClient } from "./sdkClient.js";
+import { createTtlCache, keyForParams } from "../sdk/index.js";
 
 /** Cache TTL in milliseconds (30 seconds). */
 const CONFIG_CACHE_TTL_MS = 30_000;
 
 /**
- * Completed-response cache: cacheKey → { data, etag, timestamp }
- * The cache key encodes both acpServer and sessionId (if supplied), or "__default__" when neither is.
- * @type {Map<string, { data: object, etag: string|null, timestamp: number }>}
+ * Three-level cache (TTL + in-flight dedup + ETag revalidation) wrapping
+ * `getSdkClient().serverConfig.get()`, built on the SDK's generic decorator
+ * (mitto-7gta.17 plan, decision 5: caching lives at the seam, not baked into
+ * the SDK resource itself — see sdk/cache/ttl-cache.js).
  */
-const configCache = new Map();
+const configTtlCache = createTtlCache({
+  ttlMs: CONFIG_CACHE_TTL_MS,
+  keyFor: (acpServer, sessionId) =>
+    keyForParams({ acp_server: acpServer, session_id: sessionId }),
+  revalidate: {
+    header: (record) =>
+      record.etag ? { name: "If-None-Match", value: record.etag } : null,
+    isUnchanged: (response) => response.status === 304,
+    extract: (response, data) => ({
+      data,
+      etag: response.headers.get("ETag") || null,
+    }),
+    value: (record) => record.data,
+  },
+});
 
 /**
- * In-flight request deduplication: cacheKey → Promise<object>
- * Populated when a fetch is started; removed when it settles (resolved or rejected).
- * Callers that arrive while a request is in flight receive the same Promise.
- * @type {Map<string, Promise<object>>}
+ * `allowStatus: [304]` + `raw: true` let this module observe a conditional
+ * "Not Modified" response itself (see core/transport.js's `request()` doc)
+ * instead of it always being thrown as a `MittoApiError`.
  */
-const inflight = new Map();
+const fetchConfigCached = configTtlCache.wrap(
+  async (acpServer, sessionId, revalidationHeader) => {
+    const headers = {};
+    if (revalidationHeader) headers[revalidationHeader.name] = revalidationHeader.value;
+    const response = await getSdkClient().serverConfig.get(
+      { acp_server: acpServer, session_id: sessionId },
+      { headers, raw: true, allowStatus: [304] },
+    );
+    const data = response.status === 304 ? undefined : await response.json();
+    return { response, data };
+  },
+);
 
 /**
  * Fetch /api/config, returning a cached response when one is still fresh.
@@ -47,70 +72,7 @@ export async function fetchConfig(
   force = false,
   sessionId = null,
 ) {
-  const cacheKey =
-    [acpServer || "", sessionId || ""].join("|") || "__default__";
-
-  // 1. Completed-response cache hit
-  if (!force) {
-    const cached = configCache.get(cacheKey);
-    if (cached && Date.now() - cached.timestamp < CONFIG_CACHE_TTL_MS) {
-      return cached.data;
-    }
-
-    // 2. In-flight deduplication: join an existing request rather than firing another
-    const existing = inflight.get(cacheKey);
-    if (existing) {
-      return existing;
-    }
-  }
-
-  const url = endpoints.config.get({
-    acp_server: acpServer,
-    session_id: sessionId,
-  });
-
-  // Attach the stored ETag (if any) so the server can return 304 Not Modified
-  // when the config has not changed since the last successful fetch.
-  const cached = configCache.get(cacheKey);
-  const fetchHeaders = {};
-  if (!force && cached?.etag) {
-    fetchHeaders["If-None-Match"] = cached.etag;
-  }
-
-  const promise = authFetch(url, { headers: fetchHeaders })
-    .then((res) => {
-      if (res.status === 304) {
-        if (cached) {
-          // Config unchanged — keep using the cached data without parsing the body.
-          // Update the timestamp so the TTL window resets from this revalidation.
-          configCache.set(cacheKey, {
-            ...cached,
-            timestamp: Date.now(),
-          });
-          inflight.delete(cacheKey);
-          return cached.data;
-        }
-        // Cache was cleared between ETag send and 304 response — fall through to parse.
-      }
-      const etag = res.headers.get("ETag") || null;
-      return res.json().then((data) => {
-        configCache.set(cacheKey, { data, etag, timestamp: Date.now() });
-        inflight.delete(cacheKey);
-        return data;
-      });
-    })
-    .catch((err) => {
-      // Remove from inflight on error so the next caller retries
-      inflight.delete(cacheKey);
-      throw err;
-    });
-
-  // Register as in-flight before any await so synchronous callers also deduplicate
-  if (!force) {
-    inflight.set(cacheKey, promise);
-  }
-
-  return promise;
+  return fetchConfigCached(acpServer, sessionId, { force });
 }
 
 /**
@@ -120,6 +82,5 @@ export async function fetchConfig(
  * concurrent fetches in progress do not repopulate the cache with stale data.
  */
 export function invalidateConfigCache() {
-  configCache.clear();
-  inflight.clear();
+  configTtlCache.invalidate();
 }

@@ -1,9 +1,14 @@
 /**
- * Tests for beadsPreload.js (mitto-h8a.2).
+ * Tests for beadsPreload.js (mitto-h8a.2; migrated onto the SDK client in
+ * mitto-7gta.17 slice S1).
  *
- * preloadBeadsIssues reaches the network via authFetch → global fetch, so
- * stubbing global.fetch is enough to count invocations without mocking ESM
- * modules — matching useBeadsKnownIds.test.js's approach.
+ * preloadBeadsIssues reaches the network via getSdkClient().issues (wrapped
+ * with withIssueCaches) → global fetch, so stubbing global.fetch is enough to
+ * count invocations without mocking ESM modules — matching
+ * useBeadsKnownIds.test.js's approach. Every assertion on `currentFetch`'s
+ * call count is preceded by `await flush()` since the SDK's `request()`
+ * awaits `config.auth.authorize()` before invoking `fetch`, unlike the old
+ * `authFetch()` which called `fetch` synchronously.
  */
 
 import {
@@ -43,28 +48,41 @@ afterEach(() => {
   jest.restoreAllMocks();
 });
 
+/**
+ * Resolves after the current microtask queue drains. Needed because the SDK
+ * client's `request()` (mitto-7gta.17 S1) awaits `config.auth.authorize()`
+ * before invoking `fetch`.
+ */
+function flush() {
+  return Promise.resolve();
+}
+
 describe("preloadBeadsIssues — no-op guards", () => {
-  test("no-op when workingDir is falsy", () => {
+  test("no-op when workingDir is falsy", async () => {
     mod.preloadBeadsIssues(["mitto-aaa"], "");
     mod.preloadBeadsIssues(["mitto-aaa"], null);
     mod.preloadBeadsIssues(["mitto-aaa"], undefined);
+    await flush();
     expect(currentFetch).not.toHaveBeenCalled();
   });
 
-  test("no-op when ids is empty", () => {
+  test("no-op when ids is empty", async () => {
     mod.preloadBeadsIssues([], "/tmp/wsA");
+    await flush();
     expect(currentFetch).not.toHaveBeenCalled();
   });
 
-  test("no-op when ids is not an array", () => {
+  test("no-op when ids is not an array", async () => {
     mod.preloadBeadsIssues(null, "/tmp/wsA");
     mod.preloadBeadsIssues(undefined, "/tmp/wsA");
     mod.preloadBeadsIssues("mitto-aaa", "/tmp/wsA");
+    await flush();
     expect(currentFetch).not.toHaveBeenCalled();
   });
 
-  test("skips empty/falsy IDs within the list but fires for the rest", () => {
+  test("skips empty/falsy IDs within the list but fires for the rest", async () => {
     mod.preloadBeadsIssues(["", null, "mitto-aaa", undefined], "/tmp/wsA");
+    await flush();
     expect(currentFetch).toHaveBeenCalledTimes(1);
     const [url] = currentFetch.mock.calls[0];
     expect(String(url)).toContain("/api/issues/mitto-aaa");
@@ -72,8 +90,9 @@ describe("preloadBeadsIssues — no-op guards", () => {
 });
 
 describe("preloadBeadsIssues — fetch surface", () => {
-  test("fires GET to /api/issues/{id} with working_dir query for each unique id", () => {
+  test("fires GET to /api/issues/{id} with working_dir query for each unique id", async () => {
     mod.preloadBeadsIssues(["mitto-aaa", "mitto-bbb"], "/tmp/wsA");
+    await flush();
     expect(currentFetch).toHaveBeenCalledTimes(2);
 
     const urls = currentFetch.mock.calls.map((c) => String(c[0]));
@@ -92,45 +111,53 @@ describe("preloadBeadsIssues — fetch surface", () => {
     expect(() =>
       mod.preloadBeadsIssues(["mitto-aaa"], "/tmp/wsA"),
     ).not.toThrow();
-    // Give the swallowed rejection a tick to settle so the unhandled-rejection
+    // Give the swallowed rejection a few ticks to settle (SDK request() has
+    // more await hops than the old direct fetch) so the unhandled-rejection
     // detector inside jest doesn't flag it.
-    await Promise.resolve();
+    await flush();
+    await flush();
+    await flush();
   });
 });
 
 describe("preloadBeadsIssues — dedup", () => {
-  test("dedups within TTL: same id in same workspace only fires once", () => {
+  test("dedups within TTL: same id in same workspace only fires once", async () => {
     mod.preloadBeadsIssues(["mitto-aaa"], "/tmp/wsA");
     mod.preloadBeadsIssues(["mitto-aaa"], "/tmp/wsA");
     mod.preloadBeadsIssues(["mitto-aaa", "mitto-aaa"], "/tmp/wsA");
+    await flush();
     expect(currentFetch).toHaveBeenCalledTimes(1);
   });
 
-  test("re-fires after TTL window expires", () => {
+  test("re-fires after TTL window expires", async () => {
     const realNow = Date.now;
     let clock = 1_000_000;
     Date.now = () => clock;
     try {
       mod.preloadBeadsIssues(["mitto-aaa"], "/tmp/wsA");
+      await flush();
       expect(currentFetch).toHaveBeenCalledTimes(1);
 
       // Just under TTL — still deduped.
       clock += 29_000;
       mod.preloadBeadsIssues(["mitto-aaa"], "/tmp/wsA");
+      await flush();
       expect(currentFetch).toHaveBeenCalledTimes(1);
 
       // Past TTL — fires again.
       clock += 2_000;
       mod.preloadBeadsIssues(["mitto-aaa"], "/tmp/wsA");
+      await flush();
       expect(currentFetch).toHaveBeenCalledTimes(2);
     } finally {
       Date.now = realNow;
     }
   });
 
-  test("per-workspace isolation: same id in different workspaces both fire", () => {
+  test("per-workspace isolation: same id in different workspaces both fire", async () => {
     mod.preloadBeadsIssues(["mitto-aaa"], "/tmp/wsA");
     mod.preloadBeadsIssues(["mitto-aaa"], "/tmp/wsB");
+    await flush();
     expect(currentFetch).toHaveBeenCalledTimes(2);
 
     const urls = currentFetch.mock.calls.map((c) => String(c[0]));
@@ -142,11 +169,13 @@ describe("preloadBeadsIssues — dedup", () => {
     ).toBe(true);
   });
 
-  test("_resetBeadsPreloadCache clears dedup state", () => {
+  test("_resetBeadsPreloadCache clears dedup state", async () => {
     mod.preloadBeadsIssues(["mitto-aaa"], "/tmp/wsA");
+    await flush();
     expect(currentFetch).toHaveBeenCalledTimes(1);
     mod._resetBeadsPreloadCache();
     mod.preloadBeadsIssues(["mitto-aaa"], "/tmp/wsA");
+    await flush();
     expect(currentFetch).toHaveBeenCalledTimes(2);
   });
 });

@@ -7,8 +7,7 @@
 // - On app load, we sync from server to localStorage
 // - On changes, we update both localStorage and server
 
-import { secureFetch, authFetch } from "./csrf.js";
-import { endpoints } from "./endpoints.js";
+import { getSdkClient } from "./sdkClient.js";
 
 // =============================================================================
 // UI Preferences Server Sync
@@ -63,80 +62,79 @@ export async function initUIPreferences() {
   uiPreferencesSyncPromise = (async () => {
     migrateLegacyTabStorage();
     try {
-      // Use authFetch to include credentials for cross-origin requests
-      const response = await authFetch(endpoints.misc.uiPreferences());
-      if (response.ok) {
-        const prefs = await response.json();
-        uiPreferencesCache = prefs;
+      // Use the SDK client (mitto-7gta.17 S1) — the seam's onUnauthorized
+      // preserves the authFetch 401 -> redirect-to-login policy this call
+      // relied on before migration.
+      const prefs = await getSdkClient().misc.uiPreferences.get();
+      uiPreferencesCache = prefs;
 
-        // Sync to localStorage for fast reads
-        if (prefs.grouping_mode) {
-          localStorage.setItem(GROUPING_MODE_KEY, prefs.grouping_mode);
-        }
-        if (prefs.expanded_groups) {
-          localStorage.setItem(
-            EXPANDED_GROUPS_KEY,
-            JSON.stringify(prefs.expanded_groups),
-          );
-        }
-        if (prefs.prompt_sort_mode) {
-          localStorage.setItem(PROMPT_SORT_MODE_KEY, prefs.prompt_sort_mode);
-        }
-        if (prefs.font_size) {
-          localStorage.setItem(FONT_SIZE_KEY, prefs.font_size);
-        }
-        // Theme cluster — persisted server-side for the same macOS-app,
-        // per-launch random-port reason FontSize is (see FONT_SIZE_KEY).
-        if (prefs.theme) {
-          localStorage.setItem(THEME_KEY, prefs.theme);
-        }
-        if (prefs.theme_light) {
-          localStorage.setItem(THEME_LIGHT_KEY, prefs.theme_light);
-        }
-        if (prefs.theme_dark) {
-          localStorage.setItem(THEME_DARK_KEY, prefs.theme_dark);
-        }
-        if (typeof prefs.follow_system_theme === "boolean") {
-          localStorage.setItem(
-            FOLLOW_SYSTEM_THEME_KEY,
-            String(prefs.follow_system_theme),
-          );
-        }
-        if (typeof prefs.follow_system_reduced_motion === "boolean") {
-          localStorage.setItem(
-            FOLLOW_SYSTEM_REDUCED_MOTION_KEY,
-            String(prefs.follow_system_reduced_motion),
-          );
-        }
-        if (typeof prefs.reduce_animations === "boolean") {
-          localStorage.setItem(
-            REDUCE_ANIMATIONS_KEY,
-            String(prefs.reduce_animations),
-          );
-        }
-        if (Array.isArray(prefs.dashboard_hidden_charts)) {
-          localStorage.setItem(
-            DASHBOARD_HIDDEN_CHARTS_KEY,
-            JSON.stringify(prefs.dashboard_hidden_charts),
-          );
-        }
-
-        console.debug(
-          "[Mitto] UI preferences loaded from server:",
-          prefs.grouping_mode,
-          "groups:",
-          Object.keys(prefs.expanded_groups || {}).length,
-        );
-
-        // Notify listeners that preferences have been loaded
-        uiPreferencesLoadedCallbacks.forEach((cb) => {
-          try {
-            cb(prefs);
-          } catch (e) {
-            console.warn("[Mitto] Error in UI preferences callback:", e);
-          }
-        });
+      // Sync to localStorage for fast reads
+      if (prefs.grouping_mode) {
+        localStorage.setItem(GROUPING_MODE_KEY, prefs.grouping_mode);
       }
+      if (prefs.expanded_groups) {
+        localStorage.setItem(
+          EXPANDED_GROUPS_KEY,
+          JSON.stringify(prefs.expanded_groups),
+        );
+      }
+      if (prefs.prompt_sort_mode) {
+        localStorage.setItem(PROMPT_SORT_MODE_KEY, prefs.prompt_sort_mode);
+      }
+      if (prefs.font_size) {
+        localStorage.setItem(FONT_SIZE_KEY, prefs.font_size);
+      }
+      // Theme cluster — persisted server-side for the same macOS-app,
+      // per-launch random-port reason FontSize is (see FONT_SIZE_KEY).
+      if (prefs.theme) {
+        localStorage.setItem(THEME_KEY, prefs.theme);
+      }
+      if (prefs.theme_light) {
+        localStorage.setItem(THEME_LIGHT_KEY, prefs.theme_light);
+      }
+      if (prefs.theme_dark) {
+        localStorage.setItem(THEME_DARK_KEY, prefs.theme_dark);
+      }
+      if (typeof prefs.follow_system_theme === "boolean") {
+        localStorage.setItem(
+          FOLLOW_SYSTEM_THEME_KEY,
+          String(prefs.follow_system_theme),
+        );
+      }
+      if (typeof prefs.follow_system_reduced_motion === "boolean") {
+        localStorage.setItem(
+          FOLLOW_SYSTEM_REDUCED_MOTION_KEY,
+          String(prefs.follow_system_reduced_motion),
+        );
+      }
+      if (typeof prefs.reduce_animations === "boolean") {
+        localStorage.setItem(
+          REDUCE_ANIMATIONS_KEY,
+          String(prefs.reduce_animations),
+        );
+      }
+      if (Array.isArray(prefs.dashboard_hidden_charts)) {
+        localStorage.setItem(
+          DASHBOARD_HIDDEN_CHARTS_KEY,
+          JSON.stringify(prefs.dashboard_hidden_charts),
+        );
+      }
+
+      console.debug(
+        "[Mitto] UI preferences loaded from server:",
+        prefs.grouping_mode,
+        "groups:",
+        Object.keys(prefs.expanded_groups || {}).length,
+      );
+
+      // Notify listeners that preferences have been loaded
+      uiPreferencesLoadedCallbacks.forEach((cb) => {
+        try {
+          cb(prefs);
+        } catch (e) {
+          console.warn("[Mitto] Error in UI preferences callback:", e);
+        }
+      });
     } catch (e) {
       console.warn("[Mitto] Failed to load UI preferences from server:", e);
     }
@@ -158,18 +156,10 @@ function saveUIPreferencesToServer(prefs) {
 
   saveTimeout = setTimeout(async () => {
     try {
-      // Use secureFetch to include CSRF token and credentials for cross-origin requests
-      const response = await secureFetch(endpoints.misc.uiPreferences(), {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(prefs),
-      });
-      if (!response.ok) {
-        console.warn(
-          "[Mitto] Failed to save UI preferences to server:",
-          response.status,
-        );
-      }
+      // SDK client (mitto-7gta.17 S1) throws on a non-2xx response instead
+      // of returning it, so a failed save now logs via the catch below
+      // rather than an explicit response.ok check.
+      await getSdkClient().misc.uiPreferences.save(prefs);
     } catch (e) {
       console.warn("[Mitto] Failed to save UI preferences to server:", e);
     }

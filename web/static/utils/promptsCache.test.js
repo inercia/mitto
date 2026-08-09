@@ -93,6 +93,17 @@ function createDeferredFetch() {
   return { mockFetch, settle };
 }
 
+/**
+ * Resolves after the current microtask queue drains. Needed because the SDK
+ * client's `request()` (mitto-7gta.17 S1) awaits `config.auth.authorize()`
+ * before invoking `fetch`, unlike the old `authFetch()` which called `fetch`
+ * synchronously — so a fetch fired by a still-pending call is not yet
+ * reflected in `global.fetch`'s mock call count until this tick passes.
+ */
+function flush() {
+  return Promise.resolve();
+}
+
 // ---------------------------------------------------------------------------
 // Setup
 // ---------------------------------------------------------------------------
@@ -218,6 +229,7 @@ describe("in-flight deduplication", () => {
 
     const p1 = fetchWorkspacePromptsCached({ working_dir: "/w" });
     const p2 = fetchWorkspacePromptsCached({ working_dir: "/w" });
+    await flush();
 
     expect(global.fetch).toHaveBeenCalledTimes(1);
 
@@ -238,6 +250,7 @@ describe("in-flight deduplication", () => {
 
     const pa = fetchWorkspacePromptsCached({ working_dir: "/a" });
     const pb = fetchWorkspacePromptsCached({ working_dir: "/b" });
+    await flush();
 
     expect(global.fetch).toHaveBeenCalledTimes(2);
 
@@ -280,12 +293,14 @@ describe("force=true", () => {
     global.fetch = mockFetch;
 
     const pNormal = fetchWorkspacePromptsCached({ working_dir: "/w" });
+    await flush();
     expect(global.fetch).toHaveBeenCalledTimes(1);
 
     const pForced = fetchWorkspacePromptsCached(
       { working_dir: "/w" },
       { force: true },
     );
+    await flush();
     expect(global.fetch).toHaveBeenCalledTimes(2);
 
     settle({ prompts: [] });
@@ -383,10 +398,10 @@ describe("error handling", () => {
 
     const p1 = fetchWorkspacePromptsCached({ working_dir: "/w" });
     const p2 = fetchWorkspacePromptsCached({ working_dir: "/w" });
-    expect(global.fetch).toHaveBeenCalledTimes(1);
-
     p1.catch(() => {});
     p2.catch(() => {});
+    await flush();
+    expect(global.fetch).toHaveBeenCalledTimes(1);
 
     settle(null, null, new Error("server down"));
 
@@ -400,13 +415,14 @@ describe("error handling", () => {
         status: 500,
         ok: false,
         headers: makeHeaders(),
+        text: () => Promise.resolve(""),
         json: () => Promise.resolve({}),
       }),
     );
 
     await expect(
       fetchWorkspacePromptsCached({ working_dir: "/w" }),
-    ).rejects.toThrow("HTTP 500");
+    ).rejects.toThrow("Request failed with status 500");
 
     global.fetch = immediateOkFetch({ prompts: [{ name: "ok" }] });
     const result = await fetchWorkspacePromptsCached({ working_dir: "/w" });
