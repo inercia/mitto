@@ -899,6 +899,12 @@ Action values: `added`, `removed`, `cleared`.
 | `sync_session`      | `load_events` with `after_seq`               |
 | `session_sync`      | `events_loaded`                              |
 
+The canonical, normative version of this table — with tier, deprecated-in
+version, sunset date, and the cross-surface deprecation window — lives in
+the [API Stability Tiers and Deprecation Policy §6 deprecation
+register](../api-stability.md#6-deprecation-register); this table is kept
+for quick reference only.
+
 ---
 
 ## Backend → Frontend Messages (Global Events WebSocket)

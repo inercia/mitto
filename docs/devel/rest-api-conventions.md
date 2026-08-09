@@ -119,7 +119,7 @@ These endpoints intentionally return a plain-text `405` (not the JSON envelope) 
 
 ## 6. Exception List — `external-stable`
 
-These endpoints are called by external callers (native macOS app, load balancers, viewer pages) and **must not be renamed**:
+These endpoints are called by external callers (native macOS app, load balancers, viewer pages) and **must not be renamed**. `external-stable` is a marker on the `stable` tier of the broader endpoint-level stability model — see [API Stability Tiers and Deprecation Policy §2](api-stability.md#2-external-stable-reconciles-with-stable) for the full tier definitions, the deprecation window, and per-surface signalling (REST/WebSocket/SDK).
 
 | Path                                          | Caller / reason                               |
 | --------------------------------------------- | --------------------------------------------- |

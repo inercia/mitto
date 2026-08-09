@@ -164,8 +164,9 @@ realtime event names. The pinned error taxonomy (`.3`): `MittoError` (base),
 Endpoint-level stability tiers and deprecation windows (e.g. the
 `external-stable` exception list in
 [REST API Conventions §6](rest-api-conventions.md#6-exception-list--external-stable))
-are a separate concern, owned by `mitto-7gta.28`, and are referenced rather
-than duplicated here.
+are a separate concern, defined in
+[API Stability Tiers and Deprecation Policy](api-stability.md), and are
+referenced rather than duplicated here.
 
 ## Related issues
 
