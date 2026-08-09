@@ -1,6 +1,6 @@
 // Mitto Web Interface - Prompt Menu Utilities
 
-import { authFetch } from "./csrf.js";
+import { getSdkClient } from "./sdkClient.js";
 import { endpoints } from "./endpoints.js";
 
 /**
@@ -502,7 +502,8 @@ export function isCacheableParam(p) {
  * Fetch the set of parameter names currently cached (fresh) for a prompt in a
  * conversation. Names only — never values. Tolerant of errors: on any failure
  * (network, non-2xx, unknown session) returns an EMPTY Set so callers fall back
- * to today's behavior (ask). `fetchImpl` is injectable for tests (defaults to authFetch).
+ * to today's behavior (ask). `fetchImpl` is injectable for tests (defaults to
+ * the SDK client, mitto-7gta.17 S8).
  * @returns {Promise<Set<string>>}
  */
 export async function fetchCachedParamNames(
@@ -511,13 +512,20 @@ export async function fetchCachedParamNames(
   { fetchImpl } = {},
 ) {
   if (!sessionId || !promptName) return new Set();
-  const fetch_ = fetchImpl || authFetch;
   try {
-    const resp = await fetch_(
-      endpoints.sessions.promptArgCache(sessionId, promptName),
-    );
-    if (!resp || !resp.ok) return new Set();
-    const data = await resp.json();
+    let data;
+    if (fetchImpl) {
+      const resp = await fetchImpl(
+        endpoints.sessions.promptArgCache(sessionId, promptName),
+      );
+      if (!resp || !resp.ok) return new Set();
+      data = await resp.json();
+    } else {
+      data = await getSdkClient().sessions.promptArgCache(
+        sessionId,
+        promptName,
+      );
+    }
     return new Set(Array.isArray(data && data.cached) ? data.cached : []);
   } catch (_err) {
     return new Set();

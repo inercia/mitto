@@ -2,7 +2,8 @@
 // Shared helper to seed a conversation with a named prompt via prompt_name,
 // or to create a new loop conversation driven by a named prompt.
 
-import { secureFetch } from "../utils/csrf.js";
+import { getSdkClient } from "../utils/sdkClient.js";
+import { errorStatus } from "../utils/sdkErrors.js";
 import { apiUrl } from "../utils/api.js";
 import { endpoints } from "../utils/index.js";
 
@@ -169,52 +170,62 @@ export async function makeLoopNow(
   // override.
   const { freshContext, runOnStart, coalesceDuringBusy } = p;
 
-  const fetch_ = fetchImpl || secureFetch;
-
   // Step 1: configure loop. Send `triggers` (canonical list, mitto-r6j) as
   // the primary field. condition is sent when onTasks is one of the armed
   // triggers.
   const armsOnTasks = triggers.includes("onTasks");
-  try {
-    const putResp = await fetch_(endpoints.sessions.loop(sessionId), {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        prompt_name: prompt.name,
-        frequency,
-        enabled: true,
-        max_iterations: maxIterations,
-        triggers,
-        delay_seconds: delaySeconds,
-        max_duration_seconds: maxDurationSeconds,
-        ...(armsOnTasks ? { condition } : {}),
-        ...(typeof freshContext === "boolean"
-          ? { fresh_context: freshContext }
-          : {}),
-        ...(typeof runOnStart === "boolean"
-          ? { run_on_start: runOnStart }
-          : {}),
-        ...(typeof coalesceDuringBusy === "boolean"
-          ? { coalesce_during_busy: coalesceDuringBusy }
-          : {}),
-        ...(args && typeof args === "object" && Object.keys(args).length > 0
-          ? { arguments: args }
-          : {}),
-      }),
-    });
-    if (!putResp.ok) {
-      let errData = {};
-      try {
-        errData = await putResp.json();
-      } catch (_) {}
-      return {
-        success: false,
-        error: errData.error || "loop_setup_failed",
-      };
+  const loopBody = {
+    prompt_name: prompt.name,
+    frequency,
+    enabled: true,
+    max_iterations: maxIterations,
+    triggers,
+    delay_seconds: delaySeconds,
+    max_duration_seconds: maxDurationSeconds,
+    ...(armsOnTasks ? { condition } : {}),
+    ...(typeof freshContext === "boolean"
+      ? { fresh_context: freshContext }
+      : {}),
+    ...(typeof runOnStart === "boolean" ? { run_on_start: runOnStart } : {}),
+    ...(typeof coalesceDuringBusy === "boolean"
+      ? { coalesce_during_busy: coalesceDuringBusy }
+      : {}),
+    ...(args && typeof args === "object" && Object.keys(args).length > 0
+      ? { arguments: args }
+      : {}),
+  };
+
+  if (fetchImpl) {
+    try {
+      const putResp = await fetchImpl(endpoints.sessions.loop(sessionId), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(loopBody),
+      });
+      if (!putResp.ok) {
+        let errData = {};
+        try {
+          errData = await putResp.json();
+        } catch (_) {}
+        return {
+          success: false,
+          error: errData.error || "loop_setup_failed",
+        };
+      }
+    } catch (err) {
+      console.error("makeLoopNow PUT error:", err);
+      return { success: false, error: "loop_setup_failed" };
     }
-  } catch (err) {
-    console.error("makeLoopNow PUT error:", err);
-    return { success: false, error: "loop_setup_failed" };
+  } else {
+    try {
+      await getSdkClient().sessions.loop.set(sessionId, loopBody);
+    } catch (err) {
+      console.error("makeLoopNow PUT error:", err);
+      if (errorStatus(err) === undefined) {
+        return { success: false, error: "loop_setup_failed" };
+      }
+      return { success: false, error: err.body?.error || "loop_setup_failed" };
+    }
   }
 
   // Step 2: fire first run.
@@ -224,26 +235,45 @@ export async function makeLoopNow(
   // schedule-based config immediately fired its first run — so the loop is set
   // and running. Treat 409 as success rather than surfacing a misleading
   // "failed to configure loop" error to the user.
-  try {
-    const runResp = await fetch_(endpoints.sessions.loopRunNow(sessionId), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ reset_timer: true }),
-    });
-    if (!runResp.ok) {
-      if (runResp.status === 409) {
+  if (fetchImpl) {
+    try {
+      const runResp = await fetchImpl(
+        endpoints.sessions.loopRunNow(sessionId),
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ reset_timer: true }),
+        },
+      );
+      if (!runResp.ok) {
+        if (runResp.status === 409) {
+          // Already running — config is set, a run is in flight. Not a failure.
+          return { success: true };
+        }
+        let errData = {};
+        try {
+          errData = await runResp.json();
+        } catch (_) {}
+        return { success: false, error: errData.error || "run_now_failed" };
+      }
+    } catch (err) {
+      console.error("makeLoopNow run-now error:", err);
+      return { success: false, error: "run_now_failed" };
+    }
+  } else {
+    try {
+      await getSdkClient().sessions.loop.runNow(sessionId, true);
+    } catch (err) {
+      if (errorStatus(err) === 409) {
         // Already running — config is set, a run is in flight. Not a failure.
         return { success: true };
       }
-      let errData = {};
-      try {
-        errData = await runResp.json();
-      } catch (_) {}
-      return { success: false, error: errData.error || "run_now_failed" };
+      console.error("makeLoopNow run-now error:", err);
+      if (errorStatus(err) === undefined) {
+        return { success: false, error: "run_now_failed" };
+      }
+      return { success: false, error: err.body?.error || "run_now_failed" };
     }
-  } catch (err) {
-    console.error("makeLoopNow run-now error:", err);
-    return { success: false, error: "run_now_failed" };
   }
 
   return { success: true };
@@ -280,31 +310,43 @@ export async function seedConversationWithPrompt(
     return { success: false, error: "invalid_request" };
   }
 
-  const fetch_ = fetchImpl || secureFetch;
   const body = buildSeedQueueBody(prompt, { arguments: args });
 
-  try {
-    const resp = await fetch_(endpoints.sessions.queue(sessionId), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-
-    let data = {};
+  if (fetchImpl) {
     try {
-      data = await resp.json();
-    } catch (_) {}
+      const resp = await fetchImpl(endpoints.sessions.queue(sessionId), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
 
-    if (resp.ok || resp.status === 201) {
-      return { success: true, messageId: data.id };
+      let data = {};
+      try {
+        data = await resp.json();
+      } catch (_) {}
+
+      if (resp.ok || resp.status === 201) {
+        return { success: true, messageId: data.id };
+      }
+      return {
+        success: false,
+        error: data.error?.code || data.error || "request_failed",
+      };
+    } catch (err) {
+      console.error("seedConversationWithPrompt error:", err);
+      return { success: false, error: "request_failed" };
     }
-    return {
-      success: false,
-      error: data.error?.code || data.error || "request_failed",
-    };
+  }
+
+  try {
+    const data = await getSdkClient().sessions.queue.add(sessionId, body);
+    return { success: true, messageId: data?.id };
   } catch (err) {
     console.error("seedConversationWithPrompt error:", err);
-    return { success: false, error: "request_failed" };
+    if (errorStatus(err) === undefined) {
+      return { success: false, error: "request_failed" };
+    }
+    return { success: false, error: err.code || "request_failed" };
   }
 }
 
@@ -386,46 +428,58 @@ export async function configureLoopSchedule(
     loop.coalesceDuringBusy ?? promptDefaults.coalesceDuringBusy;
 
   const armsOnTasks = triggers.includes("onTasks");
-  const fetch_ = fetchImpl || secureFetch;
-  try {
-    const resp = await fetch_(endpoints.sessions.loop(sessionId), {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        prompt_name: prompt?.name,
-        frequency,
-        enabled: true,
-        max_iterations: maxIterations,
-        triggers,
-        delay_seconds: delaySeconds,
-        max_duration_seconds: maxDurationSeconds,
-        ...(armsOnTasks ? { condition } : {}),
-        ...(typeof freshContext === "boolean"
-          ? { fresh_context: freshContext }
-          : {}),
-        ...(typeof runOnStart === "boolean"
-          ? { run_on_start: runOnStart }
-          : {}),
-        ...(typeof coalesceDuringBusy === "boolean"
-          ? { coalesce_during_busy: coalesceDuringBusy }
-          : {}),
-        ...(args && typeof args === "object" && Object.keys(args).length > 0
-          ? { arguments: args }
-          : {}),
-      }),
-    });
+  const loopBody = {
+    prompt_name: prompt?.name,
+    frequency,
+    enabled: true,
+    max_iterations: maxIterations,
+    triggers,
+    delay_seconds: delaySeconds,
+    max_duration_seconds: maxDurationSeconds,
+    ...(armsOnTasks ? { condition } : {}),
+    ...(typeof freshContext === "boolean"
+      ? { fresh_context: freshContext }
+      : {}),
+    ...(typeof runOnStart === "boolean" ? { run_on_start: runOnStart } : {}),
+    ...(typeof coalesceDuringBusy === "boolean"
+      ? { coalesce_during_busy: coalesceDuringBusy }
+      : {}),
+    ...(args && typeof args === "object" && Object.keys(args).length > 0
+      ? { arguments: args }
+      : {}),
+  };
 
-    if (resp.ok) {
-      return { success: true };
-    }
-    let errData = {};
+  if (fetchImpl) {
     try {
-      errData = await resp.json();
-    } catch (_) {}
-    return { success: false, error: errData.error || "loop_setup_failed" };
+      const resp = await fetchImpl(endpoints.sessions.loop(sessionId), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(loopBody),
+      });
+
+      if (resp.ok) {
+        return { success: true };
+      }
+      let errData = {};
+      try {
+        errData = await resp.json();
+      } catch (_) {}
+      return { success: false, error: errData.error || "loop_setup_failed" };
+    } catch (err) {
+      console.error("configureLoopSchedule error:", err);
+      return { success: false, error: "loop_setup_failed" };
+    }
+  }
+
+  try {
+    await getSdkClient().sessions.loop.set(sessionId, loopBody);
+    return { success: true };
   } catch (err) {
     console.error("configureLoopSchedule error:", err);
-    return { success: false, error: "loop_setup_failed" };
+    if (errorStatus(err) === undefined) {
+      return { success: false, error: "loop_setup_failed" };
+    }
+    return { success: false, error: err.body?.error || "loop_setup_failed" };
   }
 }
 

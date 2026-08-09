@@ -16,7 +16,6 @@ import {
   calculateSessionCreationDelay,
   createReconnectDebounceTracker,
   shouldDebounceReconnect,
-  checkSessionExists,
   isReconnectLimitReached,
   isTerminalSessionError,
   createSeqWatermark,
@@ -1323,97 +1322,6 @@ describe("lastKnownSeqRef synchronization logic", () => {
 });
 
 // =============================================================================
-// checkSessionExists
-// =============================================================================
-
-describe("checkSessionExists", () => {
-  // Helper: create a mock fetch that records calls and returns a fixed status
-  function createMockFetch(status) {
-    const calls = [];
-    const fn = async (url) => {
-      calls.push(url);
-      return { status };
-    };
-    fn.calls = calls;
-    return fn;
-  }
-
-  // Helper: create a mock fetch that rejects with an error
-  function createFailingFetch(error) {
-    const calls = [];
-    const fn = async (url) => {
-      calls.push(url);
-      throw error;
-    };
-    fn.calls = calls;
-    return fn;
-  }
-
-  const mockApiUrl = (path) => `http://localhost${path}`;
-
-  test("returns { exists: false } when server responds with 404", async () => {
-    const mockFetch = createMockFetch(404);
-
-    const result = await checkSessionExists(
-      "session-123",
-      mockFetch,
-      mockApiUrl,
-    );
-    expect(result).toEqual({ exists: false, networkError: false });
-    expect(mockFetch.calls).toEqual([
-      "http://localhost/api/sessions/session-123",
-    ]);
-  });
-
-  test("returns { exists: true } when server responds with 200", async () => {
-    const mockFetch = createMockFetch(200);
-
-    const result = await checkSessionExists(
-      "session-456",
-      mockFetch,
-      mockApiUrl,
-    );
-    expect(result).toEqual({ exists: true, networkError: false });
-  });
-
-  test("returns { exists: true } when server responds with 500 (don't give up on server errors)", async () => {
-    const mockFetch = createMockFetch(500);
-
-    const result = await checkSessionExists(
-      "session-789",
-      mockFetch,
-      mockApiUrl,
-    );
-    expect(result).toEqual({ exists: true, networkError: false });
-  });
-
-  test("returns { exists: true, networkError: true } on network failure", async () => {
-    const mockFetch = createFailingFetch(new Error("Network error"));
-
-    const result = await checkSessionExists(
-      "session-abc",
-      mockFetch,
-      mockApiUrl,
-    );
-    expect(result).toEqual({ exists: true, networkError: true });
-  });
-
-  test("passes session ID correctly in the URL", async () => {
-    const mockFetch = createMockFetch(200);
-    const prefixApiUrl = (path) => `/prefix${path}`;
-
-    await checkSessionExists(
-      "01JNPKPC01SJYTSE3EYMW5J26R",
-      mockFetch,
-      prefixApiUrl,
-    );
-    expect(mockFetch.calls).toEqual([
-      "/prefix/api/sessions/01JNPKPC01SJYTSE3EYMW5J26R",
-    ]);
-  });
-});
-
-// =============================================================================
 // isReconnectLimitReached
 // =============================================================================
 
@@ -1457,26 +1365,6 @@ describe("isReconnectLimitReached", () => {
 // =============================================================================
 
 describe("error storm prevention", () => {
-  test("session-gone detection: 404 response stops reconnection", async () => {
-    // Simulates the scenario from the bug report:
-    // 1. WebSocket connects to a dead session
-    // 2. Server returns 404 (before upgrade)
-    // 3. ws.onclose fires (ws._wasOpen is false)
-    // 4. Client checks REST API → 404 → calls handleSessionGone
-    const mockFetch = async () => ({ status: 404 });
-    const mockApiUrl = (path) => path;
-
-    const result = await checkSessionExists(
-      "01JNPKPC01SJYTSE3EYMW5J26R",
-      mockFetch,
-      mockApiUrl,
-    );
-
-    expect(result.exists).toBe(false);
-    // In the real code, this would trigger handleSessionGone()
-    // which stops all reconnection attempts for this session
-  });
-
   test("max retry limit prevents unbounded reconnection", () => {
     // Simulates the scenario where the session exists but keeps failing:
     // After MAX_SESSION_RECONNECT_ATTEMPTS failures, reconnection stops

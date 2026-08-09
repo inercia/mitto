@@ -235,34 +235,6 @@ export function shouldDebounceReconnect(tracker, sessionId, options = {}) {
 // =============================================================================
 
 /**
- * Check whether a session still exists on the server via a lightweight REST call.
- * Used by the WebSocket reconnect loop to detect "session not found" (HTTP 404)
- * and stop retrying for permanently gone sessions.
- *
- * The WebSocket API does not expose the HTTP status code when the server rejects
- * the upgrade (e.g., with 404), so we must make a separate REST request to
- * distinguish "session gone" from transient network errors.
- *
- * @param {string} sessionId - The session ID to check
- * @param {function} fetchFn - Fetch function to use (e.g., authFetch for credentials)
- * @param {function} apiUrlFn - Function to build API URLs (e.g., apiUrl)
- * @returns {Promise<{exists: boolean, networkError: boolean}>}
- */
-export async function checkSessionExists(sessionId, fetchFn, apiUrlFn) {
-  try {
-    const response = await fetchFn(apiUrlFn(`/api/sessions/${sessionId}`));
-    if (response.status === 404) {
-      return { exists: false, networkError: false };
-    }
-    // Any other response (200, 500, etc.) — session may exist, don't give up
-    return { exists: true, networkError: false };
-  } catch (_err) {
-    // Network error — can't determine, treat as transient
-    return { exists: true, networkError: true };
-  }
-}
-
-/**
  * Check whether the reconnect attempt count has exceeded the maximum allowed.
  *
  * @param {number} attempt - Current attempt number (0-based)

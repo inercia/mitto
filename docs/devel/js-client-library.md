@@ -6,12 +6,18 @@ record; implementation is tracked across the sibling issues of the
 
 ## Context
 
-The Mitto UI currently talks to the backend through ad-hoc call sites: 180+
-raw `fetch`/`authFetch` calls across 43 files (`web/static/utils/csrf.js`,
-`endpoints.js`) plus a 4800+ LOC `useWebSocket.js` fused to Preact. There is
-no reusable, documented, testable client — for the UI or for third parties /
-future CLI tools. This record defines the shape of the reusable SDK before
-any code is written.
+At the time this record was decided, the Mitto UI talked to the backend
+through ad-hoc call sites: 180+ raw `fetch`/`authFetch` calls across 43 files
+(`web/static/utils/csrf.js`, `endpoints.js`) plus a 4800+ LOC `useWebSocket.js`
+fused to Preact. There was no reusable, documented, testable client — for the
+UI or for third parties / future CLI tools. This record defines the shape of
+the reusable SDK before any code is written.
+
+**Migration status (`.17`/`.18`, completed):** every one of those call sites
+now goes through `getSdkClient()` (`web/static/utils/sdkClient.js`). `csrf.js`
+was reduced to the auth policy the SDK deliberately keeps out of its core —
+`redirectToLogin`, `initCSRF`, `getCSRFToken` — once `authFetch`/`secureFetch`
+lost their last importers (slice S8).
 
 ## 1. Package layout
 
