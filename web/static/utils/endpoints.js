@@ -1,228 +1,86 @@
 /**
  * Centralized API endpoint registry for the Mitto frontend.
  *
- * Every builder returns a full URL string via `apiUrl()` so the server prefix
- * is always applied. Query parameters are built with URLSearchParams (never
- * manual concatenation). Path params are `encodeURIComponent`-escaped.
+ * This is now a thin, browser-environment shim over the environment-agnostic
+ * SDK registry (`sdk/core/endpoints.js`, mitto-7gta.6) — kept so the ~200
+ * existing `endpoints.*` call sites across the frontend keep working
+ * unchanged until they migrate to the SDK client directly.
+ *
+ * The registry is rebuilt from `window.mittoApiPrefix`/`window.location` on
+ * every property access (memoized on the (prefix, wsBase) pair actually in
+ * effect), NOT once at import time: `getApiPrefix()` reads a value the
+ * server injects into the page and which may not be set yet at module-eval
+ * time, and the existing test suite (and some app flows) mutate
+ * `window.mittoApiPrefix` between calls and expect the very next builder
+ * call to reflect it.
  *
  * Usage:
  *   import { endpoints } from "./endpoints.js";
  *   const url = endpoints.sessions.queue(id);          // GET/POST queue
  *   const url = endpoints.issues.list({ working_dir }); // GET with QS
  */
-import { apiUrl, wsUrl } from "./api.js";
+import { getApiPrefix } from "./api.js";
+import { createEndpoints } from "../sdk/core/endpoints.js";
 
-/** Build a query string from a params object, omitting null/undefined/"" values.
- *  Array values emit repeated `key=v` params (one per element); empty arrays
- *  are treated as "no filter" and omitted entirely. Empty string entries
- *  inside an array are skipped so a caller does not accidentally send
- *  `?key=` (which the backend would reject as an empty entry). */
-function qs(params) {
-  if (!params) return "";
-  const sp = new URLSearchParams();
-  for (const [k, v] of Object.entries(params)) {
-    if (v === undefined || v === null || v === "") continue;
-    if (Array.isArray(v)) {
-      for (const item of v) {
-        if (item === undefined || item === null || item === "") continue;
-        sp.append(k, item);
-      }
-      continue;
-    }
-    sp.append(k, v);
-  }
-  const s = sp.toString();
-  return s ? "?" + s : "";
+/** Absolute ws(s):// origin for the current page. Mirrors utils/api.js's
+ *  wsUrl() scheme mapping; needed because the SDK's wsUrlFor() cannot
+ *  derive a ws(s):// scheme from the relative baseUrl used here. */
+function currentWsBaseUrl() {
+  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+  return `${protocol}//${window.location.host}`;
 }
 
-const enc = encodeURIComponent;
+let _cachedKey = null;
+let _cachedRegistry = null;
 
-export const endpoints = {
-  /** Beads issue tracker — all migrated to /api/issues (Decision #12). */
-  issues: {
-    list: (params) => apiUrl("/api/issues") + qs(params),
-    stats: (params) => apiUrl("/api/issues/stats") + qs(params),
-    show: (id, params) => apiUrl(`/api/issues/${enc(id)}`) + qs(params),
-    create: (params) => apiUrl("/api/issues") + qs(params),
-    update: (id, params) => apiUrl(`/api/issues/${enc(id)}`) + qs(params),
-    remove: (id, params) => apiUrl(`/api/issues/${enc(id)}`) + qs(params),
-    status: (id, params) =>
-      apiUrl(`/api/issues/${enc(id)}/status`) + qs(params),
-    comments: (id, params) =>
-      apiUrl(`/api/issues/${enc(id)}/comments`) + qs(params),
-    dependencies: (id, params) =>
-      apiUrl(`/api/issues/${enc(id)}/dependencies`) + qs(params),
-    labels: (id, params) => apiUrl(`/api/issues/${enc(id)}/labels`) + qs(params),
-    labelsAll: (params) => apiUrl("/api/issues/labels") + qs(params),
-    cleanup: (params) => apiUrl("/api/issues/cleanup") + qs(params),
-    config: (params) => apiUrl("/api/issues/config") + qs(params),
-    upstream: (params) => apiUrl("/api/issues/upstream") + qs(params),
-    sync: (params) => apiUrl("/api/issues/sync") + qs(params),
-  },
+/** Returns the SDK endpoint registry for the live (apiPrefix, wsBaseUrl)
+ *  pair, rebuilding only when either has changed since the last call. */
+function currentRegistry() {
+  const apiPrefix = getApiPrefix();
+  const wsBaseUrl = currentWsBaseUrl();
+  const key = `${apiPrefix}\u0000${wsBaseUrl}`;
+  if (key !== _cachedKey) {
+    _cachedRegistry = createEndpoints({ baseUrl: "", apiPrefix }, { wsBaseUrl });
+    _cachedKey = key;
+  }
+  return _cachedRegistry;
+}
 
-  /** Beads database operations (schema migration, adopt, etc.). */
-  beads: {
-    migrate: () => apiUrl("/api/beads/migrate"),
-  },
+/** Lazily proxies each resource group so `endpoints.sessions.list()` always
+ *  resolves against the live prefix/origin at call time. */
+function groupProxy(group) {
+  return new Proxy(
+    {},
+    {
+      get(_target, prop) {
+        return currentRegistry()[group][prop];
+      },
+    },
+  );
+}
 
-  /** Session lifecycle and sub-resources. */
-  sessions: {
-    list: () => apiUrl("/api/sessions"),
-    running: () => apiUrl("/api/sessions/running"),
-    get: (id) => apiUrl(`/api/sessions/${enc(id)}`),
-    create: () => apiUrl("/api/sessions"),
-    update: (id) => apiUrl(`/api/sessions/${enc(id)}`),
-    remove: (id) => apiUrl(`/api/sessions/${enc(id)}`),
-    events: (id, params) =>
-      apiUrl(`/api/sessions/${enc(id)}/events`) + qs(params),
-    ws: (id) => wsUrl(`/api/sessions/${enc(id)}/ws`),
-    changes: (id) => apiUrl(`/api/sessions/${enc(id)}/changes`),
-    settings: (id) => apiUrl(`/api/sessions/${enc(id)}/settings`),
-    loop: (id) => apiUrl(`/api/sessions/${enc(id)}/loop`),
-    loopRunNow: (id) => apiUrl(`/api/sessions/${enc(id)}/loop/run-now`),
-    loopRestore: (id) => apiUrl(`/api/sessions/${enc(id)}/loop/restore`),
-    loopSuggestFromRecent: (id) =>
-      apiUrl(`/api/sessions/${enc(id)}/loop/suggest-from-recent`),
-    loopAcknowledgeStoppedReason: (id) =>
-      apiUrl(`/api/sessions/${enc(id)}/loop/acknowledge-stopped-reason`),
-    uiPromptAcknowledge: (id) =>
-      apiUrl(`/api/sessions/${enc(id)}/ui-prompt/acknowledge`),
-    flush: (id) => apiUrl(`/api/sessions/${enc(id)}/flush`),
-    callback: (id) => apiUrl(`/api/sessions/${enc(id)}/callback`),
-    userData: (id) => apiUrl(`/api/sessions/${enc(id)}/user-data`),
-    promptArgCache: (id, promptName) =>
-      apiUrl(`/api/sessions/${enc(id)}/prompt-arg-cache`) +
-      qs({ prompt: promptName }),
-    queue: (id) => apiUrl(`/api/sessions/${enc(id)}/queue`),
-    queueMsg: (id, msgId) =>
-      apiUrl(`/api/sessions/${enc(id)}/queue/${enc(msgId)}`),
-    queueMove: (id, msgId) =>
-      apiUrl(`/api/sessions/${enc(id)}/queue/${enc(msgId)}/move`),
-    images: (id) => apiUrl(`/api/sessions/${enc(id)}/images`),
-    image: (id, imageId) =>
-      apiUrl(`/api/sessions/${enc(id)}/images/${enc(imageId)}`),
-    imagesFromPath: (id) => apiUrl(`/api/sessions/${enc(id)}/images/from-path`),
-    files: (id) => apiUrl(`/api/sessions/${enc(id)}/files`),
-    filesFromPath: (id) => apiUrl(`/api/sessions/${enc(id)}/files/from-path`),
-  },
+// Resource groups mirror sdk/core/endpoints.js's registry shape exactly —
+// see that file for the actual path/query-building logic. Each group is a
+// lazy proxy so builder calls always resolve against the live prefix/origin.
+const GROUPS = [
+  "issues",
+  "beads",
+  "sessions",
+  "workspaces",
+  "workspacePrompts",
+  "workspaceFiles",
+  "workspaceDirs",
+  "folders",
+  "global",
+  "config",
+  "agents",
+  "acpServers",
+  "aux",
+  "runners",
+  "events",
+  "misc",
+];
 
-  /** Workspaces and their sub-resources. */
-  workspaces: {
-    list: (params) => apiUrl("/api/workspaces") + qs(params),
-    create: () => apiUrl("/api/workspaces"),
-    effectiveRunnerConfig: (uuid) =>
-      apiUrl(`/api/workspaces/${enc(uuid)}/effective-runner-config`),
-    metadata: (uuid) => apiUrl(`/api/workspaces/${enc(uuid)}/metadata`),
-    userDataSchema: (uuid) =>
-      apiUrl(`/api/workspaces/${enc(uuid)}/user-data-schema`),
-    mcpTools: (uuid, params) =>
-      apiUrl(`/api/workspaces/${enc(uuid)}/mcp-tools`) + qs(params),
-    mcpToolsInstall: (uuid) =>
-      apiUrl(`/api/workspaces/${enc(uuid)}/mcp-tools/install`),
-    mcpToolsRemove: (uuid) =>
-      apiUrl(`/api/workspaces/${enc(uuid)}/mcp-tools/remove`),
-    restartAcp: (uuid) => apiUrl(`/api/workspaces/${enc(uuid)}/restart-acp`),
-    acpStatus: (uuid) => apiUrl(`/api/workspaces/${enc(uuid)}/acp-status`),
-    processors: (uuid) => apiUrl(`/api/workspaces/${enc(uuid)}/processors`),
-    processor: (uuid, name) =>
-      apiUrl(`/api/workspaces/${enc(uuid)}/processors/${enc(name)}`),
-    processorArguments: (uuid, name) =>
-      apiUrl(`/api/workspaces/${enc(uuid)}/processors/${enc(name)}/arguments`),
-  },
-
-  /** Workspace-scoped prompt management. */
-  workspacePrompts: {
-    list: (params) => apiUrl("/api/workspace-prompts") + qs(params),
-    create: () => apiUrl("/api/workspace-prompts"),
-    get: (name, params) =>
-      apiUrl(`/api/workspace-prompts/${enc(name)}`) + qs(params),
-    update: (name, params) =>
-      apiUrl(`/api/workspace-prompts/${enc(name)}`) + qs(params),
-    remove: (name, params) =>
-      apiUrl(`/api/workspace-prompts/${enc(name)}`) + qs(params),
-    // mitto-x8v, mitto-47y.6.2: per-argument "remember last value" for prompt
-    // dialogs. sessionId is optional; when provided the server merges
-    // conversation-scoped values on top of folder-scoped values.
-    rememberedArgs: (workingDir, promptName, sessionId) =>
-      apiUrl("/api/workspace-prompts/remembered-args") +
-      qs({
-        working_dir: workingDir,
-        prompt: promptName,
-        session_id: sessionId,
-      }),
-  },
-
-  /** Workspace file listing — feeds the "filename" prompt parameter type. */
-  workspaceFiles: {
-    list: (params) => apiUrl("/api/workspace-files") + qs(params),
-  },
-
-  /** Workspace directory listing — feeds the "dirname" prompt parameter type. */
-  workspaceDirs: {
-    list: (params) => apiUrl("/api/workspace-dirs") + qs(params),
-  },
-
-  /** Folder-level settings (stored in folders.json, per-user). */
-  folders: {
-    shortcuts: (params) => apiUrl("/api/folders/shortcuts") + qs(params),
-    pin: (params) => apiUrl("/api/folders/pin") + qs(params),
-  },
-
-  /** Global settings (stored in settings.json). */
-  global: {
-    // Pass { include_prompts: true } to also receive the merged global prompts
-    // list (~750 KB) needed by the shortcuts editor. Read-only callers that
-    // only render existing sections must omit it — see mitto-r4t0.
-    shortcuts: (params) => apiUrl("/api/global/shortcuts") + qs(params),
-  },
-
-  /** Global server configuration. */
-  config: {
-    get: (params) => apiUrl("/api/config" + qs(params)),
-    update: () => apiUrl("/api/config"),
-  },
-
-  /** Agent discovery and metadata. */
-  agents: {
-    scan: () => apiUrl("/api/agents/scan"),
-    confirm: () => apiUrl("/api/agents/confirm"),
-    types: () => apiUrl("/api/agents/types"),
-  },
-
-  /** ACP server lifecycle operations (delete flow requires guided reassign). */
-  acpServers: {
-    prepareDelete: (name) =>
-      apiUrl(`/api/acp-servers/${enc(name)}/prepare-delete`),
-    reassignAndDelete: (name) =>
-      apiUrl(`/api/acp-servers/${enc(name)}/reassign-and-delete`),
-  },
-
-  /** Auxiliary AI operations (improve-prompt, etc.). */
-  aux: {
-    improvePrompt: () => apiUrl("/api/aux/improve-prompt"),
-  },
-
-  /** Runner and infrastructure metadata. */
-  runners: {
-    supported: () => apiUrl("/api/supported-runners"),
-    defaults: () => apiUrl("/api/runner-defaults"),
-  },
-
-  /** Global WebSocket event stream. */
-  events: {
-    ws: () => wsUrl("/api/events"),
-  },
-
-  /** Miscellaneous / top-level utility endpoints. */
-  misc: {
-    advancedFlags: () => apiUrl("/api/advanced-flags"),
-    externalStatus: () => apiUrl("/api/external-status"),
-    uiPreferences: () => apiUrl("/api/ui-preferences"),
-    csrfToken: () => apiUrl("/api/csrf-token"),
-    checkFileExists: (params) => apiUrl("/api/check-file-exists") + qs(params),
-    saveFileToPath: () => apiUrl("/api/save-file-to-path"),
-    dashboard: (params) => apiUrl("/api/dashboard") + qs(params),
-    dashboardTimeseries: (params) =>
-      apiUrl("/api/dashboard/timeseries") + qs(params),
-  },
-};
+export const endpoints = Object.fromEntries(
+  GROUPS.map((group) => [group, groupProxy(group)]),
+);

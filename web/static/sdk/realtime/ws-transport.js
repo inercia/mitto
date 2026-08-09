@@ -42,8 +42,9 @@ export function isReconnectLimitReached(attempt, options = {}) {
  * `options.wsBaseUrl` (e.g. "ws://host:1234"). `label` prefixes thrown
  * ConfigError messages so each caller's errors stay distinguishable (e.g.
  * "SessionStream: ..." vs "EventsStream: ...").
- * TODO(mitto-7gta.6): once endpoints.js is the canonical URL registry,
- * source this from there instead of hand-building it here.
+ * This stays the low-level primitive (mitto-7gta.6): core/endpoints.js's
+ * `sessions.ws()`/`events.ws()` builders are the named registry on top of
+ * it, delegating here rather than hand-building WebSocket URLs themselves.
  */
 export function wsUrlFor(config, path, options = {}, label = "MittoWsTransport") {
   const base = options.wsBaseUrl ?? config.baseUrl;

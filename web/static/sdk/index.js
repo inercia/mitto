@@ -6,6 +6,7 @@
  * may change without notice in any release.
  */
 import { resolveConfig } from "./core/config.js";
+import { createEndpoints } from "./core/endpoints.js";
 import {
   MittoError,
   ConfigError,
@@ -53,6 +54,10 @@ export function createClient(options = {}) {
   const config = resolveConfig(options);
   return {
     config,
+    // Deep-import `createEndpoints(config, { wsBaseUrl })` directly instead
+    // when `config.baseUrl` is relative and a ws(s):// URL is needed (e.g.
+    // a same-origin browser client) — this default has no wsBaseUrl.
+    endpoints: createEndpoints(config),
     sessionStream: (sessionId, streamOptions) =>
       createSessionStream(config, sessionId, streamOptions),
     eventsStream: (streamOptions) => createEventsStream(config, streamOptions),

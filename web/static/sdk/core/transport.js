@@ -11,8 +11,10 @@ import { MittoNetworkError, errorFromResponse } from "./errors.js";
 /** Build a query string from a params object, omitting null/undefined/""
  *  values. Array values emit repeated `key=v` params (one per element);
  *  empty arrays are "no filter" and omitted entirely. Ported from
- *  utils/endpoints.js's `qs()` so behavior stays byte-identical. */
-function qs(params) {
+ *  utils/endpoints.js's `qs()` so behavior stays byte-identical. Exported
+ *  (deep-import only, not re-exported from sdk/index.js) so core/endpoints.js
+ *  shares this single implementation instead of duplicating it. */
+export function qs(params) {
   if (!params) return "";
   const sp = new URLSearchParams();
   for (const [k, v] of Object.entries(params)) {
