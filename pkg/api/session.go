@@ -527,7 +527,14 @@ func (s *Session) readLoop() {
 			continue
 		}
 
+		// Close() may have run while the dial was in flight. Discard the
+		// fresh connection rather than installing one nobody will close.
 		s.mu.Lock()
+		if s.closed {
+			s.mu.Unlock()
+			_ = conn.Close()
+			return
+		}
 		s.conn = conn
 		s.mu.Unlock()
 		attempt = 0
