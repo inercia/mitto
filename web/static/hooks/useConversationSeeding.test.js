@@ -6,6 +6,7 @@ import {
   describe,
   test,
   expect,
+  beforeEach,
   afterEach,
   jest,
 } from "../utils/testing/testGlobals.js";
@@ -19,6 +20,8 @@ import {
   parseDurationToSeconds,
 } from "./useConversationSeeding.js";
 import { promptResolveAsLoop } from "../utils/prompts.js";
+import { fakeResponse } from "../sdk/testing/fake-server.js";
+import { _resetSdkClientForTests } from "../utils/sdkClient.js";
 
 // Provide a minimal window.preact stub so the module-level destructure doesn't throw.
 // Merge into any pre-existing window.preact rather than hard-assigning, so this file
@@ -41,6 +44,9 @@ if (typeof document === "undefined") {
 
 afterEach(() => {
   jest.restoreAllMocks();
+  _resetSdkClientForTests();
+  delete window.mittoApiPrefix;
+  window.mittoApiPrefix = "";
 });
 
 // =============================================================================
@@ -1612,5 +1618,205 @@ describe("makeLoopNow — freshContext / runOnStart / coalesceDuringBusy", () =>
     expect(body).not.toHaveProperty("fresh_context");
     expect(body).not.toHaveProperty("run_on_start");
     expect(body).not.toHaveProperty("coalesce_during_busy");
+  });
+});
+
+// =============================================================================
+// SDK default path (mitto-7gta.17 slice S8) — makeLoopNow,
+// seedConversationWithPrompt, configureLoopSchedule WITHOUT `fetchImpl`.
+// Every other describe block above pins the `fetchImpl`-injected branch;
+// these pin the new default branch added in S8 (getSdkClient().sessions.*),
+// via global.fetch + the shared fakeResponse fixture (mirrors
+// useLinkedBeadPhase.test.js's approach for the same reason: sdk/core/
+// transport.js's decodeBody() calls response.text()/headers.get(), which a
+// hand-rolled {ok,status,json} mock does not provide).
+// =============================================================================
+
+describe("makeLoopNow — SDK default path (no fetchImpl)", () => {
+  const prompt = {
+    name: "daily-standup",
+    loop: { schedule: { value: 1, unit: "hours" }, maxIterations: 5 },
+  };
+
+  let originalFetch;
+  beforeEach(() => {
+    originalFetch = global.fetch;
+    // Pre-seed a CSRF cookie so browserCookieAuth's authorize() never needs
+    // its own network round trip through the mocked fetch below (mirrors
+    // useWSQueue.test.js).
+    document.cookie = "mitto_csrf=test-token";
+  });
+  afterEach(() => {
+    global.fetch = originalFetch;
+    document.cookie =
+      "mitto_csrf=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT";
+  });
+
+  test("PUTs loop config then POSTs run-now via the SDK client, returns success:true", async () => {
+    const calls = [];
+    global.fetch = jest.fn((url, opts) => {
+      calls.push({ url: String(url), method: opts?.method });
+      return Promise.resolve(fakeResponse({ status: 200, body: {} }));
+    });
+
+    const result = await makeLoopNow("sess-1", prompt);
+
+    expect(result).toEqual({ success: true });
+    expect(calls).toHaveLength(2);
+    expect(calls[0].url).toContain("/api/sessions/sess-1/loop");
+    expect(calls[0].method).toBe("PUT");
+    expect(calls[1].url).toContain("/api/sessions/sess-1/loop/run-now");
+    expect(calls[1].method).toBe("POST");
+  });
+
+  test("PUT failure: returns success:false with the server's error code, does not call run-now", async () => {
+    global.fetch = jest.fn(() =>
+      Promise.resolve(
+        fakeResponse({ status: 500, body: { error: "server_error" } }),
+      ),
+    );
+
+    const result = await makeLoopNow("sess-2", prompt);
+
+    expect(result.success).toBe(false);
+    expect(result.error).toBeDefined();
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  test("run-now 409 after a successful PUT: treated as success (session already running)", async () => {
+    let call = 0;
+    global.fetch = jest.fn(() => {
+      call += 1;
+      if (call === 1)
+        return Promise.resolve(fakeResponse({ status: 200, body: {} }));
+      return Promise.resolve(
+        fakeResponse({ status: 409, body: { error: "busy" } }),
+      );
+    });
+
+    const result = await makeLoopNow("sess-3", prompt);
+
+    expect(result).toEqual({ success: true });
+  });
+
+  test("network failure on PUT: returns success:false with loop_setup_failed", async () => {
+    global.fetch = jest.fn(() => Promise.reject(new Error("offline")));
+
+    const result = await makeLoopNow("sess-4", prompt);
+
+    expect(result).toEqual({ success: false, error: "loop_setup_failed" });
+  });
+});
+
+describe("seedConversationWithPrompt — SDK default path (no fetchImpl)", () => {
+  const prompt = { name: "test-prompt", prompt: "FULL BODY TEXT" };
+
+  let originalFetch;
+  beforeEach(() => {
+    originalFetch = global.fetch;
+    document.cookie = "mitto_csrf=test-token";
+  });
+  afterEach(() => {
+    global.fetch = originalFetch;
+    document.cookie =
+      "mitto_csrf=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT";
+  });
+
+  test("POSTs to the queue via the SDK client and returns the new message id", async () => {
+    global.fetch = jest.fn(() =>
+      Promise.resolve(fakeResponse({ status: 201, body: { id: "msg-abc" } })),
+    );
+
+    const result = await seedConversationWithPrompt("sess-1", prompt);
+
+    expect(result).toEqual({ success: true, messageId: "msg-abc" });
+    const [url, opts] = global.fetch.mock.calls[0];
+    expect(String(url)).toContain("/api/sessions/sess-1/queue");
+    expect(opts.method).toBe("POST");
+    const sentBody = JSON.parse(opts.body);
+    expect(sentBody.prompt_name).toBe("test-prompt");
+    expect(sentBody).not.toHaveProperty("message");
+  });
+
+  test("non-ok response: returns success:false with the server's error code", async () => {
+    global.fetch = jest.fn(() =>
+      Promise.resolve(
+        fakeResponse({ status: 400, body: { error: "bad_request" } }),
+      ),
+    );
+
+    const result = await seedConversationWithPrompt("sess-1", prompt);
+
+    expect(result.success).toBe(false);
+    expect(result.error).toBe("bad_request");
+  });
+
+  test("network failure: returns success:false with request_failed", async () => {
+    global.fetch = jest.fn(() => Promise.reject(new Error("network failure")));
+
+    const result = await seedConversationWithPrompt("sess-1", prompt);
+
+    expect(result).toEqual({ success: false, error: "request_failed" });
+  });
+});
+
+describe("configureLoopSchedule — SDK default path (no fetchImpl)", () => {
+  const prompt = { name: "daily-standup" };
+
+  let originalFetch;
+  beforeEach(() => {
+    originalFetch = global.fetch;
+    document.cookie = "mitto_csrf=test-token";
+  });
+  afterEach(() => {
+    global.fetch = originalFetch;
+    document.cookie =
+      "mitto_csrf=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT";
+  });
+
+  test("PUTs the loop config via the SDK client and returns success:true", async () => {
+    global.fetch = jest.fn(() =>
+      Promise.resolve(fakeResponse({ status: 200, body: {} })),
+    );
+
+    const result = await configureLoopSchedule("sess-1", prompt, {
+      value: 2,
+      unit: "hours",
+    });
+
+    expect(result).toEqual({ success: true });
+    const [url, opts] = global.fetch.mock.calls[0];
+    expect(String(url)).toContain("/api/sessions/sess-1/loop");
+    expect(opts.method).toBe("PUT");
+    const body = JSON.parse(opts.body);
+    expect(body.prompt_name).toBe("daily-standup");
+    expect(body.frequency).toEqual({ value: 2, unit: "hours" });
+  });
+
+  test("non-ok response: returns success:false with loop_setup_failed", async () => {
+    global.fetch = jest.fn(() =>
+      Promise.resolve(
+        fakeResponse({ status: 400, body: { error: "bad_request" } }),
+      ),
+    );
+
+    const result = await configureLoopSchedule("sess-1", prompt, {
+      value: 1,
+      unit: "hours",
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toBeDefined();
+  });
+
+  test("network failure: returns success:false with loop_setup_failed", async () => {
+    global.fetch = jest.fn(() => Promise.reject(new Error("net fail")));
+
+    const result = await configureLoopSchedule("sess-1", prompt, {
+      value: 1,
+      unit: "hours",
+    });
+
+    expect(result).toEqual({ success: false, error: "loop_setup_failed" });
   });
 });

@@ -4,6 +4,16 @@
 
 import { mockFn } from "./testing/mockFn.js";
 import {
+  describe,
+  test,
+  expect,
+  beforeEach,
+  afterEach,
+  jest,
+} from "./testing/testGlobals.js";
+import { fakeResponse } from "../sdk/testing/fake-server.js";
+import { _resetSdkClientForTests } from "./sdkClient.js";
+import {
   promptMenus,
   promptMenuExcludes,
   promptMenuIncludes,
@@ -1016,6 +1026,56 @@ describe("fetchCachedParamNames", () => {
       json: async () => ({ prompt: "x" }),
     });
     const result = await fetchCachedParamNames("sess-1", "x", { fetchImpl });
+    expect(result).toEqual(new Set());
+  });
+});
+
+// =============================================================================
+// fetchCachedParamNames — SDK default path (mitto-7gta.17 slice S8, no
+// fetchImpl). Every test above pins the injected fetchImpl branch; these pin
+// the getSdkClient().sessions.promptArgCache() default branch, via
+// global.fetch + the shared fakeResponse fixture (mirrors
+// useLinkedBeadPhase.test.js: sdk/core/transport.js's decodeBody() calls
+// response.text()/headers.get(), which a hand-rolled {ok,status,json} mock
+// does not provide).
+// =============================================================================
+
+describe("fetchCachedParamNames — SDK default path (no fetchImpl)", () => {
+  let originalFetch;
+  beforeEach(() => {
+    originalFetch = global.fetch;
+  });
+  afterEach(() => {
+    global.fetch = originalFetch;
+    _resetSdkClientForTests();
+  });
+
+  test("returns Set with cached names via the SDK client on a 200 response", async () => {
+    global.fetch = jest.fn(() =>
+      Promise.resolve(
+        fakeResponse({ status: 200, body: { cached: ["A", "B"] } }),
+      ),
+    );
+    const result = await fetchCachedParamNames("sess-1", "my-prompt");
+    expect(result).toEqual(new Set(["A", "B"]));
+    const [url] = global.fetch.mock.calls[0];
+    expect(String(url)).toContain("/prompt-arg-cache");
+    expect(String(url)).toContain("prompt=my-prompt");
+  });
+
+  test("returns empty Set (no throw) when the SDK call rejects with a non-2xx status", async () => {
+    global.fetch = jest.fn(() =>
+      Promise.resolve(
+        fakeResponse({ status: 404, body: { error: "not_found" } }),
+      ),
+    );
+    const result = await fetchCachedParamNames("sess-1", "my-prompt");
+    expect(result).toEqual(new Set());
+  });
+
+  test("returns empty Set (no throw) on a network failure", async () => {
+    global.fetch = jest.fn(() => Promise.reject(new Error("offline")));
+    const result = await fetchCachedParamNames("sess-1", "my-prompt");
     expect(result).toEqual(new Set());
   });
 });
