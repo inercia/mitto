@@ -30,6 +30,57 @@ describe("acpServers resource", () => {
     expect(calls[0].init.headers["Content-Type"]).toBe("application/json");
   });
 
+  test("reassignAndDelete(name, body) resolves with the reassignment summary", async () => {
+    const { acpServers, respondWith } = mk();
+    const summary = {
+      server: "srv",
+      reassigned_workspaces: ["w1"],
+      reassigned_conversation_count: 1,
+      deleted_conversation_count: 0,
+      reassigned_workspace_count: 1,
+      deleted_workspace_count: 0,
+    };
+    respondWith(() => fakeResponse({ body: summary }));
+    const result = await acpServers.reassignAndDelete("srv", { folders: {} });
+    expect(result).toEqual(summary);
+  });
+
+  test("reassignAndDelete surfaces a 409 (active_session_ids) as MittoApiError when active conversations block deletion", async () => {
+    const { acpServers, respondWith } = mk();
+    respondWith(() =>
+      fakeResponse({
+        status: 409,
+        body: {
+          error: {
+            code: "conflict",
+            message: "Cannot delete server: active conversations are using it",
+            details: { active_session_ids: ["c1", "c2"] },
+          },
+        },
+      }),
+    );
+    let caught;
+    try {
+      await acpServers.reassignAndDelete("srv", { folders: {} });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(MittoApiError);
+    expect(caught.status).toBe(409);
+    expect(caught.details).toEqual({ active_session_ids: ["c1", "c2"] });
+  });
+
+  test("reassignAndDelete surfaces a 403 as MittoApiError when the config is read-only", async () => {
+    const { acpServers, respondWith } = mk();
+    respondWith(() =>
+      fakeResponse({
+        status: 403,
+        body: { error: { code: "forbidden", message: "Configuration is read-only (loaded from config file)" } },
+      }),
+    );
+    await expect(acpServers.reassignAndDelete("srv", { folders: {} })).rejects.toThrow(MittoApiError);
+  });
+
   describe("cross-cutting concerns", () => {
     test("a non-2xx response surfaces a MittoApiError", async () => {
       const { acpServers, respondWith } = mk();

@@ -5,7 +5,7 @@
  * `config.fetch` stub — never global fetch.
  */
 import { MittoApiError } from "../core/errors.js";
-import { fakeResponse, resourceMounter } from "../testing/fake-server.js";
+import { apiFailure, fakeResponse, resourceMounter } from "../testing/fake-server.js";
 import { createWorkspacesResource } from "./workspaces.js";
 
 const mk = resourceMounter((config) => ({ workspaces: createWorkspacesResource(config) }));
@@ -26,14 +26,25 @@ describe("workspaces resource", () => {
     expect(calls[0].url).toBe("/api/workspaces?working_dir=%2Ftmp%2Fws");
   });
 
-  test("create(body) POSTs JSON to /api/workspaces", async () => {
-    const { workspaces, calls } = mk();
+  test("create(body) POSTs JSON to /api/workspaces and resolves with the 201 body", async () => {
+    const { workspaces, calls, respondWith } = mk();
     const body = { acp_server: "auggie", working_dir: "/tmp/ws", name: "n" };
-    await workspaces.create(body);
+    const created = { ...body, uuid: "u1", color: "", code: "" };
+    respondWith(() => fakeResponse({ status: 201, body: created }));
+    const result = await workspaces.create(body);
     expect(calls[0].url).toBe("/api/workspaces");
     expect(calls[0].init.method).toBe("POST");
     expect(calls[0].init.body).toBe(JSON.stringify(body));
     expect(calls[0].init.headers["Content-Type"]).toBe("application/json");
+    expect(result).toEqual(created);
+  });
+
+  test("create(body) surfaces a 409 (workspace already exists) as MittoApiError", async () => {
+    const { workspaces, respondWith } = mk();
+    respondWith(apiFailure(409, "conflict", "Workspace already exists for directory: /tmp/ws"));
+    await expect(workspaces.create({ acp_server: "auggie", working_dir: "/tmp/ws" })).rejects.toThrow(
+      MittoApiError,
+    );
   });
 
   test("remove(uuid) DELETEs /api/workspaces?uuid=..., encoding special chars", async () => {
@@ -44,6 +55,32 @@ describe("workspaces resource", () => {
     // encodeURIComponent()-based path-segment encoding used elsewhere.
     expect(calls[0].url).toBe("/api/workspaces?uuid=uuid+a%2Fb");
     expect(calls[0].init.method).toBe("DELETE");
+  });
+
+  test("remove(uuid) surfaces a 409 conflict (conversation_count) as MittoApiError when conversations still use it", async () => {
+    const { workspaces, respondWith } = mk();
+    respondWith(() =>
+      fakeResponse({
+        status: 409,
+        body: {
+          error: {
+            code: "conflict",
+            message: "Cannot delete workspace: 2 conversation(s) are using it",
+            details: { conversation_count: 2 },
+          },
+        },
+      }),
+    );
+    let caught;
+    try {
+      await workspaces.remove("u1");
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(MittoApiError);
+    expect(caught.status).toBe(409);
+    expect(caught.code).toBe("conflict");
+    expect(caught.details).toEqual({ conversation_count: 2 });
   });
 
   test("getMetadata(uuid) calls GET /api/workspaces/{uuid}/metadata", async () => {
