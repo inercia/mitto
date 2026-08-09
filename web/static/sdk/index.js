@@ -45,6 +45,9 @@ import { createProcessorsResource } from "./resources/processors.js";
 import { createShortcutsResource } from "./resources/shortcuts.js";
 import { createConfigResource } from "./resources/config.js";
 import { createIssuesResource, withIssueCaches } from "./resources/issues.js";
+import { createFilesResource } from "./resources/files.js";
+import { createDashboardResource } from "./resources/dashboard.js";
+import { createMiscResource } from "./resources/misc.js";
 import { createTtlCache, keyForParams } from "./cache/ttl-cache.js";
 
 /**
@@ -59,13 +62,15 @@ export const VERSION = "0.3.0";
  */
 export function createClient(options = {}) {
   const config = resolveConfig(options);
+  const sessions = createSessionsResource(config);
+  const serverConfig = createConfigResource(config);
   return {
     config,
     // Deep-import `createEndpoints(config, { wsBaseUrl })` directly instead
     // when `config.baseUrl` is relative and a ws(s):// URL is needed (e.g.
     // a same-origin browser client) — this default has no wsBaseUrl.
     endpoints: createEndpoints(config),
-    sessions: createSessionsResource(config),
+    sessions,
     prompts: createPromptsResource(config),
     processors: createProcessorsResource(config),
     shortcuts: createShortcutsResource(config),
@@ -73,7 +78,16 @@ export function createClient(options = {}) {
     // Named `serverConfig`, not `config`, because `client.config` is already
     // the resolved internal SDK config object (see `config` above and
     // utils/sdkClient.js's `getSdkClient().config.storage` call site).
-    serverConfig: createConfigResource(config),
+    serverConfig,
+    files: createFilesResource(config),
+    // Thin alias, not a new module (mitto-7gta.12 plan, decision 1): avoids
+    // a duplicate implementation of the session-scoped images surface
+    // already built in resources/sessions.js (mitto-7gta.7).
+    images: sessions.images,
+    dashboard: createDashboardResource(config),
+    // Delegates its discovery methods to `serverConfig` (mitto-7gta.10) —
+    // same function objects, see resources/misc.js's header comment.
+    misc: createMiscResource(config, serverConfig),
     sessionStream: (sessionId, streamOptions) =>
       createSessionStream(config, sessionId, streamOptions),
     eventsStream: (streamOptions) => createEventsStream(config, streamOptions),

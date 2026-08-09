@@ -94,6 +94,43 @@ describe("createClient() wiring (mitto-7gta.10)", () => {
     expect(a.prompts).not.toBe(b.prompts);
     expect(a.serverConfig).not.toBe(b.serverConfig);
   });
+
+  test("exposes client.files with the full resource surface (mitto-7gta.12)", () => {
+    const client = createClient({ fetch: noopFetch });
+    expect(typeof client.files.list).toBe("function");
+    expect(typeof client.files.upload).toBe("function");
+    expect(typeof client.files.uploadFromPath).toBe("function");
+    expect(typeof client.files.url).toBe("function");
+    expect(typeof client.files.fetchFile).toBe("function");
+    expect(typeof client.files.remove).toBe("function");
+    expect(typeof client.files.contentUrl).toBe("function");
+    expect(typeof client.files.fetchContent).toBe("function");
+  });
+
+  test("client.images is a thin alias of client.sessions.images, not a separate implementation (mitto-7gta.12)", () => {
+    const client = createClient({ fetch: noopFetch });
+    expect(client.images).toBe(client.sessions.images);
+  });
+
+  test("exposes client.dashboard with the full resource surface (mitto-7gta.12)", () => {
+    const client = createClient({ fetch: noopFetch });
+    expect(typeof client.dashboard.summary).toBe("function");
+    expect(typeof client.dashboard.timeseries).toBe("function");
+  });
+
+  test("exposes client.misc with the full resource surface, delegating discovery endpoints to client.serverConfig (mitto-7gta.12)", () => {
+    const client = createClient({ fetch: noopFetch });
+    expect(typeof client.misc.uiPreferences.get).toBe("function");
+    expect(typeof client.misc.uiPreferences.save).toBe("function");
+    expect(typeof client.misc.csrfToken).toBe("function");
+    expect(typeof client.misc.checkFileExists).toBe("function");
+    expect(typeof client.misc.saveFileToPath).toBe("function");
+    expect(typeof client.misc.improvePrompt).toBe("function");
+    expect(client.misc.advancedFlags).toBe(client.serverConfig.advancedFlags);
+    expect(client.misc.externalStatus).toBe(client.serverConfig.externalStatus);
+    expect(client.misc.supportedRunners).toBe(client.serverConfig.supportedRunners);
+    expect(client.misc.runnerDefaults).toBe(client.serverConfig.runnerDefaults);
+  });
 });
 
 describe("createTtlCache / keyForParams public export (mitto-7gta.10)", () => {
