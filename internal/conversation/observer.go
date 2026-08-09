@@ -99,7 +99,10 @@ type AgentWorkingObserver interface {
 type SessionObserver interface {
 	// OnAgentMessage is called when the agent sends a message chunk (HTML).
 	// seq is the sequence number for this logical message (chunks of the same message share the same seq).
-	OnAgentMessage(seq int64, html string)
+	// markdown is the raw pre-conversion markdown for this chunk, when available
+	// (mitto-pscc.3); it may be empty for chunks that did not originate from the
+	// markdown buffer.
+	OnAgentMessage(seq int64, html, markdown string)
 
 	// OnAgentThought is called when the agent sends a thought chunk (plain text).
 	// seq is the sequence number for this logical thought (chunks share the same seq).

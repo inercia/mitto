@@ -197,7 +197,7 @@ func (r *callbackRecorderObserver) record(s string) {
 	r.deps.mu.Unlock()
 }
 
-func (r *callbackRecorderObserver) OnAgentMessage(seq int64, _ string) {
+func (r *callbackRecorderObserver) OnAgentMessage(seq int64, _, _ string) {
 	r.record("agent_message:" + strconv.FormatInt(seq, 10))
 }
 func (r *callbackRecorderObserver) OnAgentThought(seq int64, _ string) {
@@ -245,7 +245,7 @@ func TestCallbackSink_ClosedShortCircuits(t *testing.T) {
 	s := acpCallbackSink{}
 	d := &fakeCallbackDeps{closed: true}
 
-	s.onAgentMessage(d, 1, "x")
+	s.onAgentMessage(d, 1, "x", "x")
 	s.onAgentThought(d, 1, "x")
 	s.onToolCall(d, 1, "i", "t", "s")
 	s.onToolUpdate(d, 1, "i", nil)
@@ -269,7 +269,7 @@ func TestCallbackSink_StreamCallbacksRecordAndNotify(t *testing.T) {
 	d := &fakeCallbackDeps{}
 
 	status := "ok"
-	s.onAgentMessage(d, 1, "<p>hi</p>")
+	s.onAgentMessage(d, 1, "<p>hi</p>", "hi")
 	s.onAgentThought(d, 2, "thinking")
 	s.onToolCall(d, 3, "tc1", "title", "running")
 	s.onToolUpdate(d, 4, "tc1", &status)
@@ -589,7 +589,7 @@ func TestACPCallbackSink_SuppressionShortCircuits_StreamingCallbacks(t *testing.
 
 	status := "running"
 	s.onContextUsageUpdate(d, 1000, 500)
-	s.onAgentMessage(d, 1, "<p>hi</p>")
+	s.onAgentMessage(d, 1, "<p>hi</p>", "hi")
 	s.onAgentThought(d, 2, "thinking")
 	s.onToolCall(d, 3, "tc1", "title", "running")
 	s.onToolUpdate(d, 4, "tc1", &status)

@@ -15,7 +15,7 @@ import (
 func TestNewWebClient(t *testing.T) {
 	client := NewWebClient(WebClientConfig{
 		AutoApprove: true,
-		OnAgentMessage: func(seq int64, html string) {
+		OnAgentMessage: func(seq int64, html, markdown string) {
 			// callback for testing
 		},
 	})
@@ -41,7 +41,7 @@ func TestWebClient_SessionUpdate_AgentMessageChunk(t *testing.T) {
 	var mu sync.Mutex
 
 	client := NewWebClient(WebClientConfig{
-		OnAgentMessage: func(seq int64, html string) {
+		OnAgentMessage: func(seq int64, html, markdown string) {
 			mu.Lock()
 			messages = append(messages, html)
 			mu.Unlock()
@@ -471,7 +471,7 @@ func TestWebClient_FlushMarkdown(t *testing.T) {
 	var mu sync.Mutex
 
 	client := NewWebClient(WebClientConfig{
-		OnAgentMessage: func(seq int64, html string) {
+		OnAgentMessage: func(seq int64, html, markdown string) {
 			mu.Lock()
 			messages = append(messages, html)
 			mu.Unlock()
@@ -562,7 +562,7 @@ func TestWebClient_ToolCallFlushesBufferedMessage(t *testing.T) {
 	seqCounter := int64(0)
 	client := NewWebClient(WebClientConfig{
 		SeqProvider: &testSeqProvider{counter: &seqCounter},
-		OnAgentMessage: func(seq int64, html string) {
+		OnAgentMessage: func(seq int64, html, markdown string) {
 			mu.Lock()
 			events = append(events, "message:"+html)
 			seqs = append(seqs, seq)

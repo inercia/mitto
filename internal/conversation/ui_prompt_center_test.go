@@ -110,7 +110,7 @@ func (r *promptRecorderObserver) OnUIPromptDismiss(id, reason string) {
 	r.record("dismiss:" + id + ":" + reason)
 }
 func (r *promptRecorderObserver) OnNotification(req UINotifyRequest)            { r.record("notify") }
-func (r *promptRecorderObserver) OnAgentMessage(int64, string)                  {}
+func (r *promptRecorderObserver) OnAgentMessage(int64, string, string)          {}
 func (r *promptRecorderObserver) OnAgentThought(int64, string)                  {}
 func (r *promptRecorderObserver) OnToolCall(int64, string, string, string)      {}
 func (r *promptRecorderObserver) OnToolUpdate(int64, string, *string)           {}

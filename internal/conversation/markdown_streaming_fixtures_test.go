@@ -79,7 +79,7 @@ func streamFixture(t *testing.T, content string, opts ...streamOption) Streaming
 	var results []string
 	var mu sync.Mutex
 
-	buffer := NewMarkdownBuffer(func(html string) {
+	buffer := NewMarkdownBuffer(func(html, markdown string) {
 		mu.Lock()
 		results = append(results, html)
 		mu.Unlock()
@@ -340,7 +340,7 @@ func TestStreamingFixtures_CodeBlockWithInactivityTimeout(t *testing.T) {
 	var results []string
 	var mu sync.Mutex
 
-	buffer := NewMarkdownBuffer(func(html string) {
+	buffer := NewMarkdownBuffer(func(html, markdown string) {
 		mu.Lock()
 		results = append(results, html)
 		mu.Unlock()
@@ -395,7 +395,7 @@ func TestStreamingFixtures_ListUnmatchedBold_NoPrematureFlush(t *testing.T) {
 	var results []string
 	var mu sync.Mutex
 
-	buffer := NewMarkdownBuffer(func(html string) {
+	buffer := NewMarkdownBuffer(func(html, markdown string) {
 		mu.Lock()
 		results = append(results, html)
 		mu.Unlock()
@@ -462,7 +462,7 @@ func TestStreamingFixtures_ToolCallDuringCodeBlock(t *testing.T) {
 	seqCounter := int64(0)
 	client := NewWebClient(WebClientConfig{
 		SeqProvider: &testSeqProvider{counter: &seqCounter},
-		OnAgentMessage: func(seq int64, html string) {
+		OnAgentMessage: func(seq int64, html, markdown string) {
 			mu.Lock()
 			messageResults = append(messageResults, html)
 			mu.Unlock()
@@ -637,7 +637,7 @@ func TestStreamingFixtures_SoftTimeoutRespectsBlocks(t *testing.T) {
 			var results []string
 			var mu sync.Mutex
 
-			buffer := NewMarkdownBuffer(func(html string) {
+			buffer := NewMarkdownBuffer(func(html, markdown string) {
 				mu.Lock()
 				results = append(results, html)
 				mu.Unlock()
@@ -711,7 +711,7 @@ func TestStreamingFixtures_ParagraphThenList(t *testing.T) {
 	var results []string
 	var mu sync.Mutex
 
-	buffer := NewMarkdownBuffer(func(html string) {
+	buffer := NewMarkdownBuffer(func(html, markdown string) {
 		mu.Lock()
 		results = append(results, html)
 		mu.Unlock()
@@ -785,7 +785,7 @@ func TestStreamingFixtures_ListItemWithParentheses(t *testing.T) {
 	var results []string
 	var mu sync.Mutex
 
-	buffer := NewMarkdownBuffer(func(html string) {
+	buffer := NewMarkdownBuffer(func(html, markdown string) {
 		mu.Lock()
 		results = append(results, html)
 		mu.Unlock()
@@ -853,7 +853,7 @@ func TestStreamingFixtures_ListItemSplitByBlankLine(t *testing.T) {
 	var results []string
 	var mu sync.Mutex
 
-	buffer := NewMarkdownBuffer(func(html string) {
+	buffer := NewMarkdownBuffer(func(html, markdown string) {
 		mu.Lock()
 		results = append(results, html)
 		mu.Unlock()
@@ -919,7 +919,7 @@ func TestStreamingFixtures_ListItemWithCodeAndParens(t *testing.T) {
 	var results []string
 	var mu sync.Mutex
 
-	buffer := NewMarkdownBuffer(func(html string) {
+	buffer := NewMarkdownBuffer(func(html, markdown string) {
 		mu.Lock()
 		results = append(results, html)
 		mu.Unlock()
@@ -1043,7 +1043,7 @@ func TestStreamingFixtures_ListSplitAtApostrophe(t *testing.T) {
 	var mu sync.Mutex
 	var seqCounter int64
 
-	buffer := NewMarkdownBuffer(func(html string) {
+	buffer := NewMarkdownBuffer(func(html, markdown string) {
 		mu.Lock()
 		seqCounter++
 		results = append(results, html)
@@ -1148,7 +1148,7 @@ func TestStreamingFixtures_UnmatchedFormattingRecovery(t *testing.T) {
 			var results []string
 			var mu sync.Mutex
 
-			buffer := NewMarkdownBuffer(func(html string) {
+			buffer := NewMarkdownBuffer(func(html, markdown string) {
 				mu.Lock()
 				results = append(results, html)
 				mu.Unlock()

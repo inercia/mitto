@@ -166,7 +166,7 @@ func (acpCallbackSink) onContextUsageUpdate(d acpCallbackDeps, size, used int) {
 
 // --- Stream callbacks ---
 
-func (acpCallbackSink) onAgentMessage(d acpCallbackDeps, seq int64, html string) {
+func (acpCallbackSink) onAgentMessage(d acpCallbackDeps, seq int64, html, markdown string) {
 	if d.cbIsClosed() || d.cbStreamingSuppressed() {
 		return
 	}
@@ -178,7 +178,7 @@ func (acpCallbackSink) onAgentMessage(d acpCallbackDeps, seq int64, html string)
 		Seq:       seq,
 		Type:      session.EventTypeAgentMessage,
 		Timestamp: time.Now(),
-		Data:      session.AgentMessageData{Text: html},
+		Data:      session.AgentMessageData{Text: html, Markdown: markdown},
 	}, "agent message")
 
 	// Notify all observers
@@ -207,7 +207,7 @@ func (acpCallbackSink) onAgentMessage(d acpCallbackDeps, seq int64, html string)
 	}
 
 	d.cbNotifyObservers(func(o SessionObserver) {
-		o.OnAgentMessage(seq, html)
+		o.OnAgentMessage(seq, html, markdown)
 	})
 }
 

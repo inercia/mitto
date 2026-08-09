@@ -63,7 +63,7 @@ type WebClientConfig struct {
 	// When set to DEBUG level, logs timing of events from ACP SDK.
 	Logger *slog.Logger
 	// Callbacks for different event types (all include seq for ordering)
-	OnAgentMessage       func(seq int64, html string)
+	OnAgentMessage       func(seq int64, html, markdown string)
 	OnAgentThought       func(seq int64, text string)
 	OnToolCall           func(seq int64, id, title, status string)
 	OnToolUpdate         func(seq int64, id string, status *string)

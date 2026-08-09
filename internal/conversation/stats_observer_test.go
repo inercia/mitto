@@ -121,7 +121,7 @@ func TestStatsObserver_AgentMessageAndThought_ProduceOutputTokens(t *testing.T) 
 
 	// A prompt has to arrive first so the aggregator's turn-heuristic has a
 	// session accumulator, but that is not strictly required — cover both.
-	obs.OnAgentMessage(1, "hello from the agent")            // 20 chars → 5 tokens
+	obs.OnAgentMessage(1, "hello from the agent", "")        // 20 chars → 5 tokens
 	obs.OnAgentThought(2, "let me think about this problem") // 32 chars → 8 tokens
 
 	if err := agg.Flush(context.Background()); err != nil {
@@ -152,7 +152,7 @@ func TestStatsObserver_NilReceiver_MethodsSafe(t *testing.T) {
 	// If any of these panic, the test fails; there is no assertion beyond
 	// "did not panic".
 	obs.OnUserPrompt(1, "s", "p", "hi", nil, nil, "", 0, nil)
-	obs.OnAgentMessage(2, "text")
+	obs.OnAgentMessage(2, "text", "")
 	obs.OnAgentThought(3, "thought")
 	obs.OnToolCall(4, "id", "title", "status")
 	obs.OnError("boom")
@@ -244,12 +244,12 @@ func TestStatsObserver_OnSessionChange_ForwardsModel(t *testing.T) {
 
 	// Under baseline modelA.
 	obs.OnUserPrompt(1, "sender", "pid", "abcd", nil, nil, "", 0, nil)
-	obs.OnAgentMessage(2, "hello agent")
+	obs.OnAgentMessage(2, "hello agent", "")
 	// Switch to modelB.
 	obs.OnSessionChange(3, session.SessionChangeData{Kind: "model", Value: "modelB", PreviousValue: "modelA"})
 	// Under modelB.
 	obs.OnUserPrompt(4, "sender", "pid", "efgh", nil, nil, "", 0, nil)
-	obs.OnAgentMessage(5, "reply under B")
+	obs.OnAgentMessage(5, "reply under B", "")
 
 	if err := agg.Flush(context.Background()); err != nil {
 		t.Fatalf("Flush: %v", err)

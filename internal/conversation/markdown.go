@@ -50,7 +50,7 @@ type MarkdownBuffer struct {
 	mu              sync.Mutex
 	buffer          strings.Builder
 	converter       *conversion.Converter
-	onFlush         func(html string)
+	onFlush         func(html, markdown string)
 	flushTimer      *time.Timer // Soft timeout (respects block boundaries)
 	inactivityTimer *time.Timer // Hard timeout (forces flush regardless of state)
 	flushTimeout    time.Duration
@@ -63,8 +63,10 @@ type MarkdownBuffer struct {
 // MarkdownBufferConfig holds configuration for creating a MarkdownBuffer.
 type MarkdownBufferConfig struct {
 	// OnFlush is called when HTML content is ready to be sent.
+	// markdown is the raw pre-conversion markdown (post-joinListItemContinuations)
+	// for the same flush, so callers can persist it alongside the HTML (mitto-pscc.3).
 	// The caller is responsible for assigning sequence numbers.
-	OnFlush func(html string)
+	OnFlush func(html, markdown string)
 	// FileLinksConfig configures file path detection and linking.
 	// If nil, file linking is disabled.
 	FileLinksConfig *conversion.FileLinkerConfig
@@ -72,7 +74,7 @@ type MarkdownBufferConfig struct {
 
 // NewMarkdownBuffer creates a new streaming Markdown buffer.
 // Deprecated: Use NewMarkdownBufferWithConfig instead.
-func NewMarkdownBuffer(onFlush func(html string)) *MarkdownBuffer {
+func NewMarkdownBuffer(onFlush func(html, markdown string)) *MarkdownBuffer {
 	return &MarkdownBuffer{
 		converter:    conversion.DefaultConverter(),
 		onFlush:      onFlush,
@@ -410,7 +412,7 @@ func (mb *MarkdownBuffer) flushLocked() {
 		log.Debug("markdown_buffer_flush_callback",
 			"html_len", htmlLen,
 			"html_preview", truncateForLog(htmlStr, 100))
-		mb.onFlush(htmlStr)
+		mb.onFlush(htmlStr, content)
 	} else if htmlStr == "" {
 		log.Debug("markdown_buffer_flush_empty_html",
 			"content_len", contentLen,

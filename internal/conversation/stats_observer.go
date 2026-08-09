@@ -58,8 +58,10 @@ func (o *statsObserver) ingest(seq int64, evType session.EventType, data any) {
 
 // --- SessionObserver methods that map onto v1 metrics ---
 
-func (o *statsObserver) OnAgentMessage(seq int64, html string) {
-	o.ingest(seq, session.EventTypeAgentMessage, session.AgentMessageData{Text: html})
+func (o *statsObserver) OnAgentMessage(seq int64, html, markdown string) {
+	// Token accounting stays keyed on html only (unchanged) to avoid double-counting;
+	// markdown is carried through for parity with the persisted event shape.
+	o.ingest(seq, session.EventTypeAgentMessage, session.AgentMessageData{Text: html, Markdown: markdown})
 }
 
 func (o *statsObserver) OnAgentThought(seq int64, text string) {

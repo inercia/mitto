@@ -322,7 +322,7 @@ func (r *handshakeRecorderObserver) record(s string) {
 }
 func (r *handshakeRecorderObserver) OnACPStarted()                                 { r.record("acp_started") }
 func (r *handshakeRecorderObserver) OnACPStopped(string)                           {}
-func (r *handshakeRecorderObserver) OnAgentMessage(int64, string)                  {}
+func (r *handshakeRecorderObserver) OnAgentMessage(int64, string, string)          {}
 func (r *handshakeRecorderObserver) OnAgentThought(int64, string)                  {}
 func (r *handshakeRecorderObserver) OnToolCall(int64, string, string, string)      {}
 func (r *handshakeRecorderObserver) OnToolUpdate(int64, string, *string)           {}

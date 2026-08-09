@@ -69,7 +69,7 @@ func TestRecorder_RecordEvents(t *testing.T) {
 		t.Errorf("RecordUserPrompt failed: %v", err)
 	}
 
-	if err := recorder.RecordAgentMessage("Hello! How can I help?"); err != nil {
+	if err := recorder.RecordAgentMessage("Hello! How can I help?", ""); err != nil {
 		t.Errorf("RecordAgentMessage failed: %v", err)
 	}
 
@@ -139,7 +139,7 @@ func TestRecorder_EventCount(t *testing.T) {
 		t.Errorf("EventCount after user prompt = %d, want 2", count)
 	}
 
-	if err := recorder.RecordAgentMessage("Hi there!"); err != nil {
+	if err := recorder.RecordAgentMessage("Hi there!", ""); err != nil {
 		t.Fatalf("RecordAgentMessage failed: %v", err)
 	}
 	if count := recorder.EventCount(); count != 3 {
@@ -232,7 +232,7 @@ func TestRecorder_Resume(t *testing.T) {
 	if err := recorder1.RecordUserPrompt("Hello"); err != nil {
 		t.Fatalf("RecordUserPrompt failed: %v", err)
 	}
-	if err := recorder1.RecordAgentMessage("Hi there!"); err != nil {
+	if err := recorder1.RecordAgentMessage("Hi there!", ""); err != nil {
 		t.Fatalf("RecordAgentMessage failed: %v", err)
 	}
 
@@ -255,7 +255,7 @@ func TestRecorder_Resume(t *testing.T) {
 	if err := recorder2.RecordUserPrompt("How are you?"); err != nil {
 		t.Fatalf("RecordUserPrompt after resume failed: %v", err)
 	}
-	if err := recorder2.RecordAgentMessage("I'm doing well!"); err != nil {
+	if err := recorder2.RecordAgentMessage("I'm doing well!", ""); err != nil {
 		t.Fatalf("RecordAgentMessage after resume failed: %v", err)
 	}
 
@@ -398,7 +398,7 @@ func TestRecorder_EventOrdering(t *testing.T) {
 	if err := recorder.RecordToolCallUpdate("tc-1", &status, nil); err != nil {
 		t.Fatalf("RecordToolCallUpdate failed: %v", err)
 	}
-	if err := recorder.RecordAgentMessage("I found the issue. Let me fix it."); err != nil {
+	if err := recorder.RecordAgentMessage("I found the issue. Let me fix it.", ""); err != nil {
 		t.Fatalf("RecordAgentMessage failed: %v", err)
 	}
 	if err := recorder.RecordToolCall("tc-2", "Edit main.go", "running", "file_write", nil, nil); err != nil {
@@ -407,7 +407,7 @@ func TestRecorder_EventOrdering(t *testing.T) {
 	if err := recorder.RecordToolCallUpdate("tc-2", &status, nil); err != nil {
 		t.Fatalf("RecordToolCallUpdate failed: %v", err)
 	}
-	if err := recorder.RecordAgentMessage("Done! I fixed the bug."); err != nil {
+	if err := recorder.RecordAgentMessage("Done! I fixed the bug.", ""); err != nil {
 		t.Fatalf("RecordAgentMessage failed: %v", err)
 	}
 
@@ -475,11 +475,11 @@ func TestRecorder_InterleavedToolCallsAndMessages(t *testing.T) {
 	// Record interleaved tool calls and messages
 	recorder.RecordUserPrompt("Do something")
 	recorder.RecordToolCall("tool-1", "First tool", "running", "test", nil, nil)
-	recorder.RecordAgentMessage("First message")
+	recorder.RecordAgentMessage("First message", "")
 	recorder.RecordToolCall("tool-2", "Second tool", "running", "test", nil, nil)
-	recorder.RecordAgentMessage("Second message")
+	recorder.RecordAgentMessage("Second message", "")
 	recorder.RecordToolCall("tool-3", "Third tool", "running", "test", nil, nil)
-	recorder.RecordAgentMessage("Third message")
+	recorder.RecordAgentMessage("Third message", "")
 
 	events, err := store.ReadEvents(recorder.SessionID())
 	if err != nil {
@@ -545,7 +545,7 @@ func TestRecorder_RapidEventRecording(t *testing.T) {
 		case 0:
 			recorder.RecordUserPrompt("Message " + string(rune('A'+i%26)))
 		case 1:
-			recorder.RecordAgentMessage("Response " + string(rune('A'+i%26)))
+			recorder.RecordAgentMessage("Response "+string(rune('A'+i%26)), "")
 		case 2:
 			recorder.RecordToolCall("tool-"+string(rune('0'+i%10)), "Tool", "running", "test", nil, nil)
 		case 3:
@@ -610,7 +610,7 @@ func TestRecorder_ConcurrentRecording(t *testing.T) {
 	for g := 0; g < numGoroutines; g++ {
 		go func(goroutineID int) {
 			for i := 0; i < eventsPerGoroutine; i++ {
-				recorder.RecordAgentMessage("Message from goroutine")
+				recorder.RecordAgentMessage("Message from goroutine", "")
 			}
 			done <- true
 		}(g)
@@ -667,7 +667,7 @@ func TestRecorder_ResumePreservesOrdering(t *testing.T) {
 	sessionID := recorder1.SessionID()
 
 	recorder1.RecordUserPrompt("First prompt")
-	recorder1.RecordAgentMessage("First response")
+	recorder1.RecordAgentMessage("First response", "")
 	recorder1.RecordToolCall("tool-1", "First tool", "completed", "test", nil, nil)
 
 	// Read events before resume
@@ -685,7 +685,7 @@ func TestRecorder_ResumePreservesOrdering(t *testing.T) {
 
 	// Record more events after resume
 	recorder2.RecordUserPrompt("Second prompt")
-	recorder2.RecordAgentMessage("Second response")
+	recorder2.RecordAgentMessage("Second response", "")
 	recorder2.RecordToolCall("tool-2", "Second tool", "completed", "test", nil, nil)
 
 	// Read all events
@@ -740,7 +740,7 @@ func TestRecorder_ResumeWithInterleavedEvents(t *testing.T) {
 
 	recorder1.RecordUserPrompt("Do something")
 	recorder1.RecordToolCall("tool-1", "First tool", "running", "test", nil, nil)
-	recorder1.RecordAgentMessage("First message")
+	recorder1.RecordAgentMessage("First message", "")
 	recorder1.RecordToolCall("tool-2", "Second tool", "running", "test", nil, nil)
 
 	// Resume and add more interleaved events
@@ -749,9 +749,9 @@ func TestRecorder_ResumeWithInterleavedEvents(t *testing.T) {
 		t.Fatalf("Resume failed: %v", err)
 	}
 
-	recorder2.RecordAgentMessage("Second message")
+	recorder2.RecordAgentMessage("Second message", "")
 	recorder2.RecordToolCall("tool-3", "Third tool", "running", "test", nil, nil)
-	recorder2.RecordAgentMessage("Third message")
+	recorder2.RecordAgentMessage("Third message", "")
 
 	// Read all events
 	events, err := store.ReadEvents(sessionID)
@@ -1653,7 +1653,7 @@ func TestRecorder_ConcurrentRecordingAndEnd(t *testing.T) {
 		go func() {
 			for i := 0; i < eventsPerGoroutine; i++ {
 				// Ignore errors - some will fail after End() is called
-				recorder.RecordAgentMessage("Message")
+				recorder.RecordAgentMessage("Message", "")
 			}
 			recordDone <- true
 		}()
@@ -1780,7 +1780,7 @@ func TestRecordOption_WithMetaMap_Merged(t *testing.T) {
 	r, store := setupRecorder(t)
 	defer store.Close()
 
-	if err := r.RecordAgentMessage("hi", WithMetaMap(map[string]any{"a": 42, "b": "two"})); err != nil {
+	if err := r.RecordAgentMessage("hi", "", WithMetaMap(map[string]any{"a": 42, "b": "two"})); err != nil {
 		t.Fatalf("RecordAgentMessage: %v", err)
 	}
 

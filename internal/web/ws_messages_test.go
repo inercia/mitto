@@ -69,13 +69,13 @@ func TestEventBuffer_AppendAgentMessage(t *testing.T) {
 	buf := NewEventBuffer()
 
 	// First chunk creates new event with seq=1
-	seq1, isNew1 := buf.AppendAgentMessage(1, "Hello, ")
+	seq1, isNew1 := buf.AppendAgentMessage(1, "Hello, ", "")
 	if !isNew1 || seq1 != 1 {
 		t.Errorf("First append: seq=%d, isNew=%v, want seq=1, isNew=true", seq1, isNew1)
 	}
 
 	// Second chunk appends to existing event, returns same seq
-	seq2, isNew2 := buf.AppendAgentMessage(2, "World!")
+	seq2, isNew2 := buf.AppendAgentMessage(2, "World!", "")
 	if isNew2 || seq2 != 1 {
 		t.Errorf("Second append: seq=%d, isNew=%v, want seq=1, isNew=false", seq2, isNew2)
 	}
@@ -122,11 +122,11 @@ func TestEventBuffer_InterleavedEvents(t *testing.T) {
 
 	// Simulate interleaved streaming: message, tool, message, tool, message
 	// Each event gets a unique seq
-	buf.AppendAgentMessage(1, "Let me help... ")
+	buf.AppendAgentMessage(1, "Let me help... ", "")
 	buf.AppendToolCall(2, "tool-1", "Read file", "running")
-	buf.AppendAgentMessage(3, "I found... ")
+	buf.AppendAgentMessage(3, "I found... ", "")
 	buf.AppendToolCall(4, "tool-2", "Edit file", "running")
-	buf.AppendAgentMessage(5, "Done!")
+	buf.AppendAgentMessage(5, "Done!", "")
 
 	// Should have 5 separate events (not concatenated because interleaved)
 	if buf.Len() != 5 {
@@ -165,7 +165,7 @@ func TestEventBuffer_InterleavedEvents(t *testing.T) {
 func TestEventBuffer_Flush(t *testing.T) {
 	buf := NewEventBuffer()
 
-	buf.AppendAgentMessage(1, "Hello")
+	buf.AppendAgentMessage(1, "Hello", "")
 	buf.AppendToolCall(2, "tool-1", "Test", "done")
 
 	events := buf.Flush()
@@ -185,7 +185,7 @@ func TestEventBuffer_Flush(t *testing.T) {
 func TestEventBuffer_Events_ReturnsCopy(t *testing.T) {
 	buf := NewEventBuffer()
 
-	buf.AppendAgentMessage(1, "Hello")
+	buf.AppendAgentMessage(1, "Hello", "")
 
 	events1 := buf.Events()
 	events2 := buf.Events()
@@ -204,11 +204,11 @@ func TestEventBuffer_Events_ReturnsCopy(t *testing.T) {
 func TestEventBuffer_GetAgentMessage_Interleaved(t *testing.T) {
 	buf := NewEventBuffer()
 
-	buf.AppendAgentMessage(1, "Part 1. ")
+	buf.AppendAgentMessage(1, "Part 1. ", "")
 	buf.AppendToolCall(2, "tool-1", "Test", "done")
-	buf.AppendAgentMessage(3, "Part 2. ")
+	buf.AppendAgentMessage(3, "Part 2. ", "")
 	buf.AppendAgentThought(4, "Thinking...")
-	buf.AppendAgentMessage(5, "Part 3.")
+	buf.AppendAgentMessage(5, "Part 3.", "")
 
 	// GetAgentMessage should concatenate all agent messages
 	result := buf.GetAgentMessage()
@@ -221,7 +221,7 @@ func TestEventBuffer_GetAgentThought_Interleaved(t *testing.T) {
 	buf := NewEventBuffer()
 
 	buf.AppendAgentThought(1, "Thought 1. ")
-	buf.AppendAgentMessage(2, "Message")
+	buf.AppendAgentMessage(2, "Message", "")
 	buf.AppendAgentThought(3, "Thought 2.")
 
 	// GetAgentThought should concatenate all thoughts
@@ -252,7 +252,7 @@ func TestEventBuffer_AllEventTypes(t *testing.T) {
 	buf := NewEventBuffer()
 
 	buf.AppendAgentThought(1, "Thinking...")
-	buf.AppendAgentMessage(2, "Hello")
+	buf.AppendAgentMessage(2, "Hello", "")
 	buf.AppendToolCall(3, "tool-1", "Read", "running")
 	status := "done"
 	buf.AppendToolCallUpdate(4, "tool-1", &status)
@@ -327,7 +327,7 @@ type replayTestObserver struct {
 	}
 }
 
-func (m *replayTestObserver) OnAgentMessage(_ int64, html string) {
+func (m *replayTestObserver) OnAgentMessage(_ int64, html, _ string) {
 	m.agentMessages = append(m.agentMessages, html)
 }
 func (m *replayTestObserver) OnAgentThought(_ int64, text string) {
@@ -457,7 +457,7 @@ type mockPersister struct {
 	returnErr error
 }
 
-func (m *mockPersister) RecordAgentMessage(html string) error {
+func (m *mockPersister) RecordAgentMessage(html, _ string) error {
 	m.agentMessages = append(m.agentMessages, html)
 	return m.returnErr
 }
@@ -556,7 +556,7 @@ func TestEventBuffer_SeqCoalescing(t *testing.T) {
 	buf := NewEventBuffer()
 
 	// First chunk gets seq=1, creates new event
-	seq1, isNew1 := buf.AppendAgentMessage(1, "Hello ")
+	seq1, isNew1 := buf.AppendAgentMessage(1, "Hello ", "")
 	if !isNew1 {
 		t.Error("First chunk should create new event")
 	}
@@ -565,7 +565,7 @@ func TestEventBuffer_SeqCoalescing(t *testing.T) {
 	}
 
 	// Second chunk gets seq=2, but appends to existing event, returns seq=1
-	seq2, isNew2 := buf.AppendAgentMessage(2, "world!")
+	seq2, isNew2 := buf.AppendAgentMessage(2, "world!", "")
 	if isNew2 {
 		t.Error("Second chunk should append to existing event")
 	}
@@ -594,13 +594,13 @@ func TestEventBuffer_SeqPreservedOnInterleave(t *testing.T) {
 	buf := NewEventBuffer()
 
 	// Message with seq=1
-	buf.AppendAgentMessage(1, "Starting...")
+	buf.AppendAgentMessage(1, "Starting...", "")
 
 	// Tool call with seq=2
 	buf.AppendToolCall(2, "tool-1", "Read file", "running")
 
 	// New message with seq=3 (not coalesced because tool call in between)
-	seq3, isNew3 := buf.AppendAgentMessage(3, "Found it!")
+	seq3, isNew3 := buf.AppendAgentMessage(3, "Found it!", "")
 	if !isNew3 {
 		t.Error("Message after tool call should create new event")
 	}
@@ -630,7 +630,7 @@ func TestEventBuffer_LastSeq(t *testing.T) {
 		t.Errorf("Empty buffer LastSeq = %d, want 0", buf.LastSeq())
 	}
 
-	buf.AppendAgentMessage(5, "Hello")
+	buf.AppendAgentMessage(5, "Hello", "")
 	if buf.LastSeq() != 5 {
 		t.Errorf("After first event LastSeq = %d, want 5", buf.LastSeq())
 	}
@@ -652,9 +652,9 @@ func TestEventBuffer_OutOfOrderSeqPreserved(t *testing.T) {
 
 	// Add events out of order (simulating markdown buffering scenario)
 	buf.AppendToolCall(3, "tool-1", "Read file", "running")
-	buf.AppendAgentMessage(1, "Let me read that file")
+	buf.AppendAgentMessage(1, "Let me read that file", "")
 	buf.AppendToolCallUpdate(4, "tool-1", ptr("completed"))
-	buf.AppendAgentMessage(2, " for you.")
+	buf.AppendAgentMessage(2, " for you.", "")
 
 	events := buf.Events()
 
@@ -679,19 +679,19 @@ func TestEventBuffer_CoalescingPreservesFirstSeq(t *testing.T) {
 	buf := NewEventBuffer()
 
 	// First chunk with seq=5
-	seq1, isNew1 := buf.AppendAgentMessage(5, "Hello ")
+	seq1, isNew1 := buf.AppendAgentMessage(5, "Hello ", "")
 	if !isNew1 || seq1 != 5 {
 		t.Errorf("First chunk: seq=%d, isNew=%v, want seq=5, isNew=true", seq1, isNew1)
 	}
 
 	// Second chunk with seq=6 should coalesce and return seq=5
-	seq2, isNew2 := buf.AppendAgentMessage(6, "World")
+	seq2, isNew2 := buf.AppendAgentMessage(6, "World", "")
 	if isNew2 || seq2 != 5 {
 		t.Errorf("Second chunk: seq=%d, isNew=%v, want seq=5, isNew=false", seq2, isNew2)
 	}
 
 	// Third chunk with seq=7 should also coalesce
-	seq3, isNew3 := buf.AppendAgentMessage(7, "!")
+	seq3, isNew3 := buf.AppendAgentMessage(7, "!", "")
 	if isNew3 || seq3 != 5 {
 		t.Errorf("Third chunk: seq=%d, isNew=%v, want seq=5, isNew=false", seq3, isNew3)
 	}
@@ -717,7 +717,7 @@ func TestEventBuffer_CoalescingPreservesFirstSeq(t *testing.T) {
 func TestEventBuffer_FlushClearsBuffer(t *testing.T) {
 	buf := NewEventBuffer()
 
-	buf.AppendAgentMessage(1, "Hello")
+	buf.AppendAgentMessage(1, "Hello", "")
 	buf.AppendToolCall(2, "tool-1", "Test", "done")
 
 	// Flush should return events
@@ -746,7 +746,7 @@ func TestEventBuffer_FlushClearsBuffer(t *testing.T) {
 func TestEventBuffer_EventsDoesNotClearBuffer(t *testing.T) {
 	buf := NewEventBuffer()
 
-	buf.AppendAgentMessage(1, "Hello")
+	buf.AppendAgentMessage(1, "Hello", "")
 
 	// Get events
 	events1 := buf.Events()
@@ -771,7 +771,7 @@ func TestEventBuffer_ReplayToObserver(t *testing.T) {
 	buf := NewEventBuffer()
 
 	buf.AppendAgentThought(1, "Thinking...")
-	buf.AppendAgentMessage(2, "<p>Hello</p>")
+	buf.AppendAgentMessage(2, "<p>Hello</p>", "")
 	buf.AppendToolCall(3, "tool-1", "Read file", "running")
 
 	// Create a mock observer to capture replayed events
@@ -805,7 +805,7 @@ func (o *testReplayObserver) OnAgentThought(seq int64, text string) {
 	o.thoughts = append(o.thoughts, text)
 }
 
-func (o *testReplayObserver) OnAgentMessage(seq int64, html string) {
+func (o *testReplayObserver) OnAgentMessage(seq int64, html, markdown string) {
 	o.messages = append(o.messages, html)
 }
 

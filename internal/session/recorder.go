@@ -262,11 +262,13 @@ func (r *Recorder) RecordUserPromptCompleteWithSeq(seq int64, message string, im
 }
 
 // RecordAgentMessage records an agent message event.
-func (r *Recorder) RecordAgentMessage(text string, opts ...RecordOption) error {
+// markdown is the raw pre-conversion markdown for this message, when available
+// (mitto-pscc.3); pass "" if unknown.
+func (r *Recorder) RecordAgentMessage(text, markdown string, opts ...RecordOption) error {
 	return r.recordEvent(applyOptions(Event{
 		Type:      EventTypeAgentMessage,
 		Timestamp: time.Now(),
-		Data:      AgentMessageData{Text: text},
+		Data:      AgentMessageData{Text: text, Markdown: markdown},
 	}, opts))
 }
 

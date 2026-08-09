@@ -156,7 +156,8 @@ type UserPromptData struct {
 // HTML (converted from markdown by the web layer's MarkdownBuffer).
 // The JSON field name "html" is used for consistency with frontend expectations.
 type AgentMessageData struct {
-	Text string `json:"html"` // Contains HTML content (despite field name)
+	Text     string `json:"html"`           // Contains HTML content (despite field name)
+	Markdown string `json:"text,omitempty"` // Raw pre-conversion markdown, when available (mitto-pscc.3). Absent on events persisted before this field existed.
 }
 
 // AgentThoughtData contains data for an agent thought event.

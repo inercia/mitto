@@ -62,7 +62,7 @@ func TestEventOrdering_AllEventTypesInterleaved(t *testing.T) {
 
 	client := NewWebClient(WebClientConfig{
 		SeqProvider: &testSeqProvider{counter: &seqCounter},
-		OnAgentMessage: func(seq int64, html string) {
+		OnAgentMessage: func(seq int64, html, markdown string) {
 			collector.addEvent(seq, "message", html)
 		},
 		OnAgentThought: func(seq int64, text string) {
@@ -164,7 +164,7 @@ func TestEventOrdering_ToolCallFlushesBufferedMarkdown(t *testing.T) {
 
 	client := NewWebClient(WebClientConfig{
 		SeqProvider: &testSeqProvider{counter: &seqCounter},
-		OnAgentMessage: func(seq int64, html string) {
+		OnAgentMessage: func(seq int64, html, markdown string) {
 			collector.addEvent(seq, "message", html)
 		},
 		OnToolCall: func(seq int64, id, title, status string) {
@@ -212,7 +212,7 @@ func TestEventOrdering_ThoughtFlushesBufferedMarkdown(t *testing.T) {
 
 	client := NewWebClient(WebClientConfig{
 		SeqProvider: &testSeqProvider{counter: &seqCounter},
-		OnAgentMessage: func(seq int64, html string) {
+		OnAgentMessage: func(seq int64, html, markdown string) {
 			collector.addEvent(seq, "message", html)
 		},
 		OnAgentThought: func(seq int64, text string) {
@@ -261,7 +261,7 @@ func TestEventOrdering_MultipleToolCallsWithMessages(t *testing.T) {
 
 	client := NewWebClient(WebClientConfig{
 		SeqProvider: &testSeqProvider{counter: &seqCounter},
-		OnAgentMessage: func(seq int64, html string) {
+		OnAgentMessage: func(seq int64, html, markdown string) {
 			collector.addEvent(seq, "message", html)
 		},
 		OnToolCall: func(seq int64, id, title, status string) {
@@ -319,7 +319,7 @@ func TestEventOrdering_BufferedMarkdownEmitsContiguousSeq(t *testing.T) {
 
 	client := NewWebClient(WebClientConfig{
 		SeqProvider: &testSeqProvider{counter: &seqCounter},
-		OnAgentMessage: func(seq int64, html string) {
+		OnAgentMessage: func(seq int64, html, markdown string) {
 			collector.addEvent(seq, "message", html)
 		},
 		OnToolCall: func(seq int64, id, title, status string) {
@@ -375,7 +375,7 @@ func TestEventOrdering_RapidEventSequence(t *testing.T) {
 
 	client := NewWebClient(WebClientConfig{
 		SeqProvider: &testSeqProvider{counter: &seqCounter},
-		OnAgentMessage: func(seq int64, html string) {
+		OnAgentMessage: func(seq int64, html, markdown string) {
 			collector.addEvent(seq, "message", html)
 		},
 		OnAgentThought: func(seq int64, text string) {
@@ -441,7 +441,7 @@ func TestEventOrdering_FileOperationsWithMessages(t *testing.T) {
 
 	client := NewWebClient(WebClientConfig{
 		SeqProvider: &testSeqProvider{counter: &seqCounter},
-		OnAgentMessage: func(seq int64, html string) {
+		OnAgentMessage: func(seq int64, html, markdown string) {
 			collector.addEvent(seq, "message", html)
 		},
 		OnFileRead: func(seq int64, path string, size int) {
@@ -504,7 +504,7 @@ func TestEventOrdering_ListItemWithMultiLineBold(t *testing.T) {
 
 	client := NewWebClient(WebClientConfig{
 		SeqProvider: &testSeqProvider{counter: &seqCounter},
-		OnAgentMessage: func(seq int64, html string) {
+		OnAgentMessage: func(seq int64, html, markdown string) {
 			collector.addEvent(seq, "message", html)
 		},
 		OnToolCall: func(seq int64, id, title, status string) {
@@ -587,7 +587,7 @@ func TestEventOrdering_ListEndWithUnmatchedBold(t *testing.T) {
 
 	client := NewWebClient(WebClientConfig{
 		SeqProvider: &testSeqProvider{counter: &seqCounter},
-		OnAgentMessage: func(seq int64, html string) {
+		OnAgentMessage: func(seq int64, html, markdown string) {
 			collector.addEvent(seq, "message", html)
 		},
 		OnToolCall: func(seq int64, id, title, status string) {
@@ -668,7 +668,7 @@ func TestEventOrdering_InactivityTimeoutFlushesContent(t *testing.T) {
 
 	client := NewWebClient(WebClientConfig{
 		SeqProvider: &testSeqProvider{counter: &seqCounter},
-		OnAgentMessage: func(seq int64, html string) {
+		OnAgentMessage: func(seq int64, html, markdown string) {
 			collector.addEvent(seq, "message", html)
 		},
 	})
@@ -740,7 +740,7 @@ func TestEventOrdering_ListWithDelayBetweenChunks(t *testing.T) {
 
 	client := NewWebClient(WebClientConfig{
 		SeqProvider: &testSeqProvider{counter: &seqCounter},
-		OnAgentMessage: func(seq int64, html string) {
+		OnAgentMessage: func(seq int64, html, markdown string) {
 			collector.addEvent(seq, "message", html)
 		},
 		OnToolCall: func(seq int64, id, title, status string) {
@@ -820,7 +820,7 @@ func TestEventOrdering_ToolCallMidListWithMultiLineBold(t *testing.T) {
 
 	client := NewWebClient(WebClientConfig{
 		SeqProvider: &testSeqProvider{counter: &seqCounter},
-		OnAgentMessage: func(seq int64, html string) {
+		OnAgentMessage: func(seq int64, html, markdown string) {
 			collector.addEvent(seq, "message", html)
 		},
 		OnToolCall: func(seq int64, id, title, status string) {
@@ -911,7 +911,7 @@ func TestEventOrdering_ToolCallDoesNotBreakList(t *testing.T) {
 
 	client := NewWebClient(WebClientConfig{
 		SeqProvider: &testSeqProvider{counter: &seqCounter},
-		OnAgentMessage: func(seq int64, html string) {
+		OnAgentMessage: func(seq int64, html, markdown string) {
 			collector.addEvent(seq, "message", html)
 		},
 		OnToolCall: func(seq int64, id, title, status string) {
@@ -992,7 +992,7 @@ func TestEventOrdering_ToolCallDoesNotBreakTable(t *testing.T) {
 
 	client := NewWebClient(WebClientConfig{
 		SeqProvider: &testSeqProvider{counter: &seqCounter},
-		OnAgentMessage: func(seq int64, html string) {
+		OnAgentMessage: func(seq int64, html, markdown string) {
 			collector.addEvent(seq, "message", html)
 		},
 		OnToolCall: func(seq int64, id, title, status string) {
@@ -1071,7 +1071,7 @@ func TestEventOrdering_ToolCallDoesNotBreakTableWithHeader(t *testing.T) {
 
 	client := NewWebClient(WebClientConfig{
 		SeqProvider: &testSeqProvider{counter: &seqCounter},
-		OnAgentMessage: func(seq int64, html string) {
+		OnAgentMessage: func(seq int64, html, markdown string) {
 			collector.addEvent(seq, "message", html)
 		},
 		OnToolCall: func(seq int64, id, title, status string) {
@@ -1280,7 +1280,7 @@ func TestEventOrdering_EmptyMarkdownChunks(t *testing.T) {
 
 	client := NewWebClient(WebClientConfig{
 		SeqProvider: &testSeqProvider{counter: &seqCounter},
-		OnAgentMessage: func(seq int64, html string) {
+		OnAgentMessage: func(seq int64, html, markdown string) {
 			collector.addEvent(seq, "message", html)
 		},
 		OnToolCall: func(seq int64, id, title, status string) {
@@ -1368,7 +1368,7 @@ func TestEventOrdering_LongMarkdownWithInterruptions(t *testing.T) {
 
 	client := NewWebClient(WebClientConfig{
 		SeqProvider: &testSeqProvider{counter: &seqCounter},
-		OnAgentMessage: func(seq int64, html string) {
+		OnAgentMessage: func(seq int64, html, markdown string) {
 			collector.addEvent(seq, "message", html)
 		},
 		OnAgentThought: func(seq int64, text string) {

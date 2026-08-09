@@ -87,7 +87,7 @@ func (r *recorderObserver) OnQueueReordered([]session.QueuedMessage) {
 func (r *recorderObserver) OnError(msg string) {
 	r.deps.notifiedObservers = append(r.deps.notifiedObservers, "error:"+msg)
 }
-func (r *recorderObserver) OnAgentMessage(int64, string)             {}
+func (r *recorderObserver) OnAgentMessage(int64, string, string)     {}
 func (r *recorderObserver) OnAgentThought(int64, string)             {}
 func (r *recorderObserver) OnToolCall(int64, string, string, string) {}
 func (r *recorderObserver) OnToolUpdate(int64, string, *string)      {}

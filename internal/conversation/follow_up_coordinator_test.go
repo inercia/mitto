@@ -147,7 +147,7 @@ func (r *followUpRecorderObserver) record(s string) {
 	r.deps.mu.Unlock()
 }
 func (r *followUpRecorderObserver) OnActionButtons(b []ActionButton)              { r.record("action_buttons") }
-func (r *followUpRecorderObserver) OnAgentMessage(int64, string)                  {}
+func (r *followUpRecorderObserver) OnAgentMessage(int64, string, string)          {}
 func (r *followUpRecorderObserver) OnAgentThought(int64, string)                  {}
 func (r *followUpRecorderObserver) OnToolCall(int64, string, string, string)      {}
 func (r *followUpRecorderObserver) OnToolUpdate(int64, string, *string)           {}

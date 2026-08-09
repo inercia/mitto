@@ -487,7 +487,7 @@ type BufferedEvent struct {
 // EventPersister defines the interface for persisting buffered events.
 // This is implemented by session.Recorder to allow decoupled persistence.
 type EventPersister interface {
-	RecordAgentMessage(html string) error
+	RecordAgentMessage(html, markdown string) error
 	RecordAgentThought(text string) error
 	RecordToolCall(toolCallID, title, status, kind string, rawInput, rawOutput any) error
 	RecordToolCallUpdate(toolCallID string, status, title *string) error
@@ -498,7 +498,8 @@ type EventPersister interface {
 
 // AgentMessageData holds data for an agent message event.
 type AgentMessageData struct {
-	HTML string
+	HTML     string
+	Markdown string // Raw pre-conversion markdown, when available (mitto-pscc.3)
 }
 
 // AgentThoughtData holds data for an agent thought event.
@@ -560,14 +561,16 @@ func (b *EventBuffer) LastSeq() int64 {
 }
 
 // AppendAgentMessage appends an agent message chunk to the buffer.
-// If the last event is also an agent message, the text is concatenated and returns (lastSeq, false).
+// If the last event is also an agent message, the html and markdown are each
+// concatenated in lockstep and returns (lastSeq, false).
 // If this creates a new event, it uses the provided seq and returns (seq, true).
-func (b *EventBuffer) AppendAgentMessage(seq int64, html string) (int64, bool) {
+func (b *EventBuffer) AppendAgentMessage(seq int64, html, markdown string) (int64, bool) {
 	if len(b.events) > 0 {
 		last := &b.events[len(b.events)-1]
 		if last.Type == BufferedEventAgentMessage {
 			if data, ok := last.Data.(*AgentMessageData); ok {
 				data.HTML += html
+				data.Markdown += markdown
 				return last.Seq, false // Appended to existing event
 			}
 		}
@@ -575,7 +578,7 @@ func (b *EventBuffer) AppendAgentMessage(seq int64, html string) (int64, bool) {
 	b.events = append(b.events, BufferedEvent{
 		Type: BufferedEventAgentMessage,
 		Seq:  seq,
-		Data: &AgentMessageData{HTML: html},
+		Data: &AgentMessageData{HTML: html, Markdown: markdown},
 	})
 	return seq, true // Created new event
 }
@@ -714,7 +717,7 @@ func (e BufferedEvent) ReplayTo(observer conversation.SessionObserver) {
 		}
 	case BufferedEventAgentMessage:
 		if data, ok := e.Data.(*AgentMessageData); ok && data.HTML != "" {
-			observer.OnAgentMessage(e.Seq, data.HTML)
+			observer.OnAgentMessage(e.Seq, data.HTML, data.Markdown)
 		}
 	case BufferedEventToolCall:
 		if data, ok := e.Data.(*ToolCallData); ok {
@@ -749,7 +752,7 @@ func (e BufferedEvent) PersistTo(persister EventPersister) error {
 		}
 	case BufferedEventAgentMessage:
 		if data, ok := e.Data.(*AgentMessageData); ok && data.HTML != "" {
-			return persister.RecordAgentMessage(data.HTML)
+			return persister.RecordAgentMessage(data.HTML, data.Markdown)
 		}
 	case BufferedEventToolCall:
 		if data, ok := e.Data.(*ToolCallData); ok {

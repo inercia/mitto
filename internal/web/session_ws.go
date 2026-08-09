@@ -2241,7 +2241,7 @@ func (c *SessionWSClient) tryAttachToSession() {
 
 // OnAgentMessage is called when the agent sends a message chunk.
 // seq is the sequence number for this logical message (chunks of the same message share the same seq).
-func (c *SessionWSClient) OnAgentMessage(seq int64, html string) {
+func (c *SessionWSClient) OnAgentMessage(seq int64, html, markdown string) {
 	// Check if this is a new message or continuation of current streaming message
 	c.seqMu.Lock()
 	// Note: seq=0 is a special case that indicates "no sequence number assigned"
@@ -2304,6 +2304,7 @@ func (c *SessionWSClient) OnAgentMessage(seq int64, html string) {
 		"seq":          seq,
 		"max_seq":      c.getServerMaxSeq(),
 		"html":         html,
+		"text":         markdown,
 		"format":       "html",
 		"session_id":   c.sessionID,
 		"is_prompting": isPrompting,

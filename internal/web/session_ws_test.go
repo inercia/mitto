@@ -1006,7 +1006,7 @@ func TestGetServerMaxSeq_WithBackgroundSession(t *testing.T) {
 					t.Fatalf("Start failed: %v", err)
 				}
 				for i := 0; i < tt.persistedCount; i++ {
-					rec.RecordAgentMessage("<p>test</p>")
+					rec.RecordAgentMessage("<p>test</p>", "")
 				}
 				_ = rec.End(session.SessionEndData{Reason: "test complete"})
 			}
@@ -1059,7 +1059,7 @@ func TestGetServerMaxSeq_NoBackgroundSession(t *testing.T) {
 		t.Fatalf("Start failed: %v", err)
 	}
 	for i := 0; i < 25; i++ {
-		rec.RecordAgentMessage("<p>test</p>")
+		rec.RecordAgentMessage("<p>test</p>", "")
 	}
 	_ = rec.End(session.SessionEndData{Reason: "test complete"})
 

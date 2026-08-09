@@ -118,7 +118,7 @@ func replayACPFixture(t *testing.T, fixture ACPReplayFixture, cfg ACPReplayConfi
 	seqCounter := int64(0)
 	client := NewWebClient(WebClientConfig{
 		SeqProvider: &testSeqProvider{counter: &seqCounter},
-		OnAgentMessage: func(seq int64, html string) {
+		OnAgentMessage: func(seq int64, html, markdown string) {
 			mu.Lock()
 			htmlOutputs = append(htmlOutputs, HTMLOutput{
 				Seq:       seq,

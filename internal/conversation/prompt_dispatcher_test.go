@@ -538,7 +538,7 @@ func (r *pdRecorderObserver) OnError(msg string) {
 	r.deps.notifiedErrors = append(r.deps.notifiedErrors, msg)
 	r.deps.mu.Unlock()
 }
-func (r *pdRecorderObserver) OnAgentMessage(int64, string)                  {}
+func (r *pdRecorderObserver) OnAgentMessage(int64, string, string)          {}
 func (r *pdRecorderObserver) OnAgentThought(int64, string)                  {}
 func (r *pdRecorderObserver) OnToolCall(int64, string, string, string)      {}
 func (r *pdRecorderObserver) OnToolUpdate(int64, string, *string)           {}

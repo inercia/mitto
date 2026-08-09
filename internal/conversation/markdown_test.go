@@ -12,7 +12,7 @@ func TestMarkdownBuffer_BasicWrite(t *testing.T) {
 	var result strings.Builder
 	var mu sync.Mutex
 
-	buffer := NewMarkdownBuffer(func(html string) {
+	buffer := NewMarkdownBuffer(func(html, markdown string) {
 		mu.Lock()
 		result.WriteString(html)
 		mu.Unlock()
@@ -38,7 +38,7 @@ func TestMarkdownBuffer_CodeBlock(t *testing.T) {
 	var result strings.Builder
 	var mu sync.Mutex
 
-	buffer := NewMarkdownBuffer(func(html string) {
+	buffer := NewMarkdownBuffer(func(html, markdown string) {
 		mu.Lock()
 		result.WriteString(html)
 		mu.Unlock()
@@ -60,7 +60,7 @@ func TestMarkdownBuffer_ParagraphBreakFlush(t *testing.T) {
 	flushCount := 0
 	var mu sync.Mutex
 
-	buffer := NewMarkdownBuffer(func(html string) {
+	buffer := NewMarkdownBuffer(func(html, markdown string) {
 		mu.Lock()
 		flushCount++
 		mu.Unlock()
@@ -87,7 +87,7 @@ func TestMarkdownBuffer_MaxBufferSize(t *testing.T) {
 	flushCount := 0
 	var mu sync.Mutex
 
-	buffer := NewMarkdownBuffer(func(html string) {
+	buffer := NewMarkdownBuffer(func(html, markdown string) {
 		mu.Lock()
 		flushCount++
 		mu.Unlock()
@@ -114,7 +114,7 @@ func TestMarkdownBuffer_FlushOnTimeout(t *testing.T) {
 	var result strings.Builder
 	var mu sync.Mutex
 
-	buffer := NewMarkdownBuffer(func(html string) {
+	buffer := NewMarkdownBuffer(func(html, markdown string) {
 		mu.Lock()
 		result.WriteString(html)
 		mu.Unlock()
@@ -141,7 +141,7 @@ func TestMarkdownBuffer_Close(t *testing.T) {
 	var result strings.Builder
 	var mu sync.Mutex
 
-	buffer := NewMarkdownBuffer(func(html string) {
+	buffer := NewMarkdownBuffer(func(html, markdown string) {
 		mu.Lock()
 		result.WriteString(html)
 		mu.Unlock()
@@ -162,7 +162,7 @@ func TestMarkdownBuffer_Close(t *testing.T) {
 func TestMarkdownBuffer_Reset(t *testing.T) {
 	flushCount := 0
 
-	buffer := NewMarkdownBuffer(func(html string) {
+	buffer := NewMarkdownBuffer(func(html, markdown string) {
 		flushCount++
 	})
 
@@ -180,7 +180,7 @@ func TestMarkdownBuffer_CodeBlockDetection(t *testing.T) {
 	var results []string
 	var mu sync.Mutex
 
-	buffer := NewMarkdownBuffer(func(html string) {
+	buffer := NewMarkdownBuffer(func(html, markdown string) {
 		mu.Lock()
 		results = append(results, html)
 		mu.Unlock()
@@ -210,7 +210,7 @@ func TestMarkdownBuffer_NestedCodeBlocks(t *testing.T) {
 	var result strings.Builder
 	var mu sync.Mutex
 
-	buffer := NewMarkdownBuffer(func(html string) {
+	buffer := NewMarkdownBuffer(func(html, markdown string) {
 		mu.Lock()
 		result.WriteString(html)
 		mu.Unlock()
@@ -232,7 +232,7 @@ func TestMarkdownBuffer_NestedCodeBlocks(t *testing.T) {
 func TestMarkdownBuffer_EmptyFlush(t *testing.T) {
 	flushCount := 0
 
-	buffer := NewMarkdownBuffer(func(html string) {
+	buffer := NewMarkdownBuffer(func(html, markdown string) {
 		flushCount++
 	})
 
@@ -250,7 +250,7 @@ func TestMarkdownBuffer_ConcurrentWrites(t *testing.T) {
 	var result strings.Builder
 	var mu sync.Mutex
 
-	buffer := NewMarkdownBuffer(func(html string) {
+	buffer := NewMarkdownBuffer(func(html, markdown string) {
 		mu.Lock()
 		result.WriteString(html)
 		mu.Unlock()
@@ -285,7 +285,7 @@ func TestMarkdownBuffer_CodeBlockNoTimeoutFlush(t *testing.T) {
 	var results []string
 	var mu sync.Mutex
 
-	buffer := NewMarkdownBuffer(func(html string) {
+	buffer := NewMarkdownBuffer(func(html, markdown string) {
 		mu.Lock()
 		results = append(results, html)
 		mu.Unlock()
@@ -355,7 +355,7 @@ func TestMarkdownBuffer_CodeBlockInactivityTimeout(t *testing.T) {
 	var results []string
 	var mu sync.Mutex
 
-	buffer := NewMarkdownBuffer(func(html string) {
+	buffer := NewMarkdownBuffer(func(html, markdown string) {
 		mu.Lock()
 		results = append(results, html)
 		mu.Unlock()
@@ -421,7 +421,7 @@ func TestMarkdownBuffer_ListNoSplit(t *testing.T) {
 	var result strings.Builder
 	var mu sync.Mutex
 
-	buffer := NewMarkdownBuffer(func(html string) {
+	buffer := NewMarkdownBuffer(func(html, markdown string) {
 		mu.Lock()
 		result.WriteString(html)
 		mu.Unlock()
@@ -461,7 +461,7 @@ func TestMarkdownBuffer_UnorderedListNoSplit(t *testing.T) {
 	var result strings.Builder
 	var mu sync.Mutex
 
-	buffer := NewMarkdownBuffer(func(html string) {
+	buffer := NewMarkdownBuffer(func(html, markdown string) {
 		mu.Lock()
 		result.WriteString(html)
 		mu.Unlock()
@@ -494,7 +494,7 @@ func TestMarkdownBuffer_NumberedListWithBlankLines(t *testing.T) {
 	var result strings.Builder
 	var mu sync.Mutex
 
-	buffer := NewMarkdownBuffer(func(html string) {
+	buffer := NewMarkdownBuffer(func(html, markdown string) {
 		mu.Lock()
 		result.WriteString(html)
 		mu.Unlock()
@@ -562,7 +562,7 @@ func TestMarkdownBuffer_NumberedListWithBlankLines_Streaming(t *testing.T) {
 	var result strings.Builder
 	var mu sync.Mutex
 
-	buffer := NewMarkdownBuffer(func(html string) {
+	buffer := NewMarkdownBuffer(func(html, markdown string) {
 		mu.Lock()
 		result.WriteString(html)
 		mu.Unlock()
@@ -611,7 +611,7 @@ func TestMarkdownBuffer_TableNoSplit(t *testing.T) {
 	var result strings.Builder
 	var mu sync.Mutex
 
-	buffer := NewMarkdownBuffer(func(html string) {
+	buffer := NewMarkdownBuffer(func(html, markdown string) {
 		mu.Lock()
 		result.WriteString(html)
 		mu.Unlock()
@@ -652,7 +652,7 @@ func TestMarkdownBuffer_LargeTableNoSplit(t *testing.T) {
 	var result strings.Builder
 	var mu sync.Mutex
 
-	buffer := NewMarkdownBuffer(func(html string) {
+	buffer := NewMarkdownBuffer(func(html, markdown string) {
 		mu.Lock()
 		result.WriteString(html)
 		mu.Unlock()
@@ -682,7 +682,7 @@ func TestMarkdownBuffer_TableWithTimeoutNoSplit(t *testing.T) {
 	var results []string
 	var mu sync.Mutex
 
-	buffer := NewMarkdownBuffer(func(html string) {
+	buffer := NewMarkdownBuffer(func(html, markdown string) {
 		mu.Lock()
 		results = append(results, html)
 		mu.Unlock()
@@ -723,7 +723,7 @@ func TestMarkdownBuffer_BoldTextNoSplit(t *testing.T) {
 	var result strings.Builder
 	var mu sync.Mutex
 
-	buffer := NewMarkdownBuffer(func(html string) {
+	buffer := NewMarkdownBuffer(func(html, markdown string) {
 		mu.Lock()
 		result.WriteString(html)
 		mu.Unlock()
@@ -756,7 +756,7 @@ func TestMarkdownBuffer_InlineCodeNoSplit(t *testing.T) {
 	var result strings.Builder
 	var mu sync.Mutex
 
-	buffer := NewMarkdownBuffer(func(html string) {
+	buffer := NewMarkdownBuffer(func(html, markdown string) {
 		mu.Lock()
 		result.WriteString(html)
 		mu.Unlock()
@@ -789,7 +789,7 @@ func TestMarkdownBuffer_SafeFlush_InTable(t *testing.T) {
 	var results []string
 	var mu sync.Mutex
 
-	buffer := NewMarkdownBuffer(func(html string) {
+	buffer := NewMarkdownBuffer(func(html, markdown string) {
 		mu.Lock()
 		results = append(results, html)
 		mu.Unlock()
@@ -842,7 +842,7 @@ func TestMarkdownBuffer_SafeFlush_InCodeBlock(t *testing.T) {
 	var results []string
 	var mu sync.Mutex
 
-	buffer := NewMarkdownBuffer(func(html string) {
+	buffer := NewMarkdownBuffer(func(html, markdown string) {
 		mu.Lock()
 		results = append(results, html)
 		mu.Unlock()
@@ -887,7 +887,7 @@ func TestMarkdownBuffer_SafeFlush_InList(t *testing.T) {
 	var results []string
 	var mu sync.Mutex
 
-	buffer := NewMarkdownBuffer(func(html string) {
+	buffer := NewMarkdownBuffer(func(html, markdown string) {
 		mu.Lock()
 		results = append(results, html)
 		mu.Unlock()
@@ -951,7 +951,7 @@ func TestMarkdownBuffer_ListWithUnmatchedBold(t *testing.T) {
 	var results []string
 	var mu sync.Mutex
 
-	buffer := NewMarkdownBuffer(func(html string) {
+	buffer := NewMarkdownBuffer(func(html, markdown string) {
 		mu.Lock()
 		results = append(results, html)
 		mu.Unlock()
@@ -1013,7 +1013,7 @@ func TestMarkdownBuffer_ToolCallDoesNotSplitTable(t *testing.T) {
 	var results []string
 	var mu sync.Mutex
 
-	buffer := NewMarkdownBuffer(func(html string) {
+	buffer := NewMarkdownBuffer(func(html, markdown string) {
 		mu.Lock()
 		results = append(results, html)
 		mu.Unlock()
@@ -1060,7 +1060,7 @@ func TestMarkdownBuffer_MermaidDiagram(t *testing.T) {
 	var result strings.Builder
 	var mu sync.Mutex
 
-	buffer := NewMarkdownBuffer(func(html string) {
+	buffer := NewMarkdownBuffer(func(html, markdown string) {
 		mu.Lock()
 		result.WriteString(html)
 		mu.Unlock()
@@ -1141,7 +1141,7 @@ func TestMarkdownBuffer_StreamingFixtures(t *testing.T) {
 			var result strings.Builder
 			var mu sync.Mutex
 
-			buffer := NewMarkdownBuffer(func(html string) {
+			buffer := NewMarkdownBuffer(func(html, markdown string) {
 				mu.Lock()
 				result.WriteString(html)
 				mu.Unlock()

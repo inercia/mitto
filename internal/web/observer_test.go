@@ -21,7 +21,7 @@ type mockObserver struct {
 	userPrompts   []string
 }
 
-func (m *mockObserver) OnAgentMessage(seq int64, html string) {
+func (m *mockObserver) OnAgentMessage(seq int64, html, markdown string) {
 	m.agentMessages = append(m.agentMessages, html)
 }
 

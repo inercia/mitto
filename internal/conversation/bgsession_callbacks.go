@@ -30,8 +30,8 @@ func (bs *BackgroundSession) onContextUsageUpdate(size, used int) {
 	bs.callbackSink.onContextUsageUpdate(bs, size, used)
 }
 
-func (bs *BackgroundSession) onAgentMessage(seq int64, html string) {
-	bs.callbackSink.onAgentMessage(bs, seq, html)
+func (bs *BackgroundSession) onAgentMessage(seq int64, html, markdown string) {
+	bs.callbackSink.onAgentMessage(bs, seq, html, markdown)
 }
 
 func (bs *BackgroundSession) onAgentThought(seq int64, text string) {

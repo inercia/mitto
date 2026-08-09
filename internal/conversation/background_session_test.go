@@ -849,7 +849,7 @@ type queueUpdate struct {
 	messageID   string
 }
 
-func (m *mockSessionObserver) OnAgentMessage(seq int64, html string) {
+func (m *mockSessionObserver) OnAgentMessage(seq int64, html, markdown string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.agentMessages = append(m.agentMessages, html)
@@ -2396,7 +2396,7 @@ type trackingObserver struct {
 	onUIPromptDismiss func(requestID string, reason string)
 }
 
-func (o *trackingObserver) OnAgentMessage(seq int64, html string)             {}
+func (o *trackingObserver) OnAgentMessage(seq int64, html, markdown string)   {}
 func (o *trackingObserver) OnAgentThought(seq int64, text string)             {}
 func (o *trackingObserver) OnToolCall(seq int64, id, title, status string)    {}
 func (o *trackingObserver) OnToolUpdate(seq int64, id string, status *string) {}
@@ -3052,7 +3052,7 @@ func TestRefreshNextSeq_AfterUserPrompt(t *testing.T) {
 	// Record events that simulate coalescing (multiple chunks with same seq)
 	// We'll record events with explicit seq numbers to simulate the scenario
 	for i := 0; i < 5; i++ {
-		if err := recorder.RecordAgentMessage("<p>chunk</p>"); err != nil {
+		if err := recorder.RecordAgentMessage("<p>chunk</p>", ""); err != nil {
 			t.Fatalf("RecordAgentMessage failed: %v", err)
 		}
 	}
