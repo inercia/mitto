@@ -76,6 +76,48 @@ Available commands during an interactive session:
 | `--debug`         | Enable debug logging                 |
 | `--dir <path>`    | Set working directory                |
 
+## Conversation Commands
+
+Scriptable, one-shot commands that talk to a **running** `mitto web` server
+over its REST API and WebSocket, built on the Go SDK (`pkg/api`). Unlike
+`mitto cli`, these do not spawn an ACP agent themselves — they operate on
+conversations the server already manages.
+
+```bash
+# Create a conversation
+mitto conversation new --title "my task" --dir /path/to/project
+
+# List conversations
+mitto conversation list
+
+# Show conversation details
+mitto conversation get <session-id>
+
+# Enqueue a prompt; --wait streams until the agent stops responding
+mitto conversation send <session-id> "run the tests" --wait
+
+# Delete a conversation
+mitto conversation delete <session-id>
+
+# Interactive full-screen chat (requires a TTY)
+mitto conversation chat <session-id>
+
+# Inspect / rotate the shared auth token
+mitto auth status
+mitto auth rotate
+```
+
+| Flag             | Description                                              |
+| ---------------- | --------------------------------------------------------- |
+| `--url <url>`    | Server URL (default: from `instance.json`, or `MITTO_URL`) |
+| `--token <tok>`  | Bearer token (default: from `instance.json`, or `MITTO_TOKEN`) |
+| `--timeout <d>`  | Request timeout                                            |
+| `--output <fmt>` | `table` (default), `json`, or `yaml`                       |
+| `--no-color`     | Disable ANSI styling (also respects `NO_COLOR`)            |
+
+See [CLI Conversation Commands — Design Decision Record](devel/cli-conversation.md)
+for the full command tree, output contract and exit-code mapping.
+
 ## Web Interface Flags
 
 | Flag              | Description                           |

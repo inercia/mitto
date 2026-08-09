@@ -34,6 +34,8 @@ This directory contains technical documentation for developers working on Mitto.
 
 - **[API Stability Tiers and Deprecation Policy](api-stability.md)** — Endpoint-level stability tiers (`stable`/`experimental`/`internal`), the `external-stable` marker, deprecation windows, per-surface signalling (REST/WebSocket/JS SDK/Go SDK), and the deprecation register
 
+- **[CLI Conversation Commands](cli-conversation.md)** — Design decision record for `mitto conversation`/`mitto auth`: command tree, global flags and precedence, output contract (table/json/yaml), and exit-code mapping
+
 ### Infrastructure
 
 - **[ACP Architecture](acp.md)** — Shared process model, concurrent RPC handling, MultiplexClient routing, auxiliary sessions, content blocks, multi-tier process GC (loop suspend, memory-bloat recycling), and the prompt inactivity watchdog
@@ -84,6 +86,7 @@ This directory contains technical documentation for developers working on Mitto.
 | SDK design (JS)     | [JS Client Library](js-client-library.md)              | Layout, Distribution, Contract, Stability Promise      |
 | SDK design (Go)     | [Go Client Library](go-client-library.md)              | Layout, Object Model, Error Model, Streaming API       |
 | API stability tiers | [API Stability Tiers](api-stability.md)                | Tiers, `external-stable`, Deprecation Window, Register |
+| CLI conversation commands | [CLI Conversation Commands](cli-conversation.md)  | Command tree, Output contract, Exit codes              |
 | MCP debugging       | [MCP Servers](mcp.md)                                  | Global Debug Server                                    |
 | Session MCP         | [MCP Servers](mcp.md)                                  | Per-Session MCP Servers                                |
 | Settings API        | [MCP Servers](mcp.md)                                  | Advanced Settings API                                  |
