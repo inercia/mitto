@@ -28,6 +28,19 @@ import { endpoints } from "../../utils/endpoints.js";
 import { modelColor, UNKNOWN_MODEL_COLOR } from "../../utils/palette.js";
 import { CDN_URLS, VERSIONS } from "../../vendor/config.js";
 
+// mitto-7gta.17 slice S7: pins the SDK-migration wiring of the two fetch
+// effects (ungrouped + groupBy=model) via a raw-source regex scan, since
+// StatsCharts.js also cannot be imported under jsdom (see module header).
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, resolve } from "node:path";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const statsChartsJs = readFileSync(
+  resolve(__dirname, "StatsCharts.js"),
+  "utf8",
+);
+
 // =============================================================================
 // Duplicated helpers — keep in sync with StatsCharts.js
 // =============================================================================
@@ -902,5 +915,54 @@ describe("isEverythingHidden (empty-state fallback)", () => {
     const specs = chartSpecMetrics();
     const everything = [...specs.map((s) => s.id), "model_usage"];
     expect(isEverythingHidden(specs, everything)).toBe(true);
+  });
+});
+
+// =============================================================================
+// SDK migration — the two dashboard.timeseries() fetch effects (mitto-7gta.17
+// slice S7)
+// =============================================================================
+
+describe("StatsCharts.js: dashboard.timeseries SDK migration (mitto-7gta.17 slice S7)", () => {
+  test("imports getSdkClient/errorMessage; no authFetch/secureFetch residue", () => {
+    expect(statsChartsJs).toMatch(
+      /import \{ getSdkClient \} from "\.\.\/\.\.\/utils\/sdkClient\.js";/,
+    );
+    expect(statsChartsJs).toMatch(
+      /import \{ errorMessage \} from "\.\.\/\.\.\/utils\/sdkErrors\.js";/,
+    );
+    expect(statsChartsJs).not.toMatch(/authFetch\(/);
+    expect(statsChartsJs).not.toMatch(/secureFetch\(/);
+  });
+
+  test("the ungrouped fetch calls dashboard.timeseries({range, metrics: REQUESTED_METRICS}, {signal}) and forwards the AbortController's signal", () => {
+    expect(statsChartsJs).toMatch(
+      /const json = await getSdkClient\(\)\.dashboard\.timeseries\(\s*\n\s*\{ range, metrics: REQUESTED_METRICS \},\s*\n\s*\{ signal: controller\.signal \},\s*\n\s*\);/,
+    );
+  });
+
+  test('the model-usage fetch calls dashboard.timeseries with REQUESTED_MODEL_METRICS and groupBy: "model"', () => {
+    expect(statsChartsJs).toMatch(
+      /const json = await getSdkClient\(\)\.dashboard\.timeseries\(\s*\n\s*\{ range, metrics: REQUESTED_MODEL_METRICS, groupBy: "model" \},\s*\n\s*\{ signal: controller\.signal \},\s*\n\s*\);/,
+    );
+  });
+
+  test("both fetch effects detect an aborted request via BOTH err.name and the SDK-wrapped err.cause?.name (MittoNetworkError wraps the original AbortError)", () => {
+    const abortGuardCount = [
+      ...statsChartsJs.matchAll(
+        /if \(err\?\.name === "AbortError" \|\| err\?\.cause\?\.name === "AbortError"\)\s*\n\s*return;/g,
+      ),
+    ].length;
+    // One guard per fetch effect (ungrouped + model-usage).
+    expect(abortGuardCount).toBe(2);
+  });
+
+  test("each catch block toasts via errorMessage() with a distinct title (Timeseries vs Model usage)", () => {
+    expect(statsChartsJs).toMatch(
+      /title: "Timeseries fetch failed",\s*\n\s*message: errorMessage\(err, String\(err\)\),/,
+    );
+    expect(statsChartsJs).toMatch(
+      /title: "Model usage fetch failed",\s*\n\s*message: errorMessage\(err, String\(err\)\),/,
+    );
   });
 });

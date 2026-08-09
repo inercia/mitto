@@ -24,10 +24,13 @@ import {
   getSeqWatermark,
   clearSeqWatermark,
   isReusedConversationResponse,
+  checkAuthOrRedirect,
+  checkAuthWithRetry,
   WEBSOCKET_CONSTANTS,
 } from "./websocket.js";
 
 import { getLastSeenSeq, setLastSeenSeq } from "./storage.js";
+import { fakeResponse } from "../sdk/testing/fake-server.js";
 
 // Mock localStorage with a simple implementation
 const createLocalStorageMock = () => {
@@ -1589,5 +1592,181 @@ describe("isReusedConversationResponse", () => {
 
   test("returns false when reused is a string, not a boolean", () => {
     expect(isReusedConversationResponse({ reused: "true" })).toBe(false);
+  });
+});
+
+// =============================================================================
+// SDK migration — checkAuthOrRedirect / checkAuthWithRetry (mitto-7gta.17
+// slice S7)
+// =============================================================================
+//
+// Both functions now go through getSdkClient().serverConfig.get() instead of
+// authFetch(endpoints.config.get()). Stubs global.fetch directly (the SDK
+// client is late-bound, see sdkClient.js), and resets the singleton via
+// _resetSdkClientForTests() between tests so window.mittoApiPrefix changes
+// (none here) or auth-adapter state never leaks across cases.
+
+import { _resetSdkClientForTests } from "./sdkClient.js";
+
+describe("checkAuthOrRedirect (mitto-7gta.17 slice S7)", () => {
+  let originalFetch;
+  let originalHref;
+
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+    originalHref = window.location.href;
+    _resetSdkClientForTests();
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    window.location.href = originalHref;
+    _resetSdkClientForTests();
+  });
+
+  test("200: resolves true without redirecting", async () => {
+    globalThis.fetch = async () => fakeResponse({ status: 200, body: {} });
+    await expect(checkAuthOrRedirect()).resolves.toBe(true);
+    expect(window.location.href).toBe(originalHref);
+  });
+
+  test("a 5xx server error resolves true (lets reconnection proceed) without redirecting", async () => {
+    globalThis.fetch = async () =>
+      fakeResponse({
+        status: 500,
+        body: { error: { code: "server_error", message: "boom" } },
+      });
+    await expect(checkAuthOrRedirect()).resolves.toBe(true);
+    expect(window.location.href).toBe(originalHref);
+  });
+
+  test("a network-level failure resolves true (lets reconnection proceed)", async () => {
+    globalThis.fetch = async () => {
+      throw new Error("offline");
+    };
+    await expect(checkAuthOrRedirect()).resolves.toBe(true);
+  });
+
+  test("concurrent callers share a single in-flight HTTP request", async () => {
+    let callCount = 0;
+    globalThis.fetch = async () => {
+      callCount++;
+      return fakeResponse({ status: 200, body: {} });
+    };
+    const [a, b, c] = await Promise.all([
+      checkAuthOrRedirect(),
+      checkAuthOrRedirect(),
+      checkAuthOrRedirect(),
+    ]);
+    expect([a, b, c]).toEqual([true, true, true]);
+    expect(callCount).toBe(1);
+  });
+
+  // Run LAST within this describe block: a 401 permanently wedges the
+  // module-level `_authCheckInflight` dedup promise (see websocket.js's
+  // comment — it deliberately never resolves/settles on 401, matching
+  // authFetch's old never-resolving-promise behavior), and there is no
+  // exported reset hook for that module-private state. Any checkAuthOrRedirect
+  // test running afterward in this same module instance would otherwise reuse
+  // the wedged promise and hang.
+  test("401: redirects to /auth.html and never resolves (matches authFetch's old never-resolving behavior)", async () => {
+    globalThis.fetch = async () =>
+      fakeResponse({
+        status: 401,
+        body: { error: { code: "unauthenticated", message: "nope" } },
+      });
+    const race = await Promise.race([
+      checkAuthOrRedirect().then(() => "resolved"),
+      new Promise((resolve) => setTimeout(() => resolve("timeout"), 50)),
+    ]);
+    expect(race).toBe("timeout");
+    expect(window.location.href).toContain("/auth.html");
+  });
+});
+
+describe("checkAuthWithRetry (mitto-7gta.17 slice S7)", () => {
+  let originalFetch;
+  let originalHref;
+
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+    originalHref = window.location.href;
+    _resetSdkClientForTests();
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    window.location.href = originalHref;
+    _resetSdkClientForTests();
+  });
+
+  test("200: returns {authenticated: true, networkError: false} on the first attempt", async () => {
+    let calls = 0;
+    globalThis.fetch = async () => {
+      calls++;
+      return fakeResponse({ status: 200, body: {} });
+    };
+    await expect(checkAuthWithRetry(3, 1)).resolves.toEqual({
+      authenticated: true,
+      networkError: false,
+    });
+    expect(calls).toBe(1);
+  });
+
+  test("401: redirects to /auth.html and never resolves", async () => {
+    globalThis.fetch = async () =>
+      fakeResponse({
+        status: 401,
+        body: { error: { code: "unauthenticated", message: "nope" } },
+      });
+    const race = await Promise.race([
+      checkAuthWithRetry(3, 1).then(() => "resolved"),
+      new Promise((resolve) => setTimeout(() => resolve("timeout"), 50)),
+    ]);
+    expect(race).toBe("timeout");
+    expect(window.location.href).toContain("/auth.html");
+  });
+
+  test("a persistent 5xx error retries maxRetries times then returns {authenticated: false, networkError: false}", async () => {
+    let calls = 0;
+    globalThis.fetch = async () => {
+      calls++;
+      return fakeResponse({
+        status: 500,
+        body: { error: { code: "server_error", message: "boom" } },
+      });
+    };
+    await expect(checkAuthWithRetry(2, 1)).resolves.toEqual({
+      authenticated: false,
+      networkError: false,
+    });
+    expect(calls).toBe(3); // initial + 2 retries
+  });
+
+  test("a persistent network failure retries maxRetries times then returns {authenticated: false, networkError: true}", async () => {
+    let calls = 0;
+    globalThis.fetch = async () => {
+      calls++;
+      throw new Error("offline");
+    };
+    await expect(checkAuthWithRetry(2, 1)).resolves.toEqual({
+      authenticated: false,
+      networkError: true,
+    });
+    expect(calls).toBe(3); // initial + 2 retries
+  });
+
+  test("recovers after a transient network failure: succeeds on the second attempt", async () => {
+    let calls = 0;
+    globalThis.fetch = async () => {
+      calls++;
+      if (calls === 1) throw new Error("offline");
+      return fakeResponse({ status: 200, body: {} });
+    };
+    await expect(checkAuthWithRetry(3, 1)).resolves.toEqual({
+      authenticated: true,
+      networkError: false,
+    });
+    expect(calls).toBe(2);
   });
 });

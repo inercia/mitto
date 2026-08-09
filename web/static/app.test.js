@@ -132,3 +132,88 @@ describe("app.js: SDK migration — session loop/flush handlers (mitto-7gta.17 s
     );
   });
 });
+
+describe("app.js: SDK migration — dashboard/misc/remainder handlers (mitto-7gta.17 slice S7)", () => {
+  test("no authFetch/secureFetch residue remains in the header-beads / badge-click / folder-group / shortcuts handlers", () => {
+    // These four handlers are the S7 call sites; none of them should read a
+    // raw fetch Response anymore (res.ok / res.json() / res.status).
+    const handlers = [
+      "getSdkClient().issues.show(issueId,",
+      "getSdkClient().misc.badgeClick({",
+      "getSdkClient().workspaces.setFolderGroup(uuid,",
+      "getSdkClient().shortcuts.getFolder({",
+      ".shortcuts.getGlobal()",
+    ];
+    for (const h of handlers) {
+      expect(appJs).toContain(h);
+    }
+  });
+
+  test("header beads-status effect: isGone() short-circuits before the network call, 404 marks gone via isNotFoundError", () => {
+    const idx = appJs.indexOf("const issueId = sessionInfo?.beads_issue;");
+    expect(idx).toBeGreaterThan(-1);
+    const snippet = appJs.slice(idx, idx + 1200);
+    const goneIdx = snippet.indexOf("if (isGone(workingDir, issueId))");
+    const showIdx = snippet.indexOf(
+      "await getSdkClient().issues.show(issueId, {",
+    );
+    expect(goneIdx).toBeGreaterThan(-1);
+    expect(showIdx).toBeGreaterThan(goneIdx);
+    expect(snippet).toMatch(
+      /if \(isNotFoundError\(err\)\) markGone\(workingDir, issueId\);/,
+    );
+  });
+
+  test("handleBadgeClick / handleOpenTarget: POST misc.badgeClick, a data.error field toasts without throwing, a thrown error toasts via errorMessage()", () => {
+    const idx = appJs.indexOf("const handleBadgeClick = useCallback(");
+    expect(idx).toBeGreaterThan(-1);
+    const snippet = appJs.slice(idx, idx + 1300);
+    expect(snippet).toMatch(
+      /const data = await getSdkClient\(\)\.misc\.badgeClick\(\{\s*\n\s*workspace_path: workspacePath,\s*\n\s*action: "open",\s*\n\s*target_id: "finder",\s*\n\s*\}\);/,
+    );
+    expect(snippet).toMatch(
+      /if \(!data\.success && data\.error\) \{\s*\n\s*showToast\(\{ style: "error", title: data\.error \}\);\s*\n\s*\}/,
+    );
+    expect(snippet).toMatch(
+      /title: errorMessage\(err, "Failed to open folder"\),/,
+    );
+
+    const openTargetIdx = appJs.indexOf(
+      "const handleOpenTarget = useCallback(",
+    );
+    expect(openTargetIdx).toBeGreaterThan(idx);
+    const openTargetSnippet = appJs.slice(openTargetIdx, openTargetIdx + 900);
+    expect(openTargetSnippet).toMatch(
+      /const data = await getSdkClient\(\)\.misc\.badgeClick\(\{\s*\n\s*workspace_path: workspacePath,\s*\n\s*action: "open",\s*\n\s*target_id: targetId,\s*\n\s*\}\);/,
+    );
+    expect(openTargetSnippet).toMatch(
+      /title: errorMessage\(err, "Failed to open target"\),/,
+    );
+  });
+
+  test("handleMoveFolderToGroup: PUT workspaces.setFolderGroup(uuid, group), invalidates config cache and refreshes workspaces on success", () => {
+    const idx = appJs.indexOf("const handleMoveFolderToGroup = useCallback(");
+    expect(idx).toBeGreaterThan(-1);
+    const snippet = appJs.slice(idx, idx + 900);
+    const setGroupIdx = snippet.indexOf(
+      'await getSdkClient().workspaces.setFolderGroup(uuid, group || "");',
+    );
+    expect(setGroupIdx).toBeGreaterThan(-1);
+    const invalidateIdx = snippet.indexOf("invalidateConfigCache();");
+    const refreshIdx = snippet.indexOf("refreshWorkspaces();");
+    expect(invalidateIdx).toBeGreaterThan(setGroupIdx);
+    expect(refreshIdx).toBeGreaterThan(invalidateIdx);
+    expect(snippet).toMatch(
+      /title: errorMessage\(err, "Failed to move folder to group"\),/,
+    );
+  });
+
+  test("loadConvShortcuts: folder+global shortcuts fetched in parallel, global's failure tolerated via .catch(() => ({}))", () => {
+    const idx = appJs.indexOf("const loadConvShortcuts = useCallback(");
+    expect(idx).toBeGreaterThan(-1);
+    const snippet = appJs.slice(idx, idx + 900);
+    expect(snippet).toMatch(
+      /const \[data, globalData\] = await Promise\.all\(\[\s*\n\s*getSdkClient\(\)\.shortcuts\.getFolder\(\{ working_dir: wd \}\),\s*\n\s*getSdkClient\(\)\s*\n\s*\.shortcuts\.getGlobal\(\)\s*\n\s*\.catch\(\(\) => \(\{\}\)\),\s*\n\s*\]\);/,
+    );
+  });
+});

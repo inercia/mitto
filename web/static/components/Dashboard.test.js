@@ -13,6 +13,16 @@
 // and `jest` from whichever runner is active (Jest or bun:test).
 import { describe, test, expect, jest } from "../utils/testing/testGlobals.js";
 
+// mitto-7gta.17 slice S7: pins the fetchDashboard SDK-migration wiring via a
+// raw-source regex scan (same technique as app.test.js), since Dashboard.js
+// also cannot be imported under jsdom for the reasons above.
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, resolve } from "node:path";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const dashboardJs = readFileSync(resolve(__dirname, "Dashboard.js"), "utf8");
+
 // =============================================================================
 // Duplicated helpers — keep in sync with web/static/components/Dashboard.js
 // =============================================================================
@@ -653,5 +663,38 @@ describe("renderConversationRows loading state (mitto-eml)", () => {
     const rows = renderConversationRows([], null, /* isLoading */ false);
     expect(rows).toHaveLength(1);
     expect(rows[0].__html).toMatch(/key="__empty"/);
+  });
+});
+
+// =============================================================================
+// SDK migration — fetchDashboard (mitto-7gta.17 slice S7)
+// =============================================================================
+
+describe("Dashboard.js: fetchDashboard SDK migration (mitto-7gta.17 slice S7)", () => {
+  test("imports getSdkClient/errorMessage; fetches via dashboard.summary()", () => {
+    expect(dashboardJs).toMatch(
+      /import \{ getSdkClient \} from "\.\.\/utils\/sdkClient\.js";/,
+    );
+    expect(dashboardJs).toMatch(
+      /import \{ errorMessage \} from "\.\.\/utils\/sdkErrors\.js";/,
+    );
+    expect(dashboardJs).toMatch(
+      /const json = await getSdkClient\(\)\.dashboard\.summary\(\);/,
+    );
+    // No leftover raw-fetch residue from the pre-migration implementation.
+    expect(dashboardJs).not.toMatch(/authFetch\(/);
+    expect(dashboardJs).not.toMatch(/secureFetch\(/);
+  });
+
+  test("fetchDashboard: mountedRef gates both the success (setData) and error (showToast) paths", () => {
+    const idx = dashboardJs.indexOf("const fetchDashboard = useCallback(");
+    expect(idx).toBeGreaterThan(-1);
+    const snippet = dashboardJs.slice(idx, idx + 700);
+    expect(snippet).toMatch(
+      /const json = await getSdkClient\(\)\.dashboard\.summary\(\);\s*\n\s*if \(!mountedRef\.current\) return;\s*\n\s*setData\(json\);/,
+    );
+    expect(snippet).toMatch(
+      /\} catch \(err\) \{\s*\n\s*if \(!mountedRef\.current\) return;\s*\n\s*if \(showToast\) \{\s*\n\s*showToast\(\{\s*\n\s*style: "error",\s*\n\s*title: "Dashboard refresh failed",\s*\n\s*message: errorMessage\(err, String\(err\)\),/,
+    );
   });
 });
