@@ -70,6 +70,36 @@ describe("sdkClient", () => {
         "mitto_csrf=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT";
     });
 
+    test("config.fetch calls the CURRENT global fetch, not a snapshot taken at client-construction time", async () => {
+      const client = getSdkClient();
+      const originalFetch = globalThis.fetch;
+      // Installed after getSdkClient() above, proving config.fetch binds
+      // `fetch` lazily rather than snapshotting it at construction time (see
+      // sdkClient.js's late-bound comment).
+      let called = false;
+      globalThis.fetch = async () => {
+        called = true;
+        return { ok: true, status: 200, json: async () => ({}) };
+      };
+      try {
+        await client.config.fetch("/anything");
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+      expect(called).toBe(true);
+    });
+
+    test("config.onUnauthorized delegates to csrf.js's redirectToLogin (401 policy preserved)", () => {
+      const originalHref = window.location.href;
+      try {
+        const client = getSdkClient();
+        client.config.onUnauthorized();
+        expect(window.location.href).toContain("/auth.html");
+      } finally {
+        window.location.href = originalHref;
+      }
+    });
+
     test("auth adapter fetches a fresh token via the CURRENT global fetch when no cookie exists, hitting endpoints.misc.csrfToken()", async () => {
       window.mittoApiPrefix = "/mitto";
       const seenUrls = [];
