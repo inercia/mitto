@@ -20,11 +20,11 @@ rules for deprecating and removing it.
 
 ## 1. The three tiers
 
-| Tier           | Meaning                                                                 |
-| -------------- | ------------------------------------------------------------------------ |
-| `stable`       | Public contract. Breaking changes require the deprecation window (§3).   |
+| Tier           | Meaning                                                                                                                            |
+| -------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `stable`       | Public contract. Breaking changes require the deprecation window (§3).                                                             |
 | `experimental` | Opt-in, may change or be removed without the full window. Must be explicitly listed with an expiry date; not covered unless named. |
-| `internal`     | Everything else. No stability promise. **This is the default.**          |
+| `internal`     | Everything else. No stability promise. **This is the default.**                                                                    |
 
 There is **no fourth tier**. `external-stable` (§2) is a marker layered on
 top of `stable`, not a competing vocabulary.
@@ -103,12 +103,12 @@ may only happen in a minor or major release per semver (never a patch).
 The normative list of everything currently deprecated, across all surfaces.
 Nothing may be deprecated, promoted, or removed without a row here.
 
-| Surface   | Identifier          | Tier     | Deprecated in | Sunset | Replacement                     |
-| --------- | -------------------- | -------- | -------------- | ------ | -------------------------------- |
-| WebSocket | `permission`         | internal | pre-v0.3.0     | TBD    | `ui_prompt` with `prompt_type: "permission"` |
-| WebSocket | `permission_answer`  | internal | pre-v0.3.0     | TBD    | `ui_prompt_answer`               |
-| WebSocket | `sync_session`       | internal | pre-v0.3.0     | TBD    | `load_events` with `after_seq`   |
-| WebSocket | `session_sync`       | internal | pre-v0.3.0     | TBD    | `events_loaded`                  |
+| Surface   | Identifier          | Tier     | Deprecated in | Sunset | Replacement                                  |
+| --------- | ------------------- | -------- | ------------- | ------ | -------------------------------------------- |
+| WebSocket | `permission`        | internal | pre-v0.3.0    | TBD    | `ui_prompt` with `prompt_type: "permission"` |
+| WebSocket | `permission_answer` | internal | pre-v0.3.0    | TBD    | `ui_prompt_answer`                           |
+| WebSocket | `sync_session`      | internal | pre-v0.3.0    | TBD    | `load_events` with `after_seq`               |
+| WebSocket | `session_sync`      | internal | pre-v0.3.0    | TBD    | `events_loaded`                              |
 
 These four predate this policy (no recorded deprecation date, hence no
 enforceable sunset yet) and are tiered `internal` today — they were never
