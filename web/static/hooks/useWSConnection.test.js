@@ -25,8 +25,10 @@ const useWebSocketJs = readFileSync(
 
 describe("useWSConnection.js: connectToEvents backed by EventsStream (mitto-7gta.18 S2)", () => {
   test("imports getSdkClient/getSdkWsBaseUrl from the S1 client seam", () => {
+    // Multi-line import since mitto-7gta.30 (S1) also pulls in
+    // createSdkSeqStore/createSdkPendingPromptStore for SessionStream.
     expect(useWSConnectionJs).toMatch(
-      /import \{ getSdkClient, getSdkWsBaseUrl \} from "\.\.\/utils\/sdkClient\.js";/,
+      /import \{\s*\n\s*getSdkClient,\s*\n\s*getSdkWsBaseUrl,\s*\n[\s\S]*?\} from "\.\.\/utils\/sdkClient\.js";/,
     );
   });
 
@@ -78,11 +80,21 @@ describe("useWSConnection.js: connectToEvents backed by EventsStream (mitto-7gta
   });
 
   test("the return bag exposes eventsStreamRef, not the deleted raw-WebSocket refs", () => {
-    expect(useWSConnectionJs).toMatch(/keepaliveRef,\s*\n\s*serverShuttingDownRef,\s*\n\s*eventsStreamRef,\s*\n\s*staggeredBackgroundTimersRef,\s*\n\s*\};\s*\n\}/);
+    // keepaliveRef was also removed from the return bag by mitto-7gta.30 (S1):
+    // SessionStream owns keepalive/zombie detection internally per session.
+    expect(useWSConnectionJs).toMatch(/sessionWsRefs,\s*\n\s*serverShuttingDownRef,\s*\n\s*eventsStreamRef,\s*\n\s*staggeredBackgroundTimersRef,\s*\n\s*\};\s*\n\}/);
   });
 
   test("no leftover references to the deleted raw-WebSocket refs in either hook", () => {
-    const deleted = ["eventsWsRef", "reconnectRef", "eventsReconnectAttemptRef", "wasConnectedRef"];
+    const deleted = [
+      "eventsWsRef",
+      "reconnectRef",
+      "eventsReconnectAttemptRef",
+      "wasConnectedRef",
+      "sessionReconnectRefs",
+      "sessionReconnectAttemptsRef",
+      "keepaliveRef",
+    ];
     for (const name of deleted) {
       const re = new RegExp(`\\b${name}\\b`);
       expect(re.test(useWSConnectionJs)).toBe(false);
@@ -94,7 +106,7 @@ describe("useWSConnection.js: connectToEvents backed by EventsStream (mitto-7gta
 describe("useWebSocket.js: composer wiring onto eventsStreamRef (mitto-7gta.18 S2)", () => {
   test("destructures eventsStreamRef (not eventsWsRef/reconnectRef) from the connection bag", () => {
     expect(useWebSocketJs).toMatch(
-      /keepaliveRef,\s*\n\s*serverShuttingDownRef,\s*\n\s*eventsStreamRef,\s*\n\s*staggeredBackgroundTimersRef,\s*\n\s*\} = connection;/,
+      /sessionWsRefs,\s*\n\s*serverShuttingDownRef,\s*\n\s*eventsStreamRef,\s*\n\s*staggeredBackgroundTimersRef,\s*\n\s*\} = connection;/,
     );
   });
 

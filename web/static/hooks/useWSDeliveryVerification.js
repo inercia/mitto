@@ -40,9 +40,9 @@ import {
  * @param {Function} props.clearActionButtons
  * @param {Function} props.setSessions
  * @param {Function} props.sendToSession — (sessionId, msg) => boolean
- * @param {Function} props.waitForSessionConnection — (sessionId, timeout?) => Promise<WebSocket>
+ * @param {Function} props.waitForSessionConnection — (sessionId, timeout?) => Promise<import("../sdk/index.js").SessionStream>
  * @param {Function} props.isConnectionHealthy — (sessionId) => boolean
- * @param {{ current: Object<string, WebSocket> }} props.sessionWsRefs — from C1
+ * @param {{ current: Object<string, import("../sdk/index.js").SessionStream> }} props.sessionWsRefs — from C1 (mitto-7gta.30)
  * @param {boolean} props.isMobileDevice — from C3, tunes INITIAL_ACK_TIMEOUT_MS
  * @param {{ current: Object<string, { resolve, reject, timeoutId }> }} props.pendingSendsRef
  * @param {{ current: Object<string, { promptId: string, seq: number }> }} props.lastConfirmedPromptRef
@@ -118,15 +118,14 @@ export function useWSDeliveryVerification({
         throw new Error("No active session");
       }
 
-      // Check if WebSocket is connected and healthy
+      // Check if the session stream is connected and healthy
       let ws = sessionWsRefs.current[activeSessionId];
       const isHealthy = isConnectionHealthy(activeSessionId) ?? true;
-      const needsReconnect =
-        !ws || ws.readyState !== WebSocket.OPEN || !isHealthy;
+      const needsReconnect = !ws || ws.state !== "open" || !isHealthy;
 
       if (needsReconnect) {
         console.log(
-          `Connection needs reconnect before sending (ws=${!!ws}, readyState=${ws?.readyState}, healthy=${isHealthy})`,
+          `Connection needs reconnect before sending (ws=${!!ws}, state=${ws?.state}, healthy=${isHealthy})`,
         );
         // Force close any existing zombie connection
         if (ws) {
