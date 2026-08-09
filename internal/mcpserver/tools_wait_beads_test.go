@@ -9,6 +9,7 @@ package mcpserver
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -46,13 +47,23 @@ func (f *fakeBeadsClient) set(id, status string) {
 	f.mu.Unlock()
 }
 
+// setErr flips the client into (or out of, when err is nil) always-failing
+// mode. Guarded by the same mutex as states/Statuses so a mid-flight flip
+// from a test goroutine (e.g. after the fast-path evaluation has already
+// succeeded) is race-safe.
+func (f *fakeBeadsClient) setErr(err error) {
+	f.mu.Lock()
+	f.err = err
+	f.mu.Unlock()
+}
+
 func (f *fakeBeadsClient) Statuses(_ context.Context, _ string, ids []string) (map[string]string, error) {
 	f.callCount.Add(1)
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.err != nil {
 		return nil, f.err
 	}
-	f.mu.Lock()
-	defer f.mu.Unlock()
 	out := make(map[string]string, len(ids))
 	for _, id := range ids {
 		if st, ok := f.states[id]; ok {
@@ -265,6 +276,100 @@ func TestConversationWait_BeadsTimeout(t *testing.T) {
 	}
 }
 
+// TestConversationWait_BeadsFailureStreak_HidesDegradationOnTimeout reproduces
+// mitto-f8zx: when every `bd` evaluation on the slow path fails for the rest
+// of the wait (as observed with 13 consecutive "bd command timed out: signal:
+// killed" WARNs), the handler's error branch used to be a bare "continue"
+// with no counter, no backoff, and nothing recorded on the output. Worse, the
+// deadline branch's own final evaluation also fails here, so the handler used
+// to return Success:true / TimedOut:true with an empty Error — exactly
+// indistinguishable from a *healthy* timeout where bd worked fine the whole
+// time and the bead simply never reached the target state. A caller branching
+// on Success/TimedOut alone (as the acceptance criteria call out) could not
+// tell "bd was completely broken the whole wait" from "bd was fine, still
+// pending".
+//
+// Fixed: the deadline branch now sets Degraded/ConsecutiveFailures/Error
+// whenever its own final evaluation (or a prior slow-loop attempt) failed.
+func TestConversationWait_BeadsFailureStreak_HidesDegradationOnTimeout(t *testing.T) {
+	srv, callerID, fake := setupBeadsWait(t, map[string]string{
+		"mitto-1": "open",
+	})
+
+	// Let the fast-path evaluation succeed once (so the handler enters the
+	// slow loop with done=false), then fail every subsequent evaluation —
+	// including the one the deadline branch runs for its "freshest snapshot"
+	// — for the rest of the wait.
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		fake.setErr(errors.New("bd command timed out: signal: killed"))
+	}()
+
+	ctx := context.Background()
+	_, out, err := srv.handleConversationWait(ctx, nil, ConversationWaitInput{
+		SelfID:           callerID,
+		ConversationID:   "self",
+		What:             "beads_issues_reached_state",
+		BeadsIssues:      []string{"mitto-1"},
+		BeadsTargetState: "closed",
+		TimeoutSeconds:   1,
+	})
+	if err != nil {
+		t.Fatalf("handleConversationWait: %v", err)
+	}
+
+	if out.Error == "" {
+		t.Errorf("bug mitto-f8zx: expected the output to surface the bd failure "+
+			"streak via a non-empty Error, but got %+v — a continuous evaluation "+
+			"failure right up to the deadline is being reported identically to a "+
+			"clean timeout", out)
+	}
+	if !out.Degraded {
+		t.Errorf("expected Degraded=true after a failure streak, got %+v", out)
+	}
+	if out.ConsecutiveFailures < 1 {
+		t.Errorf("expected ConsecutiveFailures>=1 after a failure streak, got %+v", out)
+	}
+}
+
+// TestBeadsWaitPollInterval_StrictlyGreaterThanReadTimeout pins the
+// acceptance criterion "the per-attempt bd deadline is strictly less than
+// the poll interval" (mitto-f8zx): a single evaluateBeadsState call is
+// bounded by beads.ReadTimeout, and if the poll interval this loop uses ever
+// regresses to being shorter than (or equal to) that deadline, a slow/wedged
+// bd would once again saturate every tick.
+func TestBeadsWaitPollInterval_StrictlyGreaterThanReadTimeout(t *testing.T) {
+	if beadsWaitPollInterval <= beads.ReadTimeout {
+		t.Fatalf("beadsWaitPollInterval (%s) must be strictly greater than beads.ReadTimeout (%s)",
+			beadsWaitPollInterval, beads.ReadTimeout)
+	}
+}
+
+// TestBeadsWaitBackoffInterval_EscalatesAndCaps pins the acceptance
+// criterion "spaces attempts per the backoff schedule rather than
+// back-to-back" (mitto-f8zx): each additional consecutive failure must
+// increase (or hold, once capped) the delay before the next attempt, and the
+// delay must never exceed beadsWaitMaxBackoff.
+func TestBeadsWaitBackoffInterval_EscalatesAndCaps(t *testing.T) {
+	prev := time.Duration(0)
+	for n := 1; n <= 10; n++ {
+		d := beadsWaitBackoffInterval(n)
+		if d < prev {
+			t.Fatalf("backoff must be monotonically non-decreasing: n=%d got %s < previous %s", n, d, prev)
+		}
+		if d > beadsWaitMaxBackoff {
+			t.Fatalf("backoff must never exceed the cap: n=%d got %s > cap %s", n, d, beadsWaitMaxBackoff)
+		}
+		prev = d
+	}
+	if got := beadsWaitBackoffInterval(1); got != beadsWaitPollInterval {
+		t.Errorf("first failure should back off from the base poll interval, got %s want %s", got, beadsWaitPollInterval)
+	}
+	if got := beadsWaitBackoffInterval(20); got != beadsWaitMaxBackoff {
+		t.Errorf("a long failure streak must be capped at %s, got %s", beadsWaitMaxBackoff, got)
+	}
+}
+
 func TestConversationWait_BeadsValidation_MissingIssues(t *testing.T) {
 	srv, callerID, _ := setupBeadsWait(t, map[string]string{})
 	ctx := context.Background()
@@ -381,7 +486,8 @@ func touchBeadsLastTouched(t *testing.T, workspace string, payload string) {
 // TestConversationWait_BeadsSlowPath_WatcherWake verifies the fs-event slow
 // path: the handler subscribes to the BeadsWatcher, flipping the fake client's
 // state and touching .beads/last-touched wakes it up, and it returns success
-// well before either the deadline or the 30 s poll fallback.
+// well before either the deadline or the poll fallback (beadsWaitPollInterval,
+// derived from beads.ReadTimeout).
 func TestConversationWait_BeadsSlowPath_WatcherWake(t *testing.T) {
 	srv, callerID, workspace, fake, _ := setupBeadsWaitWithWatcher(t, map[string]string{
 		"mitto-1": "open",
@@ -425,7 +531,7 @@ func TestConversationWait_BeadsSlowPath_WatcherWake(t *testing.T) {
 			t.Errorf("expected reached=[mitto-1], got %v", out.ReachedIssues)
 		}
 		// Fast-path (1) + at least one wake-driven re-eval (>=1) = >=2.
-		// The 30 s poll fallback cannot fire in a 4 s wait, so any count
+		// The poll fallback (beadsWaitPollInterval) cannot fire in a 4 s wait, so any count
 		// beyond the fast-path evaluation proves the watcher path drove
 		// the wake-up.
 		if got := fake.callCount.Load(); got < 2 {

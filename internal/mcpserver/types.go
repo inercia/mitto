@@ -996,6 +996,16 @@ type ConversationWaitOutput struct {
 	// CurrentStates is a snapshot of id -> current bd status at return time
 	// when what = "beads_issues_reached_state".
 	CurrentStates map[string]string `json:"current_states,omitempty"`
+
+	// Degraded is true when one or more bd evaluations failed shortly before
+	// the wait returned (what = "beads_issues_reached_state"), so the caller
+	// should not assume this outcome reflects a healthy read even when
+	// Success/TimedOut alone would suggest otherwise (mitto-f8zx).
+	Degraded bool `json:"degraded,omitempty"`
+	// ConsecutiveFailures is the number of consecutive bd evaluation
+	// failures observed immediately before the wait returned, when what =
+	// "beads_issues_reached_state". Zero when the wait was not degraded.
+	ConsecutiveFailures int `json:"consecutive_failures,omitempty"`
 }
 
 // =============================================================================

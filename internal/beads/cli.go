@@ -17,11 +17,19 @@ const (
 	defaultTimeout = 15 * time.Second
 	initTimeout    = 60 * time.Second
 	syncTimeout    = 120 * time.Second
-	// readTimeout bounds read-only bd invocations. It is larger than
+	// ReadTimeout bounds read-only bd invocations. It is larger than
 	// defaultTimeout because read-heavy queries (list, status, label list-all)
 	// on a warm-cold dolt DB can occasionally exceed the write-path budget
-	// without indicating a real failure.
-	readTimeout = 45 * time.Second
+	// without indicating a real failure. Exported (mitto-f8zx) so callers
+	// with their own polling cadence around a runJSONRead-based call (e.g.
+	// mcpserver's beads-wait loop) can size their poll interval strictly
+	// greater than this deadline instead of hand-copying the value, which
+	// previously let the two silently invert (readTimeout 45s > a 30s poll
+	// interval elsewhere caused back-to-back subprocess spawns).
+	ReadTimeout = 45 * time.Second
+	// readTimeout is a package-local alias so existing call sites below need
+	// no further changes.
+	readTimeout = ReadTimeout
 )
 
 // Runner executes a bd subcommand in a directory. The returned error is the

@@ -281,8 +281,15 @@ Wait until something happens in a conversation. Two conditions are supported:
 - `beads_issues_reached_state` — blocks until one or more beads issues reach a
   target bd status (e.g. `closed`). Fast-path resolves via a batched `bd list`
   query; slow-path subscribes to the shared beads watcher and re-evaluates on
-  each debounced filesystem event, with a 30 s poll safety net. Returns
-  immediately if the predicate is already satisfied.
+  each debounced filesystem event, with a poll safety net kept strictly longer
+  than the `bd` read timeout (mitto-f8zx) so a single slow/wedged `bd` call
+  can never saturate the loop into back-to-back subprocess spawns. Returns
+  immediately if the predicate is already satisfied. Consecutive `bd`
+  evaluation failures back off exponentially (capped) and escalate to a
+  single ERROR log line after 3 in a row; a wait that returns degraded (one
+  or more failures right before it ended) reports this via `degraded` /
+  `consecutive_failures` in the output instead of looking identical to a
+  healthy timeout.
 
 | Parameter            | Type     | Required | Description                                                                                                                                                              |
 | -------------------- | -------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -308,6 +315,8 @@ Returns:
 | `reached_issues` | Subset of `beads_issues` that satisfied the predicate (populated when `what = "beads_issues_reached_state"`)          |
 | `pending_issues` | Subset of `beads_issues` that did NOT reach the target state at return time (typically populated on timeout)         |
 | `current_states` | Snapshot of `id -> current bd status` at return time                                                                 |
+| `degraded`       | true if one or more `bd` evaluations failed shortly before the wait returned (`what = "beads_issues_reached_state"`); distinguishes a genuinely healthy timeout from one masking a failing `bd` (mitto-f8zx) |
+| `consecutive_failures` | Number of consecutive `bd` evaluation failures observed immediately before the wait returned; 0 when not degraded |
 
 #### `mitto_ui_options`
 

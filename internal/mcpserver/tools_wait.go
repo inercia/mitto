@@ -12,6 +12,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/inercia/mitto/internal/beads"
 	beadswatcher "github.com/inercia/mitto/internal/beads/watcher"
 	"github.com/inercia/mitto/internal/session"
 )
@@ -33,13 +34,48 @@ const defaultConversationWaitTimeout = 10 * time.Minute
 const defaultBeadsWaitTimeout = 4 * time.Hour
 
 // beadsWaitPollInterval is the polling cadence used when no BeadsWatcher is
-// wired. Long by design — the watcher is the fast path.
-const beadsWaitPollInterval = 30 * time.Second
+// wired. Long by design — the watcher is the fast path. Derived from (and
+// kept strictly greater than) beads.ReadTimeout rather than a hand-copied
+// number (mitto-f8zx): a single bd evaluation can legitimately consume the
+// whole read deadline, and the two constants previously inverted
+// (readTimeout 45s > a 30s poll interval), which saturated the loop into
+// back-to-back subprocess spawns whenever bd was slow.
+const beadsWaitPollInterval = beads.ReadTimeout + 15*time.Second
+
+// beadsWaitMaxBackoff caps the exponential backoff applied to the poll
+// cadence after consecutive bd evaluation failures on the slow-poll path
+// (mitto-f8zx).
+const beadsWaitMaxBackoff = 5 * time.Minute
+
+// beadsWaitFailureEscalationThreshold is the number of consecutive bd
+// evaluation failures after which the wait loop promotes the recurring WARN
+// to a single ERROR log line, so a wedged bd is greppable/alertable instead
+// of retrying forever, silently, at WARN (mitto-f8zx).
+const beadsWaitFailureEscalationThreshold = 3
 
 // mcpHeartbeatInterval is how often a long-blocking tool handler emits a progress
 // notification to keep the in-flight request's SSE stream from idling out. Must
 // stay comfortably below the transport idle window (tunnel / agent HTTP client).
 const mcpHeartbeatInterval = 15 * time.Second
+
+// beadsWaitBackoffInterval returns the delay before the next poll attempt
+// given the number of consecutive bd evaluation failures observed so far on
+// this wait. Zero (or fewer) failures use the normal poll cadence; each
+// additional failure doubles the delay, capped at beadsWaitMaxBackoff, so a
+// slow or wedged bd is not hammered back-to-back (mitto-f8zx).
+func beadsWaitBackoffInterval(consecutiveFailures int) time.Duration {
+	d := beadsWaitPollInterval
+	for i := 1; i < consecutiveFailures; i++ {
+		d *= 2
+		if d >= beadsWaitMaxBackoff {
+			return beadsWaitMaxBackoff
+		}
+	}
+	if d > beadsWaitMaxBackoff {
+		return beadsWaitMaxBackoff
+	}
+	return d
+}
 
 // startProgressHeartbeat emits periodic progress notifications on the in-flight
 // request's stream until the returned stop func is called, keeping the SSE
@@ -492,29 +528,74 @@ func (s *Server) handleBeadsIssuesReachedState(
 	}
 
 	// Slow poll as a safety net for missed events (also the only path when
-	// no watcher is wired).
-	poll := time.NewTicker(beadsWaitPollInterval)
+	// no watcher is wired). A Timer (not a Ticker) is used deliberately and
+	// explicitly reset after every iteration completes: a Ticker's buffered
+	// channel (capacity 1) lets a tick queue up *while* a slow evaluation is
+	// in flight, so the loop re-enters select with a tick already pending
+	// and proceeds immediately — degenerating into back-to-back subprocess
+	// spawns whenever an evaluation outlives the interval. A Timer that is
+	// only ever reset after its own consumer has run cannot do that
+	// (mitto-f8zx D2).
+	poll := time.NewTimer(beadsWaitPollInterval)
 	defer poll.Stop()
 
 	deadline := time.NewTimer(timeout)
 	defer deadline.Stop()
 
+	// consecutiveFailures/firstFailureAt/lastErr track a run of bd
+	// evaluation failures on the slow path so the loop can back off,
+	// escalate once, and surface the degradation in the eventual output
+	// instead of retrying forever, silently, at WARN (mitto-f8zx D1).
+	var consecutiveFailures int
+	var firstFailureAt time.Time
+	var lastErr error
+
+	// resetPoll safely reschedules the poll timer, draining a pending tick
+	// first if the timer already fired but a different select case (e.g. a
+	// watcher wake) is what woke this iteration.
+	resetPoll := func(d time.Duration) {
+		if !poll.Stop() {
+			select {
+			case <-poll.C:
+			default:
+			}
+		}
+		poll.Reset(d)
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
-			return nil, ConversationWaitOutput{
+			out := ConversationWaitOutput{
 				What:          input.What,
 				CurrentStates: states,
 				PendingIssues: pending,
 				Error:         "context cancelled while waiting",
-			}, nil
+			}
+			if consecutiveFailures > 0 {
+				out.Degraded = true
+				out.ConsecutiveFailures = consecutiveFailures
+				out.Error = fmt.Sprintf("%s (degraded: %d consecutive bd evaluation failures; last error: %v)",
+					out.Error, consecutiveFailures, lastErr)
+			}
+			s.logger.Warn("Beads wait: context cancelled",
+				"source_session", realSessionID,
+				"working_dir", workingDir,
+				"consecutive_failures", consecutiveFailures)
+			return nil, out, nil
 		case <-deadline.C:
 			// Final evaluation on timeout to return the freshest snapshot.
 			reached, pending, states, _, err := evaluateBeadsState(
 				ctx, client, workingDir, input.BeadsIssues, input.BeadsTargetState, match,
 			)
 			if err != nil {
-				s.logger.Warn("Beads wait: final evaluation after timeout failed", "error", err)
+				consecutiveFailures++
+				if consecutiveFailures == 1 {
+					firstFailureAt = time.Now()
+				}
+				lastErr = err
+				s.logger.Warn("Beads wait: final evaluation after timeout failed",
+					"error", err, "consecutive_failures", consecutiveFailures)
 			}
 			s.logger.Warn("Beads wait timed out",
 				"source_session", realSessionID,
@@ -523,7 +604,7 @@ func (s *Server) handleBeadsIssuesReachedState(
 				"match", match,
 				"timeout", timeout,
 				"pending", pending)
-			return nil, ConversationWaitOutput{
+			out := ConversationWaitOutput{
 				Success:       true,
 				What:          input.What,
 				TimedOut:      true,
@@ -531,7 +612,14 @@ func (s *Server) handleBeadsIssuesReachedState(
 				ReachedIssues: reached,
 				PendingIssues: pending,
 				CurrentStates: states,
-			}, nil
+			}
+			if consecutiveFailures > 0 {
+				out.Degraded = true
+				out.ConsecutiveFailures = consecutiveFailures
+				out.Error = fmt.Sprintf("bd evaluation failed %d consecutive time(s) up to and including the final check; last error: %v",
+					consecutiveFailures, lastErr)
+			}
+			return nil, out, nil
 		case <-sub.wake:
 			// re-evaluate
 		case <-poll.C:
@@ -542,11 +630,34 @@ func (s *Server) handleBeadsIssuesReachedState(
 			ctx, client, workingDir, input.BeadsIssues, input.BeadsTargetState, match,
 		)
 		if err != nil {
-			// Transient bd failures should not abort a multi-hour wait.
-			s.logger.Warn("Beads wait: evaluation failed, retrying",
-				"error", err, "working_dir", workingDir)
+			// Transient bd failures should not abort a multi-hour wait, but
+			// they must be tracked, backed off, and eventually escalated
+			// (mitto-f8zx) rather than retried forever, silently, at WARN.
+			consecutiveFailures++
+			if consecutiveFailures == 1 {
+				firstFailureAt = time.Now()
+			}
+			lastErr = err
+			backoff := beadsWaitBackoffInterval(consecutiveFailures)
+			if consecutiveFailures == beadsWaitFailureEscalationThreshold {
+				s.logger.Error("Beads wait: bd evaluation failing repeatedly",
+					"error", err,
+					"working_dir", workingDir,
+					"consecutive_failures", consecutiveFailures,
+					"elapsed_since_first_failure", time.Since(firstFailureAt),
+					"next_attempt_in", backoff)
+			} else {
+				s.logger.Warn("Beads wait: evaluation failed, retrying",
+					"error", err,
+					"working_dir", workingDir,
+					"consecutive_failures", consecutiveFailures,
+					"next_attempt_in", backoff)
+			}
+			resetPoll(backoff)
 			continue
 		}
+		consecutiveFailures = 0
+		lastErr = nil
 		if done {
 			s.logger.Info("Beads wait predicate satisfied",
 				"source_session", realSessionID,
@@ -562,5 +673,6 @@ func (s *Server) handleBeadsIssuesReachedState(
 				CurrentStates: states,
 			}, nil
 		}
+		resetPoll(beadsWaitPollInterval)
 	}
 }
