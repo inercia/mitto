@@ -41,14 +41,14 @@ not on `rootCmd`: rootCmd's existing persistent flags (`--acp`, `--dir`,
 `--auto-approve`) are ACP-spawn concepts that do not apply to
 server-touching commands, and vice versa.
 
-| Flag             | Maps to                                          |
-| ---------------- | ------------------------------------------------ |
-| `--url`          | SDK `baseURL`                                    |
-| `--token`        | `api.WithBearerToken`                            |
-| `--api-prefix`   | `api.WithAPIPrefix` (new option, `mitto-rwxq.7`) |
-| `--timeout`      | `api.WithTimeout`                                |
-| `--output`       | `table` (default) \| `json` \| `yaml`            |
-| `--no-color`     | forces glamour's notty style                     |
+| Flag           | Maps to                                          |
+| -------------- | ------------------------------------------------ |
+| `--url`        | SDK `baseURL`                                    |
+| `--token`      | `api.WithBearerToken`                            |
+| `--api-prefix` | `api.WithAPIPrefix` (new option, `mitto-rwxq.7`) |
+| `--timeout`    | `api.WithTimeout`                                |
+| `--output`     | `table` (default) \| `json` \| `yaml`            |
+| `--no-color`   | forces glamour's notty style                     |
 
 Precedence, resolved once in `mitto-pscc.4`:
 
@@ -91,14 +91,14 @@ or CI).
 
 ## 5. Exit codes
 
-| Code | Meaning             | Source                                                          |
-| ---- | -------------------- | ---------------------------------------------------------------- |
-| 0    | ok                    | —                                                                 |
-| 1    | generic               | anything not classified below                                    |
-| 2    | usage                 | cobra flag/arg validation error                                  |
-| 3    | server unreachable    | connection-refused / no-such-host / timeout, stale instance file |
-| 4    | auth failure          | `errors.Is(err, api.ErrUnauthenticated \| api.ErrForbidden)`     |
-| 5    | not found             | `errors.Is(err, api.ErrNotFound)`                                |
+| Code | Meaning            | Source                                                           |
+| ---- | ------------------ | ---------------------------------------------------------------- |
+| 0    | ok                 | —                                                                |
+| 1    | generic            | anything not classified below                                    |
+| 2    | usage              | cobra flag/arg validation error                                  |
+| 3    | server unreachable | connection-refused / no-such-host / timeout, stale instance file |
+| 4    | auth failure       | `errors.Is(err, api.ErrUnauthenticated \| api.ErrForbidden)`     |
+| 5    | not found          | `errors.Is(err, api.ErrNotFound)`                                |
 
 Mapped **mechanically in one function** in `mitto-pscc.4`, not per
 command. `(*api.APIError).Is` matches by HTTP status

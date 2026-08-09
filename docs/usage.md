@@ -107,26 +107,26 @@ mitto auth status
 mitto auth rotate
 ```
 
-| Flag             | Description                                              |
-| ---------------- | --------------------------------------------------------- |
-| `--url <url>`    | Server URL (default: from `instance.json`, or `MITTO_URL`) |
+| Flag             | Description                                                    |
+| ---------------- | -------------------------------------------------------------- |
+| `--url <url>`    | Server URL (default: from `instance.json`, or `MITTO_URL`)     |
 | `--token <tok>`  | Bearer token (default: from `instance.json`, or `MITTO_TOKEN`) |
-| `--timeout <d>`  | Request timeout                                            |
-| `--output <fmt>` | `table` (default), `json`, or `yaml`                       |
-| `--no-color`     | Disable ANSI styling (also respects `NO_COLOR`)            |
+| `--timeout <d>`  | Request timeout                                                |
+| `--output <fmt>` | `table` (default), `json`, or `yaml`                           |
+| `--no-color`     | Disable ANSI styling (also respects `NO_COLOR`)                |
 
 See [CLI Conversation Commands — Design Decision Record](devel/cli-conversation.md)
 for the full command tree, output contract and exit-code mapping.
 
 ## Web Interface Flags
 
-| Flag              | Description                           |
-| ----------------- | ------------------------------------- |
-| `--port <number>`     | HTTP server port (default: 8080)      |
-| `--host <addr>`       | HTTP server host (default: 127.0.0.1) |
-| `--open`              | Open browser on startup               |
-| `--no-sessions`       | Disable session persistence           |
-| `--workspaces <file>` | Load workspaces from a JSON/YAML file (overlay, not persisted) |
+| Flag                  | Description                                                                                               |
+| --------------------- | --------------------------------------------------------------------------------------------------------- |
+| `--port <number>`     | HTTP server port (default: 8080)                                                                          |
+| `--host <addr>`       | HTTP server host (default: 127.0.0.1)                                                                     |
+| `--open`              | Open browser on startup                                                                                   |
+| `--no-sessions`       | Disable session persistence                                                                               |
+| `--workspaces <file>` | Load workspaces from a JSON/YAML file (overlay, not persisted)                                            |
 | `--folders <file>`    | Overlay folder-level settings (name/code/color/auto_children/beads) from a JSON/YAML file (not persisted) |
 
 ## Session Management
@@ -144,13 +144,13 @@ Each session is stored as a directory containing:
 
 ## Environment Variables
 
-| Variable           | Description                     |
-| ------------------ | ------------------------------- |
-| `MITTO_DIR`         | Override default data directory             |
-| `MITTO_ACP_SERVER`  | Default ACP server to use                   |
-| `MITTO_WORK_DIR`    | Default working directory                   |
-| `MITTO_STATIC_DIR`  | Serve static files from this dir (dev/app)  |
-| `MITTORC`           | Path to configuration file                  |
+| Variable           | Description                                |
+| ------------------ | ------------------------------------------ |
+| `MITTO_DIR`        | Override default data directory            |
+| `MITTO_ACP_SERVER` | Default ACP server to use                  |
+| `MITTO_WORK_DIR`   | Default working directory                  |
+| `MITTO_STATIC_DIR` | Serve static files from this dir (dev/app) |
+| `MITTORC`          | Path to configuration file                 |
 
 ## Examples
 
