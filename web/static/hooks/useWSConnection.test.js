@@ -116,3 +116,139 @@ describe("useWebSocket.js: composer wiring onto eventsStreamRef (mitto-7gta.18 S
     );
   });
 });
+
+describe("useWSConnection.js: session sockets backed by SessionStream (mitto-7gta.30 S1/S3)", () => {
+  test("no raw `new WebSocket(` remains for session sockets", () => {
+    expect(useWSConnectionJs).not.toMatch(/new WebSocket\(/);
+    expect(useWebSocketJs).not.toMatch(/new WebSocket\(/);
+  });
+
+  test("no leftover readyState/WebSocket.OPEN checks in either hook", () => {
+    expect(useWSConnectionJs).not.toMatch(/readyState/);
+    expect(useWSConnectionJs).not.toMatch(/WebSocket\.OPEN/);
+    expect(useWebSocketJs).not.toMatch(/readyState/);
+    expect(useWebSocketJs).not.toMatch(/WebSocket\.OPEN/);
+  });
+
+  test("getOrCreateStream builds the stream via getSdkClient().sessionStream(sessionId, {...}) with the seqStore/pendingPromptStore/keepalive/shouldReconnect options", () => {
+    expect(useWSConnectionJs).toMatch(
+      /const stream = getSdkClient\(\)\.sessionStream\(sessionId, \{\s*\n\s*wsBaseUrl: getSdkWsBaseUrl\(\),\s*\n\s*seqStore: createSdkSeqStore\(\),\s*\n\s*pendingPromptStore: createSdkPendingPromptStore\(\),\s*\n\s*keepaliveIntervalMs: getKeepaliveInterval\(\),\s*\n\s*shouldReconnect: sessionShouldReconnect,/,
+    );
+  });
+
+  test("getClientMaxSeq folds lastKnownSeqRef and React-state seqs (max of ref, messages, lastLoadedSeq) into the stream", () => {
+    expect(useWSConnectionJs).toMatch(
+      /getClientMaxSeq: \(\) => \{\s*\n\s*const session = sessionsRef\.current\[sessionId\];\s*\n\s*const refSeq = lastKnownSeqRef\.current\[sessionId\] \|\| 0;\s*\n\s*const stateSeq = Math\.max\(\s*\n\s*getMaxSeq\(session\?\.messages \|\| \[\]\),\s*\n\s*session\?\.lastLoadedSeq \|\| 0,\s*\n\s*\);\s*\n\s*return Math\.max\(refSeq, stateSeq\);\s*\n\s*\},/,
+    );
+  });
+
+  test("isSyncInFlight is wired to the composer's pendingSyncRef so the stream never races a composer-initiated load_events", () => {
+    expect(useWSConnectionJs).toMatch(
+      /isSyncInFlight: \(\) => !!pendingSyncRef\.current\[sessionId\],/,
+    );
+  });
+
+  test("sessionShouldReconnect preserves the auth-redirect veto before the server-shutdown veto (same gate as connectToEvents)", () => {
+    expect(useWSConnectionJs).toMatch(
+      /const sessionShouldReconnect = useCallback\(async \(\) => \{\s*\n\s*const isAuthenticated = await checkAuthOrRedirect\(\);\s*\n\s*if \(!isAuthenticated\) return false;[\s\S]*?if \(serverShuttingDownRef\.current\) \{/,
+    );
+  });
+
+  test("the stream wires open/message/keepalive_ack/close/error listeners exactly once, on creation", () => {
+    expect(useWSConnectionJs).toMatch(/stream\.on\("open", \(\) => \{/);
+    expect(useWSConnectionJs).toMatch(
+      /stream\.on\("message", \(msg\) => \{[\s\S]*?handleSessionMessageRef\.current\(sessionId, msg\);/,
+    );
+    expect(useWSConnectionJs).toMatch(
+      /stream\.on\("keepalive_ack", \(data\) => \{\s*\n\s*handleSessionKeepaliveAckRef\.current\?\.\(sessionId, data\);/,
+    );
+    expect(useWSConnectionJs).toMatch(/stream\.on\("close", \(\) => \{/);
+    expect(useWSConnectionJs).toMatch(/stream\.on\("error", \(err\) => \{/);
+  });
+
+  test("getOrCreateStream caches the stream in sessionWsRefs and reuses it on a second call for the same session", () => {
+    expect(useWSConnectionJs).toMatch(
+      /const existing = sessionWsRefs\.current\[sessionId\];\s*\n\s*if \(existing\) return existing;/,
+    );
+    expect(useWSConnectionJs).toMatch(
+      /sessionWsRefs\.current\[sessionId\] = stream;\s*\n\s*return stream;/,
+    );
+  });
+
+  test("connectToSession gets-or-creates the stream then calls .connect() (no manual onopen/onmessage wiring at the call site)", () => {
+    expect(useWSConnectionJs).toMatch(
+      /const connectToSession = useCallback\(\s*\n\s*\(sessionId\) => \{\s*\n\s*const stream = getOrCreateStream\(sessionId\);\s*\n\s*stream\.connect\(\);\s*\n\s*return stream;/,
+    );
+  });
+
+  test("sendToSession forwards a plain object to stream.send (not JSON.stringify)", () => {
+    expect(useWSConnectionJs).toMatch(
+      /const sendToSession = useCallback\(\(sessionId, msg\) => \{\s*\n\s*const stream = sessionWsRefs\.current\[sessionId\];\s*\n\s*return stream \? stream\.send\(msg\) : false;/,
+    );
+  });
+
+  test("waitForSessionConnection checks stream.state (not readyState) and resolves via stream.once(\"open\", ...)", () => {
+    expect(useWSConnectionJs).toMatch(/if \(stream\.state === "open"\) \{\s*\n\s*resolve\(stream\);/);
+    expect(useWSConnectionJs).toMatch(
+      /stream\.once\("open", \(\) => \{\s*\n\s*clearTimeout\(timeoutId\);\s*\n\s*resolve\(stream\);/,
+    );
+  });
+
+  test("isConnectionHealthy delegates to stream.isHealthy()", () => {
+    expect(useWSConnectionJs).toMatch(
+      /const isConnectionHealthy = useCallback\(\(sessionId\) => \{\s*\n\s*const stream = sessionWsRefs\.current\[sessionId\];\s*\n\s*if \(!stream\) return true;[\s\S]*?const healthy = stream\.isHealthy\(\);/,
+    );
+  });
+
+  test("forceReconnectActiveSession and the staggered background sweep call stream.forceReconnect() (no manual close+reconnect)", () => {
+    expect(useWSConnectionJs).toMatch(
+      /getOrCreateStream\(currentSessionId\)\.forceReconnect\(\);/,
+    );
+    expect(useWSConnectionJs).toMatch(/existingStream\.forceReconnect\(\);/);
+  });
+
+  test("background-disconnect sweep calls stream.close() directly (SessionStream owns reconnect suppression internally)", () => {
+    expect(useWSConnectionJs).toMatch(
+      /delete sessionWsRefs\.current\[sessionId\];\s*\n\s*stream\.close\(\);/,
+    );
+  });
+});
+
+describe("useWebSocket.js: keepalive_ack UI bookkeeping split from SessionStream (mitto-7gta.30)", () => {
+  test("handleSessionKeepaliveAckRef is declared and populated with handleSessionKeepaliveAck", () => {
+    expect(useWebSocketJs).toMatch(/const handleSessionKeepaliveAckRef = useRef\(null\);/);
+    expect(useWebSocketJs).toMatch(
+      /handleSessionKeepaliveAckRef\.current = handleSessionKeepaliveAck;/,
+    );
+  });
+
+  test("handleSessionKeepaliveAck syncs streaming state, processor stats, queue length (active session only), status, and is_running/acp_ready", () => {
+    expect(useWebSocketJs).toMatch(
+      /const handleSessionKeepaliveAck = useCallback\(\(sessionId, data\) => \{/,
+    );
+    expect(useWebSocketJs).toMatch(/const serverIsPrompting = data\?\.is_prompting \|\| false;/);
+    expect(useWebSocketJs).toMatch(
+      /if \(data\?\.queue_length !== undefined && sessionId === activeSessionIdRef\.current\) \{/,
+    );
+    expect(useWebSocketJs).toMatch(/const serverIsRunning = data\?\.is_running \?\? true;/);
+  });
+
+  test("handleSessionKeepaliveAckRef is passed into useWSConnection alongside handleSessionMessageRef", () => {
+    expect(useWebSocketJs).toMatch(
+      /handleSessionMessageRef,\s*\n\s*handleSessionKeepaliveAckRef,\s*\n\s*handleGlobalEvent,/,
+    );
+  });
+
+  test("all remaining sessionWsRefs call sites use the SessionStream API (.state===\"open\" / .send(obj)), not the raw WebSocket API", () => {
+    // Every `.send(` on a sessionWsRefs-derived stream variable must pass a plain
+    // object literal (not JSON.stringify(...)) — count must match across both files.
+    const sendCalls = [...useWebSocketJs.matchAll(/\b(?:ws|currentWs)\.send\(/g)];
+    expect(sendCalls.length).toBeGreaterThan(0);
+    for (const _ of sendCalls) {
+      expect(useWebSocketJs).not.toMatch(/(?:ws|currentWs)\.send\(\s*JSON\.stringify/);
+    }
+    // `.state === "open"` guards replace every former `.readyState === WebSocket.OPEN` guard.
+    const stateChecks = [...useWebSocketJs.matchAll(/\.state === "open"/g)];
+    expect(stateChecks.length).toBeGreaterThanOrEqual(4);
+  });
+});
