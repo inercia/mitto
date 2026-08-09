@@ -12,9 +12,9 @@ import {
   isNativeApp,
   getAPIPrefix,
 } from "../utils/native.js";
-import { secureFetch, authFetch } from "../utils/csrf.js";
-import { apiUrl, errorMessageFromData } from "../utils/api.js";
-import { endpoints } from "../utils/index.js";
+import { apiUrl } from "../utils/api.js";
+import { getSdkClient } from "../utils/sdkClient.js";
+import { errorMessage } from "../utils/sdkErrors.js";
 import { getContextWindowSize } from "../utils/models.js";
 import { routeDroppedPaths } from "../utils/paths.js";
 import {
@@ -459,8 +459,7 @@ export function ChatInput({
   const [loopTrigger, setLoopTrigger] = useState("schedule");
   const [loopTriggers, setLoopTriggers] = useState(["schedule"]);
   const [loopDelaySeconds, setLoopDelaySeconds] = useState(5);
-  const [loopMaxDurationSeconds, setLoopMaxDurationSeconds] =
-    useState(0);
+  const [loopMaxDurationSeconds, setLoopMaxDurationSeconds] = useState(0);
   // onTasks trigger fields: CEL condition gating firing + the UI preset id
   // compiled into it (empty condition = fire on any beads/task change).
   const [loopCondition, setLoopCondition] = useState("");
@@ -569,19 +568,11 @@ export function ChatInput({
 
     const fetchLoopConfig = async () => {
       try {
-        const response = await authFetch(
-          endpoints.sessions.loop(sessionId),
-        );
-        const ct = response.headers.get("content-type");
-        if (!response.ok || !ct || !ct.includes("application/json")) {
-          console.warn(
-            "Loop config fetch returned non-JSON response:",
-            response.status,
-            ct,
-          );
+        const config = await getSdkClient().sessions.loop.get(sessionId);
+        if (!config || typeof config !== "object") {
+          console.warn("Loop config fetch returned non-JSON response:", config);
           return;
         }
-        const config = await response.json();
         // Always update frequency
         if (config.frequency) {
           setLoopFrequency(config.frequency);
@@ -658,8 +649,7 @@ export function ChatInput({
       if (frequency) {
         setLoopFrequency(frequency);
       }
-      if (iterationCount !== undefined)
-        setLoopIterationCount(iterationCount);
+      if (iterationCount !== undefined) setLoopIterationCount(iterationCount);
       if (maxIterations !== undefined) setLoopMaxIterations(maxIterations);
 
       // If loop config was deleted (not configured), reset state
@@ -688,20 +678,12 @@ export function ChatInput({
           setLoopNextScheduledAt(nextScheduledAt);
         }
         // Fetch the full config to get the prompt name and fresh_context
-        authFetch(endpoints.sessions.loop(sessionId))
-          .then(async (response) => {
-            if (!response.ok) return null;
-            const ct = response.headers.get("content-type");
-            if (!ct || !ct.includes("application/json")) {
-              console.warn(
-                "Loop config fetch returned non-JSON response:",
-                response.status,
-                ct,
-              );
-              return null;
-            }
-            return response.json();
-          })
+        getSdkClient()
+          .sessions.loop.get(sessionId)
+          .then((config) =>
+            config && typeof config === "object" ? config : null,
+          )
+          .catch(() => null)
           .then((config) => {
             if (!config) return;
             setLoopPromptName(config.prompt_name || "");
@@ -728,9 +710,7 @@ export function ChatInput({
               setIsLoopLocked(true);
             }
           })
-          .catch((err) =>
-            console.error("Failed to fetch loop config:", err),
-          );
+          .catch((err) => console.error("Failed to fetch loop config:", err));
       }
     };
 
@@ -1031,24 +1011,15 @@ export function ChatInput({
 
     setIsLoopSaving(true);
     try {
-      const response = await secureFetch(
-        endpoints.sessions.loop(sessionId),
-        {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ prompt: text.trim(), enabled: true }),
-        },
-      );
-      if (response.ok) {
-        const data = await response.json();
-        setLoopPrompt(text.trim());
-        setIsLoopLocked(true);
-        // Update next scheduled time from server response (keep as ISO string for consistency)
-        if (data.next_scheduled_at) {
-          setLoopNextScheduledAt(data.next_scheduled_at);
-        }
-      } else {
-        console.error("Failed to lock loop prompt");
+      const data = await getSdkClient().sessions.loop.update(sessionId, {
+        prompt: text.trim(),
+        enabled: true,
+      });
+      setLoopPrompt(text.trim());
+      setIsLoopLocked(true);
+      // Update next scheduled time from server response (keep as ISO string for consistency)
+      if (data.next_scheduled_at) {
+        setLoopNextScheduledAt(data.next_scheduled_at);
       }
     } catch (err) {
       console.error("Failed to lock loop prompt:", err);
@@ -1063,23 +1034,14 @@ export function ChatInput({
 
     setIsLoopSaving(true);
     try {
-      const response = await secureFetch(
-        endpoints.sessions.loop(sessionId),
-        {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ enabled: false }),
-        },
-      );
-      if (response.ok) {
-        setIsLoopLocked(false);
-        setLoopNextScheduledAt(null); // Clear next scheduled time when disabled
-        // Focus the textarea so user can start editing
-        if (textareaRef.current) {
-          textareaRef.current.focus();
-        }
-      } else {
-        console.error("Failed to unlock loop prompt");
+      await getSdkClient().sessions.loop.update(sessionId, {
+        enabled: false,
+      });
+      setIsLoopLocked(false);
+      setLoopNextScheduledAt(null); // Clear next scheduled time when disabled
+      // Focus the textarea so user can start editing
+      if (textareaRef.current) {
+        textareaRef.current.focus();
       }
     } catch (err) {
       console.error("Failed to unlock loop prompt:", err);
@@ -1101,21 +1063,14 @@ export function ChatInput({
           if (extraArgs && Object.keys(extraArgs).length > 0) {
             body.arguments = extraArgs;
           }
-          const response = await secureFetch(
-            endpoints.sessions.loop(sessionId),
-            {
-              method: "PATCH",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(body),
-            },
+          const data = await getSdkClient().sessions.loop.update(
+            sessionId,
+            body,
           );
-          if (response.ok) {
-            const data = await response.json();
-            setLoopPromptName(promptName);
-            setIsLoopLocked(true);
-            if (data.next_scheduled_at) {
-              setLoopNextScheduledAt(data.next_scheduled_at);
-            }
+          setLoopPromptName(promptName);
+          setIsLoopLocked(true);
+          if (data.next_scheduled_at) {
+            setLoopNextScheduledAt(data.next_scheduled_at);
           }
         } catch (err) {
           console.error("Failed to save loop prompt selection:", err);
@@ -1181,16 +1136,10 @@ export function ChatInput({
       params,
       async (userArgs) => {
         try {
-          const resp = await secureFetch(
-            endpoints.sessions.loop(sessionId),
-            {
-              method: "PATCH",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ arguments: userArgs }),
-            },
-          );
-          if (resp.ok) setLoopArguments(userArgs);
-          else console.error("Failed to save loop arguments");
+          await getSdkClient().sessions.loop.update(sessionId, {
+            arguments: userArgs,
+          });
+          setLoopArguments(userArgs);
         } catch (err) {
           console.error("Failed to save loop arguments:", err);
         }
@@ -1482,29 +1431,19 @@ export function ChatInput({
     try {
       const timeoutId = setTimeout(() => controller.abort(), 65000); // 65s timeout
 
-      const response = await secureFetch(endpoints.aux.improvePrompt(), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          prompt: text,
-          workspace_uuid:
-            window.mittoCurrentWorkspaceUUID ||
+      let data;
+      try {
+        data = await getSdkClient().misc.improvePrompt(
+          text,
+          window.mittoCurrentWorkspaceUUID ||
             sessionStorage.getItem("mittoCurrentWorkspaceUUID") ||
             "",
-        }),
-        signal: controller.signal,
-      });
-
-      clearTimeout(timeoutId);
-
-      if (!response.ok) {
-        const errData = await response.json().catch(() => ({}));
-        throw new Error(
-          errorMessageFromData(errData, "Failed to improve prompt"),
+          { signal: controller.signal },
         );
+      } finally {
+        clearTimeout(timeoutId);
       }
 
-      const data = await response.json();
       if (data.improved_prompt && onDraftChange) {
         onDraftChange(targetSessionId, data.improved_prompt);
         if (targetSessionId === sessionId) {
@@ -1526,10 +1465,13 @@ export function ChatInput({
       console.error("Failed to improve prompt:", err);
       // Only show error if we're still on the session that had the error
       if (targetSessionId === sessionId) {
-        if (err.name === "AbortError") {
+        // The SDK wraps an aborted fetch in a MittoNetworkError whose
+        // `.cause` is the original AbortError (sdk/core/errors.js), so check
+        // both the outer and the wrapped name.
+        if (err.name === "AbortError" || err.cause?.name === "AbortError") {
           setImproveError("Request timed out. Please try again.");
         } else {
-          const msg = err.message || "Failed to improve prompt";
+          const msg = errorMessage(err, "Failed to improve prompt");
           const hasCrashHint =
             msg.includes("crashed") || msg.includes("try again");
           setImproveError(
@@ -1616,17 +1558,10 @@ export function ChatInput({
       const formData = new FormData();
       formData.append("image", file);
 
-      const response = await secureFetch(endpoints.sessions.images(sessionId), {
-        method: "POST",
-        body: formData,
-      });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(errorMessageFromData(error, "Failed to upload image"));
-      }
-
-      const data = await response.json();
+      const data = await getSdkClient().sessions.images.upload(
+        sessionId,
+        formData,
+      );
       setPendingImages((prev) =>
         prev.map((img) =>
           img.id === tempId
@@ -1644,7 +1579,7 @@ export function ChatInput({
       return data;
     } catch (err) {
       console.error("Failed to upload image:", err);
-      setUploadError(err.message || "Failed to upload image");
+      setUploadError(errorMessage(err, "Failed to upload image"));
       setTimeout(() => setUploadError(null), 5000);
       setPendingImages((prev) => prev.filter((img) => img.id !== tempId));
       URL.revokeObjectURL(previewUrl);
@@ -1670,21 +1605,10 @@ export function ChatInput({
     });
 
     try {
-      const response = await secureFetch(
-        endpoints.sessions.imagesFromPath(sessionId),
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ paths }),
-        },
+      const results = await getSdkClient().sessions.images.uploadFromPath(
+        sessionId,
+        paths,
       );
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(errorMessageFromData(error, "Failed to upload images"));
-      }
-
-      const results = await response.json();
       const tempIds = tempImages.map((t) => t.id);
       setPendingImages((prev) =>
         prev.filter((img) => !tempIds.includes(img.id)),
@@ -1719,7 +1643,7 @@ export function ChatInput({
       return results;
     } catch (err) {
       console.error("Failed to upload images from paths:", err);
-      setUploadError(err.message || "Failed to upload images");
+      setUploadError(errorMessage(err, "Failed to upload images"));
       setTimeout(() => setUploadError(null), 5000);
       const tempIds = tempImages.map((t) => t.id);
       setPendingImages((prev) =>
@@ -1755,17 +1679,7 @@ export function ChatInput({
       const formData = new FormData();
       formData.append("file", file);
 
-      const response = await secureFetch(endpoints.sessions.files(sessionId), {
-        method: "POST",
-        body: formData,
-      });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(errorMessageFromData(error, "Failed to upload file"));
-      }
-
-      const data = await response.json();
+      const data = await getSdkClient().files.upload(sessionId, formData);
       setPendingFiles((prev) =>
         prev.map((f) =>
           f.id === tempId
@@ -1783,7 +1697,7 @@ export function ChatInput({
       return data;
     } catch (err) {
       console.error("Failed to upload file:", err);
-      setUploadError(err.message || "Failed to upload file");
+      setUploadError(errorMessage(err, "Failed to upload file"));
       setTimeout(() => setUploadError(null), 5000);
       setPendingFiles((prev) => prev.filter((f) => f.id !== tempId));
       return null;
@@ -1813,21 +1727,10 @@ export function ChatInput({
     });
 
     try {
-      const response = await secureFetch(
-        endpoints.sessions.filesFromPath(sessionId),
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ paths }),
-        },
+      const results = await getSdkClient().files.uploadFromPath(
+        sessionId,
+        paths,
       );
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(errorMessageFromData(error, "Failed to upload files"));
-      }
-
-      const results = await response.json();
       const tempIds = tempFiles.map((t) => t.id);
       setPendingFiles((prev) => prev.filter((f) => !tempIds.includes(f.id)));
 
@@ -1861,7 +1764,7 @@ export function ChatInput({
       return results;
     } catch (err) {
       console.error("Failed to upload files from paths:", err);
-      setUploadError(err.message || "Failed to upload files");
+      setUploadError(errorMessage(err, "Failed to upload files"));
       setTimeout(() => setUploadError(null), 5000);
       const tempIds = tempFiles.map((t) => t.id);
       setPendingFiles((prev) => prev.filter((f) => !tempIds.includes(f.id)));

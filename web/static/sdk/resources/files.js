@@ -11,7 +11,7 @@
  * (docs/devel/js-client-library.md §5) — `createClient()` exposes it as
  * `client.files`.
  *
- * Covers two distinct route families:
+ * Covers three distinct route families:
  *  - Session-scoped file attachments: /api/sessions/{id}/files[/{fileId},
  *    /from-path] (handlers/file.go, file_frompath.go) — mirrors the
  *    `sessions.images` surface 1:1.
@@ -19,6 +19,12 @@
  *    (internal/web/file_server.go) — read-only helpers for <a href>/<img
  *    src> URLs and raw content fetches; genuinely "files" and otherwise has
  *    no home in this SDK.
+ *  - The workspace file/dir pickers that feed the "filename"/"dirname"
+ *    prompt parameter types (mitto-7gta.17 slice S5 gap: `/api/workspace-files`
+ *    and `/api/workspace-dirs` had URL builders in `core/endpoints.js` but no
+ *    resource-module method — added here rather than as a new top-level
+ *    domain since they are read-only workspace file/dir listings, the same
+ *    theme as the two families above).
  */
 import { buildUrl, request } from "../core/transport.js";
 
@@ -29,7 +35,8 @@ const enc = encodeURIComponent;
  * @returns {object} the files resource
  */
 export function createFilesResource(config) {
-  const call = (method, path, opts = {}) => request(config, { method, path, ...opts });
+  const call = (method, path, opts = {}) =>
+    request(config, { method, path, ...opts });
 
   return {
     list: (id, opts) => call("GET", `/api/sessions/${enc(id)}/files`, opts),
@@ -49,7 +56,8 @@ export function createFilesResource(config) {
      *  fetch bytes. Use `fetchFile()` to retrieve the raw Response. Unlike
      *  the other methods it never reaches `request()`, so it applies
      *  `buildUrl()` itself to pick up `baseUrl`/`apiPrefix`. */
-    url: (id, fileId) => buildUrl(config, `/api/sessions/${enc(id)}/files/${enc(fileId)}`),
+    url: (id, fileId) =>
+      buildUrl(config, `/api/sessions/${enc(id)}/files/${enc(fileId)}`),
     /** @returns {Promise<Response>} the raw, undecoded file response. */
     fetchFile: (id, fileId, opts) =>
       call("GET", `/api/sessions/${enc(id)}/files/${enc(fileId)}`, {
@@ -65,6 +73,25 @@ export function createFilesResource(config) {
     contentUrl: (params) => buildUrl(config, "/api/files", params),
     /** @param {object} params - {ws, path, render?, diff?}
      *  @returns {Promise<Response>} the raw, undecoded file response. */
-    fetchContent: (params, opts) => call("GET", "/api/files", { query: params, raw: true, ...opts }),
+    fetchContent: (params, opts) =>
+      call("GET", "/api/files", { query: params, raw: true, ...opts }),
+
+    /** GET /api/workspace-files?working_dir=&dir=&glob= — candidate files
+     *  for a "filename" prompt parameter's dropdown.
+     *  @param {object} params - {working_dir, dir?, glob?: string|string[]}
+     *  @returns {Promise<{files: object[]}>} */
+    workspaceFiles: {
+      list: (params, opts) =>
+        call("GET", "/api/workspace-files", { query: params, ...opts }),
+    },
+
+    /** GET /api/workspace-dirs?working_dir=&dir=&glob= — candidate
+     *  directories for a "dirname" prompt parameter's dropdown.
+     *  @param {object} params - {working_dir, dir?, glob?: string|string[]}
+     *  @returns {Promise<{dirs: object[]}>} */
+    workspaceDirs: {
+      list: (params, opts) =>
+        call("GET", "/api/workspace-dirs", { query: params, ...opts }),
+    },
   };
 }

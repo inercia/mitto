@@ -5,9 +5,8 @@
 
 const { useState, useEffect, useCallback, html, Fragment } = window.preact;
 
-import { authFetch } from "../utils/csrf.js";
 import { apiUrl } from "../utils/api.js";
-import { endpoints } from "../utils/endpoints.js";
+import { getSdkClient } from "../utils/sdkClient.js";
 import { Modal } from "./Modal.js";
 import { getBasename } from "../lib.js";
 import { SlidersIcon } from "./Icons.js";
@@ -109,7 +108,11 @@ function summarizeNestedNode(innerParams, node, promptsList) {
         pickedPrompt && Array.isArray(pickedPrompt.parameters)
           ? pickedPrompt.parameters
           : [];
-      const deeper = summarizeNestedNode(deeperInner, sub[ip.name], promptsList);
+      const deeper = summarizeNestedNode(
+        deeperInner,
+        sub[ip.name],
+        promptsList,
+      );
       filled += deeper.filled;
       missingRequired += deeper.missingRequired;
       continue;
@@ -260,9 +263,7 @@ function ParamField({
           disabled
         />
         ${description &&
-        html`<p class="text-xs text-mitto-text-muted mt-1">
-          ${description}
-        </p>`}
+        html`<p class="text-xs text-mitto-text-muted mt-1">${description}</p>`}
       </fieldset>
     `;
   }
@@ -270,8 +271,7 @@ function ParamField({
   let control;
   if (type === "beadsId") {
     if (loadingBeads) {
-      control = html`<span
-        class="text-mitto-text-muted text-xs opacity-60"
+      control = html`<span class="text-mitto-text-muted text-xs opacity-60"
         >…</span
       >`;
     } else if (beadsIssues.length === 0) {
@@ -304,8 +304,7 @@ function ParamField({
     }
   } else if (type === "sessionId") {
     if (loadingSessions) {
-      control = html`<span
-        class="text-mitto-text-muted text-xs opacity-60"
+      control = html`<span class="text-mitto-text-muted text-xs opacity-60"
         >…</span
       >`;
     } else if (sessions.length === 0) {
@@ -340,8 +339,7 @@ function ParamField({
       (s) => hostSessionId && s.parent_session_id === hostSessionId,
     );
     if (loadingSessions) {
-      control = html`<span
-        class="text-mitto-text-muted text-xs opacity-60"
+      control = html`<span class="text-mitto-text-muted text-xs opacity-60"
         >…</span
       >`;
     } else if (childSessions.length === 0) {
@@ -373,8 +371,7 @@ function ParamField({
     }
   } else if (type === "workspaceId") {
     if (loadingWorkspaces) {
-      control = html`<span
-        class="text-mitto-text-muted text-xs opacity-60"
+      control = html`<span class="text-mitto-text-muted text-xs opacity-60"
         >…</span
       >`;
     } else if (workspaces.length === 0) {
@@ -414,8 +411,7 @@ function ParamField({
       return true;
     });
     if (loadingWorkspaces) {
-      control = html`<span
-        class="text-mitto-text-muted text-xs opacity-60"
+      control = html`<span class="text-mitto-text-muted text-xs opacity-60"
         >…</span
       >`;
     } else if (folders.length === 0) {
@@ -454,8 +450,7 @@ function ParamField({
     }
   } else if (type === "acpServer") {
     if (loadingWorkspaces) {
-      control = html`<span
-        class="text-mitto-text-muted text-xs opacity-60"
+      control = html`<span class="text-mitto-text-muted text-xs opacity-60"
         >…</span
       >`;
     } else if (!acpServers || acpServers.length === 0) {
@@ -520,7 +515,8 @@ function ParamField({
         ? summarizeNestedNode(innerParams, nestedNode, promptsList)
         : { filled: 0, missingRequired: 0 };
     const sliderDisabled = capped || !collectInnerArgs || !hasInnerParams;
-    const sliderHasWarning = !sliderDisabled && nestedSummary.missingRequired > 0;
+    const sliderHasWarning =
+      !sliderDisabled && nestedSummary.missingRequired > 0;
     const sliderTip = capped
       ? "nested prompt pickers are not supported here"
       : !collectInnerArgs
@@ -538,7 +534,9 @@ function ParamField({
     const sliderButton = html`
       <button
         type="button"
-        class="btn btn-sm btn-square join-item tooltip tooltip-left ${sliderHasWarning ? "btn-error" : ""}"
+        class="btn btn-sm btn-square join-item tooltip tooltip-left ${sliderHasWarning
+          ? "btn-error"
+          : ""}"
         data-tip=${sliderTip}
         disabled=${sliderDisabled}
         onClick=${() => setNestedModalOpen(true)}
@@ -549,7 +547,9 @@ function ParamField({
           ${!sliderDisabled &&
           sliderBadgeCount > 0 &&
           html`<span
-            class="indicator-item badge badge-sm ${sliderHasWarning ? "badge-error" : "badge-primary"}"
+            class="indicator-item badge badge-sm ${sliderHasWarning
+              ? "badge-error"
+              : "badge-primary"}"
             data-testid="nested-params-badge-${name}"
           >
             ${sliderBadgeCount}
@@ -623,8 +623,7 @@ function ParamField({
     const files = (filesByParam && filesByParam[name]) || [];
     const loadingFiles = !!(loadingFilesByParam && loadingFilesByParam[name]);
     if (loadingFiles) {
-      control = html`<span
-        class="text-mitto-text-muted text-xs opacity-60"
+      control = html`<span class="text-mitto-text-muted text-xs opacity-60"
         >…</span
       >`;
     } else if (files.length === 0) {
@@ -660,8 +659,7 @@ function ParamField({
     const dirs = (dirsByParam && dirsByParam[name]) || [];
     const loadingDirs = !!(loadingDirsByParam && loadingDirsByParam[name]);
     if (loadingDirs) {
-      control = html`<span
-        class="text-mitto-text-muted text-xs opacity-60"
+      control = html`<span class="text-mitto-text-muted text-xs opacity-60"
         >…</span
       >`;
     } else if (dirs.length === 0) {
@@ -788,14 +786,15 @@ function ParamField({
           ${required && html`<span class="text-mitto-danger ml-0.5">*</span>`}
         </legend>
         ${control}
-        ${description &&
-        html`<p class="text-xs text-mitto-text-muted mt-1">
-          ${description}
-        </p>`}
+        ${
+          description &&
+          html`<p class="text-xs text-mitto-text-muted mt-1">${description}</p>`
+        }
       </fieldset>
-      ${canOpenNested &&
-      nestedModalOpen &&
-      html`
+      ${
+        canOpenNested &&
+        nestedModalOpen &&
+        html`
         <${Modal}
           isOpen=${nestedModalOpen}
           onClose=${() => setNestedModalOpen(false)}
@@ -814,10 +813,12 @@ function ParamField({
           `}
         >
           <div class="space-y-4">
-            ${loadingNestedRemembered &&
-            html`<span class="text-mitto-text-muted text-xs opacity-60"
-              >…</span
-            >`}
+            ${
+              loadingNestedRemembered &&
+              html`<span class="text-mitto-text-muted text-xs opacity-60"
+                >…</span
+              >`
+            }
             ${innerParams.map(
               (inner) =>
                 html`<${ParamField}
@@ -851,7 +852,8 @@ function ParamField({
             )}
           </div>
         </${Modal}>
-      `}
+      `
+      }
     </${Fragment}>
   `;
 }
@@ -995,14 +997,12 @@ export function PromptParameterDialog({
     );
     if (!needsRemember) return;
     let cancelled = false;
-    authFetch(
-      endpoints.workspacePrompts.rememberedArgs(
-        workingDir,
-        promptName,
-        hostSessionId,
-      ),
-    )
-      .then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
+    getSdkClient()
+      .prompts.rememberedArgs({
+        working_dir: workingDir,
+        prompt: promptName,
+        session_id: hostSessionId,
+      })
       .then((data) => {
         if (cancelled) return;
         const remembered =
@@ -1027,8 +1027,8 @@ export function PromptParameterDialog({
     if (!needsBeads || !workingDir) return;
 
     setLoadingBeads(true);
-    authFetch(endpoints.issues.list({ working_dir: workingDir }))
-      .then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
+    getSdkClient()
+      .issues.list({ working_dir: workingDir })
       .then((data) => {
         setBeadsIssues(Array.isArray(data) ? data : []);
       })
@@ -1048,8 +1048,8 @@ export function PromptParameterDialog({
     if (!needsSessions) return;
 
     setLoadingSessions(true);
-    authFetch(endpoints.sessions.list())
-      .then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
+    getSdkClient()
+      .sessions.list()
       .then((data) => {
         const list = Array.isArray(data) ? data : (data?.sessions ?? []);
         setSessions(list.filter((s) => !s.archived));
@@ -1074,11 +1074,8 @@ export function PromptParameterDialog({
     setLoadingWorkspaces(true);
     // Scope the ACP server list to the current folder when known, so the
     // acpServer dropdown only offers agents configured for this workspace.
-    const wsUrl = endpoints.workspaces.list(
-      workingDir ? { working_dir: workingDir } : undefined,
-    );
-    authFetch(wsUrl)
-      .then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
+    getSdkClient()
+      .workspaces.list(workingDir ? { working_dir: workingDir } : undefined)
       .then((data) => {
         setWorkspaces(Array.isArray(data?.workspaces) ? data.workspaces : []);
         setAcpServers(Array.isArray(data?.acp_servers) ? data.acp_servers : []);
@@ -1098,8 +1095,8 @@ export function PromptParameterDialog({
     if (!needsPrompts || !workingDir) return;
 
     setLoadingPrompts(true);
-    authFetch(endpoints.workspacePrompts.list({ working_dir: workingDir }))
-      .then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
+    getSdkClient()
+      .prompts.list({ working_dir: workingDir })
       .then((data) => {
         setPromptsList(data?.prompts || []);
       })
@@ -1139,8 +1136,8 @@ export function PromptParameterDialog({
           params.glob = p.glob;
       }
       const paramName = p.name;
-      authFetch(endpoints.workspaceFiles.list(params))
-        .then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
+      getSdkClient()
+        .files.workspaceFiles.list(params)
         .then((data) => {
           setFilesByParam((prev) => ({
             ...prev,
@@ -1181,8 +1178,8 @@ export function PromptParameterDialog({
           params.glob = p.glob;
       }
       const paramName = p.name;
-      authFetch(endpoints.workspaceDirs.list(params))
-        .then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
+      getSdkClient()
+        .files.workspaceDirs.list(params)
         .then((data) => {
           setDirsByParam((prev) => ({
             ...prev,
@@ -1263,14 +1260,12 @@ export function PromptParameterDialog({
         cancelled = true;
       });
       setLoadingRememberedByPath((prev) => ({ ...prev, [pathKey]: true }));
-      authFetch(
-        endpoints.workspacePrompts.rememberedArgs(
-          workingDir,
-          pickedName,
-          hostSessionId,
-        ),
-      )
-        .then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
+      getSdkClient()
+        .prompts.rememberedArgs({
+          working_dir: workingDir,
+          prompt: pickedName,
+          session_id: hostSessionId,
+        })
         .then((data) => {
           if (cancelled) return;
           const remembered =

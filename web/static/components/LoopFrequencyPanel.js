@@ -14,9 +14,9 @@ import {
 import { promptDialogParameters } from "../utils/prompts.js";
 import { LoopPromptSelector } from "./LoopPromptSelector.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
-import { secureFetch, authFetch } from "../utils/csrf.js";
-import { apiUrl, errorMessageFromData } from "../utils/api.js";
-import { endpoints } from "../utils/index.js";
+import { apiUrl } from "../utils/api.js";
+import { getSdkClient } from "../utils/sdkClient.js";
+import { errorStatus, errorMessage as sdkErrorMessage } from "../utils/sdkErrors.js";
 import { PortalTooltip } from "./ContextMenu.js";
 import {
   CONDITION_PRESETS,
@@ -268,8 +268,8 @@ export function LoopFrequencyPanel({
   // Armed triggers (mitto-r6j). Set of {"schedule", "onCompletion", "onTasks"}.
   // Kept as a Set for O(1) has()/add()/delete() from checkbox handlers; the
   // wire payload is a stable-ordered array (see toStableTriggersList below).
-  const [localTriggers, setLocalTriggers] = useState(() =>
-    new Set(normaliseTriggersProp(triggers, trigger)),
+  const [localTriggers, setLocalTriggers] = useState(
+    () => new Set(normaliseTriggersProp(triggers, trigger)),
   );
   const [localDelay, setLocalDelay] = useState(delaySeconds || minDelaySeconds);
   const [localMaxDurValue, setLocalMaxDurValue] = useState(
@@ -560,60 +560,44 @@ export function LoopFrequencyPanel({
           localPresetId === "custom" ? "" : localPresetId;
       }
 
-      const response = await secureFetch(
-        endpoints.sessions.loop(sessionId),
-        {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-        },
-      );
-
-      if (response.ok) {
-        const data = await response.json();
-        // Server response: canonical `triggers` list + legacy `trigger`
-        // scalar (primary). Prefer the list; fall back to the scalar for
-        // servers that pre-date the mitto-r6j response shape.
-        const respTriggers = normaliseTriggersProp(
-          data.triggers,
-          data.trigger,
-        );
-        const serverDelay = data.delay_seconds ?? clampedDelay;
-        // Update with server-authoritative values
-        setLocalNextScheduledAt(data.next_scheduled_at);
-        setLocalTriggers(new Set(respTriggers));
-        setLocalDelay(serverDelay);
-        setLocalCondition(data.condition ?? localCondition);
-        // Propagate to parent so props stay in sync. Both callbacks are
-        // called so parents that hold either the scalar or the array stay
-        // consistent (mitto-r6j).
-        onFrequencyChange?.(data.frequency, data.next_scheduled_at);
-        onFreshContextChange?.(data.fresh_context ?? localFreshContext);
-        onMaxIterationsChange?.(data.max_iterations ?? localMaxIterations);
-        onTriggerChange?.(respTriggers[0]);
-        onTriggersChange?.(respTriggers);
-        onDelayChange?.(serverDelay);
-        onMaxDurationChange?.(data.max_duration_seconds ?? maxDurSecs);
-        onConditionChange?.(data.condition ?? localCondition);
-        onConditionPresetChange?.(
-          data.condition_preset ??
-            (localPresetId === "custom" ? "" : localPresetId),
-        );
-      } else {
-        const errorData = await response.json().catch(() => ({}));
-        const msg = errorMessageFromData(
-          errorData,
-          "Failed to save loop settings",
-        );
+      let data;
+      try {
+        data = await getSdkClient().sessions.loop.update(sessionId, payload);
+      } catch (err) {
+        const msg = sdkErrorMessage(err, "Failed to save loop settings");
         console.error("Failed to save loop settings:", msg);
         // Surface invalid-CEL (and other onTasks) rejections inline near the
         // condition editor instead of failing silently.
         if (armsOnTasks) {
           setConditionError(msg);
         }
+        return;
       }
-    } catch (err) {
-      console.error("Failed to save loop settings:", err);
+      // Server response: canonical `triggers` list + legacy `trigger`
+      // scalar (primary). Prefer the list; fall back to the scalar for
+      // servers that pre-date the mitto-r6j response shape.
+      const respTriggers = normaliseTriggersProp(data.triggers, data.trigger);
+      const serverDelay = data.delay_seconds ?? clampedDelay;
+      // Update with server-authoritative values
+      setLocalNextScheduledAt(data.next_scheduled_at);
+      setLocalTriggers(new Set(respTriggers));
+      setLocalDelay(serverDelay);
+      setLocalCondition(data.condition ?? localCondition);
+      // Propagate to parent so props stay in sync. Both callbacks are
+      // called so parents that hold either the scalar or the array stay
+      // consistent (mitto-r6j).
+      onFrequencyChange?.(data.frequency, data.next_scheduled_at);
+      onFreshContextChange?.(data.fresh_context ?? localFreshContext);
+      onMaxIterationsChange?.(data.max_iterations ?? localMaxIterations);
+      onTriggerChange?.(respTriggers[0]);
+      onTriggersChange?.(respTriggers);
+      onDelayChange?.(serverDelay);
+      onMaxDurationChange?.(data.max_duration_seconds ?? maxDurSecs);
+      onConditionChange?.(data.condition ?? localCondition);
+      onConditionPresetChange?.(
+        data.condition_preset ??
+          (localPresetId === "custom" ? "" : localPresetId),
+      );
     } finally {
       setIsSaving(false);
     }
@@ -702,34 +686,21 @@ export function LoopFrequencyPanel({
 
     setIsTriggering(true);
     try {
-      const response = await secureFetch(
-        endpoints.sessions.loopRunNow(sessionId),
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ reset_timer: resetTimer }),
-        },
-      );
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.error("Failed to trigger immediate delivery:", errorText);
-        // Show error to user
-        if (response.status === 409) {
-          setErrorMessage(
-            "Session is currently processing a prompt. Please wait and try again.",
-          );
-        } else {
-          setErrorMessage(
-            "Failed to trigger immediate delivery. Please try again.",
-          );
-        }
-        return; // Don't close dialog on error
-      }
+      await getSdkClient().sessions.loop.runNow(sessionId, resetTimer);
       // Success - the WebSocket will notify us of the loop_started event
       setShowConfirmDialog(false);
     } catch (err) {
       console.error("Failed to trigger immediate delivery:", err);
+      // Show error to user
+      if (errorStatus(err) === 409) {
+        setErrorMessage(
+          "Session is currently processing a prompt. Please wait and try again.",
+        );
+      } else {
+        setErrorMessage(
+          "Failed to trigger immediate delivery. Please try again.",
+        );
+      }
     } finally {
       setIsTriggering(false);
     }
@@ -785,7 +756,11 @@ export function LoopFrequencyPanel({
           Math.max(minDelaySeconds, prev || minDelaySeconds),
         );
       }
-      if ((name === "onCompletion" || name === "onTasks") && nowArmed && isNewLoop) {
+      if (
+        (name === "onCompletion" || name === "onTasks") &&
+        nowArmed &&
+        isNewLoop
+      ) {
         setLocalMaxIterations((prev) => (prev > 0 ? prev : 5));
         if (valueUnitToSeconds(localMaxDurValue, localMaxDurUnit) === 0) {
           setLocalMaxDurValue(1);
@@ -858,19 +833,10 @@ export function LoopFrequencyPanel({
     const newEnabled = !disabled;
     setIsSavingEnabled(true);
     try {
-      const response = await secureFetch(
-        endpoints.sessions.loop(sessionId),
-        {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ enabled: newEnabled }),
-        },
-      );
-      if (response.ok) {
-        if (onLoopEnabledChange) onLoopEnabledChange(newEnabled);
-      } else {
-        console.error("Failed to update loop enabled");
-      }
+      await getSdkClient().sessions.loop.update(sessionId, {
+        enabled: newEnabled,
+      });
+      if (onLoopEnabledChange) onLoopEnabledChange(newEnabled);
     } catch (err) {
       console.error("Failed to update loop enabled:", err);
     } finally {
@@ -899,47 +865,27 @@ export function LoopFrequencyPanel({
       if (limitWasStopped && resetCounters) {
         body.reset_counters = true;
       }
-      const response = await secureFetch(
-        endpoints.sessions.loop(sessionId),
-        {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
-        },
-      );
-      if (response.ok) {
-        if (onLoopEnabledChange) onLoopEnabledChange(true);
-        // mitto-5cj: after re-enabling the loop, also POST run-now so the
-        // user's play click actually fires the prompt on the FIRST click
-        // (previously they had to click play twice — once to re-arm, once
-        // to fire). Guards: skip when the loop was cap-stopped and the
-        // user did NOT tick reset_counters (the fire would immediately
-        // re-stop), and swallow the 409 "agent streaming" case silently
-        // since the loop is now enabled either way.
-        const wouldImmediatelyReStop = limitWasStopped && !resetCounters;
-        if (!wouldImmediatelyReStop) {
-          try {
-            await secureFetch(endpoints.sessions.loopRunNow(sessionId), {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ reset_timer: true }),
-            });
-          } catch (_runNowErr) {
-            // Non-fatal: the loop is enabled; the next tick will fire.
-          }
+      await getSdkClient().sessions.loop.update(sessionId, body);
+      if (onLoopEnabledChange) onLoopEnabledChange(true);
+      // mitto-5cj: after re-enabling the loop, also POST run-now so the
+      // user's play click actually fires the prompt on the FIRST click
+      // (previously they had to click play twice — once to re-arm, once
+      // to fire). Guards: skip when the loop was cap-stopped and the
+      // user did NOT tick reset_counters (the fire would immediately
+      // re-stop), and swallow the 409 "agent streaming" case silently
+      // since the loop is now enabled either way.
+      const wouldImmediatelyReStop = limitWasStopped && !resetCounters;
+      if (!wouldImmediatelyReStop) {
+        try {
+          await getSdkClient().sessions.loop.runNow(sessionId, true);
+        } catch (_runNowErr) {
+          // Non-fatal: the loop is enabled; the next tick will fire.
         }
-        setShowRestoreDialog(false);
-      } else {
-        console.error("Failed to restore loop schedule");
-        setErrorMessage(
-          "Failed to restore the loop schedule. Please try again.",
-        );
       }
+      setShowRestoreDialog(false);
     } catch (err) {
       console.error("Failed to restore loop schedule:", err);
-      setErrorMessage(
-        "Failed to restore the loop schedule. Please try again.",
-      );
+      setErrorMessage("Failed to restore the loop schedule. Please try again.");
     } finally {
       setIsSavingEnabled(false);
     }
@@ -1302,29 +1248,32 @@ export function LoopFrequencyPanel({
               />
               <span class="label-text">On completion</span>
             </label>
-            ${hasBeadsWorkspace &&
-            html`
-              <label
-                class="label cursor-pointer gap-2 py-0"
-                data-testid="loop-trigger-label-ontasks"
-              >
-                <input
-                  type="checkbox"
-                  class="checkbox checkbox-sm"
-                  checked=${armsOnTasks}
-                  onChange=${() => handleTriggerToggle("onTasks")}
-                  data-testid="loop-trigger-check-ontasks"
-                />
-                <span class="label-text">On tasks</span>
-              </label>
-            `}
+            ${
+              hasBeadsWorkspace &&
+              html`
+                <label
+                  class="label cursor-pointer gap-2 py-0"
+                  data-testid="loop-trigger-label-ontasks"
+                >
+                  <input
+                    type="checkbox"
+                    class="checkbox checkbox-sm"
+                    checked=${armsOnTasks}
+                    onChange=${() => handleTriggerToggle("onTasks")}
+                    data-testid="loop-trigger-check-ontasks"
+                  />
+                  <span class="label-text">On tasks</span>
+                </label>
+              `
+            }
           </fieldset>
 
           <!-- Per-trigger sub-panels: shown only for armed triggers, in the
                canonical schedule → onCompletion → onTasks order. -->
           ${
             armsSchedule &&
-            html` <!-- Schedule: Run every N units -->
+            html`
+              <!-- Schedule: Run every N units -->
               <div
                 class="px-4 pt-2 pb-2 flex items-center gap-3 text-sm"
                 data-testid="loop-panel-schedule"
@@ -1380,7 +1329,8 @@ export function LoopFrequencyPanel({
           }
           ${
             armsOnCompletion &&
-            html` <!-- On-completion: delay after agent finishes -->
+            html`
+              <!-- On-completion: delay after agent finishes -->
               <div
                 class="px-4 pt-2 pb-2 flex items-center gap-3 text-sm"
                 data-testid="loop-panel-oncompletion"
@@ -1411,7 +1361,8 @@ export function LoopFrequencyPanel({
           }
           ${
             armsOnTasks &&
-            html` <!-- On-tasks: condition editor (preset + advanced CEL) -->
+            html`
+              <!-- On-tasks: condition editor (preset + advanced CEL) -->
               <div
                 class="px-4 pt-2 pb-2 text-sm"
                 data-testid="loop-panel-ontasks"
@@ -1458,7 +1409,9 @@ export function LoopFrequencyPanel({
                   );
                 })()}
 
-                <div class="collapse collapse-arrow mt-2 bg-mitto-surface-2 dark:bg-mitto-surface-3 border border-mitto-border dark:border-mitto-border-2">
+                <div
+                  class="collapse collapse-arrow mt-2 bg-mitto-surface-2 dark:bg-mitto-surface-3 border border-mitto-border dark:border-mitto-border-2"
+                >
                   <input
                     type="checkbox"
                     checked=${advancedCelExpanded}
@@ -1476,12 +1429,14 @@ export function LoopFrequencyPanel({
                       class="textarea textarea-sm w-full font-mono"
                       data-testid="loop-condition-textarea"
                     ></textarea>
-                    <div class="mt-2 text-mitto-text-muted dark:text-mitto-text-300">
+                    <div
+                      class="mt-2 text-mitto-text-muted dark:text-mitto-text-300"
+                    >
                       Variables:
                       <code>Tasks</code> (current snapshot),
                       <code>Prev</code> (previous snapshot),
-                      <code>Changes</code> (added/updated/removed/touched
-                      since last run). Example:
+                      <code>Changes</code> (added/updated/removed/touched since
+                      last run). Example:
                       <code
                         >Tasks.OpenByType["bug"] &gt;
                         Prev.OpenByType["bug"]</code

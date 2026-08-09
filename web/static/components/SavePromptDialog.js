@@ -6,9 +6,8 @@ const { useState, useEffect, useCallback, useRef, html, Fragment } =
   window.preact;
 
 import { hasNativeFolderPicker, pickFolder } from "../utils/native.js";
-import { secureFetch, authFetch } from "../utils/csrf.js";
-import { errorMessageFromData } from "../utils/api.js";
-import { endpoints } from "../utils/index.js";
+import { getSdkClient } from "../utils/sdkClient.js";
+import { errorMessage } from "../utils/sdkErrors.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
 import { Modal } from "./Modal.js";
 
@@ -163,29 +162,13 @@ export function SavePromptDialog({ isOpen, onClose, promptText, workingDir }) {
 
     try {
       const content = buildFileContent(name, description, promptText);
-      const response = await secureFetch(endpoints.misc.saveFileToPath(), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ path: fullPath, content }),
-      });
-
-      if (!response.ok) {
-        let data = null;
-        try {
-          data = await response.json();
-        } catch (_) {
-          // non-JSON body; fall back to status-based message
-        }
-        throw new Error(
-          errorMessageFromData(data, `Save failed (${response.status})`),
-        );
-      }
+      await getSdkClient().misc.saveFileToPath(fullPath, content);
 
       // Success - close dialog
       onClose?.();
     } catch (err) {
       console.error("[SavePromptDialog] save error:", err);
-      setError(err.message || "Failed to save file");
+      setError(errorMessage(err, "Failed to save file"));
     } finally {
       setIsSaving(false);
     }
@@ -208,18 +191,13 @@ export function SavePromptDialog({ isOpen, onClose, promptText, workingDir }) {
 
     try {
       // Check if file already exists
-      const checkResponse = await authFetch(
-        endpoints.misc.checkFileExists({ path: fullPath }),
-      );
+      const data = await getSdkClient().misc.checkFileExists(fullPath);
 
-      if (checkResponse.ok) {
-        const data = await checkResponse.json();
-        if (data.exists) {
-          // File exists - ask for overwrite confirmation
-          setIsSaving(false);
-          setShowOverwriteConfirm(true);
-          return;
-        }
+      if (data?.exists) {
+        // File exists - ask for overwrite confirmation
+        setIsSaving(false);
+        setShowOverwriteConfirm(true);
+        return;
       }
 
       // File doesn't exist - save directly
