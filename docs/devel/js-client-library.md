@@ -26,9 +26,19 @@ web/static/sdk/
   env/                 # explicit opt-in environment presets (e.g. browser) — .2
   auth/                # browser cookie+CSRF, shared bearer token, none — .5
   resources/           # one module per REST resource — .7–.12
+  cache/               # optional, injectable caching decorators — .10
   realtime/            # SessionStream, EventsStream, sync, typed events (events.js) — .13–.16
   types/               # generated .d.ts, not hand-written — .20
 ```
+
+Caching is a **decorator, never part of the transport**: `cache/ttl-cache.js`
+exposes `createTtlCache({ ttlMs, keyFor, revalidate })`, which wraps any
+resource method with a TTL cache, in-flight-request dedup, and optional
+conditional revalidation (ETag/`If-None-Match` or
+`Last-Modified`/`If-Modified-Since`). Callers opt in explicitly; an
+undecorated resource method never caches. To let a decorator observe a `304`,
+`core/transport.js` accepts `options.allowStatus` (statuses excluded from the
+error path) alongside `options.raw`.
 
 ## 2. Module / file naming
 

@@ -18,7 +18,8 @@
  *
  * This is a deep import, not part of the public surface
  * (docs/devel/js-client-library.md §5) — `createClient()` exposes it as
- * `client.config`.
+ * `client.serverConfig`, not `client.config`: the latter is already the
+ * resolved internal SDK config object returned by `createClient()`.
  *
  * Caching (utils/configCache.js's TTL + in-flight + ETag behavior) is NOT
  * baked in here — it is available as an optional, injectable decorator via

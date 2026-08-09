@@ -4,7 +4,7 @@
  *
  * Caching is deliberately NEVER baked into `core/transport.js`. Instead this
  * module wraps an arbitrary async function — typically a resource method
- * like `client.prompts.list` or `client.config.get` — with the same
+ * like `client.prompts.list` or `client.serverConfig.get` — with the same
  * three-level pattern already proven by `utils/promptsCache.js` and
  * `utils/configCache.js`:
  *   1. Completed-response cache (TTL-based): avoids refetching within the
