@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"net/textproto"
 	"net/url"
+	"sync"
 	"time"
 )
 
@@ -27,10 +28,17 @@ type Client struct {
 	apiPrefix  string // API prefix (e.g., "/mitto")
 	httpClient *http.Client
 
+	// mu guards the authentication state below, which Login and Logout
+	// mutate while other goroutines may be issuing requests.
+	mu sync.RWMutex
+
 	// auth decorates outgoing REST requests and WebSocket handshakes with
 	// credentials. Defaults to noAuth{} (no-op), so New(baseURL) keeps the
 	// historical zero-config, unauthenticated behaviour.
 	auth authProvider
+
+	// baseAuth is the auth mode configured via options, restored by Logout.
+	baseAuth authProvider
 
 	// csrfToken holds the CSRF token obtained during Login, for cookieAuth
 	// to attach to subsequent state-changing requests. Empty outside of
@@ -81,12 +89,14 @@ func New(baseURL string, opts ...Option) *Client {
 		apiPrefix: "/mitto", // Default API prefix
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
+			Jar:     newJar(),
 		},
 		auth: noAuth{},
 	}
 	for _, opt := range opts {
 		opt(c)
 	}
+	c.baseAuth = c.auth
 	return c
 }
 
@@ -101,14 +111,9 @@ func (c *Client) apiURL(path string) string {
 // WebSocket) made through this Client are authenticated via that cookie
 // plus the CSRF token, until Logout is called or the session expires.
 //
-// Login lazily installs a cookie jar on the Client's http.Client if one is
-// not already present, so a Client created with New(baseURL) and never
-// logged in keeps its zero-config, jar-less default.
+// The session cookie is held in the Client's cookie jar, which is empty —
+// and therefore sends nothing — for a Client that never logs in.
 func (c *Client) Login(ctx context.Context, username, password string) error {
-	if err := c.ensureJar(); err != nil {
-		return fmt.Errorf("login: %w", err)
-	}
-
 	csrfReq, err := http.NewRequestWithContext(ctx, http.MethodGet, c.apiURL("/api/csrf-token"), nil)
 	if err != nil {
 		return fmt.Errorf("login: build csrf request: %w", err)
@@ -150,8 +155,10 @@ func (c *Client) Login(ctx context.Context, username, password string) error {
 
 	// Cookies (mitto_session, mitto_csrf) are now in the jar. Keep the CSRF
 	// token for cookieAuth to attach to subsequent state-changing requests.
+	c.mu.Lock()
 	c.csrfToken = csrfBody.Token
 	c.auth = cookieAuth{client: c}
+	c.mu.Unlock()
 	return nil
 }
 
@@ -160,7 +167,7 @@ func (c *Client) Login(ctx context.Context, username, password string) error {
 // currently in cookie-login mode. After Logout, the client reverts to
 // whatever auth mode was configured before Login (or noAuth if none).
 func (c *Client) Logout(ctx context.Context) error {
-	if _, ok := c.auth.(cookieAuth); !ok {
+	if _, ok := c.currentAuth().(cookieAuth); !ok {
 		return nil
 	}
 	req, err := c.newRequest(http.MethodPost, c.apiURL("/api/logout"), "", nil)
@@ -174,8 +181,10 @@ func (c *Client) Logout(ctx context.Context) error {
 	}
 	defer resp.Body.Close()
 
-	c.auth = noAuth{}
+	c.mu.Lock()
+	c.auth = c.baseAuth
 	c.csrfToken = ""
+	c.mu.Unlock()
 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("logout: %w", c.apiError("logout", resp))
@@ -202,7 +211,7 @@ func (c *Client) newRequest(method, fullURL, contentType string, body io.Reader)
 	if contentType != "" {
 		req.Header.Set("Content-Type", contentType)
 	}
-	if err := c.auth.applyREST(req); err != nil {
+	if err := c.currentAuth().applyREST(req); err != nil {
 		return nil, err
 	}
 	return req, nil

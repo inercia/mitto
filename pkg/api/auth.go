@@ -69,7 +69,7 @@ type cookieAuth struct {
 
 func (c cookieAuth) applyREST(req *http.Request) error {
 	if isStateChangingMethodClient(req.Method) {
-		req.Header.Set(csrfTokenHeaderClient, c.client.csrfToken)
+		req.Header.Set(csrfTokenHeaderClient, c.client.currentCSRFToken())
 	}
 	return nil
 }
@@ -92,17 +92,30 @@ func isStateChangingMethodClient(method string) bool {
 	return false
 }
 
-// ensureJar lazily installs a cookiejar.Jar on the Client's http.Client if
-// one is not already present. Called on first Login so New(baseURL) without
-// Login never allocates a jar (keeps the no-auth default pristine).
-func (c *Client) ensureJar() error {
-	if c.httpClient.Jar != nil {
-		return nil
-	}
+// newJar builds the cookie jar installed on every Client at construction
+// time. It is allocated eagerly rather than on first Login because
+// http.Client reads Jar on every request without synchronisation, so
+// swapping it in later would race with in-flight requests. An empty jar is
+// inert: a client that never logs in sends no cookies, exactly as before.
+func newJar() http.CookieJar {
 	jar, err := cookiejar.New(nil)
 	if err != nil {
-		return fmt.Errorf("create cookie jar: %w", err)
+		// cookiejar.New(nil) cannot fail; a nil jar simply disables cookies.
+		return nil
 	}
-	c.httpClient.Jar = jar
-	return nil
+	return jar
+}
+
+// currentAuth returns the authProvider in effect for the next request.
+func (c *Client) currentAuth() authProvider {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.auth
+}
+
+// currentCSRFToken returns the CSRF token captured by Login, if any.
+func (c *Client) currentCSRFToken() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.csrfToken
 }

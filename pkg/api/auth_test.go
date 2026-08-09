@@ -7,14 +7,70 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 )
 
+// TestAuthStateIsRaceFree exercises the documented "safe for concurrent use"
+// guarantee across an auth-mode transition: Login/Logout mutate the auth
+// provider and CSRF token while other goroutines issue requests that read
+// them. Meaningful under -race.
+func TestAuthStateIsRaceFree(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/mitto/api/csrf-token", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"token":"tok"}`)
+	})
+	mux.HandleFunc("/mitto/api/login", func(w http.ResponseWriter, r *http.Request) {
+		http.SetCookie(w, &http.Cookie{Name: "mitto_session", Value: "sess", Path: "/"})
+		w.WriteHeader(http.StatusOK)
+	})
+	mux.HandleFunc("/mitto/api/logout", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	mux.HandleFunc("/mitto/api/sessions", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `[]`)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := New(srv.URL)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 20; j++ {
+				if _, err := c.ListSessions(); err != nil {
+					t.Errorf("ListSessions: %v", err)
+					return
+				}
+			}
+		}()
+	}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for j := 0; j < 10; j++ {
+			if err := c.Login(context.Background(), "alice", "hunter2"); err != nil {
+				t.Errorf("Login: %v", err)
+				return
+			}
+			if err := c.Logout(context.Background()); err != nil {
+				t.Errorf("Logout: %v", err)
+				return
+			}
+		}
+	}()
+	wg.Wait()
+}
+
 // TestNoAuth_DefaultClientAddsNoCredentials pins the primary compatibility
 // constraint (mitto-rwxq.4 plan): New(baseURL) with no options must keep
-// sending no Authorization header and no cookies, and must not allocate a
-// cookie jar, exactly like the client before this feature existed.
+// sending no Authorization header and no cookies, exactly like the client
+// before this feature existed. A cookie jar is allocated eagerly (see
+// newJar) but stays empty and therefore inert until Login populates it.
 func TestNoAuth_DefaultClientAddsNoCredentials(t *testing.T) {
 	var gotAuth, gotCookie string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -25,11 +81,8 @@ func TestNoAuth_DefaultClientAddsNoCredentials(t *testing.T) {
 	defer srv.Close()
 
 	c := New(srv.URL)
-	if c.httpClient.Jar != nil {
-		t.Fatal("New(baseURL) must not allocate a cookie jar before Login is called")
-	}
-	if _, ok := c.auth.(noAuth); !ok {
-		t.Fatalf("default auth = %T, want noAuth", c.auth)
+	if _, ok := c.currentAuth().(noAuth); !ok {
+		t.Fatalf("default auth = %T, want noAuth", c.currentAuth())
 	}
 
 	req, err := c.newRequest(http.MethodGet, srv.URL+"/anything", "", nil)
@@ -283,10 +336,11 @@ func TestLogin_InstallsCookieAuthAndAttachesCSRFOnStateChangingRequests(t *testi
 	}
 }
 
-// TestLogout_RevertsToNoAuth confirms Logout posts to /api/logout and
-// reverts the client to the unauthenticated default, and that Logout on a
-// client never logged in is a no-op.
-func TestLogout_RevertsToNoAuth(t *testing.T) {
+// TestLogout_RevertsToConfiguredAuth confirms Logout posts to /api/logout
+// and reverts the client to the auth mode configured before Login (noAuth
+// by default, the bearer mode when one was supplied via options), and that
+// Logout on a client never logged in is a no-op.
+func TestLogout_RevertsToConfiguredAuth(t *testing.T) {
 	var logoutCalled bool
 	mux := http.NewServeMux()
 	mux.HandleFunc("/mitto/api/csrf-token", func(w http.ResponseWriter, r *http.Request) {
@@ -321,11 +375,24 @@ func TestLogout_RevertsToNoAuth(t *testing.T) {
 	if !logoutCalled {
 		t.Fatal("Logout did not call the server")
 	}
-	if _, ok := c.auth.(noAuth); !ok {
-		t.Fatalf("auth after Logout = %T, want noAuth", c.auth)
+	if _, ok := c.currentAuth().(noAuth); !ok {
+		t.Fatalf("auth after Logout = %T, want noAuth", c.currentAuth())
 	}
-	if c.csrfToken != "" {
-		t.Errorf("csrfToken after Logout = %q, want empty", c.csrfToken)
+	if c.currentCSRFToken() != "" {
+		t.Errorf("csrfToken after Logout = %q, want empty", c.currentCSRFToken())
+	}
+
+	// A client configured with a bearer token must fall back to that mode
+	// after Logout, not silently downgrade to unauthenticated.
+	bc := New(srv.URL, WithBearerToken("tok-abc"))
+	if err := bc.Login(context.Background(), "alice", "hunter2"); err != nil {
+		t.Fatalf("Login (bearer client): %v", err)
+	}
+	if err := bc.Logout(context.Background()); err != nil {
+		t.Fatalf("Logout (bearer client): %v", err)
+	}
+	if _, ok := bc.currentAuth().(bearerAuth); !ok {
+		t.Fatalf("auth after Logout = %T, want bearerAuth", bc.currentAuth())
 	}
 }
 

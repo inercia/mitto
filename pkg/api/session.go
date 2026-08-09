@@ -163,7 +163,7 @@ func (c *Client) Connect(ctx context.Context, sessionID string, callbacks Sessio
 	u.Path = c.apiPrefix + "/api/sessions/" + url.PathEscape(sessionID) + "/ws"
 
 	handshakeHeader := http.Header{}
-	if err := c.auth.applyWS(handshakeHeader); err != nil {
+	if err := c.currentAuth().applyWS(handshakeHeader); err != nil {
 		return nil, fmt.Errorf("websocket connect: %w", err)
 	}
 
