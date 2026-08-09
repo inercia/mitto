@@ -117,7 +117,7 @@ since today it is accidental rather than designed.
 Same conclusion as the JS SDK
 ([§6](js-client-library.md#6-semver-policy--relation-to-server-version)):
 `pkg/api` ships inside the Mitto module and is lockstep-versioned with the
-server — its version *is* the release tag, so there is no compatibility
+server — its version _is_ the release tag, so there is no compatibility
 matrix to maintain. No nested `go.mod`, no independent tag.
 
 Go-module caveat the JS SDK does not have: under `v0.x` the module path
