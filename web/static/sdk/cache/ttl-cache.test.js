@@ -1,6 +1,8 @@
 /**
  * Unit tests for the generic TTL cache decorator (mitto-7gta.10).
  */
+import { resolveConfig } from "../core/config.js";
+import { createConfigResource } from "../resources/config.js";
 import { createTtlCache, keyForParams } from "./ttl-cache.js";
 
 describe("keyForParams", () => {
@@ -156,5 +158,91 @@ describe("createTtlCache — conditional revalidation", () => {
     const second = await fetchOne();
     expect(second).not.toEqual(first);
     expect(second).toEqual({ v: 2 });
+  });
+});
+
+describe("createTtlCache — real transport integration (mitto-7gta.10)", () => {
+  function fakeConfigResponse({ status = 200, body, etag } = {}) {
+    const hasBody = body !== undefined;
+    return {
+      ok: status >= 200 && status < 300,
+      status,
+      headers: {
+        get: (name) => {
+          const n = name.toLowerCase();
+          if (n === "etag") return etag ?? null;
+          if (n === "content-type") return hasBody ? "application/json" : null;
+          return null;
+        },
+      },
+      text: async () => (hasBody ? JSON.stringify(body) : ""),
+    };
+  }
+
+  // Proves the decorator composes with the REAL `request()` primitive (via
+  // `resources/config.js`'s `raw`/`allowStatus` passthrough), reproducing
+  // utils/configCache.js's ETag / If-None-Match / 304 semantics end-to-end —
+  // not just against a fully-faked wrapped function like the suite above.
+  test("wrapping client.serverConfig.get with createTtlCache reproduces configCache.js's ETag/If-None-Match revalidation over the real transport", async () => {
+    let calls = 0;
+    const seenIfNoneMatch = [];
+    const fetchImpl = async (_url, init) => {
+      calls++;
+      seenIfNoneMatch.push(init.headers["If-None-Match"]);
+      if (init.headers["If-None-Match"] === "etag-1") {
+        return fakeConfigResponse({ status: 304 });
+      }
+      return fakeConfigResponse({
+        status: 200,
+        body: { web: { theme: "dark" } },
+        etag: "etag-1",
+      });
+    };
+    const config = resolveConfig({ fetch: fetchImpl }, {});
+    const serverConfig = createConfigResource(config);
+
+    const cache = createTtlCache({
+      ttlMs: 1,
+      keyFor: () => "k",
+      revalidate: {
+        header: (record) =>
+          record.etag ? { name: "If-None-Match", value: record.etag } : null,
+        isUnchanged: (response) => response.status === 304,
+        extract: (response, data) => ({
+          payload: data,
+          etag: response.headers.get("ETag"),
+        }),
+        value: (record) => record.payload,
+      },
+    });
+
+    // getConfig() is always called with zero real arguments here, so the
+    // decorator's trailing revalidation header lands as this function's
+    // *only* parameter (see createTtlCache's `fn(...fnArgs, revalidationHeader)`
+    // call convention — fnArgs is empty in this test).
+    const getConfig = cache.wrap(async (revalidationHeader) => {
+      const headers = revalidationHeader
+        ? { [revalidationHeader.name]: revalidationHeader.value }
+        : undefined;
+      const response = await serverConfig.get(undefined, {
+        raw: true,
+        allowStatus: [304],
+        headers,
+      });
+      const data = response.status === 304 ? null : JSON.parse(await response.text());
+      return { response, data };
+    });
+
+    const first = await getConfig();
+    expect(first).toEqual({ web: { theme: "dark" } });
+    expect(calls).toBe(1);
+    expect(seenIfNoneMatch[0]).toBeUndefined();
+
+    await new Promise((r) => setTimeout(r, 5)); // let the 1ms TTL expire
+
+    const second = await getConfig();
+    expect(second).toEqual(first); // still served from cache after a 304
+    expect(calls).toBe(2); // the revalidation request DID hit the network
+    expect(seenIfNoneMatch[1]).toBe("etag-1"); // real If-None-Match header sent
   });
 });
