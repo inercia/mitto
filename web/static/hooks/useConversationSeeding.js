@@ -4,7 +4,6 @@
 
 import { getSdkClient } from "../utils/sdkClient.js";
 import { errorStatus } from "../utils/sdkErrors.js";
-import { apiUrl } from "../utils/api.js";
 import { endpoints } from "../utils/index.js";
 
 /**
