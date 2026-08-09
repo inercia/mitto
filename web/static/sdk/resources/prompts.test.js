@@ -5,13 +5,10 @@
  * `config.fetch` stub — never global fetch.
  */
 import { MittoApiError } from "../core/errors.js";
-import { fakeResponse, mountResource } from "../testing/fake-server.js";
+import { fakeResponse, resourceMounter } from "../testing/fake-server.js";
 import { createPromptsResource } from "./prompts.js";
 
-function mk(extra = {}) {
-  const { resource: prompts, calls, respondWith } = mountResource(createPromptsResource, extra);
-  return { prompts, calls, respondWith };
-}
+const mk = resourceMounter((config) => ({ prompts: createPromptsResource(config) }));
 
 describe("prompts resource", () => {
   test("list(params) calls GET /api/workspace-prompts with query params", async () => {

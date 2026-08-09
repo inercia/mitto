@@ -5,16 +5,10 @@
  * `config.fetch` stub — never global fetch.
  */
 import { MittoApiError } from "../core/errors.js";
-import { fakeResponse, mountResource } from "../testing/fake-server.js";
+import { fakeResponse, resourceMounter } from "../testing/fake-server.js";
 import { createProcessorsResource } from "./processors.js";
 
-function mk(extra = {}) {
-  const { resource: processors, calls, respondWith } = mountResource(
-    createProcessorsResource,
-    extra,
-  );
-  return { processors, calls, respondWith };
-}
+const mk = resourceMounter((config) => ({ processors: createProcessorsResource(config) }));
 
 describe("processors resource", () => {
   test("list(uuid) calls GET /api/workspaces/{uuid}/processors, encoding special chars", async () => {

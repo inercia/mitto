@@ -5,16 +5,10 @@
  * `config.fetch` stub — never global fetch.
  */
 import { MittoApiError } from "../core/errors.js";
-import { fakeResponse, mountResource } from "../testing/fake-server.js";
+import { fakeResponse, resourceMounter } from "../testing/fake-server.js";
 import { createDashboardResource } from "./dashboard.js";
 
-function mk(extra = {}) {
-  const { resource: dashboard, calls, respondWith } = mountResource(
-    createDashboardResource,
-    extra,
-  );
-  return { dashboard, calls, respondWith };
-}
+const mk = resourceMounter((config) => ({ dashboard: createDashboardResource(config) }));
 
 describe("dashboard resource", () => {
   describe("summary", () => {

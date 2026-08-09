@@ -5,13 +5,10 @@
  * by an injected `config.fetch` stub — never global fetch.
  */
 import { MittoApiError } from "../core/errors.js";
-import { fakeResponse, mountResource } from "../testing/fake-server.js";
+import { fakeResponse, resourceMounter } from "../testing/fake-server.js";
 import { createIssuesResource, withIssueCaches } from "./issues.js";
 
-function mk(extra = {}) {
-  const { resource: issues, calls, respondWith } = mountResource(createIssuesResource, extra);
-  return { issues, calls, respondWith };
-}
+const mk = resourceMounter((config) => ({ issues: createIssuesResource(config) }));
 
 const WD = "/Users/x/proj";
 

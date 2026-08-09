@@ -11,17 +11,10 @@
  * double-prefixing guard (apiPrefix must appear exactly once in the URL).
  */
 import { MittoApiError } from "../core/errors.js";
-import { fakeResponse, mountResource } from "../testing/fake-server.js";
+import { fakeResponse, resourceMounter } from "../testing/fake-server.js";
 import { createSessionsResource } from "./sessions.js";
 
-/** @returns {{sessions: object, calls: Array, respondWith: Function}} */
-function mk(extra = {}) {
-  const { resource: sessions, calls, respondWith } = mountResource(
-    createSessionsResource,
-    extra,
-  );
-  return { sessions, calls, respondWith };
-}
+const mk = resourceMounter((config) => ({ sessions: createSessionsResource(config) }));
 
 describe("sessions resource", () => {
   describe("CRUD", () => {

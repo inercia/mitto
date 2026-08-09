@@ -116,6 +116,21 @@ export function mountResource(factory, extra = {}) {
   return { resource: factory(server.config), ...server };
 }
 
+/**
+ * Builds the per-file `mk(extra)` helper the resource test files use: each
+ * call mounts a fresh fake server and spreads the named resources returned
+ * by `factory(config)` alongside the server handles. `factory` returns a map
+ * so a file composing several resources (e.g. `misc`, which needs `config`'s
+ * resource too) needs no fixture of its own.
+ * @param {(config: object) => Record<string, *>} factory
+ */
+export function resourceMounter(factory) {
+  return (extra = {}) => {
+    const server = createFakeServer(extra);
+    return { ...factory(server.config), ...server };
+  };
+}
+
 /** Responder: fetch itself rejects (DNS/TLS/offline-style failure). */
 export function networkFailure(message = "network down") {
   return () => {

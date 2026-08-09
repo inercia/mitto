@@ -11,6 +11,7 @@ import {
   fakeResponse,
   mountResource,
   networkFailure,
+  resourceMounter,
 } from "./fake-server.js";
 
 describe("fakeResponse", () => {
@@ -70,7 +71,6 @@ describe("createFakeServer", () => {
   });
 
   test("respondOnce answers exactly one call then reverts", async () => {
-    const { config } = createFakeServer();
     const server = createFakeServer();
     server.respondWith(() => fakeResponse({ body: "default" }));
     server.respondOnce(() => fakeResponse({ body: "once" }));
@@ -127,6 +127,34 @@ describe("mountResource", () => {
     }));
     await resource.ping();
     expect(calls[0].url).toBe("/ping");
+  });
+});
+
+describe("resourceMounter", () => {
+  const mk = resourceMounter((config) => ({
+    alpha: { ping: () => config.fetch("/alpha", { method: "GET" }) },
+    beta: { ping: () => config.fetch("/beta", { method: "GET" }) },
+  }));
+
+  test("exposes every named resource alongside the server handles", async () => {
+    const { alpha, beta, calls, respondWith, lastCall } = mk();
+    expect(typeof respondWith).toBe("function");
+    await alpha.ping();
+    await beta.ping();
+    expect(calls.map((c) => c.url)).toEqual(["/alpha", "/beta"]);
+    expect(lastCall().url).toBe("/beta");
+  });
+
+  test("each call builds an isolated fake server", async () => {
+    const first = mk();
+    await first.alpha.ping();
+    const second = mk();
+    expect(second.calls).toEqual([]);
+  });
+
+  test("extra options are forwarded to resolveConfig", () => {
+    const { config } = mk({ apiPrefix: "/mitto" });
+    expect(config.apiPrefix).toBe("/mitto");
   });
 });
 

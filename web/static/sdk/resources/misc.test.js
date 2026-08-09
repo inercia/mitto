@@ -5,20 +5,14 @@
  * `config.fetch` stub — never global fetch.
  */
 import { MittoApiError } from "../core/errors.js";
-import { createFakeServer, fakeResponse } from "../testing/fake-server.js";
+import { fakeResponse, resourceMounter } from "../testing/fake-server.js";
 import { createConfigResource } from "./config.js";
 import { createMiscResource } from "./misc.js";
 
-function mk(extra = {}) {
-  const { config, calls, respondWith } = createFakeServer(extra);
+const mk = resourceMounter((config) => {
   const serverConfig = createConfigResource(config);
-  return {
-    misc: createMiscResource(config, serverConfig),
-    serverConfig,
-    calls,
-    respondWith,
-  };
-}
+  return { misc: createMiscResource(config, serverConfig), serverConfig };
+});
 
 describe("misc resource", () => {
   describe("uiPreferences", () => {

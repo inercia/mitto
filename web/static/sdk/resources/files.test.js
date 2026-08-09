@@ -5,13 +5,10 @@
  * `config.fetch` stub — never global fetch.
  */
 import { MittoApiError } from "../core/errors.js";
-import { fakeResponse, mountResource } from "../testing/fake-server.js";
+import { fakeResponse, resourceMounter } from "../testing/fake-server.js";
 import { createFilesResource } from "./files.js";
 
-function mk(extra = {}) {
-  const { resource: files, calls, respondWith } = mountResource(createFilesResource, extra);
-  return { files, calls, respondWith };
-}
+const mk = resourceMounter((config) => ({ files: createFilesResource(config) }));
 
 describe("files resource", () => {
   describe("session-scoped files", () => {

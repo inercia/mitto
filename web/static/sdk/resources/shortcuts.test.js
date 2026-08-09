@@ -5,16 +5,10 @@
  * `config.fetch` stub — never global fetch.
  */
 import { MittoApiError } from "../core/errors.js";
-import { fakeResponse, mountResource } from "../testing/fake-server.js";
+import { fakeResponse, resourceMounter } from "../testing/fake-server.js";
 import { createShortcutsResource } from "./shortcuts.js";
 
-function mk(extra = {}) {
-  const { resource: shortcuts, calls, respondWith } = mountResource(
-    createShortcutsResource,
-    extra,
-  );
-  return { shortcuts, calls, respondWith };
-}
+const mk = resourceMounter((config) => ({ shortcuts: createShortcutsResource(config) }));
 
 describe("shortcuts resource", () => {
   test("getGlobal() with no params calls GET /api/global/shortcuts (no include_prompts)", async () => {
