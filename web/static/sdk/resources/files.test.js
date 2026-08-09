@@ -91,6 +91,12 @@ describe("files resource", () => {
       expect(calls[0].url).toBe("/api/sessions/s1/files/f1");
       expect(calls[0].init.method).toBe("DELETE");
     });
+
+    test("list(id) encodes special characters in the session id, not just the fileId", async () => {
+      const { files, calls } = mk();
+      await files.list("s 1/2");
+      expect(calls[0].url).toBe("/api/sessions/s%201%2F2/files");
+    });
   });
 
   describe("workspace file server", () => {

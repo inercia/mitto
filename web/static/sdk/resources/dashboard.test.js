@@ -81,6 +81,12 @@ describe("dashboard resource", () => {
         "/api/dashboard/timeseries?bucket=day&workspace=w1&groupBy=model",
       );
     });
+
+    test("timeseries({metrics: []}) omits the metrics param entirely (comma-join of an empty array is '')", async () => {
+      const { dashboard, calls } = mk();
+      await dashboard.timeseries({ range: "7d", metrics: [] });
+      expect(calls[0].url).toBe("/api/dashboard/timeseries?range=7d");
+    });
   });
 
   describe("cross-cutting concerns", () => {
