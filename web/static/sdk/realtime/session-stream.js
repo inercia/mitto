@@ -128,7 +128,8 @@ export const SESSION_STREAM_CONSTANTS = {
  *
  * Events (via `.on(event, handler) -> unsubscribe`):
  *   "open", "message" (raw parsed protocol message object), "close",
- *   "error", "reconnecting" ({ attempt, delayMs }), "health" ({ healthy }).
+ *   "error", "reconnecting" ({ attempt, delayMs }), "health" ({ healthy }),
+ *   "keepalive_ack" (raw `msg.data` of a keepalive_ack frame — see below).
  */
 export class SessionStream {
   constructor(config, sessionId, options = {}) {
@@ -317,6 +318,16 @@ export class SessionStream {
       this._keepalive.lastAckTime = this._now();
       this._keepalive.missedCount = 0;
       this._emitter.emit("health", { healthy: true });
+      // keepalive_ack frames piggy-back host-relevant state (queue_length,
+      // processor stats, is_running, is_prompting, status) that has nothing
+      // to do with seq/stale-detection — that plumbing stays internal (see
+      // _handleKeepaliveAck below) and this frame is deliberately excluded
+      // from the generic "message" event (pinned by the test above this
+      // constructor's JSDoc). Emit it as its own event instead so hosts
+      // (e.g. useWSConnection.js's future SessionStream-backed
+      // connectToSession, mitto-7gta.18 S3) can still sync that state
+      // without re-deriving it from a raw WebSocket onmessage handler.
+      this._emitter.emit("keepalive_ack", msg.data || {});
       this._handleKeepaliveAck(msg.data || {});
       return;
     }

@@ -321,6 +321,30 @@ describe("SessionStream: open / message / close lifecycle", () => {
     expect(health[health.length - 1]).toBe(true);
   });
 
+  test("keepalive_ack is instead surfaced via its own \"keepalive_ack\" event, carrying msg.data verbatim", () => {
+    // A host (e.g. useWSConnection.js's future SessionStream-backed
+    // connectToSession, mitto-7gta.18 S3) needs the raw ack payload to sync
+    // UI-only state (queue_length, processor stats, is_running, status) that
+    // has nothing to do with this class's internal seq/stale bookkeeping —
+    // hence a dedicated event instead of overloading "message".
+    const h = makeHarness();
+    const ws = openStream(h);
+    const acks = [];
+    h.stream.on("keepalive_ack", (data) => acks.push(data));
+    const payload = { is_prompting: true, queue_length: 3, status: "running" };
+    ws.onmessage({ data: JSON.stringify({ type: "keepalive_ack", data: payload }) });
+    expect(acks).toEqual([payload]);
+  });
+
+  test("keepalive_ack with no data emits an empty object on \"keepalive_ack\", not undefined", () => {
+    const h = makeHarness();
+    const ws = openStream(h);
+    const acks = [];
+    h.stream.on("keepalive_ack", (data) => acks.push(data));
+    ws.onmessage({ data: JSON.stringify({ type: "keepalive_ack" }) });
+    expect(acks).toEqual([{}]);
+  });
+
   test("explicit close() never schedules a reconnect and lands on \"stopped\"", () => {
     const h = makeHarness();
     const ws = openStream(h);
