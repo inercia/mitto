@@ -154,7 +154,7 @@ func TestAPIError_Is_MatchesByStatus(t *testing.T) {
 		err  *APIError
 	}{
 		{"ErrBadRequest", ErrBadRequest},
-		{"ErrUnauthorized", ErrUnauthorized},
+		{"ErrUnauthenticated", ErrUnauthenticated},
 		{"ErrForbidden", ErrForbidden},
 		{"ErrNotFound", ErrNotFound},
 		{"ErrConflict", ErrConflict},

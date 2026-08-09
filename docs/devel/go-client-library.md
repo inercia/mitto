@@ -70,17 +70,33 @@ behaviour-identical, since that is what all in-repo consumers use.
 
 ## 4. Error model (`.3`)
 
-`*APIError{StatusCode int; Code, Message string; Details map[string]any; Body []byte}`
+`*APIError{Op string; Status int; Code, Message string; Details map[string]any; Body []byte}`
 implements `error`, parsing both the canonical envelope
 ([REST API Conventions §4](rest-api-conventions.md#4-error-envelope)) and
 the legacy flat shape used by `external-stable` endpoints, falling back to
-status-derived codes when neither parses. Sentinels `ErrNotFound`,
-`ErrUnauthenticated`, `ErrForbidden`, `ErrConflict` are matched via
-`errors.Is` (keyed off `Code`, not HTTP status — codes are the stable
-contract); `errors.As(&apiErr)` recovers structured details. Code values
-mirror the JS error taxonomy ([§7](js-client-library.md#7-stability-promise))
-so both SDKs agree. Transport failures (DNS, connection refused, timeout)
-wrap as a distinct `*NetworkError`, never `*APIError`.
+status-derived codes when neither parses. The raw body is always preserved
+in `Body` for callers needing custom parsing, and `Op` (a short operation
+label such as `"get session"`) prefixes the rendered message.
+
+One sentinel exists per canonical code — `ErrBadRequest`,
+`ErrUnauthenticated`, `ErrForbidden`, `ErrNotFound`, `ErrConflict`,
+`ErrTooLarge`, `ErrRateLimited`, `ErrUnavailable`, `ErrServerError` — matched
+via `errors.Is`; `errors.As(&apiErr)` recovers structured details. Code
+values mirror the JS error taxonomy
+([§7](js-client-library.md#7-stability-promise)) so both SDKs agree.
+
+`errors.Is` is keyed off **HTTP status, not `Code`**. Codes remain the stable
+*contract* (see [§8](#8-stability-promise)), but they are not the right
+*match* key: the server legitimately attaches app-specific codes to canonical
+statuses (`queue_full` on a 409, see `internal/web/handlers/queue.go`), and
+keying on `Code` would make `errors.Is(err, ErrConflict)` false for exactly
+the conflicts callers care about. Status is the coarser, total classifier —
+every canonical code maps to exactly one status — so sentinel matching stays
+exhaustive while `Code` remains available for finer branching.
+
+Transport failures (DNS, connection refused, timeout) are to wrap as a
+distinct `*NetworkError`, never `*APIError` — not yet implemented, owned by
+`.5`.
 
 ## 5. `context.Context` conventions
 

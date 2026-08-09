@@ -30,15 +30,15 @@ const (
 // canonical "conflict" — HTTP status is the more fundamental classifier
 // and every canonical code maps to exactly one status.
 var (
-	ErrBadRequest   = &APIError{Status: http.StatusBadRequest, Code: CodeBadRequest}
-	ErrUnauthorized = &APIError{Status: http.StatusUnauthorized, Code: CodeUnauthenticated}
-	ErrForbidden    = &APIError{Status: http.StatusForbidden, Code: CodeForbidden}
-	ErrNotFound     = &APIError{Status: http.StatusNotFound, Code: CodeNotFound}
-	ErrConflict     = &APIError{Status: http.StatusConflict, Code: CodeConflict}
-	ErrTooLarge     = &APIError{Status: http.StatusRequestEntityTooLarge, Code: CodeTooLarge}
-	ErrRateLimited  = &APIError{Status: http.StatusTooManyRequests, Code: CodeRateLimited}
-	ErrUnavailable  = &APIError{Status: http.StatusServiceUnavailable, Code: CodeUnavailable}
-	ErrServerError  = &APIError{Status: http.StatusInternalServerError, Code: CodeServerError}
+	ErrBadRequest      = &APIError{Status: http.StatusBadRequest, Code: CodeBadRequest}
+	ErrUnauthenticated = &APIError{Status: http.StatusUnauthorized, Code: CodeUnauthenticated}
+	ErrForbidden       = &APIError{Status: http.StatusForbidden, Code: CodeForbidden}
+	ErrNotFound        = &APIError{Status: http.StatusNotFound, Code: CodeNotFound}
+	ErrConflict        = &APIError{Status: http.StatusConflict, Code: CodeConflict}
+	ErrTooLarge        = &APIError{Status: http.StatusRequestEntityTooLarge, Code: CodeTooLarge}
+	ErrRateLimited     = &APIError{Status: http.StatusTooManyRequests, Code: CodeRateLimited}
+	ErrUnavailable     = &APIError{Status: http.StatusServiceUnavailable, Code: CodeUnavailable}
+	ErrServerError     = &APIError{Status: http.StatusInternalServerError, Code: CodeServerError}
 )
 
 // APIError represents a non-2xx HTTP response from the Mitto REST API.
