@@ -677,7 +677,6 @@ describe("cleanup progress toast — terminal outcomes reset state", () => {
   });
 });
 
-
 // =============================================================================
 // BeadsIssueView in-viewer navigation history stack (mitto-qluh.1)
 // =============================================================================
@@ -732,8 +731,7 @@ function goBack(state) {
 function goForward(state) {
   return {
     ...state,
-    pos:
-      state.pos < state.history.length - 1 ? state.pos + 1 : state.pos,
+    pos: state.pos < state.history.length - 1 ? state.pos + 1 : state.pos,
   };
 }
 
@@ -956,7 +954,6 @@ describe("BeadsIssueView history stack — external prop reset", () => {
     expect(s.pos).toBe(0);
   });
 });
-
 
 // =============================================================================
 // BeadsView (main tasks-list flavor) in-panel navigation history stack
@@ -1224,7 +1221,6 @@ describe("BeadsView panel history — canGoBack / canGoForward derivations", () 
   });
 });
 
-
 // =============================================================================
 // mitto-qluh.3 — computePopstateAction (browser History API integration)
 // =============================================================================
@@ -1339,7 +1335,6 @@ describe("computePopstateAction — direction & clamping", () => {
   });
 });
 
-
 // =============================================================================
 // mitto-zbfq — BeadsIssueView single-Drawer mount across loading → loaded
 // =============================================================================
@@ -1379,7 +1374,10 @@ describe("mitto-zbfq: BeadsIssueView single Drawer mount across load", () => {
     const startIdx = source.indexOf(startMarker);
     expect(startIdx).toBeGreaterThan(-1);
     // Find the next top-level function declaration after this one.
-    const afterStart = source.indexOf("\nfunction ", startIdx + startMarker.length);
+    const afterStart = source.indexOf(
+      "\nfunction ",
+      startIdx + startMarker.length,
+    );
     const endIdx = afterStart === -1 ? source.length : afterStart;
     return source.slice(startIdx, endIdx);
   }
@@ -1409,14 +1407,19 @@ describe("mitto-zbfq: BeadsIssueView single Drawer mount across load", () => {
     const startMarker = "function BeadsDetailPanel(";
     const startIdx = source.indexOf(startMarker);
     expect(startIdx).toBeGreaterThan(-1);
-    const afterStart = source.indexOf("\nfunction ", startIdx + startMarker.length);
+    const afterStart = source.indexOf(
+      "\nfunction ",
+      startIdx + startMarker.length,
+    );
     const endIdx = afterStart === -1 ? source.length : afterStart;
     const body = source.slice(startIdx, endIdx);
 
     // The buggy gate — collapse whitespace so line breaks / formatting do not
     // hide it from the assertion.
     const collapsed = body.replace(/\s+/g, " ");
-    expect(collapsed).not.toMatch(/if\s*\(\s*!\s*h\.creating\s*&&\s*!\s*h\.data\s*\)\s*return\s+null/);
+    expect(collapsed).not.toMatch(
+      /if\s*\(\s*!\s*h\.creating\s*&&\s*!\s*h\.data\s*\)\s*return\s+null/,
+    );
   });
 });
 
@@ -1449,7 +1452,10 @@ describe("mitto-n5mw: write handlers must not swallow beads_schema_skew (409)", 
     // Handler bodies are ~30–110 lines; slice a generous window and stop at
     // the next top-level `const handle` / `function ` declaration so we do
     // not bleed into the next handler.
-    const afterStart = source.indexOf("\n  const handle", startIdx + marker.length);
+    const afterStart = source.indexOf(
+      "\n  const handle",
+      startIdx + marker.length,
+    );
     const afterFn = source.indexOf("\nfunction ", startIdx + marker.length);
     const candidates = [afterStart, afterFn].filter((i) => i > startIdx);
     const endIdx = candidates.length ? Math.min(...candidates) : source.length;
@@ -1475,7 +1481,9 @@ describe("mitto-n5mw: write handlers must not swallow beads_schema_skew (409)", 
     });
 
     test("isBeadsSchemaSkew returns false for unrelated errors", () => {
-      expect(beadsUtils.isBeadsSchemaSkew({ error: "boom", code: "bd_failed" })).toBe(false);
+      expect(
+        beadsUtils.isBeadsSchemaSkew({ error: "boom", code: "bd_failed" }),
+      ).toBe(false);
       expect(beadsUtils.isBeadsSchemaSkew({ error: "boom" })).toBe(false);
       expect(beadsUtils.isBeadsSchemaSkew(null)).toBe(false);
       expect(beadsUtils.isBeadsSchemaSkew(undefined)).toBe(false);
@@ -1500,7 +1508,10 @@ describe("mitto-n5mw: write handlers must not swallow beads_schema_skew (409)", 
     });
 
     test("toSchemaSkewState tolerates missing details", () => {
-      const state = beadsUtils.toSchemaSkewState({ error: "msg", code: "beads_schema_skew" });
+      const state = beadsUtils.toSchemaSkewState({
+        error: "msg",
+        code: "beads_schema_skew",
+      });
       expect(state.message).toBe("msg");
       expect(state.dbPath).toBe("");
       expect(state.hint).toBe("");
@@ -1557,10 +1568,16 @@ describe("mitto-n5mw: write handlers must not swallow beads_schema_skew (409)", 
       // The second occurrence of confirmDeleteIssue is the main-view one.
       const first = source.indexOf("const confirmDeleteIssue = useCallback");
       expect(first).toBeGreaterThan(-1);
-      const second = source.indexOf("const confirmDeleteIssue = useCallback", first + 1);
+      const second = source.indexOf(
+        "const confirmDeleteIssue = useCallback",
+        first + 1,
+      );
       expect(second).toBeGreaterThan(-1);
       const nextIdx = source.indexOf("\n  const ", second + 30);
-      const body = source.slice(second, nextIdx > second ? nextIdx : second + 8000);
+      const body = source.slice(
+        second,
+        nextIdx > second ? nextIdx : second + 8000,
+      );
       // Guard on the parent delete branch.
       expect(body).toMatch(/isBeadsSchemaSkew\s*\(/);
       // Child loops must also honour schema_skew — either by bailing early or
@@ -1572,29 +1589,42 @@ describe("mitto-n5mw: write handlers must not swallow beads_schema_skew (409)", 
 
     test("main-view handleToggleStatus branches on isBeadsSchemaSkew", () => {
       const first = source.indexOf("const handleToggleStatus = useCallback");
-      const second = source.indexOf("const handleToggleStatus = useCallback", first + 1);
+      const second = source.indexOf(
+        "const handleToggleStatus = useCallback",
+        first + 1,
+      );
       expect(second).toBeGreaterThan(-1);
       const nextIdx = source.indexOf("\n  const ", second + 30);
-      const body = source.slice(second, nextIdx > second ? nextIdx : second + 4000);
+      const body = source.slice(
+        second,
+        nextIdx > second ? nextIdx : second + 4000,
+      );
       expect(body).toMatch(/isBeadsSchemaSkew\s*\(/);
     });
 
     test("main-view handleToggleDefer branches on isBeadsSchemaSkew", () => {
       const first = source.indexOf("const handleToggleDefer = useCallback");
-      const second = source.indexOf("const handleToggleDefer = useCallback", first + 1);
+      const second = source.indexOf(
+        "const handleToggleDefer = useCallback",
+        first + 1,
+      );
       expect(second).toBeGreaterThan(-1);
       const nextIdx = source.indexOf("\n  const ", second + 30);
-      const body = source.slice(second, nextIdx > second ? nextIdx : second + 4000);
+      const body = source.slice(
+        second,
+        nextIdx > second ? nextIdx : second + 4000,
+      );
       expect(body).toMatch(/isBeadsSchemaSkew\s*\(/);
     });
 
     test("handleAddDependencyEdge branches on isBeadsSchemaSkew", () => {
-      const body = extractHandlerBody("const handleAddDependencyEdge = useCallback");
+      const body = extractHandlerBody(
+        "const handleAddDependencyEdge = useCallback",
+      );
       expect(body).toMatch(/isBeadsSchemaSkew\s*\(/);
     });
   });
 });
-
 
 // =============================================================================
 // mitto-erry: SchemaSkewDialog copy consolidation + kill-switch UX
@@ -1615,7 +1645,10 @@ describe("mitto-erry: SchemaSkewDialog copy consolidation + kill-switch UX", () 
     const startMarker = "function SchemaSkewDialog(";
     const startIdx = source.indexOf(startMarker);
     expect(startIdx).toBeGreaterThan(-1);
-    const afterStart = source.indexOf("\nfunction ", startIdx + startMarker.length);
+    const afterStart = source.indexOf(
+      "\nfunction ",
+      startIdx + startMarker.length,
+    );
     const endIdx = afterStart === -1 ? source.length : afterStart;
     return source.slice(startIdx, endIdx);
   }
@@ -1660,7 +1693,6 @@ describe("mitto-erry: SchemaSkewDialog copy consolidation + kill-switch UX", () 
   });
 });
 
-
 // =============================================================================
 // mitto-vc2m: SchemaSkewDialog.handleConfirm must use secureFetch (CSRF header)
 // =============================================================================
@@ -1671,46 +1703,51 @@ describe("mitto-erry: SchemaSkewDialog copy consolidation + kill-switch UX", () 
 // with 403 (has_header=false has_cookie=true). Symptom on mobile: "Run
 // migration" dies with a 403 toast and never reaches the backend.
 //
-// authFetch (utils/csrf.js:193) is intentionally CSRF-less — it exists for
-// GET / auth-only paths. Only secureFetch (utils/csrf.js:126) injects the
-// X-CSRF-Token header on POST/PUT/PATCH/DELETE. The two helpers are
-// look-alikes, which invited the mistake; this source-scan assertion pins the
-// migrate call to secureFetch so a future re-swap cannot silently drop the
-// CSRF header again.
+// mitto-7gta.17 slice S3: handleConfirm was migrated onto the SDK client
+// (getSdkClient().issues.migrate()). This structurally closes the whole "picked
+// the wrong fetch helper" bug class — browserCookieAuth (sdk/auth/browser-cookie.js)
+// applies the X-CSRF-Token header unconditionally to every mutating request the
+// SDK makes, so there is no authFetch/secureFetch choice left to get wrong. This
+// source-scan assertion now pins the migrate call to the SDK and guards against a
+// future regression back to a raw authFetch/secureFetch call.
 //
 // Source-scan style parallels the mitto-erry / mitto-n5mw / mitto-zbfq blocks
 // above — a full DOM render test is impractical because BeadsView imports
 // window.preact globals at module load time.
 
-describe("mitto-vc2m: SchemaSkewDialog migrate call must use secureFetch (CSRF)", () => {
+describe("mitto-vc2m: SchemaSkewDialog migrate call must use the SDK client (CSRF)", () => {
   const source = readFileSync(BEADS_VIEW_PATH, "utf8");
 
   function extractSchemaSkewDialogSource() {
     const startMarker = "function SchemaSkewDialog(";
     const startIdx = source.indexOf(startMarker);
     expect(startIdx).toBeGreaterThan(-1);
-    const afterStart = source.indexOf("\nfunction ", startIdx + startMarker.length);
+    const afterStart = source.indexOf(
+      "\nfunction ",
+      startIdx + startMarker.length,
+    );
     const endIdx = afterStart === -1 ? source.length : afterStart;
     return source.slice(startIdx, endIdx);
   }
 
-  test("handleConfirm calls endpoints.beads.migrate() via secureFetch, never authFetch", () => {
+  test("handleConfirm calls getSdkClient().issues.migrate(), never authFetch/secureFetch", () => {
     const body = extractSchemaSkewDialogSource();
     // Locate the migrate call site. Collapse whitespace so line breaks between
-    // the fetcher name, "(", and the endpoint helper do not hide it.
+    // the client accessor and the resource method do not hide it.
     const collapsed = body.replace(/\s+/g, " ");
 
-    // Positive: the migrate POST must go through secureFetch.
-    expect(collapsed).toMatch(/secureFetch\s*\(\s*endpoints\.beads\.migrate\s*\(\s*\)/);
+    // Positive: the migrate POST must go through the SDK client, whose auth
+    // adapter applies X-CSRF-Token unconditionally.
+    expect(collapsed).toMatch(/getSdkClient\(\)\.issues\.migrate\s*\(/);
 
-    // Negative: authFetch must NEVER be paired with endpoints.beads.migrate().
-    // authFetch omits X-CSRF-Token, so this pairing is the exact 403 shape
-    // reported in mitto-vc2m.
-    expect(collapsed).not.toMatch(/authFetch\s*\(\s*endpoints\.beads\.migrate\s*\(\s*\)/);
+    // Negative: neither raw fetch helper may reappear on this call site —
+    // authFetch omits X-CSRF-Token entirely (the exact 403 shape reported in
+    // mitto-vc2m), and secureFetch would be a regression back to a bespoke
+    // fetch call the SDK migration was meant to retire.
+    expect(collapsed).not.toMatch(/\bauthFetch\s*\(/);
+    expect(collapsed).not.toMatch(/\bsecureFetch\s*\(/);
   });
 });
-
-
 
 // =============================================================================
 // mitto-vqf — renderIssueRow bgTone: tint whole row when a linked conversation
@@ -1798,10 +1835,7 @@ describe("renderIssueRow bgTone — source guard (mitto-vqf)", () => {
   // implementation still matches the mirror + spec, so a future refactor
   // that drops the streaming branch or renames the class trips a test.
   const here = dirname(fileURLToPath(import.meta.url));
-  const beadsViewSource = readFileSync(
-    resolve(here, "BeadsView.js"),
-    "utf8",
-  );
+  const beadsViewSource = readFileSync(resolve(here, "BeadsView.js"), "utf8");
   const stylesSource = readFileSync(
     resolve(here, "..", "styles-v2.css"),
     "utf8",
@@ -1818,9 +1852,7 @@ describe("renderIssueRow bgTone — source guard (mitto-vqf)", () => {
     ).length;
     expect(streamingBranchCount).toBeGreaterThanOrEqual(2);
     // Non-selected streaming path keeps hover-red reachable.
-    expect(beadsViewSource).toContain(
-      '"beads-row-streaming hover:bg-red-600"',
-    );
+    expect(beadsViewSource).toContain('"beads-row-streaming hover:bg-red-600"');
     // Selected+streaming path combines surface tint with the streaming class.
     expect(beadsViewSource).toContain(
       '"bg-mitto-surface-3/30 beads-row-streaming"',
@@ -1940,7 +1972,6 @@ describe("mitto-19j: BeadsIssueView listens for mitto:beads_changed", () => {
   });
 });
 
-
 // =============================================================================
 // mitto-0qn: computeEffectiveStreamingSet — extends the streaming-issue set
 // with every ancestor reached by walking issue.parent upward from any seed, so
@@ -1955,10 +1986,7 @@ describe("mitto-19j: BeadsIssueView listens for mitto:beads_changed", () => {
 
 describe("computeEffectiveStreamingSet (mitto-0qn)", () => {
   test("empty streaming set → empty result (never mutates input)", () => {
-    const issues = [
-      { id: "a" },
-      { id: "b", parent: "a" },
-    ];
+    const issues = [{ id: "a" }, { id: "b", parent: "a" }];
     const seed = new Set();
     const out = computeEffectiveStreamingSet(issues, seed);
     expect(out).toBeInstanceOf(Set);
@@ -1984,10 +2012,7 @@ describe("computeEffectiveStreamingSet (mitto-0qn)", () => {
   });
 
   test("direct parent → parent added to the set", () => {
-    const issues = [
-      { id: "epic1" },
-      { id: "task1", parent: "epic1" },
-    ];
+    const issues = [{ id: "epic1" }, { id: "task1", parent: "epic1" }];
     const out = computeEffectiveStreamingSet(issues, new Set(["task1"]));
     expect([...out].sort()).toEqual(["epic1", "task1"]);
   });
@@ -2097,7 +2122,6 @@ describe("renderIssueRow effective-streaming-set — source guard (mitto-0qn)", 
   });
 });
 
-
 // =============================================================================
 // mitto-9vh: BeadsIssueView must stop polling deleted issues after the first 404
 // =============================================================================
@@ -2155,20 +2179,21 @@ describe("mitto-9vh: BeadsIssueView stops polling deleted issues", () => {
   });
 
   test("fetch effect short-circuits ids already in goneIdsRef before issuing a request", () => {
-    // The guard must run BEFORE authFetch, so refreshNonce bumps on a known-
-    // gone id become a cheap no-op instead of another 404. Without this,
-    // mitto:beads_changed re-fires the same GET forever (589 x 404 observed).
+    // The guard must run BEFORE the SDK call, so refreshNonce bumps on a
+    // known-gone id become a cheap no-op instead of another 404. Without
+    // this, mitto:beads_changed re-fires the same GET forever (589 x 404
+    // observed). mitto-7gta.17 slice S3: the fetch site is now
+    // getSdkClient().issues.show(...), not authFetch(endpoints.issues.show(...)).
     const body = extractBeadsIssueViewSource();
     const collapsed = body.replace(/\s+/g, " ");
     // Grab the guard site and the fetch site, then assert the guard's index
-    // is BEFORE the first authFetch call inside the effect.
+    // is BEFORE the issues.show() call inside the effect.
     const guardIdx = collapsed.search(
       /if\s*\(\s*goneIdsRef\.current\.has\s*\(\s*currentIssueId\s*\)\s*\)/,
     );
     expect(guardIdx).toBeGreaterThan(-1);
-    const fetchIdx = collapsed.indexOf("authFetch( endpoints.issues.show");
-    // Whitespace-collapsed form may not exactly match — use a regex fallback.
-    const fetchRe = /authFetch\s*\(\s*endpoints\.issues\.show/;
+    const fetchRe =
+      /getSdkClient\s*\(\s*\)\s*\.issues\.show\s*\(\s*currentIssueId/;
     const fetchMatch = collapsed.match(fetchRe);
     expect(fetchMatch).not.toBeNull();
     expect(guardIdx).toBeLessThan(collapsed.indexOf(fetchMatch[0]));
@@ -2178,11 +2203,14 @@ describe("mitto-9vh: BeadsIssueView stops polling deleted issues", () => {
     // The recovery half of the fix: when the fetch discovers a 404, the id
     // must be memoized so the guard above will skip it next time. If this
     // add() is missing, the guard is unreachable and the bug returns.
+    // mitto-7gta.17 slice S3: the SDK throws on non-2xx instead of returning
+    // a raw Response, so the 404 branch is now `isNotFoundError(err)` inside
+    // the catch block, not a `res.status === 404` check.
     const body = extractBeadsIssueViewSource();
     const collapsed = body.replace(/\s+/g, " ");
-    // The add() lives inside the res.status === 404 branch. Assert both
+    // The add() lives inside the isNotFoundError(err) branch. Assert both
     // pieces exist in that order.
-    const statusIdx = collapsed.search(/res\.status\s*===\s*404/);
+    const statusIdx = collapsed.search(/isNotFoundError\s*\(\s*err\s*\)/);
     expect(statusIdx).toBeGreaterThan(-1);
     const addRe = /goneIdsRef\.current\.add\s*\(\s*currentIssueId\s*\)/;
     const addMatch = collapsed.match(addRe);
@@ -2210,14 +2238,16 @@ describe("mitto-9vh: BeadsIssueView stops polling deleted issues", () => {
   test("404 branch does NOT call showToast — external deletion must not spam every client", () => {
     // The bug produced 589 x 404 across 4 IPs (local + 3 mobile) in 8h.
     // Toasting each one would have quadrupled the UX pain. Isolate the 404
-    // branch specifically — the transient-error branches (!res.ok, catch)
-    // legitimately DO toast, so a whole-effect scan would false-positive.
+    // branch specifically — the transient-error branch (the rest of the
+    // catch block) legitimately DOES toast, so a whole-effect scan would
+    // false-positive. mitto-7gta.17 slice S3: the branch guard is now
+    // isNotFoundError(err), not res.status === 404.
     const body = extractBeadsIssueViewSource();
-    // Extract from "res.status === 404" up to the branch's closing `return;`
-    // so we only look inside that branch's body. The 404 branch ends with a
-    // bare `return;` (early-exit); the sibling `!res.ok` branch that
-    // legitimately calls showToast lives strictly after that boundary.
-    const idx = body.search(/res\.status\s*===\s*404/);
+    // Extract from "isNotFoundError(err)" up to the branch's closing
+    // `return;` so we only look inside that branch's body. The 404 branch
+    // ends with a bare `return;` (early-exit); the sibling catch-all code
+    // that legitimately calls showToast lives strictly after that boundary.
+    const idx = body.search(/isNotFoundError\s*\(\s*err\s*\)/);
     expect(idx).toBeGreaterThan(-1);
     const rest = body.slice(idx);
     const endMatch = rest.match(/\breturn\s*;/);

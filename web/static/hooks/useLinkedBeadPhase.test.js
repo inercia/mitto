@@ -15,8 +15,17 @@
  * matching useBeadsKnownIds.test.js: we install a preact stub whose useEffect
  * captures (cb, deps), invoke cb ourselves, and assert on side effects.
  * `useState` also comes from that stub — we return a benign [state, setState]
- * shape so the hook can call `setState(null)` without throwing. Fetch is
- * stubbed via `global.fetch` since `authFetch` reaches it directly.
+ * shape so the hook can call `setState(null)` without throwing.
+ *
+ * mitto-7gta.17 slice S3: the hook now reaches the network via
+ * `getSdkClient().issues` (wrapped with `withIssueCaches`) instead of
+ * `authFetch`, but the SDK client's `fetch` option is late-bound (see
+ * utils/sdkClient.js), so stubbing `global.fetch` still works. Responses are
+ * built with the shared `fakeResponse` fixture (not hand-rolled
+ * `{ok,status,json}` objects) because `sdk/core/transport.js`'s `decodeBody`
+ * unconditionally calls `response.text()` — a mock without it throws inside
+ * `request()`, which the hook's `fetchIssue` catch-all then silently
+ * swallows into `null`/no-markGone, masking the intended 404 behavior.
  */
 
 import {
@@ -27,6 +36,7 @@ import {
   afterEach,
   jest,
 } from "../utils/testing/testGlobals.js";
+import { fakeResponse } from "../sdk/testing/fake-server.js";
 
 // Minimal environment for the module and the transitive utils barrel it pulls
 // in (csrf.js touches document.cookie; endpoints.js reads
@@ -67,16 +77,12 @@ async function loadModules() {
 beforeEach(async () => {
   originalFetch = global.fetch;
   currentFetch = jest.fn(() =>
-    Promise.resolve({
-      ok: true,
-      status: 200,
-      json: () =>
-        Promise.resolve({
-          issue_type: "feature",
-          labels: ["planned"],
-          status: "open",
-        }),
-    }),
+    Promise.resolve(
+      fakeResponse({
+        status: 200,
+        body: { issue_type: "feature", labels: ["planned"], status: "open" },
+      }),
+    ),
   );
   global.fetch = currentFetch;
   pendingCleanups = [];
@@ -109,8 +115,8 @@ function mount(issueId, workingDir, archived) {
 }
 
 // Await enough microtask ticks that the getOrFetch → fetchIssue → .then chain
-// (three awaits: authFetch, res.json, cache-store) fully settles before the
-// assertion runs.
+// (SDK request(): auth.authorize(), fetch, decodeBody, cache-store) fully
+// settles before the assertion runs.
 async function flush() {
   for (let i = 0; i < 5; i++) await Promise.resolve();
 }
@@ -135,7 +141,9 @@ describe("useLinkedBeadPhase — archived short-circuit (mitto-msv)", () => {
     mount(freshId(), "/tmp/wsA", true);
     await flush();
     // A subsequent broadcast must not fire any fetch.
-    window.dispatchEvent(new CustomEvent("mitto:beads_changed", { detail: {} }));
+    window.dispatchEvent(
+      new CustomEvent("mitto:beads_changed", { detail: {} }),
+    );
     await flush();
     expect(currentFetch).not.toHaveBeenCalled();
   });
@@ -163,11 +171,7 @@ describe("useLinkedBeadPhase — 404 negative cache (mitto-msv)", () => {
   test("a 404 response marks the id gone and subsequent mounts skip fetch", async () => {
     const id = freshId("mitto-404");
     currentFetch.mockImplementationOnce(() =>
-      Promise.resolve({
-        ok: false,
-        status: 404,
-        json: () => Promise.resolve({}),
-      }),
+      Promise.resolve(fakeResponse({ status: 404, body: {} })),
     );
     mount(id, "/tmp/wsA", false);
     await flush();
@@ -204,11 +208,7 @@ describe("useLinkedBeadPhase — 404 negative cache (mitto-msv)", () => {
   test("non-404 errors do NOT poison the negative cache", async () => {
     const id = freshId("mitto-500");
     currentFetch.mockImplementationOnce(() =>
-      Promise.resolve({
-        ok: false,
-        status: 500,
-        json: () => Promise.resolve({}),
-      }),
+      Promise.resolve(fakeResponse({ status: 500, body: {} })),
     );
     mount(id, "/tmp/wsA", false);
     await flush();
@@ -218,11 +218,7 @@ describe("useLinkedBeadPhase — 404 negative cache (mitto-msv)", () => {
   test("a 404 in wsA does NOT shadow the same id in wsB", async () => {
     const id = freshId("mitto-iso");
     currentFetch.mockImplementationOnce(() =>
-      Promise.resolve({
-        ok: false,
-        status: 404,
-        json: () => Promise.resolve({}),
-      }),
+      Promise.resolve(fakeResponse({ status: 404, body: {} })),
     );
     mount(id, "/tmp/wsA", false);
     await flush();
