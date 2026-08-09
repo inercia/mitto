@@ -281,6 +281,203 @@ describe("sessions resource", () => {
     });
   });
 
+  describe("queue", () => {
+    test("list(id) calls GET .../queue and decodes the JSON body", async () => {
+      const { sessions, calls, respondWith } = mk();
+      respondWith(() => fakeResponse({ body: { messages: [{ id: "m1" }], count: 1 } }));
+      const result = await sessions.queue.list("s1");
+      expect(calls[0].url).toBe("/api/sessions/s1/queue");
+      expect(calls[0].init.method).toBe("GET");
+      expect(result).toEqual({ messages: [{ id: "m1" }], count: 1 });
+    });
+
+    test("add(id, body) POSTs the QueueAddRequest body untouched", async () => {
+      const { sessions, calls } = mk();
+      const body = { message: "hi", image_ids: ["i1"] };
+      await sessions.queue.add("s1", body);
+      expect(calls[0].url).toBe("/api/sessions/s1/queue");
+      expect(calls[0].init.method).toBe("POST");
+      expect(calls[0].init.body).toBe(JSON.stringify(body));
+      expect(calls[0].init.headers["Content-Type"]).toBe("application/json");
+    });
+
+    test("addNamed(id, promptName, args, extra) POSTs {prompt_name, arguments, ...extra}", async () => {
+      const { sessions, calls } = mk();
+      await sessions.queue.addNamed("s1", "team/my prompt", { x: "1" }, {
+        image_ids: ["i1"],
+      });
+      expect(calls[0].url).toBe("/api/sessions/s1/queue");
+      expect(calls[0].init.method).toBe("POST");
+      expect(calls[0].init.body).toBe(
+        JSON.stringify({
+          prompt_name: "team/my prompt",
+          arguments: { x: "1" },
+          image_ids: ["i1"],
+        }),
+      );
+    });
+
+    test("get(id, msgId) calls GET .../queue/{msgId}, encoding special chars", async () => {
+      const { sessions, calls } = mk();
+      await sessions.queue.get("s1", "m 1/x");
+      expect(calls[0].url).toBe("/api/sessions/s1/queue/m%201%2Fx");
+      expect(calls[0].init.method).toBe("GET");
+    });
+
+    test("remove(id, msgId) calls DELETE .../queue/{msgId}", async () => {
+      const { sessions, calls } = mk();
+      const result = await sessions.queue.remove("s1", "m1");
+      expect(calls[0].url).toBe("/api/sessions/s1/queue/m1");
+      expect(calls[0].init.method).toBe("DELETE");
+      expect(result).toBeNull();
+    });
+
+    test("clear(id) calls DELETE .../queue (whole queue, no message id)", async () => {
+      const { sessions, calls } = mk();
+      await sessions.queue.clear("s1");
+      expect(calls[0].url).toBe("/api/sessions/s1/queue");
+      expect(calls[0].init.method).toBe("DELETE");
+    });
+
+    test("move(id, msgId, direction) POSTs {direction} to .../queue/{msgId}/move", async () => {
+      const { sessions, calls } = mk();
+      await sessions.queue.move("s1", "m1", "up");
+      expect(calls[0].url).toBe("/api/sessions/s1/queue/m1/move");
+      expect(calls[0].init.method).toBe("POST");
+      expect(calls[0].init.body).toBe(JSON.stringify({ direction: "up" }));
+    });
+
+    test("config() reads conversations.queue from GET /api/config", async () => {
+      const { sessions, calls, respondWith } = mk();
+      respondWith(() =>
+        fakeResponse({
+          body: { conversations: { queue: { enabled: true, max_size: 10 } } },
+        }),
+      );
+      const result = await sessions.queue.config("s1");
+      expect(calls[0].url).toBe("/api/config");
+      expect(calls[0].init.method).toBe("GET");
+      expect(result).toEqual({ enabled: true, max_size: 10 });
+    });
+
+    test("config() returns undefined when the server config has no queue section", async () => {
+      const { sessions, respondWith } = mk();
+      respondWith(() => fakeResponse({ body: { conversations: {} } }));
+      const result = await sessions.queue.config("s1");
+      expect(result).toBeUndefined();
+    });
+  });
+
+  describe("loop", () => {
+    test("get(id) calls GET .../loop", async () => {
+      const { sessions, calls, respondWith } = mk();
+      respondWith(() => fakeResponse({ body: { prompt: "p", enabled: true } }));
+      const result = await sessions.loop.get("s1");
+      expect(calls[0].url).toBe("/api/sessions/s1/loop");
+      expect(calls[0].init.method).toBe("GET");
+      expect(result).toEqual({ prompt: "p", enabled: true });
+    });
+
+    test("set(id, body) PUTs the LoopPromptRequest body untouched, including triggers[]", async () => {
+      const { sessions, calls } = mk();
+      const body = {
+        prompt: "p",
+        frequency: { value: 1, unit: "hours" },
+        enabled: true,
+        triggers: [{ type: "schedule" }, { type: "onCompletion", delay_seconds: 30 }],
+      };
+      await sessions.loop.set("s1", body);
+      expect(calls[0].url).toBe("/api/sessions/s1/loop");
+      expect(calls[0].init.method).toBe("PUT");
+      expect(calls[0].init.body).toBe(JSON.stringify(body));
+    });
+
+    test("update(id, patch) PATCHes the LoopPromptPatchRequest body untouched", async () => {
+      const { sessions, calls } = mk();
+      const patch = { max_iterations: 5, reset_counters: true };
+      await sessions.loop.update("s1", patch);
+      expect(calls[0].url).toBe("/api/sessions/s1/loop");
+      expect(calls[0].init.method).toBe("PATCH");
+      expect(calls[0].init.body).toBe(JSON.stringify(patch));
+    });
+
+    test("detach(id) calls DELETE .../loop and a 204 response decodes to null", async () => {
+      const { sessions, calls } = mk();
+      const result = await sessions.loop.detach("s1");
+      expect(calls[0].url).toBe("/api/sessions/s1/loop");
+      expect(calls[0].init.method).toBe("DELETE");
+      expect(result).toBeNull();
+    });
+
+    test("restore(id) calls POST .../loop/restore", async () => {
+      const { sessions, calls, respondWith } = mk();
+      respondWith(() => fakeResponse({ body: { prompt: "p", enabled: true } }));
+      const result = await sessions.loop.restore("s1");
+      expect(calls[0].url).toBe("/api/sessions/s1/loop/restore");
+      expect(calls[0].init.method).toBe("POST");
+      expect(result).toEqual({ prompt: "p", enabled: true });
+    });
+
+    test("restore(id) surfaces a 409 conflict as MittoApiError", async () => {
+      const { sessions, respondWith } = mk();
+      respondWith(() =>
+        fakeResponse({
+          status: 409,
+          body: { error: { code: "conflict", message: "loop already configured" } },
+        }),
+      );
+      await expect(sessions.loop.restore("s1")).rejects.toThrow(MittoApiError);
+    });
+
+    test("runNow(id, resetTimer) POSTs {reset_timer} when resetTimer is provided", async () => {
+      const { sessions, calls } = mk();
+      await sessions.loop.runNow("s1", false);
+      expect(calls[0].url).toBe("/api/sessions/s1/loop/run-now");
+      expect(calls[0].init.method).toBe("POST");
+      expect(calls[0].init.body).toBe(JSON.stringify({ reset_timer: false }));
+    });
+
+    test("runNow(id) with no resetTimer omits the body entirely", async () => {
+      const { sessions, calls } = mk();
+      await sessions.loop.runNow("s1");
+      expect(calls[0].url).toBe("/api/sessions/s1/loop/run-now");
+      expect(calls[0].init.body).toBeUndefined();
+      expect(calls[0].init.headers["Content-Type"]).toBeUndefined();
+    });
+
+    test("suggestFromRecent(id) calls GET .../loop/suggest-from-recent", async () => {
+      const { sessions, calls } = mk();
+      await sessions.loop.suggestFromRecent("s1");
+      expect(calls[0].url).toBe("/api/sessions/s1/loop/suggest-from-recent");
+      expect(calls[0].init.method).toBe("GET");
+    });
+
+    test("acknowledgeStoppedReason(id) calls POST .../loop/acknowledge-stopped-reason", async () => {
+      const { sessions, calls } = mk();
+      await sessions.loop.acknowledgeStoppedReason("s1");
+      expect(calls[0].url).toBe(
+        "/api/sessions/s1/loop/acknowledge-stopped-reason",
+      );
+      expect(calls[0].init.method).toBe("POST");
+    });
+
+    test("enable(id) PATCHes {enabled: true}", async () => {
+      const { sessions, calls } = mk();
+      await sessions.loop.enable("s1");
+      expect(calls[0].url).toBe("/api/sessions/s1/loop");
+      expect(calls[0].init.method).toBe("PATCH");
+      expect(calls[0].init.body).toBe(JSON.stringify({ enabled: true }));
+    });
+
+    test("disable(id) PATCHes {enabled: false}", async () => {
+      const { sessions, calls } = mk();
+      await sessions.loop.disable("s1");
+      expect(calls[0].url).toBe("/api/sessions/s1/loop");
+      expect(calls[0].init.method).toBe("PATCH");
+      expect(calls[0].init.body).toBe(JSON.stringify({ enabled: false }));
+    });
+  });
+
   describe("cross-cutting concerns", () => {
     test("a non-2xx response surfaces a MittoApiError", async () => {
       const { sessions, respondWith } = mk();
@@ -305,6 +502,34 @@ describe("sessions resource", () => {
       await sessions.get("s1");
       expect(calls[0].url).toBe("/mitto/api/sessions/s1");
       expect(calls[0].url.split("/mitto").length - 1).toBe(1);
+    });
+
+    test("queue.list(id) applies apiPrefix exactly once", async () => {
+      const { sessions, calls } = mk({ apiPrefix: "/mitto" });
+      await sessions.queue.list("s1");
+      expect(calls[0].url).toBe("/mitto/api/sessions/s1/queue");
+      expect(calls[0].url.split("/mitto").length - 1).toBe(1);
+    });
+
+    test("loop.get(id) applies apiPrefix exactly once", async () => {
+      const { sessions, calls } = mk({ apiPrefix: "/mitto" });
+      await sessions.loop.get("s1");
+      expect(calls[0].url).toBe("/mitto/api/sessions/s1/loop");
+      expect(calls[0].url.split("/mitto").length - 1).toBe(1);
+    });
+
+    test("forwards an AbortSignal to fetch for a queue method", async () => {
+      const { sessions, calls } = mk();
+      const controller = new AbortController();
+      await sessions.queue.list("s1", { signal: controller.signal });
+      expect(calls[0].init.signal).toBe(controller.signal);
+    });
+
+    test("forwards an AbortSignal to fetch for a loop method", async () => {
+      const { sessions, calls } = mk();
+      const controller = new AbortController();
+      await sessions.loop.get("s1", { signal: controller.signal });
+      expect(calls[0].init.signal).toBe(controller.signal);
     });
   });
 });
