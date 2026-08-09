@@ -187,6 +187,43 @@ describe("issues resource", () => {
       MittoApiError,
     );
   });
+
+  describe("cross-cutting concerns (mitto-7gta.7 parity)", () => {
+    test("remove(id, params) with a 204 response decodes to null", async () => {
+      const { issues } = mk();
+      const result = await issues.remove("a-1", { working_dir: WD });
+      expect(result).toBeNull();
+    });
+
+    test("list(params) omits null/undefined/empty query values", async () => {
+      const { issues, calls } = mk();
+      await issues.list({ working_dir: WD, priority: null, assignee: undefined, notes: "" });
+      expect(calls[0].url).toBe(`/api/issues?working_dir=${encodeURIComponent(WD)}`);
+    });
+
+    test("forwards an AbortSignal to fetch", async () => {
+      const { issues, calls } = mk();
+      const controller = new AbortController();
+      await issues.show("a-1", { working_dir: WD }, { signal: controller.signal });
+      expect(calls[0].init.signal).toBe(controller.signal);
+    });
+
+    test("apiPrefix appears exactly once in the URL (no double-prefixing)", async () => {
+      const { issues, calls } = mk({ apiPrefix: "/mitto" });
+      await issues.show("a-1", { working_dir: WD });
+      expect(calls[0].url).toBe(
+        `/mitto/api/issues/a-1?working_dir=${encodeURIComponent(WD)}`,
+      );
+      expect(calls[0].url.split("/mitto").length - 1).toBe(1);
+    });
+
+    test("migrate(body) applies apiPrefix exactly once", async () => {
+      const { issues, calls } = mk({ apiPrefix: "/mitto" });
+      await issues.migrate({ working_dir: WD, mode: "migrate" });
+      expect(calls[0].url).toBe("/mitto/api/beads/migrate");
+      expect(calls[0].url.split("/mitto").length - 1).toBe(1);
+    });
+  });
 });
 
 describe("withIssueCaches decorator", () => {
@@ -247,5 +284,35 @@ describe("withIssueCaches decorator", () => {
     wrapped.preload(["throttled"], { working_dir: WD });
     await new Promise((r) => setTimeout(r, 0));
     expect(calls).toHaveLength(0);
+  });
+
+  test("show() does NOT call markGone() on a non-404 error", async () => {
+    const { issues, respondWith } = mk();
+    respondWith(() => fakeResponse({ status: 500, body: { error: "boom" } }));
+    const markGone = jest.fn();
+    const wrapped = withIssueCaches(issues, { markGone });
+    await expect(wrapped.show("a-1", { working_dir: WD })).rejects.toBeInstanceOf(MittoApiError);
+    expect(markGone).not.toHaveBeenCalled();
+  });
+
+  test("list() does NOT call onListed() when the decoded body is not an array", async () => {
+    const { issues, respondWith } = mk();
+    respondWith(() => fakeResponse({ body: { not: "an array" } }));
+    const onListed = jest.fn();
+    const wrapped = withIssueCaches(issues, { onListed });
+    await wrapped.list({ working_dir: WD });
+    expect(onListed).not.toHaveBeenCalled();
+  });
+
+  test("preload() with no hooks fetches every non-null id unconditionally", async () => {
+    const { issues, calls, respondWith } = mk();
+    respondWith(() => fakeResponse({ body: { id: "x" } }));
+    const wrapped = withIssueCaches(issues, {});
+    wrapped.preload(["a-1", "a-2"], { working_dir: WD });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(calls.map((c) => c.url)).toEqual([
+      `/api/issues/a-1?working_dir=${encodeURIComponent(WD)}`,
+      `/api/issues/a-2?working_dir=${encodeURIComponent(WD)}`,
+    ]);
   });
 });
