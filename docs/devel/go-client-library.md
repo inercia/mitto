@@ -11,9 +11,10 @@ deprecation register — are referenced rather than duplicated here.
 ## Context
 
 `internal/client` already implements roughly 80% of a conversation-centric
-Go client across 1644 LOC (`client.go`, `session.go`, `helpers.go`,
-`doc.go`), proven by 226 in-repo importers under `tests/`. It cannot be used
-outside this repository (lives under `internal/`), has no authentication,
+Go client across 1476 LOC (`client.go`, `session.go`, `helpers.go`,
+`doc.go`; 1644 with `client_test.go`), proven by 50 in-repo importers under
+`tests/integration/`. It cannot be used outside this repository (lives
+under `internal/`), has no authentication,
 does not parse the canonical error envelope, and its realtime layer is a
 bare `SessionCallbacks` struct with no reconnect, resync, or keepalive. This
 record decides the target shape before `mitto-rwxq.2` relocates it to
@@ -45,7 +46,8 @@ pkg/api/
 No `resources/`/`realtime/` sub-packages, unlike the JS SDK: today's code is
 small, `Session` needs unexported access to `Client`'s internals, and
 sub-packages would force an exported seam or an import cycle. This also
-keeps `.2`'s move a pure `git mv` + import-path rewrite across 226 files.
+keeps `.2`'s move a pure `git mv` + import-path rewrite across the 50
+importers.
 File-per-resource is the organising axis instead of package-per-resource;
 unexported helpers may move to `pkg/api/internal/` later if the file count
 grows.
@@ -64,7 +66,7 @@ mechanical-move property of `.2`.
 kept as-is. `.4` and later beads add `WithHTTPClient`, `WithAPIPrefix`
 (today `/mitto` is hardcoded), `WithAuth`, `WithLogger`, `WithUserAgent`.
 Zero-config `New(baseURL)` MUST remain unauthenticated and
-behaviour-identical, since that is what all 226 in-repo consumers use.
+behaviour-identical, since that is what all in-repo consumers use.
 
 ## 4. Error model (`.3`)
 
