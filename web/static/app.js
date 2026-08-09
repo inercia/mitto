@@ -85,6 +85,8 @@ import {
   getSidebarWidth,
   setSidebarWidth,
 } from "./utils/index.js";
+import { getSdkClient } from "./utils/sdkClient.js";
+import { errorMessage, isNotFoundError } from "./utils/sdkErrors.js";
 import { isGone, markGone } from "./utils/beadsGoneCache.js";
 
 // Import hooks
@@ -1111,7 +1113,8 @@ function App() {
 
   // Conversation font family setting (web UI, default: "system") — applied to
   // .markdown-content only, independent of the compose/input font.
-  const [conversationFontFamily, setConversationFontFamily] = useState("system");
+  const [conversationFontFamily, setConversationFontFamily] =
+    useState("system");
 
   // Conversation base font size (web UI, default: "sm") — the sidebar
   // small-A / large-A toggle re-anchors on this value.
@@ -2233,11 +2236,8 @@ function App() {
       if (!sessionId) return;
       try {
         // Attempt to restore previously-saved loop settings.
-        const restoreRes = await secureFetch(
-          endpoints.sessions.loopRestore(sessionId),
-          { method: "POST" },
-        );
-        if (restoreRes.ok) {
+        try {
+          await getSdkClient().sessions.loop.restore(sessionId);
           focusSession(sessionId);
           showToast({
             style: "success",
@@ -2246,58 +2246,41 @@ function App() {
             duration: 6000,
           });
           return;
-        }
-        if (restoreRes.status !== 404) {
-          throw new Error(`HTTP ${restoreRes.status}`);
+        } catch (err) {
+          if (!isNotFoundError(err)) throw err;
         }
 
         // Nothing saved — try to pre-fill the draft from the most recent
-        // named prompt's loop: frontmatter block (mitto-qff). On any non-200
-        // fall through to today's blank-draft PUT below.
+        // named prompt's loop: frontmatter block (mitto-qff). On any
+        // suggest/set failure fall through to today's blank-draft PUT below.
         try {
-          const suggestRes = await secureFetch(
-            endpoints.sessions.loopSuggestFromRecent(sessionId),
-            { method: "GET" },
-          );
-          if (suggestRes.ok) {
-            const suggestion = await suggestRes.json();
-            const putRes = await secureFetch(
-              endpoints.sessions.loop(sessionId),
-              {
-                method: "PUT",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ ...suggestion, enabled: false }),
-              },
-            );
-            if (putRes.ok) {
-              focusSession(sessionId);
-              showToast({
-                style: "success",
-                title: "Loop pre-filled from your last prompt",
-                message: "Review and enable scheduling.",
-                duration: 6000,
-              });
-              return;
-            }
-          }
+          const suggestion =
+            await getSdkClient().sessions.loop.suggestFromRecent(sessionId);
+          await getSdkClient().sessions.loop.set(sessionId, {
+            ...suggestion,
+            enabled: false,
+          });
+          focusSession(sessionId);
+          showToast({
+            style: "success",
+            title: "Loop pre-filled from your last prompt",
+            message: "Review and enable scheduling.",
+            duration: 6000,
+          });
+          return;
         } catch (_) {
           // Fall through to blank-draft PUT on any suggest/PUT failure.
         }
 
         // Nothing saved and no suggestion — create a fresh blank draft.
-        const res = await secureFetch(endpoints.sessions.loop(sessionId), {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          // Draft body: an empty prompt is accepted while enabled:false keeps
-          // it as DRAFT so nothing is scheduled yet. Never write a placeholder
-          // body — the runner would deliver it literally once enabled.
-          body: JSON.stringify({
-            prompt: "",
-            frequency: { value: 1, unit: "hours" },
-            enabled: false,
-          }),
+        // Draft body: an empty prompt is accepted while enabled:false keeps
+        // it as DRAFT so nothing is scheduled yet. Never write a placeholder
+        // body — the runner would deliver it literally once enabled.
+        await getSdkClient().sessions.loop.set(sessionId, {
+          prompt: "",
+          frequency: { value: 1, unit: "hours" },
+          enabled: false,
         });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
         focusSession(sessionId);
         showToast({
           style: "success",
@@ -2325,10 +2308,7 @@ function App() {
       const sessionId = session?.session_id;
       if (!sessionId) return;
       try {
-        const res = await secureFetch(endpoints.sessions.loop(sessionId), {
-          method: "DELETE",
-        });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        await getSdkClient().sessions.loop.detach(sessionId);
         showToast({
           style: "success",
           title: "Loop scheduling removed",
@@ -2875,25 +2855,17 @@ function App() {
       const sessionId = session?.session_id || activeSessionId;
       if (!sessionId) return;
       try {
-        const res = await secureFetch(endpoints.sessions.flush(sessionId), {
-          method: "POST",
+        await getSdkClient().sessions.flush(sessionId);
+        showToast({
+          style: "success",
+          title: "Flushing conversation context\u2026",
+          duration: 3000,
         });
-        if (res.ok) {
-          showToast({
-            style: "success",
-            title: "Flushing conversation context\u2026",
-            duration: 3000,
-          });
-        } else {
-          const data = await res.json().catch(() => null);
-          const msg = errorMessageFromData(data) || "Failed to flush context";
-          showToast({ style: "error", title: msg, duration: 4000 });
-        }
       } catch (err) {
         console.error("Failed to flush context:", err);
         showToast({
           style: "error",
-          title: "Failed to flush context",
+          title: errorMessage(err, "Failed to flush context"),
           duration: 4000,
         });
       }
@@ -3138,9 +3110,7 @@ function App() {
                     <span class="flex-1">Copy conversation ID</span>
                   </button>
                 </li>
-                <li
-                  class=${!headerConversationMarkdown ? "menu-disabled" : ""}
-                >
+                <li class=${!headerConversationMarkdown ? "menu-disabled" : ""}>
                   <button
                     type="button"
                     data-testid="header-copy-conversation-md"
@@ -3153,9 +3123,7 @@ function App() {
                     <span class="flex-1">Copy full contents as Markdown</span>
                   </button>
                 </li>
-                <li
-                  class=${!headerLastAgentMarkdown ? "menu-disabled" : ""}
-                >
+                <li class=${!headerLastAgentMarkdown ? "menu-disabled" : ""}>
                   <button
                     type="button"
                     data-testid="header-copy-last-response-md"

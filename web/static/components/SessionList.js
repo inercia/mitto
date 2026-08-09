@@ -3,8 +3,7 @@ const { html, Fragment, useState, useMemo, useCallback, useEffect, useRef } =
   window.preact;
 
 import { apiUrl } from "../utils/api.js";
-import { authFetch } from "../utils/csrf.js";
-import { endpoints } from "../utils/endpoints.js";
+import { getSdkClient } from "../utils/sdkClient.js";
 
 import {
   computeUnifiedTree,
@@ -105,9 +104,7 @@ const SIDEBAR_TOOLTIP_DELAY_MS = 250;
 // Returns { files, is_git_repo, branch } or null on error.
 async function fetchGitChanges(sessionId) {
   try {
-    const response = await authFetch(endpoints.sessions.changes(sessionId));
-    if (!response.ok) return null;
-    return await response.json();
+    return await getSdkClient().sessions.changes(sessionId);
   } catch {
     return null;
   }
@@ -143,11 +140,9 @@ const BEADS_STATS_IN_FLIGHT = {};
 // blocked_issues, total_issues, ... } or null on error / empty database.
 async function fetchBeadsStats(workingDir) {
   try {
-    const response = await authFetch(
-      endpoints.issues.stats({ working_dir: workingDir }),
-    );
-    if (!response.ok) return null;
-    const data = await response.json();
+    const data = await getSdkClient().issues.stats({
+      working_dir: workingDir,
+    });
     if (!data || data.error) return null;
     return data.summary || null;
   } catch {
@@ -668,9 +663,7 @@ export function SessionList({
 
   useEffect(() => {
     if (!activeSessionId) return;
-    const active = allSessions.find(
-      (s) => s.session_id === activeSessionId,
-    );
+    const active = allSessions.find((s) => s.session_id === activeSessionId);
     if (!active) return;
 
     // UI-prompt ack: send when the active session is currently waiting AND
@@ -686,17 +679,14 @@ export function SessionList({
       active.isWaitingForUserInput &&
       activeUIRequestId &&
       active.acked_ui_prompt_request_id !== activeUIRequestId &&
-      acknowledgedUIPromptRef.current.get(activeSessionId) !==
-        activeUIRequestId
+      acknowledgedUIPromptRef.current.get(activeSessionId) !== activeUIRequestId
     ) {
       acknowledgedUIPromptRef.current.set(activeSessionId, activeUIRequestId);
-      authFetch(endpoints.sessions.uiPromptAcknowledge(activeSessionId), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ request_id: activeUIRequestId }),
-      }).catch(() => {
-        acknowledgedUIPromptRef.current.delete(activeSessionId);
-      });
+      getSdkClient()
+        .sessions.acknowledgeUIPrompt(activeSessionId, activeUIRequestId)
+        .catch(() => {
+          acknowledgedUIPromptRef.current.delete(activeSessionId);
+        });
     }
 
     // Loop-error ack: send when the active session's loop stopped with an
@@ -709,12 +699,11 @@ export function SessionList({
       const key = `${activeSessionId}|${reason}`;
       if (!acknowledgedLoopErrorRef.current.has(key)) {
         acknowledgedLoopErrorRef.current.add(key);
-        authFetch(
-          endpoints.sessions.loopAcknowledgeStoppedReason(activeSessionId),
-          { method: "POST" },
-        ).catch(() => {
-          acknowledgedLoopErrorRef.current.delete(key);
-        });
+        getSdkClient()
+          .sessions.loop.acknowledgeStoppedReason(activeSessionId)
+          .catch(() => {
+            acknowledgedLoopErrorRef.current.delete(key);
+          });
       }
     }
   }, [activeSessionId, allSessions, activeSessions]);

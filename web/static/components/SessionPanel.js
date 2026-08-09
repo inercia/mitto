@@ -13,9 +13,10 @@ import {
   SettingsIcon,
   SlidersIcon,
 } from "./Icons.js";
-import { apiUrl, errorMessageFromData } from "../utils/api.js";
-import { secureFetch, authFetch } from "../utils/csrf.js";
-import { endpoints } from "../utils/endpoints.js";
+import { apiUrl } from "../utils/api.js";
+import { getSdkClient } from "../utils/sdkClient.js";
+import { errorMessage, isNotFoundError } from "../utils/sdkErrors.js";
+import { withIssueCaches } from "../sdk/index.js";
 import { isGone, markGone } from "../utils/beadsGoneCache.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
 import { Drawer } from "./Drawer.js";
@@ -307,35 +308,36 @@ export function SessionPanel({
       const loopConfigured = sessionInfo?.loop_configured === true;
 
       try {
-        const [loopRes, callbackRes, flagsRes, settingsRes] =
+        // Each call swallows its own failure (mirrors the old per-Response
+        // `x && x.ok` tolerance — the SDK throws on a non-2xx status where
+        // the old raw fetch() would just resolve with `res.ok === false`),
+        // so one endpoint failing does not blank out the other three.
+        const [loopData, callbackData, flagsData, settingsData] =
           await Promise.all([
             loopConfigured
-              ? authFetch(endpoints.sessions.loop(sessionId))
+              ? getSdkClient()
+                  .sessions.loop.get(sessionId)
+                  .catch(() => null)
               : Promise.resolve(null),
             loopConfigured
-              ? authFetch(endpoints.sessions.callback(sessionId))
+              ? getSdkClient()
+                  .sessions.getCallback(sessionId)
+                  .catch(() => null)
               : Promise.resolve(null),
-            authFetch(endpoints.misc.advancedFlags()),
-            authFetch(endpoints.sessions.settings(sessionId)),
+            getSdkClient()
+              .misc.advancedFlags()
+              .catch(() => null),
+            getSdkClient()
+              .sessions.getSettings(sessionId)
+              .catch(() => null),
           ]);
 
-        if (loopRes && loopRes.ok)
-          setLoopConfig(await loopRes.json());
-        else setLoopConfig(null);
+        setLoopConfig(loopData || null);
+        setCallbackConfig(callbackData || null);
 
-        if (callbackRes && callbackRes.ok)
-          setCallbackConfig(await callbackRes.json());
-        else setCallbackConfig(null);
+        if (flagsData) setAvailableFlags(flagsData.flags || flagsData || []);
 
-        if (flagsRes.ok) {
-          const flagsData = await flagsRes.json();
-          setAvailableFlags(flagsData.flags || flagsData || []);
-        }
-
-        if (settingsRes.ok) {
-          const settingsData = await settingsRes.json();
-          setSessionSettings(settingsData.settings || {});
-        }
+        if (settingsData) setSessionSettings(settingsData.settings || {});
       } catch (err) {
         console.error("[SessionPanel] Failed to fetch properties data:", err);
         setFlagsError("Failed to load settings");
@@ -364,20 +366,15 @@ export function SessionPanel({
     }
     let cancelled = false;
     (async () => {
+      // withIssueCaches' show() records any 404 in the shared negative
+      // cache itself (mirrors useLinkedBeadPhase.js); the isGone() guard
+      // above already handles the skip-network short-circuit, so only
+      // markGone is wired in here.
+      const issues = withIssueCaches(getSdkClient().issues, { markGone });
       try {
-        const res = await authFetch(
-          endpoints.issues.show(sessionInfo.beads_issue, {
-            working_dir: sessionInfo.working_dir,
-          }),
-        );
-        if (!res.ok) {
-          if (res.status === 404) {
-            markGone(sessionInfo.working_dir, sessionInfo.beads_issue);
-          }
-          if (!cancelled) setBeadsStatus(null);
-          return;
-        }
-        const data = await res.json();
+        const data = await issues.show(sessionInfo.beads_issue, {
+          working_dir: sessionInfo.working_dir,
+        });
         if (cancelled) return;
         const issueObj = Array.isArray(data) ? data[0] : data;
         if (issueObj && !issueObj.error && issueObj.status) {
@@ -405,15 +402,20 @@ export function SessionPanel({
       try {
         const wsUuid =
           sessionInfo?.workspace_uuid || window.mittoCurrentWorkspaceUUID || "";
-        const [userDataRes, schemaRes] = await Promise.all([
-          authFetch(endpoints.sessions.userData(sessionId)),
-          authFetch(endpoints.workspaces.userDataSchema(wsUuid)),
+        // Each call swallows its own failure (see the properties-tab effect
+        // above for the rationale): a missing user-data-schema (404) is a
+        // normal "workspace declares no schema" outcome, not an error.
+        const [userData, schema] = await Promise.all([
+          getSdkClient()
+            .sessions.getUserData(sessionId)
+            .catch(() => null),
+          getSdkClient()
+            .workspaces.getUserDataSchema(wsUuid)
+            .catch((err) => (isNotFoundError(err) ? { fields: [] } : null)),
         ]);
 
-        if (userDataRes.ok) setUserData(await userDataRes.json());
-
-        if (schemaRes.ok) setUserDataSchema(await schemaRes.json());
-        else if (schemaRes.status === 404) setUserDataSchema({ fields: [] });
+        if (userData) setUserData(userData);
+        if (schema) setUserDataSchema(schema);
       } catch (err) {
         console.error("[SessionPanel] Failed to fetch user data:", err);
         setUserDataError("Failed to load user data");
@@ -438,12 +440,10 @@ export function SessionPanel({
       setIsLoadingChanges(true);
       setChangesError(null);
       try {
-        const resp = await authFetch(endpoints.sessions.changes(sessionId));
-        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-        const data = await resp.json();
+        const data = await getSdkClient().sessions.changes(sessionId);
         setChangesData(data);
       } catch (err) {
-        setChangesError(err.message);
+        setChangesError(errorMessage(err, "Failed to load changes"));
       } finally {
         setIsLoadingChanges(false);
       }
@@ -523,23 +523,13 @@ export function SessionPanel({
       setSavingFlags((prev) => ({ ...prev, [flagName]: true }));
       setFlagsError(null);
       try {
-        const res = await secureFetch(endpoints.sessions.settings(sessionId), {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ settings: { [flagName]: newValue } }),
+        const data = await getSdkClient().sessions.updateSettings(sessionId, {
+          [flagName]: newValue,
         });
-        if (res.ok) {
-          const data = await res.json();
-          setSessionSettings(data.settings || {});
-        } else {
-          const errorData = await res.json().catch(() => ({}));
-          setFlagsError(
-            errorMessageFromData(errorData, "Failed to save setting"),
-          );
-        }
+        setSessionSettings(data.settings || {});
       } catch (err) {
         console.error("Failed to save flag:", err);
-        setFlagsError("Failed to save setting");
+        setFlagsError(errorMessage(err, "Failed to save setting"));
       } finally {
         setSavingFlags((prev) => ({ ...prev, [flagName]: false }));
       }
@@ -549,11 +539,8 @@ export function SessionPanel({
 
   // --- Handlers: callback URL ---
   const handleEnableCallback = useCallback(async () => {
-    const res = await secureFetch(endpoints.sessions.callback(sessionId), {
-      method: "POST",
-    });
-    if (res.ok) {
-      const data = await res.json();
+    try {
+      const data = await getSdkClient().sessions.createCallback(sessionId);
       setCallbackConfig(data);
       try {
         await navigator.clipboard.writeText(data.callback_url);
@@ -562,6 +549,8 @@ export function SessionPanel({
       } catch (e) {
         /* clipboard may not be available */
       }
+    } catch (_err) {
+      /* mirrors the prior !res.ok no-op */
     }
   }, [sessionId]);
 
@@ -586,11 +575,8 @@ export function SessionPanel({
       confirmVariant: "danger",
       onConfirm: async () => {
         setConfirmDialog(null);
-        const res = await secureFetch(endpoints.sessions.callback(sessionId), {
-          method: "POST",
-        });
-        if (res.ok) {
-          const data = await res.json();
+        try {
+          const data = await getSdkClient().sessions.createCallback(sessionId);
           setCallbackConfig(data);
           try {
             await navigator.clipboard.writeText(data.callback_url);
@@ -599,6 +585,8 @@ export function SessionPanel({
           } catch (e) {
             /* clipboard may not be available */
           }
+        } catch (_err) {
+          /* mirrors the prior !res.ok no-op */
         }
       },
     });
@@ -612,10 +600,12 @@ export function SessionPanel({
       confirmVariant: "danger",
       onConfirm: async () => {
         setConfirmDialog(null);
-        const res = await secureFetch(endpoints.sessions.callback(sessionId), {
-          method: "DELETE",
-        });
-        if (res.ok) setCallbackConfig(null);
+        try {
+          await getSdkClient().sessions.revokeCallback(sessionId);
+          setCallbackConfig(null);
+        } catch (_err) {
+          /* mirrors the prior !res.ok no-op */
+        }
       },
     });
   }, [sessionId]);
@@ -654,23 +644,14 @@ export function SessionPanel({
           value: editedAttributeValue,
         });
       }
-      const res = await secureFetch(endpoints.sessions.userData(sessionId), {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ attributes: updatedAttributes }),
+      const data = await getSdkClient().sessions.setUserData(sessionId, {
+        attributes: updatedAttributes,
       });
-      if (res.ok) {
-        setUserData(await res.json());
-        setEditingAttribute(null);
-      } else {
-        const errorData = await res.json().catch(() => ({}));
-        setUserDataError(
-          errorMessageFromData(errorData, "Failed to save attribute"),
-        );
-      }
+      setUserData(data);
+      setEditingAttribute(null);
     } catch (err) {
       console.error("Failed to save attribute:", err);
-      setUserDataError("Failed to save attribute");
+      setUserDataError(errorMessage(err, "Failed to save attribute"));
     } finally {
       setIsSavingAttribute(false);
     }
@@ -878,12 +859,10 @@ export function SessionPanel({
       setIsLoadingChanges(true);
       setChangesError(null);
       try {
-        const resp = await authFetch(endpoints.sessions.changes(sessionId));
-        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-        const data = await resp.json();
+        const data = await getSdkClient().sessions.changes(sessionId);
         setChangesData(data);
       } catch (err) {
-        setChangesError(err.message);
+        setChangesError(errorMessage(err, "Failed to load changes"));
       } finally {
         setIsLoadingChanges(false);
       }
@@ -1374,9 +1353,7 @@ export function SessionPanel({
               class="mt-1 flex items-baseline gap-2 text-xs text-mitto-text-500"
             >
               <strong>Last run:</strong>
-              <span
-                >${new Date(loopConfig.last_sent_at).toLocaleString()}</span
-              >
+              <span>${new Date(loopConfig.last_sent_at).toLocaleString()}</span>
             </p>`}
             ${loopConfig.next_scheduled_at &&
             html`<p
