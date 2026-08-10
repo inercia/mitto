@@ -93,8 +93,9 @@ algorithm.
 
 ### Seq & pending-prompt stores
 
-Both default to in-memory (lost on reload). Persistent variants build on
-your injected `storage` (never `localStorage` directly):
+`SessionStream` uses two injectable stores internally; both default to
+in-memory (lost on reload). Persistent variants build on your injected
+`storage` (never `localStorage` directly):
 
 ```js
 import {
@@ -107,6 +108,31 @@ const stream = client.sessionStream(sessionId, {
   pendingPromptStore: createStoragePendingPromptStore(client.config.storage),
 });
 ```
+
+`createMemorySeqStore()`/`createMemoryPendingPromptStore()` are the
+corresponding in-memory defaults, exported for hosts that want to construct
+one explicitly (e.g. to pass shared instances across multiple streams).
+
+The lower-level primitives these stores and `SessionStream` itself are built
+on are also exported, for hosts implementing custom sync/reconnection logic
+instead of using `SessionStream` directly:
+
+```js
+import {
+  createSeqTracker, // -> { highestSeq, recentSeqs: Set }
+  isSeqDuplicate, // (tracker, seq, lastMessageSeq) -> boolean
+  markSeqSeen, // (tracker, seq) -> void, prunes old entries
+  getMaxSeq, // (events) -> highest .seq in an array
+  isStaleClientState, // (clientLastSeq, serverLastSeq) -> boolean
+  isTerminalSessionError, // (message) -> boolean ("session not found", etc.)
+  generatePromptId, // () -> unique prompt ID for delivery tracking
+} from "/sdk/index.js";
+```
+
+Most hosts never need these directly — `SessionStream` already applies them
+internally per-message and exposes the results via `lastSeenSeq()`,
+`isHealthy()`, and the `duplicate`/`seq`/`maxSeq` fields on the `"message"`
+event.
 
 ## `EventsStream` — the global event bus
 
