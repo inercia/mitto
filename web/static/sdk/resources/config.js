@@ -40,7 +40,8 @@ export function createConfigResource(config) {
      * @param {object} [params] - {acp_server?, session_id?} — session_id
      *   further filters merged prompts using enabledWhen CEL expressions
      *   evaluated with that session's context.
-     * @param {object} [opts] - forwarded to request() (e.g. headers, signal)
+     * @param {import("../core/transport.js").RequestOptions} [opts] -
+     *   forwarded to request() (e.g. headers, signal)
      */
     get: (params, opts) => call("GET", "/api/config", { query: params, ...opts }),
 

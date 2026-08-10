@@ -8,9 +8,10 @@ export function createShortcutsResource(config: import("../core/config.js").Reso
      *   `{ include_prompts: true }` only for the shortcuts editor UI; it
      *   also returns the merged global prompts list (~750 KB, mitto-r4t0).
      *   Read-only renderers must omit it.
-     * @param {object} [opts] - forwarded to request() (e.g. headers, signal)
+     * @param {import("../core/transport.js").RequestOptions} [opts] -
+     *   forwarded to request() (e.g. headers, signal)
      */
-    getGlobal: (params?: object, opts?: object) => Promise<any>;
+    getGlobal: (params?: object, opts?: import("../core/transport.js").RequestOptions) => Promise<any>;
     /**
      * PUT /api/global/shortcuts.
      * @param {object} body - {sections: Object<string, Array>} — map of

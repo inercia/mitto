@@ -42,7 +42,8 @@ export function createSessionsResource(config) {
     get: (id, opts) => call("GET", `/api/sessions/${enc(id)}`, opts),
     /** @param {object} [body] - {name?, working_dir?, acp_server?, beads_issue?,
      *   origin_prompt_name?, initial_prompt_name?, arguments?}
-     *  @param {object} [opts] - forwarded to request() (e.g. headers, signal) */
+     *  @param {import("../core/transport.js").RequestOptions} [opts] -
+     *   forwarded to request() (e.g. headers, signal) */
     create: (body, opts) => call("POST", "/api/sessions", { body, ...opts }),
     /** @param {object} patch - {name?, description?, pinned?, archived?,
      *   beads_issue?, background_color?} */
@@ -50,7 +51,8 @@ export function createSessionsResource(config) {
       call("PATCH", `/api/sessions/${enc(id)}`, { body: patch, ...opts }),
     remove: (id, opts) => call("DELETE", `/api/sessions/${enc(id)}`, opts),
     /** @param {object} [params] - {limit?, before?, order?: "asc"|"desc"}
-     *  @param {object} [opts] - forwarded to request() (e.g. headers, signal) */
+     *  @param {import("../core/transport.js").RequestOptions} [opts] -
+     *   forwarded to request() (e.g. headers, signal) */
     events: (id, params, opts) =>
       call("GET", `/api/sessions/${enc(id)}/events`, { query: params, ...opts }),
     changes: (id, opts) => call("GET", `/api/sessions/${enc(id)}/changes`, opts),
@@ -65,7 +67,8 @@ export function createSessionsResource(config) {
 
     flush: (id, opts) => call("POST", `/api/sessions/${enc(id)}/flush`, opts),
     /** @param {number} [keepLast] - defaults server-side (session.DefaultPruneKeepLast)
-     *  @param {object} [opts] - forwarded to request() (e.g. headers, signal) */
+     *  @param {import("../core/transport.js").RequestOptions} [opts] -
+     *   forwarded to request() (e.g. headers, signal) */
     prune: (id, keepLast, opts) =>
       call("POST", `/api/sessions/${enc(id)}/prune`, {
         body: { keep_last: keepLast },
@@ -135,7 +138,8 @@ export function createSessionsResource(config) {
        *  @param {object} [args] - values for the prompt's .Args placeholders
        *  @param {object} [extra] - additional QueueAddRequest fields
        *   (image_ids, file_ids, scheduled_time) merged into the body
-       *  @param {object} [opts] - forwarded to request() (e.g. headers, signal) */
+       *  @param {import("../core/transport.js").RequestOptions} [opts] -
+       *   forwarded to request() (e.g. headers, signal) */
       addNamed: (id, promptName, args, extra, opts) =>
         call("POST", `/api/sessions/${enc(id)}/queue`, {
           body: { prompt_name: promptName, arguments: args, ...extra },
@@ -192,7 +196,8 @@ export function createSessionsResource(config) {
       /** Triggers an immediate run, bypassing the schedule.
        *  @param {boolean} [resetTimer] - when omitted, no body is sent and
        *   the server defaults to true (reset the countdown).
-       *  @param {object} [opts] - forwarded to request() (e.g. headers, signal) */
+       *  @param {import("../core/transport.js").RequestOptions} [opts] -
+       *   forwarded to request() (e.g. headers, signal) */
       runNow: (id, resetTimer, opts) =>
         call("POST", `/api/sessions/${enc(id)}/loop/run-now`, {
           body: resetTimer === undefined ? undefined : { reset_timer: resetTimer },

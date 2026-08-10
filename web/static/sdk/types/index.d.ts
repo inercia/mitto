@@ -9,15 +9,15 @@ export function createClient(options?: {}): {
         list: (opts: any) => Promise<any>;
         running: (opts: any) => Promise<any>;
         get: (id: any, opts: any) => Promise<any>;
-        create: (body?: object, opts?: object) => Promise<any>;
+        create: (body?: object, opts?: import("./core/transport.js").RequestOptions) => Promise<any>;
         update: (id: any, patch: object, opts: any) => Promise<any>;
         remove: (id: any, opts: any) => Promise<any>;
-        events: (id: any, params?: object, opts?: object) => Promise<any>;
+        events: (id: any, params?: object, opts?: import("./core/transport.js").RequestOptions) => Promise<any>;
         changes: (id: any, opts: any) => Promise<any>;
         getSettings: (id: any, opts: any) => Promise<any>;
         updateSettings: (id: any, settings: object, opts: any) => Promise<any>;
         flush: (id: any, opts: any) => Promise<any>;
-        prune: (id: any, keepLast?: number, opts?: object) => Promise<any>;
+        prune: (id: any, keepLast?: number, opts?: import("./core/transport.js").RequestOptions) => Promise<any>;
         getCallback: (id: any, opts: any) => Promise<any>;
         createCallback: (id: any, opts: any) => Promise<any>;
         revokeCallback: (id: any, opts: any) => Promise<any>;
@@ -39,7 +39,7 @@ export function createClient(options?: {}): {
                 count: number;
             }>;
             add: (id: any, body: object, opts: any) => Promise<any>;
-            addNamed: (id: any, promptName: string, args?: object, extra?: object, opts?: object) => Promise<any>;
+            addNamed: (id: any, promptName: string, args?: object, extra?: object, opts?: import("./core/transport.js").RequestOptions) => Promise<any>;
             get: (id: any, msgId: any, opts: any) => Promise<any>;
             remove: (id: any, msgId: any, opts: any) => Promise<any>;
             clear: (id: any, opts: any) => Promise<any>;
@@ -52,7 +52,7 @@ export function createClient(options?: {}): {
             update: (id: any, patch: object, opts: any) => Promise<any>;
             detach: (id: any, opts: any) => Promise<any>;
             restore: (id: any, opts: any) => Promise<any>;
-            runNow: (id: any, resetTimer?: boolean, opts?: object) => Promise<any>;
+            runNow: (id: any, resetTimer?: boolean, opts?: import("./core/transport.js").RequestOptions) => Promise<any>;
             suggestFromRecent: (id: any, opts: any) => Promise<any>;
             acknowledgeStoppedReason: (id: any, opts: any) => Promise<any>;
             enable: (id: any, opts: any) => Promise<any>;
@@ -60,7 +60,7 @@ export function createClient(options?: {}): {
         };
     };
     prompts: {
-        list: (params?: object, opts?: object) => Promise<any>;
+        list: (params?: object, opts?: import("./core/transport.js").RequestOptions) => Promise<any>;
         create: (body: object, opts: any) => Promise<any>;
         remove: (params: object, opts: any) => Promise<any>;
         setEnabled: (name: string, workingDir: string, enabled: boolean, opts: any) => Promise<any>;
@@ -74,7 +74,7 @@ export function createClient(options?: {}): {
         }, opts: any) => Promise<any>;
     };
     shortcuts: {
-        getGlobal: (params?: object, opts?: object) => Promise<any>;
+        getGlobal: (params?: object, opts?: import("./core/transport.js").RequestOptions) => Promise<any>;
         setGlobal: (body: object, opts: any) => Promise<any>;
         getFolder: (params: object, opts: any) => Promise<any>;
         setFolder: (workingDir: string, body: object, opts: any) => Promise<any>;
@@ -101,7 +101,7 @@ export function createClient(options?: {}): {
         migrate: (body: object, opts: any) => Promise<any>;
     };
     serverConfig: {
-        get: (params?: object, opts?: object) => Promise<any>;
+        get: (params?: object, opts?: import("./core/transport.js").RequestOptions) => Promise<any>;
         save: (body: object, opts: any) => Promise<any>;
         advancedFlags: (opts: any) => Promise<any>;
         externalStatus: (opts: any) => Promise<any>;
@@ -133,8 +133,8 @@ export function createClient(options?: {}): {
         remove: (id: any, imageId: any, opts: any) => Promise<any>;
     };
     dashboard: {
-        summary: (params?: object, opts?: object) => Promise<any>;
-        timeseries: (params?: object, opts?: object) => Promise<any>;
+        summary: (params?: object, opts?: import("./core/transport.js").RequestOptions) => Promise<any>;
+        timeseries: (params?: object, opts?: import("./core/transport.js").RequestOptions) => Promise<any>;
     };
     misc: {
         uiPreferences: {
@@ -172,7 +172,7 @@ export function createClient(options?: {}): {
         runnerDefaults: any;
     };
     workspaces: {
-        list: (params?: object, opts?: object) => Promise<{
+        list: (params?: object, opts?: import("./core/transport.js").RequestOptions) => Promise<{
             workspaces: object[];
             acp_servers: object[];
         }>;

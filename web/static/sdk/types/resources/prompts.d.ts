@@ -7,9 +7,10 @@ export function createPromptsResource(config: import("../core/config.js").Resolv
      * @param {object} [params] - working_dir, session_id, enabled_context,
      *   item_kind, item_id, item_status, item_type, item_priority,
      *   item_labels, include_global.
-     * @param {object} [opts] - forwarded to request() (e.g. headers, signal)
+     * @param {import("../core/transport.js").RequestOptions} [opts] -
+     *   forwarded to request() (e.g. headers, signal)
      */
-    list: (params?: object, opts?: object) => Promise<any>;
+    list: (params?: object, opts?: import("../core/transport.js").RequestOptions) => Promise<any>;
     /**
      * POST /api/workspace-prompts — create or update a workspace prompt.
      * @param {object} body - {name, prompt, description?, group?,

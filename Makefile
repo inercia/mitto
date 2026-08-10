@@ -92,11 +92,15 @@ sdk-types: deps-js
 
 # Fails if the committed web/static/sdk/types/ declarations are stale
 # relative to the JSDoc-annotated source (mirrors the CodeMirror-bundle
-# freshness check below). Reproduce a failure locally with: make sdk-types
+# freshness check below). Untracked output is checked too, so a brand-new
+# SDK module whose .d.ts was never committed also fails the gate.
+# Reproduce a failure locally with: make sdk-types
 check-sdk-types: sdk-types
-	@if ! git diff --quiet -- web/static/sdk/types; then \
+	@if ! git diff --quiet -- web/static/sdk/types || \
+		[ -n "$$(git ls-files --others --exclude-standard -- web/static/sdk/types)" ]; then \
 		echo "SDK type declarations are out of date. Run 'make sdk-types' and commit web/static/sdk/types/." >&2; \
 		git diff --stat -- web/static/sdk/types; \
+		git ls-files --others --exclude-standard -- web/static/sdk/types; \
 		exit 1; \
 	fi
 

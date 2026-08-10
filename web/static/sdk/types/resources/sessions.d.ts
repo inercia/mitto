@@ -7,23 +7,26 @@ export function createSessionsResource(config: import("../core/config.js").Resol
     get: (id: any, opts: any) => Promise<any>;
     /** @param {object} [body] - {name?, working_dir?, acp_server?, beads_issue?,
      *   origin_prompt_name?, initial_prompt_name?, arguments?}
-     *  @param {object} [opts] - forwarded to request() (e.g. headers, signal) */
-    create: (body?: object, opts?: object) => Promise<any>;
+     *  @param {import("../core/transport.js").RequestOptions} [opts] -
+     *   forwarded to request() (e.g. headers, signal) */
+    create: (body?: object, opts?: import("../core/transport.js").RequestOptions) => Promise<any>;
     /** @param {object} patch - {name?, description?, pinned?, archived?,
      *   beads_issue?, background_color?} */
     update: (id: any, patch: object, opts: any) => Promise<any>;
     remove: (id: any, opts: any) => Promise<any>;
     /** @param {object} [params] - {limit?, before?, order?: "asc"|"desc"}
-     *  @param {object} [opts] - forwarded to request() (e.g. headers, signal) */
-    events: (id: any, params?: object, opts?: object) => Promise<any>;
+     *  @param {import("../core/transport.js").RequestOptions} [opts] -
+     *   forwarded to request() (e.g. headers, signal) */
+    events: (id: any, params?: object, opts?: import("../core/transport.js").RequestOptions) => Promise<any>;
     changes: (id: any, opts: any) => Promise<any>;
     getSettings: (id: any, opts: any) => Promise<any>;
     /** @param {object} settings - map of setting name -> bool, merged server-side */
     updateSettings: (id: any, settings: object, opts: any) => Promise<any>;
     flush: (id: any, opts: any) => Promise<any>;
     /** @param {number} [keepLast] - defaults server-side (session.DefaultPruneKeepLast)
-     *  @param {object} [opts] - forwarded to request() (e.g. headers, signal) */
-    prune: (id: any, keepLast?: number, opts?: object) => Promise<any>;
+     *  @param {import("../core/transport.js").RequestOptions} [opts] -
+     *   forwarded to request() (e.g. headers, signal) */
+    prune: (id: any, keepLast?: number, opts?: import("../core/transport.js").RequestOptions) => Promise<any>;
     getCallback: (id: any, opts: any) => Promise<any>;
     createCallback: (id: any, opts: any) => Promise<any>;
     revokeCallback: (id: any, opts: any) => Promise<any>;
@@ -65,8 +68,9 @@ export function createSessionsResource(config: import("../core/config.js").Resol
          *  @param {object} [args] - values for the prompt's .Args placeholders
          *  @param {object} [extra] - additional QueueAddRequest fields
          *   (image_ids, file_ids, scheduled_time) merged into the body
-         *  @param {object} [opts] - forwarded to request() (e.g. headers, signal) */
-        addNamed: (id: any, promptName: string, args?: object, extra?: object, opts?: object) => Promise<any>;
+         *  @param {import("../core/transport.js").RequestOptions} [opts] -
+         *   forwarded to request() (e.g. headers, signal) */
+        addNamed: (id: any, promptName: string, args?: object, extra?: object, opts?: import("../core/transport.js").RequestOptions) => Promise<any>;
         get: (id: any, msgId: any, opts: any) => Promise<any>;
         remove: (id: any, msgId: any, opts: any) => Promise<any>;
         /** Clears the entire queue (DELETE with no message id). */
@@ -110,8 +114,9 @@ export function createSessionsResource(config: import("../core/config.js").Resol
         /** Triggers an immediate run, bypassing the schedule.
          *  @param {boolean} [resetTimer] - when omitted, no body is sent and
          *   the server defaults to true (reset the countdown).
-         *  @param {object} [opts] - forwarded to request() (e.g. headers, signal) */
-        runNow: (id: any, resetTimer?: boolean, opts?: object) => Promise<any>;
+         *  @param {import("../core/transport.js").RequestOptions} [opts] -
+         *   forwarded to request() (e.g. headers, signal) */
+        runNow: (id: any, resetTimer?: boolean, opts?: import("../core/transport.js").RequestOptions) => Promise<any>;
         /** Read-only: a LoopPrompt draft pre-filled from the most recent named
          *  prompt's `loop:` frontmatter. Never writes session state. */
         suggestFromRecent: (id: any, opts: any) => Promise<any>;

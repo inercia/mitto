@@ -71,4 +71,23 @@ describe("SDK type declarations (mitto-7gta.20)", () => {
     const dts = readType("core/transport.d.ts");
     expect(dts).toMatch(/RequestOptions/);
   });
+
+  test("resource methods document their trailing opts bag as RequestOptions, not a bare object", () => {
+    // The bead calls for real "request option" typedefs, so the documented
+    // `opts` params must reference core/transport.js's RequestOptions rather
+    // than collapsing to `object` — which type-checks cleanly and would
+    // therefore survive both tsc and the freshness gate.
+    for (const rel of [
+      "resources/sessions.d.ts",
+      "resources/config.d.ts",
+      "resources/dashboard.d.ts",
+      "resources/prompts.d.ts",
+      "resources/shortcuts.d.ts",
+      "resources/workspaces.d.ts",
+    ]) {
+      const dts = readType(rel);
+      expect(dts).toMatch(/opts\?:\s*import\(["'][^"']*core\/transport\.js["']\)\.RequestOptions/);
+      expect(dts).not.toMatch(/opts\?:\s*object/);
+    }
+  });
 });

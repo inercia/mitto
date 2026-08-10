@@ -7,9 +7,10 @@ export function createConfigResource(config: import("../core/config.js").Resolve
      * @param {object} [params] - {acp_server?, session_id?} — session_id
      *   further filters merged prompts using enabledWhen CEL expressions
      *   evaluated with that session's context.
-     * @param {object} [opts] - forwarded to request() (e.g. headers, signal)
+     * @param {import("../core/transport.js").RequestOptions} [opts] -
+     *   forwarded to request() (e.g. headers, signal)
      */
-    get: (params?: object, opts?: object) => Promise<any>;
+    get: (params?: object, opts?: import("../core/transport.js").RequestOptions) => Promise<any>;
     /**
      * POST /api/config — saves the full/partial server configuration.
      * Rejected with 403 when the server's config is read-only (loaded from

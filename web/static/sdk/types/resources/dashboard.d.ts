@@ -5,9 +5,10 @@ export function createDashboardResource(config: import("../core/config.js").Reso
     /**
      * GET /api/dashboard.
      * @param {object} [params] - {limit?} — server default 5, max 50
-     * @param {object} [opts] - forwarded to request() (e.g. headers, signal)
+     * @param {import("../core/transport.js").RequestOptions} [opts] -
+     *   forwarded to request() (e.g. headers, signal)
      */
-    summary: (params?: object, opts?: object) => Promise<any>;
+    summary: (params?: object, opts?: import("../core/transport.js").RequestOptions) => Promise<any>;
     /**
      * GET /api/dashboard/timeseries.
      *
@@ -18,7 +19,8 @@ export function createDashboardResource(config: import("../core/config.js").Reso
      *   emits array values as repeated `key=v` params — so an array-valued
      *   `metrics` is comma-joined here before being handed to `call()`; a
      *   string value is passed through untouched.
-     * @param {object} [opts] - forwarded to request() (e.g. headers, signal)
+     * @param {import("../core/transport.js").RequestOptions} [opts] -
+     *   forwarded to request() (e.g. headers, signal)
      */
-    timeseries: (params?: object, opts?: object) => Promise<any>;
+    timeseries: (params?: object, opts?: import("../core/transport.js").RequestOptions) => Promise<any>;
 };

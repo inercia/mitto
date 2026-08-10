@@ -22,7 +22,8 @@ export function createDashboardResource(config) {
     /**
      * GET /api/dashboard.
      * @param {object} [params] - {limit?} — server default 5, max 50
-     * @param {object} [opts] - forwarded to request() (e.g. headers, signal)
+     * @param {import("../core/transport.js").RequestOptions} [opts] -
+     *   forwarded to request() (e.g. headers, signal)
      */
     summary: (params, opts) => call("GET", "/api/dashboard", { query: params, ...opts }),
 
@@ -36,7 +37,8 @@ export function createDashboardResource(config) {
      *   emits array values as repeated `key=v` params — so an array-valued
      *   `metrics` is comma-joined here before being handed to `call()`; a
      *   string value is passed through untouched.
-     * @param {object} [opts] - forwarded to request() (e.g. headers, signal)
+     * @param {import("../core/transport.js").RequestOptions} [opts] -
+     *   forwarded to request() (e.g. headers, signal)
      */
     timeseries: (params, opts) => {
       const query = { ...params };
