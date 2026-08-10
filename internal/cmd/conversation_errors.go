@@ -13,6 +13,12 @@ import (
 
 // Exit codes for the conversation/auth command trees, per
 // docs/devel/cli-conversation.md §5. Stable from first release.
+//
+// exitWaitTimeout is a documented extension of the original 0-5 table
+// (mitto-pscc.6): `conversation send --wait` uses it when --wait-timeout
+// expires, distinct from exitUnreachable (3) since the server is reachable
+// and the message is still queued/running — only the client gave up
+// waiting for it to finish.
 const (
 	exitOK          = 0
 	exitGeneric     = 1
@@ -20,6 +26,7 @@ const (
 	exitUnreachable = 3
 	exitAuthFailure = 4
 	exitNotFound    = 5
+	exitWaitTimeout = 6
 )
 
 // exitCodeError wraps err with the CLI exit code it should produce. main()

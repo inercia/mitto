@@ -106,6 +106,7 @@ would never fire for `conversation get`.
 | 3    | server unreachable | connection-refused / no-such-host / timeout, stale instance file |
 | 4    | auth failure       | `errors.Is(err, api.ErrUnauthenticated \| api.ErrForbidden)`     |
 | 5    | not found          | `errors.Is(err, api.ErrNotFound)`                                |
+| 6    | wait timed out     | `conversation send --wait` only: `--wait-timeout` expired before the agent finished (`mitto-pscc.6`) |
 
 Mapped **mechanically in one function** in `mitto-pscc.4`, not per
 command. `(*api.APIError).Is` matches by HTTP status
@@ -140,7 +141,30 @@ by scripts — `--output json`/`yaml` is the contract.
   sub-components as imperative structs, an event-pump goroutine calling
   `program.Send`, no I/O in `Update`, `x/ansi` for ANSI-safe string work.
 
-## 8. Out of scope
+## 8. `conversation send` decisions (`mitto-pscc.6`)
+
+- **With `--wait`, the WebSocket is connected (and its event stream
+  registered via `Session.EventsChan`) before the REST enqueue call**, not
+  after. `handleAddToQueue` fires `go bs.TryProcessQueuedMessage()`
+  (`internal/web/handlers/queue.go`), so an idle session can finish the
+  whole turn before a post-enqueue dial completes, hanging the command to
+  `--wait-timeout` on a turn that already succeeded.
+- **Correlation is two-phase, keyed on the queue message ID.**
+  `prompt_complete` carries no message ID, so on a busy session it could
+  otherwise be mistaken for the wrong (already in-flight) turn's
+  completion. The command first waits for `OnQueueMessageSending` to report
+  the exact ID returned by the enqueue call, then treats the next
+  `prompt_complete` as this message's completion.
+- **A wait timeout never cancels the agent.** On expiry the command closes
+  its WebSocket and exits with code 6; the queued/running turn continues
+  server-side.
+- **`--image` cannot be combined with `--prompt-name`** (exit 2): the SDK
+  has no combined "named prompt + images" enqueue call.
+- **`--output json`/`yaml` with `--wait`** emits a single object
+  (`{queued, message, event_count}`) once the turn completes, instead of
+  streaming the reply to stdout.
+
+## 9. Out of scope
 
 Workspace management, prompts, processors, settings, agents, files,
 dashboard, any shell-completion work, and any change to `mitto cli`.

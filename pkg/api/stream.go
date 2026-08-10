@@ -235,9 +235,10 @@ func eventFromMessage(msg wsMessage) (Event, bool) {
 	case "agent_message":
 		var d struct {
 			HTML string `json:"html"`
+			Text string `json:"text"`
 		}
 		_ = json.Unmarshal(msg.Data, &d)
-		ev.Kind, ev.HTML = EventAgentMessage, d.HTML
+		ev.Kind, ev.HTML, ev.Text = EventAgentMessage, d.HTML, d.Text
 	case "agent_thought":
 		var d struct {
 			Text string `json:"text"`
