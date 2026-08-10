@@ -145,8 +145,18 @@ The public surface is **exactly** what `index.js` re-exports. Everything
 else (`sdk/core/transport.js`, `sdk/resources/*.js`, …) is a deep import and
 is internal/unsupported — it may change in any release without notice. This
 is enforced two ways: the npm `exports` map (§3) blocks deep resolution at
-install time, and the `.19` lint rule / CI gate blocks deep imports from
-outside `sdk/` at source-review time.
+install time, and the `.19` ESLint rules (`no-restricted-globals` /
+`no-restricted-syntax` / `no-restricted-imports` in `eslint.config.js`,
+wired into `bun run lint:js` → `make lint-frontend` → CI) block raw
+`fetch`/`WebSocket`/`XMLHttpRequest`/`EventSource` and deep `sdk/*` imports
+from outside `sdk/` at source-review time.
+
+A small, explicit `SDK_BOUNDARY_ALLOWLIST` at the top of `eslint.config.js`
+exempts files that legitimately still need direct access (the SDK itself,
+the service worker, the pre-auth login page, and the transitional
+`utils/csrf.js`/`utils/endpoints.js` shims). The list only shrinks over
+time — see `.19.1` — and any new entry needs a one-line justification plus a
+tracking bead rather than an inline `eslint-disable`.
 
 ## 6. Semver policy / relation to server version
 
