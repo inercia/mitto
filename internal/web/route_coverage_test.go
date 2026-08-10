@@ -1,6 +1,7 @@
 package web
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -240,26 +241,45 @@ func jsSDKCoveredPatterns(t *testing.T) map[string]string {
 			t.Fatalf("read %s: %v", f, err)
 		}
 		rel := filepath.Base(f)
-		for _, line := range strings.Split(string(data), "\n") {
-			// Skip comment lines (JSDoc "* ..." continuations and "//"):
-			// these sometimes reference a route in PROSE precisely to say
-			// it does NOT exist (e.g. config.js's "there is no /api/settings
-			// route" note) — only real call sites should count as coverage.
-			trimmed := strings.TrimSpace(line)
-			if strings.HasPrefix(trimmed, "*") || strings.HasPrefix(trimmed, "//") {
-				continue
-			}
-			for _, m := range jsSourceRouteRe.FindAllStringSubmatch(line, -1) {
-				norm := normalizePattern(m[1])
-				if out[norm] == "" {
-					out[norm] = rel
-				} else if !strings.Contains(out[norm], rel) {
-					out[norm] += "," + rel
-				}
-			}
+		mergeJSRouteMatches(out, extractJSRoutePatterns(string(data)), rel)
+	}
+	return out
+}
+
+// extractJSRoutePatterns is the pure, file-content-only core of
+// jsSDKCoveredPatterns: it scans JS source text for "/api/..." string and
+// template-literal patterns, normalizes them, and returns the set of
+// distinct normalized patterns found. Split out from jsSDKCoveredPatterns so
+// the comment-skipping and extraction logic can be unit-tested directly
+// against literal snippets, independent of the real SDK source tree.
+func extractJSRoutePatterns(content string) map[string]bool {
+	out := make(map[string]bool)
+	for _, line := range strings.Split(content, "\n") {
+		// Skip comment lines (JSDoc "* ..." continuations and "//"): these
+		// sometimes reference a route in PROSE precisely to say it does NOT
+		// exist (e.g. config.js's "there is no /api/settings route" note) —
+		// only real call sites should count as coverage.
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "*") || strings.HasPrefix(trimmed, "//") {
+			continue
+		}
+		for _, m := range jsSourceRouteRe.FindAllStringSubmatch(line, -1) {
+			out[normalizePattern(m[1])] = true
 		}
 	}
 	return out
+}
+
+// mergeJSRouteMatches folds a single file's extracted pattern set into the
+// aggregate pattern -> source-file-list map used for gate error messages.
+func mergeJSRouteMatches(dst map[string]string, found map[string]bool, rel string) {
+	for norm := range found {
+		if dst[norm] == "" {
+			dst[norm] = rel
+		} else if !strings.Contains(dst[norm], rel) {
+			dst[norm] += "," + rel
+		}
+	}
 }
 
 // exemptionLineRe requires a rationale comment on every exemption line:
@@ -282,17 +302,30 @@ func loadExemptions(t *testing.T) map[string]bool {
 		}
 		t.Fatalf("read %s: %v", path, err)
 	}
+	out, parseErr := parseExemptions(string(data))
+	if parseErr != nil {
+		t.Fatalf("%s: %v", path, parseErr)
+	}
+	return out
+}
+
+// parseExemptions is the pure, file-content-only core of loadExemptions: it
+// parses the exemptions-file text and returns the normalized-pattern set, or
+// an error identifying the first line that fails the "# rationale" contract.
+// Split out so the parsing/validation contract can be unit-tested directly
+// against literal snippets, independent of the on-disk testdata file.
+func parseExemptions(content string) (map[string]bool, error) {
 	out := make(map[string]bool)
-	for i, line := range strings.Split(string(data), "\n") {
+	for i, line := range strings.Split(content, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
 		m := exemptionLineRe.FindStringSubmatch(line)
 		if m == nil {
-			t.Fatalf("%s:%d: exemption line missing required '# rationale' comment: %q", path, i+1, line)
+			return nil, fmt.Errorf("line %d: exemption line missing required '# rationale' comment: %q", i+1, line)
 		}
 		out[normalizePattern(m[1])] = true
 	}
-	return out
+	return out, nil
 }
