@@ -147,6 +147,13 @@ by scripts — `--output json`/`yaml` is the contract.
 - Reference architecture: `charmbracelet/crush` — one `tea.Model`,
   sub-components as imperative structs, an event-pump goroutine calling
   `program.Send`, no I/O in `Update`, `x/ansi` for ANSI-safe string work.
+- **`mitto-pscc.8` landed**: `internal/termmd` wraps `charm.land/glamour/v2`
+  behind a single `Render(body string, opts Options) string` entry point,
+  with `ModeStyled`/`ModePlain`/`ModeDegraded` and `ResolveMode`/
+  `TerminalWidth` helpers centralising style/width policy. Owned by the CLI;
+  `internal/conversation` must not import it. `.7`'s transcript pane and any
+  one-shot command printing an agent message body are its consumers. The
+  streaming stable-prefix cache is deferred as `mitto-pscc.8.1`.
 
 ## 8. `conversation send` decisions (`mitto-pscc.6`)
 
