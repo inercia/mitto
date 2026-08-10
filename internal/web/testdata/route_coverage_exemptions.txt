@@ -9,5 +9,4 @@
 # route is legitimately unreachable through either SDK.
 
 /api/logout  # cookie-login logout is Go-SDK-only (pkg/api.Client.Logout); the JS SDK never implements interactive password login (browserCookieAuth reads an existing server-set cookie, it does not perform the login/logout POST dance) — see doc.go's Authentication section.
-/api/health  # liveness probe for external monitoring/orchestration, not an SDK-consumed resource.
 /api/callback/  # public webhook trigger endpoint (prefix route, token in path segment); invoked by external callers via a generated URL, not through either client SDK.

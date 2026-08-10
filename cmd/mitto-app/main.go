@@ -1222,21 +1222,40 @@ func run() error {
 		slog.Info("Serving static files from filesystem (development mode)", "dir", staticDir)
 	}
 
+	// Resolve the instance.json token now (mitto-pscc.9) — BEFORE constructing
+	// the server, since web.NewServer builds the AuthManager from cfg.Web.Auth
+	// immediately. Adopt it as the shared bearer token when auth is configured
+	// (Simple/Cloudflare) but the operator has not set one explicitly
+	// (MITTO_SHARED_TOKEN/settings.json/keychain always wins). The
+	// instance.json write further below passes this same value explicitly so
+	// both agree on a single resolution instead of generating independently.
+	instanceToken, tokErr := instancefile.ResolveToken()
+	if tokErr != nil {
+		slog.Warn("Failed to resolve instance token for shared-token auth adoption", "error", tokErr)
+	}
+	sharedTokenFromInstance := false
+	if instanceToken != "" && cfg != nil && cfg.Web.Auth != nil && cfg.Web.Auth.SharedToken == "" {
+		cfg.Web.Auth.SharedToken = instanceToken
+		sharedTokenFromInstance = true
+		slog.Info("Adopted instance.json token as the shared bearer token for programmatic access")
+	}
+
 	webConfig := web.Config{
-		Workspaces:       workspaces,
-		AutoApprove:      autoApprove,
-		Debug:            false,
-		MittoConfig:      cfg,
-		StaticDir:        staticDir,
-		FromCLI:          false, // macOS app always uses file-based persistence
-		OnWorkspaceSave:  onWorkspaceSave,
-		ConfigReadOnly:   configReadOnly,
-		RCFilePath:       rcFilePath,
-		HasRCFileServers: hasRCFileServers,
-		PromptsCache:     promptsCache,
-		AccessLog:        accessLogConfig,
-		BeadsCache:       true, // mitto-is2.5: read-cache on by default in the macOS app
-		EnablePProf:      config.PProfEnabled(cfg),
+		Workspaces:                  workspaces,
+		AutoApprove:                 autoApprove,
+		Debug:                       false,
+		MittoConfig:                 cfg,
+		StaticDir:                   staticDir,
+		FromCLI:                     false, // macOS app always uses file-based persistence
+		OnWorkspaceSave:             onWorkspaceSave,
+		ConfigReadOnly:              configReadOnly,
+		RCFilePath:                  rcFilePath,
+		HasRCFileServers:            hasRCFileServers,
+		PromptsCache:                promptsCache,
+		AccessLog:                   accessLogConfig,
+		BeadsCache:                  true, // mitto-is2.5: read-cache on by default in the macOS app
+		EnablePProf:                 config.PProfEnabled(cfg),
+		SharedTokenFromInstanceFile: sharedTokenFromInstance,
 	}
 
 	// Set legacy fields as fallback (for auxiliary sessions, etc.)
@@ -1328,6 +1347,7 @@ func run() error {
 		URL:         url,
 		APIPrefix:   apiPrefix,
 		ExternalURL: externalURL,
+		Token:       instanceToken,
 	}); err != nil {
 		slog.Warn("Failed to write instance file", "error", err)
 	}

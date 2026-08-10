@@ -388,6 +388,17 @@ type Deps struct {
 	// May be nil; the auth-info handler then reports both as false.
 	AuthInfo func() (simple bool, cloudflare bool)
 
+	// RotateSharedToken rotates the shared bearer token (mitto-pscc.9):
+	// generates a new token, installs it on the running AuthManager, and
+	// rewrites instance.json so CLI/SDK clients discover the new value via
+	// `mitto auth rotate`. Returns the new token's fingerprint (see
+	// instancefile.Fingerprint) — never the token value itself, in a
+	// response body, or a log line. Returns ErrSharedTokenNotConfigured or
+	// ErrSharedTokenNotRotatable for the documented refusal cases (mapped to
+	// 409 by HandleRotateSharedToken); any other error is a genuine failure
+	// (mapped to 500). May be nil; the handler then reports 503.
+	RotateSharedToken func() (fingerprint string, err error)
+
 	// ImprovePrompt mirrors Server.auxiliaryManager.ImprovePrompt: it rewrites a
 	// user prompt via the workspace-scoped auxiliary session. It is nil when the
 	// server has no auxiliary manager; the improve-prompt handler treats a nil

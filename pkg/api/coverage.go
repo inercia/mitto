@@ -57,4 +57,13 @@ var RouteCoverage = map[string]string{
 	"POST /api/sessions/{id}/loop/acknowledge-stopped-reason": "AcknowledgeLoopStoppedReason",
 	"GET /api/sessions/{id}/loop/suggest-from-recent":         "SuggestLoopFromRecent",
 	"POST /api/sessions/{id}/loop/run-now":                    "RunLoopNow",
+
+	// mitto-pscc.9/.10: `mitto auth status`/`rotate` are required (by the
+	// internal/cmd no-raw-net/http gate, mitto-pscc.10) to talk to the
+	// server through this SDK rather than net/http directly, even though
+	// these three endpoints sit outside the conversation-centric scope
+	// described above.
+	"GET /api/health":             "GetHealth",
+	"GET /api/auth-info":          "GetAuthInfo",
+	"POST /api/auth/rotate-token": "RotateSharedToken",
 }

@@ -11,7 +11,9 @@ package instancefile
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -195,6 +197,33 @@ func GenerateToken() (string, error) {
 		return "", fmt.Errorf("failed to generate random token: %w", err)
 	}
 	return base64.RawURLEncoding.EncodeToString(b), nil
+}
+
+// ResolveToken returns the token that Write would persist for the default
+// instance-file path right now: the token from a prior (even stale) record
+// if one exists, otherwise a freshly generated one (mitto-pscc.9). It lets a
+// caller that needs to seed another consumer (e.g. the shared-token auth
+// manager) with the SAME value Write will later store — pass the result
+// back via Instance.Token so WriteTo's own reuse-or-generate branch is
+// skipped and both stay in sync from a single resolution.
+func ResolveToken() (string, error) {
+	path, err := Path()
+	if err != nil {
+		return "", err
+	}
+	if existing, rerr := ReadFrom(path); existing != nil && existing.Token != "" && (rerr == nil || errors.Is(rerr, ErrStale)) {
+		return existing.Token, nil
+	}
+	return GenerateToken()
+}
+
+// Fingerprint returns a short, non-secret identifier for a bearer token: the
+// first 8 hex characters of its SHA-256 hash. Lets operators/tools confirm
+// two token values match (e.g. before/after rotation) without ever printing,
+// logging, or transmitting the token itself.
+func Fingerprint(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])[:8]
 }
 
 // Remove deletes instance.json at the default path. See RemoveFrom.

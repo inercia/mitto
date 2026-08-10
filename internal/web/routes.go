@@ -176,6 +176,12 @@ func (s *Server) apiRoutes(authMgr *middleware.AuthManager, csrfMgr *middleware.
 		apiRoute{pattern: "/api/auth-info", handler: http.HandlerFunc(s.apiHandlers.HandleAuthInfo)},
 	)
 
+	// Shared-token rotation (mitto-pscc.9) — restricted to localhost only,
+	// like the file-save endpoints above; surfaced via `mitto auth rotate`.
+	routes = append(routes,
+		apiRoute{method: "POST", pattern: "/api/auth/rotate-token", handler: http.HandlerFunc(s.apiHandlers.HandleRotateSharedToken)},
+	)
+
 	// Health check endpoint — intentionally NOT behind auth.
 	routes = append(routes,
 		apiRoute{pattern: "/api/health", handler: http.HandlerFunc(s.apiHandlers.HandleHealthCheck)},

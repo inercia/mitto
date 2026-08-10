@@ -29,6 +29,7 @@ import (
 	"github.com/inercia/mitto/internal/conversation"
 	"github.com/inercia/mitto/internal/defense"
 	"github.com/inercia/mitto/internal/hooks"
+	"github.com/inercia/mitto/internal/instancefile"
 	"github.com/inercia/mitto/internal/logging"
 	"github.com/inercia/mitto/internal/mcpdiscovery"
 	"github.com/inercia/mitto/internal/mcpserver"
@@ -100,6 +101,16 @@ type Config struct {
 	// Logger overrides the default logger (logging.Web()). When nil, the global
 	// web logger is used. Primarily used by tests to capture log output.
 	Logger *slog.Logger
+
+	// SharedTokenFromInstanceFile reports whether MittoConfig.Web.Auth.SharedToken
+	// (if any) was adopted from instance.json rather than configured explicitly
+	// by the operator (MITTO_SHARED_TOKEN, settings.json, or the keychain).
+	// Set by the caller (internal/cmd/web.go, cmd/mitto-app/main.go) BEFORE
+	// constructing the server, since the adoption decision needs to happen
+	// before NewServer builds the AuthManager from MittoConfig.Web.Auth
+	// (mitto-pscc.9). Gates whether POST /api/auth/rotate-token will rotate
+	// the token (only instance.json-sourced tokens are rotatable this way).
+	SharedTokenFromInstanceFile bool
 }
 
 // GetWorkspaces returns the effective list of workspaces.
@@ -171,6 +182,12 @@ type Server struct {
 
 	// Auth manager for handling authentication (nil if auth is disabled)
 	authManager *middleware.AuthManager
+
+	// sharedTokenFromInstanceFile mirrors Config.SharedTokenFromInstanceFile
+	// (mitto-pscc.9): whether the active shared token was adopted from
+	// instance.json (rotatable via POST /api/auth/rotate-token) rather than
+	// operator-configured (not rotatable this way). See rotateSharedToken.
+	sharedTokenFromInstanceFile bool
 
 	// CSRF manager for protecting state-changing requests
 	csrfManager *middleware.CSRFManager
@@ -887,26 +904,27 @@ func NewServer(config Config) (*Server, error) {
 	}
 
 	s := &Server{
-		config:               config,
-		logger:               logger,
-		apiPrefix:            apiPrefix,
-		eventsManager:        eventsManager,
-		sessionManager:       sessionMgr,
-		store:                store,
-		authManager:          authMgr,
-		csrfManager:          csrfMgr,
-		rateLimiter:          rateLimiter,
-		wsSecurityConfig:     wsSecurityConfig,
-		proxyChecker:         proxyChecker,
-		accessLogger:         accessLogger,
-		defense:              scannerDefense,
-		acpProcessManager:    acpProcessMgr,
-		auxiliaryManager:     auxiliaryManager,
-		negativeSessionCache: NewNegativeSessionCache(),
-		recentStartFails:     make(map[string]time.Time),
-		beads:                beads.NewClient(),
-		mcpAvailable:         true,
-		goroutineGaugeStop:   goroutineGaugeStop,
+		config:                      config,
+		logger:                      logger,
+		apiPrefix:                   apiPrefix,
+		eventsManager:               eventsManager,
+		sessionManager:              sessionMgr,
+		store:                       store,
+		authManager:                 authMgr,
+		sharedTokenFromInstanceFile: config.SharedTokenFromInstanceFile,
+		csrfManager:                 csrfMgr,
+		rateLimiter:                 rateLimiter,
+		wsSecurityConfig:            wsSecurityConfig,
+		proxyChecker:                proxyChecker,
+		accessLogger:                accessLogger,
+		defense:                     scannerDefense,
+		acpProcessManager:           acpProcessMgr,
+		auxiliaryManager:            auxiliaryManager,
+		negativeSessionCache:        NewNegativeSessionCache(),
+		recentStartFails:            make(map[string]time.Time),
+		beads:                       beads.NewClient(),
+		mcpAvailable:                true,
+		goroutineGaugeStop:          goroutineGaugeStop,
 	}
 
 	// Remembered prompt-arguments store (mitto-x8v, mitto-47y.6.2). Resolved
@@ -1456,6 +1474,7 @@ func NewServer(config Config) (*Server, error) {
 			}
 			return s.authManager.HasValidCredentials(), s.authManager.HasCloudflareAccess()
 		},
+		RotateSharedToken: s.rotateSharedToken,
 		ImprovePrompt: func() func(context.Context, string, string) (string, error) {
 			if s.auxiliaryManager == nil {
 				return nil
@@ -1942,6 +1961,40 @@ func (s *Server) Shutdown() error {
 // IsShutdown returns whether the server has been shut down.
 func (s *Server) IsShutdown() bool {
 	return s.shutdown.Load()
+}
+
+// rotateSharedToken implements Deps.RotateSharedToken (mitto-pscc.9): see
+// that field's doc comment on handlers.Deps for the full contract. It
+// refuses (via the sentinel errors handlers exports) when no shared token is
+// configured, or when the configured token was operator-supplied rather
+// than adopted from instance.json. instance.json is rewritten BEFORE the
+// live AuthManager is updated, so a failed write leaves the previous token
+// valid everywhere instead of desyncing memory from disk.
+func (s *Server) rotateSharedToken() (string, error) {
+	if s.authManager == nil || !s.authManager.HasSharedToken() {
+		return "", handlers.ErrSharedTokenNotConfigured
+	}
+	if !s.sharedTokenFromInstanceFile {
+		return "", handlers.ErrSharedTokenNotRotatable
+	}
+
+	newToken, err := instancefile.GenerateToken()
+	if err != nil {
+		return "", fmt.Errorf("generate token: %w", err)
+	}
+
+	inst, err := instancefile.Read()
+	if err != nil {
+		return "", fmt.Errorf("read instance file: %w", err)
+	}
+	inst.Token = newToken
+	if err := instancefile.Write(inst); err != nil {
+		return "", fmt.Errorf("write instance file: %w", err)
+	}
+
+	s.authManager.SetSharedToken(newToken)
+
+	return instancefile.Fingerprint(newToken), nil
 }
 
 // Logger returns the server's logger.

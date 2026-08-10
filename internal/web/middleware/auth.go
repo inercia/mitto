@@ -570,7 +570,13 @@ func (a *AuthManager) ValidateCredentials(username, password string) bool {
 // HasSharedToken returns true if a shared bearer token is configured
 // (mitto-7gta.26). This is an additional accepted credential for programmatic
 // clients (SDK, CLI); it does NOT by itself enable authentication — see IsEnabled.
+//
+// Reads a.config under a.mu.RLock (mitto-pscc.9) since SetSharedToken can now
+// mutate a.config.SharedToken concurrently (token rotation while requests are
+// in flight).
 func (a *AuthManager) HasSharedToken() bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
 	return a.config != nil && a.config.SharedToken != ""
 }
 
@@ -578,11 +584,30 @@ func (a *AuthManager) HasSharedToken() bool {
 // using a constant-time comparison to prevent timing attacks. Always returns
 // false when no token is configured or tok is empty, so an absent header can
 // never match an unset/empty configured token.
+//
+// Reads the configured token under a.mu.RLock (mitto-pscc.9); see
+// HasSharedToken and SetSharedToken.
 func (a *AuthManager) ValidateSharedToken(tok string) bool {
 	if !a.HasSharedToken() || tok == "" {
 		return false
 	}
-	return subtle.ConstantTimeCompare([]byte(tok), []byte(a.config.SharedToken)) == 1
+	a.mu.RLock()
+	configured := a.config.SharedToken
+	a.mu.RUnlock()
+	return subtle.ConstantTimeCompare([]byte(tok), []byte(configured)) == 1
+}
+
+// SetSharedToken updates the shared bearer token dynamically (mitto-pscc.9
+// token rotation, via POST /api/auth/rotate-token). Safe for concurrent use
+// with HasSharedToken/ValidateSharedToken, which take the read lock this
+// method's write lock excludes.
+func (a *AuthManager) SetSharedToken(tok string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.config == nil {
+		a.config = &config.WebAuth{}
+	}
+	a.config.SharedToken = tok
 }
 
 // extractBearerToken extracts the token from an "Authorization: Bearer <token>"
@@ -823,7 +848,22 @@ func (a *AuthManager) isPublicPath(path string) bool {
 
 	// Check API path prefixes for dynamic paths (callback tokens)
 	callbackPrefix := a.apiPrefix + "/api/callback/"
-	return strings.HasPrefix(path, callbackPrefix)
+	if strings.HasPrefix(path, callbackPrefix) {
+		return true
+	}
+
+	// The JS client SDK tree (web/static/sdk/) is a static, client-shipped
+	// asset bundle imported by auth.js (mitto-laa3) — same exposure class as
+	// the already-public auth.js/tailwind.css above, not sensitive. auth.js
+	// is a `type="module"` script whose whole import graph must be public,
+	// or the module graph fails to load and the login form never binds.
+	if strings.HasPrefix(path, "/sdk/") {
+		return true
+	}
+	if a.apiPrefix != "" && strings.HasPrefix(path, a.apiPrefix+"/sdk/") {
+		return true
+	}
+	return false
 }
 
 // isLoopbackIP checks if the given IP address is a loopback address.
