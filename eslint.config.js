@@ -3,17 +3,15 @@ import globals from "globals";
 // mitto-7gta.19: SDK boundary enforcement allowlist.
 //
 // Files listed here are still allowed to touch fetch/WebSocket/XHR/EventSource
-// directly and/or deep-import sdk/ internals. This list only shrinks over
-// time (see mitto-7gta.19.1) — do not add a new entry without a one-line
-// justification, and prefer migrating an existing entry onto the SDK client
+// directly and/or deep-import sdk/ internals. All transitional shim entries
+// were retired in mitto-7gta.19.1 — the three remaining entries are
+// permanent. Do not add a new entry without a one-line justification, and
+// prefer migrating an existing entry onto the SDK client
 // (web/static/utils/sdkClient.js's getSdkClient()) over adding a new one.
 const SDK_BOUNDARY_ALLOWLIST = [
   "web/static/sdk/**", // the SDK implementation itself (permanent)
   "web/static/sw.js", // service worker: fetch() IS the API being implemented (permanent)
-  "web/static/auth.js", // standalone pre-auth login page, outside the SPA module graph (mitto-7gta.19.1)
-  "web/static/utils/sdkClient.js", // deliberate late-bound fetch injection seam into the SDK client
-  "web/static/utils/csrf.js", // transitional shim; deep sdk/auth + sdk/env imports (mitto-7gta.19.1)
-  "web/static/utils/endpoints.js", // transitional shim; deep sdk/core/endpoints.js import (mitto-7gta.19.1)
+  "web/static/utils/sdkClient.js", // deliberate late-bound fetch injection seam into the SDK client (permanent)
 ];
 
 export default [

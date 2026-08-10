@@ -1,7 +1,6 @@
 // Mitto Web Interface - Prompt Menu Utilities
 
 import { getSdkClient } from "./sdkClient.js";
-import { endpoints } from "./endpoints.js";
 
 /**
  * Returns the list of UI menus a prompt opts INTO (positive tokens only).
@@ -516,7 +515,7 @@ export async function fetchCachedParamNames(
     let data;
     if (fetchImpl) {
       const resp = await fetchImpl(
-        endpoints.sessions.promptArgCache(sessionId, promptName),
+        getSdkClient().endpoints.sessions.promptArgCache(sessionId, promptName),
       );
       if (!resp || !resp.ok) return new Set();
       data = await resp.json();

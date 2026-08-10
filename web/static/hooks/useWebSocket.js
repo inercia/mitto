@@ -39,7 +39,6 @@ import {
 import { playAgentCompletedSound } from "../utils/audio.js";
 
 import { getApiPrefix } from "../utils/api.js";
-import { endpoints } from "../utils/index.js";
 import { getSdkClient } from "../utils/sdkClient.js";
 import { errorStatus, errorMessage } from "../utils/sdkErrors.js";
 
@@ -1917,7 +1916,7 @@ export function useWebSocket({
             if (image_ids && image_ids.length > 0) {
               userMessage.images = image_ids.map((id) => ({
                 id,
-                url: endpoints.sessions.image(sessionId, id),
+                url: getSdkClient().endpoints.sessions.image(sessionId, id),
                 name: id,
               }));
             }

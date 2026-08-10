@@ -41,6 +41,19 @@ export function createMiscResource(config, configResource) {
     /** GET /api/csrf-token. */
     csrfToken: (opts) => call("GET", "/api/csrf-token", opts),
 
+    /** GET /api/auth-info — pre-auth: reports which auth method(s) are
+     *  configured so the login page can adapt its UI.
+     *  @returns {Promise<{simple: boolean, cloudflare: boolean}>} */
+    authInfo: (opts) => call("GET", "/api/auth-info", opts),
+
+    /** POST /api/login — pre-auth, CSRF-exempt server-side. A 401 (bad
+     *  credentials) is the expected failure path, not an auth error to
+     *  redirect on — callers must NOT wire this through a CSRF-adapter
+     *  client whose onUnauthorized redirects to the login page itself.
+     *  @param {{username: string, password: string}} credentials */
+    login: (credentials, opts) =>
+      call("POST", "/api/login", { body: credentials, ...opts }),
+
     /** GET /api/check-file-exists?path= — localhost-only server-side; a
      *  403 from the external listener surfaces as `MittoApiError`.
      *  @param {string} path - absolute file path

@@ -8,7 +8,8 @@
  * marker) and exercised directly.
  *
  * The lower half of this file exercises importable, non-preact modules that
- * StatsCharts.js depends on (endpoints, vendor config) so the acceptance
+ * StatsCharts.js depends on (the SDK client's endpoints registry, vendor
+ * config) so the acceptance
  * criteria "charts render at 24h/7d/30d" and "range change re-fetches" are
  * pinned at the URL-and-metric level even though the DOM lifecycle itself is
  * covered by Playwright in mitto-a86b.10.
@@ -24,7 +25,7 @@ import {
   beforeEach,
   jest,
 } from "../../utils/testing/testGlobals.js";
-import { endpoints } from "../../utils/endpoints.js";
+import { getSdkClient } from "../../utils/sdkClient.js";
 import { modelColor, UNKNOWN_MODEL_COLOR } from "../../utils/palette.js";
 import { CDN_URLS, VERSIONS } from "../../vendor/config.js";
 
@@ -387,7 +388,7 @@ describe("beadsCycleTimeTransform (mitto-5rm6.4)", () => {
 
 describe("dashboardTimeseries URL builder", () => {
   test.each(RANGE_VALUES)("range=%s produces a well-formed URL", (range) => {
-    const url = endpoints.misc.dashboardTimeseries({
+    const url = getSdkClient().endpoints.misc.dashboardTimeseries({
       range,
       metrics: REQUESTED_METRICS.join(","),
     });
@@ -399,7 +400,7 @@ describe("dashboardTimeseries URL builder", () => {
   });
 
   test("omits null/undefined/empty params (qs contract)", () => {
-    const url = endpoints.misc.dashboardTimeseries({
+    const url = getSdkClient().endpoints.misc.dashboardTimeseries({
       range: "24h",
       metrics: "prompts",
       workspace: null,
@@ -419,7 +420,7 @@ describe("dashboardTimeseries URL builder", () => {
     // (metrics list, host prefix, path) stays byte-identical so the fetch
     // hitting the backend is deterministic.
     const urls = RANGE_VALUES.map((r) =>
-      endpoints.misc.dashboardTimeseries({
+      getSdkClient().endpoints.misc.dashboardTimeseries({
         range: r,
         metrics: REQUESTED_METRICS.join(","),
       }),
@@ -764,7 +765,7 @@ describe("model usage URL builder (groupBy=model)", () => {
   test("second fetch URL includes groupBy=model and only the two token metrics", () => {
     // Pins the exact URL shape the ModelUsageCard's second fetch effect emits
     // so a regression to a different groupBy or metric list is caught here.
-    const url = endpoints.misc.dashboardTimeseries({
+    const url = getSdkClient().endpoints.misc.dashboardTimeseries({
       range: "24h",
       metrics: REQUESTED_MODEL_METRICS.join(","),
       groupBy: "model",

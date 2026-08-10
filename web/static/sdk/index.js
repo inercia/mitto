@@ -69,10 +69,13 @@ export function createClient(options = {}) {
   const serverConfig = createConfigResource(config);
   return {
     config,
-    // Deep-import `createEndpoints(config, { wsBaseUrl })` directly instead
-    // when `config.baseUrl` is relative and a ws(s):// URL is needed (e.g.
-    // a same-origin browser client) — this default has no wsBaseUrl.
-    endpoints: createEndpoints(config),
+    // `wsBaseUrl` is an optional createClient() option (see core/config.js)
+    // for hosts whose `baseUrl` is relative and need an absolute ws(s)://
+    // origin for WebSocket builders (e.g. a same-origin browser client —
+    // see utils/sdkClient.js's getSdkWsBaseUrl()). Deep-import
+    // `createEndpoints(config, { wsBaseUrl })` directly only if a caller
+    // needs a *different* wsBaseUrl than the one already on `config`.
+    endpoints: createEndpoints(config, { wsBaseUrl: config.wsBaseUrl }),
     sessions,
     prompts: createPromptsResource(config),
     processors: createProcessorsResource(config),

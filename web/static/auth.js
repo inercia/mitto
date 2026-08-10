@@ -1,11 +1,19 @@
-// Login form handler for Mitto auth page
+// Login form handler for Mitto auth page.
+//
+// Pre-auth: this page runs before any session/CSRF cookie exists, so it uses
+// a minimal noneAuth SDK client (mitto-7gta.19.1) rather than
+// utils/sdkClient.js's getSdkClient() — that seam wires a CSRF adapter whose
+// onUnauthorized redirects to THIS page, which would be wrong here (a 401
+// from /api/login is the expected "bad password" outcome, not a session
+// expiry). Kept as its own module rather than importing sdkClient.js,
+// preserving the pre-auth/authenticated boundary.
+import { createClient, browserEnv, MittoApiError, MittoNetworkError } from "./sdk/index.js";
 
-// Get API prefix (injected by server into the page)
 function getApiPrefix() {
   return window.mittoApiPrefix || "";
 }
 
-document.addEventListener("DOMContentLoaded", function () {
+function initAuthPage() {
   const form = document.getElementById("loginForm");
   const errorDiv = document.getElementById("error");
   const submitBtn = document.getElementById("submitBtn");
@@ -16,11 +24,18 @@ document.addEventListener("DOMContentLoaded", function () {
     return;
   }
 
+  // No `fetch` option: this file is off the SDK boundary allowlist
+  // (mitto-7gta.19.1), so it must not reference the global `fetch`
+  // identifier itself — resolveConfig() already falls back to
+  // `globalThis.fetch` when none is injected (see sdk/core/config.js).
+  const client = createClient({
+    ...browserEnv(),
+    apiPrefix: getApiPrefix(),
+  });
+
   // Fetch auth info to adapt the UI before showing the form
-  fetch(getApiPrefix() + "/api/auth-info")
-    .then(function (res) {
-      return res.json();
-    })
+  client.misc
+    .authInfo()
     .then(function (info) {
       if (!info.simple && info.cloudflare) {
         // Only Cloudflare auth configured: hide login form, show message
@@ -53,31 +68,31 @@ document.addEventListener("DOMContentLoaded", function () {
     const password = document.getElementById("password").value;
 
     try {
-      const response = await fetch(getApiPrefix() + "/api/login", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ username: username, password: password }),
-        credentials: "same-origin", // Include cookies in request and accept Set-Cookie
-      });
-
-      if (response.ok) {
-        // Redirect to main app
-        window.location.href = "/";
-      } else {
-        const data = await response.json().catch(function () {
-          return {};
-        });
-        errorDiv.textContent = data.error || "Invalid username or password";
-        errorDiv.classList.remove("hidden");
-      }
+      await client.misc.login({ username: username, password: password });
+      // Redirect to main app
+      window.location.href = "/";
     } catch (err) {
-      errorDiv.textContent = "Network error. Please try again.";
+      if (err instanceof MittoApiError) {
+        // /api/login answers a flat {"error": "<message>"} body, which the
+        // SDK surfaces as err.message (see core/errors.js's errorFromResponse).
+        errorDiv.textContent = err.message || "Invalid username or password";
+      } else if (err instanceof MittoNetworkError) {
+        errorDiv.textContent = "Network error. Please try again.";
+      } else {
+        errorDiv.textContent = "Invalid username or password";
+      }
       errorDiv.classList.remove("hidden");
     } finally {
       submitBtn.disabled = false;
       submitBtn.textContent = "Sign In";
     }
   });
-});
+}
+
+// A module script's execution can be deferred past DOMContentLoaded (unlike
+// a classic script), so guard with an immediate-run fallback.
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", initAuthPage);
+} else {
+  initAuthPage();
+}

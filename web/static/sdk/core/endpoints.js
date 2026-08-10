@@ -212,6 +212,10 @@ export function createEndpoints(config, options = {}) {
       saveFileToPath: () => url("/api/save-file-to-path"),
       dashboard: (params) => url("/api/dashboard", params),
       dashboardTimeseries: (params) => url("/api/dashboard/timeseries", params),
+      // Pre-auth endpoints (mitto-7gta.19.1): used by auth.js, which runs
+      // before any session/cookie state exists.
+      authInfo: () => url("/api/auth-info"),
+      login: () => url("/api/login"),
     },
   };
 }

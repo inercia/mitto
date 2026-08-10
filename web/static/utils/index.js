@@ -61,11 +61,9 @@ export {
 
 export { playAgentCompletedSound } from "./audio.js";
 
-export { getCSRFToken, initCSRF } from "./csrf.js";
+export { getCSRFToken, initCSRF } from "./sdkClient.js";
 
 export { getApiPrefix, apiUrl, wsUrl, errorMessageFromData } from "./api.js";
-
-export { endpoints } from "./endpoints.js";
 
 export { fetchConfig, invalidateConfigCache } from "./configCache.js";
 

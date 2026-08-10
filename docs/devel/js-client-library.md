@@ -152,10 +152,14 @@ wired into `bun run lint:js` → `make lint-frontend` → CI) block raw
 from outside `sdk/` at source-review time.
 
 A small, explicit `SDK_BOUNDARY_ALLOWLIST` at the top of `eslint.config.js`
-exempts files that legitimately still need direct access (the SDK itself,
-the service worker, the pre-auth login page, and the transitional
-`utils/csrf.js`/`utils/endpoints.js` shims). The list only shrinks over
-time — see `.19.1` — and any new entry needs a one-line justification plus a
+exempts files that legitimately still need direct access. As of `.19.1` this
+is exactly three permanent entries: the SDK implementation itself
+(`sdk/**`), the service worker (`sw.js`, where `fetch()` IS the API being
+implemented), and `utils/sdkClient.js` (a deliberate late-bound fetch
+injection seam into the SDK client). The transitional shims
+(`utils/csrf.js`, `utils/endpoints.js`) and the pre-auth login page
+(`auth.js`) were retired in `.19.1` — `auth.js` now runs a minimal `noneAuth`
+SDK client of its own. Any new entry needs a one-line justification plus a
 tracking bead rather than an inline `eslint-disable`.
 
 ## 6. Semver policy / relation to server version

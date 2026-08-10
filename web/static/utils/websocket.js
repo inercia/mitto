@@ -6,8 +6,7 @@
  */
 
 import { getLastSeenSeq, setLastSeenSeq } from "./storage.js";
-import { redirectToLogin } from "./csrf.js";
-import { getSdkClient } from "./sdkClient.js";
+import { getSdkClient, redirectToLogin } from "./sdkClient.js";
 import { errorStatus } from "./sdkErrors.js";
 import { isNativeApp } from "./native.js";
 

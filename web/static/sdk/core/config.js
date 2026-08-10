@@ -22,6 +22,7 @@ const ALLOWED_KEYS = new Set([
   "auth",
   "logger",
   "onUnauthorized",
+  "wsBaseUrl",
 ]);
 
 /** Trim exactly one trailing slash (but never reduce "/" to ""). */
@@ -121,6 +122,11 @@ export function resolveConfig(options = {}, globals = globalThis) {
     auth: options.auth || noneAuth(),
     logger: options.logger || createNoopLogger(),
     onUnauthorized: options.onUnauthorized || (() => {}),
+    // Absolute ws(s):// (or http(s)://) origin used to derive WebSocket URLs
+    // when `baseUrl` is relative/empty (see core/endpoints.js, ws-transport.js).
+    // Undefined when not supplied — callers needing realtime features from a
+    // relative baseUrl must set this (e.g. a same-origin browser client).
+    wsBaseUrl: options.wsBaseUrl,
   };
 
   return Object.freeze(config);

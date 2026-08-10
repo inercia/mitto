@@ -357,6 +357,11 @@ describe("endpoints registry", () => {
       expect(endpoints.misc.csrfToken()).toBe("/api/csrf-token"));
     test("misc.saveFileToPath", () =>
       expect(endpoints.misc.saveFileToPath()).toBe("/api/save-file-to-path"));
+    // mitto-7gta.19.1: pre-auth endpoints used by auth.js.
+    test("misc.authInfo", () =>
+      expect(endpoints.misc.authInfo()).toBe("/api/auth-info"));
+    test("misc.login", () =>
+      expect(endpoints.misc.login()).toBe("/api/login"));
   });
 
   // ---------------------------------------------------------------------

@@ -140,10 +140,7 @@ describe("SDK boundary ESLint rules (mitto-7gta.19)", () => {
   test.each([
     ["web/static/sdk/core/transport.js", 'fetch("/x");\n'],
     ["web/static/sw.js", 'fetch("/x");\n'],
-    ["web/static/auth.js", 'fetch("/x");\n'],
     ["web/static/utils/sdkClient.js", 'fetch("/x");\n'],
-    ["web/static/utils/csrf.js", 'import { x } from "../sdk/auth/browser-cookie.js";\nconsole.log(x);\n'],
-    ["web/static/utils/endpoints.js", 'import { x } from "../sdk/core/endpoints.js";\nconsole.log(x);\n'],
     ["web/static/sdk/index.js", 'const m = await import("./core/endpoints.js");\nconsole.log(m);\n'],
   ])("SDK_BOUNDARY_ALLOWLIST exempts %s", async (filePath, code) => {
     const messages = await lint(code, filePath);

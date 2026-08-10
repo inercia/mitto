@@ -1,13 +1,19 @@
 /**
- * Unit tests for the SDK client seam (mitto-7gta.18, slice S1).
+ * Unit tests for the SDK client seam (mitto-7gta.18, slice S1; extended by
+ * mitto-7gta.19.1 to cover the folded-in getCSRFToken/initCSRF/
+ * redirectToLogin and the endpoints shim-contract assertions previously in
+ * utils/endpoints.test.js, both retired when utils/csrf.js and
+ * utils/endpoints.js were deleted).
  *
  * Runs under happy-dom (bunfig.toml preload) so real `window`/`localStorage`
- * are used, matching how this module is actually consumed (mirrors
- * utils/csrf.test.js's approach for the same reason).
+ * are used, matching how this module is actually consumed.
  */
 import {
   getSdkClient,
   getSdkWsBaseUrl,
+  getCSRFToken,
+  initCSRF,
+  redirectToLogin,
   createSdkSeqStore,
   createSdkPendingPromptStore,
   _resetSdkClientForTests,
@@ -90,7 +96,7 @@ describe("sdkClient", () => {
       expect(called).toBe(true);
     });
 
-    test("config.onUnauthorized delegates to csrf.js's redirectToLogin (401 policy preserved)", () => {
+    test("config.onUnauthorized delegates to this module's redirectToLogin (401 policy preserved)", () => {
       const originalHref = window.location.href;
       try {
         const client = getSdkClient();
@@ -222,6 +228,108 @@ describe("sdkClient", () => {
       store.save("sess-6", "prompt-2", "hi", [], []);
       expect(localStorage.getItem("mitto_pending_prompts")).toBe(null);
       expect(localStorage.getItem("mitto_sdk_pending_prompts")).not.toBe(null);
+    });
+  });
+
+  // mitto-7gta.19.1: getCSRFToken/initCSRF/redirectToLogin were folded in
+  // from the deleted utils/csrf.js, now sharing the SDK client's single
+  // browserCookieAuth() instance instead of constructing a second one.
+  describe("getCSRFToken / initCSRF / redirectToLogin (folded from utils/csrf.js)", () => {
+    afterEach(() => {
+      document.cookie =
+        "mitto_csrf=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT";
+    });
+
+    test("getCSRFToken reads the token from the cookie", async () => {
+      document.cookie = "mitto_csrf=folded-test-token; path=/";
+      await expect(getCSRFToken()).resolves.toBe("folded-test-token");
+    });
+
+    test("initCSRF resolves without throwing even on failure", async () => {
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = async () => ({ ok: false, status: 500 });
+      try {
+        await expect(initCSRF()).resolves.toBeUndefined();
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    });
+
+    test("redirectToLogin navigates to /auth.html and clears in-flight adapter state", () => {
+      const originalHref = window.location.href;
+      try {
+        getSdkClient(); // ensure the auth adapter exists
+        redirectToLogin();
+        expect(window.location.href).toContain("/auth.html");
+      } finally {
+        window.location.href = originalHref;
+      }
+    });
+
+    test("redirectToLogin is a no-op-safe call before getSdkClient() has ever run", () => {
+      // _resetSdkClientForTests() (afterEach, outer describe) clears both
+      // the client and the captured auth adapter — this must not throw.
+      const originalHref = window.location.href;
+      try {
+        expect(() => redirectToLogin()).not.toThrow();
+      } finally {
+        window.location.href = originalHref;
+      }
+    });
+  });
+
+  // Shim-contract tests migrated from the deleted utils/endpoints.js's
+  // endpoints.test.js (mitto-7gta.19.1). The exhaustive per-builder /
+  // per-group assertions live in sdk/core/endpoints.test.js; these only
+  // verify getSdkClient().endpoints wiring: apiPrefix/wsBaseUrl are baked in
+  // at client construction (unlike the old live-rereading proxy, a prefix
+  // change requires _resetSdkClientForTests() + a fresh getSdkClient() call,
+  // matching this file's existing "wires apiPrefix" test above), and ws
+  // builders resolve via wsBaseUrl derived from window.location.
+  describe("getSdkClient().endpoints (folded from utils/endpoints.js)", () => {
+    test("applies the current apiPrefix at construction time", () => {
+      window.mittoApiPrefix = "/mitto";
+      expect(getSdkClient().endpoints.sessions.list()).toBe(
+        "/mitto/api/sessions",
+      );
+    });
+
+    test("no prefix when mittoApiPrefix is unset", () => {
+      expect(getSdkClient().endpoints.sessions.list()).toBe("/api/sessions");
+    });
+
+    test("a prefix change requires a fresh client to take effect", () => {
+      expect(getSdkClient().endpoints.sessions.list()).toBe("/api/sessions");
+      window.mittoApiPrefix = "/mitto";
+      _resetSdkClientForTests();
+      expect(getSdkClient().endpoints.sessions.list()).toBe(
+        "/mitto/api/sessions",
+      );
+    });
+
+    test("path-param builder also respects the prefix", () => {
+      window.mittoApiPrefix = "/mitto";
+      expect(
+        getSdkClient().endpoints.sessions.get("20260101-120000-deadbeef"),
+      ).toBe("/mitto/api/sessions/20260101-120000-deadbeef");
+    });
+
+    test("ws builders derive an absolute ws(s):// origin from getSdkWsBaseUrl()", () => {
+      const url = getSdkClient().endpoints.events.ws();
+      expect(url).toMatch(/^wss?:\/\//);
+      expect(url).toMatch(/\/api\/events$/);
+    });
+
+    test("sessions.ws builder resolves to an absolute ws(s):// URL", () => {
+      const url = getSdkClient().endpoints.sessions.ws("abc");
+      expect(url).toMatch(/^wss?:\/\//);
+      expect(url).toMatch(/\/api\/sessions\/abc\/ws$/);
+    });
+
+    test("misc.csrfToken (a zero-arg builder) resolves through the registry", () => {
+      expect(getSdkClient().endpoints.misc.csrfToken()).toBe(
+        "/api/csrf-token",
+      );
     });
   });
 });

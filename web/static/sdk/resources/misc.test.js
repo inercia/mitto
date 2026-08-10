@@ -43,6 +43,47 @@ describe("misc resource", () => {
     expect(calls[0].init.method).toBe("GET");
   });
 
+  // mitto-7gta.19.1: pre-auth endpoints used by auth.js.
+  describe("authInfo", () => {
+    test("calls GET /api/auth-info", async () => {
+      const { misc, calls, respondWith } = mk();
+      respondWith(() =>
+        fakeResponse({ body: { simple: true, cloudflare: false } }),
+      );
+      const result = await misc.authInfo();
+      expect(calls[0].url).toBe("/api/auth-info");
+      expect(calls[0].init.method).toBe("GET");
+      expect(result).toEqual({ simple: true, cloudflare: false });
+    });
+  });
+
+  describe("login", () => {
+    test("POSTs the credentials body untouched", async () => {
+      const { misc, calls, respondWith } = mk();
+      respondWith(() => fakeResponse({ body: { success: true } }));
+      const result = await misc.login({ username: "alice", password: "hunter2" });
+      expect(calls[0].url).toBe("/api/login");
+      expect(calls[0].init.method).toBe("POST");
+      expect(calls[0].init.body).toBe(
+        JSON.stringify({ username: "alice", password: "hunter2" }),
+      );
+      expect(result).toEqual({ success: true });
+    });
+
+    test("a 401 (bad credentials) surfaces as MittoApiError, not a thrown network error", async () => {
+      const { misc, respondWith } = mk();
+      respondWith(() =>
+        fakeResponse({
+          status: 401,
+          body: { error: "Invalid username or password" },
+        }),
+      );
+      await expect(
+        misc.login({ username: "alice", password: "wrong" }),
+      ).rejects.toBeInstanceOf(MittoApiError);
+    });
+  });
+
   describe("checkFileExists", () => {
     test("builds ?path= from the given path", async () => {
       const { misc, calls, respondWith } = mk();

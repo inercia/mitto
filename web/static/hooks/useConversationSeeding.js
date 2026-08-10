@@ -4,7 +4,6 @@
 
 import { getSdkClient } from "../utils/sdkClient.js";
 import { errorStatus } from "../utils/sdkErrors.js";
-import { endpoints } from "../utils/index.js";
 
 /**
  * Normalize a prompt.loop.trigger field into an array of trigger names
@@ -196,7 +195,7 @@ export async function makeLoopNow(
 
   if (fetchImpl) {
     try {
-      const putResp = await fetchImpl(endpoints.sessions.loop(sessionId), {
+      const putResp = await fetchImpl(getSdkClient().endpoints.sessions.loop(sessionId), {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(loopBody),
@@ -237,7 +236,7 @@ export async function makeLoopNow(
   if (fetchImpl) {
     try {
       const runResp = await fetchImpl(
-        endpoints.sessions.loopRunNow(sessionId),
+        getSdkClient().endpoints.sessions.loopRunNow(sessionId),
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -313,7 +312,7 @@ export async function seedConversationWithPrompt(
 
   if (fetchImpl) {
     try {
-      const resp = await fetchImpl(endpoints.sessions.queue(sessionId), {
+      const resp = await fetchImpl(getSdkClient().endpoints.sessions.queue(sessionId), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
@@ -450,7 +449,7 @@ export async function configureLoopSchedule(
 
   if (fetchImpl) {
     try {
-      const resp = await fetchImpl(endpoints.sessions.loop(sessionId), {
+      const resp = await fetchImpl(getSdkClient().endpoints.sessions.loop(sessionId), {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(loopBody),
