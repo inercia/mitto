@@ -1,7 +1,9 @@
-# Mitto JavaScript SDK
+# Mitto JavaScript and Go SDKs
 
 Consumer-facing documentation for `@mitto/sdk` (`web/static/sdk/`), the
 official JavaScript client for the Mitto REST API and WebSocket protocol.
+For the Go client (`github.com/inercia/mitto/pkg/api`), see
+[Go SDK](go-sdk.md).
 
 This is the **usage** layer. For the SDK's design rationale and stability
 rules, see [JS Client Library](../devel/js-client-library.md) (design
@@ -46,6 +48,7 @@ See [Getting Started](getting-started.md) for runnable snippets of each.
 | [Realtime Guide](realtime.md)          | `SessionStream`, `EventsStream`, sequence numbers, reconnection, dedup        |
 | [Error Model](errors.md)               | The error class taxonomy and the REST error envelope                          |
 | [Versioning & Stability](stability.md) | What may/may not change in a minor release                                    |
+| [Go SDK](go-sdk.md)                    | The Go client (`pkg/api`): install, auth, streaming, error model, examples    |
 
 ## Related design documentation
 

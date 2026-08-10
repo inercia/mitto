@@ -55,6 +55,52 @@
 //	fmt.Printf("Got %d messages, %d tool calls\n",
 //	    len(result.Messages), len(result.ToolCalls))
 //
+// # Construction and Options
+//
+// New(baseURL, ...Option) builds a Client. Options configure the client
+// once, at construction time:
+//
+//   - WithTimeout(d) sets the underlying http.Client's timeout (applies to
+//     every plain REST call; the WebSocket connection itself is governed by
+//     ctx instead, see # Context Conventions below).
+//   - WithBearerToken(token) / WithTokenSupplier(supplier) configure shared-
+//     token authentication; see # Authentication.
+//
+// Connect takes its own, session-scoped SessionOption values instead,
+// covering the resilience behavior of a single WebSocket connection
+// (WithReconnect, WithKeepalive, WithSeqStore, WithSeqDedup,
+// WithStreamBuffer); see # Resilient Realtime and # Streaming below.
+//
+// # Conversation Lifecycle
+//
+// A typical program moves through these Client/Session methods in order:
+//
+//  1. CreateSession creates a conversation (optionally seeding its queue
+//     with an initial prompt via CreateSessionRequest.InitialPromptName).
+//  2. Connect dials the conversation's WebSocket and starts its read loop,
+//     returning a *Session.
+//  3. SendPrompt (or SendPromptWithImages) sends a message; the response is
+//     delivered incrementally via SessionCallbacks and/or Events/EventsChan.
+//  4. Session.Close ends the WebSocket connection when the caller is done
+//     with it; the conversation itself is unaffected.
+//  5. ArchiveSession / DeleteSession end the conversation's lifecycle on the
+//     server once no more prompts will be sent.
+//
+// PromptAndWait/PromptAndWaitWithImages collapse steps 2-4 into a single
+// blocking call for simple request-response use (# Simplified Prompt
+// Helper above).
+//
+// # Context Conventions
+//
+// Methods that can block on network I/O beyond the http.Client timeout, or
+// that manage a long-lived connection, take a context.Context as their
+// first parameter: Login, Logout, Connect, PromptAndWait(WithImages),
+// Events, and EventsChan. Cancelling that ctx is the way to bound or abort
+// those calls. Plain REST methods (ListSessions, CreateSession, GetSession,
+// DeleteSession, ArchiveSession, and the sessions_ext.go/media.go/queue.go/
+// loop.go resource methods) do not take a ctx; they are bounded by the
+// Client's http.Client.Timeout instead (see WithTimeout above).
+//
 // # Authentication
 //
 // Three modes are supported, matching the backend's authentication options
@@ -175,4 +221,11 @@
 //	if errors.As(err, &apiErr) {
 //	    log.Printf("status=%d code=%s details=%v", apiErr.Status, apiErr.Code, apiErr.Details)
 //	}
+//
+// The streaming API (Events/EventsChan) has its own sentinels, distinct from
+// *APIError since they describe local stream-adapter conditions rather than
+// an HTTP response: ErrStreamActive (a second stream on the same Session),
+// ErrSlowConsumer (the consumer fell behind and the bounded buffer
+// overflowed), and ErrDisconnected (the underlying WebSocket dropped and was
+// not recovered). See # Streaming above.
 package client

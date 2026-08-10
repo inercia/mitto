@@ -131,6 +131,7 @@ open Mitto.app
 - 🔧 [Development](docs/development.md): Building, testing
 - 🏗️ [Architecture](docs/devel/README.md): Design internals
 - 📚 [JavaScript SDK](docs/api/README.md): Client library for the Mitto REST API and WebSocket protocol
+- 🐹 [Go SDK](docs/api/go-sdk.md): Go client library for the Mitto REST API and WebSocket protocol
 
 ## Requirements
 

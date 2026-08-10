@@ -42,7 +42,7 @@ test: test-go test-js
 # Run Go unit tests (excludes integration tests)
 test-go:
 	@echo "Running Go unit tests..."
-	$(GOTEST) -v ./internal/... ./cmd/... ./pkg/...
+	$(GOTEST) -v ./internal/... ./cmd/... ./pkg/... ./examples/...
 
 # Run JavaScript unit tests (Bun; happy-dom preloaded via bunfig.toml).
 # `web/static` scope matches the roots of the old Jest config and keeps
