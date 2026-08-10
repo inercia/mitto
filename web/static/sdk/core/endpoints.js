@@ -11,7 +11,7 @@
  * cannot derive a ws(s):// scheme from a relative/empty `config.baseUrl` —
  * pass an absolute `options.wsBaseUrl` (e.g. "ws://host:1234") when
  * `config.baseUrl` is relative (the common case for a same-origin browser
- * client; see utils/endpoints.js's shim for how it supplies one).
+ * client; see utils/sdkClient.js for how it supplies one).
  *
  * This is a deep import, not part of the public surface
  * (docs/devel/js-client-library.md §5) — not re-exported from sdk/index.js

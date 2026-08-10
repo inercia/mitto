@@ -13,11 +13,14 @@ fused to Preact. There was no reusable, documented, testable client — for the
 UI or for third parties / future CLI tools. This record defines the shape of
 the reusable SDK before any code is written.
 
-**Migration status (`.17`/`.18`, completed):** every one of those call sites
-now goes through `getSdkClient()` (`web/static/utils/sdkClient.js`). `csrf.js`
-was reduced to the auth policy the SDK deliberately keeps out of its core —
-`redirectToLogin`, `initCSRF`, `getCSRFToken` — once `authFetch`/`secureFetch`
-lost their last importers (slice S8).
+**Migration status (`.17`/`.18`/`.19.1`, completed):** every one of those call
+sites now goes through `getSdkClient()` (`web/static/utils/sdkClient.js`).
+`csrf.js` was first reduced to the auth policy the SDK deliberately keeps out
+of its core — `redirectToLogin`, `initCSRF`, `getCSRFToken` — once
+`authFetch`/`secureFetch` lost their last importers (slice S8), and both it
+and `endpoints.js` were then deleted in `.19.1`: those three exports now live
+in `utils/sdkClient.js` and the URL registry is reached as
+`getSdkClient().endpoints`.
 
 ## 1. Package layout
 
@@ -104,7 +107,8 @@ Two concrete couplings from today's code are explicitly displaced:
 - `window.mittoApiPrefix` (injected into `index.html`/`auth.html` as
   `{{API_PREFIX}}`, read by `utils/api.js`) → becomes the caller-supplied
   `baseUrl`. The SDK never reads the global itself.
-- The 401 → `redirectToLogin()` side effect in `utils/csrf.js` is **policy,
+- The 401 → `redirectToLogin()` side effect (formerly in `utils/csrf.js`,
+  now in `utils/sdkClient.js`) is **policy,
   not transport**, and does **not** move into the SDK: the SDK raises a
   typed `MittoAuthError` (a `MittoApiError` specialization, `.3`), and the
   browser host wires the redirect via the `onUnauthorized` hook. Auth
