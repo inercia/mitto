@@ -30,6 +30,8 @@ const REQUESTED_METRICS = [
   "beads_closed",
   "beads_cycle_seconds_sum",
   "beads_cycle_closed_count",
+  "beads_active_cycle_seconds_sum",
+  "beads_active_cycle_closed_count",
 ];
 
 // Metrics summed per model for the "Model usage" card. Kept in sync with the
@@ -384,20 +386,33 @@ function buildChartSpecs(u) {
     {
       id: "beads_cycle_time",
       title: "Beads: cycle time (claim → close)",
-      // Raw metrics are a sum+count pair (see stats.MetricBeadsCycleSecondsSum);
-      // transform below derives the per-bucket average (hours) and keeps the
-      // sample count as a second series on its own scale, so a bucket with
-      // only one or two closed beads visibly reads as a thin/sparse sample
-      // instead of implying a confident average (plan's non-negotiable
-      // "thin series reads as thin" requirement).
-      metrics: ["beads_cycle_seconds_sum", "beads_cycle_closed_count"],
+      // Raw metrics are two sum+count pairs (see
+      // stats.MetricBeadsCycleSecondsSum / stats.MetricBeadsActiveCycleSecondsSum);
+      // transform below derives two per-bucket averages (hours) — "calendar"
+      // (raw wall-clock lead time) and "active" (calendar minus Mitto-down
+      // time, mitto-c45m) — plus the sample count on its own scale, so a
+      // bucket with only one or two closed beads visibly reads as a
+      // thin/sparse sample instead of implying a confident average (plan's
+      // non-negotiable "thin series reads as thin" requirement). The
+      // divergence between the two average lines is itself the interesting
+      // signal, so no new chart id is needed.
+      metrics: [
+        "beads_cycle_seconds_sum",
+        "beads_cycle_closed_count",
+        "beads_active_cycle_seconds_sum",
+        "beads_active_cycle_closed_count",
+      ],
       transform: (rows) => {
-        const [xs, sums, counts] = rows;
+        const [xs, sums, counts, activeSums, activeCounts] = rows;
         const avgHours = sums.map((s, i) => {
           const c = counts[i] || 0;
           return c > 0 ? s / c / 3600 : 0;
         });
-        return [xs, avgHours, counts];
+        const avgActiveHours = activeSums.map((s, i) => {
+          const c = activeCounts[i] || 0;
+          return c > 0 ? s / c / 3600 : 0;
+        });
+        return [xs, avgHours, avgActiveHours, counts];
       },
       opts: (w, h) => ({
         ...commonOpts(w, h),
@@ -420,6 +435,11 @@ function buildChartSpecs(u) {
             scale: "y",
             stroke: stroke("#f97316"),
             fill: "rgba(249,115,22,0.15)",
+          },
+          {
+            label: "avg active (h)",
+            scale: "y",
+            stroke: stroke("#a855f7"),
           },
           {
             label: "closed count",

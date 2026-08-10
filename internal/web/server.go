@@ -312,6 +312,10 @@ type Server struct {
 	// statsRetention (mitto-a86b.9) runs the nightly prune + weekly Sunday
 	// VACUUM against statsStore. Nil when the subsystem was not wired.
 	statsRetention *stats.RetentionWorker
+	// statsUptime (mitto-c45m) periodically records how many seconds the
+	// server process was alive, feeding statsBeadsSource's active-cycle
+	// fold. Nil when the stats subsystem was not wired.
+	statsUptime *stats.UptimeRecorder
 
 	// goroutineGaugeStop cancels the periodic goroutine gauge (mitto-x3x)
 	// started in NewServer. Nil when the gauge was not started (test /
@@ -1175,6 +1179,13 @@ func NewServer(config Config) (*Server, error) {
 	})
 	s.statsBeadsSource.Start(context.Background())
 
+	// UptimeRecorder (mitto-c45m): periodic heartbeat feeding
+	// statsBeadsSource's active-cycle fold (see internal/stats/uptime.go).
+	s.statsUptime = stats.NewUptimeRecorder(s.statsStore, stats.UptimeRecorderOptions{
+		Logger: logger,
+	})
+	s.statsUptime.Start(context.Background())
+
 	// Retention worker (mitto-a86b.9): nightly prune of hourly rows past the
 	// configured retention window (default 90d) + weekly Sunday VACUUM.
 	// Reads retention nil-safe from MittoConfig.Stats so unconfigured
@@ -1798,13 +1809,14 @@ func (s *Server) Shutdown() error {
 		s.store.Close()
 	}
 
-	// Close stats subsystem in retention→backfiller→beadsSource→aggregator→
-	// store order: stop the retention worker first so a mid-run VACUUM
-	// cannot observe a closed DB; then stop the backfiller and beads source
-	// (no more agg.Ingest / ReplaceDeltas writes — the two are independent
-	// of each other and can close in either order) before the aggregator
-	// flushes any pending deltas, and the store stays alive until after
-	// that final flush so no deltas are lost.
+	// Close stats subsystem in retention→backfiller→beadsSource→uptime→
+	// aggregator→store order: stop the retention worker first so a mid-run
+	// VACUUM cannot observe a closed DB; then stop the backfiller, beads
+	// source, and uptime recorder (no more agg.Ingest / ReplaceDeltas /
+	// UpsertDeltas writes — the three are independent of each other and can
+	// close in any order) before the aggregator flushes any pending deltas,
+	// and the store stays alive until after that final flush so no deltas
+	// are lost.
 	if s.statsRetention != nil {
 		_ = s.statsRetention.Close()
 	}
@@ -1813,6 +1825,9 @@ func (s *Server) Shutdown() error {
 	}
 	if s.statsBeadsSource != nil {
 		_ = s.statsBeadsSource.Close()
+	}
+	if s.statsUptime != nil {
+		_ = s.statsUptime.Close()
 	}
 	if s.statsAggregator != nil {
 		_ = s.statsAggregator.Close()

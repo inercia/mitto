@@ -78,17 +78,43 @@ const (
 	// MetricBeadsCycleSecondsSum in the bucket (i.e. closed beads that had at
 	// least one of the three start markers). See MetricBeadsCycleSecondsSum.
 	MetricBeadsCycleClosedCount = "beads_cycle_closed_count"
+	// MetricBeadsActiveCycleSecondsSum mirrors MetricBeadsCycleSecondsSum but
+	// excludes the portion of each bead's claim->close interval during which
+	// Mitto was not running (mitto-c45m), derived from MetricUptimeSeconds.
+	// A bucket with no uptime evidence is treated as fully up, so this series
+	// degrades to the calendar (MetricBeadsCycleSecondsSum) value for history
+	// predating the uptime heartbeat or pruned by retention.
+	MetricBeadsActiveCycleSecondsSum = "beads_active_cycle_seconds_sum"
+	// MetricBeadsActiveCycleClosedCount mirrors MetricBeadsCycleClosedCount
+	// for the active-cycle series. See MetricBeadsActiveCycleSecondsSum.
+	MetricBeadsActiveCycleClosedCount = "beads_active_cycle_closed_count"
+	// MetricUptimeSeconds is the number of seconds the Mitto server process
+	// was alive during the bucket, in [0, 3600]. Written by UptimeRecorder
+	// via a periodic heartbeat (mitto-c45m); a bucket with no row for this
+	// metric means "no evidence" and must be treated as fully up (3600s) by
+	// readers, not as fully down.
+	MetricUptimeSeconds = "uptime_seconds"
 )
 
 // BeadsSentinelSessionID is the reserved stats_events.session_id value used
 // for beads-derived rows (MetricBeadsOpened, MetricBeadsClosed,
-// MetricBeadsCycleSecondsSum, MetricBeadsCycleClosedCount). Beads are
-// workspace-level state, not attributable to any single ACP session, so
-// these rows are written with SessionID=BeadsSentinelSessionID and
-// Workspace=<workspace UUID>, Model="". No schema migration is needed: the
-// v2 primary key (ts_bucket, metric, session_id, workspace, model) already
-// treats session_id as an opaque string.
+// MetricBeadsCycleSecondsSum, MetricBeadsCycleClosedCount,
+// MetricBeadsActiveCycleSecondsSum, MetricBeadsActiveCycleClosedCount).
+// Beads are workspace-level state, not attributable to any single ACP
+// session, so these rows are written with SessionID=BeadsSentinelSessionID
+// and Workspace=<workspace UUID>, Model="". No schema migration is needed:
+// the v2 primary key (ts_bucket, metric, session_id, workspace, model)
+// already treats session_id as an opaque string.
 const BeadsSentinelSessionID = "__beads__"
+
+// UptimeSentinelSessionID is the reserved stats_events.session_id value used
+// for MetricUptimeSeconds rows (mitto-c45m). Uptime is a process-global
+// fact, not attributable to any session or workspace, so these rows are
+// written with SessionID=UptimeSentinelSessionID, Workspace="", Model="". A
+// distinct sentinel from BeadsSentinelSessionID keeps the two sources easy
+// to tell apart in the raw table even though both share the "not a real
+// session" shape.
+const UptimeSentinelSessionID = "__uptime__"
 
 // Bucket names the time-bucket size used by a query.
 type Bucket string

@@ -2,7 +2,11 @@ package stats
 
 // BeadsSource (mitto-5rm6.2): periodic full re-derivation of beads throughput
 // stats (MetricBeadsOpened / MetricBeadsClosed / MetricBeadsCycleSecondsSum /
-// MetricBeadsCycleClosedCount) from a `bd list` snapshot per workspace.
+// MetricBeadsCycleClosedCount / MetricBeadsActiveCycleSecondsSum /
+// MetricBeadsActiveCycleClosedCount) from a `bd list` snapshot per workspace.
+// The active-cycle pair (mitto-c45m) additionally reads MetricUptimeSeconds
+// (written by UptimeRecorder) to exclude process-down time from the raw
+// claim->close interval.
 //
 // Unlike the Backfiller (event-stream replay keyed by a per-session cursor),
 // beads are state, not an event stream: every pass is a pure function of the
@@ -44,11 +48,18 @@ var beadsWindowFrom = time.Unix(0, 0).UTC()
 // beadsMetrics lists every metric this source writes, used to scope
 // ReplaceDeltas's DELETE window so a stale row (deleted/reopened/moved bead)
 // is evicted rather than left orphaned.
+//
+// MetricUptimeSeconds is deliberately NOT listed here (mitto-c45m): it is
+// written by UptimeRecorder, not this source, and ReplaceDeltas's DELETE is
+// scoped by (metric, ts_bucket) only — not by writer — so including it would
+// make every beads pass wipe the entire uptime heartbeat history.
 var beadsMetrics = []string{
 	MetricBeadsOpened,
 	MetricBeadsClosed,
 	MetricBeadsCycleSecondsSum,
 	MetricBeadsCycleClosedCount,
+	MetricBeadsActiveCycleSecondsSum,
+	MetricBeadsActiveCycleClosedCount,
 }
 
 // BeadsLister exposes just enough of beads.Client for this source: a raw
@@ -257,12 +268,14 @@ type beadsBucketKey struct {
 	workspace string
 }
 
-// beadsBucketAgg accumulates the four beads metrics for one bucket/workspace.
+// beadsBucketAgg accumulates the beads metrics for one bucket/workspace.
 type beadsBucketAgg struct {
-	opened           int64
-	closed           int64
-	cycleSecondsSum  int64
-	cycleClosedCount int64
+	opened                 int64
+	closed                 int64
+	cycleSecondsSum        int64
+	cycleClosedCount       int64
+	activeCycleSecondsSum  int64
+	activeCycleClosedCount int64
 }
 
 // Run performs one or more full passes, each of which lists every
@@ -316,6 +329,10 @@ func (s *BeadsSource) runOnce(ctx context.Context) error {
 	workspaces := s.workspaces()
 	s.logInfo("beads source pass starting", "workspaces", len(workspaces))
 
+	now := s.opts.Now().UTC()
+	to := now.Truncate(time.Hour).Add(time.Hour) // exclusive; covers the current partial hour
+	uptime := s.loadUptime(ctx, to)
+
 	agg := make(map[beadsBucketKey]*beadsBucketAgg)
 	for _, ws := range workspaces {
 		select {
@@ -337,13 +354,11 @@ func (s *BeadsSource) runOnce(ctx context.Context) error {
 			return fmt.Errorf("stats: beads source: parse %s: %w", ws.Dir, err)
 		}
 		for _, it := range items {
-			s.foldItem(it, ws.UUID, agg)
+			s.foldItem(it, ws.UUID, agg, uptime)
 		}
 	}
 
-	now := s.opts.Now().UTC()
-	to := now.Truncate(time.Hour).Add(time.Hour) // exclusive; covers the current partial hour
-	deltas := make([]Delta, 0, len(agg)*4)
+	deltas := make([]Delta, 0, len(agg)*6)
 	for key, a := range agg {
 		bucket := time.Unix(key.bucket, 0).UTC()
 		if a.opened != 0 {
@@ -358,6 +373,12 @@ func (s *BeadsSource) runOnce(ctx context.Context) error {
 		if a.cycleClosedCount != 0 {
 			deltas = append(deltas, Delta{TSBucket: bucket, Metric: MetricBeadsCycleClosedCount, SessionID: BeadsSentinelSessionID, Workspace: key.workspace, Value: a.cycleClosedCount})
 		}
+		if a.activeCycleSecondsSum != 0 {
+			deltas = append(deltas, Delta{TSBucket: bucket, Metric: MetricBeadsActiveCycleSecondsSum, SessionID: BeadsSentinelSessionID, Workspace: key.workspace, Value: a.activeCycleSecondsSum})
+		}
+		if a.activeCycleClosedCount != 0 {
+			deltas = append(deltas, Delta{TSBucket: bucket, Metric: MetricBeadsActiveCycleClosedCount, SessionID: BeadsSentinelSessionID, Workspace: key.workspace, Value: a.activeCycleClosedCount})
+		}
 	}
 
 	if err := s.store.ReplaceDeltas(ctx, beadsMetrics, beadsWindowFrom, to, deltas); err != nil {
@@ -368,6 +389,69 @@ func (s *BeadsSource) runOnce(ctx context.Context) error {
 	}
 	s.logInfo("beads source pass done", "buckets", len(agg), "deltas", len(deltas))
 	return nil
+}
+
+// loadUptime queries MetricUptimeSeconds once per pass into an in-memory
+// map keyed by hour-bucket unix seconds, unfiltered by workspace (uptime is
+// process-global, so a bead in workspace A must not be penalised by
+// workspace B's activity). A bucket absent from the returned map means "no
+// evidence" and callers (downtimeBetween) MUST treat that as fully up.
+//
+// Fail-open (mitto-c45m): if the query errors, this logs a WARN and returns
+// an empty map rather than failing the pass — the beads pass is
+// all-or-nothing for its own List/parse errors, but must not be taken down
+// by a failure to read a signal it merely enriches with.
+func (s *BeadsSource) loadUptime(ctx context.Context, to time.Time) map[int64]int64 {
+	uptime := make(map[int64]int64)
+	points, err := s.store.Query(ctx, Query{
+		RangeFrom: beadsWindowFrom,
+		RangeTo:   to,
+		Bucket:    BucketHour,
+		Metrics:   []string{MetricUptimeSeconds},
+	})
+	if err != nil {
+		s.logWarn("beads source: uptime query failed; treating all buckets as fully up", "error", err)
+		return uptime
+	}
+	for _, p := range points {
+		uptime[p.TS.Truncate(time.Hour).Unix()] += p.Value
+	}
+	return uptime
+}
+
+// downtimeBetween sums the process-down seconds within [from, to) by
+// walking the hour buckets it overlaps and, for each, multiplying the
+// overlap duration by (1 - uptimeFraction). uptimeFraction is
+// uptime[bucket]/3600 clamped to [0, 1]; a bucket absent from uptime is
+// treated as fraction 1 (fully up, zero downtime) so history predating the
+// heartbeat (or pruned by retention) degrades to the calendar series
+// instead of collapsing active time to zero.
+func downtimeBetween(from, to time.Time, uptime map[int64]int64) time.Duration {
+	if !to.After(from) {
+		return 0
+	}
+	var downtime time.Duration
+	cursor := from
+	for cursor.Before(to) {
+		bucketStart := cursor.Truncate(time.Hour)
+		bucketEnd := bucketStart.Add(time.Hour)
+		segEnd := to
+		if bucketEnd.Before(segEnd) {
+			segEnd = bucketEnd
+		}
+		overlap := segEnd.Sub(cursor)
+		if secs, ok := uptime[bucketStart.Unix()]; ok {
+			fraction := float64(secs) / 3600
+			if fraction < 0 {
+				fraction = 0
+			} else if fraction > 1 {
+				fraction = 1
+			}
+			downtime += time.Duration(float64(overlap) * (1 - fraction))
+		}
+		cursor = segEnd
+	}
+	return downtime
 }
 
 // foldItem folds one bead into agg. created_at always contributes a
@@ -381,7 +465,11 @@ func (s *BeadsSource) runOnce(ctx context.Context) error {
 // bead with none of the three is excluded from the cycle-time series
 // entirely — no created_at lead-time fallback, since that would silently mix
 // backlog dwell time into cycle time.
-func (s *BeadsSource) foldItem(it beadsItem, workspace string, agg map[beadsBucketKey]*beadsBucketAgg) {
+//
+// uptime is the map loaded once per pass by loadUptime, used to derive the
+// active-cycle pair (mitto-c45m) alongside the existing calendar pair; see
+// downtimeBetween for the fold.
+func (s *BeadsSource) foldItem(it beadsItem, workspace string, agg map[beadsBucketKey]*beadsBucketAgg, uptime map[int64]int64) {
 	if it.CreatedAt != "" {
 		if created, err := time.Parse(time.RFC3339, it.CreatedAt); err == nil {
 			beadsBucketFor(agg, created, workspace).opened++
@@ -425,6 +513,15 @@ func (s *BeadsSource) foldItem(it beadsItem, workspace string, agg map[beadsBuck
 	}
 	a.cycleSecondsSum += int64(cycle.Seconds())
 	a.cycleClosedCount++
+
+	active := cycle - downtimeBetween(start, closed, uptime)
+	if active < 0 {
+		active = 0
+	} else if active > cycle {
+		active = cycle
+	}
+	a.activeCycleSecondsSum += int64(active.Seconds())
+	a.activeCycleClosedCount++
 }
 
 // beadsBucketFor returns the accumulator for (hour bucket of ts, workspace),
