@@ -48,6 +48,13 @@ jobs:
       - name: Lint frontend code
         run: make lint-frontend
 
+      # Static validation of the SDK's generated .d.ts declarations
+      # (mitto-7gta.20). Fails if the committed web/static/sdk/types/ is
+      # stale relative to the JSDoc-annotated source. Reproduce locally
+      # with: make sdk-types
+      - name: Check SDK type declarations are up to date
+        run: make check-sdk-types
+
       - name: Check CodeMirror bundle is up to date
         run: |
           make vendor-codemirror

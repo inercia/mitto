@@ -13,8 +13,7 @@
 import { request } from "../core/transport.js";
 
 /**
- * @param {object} config - resolved config (see core/config.js)
- * @returns {object} the dashboard resource
+ * @param {import("../core/config.js").ResolvedConfig} config - resolved config
  */
 export function createDashboardResource(config) {
   const call = (method, path, opts = {}) => request(config, { method, path, ...opts });
@@ -23,6 +22,7 @@ export function createDashboardResource(config) {
     /**
      * GET /api/dashboard.
      * @param {object} [params] - {limit?} — server default 5, max 50
+     * @param {object} [opts] - forwarded to request() (e.g. headers, signal)
      */
     summary: (params, opts) => call("GET", "/api/dashboard", { query: params, ...opts }),
 
@@ -36,6 +36,7 @@ export function createDashboardResource(config) {
      *   emits array values as repeated `key=v` params — so an array-valued
      *   `metrics` is comma-joined here before being handed to `call()`; a
      *   string value is passed through untouched.
+     * @param {object} [opts] - forwarded to request() (e.g. headers, signal)
      */
     timeseries: (params, opts) => {
       const query = { ...params };

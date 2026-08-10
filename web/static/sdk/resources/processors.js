@@ -16,8 +16,7 @@ import { request } from "../core/transport.js";
 const enc = encodeURIComponent;
 
 /**
- * @param {object} config - resolved config (see core/config.js)
- * @returns {object} the processors resource
+ * @param {import("../core/config.js").ResolvedConfig} config - resolved config
  */
 export function createProcessorsResource(config) {
   const call = (method, path, opts = {}) => request(config, { method, path, ...opts });

@@ -21,10 +21,9 @@
 import { request } from "../core/transport.js";
 
 /**
- * @param {object} config - resolved config (see core/config.js)
+ * @param {import("../core/config.js").ResolvedConfig} config - resolved config
  * @param {object} configResource - the resource created by
  *   `createConfigResource(config)` (see resources/config.js)
- * @returns {object} the misc resource
  */
 export function createMiscResource(config, configResource) {
   const call = (method, path, opts = {}) =>

@@ -32,8 +32,7 @@ import { request } from "../core/transport.js";
 const enc = encodeURIComponent;
 
 /**
- * @param {object} config - resolved config (see core/config.js)
- * @returns {object} the workspaces resource
+ * @param {import("../core/config.js").ResolvedConfig} config - resolved config
  */
 export function createWorkspacesResource(config) {
   const call = (method, path, opts = {}) => request(config, { method, path, ...opts });
@@ -43,6 +42,7 @@ export function createWorkspacesResource(config) {
      * GET /api/workspaces.
      * @param {object} [params] - {working_dir?} — when present, scopes the
      *   returned `acp_servers` list to servers configured for that folder.
+     * @param {object} [opts] - forwarded to request() (e.g. headers, signal)
      * @returns {Promise<{workspaces: object[], acp_servers: object[]}>}
      */
     list: (params, opts) => call("GET", "/api/workspaces", { query: params, ...opts }),

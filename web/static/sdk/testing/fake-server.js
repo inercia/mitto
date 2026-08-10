@@ -57,6 +57,7 @@ export function fakeResponse({ status = 200, body, headers = {}, text } = {}) {
  */
 export function createFakeServer(extra = {}) {
   const calls = [];
+  /** @type {(url?: string, init?: object) => *} */
   let next = () => fakeResponse({ status: 204 });
   const fetchImpl = async (url, init) => {
     calls.push({ url, init });

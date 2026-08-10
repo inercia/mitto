@@ -15,8 +15,7 @@
 import { request } from "../core/transport.js";
 
 /**
- * @param {object} config - resolved config (see core/config.js)
- * @returns {object} the agents resource
+ * @param {import("../core/config.js").ResolvedConfig} config - resolved config
  */
 export function createAgentsResource(config) {
   const call = (method, path, opts = {}) => request(config, { method, path, ...opts });

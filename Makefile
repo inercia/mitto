@@ -1,4 +1,4 @@
-.PHONY: build build-debug install test test-go test-js check-model-tags check-stderr-patterns check-prompts test-integration test-integration-go test-integration-cli test-integration-api test-integration-client test-integration-runner test-runner-smoke test-runner-smoke-assert test-bun-tooling test-ui test-ui-headed test-ui-debug test-ui-report test-all test-ci test-setup test-clean clean run fmt fmt-check fmt-docs fmt-docs-check lint lint-go lint-frontend deps-go deps-js deps tailwind vendor-codemirror build-mac-app clean-mac-app test-webviewlog build-mock-acp ci install-hooks homebrew-generate homebrew-test homebrew-test-style homebrew-test-install homebrew-test-cask homebrew-tap-setup homebrew-clean smoke-build smoke-test-cli smoke-test smoke-clean
+.PHONY: build build-debug install test test-go test-js check-model-tags check-stderr-patterns check-prompts sdk-types check-sdk-types test-integration test-integration-go test-integration-cli test-integration-api test-integration-client test-integration-runner test-runner-smoke test-runner-smoke-assert test-bun-tooling test-ui test-ui-headed test-ui-debug test-ui-report test-all test-ci test-setup test-clean clean run fmt fmt-check fmt-docs fmt-docs-check lint lint-go lint-frontend deps-go deps-js deps tailwind vendor-codemirror build-mac-app clean-mac-app test-webviewlog build-mock-acp ci install-hooks homebrew-generate homebrew-test homebrew-test-style homebrew-test-install homebrew-test-cask homebrew-tap-setup homebrew-clean smoke-build smoke-test-cli smoke-test smoke-clean
 
 # Binary name
 BINARY_NAME=mitto
@@ -80,6 +80,25 @@ check-prompts: check-model-tags build
 	./$(BINARY_NAME) prompts update-builtin --force
 	@echo "Validating prompts and fragments (schema, templates, fragment refs)..."
 	./$(BINARY_NAME) prompts verify
+
+# Regenerate the SDK's generated .d.ts declaration files (mitto-7gta.20) from
+# its JSDoc-annotated plain-JS source via `tsc --emitDeclarationOnly
+# --allowJs --checkJs`. Output: web/static/sdk/types/ (committed — see
+# docs/devel/js-client-library.md §1). The SDK stays plain JavaScript; this
+# adds no build step for consumers.
+sdk-types: deps-js
+	@echo "Generating SDK type declarations..."
+	cd web/static/sdk && bunx tsc -p tsconfig.json
+
+# Fails if the committed web/static/sdk/types/ declarations are stale
+# relative to the JSDoc-annotated source (mirrors the CodeMirror-bundle
+# freshness check below). Reproduce a failure locally with: make sdk-types
+check-sdk-types: sdk-types
+	@if ! git diff --quiet -- web/static/sdk/types; then \
+		echo "SDK type declarations are out of date. Run 'make sdk-types' and commit web/static/sdk/types/." >&2; \
+		git diff --stat -- web/static/sdk/types; \
+		exit 1; \
+	fi
 
 # =============================================================================
 # Integration & UI Tests

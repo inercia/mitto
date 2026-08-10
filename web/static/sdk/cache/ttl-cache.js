@@ -24,29 +24,37 @@
  */
 
 /**
- * @param {Object} options
- * @param {number} options.ttlMs - Freshness window in milliseconds.
- * @param {(...args: *[]) => string} options.keyFor - Derives a stable cache
- *   key from the wrapped function's arguments.
- * @param {Object} [options.revalidate] - Optional conditional-revalidation
- *   hooks. When omitted, `fn` must resolve with the plain value to cache and
- *   return directly (no `{ response, data }` wrapping needed).
- * @param {(record: *) => Object|null} [options.revalidate.header] - Given
- *   the previously stored cache record, returns `{ name, value }` for the
- *   revalidation request header (e.g. `{ name: "If-None-Match", value }`),
- *   or a falsy value when there is nothing to revalidate against yet.
- * @param {(response: *) => boolean} [options.revalidate.isUnchanged] -
- *   Given the raw fetch response, returns true when the server reports "no
- *   change" (e.g. `response.status === 304`).
- * @param {(response: *, data: *) => *} [options.revalidate.extract] - Given
- *   the raw response and its freshly decoded body, returns the opaque
- *   record to store (e.g. `{ payload, etag }`). Only called when
- *   `isUnchanged` returns false.
- * @param {(record: *) => *} [options.revalidate.value] - Extracts the public
- *   value to return to callers from a stored record (e.g. `record.payload`).
+ * @typedef {Object} TtlCacheRevalidateOptions
+ * @property {(record: *) => (Object|null)} [header] - Given the previously
+ *   stored cache record, returns `{ name, value }` for the revalidation
+ *   request header (e.g. `{ name: "If-None-Match", value }`), or a falsy
+ *   value when there is nothing to revalidate against yet.
+ * @property {(response: *) => boolean} [isUnchanged] - Given the raw fetch
+ *   response, returns true when the server reports "no change" (e.g.
+ *   `response.status === 304`).
+ * @property {(response: *, data: *) => *} [extract] - Given the raw response
+ *   and its freshly decoded body, returns the opaque record to store (e.g.
+ *   `{ payload, etag }`). Only called when `isUnchanged` returns false.
+ * @property {(record: *) => *} [value] - Extracts the public value to return
+ *   to callers from a stored record (e.g. `record.payload`).
+ */
+
+/**
+ * @typedef {Object} TtlCacheOptions
+ * @property {number} ttlMs - Freshness window in milliseconds.
+ * @property {(...args: *[]) => string} keyFor - Derives a stable cache key
+ *   from the wrapped function's arguments.
+ * @property {TtlCacheRevalidateOptions} [revalidate] - Optional
+ *   conditional-revalidation hooks. When omitted, `fn` must resolve with the
+ *   plain value to cache and return directly (no `{ response, data }`
+ *   wrapping needed).
+ */
+
+/**
+ * @param {TtlCacheOptions} options
  * @returns {{ wrap: Function, invalidate: (predicate?: (key: string) => boolean) => void }}
  */
-export function createTtlCache({ ttlMs, keyFor, revalidate } = {}) {
+export function createTtlCache({ ttlMs, keyFor, revalidate }) {
   /** @type {Map<string, { record: *, timestamp: number }>} */
   const cache = new Map();
   /** @type {Map<string, Promise<*>>} */

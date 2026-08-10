@@ -31,8 +31,7 @@ import { buildUrl, request } from "../core/transport.js";
 const enc = encodeURIComponent;
 
 /**
- * @param {object} config - resolved config (see core/config.js)
- * @returns {object} the files resource
+ * @param {import("../core/config.js").ResolvedConfig} config - resolved config
  */
 export function createFilesResource(config) {
   const call = (method, path, opts = {}) =>

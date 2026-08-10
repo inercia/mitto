@@ -35,11 +35,23 @@ export class ConfigError extends MittoError {
 }
 
 /**
+ * @typedef {Object} MittoApiErrorInfo
+ * @property {number} [status] - HTTP status code of the failed response.
+ * @property {string} [code] - canonical error code (see `errorCodeForStatus`).
+ * @property {*} [details] - server-supplied structured error details, when present.
+ * @property {*} [body] - the parsed (or raw) response body.
+ */
+
+/**
  * Thrown when the server answered with a non-2xx HTTP status. Carries the
  * parsed error envelope fields so callers can branch on `code` without
  * string-matching `message`.
  */
 export class MittoApiError extends MittoError {
+  /**
+   * @param {string} message
+   * @param {MittoApiErrorInfo} [info]
+   */
   constructor(message, { status, code, details, body } = {}) {
     super(message);
     this.name = "MittoApiError";
@@ -57,6 +69,10 @@ export class MittoApiError extends MittoError {
  * `onUnauthorized`).
  */
 export class MittoAuthError extends MittoApiError {
+  /**
+   * @param {string} message
+   * @param {MittoApiErrorInfo} [options]
+   */
   constructor(message, options) {
     super(message, options);
     this.name = "MittoAuthError";
@@ -64,11 +80,20 @@ export class MittoAuthError extends MittoApiError {
 }
 
 /**
+ * @typedef {Object} MittoNetworkErrorInfo
+ * @property {*} [cause] - the underlying error (e.g. from a rejected `fetch`).
+ */
+
+/**
  * Thrown when the request never produced a response: `fetch` rejected,
  * the request was aborted, or a lower-level network failure (DNS/TLS/
  * offline) occurred. `cause` carries the original error when available.
  */
 export class MittoNetworkError extends MittoError {
+  /**
+   * @param {string} message
+   * @param {MittoNetworkErrorInfo} [info]
+   */
   constructor(message, { cause } = {}) {
     super(message, cause !== undefined ? { cause } : undefined);
     this.name = "MittoNetworkError";

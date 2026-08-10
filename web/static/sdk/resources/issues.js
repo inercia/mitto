@@ -26,8 +26,7 @@ import { MittoApiError } from "../core/errors.js";
 const enc = encodeURIComponent;
 
 /**
- * @param {object} config - resolved config (see core/config.js)
- * @returns {object} the issues resource
+ * @param {import("../core/config.js").ResolvedConfig} config - resolved config
  */
 export function createIssuesResource(config) {
   const call = (method, path, opts = {}) => request(config, { method, path, ...opts });

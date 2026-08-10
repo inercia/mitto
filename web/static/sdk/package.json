@@ -4,7 +4,11 @@
   "description": "Mitto JavaScript client SDK",
   "type": "module",
   "private": true,
+  "types": "./types/index.d.ts",
   "exports": {
-    ".": "./index.js"
+    ".": {
+      "types": "./types/index.d.ts",
+      "default": "./index.js"
+    }
   }
 }

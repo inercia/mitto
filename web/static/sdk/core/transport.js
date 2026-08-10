@@ -108,28 +108,32 @@ async function decodeBody(response) {
 }
 
 /**
- * The single request primitive. Resource modules curry `config` and call
- * this for every HTTP call.
- * @param {object} config - resolved config (see core/config.js)
- * @param {object} options
- * @param {string} options.method
- * @param {string} options.path - relative (joined with baseUrl+apiPrefix) or absolute
- * @param {object} [options.query] - query params, see `qs()`
- * @param {*} [options.body] - JSON-serializable value, or a passthrough body
+ * @typedef {Object} RequestOptions
+ * @property {string} [method] - defaults to "GET"
+ * @property {string} path - relative (joined with baseUrl+apiPrefix) or absolute
+ * @property {object} [query] - query params, see `qs()`
+ * @property {*} [body] - JSON-serializable value, or a passthrough body
  *   (FormData/Blob/ArrayBuffer/URLSearchParams/string)
- * @param {object} [options.headers]
- * @param {AbortSignal} [options.signal]
- * @param {boolean} [options.raw] - when true, resolve with the untouched
+ * @property {object} [headers]
+ * @property {AbortSignal} [signal]
+ * @property {boolean} [raw] - when true, resolve with the untouched
  *   `Response` instead of a decoded body (for streaming/blob callers)
- * @param {number[]} [options.allowStatus] - HTTP statuses to exclude from the
+ * @property {number[]} [allowStatus] - HTTP statuses to exclude from the
  *   error path (in addition to the normal 2xx range), e.g. `[304]` so a
  *   cache decorator can observe a conditional-request "Not Modified" response
  *   itself instead of it always being thrown as a `MittoApiError`. Implies
  *   `raw: true` handling for the allow-listed status is left to the caller —
  *   pass `raw: true` alongside this to get the untouched `Response`.
+ */
+
+/**
+ * The single request primitive. Resource modules curry `config` and call
+ * this for every HTTP call.
+ * @param {object} config - resolved config (see core/config.js)
+ * @param {RequestOptions} options
  * @returns {Promise<*>}
  */
-export async function request(config, options = {}) {
+export async function request(config, options) {
   const method = (options.method || "GET").toUpperCase();
   const url = buildUrl(config, options.path, options.query);
   const { body, contentType } = encodeBody(options.body);

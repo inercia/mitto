@@ -22,8 +22,7 @@ import { request } from "../core/transport.js";
 const enc = encodeURIComponent;
 
 /**
- * @param {object} config - resolved config (see core/config.js)
- * @returns {object} the prompts resource
+ * @param {import("../core/config.js").ResolvedConfig} config - resolved config
  */
 export function createPromptsResource(config) {
   const call = (method, path, opts = {}) => request(config, { method, path, ...opts });

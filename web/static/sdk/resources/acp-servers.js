@@ -28,8 +28,7 @@ import { request } from "../core/transport.js";
 const enc = encodeURIComponent;
 
 /**
- * @param {object} config - resolved config (see core/config.js)
- * @returns {object} the acpServers resource
+ * @param {import("../core/config.js").ResolvedConfig} config - resolved config
  */
 export function createAcpServersResource(config) {
   const call = (method, path, opts = {}) => request(config, { method, path, ...opts });

@@ -40,6 +40,13 @@ web/static/sdk/
   types/               # generated .d.ts, not hand-written — .20
 ```
 
+Typings (`.20`): every public export is JSDoc-annotated; `web/static/sdk/types/`
+is generated from that JSDoc via `tsc --emitDeclarationOnly --allowJs --checkJs`
+(`web/static/sdk/tsconfig.json`) and **committed** — `make sdk-types`
+regenerates it, `make check-sdk-types` (wired into CI's `lint` job) fails the
+build if the committed output is stale. The SDK source stays plain
+JavaScript; this adds no build step for consumers.
+
 Caching is a **decorator, never part of the transport**: `cache/ttl-cache.js`
 exposes `createTtlCache({ ttlMs, keyFor, revalidate })`, which wraps any
 resource method with a TTL cache, in-flight-request dedup, and optional

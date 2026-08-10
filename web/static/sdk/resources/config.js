@@ -29,8 +29,7 @@
 import { request } from "../core/transport.js";
 
 /**
- * @param {object} config - resolved config (see core/config.js)
- * @returns {object} the config resource
+ * @param {import("../core/config.js").ResolvedConfig} config - resolved config
  */
 export function createConfigResource(config) {
   const call = (method, path, opts = {}) => request(config, { method, path, ...opts });
@@ -41,6 +40,7 @@ export function createConfigResource(config) {
      * @param {object} [params] - {acp_server?, session_id?} — session_id
      *   further filters merged prompts using enabledWhen CEL expressions
      *   evaluated with that session's context.
+     * @param {object} [opts] - forwarded to request() (e.g. headers, signal)
      */
     get: (params, opts) => call("GET", "/api/config", { query: params, ...opts }),
 
