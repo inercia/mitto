@@ -370,8 +370,8 @@ sequenceDiagram
     Watcher->>PR: OnBeadsChanged(event)
     PR->>PR: Layer 1 — isTasksSubtreeBusy(sessionID)?
     alt conversation or a delegated child is busy
-        PR->>PR: armTasksRebase (quiescence timer)
-        Note over PR: event dropped for now
+        PR->>PR: markTasksRefirePending (sticky) + armTasksRebase (quiescence timer)
+        Note over PR: delta deferred, NOT dropped (mitto-cwg.1)
     else idle
         PR->>PR: Layer 0 — maxDuration reached? cooldown active?
         alt guard trips
@@ -394,13 +394,23 @@ sequenceDiagram
 
     Note over PR,Agent: run (and any delegated children) finish and go idle
     PR->>PR: quiescence window elapses
-    PR->>Baseline: rebase to latest snapshot (Layer 2)
-    Note over Baseline: absorbs the run's own edits — they never<br/>reappear as a delta against the NEXT event
+    alt tasksRefirePending set, or CoalesceDuringBusy=false
+        PR->>Baseline: diff(pre-run baseline, curr)
+        alt material delta AND Layer 0 guards pass AND condition true
+            PR->>Agent: TriggerNow (fires once more, mitto-cwg.1)
+            PR->>Baseline: Set(curr) — baseline advances with the re-fire
+        else guard blocks, or no material delta
+            PR->>Baseline: rebase to latest snapshot (plain)
+        end
+    else
+        PR->>Baseline: rebase to latest snapshot (Layer 2)
+        Note over Baseline: absorbs the run's own edits — they never<br/>reappear as a delta against the NEXT event
+    end
 ```
 
 - **Layer 0 — hard backstops.** A per-conversation `CooldownSeconds` (clamped up to the global floor `SetMinLoopTasksCooldownSeconds`, default 30s) rate-limits fires regardless of the condition. `MaxIterations` and `MaxDurationSeconds` are the same caps used by every trigger; `MaxDurationSeconds` is checked (and auto-stops, mirroring `onCompletion`) before the cooldown check.
-- **Layer 1 — busy guard (temporal).** While the conversation's turn is active — **or any delegated child conversation is still running or blocked on `mitto_children_tasks_wait`** (`isTasksSubtreeBusy`) — incoming events are deferred (`armTasksRebase`), not evaluated. This is the guard against the run's OWN in-flight edits.
-- **Layer 2 — quiescence rebase (the real fix).** Once the conversation's entire delegated-child subtree goes idle, a short quiescence timer (`SetTasksQuiescenceWindow`, default 10s) fires and **rebases the baseline to the current beads snapshot**, absorbing the run's own edits into the new "current" state before the next real event is evaluated. Trade-off: an external change that lands _during_ the busy window is also absorbed and won't trigger a follow-up fire — the fired conversation can re-check state at its own startup if that matters. **Opt-in re-fire (`CoalesceDuringBusy=false`, mitto-dmb):** loops that need event-driven fidelity (e.g. "every time an issue is filed with label X, spawn a triage child") can set `coalesce_during_busy: false` on the loop config. When set, the quiescence rebase first diffs the pre-run baseline against the current snapshot and — if a material delta remains, Layer 0 (cooldown, `MaxDuration`, `MaxIterations`) allows, and the CEL `condition` evaluates true — fires **once more** via the normal firing path with the accumulated delta available as `.Trigger.OnTasks.Changes.*`, then rebases. Only one pending accumulated-delta slot is kept per session (bounded by construction). Default (`true` / unset) preserves the silent-absorb behaviour.
+- **Layer 1 — busy guard (temporal).** While the conversation's turn is active — **or any delegated child conversation is still running or blocked on `mitto_children_tasks_wait`** (`isTasksSubtreeBusy`) — incoming events are deferred (`armTasksRebase`), not evaluated immediately. This is the guard against the run's OWN in-flight edits. **The deferred delta is not dropped**: `processTasksChange` also sets a sticky `tasksRefirePending` flag (mitto-cwg.1) so Layer 2 knows a real fs-watcher delta is still pending once the subtree goes idle.
+- **Layer 2 — quiescence rebase.** Once the conversation's entire delegated-child subtree goes idle, a short quiescence timer (`SetTasksQuiescenceWindow`, default 10s) fires `fireTasksRebase`. **A fs-watcher delta that arrived during the busy window is never silently absorbed (mitto-cwg.1):** if `tasksRefirePending` is set — regardless of `CoalesceDuringBusy` — `fireTasksRebase` diffs the pre-run baseline against the current snapshot and, if a material delta remains and Layer 0 (cooldown, `MaxDuration`, `MaxIterations`) and the CEL `condition` allow it, fires **once more** via the normal firing path with the accumulated delta available as `.Trigger.OnTasks.Changes.*`, then rebases the baseline to the post-re-fire snapshot. If no guard blocks it, this happens exactly once per busy window no matter how many fs events landed during it (the flag is "mark, don't stack"). Only when nothing was pending during the busy window (no fs-watcher delta arrived while busy) does the plain rebase run, absorbing only the run's own self-edits. **`CoalesceDuringBusy=false` (mitto-dmb)** is now a narrower opt-out: it forces the same re-fire path unconditionally at quiescence (useful for loops with event-driven fidelity needs even when `tasksRefirePending` wasn't set); the `true`/unset default governs only that separate opt-out, not fs-watcher deltas, which always re-fire per the paragraph above.
 
 **Out of scope:** actor-based delta filtering (skipping only _other actors'_ edits) was investigated and explicitly deferred — `internal/beads/cli.go` does not stamp a per-change actor, and `bd list --json` exposes only `created_by`/`owner`, not a last-touched actor. The baseline-rebase approach (Layer 2) makes this unnecessary for correctness today.
 
@@ -447,7 +457,7 @@ Each entry exposes the same canonical keys the CEL condition sees: `id`, `type`,
 | `Condition`       | `condition`        | CEL expression; empty = fire on any material beads change. Only meaningful when `onTasks` is armed.               |
 | `ConditionPreset` | `condition_preset` | Optional UI preset id that was compiled into `Condition`                                                          |
 | `CooldownSeconds` | `cooldown_seconds` | Per-conversation cooldown floor; `0` = use the global floor                                                       |
-| `CoalesceDuringBusy` | `coalesce_during_busy` | Opt-in re-fire (mitto-dmb). Nil/`true` (default) = silent absorption during busy. `false` = fire once more at quiescence with the accumulated pre-run→current delta, gated by Layer 0 and the CEL `condition`. |
+| `CoalesceDuringBusy` | `coalesce_during_busy` | Opt-out (mitto-dmb) unconditionally forcing the quiescence re-fire path even when no fs-watcher delta was deferred. Nil/`true` (default) does **not** mean "always silently absorb" — a fs-watcher delta that arrived during the busy window always re-fires once at quiescence regardless of this setting (mitto-cwg.1, via the sticky `tasksRefirePending` flag); this field only gates the plain-rebase case where nothing was pending. `false` additionally fires once more at quiescence with the accumulated pre-run→current delta, gated by Layer 0 and the CEL `condition`, even when nothing was flagged pending. |
 | `StoppedReason`   | `stopped_reason`   | `"maxIterations"` / `"maxDuration"` when the loop auto-stopped after hitting a cap; shared with other triggers.   |
 
 ### Opting in from a prompt file (`loop:` frontmatter)

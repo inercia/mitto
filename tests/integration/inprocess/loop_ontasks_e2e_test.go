@@ -308,11 +308,12 @@ func TestLoopOnTasksE2E(t *testing.T) {
 
 	// -------------------------------------------------------------------------
 	// Subtest 4: Layer 1 (busy guard) defers an event that arrives while the
-	// conversation is still processing a prior fire; Layer 2 (quiescence
-	// rebase) then absorbs that "self-edit" into the baseline once idle, so it
-	// is never evaluated as a delta and never causes a spurious extra fire.
+	// conversation is still processing a prior fire. Per mitto-cwg.1, that
+	// deferred fs-watcher delta is never silently absorbed: Layer 2
+	// (quiescence rebase) re-fires exactly once with the accumulated delta
+	// once the subtree goes idle, then rebases the baseline to it.
 	// -------------------------------------------------------------------------
-	t.Run("busy_guard_defers_and_quiescence_rebase_absorbs_self_edit", func(t *testing.T) {
+	t.Run("busy_guard_defers_then_quiescence_refires_the_deferred_delta", func(t *testing.T) {
 		dir := filepath.Join(ts.TempDir, "workspace", "ontasks-busyguard")
 		sess := createOnTasksSession(t, ts, dir, "ontasks-busyguard", "")
 		defer ts.Client.DeleteSession(sess.SessionID)
@@ -325,7 +326,7 @@ func TestLoopOnTasksE2E(t *testing.T) {
 		fake.setRaw(dir, v1)
 		runner.OnBeadsChanged(onTasksChangeEvent(dir)) // fire 1 kicked off (async)
 
-		// Simulate a self-edit landing WHILE the run is still busy: TriggerNow
+		// Simulate a delta landing WHILE the run is still busy: TriggerNow
 		// sets isPrompting synchronously before returning, so calling
 		// OnBeadsChanged again right away (before waiting for fire 1 to
 		// complete) reliably lands inside the busy window.
@@ -333,28 +334,30 @@ func TestLoopOnTasksE2E(t *testing.T) {
 			onTasksIssue("mitto-bg-1", "task", "open", 1, nil, "2026-07-01T00:00:00Z"),
 			onTasksIssue("mitto-bg-2", "task", "open", 1, nil, "2026-07-01T00:00:01Z"))
 		fake.setRaw(dir, v2)
-		runner.OnBeadsChanged(onTasksChangeEvent(dir)) // Layer 1: should defer (busy), not fire again.
+		runner.OnBeadsChanged(onTasksChangeEvent(dir)) // Layer 1: defers (busy); marks the delta re-fire-pending.
 
-		// Fire 1 completing (and ONLY fire 1) confirms the busy guard held —
-		// had v2 also fired, iteration_count would reach 2 instead.
+		// Fire 1 completing (and ONLY fire 1, so far) confirms the busy guard
+		// held during the busy window itself — no immediate second dispatch.
 		waitOnTasksIterationCount(t, ts, sess.SessionID, 1)
 		waitOnTasksSessionIdle(t, ts, sess.SessionID)
 		assertOnTasksIterationCount(t, ts, sess.SessionID, 1)
 
-		// After idle + the quiescence window, the baseline rebases to v2,
-		// absorbing the self-edit without having fired for it. Compare
-		// semantically (decoded), not byte-for-byte: the persisted baseline is
-		// pretty-printed by fileutil.WriteJSONAtomic, unlike the compact v2.
+		// mitto-cwg.1: once the subtree goes idle, the quiescence timer
+		// re-fires exactly once for the deferred delta (fire 2), then
+		// rebases the baseline to v2. Compare semantically (decoded), not
+		// byte-for-byte: the persisted baseline is pretty-printed by
+		// fileutil.WriteJSONAtomic, unlike the compact v2.
+		waitOnTasksIterationCount(t, ts, sess.SessionID, 2)
 		waitFor(t, 5*time.Second, func() bool {
 			bl, err := conversation.NewTasksBaselineStore(ts.Store.SessionDir(sess.SessionID)).Get()
 			return err == nil && onTasksIssuesJSONEqual(t, []byte(bl.RawSnapshot), v2)
-		}, "baseline to rebase to v2 after idle+quiescence")
+		}, "baseline to rebase to v2 after the deferred re-fire")
 
 		// Re-delivering v2 again (no real change relative to the now-rebased
 		// baseline) must NOT fire.
 		runner.OnBeadsChanged(onTasksChangeEvent(dir))
 		time.Sleep(300 * time.Millisecond)
-		assertOnTasksIterationCount(t, ts, sess.SessionID, 1)
+		assertOnTasksIterationCount(t, ts, sess.SessionID, 2)
 
 		// A genuinely new change on top of the rebased baseline fires again.
 		v3 := marshalOnTasksIssues(t,
@@ -363,16 +366,17 @@ func TestLoopOnTasksE2E(t *testing.T) {
 			onTasksIssue("mitto-bg-3", "task", "open", 1, nil, "2026-07-01T00:00:02Z"))
 		fake.setRaw(dir, v3)
 		runner.OnBeadsChanged(onTasksChangeEvent(dir))
-		waitOnTasksIterationCount(t, ts, sess.SessionID, 2)
+		waitOnTasksIterationCount(t, ts, sess.SessionID, 3)
 	})
 
 	// -------------------------------------------------------------------------
 	// Subtest 4b: the busy-guard extends to the whole subtree — an event
 	// arriving while a DELEGATED CHILD is busy (but the outer itself is idle)
-	// must still defer, and the baseline must still rebase once the child
-	// (and therefore the whole subtree) goes idle.
+	// must still defer. Per mitto-cwg.1, the deferred delta is not silently
+	// absorbed: once the child (and therefore the whole subtree) goes idle,
+	// the runner re-fires exactly once for it, then rebases the baseline.
 	// -------------------------------------------------------------------------
-	t.Run("busy_guard_defers_when_child_in_subtree_is_busy", func(t *testing.T) {
+	t.Run("busy_guard_defers_when_child_in_subtree_is_busy_then_refires_deferred_delta", func(t *testing.T) {
 		dir := filepath.Join(ts.TempDir, "workspace", "ontasks-subtree")
 		sess := createOnTasksSession(t, ts, dir, "ontasks-subtree", "")
 		defer ts.Client.DeleteSession(sess.SessionID)
@@ -426,9 +430,10 @@ func TestLoopOnTasksE2E(t *testing.T) {
 		// overwrites in place).
 		sm.AddSessionForTest(conversation.NewMinimalBackgroundSessionPrompting(childID, false))
 
-		// Once the subtree is fully idle, the armed timer rebases the
-		// baseline to v2 — the child-side "self-edit" is absorbed without
-		// ever having fired for it.
+		// mitto-cwg.1: once the subtree is fully idle, the deferred delta
+		// re-fires exactly once (fire 2), then the armed timer rebases the
+		// baseline to v2.
+		waitOnTasksIterationCount(t, ts, sess.SessionID, 2)
 		waitFor(t, 5*time.Second, func() bool {
 			bl, err := conversation.NewTasksBaselineStore(ts.Store.SessionDir(sess.SessionID)).Get()
 			return err == nil && onTasksIssuesJSONEqual(t, []byte(bl.RawSnapshot), v2)
@@ -437,7 +442,7 @@ func TestLoopOnTasksE2E(t *testing.T) {
 		// Re-delivering v2 (matches the rebased baseline) must NOT fire.
 		runner.OnBeadsChanged(onTasksChangeEvent(dir))
 		time.Sleep(300 * time.Millisecond)
-		assertOnTasksIterationCount(t, ts, sess.SessionID, 1)
+		assertOnTasksIterationCount(t, ts, sess.SessionID, 2)
 
 		// A genuinely new change on top of the rebased baseline fires again.
 		v3 := marshalOnTasksIssues(t,
@@ -446,7 +451,7 @@ func TestLoopOnTasksE2E(t *testing.T) {
 			onTasksIssue("mitto-st-3", "task", "open", 1, nil, "2026-07-01T00:00:02Z"))
 		fake.setRaw(dir, v3)
 		runner.OnBeadsChanged(onTasksChangeEvent(dir))
-		waitOnTasksIterationCount(t, ts, sess.SessionID, 2)
+		waitOnTasksIterationCount(t, ts, sess.SessionID, 3)
 	})
 
 	// -------------------------------------------------------------------------
