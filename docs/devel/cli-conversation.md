@@ -58,7 +58,7 @@ explicit flag > MITTO_URL / MITTO_TOKEN / MITTO_API_PREFIX env
 ```
 
 `NO_COLOR` (env) is equivalent to `--no-color`. `--api-prefix` cannot be
-honored until `mitto-rwxq.7` adds `WithAPIPrefix` (`client.New` hardcodes
+honored until `mitto-rwxq.7` adds `WithAPIPrefix` (`api.New` hardcodes
 `/mitto` today) — until then the flag is accepted but only the default
 prefix works, and `conversation list` filters client-side pending that
 same issue's `ListSessions` filter arguments.
@@ -173,9 +173,9 @@ by scripts — `--output json`/`yaml` is the contract.
   useful and owning disjoint files, closing gaps rather than building from
   scratch (Layers 1 and 2 pre-existed from `.7`/`.8`).
   1. **`Update()` table tests** (`internal/chatui/model_test.go`) — every
-     `client.Event` kind and every internal `tea.Msg` (`sendDoneMsg`,
+     `api.Event` kind and every internal `tea.Msg` (`sendDoneMsg`,
      `cancelDoneMsg`, `permAnsweredMsg`, `streamEndMsg`) drives `Update`
-     directly against a `nil` `*client.Session`; assertions are on model
+     directly against a `nil` `*api.Session`; assertions are on model
      state and on the returned `tea.Cmd`'s identity (its `()` result type),
      never by executing a `Cmd` that would dereference the nil session.
      Covers the `WindowSizeMsg` geometry contract too (transcript height =
@@ -189,7 +189,7 @@ by scripts — `--output json`/`yaml` is the contract.
      gated on `mitto-pscc.8.1`'s stable-prefix cache (still open as of this
      writing) and deliberately not added speculatively.
   3. **Scripted-WebSocket pump tests** (`internal/chatui/pump_test.go`) —
-     drive `RunPump` against a real `*client.Session` connected to a stub
+     drive `RunPump` against a real `*api.Session` connected to a stub
      `httptest`-backed WebSocket server, covering duplicate/out-of-order
      seq (dedup) and the close-frame path (exactly one `streamEndMsg`
      carrying the terminal error). The ~30-line `wsTestServer` harness is
@@ -197,7 +197,7 @@ by scripts — `--output json`/`yaml` is the contract.
      shared testing package — no second consumer had appeared, and
      `RunPump` already takes the `programSender` interface, so a fake
      sender is sufficient. One test also pins a real, easy-to-miss
-     contract: a `*client.Session` disconnect terminates the specific
+     contract: a `*api.Session` disconnect terminates the specific
      `EventsChan()` stream unconditionally, even with `WithReconnect`
      enabled — `RunPump` never sees the redialed connection's events
      through the same stream, since pump-level reconnect awareness is
