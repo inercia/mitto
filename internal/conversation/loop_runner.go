@@ -1215,10 +1215,17 @@ func (r *LoopRunner) fireOnStartPulses() {
 		}
 
 		// Anti-flap: a loop that ran seconds ago (across a fast restart) should
-		// not immediately re-fire on boot.
+		// not immediately re-fire on boot. Since fireOnStartPulses now runs on
+		// every RunOnce tick (mitto-wyob), not just once at boot, the session
+		// must also be marked as fired here — otherwise suppression would only
+		// defer the pulse to the tick after the anti-flap window elapses,
+		// turning a one-time-suppression guard into a delayed re-fire.
 		if antiFlap > 0 && loop.LastSentAt != nil {
 			since := now.Sub(loop.LastSentAt.UTC())
 			if since < time.Duration(antiFlap)*time.Second {
+				r.runOnStartFiredMu.Lock()
+				r.runOnStartFired[meta.SessionID] = true
+				r.runOnStartFiredMu.Unlock()
 				if r.logger != nil {
 					r.logger.Debug("Boot pulse suppressed by anti-flap window",
 						"session_id", meta.SessionID,
@@ -1432,13 +1439,10 @@ func (r *LoopRunner) pollLoop() {
 		}
 	}
 
-	// Fire once-per-boot pulses for loops configured with RunOnStart=true
-	// (mitto-ystk). Runs after the startup delay so interactive sessions
-	// have resumed, and before RunOnce so a due scheduled fire does not race
-	// with the boot pulse and win first.
-	r.fireOnStartPulses()
-
-	// Run after delay to handle any prompts that were due
+	// Run after delay to handle any prompts that were due. RunOnce fires any
+	// pending once-per-boot pulses (mitto-ystk) for RunOnStart loops as its
+	// first step, so the ordering guarantee (boot pulse before a due scheduled
+	// fire can win first) is preserved without a separate call here.
 	r.RunOnce()
 
 	ticker := time.NewTicker(r.pollInterval)
@@ -1462,6 +1466,15 @@ func (r *LoopRunner) RunOnce() (delivered, skipped, errored int) {
 	if r.store == nil {
 		return 0, 0, 0
 	}
+
+	// Fire any pending once-per-boot pulses for RunOnStart loops (mitto-ystk).
+	// This used to run only once, from pollLoop's startup sequence, before the
+	// ticker began calling RunOnce on every tick. A loop created after that
+	// single boot-time call (e.g. via the UI or an MCP call, post-boot) would
+	// then never receive its startup pulse. fireOnStartPulses is idempotent
+	// per session (guarded by runOnStartFired, including on the anti-flap
+	// path), so calling it on every tick is safe and cheap (mitto-wyob).
+	r.fireOnStartPulses()
 
 	// List all sessions
 	sessions, err := r.store.List()

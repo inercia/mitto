@@ -6109,8 +6109,15 @@ func TestLoopRunner_FireOnStartPulses_OncePerProcess(t *testing.T) {
 }
 
 // TestLoopRunner_FireOnStartPulses_AntiFlap verifies that a loop whose
-// LastSentAt falls inside the anti-flap window is skipped (not fired, not
-// flagged in runOnStartFired).
+// LastSentAt falls inside the anti-flap window is skipped (no pulse
+// delivered) but IS flagged in runOnStartFired (mitto-wyob correction).
+//
+// fireOnStartPulses now runs on every RunOnce tick, not just once at boot
+// (mitto-wyob), so the anti-flap suppression must mark the session as fired
+// too: otherwise a session freshly suppressed here would simply get its
+// pulse delivered on a later tick once the anti-flap window elapses, turning
+// a one-time-suppression guard into a delayed re-fire rather than a
+// permanent skip.
 func TestLoopRunner_FireOnStartPulses_AntiFlap(t *testing.T) {
 	store, err := session.NewStore(t.TempDir())
 	if err != nil {
@@ -6134,8 +6141,8 @@ func TestLoopRunner_FireOnStartPulses_AntiFlap(t *testing.T) {
 	runner.runOnStartFiredMu.Lock()
 	fired := runner.runOnStartFired["s1"]
 	runner.runOnStartFiredMu.Unlock()
-	if fired {
-		t.Error("runOnStartFired[s1] = true, want false (anti-flap should have suppressed the pulse)")
+	if !fired {
+		t.Error("runOnStartFired[s1] = false, want true (anti-flap suppresses delivery but must still mark the session as fired so a later tick does not resurrect the pulse)")
 	}
 }
 
@@ -6231,6 +6238,57 @@ func TestLoopRunner_FireOnStartPulses_ArchivedSkipped(t *testing.T) {
 	runner.runOnStartFiredMu.Unlock()
 	if fired {
 		t.Error("runOnStartFired[s1] = true for an archived session, want false")
+	}
+}
+
+// TestLoopRunner_PostBootLoop_NeverFiresViaRunOnce is the reproduction test
+// for mitto-wyob: fireOnStartPulses is invoked exactly once, from pollLoop's
+// startup sequence, before the ticker loop begins (loop_runner.go:1439).
+// Every subsequent tick calls only RunOnce(), which never re-invokes
+// fireOnStartPulses. A loop with RunOnStart=true that is created *after*
+// that single boot-time call therefore never receives its startup pulse,
+// even though normal poll ticks keep running for its session.
+//
+// This test simulates that exact timeline: fire the boot pulse once while
+// the store has no matching sessions yet (mirroring pollLoop's real boot
+// call, which runs long before a post-boot conversation could exist), then
+// create a RunOnStart=true session afterward (mirroring a loop created
+// post-boot, e.g. via the UI or an MCP call), then run a normal poll tick
+// via RunOnce() (mirroring the runner's ticker, which calls only RunOnce()
+// on every tick after the initial boot sequence). The desired behavior is
+// that the new loop still receives its once-only pulse on a later tick;
+// today it never does because RunOnce() never calls fireOnStartPulses.
+func TestLoopRunner_PostBootLoop_NeverFiresViaRunOnce(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	runner := NewLoopRunner(store, nil, nil)
+
+	// Simulate pollLoop's single boot-time call to fireOnStartPulses, with no
+	// RunOnStart loops present yet (matches production: the pulse fires
+	// shortly after boot, well before a post-boot conversation could exist).
+	runner.FireOnStartPulses()
+
+	// Now simulate a loop created after Mitto's startup window, configured
+	// with RunOnStart=true.
+	newRunOnStartSession(t, store, "post-boot-session", session.TriggerOnTasks)
+
+	// Simulate a subsequent poll tick. pollLoop's ticker calls only RunOnce()
+	// on every tick after the initial boot sequence -- it never re-invokes
+	// fireOnStartPulses (loop_runner.go:1447-1454).
+	runner.RunOnce()
+
+	// Desired behavior: the new loop should receive its once-only startup
+	// pulse on a later tick, since it never got the boot-time one.
+	if !runner.HasFiredRunOnStart("post-boot-session") {
+		t.Error("HasFiredRunOnStart(post-boot-session) = false after RunOnce(); " +
+			"a loop with RunOnStart=true created after Mitto's boot pulse never " +
+			"receives its startup pulse (mitto-wyob): fireOnStartPulses is only " +
+			"invoked once, from pollLoop's startup sequence, and RunOnce() never " +
+			"calls it on subsequent ticks")
 	}
 }
 
