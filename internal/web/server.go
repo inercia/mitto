@@ -3552,10 +3552,27 @@ func (s *Server) resolvePromptTargetByPromptName(promptName, workingDir string, 
 
 	for _, p := range merged {
 		if strings.EqualFold(p.Name, promptName) {
-			if p.Target == nil {
-				return handlers.ResolvedPromptTarget{}, nil
+			target := p.Target
+			title := ""
+			reuseTitle := false
+			backgroundColor := ""
+			noArchive := false
+			if target != nil {
+				title = target.Title
+				reuseTitle = target.Reuse != nil && target.Reuse.Title
+				backgroundColor = target.BackgroundColor
+				noArchive = target.NoArchive
 			}
-			title := p.Target.Title
+			// mitto-8s89: fall back to the top-level prompt backgroundColor
+			// (the "prompt button" color) when target.backgroundColor is
+			// unset — every builtin prompt sets the former and none set the
+			// latter, so without this fallback the color is silently
+			// dropped. The top-level field is not validated at load time
+			// (see hexColorRe's doc comment), so gate it here to avoid
+			// leaking a non-hex value into the sidebar accent stripe.
+			if strings.TrimSpace(backgroundColor) == "" && prompts.IsValidHexColor(p.BackgroundColor) {
+				backgroundColor = p.BackgroundColor
+			}
 			if title != "" {
 				ctx := prompts.PromptTargetContext{Args: args}
 				ctx.Session.BeadsIssue = beadsIssue
@@ -3568,9 +3585,9 @@ func (s *Server) resolvePromptTargetByPromptName(promptName, workingDir string, 
 			}
 			return handlers.ResolvedPromptTarget{
 				Title:           title,
-				ReuseTitle:      p.Target.Reuse != nil && p.Target.Reuse.Title,
-				BackgroundColor: p.Target.BackgroundColor,
-				NoArchive:       p.Target.NoArchive,
+				ReuseTitle:      reuseTitle,
+				BackgroundColor: backgroundColor,
+				NoArchive:       noArchive,
 			}, nil
 		}
 	}

@@ -73,6 +73,97 @@ func TestConversationStart_BackgroundColor_AbsentWhenPromptHasNone(t *testing.T)
 	}
 }
 
+// TestConversationStart_BackgroundColor_TopLevelFallback pins mitto-8s89:
+// the MCP create path shares the same fallback as resolvePromptTargetByPromptName
+// (internal/web/server.go) — a prompt's top-level backgroundColor (the
+// "prompt button" color) is applied as the new conversation's default color
+// when target.backgroundColor is unset, whether or not a target: block is
+// present at all. target.backgroundColor still wins when both are set.
+func TestConversationStart_BackgroundColor_TopLevelFallback(t *testing.T) {
+	t.Run("falls back when target block has no color", func(t *testing.T) {
+		store, srv, parentID := setupConversationStartServerWithPrompts(t, []config.WebPrompt{
+			{
+				Name:            "Loopish",
+				Prompt:          "do work",
+				BackgroundColor: "#E1BEE7",
+				Target:          &prompts.PromptTarget{Title: "Loop"},
+			},
+		})
+
+		ctx := context.Background()
+		_, output, err := srv.handleConversationStart(ctx, nil, ConversationStartInput{
+			SelfID:     parentID,
+			PromptName: "Loopish",
+		})
+		if err != nil {
+			t.Fatalf("handleConversationStart: unexpected error: %v", err)
+		}
+
+		meta, err := store.GetMetadata(output.SessionID)
+		if err != nil {
+			t.Fatalf("GetMetadata(%q) error: %v", output.SessionID, err)
+		}
+		if meta.BackgroundColor != "#E1BEE7" {
+			t.Errorf("BackgroundColor = %q, want %q (top-level backgroundColor fallback)", meta.BackgroundColor, "#E1BEE7")
+		}
+	})
+
+	t.Run("falls back even with no target block at all", func(t *testing.T) {
+		store, srv, parentID := setupConversationStartServerWithPrompts(t, []config.WebPrompt{
+			{
+				Name:            "No target",
+				Prompt:          "do work",
+				BackgroundColor: "#BBDEFB",
+			},
+		})
+
+		ctx := context.Background()
+		_, output, err := srv.handleConversationStart(ctx, nil, ConversationStartInput{
+			SelfID:     parentID,
+			PromptName: "No target",
+		})
+		if err != nil {
+			t.Fatalf("handleConversationStart: unexpected error: %v", err)
+		}
+
+		meta, err := store.GetMetadata(output.SessionID)
+		if err != nil {
+			t.Fatalf("GetMetadata(%q) error: %v", output.SessionID, err)
+		}
+		if meta.BackgroundColor != "#BBDEFB" {
+			t.Errorf("BackgroundColor = %q, want %q (top-level backgroundColor fallback with no target block)", meta.BackgroundColor, "#BBDEFB")
+		}
+	})
+
+	t.Run("target.backgroundColor still wins when both are set", func(t *testing.T) {
+		store, srv, parentID := setupConversationStartServerWithPrompts(t, []config.WebPrompt{
+			{
+				Name:            "Both",
+				Prompt:          "do work",
+				BackgroundColor: "#000000",
+				Target:          &prompts.PromptTarget{BackgroundColor: "#FFFFFF"},
+			},
+		})
+
+		ctx := context.Background()
+		_, output, err := srv.handleConversationStart(ctx, nil, ConversationStartInput{
+			SelfID:     parentID,
+			PromptName: "Both",
+		})
+		if err != nil {
+			t.Fatalf("handleConversationStart: unexpected error: %v", err)
+		}
+
+		meta, err := store.GetMetadata(output.SessionID)
+		if err != nil {
+			t.Fatalf("GetMetadata(%q) error: %v", output.SessionID, err)
+		}
+		if meta.BackgroundColor != "#FFFFFF" {
+			t.Errorf("BackgroundColor = %q, want %q (target.backgroundColor must take precedence)", meta.BackgroundColor, "#FFFFFF")
+		}
+	})
+}
+
 // TestConversationStart_ReuseIssue_DoesNotOverwriteBackgroundColor verifies
 // that funneling a dispatch into an existing conversation via target.reuse.issue
 // never re-applies the prompt's target.backgroundColor — a creation-time

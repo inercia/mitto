@@ -769,10 +769,21 @@ func ValidateLoopTriggers(promptName string, p *PromptLoop) error {
 }
 
 // hexColorRe matches a `#RGB` or `#RRGGBB` hex color, case-insensitive.
-// Used only to validate PromptTarget.BackgroundColor (mitto-8sk) — the
-// existing top-level prompt BackgroundColor field is intentionally left
-// unvalidated (out of scope, would break existing unvalidated prompts).
+// Used to validate PromptTarget.BackgroundColor (mitto-8sk) at load time,
+// and by IsValidHexColor for callers that need to gate a fallback onto the
+// unvalidated top-level Prompt.BackgroundColor (mitto-8s89).
 var hexColorRe = regexp.MustCompile(`^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$`)
+
+// IsValidHexColor reports whether s (after trimming whitespace) is a valid
+// `#RGB` or `#RRGGBB` hex color, case-insensitive. Exported so callers
+// outside this package can validate a color value before applying it — in
+// particular, resolvers that fall back to the unvalidated top-level
+// Prompt.BackgroundColor (the prompt button color) must not let a
+// non-hex value leak into a conversation's accent-stripe color
+// (mitto-8s89).
+func IsValidHexColor(s string) bool {
+	return hexColorRe.MatchString(strings.TrimSpace(s))
+}
 
 // ValidatePromptTarget validates the target block's field combination.
 // Returns an error when Reuse.Title is true but Title is empty, since a

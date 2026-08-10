@@ -272,6 +272,17 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 				promptTargetTitle = rendered
 			}
 		}
+		// mitto-8s89: fall back to the top-level prompt backgroundColor (the
+		// "prompt button" color) when target.backgroundColor is unset —
+		// every builtin prompt sets the former and none set the latter, so
+		// without this fallback the color is silently dropped. This also
+		// covers prompts with no target: block at all. The top-level field
+		// is not validated at load time (see prompts.IsValidHexColor's doc
+		// comment), so gate it here to avoid leaking a non-hex value into
+		// the sidebar accent stripe.
+		if strings.TrimSpace(promptTargetBackgroundColor) == "" && prompts.IsValidHexColor(p.BackgroundColor) {
+			promptTargetBackgroundColor = p.BackgroundColor
+		}
 		// reuseTitle adopts target.title as the conversation's Name so a
 		// subsequent scan matches it. When the caller supplied a different
 		// Title, log the override (target.title is the canonical lookup key).
