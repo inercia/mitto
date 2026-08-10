@@ -911,6 +911,75 @@ func migrateLegacyTargetReuseKeys(path string, doc *yaml.Node) bool {
 	return true
 }
 
+// promptFileKnownKeys enumerates the keys valid directly under a prompt
+// file's document root (top-level frontmatter), mirroring PromptFile's yaml
+// tags. Used by collectUnknownPromptKeys (mitto-yo8o) to flag typo'd or
+// misplaced keys that yaml.v3 would otherwise silently drop.
+var promptFileKnownKeys = map[string]bool{
+	"name": true, "description": true, "group": true, "menus": true,
+	"backgroundColor": true, "icon": true, "tags": true, "singleton": true,
+	"target": true, "enabled": true, "enabledWhen": true, "loop": true,
+	"preferredModels": true, "parameters": true, "prompt": true,
+}
+
+// promptTargetKnownKeys enumerates the keys valid directly under target:,
+// mirroring PromptTarget's yaml tags. See promptFileKnownKeys.
+var promptTargetKnownKeys = map[string]bool{
+	"title": true, "backgroundColor": true, "reuse": true,
+	"suppressAutoChildren": true, "noArchive": true,
+}
+
+// collectUnknownPromptKeys walks the document-root mapping and, if present,
+// the nested target: mapping, returning one dotted-path diagnostic per key
+// absent from promptFileKnownKeys / promptTargetKnownKeys (e.g. "target.titel").
+// Unlike the loop.* subtree (rejectUnknownLoopKeys, which hard-fails via
+// UnmarshalYAML), this is WARN-only: a typo'd or misplaced key at these two
+// levels must not evict an otherwise-working prompt from the registry, per
+// the mitto-a4yg precedent for target.* fields — extended here to cover the
+// top level too (mitto-yo8o). Callers should append the result into
+// PromptFile.Warnings so it survives to the UI (mitto-tigh's channel), not
+// just a slog line.
+//
+// Must run AFTER migrateLegacyTargetReuseKeys so already-migrated legacy
+// target.reuse* flat keys are not misreported as unknown (mirrors the
+// ordering constraint that migration precedes the loop.* strict pass).
+func collectUnknownPromptKeys(doc *yaml.Node) []string {
+	if doc == nil || doc.Kind != yaml.DocumentNode || len(doc.Content) == 0 {
+		return nil
+	}
+	root := doc.Content[0]
+	if root.Kind != yaml.MappingNode {
+		return nil
+	}
+
+	var unknown []string
+	var targetNode *yaml.Node
+	for i := 0; i+1 < len(root.Content); i += 2 {
+		k := root.Content[i]
+		if k.Kind != yaml.ScalarNode {
+			continue
+		}
+		if !promptFileKnownKeys[k.Value] {
+			unknown = append(unknown, k.Value)
+		}
+		if k.Value == "target" {
+			targetNode = root.Content[i+1]
+		}
+	}
+	if targetNode != nil && targetNode.Kind == yaml.MappingNode {
+		for i := 0; i+1 < len(targetNode.Content); i += 2 {
+			k := targetNode.Content[i]
+			if k.Kind != yaml.ScalarNode {
+				continue
+			}
+			if !promptTargetKnownKeys[k.Value] {
+				unknown = append(unknown, "target."+k.Value)
+			}
+		}
+	}
+	return unknown
+}
+
 // PromptParameterCache configures value caching for a single prompt parameter.
 // When present, a successfully collected argument value may be reused within the
 // same conversation without re-prompting the user.
@@ -1241,6 +1310,18 @@ func parsePromptFileData(path string, data []byte, modTime time.Time) (*PromptFi
 		return nil, migrated, result, fmt.Errorf("failed to parse prompt file %s: %w", path, err)
 	}
 	migrateLegacyTargetReuseKeys(path, &doc)
+
+	// Warn (non-fatal) on typo'd or misplaced top-level / target.* keys
+	// (mitto-yo8o). Runs after the legacy target.reuse* migration above so
+	// already-migrated keys are never misreported as unknown. WARN, not
+	// error — a stray key must not evict an otherwise-working prompt from
+	// the registry (mitto-a4yg precedent).
+	if unknownKeys := collectUnknownPromptKeys(&doc); len(unknownKeys) > 0 {
+		slog.Warn("prompt file contains unrecognised key(s); they will have no effect",
+			"path", path, "unknown_keys", unknownKeys)
+		prompt.Warnings = append(prompt.Warnings,
+			fmt.Sprintf("unrecognised key(s) will have no effect: %s", strings.Join(unknownKeys, ", ")))
+	}
 
 	if err := doc.Decode(prompt); err != nil {
 		return nil, migrated, result, fmt.Errorf("failed to parse prompt file %s: %w", path, err)

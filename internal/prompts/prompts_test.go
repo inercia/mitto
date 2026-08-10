@@ -1709,6 +1709,64 @@ prompt: |
 	}
 }
 
+// TestParsePromptFile_UnknownKeysSilentlyIgnored is the reproduction test for
+// mitto-yo8o: unlike the loop.* subtree (which rejects unknown keys via
+// rejectUnknownLoopKeys against a promptLoop*KnownKeys map), PromptFile and
+// PromptTarget have no UnmarshalYAML and no known-keys map, so doc.Decode
+// silently drops typo'd or misplaced keys instead of surfacing a diagnostic.
+//
+// Uses the exact fixture from the investigation: a misspelled top-level
+// "backgroudColor" and two misspelled/misplaced target.* keys ("titel",
+// "backgroundColour"). Today ParsePromptFile succeeds with err == nil, the
+// three typos have no effect (BackgroundColor == "", Target.Title == "",
+// Target.BackgroundColor == ""), and prompt.Warnings — the first-class
+// diagnostic channel populated for legacy-schema migrations, deprecated
+// @mitto: vars, and unknown menus tokens (mitto-tigh) — carries nothing
+// about them either. This test asserts the diagnostic SHOULD be present
+// (in prompt.Warnings), which fails today because the mechanism does not
+// exist yet.
+func TestParsePromptFile_UnknownKeysSilentlyIgnored(t *testing.T) {
+	data := []byte(`name: "Typo Test"
+backgroudColor: '#E1BEE7'
+target:
+  titel: "X"
+  backgroundColour: '#E1BEE7'
+prompt: |
+  hi
+`)
+
+	prompt, err := ParsePromptFile("typo-test.prompt.yaml", data, time.Now())
+	if err != nil {
+		t.Fatalf("ParsePromptFile failed: %v", err)
+	}
+
+	// Sanity: confirm the typos really did have no effect on the decoded
+	// struct (this is the silent-drop behavior being reproduced).
+	if prompt.BackgroundColor != "" {
+		t.Fatalf("test setup broken: BackgroundColor = %q, want empty (typo'd key should not bind)", prompt.BackgroundColor)
+	}
+	if prompt.Target == nil {
+		t.Fatal("test setup broken: Target is nil, want a decoded (mostly-empty) PromptTarget")
+	}
+	if prompt.Target.Title != "" {
+		t.Fatalf("test setup broken: Target.Title = %q, want empty (typo'd key should not bind)", prompt.Target.Title)
+	}
+	if prompt.Target.BackgroundColor != "" {
+		t.Fatalf("test setup broken: Target.BackgroundColor = %q, want empty (typo'd key should not bind)", prompt.Target.BackgroundColor)
+	}
+
+	// BUG (mitto-yo8o): none of the three typo'd keys produced any retained
+	// diagnostic, so an author has zero signal (no error, no warning, no UI
+	// toast, no `mitto prompts verify` finding) that their config did
+	// nothing. Expect at least one warning naming the unknown keys.
+	if len(prompt.Warnings) == 0 {
+		t.Errorf("prompt.Warnings is empty (mitto-yo8o): three unknown keys " +
+			"(top-level \"backgroudColor\", target.\"titel\", target.\"backgroundColour\") " +
+			"were silently dropped with no retained diagnostic anywhere reachable " +
+			"from ParsePromptFile's result")
+	}
+}
+
 func TestToWebPrompt_IncludesEnabledWhen(t *testing.T) {
 	prompt := &PromptFile{
 		Name:        "Test",
