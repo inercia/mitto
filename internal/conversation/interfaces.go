@@ -10,6 +10,12 @@ import (
 	"github.com/inercia/mitto/internal/runner"
 )
 
+// RestartAnyGeneration is passed to SharedProcess.Restart() to force an
+// unconditional restart regardless of the process's current generation
+// (used by manual/single-caller restart paths that are not deduplicating
+// against a concurrently-observed death).
+const RestartAnyGeneration = -1
+
 // SharedProcess is the interface that a shared ACP OS process must satisfy.
 // BackgroundSession uses this interface (rather than *SharedACPProcess directly)
 // so that the domain layer does not depend on the web infrastructure package.
@@ -41,8 +47,21 @@ type SharedProcess interface {
 	Done() <-chan struct{}
 	// Capabilities returns the agent's advertised capabilities.
 	Capabilities() *acp.AgentCapabilities
-	// Restart attempts to restart the underlying OS process.
-	Restart() error
+	// Generation returns a counter bumped each time Restart() actually
+	// replaces the process. Callers that intend to call Restart() after
+	// detecting a process death should snapshot this value via Generation()
+	// as early as possible (ideally right at the point of detection, before
+	// any backoff/rate-limit delay) and pass it back in. This lets Restart()
+	// tell whether another concurrent caller has already remediated the SAME
+	// death, preventing a restart storm (mitto-x611) when several sessions
+	// sharing one process independently observe its death.
+	Generation() int
+	// Restart attempts to restart the underlying OS process, but only if the
+	// process generation still matches observedGen — i.e. nobody else has
+	// already restarted since the caller detected the death (see Generation).
+	// Pass RestartAnyGeneration to force an unconditional restart regardless
+	// of generation (e.g. a manual "Restart ACP" request).
+	Restart(observedGen int) error
 	// RecommendedLoadTimeout returns the outer wall-clock budget the caller should
 	// apply to a session/load RPC. It widens for cold sessions with MCP servers so
 	// the outer timeout does not truncate the process's own extended MCP-init

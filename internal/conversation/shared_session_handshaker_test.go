@@ -127,7 +127,8 @@ func (f *fakeSharedProcess) SetSessionMode(_ context.Context, _ acp.SessionId, _
 func (f *fakeSharedProcess) SetSessionModel(_ context.Context, _ acp.SessionId, _ string) error {
 	return nil
 }
-func (f *fakeSharedProcess) Restart() error { return nil }
+func (f *fakeSharedProcess) Generation() int     { return 0 }
+func (f *fakeSharedProcess) Restart(_ int) error { return nil }
 func (f *fakeSharedProcess) RecommendedLoadTimeout(_ bool) time.Duration {
 	f.mu.Lock()
 	defer f.mu.Unlock()

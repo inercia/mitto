@@ -924,7 +924,9 @@ func (m *ACPProcessManager) RestartProcess(workspaceUUID string) error {
 		return fmt.Errorf("no shared process for workspace %s", workspaceUUID)
 	}
 
-	return p.Restart()
+	// Manual/forced restart (e.g. the "Restart ACP" UI action): not reacting to
+	// a specific observed death, so bypass the generation dedup (mitto-x611).
+	return p.Restart(conversation.RestartAnyGeneration)
 }
 
 // Close stops all managed processes.

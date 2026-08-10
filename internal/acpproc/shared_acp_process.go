@@ -340,6 +340,15 @@ type SharedACPProcess struct {
 	wait   func() error
 	cancel context.CancelFunc // for restricted runner processes
 
+	// generation is bumped (under mu) each time Restart() actually kills and
+	// replaces the process. Restart() snapshots this value on entry and
+	// re-checks it (under mu) right before killing, so a caller whose
+	// observed death has already been remediated by a concurrent Restart()
+	// call no-ops instead of tearing down the healthy replacement — fixes
+	// the mitto-x611 restart storm (N sessions independently detecting the
+	// same process death each triggering a redundant kill+start cycle).
+	generation int
+
 	// Process death detection (Fix A: faster crash detection)
 	// processDone is closed when the ACP OS process exits, providing sub-second
 	// detection via OS-level liveness checks (signal 0 polling).
@@ -2714,10 +2723,49 @@ func (p *SharedACPProcess) recordRestart() {
 	p.restartTimes = append(p.restartTimes, time.Now())
 }
 
-// Restart kills the old process and starts a new one.
+// Generation returns the current process generation, bumped each time
+// Restart() actually replaces the process. See conversation.SharedProcess.Generation
+// for the intended caller-side usage (snapshot before detecting/acting on a death).
+func (p *SharedACPProcess) Generation() int {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.generation
+}
+
+// Restart kills the old process and starts a new one, but only if the
+// process generation still matches observedGen. Pass
+// conversation.RestartAnyGeneration to force an unconditional restart.
 // All sessions must re-register their callbacks and LoadSession after restart.
-// Returns nil on success. Returns an *mittoAcp.ACPClassifiedError for permanent failures.
-func (p *SharedACPProcess) Restart() error {
+// Returns nil on success (including the already-remediated no-op case).
+// Returns an *mittoAcp.ACPClassifiedError for permanent failures.
+//
+// Idempotency (mitto-x611): concurrent callers may each independently observe
+// the same underlying process death and call Restart() around the same time.
+// canRestart()/CanRestartGlobal are rate limits, not a dedup, so without the
+// generation check below every concurrent caller would unconditionally kill
+// whatever process is currently running — including a healthy replacement a
+// prior caller already started — producing a restart storm. observedGen MUST
+// be captured by the caller as early as possible (ideally at the moment the
+// death was detected, before any backoff/rate-limit delay of its own) so that
+// all callers reacting to the SAME death agree on the generation they intend
+// to replace; it is re-checked under mu immediately before killing, since the
+// rate-limit check and backoff wait below are not synchronized against other
+// Restart() callers.
+func (p *SharedACPProcess) Restart(observedGen int) error {
+	if observedGen != conversation.RestartAnyGeneration {
+		p.mu.RLock()
+		curGen := p.generation
+		p.mu.RUnlock()
+		if curGen != observedGen {
+			if p.logger != nil {
+				p.logger.Info("Shared ACP process already restarted by another caller, skipping redundant restart",
+					"command", p.config.ACPCommand,
+					"cwd", p.config.ACPCwd)
+			}
+			return nil
+		}
+	}
+
 	if !p.canRestart() {
 		return fmt.Errorf("restart limit exceeded (%d restarts in %v)", mittoAcp.MaxACPRestarts, mittoAcp.ACPRestartWindow)
 	}
@@ -2748,6 +2796,21 @@ func (p *SharedACPProcess) Restart() error {
 		}
 	}
 
+	// Re-check the generation now, under mu, right before killing — the rate
+	// limit check and backoff wait above are not synchronized against other
+	// Restart() callers, so the process this caller observed as dead may
+	// already have been replaced while we were waiting.
+	p.mu.Lock()
+	if observedGen != conversation.RestartAnyGeneration && p.generation != observedGen {
+		p.mu.Unlock()
+		if p.logger != nil {
+			p.logger.Info("Shared ACP process already restarted by another caller, skipping redundant restart",
+				"command", p.config.ACPCommand,
+				"cwd", p.config.ACPCwd)
+		}
+		return nil
+	}
+
 	if p.logger != nil {
 		p.logger.Info("Restarting shared ACP process",
 			"restart_count", p.restartCount+1,
@@ -2755,10 +2818,10 @@ func (p *SharedACPProcess) Restart() error {
 			"cwd", p.config.ACPCwd)
 	}
 
-	p.mu.Lock()
 	p.killProcess()
 	p.conn = nil
 	p.capabilities = nil
+	p.generation++
 	p.mu.Unlock()
 
 	p.recordRestart()

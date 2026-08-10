@@ -5832,7 +5832,8 @@ func (p *alwaysFailSharedProcess) SetSessionModel(_ context.Context, _ acp.Sessi
 }
 func (p *alwaysFailSharedProcess) Done() <-chan struct{}                { return nil }
 func (p *alwaysFailSharedProcess) Capabilities() *acp.AgentCapabilities { return nil }
-func (p *alwaysFailSharedProcess) Restart() error {
+func (p *alwaysFailSharedProcess) Generation() int                      { return 0 }
+func (p *alwaysFailSharedProcess) Restart(_ int) error {
 	return fmt.Errorf("alwaysFailSharedProcess: cannot restart — no real process")
 }
 func (p *alwaysFailSharedProcess) RecommendedLoadTimeout(_ bool) time.Duration { return 0 }

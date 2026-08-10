@@ -1060,6 +1060,11 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 
 	// Use shared process if available, otherwise start a new per-session process.
 	if config.SharedProcess != nil {
+		// Snapshot the generation before attempting resume — before this call can
+		// fail and before this session's own restart request — so Restart() can
+		// later tell whether another session already remediated the SAME process
+		// death (mitto-x611 restart-storm fix).
+		observedGen := config.SharedProcess.Generation()
 		if err := bs.resumeSharedACPSession(config.SharedProcess, config.WorkingDir, config.ACPSessionID); err != nil {
 			// Auto-restart the shared process if we hit a pipe/connection error.
 			// This happens when the OS killed the ACP subprocess during app backgrounding
@@ -1076,10 +1081,11 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 				}
 				bs.recordRestart(mittoAcp.RestartReasonResumeFailure)
 
-				// Restart the shared OS process. SharedACPProcess.Restart() is rate-limited
-				// and idempotent — if another session already triggered a restart, this
-				// returns the already-restarted process without starting another one.
-				if restartErr := config.SharedProcess.Restart(); restartErr != nil {
+				// Restart the shared OS process. Restart() is idempotent per observed
+				// death (generation-checked, mitto-x611) — if another session already
+				// triggered a restart for the same death, this returns without
+				// starting another one.
+				if restartErr := config.SharedProcess.Restart(observedGen); restartErr != nil {
 					if bs.logger != nil {
 						bs.logger.Warn("Failed to restart shared ACP process on resume",
 							"session_id", bs.persistedID,

@@ -115,6 +115,16 @@ func (bs *BackgroundSession) GetRestartStats() RestartStats {
 // Returns nil on success, or an error if restart fails.
 // Returns an *mittoAcp.ACPClassifiedError for permanent failures.
 func (bs *BackgroundSession) restartACPProcess(reason mittoAcp.RestartReason) error {
+	// Snapshot the shared process's generation as early as possible — before
+	// this session's own backoff delay below — so that Restart() can later
+	// tell whether a concurrent session already remediated the SAME process
+	// death while we were waiting (mitto-x611 restart-storm fix). Unused in
+	// per-session (non-shared) mode.
+	var observedGen int
+	if bs.sharedProcess != nil {
+		observedGen = bs.sharedProcess.Generation()
+	}
+
 	// Apply backoff based on how many recent restarts have occurred.
 	recentCount := bs.procCtl.recentRestartCount()
 
@@ -171,8 +181,11 @@ func (bs *BackgroundSession) restartACPProcess(reason mittoAcp.RestartReason) er
 	var err error
 	if bs.sharedProcess != nil {
 		// Shared mode: restart the shared OS process, then create a new session on it.
-		// Note: multiple sessions may call Restart() concurrently; SharedACPProcess.canRestart()
-		// is rate-limited so only one restart happens, others get the already-restarted process.
+		// Note: multiple sessions may call Restart() concurrently after independently
+		// observing the same process death; Restart() is idempotent per death event
+		// (generation-checked, mitto-x611) so only the first caller actually kills and
+		// starts a process — the rest no-op and proceed straight to session creation
+		// on the already-restarted process.
 
 		// Save the shared process reference before attempting session creation.
 		// resumeSharedACPSession nils bs.sharedProcess on failure (to clean up for
@@ -181,7 +194,7 @@ func (bs *BackgroundSession) restartACPProcess(reason mittoAcp.RestartReason) er
 		// stuck with "The AI agent is still starting up".
 		savedSharedProcess := bs.sharedProcess
 
-		if restartErr := bs.sharedProcess.Restart(); restartErr != nil {
+		if restartErr := bs.sharedProcess.Restart(observedGen); restartErr != nil {
 			// Log but don't fail — the process may have been restarted by another session.
 			if bs.logger != nil {
 				bs.logger.Warn("Shared ACP process restart returned error, attempting new session anyway",
