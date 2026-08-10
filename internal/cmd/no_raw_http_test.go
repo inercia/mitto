@@ -95,27 +95,39 @@ func scanNetHTTPUsage(t *testing.T) []httpOffense {
 		if perr != nil {
 			t.Fatalf("parse %s: %v", name, perr)
 		}
-		alias := netHTTPLocalName(f)
-		if alias == "" {
-			continue
-		}
-		ast.Inspect(f, func(n ast.Node) bool {
-			sel, ok := n.(*ast.SelectorExpr)
-			if !ok {
-				return true
-			}
-			ident, ok := sel.X.(*ast.Ident)
-			if !ok || ident.Name != alias || !forbiddenHTTPSymbols[sel.Sel.Name] {
-				return true
-			}
-			offenses = append(offenses, httpOffense{
-				File:   name,
-				Symbol: sel.Sel.Name,
-				Line:   fset.Position(sel.Pos()).Line,
-			})
-			return true
-		})
+		offenses = append(offenses, scanFileForHTTPOffenses(fset, name, f)...)
 	}
+	return offenses
+}
+
+// scanFileForHTTPOffenses inspects a single parsed file's AST for forbidden
+// net/http selector usage, honouring the file's own import alias (or "" if
+// the file does not import net/http, or imports it blank). Split out from
+// scanNetHTTPUsage so the detection logic is unit-testable against synthetic
+// in-memory source (see TestScanFileForHTTPOffenses_*) without needing a
+// real file on disk.
+func scanFileForHTTPOffenses(fset *token.FileSet, name string, f *ast.File) []httpOffense {
+	alias := netHTTPLocalName(f)
+	if alias == "" {
+		return nil
+	}
+	var offenses []httpOffense
+	ast.Inspect(f, func(n ast.Node) bool {
+		sel, ok := n.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		ident, ok := sel.X.(*ast.Ident)
+		if !ok || ident.Name != alias || !forbiddenHTTPSymbols[sel.Sel.Name] {
+			return true
+		}
+		offenses = append(offenses, httpOffense{
+			File:   name,
+			Symbol: sel.Sel.Name,
+			Line:   fset.Position(sel.Pos()).Line,
+		})
+		return true
+	})
 	return offenses
 }
 
@@ -138,23 +150,54 @@ func netHTTPLocalName(f *ast.File) string {
 	return ""
 }
 
+// unlistedOffenses returns the offenses not covered by any allowlist entry,
+// formatted as "file:line: http.Symbol". Pure/deterministic so it can be
+// exercised directly with synthetic data (see TestUnlistedOffenses_*),
+// independent of what internal/cmd's real files currently contain.
+func unlistedOffenses(offenses []httpOffense, allowlist []httpAllowEntry) []string {
+	allowed := make(map[string]bool, len(allowlist))
+	for _, e := range allowlist {
+		allowed[e.key()] = true
+	}
+	var unlisted []string
+	for _, o := range offenses {
+		if allowed[o.key()] {
+			continue
+		}
+		unlisted = append(unlisted, fmt.Sprintf("%s:%d: http.%s", o.File, o.Line, o.Symbol))
+	}
+	return unlisted
+}
+
+// validateAllowlist checks the two acceptance criteria for every allowlist
+// entry: a non-empty Reason, and a match against a currently-observed
+// offense (offenses is typically the live scanNetHTTPUsage result). Returns
+// one error string per violation. Pure/deterministic, see
+// TestValidateAllowlist_*.
+func validateAllowlist(allowlist []httpAllowEntry, offenses []httpOffense) []string {
+	present := make(map[string]bool, len(offenses))
+	for _, o := range offenses {
+		present[o.key()] = true
+	}
+	var errs []string
+	for _, e := range allowlist {
+		if strings.TrimSpace(e.Reason) == "" {
+			errs = append(errs, fmt.Sprintf("httpAllowlist entry %s/%s has no Reason", e.File, e.Symbol))
+		}
+		if !present[e.key()] {
+			errs = append(errs, fmt.Sprintf("httpAllowlist entry %s/%s no longer matches any net/http call site in internal/cmd; remove the stale entry", e.File, e.Symbol))
+		}
+	}
+	return errs
+}
+
 // TestNoRawHTTPClientsOutsideSDK pins mitto-pscc.10: no file in internal/cmd
 // may construct a net/http client or request against a running Mitto server
 // outside the Go SDK (pkg/api). A hit here means either a new command was
 // written against net/http instead of pkg/api, or a genuinely new exception
 // exists and needs a reasoned httpAllowlist entry (visible in review).
 func TestNoRawHTTPClientsOutsideSDK(t *testing.T) {
-	allowed := make(map[string]bool, len(httpAllowlist))
-	for _, e := range httpAllowlist {
-		allowed[e.key()] = true
-	}
-	var unlisted []string
-	for _, o := range scanNetHTTPUsage(t) {
-		if allowed[o.key()] {
-			continue
-		}
-		unlisted = append(unlisted, fmt.Sprintf("%s:%d: http.%s", o.File, o.Line, o.Symbol))
-	}
+	unlisted := unlistedOffenses(scanNetHTTPUsage(t), httpAllowlist)
 	if len(unlisted) > 0 {
 		t.Errorf("internal/cmd must talk to a running Mitto server via the SDK (pkg/api), not net/http directly; found %d unlisted call site(s):\n%s\n"+
 			"If this is a deliberate exception (e.g. a non-Mitto-API transport), add a justified entry to httpAllowlist in this file.",
@@ -168,16 +211,137 @@ func TestNoRawHTTPClientsOutsideSDK(t *testing.T) {
 // still correspond to a real call site (so the list cannot rot into
 // permission-by-accident once the code it excuses is refactored away).
 func TestHTTPAllowlistIsCurrent(t *testing.T) {
-	present := make(map[string]bool)
-	for _, o := range scanNetHTTPUsage(t) {
-		present[o.key()] = true
+	for _, msg := range validateAllowlist(httpAllowlist, scanNetHTTPUsage(t)) {
+		t.Error(msg)
 	}
-	for _, e := range httpAllowlist {
-		if strings.TrimSpace(e.Reason) == "" {
-			t.Errorf("httpAllowlist entry %s/%s has no Reason", e.File, e.Symbol)
-		}
-		if !present[e.key()] {
-			t.Errorf("httpAllowlist entry %s/%s no longer matches any net/http call site in internal/cmd; remove the stale entry", e.File, e.Symbol)
-		}
+}
+
+// TestUnlistedOffenses_FlagsUnknownCallSite pins the "stray http.Get" failure
+// mode promised in the mitto-pscc.10 plan: a call site with no matching
+// allowlist entry is reported, regardless of what the real repo tree
+// currently contains.
+func TestUnlistedOffenses_FlagsUnknownCallSite(t *testing.T) {
+	offenses := []httpOffense{{File: "stray.go", Symbol: "Get", Line: 42}}
+	got := unlistedOffenses(offenses, httpAllowlist)
+	if len(got) != 1 || got[0] != "stray.go:42: http.Get" {
+		t.Fatalf("unlistedOffenses() = %v, want exactly one entry for stray.go:42: http.Get", got)
+	}
+}
+
+// TestUnlistedOffenses_AllowlistedCallSiteIsSilent confirms an offense whose
+// (file, symbol) matches an allowlist entry is not reported.
+func TestUnlistedOffenses_AllowlistedCallSiteIsSilent(t *testing.T) {
+	allowlist := []httpAllowEntry{{File: "mcp.go", Symbol: "Client", Reason: "test fixture"}}
+	offenses := []httpOffense{{File: "mcp.go", Symbol: "Client", Line: 10}}
+	if got := unlistedOffenses(offenses, allowlist); len(got) != 0 {
+		t.Fatalf("unlistedOffenses() = %v, want none (entry is allowlisted)", got)
+	}
+}
+
+// TestValidateAllowlist_EmptyReasonFails pins the "empty Reason" failure mode
+// from the plan's acceptance criteria.
+func TestValidateAllowlist_EmptyReasonFails(t *testing.T) {
+	allowlist := []httpAllowEntry{{File: "mcp.go", Symbol: "Client", Reason: "   "}}
+	offenses := []httpOffense{{File: "mcp.go", Symbol: "Client", Line: 10}}
+	errs := validateAllowlist(allowlist, offenses)
+	if len(errs) != 1 || !strings.Contains(errs[0], "no Reason") {
+		t.Fatalf("validateAllowlist() = %v, want exactly one 'no Reason' error", errs)
+	}
+}
+
+// TestValidateAllowlist_StaleEntryFails pins the "deleting mcp.go's
+// forwarding code" failure mode: an allowlist entry with no matching offense
+// anymore must fail, so the list cannot rot into permission-by-accident.
+func TestValidateAllowlist_StaleEntryFails(t *testing.T) {
+	allowlist := []httpAllowEntry{{File: "mcp.go", Symbol: "Client", Reason: "no longer applies"}}
+	errs := validateAllowlist(allowlist, nil) // no offenses observed at all
+	if len(errs) != 1 || !strings.Contains(errs[0], "no longer matches") {
+		t.Fatalf("validateAllowlist() = %v, want exactly one 'no longer matches' error", errs)
+	}
+}
+
+// TestValidateAllowlist_ValidEntryPasses is the negative control: a
+// well-formed entry matching a real offense produces no errors.
+func TestValidateAllowlist_ValidEntryPasses(t *testing.T) {
+	allowlist := []httpAllowEntry{{File: "mcp.go", Symbol: "Client", Reason: "MCP proxy, not the Mitto REST API"}}
+	offenses := []httpOffense{{File: "mcp.go", Symbol: "Client", Line: 140}}
+	if errs := validateAllowlist(allowlist, offenses); len(errs) != 0 {
+		t.Fatalf("validateAllowlist() = %v, want none", errs)
+	}
+}
+
+// TestScanFileForHTTPOffenses_DetectsForbiddenSymbolsOnly parses synthetic
+// source directly (no dependency on the real internal/cmd tree) to confirm
+// the scanner (a) flags client-egress symbols, (b) ignores constants/helpers
+// that carry no network call, and (c) honours an import alias.
+func TestScanFileForHTTPOffenses_DetectsForbiddenSymbolsOnly(t *testing.T) {
+	const src = `package cmd
+
+import althttp "net/http"
+
+func f() {
+	_ = &althttp.Client{}
+	_ = althttp.StatusAccepted
+	_ = althttp.DetectContentType(nil)
+	req, _ := althttp.NewRequestWithContext(nil, "GET", "", nil)
+	_ = req
+}
+`
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "synthetic.go", src, 0)
+	if err != nil {
+		t.Fatalf("parse synthetic source: %v", err)
+	}
+	got := scanFileForHTTPOffenses(fset, "synthetic.go", f)
+	var symbols []string
+	for _, o := range got {
+		symbols = append(symbols, o.Symbol)
+	}
+	if len(symbols) != 2 || symbols[0] != "Client" || symbols[1] != "NewRequestWithContext" {
+		t.Fatalf("scanFileForHTTPOffenses() symbols = %v, want exactly [Client NewRequestWithContext] (StatusAccepted/DetectContentType must not be flagged)", symbols)
+	}
+}
+
+// TestScanFileForHTTPOffenses_NoImportIsSilent confirms a file that never
+// imports net/http produces no offenses even if it happens to reference an
+// identifier named "http" (e.g. a local variable), since netHTTPLocalName
+// requires an actual import to establish the alias.
+func TestScanFileForHTTPOffenses_NoImportIsSilent(t *testing.T) {
+	const src = `package cmd
+
+type http struct{}
+
+func f() {
+	h := http{}
+	_ = h
+}
+`
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "synthetic.go", src, 0)
+	if err != nil {
+		t.Fatalf("parse synthetic source: %v", err)
+	}
+	if got := scanFileForHTTPOffenses(fset, "synthetic.go", f); len(got) != 0 {
+		t.Fatalf("scanFileForHTTPOffenses() = %v, want none (no net/http import present)", got)
+	}
+}
+
+// TestScanFileForHTTPOffenses_BlankImportIsSilent confirms a blank
+// net/http import (side-effect only, cannot be selector-referenced) yields
+// no local alias and therefore no offenses.
+func TestScanFileForHTTPOffenses_BlankImportIsSilent(t *testing.T) {
+	const src = `package cmd
+
+import _ "net/http"
+
+func f() {}
+`
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "synthetic.go", src, 0)
+	if err != nil {
+		t.Fatalf("parse synthetic source: %v", err)
+	}
+	if got := scanFileForHTTPOffenses(fset, "synthetic.go", f); len(got) != 0 {
+		t.Fatalf("scanFileForHTTPOffenses() = %v, want none (blank import has no selectable alias)", got)
 	}
 }
