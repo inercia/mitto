@@ -234,6 +234,19 @@ field a struct depends on is not. Run via `make
 test-integration-sdk-contract`; skips (not fails) when `bun` is absent from
 `PATH`.
 
+## 9. Route-coverage gate (`.24`)
+
+`internal/web/route_coverage_test.go` (`TestRouteCoverage_SDKsOrExempt`, runs
+under plain `make test-go`, no build tag or server boot) asserts every route
+declared in `internal/web/routes.go`'s live table is reachable through
+`pkg/api.RouteCoverage`, this SDK's `resources/*.js` + `core/endpoints.js`, or
+an explicit, commented line in
+`internal/web/testdata/route_coverage_exemptions.txt`. **Adding a new server
+route therefore requires one of:** an SDK method here (or in `pkg/api`), or a
+justified exemption line (`<path>  # <why>`; a bare path with no rationale
+fails the gate). The gate also fails on stale exemptions and on SDK paths
+with no matching route, so removing/renaming a route is caught too.
+
 ## Related issues
 
 `.2` core config/env · `.3` typed errors · `.4` transport · `.5` auth
