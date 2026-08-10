@@ -430,10 +430,17 @@ All streaming events include `seq` and `max_seq` for ordering and gap detection.
     "seq": 52,
     "max_seq": 52,
     "html": "<p>Here's the fix...</p>",
+    "text": "Here's the fix...",
+    "format": "html",
     "is_prompting": true
   }
 }
 ```
+
+`html` is the rendered chunk and remains the canonical field for web clients.
+`text` carries the same chunk as raw pre-conversion markdown, for clients that
+render markdown themselves (e.g. terminal clients) instead of un-doing the
+syntax highlighting, sanitization, and file-link rewriting applied to `html`.
 
 #### `agent_thought` — Agent thinking/reasoning
 

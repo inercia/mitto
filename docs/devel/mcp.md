@@ -947,7 +947,7 @@ The `events.jsonl` file contains all events with sequence numbers:
 ```jsonl
 {"seq":1,"type":"session_start","timestamp":"2026-02-11T14:30:52Z","data":{...}}
 {"seq":2,"type":"user_prompt","timestamp":"2026-02-11T14:30:55Z","data":{"message":"Hello"}}
-{"seq":3,"type":"agent_message","timestamp":"2026-02-11T14:30:57Z","data":{"html":"<p>Hi!</p>"}}
+{"seq":3,"type":"agent_message","timestamp":"2026-02-11T14:30:57Z","data":{"html":"<p>Hi!</p>","text":"Hi!"}}
 ```
 
 ### 5. Check Logs

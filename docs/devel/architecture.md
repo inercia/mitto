@@ -422,7 +422,7 @@ flowchart LR
 ```jsonl
 {"type":"session_start","timestamp":"2026-01-25T14:30:52Z","data":{"session_id":"...","acp_server":"auggie","working_dir":"/home/user/project"}}
 {"type":"user_prompt","timestamp":"2026-01-25T14:30:55Z","data":{"message":"Hello, can you help me?"}}
-{"type":"agent_message","timestamp":"2026-01-25T14:30:57Z","data":{"text":"Of course! What do you need help with?"}}
+{"type":"agent_message","timestamp":"2026-01-25T14:30:57Z","data":{"html":"<p>Of course! What do you need help with?</p>","text":"Of course! What do you need help with?"}}
 {"type":"session_end","timestamp":"2026-01-25T14:35:00Z","data":{"reason":"user_quit"}}
 ```
 

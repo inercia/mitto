@@ -390,6 +390,7 @@ export function isCommandType(type) {
  * Payload of {@link EVENTS.AGENT_MESSAGE} (`agent_message`).
  * @typedef {Object} AgentMessagePayload
  * @property {string} html - Rendered message HTML chunk.
+ * @property {string} [text] - Same chunk as raw pre-conversion markdown, when available.
  */
 
 /**

@@ -107,7 +107,7 @@ graph TB
 | `connected`                       | Connection established                      |
 | `prompt_received`                 | Prompt ACK                                  |
 | `user_prompt`                     | Broadcast of user prompt to all clients     |
-| `agent_message`                   | Streaming agent response (HTML)             |
+| `agent_message`                   | Streaming agent response (HTML + markdown)  |
 | `agent_thought`                   | Agent thinking/reasoning (plain text)       |
 | `tool_call` / `tool_update`       | Tool invocations and status updates         |
 | `plan`                            | Agent task plan                             |

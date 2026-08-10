@@ -132,7 +132,7 @@ See [MCP Documentation](mcp.md) for how flags control MCP server behavior.
 | `session_start`    | Session initialization with metadata |
 | `session_end`      | Session termination with reason      |
 | `user_prompt`      | User input message                   |
-| `agent_message`    | Agent response text                  |
+| `agent_message`    | Agent response (HTML + raw markdown) |
 | `agent_thought`    | Agent's internal reasoning           |
 | `tool_call`        | Tool invocation by agent             |
 | `tool_call_update` | Tool execution status update         |
