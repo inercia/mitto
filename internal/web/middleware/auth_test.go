@@ -9,7 +9,11 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -609,12 +613,20 @@ func TestAuthManager_isPublicPath(t *testing.T) {
 		{"csrf-token endpoint", "/mitto/api/csrf-token", true},
 		{"supported-runners endpoint", "/mitto/api/supported-runners", true},
 
+		// SDK asset tree (mitto-laa3): auth.js imports from ./sdk/index.js,
+		// so the whole /sdk/ tree must be public or the login page's module
+		// graph 302s to auth.html and fails to load.
+		{"sdk index", "/sdk/index.js", true},
+		{"sdk nested", "/sdk/core/config.js", true},
+		{"sdk with prefix", "/mitto/sdk/index.js", true},
+
 		// Non-public paths
 		{"sessions endpoint", "/mitto/api/sessions", false},
 		{"config endpoint", "/mitto/api/config", false},
 		{"root", "/", false},
 		{"index.html", "/index.html", false},
 		{"app.js", "/app.js", false},
+		{"not sdk", "/sdkfoo.js", false},
 
 		// API paths without prefix (should not match)
 		{"login without prefix", "/api/login", false},
@@ -626,6 +638,111 @@ func TestAuthManager_isPublicPath(t *testing.T) {
 				t.Errorf("isPublicPath(%q) = %v, want %v", tt.path, got, tt.want)
 			}
 		})
+	}
+}
+
+// sdkImportFromRe matches `import ... from "./x.js"` and `export ... from
+// "./x.js"` (including multi-line `import {\n  a,\n} from "./x.js"` forms,
+// since the character class excludes quotes and therefore cannot skip over
+// an intervening bare/side-effect import's own quoted specifier).
+var sdkImportFromRe = regexp.MustCompile(`(?:import|export)\s+[^'"]*?from\s+['"]([^'"]+)['"]`)
+
+// sdkImportBareRe matches side-effect-only imports: `import "./x.js";`.
+var sdkImportBareRe = regexp.MustCompile(`(?m)^\s*import\s+['"]([^'"]+)['"]`)
+
+// relativeImportSpecifiers extracts the relative ("./x.js" / "../x.js")
+// ES-module specifiers referenced by a JS file. Bare/package specifiers and
+// absolute URLs are ignored. This is intentionally a simple regexp scan, not
+// a real JS parser (mitto-laa3).
+func relativeImportSpecifiers(t *testing.T, file string) []string {
+	t.Helper()
+	data, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatalf("failed to read %s: %v", file, err)
+	}
+	content := string(data)
+
+	var specs []string
+	seen := map[string]bool{}
+	addIfRelative := func(spec string) {
+		if (strings.HasPrefix(spec, "./") || strings.HasPrefix(spec, "../")) && !seen[spec] {
+			seen[spec] = true
+			specs = append(specs, spec)
+		}
+	}
+	for _, m := range sdkImportFromRe.FindAllStringSubmatch(content, -1) {
+		addIfRelative(m[1])
+	}
+	for _, m := range sdkImportBareRe.FindAllStringSubmatch(content, -1) {
+		addIfRelative(m[1])
+	}
+	return specs
+}
+
+// TestAuthManager_isPublicPath_AuthJSModuleGraphIsPublic is a drift guard
+// (mitto-laa3): it walks the entire relative ES-module import graph rooted
+// at web/static/auth.js and asserts every reachable file is public. auth.js
+// is a `type="module"` script loaded by the pre-auth login page; if any file
+// in its import graph becomes non-public, the browser's module loader 302s
+// to auth.html and the login form's submit listener is never attached — a
+// silent, total remote-login outage (this is exactly how the /sdk/ tree
+// broke login before this fix). The test does not special-case /sdk/ so it
+// also catches the next refactor that pulls a new pre-auth file from
+// elsewhere into the graph.
+func TestAuthManager_isPublicPath_AuthJSModuleGraphIsPublic(t *testing.T) {
+	staticRoot, err := filepath.Abs("../../../web/static")
+	if err != nil {
+		t.Fatalf("failed to resolve web/static root: %v", err)
+	}
+	entry, err := filepath.Abs(filepath.Join(staticRoot, "auth.js"))
+	if err != nil {
+		t.Fatalf("failed to resolve auth.js path: %v", err)
+	}
+	if _, statErr := os.Stat(entry); statErr != nil {
+		t.Fatalf("expected %s to exist: %v", entry, statErr)
+	}
+
+	am := NewAuthManager(&config.WebAuth{
+		Simple: &config.SimpleAuth{
+			Username: "admin",
+			Password: "password",
+		},
+	})
+
+	visited := map[string]bool{}
+	queue := []string{entry}
+
+	for len(queue) > 0 {
+		current := queue[0]
+		queue = queue[1:]
+		if visited[current] {
+			continue
+		}
+		visited[current] = true
+
+		rel, relErr := filepath.Rel(staticRoot, current)
+		if relErr != nil || strings.HasPrefix(rel, "..") {
+			t.Fatalf("resolved import %q escapes web/static root (rel=%q)", current, rel)
+		}
+		serverPath := "/" + filepath.ToSlash(rel)
+		if !am.isPublicPath(serverPath) {
+			t.Errorf("isPublicPath(%q) = false, want true (reachable from auth.js's module graph)", serverPath)
+		}
+
+		for _, spec := range relativeImportSpecifiers(t, current) {
+			next := filepath.Clean(filepath.Join(filepath.Dir(current), spec))
+			if !visited[next] {
+				queue = append(queue, next)
+			}
+		}
+	}
+
+	// Sanity check: auth.js alone imports sdk/index.js, which fans out into
+	// dozens of files. If we only ever visited 1-2 files, the import parser
+	// is broken (or auth.js's imports were gutted) rather than the graph
+	// being genuinely small.
+	if len(visited) < 5 {
+		t.Fatalf("expected auth.js's module graph to contain more than %d file(s) — import parsing may be broken", len(visited))
 	}
 }
 
@@ -1705,4 +1822,81 @@ func TestAuthManager_PruneSplitIPWarnSeen(t *testing.T) {
 	if !freshExists {
 		t.Error("fresh entry should not have been pruned")
 	}
+}
+
+// --- SetSharedToken (mitto-pscc.9 rotation) -------------------------------
+
+// TestAuthManager_SetSharedToken_SwapsAcceptedCredential verifies that
+// rotating the shared token via SetSharedToken atomically flips which token
+// value ValidateSharedToken accepts: the old value must be rejected and the
+// new value accepted immediately after the call returns.
+func TestAuthManager_SetSharedToken_SwapsAcceptedCredential(t *testing.T) {
+	am := NewAuthManager(&config.WebAuth{SharedToken: "old-token"})
+	defer am.Close()
+
+	if !am.ValidateSharedToken("old-token") {
+		t.Fatal("old-token should be accepted before rotation")
+	}
+
+	am.SetSharedToken("new-token")
+
+	if am.ValidateSharedToken("old-token") {
+		t.Error("old-token should be rejected after rotation")
+	}
+	if !am.ValidateSharedToken("new-token") {
+		t.Error("new-token should be accepted after rotation")
+	}
+}
+
+// TestAuthManager_SetSharedToken_NilConfig verifies SetSharedToken does not
+// panic when the AuthManager was constructed with a nil config (auth
+// disabled) — it lazily allocates a config so a shared token can still be
+// installed dynamically (not exercised by any current caller, but rotate's
+// implementation must not assume a.config is always non-nil).
+func TestAuthManager_SetSharedToken_NilConfig(t *testing.T) {
+	am := NewAuthManager(nil)
+	defer am.Close()
+
+	am.SetSharedToken("tok")
+
+	if !am.HasSharedToken() {
+		t.Fatal("HasSharedToken() = false after SetSharedToken on a nil-config manager")
+	}
+	if !am.ValidateSharedToken("tok") {
+		t.Error("ValidateSharedToken(tok) = false after SetSharedToken on a nil-config manager")
+	}
+}
+
+// TestAuthManager_SharedToken_ConcurrentRotateAndValidate_Race exercises
+// SetSharedToken concurrently with HasSharedToken/ValidateSharedToken (the
+// hot read path AuthMiddleware calls on every request) to catch data races
+// under `go test -race` (mitto-pscc.9: HasSharedToken/ValidateSharedToken
+// moved from unlocked reads to a.mu.RLock specifically to make this safe).
+func TestAuthManager_SharedToken_ConcurrentRotateAndValidate_Race(t *testing.T) {
+	am := NewAuthManager(&config.WebAuth{SharedToken: "initial-token"})
+	defer am.Close()
+
+	const iterations = 200
+	var wg sync.WaitGroup
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iterations; i++ {
+			am.SetSharedToken("token-" + string(rune('a'+i%26)))
+		}
+	}()
+
+	for w := 0; w < 4; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < iterations; i++ {
+				_ = am.HasSharedToken()
+				_ = am.ValidateSharedToken("token-" + string(rune('a'+i%26)))
+			}
+		}()
+	}
+
+	wg.Wait()
 }
