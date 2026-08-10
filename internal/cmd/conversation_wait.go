@@ -90,6 +90,26 @@ func waitForQueuedMessage(ctx context.Context, evCh <-chan client.Event, errCh <
 	matchedCh := gate.matched
 
 	for {
+		// Priority check: consume a pending "sending" notification before
+		// considering any already-buffered stream event. A plain two-case
+		// select does not preserve which channel became ready first — if this
+		// goroutine is scheduled late enough that both matchedCh (closed some
+		// time ago) and evCh (an event for OUR turn, arrived after) are ready
+		// simultaneously, select could pick evCh first and this loop would
+		// treat our own first chunk(s) as belonging to someone else's
+		// in-flight turn (silently dropped by the !sawSending branch below).
+		// Rare in practice (the gap is normally microseconds vs. the
+		// network/agent latency before any reply arrives), but deterministic
+		// to close: never let an evCh read jump ahead of an already-fired gate.
+		if matchedCh != nil {
+			select {
+			case <-matchedCh:
+				sawSending = true
+				matchedCh = nil
+			default:
+			}
+		}
+
 		select {
 		case <-matchedCh:
 			sawSending = true

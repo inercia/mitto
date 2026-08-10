@@ -149,6 +149,17 @@ by scripts — `--output json`/`yaml` is the contract.
   (`internal/web/handlers/queue.go`), so an idle session can finish the
   whole turn before a post-enqueue dial completes, hanging the command to
   `--wait-timeout` on a turn that already succeeded.
+- **A bare `Connect()` is not enough to receive live notifications.** The
+  server only calls `BackgroundSession.AddObserver` from its `load_events`
+  handler (`internal/web/session_ws.go` `postLoadProcessing`) — connecting
+  alone leaves this client un-registered, so `agent_message`/
+  `prompt_complete`/`queue_message_sending` would never arrive (found
+  during the Test phase: the command would silently hang to
+  `--wait-timeout` on every turn, regardless of completion). The command
+  therefore calls `Session.LoadEvents(1, 0, 0)` right after connecting and
+  blocks on the resulting `OnEventsLoaded` callback before enqueuing —
+  `limit=1` keeps the (unused) historical replay minimal; those events are
+  not modelled by the `Event` stream and are ignored.
 - **Correlation is two-phase, keyed on the queue message ID.**
   `prompt_complete` carries no message ID, so on a busy session it could
   otherwise be mistaken for the wrong (already in-flight) turn's

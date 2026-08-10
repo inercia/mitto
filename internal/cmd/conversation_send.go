@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -204,8 +205,13 @@ func runConversationSend(cmd *cobra.Command, args []string) error {
 		// (internal/web/handlers/queue.go), which could otherwise complete
 		// the whole turn before a post-enqueue WebSocket dial lands.
 		gate = newQueueGate()
+		loaded := make(chan struct{})
+		var loadedOnce sync.Once
 		sess, cerr := c.Connect(waitCtx, conversationID, client.SessionCallbacks{
 			OnQueueMessageSending: gate.onQueueMessageSending,
+			OnEventsLoaded: func(events []client.SyncEvent, hasMore bool, isPrompting bool) {
+				loadedOnce.Do(func() { close(loaded) })
+			},
 		})
 		if cerr != nil {
 			return classify(cerr)
@@ -215,6 +221,31 @@ func runConversationSend(cmd *cobra.Command, args []string) error {
 		evCh, errCh, cerr = sess.EventsChan(waitCtx)
 		if cerr != nil {
 			return classify(cerr)
+		}
+
+		// A bare Connect() does not make this client an observer of the
+		// session: the server only calls BackgroundSession.AddObserver from
+		// its load_events handler (internal/web/session_ws.go
+		// postLoadProcessing), which fires after an events_loaded reply. Without
+		// this handshake, agent_message/prompt_complete/queue_message_sending
+		// notifications for OUR message would never reach evCh/gate, hanging
+		// --wait until --wait-timeout regardless of whether the turn actually
+		// completes. limit=1 keeps the (unused) historical replay minimal; the
+		// events it may carry are not modelled by the Event stream and are
+		// silently ignored (see eventFromMessage). Waiting for events_loaded
+		// before enqueuing (rather than racing them) also preserves this
+		// block's ordering guarantee: server-side AddObserver happens
+		// synchronously right after events_loaded is queued for delivery, so
+		// receiving it here is a reliable (if not formally atomic) signal that
+		// registration has already happened by the time our REST enqueue
+		// reaches the server over its own, later network round trip.
+		if lerr := sess.LoadEvents(1, 0, 0); lerr != nil {
+			return classify(lerr)
+		}
+		select {
+		case <-loaded:
+		case <-waitCtx.Done():
+			return classify(waitCtx.Err())
 		}
 	}
 
