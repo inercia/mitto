@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"reflect"
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
@@ -115,12 +116,20 @@ func emit(cmd *cobra.Command, f *serverFlags, v any, tableFn func() ([]string, [
 // normalizeForEmptyCollections ensures a nil slice passed as v marshals as
 // `[]` rather than `null` (DDR §4: a zero-result list command prints `[]`).
 // Non-slice values pass through unchanged.
+//
+// A plain `switch v.(type) { case nil: ... }` only catches the untyped nil
+// interface case; a concrete-typed nil slice (e.g. a `var s []Foo` returned
+// by a zero-result list call, or `[]Foo(nil)`) is a *non-nil* interface
+// value once boxed into `any`, so that case would never fire for the exact
+// scenario this function exists to handle. reflect.Value.IsNil() sees
+// through the boxing to the underlying nil slice.
 func normalizeForEmptyCollections(v any) any {
-	switch t := v.(type) {
-	case nil:
+	if v == nil {
 		return []any{}
-	default:
-		_ = t
-		return v
 	}
+	rv := reflect.ValueOf(v)
+	if rv.Kind() == reflect.Slice && rv.IsNil() {
+		return []any{}
+	}
+	return v
 }
