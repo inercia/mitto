@@ -2,23 +2,25 @@ package web
 
 import "testing"
 
-// TestPathSegmentsMatch pins the wildcard-matching contract that makes the
+// TestRouteCoversPath pins the DIRECTIONAL wildcard contract that makes the
 // mitto-7gta.24 gate work with routes.go's generic sub-path segments (e.g.
 // "/api/sessions/{id}/loop/{subPath}" must match the JS SDK's literal
-// ".../loop/run-now" and ".../loop/restore").
-func TestPathSegmentsMatch(t *testing.T) {
+// ".../loop/run-now" and ".../loop/restore") WITHOUT letting an SDK-side
+// placeholder absorb an unrelated new sibling route.
+func TestRouteCoversPath(t *testing.T) {
 	tests := []struct {
-		name string
-		a    string
-		b    string
-		want bool
+		name  string
+		route string
+		sdk   string
+		want  bool
 	}{
 		{"identical concrete paths", "/api/health", "/api/health", true},
 		{"identical with placeholder", "/api/sessions/{}", "/api/sessions/{}", true},
-		{"route placeholder matches concrete segment", "/api/sessions/{}", "/api/sessions/abc", true},
-		{"concrete segment matches route placeholder (order swapped)", "/api/sessions/abc", "/api/sessions/{}", true},
-		{"both placeholders in same position", "/api/sessions/{}/loop/{}", "/api/sessions/{}/loop/run-now", true},
-		{"wildcard sub-path matches literal sub-action", "/api/sessions/{}/loop/{}", "/api/sessions/{}/loop/restore", true},
+		{"route placeholder covers concrete SDK segment", "/api/sessions/{}", "/api/sessions/abc", true},
+		{"wildcard sub-path covers literal sub-action", "/api/sessions/{}/loop/{}", "/api/sessions/{}/loop/run-now", true},
+		{"wildcard sub-path covers a second literal sub-action", "/api/sessions/{}/loop/{}", "/api/sessions/{}/loop/restore", true},
+		{"SDK placeholder does NOT cover a concrete new sibling route", "/api/issues/brand-new-sibling", "/api/issues/{}", false},
+		{"SDK placeholder does NOT cover a concrete route segment", "/api/sessions/running", "/api/sessions/{}", false},
 		{"different segment counts never match", "/api/sessions/{}", "/api/sessions/{}/loop", false},
 		{"different literal segments do not match", "/api/sessions/abc", "/api/sessions/xyz", false},
 		{"differing path length with placeholders still rejected", "/api/a/{}/c", "/api/a/b", false},
@@ -26,8 +28,8 @@ func TestPathSegmentsMatch(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := pathSegmentsMatch(tt.a, tt.b); got != tt.want {
-				t.Errorf("pathSegmentsMatch(%q, %q) = %v, want %v", tt.a, tt.b, got, tt.want)
+			if got := routeCoversPath(tt.route, tt.sdk); got != tt.want {
+				t.Errorf("routeCoversPath(%q, %q) = %v, want %v", tt.route, tt.sdk, got, tt.want)
 			}
 		})
 	}

@@ -38,7 +38,7 @@ func TestRouteCoverage_SDKsOrExempt(t *testing.T) {
 	for i, route := range routes {
 		norm := routeNorms[i]
 		switch {
-		case anyPathMatches(norm, goCovered), anyPathMatchesKeyed(norm, jsCovered):
+		case anyRouteCovers(norm, goCovered), anyRouteCoversKeyed(norm, jsCovered):
 			// Covered by at least one SDK.
 		case exempt[norm]:
 			// Explicitly exempted; fine.
@@ -61,22 +61,19 @@ func TestRouteCoverage_SDKsOrExempt(t *testing.T) {
 	// A route-side "{}" segment (a Go 1.22 mux path parameter) matches ANY
 	// concrete SDK segment in the same position (e.g. routes.go's
 	// "/api/sessions/{id}/loop/{subPath}" matches the JS SDK's literal
-	// ".../loop/run-now" and ".../loop/restore") — see pathSegmentsMatch.
+	// ".../loop/run-now" and ".../loop/restore") — see routeCoversPath.
 	for norm, srcs := range jsCovered {
-		if !anyPathMatches(norm, sliceToSet(routeNorms)) {
+		covered := false
+		for _, routeNorm := range routeNorms {
+			if routeCoversPath(routeNorm, norm) {
+				covered = true
+				break
+			}
+		}
+		if !covered {
 			t.Errorf("JS SDK path %q (declared in %s) has no matching route in routes.go", norm, srcs)
 		}
 	}
-}
-
-// sliceToSet is a small helper turning a []string into a set for
-// anyPathMatches's iteration signature.
-func sliceToSet(s []string) map[string]bool {
-	out := make(map[string]bool, len(s))
-	for _, v := range s {
-		out[v] = true
-	}
-	return out
 }
 
 // containsPattern reports whether norm equals (exact, not wildcard) any
@@ -92,44 +89,53 @@ func containsPattern(routeNorms []string, norm string) bool {
 	return false
 }
 
-// anyPathMatches reports whether routeNorm segment-wise matches any key in
-// candidates (see pathSegmentsMatch).
-func anyPathMatches(routeNorm string, candidates map[string]bool) bool {
+// anyRouteCovers reports whether routeNorm is covered by any key in
+// candidates (see routeCoversPath).
+func anyRouteCovers(routeNorm string, candidates map[string]bool) bool {
 	for c := range candidates {
-		if pathSegmentsMatch(routeNorm, c) {
+		if routeCoversPath(routeNorm, c) {
 			return true
 		}
 	}
 	return false
 }
 
-// anyPathMatchesKeyed is anyPathMatches for a map[string]string (JS covered
+// anyRouteCoversKeyed is anyRouteCovers for a map[string]string (JS covered
 // set, which also carries source-file provenance as the value).
-func anyPathMatchesKeyed(routeNorm string, candidates map[string]string) bool {
+func anyRouteCoversKeyed(routeNorm string, candidates map[string]string) bool {
 	for c := range candidates {
-		if pathSegmentsMatch(routeNorm, c) {
+		if routeCoversPath(routeNorm, c) {
 			return true
 		}
 	}
 	return false
 }
 
-// pathSegmentsMatch compares two normalized paths segment-by-segment. A "{}"
-// segment on EITHER side matches any non-empty segment on the other side
-// (route-declared path parameters and SDK template-literal interpolations
-// are semantically equivalent wildcards at this granularity — see the
-// Plan's design decision 3). Both paths must have the same segment count.
-func pathSegmentsMatch(a, b string) bool {
-	if a == b {
+// routeCoversPath compares a normalized ROUTE pattern against a normalized
+// SDK path segment-by-segment. The wildcard is DIRECTIONAL: only a "{}" on
+// the route side matches an arbitrary segment on the SDK side, because a
+// route-declared path parameter genuinely subsumes every concrete value the
+// SDK may send (routes.go's "/api/sessions/{id}/loop/{subPath}" really does
+// serve the JS SDK's ".../loop/run-now" and ".../loop/restore").
+//
+// The converse is NOT true and must not match: an SDK-side "{}" is a single
+// call site with an interpolated value, not a promise to cover every sibling
+// path. Treating it as a wildcard let a brand-new concrete route (e.g.
+// "/api/issues/brand-new-sibling") be silently absorbed by the SDK's
+// pre-existing "/api/issues/{}" entry, defeating the whole point of the gate
+// for that entire class of additions. Both paths must have the same segment
+// count.
+func routeCoversPath(routeNorm, sdkNorm string) bool {
+	if routeNorm == sdkNorm {
 		return true
 	}
-	as := strings.Split(a, "/")
-	bs := strings.Split(b, "/")
-	if len(as) != len(bs) {
+	rs := strings.Split(routeNorm, "/")
+	ss := strings.Split(sdkNorm, "/")
+	if len(rs) != len(ss) {
 		return false
 	}
-	for i := range as {
-		if as[i] == bs[i] || as[i] == "{}" || bs[i] == "{}" {
+	for i := range rs {
+		if rs[i] == ss[i] || rs[i] == "{}" {
 			continue
 		}
 		return false
