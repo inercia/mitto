@@ -93,14 +93,18 @@ type LoopPatchRequest struct {
 	ResetCounters *bool `json:"reset_counters,omitempty"`
 }
 
-// LoopConfig represents the loop configuration for a session.
+// LoopConfig represents the loop configuration for a session. It mirrors the
+// wire shape of the server's session.LoopPrompt; timestamps are kept as their
+// raw RFC 3339 strings (as NextScheduledAt already was) rather than time.Time
+// so the whole type decodes uniformly.
 type LoopConfig struct {
-	Prompt          string        `json:"prompt,omitempty"`
-	PromptName      string        `json:"prompt_name,omitempty"`
-	Frequency       LoopFrequency `json:"frequency"`
-	Enabled         bool          `json:"enabled"`
-	MaxIterations   int           `json:"max_iterations,omitempty"`
-	NextScheduledAt string        `json:"next_scheduled_at,omitempty"`
+	Prompt          string            `json:"prompt,omitempty"`
+	PromptName      string            `json:"prompt_name,omitempty"`
+	Arguments       map[string]string `json:"arguments,omitempty"`
+	Frequency       LoopFrequency     `json:"frequency"`
+	Enabled         bool              `json:"enabled"`
+	MaxIterations   int               `json:"max_iterations,omitempty"`
+	NextScheduledAt string            `json:"next_scheduled_at,omitempty"`
 	// Trigger is the legacy scalar primary trigger (back-compat; equals Triggers[0]).
 	Trigger            string   `json:"trigger,omitempty"`
 	Triggers           []string `json:"triggers,omitempty"`
@@ -113,6 +117,22 @@ type LoopConfig struct {
 	ConditionPreset    string   `json:"condition_preset,omitempty"`
 	CooldownSeconds    int      `json:"cooldown_seconds,omitempty"`
 	StoppedReason      string   `json:"stopped_reason,omitempty"`
+	// StoppedAt is when the loop stopped itself (empty while running).
+	StoppedAt string `json:"stopped_at,omitempty"`
+	// AcknowledgedStoppedReason is the StoppedReason the user last dismissed;
+	// see AcknowledgeLoopStoppedReason.
+	AcknowledgedStoppedReason string `json:"acknowledged_stopped_reason,omitempty"`
+	// CreatedAt / UpdatedAt are the loop configuration's own timestamps.
+	CreatedAt string `json:"created_at,omitempty"`
+	UpdatedAt string `json:"updated_at,omitempty"`
+	// FirstRunAt is when the loop first ran (the MaxDurationSeconds origin);
+	// LastSentAt is when a run was last dispatched. Both empty when never run.
+	FirstRunAt string `json:"first_run_at,omitempty"`
+	LastSentAt string `json:"last_sent_at,omitempty"`
+	// CoalesceDuringBusy mirrors the schema field; nil = unset (server default).
+	CoalesceDuringBusy *bool `json:"coalesce_during_busy,omitempty"`
+	// SettleWindowSeconds mirrors the schema field; nil = unset (server default).
+	SettleWindowSeconds *int `json:"settle_window_seconds,omitempty"`
 	// RunOnStart mirrors the schema field (mitto-ystk). Nil = unset/default.
 	RunOnStart *bool `json:"run_on_start,omitempty"`
 }

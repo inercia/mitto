@@ -49,7 +49,7 @@ func TestLoopOnCompletionE2E(t *testing.T) {
 		// DelaySeconds=0 is clamped to the server floor (5 s).
 		cfg, err := ts.Client.SetLoop(sess.SessionID, client.SetLoopRequest{
 			Prompt:        "ping",
-			Trigger:       "onCompletion",
+			Triggers:      []string{"onCompletion"},
 			DelaySeconds:  0,
 			MaxIterations: 2,
 			Enabled:       true,
@@ -117,7 +117,7 @@ func TestLoopOnCompletionE2E(t *testing.T) {
 
 		cfg, err := ts.Client.SetLoop(sess.SessionID, client.SetLoopRequest{
 			Prompt:             "ping",
-			Trigger:            "onCompletion",
+			Triggers:           []string{"onCompletion"},
 			DelaySeconds:       0, // clamped to 5 s floor
 			MaxDurationSeconds: 4, // elapsed ≈5 s at next firing >= 4 s cap → stop
 			MaxIterations:      0, // no iteration cap

@@ -16,7 +16,7 @@ func TestClient_ListImages_HappyPath(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`[{"id":"img-1","url":"/api/files/img-1","name":"a.png","mime_type":"image/png","size":42}]`))
+		_, _ = w.Write([]byte(`[{"id":"img-1","url":"/api/files/img-1","name":"a.png","mime_type":"image/png","size":42,"created_at":"2026-08-10T06:00:00Z"}]`))
 	})
 	ts := httptest.NewServer(mux)
 	defer ts.Close()
@@ -28,6 +28,11 @@ func TestClient_ListImages_HappyPath(t *testing.T) {
 	}
 	if len(images) != 1 || images[0].ID != "img-1" || images[0].Size != 42 {
 		t.Errorf("images = %+v, unexpected", images)
+	}
+	// created_at is emitted by the list endpoint (session.ImageInfo) and was
+	// dropped on decode before the review-phase DTO fix.
+	if images[0].CreatedAt == nil || images[0].CreatedAt.IsZero() {
+		t.Errorf("CreatedAt = %v, want the server's timestamp", images[0].CreatedAt)
 	}
 }
 
@@ -159,7 +164,7 @@ func TestClient_ListFiles_HappyPath(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`[{"id":"file-1","name":"a.txt","mime_type":"text/plain","size":3,"category":"text"}]`))
+		_, _ = w.Write([]byte(`[{"id":"file-1","name":"a.txt","mime_type":"text/plain","size":3,"category":"text","created_at":"2026-08-10T06:00:00Z"}]`))
 	})
 	ts := httptest.NewServer(mux)
 	defer ts.Close()
@@ -171,6 +176,11 @@ func TestClient_ListFiles_HappyPath(t *testing.T) {
 	}
 	if len(files) != 1 || files[0].ID != "file-1" {
 		t.Errorf("files = %+v, unexpected", files)
+	}
+	// created_at is emitted by the list endpoint (session.FileInfo) and was
+	// dropped on decode before the review-phase DTO fix.
+	if files[0].CreatedAt == nil || files[0].CreatedAt.IsZero() {
+		t.Errorf("CreatedAt = %v, want the server's timestamp", files[0].CreatedAt)
 	}
 }
 

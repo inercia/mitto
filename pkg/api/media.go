@@ -10,17 +10,20 @@ import (
 	"net/http"
 	"net/textproto"
 	"net/url"
+	"time"
 )
 
 // --- Image API ---
 
-// ImageInfo represents an uploaded image.
+// ImageInfo represents an uploaded image. CreatedAt is only populated by
+// ListImages (the upload response does not carry it).
 type ImageInfo struct {
-	ID       string `json:"id"`
-	URL      string `json:"url"`
-	Name     string `json:"name"`
-	MimeType string `json:"mime_type"`
-	Size     int64  `json:"size,omitempty"`
+	ID        string     `json:"id"`
+	URL       string     `json:"url"`
+	Name      string     `json:"name"`
+	MimeType  string     `json:"mime_type"`
+	Size      int64      `json:"size,omitempty"`
+	CreatedAt *time.Time `json:"created_at,omitempty"`
 }
 
 // UploadImage uploads an image to a session via multipart form.
@@ -154,13 +157,15 @@ func (c *Client) DeleteImage(sessionID, imageID string) error {
 
 // SessionFileInfo represents an uploaded file (named to avoid colliding with
 // the pre-existing FileInfo helper type used by PromptResult.FilesRead/Written).
+// CreatedAt is only populated by ListFiles (the upload response does not carry it).
 type SessionFileInfo struct {
-	ID       string `json:"id"`
-	URL      string `json:"url"`
-	Name     string `json:"name"`
-	MimeType string `json:"mime_type"`
-	Size     int64  `json:"size"`
-	Category string `json:"category,omitempty"` // "text" or "binary"
+	ID        string     `json:"id"`
+	URL       string     `json:"url"`
+	Name      string     `json:"name"`
+	MimeType  string     `json:"mime_type"`
+	Size      int64      `json:"size"`
+	Category  string     `json:"category,omitempty"` // "text" or "binary"
+	CreatedAt *time.Time `json:"created_at,omitempty"`
 }
 
 // UploadFile uploads a file to a session via multipart form. Mirrors

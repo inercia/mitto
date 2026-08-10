@@ -58,8 +58,12 @@ type SessionMetadata struct {
 	ProcessorActivations    int             `json:"processor_activations,omitempty"`
 	ProcessorLastActivation time.Time       `json:"processor_last_activation,omitempty"`
 	ParentSessionID         string          `json:"parent_session_id,omitempty"`
-	ChildOrigin             string          `json:"child_origin,omitempty"`
-	ACPStartFailureCount    int             `json:"acp_start_failure_count,omitempty"`
+	// IsAutoChild is deprecated server-side in favour of ChildOrigin, but is
+	// still emitted for metadata written before ChildOrigin existed.
+	IsAutoChild                bool      `json:"is_auto_child,omitempty"`
+	ChildOrigin                string    `json:"child_origin,omitempty"`
+	ACPStartFailureCount       int       `json:"acp_start_failure_count,omitempty"`
+	AutoUnarchiveLastAttemptAt time.Time `json:"auto_unarchive_last_attempt_at,omitempty"`
 }
 
 // UpdateSession applies a partial update to a session's metadata via PATCH,

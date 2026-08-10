@@ -59,7 +59,7 @@ func TestLoopRunOnStartE2E(t *testing.T) {
 	runOnStart := true
 	cfg, err := ts.Client.SetLoop(sess.SessionID, client.SetLoopRequest{
 		Prompt:     "boot pulse ping",
-		Trigger:    "schedule",
+		Triggers:   []string{"schedule"},
 		Frequency:  client.LoopFrequency{Value: 1, Unit: "days", At: "09:00"},
 		Enabled:    true,
 		RunOnStart: &runOnStart,

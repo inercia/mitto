@@ -152,7 +152,7 @@ func createOnTasksSession(t *testing.T, ts *TestServer, workingDir, name, condit
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
-	req := client.SetLoopRequest{Prompt: "iterate", Trigger: "onTasks", Condition: condition, Enabled: true}
+	req := client.SetLoopRequest{Prompt: "iterate", Triggers: []string{"onTasks"}, Condition: condition, Enabled: true}
 	for _, opt := range opts {
 		opt(&req)
 	}

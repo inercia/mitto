@@ -40,6 +40,31 @@ func TestClient_UpdateSession_HappyPath(t *testing.T) {
 	}
 }
 
+// TestClient_UpdateSession_DecodesFullMetadataShape guards the review-phase
+// fix for SessionMetadata omitting fields the server's session.Metadata emits
+// (is_auto_child, auto_unarchive_last_attempt_at), which were silently dropped
+// on decode.
+func TestClient_UpdateSession_DecodesFullMetadataShape(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/mitto/api/sessions/sess-1", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"session_id":"sess-1","acp_server":"auggie","working_dir":"/tmp","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z","event_count":0,"status":"idle","is_auto_child":true,"child_origin":"auto","auto_unarchive_last_attempt_at":"2026-08-10T06:00:00Z"}`))
+	})
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	meta, err := New(ts.URL).UpdateSession("sess-1", SessionUpdateRequest{})
+	if err != nil {
+		t.Fatalf("UpdateSession: %v", err)
+	}
+	if !meta.IsAutoChild || meta.ChildOrigin != "auto" {
+		t.Errorf("child fields = %v/%q, want true/auto", meta.IsAutoChild, meta.ChildOrigin)
+	}
+	if meta.AutoUnarchiveLastAttemptAt.IsZero() {
+		t.Error("AutoUnarchiveLastAttemptAt not decoded")
+	}
+}
+
 func TestClient_UpdateSession_404_ReturnsTypedNotFoundError(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/mitto/api/sessions/missing", func(w http.ResponseWriter, r *http.Request) {

@@ -224,3 +224,46 @@ func TestClient_SetLoop_MultiTriggerSchema_RoundTrip(t *testing.T) {
 		t.Errorf("LoopConfig = %+v, unexpected", config)
 	}
 }
+
+// TestClient_GetLoop_DecodesFullServerShape guards the review-phase fix for
+// LoopConfig dropping fields the server actually emits on session.LoopPrompt
+// (arguments, stopped_at, acknowledged_stopped_reason, created_at/updated_at,
+// first_run_at/last_sent_at, coalesce_during_busy, settle_window_seconds).
+// Before the fix these were silently discarded on decode.
+func TestClient_GetLoop_DecodesFullServerShape(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/mitto/api/sessions/sess-1/loop", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"prompt":"p","prompt_name":"pn","arguments":{"Commit":"true"},
+			"frequency":{"value":1,"unit":"hours"},"enabled":true,
+			"created_at":"2026-08-10T06:00:00Z","updated_at":"2026-08-10T06:30:00Z",
+			"first_run_at":"2026-08-10T06:05:00Z","last_sent_at":"2026-08-10T06:25:00Z",
+			"stopped_reason":"max_iterations","stopped_at":"2026-08-10T06:40:00Z",
+			"acknowledged_stopped_reason":"max_duration",
+			"coalesce_during_busy":false,"settle_window_seconds":15
+		}`))
+	})
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	cfg, err := New(ts.URL).GetLoop("sess-1")
+	if err != nil {
+		t.Fatalf("GetLoop: %v", err)
+	}
+	if cfg.Arguments["Commit"] != "true" {
+		t.Errorf("Arguments = %v, want Commit=true", cfg.Arguments)
+	}
+	if cfg.CreatedAt == "" || cfg.UpdatedAt == "" || cfg.FirstRunAt == "" || cfg.LastSentAt == "" {
+		t.Errorf("timestamps not decoded: %+v", cfg)
+	}
+	if cfg.StoppedAt == "" || cfg.AcknowledgedStoppedReason != "max_duration" {
+		t.Errorf("stopped fields not decoded: %+v", cfg)
+	}
+	if cfg.CoalesceDuringBusy == nil || *cfg.CoalesceDuringBusy {
+		t.Errorf("CoalesceDuringBusy = %v, want false", cfg.CoalesceDuringBusy)
+	}
+	if cfg.SettleWindowSeconds == nil || *cfg.SettleWindowSeconds != 15 {
+		t.Errorf("SettleWindowSeconds = %v, want 15", cfg.SettleWindowSeconds)
+	}
+}
