@@ -119,6 +119,15 @@ mitto auth rotate
 Each setting resolves as: explicit flag > environment variable >
 `instance.json` (written by `mitto web`) > error.
 
+`mitto auth status` reports the resolved server, whether it is reachable, which
+authentication methods it has configured, and the token's **source** plus an
+8-character fingerprint — never the token value itself. `mitto auth rotate`
+generates a new shared token on the running server and rewrites `instance.json`;
+it only works over localhost, only for a token Mitto adopted from
+`instance.json` (an explicitly configured one is refused), and every client
+holding the previous token is rejected immediately. See
+[Shared Token (Bearer) Authentication](config/web/README.md#shared-token-bearer-authentication).
+
 See [CLI Conversation Commands — Design Decision Record](devel/cli-conversation.md)
 for the full command tree, output contract and exit-code mapping.
 

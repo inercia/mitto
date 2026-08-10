@@ -93,6 +93,12 @@ const client = createClient({
 - Rotating the token invalidates every client immediately; there is no
   per-client revocation. Keep it out of shell history and URLs — see the
   server-side notes linked above.
+- **Rotation is server-side and localhost-only** (`mitto auth rotate`, or
+  `POST /api/auth/rotate-token` from the loopback listener). It returns only a
+  fingerprint, never the new value, and only rotates a token Mitto adopted from
+  its `instance.json` — an operator-configured one is refused with a 409. A
+  `getToken` supplier that re-reads its source therefore picks up the new token
+  without reconstructing the client; a captured literal does not.
 
 ## Cloudflare Access
 

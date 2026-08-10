@@ -134,6 +134,7 @@ These endpoints are called by external callers (native macOS app, load balancers
 | `POST /api/sessions/{id}/images/from-path`    | Native macOS app image paste (localhost only) |
 | `POST /api/sessions/{id}/files/from-path`     | Native macOS app file attach (localhost only) |
 | `POST /api/badge-click`                       | Native macOS app Dock badge click             |
+| `POST /api/auth/rotate-token`                 | `mitto auth rotate` CLI (localhost only)      |
 
 ---
 
@@ -254,6 +255,7 @@ All `/api/beads/*` endpoints expose a verb-based RPC style. The target maps them
 | `/api/save-file-to-path` | POST | `/api/save-file-to-path` | POST | external-stable | Native macOS app; localhost-only |
 | `/api/check-file-exists` | GET | `/api/check-file-exists` | GET | external-stable | Native macOS app; localhost-only |
 | `/api/badge-click` | POST | `/api/badge-click` | POST | external-stable | Native macOS Dock badge; localhost-only |
+| `/api/auth/rotate-token` | POST | `/api/auth/rotate-token` | POST | external-stable | `mitto auth rotate` (`mitto-pscc.9`); localhost-only, rejected on the external listener |
 
 ---
 

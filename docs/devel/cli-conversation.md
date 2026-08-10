@@ -303,7 +303,55 @@ symbol that is not on an explicit allowlist.
   `mcp.go`'s client and request: `mitto mcp --proxy-to` speaks MCP
   Streamable-HTTP JSON-RPC to an MCP endpoint, not the Mitto REST API.
 
-## 11. Out of scope
+## 11. `mitto auth` decisions (`mitto-pscc.9`)
+
+**The token `auth status` reports is the one `instance.json` holds.** Before
+`mitto-pscc.9` the server resolved its shared token only from
+`MITTO_SHARED_TOKEN`, `settings.json`, or the keychain, so the token
+`instance.json` already carried was never an accepted credential. `mitto web`
+and the macOS app now resolve that token (`instancefile.ResolveToken`) _before_
+constructing the server and adopt it into `web.auth.shared_token` **only when no
+operator-configured token exists** — explicit config always wins, and the
+adopted value is never written back to `settings.json` or the keychain. A token
+alone still does not enable authentication (`simple`/`cloudflare` must be
+configured first), so adoption is a no-op on a fully unauthenticated server.
+
+**Rotation is server-side, not a CLI file rewrite.** `mitto auth rotate` calls
+`POST {prefix}/api/auth/rotate-token`; the server generates the new token,
+rewrites `instance.json` **first**, and installs it on the live `AuthManager`
+only after that write succeeds — a failed write leaves the old token valid
+everywhere instead of desyncing memory from disk. A CLI-only rewrite of
+`instance.json` would leave the running server validating the old token, which
+is worse than having no command at all.
+
+- **Localhost-only**, like `/api/save-file-to-path`: the request is rejected
+  outright when it arrives through the external listener. The loopback bypass in
+  `AuthMiddleware` runs before the bearer check, so rotation works even with
+  auth disabled and there is no chicken-and-egg — but it must therefore never be
+  reachable remotely.
+- **Refused (409) for an operator-configured token**, naming the source.
+  Rotating a secret that lives in the environment, `settings.json`, or the
+  keychain is out of scope; the operator updates it at its source.
+- The response carries **only the new fingerprint**. The value goes to
+  `instance.json` and nowhere else — not a response body, log line, or argv.
+- Every client holding the previous token is rejected immediately; there is no
+  grace window, so `rotate` prints that warning on stderr.
+
+**A token is only ever shown as a fingerprint** —
+`instancefile.Fingerprint` (first 8 hex chars of SHA-256). `auth status`
+prints `token_source` (`flag`|`env`|`instance.json`|`none`) and
+`token_fingerprint`, never the value, no prefix and no length. The fingerprint
+exists so an operator can confirm two token values match (e.g. before/after
+`rotate`) without exposing the secret.
+
+**`auth status` proves reachability _and_ the credential.** `/api/health` and
+`/api/auth-info` are both public, so they would report "reachable" even with a
+wrong token; when `auth-info` says auth is enabled, `status` additionally issues
+one authenticated `ListSessions` call so a bad credential surfaces as exit 4.
+All three endpoints went into `pkg/api` (`auth_admin.go`) rather than being
+allowlisted as raw `net/http` calls — §10's gate applies to `auth` too.
+
+## 12. Out of scope
 
 Workspace management, prompts, processors, settings, agents, files,
 dashboard, any shell-completion work, and any change to `mitto cli`.

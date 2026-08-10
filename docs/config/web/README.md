@@ -186,6 +186,39 @@ expiry. Keep it out of shell history and process arguments — pass it to client
 through an environment file or a secret store rather than a command-line flag,
 and never place it in a URL or query string.
 
+#### Automatic token from `instance.json`
+
+If authentication is enabled but **no** token is configured explicitly (no
+`shared_token`, no `MITTO_SHARED_TOKEN`, nothing in the Keychain), Mitto adopts
+the token it already writes to its `instance.json` runtime file, so local tools
+can authenticate with zero configuration. An explicitly configured token always
+wins; the adopted value is never written to `settings.json` or the Keychain (it
+is already at rest in a `0600` file). A token alone still does not enable
+authentication — `simple` or `cloudflare` must be configured first.
+
+#### Rotating the token
+
+```bash
+mitto auth status   # resolved server, token source, token fingerprint
+mitto auth rotate   # generate a new token on the running server
+```
+
+Rotation happens **server-side** (`POST /api/auth/rotate-token`): the server
+generates the new token, rewrites `instance.json`, and only then installs it on
+its live auth manager — so a failed write leaves the previous token valid
+everywhere instead of leaving the server and the file disagreeing.
+
+- The endpoint is **localhost-only** and is rejected outright when it arrives
+  through the external listener.
+- Only an adopted `instance.json` token can be rotated this way. A token you
+  configured yourself (config file, environment, Keychain) is **refused** with a
+  409 — update it at its source instead.
+- Neither the command nor the API response ever prints the token; both report
+  only an 8-character SHA-256 fingerprint, enough to confirm two values match.
+- Every client still holding the old token — other shells, SDK clients,
+  exported `MITTO_TOKEN` values — is rejected immediately and must re-read
+  `instance.json`.
+
 ### Rate Limiting
 
 Authentication includes automatic rate limiting:

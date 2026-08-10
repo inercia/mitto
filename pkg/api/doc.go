@@ -193,11 +193,13 @@
 // This client covers the conversation-centric REST surface: sessions (CRUD,
 // events, changes, settings, flush, user data, prune, running list), queue,
 // loop (including the multi-trigger schema), and per-session media
-// (images/files). Workspace-, prompt-config-, issues-, global-settings-,
-// agents-, and dashboard-level endpoints are intentionally out of scope —
-// this SDK targets programmatic conversation drivers, not full admin/UI
-// parity. The method set is split across client.go (transport + session
-// CRUD), sessions_ext.go, media.go, queue.go, and loop.go by resource.
+// (images/files). It also covers the few server-level endpoints `mitto auth`
+// needs — GetHealth, GetAuthInfo and RotateSharedToken (auth_admin.go).
+// Workspace-, prompt-config-, issues-, global-settings-, agents-, and
+// dashboard-level endpoints are intentionally out of scope — this SDK targets
+// programmatic conversation drivers, not full admin/UI parity. The method set
+// is split across client.go (transport + session CRUD), sessions_ext.go,
+// media.go, queue.go, loop.go and auth_admin.go by resource.
 //
 // # Errors
 //
