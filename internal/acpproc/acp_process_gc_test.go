@@ -2084,6 +2084,62 @@ func TestGCTier6_SkipsProgressingDegradedProcess(t *testing.T) {
 	}
 }
 
+// TestGCTier6_DoesNotKillPromptingSessionAwaitingFirstToken reproduces
+// mitto-6a7p: Tier 6's no-streamed-progress guard is
+//
+//	!s.LastStreamActivityAt.IsZero() && now.Sub(s.LastStreamActivityAt) < tier6StreamedProgressQuietWindow
+//
+// A session that has dispatched a prompt but has not yet received its first
+// streamed token has LastStreamActivityAt == zero value, so the IsZero()
+// clause short-circuits the whole check to false — the session is classified
+// as "not progressing", the exact opposite of the truth (mode A from the
+// investigation: the handshake/set_model window before the first token
+// arrives). LastActivityAt mirrors what production always sets at the same
+// instant a prompt starts (BackgroundSession.TouchActivity, called from
+// PromptWithMeta right after promptStartTime is stamped), so it is set here
+// too to reflect a realistic prompting-session snapshot. Verifies a
+// confirmed-degraded busy process is NOT recycled while a session is in this
+// state.
+func TestGCTier6_DoesNotKillPromptingSessionAwaitingFirstToken(t *testing.T) {
+	workspaceUUID := "ws-degraded-awaiting-first-token"
+	proc := newTestSharedProcess()
+	driveToConfirmedDegraded(t, proc)
+	proc.activeRPCs.Add(1) // simulate an in-flight session/new or set_model RPC
+
+	sessions := map[string][]conversation.SessionInfo{
+		workspaceUUID: {
+			{
+				SessionID:     "s1",
+				WorkspaceUUID: workspaceUUID,
+				HasObservers:  true,
+				IsPrompting:   true,
+				// Never streamed: prompt just dispatched, awaiting first token.
+				LastStreamActivityAt: time.Time{},
+				// Set synchronously at prompt start in production (TouchActivity).
+				LastActivityAt: time.Now(),
+			},
+		},
+	}
+
+	m := newTestGCManager(
+		func() map[string][]conversation.SessionInfo { return sessions },
+		func(id string) {},
+	)
+	m.mu.Lock()
+	m.processes[workspaceUUID] = proc
+	m.mu.Unlock()
+
+	m.RunGCOnce()
+
+	m.mu.RLock()
+	_, exists := m.processes[workspaceUUID]
+	m.mu.RUnlock()
+	if !exists {
+		t.Error("session awaiting its first token (IsPrompting=true, zero LastStreamActivityAt) " +
+			"should NOT have been recycled by Tier 6 (mitto-6a7p)")
+	}
+}
+
 // TestGCTier6_SkipsLevel1BusyProcess verifies that a level-1 (first-trip)
 // saturated busy process is NOT recycled by Tier 6 — only Tier 5's idle-gated
 // path governs level-1 saturation (mitto-1h0).

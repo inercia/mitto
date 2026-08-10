@@ -952,6 +952,18 @@ gcTier1:
 			// state. Note: unlike Tier 5, we deliberately do NOT gate on
 			// ActiveRPCs()/IsPrompting here — the in-flight, timing-out control RPCs
 			// (session/new, set_model) ARE the wedge, not real work.
+			//
+			// Awaiting-first-token guard (mitto-6a7p): LastStreamActivityAt alone
+			// cannot tell "prompt just dispatched, no token yet" (zero value) or
+			// "still carrying the PREVIOUS turn's value" (non-zero but stale) apart
+			// from a genuinely wedged process — both cases false-negative into
+			// "not progressing" and get the process recycled mid-turn. LastActivityAt
+			// is touched synchronously at the START of every prompt dispatch
+			// (PromptWithMeta -> TouchActivity), so unlike LastStreamActivityAt it
+			// always resets on a new turn. Treat an actively-prompting session as
+			// progressing while it is within the quiet window of its most recent
+			// prompt start, giving the first token a fair chance to arrive before
+			// Tier 6 judges the process wedged.
 			progressing := false
 			for _, s := range sessions {
 				if !s.LastStreamActivityAt.IsZero() && now.Sub(s.LastStreamActivityAt) < tier6StreamedProgressQuietWindow {
@@ -960,6 +972,16 @@ gcTier1:
 							"workspace_uuid", workspaceUUID,
 							"session_id", s.SessionID,
 							"stream_idle", now.Sub(s.LastStreamActivityAt))
+					}
+					progressing = true
+					break
+				}
+				if s.IsPrompting && !s.LastActivityAt.IsZero() && now.Sub(s.LastActivityAt) < tier6StreamedProgressQuietWindow {
+					if m.logger != nil {
+						m.logger.Debug("GC: skipping confirmed-degraded recycle (session awaiting first token)",
+							"workspace_uuid", workspaceUUID,
+							"session_id", s.SessionID,
+							"prompt_started_ago", now.Sub(s.LastActivityAt))
 					}
 					progressing = true
 					break
