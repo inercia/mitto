@@ -1179,3 +1179,137 @@ func TestMarkdownBuffer_StreamingFixtures(t *testing.T) {
 		})
 	}
 }
+
+// =============================================================================
+// Markdown Passthrough Tests (mitto-pscc.3)
+// =============================================================================
+// These tests verify that the raw pre-conversion markdown passed to OnFlush
+// survives every buffering boundary (paragraph, code block, list, table, and
+// size-forced flush) byte-for-byte. For well-formed input, joinListItemContinuations
+// is a no-op, so the concatenation of all flushed markdown chunks must equal
+// exactly what was written.
+
+func TestMarkdownBuffer_MarkdownPassthrough_BasicWrite(t *testing.T) {
+	var mu sync.Mutex
+	var markdownOut strings.Builder
+
+	buffer := NewMarkdownBuffer(func(html, markdown string) {
+		mu.Lock()
+		markdownOut.WriteString(markdown)
+		mu.Unlock()
+	})
+
+	const input = "Hello, world!\n\n"
+	buffer.Write(input)
+	buffer.Close()
+
+	mu.Lock()
+	got := markdownOut.String()
+	mu.Unlock()
+
+	if got != input {
+		t.Errorf("markdown passthrough = %q, want %q", got, input)
+	}
+}
+
+func TestMarkdownBuffer_MarkdownPassthrough_CodeBlock(t *testing.T) {
+	var mu sync.Mutex
+	var markdownOut strings.Builder
+
+	buffer := NewMarkdownBuffer(func(html, markdown string) {
+		mu.Lock()
+		markdownOut.WriteString(markdown)
+		mu.Unlock()
+	})
+
+	const input = "```go\nfunc main() {}\n```\n"
+	buffer.Write(input)
+	buffer.Close()
+
+	mu.Lock()
+	got := markdownOut.String()
+	mu.Unlock()
+
+	if got != input {
+		t.Errorf("markdown passthrough = %q, want %q", got, input)
+	}
+}
+
+func TestMarkdownBuffer_MarkdownPassthrough_List(t *testing.T) {
+	var mu sync.Mutex
+	var markdownOut strings.Builder
+
+	buffer := NewMarkdownBuffer(func(html, markdown string) {
+		mu.Lock()
+		markdownOut.WriteString(markdown)
+		mu.Unlock()
+	})
+
+	const input = "1. First item\n2. Second item\n\n"
+	buffer.Write(input)
+	buffer.Close()
+
+	mu.Lock()
+	got := markdownOut.String()
+	mu.Unlock()
+
+	if got != input {
+		t.Errorf("markdown passthrough = %q, want %q", got, input)
+	}
+}
+
+func TestMarkdownBuffer_MarkdownPassthrough_Table(t *testing.T) {
+	var mu sync.Mutex
+	var markdownOut strings.Builder
+
+	buffer := NewMarkdownBuffer(func(html, markdown string) {
+		mu.Lock()
+		markdownOut.WriteString(markdown)
+		mu.Unlock()
+	})
+
+	const input = "| A | B |\n|---|---|\n| 1 | 2 |\n\n"
+	buffer.Write(input)
+	buffer.Close()
+
+	mu.Lock()
+	got := markdownOut.String()
+	mu.Unlock()
+
+	if got != input {
+		t.Errorf("markdown passthrough = %q, want %q", got, input)
+	}
+}
+
+// TestMarkdownBuffer_MarkdownPassthrough_MaxBufferSize verifies markdown
+// passthrough survives a size-forced flush (mid-response, before any
+// paragraph break arrives): concatenating every flushed markdown chunk must
+// reconstruct the exact input, including whatever content is still pending
+// at Close().
+func TestMarkdownBuffer_MarkdownPassthrough_MaxBufferSize(t *testing.T) {
+	var mu sync.Mutex
+	var markdownOut strings.Builder
+
+	buffer := NewMarkdownBuffer(func(html, markdown string) {
+		mu.Lock()
+		markdownOut.WriteString(markdown)
+		mu.Unlock()
+	})
+
+	var input strings.Builder
+	for i := 0; i < 50; i++ {
+		line := strings.Repeat("x", 100) + "\n"
+		input.WriteString(line)
+		buffer.Write(line)
+	}
+	buffer.Close()
+
+	mu.Lock()
+	got := markdownOut.String()
+	mu.Unlock()
+
+	if got != input.String() {
+		t.Errorf("markdown passthrough length = %d, want %d (content mismatch after size-forced flush)",
+			len(got), input.Len())
+	}
+}

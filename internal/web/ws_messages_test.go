@@ -309,10 +309,11 @@ func TestEventBuffer_Append(t *testing.T) {
 // replayTestObserver implements conversation.SessionObserver for testing ReplayTo.
 // It tracks all event types with full details.
 type replayTestObserver struct {
-	agentMessages []string
-	agentThoughts []string
-	toolCalls     []struct{ id, title, status string }
-	toolUpdates   []struct {
+	agentMessages         []string
+	agentMessageMarkdowns []string
+	agentThoughts         []string
+	toolCalls             []struct{ id, title, status string }
+	toolUpdates           []struct {
 		id     string
 		status *string
 	}
@@ -327,8 +328,9 @@ type replayTestObserver struct {
 	}
 }
 
-func (m *replayTestObserver) OnAgentMessage(_ int64, html, _ string) {
+func (m *replayTestObserver) OnAgentMessage(_ int64, html, markdown string) {
 	m.agentMessages = append(m.agentMessages, html)
+	m.agentMessageMarkdowns = append(m.agentMessageMarkdowns, markdown)
 }
 func (m *replayTestObserver) OnAgentThought(_ int64, text string) {
 	m.agentThoughts = append(m.agentThoughts, text)
@@ -438,10 +440,11 @@ func TestBufferedEvent_ReplayTo_EmptyData(t *testing.T) {
 
 // mockPersister implements EventPersister for testing PersistTo.
 type mockPersister struct {
-	agentMessages []string
-	agentThoughts []string
-	toolCalls     []struct{ id, title, status, kind string }
-	toolUpdates   []struct {
+	agentMessages         []string
+	agentMessageMarkdowns []string
+	agentThoughts         []string
+	toolCalls             []struct{ id, title, status, kind string }
+	toolUpdates           []struct {
 		id     string
 		status *string
 	}
@@ -457,8 +460,9 @@ type mockPersister struct {
 	returnErr error
 }
 
-func (m *mockPersister) RecordAgentMessage(html, _ string) error {
+func (m *mockPersister) RecordAgentMessage(html, markdown string) error {
 	m.agentMessages = append(m.agentMessages, html)
+	m.agentMessageMarkdowns = append(m.agentMessageMarkdowns, markdown)
 	return m.returnErr
 }
 func (m *mockPersister) RecordAgentThought(text string) error {
@@ -548,6 +552,80 @@ func TestBufferedEvent_PersistTo_ReturnsError(t *testing.T) {
 	}
 	if err.Error() != "persist error" {
 		t.Errorf("error = %v, want 'persist error'", err)
+	}
+}
+
+// TestBufferedEvent_PersistTo_Markdown verifies that PersistTo threads the raw
+// pre-conversion markdown alongside the HTML to EventPersister.RecordAgentMessage
+// (mitto-pscc.3).
+func TestBufferedEvent_PersistTo_Markdown(t *testing.T) {
+	persister := &mockPersister{}
+
+	event := BufferedEvent{
+		Type: BufferedEventAgentMessage,
+		Data: &AgentMessageData{HTML: "<p>hello <strong>world</strong></p>", Markdown: "hello **world**"},
+	}
+	if err := event.PersistTo(persister); err != nil {
+		t.Fatalf("PersistTo returned error: %v", err)
+	}
+
+	if len(persister.agentMessages) != 1 || persister.agentMessages[0] != "<p>hello <strong>world</strong></p>" {
+		t.Errorf("agentMessages = %v, want [<p>hello <strong>world</strong></p>]", persister.agentMessages)
+	}
+	if len(persister.agentMessageMarkdowns) != 1 || persister.agentMessageMarkdowns[0] != "hello **world**" {
+		t.Errorf("agentMessageMarkdowns = %v, want [hello **world**]", persister.agentMessageMarkdowns)
+	}
+}
+
+// TestBufferedEvent_ReplayTo_Markdown verifies that ReplayTo threads the raw
+// pre-conversion markdown alongside the HTML to SessionObserver.OnAgentMessage
+// (mitto-pscc.3).
+func TestBufferedEvent_ReplayTo_Markdown(t *testing.T) {
+	observer := &replayTestObserver{}
+
+	event := BufferedEvent{
+		Type: BufferedEventAgentMessage,
+		Data: &AgentMessageData{HTML: "<p>hi</p>", Markdown: "hi"},
+	}
+	event.ReplayTo(observer)
+
+	if len(observer.agentMessages) != 1 || observer.agentMessages[0] != "<p>hi</p>" {
+		t.Errorf("agentMessages = %v, want [<p>hi</p>]", observer.agentMessages)
+	}
+	if len(observer.agentMessageMarkdowns) != 1 || observer.agentMessageMarkdowns[0] != "hi" {
+		t.Errorf("agentMessageMarkdowns = %v, want [hi]", observer.agentMessageMarkdowns)
+	}
+}
+
+// TestEventBuffer_AppendAgentMessage_MarkdownConcatenation verifies that
+// coalesced agent-message chunks concatenate HTML and Markdown in lockstep,
+// so a chunked stream reconstructs the same markdown as a single write would
+// (mitto-pscc.3).
+func TestEventBuffer_AppendAgentMessage_MarkdownConcatenation(t *testing.T) {
+	buf := NewEventBuffer()
+
+	seq1, isNew1 := buf.AppendAgentMessage(1, "<p>Hello, ", "Hello, ")
+	if !isNew1 || seq1 != 1 {
+		t.Fatalf("First append: seq=%d, isNew=%v, want seq=1, isNew=true", seq1, isNew1)
+	}
+	seq2, isNew2 := buf.AppendAgentMessage(2, "World!</p>", "World!")
+	if isNew2 || seq2 != 1 {
+		t.Fatalf("Second append: seq=%d, isNew=%v, want seq=1, isNew=false", seq2, isNew2)
+	}
+
+	events := buf.Events()
+	if len(events) != 1 {
+		t.Fatalf("Len = %d, want 1 (messages should be concatenated)", len(events))
+	}
+	data, ok := events[0].Data.(*AgentMessageData)
+	if !ok {
+		t.Fatalf("Data is %T, want *AgentMessageData", events[0].Data)
+	}
+	if data.HTML != "<p>Hello, World!</p>" {
+		t.Errorf("HTML = %q, want %q", data.HTML, "<p>Hello, World!</p>")
+	}
+	if data.Markdown != "Hello, World!" {
+		t.Errorf("Markdown = %q, want %q", data.Markdown, "Hello, World!")
 	}
 }
 

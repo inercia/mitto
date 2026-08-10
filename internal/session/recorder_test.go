@@ -3,6 +3,8 @@ package session
 import (
 	"bytes"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -104,6 +106,123 @@ func TestRecorder_RecordEvents(t *testing.T) {
 	// Verify first event is session start
 	if events[0].Type != EventTypeSessionStart {
 		t.Errorf("first event type = %q, want %q", events[0].Type, EventTypeSessionStart)
+	}
+}
+
+// TestRecorder_RecordAgentMessage_PersistsMarkdown verifies that both the HTML
+// and the raw pre-conversion markdown survive a round trip through
+// events.jsonl (mitto-pscc.3): the "html" and "text" JSON keys are both
+// present on disk, and DecodeEventData reconstructs both fields.
+func TestRecorder_RecordAgentMessage_PersistsMarkdown(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	recorder := NewRecorder(store)
+	if err := recorder.Start("test-server", "/test/dir", ""); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+
+	const html = "<p>Hello <strong>world</strong></p>"
+	const markdown = "Hello **world**"
+	if err := recorder.RecordAgentMessage(html, markdown); err != nil {
+		t.Fatalf("RecordAgentMessage failed: %v", err)
+	}
+
+	events, err := store.ReadEvents(recorder.SessionID())
+	if err != nil {
+		t.Fatalf("ReadEvents failed: %v", err)
+	}
+
+	var found bool
+	for _, e := range events {
+		if e.Type != EventTypeAgentMessage {
+			continue
+		}
+		data, err := DecodeEventData(e)
+		if err != nil {
+			t.Fatalf("DecodeEventData failed: %v", err)
+		}
+		msgData, ok := data.(AgentMessageData)
+		if !ok {
+			t.Fatalf("data is %T, want AgentMessageData", data)
+		}
+		if msgData.Text != html {
+			t.Errorf("Text = %q, want %q", msgData.Text, html)
+		}
+		if msgData.Markdown != markdown {
+			t.Errorf("Markdown = %q, want %q", msgData.Markdown, markdown)
+		}
+		found = true
+	}
+	if !found {
+		t.Fatal("no agent_message event found")
+	}
+
+	// Verify the raw on-disk JSONL carries both the "html" and "text" keys,
+	// per the AgentMessageData JSON mapping.
+	eventsPath := filepath.Join(store.SessionDir(recorder.SessionID()), eventsFileName)
+	raw, err := os.ReadFile(eventsPath)
+	if err != nil {
+		t.Fatalf("ReadFile failed: %v", err)
+	}
+	// encoding/json HTML-escapes '<'/'>' by default, so match the escaped form.
+	if !bytes.Contains(raw, []byte(`"html":"\u003cp\u003eHello`)) {
+		t.Errorf("raw events.jsonl missing html field: %s", raw)
+	}
+	if !bytes.Contains(raw, []byte(`"text":"Hello **world**"`)) {
+		t.Errorf("raw events.jsonl missing text (markdown) field: %s", raw)
+	}
+}
+
+// TestRecorder_AgentMessage_OldEventWithoutMarkdownDecodesFine verifies backward
+// compatibility: an agent_message event persisted before mitto-pscc.3 (only the
+// "html" key, no "text" key) still decodes without error, with Markdown left
+// as the zero value.
+func TestRecorder_AgentMessage_OldEventWithoutMarkdownDecodesFine(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	const sessionID = "test-session-old-agent-message-format"
+	if err := store.Create(Metadata{SessionID: sessionID, ACPServer: "test-server", WorkingDir: "/test/dir"}); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	// Simulate a pre-mitto-pscc.3 event: agent_message with only "html", no "text".
+	eventsPath := filepath.Join(store.SessionDir(sessionID), eventsFileName)
+	oldLine := `{"seq":1,"type":"agent_message","timestamp":"2026-01-01T00:00:00Z","data":{"html":"<p>legacy</p>"}}` + "\n"
+	if err := os.WriteFile(eventsPath, []byte(oldLine), 0o644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	events, err := store.ReadEvents(sessionID)
+	if err != nil {
+		t.Fatalf("ReadEvents failed: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("got %d events, want 1", len(events))
+	}
+
+	data, err := DecodeEventData(events[0])
+	if err != nil {
+		t.Fatalf("DecodeEventData failed: %v", err)
+	}
+	msgData, ok := data.(AgentMessageData)
+	if !ok {
+		t.Fatalf("data is %T, want AgentMessageData", data)
+	}
+	if msgData.Text != "<p>legacy</p>" {
+		t.Errorf("Text = %q, want %q", msgData.Text, "<p>legacy</p>")
+	}
+	if msgData.Markdown != "" {
+		t.Errorf("Markdown = %q, want empty (absent in old event)", msgData.Markdown)
 	}
 }
 
