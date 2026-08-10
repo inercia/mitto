@@ -157,6 +157,18 @@ by scripts — `--output json`/`yaml` is the contract.
   **Styled mode is dark-only**: glamour v2 dropped v1's `WithAutoStyle`, so
   light-terminal selection needs explicit background detection — deferred to
   `.7` as `mitto-u7k3`.
+- **`mitto-pscc.7` landed**: `internal/chatui` is the CLI-owned TUI package
+  (one `tea.Model` in `model.go`, imperative sub-components in
+  `transcript.go`/`statusline.go`/`permission.go`, event pump in `pump.go`),
+  driven by `mitto conversation chat` (`internal/cmd/conversation_chat.go`).
+  Like `internal/termmd`, `internal/conversation` must not import it. The
+  bootstrap reuses §8's connect-before-use ordering: `LoadEvents(--history)`
+  and its `OnEventsLoaded` seed the transcript before `tea.NewProgram`, so
+  history replay never races the live pump. **Our own `user_prompt` echo is
+  dropped by sender ID** — the server broadcasts it back to the sender
+  (`session_ws.go` `OnUserPrompt`), which would otherwise double-render every
+  message the input textarea already appended optimistically; prompts from
+  other clients on the same conversation still render.
 
 ## 8. `conversation send` decisions (`mitto-pscc.6`)
 

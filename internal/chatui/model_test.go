@@ -201,6 +201,42 @@ func TestModel_HandleKey_EnterOnEmptyInputIsNoop(t *testing.T) {
 	}
 }
 
+// --- user_prompt echo dedup ------------------------------------------------
+
+func TestModel_UserPrompt_FromAnotherClientIsAppended(t *testing.T) {
+	m := newTestModel(t, true)
+
+	// A nil session means clientID() is "", so no event can be attributed to
+	// us — every user_prompt must render, which is the safe fallback.
+	m.Update(eventMsg{event: client.Event{Kind: client.EventUserPrompt, SenderID: "other", Message: "from the web UI"}})
+
+	if got := len(m.transcript.items); got != 1 {
+		t.Fatalf("a prompt from another client must render, len(items) = %d, want 1", got)
+	}
+	if got := m.transcript.items[0].markdown; got != "from the web UI" {
+		t.Errorf("items[0].markdown = %q, want the other client's message", got)
+	}
+}
+
+func TestModel_UserPrompt_OwnEchoIsDropped(t *testing.T) {
+	m := newTestModel(t, true)
+	m.clientIDFn = func() string { return "me" }
+
+	m.input.SetValue("hello agent")
+	m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if got := len(m.transcript.items); got != 1 {
+		t.Fatalf("submitting should optimistically append one item, len(items) = %d", got)
+	}
+
+	// The server broadcasts user_prompt back to the sender too; without the
+	// is_mine dedup this would render the message a second time.
+	m.Update(eventMsg{event: client.Event{Kind: client.EventUserPrompt, SenderID: "me", Message: "hello agent"}})
+
+	if got := len(m.transcript.items); got != 1 {
+		t.Errorf("our own user_prompt echo must be dropped, len(items) = %d, want 1", got)
+	}
+}
+
 // --- golden-frame-lite: View() renders the layout at a fixed size ---------
 
 func TestModel_View_RendersTitleAndConnectionState(t *testing.T) {

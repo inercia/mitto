@@ -39,6 +39,10 @@ type Model struct {
 	inFlight      bool
 	quitting      bool
 	quitErr       error
+
+	// clientIDFn overrides the session-derived client ID in tests, which run
+	// without a real *client.Session.
+	clientIDFn func() string
 }
 
 // NewModel builds the chat Model. sess may be nil at construction time and
@@ -221,7 +225,15 @@ func (m *Model) handleEvent(ev client.Event) (tea.Model, tea.Cmd) {
 		m.inFlight = false
 		m.status.SetInFlight(false)
 	case client.EventUserPrompt:
-		// Another client sent a prompt on this shared conversation.
+		// The server broadcasts user_prompt to every observer including the
+		// sender (internal/web/session_ws.go OnUserPrompt: "Always deliver
+		// user_prompt to the client"), so our own prompts echo back after
+		// handleKey already appended them optimistically. Drop the echo by
+		// sender ID, the same dedup the web frontend does with is_mine; a
+		// prompt from any other client still renders.
+		if id := m.clientID(); id != "" && ev.SenderID == id {
+			return m, nil
+		}
 		m.transcript.AppendUser(ev.Message)
 	case client.EventError:
 		m.transcript.AppendError(ev.Message)
@@ -235,6 +247,22 @@ func (m *Model) handleEvent(ev client.Event) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	}
 	return m, nil
+}
+
+// clientID returns the server-assigned client ID of our own WebSocket, or
+// "" when the session is absent (tests) or the server has not sent the
+// connected message yet. Session.ClientID is used rather than the stream's
+// EventConnected because the SDK consumes that message during Connect,
+// before the event stream is registered — a chat attached to an idle
+// conversation would otherwise never learn its own ID.
+func (m *Model) clientID() string {
+	if m.clientIDFn != nil {
+		return m.clientIDFn()
+	}
+	if m.sess == nil {
+		return ""
+	}
+	return m.sess.ClientID()
 }
 
 // QuitErr returns the error that caused the program to quit (nil for a
