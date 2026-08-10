@@ -169,6 +169,55 @@ by scripts — `--output json`/`yaml` is the contract.
   (`session_ws.go` `OnUserPrompt`), which would otherwise double-render every
   message the input textarea already appended optimistically; prompts from
   other clients on the same conversation still render.
+- **Test strategy (`mitto-pscc.12`)**: four layers, each independently
+  useful and owning disjoint files, closing gaps rather than building from
+  scratch (Layers 1 and 2 pre-existed from `.7`/`.8`).
+  1. **`Update()` table tests** (`internal/chatui/model_test.go`) — every
+     `client.Event` kind and every internal `tea.Msg` (`sendDoneMsg`,
+     `cancelDoneMsg`, `permAnsweredMsg`, `streamEndMsg`) drives `Update`
+     directly against a `nil` `*client.Session`; assertions are on model
+     state and on the returned `tea.Cmd`'s identity (its `()` result type),
+     never by executing a `Cmd` that would dereference the nil session.
+     Covers the `WindowSizeMsg` geometry contract too (transcript height =
+     `height - input height - 1`, clamped to 1).
+  2. **Renderer goldens** (`internal/termmd/testdata/`, shipped with `.8`) —
+     `corpus.plain.golden`/`corpus.styled.golden`/`fallback.golden` plus a
+     `go.mod`-read version-pin test (`TestGlamourVersion_Pinned`) asserting
+     the exact `charm.land/glamour/v2` version the goldens were generated
+     against, so a dependency bump shows up as a pin failure pointing here
+     rather than an unexplained golden diff. Width-variation goldens are
+     gated on `mitto-pscc.8.1`'s stable-prefix cache (still open as of this
+     writing) and deliberately not added speculatively.
+  3. **Scripted-WebSocket pump tests** (`internal/chatui/pump_test.go`) —
+     drive `RunPump` against a real `*client.Session` connected to a stub
+     `httptest`-backed WebSocket server, covering duplicate/out-of-order
+     seq (dedup) and the close-frame path (exactly one `streamEndMsg`
+     carrying the terminal error). The ~30-line `wsTestServer` harness is
+     **copied** from `pkg/api/resilience_test.go` rather than exported as a
+     shared testing package — no second consumer had appeared, and
+     `RunPump` already takes the `programSender` interface, so a fake
+     sender is sufficient. One test also pins a real, easy-to-miss
+     contract: a `*client.Session` disconnect terminates the specific
+     `EventsChan()` stream unconditionally, even with `WithReconnect`
+     enabled — `RunPump` never sees the redialed connection's events
+     through the same stream, since pump-level reconnect awareness is
+     explicitly out of scope until `mitto-rwxq.5`.
+  4. **Build-tagged e2e smoke** (`tests/integration/inprocess/`) — one thin
+     path (`//go:build integration`) wiring `chatui.Model` + `chatui.RunPump`
+     against `SetupTestServer`'s real web server and mock ACP agent: connect,
+     send a prompt, see the reply rendered in `View()`, cancel cleanly. It
+     drives the `Model` directly rather than through a PTY, since the TUI
+     needs an alt-screen terminal CI does not have and Layers 1–3 already
+     cover the logic — this only pins the real wiring.
+  - **`teatest` (`charmbracelet/x/exp/teatest`): rejected**, confirmed absent
+    from `go.sum`. It would mostly duplicate Layer 1 more slowly by
+    asserting on rendered bytes instead of model state, and adds
+    golden-output brittleness against `lipgloss`/`glamour` style drift —
+    Layer 2 already owns markdown-rendering goldens; `teatest` would
+    encourage re-litigating that concern at the wrong layer. **Revisit
+    trigger**: only if a rendering/layout bug appears that Layers 1–3
+    provably cannot catch, and if adopted, scope it to layout assertions
+    only, never markdown content.
 
 ## 8. `conversation send` decisions (`mitto-pscc.6`)
 

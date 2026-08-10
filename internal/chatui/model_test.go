@@ -237,6 +237,180 @@ func TestModel_UserPrompt_OwnEchoIsDropped(t *testing.T) {
 	}
 }
 
+// --- file_read / file_write events -----------------------------------------
+
+func TestModel_FileReadWrite_AppendToolItems(t *testing.T) {
+	m := newTestModel(t, true)
+
+	m.Update(eventMsg{event: client.Event{Kind: client.EventFileRead, Path: "main.go", Size: 42}})
+	m.Update(eventMsg{event: client.Event{Kind: client.EventFileWrite, Path: "out.go", Size: 7}})
+
+	if got := len(m.transcript.items); got != 2 {
+		t.Fatalf("file_read + file_write should each append an item, len(items) = %d, want 2", got)
+	}
+	if got := m.transcript.items[0].path; got != "main.go" {
+		t.Errorf("items[0].path = %q, want %q", got, "main.go")
+	}
+	if got := m.transcript.items[1].path; got != "out.go" {
+		t.Errorf("items[1].path = %q, want %q", got, "out.go")
+	}
+}
+
+// --- error event -------------------------------------------------------------
+
+func TestModel_ErrorEvent_AppendsErrorItem(t *testing.T) {
+	m := newTestModel(t, true)
+
+	m.Update(eventMsg{event: client.Event{Kind: client.EventError, Message: "boom"}})
+
+	if got := len(m.transcript.items); got != 1 || m.transcript.items[0].kind != itemError {
+		t.Fatalf("error event should append an error item, items = %+v", m.transcript.items)
+	}
+	if got := m.transcript.items[0].title; got != "boom" {
+		t.Errorf("items[0].title = %q, want %q", got, "boom")
+	}
+}
+
+// --- prompt_received / prompt_complete inFlight toggling --------------------
+
+func TestModel_PromptReceivedThenComplete_TogglesInFlight(t *testing.T) {
+	m := newTestModel(t, true)
+
+	m.Update(eventMsg{event: client.Event{Kind: client.EventPromptReceived}})
+	if !m.inFlight {
+		t.Error("prompt_received should set inFlight = true")
+	}
+	if !m.status.inFlight {
+		t.Error("prompt_received should set status.inFlight = true")
+	}
+
+	m.Update(eventMsg{event: client.Event{Kind: client.EventPromptComplete}})
+	if m.inFlight {
+		t.Error("prompt_complete should set inFlight = false")
+	}
+	if m.status.inFlight {
+		t.Error("prompt_complete should set status.inFlight = false")
+	}
+}
+
+// --- acp_stopped / acp_started status transitions ----------------------------
+
+func TestModel_ACPStoppedThenStarted_TogglesConnectionStatus(t *testing.T) {
+	m := newTestModel(t, true)
+	m.Update(eventMsg{event: client.Event{Kind: client.EventConnected, ACPServer: "Auggie"}})
+
+	m.Update(eventMsg{event: client.Event{Kind: client.EventACPStopped, Reason: "crashed"}})
+	if m.status.connected {
+		t.Error("acp_stopped should clear status.connected")
+	}
+	if got := m.status.disconnect; got != "acp stopped: crashed" {
+		t.Errorf("status.disconnect = %q, want %q", got, "acp stopped: crashed")
+	}
+
+	m.Update(eventMsg{event: client.Event{Kind: client.EventACPStarted}})
+	if !m.status.connected {
+		t.Error("acp_started should set status.connected = true")
+	}
+	if got := m.status.acpServer; got != "Auggie" {
+		t.Errorf("status.acpServer = %q, want the previously-known server name %q", got, "Auggie")
+	}
+}
+
+// --- session_gone quits the program ------------------------------------------
+
+func TestModel_SessionGoneMsg_Quits(t *testing.T) {
+	m := newTestModel(t, true)
+
+	_, cmd := m.Update(eventMsg{event: client.Event{Kind: client.EventSessionGone}})
+
+	if !m.quitting {
+		t.Error("session_gone should set quitting = true")
+	}
+	if m.QuitErr() == nil {
+		t.Error("session_gone should set a non-nil QuitErr")
+	}
+	if cmd == nil {
+		t.Fatal("expected a tea.Quit Cmd")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Errorf("cmd() = %T, want tea.QuitMsg", cmd())
+	}
+}
+
+// --- sendDoneMsg / cancelDoneMsg / permAnsweredMsg error surfacing -----------
+
+func TestModel_SendDoneMsg_ErrorAppendsErrorItem(t *testing.T) {
+	m := newTestModel(t, true)
+	boom := errors.New("send failed")
+
+	m.Update(sendDoneMsg{err: boom})
+
+	if got := len(m.transcript.items); got != 1 || m.transcript.items[0].kind != itemError {
+		t.Fatalf("sendDoneMsg with an error should append an error item, items = %+v", m.transcript.items)
+	}
+}
+
+func TestModel_SendDoneMsg_NoErrorIsNoop(t *testing.T) {
+	m := newTestModel(t, true)
+
+	m.Update(sendDoneMsg{err: nil})
+
+	if got := len(m.transcript.items); got != 0 {
+		t.Errorf("sendDoneMsg with no error should not append anything, len(items) = %d", got)
+	}
+}
+
+func TestModel_CancelDoneMsg_ErrorAppendsErrorItem(t *testing.T) {
+	m := newTestModel(t, true)
+	boom := errors.New("cancel failed")
+
+	m.Update(cancelDoneMsg{err: boom})
+
+	if got := len(m.transcript.items); got != 1 || m.transcript.items[0].kind != itemError {
+		t.Fatalf("cancelDoneMsg with an error should append an error item, items = %+v", m.transcript.items)
+	}
+}
+
+func TestModel_PermAnsweredMsg_ErrorAppendsErrorItem(t *testing.T) {
+	m := newTestModel(t, true)
+	boom := errors.New("answer failed")
+
+	m.Update(permAnsweredMsg{requestID: "p1", err: boom})
+
+	if got := len(m.transcript.items); got != 1 || m.transcript.items[0].kind != itemError {
+		t.Fatalf("permAnsweredMsg with an error should append an error item, items = %+v", m.transcript.items)
+	}
+}
+
+// --- WindowSizeMsg geometry: transcript height = height - input height - 1 --
+
+func TestModel_WindowSizeMsg_SetsTranscriptHeightAccountingForInputAndStatusBar(t *testing.T) {
+	m := NewModel(nil, Options{Title: "t"})
+	inputHeight := m.input.Height()
+
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+
+	if m.width != 80 || m.height != 24 {
+		t.Fatalf("m.width, m.height = %d, %d, want 80, 24", m.width, m.height)
+	}
+	wantTranscriptHeight := 24 - inputHeight - 1
+	if got := m.transcript.vp.Height(); got != wantTranscriptHeight {
+		t.Errorf("transcript viewport height = %d, want %d (height - input height - 1)", got, wantTranscriptHeight)
+	}
+}
+
+func TestModel_WindowSizeMsg_ClampsTranscriptHeightToOneOnTinyTerminal(t *testing.T) {
+	m := NewModel(nil, Options{Title: "t"})
+
+	// A terminal so short that height - inputHeight - 1 would go to zero or
+	// negative must clamp to 1 rather than propagate a non-positive height.
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 1})
+
+	if got := m.transcript.vp.Height(); got != 1 {
+		t.Errorf("transcript viewport height = %d, want the clamp value 1", got)
+	}
+}
+
 // --- golden-frame-lite: View() renders the layout at a fixed size ---------
 
 func TestModel_View_RendersTitleAndConnectionState(t *testing.T) {

@@ -4,10 +4,52 @@ import (
 	"flag"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
 )
+
+// wantGlamourVersion pins the charm.land/glamour/v2 version the goldens in
+// this package were generated against (go.mod today), so a dependency bump
+// that silently changes glamour's rendering shows up as a version-pin test
+// failure pointing here, rather than an unexplained golden diff (mitto-pscc.12
+// plan decision: "pin the glamour version so style drift is a visible diff
+// rather than silent churn").
+const wantGlamourVersion = "v2.0.1"
+
+var glamourRequireRe = regexp.MustCompile(`(?m)^\s*charm\.land/glamour/v2\s+(\S+)`)
+
+// TestGlamourVersion_Pinned fails loudly if the go.mod-resolved
+// charm.land/glamour/v2 version drifts from wantGlamourVersion, since every
+// golden file in testdata/ was generated against that exact version and
+// glamour does not promise stable rendering output across releases.
+//
+// This reads go.mod directly rather than runtime/debug.ReadBuildInfo:
+// BuildInfo.Deps is reliably populated for a `go build`-produced binary but
+// is empty for a `go test`-produced binary in this toolchain (verified: a
+// `package main` importing glamour built with `go build`/`go run` reports
+// 27 deps including glamour, while the equivalent `go test -c` binary
+// reports zero) — so asserting against go.mod is both more portable across
+// toolchains and catches a version bump before anything is even built.
+func TestGlamourVersion_Pinned(t *testing.T) {
+	root, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	modPath := filepath.Join(root, "..", "..", "go.mod")
+	data, err := os.ReadFile(modPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", modPath, err)
+	}
+	m := glamourRequireRe.FindStringSubmatch(string(data))
+	if m == nil {
+		t.Fatalf("charm.land/glamour/v2 requirement not found in %s", modPath)
+	}
+	if got := m[1]; got != wantGlamourVersion {
+		t.Errorf("go.mod requires charm.land/glamour/v2 %s, want %s (update wantGlamourVersion AND regenerate goldens with -update if this bump is intentional)", got, wantGlamourVersion)
+	}
+}
 
 // update regenerates golden files when set: go test ./internal/termmd/... -update
 var update = flag.Bool("update", false, "update golden files")
