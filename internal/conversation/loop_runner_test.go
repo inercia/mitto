@@ -7220,3 +7220,191 @@ func TestLoopRunner_FireOnChild_AfterStop_NoOp(t *testing.T) {
 		t.Errorf("fireOnChild() after Stop() should be a silent no-op, got:\n%s", buf.String())
 	}
 }
+
+// --- OnChildLoopStopped tests (mitto-q6my) ---
+
+// TestLoopRunner_OnChildLoopStopped_HappyPath drives the public
+// OnChildLoopStopped entry point end-to-end: the parent is explicitly armed
+// for anyLoopStopped, the stopped child's own metadata still carries
+// ParentSessionID (unlike the delete path), and the fire reaches
+// TriggerNowFrom with firedBy=onChild.
+func TestLoopRunner_OnChildLoopStopped_HappyPath(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	// anyLoopStopped is opt-in only (not in DefaultChildEvents), so it must
+	// be listed explicitly.
+	newOnChildSession(t, store, "parent", []session.ChildEvent{session.ChildEventAnyLoopStopped})
+	if err := store.Create(session.Metadata{
+		SessionID: "child1", ACPServer: "test", WorkingDir: "/tmp", ParentSessionID: "parent",
+	}); err != nil {
+		t.Fatalf("Create(child) error = %v", err)
+	}
+
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{})
+	sm.AddSessionForTest(NewMinimalBackgroundSessionPrompting("parent", false))
+
+	logger, buf := captureDebugLogger()
+	runner := NewLoopRunner(store, sm, logger)
+
+	runner.OnChildLoopStopped("child1", session.StoppedReasonDisabledByAgent)
+
+	out := buf.String()
+	if !strings.Contains(out, "Triggering immediate loop delivery") || !strings.Contains(out, "fired_by=onChild") {
+		t.Errorf("expected the onChild-fired dispatch to reach triggerNowFull, got:\n%s", out)
+	}
+	if !strings.Contains(out, "onChild: child loop stopped") {
+		t.Errorf("expected the child-loop-stopped debug log, got:\n%s", out)
+	}
+	for _, dropped := range []string{
+		"onChild: not armed for this event, dropping",
+		"onChild: parent missing or archived, dropping",
+		"onChild: cooldown active, dropping",
+	} {
+		if strings.Contains(out, dropped) {
+			t.Errorf("unexpected drop log %q for a fully-armed happy path:\n%s", dropped, out)
+		}
+	}
+}
+
+// TestLoopRunner_OnChildLoopStopped_NotArmedByDefault verifies that
+// anyLoopStopped, being opt-in only, does NOT fire against a parent armed
+// for onChild with only the implicit default event set (anyEndResponse +
+// anyDeleted) — the back-compat guarantee behind not adding it to
+// DefaultChildEvents().
+func TestLoopRunner_OnChildLoopStopped_NotArmedByDefault(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	// nil ChildEvents -> EffectiveChildEvents() falls back to the defaults,
+	// which exclude anyLoopStopped.
+	newOnChildSession(t, store, "parent", nil)
+	if err := store.Create(session.Metadata{
+		SessionID: "child1", ACPServer: "test", WorkingDir: "/tmp", ParentSessionID: "parent",
+	}); err != nil {
+		t.Fatalf("Create(child) error = %v", err)
+	}
+
+	logger, buf := captureDebugLogger()
+	runner := NewLoopRunner(store, nil, logger)
+
+	runner.OnChildLoopStopped("child1", session.StoppedReasonMaxIterations)
+
+	if !strings.Contains(buf.String(), "onChild: not armed for this event, dropping") {
+		t.Errorf("expected a not-armed drop log for the default event set, got:\n%s", buf.String())
+	}
+	if strings.Contains(buf.String(), "Triggering immediate loop delivery") {
+		t.Error("anyLoopStopped must not fire against a parent armed only with the default child events")
+	}
+}
+
+// TestLoopRunner_OnChildLoopStopped_NotAChild_NoOp mirrors
+// TestLoopRunner_OnChildEndResponse_NotAChild_NoOp: a top-level session (no
+// ParentSessionID) must be a silent no-op.
+func TestLoopRunner_OnChildLoopStopped_NotAChild_NoOp(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	if err := store.Create(session.Metadata{SessionID: "top-level", ACPServer: "test", WorkingDir: "/tmp"}); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	logger, buf := captureDebugLogger()
+	runner := NewLoopRunner(store, nil, logger)
+	runner.OnChildLoopStopped("top-level", session.StoppedReasonArchived)
+
+	if buf.Len() != 0 {
+		t.Errorf("OnChildLoopStopped() for a non-child session should be a silent no-op, got:\n%s", buf.String())
+	}
+}
+
+// TestLoopRunner_OnChildLoopStopped_UnknownChild_NoOp mirrors
+// TestLoopRunner_OnChildEndResponse_UnknownChild_NoOp: GetMetadata failing
+// for a session that was never created must not panic.
+func TestLoopRunner_OnChildLoopStopped_UnknownChild_NoOp(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	logger, buf := captureDebugLogger()
+	runner := NewLoopRunner(store, nil, logger)
+	runner.OnChildLoopStopped("does-not-exist", session.StoppedReasonMaxDuration)
+
+	if buf.Len() != 0 {
+		t.Errorf("OnChildLoopStopped() for an unresolvable child should be a silent no-op, got:\n%s", buf.String())
+	}
+}
+
+// TestLoopRunner_OnChildLoopStopped_SelfParent_NoOp pins the self-referential
+// guard: a session whose own ParentSessionID equals its own sessionID (a
+// pathological/self-referential record) must never re-fire its own onChild
+// trigger against itself.
+func TestLoopRunner_OnChildLoopStopped_SelfParent_NoOp(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	if err := store.Create(session.Metadata{
+		SessionID: "self-loop", ACPServer: "test", WorkingDir: "/tmp", ParentSessionID: "self-loop",
+	}); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if err := store.Loop("self-loop").Set(&session.LoopPrompt{
+		Prompt:      "iterate",
+		Enabled:     true,
+		Triggers:    []session.LoopTrigger{session.TriggerOnChild, session.TriggerOnCompletion},
+		ChildEvents: []session.ChildEvent{session.ChildEventAnyLoopStopped},
+	}); err != nil {
+		t.Fatalf("loopStore.Set() error = %v", err)
+	}
+
+	logger, buf := captureDebugLogger()
+	runner := NewLoopRunner(store, nil, logger)
+	runner.OnChildLoopStopped("self-loop", session.StoppedReasonDisabledByAgent)
+
+	if buf.Len() != 0 {
+		t.Errorf("OnChildLoopStopped() with childID == parentID should be a silent no-op, got:\n%s", buf.String())
+	}
+}
+
+// TestLoopRunner_OnChildLoopStopped_ArchivedParent mirrors
+// TestLoopRunner_FireOnChild_ArchivedParent through the OnChildLoopStopped
+// entry point.
+func TestLoopRunner_OnChildLoopStopped_ArchivedParent(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	newOnChildSession(t, store, "parent", []session.ChildEvent{session.ChildEventAnyLoopStopped})
+	if err := store.Create(session.Metadata{
+		SessionID: "child1", ACPServer: "test", WorkingDir: "/tmp", ParentSessionID: "parent",
+	}); err != nil {
+		t.Fatalf("Create(child) error = %v", err)
+	}
+	if err := store.UpdateMetadata("parent", func(m *session.Metadata) { m.Archived = true }); err != nil {
+		t.Fatalf("UpdateMetadata() error = %v", err)
+	}
+
+	logger, buf := captureDebugLogger()
+	runner := NewLoopRunner(store, nil, logger)
+	runner.OnChildLoopStopped("child1", session.StoppedReasonArchived)
+
+	if !strings.Contains(buf.String(), "onChild: parent missing or archived, dropping") {
+		t.Errorf("expected an archived-parent drop log, got:\n%s", buf.String())
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -1075,6 +1076,21 @@ func TestLoopPrompt_Validate_MultiTrigger(t *testing.T) {
 		}
 	})
 
+	// mitto-q6my: anyLoopStopped is a third, opt-in-only ChildEvent.
+	t.Run("valid onChild with anyLoopStopped child event", func(t *testing.T) {
+		p := LoopPrompt{Prompt: "p", Triggers: []LoopTrigger{TriggerOnTasks, TriggerOnChild}, ChildEvents: []ChildEvent{ChildEventAnyLoopStopped}}
+		if err := p.Validate(); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("valid onChild with all three child events combined", func(t *testing.T) {
+		p := LoopPrompt{Prompt: "p", Triggers: []LoopTrigger{TriggerOnTasks, TriggerOnChild}, ChildEvents: []ChildEvent{ChildEventAnyEndResponse, ChildEventAnyDeleted, ChildEventAnyLoopStopped}}
+		if err := p.Validate(); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
 	t.Run("onChild alone in Triggers list is rejected", func(t *testing.T) {
 		p := LoopPrompt{Prompt: "p", Triggers: []LoopTrigger{TriggerOnChild}}
 		err := p.Validate()
@@ -1393,6 +1409,21 @@ func TestLoopPrompt_EffectiveChildEvents_HasChildEvent(t *testing.T) {
 	}
 }
 
+// TestDefaultChildEvents_DoesNotIncludeAnyLoopStopped pins the mitto-q6my
+// back-compat guarantee: anyLoopStopped must be opt-in only, so existing
+// onChild loops relying on the implicit default set are unaffected.
+func TestDefaultChildEvents_DoesNotIncludeAnyLoopStopped(t *testing.T) {
+	events := DefaultChildEvents()
+	if len(events) != 2 {
+		t.Fatalf("DefaultChildEvents() = %v, want exactly 2 (anyEndResponse, anyDeleted)", events)
+	}
+	for _, e := range events {
+		if e == ChildEventAnyLoopStopped {
+			t.Errorf("DefaultChildEvents() = %v, must not include %q (opt-in only)", events, ChildEventAnyLoopStopped)
+		}
+	}
+}
+
 func TestLoopStore_OnCompletion_NextScheduledAtIsNil(t *testing.T) {
 	dir := t.TempDir()
 	ps := NewLoopStore(dir)
@@ -1524,6 +1555,170 @@ func TestLoopStore_MarkStopped_NotFound(t *testing.T) {
 	err := ps.MarkStopped(StoppedReasonMaxDuration)
 	if !errors.Is(err, ErrLoopNotFound) {
 		t.Errorf("MarkStopped() on non-existent config error = %v, want ErrLoopNotFound", err)
+	}
+}
+
+// TestLoopStore_MarkStopped_NoObserverConfigured_NoPanic pins that a
+// LoopStore constructed via the public NewLoopStore (no sessionID/observer
+// wired, used directly by tests and by any caller bypassing Store.Loop) is a
+// pure no-op notification-wise: MarkStopped must not panic on a nil observer.
+func TestLoopStore_MarkStopped_NoObserverConfigured_NoPanic(t *testing.T) {
+	dir := t.TempDir()
+	ps := NewLoopStore(dir)
+	if err := ps.Set(&LoopPrompt{
+		Prompt:    "Test",
+		Frequency: Frequency{Value: 1, Unit: FrequencyHours},
+		Enabled:   true,
+	}); err != nil {
+		t.Fatalf("Set() error = %v", err)
+	}
+	if err := ps.MarkStopped(StoppedReasonMaxDuration); err != nil {
+		t.Fatalf("MarkStopped() error = %v", err)
+	}
+}
+
+// --- SetLoopStoppedObserver / anyLoopStopped notification tests (mitto-q6my) ---
+
+// TestLoopStore_MarkStopped_NotifiesObserver_OnRealTransition is table-driven
+// over every StoppedReason: a LoopStore obtained via Store.Loop(sessionID)
+// (which threads in the Store's registered stopped-observer) must notify
+// exactly once, with the stopped session's own ID and the given reason, when
+// MarkStopped transitions an enabled loop to stopped.
+func TestLoopStore_MarkStopped_NotifiesObserver_OnRealTransition(t *testing.T) {
+	reasons := []StoppedReason{
+		StoppedReasonMaxDuration,
+		StoppedReasonMaxIterations,
+		StoppedReasonIterationSafeguard,
+		StoppedReasonPromptUnresolved,
+		StoppedReasonResumeFailures,
+		StoppedReasonContextWindowExceeded,
+		StoppedReasonDeliveryFailures,
+		StoppedReasonPausedByUser,
+		StoppedReasonDisabledByAgent,
+		StoppedReasonArchived,
+	}
+
+	for _, reason := range reasons {
+		t.Run(string(reason), func(t *testing.T) {
+			store, err := NewStore(t.TempDir())
+			if err != nil {
+				t.Fatalf("NewStore() error = %v", err)
+			}
+			defer store.Close()
+
+			if err := store.Create(Metadata{SessionID: "child1", ACPServer: "test", WorkingDir: "/tmp"}); err != nil {
+				t.Fatalf("Create() error = %v", err)
+			}
+
+			type call struct {
+				sessionID string
+				reason    StoppedReason
+			}
+			var mu sync.Mutex
+			var calls []call
+			store.SetLoopStoppedObserver(func(sessionID string, r StoppedReason) {
+				mu.Lock()
+				defer mu.Unlock()
+				calls = append(calls, call{sessionID: sessionID, reason: r})
+			})
+
+			ps := store.Loop("child1")
+			if err := ps.Set(&LoopPrompt{
+				Prompt:    "iterate",
+				Frequency: Frequency{Value: 1, Unit: FrequencyHours},
+				Enabled:   true,
+			}); err != nil {
+				t.Fatalf("Set() error = %v", err)
+			}
+
+			if err := ps.MarkStopped(reason); err != nil {
+				t.Fatalf("MarkStopped(%q) error = %v", reason, err)
+			}
+
+			mu.Lock()
+			defer mu.Unlock()
+			if len(calls) != 1 {
+				t.Fatalf("observer invocation count = %d, want 1: %+v", len(calls), calls)
+			}
+			if calls[0].sessionID != "child1" || calls[0].reason != reason {
+				t.Errorf("observer call = %+v, want {child1 %q}", calls[0], reason)
+			}
+		})
+	}
+}
+
+// TestLoopStore_MarkStopped_NoDoubleNotifyOnAlreadyStopped verifies the
+// wasEnabled guard: several real call sites (loop_runner auto-stop retries,
+// a second MCP loop_enabled:false while already paused) can invoke
+// MarkStopped against a config that is already stopped. The observer must
+// fire exactly once, on the real enabled->stopped transition only.
+func TestLoopStore_MarkStopped_NoDoubleNotifyOnAlreadyStopped(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	if err := store.Create(Metadata{SessionID: "child1", ACPServer: "test", WorkingDir: "/tmp"}); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	var mu sync.Mutex
+	callCount := 0
+	store.SetLoopStoppedObserver(func(sessionID string, reason StoppedReason) {
+		mu.Lock()
+		defer mu.Unlock()
+		callCount++
+	})
+
+	ps := store.Loop("child1")
+	if err := ps.Set(&LoopPrompt{
+		Prompt:    "iterate",
+		Frequency: Frequency{Value: 1, Unit: FrequencyHours},
+		Enabled:   true,
+	}); err != nil {
+		t.Fatalf("Set() error = %v", err)
+	}
+
+	if err := ps.MarkStopped(StoppedReasonMaxDuration); err != nil {
+		t.Fatalf("first MarkStopped() error = %v", err)
+	}
+	// Re-stop an already-stopped config with a different reason.
+	if err := ps.MarkStopped(StoppedReasonMaxIterations); err != nil {
+		t.Fatalf("second MarkStopped() error = %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if callCount != 1 {
+		t.Errorf("observer call count = %d, want 1 (no notify on re-stop of an already-stopped config)", callCount)
+	}
+}
+
+// TestLoopStore_MarkStopped_NoObserverRegistered_NoOp verifies that a Store
+// with no observer registered (the default, pre-mitto-q6my state) leaves
+// MarkStopped a pure no-op notification-wise — no panic, no spurious calls.
+func TestLoopStore_MarkStopped_NoObserverRegistered_NoOp(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	if err := store.Create(Metadata{SessionID: "child1", ACPServer: "test", WorkingDir: "/tmp"}); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	ps := store.Loop("child1")
+	if err := ps.Set(&LoopPrompt{
+		Prompt:    "iterate",
+		Frequency: Frequency{Value: 1, Unit: FrequencyHours},
+		Enabled:   true,
+	}); err != nil {
+		t.Fatalf("Set() error = %v", err)
+	}
+	if err := ps.MarkStopped(StoppedReasonMaxDuration); err != nil {
+		t.Fatalf("MarkStopped() error = %v", err)
 	}
 }
 

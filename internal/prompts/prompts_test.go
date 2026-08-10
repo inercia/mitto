@@ -487,6 +487,63 @@ prompt: |
 	}
 }
 
+// TestParsePromptFile_WithLoop_OnChild_AnyLoopStopped pins the mitto-q6my
+// acceptance criteria: loop.onChild.when accepts "anyLoopStopped" alongside
+// the two pre-existing events, and it round-trips through
+// (*PromptLoop).ChildEvents().
+func TestParsePromptFile_WithLoop_OnChild_AnyLoopStopped(t *testing.T) {
+	data := []byte(`name: "On Child Loop Stopped"
+loop:
+  trigger: [onChild, onCompletion]
+  onChild:
+    when: [anyEndResponse, anyDeleted, anyLoopStopped]
+  onCompletion:
+    delay: 30
+prompt: |
+  Fire when a child ends, is deleted, or its own loop stops.
+`)
+
+	prompt, err := ParsePromptFile("on-child-loop-stopped.prompt.yaml", data, time.Now())
+	if err != nil {
+		t.Fatalf("ParsePromptFile failed: %v", err)
+	}
+	if prompt.Loop == nil {
+		t.Fatal("Loop = nil, want non-nil")
+	}
+	want := []string{"anyEndResponse", "anyDeleted", "anyLoopStopped"}
+	got := prompt.Loop.ChildEvents()
+	if len(got) != len(want) {
+		t.Fatalf("Loop.ChildEvents() = %v, want %v", got, want)
+	}
+	for i, w := range want {
+		if got[i] != w {
+			t.Errorf("Loop.ChildEvents()[%d] = %q, want %q", i, got[i], w)
+		}
+	}
+}
+
+// TestParsePromptFile_WithLoop_OnChild_AnyLoopStoppedAlone pins that
+// anyLoopStopped may be armed on its own, without the other two events —
+// it is a standalone opt-in signal, not a modifier of the default pair.
+func TestParsePromptFile_WithLoop_OnChild_AnyLoopStoppedAlone(t *testing.T) {
+	data := []byte(`name: "Only LoopStopped"
+loop:
+  trigger: [onChild, schedule]
+  onChild:
+    when: [anyLoopStopped]
+prompt: |
+  Fire only when a child's own loop stops.
+`)
+
+	prompt, err := ParsePromptFile("only-loop-stopped.prompt.yaml", data, time.Now())
+	if err != nil {
+		t.Fatalf("ParsePromptFile failed: %v", err)
+	}
+	if got := prompt.Loop.ChildEvents(); len(got) != 1 || got[0] != "anyLoopStopped" {
+		t.Errorf("Loop.ChildEvents() = %v, want [anyLoopStopped]", got)
+	}
+}
+
 // TestParsePromptFile_WithLoop_OnChildAlone_Errors pins the "onChild cannot
 // be the sole trigger" rule (mitto-987y.2, mirrors session.ErrOnChildAlone) at
 // the ParsePromptFile level, exercising ValidatePromptLoop's plumbing end to
