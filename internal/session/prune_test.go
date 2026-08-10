@@ -1067,8 +1067,10 @@ func TestRecorder_ConcurrentRecord_DoesNotRaceOnPrune(t *testing.T) {
 		} else {
 			t.Logf("SingleStore: 0 'failed to prune' WARNs — race absent as expected (Store.mu serializes)")
 		}
-		// (c) events.jsonl is well-formed with monotonic seq
-		assertWellFormed(t, store, recorder.SessionID(), true /* monotonic */, pruneMax+numGoroutines)
+		// (c) events.jsonl is well-formed with monotonic seq. The bound allows
+		// the prune hysteresis slack on top of the cap (see PruneConfig.Slack).
+		maxEvents := pruneMax + (&PruneConfig{MaxMessages: pruneMax}).EffectiveSlack() + numGoroutines
+		assertWellFormed(t, store, recorder.SessionID(), true /* monotonic */, maxEvents)
 	})
 
 	// ── Scenario B: Two Stores, same baseDir ─────────────────────────────────
@@ -1148,6 +1150,93 @@ func TestRecorder_ConcurrentRecord_DoesNotRaceOnPrune(t *testing.T) {
 		// be valid JSONL and within a generous bound.
 		assertWellFormed(t, store1, sessionID, false /* two-store seq collision possible */, 0)
 	})
+}
+
+// TestStore_PruneIfNeeded_WriteAmplificationAtCap is the reproduction test for
+// mitto-9wwj (Prune write amplification): once a session's event count sits at
+// the configured MaxMessages cap, pruneInternal has no hysteresis — the trigger
+// (len(events) > MaxMessages) and the target (MaxMessages) are the same number,
+// so eventsToRemove is always exactly 1 and every single append past the cap
+// pays a full O(n) parse + O(n) rewrite + fsync of events.jsonl.
+//
+// This mirrors the acceptance criteria in the bead description: "append 2N
+// events to a session with MaxMessages=N and assert the number of rewrites is
+// O(N/slack), not O(N)."
+//
+// It fails today because prunesTriggered == eventsPastCap (one rewrite per
+// event, i.e. O(N)); it should pass once hysteresis/slack amortizes the
+// rewrite across a batch of events (O(N/slack)).
+func TestStore_PruneIfNeeded_WriteAmplificationAtCap(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	sessionID := "test-write-amplification"
+	meta := Metadata{
+		SessionID:  sessionID,
+		ACPServer:  "test-server",
+		WorkingDir: "/test/dir",
+	}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	const maxMessages = 50
+	const totalEvents = 2 * maxMessages // 100: 50 to reach the cap, 50 more past it
+
+	config := &PruneConfig{MaxMessages: maxMessages}
+
+	// Mirror the production recorder path (recorder.go recordEvent /
+	// RecordEventWithSeq): PruneIfNeeded is invoked after every single append.
+	prunesTriggered := 0
+	for i := 0; i < totalEvents; i++ {
+		event := Event{
+			Type:      EventTypeUserPrompt,
+			Timestamp: time.Now(),
+			Data:      UserPromptData{Message: fmt.Sprintf("msg-%d", i)},
+		}
+		if err := store.AppendEvent(sessionID, event); err != nil {
+			t.Fatalf("AppendEvent %d failed: %v", i, err)
+		}
+		result, err := store.PruneIfNeeded(sessionID, config)
+		if err != nil {
+			t.Fatalf("PruneIfNeeded after append %d failed: %v", i, err)
+		}
+		if result != nil {
+			prunesTriggered++
+		}
+	}
+
+	eventsPastCap := totalEvents - maxMessages // 50
+	t.Logf("prunesTriggered=%d eventsPastCap=%d", prunesTriggered, eventsPastCap)
+
+	// Acceptance criteria (mitto-9wwj): prune frequency must drop by at least an
+	// order of magnitude once hysteresis amortizes the rewrite — NOT one
+	// full-file rewrite per appended event.
+	maxAllowedPrunes := eventsPastCap / 10
+	if maxAllowedPrunes < 1 {
+		maxAllowedPrunes = 1
+	}
+	if prunesTriggered > maxAllowedPrunes {
+		t.Errorf("prunesTriggered = %d, want <= %d (order-of-magnitude reduction from O(N) to O(N/slack) per mitto-9wwj); got one rewrite per event past the cap instead of a batched/amortized rewrite",
+			prunesTriggered, maxAllowedPrunes)
+	}
+
+	// Sanity: regardless of rewrite frequency, the event count must still be
+	// bounded. With hysteresis the steady state oscillates between MaxMessages
+	// and MaxMessages+Slack (the trigger), never above it.
+	events, err := store.ReadEvents(sessionID)
+	if err != nil {
+		t.Fatalf("ReadEvents failed: %v", err)
+	}
+	upperBound := maxMessages + config.EffectiveSlack()
+	if len(events) < maxMessages || len(events) > upperBound {
+		t.Errorf("Expected between %d and %d events after pruning to settle, got %d",
+			maxMessages, upperBound, len(events))
+	}
 }
 
 // TestStore_PruneIfNeeded_PreservesSeqs is the primary regression test for the
