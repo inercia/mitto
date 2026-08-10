@@ -28,7 +28,10 @@ type Mode int
 
 const (
 	// ModeStyled renders full ANSI styling (color, bold, etc.) using
-	// glamour's "dark" style. Selected for an interactive TTY.
+	// glamour's "dark" style. Selected for an interactive TTY. Always dark:
+	// glamour v2 dropped v1's WithAutoStyle and defaults to dark itself, so
+	// light-terminal selection needs explicit background detection, tracked
+	// as mitto-u7k3 and deferred to the chat TUI (mitto-pscc.7).
 	ModeStyled Mode = iota
 	// ModePlain renders glamour's "notty" (ASCII-only, no ANSI) style.
 	// Selected for piped stdout, --no-color, or $NO_COLOR.

@@ -154,6 +154,9 @@ by scripts — `--output json`/`yaml` is the contract.
   `internal/conversation` must not import it. `.7`'s transcript pane and any
   one-shot command printing an agent message body are its consumers. The
   streaming stable-prefix cache is deferred as `mitto-pscc.8.1`.
+  **Styled mode is dark-only**: glamour v2 dropped v1's `WithAutoStyle`, so
+  light-terminal selection needs explicit background detection — deferred to
+  `.7` as `mitto-u7k3`.
 
 ## 8. `conversation send` decisions (`mitto-pscc.6`)
 

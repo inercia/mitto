@@ -54,10 +54,10 @@ func realStdoutIsTerminal() bool {
 }
 
 // TerminalWidth returns the current terminal width for os.Stdout, or
-// fallback when stdout is not a TTY or its size cannot be determined (e.g.
-// fallback <= 0, defaultWidth is used). Render itself never calls this —
-// callers resolve the width once (or on tea.WindowSizeMsg, for .7) and pass
-// it through Options.Width, keeping Render deterministic.
+// fallback when stdout is not a TTY or its size cannot be determined. A
+// non-positive fallback is replaced by defaultWidth. Render itself never
+// calls this — callers resolve the width once (or on tea.WindowSizeMsg, for
+// .7) and pass it through Options.Width, keeping Render deterministic.
 func TerminalWidth(fallback int) int {
 	if fallback <= 0 {
 		fallback = defaultWidth
