@@ -1655,6 +1655,60 @@ prompt: |
 	}
 }
 
+// TestParsePromptFile_WarningsNotRetained is the reproduction test for
+// mitto-tigh (gap 1): parsePromptFileData calls WarnDeprecatedMittoVars and
+// WarnUnknownMenus purely for their slog.Warn side effect (prompts.go:
+// 1275-1279) and never stores the diagnostic anywhere on the returned
+// PromptFile. This test parses a prompt with both a deprecated @mitto: token
+// and an unrecognised menus token, and asserts the resulting PromptFile (and
+// its ToWebPrompt() projection) surface at least one warning string — which
+// today they cannot, because PromptFile has no Warnings field at all.
+//
+// This intentionally uses the dedup-free detectors' *inputs* (a single fresh
+// prompt name) so the test is not flaky against the process-lifetime dedup
+// in WarnDeprecatedMittoVars/WarnUnknownMenus (investigation Finding A).
+func TestParsePromptFile_WarningsNotRetained(t *testing.T) {
+	data := []byte(`name: "mitto-tigh-repro-warnings-unique"
+menus: conversations
+prompt: |
+  Hello @mitto:session_id, this body uses a deprecated token.
+`)
+
+	prompt, err := ParsePromptFile("repro-warnings.prompt.yaml", data, time.Now())
+	if err != nil {
+		t.Fatalf("ParsePromptFile failed: %v", err)
+	}
+
+	// Sanity: the detectors themselves DO see both issues (dedup-free).
+	if vars := DeprecatedMittoVars(prompt.Content); len(vars) == 0 {
+		t.Fatal("test setup broken: DeprecatedMittoVars found no deprecated tokens")
+	}
+	if unknown := UnknownMenuTokens(prompt.Menus); len(unknown) == 0 {
+		t.Fatal("test setup broken: UnknownMenuTokens found no unknown tokens")
+	}
+
+	// BUG (mitto-tigh): PromptFile has no field carrying these diagnostics,
+	// so they are unreachable from here on — not in the cache, not in
+	// WebPrompt, not in `prompts verify`. Reflect on the struct's JSON tags
+	// via ToWebPrompt(), which is the DTO sent to the frontend.
+	wp := prompt.ToWebPrompt()
+	raw, err := json.Marshal(wp)
+	if err != nil {
+		t.Fatalf("json.Marshal(WebPrompt): %v", err)
+	}
+	var asMap map[string]interface{}
+	if err := json.Unmarshal(raw, &asMap); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
+	if _, ok := asMap["warnings"]; !ok {
+		t.Errorf("WebPrompt JSON has no \"warnings\" field (mitto-tigh gap 1): "+
+			"a prompt using a deprecated @mitto: token AND an unrecognised menus "+
+			"token produces no retained diagnostic anywhere reachable from "+
+			"ParsePromptFile's result; only a possibly-deduped slog.Warn. "+
+			"WebPrompt JSON: %s", raw)
+	}
+}
+
 func TestToWebPrompt_IncludesEnabledWhen(t *testing.T) {
 	prompt := &PromptFile{
 		Name:        "Test",

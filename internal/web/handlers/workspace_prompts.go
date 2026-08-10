@@ -185,6 +185,28 @@ func (h *Handlers) HandleWorkspacePromptsDELETE(w http.ResponseWriter, r *http.R
 	writeJSONOK(w, map[string]interface{}{"ok": true})
 }
 
+// promptLoadErrorsToPlaceholders converts prompt load errors into placeholder
+// WebProcessor-style entries so a broken prompt file is visible in the
+// Prompts tab instead of silently missing (mirrors the ProcessorLoadError
+// pattern in workspace_processors.go:139-158). PromptLoadError only carries
+// {Path, Err} (no Name/Source), so the display name is derived from the file
+// basename and Source is stamped by the caller, which knows whether it
+// walked the builtin or the workspace directory.
+func promptLoadErrorsToPlaceholders(errs []configPkg.PromptLoadError, source configPkg.PromptSource) []configPkg.WebPrompt {
+	if len(errs) == 0 {
+		return nil
+	}
+	placeholders := make([]configPkg.WebPrompt, 0, len(errs))
+	for _, le := range errs {
+		placeholders = append(placeholders, configPkg.WebPrompt{
+			Name:   filepath.Base(le.Path),
+			Source: source,
+			Error:  le.Err.Error(),
+		})
+	}
+	return placeholders
+}
+
 // HandleWorkspacePromptsGETIncludeGlobal handles the include_global=true variant of the GET endpoint.
 // It loads builtin prompts and workspace prompts, merges them (workspace overrides builtin by name),
 // and returns all prompts including disabled ones (so the UI can render enable/disable toggles).
@@ -192,23 +214,25 @@ func (h *Handlers) HandleWorkspacePromptsGETIncludeGlobal(w http.ResponseWriter,
 	// Load builtin prompts and tag them as source="builtin"
 	var builtinPrompts []configPkg.WebPrompt
 	if builtinDir, err := appdir.BuiltinPromptsDir(); err == nil {
-		rawBuiltin, _ := configPkg.LoadPromptsFromDir(builtinDir)
+		rawBuiltin, builtinErrs, _ := configPkg.LoadPromptsFromDirWithErrors(builtinDir)
 		for _, p := range rawBuiltin {
 			wp := p.ToWebPrompt()
 			wp.Source = configPkg.PromptSourceBuiltin
 			builtinPrompts = append(builtinPrompts, wp)
 		}
+		builtinPrompts = append(builtinPrompts, promptLoadErrorsToPlaceholders(builtinErrs, configPkg.PromptSourceBuiltin)...)
 	}
 
 	// Load workspace prompts from .mitto/prompts/ and tag them as source="workspace"
 	var workspacePrompts []configPkg.WebPrompt
 	workspacePromptsDir := appdir.WorkspacePromptsDir(workingDir)
-	rawWorkspace, _ := configPkg.LoadPromptsFromDir(workspacePromptsDir)
+	rawWorkspace, workspaceErrs, _ := configPkg.LoadPromptsFromDirWithErrors(workspacePromptsDir)
 	for _, p := range rawWorkspace {
 		wp := p.ToWebPrompt()
 		wp.Source = configPkg.PromptSourceWorkspace
 		workspacePrompts = append(workspacePrompts, wp)
 	}
+	workspacePrompts = append(workspacePrompts, promptLoadErrorsToPlaceholders(workspaceErrs, configPkg.PromptSourceWorkspace)...)
 
 	// Load inline prompts from .mittorc. Separate them into:
 	// - disable-only entries (no prompt text, enabled=false): applied as overrides on builtins

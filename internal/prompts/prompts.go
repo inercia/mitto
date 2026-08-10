@@ -1112,6 +1112,15 @@ type PromptFile struct {
 
 	// FileModTime is the file's modification time for cache invalidation.
 	FileModTime time.Time `yaml:"-" json:"-"`
+
+	// Warnings holds non-fatal diagnostics detected while parsing this prompt
+	// (deprecated @mitto: tokens, unrecognised menus tokens, legacy-schema
+	// migrations). Populated by parsePromptFileData from the dedup-free
+	// detectors (DeprecatedMittoVars, UnknownMenuTokens) rather than captured
+	// from the Warn* slog side effects, so every load/reload retains the full
+	// set even though the Warn* helpers themselves are deduped per process
+	// lifetime (mitto-tigh). Carried into WebPrompt.Warnings via ToWebPrompt.
+	Warnings []string `yaml:"-" json:"-"`
 }
 
 // IsEnabled returns true if the prompt is enabled.
@@ -1163,6 +1172,7 @@ func (p *PromptFile) ToWebPrompt() WebPrompt {
 		PreferredModels: p.PreferredModels,
 		Parameters:      p.Parameters,
 		Tags:            p.Tags,
+		Warnings:        p.Warnings,
 	}
 }
 
@@ -1215,6 +1225,11 @@ func parsePromptFileData(path string, data []byte, modTime time.Time) (*PromptFi
 	prompt := &PromptFile{
 		Path:        path,
 		FileModTime: modTime,
+	}
+
+	if result.Changed {
+		prompt.Warnings = append(prompt.Warnings,
+			fmt.Sprintf("prompt file uses a legacy schema and was migrated: %s", strings.Join(result.Fired, ", ")))
 	}
 
 	// Parse into a mutable node tree so the legacy target.reuse* migration
@@ -1273,10 +1288,23 @@ func parsePromptFileData(path string, data []byte, modTime time.Time) (*PromptFi
 	}
 
 	// Warn (non-fatal) when the body still uses deprecated @mitto: tokens (mitto-m7sb.9).
+	// WarnDeprecatedMittoVars itself dedupes per (name, vars) for the process
+	// lifetime, so a reload can emit nothing at all; Warnings is populated
+	// from the dedup-free detector below so it is always retained on the
+	// PromptFile regardless of prior slog emission (mitto-tigh).
 	WarnDeprecatedMittoVars(prompt.Name, prompt.Content)
+	if vars := DeprecatedMittoVars(prompt.Content); len(vars) > 0 {
+		prompt.Warnings = append(prompt.Warnings,
+			fmt.Sprintf("prompt body uses deprecated @mitto: variables (migrate to Go templates): %s", strings.Join(vars, ", ")))
+	}
 
 	// Warn (non-fatal) when menus contains an unrecognised token (mitto-rjg6).
+	// Same dedup caveat as above applies to WarnUnknownMenus.
 	WarnUnknownMenus(prompt.Name, path, prompt.Menus)
+	if unknown := UnknownMenuTokens(prompt.Menus); len(unknown) > 0 {
+		prompt.Warnings = append(prompt.Warnings,
+			fmt.Sprintf("menus field contains unrecognised token(s): %s", strings.Join(unknown, ", ")))
+	}
 
 	return prompt, migrated, result, nil
 }

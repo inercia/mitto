@@ -71,6 +71,16 @@ type WebPrompt struct {
 	// Parameters declares the named, typed inputs this prompt expects.
 	// Populated from the `parameters:` block in .prompt.yaml or inline config prompts.
 	Parameters []PromptParameter `json:"parameters,omitempty"`
+	// Warnings holds non-fatal diagnostics detected while parsing this prompt
+	// (deprecated @mitto: tokens, unrecognised menus tokens, legacy-schema
+	// migrations). Empty for prompts with no diagnostics. Mirrors the Error
+	// field's placeholder-entry pattern but for advisory (non-blocking) issues
+	// on an otherwise successfully-loaded prompt (mitto-tigh).
+	Warnings []string `json:"warnings,omitempty"`
+	// Error is non-empty only for placeholder entries representing a prompt
+	// file that failed to load/parse entirely (mirrors WebProcessor.Error).
+	// A successfully-loaded prompt always leaves this empty.
+	Error string `json:"error,omitempty"`
 }
 
 // ============================================================================
