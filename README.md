@@ -130,6 +130,7 @@ open Mitto.app
   - 🍎 [macOS App](docs/config/mac/README.md): Hotkeys, notifications
 - 🔧 [Development](docs/development.md): Building, testing
 - 🏗️ [Architecture](docs/devel/README.md): Design internals
+- 📚 [JavaScript SDK](docs/api/README.md): Client library for the Mitto REST API and WebSocket protocol
 
 ## Requirements
 

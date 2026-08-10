@@ -30,6 +30,8 @@ This directory contains technical documentation for developers working on Mitto.
 
 - **[JavaScript Client Library](js-client-library.md)** — SDK design decision record: package layout, distribution via `go:embed`, environment-agnostic contract, public/internal boundary, semver policy, and stability promise
 
+- **[JavaScript SDK Reference](../api/README.md)** — Consumer-facing usage docs for `@mitto/sdk`: getting started, client configuration, authentication, REST resource reference, and the realtime guide
+
 - **[Go Client Library](go-client-library.md)** — SDK design decision record: `pkg/api` package layout, `Client`/`Session` object model, options pattern, typed error model, `context.Context` conventions, streaming realtime API, semver policy, and stability promise
 
 - **[API Stability Tiers and Deprecation Policy](api-stability.md)** — Endpoint-level stability tiers (`stable`/`experimental`/`internal`), the `external-stable` marker, deprecation windows, per-surface signalling (REST/WebSocket/JS SDK/Go SDK), and the deprecation register
@@ -84,6 +86,7 @@ This directory contains technical documentation for developers working on Mitto.
 | Action buttons            | [Follow-up Suggestions](follow-up-suggestions.md)      | Persistence, Lifecycle                                 |
 | Callback endpoints        | [Callbacks](callbacks.md)                              | Public API, Token Lifecycle, Security                  |
 | SDK design (JS)           | [JS Client Library](js-client-library.md)              | Layout, Distribution, Contract, Stability Promise      |
+| SDK usage (JS)            | [JavaScript SDK Reference](../api/README.md)           | Getting Started, Client Config, Auth, REST, Realtime   |
 | SDK design (Go)           | [Go Client Library](go-client-library.md)              | Layout, Object Model, Error Model, Streaming API       |
 | API stability tiers       | [API Stability Tiers](api-stability.md)                | Tiers, `external-stable`, Deprecation Window, Register |
 | CLI conversation commands | [CLI Conversation Commands](cli-conversation.md)       | Command tree, Output contract, Exit codes              |

@@ -4,6 +4,11 @@ Status: decided (mitto-7gta.1). Scope: design only — no code ships in this
 record; implementation is tracked across the sibling issues of the
 `mitto-7gta` epic (`mitto-7gta.2`–`.28`), referenced by ID below.
 
+> For consumer-facing usage docs (getting started, client configuration,
+> authentication, REST reference, realtime guide), see the
+> [JavaScript SDK Reference](../api/README.md). This record stays the
+> authoritative source for _why_ the SDK is shaped this way.
+
 ## Context
 
 At the time this record was decided, the Mitto UI talked to the backend
