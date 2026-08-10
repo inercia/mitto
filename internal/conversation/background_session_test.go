@@ -96,6 +96,63 @@ func TestResumeBackgroundSession_InvalidACPCommand(t *testing.T) {
 	}
 }
 
+// TestResumeBackgroundSession_WiresOnTurnIdle is the mitto-aqtf reproduction:
+// ResumeBackgroundSession's BackgroundSession struct literal omits the
+// onTurnIdle field that NewBackgroundSession sets at
+// background_session.go:674 ("onTurnIdle: cfg.OnTurnIdle"). Every other
+// callback (onSelfDestruct, onTitleGenerated, onStreamingStateChanged, etc.)
+// is copied in ResumeBackgroundSession's literal; onTurnIdle is the one
+// missing.
+//
+// Effect in production: pdOnTurnIdle() (bgsession_prompt.go:1288) is guarded
+// by "if bs.onTurnIdle != nil", so on every RESUMED session the end-of-turn
+// arm chain (finalizeTurn -> pdOnTurnIdle -> LoopRunner.OnConversationIdle ->
+// armCompletionTimer) silently no-ops, leaving the 1-minute poll fallback
+// (recoverStalledOnCompletion) as the only path that ever arms an
+// onCompletion loop timer — see mitto-aqtf: 48/48 arms in production logs
+// were "missed end-of-turn re-arm".
+//
+// This test resumes a session via a fake SharedProcess (so the handshake
+// succeeds without a real ACP subprocess) with a non-nil
+// BackgroundSessionConfig.OnTurnIdle, and asserts the resulting
+// BackgroundSession actually wires and invokes it. It FAILS on the current
+// code (bs.onTurnIdle is nil after resume) and will PASS once
+// ResumeBackgroundSession's struct literal copies OnTurnIdle, matching
+// NewBackgroundSession.
+func TestResumeBackgroundSession_WiresOnTurnIdle(t *testing.T) {
+	fp := newFakeSharedProcess()
+
+	var called atomic.Bool
+	bs, err := ResumeBackgroundSession(BackgroundSessionConfig{
+		PersistedID:   "test-onturnidle-resume",
+		ACPServer:     "test-server",
+		WorkingDir:    "/tmp",
+		SharedProcess: fp,
+		OnTurnIdle: func(sessionID string) {
+			if sessionID != "test-onturnidle-resume" {
+				t.Errorf("onTurnIdle called with unexpected sessionID %q", sessionID)
+			}
+			called.Store(true)
+		},
+	})
+	if err != nil {
+		t.Fatalf("ResumeBackgroundSession failed: %v", err)
+	}
+
+	if bs.onTurnIdle == nil {
+		t.Fatal("mitto-aqtf: ResumeBackgroundSession did not wire onTurnIdle from " +
+			"BackgroundSessionConfig.OnTurnIdle — resumed sessions can never arm the " +
+			"on-completion loop timer synchronously from finalizeTurn, only via the " +
+			"1-minute poll fallback")
+	}
+
+	// Simulate what pdOnTurnIdle does at the end of a clean end_turn turn.
+	bs.onTurnIdle(bs.persistedID)
+	if !called.Load() {
+		t.Fatal("onTurnIdle callback was wired but did not fire when invoked")
+	}
+}
+
 func TestResumeBackgroundSession_EmptyACPCommand(t *testing.T) {
 	tmpDir := t.TempDir()
 	store, err := session.NewStore(tmpDir)

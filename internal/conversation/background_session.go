@@ -929,6 +929,7 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 		onConfigChanged:                config.OnConfigOptionChanged,
 		onTitleGenerated:               config.OnTitleGenerated,
 		onSelfDestruct:                 config.OnSelfDestruct,
+		onTurnIdle:                     config.OnTurnIdle,               // mitto-aqtf: wire end-of-turn hook on resume, matching NewBackgroundSession
 		acpCommand:                     config.ACPCommand,               // Store for restart
 		acpCwd:                         config.ACPCwd,                   // Store for restart
 		serverEnv:                      config.Env,                      // Store for restart
