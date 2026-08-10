@@ -558,9 +558,9 @@ server, zero workspaces/sessions after cold start): **~18 goroutines** fixed
 cost — HTTP server accept/timeout loops, the four middleware `cleanupLoop`s,
 `LoopRunner.Start`, `QueueTitleWorker`, `ACPProcessManager.StartGC`,
 `BeadsWatcher.Start`, `PromptsWatcher.Start` (fsnotify, 2 goroutines),
-`stats.NewAggregator`/`RetentionWorker`/`backfiller`, `ShutdownManager.Start`,
-and `database/sql.OpenDB`. This is restart-durable and does not scale with
-sessions.
+`stats.NewAggregator`/`RetentionWorker`/`backfiller`/`BeadsSource`/
+`UptimeRecorder`, `ShutdownManager.Start`, and `database/sql.OpenDB`. This is
+restart-durable and does not scale with sessions.
 
 **Per-session marginal cost**, measured by creating one session and then
 attaching/detaching one WebSocket client:

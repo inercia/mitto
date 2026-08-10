@@ -124,7 +124,11 @@ func TestConstants(t *testing.T) {
 		{"MetricBeadsClosed", MetricBeadsClosed, "beads_closed"},
 		{"MetricBeadsCycleSecondsSum", MetricBeadsCycleSecondsSum, "beads_cycle_seconds_sum"},
 		{"MetricBeadsCycleClosedCount", MetricBeadsCycleClosedCount, "beads_cycle_closed_count"},
+		{"MetricBeadsActiveCycleSecondsSum", MetricBeadsActiveCycleSecondsSum, "beads_active_cycle_seconds_sum"},
+		{"MetricBeadsActiveCycleClosedCount", MetricBeadsActiveCycleClosedCount, "beads_active_cycle_closed_count"},
+		{"MetricUptimeSeconds", MetricUptimeSeconds, "uptime_seconds"},
 		{"BeadsSentinelSessionID", BeadsSentinelSessionID, "__beads__"},
+		{"UptimeSentinelSessionID", UptimeSentinelSessionID, "__uptime__"},
 	}
 	for _, c := range cases {
 		if c.got != c.want {

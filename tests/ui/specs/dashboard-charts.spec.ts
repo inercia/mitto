@@ -57,6 +57,8 @@ const METRIC_KEYS = [
   "beads_closed",
   "beads_cycle_seconds_sum",
   "beads_cycle_closed_count",
+  "beads_active_cycle_seconds_sum",
+  "beads_active_cycle_closed_count",
 ];
 
 // Build a tsResponse mirroring internal/web/handlers/dashboard_timeseries.go.

@@ -172,11 +172,12 @@ func TestTimeseries_MetricsFilterAndAllowlist(t *testing.T) {
 	}
 }
 
-// TestTimeseries_DefaultMetricSetIncludesBeadsMetrics asserts the four beads
-// metrics (mitto-5rm6) are part of v1MetricSet's default (no ?metrics= param)
+// TestTimeseries_DefaultMetricSetIncludesBeadsMetrics asserts the beads
+// metrics (mitto-5rm6, plus the active-cycle pair and the uptime heartbeat
+// added by mitto-c45m) are part of v1MetricSet's default (no ?metrics= param)
 // response, alongside the pre-existing conversation metrics. A regression
 // that drops one of them from v1MetricSet would silently break the
-// beads_activity / beads_cycle_time dashboard charts, which request all four
+// beads_activity / beads_cycle_time dashboard charts, which request them
 // with no explicit ?metrics= filter.
 func TestTimeseries_DefaultMetricSetIncludesBeadsMetrics(t *testing.T) {
 	h, _ := newTimeseriesTestHandler(&fakeStatsStore{}, nil)
@@ -192,6 +193,9 @@ func TestTimeseries_DefaultMetricSetIncludesBeadsMetrics(t *testing.T) {
 		stats.MetricBeadsClosed,
 		stats.MetricBeadsCycleSecondsSum,
 		stats.MetricBeadsCycleClosedCount,
+		stats.MetricBeadsActiveCycleSecondsSum,
+		stats.MetricBeadsActiveCycleClosedCount,
+		stats.MetricUptimeSeconds,
 	} {
 		if _, ok := body.Series[m]; !ok {
 			t.Errorf("default response missing beads metric %q; got keys=%v", m, keys(body.Series))
