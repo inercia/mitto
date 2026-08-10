@@ -1648,10 +1648,11 @@ func TestLoopStore_MarkStopped_NotifiesObserver_OnRealTransition(t *testing.T) {
 }
 
 // TestLoopStore_MarkStopped_NoDoubleNotifyOnAlreadyStopped verifies the
-// wasEnabled guard: several real call sites (loop_runner auto-stop retries,
+// transition guard: several real call sites (loop_runner auto-stop retries,
 // a second MCP loop_enabled:false while already paused) can invoke
-// MarkStopped against a config that is already stopped. The observer must
-// fire exactly once, on the real enabled->stopped transition only.
+// MarkStopped against a config that is already stopped and already carries a
+// StoppedReason. The observer must fire exactly once, on the real stop
+// transition only.
 func TestLoopStore_MarkStopped_NoDoubleNotifyOnAlreadyStopped(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
@@ -1692,6 +1693,171 @@ func TestLoopStore_MarkStopped_NoDoubleNotifyOnAlreadyStopped(t *testing.T) {
 	defer mu.Unlock()
 	if callCount != 1 {
 		t.Errorf("observer call count = %d, want 1 (no notify on re-stop of an already-stopped config)", callCount)
+	}
+}
+
+// TestLoopStore_MarkStopped_NotifiesAfterUpdateDisabled reproduces the shape
+// of the two caller-initiated disable paths — MCP
+// mitto_conversation_update(loop_enabled: false)
+// (tools_conversation_lifecycle.go) and the REST pause
+// (session_loop_write.go) — which run Update{Enabled:false} FIRST and only
+// then MarkStopped to record the reason. Enabled is therefore already false
+// when MarkStopped runs, so an enabled-only transition check would never
+// notify for the single most important acceptance case ("a child loop calling
+// mitto_conversation_update(loop_enabled:false) fires the parent's loop").
+func TestLoopStore_MarkStopped_NotifiesAfterUpdateDisabled(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	if err := store.Create(Metadata{SessionID: "child1", ACPServer: "test", WorkingDir: "/tmp"}); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	var mu sync.Mutex
+	var gotSession string
+	var gotReason StoppedReason
+	callCount := 0
+	store.SetLoopStoppedObserver(func(sessionID string, reason StoppedReason) {
+		mu.Lock()
+		defer mu.Unlock()
+		callCount++
+		gotSession = sessionID
+		gotReason = reason
+	})
+
+	ps := store.Loop("child1")
+	if err := ps.Set(&LoopPrompt{
+		Prompt:    "iterate",
+		Frequency: Frequency{Value: 1, Unit: FrequencyHours},
+		Enabled:   true,
+	}); err != nil {
+		t.Fatalf("Set() error = %v", err)
+	}
+
+	disabled := false
+	if err := ps.Update(LoopUpdate{Enabled: &disabled}); err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if err := ps.MarkStopped(StoppedReasonDisabledByAgent); err != nil {
+		t.Fatalf("MarkStopped() error = %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if callCount != 1 {
+		t.Fatalf("observer call count = %d, want 1 (Update{Enabled:false} then MarkStopped must still notify)", callCount)
+	}
+	if gotSession != "child1" {
+		t.Errorf("observer sessionID = %q, want %q", gotSession, "child1")
+	}
+	if gotReason != StoppedReasonDisabledByAgent {
+		t.Errorf("observer reason = %q, want %q", gotReason, StoppedReasonDisabledByAgent)
+	}
+}
+
+// TestLoopStore_MarkStopped_NoRenotifyAfterReStopViaUpdate verifies the
+// transition guard is not so loose that a disable/re-stamp sequence double
+// fires: once a StoppedReason is recorded, a further Update{Enabled:false} +
+// MarkStopped against the same stopped config must stay silent.
+func TestLoopStore_MarkStopped_NoRenotifyAfterReStopViaUpdate(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	if err := store.Create(Metadata{SessionID: "child1", ACPServer: "test", WorkingDir: "/tmp"}); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	var mu sync.Mutex
+	callCount := 0
+	store.SetLoopStoppedObserver(func(sessionID string, reason StoppedReason) {
+		mu.Lock()
+		defer mu.Unlock()
+		callCount++
+	})
+
+	ps := store.Loop("child1")
+	if err := ps.Set(&LoopPrompt{
+		Prompt:    "iterate",
+		Frequency: Frequency{Value: 1, Unit: FrequencyHours},
+		Enabled:   true,
+	}); err != nil {
+		t.Fatalf("Set() error = %v", err)
+	}
+
+	disabled := false
+	if err := ps.Update(LoopUpdate{Enabled: &disabled}); err != nil {
+		t.Fatalf("first Update() error = %v", err)
+	}
+	if err := ps.MarkStopped(StoppedReasonDisabledByAgent); err != nil {
+		t.Fatalf("first MarkStopped() error = %v", err)
+	}
+	if err := ps.Update(LoopUpdate{Enabled: &disabled}); err != nil {
+		t.Fatalf("second Update() error = %v", err)
+	}
+	if err := ps.MarkStopped(StoppedReasonPausedByUser); err != nil {
+		t.Fatalf("second MarkStopped() error = %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if callCount != 1 {
+		t.Errorf("observer call count = %d, want 1 (a re-stop of an already-recorded stop must not re-notify)", callCount)
+	}
+}
+
+// TestLoopStore_MarkStopped_NotifiesAgainAfterReEnable verifies the guard
+// rearms: re-enabling a stopped loop clears StoppedReason (see Update), so a
+// subsequent stop is a fresh transition and must notify again. This is the
+// normal supervisor cycle — a driver is paused, resumed, and finishes.
+func TestLoopStore_MarkStopped_NotifiesAgainAfterReEnable(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	if err := store.Create(Metadata{SessionID: "child1", ACPServer: "test", WorkingDir: "/tmp"}); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	var mu sync.Mutex
+	callCount := 0
+	store.SetLoopStoppedObserver(func(sessionID string, reason StoppedReason) {
+		mu.Lock()
+		defer mu.Unlock()
+		callCount++
+	})
+
+	ps := store.Loop("child1")
+	if err := ps.Set(&LoopPrompt{
+		Prompt:    "iterate",
+		Frequency: Frequency{Value: 1, Unit: FrequencyHours},
+		Enabled:   true,
+	}); err != nil {
+		t.Fatalf("Set() error = %v", err)
+	}
+
+	if err := ps.MarkStopped(StoppedReasonPausedByUser); err != nil {
+		t.Fatalf("first MarkStopped() error = %v", err)
+	}
+	enabled := true
+	if err := ps.Update(LoopUpdate{Enabled: &enabled}); err != nil {
+		t.Fatalf("re-enable Update() error = %v", err)
+	}
+	if err := ps.MarkStopped(StoppedReasonDisabledByAgent); err != nil {
+		t.Fatalf("second MarkStopped() error = %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if callCount != 2 {
+		t.Errorf("observer call count = %d, want 2 (re-enable clears StoppedReason, so the next stop is a fresh transition)", callCount)
 	}
 }
 

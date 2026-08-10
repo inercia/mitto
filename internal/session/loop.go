@@ -613,7 +613,9 @@ type LoopStore struct {
 
 	// sessionID and stoppedObserver, when both set, let MarkStopped notify a
 	// listener (the LoopRunner, via Store.SetLoopStoppedObserver) once a loop
-	// transitions from enabled to stopped. Populated only by
+	// stops (see MarkStopped for how a stop transition is detected, which
+	// covers the Update{Enabled:false}-then-MarkStopped disable paths as well
+	// as a direct MarkStopped on an enabled loop). Populated only by
 	// Store.Loop(sessionID); a bare NewLoopStore has neither, so MarkStopped
 	// is a pure no-op notification-wise (used by tests and by any caller that
 	// constructs a LoopStore directly rather than through a *Store).
@@ -1021,9 +1023,8 @@ func (ps *LoopStore) DeferNextSchedule(delay time.Duration) error {
 // NextScheduledAt=nil, and UpdatedAt=now.
 // Returns ErrLoopNotFound if no loop config exists.
 //
-// When the loop was previously enabled (a real stop transition, not a
-// re-stamp of an already-stopped config) and this LoopStore was constructed
-// via Store.Loop(sessionID), the registered stopped-observer (see
+// On a real stop transition — and when this LoopStore was constructed via
+// Store.Loop(sessionID) — the registered stopped-observer (see
 // Store.SetLoopStoppedObserver) is notified after the write and after ps.mu
 // is released — mirroring Store.deleteObserver's invocation discipline so the
 // callback may safely call back into the store. This funnels every
@@ -1031,6 +1032,16 @@ func (ps *LoopStore) DeferNextSchedule(delay time.Duration) error {
 // REST pause, etc.) into a single "child loop stopped" signal for the
 // onChild "anyLoopStopped" event (mitto-q6my) without each site needing to
 // remember to notify.
+//
+// A transition is detected as "was enabled, OR has no StoppedReason recorded
+// yet". The second arm matters because the two caller-initiated disable paths
+// (MCP loop_enabled:false in tools_conversation_lifecycle.go and the REST
+// pause in session_loop_write.go) run Update{Enabled:false} *before*
+// MarkStopped, so Enabled is already false by the time this is reached and an
+// enabled-only check would never fire for them. StoppedReason is written
+// exclusively here and cleared exclusively on re-enable (see Update), so it is
+// a reliable "this stop was already recorded" marker: a re-stamp of a config
+// MarkStopped has already seen never re-notifies.
 func (ps *LoopStore) MarkStopped(reason StoppedReason) error {
 	ps.mu.Lock()
 
@@ -1040,7 +1051,7 @@ func (ps *LoopStore) MarkStopped(reason StoppedReason) error {
 		return err
 	}
 
-	wasEnabled := existing.Enabled
+	isTransition := existing.Enabled || existing.StoppedReason == ""
 
 	now := time.Now().UTC()
 	existing.Enabled = false
@@ -1064,7 +1075,7 @@ func (ps *LoopStore) MarkStopped(reason StoppedReason) error {
 	sessionID := ps.sessionID
 	ps.mu.Unlock()
 
-	if wasEnabled && observer != nil && sessionID != "" {
+	if isTransition && observer != nil && sessionID != "" {
 		observer(sessionID, reason)
 	}
 	return nil

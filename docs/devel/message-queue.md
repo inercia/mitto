@@ -212,9 +212,14 @@ registered as `store.SetLoopStoppedObserver(s.loopRunner.OnChildLoopStopped)`
 next to the delete observer. `LoopStore.MarkStopped` — the single funnel every
 stop path writes through (auto-stop on max iterations/duration,
 resume/delivery/context failures, MCP `loop_enabled: false`, REST pause,
-archiving) — invokes it once per **real** enabled→stopped transition (a
-`MarkStopped` call on an already-stopped config is a no-op notification-wise),
-after its write and after the `LoopStore`'s internal lock is released. Like
+archiving) — invokes it once per **real** stop transition, after its write and
+after the `LoopStore`'s internal lock is released. A transition is "the loop
+was still enabled, **or** no `StoppedReason` has been recorded yet": the two
+caller-initiated disable paths (MCP `loop_enabled: false`, REST pause) run
+`Update{Enabled: false}` *before* `MarkStopped`, so an enabled-only check would
+never fire for them, while `StoppedReason` — written only by `MarkStopped` and
+cleared only on re-enable — keeps a re-stamp of an already-recorded stop
+silent. Like
 the idle path, `OnChildLoopStopped` resolves the parent from the stopped
 child's own metadata (still present at notification time) — but guards
 `childID != parentID` so a loop stopping itself never re-fires its own
