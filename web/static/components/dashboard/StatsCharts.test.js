@@ -62,6 +62,8 @@ const REQUESTED_METRICS = [
   "beads_closed",
   "beads_cycle_seconds_sum",
   "beads_cycle_closed_count",
+  "beads_active_cycle_seconds_sum",
+  "beads_active_cycle_closed_count",
 ];
 
 // Duplicated from StatsCharts.js for testing (mitto-8wj). Keep in sync.
@@ -101,24 +103,35 @@ function chartSpecMetrics() {
     {
       id: "beads_cycle_time",
       title: "Beads: cycle time (claim → close)",
-      metrics: ["beads_cycle_seconds_sum", "beads_cycle_closed_count"],
+      metrics: [
+        "beads_cycle_seconds_sum",
+        "beads_cycle_closed_count",
+        "beads_active_cycle_seconds_sum",
+        "beads_active_cycle_closed_count",
+      ],
       transform: beadsCycleTimeTransform,
     },
   ];
 }
 
 // Duplicated from the beads_cycle_time spec's `transform` in StatsCharts.js
-// (mitto-5rm6.4). Keep in sync. Converts the raw [xs, sum, count] rows into
-// [xs, avgHours, count]: the average is only meaningful where count > 0 (a
-// zero-count bucket must not divide-by-zero into NaN/Infinity, which would
-// break uPlot's y-scale range calc).
+// (mitto-5rm6.4; extended to a second calendar/active pair in mitto-c45m).
+// Keep in sync. Converts the raw [xs, calSum, calCount, activeSum,
+// activeCount] rows into [xs, avgCalendarHours, avgActiveHours, count]: each
+// average is only meaningful where its count > 0 (a zero-count bucket must
+// not divide-by-zero into NaN/Infinity, which would break uPlot's y-scale
+// range calc).
 function beadsCycleTimeTransform(rows) {
-  const [xs, sums, counts] = rows;
+  const [xs, sums, counts, activeSums, activeCounts] = rows;
   const avgHours = sums.map((s, i) => {
     const c = counts[i] || 0;
     return c > 0 ? s / c / 3600 : 0;
   });
-  return [xs, avgHours, counts];
+  const avgActiveHours = activeSums.map((s, i) => {
+    const c = activeCounts[i] || 0;
+    return c > 0 ? s / c / 3600 : 0;
+  });
+  return [xs, avgHours, avgActiveHours, counts];
 }
 
 // Duplicated visibility filter from StatsCharts.js (mitto-4t8). Keep in sync.
@@ -344,35 +357,63 @@ describe("toUplotData", () => {
   });
 });
 
-describe("beadsCycleTimeTransform (mitto-5rm6.4)", () => {
+describe("beadsCycleTimeTransform (mitto-5rm6.4; active-cycle pair mitto-c45m)", () => {
   test("derives per-bucket average hours from sum/count", () => {
     // Bucket 1: 2 beads closed, 7200s total -> 1h avg. Bucket 2: 1 bead,
-    // 10800s -> 3h avg.
+    // 10800s -> 3h avg. Active pair mirrors the calendar pair here (no
+    // downtime), so the two average series should be identical.
     const rows = [
       [100, 200],
+      [7200, 10800],
+      [2, 1],
       [7200, 10800],
       [2, 1],
     ];
     const out = beadsCycleTimeTransform(rows);
     expect(out[0]).toEqual([100, 200]);
     expect(out[1]).toEqual([1, 3]);
-    expect(out[2]).toEqual([2, 1]);
+    expect(out[2]).toEqual([1, 3]);
+    expect(out[3]).toEqual([2, 1]);
   });
 
   test("zero-count bucket yields a zero average, not NaN/Infinity", () => {
-    const rows = [[100], [0], [0]];
+    const rows = [[100], [0], [0], [0], [0]];
     const out = beadsCycleTimeTransform(rows);
     expect(out[1]).toEqual([0]);
+    expect(out[2]).toEqual([0]);
     expect(Number.isFinite(out[1][0])).toBe(true);
+    expect(Number.isFinite(out[2][0])).toBe(true);
   });
 
   test("thin sample (count=1) still reports its true average, count passed through untouched", () => {
     // The chart renders count as its own series specifically so a
     // one-sample average doesn't visually masquerade as a confident trend.
-    const rows = [[100], [3600], [1]];
+    const rows = [[100], [3600], [1], [3600], [1]];
     const out = beadsCycleTimeTransform(rows);
     expect(out[1]).toEqual([1]);
     expect(out[2]).toEqual([1]);
+    expect(out[3]).toEqual([1]);
+  });
+
+  test("active average diverges from calendar average when downtime was excluded", () => {
+    // Calendar: 3600s/1 = 1h avg. Active: 1800s/1 = 0.5h avg (half the
+    // bucket's wall-clock cycle was Mitto downtime, per mitto-c45m).
+    const rows = [[100], [3600], [1], [1800], [1]];
+    const out = beadsCycleTimeTransform(rows);
+    expect(out[1]).toEqual([1]);
+    expect(out[2]).toEqual([0.5]);
+    expect(out[3]).toEqual([1]);
+  });
+
+  test("active count can be zero even where calendar count is non-zero (fail-open degrades sum, not count divergence)", () => {
+    // Not expected in practice (the two counts always move together in the
+    // real fold — see beads_source.go's foldItem), but the transform must
+    // not divide-by-zero if they ever did diverge.
+    const rows = [[100], [3600], [1], [0], [0]];
+    const out = beadsCycleTimeTransform(rows);
+    expect(out[1]).toEqual([1]);
+    expect(out[2]).toEqual([0]);
+    expect(Number.isFinite(out[2][0])).toBe(true);
   });
 });
 

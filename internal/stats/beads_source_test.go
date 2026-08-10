@@ -334,3 +334,242 @@ func TestBeadsSource_Run_ConcurrentTriggersDoNotCoalesce(t *testing.T) {
 		t.Errorf("mitto-2o5e: List invoked %d times for %d concurrent overlapping Run triggers, want <= 2 (inProgress CompareAndSwap is checked after runMu is acquired, so it never observes an in-flight pass and never coalesces — every trigger runs its own full pass)", got, triggers)
 	}
 }
+
+// -----------------------------------------------------------------------------
+// downtimeBetween (mitto-c45m)
+// -----------------------------------------------------------------------------
+
+func TestDowntimeBetween_FullyUp(t *testing.T) {
+	from := hourBucket(t, "2026-05-01T09:00:00Z")
+	to := hourBucket(t, "2026-05-01T09:30:00Z")
+	uptime := map[int64]int64{hourBucket(t, "2026-05-01T09:00:00Z").Unix(): 3600}
+	if got := downtimeBetween(from, to, uptime); got != 0 {
+		t.Errorf("downtime = %v, want 0 (bucket fully up)", got)
+	}
+}
+
+func TestDowntimeBetween_FullyDown(t *testing.T) {
+	from := hourBucket(t, "2026-05-01T09:00:00Z")
+	to := hourBucket(t, "2026-05-01T09:30:00Z")
+	uptime := map[int64]int64{hourBucket(t, "2026-05-01T09:00:00Z").Unix(): 0}
+	if got := downtimeBetween(from, to, uptime); got != 30*time.Minute {
+		t.Errorf("downtime = %v, want 30m (bucket fully down)", got)
+	}
+}
+
+// TestDowntimeBetween_AbsentBucketTreatedAsFullyUp pins the fail-open
+// contract documented on downtimeBetween: a bucket with NO evidence (never
+// recorded, or pruned by retention) must read as fully up, not fully down —
+// otherwise historical/pruned beads would collapse to active==0 instead of
+// degrading to the calendar series.
+func TestDowntimeBetween_AbsentBucketTreatedAsFullyUp(t *testing.T) {
+	from := hourBucket(t, "2026-05-01T09:00:00Z")
+	to := hourBucket(t, "2026-05-01T09:30:00Z")
+	uptime := map[int64]int64{}
+	if got := downtimeBetween(from, to, uptime); got != 0 {
+		t.Errorf("downtime = %v, want 0 (absent bucket => fully up)", got)
+	}
+}
+
+// TestDowntimeBetween_PartialOverlapAcrossTwoBuckets exercises the walk
+// across an hour boundary with two different uptime fractions per bucket.
+func TestDowntimeBetween_PartialOverlapAcrossTwoBuckets(t *testing.T) {
+	from := hourBucket(t, "2026-05-01T09:30:00Z")
+	to := hourBucket(t, "2026-05-01T10:30:00Z")
+	uptime := map[int64]int64{
+		hourBucket(t, "2026-05-01T09:00:00Z").Unix(): 1800, // half up -> 30min overlap * 0.5 down = 15min
+		hourBucket(t, "2026-05-01T10:00:00Z").Unix(): 3600, // fully up -> 0 down
+	}
+	if got, want := downtimeBetween(from, to, uptime), 15*time.Minute; got != want {
+		t.Errorf("downtime = %v, want %v", got, want)
+	}
+}
+
+// TestDowntimeBetween_FractionAboveOneIsClamped defends against a corrupted
+// or double-counted uptime row (>3600s in one hour bucket) producing
+// negative downtime.
+func TestDowntimeBetween_FractionAboveOneIsClamped(t *testing.T) {
+	from := hourBucket(t, "2026-05-01T09:00:00Z")
+	to := hourBucket(t, "2026-05-01T09:10:00Z")
+	uptime := map[int64]int64{hourBucket(t, "2026-05-01T09:00:00Z").Unix(): 7200}
+	if got := downtimeBetween(from, to, uptime); got != 0 {
+		t.Errorf("downtime = %v, want 0 (fraction > 1 must clamp, not go negative)", got)
+	}
+}
+
+func TestDowntimeBetween_ZeroOrNegativeSpanReturnsZero(t *testing.T) {
+	ts := hourBucket(t, "2026-05-01T09:00:00Z")
+	if got := downtimeBetween(ts, ts, nil); got != 0 {
+		t.Errorf("equal from/to: downtime = %v, want 0", got)
+	}
+	if got := downtimeBetween(ts, ts.Add(-time.Minute), nil); got != 0 {
+		t.Errorf("to before from: downtime = %v, want 0", got)
+	}
+}
+
+// -----------------------------------------------------------------------------
+// Active-cycle fold, end-to-end via Run (mitto-c45m)
+// -----------------------------------------------------------------------------
+
+// seedUptime writes MetricUptimeSeconds rows directly, mirroring what
+// UptimeRecorder would have persisted, so BeadsSource.loadUptime observes
+// them on its next pass.
+func seedUptime(t *testing.T, s Store, bucketSeconds map[string]int64) {
+	t.Helper()
+	deltas := make([]Delta, 0, len(bucketSeconds))
+	for ts, secs := range bucketSeconds {
+		deltas = append(deltas, Delta{
+			TSBucket:  hourBucket(t, ts),
+			Metric:    MetricUptimeSeconds,
+			SessionID: UptimeSentinelSessionID,
+			Value:     secs,
+		})
+	}
+	if err := s.UpsertDeltas(context.Background(), deltas); err != nil {
+		t.Fatalf("seedUptime: %v", err)
+	}
+}
+
+func TestBeadsSource_ActiveCycle_FullUptimeEqualsCalendar(t *testing.T) {
+	s, _ := openTestStore(t)
+	now := hourBucket(t, "2026-05-10T12:00:00Z")
+	seedUptime(t, s, map[string]int64{"2026-05-10T09:00:00Z": 3600})
+
+	payload := []byte(`[{"id":"u-1","status":"closed","created_at":"2026-05-10T09:00:00Z","closed_at":"2026-05-10T09:30:00Z","metadata":{"claimed_at":"2026-05-10T09:00:00Z"}}]`)
+	lister := &fakeBeadsLister{payloads: map[string][]byte{"/ws/u": payload}}
+	src := newBeadsTestSource(t, s, lister, wsLister(BeadsWorkspace{UUID: "ws-u", Dir: "/ws/u"}), now)
+	if err := src.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	bucket := hourBucket(t, "2026-05-10T09:00:00Z")
+	if got := countAt(t, s, bucket, MetricBeadsCycleSecondsSum, BeadsSentinelSessionID, "ws-u"); got != 1800 {
+		t.Fatalf("calendar cycle sum = %d, want 1800", got)
+	}
+	if got := countAt(t, s, bucket, MetricBeadsActiveCycleSecondsSum, BeadsSentinelSessionID, "ws-u"); got != 1800 {
+		t.Errorf("active cycle sum = %d, want 1800 (fully up => active == calendar)", got)
+	}
+	if got := countAt(t, s, bucket, MetricBeadsActiveCycleClosedCount, BeadsSentinelSessionID, "ws-u"); got != 1 {
+		t.Errorf("active cycle closed count = %d, want 1", got)
+	}
+}
+
+func TestBeadsSource_ActiveCycle_SubtractsPartialDowntime(t *testing.T) {
+	s, _ := openTestStore(t)
+	now := hourBucket(t, "2026-05-11T13:00:00Z")
+	seedUptime(t, s, map[string]int64{
+		"2026-05-11T09:00:00Z": 3600, // fully up
+		"2026-05-11T10:00:00Z": 1800, // half up -> 30min down
+	})
+
+	// Cycle: 09:00 -> 11:00 = 2h = 7200s, spanning the two seeded buckets.
+	payload := []byte(`[{"id":"u-2","status":"closed","created_at":"2026-05-11T09:00:00Z","closed_at":"2026-05-11T11:00:00Z","metadata":{"claimed_at":"2026-05-11T09:00:00Z"}}]`)
+	lister := &fakeBeadsLister{payloads: map[string][]byte{"/ws/u2": payload}}
+	src := newBeadsTestSource(t, s, lister, wsLister(BeadsWorkspace{UUID: "ws-u2", Dir: "/ws/u2"}), now)
+	if err := src.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	closedBucket := hourBucket(t, "2026-05-11T11:00:00Z")
+	if got := countAt(t, s, closedBucket, MetricBeadsCycleSecondsSum, BeadsSentinelSessionID, "ws-u2"); got != 7200 {
+		t.Fatalf("calendar cycle sum = %d, want 7200", got)
+	}
+	// downtime = 0 (09:00 bucket, fully up) + 1800 (10:00 bucket, half up) = 1800s.
+	if got := countAt(t, s, closedBucket, MetricBeadsActiveCycleSecondsSum, BeadsSentinelSessionID, "ws-u2"); got != 5400 {
+		t.Errorf("active cycle sum = %d, want 5400 (7200 - 1800 downtime)", got)
+	}
+}
+
+// TestBeadsSource_ActiveCycle_NearZeroSumStaysCounted pins the "count stays
+// visible even when the sum is nearly 0" nuance from the plan: a bead closed
+// during an hour that was almost entirely Mitto downtime contributes almost
+// no active seconds but still increments activeCycleClosedCount, so the
+// sample is not silently dropped from the average's denominator.
+//
+// Note: a LITERAL zero uptime value cannot be seeded through the normal
+// UpsertDeltas path (Store.UpsertDeltas silently skips Value==0 deltas —
+// see its doc comment), which also matches production reality: UptimeRecorder
+// only ever writes while the process is running, so it can never itself
+// produce a "confirmed fully down" row. Value=1 (the smallest representable
+// heartbeat) exercises the same near-zero-sum/visible-count behavior via the
+// real write path; the true fully-down/clamp arithmetic is covered directly
+// by TestDowntimeBetween_FullyDown.
+func TestBeadsSource_ActiveCycle_NearZeroSumStaysCounted(t *testing.T) {
+	s, _ := openTestStore(t)
+	now := hourBucket(t, "2026-05-12T12:00:00Z")
+	seedUptime(t, s, map[string]int64{"2026-05-12T09:00:00Z": 1})
+
+	payload := []byte(`[{"id":"u-3","status":"closed","created_at":"2026-05-12T09:00:00Z","closed_at":"2026-05-12T10:00:00Z","metadata":{"claimed_at":"2026-05-12T09:00:00Z"}}]`)
+	lister := &fakeBeadsLister{payloads: map[string][]byte{"/ws/u3": payload}}
+	src := newBeadsTestSource(t, s, lister, wsLister(BeadsWorkspace{UUID: "ws-u3", Dir: "/ws/u3"}), now)
+	if err := src.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	closedBucket := hourBucket(t, "2026-05-12T10:00:00Z")
+	// fraction = 1/3600; downtime = 3600*(1-1/3600) = 3599s; active = 3600-3599 = 1s.
+	if got := countAt(t, s, closedBucket, MetricBeadsActiveCycleSecondsSum, BeadsSentinelSessionID, "ws-u3"); got != 1 {
+		t.Errorf("active cycle sum = %d, want 1 (almost entirely downtime)", got)
+	}
+	if got := countAt(t, s, closedBucket, MetricBeadsActiveCycleClosedCount, BeadsSentinelSessionID, "ws-u3"); got != 1 {
+		t.Errorf("active cycle closed count = %d, want 1 (sample stays visible even though sum is ~0)", got)
+	}
+}
+
+// TestBeadsSource_ActiveCycle_NoUptimeDataDegradesToCalendar reproduces the
+// "history predating the heartbeat" scenario: no MetricUptimeSeconds rows
+// exist at all, so loadUptime returns an empty map and every bucket must
+// read as fully up.
+func TestBeadsSource_ActiveCycle_NoUptimeDataDegradesToCalendar(t *testing.T) {
+	s, _ := openTestStore(t)
+	now := hourBucket(t, "2026-05-13T12:00:00Z")
+
+	payload := []byte(`[{"id":"u-4","status":"closed","created_at":"2026-05-13T09:00:00Z","closed_at":"2026-05-13T09:30:00Z","metadata":{"claimed_at":"2026-05-13T09:00:00Z"}}]`)
+	lister := &fakeBeadsLister{payloads: map[string][]byte{"/ws/u4": payload}}
+	src := newBeadsTestSource(t, s, lister, wsLister(BeadsWorkspace{UUID: "ws-u4", Dir: "/ws/u4"}), now)
+	if err := src.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	bucket := hourBucket(t, "2026-05-13T09:00:00Z")
+	if got := countAt(t, s, bucket, MetricBeadsActiveCycleSecondsSum, BeadsSentinelSessionID, "ws-u4"); got != 1800 {
+		t.Errorf("active cycle sum = %d, want 1800 (no uptime evidence => degrades to calendar)", got)
+	}
+}
+
+// queryErrStore wraps a real *SQLiteStore and forces Query to fail, so tests
+// can exercise BeadsSource.loadUptime's fail-open path without a bespoke
+// in-memory Store reimplementation.
+type queryErrStore struct {
+	*SQLiteStore
+	err error
+}
+
+func (q *queryErrStore) Query(ctx context.Context, query Query) ([]Point, error) {
+	return nil, q.err
+}
+
+// TestBeadsSource_LoadUptime_QueryErrorFailsOpen reproduces the documented
+// fail-open contract: if the uptime Query errors, the beads pass must still
+// succeed (all-or-nothing only applies to the bead List/parse step) and
+// every bucket must be treated as fully up.
+func TestBeadsSource_LoadUptime_QueryErrorFailsOpen(t *testing.T) {
+	s, _ := openTestStore(t)
+	qs := &queryErrStore{SQLiteStore: s, err: errors.New("query: disk I/O error")}
+	now := hourBucket(t, "2026-05-14T12:00:00Z")
+
+	payload := []byte(`[{"id":"u-5","status":"closed","created_at":"2026-05-14T09:00:00Z","closed_at":"2026-05-14T09:30:00Z","metadata":{"claimed_at":"2026-05-14T09:00:00Z"}}]`)
+	lister := &fakeBeadsLister{payloads: map[string][]byte{"/ws/u5": payload}}
+	src := newBeadsTestSource(t, qs, lister, wsLister(BeadsWorkspace{UUID: "ws-u5", Dir: "/ws/u5"}), now)
+	if err := src.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v (a failing uptime Query must not abort the beads pass)", err)
+	}
+
+	bucket := hourBucket(t, "2026-05-14T09:00:00Z")
+	if got := countAt(t, s, bucket, MetricBeadsCycleSecondsSum, BeadsSentinelSessionID, "ws-u5"); got != 1800 {
+		t.Fatalf("calendar cycle sum = %d, want 1800", got)
+	}
+	if got := countAt(t, s, bucket, MetricBeadsActiveCycleSecondsSum, BeadsSentinelSessionID, "ws-u5"); got != 1800 {
+		t.Errorf("active cycle sum = %d, want 1800 (uptime query error => fail open to fully up)", got)
+	}
+}

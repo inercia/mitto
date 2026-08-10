@@ -5,14 +5,21 @@ package stats
 // fold (beads_source.go) can subtract process-down time from the raw
 // claim->close interval.
 //
-// Each tick writes the elapsed wall-clock span since the previous tick (or
-// since Start, for the first tick) as MetricUptimeSeconds deltas via
-// Store.UpsertDeltas (additive — NOT ReplaceDeltas, since uptime is a
-// running total, not a full-snapshot recompute like BeadsSource). A tick
-// whose span crosses one or more hour boundaries is split so each bucket
-// only receives the portion of the span that actually falls inside it;
-// otherwise a tick landing just after :00 would misattribute up to a full
-// interval's worth of seconds to the previous hour.
+// Each tick computes the elapsed wall-clock span since the previous tick (or
+// since Start, for the first tick), split at any hour boundary(ies) it
+// crosses so each bucket only receives the portion of the span that
+// actually falls inside it (otherwise a tick landing just after :00 would
+// misattribute up to a full interval's worth of seconds to the previous
+// hour). The recorder keeps an in-memory running total per still-open hour
+// bucket and writes that CUMULATIVE total — not just the tick's own
+// increment — via Store.UpsertDeltas. This is deliberate: SQLiteStore's
+// UpsertDeltas is last-write-wins REPLACE on (ts_bucket, metric, session_id,
+// workspace, model), not additive across separate calls for the same key
+// (see its doc comment), so writing only the incremental slice on every
+// tick would make each write clobber the previous one instead of
+// accumulating — the bucket would settle on the LAST tick's ~60s rather
+// than the hour's true total. Writing the running cumulative total is
+// correct under REPLACE semantics and is naturally idempotent under retry.
 //
 // Uptime is a process-global fact, not per-workspace: every delta is
 // written with Workspace="", Model="", SessionID=UptimeSentinelSessionID.
@@ -58,6 +65,15 @@ type UptimeRecorder struct {
 	opts  UptimeRecorderOptions
 
 	lastTick time.Time
+	// bucketTotals is the running cumulative uptime-seconds this process
+	// instance has recorded for each still-relevant hour bucket (keyed by
+	// bucket-start Unix seconds). Written in full on every tick that touches
+	// the bucket, since Store.UpsertDeltas is last-write-wins REPLACE (see
+	// the package doc comment) rather than additive. Reset only by process
+	// restart (a fresh UptimeRecorder), which is correct: a restart means a
+	// real gap in this process's own uptime, so it is appropriate for the
+	// new instance to resume counting from what it can itself observe.
+	bucketTotals map[int64]int64
 
 	closeOnce sync.Once
 	closed    chan struct{}
@@ -71,10 +87,11 @@ func NewUptimeRecorder(store Store, opts UptimeRecorderOptions) *UptimeRecorder 
 		panic("stats: NewUptimeRecorder: store is nil")
 	}
 	return &UptimeRecorder{
-		store:  store,
-		opts:   opts.withDefaults(),
-		closed: make(chan struct{}),
-		done:   make(chan struct{}),
+		store:        store,
+		opts:         opts.withDefaults(),
+		bucketTotals: make(map[int64]int64),
+		closed:       make(chan struct{}),
+		done:         make(chan struct{}),
 	}
 }
 
@@ -112,19 +129,35 @@ func (r *UptimeRecorder) loop(ctx context.Context) {
 }
 
 // tick attributes the elapsed span since the last tick to the hour bucket(s)
-// it overlaps, then advances lastTick to now. Exported seam for tests via
-// the package (lower-case, but colocated in _test.go with access to
-// unexported fields).
+// it overlaps (via splitByHour), folds each segment's incremental seconds
+// into this process's running bucketTotals, then writes the resulting
+// CUMULATIVE per-bucket totals (not the raw per-segment increments) so the
+// store's last-write-wins REPLACE semantics correctly accumulate across
+// ticks instead of clobbering the previous tick's value. Advances lastTick
+// to now regardless of whether any segment was produced. Exported seam for
+// tests via the package (lower-case, but colocated in _test.go with access
+// to unexported fields).
 func (r *UptimeRecorder) tick(ctx context.Context) {
 	now := r.opts.Now().UTC()
 	from := r.lastTick
 	if from.IsZero() || now.Before(from) {
 		from = now
 	}
-	deltas := splitByHour(from, now)
+	segments := splitByHour(from, now)
 	r.lastTick = now
-	if len(deltas) == 0 {
+	if len(segments) == 0 {
 		return
+	}
+	deltas := make([]Delta, 0, len(segments))
+	for _, seg := range segments {
+		bucket := seg.TSBucket.Unix()
+		r.bucketTotals[bucket] += seg.Value
+		deltas = append(deltas, Delta{
+			TSBucket:  seg.TSBucket,
+			Metric:    MetricUptimeSeconds,
+			SessionID: UptimeSentinelSessionID,
+			Value:     r.bucketTotals[bucket],
+		})
 	}
 	if err := r.store.UpsertDeltas(ctx, deltas); err != nil {
 		r.logWarn("uptime recorder: upsert deltas failed", "error", err)
