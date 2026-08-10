@@ -46,3 +46,39 @@ func (c *stderrPatternsCache) put(key string, val *procstart.CompiledStderrPatte
 	c.entries[key] = val
 	c.present[key] = true
 }
+
+// agentDefaultEnvCache is a simple concurrent cache keyed by ACP server name
+// that memoizes the per-agent default environment variables (metadata.yaml
+// defaults.env, e.g. NODE_OPTIONS; mitto-6dur) for that server. Mirrors
+// stderrPatternsCache above: negative lookups (no declared defaults) are
+// cached explicitly so GetOrCreateProcess does not re-parse metadata.yaml on
+// every call. Invalidation is intentionally NOT provided, matching the
+// existing discovery-time lifecycle for AgentDefaults.
+type agentDefaultEnvCache struct {
+	mu      sync.RWMutex
+	entries map[string]map[string]string
+	present map[string]bool
+}
+
+func newAgentDefaultEnvCache() *agentDefaultEnvCache {
+	return &agentDefaultEnvCache{
+		entries: make(map[string]map[string]string),
+		present: make(map[string]bool),
+	}
+}
+
+func (c *agentDefaultEnvCache) get(key string) (map[string]string, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if !c.present[key] {
+		return nil, false
+	}
+	return c.entries[key], true
+}
+
+func (c *agentDefaultEnvCache) put(key string, val map[string]string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.entries[key] = val
+	c.present[key] = true
+}

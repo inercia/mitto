@@ -69,6 +69,17 @@ type ACPProcessManager struct {
 	// from the resolver is also valid (agent has no per-agent patterns).
 	StderrPatternsResolver func(acpServer string) *procstart.CompiledStderrPatterns
 
+	// AgentDefaultEnvResolver returns per-agent default environment variables
+	// (metadata.yaml defaults.env, e.g. NODE_OPTIONS=--max-old-space-size=N)
+	// for a given ACP server name (mitto-6dur). The web layer wires this to
+	// resolve the ACP server → agent metadata → Defaults.Env, mirroring
+	// StderrPatternsResolver above. May be nil (processes then get no
+	// agent-authored defaults). Nil result from the resolver is also valid
+	// (agent has no declared defaults). Kept separate from acpEnv/Env (rather
+	// than merged) so it does NOT affect sharedProcessConfigMatchesWorkspace's
+	// process-reuse comparison.
+	AgentDefaultEnvResolver func(acpServer string) map[string]string
+
 	// Auxiliary session tracking
 	auxMu       sync.Mutex
 	auxSessions map[auxSessionKey]*auxiliarySessionState
@@ -731,6 +742,13 @@ func (m *ACPProcessManager) GetOrCreateProcess(workspace *config.WorkspaceSettin
 		stderrPatterns = m.StderrPatternsResolver(workspace.ACPServer)
 	}
 
+	// Resolve per-agent default env for this ACP server (mitto-6dur). Nil is a
+	// safe no-op — the process gets no agent-authored defaults.
+	var agentDefaultEnv map[string]string
+	if m.AgentDefaultEnvResolver != nil {
+		agentDefaultEnv = m.AgentDefaultEnvResolver(workspace.ACPServer)
+	}
+
 	createStart := time.Now()
 	p, err := NewSharedACPProcess(m.ctx, SharedACPProcessConfig{
 		WorkspaceUUID:     workspace.UUID,
@@ -747,6 +765,7 @@ func (m *ACPProcessManager) GetOrCreateProcess(workspace *config.WorkspaceSettin
 		OnMCPInitProgress: onMCPInitProgress,
 		OnMCPInitTimeout:  onMCPInitTimeout,
 		StderrPatterns:    stderrPatterns,
+		AgentDefaultEnv:   agentDefaultEnv,
 	})
 	createDuration := time.Since(createStart)
 

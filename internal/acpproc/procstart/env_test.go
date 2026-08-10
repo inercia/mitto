@@ -11,14 +11,14 @@ func TestBuildACPProcessEnv(t *testing.T) {
 	t.Setenv("MITTO_TEST_BASE_ENV", "from-base")
 
 	t.Run("includes os.Environ", func(t *testing.T) {
-		env := BuildACPProcessEnv(nil, nil, nil)
+		env := BuildACPProcessEnv(nil, nil, nil, nil)
 		if !envContainsKV(env, "MITTO_TEST_BASE_ENV", "from-base") {
 			t.Errorf("expected MITTO_TEST_BASE_ENV=from-base in env, got %v entries", len(env))
 		}
 	})
 
 	t.Run("appends server-specific env", func(t *testing.T) {
-		env := BuildACPProcessEnv(map[string]string{"FOO": "bar", "BAZ": "qux"}, nil, nil)
+		env := BuildACPProcessEnv(map[string]string{"FOO": "bar", "BAZ": "qux"}, nil, nil, nil)
 		if !envContainsKV(env, "FOO", "bar") {
 			t.Error("expected FOO=bar in env")
 		}
@@ -32,6 +32,7 @@ func TestBuildACPProcessEnv(t *testing.T) {
 		env := BuildACPProcessEnv(
 			map[string]string{"OVERLAP": "from-server"},
 			map[string]string{"OVERLAP": "from-mitto", "MITTO_SESSION_ID": "abc"},
+			nil,
 			nil,
 		)
 		// Find the LAST occurrence of OVERLAP=...
@@ -67,7 +68,7 @@ func TestBuildACPProcessEnv_ReplacesExistingKey(t *testing.T) {
 	serverEnv := map[string]string{
 		"NODE_OPTIONS": "--max-old-space-size=6144",
 	}
-	result := BuildACPProcessEnv(serverEnv, nil, nil)
+	result := BuildACPProcessEnv(serverEnv, nil, nil, nil)
 
 	var found []string
 	for _, kv := range result {
@@ -90,7 +91,7 @@ func TestBuildACPProcessEnv_MittoEnvOverridesServerEnv(t *testing.T) {
 	mittoEnv := map[string]string{
 		"MITTO_TEST_VAR": "from-mitto",
 	}
-	result := BuildACPProcessEnv(serverEnv, mittoEnv, nil)
+	result := BuildACPProcessEnv(serverEnv, mittoEnv, nil, nil)
 
 	var found []string
 	for _, kv := range result {
@@ -138,7 +139,7 @@ func TestBuildACPProcessEnv_AgentHintLayer(t *testing.T) {
 	agentHint := map[string]string{"AGENT_MODE": "1"}
 
 	t.Run("agent hint reaches subprocess env by default", func(t *testing.T) {
-		env := BuildACPProcessEnv(nil, nil, agentHint)
+		env := BuildACPProcessEnv(nil, nil, agentHint, nil)
 		got, ok := lastValueFor(env, "AGENT_MODE")
 		if !ok {
 			t.Fatalf("expected AGENT_MODE to be present in env")
@@ -150,7 +151,7 @@ func TestBuildACPProcessEnv_AgentHintLayer(t *testing.T) {
 
 	t.Run("serverEnv overrides agent hint with a custom value", func(t *testing.T) {
 		serverEnv := map[string]string{"AGENT_MODE": "verbose"}
-		env := BuildACPProcessEnv(serverEnv, nil, agentHint)
+		env := BuildACPProcessEnv(serverEnv, nil, agentHint, nil)
 		got, ok := lastValueFor(env, "AGENT_MODE")
 		if !ok {
 			t.Fatalf("expected AGENT_MODE to be present in env")
@@ -165,7 +166,7 @@ func TestBuildACPProcessEnv_AgentHintLayer(t *testing.T) {
 		// settings.json to disable it". The final value must be the empty
 		// serverEnv override, not the hint's "1".
 		serverEnv := map[string]string{"AGENT_MODE": ""}
-		env := BuildACPProcessEnv(serverEnv, nil, agentHint)
+		env := BuildACPProcessEnv(serverEnv, nil, agentHint, nil)
 		got, ok := lastValueFor(env, "AGENT_MODE")
 		if !ok {
 			t.Fatalf("expected AGENT_MODE to be present in env (with empty value), got absent")
@@ -180,7 +181,7 @@ func TestBuildACPProcessEnv_AgentHintLayer(t *testing.T) {
 		// vars. If both maps set the same key, MITTO wins (highest precedence).
 		hint := map[string]string{"MITTO_COLLISION": "from-hint"}
 		mittoEnv := map[string]string{"MITTO_COLLISION": "from-mitto"}
-		env := BuildACPProcessEnv(nil, mittoEnv, hint)
+		env := BuildACPProcessEnv(nil, mittoEnv, hint, nil)
 		got, ok := lastValueFor(env, "MITTO_COLLISION")
 		if !ok {
 			t.Fatalf("expected MITTO_COLLISION to be present")

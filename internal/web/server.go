@@ -787,6 +787,41 @@ func NewServer(config Config) (*Server, error) {
 		acpProcessMgr.StderrPatternsResolver = compileFor
 		sessionMgr.SetStderrPatternsResolver(compileFor)
 
+		// Wire per-agent default env resolver (mitto-6dur). Given an ACP server
+		// name it resolves the ACP server → agent metadata → Defaults.Env, so
+		// metadata-declared defaults (e.g. NODE_OPTIONS=--max-old-space-size=N)
+		// reach spawned ACP subprocesses even when settings.json
+		// acp_servers[].env is empty (servers confirmed before mitto-qphs, or
+		// added without dir_name). Results are cached per ACP server name so
+		// GetOrCreateProcess does not re-parse metadata.yaml on every call. An
+		// explicit acp_servers[].env entry still overrides the agent default
+		// (procstart.BuildACPProcessEnv layers it below Env).
+		agentDefaultEnvCache := newAgentDefaultEnvCache()
+		resolveAgentDefaultEnv := func(acpServer string) map[string]string {
+			if acpServer == "" {
+				return nil
+			}
+			if cached, ok := agentDefaultEnvCache.get(acpServer); ok {
+				return cached
+			}
+			acpType := ""
+			if config.MittoConfig != nil {
+				acpType = config.MittoConfig.GetServerType(acpServer)
+			}
+			if acpType == "" {
+				acpType = acpServer
+			}
+			agent, gerr := agentMgr.GetAgentByACPId(acpType)
+			if gerr != nil || agent == nil || agent.Metadata.Defaults == nil || len(agent.Metadata.Defaults.Env) == 0 {
+				agentDefaultEnvCache.put(acpServer, nil)
+				return nil
+			}
+			agentDefaultEnvCache.put(acpServer, agent.Metadata.Defaults.Env)
+			return agent.Metadata.Defaults.Env
+		}
+		acpProcessMgr.AgentDefaultEnvResolver = resolveAgentDefaultEnv
+		sessionMgr.SetAgentDefaultEnvResolver(resolveAgentDefaultEnv)
+
 		// Wire per-agent fork-cost signal (mitto-7yj). Resolves a workspace to
 		// its ACP agent metadata and reports whether that agent forks a fresh
 		// OS process per ACP session (Claude Code) vs multiplexing (auggie).

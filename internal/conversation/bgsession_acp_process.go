@@ -679,7 +679,7 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 		// Pass the same env layering used by the direct-exec branch so server-specific
 		// vars reach the runner-spawned process. agentHintEnv (AGENT_MODE=1) sits
 		// below serverEnv so per-server settings can override it.
-		runnerEnv := procstart.BuildACPProcessEnv(bs.serverEnv, mittoEnv, agentHintEnv)
+		runnerEnv := procstart.BuildACPProcessEnv(bs.serverEnv, mittoEnv, agentHintEnv, bs.agentDefaultEnv)
 		stdin, stdout, stderr, wait, err = bs.runner.RunWithPipes(bs.ctx, args[0], args[1:], runnerEnv)
 		if err != nil {
 			return "", &sessionError{"failed to start with runner: " + err.Error()}
@@ -733,7 +733,7 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 
 		// Set environment variables for the ACP subprocess: agent hints + server-specific
 		// env from settings.json + MITTO_* vars (same layering as the runner branch).
-		cmd.Env = procstart.BuildACPProcessEnv(bs.serverEnv, mittoEnv, agentHintEnv)
+		cmd.Env = procstart.BuildACPProcessEnv(bs.serverEnv, mittoEnv, agentHintEnv, bs.agentDefaultEnv)
 
 		if err := cmd.Start(); err != nil {
 			return "", &sessionError{"failed to start ACP server: " + err.Error()}

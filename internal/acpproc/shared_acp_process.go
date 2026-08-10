@@ -311,6 +311,18 @@ type SharedACPProcessConfig struct {
 	// depend on internal/agents and internal/conversation can consume the same
 	// type without an import cycle (mitto-iuw2).
 	StderrPatterns *procstart.CompiledStderrPatterns
+
+	// AgentDefaultEnv holds per-agent default environment variables declared in
+	// the agent's metadata.yaml (defaults.env, e.g.
+	// NODE_OPTIONS=--max-old-space-size=N; mitto-6dur). Resolved once by the
+	// caller (mirrors StderrPatterns above) and layered by
+	// procstart.BuildACPProcessEnv below Env (an explicit acp_servers[].env
+	// entry still wins). Kept as a separate field rather than folded into Env
+	// so it is NOT part of sharedProcessConfigMatchesWorkspace's reuse-key
+	// comparison — folding it into Env would make every pre-existing process
+	// look "changed" on the first post-upgrade resolve and force a spurious
+	// mass-restart.
+	AgentDefaultEnv map[string]string
 }
 
 // Compile-time assertion: *SharedACPProcess must satisfy the conversation.SharedProcess interface.
@@ -703,7 +715,7 @@ func (p *SharedACPProcess) doStartProcess() (string, error) {
 		// server-specific vars (from settings.json acp_servers[].env) AND MITTO_* vars
 		// are propagated to the restricted-runner-spawned process. agentHintEnv
 		// (e.g. AGENT_MODE=1) sits below serverEnv so per-server settings can override.
-		runnerEnv := procstart.BuildACPProcessEnv(p.config.Env, mittoEnv, agentHintEnv)
+		runnerEnv := procstart.BuildACPProcessEnv(p.config.Env, mittoEnv, agentHintEnv, p.config.AgentDefaultEnv)
 		stdin, stdout, stderr, wait, err = p.config.Runner.RunWithPipes(runCtx, args[0], args[1:], runnerEnv)
 		if err != nil {
 			runCancel()
@@ -752,7 +764,7 @@ func (p *SharedACPProcess) doStartProcess() (string, error) {
 
 		// Set environment variables for the ACP subprocess. Same layering as the
 		// runner branch (os.Environ + agent hints + server-specific Env + MITTO_*).
-		cmd.Env = procstart.BuildACPProcessEnv(p.config.Env, mittoEnv, agentHintEnv)
+		cmd.Env = procstart.BuildACPProcessEnv(p.config.Env, mittoEnv, agentHintEnv, p.config.AgentDefaultEnv)
 
 		if p.logger != nil && len(p.config.Env) > 0 {
 			envKeys := make([]string, 0, len(p.config.Env))

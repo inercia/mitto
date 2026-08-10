@@ -199,6 +199,14 @@ type SessionManager struct {
 	// only the hardcoded baseline applies.
 	stderrPatternsResolver func(acpServer string) *procstart.CompiledStderrPatterns
 
+	// agentDefaultEnvResolver returns per-agent default environment variables
+	// (metadata.yaml defaults.env, e.g. NODE_OPTIONS; mitto-6dur) for a given
+	// ACP server name. Passed to BackgroundSession via BackgroundSessionConfig
+	// on creation/resume, mirroring stderrPatternsResolver above, so legacy
+	// per-session ACP processes see the same agent-authored defaults as shared
+	// processes. Nil means no agent-authored defaults apply.
+	agentDefaultEnvResolver func(acpServer string) map[string]string
+
 	// onConversationIdle is invoked when a session's agent stops and the session is
 	// idle. Wired to the loop runner to drive event-driven on-completion firing.
 	onConversationIdle func(sessionID string)
@@ -1053,6 +1061,29 @@ func (sm *SessionManager) SetStderrPatternsResolver(resolver func(acpServer stri
 func (sm *SessionManager) resolveStderrPatterns(acpServer string) *procstart.CompiledStderrPatterns {
 	sm.mu.RLock()
 	r := sm.stderrPatternsResolver
+	sm.mu.RUnlock()
+	if r == nil {
+		return nil
+	}
+	return r(acpServer)
+}
+
+// SetAgentDefaultEnvResolver sets the function used to resolve per-agent
+// default environment variables (metadata.yaml defaults.env; mitto-6dur) for
+// a given ACP server name. The resolver is passed to every new and resumed
+// BackgroundSession via BackgroundSessionConfig.
+func (sm *SessionManager) SetAgentDefaultEnvResolver(resolver func(acpServer string) map[string]string) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.agentDefaultEnvResolver = resolver
+}
+
+// resolveAgentDefaultEnv looks up per-agent default environment variables for
+// the given ACP server name (mitto-6dur). Returns nil if no resolver is set
+// or the resolver returned nil (no agent-authored defaults).
+func (sm *SessionManager) resolveAgentDefaultEnv(acpServer string) map[string]string {
+	sm.mu.RLock()
+	r := sm.agentDefaultEnvResolver
 	sm.mu.RUnlock()
 	if r == nil {
 		return nil
@@ -2615,6 +2646,7 @@ func (sm *SessionManager) resumeSessionWithConstraint(sessionID, sessionName, wo
 		PromptParametersResolver:       sm.promptParametersResolver, // Named prompt resolver (resolves prompt name → parameters)
 		PromptsCache:                   sm.promptsCache,             // Workspace prompt registry for {{ .Prompts.* }} snapshot (mitto-s1w)
 		StderrPatterns:                 sm.resolveStderrPatterns(acpServer),
+		AgentDefaultEnv:                sm.resolveAgentDefaultEnv(acpServer),
 		OnTurnIdle: func(sessionID string) {
 			sm.mu.RLock()
 			cb := sm.onConversationIdle
