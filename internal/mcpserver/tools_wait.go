@@ -595,7 +595,8 @@ func (s *Server) handleBeadsIssuesReachedState(
 				}
 				lastErr = err
 				s.logger.Warn("Beads wait: final evaluation after timeout failed",
-					"error", err, "consecutive_failures", consecutiveFailures)
+					"error", err, "consecutive_failures", consecutiveFailures,
+					"elapsed_since_first_failure", time.Since(firstFailureAt))
 			}
 			s.logger.Warn("Beads wait timed out",
 				"source_session", realSessionID,
