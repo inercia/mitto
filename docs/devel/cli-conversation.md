@@ -230,7 +230,31 @@ by scripts — `--output json`/`yaml` is the contract.
   `os.Stdin`, deliberately not `cmd.InOrStdin()` and without adding
   `golang.org/x/term`. Declining the prompt exits 0.
 
-## 10. Out of scope
+## 10. Enforcing "SDK only" (`mitto-pscc.10`)
+
+§Context's claim that these commands are built entirely on the SDK is
+machine-enforced by `internal/cmd/no_raw_http_test.go`, which parses every
+non-test `.go` file in `internal/cmd` (`go/parser`, so comments and string
+literals never match) and fails on any use of a `net/http` client-egress
+symbol that is not on an explicit allowlist.
+
+- **Symbols are classified, not the import.** Flagging "imports `net/http`"
+  would flag `conversation_send.go` for `http.DetectContentType` — a pure
+  MIME sniff with no network — forcing a meaningless allowlist entry and
+  eroding the signal an entry is meant to carry. Only egress constructs are
+  flagged (`Client`, `DefaultClient`, `Transport`, `RoundTripper`,
+  `NewRequest*`, `Get`/`Head`/`Post`/`PostForm`, `ReadResponse`); status and
+  method constants are not.
+- **No URL-path matching.** `mcp.go`'s target is a variable threaded from a
+  flag, so no path is statically visible; forbidding client construction
+  outright is both stronger and statically decidable.
+- **Each allowlist entry is `(file, symbol)` + a mandatory `Reason`**, and a
+  *stale* entry (one no longer matching a real call site) also fails, so the
+  list cannot rot into permission-by-accident. The only entries are
+  `mcp.go`'s client and request: `mitto mcp --proxy-to` speaks MCP
+  Streamable-HTTP JSON-RPC to an MCP endpoint, not the Mitto REST API.
+
+## 11. Out of scope
 
 Workspace management, prompts, processors, settings, agents, files,
 dashboard, any shell-completion work, and any change to `mitto cli`.
