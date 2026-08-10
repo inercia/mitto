@@ -7478,6 +7478,129 @@ func TestFlushPendingDispatches_DropsEntryAtMaxAttempts(t *testing.T) {
 	}
 }
 
+// TestFlushPendingDispatches_ErrProcessBusyConsumesPoisonBudget reproduces
+// mitto-rcro: FlushPendingDispatches treats acperrors.ErrProcessBusy — a
+// pure, transient host-load signal with no bearing on whether THIS entry is
+// ever deliverable — as an ordinary per-entry failure, incrementing
+// entry.Attempts and eventually dropping the entry at
+// pendingDispatchMaxAttempts even though the process was never saturated in
+// the GC-recycle sense. mitto-xhsj already excludes ErrProcessBusy from
+// dispatchWithRetry's long saturation wait (isSaturationDispatchErr); this
+// test shows the SAME exclusion is missing from the flush's attempt-
+// counting path (only isNonRetryableDispatchErr is excluded there today).
+//
+// Repro: an entry starts already once-spooled (Attempts: 1, mirroring
+// dispatchWithRetry's own initial give-up when a batch is first persisted).
+// Flush is invoked repeatedly while promptFunc fails with a wrapped
+// acperrors.ErrProcessBusy each time, mirroring the exact wrap chain
+// produced by the proactive busy bail in getOrCreateAuxiliarySession
+// (internal/acpproc/acp_process_manager.go). Busy failures must NOT count
+// against the entry's attempt budget, so it must still be present
+// afterward with Attempts UNCHANGED. A final flush with a healthy
+// promptFunc must then deliver it and fire lateDeliveryFunc.
+//
+// Today, entry.Attempts increments on every busy failure and the entry is
+// dropped (notifyFunc fires) after only two more failed flushes — well
+// before the process ever recovers — permanently losing the batch. This
+// matches the production incident described on the bead: 8.5 minutes of
+// intermittent ErrProcessBusy spread across three flush attempts was
+// enough to discard a close-phase memory-extraction batch for good.
+func TestFlushPendingDispatches_ErrProcessBusyConsumesPoisonBudget(t *testing.T) {
+	origMaxRetries := dispatchPromptMaxRetries
+	dispatchPromptMaxRetries = 0 // single RPC attempt per flush call, for a fast test
+	t.Cleanup(func() { dispatchPromptMaxRetries = origMaxRetries })
+	origBaseDelay := dispatchPromptRetryBaseDelay
+	dispatchPromptRetryBaseDelay = time.Millisecond
+	t.Cleanup(func() { dispatchPromptRetryBaseDelay = origBaseDelay })
+
+	spoolDir := t.TempDir()
+	const wsUUID = "ws-flush-busy-poison"
+	store := &FilePendingDispatchStore{BaseDir: spoolDir}
+	entries := []PendingDispatchEntry{
+		{WorkspaceUUID: wsUUID, Name: "busy-batch", Prompt: "p-busy", TimeoutSeconds: 1, SavedAt: time.Now(), Attempts: 1},
+	}
+	if err := store.Replace(wsUUID, entries); err != nil {
+		t.Fatalf("Replace() error = %v", err)
+	}
+
+	var mu sync.Mutex
+	busy := true
+	var delivered []string
+	var lateDelivered []string
+	var notifiedCount int
+
+	m := NewManager("", nil)
+	m.SetPendingDispatchStore(store)
+	m.SetPromptFunc(func(_ context.Context, _, name, _ string) error {
+		mu.Lock()
+		stillBusy := busy
+		mu.Unlock()
+		if stillBusy {
+			return fmt.Errorf("failed to get auxiliary session: %w", acperrors.ErrProcessBusy)
+		}
+		mu.Lock()
+		delivered = append(delivered, name)
+		mu.Unlock()
+		return nil
+	})
+	m.SetNotifyFunc(func(_, _ string, _ error) {
+		mu.Lock()
+		notifiedCount++
+		mu.Unlock()
+	})
+	m.SetLateDeliveryFunc(func(_ string, names []string) {
+		mu.Lock()
+		lateDelivered = append(lateDelivered, names...)
+		mu.Unlock()
+	})
+
+	// Flush repeatedly while busy — more than enough cycles to exceed
+	// pendingDispatchMaxAttempts under the current (buggy) attempt counting,
+	// which drops the entry after only two failed flushes (Attempts: 1 -> 2 -> 3).
+	for i := 0; i < pendingDispatchMaxAttempts+1; i++ {
+		m.FlushPendingDispatches(context.Background(), wsUUID)
+	}
+
+	mu.Lock()
+	nCount := notifiedCount
+	mu.Unlock()
+	if nCount != 0 {
+		t.Fatalf("notifyFunc called %d times while the process was merely busy (not saturated), want 0 — "+
+			"acperrors.ErrProcessBusy is a pure host-load signal, not a poison-entry failure, and must not "+
+			"consume pendingDispatchMaxAttempts (mitto-rcro)", nCount)
+	}
+
+	remaining, err := store.Load(wsUUID)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(remaining) != 1 || remaining[0].Name != "busy-batch" {
+		t.Fatalf("remaining spool = %+v, want exactly the still-pending busy-batch entry "+
+			"(must survive repeated ErrProcessBusy failures, mitto-rcro)", remaining)
+	}
+	if remaining[0].Attempts != 1 {
+		t.Errorf("Attempts after %d busy flushes = %d, want 1 (unchanged) — busy failures must not "+
+			"count against the poison-entry budget (mitto-rcro)", pendingDispatchMaxAttempts+1, remaining[0].Attempts)
+	}
+
+	// The process recovers: the next flush must deliver the batch.
+	mu.Lock()
+	busy = false
+	mu.Unlock()
+	m.FlushPendingDispatches(context.Background(), wsUUID)
+
+	mu.Lock()
+	got := append([]string(nil), delivered...)
+	late := append([]string(nil), lateDelivered...)
+	mu.Unlock()
+	if len(got) != 1 || got[0] != "busy-batch" {
+		t.Fatalf("delivered = %v, want [busy-batch] once the shared process is no longer busy", got)
+	}
+	if len(late) != 1 || late[0] != "busy-batch" {
+		t.Errorf("lateDeliveryFunc delivered names = %v, want [busy-batch]", late)
+	}
+}
+
 // TestFlushPendingDispatches_LateDeliveryFuncFiresOnceWithAllDelivered
 // verifies the late-delivery notification seam (mitto-yfv8 plan point 6):
 // when a flush delivers one or more previously-spooled batches,

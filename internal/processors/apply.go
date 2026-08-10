@@ -2071,6 +2071,26 @@ func (m *Manager) FlushPendingDispatches(ctx context.Context, workspaceUUID stri
 			break
 		}
 
+		if errors.Is(lastErr, acperrors.ErrProcessBusy) {
+			// acperrors.ErrProcessBusy is the same proactive,
+			// concurrency-load bail excluded from isSaturationDispatchErr
+			// (mitto-xhsj): purely transient, clearing as soon as
+			// concurrent RPC load drops, with no bearing on whether THIS
+			// entry is ever deliverable. Unlike an ordinary per-entry
+			// failure it must not consume the poison-entry attempt budget
+			// — flushes only run at rare moments (session start/close),
+			// so a short burst of busy signals could otherwise exhaust
+			// pendingDispatchMaxAttempts and permanently drop the batch
+			// well before the process ever had a chance to drain
+			// (mitto-rcro). It is also a whole-shared-process condition
+			// like saturation, so — mirroring the non-retryable branch
+			// above — requeue this and all remaining entries unchanged
+			// and stop for this cycle; a later flush will retry once load
+			// clears.
+			requeue = append(requeue, entries[i:]...)
+			break
+		}
+
 		entry.Attempts++
 		entry.LastError = lastErr.Error()
 		entry.SavedAt = time.Now()
