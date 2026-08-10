@@ -286,3 +286,86 @@ func TestClient_AddToQueue_409_ReturnsTypedConflictError(t *testing.T) {
 		t.Errorf("Body = %q, want %q (raw response body must be preserved)", apiErr.Body, wantBody)
 	}
 }
+
+// TestClient_DeleteLoop_ReturnsNilOnSuccessStatuses pins DeleteLoop's
+// documented "nil on both 200 and 204" contract (mitto-7gta.25), matching
+// the other loop/queue mutators (ClearQueue, DeleteSession) in this file.
+func TestClient_DeleteLoop_ReturnsNilOnSuccessStatuses(t *testing.T) {
+	for _, status := range []int{http.StatusOK, http.StatusNoContent} {
+		t.Run(fmt.Sprintf("status_%d", status), func(t *testing.T) {
+			var gotMethod, gotPath string
+			mux := http.NewServeMux()
+			mux.HandleFunc("/mitto/api/sessions/sess-1/loop", func(w http.ResponseWriter, r *http.Request) {
+				gotMethod = r.Method
+				gotPath = r.URL.Path
+				w.WriteHeader(status)
+			})
+			ts := httptest.NewServer(mux)
+			defer ts.Close()
+
+			c := New(ts.URL)
+			if err := c.DeleteLoop("sess-1"); err != nil {
+				t.Fatalf("DeleteLoop: %v, want nil for status %d", err, status)
+			}
+			if gotMethod != http.MethodDelete {
+				t.Errorf("server saw method %q, want DELETE", gotMethod)
+			}
+			if gotPath != "/mitto/api/sessions/sess-1/loop" {
+				t.Errorf("server saw path %q, want /mitto/api/sessions/sess-1/loop", gotPath)
+			}
+		})
+	}
+}
+
+// TestClient_DeleteLoop_404_ReturnsTypedNotFoundError mirrors GetLoop's 404
+// handling: DeleteLoop must surface a typed *APIError satisfying
+// errors.Is(err, ErrNotFound), with the session ID recoverable via Details,
+// rather than falling through to the generic apiError path.
+func TestClient_DeleteLoop_404_ReturnsTypedNotFoundError(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/mitto/api/sessions/no-loop/loop", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	})
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	c := New(ts.URL)
+	err := c.DeleteLoop("no-loop")
+	if err == nil {
+		t.Fatal("DeleteLoop returned nil error for a 404 response")
+	}
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("errors.Is(err, ErrNotFound) = false, want true; err = %v", err)
+	}
+
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatal("errors.As failed to extract *APIError")
+	}
+	if apiErr.Details["session_id"] != "no-loop" {
+		t.Errorf("Details[session_id] = %v, want %q", apiErr.Details["session_id"], "no-loop")
+	}
+}
+
+// TestClient_DeleteLoop_500_ReturnsGenericAPIError pins the fallback branch:
+// any non-{200,204,404} status goes through the generic c.apiError path, so
+// the error still satisfies errors.Is against the canonical 5xx sentinel.
+func TestClient_DeleteLoop_500_ReturnsGenericAPIError(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/mitto/api/sessions/sess-1/loop", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":{"code":"server_error","message":"boom"}}`))
+	})
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	c := New(ts.URL)
+	err := c.DeleteLoop("sess-1")
+	if err == nil {
+		t.Fatal("DeleteLoop returned nil error for a 500 response")
+	}
+	if !errors.Is(err, ErrServerError) {
+		t.Errorf("errors.Is(err, ErrServerError) = false, want true; err = %v", err)
+	}
+}
