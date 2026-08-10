@@ -61,8 +61,11 @@ type ConversationStartInput struct {
 	LoopCompletionDelaySeconds *int   `json:"loop_completion_delay_seconds,omitempty"` // Wait (s) after agent stops, onCompletion only; clamped to floor
 	LoopMaxDurationSeconds     *int   `json:"loop_max_duration_seconds,omitempty"`     // Wall-clock cap (s) since iterating started (0 = unlimited)
 	// LoopChildEvents lists the child-conversation lifecycle events that arm
-	// the onChild trigger: "anyEndResponse" (a child finishes a response) and/or
-	// "anyDeleted" (a child is deleted). Empty/absent defaults to both when
+	// the onChild trigger: "anyEndResponse" (a child finishes a response),
+	// "anyDeleted" (a child is deleted), and/or "anyLoopStopped" (a child's
+	// own loop transitions into the stopped state — a real "child driver
+	// declared itself done" signal). Empty/absent defaults to
+	// anyEndResponse + anyDeleted (anyLoopStopped is opt-in only) when
 	// onChild is among the armed triggers. Only meaningful when loop_trigger
 	// includes "onChild".
 	LoopChildEvents []string `json:"loop_child_events,omitempty"`

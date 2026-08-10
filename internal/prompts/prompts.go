@@ -92,7 +92,14 @@ var loadWarnSeen sync.Map
 //	loop:
 //	  trigger: [onChild, onCompletion]
 //	  onChild:
-//	    when: [anyEndResponse, anyDeleted]   # optional; absent = both events
+//	    when: [anyEndResponse, anyDeleted]   # optional; absent = anyEndResponse + anyDeleted
+//	    # anyEndResponse fires on EVERY child turn/idle transition — not a
+//	    # "child is done" signal for a multi-phase child driver. anyDeleted
+//	    # never fires for archived (rather than deleted) children. Opt into
+//	    # anyLoopStopped instead for a real "child driver declared itself
+//	    # done" signal: it fires once, when the child's own loop transitions
+//	    # into the stopped state (any StoppedReason), and is NOT part of the
+//	    # default event set.
 //	  onCompletion:
 //	    delay: 30
 //
@@ -211,10 +218,11 @@ type PromptLoopOnTasks struct {
 // loop.onChild. Unknown keys are rejected (see UnmarshalYAML).
 type PromptLoopOnChild struct {
 	// When lists the child-conversation lifecycle events that arm this
-	// trigger; each entry must be one of "anyEndResponse" or "anyDeleted"
-	// (mirrors internal/session/loop.go's ChildEventAnyEndResponse /
-	// ChildEventAnyDeleted — internal/prompts does not import internal/session,
-	// so this list is validated against a local copy; keep the two in sync).
+	// trigger; each entry must be one of "anyEndResponse", "anyDeleted", or
+	// "anyLoopStopped" (mirrors internal/session/loop.go's
+	// ChildEventAnyEndResponse / ChildEventAnyDeleted / ChildEventAnyLoopStopped
+	// — internal/prompts does not import internal/session, so this list is
+	// validated against a local copy; keep the two in sync).
 	// Empty/absent defaults to both events at the session-layer consumption
 	// boundary (session.LoopPrompt.EffectiveChildEvents); this field returns
 	// the authored list verbatim and does not apply that default itself.
@@ -231,11 +239,13 @@ var knownLoopTriggers = map[string]bool{
 
 // knownPromptLoopChildEvents enumerates valid PromptLoopOnChild.When entries.
 // Local copy of internal/session/loop.go's ChildEventAnyEndResponse /
-// ChildEventAnyDeleted (mitto-987y.1) — internal/prompts must not import
-// internal/session, so keep this in sync with that file if it changes.
+// ChildEventAnyDeleted / ChildEventAnyLoopStopped (mitto-987y.1, mitto-q6my)
+// — internal/prompts must not import internal/session, so keep this in sync
+// with that file if it changes.
 var knownPromptLoopChildEvents = map[string]bool{
 	"anyEndResponse": true,
 	"anyDeleted":     true,
+	"anyLoopStopped": true,
 }
 
 // Triggers returns the effective, resolved trigger list: p.Trigger verbatim
@@ -698,7 +708,8 @@ func ValidatePromptLoop(promptName string, p *PromptLoop) error {
 //   - An empty/absent Trigger list is not an error — it defaults to ["schedule"]
 //     (see PromptLoop.Triggers), preserving pre-r6j implicit-schedule prompts.
 //   - loop.schedule.at is only valid when loop.schedule.unit is "days".
-//   - loop.onChild.when entries must be one of "anyEndResponse", "anyDeleted".
+//   - loop.onChild.when entries must be one of "anyEndResponse", "anyDeleted",
+//     "anyLoopStopped".
 //   - onChild can never be the only armed trigger (purely reactive to a
 //     child's lifecycle; mirrors session.ErrOnChildAlone).
 //   - A block present for a trigger NOT listed in Trigger is inert (matches
@@ -742,7 +753,7 @@ func ValidateLoopTriggers(promptName string, p *PromptLoop) error {
 		}
 		for _, e := range p.OnChild.When {
 			if !knownPromptLoopChildEvents[e] {
-				return fmt.Errorf("prompt %q: loop.onChild.when %q is not valid (must be one of: anyEndResponse, anyDeleted)", promptName, e)
+				return fmt.Errorf("prompt %q: loop.onChild.when %q is not valid (must be one of: anyEndResponse, anyDeleted, anyLoopStopped)", promptName, e)
 			}
 		}
 	}

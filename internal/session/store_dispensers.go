@@ -19,9 +19,14 @@ func (s *Store) ActionButtons(sessionID string) *ActionButtonsStore {
 }
 
 // Loop returns a LoopStore instance for managing the loop prompt of a session.
-// The returned LoopStore is safe for concurrent use.
+// The returned LoopStore is safe for concurrent use. It is wired to notify
+// this Store's loop-stopped observer (see SetLoopStoppedObserver) when the
+// session's loop transitions from enabled to stopped.
 func (s *Store) Loop(sessionID string) *LoopStore {
-	return NewLoopStore(s.sessionDir(sessionID))
+	s.mu.RLock()
+	obs := s.loopStoppedObserver
+	s.mu.RUnlock()
+	return newLoopStoreWithObserver(s.sessionDir(sessionID), sessionID, obs)
 }
 
 // Callback returns a CallbackStore instance for managing the callback token of a session.

@@ -242,7 +242,7 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 			"If two armed triggers want to fire in the same narrow window, only ONE run is delivered — the other is dropped, not queued (precedence within a tick: onTasks > onChild > onCompletion > schedule). 'loop_max_iterations' and 'loop_max_duration_seconds' are shared across every armed trigger, decremented once per delivered run regardless of which trigger fired it. " +
 			"For 'onCompletion', set 'loop_completion_delay_seconds' to the wait after the agent stops (clamped to the global floor). " +
 			"For 'onTasks', optionally set 'loop_condition' to a CEL expression gating which task changes fire the run (empty = fire on ANY beads/task change); 'loop_condition_preset' records an optional UI preset id compiled into the condition. " +
-			"For 'onChild', optionally set 'loop_child_events' to a list of 'anyEndResponse'/'anyDeleted' to restrict which child lifecycle events fire the run (empty/absent = both). " +
+			"For 'onChild', optionally set 'loop_child_events' to a list of 'anyEndResponse'/'anyDeleted'/'anyLoopStopped' to restrict which child lifecycle events fire the run (empty/absent = anyEndResponse + anyDeleted; anyLoopStopped — fires once when a child's own loop stops, a real 'child driver is done' signal — is opt-in only). " +
 			"Set 'loop_max_duration_seconds' to auto-stop the conversation after a wall-clock cap since iterating started (0 = unlimited). " +
 			"Cannot be used together with 'acp_server'. " +
 			"Requires 'Can start conversation' flag to be enabled in Advanced Settings (disabled by default for security). " +
@@ -323,7 +323,7 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 			"'loop_max_iterations' and 'loop_max_duration_seconds' are shared across every armed trigger, decremented once per delivered run regardless of which trigger fired it. " +
 			"For 'onCompletion', set 'loop_completion_delay_seconds' to the wait after the agent stops (clamped to the global floor). " +
 			"For 'onTasks', optionally set 'loop_condition' to a CEL expression gating which task changes fire the run (empty = fire on ANY beads/task change); 'loop_condition_preset' records an optional UI preset id compiled into the condition. " +
-			"For 'onChild', optionally set 'loop_child_events' to a list of 'anyEndResponse'/'anyDeleted' to restrict which child lifecycle events fire the run (nil = unchanged, non-nil replaces the stored list wholesale; empty/absent once applied = both events). " +
+			"For 'onChild', optionally set 'loop_child_events' to a list of 'anyEndResponse'/'anyDeleted'/'anyLoopStopped' to restrict which child lifecycle events fire the run (nil = unchanged, non-nil replaces the stored list wholesale; empty/absent once applied = anyEndResponse + anyDeleted; anyLoopStopped — fires once when a child's own loop stops — is opt-in only). " +
 			"Set 'loop_max_duration_seconds' to auto-stop the conversation after a wall-clock cap since iterating started (0 = unlimited). " +
 			selfIDNote,
 	}, s.handleConversationUpdate)

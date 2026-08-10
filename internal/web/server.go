@@ -1542,6 +1542,13 @@ func NewServer(config Config) (*Server, error) {
 	// (mitto-987y.5). Independent of sessionManager being non-nil.
 	store.SetDeleteObserver(s.loopRunner.OnChildDeleted)
 
+	// Wire event-driven onChild(anyLoopStopped) loop firing: the store
+	// notifies the runner once a session's own loop transitions into the
+	// stopped state, across every MarkStopped call site, so a parent armed
+	// for onChild can fire when a child driver declares itself done
+	// (mitto-q6my). Independent of sessionManager being non-nil.
+	store.SetLoopStoppedObserver(s.loopRunner.OnChildLoopStopped)
+
 	s.loopRunner.Start()
 
 	// Wire up loop runner to MCP server for the run-now tool.

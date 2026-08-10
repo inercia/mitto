@@ -24,8 +24,10 @@ type LoopPromptRequest struct {
 	// still emits both "trigger" (primary/first, back-compat) and "triggers".
 	Triggers []session.LoopTrigger `json:"triggers,omitempty"`
 	// ChildEvents lists the child-conversation lifecycle events that arm the
-	// onChild trigger: "anyEndResponse" and/or "anyDeleted". Empty defaults to
-	// both events. Only meaningful when "onChild" is among Triggers.
+	// onChild trigger: "anyEndResponse", "anyDeleted", and/or "anyLoopStopped"
+	// (fires once when a child's own loop transitions into the stopped
+	// state). Empty defaults to anyEndResponse + anyDeleted (anyLoopStopped
+	// is opt-in only). Only meaningful when "onChild" is among Triggers.
 	ChildEvents []session.ChildEvent `json:"child_events,omitempty"`
 	// DelaySeconds is the wait after the agent stops before the next run (onCompletion only).
 	// Clamped to the global floor on write.

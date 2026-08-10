@@ -102,7 +102,7 @@ var (
 	ErrInvalidTrigger = errors.New("invalid trigger: must be empty, schedule, onCompletion, onTasks, or onChild")
 	// ErrInvalidChildEvent is returned when a child_events entry is not one of
 	// the recognised onChild event names.
-	ErrInvalidChildEvent = errors.New("invalid child event: must be anyEndResponse or anyDeleted")
+	ErrInvalidChildEvent = errors.New("invalid child event: must be anyEndResponse, anyDeleted, or anyLoopStopped")
 	// ErrOnChildAlone is returned when onChild is the only armed trigger. The
 	// onChild leg is purely reactive to a child's lifecycle, so a loop armed
 	// with nothing else would never fire on its own for a conversation that has
@@ -148,6 +148,13 @@ const (
 	// ChildEventAnyDeleted fires when any child of the loop conversation is
 	// deleted.
 	ChildEventAnyDeleted ChildEvent = "anyDeleted"
+	// ChildEventAnyLoopStopped fires when any child's OWN loop transitions
+	// into the stopped state (LoopStore.MarkStopped), regardless of the
+	// StoppedReason — a real "the child driver declared itself done" signal,
+	// unlike anyEndResponse (fires on every turn) or anyDeleted (never fires
+	// for archived children). Not part of DefaultChildEvents(): must be
+	// opted into explicitly so existing onChild loops are unaffected.
+	ChildEventAnyLoopStopped ChildEvent = "anyLoopStopped"
 )
 
 // DefaultChildEvents is the event set applied when onChild is armed without an
@@ -565,7 +572,7 @@ func (p *LoopPrompt) Validate() error {
 	// validating the effective set would waste work and mask nothing.
 	for _, e := range p.ChildEvents {
 		switch e {
-		case ChildEventAnyEndResponse, ChildEventAnyDeleted:
+		case ChildEventAnyEndResponse, ChildEventAnyDeleted, ChildEventAnyLoopStopped:
 			// valid
 		default:
 			return fmt.Errorf("%w: %q", ErrInvalidChildEvent, e)
@@ -603,12 +610,33 @@ func (p *LoopPrompt) Validate() error {
 type LoopStore struct {
 	sessionDir string
 	mu         sync.RWMutex
+
+	// sessionID and stoppedObserver, when both set, let MarkStopped notify a
+	// listener (the LoopRunner, via Store.SetLoopStoppedObserver) once a loop
+	// transitions from enabled to stopped. Populated only by
+	// Store.Loop(sessionID); a bare NewLoopStore has neither, so MarkStopped
+	// is a pure no-op notification-wise (used by tests and by any caller that
+	// constructs a LoopStore directly rather than through a *Store).
+	sessionID       string
+	stoppedObserver func(sessionID string, reason StoppedReason)
 }
 
 // NewLoopStore creates a new LoopStore for the given session directory.
 func NewLoopStore(sessionDir string) *LoopStore {
 	return &LoopStore{
 		sessionDir: sessionDir,
+	}
+}
+
+// newLoopStoreWithObserver creates a LoopStore wired to notify obs (if
+// non-nil) from MarkStopped. Used exclusively by Store.Loop(sessionID) so the
+// onChild "anyLoopStopped" event (mitto-q6my) can be raised without adding a
+// sessionID parameter to the public NewLoopStore constructor.
+func newLoopStoreWithObserver(sessionDir, sessionID string, obs func(sessionID string, reason StoppedReason)) *LoopStore {
+	return &LoopStore{
+		sessionDir:      sessionDir,
+		sessionID:       sessionID,
+		stoppedObserver: obs,
 	}
 }
 
@@ -992,14 +1020,27 @@ func (ps *LoopStore) DeferNextSchedule(delay time.Duration) error {
 // It sets Enabled=false, StoppedReason=reason, StoppedAt=now (UTC),
 // NextScheduledAt=nil, and UpdatedAt=now.
 // Returns ErrLoopNotFound if no loop config exists.
+//
+// When the loop was previously enabled (a real stop transition, not a
+// re-stamp of an already-stopped config) and this LoopStore was constructed
+// via Store.Loop(sessionID), the registered stopped-observer (see
+// Store.SetLoopStoppedObserver) is notified after the write and after ps.mu
+// is released — mirroring Store.deleteObserver's invocation discipline so the
+// callback may safely call back into the store. This funnels every
+// MarkStopped call site (loop_runner auto-stops, MCP loop_enabled:false,
+// REST pause, etc.) into a single "child loop stopped" signal for the
+// onChild "anyLoopStopped" event (mitto-q6my) without each site needing to
+// remember to notify.
 func (ps *LoopStore) MarkStopped(reason StoppedReason) error {
 	ps.mu.Lock()
-	defer ps.mu.Unlock()
 
 	existing, err := ps.getUnlocked()
 	if err != nil {
+		ps.mu.Unlock()
 		return err
 	}
+
+	wasEnabled := existing.Enabled
 
 	now := time.Now().UTC()
 	existing.Enabled = false
@@ -1015,7 +1056,16 @@ func (ps *LoopStore) MarkStopped(reason StoppedReason) error {
 	}
 
 	if err := fileutil.WriteJSONAtomic(ps.loopPath(), existing, 0644); err != nil {
+		ps.mu.Unlock()
 		return fmt.Errorf("failed to write loop file: %w", err)
+	}
+
+	observer := ps.stoppedObserver
+	sessionID := ps.sessionID
+	ps.mu.Unlock()
+
+	if wasEnabled && observer != nil && sessionID != "" {
+		observer(sessionID, reason)
 	}
 	return nil
 }

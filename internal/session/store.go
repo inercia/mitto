@@ -44,6 +44,12 @@ type Store struct {
 	// (the target session itself plus any cascade-deleted descendants), after
 	// s.mu has been released. Guarded by s.mu; see SetDeleteObserver.
 	deleteObserver func(sessionID, parentSessionID string)
+
+	// loopStoppedObserver, when set, is invoked once a session's loop
+	// transitions from enabled to stopped via LoopStore.MarkStopped. Guarded
+	// by s.mu; see SetLoopStoppedObserver. Threaded into each *LoopStore
+	// returned by Loop(sessionID) (store_dispensers.go).
+	loopStoppedObserver func(sessionID string, reason StoppedReason)
 }
 
 // SetDeleteObserver registers a callback invoked once per session removed by
@@ -60,6 +66,23 @@ func (s *Store) SetDeleteObserver(fn func(sessionID, parentSessionID string)) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.deleteObserver = fn
+}
+
+// SetLoopStoppedObserver registers a callback invoked once a session's loop
+// transitions from enabled to stopped (LoopStore.MarkStopped), across every
+// stop path (auto-stop on max iterations/duration, resume/delivery/context
+// failures, MCP loop_enabled:false, REST pause, archive). The callback
+// receives the stopped session's own ID and the StoppedReason; it does NOT
+// receive a parent session ID (unlike SetDeleteObserver) because, unlike a
+// deleted session, the stopped session's own metadata still exists at
+// notification time, so a caller that needs the parent can resolve it via
+// GetMetadata(sessionID).ParentSessionID. Invoked after the write and after
+// the LoopStore's internal lock has been released, so the callback may
+// safely call back into the store. Pass nil to clear the observer.
+func (s *Store) SetLoopStoppedObserver(fn func(sessionID string, reason StoppedReason)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.loopStoppedObserver = fn
 }
 
 // NewStore creates a new session store with the given base directory.

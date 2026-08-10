@@ -435,11 +435,13 @@ type ConversationUpdateInput struct {
 	// optionally gated by loop_condition.
 	LoopTrigger *string `json:"loop_trigger,omitempty"`
 	// LoopChildEvents lists the child-conversation lifecycle events that arm
-	// the onChild trigger: "anyEndResponse" and/or "anyDeleted". nil means
-	// "leave unchanged"; a non-nil slice (including empty) replaces the stored
-	// list wholesale — same convention as LoopArguments above. Empty/absent
-	// (once applied) defaults to both events. Only meaningful when onChild is
-	// among the armed triggers.
+	// the onChild trigger: "anyEndResponse", "anyDeleted", and/or
+	// "anyLoopStopped" (fires once when a child's own loop transitions into
+	// the stopped state). nil means "leave unchanged"; a non-nil slice
+	// (including empty) replaces the stored list wholesale — same convention
+	// as LoopArguments above. Empty/absent (once applied) defaults to
+	// anyEndResponse + anyDeleted (anyLoopStopped is opt-in only). Only
+	// meaningful when onChild is among the armed triggers.
 	LoopChildEvents []string `json:"loop_child_events,omitempty"`
 	// LoopCompletionDelaySeconds is the wait (seconds) after the agent stops before the next
 	// run; only meaningful for the onCompletion trigger. Clamped to the global floor on write.

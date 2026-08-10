@@ -750,7 +750,7 @@ loop block between prompts and pruning unused blocks later.
 
 | Field  | Required | Description |
 | ------ | -------- | ----------- |
-| `when` | No       | Child-conversation lifecycle events that fire this loop: `anyEndResponse` (a child finished an agent response and went idle) and/or `anyDeleted` (a child was deleted). Empty/absent = both. Unknown entries fail prompt load. |
+| `when` | No       | Child-conversation lifecycle events that fire this loop: `anyEndResponse` (a child finished an agent response and went idle — fires on **every turn**, not just when the child is fully done; a multi-phase child driver produces one fire per phase), `anyDeleted` (a child was deleted), and/or `anyLoopStopped` (a child's **own loop** transitioned into the stopped state — fires exactly once, a real "child driver declared itself done" signal, covering `mitto_conversation_update(loop_enabled: false)`, auto-stop on max iterations/duration, and archiving). Empty/absent = `anyEndResponse` + `anyDeleted`; `anyLoopStopped` is opt-in only, so existing loops are unaffected. Unknown entries fail prompt load. |
 
 `when` is the only key under `onChild:` — the per-conversation cooldown that
 also governs a burst of child events is a loop-wide runtime setting (see
@@ -860,11 +860,21 @@ it is enabled:
 - **`onChild`** — runs fire on a **child conversation's** lifecycle event, never
   on the loop conversation's own turn ending (that is `onCompletion`).
   `onChild.when: [anyEndResponse]` fires when any child finishes an agent
-  response and goes idle; `anyDeleted` fires when any child is deleted. Both
-  are armed by default. A cascade delete that also removes the parent itself
-  is a silent no-op (there is no longer a parent loop to fire). `onChild` is
-  **additive-only** — it can never be the only armed trigger — since it never
-  fires on its own for a conversation that has no children yet.
+  response and goes idle — this happens on **every turn**, so a multi-phase
+  child driver (e.g. plan → implement → test → review) produces one fire per
+  phase, not one fire when the child is actually done; `anyDeleted` fires when
+  any child is deleted (but never for a child that is archived rather than
+  deleted). Both are armed by default. `anyLoopStopped` fires exactly once,
+  when a child's **own loop** transitions into the stopped state (any
+  `StoppedReason` — agent-disabled via `loop_enabled: false`, auto-stop on max
+  iterations/duration, resume/delivery/context failures, user pause, or
+  archiving) — the reliable "child driver declared itself done" signal; it is
+  **not** armed by default and must be listed explicitly in `when`. A cascade
+  delete that also removes the parent itself is a silent no-op (there is no
+  longer a parent loop to fire), and the same applies to `anyLoopStopped` when
+  the parent is missing or archived. `onChild` is **additive-only** — it can
+  never be the only armed trigger — since it never fires on its own for a
+  conversation that has no children yet.
 
 `onChild` honours the **same per-conversation cooldown** the `onTasks` leg
 uses: a burst of child completions or deletions within the cooldown window

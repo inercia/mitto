@@ -156,7 +156,7 @@ capable of calling into the same delivery path at any time:
 | `schedule`     | The poll loop's due-check (`NextScheduledAt` reached)                       |
 | `onCompletion` | A one-shot timer armed by `OnConversationIdle` when the agent stops         |
 | `onTasks`      | `OnBeadsChanged`, when a workspace-wide `BeadsWatcher` event lands           |
-| `onChild`      | `OnConversationIdle`'s child leg (→ `OnChildEndResponse`) for `anyEndResponse`, and the `session.Store` delete observer (→ `OnChildDeleted`) for `anyDeleted` |
+| `onChild`      | `OnConversationIdle`'s child leg (→ `OnChildEndResponse`) for `anyEndResponse`, the `session.Store` delete observer (→ `OnChildDeleted`) for `anyDeleted`, and the `session.Store` loop-stopped observer (→ `OnChildLoopStopped`) for `anyLoopStopped` |
 
 Because these sources are independent, two of them can want to deliver a run
 in the same narrow window (e.g. the agent finishes a turn — arming
@@ -194,7 +194,7 @@ flowchart TB
     RELEASE -.->|"re-arms"| Sources
 ```
 
-`onChild`'s two event sources are wired at different layers: `anyEndResponse`
+`onChild`'s three event sources are wired at different layers: `anyEndResponse`
 rides the same `OnConversationIdle` callback that arms `onCompletion` (see
 [Loop Prompts: On-Completion Delivery](#loop-prompts-on-completion-delivery)
 below) — it resolves the child's parent from the child's own metadata (still
@@ -206,6 +206,19 @@ registered in `internal/web/server.go` as `store.SetDeleteObserver(s.loopRunner.
 Unlike the idle path, `OnChildDeleted` receives the parent session ID as an
 explicit argument from the caller — by observer time the child's own metadata
 is already gone, so it cannot be resolved from the child side.
+
+`anyLoopStopped` (mitto-q6my) is wired through `session.Store.SetLoopStoppedObserver`,
+registered as `store.SetLoopStoppedObserver(s.loopRunner.OnChildLoopStopped)`
+next to the delete observer. `LoopStore.MarkStopped` — the single funnel every
+stop path writes through (auto-stop on max iterations/duration,
+resume/delivery/context failures, MCP `loop_enabled: false`, REST pause,
+archiving) — invokes it once per **real** enabled→stopped transition (a
+`MarkStopped` call on an already-stopped config is a no-op notification-wise),
+after its write and after the `LoopStore`'s internal lock is released. Like
+the idle path, `OnChildLoopStopped` resolves the parent from the stopped
+child's own metadata (still present at notification time) — but guards
+`childID != parentID` so a loop stopping itself never re-fires its own
+`onChild` trigger.
 
 ### Shared caps, per-trigger settings
 

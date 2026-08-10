@@ -43,6 +43,41 @@ func (r *LoopRunner) OnChildDeleted(childID, parentID string) {
 	r.fireOnChild(parentID, session.ChildEventAnyDeleted, childID)
 }
 
+// OnChildLoopStopped notifies the onChild loop leg that a child conversation
+// (childID)'s OWN loop has transitioned into the stopped state (mitto-q6my).
+// It is invoked from the session.Store loop-stopped observer
+// (SetLoopStoppedObserver), which fires synchronously from
+// LoopStore.MarkStopped after its write and after the LoopStore's internal
+// lock is released. Like OnChildEndResponse (and unlike OnChildDeleted), the
+// stopped session's own metadata still exists at this point, so ParentID is
+// resolved here rather than supplied by the caller. reason is accepted for
+// logging only; every StoppedReason produces the same anyLoopStopped event —
+// there is no per-reason gating in this increment.
+//
+// Guards childID != parentID: a parent's own loop stopping must never
+// re-fire that same parent's onChild trigger against itself (only against
+// the parent's OWN parent, if any) — otherwise a loop that owns a child
+// armed for anyLoopStopped could recurse into itself.
+func (r *LoopRunner) OnChildLoopStopped(childID string, reason session.StoppedReason) {
+	if r.store == nil {
+		return
+	}
+	meta, err := r.store.GetMetadata(childID)
+	if err != nil {
+		return
+	}
+	if meta.ParentSessionID == "" || meta.ParentSessionID == childID {
+		// Not a child conversation (or a top-level session), or a
+		// self-referential parent — nothing to fire.
+		return
+	}
+	if r.logger != nil {
+		r.logger.Debug("onChild: child loop stopped",
+			"child_id", childID, "parent_id", meta.ParentSessionID, "reason", string(reason))
+	}
+	r.fireOnChild(meta.ParentSessionID, session.ChildEventAnyLoopStopped, childID)
+}
+
 // fireOnChild applies the onChild trigger's guards, in order, then dispatches
 // a run of the parent conversation's loop via TriggerNowFrom. Every drop
 // path is logged at Debug (never Warn/Error) — dropped fires are the expected
