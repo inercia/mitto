@@ -165,6 +165,71 @@ func enqueueSend(c *client.Client, conversationID string, usingPromptName bool, 
 	return c.AddToQueue(conversationID, text)
 }
 
+// connectAndAwaitLoad connects to conversationID, registers this client's
+// event stream, and blocks until the "events_loaded" handshake completes
+// before returning — the ordering documented in
+// docs/devel/cli-conversation.md §8, extracted here so both `conversation
+// send --wait` and `conversation new --wait` (mitto-pscc.5) share exactly
+// one implementation:
+//
+//   - Connect (and register the event stream) BEFORE enqueuing: the REST
+//     enqueue triggers immediate processing on an idle session
+//     (internal/web/handlers/queue.go), which could otherwise complete the
+//     whole turn before a post-enqueue WebSocket dial lands.
+//   - A bare Connect() does not make this client an observer of the
+//     session: the server only calls BackgroundSession.AddObserver from its
+//     load_events handler (internal/web/session_ws.go postLoadProcessing),
+//     which fires after an events_loaded reply. Without this handshake,
+//     agent_message/prompt_complete/queue_message_sending notifications for
+//     OUR message would never reach evCh/gate, hanging --wait until
+//     --wait-timeout regardless of whether the turn actually completes.
+//     limit=1 keeps the (unused) historical replay minimal; the events it
+//     may carry are not modelled by the Event stream and are silently
+//     ignored (see eventFromMessage). Waiting for events_loaded before
+//     enqueuing (rather than racing them) also preserves this ordering
+//     guarantee: server-side AddObserver happens synchronously right after
+//     events_loaded is queued for delivery, so receiving it here is a
+//     reliable (if not formally atomic) signal that registration has
+//     already happened by the time our REST enqueue reaches the server over
+//     its own, later network round trip.
+//
+// On success the caller owns the returned *client.Session and must Close()
+// it. On error, any partially-established connection is already closed
+// internally — the caller has nothing to clean up.
+func connectAndAwaitLoad(waitCtx context.Context, c *client.Client, conversationID string) (*client.Session, *queueGate, <-chan client.Event, <-chan error, error) {
+	gate := newQueueGate()
+	loaded := make(chan struct{})
+	var loadedOnce sync.Once
+	sess, err := c.Connect(waitCtx, conversationID, client.SessionCallbacks{
+		OnQueueMessageSending: gate.onQueueMessageSending,
+		OnEventsLoaded: func(events []client.SyncEvent, hasMore bool, isPrompting bool) {
+			loadedOnce.Do(func() { close(loaded) })
+		},
+	})
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+
+	evCh, errCh, err := sess.EventsChan(waitCtx)
+	if err != nil {
+		sess.Close()
+		return nil, nil, nil, nil, err
+	}
+
+	if err := sess.LoadEvents(1, 0, 0); err != nil {
+		sess.Close()
+		return nil, nil, nil, nil, err
+	}
+	select {
+	case <-loaded:
+	case <-waitCtx.Done():
+		sess.Close()
+		return nil, nil, nil, nil, waitCtx.Err()
+	}
+
+	return sess, gate, evCh, errCh, nil
+}
+
 func sendTableFn(queued *client.QueuedMessage) func() ([]string, [][]string) {
 	return func() ([]string, [][]string) {
 		return []string{"ID", "QUEUED AT", "TITLE"}, [][]string{{queued.ID, queued.QueuedAt, queued.Title}}
@@ -200,53 +265,12 @@ func runConversationSend(cmd *cobra.Command, args []string) error {
 		}
 		defer waitCancel()
 
-		// Connect (and register the event stream) BEFORE enqueuing: the
-		// REST enqueue triggers immediate processing on an idle session
-		// (internal/web/handlers/queue.go), which could otherwise complete
-		// the whole turn before a post-enqueue WebSocket dial lands.
-		gate = newQueueGate()
-		loaded := make(chan struct{})
-		var loadedOnce sync.Once
-		sess, cerr := c.Connect(waitCtx, conversationID, client.SessionCallbacks{
-			OnQueueMessageSending: gate.onQueueMessageSending,
-			OnEventsLoaded: func(events []client.SyncEvent, hasMore bool, isPrompting bool) {
-				loadedOnce.Do(func() { close(loaded) })
-			},
-		})
-		if cerr != nil {
-			return classify(cerr)
+		var sess *client.Session
+		sess, gate, evCh, errCh, err = connectAndAwaitLoad(waitCtx, c, conversationID)
+		if err != nil {
+			return classify(err)
 		}
 		defer sess.Close()
-
-		evCh, errCh, cerr = sess.EventsChan(waitCtx)
-		if cerr != nil {
-			return classify(cerr)
-		}
-
-		// A bare Connect() does not make this client an observer of the
-		// session: the server only calls BackgroundSession.AddObserver from
-		// its load_events handler (internal/web/session_ws.go
-		// postLoadProcessing), which fires after an events_loaded reply. Without
-		// this handshake, agent_message/prompt_complete/queue_message_sending
-		// notifications for OUR message would never reach evCh/gate, hanging
-		// --wait until --wait-timeout regardless of whether the turn actually
-		// completes. limit=1 keeps the (unused) historical replay minimal; the
-		// events it may carry are not modelled by the Event stream and are
-		// silently ignored (see eventFromMessage). Waiting for events_loaded
-		// before enqueuing (rather than racing them) also preserves this
-		// block's ordering guarantee: server-side AddObserver happens
-		// synchronously right after events_loaded is queued for delivery, so
-		// receiving it here is a reliable (if not formally atomic) signal that
-		// registration has already happened by the time our REST enqueue
-		// reaches the server over its own, later network round trip.
-		if lerr := sess.LoadEvents(1, 0, 0); lerr != nil {
-			return classify(lerr)
-		}
-		select {
-		case <-loaded:
-		case <-waitCtx.Done():
-			return classify(waitCtx.Err())
-		}
 	}
 
 	imageIDs, err := uploadSendImages(c, conversationID, conversationSendFlags.Images)

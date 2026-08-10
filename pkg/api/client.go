@@ -232,6 +232,12 @@ type SessionInfo struct {
 	// Reused is true when CreateSession was routed to an existing singleton-prompt
 	// conversation instead of creating a new one (see find-or-route, mitto-4mb.3).
 	Reused bool `json:"reused,omitempty"`
+	// Archived mirrors session.Metadata.Archived. GET /api/sessions already
+	// serializes it (SessionListResponse embeds session.Metadata), but this
+	// decode-side struct previously dropped it, so `conversation list
+	// --archived` had no field to filter on (mitto-pscc.5 Plan comment, Key
+	// Decision 1).
+	Archived bool `json:"archived,omitempty"`
 }
 
 // CreateSessionRequest represents a request to create a new session.
