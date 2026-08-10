@@ -276,6 +276,88 @@ func TestSchemaSkewInfo_FlatErrorHintShape(t *testing.T) {
 	}
 }
 
+// TestSchemaSkewInfo_BD112GateBlob reproduces mitto-iwe1: the real bd 1.1.2
+// remote_migrate_gate blob (captured verbatim from a mitto.log WARN "beads
+// schema needs migration" line) currently yields DBVersion=0,
+// BinaryVersion=0, and two all-empty Options entries instead of the parsed
+// values, even though IsSchemaSkew correctly detects the failure and the
+// outer JSON envelope decodes without error. Three independent shape
+// mismatches (see Investigation comment on mitto-iwe1) cause this:
+//  1. bd 1.1.2 emits current_version/latest_version, not
+//     db_version/binary_version (or any other alias applyGateFields
+//     recognizes) -> versions stay 0.
+//  2. bd JSON-escapes ">" in the error string, so the arrow fallback regex
+//     (which expects a literal "->") never matches "(v49 -\u003e v53)".
+//  3. bd's option objects use {id, when, risk, commands}, not
+//     {mode, description, command} -> json.Unmarshal succeeds but produces
+//     len(Options)==2 with every field empty, which is worse than omitting
+//     them (the UI would render two blank remediation buttons).
+func TestSchemaSkewInfo_BD112GateBlob(t *testing.T) {
+	// Verbatim stderr blob from bd 1.1.2 (mitto.log, 2026-08-10).
+	stderr := `{
+  "error": "refusing to auto-apply 4 pending schema migrations to a remote-backed database (v49 -\u003e v53): migrating clones independently forks the schema (#4259)",
+  "hint": "Coordination decision required: only ONE clone may migrate a shared remote; a second clone migrating independently forks the schema unrecoverably (#4259). Do NOT auto-run a migration — surface remote_migrate_gate.options to the operator and let them choose.",
+  "remote_migrate_gate": {
+    "current_version": 49,
+    "docs": "https://github.com/gastownhall/beads/blob/main/website/docs/getting-started/upgrading.md#remote-backed-databases-and-multiple-clones",
+    "expected": "exactly one designated clone migrates and publishes; every other clone adopts the result",
+    "human_decision_required": true,
+    "latest_version": 53,
+    "observed": "4 pending schema migration(s) and a configured remote",
+    "options": [
+      {
+        "commands": [
+          "BD_ALLOW_REMOTE_MIGRATE=1 bd migrate",
+          "bd dolt push"
+        ],
+        "id": "migrate",
+        "risk": "if another clone also migrates independently, the schema forks unrecoverably (#4259)",
+        "when": "you are the single designated migrator (only ONE machine, confirmed with the operator) and no other clone has migrated yet"
+      },
+      {
+        "commands": [
+          "bd bootstrap"
+        ],
+        "id": "adopt",
+        "risk": "re-clones and replaces the local database; push or export unpushed work first or it is lost",
+        "when": "another machine has already migrated and pushed"
+      }
+    ],
+    "pending": 4,
+    "severity": "blocking"
+  },
+  "schema_version": 1
+}`
+	err := &CmdError{Err: errors.New("bd exited with non-zero status: exit status 1"), Stderr: stderr, ExitCode: 1}
+
+	if !IsSchemaSkew(err) {
+		t.Fatal("IsSchemaSkew = false, want true for the bd 1.1.2 remote_migrate_gate blob")
+	}
+
+	info := SchemaSkewInfo(err)
+	if info.DBVersion != 49 {
+		t.Errorf("DBVersion = %d, want 49 (mitto-iwe1: current_version/latest_version not recognized)", info.DBVersion)
+	}
+	if info.BinaryVersion != 53 {
+		t.Errorf("BinaryVersion = %d, want 53 (mitto-iwe1: current_version/latest_version not recognized)", info.BinaryVersion)
+	}
+	if len(info.Options) != 2 {
+		t.Fatalf("Options len = %d, want 2 (%+v)", len(info.Options), info.Options)
+	}
+	if info.Options[0].Mode != "migrate" {
+		t.Errorf("Options[0].Mode = %q, want %q (mitto-iwe1: id/when/risk/commands not mapped)", info.Options[0].Mode, "migrate")
+	}
+	if info.Options[0].Description == "" {
+		t.Errorf("Options[0].Description empty, want non-empty (mitto-iwe1: when/risk not mapped to Description)")
+	}
+	if info.Options[0].Command == "" {
+		t.Errorf("Options[0].Command empty, want non-empty (mitto-iwe1: commands[] not mapped to Command)")
+	}
+	if info.Options[1].Mode != "adopt" {
+		t.Errorf("Options[1].Mode = %q, want %q", info.Options[1].Mode, "adopt")
+	}
+}
+
 // TestSchemaSkewInfo_Empty verifies that a nil error and a *CmdError with
 // empty stderr both yield a zero-value SchemaSkewDetails.
 func TestSchemaSkewInfo_Empty(t *testing.T) {

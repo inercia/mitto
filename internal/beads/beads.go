@@ -262,14 +262,14 @@ func applyGateFields(obj map[string]json.RawMessage, out *SchemaSkewDetails) {
 					out.DBPath = strings.TrimSpace(s)
 				}
 			}
-		case "db_version", "database_version", "from_version":
+		case "db_version", "database_version", "from_version", "current_version":
 			if out.DBVersion == 0 {
 				var n int
 				if json.Unmarshal(raw, &n) == nil {
 					out.DBVersion = n
 				}
 			}
-		case "binary_version", "to_version", "expected_version":
+		case "binary_version", "to_version", "expected_version", "latest_version":
 			if out.BinaryVersion == 0 {
 				var n int
 				if json.Unmarshal(raw, &n) == nil {
@@ -278,13 +278,69 @@ func applyGateFields(obj map[string]json.RawMessage, out *SchemaSkewDetails) {
 			}
 		case "options":
 			if len(out.Options) == 0 {
-				var opts []SchemaSkewOption
-				if json.Unmarshal(raw, &opts) == nil {
-					out.Options = opts
-				}
+				out.Options = decodeSchemaSkewOptions(raw)
 			}
 		}
 	}
+}
+
+// schemaSkewRawOption is the union of every options[] shape bd has emitted
+// for remote_migrate_gate: the original {mode, description, command} as
+// well as bd 1.1.2's {id, when, risk, commands}. Decoding into one struct
+// that carries both shapes lets decodeSchemaSkewOptions prefer whichever
+// fields are actually populated instead of hard-failing on an unknown
+// layout (mitto-iwe1).
+type schemaSkewRawOption struct {
+	Mode        string   `json:"mode"`
+	Description string   `json:"description"`
+	Command     string   `json:"command"`
+	ID          string   `json:"id"`
+	When        string   `json:"when"`
+	Risk        string   `json:"risk"`
+	Commands    []string `json:"commands"`
+}
+
+// decodeSchemaSkewOptions decodes a raw options[] JSON array into
+// SchemaSkewOption, mapping bd 1.1.2's {id, when, risk, commands} shape onto
+// {mode, description, command} when the legacy fields are absent: id becomes
+// Mode, when/risk are joined into Description, and commands[] is joined into
+// a single Command string. Options that still resolve to an empty Mode are
+// dropped rather than returned as blank entries, since the UI renders one
+// button per option keyed on Mode.
+func decodeSchemaSkewOptions(raw json.RawMessage) []SchemaSkewOption {
+	var rawOpts []schemaSkewRawOption
+	if json.Unmarshal(raw, &rawOpts) != nil {
+		return nil
+	}
+	opts := make([]SchemaSkewOption, 0, len(rawOpts))
+	for _, r := range rawOpts {
+		opt := SchemaSkewOption{
+			Mode:        r.Mode,
+			Description: r.Description,
+			Command:     r.Command,
+		}
+		if opt.Mode == "" {
+			opt.Mode = r.ID
+		}
+		if opt.Description == "" {
+			switch {
+			case r.When != "" && r.Risk != "":
+				opt.Description = r.When + " (risk: " + r.Risk + ")"
+			case r.When != "":
+				opt.Description = r.When
+			case r.Risk != "":
+				opt.Description = r.Risk
+			}
+		}
+		if opt.Command == "" && len(r.Commands) > 0 {
+			opt.Command = strings.Join(r.Commands, " && ")
+		}
+		if opt.Mode == "" {
+			continue
+		}
+		opts = append(opts, opt)
+	}
+	return opts
 }
 
 // parseVersionsFromText extracts "database is at vN, binary expects vM" from
@@ -307,8 +363,13 @@ func parseVersionsFromText(stderr string) (int, int, bool) {
 
 // schemaSkewArrowVersionsRe matches bd 1.1.2's inline version shorthand, e.g.
 // "... a remote-backed database (v49 -> v53): ...", where no separate
-// "database is at vN" / "binary expects vM" text is emitted.
-var schemaSkewArrowVersionsRe = regexp.MustCompile(`\(v(\d+)\s*->\s*v(\d+)\)`)
+// "database is at vN" / "binary expects vM" text is emitted. bd 1.1.2's
+// error string is itself JSON-encoded (e.g. inside "error": "...(v49
+// -\u003e v53)..."), and Go's encoding/json HTML-escapes ">" to "\u003e" by
+// default, so the raw stderr text literally contains the six characters
+// `-\u003e` rather than `->`. The alternation below matches either form
+// (mitto-iwe1).
+var schemaSkewArrowVersionsRe = regexp.MustCompile(`\(v(\d+)\s*-(?:>|\\u003e)\s*v(\d+)\)`)
 
 // parseVersionsFromArrow extracts "(vN -> vM)" from bd 1.1.2's flat stderr
 // shape (see schemaSkewArrowVersionsRe), returning (db, binary, true) on
