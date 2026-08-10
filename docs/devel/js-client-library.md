@@ -214,6 +214,26 @@ are a separate concern, defined in
 [API Stability Tiers and Deprecation Policy](api-stability.md), and are
 referenced rather than duplicated here.
 
+## 8. Cross-client contract smoke (`.25`)
+
+`tests/integration/inprocess/sdk_contract_test.go`
+(`TestSDKContract_GoAndJSAgree`) is the single test that guards this SDK and
+`pkg/api` (the Go SDK) from drifting apart, not just from the backend. It
+starts a real Mitto server (`tests/integration/inprocess` harness + the mock
+ACP agent) and drives the identical create/prompt/stream/queue/loop scenario
+through both clients — `pkg/api` in-process, this SDK via a Bun subprocess
+(`tests/integration/sdkcontract/driver.js`) — then compares two curated
+observation traces. Both traces record only order-stable, non-volatile
+fields (never ids/timestamps/seq), so the comparison catches behavioral
+divergence, not incidental payload differences between a Go struct decode
+and raw JS JSON. Response-SHAPE drift is checked separately and
+asymmetrically: the JS driver also records each raw REST response's sorted
+top-level key set, and the Go side asserts only its structs' non-`omitempty`
+JSON tags are present — additive backend fields are fine, a renamed/removed
+field a struct depends on is not. Run via `make
+test-integration-sdk-contract`; skips (not fails) when `bun` is absent from
+`PATH`.
+
 ## Related issues
 
 `.2` core config/env · `.3` typed errors · `.4` transport · `.5` auth

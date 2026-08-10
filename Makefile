@@ -1,4 +1,4 @@
-.PHONY: build build-debug install test test-go test-js check-model-tags check-stderr-patterns check-prompts sdk-types check-sdk-types test-integration test-integration-go test-integration-cli test-integration-api test-integration-client test-integration-runner test-runner-smoke test-runner-smoke-assert test-bun-tooling test-ui test-ui-headed test-ui-debug test-ui-report test-all test-ci test-setup test-clean clean run fmt fmt-check fmt-docs fmt-docs-check lint lint-go lint-frontend deps-go deps-js deps tailwind vendor-codemirror build-mac-app clean-mac-app test-webviewlog build-mock-acp ci install-hooks homebrew-generate homebrew-test homebrew-test-style homebrew-test-install homebrew-test-cask homebrew-tap-setup homebrew-clean smoke-build smoke-test-cli smoke-test smoke-clean
+.PHONY: build build-debug install test test-go test-js check-model-tags check-stderr-patterns check-prompts sdk-types check-sdk-types test-integration test-integration-go test-integration-sdk-contract test-integration-cli test-integration-api test-integration-client test-integration-runner test-runner-smoke test-runner-smoke-assert test-bun-tooling test-ui test-ui-headed test-ui-debug test-ui-report test-all test-ci test-setup test-clean clean run fmt fmt-check fmt-docs fmt-docs-check lint lint-go lint-frontend deps-go deps-js deps tailwind vendor-codemirror build-mac-app clean-mac-app test-webviewlog build-mock-acp ci install-hooks homebrew-generate homebrew-test homebrew-test-style homebrew-test-install homebrew-test-cask homebrew-tap-setup homebrew-clean smoke-build smoke-test-cli smoke-test smoke-clean
 
 # Binary name
 BINARY_NAME=mitto
@@ -125,6 +125,15 @@ test-integration-legacy: build
 test-integration-go: build build-mock-acp
 	@echo "Running Go integration tests..."
 	$(GOTEST) -v -tags=integration ./tests/integration/...
+
+# Run the SDK contract-smoke test only: drives both the Go SDK (pkg/api) and
+# the JS SDK (web/static/sdk, via a Bun subprocess) through the same
+# create/prompt/stream/queue/loop scenario against one in-process server with
+# the mock ACP agent, asserting the two clients observe identical behavior.
+# Skips the JS side (t.Skip) if `bun` is not on PATH.
+test-integration-sdk-contract: build build-mock-acp
+	@echo "Running SDK contract-smoke test..."
+	$(GOTEST) -v -tags=integration ./tests/integration/inprocess/... -run TestSDKContract_GoAndJSAgree
 
 # Run CLI integration tests only
 test-integration-cli: build build-mock-acp

@@ -821,6 +821,34 @@ func (c *Client) GetLoop(sessionID string) (*LoopConfig, error) {
 	return &config, nil
 }
 
+// DeleteLoop detaches the loop configuration from a session (the "un-loop"
+// action). The settings are preserved server-side so a later SetLoop call
+// against the same session can be undone by re-configuring; this mirrors the
+// UI's "Make non-loop" action. Returns nil on both 200 and 204, matching the
+// other loop/queue mutators in this file.
+func (c *Client) DeleteLoop(sessionID string) error {
+	req, err := c.newRequest(http.MethodDelete, c.apiURL("/api/sessions/"+url.PathEscape(sessionID)+"/loop"), "", nil)
+	if err != nil {
+		return fmt.Errorf("delete loop: %w", err)
+	}
+
+	resp, err := c.do(req)
+	if err != nil {
+		return fmt.Errorf("delete loop: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return &APIError{Op: "delete loop", Status: http.StatusNotFound, Code: CodeNotFound,
+			Message: fmt.Sprintf("loop not configured for session: %s", sessionID),
+			Details: map[string]any{"session_id": sessionID}}
+	}
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
+		return c.apiError("delete loop", resp)
+	}
+	return nil
+}
+
 // RunLoopNow triggers an immediate run of the loop prompt.
 // resetTimer controls whether the next scheduled run timer is reset.
 func (c *Client) RunLoopNow(sessionID string, resetTimer bool) error {

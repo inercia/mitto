@@ -204,6 +204,18 @@ tier from public-export reachability
 ([§3](api-stability.md#3-tier-is-derived-not-enumerated)); this record
 defers to it rather than restating the window.
 
+## 9. Cross-client contract smoke
+
+`pkg/api` is held to the same live contract smoke as the JS SDK
+(`mitto-7gta.25`): `TestSDKContract_GoAndJSAgree` in
+`tests/integration/inprocess/sdk_contract_test.go` drives an identical
+create/prompt/stream/queue/loop scenario through both clients against one
+in-process server with the mock ACP agent, and compares curated observation
+traces plus a response-shape superset check against the Go structs' required
+(non-`omitempty`) fields. See
+[JavaScript Client Library §8](js-client-library.md#8-cross-client-contract-smoke-25)
+for the full design; run via `make test-integration-sdk-contract`.
+
 ## Related issues
 
 `.2` relocate `internal/client` → `pkg/api` · `.3` typed error model ·
