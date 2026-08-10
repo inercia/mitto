@@ -142,6 +142,17 @@
 // loop or silently dropping events. EventsChan offers the same semantics
 // for select-based callers that prefer channels over range-over-func.
 //
+// # REST Surface Coverage
+//
+// This client covers the conversation-centric REST surface: sessions (CRUD,
+// events, changes, settings, flush, user data, prune, running list), queue,
+// loop (including the multi-trigger schema), and per-session media
+// (images/files). Workspace-, prompt-config-, issues-, global-settings-,
+// agents-, and dashboard-level endpoints are intentionally out of scope —
+// this SDK targets programmatic conversation drivers, not full admin/UI
+// parity. The method set is split across client.go (transport + session
+// CRUD), sessions_ext.go, media.go, queue.go, and loop.go by resource.
+//
 // # Errors
 //
 // Non-2xx HTTP responses are returned as *APIError, which carries the
