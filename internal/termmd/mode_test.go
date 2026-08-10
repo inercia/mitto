@@ -1,6 +1,39 @@
 package termmd
 
+import "os"
 import "testing"
+
+// TestRealStdoutIsTerminal_MatchesRawCheck exercises the production
+// implementation behind stdoutIsTerminalOverride directly (bypassing the
+// test seam), recomputing the same os.ModeCharDevice check independently so
+// the assertion is correct regardless of whether the test binary's stdout
+// happens to be a TTY in a given CI/dev environment.
+func TestRealStdoutIsTerminal_MatchesRawCheck(t *testing.T) {
+	got := realStdoutIsTerminal()
+	info, err := os.Stdout.Stat()
+	want := err == nil && info.Mode()&os.ModeCharDevice != 0
+	if got != want {
+		t.Errorf("realStdoutIsTerminal() = %v, want %v (raw os.Stdout.Stat check)", got, want)
+	}
+}
+
+// TestTerminalWidth_TTYCallsGetSize exercises TerminalWidth's TTY branch
+// (term.GetSize on os.Stdout.Fd()), which TestTerminalWidth_FallbackWhenNotATTY
+// deliberately never reaches. It asserts only that the result is positive
+// rather than a specific value, since the test binary's actual stdout may or
+// may not be a real terminal depending on how the suite is invoked — GetSize
+// either fails (falling back to 55) or succeeds (returning the terminal's
+// real width); both are valid outcomes and this keeps the test deterministic
+// across environments while still covering the call.
+func TestTerminalWidth_TTYCallsGetSize(t *testing.T) {
+	restore := stdoutIsTerminalOverride
+	stdoutIsTerminalOverride = func() bool { return true }
+	t.Cleanup(func() { stdoutIsTerminalOverride = restore })
+
+	if got := TerminalWidth(55); got <= 0 {
+		t.Errorf("TerminalWidth(55) = %d, want a positive width", got)
+	}
+}
 
 // TestResolveMode_TruthTable pins ResolveMode's precedence: --no-color flag,
 // then $NO_COLOR, then TTY-ness, matching docs/devel/cli-conversation.md §7

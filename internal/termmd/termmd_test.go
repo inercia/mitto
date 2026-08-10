@@ -92,6 +92,20 @@ func TestTermRenderer_WidthChangeInvalidates(t *testing.T) {
 	}
 }
 
+// TestRender_ZeroWidthUsesGlamourDefault verifies Options{Width: 0} (the
+// zero value, e.g. a caller that forgot to resolve a width) does not crash
+// termRenderer's "if width > 0" guard against calling
+// glamour.WithWordWrap(0) — it renders using glamour's own default wrap
+// width instead, for both modes that reach the glamour path.
+func TestRender_ZeroWidthUsesGlamourDefault(t *testing.T) {
+	for _, mode := range []Mode{ModeStyled, ModePlain} {
+		out := Render("A short paragraph.\n", Options{Mode: mode})
+		if out == "" {
+			t.Errorf("Render with zero Width and mode %v returned empty output", mode)
+		}
+	}
+}
+
 // TestRender_ConcurrentSafe exercises Render from multiple goroutines under
 // -race: glamour's TermRenderer is documented as not concurrency-safe, so
 // this pins that Render's shared-renderer-cache locking prevents a race.
