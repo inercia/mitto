@@ -1,4 +1,4 @@
-// Package client (import path github.com/inercia/mitto/pkg/api) provides a Go
+// Package api (import path github.com/inercia/mitto/pkg/api) provides a Go
 // client for connecting to the Mitto backend.
 //
 // By default the client is unauthenticated, which is useful for integration
@@ -9,12 +9,12 @@
 //
 // Create a client and list sessions:
 //
-//	c := client.New("http://localhost:8080")
+//	c := api.New("http://localhost:8080")
 //	sessions, err := c.ListSessions()
 //
 // Create a new session:
 //
-//	session, err := c.CreateSession(client.CreateSessionRequest{
+//	session, err := c.CreateSession(api.CreateSessionRequest{
 //	    Name:       "my-session",
 //	    WorkingDir: "/path/to/project",
 //	})
@@ -24,7 +24,7 @@
 // Connect to a session for real-time interaction:
 //
 //	ctx := context.Background()
-//	sess, err := c.Connect(ctx, session.SessionID, client.SessionCallbacks{
+//	sess, err := c.Connect(ctx, session.SessionID, api.SessionCallbacks{
 //	    OnConnected: func(sessionID, clientID, acpServer string) {
 //	        fmt.Printf("Connected to %s\n", sessionID)
 //	    },
@@ -115,7 +115,7 @@
 //     it lazily (environment variable, keychain, config file) and support
 //     rotation without reconstructing the Client:
 //
-//     c := client.New(baseURL, client.WithTokenSupplier(func() (string, error) {
+//     c := api.New(baseURL, api.WithTokenSupplier(func() (string, error) {
 //     return os.Getenv("MITTO_TOKEN"), nil
 //     }))
 //
@@ -123,7 +123,7 @@
 //     username/password to obtain a session cookie plus CSRF token, used
 //     automatically on subsequent REST requests and WebSocket connections:
 //
-//     c := client.New(baseURL)
+//     c := api.New(baseURL)
 //     if err := c.Login(ctx, "user", "pass"); err != nil { ... }
 //     defer c.Logout(ctx)
 //
@@ -147,9 +147,9 @@
 // docs/devel/websockets/{sequence-numbers,synchronization}.md):
 //
 //	sess, err := c.Connect(ctx, sessionID, callbacks,
-//	    client.WithReconnect(client.ReconnectConfig{}),   // exp. backoff, defaults 1s/30s/30% jitter
-//	    client.WithKeepalive(client.KeepaliveConfig{}),   // zombie-connection detection, defaults 10s/2 missed
-//	    client.WithSeqDedup(true),                        // drop duplicate events by seq
+//	    api.WithReconnect(api.ReconnectConfig{}),   // exp. backoff, defaults 1s/30s/30% jitter
+//	    api.WithKeepalive(api.KeepaliveConfig{}),   // zombie-connection detection, defaults 10s/2 missed
+//	    api.WithSeqDedup(true),                        // drop duplicate events by seq
 //	)
 //
 // WithReconnect redials on any non-terminal disconnect and resyncs from the
@@ -173,10 +173,10 @@
 //	    if err != nil {
 //	        log.Fatal(err) // ctx cancelled, disconnected, or ErrSlowConsumer
 //	    }
-//	    if ev.Kind == client.EventAgentMessage {
+//	    if ev.Kind == api.EventAgentMessage {
 //	        fmt.Print(ev.HTML)
 //	    }
-//	    if ev.Kind == client.EventPromptComplete {
+//	    if ev.Kind == api.EventPromptComplete {
 //	        break
 //	    }
 //	}
@@ -213,13 +213,13 @@
 // class without string-matching:
 //
 //	session, err := c.GetSession(id)
-//	if errors.Is(err, client.ErrNotFound) {
+//	if errors.Is(err, api.ErrNotFound) {
 //	    // handle missing session
 //	}
 //
 // Use errors.As to inspect the full error detail:
 //
-//	var apiErr *client.APIError
+//	var apiErr *api.APIError
 //	if errors.As(err, &apiErr) {
 //	    log.Printf("status=%d code=%s details=%v", apiErr.Status, apiErr.Code, apiErr.Details)
 //	}
@@ -230,4 +230,4 @@
 // ErrSlowConsumer (the consumer fell behind and the bounded buffer
 // overflowed), and ErrDisconnected (the underlying WebSocket dropped and was
 // not recovered). See # Streaming above.
-package client
+package api

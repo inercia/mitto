@@ -8,7 +8,7 @@ import (
 	"strings"
 	"sync"
 
-	client "github.com/inercia/mitto/pkg/api"
+	"github.com/inercia/mitto/pkg/api"
 )
 
 // queueGate correlates the "queue_message_sending" WebSocket event (fired by
@@ -64,9 +64,9 @@ func (g *queueGate) fireLocked() {
 // pieces of information — the queued message and the reply — that have no
 // single REST representation).
 type waitResult struct {
-	Queued     *client.QueuedMessage `json:"queued"`
-	Message    string                `json:"message"`
-	EventCount int                   `json:"event_count"`
+	Queued     *api.QueuedMessage `json:"queued"`
+	Message    string             `json:"message"`
+	EventCount int                `json:"event_count"`
 }
 
 // waitForQueuedMessage ranges over evCh/errCh (from Session.EventsChan,
@@ -79,7 +79,7 @@ type waitResult struct {
 // to stderr. The agent's markdown body is streamed live to stdout only when
 // streamText is true (table output); otherwise it is only accumulated for
 // the caller to render as a single --output json/yaml object.
-func waitForQueuedMessage(ctx context.Context, evCh <-chan client.Event, errCh <-chan error, gate *queueGate, streamText bool, stdout, stderr io.Writer) (*waitResult, error) {
+func waitForQueuedMessage(ctx context.Context, evCh <-chan api.Event, errCh <-chan error, gate *queueGate, streamText bool, stdout, stderr io.Writer) (*waitResult, error) {
 	var (
 		sawSending bool
 		curSeq     int64 = -1
@@ -126,7 +126,7 @@ func waitForQueuedMessage(ctx context.Context, evCh <-chan client.Event, errCh <
 			}
 
 			switch ev.Kind {
-			case client.EventAgentMessage:
+			case api.EventAgentMessage:
 				if !sawSending {
 					// Belongs to an in-flight turn that predates ours.
 					continue
@@ -147,7 +147,7 @@ func waitForQueuedMessage(ctx context.Context, evCh <-chan client.Event, errCh <
 					fmt.Fprint(stdout, delta)
 				}
 
-			case client.EventPromptComplete:
+			case api.EventPromptComplete:
 				if sawSending {
 					if streamText && printed != "" && !strings.HasSuffix(printed, "\n") {
 						fmt.Fprintln(stdout)
@@ -159,28 +159,28 @@ func waitForQueuedMessage(ctx context.Context, evCh <-chan client.Event, errCh <
 				curSeq = -1
 				printed = ""
 
-			case client.EventError:
+			case api.EventError:
 				return nil, fmt.Errorf("agent reported an error while waiting: %s", ev.Message)
 
-			case client.EventACPStopped:
+			case api.EventACPStopped:
 				return nil, fmt.Errorf("agent connection stopped while waiting (reason: %s)", ev.Reason)
 
-			case client.EventSessionGone:
+			case api.EventSessionGone:
 				return nil, fmt.Errorf("conversation was deleted while waiting")
 
-			case client.EventToolCall:
+			case api.EventToolCall:
 				fmt.Fprintf(stderr, "[tool] %s: %s\n", ev.Title, ev.Status)
 
-			case client.EventToolUpdate:
+			case api.EventToolUpdate:
 				fmt.Fprintf(stderr, "[tool] %s: %s\n", ev.ID, ev.Status)
 
-			case client.EventAgentThought:
+			case api.EventAgentThought:
 				fmt.Fprintf(stderr, "[thinking] %s\n", ev.Text)
 
-			case client.EventPermission:
+			case api.EventPermission:
 				fmt.Fprintf(stderr, "[permission] %s: %s\n", ev.Title, ev.Description)
 
-			case client.EventFileRead, client.EventFileWrite:
+			case api.EventFileRead, api.EventFileWrite:
 				fmt.Fprintf(stderr, "[file] %s (%d bytes)\n", ev.Path, ev.Size)
 			}
 		}

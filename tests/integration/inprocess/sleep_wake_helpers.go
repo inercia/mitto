@@ -56,7 +56,7 @@ type SleepWakeResult struct {
 
 	// EventsAfterReconnect contains all events received in the events_loaded response
 	// after reconnection with after_seq = LastSeqBeforeSleep.
-	EventsAfterReconnect []client.SyncEvent
+	EventsAfterReconnect []api.SyncEvent
 
 	// ReceivedCorrectEvents is true when the client received exactly the missed events:
 	// count == RoundsDuringSleep*2 and all have seq > LastSeqBeforeSleep.
@@ -81,7 +81,7 @@ func (s *SleepWakeScenario) Run(t *testing.T) *SleepWakeResult {
 
 	// ── Phase 1: Connect a client and register as observer ──────────────────
 	connected1 := make(chan struct{})
-	sess1, err := s.Server.Client.Connect(ctx, s.SessionID, client.SessionCallbacks{
+	sess1, err := s.Server.Client.Connect(ctx, s.SessionID, api.SessionCallbacks{
 		OnConnected: func(sessionID, clientID, acpServer string) {
 			t.Logf("SleepWake[pre-sleep]: connected clientID=%s", clientID)
 			close(connected1)
@@ -131,12 +131,12 @@ func (s *SleepWakeScenario) Run(t *testing.T) *SleepWakeResult {
 	connected2 := make(chan struct{})
 	eventsLoadedDone := make(chan struct{}, 1)
 
-	sess2, err := s.Server.Client.Connect(ctx, s.SessionID, client.SessionCallbacks{
+	sess2, err := s.Server.Client.Connect(ctx, s.SessionID, api.SessionCallbacks{
 		OnConnected: func(sessionID, clientID, acpServer string) {
 			t.Logf("SleepWake[post-sleep]: reconnected clientID=%s", clientID)
 			close(connected2)
 		},
-		OnEventsLoaded: func(events []client.SyncEvent, hasMore bool, isPrompting bool) {
+		OnEventsLoaded: func(events []api.SyncEvent, hasMore bool, isPrompting bool) {
 			mu.Lock()
 			result.EventsAfterReconnect = append(result.EventsAfterReconnect, events...)
 			result.HasMore = hasMore

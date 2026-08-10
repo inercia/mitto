@@ -21,7 +21,7 @@ func TestSendPromptAndReceiveResponse(t *testing.T) {
 	ts := SetupTestServer(t)
 
 	// Create a session
-	session, err := ts.Client.CreateSession(client.CreateSessionRequest{})
+	session, err := ts.Client.CreateSession(api.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -39,7 +39,7 @@ func TestSendPromptAndReceiveResponse(t *testing.T) {
 		promptID       string
 	)
 
-	callbacks := client.SessionCallbacks{
+	callbacks := api.SessionCallbacks{
 		OnConnected: func(sid, cid, acp string) {
 			mu.Lock()
 			defer mu.Unlock()
@@ -167,7 +167,7 @@ func writeTemplatePrompt(t *testing.T, ts *TestServer, slug, name, body string) 
 // connects, waits for prompt completion, and returns the RPC-order lines.
 func runTemplatePromptAndWait(t *testing.T, ts *TestServer, orderFile, promptName string, args map[string]string) []string {
 	t.Helper()
-	sess, err := ts.Client.CreateSession(client.CreateSessionRequest{
+	sess, err := ts.Client.CreateSession(api.CreateSessionRequest{
 		InitialPromptName: promptName,
 		Arguments:         args,
 	})
@@ -182,7 +182,7 @@ func runTemplatePromptAndWait(t *testing.T, ts *TestServer, orderFile, promptNam
 	)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	ws, err := ts.Client.Connect(ctx, sess.SessionID, client.SessionCallbacks{
+	ws, err := ts.Client.Connect(ctx, sess.SessionID, api.SessionCallbacks{
 		OnPromptComplete: func(_ int) { mu.Lock(); promptComplete = true; mu.Unlock() },
 	})
 	if err != nil {
@@ -212,7 +212,7 @@ func TestTemplateRender_NamedPrompt_SessionID(t *testing.T) {
 	ts, orderFile := setupDeferredConfigServer(t)
 	writeTemplatePrompt(t, ts, "tmpl-sessid", "tmpl-sessid", "Session: {{ .Session.ID }}")
 
-	sess, err := ts.Client.CreateSession(client.CreateSessionRequest{InitialPromptName: "tmpl-sessid"})
+	sess, err := ts.Client.CreateSession(api.CreateSessionRequest{InitialPromptName: "tmpl-sessid"})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -224,7 +224,7 @@ func TestTemplateRender_NamedPrompt_SessionID(t *testing.T) {
 	)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	ws, err := ts.Client.Connect(ctx, sess.SessionID, client.SessionCallbacks{
+	ws, err := ts.Client.Connect(ctx, sess.SessionID, api.SessionCallbacks{
 		OnPromptComplete: func(_ int) { mu.Lock(); promptComplete = true; mu.Unlock() },
 	})
 	if err != nil {
@@ -337,7 +337,7 @@ func TestTemplateRender_CoexistWithMitto(t *testing.T) {
 	writeTemplatePrompt(t, ts, "tmpl-coexist", "tmpl-coexist",
 		`ID={{ .Session.ID }} CHILDREN=@mitto:children END`)
 
-	sess, err := ts.Client.CreateSession(client.CreateSessionRequest{InitialPromptName: "tmpl-coexist"})
+	sess, err := ts.Client.CreateSession(api.CreateSessionRequest{InitialPromptName: "tmpl-coexist"})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -349,7 +349,7 @@ func TestTemplateRender_CoexistWithMitto(t *testing.T) {
 	)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	ws, err := ts.Client.Connect(ctx, sess.SessionID, client.SessionCallbacks{
+	ws, err := ts.Client.Connect(ctx, sess.SessionID, api.SessionCallbacks{
 		OnPromptComplete: func(_ int) { mu.Lock(); promptComplete = true; mu.Unlock() },
 	})
 	if err != nil {
@@ -388,7 +388,7 @@ func TestTemplateRender_CoexistWithMitto(t *testing.T) {
 func TestTemplateRender_FailOpen_RawMessage(t *testing.T) {
 	ts, orderFile := setupDeferredConfigServer(t)
 
-	sess, err := ts.Client.CreateSession(client.CreateSessionRequest{})
+	sess, err := ts.Client.CreateSession(api.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -400,7 +400,7 @@ func TestTemplateRender_FailOpen_RawMessage(t *testing.T) {
 	)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	ws, err := ts.Client.Connect(ctx, sess.SessionID, client.SessionCallbacks{
+	ws, err := ts.Client.Connect(ctx, sess.SessionID, api.SessionCallbacks{
 		OnPromptComplete: func(_ int) { mu.Lock(); promptComplete = true; mu.Unlock() },
 	})
 	if err != nil {
@@ -467,7 +467,7 @@ func TestTemplateRender_LoopRun(t *testing.T) {
 		`LoopMarker: {{ if .Session.IsLoop }}LOOP{{ else }}ONESHOT{{ end }}{{ if .Session.IsLoopForced }}-FORCED{{ end }}`)
 
 	// Create session without an initial prompt (avoids a concurrent-prompt 409 during SetLoop).
-	sess, err := ts.Client.CreateSession(client.CreateSessionRequest{Name: "loop-template-test"})
+	sess, err := ts.Client.CreateSession(api.CreateSessionRequest{Name: "loop-template-test"})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -480,7 +480,7 @@ func TestTemplateRender_LoopRun(t *testing.T) {
 	)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	ws, err := ts.Client.Connect(ctx, sess.SessionID, client.SessionCallbacks{
+	ws, err := ts.Client.Connect(ctx, sess.SessionID, api.SessionCallbacks{
 		OnPromptComplete: func(_ int) { mu.Lock(); completes++; mu.Unlock() },
 	})
 	if err != nil {
@@ -492,9 +492,9 @@ func TestTemplateRender_LoopRun(t *testing.T) {
 	}
 
 	// Configure loop with the named template prompt.
-	cfg, err := ts.Client.SetLoop(sess.SessionID, client.SetLoopRequest{
+	cfg, err := ts.Client.SetLoop(sess.SessionID, api.SetLoopRequest{
 		PromptName: "tmpl-loop",
-		Frequency:  client.LoopFrequency{Value: 1, Unit: "hours"},
+		Frequency:  api.LoopFrequency{Value: 1, Unit: "hours"},
 		Enabled:    true,
 	})
 	if err != nil {
@@ -576,7 +576,7 @@ output: discard
 	t.Logf("Sentinel path: %s", sentinelPath)
 
 	// Create a session (processor is loaded at this point).
-	sess, err := ts.Client.CreateSession(client.CreateSessionRequest{})
+	sess, err := ts.Client.CreateSession(api.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -587,7 +587,7 @@ output: discard
 		promptComplete bool
 	)
 
-	callbacks := client.SessionCallbacks{
+	callbacks := api.SessionCallbacks{
 		OnPromptComplete: func(eventCount int) {
 			mu.Lock()
 			defer mu.Unlock()
@@ -711,7 +711,7 @@ prompt: |
 	}
 
 	// Create a plain session (no initial prompt — keeps the order file clean).
-	sess, err := ts.Client.CreateSession(client.CreateSessionRequest{})
+	sess, err := ts.Client.CreateSession(api.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -725,7 +725,7 @@ prompt: |
 	)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	ws, err := ts.Client.Connect(ctx, sid, client.SessionCallbacks{
+	ws, err := ts.Client.Connect(ctx, sid, api.SessionCallbacks{
 		OnPromptComplete: func(_ int) { mu.Lock(); completes++; mu.Unlock() },
 	})
 	if err != nil {

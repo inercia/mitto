@@ -5,12 +5,12 @@ import (
 	"fmt"
 	"os"
 
-	client "github.com/inercia/mitto/pkg/api"
+	"github.com/inercia/mitto/pkg/api"
 
 	"github.com/inercia/mitto/internal/instancefile"
 )
 
-// defaultAPIPrefix is the only API prefix pkg/api's client.New currently
+// defaultAPIPrefix is the only API prefix pkg/api's api.New currently
 // supports (it is hardcoded there). Kept as a named constant so the
 // mismatch check below has one place to update once mitto-rwxq.7 lands.
 const defaultAPIPrefix = "/mitto"
@@ -90,13 +90,13 @@ func firstNonEmpty(vals ...string) string {
 // newClient resolves f into a target and constructs an SDK client from it.
 //
 // --api-prefix (and MITTO_API_PREFIX / instance.json's api_prefix) is
-// accepted and resolved, but pkg/api's client.New hardcodes "/mitto" today
+// accepted and resolved, but pkg/api's api.New hardcodes "/mitto" today
 // (mitto-rwxq.7 tracks adding a WithAPIPrefix option). A resolved prefix
 // other than the default fails loudly here with a usage error rather than
 // silently connecting against the wrong prefix.
 // TODO(mitto-rwxq.7): once WithAPIPrefix exists, pass t.APIPrefix through
 // instead of rejecting non-default values.
-func newClient(f *serverFlags) (*client.Client, error) {
+func newClient(f *serverFlags) (*api.Client, error) {
 	t, err := resolveTarget(f)
 	if err != nil {
 		return nil, newExitCodeError(3, err)
@@ -105,9 +105,9 @@ func newClient(f *serverFlags) (*client.Client, error) {
 		return nil, newExitCodeError(2, fmt.Errorf("--api-prefix %q is not yet supported (only %q); see mitto-rwxq.7", t.APIPrefix, defaultAPIPrefix))
 	}
 
-	opts := []client.Option{client.WithTimeout(f.Timeout)}
+	opts := []api.Option{api.WithTimeout(f.Timeout)}
 	if t.Token != "" {
-		opts = append(opts, client.WithBearerToken(t.Token))
+		opts = append(opts, api.WithBearerToken(t.Token))
 	}
-	return client.New(t.URL, opts...), nil
+	return api.New(t.URL, opts...), nil
 }

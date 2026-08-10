@@ -28,7 +28,7 @@ func TestSequenceNumberMonotonicity(t *testing.T) {
 	ts := SetupTestServer(t)
 
 	// Create a session
-	session, err := ts.Client.CreateSession(client.CreateSessionRequest{})
+	session, err := ts.Client.CreateSession(api.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -41,8 +41,8 @@ func TestSequenceNumberMonotonicity(t *testing.T) {
 		complete = make(chan struct{})
 	)
 
-	callbacks := client.SessionCallbacks{
-		OnEventsLoaded: func(events []client.SyncEvent, hasMore bool, isPrompting bool) {
+	callbacks := api.SessionCallbacks{
+		OnEventsLoaded: func(events []api.SyncEvent, hasMore bool, isPrompting bool) {
 			mu.Lock()
 			for _, e := range events {
 				if e.Seq > 0 {
@@ -112,7 +112,7 @@ func TestSequenceNumberPersistence(t *testing.T) {
 	ts := SetupTestServer(t)
 
 	// Create a session
-	session, err := ts.Client.CreateSession(client.CreateSessionRequest{})
+	session, err := ts.Client.CreateSession(api.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -125,7 +125,7 @@ func TestSequenceNumberPersistence(t *testing.T) {
 		complete      = make(chan struct{})
 	)
 
-	callbacks1 := client.SessionCallbacks{
+	callbacks1 := api.SessionCallbacks{
 		OnAgentMessage: func(html string) {
 			// Note: OnAgentMessage doesn't include seq in the callback
 			// We'll verify via events_loaded
@@ -169,8 +169,8 @@ func TestSequenceNumberPersistence(t *testing.T) {
 		loaded     = make(chan struct{})
 	)
 
-	callbacks2 := client.SessionCallbacks{
-		OnEventsLoaded: func(events []client.SyncEvent, hasMore bool, isPrompting bool) {
+	callbacks2 := api.SessionCallbacks{
+		OnEventsLoaded: func(events []api.SyncEvent, hasMore bool, isPrompting bool) {
 			mu.Lock()
 			for _, e := range events {
 				if e.Seq > 0 {
@@ -223,7 +223,7 @@ func TestSequenceNumberSyncAfterReconnect(t *testing.T) {
 	ts := SetupTestServer(t)
 
 	// Create a session
-	session, err := ts.Client.CreateSession(client.CreateSessionRequest{})
+	session, err := ts.Client.CreateSession(api.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -236,8 +236,8 @@ func TestSequenceNumberSyncAfterReconnect(t *testing.T) {
 		complete = make(chan struct{})
 	)
 
-	callbacks1 := client.SessionCallbacks{
-		OnEventsLoaded: func(events []client.SyncEvent, hasMore bool, isPrompting bool) {
+	callbacks1 := api.SessionCallbacks{
+		OnEventsLoaded: func(events []api.SyncEvent, hasMore bool, isPrompting bool) {
 			mu.Lock()
 			for _, e := range events {
 				if e.Seq > lastSeq {
@@ -291,12 +291,12 @@ func TestSequenceNumberSyncAfterReconnect(t *testing.T) {
 
 	// Second connection - sync from last known seq
 	var (
-		syncedEvents []client.SyncEvent
+		syncedEvents []api.SyncEvent
 		synced       = make(chan struct{})
 	)
 
-	callbacks2 := client.SessionCallbacks{
-		OnEventsLoaded: func(events []client.SyncEvent, hasMore bool, isPrompting bool) {
+	callbacks2 := api.SessionCallbacks{
+		OnEventsLoaded: func(events []api.SyncEvent, hasMore bool, isPrompting bool) {
 			mu.Lock()
 			syncedEvents = append(syncedEvents, events...)
 			mu.Unlock()
@@ -340,7 +340,7 @@ func TestMultipleClientsReceiveSameSeqs(t *testing.T) {
 	ts := SetupTestServer(t)
 
 	// Create a session
-	session, err := ts.Client.CreateSession(client.CreateSessionRequest{})
+	session, err := ts.Client.CreateSession(api.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -349,14 +349,14 @@ func TestMultipleClientsReceiveSameSeqs(t *testing.T) {
 	// Track events from both clients
 	var (
 		mu1, mu2      sync.Mutex
-		client1Events []client.SyncEvent
-		client2Events []client.SyncEvent
+		client1Events []api.SyncEvent
+		client2Events []api.SyncEvent
 		complete1     = make(chan struct{})
 		complete2     = make(chan struct{})
 	)
 
-	callbacks1 := client.SessionCallbacks{
-		OnEventsLoaded: func(events []client.SyncEvent, hasMore bool, isPrompting bool) {
+	callbacks1 := api.SessionCallbacks{
+		OnEventsLoaded: func(events []api.SyncEvent, hasMore bool, isPrompting bool) {
 			mu1.Lock()
 			client1Events = append(client1Events, events...)
 			mu1.Unlock()
@@ -370,8 +370,8 @@ func TestMultipleClientsReceiveSameSeqs(t *testing.T) {
 		},
 	}
 
-	callbacks2 := client.SessionCallbacks{
-		OnEventsLoaded: func(events []client.SyncEvent, hasMore bool, isPrompting bool) {
+	callbacks2 := api.SessionCallbacks{
+		OnEventsLoaded: func(events []api.SyncEvent, hasMore bool, isPrompting bool) {
 			mu2.Lock()
 			client2Events = append(client2Events, events...)
 			mu2.Unlock()
@@ -493,7 +493,7 @@ func TestProtocolOrdering_ConnectedBeforeEventsLoaded(t *testing.T) {
 	ts := SetupTestServer(t)
 
 	// Create a session with some events so events_loaded has content.
-	sess, err := ts.Client.CreateSession(client.CreateSessionRequest{})
+	sess, err := ts.Client.CreateSession(api.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -514,7 +514,7 @@ func TestProtocolOrdering_ConnectedBeforeEventsLoaded(t *testing.T) {
 		loaded       = make(chan struct{}, 1)
 	)
 
-	ws, err := ts.Client.Connect(ctx, sess.SessionID, client.SessionCallbacks{
+	ws, err := ts.Client.Connect(ctx, sess.SessionID, api.SessionCallbacks{
 		OnConnected: func(sessionID, clientID, acpServer string) {
 			mu.Lock()
 			messageOrder = append(messageOrder, "connected")
@@ -524,7 +524,7 @@ func TestProtocolOrdering_ConnectedBeforeEventsLoaded(t *testing.T) {
 			default:
 			}
 		},
-		OnEventsLoaded: func(events []client.SyncEvent, hasMore bool, isPrompting bool) {
+		OnEventsLoaded: func(events []api.SyncEvent, hasMore bool, isPrompting bool) {
 			mu.Lock()
 			messageOrder = append(messageOrder, "events_loaded")
 			mu.Unlock()
@@ -591,7 +591,7 @@ func TestProtocolOrdering_ConnectedBeforeEventsLoaded(t *testing.T) {
 func TestProtocolOrdering_ConnectedBeforeEventsLoaded_MultipleReconnects(t *testing.T) {
 	ts := SetupTestServer(t)
 
-	sess, err := ts.Client.CreateSession(client.CreateSessionRequest{})
+	sess, err := ts.Client.CreateSession(api.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -611,13 +611,13 @@ func TestProtocolOrdering_ConnectedBeforeEventsLoaded_MultipleReconnects(t *test
 			done         = make(chan struct{})
 		)
 
-		ws, err := ts.Client.Connect(ctx, sess.SessionID, client.SessionCallbacks{
+		ws, err := ts.Client.Connect(ctx, sess.SessionID, api.SessionCallbacks{
 			OnConnected: func(sessionID, clientID, acpServer string) {
 				mu.Lock()
 				messageOrder = append(messageOrder, "connected")
 				mu.Unlock()
 			},
-			OnEventsLoaded: func(events []client.SyncEvent, hasMore bool, isPrompting bool) {
+			OnEventsLoaded: func(events []api.SyncEvent, hasMore bool, isPrompting bool) {
 				mu.Lock()
 				messageOrder = append(messageOrder, "events_loaded")
 				mu.Unlock()
@@ -669,7 +669,7 @@ func TestProtocolOrdering_ConnectedBeforeEventsLoaded_MultipleReconnects(t *test
 // max_seq. This exercises the application-level keepalive mechanism end-to-end.
 func TestKeepalive_AckReceivedForKeepaliveMessage(t *testing.T) {
 	ts := SetupTestServer(t)
-	session, err := ts.Client.CreateSession(client.CreateSessionRequest{})
+	session, err := ts.Client.CreateSession(api.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -689,7 +689,7 @@ func TestKeepalive_AckReceivedForKeepaliveMessage(t *testing.T) {
 		ackReceived = make(chan struct{}, 1)
 	)
 
-	ws, err := ts.Client.Connect(ctx, session.SessionID, client.SessionCallbacks{
+	ws, err := ts.Client.Connect(ctx, session.SessionID, api.SessionCallbacks{
 		OnRawMessage: func(msgType string, data []byte) {
 			mu.Lock()
 			msgTypes = append(msgTypes, msgType)
@@ -779,7 +779,7 @@ func TestKeepalive_AckReceivedForKeepaliveMessage(t *testing.T) {
 //     (not 1006 / abnormal), confirming the server sends a proper close frame.
 func TestWebSocketCloseCode_SessionDeleted(t *testing.T) {
 	ts := SetupTestServer(t)
-	session, err := ts.Client.CreateSession(client.CreateSessionRequest{})
+	session, err := ts.Client.CreateSession(api.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -796,7 +796,7 @@ func TestWebSocketCloseCode_SessionDeleted(t *testing.T) {
 		acpStopped    = make(chan struct{}, 1)
 	)
 
-	ws, err := ts.Client.Connect(ctx, session.SessionID, client.SessionCallbacks{
+	ws, err := ts.Client.Connect(ctx, session.SessionID, api.SessionCallbacks{
 		OnACPStopped: func(reason string) {
 			t.Logf("acp_stopped received: reason=%q", reason)
 			select {

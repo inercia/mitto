@@ -10,7 +10,7 @@ import (
 
 	"github.com/inercia/mitto/internal/chatui"
 	"github.com/inercia/mitto/internal/termmd"
-	client "github.com/inercia/mitto/pkg/api"
+	"github.com/inercia/mitto/pkg/api"
 )
 
 // chatFlags holds the flags for `conversation chat`, per the design
@@ -88,8 +88,8 @@ func runConversationChat(cmd *cobra.Command, args []string) error {
 	// client registers as an observer via load_events).
 	loaded := make(chan struct{})
 	var loadedOnce sync.Once
-	sess, err := c.Connect(ctx, conversationID, client.SessionCallbacks{
-		OnEventsLoaded: func(events []client.SyncEvent, hasMore bool, isPrompting bool) {
+	sess, err := c.Connect(ctx, conversationID, api.SessionCallbacks{
+		OnEventsLoaded: func(events []api.SyncEvent, hasMore bool, isPrompting bool) {
 			model.SeedHistory(events)
 			loadedOnce.Do(func() { close(loaded) })
 		},

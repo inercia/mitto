@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	client "github.com/inercia/mitto/pkg/api"
+	"github.com/inercia/mitto/pkg/api"
 )
 
 // --- queueGate ---------------------------------------------------------
@@ -83,8 +83,8 @@ func TestQueueGate_FireIsIdempotent(t *testing.T) {
 
 // runWait starts waitForQueuedMessage in a goroutine and returns channels for
 // its result/error plus the stdout/stderr buffers it writes to.
-func runWait(gate *queueGate, streamText bool) (evCh chan client.Event, errCh chan error, resultCh chan *waitResult, errOutCh chan error, stdout, stderr *bytes.Buffer) {
-	evCh = make(chan client.Event, 16)
+func runWait(gate *queueGate, streamText bool) (evCh chan api.Event, errCh chan error, resultCh chan *waitResult, errOutCh chan error, stdout, stderr *bytes.Buffer) {
+	evCh = make(chan api.Event, 16)
 	errCh = make(chan error, 1)
 	resultCh = make(chan *waitResult, 1)
 	errOutCh = make(chan error, 1)
@@ -104,8 +104,8 @@ func TestWaitForQueuedMessage_IgnoresEventsBeforeSending(t *testing.T) {
 
 	// A foreign turn's completion arrives before our gate ever fires: must be
 	// ignored (loop keeps waiting), not returned as our result.
-	evCh <- client.Event{Kind: client.EventPromptComplete, EventCount: 1}
-	evCh <- client.Event{Kind: client.EventAgentMessage, Seq: 1, Text: "someone else's reply"}
+	evCh <- api.Event{Kind: api.EventPromptComplete, EventCount: 1}
+	evCh <- api.Event{Kind: api.EventAgentMessage, Seq: 1, Text: "someone else's reply"}
 
 	time.Sleep(20 * time.Millisecond)
 	select {
@@ -117,9 +117,9 @@ func TestWaitForQueuedMessage_IgnoresEventsBeforeSending(t *testing.T) {
 	gate.setWant("mine")
 	gate.onQueueMessageSending("mine")
 
-	evCh <- client.Event{Kind: client.EventAgentMessage, Seq: 2, Text: "hello"}
-	evCh <- client.Event{Kind: client.EventAgentMessage, Seq: 2, Text: "hello world"}
-	evCh <- client.Event{Kind: client.EventPromptComplete, EventCount: 5}
+	evCh <- api.Event{Kind: api.EventAgentMessage, Seq: 2, Text: "hello"}
+	evCh <- api.Event{Kind: api.EventAgentMessage, Seq: 2, Text: "hello world"}
+	evCh <- api.Event{Kind: api.EventPromptComplete, EventCount: 5}
 
 	res := <-resultCh
 	err := <-errOutCh
@@ -147,8 +147,8 @@ func TestWaitForQueuedMessage_NoStreamingWhenTableOff(t *testing.T) {
 	gate.onQueueMessageSending("mine")
 	evCh, _, resultCh, errOutCh, stdout, _ := runWait(gate, false)
 
-	evCh <- client.Event{Kind: client.EventAgentMessage, Seq: 1, Text: "quiet reply"}
-	evCh <- client.Event{Kind: client.EventPromptComplete, EventCount: 2}
+	evCh <- api.Event{Kind: api.EventAgentMessage, Seq: 1, Text: "quiet reply"}
+	evCh <- api.Event{Kind: api.EventPromptComplete, EventCount: 2}
 
 	res := <-resultCh
 	if err := <-errOutCh; err != nil {
@@ -168,13 +168,13 @@ func TestWaitForQueuedMessage_ProgressAlwaysGoesToStderr(t *testing.T) {
 	gate.onQueueMessageSending("mine")
 	evCh, _, resultCh, errOutCh, _, stderr := runWait(gate, true)
 
-	evCh <- client.Event{Kind: client.EventToolCall, Title: "Read file", Status: "in_progress"}
-	evCh <- client.Event{Kind: client.EventToolUpdate, ID: "tool-1", Status: "completed"}
-	evCh <- client.Event{Kind: client.EventAgentThought, Text: "thinking..."}
-	evCh <- client.Event{Kind: client.EventPermission, Title: "Write", Description: "may I?"}
-	evCh <- client.Event{Kind: client.EventFileRead, Path: "/a", Size: 10}
-	evCh <- client.Event{Kind: client.EventFileWrite, Path: "/b", Size: 20}
-	evCh <- client.Event{Kind: client.EventPromptComplete, EventCount: 1}
+	evCh <- api.Event{Kind: api.EventToolCall, Title: "Read file", Status: "in_progress"}
+	evCh <- api.Event{Kind: api.EventToolUpdate, ID: "tool-1", Status: "completed"}
+	evCh <- api.Event{Kind: api.EventAgentThought, Text: "thinking..."}
+	evCh <- api.Event{Kind: api.EventPermission, Title: "Write", Description: "may I?"}
+	evCh <- api.Event{Kind: api.EventFileRead, Path: "/a", Size: 10}
+	evCh <- api.Event{Kind: api.EventFileWrite, Path: "/b", Size: 20}
+	evCh <- api.Event{Kind: api.EventPromptComplete, EventCount: 1}
 
 	<-resultCh
 	if err := <-errOutCh; err != nil {
@@ -194,7 +194,7 @@ func TestWaitForQueuedMessage_ErrorEvent(t *testing.T) {
 	gate.onQueueMessageSending("mine")
 	evCh, _, resultCh, errOutCh, _, _ := runWait(gate, true)
 
-	evCh <- client.Event{Kind: client.EventError, Message: "boom"}
+	evCh <- api.Event{Kind: api.EventError, Message: "boom"}
 
 	res := <-resultCh
 	err := <-errOutCh
@@ -209,7 +209,7 @@ func TestWaitForQueuedMessage_ErrorEvent(t *testing.T) {
 func TestWaitForQueuedMessage_ACPStopped(t *testing.T) {
 	gate := newQueueGate()
 	evCh, _, resultCh, errOutCh, _, _ := runWait(gate, true)
-	evCh <- client.Event{Kind: client.EventACPStopped, Reason: "archived"}
+	evCh <- api.Event{Kind: api.EventACPStopped, Reason: "archived"}
 	if res := <-resultCh; res != nil {
 		t.Errorf("result = %v, want nil", res)
 	}
@@ -222,7 +222,7 @@ func TestWaitForQueuedMessage_ACPStopped(t *testing.T) {
 func TestWaitForQueuedMessage_SessionGone(t *testing.T) {
 	gate := newQueueGate()
 	evCh, _, resultCh, errOutCh, _, _ := runWait(gate, true)
-	evCh <- client.Event{Kind: client.EventSessionGone}
+	evCh <- api.Event{Kind: api.EventSessionGone}
 	if res := <-resultCh; res != nil {
 		t.Errorf("result = %v, want nil", res)
 	}

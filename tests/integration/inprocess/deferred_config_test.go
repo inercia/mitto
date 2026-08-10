@@ -142,7 +142,7 @@ func deferAndAssertMidTurn(t *testing.T, ts *TestServer, orderFile, sessionID, c
 func runDeferredConfigTest(t *testing.T, configID, method, supersededValue, wantValue string, confirm func(t *testing.T, bs *conversation.BackgroundSession)) {
 	ts, orderFile := setupDeferredConfigServer(t)
 
-	sess, err := ts.Client.CreateSession(client.CreateSessionRequest{Name: "deferred-" + configID})
+	sess, err := ts.Client.CreateSession(api.CreateSessionRequest{Name: "deferred-" + configID})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -151,7 +151,7 @@ func runDeferredConfigTest(t *testing.T, configID, method, supersededValue, want
 	var mu sync.Mutex
 	var completes int
 	var errs []string
-	cb := client.SessionCallbacks{
+	cb := api.SessionCallbacks{
 		OnPromptComplete: func(int) { mu.Lock(); completes++; mu.Unlock() },
 		OnError:          func(m string) { mu.Lock(); errs = append(errs, m); mu.Unlock() },
 	}

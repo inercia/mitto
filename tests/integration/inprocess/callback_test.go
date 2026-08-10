@@ -32,7 +32,7 @@ func TestCallback_EnableAndGet(t *testing.T) {
 	ts := SetupTestServer(t)
 
 	// Create session
-	sess, err := ts.Client.CreateSession(client.CreateSessionRequest{Name: "callback-test"})
+	sess, err := ts.Client.CreateSession(api.CreateSessionRequest{Name: "callback-test"})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -93,7 +93,7 @@ func TestCallback_TriggerSuccess(t *testing.T) {
 	ts := SetupTestServer(t)
 
 	// Create session
-	sess, err := ts.Client.CreateSession(client.CreateSessionRequest{Name: "callback-trigger-test"})
+	sess, err := ts.Client.CreateSession(api.CreateSessionRequest{Name: "callback-trigger-test"})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -214,7 +214,7 @@ func TestCallback_MethodNotAllowed(t *testing.T) {
 	ts := SetupTestServer(t)
 
 	// Create session and enable callback
-	sess, err := ts.Client.CreateSession(client.CreateSessionRequest{Name: "method-test"})
+	sess, err := ts.Client.CreateSession(api.CreateSessionRequest{Name: "method-test"})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -251,7 +251,7 @@ func TestCallback_LoopDisabled(t *testing.T) {
 	ts := SetupTestServer(t)
 
 	// Create session
-	sess, err := ts.Client.CreateSession(client.CreateSessionRequest{Name: "loop-disabled-test"})
+	sess, err := ts.Client.CreateSession(api.CreateSessionRequest{Name: "loop-disabled-test"})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -330,7 +330,7 @@ func TestCallback_LoopReEnabled_SameURL(t *testing.T) {
 	ts := SetupTestServer(t)
 
 	// Create session
-	sess, err := ts.Client.CreateSession(client.CreateSessionRequest{Name: "loop-reenabled-test"})
+	sess, err := ts.Client.CreateSession(api.CreateSessionRequest{Name: "loop-reenabled-test"})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -412,7 +412,7 @@ func TestCallback_Rotate(t *testing.T) {
 	ts := SetupTestServer(t)
 
 	// Create session
-	sess, err := ts.Client.CreateSession(client.CreateSessionRequest{Name: "rotate-test"})
+	sess, err := ts.Client.CreateSession(api.CreateSessionRequest{Name: "rotate-test"})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -482,7 +482,7 @@ func TestCallback_Revoke(t *testing.T) {
 	ts := SetupTestServer(t)
 
 	// Create session
-	sess, err := ts.Client.CreateSession(client.CreateSessionRequest{Name: "revoke-test"})
+	sess, err := ts.Client.CreateSession(api.CreateSessionRequest{Name: "revoke-test"})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -533,7 +533,7 @@ func TestCallback_SessionDelete_CleansIndex(t *testing.T) {
 	ts := SetupTestServer(t)
 
 	// Create session
-	sess, err := ts.Client.CreateSession(client.CreateSessionRequest{Name: "delete-cleanup-test"})
+	sess, err := ts.Client.CreateSession(api.CreateSessionRequest{Name: "delete-cleanup-test"})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -575,7 +575,7 @@ func TestCallback_RateLimit(t *testing.T) {
 	ts := SetupTestServer(t)
 
 	// Create session
-	sess, err := ts.Client.CreateSession(client.CreateSessionRequest{Name: "rate-limit-test"})
+	sess, err := ts.Client.CreateSession(api.CreateSessionRequest{Name: "rate-limit-test"})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -651,7 +651,7 @@ func TestCallback_GetNotFound(t *testing.T) {
 	ts := SetupTestServer(t)
 
 	// Create session without enabling callback
-	sess, err := ts.Client.CreateSession(client.CreateSessionRequest{Name: "get-notfound-test"})
+	sess, err := ts.Client.CreateSession(api.CreateSessionRequest{Name: "get-notfound-test"})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -676,7 +676,7 @@ func TestCallback_LoopNotConfigured(t *testing.T) {
 	ts := SetupTestServer(t)
 
 	// Create session
-	sess, err := ts.Client.CreateSession(client.CreateSessionRequest{Name: "no-loop-test"})
+	sess, err := ts.Client.CreateSession(api.CreateSessionRequest{Name: "no-loop-test"})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}

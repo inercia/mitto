@@ -20,7 +20,7 @@ func TestDeferredHandshakePermanentFailure(t *testing.T) {
 
 	ts := SetupTestServer(t)
 
-	sess, err := ts.Client.CreateSession(client.CreateSessionRequest{Name: "deferred-fail-permanent"})
+	sess, err := ts.Client.CreateSession(api.CreateSessionRequest{Name: "deferred-fail-permanent"})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -33,7 +33,7 @@ func TestDeferredHandshakePermanentFailure(t *testing.T) {
 	promptComplete := false
 	var errors []string
 
-	ws, err := ts.Client.Connect(ctx, sess.SessionID, client.SessionCallbacks{
+	ws, err := ts.Client.Connect(ctx, sess.SessionID, api.SessionCallbacks{
 		OnPromptComplete: func(_ int) {
 			mu.Lock()
 			promptComplete = true
@@ -104,7 +104,7 @@ func TestDeferredHandshakeRetrySucceeds(t *testing.T) {
 
 	ts := SetupTestServer(t)
 
-	sess, err := ts.Client.CreateSession(client.CreateSessionRequest{Name: "deferred-retry-ok"})
+	sess, err := ts.Client.CreateSession(api.CreateSessionRequest{Name: "deferred-retry-ok"})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -118,7 +118,7 @@ func TestDeferredHandshakeRetrySucceeds(t *testing.T) {
 	var agentMessages []string
 	var errors []string
 
-	ws, err := ts.Client.Connect(ctx, sess.SessionID, client.SessionCallbacks{
+	ws, err := ts.Client.Connect(ctx, sess.SessionID, api.SessionCallbacks{
 		OnAgentMessage: func(html string) {
 			mu.Lock()
 			agentMessages = append(agentMessages, html)

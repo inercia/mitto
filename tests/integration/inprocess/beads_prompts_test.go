@@ -66,7 +66,7 @@ func TestWorkspacePrompts_BeadsDirGatesUseDirParamNotSession(t *testing.T) {
 	}
 
 	// Active conversation lives in the configured workspace, which has no .beads.
-	sess, err := ts.Client.CreateSession(client.CreateSessionRequest{Name: "Active elsewhere"})
+	sess, err := ts.Client.CreateSession(api.CreateSessionRequest{Name: "Active elsewhere"})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}

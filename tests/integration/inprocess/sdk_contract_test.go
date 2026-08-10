@@ -17,7 +17,7 @@ import (
 	"github.com/inercia/mitto/internal/appdir"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/web"
-	client "github.com/inercia/mitto/pkg/api"
+	"github.com/inercia/mitto/pkg/api"
 )
 
 // sdkContractTrace mirrors the JSON document tests/integration/sdkcontract/driver.js
@@ -33,7 +33,7 @@ const sharedTestToken = "sdk-contract-smoke-token"
 // runGoSDKContractScenario drives pkg/api through the same create/prompt/
 // stream/queue/loop scenario as the JS driver, returning a curated trace in
 // the identical shape (see sdkContractTrace) so the two can be compared.
-func runGoSDKContractScenario(t *testing.T, c *client.Client, workingDir string) sdkContractTrace {
+func runGoSDKContractScenario(t *testing.T, c *api.Client, workingDir string) sdkContractTrace {
 	t.Helper()
 	var trace []map[string]interface{}
 	record := func(kind string, fields map[string]interface{}) {
@@ -44,7 +44,7 @@ func runGoSDKContractScenario(t *testing.T, c *client.Client, workingDir string)
 		trace = append(trace, rec)
 	}
 
-	created, err := c.CreateSession(client.CreateSessionRequest{WorkingDir: workingDir})
+	created, err := c.CreateSession(api.CreateSessionRequest{WorkingDir: workingDir})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -57,7 +57,7 @@ func runGoSDKContractScenario(t *testing.T, c *client.Client, workingDir string)
 	var haveEventCount bool
 	opened := make(chan struct{})
 	completed := make(chan struct{})
-	sess, err := c.Connect(ctx, created.SessionID, client.SessionCallbacks{
+	sess, err := c.Connect(ctx, created.SessionID, api.SessionCallbacks{
 		OnConnected: func(string, string, string) { close(opened) },
 		OnAgentMessage: func(html string) {
 			agentText += html
@@ -112,9 +112,9 @@ func runGoSDKContractScenario(t *testing.T, c *client.Client, workingDir string)
 	}
 	record("queue_cleared", nil)
 
-	loopSet, err := c.SetLoop(created.SessionID, client.SetLoopRequest{
+	loopSet, err := c.SetLoop(created.SessionID, api.SetLoopRequest{
 		Prompt:    "contract smoke loop",
-		Frequency: client.LoopFrequency{Value: 1, Unit: "hours"},
+		Frequency: api.LoopFrequency{Value: 1, Unit: "hours"},
 		Enabled:   true,
 	})
 	if err != nil {
@@ -230,7 +230,7 @@ func TestSDKContract_GoAndJSAgree(t *testing.T) {
 	httpServer := httptest.NewServer(externalHandler)
 	t.Cleanup(httpServer.Close)
 
-	goClient := client.New(httpServer.URL, client.WithBearerToken(sharedTestToken))
+	goClient := api.New(httpServer.URL, api.WithBearerToken(sharedTestToken))
 	goTrace := runGoSDKContractScenario(t, goClient, workspaceDir)
 
 	wsBaseURL := "ws" + httpServer.URL[len("http"):]
@@ -281,11 +281,11 @@ func contractStructKeys(v interface{}) []string {
 func assertResponseShapeSuperset(t *testing.T, keySets map[string][]string) {
 	t.Helper()
 	checks := map[string]interface{}{
-		"session_create": client.SessionInfo{},
-		"queue_add":      client.QueuedMessage{},
-		"queue_list":     client.QueueListResponse{},
-		"loop_set":       client.LoopConfig{},
-		"loop_get":       client.LoopConfig{},
+		"session_create": api.SessionInfo{},
+		"queue_add":      api.QueuedMessage{},
+		"queue_list":     api.QueueListResponse{},
+		"loop_set":       api.LoopConfig{},
+		"loop_get":       api.LoopConfig{},
 	}
 	for label, sample := range checks {
 		observed := keySets[label]

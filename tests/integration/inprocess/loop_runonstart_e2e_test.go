@@ -46,7 +46,7 @@ func TestLoopRunOnStartE2E(t *testing.T) {
 	// would reach the pulse promptly.
 	runner.SetStartupDelay(200 * time.Millisecond)
 
-	sess, err := ts.Client.CreateSession(client.CreateSessionRequest{Name: "runonstart-boot"})
+	sess, err := ts.Client.CreateSession(api.CreateSessionRequest{Name: "runonstart-boot"})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -57,10 +57,10 @@ func TestLoopRunOnStartE2E(t *testing.T) {
 	// during this test's runtime; only the boot pulse (mitto-ystk) can drive
 	// iteration_count to 1 in this window.
 	runOnStart := true
-	cfg, err := ts.Client.SetLoop(sess.SessionID, client.SetLoopRequest{
+	cfg, err := ts.Client.SetLoop(sess.SessionID, api.SetLoopRequest{
 		Prompt:     "boot pulse ping",
 		Triggers:   []string{"schedule"},
-		Frequency:  client.LoopFrequency{Value: 1, Unit: "days", At: "09:00"},
+		Frequency:  api.LoopFrequency{Value: 1, Unit: "days", At: "09:00"},
 		Enabled:    true,
 		RunOnStart: &runOnStart,
 	})

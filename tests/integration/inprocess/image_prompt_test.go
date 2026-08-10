@@ -32,7 +32,7 @@ func TestSendPromptWithImageAndVerifyACPReceivesIt(t *testing.T) {
 	ts := SetupTestServer(t)
 
 	// 1. Create a session
-	session, err := ts.Client.CreateSession(client.CreateSessionRequest{})
+	session, err := ts.Client.CreateSession(api.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -53,7 +53,7 @@ func TestSendPromptWithImageAndVerifyACPReceivesIt(t *testing.T) {
 		agentMessages  []string
 	)
 
-	callbacks := client.SessionCallbacks{
+	callbacks := api.SessionCallbacks{
 		OnConnected: func(sid, cid, acp string) {
 			mu.Lock()
 			defer mu.Unlock()

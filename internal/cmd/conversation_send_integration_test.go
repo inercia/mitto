@@ -17,7 +17,7 @@ import (
 	"github.com/inercia/mitto/internal/appdir"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/web"
-	client "github.com/inercia/mitto/pkg/api"
+	"github.com/inercia/mitto/pkg/api"
 )
 
 // This file exercises `mitto conversation send [--wait]` end-to-end against a
@@ -149,8 +149,8 @@ func runSend(t *testing.T, args ...string) (stdout, stderr string, err error) {
 
 func createTestSession(t *testing.T, serverURL string) string {
 	t.Helper()
-	c := client.New(serverURL)
-	sess, err := c.CreateSession(client.CreateSessionRequest{})
+	c := api.New(serverURL)
+	sess, err := c.CreateSession(api.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}

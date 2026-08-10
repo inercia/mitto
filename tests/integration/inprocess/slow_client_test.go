@@ -40,7 +40,7 @@ import (
 func TestSlowClient_BackpressureDisconnectAndRecovery(t *testing.T) {
 	ts := SetupTestServer(t)
 
-	sess, err := ts.Client.CreateSession(client.CreateSessionRequest{})
+	sess, err := ts.Client.CreateSession(api.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -53,7 +53,7 @@ func TestSlowClient_BackpressureDisconnectAndRecovery(t *testing.T) {
 	// Client A is the well-behaved reference observer.
 	var promptsDone int32 // atomic counter, incremented by OnPromptComplete
 
-	sessA, err := ts.Client.Connect(ctx, sess.SessionID, client.SessionCallbacks{
+	sessA, err := ts.Client.Connect(ctx, sess.SessionID, api.SessionCallbacks{
 		OnPromptComplete: func(eventCount int) {
 			atomic.AddInt32(&promptsDone, 1)
 		},
@@ -86,7 +86,7 @@ func TestSlowClient_BackpressureDisconnectAndRecovery(t *testing.T) {
 
 	// ── Phase 2: Connect raw slow client B ────────────────────────────────────
 	// B connects via raw gorilla/websocket so we control its read behaviour.
-	// The API prefix is "/mitto" (default for client.New); the WS URL matches.
+	// The API prefix is "/mitto" (default for api.New); the WS URL matches.
 	wsURL := fmt.Sprintf("ws://%s/mitto/api/sessions/%s/ws",
 		ts.HTTPServer.Listener.Addr().String(), sess.SessionID)
 
@@ -186,12 +186,12 @@ func TestSlowClient_BackpressureDisconnectAndRecovery(t *testing.T) {
 		bLoadedOnce     sync.Once
 	)
 
-	sessB, err := ts.Client.Connect(ctx, sess.SessionID, client.SessionCallbacks{
+	sessB, err := ts.Client.Connect(ctx, sess.SessionID, api.SessionCallbacks{
 		OnConnected: func(sessionID, clientID, acpServer string) {
 			t.Logf("Client B reconnected: clientID=%s", clientID)
 			close(bConnected)
 		},
-		OnEventsLoaded: func(events []client.SyncEvent, hasMore bool, isPrompting bool) {
+		OnEventsLoaded: func(events []api.SyncEvent, hasMore bool, isPrompting bool) {
 			mu.Lock()
 			for _, ev := range events {
 				bRecoveredSeqs = append(bRecoveredSeqs, ev.Seq)

@@ -12,7 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	client "github.com/inercia/mitto/pkg/api"
+	"github.com/inercia/mitto/pkg/api"
 )
 
 // withSendCmd builds a throwaway *cobra.Command carrying only the "prompt"
@@ -239,7 +239,7 @@ func TestUploadSendImages_UploadsInOrder(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	c := client.New(srv.URL)
+	c := api.New(srv.URL)
 	ids, err := uploadSendImages(c, "conv", []string{p1, p2})
 	if err != nil {
 		t.Fatalf("uploadSendImages: %v", err)
@@ -253,7 +253,7 @@ func TestUploadSendImages_UploadsInOrder(t *testing.T) {
 }
 
 func TestUploadSendImages_MissingFileIsError(t *testing.T) {
-	c := client.New("http://unused.invalid")
+	c := api.New("http://unused.invalid")
 	_, err := uploadSendImages(c, "conv", []string{filepath.Join(t.TempDir(), "missing.png")})
 	if err == nil || !strings.Contains(err.Error(), "reading image") {
 		t.Fatalf("uploadSendImages(missing file) = %v, want a 'reading image' error", err)
@@ -277,7 +277,7 @@ func TestEnqueueSend_PlainText(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := client.New(srv.URL)
+	c := api.New(srv.URL)
 	msg, err := enqueueSend(c, "conv", false, "", nil, "hello", nil)
 	if err != nil {
 		t.Fatalf("enqueueSend: %v", err)
@@ -299,7 +299,7 @@ func TestEnqueueSend_WithImages(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := client.New(srv.URL)
+	c := api.New(srv.URL)
 	msg, err := enqueueSend(c, "conv", false, "", nil, "with images", []string{"img-1", "img-2"})
 	if err != nil {
 		t.Fatalf("enqueueSend: %v", err)
@@ -321,7 +321,7 @@ func TestEnqueueSend_NamedPromptWithArgs(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := client.New(srv.URL)
+	c := api.New(srv.URL)
 	msg, err := enqueueSend(c, "conv", true, "greet", map[string]string{"who": "world"}, "", nil)
 	if err != nil {
 		t.Fatalf("enqueueSend: %v", err)
@@ -343,7 +343,7 @@ func readAll(t *testing.T, r *http.Request) string {
 // --- sendTableFn -------------------------------------------------------------
 
 func TestSendTableFn(t *testing.T) {
-	q := &client.QueuedMessage{ID: "q-1", QueuedAt: "2026-01-01T00:00:00Z", Title: "My Title"}
+	q := &api.QueuedMessage{ID: "q-1", QueuedAt: "2026-01-01T00:00:00Z", Title: "My Title"}
 	headers, rows := sendTableFn(q)()
 	if len(headers) != 3 || headers[0] != "ID" || headers[1] != "QUEUED AT" || headers[2] != "TITLE" {
 		t.Errorf("headers = %v, want ID/QUEUED AT/TITLE", headers)

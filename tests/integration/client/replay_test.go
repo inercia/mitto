@@ -21,9 +21,9 @@ import (
 // TestReplay_ReconnectGetsAllEvents verifies that reconnecting to a session
 // after events have occurred allows the client to retrieve all events via sync.
 func TestReplay_ReconnectGetsAllEvents(t *testing.T) {
-	c := client.New(testServerURL)
+	c := api.New(testServerURL)
 
-	session, err := c.CreateSession(client.CreateSessionRequest{
+	session, err := c.CreateSession(api.CreateSessionRequest{
 		Name:       "replay-reconnect",
 		WorkingDir: testWorkspace,
 	})
@@ -49,15 +49,15 @@ func TestReplay_ReconnectGetsAllEvents(t *testing.T) {
 
 	// Reconnect and sync from the beginning
 	var mu sync.Mutex
-	var syncEvents []client.SyncEvent
+	var syncEvents []api.SyncEvent
 	syncReceived := make(chan struct{})
 	connected := make(chan struct{})
 
-	sess, err := c.Connect(ctx, session.SessionID, client.SessionCallbacks{
+	sess, err := c.Connect(ctx, session.SessionID, api.SessionCallbacks{
 		OnConnected: func(sessionID, clientID, acpServer string) {
 			close(connected)
 		},
-		OnSessionSync: func(events []client.SyncEvent, ec int) {
+		OnSessionSync: func(events []api.SyncEvent, ec int) {
 			mu.Lock()
 			syncEvents = events
 			mu.Unlock()
@@ -112,9 +112,9 @@ func TestReplay_ReconnectGetsAllEvents(t *testing.T) {
 // TestReplay_EventTypesPreserved verifies that all event types are correctly
 // preserved and can be replayed.
 func TestReplay_EventTypesPreserved(t *testing.T) {
-	c := client.New(testServerURL)
+	c := api.New(testServerURL)
 
-	session, err := c.CreateSession(client.CreateSessionRequest{
+	session, err := c.CreateSession(api.CreateSessionRequest{
 		Name:       "replay-types",
 		WorkingDir: testWorkspace,
 	})
@@ -136,15 +136,15 @@ func TestReplay_EventTypesPreserved(t *testing.T) {
 
 	// Reconnect and sync
 	var mu sync.Mutex
-	var syncEvents []client.SyncEvent
+	var syncEvents []api.SyncEvent
 	syncReceived := make(chan struct{})
 	connected := make(chan struct{})
 
-	sess, err := c.Connect(ctx, session.SessionID, client.SessionCallbacks{
+	sess, err := c.Connect(ctx, session.SessionID, api.SessionCallbacks{
 		OnConnected: func(sessionID, clientID, acpServer string) {
 			close(connected)
 		},
-		OnSessionSync: func(events []client.SyncEvent, ec int) {
+		OnSessionSync: func(events []api.SyncEvent, ec int) {
 			mu.Lock()
 			syncEvents = events
 			mu.Unlock()
@@ -198,9 +198,9 @@ func TestReplay_EventTypesPreserved(t *testing.T) {
 // TestReplay_SequenceNumbersMatch verifies that replayed events have the
 // same sequence numbers as when they were originally created.
 func TestReplay_SequenceNumbersMatch(t *testing.T) {
-	c := client.New(testServerURL)
+	c := api.New(testServerURL)
 
-	session, err := c.CreateSession(client.CreateSessionRequest{
+	session, err := c.CreateSession(api.CreateSessionRequest{
 		Name:       "replay-seq",
 		WorkingDir: testWorkspace,
 	})
@@ -226,17 +226,17 @@ func TestReplay_SequenceNumbersMatch(t *testing.T) {
 	// Sync twice - once from beginning, once from middle
 	// Both should return consistent sequence numbers
 
-	var sync1Events, sync2Events []client.SyncEvent
+	var sync1Events, sync2Events []api.SyncEvent
 	var mu sync.Mutex
 
 	// First sync - all events
 	sync1Done := make(chan struct{})
 	connected1 := make(chan struct{})
-	sess1, err := c.Connect(ctx, session.SessionID, client.SessionCallbacks{
+	sess1, err := c.Connect(ctx, session.SessionID, api.SessionCallbacks{
 		OnConnected: func(sessionID, clientID, acpServer string) {
 			close(connected1)
 		},
-		OnSessionSync: func(events []client.SyncEvent, ec int) {
+		OnSessionSync: func(events []api.SyncEvent, ec int) {
 			mu.Lock()
 			sync1Events = events
 			mu.Unlock()
@@ -255,11 +255,11 @@ func TestReplay_SequenceNumbersMatch(t *testing.T) {
 	// Second sync - from middle
 	sync2Done := make(chan struct{})
 	connected2 := make(chan struct{})
-	sess2, err := c.Connect(ctx, session.SessionID, client.SessionCallbacks{
+	sess2, err := c.Connect(ctx, session.SessionID, api.SessionCallbacks{
 		OnConnected: func(sessionID, clientID, acpServer string) {
 			close(connected2)
 		},
-		OnSessionSync: func(events []client.SyncEvent, ec int) {
+		OnSessionSync: func(events []api.SyncEvent, ec int) {
 			mu.Lock()
 			sync2Events = events
 			mu.Unlock()
@@ -282,7 +282,7 @@ func TestReplay_SequenceNumbersMatch(t *testing.T) {
 	// Find where sync2 events start in sync1
 	if len(sync2Events) > 0 {
 		firstSync2Seq := sync2Events[0].Seq
-		var matchingEvents []client.SyncEvent
+		var matchingEvents []api.SyncEvent
 		for _, e := range sync1Events {
 			if e.Seq >= firstSync2Seq {
 				matchingEvents = append(matchingEvents, e)
@@ -306,9 +306,9 @@ func TestReplay_SequenceNumbersMatch(t *testing.T) {
 
 // TestReplay_LargeSession verifies replay works correctly with many events.
 func TestReplay_LargeSession(t *testing.T) {
-	c := client.New(testServerURL)
+	c := api.New(testServerURL)
 
-	session, err := c.CreateSession(client.CreateSessionRequest{
+	session, err := c.CreateSession(api.CreateSessionRequest{
 		Name:       "replay-large",
 		WorkingDir: testWorkspace,
 	})
@@ -333,15 +333,15 @@ func TestReplay_LargeSession(t *testing.T) {
 	t.Logf("After %d prompts: event_count=%d", numPrompts, lastEventCount)
 
 	// Sync all events
-	var syncEvents []client.SyncEvent
+	var syncEvents []api.SyncEvent
 	syncReceived := make(chan struct{})
 	connected := make(chan struct{})
 
-	sess, err := c.Connect(ctx, session.SessionID, client.SessionCallbacks{
+	sess, err := c.Connect(ctx, session.SessionID, api.SessionCallbacks{
 		OnConnected: func(sessionID, clientID, acpServer string) {
 			close(connected)
 		},
-		OnSessionSync: func(events []client.SyncEvent, ec int) {
+		OnSessionSync: func(events []api.SyncEvent, ec int) {
 			syncEvents = events
 			close(syncReceived)
 		},

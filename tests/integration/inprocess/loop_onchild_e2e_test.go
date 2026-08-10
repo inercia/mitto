@@ -16,15 +16,15 @@ import (
 )
 
 // createOnChildParentSession creates a top-level session rooted at workingDir
-// (created if missing). The onChild trigger has no client.SetLoopRequest
+// (created if missing). The onChild trigger has no api.SetLoopRequest
 // field yet (mitto-987y.8), so the loop itself is configured directly through
 // the shared session.Store by setOnChildLoop below, not via ts.Client.SetLoop.
-func createOnChildParentSession(t *testing.T, ts *TestServer, workingDir, name string) *client.SessionInfo {
+func createOnChildParentSession(t *testing.T, ts *TestServer, workingDir, name string) *api.SessionInfo {
 	t.Helper()
 	if err := os.MkdirAll(workingDir, 0755); err != nil {
 		t.Fatalf("MkdirAll(%s) error = %v", workingDir, err)
 	}
-	sess, err := ts.Client.CreateSession(client.CreateSessionRequest{Name: name, WorkingDir: workingDir})
+	sess, err := ts.Client.CreateSession(api.CreateSessionRequest{Name: name, WorkingDir: workingDir})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}

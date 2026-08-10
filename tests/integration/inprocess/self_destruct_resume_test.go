@@ -31,7 +31,7 @@ import (
 func TestSelfDestructAfterResume(t *testing.T) {
 	ts := SetupTestServer(t)
 
-	sess, err := ts.Client.CreateSession(client.CreateSessionRequest{
+	sess, err := ts.Client.CreateSession(api.CreateSessionRequest{
 		Name: "Self Destruct After Resume",
 	})
 	if err != nil {
@@ -42,7 +42,7 @@ func TestSelfDestructAfterResume(t *testing.T) {
 		mu             sync.Mutex
 		promptComplete bool
 	)
-	callbacks := client.SessionCallbacks{
+	callbacks := api.SessionCallbacks{
 		OnPromptComplete: func(int) {
 			mu.Lock()
 			promptComplete = true

@@ -13,12 +13,12 @@
 package chatui
 
 import (
-	client "github.com/inercia/mitto/pkg/api"
+	"github.com/inercia/mitto/pkg/api"
 )
 
-// eventMsg wraps a single streamed client.Event from the event pump.
+// eventMsg wraps a single streamed api.Event from the event pump.
 type eventMsg struct {
-	event client.Event
+	event api.Event
 }
 
 // streamEndMsg reports that the event stream (Session.EventsChan) has

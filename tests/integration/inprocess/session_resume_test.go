@@ -17,7 +17,7 @@ func TestSessionResume_PreferResumeOverLoad(t *testing.T) {
 	ts := SetupTestServer(t)
 
 	// Create session and send a prompt
-	session, err := ts.Client.CreateSession(client.CreateSessionRequest{
+	session, err := ts.Client.CreateSession(api.CreateSessionRequest{
 		Name: "Resume Test Session",
 	})
 	if err != nil {
@@ -33,7 +33,7 @@ func TestSessionResume_PreferResumeOverLoad(t *testing.T) {
 		agentMessages  []string
 	)
 
-	callbacks := client.SessionCallbacks{
+	callbacks := api.SessionCallbacks{
 		OnConnected: func(sid, cid, acp string) {
 			mu.Lock()
 			defer mu.Unlock()
@@ -190,7 +190,7 @@ func TestSessionResume_SessionNotFound(t *testing.T) {
 	ts := SetupTestServer(t)
 
 	// Create session
-	session, err := ts.Client.CreateSession(client.CreateSessionRequest{
+	session, err := ts.Client.CreateSession(api.CreateSessionRequest{
 		Name: "Session to be lost",
 	})
 	if err != nil {
@@ -234,7 +234,7 @@ func TestSessionResume_ModePreservation(t *testing.T) {
 	ts := SetupTestServer(t)
 
 	// Create session
-	session, err := ts.Client.CreateSession(client.CreateSessionRequest{
+	session, err := ts.Client.CreateSession(api.CreateSessionRequest{
 		Name: "Mode Preservation Test",
 	})
 	if err != nil {
@@ -250,7 +250,7 @@ func TestSessionResume_ModePreservation(t *testing.T) {
 		resumedMode string
 	)
 
-	callbacks := client.SessionCallbacks{
+	callbacks := api.SessionCallbacks{
 		OnConnected: func(sid, cid, acp string) {
 			mu.Lock()
 			defer mu.Unlock()

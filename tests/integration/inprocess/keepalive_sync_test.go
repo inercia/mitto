@@ -26,7 +26,7 @@ import (
 func TestKeepalive_GapDetectionAndSync(t *testing.T) {
 	ts := SetupTestServer(t)
 
-	sess, err := ts.Client.CreateSession(client.CreateSessionRequest{})
+	sess, err := ts.Client.CreateSession(api.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -44,15 +44,15 @@ func TestKeepalive_GapDetectionAndSync(t *testing.T) {
 	var (
 		mu            sync.Mutex
 		ackPayload    json.RawMessage
-		syncedEvents  []client.SyncEvent
+		syncedEvents  []api.SyncEvent
 		loadCallCount int
 		ackReceived   = make(chan struct{}, 1)
 		initialLoaded = make(chan struct{}, 1)
 		syncLoaded    = make(chan struct{}, 1)
 	)
 
-	ws, err := ts.Client.Connect(ctx, sess.SessionID, client.SessionCallbacks{
-		OnEventsLoaded: func(events []client.SyncEvent, hasMore bool, isPrompting bool) {
+	ws, err := ts.Client.Connect(ctx, sess.SessionID, api.SessionCallbacks{
+		OnEventsLoaded: func(events []api.SyncEvent, hasMore bool, isPrompting bool) {
 			mu.Lock()
 			loadCallCount++
 			count := loadCallCount
@@ -166,7 +166,7 @@ func TestKeepalive_GapDetectionAndSync(t *testing.T) {
 	}
 
 	mu.Lock()
-	recovered := make([]client.SyncEvent, len(syncedEvents))
+	recovered := make([]api.SyncEvent, len(syncedEvents))
 	copy(recovered, syncedEvents)
 	mu.Unlock()
 

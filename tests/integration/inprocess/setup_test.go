@@ -23,7 +23,7 @@ type TestServer struct {
 	Server     *web.Server
 	HTTPServer *httptest.Server
 	Store      *session.Store
-	Client     *client.Client
+	Client     *api.Client
 	TempDir    string
 	MockACPCmd string
 }
@@ -107,7 +107,7 @@ func SetupTestServer(t *testing.T, opts ...func(*web.Config)) *TestServer {
 	t.Cleanup(httpServer.Close)
 
 	// Create client
-	mittoClient := client.New(httpServer.URL)
+	mittoClient := api.New(httpServer.URL)
 
 	return &TestServer{
 		Server:     srv,

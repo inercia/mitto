@@ -1,4 +1,4 @@
-package client_test
+package api_test
 
 import (
 	"context"
@@ -24,7 +24,7 @@ func testServerURL(t *testing.T) string {
 
 func TestClient_ListSessions(t *testing.T) {
 	serverURL := testServerURL(t)
-	c := client.New(serverURL)
+	c := api.New(serverURL)
 
 	sessions, err := c.ListSessions()
 	if err != nil {
@@ -36,7 +36,7 @@ func TestClient_ListSessions(t *testing.T) {
 
 func TestClient_CreateAndDeleteSession(t *testing.T) {
 	serverURL := testServerURL(t)
-	c := client.New(serverURL)
+	c := api.New(serverURL)
 
 	// Get current working directory for the session
 	cwd, err := os.Getwd()
@@ -45,7 +45,7 @@ func TestClient_CreateAndDeleteSession(t *testing.T) {
 	}
 
 	// Create a session
-	session, err := c.CreateSession(client.CreateSessionRequest{
+	session, err := c.CreateSession(api.CreateSessionRequest{
 		Name:       "test-session",
 		WorkingDir: cwd,
 	})
@@ -74,7 +74,7 @@ func TestClient_CreateAndDeleteSession(t *testing.T) {
 
 func TestSession_SendPrompt(t *testing.T) {
 	serverURL := testServerURL(t)
-	c := client.New(serverURL)
+	c := api.New(serverURL)
 
 	// Get workspace directory from environment or use fixture
 	workingDir := os.Getenv("MITTO_TEST_WORKSPACE")
@@ -85,7 +85,7 @@ func TestSession_SendPrompt(t *testing.T) {
 	}
 
 	// Create a session
-	session, err := c.CreateSession(client.CreateSessionRequest{
+	session, err := c.CreateSession(api.CreateSessionRequest{
 		Name:       "prompt-test",
 		WorkingDir: workingDir,
 	})
@@ -104,7 +104,7 @@ func TestSession_SendPrompt(t *testing.T) {
 	defer cancel()
 
 	// Connect to the session
-	sess, err := c.Connect(ctx, session.SessionID, client.SessionCallbacks{
+	sess, err := c.Connect(ctx, session.SessionID, api.SessionCallbacks{
 		OnConnected: func(sessionID, clientID, acpServer string) {
 			mu.Lock()
 			connected = true

@@ -4,7 +4,7 @@ import (
 	"context"
 
 	tea "charm.land/bubbletea/v2"
-	client "github.com/inercia/mitto/pkg/api"
+	"github.com/inercia/mitto/pkg/api"
 )
 
 // programSender is the subset of *tea.Program used by the pump, so tests
@@ -28,7 +28,7 @@ type programSender interface {
 // RunPump is exported so the CLI bootstrap (internal/cmd/conversation_chat.go)
 // can start it as `go chatui.RunPump(...)` right after tea.NewProgram, per
 // the crush pattern: the pump lives outside the program.
-func RunPump(ctx context.Context, evCh <-chan client.Event, errCh <-chan error, program programSender) {
+func RunPump(ctx context.Context, evCh <-chan api.Event, errCh <-chan error, program programSender) {
 	for {
 		select {
 		case <-ctx.Done():

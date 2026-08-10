@@ -82,7 +82,7 @@ func TestColdStart_LiveACPContentionAttribute(t *testing.T) {
 	// Create a session — this triggers the full cold-start path, which the
 	// coldstart tracer instruments via bs.coldTrace.Phase(...) inside
 	// BackgroundSession initialization.
-	sess, err := ts.Client.CreateSession(client.CreateSessionRequest{Name: "coldstart-test"})
+	sess, err := ts.Client.CreateSession(api.CreateSessionRequest{Name: "coldstart-test"})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}

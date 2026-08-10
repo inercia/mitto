@@ -4,7 +4,7 @@
 // (zero-config), matching every existing integration-test consumer. See
 // WithBearerToken, WithTokenSupplier and (*Client).Login for the shared-token
 // and interactive cookie-login modes; both are documented in doc.go.
-package client
+package api
 
 import (
 	"bytes"

@@ -22,12 +22,12 @@ import (
 	"syscall"
 	"time"
 
-	client "github.com/inercia/mitto/pkg/api"
+	"github.com/inercia/mitto/pkg/api"
 )
 
 func main() {
 	if err := run(); err != nil {
-		var apiErr *client.APIError
+		var apiErr *api.APIError
 		if errors.As(err, &apiErr) {
 			fmt.Fprintf(os.Stderr, "prompt-stream: %s (status=%d code=%s)\n", apiErr.Message, apiErr.Status, apiErr.Code)
 		} else {
@@ -50,13 +50,13 @@ func run() error {
 	ctx, cancel := context.WithTimeout(ctx, *timeout)
 	defer cancel()
 
-	var opts []client.Option
+	var opts []api.Option
 	if *token != "" {
-		opts = append(opts, client.WithBearerToken(*token))
+		opts = append(opts, api.WithBearerToken(*token))
 	}
-	c := client.New(*url, opts...)
+	c := api.New(*url, opts...)
 
-	info, err := c.CreateSession(client.CreateSessionRequest{
+	info, err := c.CreateSession(api.CreateSessionRequest{
 		Name:       "prompt-stream-example",
 		WorkingDir: *dir,
 	})
@@ -65,7 +65,7 @@ func run() error {
 	}
 	defer c.DeleteSession(info.SessionID)
 
-	sess, err := c.Connect(ctx, info.SessionID, client.SessionCallbacks{})
+	sess, err := c.Connect(ctx, info.SessionID, api.SessionCallbacks{})
 	if err != nil {
 		return fmt.Errorf("connect: %w", err)
 	}
@@ -80,12 +80,12 @@ func run() error {
 			return fmt.Errorf("stream: %w", err)
 		}
 		switch ev.Kind {
-		case client.EventAgentMessage:
+		case api.EventAgentMessage:
 			fmt.Print(ev.HTML)
-		case client.EventPromptComplete:
+		case api.EventPromptComplete:
 			fmt.Println()
 			return nil
-		case client.EventError:
+		case api.EventError:
 			return fmt.Errorf("agent error: %s", ev.Message)
 		}
 	}

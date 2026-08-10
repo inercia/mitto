@@ -25,7 +25,7 @@ func connectAndWaitForSessionGone(t *testing.T, ts *TestServer, sessionID string
 
 	gone := make(chan sessionGoneData, 1)
 
-	callbacks := client.SessionCallbacks{
+	callbacks := api.SessionCallbacks{
 		OnRawMessage: func(msgType string, data []byte) {
 			if msgType == "session_gone" {
 				var payload sessionGoneData
@@ -66,7 +66,7 @@ func TestSessionGone_DeletedSessionSendsGone(t *testing.T) {
 	ts := SetupTestServer(t)
 
 	// 1. Create a session.
-	sess, err := ts.Client.CreateSession(client.CreateSessionRequest{})
+	sess, err := ts.Client.CreateSession(api.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -77,7 +77,7 @@ func TestSessionGone_DeletedSessionSendsGone(t *testing.T) {
 		promptComplete bool
 		pcMu           sync.Mutex
 	)
-	cbA := client.SessionCallbacks{
+	cbA := api.SessionCallbacks{
 		OnPromptComplete: func(_ int) {
 			pcMu.Lock()
 			promptComplete = true
@@ -133,7 +133,7 @@ func TestSessionGone_NegativeCacheFastPath(t *testing.T) {
 	ts := SetupTestServer(t)
 
 	// 1. Create a session and immediately delete it (no need to connect first).
-	sess, err := ts.Client.CreateSession(client.CreateSessionRequest{})
+	sess, err := ts.Client.CreateSession(api.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}

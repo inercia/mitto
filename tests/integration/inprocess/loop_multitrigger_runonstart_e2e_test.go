@@ -29,7 +29,7 @@ func TestLoopMultiTriggerRunOnStartE2E(t *testing.T) {
 	runner.SetRunOnStartAntiFlapSeconds(300)
 	runner.SetStartupDelay(200 * time.Millisecond)
 
-	sess, err := ts.Client.CreateSession(client.CreateSessionRequest{Name: "multitrigger-runonstart"})
+	sess, err := ts.Client.CreateSession(api.CreateSessionRequest{Name: "multitrigger-runonstart"})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}

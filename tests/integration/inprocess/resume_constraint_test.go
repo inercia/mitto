@@ -80,7 +80,7 @@ func setupTestServerWithModelConstraint(t *testing.T, pattern string) *TestServe
 		Server:     srv,
 		HTTPServer: httpServer,
 		Store:      store,
-		Client:     client.New(httpServer.URL),
+		Client:     api.New(httpServer.URL),
 		TempDir:    tmpDir,
 		MockACPCmd: mockACPCmd,
 	}
@@ -98,7 +98,7 @@ func TestResumeModelConstraint(t *testing.T) {
 
 	ts := setupTestServerWithModelConstraint(t, "Opus")
 
-	sess, err := ts.Client.CreateSession(client.CreateSessionRequest{
+	sess, err := ts.Client.CreateSession(api.CreateSessionRequest{
 		Name: "Resume Constraint Test",
 	})
 	if err != nil {
@@ -110,7 +110,7 @@ func TestResumeModelConstraint(t *testing.T) {
 	// populates model info (lazy creation defers this to the first prompt).
 	var promptComplete bool
 	var promptMu sync.Mutex
-	callbacks := client.SessionCallbacks{
+	callbacks := api.SessionCallbacks{
 		OnConnected: func(sid, cid, acp string) {
 			t.Logf("Connected: session=%s", sid)
 		},

@@ -1,7 +1,7 @@
 # Mitto Go SDK
 
 Consumer-facing documentation for `github.com/inercia/mitto/pkg/api`
-(package `client`), the official Go client for the Mitto REST API and
+(package `api`), the official Go client for the Mitto REST API and
 WebSocket protocol.
 
 This is the **usage** layer. For the SDK's design rationale and stability
@@ -17,13 +17,13 @@ go get github.com/inercia/mitto/pkg/api
 ```
 
 ```go
-import client "github.com/inercia/mitto/pkg/api"
+import "github.com/inercia/mitto/pkg/api"
 ```
 
 ## First call
 
 ```go
-c := client.New("http://localhost:8080")
+c := api.New("http://localhost:8080")
 sessions, err := c.ListSessions()
 ```
 
@@ -32,7 +32,7 @@ sessions, err := c.ListSessions()
 By default the client is unauthenticated. For a shared bearer token:
 
 ```go
-c := client.New(baseURL, client.WithBearerToken(token))
+c := api.New(baseURL, api.WithBearerToken(token))
 ```
 
 See the full list of modes (including cookie login and token rotation via
@@ -41,13 +41,13 @@ See the full list of modes (including cookie login and token rotation via
 ## Streaming
 
 ```go
-sess, err := c.Connect(ctx, sessionID, client.SessionCallbacks{})
+sess, err := c.Connect(ctx, sessionID, api.SessionCallbacks{})
 sess.SendPrompt("Hello, world!")
 for ev, err := range sess.Events(ctx) {
-    if ev.Kind == client.EventAgentMessage {
+    if ev.Kind == api.EventAgentMessage {
         fmt.Print(ev.HTML)
     }
-    if ev.Kind == client.EventPromptComplete {
+    if ev.Kind == api.EventPromptComplete {
         break
     }
 }
@@ -55,7 +55,7 @@ for ev, err := range sess.Events(ctx) {
 
 ## Error model
 
-Non-2xx responses are `*client.APIError`. Branch with `errors.Is` against
+Non-2xx responses are `*api.APIError`. Branch with `errors.Is` against
 the package's sentinels (`ErrNotFound`, `ErrUnauthenticated`, ...) or
 `errors.As` for full detail (`Status`, `Code`, `Message`, `Details`).
 

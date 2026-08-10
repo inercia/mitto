@@ -106,7 +106,7 @@ func setupWatchdogTestServer(t *testing.T, acpCommand string, logger *slog.Logge
 		Server:     srv,
 		HTTPServer: httpServer,
 		Store:      store,
-		Client:     client.New(httpServer.URL),
+		Client:     api.New(httpServer.URL),
 		TempDir:    tmpDir,
 	}
 }
@@ -120,7 +120,7 @@ func TestACPStartupWatchdog_WarnsOnSilentStub(t *testing.T) {
 
 	// CreateSession blocks until ACP Initialize completes; with a silent stub
 	// it never completes, so run it in a goroutine and ignore the result.
-	go func() { _, _ = ts.Client.CreateSession(client.CreateSessionRequest{}) }()
+	go func() { _, _ = ts.Client.CreateSession(api.CreateSessionRequest{}) }()
 
 	// Watchdog WARN fires at acpStartupWatchdogWarnDelay (10 s). Allow generous margin.
 	waitFor(t, 25*time.Second, func() bool {

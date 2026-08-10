@@ -11,7 +11,7 @@ import (
 
 	"github.com/spf13/pflag"
 
-	client "github.com/inercia/mitto/pkg/api"
+	"github.com/inercia/mitto/pkg/api"
 )
 
 // notFoundSessionID is a well-formed (regex-valid) session ID that is never
@@ -198,8 +198,8 @@ func TestConversationGetIntegration_UnreachableExits3(t *testing.T) {
 
 func TestConversationDeleteIntegration_ForceDeletes(t *testing.T) {
 	url := setupSendTestServer(t)
-	c := client.New(url, client.WithBearerToken("x"))
-	sess, err := c.CreateSession(client.CreateSessionRequest{})
+	c := api.New(url, api.WithBearerToken("x"))
+	sess, err := c.CreateSession(api.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}

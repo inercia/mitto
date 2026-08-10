@@ -9,7 +9,7 @@ import (
 	"testing"
 
 	"github.com/inercia/mitto/internal/web/middleware"
-	client "github.com/inercia/mitto/pkg/api"
+	"github.com/inercia/mitto/pkg/api"
 )
 
 // TestRouteCoverage_SDKsOrExempt is the mitto-7gta.24 gate: every route
@@ -201,8 +201,8 @@ func normalizePattern(route string) string {
 // goSDKCoveredPatterns derives the Go SDK's covered-path set from the
 // exported pkg/api.RouteCoverage map (route -> *Client method name).
 func goSDKCoveredPatterns() map[string]bool {
-	out := make(map[string]bool, len(client.RouteCoverage))
-	for route := range client.RouteCoverage {
+	out := make(map[string]bool, len(api.RouteCoverage))
+	for route := range api.RouteCoverage {
 		out[normalizePattern(route)] = true
 	}
 	return out

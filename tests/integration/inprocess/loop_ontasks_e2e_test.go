@@ -143,16 +143,16 @@ func onTasksIssuesJSONEqual(t *testing.T, a, b []byte) bool {
 // missing) with an enabled onTasks loop prompt gated by condition.
 // Additional SetLoopRequest fields (MaxIterations, CooldownSeconds, ...)
 // can be set via opts.
-func createOnTasksSession(t *testing.T, ts *TestServer, workingDir, name, condition string, opts ...func(*client.SetLoopRequest)) *client.SessionInfo {
+func createOnTasksSession(t *testing.T, ts *TestServer, workingDir, name, condition string, opts ...func(*api.SetLoopRequest)) *api.SessionInfo {
 	t.Helper()
 	if err := os.MkdirAll(workingDir, 0755); err != nil {
 		t.Fatalf("MkdirAll(%s) error = %v", workingDir, err)
 	}
-	sess, err := ts.Client.CreateSession(client.CreateSessionRequest{Name: name, WorkingDir: workingDir})
+	sess, err := ts.Client.CreateSession(api.CreateSessionRequest{Name: name, WorkingDir: workingDir})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
-	req := client.SetLoopRequest{Prompt: "iterate", Triggers: []string{"onTasks"}, Condition: condition, Enabled: true}
+	req := api.SetLoopRequest{Prompt: "iterate", Triggers: []string{"onTasks"}, Condition: condition, Enabled: true}
 	for _, opt := range opts {
 		opt(&req)
 	}
@@ -169,7 +169,7 @@ func createOnTasksSession(t *testing.T, ts *TestServer, workingDir, name, condit
 	return sess
 }
 
-func getOnTasksLoop(t *testing.T, ts *TestServer, sessionID string) *client.LoopConfig {
+func getOnTasksLoop(t *testing.T, ts *TestServer, sessionID string) *api.LoopConfig {
 	t.Helper()
 	got, err := ts.Client.GetLoop(sessionID)
 	if err != nil {
@@ -461,7 +461,7 @@ func TestLoopOnTasksE2E(t *testing.T) {
 	t.Run("cooldown_floor_blocks_rapid_refire", func(t *testing.T) {
 		dir := filepath.Join(ts.TempDir, "workspace", "ontasks-cooldown")
 		sess := createOnTasksSession(t, ts, dir, "ontasks-cooldown", "",
-			func(r *client.SetLoopRequest) { r.CooldownSeconds = 2 })
+			func(r *api.SetLoopRequest) { r.CooldownSeconds = 2 })
 		defer ts.Client.DeleteSession(sess.SessionID)
 
 		fake.setRaw(dir, marshalOnTasksIssues(t))
@@ -496,7 +496,7 @@ func TestLoopOnTasksE2E(t *testing.T) {
 	t.Run("max_iterations_auto_stop", func(t *testing.T) {
 		dir := filepath.Join(ts.TempDir, "workspace", "ontasks-maxiter")
 		sess := createOnTasksSession(t, ts, dir, "ontasks-maxiter", "",
-			func(r *client.SetLoopRequest) { r.MaxIterations = 1 })
+			func(r *api.SetLoopRequest) { r.MaxIterations = 1 })
 		defer ts.Client.DeleteSession(sess.SessionID)
 
 		fake.setRaw(dir, marshalOnTasksIssues(t))
@@ -527,7 +527,7 @@ func TestLoopOnTasksE2E(t *testing.T) {
 	t.Run("max_duration_auto_stop", func(t *testing.T) {
 		dir := filepath.Join(ts.TempDir, "workspace", "ontasks-maxdur")
 		sess := createOnTasksSession(t, ts, dir, "ontasks-maxdur", "",
-			func(r *client.SetLoopRequest) { r.MaxDurationSeconds = 1 })
+			func(r *api.SetLoopRequest) { r.MaxDurationSeconds = 1 })
 		defer ts.Client.DeleteSession(sess.SessionID)
 
 		fake.setRaw(dir, marshalOnTasksIssues(t))

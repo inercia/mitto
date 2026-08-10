@@ -15,7 +15,7 @@ func TestQueueOperations(t *testing.T) {
 	ts := SetupTestServer(t)
 
 	// Create a session first
-	session, err := ts.Client.CreateSession(client.CreateSessionRequest{})
+	session, err := ts.Client.CreateSession(api.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -53,7 +53,7 @@ func TestQueueRaceCondition(t *testing.T) {
 	ts := SetupTestServer(t)
 
 	// Create a session first
-	session, err := ts.Client.CreateSession(client.CreateSessionRequest{})
+	session, err := ts.Client.CreateSession(api.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -91,7 +91,7 @@ func TestQueueMultipleMessages(t *testing.T) {
 	ts := SetupTestServer(t)
 
 	// Create a session
-	session, err := ts.Client.CreateSession(client.CreateSessionRequest{})
+	session, err := ts.Client.CreateSession(api.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -133,7 +133,7 @@ func TestQueueWithImages(t *testing.T) {
 	ts := SetupTestServer(t)
 
 	// Create a session
-	session, err := ts.Client.CreateSession(client.CreateSessionRequest{})
+	session, err := ts.Client.CreateSession(api.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}

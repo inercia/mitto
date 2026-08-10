@@ -6,7 +6,7 @@ import (
 	textarea "charm.land/bubbles/v2/textarea"
 	tea "charm.land/bubbletea/v2"
 	"github.com/inercia/mitto/internal/termmd"
-	client "github.com/inercia/mitto/pkg/api"
+	"github.com/inercia/mitto/pkg/api"
 )
 
 // Options configures a new chat Model. Constructed by the CLI command
@@ -27,7 +27,7 @@ type Options struct {
 // sub-components as imperative structs called directly from Update/View —
 // never nested models, never message routing between sub-components).
 type Model struct {
-	sess *client.Session
+	sess *api.Session
 
 	transcript *transcript
 	input      textarea.Model
@@ -41,7 +41,7 @@ type Model struct {
 	quitErr       error
 
 	// clientIDFn overrides the session-derived client ID in tests, which run
-	// without a real *client.Session.
+	// without a real *api.Session.
 	clientIDFn func() string
 }
 
@@ -51,7 +51,7 @@ type Model struct {
 // callback passed to Connect) — see internal/cmd/conversation_chat.go. sess
 // must be set (directly or via SetSession) before Init/Update run, i.e.
 // before tea.NewProgram(model).Run() is called.
-func NewModel(sess *client.Session, opts Options) *Model {
+func NewModel(sess *api.Session, opts Options) *Model {
 	st := newStyles()
 	ta := textarea.New()
 	ta.Placeholder = "Send a message… (esc cancels, ctrl-c/q quits)"
@@ -78,7 +78,7 @@ func NewModel(sess *client.Session, opts Options) *Model {
 // SetSession attaches sess after construction, for callers (the CLI
 // bootstrap) that build the Model before Connect returns. Must be called
 // before the program starts.
-func (m *Model) SetSession(sess *client.Session) {
+func (m *Model) SetSession(sess *api.Session) {
 	m.sess = sess
 	m.perm.sess = sess
 }
@@ -88,7 +88,7 @@ func (m *Model) SetSession(sess *client.Session) {
 // tea.NewProgram, so historyMsg is never needed as a live message — no
 // race with the live event pump, which the bootstrap starts only after
 // this seeding completes).
-func (m *Model) SeedHistory(events []client.SyncEvent) {
+func (m *Model) SeedHistory(events []api.SyncEvent) {
 	for _, ev := range events {
 		applySyncEvent(m.transcript, ev)
 	}
@@ -196,35 +196,35 @@ func (m *Model) cancelCmd() tea.Cmd {
 	}
 }
 
-// handleEvent dispatches a single streamed client.Event into the
+// handleEvent dispatches a single streamed api.Event into the
 // transcript/status line/permission modal, per the Scope in the Plan
 // comment: agent messages via termmd, tool calls/thoughts as distinct
 // styled blocks, permissions as a modal overlay.
-func (m *Model) handleEvent(ev client.Event) (tea.Model, tea.Cmd) {
+func (m *Model) handleEvent(ev api.Event) (tea.Model, tea.Cmd) {
 	switch ev.Kind {
-	case client.EventConnected:
+	case api.EventConnected:
 		m.status.SetConnected(ev.ACPServer)
-	case client.EventAgentMessage:
+	case api.EventAgentMessage:
 		m.transcript.AppendOrUpdateAgent(ev.Seq, ev.Text, ev.HTML)
-	case client.EventAgentThought:
+	case api.EventAgentThought:
 		m.transcript.AppendThought(ev.Text)
-	case client.EventToolCall:
+	case api.EventToolCall:
 		m.transcript.AppendTool(ev.ID, ev.Title, ev.Status)
-	case client.EventToolUpdate:
+	case api.EventToolUpdate:
 		m.transcript.UpdateTool(ev.ID, ev.Status)
-	case client.EventFileRead:
+	case api.EventFileRead:
 		m.transcript.AppendFileEvent("read", ev.Path, ev.Size)
-	case client.EventFileWrite:
+	case api.EventFileWrite:
 		m.transcript.AppendFileEvent("write", ev.Path, ev.Size)
-	case client.EventPermission:
+	case api.EventPermission:
 		m.perm.Push(ev)
-	case client.EventPromptReceived:
+	case api.EventPromptReceived:
 		m.inFlight = true
 		m.status.SetInFlight(true)
-	case client.EventPromptComplete:
+	case api.EventPromptComplete:
 		m.inFlight = false
 		m.status.SetInFlight(false)
-	case client.EventUserPrompt:
+	case api.EventUserPrompt:
 		// The server broadcasts user_prompt to every observer including the
 		// sender (internal/web/session_ws.go OnUserPrompt: "Always deliver
 		// user_prompt to the client"), so our own prompts echo back after
@@ -235,13 +235,13 @@ func (m *Model) handleEvent(ev client.Event) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.transcript.AppendUser(ev.Message)
-	case client.EventError:
+	case api.EventError:
 		m.transcript.AppendError(ev.Message)
-	case client.EventACPStopped:
+	case api.EventACPStopped:
 		m.status.SetDisconnected("acp stopped: " + ev.Reason)
-	case client.EventACPStarted:
+	case api.EventACPStarted:
 		m.status.SetConnected(m.status.acpServer)
-	case client.EventSessionGone:
+	case api.EventSessionGone:
 		m.quitting = true
 		m.quitErr = fmt.Errorf("conversation was deleted")
 		return m, tea.Quit

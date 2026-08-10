@@ -48,7 +48,7 @@ func TestMCPInitTimeout_FailsFastOnStderrSignal(t *testing.T) {
 		c.MittoConfig.Session = &config.SessionConfig{McpInitTimeout: "10s"}
 	})
 
-	sess, err := ts.Client.CreateSession(client.CreateSessionRequest{Name: "mcp-init-timeout"})
+	sess, err := ts.Client.CreateSession(api.CreateSessionRequest{Name: "mcp-init-timeout"})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -61,7 +61,7 @@ func TestMCPInitTimeout_FailsFastOnStderrSignal(t *testing.T) {
 	var errors []string
 	promptComplete := false
 
-	ws, err := ts.Client.Connect(ctx, sess.SessionID, client.SessionCallbacks{
+	ws, err := ts.Client.Connect(ctx, sess.SessionID, api.SessionCallbacks{
 		OnPromptComplete: func(_ int) {
 			mu.Lock()
 			promptComplete = true
@@ -143,7 +143,7 @@ func TestMCPInitDelay_ExtendedBudgetAllowsSuccess(t *testing.T) {
 		c.MittoConfig.Session = &config.SessionConfig{McpInitTimeout: "4m"}
 	})
 
-	sess, err := ts.Client.CreateSession(client.CreateSessionRequest{Name: "mcp-init-delay-ok"})
+	sess, err := ts.Client.CreateSession(api.CreateSessionRequest{Name: "mcp-init-delay-ok"})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -156,7 +156,7 @@ func TestMCPInitDelay_ExtendedBudgetAllowsSuccess(t *testing.T) {
 	promptComplete := false
 	var errors []string
 
-	ws, err := ts.Client.Connect(ctx, sess.SessionID, client.SessionCallbacks{
+	ws, err := ts.Client.Connect(ctx, sess.SessionID, api.SessionCallbacks{
 		OnPromptComplete: func(_ int) {
 			mu.Lock()
 			promptComplete = true

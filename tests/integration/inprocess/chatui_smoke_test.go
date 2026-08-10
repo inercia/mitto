@@ -11,7 +11,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/inercia/mitto/internal/chatui"
-	client "github.com/inercia/mitto/pkg/api"
+	"github.com/inercia/mitto/pkg/api"
 )
 
 // modelSender adapts *chatui.Model to chatui.RunPump's programSender
@@ -50,7 +50,7 @@ func (s *modelSender) view() string {
 func TestChatUI_SmokeAgainstRealServer(t *testing.T) {
 	ts := SetupTestServer(t)
 
-	sess, err := ts.Client.CreateSession(client.CreateSessionRequest{})
+	sess, err := ts.Client.CreateSession(api.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -65,8 +65,8 @@ func TestChatUI_SmokeAgainstRealServer(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	ws, err := ts.Client.Connect(ctx, sess.SessionID, client.SessionCallbacks{
-		OnEventsLoaded: func(events []client.SyncEvent, hasMore bool, isPrompting bool) {
+	ws, err := ts.Client.Connect(ctx, sess.SessionID, api.SessionCallbacks{
+		OnEventsLoaded: func(events []api.SyncEvent, hasMore bool, isPrompting bool) {
 			model.SeedHistory(events)
 			loadedOnce.Do(func() { close(loaded) })
 		},

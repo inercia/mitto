@@ -69,7 +69,7 @@ func TestACPRestart_SingleCrash(t *testing.T) {
 	ts := SetupTestServer(t)
 
 	// Create a session
-	session, err := ts.Client.CreateSession(client.CreateSessionRequest{})
+	session, err := ts.Client.CreateSession(api.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -80,7 +80,7 @@ func TestACPRestart_SingleCrash(t *testing.T) {
 	defer cancel()
 
 	errorCollector := &safeErrorCollector{}
-	callbacks := client.SessionCallbacks{
+	callbacks := api.SessionCallbacks{
 		OnError: func(msg string) {
 			errorCollector.add(msg)
 			t.Logf("Error: %s", msg)
@@ -124,7 +124,7 @@ func TestACPRestart_RateLimiting(t *testing.T) {
 	ts := SetupTestServer(t)
 
 	// Create a session
-	session, err := ts.Client.CreateSession(client.CreateSessionRequest{})
+	session, err := ts.Client.CreateSession(api.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -135,7 +135,7 @@ func TestACPRestart_RateLimiting(t *testing.T) {
 	defer cancel()
 
 	errorCollector := &safeErrorCollector{}
-	callbacks := client.SessionCallbacks{
+	callbacks := api.SessionCallbacks{
 		OnError: func(msg string) {
 			errorCollector.add(msg)
 			t.Logf("Error: %s", msg)
@@ -206,7 +206,7 @@ func TestACPRestart_RateLimiting(t *testing.T) {
 func TestACPRestart_BackoffDelays(t *testing.T) {
 	ts := SetupTestServer(t)
 
-	session, err := ts.Client.CreateSession(client.CreateSessionRequest{})
+	session, err := ts.Client.CreateSession(api.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -216,7 +216,7 @@ func TestACPRestart_BackoffDelays(t *testing.T) {
 	defer cancel()
 
 	errorCollector := &safeErrorCollector{}
-	callbacks := client.SessionCallbacks{
+	callbacks := api.SessionCallbacks{
 		OnError: func(msg string) {
 			errorCollector.add(msg)
 		},
@@ -284,7 +284,7 @@ func TestACPRestart_BackoffDelays(t *testing.T) {
 func TestACPRestart_ReasonTracking(t *testing.T) {
 	ts := SetupTestServer(t)
 
-	session, err := ts.Client.CreateSession(client.CreateSessionRequest{})
+	session, err := ts.Client.CreateSession(api.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -302,7 +302,7 @@ func TestACPRestart_ReasonTracking(t *testing.T) {
 	defer cancel()
 
 	errorCollector := &safeErrorCollector{}
-	callbacks := client.SessionCallbacks{
+	callbacks := api.SessionCallbacks{
 		OnError: func(msg string) {
 			errorCollector.add(msg)
 			t.Logf("Error: %s", msg)

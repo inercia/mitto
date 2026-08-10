@@ -4,7 +4,7 @@ import (
 	"testing"
 
 	"github.com/inercia/mitto/internal/termmd"
-	client "github.com/inercia/mitto/pkg/api"
+	"github.com/inercia/mitto/pkg/api"
 )
 
 // newTestTranscript builds a bare transcript (no Model/textarea overhead)
@@ -18,7 +18,7 @@ func newTestTranscript(t *testing.T) *transcript {
 
 func TestApplySyncEvent_AgentMessage(t *testing.T) {
 	tr := newTestTranscript(t)
-	ev := client.SyncEvent{Seq: 1, Type: "agent_message", Data: map[string]any{
+	ev := api.SyncEvent{Seq: 1, Type: "agent_message", Data: map[string]any{
 		"text": "**hi**", "html": "<b>hi</b>",
 	}}
 	applySyncEvent(tr, ev)
@@ -36,7 +36,7 @@ func TestApplySyncEvent_AgentMessage_NoMarkdown_DegradesToHTML(t *testing.T) {
 	// html. renderModeFor (items.go) must fall back to ModeDegraded for
 	// these, which it does purely from markdown=="".
 	tr := newTestTranscript(t)
-	ev := client.SyncEvent{Seq: 1, Type: "agent_message", Data: map[string]any{"html": "<b>legacy</b>"}}
+	ev := api.SyncEvent{Seq: 1, Type: "agent_message", Data: map[string]any{"html": "<b>legacy</b>"}}
 	applySyncEvent(tr, ev)
 
 	it := tr.items[0]
@@ -50,10 +50,10 @@ func TestApplySyncEvent_AgentMessage_NoMarkdown_DegradesToHTML(t *testing.T) {
 
 func TestApplySyncEvent_ToolCallThenUpdate(t *testing.T) {
 	tr := newTestTranscript(t)
-	applySyncEvent(tr, client.SyncEvent{Type: "tool_call", Data: map[string]any{
+	applySyncEvent(tr, api.SyncEvent{Type: "tool_call", Data: map[string]any{
 		"ID": "t1", "Title": "Read file", "Status": "running",
 	}})
-	applySyncEvent(tr, client.SyncEvent{Type: "tool_update", Data: map[string]any{
+	applySyncEvent(tr, api.SyncEvent{Type: "tool_update", Data: map[string]any{
 		"ID": "t1", "Status": "done",
 	}})
 
@@ -67,8 +67,8 @@ func TestApplySyncEvent_ToolCallThenUpdate(t *testing.T) {
 
 func TestApplySyncEvent_UserPromptAndError(t *testing.T) {
 	tr := newTestTranscript(t)
-	applySyncEvent(tr, client.SyncEvent{Type: "user_prompt", Data: map[string]any{"message": "hello"}})
-	applySyncEvent(tr, client.SyncEvent{Type: "error", Data: map[string]any{"message": "boom"}})
+	applySyncEvent(tr, api.SyncEvent{Type: "user_prompt", Data: map[string]any{"message": "hello"}})
+	applySyncEvent(tr, api.SyncEvent{Type: "error", Data: map[string]any{"message": "boom"}})
 
 	if got := len(tr.items); got != 2 {
 		t.Fatalf("len(items) = %d, want 2", got)
@@ -83,7 +83,7 @@ func TestApplySyncEvent_UserPromptAndError(t *testing.T) {
 
 func TestApplySyncEvent_UnknownType_Ignored(t *testing.T) {
 	tr := newTestTranscript(t)
-	applySyncEvent(tr, client.SyncEvent{Type: "something_new", Data: map[string]any{"x": 1}})
+	applySyncEvent(tr, api.SyncEvent{Type: "something_new", Data: map[string]any{"x": 1}})
 	if got := len(tr.items); got != 0 {
 		t.Errorf("an unrecognized event type must be a silent no-op, len(items) = %d, want 0", got)
 	}

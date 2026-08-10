@@ -3,10 +3,10 @@ package chatui
 import (
 	"encoding/json"
 
-	client "github.com/inercia/mitto/pkg/api"
+	"github.com/inercia/mitto/pkg/api"
 )
 
-// applySyncEvent decodes one client.SyncEvent (as returned by --history's
+// applySyncEvent decodes one api.SyncEvent (as returned by --history's
 // Session.LoadEvents / OnEventsLoaded) into the transcript. SyncEvent.Data
 // is an already-JSON-decoded interface{} (unlike the live Event stream's
 // Raw json.RawMessage), so it is re-marshaled here to reuse the same
@@ -14,7 +14,7 @@ import (
 // the live WebSocket — kept in sync manually since eventFromMessage itself
 // is unexported and keyed on a different envelope type (wsMessage vs
 // SyncEvent).
-func applySyncEvent(t *transcript, ev client.SyncEvent) {
+func applySyncEvent(t *transcript, ev api.SyncEvent) {
 	raw, err := json.Marshal(ev.Data)
 	if err != nil {
 		return

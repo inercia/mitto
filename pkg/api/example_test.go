@@ -1,4 +1,4 @@
-package client_test
+package api_test
 
 import (
 	"context"
@@ -8,7 +8,7 @@ import (
 	"os"
 	"time"
 
-	client "github.com/inercia/mitto/pkg/api"
+	"github.com/inercia/mitto/pkg/api"
 )
 
 // Example_listSessions demonstrates the simplest possible use of the
@@ -18,7 +18,7 @@ import (
 // No "Output:" comment, so `go test` compiles this (catching API drift)
 // without executing it against a live server.
 func Example_listSessions() {
-	c := client.New("http://localhost:8080")
+	c := api.New("http://localhost:8080")
 
 	sessions, err := c.ListSessions()
 	if err != nil {
@@ -33,7 +33,7 @@ func Example_listSessions() {
 // a shared bearer token sourced lazily from the environment, so it can
 // rotate without reconstructing the Client (doc.go "Authentication").
 func Example_bearerToken() {
-	c := client.New("http://localhost:8080", client.WithTokenSupplier(func() (string, error) {
+	c := api.New("http://localhost:8080", api.WithTokenSupplier(func() (string, error) {
 		return os.Getenv("MITTO_TOKEN"), nil
 	}))
 
@@ -49,7 +49,7 @@ func Example_promptAndWait() {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	c := client.New("http://localhost:8080")
+	c := api.New("http://localhost:8080")
 	result, err := c.PromptAndWait(ctx, "some-session-id", "Explain this code")
 	if err != nil {
 		log.Fatal(err)
@@ -61,14 +61,14 @@ func Example_promptAndWait() {
 // errors.Is (sentinel comparison by HTTP status) and recovering full detail
 // with errors.As (doc.go "Errors").
 func Example_errorHandling() {
-	c := client.New("http://localhost:8080")
+	c := api.New("http://localhost:8080")
 
 	_, err := c.GetSession("missing-session-id")
-	if errors.Is(err, client.ErrNotFound) {
+	if errors.Is(err, api.ErrNotFound) {
 		fmt.Println("session not found")
 	}
 
-	var apiErr *client.APIError
+	var apiErr *api.APIError
 	if errors.As(err, &apiErr) {
 		log.Printf("status=%d code=%s details=%v", apiErr.Status, apiErr.Code, apiErr.Details)
 	}
@@ -79,12 +79,12 @@ func Example_errorHandling() {
 // detection, and sequence-number dedup (doc.go "Resilient Realtime").
 func Example_reconnect() {
 	ctx := context.Background()
-	c := client.New("http://localhost:8080")
+	c := api.New("http://localhost:8080")
 
-	sess, err := c.Connect(ctx, "some-session-id", client.SessionCallbacks{},
-		client.WithReconnect(client.ReconnectConfig{}),
-		client.WithKeepalive(client.KeepaliveConfig{}),
-		client.WithSeqDedup(true),
+	sess, err := c.Connect(ctx, "some-session-id", api.SessionCallbacks{},
+		api.WithReconnect(api.ReconnectConfig{}),
+		api.WithKeepalive(api.KeepaliveConfig{}),
+		api.WithSeqDedup(true),
 	)
 	if err != nil {
 		log.Fatal(err)

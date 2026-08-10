@@ -34,7 +34,7 @@ func TestSetSessionModel_LegacyFallback_PreSchema013(t *testing.T) {
 	ts := setupTestServerWithModelConstraintAndEnv(t, "Opus",
 		map[string]string{"MOCK_SET_MODEL_FORCE_LEGACY": "1"})
 
-	sess, err := ts.Client.CreateSession(client.CreateSessionRequest{
+	sess, err := ts.Client.CreateSession(api.CreateSessionRequest{
 		Name: "set-model-legacy-fallback",
 	})
 	if err != nil {
@@ -43,7 +43,7 @@ func TestSetSessionModel_LegacyFallback_PreSchema013(t *testing.T) {
 	t.Cleanup(func() { ts.Client.DeleteSession(sess.SessionID) })
 
 	var promptComplete bool
-	callbacks := client.SessionCallbacks{
+	callbacks := api.SessionCallbacks{
 		OnPromptComplete: func(_ int) { promptComplete = true },
 	}
 

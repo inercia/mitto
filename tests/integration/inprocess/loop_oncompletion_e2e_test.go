@@ -39,7 +39,7 @@ func TestLoopOnCompletionE2E(t *testing.T) {
 	//   and the runner disables the loop (count >= cap).
 	// -------------------------------------------------------------------------
 	t.Run("max_iterations_auto_stop", func(t *testing.T) {
-		sess, err := ts.Client.CreateSession(client.CreateSessionRequest{Name: "oncomplete-maxiter"})
+		sess, err := ts.Client.CreateSession(api.CreateSessionRequest{Name: "oncomplete-maxiter"})
 		if err != nil {
 			t.Fatalf("CreateSession failed: %v", err)
 		}
@@ -47,7 +47,7 @@ func TestLoopOnCompletionE2E(t *testing.T) {
 
 		// Zero Frequency is intentional: onCompletion skips frequency validation.
 		// DelaySeconds=0 is clamped to the server floor (5 s).
-		cfg, err := ts.Client.SetLoop(sess.SessionID, client.SetLoopRequest{
+		cfg, err := ts.Client.SetLoop(sess.SessionID, api.SetLoopRequest{
 			Prompt:        "ping",
 			Triggers:      []string{"onCompletion"},
 			DelaySeconds:  0,
@@ -72,7 +72,7 @@ func TestLoopOnCompletionE2E(t *testing.T) {
 
 		// Poll until the runner disables the loop after reaching MaxIterations=2.
 		deadline := time.Now().Add(30 * time.Second)
-		var last *client.LoopConfig
+		var last *api.LoopConfig
 		for time.Now().Before(deadline) {
 			time.Sleep(250 * time.Millisecond)
 			got, err := ts.Client.GetLoop(sess.SessionID)
@@ -109,13 +109,13 @@ func TestLoopOnCompletionE2E(t *testing.T) {
 	//   delivering run 2 — iteration_count remains 1.
 	// -------------------------------------------------------------------------
 	t.Run("max_duration_auto_stop", func(t *testing.T) {
-		sess, err := ts.Client.CreateSession(client.CreateSessionRequest{Name: "oncomplete-maxdur"})
+		sess, err := ts.Client.CreateSession(api.CreateSessionRequest{Name: "oncomplete-maxdur"})
 		if err != nil {
 			t.Fatalf("CreateSession failed: %v", err)
 		}
 		defer ts.Client.DeleteSession(sess.SessionID)
 
-		cfg, err := ts.Client.SetLoop(sess.SessionID, client.SetLoopRequest{
+		cfg, err := ts.Client.SetLoop(sess.SessionID, api.SetLoopRequest{
 			Prompt:             "ping",
 			Triggers:           []string{"onCompletion"},
 			DelaySeconds:       0, // clamped to 5 s floor
@@ -140,7 +140,7 @@ func TestLoopOnCompletionE2E(t *testing.T) {
 
 		// Poll until the runner disables (max duration reached at the next firing).
 		deadline := time.Now().Add(30 * time.Second)
-		var last *client.LoopConfig
+		var last *api.LoopConfig
 		for time.Now().Before(deadline) {
 			time.Sleep(250 * time.Millisecond)
 			got, err := ts.Client.GetLoop(sess.SessionID)

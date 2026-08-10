@@ -15,7 +15,7 @@ import (
 
 	"github.com/inercia/mitto/internal/appdir"
 	"github.com/inercia/mitto/internal/instancefile"
-	client "github.com/inercia/mitto/pkg/api"
+	"github.com/inercia/mitto/pkg/api"
 )
 
 // clearServerEnv unsets the env vars resolveTarget consults, restoring the
@@ -220,9 +220,9 @@ func TestClassify(t *testing.T) {
 	}{
 		{"nil", nil, exitOK},
 		{"already classified passes through unchanged", newExitCodeError(exitNotFound, errors.New("x")), exitNotFound},
-		{"unauthenticated", client.ErrUnauthenticated, exitAuthFailure},
-		{"forbidden", client.ErrForbidden, exitAuthFailure},
-		{"not found", client.ErrNotFound, exitNotFound},
+		{"unauthenticated", api.ErrUnauthenticated, exitAuthFailure},
+		{"forbidden", api.ErrForbidden, exitAuthFailure},
+		{"not found", api.ErrNotFound, exitNotFound},
 		{"connection refused", syscall.ECONNREFUSED, exitUnreachable},
 		{"deadline exceeded", context.DeadlineExceeded, exitUnreachable},
 		{"dns error", &net.DNSError{Err: "no such host", Name: "x.invalid"}, exitUnreachable},
@@ -231,7 +231,7 @@ func TestClassify(t *testing.T) {
 		{"instancefile stale", instancefile.ErrStale, exitUnreachable},
 		{"instancefile corrupt", instancefile.ErrCorrupt, exitUnreachable},
 		{"generic error", errors.New("boom"), exitGeneric},
-		{"other api error (conflict)", client.ErrConflict, exitGeneric},
+		{"other api error (conflict)", api.ErrConflict, exitGeneric},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

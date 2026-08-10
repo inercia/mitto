@@ -13,7 +13,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/gorilla/websocket"
-	client "github.com/inercia/mitto/pkg/api"
+	"github.com/inercia/mitto/pkg/api"
 )
 
 // wsTestServer is a minimal stub WebSocket server for driving RunPump
@@ -82,12 +82,12 @@ func waitFor(t *testing.T, timeout time.Duration, cond func() bool, msg string) 
 	}
 }
 
-// agentEventMsgs returns the eventMsg-wrapped client.Event.HTML bodies (in
+// agentEventMsgs returns the eventMsg-wrapped api.Event.HTML bodies (in
 // order) that RunPump has forwarded so far.
 func agentEventMsgs(msgs []tea.Msg) []string {
 	var out []string
 	for _, m := range msgs {
-		if em, ok := m.(eventMsg); ok && em.event.Kind == client.EventAgentMessage {
+		if em, ok := m.(eventMsg); ok && em.event.Kind == api.EventAgentMessage {
 			out = append(out, em.event.HTML)
 		}
 	}
@@ -100,7 +100,7 @@ func agentEventMsgs(msgs []tea.Msg) []string {
 // real, documented contract at the pump/stream boundary: Session.
 // terminateActiveStream fires unconditionally on every disconnect
 // (session.go readUntilError), "regardless of whether WithReconnect will
-// redial afterward" — so a *client.Session configured with WithReconnect
+// redial afterward" — so a *api.Session configured with WithReconnect
 // still terminates the specific EventsChan() stream RunPump is reading from
 // on the very first drop, before any redial happens. RunPump therefore sees
 // exactly one streamEndMsg here and returns, never the second connection's
@@ -132,9 +132,9 @@ func TestRunPump_DisconnectEndsStreamEvenWithSessionReconnectEnabled(t *testing.
 		}
 	})
 
-	c := client.New(ts.srv.URL)
-	sess, err := c.Connect(context.Background(), "sess-1", client.SessionCallbacks{},
-		client.WithReconnect(client.ReconnectConfig{BaseDelay: 10 * time.Millisecond, MaxDelay: 20 * time.Millisecond}))
+	c := api.New(ts.srv.URL)
+	sess, err := c.Connect(context.Background(), "sess-1", api.SessionCallbacks{},
+		api.WithReconnect(api.ReconnectConfig{BaseDelay: 10 * time.Millisecond, MaxDelay: 20 * time.Millisecond}))
 	if err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
@@ -208,8 +208,8 @@ func TestRunPump_DuplicateAndOutOfOrderSeq_DedupApplies(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 	})
 
-	c := client.New(ts.srv.URL)
-	sess, err := c.Connect(context.Background(), "sess-1", client.SessionCallbacks{}, client.WithSeqDedup(true))
+	c := api.New(ts.srv.URL)
+	sess, err := c.Connect(context.Background(), "sess-1", api.SessionCallbacks{}, api.WithSeqDedup(true))
 	if err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
@@ -254,8 +254,8 @@ func TestRunPump_StreamCloses_SendsExactlyOneStreamEndMsgWithTerminalError(t *te
 		<-time.After(500 * time.Millisecond)
 	})
 
-	c := client.New(ts.srv.URL)
-	sess, err := c.Connect(context.Background(), "sess-1", client.SessionCallbacks{})
+	c := api.New(ts.srv.URL)
+	sess, err := c.Connect(context.Background(), "sess-1", api.SessionCallbacks{})
 	if err != nil {
 		t.Fatalf("Connect: %v", err)
 	}

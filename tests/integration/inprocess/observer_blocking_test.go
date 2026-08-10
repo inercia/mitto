@@ -24,15 +24,15 @@ import (
 // The test sets up three clients on the same session:
 //   - Client A (slow): raw gorilla WebSocket that sends load_events but never reads.
 //     Its send buffer will eventually fill and backpressure will close it.
-//   - Client B (healthy): normal client.Session tracking all received messages.
-//   - Client C (healthy): normal client.Session tracking all received messages.
+//   - Client B (healthy): normal api.Session tracking all received messages.
+//   - Client C (healthy): normal api.Session tracking all received messages.
 //
 // B sends a prompt and the test asserts that both B and C receive all agent
 // messages and prompt_complete within a 10-second window.
 func TestObserverBlocking_SlowClientDoesNotDegradeOthers(t *testing.T) {
 	ts := SetupTestServer(t)
 
-	session, err := ts.Client.CreateSession(client.CreateSessionRequest{})
+	session, err := ts.Client.CreateSession(api.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -42,7 +42,7 @@ func TestObserverBlocking_SlowClientDoesNotDegradeOthers(t *testing.T) {
 	defer cancel()
 
 	// ── Client A: slow raw WebSocket – never reads after load_events ──────────
-	// The API prefix "/mitto" must match what the server uses (see client.New default).
+	// The API prefix "/mitto" must match what the server uses (see api.New default).
 	wsURL := strings.Replace(ts.HTTPServer.URL, "http://", "ws://", 1) +
 		"/mitto/api/sessions/" + session.SessionID + "/ws"
 	rawConn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
@@ -71,7 +71,7 @@ func TestObserverBlocking_SlowClientDoesNotDegradeOthers(t *testing.T) {
 	)
 	bConnected := make(chan struct{})
 
-	wsB, err := ts.Client.Connect(ctx, session.SessionID, client.SessionCallbacks{
+	wsB, err := ts.Client.Connect(ctx, session.SessionID, api.SessionCallbacks{
 		OnConnected: func(sessionID, clientID, acpServer string) {
 			t.Logf("Client B connected: clientID=%s", clientID)
 			close(bConnected)
@@ -102,7 +102,7 @@ func TestObserverBlocking_SlowClientDoesNotDegradeOthers(t *testing.T) {
 	)
 	cConnected := make(chan struct{})
 
-	wsC, err := ts.Client.Connect(ctx, session.SessionID, client.SessionCallbacks{
+	wsC, err := ts.Client.Connect(ctx, session.SessionID, api.SessionCallbacks{
 		OnConnected: func(sessionID, clientID, acpServer string) {
 			t.Logf("Client C connected: clientID=%s", clientID)
 			close(cConnected)

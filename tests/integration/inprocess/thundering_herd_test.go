@@ -33,7 +33,7 @@ func TestThunderingHerd_MultipleSessionsSync(t *testing.T) {
 	// ── Phase 1: Create N sessions and inject event history into each ─────────
 	sessionIDs := make([]string, numSessions)
 	for i := 0; i < numSessions; i++ {
-		sess, err := ts.Client.CreateSession(client.CreateSessionRequest{
+		sess, err := ts.Client.CreateSession(api.CreateSessionRequest{
 			Name: fmt.Sprintf("thundering-herd-session-%d", i),
 		})
 		if err != nil {
@@ -79,11 +79,11 @@ func TestThunderingHerd_MultipleSessionsSync(t *testing.T) {
 			var count int
 			var more bool
 
-			sess, err := ts.Client.Connect(ctx, sessionID, client.SessionCallbacks{
+			sess, err := ts.Client.Connect(ctx, sessionID, api.SessionCallbacks{
 				OnConnected: func(sID, clientID, acpServer string) {
 					close(connected)
 				},
-				OnEventsLoaded: func(events []client.SyncEvent, hasMore bool, isPrompting bool) {
+				OnEventsLoaded: func(events []api.SyncEvent, hasMore bool, isPrompting bool) {
 					mu.Lock()
 					count += len(events)
 					more = hasMore

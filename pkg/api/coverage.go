@@ -1,4 +1,4 @@
-package client
+package api
 
 // RouteCoverage pins the mitto-rwxq.7 Plan comment's audit: every
 // conversation-centric REST route this SDK claims to cover (per the "REST

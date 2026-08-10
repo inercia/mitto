@@ -13,7 +13,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	client "github.com/inercia/mitto/pkg/api"
+	"github.com/inercia/mitto/pkg/api"
 )
 
 // sendFlags holds the flags for `conversation send`, per the design decisions
@@ -134,7 +134,7 @@ func parseSendArgs(pairs []string) (map[string]string, error) {
 
 // uploadSendImages uploads each path in order and returns their server-side
 // image IDs, in the same order, for attaching to the queued message.
-func uploadSendImages(c *client.Client, conversationID string, paths []string) ([]string, error) {
+func uploadSendImages(c *api.Client, conversationID string, paths []string) ([]string, error) {
 	if len(paths) == 0 {
 		return nil, nil
 	}
@@ -155,7 +155,7 @@ func uploadSendImages(c *client.Client, conversationID string, paths []string) (
 
 // enqueueSend performs the single REST enqueue call matching the resolved
 // body source.
-func enqueueSend(c *client.Client, conversationID string, usingPromptName bool, promptName string, promptArgs map[string]string, text string, imageIDs []string) (*client.QueuedMessage, error) {
+func enqueueSend(c *api.Client, conversationID string, usingPromptName bool, promptName string, promptArgs map[string]string, text string, imageIDs []string) (*api.QueuedMessage, error) {
 	if usingPromptName {
 		return c.AddToQueueNamedWithArgs(conversationID, promptName, promptArgs)
 	}
@@ -193,16 +193,16 @@ func enqueueSend(c *client.Client, conversationID string, usingPromptName bool, 
 //     already happened by the time our REST enqueue reaches the server over
 //     its own, later network round trip.
 //
-// On success the caller owns the returned *client.Session and must Close()
+// On success the caller owns the returned *api.Session and must Close()
 // it. On error, any partially-established connection is already closed
 // internally — the caller has nothing to clean up.
-func connectAndAwaitLoad(waitCtx context.Context, c *client.Client, conversationID string) (*client.Session, *queueGate, <-chan client.Event, <-chan error, error) {
+func connectAndAwaitLoad(waitCtx context.Context, c *api.Client, conversationID string) (*api.Session, *queueGate, <-chan api.Event, <-chan error, error) {
 	gate := newQueueGate()
 	loaded := make(chan struct{})
 	var loadedOnce sync.Once
-	sess, err := c.Connect(waitCtx, conversationID, client.SessionCallbacks{
+	sess, err := c.Connect(waitCtx, conversationID, api.SessionCallbacks{
 		OnQueueMessageSending: gate.onQueueMessageSending,
-		OnEventsLoaded: func(events []client.SyncEvent, hasMore bool, isPrompting bool) {
+		OnEventsLoaded: func(events []api.SyncEvent, hasMore bool, isPrompting bool) {
 			loadedOnce.Do(func() { close(loaded) })
 		},
 	})
@@ -230,7 +230,7 @@ func connectAndAwaitLoad(waitCtx context.Context, c *client.Client, conversation
 	return sess, gate, evCh, errCh, nil
 }
 
-func sendTableFn(queued *client.QueuedMessage) func() ([]string, [][]string) {
+func sendTableFn(queued *api.QueuedMessage) func() ([]string, [][]string) {
 	return func() ([]string, [][]string) {
 		return []string{"ID", "QUEUED AT", "TITLE"}, [][]string{{queued.ID, queued.QueuedAt, queued.Title}}
 	}
@@ -251,7 +251,7 @@ func runConversationSend(cmd *cobra.Command, args []string) error {
 
 	var (
 		gate  *queueGate
-		evCh  <-chan client.Event
+		evCh  <-chan api.Event
 		errCh <-chan error
 	)
 
@@ -265,7 +265,7 @@ func runConversationSend(cmd *cobra.Command, args []string) error {
 		}
 		defer waitCancel()
 
-		var sess *client.Session
+		var sess *api.Session
 		sess, gate, evCh, errCh, err = connectAndAwaitLoad(waitCtx, c, conversationID)
 		if err != nil {
 			return classify(err)

@@ -40,7 +40,7 @@ func TestRememberedArgs_EnqueueThenGET(t *testing.T) {
 		cfg.MittoConfig.Prompts = append(cfg.MittoConfig.Prompts, remPrompt)
 	})
 
-	sess, err := ts.Client.CreateSession(client.CreateSessionRequest{Name: "remember-test"})
+	sess, err := ts.Client.CreateSession(api.CreateSessionRequest{Name: "remember-test"})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -140,12 +140,12 @@ func TestRememberedArgs_ConversationScope_EnqueueThenGET(t *testing.T) {
 		cfg.MittoConfig.Prompts = append(cfg.MittoConfig.Prompts, remPrompt)
 	})
 
-	sessA, err := ts.Client.CreateSession(client.CreateSessionRequest{Name: "conv-remember-A"})
+	sessA, err := ts.Client.CreateSession(api.CreateSessionRequest{Name: "conv-remember-A"})
 	if err != nil {
 		t.Fatalf("CreateSession A: %v", err)
 	}
 	defer ts.Client.DeleteSession(sessA.SessionID)
-	sessB, err := ts.Client.CreateSession(client.CreateSessionRequest{Name: "conv-remember-B"})
+	sessB, err := ts.Client.CreateSession(api.CreateSessionRequest{Name: "conv-remember-B"})
 	if err != nil {
 		t.Fatalf("CreateSession B: %v", err)
 	}

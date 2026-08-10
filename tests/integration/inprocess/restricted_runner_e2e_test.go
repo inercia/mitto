@@ -105,7 +105,7 @@ func TestRestrictedRunner_SessionManager_CreatesRunner(t *testing.T) {
 	// where the target INFO log is emitted, so this alone is enough to exercise
 	// the SessionManager runner path. Connect + SendPrompt round-trips exercise
 	// that the sandbox does not break normal prompt delivery.
-	sess, err := ts.Client.CreateSession(client.CreateSessionRequest{})
+	sess, err := ts.Client.CreateSession(api.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -118,7 +118,7 @@ func TestRestrictedRunner_SessionManager_CreatesRunner(t *testing.T) {
 		mu             sync.Mutex
 		promptComplete bool
 	)
-	callbacks := client.SessionCallbacks{
+	callbacks := api.SessionCallbacks{
 		OnPromptComplete: func(int) {
 			mu.Lock()
 			promptComplete = true
@@ -210,7 +210,7 @@ func TestRestrictedRunner_SessionManager_FallsBackOnUnavailableType(t *testing.T
 		}
 	})
 
-	sess, err := ts.Client.CreateSession(client.CreateSessionRequest{})
+	sess, err := ts.Client.CreateSession(api.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}

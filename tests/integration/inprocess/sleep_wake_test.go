@@ -20,7 +20,7 @@ import (
 func TestSleepWake_Basic(t *testing.T) {
 	ts := SetupTestServer(t)
 
-	sess, err := ts.Client.CreateSession(client.CreateSessionRequest{})
+	sess, err := ts.Client.CreateSession(api.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -84,7 +84,7 @@ func TestSleepWake_Parameterized(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			ts := SetupTestServer(t)
 
-			sess, err := ts.Client.CreateSession(client.CreateSessionRequest{})
+			sess, err := ts.Client.CreateSession(api.CreateSessionRequest{})
 			if err != nil {
 				t.Fatalf("CreateSession failed: %v", err)
 			}
@@ -121,7 +121,7 @@ func TestSleepWake_Parameterized(t *testing.T) {
 func TestSleepWake_ReconnectUsesCorrectAfterSeq(t *testing.T) {
 	ts := SetupTestServer(t)
 
-	sess, err := ts.Client.CreateSession(client.CreateSessionRequest{})
+	sess, err := ts.Client.CreateSession(api.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -134,7 +134,7 @@ func TestSleepWake_ReconnectUsesCorrectAfterSeq(t *testing.T) {
 
 	// ── Phase 1: Connect client A with recording enabled ─────────────────────
 	connected1 := make(chan struct{})
-	sess1, err := ts.Client.Connect(ctx, sess.SessionID, client.SessionCallbacks{
+	sess1, err := ts.Client.Connect(ctx, sess.SessionID, api.SessionCallbacks{
 		OnConnected: func(sessionID, clientID, acpServer string) {
 			close(connected1)
 		},
@@ -170,11 +170,11 @@ func TestSleepWake_ReconnectUsesCorrectAfterSeq(t *testing.T) {
 	// ── Phase 5: Reconnect with a NEW client, recording enabled ──────────────
 	connected2 := make(chan struct{})
 	eventsLoaded := make(chan struct{}, 1)
-	sess2, err := ts.Client.Connect(ctx, sess.SessionID, client.SessionCallbacks{
+	sess2, err := ts.Client.Connect(ctx, sess.SessionID, api.SessionCallbacks{
 		OnConnected: func(sessionID, clientID, acpServer string) {
 			close(connected2)
 		},
-		OnEventsLoaded: func(events []client.SyncEvent, hasMore bool, isPrompting bool) {
+		OnEventsLoaded: func(events []api.SyncEvent, hasMore bool, isPrompting bool) {
 			select {
 			case eventsLoaded <- struct{}{}:
 			default:
@@ -220,7 +220,7 @@ func TestSleepWake_ReconnectUsesCorrectAfterSeq(t *testing.T) {
 func TestSleepWake_MultipleReconnectCycles(t *testing.T) {
 	ts := SetupTestServer(t)
 
-	sess, err := ts.Client.CreateSession(client.CreateSessionRequest{})
+	sess, err := ts.Client.CreateSession(api.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -235,20 +235,20 @@ func TestSleepWake_MultipleReconnectCycles(t *testing.T) {
 	// waits for events_loaded, and returns the received events and hasMore flag.
 	// It closes the connection and waits for the server to finish its close handling
 	// before returning, preventing races with subsequent store writes.
-	connectAndFetch := func(afterSeq int64) ([]client.SyncEvent, bool) {
+	connectAndFetch := func(afterSeq int64) ([]api.SyncEvent, bool) {
 		t.Helper()
 		var mu sync.Mutex
-		var received []client.SyncEvent
+		var received []api.SyncEvent
 		var hasMore bool
 
 		connected := make(chan struct{})
 		eventsLoaded := make(chan struct{}, 1)
 
-		ws, err := ts.Client.Connect(ctx, sess.SessionID, client.SessionCallbacks{
+		ws, err := ts.Client.Connect(ctx, sess.SessionID, api.SessionCallbacks{
 			OnConnected: func(sessionID, clientID, acpServer string) {
 				close(connected)
 			},
-			OnEventsLoaded: func(events []client.SyncEvent, hm bool, isPrompting bool) {
+			OnEventsLoaded: func(events []api.SyncEvent, hm bool, isPrompting bool) {
 				mu.Lock()
 				received = append(received, events...)
 				hasMore = hm
@@ -387,7 +387,7 @@ func TestSleepWake_MidStreamDisconnectReconnectAfterCompletion(t *testing.T) {
 	t.Skip("Skipped: load_events replay returns no events after mid-stream reconnect — needs investigation")
 	ts := SetupTestServer(t)
 
-	sess, err := ts.Client.CreateSession(client.CreateSessionRequest{})
+	sess, err := ts.Client.CreateSession(api.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -401,7 +401,7 @@ func TestSleepWake_MidStreamDisconnectReconnectAfterCompletion(t *testing.T) {
 		bMu       sync.Mutex
 		bComplete = make(chan struct{}, 1)
 	)
-	wsB, err := ts.Client.Connect(ctx, sess.SessionID, client.SessionCallbacks{
+	wsB, err := ts.Client.Connect(ctx, sess.SessionID, api.SessionCallbacks{
 		OnPromptComplete: func(count int) {
 			bMu.Lock()
 			defer bMu.Unlock()
@@ -427,7 +427,7 @@ func TestSleepWake_MidStreamDisconnectReconnectAfterCompletion(t *testing.T) {
 		aFirstChunk  = make(chan struct{}, 1)
 		aChunkCount  int
 	)
-	wsA, err := ts.Client.Connect(ctx, sess.SessionID, client.SessionCallbacks{
+	wsA, err := ts.Client.Connect(ctx, sess.SessionID, api.SessionCallbacks{
 		OnAgentMessage: func(html string) {
 			aMu.Lock()
 			aChunkCount++
@@ -494,12 +494,12 @@ func TestSleepWake_MidStreamDisconnectReconnectAfterCompletion(t *testing.T) {
 	// ── Reconnect A with saved watermark ──────────────────────────────────────
 	var (
 		aReconnectMu          sync.Mutex
-		aReconnectEvents      []client.SyncEvent
+		aReconnectEvents      []api.SyncEvent
 		aReconnectIsPrompting = true // pessimistic default; expect false
 		aReconnectLoaded      = make(chan struct{}, 1)
 	)
-	wsA2, err := ts.Client.Connect(ctx, sess.SessionID, client.SessionCallbacks{
-		OnEventsLoaded: func(events []client.SyncEvent, hasMore bool, isPrompting bool) {
+	wsA2, err := ts.Client.Connect(ctx, sess.SessionID, api.SessionCallbacks{
+		OnEventsLoaded: func(events []api.SyncEvent, hasMore bool, isPrompting bool) {
 			aReconnectMu.Lock()
 			aReconnectEvents = append(aReconnectEvents, events...)
 			aReconnectIsPrompting = isPrompting
@@ -579,7 +579,7 @@ func TestSleepWake_MidStreamDisconnectReconnectAfterCompletion(t *testing.T) {
 func TestHasMorePagination_LargeHistory(t *testing.T) {
 	ts := SetupTestServer(t)
 
-	sess, err := ts.Client.CreateSession(client.CreateSessionRequest{})
+	sess, err := ts.Client.CreateSession(api.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -599,18 +599,18 @@ func TestHasMorePagination_LargeHistory(t *testing.T) {
 	// ── Phase 1: Initial load — newest 50 events ─────────────────────────────
 
 	var (
-		firstPage []client.SyncEvent
+		firstPage []api.SyncEvent
 		hasMore   bool
 		loaded1   = make(chan struct{}, 1)
 		mu1       sync.Mutex
 	)
 
 	connected1 := make(chan struct{})
-	ws1, err := ts.Client.Connect(ctx, sess.SessionID, client.SessionCallbacks{
+	ws1, err := ts.Client.Connect(ctx, sess.SessionID, api.SessionCallbacks{
 		OnConnected: func(sessionID, clientID, acpServer string) {
 			close(connected1)
 		},
-		OnEventsLoaded: func(events []client.SyncEvent, more bool, isPrompting bool) {
+		OnEventsLoaded: func(events []api.SyncEvent, more bool, isPrompting bool) {
 			mu1.Lock()
 			firstPage = events
 			hasMore = more
@@ -666,18 +666,18 @@ func TestHasMorePagination_LargeHistory(t *testing.T) {
 	// ── Phase 2: Load more — events before oldestSeqPage1 ────────────────────
 
 	var (
-		secondPage []client.SyncEvent
+		secondPage []api.SyncEvent
 		hasMore2   bool
 		loaded2    = make(chan struct{}, 1)
 		mu2        sync.Mutex
 	)
 
 	connected2 := make(chan struct{})
-	ws2, err := ts.Client.Connect(ctx, sess.SessionID, client.SessionCallbacks{
+	ws2, err := ts.Client.Connect(ctx, sess.SessionID, api.SessionCallbacks{
 		OnConnected: func(sessionID, clientID, acpServer string) {
 			close(connected2)
 		},
-		OnEventsLoaded: func(events []client.SyncEvent, more bool, isPrompting bool) {
+		OnEventsLoaded: func(events []api.SyncEvent, more bool, isPrompting bool) {
 			mu2.Lock()
 			secondPage = events
 			hasMore2 = more

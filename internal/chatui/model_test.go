@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
-	client "github.com/inercia/mitto/pkg/api"
+	"github.com/inercia/mitto/pkg/api"
 )
 
 // newTestModel builds a Model with a nil session (never dereferenced by
@@ -26,8 +26,8 @@ func newTestModel(t *testing.T, showThoughts bool) *Model {
 func TestModel_AgentMessage_SameSeqCoalesces_NewSeqAppends(t *testing.T) {
 	m := newTestModel(t, true)
 
-	m.Update(eventMsg{event: client.Event{Kind: client.EventAgentMessage, Seq: 1, Text: "Hel"}})
-	m.Update(eventMsg{event: client.Event{Kind: client.EventAgentMessage, Seq: 1, Text: "Hello world"}})
+	m.Update(eventMsg{event: api.Event{Kind: api.EventAgentMessage, Seq: 1, Text: "Hel"}})
+	m.Update(eventMsg{event: api.Event{Kind: api.EventAgentMessage, Seq: 1, Text: "Hello world"}})
 	if got := len(m.transcript.items); got != 1 {
 		t.Fatalf("after two chunks on the same seq, len(items) = %d, want 1", got)
 	}
@@ -35,7 +35,7 @@ func TestModel_AgentMessage_SameSeqCoalesces_NewSeqAppends(t *testing.T) {
 		t.Errorf("items[0].markdown = %q, want the latest accumulated chunk", got)
 	}
 
-	m.Update(eventMsg{event: client.Event{Kind: client.EventAgentMessage, Seq: 2, Text: "Second"}})
+	m.Update(eventMsg{event: api.Event{Kind: api.EventAgentMessage, Seq: 2, Text: "Second"}})
 	if got := len(m.transcript.items); got != 2 {
 		t.Fatalf("a new seq must append, len(items) = %d, want 2", got)
 	}
@@ -46,8 +46,8 @@ func TestModel_AgentMessage_SameSeqCoalesces_NewSeqAppends(t *testing.T) {
 func TestModel_ToolCall_ThenUpdate_MutatesInPlaceByID(t *testing.T) {
 	m := newTestModel(t, true)
 
-	m.Update(eventMsg{event: client.Event{Kind: client.EventToolCall, ID: "t1", Title: "Read file", Status: "running"}})
-	m.Update(eventMsg{event: client.Event{Kind: client.EventToolUpdate, ID: "t1", Status: "done"}})
+	m.Update(eventMsg{event: api.Event{Kind: api.EventToolCall, ID: "t1", Title: "Read file", Status: "running"}})
+	m.Update(eventMsg{event: api.Event{Kind: api.EventToolUpdate, ID: "t1", Status: "done"}})
 
 	if got := len(m.transcript.items); got != 1 {
 		t.Fatalf("tool_update on a known ID must mutate in place, len(items) = %d, want 1", got)
@@ -60,7 +60,7 @@ func TestModel_ToolCall_ThenUpdate_MutatesInPlaceByID(t *testing.T) {
 func TestModel_ToolUpdate_UnknownID_SynthesizesItem(t *testing.T) {
 	m := newTestModel(t, true)
 
-	m.Update(eventMsg{event: client.Event{Kind: client.EventToolUpdate, ID: "ghost", Status: "done"}})
+	m.Update(eventMsg{event: api.Event{Kind: api.EventToolUpdate, ID: "ghost", Status: "done"}})
 
 	if got := len(m.transcript.items); got != 1 {
 		t.Fatalf("an update for an unseen ID must not be silently dropped, len(items) = %d, want 1", got)
@@ -74,13 +74,13 @@ func TestModel_ToolUpdate_UnknownID_SynthesizesItem(t *testing.T) {
 
 func TestModel_AgentThought_SuppressedWhenShowThoughtsFalse(t *testing.T) {
 	shown := newTestModel(t, true)
-	shown.Update(eventMsg{event: client.Event{Kind: client.EventAgentThought, Text: "thinking..."}})
+	shown.Update(eventMsg{event: api.Event{Kind: api.EventAgentThought, Text: "thinking..."}})
 	if got := len(shown.transcript.items); got != 1 {
 		t.Errorf("ShowThoughts=true: len(items) = %d, want 1", got)
 	}
 
 	hidden := newTestModel(t, false)
-	hidden.Update(eventMsg{event: client.Event{Kind: client.EventAgentThought, Text: "thinking..."}})
+	hidden.Update(eventMsg{event: api.Event{Kind: api.EventAgentThought, Text: "thinking..."}})
 	if got := len(hidden.transcript.items); got != 0 {
 		t.Errorf("ShowThoughts=false: len(items) = %d, want 0 (dropped at append time)", got)
 	}
@@ -90,8 +90,8 @@ func TestModel_AgentThought_SuppressedWhenShowThoughtsFalse(t *testing.T) {
 
 func TestModel_PermissionModal_QueueAdvancesOnAnswerThenCloses(t *testing.T) {
 	m := newTestModel(t, true)
-	m.Update(eventMsg{event: client.Event{Kind: client.EventPermission, RequestID: "p1", Title: "Run rm -rf"}})
-	m.Update(eventMsg{event: client.Event{Kind: client.EventPermission, RequestID: "p2", Title: "Write file"}})
+	m.Update(eventMsg{event: api.Event{Kind: api.EventPermission, RequestID: "p1", Title: "Run rm -rf"}})
+	m.Update(eventMsg{event: api.Event{Kind: api.EventPermission, RequestID: "p2", Title: "Write file"}})
 	if !m.perm.Open() {
 		t.Fatal("modal should be open after two pushes")
 	}
@@ -208,7 +208,7 @@ func TestModel_UserPrompt_FromAnotherClientIsAppended(t *testing.T) {
 
 	// A nil session means clientID() is "", so no event can be attributed to
 	// us — every user_prompt must render, which is the safe fallback.
-	m.Update(eventMsg{event: client.Event{Kind: client.EventUserPrompt, SenderID: "other", Message: "from the web UI"}})
+	m.Update(eventMsg{event: api.Event{Kind: api.EventUserPrompt, SenderID: "other", Message: "from the web UI"}})
 
 	if got := len(m.transcript.items); got != 1 {
 		t.Fatalf("a prompt from another client must render, len(items) = %d, want 1", got)
@@ -230,7 +230,7 @@ func TestModel_UserPrompt_OwnEchoIsDropped(t *testing.T) {
 
 	// The server broadcasts user_prompt back to the sender too; without the
 	// is_mine dedup this would render the message a second time.
-	m.Update(eventMsg{event: client.Event{Kind: client.EventUserPrompt, SenderID: "me", Message: "hello agent"}})
+	m.Update(eventMsg{event: api.Event{Kind: api.EventUserPrompt, SenderID: "me", Message: "hello agent"}})
 
 	if got := len(m.transcript.items); got != 1 {
 		t.Errorf("our own user_prompt echo must be dropped, len(items) = %d, want 1", got)
@@ -242,8 +242,8 @@ func TestModel_UserPrompt_OwnEchoIsDropped(t *testing.T) {
 func TestModel_FileReadWrite_AppendToolItems(t *testing.T) {
 	m := newTestModel(t, true)
 
-	m.Update(eventMsg{event: client.Event{Kind: client.EventFileRead, Path: "main.go", Size: 42}})
-	m.Update(eventMsg{event: client.Event{Kind: client.EventFileWrite, Path: "out.go", Size: 7}})
+	m.Update(eventMsg{event: api.Event{Kind: api.EventFileRead, Path: "main.go", Size: 42}})
+	m.Update(eventMsg{event: api.Event{Kind: api.EventFileWrite, Path: "out.go", Size: 7}})
 
 	if got := len(m.transcript.items); got != 2 {
 		t.Fatalf("file_read + file_write should each append an item, len(items) = %d, want 2", got)
@@ -261,7 +261,7 @@ func TestModel_FileReadWrite_AppendToolItems(t *testing.T) {
 func TestModel_ErrorEvent_AppendsErrorItem(t *testing.T) {
 	m := newTestModel(t, true)
 
-	m.Update(eventMsg{event: client.Event{Kind: client.EventError, Message: "boom"}})
+	m.Update(eventMsg{event: api.Event{Kind: api.EventError, Message: "boom"}})
 
 	if got := len(m.transcript.items); got != 1 || m.transcript.items[0].kind != itemError {
 		t.Fatalf("error event should append an error item, items = %+v", m.transcript.items)
@@ -276,7 +276,7 @@ func TestModel_ErrorEvent_AppendsErrorItem(t *testing.T) {
 func TestModel_PromptReceivedThenComplete_TogglesInFlight(t *testing.T) {
 	m := newTestModel(t, true)
 
-	m.Update(eventMsg{event: client.Event{Kind: client.EventPromptReceived}})
+	m.Update(eventMsg{event: api.Event{Kind: api.EventPromptReceived}})
 	if !m.inFlight {
 		t.Error("prompt_received should set inFlight = true")
 	}
@@ -284,7 +284,7 @@ func TestModel_PromptReceivedThenComplete_TogglesInFlight(t *testing.T) {
 		t.Error("prompt_received should set status.inFlight = true")
 	}
 
-	m.Update(eventMsg{event: client.Event{Kind: client.EventPromptComplete}})
+	m.Update(eventMsg{event: api.Event{Kind: api.EventPromptComplete}})
 	if m.inFlight {
 		t.Error("prompt_complete should set inFlight = false")
 	}
@@ -297,9 +297,9 @@ func TestModel_PromptReceivedThenComplete_TogglesInFlight(t *testing.T) {
 
 func TestModel_ACPStoppedThenStarted_TogglesConnectionStatus(t *testing.T) {
 	m := newTestModel(t, true)
-	m.Update(eventMsg{event: client.Event{Kind: client.EventConnected, ACPServer: "Auggie"}})
+	m.Update(eventMsg{event: api.Event{Kind: api.EventConnected, ACPServer: "Auggie"}})
 
-	m.Update(eventMsg{event: client.Event{Kind: client.EventACPStopped, Reason: "crashed"}})
+	m.Update(eventMsg{event: api.Event{Kind: api.EventACPStopped, Reason: "crashed"}})
 	if m.status.connected {
 		t.Error("acp_stopped should clear status.connected")
 	}
@@ -307,7 +307,7 @@ func TestModel_ACPStoppedThenStarted_TogglesConnectionStatus(t *testing.T) {
 		t.Errorf("status.disconnect = %q, want %q", got, "acp stopped: crashed")
 	}
 
-	m.Update(eventMsg{event: client.Event{Kind: client.EventACPStarted}})
+	m.Update(eventMsg{event: api.Event{Kind: api.EventACPStarted}})
 	if !m.status.connected {
 		t.Error("acp_started should set status.connected = true")
 	}
@@ -321,7 +321,7 @@ func TestModel_ACPStoppedThenStarted_TogglesConnectionStatus(t *testing.T) {
 func TestModel_SessionGoneMsg_Quits(t *testing.T) {
 	m := newTestModel(t, true)
 
-	_, cmd := m.Update(eventMsg{event: client.Event{Kind: client.EventSessionGone}})
+	_, cmd := m.Update(eventMsg{event: api.Event{Kind: api.EventSessionGone}})
 
 	if !m.quitting {
 		t.Error("session_gone should set quitting = true")
@@ -420,7 +420,7 @@ func TestModel_View_RendersTitleAndConnectionState(t *testing.T) {
 		t.Errorf("initial View() should show the title, got:\n%s", got)
 	}
 
-	m.Update(eventMsg{event: client.Event{Kind: client.EventConnected, ACPServer: "Auggie"}})
+	m.Update(eventMsg{event: api.Event{Kind: api.EventConnected, ACPServer: "Auggie"}})
 	if got := m.View().Content; !strings.Contains(got, "Auggie") || !strings.Contains(got, "connected") {
 		t.Errorf("after EventConnected, View() should show the ACP server and connected state, got:\n%s", got)
 	}

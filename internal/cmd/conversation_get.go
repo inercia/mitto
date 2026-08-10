@@ -6,7 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	client "github.com/inercia/mitto/pkg/api"
+	"github.com/inercia/mitto/pkg/api"
 )
 
 // conversationDetails composes a conversation's REST resources that have no
@@ -16,9 +16,9 @@ import (
 // the session info, its loop configuration (nil if none configured), and
 // its current queue depth.
 type conversationDetails struct {
-	Session    *client.SessionInfo `json:"session"`
-	Loop       *client.LoopConfig  `json:"loop,omitempty"`
-	QueueDepth int                 `json:"queue_depth"`
+	Session    *api.SessionInfo `json:"session"`
+	Loop       *api.LoopConfig  `json:"loop,omitempty"`
+	QueueDepth int              `json:"queue_depth"`
 }
 
 var conversationGetCmd = &cobra.Command{
@@ -76,13 +76,13 @@ func runConversationGet(cmd *cobra.Command, args []string) error {
 	details := &conversationDetails{Session: info}
 
 	// The session is confirmed to exist above, so a 404 here can only mean
-	// "loop not configured" (client.GetLoop's synthetic ErrNotFound) — swallow
+	// "loop not configured" (api.GetLoop's synthetic ErrNotFound) — swallow
 	// it to a nil Loop rather than surfacing exit 5 for a normal, common state.
 	loop, lerr := c.GetLoop(conversationID)
 	switch {
 	case lerr == nil:
 		details.Loop = loop
-	case errors.Is(lerr, client.ErrNotFound):
+	case errors.Is(lerr, api.ErrNotFound):
 		// not configured; leave Loop nil
 	default:
 		return classify(lerr)

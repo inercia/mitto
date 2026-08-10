@@ -55,7 +55,7 @@ prompt: |
 	t.Logf("Wrote prompt file: %s", promptPath)
 
 	// Single call: create session AND seed with named prompt + arguments.
-	sess, err := ts.Client.CreateSession(client.CreateSessionRequest{
+	sess, err := ts.Client.CreateSession(api.CreateSessionRequest{
 		InitialPromptName: "atomic-seed-test-prompt",
 		Arguments:         map[string]string{"TEST_KEY": "test-value"},
 	})
@@ -74,7 +74,7 @@ prompt: |
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	ws, err := ts.Client.Connect(ctx, sess.SessionID, client.SessionCallbacks{
+	ws, err := ts.Client.Connect(ctx, sess.SessionID, api.SessionCallbacks{
 		OnPromptComplete: func(eventCount int) {
 			mu.Lock()
 			defer mu.Unlock()
@@ -160,7 +160,7 @@ prompt: |
 	}
 
 	// First call: creates a brand-new conversation and seeds it.
-	first, err := ts.Client.CreateSession(client.CreateSessionRequest{
+	first, err := ts.Client.CreateSession(api.CreateSessionRequest{
 		InitialPromptName: "singleton-test-prompt",
 	})
 	if err != nil {
@@ -178,7 +178,7 @@ prompt: |
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	ws, err := ts.Client.Connect(ctx, first.SessionID, client.SessionCallbacks{
+	ws, err := ts.Client.Connect(ctx, first.SessionID, api.SessionCallbacks{
 		OnPromptComplete: func(eventCount int) {
 			mu.Lock()
 			defer mu.Unlock()
@@ -205,7 +205,7 @@ prompt: |
 
 	// Second call: same prompt, same (default) working dir — must route to the
 	// SAME conversation instead of creating a duplicate, and re-seed it (idle).
-	second, err := ts.Client.CreateSession(client.CreateSessionRequest{
+	second, err := ts.Client.CreateSession(api.CreateSessionRequest{
 		InitialPromptName: "singleton-test-prompt",
 	})
 	if err != nil {
@@ -278,7 +278,7 @@ prompt: |
 	}
 
 	// First call: creates a brand-new conversation and seeds it with the slow prompt.
-	first, err := ts.Client.CreateSession(client.CreateSessionRequest{
+	first, err := ts.Client.CreateSession(api.CreateSessionRequest{
 		InitialPromptName: "singleton-busy-prompt",
 	})
 	if err != nil {
@@ -296,7 +296,7 @@ prompt: |
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	ws, err := ts.Client.Connect(ctx, first.SessionID, client.SessionCallbacks{
+	ws, err := ts.Client.Connect(ctx, first.SessionID, api.SessionCallbacks{
 		OnPromptComplete: func(eventCount int) {
 			mu.Lock()
 			defer mu.Unlock()
@@ -323,7 +323,7 @@ prompt: |
 
 	// Second call, issued WHILE busy: same prompt, same working dir — must route
 	// to the SAME conversation, and must NOT enqueue a duplicate (busy = focus-only).
-	second, err := ts.Client.CreateSession(client.CreateSessionRequest{
+	second, err := ts.Client.CreateSession(api.CreateSessionRequest{
 		InitialPromptName: "singleton-busy-prompt",
 	})
 	if err != nil {
@@ -419,7 +419,7 @@ prompt: |
 	}
 
 	// First call: creates a brand-new conversation and seeds it.
-	first, err := ts.Client.CreateSession(client.CreateSessionRequest{
+	first, err := ts.Client.CreateSession(api.CreateSessionRequest{
 		InitialPromptName: "singleton-unloaded-prompt",
 	})
 	if err != nil {
@@ -437,7 +437,7 @@ prompt: |
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	ws, err := ts.Client.Connect(ctx, first.SessionID, client.SessionCallbacks{
+	ws, err := ts.Client.Connect(ctx, first.SessionID, api.SessionCallbacks{
 		OnPromptComplete: func(eventCount int) {
 			mu.Lock()
 			defer mu.Unlock()
@@ -487,7 +487,7 @@ prompt: |
 	// Second call: same singleton prompt, same working dir — must route to the
 	// SAME conversation (reused:true) with bs == nil, enqueuing but not
 	// dispatching from within reuseSingletonSession.
-	second, err := ts.Client.CreateSession(client.CreateSessionRequest{
+	second, err := ts.Client.CreateSession(api.CreateSessionRequest{
 		InitialPromptName: "singleton-unloaded-prompt",
 	})
 	if err != nil {
@@ -513,7 +513,7 @@ prompt: |
 	// after resume, so the queue stays at length 1 and this waitFor times out.
 	ctx2, cancel2 := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel2()
-	ws2, err := ts.Client.Connect(ctx2, first.SessionID, client.SessionCallbacks{
+	ws2, err := ts.Client.Connect(ctx2, first.SessionID, api.SessionCallbacks{
 		OnPromptComplete: func(eventCount int) {
 			mu.Lock()
 			defer mu.Unlock()

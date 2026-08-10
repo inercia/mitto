@@ -1,11 +1,11 @@
-package client_test
+package api_test
 
 import (
 	"context"
 	"fmt"
 	"log"
 
-	client "github.com/inercia/mitto/pkg/api"
+	"github.com/inercia/mitto/pkg/api"
 )
 
 // Example_streaming demonstrates the canonical streaming use case: create a
@@ -16,9 +16,9 @@ import (
 // API drift) without executing it against a live server.
 func Example_streaming() {
 	ctx := context.Background()
-	c := client.New("http://localhost:8080")
+	c := api.New("http://localhost:8080")
 
-	info, err := c.CreateSession(client.CreateSessionRequest{
+	info, err := c.CreateSession(api.CreateSessionRequest{
 		Name:       "example-session",
 		WorkingDir: "/path/to/project",
 	})
@@ -26,7 +26,7 @@ func Example_streaming() {
 		log.Fatal(err)
 	}
 
-	sess, err := c.Connect(ctx, info.SessionID, client.SessionCallbacks{})
+	sess, err := c.Connect(ctx, info.SessionID, api.SessionCallbacks{})
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -40,10 +40,10 @@ func Example_streaming() {
 		if err != nil {
 			log.Fatal(err) // ctx cancelled, disconnected, or ErrSlowConsumer
 		}
-		if ev.Kind == client.EventAgentMessage {
+		if ev.Kind == api.EventAgentMessage {
 			fmt.Print(ev.HTML)
 		}
-		if ev.Kind == client.EventPromptComplete {
+		if ev.Kind == api.EventPromptComplete {
 			break
 		}
 	}

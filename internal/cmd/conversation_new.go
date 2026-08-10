@@ -9,7 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	client "github.com/inercia/mitto/pkg/api"
+	"github.com/inercia/mitto/pkg/api"
 )
 
 // newFlags holds the flags for `conversation new`, per the design decisions
@@ -61,7 +61,7 @@ func init() {
 	conversationNewCmd.Flags().DurationVar(&f.WaitTimeout, "wait-timeout", 10*time.Minute, "Maximum time to wait with --wait (0 = no limit); a timeout never cancels the agent")
 }
 
-func newTableFn(info *client.SessionInfo) func() ([]string, [][]string) {
+func newTableFn(info *api.SessionInfo) func() ([]string, [][]string) {
 	return func() ([]string, [][]string) {
 		return []string{"ID", "NAME", "DIR", "ACP", "REUSED"},
 			[][]string{{info.SessionID, info.Name, info.WorkingDir, info.ACPServer, fmt.Sprintf("%t", info.Reused)}}
@@ -107,7 +107,7 @@ func runConversationNew(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	req := client.CreateSessionRequest{
+	req := api.CreateSessionRequest{
 		Name:       conversationNewFlags.Title,
 		WorkingDir: dir,
 		ACPServer:  conversationNewFlags.ACP,

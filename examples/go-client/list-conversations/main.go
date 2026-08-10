@@ -12,7 +12,7 @@ import (
 	"fmt"
 	"os"
 
-	client "github.com/inercia/mitto/pkg/api"
+	"github.com/inercia/mitto/pkg/api"
 )
 
 func main() {
@@ -20,11 +20,11 @@ func main() {
 	token := flag.String("token", os.Getenv("MITTO_TOKEN"), "shared bearer token (default: $MITTO_TOKEN)")
 	flag.Parse()
 
-	var opts []client.Option
+	var opts []api.Option
 	if *token != "" {
-		opts = append(opts, client.WithBearerToken(*token))
+		opts = append(opts, api.WithBearerToken(*token))
 	}
-	c := client.New(*url, opts...)
+	c := api.New(*url, opts...)
 
 	sessions, err := c.ListSessions()
 	if err != nil {

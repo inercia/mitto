@@ -77,7 +77,7 @@ func setupTestServerWithModelConstraintAndEnv(t *testing.T, pattern string, acpE
 		Server:     srv,
 		HTTPServer: httpServer,
 		Store:      srv.Store(),
-		Client:     client.New(httpServer.URL),
+		Client:     api.New(httpServer.URL),
 		TempDir:    tmpDir,
 		MockACPCmd: mockACPCmd,
 	}
@@ -125,7 +125,7 @@ func TestConcurrentModelSetBurst(t *testing.T) {
 		go func(idx int) {
 			defer wg.Done()
 
-			sess, err := ts.Client.CreateSession(client.CreateSessionRequest{
+			sess, err := ts.Client.CreateSession(api.CreateSessionRequest{
 				Name: fmt.Sprintf("concurrent-model-burst-%d", idx),
 			})
 			if err != nil {
@@ -136,7 +136,7 @@ func TestConcurrentModelSetBurst(t *testing.T) {
 
 			var promptComplete bool
 			var mu sync.Mutex
-			callbacks := client.SessionCallbacks{
+			callbacks := api.SessionCallbacks{
 				OnPromptComplete: func(_ int) {
 					mu.Lock()
 					promptComplete = true

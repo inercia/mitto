@@ -6,7 +6,7 @@ import (
 	"net"
 	"syscall"
 
-	client "github.com/inercia/mitto/pkg/api"
+	"github.com/inercia/mitto/pkg/api"
 
 	"github.com/inercia/mitto/internal/instancefile"
 )
@@ -53,7 +53,7 @@ func (e *exitCodeError) ExitCode() int { return e.code }
 // wrap their SDK call results in classify() rather than reimplementing any
 // part of this logic.
 //
-// Order matters: typed auth/not-found *client.APIError values are checked
+// Order matters: typed auth/not-found *api.APIError values are checked
 // before the transport-unreachable bucket, since an *APIError also may
 // satisfy some transport-like checks incidentally (it does not today, but
 // keeping auth/not-found first keeps the precedence documented and stable).
@@ -67,10 +67,10 @@ func classify(err error) error {
 		return err
 	}
 
-	if errors.Is(err, client.ErrUnauthenticated) || errors.Is(err, client.ErrForbidden) {
+	if errors.Is(err, api.ErrUnauthenticated) || errors.Is(err, api.ErrForbidden) {
 		return newExitCodeError(exitAuthFailure, err)
 	}
-	if errors.Is(err, client.ErrNotFound) {
+	if errors.Is(err, api.ErrNotFound) {
 		return newExitCodeError(exitNotFound, err)
 	}
 

@@ -44,7 +44,7 @@ internal/session/     → Session persistence (Store/Recorder/Player/Lock/Queue/
 internal/stats/       → Dashboard time-series stats skeleton (interfaces + NoopStore, filled in by stats.2–stats.10); no internal/web / internal/conversation imports
 internal/conversation/→ Runtime conversation domain: BackgroundSession, SessionManager, QueueTitleWorker, streaming buffers, domain interfaces (never imports internal/web)
 internal/web/         → HTTP/WebSocket delivery + infrastructure layer; wires and serves the conversation domain (depends on internal/conversation)
-pkg/api/              → Go client SDK for Mitto REST API + WebSocket (public; package client, import path pkg/api — repo's first pkg/ directory)
+pkg/api/              → Go client SDK for Mitto REST API + WebSocket (public; package api, import path pkg/api — repo's first pkg/ directory)
 web/static/           → Frontend (Preact/HTM)
   ├── components/     → UI components (ChatInput, QueueDropdown, Message, etc.)
   ├── hooks/          → Custom hooks (useWebSocket, useSwipeNavigation, useResizeHandle)

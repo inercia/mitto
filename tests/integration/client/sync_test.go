@@ -20,9 +20,9 @@ import (
 // TestSync_MissedEvents_Recovery verifies that a client can use sync_session
 // to recover events that were missed while disconnected.
 func TestSync_MissedEvents_Recovery(t *testing.T) {
-	c := client.New(testServerURL)
+	c := api.New(testServerURL)
 
-	session, err := c.CreateSession(client.CreateSessionRequest{
+	session, err := c.CreateSession(api.CreateSessionRequest{
 		Name:       "sync-recovery",
 		WorkingDir: testWorkspace,
 	})
@@ -52,16 +52,16 @@ func TestSync_MissedEvents_Recovery(t *testing.T) {
 
 	// Now connect and request sync from after the first prompt
 	var mu sync.Mutex
-	var syncEvents []client.SyncEvent
+	var syncEvents []api.SyncEvent
 	var syncEventCount int
 	syncReceived := make(chan struct{})
 	connected := make(chan struct{})
 
-	sess, err := c.Connect(ctx, session.SessionID, client.SessionCallbacks{
+	sess, err := c.Connect(ctx, session.SessionID, api.SessionCallbacks{
 		OnConnected: func(sessionID, clientID, acpServer string) {
 			close(connected)
 		},
-		OnSessionSync: func(events []client.SyncEvent, eventCount int) {
+		OnSessionSync: func(events []api.SyncEvent, eventCount int) {
 			mu.Lock()
 			syncEvents = events
 			syncEventCount = eventCount
@@ -113,9 +113,9 @@ func TestSync_MissedEvents_Recovery(t *testing.T) {
 // TestSync_EventOrderingPreserved verifies that synced events maintain
 // their original ordering (by sequence number).
 func TestSync_EventOrderingPreserved(t *testing.T) {
-	c := client.New(testServerURL)
+	c := api.New(testServerURL)
 
-	session, err := c.CreateSession(client.CreateSessionRequest{
+	session, err := c.CreateSession(api.CreateSessionRequest{
 		Name:       "sync-ordering",
 		WorkingDir: testWorkspace,
 	})
@@ -137,15 +137,15 @@ func TestSync_EventOrderingPreserved(t *testing.T) {
 
 	// Connect and sync from the beginning
 	var mu sync.Mutex
-	var syncEvents []client.SyncEvent
+	var syncEvents []api.SyncEvent
 	syncReceived := make(chan struct{})
 	connected := make(chan struct{})
 
-	sess, err := c.Connect(ctx, session.SessionID, client.SessionCallbacks{
+	sess, err := c.Connect(ctx, session.SessionID, api.SessionCallbacks{
 		OnConnected: func(sessionID, clientID, acpServer string) {
 			close(connected)
 		},
-		OnSessionSync: func(events []client.SyncEvent, ec int) {
+		OnSessionSync: func(events []api.SyncEvent, ec int) {
 			mu.Lock()
 			syncEvents = events
 			mu.Unlock()
@@ -188,9 +188,9 @@ func TestSync_EventOrderingPreserved(t *testing.T) {
 // TestSync_PartialSync verifies that sync correctly returns only events
 // after the specified sequence number.
 func TestSync_PartialSync(t *testing.T) {
-	c := client.New(testServerURL)
+	c := api.New(testServerURL)
 
-	session, err := c.CreateSession(client.CreateSessionRequest{
+	session, err := c.CreateSession(api.CreateSessionRequest{
 		Name:       "sync-partial",
 		WorkingDir: testWorkspace,
 	})
@@ -216,15 +216,15 @@ func TestSync_PartialSync(t *testing.T) {
 
 	// Connect and sync from after the second prompt
 	var mu sync.Mutex
-	var syncEvents []client.SyncEvent
+	var syncEvents []api.SyncEvent
 	syncReceived := make(chan struct{})
 	connected := make(chan struct{})
 
-	sess, err := c.Connect(ctx, session.SessionID, client.SessionCallbacks{
+	sess, err := c.Connect(ctx, session.SessionID, api.SessionCallbacks{
 		OnConnected: func(sessionID, clientID, acpServer string) {
 			close(connected)
 		},
-		OnSessionSync: func(events []client.SyncEvent, ec int) {
+		OnSessionSync: func(events []api.SyncEvent, ec int) {
 			mu.Lock()
 			syncEvents = events
 			mu.Unlock()
@@ -272,9 +272,9 @@ func TestSync_PartialSync(t *testing.T) {
 // TestSync_EmptyWhenUpToDate verifies that sync returns empty when
 // the client is already up to date.
 func TestSync_EmptyWhenUpToDate(t *testing.T) {
-	c := client.New(testServerURL)
+	c := api.New(testServerURL)
 
-	session, err := c.CreateSession(client.CreateSessionRequest{
+	session, err := c.CreateSession(api.CreateSessionRequest{
 		Name:       "sync-empty",
 		WorkingDir: testWorkspace,
 	})
@@ -295,15 +295,15 @@ func TestSync_EmptyWhenUpToDate(t *testing.T) {
 
 	// Connect and sync from the current event count (should be empty)
 	var mu sync.Mutex
-	var syncEvents []client.SyncEvent
+	var syncEvents []api.SyncEvent
 	syncReceived := make(chan struct{})
 	connected := make(chan struct{})
 
-	sess, err := c.Connect(ctx, session.SessionID, client.SessionCallbacks{
+	sess, err := c.Connect(ctx, session.SessionID, api.SessionCallbacks{
 		OnConnected: func(sessionID, clientID, acpServer string) {
 			close(connected)
 		},
-		OnSessionSync: func(events []client.SyncEvent, ec int) {
+		OnSessionSync: func(events []api.SyncEvent, ec int) {
 			mu.Lock()
 			syncEvents = events
 			mu.Unlock()

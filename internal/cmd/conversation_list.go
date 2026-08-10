@@ -5,7 +5,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	client "github.com/inercia/mitto/pkg/api"
+	"github.com/inercia/mitto/pkg/api"
 )
 
 // listFlags holds the flags for `conversation list`, per the design
@@ -48,7 +48,7 @@ func init() {
 	conversationListCmd.Flags().StringVar(&f.Workspace, "workspace", "", "Filter by workspace UUID (not yet supported server-side; see mitto-pscc.5.1)")
 }
 
-func listTableFn(sessions []client.SessionInfo) func() ([]string, [][]string) {
+func listTableFn(sessions []api.SessionInfo) func() ([]string, [][]string) {
 	return func() ([]string, [][]string) {
 		rows := make([][]string, 0, len(sessions))
 		for _, s := range sessions {
@@ -86,7 +86,7 @@ func runConversationList(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	filtered := make([]client.SessionInfo, 0, len(sessions))
+	filtered := make([]api.SessionInfo, 0, len(sessions))
 	for _, s := range sessions {
 		if conversationListFlags.Dir != "" && s.WorkingDir != conversationListFlags.Dir {
 			continue

@@ -14,7 +14,7 @@ import (
 
 // extractPromptName extracts the prompt_name field from a SyncEvent's Data.
 // Returns "" if the field is absent or Data is not a map.
-func extractPromptName(e client.SyncEvent) string {
+func extractPromptName(e api.SyncEvent) string {
 	dataMap, ok := e.Data.(map[string]interface{})
 	if !ok {
 		return ""
@@ -29,7 +29,7 @@ func extractPromptName(e client.SyncEvent) string {
 func TestGapFill_UserPromptWithPromptName(t *testing.T) {
 	ts := SetupTestServer(t)
 
-	sess, err := ts.Client.CreateSession(client.CreateSessionRequest{})
+	sess, err := ts.Client.CreateSession(api.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -45,14 +45,14 @@ func TestGapFill_UserPromptWithPromptName(t *testing.T) {
 
 	var (
 		mu            sync.Mutex
-		syncedEvents  []client.SyncEvent
+		syncedEvents  []api.SyncEvent
 		loadCallCount int
 		initialLoaded = make(chan struct{}, 1)
 		syncLoaded    = make(chan struct{}, 1)
 	)
 
-	ws, err := ts.Client.Connect(ctx, sess.SessionID, client.SessionCallbacks{
-		OnEventsLoaded: func(events []client.SyncEvent, _ bool, _ bool) {
+	ws, err := ts.Client.Connect(ctx, sess.SessionID, api.SessionCallbacks{
+		OnEventsLoaded: func(events []api.SyncEvent, _ bool, _ bool) {
 			mu.Lock()
 			loadCallCount++
 			count := loadCallCount
@@ -106,7 +106,7 @@ func TestGapFill_UserPromptWithPromptName(t *testing.T) {
 	}
 
 	mu.Lock()
-	recovered := make([]client.SyncEvent, len(syncedEvents))
+	recovered := make([]api.SyncEvent, len(syncedEvents))
 	copy(recovered, syncedEvents)
 	mu.Unlock()
 
@@ -149,7 +149,7 @@ func TestGapFill_UserPromptWithPromptName(t *testing.T) {
 func TestGapFill_MultipleLoopPromptsWithSameText(t *testing.T) {
 	ts := SetupTestServer(t)
 
-	sess, err := ts.Client.CreateSession(client.CreateSessionRequest{})
+	sess, err := ts.Client.CreateSession(api.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -162,12 +162,12 @@ func TestGapFill_MultipleLoopPromptsWithSameText(t *testing.T) {
 
 	var (
 		mu           sync.Mutex
-		loadedEvents []client.SyncEvent
+		loadedEvents []api.SyncEvent
 		loaded       = make(chan struct{}, 1)
 	)
 
-	ws, err := ts.Client.Connect(ctx, sess.SessionID, client.SessionCallbacks{
-		OnEventsLoaded: func(events []client.SyncEvent, _ bool, _ bool) {
+	ws, err := ts.Client.Connect(ctx, sess.SessionID, api.SessionCallbacks{
+		OnEventsLoaded: func(events []api.SyncEvent, _ bool, _ bool) {
 			mu.Lock()
 			loadedEvents = append(loadedEvents, events...)
 			mu.Unlock()
@@ -198,12 +198,12 @@ func TestGapFill_MultipleLoopPromptsWithSameText(t *testing.T) {
 	}
 
 	mu.Lock()
-	events := make([]client.SyncEvent, len(loadedEvents))
+	events := make([]api.SyncEvent, len(loadedEvents))
 	copy(events, loadedEvents)
 	mu.Unlock()
 
 	// Filter to only user_prompt events (CreateSession may add a session_start event).
-	var prompts []client.SyncEvent
+	var prompts []api.SyncEvent
 	for _, e := range events {
 		if e.Type == "user_prompt" {
 			prompts = append(prompts, e)
@@ -245,7 +245,7 @@ func TestGapFill_MultipleLoopPromptsWithSameText(t *testing.T) {
 func TestGapFill_PromptNameSurvivesFullReload(t *testing.T) {
 	ts := SetupTestServer(t)
 
-	sess, err := ts.Client.CreateSession(client.CreateSessionRequest{})
+	sess, err := ts.Client.CreateSession(api.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -262,12 +262,12 @@ func TestGapFill_PromptNameSurvivesFullReload(t *testing.T) {
 
 	var (
 		mu           sync.Mutex
-		loadedEvents []client.SyncEvent
+		loadedEvents []api.SyncEvent
 		loaded       = make(chan struct{}, 1)
 	)
 
-	ws, err := ts.Client.Connect(ctx, sess.SessionID, client.SessionCallbacks{
-		OnEventsLoaded: func(events []client.SyncEvent, _ bool, _ bool) {
+	ws, err := ts.Client.Connect(ctx, sess.SessionID, api.SessionCallbacks{
+		OnEventsLoaded: func(events []api.SyncEvent, _ bool, _ bool) {
 			mu.Lock()
 			loadedEvents = append(loadedEvents, events...)
 			mu.Unlock()
@@ -293,7 +293,7 @@ func TestGapFill_PromptNameSurvivesFullReload(t *testing.T) {
 	}
 
 	mu.Lock()
-	events := make([]client.SyncEvent, len(loadedEvents))
+	events := make([]api.SyncEvent, len(loadedEvents))
 	copy(events, loadedEvents)
 	mu.Unlock()
 
@@ -326,7 +326,7 @@ func TestGapFill_PromptNameSurvivesFullReload(t *testing.T) {
 func TestGapFill_PromptNameEmptyForAdHocPrompts(t *testing.T) {
 	ts := SetupTestServer(t)
 
-	sess, err := ts.Client.CreateSession(client.CreateSessionRequest{})
+	sess, err := ts.Client.CreateSession(api.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -343,12 +343,12 @@ func TestGapFill_PromptNameEmptyForAdHocPrompts(t *testing.T) {
 
 	var (
 		mu           sync.Mutex
-		loadedEvents []client.SyncEvent
+		loadedEvents []api.SyncEvent
 		loaded       = make(chan struct{}, 1)
 	)
 
-	ws, err := ts.Client.Connect(ctx, sess.SessionID, client.SessionCallbacks{
-		OnEventsLoaded: func(events []client.SyncEvent, _ bool, _ bool) {
+	ws, err := ts.Client.Connect(ctx, sess.SessionID, api.SessionCallbacks{
+		OnEventsLoaded: func(events []api.SyncEvent, _ bool, _ bool) {
 			mu.Lock()
 			loadedEvents = append(loadedEvents, events...)
 			mu.Unlock()
@@ -373,12 +373,12 @@ func TestGapFill_PromptNameEmptyForAdHocPrompts(t *testing.T) {
 	}
 
 	mu.Lock()
-	events := make([]client.SyncEvent, len(loadedEvents))
+	events := make([]api.SyncEvent, len(loadedEvents))
 	copy(events, loadedEvents)
 	mu.Unlock()
 
 	// Filter to only user_prompt events (CreateSession may add a session_start event).
-	var prompts []client.SyncEvent
+	var prompts []api.SyncEvent
 	for _, e := range events {
 		if e.Type == "user_prompt" {
 			prompts = append(prompts, e)
