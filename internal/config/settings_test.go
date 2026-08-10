@@ -1,8 +1,10 @@
 package config
 
 import (
+	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -1309,14 +1311,22 @@ func TestLoadSettingsWithFallbackNoKeychain_SharedToken_NotResolved(t *testing.T
 }
 
 // TestLoadSettings_SharedToken_EnvVarTakesPrecedence verifies MITTO_SHARED_TOKEN
-// wins outright over any settings.json value, and requires no Keychain access
-// (safe to run on any platform/CI).
+// wins outright over any settings.json value. The fixture below also carries
+// a simple-auth password, which unconditionally triggers
+// migratePasswordToKeychain (mitto-klux) regardless of the shared-token env
+// var -- so this test redirects the secret store to an in-memory fake
+// (secrets.SetStoreForTest) to guarantee it never touches the real macOS
+// Keychain, while still exercising the real migration code path.
 func TestLoadSettings_SharedToken_EnvVarTakesPrecedence(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv(appdir.MittoDirEnv, tmpDir)
 	t.Setenv("MITTO_SHARED_TOKEN", "env-token-value")
 	appdir.ResetCache()
 	t.Cleanup(appdir.ResetCache)
+
+	if secrets.IsSupported() {
+		t.Cleanup(secrets.SetStoreForTest(secrets.NewFakeStore()))
+	}
 
 	settingsPath := filepath.Join(tmpDir, appdir.SettingsFileName)
 	settingsJSON := `{"web":{"auth":{"simple":{"username":"admin","password":"pw"},"shared_token":"settings-token-value"}}}`
@@ -1390,12 +1400,12 @@ func TestLoadSettings_SharedToken_NotConfigured(t *testing.T) {
 // directly in settings.json (no env var) is resolved into cfg.Web.Auth.SharedToken.
 //
 // On a platform where secrets.IsSupported() is true (macOS), loading also
-// triggers migrateSharedTokenToKeychain, which writes to the SAME production
-// Keychain entry ("Mitto"/"shared-token") the running app would use -- there
-// is no test-only account name for this convenience wrapper (mirroring the
-// pre-existing, equally real-Keychain-touching password migration path). To
-// avoid clobbering a developer's actual configured token, this test saves and
-// restores whatever was there before via t.Cleanup.
+// triggers migrateSharedTokenToKeychain and (because the fixture also carries
+// a simple-auth password) migratePasswordToKeychain -- both of which write to
+// the production Keychain by default (mitto-klux). This test redirects the
+// secret store to an in-memory fake (secrets.SetStoreForTest) for the
+// duration of the test so neither migration ever touches the real Keychain,
+// while still exercising the real migration code paths end-to-end.
 func TestLoadSettings_SharedToken_FromSettingsJSON(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv(appdir.MittoDirEnv, tmpDir)
@@ -1404,14 +1414,7 @@ func TestLoadSettings_SharedToken_FromSettingsJSON(t *testing.T) {
 	t.Cleanup(appdir.ResetCache)
 
 	if secrets.IsSupported() {
-		priorToken, priorErr := secrets.GetSharedToken()
-		t.Cleanup(func() {
-			if priorErr == nil && priorToken != "" {
-				_ = secrets.SetSharedToken(priorToken)
-			} else {
-				_ = secrets.DeleteSharedToken()
-			}
-		})
+		t.Cleanup(secrets.SetStoreForTest(secrets.NewFakeStore()))
 	}
 
 	settingsPath := filepath.Join(tmpDir, appdir.SettingsFileName)
@@ -1446,6 +1449,115 @@ func TestLoadSettings_SharedToken_FromSettingsJSON(t *testing.T) {
 		if !strings.Contains(string(raw), "settings-token-value") {
 			t.Errorf("settings.json should retain the token when secrets are unsupported, got: %s", raw)
 		}
+	}
+}
+
+// runSecurityCLI runs the macOS `security` command-line tool with the given
+// arguments, bounded by a short timeout, and returns combined stdout+stderr
+// plus whether the command exited zero. Every call in this file avoids the
+// `-w` (decrypt-and-print-password) flag against an *existing* item: doing
+// so was observed, while developing this reproduction, to trigger an
+// interactive OS Keychain-authorization prompt that hangs indefinitely in a
+// headless run (the prompt has nothing to answer it). Metadata-only lookups
+// (no `-w`) were consistently fast and prompt-free, which is why the
+// assertion below is built on item existence/modification-timestamp rather
+// than decrypted content.
+func runSecurityCLI(t *testing.T, args ...string) (output string, ok bool) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "security", args...).CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		t.Fatalf("security %v timed out after 5s (likely an unanswerable Keychain authorization prompt); output so far: %s", args, out)
+	}
+	return string(out), err == nil
+}
+
+// keychainEntryFingerprint returns a metadata-only fingerprint (existence +
+// modification timestamp) for a Keychain entry, without ever decrypting it.
+// Two fingerprints taken before/after an operation are equal iff the entry
+// was neither created, deleted, nor updated in between.
+func keychainEntryFingerprint(t *testing.T, service, account string) string {
+	t.Helper()
+	out, found := runSecurityCLI(t, "find-generic-password", "-s", service, "-a", account)
+	if !found {
+		return "<absent>"
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "\"mdat\"") {
+			return line
+		}
+	}
+	return out
+}
+
+// TestLoadSettings_PasswordMigration_ClobbersExistingKeychainEntry is the
+// regression test for mitto-klux.
+//
+// Root cause: migratePasswordToKeychain (triggered by LoadSettings whenever
+// a non-empty simple-auth password is present in the settings.json fixture)
+// writes to the Keychain entry "Mitto"/"external-access" via the
+// package-level secrets.Default() store. Before the fix, that store was
+// always the real macOS KeychainStore with no override -- any test whose
+// fixture carried a password (e.g. this repo's own
+// TestLoadSettings_SharedToken_EnvVarTakesPrecedence and
+// TestLoadSettings_SharedToken_FromSettingsJSON, both of which use a
+// password:"pw" fixture) silently overwrote whatever real credential was
+// stored there. That is exactly how a real developer's password was
+// permanently lost (see bead description).
+//
+// The fix is secrets.SetStoreForTest + secrets.NewFakeStore (internal/secrets/
+// testing.go): tests redirect the package-level store to an in-memory fake
+// before calling LoadSettings(), so migratePasswordToKeychain still runs
+// (proving the migration logic itself is exercised) but every Get/Set/Delete
+// lands on the fake instead of macOS Keychain syscalls. This test proves
+// both halves of that contract:
+//  1. the fixture password DOES reach the fake store (the migration path
+//     actually ran, not skipped), and
+//  2. the REAL Keychain entry's metadata fingerprint (existence + mdat) is
+//     byte-for-byte unchanged across the call -- verified via the `security`
+//     CLI, decrypt-free (see keychainEntryFingerprint) -- i.e. the real
+//     entry was never touched, regardless of whatever value it held before
+//     this test ran.
+func TestLoadSettings_PasswordMigration_ClobbersExistingKeychainEntry(t *testing.T) {
+	if !secrets.IsSupported() {
+		t.Skip("secrets.IsSupported() is false on this platform; migratePasswordToKeychain never runs, nothing to reproduce")
+	}
+	if _, err := exec.LookPath("security"); err != nil {
+		t.Skip("security CLI not available; cannot safely verify this test without decrypting the real Keychain entry")
+	}
+
+	before := keychainEntryFingerprint(t, secrets.ServiceName, secrets.AccountExternalAccess)
+
+	fake := secrets.NewFakeStore()
+	t.Cleanup(secrets.SetStoreForTest(fake))
+
+	tmpDir := t.TempDir()
+	t.Setenv(appdir.MittoDirEnv, tmpDir)
+	appdir.ResetCache()
+	t.Cleanup(appdir.ResetCache)
+
+	settingsPath := filepath.Join(tmpDir, appdir.SettingsFileName)
+	settingsJSON := `{"web":{"auth":{"simple":{"username":"admin","password":"pw"}}}}`
+	if err := os.WriteFile(settingsPath, []byte(settingsJSON), 0644); err != nil {
+		t.Fatalf("failed to create settings.json: %v", err)
+	}
+
+	if _, err := LoadSettings(); err != nil {
+		t.Fatalf("LoadSettings() failed: %v", err)
+	}
+
+	// The migration path must have actually run against the injected fake
+	// (otherwise this test would pass vacuously without exercising anything).
+	if got, err := fake.Get(secrets.ServiceName, secrets.AccountExternalAccess); err != nil || got != "pw" {
+		t.Fatalf("fake store Get(%s, %s) = (%q, %v), want (\"pw\", nil) -- migration path did not run against the injected store", secrets.ServiceName, secrets.AccountExternalAccess, got, err)
+	}
+
+	// The real Keychain entry must be byte-for-byte unchanged -- proving the
+	// injected fake, not the real Keychain, absorbed the write above.
+	after := keychainEntryFingerprint(t, secrets.ServiceName, secrets.AccountExternalAccess)
+	if before != after {
+		t.Errorf("real Keychain entry %s/%s changed across LoadSettings() despite an injected fake store: before=%q after=%q", secrets.ServiceName, secrets.AccountExternalAccess, before, after)
 	}
 }
 
