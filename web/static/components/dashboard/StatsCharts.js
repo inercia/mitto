@@ -747,7 +747,6 @@ export function StatsCharts({ showToast }) {
       cancelled = true;
     };
     // Load exactly once per mount.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Fetch (or refetch) on range change; AbortController cancels stale calls.

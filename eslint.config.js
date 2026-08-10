@@ -107,6 +107,17 @@ export default [
           selector: "NewExpression[callee.name='WebSocket']",
           message: "Use the SDK's realtime streams (web/static/sdk/realtime/) instead of raw WebSocket.",
         },
+        // no-restricted-imports only sees static import/export declarations, so
+        // the dynamic `import()` form needs its own selectors to close the
+        // same two holes.
+        {
+          selector: "ImportExpression[source.value=/sdk\\/[^/]+\\//]",
+          message: "Deep sdk/ imports are internal/unsupported (docs/devel/js-client-library.md §5). Import from sdk/index.js instead.",
+        },
+        {
+          selector: "ImportExpression[source.value=/(^|\\/)csrf\\.js$/]",
+          message: "authFetch/secureFetch were removed (mitto-7gta.17 slice S8). Use the SDK client instead.",
+        },
       ],
       "no-restricted-imports": [
         "error",
@@ -116,15 +127,19 @@ export default [
               group: ["**/sdk/*/*"],
               message: "Deep sdk/ imports are internal/unsupported (docs/devel/js-client-library.md §5). Import from sdk/index.js instead.",
             },
-          ],
-          paths: [
+            // A glob (not a `paths` entry) so the ban holds at any nesting
+            // depth: `paths` matches the specifier string literally, so
+            // "../utils/csrf.js" would not cover "../../utils/csrf.js".
             {
-              name: "./csrf.js",
+              group: ["**/utils/csrf.js"],
               importNames: ["authFetch", "secureFetch"],
               message: "authFetch/secureFetch were removed (mitto-7gta.17 slice S8). Use the SDK client instead.",
             },
+          ],
+          paths: [
+            // Sibling form, only reachable from within web/static/utils/.
             {
-              name: "../utils/csrf.js",
+              name: "./csrf.js",
               importNames: ["authFetch", "secureFetch"],
               message: "authFetch/secureFetch were removed (mitto-7gta.17 slice S8). Use the SDK client instead.",
             },

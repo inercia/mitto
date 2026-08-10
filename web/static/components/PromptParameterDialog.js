@@ -1225,7 +1225,6 @@ export function PromptParameterDialog({
     // Dependency on the JSON-serialised picked-path map so the effect fires
     // when any picker's picked prompt changes but not on unrelated re-renders
     // (e.g. typing into an outer text field).
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     isOpen,
     JSON.stringify(pickedPaths.map((e) => [e.path, e.pickedPromptName])),
@@ -1320,7 +1319,6 @@ export function PromptParameterDialog({
     return () => {
       for (const c of cancels) c();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     isOpen,
     workingDir,

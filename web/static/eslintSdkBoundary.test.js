@@ -82,6 +82,53 @@ describe("SDK boundary ESLint rules (mitto-7gta.19)", () => {
     expect(restrictedRuleIds(messages)).toContain("no-restricted-imports");
   });
 
+  test("bans authFetch/secureFetch imports at ANY nesting depth", async () => {
+    // A literal `paths` entry only matches one exact specifier string, so a
+    // deeply-nested file could otherwise slip past the ban.
+    const messages = await lint(
+      'import { secureFetch } from "../../../utils/csrf.js";\n',
+      "web/static/components/beads/detail/FakeDetail.js",
+    );
+    expect(restrictedRuleIds(messages)).toContain("no-restricted-imports");
+  });
+
+  test("bans re-exporting authFetch/secureFetch from utils/csrf.js", async () => {
+    const messages = await lint(
+      'export { authFetch } from "../../utils/csrf.js";\n',
+      "web/static/components/beads/FakeBeads.js",
+    );
+    expect(restrictedRuleIds(messages)).toContain("no-restricted-imports");
+  });
+
+  test("bans dynamic import() of deep sdk/ internals and of csrf.js", async () => {
+    for (const [specifier, filePath] of [
+      ["../sdk/core/endpoints.js", NON_ALLOWLISTED_FILE],
+      ["../../utils/csrf.js", "web/static/components/beads/FakeBeads.js"],
+    ]) {
+      const messages = await lint(
+        `const m = await import("${specifier}");\nconsole.log(m);\n`,
+        filePath,
+      );
+      expect(restrictedRuleIds(messages)).toContain("no-restricted-syntax");
+    }
+  });
+
+  test("does not flag dynamic import() of the public SDK entrypoint", async () => {
+    const messages = await lint(
+      'const m = await import("../sdk/index.js");\nconsole.log(m);\n',
+      NON_ALLOWLISTED_FILE,
+    );
+    expect(restrictedRuleIds(messages)).toHaveLength(0);
+  });
+
+  test("does not flag non-banned named imports from utils/csrf.js", async () => {
+    const messages = await lint(
+      'import { getCsrfToken } from "../utils/csrf.js";\nconsole.log(getCsrfToken);\n',
+      NON_ALLOWLISTED_FILE,
+    );
+    expect(restrictedRuleIds(messages)).toHaveLength(0);
+  });
+
   test("does not flag importing the public SDK entrypoint", async () => {
     const messages = await lint(
       'import { getSdkClient } from "../sdk/index.js";\nconsole.log(getSdkClient);\n',
@@ -97,6 +144,7 @@ describe("SDK boundary ESLint rules (mitto-7gta.19)", () => {
     ["web/static/utils/sdkClient.js", 'fetch("/x");\n'],
     ["web/static/utils/csrf.js", 'import { x } from "../sdk/auth/browser-cookie.js";\nconsole.log(x);\n'],
     ["web/static/utils/endpoints.js", 'import { x } from "../sdk/core/endpoints.js";\nconsole.log(x);\n'],
+    ["web/static/sdk/index.js", 'const m = await import("./core/endpoints.js");\nconsole.log(m);\n'],
   ])("SDK_BOUNDARY_ALLOWLIST exempts %s", async (filePath, code) => {
     const messages = await lint(code, filePath);
     expect(restrictedRuleIds(messages)).toHaveLength(0);
