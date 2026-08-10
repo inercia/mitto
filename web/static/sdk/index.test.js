@@ -165,6 +165,24 @@ describe("createClient() wiring (mitto-7gta.10)", () => {
     expect(client.misc.externalStatus).toBe(client.serverConfig.externalStatus);
     expect(client.misc.supportedRunners).toBe(client.serverConfig.supportedRunners);
     expect(client.misc.runnerDefaults).toBe(client.serverConfig.runnerDefaults);
+    // mitto-7gta.19.1: pre-auth endpoints used by auth.js.
+    expect(typeof client.misc.authInfo).toBe("function");
+    expect(typeof client.misc.login).toBe("function");
+  });
+
+  // mitto-7gta.19.1: wsBaseUrl is an optional createClient() option threaded
+  // into createEndpoints() so a relative-baseUrl client (config.wsBaseUrl
+  // set) still gets a ws-capable client.endpoints without a caller-side deep
+  // import of core/endpoints.js.
+  test("an explicit wsBaseUrl option makes client.endpoints ws-capable with a relative baseUrl", () => {
+    const client = createClient({ fetch: noopFetch, wsBaseUrl: "ws://host:1234" });
+    expect(client.config.baseUrl).toBe("");
+    expect(client.endpoints.events.ws()).toBe("ws://host:1234/api/events");
+  });
+
+  test("without wsBaseUrl, a relative-baseUrl client's ws endpoints throw ConfigError", () => {
+    const client = createClient({ fetch: noopFetch });
+    expect(() => client.endpoints.events.ws()).toThrow();
   });
 });
 

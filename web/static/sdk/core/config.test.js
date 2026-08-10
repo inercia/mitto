@@ -188,6 +188,32 @@ describe("resolveConfig", () => {
     });
   });
 
+  // mitto-7gta.19.1: wsBaseUrl lets a relative-baseUrl client (e.g. the
+  // browser UI) still build absolute ws(s):// URLs via core/endpoints.js's
+  // wsUrlFor() — see sdk/index.js's `createEndpoints(config, { wsBaseUrl:
+  // config.wsBaseUrl })` wiring, which depends on this key surviving
+  // resolveConfig() unmangled.
+  describe("wsBaseUrl", () => {
+    test("is accepted (not rejected as an unknown key)", () => {
+      expect(() =>
+        resolveConfig({ fetch: () => {}, wsBaseUrl: "ws://host:1234" }, {}),
+      ).not.toThrow();
+    });
+
+    test("is threaded through onto the resolved config, untouched", () => {
+      const config = resolveConfig(
+        { fetch: () => {}, wsBaseUrl: "wss://example.test" },
+        {},
+      );
+      expect(config.wsBaseUrl).toBe("wss://example.test");
+    });
+
+    test("defaults to undefined when not supplied", () => {
+      const config = resolveConfig({ fetch: () => {} }, {});
+      expect(config.wsBaseUrl).toBeUndefined();
+    });
+  });
+
   describe("no-browser-globals source guarantee (sdk/core/**)", () => {
     const FORBIDDEN = [
       "window",
