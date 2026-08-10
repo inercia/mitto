@@ -276,6 +276,46 @@ func TestConversationWait_BeadsTimeout(t *testing.T) {
 	}
 }
 
+// TestConversationWait_BeadsTimeout_CappedBelowRequestedTimeout is a
+// regression test for mitto-m2lk: a caller requesting a very long timeout
+// (mirroring beads_issues_reached_state's real 4h default) must still get a
+// response well before that full duration elapses, because
+// Server.maxSingleWaitBlock caps the actual physical block. This is what
+// keeps a single mitto_conversation_wait HTTP call from sitting silent long
+// enough to trip a client-side transport timeout (see
+// defaultMaxSingleWaitBlock, tools_wait.go).
+func TestConversationWait_BeadsTimeout_CappedBelowRequestedTimeout(t *testing.T) {
+	srv, callerID, _ := setupBeadsWait(t, map[string]string{
+		"mitto-1": "open",
+	})
+	const singleCallCap = 50 * time.Millisecond
+	srv.maxSingleWaitBlock = singleCallCap
+	ctx := context.Background()
+
+	start := time.Now()
+	_, output, err := srv.handleConversationWait(ctx, nil, ConversationWaitInput{
+		SelfID:           callerID,
+		ConversationID:   "self",
+		What:             "beads_issues_reached_state",
+		BeadsIssues:      []string{"mitto-1"},
+		BeadsTargetState: "closed",
+		TimeoutSeconds:   14400, // 4h, mirrors the real default/L1 orchestrator ask
+	})
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("handleConversationWait: %v", err)
+	}
+	if elapsed >= 5*time.Second {
+		t.Fatalf("expected the wait to return within the %v cap, took %v (requested 4h)", singleCallCap, elapsed)
+	}
+	if !output.TimedOut {
+		t.Fatalf("expected timed_out=true (capped early return), got %+v", output)
+	}
+	if len(output.PendingIssues) != 1 {
+		t.Errorf("expected 1 pending on capped timeout, got %v", output.PendingIssues)
+	}
+}
+
 // TestConversationWait_BeadsFailureStreak_HidesDegradationOnTimeout reproduces
 // mitto-f8zx: when every `bd` evaluation on the slow path fails for the rest
 // of the wait (as observed with 13 consecutive "bd command timed out: signal:

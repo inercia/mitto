@@ -342,6 +342,7 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 			"Returns immediately if the condition is already met (e.g., agent is not currently responding, or all listed beads already at the target state). " +
 			"Optionally specify a 'workspace' UUID when waiting on a conversation in a different workspace (requires user confirmation). " +
 			"If the wait times out, the result includes 'timed_out: true' and 'still_prompting' indicating whether the agent is still responding — you do NOT need to separately check the prompting status. " +
+			"Note: each physical call blocks at most a few minutes internally regardless of timeout_seconds or the mode's default, to avoid tripping a client-side HTTP transport timeout on very long waits — if 'timed_out' comes back true well before your requested duration has elapsed, simply call this tool again with the same parameters to keep waiting. " +
 			selfIDNote,
 	}, s.handleConversationWait)
 

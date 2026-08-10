@@ -58,6 +58,26 @@ const beadsWaitFailureEscalationThreshold = 3
 // stay comfortably below the transport idle window (tunnel / agent HTTP client).
 const mcpHeartbeatInterval = 15 * time.Second
 
+// defaultMaxSingleWaitBlock caps how long a single mitto_conversation_wait
+// HTTP call physically blocks, comfortably below undici's default 300s
+// headersTimeout (mitto-m2lk). Streamable HTTP's JSONResponse:true mode
+// (mitto-6hr) writes zero response bytes — not even headers — until the
+// handler returns: mcpHeartbeatInterval's progress notifications are routed
+// to the client's separate standalone SSE stream in that mode (per the
+// go-sdk's streamableServerConn.Write), so they cannot keep the pending POST
+// itself from going byte-silent. A handler that blocks longer than the
+// client's own transport timeout is therefore reported to the caller as a
+// generic transport failure ("fetch failed" / UND_ERR_HEADERS_TIMEOUT) even
+// though Mitto is still working correctly server-side.
+//
+// This cap applies regardless of timeout_seconds or the mode's own default
+// (600s for agent_responded, 4h for beads_issues_reached_state): once it is
+// hit the call returns normally with TimedOut:true — not an error — well
+// within any realistic client budget. A caller that still wants to keep
+// waiting is expected to call the tool again, the same resumable pattern
+// already documented for mitto_children_tasks_wait.
+const defaultMaxSingleWaitBlock = 4 * time.Minute
+
 // beadsWaitBackoffInterval returns the delay before the next poll attempt
 // given the number of consecutive bd evaluation failures observed so far on
 // this wait. Zero (or fewer) failures use the normal poll cadence; each
@@ -232,11 +252,21 @@ func (s *Server) handleConversationWait(ctx context.Context, req *mcp.CallToolRe
 		timeout = defaultConversationWaitTimeout
 	}
 
+	// Cap the actual physical block below the client transport timeout floor
+	// (mitto-m2lk); see defaultMaxSingleWaitBlock. waitBudget is what the
+	// call actually blocks for; timeout remains the caller's nominal ask for
+	// logging/messaging.
+	waitBudget := timeout
+	if maxBlock := s.effectiveSingleWaitBlock(); waitBudget > maxBlock {
+		waitBudget = maxBlock
+	}
+
 	s.logger.Info("Waiting for conversation condition",
 		"source_session", realSessionID,
 		"target_conversation", input.ConversationID,
 		"what", input.What,
-		"timeout", timeout)
+		"requested_timeout", timeout,
+		"wait_budget", waitBudget)
 
 	// Broadcast that this session is now waiting (shows hourglass in sidebar)
 	if s.sessionManager != nil {
@@ -252,7 +282,7 @@ func (s *Server) handleConversationWait(ctx context.Context, req *mcp.CallToolRe
 	defer s.startProgressHeartbeat(ctx, req)()
 	done := make(chan bool, 1)
 	go func() {
-		done <- targetBS.WaitForResponseComplete(timeout)
+		done <- targetBS.WaitForResponseComplete(waitBudget)
 	}()
 
 	select {
@@ -271,15 +301,19 @@ func (s *Server) handleConversationWait(ctx context.Context, req *mcp.CallToolRe
 		stillPrompting := targetBS.IsPrompting()
 		var msg string
 		if stillPrompting {
-			msg = fmt.Sprintf("timed out after %s; the agent is still responding", timeout)
+			msg = fmt.Sprintf("timed out after %s; the agent is still responding", waitBudget)
 		} else {
-			msg = fmt.Sprintf("timed out after %s; the agent has finished responding", timeout)
+			msg = fmt.Sprintf("timed out after %s; the agent has finished responding", waitBudget)
+		}
+		if waitBudget < timeout {
+			msg += fmt.Sprintf(" (capped below the requested/default %s to avoid a client-side transport timeout; call again to keep waiting)", timeout)
 		}
 		s.logger.Warn("Conversation wait timed out",
 			"source_session", realSessionID,
 			"target_conversation", input.ConversationID,
 			"what", input.What,
-			"timeout", timeout,
+			"requested_timeout", timeout,
+			"wait_budget", waitBudget,
 			"still_prompting", stillPrompting)
 		return nil, ConversationWaitOutput{
 			Success:        true,
@@ -467,6 +501,17 @@ func (s *Server) handleBeadsIssuesReachedState(
 		timeout = defaultBeadsWaitTimeout
 	}
 
+	// Cap the actual physical block below the client transport timeout floor
+	// (mitto-m2lk); see defaultMaxSingleWaitBlock. The caller-requested/
+	// default timeout (up to 4h) is still honored overall via repeated calls
+	// — the same resumable pattern already documented for
+	// mitto_children_tasks_wait — but no single HTTP call blocks longer than
+	// the cap.
+	waitBudget := timeout
+	if maxBlock := s.effectiveSingleWaitBlock(); waitBudget > maxBlock {
+		waitBudget = maxBlock
+	}
+
 	// Fast path: evaluate once before subscribing.
 	reached, pending, states, done, err := evaluateBeadsState(
 		ctx, client, workingDir, input.BeadsIssues, input.BeadsTargetState, match,
@@ -499,7 +544,8 @@ func (s *Server) handleBeadsIssuesReachedState(
 		"issues", input.BeadsIssues,
 		"target_state", input.BeadsTargetState,
 		"match", match,
-		"timeout", timeout)
+		"requested_timeout", timeout,
+		"wait_budget", waitBudget)
 
 	// Broadcast waiting state (sidebar hourglass).
 	if s.sessionManager != nil {
@@ -539,7 +585,7 @@ func (s *Server) handleBeadsIssuesReachedState(
 	poll := time.NewTimer(beadsWaitPollInterval)
 	defer poll.Stop()
 
-	deadline := time.NewTimer(timeout)
+	deadline := time.NewTimer(waitBudget)
 	defer deadline.Stop()
 
 	// consecutiveFailures/firstFailureAt/lastErr track a run of bd
@@ -603,13 +649,18 @@ func (s *Server) handleBeadsIssuesReachedState(
 				"working_dir", workingDir,
 				"target_state", input.BeadsTargetState,
 				"match", match,
-				"timeout", timeout,
+				"requested_timeout", timeout,
+				"wait_budget", waitBudget,
 				"pending", pending)
+			msg := fmt.Sprintf("timed out after %s waiting for beads to reach %q", waitBudget, input.BeadsTargetState)
+			if waitBudget < timeout {
+				msg += fmt.Sprintf(" (capped below the requested/default %s to avoid a client-side transport timeout; call again to keep waiting)", timeout)
+			}
 			out := ConversationWaitOutput{
 				Success:       true,
 				What:          input.What,
 				TimedOut:      true,
-				Message:       fmt.Sprintf("timed out after %s waiting for beads to reach %q", timeout, input.BeadsTargetState),
+				Message:       msg,
 				ReachedIssues: reached,
 				PendingIssues: pending,
 				CurrentStates: states,

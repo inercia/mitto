@@ -179,6 +179,24 @@ type Server struct {
 	// certain it has exited before returning (mirrors the graceful-shutdown
 	// discipline of the rest of Stop()).
 	reaperWG sync.WaitGroup
+
+	// maxSingleWaitBlock caps how long a single mitto_conversation_wait HTTP
+	// call (handleConversationWait / handleBeadsIssuesReachedState) may
+	// physically block, regardless of the caller-requested/default timeout.
+	// Defaults to defaultMaxSingleWaitBlock when zero; overridable in tests
+	// so they don't need to block for minutes. See defaultMaxSingleWaitBlock
+	// for the full rationale (mitto-m2lk).
+	maxSingleWaitBlock time.Duration
+}
+
+// effectiveSingleWaitBlock returns the cap to apply to a single physical
+// mitto_conversation_wait call, defaulting to defaultMaxSingleWaitBlock when
+// s.maxSingleWaitBlock is unset (mitto-m2lk).
+func (s *Server) effectiveSingleWaitBlock() time.Duration {
+	if s.maxSingleWaitBlock > 0 {
+		return s.maxSingleWaitBlock
+	}
+	return defaultMaxSingleWaitBlock
 }
 
 // registeredSession holds information about a registered session.
