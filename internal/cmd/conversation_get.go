@@ -28,8 +28,9 @@ var conversationGetCmd = &cobra.Command{
 (if any), and current queue depth.
 
 Not found (404) on the session itself maps to exit 5. A missing loop
-configuration is not an error — it is a normal state rendered as "loop: not
-configured" (table) or a null "loop" field (json/yaml).`,
+configuration is not an error — it is a normal state rendered as
+"LOOP ENABLED: not configured" (table) or an omitted "loop" field
+(json/yaml).`,
 	Args: cobra.ExactArgs(1),
 	RunE: runConversationGet,
 }

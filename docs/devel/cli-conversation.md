@@ -89,6 +89,13 @@ would never fire for `conversation get`.
   the emitted shape is exactly the documented REST shape and cannot drift.
   YAML round-trips through the same JSON tags (marshal-to-JSON-then-YAML),
   so JSON tags remain the single source of truth for field names.
+- **Exception: a command whose output has no single REST response shape**
+  composes a CLI-owned struct whose fields are themselves SDK types
+  (`conversation send --wait`'s `waitResult`, `conversation get`'s
+  `conversationDetails`, `conversation delete`'s `deleteResult` — DELETE has
+  no response body at all). The composition is CLI-owned; every nested
+  payload is still an unmodified SDK type, so the anti-drift guarantee holds
+  for the parts that come from the server.
 - Machine output (the table, or `json`/`yaml`) goes to stdout and nothing
   else does. All human chatter, progress and errors go to stderr.
 - A list command with zero results prints `[]`, never `null`, and exits 0.
@@ -175,7 +182,33 @@ by scripts — `--output json`/`yaml` is the contract.
   (`{queued, message, event_count}`) once the turn completes, instead of
   streaming the reply to stdout.
 
-## 9. Out of scope
+## 9. Lifecycle verb decisions (`mitto-pscc.5`)
+
+- **`new --wait` defers queue seeding until after the WebSocket is
+  connected.** Without `--wait`, `--prompt-name` is seeded atomically at
+  creation via `CreateSessionRequest.InitialPromptName`; with `--wait` that
+  atomic seed would dispatch immediately and could finish the turn before a
+  post-creation `Connect` — so `--wait` always enqueues after
+  `connectAndAwaitLoad`, preserving §8's connect-before-enqueue ordering.
+  That block is shared by `send --wait` and `new --wait`, not duplicated.
+- **`list` filters client-side** pending `mitto-rwxq.7`'s `ListSessions`
+  filter arguments (§2). `--dir` and `--archived` filter the full list
+  locally; `--running` intersects it with `ListRunningSessions`. Archived
+  conversations are excluded by default, matching
+  `session.Metadata.Archived`'s "hidden from main list by default".
+- **`list --workspace` is accepted but a no-op with a stderr warning**:
+  neither `GET /api/sessions` nor `api.SessionInfo` carries a workspace
+  UUID. Tracked as `mitto-pscc.5.1`; use `--dir` meanwhile.
+- **`get`'s missing loop is not an error.** The session's own 404 maps to
+  exit 5, but `GetLoop`'s synthetic `ErrNotFound` (session confirmed to
+  exist) is swallowed to a nil `Loop`, omitted from `json`/`yaml`.
+- **`delete` refuses on a non-TTY stdin without `--force`** (exit 2) rather
+  than hanging on a read that will never receive input. Detection is a raw
+  `os.Stdin.Stat()` + `os.ModeCharDevice` check against the **real**
+  `os.Stdin`, deliberately not `cmd.InOrStdin()` and without adding
+  `golang.org/x/term`. Declining the prompt exits 0.
+
+## 10. Out of scope
 
 Workspace management, prompts, processors, settings, agents, files,
 dashboard, any shell-completion work, and any change to `mitto cli`.
