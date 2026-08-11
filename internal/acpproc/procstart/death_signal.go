@@ -100,10 +100,13 @@ func StderrTail(collector *StderrCollector, maxBytes int) string {
 
 	headBytes := maxBytes / 2
 	tailBytes := maxBytes - headBytes
-	elided := len(out) - maxBytes
 
 	head := snapHeadToLineBoundary(out[:headBytes])
 	tail := snapTailToLineBoundary(out[len(out)-tailBytes:])
+
+	// Count elided bytes after snapping, so the marker reports what was
+	// actually dropped rather than the pre-snap estimate.
+	elided := len(out) - len(head) - len(tail)
 
 	marker := fmt.Sprintf("\n…[%d bytes elided]…\n", elided)
 	return head + marker + tail

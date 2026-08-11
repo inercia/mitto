@@ -3,6 +3,8 @@ package procstart
 import (
 	"fmt"
 	"os"
+	"regexp"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -216,6 +218,35 @@ func TestStderrTail_NoNewlineFallsBackToRawCut(t *testing.T) {
 	}
 	if !strings.HasPrefix(got, "X") || !strings.HasSuffix(got, "X") {
 		t.Errorf("StderrTail head/tail unexpectedly empty: %q", got)
+	}
+}
+
+// TestStderrTail_ElidedCountIsAccurate verifies the elision marker reports the
+// bytes actually dropped, counted *after* line-boundary snapping — snapping
+// discards extra bytes beyond the raw maxBytes cut, and a pre-snap count would
+// silently under-report by up to two snap windows.
+func TestStderrTail_ElidedCountIsAccurate(t *testing.T) {
+	c := NewStderrCollector(1<<20, nil)
+	var b strings.Builder
+	for i := 0; i < 500; i++ {
+		fmt.Fprintf(&b, "line %03d padding padding padding padding\n", i)
+	}
+	_, _ = c.Write([]byte(b.String()))
+
+	got := StderrTail(c, 1024)
+	marker := regexp.MustCompile(`…\[(\d+) bytes elided\]…`).FindStringSubmatch(got)
+	if marker == nil {
+		t.Fatalf("StderrTail missing elision marker: %q", got)
+	}
+	elided, err := strconv.Atoi(marker[1])
+	if err != nil {
+		t.Fatalf("unparseable elided count %q: %v", marker[1], err)
+	}
+	// head + tail + elided must reconstruct the full trimmed buffer length.
+	kept := len(got) - len(marker[0]) - 2 // minus the marker and its two \n
+	total := strings.TrimSpace(b.String())
+	if kept+elided != len(total) {
+		t.Errorf("kept(%d) + elided(%d) = %d, want total %d", kept, elided, kept+elided, len(total))
 	}
 }
 
