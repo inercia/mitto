@@ -1540,6 +1540,138 @@ func TestRecorder_EndUsesMaxSeqNotEventCount(t *testing.T) {
 	}
 }
 
+// TestRecorder_UIPromptAnswer_DuplicatesReservedSeq reproduces mitto-t7xv:
+// RecordUIPromptAnswer (and RecordPermission) go through the recordEvent ->
+// Store.AppendEvent path, which assigns its own seq from
+// max(EventCount, MaxSeq)+1. Live BackgroundSession sessions instead
+// pre-reserve seq numbers via getNextSeq() for streamed events *before*
+// they are persisted (e.g. while a chunk is still coalescing). If a UI
+// prompt answer is recorded via AppendEvent in that window, it can grab
+// the very seq number already reserved-but-not-yet-persisted for the next
+// streamed event, producing a duplicate seq once that streamed event is
+// finally written.
+//
+// This test simulates that race deterministically:
+//  1. A streamed event is persisted with seq 2 (as if obtained from
+//     getNextSeq()).
+//  2. The "next" streamed seq (3) is reserved by the in-memory counter but
+//     NOT yet persisted (simulating a chunk still being coalesced).
+//  3. A UI prompt answer arrives and is recorded via RecordUIPromptAnswer
+//     (the AppendEvent path) — today this collides with the reserved seq.
+//  4. The reserved streamed event is finally persisted with seq 3.
+//
+// With the bug present, seq 3 is written twice, and the reproduction test
+// below fails. The fix must give RecordUIPromptAnswer (and RecordPermission)
+// a *WithSeq variant so the caller can supply a seq obtained from the same
+// counter as streamed events, eliminating the collision.
+func TestRecorder_UIPromptAnswer_DuplicatesReservedSeq(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	recorder := NewRecorder(store)
+	if err := recorder.Start("test-server", "/test/dir", ""); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+
+	// Simulated getNextSeq() counter, independent of the store, mirroring
+	// BackgroundSession.nextSeq. session_start already consumed seq 1.
+	simulatedNextSeq := int64(2)
+
+	// Streamed event A: seq obtained from the simulated counter and
+	// persisted immediately (typical case).
+	seqA := simulatedNextSeq
+	simulatedNextSeq++
+	if err := recorder.RecordEventWithSeq(Event{
+		Seq:  seqA,
+		Type: EventTypeAgentMessage,
+		Data: AgentMessageData{Text: "streamed chunk A"},
+	}); err != nil {
+		t.Fatalf("RecordEventWithSeq(A) failed: %v", err)
+	}
+
+	// Streamed event B's seq is reserved by the in-memory counter (as
+	// getNextSeq() would do while a chunk is still coalescing) but NOT
+	// persisted yet.
+	seqB := simulatedNextSeq
+	simulatedNextSeq++
+
+	// A UI prompt answer arrives in this window. Fixed callers (e.g.
+	// BackgroundSession.upRecordUIPromptAnswer) obtain a seq from the same
+	// getNextSeq() counter as streamed events and record it via
+	// RecordUIPromptAnswerWithSeq instead of the non-seq AppendEvent path,
+	// so the answer takes the next slot from the shared counter (mitto-t7xv).
+	seqUIAnswer := simulatedNextSeq
+	simulatedNextSeq++
+	if err := recorder.RecordUIPromptAnswerWithSeq(seqUIAnswer, "req-1", "yes", "Yes"); err != nil {
+		t.Fatalf("RecordUIPromptAnswerWithSeq failed: %v", err)
+	}
+
+	// Streamed event B is now persisted with its pre-reserved seq.
+	if err := recorder.RecordEventWithSeq(Event{
+		Seq:  seqB,
+		Type: EventTypeAgentMessage,
+		Data: AgentMessageData{Text: "streamed chunk B"},
+	}); err != nil {
+		t.Fatalf("RecordEventWithSeq(B) failed: %v", err)
+	}
+
+	// Read the raw JSONL directly (NOT store.ReadEvents, which silently
+	// dedups on seq and would mask the collision by dropping one of the
+	// two colliding events entirely — itself a symptom of this same bug).
+	eventsPath := filepath.Join(store.SessionDir(recorder.SessionID()), eventsFileName)
+	raw, err := os.ReadFile(eventsPath)
+	if err != nil {
+		t.Fatalf("ReadFile failed: %v", err)
+	}
+	lines := strings.Split(strings.TrimRight(string(raw), "\n"), "\n")
+
+	var events []Event
+	for _, line := range lines {
+		var e Event
+		if err := json.Unmarshal([]byte(line), &e); err != nil {
+			t.Fatalf("failed to unmarshal event line %q: %v", line, err)
+		}
+		events = append(events, e)
+	}
+
+	// Assert no duplicate seqs (the direct regression) and no permanent
+	// drift (failure mode B): the set of seqs must be contiguous with no
+	// gaps or repeats. We do NOT assert the on-disk write order matches
+	// seq order — a fixed UI-prompt-answer legitimately draws the next
+	// value from the shared counter even while an earlier-reserved,
+	// not-yet-persisted streamed event is still in flight, so it can be
+	// written to disk before that lower-numbered event finishes. That
+	// write-order/seq-order mismatch is an accepted, pre-existing
+	// characteristic of the reservation-gap design (see mitto-c36) and is
+	// orthogonal to this bug, which is specifically about seq collisions.
+	seen := make(map[int64]string)
+	var minSeq, maxSeq int64
+	for i, e := range events {
+		if prevType, dup := seen[e.Seq]; dup {
+			t.Errorf("duplicate seq %d: %q and %q both use it (mitto-t7xv)", e.Seq, prevType, e.Type)
+		}
+		seen[e.Seq] = string(e.Type)
+		if i == 0 || e.Seq < minSeq {
+			minSeq = e.Seq
+		}
+		if i == 0 || e.Seq > maxSeq {
+			maxSeq = e.Seq
+		}
+	}
+
+	if got, want := len(seen), len(events); got != want {
+		t.Errorf("expected %d unique seqs, got %d (mitto-t7xv)", want, got)
+	}
+	if got, want := maxSeq-minSeq+1, int64(len(events)); got != want {
+		t.Errorf("seqs are not contiguous (permanent drift): min=%d max=%d count=%d, want range width %d (mitto-t7xv)",
+			minSeq, maxSeq, len(events), want)
+	}
+}
+
 // TestRecorder_SuspendThenResumeThenEnd tests the state transitions:
 // Start -> Suspend -> Resume -> End
 func TestRecorder_SuspendThenResumeThenEnd(t *testing.T) {

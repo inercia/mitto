@@ -202,12 +202,15 @@ func (bs *BackgroundSession) wireProcessorPendingDispatch() {
 	}
 }
 
-// cbRecordPermission records a permission decision via the recorder.
+// cbRecordPermission records a permission decision via the recorder, using a
+// seq reserved from the same authoritative counter (getNextSeq()) that
+// streamed events use so it cannot collide with a seq reserved-but-not-yet-
+// persisted for a concurrently streaming event (mitto-t7xv).
 func (bs *BackgroundSession) cbRecordPermission(title, selectedOption, outcome string) {
 	if bs.recorder == nil {
 		return
 	}
-	bs.recorder.RecordPermission(title, selectedOption, outcome)
+	bs.recorder.RecordPermissionWithSeq(bs.getNextSeq(), title, selectedOption, outcome)
 }
 
 // cbSetContextUsage stores the latest context window usage atomically.

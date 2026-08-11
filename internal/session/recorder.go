@@ -332,6 +332,23 @@ func (r *Recorder) RecordPermission(title, selectedOption, outcome string, opts 
 	}, opts))
 }
 
+// RecordPermissionWithSeq records a permission decision with a pre-assigned
+// sequence number obtained from getNextSeq(), so the event shares the same
+// monotonic counter as concurrent streamed events instead of taking an
+// independently-computed seq from Store.AppendEvent (mitto-t7xv).
+func (r *Recorder) RecordPermissionWithSeq(seq int64, title, selectedOption, outcome string, opts ...RecordOption) error {
+	return r.RecordEventWithSeq(applyOptions(Event{
+		Seq:       seq,
+		Type:      EventTypePermission,
+		Timestamp: time.Now(),
+		Data: PermissionData{
+			Title:          title,
+			SelectedOption: selectedOption,
+			Outcome:        outcome,
+		},
+	}, opts))
+}
+
 // RecordError records an error event.
 func (r *Recorder) RecordError(message string, code int, opts ...RecordOption) error {
 	return r.recordEvent(applyOptions(Event{
@@ -549,6 +566,24 @@ func (r *Recorder) RecordSessionChangeWithSeq(seq int64, data SessionChangeData,
 // This creates an audit trail of user decisions made through the UI prompt system.
 func (r *Recorder) RecordUIPromptAnswer(requestID, optionID, label string, opts ...RecordOption) error {
 	return r.recordEvent(applyOptions(Event{
+		Type:      EventTypeUIPromptAnswer,
+		Timestamp: time.Now(),
+		Data: map[string]interface{}{
+			"request_id": requestID,
+			"option_id":  optionID,
+			"label":      label,
+		},
+	}, opts))
+}
+
+// RecordUIPromptAnswerWithSeq records a user's response to a UI prompt with a
+// pre-assigned sequence number obtained from getNextSeq(), so the event
+// participates in the same monotonic ordering as concurrent streamed events
+// instead of taking an independently-computed seq from Store.AppendEvent
+// (mitto-t7xv).
+func (r *Recorder) RecordUIPromptAnswerWithSeq(seq int64, requestID, optionID, label string, opts ...RecordOption) error {
+	return r.RecordEventWithSeq(applyOptions(Event{
+		Seq:       seq,
 		Type:      EventTypeUIPromptAnswer,
 		Timestamp: time.Now(),
 		Data: map[string]interface{}{
