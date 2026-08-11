@@ -68,6 +68,18 @@ type SessionListResponse struct {
 	// LoopPromptPreview is a short preview of the free-text Prompt body only
 	// (first line, trimmed, truncated to ~80 runes). Empty for named-prompt-only configs.
 	LoopPromptPreview string `json:"loop_prompt_preview,omitempty"`
+	// WorkspaceUUID is the UUID of the workspace this session belongs to
+	// (mitto-pscc.5.1). Derived at list time, never persisted on
+	// session.Metadata: a live session resolves it from the running
+	// BackgroundSession; otherwise it is looked up from the workspace
+	// registry by (WorkingDir, ACPServer). Empty when no workspace matches —
+	// deliberately not defaulted, so this field never fabricates membership.
+	WorkspaceUUID string `json:"workspace_uuid,omitempty"`
+	// WorkspaceName is the resolved workspace's friendly display name (may be
+	// empty even when WorkspaceUUID is set, since Name is optional on
+	// WorkspaceSettings). Included so CLI/UI consumers can filter or display
+	// by name without a second round trip to a workspaces endpoint.
+	WorkspaceName string `json:"workspace_name,omitempty"`
 }
 
 // HandleListSessions handles GET /api/sessions
@@ -139,6 +151,25 @@ func (h *Handlers) HandleListSessions(w http.ResponseWriter, r *http.Request) {
 			response[i].IsStreaming = h.deps.SessionManager.IsStreaming(meta.SessionID)
 			response[i].IsWaitingForUserInput = h.deps.SessionManager.IsWaitingForUserInput(meta.SessionID)
 			response[i].AckedUIPromptRequestID = h.deps.SessionManager.GetAckedUIPromptRequestID(meta.SessionID)
+
+			// Resolve workspace identity (mitto-pscc.5.1): prefer the live
+			// session's own resolved UUID (agrees with runtime), else fall
+			// back to a (WorkingDir, ACPServer) registry lookup for
+			// not-currently-loaded sessions. Left empty if neither
+			// resolves — never guess the default workspace here, since a
+			// wrong UUID would be worse than an absent one for a filter.
+			workspaceUUID := h.deps.SessionManager.GetWorkspaceUUIDForSession(meta.SessionID)
+			if workspaceUUID == "" {
+				if ws := h.deps.SessionManager.GetWorkspaceByDirAndACP(meta.WorkingDir, meta.ACPServer); ws != nil {
+					workspaceUUID = ws.UUID
+				}
+			}
+			if workspaceUUID != "" {
+				response[i].WorkspaceUUID = workspaceUUID
+				if ws := h.deps.SessionManager.GetWorkspaceByUUID(workspaceUUID); ws != nil {
+					response[i].WorkspaceName = ws.Name
+				}
+			}
 		}
 	}
 

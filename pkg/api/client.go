@@ -238,6 +238,15 @@ type SessionInfo struct {
 	// --archived` had no field to filter on (mitto-pscc.5 Plan comment, Key
 	// Decision 1).
 	Archived bool `json:"archived,omitempty"`
+	// WorkspaceUUID mirrors handlers.SessionListResponse.WorkspaceUUID
+	// (mitto-pscc.5.1): the UUID of the workspace this session belongs to,
+	// derived server-side, empty when unresolved. Same decode-side-gap fix
+	// pattern as Archived above.
+	WorkspaceUUID string `json:"workspace_uuid,omitempty"`
+	// WorkspaceName mirrors handlers.SessionListResponse.WorkspaceName: the
+	// resolved workspace's friendly display name, so `conversation list
+	// --workspace` can match by name without a separate workspaces request.
+	WorkspaceName string `json:"workspace_name,omitempty"`
 }
 
 // CreateSessionRequest represents a request to create a new session.

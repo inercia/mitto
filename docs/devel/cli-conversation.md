@@ -282,9 +282,15 @@ by scripts — `--output json`/`yaml` is the contract.
   locally; `--running` intersects it with `ListRunningSessions`. Archived
   conversations are excluded by default, matching
   `session.Metadata.Archived`'s "hidden from main list by default".
-- **`list --workspace` is accepted but a no-op with a stderr warning**:
-  neither `GET /api/sessions` nor `api.SessionInfo` carries a workspace
-  UUID. Tracked as `mitto-pscc.5.1`; use `--dir` meanwhile.
+- **`list --workspace` filters by workspace UUID or name** (`mitto-pscc.5.1`).
+  `GET /api/sessions` derives `workspace_uuid`/`workspace_name` per session
+  (live session → `SessionManager.GetWorkspaceUUIDForSession`; else a
+  `(WorkingDir, ACPServer)` registry lookup; left empty if neither resolves —
+  workspace membership is never persisted on `session.Metadata`, only
+  derived at list time). `api.SessionInfo` mirrors both fields. The CLI
+  matches `--workspace` against either field client-side (UUID exact,
+  name case-insensitive); a value matching no configured workspace yields
+  an empty result rather than an error.
 - **`get`'s missing loop is not an error.** The session's own 404 maps to
   exit 5, but `GetLoop`'s synthetic `ErrNotFound` (session confirmed to
   exist) is swallowed to a nil `Loop`, omitted from `json`/`yaml`.

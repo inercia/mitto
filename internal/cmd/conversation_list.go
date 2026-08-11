@@ -1,7 +1,7 @@
 package cmd
 
 import (
-	"fmt"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -31,9 +31,11 @@ intersects it with the running-sessions list. Archived conversations are
 excluded by default (matching the "hidden from main list by default"
 convention of session.Metadata.Archived); pass --archived to include them.
 
---workspace is accepted but currently a no-op with a warning: neither
-GET /api/sessions nor its SessionInfo shape carries a workspace UUID.
-See mitto-pscc.5.1; use --dir instead until it lands.`,
+--workspace matches a session's server-derived workspace UUID (exact,
+case-sensitive) or workspace name (case-insensitive), also client-side.
+A value matching no configured workspace at all yields an empty result
+rather than an error, since the SDK has no workspaces list to validate
+against (mitto-pscc.5.1).`,
 	Args: cobra.NoArgs,
 	RunE: runConversationList,
 }
@@ -45,7 +47,7 @@ func init() {
 	conversationListCmd.Flags().StringVar(&f.Dir, "dir", "", "Only show conversations in this working directory")
 	conversationListCmd.Flags().BoolVar(&f.Archived, "archived", false, "Also include archived conversations (excluded by default)")
 	conversationListCmd.Flags().BoolVar(&f.Running, "running", false, "Only show currently-running conversations")
-	conversationListCmd.Flags().StringVar(&f.Workspace, "workspace", "", "Filter by workspace UUID (not yet supported server-side; see mitto-pscc.5.1)")
+	conversationListCmd.Flags().StringVar(&f.Workspace, "workspace", "", "Filter by workspace UUID or name")
 }
 
 func listTableFn(sessions []api.SessionInfo) func() ([]string, [][]string) {
@@ -59,11 +61,6 @@ func listTableFn(sessions []api.SessionInfo) func() ([]string, [][]string) {
 }
 
 func runConversationList(cmd *cobra.Command, args []string) error {
-	if conversationListFlags.Workspace != "" {
-		fmt.Fprintf(cmd.ErrOrStderr(),
-			"warning: --workspace is not yet supported (neither GET /api/sessions nor SessionInfo carries a workspace UUID); ignoring. Use --dir instead, or see mitto-pscc.5.1.\n")
-	}
-
 	c, err := newClient(&conversationFlags)
 	if err != nil {
 		return err
@@ -96,6 +93,11 @@ func runConversationList(cmd *cobra.Command, args []string) error {
 		}
 		if conversationListFlags.Running && !runningIDs[s.SessionID] {
 			continue
+		}
+		if w := conversationListFlags.Workspace; w != "" {
+			if s.WorkspaceUUID != w && !strings.EqualFold(s.WorkspaceName, w) {
+				continue
+			}
 		}
 		filtered = append(filtered, s)
 	}
