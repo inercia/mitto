@@ -4,6 +4,7 @@ package cmd
 
 import (
 	"bytes"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
@@ -11,6 +12,9 @@ import (
 
 	"github.com/spf13/pflag"
 
+	"github.com/inercia/mitto/internal/appdir"
+	"github.com/inercia/mitto/internal/config"
+	"github.com/inercia/mitto/internal/web"
 	"github.com/inercia/mitto/pkg/api"
 )
 
@@ -148,6 +152,97 @@ func TestConversationListIntegration_ListsAndFiltersByDir(t *testing.T) {
 	}
 	if strings.TrimSpace(stdout) != "[]" {
 		t.Errorf("stdout = %q, want an empty JSON array for a non-matching --dir", stdout)
+	}
+}
+
+// setupWorkspaceListTestServer is like setupSendTestServer but registers a
+// single workspace with an explicit, known UUID and Name (setupSendTestServer
+// leaves both to the server's own auto-generation, which the --workspace
+// tests below need to know in advance to filter on).
+func setupWorkspaceListTestServer(t *testing.T, workspaceUUID, workspaceName string) string {
+	t.Helper()
+
+	tmpDir := t.TempDir()
+	t.Setenv(appdir.MittoDirEnv, tmpDir)
+	appdir.ResetCache()
+	t.Cleanup(appdir.ResetCache)
+
+	repoRoot := findRepoRootForCmdTest(t)
+	mockACPBinary := findMockACPServerForCmdTest(t, repoRoot)
+	scenariosDir := repoRoot + "/tests/fixtures/responses"
+
+	workspaceDir := tmpDir + "/workspace"
+	if err := os.MkdirAll(workspaceDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll workspace: %v", err)
+	}
+
+	mockACPCmd := mockACPBinary + ` --scenarios "` + scenariosDir + `"`
+
+	mittoConfig := &config.Config{
+		ACPServers: []config.ACPServer{{Name: "mock-acp", Command: mockACPCmd}},
+	}
+
+	webConfig := web.Config{
+		Workspaces: []config.WorkspaceSettings{
+			{UUID: workspaceUUID, Name: workspaceName, ACPServer: "mock-acp", WorkingDir: workspaceDir},
+		},
+		ACPCommand:              mockACPCmd,
+		ACPServer:               "mock-acp",
+		DefaultWorkingDir:       workspaceDir,
+		AutoApprove:             true,
+		FromCLI:                 true,
+		MittoConfig:             mittoConfig,
+		DisableAuxiliaryPrewarm: true,
+	}
+
+	srv, err := web.NewServer(webConfig)
+	if err != nil {
+		t.Fatalf("web.NewServer: %v", err)
+	}
+	t.Cleanup(func() { _ = srv.Shutdown() })
+
+	httpServer := httptest.NewServer(srv.Handler())
+	t.Cleanup(httpServer.Close)
+
+	return httpServer.URL
+}
+
+// TestConversationListIntegration_FiltersByWorkspace covers mitto-pscc.5.1's
+// real --workspace filter end-to-end: matching by UUID (exact), matching by
+// name (case-insensitive), and a value matching no configured workspace
+// yielding an empty result rather than an error.
+func TestConversationListIntegration_FiltersByWorkspace(t *testing.T) {
+	const workspaceUUID = "11111111-2222-3333-4444-555555555555"
+	const workspaceName = "My Workspace"
+
+	url := setupWorkspaceListTestServer(t, workspaceUUID, workspaceName)
+	sessionID := createTestSession(t, url)
+
+	stdout, _, err := runConv(t, "", "list", "--workspace", workspaceUUID,
+		"--url", url, "--token", "x", "--api-prefix", "/mitto", "--output", "json")
+	if err != nil {
+		t.Fatalf("conversation list --workspace <uuid>: %v", err)
+	}
+	if !strings.Contains(stdout, sessionID) {
+		t.Errorf("stdout = %q, want it to contain the session id for a matching workspace UUID", stdout)
+	}
+
+	stdout, _, err = runConv(t, "", "list", "--workspace", "my workspace",
+		"--url", url, "--token", "x", "--api-prefix", "/mitto", "--output", "json")
+	if err != nil {
+		t.Fatalf("conversation list --workspace <name, different case>: %v", err)
+	}
+	if !strings.Contains(stdout, sessionID) {
+		t.Errorf("stdout = %q, want it to contain the session id for a case-insensitive workspace name match", stdout)
+	}
+
+	stdout, _, err = runConv(t, "", "list", "--workspace", "no-such-workspace",
+		"--url", url, "--token", "x", "--api-prefix", "/mitto", "--output", "json")
+	if err != nil {
+		t.Fatalf("conversation list --workspace <no match>: %v", err)
+	}
+	if strings.TrimSpace(stdout) != "[]" {
+		t.Errorf("stdout = %q, want an empty JSON array for a non-matching --workspace", stdout)
 	}
 }
 
