@@ -27,8 +27,8 @@
   </head>
   <body>
     <h1>Mitto SDK — browser snippet</h1>
-    <label>Mitto base URL (e.g. https://mitto.example.com/api; leave as "/api" if this page is served by Mitto itself)
-      <input id="baseUrl" value="/api" />
+    <label>Mitto base URL — host ORIGIN only, no "/api" suffix (resource paths already carry it); leave empty if this page is served by Mitto itself
+      <input id="baseUrl" placeholder="https://mitto.example.com (empty = same origin)" />
     </label>
     <label>Shared bearer token (leave empty for same-origin/cookie auth)
       <input id="token" type="password" placeholder="only needed cross-origin" />
@@ -40,18 +40,21 @@
       const out = document.getElementById("out");
       const log = (line) => (out.textContent += "\n" + line);
 
+      /** Absolute origin of the target host; an empty baseUrl means same-origin. */
+      const originFor = (baseUrl) =>
+        /^https?:\/\//i.test(baseUrl) ? new URL(baseUrl).origin : location.origin;
+
       /**
        * The SDK is always imported from the TARGET Mitto host's /sdk/index.js
        * (docs/api/getting-started.md's browser modes), which is only known
        * once the user fills in the base-URL field — so this uses a dynamic
        * import() instead of a static one. Same-origin (this page served by
-       * Mitto itself, baseUrl relative like "/api") resolves against
-       * location.origin; cross-origin (an absolute baseUrl on another host)
-       * resolves against that host's own origin.
+       * Mitto itself, empty baseUrl) resolves against location.origin;
+       * cross-origin (an absolute baseUrl on another host) resolves against
+       * that host's own origin.
        */
       async function loadSdk(baseUrl) {
-        const origin = /^https?:\/\//i.test(baseUrl) ? new URL(baseUrl).origin : location.origin;
-        return import(/* @vite-ignore */ `${origin}/sdk/index.js`);
+        return import(/* @vite-ignore */ `${originFor(baseUrl)}/sdk/index.js`);
       }
 
       document.getElementById("run").addEventListener("click", async () => {
@@ -61,6 +64,10 @@
 
         const { createClient, sharedTokenAuth } = await loadSdk(baseUrl);
 
+        // baseUrl is the host origin ONLY (or empty for same-origin): SDK
+        // resource paths already start with "/api", so appending it here
+        // would produce "/api/api/sessions".
+        //
         // sharedTokenAuth is only needed cross-origin; same-origin requests
         // already carry the browser's session cookie automatically, and
         // omitting `auth` defaults to noneAuth() (adds nothing).
@@ -80,7 +87,9 @@
           const sessionId = sessions[0].session_id;
           log(`Streaming from "${sessionId}"...`);
 
-          const stream = client.sessionStream(sessionId, { wsBaseUrl: baseUrl });
+          // wsUrlFor() cannot map a relative/empty baseUrl to ws(s)://, so the
+          // absolute origin is passed explicitly.
+          const stream = client.sessionStream(sessionId, { wsBaseUrl: originFor(baseUrl) });
           stream.on("open", () => log("[connected]"));
           stream.on("error", (err) => log(`[error] ${err?.message || err}`));
           stream.on("message", (msg) => {

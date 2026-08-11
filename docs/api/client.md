@@ -6,7 +6,7 @@
 import { createClient } from "/sdk/index.js";
 
 const client = createClient({
-  baseUrl, // string, e.g. "/api" or "https://host/api"
+  baseUrl, // host origin only, e.g. "" (same origin) or "https://host"
   apiPrefix, // string, rarely needed — see below
   fetch, // typeof fetch
   WebSocket, // typeof WebSocket
@@ -22,7 +22,7 @@ Every key is optional; an unknown key throws `ConfigError`. Defaults:
 
 | Option           | Default                              | Notes                                                                                                                             |
 | ---------------- | ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------- |
-| `baseUrl`        | `""`                                 | Trailing slash trimmed. Relative or absolute.                                                                                     |
+| `baseUrl`        | `""`                                 | Host **origin** only — never include `/api`; resource paths already carry it. Trailing slash trimmed. Relative or absolute.       |
 | `apiPrefix`      | `""`                                 | Prepended between `baseUrl` and the path; leading `/` added if missing.                                                           |
 | `fetch`          | `globalThis.fetch` bound             | Throws `ConfigError` at request time if neither is available.                                                                     |
 | `WebSocket`      | `globalThis.WebSocket`               | Resolved **lazily** — a REST-only caller is never forced to supply one; only realtime calls trigger the `ConfigError` if missing. |
@@ -42,7 +42,7 @@ logging opts in explicitly:
 ```js
 import { createClient, browserEnv } from "/sdk/index.js";
 
-const client = createClient({ ...browserEnv(), baseUrl: "/api" });
+const client = createClient({ ...browserEnv() });
 ```
 
 ## The returned client shape

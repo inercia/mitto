@@ -76,6 +76,9 @@ async function main() {
   const opts = parseArgs(process.argv.slice(2));
   const WebSocketImpl = await resolveWebSocketImpl();
 
+  // baseUrl is the host ORIGIN only — SDK resource paths already start with
+  // "/api", so an "/api" suffix here would request "/api/api/sessions".
+  //
   // No wsBaseUrl needed: wsUrlFor() (sdk/realtime/ws-transport.js) derives
   // ws(s):// automatically from an absolute http(s):// baseUrl like this
   // one. wsBaseUrl only matters for a relative baseUrl (same-origin browser

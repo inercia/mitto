@@ -9,11 +9,16 @@ works — the SDK resolves them from `globalThis`:
 <script type="module">
   import { createClient } from "/sdk/index.js";
 
-  const client = createClient({ baseUrl: "/api" });
+  const client = createClient();
   const sessions = await client.sessions.list();
   console.log(sessions);
 </script>
 ```
+
+`baseUrl` is the **host origin only** — never include `/api`. Resource
+paths already start with `/api` (`buildUrl()` composes
+`baseUrl + apiPrefix + path`), so `baseUrl: "/api"` would request
+`/api/api/sessions`. Same-origin callers leave it unset.
 
 ## Browser, third party (different origin)
 
@@ -29,7 +34,7 @@ import {
 } from "https://mitto.example.com/sdk/index.js";
 
 const client = createClient({
-  baseUrl: "https://mitto.example.com/api",
+  baseUrl: "https://mitto.example.com",
   auth: sharedTokenAuth({ getToken: () => "your-shared-secret" }),
 });
 
@@ -48,8 +53,7 @@ import { createClient, sharedTokenAuth } from "./sdk/index.js";
 import WebSocket from "ws";
 
 const client = createClient({
-  baseUrl: "http://localhost:8080/api",
-  wsBaseUrl: "ws://localhost:8080",
+  baseUrl: "http://localhost:8080",
   WebSocket,
   auth: sharedTokenAuth({ getToken: () => process.env.MITTO_TOKEN }),
 });

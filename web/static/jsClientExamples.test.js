@@ -139,4 +139,27 @@ describe("browser-snippet/index.html (mitto-7gta.22)", () => {
     expect(inlineScript).toMatch(/sharedTokenAuth/);
     expect(inlineScript).toMatch(/auth:\s*token\s*\?\s*sharedTokenAuth/);
   });
+
+  test('base-URL field defaults to empty, not "/api" (path-doubling guard)', () => {
+    // buildUrl() composes baseUrl + apiPrefix + path, and every resource
+    // path already starts with "/api" — so a baseUrl of "/api" would request
+    // "/api/api/sessions". The field must default to the host origin (empty
+    // for same-origin).
+    expect(html).not.toMatch(/id="baseUrl"[^>]*value=/);
+  });
+});
+
+test("baseUrl must be an origin, not an /api-suffixed URL (path-doubling guard, mitto-7gta.22)", async () => {
+  const { resolveConfig } = await import("./sdk/core/config.js");
+  const { buildUrl } = await import("./sdk/core/transport.js");
+  expect(buildUrl(resolveConfig({ baseUrl: "" }), "/api/sessions")).toBe(
+    "/api/sessions",
+  );
+  expect(
+    buildUrl(resolveConfig({ baseUrl: "https://h.example" }), "/api/sessions"),
+  ).toBe("https://h.example/api/sessions");
+  // The mistake this guards against:
+  expect(buildUrl(resolveConfig({ baseUrl: "/api" }), "/api/sessions")).toBe(
+    "/api/api/sessions",
+  );
 });

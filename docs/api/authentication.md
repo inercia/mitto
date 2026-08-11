@@ -39,7 +39,6 @@ import {
 } from "/sdk/index.js";
 
 const client = createClient({
-  baseUrl: "/api",
   auth: browserCookieAuth({
     getCookie: browserCookieReader(), // reads document.cookie
     fetch: window.fetch.bind(window), // used only to fetch a fresh CSRF token
@@ -70,7 +69,7 @@ for enabling it server-side.
 import { createClient, sharedTokenAuth } from "/sdk/index.js";
 
 const client = createClient({
-  baseUrl: "https://mitto.example.com/api",
+  baseUrl: "https://mitto.example.com",
   auth: sharedTokenAuth({
     getToken: () => process.env.MITTO_TOKEN, // sync or async; lazy, never captured as a literal
   }),
