@@ -19,6 +19,13 @@ type Options struct {
 	// forwarded from --no-color/$NO_COLOR (Plan decision: never disables
 	// rendering, only styling).
 	NoColor bool
+	// Style selects the ModeStyled dark/light palette (mitto-u7k3):
+	// "dark" or "light" pin it outright; "auto" (or "", the zero value)
+	// requests the terminal's background color via
+	// tea.RequestBackgroundColor and resolves once the reply arrives (see
+	// Init/Update) — starting dark until then, mirroring termmd.ThemeDark's
+	// zero value.
+	Style string
 	// ShowThoughts, when false (the --no-thoughts flag), drops
 	// EventAgentThought items at append time.
 	ShowThoughts bool
@@ -48,6 +55,11 @@ type Model struct {
 	inFlight      bool
 	quitting      bool
 	quitErr       error
+
+	// requestTheme is true when Options.Style was "auto"/"" (dark/light not
+	// pinned), so Init must issue tea.RequestBackgroundColor() to resolve
+	// it (mitto-u7k3).
+	requestTheme bool
 
 	// clientIDFn overrides the session-derived client ID in tests, which run
 	// without a real *api.Session.
@@ -83,6 +95,23 @@ func NewModel(sess *api.Session, opts Options) *Model {
 		completion: newCompletionMenu(st),
 	}
 	m.transcript.SetMode(mode)
+
+	// Theme resolution (mitto-u7k3): an explicit "dark"/"light" pins the
+	// theme outright; anything else ("auto", "", or NoColor — no point
+	// querying the background when nothing will be colored) defers to a
+	// tea.BackgroundColorMsg reply requested from Init. The transcript
+	// starts at its zero-value ThemeDark either way, matching Options.Style
+	// == "auto"'s documented "starts dark until resolved" behavior.
+	if mode == termmd.ModeStyled {
+		switch opts.Style {
+		case "dark":
+			m.transcript.SetTheme(termmd.ThemeDark)
+		case "light":
+			m.transcript.SetTheme(termmd.ThemeLight)
+		default:
+			m.requestTheme = true
+		}
+	}
 	return m
 }
 
@@ -129,7 +158,17 @@ func (m *Model) saveHistoryCmd() tea.Cmd {
 	}
 }
 
-func (m *Model) Init() tea.Cmd { return nil }
+// Init issues tea.RequestBackgroundColor() when the theme was not pinned by
+// --style, so Update's tea.BackgroundColorMsg case below can resolve
+// dark/light (mitto-u7k3). Bubble Tea handles the terminal query itself
+// (tea.go); a raw lipgloss.HasDarkBackground call here would instead fight
+// the program's own input reader for the terminal.
+func (m *Model) Init() tea.Cmd {
+	if m.requestTheme {
+		return func() tea.Msg { return tea.RequestBackgroundColor() }
+	}
+	return nil
+}
 
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
@@ -137,6 +176,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleResize(msg)
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
+	case tea.BackgroundColorMsg:
+		if msg.IsDark() {
+			m.transcript.SetTheme(termmd.ThemeDark)
+		} else {
+			m.transcript.SetTheme(termmd.ThemeLight)
+		}
+		return m, nil
 	case eventMsg:
 		return m.handleEvent(msg.event)
 	case streamEndMsg:

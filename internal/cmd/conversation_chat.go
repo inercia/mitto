@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"os"
 	"sync"
 
 	tea "charm.land/bubbletea/v2"
@@ -47,6 +48,23 @@ func init() {
 	conversationChatCmd.Flags().BoolVar(&f.NoThoughts, "no-thoughts", false, "Hide agent thinking/thought events")
 }
 
+// resolveChatStyle applies the flag > $GLAMOUR_STYLE steps of termmd.
+// ResolveTheme's precedence (mitto-u7k3) before the chat TUI even starts:
+// an explicit "dark"/"light" (from --style or $GLAMOUR_STYLE) is returned
+// as-is; anything else becomes "auto", handing background detection to
+// chatui.Model's tea.RequestBackgroundColor flow (Init/Update) since a
+// raw lipgloss query would fight Bubble Tea's own input reader for the
+// terminal.
+func resolveChatStyle(styleFlag string) string {
+	if styleFlag == "dark" || styleFlag == "light" {
+		return styleFlag
+	}
+	if env := os.Getenv("GLAMOUR_STYLE"); env == "dark" || env == "light" {
+		return env
+	}
+	return "auto"
+}
+
 func runConversationChat(cmd *cobra.Command, args []string) error {
 	conversationID := args[0]
 
@@ -78,6 +96,7 @@ func runConversationChat(cmd *cobra.Command, args []string) error {
 	model := chatui.NewModel(nil, chatui.Options{
 		Title:        title,
 		NoColor:      conversationFlags.NoColor,
+		Style:        resolveChatStyle(conversationFlags.Style),
 		ShowThoughts: !conversationChatFlags.NoThoughts,
 	})
 

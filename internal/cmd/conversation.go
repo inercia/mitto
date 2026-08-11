@@ -17,6 +17,7 @@ type serverFlags struct {
 	Timeout   time.Duration
 	Output    string
 	NoColor   bool
+	Style     string
 }
 
 // conversationFlags and authFlags are separate instances (not shared) since
@@ -62,4 +63,5 @@ func registerServerFlags(cmd *cobra.Command, f *serverFlags) {
 	cmd.PersistentFlags().DurationVar(&f.Timeout, "timeout", 30*time.Second, "HTTP request timeout")
 	cmd.PersistentFlags().StringVar(&f.Output, "output", "table", "Output format: table, json, or yaml")
 	cmd.PersistentFlags().BoolVar(&f.NoColor, "no-color", false, "Disable colored/styled output (also: $NO_COLOR)")
+	cmd.PersistentFlags().StringVar(&f.Style, "style", "auto", "Styled-mode color palette: auto, dark, or light (also: $GLAMOUR_STYLE)")
 }

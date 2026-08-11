@@ -4,9 +4,10 @@
 // package, so styling policy stays a CLI-only concern (mitto-pscc.8 DDR).
 //
 // Render is the single entry point. It is pure and deterministic for a given
-// (markdown, Options) pair — callers resolve Mode and Width themselves (see
-// ResolveMode and TerminalWidth) rather than Render sniffing the environment,
-// which is what keeps the golden-file tests in this package stable in CI.
+// (markdown, Options) pair — callers resolve Mode, Theme, and Width
+// themselves (see ResolveMode, ResolveTheme, and TerminalWidth) rather than
+// Render sniffing the environment, which is what keeps the golden-file tests
+// in this package stable in CI.
 //
 // Render is meant to be called once per complete message body. A caller
 // that must re-render a growing in-flight message on every streamed chunk
@@ -31,10 +32,10 @@ type Mode int
 
 const (
 	// ModeStyled renders full ANSI styling (color, bold, etc.) using
-	// glamour's "dark" style. Selected for an interactive TTY. Always dark:
-	// glamour v2 dropped v1's WithAutoStyle and defaults to dark itself, so
-	// light-terminal selection needs explicit background detection, tracked
-	// as mitto-u7k3 and deferred to the chat TUI (mitto-pscc.7).
+	// glamour's "dark" or "light" style, per Options.Theme. Selected for an
+	// interactive TTY. glamour v2 dropped v1's WithAutoStyle and defaults to
+	// dark itself, so light-terminal selection is the caller's
+	// responsibility — see Theme and ResolveTheme (mitto-u7k3).
 	ModeStyled Mode = iota
 	// ModePlain renders glamour's "notty" (ASCII-only, no ANSI) style.
 	// Selected for piped stdout, --no-color, or $NO_COLOR.
@@ -46,9 +47,26 @@ const (
 	ModeDegraded
 )
 
+// Theme selects which glamour color palette ModeStyled uses. It is ignored
+// by ModePlain (notty has no color to tune) and ModeDegraded. The zero value
+// is ThemeDark, so every existing Options{Mode: ...} literal that predates
+// this field keeps rendering exactly as before (mitto-u7k3 plan decision).
+type Theme int
+
+const (
+	// ThemeDark selects glamour's "dark" style. Zero value.
+	ThemeDark Theme = iota
+	// ThemeLight selects glamour's "light" style.
+	ThemeLight
+)
+
 // Options configures a single Render call.
 type Options struct {
 	Mode Mode
+	// Theme selects the ModeStyled color palette (dark/light). Callers
+	// resolve it themselves (see ResolveTheme) rather than Render sniffing
+	// the environment, for the same determinism reason as Width below.
+	Theme Theme
 	// Width is the wrap width in columns. Always supplied by the caller
 	// (see TerminalWidth) — Render never queries the terminal itself, so
 	// its output stays deterministic for golden-file testing. Non-positive
@@ -56,10 +74,14 @@ type Options struct {
 	Width int
 }
 
-// rendererKey identifies a cached *glamour.TermRenderer by the (mode, width)
-// pair that determines its output. ModeDegraded never reaches this cache.
+// rendererKey identifies a cached *glamour.TermRenderer by the (mode, theme,
+// width) triple that determines its output. ModeDegraded never reaches this
+// cache. theme is meaningless for ModePlain, but including it unconditionally
+// keeps the key simple; ResolveTheme's ModePlain callers always pass the
+// zero Theme anyway, so no extra cache entries are created in practice.
 type rendererKey struct {
 	mode  Mode
+	theme Theme
 	width int
 }
 
@@ -68,28 +90,32 @@ var (
 	rendererCache = map[rendererKey]*glamour.TermRenderer{}
 )
 
-// glamourStyle maps a styled/plain Mode to glamour's builtin style name.
-func glamourStyle(mode Mode) string {
+// glamourStyle maps a (mode, theme) pair to glamour's builtin style name.
+func glamourStyle(mode Mode, theme Theme) string {
 	if mode == ModePlain {
 		return glamourStyleNoTTY
+	}
+	if theme == ThemeLight {
+		return glamourStyleLight
 	}
 	return glamourStyleDark
 }
 
 // Builtin glamour style names (charm.land/glamour/v2/styles), duplicated here
 // as untyped constants so this package does not need to import the styles
-// subpackage just for two string literals.
+// subpackage just for these string literals.
 const (
 	glamourStyleDark  = "dark"
+	glamourStyleLight = "light"
 	glamourStyleNoTTY = "notty"
 )
 
-// termRenderer returns a cached *glamour.TermRenderer for (mode, width),
-// creating one on first use. glamour's TermRenderer is stateful and not
-// concurrency-safe (mitto-pscc.8 plan) — callers must render under the
+// termRenderer returns a cached *glamour.TermRenderer for (mode, theme,
+// width), creating one on first use. glamour's TermRenderer is stateful and
+// not concurrency-safe (mitto-pscc.8 plan) — callers must render under the
 // returned mutex, which is what Render below does.
-func termRenderer(mode Mode, width int) (*glamour.TermRenderer, error) {
-	key := rendererKey{mode: mode, width: width}
+func termRenderer(mode Mode, theme Theme, width int) (*glamour.TermRenderer, error) {
+	key := rendererKey{mode: mode, theme: theme, width: width}
 
 	rendererMu.Lock()
 	defer rendererMu.Unlock()
@@ -98,7 +124,7 @@ func termRenderer(mode Mode, width int) (*glamour.TermRenderer, error) {
 		return r, nil
 	}
 
-	opts := []glamour.TermRendererOption{glamour.WithStylePath(glamourStyle(mode))}
+	opts := []glamour.TermRendererOption{glamour.WithStylePath(glamourStyle(mode, theme))}
 	if width > 0 {
 		opts = append(opts, glamour.WithWordWrap(width))
 	}
@@ -124,7 +150,7 @@ func Render(body string, opts Options) string {
 		return RenderHTMLFallback(body)
 	}
 
-	r, err := termRenderer(opts.Mode, opts.Width)
+	r, err := termRenderer(opts.Mode, opts.Theme, opts.Width)
 	if err != nil {
 		return body
 	}

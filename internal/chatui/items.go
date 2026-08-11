@@ -50,11 +50,12 @@ type item struct {
 	size int
 
 	// rendered is the cached render of this item at renderedWidth, in the
-	// current renderMode. Empty rendered with renderedWidth == -1 means
-	// "never rendered yet".
+	// current renderMode/renderedTheme. Empty rendered with renderedWidth
+	// == -1 means "never rendered yet".
 	rendered      string
 	renderedWidth int
 	renderedMode  termmd.Mode
+	renderedTheme termmd.Theme
 
 	// stream is the stable-prefix streaming cache for an itemAgent's
 	// glamour render (mitto-pscc.8.1), lazily created on first render.
@@ -85,7 +86,7 @@ func renderModeFor(base termmd.Mode, markdown string) termmd.Mode {
 
 // render returns the styled string for this item at width, using the cache
 // when neither width nor content changed since the last call.
-func (it *item) render(width int, baseMode termmd.Mode, styles *styles) string {
+func (it *item) render(width int, baseMode termmd.Mode, theme termmd.Theme, styles *styles) string {
 	switch it.kind {
 	case itemTool:
 		return styles.renderTool(it.title, it.status)
@@ -96,7 +97,7 @@ func (it *item) render(width int, baseMode termmd.Mode, styles *styles) string {
 	}
 
 	mode := renderModeFor(baseMode, it.markdown)
-	if it.rendered != "" && it.renderedWidth == width && it.renderedMode == mode {
+	if it.rendered != "" && it.renderedWidth == width && it.renderedMode == mode && it.renderedTheme == theme {
 		return it.decorate(it.rendered, styles)
 	}
 
@@ -104,7 +105,7 @@ func (it *item) render(width int, baseMode termmd.Mode, styles *styles) string {
 	if mode == termmd.ModeDegraded {
 		body = it.html
 	}
-	opts := termmd.Options{Mode: mode, Width: width}
+	opts := termmd.Options{Mode: mode, Theme: theme, Width: width}
 
 	var out string
 	if it.kind == itemAgent {
@@ -112,8 +113,8 @@ func (it *item) render(width int, baseMode termmd.Mode, styles *styles) string {
 		// AppendOrUpdateAgent grows markdown chunk by chunk, and
 		// StreamRenderer avoids re-rendering the whole accumulated body on
 		// every chunk. SetOptions is a no-op (and does not reset the
-		// stream cache) when mode/width are unchanged from the previous
-		// call.
+		// stream cache) when mode/theme/width are unchanged from the
+		// previous call.
 		if it.stream == nil {
 			it.stream = termmd.NewStreamRenderer(opts)
 		} else {
@@ -127,6 +128,7 @@ func (it *item) render(width int, baseMode termmd.Mode, styles *styles) string {
 	it.rendered = out
 	it.renderedWidth = width
 	it.renderedMode = mode
+	it.renderedTheme = theme
 	return it.decorate(out, styles)
 }
 

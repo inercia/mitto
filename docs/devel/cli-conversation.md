@@ -49,6 +49,7 @@ server-touching commands, and vice versa.
 | `--timeout`    | `api.WithTimeout`                                |
 | `--output`     | `table` (default) \| `json` \| `yaml`            |
 | `--no-color`   | forces glamour's notty style                     |
+| `--style`      | `auto` (default) \| `dark` \| `light` glamour palette for styled mode (mitto-u7k3); `auto` detects the terminal background — the chat TUI via `tea.RequestBackgroundColor`, any other termmd caller via `termmd.ResolveTheme`'s `lipgloss.HasDarkBackground` fallback |
 
 Precedence, resolved once in `mitto-pscc.4`:
 
@@ -169,9 +170,15 @@ by scripts — `--output json`/`yaml` is the contract.
   `internal/conversation` must not import it. `.7`'s transcript pane and any
   one-shot command printing an agent message body are its consumers. The
   streaming stable-prefix cache is deferred as `mitto-pscc.8.1`.
-  **Styled mode is dark-only**: glamour v2 dropped v1's `WithAutoStyle`, so
-  light-terminal selection needs explicit background detection — deferred to
-  `.7` as `mitto-u7k3`.
+  **`mitto-u7k3` landed**: glamour v2 dropped v1's `WithAutoStyle`, so styled
+  mode's dark/light palette is now a `termmd.Theme` (`Options.Theme`, zero
+  value `ThemeDark`) resolved by `ResolveTheme` — `--style dark|light` >
+  `$GLAMOUR_STYLE` (only when exactly `dark`/`light`) > terminal background
+  detection > dark. One-shot commands detect via
+  `lipgloss.HasDarkBackground`; the chat TUI cannot use that raw-mode query
+  (it would fight Bubble Tea's own input reader) and instead issues
+  `tea.RequestBackgroundColor()` from `Init` and resolves on the
+  `tea.BackgroundColorMsg` reply in `Update`.
 - **`mitto-pscc.7` landed**: `internal/chatui` is the CLI-owned TUI package
   (one `tea.Model` in `model.go`, imperative sub-components in
   `transcript.go`/`statusline.go`/`permission.go`, event pump in `pump.go`),

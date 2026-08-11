@@ -71,7 +71,7 @@ func TestAppendOrUpdateAgent_StreamedRenderMatchesFullRenderStructurally(t *test
 		t.Fatalf("len(items) = %d, want 1 (same seq must update in place)", got)
 	}
 
-	got := normalizeLines(tr.items[0].render(tr.width, tr.mode, tr.styles))
+	got := normalizeLines(tr.items[0].render(tr.width, tr.mode, tr.theme, tr.styles))
 	want := normalizeLines(termmd.Render(streamedAgentCorpus, termmd.Options{Mode: tr.mode, Width: tr.width}))
 
 	if len(got) != len(want) {
@@ -97,14 +97,14 @@ func TestItem_Render_ItemAgentLazilyCreatesStreamRenderer(t *testing.T) {
 	if agent.stream != nil {
 		t.Fatal("stream must be nil before the first render")
 	}
-	agent.render(80, termmd.ModeStyled, styles)
+	agent.render(80, termmd.ModeStyled, termmd.ThemeDark, styles)
 	if agent.stream == nil {
 		t.Error("render on an itemAgent must lazily create a StreamRenderer")
 	}
 
 	user := newItem(itemUser)
 	user.markdown = "hi"
-	user.render(80, termmd.ModeStyled, styles)
+	user.render(80, termmd.ModeStyled, termmd.ThemeDark, styles)
 	if user.stream != nil {
 		t.Error("render on a non-agent item must never create a StreamRenderer")
 	}
@@ -121,7 +121,7 @@ func TestItem_Invalidate_DoesNotResetStreamCache(t *testing.T) {
 	styles := newStyles()
 	it := newItem(itemAgent)
 	it.markdown = "Para one.\n\nPara two.\n"
-	it.render(80, termmd.ModeStyled, styles)
+	it.render(80, termmd.ModeStyled, termmd.ThemeDark, styles)
 	if it.stream == nil {
 		t.Fatal("expected a StreamRenderer after the first render")
 	}

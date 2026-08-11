@@ -22,6 +22,7 @@ type transcript struct {
 
 	width       int
 	mode        termmd.Mode
+	theme       termmd.Theme
 	showThought bool
 
 	styles *styles
@@ -55,6 +56,21 @@ func (t *transcript) SetMode(mode termmd.Mode) {
 		return
 	}
 	t.mode = mode
+	for _, it := range t.items {
+		it.invalidate()
+	}
+	t.refresh()
+}
+
+// SetTheme updates the termmd dark/light theme (mitto-u7k3) applied to
+// future and cached ModeStyled renders, invalidating the cache so it takes
+// effect immediately — mirrors SetMode above. Called once the chat TUI's
+// tea.BackgroundColorMsg reply arrives (see Model.Update).
+func (t *transcript) SetTheme(theme termmd.Theme) {
+	if t.theme == theme {
+		return
+	}
+	t.theme = theme
 	for _, it := range t.items {
 		it.invalidate()
 	}
@@ -164,7 +180,7 @@ func (t *transcript) refresh() {
 	wasAtBottom := t.vp.AtBottom()
 	lines := make([]string, 0, len(t.items))
 	for _, it := range t.items {
-		lines = append(lines, it.render(t.width, t.mode, t.styles))
+		lines = append(lines, it.render(t.width, t.mode, t.theme, t.styles))
 	}
 	t.vp.SetContent(strings.Join(lines, "\n\n"))
 	if wasAtBottom {
