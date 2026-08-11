@@ -184,6 +184,30 @@ func TestStatsDir(t *testing.T) {
 	}
 }
 
+func TestChatHistoryDir(t *testing.T) {
+	customDir := t.TempDir()
+	t.Setenv(MittoDirEnv, customDir)
+	ResetCache()
+	t.Cleanup(ResetCache)
+
+	chatHistoryDir, err := ChatHistoryDir()
+	if err != nil {
+		t.Fatalf("ChatHistoryDir() failed: %v", err)
+	}
+
+	expected := filepath.Join(customDir, ChatHistoryDirName)
+	if chatHistoryDir != expected {
+		t.Errorf("ChatHistoryDir() = %q, want %q", chatHistoryDir, expected)
+	}
+
+	// ChatHistoryDir must return the path only; it must not create the
+	// directory (callers persist via fileutil.WriteJSONAtomic, which
+	// creates it on first write — see internal/chatui/inputhistory.go).
+	if _, err := os.Stat(expected); !os.IsNotExist(err) {
+		t.Errorf("ChatHistoryDir() unexpectedly created %q (err=%v); it should return path only", expected, err)
+	}
+}
+
 func TestWorkspacesPath(t *testing.T) {
 	customDir := t.TempDir()
 	t.Setenv(MittoDirEnv, customDir)

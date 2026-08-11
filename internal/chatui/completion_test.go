@@ -1,6 +1,9 @@
 package chatui
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestCompletionMenu_Filter_MatchesNamesAndAliases(t *testing.T) {
 	m := newCompletionMenu(newStyles())
@@ -83,6 +86,30 @@ func TestCompletionMenu_Accept_ReturnsSelectedName(t *testing.T) {
 	name, ok := m.Accept()
 	if !ok || name != "/cancel" {
 		t.Errorf("Accept() = (%q, %v), want (/cancel, true)", name, ok)
+	}
+}
+
+func TestCompletionMenu_Render_ListsMatchesWithSelectionHighlighted(t *testing.T) {
+	m := newCompletionMenu(newStyles())
+	m.Filter("/c") // both /cancel and /clear start with "/c"
+
+	out := m.Render()
+
+	if !strings.Contains(out, "/cancel") || !strings.Contains(out, "/clear") {
+		t.Fatalf("Render() should list every match, got:\n%s", out)
+	}
+	if !strings.Contains(out, "Cancel the current operation") {
+		t.Errorf("Render() should include each match's description, got:\n%s", out)
+	}
+	lines := strings.Split(out, "\n")
+	if got := len(lines); got != 2 {
+		t.Fatalf("Render() should emit one line per match, got %d lines:\n%s", got, out)
+	}
+
+	m.Next() // select /clear
+	out2 := m.Render()
+	if out == out2 {
+		t.Error("Render() should change when the selection moves (highlight follows selected)")
 	}
 }
 

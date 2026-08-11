@@ -411,6 +411,50 @@ func TestModel_WindowSizeMsg_ClampsTranscriptHeightToOneOnTinyTerminal(t *testin
 	}
 }
 
+// --- input history seeding (bootstrap wiring) -------------------------------
+
+func TestModel_SeedInputHistory_PopulatesRecall(t *testing.T) {
+	m := newTestModel(t, true)
+
+	m.SeedInputHistory([]string{"older", "newer"})
+
+	got, ok := m.history.Prev("")
+	if !ok || got != "newer" {
+		t.Fatalf("after SeedInputHistory, first Prev() = (%q, %v), want (newer, true)", got, ok)
+	}
+}
+
+func TestModel_SaveHistoryCmd_NilSessionReturnsNilCmd(t *testing.T) {
+	m := newTestModel(t, true) // sess is nil
+	m.history.Add("previous")
+
+	if cmd := m.saveHistoryCmd(); cmd != nil {
+		t.Error("saveHistoryCmd() with a nil session should return a nil Cmd (nothing to key the file on)")
+	}
+}
+
+func TestModel_SaveHistoryCmd_PersistsEntriesUnderSessionID(t *testing.T) {
+	withTempMittoDir(t)
+	m := newTestModel(t, true)
+	m.SetSession(&api.Session{})
+	m.history.Add("hello")
+	m.history.Add("world")
+
+	cmd := m.saveHistoryCmd()
+	if cmd == nil {
+		t.Fatal("saveHistoryCmd() with a non-nil session should return a Cmd")
+	}
+	cmd() // run the closure synchronously, as tea's runtime would
+
+	got, err := LoadInputHistory(m.sess.SessionID())
+	if err != nil {
+		t.Fatalf("LoadInputHistory: %v", err)
+	}
+	if len(got) != 2 || got[0] != "hello" || got[1] != "world" {
+		t.Errorf("LoadInputHistory() = %v, want [hello world]", got)
+	}
+}
+
 // --- input history recall: up/down gated to first/last line ----------------
 
 func TestModel_Up_OnFirstLine_RecallsHistory(t *testing.T) {
@@ -546,6 +590,21 @@ func TestModel_CompletionMenu_EnterAcceptsSelection(t *testing.T) {
 	// input for the user to review/edit before a separate enter sends it.
 	if got := len(m.transcript.items); got != 0 {
 		t.Errorf("accepting a completion must not submit, len(items) = %d", got)
+	}
+}
+
+func TestModel_View_RendersCompletionMenuAboveInput(t *testing.T) {
+	m := newTestModel(t, true)
+	m.input.SetValue("/c") // matches /cancel and /clear
+	m.Update(tea.KeyPressMsg{Text: "tab", Code: tea.KeyTab})
+	if !m.completion.Open() {
+		t.Fatal("precondition: menu should be open")
+	}
+
+	out := m.View().Content
+
+	if !strings.Contains(out, "/cancel") || !strings.Contains(out, "/clear") {
+		t.Errorf("View() should render the completion menu above the input, got:\n%s", out)
 	}
 }
 
