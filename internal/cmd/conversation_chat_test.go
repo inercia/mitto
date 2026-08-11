@@ -6,6 +6,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/inercia/mitto/pkg/api"
 )
 
 // withChatNonTTYStdin replaces the real os.Stdin with a pipe whose write end
@@ -66,6 +68,124 @@ func TestConversationChat_NonTTYStdin_ExitsUsageError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "conversation send --wait") {
 		t.Errorf("error should point at the non-interactive alternative: %v", err)
+	}
+}
+
+func TestConversationChat_OptionalArgumentValidation(t *testing.T) {
+	for _, args := range [][]string{nil, {"session-1"}} {
+		if err := conversationChatCmd.Args(conversationChatCmd, args); err != nil {
+			t.Errorf("Args(%v) = %v, want nil", args, err)
+		}
+	}
+	if err := conversationChatCmd.Args(conversationChatCmd, []string{"session-1", "session-2"}); err == nil {
+		t.Fatal("Args(two IDs) = nil, want a validation error")
+	}
+	if got := conversationChatCmd.Use; got != "chat [conversation-id]" {
+		t.Errorf("Use = %q, want optional conversation ID syntax", got)
+	}
+}
+
+func TestResolveChatConversationID_ExplicitIDBypassesListAndPicker(t *testing.T) {
+	got, selected, err := resolveChatConversationID(
+		[]string{"session-explicit"},
+		func() ([]api.SessionInfo, error) {
+			t.Fatal("explicit-ID path must not list sessions")
+			return nil, nil
+		},
+		func([]api.SessionInfo) (string, bool, error) {
+			t.Fatal("explicit-ID path must not open the picker")
+			return "", false, nil
+		},
+	)
+	if err != nil || !selected || got != "session-explicit" {
+		t.Fatalf("resolve explicit ID = (%q, %t, %v), want (session-explicit, true, nil)", got, selected, err)
+	}
+}
+
+func TestResolveChatConversationID_NoIDOutcomes(t *testing.T) {
+	boom := errors.New("list failed")
+	tests := []struct {
+		name      string
+		list      func() ([]api.SessionInfo, error)
+		pick      chatConversationPicker
+		wantID    string
+		wantPick  bool
+		wantError string
+	}{
+		{
+			name: "selection",
+			list: func() ([]api.SessionInfo, error) {
+				return []api.SessionInfo{{SessionID: "session-1"}}, nil
+			},
+			pick: func(sessions []api.SessionInfo) (string, bool, error) {
+				if len(sessions) != 1 || sessions[0].SessionID != "session-1" {
+					t.Fatalf("picker candidates = %+v, want session-1", sessions)
+				}
+				return "session-1", true, nil
+			},
+			wantID:   "session-1",
+			wantPick: true,
+		},
+		{
+			name: "cancel",
+			list: func() ([]api.SessionInfo, error) {
+				return []api.SessionInfo{{SessionID: "session-1"}}, nil
+			},
+			pick: func([]api.SessionInfo) (string, bool, error) { return "", false, nil },
+		},
+		{
+			name: "empty",
+			list: func() ([]api.SessionInfo, error) { return nil, nil },
+			pick: func([]api.SessionInfo) (string, bool, error) {
+				t.Fatal("empty candidate set must not open picker")
+				return "", false, nil
+			},
+			wantError: "no selectable conversations",
+		},
+		{
+			name: "list failure",
+			list: func() ([]api.SessionInfo, error) { return nil, boom },
+			pick: func([]api.SessionInfo) (string, bool, error) {
+				t.Fatal("list failure must not open picker")
+				return "", false, nil
+			},
+			wantError: "list failed",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			gotID, gotPick, err := resolveChatConversationID(nil, tc.list, tc.pick)
+			if gotID != tc.wantID || gotPick != tc.wantPick {
+				t.Errorf("resolve = (%q, %t), want (%q, %t)", gotID, gotPick, tc.wantID, tc.wantPick)
+			}
+			if tc.wantError == "" && err != nil {
+				t.Fatalf("resolve error = %v, want nil", err)
+			}
+			if tc.wantError != "" && (err == nil || !strings.Contains(err.Error(), tc.wantError)) {
+				t.Fatalf("resolve error = %v, want substring %q", err, tc.wantError)
+			}
+		})
+	}
+}
+
+func TestSelectableChatSessions_FiltersAndSortsRecentFirst(t *testing.T) {
+	sessions := []api.SessionInfo{
+		{SessionID: "invalid-time", ChildOrigin: "manual", UpdatedAt: "unknown"},
+		{SessionID: "archived", Archived: true, UpdatedAt: "2026-08-11T15:00:00Z"},
+		{SessionID: "human-old", UpdatedAt: "2026-08-10T12:00:00Z"},
+		{SessionID: "auto", ChildOrigin: "auto", UpdatedAt: "2026-08-11T16:00:00Z"},
+		{SessionID: "mcp-new", ChildOrigin: "mcp", UpdatedAt: "2026-08-11T14:00:00Z"},
+	}
+
+	got := selectableChatSessions(sessions)
+	want := []string{"mcp-new", "human-old", "invalid-time"}
+	if len(got) != len(want) {
+		t.Fatalf("selectable sessions = %+v, want IDs %v", got, want)
+	}
+	for i, id := range want {
+		if got[i].SessionID != id {
+			t.Errorf("selectable[%d] = %q, want %q", i, got[i].SessionID, id)
+		}
 	}
 }
 

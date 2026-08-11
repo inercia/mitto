@@ -280,7 +280,7 @@ func TestClient_CreateSession_500_ReturnsTypedAPIError(t *testing.T) {
 func TestClient_ListSessions_HappyPath(t *testing.T) {
 	f := newFakeServer(t)
 	f.On(http.MethodGet, "/mitto/api/sessions").
-		RespondJSON(http.StatusOK, `[{"session_id":"sess-1","acp_server":"auggie"},{"session_id":"sess-2","acp_server":"claude"}]`)
+		RespondJSON(http.StatusOK, `[{"session_id":"sess-1","acp_server":"auggie","parent_session_id":"parent-1","child_origin":"mcp"},{"session_id":"sess-2","acp_server":"claude"}]`)
 
 	got, err := f.Client().ListSessions()
 	if err != nil {
@@ -288,6 +288,9 @@ func TestClient_ListSessions_HappyPath(t *testing.T) {
 	}
 	if len(got) != 2 || got[0].SessionID != "sess-1" {
 		t.Errorf("ListSessions = %+v, unexpected", got)
+	}
+	if got[0].ParentSessionID != "parent-1" || got[0].ChildOrigin != "mcp" {
+		t.Errorf("ListSessions session relationship fields = %+v, want parent-1/mcp", got[0])
 	}
 }
 
