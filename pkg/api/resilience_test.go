@@ -89,6 +89,32 @@ func TestReconnectDelay_Table(t *testing.T) {
 	}
 }
 
+// fakeSeqStore is a minimal SeqStore double for TestWithSeqStore_OverridesDefault;
+// its behavior is irrelevant, only its identity matters (it must be the
+// exact value threaded through resilienceConfig.seqStore).
+type fakeSeqStore struct{}
+
+func (fakeSeqStore) Load(string) (int64, error) { return 0, nil }
+func (fakeSeqStore) Store(string, int64) error  { return nil }
+
+// TestWithSeqStore_OverridesDefault pins WithSeqStore as a pure
+// SessionOption: applying it sets resilienceConfig.seqStore to the supplied
+// store, and the zero value (no option applied) leaves it nil so Connect's
+// own default (an in-memory store, see NewMemorySeqStore) takes over. No
+// server or Session needed since this is package-private config wiring.
+func TestWithSeqStore_OverridesDefault(t *testing.T) {
+	var rc resilienceConfig
+	if rc.seqStore != nil {
+		t.Fatalf("zero-value resilienceConfig.seqStore = %v, want nil", rc.seqStore)
+	}
+
+	store := fakeSeqStore{}
+	WithSeqStore(store)(&rc)
+	if rc.seqStore != store {
+		t.Errorf("resilienceConfig.seqStore = %v, want %v", rc.seqStore, store)
+	}
+}
+
 // TestConnect_DefaultBehavior_DisconnectNotRetried pins the backward
 // compatibility guarantee: a Session created with no SessionOption values
 // behaves exactly as before this feature existed — a dropped connection is

@@ -240,6 +240,38 @@ func TestClient_CreateSession_HappyPath(t *testing.T) {
 	}
 }
 
+func TestClient_CreateSession_500_ReturnsTypedAPIError(t *testing.T) {
+	f := newFakeServer(t)
+	f.On(http.MethodPost, "/mitto/api/sessions").
+		Fail(http.StatusInternalServerError, CodeServerError, "boom", nil)
+
+	_, err := f.Client().CreateSession(CreateSessionRequest{Name: "n", WorkingDir: "/tmp"})
+	assertAPIError(t, err, ErrServerError, http.StatusInternalServerError, CodeServerError)
+}
+
+func TestClient_ListSessions_HappyPath(t *testing.T) {
+	f := newFakeServer(t)
+	f.On(http.MethodGet, "/mitto/api/sessions").
+		RespondJSON(http.StatusOK, `[{"session_id":"sess-1","acp_server":"auggie"},{"session_id":"sess-2","acp_server":"claude"}]`)
+
+	got, err := f.Client().ListSessions()
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	if len(got) != 2 || got[0].SessionID != "sess-1" {
+		t.Errorf("ListSessions = %+v, unexpected", got)
+	}
+}
+
+func TestClient_ListSessions_500_ReturnsTypedAPIError(t *testing.T) {
+	f := newFakeServer(t)
+	f.On(http.MethodGet, "/mitto/api/sessions").
+		Fail(http.StatusInternalServerError, CodeServerError, "boom", nil)
+
+	_, err := f.Client().ListSessions()
+	assertAPIError(t, err, ErrServerError, http.StatusInternalServerError, CodeServerError)
+}
+
 func TestClient_DeleteSession_HappyPath(t *testing.T) {
 	f := newFakeServer(t)
 	f.On(http.MethodDelete, "/mitto/api/sessions/sess-1").RespondRaw(http.StatusNoContent, "", nil)
@@ -269,6 +301,14 @@ func TestClient_ArchiveSession_HappyPath(t *testing.T) {
 	if gotBody["archived"] != true {
 		t.Errorf("request body archived = %v, want true", gotBody["archived"])
 	}
+}
+
+func TestClient_ArchiveSession_404_ReturnsTypedAPIError(t *testing.T) {
+	f := newFakeServer(t)
+	f.On(http.MethodPatch, "/mitto/api/sessions/missing").RespondRaw(http.StatusNotFound, "", nil)
+
+	err := f.Client().ArchiveSession("missing", true)
+	assertAPIError(t, err, ErrNotFound, http.StatusNotFound, "")
 }
 
 func TestClient_BaseURL(t *testing.T) {
