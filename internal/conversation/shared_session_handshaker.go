@@ -32,6 +32,22 @@ import (
 // warm loads (which resolve well under 25s).
 const staleLoadProbeTimeout = 25 * time.Second
 
+// minColdFallbackAttemptFraction is the smallest fraction of a fresh cold
+// budget (RecommendedLoadTimeout) that the session/new fallback is guaranteed
+// after a timed-out load probe (mitto-s1rt.1). See the probeTimedOut branch in
+// resumeSharedACPSession: rather than granting a FULL fresh MCPInitTimeout on
+// top of whatever the probe already burned (the mitto-l9as ~265s field wedge,
+// staleLoadProbeTimeout 25s + MCPInitTimeout 240s), the fallback gets the
+// LARGER of (a) whatever remains of the single combined resume budget, or (b)
+// this fraction of one fresh cold budget — a floor that only matters when the
+// probe consumed virtually the entire original budget itself (e.g. a very
+// small RecommendedLoadTimeout, where staleLoadProbeTimeout no longer bounds
+// the probe below it). On realistic production values (staleLoadProbeTimeout
+// 25s vs MCPInitTimeout 240s) the probe burns a small slice of the budget, so
+// branch (a) dominates and the combined wall-clock stays within ONE cold
+// budget instead of stacking two.
+const minColdFallbackAttemptFraction = 0.4
+
 // isSessionNotFoundErr reports whether err from LoadSession/ResumeSession
 // indicates the requested acp_session_id is no longer known to the agent
 // (mitto-z70). Agents return JSON-RPC -32602 "Invalid params" for a stale
@@ -500,34 +516,31 @@ func (c sharedSessionHandshaker) resumeSharedACPSession(d handshakeDeps, sharedP
 		// EXCEPTION (mitto-1ut starvation fix): when the load probe FAILED BY DEADLINE
 		// (probeTimedOut) rather than a fast -32602, the process is proven genuinely
 		// cold. Applying the ORIGINAL shared cap would hand NewSession only the remainder
-		// (handshakeDeadline - ~probe ≈ budget - 25s) — LESS than a single MCPInitTimeout
-		// attempt (240s) — so attempt 1 is truncated and attempt 2 is aborted with
-		// "context cancelled before attempt 2: context deadline exceeded", GUARANTEEING
-		// failure on exactly the cold/contended case we need to survive.
+		// (handshakeDeadline - ~probe), which can be too small for a legitimate
+		// session/new attempt on a cold/contended process.
 		//
-		// mitto-l9as: releasing the cap ENTIRELY (as the original mitto-1ut exception
-		// did) instead lets the fallback ctx run unbounded from the resume path's
-		// perspective, and on outcome=shared_resume_failed the operator sees the STACKED
-		// probe(25s) + fullNewSessionBudget(~175s) ≈ 200s wedge documented at
-		// 2026-07-23T08:55:24 (total_ms=199032). The fix restores a bounded ceiling:
-		// impose a FRESH cold budget deadline from the current instant (RecommendedLoadTimeout
-		// again, not the original — already-drained — handshakeDeadline). This preserves
-		// mitto-1ut (NewSession still gets a full MCPInitTimeout to attempt one legitimate
-		// session/new) while capping the combined wall-clock burn to probe + oneColdBudget
-		// rather than probe + unbounded. Stale-id path (probeTimedOut=false) is unchanged:
-		// a -32602 probe returns in ~ms and keeps the ORIGINAL shared cap.
+		// mitto-l9as attempted to fix this by granting a FRESH full cold budget from
+		// the current instant — but that STACKS on top of whatever the probe already
+		// burned, e.g. probe(25s) + freshNewSessionBudget(240s) ≈ 265s, the exact
+		// field wedge documented at 2026-07-23T08:55:24 (total_ms=199032/265009).
+		//
+		// mitto-s1rt.1 fix: give the fallback the LARGER of (a) whatever remains of
+		// the ORIGINAL single combined budget (handshakeDeadline), or (b) a minimum
+		// floor of minColdFallbackAttemptFraction of one fresh cold budget — a floor
+		// that only matters when the probe consumed virtually the whole original
+		// budget itself. On realistic production values (staleLoadProbeTimeout 25s
+		// vs MCPInitTimeout 240s) branch (a) dominates (215s remains, well above the
+		// 96s floor), so the combined wall-clock stays within ONE cold budget (~240s)
+		// instead of stacking two (~265s). Stale-id path (probeTimedOut=false) is
+		// unchanged: a -32602 probe returns in ~ms and keeps the ORIGINAL shared cap.
 		if !handshakeDeadline.IsZero() {
-			var fallbackDeadline time.Time
+			fallbackDeadline := handshakeDeadline
 			if probeTimedOut {
-				// Fresh cold budget from now; RecommendedLoadTimeout is the same
-				// MCPInitTimeout hint that derived the original handshakeDeadline.
 				if rec := sharedProcess.RecommendedLoadTimeout(len(mcpServers) > 0); rec > 0 {
-					fallbackDeadline = time.Now().Add(rec)
-				} else {
-					fallbackDeadline = handshakeDeadline
+					remaining := time.Until(handshakeDeadline)
+					minAttempt := time.Duration(float64(rec) * minColdFallbackAttemptFraction)
+					fallbackDeadline = time.Now().Add(max(remaining, minAttempt))
 				}
-			} else {
-				fallbackDeadline = handshakeDeadline
 			}
 			var deadlineCancel context.CancelFunc
 			rpcCtx, deadlineCancel = context.WithDeadline(rpcCtx, fallbackDeadline)

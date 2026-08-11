@@ -980,3 +980,75 @@ func TestHandshaker_ResumeSharedACPSession_ColdProbeTimeout_NewSessionCombinedCa
 			coldBudget, staleLoadProbeTimeout, staleLoadProbeTimeout+coldBudget)
 	}
 }
+
+// TestHandshaker_ResumeSharedACPSession_CombinedWallClock_BoundedBySingleColdBudget
+// is the mitto-s1rt.1 reproduction.
+//
+// mitto-s1rt.1 investigation: the 265s field outage (probe 25001ms +
+// session/new 240000ms = 265009ms total) is not an unbounded stack — it is
+// exactly staleLoadProbeTimeout + one fresh MCPInitTimeout, because the
+// mitto-1ut/mitto-l9as starvation exception (shared_session_handshaker.go,
+// "fallbackDeadline = time.Now().Add(rec)") grants the session/new fallback a
+// FRESH full cold budget measured from AFTER the probe already burned its own
+// staleLoadProbeTimeout. TestHandshaker_ResumeSharedACPSession_ColdProbeTimeout_
+// NewSessionCombinedCap only asserts the fallback ctx HAS a deadline — it does
+// not bound the deadline's VALUE relative to the start of the whole resume
+// attempt, so today's "probe + fresh full budget" arithmetic passes it.
+//
+// This test measures the fallback deadline from the START of the WHOLE resume
+// attempt (matching how an operator experiences total_ms in cold_start_summary)
+// and asserts it does not exceed roughly ONE cold budget. On HEAD the fallback
+// gets probe-time + a full fresh cold budget on top, i.e. close to 2x the cold
+// budget — this test FAILS on HEAD and must PASS once the fix bounds the
+// combined budget (e.g. reduces the fallback's budget by however much the
+// probe already spent, or fails the handshake fast instead of paying a second
+// full budget).
+func TestHandshaker_ResumeSharedACPSession_CombinedWallClock_BoundedBySingleColdBudget(t *testing.T) {
+	c := sharedSessionHandshaker{}
+	d := newFakeHandshakeDeps()
+	fp := newFakeSharedProcess()
+	fp.caps = &acp.AgentCapabilities{LoadSession: true}
+	// Small cold budget so the capped probe (and any fresh fallback budget)
+	// resolve quickly in the test; staleLoadProbeTimeout (25s) is much larger
+	// than this, so the probe's effective deadline is capped by coldBudget
+	// itself (min(staleLoadProbeTimeout, remaining) == coldBudget here) —
+	// mirroring the production shape where the probe is the binding constraint
+	// against a large remaining handshake budget.
+	const coldBudget = 200 * time.Millisecond
+	fp.recommendedLoadTimeout = coldBudget
+	// The probe blocks until its ctx deadline and returns DeadlineExceeded —
+	// a genuinely cold/wedged process, not a fast -32602 stale-id response.
+	fp.loadBlocksUntilCtxDone = true
+	fp.newSessionErr = errors.New("simulated cold NewSession failure")
+
+	start := time.Now()
+	_ = c.resumeSharedACPSession(d, fp, "cwd", "stale-acp-id")
+
+	if len(fp.loadSessionCalls) != 1 {
+		t.Fatalf("expected exactly 1 LoadSession probe, got %d", len(fp.loadSessionCalls))
+	}
+	if len(fp.newSessionCalls) != 1 {
+		t.Fatalf("expected exactly 1 NewSession fallback after probe timeout, got %d", len(fp.newSessionCalls))
+	}
+	if !fp.newCtxHasDeadline {
+		t.Fatal("expected NewSession fallback to carry a bounded deadline after a timed-out probe")
+	}
+
+	// mitto-s1rt.1: combined wall-clock burn (probe + fallback), measured from
+	// the START of the whole resume attempt, must not exceed roughly ONE cold
+	// budget plus a small scheduling margin. On HEAD it is close to 2x
+	// coldBudget (probe drains coldBudget, then the fallback gets a FRESH
+	// coldBudget from that later instant) — reproducing the field evidence
+	// where probe(25001ms) + new(240000ms) = 265009ms, i.e. ~(25s + 240s),
+	// not bounded by a single ~240s ceiling.
+	combined := fp.newCtxDeadline.Sub(start)
+	maxAllowed := coldBudget + coldBudget/2 // generous margin, still << 2x
+	if combined > maxAllowed {
+		t.Fatalf("mitto-s1rt.1: combined resume wall-clock budget %v exceeds single-cold-budget "+
+			"ceiling %v (coldBudget=%v) — the session/new fallback is granted a FRESH full cold "+
+			"budget on top of the probe's own %v burn instead of sharing one budget. Field evidence: "+
+			"session_load_failed@25001ms -> session_new_failed@265009ms (staleLoadProbeTimeout=%v + "+
+			"MCPInitTimeout=240s = 265s doomed-agent outage).",
+			combined, maxAllowed, coldBudget, coldBudget, staleLoadProbeTimeout)
+	}
+}
