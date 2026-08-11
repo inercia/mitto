@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sort"
 	"sync"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/spf13/cobra"
@@ -25,9 +27,13 @@ type chatFlags struct {
 var conversationChatFlags chatFlags
 
 var conversationChatCmd = &cobra.Command{
-	Use:   "chat <conversation-id>",
+	Use:   "chat [conversation-id]",
 	Short: "Open an interactive full-screen chat TUI over WebSocket",
 	Long: `Attach a full-screen Bubble Tea terminal UI to an existing conversation.
+
+When conversation-id is omitted, choose from a recent-first interactive list.
+Archived conversations and automatically-created children are hidden from the
+picker; human-created and MCP-created conversations remain selectable.
 
 Requires stdout and stdin to both be interactive terminals: piped or
 redirected I/O exits with a usage error pointing at "conversation send
@@ -36,7 +42,7 @@ transcript on attach. esc cancels the in-flight agent turn; ctrl-c/q quits.
 
 Up/down recall previously submitted lines (persisted per conversation);
 tab completes slash commands (/help, /quit, /cancel, /clear).`,
-	Args: cobra.ExactArgs(1),
+	Args: cobra.MaximumNArgs(1),
 	RunE: runConversationChat,
 }
 
@@ -66,8 +72,6 @@ func resolveChatStyle(styleFlag string) string {
 }
 
 func runConversationChat(cmd *cobra.Command, args []string) error {
-	conversationID := args[0]
-
 	// TTY precondition (Plan Scope: "this command requires a TTY"). Checked
 	// before any dialing so a piped invocation fails fast with a usage
 	// error rather than hanging in an alt-screen program nobody can see.
@@ -80,7 +84,82 @@ func runConversationChat(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	conversationID, selected, err := resolveChatConversationID(args, c.ListSessions, pickChatConversation)
+	if err != nil {
+		return classify(err)
+	}
+	if !selected {
+		return nil
+	}
 
+	return runConversationChatForID(c, conversationID)
+}
+
+type chatConversationPicker func([]api.SessionInfo) (string, bool, error)
+
+func resolveChatConversationID(
+	args []string,
+	listSessions func() ([]api.SessionInfo, error),
+	pick chatConversationPicker,
+) (string, bool, error) {
+	if len(args) == 1 {
+		return args[0], true, nil
+	}
+	sessions, err := listSessions()
+	if err != nil {
+		return "", false, err
+	}
+	candidates := selectableChatSessions(sessions)
+	if len(candidates) == 0 {
+		return "", false, fmt.Errorf("no selectable conversations found (archived and automatic child conversations are hidden)")
+	}
+	return pick(candidates)
+}
+
+func selectableChatSessions(sessions []api.SessionInfo) []api.SessionInfo {
+	filtered := make([]api.SessionInfo, 0, len(sessions))
+	for _, session := range sessions {
+		if session.Archived || session.ChildOrigin == "auto" {
+			continue
+		}
+		filtered = append(filtered, session)
+	}
+	sort.SliceStable(filtered, func(i, j int) bool {
+		iTime, iOK := chatSessionUpdatedAt(filtered[i].UpdatedAt)
+		jTime, jOK := chatSessionUpdatedAt(filtered[j].UpdatedAt)
+		if iOK != jOK {
+			return iOK
+		}
+		return iOK && iTime.After(jTime)
+	})
+	return filtered
+}
+
+func chatSessionUpdatedAt(value string) (time.Time, bool) {
+	updated, err := time.Parse(time.RFC3339Nano, value)
+	return updated, err == nil
+}
+
+func pickChatConversation(sessions []api.SessionInfo) (string, bool, error) {
+	model := chatui.NewSessionPickerModel(sessions)
+	finalModel, err := tea.NewProgram(model).Run()
+	if err != nil {
+		return "", false, err
+	}
+	result, ok := finalModel.(*chatui.SessionPickerModel)
+	if !ok {
+		return "", false, fmt.Errorf("session picker returned unexpected model %T", finalModel)
+	}
+	if result.Cancelled() {
+		return "", false, nil
+	}
+	if result.SelectedSessionID() == "" {
+		return "", false, fmt.Errorf("session picker exited without selecting a conversation")
+	}
+	return result.SelectedSessionID(), true, nil
+}
+
+func runConversationChatForID(c *api.Client, conversationID string) error {
 	info, err := c.GetSession(conversationID)
 	if err != nil {
 		return classify(err)

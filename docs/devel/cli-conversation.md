@@ -137,6 +137,15 @@ by scripts — `--output json`/`yaml` is the contract.
 
 ## 7. `conversation chat` decisions (rescoped `mitto-pscc.7`/`.8`)
 
+- **Conversation ID is optional.** `mitto conversation chat <conversation-id>`
+  keeps the direct attach path and does not list sessions. With no ID, the CLI
+  calls `ListSessions`, excludes archived sessions and only children whose
+  `child_origin` is `auto`, sorts the remainder newest-first by `updated_at`,
+  and opens a Bubble Tea selector before starting the same chat bootstrap.
+  Human- and MCP-created children remain visible. Rows include title/ID,
+  status, workspace or directory, and update time; Esc/Ctrl-C/q cancels without
+  attaching. An empty eligible list or list failure exits non-zero with a clear
+  error.
 - **TTY required.** Non-TTY stdout or stdin exits 2 (usage) with a message
   pointing at `conversation send --wait`.
 - **`mitto-pscc.11` landed**: input history and slash-command completion,

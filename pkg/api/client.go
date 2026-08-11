@@ -221,14 +221,16 @@ func (c *Client) do(req *http.Request) (*http.Response, error) {
 
 // SessionInfo represents information about a session.
 type SessionInfo struct {
-	SessionID    string `json:"session_id"`
-	ACPSessionID string `json:"acp_session_id,omitempty"`
-	Name         string `json:"name,omitempty"`
-	WorkingDir   string `json:"working_dir,omitempty"`
-	ACPServer    string `json:"acp_server,omitempty"`
-	Status       string `json:"status,omitempty"`
-	CreatedAt    string `json:"created_at,omitempty"`
-	UpdatedAt    string `json:"updated_at,omitempty"`
+	SessionID       string `json:"session_id"`
+	ACPSessionID    string `json:"acp_session_id,omitempty"`
+	Name            string `json:"name,omitempty"`
+	WorkingDir      string `json:"working_dir,omitempty"`
+	ACPServer       string `json:"acp_server,omitempty"`
+	Status          string `json:"status,omitempty"`
+	CreatedAt       string `json:"created_at,omitempty"`
+	UpdatedAt       string `json:"updated_at,omitempty"`
+	ParentSessionID string `json:"parent_session_id,omitempty"`
+	ChildOrigin     string `json:"child_origin,omitempty"`
 	// Reused is true when CreateSession was routed to an existing singleton-prompt
 	// conversation instead of creating a new one (see find-or-route, mitto-4mb.3).
 	Reused bool `json:"reused,omitempty"`
