@@ -487,16 +487,27 @@ func (s *Server) buildWorkspacePromptEnabledContext(workingDir string) *config.P
 // CEL filtering is handled later by filterPromptsByEnabled.
 func (s *Server) loadPromptsFromDirs(workspaceRoot string, dirs []string) []config.WebPrompt {
 	var allPrompts []config.WebPrompt
-
+	absDirs := make([]string, 0, len(dirs))
 	for _, dir := range dirs {
-		// Resolve relative paths
-		absDir := dir
 		if !filepath.IsAbs(dir) {
-			absDir = filepath.Join(workspaceRoot, dir)
+			dir = filepath.Join(workspaceRoot, dir)
 		}
+		absDirs = append(absDirs, dir)
+	}
 
+	fragments, fragmentErrors, fragmentErr := config.LoadScopedFragmentsFromDirs(absDirs)
+	if s.logger != nil {
+		if fragmentErr != nil {
+			s.logger.Warn("Failed to load workspace prompt fragments", "workspace", workspaceRoot, "error", fragmentErr)
+		}
+		for _, err := range fragmentErrors {
+			s.logger.Warn("Failed to load workspace prompt fragment", "workspace", workspaceRoot, "error", err)
+		}
+	}
+
+	for _, absDir := range absDirs {
 		// Load prompts from this directory (silently ignore errors)
-		prompts, err := config.LoadPromptsFromDir(absDir)
+		prompts, err := config.LoadPromptsFromDirWithFragments(absDir, fragments)
 		if err != nil {
 			if s.logger != nil {
 				s.logger.Debug("Failed to load prompts from directory",

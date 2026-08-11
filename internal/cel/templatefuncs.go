@@ -1582,7 +1582,11 @@ func renderNestedPromptBody(name, body string, data any, funcs template.FuncMap)
 		return body, nil
 	}
 	tmpl := template.New(name).Option("missingkey=zero").Funcs(funcs)
-	for fragName, fragBody := range fragmentsForNestedRender() {
+	fragments := fragmentsForNestedRender()
+	if ctx, ok := data.(*PromptEnabledContext); ok && ctx.TemplateFragments != nil {
+		fragments = ctx.TemplateFragments
+	}
+	for fragName, fragBody := range fragments {
 		if _, err := tmpl.New(fragName).Parse(fragBody); err != nil {
 			return "", fmt.Errorf("fragment %q parse: %w", fragName, err)
 		}

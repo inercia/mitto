@@ -53,6 +53,11 @@ type PromptEnabledContext struct {
 	// the dispatch/render path (see prompt_dispatcher.go). Template-only; NOT
 	// exposed to CEL.
 	PromptTextResolver func(name string) (string, error)
+	// TemplateFragments is the workspace-scoped fragment snapshot used by top-level
+	// and nested prompt renders. Nil means no scoped snapshot was supplied, so
+	// nested renders fall back to the process-global provider for compatibility.
+	// Template-only; NOT exposed to CEL.
+	TemplateFragments map[string]string
 	// PromptTextDepth tracks the current nesting depth of PromptTextWithArgs
 	// sub-renders (mitto-47y.1). Zero at the top-level render; incremented by
 	// one on each nested sub-render. Capped at promptTextMaxDepth to prevent

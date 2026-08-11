@@ -185,6 +185,13 @@ func HasTemplateSyntax(body string) bool {
 // Wired at load time (ParsePromptFile) and save time (MCP mitto_prompt_update,
 // REST POST /api/workspace-prompts) as of mitto-m7sb.6.
 func PrecompileTemplateConds(name, body string) error {
+	return PrecompileTemplateCondsWithFragments(name, body, CurrentFragments())
+}
+
+// PrecompileTemplateCondsWithFragments validates a prompt against an explicit
+// fragment registry. It is used for workspace-scoped loading without mutating
+// the process-global registry.
+func PrecompileTemplateCondsWithFragments(name, body string, fragments *FragmentRegistry) error {
 	if !HasTemplateSyntax(body) {
 		return nil
 	}
@@ -211,8 +218,8 @@ func PrecompileTemplateConds(name, body string) error {
 	// references at load time (same class of failure as an unbalanced `{{ ... }}`).
 	// Nil registry (default until bootstrap installs one) skips attachment and preserves
 	// pre-fragment behavior bytewise. Mirrors RenderPromptTemplate's attach loop.
-	if frags := CurrentFragments(); frags != nil {
-		for fragName, fragBody := range frags.All() {
+	if fragments != nil {
+		for fragName, fragBody := range fragments.All() {
 			if _, err := t.New(fragName).Parse(fragBody); err != nil {
 				return fmt.Errorf("prompt template %q: fragment %q parse: %w", name, fragName, err)
 			}
@@ -289,12 +296,18 @@ func ValidatePromptTemplateSyntax(name, body string) error {
 // Returns the rendered string, or a non-nil error on parse/exec failure
 // (fail-closed: the caller must abort the send on error).
 func RenderPromptTemplate(name, body string, data any, funcs template.FuncMap) (string, error) {
+	return RenderPromptTemplateWithFragments(name, body, data, funcs, CurrentFragments())
+}
+
+// RenderPromptTemplateWithFragments renders against an explicit fragment
+// registry. It is the workspace-scoped counterpart to RenderPromptTemplate.
+func RenderPromptTemplateWithFragments(name, body string, data any, funcs template.FuncMap, fragments *FragmentRegistry) (string, error) {
 	if !HasTemplateSyntax(body) {
 		return body, nil
 	}
 	t := template.New(name).Option("missingkey=zero").Funcs(funcs)
-	if frags := CurrentFragments(); frags != nil {
-		for fragName, fragBody := range frags.All() {
+	if fragments != nil {
+		for fragName, fragBody := range fragments.All() {
 			if _, err := t.New(fragName).Parse(fragBody); err != nil {
 				return "", fmt.Errorf("prompt template %q: fragment %q parse: %w", name, fragName, err)
 			}

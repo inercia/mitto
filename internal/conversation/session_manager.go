@@ -178,6 +178,9 @@ type SessionManager struct {
 	// Passed to BackgroundSession via BackgroundSessionConfig on creation/resume.
 	promptResolver PromptResolver
 
+	// promptFragmentsResolver resolves workspace-scoped fragments for rendering.
+	promptFragmentsResolver PromptFragmentsResolver
+
 	// preferredModelsResolver resolves a named workspace prompt to its preferredModels list.
 	// Passed to BackgroundSession via BackgroundSessionConfig on creation/resume.
 	preferredModelsResolver func(name, workingDir string) []config.PromptPreferredModel
@@ -1027,6 +1030,14 @@ func (sm *SessionManager) SetPromptResolver(resolver PromptResolver) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 	sm.promptResolver = resolver
+}
+
+// SetPromptFragmentsResolver sets the resolver passed to every new and resumed
+// BackgroundSession for workspace-scoped prompt rendering.
+func (sm *SessionManager) SetPromptFragmentsResolver(resolver PromptFragmentsResolver) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.promptFragmentsResolver = resolver
 }
 
 // SetPromptsCache sets the workspace prompt registry used by every new /
@@ -2027,6 +2038,7 @@ func (sm *SessionManager) CreateSessionWithWorkspaceAndOptions(ctx context.Conte
 		SharedProcess:                  sharedProcess,               // Shared ACP process (nil = legacy mode)
 		PruneConfig:                    pruneConfig,                 // Auto-pruning configuration (nil = no auto-pruning)
 		PromptResolver:                 sm.promptResolver,           // Named prompt resolver (resolves prompt name → text)
+		PromptFragmentsResolver:        sm.promptFragmentsResolver,  // Workspace-scoped prompt fragments
 		PreferredModelsResolver:        sm.preferredModelsResolver,  // Named prompt resolver (resolves prompt name → preferredModels)
 		PromptParametersResolver:       sm.promptParametersResolver, // Named prompt resolver (resolves prompt name → parameters)
 		PromptsCache:                   sm.promptsCache,             // Workspace prompt registry for {{ .Prompts.* }} snapshot (mitto-s1w)
@@ -2642,6 +2654,7 @@ func (sm *SessionManager) resumeSessionWithConstraint(sessionID, sessionName, wo
 		SharedProcess:                  sharedProcess,               // Shared ACP process (nil = legacy mode)
 		PruneConfig:                    pruneConfig,                 // Auto-pruning configuration (nil = no auto-pruning)
 		PromptResolver:                 sm.promptResolver,           // Named prompt resolver (resolves prompt name → text)
+		PromptFragmentsResolver:        sm.promptFragmentsResolver,  // Workspace-scoped prompt fragments
 		PreferredModelsResolver:        sm.preferredModelsResolver,  // Named prompt resolver (resolves prompt name → preferredModels)
 		PromptParametersResolver:       sm.promptParametersResolver, // Named prompt resolver (resolves prompt name → parameters)
 		PromptsCache:                   sm.promptsCache,             // Workspace prompt registry for {{ .Prompts.* }} snapshot (mitto-s1w)

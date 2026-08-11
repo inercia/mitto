@@ -109,7 +109,12 @@ func (h *Handlers) HandleWorkspacePromptsPOST(w http.ResponseWriter, r *http.Req
 	filePath := filepath.Join(promptsDir, slug+".prompt.yaml")
 
 	// Reject invalid Go-template syntax / cond CEL before persisting (mitto-m7sb.6).
-	if err := configPkg.PrecompileTemplateConds(req.Name, req.Prompt); err != nil {
+	fragments, _, fragmentErr := configPkg.LoadScopedFragmentsFromDirs([]string{promptsDir})
+	if fragmentErr != nil {
+		writeErrorJSON(w, http.StatusInternalServerError, "", "failed to read prompt fragments: "+fragmentErr.Error())
+		return
+	}
+	if err := configPkg.PrecompileTemplateCondsWithFragments(req.Name, req.Prompt, fragments); err != nil {
 		writeErrorJSON(w, http.StatusBadRequest, "", "invalid prompt template: "+err.Error())
 		return
 	}
@@ -155,7 +160,12 @@ func (h *Handlers) HandleWorkspacePromptsDELETE(w http.ResponseWriter, r *http.R
 	}
 
 	promptsDir := appdir.WorkspacePromptsDir(workingDir)
-	rawPrompts, err := configPkg.LoadPromptsFromDir(promptsDir)
+	fragments, _, err := configPkg.LoadScopedFragmentsFromDirs([]string{promptsDir})
+	if err != nil {
+		writeErrorJSON(w, http.StatusInternalServerError, "", "failed to read prompt fragments: "+err.Error())
+		return
+	}
+	rawPrompts, err := configPkg.LoadPromptsFromDirWithFragments(promptsDir, fragments)
 	if err != nil {
 		writeErrorJSON(w, http.StatusInternalServerError, "", "failed to read prompts directory: "+err.Error())
 		return
@@ -226,7 +236,8 @@ func (h *Handlers) HandleWorkspacePromptsGETIncludeGlobal(w http.ResponseWriter,
 	// Load workspace prompts from .mitto/prompts/ and tag them as source="workspace"
 	var workspacePrompts []configPkg.WebPrompt
 	workspacePromptsDir := appdir.WorkspacePromptsDir(workingDir)
-	rawWorkspace, workspaceErrs, _ := configPkg.LoadPromptsFromDirWithErrors(workspacePromptsDir)
+	fragments, _, _ := configPkg.LoadScopedFragmentsFromDirs([]string{workspacePromptsDir})
+	rawWorkspace, workspaceErrs, _ := configPkg.LoadPromptsFromDirWithErrorsAndFragments(workspacePromptsDir, fragments)
 	for _, p := range rawWorkspace {
 		wp := p.ToWebPrompt()
 		wp.Source = configPkg.PromptSourceWorkspace

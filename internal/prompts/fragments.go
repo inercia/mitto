@@ -323,6 +323,17 @@ func ReloadFragmentsFromDirs(dirs []string) (*FragmentRegistry, []FragmentLoadEr
 	return merged, allErrors, nil
 }
 
+// LoadScopedFragmentsFromDirs builds a request-scoped registry by copying the
+// process-global fragments and overlaying the supplied directories in order.
+// It never mutates CurrentFragments, so colliding names remain workspace-local.
+func LoadScopedFragmentsFromDirs(dirs []string) (*FragmentRegistry, []FragmentLoadError, error) {
+	merged := NewFragmentRegistry()
+	merged.Merge(CurrentFragments())
+	local, loadErrors, err := ReloadFragmentsFromDirs(dirs)
+	merged.Merge(local)
+	return merged, loadErrors, err
+}
+
 // currentFragments is the package-level singleton holding the fragment registry
 // consulted by RenderPromptTemplate at render time. It is intentionally kept
 // nil-safe: callers of CurrentFragments may receive nil, and RenderPromptTemplate

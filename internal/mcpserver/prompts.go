@@ -321,7 +321,11 @@ func (s *Server) handlePromptUpdate(ctx context.Context, req *mcp.CallToolReques
 	}
 
 	// Reject invalid Go-template syntax / cond CEL before persisting (mitto-m7sb.6).
-	if err := config.PrecompileTemplateConds(name, promptText); err != nil {
+	fragments, _, fragmentErr := config.LoadScopedFragmentsFromDirs([]string{promptsDir})
+	if fragmentErr != nil {
+		return nil, PromptUpdateOutput{Error: "failed to read prompt fragments: " + fragmentErr.Error()}, nil
+	}
+	if err := config.PrecompileTemplateCondsWithFragments(name, promptText, fragments); err != nil {
 		return nil, PromptUpdateOutput{Error: "invalid prompt template: " + err.Error()}, nil
 	}
 	// Warn (non-fatal) when body still uses deprecated @mitto: tokens (mitto-m7sb.9).

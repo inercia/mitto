@@ -76,16 +76,21 @@ var (
 	WarnUnknownMenus                          = prompts.WarnUnknownMenus
 	HasTemplateSyntax                         = prompts.HasTemplateSyntax
 	PrecompileTemplateConds                   = prompts.PrecompileTemplateConds
+	PrecompileTemplateCondsWithFragments      = prompts.PrecompileTemplateCondsWithFragments
 	ValidatePromptTemplateSyntax              = prompts.ValidatePromptTemplateSyntax
 	RenderPromptTemplate                      = prompts.RenderPromptTemplate
+	RenderPromptTemplateWithFragments         = prompts.RenderPromptTemplateWithFragments
 	ValidatePromptLoop                        = prompts.ValidatePromptLoop
 	ValidateLoopTriggers                      = prompts.ValidateLoopTriggers
 	DecodeInlineLoop                          = prompts.DecodeInlineLoop
 	ValidatePromptTarget                      = prompts.ValidatePromptTarget
 	ParsePromptFile                           = prompts.ParsePromptFile
 	LoadPromptFile                            = prompts.LoadPromptFile
+	LoadPromptFileWithFragments               = prompts.LoadPromptFileWithFragments
 	LoadPromptsFromDir                        = prompts.LoadPromptsFromDir
+	LoadPromptsFromDirWithFragments           = prompts.LoadPromptsFromDirWithFragments
 	LoadPromptsFromDirWithErrors              = prompts.LoadPromptsFromDirWithErrors
+	LoadPromptsFromDirWithErrorsAndFragments  = prompts.LoadPromptsFromDirWithErrorsAndFragments
 	PromptsToWebPrompts                       = prompts.PromptsToWebPrompts
 	FilterPromptsSpecificToACP                = prompts.FilterPromptsSpecificToACP
 	GetPromptsDirModTime                      = prompts.GetPromptsDirModTime
@@ -99,9 +104,10 @@ var (
 	MergePrompts                              = prompts.MergePrompts
 	MergePromptsKeepDisabled                  = prompts.MergePromptsKeepDisabled
 	// --- Fragments (mitto-g61) ---
-	NewFragmentRegistry     = prompts.NewFragmentRegistry
-	LoadFragmentsFromDir    = prompts.LoadFragmentsFromDir
-	ReloadFragmentsFromDirs = prompts.ReloadFragmentsFromDirs
-	CurrentFragments        = prompts.CurrentFragments
-	SetCurrentFragments     = prompts.SetCurrentFragments
+	NewFragmentRegistry         = prompts.NewFragmentRegistry
+	LoadFragmentsFromDir        = prompts.LoadFragmentsFromDir
+	ReloadFragmentsFromDirs     = prompts.ReloadFragmentsFromDirs
+	LoadScopedFragmentsFromDirs = prompts.LoadScopedFragmentsFromDirs
+	CurrentFragments            = prompts.CurrentFragments
+	SetCurrentFragments         = prompts.SetCurrentFragments
 )

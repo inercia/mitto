@@ -347,6 +347,9 @@ type BackgroundSession struct {
 	// Set via SetPromptResolver or BackgroundSessionConfig.PromptResolver.
 	// When nil, PromptMeta.PromptName resolution is skipped.
 	promptResolver PromptResolver
+	// promptFragmentsResolver returns the workspace-scoped fragment registry used
+	// by top-level and nested prompt renders.
+	promptFragmentsResolver PromptFragmentsResolver
 
 	// preferredModelsResolver resolves a prompt name to its preferredModels list.
 	// Used in PromptWithMeta to auto-select models for named prompts without a
@@ -523,6 +526,8 @@ type BackgroundSessionConfig struct {
 	// PromptResolver resolves a named workspace prompt to its full text at send time.
 	// When set, PromptMeta.PromptName is resolved via this function in PromptWithMeta.
 	PromptResolver PromptResolver
+	// PromptFragmentsResolver resolves the workspace-scoped fragment registry.
+	PromptFragmentsResolver PromptFragmentsResolver
 
 	// PreferredModelsResolver resolves a named workspace prompt to its preferredModels list.
 	// When set and PromptMeta.PreferredModels is empty, the list is resolved from the
@@ -629,30 +634,32 @@ func (bs *BackgroundSession) SimulateClose() {
 // BackgroundSessionTestOpts carries optional fields for NewTestBackgroundSession.
 // Only set the fields your test needs; zero values are used for the rest.
 type BackgroundSessionTestOpts struct {
-	SessionID           string
-	WorkingDir          string
-	WorkspaceUUID       string
-	ACPID               string
-	IsPrompting         bool
-	NextSeq             int64
-	Store               *session.Store
-	PromptResolver      PromptResolver
-	ContextFlushCommand string
+	SessionID               string
+	WorkingDir              string
+	WorkspaceUUID           string
+	ACPID                   string
+	IsPrompting             bool
+	NextSeq                 int64
+	Store                   *session.Store
+	PromptResolver          PromptResolver
+	PromptFragmentsResolver PromptFragmentsResolver
+	ContextFlushCommand     string
 }
 
 // NewTestBackgroundSession creates a BackgroundSession from test options.
 // Use this for tests that need to set multiple private fields.
 func NewTestBackgroundSession(opts BackgroundSessionTestOpts) *BackgroundSession {
 	bs := &BackgroundSession{
-		persistedID:         opts.SessionID,
-		workingDir:          opts.WorkingDir,
-		workspaceUUID:       opts.WorkspaceUUID,
-		acpID:               opts.ACPID,
-		isPrompting:         opts.IsPrompting,
-		nextSeq:             opts.NextSeq,
-		store:               opts.Store,
-		promptResolver:      opts.PromptResolver,
-		contextFlushCommand: opts.ContextFlushCommand,
+		persistedID:             opts.SessionID,
+		workingDir:              opts.WorkingDir,
+		workspaceUUID:           opts.WorkspaceUUID,
+		acpID:                   opts.ACPID,
+		isPrompting:             opts.IsPrompting,
+		nextSeq:                 opts.NextSeq,
+		store:                   opts.Store,
+		promptResolver:          opts.PromptResolver,
+		promptFragmentsResolver: opts.PromptFragmentsResolver,
+		contextFlushCommand:     opts.ContextFlushCommand,
 	}
 	return bs
 }
@@ -695,6 +702,7 @@ func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, erro
 		auxiliaryManager:               cfg.AuxiliaryManager,         // Workspace-scoped auxiliary manager
 		availableACPServers:            cfg.AvailableACPServers,      // Pre-computed workspace server list
 		promptResolver:                 cfg.PromptResolver,           // Named prompt resolver (resolves name → text at send time)
+		promptFragmentsResolver:        cfg.PromptFragmentsResolver,  // Workspace-scoped prompt fragments
 		preferredModelsResolver:        cfg.PreferredModelsResolver,  // Named prompt resolver (resolves name → preferredModels)
 		promptParametersResolver:       cfg.PromptParametersResolver, // Named prompt resolver (resolves name → parameters)
 		promptsCache:                   cfg.PromptsCache,             // Workspace prompt registry for {{ .Prompts.* }} snapshot (mitto-s1w)
@@ -956,6 +964,7 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 		auxiliaryManager:               config.AuxiliaryManager,         // Workspace-scoped auxiliary manager
 		availableACPServers:            config.AvailableACPServers,      // Pre-computed workspace server list
 		promptResolver:                 config.PromptResolver,           // Named prompt resolver (resolves name → text at send time)
+		promptFragmentsResolver:        config.PromptFragmentsResolver,  // Workspace-scoped prompt fragments
 		preferredModelsResolver:        config.PreferredModelsResolver,  // Named prompt resolver (resolves name → preferredModels)
 		promptParametersResolver:       config.PromptParametersResolver, // Named prompt resolver (resolves name → parameters)
 		promptsCache:                   config.PromptsCache,             // Workspace prompt registry for {{ .Prompts.* }} snapshot (mitto-s1w)

@@ -26,10 +26,11 @@ var _ promptDeps = (*fakePromptDeps)(nil)
 type fakePromptDeps struct {
 	mu sync.Mutex
 
-	resolver    PromptResolver
-	workingDir  string
-	agentImages bool
-	hasStore    bool
+	resolver          PromptResolver
+	fragmentsResolver PromptFragmentsResolver
+	workingDir        string
+	agentImages       bool
+	hasStore          bool
 
 	// per-ID path/error maps
 	imagePaths map[string]string
@@ -179,11 +180,14 @@ func newFakePromptDeps() *fakePromptDeps {
 }
 
 func (f *fakePromptDeps) pdPromptResolver() PromptResolver { return f.resolver }
-func (f *fakePromptDeps) pdWorkingDir() string             { return f.workingDir }
-func (f *fakePromptDeps) pdAgentSupportsImages() bool      { return f.agentImages }
-func (f *fakePromptDeps) pdHasStore() bool                 { return f.hasStore }
-func (f *fakePromptDeps) pdLogger() *slog.Logger           { return f.logger }
-func (f *fakePromptDeps) pdSessionID() string              { return f.sessionID }
+func (f *fakePromptDeps) pdPromptFragmentsResolver() PromptFragmentsResolver {
+	return f.fragmentsResolver
+}
+func (f *fakePromptDeps) pdWorkingDir() string        { return f.workingDir }
+func (f *fakePromptDeps) pdAgentSupportsImages() bool { return f.agentImages }
+func (f *fakePromptDeps) pdHasStore() bool            { return f.hasStore }
+func (f *fakePromptDeps) pdLogger() *slog.Logger      { return f.logger }
+func (f *fakePromptDeps) pdSessionID() string         { return f.sessionID }
 
 func (f *fakePromptDeps) pdGetImagePath(imageID string) (string, error) {
 	if err := f.imageErrs[imageID]; err != nil {
@@ -821,6 +825,48 @@ func TestResolveAndSubstitute_Template_PromptText_Wired(t *testing.T) {
 	}
 	if msg != "pre resolved-body post" {
 		t.Fatalf("expected inlined body, got %q", msg)
+	}
+}
+
+func TestResolveAndSubstitute_UsesWorkspaceFragmentsInNestedRender(t *testing.T) {
+	p := promptDispatcher{}
+	d := newFakePromptDeps()
+	d.workingDir = "/workspace-one"
+	d.resolver = func(name, _ string) (string, error) {
+		switch name {
+		case "outer":
+			return `{{ PromptTextWithArgs "inner" .Args }}`, nil
+		case "inner":
+			return `{{ template "shared/foo" . }}`, nil
+		default:
+			return "", errors.New("unknown prompt")
+		}
+	}
+
+	fragmentsDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(fragmentsDir, "shared"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(fragmentsDir, "shared", "foo.tmpl"), []byte("workspace one"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	registry, loadErrs, err := config.LoadFragmentsFromDir(fragmentsDir)
+	if err != nil || len(loadErrs) != 0 {
+		t.Fatalf("load fragments: err=%v loadErrs=%v", err, loadErrs)
+	}
+	d.fragmentsResolver = func(workingDir string) (*config.FragmentRegistry, error) {
+		if workingDir != d.workingDir {
+			t.Fatalf("fragment resolver workingDir = %q, want %q", workingDir, d.workingDir)
+		}
+		return registry, nil
+	}
+
+	msg, _, _, err := p.resolveAndSubstitute(d, "", PromptMeta{PromptName: "outer"})
+	if err != nil {
+		t.Fatalf("resolve and substitute: %v", err)
+	}
+	if msg != "workspace one" {
+		t.Fatalf("rendered message = %q, want %q", msg, "workspace one")
 	}
 }
 

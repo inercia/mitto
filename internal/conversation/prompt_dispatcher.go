@@ -26,7 +26,8 @@ import (
 // All methods are prefixed with "pd" to avoid clashing with BackgroundSession's public API.
 type promptDeps interface {
 	// Prompt resolver
-	pdPromptResolver() PromptResolver // may return nil
+	pdPromptResolver() PromptResolver                   // may return nil
+	pdPromptFragmentsResolver() PromptFragmentsResolver // may return nil
 	pdWorkingDir() string
 
 	// Agent capabilities
@@ -444,12 +445,23 @@ func (p promptDispatcher) resolveAndSubstitute(d promptDeps, message string, met
 				return resolver(name, workingDir)
 			}
 		}
+		fragments := config.CurrentFragments()
+		if resolver := d.pdPromptFragmentsResolver(); resolver != nil {
+			var ferr error
+			fragments, ferr = resolver(d.pdWorkingDir())
+			if ferr != nil {
+				return "", 0, meta, fmt.Errorf("load workspace prompt fragments: %w", ferr)
+			}
+			if fragments != nil {
+				tctx.TemplateFragments = fragments.All()
+			}
+		}
 		funcs := config.BuildTemplateFuncMap(tctx)
 		name := meta.PromptName
 		if name == "" {
 			name = "prompt"
 		}
-		rendered, rerr := config.RenderPromptTemplate(name, message, tctx, funcs)
+		rendered, rerr := config.RenderPromptTemplateWithFragments(name, message, tctx, funcs, fragments)
 		if rerr != nil {
 			// Named prompts and loop-runner dispatches always fail-closed. Queue
 			// dispatches now distinguish origin: agent-originated (cross-session/MCP

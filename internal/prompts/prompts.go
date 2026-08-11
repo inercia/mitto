@@ -1272,7 +1272,7 @@ func (p *PromptFile) HasVisibilityCondition() bool {
 //
 // The name is derived from the filename if not specified in the file.
 func ParsePromptFile(path string, data []byte, modTime time.Time) (*PromptFile, error) {
-	prompt, _, _, err := parsePromptFileData(path, data, modTime)
+	prompt, _, _, err := parsePromptFileData(path, data, modTime, CurrentFragments())
 	return prompt, err
 }
 
@@ -1287,7 +1287,7 @@ func ParsePromptFile(path string, data []byte, modTime time.Time) (*PromptFile, 
 // so LoadPromptFile can additionally persist the write-back to disk; callers
 // without a writable absolute path (embedded/inline prompts, tests,
 // read-only sources) still get a successfully parsed PromptFile.
-func parsePromptFileData(path string, data []byte, modTime time.Time) (*PromptFile, []byte, migrate.Result, error) {
+func parsePromptFileData(path string, data []byte, modTime time.Time, fragments *FragmentRegistry) (*PromptFile, []byte, migrate.Result, error) {
 	migrated, result, migrateErr := migrate.MigrateYAML(data)
 	if migrateErr != nil {
 		// A migration bug must not break prompt loading: fall back to the
@@ -1375,7 +1375,7 @@ func parsePromptFileData(path string, data []byte, modTime time.Time) (*PromptFi
 
 	// Validate Go-template syntax + cond/when CEL literals (mitto-m7sb.6).
 	// Fast-path no-op for bodies without "{{". Fail-fast on invalid templates.
-	if err := PrecompileTemplateConds(prompt.Name, prompt.Content); err != nil {
+	if err := PrecompileTemplateCondsWithFragments(prompt.Name, prompt.Content, fragments); err != nil {
 		return nil, migrated, result, fmt.Errorf("prompt file %s: %w", path, err)
 	}
 
@@ -1408,6 +1408,12 @@ func parsePromptFileData(path string, data []byte, modTime time.Time) (*PromptFi
 // see migrate.WriteBackIfNeeded). A file already on the current schema is
 // never written to, so its mtime is untouched.
 func LoadPromptFile(promptsDir, relativePath string) (*PromptFile, error) {
+	return LoadPromptFileWithFragments(promptsDir, relativePath, CurrentFragments())
+}
+
+// LoadPromptFileWithFragments loads one prompt using an explicit fragment
+// registry for template precompilation.
+func LoadPromptFileWithFragments(promptsDir, relativePath string, fragments *FragmentRegistry) (*PromptFile, error) {
 	fullPath := filepath.Join(promptsDir, relativePath)
 
 	info, err := os.Stat(fullPath)
@@ -1420,7 +1426,7 @@ func LoadPromptFile(promptsDir, relativePath string) (*PromptFile, error) {
 		return nil, fmt.Errorf("failed to read prompt file %s: %w", relativePath, err)
 	}
 
-	prompt, migrated, result, err := parsePromptFileData(relativePath, data, info.ModTime())
+	prompt, migrated, result, err := parsePromptFileData(relativePath, data, info.ModTime(), fragments)
 	if err != nil {
 		return nil, err
 	}
@@ -1447,11 +1453,24 @@ func LoadPromptsFromDir(dir string) ([]*PromptFile, error) {
 	return prompts, err
 }
 
+// LoadPromptsFromDirWithFragments loads prompts using an explicit fragment
+// registry for template precompilation.
+func LoadPromptsFromDirWithFragments(dir string, fragments *FragmentRegistry) ([]*PromptFile, error) {
+	prompts, _, err := LoadPromptsFromDirWithErrorsAndFragments(dir, fragments)
+	return prompts, err
+}
+
 // LoadPromptsFromDirWithErrors loads all .prompt.yaml files from a directory recursively,
 // returning both the successfully-loaded prompts and per-file errors for files that
 // failed to load/parse/precompile. Failed files are also logged at WARN.
 // Returns an empty slice if the directory doesn't exist.
 func LoadPromptsFromDirWithErrors(dir string) ([]*PromptFile, []PromptLoadError, error) {
+	return LoadPromptsFromDirWithErrorsAndFragments(dir, CurrentFragments())
+}
+
+// LoadPromptsFromDirWithErrorsAndFragments is the scoped-registry variant of
+// LoadPromptsFromDirWithErrors.
+func LoadPromptsFromDirWithErrorsAndFragments(dir string, fragments *FragmentRegistry) ([]*PromptFile, []PromptLoadError, error) {
 	// Check if directory exists
 	if _, err := os.Stat(dir); os.IsNotExist(err) {
 		return nil, nil, nil
@@ -1482,7 +1501,7 @@ func LoadPromptsFromDirWithErrors(dir string) ([]*PromptFile, []PromptLoadError,
 		}
 
 		// Load and parse the file
-		prompt, err := LoadPromptFile(dir, relPath)
+		prompt, err := LoadPromptFileWithFragments(dir, relPath, fragments)
 		if err != nil {
 			loadErrors = append(loadErrors, PromptLoadError{Path: relPath, Err: err})
 			// De-dup WARN per (absPath, err) per process lifetime (mitto-e8r):

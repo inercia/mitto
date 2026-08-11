@@ -1570,6 +1570,9 @@ func NewServer(config Config) (*Server, error) {
 	promptResolverFunc := func(promptName string, workingDir string) (string, error) {
 		return s.resolvePromptByName(promptName, workingDir)
 	}
+	promptFragmentsResolverFunc := func(workingDir string) (*configPkg.FragmentRegistry, error) {
+		return s.resolvePromptFragments(workingDir)
+	}
 	preferredModelsResolverFunc := func(promptName string, workingDir string) []configPkg.PromptPreferredModel {
 		return s.resolvePreferredModelsByPromptName(promptName, workingDir)
 	}
@@ -1579,6 +1582,7 @@ func NewServer(config Config) (*Server, error) {
 	s.loopRunner.SetPromptResolver(promptResolverFunc)
 	if s.sessionManager != nil {
 		s.sessionManager.SetPromptResolver(promptResolverFunc)
+		s.sessionManager.SetPromptFragmentsResolver(promptFragmentsResolverFunc)
 		s.sessionManager.SetPreferredModelsResolver(preferredModelsResolverFunc)
 		s.sessionManager.SetPromptParametersResolver(promptParametersResolverFunc)
 		// Pass the workspace prompt registry to every new/resumed session so the
@@ -3079,6 +3083,27 @@ func (s *Server) beadsStatsWorkspaces() []stats.BeadsWorkspace {
 		out = append(out, stats.BeadsWorkspace{UUID: ws.UUID, Dir: ws.WorkingDir})
 	}
 	return out
+}
+
+// resolvePromptFragments builds the fragment registry for one workspace using
+// the same ordered prompt directories as named-prompt resolution.
+func (s *Server) resolvePromptFragments(workingDir string) (*configPkg.FragmentRegistry, error) {
+	dirs := []string{appdir.WorkspacePromptsDir(workingDir)}
+	if s.sessionManager != nil {
+		for _, dir := range s.sessionManager.GetWorkspacePromptsDirs(workingDir) {
+			if !filepath.IsAbs(dir) {
+				dir = filepath.Join(workingDir, dir)
+			}
+			dirs = append(dirs, dir)
+		}
+	}
+	fragments, loadErrors, err := configPkg.LoadScopedFragmentsFromDirs(dirs)
+	if s.logger != nil {
+		for _, loadErr := range loadErrors {
+			s.logger.Warn("Failed to load workspace prompt fragment", "workspace", workingDir, "error", loadErr)
+		}
+	}
+	return fragments, err
 }
 
 // resolvePromptByName resolves a prompt name to its full text for a given working directory.

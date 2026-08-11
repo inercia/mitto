@@ -135,6 +135,12 @@ func (bs *BackgroundSession) SetPromptResolver(resolver PromptResolver) {
 	bs.promptResolver = resolver
 }
 
+// SetPromptFragmentsResolver sets the workspace-scoped fragment resolver used
+// by prompt rendering.
+func (bs *BackgroundSession) SetPromptFragmentsResolver(resolver PromptFragmentsResolver) {
+	bs.promptFragmentsResolver = resolver
+}
+
 // LoopKind classifies how a loop prompt was triggered so the dispatch path can
 // distinguish a normal scheduled/onCompletion delivery from a manual "run now" without
 // matching the magic SenderID string. LoopKindNone means the prompt is not a
@@ -856,7 +862,10 @@ func (bs *BackgroundSession) ForceReset() {
 // =============================================================================
 
 func (bs *BackgroundSession) pdPromptResolver() PromptResolver { return bs.promptResolver }
-func (bs *BackgroundSession) pdWorkingDir() string             { return bs.workingDir }
+func (bs *BackgroundSession) pdPromptFragmentsResolver() PromptFragmentsResolver {
+	return bs.promptFragmentsResolver
+}
+func (bs *BackgroundSession) pdWorkingDir() string { return bs.workingDir }
 
 // pdPromptsSnapshot returns a lazy fn that snapshots the workspace prompt
 // registry for the render-time {{ .Prompts.Exists }} / {{ .Prompts.Enabled }}

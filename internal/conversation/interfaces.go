@@ -84,6 +84,11 @@ type SharedProcess interface {
 // named workspace prompts at execution time.
 type PromptResolver func(promptName string, workingDir string) (string, error)
 
+// PromptFragmentsResolver resolves the fragment registry applicable to a
+// workspace. The returned registry is request-scoped and safe to use for one
+// render without mutating the process-global fragment registry.
+type PromptFragmentsResolver func(workingDir string) (*config.FragmentRegistry, error)
+
 // ProcessManager abstracts the shared ACP process manager (web.ACPProcessManager)
 // so the domain layer does not depend on the web infrastructure package.
 type ProcessManager interface {
