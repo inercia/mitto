@@ -208,15 +208,67 @@ func TestStreamRenderer_Reset(t *testing.T) {
 	}
 }
 
-// TestTrimGlamourMargins verifies leading/trailing blank lines and
-// whitespace are stripped, so two fragments can be glued without stacking
-// their own document margins.
+// TestTrimGlamourMargins verifies whole leading/trailing blank lines are
+// stripped so two fragments can be glued without stacking their own
+// document margins, while the first surviving line keeps its own leading
+// whitespace — that is glamour's left indent, not a margin.
 func TestTrimGlamourMargins(t *testing.T) {
-	in := "\n\n  content line  \n\n"
-	want := "content line"
-	if got := trimGlamourMargins(in); got != want {
-		t.Errorf("trimGlamourMargins(%q) = %q, want %q", in, got, want)
+	tests := []struct {
+		name, in, want string
+	}{
+		{"blank margins only", "\n\n  content line  \n\n", "  content line  "},
+		{"all blank", "\n  \n\t\n", ""},
+		{"empty", "", ""},
+		{"no margins", "  a\n  b", "  a\n  b"},
+		{"interior blank kept", "\n  a\n\n  b\n\n", "  a\n\n  b"},
 	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := trimGlamourMargins(tt.in); got != tt.want {
+				t.Errorf("trimGlamourMargins(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestStreamRenderer_PreservesGlamourIndent pins the left indent glamour
+// applies to every body line. The structural comparisons elsewhere in this
+// file trim each line, so they cannot see an indent regression; this test
+// compares the per-line leading whitespace of a streamed render against a
+// full render directly.
+func TestStreamRenderer_PreservesGlamourIndent(t *testing.T) {
+	body := readStreamCorpusT(t)
+	opts := Options{Mode: ModePlain, Width: testWidth}
+
+	sr := NewStreamRenderer(opts)
+	var streamed string
+	for _, c := range streamChunks(body, 137) {
+		streamed = sr.Render(c)
+	}
+
+	got := indentedLines(streamed)
+	want := indentedLines(Render(body, opts))
+	if len(got) != len(want) {
+		t.Fatalf("got %d non-blank lines, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("line %d = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+// indentedLines returns the non-blank lines of s with ANSI escapes and
+// trailing whitespace removed but leading whitespace preserved.
+func indentedLines(s string) []string {
+	var lines []string
+	for _, line := range strings.Split(xansi.Strip(s), "\n") {
+		line = strings.TrimRight(line, " \t")
+		if strings.TrimSpace(line) != "" {
+			lines = append(lines, line)
+		}
+	}
+	return lines
 }
 
 // TestGlueRenders covers all four prefix/trail emptiness combinations.

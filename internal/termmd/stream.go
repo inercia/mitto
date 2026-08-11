@@ -104,12 +104,27 @@ func (s *StreamRenderer) renderFragment(text string) string {
 	return trimGlamourMargins(Render(text, s.opts))
 }
 
-// trimGlamourMargins strips the leading/trailing blank lines and
-// whitespace glamour wraps every document in, so two independently
-// rendered fragments can be joined with a single explicit separator
-// instead of stacking each fragment's own margin.
+// trimGlamourMargins strips the leading/trailing blank lines glamour wraps
+// every document in, so two independently rendered fragments can be joined
+// with a single explicit separator instead of stacking each fragment's own
+// margin. Only whole blank lines are removed: the leading whitespace of the
+// first surviving line is glamour's own left indent (two spaces under the
+// "dark" style) and must survive, or every fragment after a stable-prefix
+// boundary would render flush-left while a full render stays indented.
 func trimGlamourMargins(s string) string {
-	return strings.Trim(s, " \t\n")
+	lines := strings.Split(s, "\n")
+	start := 0
+	for start < len(lines) && strings.TrimSpace(lines[start]) == "" {
+		start++
+	}
+	end := len(lines)
+	for end > start && strings.TrimSpace(lines[end-1]) == "" {
+		end--
+	}
+	if start >= end {
+		return ""
+	}
+	return strings.Join(lines[start:end], "\n")
 }
 
 // glueRenders joins two already-margin-trimmed fragments with a single
