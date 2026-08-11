@@ -2,10 +2,12 @@ package chatui
 
 import (
 	"errors"
+	"image/color"
 	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/inercia/mitto/internal/termmd"
 	"github.com/inercia/mitto/pkg/api"
 )
 
@@ -110,6 +112,90 @@ func TestModel_PermissionModal_QueueAdvancesOnAnswerThenCloses(t *testing.T) {
 	m.Update(tea.KeyPressMsg{Text: "n", Code: 'n'})
 	if m.perm.Open() {
 		t.Error("modal should close once every queued request is answered")
+	}
+}
+
+// --- background color theme resolution (mitto-u7k3) -------------------------
+
+func TestModel_NewModel_StyleAuto_RequestsThemeAndStartsDark(t *testing.T) {
+	m := NewModel(nil, Options{Title: "t", Style: "auto"})
+
+	if !m.requestTheme {
+		t.Error(`Style: "auto" should set requestTheme = true`)
+	}
+	if got := m.transcript.theme; got != termmd.ThemeDark {
+		t.Errorf("transcript.theme = %v before the reply arrives, want the zero-value ThemeDark", got)
+	}
+}
+
+func TestModel_NewModel_StyleDark_PinsThemeWithoutRequesting(t *testing.T) {
+	m := NewModel(nil, Options{Title: "t", Style: "dark"})
+
+	if m.requestTheme {
+		t.Error(`Style: "dark" should not request the background color`)
+	}
+	if got := m.transcript.theme; got != termmd.ThemeDark {
+		t.Errorf("transcript.theme = %v, want ThemeDark", got)
+	}
+}
+
+func TestModel_NewModel_StyleLight_PinsThemeWithoutRequesting(t *testing.T) {
+	m := NewModel(nil, Options{Title: "t", Style: "light"})
+
+	if m.requestTheme {
+		t.Error(`Style: "light" should not request the background color`)
+	}
+	if got := m.transcript.theme; got != termmd.ThemeLight {
+		t.Errorf("transcript.theme = %v, want ThemeLight", got)
+	}
+}
+
+func TestModel_NewModel_NoColor_NeverRequestsTheme(t *testing.T) {
+	m := NewModel(nil, Options{Title: "t", NoColor: true, Style: "auto"})
+
+	if m.requestTheme {
+		t.Error(`NoColor should skip the background-color request even with Style: "auto" (nothing will be colored)`)
+	}
+}
+
+func TestModel_Init_RequestsBackgroundColorWhenThemeUnresolved(t *testing.T) {
+	m := NewModel(nil, Options{Title: "t", Style: "auto"})
+
+	cmd := m.Init()
+
+	if cmd == nil {
+		t.Fatal("Init() should return a Cmd requesting the background color when requestTheme is set")
+	}
+	if got := cmd(); got != tea.RequestBackgroundColor() {
+		t.Errorf("Init()() = %v, want tea.RequestBackgroundColor()", got)
+	}
+}
+
+func TestModel_Init_NoCmdWhenThemeAlreadyPinned(t *testing.T) {
+	m := NewModel(nil, Options{Title: "t", Style: "dark"})
+
+	if cmd := m.Init(); cmd != nil {
+		t.Error("Init() should return a nil Cmd when the theme was already pinned by --style")
+	}
+}
+
+func TestModel_BackgroundColorMsg_DarkSetsThemeDark(t *testing.T) {
+	m := newTestModel(t, true)
+
+	m.Update(tea.BackgroundColorMsg{Color: color.Black})
+
+	if got := m.transcript.theme; got != termmd.ThemeDark {
+		t.Errorf("transcript.theme = %v after a dark BackgroundColorMsg, want ThemeDark", got)
+	}
+}
+
+func TestModel_BackgroundColorMsg_LightSetsThemeLight(t *testing.T) {
+	m := newTestModel(t, true)
+
+	m.Update(tea.BackgroundColorMsg{Color: color.White})
+
+	if got := m.transcript.theme; got != termmd.ThemeLight {
+		t.Errorf("transcript.theme = %v after a light BackgroundColorMsg, want ThemeLight", got)
 	}
 }
 

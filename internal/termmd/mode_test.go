@@ -67,6 +67,59 @@ func TestResolveMode_TruthTable(t *testing.T) {
 	}
 }
 
+// TestResolveTheme_TruthTable pins ResolveTheme's precedence (mitto-u7k3):
+// explicit --style flag, then $GLAMOUR_STYLE (only exact "dark"/"light"),
+// then terminal background detection (both stdin and stdout TTYs), then the
+// ThemeDark fallback — matching ResolveTheme's doc comment and mirroring
+// TestResolveMode_TruthTable's shape.
+func TestResolveTheme_TruthTable(t *testing.T) {
+	cases := []struct {
+		name         string
+		explicit     string
+		glamourStyle string
+		stdinTTY     bool
+		stdoutTTY    bool
+		hasDark      bool
+		want         Theme
+	}{
+		{"explicit dark wins over everything", "dark", "light", true, true, false, ThemeDark},
+		{"explicit light wins over everything", "light", "dark", true, true, true, ThemeLight},
+		{"explicit auto falls through to env", "auto", "light", false, false, false, ThemeLight},
+		{"explicit empty falls through to env", "", "dark", false, false, false, ThemeDark},
+		{"env dark wins over detection", "", "dark", true, true, false, ThemeDark},
+		{"env light wins over detection", "", "light", true, true, true, ThemeLight},
+		{"env junk value is ignored, falls to detection", "", "dracula", true, true, true, ThemeDark},
+		{"env style path is ignored, falls to detection", "", "/path/to/style.json", true, true, false, ThemeLight},
+		{"detection: dark background", "", "", true, true, true, ThemeDark},
+		{"detection: light background", "", "", true, true, false, ThemeLight},
+		{"stdout not a TTY skips detection, falls to dark", "", "", true, false, false, ThemeDark},
+		{"stdin not a TTY skips detection, falls to dark", "", "", false, true, false, ThemeDark},
+		{"neither a TTY, no flag, no env", "", "", false, false, false, ThemeDark},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("GLAMOUR_STYLE", tc.glamourStyle)
+
+			restoreStdin := stdinIsTerminalOverride
+			stdinIsTerminalOverride = func() bool { return tc.stdinTTY }
+			t.Cleanup(func() { stdinIsTerminalOverride = restoreStdin })
+
+			restoreStdout := stdoutIsTerminalOverride
+			stdoutIsTerminalOverride = func() bool { return tc.stdoutTTY }
+			t.Cleanup(func() { stdoutIsTerminalOverride = restoreStdout })
+
+			restoreDark := hasDarkBackgroundOverride
+			hasDarkBackgroundOverride = func() bool { return tc.hasDark }
+			t.Cleanup(func() { hasDarkBackgroundOverride = restoreDark })
+
+			got := ResolveTheme(tc.explicit)
+			if got != tc.want {
+				t.Errorf("ResolveTheme(%q) = %v, want %v", tc.explicit, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestTerminalWidth_FallbackWhenNotATTY pins TerminalWidth's fallback path:
 // when stdout is not a TTY, the caller-supplied fallback (or defaultWidth if
 // <= 0) is returned unconditionally, without touching term.GetSize.

@@ -103,6 +103,28 @@ func TestRender_Styled(t *testing.T) {
 	checkGolden(t, "corpus.styled.golden", out)
 }
 
+// TestRender_StyledLight pins glamour's light style output at a fixed width
+// (mitto-u7k3), analogous to TestRender_Styled — deterministic for the same
+// reason: WithStylePath("light") + a caller-supplied width are the only
+// inputs, so Options.Theme: ThemeLight never touches the terminal.
+func TestRender_StyledLight(t *testing.T) {
+	out := Render(readCorpus(t), Options{Mode: ModeStyled, Theme: ThemeLight, Width: testWidth})
+	checkGolden(t, "corpus.light.golden", out)
+}
+
+// TestRender_StyledDarkVsLightDiffer guards against ResolveTheme's
+// precedence table silently regressing to a single style — ModeStyled with
+// ThemeDark vs ThemeLight must produce different output for the same body,
+// since golden-file byte equality between the two would mean Theme is not
+// actually being threaded into glamourStyle/termRenderer.
+func TestRender_StyledDarkVsLightDiffer(t *testing.T) {
+	dark := Render(readCorpus(t), Options{Mode: ModeStyled, Theme: ThemeDark, Width: testWidth})
+	light := Render(readCorpus(t), Options{Mode: ModeStyled, Theme: ThemeLight, Width: testWidth})
+	if dark == light {
+		t.Fatal("ModeStyled with ThemeDark and ThemeLight produced identical output, want the theme to change the palette")
+	}
+}
+
 // TestRenderHTMLFallback_Golden pins the degraded HTML-to-text path against
 // a small legacy-style HTML body (mitto-pscc.3 predates markdown
 // persistence, so old events carry HTML only).
