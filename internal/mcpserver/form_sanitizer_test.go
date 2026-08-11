@@ -90,7 +90,10 @@ func TestSanitizeFormHTML_AllowsFieldset(t *testing.T) {
 }
 
 func TestSanitizeFormHTML_AllowsLayoutElements(t *testing.T) {
-	html := `<div><p><strong>Bold</strong> and <em>italic</em></p><br><hr></div>`
+	// Layout elements alone are not a usable form (mitto-pduw), so this test
+	// includes a real control alongside the layout markup under test.
+	html := `<div><p><strong>Bold</strong> and <em>italic</em></p><br><hr>` +
+		`<input type="text" name="x"></div>`
 	result, err := sanitizeFormHTML(html)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -313,6 +316,34 @@ func TestSanitizeFormHTML_ErrorOnAllStripped(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "no allowed form elements") {
 		t.Errorf("expected 'no allowed form elements' in error, got: %v", err)
+	}
+}
+
+// TestSanitizeFormHTML_ErrorOnEntityEscapedInput reproduces mitto-pduw: an agent
+// that entity-escapes its HTML payload (e.g. "&lt;p&gt;...&lt;/p&gt;" instead of
+// "<p>...</p>") gets no error today. bluemonday sees no tags to strip in escaped
+// markup, so sanitizeFormHTML returns the escaped text byte-for-byte as "sanitized"
+// output, which mitto_ui_form then renders as literal visible tag text with zero
+// interactive controls — exactly the reported symptom. This must become an error.
+func TestSanitizeFormHTML_ErrorOnEntityEscapedInput(t *testing.T) {
+	escaped := "&lt;p&gt;Create beads?&lt;/p&gt;&lt;label&gt;&lt;input type=&#34;checkbox&#34; " +
+		"name=&#34;a&#34; value=&#34;1&#34;&gt; Alpha&lt;/label&gt;"
+	_, err := sanitizeFormHTML(escaped)
+	if err == nil {
+		t.Fatal("expected error for entity-escaped HTML (bug mitto-pduw): got success, " +
+			"but the caller's tags were never actual HTML and will render as literal text")
+	}
+}
+
+// TestSanitizeFormHTML_ErrorOnNoInteractiveControls reproduces mitto-pduw: HTML
+// containing only layout/text elements (no input/select/textarea) is accepted
+// today because the sole acceptance gate is "sanitized == empty". This produces a
+// form with nothing for the user to fill in. Must become an error.
+func TestSanitizeFormHTML_ErrorOnNoInteractiveControls(t *testing.T) {
+	_, err := sanitizeFormHTML(`<p>Just a paragraph, no controls at all.</p>`)
+	if err == nil {
+		t.Fatal("expected error for HTML with no interactive controls (bug mitto-pduw): " +
+			"got success, but the form has nothing for the user to fill in")
 	}
 }
 
