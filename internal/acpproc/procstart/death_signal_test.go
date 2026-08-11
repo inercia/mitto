@@ -196,3 +196,105 @@ func TestStderrTail_PreservesV8FatalHeader(t *testing.T) {
 		t.Errorf("StderrTail len = %d, want <= %d+marker", len(got), DefaultStderrTailBytes)
 	}
 }
+
+// TestStderrTail_NoNewlineFallsBackToRawCut covers the "no newline found in
+// the snap window" fallback for both the head and tail halves: a single
+// pathological long line with no newlines anywhere must not crash, must not
+// grow the excerpt past its budget, and still contains an elision marker.
+func TestStderrTail_NoNewlineFallsBackToRawCut(t *testing.T) {
+	c := NewStderrCollector(1<<20, nil)
+	// One giant line, no newlines at all.
+	payload := strings.Repeat("X", 5000)
+	_, _ = c.Write([]byte(payload))
+
+	got := StderrTail(c, 1024)
+	if len(got) > 1024+64 {
+		t.Fatalf("StderrTail len = %d, want <= 1024+marker", len(got))
+	}
+	if !strings.Contains(got, "bytes elided") {
+		t.Errorf("StderrTail missing elision marker: %q", got)
+	}
+	if !strings.HasPrefix(got, "X") || !strings.HasSuffix(got, "X") {
+		t.Errorf("StderrTail head/tail unexpectedly empty: %q", got)
+	}
+}
+
+// TestSnapHeadToLineBoundary covers the head-snap helper directly: it must
+// trim back to the last newline within the bounded search window, and leave
+// s unchanged when no newline exists in that window (bounded fallback).
+func TestSnapHeadToLineBoundary(t *testing.T) {
+	if got := snapHeadToLineBoundary("line1\nline2\npartial"); got != "line1\nline2" {
+		t.Errorf("snapHeadToLineBoundary = %q, want %q", got, "line1\nline2")
+	}
+	// No newline anywhere: unchanged (raw-cut fallback).
+	noNewline := strings.Repeat("A", 50)
+	if got := snapHeadToLineBoundary(noNewline); got != noNewline {
+		t.Errorf("snapHeadToLineBoundary(no newline) = %q, want unchanged", got)
+	}
+	// Newline exists but outside the bounded search window: unchanged.
+	outsideWindow := "line1\n" + strings.Repeat("B", stderrSnapWindow+10)
+	if got := snapHeadToLineBoundary(outsideWindow); got != outsideWindow {
+		t.Errorf("snapHeadToLineBoundary(newline outside window) = %q, want unchanged", got)
+	}
+	// Empty string: unchanged.
+	if got := snapHeadToLineBoundary(""); got != "" {
+		t.Errorf("snapHeadToLineBoundary(\"\") = %q, want empty", got)
+	}
+}
+
+// TestSnapTailToLineBoundary covers the tail-snap helper directly: it must
+// advance past the first newline within the bounded search window, and leave
+// s unchanged when no newline exists in that window (bounded fallback).
+func TestSnapTailToLineBoundary(t *testing.T) {
+	if got := snapTailToLineBoundary("partial\nline2\nline3"); got != "line2\nline3" {
+		t.Errorf("snapTailToLineBoundary = %q, want %q", got, "line2\nline3")
+	}
+	// No newline anywhere: unchanged (raw-cut fallback).
+	noNewline := strings.Repeat("A", 50)
+	if got := snapTailToLineBoundary(noNewline); got != noNewline {
+		t.Errorf("snapTailToLineBoundary(no newline) = %q, want unchanged", got)
+	}
+	// Newline exists but outside the bounded search window: unchanged.
+	outsideWindow := strings.Repeat("B", stderrSnapWindow+10) + "\nline2"
+	if got := snapTailToLineBoundary(outsideWindow); got != outsideWindow {
+		t.Errorf("snapTailToLineBoundary(newline outside window) = %q, want unchanged", got)
+	}
+	// Empty string: unchanged.
+	if got := snapTailToLineBoundary(""); got != "" {
+		t.Errorf("snapTailToLineBoundary(\"\") = %q, want empty", got)
+	}
+}
+
+// TestAbnormalExitAttrs_PreservesV8FatalHeader is the end-to-end acceptance
+// test for mitto-zq6a at the actual log-attribute API (AbnormalExitAttrs),
+// not just the StderrTail primitive: the emitted stderr_tail attr for a
+// simulated V8 OOM dump must contain both the fatal header and the last
+// backtrace frame, with stderr_tail_len bounded to DefaultStderrTailBytes
+// plus the small marker allowance.
+func TestAbnormalExitAttrs_PreservesV8FatalHeader(t *testing.T) {
+	c := NewStderrCollector(DefaultStderrCollectorBytes, nil)
+	var b strings.Builder
+	b.WriteString("FATAL ERROR: Ineffective mark-compacts near heap limit Allocation failed - JavaScript heap out of memory\n")
+	b.WriteString("----- Native stack trace -----\n")
+	for i := 0; i < 200; i++ {
+		fmt.Fprintf(&b, " %d: 0x%x some_frame_symbol(args) [/opt/homebrew/lib/libnode.dylib]\n", i, 0x1000000+i)
+	}
+	_, _ = c.Write([]byte(b.String()))
+
+	attrs := AbnormalExitAttrs(syscall.SIGABRT, true, c, DefaultStderrTailBytes)
+
+	tail, _ := findAttr(attrs, "stderr_tail").(string)
+	if !strings.Contains(tail, "FATAL ERROR") {
+		t.Errorf("stderr_tail dropped the fatal header: %q", tail[:200])
+	}
+	if !strings.Contains(tail, "199:") {
+		t.Errorf("stderr_tail dropped the last backtrace frame")
+	}
+	tlen, _ := findAttr(attrs, "stderr_tail_len").(int)
+	if tlen > DefaultStderrTailBytes+64 {
+		t.Errorf("stderr_tail_len=%d exceeds cap %d+marker", tlen, DefaultStderrTailBytes)
+	}
+	if name, _ := findAttr(attrs, "death_signal").(string); name != "SIGABRT" {
+		t.Errorf("death_signal = %q, want SIGABRT", name)
+	}
+}
