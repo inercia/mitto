@@ -4355,6 +4355,89 @@ func (r *LoopRunner) tasksRefirePendingForTest(sessionID string) bool {
 	return r.tasksRefirePending[sessionID]
 }
 
+// TestLoopRunner_ProcessTasksChange_NonTransientDeliveryFailure_DroppedWithoutRearm
+// reproduces mitto-c9kp: a first-shot onTasks fire (processTasksChange's
+// tasksActionFire branch, NOT the busy/quiescence re-fire path) whose dispatch
+// error is durable/non-transient — e.g. an ACP handshake failure such as the
+// reported "failed to create session on shared process: ... context deadline
+// exceeded" (-32603) — must NOT be silently dropped. Today it is: the
+// tasksActionFire branch in processTasksChange only special-cases
+// ErrPromptResolveFailed (auto-pause) and ErrSessionBusy (benign, owned by the
+// busy path); every other error takes the bare `return` at
+// loop_runner_tasks.go:397 with no re-arm and no baseline rebase, so the
+// pending delta survives on disk but nothing is scheduled to consume it — the
+// loop goes deaf until an unrelated future fs-watcher event fires it again.
+//
+// This differs from the already-covered
+// TestLoopRunner_FireTasksRebase_PersistentTransientFailure_BaselineUnchanged:
+// that test drives fireTasksRebase (the busy-window re-fire path, which DOES
+// apply the tri-state self-heal via maybeFireAccumulatedDelta) with a
+// TRANSIENT compile-race error. This test drives the plain idle-path
+// processTasksChange (which has no self-heal at all) with a NON-transient
+// error, matching the bead's exact failure mode.
+//
+// The reproduction reuses newTasksRefireTestRunner's registered
+// BackgroundSession, which has no promptResolver wired — so PromptWithMeta
+// synchronously fails with a plain *promptResolverError (non-transient,
+// distinct from both ErrPromptTransientCompileRace and ErrPromptResolveFailed
+// since PromptWithMeta's resolveAndSubstitute path never wraps
+// ErrPromptResolveFailed — see resolveAndSubstitute in prompt_dispatcher.go),
+// giving exactly the bug's error class without needing a real ACP process.
+//
+// Expected behavior (fails today): the delivery failure should re-arm the
+// onTasks quiescence timer (armTasksRebase) and set the sticky re-fire flag —
+// mirroring the self-heal fireTasksRebase already applies on
+// tasksRefireDeliveryFailed — so the pending delta is retried instead of
+// vanishing. The baseline must also be left un-rebased so the delta survives.
+func TestLoopRunner_ProcessTasksChange_NonTransientDeliveryFailure_DroppedWithoutRearm(t *testing.T) {
+	const sessionID = "s1"
+	rawBefore := mustMarshalRows(t, beadsRow("mitto-1", "open", "2026-01-01T00:00:00Z"))
+	rawNow := mustMarshalRows(t,
+		beadsRow("mitto-1", "open", "2026-01-01T00:00:00Z"),
+		beadsRow("mitto-2", "open", "2026-01-02T00:00:00Z"),
+	)
+
+	runner, ps := newTasksRefireTestRunner(t, sessionID, rawNow)
+	if err := NewTasksBaselineStore(runner.store.SessionDir(sessionID)).Set(rawBefore); err != nil {
+		t.Fatalf("Set() baseline error = %v", err)
+	}
+	// No promptResolver configured on the registered BackgroundSession (see
+	// newTasksRefireTestRunner) — PromptWithMeta's resolveAndSubstitute will
+	// synchronously fail with a non-transient *promptResolverError, standing
+	// in for the reported ACP handshake failure (-32603 context deadline
+	// exceeded). Neither isTransientPromptCompileRace nor errors.Is(...,
+	// ErrPromptResolveFailed) match it, nor is it ErrSessionBusy.
+
+	meta, err := runner.store.GetMetadata(sessionID)
+	if err != nil {
+		t.Fatalf("GetMetadata() error = %v", err)
+	}
+	loop, err := ps.Get()
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+
+	// Drive the idle-path tasksActionFire branch directly with a material
+	// delta, exactly as processTasksChange's caller (OnBeadsChanged) would.
+	runner.processTasksChange(meta, loop, ps, rawNow)
+
+	baseline, err := NewTasksBaselineStore(runner.store.SessionDir(sessionID)).Get()
+	if err != nil {
+		t.Fatalf("Get() baseline error = %v", err)
+	}
+	if !jsonBytesEqual(t, baseline.RawSnapshot, rawBefore) {
+		t.Errorf("baseline.RawSnapshot = %s, want %s (must not rebase on delivery failure)",
+			baseline.RawSnapshot, rawBefore)
+	}
+	if got := countTasksRebaseTimers(runner); got != 1 {
+		t.Errorf("tasksRebaseTimers = %d, want 1 (a non-transient delivery failure on the idle fire path must self-heal by re-arming, mirroring fireTasksRebase)", got)
+	}
+	if !runner.tasksRefirePendingForTest(sessionID) {
+		t.Error("tasksRefirePending must be set after a non-transient delivery failure so the next quiescence tick retries")
+	}
+	runner.cancelTasksRebaseTimerForTest(sessionID)
+}
+
 func TestLoopRunner_BootstrapTasksBaseline_CreatesWhenMissing(t *testing.T) {
 	store, err := session.NewStore(t.TempDir())
 	if err != nil {

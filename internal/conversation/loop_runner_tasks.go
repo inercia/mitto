@@ -386,16 +386,37 @@ func (r *LoopRunner) processTasksChange(meta session.Metadata, loop *session.Loo
 			// forever.
 			if errors.Is(err, ErrPromptResolveFailed) {
 				r.handlePromptResolveFailure(sessionID, meta.Name, loop, loopStore, err)
-			} else if r.logger != nil && !errors.Is(err, ErrSessionBusy) {
-				if exhausted {
-					r.logger.Error("onTasks: firing failed after transient-race retries",
-						"session_id", sessionID, "error", err, "retries_exhausted", true)
+			} else if errors.Is(err, ErrSessionBusy) {
+				// Benign, expected outcome already owned by the busy/quiescence
+				// path — no self-heal needed, no error logging.
+			} else {
+				// Durable delivery failure (e.g. an ACP handshake error) is
+				// deferrable, not terminal (mitto-c9kp). Self-heal identically
+				// to fireTasksRebase's tasksRefireDeliveryFailed outcome: mark
+				// a pending re-fire and arm the quiescence timer so the delta
+				// (left un-rebased below) is retried instead of dropped,
+				// bounded by maxTasksRefireDeliveryFailures.
+				if r.bumpTasksRefireDeliveryFailure(sessionID) < maxTasksRefireDeliveryFailures {
+					r.markTasksRefirePending(sessionID)
+					r.armTasksRebase(sessionID, loopStore)
+					if exhausted && r.logger != nil {
+						r.logger.Error("onTasks: firing failed after transient-race retries",
+							"session_id", sessionID, "error", err, "retries_exhausted", true)
+					} else if r.logger != nil {
+						r.logger.Warn("onTasks: firing failed; self-healing via re-arm", "session_id", sessionID, "error", err)
+					}
 				} else {
-					r.logger.Warn("onTasks: firing failed", "session_id", sessionID, "error", err)
+					if r.logger != nil {
+						r.logger.Error("onTasks: firing failed repeatedly; giving up self-heal without rebasing baseline",
+							"session_id", sessionID, "error", err,
+							"max_attempts", maxTasksRefireDeliveryFailures, "retries_exhausted", true)
+					}
+					r.clearTasksRefireDeliveryFailures(sessionID)
 				}
 			}
 			return
 		}
+		r.clearTasksRefireDeliveryFailures(sessionID)
 		// Persist the new baseline now that the run has been kicked off. Any
 		// beads edits the run itself (or a delegated child) makes while busy
 		// are caught by Layer 1 and absorbed later by the idle+quiescence
@@ -661,16 +682,37 @@ func (r *LoopRunner) fireTasksSettle(sessionID string, loopStore *session.LoopSt
 		if err, exhausted := r.triggerTasksFireWithRetry(sessionID, decision.delta); err != nil {
 			if errors.Is(err, ErrPromptResolveFailed) {
 				r.handlePromptResolveFailure(sessionID, meta.Name, loop, loopStore, err)
-			} else if r.logger != nil && !errors.Is(err, ErrSessionBusy) {
-				if exhausted {
-					r.logger.Error("onTasks: settled firing failed after transient-race retries",
-						"session_id", sessionID, "error", err, "retries_exhausted", true)
+			} else if errors.Is(err, ErrSessionBusy) {
+				// Benign, expected outcome already owned by the busy/quiescence
+				// path — no self-heal needed, no error logging.
+			} else {
+				// Durable delivery failure (e.g. an ACP handshake error) is
+				// deferrable, not terminal (mitto-c9kp). Self-heal identically
+				// to fireTasksRebase's tasksRefireDeliveryFailed outcome: mark
+				// a pending re-fire and arm the quiescence timer so the delta
+				// (left un-rebased below) is retried instead of dropped,
+				// bounded by maxTasksRefireDeliveryFailures.
+				if r.bumpTasksRefireDeliveryFailure(sessionID) < maxTasksRefireDeliveryFailures {
+					r.markTasksRefirePending(sessionID)
+					r.armTasksRebase(sessionID, loopStore)
+					if exhausted && r.logger != nil {
+						r.logger.Error("onTasks: settled firing failed after transient-race retries",
+							"session_id", sessionID, "error", err, "retries_exhausted", true)
+					} else if r.logger != nil {
+						r.logger.Warn("onTasks: settled firing failed; self-healing via re-arm", "session_id", sessionID, "error", err)
+					}
 				} else {
-					r.logger.Warn("onTasks: settled firing failed", "session_id", sessionID, "error", err)
+					if r.logger != nil {
+						r.logger.Error("onTasks: settled firing failed repeatedly; giving up self-heal without rebasing baseline",
+							"session_id", sessionID, "error", err,
+							"max_attempts", maxTasksRefireDeliveryFailures, "retries_exhausted", true)
+					}
+					r.clearTasksRefireDeliveryFailures(sessionID)
 				}
 			}
 			return
 		}
+		r.clearTasksRefireDeliveryFailures(sessionID)
 		if err := decision.baseline.Set(raw); err != nil && r.logger != nil {
 			r.logger.Warn("onTasks: failed to persist baseline after settled fire",
 				"session_id", sessionID, "error", err)
