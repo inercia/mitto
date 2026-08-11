@@ -152,6 +152,12 @@ type fakePromptDeps struct {
 	// argCache is a real per-conversation cache backing pdCacheGetArg/pdCacheSetArg so
 	// dispatcher tests can exercise the merge + write-back path end-to-end.
 	argCache *promptArgCache
+
+	// === New in mitto-s9g2: skip redundant FreshContext clear on a virgin session ===
+	// contextIsEmpty backs pdContextIsEmpty. Defaults to false so all pre-existing
+	// FreshContext dispatcher tests keep exercising the flush/new-session paths
+	// unchanged; virginity-skip tests set this to true explicitly.
+	contextIsEmpty bool
 }
 
 func newFakePromptDeps() *fakePromptDeps {
@@ -521,6 +527,7 @@ func (f *fakePromptDeps) pdReacquirePromptingState() {
 // === New in mitto-2tm ===
 
 func (f *fakePromptDeps) pdContextFlushCommand() string { return f.contextFlushCommand }
+func (f *fakePromptDeps) pdContextIsEmpty() bool        { return f.contextIsEmpty }
 func (f *fakePromptDeps) pdFlushContextInPlace(_ context.Context) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()

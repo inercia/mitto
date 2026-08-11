@@ -1004,6 +1004,9 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 			if err == nil {
 				bs.acpID = acpSessionID
 				bs.resumeMethod = "resume"
+				// Resumed sessions may already hold agent-side history we cannot
+				// see from Go; virginity is not authoritative (mitto-s9g2).
+				bs.markACPContextUnknown()
 				bs.setSessionModes(resumeResp.Modes)
 				models, cfgId, modelSource := DeriveAgentModels(
 					resumeResp.ConfigOptions,
@@ -1061,6 +1064,9 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 			if err == nil {
 				bs.acpID = acpSessionID
 				bs.resumeMethod = "load"
+				// Session/load replays history agent-side; virginity is not
+				// authoritative (mitto-s9g2).
+				bs.markACPContextUnknown()
 				// Store available modes from session load
 				bs.setSessionModes(loadResp.Modes)
 				models, cfgId, modelSource := DeriveAgentModels(
@@ -1133,6 +1139,8 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 	}
 
 	bs.acpID = string(sessResp.SessionId)
+	// A brand-new session created fresh in this process is provably empty (mitto-s9g2).
+	bs.markACPContextFresh()
 
 	// Store available modes from session setup
 	bs.setSessionModes(sessResp.Modes)

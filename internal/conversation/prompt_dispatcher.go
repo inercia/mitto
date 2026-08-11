@@ -201,6 +201,13 @@ type promptDeps interface {
 	// with streaming suppressed so the flush turn stays out of the transcript.
 	pdFlushContextInPlace(ctx context.Context) error
 
+	// pdContextIsEmpty reports whether the current ACP session is provably empty
+	// (created fresh in this process, no turns dispatched since) — mitto-s9g2.
+	// Used by createFreshContextSession to skip a redundant clear on the first
+	// FreshContext loop iteration. Returns false (fail safe) for resumed/loaded
+	// sessions, where virginity cannot be asserted.
+	pdContextIsEmpty() bool
+
 	// Cold-start diagnostics (mitto-3mv WI-2). Nil-safe — no-op when the
 	// session's cold-start trace has not been begun or has been finalized.
 	pdColdPhase(name string, kv ...any)
@@ -998,6 +1005,19 @@ func runHandshakeWithWatchdog(d promptDeps, deadline time.Duration) error {
 // falls back to the plain pdRecordSessionChange which allocates its own seq.
 func (p promptDispatcher) createFreshContextSession(d promptDeps, meta PromptMeta, pillSeq int64) string {
 	if !meta.FreshContext {
+		return ""
+	}
+
+	// mitto-s9g2: skip the clear entirely when the current ACP session is
+	// provably empty (created fresh in this process, no turns dispatched since).
+	// No pill, no flush RPC, no session/new — the reserved pillSeq becomes a
+	// tolerated seq gap, same as the existing flush-error path. Resumed/loaded
+	// sessions report pdContextIsEmpty()==false (fail safe) and keep flushing.
+	if d.pdContextIsEmpty() {
+		if l := d.pdLogger(); l != nil {
+			l.Debug("Skipping FreshContext clear: ACP session has no turns yet",
+				"session_id", d.pdSessionID())
+		}
 		return ""
 	}
 

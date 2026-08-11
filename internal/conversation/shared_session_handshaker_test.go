@@ -178,6 +178,10 @@ type fakeHandshakeDeps struct {
 	stopMcpCalls     int
 	processDonesSet  int
 	niledCreation    int
+
+	// === New in mitto-s9g2: ACP context virginity tracking ===
+	markFreshCalls   int
+	markUnknownCalls int
 }
 
 func newFakeHandshakeDeps() *fakeHandshakeDeps {
@@ -213,6 +217,9 @@ func (f *fakeHandshakeDeps) hsSetAgentSupportsImages(v bool) { f.agentImages = v
 
 func (f *fakeHandshakeDeps) hsGetACPID() string   { return f.acpID }
 func (f *fakeHandshakeDeps) hsSetACPID(id string) { f.acpID = id }
+
+func (f *fakeHandshakeDeps) hsMarkContextFresh()   { f.markFreshCalls++ }
+func (f *fakeHandshakeDeps) hsMarkContextUnknown() { f.markUnknownCalls++ }
 
 func (f *fakeHandshakeDeps) hsPendingSharedLock()   { f.pendingMu.Lock() }
 func (f *fakeHandshakeDeps) hsPendingSharedUnlock() { f.pendingMu.Unlock() }

@@ -102,6 +102,9 @@ func (bs *BackgroundSession) hsSetAgentSupportsImages(v bool) { bs.agentSupports
 func (bs *BackgroundSession) hsGetACPID() string   { return bs.acpID }
 func (bs *BackgroundSession) hsSetACPID(id string) { bs.acpID = id }
 
+func (bs *BackgroundSession) hsMarkContextFresh()   { bs.markACPContextFresh() }
+func (bs *BackgroundSession) hsMarkContextUnknown() { bs.markACPContextUnknown() }
+
 func (bs *BackgroundSession) hsPendingSharedLock()   { bs.pendingSharedMu.Lock() }
 func (bs *BackgroundSession) hsPendingSharedUnlock() { bs.pendingSharedMu.Unlock() }
 

@@ -337,6 +337,9 @@ func (bs *BackgroundSession) FlushContext() error {
 			})
 			return
 		}
+		// The manual flush succeeded: the session is now provably empty (mitto-s9g2).
+		// This only resets the counter — the manual action does not skip itself.
+		bs.markACPContextFresh()
 		// Surface the context clear in the conversation timeline (mirrors the
 		// loop FreshContext pill recorded by createFreshContextSession).
 		bs.cmRecordSessionChange("context_cleared", "flush", "")
@@ -693,6 +696,10 @@ retryAfterRestart:
 		if freshContextSessionID != "" && !autoRetried {
 			acpSessionIDForPrompt = freshContextSessionID
 		}
+
+		// Track that a turn is being dispatched on the current ACP session, so a
+		// later FreshContext iteration can tell it is no longer virgin (mitto-s9g2).
+		bs.noteACPTurnDispatched()
 
 		promptStartedAt = time.Now() // captured for after-phase processors
 		if bs.sharedProcess != nil {
@@ -1106,6 +1113,8 @@ func (bs *BackgroundSession) pdACPConnNewSession(ctx context.Context, cwd string
 	if err != nil {
 		return "", err
 	}
+	// A brand-new session created fresh in this process is provably empty (mitto-s9g2).
+	bs.markACPContextFresh()
 	return string(freshSess.SessionId), nil
 }
 
@@ -1352,8 +1361,17 @@ func (bs *BackgroundSession) pdReacquirePromptingState() {
 func (bs *BackgroundSession) pdContextFlushCommand() string { return bs.ContextFlushCommand() }
 
 func (bs *BackgroundSession) pdFlushContextInPlace(ctx context.Context) error {
-	return bs.flushContextInPlace(ctx)
+	err := bs.flushContextInPlace(ctx)
+	if err == nil {
+		// The in-place flush succeeded: the session is now provably empty (mitto-s9g2).
+		bs.markACPContextFresh()
+	}
+	return err
 }
+
+// === New in mitto-s9g2: skip redundant FreshContext clear on a virgin session ===
+
+func (bs *BackgroundSession) pdContextIsEmpty() bool { return bs.acpContextIsEmpty() }
 
 // Cold-start diagnostics (mitto-3mv WI-2). Delegates to the nil-safe helper.
 func (bs *BackgroundSession) pdColdPhase(name string, kv ...any) { bs.coldPhase(name, kv...) }

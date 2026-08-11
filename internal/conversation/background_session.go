@@ -322,6 +322,20 @@ type BackgroundSession struct {
 	// "resume" (UNSTABLE resume API), "load" (history replay), or "new" (fresh session)
 	resumeMethod string
 
+	// acpContextTurns is a tri-state counter tracking how many prompt turns have
+	// been dispatched on the CURRENT ACP session since it was last known to be
+	// empty (mitto-s9g2). Values:
+	//   contextTurnsUnknown (-1): virginity is NOT authoritative — the session was
+	//     resumed/loaded (or the counter hasn't been classified yet), so the agent
+	//     may already hold history we cannot see from Go. Treat as "not empty".
+	//   0: the session was created fresh in THIS process and has dispatched no
+	//     turns yet (or was just cleared) — provably empty.
+	//   N > 0: N turns have been dispatched since the last fresh-create/clear.
+	// Always initialized to contextTurnsUnknown in both constructors so the
+	// zero value of the struct never falsely claims virginity. See
+	// acpContextIsEmpty/markACPContextFresh/markACPContextUnknown/noteACPTurnDispatched.
+	acpContextTurns atomic.Int64
+
 	// creationCtx is the context passed for the initial ACP session creation RPC.
 	// It is set from BackgroundSessionConfig.CreationCtx and nil'd out after the RPC
 	// completes so we don't hold a reference longer than necessary.
@@ -687,6 +701,9 @@ func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, erro
 		isChildPrompting:               cfg.IsChildPrompting,         // Callback to check if a child session is prompting
 		creationCtx:                    cfg.CreationCtx,              // Context for initial ACP session creation RPC only
 	}
+	// Fail-safe default: virginity is unknown until a handshake site proves the
+	// session was created fresh (mitto-s9g2). Must be set before any handshake runs.
+	bs.acpContextTurns.Store(contextTurnsUnknown)
 
 	// Look up ACP server constraints from config
 	bs.acpServerConstraints = applyModelConstraintOverride(
@@ -945,6 +962,9 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 		isChildPrompting:               config.IsChildPrompting,         // Callback to check if a child session is prompting
 		creationCtx:                    config.CreationCtx,              // Context for initial ACP session creation RPC only
 	}
+	// Fail-safe default: virginity is unknown until a handshake site proves the
+	// session was created fresh (mitto-s9g2). Must be set before any handshake runs.
+	bs.acpContextTurns.Store(contextTurnsUnknown)
 
 	// Look up ACP server constraints from config
 	bs.acpServerConstraints = applyModelConstraintOverride(
@@ -1211,6 +1231,42 @@ func (bs *BackgroundSession) ContextFlushCommand() string {
 	}
 	return ""
 }
+
+// contextTurnsUnknown is the sentinel value for BackgroundSession.acpContextTurns
+// meaning virginity is not authoritative (session resumed/loaded, or not yet
+// classified). See the acpContextTurns field doc for the full tri-state contract.
+const contextTurnsUnknown int64 = -1
+
+// markACPContextFresh records that the current ACP session is known to be empty
+// right now — either because it was just created fresh in this process, or
+// because a context-flush/clear just succeeded on it.
+func (bs *BackgroundSession) markACPContextFresh() { bs.acpContextTurns.Store(0) }
+
+// markACPContextUnknown records that virginity cannot be asserted for the current
+// ACP session (e.g. it was resumed or loaded, replaying agent-side history that
+// Go cannot see).
+func (bs *BackgroundSession) markACPContextUnknown() { bs.acpContextTurns.Store(contextTurnsUnknown) }
+
+// noteACPTurnDispatched records that a prompt turn is about to be dispatched on
+// the current ACP session. It only increments a already-classified-fresh counter
+// (>= 0); the unknown sentinel (-1) is never promoted into a count by this call —
+// only markACPContextFresh/markACPContextUnknown reclassify the session.
+func (bs *BackgroundSession) noteACPTurnDispatched() {
+	for {
+		cur := bs.acpContextTurns.Load()
+		if cur < 0 {
+			return
+		}
+		if bs.acpContextTurns.CompareAndSwap(cur, cur+1) {
+			return
+		}
+	}
+}
+
+// acpContextIsEmpty reports whether the current ACP session is provably empty
+// (created fresh in this process, no turns dispatched since). Returns false for
+// the unknown sentinel, so resumed/loaded sessions always fail safe to "not empty".
+func (bs *BackgroundSession) acpContextIsEmpty() bool { return bs.acpContextTurns.Load() == 0 }
 
 // StartedAt returns when this session was started or resumed.
 // Used by the GC to apply a grace period to freshly started sessions.

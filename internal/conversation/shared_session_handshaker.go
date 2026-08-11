@@ -93,6 +93,13 @@ type handshakeDeps interface {
 	hsGetACPID() string
 	hsSetACPID(id string)
 
+	// ACP context virginity tracking (mitto-s9g2). hsMarkContextFresh is called
+	// only when the ACP session was created fresh (session/new) in this process;
+	// hsMarkContextUnknown is called on resume/load, where agent-side history may
+	// already exist and cannot be observed from Go.
+	hsMarkContextFresh()
+	hsMarkContextUnknown()
+
 	// Pending shared handshake state.
 	// Lock ordering: pendingSharedMu may be nested under handshakeMu (never reverse).
 	hsPendingSharedLock()
@@ -266,6 +273,9 @@ func (c sharedSessionHandshaker) ensureSharedACPSession(d handshakeDeps) error {
 	})
 
 	d.hsSetACPID(handle.SessionID)
+	// Deferred session/new: this session was created fresh in this process,
+	// so it is provably empty (mitto-s9g2).
+	d.hsMarkContextFresh()
 	d.hsSetPendingSharedModes(handle.Modes)
 	d.hsSetPendingSharedModels(handle.Models)
 	d.hsSetPendingSharedModelConfigId(handle.ModelConfigId)
@@ -419,6 +429,9 @@ func (c sharedSessionHandshaker) resumeSharedACPSession(d handshakeDeps, sharedP
 					"error", err.Error())
 			} else {
 				d.hsSetResumeMethod("resume")
+				// Resumed sessions may already hold agent-side history we cannot
+				// see from Go; virginity is not authoritative (mitto-s9g2).
+				d.hsMarkContextUnknown()
 				if l := d.hsLogger(); l != nil {
 					l.Info("Successfully resumed session using UNSTABLE resume API",
 						"acp_session_id", acpSessionID, "resume_method", "resume")
@@ -493,6 +506,9 @@ func (c sharedSessionHandshaker) resumeSharedACPSession(d handshakeDeps, sharedP
 				d.hsClearPersistedACPSessionID()
 			} else {
 				d.hsSetResumeMethod("load")
+				// Session/load replays history agent-side; virginity is not
+				// authoritative (mitto-s9g2).
+				d.hsMarkContextUnknown()
 				if l := d.hsLogger(); l != nil {
 					l.Info("Successfully loaded session (with history replay)",
 						"acp_session_id", acpSessionID, "resume_method", "load")
@@ -562,6 +578,9 @@ func (c sharedSessionHandshaker) resumeSharedACPSession(d handshakeDeps, sharedP
 		d.hsColdPhase("session_new",
 			"rpc_ms", time.Since(newStart).Milliseconds(),
 			"acp_session_id", handle.SessionID)
+		// This session was created fresh in this process, so it is provably
+		// empty (mitto-s9g2).
+		d.hsMarkContextFresh()
 	}
 	// Cold-start diagnostics (mitto-3mv): if the agent reported "waiting for MCP
 	// server..." during this handshake episode, close the episode now — session
