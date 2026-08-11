@@ -55,6 +55,16 @@ type item struct {
 	rendered      string
 	renderedWidth int
 	renderedMode  termmd.Mode
+
+	// stream is the stable-prefix streaming cache for an itemAgent's
+	// glamour render (mitto-pscc.8.1), lazily created on first render.
+	// Unlike rendered/renderedWidth/renderedMode (which only avoid
+	// re-rendering when NOTHING changed since the last render call),
+	// stream's own internal cache survives invalidate() and keeps paying
+	// off across every streamed chunk that grows markdown — invalidate()
+	// deliberately does not reset it; only stream.SetOptions (called from
+	// render, below) resets it, and only when width/mode actually change.
+	stream *termmd.StreamRenderer
 }
 
 func newItem(kind itemKind) *item {
@@ -94,7 +104,25 @@ func (it *item) render(width int, baseMode termmd.Mode, styles *styles) string {
 	if mode == termmd.ModeDegraded {
 		body = it.html
 	}
-	out := termmd.Render(body, termmd.Options{Mode: mode, Width: width})
+	opts := termmd.Options{Mode: mode, Width: width}
+
+	var out string
+	if it.kind == itemAgent {
+		// Route through the stable-prefix streaming cache (mitto-pscc.8.1):
+		// AppendOrUpdateAgent grows markdown chunk by chunk, and
+		// StreamRenderer avoids re-rendering the whole accumulated body on
+		// every chunk. SetOptions is a no-op (and does not reset the
+		// stream cache) when mode/width are unchanged from the previous
+		// call.
+		if it.stream == nil {
+			it.stream = termmd.NewStreamRenderer(opts)
+		} else {
+			it.stream.SetOptions(opts)
+		}
+		out = it.stream.Render(body)
+	} else {
+		out = termmd.Render(body, opts)
+	}
 
 	it.rendered = out
 	it.renderedWidth = width

@@ -8,11 +8,14 @@
 // ResolveMode and TerminalWidth) rather than Render sniffing the environment,
 // which is what keeps the golden-file tests in this package stable in CI.
 //
-// Streaming is explicitly out of scope: re-rendering a whole in-flight
-// message on every chunk is O(n^2) over a long answer. Render is meant to be
-// called once per complete message body. A stable-prefix cache for streaming
-// re-render is tracked separately (mitto-pscc.8.1), gated on the chat TUI
-// showing the cost.
+// Render is meant to be called once per complete message body. A caller
+// that must re-render a growing in-flight message on every streamed chunk
+// — re-rendering the whole accumulated body each time is O(n^2) over a
+// long answer — should drive a StreamRenderer instead (mitto-pscc.8.1): it
+// caches the render of a "stable prefix" (a point after a blank line where
+// no markdown construct is open) and only re-renders the trailing partial
+// on each flush. See StreamRenderer's doc comment for the correctness
+// rules and the byte-identity caveat.
 package termmd
 
 import (
