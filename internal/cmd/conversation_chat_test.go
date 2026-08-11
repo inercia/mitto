@@ -88,3 +88,64 @@ func TestConversationChat_Flags(t *testing.T) {
 		}
 	}
 }
+
+// TestConversationChat_StylePersistentFlag pins --style as a persistent flag
+// on the "conversation" group (mitto-u7k3), defaulting to "auto" — so every
+// subcommand, not just chat, sees the same palette selector.
+func TestConversationChat_StylePersistentFlag(t *testing.T) {
+	f := conversationCmd.PersistentFlags().Lookup("style")
+	if f == nil {
+		t.Fatal("persistent flag --style not registered on conversationCmd")
+	}
+	if f.DefValue != "auto" {
+		t.Errorf("--style default = %q, want %q", f.DefValue, "auto")
+	}
+	if conversationChatCmd.Flags().Lookup("style") == nil {
+		t.Error("--style should be visible to the chat subcommand via inheritance")
+	}
+}
+
+// TestResolveChatStyle pins the flag > $GLAMOUR_STYLE > "auto" precedence
+// that resolveChatStyle applies before the TUI starts (mitto-u7k3). Only the
+// exact values "dark"/"light" are honored at either level; anything else
+// (including "auto", "", a named glamour style, or a style file path) falls
+// through, ultimately to "auto" so chatui.Model does its own
+// tea.RequestBackgroundColor detection.
+func TestResolveChatStyle(t *testing.T) {
+	cases := []struct {
+		name  string
+		flag  string
+		env   string
+		unset bool
+		want  string
+	}{
+		{name: "flag dark wins over env light", flag: "dark", env: "light", want: "dark"},
+		{name: "flag light wins over env dark", flag: "light", env: "dark", want: "light"},
+		{name: "flag auto falls through to env dark", flag: "auto", env: "dark", want: "dark"},
+		{name: "flag auto falls through to env light", flag: "auto", env: "light", want: "light"},
+		{name: "empty flag falls through to env", flag: "", env: "light", want: "light"},
+		{name: "unknown flag falls through to env", flag: "dracula", env: "dark", want: "dark"},
+		{name: "flag auto, no env", flag: "auto", unset: true, want: "auto"},
+		{name: "flag auto, unrelated env style", flag: "auto", env: "dracula", want: "auto"},
+		{name: "flag auto, env style path", flag: "auto", env: "/tmp/custom.json", want: "auto"},
+		{name: "flag auto, empty env", flag: "auto", env: "", want: "auto"},
+		{name: "case-sensitive: Dark is not dark", flag: "Dark", unset: true, want: "auto"},
+		{name: "case-sensitive env: LIGHT is not light", flag: "auto", env: "LIGHT", want: "auto"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.unset {
+				t.Setenv("GLAMOUR_STYLE", "")
+				if err := os.Unsetenv("GLAMOUR_STYLE"); err != nil {
+					t.Fatalf("unsetting GLAMOUR_STYLE: %v", err)
+				}
+			} else {
+				t.Setenv("GLAMOUR_STYLE", tc.env)
+			}
+			if got := resolveChatStyle(tc.flag); got != tc.want {
+				t.Errorf("resolveChatStyle(%q) with GLAMOUR_STYLE=%q = %q, want %q",
+					tc.flag, tc.env, got, tc.want)
+			}
+		})
+	}
+}
