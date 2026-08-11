@@ -59,6 +59,38 @@ var negCases = []negCase{
 		_, err := c.GetAuthInfo()
 		return err
 	}},
+	{"GetPromptArgCache", http.MethodGet, "/mitto/api/sessions/sess-1/prompt-arg-cache", func(c *Client) error {
+		_, err := c.GetPromptArgCache("sess-1", "p")
+		return err
+	}},
+	{"GetSessionChanges", http.MethodGet, "/mitto/api/sessions/sess-1/changes", func(c *Client) error {
+		_, err := c.GetSessionChanges("sess-1")
+		return err
+	}},
+	{"GetSessionUserData", http.MethodGet, "/mitto/api/sessions/sess-1/user-data", func(c *Client) error {
+		_, err := c.GetSessionUserData("sess-1")
+		return err
+	}},
+	{"ListRunningSessions", http.MethodGet, "/mitto/api/sessions/running", func(c *Client) error {
+		_, err := c.ListRunningSessions()
+		return err
+	}},
+	{"SetLoop", http.MethodPut, "/mitto/api/sessions/sess-1/loop", func(c *Client) error {
+		_, err := c.SetLoop("sess-1", SetLoopRequest{Prompt: "p"})
+		return err
+	}},
+	{"UpdateSessionSettings", http.MethodPatch, "/mitto/api/sessions/sess-1/settings", func(c *Client) error {
+		_, err := c.UpdateSessionSettings("sess-1", map[string]bool{"beta_feature": true})
+		return err
+	}},
+	{"UploadImage", http.MethodPost, "/mitto/api/sessions/sess-1/images", func(c *Client) error {
+		_, err := c.UploadImage("sess-1", "a.png", "image/png", []byte("PNGDATA"))
+		return err
+	}},
+	{"UploadFile", http.MethodPost, "/mitto/api/sessions/sess-1/files", func(c *Client) error {
+		_, err := c.UploadFile("sess-1", "notes.txt", "text/plain", []byte("hello"))
+		return err
+	}},
 }
 
 // TestNegativePaths_CanonicalEnvelope pins that every representative call

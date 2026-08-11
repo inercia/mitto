@@ -128,6 +128,28 @@ func TestClient_ClearQueue_500_ReturnsGenericAPIError(t *testing.T) {
 	assertAPIError(t, err, ErrServerError, http.StatusInternalServerError, CodeServerError)
 }
 
+func TestClient_AddToQueue_HappyPath(t *testing.T) {
+	f := newFakeServer(t)
+	f.On(http.MethodPost, "/mitto/api/sessions/sess-1/queue").
+		RespondRaw(http.StatusCreated, "application/json", []byte(`{"id":"msg-1","message":"hi","queued_at":"2026-01-01T00:00:00Z"}`))
+
+	msg, err := f.Client().AddToQueue("sess-1", "hi")
+	if err != nil {
+		t.Fatalf("AddToQueue: %v", err)
+	}
+	if msg.ID != "msg-1" || msg.Message != "hi" {
+		t.Errorf("QueuedMessage = %+v, unexpected", msg)
+	}
+	var gotBody map[string]any
+	_ = json.Unmarshal(f.LastRequest().Body, &gotBody)
+	if gotBody["message"] != "hi" {
+		t.Errorf("request body message = %v, want hi", gotBody["message"])
+	}
+	if _, hasImages := gotBody["image_ids"]; hasImages {
+		t.Error("request body must omit image_ids when none are given")
+	}
+}
+
 func TestClient_AddToQueueNamed_HappyPath(t *testing.T) {
 	f := newFakeServer(t)
 	f.On(http.MethodPost, "/mitto/api/sessions/sess-1/queue").
@@ -181,5 +203,19 @@ func TestClient_GetPromptArgCache_HappyPath(t *testing.T) {
 	}
 	if got := f.LastRequest().RawQuery; got != "prompt=p" {
 		t.Errorf("query = %q, want prompt=p", got)
+	}
+}
+
+// TestClient_GetPromptArgCache_404_ReturnsTypedNotFoundError pins the 404
+// short-circuit (sessionNotFoundError), which the shared negative-path matrix
+// does not reach: it only exercises 5xx statuses.
+func TestClient_GetPromptArgCache_404_ReturnsTypedNotFoundError(t *testing.T) {
+	f := newFakeServer(t)
+	f.On(http.MethodGet, "/mitto/api/sessions/missing/prompt-arg-cache").RespondRaw(http.StatusNotFound, "", nil)
+
+	_, err := f.Client().GetPromptArgCache("missing", "p")
+	apiErr := assertAPIError(t, err, ErrNotFound, http.StatusNotFound, CodeNotFound)
+	if apiErr.Details["session_id"] != "missing" {
+		t.Errorf("Details[session_id] = %v, want %q", apiErr.Details["session_id"], "missing")
 	}
 }

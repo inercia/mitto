@@ -134,6 +134,20 @@ func TestClient_UpdateSessionSettings_HappyPath(t *testing.T) {
 	}
 }
 
+// TestClient_UpdateSessionSettings_404_ReturnsTypedNotFoundError pins the 404
+// short-circuit (sessionNotFoundError), which the shared negative-path matrix
+// does not reach: it only exercises 5xx statuses.
+func TestClient_UpdateSessionSettings_404_ReturnsTypedNotFoundError(t *testing.T) {
+	f := newFakeServer(t)
+	f.On(http.MethodPatch, "/mitto/api/sessions/missing/settings").RespondRaw(http.StatusNotFound, "", nil)
+
+	_, err := f.Client().UpdateSessionSettings("missing", map[string]bool{"beta_feature": true})
+	apiErr := assertAPIError(t, err, ErrNotFound, http.StatusNotFound, CodeNotFound)
+	if apiErr.Details["session_id"] != "missing" {
+		t.Errorf("Details[session_id] = %v, want %q", apiErr.Details["session_id"], "missing")
+	}
+}
+
 func TestClient_FlushSession_HappyPath(t *testing.T) {
 	f := newFakeServer(t)
 	f.On(http.MethodPost, "/mitto/api/sessions/sess-1/flush").RespondJSON(http.StatusOK, `{"status":"flushed","command":"/clear"}`)
@@ -167,6 +181,20 @@ func TestClient_GetSessionUserData_HappyPath(t *testing.T) {
 	}
 	if len(got.Attributes) != 1 || got.Attributes[0].Name != "priority" || got.Attributes[0].Value != "high" {
 		t.Errorf("UserData = %+v, unexpected", got)
+	}
+}
+
+// TestClient_GetSessionUserData_404_ReturnsTypedNotFoundError pins the 404
+// short-circuit (sessionNotFoundError), which the shared negative-path matrix
+// does not reach: it only exercises 5xx statuses.
+func TestClient_GetSessionUserData_404_ReturnsTypedNotFoundError(t *testing.T) {
+	f := newFakeServer(t)
+	f.On(http.MethodGet, "/mitto/api/sessions/missing/user-data").RespondRaw(http.StatusNotFound, "", nil)
+
+	_, err := f.Client().GetSessionUserData("missing")
+	apiErr := assertAPIError(t, err, ErrNotFound, http.StatusNotFound, CodeNotFound)
+	if apiErr.Details["session_id"] != "missing" {
+		t.Errorf("Details[session_id] = %v, want %q", apiErr.Details["session_id"], "missing")
 	}
 }
 

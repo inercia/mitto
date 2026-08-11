@@ -44,6 +44,20 @@ func TestClient_GetHealth_ErrorStatus_ReturnsTypedAPIErrorAndStatus(t *testing.T
 	assertAPIError(t, err, ErrUnavailable, http.StatusServiceUnavailable, CodeUnavailable)
 }
 
+func TestClient_GetAuthInfo_HappyPath(t *testing.T) {
+	f := newFakeServer(t)
+	f.On(http.MethodGet, "/mitto/api/auth-info").
+		RespondJSON(http.StatusOK, `{"simple":true,"cloudflare":false}`)
+
+	got, err := f.Client().GetAuthInfo()
+	if err != nil {
+		t.Fatalf("GetAuthInfo: %v", err)
+	}
+	if !got.Simple || got.Cloudflare {
+		t.Errorf("AuthInfoResponse = %+v, want Simple=true Cloudflare=false", got)
+	}
+}
+
 func TestClient_GetHealth_MalformedBody_ReturnsDecodeErrorNotAPIError(t *testing.T) {
 	f := newFakeServer(t)
 	f.On(http.MethodGet, "/mitto/api/health").RespondMalformed(http.StatusOK)
