@@ -547,6 +547,39 @@ func TestModel_Tab_NonSlashInput_FallsThroughToTextarea(t *testing.T) {
 	}
 }
 
+func TestModel_CompletionMenu_TypingNarrowsMatches(t *testing.T) {
+	m := newTestModel(t, true)
+	m.input.SetValue("/c") // ambiguous: /cancel and /clear
+	m.Update(tea.KeyPressMsg{Text: "tab", Code: tea.KeyTab})
+	if len(m.completion.matches) != 2 {
+		t.Fatalf("precondition: matches = %d, want 2", len(m.completion.matches))
+	}
+
+	m.Update(tea.KeyPressMsg{Text: "l", Code: 'l'}) // "/cl" — only /clear
+
+	if !m.completion.Open() {
+		t.Fatal("menu should stay open while the narrowed input still matches")
+	}
+	if len(m.completion.matches) != 1 || m.completion.matches[0].name != "/clear" {
+		t.Errorf("matches = %v, want only /clear after typing narrows the input", m.completion.matches)
+	}
+}
+
+func TestModel_CompletionMenu_TypingPastEveryMatchClosesMenu(t *testing.T) {
+	m := newTestModel(t, true)
+	m.input.SetValue("/c")
+	m.Update(tea.KeyPressMsg{Text: "tab", Code: tea.KeyTab})
+	if !m.completion.Open() {
+		t.Fatal("precondition: menu should be open")
+	}
+
+	m.Update(tea.KeyPressMsg{Text: "z", Code: 'z'}) // "/cz" — matches nothing
+
+	if m.completion.Open() {
+		t.Error("menu must close once the edited input matches no command")
+	}
+}
+
 func TestModel_CompletionMenu_EscClosesWithoutCancellingTurn(t *testing.T) {
 	m := newTestModel(t, true)
 	m.inFlight = true

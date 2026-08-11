@@ -249,7 +249,24 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// readline (typing while browsing history starts a fresh edit rather
 	// than mutating the recalled entry).
 	m.history.ResetCursor()
+	m.refreshCompletion()
 	return m, cmd
+}
+
+// refreshCompletion re-filters an open completion menu against the edited
+// input, so typing narrows the matches instead of leaving a stale list on
+// screen. Closes the menu once the input stops being a single-line
+// "/"-prefixed value or no command matches any more.
+func (m *Model) refreshCompletion() {
+	if !m.completion.Open() {
+		return
+	}
+	value := m.input.Value()
+	if m.input.LineCount() != 1 || !strings.HasPrefix(value, "/") {
+		m.completion.Close()
+		return
+	}
+	m.completion.Filter(value)
 }
 
 // maybeOpenCompletion opens the completion menu when the input is a
