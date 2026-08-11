@@ -1,28 +1,17 @@
 package api
 
 import (
-	"errors"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 )
 
 func TestClient_ListImages_HappyPath(t *testing.T) {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/mitto/api/sessions/sess-1/images", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			t.Errorf("method = %q, want GET", r.Method)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`[{"id":"img-1","url":"/api/files/img-1","name":"a.png","mime_type":"image/png","size":42,"created_at":"2026-08-10T06:00:00Z"}]`))
-	})
-	ts := httptest.NewServer(mux)
-	defer ts.Close()
+	f := newFakeServer(t)
+	f.On(http.MethodGet, "/mitto/api/sessions/sess-1/images").
+		RespondJSON(http.StatusOK, `[{"id":"img-1","url":"/api/files/img-1","name":"a.png","mime_type":"image/png","size":42,"created_at":"2026-08-10T06:00:00Z"}]`)
 
-	c := New(ts.URL)
-	images, err := c.ListImages("sess-1")
+	images, err := f.Client().ListImages("sess-1")
 	if err != nil {
 		t.Fatalf("ListImages: %v", err)
 	}
@@ -37,32 +26,18 @@ func TestClient_ListImages_HappyPath(t *testing.T) {
 }
 
 func TestClient_ListImages_404_ReturnsTypedNotFoundError(t *testing.T) {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/mitto/api/sessions/missing/images", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNotFound)
-	})
-	ts := httptest.NewServer(mux)
-	defer ts.Close()
+	f := newFakeServer(t)
+	f.On(http.MethodGet, "/mitto/api/sessions/missing/images").RespondRaw(http.StatusNotFound, "", nil)
 
-	c := New(ts.URL)
-	_, err := c.ListImages("missing")
-	if !errors.Is(err, ErrNotFound) {
-		t.Errorf("errors.Is(err, ErrNotFound) = false, want true; err = %v", err)
-	}
+	_, err := f.Client().ListImages("missing")
+	assertAPIError(t, err, ErrNotFound, http.StatusNotFound, "")
 }
 
 func TestClient_GetImage_HappyPath(t *testing.T) {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/mitto/api/sessions/sess-1/images/img-1", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "image/png")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("PNGDATA"))
-	})
-	ts := httptest.NewServer(mux)
-	defer ts.Close()
+	f := newFakeServer(t)
+	f.On(http.MethodGet, "/mitto/api/sessions/sess-1/images/img-1").RespondRaw(http.StatusOK, "image/png", []byte("PNGDATA"))
 
-	c := New(ts.URL)
-	rc, contentType, err := c.GetImage("sess-1", "img-1")
+	rc, contentType, err := f.Client().GetImage("sess-1", "img-1")
 	if err != nil {
 		t.Fatalf("GetImage: %v", err)
 	}
@@ -77,79 +52,73 @@ func TestClient_GetImage_HappyPath(t *testing.T) {
 }
 
 func TestClient_GetImage_404_ReturnsTypedNotFoundError(t *testing.T) {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/mitto/api/sessions/sess-1/images/missing", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNotFound)
-	})
-	ts := httptest.NewServer(mux)
-	defer ts.Close()
+	f := newFakeServer(t)
+	f.On(http.MethodGet, "/mitto/api/sessions/sess-1/images/missing").RespondRaw(http.StatusNotFound, "", nil)
 
-	c := New(ts.URL)
-	_, _, err := c.GetImage("sess-1", "missing")
-	if !errors.Is(err, ErrNotFound) {
-		t.Errorf("errors.Is(err, ErrNotFound) = false, want true; err = %v", err)
-	}
+	_, _, err := f.Client().GetImage("sess-1", "missing")
+	assertAPIError(t, err, ErrNotFound, http.StatusNotFound, "")
 }
 
 func TestClient_DeleteImage_HappyPath(t *testing.T) {
 	for _, status := range []int{http.StatusOK, http.StatusNoContent} {
-		mux := http.NewServeMux()
-		var gotMethod string
-		mux.HandleFunc("/mitto/api/sessions/sess-1/images/img-1", func(w http.ResponseWriter, r *http.Request) {
-			gotMethod = r.Method
-			w.WriteHeader(status)
-		})
-		ts := httptest.NewServer(mux)
+		f := newFakeServer(t)
+		f.On(http.MethodDelete, "/mitto/api/sessions/sess-1/images/img-1").RespondRaw(status, "", nil)
 
-		c := New(ts.URL)
-		if err := c.DeleteImage("sess-1", "img-1"); err != nil {
+		if err := f.Client().DeleteImage("sess-1", "img-1"); err != nil {
 			t.Fatalf("DeleteImage: %v, want nil for status %d", err, status)
 		}
-		if gotMethod != http.MethodDelete {
-			t.Errorf("method = %q, want DELETE", gotMethod)
+		if got := f.LastRequest().Method; got != http.MethodDelete {
+			t.Errorf("method = %q, want DELETE", got)
 		}
-		ts.Close()
 	}
 }
 
 func TestClient_DeleteImage_404_ReturnsTypedNotFoundError(t *testing.T) {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/mitto/api/sessions/sess-1/images/missing", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNotFound)
-	})
-	ts := httptest.NewServer(mux)
-	defer ts.Close()
+	f := newFakeServer(t)
+	f.On(http.MethodDelete, "/mitto/api/sessions/sess-1/images/missing").RespondRaw(http.StatusNotFound, "", nil)
 
-	c := New(ts.URL)
-	err := c.DeleteImage("sess-1", "missing")
-	if !errors.Is(err, ErrNotFound) {
-		t.Errorf("errors.Is(err, ErrNotFound) = false, want true; err = %v", err)
+	err := f.Client().DeleteImage("sess-1", "missing")
+	assertAPIError(t, err, ErrNotFound, http.StatusNotFound, "")
+}
+
+// TestClient_UploadImage_HappyPath covers the previously-0%-tested
+// UploadImage (mitto-rwxq.9), mirroring UploadFile's multipart assertions.
+func TestClient_UploadImage_HappyPath(t *testing.T) {
+	f := newFakeServer(t)
+	f.On(http.MethodPost, "/mitto/api/sessions/sess-1/images").
+		RespondRaw(http.StatusCreated, "application/json", []byte(`{"id":"img-1","url":"/api/files/img-1","name":"a.png","mime_type":"image/png","size":7}`))
+
+	info, err := f.Client().UploadImage("sess-1", "a.png", "image/png", []byte("PNGDATA"))
+	if err != nil {
+		t.Fatalf("UploadImage: %v", err)
+	}
+	req := f.LastRequest()
+	if req.Method != http.MethodPost {
+		t.Errorf("method = %q, want POST", req.Method)
+	}
+	if len(req.ContentType) < 19 || req.ContentType[:19] != "multipart/form-data" {
+		t.Errorf("Content-Type = %q, want multipart/form-data prefix", req.ContentType)
+	}
+	if info.ID != "img-1" || info.MimeType != "image/png" {
+		t.Errorf("ImageInfo = %+v, unexpected", info)
 	}
 }
 
 func TestClient_UploadFile_HappyPath(t *testing.T) {
-	var gotMethod, gotContentType string
-	mux := http.NewServeMux()
-	mux.HandleFunc("/mitto/api/sessions/sess-1/files", func(w http.ResponseWriter, r *http.Request) {
-		gotMethod = r.Method
-		gotContentType = r.Header.Get("Content-Type")
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusCreated)
-		_, _ = w.Write([]byte(`{"id":"file-1","url":"/api/files/file-1","name":"notes.txt","mime_type":"text/plain","size":5,"category":"text"}`))
-	})
-	ts := httptest.NewServer(mux)
-	defer ts.Close()
+	f := newFakeServer(t)
+	f.On(http.MethodPost, "/mitto/api/sessions/sess-1/files").
+		RespondRaw(http.StatusCreated, "application/json", []byte(`{"id":"file-1","url":"/api/files/file-1","name":"notes.txt","mime_type":"text/plain","size":5,"category":"text"}`))
 
-	c := New(ts.URL)
-	info, err := c.UploadFile("sess-1", "notes.txt", "text/plain", []byte("hello"))
+	info, err := f.Client().UploadFile("sess-1", "notes.txt", "text/plain", []byte("hello"))
 	if err != nil {
 		t.Fatalf("UploadFile: %v", err)
 	}
-	if gotMethod != http.MethodPost {
-		t.Errorf("method = %q, want POST", gotMethod)
+	req := f.LastRequest()
+	if req.Method != http.MethodPost {
+		t.Errorf("method = %q, want POST", req.Method)
 	}
-	if gotContentType == "" || gotContentType[:19] != "multipart/form-data" {
-		t.Errorf("Content-Type = %q, want multipart/form-data prefix", gotContentType)
+	if len(req.ContentType) < 19 || req.ContentType[:19] != "multipart/form-data" {
+		t.Errorf("Content-Type = %q, want multipart/form-data prefix", req.ContentType)
 	}
 	if info.ID != "file-1" || info.Category != "text" || info.Size != 5 {
 		t.Errorf("SessionFileInfo = %+v, unexpected", info)
@@ -157,20 +126,11 @@ func TestClient_UploadFile_HappyPath(t *testing.T) {
 }
 
 func TestClient_ListFiles_HappyPath(t *testing.T) {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/mitto/api/sessions/sess-1/files", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			t.Errorf("method = %q, want GET", r.Method)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`[{"id":"file-1","name":"a.txt","mime_type":"text/plain","size":3,"category":"text","created_at":"2026-08-10T06:00:00Z"}]`))
-	})
-	ts := httptest.NewServer(mux)
-	defer ts.Close()
+	f := newFakeServer(t)
+	f.On(http.MethodGet, "/mitto/api/sessions/sess-1/files").
+		RespondJSON(http.StatusOK, `[{"id":"file-1","name":"a.txt","mime_type":"text/plain","size":3,"category":"text","created_at":"2026-08-10T06:00:00Z"}]`)
 
-	c := New(ts.URL)
-	files, err := c.ListFiles("sess-1")
+	files, err := f.Client().ListFiles("sess-1")
 	if err != nil {
 		t.Fatalf("ListFiles: %v", err)
 	}
@@ -185,32 +145,18 @@ func TestClient_ListFiles_HappyPath(t *testing.T) {
 }
 
 func TestClient_ListFiles_404_ReturnsTypedNotFoundError(t *testing.T) {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/mitto/api/sessions/missing/files", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNotFound)
-	})
-	ts := httptest.NewServer(mux)
-	defer ts.Close()
+	f := newFakeServer(t)
+	f.On(http.MethodGet, "/mitto/api/sessions/missing/files").RespondRaw(http.StatusNotFound, "", nil)
 
-	c := New(ts.URL)
-	_, err := c.ListFiles("missing")
-	if !errors.Is(err, ErrNotFound) {
-		t.Errorf("errors.Is(err, ErrNotFound) = false, want true; err = %v", err)
-	}
+	_, err := f.Client().ListFiles("missing")
+	assertAPIError(t, err, ErrNotFound, http.StatusNotFound, "")
 }
 
 func TestClient_GetFile_HappyPath(t *testing.T) {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/mitto/api/sessions/sess-1/files/file-1", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/plain")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("hello"))
-	})
-	ts := httptest.NewServer(mux)
-	defer ts.Close()
+	f := newFakeServer(t)
+	f.On(http.MethodGet, "/mitto/api/sessions/sess-1/files/file-1").RespondRaw(http.StatusOK, "text/plain", []byte("hello"))
 
-	c := New(ts.URL)
-	rc, contentType, err := c.GetFile("sess-1", "file-1")
+	rc, contentType, err := f.Client().GetFile("sess-1", "file-1")
 	if err != nil {
 		t.Fatalf("GetFile: %v", err)
 	}
@@ -225,52 +171,31 @@ func TestClient_GetFile_HappyPath(t *testing.T) {
 }
 
 func TestClient_GetFile_404_ReturnsTypedNotFoundError(t *testing.T) {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/mitto/api/sessions/sess-1/files/missing", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNotFound)
-	})
-	ts := httptest.NewServer(mux)
-	defer ts.Close()
+	f := newFakeServer(t)
+	f.On(http.MethodGet, "/mitto/api/sessions/sess-1/files/missing").RespondRaw(http.StatusNotFound, "", nil)
 
-	c := New(ts.URL)
-	_, _, err := c.GetFile("sess-1", "missing")
-	if !errors.Is(err, ErrNotFound) {
-		t.Errorf("errors.Is(err, ErrNotFound) = false, want true; err = %v", err)
-	}
+	_, _, err := f.Client().GetFile("sess-1", "missing")
+	assertAPIError(t, err, ErrNotFound, http.StatusNotFound, "")
 }
 
 func TestClient_DeleteFile_HappyPath(t *testing.T) {
 	for _, status := range []int{http.StatusOK, http.StatusNoContent} {
-		mux := http.NewServeMux()
-		var gotMethod string
-		mux.HandleFunc("/mitto/api/sessions/sess-1/files/file-1", func(w http.ResponseWriter, r *http.Request) {
-			gotMethod = r.Method
-			w.WriteHeader(status)
-		})
-		ts := httptest.NewServer(mux)
+		f := newFakeServer(t)
+		f.On(http.MethodDelete, "/mitto/api/sessions/sess-1/files/file-1").RespondRaw(status, "", nil)
 
-		c := New(ts.URL)
-		if err := c.DeleteFile("sess-1", "file-1"); err != nil {
+		if err := f.Client().DeleteFile("sess-1", "file-1"); err != nil {
 			t.Fatalf("DeleteFile: %v, want nil for status %d", err, status)
 		}
-		if gotMethod != http.MethodDelete {
-			t.Errorf("method = %q, want DELETE", gotMethod)
+		if got := f.LastRequest().Method; got != http.MethodDelete {
+			t.Errorf("method = %q, want DELETE", got)
 		}
-		ts.Close()
 	}
 }
 
 func TestClient_DeleteFile_404_ReturnsTypedNotFoundError(t *testing.T) {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/mitto/api/sessions/sess-1/files/missing", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNotFound)
-	})
-	ts := httptest.NewServer(mux)
-	defer ts.Close()
+	f := newFakeServer(t)
+	f.On(http.MethodDelete, "/mitto/api/sessions/sess-1/files/missing").RespondRaw(http.StatusNotFound, "", nil)
 
-	c := New(ts.URL)
-	err := c.DeleteFile("sess-1", "missing")
-	if !errors.Is(err, ErrNotFound) {
-		t.Errorf("errors.Is(err, ErrNotFound) = false, want true; err = %v", err)
-	}
+	err := f.Client().DeleteFile("sess-1", "missing")
+	assertAPIError(t, err, ErrNotFound, http.StatusNotFound, "")
 }

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"reflect"
 	"testing"
 )
@@ -222,66 +221,28 @@ func TestClient_GetSession_404_ReturnsTypedNotFoundError(t *testing.T) {
 	// case intentionally does NOT carry a raw Body — unlike AddToQueue's 409
 	// below, which reads the body through errorFromResponse. Session ID is
 	// still recoverable via Details.
-	mux := http.NewServeMux()
-	mux.HandleFunc("/mitto/api/sessions/missing", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusNotFound)
-		_, _ = w.Write([]byte(`{"error":{"code":"not_found","message":"Session not found"}}`))
-	})
-	ts := httptest.NewServer(mux)
-	defer ts.Close()
+	f := newFakeServer(t)
+	f.On(http.MethodGet, "/mitto/api/sessions/missing").
+		Fail(http.StatusNotFound, "not_found", "Session not found", nil)
 
-	c := New(ts.URL)
-	_, err := c.GetSession("missing")
-	if err == nil {
-		t.Fatal("GetSession returned nil error for a 404 response")
-	}
-	if !errors.Is(err, ErrNotFound) {
-		t.Errorf("errors.Is(err, ErrNotFound) = false, want true; err = %v", err)
-	}
-
-	var apiErr *APIError
-	if !errors.As(err, &apiErr) {
-		t.Fatal("errors.As failed to extract *APIError")
-	}
-	if apiErr.Status != http.StatusNotFound {
-		t.Errorf("Status = %d, want %d", apiErr.Status, http.StatusNotFound)
-	}
+	_, err := f.Client().GetSession("missing")
+	apiErr := assertAPIError(t, err, ErrNotFound, http.StatusNotFound, "")
 	if apiErr.Details["session_id"] != "missing" {
 		t.Errorf("Details[session_id] = %v, want %q", apiErr.Details["session_id"], "missing")
 	}
 }
 
 func TestClient_AddToQueue_409_ReturnsTypedConflictError(t *testing.T) {
-	const wantBody = `{"error":{"code":"queue_full","message":"Queue is full. Maximum 5 messages allowed."}}`
-	mux := http.NewServeMux()
-	mux.HandleFunc("/mitto/api/sessions/full-session/queue", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusConflict)
-		_, _ = w.Write([]byte(wantBody))
-	})
-	ts := httptest.NewServer(mux)
-	defer ts.Close()
+	f := newFakeServer(t)
+	f.On(http.MethodPost, "/mitto/api/sessions/full-session/queue").
+		Fail(http.StatusConflict, "queue_full", "Queue is full. Maximum 5 messages allowed.", nil)
 
-	c := New(ts.URL)
-	_, err := c.AddToQueue("full-session", "one more message")
-	if err == nil {
-		t.Fatal("AddToQueue returned nil error for a 409 response")
-	}
-	if !errors.Is(err, ErrConflict) {
-		t.Errorf("errors.Is(err, ErrConflict) = false, want true; err = %v", err)
-	}
-
-	var apiErr *APIError
-	if !errors.As(err, &apiErr) {
-		t.Fatal("errors.As failed to extract *APIError")
-	}
-	if apiErr.Code != "queue_full" {
-		t.Errorf("Code = %q, want %q", apiErr.Code, "queue_full")
-	}
+	_, err := f.Client().AddToQueue("full-session", "one more message")
+	apiErr := assertAPIError(t, err, ErrConflict, http.StatusConflict, "queue_full")
 	if apiErr.Message != "Queue is full. Maximum 5 messages allowed." {
 		t.Errorf("Message = %q, want the server-supplied message preserved verbatim", apiErr.Message)
 	}
+	const wantBody = `{"error":{"code":"queue_full","message":"Queue is full. Maximum 5 messages allowed."}}`
 	if string(apiErr.Body) != wantBody {
 		t.Errorf("Body = %q, want %q (raw response body must be preserved)", apiErr.Body, wantBody)
 	}
@@ -293,25 +254,18 @@ func TestClient_AddToQueue_409_ReturnsTypedConflictError(t *testing.T) {
 func TestClient_DeleteLoop_ReturnsNilOnSuccessStatuses(t *testing.T) {
 	for _, status := range []int{http.StatusOK, http.StatusNoContent} {
 		t.Run(fmt.Sprintf("status_%d", status), func(t *testing.T) {
-			var gotMethod, gotPath string
-			mux := http.NewServeMux()
-			mux.HandleFunc("/mitto/api/sessions/sess-1/loop", func(w http.ResponseWriter, r *http.Request) {
-				gotMethod = r.Method
-				gotPath = r.URL.Path
-				w.WriteHeader(status)
-			})
-			ts := httptest.NewServer(mux)
-			defer ts.Close()
+			f := newFakeServer(t)
+			f.On(http.MethodDelete, "/mitto/api/sessions/sess-1/loop").RespondRaw(status, "", nil)
 
-			c := New(ts.URL)
-			if err := c.DeleteLoop("sess-1"); err != nil {
+			if err := f.Client().DeleteLoop("sess-1"); err != nil {
 				t.Fatalf("DeleteLoop: %v, want nil for status %d", err, status)
 			}
-			if gotMethod != http.MethodDelete {
-				t.Errorf("server saw method %q, want DELETE", gotMethod)
+			req := f.LastRequest()
+			if req.Method != http.MethodDelete {
+				t.Errorf("server saw method %q, want DELETE", req.Method)
 			}
-			if gotPath != "/mitto/api/sessions/sess-1/loop" {
-				t.Errorf("server saw path %q, want /mitto/api/sessions/sess-1/loop", gotPath)
+			if req.Path != "/mitto/api/sessions/sess-1/loop" {
+				t.Errorf("server saw path %q, want /mitto/api/sessions/sess-1/loop", req.Path)
 			}
 		})
 	}
@@ -322,26 +276,11 @@ func TestClient_DeleteLoop_ReturnsNilOnSuccessStatuses(t *testing.T) {
 // errors.Is(err, ErrNotFound), with the session ID recoverable via Details,
 // rather than falling through to the generic apiError path.
 func TestClient_DeleteLoop_404_ReturnsTypedNotFoundError(t *testing.T) {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/mitto/api/sessions/no-loop/loop", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNotFound)
-	})
-	ts := httptest.NewServer(mux)
-	defer ts.Close()
+	f := newFakeServer(t)
+	f.On(http.MethodDelete, "/mitto/api/sessions/no-loop/loop").RespondRaw(http.StatusNotFound, "", nil)
 
-	c := New(ts.URL)
-	err := c.DeleteLoop("no-loop")
-	if err == nil {
-		t.Fatal("DeleteLoop returned nil error for a 404 response")
-	}
-	if !errors.Is(err, ErrNotFound) {
-		t.Errorf("errors.Is(err, ErrNotFound) = false, want true; err = %v", err)
-	}
-
-	var apiErr *APIError
-	if !errors.As(err, &apiErr) {
-		t.Fatal("errors.As failed to extract *APIError")
-	}
+	err := f.Client().DeleteLoop("no-loop")
+	apiErr := assertAPIError(t, err, ErrNotFound, http.StatusNotFound, "")
 	if apiErr.Details["session_id"] != "no-loop" {
 		t.Errorf("Details[session_id] = %v, want %q", apiErr.Details["session_id"], "no-loop")
 	}
@@ -351,21 +290,10 @@ func TestClient_DeleteLoop_404_ReturnsTypedNotFoundError(t *testing.T) {
 // any non-{200,204,404} status goes through the generic c.apiError path, so
 // the error still satisfies errors.Is against the canonical 5xx sentinel.
 func TestClient_DeleteLoop_500_ReturnsGenericAPIError(t *testing.T) {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/mitto/api/sessions/sess-1/loop", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusInternalServerError)
-		_, _ = w.Write([]byte(`{"error":{"code":"server_error","message":"boom"}}`))
-	})
-	ts := httptest.NewServer(mux)
-	defer ts.Close()
+	f := newFakeServer(t)
+	f.On(http.MethodDelete, "/mitto/api/sessions/sess-1/loop").
+		Fail(http.StatusInternalServerError, "server_error", "boom", nil)
 
-	c := New(ts.URL)
-	err := c.DeleteLoop("sess-1")
-	if err == nil {
-		t.Fatal("DeleteLoop returned nil error for a 500 response")
-	}
-	if !errors.Is(err, ErrServerError) {
-		t.Errorf("errors.Is(err, ErrServerError) = false, want true; err = %v", err)
-	}
+	err := f.Client().DeleteLoop("sess-1")
+	assertAPIError(t, err, ErrServerError, http.StatusInternalServerError, "server_error")
 }

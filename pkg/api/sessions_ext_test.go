@@ -2,37 +2,26 @@ package api
 
 import (
 	"encoding/json"
-	"errors"
 	"net/http"
-	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 func TestClient_UpdateSession_HappyPath(t *testing.T) {
-	var gotMethod, gotBody string
-	mux := http.NewServeMux()
-	mux.HandleFunc("/mitto/api/sessions/sess-1", func(w http.ResponseWriter, r *http.Request) {
-		gotMethod = r.Method
-		b, _ := json.Marshal(map[string]any{})
-		_ = json.NewDecoder(r.Body).Decode(&b)
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"session_id":"sess-1","acp_server":"auggie","working_dir":"/tmp","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z","event_count":3,"status":"idle","name":"renamed"}`))
-		gotBody = "seen"
-	})
-	ts := httptest.NewServer(mux)
-	defer ts.Close()
+	f := newFakeServer(t)
+	f.On(http.MethodPatch, "/mitto/api/sessions/sess-1").
+		RespondJSON(http.StatusOK, `{"session_id":"sess-1","acp_server":"auggie","working_dir":"/tmp","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z","event_count":3,"status":"idle","name":"renamed"}`)
 
-	c := New(ts.URL)
 	name := "renamed"
-	meta, err := c.UpdateSession("sess-1", SessionUpdateRequest{Name: &name})
+	meta, err := f.Client().UpdateSession("sess-1", SessionUpdateRequest{Name: &name})
 	if err != nil {
 		t.Fatalf("UpdateSession: %v", err)
 	}
-	if gotMethod != http.MethodPatch {
-		t.Errorf("method = %q, want PATCH", gotMethod)
+	req := f.LastRequest()
+	if req.Method != http.MethodPatch {
+		t.Errorf("method = %q, want PATCH", req.Method)
 	}
-	if gotBody == "" {
+	if len(req.Body) == 0 {
 		t.Error("server never saw a request body")
 	}
 	if meta.SessionID != "sess-1" || meta.Name != "renamed" || meta.Status != "idle" {
@@ -45,15 +34,11 @@ func TestClient_UpdateSession_HappyPath(t *testing.T) {
 // (is_auto_child, auto_unarchive_last_attempt_at), which were silently dropped
 // on decode.
 func TestClient_UpdateSession_DecodesFullMetadataShape(t *testing.T) {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/mitto/api/sessions/sess-1", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"session_id":"sess-1","acp_server":"auggie","working_dir":"/tmp","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z","event_count":0,"status":"idle","is_auto_child":true,"child_origin":"auto","auto_unarchive_last_attempt_at":"2026-08-10T06:00:00Z"}`))
-	})
-	ts := httptest.NewServer(mux)
-	defer ts.Close()
+	f := newFakeServer(t)
+	f.On(http.MethodPatch, "/mitto/api/sessions/sess-1").RespondJSON(http.StatusOK,
+		`{"session_id":"sess-1","acp_server":"auggie","working_dir":"/tmp","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z","event_count":0,"status":"idle","is_auto_child":true,"child_origin":"auto","auto_unarchive_last_attempt_at":"2026-08-10T06:00:00Z"}`)
 
-	meta, err := New(ts.URL).UpdateSession("sess-1", SessionUpdateRequest{})
+	meta, err := f.Client().UpdateSession("sess-1", SessionUpdateRequest{})
 	if err != nil {
 		t.Fatalf("UpdateSession: %v", err)
 	}
@@ -66,40 +51,25 @@ func TestClient_UpdateSession_DecodesFullMetadataShape(t *testing.T) {
 }
 
 func TestClient_UpdateSession_404_ReturnsTypedNotFoundError(t *testing.T) {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/mitto/api/sessions/missing", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNotFound)
-	})
-	ts := httptest.NewServer(mux)
-	defer ts.Close()
+	f := newFakeServer(t)
+	f.On(http.MethodPatch, "/mitto/api/sessions/missing").RespondRaw(http.StatusNotFound, "", nil)
 
-	c := New(ts.URL)
 	name := "x"
-	_, err := c.UpdateSession("missing", SessionUpdateRequest{Name: &name})
-	if !errors.Is(err, ErrNotFound) {
-		t.Errorf("errors.Is(err, ErrNotFound) = false, want true; err = %v", err)
-	}
+	_, err := f.Client().UpdateSession("missing", SessionUpdateRequest{Name: &name})
+	assertAPIError(t, err, ErrNotFound, http.StatusNotFound, "")
 }
 
 func TestClient_GetSessionEvents_HappyPath_WithOptions(t *testing.T) {
-	var gotQuery string
-	mux := http.NewServeMux()
-	mux.HandleFunc("/mitto/api/sessions/sess-1/events", func(w http.ResponseWriter, r *http.Request) {
-		gotQuery = r.URL.RawQuery
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`[{"seq":1,"type":"user_message","timestamp":"2026-01-01T00:00:00Z","data":{"text":"hi"}}]`))
-	})
-	ts := httptest.NewServer(mux)
-	defer ts.Close()
+	f := newFakeServer(t)
+	f.On(http.MethodGet, "/mitto/api/sessions/sess-1/events").
+		RespondJSON(http.StatusOK, `[{"seq":1,"type":"user_message","timestamp":"2026-01-01T00:00:00Z","data":{"text":"hi"}}]`)
 
-	c := New(ts.URL)
-	events, err := c.GetSessionEvents("sess-1", GetSessionEventsOptions{Limit: 10, BeforeSeq: 5, Reverse: true})
+	events, err := f.Client().GetSessionEvents("sess-1", GetSessionEventsOptions{Limit: 10, BeforeSeq: 5, Reverse: true})
 	if err != nil {
 		t.Fatalf("GetSessionEvents: %v", err)
 	}
-	if gotQuery != "before=5&limit=10&order=desc" {
-		t.Errorf("query = %q, want before=5&limit=10&order=desc", gotQuery)
+	if got := f.LastRequest().RawQuery; got != "before=5&limit=10&order=desc" {
+		t.Errorf("query = %q, want before=5&limit=10&order=desc", got)
 	}
 	if len(events) != 1 || events[0].Seq != 1 || events[0].Type != "user_message" {
 		t.Errorf("events = %+v, want one user_message event with seq=1", events)
@@ -107,32 +77,19 @@ func TestClient_GetSessionEvents_HappyPath_WithOptions(t *testing.T) {
 }
 
 func TestClient_GetSessionEvents_404_ReturnsTypedNotFoundError(t *testing.T) {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/mitto/api/sessions/missing/events", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNotFound)
-	})
-	ts := httptest.NewServer(mux)
-	defer ts.Close()
+	f := newFakeServer(t)
+	f.On(http.MethodGet, "/mitto/api/sessions/missing/events").RespondRaw(http.StatusNotFound, "", nil)
 
-	c := New(ts.URL)
-	_, err := c.GetSessionEvents("missing", GetSessionEventsOptions{})
-	if !errors.Is(err, ErrNotFound) {
-		t.Errorf("errors.Is(err, ErrNotFound) = false, want true; err = %v", err)
-	}
+	_, err := f.Client().GetSessionEvents("missing", GetSessionEventsOptions{})
+	assertAPIError(t, err, ErrNotFound, http.StatusNotFound, "")
 }
 
 func TestClient_GetSessionChanges_HappyPath(t *testing.T) {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/mitto/api/sessions/sess-1/changes", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"files":[{"path":"a.go","status":"M","additions":3,"deletions":1}],"is_git_repo":true,"branch":"main"}`))
-	})
-	ts := httptest.NewServer(mux)
-	defer ts.Close()
+	f := newFakeServer(t)
+	f.On(http.MethodGet, "/mitto/api/sessions/sess-1/changes").
+		RespondJSON(http.StatusOK, `{"files":[{"path":"a.go","status":"M","additions":3,"deletions":1}],"is_git_repo":true,"branch":"main"}`)
 
-	c := New(ts.URL)
-	changes, err := c.GetSessionChanges("sess-1")
+	changes, err := f.Client().GetSessionChanges("sess-1")
 	if err != nil {
 		t.Fatalf("GetSessionChanges: %v", err)
 	}
@@ -142,20 +99,10 @@ func TestClient_GetSessionChanges_HappyPath(t *testing.T) {
 }
 
 func TestClient_GetSessionSettings_HappyPath(t *testing.T) {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/mitto/api/sessions/sess-1/settings", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			t.Errorf("method = %q, want GET", r.Method)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"settings":{"beta_feature":true}}`))
-	})
-	ts := httptest.NewServer(mux)
-	defer ts.Close()
+	f := newFakeServer(t)
+	f.On(http.MethodGet, "/mitto/api/sessions/sess-1/settings").RespondJSON(http.StatusOK, `{"settings":{"beta_feature":true}}`)
 
-	c := New(ts.URL)
-	got, err := c.GetSessionSettings("sess-1")
+	got, err := f.Client().GetSessionSettings("sess-1")
 	if err != nil {
 		t.Fatalf("GetSessionSettings: %v", err)
 	}
@@ -165,27 +112,19 @@ func TestClient_GetSessionSettings_HappyPath(t *testing.T) {
 }
 
 func TestClient_UpdateSessionSettings_HappyPath(t *testing.T) {
-	var gotMethod string
-	var gotBody map[string]any
-	mux := http.NewServeMux()
-	mux.HandleFunc("/mitto/api/sessions/sess-1/settings", func(w http.ResponseWriter, r *http.Request) {
-		gotMethod = r.Method
-		_ = json.NewDecoder(r.Body).Decode(&gotBody)
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"settings":{"beta_feature":false}}`))
-	})
-	ts := httptest.NewServer(mux)
-	defer ts.Close()
+	f := newFakeServer(t)
+	f.On(http.MethodPatch, "/mitto/api/sessions/sess-1/settings").RespondJSON(http.StatusOK, `{"settings":{"beta_feature":false}}`)
 
-	c := New(ts.URL)
-	got, err := c.UpdateSessionSettings("sess-1", map[string]bool{"beta_feature": false})
+	got, err := f.Client().UpdateSessionSettings("sess-1", map[string]bool{"beta_feature": false})
 	if err != nil {
 		t.Fatalf("UpdateSessionSettings: %v", err)
 	}
-	if gotMethod != http.MethodPatch {
-		t.Errorf("method = %q, want PATCH", gotMethod)
+	req := f.LastRequest()
+	if req.Method != http.MethodPatch {
+		t.Errorf("method = %q, want PATCH", req.Method)
 	}
+	var gotBody map[string]any
+	_ = json.Unmarshal(req.Body, &gotBody)
 	settings, _ := gotBody["settings"].(map[string]any)
 	if settings["beta_feature"] != false {
 		t.Errorf("request body settings = %+v, want beta_feature=false", settings)
@@ -196,20 +135,10 @@ func TestClient_UpdateSessionSettings_HappyPath(t *testing.T) {
 }
 
 func TestClient_FlushSession_HappyPath(t *testing.T) {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/mitto/api/sessions/sess-1/flush", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			t.Errorf("method = %q, want POST", r.Method)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"status":"flushed","command":"/clear"}`))
-	})
-	ts := httptest.NewServer(mux)
-	defer ts.Close()
+	f := newFakeServer(t)
+	f.On(http.MethodPost, "/mitto/api/sessions/sess-1/flush").RespondJSON(http.StatusOK, `{"status":"flushed","command":"/clear"}`)
 
-	c := New(ts.URL)
-	got, err := c.FlushSession("sess-1")
+	got, err := f.Client().FlushSession("sess-1")
 	if err != nil {
 		t.Fatalf("FlushSession: %v", err)
 	}
@@ -219,37 +148,20 @@ func TestClient_FlushSession_HappyPath(t *testing.T) {
 }
 
 func TestClient_FlushSession_409_ReturnsTypedConflictError(t *testing.T) {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/mitto/api/sessions/sess-1/flush", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusConflict)
-		_, _ = w.Write([]byte(`{"error":{"code":"conflict","message":"session is busy"}}`))
-	})
-	ts := httptest.NewServer(mux)
-	defer ts.Close()
+	f := newFakeServer(t)
+	f.On(http.MethodPost, "/mitto/api/sessions/sess-1/flush").
+		Fail(http.StatusConflict, "conflict", "session is busy", nil)
 
-	c := New(ts.URL)
-	_, err := c.FlushSession("sess-1")
-	if !errors.Is(err, ErrConflict) {
-		t.Errorf("errors.Is(err, ErrConflict) = false, want true; err = %v", err)
-	}
+	_, err := f.Client().FlushSession("sess-1")
+	assertAPIError(t, err, ErrConflict, http.StatusConflict, "conflict")
 }
 
 func TestClient_GetSessionUserData_HappyPath(t *testing.T) {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/mitto/api/sessions/sess-1/user-data", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			t.Errorf("method = %q, want GET", r.Method)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"attributes":[{"name":"priority","value":"high"}]}`))
-	})
-	ts := httptest.NewServer(mux)
-	defer ts.Close()
+	f := newFakeServer(t)
+	f.On(http.MethodGet, "/mitto/api/sessions/sess-1/user-data").
+		RespondJSON(http.StatusOK, `{"attributes":[{"name":"priority","value":"high"}]}`)
 
-	c := New(ts.URL)
-	got, err := c.GetSessionUserData("sess-1")
+	got, err := f.Client().GetSessionUserData("sess-1")
 	if err != nil {
 		t.Fatalf("GetSessionUserData: %v", err)
 	}
@@ -259,24 +171,16 @@ func TestClient_GetSessionUserData_HappyPath(t *testing.T) {
 }
 
 func TestClient_SetSessionUserData_HappyPath(t *testing.T) {
-	var gotMethod string
-	mux := http.NewServeMux()
-	mux.HandleFunc("/mitto/api/sessions/sess-1/user-data", func(w http.ResponseWriter, r *http.Request) {
-		gotMethod = r.Method
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"attributes":[{"name":"priority","value":"low"}]}`))
-	})
-	ts := httptest.NewServer(mux)
-	defer ts.Close()
+	f := newFakeServer(t)
+	f.On(http.MethodPut, "/mitto/api/sessions/sess-1/user-data").
+		RespondJSON(http.StatusOK, `{"attributes":[{"name":"priority","value":"low"}]}`)
 
-	c := New(ts.URL)
-	got, err := c.SetSessionUserData("sess-1", []UserDataAttribute{{Name: "priority", Value: "low"}})
+	got, err := f.Client().SetSessionUserData("sess-1", []UserDataAttribute{{Name: "priority", Value: "low"}})
 	if err != nil {
 		t.Fatalf("SetSessionUserData: %v", err)
 	}
-	if gotMethod != http.MethodPut {
-		t.Errorf("method = %q, want PUT", gotMethod)
+	if got := f.LastRequest().Method; got != http.MethodPut {
+		t.Errorf("method = %q, want PUT", got)
 	}
 	if len(got.Attributes) != 1 || got.Attributes[0].Value != "low" {
 		t.Errorf("UserData = %+v, unexpected", got)
@@ -284,42 +188,25 @@ func TestClient_SetSessionUserData_HappyPath(t *testing.T) {
 }
 
 func TestClient_SetSessionUserData_400_ReturnsTypedBadRequestError(t *testing.T) {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/mitto/api/sessions/sess-1/user-data", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
-		_, _ = w.Write([]byte(`{"error":{"code":"validation_error","message":"unknown attribute"}}`))
-	})
-	ts := httptest.NewServer(mux)
-	defer ts.Close()
+	f := newFakeServer(t)
+	f.On(http.MethodPut, "/mitto/api/sessions/sess-1/user-data").
+		Fail(http.StatusBadRequest, "validation_error", "unknown attribute", nil)
 
-	c := New(ts.URL)
-	_, err := c.SetSessionUserData("sess-1", []UserDataAttribute{{Name: "bogus", Value: "x"}})
-	if !errors.Is(err, ErrBadRequest) {
-		t.Errorf("errors.Is(err, ErrBadRequest) = false, want true; err = %v", err)
-	}
+	_, err := f.Client().SetSessionUserData("sess-1", []UserDataAttribute{{Name: "bogus", Value: "x"}})
+	assertAPIError(t, err, ErrBadRequest, http.StatusBadRequest, "validation_error")
 }
 
 func TestClient_PruneSession_HappyPath(t *testing.T) {
-	var gotBody map[string]any
-	mux := http.NewServeMux()
-	mux.HandleFunc("/mitto/api/sessions/sess-1/prune", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			t.Errorf("method = %q, want POST", r.Method)
-		}
-		_ = json.NewDecoder(r.Body).Decode(&gotBody)
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"pruned_count":50,"remaining_count":100,"new_max_seq":150}`))
-	})
-	ts := httptest.NewServer(mux)
-	defer ts.Close()
+	f := newFakeServer(t)
+	f.On(http.MethodPost, "/mitto/api/sessions/sess-1/prune").
+		RespondJSON(http.StatusOK, `{"pruned_count":50,"remaining_count":100,"new_max_seq":150}`)
 
-	c := New(ts.URL)
-	got, err := c.PruneSession("sess-1", 100)
+	got, err := f.Client().PruneSession("sess-1", 100)
 	if err != nil {
 		t.Fatalf("PruneSession: %v", err)
 	}
+	var gotBody map[string]any
+	_ = json.Unmarshal(f.LastRequest().Body, &gotBody)
 	if gotBody["keep_last"] != float64(100) {
 		t.Errorf("request body keep_last = %v, want 100", gotBody["keep_last"])
 	}
@@ -329,37 +216,103 @@ func TestClient_PruneSession_HappyPath(t *testing.T) {
 }
 
 func TestClient_PruneSession_409_ReturnsTypedConflictError(t *testing.T) {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/mitto/api/sessions/sess-1/prune", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusConflict)
-		_, _ = w.Write([]byte(`{"error":{"code":"conflict","message":"session is busy"}}`))
-	})
-	ts := httptest.NewServer(mux)
-	defer ts.Close()
+	f := newFakeServer(t)
+	f.On(http.MethodPost, "/mitto/api/sessions/sess-1/prune").
+		Fail(http.StatusConflict, "conflict", "session is busy", nil)
 
-	c := New(ts.URL)
-	_, err := c.PruneSession("sess-1", 100)
-	if !errors.Is(err, ErrConflict) {
-		t.Errorf("errors.Is(err, ErrConflict) = false, want true; err = %v", err)
+	_, err := f.Client().PruneSession("sess-1", 100)
+	assertAPIError(t, err, ErrConflict, http.StatusConflict, "conflict")
+}
+
+// --- Coverage for previously-0%-tested core Client methods (mitto-rwxq.9) ---
+
+func TestClient_CreateSession_HappyPath(t *testing.T) {
+	f := newFakeServer(t)
+	f.On(http.MethodPost, "/mitto/api/sessions").
+		RespondRaw(http.StatusCreated, "application/json", []byte(`{"session_id":"sess-1","working_dir":"/tmp","acp_server":"auggie"}`))
+
+	got, err := f.Client().CreateSession(CreateSessionRequest{Name: "n", WorkingDir: "/tmp"})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	if got.SessionID != "sess-1" {
+		t.Errorf("SessionInfo = %+v, unexpected", got)
 	}
 }
 
-func TestClient_ListRunningSessions_HappyPath(t *testing.T) {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/mitto/api/sessions/running", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			t.Errorf("method = %q, want GET", r.Method)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"total_running":2,"prompting":1,"sessions":[{"session_id":"a","is_prompting":true},{"session_id":"b","is_prompting":false}]}`))
-	})
-	ts := httptest.NewServer(mux)
-	defer ts.Close()
+func TestClient_DeleteSession_HappyPath(t *testing.T) {
+	f := newFakeServer(t)
+	f.On(http.MethodDelete, "/mitto/api/sessions/sess-1").RespondRaw(http.StatusNoContent, "", nil)
 
-	c := New(ts.URL)
-	got, err := c.ListRunningSessions()
+	if err := f.Client().DeleteSession("sess-1"); err != nil {
+		t.Fatalf("DeleteSession: %v", err)
+	}
+}
+
+func TestClient_DeleteSession_404_ReturnsGenericAPIError(t *testing.T) {
+	f := newFakeServer(t)
+	f.On(http.MethodDelete, "/mitto/api/sessions/missing").RespondRaw(http.StatusNotFound, "", nil)
+
+	err := f.Client().DeleteSession("missing")
+	assertAPIError(t, err, ErrNotFound, http.StatusNotFound, "")
+}
+
+func TestClient_ArchiveSession_HappyPath(t *testing.T) {
+	f := newFakeServer(t)
+	f.On(http.MethodPatch, "/mitto/api/sessions/sess-1").RespondRaw(http.StatusOK, "", nil)
+
+	if err := f.Client().ArchiveSession("sess-1", true); err != nil {
+		t.Fatalf("ArchiveSession: %v", err)
+	}
+	var gotBody map[string]any
+	_ = json.Unmarshal(f.LastRequest().Body, &gotBody)
+	if gotBody["archived"] != true {
+		t.Errorf("request body archived = %v, want true", gotBody["archived"])
+	}
+}
+
+func TestClient_BaseURL(t *testing.T) {
+	c := New("http://example.invalid")
+	if got := c.BaseURL(); got != "http://example.invalid" {
+		t.Errorf("BaseURL() = %q, want http://example.invalid", got)
+	}
+}
+
+func TestWithTimeout_SetsHTTPClientTimeout(t *testing.T) {
+	c := New("http://example.invalid", WithTimeout(5*time.Second))
+	if c.httpClient.Timeout != 5*time.Second {
+		t.Errorf("httpClient.Timeout = %v, want 5s", c.httpClient.Timeout)
+	}
+}
+
+func TestClient_RotateSharedToken_HappyPath(t *testing.T) {
+	f := newFakeServer(t)
+	f.On(http.MethodPost, "/mitto/api/auth/rotate-token").RespondJSON(http.StatusOK, `{"fingerprint":"abc123"}`)
+
+	got, err := f.Client().RotateSharedToken()
+	if err != nil {
+		t.Fatalf("RotateSharedToken: %v", err)
+	}
+	if got.Fingerprint != "abc123" {
+		t.Errorf("RotateTokenResponse = %+v, unexpected", got)
+	}
+}
+
+func TestClient_RotateSharedToken_403_ReturnsTypedForbiddenError(t *testing.T) {
+	f := newFakeServer(t)
+	f.On(http.MethodPost, "/mitto/api/auth/rotate-token").
+		Fail(http.StatusForbidden, CodeForbidden, "not localhost", nil)
+
+	_, err := f.Client().RotateSharedToken()
+	assertAPIError(t, err, ErrForbidden, http.StatusForbidden, CodeForbidden)
+}
+
+func TestClient_ListRunningSessions_HappyPath(t *testing.T) {
+	f := newFakeServer(t)
+	f.On(http.MethodGet, "/mitto/api/sessions/running").
+		RespondJSON(http.StatusOK, `{"total_running":2,"prompting":1,"sessions":[{"session_id":"a","is_prompting":true},{"session_id":"b","is_prompting":false}]}`)
+
+	got, err := f.Client().ListRunningSessions()
 	if err != nil {
 		t.Fatalf("ListRunningSessions: %v", err)
 	}
