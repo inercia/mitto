@@ -615,7 +615,7 @@ func (p *SharedACPProcess) doStartProcess() (string, error) {
 	var wait func() error
 	var cmd *exec.Cmd
 
-	stderrCollector := procstart.NewStderrCollector(8192, p.logger)
+	stderrCollector := procstart.NewStderrCollector(procstart.DefaultStderrCollectorBytes, p.logger)
 	// Install per-agent ignore patterns (mitto-k6h) so matching writes are
 	// suppressed from the debug-level stderr log. Nil is a safe no-op.
 	if p.config.StderrPatterns != nil {

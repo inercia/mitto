@@ -112,9 +112,12 @@ func TestAbnormalExitAttrs_PairsAreSlogParseable(t *testing.T) {
 }
 
 // TestAbnormalExitAttrs_TailIsCapped is a small end-to-end guard: the
-// abnormal-exit log line must never carry more than DefaultStderrTailBytes
-// bytes of stderr, even if the collector has been filled to its full 8-KB
-// capacity.
+// abnormal-exit log line must never carry substantially more than
+// DefaultStderrTailBytes bytes of stderr, even if the collector has been
+// filled to its full 8-KB capacity. Since mitto-zq6a, StderrTail emits a
+// bounded head+tail excerpt plus a short elision marker on overflow, so the
+// cap is enforced as maxBytes + a small marker allowance rather than an exact
+// byte ceiling (see StderrTail's doc comment for the head+tail rationale).
 func TestAbnormalExitAttrs_TailIsCapped(t *testing.T) {
 	c := NewStderrCollector(8192, nil)
 	// Fill the full 8-KB ring.
@@ -127,8 +130,8 @@ func TestAbnormalExitAttrs_TailIsCapped(t *testing.T) {
 	attrs := AbnormalExitAttrs(syscall.SIGKILL, true, c, DefaultStderrTailBytes)
 
 	tail, _ := findAttr(attrs, "stderr_tail").(string)
-	if len(tail) > DefaultStderrTailBytes {
-		t.Errorf("stderr_tail len=%d exceeds cap %d", len(tail), DefaultStderrTailBytes)
+	if len(tail) > DefaultStderrTailBytes+64 {
+		t.Errorf("stderr_tail len=%d exceeds cap %d+marker", len(tail), DefaultStderrTailBytes)
 	}
 	tlen, _ := findAttr(attrs, "stderr_tail_len").(int)
 	if tlen != len(tail) {

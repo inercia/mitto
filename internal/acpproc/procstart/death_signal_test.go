@@ -1,6 +1,7 @@
 package procstart
 
 import (
+	"fmt"
 	"os"
 	"strings"
 	"syscall"
@@ -127,21 +128,71 @@ func TestStderrTail_CRLFNormalizedAndTrimmed(t *testing.T) {
 	}
 }
 
-// TestStderrTail_TruncatesToMaxBytes verifies only the trailing maxBytes bytes
-// survive when the collector is fuller than the cap — this is the ring-buffer
-// guarantee the abnormal-exit log line depends on to stay grep-friendly.
+// TestStderrTail_TruncatesToMaxBytes verifies the head+tail excerpt semantics
+// (mitto-zq6a) when the collector is fuller than the cap: the result contains
+// both the head and the tail of the buffer, joined by an explicit elision
+// marker, and stays within maxBytes plus the marker.
 func TestStderrTail_TruncatesToMaxBytes(t *testing.T) {
 	c := NewStderrCollector(8192, nil)
-	// Write 5 KB; ask for the last 1 KB.
+	// Write 5 KB; ask for 1 KB total.
 	payload := strings.Repeat("A", 4000) + strings.Repeat("B", 1000)
 	_, _ = c.Write([]byte(payload))
 	got := StderrTail(c, 1024)
-	if len(got) != 1024 {
-		t.Fatalf("StderrTail len = %d, want 1024", len(got))
+	if len(got) > 1024+64 {
+		t.Fatalf("StderrTail len = %d, want <= 1024+marker", len(got))
 	}
-	// Tail must be the trailing bytes — all 'B' since we asked for 1000 B's
-	// plus 24 A's before them.
-	if !strings.HasSuffix(got, strings.Repeat("B", 1000)) {
-		t.Errorf("StderrTail tail does not end with the B run; got last 32=%q", got[len(got)-32:])
+	if !strings.HasPrefix(got, strings.Repeat("A", 10)) {
+		t.Errorf("StderrTail does not start with the A run (head); got first 32=%q", got[:32])
+	}
+	if !strings.HasSuffix(got, strings.Repeat("B", 10)) {
+		t.Errorf("StderrTail does not end with the B run (tail); got last 32=%q", got[len(got)-32:])
+	}
+	if !strings.Contains(got, "bytes elided") {
+		t.Errorf("StderrTail missing elision marker: %q", got)
+	}
+}
+
+// TestStderrTail_NoMarkerWhenNotTruncated verifies the elision marker is
+// absent when the buffer fits within maxBytes — head+tail excerpting only
+// kicks in on overflow.
+func TestStderrTail_NoMarkerWhenNotTruncated(t *testing.T) {
+	c := NewStderrCollector(8192, nil)
+	_, _ = c.Write([]byte("short content"))
+	got := StderrTail(c, 4096)
+	if strings.Contains(got, "elided") {
+		t.Errorf("StderrTail added an elision marker despite fitting: %q", got)
+	}
+	if got != "short content" {
+		t.Errorf("StderrTail = %q, want %q", got, "short content")
+	}
+}
+
+// TestStderrTail_PreservesV8FatalHeader is the acceptance-criterion
+// regression test for mitto-zq6a: a simulated V8 fatal-error dump whose
+// header would previously be discarded by tail-only truncation must survive
+// in the head half of the excerpt, alongside the last backtrace frame in the
+// tail half.
+func TestStderrTail_PreservesV8FatalHeader(t *testing.T) {
+	c := NewStderrCollector(1<<20, nil)
+	var b strings.Builder
+	b.WriteString("FATAL ERROR: Ineffective mark-compacts near heap limit Allocation failed - JavaScript heap out of memory\n")
+	b.WriteString("----- Native stack trace -----\n")
+	for i := 0; i < 200; i++ {
+		fmt.Fprintf(&b, " %d: 0x%x some_frame_symbol(args) [/opt/homebrew/lib/libnode.dylib]\n", i, 0x1000000+i)
+	}
+	_, _ = c.Write([]byte(b.String()))
+
+	got := StderrTail(c, DefaultStderrTailBytes)
+	if !strings.Contains(got, "FATAL ERROR") {
+		t.Errorf("StderrTail dropped the fatal header; got head+tail: %q", got[:200])
+	}
+	if !strings.Contains(got, "199:") {
+		t.Errorf("StderrTail dropped the last backtrace frame")
+	}
+	if !strings.Contains(got, "bytes elided") {
+		t.Errorf("StderrTail missing elision marker for an overflowing dump")
+	}
+	if len(got) > DefaultStderrTailBytes+64 {
+		t.Errorf("StderrTail len = %d, want <= %d+marker", len(got), DefaultStderrTailBytes)
 	}
 }
