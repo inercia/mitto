@@ -35,7 +35,10 @@ deep import and may change in any release without notice — see
 3. **Node / Bun.** Vendor or fetch the `sdk/` tree — plain ESM, zero runtime
    dependencies, no bundler needed.
 
-See [Getting Started](getting-started.md) for runnable snippets of each.
+See [Getting Started](getting-started.md) for runnable snippets of each, and
+[Getting Started § Runnable examples](getting-started.md#runnable-examples)
+for full standalone programs
+(`examples/js-client/browser-snippet`, `examples/js-client/prompt-stream`).
 
 ## Documentation map
 

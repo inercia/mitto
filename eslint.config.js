@@ -66,6 +66,46 @@ export default [
     },
   },
   {
+    // mitto-7gta.22: the JS-client examples are plain Bun/Node CLI programs,
+    // not part of web/static/, so the block above never covers them and
+    // they'd otherwise be silently unlinted (unlike the Go examples, which
+    // `make test-go` compiles as part of ./examples/...). SDK-boundary
+    // rules below are deliberately NOT extended here: an example
+    // constructing its own WebSocket implementation (see prompt-stream's
+    // BunWebSocket) is exactly the point being demonstrated, not a
+    // violation of it.
+    files: ["examples/js-client/**/*.js"],
+    languageOptions: {
+      ecmaVersion: 2022,
+      sourceType: "module",
+      globals: {
+        ...globals.node,
+      },
+    },
+    rules: {
+      "no-dupe-keys": "error",
+      "no-dupe-args": "error",
+      "no-duplicate-case": "error",
+      "no-unreachable": "error",
+      "valid-typeof": "error",
+      "no-constant-condition": "error",
+      "no-self-assign": "error",
+      "no-self-compare": "error",
+      "use-isnan": "error",
+      "no-sparse-arrays": "error",
+      "no-loss-of-precision": "error",
+      "eqeqeq": ["error", "always", { null: "ignore" }],
+      "no-unused-vars": [
+        "warn",
+        {
+          argsIgnorePattern: "^_",
+          varsIgnorePattern: "^_",
+          caughtErrorsIgnorePattern: "^_",
+        },
+      ],
+    },
+  },
+  {
     // mitto-7gta.19: ban direct backend access outside the SDK
     // (web/static/sdk/). All fetch/WebSocket/XHR/EventSource traffic and
     // deep sdk/ imports must go through web/static/sdk/index.js (see

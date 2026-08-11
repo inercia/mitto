@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<!--
+  Minimal browser example of the Mitto JS SDK (web/static/sdk/). Proves the
+  SDK works standalone in a browser with zero build step: open this file
+  (or serve it) and point it at a running Mitto server.
+
+  Two modes, matching docs/api/getting-started.md:
+  - Same-origin: serve this file from the Mitto host itself and leave the
+    token field empty; the browser's session cookie authenticates.
+  - Cross-origin: fill in a shared bearer token (docs/api/authentication.md
+    #sharedtokenauth-bearer-token) and make sure the target host's CORS
+    allowlist includes this page's origin.
+
+  See ../README.md for how to run this.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Mitto SDK — browser snippet</title>
+    <style>
+      body { font-family: system-ui, sans-serif; max-width: 640px; margin: 2rem auto; }
+      label { display: block; margin-top: 0.75rem; font-size: 0.9rem; }
+      input { width: 100%; box-sizing: border-box; padding: 0.4rem; }
+      button { margin-top: 1rem; padding: 0.5rem 1rem; }
+      pre { white-space: pre-wrap; background: #f4f4f4; padding: 1rem; }
+    </style>
+  </head>
+  <body>
+    <h1>Mitto SDK — browser snippet</h1>
+    <label>Mitto base URL (e.g. https://mitto.example.com/api; leave as "/api" if this page is served by Mitto itself)
+      <input id="baseUrl" value="/api" />
+    </label>
+    <label>Shared bearer token (leave empty for same-origin/cookie auth)
+      <input id="token" type="password" placeholder="only needed cross-origin" />
+    </label>
+    <button id="run">List conversations &amp; stream a prompt</button>
+    <pre id="out">Idle.</pre>
+
+    <script type="module">
+      const out = document.getElementById("out");
+      const log = (line) => (out.textContent += "\n" + line);
+
+      /**
+       * The SDK is always imported from the TARGET Mitto host's /sdk/index.js
+       * (docs/api/getting-started.md's browser modes), which is only known
+       * once the user fills in the base-URL field — so this uses a dynamic
+       * import() instead of a static one. Same-origin (this page served by
+       * Mitto itself, baseUrl relative like "/api") resolves against
+       * location.origin; cross-origin (an absolute baseUrl on another host)
+       * resolves against that host's own origin.
+       */
+      async function loadSdk(baseUrl) {
+        const origin = /^https?:\/\//i.test(baseUrl) ? new URL(baseUrl).origin : location.origin;
+        return import(/* @vite-ignore */ `${origin}/sdk/index.js`);
+      }
+
+      document.getElementById("run").addEventListener("click", async () => {
+        out.textContent = "";
+        const baseUrl = document.getElementById("baseUrl").value.trim();
+        const token = document.getElementById("token").value.trim();
+
+        const { createClient, sharedTokenAuth } = await loadSdk(baseUrl);
+
+        // sharedTokenAuth is only needed cross-origin; same-origin requests
+        // already carry the browser's session cookie automatically, and
+        // omitting `auth` defaults to noneAuth() (adds nothing).
+        const client = createClient({
+          baseUrl,
+          auth: token ? sharedTokenAuth({ getToken: () => token }) : undefined,
+        });
+
+        try {
+          const sessions = await client.sessions.list();
+          log(`Found ${sessions.length} conversation(s).`);
+          if (sessions.length === 0) {
+            log("Create one from the Mitto UI first, then reload.");
+            return;
+          }
+
+          const sessionId = sessions[0].session_id;
+          log(`Streaming from "${sessionId}"...`);
+
+          const stream = client.sessionStream(sessionId, { wsBaseUrl: baseUrl });
+          stream.on("open", () => log("[connected]"));
+          stream.on("error", (err) => log(`[error] ${err?.message || err}`));
+          stream.on("message", (msg) => {
+            if (msg.type === "agent_message" && msg.data?.html) {
+              log(msg.data.html.replace(/<[^>]+>/g, ""));
+            }
+          });
+          stream.connect();
+
+          await new Promise((resolve) => stream.once("open", resolve));
+          await stream.sendPrompt({ message: "Say hello in one short sentence." });
+        } catch (err) {
+          log(`FAILED: ${err?.message || err}`);
+        }
+      });
+    </script>
+  </body>
+</html>

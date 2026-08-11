@@ -89,3 +89,15 @@ await stream.sendPrompt({ message: "Hello!" });
 
 See the [Realtime Guide](realtime.md) for the full event/session-stream API,
 sequence numbers, and reconnection behavior.
+
+## Runnable examples
+
+- [`examples/js-client/browser-snippet`](../../examples/js-client/browser-snippet) —
+  standalone HTML page: lists conversations and streams one prompt's
+  response.
+- [`examples/js-client/prompt-stream`](../../examples/js-client/prompt-stream) —
+  Bun/Node CLI: authenticates with a shared bearer token, creates a
+  conversation, sends a prompt, and streams the response to stdout. Proves
+  the SDK is genuinely environment-agnostic.
+
+See [Go SDK](go-sdk.md#runnable-examples) for the equivalent Go examples.
