@@ -323,8 +323,25 @@ type LoopRunner struct {
 	// flaky transport does not cause the same prompt to re-fire every poll tick
 	// (mitto-qal.2). Reset to zero on the next successful delivery. Distinct from
 	// consecutiveFailures, which tracks resume failures and triggers auto-archive.
+	// Scoped strictly to schedule-initiated (resetTimer=true, forced=false,
+	// firedBy=TriggerSchedule) runs so a failed onCompletion/onTasks leg on a
+	// multi-trigger loop never consumes the schedule leg's own breaker
+	// (mitto-r6j.2). See deliveryFailures for the trigger-agnostic counterpart.
 	scheduleBackoffFailures   map[string]int
 	scheduleBackoffFailuresMu sync.Mutex
+
+	// deliveryFailures tracks consecutive generic (non context-window) delivery
+	// failures REGARDLESS of trigger type or forced-ness — unlike
+	// scheduleBackoffFailures above, which is deliberately schedule-only. Once
+	// it reaches MaxLoopDeliveryFailures the loop is auto-paused with
+	// StoppedReasonDeliveryFailures, giving forced dispatches (manual "Run Now",
+	// the runOnStart boot pulse) and event-driven fires (onCompletion/onTasks/
+	// onChild) the same bounded safety net a scheduled run gets — a durably
+	// broken forced/event-driven delivery previously had no ceiling at all and
+	// could go silently deaf forever (mitto-bmct). Reset to zero on the next
+	// successful delivery, regardless of trigger.
+	deliveryFailures   map[string]int
+	deliveryFailuresMu sync.Mutex
 
 	// contextWindowFailures tracks consecutive `augmentTooLarge` (HTTP 413 /
 	// context window exceeded) delivery failures. After MaxLoopContextWindowFailures
@@ -478,6 +495,7 @@ func NewLoopRunner(store *session.Store, sm *SessionManager, logger *slog.Logger
 		promptResolveFailures:        make(map[string]int),
 		transientCompileRaceFailures: make(map[string]*transientRaceState),
 		scheduleBackoffFailures:      make(map[string]int),
+		deliveryFailures:             make(map[string]int),
 		contextWindowFailures:        make(map[string]int),
 		completionTimers:             make(map[string]*time.Timer),
 		tasksEvaluator:               evaluator,
@@ -1181,6 +1199,15 @@ func (r *LoopRunner) BootstrapOnCompletion(sessionID string) {
 // {{ .Session.IsLoopRunOnStart }} accessor, and the @mitto:loop_run_on_start
 // placeholder). Errors are logged but not propagated — the boot pulse is
 // best-effort.
+//
+// runOnStartFired is set BEFORE the dispatch attempt (to close a race between
+// concurrent ticks), but a transient contention error — ErrSessionBusy,
+// ErrWorkspaceBusy, or ErrLoopDispatchCoalesced — rolls it back so the once-
+// per-process guard does not permanently consume the pulse (mitto-bmct defect
+// A): fireOnStartPulses runs on every RunOnce poll tick, not just once at
+// boot (mitto-wyob), specifically so these three sentinels can self-heal on a
+// later tick. Any other (durable) delivery error leaves the guard set — the
+// boot pulse is genuinely one-shot for a deterministic failure.
 func (r *LoopRunner) fireOnStartPulses() {
 	if r.store == nil {
 		return
@@ -1261,6 +1288,15 @@ func (r *LoopRunner) fireOnStartPulses() {
 		}
 
 		if err := r.triggerNowFull(meta.SessionID, true, nil, true, ""); err != nil {
+			if errors.Is(err, ErrSessionBusy) || errors.Is(err, ErrWorkspaceBusy) || errors.Is(err, ErrLoopDispatchCoalesced) {
+				// Transient contention, not a real delivery failure: roll back
+				// the once-per-process guard so a later tick of the per-tick
+				// fireOnStartPulses (mitto-wyob) can retry instead of the
+				// pulse being permanently consumed (mitto-bmct defect A).
+				r.runOnStartFiredMu.Lock()
+				delete(r.runOnStartFired, meta.SessionID)
+				r.runOnStartFiredMu.Unlock()
+			}
 			if r.logger == nil {
 				continue
 			}
@@ -2217,20 +2253,35 @@ func (r *LoopRunner) handleContextWindowFailure(sessionID, sessionName string, l
 //     counter and auto-pauses the loop after MaxLoopContextWindowFailures
 //     consecutive hits (mitto-7jn). This runs regardless of trigger type —
 //     onCompletion loops need the same safety net (mitto-4he), and the counter
-//     is trigger-agnostic. Only the schedule-backoff block below is schedule-only.
-//   - Schedule-initiated runs with resetTimer=true and forced=false then back off
-//     NextScheduledAt so a transient transport failure (e.g. -32603) does not
-//     re-fire the same prompt on every poll tick (mitto-qal.2). Event-driven
-//     fires (onCompletion/onTasks) and manual "keep schedule" runs
-//     (resetTimer=false) or forced one-shots must not push out the regular
-//     schedule. The gate is on firedBy — the trigger that actually won this
-//     dispatch — so that on a multi-trigger loop a failed onCompletion run does
-//     not consume the schedule leg's breaker (mitto-r6j.2).
-//   - The same schedule-backoff counter also gates a MaxLoopDeliveryFailures
-//     ceiling: once a generic (non-context-window) failure recurs that many
-//     consecutive times, the loop is auto-paused with
-//     StoppedReasonDeliveryFailures instead of being deferred again, so a
-//     deterministically permanent failure cannot re-fire forever (mitto-aeb).
+//     is trigger-agnostic.
+//   - Every other failure bumps the trigger-agnostic deliveryFailures counter
+//     and is compared against a MaxLoopDeliveryFailures ceiling REGARDLESS of
+//     trigger type or forced-ness (mitto-bmct): a forced dispatch (manual
+//     "Run Now", or the runOnStart boot pulse) or an event-driven fire
+//     (onCompletion/onTasks/onChild) that fails deterministically must still
+//     auto-pause with StoppedReasonDeliveryFailures after MaxLoopDeliveryFailures
+//     consecutive hits, exactly like a scheduled run — otherwise a durable
+//     failure on one of those paths is a silent, unbounded drop with the loop
+//     still reporting Enabled and no StoppedReason (observed: a boot-pulse
+//     onTasks loop went deaf for 5 days). deliveryFailures is cleared on any
+//     successful delivery regardless of trigger (see deliverPrompt's
+//     OnComplete), so incrementing it unconditionally on failure is safe and
+//     symmetric.
+//   - The schedule *backoff* (deferring NextScheduledAt via
+//     loopScheduleBackoff/DeferNextSchedule) uses a SEPARATE, schedule-scoped
+//     counter (scheduleBackoffFailures) and remains gated to schedule-initiated
+//     runs with resetTimer=true and forced=false, so a transient transport
+//     failure (e.g. -32603) does not re-fire the same prompt on every poll tick
+//     (mitto-qal.2) — event-driven fires (onCompletion/onTasks) and manual
+//     "keep schedule" runs (resetTimer=false) or forced one-shots must not push
+//     out the regular schedule. The gate is on firedBy — the trigger that
+//     actually won this dispatch — so that on a multi-trigger loop a failed
+//     onCompletion run does not consume the schedule leg's own breaker
+//     (mitto-r6j.2); using a separate counter from the trigger-agnostic ceiling
+//     keeps that invariant intact even though both ceilings are compared
+//     against the same MaxLoopDeliveryFailures constant. Below the ceiling, a
+//     forced/event-driven failure is still logged (with the trigger-agnostic
+//     failure count) but the schedule itself is left untouched.
 func (r *LoopRunner) handleDeliveryFailure(sessionID, sessionName string, loop *session.LoopPrompt, loopStore *session.LoopStore, err error, resetTimer, forced bool, firedBy session.LoopTrigger) {
 	if mittoAcp.IsContextTooLargeError(err) {
 		if r.handleContextWindowFailure(sessionID, sessionName, loopStore) {
@@ -2245,51 +2296,66 @@ func (r *LoopRunner) handleDeliveryFailure(sessionID, sessionName string, loop *
 		// loop keeps ticking (with backoff) until the auto-pause threshold is hit.
 	}
 
-	if resetTimer && !forced && firedBy == session.TriggerSchedule {
-		r.scheduleBackoffFailuresMu.Lock()
-		r.scheduleBackoffFailures[sessionID]++
-		failures := r.scheduleBackoffFailures[sessionID]
-		r.scheduleBackoffFailuresMu.Unlock()
+	// Trigger-agnostic ceiling (mitto-bmct): count this failure and compare
+	// against MaxLoopDeliveryFailures regardless of trigger/forced-ness.
+	r.deliveryFailuresMu.Lock()
+	r.deliveryFailures[sessionID]++
+	failures := r.deliveryFailures[sessionID]
+	r.deliveryFailuresMu.Unlock()
 
-		if failures >= MaxLoopDeliveryFailures {
-			if stopErr := loopStore.MarkStopped(session.StoppedReasonDeliveryFailures); stopErr != nil {
-				if r.logger != nil {
-					r.logger.Warn("Failed to auto-pause loop after repeated delivery failures",
-						"session_id", sessionID,
-						"session_name", sessionName,
-						"consecutive_failures", failures,
-						"error", stopErr)
-				}
-				// Do not clear the counter so a subsequent retry can try again.
-				return
-			}
-			r.releaseBeadClaim(sessionID, sessionName)
+	if failures >= MaxLoopDeliveryFailures {
+		if stopErr := loopStore.MarkStopped(session.StoppedReasonDeliveryFailures); stopErr != nil {
 			if r.logger != nil {
-				r.logger.Warn("Auto-paused loop conversation after repeated delivery failures",
+				r.logger.Warn("Failed to auto-pause loop after repeated delivery failures",
 					"session_id", sessionID,
 					"session_name", sessionName,
 					"consecutive_failures", failures,
-					"max_failures", MaxLoopDeliveryFailures,
-					"error", err)
+					"error", stopErr)
 			}
-			if r.onLoopAutoStopped != nil {
-				if final, gErr := loopStore.Get(); gErr == nil {
-					r.onLoopAutoStopped(sessionID, final)
-				}
-			}
-			r.scheduleBackoffFailuresMu.Lock()
-			delete(r.scheduleBackoffFailures, sessionID)
-			r.scheduleBackoffFailuresMu.Unlock()
+			// Do not clear the counter so a subsequent retry can try again.
 			return
 		}
+		r.releaseBeadClaim(sessionID, sessionName)
+		if r.logger != nil {
+			r.logger.Warn("Auto-paused loop conversation after repeated delivery failures",
+				"session_id", sessionID,
+				"session_name", sessionName,
+				"consecutive_failures", failures,
+				"max_failures", MaxLoopDeliveryFailures,
+				"forced", forced,
+				"fired_by", firedBy,
+				"error", err)
+		}
+		if r.onLoopAutoStopped != nil {
+			if final, gErr := loopStore.Get(); gErr == nil {
+				r.onLoopAutoStopped(sessionID, final)
+			}
+		}
+		r.deliveryFailuresMu.Lock()
+		delete(r.deliveryFailures, sessionID)
+		r.deliveryFailuresMu.Unlock()
+		r.scheduleBackoffFailuresMu.Lock()
+		delete(r.scheduleBackoffFailures, sessionID)
+		r.scheduleBackoffFailuresMu.Unlock()
+		return
+	}
 
-		delay := loopScheduleBackoff(failures)
+	// Below the ceiling: only a schedule-initiated, resetTimer=true, non-forced
+	// run defers NextScheduledAt, using its own dedicated schedule-scoped
+	// counter (mitto-r6j.2) — distinct from the trigger-agnostic ceiling above.
+	if resetTimer && !forced && firedBy == session.TriggerSchedule {
+		r.scheduleBackoffFailuresMu.Lock()
+		r.scheduleBackoffFailures[sessionID]++
+		scheduleFailures := r.scheduleBackoffFailures[sessionID]
+		r.scheduleBackoffFailuresMu.Unlock()
+
+		delay := loopScheduleBackoff(scheduleFailures)
 		if deferErr := loopStore.DeferNextSchedule(delay); deferErr != nil {
 			if r.logger != nil {
 				r.logger.Warn("Loop prompt failed, backoff could not be applied",
 					"session_id", sessionID,
 					"session_name", sessionName,
-					"consecutive_failures", failures,
+					"consecutive_failures", scheduleFailures,
 					"error", deferErr)
 			}
 		} else {
@@ -2297,7 +2363,7 @@ func (r *LoopRunner) handleDeliveryFailure(sessionID, sessionName string, loop *
 				r.logger.Warn("Loop prompt failed, backing off next run",
 					"session_id", sessionID,
 					"session_name", sessionName,
-					"consecutive_failures", failures,
+					"consecutive_failures", scheduleFailures,
 					"max_failures", MaxLoopDeliveryFailures,
 					"backoff", delay,
 					"error", err)
@@ -2311,10 +2377,16 @@ func (r *LoopRunner) handleDeliveryFailure(sessionID, sessionName string, loop *
 		return
 	}
 
+	// Forced/event-driven fires must not push out the regular schedule, but
+	// still get the same trigger-agnostic failure accounting logged.
 	if r.logger != nil {
 		r.logger.Warn("Loop prompt failed, schedule not advanced",
 			"session_id", sessionID,
 			"session_name", sessionName,
+			"consecutive_failures", failures,
+			"max_failures", MaxLoopDeliveryFailures,
+			"forced", forced,
+			"fired_by", firedBy,
 			"error", err)
 	}
 }
@@ -2497,6 +2569,12 @@ func (r *LoopRunner) deliverPrompt(bs *BackgroundSession, sessionMeta session.Me
 			r.scheduleBackoffFailuresMu.Lock()
 			delete(r.scheduleBackoffFailures, sessionID)
 			r.scheduleBackoffFailuresMu.Unlock()
+
+			// Also clear the trigger-agnostic delivery-failure ceiling counter on
+			// any successful delivery, regardless of trigger (mitto-bmct).
+			r.deliveryFailuresMu.Lock()
+			delete(r.deliveryFailures, sessionID)
+			r.deliveryFailuresMu.Unlock()
 
 			// Also clear context-window failure counter on any successful delivery (mitto-7jn).
 			r.contextWindowFailuresMu.Lock()

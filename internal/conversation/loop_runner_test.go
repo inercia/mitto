@@ -5621,6 +5621,105 @@ func TestLoopRunner_DeliveryFailure_GenericError_AutoPausesAtCeiling(t *testing.
 	}
 }
 
+// TestLoopRunner_DeliveryFailure_ForcedDispatch_MustEventuallyAutoPause is the
+// reproduction test for mitto-bmct defect B: handleDeliveryFailure's entire
+// remediation block (schedule backoff bump, DeferNextSchedule, and —
+// critically — the MaxLoopDeliveryFailures auto-pause added by mitto-aeb) is
+// gated on
+//
+//	resetTimer && !forced && firedBy == session.TriggerSchedule
+//
+// A forced dispatch (manual "Run Now", or the runOnStart boot pulse, which
+// calls deliverPrompt/triggerNowFull with forced=true) fails that gate
+// unconditionally regardless of how many times it fails, so a permanently
+// broken forced/event-driven delivery is a silent, unbounded, never-ending
+// drop: no backoff, no auto-pause, no StoppedReason, no onLoopAutoStopped
+// broadcast — nothing distinguishes it from a healthy loop except the log.
+//
+// This mirrors the bead's own log evidence for an onTasks boot-pulse fire
+// that failed asynchronously with a durable ACP "Authentication required"
+// error: PromptWithMeta dispatched synchronously (so triggerNowFull returned
+// nil — fireOnStartPulses's own error branch never even ran), and the async
+// OnComplete failure landed in handleDeliveryFailure with forced=true,
+// firedBy=onTasks — never TriggerSchedule. The loop then sat silent for 5
+// days with Enabled=true and no StoppedReason.
+//
+// EXPECTED (post-fix) behavior, asserted here: a forced/event-driven loop
+// dispatch that fails MaxLoopDeliveryFailures times in a row with a generic,
+// durable, non-context-window error must auto-pause exactly like the
+// scheduled path does (TestLoopRunner_DeliveryFailure_GenericError_AutoPausesAtCeiling
+// above) — Enabled=false, StoppedReason=StoppedReasonDeliveryFailures, and
+// exactly one onLoopAutoStopped broadcast. This currently FAILS: no such
+// ceiling exists for forced/non-schedule dispatches today, so the loop stays
+// Enabled with no StoppedReason no matter how many times it fails.
+func TestLoopRunner_DeliveryFailure_ForcedDispatch_MustEventuallyAutoPause(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	const sessionID = "forced-delivery-no-ceiling"
+	meta := session.Metadata{SessionID: sessionID, ACPServer: "auggie", WorkingDir: "/tmp"}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	loopStore := store.Loop(sessionID)
+	tr := true
+	loop := &session.LoopPrompt{
+		Prompt:     "Test",
+		Trigger:    session.TriggerOnTasks,
+		RunOnStart: &tr,
+		Enabled:    true,
+	}
+	if err := loopStore.Set(loop); err != nil {
+		t.Fatalf("loopStore.Set() error = %v", err)
+	}
+
+	runner := NewLoopRunner(store, nil, nil)
+	var autoStopCalls int
+	runner.SetOnLoopAutoStopped(func(sid string, p *session.LoopPrompt) {
+		autoStopCalls++
+	})
+
+	// The same durable, non-context-window error class as the bead's evidence
+	// (ACP handshake / auth failure), delivered as a FORCED dispatch fired by
+	// onTasks — exactly the shape of a boot-pulse triggerNowFull(..., true, ...)
+	// call whose deliverPrompt OnComplete fires asynchronously.
+	authErr := errors.New(`{"code":-32000,"message":"Authentication required"}`)
+
+	// Drive exactly MaxLoopDeliveryFailures consecutive forced failures — the
+	// same shape as the sibling scheduled-path test
+	// (TestLoopRunner_DeliveryFailure_GenericError_AutoPausesAtCeiling): the
+	// Nth hit must trip the ceiling exactly once. (In production the loop
+	// would also stop being redispatched once Enabled flips to false; calling
+	// past the ceiling here would just retrigger it every further
+	// MaxLoopDeliveryFailures hits, which is not what this test is checking.)
+	const attempts = MaxLoopDeliveryFailures
+	for i := 1; i <= attempts; i++ {
+		runner.handleDeliveryFailure(sessionID, "cgw-managed-tools", loop, loopStore, authErr, true, true, session.TriggerOnTasks)
+	}
+
+	final, err := loopStore.Get()
+	if err != nil {
+		t.Fatalf("loopStore.Get() error = %v", err)
+	}
+	if final.Enabled {
+		t.Errorf("loop.Enabled = true after %d forced onTasks delivery failures; want false "+
+			"(mitto-bmct: forced/event-driven dispatches must have the same bounded "+
+			"auto-pause safety net as scheduled dispatches — currently there is none, "+
+			"which is how the bead's onTasks loop went deaf for 5 days)", attempts)
+	}
+	if final.StoppedReason != session.StoppedReasonDeliveryFailures {
+		t.Errorf("loop.StoppedReason = %q after %d forced onTasks delivery failures; want %q",
+			final.StoppedReason, attempts, session.StoppedReasonDeliveryFailures)
+	}
+	if autoStopCalls != 1 {
+		t.Errorf("onLoopAutoStopped invocation count = %d after %d forced onTasks delivery "+
+			"failures; want 1", autoStopCalls, attempts)
+	}
+}
+
 // TestLoopRunner_ReleaseBeadClaim_OnNonBenignAutoStop reproduces the fix for
 // mitto-2efc defect 2: a loop that auto-pauses for a non-benign reason
 // (context-window exceeded / repeated delivery failures) must release any
