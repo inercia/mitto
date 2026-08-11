@@ -2046,6 +2046,117 @@ func TestPromptDispatcher_CreateFreshContextSession_ZeroPillSeq_FallsBackToSeqle
 	}
 }
 
+// --- createFreshContextSession virginity-skip tests (mitto-s9g2) ---
+
+// TestPromptDispatcher_CreateFreshContextSession_VirginSession_SkipsInPlaceFlush
+// asserts that a provably-empty session (pdContextIsEmpty()==true) skips the
+// in-place flush RPC entirely, records no pill, and returns "" (continue on
+// the existing, already-empty session).
+func TestPromptDispatcher_CreateFreshContextSession_VirginSession_SkipsInPlaceFlush(t *testing.T) {
+	p := promptDispatcher{}
+	d := newFakePromptDeps()
+	d.contextIsEmpty = true
+	d.contextFlushCommand = "/clear" // would normally be preferred
+	d.hasACPConn = true
+	d.acpNewSessionID = "should-not-be-used"
+
+	id := p.createFreshContextSession(d, PromptMeta{FreshContext: true}, 0)
+
+	if id != "" {
+		t.Fatalf("expected empty id (skip path), got %q", id)
+	}
+	if d.flushContextCalled {
+		t.Fatal("expected pdFlushContextInPlace NOT to be called on a virgin session")
+	}
+	if d.acpNewSessionCalls != 0 {
+		t.Fatalf("acpNewSessionCalls = %d, want 0 (new-session fallback must not be reached)", d.acpNewSessionCalls)
+	}
+	if len(d.recordedSessionChanges) != 0 {
+		t.Fatalf("expected no context_cleared pill on skip, got %v", d.recordedSessionChanges)
+	}
+}
+
+// TestPromptDispatcher_CreateFreshContextSession_VirginSession_SkipsNewSession
+// exercises the skip on the no-flush-command / new-session-fallback path:
+// a virgin session must never pay for a new ACP session either.
+func TestPromptDispatcher_CreateFreshContextSession_VirginSession_SkipsNewSession(t *testing.T) {
+	p := promptDispatcher{}
+	d := newFakePromptDeps()
+	d.contextIsEmpty = true
+	d.contextFlushCommand = "" // no flush command configured
+	d.hasACPConn = true
+	d.acpNewSessionID = "should-not-be-used"
+
+	id := p.createFreshContextSession(d, PromptMeta{FreshContext: true}, 0)
+
+	if id != "" {
+		t.Fatalf("expected empty id (skip path), got %q", id)
+	}
+	if d.acpNewSessionCalls != 0 {
+		t.Fatalf("acpNewSessionCalls = %d, want 0 (new-session fallback must not be reached)", d.acpNewSessionCalls)
+	}
+	if len(d.recordedSessionChanges) != 0 {
+		t.Fatalf("expected no context_cleared pill on skip, got %v", d.recordedSessionChanges)
+	}
+}
+
+// TestPromptDispatcher_CreateFreshContextSession_NonVirginSession_FlushesAsToday
+// pins the tri-state intent: a session with >=1 dispatched turn (not empty)
+// must flush exactly as before mitto-s9g2 — same observable behavior as the
+// pre-existing PrefersInPlaceFlush test, but asserted explicitly against the
+// new contextIsEmpty=false knob so a future regression flipping the default
+// is caught here too.
+func TestPromptDispatcher_CreateFreshContextSession_NonVirginSession_FlushesAsToday(t *testing.T) {
+	p := promptDispatcher{}
+	d := newFakePromptDeps()
+	d.contextIsEmpty = false // explicit: session has dispatched turns
+	d.contextFlushCommand = "/clear"
+	d.hasACPConn = false
+
+	id := p.createFreshContextSession(d, PromptMeta{FreshContext: true}, 0)
+
+	if id != "" {
+		t.Fatalf("expected empty id (in-place path), got %q", id)
+	}
+	if !d.flushContextCalled {
+		t.Fatal("expected pdFlushContextInPlace to be called for a non-virgin session")
+	}
+	if len(d.recordedSessionChanges) != 1 {
+		t.Fatalf("expected 1 context_cleared pill on flush success, got %d: %v", len(d.recordedSessionChanges), d.recordedSessionChanges)
+	}
+	if sc := d.recordedSessionChanges[0]; sc.Kind != "context_cleared" || sc.Value != "flush" {
+		t.Fatalf("unexpected pill: %+v", sc)
+	}
+}
+
+// TestPromptDispatcher_CreateFreshContextSession_ResumedUnknownVirginity_FlushesAsToday
+// pins the safety contract for resumed/loaded sessions: pdContextIsEmpty()
+// reports false (fail safe) for the unknown-virginity state, so a resumed
+// session's FreshContext iteration flushes exactly like a non-virgin one —
+// asserted separately from the non-virgin case to document that both "known
+// not-empty" and "unknown virginity" collapse to the same observable
+// behavior via the same false return.
+func TestPromptDispatcher_CreateFreshContextSession_ResumedUnknownVirginity_FlushesAsToday(t *testing.T) {
+	p := promptDispatcher{}
+	d := newFakePromptDeps()
+	d.contextIsEmpty = false // resumed/loaded sessions report false (unknown != empty)
+	d.hasACPConn = true
+	d.contextFlushCommand = "" // exercise the new-session fallback leg too
+	d.acpNewSessionID = "resumed-session-fresh"
+
+	id := p.createFreshContextSession(d, PromptMeta{FreshContext: true}, 0)
+
+	if id != "resumed-session-fresh" {
+		t.Fatalf("expected new-session fallback id, got %q", id)
+	}
+	if len(d.recordedSessionChanges) != 1 {
+		t.Fatalf("expected 1 context_cleared pill, got %d: %v", len(d.recordedSessionChanges), d.recordedSessionChanges)
+	}
+	if sc := d.recordedSessionChanges[0]; sc.Kind != "context_cleared" || sc.Value != "new_session" {
+		t.Fatalf("unexpected pill: %+v", sc)
+	}
+}
+
 // --- applyModelPreference tests ---
 
 func TestPromptDispatcher_ApplyModelPreference_NoAgentModels_NoOp(t *testing.T) {

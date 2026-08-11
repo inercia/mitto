@@ -1262,6 +1262,100 @@ func TestBackgroundSession_GetEventCount(t *testing.T) {
 	}
 }
 
+// --- mitto-s9g2: acpContextTurns tri-state counter helpers ---
+
+// TestBackgroundSession_MarkACPContextFresh_SetsEmpty verifies that a session
+// explicitly marked fresh (e.g. right after a genuine session/new or a
+// successful in-place flush) reports acpContextIsEmpty()==true.
+func TestBackgroundSession_MarkACPContextFresh_SetsEmpty(t *testing.T) {
+	bs := &BackgroundSession{}
+	bs.acpContextTurns.Store(contextTurnsUnknown) // simulate constructor init
+
+	bs.markACPContextFresh()
+
+	if !bs.acpContextIsEmpty() {
+		t.Error("acpContextIsEmpty() = false, want true after markACPContextFresh")
+	}
+	if got := bs.acpContextTurns.Load(); got != 0 {
+		t.Errorf("acpContextTurns = %d, want 0 after markACPContextFresh", got)
+	}
+}
+
+// TestBackgroundSession_MarkACPContextUnknown_SetsNotEmpty verifies that a
+// session explicitly marked unknown (resume/load) fails safe to "not empty",
+// even if it had previously been marked fresh.
+func TestBackgroundSession_MarkACPContextUnknown_SetsNotEmpty(t *testing.T) {
+	bs := &BackgroundSession{}
+	bs.markACPContextFresh() // start fresh, then...
+	bs.markACPContextUnknown()
+
+	if bs.acpContextIsEmpty() {
+		t.Error("acpContextIsEmpty() = true, want false after markACPContextUnknown")
+	}
+	if got := bs.acpContextTurns.Load(); got != contextTurnsUnknown {
+		t.Errorf("acpContextTurns = %d, want %d (unknown sentinel)", got, contextTurnsUnknown)
+	}
+}
+
+// TestBackgroundSession_NoteACPTurnDispatched_IncrementsFromFresh verifies
+// that dispatching a turn on a freshly-classified (0) session increments the
+// counter and the session is no longer reported as empty.
+func TestBackgroundSession_NoteACPTurnDispatched_IncrementsFromFresh(t *testing.T) {
+	bs := &BackgroundSession{}
+	bs.markACPContextFresh()
+
+	bs.noteACPTurnDispatched()
+
+	if bs.acpContextIsEmpty() {
+		t.Error("acpContextIsEmpty() = true, want false after one turn dispatched")
+	}
+	if got := bs.acpContextTurns.Load(); got != 1 {
+		t.Errorf("acpContextTurns = %d, want 1 after one dispatched turn", got)
+	}
+
+	bs.noteACPTurnDispatched()
+	if got := bs.acpContextTurns.Load(); got != 2 {
+		t.Errorf("acpContextTurns = %d, want 2 after a second dispatched turn", got)
+	}
+}
+
+// TestBackgroundSession_NoteACPTurnDispatched_DoesNotPromoteUnknownSentinel
+// pins the tri-state contract: noteACPTurnDispatched must never turn the
+// unknown sentinel (-1) into a count. Only markACPContextFresh/Unknown may
+// reclassify the session.
+func TestBackgroundSession_NoteACPTurnDispatched_DoesNotPromoteUnknownSentinel(t *testing.T) {
+	bs := &BackgroundSession{}
+	bs.markACPContextUnknown()
+
+	bs.noteACPTurnDispatched()
+
+	if got := bs.acpContextTurns.Load(); got != contextTurnsUnknown {
+		t.Errorf("acpContextTurns = %d, want unchanged %d (sentinel must not be promoted)", got, contextTurnsUnknown)
+	}
+	if bs.acpContextIsEmpty() {
+		t.Error("acpContextIsEmpty() = true, want false (still unknown)")
+	}
+}
+
+// TestBackgroundSession_ACPContextIsEmpty_ZeroValueStructIsNotEmpty documents
+// that a raw zero-value BackgroundSession (as used in many unit tests here)
+// happens to read as "empty" (Go zero value 0 == the fresh state) UNLESS the
+// constructor's fail-safe Store(contextTurnsUnknown) has run. Both real
+// constructors (NewBackgroundSession/ResumeBackgroundSession) explicitly set
+// the unknown sentinel before any handshake can run, so this is not reachable
+// in production — this test exists purely to document why unit tests that
+// construct BackgroundSession directly must call markACPContext*/Store
+// explicitly rather than relying on the zero value.
+func TestBackgroundSession_ACPContextIsEmpty_ZeroValueStructIsNotEmpty(t *testing.T) {
+	bs := &BackgroundSession{}
+
+	// The bare zero value (atomic.Int64 defaults to 0) reads as "empty" — this
+	// is exactly why both constructors immediately Store(contextTurnsUnknown).
+	if !bs.acpContextIsEmpty() {
+		t.Error("expected zero-value acpContextTurns to read as empty (0), confirming constructors must override it")
+	}
+}
+
 func TestBackgroundSession_CreatedAt(t *testing.T) {
 	bs := &BackgroundSession{}
 
