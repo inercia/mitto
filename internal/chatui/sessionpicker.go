@@ -130,7 +130,7 @@ func (m *SessionPickerModel) View() tea.View {
 		b.WriteString(ansi.Truncate("  "+m.items[index].Description(), width, "…"))
 		b.WriteByte('\n')
 	}
-	b.WriteString(fmt.Sprintf("\n%d/%d  ↑/↓ or j/k move · enter select · esc/q cancel", m.cursor+1, len(m.items)))
+	fmt.Fprintf(&b, "\n%d/%d  ↑/↓ or j/k move · enter select · esc/q cancel", m.cursor+1, len(m.items))
 	return tea.NewView(b.String())
 }
 
