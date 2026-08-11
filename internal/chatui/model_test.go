@@ -411,6 +411,144 @@ func TestModel_WindowSizeMsg_ClampsTranscriptHeightToOneOnTinyTerminal(t *testin
 	}
 }
 
+// --- input history recall: up/down gated to first/last line ----------------
+
+func TestModel_Up_OnFirstLine_RecallsHistory(t *testing.T) {
+	m := newTestModel(t, true)
+	m.history.Add("previous message")
+
+	m.Update(tea.KeyPressMsg{Text: "up", Code: tea.KeyUp})
+
+	if got := m.input.Value(); got != "previous message" {
+		t.Errorf("input.Value() = %q, want the recalled entry", got)
+	}
+}
+
+func TestModel_Down_WhenNotRecalling_IsNoopAndFallsThroughToTextarea(t *testing.T) {
+	m := newTestModel(t, true)
+	m.input.SetValue("typing")
+
+	m.Update(tea.KeyPressMsg{Text: "down", Code: tea.KeyDown})
+
+	// Not currently recalling (cursor already at len(entries)) — history.Next
+	// returns ok=false, so the down key must not clobber the live draft.
+	if got := m.input.Value(); got != "typing" {
+		t.Errorf("input.Value() = %q, want the untouched draft %q", got, "typing")
+	}
+}
+
+func TestModel_Up_OnSecondLine_MovesCursorInsteadOfRecalling(t *testing.T) {
+	m := newTestModel(t, true)
+	m.history.Add("previous message")
+	m.input.SetValue("line one\nline two")
+	// SetValue leaves the cursor at the end (row 1); confirm the precondition.
+	if m.input.Line() != 1 {
+		t.Fatalf("precondition: Line() = %d, want 1", m.input.Line())
+	}
+
+	m.Update(tea.KeyPressMsg{Text: "up", Code: tea.KeyUp})
+
+	if got := m.input.Value(); got != "line one\nline two" {
+		t.Errorf("up on a non-first line must not recall history, input.Value() = %q", got)
+	}
+}
+
+func TestModel_TypingAfterRecall_ResetsHistoryCursor(t *testing.T) {
+	m := newTestModel(t, true)
+	m.history.Add("previous message")
+	m.Update(tea.KeyPressMsg{Text: "up", Code: tea.KeyUp})
+
+	m.Update(tea.KeyPressMsg{Text: "x", Code: 'x'})
+
+	if _, ok := m.history.Next(""); ok {
+		t.Error("an ordinary edit after recall should reset the history cursor (readline semantics)")
+	}
+}
+
+// --- slash-command completion menu ------------------------------------------
+
+func TestModel_Tab_OpensCompletionMenuForSlashPrefix(t *testing.T) {
+	m := newTestModel(t, true)
+	m.input.SetValue("/c") // ambiguous: matches both /cancel and /clear
+
+	m.Update(tea.KeyPressMsg{Text: "tab", Code: tea.KeyTab})
+
+	if !m.completion.Open() {
+		t.Fatal("tab on a /-prefixed single-line input with multiple matches should open the completion menu")
+	}
+}
+
+func TestModel_Tab_SingleMatch_CompletesImmediately(t *testing.T) {
+	m := newTestModel(t, true)
+	m.input.SetValue("/hel")
+
+	m.Update(tea.KeyPressMsg{Text: "tab", Code: tea.KeyTab})
+
+	if got := m.input.Value(); got != "/help" {
+		t.Errorf("input.Value() = %q, want the single completed match /help", got)
+	}
+	if m.completion.Open() {
+		t.Error("a single-match completion should close the menu immediately")
+	}
+}
+
+func TestModel_Tab_NonSlashInput_FallsThroughToTextarea(t *testing.T) {
+	m := newTestModel(t, true)
+	m.input.SetValue("hello")
+
+	m.Update(tea.KeyPressMsg{Text: "tab", Code: tea.KeyTab})
+
+	if m.completion.Open() {
+		t.Error("tab on non-slash input must not open the completion menu")
+	}
+}
+
+func TestModel_CompletionMenu_EscClosesWithoutCancellingTurn(t *testing.T) {
+	m := newTestModel(t, true)
+	m.inFlight = true
+	m.status.SetInFlight(true)
+	m.input.SetValue("/c")
+	m.Update(tea.KeyPressMsg{Text: "tab", Code: tea.KeyTab})
+	if !m.completion.Open() {
+		t.Fatal("precondition: menu should be open (multiple /c matches)")
+	}
+
+	_, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+
+	if m.completion.Open() {
+		t.Error("esc should close the completion menu")
+	}
+	if !m.inFlight {
+		t.Error("esc closing the menu must NOT cancel the in-flight turn")
+	}
+	if cmd != nil {
+		t.Error("esc closing the menu should not issue a cancel Cmd")
+	}
+}
+
+func TestModel_CompletionMenu_EnterAcceptsSelection(t *testing.T) {
+	m := newTestModel(t, true)
+	m.input.SetValue("/c") // matches /cancel and /clear, in that table order
+	m.Update(tea.KeyPressMsg{Text: "tab", Code: tea.KeyTab})
+	if !m.completion.Open() {
+		t.Fatal("precondition: menu should be open")
+	}
+
+	m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+
+	if got := m.input.Value(); got != "/cancel" {
+		t.Errorf("input.Value() = %q, want the first match /cancel accepted", got)
+	}
+	if m.completion.Open() {
+		t.Error("enter should close the menu after accepting")
+	}
+	// Accepting must not itself submit — the accepted text stays in the
+	// input for the user to review/edit before a separate enter sends it.
+	if got := len(m.transcript.items); got != 0 {
+		t.Errorf("accepting a completion must not submit, len(items) = %d", got)
+	}
+}
+
 // --- golden-frame-lite: View() renders the layout at a fixed size ---------
 
 func TestModel_View_RendersTitleAndConnectionState(t *testing.T) {

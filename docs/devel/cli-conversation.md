@@ -138,10 +138,25 @@ by scripts — `--output json`/`yaml` is the contract.
 
 - **TTY required.** Non-TTY stdout or stdin exits 2 (usage) with a message
   pointing at `conversation send --wait`.
-- **Input history / slash-command completion are deferred**, not required
-  for the first cut (`bubbles/textarea` provides neither; `mitto cli`
-  keeps its `reeflective/readline` affordances unchanged). Tracked as
-  `mitto-pscc.11`, blocked on `mitto-pscc.7`.
+- **`mitto-pscc.11` landed**: input history and slash-command completion,
+  reimplemented as plain imperative structs (`internal/chatui/inputhistory.go`,
+  `completion.go`, `commands.go`) rather than pulling in `reeflective/readline`
+  (which owns its own terminal and cannot coexist with an alt-screen Bubble
+  Tea program). Key routing precedence in `handleKey`, highest first:
+  permission modal > completion menu > input history > textarea.
+  - **History**: `up`/`down` recall previously submitted lines, gated to the
+    textarea's first/last line (`Line() == 0` / `Line() == LineCount()-1`) so
+    multi-line editing is unaffected. Persisted per conversation at
+    `$MITTO_DIR/chat-history/<conversation-id>.json`, capped at 200 entries;
+    loaded once at bootstrap, saved via a `tea.Cmd` after each submit (never
+    inline in `Update`).
+  - **Completion**: `tab` on a single-line `/`-prefixed input opens a menu
+    (immediate completion on a single match); `up`/`down`/`tab` navigate,
+    `enter` accepts, `esc` closes the menu only (does not cancel the turn).
+    The chat command set is `/help` (`/h`, `/?`), `/quit` (`/exit`, `/q`),
+    `/cancel`, and `/clear` (TUI-only — clears the transcript pane; no `mitto
+    cli` counterpart). An unrecognized `/word` is refused locally (error
+    item) rather than forwarded to the agent, matching `mitto cli`.
 - `--no-color`/`NO_COLOR` select glamour's notty style; they never disable
   rendering and never change `--output`, which is always colourless.
 - Reference architecture: `charmbracelet/crush` — one `tea.Model`,

@@ -135,6 +135,22 @@ func (t *transcript) AppendError(message string) {
 	t.append(it)
 }
 
+// AppendSystem appends local-only output from a slash command (e.g.
+// /help), rendered as plain text rather than through glamour/markdown.
+func (t *transcript) AppendSystem(text string) {
+	it := newItem(itemSystem)
+	it.title = text
+	t.append(it)
+}
+
+// Clear empties the transcript (the "/clear" command), dropping every item
+// and the tool-ID index, then refreshes the now-empty viewport.
+func (t *transcript) Clear() {
+	t.items = nil
+	t.byToolID = make(map[string]*item)
+	t.refresh()
+}
+
 func (t *transcript) append(it *item) {
 	t.items = append(t.items, it)
 	t.refresh()

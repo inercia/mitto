@@ -33,8 +33,8 @@ redirected I/O exits with a usage error pointing at "conversation send
 --wait" instead. --history N replays the N most recent events into the
 transcript on attach. esc cancels the in-flight agent turn; ctrl-c/q quits.
 
-Input history and slash-command completion are not yet available in this
-TUI (tracked as mitto-pscc.11); "mitto cli" keeps those affordances.`,
+Up/down recall previously submitted lines (persisted per conversation);
+tab completes slash commands (/help, /quit, /cancel, /clear).`,
 	Args: cobra.ExactArgs(1),
 	RunE: runConversationChat,
 }
@@ -80,6 +80,13 @@ func runConversationChat(cmd *cobra.Command, args []string) error {
 		NoColor:      conversationFlags.NoColor,
 		ShowThoughts: !conversationChatFlags.NoThoughts,
 	})
+
+	// Seed persisted input history before the program starts (mitto-pscc.11),
+	// mirroring SeedHistory's ordering discipline. A missing/unreadable file
+	// is non-fatal — history just starts empty for this run.
+	if entries, herr := chatui.LoadInputHistory(conversationID); herr == nil {
+		model.SeedInputHistory(entries)
+	}
 
 	// Bootstrap mirrors connectAndAwaitLoad (conversation_send.go), with the
 	// history limit driving the same LoadEvents/OnEventsLoaded round trip

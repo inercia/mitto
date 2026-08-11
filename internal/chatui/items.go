@@ -14,6 +14,9 @@ const (
 	itemThought
 	itemTool
 	itemError
+	// itemSystem is local-only output from a slash command (e.g. /help),
+	// never sent to or received from the agent (mitto-pscc.11).
+	itemSystem
 )
 
 // item is one entry in the transcript, owning its own render cache
@@ -78,6 +81,8 @@ func (it *item) render(width int, baseMode termmd.Mode, styles *styles) string {
 		return styles.renderTool(it.title, it.status)
 	case itemError:
 		return styles.errorStyle.Render(it.title)
+	case itemSystem:
+		return it.title
 	}
 
 	mode := renderModeFor(baseMode, it.markdown)

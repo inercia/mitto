@@ -2,6 +2,7 @@ package chatui
 
 import (
 	"fmt"
+	"strings"
 
 	textarea "charm.land/bubbles/v2/textarea"
 	tea "charm.land/bubbletea/v2"
@@ -34,6 +35,14 @@ type Model struct {
 	status     *statusLine
 	perm       *permissionModal
 	styles     *styles
+
+	// history and completion restore the two readline affordances
+	// bubbles/textarea provides neither of (mitto-pscc.11): up/down input
+	// recall and slash-command tab completion. See handleKey for the
+	// routing precedence between them, the textarea, and the permission
+	// modal.
+	history    *inputHistory
+	completion *completionMenu
 
 	width, height int
 	inFlight      bool
@@ -70,6 +79,8 @@ func NewModel(sess *api.Session, opts Options) *Model {
 		status:     newStatusLine(st, opts.Title),
 		perm:       newPermissionModal(sess, st),
 		styles:     st,
+		history:    newInputHistory(),
+		completion: newCompletionMenu(st),
 	}
 	m.transcript.SetMode(mode)
 	return m
@@ -91,6 +102,30 @@ func (m *Model) SetSession(sess *api.Session) {
 func (m *Model) SeedHistory(events []api.SyncEvent) {
 	for _, ev := range events {
 		applySyncEvent(m.transcript, ev)
+	}
+}
+
+// SeedInputHistory replays previously persisted input-history entries
+// (oldest first) before the program starts, mirroring SeedHistory's
+// ordering discipline so there is no race with a live Add (called only
+// from handleKey's enter submit path, which runs after the program starts).
+func (m *Model) SeedInputHistory(entries []string) {
+	m.history.Seed(entries)
+}
+
+// saveHistoryCmd persists the input history to disk as a tea.Cmd — Update
+// must stay I/O-free, so this is only ever returned from handleKey, never
+// called inline. Errors are swallowed (non-fatal: history degrades to
+// in-memory only), matching LoadInputHistory's own non-fatal contract.
+func (m *Model) saveHistoryCmd() tea.Cmd {
+	if m.sess == nil {
+		return nil
+	}
+	conversationID := m.sess.SessionID()
+	entries := append([]string(nil), m.history.entries...)
+	return func() tea.Msg {
+		_ = SaveInputHistory(conversationID, entries)
+		return nil
 	}
 }
 
@@ -139,13 +174,16 @@ func (m *Model) handleResize(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) {
 	m.input.SetWidth(m.width)
 	m.status.SetWidth(m.width)
 	m.perm.SetWidth(m.width)
+	m.completion.SetWidth(m.width)
 	return m, nil
 }
 
-// handleKey routes a key press. The permission modal, when open, captures
-// all keys (y/n only); otherwise esc cancels the in-flight turn, ctrl-c/q
-// quit, enter submits the input textarea, and everything else is forwarded
-// to the textarea. This is the split the Plan mandates: the two-stage
+// handleKey routes a key press. Precedence, highest first: the permission
+// modal (open ⇒ captures every key, y/n only) > the slash-command
+// completion menu (open ⇒ up/down/tab navigate, enter/tab-on-single-match
+// accept, esc closes the menu only) > input-history recall (up/down, gated
+// to the textarea's first/last line so multi-line editing is unaffected) >
+// the textarea itself. This is the split the Plan mandates: the two-stage
 // ctrl-c from the readline REPL is dropped as a REPL-only affordance that
 // does not carry over to an alt-screen app.
 func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
@@ -159,25 +197,117 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	if m.completion.Open() {
+		if cmd, handled := m.handleCompletionKey(msg); handled {
+			return m, cmd
+		}
+	}
+
 	switch msg.String() {
 	case "ctrl+c", "q":
 		m.quitting = true
 		return m, tea.Quit
 	case "esc":
 		return m, m.cancelCmd()
+	case "tab":
+		if m.maybeOpenCompletion() {
+			return m, nil
+		}
+	case "up":
+		if m.input.Line() == 0 {
+			if text, ok := m.history.Prev(m.input.Value()); ok {
+				m.setInputText(text)
+			}
+			return m, nil
+		}
+	case "down":
+		if m.input.Line() == m.input.LineCount()-1 {
+			if text, ok := m.history.Next(m.input.Value()); ok {
+				m.setInputText(text)
+			}
+			return m, nil
+		}
 	case "enter":
 		text := m.input.Value()
 		if text == "" {
 			return m, nil
 		}
 		m.input.Reset()
+		m.history.Add(text)
+		saveCmd := m.saveHistoryCmd()
+		if strings.HasPrefix(text, "/") {
+			_, cmd := m.executeSlashCommand(text)
+			return m, tea.Batch(cmd, saveCmd)
+		}
 		m.transcript.AppendUser(text)
-		return m, m.sendCmd(text)
+		return m, tea.Batch(m.sendCmd(text), saveCmd)
 	}
 
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
+	// Any ordinary edit abandons an in-progress history recall, mirroring
+	// readline (typing while browsing history starts a fresh edit rather
+	// than mutating the recalled entry).
+	m.history.ResetCursor()
 	return m, cmd
+}
+
+// maybeOpenCompletion opens the completion menu when the input is a
+// single-line value starting with "/", immediately completing when exactly
+// one command matches (mirroring mitto cli's completeInput single-match
+// convenience). Returns true if tab was consumed (menu opened or
+// completed), false if it should fall through to the textarea.
+func (m *Model) maybeOpenCompletion() bool {
+	value := m.input.Value()
+	if m.input.LineCount() != 1 || !strings.HasPrefix(value, "/") {
+		return false
+	}
+	m.completion.Filter(value)
+	if !m.completion.Open() {
+		return false
+	}
+	if name, ok := m.completion.SingleMatch(); ok {
+		m.setInputText(name)
+		m.completion.Close()
+	}
+	return true
+}
+
+// handleCompletionKey handles a key press while the completion menu is
+// open. Returns handled=false for any key the menu does not care about, so
+// the caller falls through to the normal routing (esc still needs to close
+// the menu without triggering the normal esc-cancels-turn behavior, so esc
+// IS handled here).
+func (m *Model) handleCompletionKey(msg tea.KeyPressMsg) (cmd tea.Cmd, handled bool) {
+	switch msg.String() {
+	case "up":
+		m.completion.Prev()
+		return nil, true
+	case "down", "tab":
+		m.completion.Next()
+		return nil, true
+	case "enter":
+		if name, ok := m.completion.Accept(); ok {
+			m.setInputText(name)
+		}
+		m.completion.Close()
+		return nil, true
+	case "esc":
+		m.completion.Close()
+		return nil, true
+	}
+	return nil, false
+}
+
+// setInputText replaces the textarea's value, used by both history recall
+// and completion acceptance. SetValue itself already leaves the cursor at
+// the end of the inserted text (textarea.Model.InsertString positions the
+// cursor there), so no separate cursor move is needed — text may be
+// multi-line (a history entry can contain embedded newlines from a
+// shift-enter draft), and a column offset computed from len(text) would be
+// wrong relative to a single row.
+func (m *Model) setInputText(text string) {
+	m.input.SetValue(text)
 }
 
 // sendCmd issues Session.SendPrompt as a tea.Cmd — no I/O in Update itself.
@@ -278,6 +408,9 @@ func (m *Model) View() tea.View {
 		return tea.NewView("")
 	}
 	bottom := m.input.View()
+	if m.completion.Open() {
+		bottom = m.completion.Render() + "\n" + bottom
+	}
 	if m.perm.Open() {
 		bottom = m.perm.Render()
 	}

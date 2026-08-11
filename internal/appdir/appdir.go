@@ -92,6 +92,11 @@ const (
 	// See internal/rememberedargs.
 	RememberedArgsConversationDirName = "remembered-args-conversation"
 
+	// ChatHistoryDirName is the name of the subdirectory holding per-conversation
+	// persisted input-history snapshots for `mitto conversation chat` (one JSON
+	// file per conversation ID). See internal/chatui/inputhistory.go (mitto-pscc.11).
+	ChatHistoryDirName = "chat-history"
+
 	// PendingProcessorDispatchDirName is the name of the subdirectory holding
 	// per-workspace spools of undelivered prompt-mode processor batches (one
 	// JSON file per workspace UUID). Deliberately independent of any single
@@ -493,6 +498,19 @@ func RememberedArgsConversationDir() (string, error) {
 		return "", err
 	}
 	return filepath.Join(dir, RememberedArgsConversationDirName), nil
+}
+
+// ChatHistoryDir returns the directory holding per-conversation persisted
+// input-history snapshots for `mitto conversation chat`
+// ($MITTO_DIR/chat-history). The directory is not created here; callers
+// persist via fileutil.WriteJSONAtomic, which creates it on first write.
+// Mirrors the MCPToolsCacheDir pattern.
+func ChatHistoryDir() (string, error) {
+	dir, err := Dir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, ChatHistoryDirName), nil
 }
 
 // PendingProcessorDispatchDir returns the directory holding per-workspace
