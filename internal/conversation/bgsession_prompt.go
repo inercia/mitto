@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -602,6 +603,22 @@ retryAfterRestart:
 
 	// Run prompt in background
 	go func() {
+		// PromptWithMeta has already returned success to its caller, so every exit
+		// from this goroutine must invoke OnComplete exactly once. Normal completion
+		// goes through finalizeTurn below; abort paths (including deferred-handshake
+		// failure and session closure) fall back to this defer. Keeping release with
+		// the owning turn avoids a stale lifecycle cleanup releasing a newer claim.
+		abortedErr := &sessionError{"prompt ended before completion finalization"}
+		var completionErr error = abortedErr
+		if meta.OnComplete != nil {
+			originalOnComplete := meta.OnComplete
+			var completionOnce sync.Once
+			meta.OnComplete = func(err error) {
+				completionOnce.Do(func() { originalOnComplete(err) })
+			}
+			defer func() { meta.OnComplete(completionErr) }()
+		}
+
 		// autoRetried guards a single automatic retry after an ACP crash during
 		// streaming. On the first crash we restart the process and jump back to
 		// retryPrompt; if the retry also crashes we fall through to the normal
@@ -718,6 +735,10 @@ retryAfterRestart:
 		}
 		promptCancel()             // cancel context to unblock the health-monitor goroutine
 		promptEndedAt = time.Now() // captured for after-phase processors
+		completionErr = err
+		if completionErr == nil {
+			completionErr = abortedErr
+		}
 
 		bs.promptDisp.accumulateTokenUsage(bs, promptResp, message)
 

@@ -6901,6 +6901,120 @@ func TestLoopRunner_StopLoopForArchive_ReleasesDispatchClaim(t *testing.T) {
 	}
 }
 
+// TestLoopRunner_CloseInFlightTurn_ReleasesDispatchResources reproduces
+// mitto-7ul8.1: closing a BackgroundSession during an accepted loop turn must
+// release both its dispatch claim and workspace slot so the resumed session can
+// deliver again under the same persisted ID.
+func TestLoopRunner_CloseInFlightTurn_ReleasesDispatchResources(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	const sessionID = "close-in-flight"
+	ps := newMultiTriggerSession(t, store, sessionID,
+		[]session.LoopTrigger{session.TriggerOnTasks, session.TriggerSchedule})
+	loop, err := ps.Get()
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	meta := session.Metadata{SessionID: sessionID, ACPServer: "test", WorkingDir: "/tmp"}
+
+	shared := newFakeSharedProcess()
+	shared.promptBlock = make(chan struct{})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	bs := &BackgroundSession{
+		ctx:           ctx,
+		cancel:        cancel,
+		observers:     make(map[SessionObserver]struct{}),
+		store:         store,
+		persistedID:   sessionID,
+		workingDir:    "/tmp",
+		sharedProcess: shared,
+		acpID:         "acp-old",
+		pendingConfig: make(map[string]string),
+	}
+	bs.promptCond = sync.NewCond(&bs.promptMu)
+
+	runner := NewLoopRunner(store, nil, nil)
+	runner.SetLoopWorkspaceConcurrency(1)
+	if err := runner.deliverPrompt(bs, meta, loop, ps, true, false, nil, false, session.TriggerOnTasks); err != nil {
+		t.Fatalf("initial deliverPrompt() error = %v", err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		shared.mu.Lock()
+		started := len(shared.promptCalls) == 1
+		shared.mu.Unlock()
+		if started {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for initial prompt to start")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	bs.Close("acp_server_reconfigured")
+	close(shared.promptBlock)
+	deadline = time.Now().Add(2 * time.Second)
+	for bs.IsPrompting() {
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for closed prompt goroutine to exit")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	replacementShared := newFakeSharedProcess()
+	replacementCtx, replacementCancel := context.WithCancel(context.Background())
+	defer replacementCancel()
+	replacement := &BackgroundSession{
+		ctx:           replacementCtx,
+		cancel:        replacementCancel,
+		observers:     make(map[SessionObserver]struct{}),
+		store:         store,
+		persistedID:   sessionID,
+		workingDir:    "/tmp",
+		sharedProcess: replacementShared,
+		acpID:         "acp-new",
+		pendingConfig: make(map[string]string),
+	}
+	replacement.promptCond = sync.NewCond(&replacement.promptMu)
+
+	deadline = time.Now().Add(2 * time.Second)
+	for {
+		err = runner.deliverPrompt(replacement, meta, loop, ps, true, false, nil, false, session.TriggerOnTasks)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, ErrLoopDispatchCoalesced) && !errors.Is(err, ErrWorkspaceBusy) {
+			t.Fatalf("replacement deliverPrompt() unexpected error = %v", err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("replacement delivery remained blocked after the old turn closed: %v", err)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	deadline = time.Now().Add(2 * time.Second)
+	for {
+		runner.dispatchInFlightMu.Lock()
+		_, claimHeld := runner.dispatchInFlight[sessionID]
+		runner.dispatchInFlightMu.Unlock()
+		workspaceHeld := runner.workspaceInFlightCount(workspaceKey(meta.WorkingDir, meta.ACPServer))
+		if !claimHeld && workspaceHeld == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("replacement turn did not release resources: claim_held=%v workspace_in_flight=%d", claimHeld, workspaceHeld)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 // TestLoopRunner_CheckSession_Precedence_OnCompletionWinsOverSchedule pins the
 // onTasks > onCompletion > schedule precedence documented on checkSession
 // (loop_runner.go): for a loop listing BOTH onCompletion and schedule, and
