@@ -966,6 +966,11 @@ function SchemaSkewDialog({
   const [ackChecked, setAckChecked] = useState(false);
   const [isRunning, setIsRunning] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
+  // Raw stderr captured from a failed migration request (error.details.stderr).
+  // Rendered separately from errorMsg, preserving newlines, so a multi-line
+  // bd diagnostic (e.g. a dolt-push remote/auth failure) is not discarded —
+  // see mitto-cq2n.1.
+  const [errorStderr, setErrorStderr] = useState("");
 
   // Reset transient state whenever the dialog is (re)opened so a previous
   // inline error / stale mode / checkbox does not leak across invocations.
@@ -975,6 +980,7 @@ function SchemaSkewDialog({
       setAckChecked(false);
       setIsRunning(false);
       setErrorMsg("");
+      setErrorStderr("");
     }
     // defaultMode is derived from options; safe to depend on isOpen only —
     // options is stable for the lifetime of a single skew event.
@@ -989,6 +995,7 @@ function SchemaSkewDialog({
     if (isRunning) return;
     setIsRunning(true);
     setErrorMsg("");
+    setErrorStderr("");
     try {
       await getSdkClient().issues.migrate({ working_dir: workingDir, mode });
       // Success: parent handles toast + refresh + close.
@@ -999,7 +1006,14 @@ function SchemaSkewDialog({
           "UI-initiated beads migrations have been disabled by the administrator on this Mitto instance (web.beads.allow_migrate_from_ui: false). Run the migration from a terminal on the designated clone.",
         );
       } else {
-        setErrorMsg(beadsErrorFrom(err, "Migration request failed").error);
+        // beadsErrorFrom() flattens both the primary message (error.message,
+        // which the backend makes actionable for a publish-stage failure —
+        // see mitto-cq2n.1) and the raw error.details.stderr. Render both:
+        // dropping stderr here previously left the user with only the bare
+        // "bd exited with non-zero status: exit status N" wrapper text.
+        const data = beadsErrorFrom(err, "Migration request failed");
+        setErrorMsg(data.error);
+        setErrorStderr(data.stderr || "");
       }
       setIsRunning(false);
     }
@@ -1092,11 +1106,20 @@ function SchemaSkewDialog({
         ${
           errorMsg &&
           html`
-            <div
-              class="text-xs text-red-400 break-all"
-              data-testid="schema-skew-dialog-error"
-            >
-              ${errorMsg}
+            <div class="space-y-1">
+              <div
+                class="text-xs text-red-400 break-all"
+                data-testid="schema-skew-dialog-error"
+              >
+                ${errorMsg}
+              </div>
+              ${
+                errorStderr &&
+                html`<pre
+                  class="max-h-64 overflow-y-auto whitespace-pre-wrap break-all font-mono text-xs bg-mitto-surface-2/50 rounded p-2 text-mitto-text-secondary"
+                  data-testid="schema-skew-dialog-error-stderr"
+                >${errorStderr}</pre>`
+              }
             </div>
           `
         }

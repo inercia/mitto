@@ -15,11 +15,20 @@ import (
 // the captured stderr so callers can surface both to the user. ExitCode is the
 // bd subprocess exit status when the failure was a non-zero exit (0 otherwise
 // — e.g. timeout or context cancellation, where no exit status is available).
+// Stage optionally identifies which step of a multi-step bd operation failed
+// (e.g. StagePublish for MigrateRemote's "bd dolt push" step); it is empty
+// for single-step commands. See IsPublishFailure.
 type CmdError struct {
 	Err      error
 	Stderr   string
 	ExitCode int
+	Stage    string
 }
+
+// StagePublish identifies a *CmdError produced by MigrateRemote's "bd dolt
+// push" publish step, as opposed to its "bd migrate schema" step. See
+// IsPublishFailure.
+const StagePublish = "push"
 
 // Error implements the error interface.
 func (e *CmdError) Error() string { return e.Err.Error() }
@@ -89,6 +98,23 @@ func IsNotFound(err error) bool {
 		}
 	}
 	return false
+}
+
+// IsPublishFailure reports whether err is a MigrateRemote failure at the
+// publish stage ("bd dolt push") rather than the local schema-migration
+// stage ("bd migrate schema"). When true, the local migration already
+// applied successfully — only publishing the reconciled schema to the
+// remote failed — but the overall operation is still a failure: the
+// remote-backed safety requirement (every clone must agree on the schema)
+// is not satisfied until the push succeeds. Callers use this to report the
+// partial-success nuance (see internal/web/handlers/beads_migrate.go)
+// without ever treating a failed publish as an overall success.
+func IsPublishFailure(err error) bool {
+	var ce *CmdError
+	if !errors.As(err, &ce) {
+		return false
+	}
+	return ce.Stage == StagePublish
 }
 
 // IsSchemaSkew reports whether err represents a bd schema-version skew

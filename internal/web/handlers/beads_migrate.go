@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"path/filepath"
 	"time"
@@ -105,19 +106,48 @@ func (h *Handlers) HandleBeadsMigrate(w http.ResponseWriter, r *http.Request) {
 			writeRetryableUnavailable(w, "Beads migration timed out. Try running it manually from a terminal.", 0)
 			return
 		}
+
+		// A publish-stage failure (mode=migrate only: the local "bd migrate
+		// schema" step succeeded but "bd dolt push" failed) is distinguished
+		// from every other failure so the API can tell the caller the local
+		// migration DID apply — it just is not published yet — without ever
+		// claiming overall success. See beads.IsPublishFailure.
+		publishFailure := mode == "migrate" && beads.IsPublishFailure(err)
+
 		if h.deps.Logger != nil {
 			h.deps.Logger.Error("beads migration failed",
 				"mode", mode, "working_dir", req.WorkingDir,
 				"error", err, "stderr", beads.StderrOf(err),
-				"exit_code", beads.ExitCodeOf(err))
+				"exit_code", beads.ExitCodeOf(err),
+				"publish_failure", publishFailure)
 		}
+
+		code := errCodeServerError
+		message := err.Error()
 		details := map[string]any{"mode": mode, "working_dir": req.WorkingDir}
 		if s := beads.StderrOf(err); s != "" {
 			details["stderr"] = s
 		}
+		if publishFailure {
+			code = errCodeBeadsMigratePublishFailed
+			details["stage"] = "push"
+			details["local_migration_applied"] = true
+			message = fmt.Sprintf(
+				"The local beads schema migration succeeded, but publishing it to the remote (bd dolt push) failed: %s",
+				err.Error(),
+			)
+			// out carries step 1's stdout (bd migrate --json), which
+			// MigrateRemote still returns on a step-2 (push) failure — surface
+			// it so the caller can show exactly what the local migration
+			// applied even though it was not published.
+			if len(out) > 0 && json.Valid(out) {
+				details["local_migration_output"] = json.RawMessage(out)
+			}
+		}
+
 		writeJSON(w, http.StatusInternalServerError, errorEnvelope{Error: errorBody{
-			Code:    errCodeServerError,
-			Message: err.Error(),
+			Code:    code,
+			Message: message,
 			Details: details,
 		}})
 		return

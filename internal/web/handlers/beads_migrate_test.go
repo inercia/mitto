@@ -32,7 +32,7 @@ func (c *migrateStubClient) MigrateRemote(_ context.Context, dir string) ([]byte
 	c.migrateCalls.Add(1)
 	c.lastDir.Store(dir)
 	if c.migrateErr != nil {
-		return nil, c.migrateErr
+		return c.migrateOut, c.migrateErr
 	}
 	out := c.migrateOut
 	if out == nil {
@@ -333,5 +333,118 @@ func TestHandleBeadsMigrate_MigrateFailure(t *testing.T) {
 	}
 	if got, want := env.Error.Details["mode"], "migrate"; got != want {
 		t.Errorf("details.mode = %v, want %q", got, want)
+	}
+	// A migrate-stage failure (no Stage set on the CmdError) must NOT be
+	// misclassified as a publish failure — see
+	// TestHandleBeadsMigrate_PublishFailure for the contrasting case.
+	if _, ok := env.Error.Details["stage"]; ok {
+		t.Errorf("details.stage = %v, want absent for a migrate-stage failure", env.Error.Details["stage"])
+	}
+}
+
+// TestHandleBeadsMigrate_PublishFailure covers mitto-cq2n.1: when the local
+// "bd migrate schema" step succeeds but "bd dolt push" fails, the error
+// envelope must identify the publish stage and that the local migration was
+// applied, carry an actionable message (not just the bare exit-status
+// wrapper), and preserve the raw stderr — while still returning a non-2xx
+// status (never claiming overall success).
+func TestHandleBeadsMigrate_PublishFailure(t *testing.T) {
+	stub := &migrateStubClient{
+		migrateOut: []byte(`{"applied":4,"from":49,"to":53}`),
+		migrateErr: &beads.CmdError{
+			Err: errors.New("bd exited with non-zero status"),
+			Stderr: "Error: push to origin/main: Error 1105: failed to get remote db; " +
+				"ERROR: Repository not found.",
+			ExitCode: 1,
+			Stage:    beads.StagePublish,
+		},
+	}
+	h := newBeadsMigrateHandlers(t, stub, true)
+	req := postJSON(t, "/api/beads/migrate", map[string]string{
+		"working_dir": "/test/workspace",
+		"mode":        "migrate",
+	})
+	w := httptest.NewRecorder()
+	h.HandleBeadsMigrate(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d (body: %s)", w.Code, http.StatusInternalServerError, w.Body.String())
+	}
+
+	var env struct {
+		Error struct {
+			Code    string         `json:"code"`
+			Message string         `json:"message"`
+			Details map[string]any `json:"details"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&env); err != nil {
+		t.Fatalf("decode: %v (body=%s)", err, w.Body.String())
+	}
+
+	if env.Error.Code != "beads_migrate_publish_failed" {
+		t.Errorf("code = %q, want %q", env.Error.Code, "beads_migrate_publish_failed")
+	}
+	if !strings.Contains(env.Error.Message, "local beads schema migration succeeded") {
+		t.Errorf("message = %q, want it to state the local migration succeeded", env.Error.Message)
+	}
+	if !strings.Contains(env.Error.Message, "publishing") {
+		t.Errorf("message = %q, want it to mention publishing failed", env.Error.Message)
+	}
+	if got, want := env.Error.Details["stage"], "push"; got != want {
+		t.Errorf("details.stage = %v, want %q", got, want)
+	}
+	if got, want := env.Error.Details["local_migration_applied"], true; got != want {
+		t.Errorf("details.local_migration_applied = %v, want %v", got, want)
+	}
+	if got, want := env.Error.Details["stderr"], stub.migrateErr.(*beads.CmdError).Stderr; got != want {
+		t.Errorf("details.stderr = %v, want %q", got, want)
+	}
+	output, ok := env.Error.Details["local_migration_output"].(map[string]any)
+	if !ok {
+		t.Fatalf("details.local_migration_output = %T, want JSON object", env.Error.Details["local_migration_output"])
+	}
+	if got, want := output["applied"], float64(4); got != want {
+		t.Errorf("details.local_migration_output.applied = %v, want %v", got, want)
+	}
+}
+
+// TestHandleBeadsMigrate_PublishFailure_AdoptModeNeverClassified verifies the
+// publish-failure classification is scoped to mode=migrate: an "adopt" (bd
+// bootstrap) failure must never be reported as a publish failure even if the
+// underlying CmdError happened to carry beads.StagePublish (defense in
+// depth — Bootstrap never sets it in practice).
+func TestHandleBeadsMigrate_PublishFailure_AdoptModeNeverClassified(t *testing.T) {
+	stub := &migrateStubClient{bootstrapErr: &beads.CmdError{
+		Err:      errors.New("bd exited with non-zero status"),
+		Stderr:   "Error: bootstrap failed",
+		ExitCode: 1,
+		Stage:    beads.StagePublish,
+	}}
+	h := newBeadsMigrateHandlers(t, stub, true)
+	req := postJSON(t, "/api/beads/migrate", map[string]string{
+		"working_dir": "/test/workspace",
+		"mode":        "adopt",
+	})
+	w := httptest.NewRecorder()
+	h.HandleBeadsMigrate(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d (body: %s)", w.Code, http.StatusInternalServerError, w.Body.String())
+	}
+	var env struct {
+		Error struct {
+			Code    string         `json:"code"`
+			Details map[string]any `json:"details"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&env); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if env.Error.Code != "server_error" {
+		t.Errorf("code = %q, want %q (adopt-mode failures are never publish failures)", env.Error.Code, "server_error")
+	}
+	if _, ok := env.Error.Details["stage"]; ok {
+		t.Errorf("details.stage = %v, want absent for mode=adopt", env.Error.Details["stage"])
 	}
 }

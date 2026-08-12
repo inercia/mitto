@@ -1750,6 +1750,78 @@ describe("mitto-vc2m: SchemaSkewDialog migrate call must use the SDK client (CSR
 });
 
 // =============================================================================
+// mitto-cq2n.1: SchemaSkewDialog must render details.stderr, not just the
+// generic error wrapper message
+// =============================================================================
+//
+// The original bug: when POST /api/beads/migrate failed, handleConfirm's
+// catch branch called `setErrorMsg(beadsErrorFrom(err, ...).error)` — only
+// the flattened `.error` (the generic "bd exited with non-zero status: exit
+// status N" wrapper) — and never read `.stderr`, silently discarding the
+// actionable diagnostic the backend had already captured and returned in
+// `error.details.stderr` (e.g. a `bd dolt push` remote/auth failure). The fix
+// renders both the primary message and the raw (possibly multi-line) stderr.
+//
+// Source-scan style parallels the mitto-erry / mitto-vc2m blocks above.
+
+describe("mitto-cq2n.1: SchemaSkewDialog renders both errorMsg and details.stderr", () => {
+  const source = readFileSync(BEADS_VIEW_PATH, "utf8");
+
+  function extractSchemaSkewDialogSource() {
+    const startMarker = "function SchemaSkewDialog(";
+    const startIdx = source.indexOf(startMarker);
+    expect(startIdx).toBeGreaterThan(-1);
+    const afterStart = source.indexOf(
+      "\nfunction ",
+      startIdx + startMarker.length,
+    );
+    const endIdx = afterStart === -1 ? source.length : afterStart;
+    return source.slice(startIdx, endIdx);
+  }
+
+  test("handleConfirm's catch branch captures beadsErrorFrom(err).stderr into state", () => {
+    const body = extractSchemaSkewDialogSource();
+    const collapsed = body.replace(/\s+/g, " ");
+    // The non-kill-switch branch must read the flattened error object once
+    // (so both .error and .stderr come from the same beadsErrorFrom() call)
+    // rather than re-deriving errorMsg via a bare `.error` accessor chain
+    // that has no sibling `.stderr` read anywhere nearby.
+    expect(collapsed).toMatch(
+      /beadsErrorFrom\(\s*err\s*,\s*["'][^"']*["']\s*\)/,
+    );
+    expect(collapsed).toMatch(/\.stderr\b/);
+    // Must be plumbed into a piece of state that is distinct from errorMsg
+    // (i.e. not silently discarded) — look for a state setter call whose
+    // name is not setErrorMsg but is invoked with a `.stderr` derived value.
+    expect(collapsed).toMatch(/setErrorStderr\s*\(/);
+  });
+
+  test("dialog resets stderr state whenever it reopens or a new attempt starts", () => {
+    const body = extractSchemaSkewDialogSource();
+    // The stale-state-leak class of bug (mitto-erry's own useEffect reset
+    // pattern) applies equally to the new stderr state: it must be cleared
+    // both on reopen (isOpen effect) and at the start of every handleConfirm
+    // attempt, mirroring how errorMsg is already reset in both places.
+    const setStderrCalls = (body.match(/setErrorStderr\(\s*""\s*\)/g) || [])
+      .length;
+    expect(setStderrCalls).toBeGreaterThanOrEqual(2);
+  });
+
+  test("dialog renders details.stderr in a distinct, multiline-preserving block", () => {
+    const body = extractSchemaSkewDialogSource();
+    const collapsed = body.replace(/\s+/g, " ");
+    // A dedicated testid must exist for the stderr block, distinct from the
+    // primary error message's testid.
+    expect(body).toMatch(/data-testid="schema-skew-dialog-error-stderr"/);
+    expect(body).toMatch(/data-testid="schema-skew-dialog-error"/);
+    // Multiline output must be preserved (whitespace-pre-wrap or a <pre>
+    // element), not collapsed the way `break-all` alone would visually
+    // squash it.
+    expect(collapsed).toMatch(/whitespace-pre-wrap|<pre\b/);
+  });
+});
+
+// =============================================================================
 // mitto-vqf — renderIssueRow bgTone: tint whole row when a linked conversation
 // is prompting on the bead.
 // =============================================================================

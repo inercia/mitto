@@ -21,11 +21,16 @@ const bootstrapTimeout = 5 * time.Minute
 //  2. bd dolt push (publishes the reconciled schema to the remote).
 //
 // Both steps must succeed. When step 1 fails the error is returned directly
-// without attempting step 2. Step 2 failures are wrapped so callers can
-// distinguish a local migration that ran but did not publish.
+// without attempting step 2. Step 2 failures are wrapped with
+// Stage: StagePublish so callers can distinguish a local migration that ran
+// but did not publish (see IsPublishFailure) from a migrate-stage failure —
+// either way the overall call still returns a non-nil error: a failed
+// publish is never reported as an overall success.
 //
 // The returned bytes are step 1's stdout (bd migrate --json), useful for
-// surfacing migration details in the API response.
+// surfacing migration details in the API response — including on a step-2
+// failure, where it lets the caller report exactly what the (successful)
+// local migration applied even though publishing it failed.
 func (c *cliClient) MigrateRemote(ctx context.Context, dir string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, migrateTimeout)
 	defer cancel()
@@ -40,7 +45,7 @@ func (c *cliClient) MigrateRemote(ctx context.Context, dir string) ([]byte, erro
 
 	pushOut, pushStderr, pushErr := c.runner.Run(ctx, dir, "dolt", "push")
 	if pushErr != nil {
-		return out, &CmdError{Err: pushErr, Stderr: diagnosticOutput(pushStderr, string(pushOut)), ExitCode: exitCodeFromErr(pushErr)}
+		return out, &CmdError{Err: pushErr, Stderr: diagnosticOutput(pushStderr, string(pushOut)), ExitCode: exitCodeFromErr(pushErr), Stage: StagePublish}
 	}
 
 	return out, nil

@@ -73,6 +73,14 @@ const (
 	// binary's schema and is remote-backed, so bd refuses to auto-migrate it.
 	// See writeBeadsError in internal/web/handlers/beads.go.
 	errCodeBeadsSchemaSkew = "beads_schema_skew"
+
+	// errCodeBeadsMigratePublishFailed identifies a POST /api/beads/migrate
+	// (mode=migrate) failure at the publish stage: the local "bd migrate
+	// schema" step succeeded but "bd dolt push" failed, so the remote-backed
+	// safety requirement is not yet satisfied. Distinct from the generic
+	// server_error so the frontend can render the partial-success nuance.
+	// See HandleBeadsMigrate in internal/web/handlers/beads_migrate.go.
+	errCodeBeadsMigratePublishFailed = "beads_migrate_publish_failed"
 )
 
 // auxBackedRequestTimeout bounds aux/bd-backed handlers BELOW the 60s
