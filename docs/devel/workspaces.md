@@ -192,9 +192,9 @@ folder-level information always lives in `folders.json`. The split is
 `LoadWorkspaces()` is always fully populated, so no other code
 (`SessionManager`, REST API, frontend) needs to know `folders.json` exists.
 
-| Phase | Function | Behavior |
-| ----- | -------- | -------- |
-| Load  | `LoadWorkspaces()` | Reads `workspaces.json`, loads the authoritative `folders.json`, and merges folder values into each workspace via `ApplyFolderDefaults`. The folder value **always wins** over any value still on a workspace (collapsing divergent legacy values). |
+| Phase | Function           | Behavior                                                                                                                                                                                                                                                                                             |
+| ----- | ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Load  | `LoadWorkspaces()` | Reads `workspaces.json`, loads the authoritative `folders.json`, and merges folder values into each workspace via `ApplyFolderDefaults`. The folder value **always wins** over any value still on a workspace (collapsing divergent legacy values).                                                  |
 | Save  | `SaveWorkspaces()` | Calls `extractFolderSettings` to hoist each folder-level field (first non-empty value across the group, divergence collapses) into `folders.json`, merges folder-native fields (`beads`) via `preserveFolderNativeFields`, then writes `folders.json` **first**, then the cleaned `workspaces.json`. |
 
 `folders.json` is written before `workspaces.json` so folder-level values can

@@ -310,7 +310,11 @@ sidebar indicator should change, or to acknowledge that the user dismissed it.
 ```json
 {
   "type": "session_ui_prompt",
-  "data": { "session_id": "...", "is_waiting": true, "acked_request_id": "req-1" }
+  "data": {
+    "session_id": "...",
+    "is_waiting": true,
+    "acked_request_id": "req-1"
+  }
 }
 ```
 
@@ -322,7 +326,10 @@ Broadcast on `/api/events` when a session starts or stops blocking on
 `mitto_children_tasks_wait`.
 
 ```json
-{ "type": "session_waiting", "data": { "session_id": "...", "is_waiting": true } }
+{
+  "type": "session_waiting",
+  "data": { "session_id": "...", "is_waiting": true }
+}
 ```
 
 #### `session_change` — Generic session timeline event
@@ -1143,7 +1150,12 @@ Sent repeatedly as batches complete, plus a final message with `done: true` (or
 ```json
 {
   "type": "beads_cleanup_progress",
-  "data": { "working_dir": "/project", "deleted": 40, "total": 120, "done": false }
+  "data": {
+    "working_dir": "/project",
+    "deleted": 40,
+    "total": 120,
+    "done": false
+  }
 }
 ```
 
@@ -1236,7 +1248,11 @@ Informational "session/new may take longer than usual" hint; not an error.
 ```json
 {
   "type": "mcp_initializing",
-  "data": { "workspace_uuid": "...", "workspace_name": "...", "working_dir": "..." }
+  "data": {
+    "workspace_uuid": "...",
+    "workspace_name": "...",
+    "working_dir": "..."
+  }
 }
 ```
 

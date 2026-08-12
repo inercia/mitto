@@ -41,14 +41,14 @@ not on `rootCmd`: rootCmd's existing persistent flags (`--acp`, `--dir`,
 `--auto-approve`) are ACP-spawn concepts that do not apply to
 server-touching commands, and vice versa.
 
-| Flag           | Maps to                                          |
-| -------------- | ------------------------------------------------ |
-| `--url`        | SDK `baseURL`                                    |
-| `--token`      | `api.WithBearerToken`                            |
-| `--api-prefix` | `api.WithAPIPrefix` (new option, `mitto-rwxq.7`) |
-| `--timeout`    | `api.WithTimeout`                                |
-| `--output`     | `table` (default) \| `json` \| `yaml`            |
-| `--no-color`   | forces glamour's notty style                     |
+| Flag           | Maps to                                                                                                                                                                                                                                                               |
+| -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--url`        | SDK `baseURL`                                                                                                                                                                                                                                                         |
+| `--token`      | `api.WithBearerToken`                                                                                                                                                                                                                                                 |
+| `--api-prefix` | `api.WithAPIPrefix` (new option, `mitto-rwxq.7`)                                                                                                                                                                                                                      |
+| `--timeout`    | `api.WithTimeout`                                                                                                                                                                                                                                                     |
+| `--output`     | `table` (default) \| `json` \| `yaml`                                                                                                                                                                                                                                 |
+| `--no-color`   | forces glamour's notty style                                                                                                                                                                                                                                          |
 | `--style`      | `auto` (default) \| `dark` \| `light` glamour palette for styled mode (mitto-u7k3); `auto` detects the terminal background — the chat TUI via `tea.RequestBackgroundColor`, any other termmd caller via `termmd.ResolveTheme`'s `lipgloss.HasDarkBackground` fallback |
 
 Precedence, resolved once in `mitto-pscc.4`:
@@ -106,14 +106,14 @@ would never fire for `conversation get`.
 
 ## 5. Exit codes
 
-| Code | Meaning            | Source                                                           |
-| ---- | ------------------ | ---------------------------------------------------------------- |
-| 0    | ok                 | —                                                                |
-| 1    | generic            | anything not classified below                                    |
-| 2    | usage              | cobra flag/arg validation error                                  |
-| 3    | server unreachable | connection-refused / no-such-host / timeout, stale instance file |
-| 4    | auth failure       | `errors.Is(err, api.ErrUnauthenticated \| api.ErrForbidden)`     |
-| 5    | not found          | `errors.Is(err, api.ErrNotFound)`                                |
+| Code | Meaning            | Source                                                                                               |
+| ---- | ------------------ | ---------------------------------------------------------------------------------------------------- |
+| 0    | ok                 | —                                                                                                    |
+| 1    | generic            | anything not classified below                                                                        |
+| 2    | usage              | cobra flag/arg validation error                                                                      |
+| 3    | server unreachable | connection-refused / no-such-host / timeout, stale instance file                                     |
+| 4    | auth failure       | `errors.Is(err, api.ErrUnauthenticated \| api.ErrForbidden)`                                         |
+| 5    | not found          | `errors.Is(err, api.ErrNotFound)`                                                                    |
 | 6    | wait timed out     | `conversation send --wait` only: `--wait-timeout` expired before the agent finished (`mitto-pscc.6`) |
 
 Mapped **mechanically in one function** in `mitto-pscc.4`, not per
@@ -165,7 +165,7 @@ by scripts — `--output json`/`yaml` is the contract.
     `enter` accepts, `esc` closes the menu only (does not cancel the turn).
     The chat command set is `/help` (`/h`, `/?`), `/quit` (`/exit`, `/q`),
     `/cancel`, and `/clear` (TUI-only — clears the transcript pane; no `mitto
-    cli` counterpart). An unrecognized `/word` is refused locally (error
+cli` counterpart). An unrecognized `/word` is refused locally (error
     item) rather than forwarded to the agent, matching `mitto cli`.
 - `--no-color`/`NO_COLOR` select glamour's notty style; they never disable
   rendering and never change `--output`, which is always colourless.
@@ -335,7 +335,7 @@ symbol that is not on an explicit allowlist.
   flag, so no path is statically visible; forbidding client construction
   outright is both stronger and statically decidable.
 - **Each allowlist entry is `(file, symbol)` + a mandatory `Reason`**, and a
-  *stale* entry (one no longer matching a real call site) also fails, so the
+  _stale_ entry (one no longer matching a real call site) also fails, so the
   list cannot rot into permission-by-accident. The only entries are
   `mcp.go`'s client and request: `mitto mcp --proxy-to` speaks MCP
   Streamable-HTTP JSON-RPC to an MCP endpoint, not the Mitto REST API.

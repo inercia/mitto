@@ -160,6 +160,7 @@ server-side (`internal/mcpserver`); nothing currently uses its client side.
    bucket older than 5 min is dropped from the returned view even when the
    deterministic bucket is still within its 15-min window (belt-and-braces
    floor for pathologically fast restart cycles).
+
 4. **Retire blind timed retries.** The 30s/60s/120s re-broadcast loop in
    `checkRequiredToolPatterns` (`session_ws.go:1684`) exists only because the
    LLM path is slow and unreliable. A bounded (5-10s timeout) direct MCP

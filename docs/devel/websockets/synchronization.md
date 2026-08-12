@@ -375,9 +375,9 @@ A related wake/visibility path, `reconnectAllSessionsStaggered`, iterates every 
 
 The recovery and staggered-reconnect paths emit two log lines that look like noise but are actually **healthy guard rails** — they indicate the protections are working, not that something failed:
 
-| Log Line                                                                              | What It Means                                                                                                                                                                                                                |
-| ------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `WebSocket <id> closed but ref points to different WebSocket - not deleting`          | Ref-identity guard. A newer WebSocket has already replaced the old ref in `sessionWsRefs.current`, so the old socket's `onclose` correctly refuses to evict the new one. Expected during back-to-back recoveries.            |
+| Log Line                                                                                     | What It Means                                                                                                                                                                                                             |
+| -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `WebSocket <id> closed but ref points to different WebSocket - not deleting`                 | Ref-identity guard. A newer WebSocket has already replaced the old ref in `sessionWsRefs.current`, so the old socket's `onclose` correctly refuses to evict the new one. Expected during back-to-back recoveries.         |
 | `[stagger] Skipping duplicate staggered reconnect (<elapsed>ms since last, debounce=5000ms)` | The `STAGGERED_RECONNECT_DEBOUNCE_MS` leading-edge debounce working as intended — a second wake/activation event arrived within 5 s of the first and was correctly collapsed, preventing duplicate observer registration. |
 
 ### Expected Recovery Volume

@@ -410,7 +410,7 @@ restricted_runners:
 
 `go-restricted-runner` v0.2.0's `sandbox-exec` profile is `(allow default)` — a **permissive base** with a hardcoded set of regex-based **deny** rules. The `allow_read_folders` and `allow_write_folders` config keys are **additive permits over that permissive base**, not a whitelist that flips the profile to deny-by-default.
 
-**Practical implication:** any path that is *not* on the hardcoded deny regex is readable/writable inside the sandbox even if it is not on your `allow_*_folders` list. Adding a path to the allow list only grants access to paths that would otherwise be denied — it does **not** restrict access to unlisted paths.
+**Practical implication:** any path that is _not_ on the hardcoded deny regex is readable/writable inside the sandbox even if it is not on your `allow_*_folders` list. Adding a path to the allow list only grants access to paths that would otherwise be denied — it does **not** restrict access to unlisted paths.
 
 ### The actual deny set today
 
@@ -540,13 +540,13 @@ merge_strategy: "replace"  # Ignore parent config
 
 Variables are resolved at runtime when the agent starts.
 
-| Variable     | Description                 | Example                               |
-| ------------ | --------------------------- | ------------------------------------- |
+| Variable             | Description                 | Example                               |
+| -------------------- | --------------------------- | ------------------------------------- |
 | `$MITTO_WORKING_DIR` | Current workspace directory | `/Users/user/project`                 |
-| `$HOME`      | User's home directory       | `/Users/user`                         |
-| `$MITTO_DIR` | Mitto data directory        | `~/Library/Application Support/Mitto` |
-| `$USER`      | Current username            | `user`                                |
-| `$TMPDIR`    | System temp directory       | `/tmp`                                |
+| `$HOME`              | User's home directory       | `/Users/user`                         |
+| `$MITTO_DIR`         | Mitto data directory        | `~/Library/Application Support/Mitto` |
+| `$USER`              | Current username            | `user`                                |
+| `$TMPDIR`            | System temp directory       | `/tmp`                                |
 
 Both `$VAR` and `${VAR}` syntax are supported.
 

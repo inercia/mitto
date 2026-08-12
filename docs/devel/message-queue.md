@@ -151,11 +151,11 @@ precedence described below. But arming is not the same as firing: the four
 trigger mechanisms below are otherwise independent event sources, each
 capable of calling into the same delivery path at any time:
 
-| Trigger        | Fires from                                                                 |
-| -------------- | --------------------------------------------------------------------------- |
-| `schedule`     | The poll loop's due-check (`NextScheduledAt` reached)                       |
-| `onCompletion` | A one-shot timer armed by `OnConversationIdle` when the agent stops         |
-| `onTasks`      | `OnBeadsChanged`, when a workspace-wide `BeadsWatcher` event lands           |
+| Trigger        | Fires from                                                                                                                                                                                                                                             |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `schedule`     | The poll loop's due-check (`NextScheduledAt` reached)                                                                                                                                                                                                  |
+| `onCompletion` | A one-shot timer armed by `OnConversationIdle` when the agent stops                                                                                                                                                                                    |
+| `onTasks`      | `OnBeadsChanged`, when a workspace-wide `BeadsWatcher` event lands                                                                                                                                                                                     |
 | `onChild`      | `OnConversationIdle`'s child leg (→ `OnChildEndResponse`) for `anyEndResponse`, the `session.Store` delete observer (→ `OnChildDeleted`) for `anyDeleted`, and the `session.Store` loop-stopped observer (→ `OnChildLoopStopped`) for `anyLoopStopped` |
 
 Because these sources are independent, two of them can want to deliver a run
@@ -216,7 +216,7 @@ archiving) — invokes it once per **real** stop transition, after its write and
 after the `LoopStore`'s internal lock is released. A transition is "the loop
 was still enabled, **or** no `StoppedReason` has been recorded yet": the two
 caller-initiated disable paths (MCP `loop_enabled: false`, REST pause) run
-`Update{Enabled: false}` *before* `MarkStopped`, so an enabled-only check would
+`Update{Enabled: false}` _before_ `MarkStopped`, so an enabled-only check would
 never fire for them, while `StoppedReason` — written only by `MarkStopped` and
 cleared only on re-enable — keeps a re-stamp of an already-recorded stop
 silent. Like
@@ -260,7 +260,7 @@ dispatch-claim coalescing tests) and `internal/session/loop_test.go` cover
 independent arming, the coalescing claim, and shared-cap accounting across
 trigger combinations.
 `TestLoopRunner_CheckSession_Precedence_OnCompletionWinsOverSchedule` additionally
-pins the precedence *ordering* through `checkSession` itself rather than the
+pins the precedence _ordering_ through `checkSession` itself rather than the
 generic claim: with both legs simultaneously eligible, the event-driven leg takes
 the claim and the schedule fire is coalesced without advancing `NextScheduledAt`.
 Note that `onTasks` is dispatched from `OnBeadsChanged`, not from `checkSession`
@@ -445,15 +445,15 @@ Beads that just changed in this working directory:
 {{ end }}{{ end }}
 ```
 
-| Namespace                          | Shape                                                                                                                                                                                                                        |
-| ---------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `.Trigger.OnTasks.Changes.Added`    | `[]map[string]any` — issues present in the current snapshot but not the previous baseline                                                                                                                                        |
-| `.Trigger.OnTasks.Changes.Updated`  | `[]map[string]any` — issues present in both snapshots whose canonical fields differ                                                                                                                                              |
-| `.Trigger.OnTasks.Changes.Removed`  | `[]map[string]any` — issues present in the previous baseline but no longer in the current snapshot                                                                                                                               |
-| `.Trigger.OnTasks.Changes.Closed`   | `[]map[string]any` — issues whose status transitioned to `closed`                                                                                                                                                                |
-| `.Trigger.OnTasks.Changes.Reopened` | `[]map[string]any` — issues whose status transitioned from `closed` back to open                                                                                                                                                |
-| `.Trigger.OnTasks.Changes.LabelAdded` | `[]map[string]any` — issues that gained at least one label between baseline and current                                                                                                                                        |
-| `.Trigger.OnTasks.Changes.Touched`  | `[]map[string]any` — `Added ∪ Updated` (the convenient superset for prompts that don't care about the distinction)                                                                                                              |
+| Namespace                             | Shape                                                                                                              |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `.Trigger.OnTasks.Changes.Added`      | `[]map[string]any` — issues present in the current snapshot but not the previous baseline                          |
+| `.Trigger.OnTasks.Changes.Updated`    | `[]map[string]any` — issues present in both snapshots whose canonical fields differ                                |
+| `.Trigger.OnTasks.Changes.Removed`    | `[]map[string]any` — issues present in the previous baseline but no longer in the current snapshot                 |
+| `.Trigger.OnTasks.Changes.Closed`     | `[]map[string]any` — issues whose status transitioned to `closed`                                                  |
+| `.Trigger.OnTasks.Changes.Reopened`   | `[]map[string]any` — issues whose status transitioned from `closed` back to open                                   |
+| `.Trigger.OnTasks.Changes.LabelAdded` | `[]map[string]any` — issues that gained at least one label between baseline and current                            |
+| `.Trigger.OnTasks.Changes.Touched`    | `[]map[string]any` — `Added ∪ Updated` (the convenient superset for prompts that don't care about the distinction) |
 
 Each entry exposes the same canonical keys the CEL condition sees: `id`, `type`, `status`, `priority`, `labels`, `title`, `assignee`, `updated_at`.
 
@@ -469,14 +469,14 @@ Each entry exposes the same canonical keys the CEL condition sees: `id`, `type`,
 
 ### Configuration fields (`session.LoopPrompt`)
 
-| Field             | JSON               | Meaning                                                                                                           |
-| ----------------- | ------------------ | ----------------------------------------------------------------------------------------------------------------- |
-| `Triggers`        | `triggers`         | Canonical armed-trigger list, e.g. `["onTasks"]` or `["onTasks", "onCompletion"]`. `Trigger`/`trigger` (singular) is kept in sync with `Triggers[0]` for on-disk/wire back-compat (`Normalize()`); see [EffectiveTriggers](#loop-prompts-multi-trigger-architecture). |
-| `Condition`       | `condition`        | CEL expression; empty = fire on any material beads change. Only meaningful when `onTasks` is armed.               |
-| `ConditionPreset` | `condition_preset` | Optional UI preset id that was compiled into `Condition`                                                          |
-| `CooldownSeconds` | `cooldown_seconds` | Per-conversation cooldown floor; `0` = use the global floor                                                       |
+| Field                | JSON                   | Meaning                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| -------------------- | ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Triggers`           | `triggers`             | Canonical armed-trigger list, e.g. `["onTasks"]` or `["onTasks", "onCompletion"]`. `Trigger`/`trigger` (singular) is kept in sync with `Triggers[0]` for on-disk/wire back-compat (`Normalize()`); see [EffectiveTriggers](#loop-prompts-multi-trigger-architecture).                                                                                                                                                                                                                                                                                                                                                      |
+| `Condition`          | `condition`            | CEL expression; empty = fire on any material beads change. Only meaningful when `onTasks` is armed.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `ConditionPreset`    | `condition_preset`     | Optional UI preset id that was compiled into `Condition`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `CooldownSeconds`    | `cooldown_seconds`     | Per-conversation cooldown floor; `0` = use the global floor                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | `CoalesceDuringBusy` | `coalesce_during_busy` | Opt-out (mitto-dmb) unconditionally forcing the quiescence re-fire path even when no fs-watcher delta was deferred. Nil/`true` (default) does **not** mean "always silently absorb" — a fs-watcher delta that arrived during the busy window always re-fires once at quiescence regardless of this setting (mitto-cwg.1, via the sticky `tasksRefirePending` flag); this field only gates the plain-rebase case where nothing was pending. `false` additionally fires once more at quiescence with the accumulated pre-run→current delta, gated by Layer 0 and the CEL `condition`, even when nothing was flagged pending. |
-| `StoppedReason`   | `stopped_reason`   | `"maxIterations"` / `"maxDuration"` when the loop auto-stopped after hitting a cap; shared with other triggers.   |
+| `StoppedReason`      | `stopped_reason`       | `"maxIterations"` / `"maxDuration"` when the loop auto-stopped after hitting a cap; shared with other triggers.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 
 ### Opting in from a prompt file (`loop:` frontmatter)
 
@@ -581,12 +581,12 @@ Resolution is deferred to the target conversation's context so that workspace-sp
 
 All menu-driven prompt sends (prompts menu, Cmd+/ slash picker, beads-issue menus, beads-list menus) go through a **single shared helper** — never POST the full prompt body directly:
 
-| Export                                                                                                | Purpose                                                                |
-| ----------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
-| `buildSeedQueueBody(prompt, {arguments})`                                                             | Builds `{prompt_name, arguments}` POST body (never includes `message`) |
-| `seedConversationWithPrompt(sessionId, prompt, {arguments})`                                          | POST `{prompt_name}` to an existing session's queue                    |
-| `startConversationWithPrompt({workingDir, acpServer, name, beadsIssue, prompt, arguments, loop})` | Create a new conversation (one-time or loop — see below)           |
-| `configureLoopSchedule(sessionId, prompt, loop, {fetchImpl})`                                 | PUT loop config onto an already-created session                    |
+| Export                                                                                            | Purpose                                                                |
+| ------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| `buildSeedQueueBody(prompt, {arguments})`                                                         | Builds `{prompt_name, arguments}` POST body (never includes `message`) |
+| `seedConversationWithPrompt(sessionId, prompt, {arguments})`                                      | POST `{prompt_name}` to an existing session's queue                    |
+| `startConversationWithPrompt({workingDir, acpServer, name, beadsIssue, prompt, arguments, loop})` | Create a new conversation (one-time or loop — see below)               |
+| `configureLoopSchedule(sessionId, prompt, loop, {fetchImpl})`                                     | PUT loop config onto an already-created session                        |
 
 #### One-time path (no `loop`)
 
@@ -885,11 +885,11 @@ The queue system supports automatic dequeuing for idle agent sessions:
 
 ### Methods
 
-| Method                       | Location            | Purpose                                                         |
-| ---------------------------- | ------------------- | --------------------------------------------------------------- |
-| `processNextQueuedMessage()` | `BackgroundSession` | Called after prompt completion, applies delay synchronously     |
-| `TryProcessQueuedMessage()`  | `BackgroundSession` | Used for startup/loop checking, respects delay elapsed time |
-| `ProcessPendingQueues()`     | `SessionManager`    | Called on server startup, resumes sessions with queued items    |
+| Method                       | Location            | Purpose                                                      |
+| ---------------------------- | ------------------- | ------------------------------------------------------------ |
+| `processNextQueuedMessage()` | `BackgroundSession` | Called after prompt completion, applies delay synchronously  |
+| `TryProcessQueuedMessage()`  | `BackgroundSession` | Used for startup/loop checking, respects delay elapsed time  |
+| `ProcessPendingQueues()`     | `SessionManager`    | Called on server startup, resumes sessions with queued items |
 
 ## Frontend Integration
 

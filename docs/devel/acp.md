@@ -268,9 +268,9 @@ and a **per-agent** extension declared in each agent's `metadata.yaml`.
 
 ```yaml
 stderrPatterns:
-  crash: ["FATAL ERROR: .* Allocation failed"]   # OR'd with hardcoded baseline
-  ignore: ["(?i)DeprecationWarning"]              # suppress from debug log
-  degraded: ["(?i)rate limit"]                    # plumbed, behaviour deferred
+  crash: ["FATAL ERROR: .* Allocation failed"] # OR'd with hardcoded baseline
+  ignore: ["(?i)DeprecationWarning"] # suppress from debug log
+  degraded: ["(?i)rate limit"] # plumbed, behaviour deferred
 ```
 
 **Action classes**:
@@ -504,7 +504,7 @@ loop-suspend path. The threshold is configurable per the
 Runs after Tier 4 (re-querying sessions). The saturation infrastructure in
 `internal/acpproc/shared_acp_process.go` (`sessionSaturationTimeoutThreshold`,
 `saturatedUntil`, `saturationLevel`) only fails new requests fast once a shared
-process is flagged saturated — it never *heals* the degraded process. Left alone, a
+process is flagged saturated — it never _heals_ the degraded process. Left alone, a
 saturated-but-idle process keeps failing every subsequent `NewSession`/`LoadSession`
 until its cooldown finally elapses.
 
@@ -522,7 +522,7 @@ picked up by `IsSaturated()` and `IsConfirmedDegraded()` identically, so no chan
 in `acp_process_gc.go` are required beyond reading those getters.
 
 1. **Consecutive-timeout fast path** (mitto-13ck.2, unchanged): after
-   `sessionSaturationTimeoutThreshold` (3) *back-to-back* full-deadline
+   `sessionSaturationTimeoutThreshold` (3) _back-to-back_ full-deadline
    `NewSession`/`LoadSession` RPCs the process is flagged. This catches the
    fully-wedged case where every RPC runs to its deadline.
 
@@ -536,8 +536,7 @@ in `acp_process_gc.go` are required beyond reading those getters.
    `saturatedUntil = now + cooldown` path as the consecutive trigger.
 
    This closes two gaps the consecutive-only design left open:
-
-   - **Interspersed success reset**: a degraded process that still serves *some*
+   - **Interspersed success reset**: a degraded process that still serves _some_
      traffic never accumulates 3 timeouts in a row — every interspersed success
      zeroes `consecutiveRPCTimeouts`. The rolling window is NOT wiped by a
      success; a success only adds a sample so the ratio drops naturally as
@@ -559,17 +558,17 @@ in `acp_process_gc.go` are required beyond reading those getters.
    (`extendedBudget == true` → skipped).
 
 3. **Agent "query closed" wedge** (mitto-aoo): the agent answers `session/new` /
-   `session/load` with JSON-RPC `-32603` whose data carries *"Query closed before
-   response received"*, in **1-10 ms** — not a deadline. It is the agent's own
+   `session/load` with JSON-RPC `-32603` whose data carries _"Query closed before
+   response received"_, in **1-10 ms** — not a deadline. It is the agent's own
    report that its query loop is torn down and will never complete another
-   `session/new`, so `recordRPCWedgeFailure()` feeds the *same* consecutive-failure
+   `session/new`, so `recordRPCWedgeFailure()` feeds the _same_ consecutive-failure
    fast path as trigger 1 (`recordRPCFailureLocked`), rather than the softer
    rolling window only.
 
    Unlike triggers 1 and 2, this signature is **not** gated on `extendedBudget`: a
    1-10 ms reply cannot be cold-start MCP latency. The wedge is also classified as
    retryable in `isRetryableCreateError`, so the bounded `sessionCreateMaxAttempts`
-   (3) loop records three consecutive samples within a *single* `NewSession` call
+   (3) loop records three consecutive samples within a _single_ `NewSession` call
    and trips saturation immediately, instead of waiting for three separate caller
    attempts. Before this trigger, the signature fed zero saturation samples: one
    incident produced 38 consecutive `session/new` failures over 9 h with no
@@ -627,7 +626,7 @@ misleading agent-side error.
 
 #### Pre-recycle degraded-state notification (mitto-13n.3)
 
-`onHealthRecycled` only fires once a degraded process is *actually recycled*, and
+`onHealthRecycled` only fires once a degraded process is _actually recycled_, and
 Tier 5's idle safety gates can hold that off indefinitely — a saturated process
 that keeps receiving traffic stays degraded and invisible for hours. Tier 5
 therefore also reports the degraded state itself, before those gates.
@@ -763,10 +762,10 @@ defaults from `defaultGCConfig()`. Two user-facing knobs are exposed via setting
 (`internal/config/settings.go`, `SessionConfig`) and the Settings dialog under
 **Conversations**:
 
-| Setting (JSON key)         | Valid values                          | Default        | Effect                                                                 |
-| -------------------------- | ------------------------------------- | -------------- | ---------------------------------------------------------------------- |
-| `loop_suspend_timeout` | `""`, `disabled`, `15m`, `30m`, `1h`, `2h` | `""` → 30m | Tier 1 loop-suspend threshold. `disabled` turns the heuristic off. |
-| `memory_recycle_threshold` | `""`, `disabled`, `3g`, `4g`, `6g`, `8g`   | `""` → disabled (opt-in) | Tier 4 RSS threshold above which an idle bloated process is recycled.  |
+| Setting (JSON key)         | Valid values                               | Default                  | Effect                                                                |
+| -------------------------- | ------------------------------------------ | ------------------------ | --------------------------------------------------------------------- |
+| `loop_suspend_timeout`     | `""`, `disabled`, `15m`, `30m`, `1h`, `2h` | `""` → 30m               | Tier 1 loop-suspend threshold. `disabled` turns the heuristic off.    |
+| `memory_recycle_threshold` | `""`, `disabled`, `3g`, `4g`, `6g`, `8g`   | `""` → disabled (opt-in) | Tier 4 RSS threshold above which an idle bloated process is recycled. |
 
 Parsing lives in `ParseLoopSuspendTimeout()` and `ParseMemoryRecycleThreshold()`
 (both return `(value, enabled)`). At startup, `server.go` reads these into `GCConfig`
@@ -805,9 +804,9 @@ cancelling a legitimate long-running tool call that produces no intermediate str
 output (e.g. a multi-minute build) — the watchdog already pauses its idle clock while a
 tool call or UI prompt is in flight, so a live-but-busy agent is never cancelled.
 
-| Setting (JSON key)          | Valid values                         | Default   | Effect                                                                 |
-| ---------------------------- | ------------------------------------- | --------- | ----------------------------------------------------------------------- |
-| `agent_inactivity_timeout`   | `""`, `disabled`, `5m`, `10m`, `15m`, `30m` | `""` → 10m | Cancels a prompt with zero streamed activity after this long, clearing `is_prompting`. |
+| Setting (JSON key)         | Valid values                                | Default    | Effect                                                                                 |
+| -------------------------- | ------------------------------------------- | ---------- | -------------------------------------------------------------------------------------- |
+| `agent_inactivity_timeout` | `""`, `disabled`, `5m`, `10m`, `15m`, `30m` | `""` → 10m | Cancels a prompt with zero streamed activity after this long, clearing `is_prompting`. |
 
 Parsing lives in `ParseAgentInactivityTimeout()` (returns `(value, enabled)`). The
 runtime timeout is stored in `conversation.promptInactivityWatchdogTimeoutNanos` (an
@@ -822,15 +821,15 @@ session simply returns to idle rather than churning the process.
 
 ## Impact Summary
 
-| Component                  | Change                                                                  |
-| -------------------------- | ----------------------------------------------------------------------- |
+| Component                  | Change                                                                                                                                                        |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `ACPProcessManager`        | GC loop, `lastSessionSeen` tracking, `StartGC`/`StopGC`/`RunGCOnce`; Tier 4 memory recycle + live `UpdateMemoryRecycleThreshold`/`UpdateLoopSuspendThreshold` |
-| `acp_process_memory.go`    | New — cross-platform process-tree RSS sampling via `gopsutil/v4`        |
-| `SharedACPProcess`         | New `RSSBytes()` (process-tree RSS for the recycle tier)                |
-| `BackgroundSession`        | Prompt inactivity watchdog (`startPromptInactivityWatchdog`, `signalAgentActivity`, `lastAgentActivityAt`) |
-| `SessionManager`           | `GetSessionInfoByWorkspace()` method                                    |
-| `server.go`                | Wire up GC start/stop; read `loop_suspend_timeout` + `memory_recycle_threshold` into `GCConfig` |
-| `config_handlers.go`       | Live-update GC thresholds when settings change                          |
-| `SettingsDialog.js`        | UI controls for Suspend Settings + Memory recycling                     |
-| Existing session lifecycle | **No changes** — GC and watchdog are purely additive                    |
-| Tests                      | New unit tests for GC tiers, RSS parsing, and the watchdog              |
+| `acp_process_memory.go`    | New — cross-platform process-tree RSS sampling via `gopsutil/v4`                                                                                              |
+| `SharedACPProcess`         | New `RSSBytes()` (process-tree RSS for the recycle tier)                                                                                                      |
+| `BackgroundSession`        | Prompt inactivity watchdog (`startPromptInactivityWatchdog`, `signalAgentActivity`, `lastAgentActivityAt`)                                                    |
+| `SessionManager`           | `GetSessionInfoByWorkspace()` method                                                                                                                          |
+| `server.go`                | Wire up GC start/stop; read `loop_suspend_timeout` + `memory_recycle_threshold` into `GCConfig`                                                               |
+| `config_handlers.go`       | Live-update GC thresholds when settings change                                                                                                                |
+| `SettingsDialog.js`        | UI controls for Suspend Settings + Memory recycling                                                                                                           |
+| Existing session lifecycle | **No changes** — GC and watchdog are purely additive                                                                                                          |
+| Tests                      | New unit tests for GC tiers, RSS parsing, and the watchdog                                                                                                    |

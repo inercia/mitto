@@ -24,11 +24,11 @@ Conversation settings live under the `conversations` key in `~/.mittorc` or `set
 
 ```yaml
 conversations:
-  auto_approve: false        # Auto-approve agent tool calls (default: false)
-  auto_archive: 0            # Auto-archive after N minutes of inactivity (0 = disabled)
-  auto_delete: 0             # Auto-delete archived conversations after N minutes (0 = disabled)
+  auto_approve: false # Auto-approve agent tool calls (default: false)
+  auto_archive: 0 # Auto-archive after N minutes of inactivity (0 = disabled)
+  auto_delete: 0 # Auto-delete archived conversations after N minutes (0 = disabled)
   external_images:
-    enabled: false            # Allow external HTTPS images in responses (default: false)
+    enabled: false # Allow external HTTPS images in responses (default: false)
 ```
 
 ### Inline Processors
@@ -88,6 +88,7 @@ The **effective cap** depends on whether the prompt author has expressed an opin
 - **Per-prompt cap `> 0`** — the effective cap is the smallest positive of `{ per-prompt max_iterations, max_loop_iterations, 1000 }`.
 
 Examples:
+
 - Per-prompt cap = 0 (unlimited), config cap = 0 (unlimited) → effective cap = 1000 (backstop)
 - Per-prompt cap = 5, config cap = 100 → effective cap = 5
 - Per-prompt cap = 0, config cap = 200 → effective cap = 1000 (author opted out; config default ignored)
@@ -97,12 +98,12 @@ Examples:
 
 ```yaml
 conversations:
-  max_loop_iterations: 100  # Default cap for all loop conversations (default: 100, 0 = unlimited)
+  max_loop_iterations: 100 # Default cap for all loop conversations (default: 100, 0 = unlimited)
 ```
 
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `max_loop_iterations` | integer | `100` | Default maximum number of scheduled runs for any loop conversation. `0` means unlimited (still bounded by the built-in backstop of 1000). |
+| Field                 | Type    | Default | Description                                                                                                                               |
+| --------------------- | ------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `max_loop_iterations` | integer | `100`   | Default maximum number of scheduled runs for any loop conversation. `0` means unlimited (still bounded by the built-in backstop of 1000). |
 
 **Via Settings UI:**
 
@@ -119,12 +120,12 @@ To prevent runaway hot loops, the on-completion `delay` is clamped up to a globa
 
 ```yaml
 conversations:
-  min_loop_completion_delay_seconds: 5  # Floor for the onCompletion delay (default: 5)
+  min_loop_completion_delay_seconds: 5 # Floor for the onCompletion delay (default: 5)
 ```
 
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `min_loop_completion_delay_seconds` | integer | `5` | Lower bound (seconds) applied to every on-completion loop `delay`. A per-prompt `delay` below this floor is raised to it. `0` disables the floor (not recommended). |
+| Field                               | Type    | Default | Description                                                                                                                                                         |
+| ----------------------------------- | ------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `min_loop_completion_delay_seconds` | integer | `5`     | Lower bound (seconds) applied to every on-completion loop `delay`. A per-prompt `delay` below this floor is raised to it. `0` disables the floor (not recommended). |
 
 A conversation can also be bounded by **wall-clock time** via the loop prompt's `maxDuration` (a duration string such as `30m`, `4h`, `1d`). Measured from the first run, once it elapses the conversation auto-stops (the loop prompt is **disabled**, not deleted) on the next check — for both `schedule` and `onCompletion` triggers. This complements the iteration limit above: a loop stops at whichever bound (max iterations or max duration) is reached first.
 

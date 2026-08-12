@@ -14,12 +14,12 @@ The left panel lists your workspaces grouped by folder. Each folder can have mul
 
 **Toolbar buttons** at the bottom of the left panel:
 
-| Button | Action |
-|--------|--------|
+| Button            | Action                                                         |
+| ----------------- | -------------------------------------------------------------- |
 | 📁 **Add Folder** | Create a new workspace — you'll be prompted to select a folder |
-| 🗑️ **Delete** | Remove the selected ACP server entry |
-| 📋 **Duplicate** | Clone the selected workspace with a new UUID |
-| 🖥️ **Add Server** | Add another ACP server to the currently selected folder |
+| 🗑️ **Delete**     | Remove the selected ACP server entry                           |
+| 📋 **Duplicate**  | Clone the selected workspace with a new UUID                   |
+| 🖥️ **Add Server** | Add another ACP server to the currently selected folder        |
 
 ### Editing Workspace Settings
 
@@ -29,16 +29,16 @@ Click a **folder name** (e.g., "Mitto") to access folder-level settings. Click a
 
 The right panel provides these tabs:
 
-| Tab | Screenshot | What it configures |
-|-----|------------|--------------------|
-| **General** | ![](screenshots/04-workspace-general.png) | ACP server, auxiliary model selection, runner, auto-approve |
-| **Metadata** | ![](screenshots/04-workspace-metadata.png) | Display name, description, URL, user data schema |
-| **Beads** | — | Per-folder Beads (`bd`) integration: upstream task system, `bd config` keys, and Pull/Push/Sync (see [Beads Integration](#beads-integration)) |
-| **Prompts** | ![](screenshots/04-workspace-prompts.png) | Quick-action prompts (enable/disable, add, edit) |
-| **Processors** | ![](screenshots/04-workspace-processors.png) | Message processors (enable/disable per workspace) |
-| **Children** | ![](screenshots/04-workspace-children.png) | Auto-spawn child conversations |
-| **Runner** | — | Restricted execution sandbox settings |
-| **MCP** | — | MCP server configuration and installation (see also [Cold-Start Hygiene](mcp.md#cold-start-hygiene) — trim unused servers, avoid concurrent workspace UUIDs sharing one `working_dir`) |
+| Tab            | Screenshot                                   | What it configures                                                                                                                                                                     |
+| -------------- | -------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **General**    | ![](screenshots/04-workspace-general.png)    | ACP server, auxiliary model selection, runner, auto-approve                                                                                                                            |
+| **Metadata**   | ![](screenshots/04-workspace-metadata.png)   | Display name, description, URL, user data schema                                                                                                                                       |
+| **Beads**      | —                                            | Per-folder Beads (`bd`) integration: upstream task system, `bd config` keys, and Pull/Push/Sync (see [Beads Integration](#beads-integration))                                          |
+| **Prompts**    | ![](screenshots/04-workspace-prompts.png)    | Quick-action prompts (enable/disable, add, edit)                                                                                                                                       |
+| **Processors** | ![](screenshots/04-workspace-processors.png) | Message processors (enable/disable per workspace)                                                                                                                                      |
+| **Children**   | ![](screenshots/04-workspace-children.png)   | Auto-spawn child conversations                                                                                                                                                         |
+| **Runner**     | —                                            | Restricted execution sandbox settings                                                                                                                                                  |
+| **MCP**        | —                                            | MCP server configuration and installation (see also [Cold-Start Hygiene](mcp.md#cold-start-hygiene) — trim unused servers, avoid concurrent workspace UUIDs sharing one `working_dir`) |
 
 ---
 
@@ -65,12 +65,12 @@ The file is automatically loaded when you open a workspace in Mitto and reloaded
 
 ### Supported Sections
 
-| Section           | Description                                              | Details |
-| ----------------- | -------------------------------------------------------- | ------- |
-| `prompts`         | Quick-action prompts shown in the chat interface         | [Prompts](prompts.md) |
-| `conversations`   | Inline text-mode processors                              | [Processors](processors.md#inline-processors-in-mittorc) |
-| `processors_dirs` | Additional processor directories                         | [Processors](processors.md#workspace-local-processors) |
-| `metadata`        | Display name, description, URL, user data schema         | [User Data](user-data.md) |
+| Section           | Description                                      | Details                                                  |
+| ----------------- | ------------------------------------------------ | -------------------------------------------------------- |
+| `prompts`         | Quick-action prompts shown in the chat interface | [Prompts](prompts.md)                                    |
+| `conversations`   | Inline text-mode processors                      | [Processors](processors.md#inline-processors-in-mittorc) |
+| `processors_dirs` | Additional processor directories                 | [Processors](processors.md#workspace-local-processors)   |
+| `metadata`        | Display name, description, URL, user data schema | [User Data](user-data.md)                                |
 
 > **Note**: Sections like `acp`, `web`, and `ui` are ignored in workspace files — these can only be configured globally.
 
@@ -78,15 +78,15 @@ The file is automatically loaded when you open a workspace in Mitto and reloaded
 
 The following fields are stored in `workspaces.json` and edited through the UI. The most commonly changed ones:
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `acp_server` | string | Name of the ACP server for this workspace |
-| `auxiliary_model_selection` | object | Optional model selection for auxiliary sessions (title generation, follow-up analysis, etc.). When set, auxiliary sessions start on the workspace's main ACP server and switch to the best-matching available model. When unset, the ACP server's default model is used. Object has two fields: `matchMode` (one of `contains`, `exact`, `startsWith`, `regex`, `lookAlike`) and `pattern` (the text to match against model names). |
-| `auxiliary_model_tag` | string | Selects the auxiliary-session model by capability tag (e.g. `Fast`), resolved to the first Model profile (`Config.Models`, in definition order) carrying this tag whose criteria matches an available model. Precedence is `auxiliary_model_profile` > `auxiliary_model_tag` > `auxiliary_model_selection`. |
-| `restricted_runner` | string | Sandbox type: `exec` (default), `sandbox-exec`, `firejail`, `docker` |
-| `auto_approve` | boolean | Auto-approve all agent tool-call permission requests |
-| `is_default` | boolean | Marks this workspace as the default for its folder. When several workspaces share the same directory (e.g. different ACP servers or model variants), the default is preferred when a workspace must be resolved from the folder alone (no ACP server specified). At most one workspace per folder should set this. |
-| `acp_command_override` | string | Custom command line for the ACP server (overrides the server's default command) |
+| Field                       | Type    | Description                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| --------------------------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `acp_server`                | string  | Name of the ACP server for this workspace                                                                                                                                                                                                                                                                                                                                                                                           |
+| `auxiliary_model_selection` | object  | Optional model selection for auxiliary sessions (title generation, follow-up analysis, etc.). When set, auxiliary sessions start on the workspace's main ACP server and switch to the best-matching available model. When unset, the ACP server's default model is used. Object has two fields: `matchMode` (one of `contains`, `exact`, `startsWith`, `regex`, `lookAlike`) and `pattern` (the text to match against model names). |
+| `auxiliary_model_tag`       | string  | Selects the auxiliary-session model by capability tag (e.g. `Fast`), resolved to the first Model profile (`Config.Models`, in definition order) carrying this tag whose criteria matches an available model. Precedence is `auxiliary_model_profile` > `auxiliary_model_tag` > `auxiliary_model_selection`.                                                                                                                         |
+| `restricted_runner`         | string  | Sandbox type: `exec` (default), `sandbox-exec`, `firejail`, `docker`                                                                                                                                                                                                                                                                                                                                                                |
+| `auto_approve`              | boolean | Auto-approve all agent tool-call permission requests                                                                                                                                                                                                                                                                                                                                                                                |
+| `is_default`                | boolean | Marks this workspace as the default for its folder. When several workspaces share the same directory (e.g. different ACP servers or model variants), the default is preferred when a workspace must be resolved from the folder alone (no ACP server specified). At most one workspace per folder should set this.                                                                                                                  |
+| `acp_command_override`      | string  | Custom command line for the ACP server (overrides the server's default command)                                                                                                                                                                                                                                                                                                                                                     |
 
 ### Complete `.mittorc` Example
 

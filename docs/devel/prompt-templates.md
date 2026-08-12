@@ -15,17 +15,17 @@ See also §11a (`target.title` templates) and §11b (prompt fragments — co-loc
 Replace the three overlapping ad-hoc substitution mechanisms in prompt bodies with a single
 unified templating layer:
 
-| Mechanism | Current location | Status after this epic |
-|-----------|-----------------|----------------------|
+| Mechanism                                | Current location                 | Status after this epic                                              |
+| ---------------------------------------- | -------------------------------- | ------------------------------------------------------------------- |
 | `${VAR}` / `${VAR:-default}` (bash-like) | `processors.SubstituteArguments` | **Removed** — use `{{ .Args.NAME }}` / `{{ Arg "NAME" "default" }}` |
-| `@mitto:variable` | `processors.SubstituteVariables` | **Deprecated** in prompt bodies; kept for processor configs |
-| `enabledWhen` CEL expressions | `config.CELEvaluator` | **Extended** — reused as `cond` / `when` template function |
+| `@mitto:variable`                        | `processors.SubstituteVariables` | **Deprecated** in prompt bodies; kept for processor configs         |
+| `enabledWhen` CEL expressions            | `config.CELEvaluator`            | **Extended** — reused as `cond` / `when` template function          |
 
 ---
 
 ## 2. Background: the three legacy mechanisms
 
-### 2.1  `${VAR}` / `${VAR:-default}` — bash-like argument substitution
+### 2.1 `${VAR}` / `${VAR:-default}` — bash-like argument substitution
 
 File: `internal/processors/arguments.go` — `SubstituteArguments(text string, args map[string]string) string`
 
@@ -33,7 +33,7 @@ Applied in `resolveAndSubstitute` (step 3 below) when `meta.Arguments` is non-em
 Regex: `` `\$\{([A-Za-z_][A-Za-z0-9_]*)(:-([^}]*))?\}` `` (captured in `argPlaceholderRe`).
 `${VAR}` → `Args["VAR"]` or `""`; `${VAR:-default}` → value when present AND non-empty, else default.
 
-### 2.2  `@mitto:variable` — session-context substitution
+### 2.2 `@mitto:variable` — session-context substitution
 
 File: `internal/processors/variables.go` — `SubstituteVariables(message string, input *ProcessorInput) string`
 
@@ -41,7 +41,7 @@ Applied in `applyProcessorsAndBuildBlocks` (step 6 below). Replaces 16 named pla
 fields from `*processors.ProcessorInput`. Escape: `\@mitto:foo` emits `@mitto:foo` literally.
 Full placeholder list: see §9.
 
-### 2.3  `enabledWhen` CEL — conditional visibility
+### 2.3 `enabledWhen` CEL — conditional visibility
 
 File: `internal/config/cel_evaluator.go` — `CELEvaluator.Compile` / `Evaluate` / `buildActivation`.
 
@@ -53,7 +53,7 @@ and variables at **send time** (see §5).
 
 ## 3. The send pipeline: today vs. with template rendering
 
-### 3.1  Current order (source of truth: `prompt_dispatcher.go`)
+### 3.1 Current order (source of truth: `prompt_dispatcher.go`)
 
 ```
 PromptWithMeta (bgsession_prompt.go:162)
@@ -71,7 +71,7 @@ PromptWithMeta (bgsession_prompt.go:162)
        9. Assemble finalBlocks → ACP agent
 ```
 
-### 3.2  New order after mitto-m7sb.2 (insertion point in `resolveAndSubstitute`)
+### 3.2 New order after mitto-m7sb.2 (insertion point in `resolveAndSubstitute`)
 
 ```
 resolveAndSubstitute:
@@ -107,53 +107,53 @@ CEL expression always read the same field from the same struct.
 
 **Template accessor ↔ CEL variable ↔ Go field (guaranteed same value):**
 
-| Template accessor | CEL variable | Go field (`PromptEnabledContext`) |
-|---|---|---|
-| `{{ .Session.ID }}` | `Session.ID` | `Session.ID` |
-| `{{ .Session.Name }}` | `Session.Name` | `Session.Name` |
-| `{{ .Session.IsChild }}` | `Session.IsChild` | `Session.IsChild` |
-| `{{ .Session.IsLoop }}` | `Session.IsLoop` | `Session.IsLoop` |
-| `{{ .Session.HasMessages }}` | `Session.HasMessages` | `Session.HasMessages` |
-| `{{ .Session.BeadsIssue }}` | `Session.BeadsIssue` | `Session.BeadsIssue` |
-| `{{ .Session.UserDataJSON }}` | — | `Session.UserDataJSON` — JSON of session user-data attributes |
-| `{{ Model "tag" }}` | `Session.HasModelTag("tag")` / `"tag" in Session.ModelTags` | `Session.ModelTags` — capability tags of the **current** model (from `models:` profiles); `[]` when unknown |
-| `{{ .Session.ModelName }}` | — | `Session.ModelName` — display name of the current model; `""` when unknown |
-| `{{ UserData "NAME" }}` / `{{ index .UserData "NAME" }}` | `UserData["NAME"]` (new) | `UserData["NAME"]` (new) — per-conversation user-data field; `""` when unset |
-| `{{ .ACP.Name }}` | `ACP.Name` | `ACP.Name` |
-| `{{ .ACP.Type }}` | `ACP.Type` | `ACP.Type` |
-| `{{ .Workspace.Folder }}` | `Workspace.Folder` | `Workspace.Folder` |
-| `{{ .Workspace.UUID }}` | `Workspace.UUID` | `Workspace.UUID` |
-| `{{ .Workspace.UserDataSchemaJSON }}` | — | `Workspace.UserDataSchemaJSON` — JSON of workspace user-data schema fields |
-| `{{ .Workspace.Peers.Count }}` | `Workspace.Peers.Count` | `Workspace.Peers.Count` — number of non-archived sessions sharing this workspace (excluding self) |
-| `{{ .Workspace.Peers.Exists }}` | `Workspace.Peers.Exists` | `Workspace.Peers.Exists` — `Count > 0` |
-| `{{ .Workspace.Peers.PromptingCount }}` | `Workspace.Peers.PromptingCount` | `Workspace.Peers.PromptingCount` — peers where the agent is currently responding |
-| `{{ .Workspace.Peers.IdleCount }}` | `Workspace.Peers.IdleCount` | `Workspace.Peers.IdleCount` — peers NOT currently prompting (`Count - PromptingCount`) |
-| `{{ .Workspace.Peers.All }}` | — | `Workspace.Peers.All` — `[]config.PeerInfo` for all peer conversations |
-| `{{ .Workspace.Peers.AllText }}` | — | `config.FormatPeers(ctx.Workspace.Peers.All)`; format: `"id (name) [acp] {bd-id}, id2"` — `(name)` / `[acp]` / `{bd-id}` each omitted when empty. Mirrors `.Children.AllText`. |
-| `{{ .Parent.Name }}` | `Parent.Name` | `Parent.Name` |
-| `{{ .Parent.Exists }}` | `Parent.Exists` | `Parent.Exists` |
-| `{{ .Children.Count }}` | `Children.Count` | `Children.Count` |
-| `{{ .Children.MCPCount }}` | `Children.MCPCount` | `Children.MCPCount` |
-| `{{ .Children.All }}` | — | `Children.All` — `[]config.ChildInfo` for all children |
-| `{{ .Children.MCP }}` | — | `Children.MCP` — `[]config.ChildInfo` for MCP-origin children only |
-| `{{ with .Children.Get "id" }}...{{ end }}` | — | `Children.Get(id string) *ChildInfo` — O(n) lookup over `Children.All`; returns nil for empty/unknown id so `{{ with }}` acts as an exists gate. Fields on the block value: `.ID`, `.Name`, `.ACPServer`, `.Origin`, `.IsPrompting`, `.BeadsIssue`. |
-| `{{ .ACP.Available }}` | — | `ACP.Available` — `[]config.ACPServerInfo` for workspace ACP servers |
-| `{{ .Args.NAME }}` | `Args["NAME"]` (new) | `Args["NAME"]` (new) |
-| `{{ .Iteration.Number }}` | — | `Iteration.Number` — 0-based index of the current loop run; 0 for non-loop |
-| `{{ .Iteration.Max }}` | — | `Iteration.Max` — configured max runs (0 = unlimited); 0 for non-loop |
-| `{{ .Iteration.IsLoop }}` | — | `Iteration.IsLoop` — `true` when triggered by the loop runner |
-| `{{ .Iteration.IsFirst }}` | — | `Iteration.IsFirst` — `true` when `Number == 0` |
-| `{{ .Iteration.IsLast }}` | — | `Iteration.IsLast` — `true` when `Max > 0 && Number == Max-1` |
-| `{{ .Iteration.IsUninterrupted }}` | — | `Iteration.IsUninterrupted` — `true` only on a scheduled, non-forced loop run directly following another such run (no user interjection / forced run / FreshContext; same process lifetime) |
-| `{{ .Trigger.OnTasks.Changes.Added }}` | — | `Trigger.OnTasks.Changes.Added` — `[]map[string]any` of beads that appeared since the previous baseline (canonical keys `id`, `type`, `status`, `priority`, `labels`, `title`, `assignee`, `updated_at`). Nil-safe via nested `with`. |
-| `{{ .Trigger.OnTasks.Changes.Updated }}` | — | `Trigger.OnTasks.Changes.Updated` — beads whose fields changed. Same shape as `Added`. |
-| `{{ .Trigger.OnTasks.Changes.Removed }}` | — | `Trigger.OnTasks.Changes.Removed` — beads that disappeared. Same shape. |
-| `{{ .Trigger.OnTasks.Changes.Closed }}` | — | `Trigger.OnTasks.Changes.Closed` — beads that transitioned to closed. Same shape. |
-| `{{ .Trigger.OnTasks.Changes.Reopened }}` | — | `Trigger.OnTasks.Changes.Reopened` — beads that transitioned from closed back to open. Same shape. |
-| `{{ .Trigger.OnTasks.Changes.LabelAdded }}` | — | `Trigger.OnTasks.Changes.LabelAdded` — beads that gained one or more labels. Same shape. |
-| `{{ .Trigger.OnTasks.Changes.Touched }}` | — | `Trigger.OnTasks.Changes.Touched` — `Added ∪ Updated` convenience union. Same shape. |
-| `{{ .Prompts.Exists "name" }}` | — | `Prompts.Exists(name string) bool` — case-insensitive membership check against the effective workspace prompt registry (same view `mitto_prompt_get` / `mitto_prompt_list` see). Empty name and cold-start (nil cache / empty snapshot) fail-closed. **Template-only** — not declared on the CEL env. |
-| `{{ .Prompts.Enabled "name" }}` | — | `Prompts.Enabled(name string) bool` — case-insensitive check for a currently-enabled prompt. Disabled prompts are pruned from the cache during reload, so `Enabled` and `Exists` share the same set (any name that resolves via `mitto_prompt_get` returns `true`). Empty name and cold-start fail-closed. **Template-only**. |
+| Template accessor                                        | CEL variable                                                | Go field (`PromptEnabledContext`)                                                                                                                                                                                                                                                                                             |
+| -------------------------------------------------------- | ----------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `{{ .Session.ID }}`                                      | `Session.ID`                                                | `Session.ID`                                                                                                                                                                                                                                                                                                                  |
+| `{{ .Session.Name }}`                                    | `Session.Name`                                              | `Session.Name`                                                                                                                                                                                                                                                                                                                |
+| `{{ .Session.IsChild }}`                                 | `Session.IsChild`                                           | `Session.IsChild`                                                                                                                                                                                                                                                                                                             |
+| `{{ .Session.IsLoop }}`                                  | `Session.IsLoop`                                            | `Session.IsLoop`                                                                                                                                                                                                                                                                                                              |
+| `{{ .Session.HasMessages }}`                             | `Session.HasMessages`                                       | `Session.HasMessages`                                                                                                                                                                                                                                                                                                         |
+| `{{ .Session.BeadsIssue }}`                              | `Session.BeadsIssue`                                        | `Session.BeadsIssue`                                                                                                                                                                                                                                                                                                          |
+| `{{ .Session.UserDataJSON }}`                            | —                                                           | `Session.UserDataJSON` — JSON of session user-data attributes                                                                                                                                                                                                                                                                 |
+| `{{ Model "tag" }}`                                      | `Session.HasModelTag("tag")` / `"tag" in Session.ModelTags` | `Session.ModelTags` — capability tags of the **current** model (from `models:` profiles); `[]` when unknown                                                                                                                                                                                                                   |
+| `{{ .Session.ModelName }}`                               | —                                                           | `Session.ModelName` — display name of the current model; `""` when unknown                                                                                                                                                                                                                                                    |
+| `{{ UserData "NAME" }}` / `{{ index .UserData "NAME" }}` | `UserData["NAME"]` (new)                                    | `UserData["NAME"]` (new) — per-conversation user-data field; `""` when unset                                                                                                                                                                                                                                                  |
+| `{{ .ACP.Name }}`                                        | `ACP.Name`                                                  | `ACP.Name`                                                                                                                                                                                                                                                                                                                    |
+| `{{ .ACP.Type }}`                                        | `ACP.Type`                                                  | `ACP.Type`                                                                                                                                                                                                                                                                                                                    |
+| `{{ .Workspace.Folder }}`                                | `Workspace.Folder`                                          | `Workspace.Folder`                                                                                                                                                                                                                                                                                                            |
+| `{{ .Workspace.UUID }}`                                  | `Workspace.UUID`                                            | `Workspace.UUID`                                                                                                                                                                                                                                                                                                              |
+| `{{ .Workspace.UserDataSchemaJSON }}`                    | —                                                           | `Workspace.UserDataSchemaJSON` — JSON of workspace user-data schema fields                                                                                                                                                                                                                                                    |
+| `{{ .Workspace.Peers.Count }}`                           | `Workspace.Peers.Count`                                     | `Workspace.Peers.Count` — number of non-archived sessions sharing this workspace (excluding self)                                                                                                                                                                                                                             |
+| `{{ .Workspace.Peers.Exists }}`                          | `Workspace.Peers.Exists`                                    | `Workspace.Peers.Exists` — `Count > 0`                                                                                                                                                                                                                                                                                        |
+| `{{ .Workspace.Peers.PromptingCount }}`                  | `Workspace.Peers.PromptingCount`                            | `Workspace.Peers.PromptingCount` — peers where the agent is currently responding                                                                                                                                                                                                                                              |
+| `{{ .Workspace.Peers.IdleCount }}`                       | `Workspace.Peers.IdleCount`                                 | `Workspace.Peers.IdleCount` — peers NOT currently prompting (`Count - PromptingCount`)                                                                                                                                                                                                                                        |
+| `{{ .Workspace.Peers.All }}`                             | —                                                           | `Workspace.Peers.All` — `[]config.PeerInfo` for all peer conversations                                                                                                                                                                                                                                                        |
+| `{{ .Workspace.Peers.AllText }}`                         | —                                                           | `config.FormatPeers(ctx.Workspace.Peers.All)`; format: `"id (name) [acp] {bd-id}, id2"` — `(name)` / `[acp]` / `{bd-id}` each omitted when empty. Mirrors `.Children.AllText`.                                                                                                                                                |
+| `{{ .Parent.Name }}`                                     | `Parent.Name`                                               | `Parent.Name`                                                                                                                                                                                                                                                                                                                 |
+| `{{ .Parent.Exists }}`                                   | `Parent.Exists`                                             | `Parent.Exists`                                                                                                                                                                                                                                                                                                               |
+| `{{ .Children.Count }}`                                  | `Children.Count`                                            | `Children.Count`                                                                                                                                                                                                                                                                                                              |
+| `{{ .Children.MCPCount }}`                               | `Children.MCPCount`                                         | `Children.MCPCount`                                                                                                                                                                                                                                                                                                           |
+| `{{ .Children.All }}`                                    | —                                                           | `Children.All` — `[]config.ChildInfo` for all children                                                                                                                                                                                                                                                                        |
+| `{{ .Children.MCP }}`                                    | —                                                           | `Children.MCP` — `[]config.ChildInfo` for MCP-origin children only                                                                                                                                                                                                                                                            |
+| `{{ with .Children.Get "id" }}...{{ end }}`              | —                                                           | `Children.Get(id string) *ChildInfo` — O(n) lookup over `Children.All`; returns nil for empty/unknown id so `{{ with }}` acts as an exists gate. Fields on the block value: `.ID`, `.Name`, `.ACPServer`, `.Origin`, `.IsPrompting`, `.BeadsIssue`.                                                                           |
+| `{{ .ACP.Available }}`                                   | —                                                           | `ACP.Available` — `[]config.ACPServerInfo` for workspace ACP servers                                                                                                                                                                                                                                                          |
+| `{{ .Args.NAME }}`                                       | `Args["NAME"]` (new)                                        | `Args["NAME"]` (new)                                                                                                                                                                                                                                                                                                          |
+| `{{ .Iteration.Number }}`                                | —                                                           | `Iteration.Number` — 0-based index of the current loop run; 0 for non-loop                                                                                                                                                                                                                                                    |
+| `{{ .Iteration.Max }}`                                   | —                                                           | `Iteration.Max` — configured max runs (0 = unlimited); 0 for non-loop                                                                                                                                                                                                                                                         |
+| `{{ .Iteration.IsLoop }}`                                | —                                                           | `Iteration.IsLoop` — `true` when triggered by the loop runner                                                                                                                                                                                                                                                                 |
+| `{{ .Iteration.IsFirst }}`                               | —                                                           | `Iteration.IsFirst` — `true` when `Number == 0`                                                                                                                                                                                                                                                                               |
+| `{{ .Iteration.IsLast }}`                                | —                                                           | `Iteration.IsLast` — `true` when `Max > 0 && Number == Max-1`                                                                                                                                                                                                                                                                 |
+| `{{ .Iteration.IsUninterrupted }}`                       | —                                                           | `Iteration.IsUninterrupted` — `true` only on a scheduled, non-forced loop run directly following another such run (no user interjection / forced run / FreshContext; same process lifetime)                                                                                                                                   |
+| `{{ .Trigger.OnTasks.Changes.Added }}`                   | —                                                           | `Trigger.OnTasks.Changes.Added` — `[]map[string]any` of beads that appeared since the previous baseline (canonical keys `id`, `type`, `status`, `priority`, `labels`, `title`, `assignee`, `updated_at`). Nil-safe via nested `with`.                                                                                         |
+| `{{ .Trigger.OnTasks.Changes.Updated }}`                 | —                                                           | `Trigger.OnTasks.Changes.Updated` — beads whose fields changed. Same shape as `Added`.                                                                                                                                                                                                                                        |
+| `{{ .Trigger.OnTasks.Changes.Removed }}`                 | —                                                           | `Trigger.OnTasks.Changes.Removed` — beads that disappeared. Same shape.                                                                                                                                                                                                                                                       |
+| `{{ .Trigger.OnTasks.Changes.Closed }}`                  | —                                                           | `Trigger.OnTasks.Changes.Closed` — beads that transitioned to closed. Same shape.                                                                                                                                                                                                                                             |
+| `{{ .Trigger.OnTasks.Changes.Reopened }}`                | —                                                           | `Trigger.OnTasks.Changes.Reopened` — beads that transitioned from closed back to open. Same shape.                                                                                                                                                                                                                            |
+| `{{ .Trigger.OnTasks.Changes.LabelAdded }}`              | —                                                           | `Trigger.OnTasks.Changes.LabelAdded` — beads that gained one or more labels. Same shape.                                                                                                                                                                                                                                      |
+| `{{ .Trigger.OnTasks.Changes.Touched }}`                 | —                                                           | `Trigger.OnTasks.Changes.Touched` — `Added ∪ Updated` convenience union. Same shape.                                                                                                                                                                                                                                          |
+| `{{ .Prompts.Exists "name" }}`                           | —                                                           | `Prompts.Exists(name string) bool` — case-insensitive membership check against the effective workspace prompt registry (same view `mitto_prompt_get` / `mitto_prompt_list` see). Empty name and cold-start (nil cache / empty snapshot) fail-closed. **Template-only** — not declared on the CEL env.                         |
+| `{{ .Prompts.Enabled "name" }}`                          | —                                                           | `Prompts.Enabled(name string) bool` — case-insensitive check for a currently-enabled prompt. Disabled prompts are pruned from the cache during reload, so `Enabled` and `Exists` share the same set (any name that resolves via `mitto_prompt_get` returns `true`). Empty name and cold-start fail-closed. **Template-only**. |
 
 `Args` is populated from `meta.Arguments` at send time. At menu time (`enabledWhen`
 evaluation), `Args` is `nil`. Template rendering runs at **send time only**, so `Args` is
@@ -192,6 +192,7 @@ The `Cond` (alias `When`) template function evaluates a CEL expression string at
 ```
 
 Implementation:
+
 1. Call `config.GetCELEvaluator().Compile(exprString)` — cached; compile once.
 2. Call `evaluator.Evaluate(compiled, &ctx)` — evaluates against the send-time context.
 3. Return the `bool` result; propagate any error as a template execution error (fail-closed).
@@ -211,29 +212,29 @@ All helper functions listed below share a single Go implementation (extracted fr
 `internal/config/cel_evaluator.go`) to prevent drift between CEL bindings and template funcs.
 The shared pure-Go helpers are: `statResolved`, the glob-match logic, `matchesServerType`.
 
-| Function | Signature | Semantics |
-|---|---|---|
-| `Arg` | `Arg(name, defaultVal string) string` | `Args[name]` if present AND non-empty, else `defaultVal`. Replaces the removed `${NAME:-default}` bash syntax. |
-| `UserData` | `UserData(name string) string` | `UserData[name]` (per-conversation user-data field), or `""` when unset. Handles names with spaces, e.g. `UserData "JIRA Ticket"`. The `.UserData` map is also directly accessible: `{{ index .UserData "JIRA Ticket" }}`. |
-| `Default` | `Default(fallback, val string) string` | Returns `val` if non-empty, else `fallback`. Same as sprig `default`. |
-| `Cond` | `Cond(celExpr string) (bool, error)` | Evaluate CEL expression against send-time context. |
-| `When` | alias for `Cond` | |
-| `FileExists` | `FileExists(path string) bool` | File exists at `path` (relative to `Workspace.Folder`). Calls `statResolved`. |
-| `DirExists` | `DirExists(path string) bool` | Directory exists. Calls `statResolved`. |
-| `CommandExists` | `CommandExists(name string) bool` | Command is in PATH (`exec.LookPath`). |
-| `ReadFile` | `ReadFile(path string) string` | Contents of a workspace-relative regular file, inlined **verbatim** (no template expansion). Fail-open: returns `""` on missing file, path escape (absolute, `..`, symlink out), directory, size cap (256 KB), or any I/O error. Pair with `FileExists` to distinguish absent from empty. Intended for small, curated fragment files (e.g. `.mitto/support/<channel>/*.md`); do NOT use for arbitrary user-supplied paths without an out-of-band allow-list. |
-| `ReadTemplate` | `ReadTemplate(path string, dot any) (string, error)` | Variable-expanding counterpart to `ReadFile`. Reads a workspace-relative file with the **same fail-open read semantics** as `ReadFile`, then **sub-renders** the body as a Go text/template against the current context — the included file may reference `{{ .Args.X }}` / `{{ .Session.* }}` / any FuncMap helper. The second argument is the current dot (`.`) — an author idiom; its value is ignored in v1 (the sub-render always uses the closure's captured ctx). Fast path: files that contain no `{{` are returned verbatim (no parse cost, no `missingkey` substitution). Render step is **fail-closed** (parse/exec error, unknown func, or depth-exceeded returns an error which aborts the outer render). Recursion-capped at `promptTextMaxDepth` (=3), shared with `PromptTextWithArgs`. Fragments (`{{ template "_shared/..." }}`) ARE attached in the sub-render, same as `PromptTextWithArgs` (mitto-twa). |
-| `GitRepo` | `GitRepo(path ...string) bool` | Folder (default: whole workspace) is inside a git work tree (`git rev-parse --is-inside-work-tree`). Gatekeeper for the other `Git*` checks. |
-| `GitFileModified` | `GitFileModified(path string) bool` | Tracked file at `path` has pending (staged/unstaged) changes vs HEAD/index; untracked files are `false`. Relative to `Workspace.Folder`. Runs `git` as a subprocess (bounded 5s). |
-| `GitDirModified` | `GitDirModified(path ...string) bool` | Directory (default: whole workspace) has any pending changes, including untracked files. |
-| `GitFileTracked` | `GitFileTracked(path string) bool` | `path` is tracked by git (present in the index). |
-| `GitFileDeleted` | `GitFileDeleted(path string) bool` | Tracked file at `path` has been deleted (staged or unstaged deletion). |
-| `BeadsCount` | `BeadsCount(labels, statuses string) int` | Count of beads matching ALL comma-separated `labels` AND ANY of the comma-separated `statuses`, via `bd list -l <labels> --status <statuses> --all --json` in `Workspace.Folder`. Bounded 5s subprocess, short-TTL in-memory cache (5s), **fail-open**: returns positive sentinel on any error (missing `bd`, non-zero exit, unparseable JSON, timeout) so `HasBeads`-gated prompts are never wrongly hidden. Legitimate empty result (`[]`) returns `0`. Cheap gates (`CommandExists("bd") && DirExists(".beads")`) should short-circuit **before** this to avoid exec when there is no beads DB. |
-| `HasBeads` | `HasBeads(labels, statuses string) bool` | `BeadsCount(labels, statuses) > 0`. Same fail-open + cache semantics. |
-| `BeadHasLabels` | `BeadHasLabels(id, labels string) bool` | `true` iff the single bead `<id>` carries ALL comma-separated `labels`, via `bd show <id> --json` in `Workspace.Folder`. Bounded 5s subprocess, short-TTL in-memory cache (5s) shared with `BeadIsOpen`. **Fail-open**: returns `true` on any error (missing `bd`, missing bead, unparseable JSON, timeout) so gated prompts are never wrongly hidden. Empty `id` or empty `labels` → `true`. |
-| `BeadIsOpen` | `BeadIsOpen(id string) bool` | `true` iff the single bead `<id>` is not `closed`, via `bd show <id> --json`. Same fail-open + cache semantics as `BeadHasLabels`. Companion for gating on the linked bead's status. |
-| `BeadMetadata` | `BeadMetadata(id, key string) string` | String value of bead `<id>`'s `metadata[key]` (e.g. `metadata.slack_channel`), via `bd show <id> --json`. Short-TTL in-memory string cache (5s), parallel to the boolean/count `BeadHasLabels`/`BeadIsOpen`/`BeadsCount` caches. **Fail-open (empty)**: returns `""` on missing `bd`, missing bead, unparseable JSON, timeout, null `metadata`, or absent `key` — callers should treat `""` as "not set" and fall back accordingly. Enables render-time auto-derivation of per-bead values (e.g. `SlackChannelID`) from the linked issue without requiring the dispatcher to pass them explicitly. |
-| `Model` | `Model(tag string) bool` | Current model carries capability `tag` (case-insensitive), resolved from `models:` profiles. `false` when the model is unknown or no profile matches. |
+| Function          | Signature                                            | Semantics                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| ----------------- | ---------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Arg`             | `Arg(name, defaultVal string) string`                | `Args[name]` if present AND non-empty, else `defaultVal`. Replaces the removed `${NAME:-default}` bash syntax.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `UserData`        | `UserData(name string) string`                       | `UserData[name]` (per-conversation user-data field), or `""` when unset. Handles names with spaces, e.g. `UserData "JIRA Ticket"`. The `.UserData` map is also directly accessible: `{{ index .UserData "JIRA Ticket" }}`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `Default`         | `Default(fallback, val string) string`               | Returns `val` if non-empty, else `fallback`. Same as sprig `default`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `Cond`            | `Cond(celExpr string) (bool, error)`                 | Evaluate CEL expression against send-time context.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `When`            | alias for `Cond`                                     |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `FileExists`      | `FileExists(path string) bool`                       | File exists at `path` (relative to `Workspace.Folder`). Calls `statResolved`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `DirExists`       | `DirExists(path string) bool`                        | Directory exists. Calls `statResolved`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `CommandExists`   | `CommandExists(name string) bool`                    | Command is in PATH (`exec.LookPath`).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `ReadFile`        | `ReadFile(path string) string`                       | Contents of a workspace-relative regular file, inlined **verbatim** (no template expansion). Fail-open: returns `""` on missing file, path escape (absolute, `..`, symlink out), directory, size cap (256 KB), or any I/O error. Pair with `FileExists` to distinguish absent from empty. Intended for small, curated fragment files (e.g. `.mitto/support/<channel>/*.md`); do NOT use for arbitrary user-supplied paths without an out-of-band allow-list.                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `ReadTemplate`    | `ReadTemplate(path string, dot any) (string, error)` | Variable-expanding counterpart to `ReadFile`. Reads a workspace-relative file with the **same fail-open read semantics** as `ReadFile`, then **sub-renders** the body as a Go text/template against the current context — the included file may reference `{{ .Args.X }}` / `{{ .Session.* }}` / any FuncMap helper. The second argument is the current dot (`.`) — an author idiom; its value is ignored in v1 (the sub-render always uses the closure's captured ctx). Fast path: files that contain no `{{` are returned verbatim (no parse cost, no `missingkey` substitution). Render step is **fail-closed** (parse/exec error, unknown func, or depth-exceeded returns an error which aborts the outer render). Recursion-capped at `promptTextMaxDepth` (=3), shared with `PromptTextWithArgs`. Fragments (`{{ template "_shared/..." }}`) ARE attached in the sub-render, same as `PromptTextWithArgs` (mitto-twa). |
+| `GitRepo`         | `GitRepo(path ...string) bool`                       | Folder (default: whole workspace) is inside a git work tree (`git rev-parse --is-inside-work-tree`). Gatekeeper for the other `Git*` checks.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `GitFileModified` | `GitFileModified(path string) bool`                  | Tracked file at `path` has pending (staged/unstaged) changes vs HEAD/index; untracked files are `false`. Relative to `Workspace.Folder`. Runs `git` as a subprocess (bounded 5s).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `GitDirModified`  | `GitDirModified(path ...string) bool`                | Directory (default: whole workspace) has any pending changes, including untracked files.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `GitFileTracked`  | `GitFileTracked(path string) bool`                   | `path` is tracked by git (present in the index).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `GitFileDeleted`  | `GitFileDeleted(path string) bool`                   | Tracked file at `path` has been deleted (staged or unstaged deletion).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `BeadsCount`      | `BeadsCount(labels, statuses string) int`            | Count of beads matching ALL comma-separated `labels` AND ANY of the comma-separated `statuses`, via `bd list -l <labels> --status <statuses> --all --json` in `Workspace.Folder`. Bounded 5s subprocess, short-TTL in-memory cache (5s), **fail-open**: returns positive sentinel on any error (missing `bd`, non-zero exit, unparseable JSON, timeout) so `HasBeads`-gated prompts are never wrongly hidden. Legitimate empty result (`[]`) returns `0`. Cheap gates (`CommandExists("bd") && DirExists(".beads")`) should short-circuit **before** this to avoid exec when there is no beads DB.                                                                                                                                                                                                                                                                                                                           |
+| `HasBeads`        | `HasBeads(labels, statuses string) bool`             | `BeadsCount(labels, statuses) > 0`. Same fail-open + cache semantics.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `BeadHasLabels`   | `BeadHasLabels(id, labels string) bool`              | `true` iff the single bead `<id>` carries ALL comma-separated `labels`, via `bd show <id> --json` in `Workspace.Folder`. Bounded 5s subprocess, short-TTL in-memory cache (5s) shared with `BeadIsOpen`. **Fail-open**: returns `true` on any error (missing `bd`, missing bead, unparseable JSON, timeout) so gated prompts are never wrongly hidden. Empty `id` or empty `labels` → `true`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `BeadIsOpen`      | `BeadIsOpen(id string) bool`                         | `true` iff the single bead `<id>` is not `closed`, via `bd show <id> --json`. Same fail-open + cache semantics as `BeadHasLabels`. Companion for gating on the linked bead's status.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `BeadMetadata`    | `BeadMetadata(id, key string) string`                | String value of bead `<id>`'s `metadata[key]` (e.g. `metadata.slack_channel`), via `bd show <id> --json`. Short-TTL in-memory string cache (5s), parallel to the boolean/count `BeadHasLabels`/`BeadIsOpen`/`BeadsCount` caches. **Fail-open (empty)**: returns `""` on missing `bd`, missing bead, unparseable JSON, timeout, null `metadata`, or absent `key` — callers should treat `""` as "not set" and fall back accordingly. Enables render-time auto-derivation of per-bead values (e.g. `SlackChannelID`) from the linked issue without requiring the dispatcher to pass them explicitly.                                                                                                                                                                                                                                                                                                                           |
+| `Model`           | `Model(tag string) bool`                             | Current model carries capability `tag` (case-insensitive), resolved from `models:` profiles. `false` when the model is unknown or no profile matches.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 
 **No `html` escaping.** Use `text/template` (not `html/template`). Prompt bodies are
 plain text / Markdown sent to an AI agent, not rendered in a browser.
@@ -242,12 +243,12 @@ plain text / Markdown sent to an AI agent, not rendered in a browser.
 
 ## 7. Error and validation policy
 
-| Location | Policy | Mechanism |
-|---|---|---|
-| Send time (`renderTemplateBody`) | **Fail-closed** | Return error from `resolveAndSubstitute` → `PromptWithMeta` returns error → error broadcast to UI observers, send aborted |
-| Load time (`ParsePromptFile`) | **Fail-fast** | `text/template.New(...).Parse(body)` on every prompt load; return parse error |
-| Save / update time (MCP `mitto_prompt_update`) | **Fail-fast** | Same parse call before persisting |
-| `Cond`/`When` literal args (load time) | **Fail-fast** | `CELEvaluator.Compile(litArg)` during AST walk; discard program |
+| Location                                       | Policy          | Mechanism                                                                                                                 |
+| ---------------------------------------------- | --------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| Send time (`renderTemplateBody`)               | **Fail-closed** | Return error from `resolveAndSubstitute` → `PromptWithMeta` returns error → error broadcast to UI observers, send aborted |
+| Load time (`ParsePromptFile`)                  | **Fail-fast**   | `text/template.New(...).Parse(body)` on every prompt load; return parse error                                             |
+| Save / update time (MCP `mitto_prompt_update`) | **Fail-fast**   | Same parse call before persisting                                                                                         |
+| `Cond`/`When` literal args (load time)         | **Fail-fast**   | `CELEvaluator.Compile(litArg)` during AST walk; discard program                                                           |
 
 Errors at send time use `bs.notifyObservers(func(o SessionObserver) { o.OnError(msg) })` with a
 descriptive message (e.g., `"template error in prompt 'my-prompt': ..."`).
@@ -272,24 +273,24 @@ no template syntax. This check is identical to the `@mitto:` fast-path in `Subst
 
 ## 9. `@mitto:` → template mapping table
 
-| `@mitto:` placeholder | Template equivalent | Notes |
-|---|---|---|
-| `@mitto:session_id` | `{{ .Session.ID }}` | |
-| `@mitto:parent_session_id` | `{{ .Session.ParentID }}` | |
-| `@mitto:parent` | `{{ .Parent.Ref }}` | `ParentContext.Ref()` mirrors `formatParentSession`: `"id (name)"`, or just `"id"` when the name is empty, or `""` when there is no parent |
-| `@mitto:session_name` | `{{ .Session.Name }}` | |
-| `@mitto:working_dir` | `{{ .Workspace.Folder }}` | |
-| `@mitto:acp_server` | `{{ .ACP.Name }}` | |
-| `@mitto:workspace_uuid` | `{{ .Workspace.UUID }}` | |
-| `@mitto:beads_issue` | `{{ .Session.BeadsIssue }}` | |
-| `@mitto:mcp_children_count` | `{{ .Children.MCPCount }}` | int, not string |
-| `@mitto:loop` | `{{ .Session.IsLoop }}` | bool, not `"true"`/`"false"` string |
-| `@mitto:loop_forced` | `{{ .Session.IsLoopForced }}` | bool, not `"true"`/`"false"` string. Field added to `SessionContext` (mitto-m7sb.3); fully wired into the CEL env (`Session.IsLoopForced`). |
-| `@mitto:available_acp_servers` | `{{ .ACP.AvailableText }}` | `config.FormatACPServers(ctx.ACP.Available)`; format: `"name [tags] (current), name2"` |
-| `@mitto:children` | `{{ .Children.AllText }}` | `config.FormatChildren(ctx.Children.All)`; format: `"id (name) [acp] {bd-id}, id2"` — `{bd-id}` appended only when the child has a linked beads issue |
-| `@mitto:mcp_children` | `{{ .Children.MCPText }}` | `config.FormatChildren(ctx.Children.MCP)`; MCP-origin only; same `{bd-id}` suffix rule as above |
-| `@mitto:user_data` | `{{ .Session.UserDataJSON }}` | JSON of session user-data attributes; `""` when none |
-| `@mitto:user_data_schema` | `{{ .Workspace.UserDataSchemaJSON }}` | JSON of workspace user-data schema fields; `""` when none |
+| `@mitto:` placeholder          | Template equivalent                   | Notes                                                                                                                                                 |
+| ------------------------------ | ------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `@mitto:session_id`            | `{{ .Session.ID }}`                   |                                                                                                                                                       |
+| `@mitto:parent_session_id`     | `{{ .Session.ParentID }}`             |                                                                                                                                                       |
+| `@mitto:parent`                | `{{ .Parent.Ref }}`                   | `ParentContext.Ref()` mirrors `formatParentSession`: `"id (name)"`, or just `"id"` when the name is empty, or `""` when there is no parent            |
+| `@mitto:session_name`          | `{{ .Session.Name }}`                 |                                                                                                                                                       |
+| `@mitto:working_dir`           | `{{ .Workspace.Folder }}`             |                                                                                                                                                       |
+| `@mitto:acp_server`            | `{{ .ACP.Name }}`                     |                                                                                                                                                       |
+| `@mitto:workspace_uuid`        | `{{ .Workspace.UUID }}`               |                                                                                                                                                       |
+| `@mitto:beads_issue`           | `{{ .Session.BeadsIssue }}`           |                                                                                                                                                       |
+| `@mitto:mcp_children_count`    | `{{ .Children.MCPCount }}`            | int, not string                                                                                                                                       |
+| `@mitto:loop`                  | `{{ .Session.IsLoop }}`               | bool, not `"true"`/`"false"` string                                                                                                                   |
+| `@mitto:loop_forced`           | `{{ .Session.IsLoopForced }}`         | bool, not `"true"`/`"false"` string. Field added to `SessionContext` (mitto-m7sb.3); fully wired into the CEL env (`Session.IsLoopForced`).           |
+| `@mitto:available_acp_servers` | `{{ .ACP.AvailableText }}`            | `config.FormatACPServers(ctx.ACP.Available)`; format: `"name [tags] (current), name2"`                                                                |
+| `@mitto:children`              | `{{ .Children.AllText }}`             | `config.FormatChildren(ctx.Children.All)`; format: `"id (name) [acp] {bd-id}, id2"` — `{bd-id}` appended only when the child has a linked beads issue |
+| `@mitto:mcp_children`          | `{{ .Children.MCPText }}`             | `config.FormatChildren(ctx.Children.MCP)`; MCP-origin only; same `{bd-id}` suffix rule as above                                                       |
+| `@mitto:user_data`             | `{{ .Session.UserDataJSON }}`         | JSON of session user-data attributes; `""` when none                                                                                                  |
+| `@mitto:user_data_schema`      | `{{ .Workspace.UserDataSchemaJSON }}` | JSON of workspace user-data schema fields; `""` when none                                                                                             |
 
 All `@mitto:` tokens now have template equivalents. The `@mitto:` forms remain supported for
 backward compatibility in processors and prompt bodies, but usage in prompt bodies logs a
@@ -304,13 +305,13 @@ that the opaque blob cannot drive.
 
 ## 10. Corner cases
 
-### 10.1  Timing asymmetry: `Args` is empty at menu time
+### 10.1 Timing asymmetry: `Args` is empty at menu time
 
 `enabledWhen` runs at menu time; `Args` is `nil` (no prompt has been dispatched yet). Do NOT
 write `enabledWhen` expressions that branch on `Args["BRANCH"]` for menu visibility — those
 will always evaluate the empty-map path. Template `{{ .Args.NAME }}` is send-time only.
 
-### 10.2  CEL single-quote nesting inside template double-quotes
+### 10.2 CEL single-quote nesting inside template double-quotes
 
 Go template strings use backtick literals or escaped double quotes. CEL string literals use
 double quotes. When embedding a CEL expression inside `{{ if Cond "..." }}`:
@@ -323,17 +324,17 @@ double quotes. When embedding a CEL expression inside `{{ if Cond "..." }}`:
 {{ if Cond "FileExists(\".git/config\")" }}
 ```
 
-### 10.3  Literal double-brace escaping
+### 10.3 Literal double-brace escaping
 
 To emit a literal `{{` in output, use `{{ "{{" }}` (the template `{{` delimiter cannot be
 escaped with a backslash). Example: `{{ "{{" }} .Example {{ "}}" }}` renders `{{ .Example }}`.
 
-### 10.4  Invalid `{{ fi }}` — Go uses `{{ end }}`
+### 10.4 Invalid `{{ fi }}` — Go uses `{{ end }}`
 
 Go `text/template` uses `{{ end }}` to close blocks, not `fi`. An `{{ fi }}` produces a
 **parse error at load time** (caught by `ParsePromptFile` validation).
 
-### 10.5  YAML block-scalar indentation + template whitespace trimming
+### 10.5 YAML block-scalar indentation + template whitespace trimming
 
 YAML `|` block scalars preserve leading indentation relative to the first content line. Template
 `{{-` / `-}}` trim surrounding whitespace. Prefer `-}}` before newlines inside YAML blocks to
@@ -348,19 +349,19 @@ prompt: |
   Footer text.
 ```
 
-### 10.6  CLI mode: empty context fields are safe
+### 10.6 CLI mode: empty context fields are safe
 
 All fields in `PromptEnabledContext` have zero values (`""`, `false`, `0`). When a template
 accesses `.Session.ID` in a context where `ID` was not populated (e.g. CLI mode without a
 stored session), it returns `""` rather than panicking. This is guaranteed by `missingkey=zero`.
 
-### 10.7  Struct-field typos still error
+### 10.7 Struct-field typos still error
 
 `missingkey=zero` applies to **map keys** (i.e. `{{ .Args.MISSING }}` → `""`). Struct field
 typos (e.g. `{{ .Session.IDd }}`) produce a compile-time error from `text/template.Parse` and
 are caught at load time by `ParsePromptFile`.
 
-### 10.8  Title-generation path must NOT render templates
+### 10.8 Title-generation path must NOT render templates
 
 `BackgroundSession.TriggerTitleGenerationFromLoop` (in `bgsession_title.go`) resolves
 a prompt name and feeds the result to an auxiliary AI session for title generation. It does NOT
@@ -369,14 +370,14 @@ text (with un-rendered `{{ ... }}` tokens) is sent to the auxiliary title genera
 correct: title generation reads the prompt template for summarization purposes, not for execution.
 No special handling is required.
 
-### 10.9  `Tools.HasPattern` fail-open is menu-time only
+### 10.9 `Tools.HasPattern` fail-open is menu-time only
 
 At menu time, `ToolsContext.Available == false` causes `Tools.HasPattern` to return `true`
 (fail-open) so tool-gated prompts aren't hidden during MCP tool cache warm-up. At send time
 (template `cond` evaluation), the real tool list is always available (warm cache). No asymmetry
 issue for the `cond` function.
 
-### 10.10  Loop runner IS covered
+### 10.10 Loop runner IS covered
 
 `internal/web/loop_runner.go` dispatches prompts via `bs.PromptWithMeta(promptText, meta)`
 with `meta.SenderID = "loop-runner"` (line ~1149). Because it goes through `PromptWithMeta`,
@@ -387,12 +388,12 @@ loop-runner handling is needed.
 
 ## 11. Migration summary
 
-| Phase | Action |
-|---|---|
-| mitto-m7sb.2 | Add template rendering to `resolveAndSubstitute`. `{{ ... }}` is the primary mechanism; `${VAR}` remained as a legacy fallback during this phase. |
-| mitto-m7sb.10 | Add migration guide to `docs/config/prompts.md`; annotate built-in prompts with migration comments. |
-| mitto-m7sb.12 | Migrate built-in prompts in `config/prompts/` from `${VAR}` / `@mitto:` to `{{ ... }}`. |
-| mitto-4so | **Removed** `${VAR}` / `${VAR:-default}` bash-like argument substitution (`SubstituteArguments`) from `resolveAndSubstitute`. `{{ .Args.NAME }}` / `{{ Arg "NAME" "default" }}` are the only mechanisms. `@mitto:` stays in processor configs indefinitely; `SubstituteVariables` in `applyProcessorsAndBuildBlocks` is retained for processor backward-compat. |
+| Phase         | Action                                                                                                                                                                                                                                                                                                                                                          |
+| ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| mitto-m7sb.2  | Add template rendering to `resolveAndSubstitute`. `{{ ... }}` is the primary mechanism; `${VAR}` remained as a legacy fallback during this phase.                                                                                                                                                                                                               |
+| mitto-m7sb.10 | Add migration guide to `docs/config/prompts.md`; annotate built-in prompts with migration comments.                                                                                                                                                                                                                                                             |
+| mitto-m7sb.12 | Migrate built-in prompts in `config/prompts/` from `${VAR}` / `@mitto:` to `{{ ... }}`.                                                                                                                                                                                                                                                                         |
+| mitto-4so     | **Removed** `${VAR}` / `${VAR:-default}` bash-like argument substitution (`SubstituteArguments`) from `resolveAndSubstitute`. `{{ .Args.NAME }}` / `{{ Arg "NAME" "default" }}` are the only mechanisms. `@mitto:` stays in processor configs indefinitely; `SubstituteVariables` in `applyProcessorsAndBuildBlocks` is retained for processor backward-compat. |
 
 ---
 
@@ -421,11 +422,11 @@ Unlike prompt bodies, `target.title` receives a small dedicated context
 dispatch entry points (MCP `mitto_conversation_new` and the web
 `POST /api/sessions` handler) — no cross-package plumbing:
 
-| Field | Source (MCP → web) | Purpose |
-|---|---|---|
-| `.Args` | `input.Arguments` → `req.Arguments` | Caller-supplied prompt arguments. Primary lever. |
+| Field                 | Source (MCP → web)                    | Purpose                                            |
+| --------------------- | ------------------------------------- | -------------------------------------------------- |
+| `.Args`               | `input.Arguments` → `req.Arguments`   | Caller-supplied prompt arguments. Primary lever.   |
 | `.Session.BeadsIssue` | `input.BeadsIssue` → `req.BeadsIssue` | Top-level linked bead ID for the new conversation. |
-| `.Workspace.Folder` | resolved working dir | Workspace disambiguation. |
+| `.Workspace.Folder`   | resolved working dir                  | Workspace disambiguation.                          |
 
 The full `PromptEnabledContext` (`.Session.ID`, `.ACP.*`, `.Children.*`,
 etc.) is **not** available here — those fields describe the caller/parent,
@@ -490,10 +491,10 @@ below falls out of `text/template` itself.
 Fragments live in the **same directories** as regular prompt files, side by side.
 They are distinguished purely by file extension:
 
-| Extension        | Kind     | Visible in UI? | Loaded by                | Directory tree                           |
-|------------------|----------|----------------|--------------------------|------------------------------------------|
-| `*.prompt.yaml`  | Prompt   | Yes            | `LoadPromptsFromDir`     | `config/prompts/builtin/`, `.mitto/prompts/`, settings, etc. |
-| `*.tmpl`         | Fragment | **No**         | `LoadFragmentsFromDir`   | Same directory tree as prompts           |
+| Extension       | Kind     | Visible in UI? | Loaded by              | Directory tree                                               |
+| --------------- | -------- | -------------- | ---------------------- | ------------------------------------------------------------ |
+| `*.prompt.yaml` | Prompt   | Yes            | `LoadPromptsFromDir`   | `config/prompts/builtin/`, `.mitto/prompts/`, settings, etc. |
+| `*.tmpl`        | Fragment | **No**         | `LoadFragmentsFromDir` | Same directory tree as prompts                               |
 
 Why co-location: keeps related prompts and their partials next to each other,
 avoids a separate directory tree to sync or permission, and matches how prompt
@@ -527,11 +528,11 @@ Locked by tests: `TestLoadFragmentsFromDir_CoLocationIsolation`
 Fragment names are derived from the path relative to the origin root, with the
 `.tmpl` extension stripped:
 
-| On-disk path                                        | Fragment name           |
-|-----------------------------------------------------|-------------------------|
-| `builtin/github/shared/pr-comments.tmpl`            | `github/shared/pr-comments` |
-| `builtin/beads/issue-context.tmpl`                  | `beads/issue-context`   |
-| `builtin/simple.tmpl`                               | `simple`                |
+| On-disk path                             | Fragment name               |
+| ---------------------------------------- | --------------------------- |
+| `builtin/github/shared/pr-comments.tmpl` | `github/shared/pr-comments` |
+| `builtin/beads/issue-context.tmpl`       | `beads/issue-context`       |
+| `builtin/simple.tmpl`                    | `simple`                    |
 
 Go template names are just strings; slashes are legal. This gives natural
 namespacing without a dedicated directory. Cross-origin merge follows the same
@@ -569,7 +570,7 @@ fragments participate in `text/template.Parse`:
 - **Unknown fragment name.** `{{ template "no-such-thing" . }}` in a prompt
   body fails `template.Parse`, so `PrecompileTemplateConds` and
   `ValidatePromptTemplateSyntax` report `prompt template "<caller>": template
-  "no-such-thing" is undefined` at load — same code path that already
+"no-such-thing" is undefined` at load — same code path that already
   fails-fast on syntax errors.
 - **Cycles.** Go `text/template` rejects mutual recursion at parse; there is
   no cycle-detection code in Mitto for this. `A → B → A` fails to parse and
@@ -622,12 +623,14 @@ or under the top-level `_shared/` prefix when they're genuinely cross-family
 with no clear owner. Prompt authors adding a new prompt should scan this
 table before restating shared content inline.
 
-| Fragment name              | On-disk path                                                | Consumers | Landed in     | Purpose                                                                          |
-|----------------------------|-------------------------------------------------------------|-----------|---------------|----------------------------------------------------------------------------------|
-| `github/shared/pr-comments` | `config/prompts/builtin/github/shared/pr-comments.tmpl`    | 3         | `mitto-g61.8` | "How to handle PR review comments" body used by the `github/babysit-*` family (pilot: family-scoped, agent-specific). |
-| `_shared/session-context`  | `config/prompts/builtin/_shared/session-context.tmpl`       | 64        | `mitto-g61.9` | The `## Session Context` preamble telling the agent its own session ID. Cross-topic — consumed by beads-issues/, beads/, ci/, code/, docs/, github/, jira/, loop/, and support/ prompts. |
-| `beads-issues/shared/ensure-bead-branch` | `config/prompts/builtin/beads-issues/shared/ensure-bead-branch.tmpl` | 2 | `mitto-cwz.2` | Headless (no `mitto_ui_*`) idempotent per-bead branch creation for automated loop drivers, called before a bead's first commit. Composes `git/shared/identify-remote-branch`. Called as `(dict "Ctx" . "Target" <id> "Type" "feat"\|"fix")`. Wired in `mitto-cwz.3` into the two first-committing phases (`feature-phase-implement`, `fix-phase-fix`), gated on `SubmitStrategy == "Pull Request"`. |
-| `beads-issues/shared/push-and-open-pr` | `config/prompts/builtin/beads-issues/shared/push-and-open-pr.tmpl` | 3 | `mitto-cwz.2` | Headless (no `mitto_ui_*`) push + idempotent PR create-or-reuse, called **exactly once** from a driver's Done branch. Composes `git/shared/identify-remote-branch` + `git/shared/behind-base-count`; reports the PR URL back via `bd comment`. Called as `(dict "Ctx" . "Target" <id>)`. Wired in `mitto-cwz.3` into the three driver Done/finalize branches (`loop-implementing-feature`, `loop-fixing-bug`, `mention-driver`), gated on `SubmitStrategy == "Pull Request"`. |
+| Fragment name                            | On-disk path                                                         | Consumers | Landed in     | Purpose                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| ---------------------------------------- | -------------------------------------------------------------------- | --------- | ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `github/shared/pr-comments`              | `config/prompts/builtin/github/shared/pr-comments.tmpl`              | 3         | `mitto-g61.8` | "How to handle PR review comments" body used by the `github/babysit-*` family (pilot: family-scoped, agent-specific).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `_shared/session-context`                | `config/prompts/builtin/_shared/session-context.tmpl`                | 64        | `mitto-g61.9` | The `## Session Context` preamble telling the agent its own session ID. Cross-topic — consumed by beads-issues/, beads/, ci/, code/, docs/, github/, jira/, loop/, and support/ prompts.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `beads-issues/shared/ensure-bead-branch` | `config/prompts/builtin/beads-issues/shared/ensure-bead-branch.tmpl` | 2         | `mitto-cwz.2` | Headless (no `mitto_ui_*`) idempotent per-bead branch creation for automated loop drivers, called before a bead's first commit. Composes `git/shared/identify-remote-branch`. Called as `(dict "Ctx" . "Target" <id> "Type" "feat"\|"fix")`. Wired in `mitto-cwz.3` into the two first-committing phases (`feature-phase-implement`, `fix-phase-fix`), gated on `SubmitStrategy == "Pull Request"`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `beads-issues/shared/push-and-open-pr`   | `config/prompts/builtin/beads-issues/shared/push-and-open-pr.tmpl`   | 3         | `mitto-cwz.2` | Headless (no `mitto_ui_*`) push + idempotent PR create-or-reuse, called **exactly once** from a driver's Done branch. Composes `git/shared/identify-remote-branch` + `git/shared/behind-base-count` + `git/shared/pr-description-no-beads`; reports the PR URL back via `bd comment`. Called as `(dict "Ctx" . "Target" <id>)`. Wired in `mitto-cwz.3` into the three driver Done/finalize branches (`loop-implementing-feature`, `loop-fixing-bug`, `mention-driver`), gated on `SubmitStrategy == "Pull Request"`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `git/shared/pr-description-no-beads`     | `config/prompts/builtin/git/shared/pr-description-no-beads.tmpl`     | 2         | —             | The canonical "keep the beads tracker out of the PR" constraint on every PR/MR title and body: no bead IDs, no `(refs <bead-id>)` footers, no `bd` commands or beads phrasing (upstream GitHub/JIRA references stay fine). Load-bearing for the **`--fill` ban** — the L1 driver commit convention requires a `(refs <bead-id>)` footer on every commit, so `--fill` would copy bead IDs straight into the PR body; both PR paths must write an explicit title/body instead. Parameter-less. Consumers: `git/shared/create-or-update-pr` (interactive), `beads-issues/shared/push-and-open-pr` (headless drivers) — so it reaches `git/submit-changes`, `git/commit-and-submit`, and the three loop drivers.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `beads-issues/shared/rank-candidates`    | `config/prompts/builtin/beads-issues/shared/rank-candidates.tmpl`    | 6         | —             | The single canonical "what do I work on next?" ordering rule: **unblocked-only (hard filter) → declared priority → epic completion → blocking leverage → readiness [→ bead ID asc]**. Priority stays authoritative (preserving `loop-processing`'s pinned "a P0 ALWAYS runs before a P3" invariant) and the rest are tie-breaks within a priority band. One bounded exception, the **epic-finishing promotion**: a bead that is the last open child of its epic ranks one band higher (capped at P1, ranking-only — never `bd update --priority`), so low-priority epic tails ("document XYZ", "test ABC") stop being stranded forever behind unrelated higher-priority work. Emits a ranked **shortlist** of the top `TopN` (default 3), not a single winner — how many of the shortlist to act on is explicitly deferred to the calling step, which must carry a "How … consumes the ranking" note (a single-target flow takes #1 and keeps the rest as fallbacks; a capped or report flow may take several). Called as `(dict "Set" <noun phrase> "Deterministic" <bool> "PreFiltered" <bool> "TopN" <int>)`. Consumers: `beads/work`, `beads/reevaluate` (`TopN` 5), `beads-issues/work`, `beads-issues/loop-until-complete`, `beads-issues/loop-processing` (§2B/§2C), `misc/continue`. |
 
 **Layout convention.** Fragments whose primary consumer is one family live
 under `<family>/shared/<name>.tmpl` (e.g. `github/shared/pr-comments.tmpl`,
@@ -729,15 +732,15 @@ or refactoring bootstrap:
 
 ## 12. Impacted files / child-issue map
 
-| Bead | Scope | Key files |
-|---|---|---|
-| **mitto-m7sb.2** | Core renderer: `renderTemplateBody`, insert in `resolveAndSubstitute`, `missingkey=zero`, fast-path, `text/template.FuncMap` skeleton | `internal/conversation/prompt_dispatcher.go`, new `internal/config/prompt_template.go` |
-| **mitto-m7sb.3** | Context builder: populate `PromptEnabledContext` at send time; add `Args map[string]string` field; add `IsLoopForced` to `SessionContext` | `internal/config/cel_context.go`, `internal/conversation/prompt_dispatcher.go` |
-| **mitto-m7sb.4** | Load-time validation: `ParsePromptFile` + MCP `mitto_prompt_update` parse-and-validate; `cond` literal pre-compile | `internal/config/prompts.go`, `internal/web/handlers/` (prompt update handler) |
-| **mitto-m7sb.5** | CEL env extension: add `args` map variable to `NewCELEvaluator` and `buildActivation` | `internal/config/cel_evaluator.go` |
-| **mitto-m7sb.6** | FuncMap full impl: `arg`, `default`, `fileExists`, `dirExists`, `commandExists`, `cond`/`when`; extract shared pure-Go helper package | `internal/config/cel_evaluator.go` (extract), new `internal/config/templatefuncs.go` |
-| **mitto-m7sb.10** | Docs update: migration guide in `docs/config/prompts.md` | `docs/config/prompts.md` |
-| **mitto-m7sb.12** | Prompt migration: convert built-in prompts | `config/prompts/builtin/*.prompt.yaml` |
+| Bead              | Scope                                                                                                                                     | Key files                                                                              |
+| ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| **mitto-m7sb.2**  | Core renderer: `renderTemplateBody`, insert in `resolveAndSubstitute`, `missingkey=zero`, fast-path, `text/template.FuncMap` skeleton     | `internal/conversation/prompt_dispatcher.go`, new `internal/config/prompt_template.go` |
+| **mitto-m7sb.3**  | Context builder: populate `PromptEnabledContext` at send time; add `Args map[string]string` field; add `IsLoopForced` to `SessionContext` | `internal/config/cel_context.go`, `internal/conversation/prompt_dispatcher.go`         |
+| **mitto-m7sb.4**  | Load-time validation: `ParsePromptFile` + MCP `mitto_prompt_update` parse-and-validate; `cond` literal pre-compile                        | `internal/config/prompts.go`, `internal/web/handlers/` (prompt update handler)         |
+| **mitto-m7sb.5**  | CEL env extension: add `args` map variable to `NewCELEvaluator` and `buildActivation`                                                     | `internal/config/cel_evaluator.go`                                                     |
+| **mitto-m7sb.6**  | FuncMap full impl: `arg`, `default`, `fileExists`, `dirExists`, `commandExists`, `cond`/`when`; extract shared pure-Go helper package     | `internal/config/cel_evaluator.go` (extract), new `internal/config/templatefuncs.go`   |
+| **mitto-m7sb.10** | Docs update: migration guide in `docs/config/prompts.md`                                                                                  | `docs/config/prompts.md`                                                               |
+| **mitto-m7sb.12** | Prompt migration: convert built-in prompts                                                                                                | `config/prompts/builtin/*.prompt.yaml`                                                 |
 
 ---
 
@@ -749,13 +752,13 @@ machine that a loop conversation advances one stage per run. It is the pattern
 behind the shipped `Iterate fixing bug`, `Iterate fixing bugs`, and
 `Iterate implementing features` builtin prompts (§13.9).
 
-### 13.1  Concept
+### 13.1 Concept
 
 A **loop conversation** advances a single beads issue through an ordered,
 finite set of states encoded as `bd` **labels** (e.g. `researched` → `reproduced`
 → `fixed`). Each scheduled run performs the same four-step cycle:
 
-1. **Read** the issue's *live* labels (`bd show <id> --json`).
+1. **Read** the issue's _live_ labels (`bd show <id> --json`).
 2. **Branch** to the stage implied by the current label set.
 3. **Do** that stage's work (and only that stage's — never more than one stage
    per run).
@@ -767,7 +770,7 @@ Because the state lives in the tracker (not in conversation memory), the loop
 survives conversation restarts, crashes, and even a full context reset —
 anything that can run `bd show <id>` can resume it.
 
-### 13.2  Critical context distinction: `Item.*` vs. live `bd show`
+### 13.2 Critical context distinction: `Item.*` vs. live `bd show`
 
 > **Warning — do not branch on `Item.*` in the prompt body.**
 >
@@ -783,7 +786,7 @@ anything that can run `bd show <id>` can resume it.
 > - **Therefore:** branch on the **live** state, read fresh every run via
 >   `bd show {{ .Args.IssueID }} --json` (where `{{ .Args.IssueID }}` is
 >   whatever the durable target resolves to — see §13.3), **never** on
->   `Item.*` in the body. This is also the more *correct* behavior: labels
+>   `Item.*` in the body. This is also the more _correct_ behavior: labels
 >   mutate between runs, so a menu-time snapshot would already be stale by the
 >   time a later scheduled run reads it.
 
@@ -793,18 +796,18 @@ mirror image: populated at menu time, empty at send time. See [§4](#4-the-unifi
 for the full accessor↔CEL↔Go-field table that documents which fields exist in
 which context.
 
-### 13.3  Durable anchors across runs
+### 13.3 Durable anchors across runs
 
-Two fields identify *which* issue a given run should act on, and one namespace
+Two fields identify _which_ issue a given run should act on, and one namespace
 reports where in the schedule the run sits:
 
-| Field | Meaning |
-|---|---|
-| `{{ .Session.BeadsIssue }}` | The conversation's **linked** beads issue (set via `beads_issue` at creation, or `mitto_conversation_update`). Preferred — durable across every loop re-fire regardless of arguments. |
-| `{{ .Args.IssueID }}` | An explicit argument (e.g. auto-filled by the `beadsIssues` menu on the first send). Used when there is no linked issue yet, or as a one-shot override. |
-| `{{ .Iteration.IsFirst }}` | `true` on the very first run (`Iteration.Number == 0`) — no prior `bd comment` history to review yet. |
-| `{{ .Iteration.IsUninterrupted }}` | `true` only on a scheduled, non-forced loop run directly following another such run — i.e. genuine machine-driven continuation, not a user-resumed or force-triggered run. |
-| `{{ .Iteration.IsLast }}` | `true` on the final scheduled run before `maxIterations` is hit — a hook to wrap up gracefully instead of starting a stage that won't finish. |
+| Field                              | Meaning                                                                                                                                                                               |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `{{ .Session.BeadsIssue }}`        | The conversation's **linked** beads issue (set via `beads_issue` at creation, or `mitto_conversation_update`). Preferred — durable across every loop re-fire regardless of arguments. |
+| `{{ .Args.IssueID }}`              | An explicit argument (e.g. auto-filled by the `beadsIssues` menu on the first send). Used when there is no linked issue yet, or as a one-shot override.                               |
+| `{{ .Iteration.IsFirst }}`         | `true` on the very first run (`Iteration.Number == 0`) — no prior `bd comment` history to review yet.                                                                                 |
+| `{{ .Iteration.IsUninterrupted }}` | `true` only on a scheduled, non-forced loop run directly following another such run — i.e. genuine machine-driven continuation, not a user-resumed or force-triggered run.            |
+| `{{ .Iteration.IsLast }}`          | `true` on the final scheduled run before `maxIterations` is hit — a hook to wrap up gracefully instead of starting a stage that won't finish.                                         |
 
 The standard **target ladder** (also used by the context-adaptive prompts in
 [docs/config/prompts.md](../config/prompts.md#context-adaptive-prompts-three-modes))
@@ -816,7 +819,7 @@ prefers the durable linked issue, falling back to the argument:
 {{ else if .Args.IssueID }}{{ $target = .Args.IssueID }}{{ end -}}
 ```
 
-### 13.4  Auto-loop frontmatter block
+### 13.4 Auto-loop frontmatter block
 
 A label-as-state-machine prompt declares a `loop:` block so each run
 re-fires automatically once the agent stops responding — see
@@ -826,19 +829,19 @@ for the full field reference:
 ```yaml
 loop:
   mode: always
-  trigger: [onCompletion]   # fire the next run after the agent stops, not on a fixed clock
+  trigger: [onCompletion] # fire the next run after the agent stops, not on a fixed clock
   onCompletion:
-    delay: 30               # seconds to wait after the agent finishes
-  maxIterations: 20         # hard cap on scheduled runs — a backstop, not the exit condition
-  maxDuration: "4h"         # wall-clock cap from the first run
+    delay: 30 # seconds to wait after the agent finishes
+  maxIterations: 20 # hard cap on scheduled runs — a backstop, not the exit condition
+  maxDuration: "4h" # wall-clock cap from the first run
 ```
 
 **This block behaves differently depending on how the conversation was
 started — this distinction matters for orchestrator authors:**
 
-| How the prompt is dispatched | Does `loop:` auto-apply? |
-|---|---|
-| Selected directly in the UI (ChatInput dropup, Beads context menu, loop selector) | **Yes.** The frontend reads the prompt's `loop:` block and configures the conversation accordingly (see [Behavior](../config/prompts.md#behavior)). |
+| How the prompt is dispatched                                                                                 | Does `loop:` auto-apply?                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| ------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Selected directly in the UI (ChatInput dropup, Beads context menu, loop selector)                            | **Yes.** The frontend reads the prompt's `loop:` block and configures the conversation accordingly (see [Behavior](../config/prompts.md#behavior)).                                                                                                                                                                                                                                                                                                                                                                       |
 | Spawned programmatically via `mitto_conversation_new(prompt_name: "...")` (e.g. from an orchestrator prompt) | **Yes** (since mitto-r7y). `applyPromptLoopDefaultsToStartInput` (`internal/mcpserver/prompt_loop_defaults.go`) fills every `loop_*` argument the caller left unset from the resolved prompt's `loop:` block, and defaults the loop body to the seed prompt itself (self-referential loop). Explicit caller arguments always win; `loop_apply_prompt_defaults: false` disables the whole merge. `mode: optional` + `default: false` yields a **disabled** loop unless the caller passes `loop_enabled: true` (mitto-ydj). |
 
 The shipped list-level orchestrators (`Iterate fixing bugs`,
@@ -848,7 +851,7 @@ per-issue driver's body once via `mitto_prompt_get`, then pass that body as
 copied from the driver's own `loop:` block (see §13.9). That remains valid —
 explicit caller arguments win over the merge — but is no longer required.
 
-### 13.5  Self-termination
+### 13.5 Self-termination
 
 At the terminal label — the stage after which there is no further work —
 the prompt turns off its own loop schedule instead of continuing to fire:
@@ -861,15 +864,15 @@ This flips the conversation back into a regular (non-loop) one; it is not
 deleted or archived, and can be re-enabled later (e.g. after a human clears a
 `needs-human` label and wants to resume — §13.7).
 
-### 13.6  State-label vocabulary guidance
+### 13.6 State-label vocabulary guidance
 
 Keep the label set for a given workflow **small, ordered, and documented** —
 each label should represent exactly one completed stage, and the prompt body
 should never skip a label or add two in the same run. Two shipped examples:
 
-| Workflow | Ordered labels |
-|---|---|
-| Bug fix (`Iterate fixing bug`) | `researched` → `reproduced` → `fixed` |
+| Workflow                                                       | Ordered labels                                    |
+| -------------------------------------------------------------- | ------------------------------------------------- |
+| Bug fix (`Iterate fixing bug`)                                 | `researched` → `reproduced` → `fixed`             |
 | Feature (`Iterate implementing features`'s per-feature driver) | `planned` → `implemented` → `tested` → `verified` |
 
 **Label collisions across workflows.** Because labels are a flat namespace on
@@ -881,7 +884,7 @@ workflow's label vocabulary lexically distinct (as the two examples above
 already are) or adopt an explicit prefix convention (e.g. `bugfix:researched`,
 `feature:planned`) to make ownership unambiguous.
 
-### 13.7  Blocked → Defer + Handoff sub-pattern
+### 13.7 Blocked → Defer + Handoff sub-pattern
 
 When a run **cannot make progress autonomously** — a requirement is
 ill-defined, a decision needs a human, or an external action/secret is
@@ -922,7 +925,7 @@ re-enabling its loop schedule) resumes at the **un-advanced** stage: no
 progress is lost, because the state is durable in the labels, not in
 conversation memory.
 
-### 13.8  Copy-pasteable skeleton prompt
+### 13.8 Copy-pasteable skeleton prompt
 
 A minimal, internally-consistent two-stage (`started` → `done`) skeleton.
 Adapt the label vocabulary (§13.6), the per-stage work, and the `bd` calls to
@@ -986,7 +989,7 @@ prompt: |
       mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", loop_enabled: false)
 ```
 
-### 13.9  Worked example: the shipped bug-fix state machine
+### 13.9 Worked example: the shipped bug-fix state machine
 
 `config/prompts/builtin/beads-issue-iterate-fixing-bug.prompt.yaml`
 (prompt name: **`Iterate fixing bug`**) is the real, shipped implementation of
@@ -999,8 +1002,8 @@ this pattern. It drives a single `bug`-type bead through
 - **Step 3** branches on which of `researched` / `reproduced` / `fixed` is
   present and **dispatches** (rather than inlines) the matching per-phase
   prompt via a self-send (`mitto_conversation_send_prompt(conversation_id:
-  "self", prompt_name: "Bug fix — investigate phase" | "...reproduce phase" |
-  "...fix phase", ...)`) — each phase prompt runs on its own preferred model
+"self", prompt_name: "Bug fix — investigate phase" | "...reproduce phase" |
+"...fix phase", ...)`) — each phase prompt runs on its own preferred model
   tier, adds its label, and stops; the driver's `onCompletion` schedule then
   re-observes the advanced label on the next run. `fixed` present → close the
   bead and self-terminate (§13.5).
@@ -1019,7 +1022,7 @@ child, wait for it, then move to the next:
   feature at a time.
 
 Both orchestrators are themselves **non-loop, one-shot** runs (they loop
-internally via `mitto_children_tasks_wait`); the *children* they spawn are the
+internally via `mitto_children_tasks_wait`); the _children_ they spawn are the
 loop ones, and both fetch the child driver's body via `mitto_prompt_get`
 and pass it as both `initial_prompt` and `loop_prompt` — historically a
 requirement, now redundant given the auto-merge documented in §13.4.

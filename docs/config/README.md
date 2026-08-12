@@ -42,38 +42,38 @@ Click a folder name (e.g., "Mitto") to access folder-level settings:
 
 Use the remaining Settings tabs to fine-tune Mitto:
 
-| Tab | Screenshot | What it configures |
-|-----|------------|--------------------|
-| **Runners** | ![](screenshots/02-settings-runners.png) | Sandbox execution (sandbox-exec, docker, firejail) |
-| **Conversations** | ![](screenshots/02-settings-conversations.png) | Auto-approve, auto-archive, auto-delete |
-| **Web** | ![](screenshots/02-settings-web.png) | External access, access logging |
-| **UI** | ![](screenshots/02-settings-ui.png) | Theme, fonts, prompt sorting |
+| Tab               | Screenshot                                     | What it configures                                 |
+| ----------------- | ---------------------------------------------- | -------------------------------------------------- |
+| **Runners**       | ![](screenshots/02-settings-runners.png)       | Sandbox execution (sandbox-exec, docker, firejail) |
+| **Conversations** | ![](screenshots/02-settings-conversations.png) | Auto-approve, auto-archive, auto-delete            |
+| **Web**           | ![](screenshots/02-settings-web.png)           | External access, access logging                    |
+| **UI**            | ![](screenshots/02-settings-ui.png)            | Theme, fonts, prompt sorting                       |
 
 ## Configuration Topics
 
 ### Features & Customization
 
-| Topic | Document | UI Location | Description |
-|-------|----------|-------------|-------------|
-| 🤖 **ACP Servers** | [acp.md](acp.md) | Settings → ACP Servers | Claude Code, Auggie, Gemini, Copilot setup |
-| 🏷️ **Model Profiles** | [models.md](models.md) | Settings (`models:`) | Tag models by capability; branch prompts on tags |
-| ⚡ **Prompts** | [prompts.md](prompts.md) | Workspaces → Prompts tab | Quick actions and predefined prompts |
-| 🔗 **Processors** | [processors.md](processors.md) | Workspaces → Processors tab | Message transformation (text, command, prompt modes) |
-| 💬 **Conversations** | [conversations.md](conversations.md) | Settings → Conversations | Auto-approve, auto-archive, external images |
-| 📝 **User Data** | [user-data.md](user-data.md) | Workspaces → Metadata tab | Custom metadata for conversations |
-| 👥 **Auto-Children** | [auto-children.md](auto-children.md) | Workspaces → Children tab | Auto-spawn helper conversations |
-| 🔌 **MCP Server** | [mcp.md](mcp.md) | Workspaces → MCP tab | MCP server for AI agent integration |
-| 🔒 **Restricted Execution** | [restricted.md](restricted.md) | Workspaces → Runner tab | Sandbox agents for security |
+| Topic                       | Document                             | UI Location                 | Description                                          |
+| --------------------------- | ------------------------------------ | --------------------------- | ---------------------------------------------------- |
+| 🤖 **ACP Servers**          | [acp.md](acp.md)                     | Settings → ACP Servers      | Claude Code, Auggie, Gemini, Copilot setup           |
+| 🏷️ **Model Profiles**       | [models.md](models.md)               | Settings (`models:`)        | Tag models by capability; branch prompts on tags     |
+| ⚡ **Prompts**              | [prompts.md](prompts.md)             | Workspaces → Prompts tab    | Quick actions and predefined prompts                 |
+| 🔗 **Processors**           | [processors.md](processors.md)       | Workspaces → Processors tab | Message transformation (text, command, prompt modes) |
+| 💬 **Conversations**        | [conversations.md](conversations.md) | Settings → Conversations    | Auto-approve, auto-archive, external images          |
+| 📝 **User Data**            | [user-data.md](user-data.md)         | Workspaces → Metadata tab   | Custom metadata for conversations                    |
+| 👥 **Auto-Children**        | [auto-children.md](auto-children.md) | Workspaces → Children tab   | Auto-spawn helper conversations                      |
+| 🔌 **MCP Server**           | [mcp.md](mcp.md)                     | Workspaces → MCP tab        | MCP server for AI agent integration                  |
+| 🔒 **Restricted Execution** | [restricted.md](restricted.md)       | Workspaces → Runner tab     | Sandbox agents for security                          |
 
 ### Platform & Deployment
 
-| Topic | Document | Description |
-|-------|----------|-------------|
-| 🌐 **Web Interface** | [web/README.md](web/README.md) | Web server, auth, security, reverse proxy |
-| 🍎 **macOS App** | [mac/README.md](mac/README.md) | Native macOS Desktop App features |
-| 🌍 **External Access** | [ext-access.md](ext-access.md) | Tailscale, ngrok, Cloudflare tunneling |
-| 📁 **Workspace Files** | [workspace.md](workspace.md) | Workspace management and `.mittorc` files |
-| 📋 **Config Overview** | [overview.md](overview.md) | File locations, formats, complete examples |
+| Topic                  | Document                       | Description                                |
+| ---------------------- | ------------------------------ | ------------------------------------------ |
+| 🌐 **Web Interface**   | [web/README.md](web/README.md) | Web server, auth, security, reverse proxy  |
+| 🍎 **macOS App**       | [mac/README.md](mac/README.md) | Native macOS Desktop App features          |
+| 🌍 **External Access** | [ext-access.md](ext-access.md) | Tailscale, ngrok, Cloudflare tunneling     |
+| 📁 **Workspace Files** | [workspace.md](workspace.md)   | Workspace management and `.mittorc` files  |
+| 📋 **Config Overview** | [overview.md](overview.md)     | File locations, formats, complete examples |
 
 ## Configuration File Locations
 
@@ -83,20 +83,20 @@ Mitto uses two configuration approaches:
 
 The Settings UI writes to `settings.json` — this is the recommended way to configure Mitto:
 
-| Platform    | Location                                            |
-| ----------- | --------------------------------------------------- |
-| **macOS**   | `~/Library/Application Support/Mitto/settings.json` |
-| **Linux**   | `~/.local/share/mitto/settings.json`                |
+| Platform  | Location                                            |
+| --------- | --------------------------------------------------- |
+| **macOS** | `~/Library/Application Support/Mitto/settings.json` |
+| **Linux** | `~/.local/share/mitto/settings.json`                |
 
 ### YAML Configuration
 
 For advanced users or automation, you can use YAML configuration files:
 
-| Source                         | Priority | Description |
-| ------------------------------ | -------- | ----------- |
-| `--config` flag                | Highest  | CLI override |
-| `MITTORC` environment variable | High     | Environment override |
-| `~/.mittorc`                   | Default  | Global YAML config |
+| Source                         | Priority    | Description                 |
+| ------------------------------ | ----------- | --------------------------- |
+| `--config` flag                | Highest     | CLI override                |
+| `MITTORC` environment variable | High        | Environment override        |
+| `~/.mittorc`                   | Default     | Global YAML config          |
 | `<project>/.mittorc`           | Per-project | Workspace-specific settings |
 
 To create a default YAML configuration file:

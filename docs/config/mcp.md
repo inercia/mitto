@@ -33,26 +33,26 @@ From this tab you can:
 
 These tools are **always available** and don't require special permissions:
 
-| Tool                             | Description                                                               |
-| -------------------------------- | ------------------------------------------------------------------------- |
-| `mitto_conversation_list`        | List all conversations with metadata (title, status, message count, etc.) |
-| `mitto_get_config`               | Get the current Mitto configuration (sanitized)                           |
-| `mitto_get_runtime_info`         | Get runtime info (OS, log paths, data directories, process info)          |
-| `mitto_conversation_get_current` | Get details about the current conversation                                |
-| `mitto_conversation_get`         | Get details about a specific conversation by ID                           |
+| Tool                             | Description                                                                                                                               |
+| -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `mitto_conversation_list`        | List all conversations with metadata (title, status, message count, etc.)                                                                 |
+| `mitto_get_config`               | Get the current Mitto configuration (sanitized)                                                                                           |
+| `mitto_get_runtime_info`         | Get runtime info (OS, log paths, data directories, process info)                                                                          |
+| `mitto_conversation_get_current` | Get details about the current conversation                                                                                                |
+| `mitto_conversation_get`         | Get details about a specific conversation by ID                                                                                           |
 | `mitto_conversation_history`     | Search and retrieve conversation history events with filtering by type, text content, tool name, and sequence range. Supports pagination. |
-| `mitto_workspace_list`           | List all configured workspaces with their settings, metadata, and activity status. |
+| `mitto_workspace_list`           | List all configured workspaces with their settings, metadata, and activity status.                                                        |
 
 ### UI Prompt Tools
 
 These tools require the **"Can prompt user"** flag to be enabled:
 
-| Tool                       | Description                                                            |
-| -------------------------- | ---------------------------------------------------------------------- |
-| `mitto_ui_options`         | Present an options menu with optional descriptions and free text input |
-| `mitto_ui_textbox`         | Present a text editing dialog to the user and wait for their changes. Returns the edited text or a diff. |
-| `mitto_ui_form`            | Present a sanitized HTML form to the user. Returns submitted field values as key-value pairs. |
-| `mitto_ui_notify`          | Send a non-blocking notification to the user. Supports styles: 'info', 'success', 'warning', 'error'. Can optionally play a sound or trigger a native OS notification. |
+| Tool                        | Description                                                                                                                                                                                                                                                                                                                                                     |
+| --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `mitto_ui_options`          | Present an options menu with optional descriptions and free text input                                                                                                                                                                                                                                                                                          |
+| `mitto_ui_textbox`          | Present a text editing dialog to the user and wait for their changes. Returns the edited text or a diff.                                                                                                                                                                                                                                                        |
+| `mitto_ui_form`             | Present a sanitized HTML form to the user. Returns submitted field values as key-value pairs.                                                                                                                                                                                                                                                                   |
+| `mitto_ui_notify`           | Send a non-blocking notification to the user. Supports styles: 'info', 'success', 'warning', 'error'. Can optionally play a sound or trigger a native OS notification.                                                                                                                                                                                          |
 | `mitto_workspace_ui_notify` | Workspace-scoped variant of `mitto_ui_notify`: targets a `workspace_uuid` rather than a live registered session, so callers without a live MCP session — notably auxiliary sessions running close-phase (`conversationClosed`) processors — can still surface toasts. Frontend filters by workspace so only clients viewing the target workspace see the toast. |
 
 ### Cross-Conversation Tools
@@ -68,21 +68,21 @@ These tools require the **"Can Send Prompt"** or **"Can start conversation"** fl
 
 These tools require the **"Can Send Prompt"** flag or appropriate permissions:
 
-| Tool                              | Description                                                                            |
-| --------------------------------- | -------------------------------------------------------------------------------------- |
-| `mitto_conversation_archive`      | Archive or unarchive a conversation                                                    |
-| `mitto_conversation_delete`       | Delete a child conversation (caller must be parent)                                    |
-| `mitto_conversation_wait`         | Wait until an event occurs in a conversation (agent finishes responding, or beads issues reach a target status) |
-| `mitto_conversation_update`       | Update conversation properties: title, user-defined metadata, and loop prompt configuration. |
+| Tool                         | Description                                                                                                     |
+| ---------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `mitto_conversation_archive` | Archive or unarchive a conversation                                                                             |
+| `mitto_conversation_delete`  | Delete a child conversation (caller must be parent)                                                             |
+| `mitto_conversation_wait`    | Wait until an event occurs in a conversation (agent finishes responding, or beads issues reach a target status) |
+| `mitto_conversation_update`  | Update conversation properties: title, user-defined metadata, and loop prompt configuration.                    |
 
 ### Parent-Child Task Coordination Tools
 
 These tools require the **"Can Send Prompt"** flag:
 
-| Tool                         | Description                                                                    |
-| ---------------------------- | ------------------------------------------------------------------------------ |
-| `mitto_children_tasks_wait`  | Send a progress inquiry to child conversations and block until they all report back |
-| `mitto_children_tasks_report`| Report task completion/progress back to a waiting parent conversation          |
+| Tool                          | Description                                                                         |
+| ----------------------------- | ----------------------------------------------------------------------------------- |
+| `mitto_children_tasks_wait`   | Send a progress inquiry to child conversations and block until they all report back |
+| `mitto_children_tasks_report` | Report task completion/progress back to a waiting parent conversation               |
 
 ## Enabling Permissions
 

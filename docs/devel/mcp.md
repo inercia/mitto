@@ -154,8 +154,8 @@ Lists all configured workspaces with settings and metadata from `.mittorc` files
 
 **Optional parameter:**
 
-| Parameter | Type   | Description                                                   |
-| --------- | ------ | ------------------------------------------------------------- |
+| Parameter | Type   | Description                                                  |
+| --------- | ------ | ------------------------------------------------------------ |
 | `filter`  | string | Filter workspaces: `"active"`, `"archived"`, or omit for all |
 
 **Filter values:**
@@ -180,25 +180,25 @@ Updates a workspace's `.mittorc` configuration: descriptive metadata and/or the 
 
 **Parameters:**
 
-| Parameter               | Type    | Description                                                                                       |
-| ----------------------- | ------- | ------------------------------------------------------------------------------------------------- |
-| `self_id`               | string  | Required. Identifies the calling session.                                                         |
-| `workspace`             | string  | Target workspace UUID (from `mitto_workspace_list`). Omit to target the caller's own workspace.  |
-| `description`           | string  | Workspace description. Omit to leave unchanged; pass `""` to clear.                              |
-| `url`                   | string  | Associated URL (e.g. repo URL). Omit to leave unchanged; pass `""` to clear.                     |
-| `group`                 | string  | Grouping label. Omit to leave unchanged; pass `""` to clear.                                     |
-| `user_data_schema`      | array   | List of `{name, description, type}` field definitions. `type` is `"string"` (default), `"url"`, or `"filename"`. Nil/absent = leave schema untouched. |
-| `user_data_schema_merge`| boolean | If `true` (default), merge fields by name with the existing schema. If `false`, replace the whole schema (an empty list clears it). |
+| Parameter                | Type    | Description                                                                                                                                           |
+| ------------------------ | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `self_id`                | string  | Required. Identifies the calling session.                                                                                                             |
+| `workspace`              | string  | Target workspace UUID (from `mitto_workspace_list`). Omit to target the caller's own workspace.                                                       |
+| `description`            | string  | Workspace description. Omit to leave unchanged; pass `""` to clear.                                                                                   |
+| `url`                    | string  | Associated URL (e.g. repo URL). Omit to leave unchanged; pass `""` to clear.                                                                          |
+| `group`                  | string  | Grouping label. Omit to leave unchanged; pass `""` to clear.                                                                                          |
+| `user_data_schema`       | array   | List of `{name, description, type}` field definitions. `type` is `"string"` (default), `"url"`, or `"filename"`. Nil/absent = leave schema untouched. |
+| `user_data_schema_merge` | boolean | If `true` (default), merge fields by name with the existing schema. If `false`, replace the whole schema (an empty list clears it).                   |
 
 **Returns:**
 
-| Field            | Description                                        |
-| ---------------- | -------------------------------------------------- |
-| `success`        | Whether the update succeeded                       |
-| `error`          | Error message (only on failure)                    |
-| `workspace_uuid` | UUID of the updated workspace                      |
-| `working_dir`    | Working directory of the updated workspace         |
-| `updated`        | List of field names that were changed              |
+| Field            | Description                                          |
+| ---------------- | ---------------------------------------------------- |
+| `success`        | Whether the update succeeded                         |
+| `error`          | Error message (only on failure)                      |
+| `workspace_uuid` | UUID of the updated workspace                        |
+| `working_dir`    | Working directory of the updated workspace           |
+| `updated`        | List of field names that were changed                |
 | `metadata`       | The workspace's new `.mittorc` metadata after update |
 
 **Cross-workspace access:** Targeting another workspace requires the `Can interact with other workspaces` flag and an interactive user confirmation dialog.
@@ -234,42 +234,42 @@ Returns:
 
 Get detailed properties of a specific conversation by ID. Returns metadata, status, and runtime info including whether the agent is currently replying.
 
-| Parameter         | Type   | Required | Description                                                                                                                                                              |
-| ----------------- | ------ | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `self_id`         | string | Yes      | YOUR session ID (the caller)                                                                                                                                             |
-| `conversation_id` | string | Yes      | Target conversation ID to query                                                                                                                                          |
+| Parameter         | Type   | Required | Description                                                                                                                                                             |
+| ----------------- | ------ | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `self_id`         | string | Yes      | YOUR session ID (the caller)                                                                                                                                            |
+| `conversation_id` | string | Yes      | Target conversation ID to query                                                                                                                                         |
 | `workspace`       | string | No       | Optional workspace UUID. When provided, validates the target conversation belongs to the specified workspace and triggers user confirmation for cross-workspace access. |
 
 Returns (same `ConversationDetails` as `mitto_conversation_get_current`):
 
-| Field               | Description                                   |
-| ------------------- | --------------------------------------------- |
-| `session_id`        | Session identifier                            |
-| `title`             | Session title                                 |
-| `description`       | Session description                           |
-| `acp_server`        | ACP server name                               |
-| `working_dir`       | Working directory                             |
-| `created_at`        | Creation timestamp (ISO 8601)                 |
-| `updated_at`        | Last update timestamp (ISO 8601)              |
-| `message_count`     | Number of messages                            |
-| `status`            | Session status                                |
-| `archived`          | Whether session is archived                   |
-| `session_folder`    | Full path to session directory                |
-| `is_running`        | Whether session is currently active           |
-| `is_prompting`      | Whether agent is processing a prompt          |
-| `is_locked`         | Whether session is locked                     |
-| `last_seq`          | Last sequence number                          |
-| `parent_session_id` | Parent session ID (if this is a child)        |
+| Field               | Description                            |
+| ------------------- | -------------------------------------- |
+| `session_id`        | Session identifier                     |
+| `title`             | Session title                          |
+| `description`       | Session description                    |
+| `acp_server`        | ACP server name                        |
+| `working_dir`       | Working directory                      |
+| `created_at`        | Creation timestamp (ISO 8601)          |
+| `updated_at`        | Last update timestamp (ISO 8601)       |
+| `message_count`     | Number of messages                     |
+| `status`            | Session status                         |
+| `archived`          | Whether session is archived            |
+| `session_folder`    | Full path to session directory         |
+| `is_running`        | Whether session is currently active    |
+| `is_prompting`      | Whether agent is processing a prompt   |
+| `is_locked`         | Whether session is locked              |
+| `last_seq`          | Last sequence number                   |
+| `parent_session_id` | Parent session ID (if this is a child) |
 
 #### `mitto_conversation_send_prompt`
 
 Send a prompt to another conversation's queue. Requires `can_send_prompt` flag on the source session. Pass `"self"` (or your own conversation ID) as `conversation_id` to enqueue on your own conversation — the self-dispatch pattern used by loop drivers to queue their next phase.
 
-| Parameter         | Type   | Required | Description                                                                                                                                                              |
-| ----------------- | ------ | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `self_id`         | string | Yes      | YOUR session ID (the caller)                                                                                                                                             |
-| `conversation_id` | string | Yes      | Target conversation ID, or `"self"` / your own ID to enqueue on yourself                                                                                                 |
-| `prompt`          | string | Yes      | The prompt text to send                                                                                                                                                  |
+| Parameter         | Type   | Required | Description                                                                                                                                                             |
+| ----------------- | ------ | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `self_id`         | string | Yes      | YOUR session ID (the caller)                                                                                                                                            |
+| `conversation_id` | string | Yes      | Target conversation ID, or `"self"` / your own ID to enqueue on yourself                                                                                                |
+| `prompt`          | string | Yes      | The prompt text to send                                                                                                                                                 |
 | `workspace`       | string | No       | Optional workspace UUID. When provided, validates the target conversation belongs to the specified workspace and triggers user confirmation for cross-workspace access. |
 
 #### `mitto_conversation_wait`
@@ -291,55 +291,55 @@ Wait until something happens in a conversation. Two conditions are supported:
   `consecutive_failures` in the output instead of looking identical to a
   healthy timeout.
 
-| Parameter            | Type     | Required | Description                                                                                                                                                              |
-| -------------------- | -------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `self_id`            | string   | Yes      | YOUR session ID (the caller)                                                                                                                                             |
-| `conversation_id`    | string   | Yes      | Target conversation to wait on (used for working_dir resolution when `what = "beads_issues_reached_state"`)                                                              |
-| `what`               | string   | Yes      | Condition to wait for: `"agent_responded"` or `"beads_issues_reached_state"`                                                                                             |
-| `timeout_seconds`    | int      | No       | Timeout in seconds (default: 600 for `agent_responded`; default: 14400 / 4 h for `beads_issues_reached_state`)                                                          |
-| `workspace`          | string   | No       | Optional workspace UUID. When provided, validates the target conversation belongs to the specified workspace and triggers user confirmation for cross-workspace access. |
-| `beads_issues`       | string[] | Cond.    | Required when `what = "beads_issues_reached_state"`: the bead IDs to observe.                                                                                            |
-| `beads_target_state` | string   | Cond.    | Required when `what = "beads_issues_reached_state"`: the bd status to wait for (e.g. `"closed"`, `"in_progress"`). Case-insensitive.                                     |
+| Parameter            | Type     | Required | Description                                                                                                                                                                |
+| -------------------- | -------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `self_id`            | string   | Yes      | YOUR session ID (the caller)                                                                                                                                               |
+| `conversation_id`    | string   | Yes      | Target conversation to wait on (used for working_dir resolution when `what = "beads_issues_reached_state"`)                                                                |
+| `what`               | string   | Yes      | Condition to wait for: `"agent_responded"` or `"beads_issues_reached_state"`                                                                                               |
+| `timeout_seconds`    | int      | No       | Timeout in seconds (default: 600 for `agent_responded`; default: 14400 / 4 h for `beads_issues_reached_state`)                                                             |
+| `workspace`          | string   | No       | Optional workspace UUID. When provided, validates the target conversation belongs to the specified workspace and triggers user confirmation for cross-workspace access.    |
+| `beads_issues`       | string[] | Cond.    | Required when `what = "beads_issues_reached_state"`: the bead IDs to observe.                                                                                              |
+| `beads_target_state` | string   | Cond.    | Required when `what = "beads_issues_reached_state"`: the bd status to wait for (e.g. `"closed"`, `"in_progress"`). Case-insensitive.                                       |
 | `beads_match`        | string   | No       | Aggregation for `beads_issues_reached_state`: `"all"` (default) completes only when every listed bead reaches `beads_target_state`; `"any"` completes as soon as one does. |
 
 Returns:
 
-| Field            | Description                                                                                                          |
-| ---------------- | -------------------------------------------------------------------------------------------------------------------- |
-| `success`        | Whether the wait completed successfully                                                                              |
-| `what`           | The condition that was waited on                                                                                     |
-| `timed_out`      | true if the condition was not met within the timeout                                                                 |
-| `still_prompting`| true if the target agent is still responding at timeout (only meaningful for `agent_responded`)                       |
-| `message`        | Human-readable description of the wait outcome                                                                       |
-| `error`          | Error message if the operation failed                                                                                |
-| `reached_issues` | Subset of `beads_issues` that satisfied the predicate (populated when `what = "beads_issues_reached_state"`)          |
-| `pending_issues` | Subset of `beads_issues` that did NOT reach the target state at return time (typically populated on timeout)         |
-| `current_states` | Snapshot of `id -> current bd status` at return time                                                                 |
-| `degraded`       | true if one or more `bd` evaluations failed shortly before the wait returned (`what = "beads_issues_reached_state"`); distinguishes a genuinely healthy timeout from one masking a failing `bd` (mitto-f8zx) |
-| `consecutive_failures` | Number of consecutive `bd` evaluation failures observed immediately before the wait returned; 0 when not degraded |
+| Field                  | Description                                                                                                                                                                                                  |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `success`              | Whether the wait completed successfully                                                                                                                                                                      |
+| `what`                 | The condition that was waited on                                                                                                                                                                             |
+| `timed_out`            | true if the condition was not met within the timeout                                                                                                                                                         |
+| `still_prompting`      | true if the target agent is still responding at timeout (only meaningful for `agent_responded`)                                                                                                              |
+| `message`              | Human-readable description of the wait outcome                                                                                                                                                               |
+| `error`                | Error message if the operation failed                                                                                                                                                                        |
+| `reached_issues`       | Subset of `beads_issues` that satisfied the predicate (populated when `what = "beads_issues_reached_state"`)                                                                                                 |
+| `pending_issues`       | Subset of `beads_issues` that did NOT reach the target state at return time (typically populated on timeout)                                                                                                 |
+| `current_states`       | Snapshot of `id -> current bd status` at return time                                                                                                                                                         |
+| `degraded`             | true if one or more `bd` evaluations failed shortly before the wait returned (`what = "beads_issues_reached_state"`); distinguishes a genuinely healthy timeout from one masking a failing `bd` (mitto-f8zx) |
+| `consecutive_failures` | Number of consecutive `bd` evaluation failures observed immediately before the wait returned; 0 when not degraded                                                                                            |
 
 #### `mitto_ui_options`
 
 Present an options menu to the user. Requires `can_prompt_user` flag. Supports up to 20 options,
 optional per-option descriptions, and an optional free-text input field.
 
-| Parameter              | Type     | Required | Description                                        |
-| ---------------------- | -------- | -------- | -------------------------------------------------- |
-| `self_id`              | string   | Yes      | YOUR session ID (the caller)                       |
-| `question`             | string   | No       | The question to display (default: "Please select") |
-| `options`              | object[] | No       | List of `{label, description}` objects (max 20)    |
-| `allow_free_text`      | bool     | No       | Allow user to type a custom response               |
-| `free_text_placeholder`| string   | No       | Placeholder text for the free-text input           |
-| `timeout_seconds`      | int      | No       | Timeout in seconds (default: 300)                  |
+| Parameter               | Type     | Required | Description                                        |
+| ----------------------- | -------- | -------- | -------------------------------------------------- |
+| `self_id`               | string   | Yes      | YOUR session ID (the caller)                       |
+| `question`              | string   | No       | The question to display (default: "Please select") |
+| `options`               | object[] | No       | List of `{label, description}` objects (max 20)    |
+| `allow_free_text`       | bool     | No       | Allow user to type a custom response               |
+| `free_text_placeholder` | string   | No       | Placeholder text for the free-text input           |
+| `timeout_seconds`       | int      | No       | Timeout in seconds (default: 300)                  |
 
 Returns:
 
-| Field      | Description                                      |
-| ---------- | ------------------------------------------------ |
-| `selected` | Label of the selected option (if option chosen)  |
-| `index`    | 0-based index of selected option (-1 if none)    |
-| `free_text`| User-typed text (if free text was entered)       |
-| `timed_out`| true if no response within timeout               |
+| Field       | Description                                     |
+| ----------- | ----------------------------------------------- |
+| `selected`  | Label of the selected option (if option chosen) |
+| `index`     | 0-based index of selected option (-1 if none)   |
+| `free_text` | User-typed text (if free text was entered)      |
+| `timed_out` | true if no response within timeout              |
 
 #### `mitto_ui_form`
 
@@ -350,21 +350,21 @@ fieldset, legend, div, span, p, br, hr, headings). Scripts, styles, event handle
 (`<a>`/`href`), iframes, and all other elements are stripped. Submit/cancel buttons are added
 automatically. Form values are returned as key-value pairs keyed by each element's `name` attribute.
 
-| Parameter         | Type   | Required | Description                                         |
-| ----------------- | ------ | -------- | --------------------------------------------------- |
-| `self_id`         | string | Yes      | YOUR session ID (the caller)                        |
-| `title`           | string | Yes      | Dialog title shown above the form                   |
-| `html`            | string | Yes      | HTML form content (sanitized before rendering)      |
-| `timeout_seconds` | int    | No       | Timeout in seconds (default: 600)                   |
+| Parameter         | Type   | Required | Description                                    |
+| ----------------- | ------ | -------- | ---------------------------------------------- |
+| `self_id`         | string | Yes      | YOUR session ID (the caller)                   |
+| `title`           | string | Yes      | Dialog title shown above the form              |
+| `html`            | string | Yes      | HTML form content (sanitized before rendering) |
+| `timeout_seconds` | int    | No       | Timeout in seconds (default: 600)              |
 
 Returns:
 
-| Field       | Description                                                |
-| ----------- | ---------------------------------------------------------- |
-| `submitted` | true if the user submitted the form                        |
-| `cancelled` | true if the user clicked Cancel                            |
-| `timed_out` | true if no response within timeout                         |
-| `values`    | Object of field name → value pairs (when submitted)        |
+| Field       | Description                                         |
+| ----------- | --------------------------------------------------- |
+| `submitted` | true if the user submitted the form                 |
+| `cancelled` | true if the user clicked Cancel                     |
+| `timed_out` | true if no response within timeout                  |
+| `values`    | Object of field name → value pairs (when submitted) |
 
 Supported input types: `text`, `number`, `email`, `url`, `tel`, `password`, `date`, `time`,
 `checkbox`, `radio`, `hidden`, `color`, `range`. Checkbox values are returned as `"true"`/`"false"`.
@@ -377,9 +377,18 @@ question:
 
 ```html
 <p>Scope of the drop:</p>
-<label><input type="radio" name="scope" value="mcp" checked> Drop only MCP requests</label>
-<label><input type="radio" name="scope" value="path"> Drop by literal path match</label>
-<label><input type="radio" name="scope" value="all"> Blanket: drop all spans</label>
+<label
+  ><input type="radio" name="scope" value="mcp" checked /> Drop only MCP
+  requests</label
+>
+<label
+  ><input type="radio" name="scope" value="path" /> Drop by literal path
+  match</label
+>
+<label
+  ><input type="radio" name="scope" value="all" /> Blanket: drop all
+  spans</label
+>
 ```
 
 Do **not** render the question as inline text/`<strong>` immediately followed by the first option,
@@ -393,7 +402,9 @@ block-level, but wrapping each option in a `<label>` is the reliable pattern.)
 opening Mitto's internal file viewer (`viewer.html`) at an optional line:
 
 ```html
-<span data-mitto-file="internal/web/server.go" data-mitto-line="142">internal/web/server.go:142</span>
+<span data-mitto-file="internal/web/server.go" data-mitto-line="142"
+  >internal/web/server.go:142</span
+>
 ```
 
 - `data-mitto-file` — a **workspace-relative** path. Absolute paths (leading `/`), `..` traversal,
@@ -412,12 +423,12 @@ Create a new conversation. By default creates it in the same workspace as the ca
 
 The new conversation inherits the workspace configuration (ACP server, working directory) from the calling session. This is useful for agents that want to spawn sub-conversations for parallel work or delegate tasks.
 
-| Parameter        | Type   | Required | Description                                                                                                                                                                              |
-| ---------------- | ------ | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `self_id`        | string | Yes      | YOUR session ID (the caller)                                                                                                                                                             |
-| `title`          | string | No       | Title for the new conversation                                                                                                                                                           |
-| `initial_prompt` | string | No       | Initial message to queue for the new session                                                                                                                                             |
-| `acp_server`     | string | No       | Optional ACP server name to use (must have a workspace configured for the current folder). Cannot be used together with `workspace`.                                                     |
+| Parameter        | Type   | Required | Description                                                                                                                                                                                        |
+| ---------------- | ------ | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `self_id`        | string | Yes      | YOUR session ID (the caller)                                                                                                                                                                       |
+| `title`          | string | No       | Title for the new conversation                                                                                                                                                                     |
+| `initial_prompt` | string | No       | Initial message to queue for the new session                                                                                                                                                       |
+| `acp_server`     | string | No       | Optional ACP server name to use (must have a workspace configured for the current folder). Cannot be used together with `workspace`.                                                               |
 | `workspace`      | string | No       | Optional workspace UUID. Creates the conversation in the specified workspace instead of the caller's. Cannot be used with `acp_server`. Requires user confirmation for cross-workspace operations. |
 
 **When `workspace` is specified**, the new conversation uses the target workspace's ACP server and working directory. The `acp_server` parameter cannot be used simultaneously — the workspace determines the ACP server.
@@ -457,18 +468,18 @@ Permanently delete a conversation. This tool supports two modes:
 
 The target conversation is gracefully stopped (waits for any active response to complete) and then permanently deleted from disk, along with all of its descendants. Deleted conversations cannot be recovered.
 
-| Parameter         | Type   | Required | Description                                                        |
-| ----------------- | ------ | -------- | ------------------------------------------------------------------ |
-| `self_id`         | string | Yes      | Your session ID (the caller)                                       |
+| Parameter         | Type   | Required | Description                                                                 |
+| ----------------- | ------ | -------- | --------------------------------------------------------------------------- |
+| `self_id`         | string | Yes      | Your session ID (the caller)                                                |
 | `conversation_id` | string | Yes      | Child conversation ID to delete, or `"self"` / your own ID to self-destruct |
 
 Returns:
 
-| Field             | Description                                            |
-| ----------------- | ------------------------------------------------------ |
+| Field             | Description                                               |
+| ----------------- | --------------------------------------------------------- |
 | `success`         | Whether the deletion (or self-destruct request) succeeded |
-| `conversation_id` | The deleted conversation's ID                          |
-| `error`           | Error message if deletion failed                       |
+| `conversation_id` | The deleted conversation's ID                             |
+| `error`           | Error message if deletion failed                          |
 
 **Security:** Only the parent that created a child can delete it. Attempting to delete a conversation that is neither your child nor your own returns `"permission denied: can only delete your own child conversations"`.
 
@@ -502,24 +513,24 @@ sequenceDiagram
 
 Update properties of a conversation. Supports partial updates — only specified fields are changed, others are left untouched. Any registered session can update any conversation (no parent-child restriction). Pass `"self"` (or your own conversation ID) as `conversation_id` to update your own conversation (e.g. a loop conversation disabling its own looping).
 
-| Parameter         | Type                            | Required | Description                                                    |
-| ----------------- | ------------------------------- | -------- | -------------------------------------------------------------- |
-| `self_id`         | string                          | Yes      | Your session ID                                                |
-| `conversation_id` | string                          | Yes      | Target conversation to update, or `"self"`/your own ID to update yourself |
-| `name`            | string                          | No       | New conversation title (omit to leave unchanged)               |
-| `user_data`       | `[{name, value}]`               | No       | User data attributes to set (validated against workspace schema) |
-| `user_data_merge` | bool                            | No       | If `true` (default), merge with existing attributes; if `false`, replace all |
+| Parameter         | Type              | Required | Description                                                                  |
+| ----------------- | ----------------- | -------- | ---------------------------------------------------------------------------- |
+| `self_id`         | string            | Yes      | Your session ID                                                              |
+| `conversation_id` | string            | Yes      | Target conversation to update, or `"self"`/your own ID to update yourself    |
+| `name`            | string            | No       | New conversation title (omit to leave unchanged)                             |
+| `user_data`       | `[{name, value}]` | No       | User data attributes to set (validated against workspace schema)             |
+| `user_data_merge` | bool              | No       | If `true` (default), merge with existing attributes; if `false`, replace all |
 
 Returns:
 
-| Field             | Description                                     |
-| ----------------- | ----------------------------------------------- |
-| `success`         | Whether the update succeeded                    |
-| `conversation_id` | The updated conversation's ID                   |
-| `updated`         | List of property names that were changed         |
-| `name`            | Current name after update                       |
-| `user_data`       | Current user data attributes after update       |
-| `error`           | Error message if update failed                  |
+| Field             | Description                               |
+| ----------------- | ----------------------------------------- |
+| `success`         | Whether the update succeeded              |
+| `conversation_id` | The updated conversation's ID             |
+| `updated`         | List of property names that were changed  |
+| `name`            | Current name after update                 |
+| `user_data`       | Current user data attributes after update |
+| `error`           | Error message if update failed            |
 
 **User data validation:**
 
@@ -640,21 +651,21 @@ Returns:
 
 Get and search through the conversation history of a session. Returns events with powerful filtering. Useful for recalling past decisions, finding specific tool calls, searching for errors, or reviewing what happened. Defaults to your own conversation if `conversation_id` is omitted.
 
-| Parameter         | Type     | Required | Description                                                         |
-| ----------------- | -------- | -------- | ------------------------------------------------------------------- |
-| `self_id`         | string   | Yes      | YOUR session ID (the caller)                                        |
-| `conversation_id` | string   | No       | Target conversation (defaults to self if omitted)                   |
+| Parameter         | Type     | Required | Description                                                                                                                                                                                                             |
+| ----------------- | -------- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `self_id`         | string   | Yes      | YOUR session ID (the caller)                                                                                                                                                                                            |
+| `conversation_id` | string   | No       | Target conversation (defaults to self if omitted)                                                                                                                                                                       |
 | `event_types`     | string[] | No       | Filter by event types (omit for all). Valid: `user_prompt`, `agent_message`, `agent_thought`, `tool_call`, `tool_call_update`, `plan`, `permission`, `file_read`, `file_write`, `error`, `session_start`, `session_end` |
-| `text_contains`   | string   | No       | Only events whose text content contains this substring (case-insensitive) |
-| `text_excludes`   | string   | No       | Exclude events whose text content contains this substring (case-insensitive) |
-| `after_seq`       | int      | No       | Only events with seq > this value                                   |
-| `before_seq`      | int      | No       | Only events with seq < this value                                   |
-| `since`           | string   | No       | Only events at/after this time. RFC 3339 timestamp (e.g. `2024-01-15T10:30:00Z`) or relative duration ago (e.g. `3m`, `1h`, `2h30m`) |
-| `until`           | string   | No       | Only events at/before this time. Same format as `since`             |
-| `last_n`          | int      | No       | Return last N matching events (default: 50, max: 200)               |
-| `offset`          | int      | No       | Skip this many matching events from the end (for backward pagination) |
-| `include_data`    | bool     | No       | Include full event data in results (default: true)                  |
-| `tool_name`       | string   | No       | For `tool_call` events: filter by tool name/title substring         |
+| `text_contains`   | string   | No       | Only events whose text content contains this substring (case-insensitive)                                                                                                                                               |
+| `text_excludes`   | string   | No       | Exclude events whose text content contains this substring (case-insensitive)                                                                                                                                            |
+| `after_seq`       | int      | No       | Only events with seq > this value                                                                                                                                                                                       |
+| `before_seq`      | int      | No       | Only events with seq < this value                                                                                                                                                                                       |
+| `since`           | string   | No       | Only events at/after this time. RFC 3339 timestamp (e.g. `2024-01-15T10:30:00Z`) or relative duration ago (e.g. `3m`, `1h`, `2h30m`)                                                                                    |
+| `until`           | string   | No       | Only events at/before this time. Same format as `since`                                                                                                                                                                 |
+| `last_n`          | int      | No       | Return last N matching events (default: 50, max: 200)                                                                                                                                                                   |
+| `offset`          | int      | No       | Skip this many matching events from the end (for backward pagination)                                                                                                                                                   |
+| `include_data`    | bool     | No       | Include full event data in results (default: true)                                                                                                                                                                      |
+| `tool_name`       | string   | No       | For `tool_call` events: filter by tool name/title substring                                                                                                                                                             |
 
 Returns:
 
@@ -670,19 +681,20 @@ Returns:
 
 Each event contains:
 
-| Field       | Description                                                |
-| ----------- | ---------------------------------------------------------- |
-| `seq`       | Sequence number                                            |
-| `type`      | Event type string                                          |
-| `timestamp` | ISO 8601 timestamp                                         |
-| `summary`   | Human-readable one-liner (always present, max 150 chars)   |
-| `data`      | Full event data (omitted when `include_data` is false)     |
+| Field       | Description                                              |
+| ----------- | -------------------------------------------------------- |
+| `seq`       | Sequence number                                          |
+| `type`      | Event type string                                        |
+| `timestamp` | ISO 8601 timestamp                                       |
+| `summary`   | Human-readable one-liner (always present, max 150 chars) |
+| `data`      | Full event data (omitted when `include_data` is false)   |
 
 **Text search** covers the relevant field for each event type: message text for prompts, HTML content for agent messages, thought text, tool call titles and raw input/output, plan entry content, permission titles, file paths, error messages, etc.
 
 **Data truncation**: Long string fields in `data` are truncated to 2048 characters to keep response sizes manageable.
 
 **Example use cases:**
+
 - Search for all tool calls that read a specific file: `event_types: ["tool_call"], text_contains: "auth.go"`
 - Find all errors in a session: `event_types: ["error"]`
 - Get the last 10 user prompts: `event_types: ["user_prompt"], last_n: 10`
@@ -694,77 +706,78 @@ Each event contains:
 
 List all prompts available in a workspace, returning basic metadata for each but NOT the full prompt text. This reflects the merged/effective prompt list from all sources (global files, settings, ACP-specific, workspace directory, workspace inline).
 
-| Parameter   | Type   | Required | Description                                          |
-| ----------- | ------ | -------- | ---------------------------------------------------- |
-| `self_id`   | string | Yes      | YOUR session ID (the caller)                         |
-| `workspace` | string | No       | Optional workspace UUID for cross-workspace access   |
+| Parameter   | Type   | Required | Description                                        |
+| ----------- | ------ | -------- | -------------------------------------------------- |
+| `self_id`   | string | Yes      | YOUR session ID (the caller)                       |
+| `workspace` | string | No       | Optional workspace UUID for cross-workspace access |
 
 Returns:
 
-| Field        | Description                                    |
-| ------------ | ---------------------------------------------- |
-| `success`    | Whether the operation succeeded                |
-| `prompts`    | Array of prompt metadata (see below)           |
-| `working_dir`| Working directory the prompts were loaded from |
-| `error`      | Error message if the operation failed          |
+| Field         | Description                                    |
+| ------------- | ---------------------------------------------- |
+| `success`     | Whether the operation succeeded                |
+| `prompts`     | Array of prompt metadata (see below)           |
+| `working_dir` | Working directory the prompts were loaded from |
+| `error`       | Error message if the operation failed          |
 
 Each prompt in `prompts` contains:
 
-| Field              | Description                                          |
-| ------------------ | ---------------------------------------------------- |
-| `name`             | Prompt display name                                  |
-| `description`      | Optional description                                 |
-| `group`            | Optional group name for organizing prompts           |
-| `background_color` | Optional hex color for the prompt button             |
-| `source`           | Origin: "file", "settings", "workspace", "builtin"  |
-| `enabled`          | Whether enabled (null = enabled, false = disabled)   |
+| Field              | Description                                        |
+| ------------------ | -------------------------------------------------- |
+| `name`             | Prompt display name                                |
+| `description`      | Optional description                               |
+| `group`            | Optional group name for organizing prompts         |
+| `background_color` | Optional hex color for the prompt button           |
+| `source`           | Origin: "file", "settings", "workspace", "builtin" |
+| `enabled`          | Whether enabled (null = enabled, false = disabled) |
 
 #### `mitto_prompt_get`
 
 Get full details for a specific prompt in a workspace, including the complete prompt text and all metadata. Prompt name matching is case-insensitive.
 
-| Parameter   | Type   | Required | Description                                          |
-| ----------- | ------ | -------- | ---------------------------------------------------- |
-| `self_id`   | string | Yes      | YOUR session ID (the caller)                         |
-| `name`      | string | Yes      | Prompt name (case-insensitive match)                 |
-| `workspace` | string | No       | Optional workspace UUID for cross-workspace access   |
+| Parameter   | Type   | Required | Description                                        |
+| ----------- | ------ | -------- | -------------------------------------------------- |
+| `self_id`   | string | Yes      | YOUR session ID (the caller)                       |
+| `name`      | string | Yes      | Prompt name (case-insensitive match)               |
+| `workspace` | string | No       | Optional workspace UUID for cross-workspace access |
 
 Returns:
 
-| Field     | Description                                    |
-| --------- | ---------------------------------------------- |
-| `success` | Whether the operation succeeded                |
-| `prompt`  | Full prompt details (see below)                |
-| `error`   | Error message if the operation failed          |
+| Field     | Description                           |
+| --------- | ------------------------------------- |
+| `success` | Whether the operation succeeded       |
+| `prompt`  | Full prompt details (see below)       |
+| `error`   | Error message if the operation failed |
 
 The `prompt` object contains:
 
-| Field              | Description                                          |
-| ------------------ | ---------------------------------------------------- |
-| `name`             | Prompt display name                                  |
-| `prompt`           | Full prompt text                                     |
-| `description`      | Optional description                                 |
-| `group`            | Optional group name                                  |
-| `background_color` | Optional hex color                                   |
-| `source`           | Origin: "file", "settings", "workspace", "builtin"  |
-| `enabled`          | Whether enabled (null = enabled, false = disabled)   |
+| Field              | Description                                        |
+| ------------------ | -------------------------------------------------- |
+| `name`             | Prompt display name                                |
+| `prompt`           | Full prompt text                                   |
+| `description`      | Optional description                               |
+| `group`            | Optional group name                                |
+| `background_color` | Optional hex color                                 |
+| `source`           | Origin: "file", "settings", "workspace", "builtin" |
+| `enabled`          | Whether enabled (null = enabled, false = disabled) |
 
 #### `mitto_prompt_update`
 
 Update a prompt's details including its full text, description, group, color, and enabled status. If the prompt originates from a global source, the update is saved to the workspace-local `.mitto/prompts/` folder, creating a workspace-level override without modifying the global source. Can also create new prompts.
 
-| Parameter          | Type   | Required | Description                                     |
-| ------------------ | ------ | -------- | ----------------------------------------------- |
-| `self_id`          | string | Yes      | YOUR session ID (the caller)                    |
-| `name`             | string | Yes      | Prompt name to update or create                 |
-| `workspace`        | string | No       | Optional workspace UUID                         |
-| `prompt`           | string | No       | New prompt text                                 |
-| `description`      | string | No       | New description                                 |
-| `background_color` | string | No       | New background color (hex)                      |
-| `group`            | string | No       | New group name                                  |
-| `enabled`          | bool   | No       | Enable/disable the prompt                       |
+| Parameter          | Type   | Required | Description                     |
+| ------------------ | ------ | -------- | ------------------------------- |
+| `self_id`          | string | Yes      | YOUR session ID (the caller)    |
+| `name`             | string | Yes      | Prompt name to update or create |
+| `workspace`        | string | No       | Optional workspace UUID         |
+| `prompt`           | string | No       | New prompt text                 |
+| `description`      | string | No       | New description                 |
+| `background_color` | string | No       | New background color (hex)      |
+| `group`            | string | No       | New group name                  |
+| `enabled`          | bool   | No       | Enable/disable the prompt       |
 
 **Key behavior:**
+
 - If only `enabled` is provided: Uses optimized toggle logic (updates `.mitto/prompts/` frontmatter or `.mittorc`)
 - If content/metadata fields are provided: Writes a full prompt file to `.mitto/prompts/<slug>.md`
 - For global prompts: Creates a workspace-local override (does NOT modify the global source)
@@ -772,22 +785,22 @@ Update a prompt's details including its full text, description, group, color, an
 
 Returns:
 
-| Field     | Description                              |
-| --------- | ---------------------------------------- |
-| `success` | Whether the update succeeded             |
-| `path`    | File path of the saved/updated prompt    |
-| `error`   | Error message if the operation failed    |
+| Field     | Description                           |
+| --------- | ------------------------------------- |
+| `success` | Whether the update succeeded          |
+| `path`    | File path of the saved/updated prompt |
+| `error`   | Error message if the operation failed |
 
 ### Permission Flags
 
 Session-scoped tools check permissions at runtime:
 
-| Flag                     | Tools That Require It                                                       |
-| ------------------------ | --------------------------------------------------------------------------- |
-| `can_do_introspection`   | (None currently - for future tools)                                         |
-| `can_send_prompt`        | `mitto_conversation_send_prompt`, `mitto_children_tasks_wait`               |
-| `can_prompt_user`        | `mitto_ui_options`, `mitto_ui_textbox`, `mitto_ui_form`                                         |
-| `can_start_conversation` | `mitto_conversation_new`                                                    |
+| Flag                            | Tools That Require It                                                                                                                                                           |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `can_do_introspection`          | (None currently - for future tools)                                                                                                                                             |
+| `can_send_prompt`               | `mitto_conversation_send_prompt`, `mitto_children_tasks_wait`                                                                                                                   |
+| `can_prompt_user`               | `mitto_ui_options`, `mitto_ui_textbox`, `mitto_ui_form`                                                                                                                         |
+| `can_start_conversation`        | `mitto_conversation_new`                                                                                                                                                        |
 | `can_interact_other_workspaces` | `mitto_conversation_new`, `mitto_conversation_get`, `mitto_conversation_send_prompt`, `mitto_conversation_wait` (only when `workspace` parameter targets a different workspace) |
 
 **Note:** `mitto_conversation_list` is **always available** (no permission check).

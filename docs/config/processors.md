@@ -2,9 +2,9 @@
 
 Mitto supports processors that can run at four points in the conversation lifecycle:
 
-- **`on: userPrompt`** — Processors fire *before* the user's message is sent to the ACP agent. This is the standard phase for injecting context, prepending reminders, running scripts, or dispatching background prompts.
-- **`on: agentResponded`** — Processors fire *after* the agent finishes **each** turn — even while more queued messages are still pending. Only command-mode and prompt-mode are allowed here (text injection is not meaningful post-response).
-- **`on: agentIdle`** — Like `agentResponded`, but fires only once the agent has **drained its message queue and gone idle**. Within a burst of queued messages it fires a single time, at the idle breakpoint, so the processor sees the *complete* exchange rather than a partial mid-burst turn. Same execution rules as `agentResponded`. This is the right phase for memory/insight processors (e.g., `memorize-preferences`, `identify-user-data`, `auggie-update-rules`, `claude-update-memory`) that need full context. Cadence still applies and accumulates across the burst (see [Cadence Throttling](#cadence-throttling-cadence)).
+- **`on: userPrompt`** — Processors fire _before_ the user's message is sent to the ACP agent. This is the standard phase for injecting context, prepending reminders, running scripts, or dispatching background prompts.
+- **`on: agentResponded`** — Processors fire _after_ the agent finishes **each** turn — even while more queued messages are still pending. Only command-mode and prompt-mode are allowed here (text injection is not meaningful post-response).
+- **`on: agentIdle`** — Like `agentResponded`, but fires only once the agent has **drained its message queue and gone idle**. Within a burst of queued messages it fires a single time, at the idle breakpoint, so the processor sees the _complete_ exchange rather than a partial mid-burst turn. Same execution rules as `agentResponded`. This is the right phase for memory/insight processors (e.g., `memorize-preferences`, `identify-user-data`, `auggie-update-rules`, `claude-update-memory`) that need full context. Cadence still applies and accumulates across the burst (see [Cadence Throttling](#cadence-throttling-cadence)).
 - **`on: conversationClosed`** — Processors fire **once** when a session is archived, either manually from the UI or automatically due to inactivity. Fire-and-forget: the archive path does not wait for these processors to complete. Only command-mode and prompt-mode are allowed, and `match` must be `all` (there is a single close event — `first`/`allExceptFirst` are meaningless). `mutate`, `rerun`, `cadence`, `stopReasons`, and `excludeOrigins` are rejected. Because the session is no longer active, only `output: discard` is supported — notifications, action buttons, and user-data patches cannot be delivered back to the closed conversation. Prompt-mode processors can still reach the user with a workspace-scoped toast by calling the `mitto_workspace_ui_notify` MCP tool with `{{ .Workspace.UUID }}`. This phase is ideal for post-mortem knowledge extraction (see the builtin `extract-memories-on-close`).
 
 Within each phase, three execution modes are available:
@@ -27,6 +27,7 @@ From this tab you can:
 - See a red **error** badge (with the full error as a tooltip) for any processor that fails to load or validate — e.g. a missing mandatory `default` on a parameter
 
 Each processor shows badges indicating:
+
 - **Source**: `global` (orange), `workspace` (green), or `built-in` (blue)
 - **Mode**: `prompt` badge for prompt-mode processors
 - **Trigger**: `on: userPrompt / match: first`, etc.
@@ -132,9 +133,9 @@ conversations:
 
     processors:
       - when:
-          on: userPrompt    # "userPrompt" (before sending) or "agentResponded" (after response)
-          match: first      # "first", "all", or "allExceptFirst"
-        mutate: prepend     # "prepend" or "append" (text-mode only; required for text mode)
+          on: userPrompt # "userPrompt" (before sending) or "agentResponded" (after response)
+          match: first # "first", "all", or "allExceptFirst"
+        mutate: prepend # "prepend" or "append" (text-mode only; required for text mode)
         text: |
           You are a helpful AI coding assistant.
           Follow best practices and be concise.
@@ -175,11 +176,11 @@ For workspace-local processors (from `.mitto/processors/`), the toggle updates t
 
 **Source precedence:**
 
-| Source      | Badge Color | Description                                               |
-| ----------- | ----------- | --------------------------------------------------------- |
-| `workspace` | Green       | From `.mitto/processors/` in the workspace                |
-| `built-in`  | Blue        | Shipped with Mitto, in `MITTO_DIR/processors/builtin/`    |
-| `global`    | Orange      | User-created in `MITTO_DIR/processors/`                   |
+| Source      | Badge Color | Description                                            |
+| ----------- | ----------- | ------------------------------------------------------ |
+| `workspace` | Green       | From `.mitto/processors/` in the workspace             |
+| `built-in`  | Blue        | Shipped with Mitto, in `MITTO_DIR/processors/builtin/` |
+| `global`    | Orange      | User-created in `MITTO_DIR/processors/`                |
 
 ## Builtin Processors
 
@@ -187,24 +188,24 @@ Mitto ships with builtin processors that are automatically deployed to `MITTO_DI
 
 ### Included Builtin Processors
 
-| Processor             | Description                                                                                              | Phase / Match | Mode   | Enabled                                            |
-| --------------------- | -------------------------------------------------------------------------------------------------------- | ------------- | ------ | -------------------------------------------------- |
-| `session-context`     | Injects session identity, parent/child relationships, and available agents into the first message        | userPrompt / first | text   | Yes                                                |
-| `check-mcp-tools`     | Checks if Mitto MCP tools are available and suggests installation if missing                             | userPrompt / first | text   | Yes                                                |
-| `delegate-to-coder`   | Suggests delegating coding tasks to a faster model when using a premium reasoning model (Opus, o3, etc.) | userPrompt / first | text   | Yes (only activates for matching ACP servers)      |
-| `delegate-playwright` | Delegates Playwright browser automation to a faster model when using a premium reasoning model           | userPrompt / first | text   | Yes (requires smart model + `browser_*` MCP tools) |
-| `cleanup-children`    | Reminds the agent to clean up child conversations it no longer needs                                     | userPrompt / first | text   | Yes (requires ≥2 MCP-created children + delete tool) |
-| `use-ui-tools`        | Reminds the agent to use Mitto UI tools (options, textbox, form, notify) instead of text prompts | userPrompt / first | text   | Yes |
-| `beads-track-tasks`   | Reminds the agent to track tasks and knowledge in beads (`bd`) instead of markdown TODO lists | userPrompt / first | text   | Yes (requires `bd` command on PATH) |
-| `beads-ready-tasks`   | Reminds the agent to review available tasks (`bd ready`) when a beads database exists | userPrompt / first | text   | Yes (requires `bd` command + `.beads` directory) |
-| `memorize-preferences`| Extracts user preferences from conversations and saves them to a configurable file (AGENTS.md by default) | agentResponded / all | prompt | **Yes** (disable in Workspaces dialog or `.mittorc`) |
-| `auggie-manage-rules` | Generates initial `.augment/rules/` when none exist | userPrompt / first | prompt | **Yes** (Auggie only) |
-| `auggie-update-rules` | Updates `.augment/rules/` from conversation insights (every 6 turns or 15k tokens) | agentResponded / all | prompt | **Yes** (Auggie only) |
-| `claude-manage-memory`| Generates initial Claude Code memory files when none exist | userPrompt / first | prompt | **Yes** (Claude Code only) |
-| `claude-update-memory`| Updates Claude Code memory files from conversation insights (every 6 turns or 15k tokens) | agentResponded / all | prompt | **Yes** (Claude Code only) |
-| `identify-user-data`  | Detects user data values from conversations and sets them via MCP (every 2 turns or 6k tokens)           | agentResponded / all | prompt | **Yes** (only activates when `user_data` schema is defined in `.mittorc`) |
-| `identify-workspace-metadata` | Analyzes the project and fills in `metadata.description` and `metadata.url` in `.mittorc` when missing | userPrompt / first | prompt | **Yes** (only fires when `.mittorc` exists but lacks a description) |
-| `extract-memories-on-close` | On archive, extracts durable project knowledge from the conversation and saves it via `bd remember` | conversationClosed / all | prompt | **Yes** (requires `bd` command + `.beads` directory; skipped for loop sessions) |
+| Processor                     | Description                                                                                               | Phase / Match            | Mode   | Enabled                                                                         |
+| ----------------------------- | --------------------------------------------------------------------------------------------------------- | ------------------------ | ------ | ------------------------------------------------------------------------------- |
+| `session-context`             | Injects session identity, parent/child relationships, and available agents into the first message         | userPrompt / first       | text   | Yes                                                                             |
+| `check-mcp-tools`             | Checks if Mitto MCP tools are available and suggests installation if missing                              | userPrompt / first       | text   | Yes                                                                             |
+| `delegate-to-coder`           | Suggests delegating coding tasks to a faster model when using a premium reasoning model (Opus, o3, etc.)  | userPrompt / first       | text   | Yes (only activates for matching ACP servers)                                   |
+| `delegate-playwright`         | Delegates Playwright browser automation to a faster model when using a premium reasoning model            | userPrompt / first       | text   | Yes (requires smart model + `browser_*` MCP tools)                              |
+| `cleanup-children`            | Reminds the agent to clean up child conversations it no longer needs                                      | userPrompt / first       | text   | Yes (requires ≥2 MCP-created children + delete tool)                            |
+| `use-ui-tools`                | Reminds the agent to use Mitto UI tools (options, textbox, form, notify) instead of text prompts          | userPrompt / first       | text   | Yes                                                                             |
+| `beads-track-tasks`           | Reminds the agent to track tasks and knowledge in beads (`bd`) instead of markdown TODO lists             | userPrompt / first       | text   | Yes (requires `bd` command on PATH)                                             |
+| `beads-ready-tasks`           | Reminds the agent to review available tasks (`bd ready`) when a beads database exists                     | userPrompt / first       | text   | Yes (requires `bd` command + `.beads` directory)                                |
+| `memorize-preferences`        | Extracts user preferences from conversations and saves them to a configurable file (AGENTS.md by default) | agentResponded / all     | prompt | **Yes** (disable in Workspaces dialog or `.mittorc`)                            |
+| `auggie-manage-rules`         | Generates initial `.augment/rules/` when none exist                                                       | userPrompt / first       | prompt | **Yes** (Auggie only)                                                           |
+| `auggie-update-rules`         | Updates `.augment/rules/` from conversation insights (every 6 turns or 15k tokens)                        | agentResponded / all     | prompt | **Yes** (Auggie only)                                                           |
+| `claude-manage-memory`        | Generates initial Claude Code memory files when none exist                                                | userPrompt / first       | prompt | **Yes** (Claude Code only)                                                      |
+| `claude-update-memory`        | Updates Claude Code memory files from conversation insights (every 6 turns or 15k tokens)                 | agentResponded / all     | prompt | **Yes** (Claude Code only)                                                      |
+| `identify-user-data`          | Detects user data values from conversations and sets them via MCP (every 2 turns or 6k tokens)            | agentResponded / all     | prompt | **Yes** (only activates when `user_data` schema is defined in `.mittorc`)       |
+| `identify-workspace-metadata` | Analyzes the project and fills in `metadata.description` and `metadata.url` in `.mittorc` when missing    | userPrompt / first       | prompt | **Yes** (only fires when `.mittorc` exists but lacks a description)             |
+| `extract-memories-on-close`   | On archive, extracts durable project knowledge from the conversation and saves it via `bd remember`       | conversationClosed / all | prompt | **Yes** (requires `bd` command + `.beads` directory; skipped for loop sessions) |
 
 ### Managing Builtin Processors
 
@@ -227,9 +228,9 @@ reminders, or instructions to conversations.
 name: my-reminder
 description: "Adds a coding reminder to every message"
 when:
-  on: userPrompt   # required: "userPrompt", "agentResponded", "agentIdle", or "conversationClosed"
-  match: all       # required: "first", "all", or "allExceptFirst" (must be "all" for conversationClosed)
-mutate: append     # required for text mode: "prepend" or "append"
+  on: userPrompt # required: "userPrompt", "agentResponded", "agentIdle", or "conversationClosed"
+  match: all # required: "first", "all", or "allExceptFirst" (must be "all" for conversationClosed)
+mutate: append # required for text mode: "prepend" or "append"
 priority: 100
 text: |
   ---
@@ -284,7 +285,7 @@ description: "Injects session identity and context"
 when:
   on: userPrompt
   match: first
-  rerun:           # optional; only valid with on:userPrompt + match:first
+  rerun: # optional; only valid with on:userPrompt + match:first
     afterTime: 30m
     afterSentMsgs: 20
 mutate: prepend
@@ -365,7 +366,7 @@ prompt: |
 - **No `mutate` or `output` fields** — prompt-mode processors don't modify the outgoing message
 - **Always asynchronous** — the pipeline never blocks waiting for the auxiliary agent
 - **Requires a workspace** — the auxiliary session is scoped to the workspace
-- **Runs on the workspace's ACP server** — auxiliary sessions use the workspace's main ACP server; an optional *Auxiliary Model Selection* (match mode + pattern) in workspace settings can switch the aux session to a specific model (otherwise the server default is used)
+- **Runs on the workspace's ACP server** — auxiliary sessions use the workspace's main ACP server; an optional _Auxiliary Model Selection_ (match mode + pattern) in workspace settings can switch the aux session to a specific model (otherwise the server default is used)
 - **Conversation history via MCP tool** — use `mitto_conversation_history` in the prompt to retrieve messages dynamically
 
 ### Parameters (Prompt-Mode Only)
@@ -376,23 +377,24 @@ Prompt-mode processors can declare named, typed inputs via a `parameters:` block
 
 ```yaml
 parameters:
-  - name: HistoryLimit      # placeholder name → ${HistoryLimit}
-    type: text              # one of: beadsId beadsTitle sessionId childSessionId
-                            #         workspaceId workspaceFolder acpServer text boolean
-    description: "..."      # optional hint shown in the UI
-    required: false         # optional; when false, an empty default is allowed
-    default: "10"           # MANDATORY (non-empty) unless required: false
+  - name: HistoryLimit # placeholder name → ${HistoryLimit}
+    type:
+      text # one of: beadsId beadsTitle sessionId childSessionId
+      #         workspaceId workspaceFolder acpServer text boolean
+    description: "..." # optional hint shown in the UI
+    required: false # optional; when false, an empty default is allowed
+    default: "10" # MANDATORY (non-empty) unless required: false
 ```
 
 A missing or empty `default` is a **load error** — the processor is not loaded and appears as a red **error** badge with the full message as a tooltip in the Workspaces → Processors tab — **unless** the parameter declares `required: false`, which marks it as an optional, may-be-empty input (useful when the value is auto-detected at dispatch when left blank).
 
 #### Substitution semantics
 
-| Syntax               | Result                                                         |
-| -------------------- | -------------------------------------------------------------- |
-| `${NAME}`            | Resolved value, or `""` if absent                             |
-| `${NAME:-fallback}`  | Resolved value when set AND non-empty; else the inline fallback|
-| `\${NAME}`           | Literal `${NAME}` (escape — no substitution)                  |
+| Syntax              | Result                                                          |
+| ------------------- | --------------------------------------------------------------- |
+| `${NAME}`           | Resolved value, or `""` if absent                               |
+| `${NAME:-fallback}` | Resolved value when set AND non-empty; else the inline fallback |
+| `\${NAME}`          | Literal `${NAME}` (escape — no substitution)                    |
 
 Surrounding single or double quotes around an inline fallback are stripped: `${NAME:-"a value"}` yields `a value` when `NAME` is unset.
 
@@ -407,7 +409,7 @@ In the Workspaces → Processors tab, each prompt-mode processor with declared p
 processors:
   - name: auggie-update-rules
     arguments:
-      HistoryLimit: "25"   # overrides the declared default of "10"
+      HistoryLimit: "25" # overrides the declared default of "10"
 ```
 
 **Example** (the builtin `auggie-update-rules`):
@@ -511,7 +513,7 @@ name: my-close-memoriser
 description: "Save durable lessons learned to an external store on archive"
 when:
   on: conversationClosed
-  match: all             # required; first / allExceptFirst are rejected
+  match: all # required; first / allExceptFirst are rejected
 priority: 200
 timeout: 300s
 onError: skip
@@ -539,59 +541,61 @@ Use **either** `text` (text-mode), `command` (command-mode), or `prompt` (prompt
 
 ```yaml
 # Required fields
-name: my-processor   # Human-readable identifier
-when:                # Trigger condition — always a block
-  on: userPrompt     # Phase: "userPrompt" (before send), "agentResponded" (after each turn),
-                     #   "agentIdle" (after the queue drains / agent goes idle), or
-                     #   "conversationClosed" (once when the session is archived)
-  match: first       # Match: "first", "all", or "allExceptFirst" (must be "all" for conversationClosed)
-  rerun:             # Optional: auto re-run — only valid with on:userPrompt + match:first
-    afterTime: 30m          # re-run after 30 minutes since last run
-    afterSentMsgs: 20       # re-run after 20 user messages since last run
-    afterTokens: 50000      # re-run after 50000 tokens consumed since last run
+name: my-processor # Human-readable identifier
+when: # Trigger condition — always a block
+  on:
+    userPrompt # Phase: "userPrompt" (before send), "agentResponded" (after each turn),
+    #   "agentIdle" (after the queue drains / agent goes idle), or
+    #   "conversationClosed" (once when the session is archived)
+  match: first # Match: "first", "all", or "allExceptFirst" (must be "all" for conversationClosed)
+  rerun: # Optional: auto re-run — only valid with on:userPrompt + match:first
+    afterTime: 30m # re-run after 30 minutes since last run
+    afterSentMsgs: 20 # re-run after 20 user messages since last run
+    afterTokens: 50000 # re-run after 50000 tokens consumed since last run
   # agentResponded / agentIdle-only fields (forbidden for userPrompt):
-  stopReasons:       # which ACP stop reasons trigger this processor (default: ["end_turn"])
-    - end_turn       # valid values: end_turn, max_tokens, max_turn_requests, refusal, cancelled
-  excludeOrigins:    # skip processor when message origin matches any of these
+  stopReasons: # which ACP stop reasons trigger this processor (default: ["end_turn"])
+    - end_turn # valid values: end_turn, max_tokens, max_turn_requests, refusal, cancelled
+  excludeOrigins: # skip processor when message origin matches any of these
     - loop-runner
 
 # --- Text-mode (use ONE of the three modes) ---
 # Only valid for on:userPrompt; forbidden for on:agentResponded and on:agentIdle
-text: |  # Static text to inject
+text: | # Static text to inject
   Your static content here.
 
 # --- Command-mode (use ONE of the three modes) ---
-command: /path/to/script.sh  # Command to execute (see Command Resolution)
+command: /path/to/script.sh # Command to execute (see Command Resolution)
 
 # --- Prompt-mode (use ONE of the three modes) ---
-prompt: |  # Prompt template for auxiliary AI agent (fire-and-forget)
+prompt: | # Prompt template for auxiliary AI agent (fire-and-forget)
   Session: @mitto:session_id
   Use mitto_conversation_history to retrieve messages and analyze them.
 
 # Prompt-mode only: declare typed inputs substituted into the prompt body.
 # Each needs a MANDATORY non-empty default; values overridable per-workspace (.mittorc).
 parameters:
-  - name: HistoryLimit      # placeholder name → ${HistoryLimit}
-    type: text              # one of the known parameter types
-    description: "..."      # optional UI/MCP hint
-    default: "10"           # REQUIRED, non-empty
+  - name: HistoryLimit # placeholder name → ${HistoryLimit}
+    type: text # one of the known parameter types
+    description: "..." # optional UI/MCP hint
+    default: "10" # REQUIRED, non-empty
 
 # Optional fields
-description: "Adds context"  # Description of what the processor does
-enabled: true                # Default: true
-mutate: prepend              # "prepend" or "append" (text-mode only; required for text mode)
-priority: 100                # Execution order, lower = earlier (default: 100)
+description: "Adds context" # Description of what the processor does
+enabled: true # Default: true
+mutate: prepend # "prepend" or "append" (text-mode only; required for text mode)
+priority: 100 # Execution order, lower = earlier (default: 100)
 
 # I/O configuration (command-mode only; ignored for text/prompt-mode)
-input: message   # "message", "conversation", or "none" (default: message)
-output: transform # "transform", "prepend", "append", "discard" (default: transform)
-                  # NOTE: transform/prepend/append are forbidden for on:agentResponded and on:agentIdle
+input: message # "message", "conversation", or "none" (default: message)
+output:
+  transform # "transform", "prepend", "append", "discard" (default: transform)
+  # NOTE: transform/prepend/append are forbidden for on:agentResponded and on:agentIdle
 outputFormat: json # "json" (default) or "raw"; command-mode only. "raw" uses trimmed stdout directly as the message/prepend/append text instead of parsing JSON.
 
 # Execution settings
-timeout: 5s       # Command timeout (default: 5s); also caps auxiliary agent time in prompt-mode
-working_dir: session  # "session" or "hook" (default: session)
-onError: skip     # "skip" or "fail" (default: skip)
+timeout: 5s # Command timeout (default: 5s); also caps auxiliary agent time in prompt-mode
+working_dir: session # "session" or "hook" (default: session)
+onError: skip # "skip" or "fail" (default: skip)
 
 # Environment variables (in addition to automatic ones; command-mode only)
 environment:
@@ -606,71 +610,70 @@ enabledWhen: 'ACP.Tags.exists(t, t == "reasoning") && Tools.HasAllPatterns(["mit
 
 The `when:` block is required for all processors. Both `on:` and `match:` are required fields.
 
-| Field               | Values                                                                | Required | Notes                                              |
-| ------------------- | --------------------------------------------------------------------- | -------- | -------------------------------------------------- |
-| `on`                | `userPrompt` \| `agentResponded` \| `agentIdle` \| `conversationClosed` | ✅ Yes   | Phase when the processor fires                     |
-| `match`             | `first` \| `all` \| `allExceptFirst`                                  | ✅ Yes   | Which messages to fire on. Must be `all` for `conversationClosed` |
-| `rerun`             | sub-block (see below)                                                 | No       | Only valid with `on: userPrompt` + `match: first`  |
-| `cadence`           | sub-block (see below)                                                 | No       | Only valid with `on: agentResponded` / `agentIdle`; not with `match: first` or `conversationClosed` |
-| `stopReasons`       | list of strings                                                       | No       | Only valid with `on: agentResponded` / `agentIdle`. Default: `["end_turn"]` |
-| `excludeOrigins`    | list of strings                                                       | No       | Only valid with `on: agentResponded` / `agentIdle` |
+| Field            | Values                                                                  | Required | Notes                                                                                               |
+| ---------------- | ----------------------------------------------------------------------- | -------- | --------------------------------------------------------------------------------------------------- |
+| `on`             | `userPrompt` \| `agentResponded` \| `agentIdle` \| `conversationClosed` | ✅ Yes   | Phase when the processor fires                                                                      |
+| `match`          | `first` \| `all` \| `allExceptFirst`                                    | ✅ Yes   | Which messages to fire on. Must be `all` for `conversationClosed`                                   |
+| `rerun`          | sub-block (see below)                                                   | No       | Only valid with `on: userPrompt` + `match: first`                                                   |
+| `cadence`        | sub-block (see below)                                                   | No       | Only valid with `on: agentResponded` / `agentIdle`; not with `match: first` or `conversationClosed` |
+| `stopReasons`    | list of strings                                                         | No       | Only valid with `on: agentResponded` / `agentIdle`. Default: `["end_turn"]`                         |
+| `excludeOrigins` | list of strings                                                         | No       | Only valid with `on: agentResponded` / `agentIdle`                                                  |
 
 **`match` values:**
-- `first` — fires only on the *first-ever* message in the conversation. This state **persists across session restarts** — if the processor already fired before the session was stopped and resumed, it will not fire again.
+
+- `first` — fires only on the _first-ever_ message in the conversation. This state **persists across session restarts** — if the processor already fired before the session was stopped and resumed, it will not fire again.
 - `all` — fires on every message.
-- `allExceptFirst` — fires on every message *except* the first. _(Note: camelCase only — `all-except-first` is rejected.)_
+- `allExceptFirst` — fires on every message _except_ the first. _(Note: camelCase only — `all-except-first` is rejected.)_
 
 **`stopReasons` values** (only for `on: agentResponded`):
 
-| Value              | Meaning                                              |
-| ------------------ | ---------------------------------------------------- |
-| `end_turn`          | Agent finished normally (default)                    |
-| `max_tokens`        | Context limit reached                                |
-| `max_turn_requests` | Turn request limit reached                           |
-| `refusal`           | Agent refused to respond                             |
-| `cancelled`         | Turn was cancelled by the user                       |
+| Value               | Meaning                           |
+| ------------------- | --------------------------------- |
+| `end_turn`          | Agent finished normally (default) |
+| `max_tokens`        | Context limit reached             |
+| `max_turn_requests` | Turn request limit reached        |
+| `refusal`           | Agent refused to respond          |
+| `cancelled`         | Turn was cancelled by the user    |
 
 **`excludeOrigins` values** (only for `on: agentResponded`):
 
-| Origin value      | Meaning                                              |
-| ----------------- | ---------------------------------------------------- |
-| `user`            | Message sent by the user via the UI                  |
-| `queue`           | Message dispatched from the conversation queue       |
-| `loop-runner` | Message triggered by the loop runner             |
+| Origin value      | Meaning                                                        |
+| ----------------- | -------------------------------------------------------------- |
+| `user`            | Message sent by the user via the UI                            |
+| `queue`           | Message dispatched from the conversation queue                 |
+| `loop-runner`     | Message triggered by the loop runner                           |
 | `mcp-send-prompt` | Message sent via the `mitto_conversation_send_prompt` MCP tool |
 
 ### Phase/Field Rules
 
 Which fields are allowed or forbidden depends on the `on:` phase:
 
-| Field / Setting                    | `on: userPrompt`      | `on: agentResponded` / `agentIdle` | `on: conversationClosed` |
-| ---------------------------------- | --------------------- | ---------------------------------- | ------------------------ |
-| `text:`                            | ✅ allowed            | ❌ forbidden                       | ❌ forbidden             |
-| `mutate:`                          | ✅ required (text mode) | ❌ forbidden                     | ❌ forbidden             |
-| `command:`                         | ✅ allowed            | ✅ allowed                         | ✅ allowed               |
-| `prompt:`                          | ✅ allowed            | ✅ allowed                         | ✅ allowed               |
-| `when.match: first`                | ✅ allowed            | ✅ allowed                         | ❌ forbidden (must be `all`) |
-| `when.rerun:`                      | ✅ allowed (`match: first` only) | ❌ forbidden             | ❌ forbidden             |
-| `when.cadence:`                    | ❌ forbidden          | ✅ allowed                         | ❌ forbidden             |
-| `when.stopReasons:`                | ❌ forbidden          | ✅ allowed (default: `[end_turn]`) | ❌ forbidden             |
-| `when.excludeOrigins:`             | ❌ forbidden          | ✅ allowed                         | ❌ forbidden             |
-| `output: transform/prepend/append` | ✅ allowed            | ❌ forbidden                       | ❌ forbidden             |
-| `output: notify/actionButtons/userData` | ❌ forbidden     | ✅ allowed                         | ❌ forbidden (session closed) |
-| `output: discard`                  | ✅ allowed            | ✅ allowed                         | ✅ allowed (only option) |
-
-
+| Field / Setting                         | `on: userPrompt`                 | `on: agentResponded` / `agentIdle` | `on: conversationClosed`      |
+| --------------------------------------- | -------------------------------- | ---------------------------------- | ----------------------------- |
+| `text:`                                 | ✅ allowed                       | ❌ forbidden                       | ❌ forbidden                  |
+| `mutate:`                               | ✅ required (text mode)          | ❌ forbidden                       | ❌ forbidden                  |
+| `command:`                              | ✅ allowed                       | ✅ allowed                         | ✅ allowed                    |
+| `prompt:`                               | ✅ allowed                       | ✅ allowed                         | ✅ allowed                    |
+| `when.match: first`                     | ✅ allowed                       | ✅ allowed                         | ❌ forbidden (must be `all`)  |
+| `when.rerun:`                           | ✅ allowed (`match: first` only) | ❌ forbidden                       | ❌ forbidden                  |
+| `when.cadence:`                         | ❌ forbidden                     | ✅ allowed                         | ❌ forbidden                  |
+| `when.stopReasons:`                     | ❌ forbidden                     | ✅ allowed (default: `[end_turn]`) | ❌ forbidden                  |
+| `when.excludeOrigins:`                  | ❌ forbidden                     | ✅ allowed                         | ❌ forbidden                  |
+| `output: transform/prepend/append`      | ✅ allowed                       | ❌ forbidden                       | ❌ forbidden                  |
+| `output: notify/actionButtons/userData` | ❌ forbidden                     | ✅ allowed                         | ❌ forbidden (session closed) |
+| `output: discard`                       | ✅ allowed                       | ✅ allowed                         | ✅ allowed (only option)      |
 
 ### Migration Table
 
 If you have existing processors using the old schema, update them as follows:
 
-| Old syntax                                          | New syntax                                          |
-| --------------------------------------------------- | --------------------------------------------------- |
-| `when: first` (scalar)                              | `when:\n  on: userPrompt\n  match: first`           |
-| `when:\n  sent: first`                              | `when:\n  on: userPrompt\n  match: first`           |
-| `when:\n  sent: all`                                | `when:\n  on: userPrompt\n  match: all`             |
-| `when:\n  sent: all-except-first`                   | `when:\n  on: userPrompt\n  match: allExceptFirst`  |
-| `position: prepend` / `position: append`            | `mutate: prepend` / `mutate: append`                |
+| Old syntax                               | New syntax                                         |
+| ---------------------------------------- | -------------------------------------------------- |
+| `when: first` (scalar)                   | `when:\n  on: userPrompt\n  match: first`          |
+| `when:\n  sent: first`                   | `when:\n  on: userPrompt\n  match: first`          |
+| `when:\n  sent: all`                     | `when:\n  on: userPrompt\n  match: all`            |
+| `when:\n  sent: all-except-first`        | `when:\n  on: userPrompt\n  match: allExceptFirst` |
+| `position: prepend` / `position: append` | `mutate: prepend` / `mutate: append`               |
 
 ### Conditional Enablement
 
@@ -711,15 +714,15 @@ when:
   on: userPrompt
   match: first
   rerun:
-    afterTime: 30m     # re-run after 30 minutes since last run
-    afterSentMsgs: 20  # re-run after 20 user messages since last run
+    afterTime: 30m # re-run after 30 minutes since last run
+    afterSentMsgs: 20 # re-run after 20 user messages since last run
     afterTokens: 50000 # re-run after 50000 tokens consumed since last run
 ```
 
-| Field           | Type     | Description                                               |
-| --------------- | -------- | --------------------------------------------------------- |
-| `afterTime`     | duration | Time since last run (`"10m"`, `"1h"`, `"30s"`, `"2h30m"`) |
-| `afterSentMsgs` | int      | Number of user messages sent since last run               |
+| Field           | Type     | Description                                                    |
+| --------------- | -------- | -------------------------------------------------------------- |
+| `afterTime`     | duration | Time since last run (`"10m"`, `"1h"`, `"30s"`, `"2h30m"`)      |
+| `afterSentMsgs` | int      | Number of user messages sent since last run                    |
 | `afterTokens`   | int      | Number of tokens consumed since last run (actual or estimated) |
 
 If multiple thresholds are set, whichever is reached first triggers the re-run.
@@ -742,18 +745,19 @@ when:
   on: agentResponded
   match: all
   cadence:
-    everyNTurns: 3      # fire every 3 agent responses since last firing
+    everyNTurns: 3 # fire every 3 agent responses since last firing
     everyNTokens: 15000 # AND only after 15k cumulative tokens since last firing
-    afterInterval: 5m   # AND only after 5 minutes since last firing
+    afterInterval: 5m # AND only after 5 minutes since last firing
 ```
 
-| Field           | Type     | Description                                                       |
-| --------------- | -------- | ----------------------------------------------------------------- |
+| Field           | Type     | Description                                                                                                    |
+| --------------- | -------- | -------------------------------------------------------------------------------------------------------------- |
 | `everyNTurns`   | int      | Fire every N agent responses since the last firing (pre-increment: `everyNTurns: 3` fires on turns 3, 6, 9, …) |
-| `everyNTokens`  | int      | Fire only after N cumulative tokens since the last firing         |
-| `afterInterval` | duration | Fire only after this much wall-clock time since the last firing (`"5m"`, `"1h"`, `"30s"`) |
+| `everyNTokens`  | int      | Fire only after N cumulative tokens since the last firing                                                      |
+| `afterInterval` | duration | Fire only after this much wall-clock time since the last firing (`"5m"`, `"1h"`, `"30s"`)                      |
 
 **Constraints:**
+
 - Only valid with `on: agentResponded` or `on: agentIdle`.
 - Not valid with `match: first` (firing once needs no cadence).
 - At least one field must be specified.
@@ -1012,20 +1016,19 @@ The `@mitto:` prefix followed by a lowercase, underscored variable name. This is
 
 ### Available Variables
 
-| Placeholder                    | Replaced with                                                                  |
-| ------------------------------ | ------------------------------------------------------------------------------ |
-| `@mitto:session_id`            | Current session ID                                                             |
-| `@mitto:parent_session_id`     | Parent conversation ID; empty string if this is a root session                 |
-| `@mitto:parent`                | Parent session formatted as `id (name)` or just `id` if unnamed; empty if root |
-| `@mitto:session_name`          | Conversation title/name; empty string if not yet set                           |
-| `@mitto:working_dir`           | Session working directory                                                      |
-| `@mitto:acp_server`            | Active ACP server name (e.g. `claude-code`)                                    |
-| `@mitto:workspace_uuid`        | Workspace UUID                                                                 |
-| `@mitto:available_acp_servers` | Human-readable list of ACP servers with workspaces for this folder — see below |
-| `@mitto:children`              | Human-readable list of child sessions — see below                              |
-| `@mitto:loop`              | `"true"` if this prompt was triggered by the loop runner, `"false"` otherwise |
-| `@mitto:loop_forced`       | `"true"` if this is a manually-triggered loop run (via "run now"), `"false"` otherwise |
-
+| Placeholder                    | Replaced with                                                                          |
+| ------------------------------ | -------------------------------------------------------------------------------------- |
+| `@mitto:session_id`            | Current session ID                                                                     |
+| `@mitto:parent_session_id`     | Parent conversation ID; empty string if this is a root session                         |
+| `@mitto:parent`                | Parent session formatted as `id (name)` or just `id` if unnamed; empty if root         |
+| `@mitto:session_name`          | Conversation title/name; empty string if not yet set                                   |
+| `@mitto:working_dir`           | Session working directory                                                              |
+| `@mitto:acp_server`            | Active ACP server name (e.g. `claude-code`)                                            |
+| `@mitto:workspace_uuid`        | Workspace UUID                                                                         |
+| `@mitto:available_acp_servers` | Human-readable list of ACP servers with workspaces for this folder — see below         |
+| `@mitto:children`              | Human-readable list of child sessions — see below                                      |
+| `@mitto:loop`                  | `"true"` if this prompt was triggered by the loop runner, `"false"` otherwise          |
+| `@mitto:loop_forced`           | `"true"` if this is a manually-triggered loop run (via "run now"), `"false"` otherwise |
 
 ### `@mitto:available_acp_servers` format
 
@@ -1220,14 +1223,14 @@ Processors that timeout or exit with non-zero status are treated as errors.
 
 ## Mode Comparison
 
-| Feature       | Text-Mode                    | Command-Mode                           | Prompt-Mode                                  |
-| ------------- | ---------------------------- | -------------------------------------- | -------------------------------------------- |
-| Configuration | `text` field in YAML         | `command` field + external script      | `prompt` field only                          |
-| Content       | Static text (with variables) | Dynamic via external commands          | Prompt template with `@mitto:variable` subs  |
-| Input         | None (text is inline)        | JSON via stdin                         | Conversation history via `mitto_conversation_history` MCP tool |
-| Output        | Modifies outgoing message    | Modifies outgoing message              | None (fire-and-forget to auxiliary agent)    |
-| Execution     | Synchronous                  | Synchronous                            | Asynchronous (pipeline continues immediately)|
-| Use case      | Context, reminders, rules    | Complex transformations, external data | Background analysis, preference tracking     |
+| Feature       | Text-Mode                    | Command-Mode                           | Prompt-Mode                                                               |
+| ------------- | ---------------------------- | -------------------------------------- | ------------------------------------------------------------------------- |
+| Configuration | `text` field in YAML         | `command` field + external script      | `prompt` field only                                                       |
+| Content       | Static text (with variables) | Dynamic via external commands          | Prompt template with `@mitto:variable` subs                               |
+| Input         | None (text is inline)        | JSON via stdin                         | Conversation history via `mitto_conversation_history` MCP tool            |
+| Output        | Modifies outgoing message    | Modifies outgoing message              | None (fire-and-forget to auxiliary agent)                                 |
+| Execution     | Synchronous                  | Synchronous                            | Asynchronous (pipeline continues immediately)                             |
+| Use case      | Context, reminders, rules    | Complex transformations, external data | Background analysis, preference tracking                                  |
 | Dependencies  | None                         | External script or binary              | Workspace (auxiliary session on its ACP server; optional model selection) |
 
 All modes share the same triggering (`when`), priority, conditional enablement

@@ -80,7 +80,7 @@ Triggers the loop prompt for the session associated with this token.
 | 404    | `{"error": "not_found"}`          | Token doesn't match any session              |
 | 405    | `{"error": "method_not_allowed"}` | Non-POST method                              |
 | 409    | `{"error": "session_busy"}`       | Session is currently prompting               |
-| 410    | `{"error": "loop_disabled"}`  | Loop is disabled or not configured       |
+| 410    | `{"error": "loop_disabled"}`      | Loop is disabled or not configured           |
 | 429    | `{"error": "rate_limited"}`       | Too many requests for this token             |
 | 500    | `{"error": "internal"}`           | Delivery failure (session unavailable, etc.) |
 
@@ -369,12 +369,12 @@ The `ConversationPropertiesPanel` component shows callback controls in the **Loo
 
 ### UI States
 
-| Loop State | Callback State | UI Display                                                             |
-| -------------- | -------------- | ---------------------------------------------------------------------- |
-| Disabled       | None           | "Enable Loop Prompts first" message                                |
-| Enabled        | None           | "Enable Callback" button                                               |
-| Enabled        | Active         | URL display + Copy/Rotate/Revoke buttons                               |
-| Disabled       | Active         | Subdued display: "Callback preserved but inactive (loop disabled)" |
+| Loop State | Callback State | UI Display                                                         |
+| ---------- | -------------- | ------------------------------------------------------------------ |
+| Disabled   | None           | "Enable Loop Prompts first" message                                |
+| Enabled    | None           | "Enable Callback" button                                           |
+| Enabled    | Active         | URL display + Copy/Rotate/Revoke buttons                           |
+| Disabled   | Active         | Subdued display: "Callback preserved but inactive (loop disabled)" |
 
 ### Workflow
 
@@ -656,4 +656,3 @@ curl -X POST http://localhost:5757/api/callback/cb_a1b2c3d4...
 2. Prompt content is controlled by session owner (via loop config)
 3. No data exposure — callback returns minimal response
 4. Session authentication required for all management endpoints
-

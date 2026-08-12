@@ -127,20 +127,20 @@ See [MCP Documentation](mcp.md) for how flags control MCP server behavior.
 
 ## Event Types
 
-| Event Type         | Description                          |
-| ------------------ | ------------------------------------ |
-| `session_start`    | Session initialization with metadata |
-| `session_end`      | Session termination with reason      |
-| `user_prompt`      | User input message                   |
-| `agent_message`    | Agent response (HTML + raw markdown) |
-| `agent_thought`    | Agent's internal reasoning           |
-| `tool_call`        | Tool invocation by agent             |
-| `tool_call_update` | Tool execution status update         |
-| `plan`             | Agent's task plan                    |
-| `permission`       | Permission request and outcome       |
-| `file_read`        | File read operation                  |
-| `file_write`       | File write operation                 |
-| `error`            | Error occurrence                     |
+| Event Type         | Description                                               |
+| ------------------ | --------------------------------------------------------- |
+| `session_start`    | Session initialization with metadata                      |
+| `session_end`      | Session termination with reason                           |
+| `user_prompt`      | User input message                                        |
+| `agent_message`    | Agent response (HTML + raw markdown)                      |
+| `agent_thought`    | Agent's internal reasoning                                |
+| `tool_call`        | Tool invocation by agent                                  |
+| `tool_call_update` | Tool execution status update                              |
+| `plan`             | Agent's task plan                                         |
+| `permission`       | Permission request and outcome                            |
+| `file_read`        | File read operation                                       |
+| `file_write`       | File write operation                                      |
+| `error`            | Error occurrence                                          |
 | `processor_run`    | One processor invocation (name, phase, outcome, duration) |
 
 ## Generic Event Metadata
@@ -187,6 +187,7 @@ This "drop whole" policy keeps behaviour predictable: either the full annotation
 ### Sensitivity policy
 
 `Meta` **must NOT** carry:
+
 - Secrets, credentials, or API keys
 - Full argument values or full prompt text
 - Any personally identifiable information

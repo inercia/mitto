@@ -2,7 +2,7 @@
 
 **Status:** Analysis Document  
 **Date:** 2026-04-25  
-**Author:** System Analysis  
+**Author:** System Analysis
 
 ## Executive Summary
 
@@ -16,20 +16,20 @@ The ACP SDK **does support session resume** via an **UNSTABLE/experimental API**
 
 The `github.com/coder/acp-go-sdk` package provides:
 
-| Component | Type | Status |
-|-----------|------|--------|
-| `UnstableResumeSession()` | Method on `ClientSideConnection` | ⚠️ **UNSTABLE** |
-| `UnstableResumeSessionRequest` | Request struct | ⚠️ **UNSTABLE** |
-| `UnstableResumeSessionResponse` | Response struct | ⚠️ **UNSTABLE** |
-| `SessionResumeCapabilities` | Capability struct | ⚠️ **UNSTABLE** |
-| `SessionCapabilities.Resume` | Capability field (`*SessionResumeCapabilities`) | ⚠️ **UNSTABLE** |
+| Component                       | Type                                            | Status          |
+| ------------------------------- | ----------------------------------------------- | --------------- |
+| `UnstableResumeSession()`       | Method on `ClientSideConnection`                | ⚠️ **UNSTABLE** |
+| `UnstableResumeSessionRequest`  | Request struct                                  | ⚠️ **UNSTABLE** |
+| `UnstableResumeSessionResponse` | Response struct                                 | ⚠️ **UNSTABLE** |
+| `SessionResumeCapabilities`     | Capability struct                               | ⚠️ **UNSTABLE** |
+| `SessionCapabilities.Resume`    | Capability field (`*SessionResumeCapabilities`) | ⚠️ **UNSTABLE** |
 
 ### API Signature
 
 ```go
 // From github.com/coder/acp-go-sdk
 func (c *ClientSideConnection) UnstableResumeSession(
-    ctx context.Context, 
+    ctx context.Context,
     params UnstableResumeSessionRequest,
 ) (UnstableResumeSessionResponse, error)
 
@@ -50,13 +50,13 @@ type UnstableResumeSessionResponse struct {
 
 ### Key Difference: Resume vs Load
 
-| Feature | `session/resume` | `session/load` |
-|---------|------------------|----------------|
-| **History Replay** | ❌ No — session state already exists | ✅ Yes — replays all previous messages |
-| **Speed** | ⚡ Fast (instant) | 🐌 Slow (70+ seconds for long sessions) |
-| **Agent State** | Agent must maintain state | Agent rebuilds state from history |
-| **Use Case** | Quick session switching | First-time resume or stateless agents |
-| **ACP Spec Status** | ⚠️ UNSTABLE | ✅ Stable (in main spec) |
+| Feature             | `session/resume`                     | `session/load`                          |
+| ------------------- | ------------------------------------ | --------------------------------------- |
+| **History Replay**  | ❌ No — session state already exists | ✅ Yes — replays all previous messages  |
+| **Speed**           | ⚡ Fast (instant)                    | 🐌 Slow (70+ seconds for long sessions) |
+| **Agent State**     | Agent must maintain state            | Agent rebuilds state from history       |
+| **Use Case**        | Quick session switching              | First-time resume or stateless agents   |
+| **ACP Spec Status** | ⚠️ UNSTABLE                          | ✅ Stable (in main spec)                |
 
 **Resume is faster** because it assumes the agent already has the session in memory. It's ideal for switching between recent sessions that the agent hasn't garbage-collected yet.
 
@@ -66,14 +66,14 @@ type UnstableResumeSessionResponse struct {
 
 Each session is stored in `$MITTO_DIR/sessions/{session-id}/`:
 
-| File | Content | Used by Resume? |
-|------|---------|-----------------|
-| `metadata.json` | Session metadata (see below) | ✅ **Required** (ACPSessionID, WorkingDir, ACPServer) |
-| `events.jsonl` | Full event log (prompts, messages, tool calls) | ❌ Not needed (unlike load) |
-| `images/` | Uploaded image files (referenced by UUID) | ❌ Not directly |
-| `files/` | Uploaded general files | ❌ Not directly |
-| `queue.json` | Queued messages (optional) | ❌ Not directly |
-| `action_buttons.json` | Follow-up suggestions (optional) | ❌ Not directly |
+| File                  | Content                                        | Used by Resume?                                       |
+| --------------------- | ---------------------------------------------- | ----------------------------------------------------- |
+| `metadata.json`       | Session metadata (see below)                   | ✅ **Required** (ACPSessionID, WorkingDir, ACPServer) |
+| `events.jsonl`        | Full event log (prompts, messages, tool calls) | ❌ Not needed (unlike load)                           |
+| `images/`             | Uploaded image files (referenced by UUID)      | ❌ Not directly                                       |
+| `files/`              | Uploaded general files                         | ❌ Not directly                                       |
+| `queue.json`          | Queued messages (optional)                     | ❌ Not directly                                       |
+| `action_buttons.json` | Follow-up suggestions (optional)               | ❌ Not directly                                       |
 
 ### Metadata Structure
 
@@ -110,11 +110,11 @@ type Metadata struct {
 
 ### ✅ Required Data — Available
 
-| Field | Source | Status |
-|-------|--------|--------|
-| `SessionId` | `metadata.ACPSessionID` | ✅ Stored during session creation |
-| `Cwd` | `metadata.WorkingDir` | ✅ Stored during session creation |
-| `McpServers` | Computed at runtime | ⚠️ **Not persisted** (see Gaps) |
+| Field        | Source                  | Status                            |
+| ------------ | ----------------------- | --------------------------------- |
+| `SessionId`  | `metadata.ACPSessionID` | ✅ Stored during session creation |
+| `Cwd`        | `metadata.WorkingDir`   | ✅ Stored during session creation |
+| `McpServers` | Computed at runtime     | ⚠️ **Not persisted** (see Gaps)   |
 
 ### Current Flow (Load Session)
 
@@ -152,13 +152,16 @@ if acpSessionID != "" && caps.LoadSession {
 ### A. Capability Detection
 
 **Where to check:**
+
 - `SessionCapabilities.Resume != nil` (not `AgentCapabilities.LoadSession`)
 
 **When to check:**
+
 - During ACP initialization in `SharedACPProcess.doStartProcess()` (line 461+)
 - After receiving `InitializeResponse` and storing capabilities
 
 **Where to store:**
+
 ```go
 // Add to SessionHandle (internal/web/shared_acp_process.go):
 type SessionHandle struct {
@@ -169,19 +172,20 @@ type SessionHandle struct {
 }
 
 // Check capability:
-if handle.Capabilities.SessionCapabilities != nil && 
+if handle.Capabilities.SessionCapabilities != nil &&
    handle.Capabilities.SessionCapabilities.Resume != nil {
     // Agent supports resume
 }
 ```
 
 **Add logging:**
+
 ```go
 // In doStartProcess after storing capabilities:
 if p.logger != nil {
     p.logger.Debug("Agent session capabilities",
         "acp_server", p.config.ACPServer,
-        "resume_supported", initResp.AgentCapabilities.SessionCapabilities != nil && 
+        "resume_supported", initResp.AgentCapabilities.SessionCapabilities != nil &&
                            initResp.AgentCapabilities.SessionCapabilities.Resume != nil,
         "fork_supported", initResp.AgentCapabilities.SessionCapabilities != nil &&
                          initResp.AgentCapabilities.SessionCapabilities.Fork != nil,
@@ -216,7 +220,7 @@ func (p *SharedACPProcess) ResumeSession(ctx context.Context, acpSessionID, cwd 
     if conn == nil {
         return nil, fmt.Errorf("shared ACP process is not running")
     }
-    
+
     // Check capability
     if caps == nil || caps.SessionCapabilities == nil || caps.SessionCapabilities.Resume == nil {
         return nil, fmt.Errorf("agent does not support session resume (UNSTABLE API)")
@@ -455,16 +459,16 @@ func (s *Server) handleUnstableResumeSession(params json.RawMessage) (any, error
     if err := json.Unmarshal(params, &req); err != nil {
         return nil, err
     }
-    
+
     // Check if we have this session
     s.mu.Lock()
     sess, exists := s.sessions[string(req.SessionID)]
     s.mu.Unlock()
-    
+
     if !exists {
         return nil, fmt.Errorf("session not found: %s", req.SessionID)
     }
-    
+
     // Return session state without replaying history
     return UnstableResumeSessionResponse{
         Modes: sess.Modes,
@@ -488,6 +492,7 @@ func TestSessionResume_UsingUnstableResumeAPI(t *testing.T) {
 #### 3. Manual Testing
 
 Test with real agents:
+
 - Claude Code (check if it supports resume)
 - Auggie (check if it supports resume)
 - Log which method is actually used
@@ -501,19 +506,23 @@ Test with real agents:
 #### 1. MCP Server Configuration Not Persisted
 
 **Problem:**
+
 - `LoadSession` and `ResumeSession` both require `mcpServers []acp.McpServer`
 - Currently computed at runtime from workspace config
 - If workspace config changes, we may pass different servers than original session
 
 **Impact:**
+
 - Medium — sessions work but may have different tools available
 
 **Solution:**
+
 - Add `MCPServers []acp.McpServer` to `session.Metadata`
 - Persist during session creation
 - Use persisted config during resume
 
 **Example:**
+
 ```go
 type Metadata struct {
     // ... existing fields
@@ -526,20 +535,24 @@ type Metadata struct {
 #### 2. UNSTABLE API Warning
 
 **Problem:**
+
 - Resume API is marked UNSTABLE and **may change or be removed**
 - No guarantees about backward compatibility
 
 **Risks:**
+
 - SDK update could break resume functionality
 - Agents may implement it differently
 
 **Mitigation:**
+
 - Always have fallback to Load
 - Log when UNSTABLE APIs are used
 - Monitor SDK release notes
 - Add integration tests to catch breaking changes
 
 **Implementation:**
+
 ```go
 // Wrap all resume calls with clear unstable warnings:
 if bs.logger != nil {
@@ -553,15 +566,18 @@ if bs.logger != nil {
 #### 3. Agent Session Garbage Collection
 
 **Problem:**
+
 - Resume assumes agent still has session in memory
 - Agents may garbage-collect old sessions
 - No way to know if session is still available without trying
 
 **Impact:**
+
 - Resume will fail for old sessions
 - Need fallback to Load (already planned)
 
 **Mitigation:**
+
 - Already handled by fallback logic
 - Consider time-based heuristic: only try resume for sessions accessed < 1 hour ago
 
@@ -573,13 +589,14 @@ if bs.logger != nil {
 
 Based on comments in code (line 102: "LoadSession can take 70+ seconds"):
 
-| Method | Typical Time | Use Case |
-|--------|--------------|----------|
-| Resume | < 1 second | Recent sessions still in agent memory |
-| Load | 10-70+ seconds | Old sessions or first-time resume |
-| New | 1-5 seconds | Fresh conversation |
+| Method | Typical Time   | Use Case                              |
+| ------ | -------------- | ------------------------------------- |
+| Resume | < 1 second     | Recent sessions still in agent memory |
+| Load   | 10-70+ seconds | Old sessions or first-time resume     |
+| New    | 1-5 seconds    | Fresh conversation                    |
 
 **Expected improvement:**
+
 - 10-70x faster for recent sessions
 - No network/disk overhead from history replay
 
@@ -588,6 +605,7 @@ Based on comments in code (line 102: "LoadSession can take 70+ seconds"):
 ### 🔐 Security Considerations
 
 **No additional security risks:**
+
 - Resume uses same authentication as Load
 - No new attack surface
 - Same permission model
@@ -601,6 +619,7 @@ Based on comments in code (line 102: "LoadSession can take 70+ seconds"):
 **Goal:** Understand current landscape before implementing resume
 
 **Tasks:**
+
 1. ✅ **Add capability logging** (already implemented in this session)
    - Log `SessionCapabilities.Resume` support
    - Log `SessionCapabilities.Fork` support
@@ -617,6 +636,7 @@ Based on comments in code (line 102: "LoadSession can take 70+ seconds"):
    - Identify performance bottlenecks
 
 **Deliverables:**
+
 - Log analysis showing agent capabilities
 - Performance metrics for Load operations
 
@@ -627,6 +647,7 @@ Based on comments in code (line 102: "LoadSession can take 70+ seconds"):
 **Goal:** Implement resume with proper fallbacks
 
 **Tasks:**
+
 1. Add `ResumeSession()` method to `SharedACPProcess`
 2. Update `resumeSharedACPSession()` decision logic
 3. Add resume metrics logging
@@ -634,6 +655,7 @@ Based on comments in code (line 102: "LoadSession can take 70+ seconds"):
 5. Write integration tests
 
 **Deliverables:**
+
 - Working resume implementation
 - Fallback to Load when resume fails
 - Integration test coverage
@@ -647,12 +669,14 @@ Based on comments in code (line 102: "LoadSession can take 70+ seconds"):
 **Goal:** Persist MCP server config for consistent resume
 
 **Tasks:**
+
 1. Add `MCPServers` field to `session.Metadata`
 2. Persist during session creation
 3. Load during resume
 4. Handle migration for existing sessions
 
 **Deliverables:**
+
 - Consistent MCP server config across resume
 - Backward-compatible metadata format
 
@@ -665,12 +689,14 @@ Based on comments in code (line 102: "LoadSession can take 70+ seconds"):
 **Goal:** Track resume success/failure in production
 
 **Metrics to track:**
+
 - Resume attempts vs successes
 - Resume failures with fallback to Load
 - Resume performance (time to ready)
 - Agent capability adoption (% supporting resume)
 
 **Deliverables:**
+
 - Dashboard showing resume usage
 - Alerts for high resume failure rates
 
@@ -680,13 +706,13 @@ Based on comments in code (line 102: "LoadSession can take 70+ seconds"):
 
 **Can we implement resume?** ✅ **Yes, with caveats:**
 
-| Aspect | Status | Notes |
-|--------|--------|-------|
-| SDK Support | ✅ Available | UNSTABLE API |
+| Aspect            | Status        | Notes                                          |
+| ----------------- | ------------- | ---------------------------------------------- |
+| SDK Support       | ✅ Available  | UNSTABLE API                                   |
 | Data Availability | ✅ Sufficient | ACPSessionID, WorkingDir, ACPServer all stored |
-| Fallback Strategy | ✅ Planned | Resume → Load → New |
-| Testing | ⚠️ Needs work | Mock server needs updates |
-| Production Ready | ⚠️ Not yet | Need Phase 2 implementation |
+| Fallback Strategy | ✅ Planned    | Resume → Load → New                            |
+| Testing           | ⚠️ Needs work | Mock server needs updates                      |
+| Production Ready  | ⚠️ Not yet    | Need Phase 2 implementation                    |
 
 **Key Takeaways:**
 
@@ -697,6 +723,7 @@ Based on comments in code (line 102: "LoadSession can take 70+ seconds"):
 5. **Low risk** due to multi-level fallback strategy
 
 **Recommended Action:**
+
 - ✅ Phase 1 already completed (capability logging)
 - 🚀 Proceed with Phase 2 implementation
 - 📊 Monitor agent adoption of resume capability

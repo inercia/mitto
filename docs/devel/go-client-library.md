@@ -86,8 +86,8 @@ values mirror the JS error taxonomy
 ([§7](js-client-library.md#7-stability-promise)) so both SDKs agree.
 
 `errors.Is` is keyed off **HTTP status, not `Code`**. Codes remain the stable
-*contract* (see [§8](#8-stability-promise)), but they are not the right
-*match* key: the server legitimately attaches app-specific codes to canonical
+_contract_ (see [§8](#8-stability-promise)), but they are not the right
+_match_ key: the server legitimately attaches app-specific codes to canonical
 statuses (`queue_full` on a 409, see `internal/web/handlers/queue.go`), and
 keying on `Code` would make `errors.Is(err, ErrConflict)` false for exactly
 the conflicts callers care about. Status is the coarser, total classifier —
