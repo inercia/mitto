@@ -2371,6 +2371,9 @@ func TestGCTier4_LogsRSSBreakdown_MITTO3GU(t *testing.T) {
 		if got := attrValue(rec, "rss_bytes"); got != total {
 			t.Errorf("rss_bytes: want %d, got %v", total, got)
 		}
+		if got := attrValue(rec, "effective_memory_bytes"); got != total {
+			t.Errorf("effective_memory_bytes: want %d, got %v", total, got)
+		}
 		if got := attrValue(rec, "threshold_bytes"); got != gcTier4Threshold {
 			t.Errorf("threshold_bytes: want %d, got %v", gcTier4Threshold, got)
 		}
@@ -2429,6 +2432,9 @@ func TestGCTier4_LogsRSSBreakdown_MITTO3GU(t *testing.T) {
 		}
 		if got := attrValue(rec, "rss_bytes"); got != total {
 			t.Errorf("rss_bytes: want %d, got %v", total, got)
+		}
+		if got := attrValue(rec, "effective_memory_bytes"); got != total {
+			t.Errorf("effective_memory_bytes: want %d, got %v", total, got)
 		}
 		if got := attrValue(rec, "parent_rss_bytes"); got != parentRSS {
 			t.Errorf("parent_rss_bytes: want %d, got %v (fix must add this field)", parentRSS, got)
@@ -2544,5 +2550,24 @@ func TestGCTier4_DescendantCountRatchet_MITTO52MT(t *testing.T) {
 	}
 	if got := attrValue(rec, "workspace_uuid"); got != workspaceUUID {
 		t.Errorf("workspace_uuid: want %q, got %v", workspaceUUID, got)
+	}
+}
+
+func TestEffectiveProcessTreeMemory_MITTO52MT(t *testing.T) {
+	const (
+		finalRSS         uint64 = 521 * 1024 * 1024
+		v8Footprint      uint64 = 12073 * 1024 * 1024
+		recycleThreshold uint64 = 6 * 1024 * 1024 * 1024
+	)
+
+	got := effectiveProcessTreeMemory(finalRSS, v8Footprint)
+	if got != v8Footprint {
+		t.Fatalf("effective memory = %d, want physical footprint %d", got, v8Footprint)
+	}
+	if got <= recycleThreshold {
+		t.Fatalf("effective memory %d must cross recycle threshold %d", got, recycleThreshold)
+	}
+	if got := effectiveProcessTreeMemory(v8Footprint, finalRSS); got != v8Footprint {
+		t.Fatalf("RSS fallback = %d, want larger RSS %d", got, v8Footprint)
 	}
 }

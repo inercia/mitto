@@ -57,8 +57,10 @@ type GCConfig struct {
 	// is therefore stale after a long-running task. Set to a negative value to disable
 	// the grace window (default: 10m).
 	LoopSuspendGracePeriod time.Duration
-	// MemoryRecycleThreshold is the RSS threshold in bytes (summed over the agent
-	// process tree) above which an IDLE shared ACP process is recycled (stopped) to
+	// MemoryRecycleThreshold is the effective-memory threshold in bytes (summed
+	// over the agent process tree) above which an IDLE shared ACP process is recycled.
+	// On macOS the effective sample includes compressed physical footprint, not
+	// only RSS, so a hidden V8 old-space climb still crosses the threshold.
 	// reclaim memory. Recycling only happens when the process has no prompting
 	// session, no in-flight RPCs, empty queues, and no loop prompt due soon —
 	// affected conversations resume transparently on next focus. 0 means disabled
@@ -685,6 +687,8 @@ gcTier1:
 					m.logger.Debug("GC: memory recycle below threshold",
 						"workspace_uuid", workspaceUUID,
 						"rss_bytes", rss,
+						"effective_memory_bytes", rss,
+						"memory_metric", "max_tree_rss_physical_footprint",
 						"threshold_bytes", m.gcConfig.MemoryRecycleThreshold,
 						"parent_rss_bytes", parentRSS,
 						"descendant_rss_bytes", descendantRSS,
@@ -698,6 +702,8 @@ gcTier1:
 				m.logger.Info("GC: recycling memory-bloated idle shared ACP process",
 					"workspace_uuid", workspaceUUID,
 					"rss_bytes", rss,
+					"effective_memory_bytes", rss,
+					"memory_metric", "max_tree_rss_physical_footprint",
 					"threshold_bytes", m.gcConfig.MemoryRecycleThreshold,
 					"session_count", len(sessions),
 					"parent_rss_bytes", parentRSS,

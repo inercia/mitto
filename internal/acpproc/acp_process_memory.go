@@ -6,10 +6,11 @@ import (
 	"github.com/shirou/gopsutil/v4/process"
 )
 
-// processTreeRSS returns the total resident set size (RSS) in bytes summed over
-// the process tree rooted at pid — the root process plus all descendants. A
-// shared ACP agent typically spawns a child tree (e.g. node → claude), so the
-// total memory footprint requires walking the whole tree.
+// processTreeRSS returns the effective memory pressure in bytes for the process
+// tree rooted at pid — the greater of aggregate RSS and aggregate physical
+// footprint. On macOS, physical footprint includes compressed memory that RSS
+// can omit; this prevents a V8 heap from reaching its limit while Tier 4 still
+// sees the process tree below its recycle threshold (mitto-52mt).
 //
 // Per-process errors during the walk are tolerated by skipping that process (a
 // child may exit mid-walk). Only a failure to look up the ROOT process is
@@ -19,7 +20,50 @@ func processTreeRSS(pid int) (uint64, error) {
 	if err != nil {
 		return 0, err
 	}
-	return parent + descendants, nil
+	rss := parent + descendants
+	footprint, err := processTreePhysicalFootprint(pid)
+	if err != nil {
+		return rss, nil // Unsupported or transiently unavailable: retain RSS fallback.
+	}
+	return effectiveProcessTreeMemory(rss, footprint), nil
+}
+
+func effectiveProcessTreeMemory(rss, physicalFootprint uint64) uint64 {
+	if physicalFootprint > rss {
+		return physicalFootprint
+	}
+	return rss
+}
+
+// processTreePhysicalFootprint sums the platform physical-footprint metric for
+// the root process and every descendant. Per-child errors are tolerated because
+// children can exit during the walk; a root lookup/sample error causes callers
+// to fall back to RSS.
+func processTreePhysicalFootprint(pid int) (uint64, error) {
+	root, err := process.NewProcess(int32(pid))
+	if err != nil {
+		return 0, fmt.Errorf("lookup root process %d: %w", pid, err)
+	}
+	rootFootprint, err := processPhysicalFootprint(pid)
+	if err != nil {
+		return 0, fmt.Errorf("sample root process %d physical footprint: %w", pid, err)
+	}
+	return rootFootprint + descendantsPhysicalFootprint(root), nil
+}
+
+func descendantsPhysicalFootprint(p *process.Process) uint64 {
+	children, err := p.Children()
+	if err != nil {
+		return 0
+	}
+	var total uint64
+	for _, child := range children {
+		if footprint, err := processPhysicalFootprint(int(child.Pid)); err == nil {
+			total += footprint
+		}
+		total += descendantsPhysicalFootprint(child)
+	}
+	return total
 }
 
 // processTreeRSSDetailed returns the RSS breakdown of the process tree rooted

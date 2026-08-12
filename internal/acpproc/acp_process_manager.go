@@ -122,9 +122,10 @@ type ACPProcessManager struct {
 	// sprawl while comfortably under MemoryRecycleThreshold.
 	descendantCountHistory map[string]*descendantCountEntry
 
-	// rssSampler samples the RSS (in bytes) of a shared process tree for the GC's
-	// memory-recycle tier. It defaults to (*SharedACPProcess).RSSBytes; tests
-	// override it to exercise the tier without launching a real subprocess.
+	// rssSampler samples effective memory pressure (in bytes) for the GC's memory-
+	// recycle tier. It defaults to (*SharedACPProcess).RSSBytes, which uses the
+	// greater of tree RSS and macOS physical footprint; the historical field name
+	// is retained because tests override this seam extensively.
 	rssSampler func(p *SharedACPProcess) (uint64, error)
 
 	// rssBreakdownSampler samples the RSS breakdown of a shared process tree for

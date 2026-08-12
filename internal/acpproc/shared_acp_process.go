@@ -2285,10 +2285,9 @@ func (p *SharedACPProcess) ActiveRPCs() int32 {
 	return p.activeRPCs.Load()
 }
 
-// RSSBytes returns the resident set size in bytes summed over this process's
-// tree (the ACP agent process plus all of its descendants). Used by the GC's
-// memory-recycle tier to decide whether an idle process has grown bloated
-// enough to be reclaimed.
+// RSSBytes returns the effective memory pressure in bytes for this process tree.
+// On macOS this is max(aggregate RSS, aggregate physical footprint), so compressed
+// memory remains visible to the GC; other platforms retain aggregate RSS.
 func (p *SharedACPProcess) RSSBytes() (uint64, error) {
 	p.mu.RLock()
 	if p.cmd == nil || p.cmd.Process == nil {
