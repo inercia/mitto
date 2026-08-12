@@ -368,6 +368,14 @@ window.updateMermaidTheme = updateMermaidTheme;
 // - On visibility change we also check for updates, keeping long-lived PWA
 //   tabs (especially on iPadOS) from running stale code.
 if ("serviceWorker" in navigator) {
+  // Snapshot this before registration. The first worker calls clients.claim()
+  // while activating, which makes navigator.serviceWorker.controller truthy
+  // even though the page did not have an old worker. Reading controller later
+  // would mistake that first install for an update and reload mid-bootstrap,
+  // aborting every in-flight API request.
+  const wasControlledByServiceWorker = Boolean(
+    navigator.serviceWorker.controller,
+  );
   navigator.serviceWorker
     .register("./sw.js", { updateViaCache: "none" })
     .then((registration) => {
@@ -378,7 +386,7 @@ if ("serviceWorker" in navigator) {
           newWorker.addEventListener("statechange", () => {
             if (
               newWorker.state === "activated" &&
-              navigator.serviceWorker.controller
+              wasControlledByServiceWorker
             ) {
               // New SW active and we had an old one — reload for fresh assets
               window.location.reload();
