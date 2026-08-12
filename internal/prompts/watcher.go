@@ -317,7 +317,28 @@ func (pw *PromptsWatcher) handleEvent(event fsnotify.Event) {
 	kind := pendingChangeKinds{}
 	lower := strings.ToLower(path)
 
-	if strings.HasSuffix(lower, ".prompt.yaml") {
+	base := filepath.Base(path)
+	if base == DeploymentGenerationName {
+		if event.Has(fsnotify.Create) ||
+			event.Has(fsnotify.Write) ||
+			event.Has(fsnotify.Remove) ||
+			event.Has(fsnotify.Rename) {
+			isRelevant = true
+			// Transaction boundaries require one final fragment-first full reload.
+			kind.prompt = true
+			kind.fragment = true
+		}
+	} else if base == DeploymentMarkerName {
+		// Creation marks the start of a transaction and must NOT publish: the
+		// tree may already be changing by the time the debounce fires. Completion
+		// writes DeploymentGenerationName and then removes this marker; either end
+		// event schedules the authoritative fragment-first full reload.
+		if event.Has(fsnotify.Remove) || event.Has(fsnotify.Rename) {
+			isRelevant = true
+			kind.prompt = true
+			kind.fragment = true
+		}
+	} else if strings.HasSuffix(lower, ".prompt.yaml") {
 		if event.Has(fsnotify.Create) ||
 			event.Has(fsnotify.Write) ||
 			event.Has(fsnotify.Remove) ||

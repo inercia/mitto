@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	promptspkg "github.com/inercia/mitto/internal/prompts"
 )
 
 // isBuiltinManagedFile reports whether a file inside the builtin prompt tree is
@@ -47,13 +49,28 @@ type DeployBuiltinPromptsResult struct {
 // `beads/`, `github/`, `jira/`); files are walked recursively and Deployed /
 // Skipped entries are reported as forward-slash rel-paths from BuiltinPromptsDir
 // (e.g. `beads/foo.prompt.yaml`) so nested layout is visible to callers.
-func DeployBuiltinPrompts(targetDir string, force bool) (*DeployBuiltinPromptsResult, error) {
-	result := &DeployBuiltinPromptsResult{}
+func DeployBuiltinPrompts(targetDir string, force bool) (result *DeployBuiltinPromptsResult, retErr error) {
+	result = &DeployBuiltinPromptsResult{}
 
 	// Create target directory if it doesn't exist
 	if err := os.MkdirAll(targetDir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create target directory %s: %w", targetDir, err)
 	}
+
+	var finishDeployment func() error
+	beginDeployment := func() error {
+		if finishDeployment != nil {
+			return nil
+		}
+		var err error
+		finishDeployment, err = promptspkg.BeginDeployment(filepath.Dir(targetDir))
+		return err
+	}
+	defer func() {
+		if finishDeployment != nil {
+			retErr = errors.Join(retErr, finishDeployment())
+		}
+	}()
 
 	walkErr := fs.WalkDir(BuiltinPromptsFS, BuiltinPromptsDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -80,6 +97,9 @@ func DeployBuiltinPrompts(targetDir string, force bool) (*DeployBuiltinPromptsRe
 		if err != nil {
 			result.Errors = append(result.Errors, fmt.Errorf("failed to read %s: %w", relPath, err))
 			return nil
+		}
+		if err := beginDeployment(); err != nil {
+			return err
 		}
 
 		// Ensure destination subdirectory exists before writing
@@ -115,14 +135,27 @@ func DeployBuiltinPrompts(targetDir string, force bool) (*DeployBuiltinPromptsRe
 // pass removes stale nested files as well. After pruning files, any empty
 // subdirectories that remain are also removed so the on-disk layout mirrors
 // the embedded layout exactly.
-func EnsureBuiltinPrompts(targetDir string) (bool, error) {
+func EnsureBuiltinPrompts(targetDir string) (deployed bool, retErr error) {
 	// Create target directory if it doesn't exist
 	if err := os.MkdirAll(targetDir, 0755); err != nil {
 		return false, fmt.Errorf("failed to create target directory %s: %w", targetDir, err)
 	}
 
-	deployed := false
 	var errs []error
+	var finishDeployment func() error
+	beginDeployment := func() error {
+		if finishDeployment != nil {
+			return nil
+		}
+		var err error
+		finishDeployment, err = promptspkg.BeginDeployment(filepath.Dir(targetDir))
+		return err
+	}
+	defer func() {
+		if finishDeployment != nil {
+			retErr = errors.Join(retErr, finishDeployment())
+		}
+	}()
 	// Track the embedded rel-paths so we can prune orphaned builtin prompts
 	// (files that were removed or renamed in a newer build) from targetDir.
 	// Keys are forward-slash rel-paths from BuiltinPromptsDir (e.g.
@@ -154,6 +187,9 @@ func EnsureBuiltinPrompts(targetDir string) (bool, error) {
 		existingContent, err := os.ReadFile(dstPath)
 		if err == nil && bytes.Equal(existingContent, embeddedContent) {
 			return nil // Already up to date
+		}
+		if err := beginDeployment(); err != nil {
+			return err
 		}
 
 		// Ensure destination subdirectory exists before writing.
@@ -202,6 +238,9 @@ func EnsureBuiltinPrompts(targetDir string) (bool, error) {
 		relSlash := filepath.ToSlash(rel)
 		if _, ok := embeddedNames[relSlash]; ok {
 			return nil
+		}
+		if err := beginDeployment(); err != nil {
+			return err
 		}
 		if err := os.Remove(path); err != nil {
 			errs = append(errs, fmt.Errorf("failed to remove stale prompt %s: %w", relSlash, err))

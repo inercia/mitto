@@ -1,12 +1,17 @@
 package prompts
 
 import (
+	"errors"
 	"path/filepath"
 	"sync"
 	"time"
 
 	"github.com/inercia/mitto/internal/appdir"
 )
+
+// ErrDeploymentInProgress is returned only when the cache has no last-good
+// snapshot to serve while a multi-file prompts deployment is active.
+var ErrDeploymentInProgress = errors.New("prompts deployment in progress")
 
 // PromptsCache provides cached access to global prompts with on-demand reload.
 // The cache supports multiple directories with proper priority ordering:
@@ -193,6 +198,11 @@ func (c *PromptsCache) reload() ([]*PromptFile, error) {
 		return c.prompts, nil
 	}
 
+	deploymentBefore, deploymentActive := captureDeploymentSnapshot(dirs)
+	if deploymentActive {
+		return c.lastGoodOrDeploymentError()
+	}
+
 	// Sample the fragment generation BEFORE loading so a concurrent
 	// SetCurrentFragments landing mid-reload leaves us with the older
 	// value cached — needsReload() will then re-fire on the next Get().
@@ -218,6 +228,14 @@ func (c *PromptsCache) reload() ([]*PromptFile, error) {
 		promptsByName, newModTimes, newLoadErrors = c.loadPromptsOnce(dirs)
 	}
 
+	// Do not publish a snapshot read while a bulk deployment was active. The
+	// marker covers ordinary long-running deploys; the generation comparison
+	// catches a fast deploy that began and ended entirely during this reload.
+	deploymentAfter, deploymentActive := captureDeploymentSnapshot(dirs)
+	if deploymentActive || !deploymentBefore.equal(deploymentAfter) {
+		return c.lastGoodOrDeploymentError()
+	}
+
 	// Convert map to slice, filtering out disabled prompts.
 	// Disabled prompts have already served their purpose of suppressing
 	// same-named prompts from lower-priority directories during merge.
@@ -236,6 +254,13 @@ func (c *PromptsCache) reload() ([]*PromptFile, error) {
 	c.fragmentsGen = fragmentsGen
 
 	return prompts, nil
+}
+
+func (c *PromptsCache) lastGoodOrDeploymentError() ([]*PromptFile, error) {
+	if c.prompts != nil {
+		return c.prompts, nil
+	}
+	return nil, ErrDeploymentInProgress
 }
 
 // loadPromptsOnce loads prompts from all directories, merging by name (later
@@ -278,15 +303,18 @@ func (c *PromptsCache) loadPromptsOnce(dirs []string) (map[string]*PromptFile, m
 // and the load errors already collected against it — are left untouched,
 // matching the fs-watcher's "keep previous registry on failure" policy).
 //
-// dirs is the PromptsCache's own directory list (default/additional/
-// workspace), not internal/web's getFragmentScanDirs() — internal/prompts
-// must not import internal/web. In practice the two lists mostly overlap
-// (both include MITTO_DIR/prompts/); the builtin subdirectory the web layer
-// additionally scans is itself a subdirectory of MITTO_DIR/prompts/, so
-// LoadFragmentsFromDir's recursive walk already picks up fragments placed
-// there when the default dir is included in dirs.
+// Fragment names are relative to each scan root. The builtin directory must be
+// scanned separately before the parent prompts directory; otherwise builtin
+// `_shared/x.tmpl` is registered only as `builtin/_shared/x`, and replacing the
+// process-wide registry drops the short `_shared/x` name used by prompts.
 func (c *PromptsCache) refreshFragmentsFromDisk(dirs []string) bool {
-	reg, _, err := ReloadFragmentsFromDirs(dirs)
+	fragmentDirs := make([]string, 0, len(dirs)+1)
+	if builtinDir, err := appdir.BuiltinPromptsDir(); err == nil {
+		fragmentDirs = append(fragmentDirs, builtinDir)
+	}
+	fragmentDirs = append(fragmentDirs, dirs...)
+
+	reg, _, err := ReloadFragmentsFromDirs(fragmentDirs)
 	if err != nil {
 		return false
 	}

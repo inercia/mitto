@@ -2762,6 +2762,18 @@ func (s *Server) OnPromptsChanged(event configPkg.PromptsChangeEvent) {
 	// invalidation still happens with zero WebSocket clients connected.
 	cel.InvalidateAllGlobCaches()
 
+	// Bulk builtin deployment writes many mutually-dependent prompt and
+	// fragment files. Ignore intermediate watcher batches while its transaction
+	// marker is present; the generation/marker completion event schedules one
+	// authoritative fragment-first reload after the tree is complete
+	// (mitto-aczx).
+	if prompts.DeploymentInProgress(s.getPromptsWatchDirs()) {
+		if s.logger != nil {
+			s.logger.Debug("Deferring prompts reload during bulk deployment")
+		}
+		return
+	}
+
 	if s.eventsManager == nil {
 		return
 	}

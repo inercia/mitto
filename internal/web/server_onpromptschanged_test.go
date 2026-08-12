@@ -139,6 +139,66 @@ prompt: |
 	}
 }
 
+func TestOnPromptsChanged_DefersDuringBulkDeployment(t *testing.T) {
+	mittoDir := t.TempDir()
+	t.Setenv(appdir.MittoDirEnv, mittoDir)
+	appdir.ResetCache()
+	t.Cleanup(appdir.ResetCache)
+
+	previous := prompts.CurrentFragments()
+	t.Cleanup(func() { prompts.SetCurrentFragments(previous) })
+	promptsDir := filepath.Join(mittoDir, appdir.PromptsDirName)
+	if err := os.MkdirAll(promptsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(promptsDir, "old.tmpl"), []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(promptsDir, "old.prompt.yaml"), []byte("name: Old\nprompt: old\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	registry, _, err := prompts.ReloadFragmentsFromDirs([]string{promptsDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prompts.SetCurrentFragments(registry)
+
+	cache := prompts.NewPromptsCache()
+	if _, err := cache.Get(); err != nil {
+		t.Fatal(err)
+	}
+	loadedAt := cache.LoadedAt()
+	s := &Server{
+		config:        Config{PromptsCache: cache, MittoConfig: &configPkg.Config{}},
+		eventsManager: NewGlobalEventsManager(),
+	}
+
+	finish, err := prompts.BeginDeployment(promptsDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	partial := "name: New\nprompt: |\n  {{ template \"missing\" . }}\n"
+	if err := os.WriteFile(filepath.Join(promptsDir, "new.prompt.yaml"), []byte(partial), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s.OnPromptsChanged(configPkg.PromptsChangeEvent{
+		HasFragmentChanges: true,
+		HasPromptChanges:   true,
+		ChangedDirs:        []string{promptsDir},
+		Timestamp:          time.Now(),
+	})
+
+	if prompts.CurrentFragments() != registry {
+		t.Fatal("fragment registry changed during active bulk deployment")
+	}
+	if !cache.LoadedAt().Equal(loadedAt) {
+		t.Fatal("prompt cache reloaded during active bulk deployment")
+	}
+	if err := finish(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // TestOnPromptsChanged_InvalidatesGlobCache pins mitto-ayl.1: firing
 // Server.OnPromptsChanged must invalidate the CEL glob-mode
 // FileExists/DirExists cache across ALL folders (not just one), since
