@@ -200,3 +200,7 @@ if (response.status === 401) {
 ```
 
 This is a defensive fallback. The primary redirect happens inside `authFetch`.
+
+## Middleware DEBUG-volume anti-pattern (mitto-1md)
+
+The auth middleware emits 5 DEBUG records per request (`AUTH: isPublicPath: NO MATCH` / `Required for path` / `Session cookie valid` / `External connection` / `Session validated`) — once 39% of all log bytes. Same anti-pattern as closed `mitto-t3i` at a different call site. Fix: aggregate to ≤1 record per request, guard with `logger.Enabled(ctx, slog.LevelDebug)`. **Rule for any new per-request observer**: avoid DEBUG in the steady state or emit exactly one aggregated record — multi-line DEBUG traces belong behind a build tag or explicit trace flag, not the default DEBUG channel.

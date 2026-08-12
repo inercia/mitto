@@ -147,3 +147,13 @@ grep "seq=42" ~/Library/Logs/Mitto/webview.log ~/Library/Logs/Mitto/mitto.log
 ## Replaying Events
 
 Build mock server (`make build-mock-acp`), extract events from `events.jsonl`, configure Mitto to use mock server.
+
+## Rebuild-verification protocol (recurring trap)
+
+After a user-reported rebuild+restart, **never** analyze the new log until you've confirmed the fix is in the running binary. Bitten repeatedly (mitto-54k.3/54k.5, mitto-xetv, mitto-mzvc). Three cheap checks:
+
+1. **Binary mtime vs commit time** — `ls -la ./mitto` vs `git show -s --format=%ci <fix-commit>`; if mtime < commit ci, fix is **not** live.
+2. **Symbol check** — `strings ./mitto | grep <new-symbol>` (log-literal, new bd-id, new const). Zero hits = not compiled in.
+3. **Post-restart log grep** for a new log-line literal introduced by the fix.
+
+Run at least (2) before drawing conclusions from post-restart measurements.

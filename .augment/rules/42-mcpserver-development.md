@@ -34,6 +34,14 @@ Earlier diagnosis ("agent-side, unfixable in Mitto" — auggie hard-gating on MC
 
 **Fix (`mitto-6hr`, P1, epic `mitto-54k`, APPLIED)**: `startSSE()` now passes `&mcp.StreamableHTTPOptions{JSONResponse: true}` to `NewStreamableHTTPHandler` so POST responses resolve inline, independent of the SSE GET. **Not** `Stateless: true` — rejects server→client *requests*, breaking `UIPrompter` (mitto_ui_options/form). Still-valid secondary mitigations (reduce concurrency, don't fix the stall): `mitto-clc` (disable proactive keep-warm), `mitto-cgc` (stagger aux-session creation).
 
+## MCP `SessionTimeout` is POST-only (mitto-6cz6)
+
+`mcpStreamableHTTPOptions()` (`internal/mcpserver/server.go`) sets `SessionTimeout: 30 * time.Minute`. The SDK only resets the idle timer on HTTP **POST** (`sessInfo.startPOST()`/`endPOST()`), **not** on SSE `GET` keepalive reconnects — that's what makes it selective for ghost sessions (SSE-only, never POST) while sparing live ones (max observed live inter-POST gap ~10.5 min; 30 min = ~3× headroom). Verified post-restart 2026-08-07: ghost sessions 273→0, reaper fired at 30-min boundary (34 sessions 404), zero client wedges. Pinned by `TestMcpStreamableHTTPOptions_SessionTimeoutConfigured`. Do **not** lower without re-checking live gaps.
+
+**Upstream compound risk (auggie#162 + #149)**: auggie NEVER calls `terminateSession()` — bundle audit shows the TS SDK's `terminateSession` symbol has **zero** call sites; `close()` only aborts the AbortController. That's why hundreds of stale sessions accumulate per client (one pid held 146 sockets). Auggie #149 (open) means auggie also does not re-initialize on 404. Today this is masked by **pooled-session failover** (`tools/call` transparently rides another live session in the same pool) — verified by `DELETE /mcp` on this-conversation's own live session. **If #162 is fixed upstream but #149 remains, the pool disappears and the 30-min timeout produces wedged tool calls.** Mitigation would be **raising** `mcpIdleSessionTimeout`, not removing it. Same-language control: `internal/mcpdiscovery` (Go SDK) **does** send `DELETE` on `Close()`.
+
+**Log-grep gotcha**: MCP session IDs are **uppercase base32** (`YCYYTHDLWGR7QDFI2XFEAS5766`), not hex/UUID. `mcp_session_id=[a-f0-9-]+` matches nothing (once produced a fake ~16× undercount). Use `[A-Z0-9]+` with length ≥20.
+
 **Operator-facing hygiene** (residual first-token gate under Auggie, epic `mitto-ammz`, bead `mitto-agt`): see [`docs/config/mcp.md` → Cold-Start Hygiene](../../docs/config/mcp.md#cold-start-hygiene) for the operator recipe (trim unused MCP servers, `uv tool install` for `uvx`-launched servers, avoid concurrent workspace UUIDs sharing one `working_dir`, verify `working_dir` matches the git root). The upstream Auggie feature-request draft (lazy / bounded MCP init) lives at [`docs/devel/upstream/auggie-lazy-mcp-init.md`](../../docs/devel/upstream/auggie-lazy-mcp-init.md).
 
 ## Adding New Tools
