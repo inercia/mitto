@@ -23,18 +23,25 @@ NPM=bun
 # Build flags
 LDFLAGS=-ldflags "-s -w"
 
+# macOS Keychain support requires cgo. Do not let an inherited
+# CGO_ENABLED=0 silently exclude the dependency's implementation.
+CGO_BUILD_ENV=
+ifeq ($(shell $(GOCMD) env GOOS),darwin)
+CGO_BUILD_ENV=CGO_ENABLED=1
+endif
+
 # Main build target
 build:
-	$(GOBUILD) $(LDFLAGS) -o $(BINARY_NAME) ./cmd/mitto
+	$(CGO_BUILD_ENV) $(GOBUILD) $(LDFLAGS) -o $(BINARY_NAME) ./cmd/mitto
 
 # Debug build: no -s -w stripping, so external samplers (sample, atos) can
 # resolve Go symbols. Pair with --pprof / MITTO_PPROF=1 (mitto-aek).
 build-debug:
-	$(GOBUILD) -o $(BINARY_NAME) ./cmd/mitto
+	$(CGO_BUILD_ENV) $(GOBUILD) -o $(BINARY_NAME) ./cmd/mitto
 
 # Install to GOPATH/bin
 install:
-	$(GOCMD) install ./cmd/mitto
+	$(CGO_BUILD_ENV) $(GOCMD) install ./cmd/mitto
 
 # Run all unit tests (Go + JavaScript)
 test: test-go test-js
@@ -367,7 +374,7 @@ build-mac-app: deps-go
 	CGO_ENABLED=1 $(GOBUILD) $(LDFLAGS) -o "$(APP_BUNDLE)/Contents/MacOS/$(APP_BINARY)" ./cmd/mitto-app
 	@# Build and bundle the CLI binary (used for MCP STDIO proxy)
 	@echo "Compiling $(BINARY_NAME) CLI..."
-	$(GOBUILD) $(LDFLAGS) -o "$(APP_BUNDLE)/Contents/MacOS/$(BINARY_NAME)" ./cmd/mitto
+	CGO_ENABLED=1 $(GOBUILD) $(LDFLAGS) -o "$(APP_BUNDLE)/Contents/MacOS/$(BINARY_NAME)" ./cmd/mitto
 	@# Copy Info.plist
 	@cp platform/mac/Info.plist "$(APP_BUNDLE)/Contents/"
 	@# Copy icon
