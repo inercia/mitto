@@ -1206,8 +1206,10 @@ func (r *LoopRunner) BootstrapOnCompletion(sessionID string) {
 // per-process guard does not permanently consume the pulse (mitto-bmct defect
 // A): fireOnStartPulses runs on every RunOnce poll tick, not just once at
 // boot (mitto-wyob), specifically so these three sentinels can self-heal on a
-// later tick. Any other (durable) delivery error leaves the guard set — the
-// boot pulse is genuinely one-shot for a deterministic failure.
+// later tick. Other synchronous and asynchronous delivery errors are routed
+// through their bounded failure classifier, then re-arm the pulse while the
+// loop remains enabled. A durably failing loop therefore retries on later
+// ticks until its classifier auto-pauses it instead of going silently deaf.
 func (r *LoopRunner) fireOnStartPulses() {
 	if r.store == nil {
 		return
@@ -1288,7 +1290,8 @@ func (r *LoopRunner) fireOnStartPulses() {
 		}
 
 		if err := r.triggerNowFull(meta.SessionID, true, nil, true, ""); err != nil {
-			if errors.Is(err, ErrSessionBusy) || errors.Is(err, ErrWorkspaceBusy) || errors.Is(err, ErrLoopDispatchCoalesced) {
+			isContention := errors.Is(err, ErrSessionBusy) || errors.Is(err, ErrWorkspaceBusy) || errors.Is(err, ErrLoopDispatchCoalesced)
+			if isContention {
 				// Transient contention, not a real delivery failure: roll back
 				// the once-per-process guard so a later tick of the per-tick
 				// fireOnStartPulses (mitto-wyob) can retry instead of the
@@ -1296,6 +1299,11 @@ func (r *LoopRunner) fireOnStartPulses() {
 				r.runOnStartFiredMu.Lock()
 				delete(r.runOnStartFired, meta.SessionID)
 				r.runOnStartFiredMu.Unlock()
+			} else if errors.Is(err, ErrPromptResolveFailed) {
+				r.handlePromptResolveFailure(meta.SessionID, meta.Name, loop, loopStore, err)
+				r.rearmRunOnStartAfterFailure(meta.SessionID, meta.Name, loopStore, err)
+			} else {
+				r.handleRunOnStartDeliveryFailure(meta.SessionID, meta.Name, loop, loopStore, err, true, true, loop.EffectiveTrigger())
 			}
 			if r.logger == nil {
 				continue
@@ -2391,6 +2399,34 @@ func (r *LoopRunner) handleDeliveryFailure(sessionID, sessionName string, loop *
 	}
 }
 
+// handleRunOnStartDeliveryFailure applies the trigger-agnostic delivery-failure
+// ceiling, then re-arms a consumed boot-pulse guard while the loop remains
+// enabled. It is shared by synchronous dispatch failures and asynchronous ACP
+// turn failures arriving through PromptMeta.OnComplete.
+func (r *LoopRunner) handleRunOnStartDeliveryFailure(sessionID, sessionName string, loop *session.LoopPrompt, loopStore *session.LoopStore, err error, resetTimer, forced bool, firedBy session.LoopTrigger) {
+	r.handleDeliveryFailure(sessionID, sessionName, loop, loopStore, err, resetTimer, forced, firedBy)
+	r.rearmRunOnStartAfterFailure(sessionID, sessionName, loopStore, err)
+}
+
+func (r *LoopRunner) rearmRunOnStartAfterFailure(sessionID, sessionName string, loopStore *session.LoopStore, err error) {
+	updated, getErr := loopStore.Get()
+	if getErr != nil || updated == nil || !updated.Enabled {
+		return
+	}
+
+	r.runOnStartFiredMu.Lock()
+	wasFired := r.runOnStartFired[sessionID]
+	delete(r.runOnStartFired, sessionID)
+	r.runOnStartFiredMu.Unlock()
+
+	if wasFired && r.logger != nil {
+		r.logger.Warn("Re-armed runOnStart boot pulse after delivery failure",
+			"session_id", sessionID,
+			"session_name", sessionName,
+			"error", err)
+	}
+}
+
 // deliverPrompt sends the loop prompt to the session.
 // resetTimer controls whether RecordSent() is called when the prompt completes:
 //   - true  → schedule advances from now (normal behaviour)
@@ -2561,7 +2597,11 @@ func (r *LoopRunner) deliverPrompt(bs *BackgroundSession, sessionMeta session.Me
 			// mitto-r6j.2).
 			defer releaseSlot()
 			if err != nil {
-				r.handleDeliveryFailure(sessionID, sessionName, loop, loopStore, err, resetTimer, forced, firedBy)
+				if isRunOnStart {
+					r.handleRunOnStartDeliveryFailure(sessionID, sessionName, loop, loopStore, err, resetTimer, forced, firedBy)
+				} else {
+					r.handleDeliveryFailure(sessionID, sessionName, loop, loopStore, err, resetTimer, forced, firedBy)
+				}
 				return
 			}
 

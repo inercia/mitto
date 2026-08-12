@@ -5720,6 +5720,74 @@ func TestLoopRunner_DeliveryFailure_ForcedDispatch_MustEventuallyAutoPause(t *te
 	}
 }
 
+// TestLoopRunner_RunOnStartAsyncFailure_RearmsUntilDeliveryFailureCeiling
+// reproduces the remaining mitto-bmct failure after the first fix: an ACP turn
+// can fail asynchronously after triggerNowFull has returned nil, leaving the
+// once-per-process runOnStartFired guard consumed. Each sub-ceiling failure must
+// clear that guard so a later poll tick retries; the ceiling must still stop a
+// durably failing loop instead of retrying forever.
+func TestLoopRunner_RunOnStartAsyncFailure_RearmsUntilDeliveryFailureCeiling(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	const sessionID = "run-on-start-async-failure"
+	meta := session.Metadata{SessionID: sessionID, ACPServer: "claude", WorkingDir: "/tmp"}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	loopStore := store.Loop(sessionID)
+	tr := true
+	loop := &session.LoopPrompt{
+		Prompt:     "Test",
+		Trigger:    session.TriggerOnTasks,
+		RunOnStart: &tr,
+		Enabled:    true,
+	}
+	if err := loopStore.Set(loop); err != nil {
+		t.Fatalf("loopStore.Set() error = %v", err)
+	}
+
+	runner := NewLoopRunner(store, nil, nil)
+	var autoStopCalls int
+	runner.SetOnLoopAutoStopped(func(string, *session.LoopPrompt) { autoStopCalls++ })
+	authErr := errors.New(`{"code":-32000,"message":"Authentication required"}`)
+
+	for attempt := 1; attempt <= MaxLoopDeliveryFailures; attempt++ {
+		// fireOnStartPulses consumes the guard before dispatch. The ACP error then
+		// arrives later through PromptMeta.OnComplete.
+		runner.runOnStartFiredMu.Lock()
+		runner.runOnStartFired[sessionID] = true
+		runner.runOnStartFiredMu.Unlock()
+
+		runner.handleRunOnStartDeliveryFailure(sessionID, "cgw-managed-tools", loop,
+			loopStore, authErr, true, true, session.TriggerOnTasks)
+
+		if attempt < MaxLoopDeliveryFailures && runner.HasFiredRunOnStart(sessionID) {
+			t.Fatalf("attempt %d: runOnStartFired remained set after asynchronous failure; want re-armed", attempt)
+		}
+	}
+
+	final, err := loopStore.Get()
+	if err != nil {
+		t.Fatalf("loopStore.Get() error = %v", err)
+	}
+	if final.Enabled {
+		t.Errorf("loop.Enabled = true after %d asynchronous boot failures; want false", MaxLoopDeliveryFailures)
+	}
+	if final.StoppedReason != session.StoppedReasonDeliveryFailures {
+		t.Errorf("loop.StoppedReason = %q, want %q", final.StoppedReason, session.StoppedReasonDeliveryFailures)
+	}
+	if autoStopCalls != 1 {
+		t.Errorf("onLoopAutoStopped invocation count = %d, want 1", autoStopCalls)
+	}
+	if !runner.HasFiredRunOnStart(sessionID) {
+		t.Error("runOnStartFired cleared after the loop auto-paused; want terminal guard retained")
+	}
+}
+
 // TestLoopRunner_ReleaseBeadClaim_OnNonBenignAutoStop reproduces the fix for
 // mitto-2efc defect 2: a loop that auto-pauses for a non-benign reason
 // (context-window exceeded / repeated delivery failures) must release any
@@ -6234,28 +6302,39 @@ func TestLoopRunner_FireOnStartPulses_NilStore(t *testing.T) {
 	runner.fireOnStartPulses()
 }
 
-// TestLoopRunner_FireOnStartPulses_MarksSessionAsFired verifies that
-// fireOnStartPulses tries to deliver the pulse for a session configured with
-// RunOnStart=true and records the session in runOnStartFired even though the
-// delivery itself fails (nil session manager). This documents the
-// once-per-process guard behaviour: a subsequent invocation must NOT re-fire.
-func TestLoopRunner_FireOnStartPulses_MarksSessionAsFired(t *testing.T) {
+// TestLoopRunner_FireOnStartPulses_SynchronousFailure_RearmsUntilCeiling
+// verifies that a non-contention failure returned directly by triggerNowFull
+// does not consume the boot pulse forever. The per-tick pass retries while the
+// loop remains enabled, then the shared delivery-failure ceiling auto-pauses it.
+func TestLoopRunner_FireOnStartPulses_SynchronousFailure_RearmsUntilCeiling(t *testing.T) {
 	store, err := session.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewStore() error = %v", err)
 	}
 	defer store.Close()
 
-	newRunOnStartSession(t, store, "s1", session.TriggerOnTasks)
+	loopStore := newRunOnStartSession(t, store, "s1", session.TriggerOnTasks)
 
 	runner := NewLoopRunner(store, nil, nil) // nil SM → triggerNowFull returns ErrSessionManagerNotAvailable
-	runner.fireOnStartPulses()
+	for attempt := 1; attempt <= MaxLoopDeliveryFailures; attempt++ {
+		runner.fireOnStartPulses()
+		if attempt < MaxLoopDeliveryFailures && runner.HasFiredRunOnStart("s1") {
+			t.Fatalf("attempt %d: runOnStartFired[s1] remained set after synchronous failure; want re-armed", attempt)
+		}
+	}
 
-	runner.runOnStartFiredMu.Lock()
-	fired := runner.runOnStartFired["s1"]
-	runner.runOnStartFiredMu.Unlock()
-	if !fired {
-		t.Error("runOnStartFired[s1] = false after fireOnStartPulses(), want true")
+	final, err := loopStore.Get()
+	if err != nil {
+		t.Fatalf("loopStore.Get() error = %v", err)
+	}
+	if final.Enabled {
+		t.Errorf("loop.Enabled = true after %d synchronous delivery failures; want false", MaxLoopDeliveryFailures)
+	}
+	if final.StoppedReason != session.StoppedReasonDeliveryFailures {
+		t.Errorf("loop.StoppedReason = %q, want %q", final.StoppedReason, session.StoppedReasonDeliveryFailures)
+	}
+	if !runner.HasFiredRunOnStart("s1") {
+		t.Error("runOnStartFired[s1] cleared after auto-pause; want terminal guard retained")
 	}
 }
 
@@ -6423,24 +6502,12 @@ func TestLoopRunner_FireOnStartPulses_ArchivedSkipped(t *testing.T) {
 	}
 }
 
-// TestLoopRunner_PostBootLoop_NeverFiresViaRunOnce is the reproduction test
-// for mitto-wyob: fireOnStartPulses is invoked exactly once, from pollLoop's
-// startup sequence, before the ticker loop begins (loop_runner.go:1439).
-// Every subsequent tick calls only RunOnce(), which never re-invokes
-// fireOnStartPulses. A loop with RunOnStart=true that is created *after*
-// that single boot-time call therefore never receives its startup pulse,
-// even though normal poll ticks keep running for its session.
-//
-// This test simulates that exact timeline: fire the boot pulse once while
-// the store has no matching sessions yet (mirroring pollLoop's real boot
-// call, which runs long before a post-boot conversation could exist), then
-// create a RunOnStart=true session afterward (mirroring a loop created
-// post-boot, e.g. via the UI or an MCP call), then run a normal poll tick
-// via RunOnce() (mirroring the runner's ticker, which calls only RunOnce()
-// on every tick after the initial boot sequence). The desired behavior is
-// that the new loop still receives its once-only pulse on a later tick;
-// today it never does because RunOnce() never calls fireOnStartPulses.
-func TestLoopRunner_PostBootLoop_NeverFiresViaRunOnce(t *testing.T) {
+// TestLoopRunner_PostBootLoop_RunOnceAttemptsBootPulse verifies the mitto-wyob
+// behavior: a RunOnStart loop created after the initial boot pass is discovered
+// by a later RunOnce tick. The nil session manager makes delivery fail
+// synchronously; deliveryFailures is therefore the observable attempt marker,
+// while the once-per-process guard must be re-armed for the next bounded retry.
+func TestLoopRunner_PostBootLoop_RunOnceAttemptsBootPulse(t *testing.T) {
 	store, err := session.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewStore() error = %v", err)
@@ -6458,19 +6525,17 @@ func TestLoopRunner_PostBootLoop_NeverFiresViaRunOnce(t *testing.T) {
 	// with RunOnStart=true.
 	newRunOnStartSession(t, store, "post-boot-session", session.TriggerOnTasks)
 
-	// Simulate a subsequent poll tick. pollLoop's ticker calls only RunOnce()
-	// on every tick after the initial boot sequence -- it never re-invokes
-	// fireOnStartPulses (loop_runner.go:1447-1454).
+	// Simulate a subsequent poll tick.
 	runner.RunOnce()
 
-	// Desired behavior: the new loop should receive its once-only startup
-	// pulse on a later tick, since it never got the boot-time one.
-	if !runner.HasFiredRunOnStart("post-boot-session") {
-		t.Error("HasFiredRunOnStart(post-boot-session) = false after RunOnce(); " +
-			"a loop with RunOnStart=true created after Mitto's boot pulse never " +
-			"receives its startup pulse (mitto-wyob): fireOnStartPulses is only " +
-			"invoked once, from pollLoop's startup sequence, and RunOnce() never " +
-			"calls it on subsequent ticks")
+	runner.deliveryFailuresMu.Lock()
+	failures := runner.deliveryFailures["post-boot-session"]
+	runner.deliveryFailuresMu.Unlock()
+	if failures != 1 {
+		t.Errorf("deliveryFailures[post-boot-session] = %d after RunOnce(); want 1 delivery attempt", failures)
+	}
+	if runner.HasFiredRunOnStart("post-boot-session") {
+		t.Error("HasFiredRunOnStart(post-boot-session) = true after failed attempt; want re-armed for retry")
 	}
 }
 

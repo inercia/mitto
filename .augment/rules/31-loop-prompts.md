@@ -164,11 +164,11 @@ When an `onTasks` loop is busy (child driver still running), fs-watcher fires do
 
 ## `runOnStart` Boot Pulse — Once-per-Process Guard
 
-`fireOnStartPulses` (`internal/conversation/loop_runner.go` ~L1000) marks `runOnStartFired[sessionID] = true` **before** calling `triggerNowFull → deliverPrompt → promptResolver`. If prompt resolution fails at that instant, the guard has already consumed the pulse and the boot fire will **not** be retried this process lifetime — the loop appears "deaf on restart".
+`fireOnStartPulses` (`internal/conversation/loop_runner.go`) reserves `runOnStartFired[sessionID] = true` **before** calling `triggerNowFull` to prevent concurrent ticks from double-dispatching. Failed deliveries must release that reservation while the loop remains enabled: contention errors roll it back directly; prompt-resolution failures use their dedicated bounded strike counter; other synchronous and asynchronous failures use the trigger-agnostic `deliveryFailures` ceiling. Once a classifier auto-pauses the loop, the guard remains terminally set and no further boot retries occur.
 
 - Anti-flap window default: `config.DefaultRunOnStartAntiFlapSeconds = 60` seconds (not minutes). Only suppresses if the loop actually ran within that window.
-- Historical root cause of `prompt "X" not found` at boot: prompts-cache warmed before the fragment registry — fixed by `mitto-g61` / commit `2fd8e7b3` (`internal/web/server.go` now calls `prompts.SetCurrentFragments(reg)` BEFORE starting the prompts watcher). The guard-consume-on-failure hazard remains latent for any other transient resolve failure.
-- Diagnosis path: `grep 'Firing loop boot pulse' mitto.log` for `session_id`, then `grep 'Boot pulse delivery failed'` for the resolver error.
+- Historical root cause of `prompt "X" not found` at boot: prompts-cache warmed before the fragment registry — fixed by `mitto-g61` / commit `2fd8e7b3` (`internal/web/server.go` now calls `prompts.SetCurrentFragments(reg)` BEFORE starting the prompts watcher).
+- Diagnosis path: grep `Firing loop boot pulse`, `Boot pulse delivery failed`, `Re-armed runOnStart boot pulse after delivery failure`, and the eventual auto-stop record by `session_id`.
 
 ## Sending Prompts Inside a Running Loop Iteration
 
