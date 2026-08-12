@@ -61,7 +61,10 @@ describe("misc resource", () => {
     test("POSTs the credentials body untouched", async () => {
       const { misc, calls, respondWith } = mk();
       respondWith(() => fakeResponse({ body: { success: true } }));
-      const result = await misc.login({ username: "alice", password: "hunter2" });
+      const result = await misc.login({
+        username: "alice",
+        password: "hunter2",
+      });
       expect(calls[0].url).toBe("/api/login");
       expect(calls[0].init.method).toBe("POST");
       expect(calls[0].init.body).toBe(
@@ -130,8 +133,29 @@ describe("misc resource", () => {
       expect(result).toEqual({ improved_prompt: "better" });
     });
 
+    // Regression for mitto-hr5m: a transient warm-up response must not require
+    // the user to click the magic wand a second time.
+    test("retries one unavailable 503 and returns the successful improvement", async () => {
+      const { misc, calls, respondWith, respondOnce } = mk();
+      respondWith(() =>
+        fakeResponse({ body: { improved_prompt: "better after warm-up" } }),
+      );
+      respondOnce(() =>
+        fakeResponse({
+          status: 503,
+          headers: { "Retry-After": "0" },
+          body: { error: { code: "unavailable", message: "starting up" } },
+        }),
+      );
+
+      await expect(misc.improvePrompt("do it", "ws-1")).resolves.toEqual({
+        improved_prompt: "better after warm-up",
+      });
+      expect(calls).toHaveLength(2);
+    });
+
     test("a 503 while the auxiliary session warms up surfaces as MittoApiError", async () => {
-      const { misc, respondWith } = mk();
+      const { misc, calls, respondWith } = mk();
       respondWith(() =>
         fakeResponse({
           status: 503,
@@ -141,6 +165,45 @@ describe("misc resource", () => {
       await expect(misc.improvePrompt("do it", "ws-1")).rejects.toThrow(
         MittoApiError,
       );
+      expect(calls).toHaveLength(2);
+    });
+
+    test("does not retry a non-unavailable server error", async () => {
+      const { misc, calls, respondWith } = mk();
+      respondWith(() =>
+        fakeResponse({
+          status: 503,
+          body: { error: { code: "server_error", message: "broken" } },
+        }),
+      );
+      await expect(misc.improvePrompt("do it", "ws-1")).rejects.toThrow(
+        MittoApiError,
+      );
+      expect(calls).toHaveLength(1);
+    });
+
+    test("aborts while waiting for Retry-After without making a second call", async () => {
+      const { misc, calls, respondWith } = mk();
+      const controller = new AbortController();
+      respondWith(() =>
+        fakeResponse({
+          status: 503,
+          headers: { "Retry-After": "30" },
+          body: { error: { code: "unavailable", message: "starting up" } },
+        }),
+      );
+
+      const result = misc.improvePrompt("do it", "ws-1", {
+        signal: controller.signal,
+      });
+      await Promise.resolve();
+      controller.abort();
+
+      await expect(result).rejects.toMatchObject({
+        code: "network_error",
+        cause: { name: "AbortError" },
+      });
+      expect(calls).toHaveLength(1);
     });
   });
 

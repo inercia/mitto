@@ -15,6 +15,7 @@ import (
 type auxiliaryClient struct {
 	mu       sync.Mutex
 	response strings.Builder
+	retired  bool
 }
 
 // newAuxiliaryClient creates a new auxiliary client.
@@ -27,6 +28,14 @@ func (c *auxiliaryClient) reset() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.response.Reset()
+}
+
+// retire permanently stops this client from collecting late chunks from a
+// cancelled turn. A fresh auxiliary session always receives a fresh client.
+func (c *auxiliaryClient) retire() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.retired = true
 }
 
 // getResponse returns the collected response text.
@@ -45,7 +54,9 @@ func (c *auxiliaryClient) OnSessionUpdate(ctx context.Context, params acp.Sessio
 		content := u.AgentMessageChunk.Content
 		if content.Text != nil {
 			c.mu.Lock()
-			c.response.WriteString(content.Text.Text)
+			if !c.retired {
+				c.response.WriteString(content.Text.Text)
+			}
 			c.mu.Unlock()
 		}
 	}

@@ -1429,7 +1429,8 @@ export function ChatInput({
     setImproveError(null);
 
     try {
-      const timeoutId = setTimeout(() => controller.abort(), 65000); // 65s timeout
+      // Covers two 55s server attempts plus Retry-After and client overhead.
+      const timeoutId = setTimeout(() => controller.abort(), 125000);
 
       let data;
       try {

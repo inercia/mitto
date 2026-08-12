@@ -32,6 +32,8 @@ export function buildUrl(config: object, path: string, query?: object): string;
  *   itself instead of it always being thrown as a `MittoApiError`. Implies
  *   `raw: true` handling for the allow-listed status is left to the caller —
  *   pass `raw: true` alongside this to get the untouched `Response`.
+ * @property {boolean} [retryUnavailable] - retry one canonical 503
+ *   `unavailable` response, honoring `Retry-After` up to 30 seconds
  */
 /**
  * The single request primitive. Resource modules curry `config` and call
@@ -75,4 +77,9 @@ export type RequestOptions = {
      * pass `raw: true` alongside this to get the untouched `Response`.
      */
     allowStatus?: number[];
+    /**
+     * - retry one canonical 503
+     * `unavailable` response, honoring `Retry-After` up to 30 seconds
+     */
+    retryUnavailable?: boolean;
 };

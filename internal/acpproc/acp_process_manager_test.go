@@ -252,6 +252,66 @@ func TestAuxiliaryClient_ResponseCollection(t *testing.T) {
 	}
 }
 
+func TestAuxiliaryClient_RetireIgnoresLateChunks(t *testing.T) {
+	client := newAuxiliaryClient()
+	client.retire()
+	client.reset()
+
+	err := client.OnSessionUpdate(context.Background(), acp.SessionNotification{
+		Update: acp.SessionUpdate{
+			AgentMessageChunk: &acp.SessionUpdateAgentMessageChunk{
+				Content: acp.ContentBlock{Text: &acp.ContentBlockText{Text: "late output"}},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("OnSessionUpdate() error = %v", err)
+	}
+	if got := client.getResponse(); got != "" {
+		t.Fatalf("retired client collected late output %q", got)
+	}
+}
+
+func TestInvalidateAuxSession_DoesNotDeleteReplacement(t *testing.T) {
+	mgr := NewACPProcessManager(context.Background(), nil)
+	defer mgr.Close()
+	key := auxSessionKey{workspaceUUID: "workspace1", purpose: "improve-prompt"}
+	stale := &auxiliarySessionState{sessionID: "stale"}
+	replacement := &auxiliarySessionState{sessionID: "replacement"}
+	mgr.auxSessions[key] = replacement
+
+	mgr.invalidateAuxSession(key.workspaceUUID, key.purpose, stale)
+
+	if got := mgr.auxSessions[key]; got != replacement {
+		t.Fatalf("replacement session was removed: got %p, want %p", got, replacement)
+	}
+}
+
+func TestRetireCancelledAuxSession_UnregistersAndInvalidates(t *testing.T) {
+	mgr := NewACPProcessManager(context.Background(), nil)
+	defer mgr.Close()
+	key := auxSessionKey{workspaceUUID: "workspace1", purpose: "improve-prompt"}
+	client := newAuxiliaryClient()
+	state := &auxiliarySessionState{sessionID: "cancelled", client: client}
+	process := &SharedACPProcess{client: NewMultiplexClient()}
+	process.RegisterSession(acp.SessionId(state.sessionID), &conversation.SessionCallbacks{
+		OnSessionUpdate: client.OnSessionUpdate,
+	})
+	mgr.auxSessions[key] = state
+
+	mgr.retireCancelledAuxSession(process, key.workspaceUUID, key.purpose, state)
+
+	if process.client.getSession(acp.SessionId(state.sessionID)) != nil {
+		t.Fatal("cancelled session callback remains registered")
+	}
+	if _, ok := mgr.auxSessions[key]; ok {
+		t.Fatal("cancelled auxiliary session remains cached")
+	}
+	if !client.retired {
+		t.Fatal("cancelled auxiliary client was not retired")
+	}
+}
+
 // ---- mapsEqual tests ----
 
 func TestMapsEqual(t *testing.T) {

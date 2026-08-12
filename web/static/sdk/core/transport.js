@@ -8,6 +8,8 @@
  */
 import { MittoNetworkError, errorFromResponse } from "./errors.js";
 
+const MAX_RETRY_AFTER_MS = 30_000;
+
 /** Build a query string from a params object, omitting null/undefined/""
  *  values. Array values emit repeated `key=v` params (one per element);
  *  empty arrays are "no filter" and omitted entirely. Ported from
@@ -88,6 +90,43 @@ function isJsonContentType(contentType) {
   return typeof contentType === "string" && /\bjson\b/i.test(contentType);
 }
 
+function retryAfterMs(response) {
+  const value = response.headers?.get?.("retry-after");
+  if (!value) return 0;
+
+  const seconds = Number(value);
+  if (Number.isFinite(seconds) && seconds >= 0) {
+    return Math.min(seconds * 1000, MAX_RETRY_AFTER_MS);
+  }
+
+  const retryAt = Date.parse(value);
+  if (!Number.isFinite(retryAt)) return 0;
+  return Math.min(Math.max(retryAt - Date.now(), 0), MAX_RETRY_AFTER_MS);
+}
+
+function waitForRetry(delayMs, signal) {
+  if (signal?.aborted) {
+    const cause = new Error("Request was aborted before retry");
+    cause.name = "AbortError";
+    return Promise.reject(new MittoNetworkError(cause.message, { cause }));
+  }
+  if (delayMs === 0) return Promise.resolve();
+
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, delayMs);
+    const onAbort = () => {
+      clearTimeout(timer);
+      const cause = new Error("Request was aborted before retry");
+      cause.name = "AbortError";
+      reject(new MittoNetworkError(cause.message, { cause }));
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
 /** Decodes a Response body: null for 204/205/empty, JSON when the
  *  content-type says so, otherwise text. Never throws on malformed JSON —
  *  falls back to text so callers get *something* rather than a decode
@@ -124,6 +163,8 @@ async function decodeBody(response) {
  *   itself instead of it always being thrown as a `MittoApiError`. Implies
  *   `raw: true` handling for the allow-listed status is left to the caller —
  *   pass `raw: true` alongside this to get the untouched `Response`.
+ * @property {boolean} [retryUnavailable] - retry one canonical 503
+ *   `unavailable` response, honoring `Retry-After` up to 30 seconds
  */
 
 /**
@@ -157,29 +198,44 @@ export async function request(config, options) {
   };
   if (patch.credentials) fetchInit.credentials = patch.credentials;
 
-  let response;
-  try {
-    response = await config.fetch(url, fetchInit);
-  } catch (cause) {
-    throw new MittoNetworkError(`Request to ${url} failed: ${cause.message}`, {
-      cause,
-    });
-  }
-
-  const allowed = response.ok || (options.allowStatus || []).includes(response.status);
-  if (!allowed) {
-    const responseBody = await decodeBody(response);
-    const error = errorFromResponse({
-      status: response.status,
-      body: responseBody,
-    });
-    if (response.status === 401) {
-      config.auth.onUnauthorized?.(error);
-      config.onUnauthorized(error);
+  for (let attempt = 0; attempt < 2; attempt++) {
+    let response;
+    try {
+      response = await config.fetch(url, fetchInit);
+    } catch (cause) {
+      throw new MittoNetworkError(
+        `Request to ${url} failed: ${cause.message}`,
+        {
+          cause,
+        },
+      );
     }
-    throw error;
-  }
 
-  if (options.raw) return response;
-  return decodeBody(response);
+    const allowed =
+      response.ok || (options.allowStatus || []).includes(response.status);
+    if (!allowed) {
+      const responseBody = await decodeBody(response);
+      const error = errorFromResponse({
+        status: response.status,
+        body: responseBody,
+      });
+      if (
+        attempt === 0 &&
+        options.retryUnavailable &&
+        response.status === 503 &&
+        error.code === "unavailable"
+      ) {
+        await waitForRetry(retryAfterMs(response), options.signal);
+        continue;
+      }
+      if (response.status === 401) {
+        config.auth.onUnauthorized?.(error);
+        config.onUnauthorized(error);
+      }
+      throw error;
+    }
+
+    if (options.raw) return response;
+    return decodeBody(response);
+  }
 }

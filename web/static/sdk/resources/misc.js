@@ -69,15 +69,15 @@ export function createMiscResource(config, configResource) {
         ...opts,
       }),
 
-    /** POST /api/aux/improve-prompt. May answer 503 while the auxiliary
-     *  session warms up — surfaced as `MittoApiError`, no client-side
-     *  retry.
+    /** POST /api/aux/improve-prompt. Retries one canonical 503 unavailable
+     *  response while the auxiliary session warms up.
      *  @param {string} prompt
      *  @param {string} workspaceUUID
      *  @returns {Promise<{improved_prompt: string}>} */
     improvePrompt: (prompt, workspaceUUID, opts) =>
       call("POST", "/api/aux/improve-prompt", {
         body: { prompt, workspace_uuid: workspaceUUID },
+        retryUnavailable: true,
         ...opts,
       }),
 

@@ -38,9 +38,8 @@ export function createMiscResource(config: import("../core/config.js").ResolvedC
      *  @param {string} path - absolute file path
      *  @param {string} content */
     saveFileToPath: (path: string, content: string, opts: any) => Promise<any>;
-    /** POST /api/aux/improve-prompt. May answer 503 while the auxiliary
-     *  session warms up — surfaced as `MittoApiError`, no client-side
-     *  retry.
+    /** POST /api/aux/improve-prompt. Retries one canonical 503 unavailable
+     *  response while the auxiliary session warms up.
      *  @param {string} prompt
      *  @param {string} workspaceUUID
      *  @returns {Promise<{improved_prompt: string}>} */

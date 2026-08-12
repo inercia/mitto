@@ -171,7 +171,8 @@ export function useBeadsDetailPanel({
       if (improvingDesc || !text || !text.trim()) return;
       setImprovingDesc(true);
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 65000); // 65s timeout
+      // Covers two 55s server attempts plus Retry-After and client overhead.
+      const timeoutId = setTimeout(() => controller.abort(), 125000);
       try {
         const workspaceUUID =
           (typeof window !== "undefined" && window.mittoCurrentWorkspaceUUID) ||

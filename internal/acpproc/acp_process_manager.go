@@ -1016,6 +1016,11 @@ func (m *ACPProcessManager) PromptAuxiliary(ctx context.Context, workspaceUUID, 
 	// Send prompt to the auxiliary session
 	_, err = process.Prompt(ctx, acp.SessionId(auxState.sessionID), []acp.ContentBlock{acp.TextBlock(message)})
 	if err != nil {
+		if ctx.Err() != nil {
+			m.retireCancelledAuxSession(process, workspaceUUID, purpose, auxState)
+			auxState.mu.Unlock()
+			return "", fmt.Errorf("auxiliary prompt cancelled: %w", err)
+		}
 		// Always release the lock before returning or retrying.
 		auxState.mu.Unlock()
 
@@ -1031,7 +1036,7 @@ func (m *ACPProcessManager) PromptAuxiliary(ctx context.Context, workspaceUUID, 
 				"purpose", purpose,
 				"error", err)
 		}
-		m.invalidateAuxSession(workspaceUUID, purpose)
+		m.invalidateAuxSession(workspaceUUID, purpose, auxState)
 
 		// Wait 1 second for the process to auto-restart, honouring context cancellation.
 		select {
@@ -1061,6 +1066,11 @@ func (m *ACPProcessManager) PromptAuxiliary(ctx context.Context, workspaceUUID, 
 		auxState.client.reset()
 		_, err = process.Prompt(ctx, acp.SessionId(auxState.sessionID), []acp.ContentBlock{acp.TextBlock(message)})
 		if err != nil {
+			if ctx.Err() != nil {
+				m.retireCancelledAuxSession(process, workspaceUUID, purpose, auxState)
+				auxState.mu.Unlock()
+				return "", fmt.Errorf("auxiliary prompt cancelled on retry: %w", err)
+			}
 			auxState.mu.Unlock()
 			if m.logger != nil {
 				m.logger.Error("Auxiliary prompt failed after retry",
@@ -1672,12 +1682,13 @@ func (m *ACPProcessManager) invalidateAuxiliarySessions(workspaceUUID string) {
 // invalidateAuxSession removes a single cached auxiliary session entry,
 // forcing a new session to be created on the next PromptAuxiliary call.
 // This is more surgical than invalidateAuxiliarySessions which removes all sessions for a workspace.
+// The expected-state check prevents a delayed cleanup from deleting a replacement.
 // Must be called WITHOUT holding auxMu.
-func (m *ACPProcessManager) invalidateAuxSession(workspaceUUID, purpose string) {
+func (m *ACPProcessManager) invalidateAuxSession(workspaceUUID, purpose string, expected *auxiliarySessionState) {
 	key := auxSessionKey{workspaceUUID: workspaceUUID, purpose: purpose}
 	m.auxMu.Lock()
 	defer m.auxMu.Unlock()
-	if _, ok := m.auxSessions[key]; ok {
+	if current, ok := m.auxSessions[key]; ok && current == expected {
 		delete(m.auxSessions, key)
 		if m.logger != nil {
 			m.logger.Info("Invalidated stale auxiliary session for retry",
@@ -1685,6 +1696,26 @@ func (m *ACPProcessManager) invalidateAuxSession(workspaceUUID, purpose string) 
 				"purpose", purpose)
 		}
 	}
+}
+
+const auxiliaryCancelTimeout = 2 * time.Second
+
+// retireCancelledAuxSession isolates a timed-out turn before the per-session
+// lock is released. Retiring the callback first also rejects notifications
+// already queued inside the ACP client before UnregisterSession takes effect.
+func (m *ACPProcessManager) retireCancelledAuxSession(process *SharedACPProcess, workspaceUUID, purpose string, state *auxiliarySessionState) {
+	state.client.retire()
+	cancelCtx, cancel := context.WithTimeout(context.Background(), auxiliaryCancelTimeout)
+	defer cancel()
+	if err := process.Cancel(cancelCtx, acp.SessionId(state.sessionID)); err != nil && m.logger != nil {
+		m.logger.Warn("Failed to cancel timed-out auxiliary prompt",
+			"workspace_uuid", workspaceUUID,
+			"purpose", purpose,
+			"session_id", state.sessionID,
+			"error", err)
+	}
+	process.UnregisterSession(acp.SessionId(state.sessionID))
+	m.invalidateAuxSession(workspaceUUID, purpose, state)
 }
 
 // acquireAuxLock acquires the auxiliary session mutex with context cancellation support.
