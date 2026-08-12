@@ -170,6 +170,49 @@ type dirPromptResult struct {
 	LoadErrors []config.PromptLoadError
 }
 
+// promptTreeVerification is the result of loading a prompt tree exactly as the
+// runtime does: fragments first, then every prompt against that registry.
+type promptTreeVerification struct {
+	FragmentCount  int
+	FragmentErrors []config.FragmentLoadError
+	DirResults     []dirPromptResult
+	PromptCount    int
+	PromptErrors   int
+}
+
+func verifyPromptTree(promptDirs, fragmentDirs []string) (promptTreeVerification, error) {
+	var result promptTreeVerification
+
+	fragErrs, err := installFragments(fragmentDirs)
+	if err != nil {
+		return result, err
+	}
+	result.FragmentErrors = fragErrs
+	if frags := prompts.CurrentFragments(); frags != nil {
+		result.FragmentCount = frags.Len()
+	}
+
+	dirResults, err := loadAllPrompts(promptDirs)
+	if err != nil {
+		return result, err
+	}
+	result.DirResults = dirResults
+	for _, r := range dirResults {
+		result.PromptCount += len(r.Prompts)
+		result.PromptErrors += len(r.LoadErrors)
+	}
+
+	return result, nil
+}
+
+func (r promptTreeVerification) validationError() error {
+	if len(r.FragmentErrors) == 0 && r.PromptErrors == 0 {
+		return nil
+	}
+	return fmt.Errorf("verification failed: %d fragment error(s), %d prompt error(s)",
+		len(r.FragmentErrors), r.PromptErrors)
+}
+
 func runPromptsVerify(cmd *cobra.Command, args []string) error {
 	promptDirs, fragmentDirs, err := promptTreeDirs(verifyExtraDir)
 	if err != nil {
@@ -195,41 +238,27 @@ func runPromptsVerify(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Println()
 
-	// 1. Load and install fragments.
-	fragErrs, err := installFragments(fragmentDirs)
+	// Load fragments first, then load every prompt against that registry.
+	verification, err := verifyPromptTree(promptDirs, fragmentDirs)
 	if err != nil {
 		return err
 	}
+	fragErrs := verification.FragmentErrors
+	dirResults := verification.DirResults
 	frags := prompts.CurrentFragments()
-	fragCount := 0
-	if frags != nil {
-		for range frags.All() {
-			fragCount++
-		}
-	}
+	fragCount := verification.FragmentCount
 	fmt.Printf("Fragments loaded: %d\n", fragCount)
 	if len(fragErrs) > 0 {
 		fmt.Printf("Fragment errors:  %d\n", len(fragErrs))
 	}
 
-	// 2. Load prompts per-dir (so we can report which dir each error came from).
-	dirResults, err := loadAllPrompts(promptDirs)
-	if err != nil {
-		return err
-	}
-	totalPrompts := 0
-	totalPromptErrors := 0
-	for _, r := range dirResults {
-		totalPrompts += len(r.Prompts)
-		totalPromptErrors += len(r.LoadErrors)
-	}
+	totalPrompts := verification.PromptCount
+	totalPromptErrors := verification.PromptErrors
 	fmt.Printf("Prompts loaded:   %d\n", totalPrompts)
 	if totalPromptErrors > 0 {
 		fmt.Printf("Prompt errors:    %d\n", totalPromptErrors)
 	}
 	fmt.Println()
-
-	hasErrors := len(fragErrs) > 0 || totalPromptErrors > 0
 
 	// 3. Report fragment load errors.
 	if len(fragErrs) > 0 {
@@ -314,10 +343,9 @@ func runPromptsVerify(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	if hasErrors {
+	if verification.validationError() != nil {
 		fmt.Println("VERIFY FAILED")
-		return fmt.Errorf("verification failed: %d fragment error(s), %d prompt error(s)",
-			len(fragErrs), totalPromptErrors)
+		return verification.validationError()
 	}
 	fmt.Println("VERIFY OK")
 	return nil

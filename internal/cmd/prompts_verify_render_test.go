@@ -255,6 +255,141 @@ func writePromptFile(t *testing.T, mittoDir, name, body string) {
 	}
 }
 
+func writeTreeFile(t *testing.T, root, name, body string) {
+	t.Helper()
+	path := filepath.Join(root, filepath.FromSlash(name))
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir for %s: %v", path, err)
+	}
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+}
+
+func preserveCurrentFragments(t *testing.T) {
+	t.Helper()
+	previous := prompts.CurrentFragments()
+	t.Cleanup(func() { prompts.SetCurrentFragments(previous) })
+}
+
+func captureStdout(t *testing.T, fn func() error) (string, error) {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	oldStdout := os.Stdout
+	os.Stdout = w
+	output := make(chan string, 1)
+	go func() {
+		data, _ := io.ReadAll(r)
+		output <- string(data)
+	}()
+
+	runErr := fn()
+	os.Stdout = oldStdout
+	_ = w.Close()
+	text := <-output
+	_ = r.Close()
+	return text, runErr
+}
+
+func TestVerifyPromptTree_LoadsFragmentsBeforePrompts(t *testing.T) {
+	preserveCurrentFragments(t)
+	root := t.TempDir()
+	writeTreeFile(t, root, "shared/greeting.tmpl", "hello from fragment")
+	writeTreeFile(t, root, "valid.prompt.yaml", `name: "Valid"
+prompt: |
+  {{ template "shared/greeting" . }}
+`)
+
+	result, err := verifyPromptTree([]string{root}, []string{root})
+	if err != nil {
+		t.Fatalf("verifyPromptTree: %v", err)
+	}
+	if err := result.validationError(); err != nil {
+		t.Fatalf("valid deployed tree failed verification: %v", err)
+	}
+	if result.FragmentCount != 1 || result.PromptCount != 1 {
+		t.Fatalf("loaded fragments/prompts = %d/%d, want 1/1", result.FragmentCount, result.PromptCount)
+	}
+}
+
+func TestVerifyPromptTree_MissingFragmentFails(t *testing.T) {
+	preserveCurrentFragments(t)
+	root := t.TempDir()
+	writeTreeFile(t, root, "broken.prompt.yaml", `name: "Broken"
+prompt: |
+  {{ template "shared/missing" . }}
+`)
+
+	result, err := verifyPromptTree([]string{root}, []string{root})
+	if err != nil {
+		t.Fatalf("verifyPromptTree loader error: %v", err)
+	}
+	if result.validationError() == nil {
+		t.Fatal("missing fragment passed deployed-tree verification")
+	}
+	if result.PromptErrors != 1 {
+		t.Fatalf("PromptErrors = %d, want 1", result.PromptErrors)
+	}
+}
+
+func TestRunPromptsUpdateBuiltin_VerifiesInstalledTree(t *testing.T) {
+	t.Setenv("MITTO_DIR", t.TempDir())
+	appdir.ResetCache()
+	t.Cleanup(appdir.ResetCache)
+	preserveCurrentFragments(t)
+
+	oldDryRun, oldForce := updateBuiltinDryRun, updateBuiltinForce
+	updateBuiltinDryRun, updateBuiltinForce = false, true
+	t.Cleanup(func() {
+		updateBuiltinDryRun, updateBuiltinForce = oldDryRun, oldForce
+	})
+
+	output, err := captureStdout(t, func() error {
+		return runPromptsUpdateBuiltin(nil, nil)
+	})
+	if err != nil {
+		t.Fatalf("runPromptsUpdateBuiltin: %v", err)
+	}
+	for _, want := range []string{
+		"Verifying installed prompt tree...",
+		"Fragments loaded:",
+		"Prompts loaded:",
+		"Installation verification: OK",
+	} {
+		if !strings.Contains(output, want) {
+			t.Errorf("output missing %q", want)
+		}
+	}
+}
+
+func TestRunPromptsUpdateBuiltin_DryRunSkipsInstallationVerification(t *testing.T) {
+	t.Setenv("MITTO_DIR", t.TempDir())
+	appdir.ResetCache()
+	t.Cleanup(appdir.ResetCache)
+
+	oldDryRun, oldForce := updateBuiltinDryRun, updateBuiltinForce
+	updateBuiltinDryRun, updateBuiltinForce = true, true
+	t.Cleanup(func() {
+		updateBuiltinDryRun, updateBuiltinForce = oldDryRun, oldForce
+	})
+
+	output, err := captureStdout(t, func() error {
+		return runPromptsUpdateBuiltin(nil, nil)
+	})
+	if err != nil {
+		t.Fatalf("dry-run update-builtin: %v", err)
+	}
+	if strings.Contains(output, "Verifying installed prompt tree") {
+		t.Fatal("dry run unexpectedly performed installation verification")
+	}
+	if !strings.Contains(output, "Dry run mode - no changes will be made.") {
+		t.Fatal("dry-run output lost its no-changes notice")
+	}
+}
+
 // TestPromptsVerify_ValidTree_Succeeds pins the positive baseline: a prompt
 // tree with no errors returns nil (VERIFY OK path).
 func TestPromptsVerify_ValidTree_Succeeds(t *testing.T) {
