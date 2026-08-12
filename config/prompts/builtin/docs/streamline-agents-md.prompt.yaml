@@ -1,0 +1,153 @@
+icon: robot
+name: Streamline AGENTS.md
+menus: prompts, !promptsLoop
+description: Audit an existing `AGENTS.md` and optimize it for agent consumption, moving overflow detail into sub-documents
+group: Agents & Mitto
+backgroundColor: '#B3E5FC'
+enabledWhen: '!Session.IsLoopConversation && FileExists("AGENTS.md")'
+preferredModels:
+  - modelTag: Reasoning
+parameters:
+  - name: SubDocsDir
+    type: text
+    required: false
+    default: ".agents/docs"
+    remember: folder
+    description: 'Workspace-relative folder where overflow sub-documents are stored (created if missing). Only used when `AGENTS.md` is too large to stay in one file.'
+target:
+  title: 'Streamline AGENTS.md'
+  reuse:
+    title: true
+    coalesce: true
+prompt: |
+  Audit the existing `AGENTS.md` at the project root and streamline it into a file
+  optimized for being read by AI coding agents (Claude Code, Augment, Cursor, etc.).
+
+  Overflow detail goes into sub-documents under
+  `{{ Arg "SubDocsDir" ".agents/docs" }}/` (workspace-relative; create the folder
+  only if a split actually happens).
+
+  This is an **audit + restructure** pass on an existing file, not a regeneration.
+  Preserve every documented fact, rule, and command unless it is provably wrong —
+  the goal is to make the content easier for an agent to find and act on, not to
+  rewrite it from scratch. If you want a fresh file generated from the codebase,
+  use the `Generate AGENTS.md` prompt instead.
+
+  ## Step 1 — Read and inventory
+
+  Read `AGENTS.md` in full, plus anything it links to (including any files already
+  under `{{ Arg "SubDocsDir" ".agents/docs" }}/`), and record:
+
+  - Total size (lines and KB).
+  - A section-by-section table: `heading | lines | what it covers | agent-actionable? (yes/no)`.
+  - Existing links out of `AGENTS.md` and whether each target exists.
+
+  Also read `CLAUDE.md`, `README.md`, and `CONTRIBUTING.md` if present — **read only**,
+  to detect duplication. Do not edit them.
+
+  If `AGENTS.md` is missing or empty, stop with a brief note.
+
+  ## Step 2 — Findings
+
+  Produce a findings report. Cite the section for every finding. Do not edit yet.
+
+  - **Stale or wrong** — commands that no longer exist, paths that were removed,
+    conventions contradicted by the current code. Verify against the workspace;
+    if you cannot verify, mark it `suspected stale — needs confirmation` instead
+    of deleting.
+  - **Duplication** — content repeated inside `AGENTS.md`, or restated verbatim
+    from `README.md` / `CONTRIBUTING.md` / `CLAUDE.md`.
+  - **Not agent-actionable** — prose an agent cannot act on: marketing language,
+    project history, contributor lists, aspirational roadmap, long rationale.
+  - **Buried rules** — an invariant or gotcha hidden mid-paragraph instead of
+    standing as its own bullet.
+  - **Missing essentials** — no build/test commands, no architecture orientation,
+    no conventions section, no gotchas, when the repo clearly has them.
+  - **Overflow** — sections large enough to warrant a sub-document (see Step 3).
+
+  ## Step 3 — Decide the split
+
+  Target for the streamlined `AGENTS.md`: **under ~200 lines**, ideally 100–150.
+  It is the entry point an agent reads *every* session, so every line must earn
+  its place.
+
+  If the file is already within budget after removing the Step 2 findings, do
+  **not** split — a single file is preferable.
+
+  If it is still over budget, move the largest self-contained topics out, in this
+  order of preference (most-likely-to-be-split first):
+
+  1. Deep architecture / subsystem walkthroughs
+  2. Exhaustive command references and CI/release procedures
+  3. Long gotcha/troubleshooting catalogues
+  4. Per-area coding conventions that only apply to one package
+
+  Rules for sub-documents:
+
+  - One topic per file, placed at
+    `{{ Arg "SubDocsDir" ".agents/docs" }}/<kebab-case-topic>.md`.
+  - Each starts with an H1 title and a one-paragraph scope statement.
+  - Content is **moved**, not copied — never leave the same text in both places.
+  - `AGENTS.md` keeps a short summary plus a **trigger sentence** pointing at it:
+    `- Read [<title>]({{ Arg "SubDocsDir" ".agents/docs" }}/<file>.md) when <trigger>.`
+    The trigger is what tells an agent whether it needs to open the file at all.
+  - Never move the Quick Reference commands, the top-level architecture
+    orientation, or safety-critical invariants out of `AGENTS.md`.
+  - Prefer extending an existing sub-document over creating a new one.
+
+  Present the resulting **change plan** — one bullet per edit, in apply order,
+  shaped as `<file>: <what changes> — <why> — <finding it addresses>` — and pause
+  for operator approval via `mitto_ui_options`. The operator may accept the whole
+  plan, accept a subset, or reject. For anything ambiguous (two plausible
+  resolutions, a rule that may or may not be obsolete), mark it
+  `NEEDS OPERATOR DECISION`, skip it in Step 4, and report it in Step 5.
+
+  ## Step 4 — Apply
+
+  Apply only the approved edits, using file-editing tools — never a full-file
+  rewrite of `AGENTS.md`, never `sed`.
+
+  Optimize the streamlined `AGENTS.md` for agent consumption:
+
+  - **Front-load what is used most**: what the project is (1–2 sentences), then
+    the Quick Reference command block, then architecture orientation.
+  - **Imperative and specific**: real commands, real paths, real file names.
+    Replace "the build system compiles the project" with the actual command.
+  - **One rule per bullet.** Promote every invariant and gotcha out of prose.
+  - **Descriptive, keyword-rich headings** so an agent grepping for a topic hits
+    the right section.
+  - **Tables for lookup material** (key files, env vars, make targets).
+  - **Stable relative links** for every sub-document reference; verify each
+    target exists after the move.
+  - **Preserve voice and explicit user rules.** Do not invent conventions the
+    repo does not follow, and do not touch a section that had no findings.
+
+  Deprecation over deletion: if a documented behavior looks obsolete but the
+  operator did not approve removing it, mark it deprecated with a dated note.
+
+  ## Step 5 — Report
+
+  Notify with
+  `mitto_ui_notify(self_id: "{{ .Session.ID }}", title: "AGENTS.md streamlined", style: "success")`
+  and print:
+
+  - **Size before → after** (lines and KB) for `AGENTS.md`.
+  - **Sub-documents created or extended**, each with the trigger sentence added
+    to `AGENTS.md`.
+  - **Content removed**, with the finding that justified it.
+  - **Findings deferred** — every `NEEDS OPERATOR DECISION` item.
+  - **Suspected-stale items** the operator should confirm.
+  - **Findings vetoed** by the operator, for the audit trail.
+  - **Link check** — confirm every link out of `AGENTS.md` resolves.
+
+  ## Guardrails
+
+  - **Do not lose content.** Every fact either stays in `AGENTS.md`, moves to a
+    sub-document, or is removed with an explicit approved finding behind it.
+  - **Do not split unnecessarily.** A single file within budget beats a folder of
+    fragments; splitting is a response to an overflow finding, not a default.
+  - **Do not edit `README.md`, `CONTRIBUTING.md`, or `CLAUDE.md`** — they are read
+    only for duplication detection.
+  - **No git mutations.** Do not run `git add` / `git commit` / `git push` — the
+    operator reviews and commits the diff.
+  - **Do not spawn child conversations** — this is an in-place authoring task.

@@ -30,7 +30,43 @@ parameters:
     description: When enabled, file a beads issue for each important test failure that is left unresolved
 prompt: |
   Run the project's test suite and report results.
+  {{ if and (Model "Expensive") (not (Model "Coding")) }}
+  ### 0. Cost check — delegate this run
 
+  This prompt declares `preferredModels: [{modelTag: Coding}]`, but the active
+  model is `{{ if .Session.ModelName }}{{ .Session.ModelName }}{{ else }}<unknown>{{ end }}`
+  (tags: {{ range $i, $t := .Session.ModelTags }}{{ if $i }}, {{ end }}{{ $t }}{{ end }}) —
+  an **expensive** tier that did not pick up the `Coding` tag. Running a test
+  suite is mechanical work, so hand this run to a cheaper child conversation
+  when one is available.
+
+  {{ template "_shared/delegation-context" . }}
+
+  1. Pick a delegate among the children listed above: one that is **not**
+     currently prompting and whose ACP server carries a `coding` / `fast` /
+     `cheap` tag in the catalog above. If no child qualifies, skip to section 1
+     and run the tests yourself — do **not** create a new conversation just for
+     this.
+  2. Hand the run over by re-sending this same prompt with your arguments, so
+     the delegate gets the full instructions:
+
+     ```
+     mitto_conversation_send_prompt(
+       self_id: "{{ .Session.ID }}",
+       conversation_id: "<child id>",
+       prompt_name: "Run tests",
+       arguments: {"FixTests": "{{ Arg "FixTests" "false" }}", "CreateIssues": "{{ Arg "CreateIssues" "false" }}"})
+     ```
+
+  3. Wait for it:
+     `mitto_children_tasks_wait(self_id: "{{ .Session.ID }}", children_list: ["<child id>"], task_id: "run-tests", timeout_seconds: 1800)`
+  4. Relay the delegate's report as your own summary (sections 3 and 4 below).
+     Do **not** re-run the suite yourself, and do not delete the child — it was
+     not created by this run.
+
+  Continue with the sections below yourself only when delegation is not
+  possible (no suitable child) or the delegate failed to report back.
+  {{ end }}
   ### 1. Discover and Run
 
   Identify test framework from project config:
