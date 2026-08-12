@@ -2235,7 +2235,7 @@ export function ChatInput({
                         <textarea
                           ref=${textboxRef}
                           autocorrect="off"
-                          class="ui-textbox-textarea textarea textarea-sm font-mono w-full resize-none"
+                          class="ui-textbox-textarea textarea textarea-sm w-full resize-none"
                           style="min-height: 120px;"
                           maxlength=${16384}
                           onInput=${(e) => {

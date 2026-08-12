@@ -87,7 +87,7 @@ export function CommentsSection({
           ? html`
               <textarea
                 ref=${commentRef}
-                class="${textareaClass} resize-y mt-2"
+                class="${textareaClass} text-sm resize-y mt-2"
                 rows="3"
                 placeholder="Add a comment…"
                 value=${commentDraft}
