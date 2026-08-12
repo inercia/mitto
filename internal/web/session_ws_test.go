@@ -578,10 +578,11 @@ func TestPostLoadProcessing_NoH2SyncOnSubsequentSync(t *testing.T) {
 
 	mockWS := newMockWSConn()
 	client := &SessionWSClient{
-		sessionID:       sessionID,
-		wsConn:          &WSConn{send: mockWS.send},
-		store:           store,
-		initialLoadDone: true, // observer already registered — simulates a subsequent sync
+		sessionID:          sessionID,
+		wsConn:             &WSConn{send: mockWS.send},
+		store:              store,
+		initialLoadDone:    true,
+		observerRegistered: true, // observer already registered — simulates a subsequent sync
 	}
 
 	// postLoadProcessing with a non-prepend sync result (lastSeq=2, one event beyond).
@@ -604,6 +605,149 @@ func TestPostLoadProcessing_NoH2SyncOnSubsequentSync(t *testing.T) {
 		// Any other message type (e.g. plan state) is fine.
 	case <-time.After(80 * time.Millisecond):
 		// Expected: no events_loaded from H2 path.
+	}
+}
+
+// TestAttachToBackgroundSession_RegistersAfterEmptyInitialLoad reproduces
+// mitto-mhgk: load_events completed while async ACP resume was still running,
+// but the empty history left lastSentSeq at zero. The old attach path treated
+// that as "not loaded" and never registered the client as an observer.
+func TestAttachToBackgroundSession_RegistersAfterEmptyInitialLoad(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+	const sessionID = "test-empty-load-before-resume"
+	if err := store.Create(session.Metadata{SessionID: sessionID}); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	mockWS := newMockWSConn()
+	client := &SessionWSClient{
+		sessionID: sessionID,
+		wsConn:    &WSConn{send: mockWS.send},
+		store:     store,
+	}
+
+	// Successful non-prepend load with no events while bgSession is nil.
+	client.handleLoadEventsAsync(20, 0, 0)
+	if !client.initialLoadDone {
+		t.Fatal("successful empty load was not recorded")
+	}
+	if client.observerRegistered {
+		t.Fatal("observer registered before a background session was available")
+	}
+
+	// Async resume completes later. Registration must not depend on lastSentSeq > 0.
+	bs := conversation.NewMinimalBackgroundSession(sessionID, "", "")
+	client.attachToBackgroundSession(bs)
+
+	if !client.observerRegistered {
+		t.Fatal("observer was not registered after resume following an empty load")
+	}
+	if got := bs.ObserverCount(); got != 1 {
+		t.Fatalf("ObserverCount() = %d, want 1", got)
+	}
+
+	// Repeated attachment must remain idempotent.
+	client.attachToBackgroundSession(bs)
+	if got := bs.ObserverCount(); got != 1 {
+		t.Fatalf("ObserverCount() after duplicate attach = %d, want 1", got)
+	}
+}
+
+// TestAttachToBackgroundSession_ReregistersOnInstanceChange verifies that a
+// client already marked initialLoadDone/observerRegistered against an OLD
+// BackgroundSession instance (e.g. before an ACP restart replaced it) is
+// re-registered on the NEW instance rather than being silently skipped.
+// A fresh BackgroundSession's own observer set always starts empty, so
+// observerRegistered must be scoped to "registered on the CURRENT bgSession",
+// not "registered at some point in the past" (mitto-mhgk coordination fix).
+func TestAttachToBackgroundSession_ReregistersOnInstanceChange(t *testing.T) {
+	mockWS := newMockWSConn()
+	client := &SessionWSClient{
+		sessionID:       "test-instance-change",
+		wsConn:          &WSConn{send: mockWS.send},
+		initialLoadDone: true, // load already completed in an earlier attach
+	}
+
+	bsOld := conversation.NewMinimalBackgroundSession("test-instance-change", "", "")
+	client.attachToBackgroundSession(bsOld)
+	if !client.observerRegistered || bsOld.ObserverCount() != 1 {
+		t.Fatalf("setup: expected registration on bsOld, observerRegistered=%v count=%d",
+			client.observerRegistered, bsOld.ObserverCount())
+	}
+
+	// Simulate ACP restart: OnACPStopped clears bgSession, sessionManager
+	// later hands back a brand-new BackgroundSession instance for the same
+	// session ID.
+	bsNew := conversation.NewMinimalBackgroundSession("test-instance-change", "", "")
+	client.attachToBackgroundSession(bsNew)
+
+	if !client.observerRegistered {
+		t.Fatal("client was not re-registered on the new BackgroundSession instance")
+	}
+	if got := bsNew.ObserverCount(); got != 1 {
+		t.Fatalf("bsNew.ObserverCount() = %d, want 1", got)
+	}
+}
+
+// TestAttachAndPostLoad_ConcurrentInterleavings_RegisterExactlyOnce reproduces
+// the production race (mitto-mhgk): the async-resume goroutine's
+// attachToBackgroundSession(bs) and handleLoadEventsAsync's
+// postLoadProcessing() run concurrently and both may try to register the
+// same client as an observer of the same BackgroundSession. Both read/mutate
+// initialLoadDone/observerRegistered/bgSession only under initialLoadMu, so
+// regardless of which goroutine's critical section runs first, the client
+// must end up registered exactly once. Run with -race to also catch any
+// unsynchronized access reintroduced by a future edit.
+func TestAttachAndPostLoad_ConcurrentInterleavings_RegisterExactlyOnce(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	for i := 0; i < 50; i++ {
+		sessionID := "test-concurrent-attach"
+		if err := store.Create(session.Metadata{SessionID: sessionID}); err != nil {
+			t.Fatalf("Create() error = %v", err)
+		}
+
+		mockWS := newMockWSConn()
+		client := &SessionWSClient{
+			sessionID: sessionID,
+			wsConn:    &WSConn{send: mockWS.send},
+			store:     store,
+		}
+		bs := conversation.NewMinimalBackgroundSession(sessionID, "", "")
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			client.handleLoadEventsAsync(20, 0, 0)
+		}()
+		go func() {
+			defer wg.Done()
+			client.attachToBackgroundSession(bs)
+		}()
+		wg.Wait()
+
+		if !client.initialLoadDone {
+			t.Fatalf("iteration %d: load was never recorded as completed", i)
+		}
+		if !client.observerRegistered {
+			t.Fatalf("iteration %d: observer was never registered", i)
+		}
+		if got := bs.ObserverCount(); got != 1 {
+			t.Fatalf("iteration %d: ObserverCount() = %d, want exactly 1", i, got)
+		}
+
+		if err := store.Delete(sessionID); err != nil {
+			t.Fatalf("Delete() error = %v", err)
+		}
 	}
 }
 

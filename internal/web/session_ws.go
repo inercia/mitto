@@ -186,11 +186,13 @@ type SessionWSClient struct {
 	// This allows multiple chunks with the same seq to be sent (they're continuations)
 	currentStreamingSeq int64
 
-	// Track whether the initial load has been done. The client is not added as an
-	// observer until after the initial load to prevent race conditions where events
-	// are sent via observer callbacks before the client has loaded historical events.
-	initialLoadDone bool
-	initialLoadMu   sync.Mutex
+	// Track initial history load and observer registration separately. A successful
+	// load may contain zero events, so lastSentSeq cannot be used to infer completion.
+	// The client is registered only after the load completes, even when ACP resume
+	// attaches the BackgroundSession later.
+	initialLoadDone    bool
+	observerRegistered bool
+	initialLoadMu      sync.Mutex
 
 	// Guard against concurrent handleLoadEvents goroutines. TryLock is used
 	// so that a second load_events arriving while one is in-flight is silently
@@ -1103,7 +1105,7 @@ type loadEventsResult struct {
 // This is safe because:
 // - c.store has its own sync.RWMutex for concurrent reads
 // - c.seqMu protects lastSentSeq
-// - c.initialLoadMu protects initialLoadDone and AddObserver
+// - c.initialLoadMu protects initialLoadDone, observerRegistered, and AddObserver
 // - c.sendMessage writes to a buffered channel (thread-safe)
 //
 // The lock is released BEFORE postLoadProcessing so that a second load_events
@@ -1376,9 +1378,15 @@ func (c *SessionWSClient) handleLoadEvents(limit int, beforeSeq, afterSeq int64)
 		c.seqMu.Unlock()
 	}
 
-	// Get session status
-	isRunning := c.bgSession != nil && !c.bgSession.IsClosed()
-	isPrompting := isRunning && c.bgSession.IsPrompting()
+	// Get session status. bgSession is read under initialLoadMu because it can
+	// be concurrently written by attachToBackgroundSession (async ACP resume
+	// racing this very load_events) — see the coordination comment on
+	// initialLoadMu near the struct definition.
+	c.initialLoadMu.Lock()
+	bgSession := c.bgSession
+	c.initialLoadMu.Unlock()
+	isRunning := bgSession != nil && !bgSession.IsClosed()
+	isPrompting := isRunning && bgSession.IsPrompting()
 
 	// DEBUG: Log event order being sent to client
 	if c.logger != nil && len(events) > 0 {
@@ -1452,14 +1460,16 @@ func (c *SessionWSClient) postLoadProcessing(result loadEventsResult) {
 		// The H2 sync is only needed when the observer is first registered.
 		justRegistered := false
 		c.initialLoadMu.Lock()
-		if !c.initialLoadDone && c.bgSession != nil {
-			c.bgSession.AddObserver(c)
-			c.initialLoadDone = true
+		c.initialLoadDone = true
+		bgSession := c.bgSession
+		if !c.observerRegistered && bgSession != nil {
+			bgSession.AddObserver(c)
+			c.observerRegistered = true
 			justRegistered = true
 			if c.logger != nil {
 				c.logger.Debug("Added client as observer after load_events",
 					"session_id", c.sessionID,
-					"observer_count", c.bgSession.ObserverCount())
+					"observer_count", bgSession.ObserverCount())
 			}
 			// Background-prewarm the deferred ACP session/new handshake so the
 			// model/mode selectors appear before the first prompt. This is a no-op
@@ -1467,12 +1477,12 @@ func (c *SessionWSClient) postLoadProcessing(result loadEventsResult) {
 			// reliably receives the acp_started broadcast (with config_options) once
 			// the handshake completes. PrewarmACPSession is idempotent and safe under
 			// concurrent callers (e.g. multiple connected clients).
-			go c.bgSession.PrewarmACPSession()
+			go bgSession.PrewarmACPSession()
 			// Re-send any active UI prompt to the newly connected client.
 			// This handles the case where a page reload occurs while a blocking
 			// UI prompt (e.g., mitto_ui_options) is waiting for user input.
 			// Without this, the prompt dialog is lost and the session appears stuck.
-			if activePrompt := c.bgSession.GetActiveUIPrompt(); activePrompt != nil {
+			if activePrompt := bgSession.GetActiveUIPrompt(); activePrompt != nil {
 				if c.logger != nil {
 					c.logger.Info("Re-sending active UI prompt to reconnected client",
 						"session_id", c.sessionID,
@@ -1488,15 +1498,15 @@ func (c *SessionWSClient) postLoadProcessing(result loadEventsResult) {
 		// H2 fix: Check for events persisted between the storage read and AddObserver.
 		// Only needed when the observer was just registered in this call; on subsequent
 		// sync load_events the observer is already active and streaming covers new events.
-		if justRegistered && lastSeq > 0 {
+		if justRegistered {
 			c.syncMissedEventsDuringRegistration(lastSeq)
 		}
 
 		// Trigger MCP availability check (once per workspace per server lifetime).
 		// This runs when a client focuses/switches to a conversation (load_events).
 		// The check is skipped if already done for this workspace (IsMCPChecked).
-		if c.bgSession != nil && c.server != nil && c.server.sessionManager != nil {
-			if workspaceUUID := c.bgSession.GetWorkspaceUUID(); workspaceUUID != "" {
+		if bgSession != nil && c.server != nil && c.server.sessionManager != nil {
+			if workspaceUUID := bgSession.GetWorkspaceUUID(); workspaceUUID != "" {
 				if !c.server.sessionManager.IsMCPChecked(workspaceUUID) {
 					// Mark immediately to prevent concurrent checks for the same workspace.
 					c.server.sessionManager.MarkMCPChecked(workspaceUUID)
@@ -1752,8 +1762,11 @@ func (c *SessionWSClient) getServerMaxSeq() int64 {
 	// This includes events that have been assigned but may not yet be reflected
 	// in the store metadata (small window between assign and persist).
 	// This prevents false "stale client" detection during active streaming.
-	if c.bgSession != nil {
-		assignedSeq := c.bgSession.GetMaxAssignedSeq()
+	c.initialLoadMu.Lock()
+	bgSession := c.bgSession
+	c.initialLoadMu.Unlock()
+	if bgSession != nil {
+		assignedSeq := bgSession.GetMaxAssignedSeq()
 		if assignedSeq > maxSeq {
 			maxSeq = assignedSeq
 		}
@@ -2149,7 +2162,7 @@ func (c *SessionWSClient) handleEnsureResumed() {
 // This is called when bgSession is nil but the session may have been resumed
 // (e.g., after unarchiving). If successful, the client is added as an observer.
 func (c *SessionWSClient) tryAttachToSession() {
-	if c.server.sessionManager == nil {
+	if c.server == nil || c.server.sessionManager == nil {
 		return
 	}
 
@@ -2158,64 +2171,7 @@ func (c *SessionWSClient) tryAttachToSession() {
 		return
 	}
 
-	// Attach to the session
-	c.bgSession = bs
-	bs.AddConnectedClient()
-
-	// Determine if we should add the observer now.
-	c.initialLoadMu.Lock()
-	if c.initialLoadDone {
-		// Normal case: initial load already completed with bgSession available.
-		// Add observer immediately.
-		c.initialLoadMu.Unlock()
-		bs.AddObserver(c)
-		if c.logger != nil {
-			c.logger.Debug("Attached to session after unarchive",
-				"session_id", c.sessionID,
-				"acp_id", bs.GetACPID(),
-				"observer_count", bs.ObserverCount())
-		}
-	} else {
-		// Check if the client already completed its initial load while bgSession was nil.
-		// This happens when ACP resumes AFTER the initial load_events has already run.
-		// In this case, initialLoadDone is still false because postLoadProcessing
-		// skipped observer registration (bgSession was nil at that time).
-		// We detect this by checking lastSentSeq > 0 (events were already sent to client).
-		c.seqMu.Lock()
-		alreadyLoaded := c.lastSentSeq > 0
-		lastSeq := c.lastSentSeq
-		c.seqMu.Unlock()
-
-		if alreadyLoaded {
-			// The client already loaded events but was never registered as an observer
-			// because bgSession was nil at load time. Register now and sync any missed events.
-			c.initialLoadDone = true
-			c.initialLoadMu.Unlock()
-			bs.AddObserver(c)
-			if c.logger != nil {
-				c.logger.Debug("Attached to session after unarchive (observer added — load was already done)",
-					"session_id", c.sessionID,
-					"acp_id", bs.GetACPID(),
-					"last_sent_seq", lastSeq,
-					"observer_count", bs.ObserverCount())
-			}
-			// Sync any events that were persisted between the initial load and now.
-			// This covers the window where events arrived after the client's load_events
-			// but before we registered as an observer.
-			if lastSeq > 0 {
-				c.syncMissedEventsDuringRegistration(lastSeq)
-			}
-		} else {
-			// Client hasn't loaded events yet. Observer will be added in postLoadProcessing
-			// when load_events arrives.
-			c.initialLoadMu.Unlock()
-			if c.logger != nil {
-				c.logger.Debug("Attached to session after unarchive (observer will be added after load)",
-					"session_id", c.sessionID,
-					"acp_id", bs.GetACPID())
-			}
-		}
-	}
+	c.attachToBackgroundSession(bs)
 
 	// Re-send any active UI prompt to the newly attached client.
 	// This handles the case where a session is unarchived while a blocking
@@ -2235,6 +2191,46 @@ func (c *SessionWSClient) tryAttachToSession() {
 	// including capability data (config_options, agent_models, etc.) that
 	// is now available after ACP finished loading.
 	c.sendMessage(WSMsgTypeACPStarted, c.buildACPStartedPayload())
+}
+
+// attachToBackgroundSession coordinates asynchronous ACP resume with the initial
+// history load. Registration occurs exactly once after both have completed,
+// including when the successful history load contained zero events.
+func (c *SessionWSClient) attachToBackgroundSession(bs *conversation.BackgroundSession) {
+	if bs == nil {
+		return
+	}
+
+	c.initialLoadMu.Lock()
+	if c.bgSession != bs {
+		c.bgSession = bs
+		c.observerRegistered = false
+		bs.AddConnectedClient()
+	}
+	shouldRegister := c.initialLoadDone && !c.observerRegistered
+	if shouldRegister {
+		bs.AddObserver(c)
+		c.observerRegistered = true
+	}
+	c.initialLoadMu.Unlock()
+
+	if shouldRegister {
+		c.seqMu.Lock()
+		lastSeq := c.lastSentSeq
+		c.seqMu.Unlock()
+		if c.logger != nil {
+			c.logger.Debug("Attached to session after resume (observer added)",
+				"session_id", c.sessionID,
+				"acp_id", bs.GetACPID(),
+				"last_sent_seq", lastSeq,
+				"observer_count", bs.ObserverCount())
+		}
+		c.syncMissedEventsDuringRegistration(lastSeq)
+	} else if c.logger != nil {
+		c.logger.Debug("Attached to session after resume (observer will be added after load)",
+			"session_id", c.sessionID,
+			"acp_id", bs.GetACPID())
+	}
 }
 
 // --- conversation.SessionObserver interface implementation ---
