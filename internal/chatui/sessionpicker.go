@@ -2,8 +2,8 @@ package chatui
 
 import (
 	"fmt"
+	"sort"
 	"strings"
-	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -22,34 +22,14 @@ func (i sessionPickerItem) Title() string {
 	return i.session.SessionID
 }
 
-func (i sessionPickerItem) Description() string {
-	parts := []string{"ID " + i.session.SessionID}
-	if i.session.Status != "" {
-		parts = append(parts, i.session.Status)
+// Line renders the item as a single line: the working directory (folder)
+// and the conversation title, clearly separated. When no working directory
+// is known, only the title is shown.
+func (i sessionPickerItem) Line() string {
+	if i.session.WorkingDir == "" {
+		return i.Title()
 	}
-	if workspace := sessionPickerWorkspace(i.session); workspace != "" {
-		parts = append(parts, "workspace "+workspace)
-	}
-	if i.session.WorkingDir != "" {
-		parts = append(parts, i.session.WorkingDir)
-	}
-	parts = append(parts, formatSessionPickerUpdatedAt(i.session.UpdatedAt))
-	return strings.Join(parts, " · ")
-}
-
-func sessionPickerWorkspace(session api.SessionInfo) string {
-	if session.WorkspaceName != "" {
-		return session.WorkspaceName
-	}
-	return session.WorkspaceUUID
-}
-
-func formatSessionPickerUpdatedAt(value string) string {
-	updated, err := time.Parse(time.RFC3339Nano, value)
-	if err != nil {
-		return "updated unknown"
-	}
-	return "updated " + updated.UTC().Format("2006-01-02 15:04 UTC")
+	return i.session.WorkingDir + "  —  " + i.Title()
 }
 
 // SessionPickerModel lets a CLI user choose a conversation before the chat
@@ -69,6 +49,19 @@ func NewSessionPickerModel(sessions []api.SessionInfo) *SessionPickerModel {
 	for _, session := range sessions {
 		items = append(items, sessionPickerItem{session: session})
 	}
+	sort.SliceStable(items, func(left, right int) bool {
+		leftDir := strings.ToLower(items[left].session.WorkingDir)
+		rightDir := strings.ToLower(items[right].session.WorkingDir)
+		if leftDir != rightDir {
+			return leftDir < rightDir
+		}
+		leftTitle := strings.ToLower(items[left].Title())
+		rightTitle := strings.ToLower(items[right].Title())
+		if leftTitle != rightTitle {
+			return leftTitle < rightTitle
+		}
+		return items[left].session.SessionID < items[right].session.SessionID
+	})
 	return &SessionPickerModel{items: items, width: 80, height: 24}
 }
 
@@ -111,7 +104,7 @@ func (m *SessionPickerModel) View() tea.View {
 		return tea.NewView("No selectable conversations.\n\nesc/q cancel")
 	}
 	width := max(m.width, 20)
-	visible := max((m.height-5)/3, 1)
+	visible := max(m.height-5, 1)
 	start := 0
 	if m.cursor >= visible {
 		start = m.cursor - visible + 1
@@ -125,9 +118,7 @@ func (m *SessionPickerModel) View() tea.View {
 		if index == m.cursor {
 			prefix = "> "
 		}
-		b.WriteString(ansi.Truncate(prefix+m.items[index].Title(), width, "…"))
-		b.WriteByte('\n')
-		b.WriteString(ansi.Truncate("  "+m.items[index].Description(), width, "…"))
+		b.WriteString(ansi.Truncate(prefix+m.items[index].Line(), width, "…"))
 		b.WriteByte('\n')
 	}
 	fmt.Fprintf(&b, "\n%d/%d  ↑/↓ or j/k move · enter select · esc/q cancel", m.cursor+1, len(m.items))

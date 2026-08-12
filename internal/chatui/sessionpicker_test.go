@@ -20,7 +20,7 @@ func assertSessionPickerQuit(t *testing.T, cmd tea.Cmd) {
 	}
 }
 
-func TestSessionPickerItem_TitleAndDescription(t *testing.T) {
+func TestSessionPickerItem_TitleAndLine(t *testing.T) {
 	item := sessionPickerItem{session: api.SessionInfo{
 		SessionID:     "session-1",
 		Status:        "idle",
@@ -35,10 +35,43 @@ func TestSessionPickerItem_TitleAndDescription(t *testing.T) {
 	if got := (sessionPickerItem{session: api.SessionInfo{Name: "Named conversation"}}).Title(); got != "Named conversation" {
 		t.Errorf("named Title() = %q, want conversation name", got)
 	}
-	for _, want := range []string{"ID session-1", "idle", "workspace Demo", "/tmp/demo", "updated 2026-08-11 12:05 UTC"} {
-		if got := item.Description(); !strings.Contains(got, want) {
-			t.Errorf("Description() = %q, want %q", got, want)
+
+	line := item.Line()
+	if !strings.Contains(line, "/tmp/demo") {
+		t.Errorf("Line() = %q, want working dir /tmp/demo", line)
+	}
+	if !strings.Contains(line, "session-1") {
+		t.Errorf("Line() = %q, want title/ID fallback session-1", line)
+	}
+	for _, unwanted := range []string{"ID session-1", "idle", "Demo", "workspace-fallback", "2026-08-11", "updated"} {
+		if strings.Contains(line, unwanted) {
+			t.Errorf("Line() = %q, must not contain status/workspace/timestamp %q", line, unwanted)
 		}
+	}
+
+	// No working dir: falls back to title only.
+	noDir := sessionPickerItem{session: api.SessionInfo{SessionID: "no-dir"}}
+	if got := noDir.Line(); got != "no-dir" {
+		t.Errorf("Line() with no WorkingDir = %q, want bare title/ID %q", got, "no-dir")
+	}
+}
+
+func TestNewSessionPickerModel_SortsByFolderThenTitle(t *testing.T) {
+	sessions := []api.SessionInfo{
+		{SessionID: "zebra", WorkingDir: "/work/Beta", Name: "Alpha"},
+		{SessionID: "bravo", WorkingDir: "/work/alpha", Name: "Zulu"},
+		{SessionID: "alpha", WorkingDir: "/work/alpha", Name: "alpha"},
+	}
+	m := NewSessionPickerModel(sessions)
+
+	want := []string{"alpha", "bravo", "zebra"}
+	for index, item := range m.items {
+		if got := item.session.SessionID; got != want[index] {
+			t.Errorf("items[%d].SessionID = %q, want %q", index, got, want[index])
+		}
+	}
+	if sessions[0].SessionID != "zebra" {
+		t.Errorf("NewSessionPickerModel mutated caller input: first ID = %q", sessions[0].SessionID)
 	}
 }
 
@@ -83,7 +116,7 @@ func TestSessionPickerModel_ViewResizesAndKeepsCursorVisible(t *testing.T) {
 		{SessionID: "second", Name: "Second"},
 		{SessionID: "third", Name: "Third"},
 	})
-	m.Update(tea.WindowSizeMsg{Width: 80, Height: 8}) // one visible row
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 6}) // one visible row
 	m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
 
 	view := m.View().Content
