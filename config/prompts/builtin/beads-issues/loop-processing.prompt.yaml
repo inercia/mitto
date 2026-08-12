@@ -515,8 +515,23 @@ prompt: |
     | grep -iE '<2-4 distinctive keywords from bead title, joined by |>' | head -5
   ```
 
-  If either returns a commit whose diff/subject plausibly resolves the bead
-  (matches the bead's file surface or has distinctive unambiguous keywords),
+  Before accepting any candidate, establish its temporal ordering:
+
+  ```bash
+  bd history <id> --json
+  git show -s --format='%cI' <hash>
+  ```
+
+  From the history, identify the **most recent transition into the current open episode**
+  (the newest `closed` → `open` boundary; if the bead has never been closed, use
+  `bead.created_at`). A candidate is eligible only when its commit timestamp is
+  **strictly newer than that transition**.
+  If either timestamp or ordering cannot be established, leave the bead actionable —
+  do not exclude it or add terminal labels. This fail-safe prevents a historical fix
+  from re-closing a later regression.
+
+  Only if a candidate passes that temporal gate AND its diff/subject plausibly
+  resolves the bead (matches the bead's file surface or has distinctive unambiguous keywords),
   **exclude AND self-heal** — post a repair comment and add the class-terminal
   chain so Step 2P closes it:
 
