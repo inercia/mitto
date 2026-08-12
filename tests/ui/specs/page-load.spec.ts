@@ -8,6 +8,75 @@ import { test, expect } from "../fixtures/test-fixtures";
  */
 
 test.describe("Page Load", () => {
+  test("first service-worker install does not reload during API bootstrap", async ({
+    page,
+  }) => {
+    const navigations: string[] = [];
+    const failedApiRequests: string[] = [];
+
+    page.on("framenavigated", (frame) => {
+      if (frame === page.mainFrame()) navigations.push(frame.url());
+    });
+    page.on("requestfailed", (request) => {
+      if (new URL(request.url()).pathname.includes("/api/")) {
+        failedApiRequests.push(request.url());
+      }
+    });
+
+    await page.goto("/");
+    await expect(
+      page.getByText("project-alpha", { exact: true }).last(),
+    ).toBeVisible();
+    await page.waitForTimeout(500);
+
+    expect(navigations).toHaveLength(1);
+    expect(failedApiRequests).toEqual([]);
+  });
+
+  test("session stream opens with browser-native timers", async ({ page }) => {
+    await page.goto("/");
+
+    const opened = await page.evaluate(async () => {
+      // @ts-expect-error Browser-served JavaScript module has no TS declaration.
+      const { SessionStream } = await import("/sdk/realtime/session-stream.js");
+      // @ts-expect-error Browser-served JavaScript module has no TS declaration.
+      const { resolveConfig } = await import("/sdk/core/config.js");
+      const sockets: any[] = [];
+      class FakeWebSocket {
+        static OPEN = 1;
+        readyState = 0;
+        onopen: (() => void) | null = null;
+        onclose: ((event: object) => void) | null = null;
+        onmessage = null;
+        onerror = null;
+        constructor() {
+          sockets.push(this);
+        }
+        send() {}
+        close() {
+          this.onclose?.({ code: 1000, reason: "", wasClean: true });
+        }
+      }
+      const stream = new SessionStream(
+        resolveConfig({
+          baseUrl: location.origin,
+          fetch: window.fetch.bind(window),
+          WebSocket: FakeWebSocket,
+        }),
+        "existing-session",
+      );
+      let didOpen = false;
+      stream.on("open", () => (didOpen = true));
+      stream.connect();
+      sockets[0].readyState = FakeWebSocket.OPEN;
+      sockets[0].onopen();
+      stream.close();
+      return didOpen;
+    });
+
+    expect(opened).toBe(true);
+  });
+
   test("should load the main page", async ({ page }) => {
     await page.goto("/");
 

@@ -151,6 +151,23 @@ describe("EventsStream: construction and URL derivation", () => {
 });
 
 describe("EventsStream: open / message lifecycle", () => {
+  test("invokes reconnect timers without the EventsStream as receiver", () => {
+    let timerReceiver = "not-called";
+    const h = makeHarness({
+      setTimeout: function () {
+        timerReceiver = this;
+        if (this !== undefined) throw new TypeError("Illegal invocation");
+        return 1;
+      },
+    });
+    const ws = openStream(h);
+
+    expect(() =>
+      ws.onclose({ code: 1006, reason: "", wasClean: false }),
+    ).not.toThrow();
+    expect(timerReceiver).toBeUndefined();
+  });
+
   test("\"open\" reports isReconnect:false the first time, true after a reconnect", () => {
     const h = makeHarness();
     const opens = [];

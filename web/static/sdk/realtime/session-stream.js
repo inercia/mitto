@@ -136,10 +136,19 @@ export class SessionStream {
     this._config = config;
     this._sessionId = sessionId;
     this._now = options.now ?? Date.now;
-    this._setTimeout = options.setTimeout ?? setTimeout;
-    this._clearTimeout = options.clearTimeout ?? clearTimeout;
-    this._setInterval = options.setInterval ?? setInterval;
-    this._clearInterval = options.clearInterval ?? clearInterval;
+    // Native browser timers are Web IDL methods. Storing one directly and later
+    // calling `this._setInterval(...)` binds `this` to SessionStream, which
+    // WebKit/Chromium reject with "Illegal invocation". Normalize every timer
+    // dependency through an arrow so native and injected functions are called
+    // without the stream instance as their receiver.
+    const setTimeoutFn = options.setTimeout ?? setTimeout;
+    const clearTimeoutFn = options.clearTimeout ?? clearTimeout;
+    const setIntervalFn = options.setInterval ?? setInterval;
+    const clearIntervalFn = options.clearInterval ?? clearInterval;
+    this._setTimeout = (...args) => setTimeoutFn(...args);
+    this._clearTimeout = (...args) => clearTimeoutFn(...args);
+    this._setInterval = (...args) => setIntervalFn(...args);
+    this._clearInterval = (...args) => clearIntervalFn(...args);
     this._random = options.random ?? Math.random;
     this._wsBaseUrl = options.wsBaseUrl;
     this._seqStore = options.seqStore ?? createMemorySeqStore();

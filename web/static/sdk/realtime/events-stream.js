@@ -49,8 +49,13 @@ export class EventsStream {
   constructor(config, options = {}) {
     this._config = config;
     this._now = options.now ?? Date.now;
-    this._setTimeout = options.setTimeout ?? setTimeout;
-    this._clearTimeout = options.clearTimeout ?? clearTimeout;
+    // Do not retain browser timer methods directly: invoking a retained timer
+    // as `this._setTimeout(...)` gives it the EventsStream receiver and causes
+    // an "Illegal invocation" in WebKit/Chromium.
+    const setTimeoutFn = options.setTimeout ?? setTimeout;
+    const clearTimeoutFn = options.clearTimeout ?? clearTimeout;
+    this._setTimeout = (...args) => setTimeoutFn(...args);
+    this._clearTimeout = (...args) => clearTimeoutFn(...args);
     this._random = options.random ?? Math.random;
     this._wsBaseUrl = options.wsBaseUrl;
     this._maxReconnectAttempts = options.maxReconnectAttempts ?? MAX_RECONNECT_ATTEMPTS;

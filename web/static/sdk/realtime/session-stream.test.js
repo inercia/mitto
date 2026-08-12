@@ -269,6 +269,27 @@ describe("SessionStream: construction and URL derivation", () => {
 });
 
 describe("SessionStream: open / message / close lifecycle", () => {
+  test("invokes timer dependencies without the SessionStream as receiver", () => {
+    let intervalReceiver = "not-called";
+    let clearReceiver = "not-called";
+    const h = makeHarness({
+      setInterval: function () {
+        intervalReceiver = this;
+        if (this !== undefined) throw new TypeError("Illegal invocation");
+        return 1;
+      },
+      clearInterval: function () {
+        clearReceiver = this;
+        if (this !== undefined) throw new TypeError("Illegal invocation");
+      },
+    });
+
+    expect(() => openStream(h)).not.toThrow();
+    expect(intervalReceiver).toBeUndefined();
+    expect(() => h.stream.close()).not.toThrow();
+    expect(clearReceiver).toBeUndefined();
+  });
+
   test("open transitions to \"open\" and emits open + health(healthy=true)", () => {
     const h = makeHarness();
     const events = [];
