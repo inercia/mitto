@@ -12,6 +12,7 @@ parameters:
     description: The stop condition — keep iterating until this is true (e.g. "all tests pass and the linter is clean")
   - name: Commit
     type: boolean
+    group: Advanced
     description: Commit the changes made at the end of each iteration
 description: Make this conversation a loop (on completion), run a picked prompt each iteration, and keep iterating until your condition is met — then self-terminate
 backgroundColor: '#D1C4E9'

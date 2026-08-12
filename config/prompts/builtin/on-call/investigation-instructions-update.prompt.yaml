@@ -10,6 +10,7 @@ preferredModels:
 parameters:
   - name: InvestigationInstructions
     type: filename
+    group: Advanced
     glob:
       - "**/*.md"
     remember: folder

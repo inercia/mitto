@@ -25,6 +25,7 @@ parameters:
     description: 'When true (default), push local changes back to JIRA: transition the JIRA ticket to a Done status when the mirrored bead is closed locally, and mirror local beads comments (those without a `[jira]` prefix) back to JIRA as new comments tagged with `[mitto]`. Idempotency is tracked in bead metadata (`jira_pushed_comments`). Set to false for a pull-only run.'
   - name: AdditionalInstructions
     type: text
+    group: Advanced
     required: false
     multiLine: true
     description: 'Optional additional instructions for this run, applied on top of the steps below when pulling and pushing (e.g. "skip tickets labelled `spike`", "map priority Highest to p0", "do not close beads this run — only report", "add the sprint name to each bead title"). Used for this run only; nothing is persisted.'

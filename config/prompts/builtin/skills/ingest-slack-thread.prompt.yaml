@@ -21,6 +21,7 @@ parameters:
     description: 'URL of the Slack thread to ingest (e.g. https://<workspace>.slack.com/archives/C0123456/p1700000000000000)'
   - name: Focus
     type: text
+    group: Advanced
     required: false
     multiLine: true
     description: 'Optional narrowing of what to extract from the thread — one or more topics, subsections, or aspects the operator cares about (e.g. "only the retry/timeout tuning discussion", "the decision about which auth mode to use, ignore the deployment tangent", "just the error-message table Alice pasted"). If empty, the entire thread is treated as relevant and evaluated message-by-message per Step 3.'

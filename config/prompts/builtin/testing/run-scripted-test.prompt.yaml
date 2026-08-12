@@ -23,12 +23,14 @@ parameters:
     description: Markdown file describing the test procedure to follow
   - name: Instructions
     type: text
+    group: Advanced
     multiLine: true
     remember: folder
     required: false
     description: 'Optional additional instructions to steer this test run (e.g. "skip the migration step", "use the staging endpoint instead of prod", "report timing for each step"). These override or add to the scripted procedure without editing the source Markdown files.'
   - name: CreateIssues
     type: boolean
+    group: Advanced
     default: "false"
     required: false
     description: When enabled, file a beads issue for each error found during the run

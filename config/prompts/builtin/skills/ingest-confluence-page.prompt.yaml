@@ -21,15 +21,18 @@ parameters:
     description: 'URL or ID of the Confluence page to ingest (e.g. https://<site>.atlassian.net/wiki/spaces/ENG/pages/123456789/Runbook or the bare page ID 123456789)'
   - name: MaxDepth
     type: text
+    group: Advanced
     required: false
     description: 'How many levels of child/linked pages to follow (default: 1 — only the root page + its direct children). Use 0 for the root page only. Cap: 3.'
   - name: LinkFilter
     type: text
+    group: Advanced
     required: false
     multiLine: true
     description: 'Optional guidance narrowing which linked pages to follow (e.g. "only pages under the same space", "skip anything tagged draft", "follow only pages whose title contains ''API''"). If empty, the built-in heuristics in Step 2b apply.'
   - name: Focus
     type: text
+    group: Advanced
     required: false
     multiLine: true
     description: 'Optional narrowing of what to extract from the fetched pages — one or more topics, subsections, or aspects the operator cares about (e.g. "only the section on cache invalidation, ignore the migration history", "the API-versioning policy, not the deprecation timeline", "just the on-call escalation table"). If empty, the entire page (and each followed child page) is treated as relevant and evaluated section-by-section per Step 3.'
