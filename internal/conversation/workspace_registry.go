@@ -15,8 +15,10 @@ import (
 // It is a leaf type: it never calls back into SessionManager.
 // Its own mu provides a consistent lock order: sm.mu → wsRegistry.mu.
 type WorkspaceRegistry struct {
-	mu               sync.RWMutex
-	workspaces       map[string]*config.WorkspaceSettings
+	mu         sync.RWMutex
+	workspaces map[string]*config.WorkspaceSettings
+	// workspaceOrder preserves configuration order for deterministic enumeration.
+	workspaceOrder   []string
 	defaultWorkspace *config.WorkspaceSettings
 	fromCLI          bool
 	onWorkspaceSave  WorkspaceSaveFunc
@@ -50,11 +52,15 @@ func (r *WorkspaceRegistry) SetWorkspaces(workspaces []config.WorkspaceSettings)
 	r.mu.Lock()
 
 	r.workspaces = make(map[string]*config.WorkspaceSettings)
+	r.workspaceOrder = make([]string, 0, len(workspaces))
 	r.defaultWorkspace = nil
 
 	for i := range workspaces {
 		ws := &workspaces[i]
 		ws.EnsureUUID()
+		if _, exists := r.workspaces[ws.UUID]; !exists {
+			r.workspaceOrder = append(r.workspaceOrder, ws.UUID)
+		}
 		r.workspaces[ws.UUID] = ws
 		if r.defaultWorkspace == nil {
 			r.defaultWorkspace = ws
@@ -75,7 +81,7 @@ func (r *WorkspaceRegistry) SetWorkspaces(workspaces []config.WorkspaceSettings)
 	}
 }
 
-// GetWorkspaces returns all configured workspaces.
+// GetWorkspaces returns all configured workspaces in configuration order.
 func (r *WorkspaceRegistry) GetWorkspaces() []config.WorkspaceSettings {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -87,22 +93,19 @@ func (r *WorkspaceRegistry) GetWorkspaces() []config.WorkspaceSettings {
 		return []config.WorkspaceSettings{}
 	}
 
-	result := make([]config.WorkspaceSettings, 0, len(r.workspaces))
-	for _, ws := range r.workspaces {
-		result = append(result, *ws)
-	}
-	return result
+	return r.getWorkspacesLocked()
 }
 
 // GetWorkspace returns a workspace matching the given directory.
 // If multiple workspaces share the same directory (with different ACP servers),
-// the one marked IsDefault is preferred; otherwise the first one found is returned.
+// the one marked IsDefault is preferred; otherwise the first configured one is returned.
 func (r *WorkspaceRegistry) GetWorkspace(workingDir string) *config.WorkspaceSettings {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
 	var first *config.WorkspaceSettings
-	for _, ws := range r.workspaces {
+	for _, uuid := range r.workspaceOrder {
+		ws := r.workspaces[uuid]
 		if ws.WorkingDir == workingDir {
 			if ws.IsDefault {
 				return ws
@@ -116,7 +119,7 @@ func (r *WorkspaceRegistry) GetWorkspace(workingDir string) *config.WorkspaceSet
 }
 
 // GetWorkspaceByDirAndACP returns the workspace matching both directory and ACP server.
-// If acpServer is empty, returns the first workspace matching the directory.
+// If acpServer is empty, returns the first configured workspace matching the directory.
 func (r *WorkspaceRegistry) GetWorkspaceByDirAndACP(workingDir, acpServer string) *config.WorkspaceSettings {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -127,7 +130,8 @@ func (r *WorkspaceRegistry) GetWorkspaceByDirAndACP(workingDir, acpServer string
 // Caller must hold r.mu.
 func (r *WorkspaceRegistry) getWorkspaceByDirAndACPLocked(workingDir, acpServer string) *config.WorkspaceSettings {
 	var first *config.WorkspaceSettings
-	for _, ws := range r.workspaces {
+	for _, uuid := range r.workspaceOrder {
+		ws := r.workspaces[uuid]
 		if ws.WorkingDir == workingDir {
 			if acpServer == "" || ws.ACPServer == acpServer {
 				if acpServer == "" && ws.IsDefault {
@@ -190,7 +194,8 @@ func (r *WorkspaceRegistry) GetWorkspacesForFolder(folder string) []config.Works
 	var result []config.WorkspaceSettings
 	seen := make(map[string]bool)
 
-	for _, ws := range r.workspaces {
+	for _, uuid := range r.workspaceOrder {
+		ws := r.workspaces[uuid]
 		if ws.WorkingDir == folder {
 			result = append(result, *ws)
 			seen[ws.UUID] = true
@@ -222,6 +227,9 @@ func (r *WorkspaceRegistry) AddWorkspace(ws config.WorkspaceSettings) {
 	}
 
 	ws.EnsureUUID()
+	if _, exists := r.workspaces[ws.UUID]; !exists {
+		r.workspaceOrder = append(r.workspaceOrder, ws.UUID)
+	}
 	r.workspaces[ws.UUID] = &ws
 
 	if r.defaultWorkspace == nil || r.defaultWorkspace.WorkingDir == "" {
@@ -253,8 +261,10 @@ func (r *WorkspaceRegistry) AddWorkspace(ws config.WorkspaceSettings) {
 // getWorkspacesLocked returns all workspaces as a slice. Caller must hold r.mu.
 func (r *WorkspaceRegistry) getWorkspacesLocked() []config.WorkspaceSettings {
 	result := make([]config.WorkspaceSettings, 0, len(r.workspaces))
-	for _, ws := range r.workspaces {
-		result = append(result, *ws)
+	for _, uuid := range r.workspaceOrder {
+		if ws, ok := r.workspaces[uuid]; ok {
+			result = append(result, *ws)
+		}
 	}
 	return result
 }
@@ -276,12 +286,17 @@ func (r *WorkspaceRegistry) RemoveWorkspace(uuid string) {
 	workingDir := ws.WorkingDir
 
 	delete(r.workspaces, uuid)
+	for i, orderedUUID := range r.workspaceOrder {
+		if orderedUUID == uuid {
+			r.workspaceOrder = append(r.workspaceOrder[:i], r.workspaceOrder[i+1:]...)
+			break
+		}
+	}
 
 	if r.defaultWorkspace != nil && r.defaultWorkspace.UUID == uuid {
 		r.defaultWorkspace = nil
-		for _, ws := range r.workspaces {
-			r.defaultWorkspace = ws
-			break
+		if len(r.workspaceOrder) > 0 {
+			r.defaultWorkspace = r.workspaces[r.workspaceOrder[0]]
 		}
 	}
 

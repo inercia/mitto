@@ -316,6 +316,9 @@ func NewSessionManagerWithOptions(opts SessionManagerOptions) *SessionManager {
 	for i := range opts.Workspaces {
 		ws := &opts.Workspaces[i]
 		ws.EnsureUUID()
+		if _, exists := reg.workspaces[ws.UUID]; !exists {
+			reg.workspaceOrder = append(reg.workspaceOrder, ws.UUID)
+		}
 		reg.workspaces[ws.UUID] = ws
 		if reg.defaultWorkspace == nil {
 			reg.defaultWorkspace = ws
@@ -416,14 +419,14 @@ func (sm *SessionManager) SetWorkspaces(workspaces []config.WorkspaceSettings) {
 	sm.wsRegistry.SetWorkspaces(workspaces)
 }
 
-// GetWorkspaces returns all configured workspaces.
+// GetWorkspaces returns all configured workspaces in configuration order.
 func (sm *SessionManager) GetWorkspaces() []config.WorkspaceSettings {
 	return sm.wsRegistry.GetWorkspaces()
 }
 
 // GetWorkspace returns a workspace matching the given directory.
 // If multiple workspaces share the same directory (with different ACP servers),
-// the one marked IsDefault is preferred; otherwise the first one found is
+// the one marked IsDefault is preferred; otherwise the first configured one is
 // returned. Use GetWorkspaceByDirAndACP for a specific ACP server match.
 func (sm *SessionManager) GetWorkspace(workingDir string) *config.WorkspaceSettings {
 	return sm.wsRegistry.GetWorkspace(workingDir)

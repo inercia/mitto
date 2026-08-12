@@ -201,8 +201,8 @@ func TestNewSessionManagerWithOptions(t *testing.T) {
 
 func TestSessionManager_GetWorkspaces(t *testing.T) {
 	workspaces := []config.WorkspaceSettings{
-		{ACPServer: "server1", WorkingDir: "/path1"},
-		{ACPServer: "server2", WorkingDir: "/path2"},
+		{UUID: "ws-z", ACPServer: "server1", WorkingDir: "/path1"},
+		{UUID: "ws-a", ACPServer: "server2", WorkingDir: "/path1"},
 	}
 
 	sm := NewSessionManagerWithOptions(SessionManagerOptions{
@@ -212,7 +212,12 @@ func TestSessionManager_GetWorkspaces(t *testing.T) {
 
 	got := sm.GetWorkspaces()
 	if len(got) != 2 {
-		t.Errorf("GetWorkspaces count = %d, want 2", len(got))
+		t.Fatalf("GetWorkspaces count = %d, want 2", len(got))
+	}
+	for i, want := range workspaces {
+		if got[i].UUID != want.UUID {
+			t.Errorf("GetWorkspaces()[%d].UUID = %q, want %q", i, got[i].UUID, want.UUID)
+		}
 	}
 }
 
@@ -800,15 +805,20 @@ func TestSessionManager_SetWorkspaces(t *testing.T) {
 	sm := NewSessionManager("", "", false, nil)
 
 	workspaces := []config.WorkspaceSettings{
-		{WorkingDir: "/workspace1", ACPServer: "server1"},
-		{WorkingDir: "/workspace2", ACPServer: "server2"},
+		{UUID: "ws-z", WorkingDir: "/workspace1", ACPServer: "server1"},
+		{UUID: "ws-a", WorkingDir: "/workspace1", ACPServer: "server2"},
 	}
 
 	sm.SetWorkspaces(workspaces)
 
 	result := sm.GetWorkspaces()
 	if len(result) != 2 {
-		t.Errorf("GetWorkspaces() = %d, want 2", len(result))
+		t.Fatalf("GetWorkspaces() = %d, want 2", len(result))
+	}
+	for i, want := range workspaces {
+		if result[i].UUID != want.UUID {
+			t.Errorf("GetWorkspaces()[%d].UUID = %q, want %q", i, result[i].UUID, want.UUID)
+		}
 	}
 }
 
@@ -868,6 +878,9 @@ func TestSessionManager_AddWorkspace_SameDirectoryDifferentACP(t *testing.T) {
 	workspaces := sm.GetWorkspaces()
 	if len(workspaces) != 2 {
 		t.Errorf("GetWorkspaces() = %d, want 2 (same dir, different ACP servers allowed)", len(workspaces))
+	}
+	if ws := sm.GetWorkspace("/workspace1"); ws == nil || ws.UUID != "uuid-1" {
+		t.Errorf("GetWorkspace() = %+v, want first configured workspace uuid-1", ws)
 	}
 
 	// GetWorkspaceByDirAndACP should find the correct one
