@@ -10,6 +10,7 @@ parameters:
     description: The workspace folder whose beads database should receive the issue
   - name: DeleteFromSource
     type: boolean
+    group: Advanced
     default: "true"
     description: When true (default), the issue is deleted from this folder's database after it has been verified in the target. Set to false to copy instead of move.
 description: Move this bead (with its labels, comments and descendants) into another workspace folder's beads database

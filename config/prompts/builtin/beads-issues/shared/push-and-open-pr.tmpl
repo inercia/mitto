@@ -1,7 +1,7 @@
 {{- /*
   beads-issues/push-and-open-pr — headless (no mitto_ui_* calls) push +
   PR-create-or-update, safe to call exactly once from an automated loop
-  driver's Done branch.
+  driver's Done branch. Supports one PR per bead or one shared PR per epic.
 
   Called EXACTLY ONCE, inline in each driver's Done branch (e.g.
   loop-fixing-bug Step 3d, loop-implementing-feature Step 3e, mention-driver
@@ -15,9 +15,10 @@
 
   Unlike git/shared/create-or-update-pr (built around mitto_ui_form +
   mitto_ui_textbox for title/description/reviewers), this fragment is
-  headless-only by construction: it always uses `gh pr create --fill` /
-  `glab mr create --fill` and reports the URL back onto the bead as a
-  comment instead of presenting a form.
+  headless-only by construction: the agent writes the title and body itself
+  and reports the URL back onto the bead as a comment instead of presenting
+  a form. Both paths share git/shared/pr-description-no-beads, which also
+  bans `--fill` (driver commits carry `(refs <bead-id>)` footers).
 
   Callers pass a dict:
     "Ctx"    — the full render context (`.`), forwarded verbatim to the
@@ -30,7 +31,44 @@
 */ -}}
 {{- $ctx := .Ctx -}}
 {{- $target := .Target -}}
+{{- $fromBranch := Default "main" $ctx.Args.FromBranch -}}
+{{- $groupEpics := ne $ctx.Args.GroupEpics "false" -}}
 {{ template "git/shared/identify-remote-branch" $ctx }}
+
+For this workflow, set `<target-branch>` to the explicit base
+`{{ $fromBranch }}`. Resolve the PR owner before continuing:
+
+```bash
+pr_target="{{ $target }}"
+grouped_epic=false
+{{ if $groupEpics -}}
+parent=$(bd show {{ $target }} --json | jq -r '.[0].parent // empty')
+if [ -n "$parent" ] && [ "$(bd show "$parent" --json | jq -r '.[0].issue_type // empty')" = "epic" ]; then
+  pr_target="$parent"
+  grouped_epic=true
+fi
+{{- end }}
+```
+
+{{ if $groupEpics -}}
+When `grouped_epic=true`, count the epic's other open children, excluding
+`{{ $target }}` (the caller closes this child immediately after this fragment).
+If any remain, do **not** run the push/PR subsections below. Comment on the child
+that its commit is on the shared epic branch and the PR is deferred until the
+last child, then return to the caller's close step. This is what guarantees one
+PR for the whole epic rather than one per child.
+
+```bash
+if [ "$grouped_epic" = true ]; then
+  open_others=$(bd children "$pr_target" --json | jq --arg id "{{ $target }}" \
+    '[.[] | select(.id != $id and .status != "closed")] | length')
+  if [ "$open_others" -gt 0 ]; then
+    bd comment {{ $target }} "Committed to shared epic branch; PR deferred until the epic's last open child finishes."
+    # Skip the remaining PR subsections and return to the caller's close step.
+  fi
+fi
+```
+{{- end }}
 
 #### Preflight: not behind the base
 
@@ -42,6 +80,14 @@ rebase first, then stop — do not open or update a PR against a stale base.
 
 #### Push and create-or-update the PR
 
+{{ template "git/shared/pr-description-no-beads" $ctx }}
+
+This bead is being submitted by an automated driver, so there is no user to
+review the wording — compose the title and body yourself from the branch's
+diff and commits, stripping every bead reference. When `grouped_epic=true`,
+title the PR for the epic and summarize all completed children represented by
+the shared branch, not only the final child.
+
 Idempotent — check for an existing PR before creating a new one:
 
 ```bash
@@ -51,8 +97,8 @@ if [ -n "$existing_url" ]; then
   pr_url="$existing_url"
 else
   git push -u <push-remote> <branch-name>
-  gh pr create --fill --base <target-branch>          # GitHub
-  # glab mr create --fill                              # GitLab
+  gh pr create --title "<title>" --body-file <path> --base {{ $fromBranch | printf "%q" }}   # GitHub
+  # glab mr create --title "<title>" --description "<body>"                   # GitLab
   pr_url=$(gh pr view <branch-name> --json url -q '.url')
 fi
 ```
@@ -60,7 +106,8 @@ fi
 #### Report back
 
 ```bash
-bd comment {{ $target }} "PR: $pr_url"
+bd comment "$pr_target" "PR: $pr_url"
+if [ "$pr_target" != "{{ $target }}" ]; then bd comment {{ $target }} "Epic PR: $pr_url"; fi
 ```
 
 No `mitto_ui_*` calls anywhere in this fragment — safe for unattended runs.

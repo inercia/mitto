@@ -1,6 +1,6 @@
 {{- /*
-  beads-issues/ensure-bead-branch — headless (no mitto_ui_* calls) per-bead
-  branch creation, safe to call from an automated loop driver.
+  beads-issues/ensure-bead-branch — headless branch creation for automated
+  loop drivers. Supports one branch per bead or one shared branch per epic.
 
   Called before the FIRST commit of a bead (fix-phase entry / implement-phase
   entry). Must be idempotent — a feature bead crosses four phases in four
@@ -21,8 +21,10 @@
                gate still sees the real session.
     "Target" — the resolved bead ID. Required.
     "Type"   — conventional branch-type prefix: "feat" for features, "fix"
-               for bugs. Empty string renders `<type>` (a placeholder,
-               callers should always pass a concrete value).
+               for bugs. Empty string renders `<type>`.
+
+  Reads Ctx.Args.FromBranch (default "main") and Ctx.Args.GroupEpics
+  (default-on; only "false" disables it).
 
   After this block, the caller can refer to `<branch-name>` as the resolved,
   already-checked-out feature branch.
@@ -30,19 +32,34 @@
 {{- $ctx := .Ctx -}}
 {{- $target := .Target -}}
 {{- $type := .Type -}}{{- if eq $type "" }}{{ $type = "<type>" }}{{ end -}}
+{{- $fromBranch := Default "main" $ctx.Args.FromBranch -}}
+{{- $groupEpics := ne $ctx.Args.GroupEpics "false" -}}
 {{ template "git/shared/identify-remote-branch" $ctx }}
 
-#### Resolve the branch name
+For this workflow, the explicit base is `{{ $fromBranch }}`; use it as
+`<target-branch>` even when the repository's default branch differs.
+
+#### Resolve the branch owner and name
 
 The branch name must be **stable across phases** — this fragment is re-entered
-once per phase (plan/implement/test/review), so derive it deterministically
-from the bead title rather than inventing a new name each time:
+once per phase, so derive it deterministically.{{ if $groupEpics }} If the target's direct parent is
+an `epic`, set `branch_target` to that epic so every sibling shares one branch;
+otherwise keep the task itself.{{ end }}
 
 ```bash
-slug=$(bd show {{ $target }} --json | jq -r '.[0].title' \
+branch_target="{{ $target }}"
+branch_type="{{ $type }}"
+{{ if $groupEpics -}}
+parent=$(bd show {{ $target }} --json | jq -r '.[0].parent // empty')
+if [ -n "$parent" ] && [ "$(bd show "$parent" --json | jq -r '.[0].issue_type // empty')" = "epic" ]; then
+  branch_target="$parent"
+  branch_type="epic"
+fi
+{{- end }}
+slug=$(bd show "$branch_target" --json | jq -r '.[0].title' \
   | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+|-+$//g' \
   | cut -c1-40 | sed -E 's/-+$//')
-branch="{{ $type }}/{{ $target }}-$slug"
+branch="${branch_type}/${branch_target}-$slug"
 ```
 
 #### Ensure the branch exists and is checked out
@@ -56,10 +73,15 @@ if [ "$current" = "$branch" ]; then
 elif git show-ref --verify --quiet "refs/heads/$branch"; then
   git switch "$branch"
 else
-  git fetch <target-remote> <target-branch>
-  git switch -c "$branch" <target-remote>/<target-branch>
+  base_branch={{ $fromBranch | printf "%q" }}
+  git fetch <target-remote> "$base_branch"
+  git switch -c "$branch" "<target-remote>/$base_branch"
 fi
 ```
+
+Never create the new branch from bare `HEAD`: a prior task may have left a
+different task branch checked out. Existing deterministic branches are reused
+only for later phases{{ if $groupEpics }} or later children of the same epic{{ end }}.
 
 No `mitto_ui_*` calls anywhere in this fragment — safe for unattended runs.
 {{- /* no trailing newline */ -}}

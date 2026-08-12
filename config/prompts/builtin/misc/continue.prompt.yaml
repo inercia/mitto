@@ -152,12 +152,23 @@ prompt: |
   1. **The bead has remaining work** (acceptance criteria not yet met) → keep implementing it as
      the natural next step above. Claim it if it isn't already (`bd update {{ .Session.BeadsIssue }} --claim`).
   2. **The bead is an epic/parent with open children** → it's a container, not directly
-     implementable; work the **next ready child** (open + unblocked per `bd dep tree`; prefer
-     schema/scaffolding before dependents, then highest priority).
+     implementable; work the **next ready child** (open + unblocked per `bd dep tree`), chosen
+     with the canonical ranking below.
   3. **The bead is complete but has follow-ups** → using `bd ready --json` to confirm readiness,
      look in order for: a ready **dependent** (an issue this bead *blocks* that is now unblocked),
-     then a ready **sibling** under the same parent epic. Work that follow-up.
+     then a ready **sibling** under the same parent epic. Work that follow-up, again choosing
+     between several with the canonical ranking below.
   4. **Nothing ready remains** → go to **B4** (wrap up).
+
+  When cases 2 or 3 leave you with more than one candidate:
+
+  {{ template "beads-issues/shared/rank-candidates" (dict
+      "Set"           "the candidate beads"
+      "Deterministic" true
+  ) }}
+
+  **How this step consumes the ranking:** a continuation works **one bead**, so take
+  shortlist #1; #2 and #3 are fallbacks if #1 turns out not to be workable.
 
   When you switch to a different bead (child, dependent, or sibling), keep the conversation link on
   the right anchor:

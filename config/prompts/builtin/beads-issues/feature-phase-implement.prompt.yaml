@@ -8,10 +8,12 @@ parameters:
     description: The beads issue ID to implement
   - name: SubmitStrategy
     type: text
+    group: Advanced
     required: false
-    description: How finished work is submitted. "Commit" (default) — commit the increment after this phase. "Pull Request" — same, on a per-bead branch created here. "None" — leave changes staged for review.
+    description: How finished work is submitted. "Commit" (default) commits this increment; "Pull Request" commits on the configured task/epic branch; "None" leaves changes for review.
   - name: AdditionalInstructions
     type: text
+    group: Advanced
     required: false
     multiLine: true
     description: Optional additional instructions for this phase, forwarded by the driver that dispatched it.
@@ -41,7 +43,7 @@ prompt: |
   {{ $commit := ne $submit "None" -}}
   {{ $pr := eq $submit "Pull Request" -}}
   {{ $suffix := "Submit strategy is **None** (`SubmitStrategy` argument) — commit-after-implement is disabled." -}}
-  {{ if $pr }}{{ $suffix = "Submit strategy is **Pull Request** (`SubmitStrategy` argument) — committed on a per-bead branch." }}{{ else if $commit }}{{ $suffix = "Submit strategy is **Commit** (`SubmitStrategy` argument) — commit-after-implement is enabled." }}{{ end -}}
+  {{ if $pr }}{{ $suffix = "Submit strategy is **Pull Request** — commit on the configured task/epic branch." }}{{ else if $commit }}{{ $suffix = "Submit strategy is **Commit** (`SubmitStrategy` argument) — commit-after-implement is enabled." }}{{ end -}}
   {{ template "beads-issues/shared/target-bead-header-strict" (dict
       "Target"      $target
       "Noun"        "target feature"

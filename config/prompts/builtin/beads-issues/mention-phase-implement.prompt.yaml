@@ -16,6 +16,7 @@ parameters:
     description: Verbatim body of the @mitto mention (already scoped by the router)
   - name: AdditionalInstructions
     type: text
+    group: Advanced
     required: false
     multiLine: true
     description: Optional additional instructions for this phase, forwarded by the driver that dispatched it.

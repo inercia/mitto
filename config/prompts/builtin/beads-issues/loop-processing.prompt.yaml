@@ -4,9 +4,20 @@ menus: beadsList, promptsLoop
 parameters:
   - name: SubmitStrategy
     type: text
-    description: 'How finished work is submitted. "Commit" (default) — workers commit their changes: §A one-shot workers commit inline and §B/§C drivers commit at each terminal stage. "Pull Request" — same, but on a per-bead branch, with the driver opening a PR in its Done branch. "None" — changes are left uncommitted (working tree only) for human review.'
+    group: Changes
+    description: 'How finished work is submitted. "Commit" (default) — workers commit their changes. "Pull Request" — workers branch from FromBranch and open PRs according to GroupEpics. "None" — changes remain uncommitted for human review.'
     options: ["Commit", "Pull Request", "None"]
     default: "Commit"
+  - name: FromBranch
+    type: text
+    group: Changes
+    default: "main"
+    description: Base branch for new Pull Request branches. Each new top-level task starts from a fresh branch based on this ref; grouped epic children share the epic branch created from it.
+  - name: GroupEpics
+    type: boolean
+    group: Changes
+    default: "true"
+    description: When true (default), children of one epic share a branch and produce one PR for the epic after its last child finishes. When false, every child task gets its own branch and PR.
   - name: FixBugs
     type: boolean
     default: "true"
@@ -15,16 +26,24 @@ parameters:
     type: boolean
     default: "true"
     description: When true (default), the loop processes open features via §C. Set to false to disable feature handling entirely — Step 2C is skipped and §C is never dispatched. Useful when the operator only wants the loop to work on bugs (or on @mitto mentions).
+  - name: MaxParallelWorkers
+    type: text
+    group: Advanced
+    options: ["1", "2", "3"]
+    default: "1"
+    description: 'Upper bound on concurrent §B/§C worker conversations in the workspace. "1" (default) is strictly serial. Raising it only raises the CEILING — a second worker is dispatched only when Step 3D can prove from recorded evidence that the candidates touch disjoint code; absence of evidence keeps the pass at one worker. Forced back to "1" when SubmitStrategy is "Pull Request" because branch switching races in the shared working tree.'
   - name: PostIterationPrompt
     type: prompts
+    group: Advanced
     required: false
     description: Optional prompt to run after a task completes and before the next one is picked (e.g. "Run tests"). Dispatched as its own short-lived child conversation from Step 5H; best-effort — a failing hook never blocks the next task. Leave empty to disable.
   - name: AdditionalInstructions
     type: text
+    group: Advanced
     required: false
     multiLine: true
     description: 'Optional additional instructions applied on top of the steps below, and propagated verbatim to every §A/§B/§C driver (and from there to their phase prompts) so the whole chain follows them (e.g. "only work on beads labelled `frontend`", "always run `make lint` before committing", "never touch files under vendor/"). Used for this run only; nothing is persisted.'
-description: "Unified standing supervisor — on every beads change, process at most one increment from whichever class has work — (A) unaddressed @mitto comments, (B) eligible open bugs, (C) eligible open features. Comments first, then bugs, then features. One worker in flight at a time."
+description: "Unified standing supervisor — on every beads change, process at most one increment from whichever class has work — (A) unaddressed @mitto comments, (B) eligible open bugs, (C) eligible open features. Comments first, then bugs, then features. One worker in flight at a time, unless MaxParallelWorkers is raised and the candidates are provably code-disjoint."
 backgroundColor: '#E1BEE7'
 group: Tasks
 enabledWhen: '!Session.IsChild && CommandExists("bd") && DirExists(".beads") && Permissions.CanStartConversation'
@@ -80,6 +99,13 @@ prompt: |
   {{- end }}
   {{ end }}{{ end }}
 
+  {{- $submit := Default "Commit" .Args.SubmitStrategy }}
+  {{- $fromBranch := Default "main" .Args.FromBranch }}
+  {{- $groupEpics := ne .Args.GroupEpics "false" }}
+  {{- /* Pull Request work is serial because all branches share one working tree. */ -}}
+  {{- $maxWorkers := Default "1" .Args.MaxParallelWorkers }}
+  {{- if eq $submit "Pull Request" }}{{ $maxWorkers = "1" }}{{ end }}
+
   {{ template "beads-issues/shared/additional-instructions" . }}
   # Beads: Loop Processing Beads (unified list-level orchestrator)
 
@@ -110,19 +136,32 @@ prompt: |
   automatically closes the epic in the same pass once its last child is closed (pass-local
   scope: only epics whose children were closed by this pass are considered).
 
+  {{ if eq $submit "Pull Request" -}}
+  ### Changes policy
+
+  Before doing any task work, its driver must switch to a deterministic working branch
+  created from `{{ $fromBranch }}` — never branch from the current HEAD or a previous
+  task's branch. {{ if $groupEpics }}For an epic child, use the epic's shared branch; reuse it for later siblings and open
+  **one epic PR** only when the last open child finishes. Top-level tasks still get one
+  branch and PR each.{{ else }}Epic grouping is disabled: every task, including each epic child, gets a fresh branch
+  and its own PR.{{ end }}
+  {{- end }}
+
   ### Concurrency, deferral, preflight (summary — enforced in Steps 2P/2Z/§B/§C/7)
 
-  - **Cap: 1 active worker per workspace** total across §B + §C{{ if .Args.PostIterationPrompt }} + the Step 5H
+  - **Cap: {{ $maxWorkers }} active worker{{ if ne $maxWorkers "1" }}s{{ end }} per workspace** total across §B + §C{{ if .Args.PostIterationPrompt }} + the Step 5H
     post-task hook{{ end }} (non-archived conversations whose title starts with `Fix ` /
     `Implement `{{ if .Args.PostIterationPrompt }} / `Post-task: `{{ end }}). The
     cap is workspace-scoped (enumerated via `.Workspace.Peers.All` — non-archived
     sibling conversations sharing this session's `(WorkingDir, ACPServer)`,
     populated at template-dispatch time), not per-orchestrator — parallel
-    `Loop processing tasks` sessions in the same workspace share the single
-    slot (mitto-9mk). §A mention drivers self-terminate and are NOT counted.
-    Serial execution prevents overlapping-file races{{ if .Args.PostIterationPrompt }} — including between a
-    driver editing the tree and a post-task hook (e.g. `Run tests`) reading it{{ end }}. Step 2P prunes
-    stale children every pass to free the slot.
+    `Loop processing tasks` sessions in the same workspace share the {{ if eq $maxWorkers "1" }}single
+    slot{{ else }}same {{ $maxWorkers }} slots{{ end }} (mitto-9mk). §A mention drivers self-terminate and are NOT counted.
+    {{ if eq $maxWorkers "1" }}Serial execution prevents overlapping-file races{{ if .Args.PostIterationPrompt }} — including between a
+    driver editing the tree and a post-task hook (e.g. `Run tests`) reading it{{ end }}.{{ else }}The cap is a **ceiling, not a target** — Step 3D still has to prove code
+    disjointness before a second worker starts, so most passes stay at one{{ if .Args.PostIterationPrompt }}, and the
+    Step 5H post-task hook always runs alone (it may read/mutate the whole tree){{ end }}.{{ end }} Step 2P prunes
+    stale children every pass to free {{ if eq $maxWorkers "1" }}the slot{{ else }}slots{{ end }}.
   - **Deferral:** any un-progressable bead gets `--add-label needs-human --defer +1d`
     plus a comment starting `[deferred: <RFC3339>]` (full template in Step 7).
     Step 2Z undefers when the human replies, posting `[undeferred: <deferred-ts>]`.
@@ -543,10 +582,23 @@ prompt: |
   Keep the similarity check **narrow** — over-spawning a driver (it self-verifies
   and terminates quickly) is safer than mis-closing on a coincidental match.
 
-  Order survivors by **priority** (`critical → high → medium → low` — i.e.
-  `bd` numeric `priority` **ascending**: `P0` before `P1` before `P2` before
-  `P3`), then bead ID asc. **Priority is authoritative within §B** — a P0 bug
-  ALWAYS runs before a P3 bug; never demote by "looks small" or "looks urgent".
+  Order survivors with the canonical ranking:
+
+  {{ template "beads-issues/shared/rank-candidates" (dict
+      "Set"           "the surviving bugs"
+      "Deterministic" true
+  ) }}
+
+  A bead dropped by criterion 1 is not discarded — it still appears in the Step 2T
+  table with the 🟡 `blocked` status and its `blocked-by <id>` reason.
+
+  **How this pass consumes the ranking:** the ordering applies to the WHOLE set (2T
+  lists every candidate in it), and the shortlist is just its top slice. §B always
+  dispatches shortlist #1; #2 and #3 are the fallbacks used when #1 is disqualified
+  at spawn time (an existing child already carries its `beads_issue`, or its
+  preflight fails){{ if ne $maxWorkers "1" }}, and — because the worker cap is **{{ $maxWorkers }}** (see Guidelines) — they are
+  ALSO the candidates Step 3D may clear for a parallel dispatch alongside #1{{ end }}. Anything
+  not dispatched this pass is marked ⏸️ `queued` rather than dropped.
   {{- end }}
 
   ### 2C — Eligible open features
@@ -558,10 +610,8 @@ prompt: |
   {{- else -}}
   Same shape as 2B — same exclusions, same eligibility rule (bead's own
   `status`/labels decide; parent epic's status is irrelevant; recently-closed
-  parent is pass-local, mitto-fko), and **same ordering**: priority
-  (`critical → high → medium → low`, i.e. `P0` before `P1` before `P2` before
-  `P3`) then bead ID asc. Priority is authoritative within §C — a P0 feature
-  ALWAYS runs before a P3 feature. Differences:
+  parent is pass-local, mitto-fko), and the **same canonical ordering** applied
+  to the surviving features. Differences:
 
   - Terminal label is `verified`.
   - Self-heal chain (already-landed fix) adds `planned`, `implemented`, `tested`,
@@ -591,8 +641,8 @@ prompt: |
   exposed — no per-bead prose outside this table.
 
   One row per candidate across all three sets. Order: class A → B → C, then
-  class-native (2A: `ts` asc; 2B/2C: priority `critical → high → medium → low`
-  — i.e. `P0` before `P1` before `P2` before `P3` — then bead ID asc).
+  class-native (2A: `ts` asc; 2B/2C: the canonical ranking established in those
+  sections).
   Include EVERY candidate, including excluded — those rows are the whole point.
 
   - **Class** — `A` / `B` / `C`.
@@ -641,14 +691,12 @@ prompt: |
 
   1. 2A non-empty → §A on the oldest unaddressed mention.
   {{ if ne .Args.FixBugs "false" -}}
-  2. Else 2B non-empty AND Step 1 "Loop fixing bug" preflight succeeded → §B on the
-     **highest-priority bug** (2B's first row: lowest numeric priority — `P0`
-     before `P1` before `P2` before `P3` — tie-broken by bead ID asc).
+  2. Else 2B non-empty AND Step 1 "Loop fixing bug" preflight succeeded → §B on
+     **2B's first row** (the top of the canonical ranking established in 2B).
   {{ end -}}
   {{ if ne .Args.WorkOnFeatures "false" -}}
   {{ if ne .Args.FixBugs "false" }}3{{ else }}2{{ end }}. Else 2C non-empty AND Step 1 "Loop implementing feature" preflight
-     succeeded → §C on the **highest-priority feature** (2C's first row: same
-     `P0 → P3` rule as §B, tie-broken by bead ID asc).
+     succeeded → §C on **2C's first row** (same canonical ranking as §B).
   {{ end -}}
   {{ if ne .Args.FixBugs "false" }}{{ if ne .Args.WorkOnFeatures "false" }}4{{ else }}3{{ end }}{{ else }}{{ if ne .Args.WorkOnFeatures "false" }}3{{ else }}2{{ end }}{{ end }}. Otherwise → Step 6 with reason "nothing eligible" (include `scope: bugs={{ if ne .Args.FixBugs "false" }}on{{ else }}off{{ end }}
      features={{ if ne .Args.WorkOnFeatures "false" }}on{{ else }}off{{ end }}` so the operator can see whether the empty result is real or
@@ -656,6 +704,71 @@ prompt: |
 
   One class per pass only — the `onTasks` fire that lands after the chosen worker's
   `bd` mutations will re-enter this prompt with a fresh view of all three sets.
+  {{- if and (ne $maxWorkers "1") (or (ne .Args.FixBugs "false") (ne .Args.WorkOnFeatures "false")) }}
+
+  ## Step 3D — Can a second worker start? (disjointness proof)
+
+  The operator raised the ceiling to **{{ $maxWorkers }} concurrent workers**
+  (`MaxParallelWorkers`). That is a **ceiling, not a target**: workers share ONE
+  working tree, so two drivers editing the same files corrupt each other's diffs and
+  produce commits nobody can untangle. A second worker starts **only** when you can
+  prove from *recorded evidence* that the candidates cannot collide.
+
+  Run this only when §B or §C was chosen above and its slot budget is not yet full.
+  Candidates are the remaining entries of the chosen class's shortlist (#2, #3 …), in
+  rank order; the class chosen in Step 3 does not change (never mix §B and §C in one
+  pass — the class-priority rule stands).
+
+  **The burden of proof is on parallelism.** Evaluate each additional candidate `<c>`
+  against the already-dispatched target(s). ALL of the following must hold:
+
+  1. **Recorded file surface on both sides.** Each bead must carry an explicit,
+     already-written list of the files/directories it will touch — a previous
+     driver's `Investigation [tier: …]:` or `Plan [tier: …]:` comment (both record
+     code locations / files touched), or the bead's own design/acceptance text.
+     Read it, do not derive it:
+
+     ```bash
+     bd show <c> --long --json | jq -r '.[0].design, .[0].acceptance_criteria'
+     bd show <c> --long --include-comments | grep -E '^(Investigation|Plan) \[tier:'
+     ```
+
+     If either bead has **no recorded surface**, the proof fails. Do NOT infer a
+     surface by reading code, guessing from the title, or asking a model — an
+     unverified guess is exactly the failure mode this gate exists to prevent.
+     A never-dispatched bead usually has no recorded surface; that is the normal
+     case and the correct answer is a single-worker pass.
+  2. **Disjoint at directory granularity.** The two surfaces must share no file AND
+     no immediate parent directory. Same-directory work counts as a collision even
+     when the file lists differ (drivers routinely touch a sibling test file, a
+     `doc.go`, or a shared helper in the same package).
+  3. **No shared build/config surface.** Neither may touch a file both would plausibly
+     need to re-generate or re-format: `go.mod`, `go.sum`, `package.json`, lockfiles,
+     `Makefile`, CI config, generated bundles, or the same schema/migration directory.
+  4. **No dependency edge, no shared parent epic.** `bd dep tree <c>` must show no
+     path to or from the dispatched target, and the two must not be children of the
+     same epic (siblings in one epic almost always share a code surface).
+  5. **Same class, independent lifecycles.** Both are §B or both are §C, and neither
+     is the `<id>` of a bead already carried by any non-archived child or peer
+     conversation (the Step 2B/2C exclusion already removed those — re-check anyway).
+
+  Any criterion you cannot answer from recorded evidence is a **fail**, not a maybe.
+  On a fail: leave the candidate as ⏸️ `queued` and stop widening — do not try
+  candidate #3 after #2 failed{{ if ne $maxWorkers "2" }} unless #2 failed criterion 5 only (already
+  dispatched elsewhere), which says nothing about #3{{ end }}.
+
+  On a pass, record the proof on **both** beads so the decision is auditable and a
+  later human can see why they ran together:
+
+  ```bash
+  bd comment <c> "Orchestrator: dispatched in parallel with <other-id> (cap {{ $maxWorkers }}). Disjointness: <c> touches <paths-a>; <other-id> touches <paths-b>; no shared directory, no dependency edge, no shared epic."
+  ```
+
+  Then dispatch it through the same §B/§C spawn block as the primary target. Every
+  additional worker consumes one slot and is counted by the concurrency gate exactly
+  like the first{{ if .Args.PostIterationPrompt }}; the Step 5H post-task hook is NEVER one of them — it needs the
+  tree to itself and only runs when the live worker count is 0{{ end }}.
+  {{- end }}
 
   ---
 
@@ -675,9 +788,9 @@ prompt: |
     title: "Address @mitto on <id> [<ts>]",
     beads_issue: "<id>",
     prompt_name: "Mention — driver",
-    arguments: { "IssueID": "<id>", "MentionTS": "<ts>", "MentionBody": "<body>", "SubmitStrategy": "{{ if .Args.SubmitStrategy }}{{ .Args.SubmitStrategy }}{{ else }}Commit{{ end }}"{{ with .Args.AdditionalInstructions }}, "AdditionalInstructions": {{ . | printf "%q" }}{{ end }} },
+    arguments: { "IssueID": "<id>", "MentionTS": "<ts>", "MentionBody": "<body>", "SubmitStrategy": "{{ $submit }}", "FromBranch": {{ $fromBranch | printf "%q" }}, "GroupEpics": "{{ $groupEpics }}"{{ with .Args.AdditionalInstructions }}, "AdditionalInstructions": {{ . | printf "%q" }}{{ end }} },
     loop_prompt_name: "Mention — driver",
-    loop_arguments: { "IssueID": "<id>", "MentionTS": "<ts>", "MentionBody": "<body>", "SubmitStrategy": "{{ if .Args.SubmitStrategy }}{{ .Args.SubmitStrategy }}{{ else }}Commit{{ end }}"{{ with .Args.AdditionalInstructions }}, "AdditionalInstructions": {{ . | printf "%q" }}{{ end }} },
+    loop_arguments: { "IssueID": "<id>", "MentionTS": "<ts>", "MentionBody": "<body>", "SubmitStrategy": "{{ $submit }}", "FromBranch": {{ $fromBranch | printf "%q" }}, "GroupEpics": "{{ $groupEpics }}"{{ with .Args.AdditionalInstructions }}, "AdditionalInstructions": {{ . | printf "%q" }}{{ end }} },
     loop_trigger: "onCompletion",
     loop_completion_delay_seconds: 30,
     loop_max_iterations: 8,
@@ -757,11 +870,11 @@ prompt: |
   `(WorkingDir, ACPServer)` — i.e. the workspace boundary — and is populated at
   template-dispatch time (no MCP round-trip), so this counts drivers spawned by any
   orchestrator in the workspace and parallel `Loop processing tasks` sessions share
-  the single slot instead of each spawning their own (mitto-9mk).{{ if .Args.PostIterationPrompt }}
-  A running `Post-task: …` hook holds the same slot, so a driver never starts while
+  the {{ if eq $maxWorkers "1" }}single slot{{ else }}same {{ $maxWorkers }} slots{{ end }} instead of each spawning their own (mitto-9mk).{{ if .Args.PostIterationPrompt }}
+  A running `Post-task: …` hook holds {{ if eq $maxWorkers "1" }}the same slot{{ else }}the tree exclusively{{ end }}, so a driver never starts while
   the hook is mutating/reading the tree.{{ end }}
-  If the workspace-wide count is already ≥ **1**, skip the spawn this pass — write
-  `bd comment <id> "Orchestrator: concurrency cap (1 active worker in workspace) reached; bug queued for a later pass."`
+  If the workspace-wide count is already ≥ **{{ $maxWorkers }}**, skip the spawn this pass — write
+  `bd comment <id> "Orchestrator: concurrency cap ({{ $maxWorkers }} active worker{{ if ne $maxWorkers "1" }}s{{ end }} in workspace) reached; bug queued for a later pass."`
   and jump to Step 6. Otherwise spawn ONE child whose seed AND `onCompletion` re-fire
   are both the named per-bug driver:
 
@@ -771,9 +884,9 @@ prompt: |
     title: "Fix <id>",
     beads_issue: "<id>",
     prompt_name: "Loop fixing bug",
-    arguments: { "IssueID": "<id>", "SubmitStrategy": "{{ if .Args.SubmitStrategy }}{{ .Args.SubmitStrategy }}{{ else }}Commit{{ end }}"{{ with .Args.AdditionalInstructions }}, "AdditionalInstructions": {{ . | printf "%q" }}{{ end }} },
+    arguments: { "IssueID": "<id>", "SubmitStrategy": "{{ $submit }}", "FromBranch": {{ $fromBranch | printf "%q" }}, "GroupEpics": "{{ $groupEpics }}"{{ with .Args.AdditionalInstructions }}, "AdditionalInstructions": {{ . | printf "%q" }}{{ end }} },
     loop_prompt_name: "Loop fixing bug",
-    loop_arguments: { "IssueID": "<id>", "SubmitStrategy": "{{ if .Args.SubmitStrategy }}{{ .Args.SubmitStrategy }}{{ else }}Commit{{ end }}"{{ with .Args.AdditionalInstructions }}, "AdditionalInstructions": {{ . | printf "%q" }}{{ end }} },
+    loop_arguments: { "IssueID": "<id>", "SubmitStrategy": "{{ $submit }}", "FromBranch": {{ $fromBranch | printf "%q" }}, "GroupEpics": "{{ $groupEpics }}"{{ with .Args.AdditionalInstructions }}, "AdditionalInstructions": {{ . | printf "%q" }}{{ end }} },
     loop_trigger: "onCompletion",
     loop_completion_delay_seconds: 30,
     loop_max_iterations: 20,
@@ -785,6 +898,13 @@ prompt: |
   seed and re-fire). Budget mirrors the per-bug driver's `delay: 30`,
   `maxIterations: 20`, `maxDuration: "4h"`. Record `conversation_id` as
   **`<child-id>`**. On create failure → Step 7.
+  {{- if ne $maxWorkers "1" }}
+
+  If **Step 3D** cleared additional candidates, repeat this exact spawn block once
+  per cleared candidate (each with its own `<id>` / `<child-id>`), stopping when the
+  live worker count reaches {{ $maxWorkers }}. Call the resulting set **`<ids>`** /
+  **`<child-ids>`**.
+  {{- end }}
 
   ### §B wait, log, archive
 
@@ -800,12 +920,20 @@ prompt: |
     self_id: "{{ .Session.ID }}",
     conversation_id: "self",
     what: "beads_issues_reached_state",
-    beads_issues: ["<id>"],
+    beads_issues: [{{ if ne $maxWorkers "1" }}"<ids…>"{{ else }}"<id>"{{ end }}],
     beads_target_state: "closed",
-    beads_match: "all",
+    beads_match: "{{ if ne $maxWorkers "1" }}any{{ else }}all{{ end }}",
     timeout_seconds: 14400
   )
   ```
+  {{- if ne $maxWorkers "1" }}
+
+  With several workers in flight, list every dispatched `<id>` and use
+  `beads_match: "any"` — the pass ends as soon as the FIRST bead closes; the others
+  keep running and are picked up by the next `onTasks` fire (Step 2P reaps their
+  children once their beads reach terminal state). Apply the branches below to the
+  bead(s) the wait reports as reached, and leave the still-running ones untouched.
+  {{- end }}
 
   - **Bead closed** (happy path) — write one bookkeeping comment then archive
     the child (the driver has already logged its own `Investigation:` /
@@ -851,9 +979,9 @@ prompt: |
   (backed by `.Workspace.Peers.All`, scoped to non-archived siblings sharing
   this session's `(WorkingDir, ACPServer)`) and count peers whose `(name)`
   starts with `Fix `{{ if .Args.PostIterationPrompt }}, `Implement ` or `Post-task: ` (§B, §C and the Step 5H hook share
-  the 1-worker budget{{ else }} or `Implement ` (§B and §C share the 1-driver budget{{ end }}
+  the {{ $maxWorkers }}-worker budget{{ else }} or `Implement ` (§B and §C share the {{ $maxWorkers }}-driver budget{{ end }}
   workspace-wide, not per-orchestrator; mitto-9mk).
-  At cap → `bd comment <id> "Orchestrator: concurrency cap (1 active worker in workspace) reached; feature queued for a later pass."`
+  At cap → `bd comment <id> "Orchestrator: concurrency cap ({{ $maxWorkers }} active worker{{ if ne $maxWorkers "1" }}s{{ end }} in workspace) reached; feature queued for a later pass."`
   and jump to Step 6. Otherwise spawn ONE child (seed AND `onCompletion` re-fire both the
   named per-feature driver):
 
@@ -863,9 +991,9 @@ prompt: |
     title: "Implement <id>: <slug>",
     beads_issue: "<id>",
     prompt_name: "Loop implementing feature",
-    arguments: { "IssueID": "<id>", "SubmitStrategy": "{{ if .Args.SubmitStrategy }}{{ .Args.SubmitStrategy }}{{ else }}Commit{{ end }}"{{ with .Args.AdditionalInstructions }}, "AdditionalInstructions": {{ . | printf "%q" }}{{ end }} },
+    arguments: { "IssueID": "<id>", "SubmitStrategy": "{{ $submit }}", "FromBranch": {{ $fromBranch | printf "%q" }}, "GroupEpics": "{{ $groupEpics }}"{{ with .Args.AdditionalInstructions }}, "AdditionalInstructions": {{ . | printf "%q" }}{{ end }} },
     loop_prompt_name: "Loop implementing feature",
-    loop_arguments: { "IssueID": "<id>", "SubmitStrategy": "{{ if .Args.SubmitStrategy }}{{ .Args.SubmitStrategy }}{{ else }}Commit{{ end }}"{{ with .Args.AdditionalInstructions }}, "AdditionalInstructions": {{ . | printf "%q" }}{{ end }} },
+    loop_arguments: { "IssueID": "<id>", "SubmitStrategy": "{{ $submit }}", "FromBranch": {{ $fromBranch | printf "%q" }}, "GroupEpics": "{{ $groupEpics }}"{{ with .Args.AdditionalInstructions }}, "AdditionalInstructions": {{ . | printf "%q" }}{{ end }} },
     loop_trigger: "onCompletion",
     loop_completion_delay_seconds: 30,
     loop_max_iterations: 30,
@@ -880,6 +1008,13 @@ prompt: |
   `story`/`chore`); the driver's state machine is type-agnostic. For epic
   members use `Implement <id> (child of <epic-id>): <slug>` so the epic context
   is visible in the conversation list.
+  {{- if ne $maxWorkers "1" }}
+
+  If **Step 3D** cleared additional candidates, repeat this spawn block once per
+  cleared candidate, stopping when the live worker count reaches {{ $maxWorkers }}.
+  Note that Step 3D's criterion 4 rejects two children of the same epic, so epic
+  siblings are never fanned out together.
+  {{- end }}
 
   ### §C wait, log, archive
 
@@ -894,12 +1029,17 @@ prompt: |
     self_id: "{{ .Session.ID }}",
     conversation_id: "self",
     what: "beads_issues_reached_state",
-    beads_issues: ["<id>"],
+    beads_issues: [{{ if ne $maxWorkers "1" }}"<ids…>"{{ else }}"<id>"{{ end }}],
     beads_target_state: "closed",
-    beads_match: "all",
+    beads_match: "{{ if ne $maxWorkers "1" }}any{{ else }}all{{ end }}",
     timeout_seconds: 14400
   )
   ```
+  {{- if ne $maxWorkers "1" }}
+
+  Same multi-worker rule as §B: list every dispatched `<id>`, `beads_match: "any"`,
+  and apply the branches below only to the bead(s) reported as reached.
+  {{- end }}
 
   - **Bead closed** (happy path) — write one bookkeeping comment then archive
     the child (the driver has already logged its own per-phase `Plan:` /
@@ -947,9 +1087,11 @@ prompt: |
   nothing-eligible, timeout, wait-errored or Step 7 (deferral) paths: this hook
   marks *a task finished*, not *a pass finished*.
 
-  **Exclusivity gate (mandatory, run BEFORE the spawn).** The hook shares the
-  single workspace worker slot with §B/§C drivers: it must not start while any
-  other worker is running, and while it runs no other worker may start. The
+  **Exclusivity gate (mandatory, run BEFORE the spawn).** The hook needs the working
+  tree to itself: it must not start while any other worker is running, and while it
+  runs no other worker may start. This is **exclusivity, not a slot count** —{{ if ne $maxWorkers "1" }} even with
+  the cap raised to {{ $maxWorkers }}, the hook requires a live worker count of exactly 0.{{ else }} it holds
+  the single workspace worker slot for its whole run.{{ end }} The
   pre-rendered `Workspace peers:` block is a template-dispatch-time snapshot and
   is stale by now (a driver may have been spawned earlier in this very pass), so
   re-enumerate live:
@@ -1026,7 +1168,7 @@ prompt: |
   discovers real work (e.g. tests it ran now fail), it is the hook prompt's own job
   to file a bead — the orchestrator will pick it up on the next `onTasks` pass.
 
-  The hook child **does** count against the workspace 1-worker cap while it runs
+  The hook child **does** count against the workspace worker cap while it runs
   (that mutual exclusion is the point: a `Run tests`-style hook must never race a
   driver editing the same tree). Every exit branch above therefore releases the
   slot — reported and timed-out both end in `mitto_conversation_delete`. Step 2P
@@ -1043,7 +1185,7 @@ prompt: |
   mitto_ui_notify(
     self_id: "{{ .Session.ID }}",
     title: "Loop processing tasks — pass complete",
-    message: "<Class ran (A/B/C) and target processed | 'nothing eligible' if Step 3 fell through | 'at cap' if concurrency gate skipped>. Sets: A=<count> B=<count> C=<count>. Active drivers: <count of running Fix/Implement children after this pass>/1. Reaped: <count from Step 2P, 0 if none>. Closed: <count of terminal-label beads closed this pass, 0 if none>. Reaped-epics: <count from Step 2P epic-reaper, 0 if none>. Reaper: released=<n> skipped=<n> (from Step 2R, 0/0 if none). Undeferred: <count from Step 2Z, 0 if none>.{{ if .Args.PostIterationPrompt }} Post-task hook: <ran-ok|timed-out|spawn-failed|skipped-worker-active|not-run>.{{ end }} Will re-fire on beads changes.",
+    message: "<Class ran (A/B/C) and target processed | 'nothing eligible' if Step 3 fell through | 'at cap' if concurrency gate skipped>. Sets: A=<count> B=<count> C=<count>. Active drivers: <count of running Fix/Implement children after this pass>/{{ $maxWorkers }}.{{ if ne $maxWorkers "1" }} Parallel: <n dispatched this pass, and for n>1 the disjointness basis in ≤10 words | 'serial' when only one>.{{ end }} Reaped: <count from Step 2P, 0 if none>. Closed: <count of terminal-label beads closed this pass, 0 if none>. Reaped-epics: <count from Step 2P epic-reaper, 0 if none>. Reaper: released=<n> skipped=<n> (from Step 2R, 0/0 if none). Undeferred: <count from Step 2Z, 0 if none>.{{ if .Args.PostIterationPrompt }} Post-task hook: <ran-ok|timed-out|spawn-failed|skipped-worker-active|not-run>.{{ end }} Will re-fire on beads changes.",
     style: "success"
   )
   ```
@@ -1080,14 +1222,17 @@ prompt: |
 
   ## Guidelines
 
-  - **One increment per pass.** Exactly one worker, one class. The `onTasks`
+  - **One increment per pass.** {{ if eq $maxWorkers "1" }}Exactly one worker, one class.{{ else }}One class per pass, and at most
+    {{ $maxWorkers }} workers within it — and more than one ONLY on a Step 3D disjointness
+    proof. Absent that proof, the pass is single-worker.{{ end }} The `onTasks`
     re-fire drives cross-pass progress — never batch.
   - **Strict class priority A{{ if ne .Args.FixBugs "false" }} → B{{ end }}{{ if ne .Args.WorkOnFeatures "false" }} → C{{ end }}, then bead priority within class.** Class comes first
     (bugs always before features), then within the chosen class pick the
     highest-priority bead (`critical → high → medium → low`, i.e. `P0` before
-    `P1` before `P2` before `P3`), tie-broken by bead ID asc. Never demote by
-    "looks small" / "looks urgent"; never promote a feature over an eligible
-    bug on urgency vibes.
+    `P1` before `P2` before `P3`) per the §2B/§2C ranking — including its
+    epic-finishing promotion, which is the only sanctioned way a lower-priority
+    bead outranks a higher one. Never demote by "looks small" / "looks urgent";
+    never promote a feature over an eligible bug on urgency vibes.
   - **Top-level only.** `Session.IsChild` → notify + STOP; no `bd` writes, no spawns.
   - **Silent unless it matters.** `mitto_ui_notify` only at Step 6, degrade paths
     (Step 7, wait errors), and wait-timeout milestones. Never per-target.
@@ -1108,10 +1253,18 @@ prompt: |
     The ONLY legitimate pass-level yields: (a) sets empty after 2A/2B/2C,
     (b) concurrency cap (Step 3), (c) Step 7 deferral, (d) preflight failure.
   {{ if or (ne .Args.FixBugs "false") (ne .Args.WorkOnFeatures "false") -}}
-  - **Cap: 1 active worker.** {{ if and (ne .Args.FixBugs "false") (ne .Args.WorkOnFeatures "false") }}§B and §C share{{ else }}{{ if ne .Args.FixBugs "false" }}§B has{{ else }}§C has{{ end }}{{ end }}{{ if .Args.PostIterationPrompt }} — together with the Step 5H
-    post-task hook —{{ end }} a budget of 1 concurrent worker conversation.
-    Serial execution prevents overlapping-file races. At cap → skip the spawn;
+  - **Cap: {{ $maxWorkers }} active worker{{ if ne $maxWorkers "1" }}s{{ end }}.** {{ if and (ne .Args.FixBugs "false") (ne .Args.WorkOnFeatures "false") }}§B and §C share{{ else }}{{ if ne .Args.FixBugs "false" }}§B has{{ else }}§C has{{ end }}{{ end }}{{ if .Args.PostIterationPrompt }} — together with the Step 5H
+    post-task hook —{{ end }} a budget of {{ $maxWorkers }} concurrent worker conversation{{ if ne $maxWorkers "1" }}s{{ end }}.
+    {{ if eq $maxWorkers "1" }}Serial execution prevents overlapping-file races.{{ else }}Workers share ONE working tree, so the extra slots are usable only for
+    provably code-disjoint beads (Step 3D){{ if .Args.PostIterationPrompt }}; the post-task hook still runs alone{{ end }}.{{ end }} At cap → skip the spawn;
     Step 2P will free the slot. §A mention drivers self-terminate and don't count.
+  {{- if ne $maxWorkers "1" }}
+  - **Never parallelize on a hunch.** Step 3D's proof must rest on a *recorded* file
+    surface on BOTH beads. No recorded surface, same directory, shared build/config
+    file, dependency edge, or shared parent epic → one worker. Reading the code to
+    guess a surface is not evidence; a mis-parallelized pass costs more than the
+    serial pass it tried to avoid.
+  {{- end }}
   {{- end }}
   - **Reap aggressively.** Step 2P deletes (not archives) terminal/orphaned/idle-2h/
     duplicate children every pass. Never let the child list grow unbounded.

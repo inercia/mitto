@@ -38,7 +38,7 @@ prompt: |
   {{- else if .Args.IssueID -}}
   The **target bead** for this run is `{{ .Args.IssueID }}` (supplied as the `IssueID` argument).
   {{- else -}}
-  The **target bead** for this run is **not explicitly specified** — infer it from this conversation (recent messages, current git branch, linked PRs). If you cannot determine it confidently, **do not ask the user which ticket to work on** — just pick **any ready, unblocked bead** in scope (apply the Step 2 ranking: highest blocking leverage, then highest declared priority). Any ready, not-blocked bead is fair game. Only if there is no ready, unblocked bead at all do you stop (Step 5).
+  The **target bead** for this run is **not explicitly specified** — infer it from this conversation (recent messages, current git branch, linked PRs). If you cannot determine it confidently, **do not ask the user which ticket to work on** — just pick a **ready, unblocked bead** in scope, applying the canonical ranking in Step 1 to choose between them. Any ready, not-blocked bead is fair game. Only if there is no ready, unblocked bead at all do you stop (Step 5).
   {{- end }}
   This is the **automated, non-interactive** sibling of "Start work": on every scheduled run you advance the target **one concrete increment** toward completion, and when there is **nothing ready left to do in scope**, you remove your own loop flag and stop.
 
@@ -119,12 +119,9 @@ prompt: |
       well-scoped work, continue and finish **that** child before picking up
       anything new.
     - **Otherwise start the next ready child in logical order.** Among open,
-      unblocked children (not `closed`/`in_progress`), map explicit edges (`blocks` /
-      `depends-on` from `bd dep tree`) and implicit ordering you infer from the
-      children's descriptions (schema/infrastructure/scaffolding first), build a
-      topological order, and choose the first workable child. When several are
-      equally workable, apply common sense — **highest priority, then highest
-      blocking leverage** over its siblings — and proceed with **one**.
+      unblocked children (not `closed`/`in_progress`), build a topological order
+      and choose the first workable child by applying the canonical ranking
+      below, then proceed with **one**.
     - **Defer what is not ready.** Any child that is **not clearly defined** (vague
       or missing acceptance criteria) or **not genuinely ready for work** must be
       **deferred**, not guessed at — record the gap on that child and drop it out of
@@ -133,6 +130,18 @@ prompt: |
       chose for this run and why (or why none was actionable), so the reasoning is
       auditable across runs.
     **Do NOT ask the user** which child; this is automated.
+
+  ### Canonical ranking
+
+  {{ template "beads-issues/shared/rank-candidates" (dict
+      "Set"           "the open, unblocked candidates"
+      "Deterministic" true
+  ) }}
+
+  **How this step consumes the ranking:** this loop works **one child per run**, so
+  take shortlist #1. The remaining shortlist entries are fallbacks only — if #1 turns
+  out to be deferred as not-ready (above), drop to #2, then #3, rather than
+  re-deriving the ranking.
 
   Treat the issue chosen here as **`<target>`** for the rest of this run.
 

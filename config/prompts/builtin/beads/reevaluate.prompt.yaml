@@ -215,8 +215,16 @@ prompt: |
 
   ### Most important things to do now
   A short, ranked list (top ~3–5) of the beads that matter most to tackle next, based on your
-  reevaluation — favouring high-priority, ready (unblocked) work that unblocks the most other
-  beads. For each, give the bead ID, title, and a one-line justification.
+  reevaluation. For each, give the bead ID, title, and a one-line justification. Rank them with
+  the canonical ordering:
+
+  {{ template "beads-issues/shared/rank-candidates" (dict
+      "Set"  "the reevaluated beads"
+      "TopN" 5
+  ) }}
+
+  **How this step consumes the ranking:** this is a report, not a dispatch — publish
+  the whole shortlist as the "most important things to do now" list.
 
   ## Step 9 — Clean up the deep-evaluation children
 

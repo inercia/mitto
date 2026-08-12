@@ -74,21 +74,33 @@ prompt: |
     3. **Find the first workable child(ren)** — every child with **no unresolved blockers** that
        can be started right now. There may be **more than one** when several have no dependencies
        between them; in that case they can all be tackled in parallel.
-    4. **Propose to the user** which child(ren) to start with, using
+    4. **Rank the workable children** using the canonical ordering below.
+    5. **Propose to the user** which child(ren) to start with, using
        `mitto_ui_options(self_id: "{{ .Session.ID }}", allow_free_text: true)`:
-       - Make the first option your top recommendation among the workable children (highest declared
-         priority, then highest blocking leverage over its siblings), labelled with the child bead
-         ID and title.
+       - Make the first option your top recommendation — the top-ranked workable child from the
+         previous step — labelled with the child bead ID and title.
        - If multiple children are independently workable, offer an option to **start them together**,
          plus an option for each individually.
        - Set `allow_free_text: true` so the user can override and name a different child.
        - **Do not** offer any child that is blocked (directly or transitively) by an unfinished
          child — it is not in a workable state yet.
-    5. **Wait for the user's confirmation.** Once they confirm, treat the chosen child (or children)
+    6. **Wait for the user's confirmation.** Once they confirm, treat the chosen child (or children)
        as the bead(s) to work for the rest of this prompt — substitute the chosen child bead ID for
        `{{ $target }}` in the steps below (claim, plan, dispatch, and log against the chosen child).
        If the user picked multiple independent children, plan and dispatch each of them. Leave the
        epic itself open as the parent.
+
+  ### Ranking the workable children
+
+  {{ template "beads-issues/shared/rank-candidates" (dict
+      "Set"         "the workable children"
+      "PreFiltered" true
+  ) }}
+
+  **How step 5 consumes the ranking:** shortlist #1 is the top recommendation; the
+  remaining shortlist entries are the per-child options offered next to it, and the
+  "start them together" option covers the shortlist members that have no dependency
+  between them.
   {{- end }}
 
   {{ if $target -}}

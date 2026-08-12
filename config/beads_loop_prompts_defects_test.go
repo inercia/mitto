@@ -5,6 +5,9 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/inercia/mitto/internal/cel"
+	promptspkg "github.com/inercia/mitto/internal/prompts"
 )
 
 // TestBeadsLoopPrompts_Defects_mitto6am is the regression guard for the four
@@ -344,20 +347,49 @@ func TestBeadsLoopPrompts_Defects_mitto9mk_WorkspaceScopedConcurrencyGate(t *tes
 // §A is deliberately left alone — its success criterion IS "child agent
 // stopped talking" (one-shot mention drivers that don't necessarily touch a
 // bead's status), so it keeps `mitto_children_tasks_wait`. This test also
-// asserts §A did not accidentally get rewritten by a §B/§C-wide edit.
+// asserts §A did not accidentally get rewritten by a §B/§C-wide edit. The
+// assertions run against rendered prompt bodies because MaxParallelWorkers
+// intentionally changes §B/§C wait semantics at dispatch time.
 func TestBeadsLoopPrompts_mitto4vr_BeadsStateWait(t *testing.T) {
 	const mergedOrch = "beads-issues/loop-processing.prompt.yaml"
 
-	body, err := fs.ReadFile(BuiltinPromptsFS, BuiltinPromptsDir+"/"+mergedOrch)
+	const builtinDir = "prompts/builtin"
+	fragments, loadErrs, err := promptspkg.LoadFragmentsFromDir(builtinDir)
 	if err != nil {
-		t.Fatalf("read embedded prompt %s: %v", mergedOrch, err)
+		t.Fatalf("load builtin fragments: %v", err)
 	}
-	src := string(body)
+	if len(loadErrs) != 0 {
+		t.Fatalf("load builtin fragments: %+v", loadErrs)
+	}
+	prompt, err := promptspkg.LoadPromptFileWithFragments(builtinDir, mergedOrch, fragments)
+	if err != nil {
+		t.Fatalf("load builtin prompt %s: %v", mergedOrch, err)
+	}
+
+	render := func(t *testing.T, args map[string]string) string {
+		t.Helper()
+		ctx := &cel.PromptEnabledContext{
+			Session: cel.SessionContext{ID: "orchestrator-1"},
+			Args:    args,
+			Prompts: cel.PromptsContext{
+				Names:        []string{"Loop fixing bug", "Loop implementing feature"},
+				EnabledNames: []string{"Loop fixing bug", "Loop implementing feature"},
+			},
+		}
+		out, renderErr := promptspkg.RenderPromptTemplateWithFragments(
+			prompt.Name, prompt.Content, ctx, cel.BuildTemplateFuncMap(ctx), fragments,
+		)
+		if renderErr != nil {
+			t.Fatalf("render builtin prompt %s: %v", mergedOrch, renderErr)
+		}
+		return out
+	}
 
 	// Slice out each wait block by its `### §X wait, log, archive` heading and
 	// the next `### ` / `## ` / `---` boundary so the assertions target only
 	// the wait paragraph. Reuses the same slicing shape as the mitto-9mk test.
-	sliceWait := func(marker string) string {
+	sliceWait := func(t *testing.T, src, marker string) string {
+		t.Helper()
 		start := strings.Index(src, marker)
 		if start < 0 {
 			t.Fatalf("%s: wait-block marker %q not found — test needs updating", mergedOrch, marker)
@@ -365,7 +397,7 @@ func TestBeadsLoopPrompts_mitto4vr_BeadsStateWait(t *testing.T) {
 		rest := src[start:]
 		// Stop at the next section heading or horizontal rule; the wait block
 		// always ends before one of these appears.
-		enders := []string{"\n  ### ", "\n  ## ", "\n  ---"}
+		enders := []string{"\n### ", "\n## ", "\n---"}
 		end := len(rest)
 		for _, e := range enders {
 			if i := strings.Index(rest[len(marker):], e); i >= 0 && len(marker)+i < end {
@@ -375,117 +407,91 @@ func TestBeadsLoopPrompts_mitto4vr_BeadsStateWait(t *testing.T) {
 		return rest[:end]
 	}
 
-	waitA := sliceWait("### §A wait, verify, archive")
-	waitB := sliceWait("### §B wait, log, archive")
-	waitC := sliceWait("### §C wait, log, archive")
-
-	// §B — must use the bead-state wait, not children-tasks wait.
-	for _, want := range []string{
-		`what: "beads_issues_reached_state"`,
-		`beads_target_state: "closed"`,
-		`beads_match: "all"`,
-		`timeout_seconds: 14400`,
-	} {
-		if !strings.Contains(waitB, want) {
-			t.Errorf("[mitto-4vr §B wait not bead-state] §B wait block does not contain %q; expected `mitto_conversation_wait(what: \"beads_issues_reached_state\", beads_target_state: \"closed\", beads_match: \"all\", timeout_seconds: 14400, ...)` per the mitto-7rw backend extension. Waiting on child-agent yield instead of bead closure fires the orchestrator ~N times per child turn and is strictly less correct (yield ≠ closed)", want)
-		}
-	}
-	if strings.Contains(waitB, "mitto_children_tasks_wait") {
-		t.Errorf("[mitto-4vr §B still uses children_tasks_wait] §B wait block still contains `mitto_children_tasks_wait`; the whole point of mitto-4vr is to replace the child-yield wait with a bead-state wait. Remove the `mitto_children_tasks_wait(...)` call and use `mitto_conversation_wait(what: \"beads_issues_reached_state\", ...)` instead")
-	}
-
-	// §C — same requirements. Enforced independently (the previous
-	// "Identical to §B" shorthand allowed §C to silently diverge on any §B
-	// edit; the mitto-4vr fix inlines §C so the two are separately auditable).
-	for _, want := range []string{
-		`what: "beads_issues_reached_state"`,
-		`beads_target_state: "closed"`,
-		`beads_match: "all"`,
-		`timeout_seconds: 14400`,
-	} {
-		if !strings.Contains(waitC, want) {
-			t.Errorf("[mitto-4vr §C wait not bead-state] §C wait block does not contain %q; expected an explicit `mitto_conversation_wait(what: \"beads_issues_reached_state\", beads_target_state: \"closed\", beads_match: \"all\", timeout_seconds: 14400, ...)` block (NOT the previous `Identical to §B` shorthand — inlining makes §C independently testable and prevents silent drift from §B edits)", want)
-		}
-	}
-	if strings.Contains(waitC, "mitto_children_tasks_wait") {
-		t.Errorf("[mitto-4vr §C still uses children_tasks_wait] §C wait block still contains `mitto_children_tasks_wait`; §C must use the bead-state wait in parallel with §B (both share the 1-driver budget and the same activation-reduction motivation)")
-	}
-
-	// §A leave-alone regression — the mention-driver success criterion IS
-	// "child agent stopped talking", so §A must keep `mitto_children_tasks_wait`
-	// with the existing 30-minute timeout. If a future edit sweeps §A into
-	// the §B/§C bead-state rewrite it will silently break the mention flow.
-	if !strings.Contains(waitA, "mitto_children_tasks_wait") {
-		t.Errorf("[mitto-4vr §A leave-alone regression] §A wait block no longer contains `mitto_children_tasks_wait`; §A dispatches one-shot mention drivers whose success criterion is child-agent yield (not bead closure) — keep `mitto_children_tasks_wait(..., timeout_seconds: 1800)` here")
-	}
-	if !strings.Contains(waitA, "timeout_seconds: 1800") {
-		t.Errorf("[mitto-4vr §A leave-alone regression] §A wait block no longer specifies `timeout_seconds: 1800`; the 30-minute cap matches the mention-driver's own budget and must be preserved")
-	}
-	if strings.Contains(waitA, "beads_issues_reached_state") {
-		t.Errorf("[mitto-4vr §A leave-alone regression] §A wait block now references `beads_issues_reached_state`; §A must keep `mitto_children_tasks_wait` — a mention driver may reply/investigate without ever touching a bead's status, so a bead-state wait would hang until timeout on every §A dispatch")
-	}
-
-	// Bead-id substitution — both §B and §C waits MUST observe the BEAD id
-	// (spelled `<id>` everywhere else in this file for the target bead) and
-	// NOT the child conversation id (`<child-id>`). Copy-pasting the wrong
-	// placeholder is a plausible failure mode because both variables are
-	// bound in the same paragraph — `<child-id>` is the spawn's return value,
-	// but a bead-state wait keyed on that would never resolve.
-	for _, tc := range []struct {
-		section, block string
+	modes := []struct {
+		name             string
+		args             map[string]string
+		wantBeadsIssues  string
+		wantBeadsMatch   string
+		wrongBeadsIssues string
+		wrongBeadsMatch  string
 	}{
-		{"§B", waitB},
-		{"§C", waitC},
-	} {
-		if !strings.Contains(tc.block, `beads_issues: ["<id>"]`) {
-			t.Errorf("[mitto-4vr %s wait wrong bead-id] %s wait block does not contain `beads_issues: [\"<id>\"]`; the bead-state wait MUST observe the bead id (the same `<id>` placeholder used by every other statement in this section), not `<child-id>` or any other placeholder — a wait keyed on the wrong id would hang until the 4h timeout on every dispatch", tc.section, tc.section)
-		}
-		if strings.Contains(tc.block, `beads_issues: ["<child-id>"]`) {
-			t.Errorf("[mitto-4vr %s wait keyed on child-id] %s wait block contains `beads_issues: [\"<child-id>\"]`; the wait must observe the BEAD id (`<id>`), not the spawned child's conversation id — beads_issues_reached_state polls beads status, so `<child-id>` would never resolve", tc.section, tc.section)
-		}
+		{
+			name:             "default serial render",
+			args:             map[string]string{"FixBugs": "true", "WorkOnFeatures": "true"},
+			wantBeadsIssues:  `beads_issues: ["<id>"]`,
+			wantBeadsMatch:   `beads_match: "all"`,
+			wrongBeadsIssues: `beads_issues: ["<ids…>"]`,
+			wrongBeadsMatch:  `beads_match: "any"`,
+		},
+		{
+			name: "raised parallel cap render",
+			args: map[string]string{
+				"FixBugs":            "true",
+				"WorkOnFeatures":     "true",
+				"MaxParallelWorkers": "2",
+			},
+			wantBeadsIssues:  `beads_issues: ["<ids…>"]`,
+			wantBeadsMatch:   `beads_match: "any"`,
+			wrongBeadsIssues: `beads_issues: ["<id>"]`,
+			wrongBeadsMatch:  `beads_match: "all"`,
+		},
 	}
 
-	// Timeout branch prose — the bead's acceptance criteria (mitto-4vr
-	// description, "Semantics" section) explicitly specifies the exact
-	// comment text on the 4h timeout branch. Both §B and §C must carry it
-	// verbatim so operators see a consistent, machine-greppable marker in
-	// bead histories and can distinguish it from other orchestrator comments.
-	const wantTimeoutProse = `Orchestrator: 4h bead-state wait timed out; leaving child running.`
-	for _, tc := range []struct {
-		section, block string
-	}{
-		{"§B", waitB},
-		{"§C", waitC},
-	} {
-		if !strings.Contains(tc.block, wantTimeoutProse) {
-			t.Errorf("[mitto-4vr %s timeout prose] %s wait block does not contain the acceptance-criteria timeout comment %q; the bead's Semantics section specifies this exact wording so operators can grep bead histories for orchestrator timeouts", tc.section, tc.section, wantTimeoutProse)
-		}
-	}
+	for _, mode := range modes {
+		t.Run(mode.name, func(t *testing.T) {
+			src := render(t, mode.args)
+			waitA := sliceWait(t, src, "### §A wait, verify, archive")
+			waitB := sliceWait(t, src, "### §B wait, log, archive")
+			waitC := sliceWait(t, src, "### §C wait, log, archive")
 
-	// Bookkeeping / archive preservation — the bead description says the
-	// bookkeeping comment and the archive step are "unchanged" from the
-	// prior form. Both §B and §C wait blocks must still invoke
-	// `mitto_conversation_archive` on the child. Regression against a future
-	// edit that drops the archive (which would strand finished children in
-	// the workspace conversation list, defeating Step 2P's reap contract).
-	for _, tc := range []struct {
-		section, block string
-	}{
-		{"§B", waitB},
-		{"§C", waitC},
-	} {
-		if !strings.Contains(tc.block, "mitto_conversation_archive") {
-			t.Errorf("[mitto-4vr %s archive dropped] %s wait block no longer contains `mitto_conversation_archive(...)`; the bead's Section-by-section deltas explicitly say the archive step is unchanged. Dropping it strands finished children in the conversation list — Step 2P will eventually reap them but the happy-path Bead-closed branch must archive inline so the workspace stays clean", tc.section, tc.section)
-		}
-	}
+			// §A remains a child-yield wait in every render mode.
+			for _, want := range []string{"mitto_children_tasks_wait", "timeout_seconds: 1800"} {
+				if !strings.Contains(waitA, want) {
+					t.Errorf("[mitto-4vr §A leave-alone regression] §A wait block missing %q", want)
+				}
+			}
+			if strings.Contains(waitA, "beads_issues_reached_state") {
+				t.Error("[mitto-4vr §A leave-alone regression] §A must wait for child-agent yield, not bead state")
+			}
 
-	// File-scope negative space — the token `beads_issues_reached_state`
-	// must appear EXACTLY twice in this file: once in §B wait, once in §C
-	// wait. Any other occurrence means the token leaked into an unrelated
-	// section (Step 2P reap, Step 7 defer, §A, guidelines, ...), which
-	// would be either dead prose or an incorrect wait somewhere unexpected.
-	// Fewer than 2 means one of §B/§C's wait blocks lost it.
-	if got, want := strings.Count(src, "beads_issues_reached_state"), 2; got != want {
-		t.Errorf("[mitto-4vr token leak] `beads_issues_reached_state` appears %d times in %s; want exactly %d (one in §B wait, one in §C wait). Extra occurrences mean the token leaked into an unrelated section; missing occurrences mean §B or §C dropped it", got, mergedOrch, want)
+			// §B and §C independently retain the bead-state wait, timeout,
+			// bookkeeping prose, archive action, and correct bead identifiers.
+			for _, tc := range []struct {
+				section string
+				block   string
+			}{
+				{"§B", waitB},
+				{"§C", waitC},
+			} {
+				for _, want := range []string{
+					`what: "beads_issues_reached_state"`,
+					`beads_target_state: "closed"`,
+					mode.wantBeadsIssues,
+					mode.wantBeadsMatch,
+					"timeout_seconds: 14400",
+					`Orchestrator: 4h bead-state wait timed out; leaving child running.`,
+					"mitto_conversation_archive",
+				} {
+					if !strings.Contains(tc.block, want) {
+						t.Errorf("[mitto-4vr %s rendered semantics] wait block missing %q", tc.section, want)
+					}
+				}
+				for _, wrong := range []string{
+					"mitto_children_tasks_wait",
+					`beads_issues: ["<child-id>"]`,
+					mode.wrongBeadsIssues,
+					mode.wrongBeadsMatch,
+				} {
+					if strings.Contains(tc.block, wrong) {
+						t.Errorf("[mitto-4vr %s rendered semantics] wait block unexpectedly contains %q", tc.section, wrong)
+					}
+				}
+			}
+
+			// Rendered negative space: exactly §B and §C use the bead-state wait.
+			if got, want := strings.Count(src, "beads_issues_reached_state"), 2; got != want {
+				t.Errorf("[mitto-4vr token leak] rendered prompt contains %d bead-state wait tokens; want %d", got, want)
+			}
+		})
 	}
 }

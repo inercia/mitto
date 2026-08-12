@@ -1,6 +1,7 @@
 package prompts
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -511,6 +512,149 @@ func TestTargetBeadHeaderStrictFragmentRenders(t *testing.T) {
 		}
 		if !strings.Contains(out, "report failure to the parent via `mitto_children_tasks_report`") {
 			t.Errorf("Mention — driver (nolink): FailStop override missing")
+		}
+	}
+}
+
+// TestRankCandidatesFragmentRenders is a smoke test for the
+// beads-issues/shared/rank-candidates fragment: it renders every consumer and
+// asserts the five canonical criteria appear, that the per-caller `Set` noun
+// substitutes, and that the `Deterministic` / `PreFiltered` toggles flip the
+// right way. The ordering itself is the invariant worth pinning — priority
+// stays authoritative and the rest are tie-breaks within a priority band,
+// which is what preserves loop-processing's "a P0 ALWAYS runs before a P3"
+// rule after the six restatements were collapsed into one fragment. The single
+// bounded exception (the epic-finishing promotion, capped at P1) is pinned
+// alongside it so neither the promotion nor its cap can silently disappear.
+func TestRankCandidatesFragmentRenders(t *testing.T) {
+	prev := CurrentFragments()
+	t.Cleanup(func() { SetCurrentFragments(prev) })
+
+	builtinDir := "../../config/prompts/builtin"
+	reg, loadErrs, err := LoadFragmentsFromDir(builtinDir)
+	if err != nil {
+		t.Fatalf("LoadFragmentsFromDir(builtin): %v", err)
+	}
+	if len(loadErrs) != 0 {
+		t.Fatalf("LoadFragmentsFromDir(builtin) per-file errors: %+v", loadErrs)
+	}
+	SetCurrentFragments(reg)
+
+	list, err := LoadPromptsFromDir(builtinDir)
+	if err != nil {
+		t.Fatalf("LoadPromptsFromDir(builtin): %v", err)
+	}
+	byName := map[string]string{}
+	for _, p := range list {
+		byName[p.Name] = p.Content
+	}
+
+	// (name, set noun, deterministic, preFiltered, shortlist length)
+	type consumer struct {
+		name          string
+		set           string
+		deterministic bool
+		preFiltered   bool
+		topN          int
+	}
+	consumers := []consumer{
+		{"Start working on ready", "the available (ready, not-in-progress) beads", false, false, 3},
+		{"Start work", "the workable children", false, true, 3},
+		{"Loop until issue complete", "the open, unblocked candidates", true, false, 3},
+		{"Loop processing tasks", "the surviving bugs", true, false, 3},
+		{"Continue", "the candidate beads", true, false, 3},
+		{"Reevaluate all issues", "the reevaluated beads", false, false, 5},
+	}
+
+	// The five canonical criteria, in order. Their presence (and the order
+	// of priority before epic completion before leverage) is the invariant.
+	criteria := []string{
+		"**Dependencies first — unblocked only.**",
+		"**Declared priority.**",
+		"**Epic completion.**",
+		"**Blocking leverage.**",
+		"**Readiness to start.**",
+	}
+
+	ctx := &cel.PromptEnabledContext{
+		Session: cel.SessionContext{ID: "sess-1", Name: "N", HasMessages: true, BeadsIssue: "mitto-abc", HasBeadsIssue: true},
+		Args:    map[string]string{"IssueID": "mitto-abc"},
+	}
+	funcs := cel.BuildTemplateFuncMap(ctx)
+
+	for _, c := range consumers {
+		body, ok := byName[c.name]
+		if !ok {
+			t.Errorf("prompt %q not found in builtin corpus", c.name)
+			continue
+		}
+		out, err := RenderPromptTemplate(c.name, body, ctx, funcs)
+		if err != nil {
+			t.Errorf("render %q: %v", c.name, err)
+			continue
+		}
+		// Set noun substitution — proves the dict argument reached the body.
+		if !strings.Contains(out, "Order "+c.set+" by these criteria") {
+			t.Errorf("%q: missing Set noun %q — rank-candidates did not inline or dict not honoured", c.name, c.set)
+		}
+		// All four criteria present, and priority strictly before leverage.
+		prevIdx := -1
+		for _, want := range criteria {
+			idx := strings.Index(out, want)
+			if idx < 0 {
+				t.Errorf("%q: missing canonical criterion %q", c.name, want)
+				continue
+			}
+			if idx < prevIdx {
+				t.Errorf("%q: canonical criteria out of order at %q", c.name, want)
+			}
+			prevIdx = idx
+		}
+		// Priority-is-authoritative invariant (loop-processing's pinned rule).
+		if !strings.Contains(out, "a P0 always comes before a P3") {
+			t.Errorf("%q: missing priority-is-authoritative invariant", c.name)
+		}
+		// Epic-finishing promotion — the one bounded exception to the rule
+		// above. Without the P0 cap it would override genuinely urgent work.
+		if !strings.Contains(out, "the epic-finishing promotion") {
+			t.Errorf("%q: missing epic-finishing promotion", c.name)
+		}
+		if !strings.Contains(out, "one band higher") {
+			t.Errorf("%q: epic-finishing promotion is not bounded to one band", c.name)
+		}
+		if !strings.Contains(out, "capped at P1") {
+			t.Errorf("%q: epic-finishing promotion is missing its P0 cap", c.name)
+		}
+		// Ranking-only: the promotion must never write a real priority.
+		if !strings.Contains(out, "do **not** run `bd update --priority`") {
+			t.Errorf("%q: epic-finishing promotion is missing its ranking-only guard", c.name)
+		}
+		// Deterministic toggle: the bead-ID tie-break clause.
+		hasDet := strings.Contains(out, "broken by **bead ID ascending**")
+		if hasDet != c.deterministic {
+			t.Errorf("%q: Deterministic mismatch — want %v, got %v", c.name, c.deterministic, hasDet)
+		}
+		// PreFiltered toggle: re-check phrasing vs. drop-it phrasing.
+		hasPre := strings.Contains(out, "The set is already")
+		if hasPre != c.preFiltered {
+			t.Errorf("%q: PreFiltered mismatch — want %v, got %v", c.name, c.preFiltered, hasPre)
+		}
+		hasDrop := strings.Contains(out, "is not a\n   candidate at all")
+		if hasDrop == c.preFiltered {
+			t.Errorf("%q: PreFiltered=false branch mismatch — want %v, got %v", c.name, !c.preFiltered, hasDrop)
+		}
+		// Shortlist: the fragment yields the top N, not a single winner, and
+		// explicitly defers "how many to act on" to the caller.
+		if want := fmt.Sprintf("the **top %d**", c.topN); !strings.Contains(out, want) {
+			t.Errorf("%q: missing shortlist length %q", c.name, want)
+		}
+		if !strings.Contains(out, "Do not decide here how many of them to") {
+			t.Errorf("%q: missing shortlist-consumption deferral to the caller", c.name)
+		}
+		// Every consumer must say how it uses the shortlist — otherwise the
+		// deferral above dangles and the agent has no instruction.
+		if !strings.Contains(out, "consumes the ranking:") {
+			t.Errorf("%q: missing a 'How ... consumes the ranking' note next to the fragment", c.name)
 		}
 	}
 }

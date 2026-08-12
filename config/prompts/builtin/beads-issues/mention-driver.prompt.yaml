@@ -16,10 +16,12 @@ parameters:
     description: Verbatim body of the @mitto mention
   - name: SubmitStrategy
     type: text
+    group: Advanced
     required: false
-    description: How finished work is submitted. "Commit" (default) — commit any file changes after the implement phase. "Pull Request" — same, on a per-bead branch, with a PR opened before finalizing. "None" — leave changes uncommitted for human review.
+    description: How finished work is submitted. "Commit" (default) commits file changes; "Pull Request" uses the configured task/epic branch and opens a PR before finalizing; "None" leaves changes uncommitted.
   - name: AdditionalInstructions
     type: text
+    group: Advanced
     required: false
     multiLine: true
     description: 'Optional additional instructions applied on top of the steps below and forwarded verbatim to every phase prompt this router dispatches. Propagated from the "Loop processing tasks" supervisor. Used for this run only; nothing is persisted.'
@@ -72,7 +74,7 @@ prompt: |
   {{ $pr := eq $submit "Pull Request" -}}
   {{ $suffix := "" -}}
   {{ if $ts }}{{ $suffix = printf "Mention timestamp (dedup key): `%s`." $ts }}{{ end -}}
-  {{ if $pr }}{{ $suffix = printf "%s\nSubmit strategy is **Pull Request** (`SubmitStrategy` argument) — committed on a per-bead branch, PR opened before finalizing." $suffix }}{{ else if $commit }}{{ $suffix = printf "%s\nSubmit strategy is **Commit** (`SubmitStrategy` argument)." $suffix }}{{ else }}{{ $suffix = printf "%s\nSubmit strategy is **None** (`SubmitStrategy` argument) — changes left uncommitted." $suffix }}{{ end -}}
+  {{ if $pr }}{{ $suffix = printf "%s\nSubmit strategy is **Pull Request** — use the configured task/epic branch from `%s`; open the PR before finalizing." $suffix (Default "main" .Args.FromBranch) }}{{ else if $commit }}{{ $suffix = printf "%s\nSubmit strategy is **Commit** (`SubmitStrategy` argument)." $suffix }}{{ else }}{{ $suffix = printf "%s\nSubmit strategy is **None** (`SubmitStrategy` argument) — changes left uncommitted." $suffix }}{{ end -}}
   {{ template "beads-issues/shared/target-bead-header-strict" (dict
       "Target"      $target
       "Scope"       "for this run"
@@ -200,6 +202,17 @@ prompt: |
   Implement.
 
   ### Step 3d — Dispatch Implement (`mention-planned` present)
+
+  {{ if $pr -}}
+  Before implementation starts, ensure this task is on its deterministic branch
+  created from `{{ Default "main" .Args.FromBranch }}` (never from current HEAD):
+
+  {{ template "beads-issues/shared/ensure-bead-branch" (dict
+      "Ctx"    .
+      "Target" $target
+      "Type"   "feat"
+  ) }}
+  {{- end }}
 
   ```
   mitto_conversation_send_prompt(

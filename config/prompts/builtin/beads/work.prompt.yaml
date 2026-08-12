@@ -66,11 +66,14 @@ prompt: |
 
   ## Step 2 — Prioritize and present the work
 
-  Rank the available (ready, not-in-progress) beads using these ordered criteria, **highest priority first**:
+  {{ template "beads-issues/shared/rank-candidates" (dict
+      "Set" "the available (ready, not-in-progress) beads"
+  ) }}
 
-  1. **Blocking dependencies** — beads that block other work rank highest. The more beads a ready bead unblocks (directly or transitively), the higher it goes, because completing it frees up the most downstream work.
-  2. **Declared priority** — among beads with comparable blocking impact, prefer the tracker's declared priority: `critical` → `high` → `medium` → `low`.
-  3. **Unblocked readiness** — beads with no dependencies that can be started immediately break any remaining ties.
+  **How this step consumes the ranking:** the shortlist's #1 is your top
+  recommendation and the rest are the alternatives you offer alongside it — the
+  user makes the final call in the options dialog below, so present the whole
+  ranked list, not just the shortlist.
 
   ### Decompose epics and parent issues first
 
@@ -78,7 +81,7 @@ prompt: |
 
   1. **Map the dependency tree** of the epic's children — both explicit edges (`blocks` / `depends-on`) and the implicit ordering you inferred (e.g., a child that establishes schema, infrastructure, or shared scaffolding the others build on).
   2. **Determine the correct execution order** that respects those dependencies (a topological order: a child only comes after everything it depends on).
-  3. **Select the first workable child** — the earliest child in that order that has **no unresolved blockers**. Among several equally-unblocked candidates, pick the highest-value one (highest declared priority, then highest blocking leverage over its siblings).
+  3. **Select the first workable child** — the earliest child in that order that has **no unresolved blockers**. Among several equally-unblocked candidates, pick the highest-value one by applying the ranking criteria above to the epic's children.
   4. **Represent the epic by that first child** in the ranked list — propose the child (annotated with its parent epic, e.g. `<child-id>: <title> (part of <epic-id>)`), **not** the epic itself.
 
   **Do not propose any child that is blocked by the selected first child** (directly or transitively) — those are not in a workable state yet and would only confuse the choice. They become candidates on a later run once the first child is done. Standalone (non-epic) beads are ranked normally alongside the epic-derived first child.

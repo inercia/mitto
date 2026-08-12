@@ -8,10 +8,12 @@ parameters:
     description: The beads issue ID to act on
   - name: SubmitStrategy
     type: text
+    group: Advanced
     required: false
-    description: How finished work is submitted. "Commit" (default) — commit at the end of each stage. "Pull Request" — same, on a per-bead branch, with a PR opened in the Done branch. "None" — leave changes uncommitted for human review.
+    description: How finished work is submitted. "Commit" (default) commits each stage; "Pull Request" uses the configured task/epic branch and opens a PR in Done; "None" leaves changes uncommitted.
   - name: AdditionalInstructions
     type: text
+    group: Advanced
     required: false
     multiLine: true
     description: 'Optional additional instructions applied on top of the steps below and forwarded verbatim to every phase prompt this driver dispatches (e.g. "always run `make lint` before committing", "never touch files under vendor/"). Set by the operator, or propagated from the "Loop processing tasks" supervisor. Used for this run only; nothing is persisted.'
@@ -143,6 +145,17 @@ prompt: |
       "SessionID" .Session.ID
   ) }}
 
+  {{ if $pr -}}
+  Before any phase work, ensure this task is on its deterministic branch created
+  from `{{ Default "main" .Args.FromBranch }}` (never from the current HEAD):
+
+  {{ template "beads-issues/shared/ensure-bead-branch" (dict
+      "Ctx"    .
+      "Target" $target
+      "Type"   "feat"
+  ) }}
+  {{- end }}
+
   ## Step 3 — Branch on the live labels; dispatch exactly ONE phase this run
 
   Do **not** do the phase's work inline. Dispatch the matching phase prompt by name
@@ -200,7 +213,7 @@ prompt: |
     self_id: "{{ .Session.ID }}",
     conversation_id: "self",
     prompt_name: "Feature — implement phase",
-    arguments: { "IssueID": "{{ $target }}", "SubmitStrategy": "{{ if .Args.SubmitStrategy }}{{ .Args.SubmitStrategy }}{{ else }}Commit{{ end }}"{{ with .Args.AdditionalInstructions }}, "AdditionalInstructions": {{ . | printf "%q" }}{{ end }} }
+    arguments: { "IssueID": "{{ $target }}", "SubmitStrategy": "{{ if .Args.SubmitStrategy }}{{ .Args.SubmitStrategy }}{{ else }}Commit{{ end }}", "FromBranch": {{ Default "main" .Args.FromBranch | printf "%q" }}, "GroupEpics": "{{ ne .Args.GroupEpics "false" }}"{{ with .Args.AdditionalInstructions }}, "AdditionalInstructions": {{ . | printf "%q" }}{{ end }} }
   )
   ```
 
@@ -217,7 +230,7 @@ prompt: |
     self_id: "{{ .Session.ID }}",
     conversation_id: "self",
     prompt_name: "Feature — test phase",
-    arguments: { "IssueID": "{{ $target }}", "SubmitStrategy": "{{ if .Args.SubmitStrategy }}{{ .Args.SubmitStrategy }}{{ else }}Commit{{ end }}"{{ with .Args.AdditionalInstructions }}, "AdditionalInstructions": {{ . | printf "%q" }}{{ end }} }
+    arguments: { "IssueID": "{{ $target }}", "SubmitStrategy": "{{ if .Args.SubmitStrategy }}{{ .Args.SubmitStrategy }}{{ else }}Commit{{ end }}", "FromBranch": {{ Default "main" .Args.FromBranch | printf "%q" }}, "GroupEpics": "{{ ne .Args.GroupEpics "false" }}"{{ with .Args.AdditionalInstructions }}, "AdditionalInstructions": {{ . | printf "%q" }}{{ end }} }
   )
   ```
 
@@ -234,7 +247,7 @@ prompt: |
     self_id: "{{ .Session.ID }}",
     conversation_id: "self",
     prompt_name: "Feature — review phase",
-    arguments: { "IssueID": "{{ $target }}", "SubmitStrategy": "{{ if .Args.SubmitStrategy }}{{ .Args.SubmitStrategy }}{{ else }}Commit{{ end }}"{{ with .Args.AdditionalInstructions }}, "AdditionalInstructions": {{ . | printf "%q" }}{{ end }} }
+    arguments: { "IssueID": "{{ $target }}", "SubmitStrategy": "{{ if .Args.SubmitStrategy }}{{ .Args.SubmitStrategy }}{{ else }}Commit{{ end }}", "FromBranch": {{ Default "main" .Args.FromBranch | printf "%q" }}, "GroupEpics": "{{ ne .Args.GroupEpics "false" }}"{{ with .Args.AdditionalInstructions }}, "AdditionalInstructions": {{ . | printf "%q" }}{{ end }} }
   )
   ```
 

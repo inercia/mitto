@@ -15,9 +15,14 @@ git push --force-with-lease <push-remote> <branch-name>
 ```
 Provide PR/MR URL.
 
+#### PR description constraints
+
+{{ template "git/shared/pr-description-no-beads" . }}
+
 #### No existing PR — With Mitto UI
 
-First, generate a PR title and description from the commits. Then present a form for the user to review and customize:
+First, generate a PR title and description from the commits (honoring the
+constraints above). Then present a form for the user to review and customize:
 
 ```
 mitto_ui_form(self_id: "{{ .Session.ID }}", title: "Create Pull Request", html: "
@@ -55,8 +60,14 @@ gh pr create --title "<pr_title>" --body "<description>" --base <base_branch> [-
 
 ```bash
 git push -u <push-remote> <branch-name>
-gh pr create --fill --base <target-branch>    # GitHub
-glab mr create --fill                          # GitLab
+```
+
+Then create the PR with an explicit title and body written per the constraints
+above — do **not** use `--fill` when any commit references a bead:
+
+```bash
+gh pr create --title "<title>" --body-file <path> --base <target-branch>   # GitHub
+glab mr create --title "<title>" --description "<body>"                     # GitLab
 ```
 
 Provide PR/MR URL.

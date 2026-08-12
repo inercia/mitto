@@ -158,16 +158,19 @@ func TestSubmitStrategy_DefaultOnGateSafety(t *testing.T) {
 }
 
 // TestSubmitStrategy_FragmentWiringCallSites pins the exact fan-out of the two
-// mitto-cwz.2 git fragments across the 9-file surface, per the plan: exactly
-// the two first-committing phases invoke ensure-bead-branch, and exactly the
-// three driver Done/finalize branches invoke push-and-open-pr — never zero
+// git fragments across the 9-file surface: drivers switch before any task work,
+// first-committing phases re-check idempotently, and exactly the three driver
+// Done/finalize branches invoke push-and-open-pr — never zero
 // (PR strategy silently does nothing) and never duplicated (PR opened twice).
 func TestSubmitStrategy_FragmentWiringCallSites(t *testing.T) {
 	builtinDir := "../../config/prompts/builtin"
 
 	wantBranch := map[string]bool{
-		"beads-issues/feature-phase-implement.prompt.yaml": true,
-		"beads-issues/fix-phase-fix.prompt.yaml":           true,
+		"beads-issues/feature-phase-implement.prompt.yaml":   true,
+		"beads-issues/fix-phase-fix.prompt.yaml":             true,
+		"beads-issues/loop-implementing-feature.prompt.yaml": true,
+		"beads-issues/loop-fixing-bug.prompt.yaml":           true,
+		"beads-issues/mention-driver.prompt.yaml":            true,
 	}
 	wantPR := map[string]bool{
 		"beads-issues/loop-implementing-feature.prompt.yaml": true,
@@ -203,8 +206,8 @@ func TestSubmitStrategy_FragmentWiringCallSites(t *testing.T) {
 //   - safe-commit (git/shared/safe-commit) callers: the four phase prompts
 //     that make their own commit (feature-phase-implement/test/review,
 //     fix-phase-fix) plus mention-driver's inline finalize commit.
-//   - ensure-bead-branch callers: only the two FIRST-committing phases
-//     (feature-phase-implement, fix-phase-fix) -- Pull-Request-only.
+//   - ensure-bead-branch callers: all three drivers (before task work) plus the
+//     two first-committing phases as an idempotent safety check -- PR-only.
 //   - push-and-open-pr callers: only the three driver Done/finalize branches
 //     (loop-implementing-feature, loop-fixing-bug, mention-driver) --
 //     Pull-Request-only, called exactly once per bead lifecycle.
@@ -256,21 +259,21 @@ func TestSubmitStrategy_StrategyMatrixAcrossPhases(t *testing.T) {
 			branch:       true,
 			suffixNone:   "commit-after-implement is disabled",
 			suffixCommit: "commit-after-implement is enabled",
-			suffixPR:     "committed on a per-bead branch",
+			suffixPR:     "commit on the configured task/epic branch",
 		},
 		{
 			rel:          "beads-issues/feature-phase-test.prompt.yaml",
 			safeCommit:   true,
 			suffixNone:   "commit-after-test is disabled",
 			suffixCommit: "commit-after-test is enabled",
-			suffixPR:     "committed on the bead's existing feature branch",
+			suffixPR:     "committed on the configured task/epic branch",
 		},
 		{
 			rel:          "beads-issues/feature-phase-review.prompt.yaml",
 			safeCommit:   true,
 			suffixNone:   "commit-after-review is disabled",
 			suffixCommit: "commit-after-review is enabled",
-			suffixPR:     "committed on the bead's existing feature branch",
+			suffixPR:     "committed on the configured task/epic branch",
 		},
 		{
 			rel:          "beads-issues/fix-phase-fix.prompt.yaml",
@@ -278,10 +281,11 @@ func TestSubmitStrategy_StrategyMatrixAcrossPhases(t *testing.T) {
 			branch:       true,
 			suffixNone:   "commit-after-fix is disabled",
 			suffixCommit: "commit-after-fix is enabled",
-			suffixPR:     "committed on a per-bead branch",
+			suffixPR:     "commit on the configured task/epic branch",
 		},
 		{
 			rel:          "beads-issues/loop-implementing-feature.prompt.yaml",
+			branch:       true,
 			pr:           true,
 			suffixNone:   "", // driver has no PhaseSuffix; skip suffix assertions
 			suffixCommit: "",
@@ -289,6 +293,7 @@ func TestSubmitStrategy_StrategyMatrixAcrossPhases(t *testing.T) {
 		},
 		{
 			rel:          "beads-issues/loop-fixing-bug.prompt.yaml",
+			branch:       true,
 			pr:           true,
 			suffixNone:   "",
 			suffixCommit: "",
@@ -297,6 +302,7 @@ func TestSubmitStrategy_StrategyMatrixAcrossPhases(t *testing.T) {
 		{
 			rel:          "beads-issues/mention-driver.prompt.yaml",
 			safeCommit:   true,
+			branch:       true,
 			pr:           true,
 			suffixNone:   "Submit strategy is **None**",
 			suffixCommit: "Submit strategy is **Commit**",

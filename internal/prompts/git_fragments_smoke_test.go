@@ -46,9 +46,14 @@ func TestGitFragmentsRenderCorrectly(t *testing.T) {
 		hallmarkEnsureFeatureForm  = "Create Feature Branch?"                     // uniquely from git/shared/ensure-feature-branch interactive branch
 		hallmarkCommitPlan         = "SEQUENCE | COMMIT MESSAGE | FILES | REASON" // from git/shared/commit-plan
 		hallmarkRebaseOntoBase     = "Accept theirs / Accept ours"                // from git/shared/rebase-onto-base interactive branch
-		hallmarkCreateOrUpdatePR   = "gh pr create --fill --base"                 // from git/shared/create-or-update-pr
+		hallmarkCreateOrUpdatePR   = "#### No existing PR — With Mitto UI"        // from git/shared/create-or-update-pr
 		hallmarkCloseLinkedBead    = "bd show mitto-abc --long --json"            // from git/shared/close-linked-bead
 		hallmarkUpdateAgentRules   = "Ask user before modifying rules files"      // from git/shared/update-agent-rules
+		// git/shared/pr-description-no-beads: the PR title/body must never carry
+		// beads-tracker references, and `--fill` is banned because driver commits
+		// carry a "(refs <bead-id>)" footer that --fill would copy verbatim.
+		hallmarkNoBeadsInPR = "must not mention the beads tracker"
+		forbiddenFillPR     = "gh pr create --fill"
 		// check-behind-base's stop-and-defer verdict, absent from behind-base-count.
 		hallmarkCheckBehindVerdict = "**\"Rebase changes\"** prompt"
 		// check-behind-base's scheduled-mode (loop) verdict — the counterpart to
@@ -138,7 +143,7 @@ func TestGitFragmentsRenderCorrectly(t *testing.T) {
 
 		// commit-plan / close-linked-bead / update-agent-rules consumers.
 		{"Commit changes", ctxWith, []string{hallmarkCommitPlan, hallmarkCloseLinkedBead, hallmarkUpdateAgentRules}, nil},
-		{"Submit changes", ctxWith, []string{hallmarkCreateOrUpdatePR, hallmarkUpdateAgentRules}, nil},
+		{"Submit changes", ctxWith, []string{hallmarkCreateOrUpdatePR, hallmarkNoBeadsInPR, hallmarkUpdateAgentRules}, []string{forbiddenFillPR}},
 
 		// rebase-onto-base consumers.
 		{"Rebase changes", ctxWith, []string{hallmarkRebaseOntoBase}, nil},
@@ -149,8 +154,9 @@ func TestGitFragmentsRenderCorrectly(t *testing.T) {
 		{"Commit & Submit changes", ctxWith, []string{
 			hallmarkEnsureFeatureForm, hallmarkCommitScoped, hallmarkCommitPlan,
 			hallmarkIdentifyRemote, hallmarkCheckBehindBase, hallmarkRebaseOntoBase,
-			hallmarkCreateOrUpdatePR, hallmarkCloseLinkedBead, hallmarkUpdateAgentRules,
-		}, []string{hallmarkCommitAll, hallmarkCheckBehindVerdict}},
+			hallmarkCreateOrUpdatePR, hallmarkNoBeadsInPR, hallmarkCloseLinkedBead,
+			hallmarkUpdateAgentRules,
+		}, []string{hallmarkCommitAll, hallmarkCheckBehindVerdict, forbiddenFillPR}},
 		{"Commit & Submit changes", ctxWithout, []string{hallmarkCommitAll}, []string{hallmarkCommitScoped}},
 	}
 
@@ -227,32 +233,41 @@ func TestHeadlessBeadsGitFragmentsRenderCorrectly(t *testing.T) {
 		hallmarkEnsureBeadBranch = "must be **stable across phases**"           // unique to ensure-bead-branch
 		hallmarkNoOpBranch       = "already on it — no-op"                      // ensure-bead-branch idempotency: already on branch
 		hallmarkSwitchExisting   = `elif git show-ref --verify --quiet "refs/heads/$branch"; then`
-		hallmarkCreateBranch     = `git switch -c "$branch" <target-remote>/<target-branch>`
+		hallmarkCreateBranch     = `git switch -c "$branch" "<target-remote>/$base_branch"`
 		hallmarkExistingPR       = "existing_url=$(gh pr view" // push-and-open-pr idempotency: reuse existing PR
 		hallmarkPushNewBranch    = "git push -u <push-remote>" // push-and-open-pr: first-time push
 		hallmarkNoPushIfBehind   = "do **not** push"           // push-and-open-pr: behind-base preflight gate
+		// git/shared/pr-description-no-beads, composed by push-and-open-pr: the
+		// driver-authored PR body must not leak bead IDs, and `--fill` is banned
+		// because every driver commit carries a "(refs <bead-id>)" footer.
+		hallmarkNoBeadsInPR2 = "must not mention the beads tracker"
 	)
 
 	forbiddenUITools := []string{"mitto_ui_form", "mitto_ui_options", "mitto_ui_textbox"}
+	// A headless PR must never be filled from commit messages — see
+	// git/shared/pr-description-no-beads.
+	forbiddenFill := []string{"gh pr create --fill", "glab mr create --fill"}
 
 	// ctxLoop: scheduled loop run (IsLoop=true, IsLoopForced=false) — the mode
 	// these fragments must primarily support headlessly.
 	ctxLoop := &cel.PromptEnabledContext{
 		Session: cel.SessionContext{ID: "s", Name: "N", IsLoop: true, IsLoopForced: false, BeadsIssue: "mitto-abc", HasBeadsIssue: true},
-		Args:    map[string]string{"IssueID": "mitto-abc"},
+		Args:    map[string]string{"IssueID": "mitto-abc", "GroupEpics": "false"},
 	}
 
 	type row struct {
 		name    string
 		call    string
 		require []string
+		forbid  []string
 	}
 	rows := []row{
 		{
 			name: "ensure-bead-branch-feat",
 			call: `{{ template "beads-issues/shared/ensure-bead-branch" (dict "Ctx" . "Target" "mitto-abc" "Type" "feat") }}`,
 			require: []string{
-				hallmarkIdentifyRemote2, hallmarkEnsureBeadBranch, "feat/mitto-abc-$slug",
+				hallmarkIdentifyRemote2, hallmarkEnsureBeadBranch, `branch_type="feat"`,
+				`branch="${branch_type}/${branch_target}-$slug"`,
 				hallmarkNoOpBranch, hallmarkSwitchExisting, hallmarkCreateBranch,
 			},
 		},
@@ -261,22 +276,24 @@ func TestHeadlessBeadsGitFragmentsRenderCorrectly(t *testing.T) {
 			// type must also resolve correctly, not just the feature default.
 			name:    "ensure-bead-branch-fix",
 			call:    `{{ template "beads-issues/shared/ensure-bead-branch" (dict "Ctx" . "Target" "mitto-abc" "Type" "fix") }}`,
-			require: []string{"fix/mitto-abc-$slug"},
+			require: []string{`branch_type="fix"`},
 		},
 		{
 			// Documented fallback: an empty Type renders the literal "<type>"
 			// placeholder rather than silently defaulting to "feat" or "fix".
 			name:    "ensure-bead-branch-default-type",
 			call:    `{{ template "beads-issues/shared/ensure-bead-branch" (dict "Ctx" . "Target" "mitto-abc" "Type" "") }}`,
-			require: []string{"<type>/mitto-abc-$slug"},
+			require: []string{`branch_type="<type>"`},
 		},
 		{
 			name: "push-and-open-pr",
 			call: `{{ template "beads-issues/shared/push-and-open-pr" (dict "Ctx" . "Target" "mitto-abc") }}`,
 			require: []string{
-				hallmarkIdentifyRemote2, hallmarkBehindBaseCount, `bd comment mitto-abc "PR: $pr_url"`,
+				hallmarkIdentifyRemote2, hallmarkBehindBaseCount, `bd comment "$pr_target" "PR: $pr_url"`,
 				hallmarkExistingPR, hallmarkPushNewBranch, hallmarkNoPushIfBehind,
+				hallmarkNoBeadsInPR2,
 			},
+			forbid: forbiddenFill,
 		},
 	}
 
@@ -295,6 +312,11 @@ func TestHeadlessBeadsGitFragmentsRenderCorrectly(t *testing.T) {
 		for _, needle := range forbiddenUITools {
 			if strings.Contains(out, needle) {
 				t.Errorf("fragment %q: rendered output UNEXPECTEDLY contains %q — headless fragment must never prompt", r.name, needle)
+			}
+		}
+		for _, needle := range r.forbid {
+			if strings.Contains(out, needle) {
+				t.Errorf("fragment %q: rendered output UNEXPECTEDLY contains %q", r.name, needle)
 			}
 		}
 	}
