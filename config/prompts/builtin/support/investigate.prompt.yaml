@@ -31,6 +31,8 @@ prompt: |-
 
   {{ template "_shared/session-context" . }}
 
+  {{ template "support/shared/playbook-files-policy" . }}
+
   ## Description
 
   Investigate a tracked support question **on our side** — do the work needed to actually answer it.
@@ -84,65 +86,40 @@ prompt: |-
     `bd update <id> --remove-label state:<previous> --add-label state:gathering-info`, and add a short
     `**[STATE · <time>]** <prev> → gathering-info` comment.
 
-  ## Step 3: Read the channel playbook fragments (this prompt owns four)
-
-  {{ template "support/shared/migrate-monolith" (dict "Channel" "<channel-id>" "ActiveBead" "<id>") }}
+  ## Step 3: Read the channel playbook fragments
 
   You must work using **this channel's documented playbook**, not by guessing. The playbook is
   stored **per channel** as topical fragments under **`.mitto/support/<channel-id>/`**, where
   `<channel-id>` is the bead's stored `slack_channel` value (from Step 2). Build the exact path
   from that value — e.g. if `slack_channel` is `C0XXXXXXX`, fragments live in
-  `.mitto/support/C0XXXXXXX/`. In the migration block above, substitute `<channel-id>` with the
-  actual `slack_channel` value and `<id>` with the bead ID from Step 1 before running the shell
-  commands.
+  `.mitto/support/C0XXXXXXX/`. Every fragment is read-only under the policy above. If one is missing,
+  note that on the bead when relevant and continue with the generic defaults; do not ask to create it.
 
-  This prompt is the **owner** of `investigation.md`, `resources.md`, `escalation.md`, and
-  (optionally) `redirects.md`. It reads `scope.md` and `tone.md` (owned by `Support: watch channel`
-  and `Support: reply to user` respectively) but does not create them here.
+  ### 3.1 `investigation.md`
 
-  For each owned fragment, if the file is missing, ask the user with a focused `mitto_ui_form`
-  (300s timeout — this is an interactive prompt), write the file, and continue. Do not settle for
-  vague answers; re-ask for specifics.
+  - {{ template "support/shared/channel-fragment-read" (dict "Channel" $channel "Fragment" "investigation" "Purpose" "learn this channel's investigation method (tool order, safe commands, MCP/CLI tools, confidence rules)" "Owner" "" "OwnerAsk" false) }}
 
-  ### 3.1 `investigation.md` (owner)
+  ### 3.2 `resources.md`
 
-  - {{ template "support/shared/channel-fragment-read" (dict "Channel" $channel "Fragment" "investigation" "Purpose" "learn this channel's investigation method (tool order, safe commands, MCP/CLI tools, confidence rules)" "Owner" "Support: investigate" "OwnerAsk" true) }}
-  - **Owner-ask step (only if `investigation.md` is missing).** Create the
-    `.mitto/support/<channel-id>/` directory if missing, then:
-    {{ template "support/shared/ask-investigation" (dict "TimeoutSeconds" 300) }}
+  - {{ template "support/shared/channel-fragment-read" (dict "Channel" $channel "Fragment" "resources" "Purpose" "know which repos, runbooks, dashboards, and docs to consult for this channel" "Owner" "" "OwnerAsk" false) }}
 
-  ### 3.2 `resources.md` (owner)
+  ### 3.3 `escalation.md`
 
-  - {{ template "support/shared/channel-fragment-read" (dict "Channel" $channel "Fragment" "resources" "Purpose" "know which repos, runbooks, dashboards, and docs to consult for this channel" "Owner" "Support: investigate" "OwnerAsk" true) }}
-  - **Owner-ask step (only if `resources.md` is missing).**
-    {{ template "support/shared/ask-resources" (dict "TimeoutSeconds" 300) }}
+  - {{ template "support/shared/channel-fragment-read" (dict "Channel" $channel "Fragment" "escalation" "Purpose" "know who/when/how to escalate for this channel" "Owner" "" "OwnerAsk" false) }}
 
-  ### 3.3 `escalation.md` (owner)
+  ### 3.4 `redirects.md`
 
-  - {{ template "support/shared/channel-fragment-read" (dict "Channel" $channel "Fragment" "escalation" "Purpose" "know who/when/how to escalate for this channel" "Owner" "Support: investigate" "OwnerAsk" true) }}
-  - **Owner-ask step (only if `escalation.md` is missing).**
-    {{ template "support/shared/ask-escalation" (dict "TimeoutSeconds" 300) }}
-
-  ### 3.4 `redirects.md` (optional owner)
-
-  - {{ template "support/shared/channel-fragment-read" (dict "Channel" $channel "Fragment" "redirects" "Purpose" "know where out-of-scope questions should go" "Owner" "Support: investigate" "OwnerAsk" true) }}
-  - **Owner-ask step (only if `redirects.md` is missing AND the current question is out of scope
-    for this channel).** This fragment is optional — if the question is in scope for the channel,
-    do **not** ask; skip silently. Only when out-of-scope handling is actually needed for this
-    investigation:
-    {{ template "support/shared/ask-redirects" (dict "TimeoutSeconds" 300) }}
+  - {{ template "support/shared/channel-fragment-read" (dict "Channel" $channel "Fragment" "redirects" "Purpose" "know where out-of-scope questions should go" "Owner" "" "OwnerAsk" false) }}
 
   ### 3.5 `scope.md` and `tone.md` (readers)
 
   - {{ template "support/shared/channel-fragment-read" (dict "Channel" $channel "Fragment" "scope" "Purpose" "confirm the question is in scope for this channel before investigating" "Owner" "Support: watch channel" "OwnerAsk" false) }}
   - {{ template "support/shared/channel-fragment-read" (dict "Channel" $channel "Fragment" "tone" "Purpose" "shape the tone/reply guidance when drafting the reply" "Owner" "Support: reply to user" "OwnerAsk" false) }}
 
-  ### 3.6 Keep the owned fragments current
+  ### 3.6 Record reusable findings without editing the playbook
 
-  If you discover a new useful pattern during this investigation, **append it** to the appropriate
-  owned fragment (`investigation.md` for a better search / tool order, `resources.md` for a new
-  docs link / runbook, `escalation.md` for a new escalation contact) so future runs benefit. Do
-  **not** append to `scope.md` or `tone.md` here — those are owned by other prompts.
+  If you discover a useful pattern, record it on the bead as a `[CONTEXT]` note. Do not append it to
+  any file under `.mitto/support/<channel-id>/` unless the user directly requested that exact edit.
 
   ## Step 4: Investigate
 

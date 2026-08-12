@@ -27,6 +27,10 @@
 
         **The "What's next" cell must be a markdown link ...
 
+  After the mapping table the fragment also emits the shared rule for
+  the **Last activity** column, so both callers compute and render the
+  thread's age identically.
+
   Whitespace: fragment body starts and ends flush (no leading/trailing
   newline); the surrounding YAML newlines and the caller's indent
   provide framing. Every rendered line is indented 4 spaces so the
@@ -45,4 +49,11 @@
   | `resolved` | Resolved (closing) |
   | `stale` | Stale — auto-closing |
 {{- end }}
+
+  **The "Last activity" cell is how old the thread is**, as a relative age: take the most recent
+  of the bead's `updated_at` and its newest comment timestamp (both already available from the
+  `bd show <id>` / `bd comments <id>` output you loaded this run), and render the elapsed time
+  against the current timestamp in the coarsest unit that is at least 1 — `<N>m ago`, `<N>h ago`,
+  `<N>d ago` (use `just now` below one minute). Never print an absolute timestamp in this cell,
+  and never leave it empty — if a bead has no usable timestamp at all, write `unknown`.
 {{- /* no trailing newline */ -}}

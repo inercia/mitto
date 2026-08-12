@@ -4809,6 +4809,53 @@ func TestBuiltinPrompts_NoSingletonRemains(t *testing.T) {
 	}
 }
 
+func TestBuiltinSupportPrompts_PlaybookFilesReadOnlyPolicy(t *testing.T) {
+	supportDir := filepath.Join("..", "..", "config", "prompts", "builtin", "support")
+	entries, err := os.ReadDir(supportDir)
+	if err != nil {
+		t.Fatalf("ReadDir(%s): %v", supportDir, err)
+	}
+
+	const policyCall = `{{ template "support/shared/playbook-files-policy" . }}`
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".prompt.yaml") {
+			continue
+		}
+		data, readErr := os.ReadFile(filepath.Join(supportDir, entry.Name()))
+		if readErr != nil {
+			t.Fatalf("ReadFile(%s): %v", entry.Name(), readErr)
+		}
+		body := string(data)
+		if strings.Count(body, policyCall) != 1 {
+			t.Errorf("%s: read-only playbook policy call count = %d, want 1", entry.Name(), strings.Count(body, policyCall))
+		}
+		for _, forbidden := range []string{
+			`support/shared/bootstrap-gate`,
+			`support/shared/migrate-monolith`,
+			`support/shared/ask-`,
+			`"OwnerAsk" true`,
+		} {
+			if strings.Contains(body, forbidden) {
+				t.Errorf("%s: contains obsolete playbook mutation path %q", entry.Name(), forbidden)
+			}
+		}
+	}
+
+	policy, err := os.ReadFile(filepath.Join(supportDir, "shared", "playbook-files-policy.tmpl"))
+	if err != nil {
+		t.Fatalf("read playbook-files-policy.tmpl: %v", err)
+	}
+	for _, hallmark := range []string{
+		`.mitto/support/<channel_id>/*.md`,
+		`never create`,
+		`explicitly and directly requires`,
+	} {
+		if !strings.Contains(string(policy), hallmark) {
+			t.Errorf("playbook policy missing hallmark %q", hallmark)
+		}
+	}
+}
+
 // TestBuiltinPrompts_SupportRoutingAdoption pins mitto-5x21.1: the five
 // today-tier support-* builtin prompts must declare target/reuse routing so
 // repeat dispatches funnel back into the right existing conversation instead

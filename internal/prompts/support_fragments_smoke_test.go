@@ -264,18 +264,20 @@ func TestChannelFragmentReadRenders(t *testing.T) {
 			}
 		}
 	}
-	// Owner-ask branch hallmark: the three owner prompts must render the
-	// "this prompt owns creating it" text for at least one fragment.
-	ownerAskHallmark := "this prompt owns creating it"
-	owners := []string{
+	// Every former owner now renders the shared read-only policy instead of
+	// asking to create a missing fragment.
+	formerOwners := []string{
 		"Support: watch channel",
 		"Support: investigate",
 		"Support: reply to user",
 	}
-	for _, name := range owners {
+	for _, name := range formerOwners {
 		out := renderSupportPrompt(t, name, ctx)
-		if !strings.Contains(out, ownerAskHallmark) {
-			t.Errorf("prompt %q: rendered output missing owner-ask hallmark %q", name, ownerAskHallmark)
+		if !strings.Contains(out, "read-only by default") || !strings.Contains(out, "explicitly and directly requires") {
+			t.Errorf("prompt %q: rendered output missing shared read-only policy", name)
+		}
+		if strings.Contains(out, "this prompt owns creating it") {
+			t.Errorf("prompt %q: rendered obsolete owner-write instruction", name)
 		}
 	}
 
@@ -302,6 +304,58 @@ func TestChannelFragmentReadRenders(t *testing.T) {
 	// The runtime-read fallback branch must NOT fire when a channel is set.
 	if strings.Contains(missOut, "fragment (runtime read fallback)") {
 		t.Errorf("watch-channel (channel set): unexpectedly rendered runtime-read fallback branch")
+	}
+}
+
+func TestChannelToneDefaultFallback(t *testing.T) {
+	ctx := &cel.PromptEnabledContext{
+		Session: cel.SessionContext{ID: "s", Name: "N", HasMessages: true},
+	}
+	consumers := []string{
+		"Support: check status",
+		"Support: continue conversation",
+		"Support: gather more information",
+		"Support: investigate",
+		"Support: reply to user",
+		"Support: watch channel",
+	}
+	hallmarks := []string{
+		"Use this default tone guidance:",
+		"**Keep responses concise and brief:**",
+		"Prioritize short, focused answers",
+		"**Show appropriate uncertainty:**",
+		`❌ "Great question! This is definitely a XXX issue.`,
+	}
+	for _, name := range consumers {
+		out := renderSupportPrompt(t, name, ctx)
+		for _, hallmark := range hallmarks {
+			if !strings.Contains(out, hallmark) {
+				t.Errorf("prompt %q: missing default-tone hallmark %q", name, hallmark)
+			}
+		}
+	}
+
+	// A real tone.md remains authoritative and suppresses the fallback.
+	tmpDir := t.TempDir()
+	channel := "C0CUSTOMTONE"
+	fragmentDir := filepath.Join(tmpDir, ".mitto", "support", channel)
+	if err := os.MkdirAll(fragmentDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(fragmentDir, "tone.md"), []byte("CUSTOM-TONE-SENTINEL"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	customCtx := &cel.PromptEnabledContext{
+		Session:   cel.SessionContext{ID: "s", Name: "N", HasMessages: true},
+		Workspace: cel.WorkspaceContext{Folder: tmpDir},
+		Args:      map[string]string{"SlackChannelID": channel},
+	}
+	out := renderSupportPrompt(t, "Support: reply to user", customCtx)
+	if !strings.Contains(out, "CUSTOM-TONE-SENTINEL") {
+		t.Error("custom tone.md was not inlined")
+	}
+	if strings.Contains(out, "Use this default tone guidance:") {
+		t.Error("default tone rendered even though tone.md exists")
 	}
 }
 
@@ -489,6 +543,7 @@ func TestChannelFragmentReadOwnerAskWhenChannelKnownButFileMissing(t *testing.T)
 // channel`), and asserts each branch's stable hallmarks appear (and the
 // other branches' hallmarks do not).
 func TestBootstrapGateFragmentRenders(t *testing.T) {
+	t.Skip("bootstrap writes were removed by the channel-playbook read-only policy")
 	// Branch A: channel unknown at render time -> skip note.
 	t.Run("no_channel_skip", func(t *testing.T) {
 		ctx := &cel.PromptEnabledContext{
@@ -724,6 +779,7 @@ func TestWhatsNextMappingFragmentRenders(t *testing.T) {
 // the correct owner (and only that owner) — protecting the owner
 // mapping from silent drift.
 func TestAskFragmentTemplatesRender(t *testing.T) {
+	t.Skip("owner ask/write paths were removed by the channel-playbook read-only policy")
 	ctx := &cel.PromptEnabledContext{
 		Session: cel.SessionContext{ID: "s", Name: "N", HasMessages: true},
 	}
@@ -793,6 +849,7 @@ func TestAskFragmentTemplatesRender(t *testing.T) {
 // If a future edit accidentally flips watch-channel to 300s (or an
 // interactive owner to 60s), this test catches it.
 func TestAskFragmentTimeouts(t *testing.T) {
+	t.Skip("owner ask/write paths were removed by the channel-playbook read-only policy")
 	ctx := &cel.PromptEnabledContext{
 		Session: cel.SessionContext{ID: "s", Name: "N", HasMessages: true},
 	}
@@ -846,6 +903,7 @@ func TestAskFragmentTimeouts(t *testing.T) {
 // Also asserts that non-host support prompts do NOT accidentally include
 // the migration block (owner mapping guard).
 func TestMigrateMonolithFragmentRenders(t *testing.T) {
+	t.Skip("automatic migration was removed by the channel-playbook read-only policy")
 	ctx := &cel.PromptEnabledContext{
 		Session: cel.SessionContext{ID: "s", Name: "N", HasMessages: true},
 	}
@@ -900,6 +958,7 @@ func TestMigrateMonolithFragmentRenders(t *testing.T) {
 // `bd comment <id> ...` command (non-empty) or a generic "any tracked
 // bead in this channel" fallback (empty).
 func TestMigrateMonolithChannelSubstitution(t *testing.T) {
+	t.Skip("automatic migration was removed by the channel-playbook read-only policy")
 	ctx := &cel.PromptEnabledContext{
 		Session: cel.SessionContext{ID: "s", Name: "N", HasMessages: true},
 	}

@@ -23,6 +23,7 @@ parameters:
     description: 'Base Slack workspace URL used to build message permalinks (e.g. https://yourteam.slack.com). No trailing slash.'
   - name: LookbackDays
     type: text
+    group: Advanced
     required: false
     description: 'How many days of channel history to scan (default 7).'
 prompt: |-
@@ -32,6 +33,8 @@ prompt: |-
   # Support — Continue Conversation
 
   {{ template "_shared/session-context" . }}
+
+  {{ template "support/shared/playbook-files-policy" . }}
 
   ## Description
 
@@ -64,10 +67,8 @@ prompt: |-
   ## Step 0: Read the channel playbook fragments
 
   This channel's playbook lives as topical fragments under **`.mitto/support/{{ $channel }}/`**, one
-  topic per file. This prompt is a **reader** — it does not own any fragment; the owners are
-  `Support: watch channel` (`scope.md`), `Support: reply to user` (`tone.md`), and
-  `Support: investigate` (`investigation.md`, `resources.md`, `escalation.md`, `redirects.md`).
-  Read the fragments needed to craft a reply and honor them throughout.
+  topic per file. This prompt is a **reader**. Read the fragments needed to craft a reply and honor
+  them throughout; missing guidance falls back to the generic rules without modifying the playbook.
 
   - {{ template "support/shared/channel-fragment-read" (dict "Channel" $channel "Fragment" "scope" "Purpose" "confirm the conversation is in scope for this channel before continuing" "Owner" "Support: watch channel" "OwnerAsk" false) }}
   - {{ template "support/shared/channel-fragment-read" (dict "Channel" $channel "Fragment" "tone" "Purpose" "shape the tone/reply guidance when crafting any reply below" "Owner" "Support: reply to user" "OwnerAsk" false) }}
@@ -138,9 +139,7 @@ prompt: |-
     `.mitto/support/{{ $channel }}/` — `investigation.md` for tool order and safe commands,
     `scope.md` to confirm the ask is in scope, and `tone.md` for reply style). If any of those
     fragments were missing in Step 0, note that in a `[CONTEXT]` bead comment and use the generic
-    defaults for the missing pieces. Do **not** create or append to those fragments here — this
-    prompt is a reader; the owners (`Support: watch channel`, `Support: investigate`,
-    `Support: reply to user`) are responsible for populating them.
+    defaults for the missing pieces. Do **not** create or append to those fragments.
   - Feed the full conversation context (original question, thread history, the specific unanswered
     question) and ask for a response that addresses the open point, avoids repeating what was said,
     and links docs/tickets if relevant. Proceed to Step 6.

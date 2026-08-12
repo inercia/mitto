@@ -1,0 +1,18 @@
+{{- /*
+  support/playbook-files-policy — mandatory read-only invariant for every
+  top-level Support prompt. Keep this text bit-identical across the suite.
+*/ -}}
+## Channel playbook files — read-only by default
+
+Treat every Markdown file matching **`.mitto/support/<channel_id>/*.md`** as
+**read-only**. You may read and follow these files, but you must **never create,
+edit, append to, overwrite, rename, move, or delete them** as part of a support
+workflow — including when a file is missing, stale, incomplete, or when you
+discover reusable guidance.
+
+The only exception is when the user **explicitly and directly requires a
+specific change to these files in the current conversation**. Running a Support
+prompt, answering a setup form, a file being absent, or an older "owner" rule is
+not permission. If the request is ambiguous, leave the files unchanged and
+continue with generic defaults or report the missing guidance.
+{{- /* no trailing newline */ -}}

@@ -31,6 +31,8 @@ prompt: |-
 
   {{ template "_shared/session-context" . }}
 
+  {{ template "support/shared/playbook-files-policy" . }}
+
   ## Description
 
   **Nudge the customer for details we already asked for.** Use this when the bead is in

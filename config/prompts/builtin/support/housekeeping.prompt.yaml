@@ -17,6 +17,8 @@ prompt: |-
 
   {{ template "_shared/session-context" . }}
 
+  {{ template "support/shared/playbook-files-policy" . }}
+
   Available ACP servers:
   {{ Default "(none)" .ACP.AvailableText }}
 
@@ -310,7 +312,7 @@ prompt: |-
   ```
 
   - **Always end with a "what's next" table** listing every ticket that is still open after the sweep,
-    one row per bead: `| <id> | <state:*> | <what's next> |`. In the **Bead** column use the **full bead
+    one row per bead: `| <id> | <state:*> | <what's next> | <last activity> |`. In the **Bead** column use the **full bead
     ID exactly as `bd` reports it, including the project prefix** (e.g. `mitto-u2i`, not the bare suffix
     `u2i`) — Mitto only recognises and links the full ID, so a truncated ID renders as plain text. The
     **what's next** cell is a short human phrase derived from the bead's current `state:*` label (use
@@ -323,12 +325,13 @@ prompt: |-
     `[<what's next phrase>](<slack_url>)`. Read `slack_url` from the bead you already loaded this run
     (`bd show <id>` metadata). Only fall back to plain text if a bead has no `slack_url`.
 
-    Render it as (note the **full** IDs with the project prefix and the linked what's-next cell):
+    Render it as (note the **full** IDs with the project prefix, the linked what's-next cell, and the
+    relative **Last activity** ages):
     ```markdown
-    | Bead | State | What's next |
-    |------|-------|-------------|
-    | mitto-u2i | drafting | [Ready to reply to user](https://acme.slack.com/archives/C02JYLD3FFU/p1770802214391359) |
-    | mitto-9e3 | need-info | [Needs more info from user](https://acme.slack.com/archives/C02JYLD3FFU/p1770891133552019) |
+    | Bead | State | What's next | Last activity |
+    |------|-------|-------------|---------------|
+    | mitto-u2i | drafting | [Ready to reply to user](https://acme.slack.com/archives/C02JYLD3FFU/p1770802214391359) | 3h ago |
+    | mitto-9e3 | need-info | [Needs more info from user](https://acme.slack.com/archives/C02JYLD3FFU/p1770891133552019) | 2d ago |
     ```
 
   Finish with a `mitto_ui_notify` (success) summarising counts (swept / closed / investigations

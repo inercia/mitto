@@ -23,6 +23,7 @@ parameters:
     description: 'Base Slack workspace URL used to build message permalinks (e.g. https://yourteam.slack.com). No trailing slash.'
   - name: LookbackDays
     type: text
+    group: Advanced
     required: false
     description: 'How many days of channel history to scan each run (default 2).'
 enabledWhen: '!Session.IsChild && CommandExists("bd") && Tools.HasAnyPattern(["slack_*", "*_slack"])'
@@ -40,6 +41,7 @@ prompt: |-
   # Support — Watch Channel (Triage + Keep Beads in Sync)
 
   {{ template "_shared/session-context" . }}
+  {{ template "support/shared/playbook-files-policy" . }}
   {{ template "beads-issues/shared/bootstrap" . }}
 
   Available ACP servers:
@@ -183,56 +185,23 @@ prompt: |-
   | **P2** | MEDIUM — in motion, our court, not blocked on your approval | `state:triaged`, `state:gathering-info`, `state:awaiting-us` (customer replied, our turn). |
   | **P3** | LOW — waiting on the customer, nothing for you to do now | `state:awaiting-customer` or `state:need-info` — we posted a reply or a clarifying question and are waiting on the customer (also drifting toward the 10-day auto-close as time passes). |
 
-  ## Channel bootstrap gate: first-run playbook setup
+  ## Channel playbook gate: read before triage
 
-  {{ template "support/shared/bootstrap-gate" (dict "Channel" $channel "Silent" (and .Session.IsLoop (not .Session.IsLoopForced))) }}
+  Fragments live under **`.mitto/support/{{ $channel }}/`**, one topic per file. Read the available
+  guidance on every iteration, but keep the entire directory read-only under the policy above.
 
-  ## Channel scope gate: check this FIRST, every iteration
-
-  {{ template "support/shared/migrate-monolith" (dict "Channel" $channel "ActiveBead" "") }}
-
-  > **Note.** On a channel that has been through the bootstrap gate above, `scope.md` is guaranteed
-  > to exist. This per-iteration gate is the **repair path**: if `scope.md` was deleted or the
-  > channel was never bootstrapped (imported / hand-created), it re-asks for it here.
-
-  Before you can triage this channel you must know **what it is responsible for** — i.e. its
-  `scope.md`. The rest of the playbook (investigation method, resources, escalation, tone) is
-  created on demand by the **child prompts that need it** (`Support: investigate` owns
-  investigation/resources/escalation; `Support: reply to user` owns tone). This gate only owns
-  `scope.md`; it also reads `tone.md` when available to keep triage summaries consistent with the
-  channel's voice.
-
-  Fragments live under **`.mitto/support/{{ $channel }}/`**, one topic per file. This prompt is
-  the **owner** of `scope.md` — it asks for it and writes it when missing. All other fragments are
-  read-only here.
-
-  **This gate runs on *every* iteration** as a safety net for `scope.md`. A channel whose
-  `scope.md` was deleted keeps getting asked until it exists again.
-
-  1. **Scope fragment (owner).**
-     - {{ template "support/shared/channel-fragment-read" (dict "Channel" $channel "Fragment" "scope" "Purpose" "know what this channel is (and is not) responsible for before triaging" "Owner" "Support: watch channel" "OwnerAsk" true) }}
-     - **Owner-ask step (only if `scope.md` is missing).** Create the
-       `.mitto/support/{{ $channel }}/` directory if missing, then:
-       {{ template "support/shared/ask-scope" (dict "TimeoutSeconds" 60) }}
-     - **On a silent scheduled run**, keep the ask's `timeout_seconds` short (60s above) so an
-       unattended tick does not hang. If nobody answers before it times out, send a
-       `mitto_ui_notify` (warning) that no `scope.md` exists yet, then continue triage + keeping
-       beads in sync but **skip drafting** this run. The next iteration asks again.
-  2. **Tone fragment (reader).**
-     - {{ template "support/shared/channel-fragment-read" (dict "Channel" $channel "Fragment" "tone" "Purpose" "keep triage summaries and any notifications consistent with the channel's voice" "Owner" "Support: reply to user" "OwnerAsk" false) }}
-  3. **Keep `scope.md` current.** Whenever you learn a new in-scope or out-of-scope pattern while
-     triaging this run (a topic we now cover, a topic we should redirect), **append it** to
-     `.mitto/support/{{ $channel }}/scope.md` so future runs benefit. Other fragments
-     (investigation, resources, escalation, tone) are owned elsewhere — do **not** append to them
-     from this prompt.
+  1. **Scope fragment.**
+     - {{ template "support/shared/channel-fragment-read" (dict "Channel" $channel "Fragment" "scope" "Purpose" "know what this channel is (and is not) responsible for before triaging" "Owner" "" "OwnerAsk" false) }}
+  2. **Tone fragment.**
+     - {{ template "support/shared/channel-fragment-read" (dict "Channel" $channel "Fragment" "tone" "Purpose" "keep triage summaries and any notifications consistent with the channel's voice" "Owner" "" "OwnerAsk" false) }}
+  3. If either fragment is missing, do not create it or ask to populate it. Continue with the generic
+     defaults and mention the missing guidance in the run summary. Record newly discovered patterns
+     on the relevant bead, not in `.mitto/support/{{ $channel }}/*.md`.
 
   ## Instructions
 
-  > **Run the two gates above FIRST**, in order, at the start of every iteration — before Step 0
-  > and everything else. The **channel bootstrap gate** is a one-time (idempotent) playbook setup:
-  > it asks for the mandatory fragments (`scope`, `investigation`, `escalation`) if missing and
-  > offers the optional ones (`tone`, `resources`) as opt-in; on subsequent iterations it
-  > short-circuits with a one-line "already bootstrapped" note. The **channel scope gate** is the
+  > **Run the channel playbook gate above FIRST** at the start of every iteration — before Step 0
+  > and everything else. The **channel playbook gate** is a read-only,
   > per-iteration safety net for `scope.md`. Children read the other fragments during
   > investigation.
 
@@ -453,8 +422,7 @@ prompt: |-
     **enclosed in the `--- BEGIN REPLY ---` / `--- END REPLY ---` block** — see the Beads tracking
     model) and set `state:drafting`. Leave the rest for subsequent iterations, tagging each as
     `deferred: no-spawn-permission` for Step 5. If you learn a reusable in-scope/out-of-scope
-    pattern, append it to `scope.md` (see the channel scope gate); other fragments are owned by
-    the investigate / reply-to-user prompts.
+    pattern, record it on the bead; do not append it to the channel playbook.
   {{- end }}
 
   - If a bead genuinely cannot be answered without more detail from the customer, set `state:need-info`
@@ -462,13 +430,14 @@ prompt: |-
     them) — do not spawn an investigation for it.
   - **Never post to Slack here** (nor do the children). Drafts wait for review in
     **"Support: reply to user"**.
-  - If `scope.md` does not exist for this channel yet, skip this step entirely (see the channel
-    scope gate) — never spawn investigations without a scope definition.
+  - If `scope.md` does not exist for this channel, use the generic scope defaults and note the
+    missing guidance; do not create or repair the file.
 
   ### 5. Summary
 
   - **Always end the iteration with a "what's next" table** listing every open tracked bead you
-    touched or reviewed this run, one row per bead: `| <id> | <state:*> | <what's next> |`. In the
+    touched or reviewed this run, one row per bead:
+    `| <id> | <state:*> | <what's next> | <last activity> |`. In the
     **Bead** column use the **full bead ID exactly as `bd` reports it, including the project prefix**
     (e.g. `mitto-u2i`, not the bare suffix `u2i`) — Mitto only recognises and links the full ID, so a
     truncated ID renders as plain text. The **what's next** cell is a short human phrase derived from
@@ -496,15 +465,15 @@ prompt: |-
     If a `triaged` row has none of these dispositions, Step 4 was not executed for that bead — go
     back to Step 4 and act before printing the summary.
 
-    Render it as (note the **full** IDs, the linked what's-next cell, and the `triaged` disposition
-    tags):
+    Render it as (note the **full** IDs, the linked what's-next cell, the `triaged` disposition
+    tags, and the relative **Last activity** ages):
     ```markdown
-    | Bead | State | What's next |
-    |------|-------|-------------|
-    | mitto-u2i | drafting | [Ready to reply to user](https://acme.slack.com/archives/C02JYLD3FFU/p1770802214391359) |
-    | mitto-9e3 | need-info | [Needs more info from user](https://acme.slack.com/archives/C02JYLD3FFU/p1770891133552019) |
-    | mitto-5ce | triaged | [Needs investigation](https://acme.slack.com/archives/C02JYLD3FFU/p1770912223441201) (— investigating: spawned 20260721-…-abcd) |
-    | mitto-v22 | triaged | [Needs investigation](https://acme.slack.com/archives/C02JYLD3FFU/p1770913001772440) (— queued: over 3-cap, rank #4) |
+    | Bead | State | What's next | Last activity |
+    |------|-------|-------------|---------------|
+    | mitto-u2i | drafting | [Ready to reply to user](https://acme.slack.com/archives/C02JYLD3FFU/p1770802214391359) | 3h ago |
+    | mitto-9e3 | need-info | [Needs more info from user](https://acme.slack.com/archives/C02JYLD3FFU/p1770891133552019) | 2d ago |
+    | mitto-5ce | triaged | [Needs investigation](https://acme.slack.com/archives/C02JYLD3FFU/p1770912223441201) (— investigating: spawned 20260721-…-abcd) | 12m ago |
+    | mitto-v22 | triaged | [Needs investigation](https://acme.slack.com/archives/C02JYLD3FFU/p1770913001772440) (— queued: over 3-cap, rank #4) | 5d ago |
     ```
   - Then send a `mitto_ui_notify` summarizing the run: new questions triaged, beads updated, how many
     **investigations were spawned** (and for which beads), and how many beads are `drafting` (ready
@@ -532,9 +501,8 @@ prompt: |-
     answer). All posting requires your explicit approval.
   - The channel playbook lives under **`.mitto/support/{{ $channel }}/`** as topical fragments
     (`scope.md`, `tone.md`, `investigation.md`, `resources.md`, `escalation.md`, `redirects.md`).
-    This prompt owns `scope.md`; other fragments are owned by `Support: investigate` (investigation,
-    resources, escalation, redirects) and `Support: reply to user` (tone). Read `scope.md` before
-    triaging and append newly-learned scope patterns to it.
+    All are read-only unless the user directly requests a specific playbook-file change. Read
+    `scope.md` before triaging when present, and record newly learned patterns on beads instead.
   - **Proactive investigation** — Step 4 delegates investigable beads (`state:triaged` /
     `awaiting-us`) to parallel one-off children running **"Support: investigate"**, capped at **3 per
     run** and deduped against existing children so a bead is never investigated twice at once. Spawned

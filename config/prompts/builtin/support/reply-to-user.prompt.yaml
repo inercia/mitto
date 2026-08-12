@@ -31,6 +31,8 @@ prompt: |-
 
   {{ template "_shared/session-context" . }}
 
+  {{ template "support/shared/playbook-files-policy" . }}
+
   ## Description
 
   Post our draft to a tracked support question — either an **answer** (we have enough info to help) or
@@ -71,16 +73,11 @@ prompt: |-
     for what has already been said. Note the stored `slack_thread_ts` / `slack_channel` /
     `slack_url` metadata.
 
-  ## Step 2.5: Read (and if needed, ask for) the channel `tone.md`
+  ## Step 2.5: Read the channel `tone.md`
 
-  This prompt is the **owner** of `tone.md`. On the first draft for a channel that has no
-  `tone.md` yet, the interactive review path (user is present for `state:drafting`) asks the user
-  to define tone once and writes the file; subsequent runs just read it.
-
-  - {{ template "support/shared/channel-fragment-read" (dict "Channel" $channel "Fragment" "tone" "Purpose" "shape the tone/reply guidance when reviewing or building the draft" "Owner" "Support: reply to user" "OwnerAsk" true) }}
-  - **Owner-ask step (only if `tone.md` is missing).** Create the `.mitto/support/<channel-id>/`
-    directory if missing, then:
-    {{ template "support/shared/ask-tone" (dict "TimeoutSeconds" 300) }}
+  - {{ template "support/shared/channel-fragment-read" (dict "Channel" $channel "Fragment" "tone" "Purpose" "shape the tone/reply guidance when reviewing or building the draft" "Owner" "" "OwnerAsk" false) }}
+  - If `tone.md` is missing, use the generic formatting guidance below. Do not ask to create it or
+    modify any channel playbook file.
   - Confirm the `state:*` label is `drafting`. If it is **not**, use `mitto_ui_options` to warn:
     - **Question**: "This bead is in `state:<current>`, not `drafting`. Continue anyway?"
     - **Options**: `[{label: "Continue anyway"}, {label: "Cancel"}]`, timeout 300.

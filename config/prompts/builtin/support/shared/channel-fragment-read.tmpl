@@ -13,7 +13,8 @@
   drift), and cheaper (no shell/tool round-trip).
 
   When the fragment file is MISSING, the template falls back to a short
-  `[CONTEXT]` note or an owner-ask instruction, depending on `OwnerAsk`.
+  `[CONTEXT]` note and generic defaults without requesting or writing a file.
+  For `tone`, it also inlines support/shared/default-tone.
 
   Callers pass named fields via a `dict`:
 
@@ -26,14 +27,10 @@
                 "scope" | "tone" | "investigation" | "resources"
                 | "escalation" | "redirects".
       Purpose:  short caller-supplied phrase spliced into "use it to <Purpose>".
-      Owner:    canonical name of the owner prompt, e.g. "Support: reply to
-                user" — used in the missing-file / no-channel message so the
-                reader tells the user which prompt would populate it. Required.
-      OwnerAsk: bool. If true, the CALLING prompt is itself the owner and
-                should ask + write when the fragment is missing. If false
-                (reader mode), the caller just logs a `[CONTEXT]` note and
-                continues with in-prompt defaults.
-
+      Owner:    legacy compatibility field; no Support prompt owns writes to
+                playbook Markdown files anymore.
+      OwnerAsk: legacy compatibility field; ignored. Missing files never grant
+                permission to ask for content or write a replacement.
   Usage (rendered as a single Markdown bullet — the CALLER supplies the
   leading `- `):
 
@@ -47,8 +44,6 @@
 {{- $channel := .Channel -}}
 {{- $fragment := .Fragment -}}
 {{- $purpose  := .Purpose  -}}
-{{- $owner    := .Owner    -}}
-{{- $ownerAsk := .OwnerAsk -}}
 {{- $path := printf ".mitto/support/%s/%s.md" $channel $fragment -}}
 {{- if and $channel (FileExists $path) -}}
 **Channel `{{ $fragment }}` (embedded from `{{ $path }}`)** — this is the
@@ -60,14 +55,13 @@ authoritative `{{ $fragment }}` guide for channel `{{ $channel }}`; use it to
 <!-- END {{ $path }} -->
 {{- else if $channel -}}
 **Channel `{{ $fragment }}` fragment MISSING** (`{{ $path }}` does not exist for channel
-`{{ $channel }}`).
-{{- if $ownerAsk }} This prompt owns creating it: ask the user for the `{{ $fragment }}`
-content via a focused `mitto_ui_form`, write the file, then proceed. See the owner-ask
-step below for the field list.
-{{- else }} Log a short `[CONTEXT]` bead comment noting `{{ $fragment }}.md missing —
-using generic defaults; owner = **{{ $owner }}**` and continue with the generic defaults
-in this section. Do **not** ask the user here — only **{{ $owner }}** is responsible
-for populating this fragment.
+`{{ $channel }}`). Leave the playbook unchanged, optionally log a short `[CONTEXT]`
+bead comment noting `{{ $fragment }}.md missing — using generic defaults`, and continue
+with the generic defaults in this section. Do not ask to create the file.
+{{ if eq $fragment "tone" }}
+Use this default tone guidance:
+
+{{ template "support/shared/default-tone" . }}
 {{- end }}
 {{- else -}}
 **Channel `{{ $fragment }}` fragment (runtime read fallback)** — the caller did not
@@ -77,13 +71,13 @@ bead's `slack_channel` value, read
 `.mitto/support/C0XXXXXXX/{{ $fragment }}.md`). This is the authoritative
 `{{ $fragment }}` guide for this channel — use it to {{ $purpose }}. **If it exists**,
 honor its guidance; it **overrides** the generic defaults below.
-{{- if $ownerAsk }} **If it does not exist**, this prompt owns creating it: ask the user
-for the `{{ $fragment }}` content via a focused `mitto_ui_form`, write the file, then
-proceed. See the owner-ask step below for the field list.
-{{- else }} **If it does not exist**, log a short `[CONTEXT]` bead comment noting
-`{{ $fragment }}.md missing — using generic defaults; owner = **{{ $owner }}**` and
-continue with the generic defaults in this section. Do **not** ask the user here — only
-**{{ $owner }}** is responsible for populating this fragment.
+**If it does not exist**, leave the playbook unchanged, optionally log a short
+`[CONTEXT]` bead comment noting `{{ $fragment }}.md missing — using generic defaults`,
+and continue with the generic defaults in this section. Do not ask to create the file.
+{{ if eq $fragment "tone" }}
+Use this default tone guidance:
+
+{{ template "support/shared/default-tone" . }}
 {{- end }}
 {{- end -}}
 {{- /* no trailing newline */ -}}
