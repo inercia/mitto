@@ -152,7 +152,8 @@ func (m *SessionPickerModel) View() tea.View {
 	end := min(start+visible, len(m.items))
 
 	var b strings.Builder
-	b.WriteString(m.styles.accentStyle.Render("Choose a conversation"))
+	heading := m.styles.accentStyle.Render("Choose a conversation")
+	b.WriteString(ansi.Truncate(heading, width, ""))
 	b.WriteString("\n\n")
 	for index := start; index < end; index++ {
 		prefix := "  "
@@ -168,7 +169,8 @@ func (m *SessionPickerModel) View() tea.View {
 		b.WriteByte('\n')
 	}
 	footer := fmt.Sprintf("%d/%d  ↑/↓ or j/k move · enter select · esc/q cancel", m.cursor+1, len(m.items))
-	b.WriteString("\n" + m.styles.mutedStyle.Render(footer))
+	footer = ansi.Truncate(m.styles.mutedStyle.Render(footer), width, "")
+	b.WriteString("\n" + footer)
 	return tea.NewView(b.String())
 }
 

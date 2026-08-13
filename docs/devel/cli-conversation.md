@@ -225,6 +225,35 @@ cli` counterpart). An unrecognized `/word` is refused locally (error
   User/assistant/thought labels are decorated outside the cached Glamour body,
   preserving Markdown syntax colors and streaming-cache reuse. The same labels
   remain as structural cues in `--no-color`/`$NO_COLOR` mode.
+
+### Visual palette regression matrix and manual checks
+
+`internal/chatui/visual_regression_test.go` renders the picker, representative
+chat frames, completion and permission surfaces, and every footer state directly.
+It deliberately avoids a PTY and `teatest`, and leaves Markdown byte goldens in
+`internal/termmd`. The matrix checks the following presentation contract:
+
+| Presentation | Color behavior | Required non-color cues |
+| ------------ | -------------- | ----------------------- |
+| `--style dark` | Dark semantic palette for every chat and picker surface | `>` selection marker, bracketed transcript roles, state symbols and labels, explicit permission actions |
+| `--style light` | Light semantic palette with the same text and geometry as dark | Same cues as dark; palette changes must not change content or layout |
+| `--no-color` / `$NO_COLOR` | No ANSI styling from any surface | All selection, role, status, border, and action cues remain visible |
+
+Before changing the palette or terminal layout, manually run
+`mitto conversation chat` in a real terminal and check:
+
+1. Pin `--style dark` and `--style light`; move the picker and completion
+   selections and confirm exactly one highlighted row follows the `>` marker.
+2. Show user, assistant, thought, tool, system, and error entries; confirm their
+   bracketed labels remain visible and Markdown bodies retain readable syntax.
+3. Open a permission request and confirm `[y] Approve` and `[n] Deny` remain
+   distinct in color and text.
+4. Observe connecting, connected, working, and disconnected footer transitions;
+   confirm both symbols and labels change.
+5. Repeat with `--no-color` (and separately `$NO_COLOR`), then resize to a narrow
+   terminal; confirm ANSI is absent, cues remain distinguishable, rows do not
+   overflow, and the transcript does not overlap the composer or modal.
+
 - **Test strategy (`mitto-pscc.12`)**: four layers, each independently
   useful and owning disjoint files, closing gaps rather than building from
   scratch (Layers 1 and 2 pre-existed from `.7`/`.8`).
