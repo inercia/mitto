@@ -91,9 +91,9 @@ func (it *item) render(width int, baseMode termmd.Mode, theme termmd.Theme, styl
 	case itemTool:
 		return styles.renderTool(it.title, it.status)
 	case itemError:
-		return styles.errorStyle.Render(it.title)
+		return styles.renderTranscriptLine("[error]", it.title, styles.errorStyle)
 	case itemSystem:
-		return styles.systemStyle.Render(it.title)
+		return styles.renderTranscriptLine("[system]", it.title, styles.systemStyle)
 	}
 
 	mode := renderModeFor(baseMode, it.markdown)
@@ -132,16 +132,17 @@ func (it *item) render(width int, baseMode termmd.Mode, theme termmd.Theme, styl
 	return it.decorate(out, styles)
 }
 
-// decorate applies the per-kind wrapper style (dimming for thoughts, a
-// sender label for user items) around the already-rendered markdown body.
+// decorate adds a semantic label outside the already-rendered markdown body.
+// Keeping decoration out of rendered preserves Glamour's syntax colors and
+// ensures cached/streamed bodies never accumulate duplicate labels.
 func (it *item) decorate(body string, styles *styles) string {
 	switch it.kind {
 	case itemAgent:
-		return styles.agentStyle.Render(body)
+		return styles.renderTranscriptBlock("[assistant]", body, styles.agentStyle)
 	case itemThought:
-		return styles.thoughtStyle.Render(body)
+		return styles.renderTranscriptBlock("[thought]", body, styles.thoughtStyle)
 	case itemUser:
-		return styles.userStyle.Render(body)
+		return styles.renderTranscriptBlock("[user]", body, styles.userStyle)
 	default:
 		return body
 	}

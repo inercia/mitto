@@ -147,12 +147,22 @@ func (s *styles) textareaStyles(mode termmd.Mode, theme termmd.Theme) textarea.S
 	return result
 }
 
-// renderTool renders a tool-call/tool-update item as a single dimmed,
-// bracketed line: "[tool] <title>: <status>", or "[tool] <title>" when
-// status is empty (e.g. file_read/file_write items, which have no status).
+// renderTranscriptBlock styles only the semantic label, leaving the rendered
+// Markdown body untouched so Glamour's syntax colors remain authoritative.
+func (s *styles) renderTranscriptBlock(label, body string, labelStyle lipgloss.Style) string {
+	return labelStyle.Render(label) + "\n" + body
+}
+
+// renderTranscriptLine renders non-Markdown events as one semantic line.
+func (s *styles) renderTranscriptLine(label, body string, itemStyle lipgloss.Style) string {
+	return itemStyle.Render(label + " " + body)
+}
+
+// renderTool renders a tool-call/tool-update item as a labeled line. Status is
+// omitted for file_read/file_write items, which do not carry one.
 func (s *styles) renderTool(title, status string) string {
 	if status == "" {
-		return s.toolStyle.Render("[tool] " + title)
+		return s.renderTranscriptLine("[tool]", title, s.toolStyle)
 	}
-	return s.toolStyle.Render("[tool] " + title + ": " + status)
+	return s.renderTranscriptLine("[tool]", title+": "+status, s.toolStyle)
 }

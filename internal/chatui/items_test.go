@@ -71,7 +71,15 @@ func TestAppendOrUpdateAgent_StreamedRenderMatchesFullRenderStructurally(t *test
 		t.Fatalf("len(items) = %d, want 1 (same seq must update in place)", got)
 	}
 
-	got := normalizeLines(tr.items[0].render(tr.width, tr.mode, tr.theme, tr.styles))
+	rendered := tr.items[0].render(tr.width, tr.mode, tr.theme, tr.styles)
+	if got := strings.Count(xansi.Strip(rendered), "[assistant]"); got != 1 {
+		t.Fatalf("assistant label count = %d, want 1\nrendered:\n%s", got, rendered)
+	}
+	_, body, ok := strings.Cut(rendered, "\n")
+	if !ok {
+		t.Fatalf("rendered agent item has no label separator: %q", rendered)
+	}
+	got := normalizeLines(body)
 	want := normalizeLines(termmd.Render(streamedAgentCorpus, termmd.Options{Mode: tr.mode, Width: tr.width}))
 
 	if len(got) != len(want) {
@@ -82,6 +90,82 @@ func TestAppendOrUpdateAgent_StreamedRenderMatchesFullRenderStructurally(t *test
 		if got[i] != want[i] {
 			t.Errorf("line %d = %q, want %q", i, got[i], want[i])
 		}
+	}
+}
+
+func TestItem_Render_LabelsEveryKindInStyledAndPlainModes(t *testing.T) {
+	tests := []struct {
+		name  string
+		kind  itemKind
+		label string
+		setup func(*item)
+	}{
+		{name: "user", kind: itemUser, label: "[user]", setup: func(it *item) { it.markdown = "body" }},
+		{name: "assistant", kind: itemAgent, label: "[assistant]", setup: func(it *item) { it.markdown = "body" }},
+		{name: "thought", kind: itemThought, label: "[thought]", setup: func(it *item) { it.markdown = "body" }},
+		{name: "tool", kind: itemTool, label: "[tool]", setup: func(it *item) { it.title, it.status = "Read file", "done" }},
+		{name: "error", kind: itemError, label: "[error]", setup: func(it *item) { it.title = "failed" }},
+		{name: "system", kind: itemSystem, label: "[system]", setup: func(it *item) { it.title = "local output" }},
+	}
+	modes := []struct {
+		name  string
+		mode  termmd.Mode
+		theme termmd.Theme
+	}{
+		{name: "dark", mode: termmd.ModeStyled, theme: termmd.ThemeDark},
+		{name: "light", mode: termmd.ModeStyled, theme: termmd.ThemeLight},
+		{name: "plain", mode: termmd.ModePlain, theme: termmd.ThemeDark},
+	}
+
+	for _, mode := range modes {
+		for _, tt := range tests {
+			t.Run(mode.name+"/"+tt.name, func(t *testing.T) {
+				styles := newStyles()
+				styles.apply(mode.mode, mode.theme)
+				it := newItem(tt.kind)
+				tt.setup(it)
+
+				got := it.render(80, mode.mode, mode.theme, styles)
+				stripped := xansi.Strip(got)
+				if !strings.Contains(stripped, tt.label) {
+					t.Errorf("rendered item = %q, want label %q", stripped, tt.label)
+				}
+				if mode.mode == termmd.ModePlain && got != stripped {
+					t.Errorf("plain item emitted ANSI: %q", got)
+				}
+				if tt.kind == itemUser || tt.kind == itemAgent || tt.kind == itemThought {
+					if !strings.HasSuffix(got, it.rendered) {
+						t.Errorf("Markdown body was wrapped or recolored outside its cached render:\n%q", got)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestItem_Render_CachedAgentDoesNotDuplicateLabel(t *testing.T) {
+	styles := newStyles()
+	it := newItem(itemAgent)
+	it.markdown = "first chunk"
+
+	it.render(80, termmd.ModeStyled, termmd.ThemeDark, styles)
+	stream := it.stream
+	second := it.render(80, termmd.ModeStyled, termmd.ThemeDark, styles)
+	if got := strings.Count(xansi.Strip(second), "[assistant]"); got != 1 {
+		t.Fatalf("cached render label count = %d, want 1: %q", got, second)
+	}
+	if it.stream != stream {
+		t.Fatal("cached render replaced the StreamRenderer")
+	}
+
+	it.markdown = "first chunk plus more"
+	it.invalidate()
+	third := it.render(80, termmd.ModeStyled, termmd.ThemeDark, styles)
+	if got := strings.Count(xansi.Strip(third), "[assistant]"); got != 1 {
+		t.Fatalf("stream update label count = %d, want 1: %q", got, third)
+	}
+	if it.stream != stream {
+		t.Fatal("stream update replaced the StreamRenderer")
 	}
 }
 
