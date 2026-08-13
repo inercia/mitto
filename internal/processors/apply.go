@@ -1792,22 +1792,17 @@ func isSaturationDispatchErr(err error) bool {
 // dispatchSaturationMaxWait wall-clock window, without consuming the normal
 // attempt budget — see dispatchSaturationMaxWait for why saturation needs a
 // much longer window than other transient errors (mitto-7q2). The
-// non-retryable "no shared process for workspace" sentinel is logged at
-// WARN and abandoned immediately (mitto-6bn.1). If retrying is exhausted,
+// non-retryable "no shared process for workspace" sentinel stops immediate
+// retries but still flows through durable persistence for later delivery.
+// If retrying is exhausted,
 // the final error is logged at ERROR and, when a NotifyFunc is configured
 // (see SetNotifyFunc), surfaced to the user — previously such failures were
 // silently logged and the work was lost with no retry and no UI signal
-// (mitto-exr). skipLog/failLog are the exact log messages used for the two
-// outcomes, letting single vs batched dispatch keep their previously
-// distinct wording.
+// (mitto-exr). failLog lets single vs batched dispatch keep their distinct
+// terminal wording.
 func (m *Manager) dispatchWithRetry(workspaceUUID, name, prompt string, timeout time.Duration, skipLog, failLog string) {
 	totalAttempts, waited, lastErr := m.runDispatchRetryLoop(workspaceUUID, name, prompt, timeout, skipLog)
 	if lastErr == nil {
-		return
-	}
-	if isNonRetryableDispatchErr(lastErr) {
-		// Already logged (at WARN) and abandoned by runDispatchRetryLoop;
-		// nothing further to persist or notify.
 		return
 	}
 
@@ -1887,7 +1882,11 @@ func (m *Manager) dispatchWithRetry(workspaceUUID, name, prompt string, timeout 
 		}
 	}
 	if m.notifyFunc != nil {
-		m.notifyFunc(workspaceUUID, name, lastErr)
+		notifyErr := lastErr
+		if persisted {
+			notifyErr = fmt.Errorf("delivery deferred; batch persisted for later retry: %w", lastErr)
+		}
+		m.notifyFunc(workspaceUUID, name, notifyErr)
 	}
 }
 
@@ -1899,8 +1898,8 @@ func (m *Manager) dispatchWithRetry(workspaceUUID, name, prompt string, timeout 
 // without consuming the normal attempt budget (mitto-7q2). Returns (attempts,
 // waited, nil) on success, or (attempts, waited, the final error) once
 // retrying is exhausted or the non-retryable "no shared process for
-// workspace" sentinel is seen (in which case skipLog has already been logged
-// at WARN and the error should not be persisted or notified by the caller).
+// workspace" sentinel is seen. The caller decides whether to persist that
+// terminal result; initial dispatches spool it while flushes requeue it.
 // attempts is the number of RPC attempts made in this call and waited is the
 // total wall-clock time spent in this call (including sleeps), both for
 // caller logging.
@@ -1941,7 +1940,8 @@ func (m *Manager) runDispatchRetryLoop(workspaceUUID, name, prompt string, timeo
 
 		if isNonRetryableDispatchErr(lastErr) {
 			if m.logger != nil {
-				m.logger.Warn(skipLog, "name", name, "error", lastErr)
+				m.logger.Info("prompt-mode processor dispatch unavailable; deferring durable delivery",
+					"name", name, "error", lastErr)
 			}
 			return totalAttempts, time.Since(start), lastErr
 		}
