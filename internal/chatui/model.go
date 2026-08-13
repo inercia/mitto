@@ -6,6 +6,7 @@ import (
 
 	textarea "charm.land/bubbles/v2/textarea"
 	tea "charm.land/bubbletea/v2"
+	lipgloss "charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/inercia/mitto/internal/termmd"
 	"github.com/inercia/mitto/pkg/api"
@@ -81,7 +82,7 @@ func NewModel(sess *api.Session, opts Options) *Model {
 	st := newStyles()
 	st.apply(mode, theme)
 	ta := textarea.New()
-	ta.Placeholder = "Send a message… (esc cancels, ctrl-c/q quits)"
+	ta.Placeholder = "Send a message…"
 	ta.Focus()
 	ta.ShowLineNumbers = false
 	ta.SetStyles(st.textareaStyles(mode, theme))
@@ -170,9 +171,13 @@ func (m *Model) Init() tea.Cmd {
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		return m.handleResize(msg)
+		model, cmd := m.handleResize(msg)
+		m.recalculateLayout()
+		return model, cmd
 	case tea.KeyPressMsg:
-		return m.handleKey(msg)
+		model, cmd := m.handleKey(msg)
+		m.recalculateLayout()
+		return model, cmd
 	case tea.BackgroundColorMsg:
 		if msg.IsDark() {
 			m.applyPresentation(termmd.ThemeDark)
@@ -181,7 +186,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case eventMsg:
-		return m.handleEvent(msg.event)
+		model, cmd := m.handleEvent(msg.event)
+		if msg.event.Kind == api.EventPermission {
+			m.recalculateLayout()
+		}
+		return model, cmd
 	case streamEndMsg:
 		m.quitting = true
 		m.quitErr = msg.err
@@ -208,17 +217,31 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m *Model) handleResize(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) {
 	m.width, m.height = msg.Width, msg.Height
-	inputHeight := m.input.Height()
-	transcriptHeight := m.height - inputHeight - 1 // 1 line for the status bar
-	if transcriptHeight < 1 {
-		transcriptHeight = 1
-	}
-	m.transcript.SetSize(m.width, transcriptHeight)
-	m.input.SetWidth(m.width)
-	m.status.SetWidth(m.width)
-	m.perm.SetWidth(m.width)
-	m.completion.SetWidth(m.width)
+	safeWidth := max(1, m.width)
+	m.input.SetWidth(surfaceContentWidth(safeWidth))
+	m.status.SetWidth(safeWidth)
+	m.perm.SetWidth(safeWidth)
+	m.completion.SetWidth(safeWidth)
 	return m, nil
+}
+
+// recalculateLayout derives the viewport height from the surface that is
+// actually visible below it. Completion rows grow the bottom area; permission
+// requests replace it. Two separator newlines join transcript, bottom, and
+// status. Heights are clamped so tiny terminals never reach Bubble components
+// with non-positive dimensions.
+func (m *Model) recalculateLayout() {
+	if m.height <= 0 {
+		return
+	}
+	width := max(1, m.width)
+	bottomHeight := lipgloss.Height(m.bottomView())
+	statusHeight := lipgloss.Height(m.status.Render())
+	transcriptHeight := max(1, m.height-bottomHeight-statusHeight-2)
+	if m.transcript.width == width && m.transcript.vp.Height() == transcriptHeight {
+		return
+	}
+	m.transcript.SetSize(width, transcriptHeight)
 }
 
 // handleKey routes a key press. Precedence, highest first: the permission
@@ -467,14 +490,30 @@ func (m *Model) View() tea.View {
 	if m.quitting {
 		return tea.NewView("")
 	}
-	bottom := m.inputView()
+	bottom := m.bottomView()
+	return tea.NewView(m.transcript.View() + "\n" + bottom + "\n" + m.status.Render())
+}
+
+func (m *Model) bottomView() string {
+	bottom := m.composerView()
 	if m.completion.Open() {
 		bottom = m.completion.Render() + "\n" + bottom
 	}
 	if m.perm.Open() {
 		bottom = m.perm.Render()
 	}
-	return tea.NewView(m.transcript.View() + "\n" + bottom + "\n" + m.status.Render())
+	return bottom
+}
+
+// composerView gives the focused textarea an explicit boundary and keeps its
+// key help separate from the placeholder. The text cue remains useful in plain
+// mode while semantic color reinforces focus in dark and light modes.
+func (m *Model) composerView() string {
+	contentWidth := surfaceContentWidth(max(1, m.width))
+	hint := m.styles.mutedStyle.Render("enter send · shift+enter newline · tab commands · esc cancel")
+	hint = ansi.Truncate(hint, contentWidth, "")
+	content := m.inputView() + "\n" + hint
+	return renderSurface(m.styles.composerBorder, content, max(1, m.width))
 }
 
 // inputView removes Bubbles' hard-coded reverse-video virtual cursor in plain

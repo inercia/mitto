@@ -42,20 +42,27 @@ type semanticPalette struct {
 type styles struct {
 	palette semanticPalette
 
-	accentStyle   lipgloss.Style
-	selectedStyle lipgloss.Style
-	mutedStyle    lipgloss.Style
-	successStyle  lipgloss.Style
-	warningStyle  lipgloss.Style
-	errorStyle    lipgloss.Style
-	borderStyle   lipgloss.Style
-	userStyle     lipgloss.Style
-	agentStyle    lipgloss.Style
-	thoughtStyle  lipgloss.Style
-	toolStyle     lipgloss.Style
-	systemStyle   lipgloss.Style
-	statusBar     lipgloss.Style
-	modalBorder   lipgloss.Style
+	accentStyle                lipgloss.Style
+	selectedStyle              lipgloss.Style
+	selectedDescriptionStyle   lipgloss.Style
+	mutedStyle                 lipgloss.Style
+	successStyle               lipgloss.Style
+	warningStyle               lipgloss.Style
+	errorStyle                 lipgloss.Style
+	borderStyle                lipgloss.Style
+	userStyle                  lipgloss.Style
+	agentStyle                 lipgloss.Style
+	thoughtStyle               lipgloss.Style
+	toolStyle                  lipgloss.Style
+	systemStyle                lipgloss.Style
+	completionCommandStyle     lipgloss.Style
+	completionDescriptionStyle lipgloss.Style
+	permissionTitleStyle       lipgloss.Style
+	permissionApproveStyle     lipgloss.Style
+	permissionDenyStyle        lipgloss.Style
+	statusBar                  lipgloss.Style
+	composerBorder             lipgloss.Style
+	modalBorder                lipgloss.Style
 }
 
 func newStyles() *styles {
@@ -70,6 +77,7 @@ func (s *styles) apply(mode termmd.Mode, theme termmd.Theme) {
 	if mode == termmd.ModePlain {
 		s.accentStyle = base
 		s.selectedStyle = base
+		s.selectedDescriptionStyle = base
 		s.mutedStyle = base
 		s.successStyle = base
 		s.warningStyle = base
@@ -80,14 +88,21 @@ func (s *styles) apply(mode termmd.Mode, theme termmd.Theme) {
 		s.thoughtStyle = base
 		s.toolStyle = base
 		s.systemStyle = base
+		s.completionCommandStyle = base
+		s.completionDescriptionStyle = base
+		s.permissionTitleStyle = base
+		s.permissionApproveStyle = base
+		s.permissionDenyStyle = base
 		s.statusBar = base.Padding(0, 1)
-		s.modalBorder = base.Border(lipgloss.RoundedBorder()).Padding(1, 2)
+		s.composerBorder = base.Border(lipgloss.RoundedBorder())
+		s.modalBorder = base.Border(lipgloss.RoundedBorder())
 		return
 	}
 
 	p := s.palette
 	s.accentStyle = base.Foreground(p.accent)
 	s.selectedStyle = base.Foreground(p.selectedText).Background(p.selected).Bold(true)
+	s.selectedDescriptionStyle = base.Foreground(p.selectedText).Background(p.selected)
 	s.mutedStyle = base.Foreground(p.muted)
 	s.successStyle = base.Foreground(p.success)
 	s.warningStyle = base.Foreground(p.warning)
@@ -98,8 +113,32 @@ func (s *styles) apply(mode termmd.Mode, theme termmd.Theme) {
 	s.thoughtStyle = base.Foreground(p.thought).Italic(true)
 	s.toolStyle = base.Foreground(p.tool)
 	s.systemStyle = base.Foreground(p.system)
+	s.completionCommandStyle = base.Foreground(p.accent).Bold(true)
+	s.completionDescriptionStyle = base.Foreground(p.muted)
+	s.permissionTitleStyle = base.Foreground(p.warning).Bold(true)
+	s.permissionApproveStyle = base.Foreground(p.success).Bold(true)
+	s.permissionDenyStyle = base.Foreground(p.err).Bold(true)
 	s.statusBar = base.Foreground(p.muted).Background(p.surface).Padding(0, 1)
-	s.modalBorder = base.Border(lipgloss.RoundedBorder()).BorderForeground(p.border).Padding(1, 2)
+	s.composerBorder = base.Border(lipgloss.RoundedBorder()).BorderForeground(p.accent)
+	s.modalBorder = base.Border(lipgloss.RoundedBorder()).BorderForeground(p.warning)
+}
+
+// surfaceContentWidth returns the usable width inside a one-cell border. At
+// tiny widths the border is omitted, so the terminal's full width stays usable.
+func surfaceContentWidth(totalWidth int) int {
+	if totalWidth > 2 {
+		return totalWidth - 2
+	}
+	return max(1, totalWidth)
+}
+
+// renderSurface applies a one-cell border without allowing negative widths.
+// Terminals narrower than the border fall back to the content itself.
+func renderSurface(style lipgloss.Style, content string, totalWidth int) string {
+	if totalWidth < 3 {
+		return content
+	}
+	return style.Width(surfaceContentWidth(totalWidth)).Render(content)
 }
 
 func semanticPaletteFor(mode termmd.Mode, theme termmd.Theme) semanticPalette {

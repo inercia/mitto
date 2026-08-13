@@ -2,6 +2,8 @@ package chatui
 
 import (
 	tea "charm.land/bubbletea/v2"
+	lipgloss "charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/inercia/mitto/pkg/api"
 )
 
@@ -56,9 +58,26 @@ func (p *permissionModal) Answer(approved bool) tea.Cmd {
 
 func (p *permissionModal) Render() string {
 	cur := p.current()
-	body := p.styles.warningStyle.Render(cur.Title) + "\n\n" +
-		p.styles.agentStyle.Render(cur.Description) + "\n\n" +
-		p.styles.successStyle.Render("[y] approve") + "   " +
-		p.styles.errorStyle.Render("[n] deny")
-	return p.styles.modalBorder.Width(p.width - 4).Render(body)
+	contentWidth := surfaceContentWidth(p.width)
+	title := "Permission required"
+	if cur.Title != "" {
+		title += ": " + cur.Title
+	}
+	title = ansi.Hardwrap(p.styles.permissionTitleStyle.Render(title), contentWidth, false)
+
+	body := title
+	if cur.Description != "" {
+		description := ansi.Hardwrap(p.styles.agentStyle.Render(cur.Description), contentWidth, false)
+		body += "\n\n" + description
+	}
+
+	approve := p.styles.permissionApproveStyle.Render("[y] Approve")
+	deny := p.styles.permissionDenyStyle.Render("[n] Deny")
+	actions := approve + "   " + deny
+	if lipgloss.Width(actions) > contentWidth {
+		actions = ansi.Hardwrap(approve, contentWidth, false) + "\n" +
+			ansi.Hardwrap(deny, contentWidth, false)
+	}
+	body += "\n\n" + actions
+	return renderSurface(p.styles.modalBorder, body, p.width)
 }

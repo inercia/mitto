@@ -2,6 +2,8 @@ package chatui
 
 import (
 	"strings"
+
+	"github.com/charmbracelet/x/ansi"
 )
 
 // completionMenu is the imperative struct backing slash-command tab
@@ -95,11 +97,17 @@ func (c *completionMenu) SingleMatch() (string, bool) {
 func (c *completionMenu) Render() string {
 	var b strings.Builder
 	for i, m := range c.matches {
-		line := m.name + "  " + m.description
+		var line string
 		if i == c.selected {
-			line = c.styles.selectedStyle.Render("> " + line)
+			line = c.styles.selectedStyle.Render("> "+m.name) +
+				c.styles.selectedDescriptionStyle.Render("  "+m.description)
 		} else {
-			line = c.styles.mutedStyle.Render("  " + line)
+			line = c.styles.mutedStyle.Render("  ") +
+				c.styles.completionCommandStyle.Render(m.name) +
+				c.styles.completionDescriptionStyle.Render("  "+m.description)
+		}
+		if c.width > 0 {
+			line = ansi.Truncate(line, max(1, c.width), "")
 		}
 		b.WriteString(line)
 		if i < len(c.matches)-1 {
