@@ -206,6 +206,14 @@ cli` counterpart). An unrecognized `/word` is refused locally (error
   updates both Glamour and every Lipgloss/Bubbles style. `--no-color` and
   `$NO_COLOR` select a plain palette that preserves text, selection markers,
   rounded borders, padding, and spacing while emitting no ANSI styling.
+- **Interactive surface hierarchy (`mitto-1bml.4`)**: the focused composer has
+  an accent boundary and a separate muted key hint; completion rows distinguish
+  command names from descriptions and retain a `>` selection marker in plain
+  mode; permission requests use a warning boundary with explicit `[y] Approve`
+  and `[n] Deny` actions. All three surfaces use ANSI-aware wrapping or
+  truncation and omit borders when a terminal is too narrow to contain them.
+  Their rendered heights, rather than fixed row assumptions, determine the
+  transcript viewport so opening completion or permission UI cannot overlap it.
 - **Transcript item hierarchy (`mitto-1bml.3`)**: user, assistant, thought,
   tool, local system, and error entries carry persistent bracketed text labels.
   User/assistant/thought labels are decorated outside the cached Glamour body,
@@ -221,7 +229,8 @@ cli` counterpart). An unrecognized `/word` is refused locally (error
      state and on the returned `tea.Cmd`'s identity (its `()` result type),
      never by executing a `Cmd` that would dereference the nil session.
      Covers the `WindowSizeMsg` geometry contract too (transcript height =
-     `height - input height - 1`, clamped to 1).
+     terminal height minus the rendered bottom surface, rendered status, and
+     two separator rows, clamped to 1).
   2. **Renderer goldens** (`internal/termmd/testdata/`, shipped with `.8`) —
      `corpus.plain.golden`/`corpus.styled.golden`/`fallback.golden` plus a
      `go.mod`-read version-pin test (`TestGlamourVersion_Pinned`) asserting

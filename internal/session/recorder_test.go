@@ -1605,7 +1605,6 @@ func TestRecorder_UIPromptAnswer_DuplicatesReservedSeq(t *testing.T) {
 	// RecordUIPromptAnswerWithSeq instead of the non-seq AppendEvent path,
 	// so the answer takes the next slot from the shared counter (mitto-t7xv).
 	seqUIAnswer := simulatedNextSeq
-	simulatedNextSeq++
 	if err := recorder.RecordUIPromptAnswerWithSeq(seqUIAnswer, "req-1", "yes", "Yes"); err != nil {
 		t.Fatalf("RecordUIPromptAnswerWithSeq failed: %v", err)
 	}
