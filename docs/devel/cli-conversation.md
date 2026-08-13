@@ -206,6 +206,11 @@ cli` counterpart). An unrecognized `/word` is refused locally (error
   updates both Glamour and every Lipgloss/Bubbles style. `--no-color` and
   `$NO_COLOR` select a plain palette that preserves text, selection markers,
   rounded borders, padding, and spacing while emitting no ANSI styling.
+- **Transcript item hierarchy (`mitto-1bml.3`)**: user, assistant, thought,
+  tool, local system, and error entries carry persistent bracketed text labels.
+  User/assistant/thought labels are decorated outside the cached Glamour body,
+  preserving Markdown syntax colors and streaming-cache reuse. The same labels
+  remain as structural cues in `--no-color`/`$NO_COLOR` mode.
 - **Test strategy (`mitto-pscc.12`)**: four layers, each independently
   useful and owning disjoint files, closing gaps rather than building from
   scratch (Layers 1 and 2 pre-existed from `.7`/`.8`).

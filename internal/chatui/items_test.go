@@ -98,14 +98,16 @@ func TestItem_Render_LabelsEveryKindInStyledAndPlainModes(t *testing.T) {
 		name  string
 		kind  itemKind
 		label string
+		body  string
+		block bool
 		setup func(*item)
 	}{
-		{name: "user", kind: itemUser, label: "[user]", setup: func(it *item) { it.markdown = "body" }},
-		{name: "assistant", kind: itemAgent, label: "[assistant]", setup: func(it *item) { it.markdown = "body" }},
-		{name: "thought", kind: itemThought, label: "[thought]", setup: func(it *item) { it.markdown = "body" }},
-		{name: "tool", kind: itemTool, label: "[tool]", setup: func(it *item) { it.title, it.status = "Read file", "done" }},
-		{name: "error", kind: itemError, label: "[error]", setup: func(it *item) { it.title = "failed" }},
-		{name: "system", kind: itemSystem, label: "[system]", setup: func(it *item) { it.title = "local output" }},
+		{name: "user", kind: itemUser, label: "[user]", body: "body", block: true, setup: func(it *item) { it.markdown = "body" }},
+		{name: "assistant", kind: itemAgent, label: "[assistant]", body: "body", block: true, setup: func(it *item) { it.markdown = "body" }},
+		{name: "thought", kind: itemThought, label: "[thought]", body: "body", block: true, setup: func(it *item) { it.markdown = "body" }},
+		{name: "tool", kind: itemTool, label: "[tool]", body: "Read file: done", setup: func(it *item) { it.title, it.status = "Read file", "done" }},
+		{name: "error", kind: itemError, label: "[error]", body: "failed", setup: func(it *item) { it.title = "failed" }},
+		{name: "system", kind: itemSystem, label: "[system]", body: "local output", setup: func(it *item) { it.title = "local output" }},
 	}
 	modes := []struct {
 		name  string
@@ -127,8 +129,15 @@ func TestItem_Render_LabelsEveryKindInStyledAndPlainModes(t *testing.T) {
 
 				got := it.render(80, mode.mode, mode.theme, styles)
 				stripped := xansi.Strip(got)
-				if !strings.Contains(stripped, tt.label) {
-					t.Errorf("rendered item = %q, want label %q", stripped, tt.label)
+				separator := " "
+				if tt.block {
+					separator = "\n"
+				}
+				if !strings.HasPrefix(stripped, tt.label+separator) {
+					t.Errorf("rendered item = %q, want structural prefix %q", stripped, tt.label+separator)
+				}
+				if !strings.Contains(stripped, tt.body) {
+					t.Errorf("ANSI-stripped item = %q, want body %q", stripped, tt.body)
 				}
 				if mode.mode == termmd.ModePlain && got != stripped {
 					t.Errorf("plain item emitted ANSI: %q", got)
