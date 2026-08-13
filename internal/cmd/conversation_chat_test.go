@@ -269,3 +269,29 @@ func TestResolveChatStyle(t *testing.T) {
 		})
 	}
 }
+
+func TestResolveChatPresentation_FoldsNoColorAndPreservesThemePrecedence(t *testing.T) {
+	t.Run("NO_COLOR", func(t *testing.T) {
+		t.Setenv("NO_COLOR", "1")
+		t.Setenv("GLAMOUR_STYLE", "dark")
+		got := resolveChatPresentation(false, "light")
+		if !got.NoColor {
+			t.Error("NO_COLOR should select the shared plain picker/chat presentation")
+		}
+		if got.Style != "light" {
+			t.Errorf("Style = %q, want explicit light to retain theme precedence", got.Style)
+		}
+	})
+
+	t.Run("flag", func(t *testing.T) {
+		t.Setenv("NO_COLOR", "")
+		t.Setenv("GLAMOUR_STYLE", "light")
+		got := resolveChatPresentation(true, "auto")
+		if !got.NoColor {
+			t.Error("--no-color should select the shared plain picker/chat presentation")
+		}
+		if got.Style != "light" {
+			t.Errorf("Style = %q, want GLAMOUR_STYLE light", got.Style)
+		}
+	})
+}

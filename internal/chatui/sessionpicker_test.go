@@ -1,10 +1,12 @@
 package chatui
 
 import (
+	"image/color"
 	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/inercia/mitto/pkg/api"
 )
@@ -139,5 +141,41 @@ func TestSessionPickerModel_EmptyViewAndBoundedNavigation(t *testing.T) {
 	m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
 	if m.cursor != 0 {
 		t.Errorf("single-item navigation moved cursor to %d, want 0", m.cursor)
+	}
+}
+
+func TestSessionPickerModel_AutoThemeUpdatesEveryStyledRow(t *testing.T) {
+	m := NewSessionPickerModel([]api.SessionInfo{{
+		SessionID: "one", Name: "Conversation", WorkingDir: "/work/demo",
+	}}, PresentationOptions{Style: "auto"})
+	if cmd := m.Init(); cmd == nil || cmd() != tea.RequestBackgroundColor() {
+		t.Fatal("auto picker should request the terminal background color")
+	}
+	dark := m.View().Content
+	m.Update(tea.BackgroundColorMsg{Color: color.White})
+	light := m.View().Content
+	if dark == light {
+		t.Fatal("picker output did not change after light background resolution")
+	}
+	if ansi.Strip(dark) == dark || ansi.Strip(light) == light {
+		t.Fatal("styled picker should emit ANSI for both dark and light palettes")
+	}
+}
+
+func TestSessionPickerModel_NoColorPreservesTextWithoutANSI(t *testing.T) {
+	m := NewSessionPickerModel([]api.SessionInfo{{
+		SessionID: "one", Name: "Conversation", WorkingDir: "/work/demo",
+	}}, PresentationOptions{NoColor: true, Style: "auto"})
+	if cmd := m.Init(); cmd != nil {
+		t.Fatal("plain picker must not request the terminal background color")
+	}
+	out := m.View().Content
+	if ansi.Strip(out) != out {
+		t.Errorf("plain picker emitted ANSI: %q", out)
+	}
+	for _, text := range []string{"Choose a conversation", "> /work/demo  —  Conversation", "enter select"} {
+		if !strings.Contains(out, text) {
+			t.Errorf("plain picker lost %q:\n%s", text, out)
+		}
 	}
 }

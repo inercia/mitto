@@ -6,6 +6,7 @@ import (
 
 	textarea "charm.land/bubbles/v2/textarea"
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/inercia/mitto/internal/termmd"
 	"github.com/inercia/mitto/pkg/api"
 )
@@ -466,7 +467,7 @@ func (m *Model) View() tea.View {
 	if m.quitting {
 		return tea.NewView("")
 	}
-	bottom := m.input.View()
+	bottom := m.inputView()
 	if m.completion.Open() {
 		bottom = m.completion.Render() + "\n" + bottom
 	}
@@ -474,4 +475,14 @@ func (m *Model) View() tea.View {
 		bottom = m.perm.Render()
 	}
 	return tea.NewView(m.transcript.View() + "\n" + bottom + "\n" + m.status.Render())
+}
+
+// inputView removes Bubbles' hard-coded reverse-video virtual cursor in plain
+// mode. The cursor character and textarea layout remain intact.
+func (m *Model) inputView() string {
+	out := m.input.View()
+	if m.transcript.mode == termmd.ModePlain {
+		return ansi.Strip(out)
+	}
+	return out
 }
