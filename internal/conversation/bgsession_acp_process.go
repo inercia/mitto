@@ -445,6 +445,10 @@ func (bs *BackgroundSession) resetInFlightToolCalls() {
 	bs.inFlightToolTitles = nil
 }
 
+type mcpInitProgressProvider interface {
+	MCPInitInProgress() bool
+}
+
 // startPromptInactivityWatchdog launches a background goroutine that watches for a
 // live-but-unresponsive agent during a prompt. Unlike the process-death and
 // connection-EOF monitors, this catches the case where the agent stays alive with an
@@ -453,6 +457,7 @@ func (bs *BackgroundSession) resetInFlightToolCalls() {
 //
 // The watchdog resets its idle baseline to now, then on each tick:
 //   - returns when ctx is done (the prompt completed or was cancelled elsewhere);
+//   - pauses (resets the baseline) while MCP initialization is in progress;
 //   - pauses (resets the baseline) while a UI prompt is active, since permission
 //     dialogs and MCP tool questions legitimately block the agent on user input;
 //   - pauses (resets the baseline) while a tool call is in flight, since a long-running
@@ -498,11 +503,15 @@ func (bs *BackgroundSession) startPromptInactivityWatchdog(ctx context.Context, 
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				// Pause while the agent is legitimately blocked on a UI prompt
-				// (permission dialog or MCP tool question) or waiting on an in-flight
+				// Pause while the agent is legitimately blocked on MCP initialization,
+				// a UI prompt (permission dialog or MCP tool question), or an in-flight
 				// tool call (a long-running tool may stream no intermediate updates).
 				// Reset the baseline so the idle clock starts fresh once it resumes.
-				if bs.GetActiveUIPrompt() != nil || bs.hasInFlightToolCall() {
+				mcpInitializing := false
+				if process, ok := bs.sharedProcess.(mcpInitProgressProvider); ok {
+					mcpInitializing = process.MCPInitInProgress()
+				}
+				if mcpInitializing || bs.GetActiveUIPrompt() != nil || bs.hasInFlightToolCall() {
 					bs.lastAgentActivityAt.Store(time.Now().UnixNano())
 					warned = false
 					continue

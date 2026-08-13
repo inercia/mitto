@@ -1157,16 +1157,16 @@ func (m *ACPProcessManager) PromptAuxiliaryAsync(ctx context.Context, workspaceU
 
 // auxSessionCreateBusyRPCThreshold is the number of in-flight user-facing RPCs on
 // the shared process at which non-essential auxiliary session/new attempts bail
-// proactively (mitto-9gt). Rationale: a healthy workspace at rest has 0-1 active
-// RPCs; a single user prompt in flight has 1. During a parallel fan-out the parent
-// + worker RPCs quickly climb to ≥3, and the log-analysis on the bead observed the
-// aux-session storm firing at concurrent_prompting=6. Threshold 3 catches the storm
-// window without penalising the normal single-prompt case. The IsSaturated() bail
+// proactively (mitto-9gt, mitto-6cz6). A healthy workspace at rest has 0 active
+// RPCs. Even one foreground prompt can overlap several distinct auxiliary creators,
+// and each session/new starts an asynchronous MCP handshake in Auggie. Threshold 1
+// therefore protects the normal foreground-prompt case from background amplification.
+// The IsSaturated() bail
 // above is REACTIVE (fires only after sessionSaturationTimeoutThreshold=3
 // consecutive timeouts); this proactive check closes the first-storm hole where
 // saturation has not yet tripped and NewSession would otherwise burn the full
 // auxSessionCreateBudget (60s) hitting the agent's internal deadline.
-const auxSessionCreateBusyRPCThreshold = int32(3)
+const auxSessionCreateBusyRPCThreshold = int32(1)
 
 // isProactiveBailPurpose reports whether an auxiliary purpose is subject to the
 // proactive ActiveRPCs()-based load-shed (mitto-9gt). Background pre-warming and

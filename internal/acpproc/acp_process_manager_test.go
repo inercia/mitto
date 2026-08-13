@@ -2221,6 +2221,31 @@ func TestGetOrCreateAuxiliarySession_HighActiveRPCsBails(t *testing.T) {
 	}
 }
 
+// TestGetOrCreateAuxiliarySession_SingleForegroundPromptBails reproduces
+// mitto-6cz6: even one active foreground prompt can overlap several distinct
+// auxiliary session/new calls, each triggering Auggie's asynchronous MCP init.
+// Nonessential auxiliary creation must therefore shed before joining that prompt.
+func TestGetOrCreateAuxiliarySession_SingleForegroundPromptBails(t *testing.T) {
+	m := NewACPProcessManager(context.Background(), nil)
+	defer m.Close()
+
+	const wsUUID = "ws-single-foreground-prompt"
+	proc := newTestSharedProcess()
+	proc.activeRPCs.Store(1)
+	m.mu.Lock()
+	m.processes[wsUUID] = proc
+	m.mu.Unlock()
+
+	start := time.Now()
+	_, err := m.getOrCreateAuxiliarySession(context.Background(), wsUUID, "follow-up")
+	if !errors.Is(err, acperrors.ErrProcessBusy) {
+		t.Fatalf("one active foreground RPC should shed nonessential auxiliary creation with ErrProcessBusy, got %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+		t.Fatalf("expected immediate load shedding, got %v", elapsed)
+	}
+}
+
 // TestGetOrCreateAuxiliarySession_MCPInitTimedOutBails is the mitto-337
 // reproduction (hard case): the shared process's stderr monitor has already
 // observed the agent report "MCP initialization timed out"
