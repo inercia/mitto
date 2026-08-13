@@ -71,7 +71,7 @@ func (s *statusLine) Render() string {
 	}
 	left = ansi.Truncate(left, max(0, leftBudget), "…")
 	line := left + lipgloss.NewStyle().Width(gap).Render("") + right
-	return bar.Width(contentWidth).Render(line)
+	return bar.Width(width).Render(line)
 }
 
 func (s *statusLine) renderState(width int) string {

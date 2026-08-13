@@ -370,6 +370,9 @@ func TestModel_PromptReceivedThenComplete_TogglesInFlight(t *testing.T) {
 	if !m.status.inFlight {
 		t.Error("prompt_received should set status.inFlight = true")
 	}
+	if got := m.status.Render(); !strings.Contains(got, "◆ working") {
+		t.Errorf("prompt_received status = %q, want visible working cue", got)
+	}
 
 	m.Update(eventMsg{event: api.Event{Kind: api.EventPromptComplete}})
 	if m.inFlight {
@@ -377,6 +380,9 @@ func TestModel_PromptReceivedThenComplete_TogglesInFlight(t *testing.T) {
 	}
 	if m.status.inFlight {
 		t.Error("prompt_complete should set status.inFlight = false")
+	}
+	if got := m.status.Render(); strings.Contains(got, "working") {
+		t.Errorf("prompt_complete status = %q, must clear visible working cue", got)
 	}
 }
 
@@ -393,6 +399,9 @@ func TestModel_ACPStoppedThenStarted_TogglesConnectionStatus(t *testing.T) {
 	if got := m.status.disconnect; got != "acp stopped: crashed" {
 		t.Errorf("status.disconnect = %q, want %q", got, "acp stopped: crashed")
 	}
+	if got := m.status.Render(); !strings.Contains(got, "× disconnected") {
+		t.Errorf("acp_stopped status = %q, want visible disconnected cue", got)
+	}
 
 	m.Update(eventMsg{event: api.Event{Kind: api.EventACPStarted}})
 	if !m.status.connected {
@@ -400,6 +409,9 @@ func TestModel_ACPStoppedThenStarted_TogglesConnectionStatus(t *testing.T) {
 	}
 	if got := m.status.acpServer; got != "Auggie" {
 		t.Errorf("status.acpServer = %q, want the previously-known server name %q", got, "Auggie")
+	}
+	if got := m.status.Render(); !strings.Contains(got, "● connected") {
+		t.Errorf("acp_started status = %q, want visible connected cue", got)
 	}
 }
 
