@@ -97,9 +97,9 @@ func (c *completionMenu) Render() string {
 	for i, m := range c.matches {
 		line := m.name + "  " + m.description
 		if i == c.selected {
-			line = c.styles.statusOK.Render("> " + line)
+			line = c.styles.selectedStyle.Render("> " + line)
 		} else {
-			line = "  " + line
+			line = c.styles.mutedStyle.Render("  " + line)
 		}
 		b.WriteString(line)
 		if i < len(c.matches)-1 {

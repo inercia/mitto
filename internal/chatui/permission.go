@@ -56,6 +56,9 @@ func (p *permissionModal) Answer(approved bool) tea.Cmd {
 
 func (p *permissionModal) Render() string {
 	cur := p.current()
-	body := cur.Title + "\n\n" + cur.Description + "\n\n[y] approve   [n] deny"
+	body := p.styles.warningStyle.Render(cur.Title) + "\n\n" +
+		p.styles.agentStyle.Render(cur.Description) + "\n\n" +
+		p.styles.successStyle.Render("[y] approve") + "   " +
+		p.styles.errorStyle.Render("[n] deny")
 	return p.styles.modalBorder.Width(p.width - 4).Render(body)
 }

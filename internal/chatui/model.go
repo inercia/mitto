@@ -73,46 +73,42 @@ type Model struct {
 // must be set (directly or via SetSession) before Init/Update run, i.e.
 // before tea.NewProgram(model).Run() is called.
 func NewModel(sess *api.Session, opts Options) *Model {
+	mode, theme, requestTheme := resolvePresentation(PresentationOptions{
+		NoColor: opts.NoColor,
+		Style:   opts.Style,
+	})
 	st := newStyles()
+	st.apply(mode, theme)
 	ta := textarea.New()
 	ta.Placeholder = "Send a message… (esc cancels, ctrl-c/q quits)"
 	ta.Focus()
 	ta.ShowLineNumbers = false
-
-	mode := termmd.ModeStyled
-	if opts.NoColor {
-		mode = termmd.ModePlain
-	}
+	ta.SetStyles(st.textareaStyles(mode, theme))
 
 	m := &Model{
-		sess:       sess,
-		transcript: newTranscript(st, opts.ShowThoughts),
-		input:      ta,
-		status:     newStatusLine(st, opts.Title),
-		perm:       newPermissionModal(sess, st),
-		styles:     st,
-		history:    newInputHistory(),
-		completion: newCompletionMenu(st),
+		sess:         sess,
+		transcript:   newTranscript(st, opts.ShowThoughts),
+		input:        ta,
+		status:       newStatusLine(st, opts.Title),
+		perm:         newPermissionModal(sess, st),
+		styles:       st,
+		history:      newInputHistory(),
+		completion:   newCompletionMenu(st),
+		requestTheme: requestTheme,
 	}
 	m.transcript.SetMode(mode)
-
-	// Theme resolution (mitto-u7k3): an explicit "dark"/"light" pins the
-	// theme outright; anything else ("auto", "", or NoColor — no point
-	// querying the background when nothing will be colored) defers to a
-	// tea.BackgroundColorMsg reply requested from Init. The transcript
-	// starts at its zero-value ThemeDark either way, matching Options.Style
-	// == "auto"'s documented "starts dark until resolved" behavior.
-	if mode == termmd.ModeStyled {
-		switch opts.Style {
-		case "dark":
-			m.transcript.SetTheme(termmd.ThemeDark)
-		case "light":
-			m.transcript.SetTheme(termmd.ThemeLight)
-		default:
-			m.requestTheme = true
-		}
-	}
+	m.transcript.SetTheme(theme)
 	return m
+}
+
+// applyPresentation updates the shared semantic styles, textarea styles, and
+// transcript renderer together. BackgroundColorMsg must never update only the
+// Glamour transcript while leaving the surrounding Lipgloss UI stale.
+func (m *Model) applyPresentation(theme termmd.Theme) {
+	mode := m.transcript.mode
+	m.styles.apply(mode, theme)
+	m.input.SetStyles(m.styles.textareaStyles(mode, theme))
+	m.transcript.SetTheme(theme)
 }
 
 // SetSession attaches sess after construction, for callers (the CLI
@@ -178,9 +174,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleKey(msg)
 	case tea.BackgroundColorMsg:
 		if msg.IsDark() {
-			m.transcript.SetTheme(termmd.ThemeDark)
+			m.applyPresentation(termmd.ThemeDark)
 		} else {
-			m.transcript.SetTheme(termmd.ThemeLight)
+			m.applyPresentation(termmd.ThemeLight)
 		}
 		return m, nil
 	case eventMsg:

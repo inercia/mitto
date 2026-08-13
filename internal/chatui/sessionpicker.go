@@ -8,6 +8,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/inercia/mitto/internal/termmd"
 	"github.com/inercia/mitto/pkg/api"
 )
 
@@ -36,15 +37,26 @@ func (i sessionPickerItem) Line() string {
 // TUI starts. It performs no I/O in Update; the command owns API calls and the
 // tea.Program lifecycle.
 type SessionPickerModel struct {
-	items      []sessionPickerItem
-	cursor     int
-	width      int
-	height     int
-	selectedID string
-	cancelled  bool
+	items        []sessionPickerItem
+	cursor       int
+	width        int
+	height       int
+	selectedID   string
+	cancelled    bool
+	mode         termmd.Mode
+	theme        termmd.Theme
+	styles       *styles
+	requestTheme bool
 }
 
-func NewSessionPickerModel(sessions []api.SessionInfo) *SessionPickerModel {
+func NewSessionPickerModel(sessions []api.SessionInfo, options ...PresentationOptions) *SessionPickerModel {
+	var opts PresentationOptions
+	if len(options) > 0 {
+		opts = options[0]
+	}
+	mode, theme, requestTheme := resolvePresentation(opts)
+	st := newStyles()
+	st.apply(mode, theme)
 	items := make([]sessionPickerItem, 0, len(sessions))
 	for _, session := range sessions {
 		items = append(items, sessionPickerItem{session: session})
@@ -62,15 +74,29 @@ func NewSessionPickerModel(sessions []api.SessionInfo) *SessionPickerModel {
 		}
 		return items[left].session.SessionID < items[right].session.SessionID
 	})
-	return &SessionPickerModel{items: items, width: 80, height: 24}
+	return &SessionPickerModel{
+		items: items, width: 80, height: 24,
+		mode: mode, theme: theme, styles: st, requestTheme: requestTheme,
+	}
 }
 
-func (m *SessionPickerModel) Init() tea.Cmd { return nil }
+func (m *SessionPickerModel) Init() tea.Cmd {
+	if m.requestTheme {
+		return func() tea.Msg { return tea.RequestBackgroundColor() }
+	}
+	return nil
+}
 
 func (m *SessionPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
+	case tea.BackgroundColorMsg:
+		if msg.IsDark() {
+			m.applyPresentation(termmd.ThemeDark)
+		} else {
+			m.applyPresentation(termmd.ThemeLight)
+		}
 	case tea.KeyPressMsg:
 		switch msg.String() {
 		case "up", "k":
@@ -96,12 +122,26 @@ func (m *SessionPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m *SessionPickerModel) applyPresentation(theme termmd.Theme) {
+	m.theme = theme
+	m.styles.apply(m.mode, theme)
+}
+
+func (m *SessionPickerModel) renderItem(item sessionPickerItem) string {
+	if item.session.WorkingDir == "" {
+		return m.styles.agentStyle.Render(item.Title())
+	}
+	return m.styles.mutedStyle.Render(item.session.WorkingDir+"  —  ") +
+		m.styles.agentStyle.Render(item.Title())
+}
+
 func (m *SessionPickerModel) View() tea.View {
 	if m.cancelled || m.selectedID != "" {
 		return tea.NewView("")
 	}
 	if len(m.items) == 0 {
-		return tea.NewView("No selectable conversations.\n\nesc/q cancel")
+		return tea.NewView(m.styles.warningStyle.Render("No selectable conversations.") +
+			"\n\n" + m.styles.mutedStyle.Render("esc/q cancel"))
 	}
 	width := max(m.width, 20)
 	visible := max(m.height-5, 1)
@@ -112,16 +152,23 @@ func (m *SessionPickerModel) View() tea.View {
 	end := min(start+visible, len(m.items))
 
 	var b strings.Builder
-	b.WriteString("Choose a conversation\n\n")
+	b.WriteString(m.styles.accentStyle.Render("Choose a conversation"))
+	b.WriteString("\n\n")
 	for index := start; index < end; index++ {
 		prefix := "  "
 		if index == m.cursor {
 			prefix = "> "
 		}
-		b.WriteString(ansi.Truncate(prefix+m.items[index].Line(), width, "…"))
+		line := ansi.Truncate(prefix+m.renderItem(m.items[index]), width, "…")
+		if index == m.cursor {
+			line = ansi.Truncate(prefix+m.items[index].Line(), width, "…")
+			line = m.styles.selectedStyle.Render(line)
+		}
+		b.WriteString(line)
 		b.WriteByte('\n')
 	}
-	fmt.Fprintf(&b, "\n%d/%d  ↑/↓ or j/k move · enter select · esc/q cancel", m.cursor+1, len(m.items))
+	footer := fmt.Sprintf("%d/%d  ↑/↓ or j/k move · enter select · esc/q cancel", m.cursor+1, len(m.items))
+	b.WriteString("\n" + m.styles.mutedStyle.Render(footer))
 	return tea.NewView(b.String())
 }
 

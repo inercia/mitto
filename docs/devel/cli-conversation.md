@@ -200,6 +200,12 @@ cli` counterpart). An unrecognized `/word` is refused locally (error
   (`session_ws.go` `OnUserPrompt`), which would otherwise double-render every
   message the input textarea already appended optimistically; prompts from
   other clients on the same conversation still render.
+- **Semantic palette and no-color behavior (`mitto-1bml.1`)**: chat roles,
+  status, completion, permission modal, textarea, and the conversation picker
+  share one dark/light semantic palette. An auto `tea.BackgroundColorMsg`
+  updates both Glamour and every Lipgloss/Bubbles style. `--no-color` and
+  `$NO_COLOR` select a plain palette that preserves text, selection markers,
+  rounded borders, padding, and spacing while emitting no ANSI styling.
 - **Test strategy (`mitto-pscc.12`)**: four layers, each independently
   useful and owning disjoint files, closing gaps rather than building from
   scratch (Layers 1 and 2 pre-existed from `.7`/`.8`).

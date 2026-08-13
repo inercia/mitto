@@ -71,6 +71,13 @@ func resolveChatStyle(styleFlag string) string {
 	return "auto"
 }
 
+func resolveChatPresentation(noColor bool, style string) chatui.PresentationOptions {
+	return chatui.PresentationOptions{
+		NoColor: termmd.ResolveMode(noColor) == termmd.ModePlain,
+		Style:   resolveChatStyle(style),
+	}
+}
+
 func runConversationChat(cmd *cobra.Command, args []string) error {
 	// TTY precondition (Plan Scope: "this command requires a TTY"). Checked
 	// before any dialing so a piped invocation fails fast with a usage
@@ -84,7 +91,11 @@ func runConversationChat(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	conversationID, selected, err := resolveChatConversationID(args, c.ListSessions, pickChatConversation)
+	presentation := resolveChatPresentation(conversationFlags.NoColor, conversationFlags.Style)
+	picker := func(sessions []api.SessionInfo) (string, bool, error) {
+		return pickChatConversation(sessions, presentation)
+	}
+	conversationID, selected, err := resolveChatConversationID(args, c.ListSessions, picker)
 	if err != nil {
 		return classify(err)
 	}
@@ -92,7 +103,7 @@ func runConversationChat(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	return runConversationChatForID(c, conversationID)
+	return runConversationChatForID(c, conversationID, presentation)
 }
 
 type chatConversationPicker func([]api.SessionInfo) (string, bool, error)
@@ -140,8 +151,8 @@ func chatSessionUpdatedAt(value string) (time.Time, bool) {
 	return updated, err == nil
 }
 
-func pickChatConversation(sessions []api.SessionInfo) (string, bool, error) {
-	model := chatui.NewSessionPickerModel(sessions)
+func pickChatConversation(sessions []api.SessionInfo, presentation chatui.PresentationOptions) (string, bool, error) {
+	model := chatui.NewSessionPickerModel(sessions, presentation)
 	finalModel, err := tea.NewProgram(model).Run()
 	if err != nil {
 		return "", false, err
@@ -159,7 +170,7 @@ func pickChatConversation(sessions []api.SessionInfo) (string, bool, error) {
 	return result.SelectedSessionID(), true, nil
 }
 
-func runConversationChatForID(c *api.Client, conversationID string) error {
+func runConversationChatForID(c *api.Client, conversationID string, presentation chatui.PresentationOptions) error {
 	info, err := c.GetSession(conversationID)
 	if err != nil {
 		return classify(err)
@@ -174,8 +185,8 @@ func runConversationChatForID(c *api.Client, conversationID string) error {
 	}
 	model := chatui.NewModel(nil, chatui.Options{
 		Title:        title,
-		NoColor:      conversationFlags.NoColor,
-		Style:        resolveChatStyle(conversationFlags.Style),
+		NoColor:      presentation.NoColor,
+		Style:        presentation.Style,
 		ShowThoughts: !conversationChatFlags.NoThoughts,
 	})
 

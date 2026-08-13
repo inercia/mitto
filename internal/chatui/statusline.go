@@ -38,22 +38,22 @@ func (s *statusLine) SetDisconnected(reason string) {
 func (s *statusLine) SetInFlight(v bool) { s.inFlight = v }
 
 func (s *statusLine) Render() string {
-	left := s.title
+	left := s.styles.accentStyle.Render(s.title)
 	if s.acpServer != "" {
-		left += " · " + s.acpServer
+		left += s.styles.mutedStyle.Render(" · " + s.acpServer)
 	}
 
 	var right string
 	switch {
 	case s.disconnect != "":
-		right = s.styles.statusBad.Render("disconnected: " + s.disconnect)
+		right = s.styles.errorStyle.Render("disconnected: " + s.disconnect)
 	case s.connected:
-		right = s.styles.statusOK.Render("connected")
+		right = s.styles.successStyle.Render("connected")
 	default:
-		right = s.styles.statusBad.Render("connecting…")
+		right = s.styles.warningStyle.Render("connecting…")
 	}
 	if s.inFlight {
-		right += " " + s.styles.statusOK.Render("●")
+		right += " " + s.styles.accentStyle.Render("●")
 	}
 
 	gap := s.width - lipgloss.Width(left) - lipgloss.Width(right) - 2

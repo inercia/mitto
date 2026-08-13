@@ -93,7 +93,7 @@ func (it *item) render(width int, baseMode termmd.Mode, theme termmd.Theme, styl
 	case itemError:
 		return styles.errorStyle.Render(it.title)
 	case itemSystem:
-		return it.title
+		return styles.systemStyle.Render(it.title)
 	}
 
 	mode := renderModeFor(baseMode, it.markdown)
@@ -136,6 +136,8 @@ func (it *item) render(width int, baseMode termmd.Mode, theme termmd.Theme, styl
 // sender label for user items) around the already-rendered markdown body.
 func (it *item) decorate(body string, styles *styles) string {
 	switch it.kind {
+	case itemAgent:
+		return styles.agentStyle.Render(body)
 	case itemThought:
 		return styles.thoughtStyle.Render(body)
 	case itemUser:
