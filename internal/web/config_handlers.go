@@ -325,21 +325,24 @@ func (s *Server) buildNewSettings(req *ConfigSaveRequest) (*configPkg.Settings, 
 	// request body (edited via the dedicated /api/global/shortcuts endpoint), so
 	// carry the existing value forward to avoid wiping them on an unrelated save.
 	var shortcutsConfig map[string][]configPkg.ShortcutButton
+	var taskLabelColorsConfig []configPkg.TaskLabelColor
 	if s.config.MittoConfig != nil {
 		shortcutsConfig = s.config.MittoConfig.Shortcuts
+		taskLabelColorsConfig = s.config.MittoConfig.TaskLabelColors
 	}
 
 	return &configPkg.Settings{
-		ACPServers:    newACPServers,
-		Prompts:       settingsPrompts,
-		Web:           newWebConfig,
-		UI:            newUIConfig,
-		Session:       sessionConfig,
-		Conversations: conversationsConfig,
-		Permissions:   permissionsConfig,
-		MCP:           mcpConfig,
-		Models:        modelsConfig,
-		Shortcuts:     shortcutsConfig,
+		ACPServers:      newACPServers,
+		Prompts:         settingsPrompts,
+		Web:             newWebConfig,
+		UI:              newUIConfig,
+		Session:         sessionConfig,
+		Conversations:   conversationsConfig,
+		Permissions:     permissionsConfig,
+		MCP:             mcpConfig,
+		Models:          modelsConfig,
+		Shortcuts:       shortcutsConfig,
+		TaskLabelColors: taskLabelColorsConfig,
 	}, nil
 }
 

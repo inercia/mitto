@@ -81,6 +81,9 @@ type Settings struct {
 	// section ID (e.g. "conversations"). Merged with folder-level shortcuts at
 	// render time (global entries first).
 	Shortcuts map[string][]ShortcutButton `json:"shortcuts,omitempty"`
+	// TaskLabelColors is an ordered global mapping from task labels to task-title
+	// background colors. The first matching entry wins.
+	TaskLabelColors []TaskLabelColor `json:"task_label_colors,omitempty"`
 }
 
 // DefaultStartupStaggerMs is the default stagger delay in milliseconds between
@@ -818,6 +821,7 @@ func (s *Settings) ToConfig() *Config {
 		MCP:               s.MCP,
 		Models:            s.Models,
 		Shortcuts:         s.Shortcuts,
+		TaskLabelColors:   s.TaskLabelColors,
 	}
 	for i, srv := range s.ACPServers {
 		cfg.ACPServers[i] = ACPServer(srv)
@@ -842,6 +846,7 @@ func ConfigToSettings(cfg *Config) *Settings {
 		MCP:               cfg.MCP,
 		Models:            cfg.Models,
 		Shortcuts:         cfg.Shortcuts,
+		TaskLabelColors:   cfg.TaskLabelColors,
 	}
 	for i, srv := range cfg.ACPServers {
 		s.ACPServers[i] = ACPServerSettings(srv)
@@ -904,6 +909,31 @@ func SetGlobalShortcuts(sections map[string][]ShortcutButton) error {
 		settings.Shortcuts = nil
 	} else {
 		settings.Shortcuts = cleaned
+	}
+	return SaveSettings(settings)
+}
+
+// GlobalTaskLabelColors returns the ordered task-label color mapping stored in
+// settings.json, or nil if none is configured or settings cannot be read.
+func GlobalTaskLabelColors() []TaskLabelColor {
+	settings, err := loadRawSettings()
+	if err != nil || settings == nil {
+		return nil
+	}
+	return settings.TaskLabelColors
+}
+
+// SetGlobalTaskLabelColors persists the ordered task-label color mapping while
+// preserving every unrelated raw settings.json field.
+func SetGlobalTaskLabelColors(entries []TaskLabelColor) error {
+	settings, err := loadRawSettings()
+	if err != nil {
+		return err
+	}
+	if len(entries) == 0 {
+		settings.TaskLabelColors = nil
+	} else {
+		settings.TaskLabelColors = entries
 	}
 	return SaveSettings(settings)
 }

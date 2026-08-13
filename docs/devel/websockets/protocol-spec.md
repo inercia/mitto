@@ -1088,6 +1088,15 @@ beads issue. An empty `beads_issue` value indicates the link was cleared.
 }
 ```
 
+#### `task_label_colors_updated`
+
+Broadcast after the ordered global task-label color mapping is saved. Clients
+refetch `GET /api/global/task-label-colors`; the event carries an empty object.
+
+```json
+{ "type": "task_label_colors_updated", "data": {} }
+```
+
 ### Diagnostic & Lifecycle Events
 
 Broadcast on `/api/events` to all connected clients. Mostly informational — the UI

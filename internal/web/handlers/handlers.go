@@ -165,6 +165,10 @@ type Deps struct {
 	// given session. May be nil; callers must nil-guard.
 	BroadcastSettingsUpdated func(sessionID string, settings map[string]bool)
 
+	// BroadcastTaskLabelColorsUpdated notifies every global-events client that
+	// the global task-label color mapping changed. May be nil.
+	BroadcastTaskLabelColorsUpdated func()
+
 	// BroadcastSessionDeleted mirrors Server.BroadcastSessionDeleted: it notifies
 	// all connected clients that a session was deleted. May be nil; callers must
 	// nil-guard.

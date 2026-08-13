@@ -23,6 +23,7 @@ import {
   matchesSearch,
   cmpBySort,
   computeEffectiveStreamingSet,
+  taskTitleBackground,
   SORT_FIELD_OPTIONS,
   SORT_FIELD_LABELS,
   CLEANUP_PROGRESS_TOAST_INTERVAL_MS,
@@ -1350,6 +1351,8 @@ export function BeadsView({
   const [shortcuts, setShortcuts] = useState([]);
   // Map from prompt name → prompt object, built once shortcuts + prompts are loaded.
   const [shortcutPromptMap, setShortcutPromptMap] = useState(new Map());
+  const [taskLabelColors, setTaskLabelColors] = useState([]);
+  const taskLabelColorsRequestRef = useRef(0);
   // Ref for the issues scroll container — used by usePullToRefresh.
   const scrollContainerRef = useRef(null);
 
@@ -1501,6 +1504,32 @@ export function BeadsView({
       );
     };
   }, [loadShortcuts, workingDir]);
+
+  const loadTaskLabelColors = useCallback(async (isStale) => {
+    const requestID = ++taskLabelColorsRequestRef.current;
+    try {
+      const data = await getSdkClient().taskLabelColors.getGlobal();
+      if (requestID !== taskLabelColorsRequestRef.current || (isStale && isStale())) return;
+      setTaskLabelColors(data.entries || []);
+    } catch (_err) {
+      if (requestID !== taskLabelColorsRequestRef.current || (isStale && isStale())) return;
+      setTaskLabelColors([]);
+    }
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    loadTaskLabelColors(() => cancelled);
+    return () => {
+      cancelled = true;
+    };
+  }, [loadTaskLabelColors]);
+
+  useEffect(() => {
+    const handler = () => loadTaskLabelColors();
+    window.addEventListener("mitto:task_label_colors_updated", handler);
+    return () => window.removeEventListener("mitto:task_label_colors_updated", handler);
+  }, [loadTaskLabelColors]);
 
   // Auto-refresh the issue list when the backend fsnotify watcher reports
   // external changes to .beads (another agent/CLI, git pull, bd dolt pull).
@@ -2421,6 +2450,7 @@ export function BeadsView({
     const childCount = childCountById[issue.id] || 0;
     const isEpic = issue.issue_type === "epic" || childCount > 0;
     const showChevron = epicExpanded !== null;
+    const titleBackground = taskTitleBackground(issue, taskLabelColors);
     const bgTone = isSelected
       ? isStreamingIssue
         ? "bg-mitto-surface-3/30 beads-row-streaming"
@@ -2512,7 +2542,10 @@ export function BeadsView({
             : null}
         </div>
         <div class="text-sm text-mitto-text wrap-break-word">
-          ${issue.title}
+          <span
+            data-testid="beads-issue-title"
+            style=${titleBackground ? { backgroundColor: titleBackground } : undefined}
+          >${issue.title}</span>
         </div>
       </div>
       <div class="flex items-center gap-1 shrink-0 self-center">

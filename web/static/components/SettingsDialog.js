@@ -52,6 +52,7 @@ import {
   LayersIcon,
   KeyboardIcon,
   DashboardIcon,
+  TagIcon,
 } from "./Icons.js";
 import { AgentDiscoveryDialog } from "./AgentDiscoveryDialog.js";
 import { Modal } from "./Modal.js";
@@ -61,6 +62,7 @@ import { ModelTagSelect } from "./ModelTagSelect.js";
 import { RichSelect } from "./RichSelect.js";
 import { Tooltip } from "./Tooltip.js";
 import { ShortcutsEditor } from "./ShortcutsEditor.js";
+import { TaskLabelColorsEditor } from "./TaskLabelColorsEditor.js";
 import { promptMenuIncludes } from "../utils/prompts.js";
 
 // Section descriptors for the global Shortcuts tab. Section IDs match those used
@@ -2017,6 +2019,73 @@ export function SettingsDialog({
     }
   };
 
+  // ------ Global Tasks label-color state --------------------------------------
+  const [taskLabelColors, setTaskLabelColors] = useState([]);
+  const [taskLabelColorsLoading, setTaskLabelColorsLoading] = useState(false);
+  const [taskLabelColorsLoaded, setTaskLabelColorsLoaded] = useState(false);
+  const [taskLabelColorsError, setTaskLabelColorsError] = useState("");
+
+  useEffect(() => {
+    if (!isOpen || activeTab !== "tasks" || taskLabelColorsLoaded) return;
+    setTaskLabelColorsLoading(true);
+    setTaskLabelColorsError("");
+    getSdkClient().taskLabelColors
+      .getGlobal()
+      .then((data) => {
+        setTaskLabelColors(data.entries || []);
+        setTaskLabelColorsLoaded(true);
+      })
+      .catch((err) => {
+        setTaskLabelColorsError("Failed to load task label colors: " + err.message);
+      })
+      .finally(() => setTaskLabelColorsLoading(false));
+  }, [isOpen, activeTab, taskLabelColorsLoaded]);
+
+  useEffect(() => {
+    if (!isOpen) {
+      setTaskLabelColorsLoaded(false);
+      setTaskLabelColors([]);
+      setTaskLabelColorsError("");
+    }
+  }, [isOpen]);
+
+  const addTaskLabelColor = () =>
+    setTaskLabelColors((prev) => [...prev, { label: "", color: "#ef4444" }]);
+  const updateTaskLabelColor = (idx, patch) =>
+    setTaskLabelColors((prev) =>
+      prev.map((entry, i) => (i === idx ? { ...entry, ...patch } : entry)),
+    );
+  const removeTaskLabelColor = (idx) =>
+    setTaskLabelColors((prev) => prev.filter((_, i) => i !== idx));
+  const moveTaskLabelColor = (idx, dir) =>
+    setTaskLabelColors((prev) => {
+      const target = idx + dir;
+      if (target < 0 || target >= prev.length) return prev;
+      const next = [...prev];
+      [next[idx], next[target]] = [next[target], next[idx]];
+      return next;
+    });
+
+  const persistTaskLabelColors = async () => {
+    if (!taskLabelColorsLoaded) return;
+    const entries = taskLabelColors.map((entry) => ({
+      label: (entry.label || "").trim(),
+      color: (entry.color || "").trim(),
+    }));
+    if (entries.some((entry) => !entry.label)) {
+      setActiveTab("tasks");
+      throw new Error("Task labels must not be empty");
+    }
+    if (entries.some((entry) => !/^#[0-9a-fA-F]{6}$/.test(entry.color))) {
+      setActiveTab("tasks");
+      throw new Error("Task label colors must be six-digit hex values");
+    }
+    const data = await getSdkClient().taskLabelColors.setGlobal({ entries });
+    setTaskLabelColors(data.entries || []);
+    // Same-window update; the server broadcast handles every other client.
+    window.dispatchEvent(new CustomEvent("mitto:task_label_colors_updated"));
+  };
+
   // Configuration state
   const [workspaces, setWorkspaces] = useState([]);
   const [acpServers, setAcpServers] = useState([]);
@@ -2988,6 +3057,7 @@ export function SettingsDialog({
       // Persist global shortcuts (dedicated endpoint; no-op if the Shortcuts tab
       // was never opened). Runs after the main config save so its write wins.
       await persistGlobalShortcuts();
+      await persistTaskLabelColors();
 
       // Update the global sound and notification setting flags
       if (isMacApp) {
@@ -3444,6 +3514,7 @@ export function SettingsDialog({
     { id: "mcp", label: "MCP", icon: LightningIcon },
     { id: "ui", label: "UI", icon: SlidersIcon },
     { id: "dashboard", label: "Dashboard", icon: DashboardIcon },
+    { id: "tasks", label: "Tasks", icon: TagIcon },
     { id: "shortcuts", label: "Shortcuts", icon: KeyboardIcon },
   ];
 
@@ -5930,6 +6001,26 @@ export function SettingsDialog({
                         `,
                       )}
                     </div>
+                  </div>
+                `}
+
+                <!-- Tasks Tab -->
+                ${activeTab === "tasks" &&
+                html`
+                  <div class="space-y-4">
+                    <p class="text-mitto-text-muted text-sm">
+                      Configure global task-title background colors by label.
+                      Order matters: the first matching label wins.
+                    </p>
+                    <${TaskLabelColorsEditor}
+                      entries=${taskLabelColors}
+                      loading=${taskLabelColorsLoading}
+                      error=${taskLabelColorsError}
+                      onAdd=${addTaskLabelColor}
+                      onUpdate=${updateTaskLabelColor}
+                      onRemove=${removeTaskLabelColor}
+                      onMove=${moveTaskLabelColor}
+                    />
                   </div>
                 `}
 

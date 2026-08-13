@@ -43,6 +43,7 @@ import { createSessionsResource } from "./resources/sessions.js";
 import { createPromptsResource } from "./resources/prompts.js";
 import { createProcessorsResource } from "./resources/processors.js";
 import { createShortcutsResource } from "./resources/shortcuts.js";
+import { createTaskLabelColorsResource } from "./resources/task-label-colors.js";
 import { createConfigResource } from "./resources/config.js";
 import { createIssuesResource, withIssueCaches } from "./resources/issues.js";
 import { createFilesResource } from "./resources/files.js";
@@ -80,6 +81,7 @@ export function createClient(options = {}) {
     prompts: createPromptsResource(config),
     processors: createProcessorsResource(config),
     shortcuts: createShortcutsResource(config),
+    taskLabelColors: createTaskLabelColorsResource(config),
     issues: createIssuesResource(config),
     // Named `serverConfig`, not `config`, because `client.config` is already
     // the resolved internal SDK config object (see `config` above and

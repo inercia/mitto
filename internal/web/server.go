@@ -1383,6 +1383,7 @@ func NewServer(config Config) (*Server, error) {
 		BroadcastBeadsCleanupProgress:     s.BroadcastBeadsCleanupProgress,
 		BootstrapOnCompletion:             s.loopRunner.BootstrapOnCompletion,
 		BroadcastSettingsUpdated:          s.BroadcastSessionSettingsUpdated,
+		BroadcastTaskLabelColorsUpdated:   s.BroadcastTaskLabelColorsUpdated,
 		BroadcastSessionDeleted:           s.BroadcastSessionDeleted,
 		BroadcastACPStartFailed:           s.BroadcastACPStartFailed,
 		BroadcastACPStopped:               s.BroadcastACPStopped,
@@ -2122,6 +2123,15 @@ func (s *Server) BroadcastSessionSettingsUpdated(sessionID string, settings map[
 		s.logger.Debug("Broadcast session settings updated", "session_id", sessionID,
 			"settings_count", len(settings), "clients", s.eventsManager.ClientCount())
 	}
+}
+
+// BroadcastTaskLabelColorsUpdated tells all clients to refetch the global
+// task-label color mapping after a successful settings update.
+func (s *Server) BroadcastTaskLabelColorsUpdated() {
+	if s.eventsManager == nil {
+		return
+	}
+	s.eventsManager.Broadcast(WSMsgTypeTaskLabelColorsUpdated, map[string]interface{}{})
 }
 
 // BroadcastSessionBeadsIssueUpdated notifies all connected clients that a

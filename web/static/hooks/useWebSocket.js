@@ -3503,6 +3503,14 @@ export function useWebSocket({
         );
         break;
 
+      case "task_label_colors_updated":
+        window.dispatchEvent(
+          new CustomEvent("mitto:task_label_colors_updated", {
+            detail: msg.data,
+          }),
+        );
+        break;
+
       case "beads_cleanup_progress":
         if (msg.data) {
           window.dispatchEvent(

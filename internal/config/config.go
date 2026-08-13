@@ -1334,6 +1334,15 @@ type Config struct {
 	// section ID (e.g. "conversations", "tasksList", "beadsIssue"). These are
 	// merged with folder-level shortcuts at render time (global entries first).
 	Shortcuts map[string][]ShortcutButton
+	// TaskLabelColors is an ordered global mapping from task labels to task-title
+	// background colors. The first matching label wins at render time.
+	TaskLabelColors []TaskLabelColor
+}
+
+// TaskLabelColor maps a task label to a task-title background color.
+type TaskLabelColor struct {
+	Label string `json:"label" yaml:"label"`
+	Color string `json:"color" yaml:"color"`
 }
 
 // rawModelCriteria is used for YAML unmarshaling of a model profile's criteria.
@@ -1412,7 +1421,9 @@ type rawConfig struct {
 	PromptsDirs []string `yaml:"prompts_dirs"`
 	// Shortcuts is the top-level global shortcut buttons section, keyed by section ID.
 	Shortcuts map[string][]ShortcutButton `yaml:"shortcuts"`
-	Web       struct {
+	// TaskLabelColors is the ordered global task-label color mapping.
+	TaskLabelColors []TaskLabelColor `yaml:"task_label_colors"`
+	Web             struct {
 		Host         string `yaml:"host"`
 		Port         int    `yaml:"port"`
 		ExternalPort int    `yaml:"external_port"`
@@ -1722,6 +1733,7 @@ func Parse(data []byte) (*Config, error) {
 
 	// Populate global shortcut buttons
 	cfg.Shortcuts = raw.Shortcuts
+	cfg.TaskLabelColors = raw.TaskLabelColors
 
 	// Populate web config
 	cfg.Web.Host = raw.Web.Host

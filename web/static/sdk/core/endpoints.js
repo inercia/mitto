@@ -164,6 +164,7 @@ export function createEndpoints(config, options = {}) {
       // list (~750 KB) needed by the shortcuts editor. Read-only callers that
       // only render existing sections must omit it — see mitto-r4t0.
       shortcuts: (params) => url("/api/global/shortcuts", params),
+      taskLabelColors: () => url("/api/global/task-label-colors"),
     },
 
     /** Global server configuration. */

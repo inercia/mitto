@@ -145,6 +145,8 @@ func (s *Server) apiRoutes(authMgr *middleware.AuthManager, csrfMgr *middleware.
 		// Global shortcut buttons (stored in settings.json, merged with folder shortcuts at render time).
 		apiRoute{method: "GET", pattern: "/api/global/shortcuts", handler: http.HandlerFunc(s.apiHandlers.HandleGlobalShortcuts)},
 		apiRoute{method: "PUT", pattern: "/api/global/shortcuts", handler: http.HandlerFunc(s.apiHandlers.HandleGlobalShortcuts)},
+		apiRoute{method: "GET", pattern: "/api/global/task-label-colors", handler: http.HandlerFunc(s.apiHandlers.HandleGlobalTaskLabelColors)},
+		apiRoute{method: "PUT", pattern: "/api/global/task-label-colors", handler: http.HandlerFunc(s.apiHandlers.HandleGlobalTaskLabelColors)},
 		apiRoute{method: "POST", pattern: "/api/issues/cleanup", handler: http.HandlerFunc(s.apiHandlers.HandleBeadsCleanup)},
 		apiRoute{method: "POST", pattern: "/api/issues/sync", handler: http.HandlerFunc(s.apiHandlers.HandleBeadsSync)},
 		apiRoute{method: "POST", pattern: "/api/issues/{id}/status", handler: http.HandlerFunc(s.apiHandlers.HandleBeadsStatus)},

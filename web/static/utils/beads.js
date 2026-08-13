@@ -164,6 +164,16 @@ export function matchesSearch(issue, search) {
   return true;
 }
 
+// Return the first configured color whose label is present on the issue. The
+// mapping is ordered and matching is exact; no color state is stored per issue.
+export function taskTitleBackground(issue, entries) {
+  const labels = Array.isArray(issue?.labels) ? new Set(issue.labels) : new Set();
+  for (const entry of entries || []) {
+    if (entry?.label && labels.has(entry.label)) return entry.color || "";
+  }
+  return "";
+}
+
 // Sort menu options. `field` is the persisted key; `key` is the issue property
 // holding the value to compare on (priority is numeric, the dates are RFC3339
 // strings).
