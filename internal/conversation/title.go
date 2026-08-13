@@ -110,7 +110,7 @@ type TitleGenerationConfig struct {
 	OnTitleGenerated func(sessionID, title string)
 }
 
-// SessionNeedsTitle returns true if the session has no title yet and needs auto-title generation.
+// SessionNeedsTitle returns true if the session needs an initial or upgraded auto-title.
 // Returns false if the session already has a final (LLM-generated or user-set) title.
 // A quick fallback title populated by GenerateAndSetTitle (marked via meta.NameIsFallback)
 // is treated as still needing generation so titleCoordinator.retryIfNeeded can upgrade
@@ -156,12 +156,14 @@ func GenerateAndSetTitle(cfg TitleGenerationConfig) {
 	// auxiliary session.
 	quickTitle := GenerateQuickTitle(cfg.Message)
 	if quickTitle != "" && cfg.Store != nil {
+		fallbackSet := false
 		if err := cfg.Store.UpdateMetadata(cfg.SessionID, func(m *session.Metadata) {
 			if m.Name == "" { // Only set if no title yet
 				m.Name = quickTitle
 				m.NameIsFallback = true // mitto-ee3: mark so retryIfNeeded can upgrade later
+				fallbackSet = true
 			}
-		}); err == nil {
+		}); err == nil && fallbackSet {
 			if cfg.Logger != nil {
 				cfg.Logger.Debug("Set quick fallback title", "session_id", cfg.SessionID, "title", quickTitle)
 			}
