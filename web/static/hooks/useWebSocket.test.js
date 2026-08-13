@@ -37,3 +37,11 @@ describe("useWebSocket.js: no_archive transport (mitto-yvel.4)", () => {
     );
   });
 });
+
+describe("useWebSocket.js: task label color global refresh (mitto-ggs6)", () => {
+  test("bridges the server event to the same-window event consumed by Tasks views", () => {
+    expect(useWebSocketJs).toMatch(
+      /case "task_label_colors_updated":[\s\S]*?new CustomEvent\("mitto:task_label_colors_updated", \{[\s\S]*?detail: msg\.data/,
+    );
+  });
+});

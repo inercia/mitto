@@ -1382,12 +1382,29 @@ describe("task label title backgrounds (mitto-ggs6)", () => {
     expect(taskTitleBackground({}, mappings)).toBe("");
   });
 
+  test("removing the matched task label or mapping immediately removes the color", () => {
+    const issue = { labels: ["needs-human"] };
+    expect(taskTitleBackground(issue, mappings)).toBe("#ef4444");
+    expect(taskTitleBackground({ labels: [] }, mappings)).toBe("");
+    expect(taskTitleBackground(issue, mappings.slice(1))).toBe("");
+  });
+
   test("BeadsView applies the derived color to the title span only", () => {
     const source = readFileSync(BEADS_VIEW_PATH, "utf8");
     expect(source).toMatch(
       /<span\s+data-testid="beads-issue-title"\s+style=\$\{titleBackground \? \{ backgroundColor: titleBackground \} : undefined\}/,
     );
     expect(source).not.toMatch(/BeadsIssueRow[\s\S]{0,300}backgroundColor/);
+  });
+
+  test("an open BeadsView refetches mappings when the global event arrives", () => {
+    const source = readFileSync(BEADS_VIEW_PATH, "utf8");
+    expect(source).toMatch(
+      /const handler = \(\) => loadTaskLabelColors\(\);\s*window\.addEventListener\("mitto:task_label_colors_updated", handler\)/,
+    );
+    expect(source).toMatch(
+      /loadTaskLabelColors[\s\S]*?getSdkClient\(\)\.taskLabelColors\.getGlobal\(\)/,
+    );
   });
 });
 

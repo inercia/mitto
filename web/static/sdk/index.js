@@ -52,6 +52,8 @@ import { createMiscResource } from "./resources/misc.js";
 import { createWorkspacesResource } from "./resources/workspaces.js";
 import { createAcpServersResource } from "./resources/acp-servers.js";
 import { createAgentsResource } from "./resources/agents.js";
+
+/** @typedef {import("./resources/task-label-colors.js").TaskLabelColorsBody} TaskLabelColorsBody */
 import { createTtlCache, keyForParams } from "./cache/ttl-cache.js";
 
 /**
@@ -105,10 +107,19 @@ export function createClient(options = {}) {
   };
 }
 
-export { MittoError, ConfigError, MittoApiError, MittoAuthError, MittoNetworkError };
+export {
+  MittoError,
+  ConfigError,
+  MittoApiError,
+  MittoAuthError,
+  MittoNetworkError,
+};
 export { browserEnv, browserCookieReader } from "./env/browser.js";
 export { noneAuth, sharedTokenAuth, browserCookieAuth };
-export { createSessionStream, SessionStream } from "./realtime/session-stream.js";
+export {
+  createSessionStream,
+  SessionStream,
+} from "./realtime/session-stream.js";
 export { createEventsStream, EventsStream } from "./realtime/events-stream.js";
 export {
   createSeqTracker,
@@ -120,7 +131,11 @@ export {
   createMemorySeqStore,
   createStorageSeqStore,
 };
-export { generatePromptId, createMemoryPendingPromptStore, createStoragePendingPromptStore };
+export {
+  generatePromptId,
+  createMemoryPendingPromptStore,
+  createStoragePendingPromptStore,
+};
 export { EVENTS, COMMANDS, LEGACY_EVENTS, isKnownEventType, isCommandType };
 export { createTtlCache, keyForParams };
 export { withIssueCaches };

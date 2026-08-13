@@ -133,6 +133,10 @@ Global shortcut buttons (`shortcuts:` in `settings.json`) mirror per-folder shor
 
 Frontend merge/dedupe logic (duplicated in `BeadsView.js` ×2 and `app.js`): global list first, then folder entries whose `prompt` isn't already in the global list. See `25-web-frontend-components.md` for the shared `ShortcutsEditor` UI component.
 
+## Global Task Label Colors
+
+Global task-title colors are an ordered `[]TaskLabelColor` stored as `task_label_colors` in `settings.json`. `GET/PUT /api/global/task-label-colors` owns the field; writes trim labels, normalize six-digit hex colors to lowercase, preserve unrelated settings through the raw read-modify-write path, and broadcast `task_label_colors_updated` only after a successful save. `buildNewSettings` must carry the field forward so a full Settings save cannot erase a dedicated-resource update. `BeadsView` derives the first exact label match at render time and never persists color state per task.
+
 ## WorkspaceSettings Override Pattern
 
 `WorkspaceSettings.ACPCommandOverride`: set default from server map, then apply override. See `internal/config/merger.go` for `GenericMerger[T]`.

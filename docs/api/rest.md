@@ -85,6 +85,14 @@ array field, not the legacy scalar `trigger`. See
 `getFolder(params, opts)`/`setFolder(workingDir, body, opts)`
 (`/api/folders/shortcuts?working_dir=...`).
 
+## `client.taskLabelColors`
+
+`getGlobal(opts)`/`setGlobal(body, opts)` — `GET`/`PUT
+/api/global/task-label-colors`. The body is
+`{ entries: [{ label, color }] }`; entries stay ordered and `color` is a
+six-digit hexadecimal value. Saving broadcasts `task_label_colors_updated` so
+open Tasks views refetch the mapping.
+
 ## `client.serverConfig`
 
 `get(params, opts)`/`save(body, opts)` — `GET`/`POST /api/config`. Plus

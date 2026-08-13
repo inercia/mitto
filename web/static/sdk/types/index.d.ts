@@ -79,6 +79,10 @@ export function createClient(options?: {}): {
         getFolder: (params: object, opts: any) => Promise<any>;
         setFolder: (workingDir: string, body: object, opts: any) => Promise<any>;
     };
+    taskLabelColors: {
+        getGlobal: (opts?: import("./core/transport.js").RequestOptions) => Promise<import("./resources/task-label-colors.js").TaskLabelColorsBody>;
+        setGlobal: (body: import("./resources/task-label-colors.js").TaskLabelColorsBody, opts?: import("./core/transport.js").RequestOptions) => Promise<import("./resources/task-label-colors.js").TaskLabelColorsBody>;
+    };
     issues: {
         list: (params: any, opts: any) => Promise<any>;
         stats: (params: any, opts: any) => Promise<any>;
@@ -211,6 +215,7 @@ export function createClient(options?: {}): {
  * Mitto release tag it is served inside.
  */
 export const VERSION: "0.3.0";
+export type TaskLabelColorsBody = import("./resources/task-label-colors.js").TaskLabelColorsBody;
 import { MittoError } from "./core/errors.js";
 import { ConfigError } from "./core/errors.js";
 import { MittoApiError } from "./core/errors.js";

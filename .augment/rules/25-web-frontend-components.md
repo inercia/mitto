@@ -52,6 +52,7 @@ All components use Preact/HTM with window globals: `const { useState, useEffect,
 | `SessionItem`       | List item with swipe, menu, status            |
 | `Toolbar`           | Config-driven action bar (see below)          |
 | `ShortcutsEditor`   | Global+folder shortcut button config panel    |
+| `TaskLabelColorsEditor` | Ordered global task label/title-color panel |
 
 ## ChatInput
 
@@ -90,6 +91,8 @@ html`<${Toolbar} variant="block" surface="bg-mitto-surface-3"
 Used in `BeadsView.js` list actions and issue-detail header — prefer over ad-hoc "..." kebab menus.
 
 **ShortcutsEditor** (`ShortcutsEditor.js`) — one panel reused for both **global** (Settings dialog) and **folder** (Workspaces dialog) shortcut config. Consumers (conversations/beadsIssue/tasksList toolbars) merge global + folder shortcuts at render: global first, folder duplicates of a global `prompt` dropped; leftover duplicates render greyed-out via `redundantPromptNames`. Backend mirror: `GET/PUT /api/global/shortcuts` (`internal/web/handlers/global_shortcuts.go`); type `config.ShortcutButton{Icon, Prompt}`. Refresh via `mitto:global_shortcuts_updated`/`mitto:folder_shortcuts_updated` window events. See `08-config.md` for backend details.
+
+**TaskLabelColorsEditor** (`TaskLabelColorsEditor.js`) — ordered global label/color rows in Settings → Tasks, using the same fieldset/join and add/move/remove controls as `ShortcutsEditor` plus native color and hex inputs. List transforms live in `utils/taskLabelColors.js`. Consumers must derive the first exact label match at render time and listen for `mitto:task_label_colors_updated`; never store a color on an issue.
 
 ## Icons
 

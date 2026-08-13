@@ -45,4 +45,18 @@ describe("task label colors resource", () => {
       "invalid color",
     );
   });
+
+  test("applies apiPrefix exactly once", async () => {
+    const { taskLabelColors, calls } = mk({ apiPrefix: "/mitto" });
+    await taskLabelColors.getGlobal();
+    expect(calls[0].url).toBe("/mitto/api/global/task-label-colors");
+    expect(calls[0].url.split("/mitto")).toHaveLength(2);
+  });
+
+  test("forwards an AbortSignal to fetch", async () => {
+    const { taskLabelColors, calls } = mk();
+    const controller = new AbortController();
+    await taskLabelColors.getGlobal({ signal: controller.signal });
+    expect(calls[0].init.signal).toBe(controller.signal);
+  });
 });
