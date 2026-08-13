@@ -1720,6 +1720,12 @@ var dispatchPromptMaxRetries = 2 // 3 total attempts
 // pipeline (mitto-4is) exists specifically to make this retry window safe.
 var dispatchPromptRetryBaseDelay = 2 * time.Second
 
+// pendingDispatchBusyRetryInterval is the pause between flush-level retries
+// when a fire-and-forget delivery leaves the shared process's only active-RPC
+// slot occupied. The entry's configured timeout bounds the overall wait.
+// var (not const) so tests can keep the async-slot lifecycle deterministic.
+var pendingDispatchBusyRetryInterval = 100 * time.Millisecond
+
 // dispatchSaturationMaxWait bounds how long dispatchWithRetry will keep
 // retrying while the shared ACP process reports itself saturated, before
 // giving up. This is deliberately much longer than the ~6s window covered
@@ -2005,11 +2011,13 @@ func (m *Manager) runDispatchRetryLoop(workspaceUUID, name, prompt string, timeo
 // that produced the spool in the first place. Claim atomically drains the
 // current spool; entries appended afterward land in a new spool, and Requeue
 // merges failures back without overwriting those additions (mitto-gfr1).
-// Entries that fail again are written back with an incremented Attempts, and any
-// entry whose Attempts exceeds pendingDispatchMaxAttempts is dropped
-// instead of blocking the rest of the spool. When one or more entries are
-// delivered, lateDeliveryFunc (if set) is invoked once with all delivered
-// names.
+// A fire-and-forget delivery may leave the shared process busy while its prompt
+// runs; the next entry waits and retries within its configured timeout so one
+// flush opportunity can drain several entries sequentially (mitto-e3ut.1).
+// Entries that fail again are written back with an incremented Attempts, and
+// any entry whose Attempts exceeds pendingDispatchMaxAttempts is dropped instead
+// of blocking the rest of the spool. When one or more entries are delivered,
+// lateDeliveryFunc (if set) is invoked once with all delivered names.
 func (m *Manager) FlushPendingDispatches(ctx context.Context, workspaceUUID string) {
 	if m == nil || m.pendingDispatchStore == nil || m.promptFunc == nil || workspaceUUID == "" {
 		return
@@ -2042,6 +2050,7 @@ func (m *Manager) FlushPendingDispatches(ctx context.Context, workspaceUUID stri
 	var delivered []string
 	var requeue []PendingDispatchEntry
 
+flushEntries:
 	for i, entry := range entries {
 		if ctx.Err() != nil {
 			// Out of time — requeue this and all remaining entries unchanged
@@ -2067,8 +2076,50 @@ func (m *Manager) FlushPendingDispatches(ctx context.Context, workspaceUUID stri
 			timeout = DefaultTimeout
 		}
 
-		_, _, lastErr := m.runDispatchRetryLoop(workspaceUUID, entry.Name, entry.Prompt, timeout,
-			"pending-dispatch flush skipped: shared ACP process not available")
+		var lastErr error
+		var busyDeadline time.Time
+		for {
+			if !busyDeadline.IsZero() && !time.Now().Before(busyDeadline) {
+				requeue = append(requeue, entries[i:]...)
+				break flushEntries
+			}
+
+			_, _, lastErr = m.runDispatchRetryLoop(workspaceUUID, entry.Name, entry.Prompt, timeout,
+				"pending-dispatch flush skipped: shared ACP process not available")
+			if !errors.Is(lastErr, acperrors.ErrProcessBusy) {
+				break
+			}
+
+			if busyDeadline.IsZero() {
+				busyDeadline = time.Now().Add(timeout)
+				if m.logger != nil {
+					m.logger.Info("pending-dispatch flush: shared process busy; waiting to continue sequential drain",
+						"dispatch_id", entry.ID,
+						"workspace_uuid", workspaceUUID,
+						"name", entry.Name,
+						"deadline", busyDeadline,
+					)
+				}
+			}
+
+			wait := pendingDispatchBusyRetryInterval
+			if remaining := time.Until(busyDeadline); wait > remaining {
+				wait = remaining
+			}
+			timer := time.NewTimer(wait)
+			select {
+			case <-ctx.Done():
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+				requeue = append(requeue, entries[i:]...)
+				break flushEntries
+			case <-timer.C:
+			}
+		}
 		if lastErr == nil {
 			delivered = append(delivered, entry.Name)
 			if m.logger != nil {
@@ -2087,26 +2138,6 @@ func (m *Manager) FlushPendingDispatches(ctx context.Context, workspaceUUID stri
 			// and all remaining entries unchanged (does not count as a
 			// further attempt) and stop — later entries would fail the
 			// same way.
-			requeue = append(requeue, entries[i:]...)
-			break
-		}
-
-		if errors.Is(lastErr, acperrors.ErrProcessBusy) {
-			// acperrors.ErrProcessBusy is the same proactive,
-			// concurrency-load bail excluded from isSaturationDispatchErr
-			// (mitto-xhsj): purely transient, clearing as soon as
-			// concurrent RPC load drops, with no bearing on whether THIS
-			// entry is ever deliverable. Unlike an ordinary per-entry
-			// failure it must not consume the poison-entry attempt budget
-			// — flushes only run at rare moments (session start/close),
-			// so a short burst of busy signals could otherwise exhaust
-			// pendingDispatchMaxAttempts and permanently drop the batch
-			// well before the process ever had a chance to drain
-			// (mitto-rcro). It is also a whole-shared-process condition
-			// like saturation, so — mirroring the non-retryable branch
-			// above — requeue this and all remaining entries unchanged
-			// and stop for this cycle; a later flush will retry once load
-			// clears.
 			requeue = append(requeue, entries[i:]...)
 			break
 		}
