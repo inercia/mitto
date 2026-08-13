@@ -6,7 +6,7 @@
 //
 // Item kinds (each entry in `items`):
 //   { kind: "button",    testId, icon, tip, ariaLabel, active, disabled, danger, onClick, className }
-//   { kind: "dropdown",  testId, icon, tip, ariaLabel, active, caret, align, open, onToggle, menu, className, closeOnOutsideClick }
+//   { kind: "dropdown",  testId, icon, tip, ariaLabel, active, caret, align, open, onToggle, menu, className, closeOnOutsideClick, portal }
 //   { kind: "overflow",  testId, tip, ariaLabel, align, open, onToggle, items: [{ testId, icon, label, active, disabled, onClick }] }
 //   { kind: "separator" }
 //   { kind: "spacer" }
@@ -29,11 +29,22 @@
 //   testId    - data-testid for the container.
 //   className - extra classes on the container.
 
-const { html, Fragment, useState, useEffect, useCallback, useRef } =
-  window.preact;
+const {
+  html,
+  Fragment,
+  useState,
+  useEffect,
+  useLayoutEffect,
+  useCallback,
+  useRef,
+} = window.preact;
 
 import { ChevronDownIcon, EllipsisIcon } from "./Icons.js";
-import { PortalTooltip } from "./ContextMenu.js";
+import { Portal, PortalTooltip } from "./ContextMenu.js";
+import {
+  computePortalDropdownPlacement,
+  TOOLBAR_DROPDOWN_MARGIN,
+} from "../utils/toolbarDropdown.js";
 
 const SIZE = { xs: "btn-xs", sm: "btn-sm", md: "btn-md" };
 
@@ -142,12 +153,98 @@ function ToolbarButton({ item, size }) {
   <//>`;
 }
 
+// Body-level fixed surface for dropdowns that must escape clipping ancestors.
+// Placement is measured before paint and recomputed while its anchor moves.
+function ToolbarPortalDropdown({ triggerRef, surfaceRef, align, menu }) {
+  const [position, setPosition] = useState({
+    left: 8,
+    top: 8,
+    visible: false,
+  });
+  const reposition = useCallback(() => {
+    const trigger = triggerRef.current;
+    const surface = surfaceRef.current;
+    if (!trigger || !surface) return;
+    const anchorRect = trigger.getBoundingClientRect();
+    if (anchorRect.width === 0 && anchorRect.height === 0) {
+      setPosition((prev) =>
+        prev.visible ? { ...prev, visible: false } : prev,
+      );
+      return;
+    }
+    const viewportWidth =
+      window.innerWidth || document.documentElement.clientWidth;
+    const viewportHeight =
+      window.innerHeight || document.documentElement.clientHeight;
+    // Reset the live constraints before measuring so a viewport that grows can
+    // restore the menu's natural width/height instead of reusing the old cap.
+    surface.style.maxWidth = `${Math.max(
+      0,
+      viewportWidth - TOOLBAR_DROPDOWN_MARGIN * 2,
+    )}px`;
+    surface.style.maxHeight = `${Math.max(
+      0,
+      viewportHeight - TOOLBAR_DROPDOWN_MARGIN * 2,
+    )}px`;
+    const next = computePortalDropdownPlacement({
+      anchorRect,
+      menuRect: surface.getBoundingClientRect(),
+      viewportWidth,
+      viewportHeight,
+      align,
+    });
+    setPosition((prev) =>
+      prev.left === next.left &&
+      prev.top === next.top &&
+      prev.maxWidth === next.maxWidth &&
+      prev.maxHeight === next.maxHeight &&
+      prev.visible
+        ? prev
+        : { ...next, visible: true },
+    );
+  }, [align, surfaceRef, triggerRef]);
+
+  useLayoutEffect(() => {
+    reposition();
+  }, [menu, reposition]);
+  useEffect(() => {
+    window.addEventListener("resize", reposition);
+    window.addEventListener("scroll", reposition, true);
+    return () => {
+      window.removeEventListener("resize", reposition);
+      window.removeEventListener("scroll", reposition, true);
+    };
+  }, [reposition]);
+
+  const maxWidth = position.maxWidth ?? "calc(100vw - 1rem)";
+  const maxHeight = position.maxHeight ?? "calc(100vh - 1rem)";
+  const surfaceStyle = [
+    `opacity: ${position.visible ? "1" : "0"}`,
+    `pointer-events: ${position.visible ? "auto" : "none"}`,
+    `left: ${position.left}px`,
+    `top: ${position.top}px`,
+    `max-width: ${typeof maxWidth === "number" ? `${maxWidth}px` : maxWidth}`,
+    `max-height: ${typeof maxHeight === "number" ? `${maxHeight}px` : maxHeight}`,
+  ].join("; ");
+  return html`<${Portal}>
+    <div
+      ref=${surfaceRef}
+      class="mitto-toolbar-portal-dropdown"
+      style=${surfaceStyle}
+    >
+      ${menu}
+    </div>
+  <//>`;
+}
+
 function ToolbarDropdown({ item, size }) {
   // Optional outside-click / Escape dismissal. Opt-in per item so existing
   // dropdowns (which rely on native <details> toggle-on-summary-click) keep
   // their behaviour. Requires the caller to drive `item.open` + `item.onToggle`
   // so the parent's state and the DOM stay in sync when we close from here.
   const detailsRef = useRef(null);
+  const triggerRef = useRef(null);
+  const portalSurfaceRef = useRef(null);
   const onToggle = item.onToggle;
   const isOpen = !!item.open;
   const closeOnOutsideClick = !!item.closeOnOutsideClick;
@@ -166,6 +263,12 @@ function ToolbarDropdown({ item, size }) {
       const el = detailsRef.current;
       if (!el) return;
       if (e.target && el.contains(e.target)) return;
+      if (
+        e.target &&
+        portalSurfaceRef.current &&
+        portalSurfaceRef.current.contains(e.target)
+      )
+        return;
       close();
     };
     const onKeyDown = (e) => {
@@ -181,7 +284,7 @@ function ToolbarDropdown({ item, size }) {
   return html`<${Fragment}>
     <details
       ref=${detailsRef}
-      class="dropdown ${item.align === "end"
+      class="dropdown ${item.align === "end" && !item.portal
         ? "dropdown-end"
         : ""} ${item.className || ""}"
       open=${!!item.open}
@@ -191,6 +294,7 @@ function ToolbarDropdown({ item, size }) {
       }}
     >
       <summary
+        ref=${triggerRef}
         data-testid=${item.testId || null}
         aria-label=${item.ariaLabel || item.tip || null}
         class="${triggerClasses(size, {
@@ -208,7 +312,15 @@ function ToolbarDropdown({ item, size }) {
           ? html`<${ChevronDownIcon} className="w-3 h-3 opacity-70" />`
           : null}
       </summary>
-      ${item.menu}
+      ${item.portal
+        ? isOpen &&
+          html`<${ToolbarPortalDropdown}
+            triggerRef=${triggerRef}
+            surfaceRef=${portalSurfaceRef}
+            align=${item.align}
+            menu=${item.menu}
+          />`
+        : item.menu}
     </details>
     ${node}
   <//>`;

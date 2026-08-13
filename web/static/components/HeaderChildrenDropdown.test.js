@@ -48,6 +48,7 @@ function buildChildrenDropdownItems(activeSessionId, activeChildren, deps) {
       tip: `Children (${activeChildren.length})`,
       ariaLabel: `Children of this conversation (${activeChildren.length})`,
       align: "end",
+      portal: true,
       className: "hidden md:block",
       // Controlled-open + outside-click dismissal (mitto follow-up): the
       // dropdown's open state lives in the parent so clicks outside the pill
@@ -205,6 +206,7 @@ describe("buildChildrenDropdownItems (mitto-7vpp toolbar shape)", () => {
       deps,
     );
     expect(item.align).toBe("end");
+    expect(item.portal).toBe(true);
   });
 
   test("builds one row per child with a stable testId and per-row click handler", () => {

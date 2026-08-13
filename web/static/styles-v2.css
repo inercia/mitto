@@ -741,6 +741,27 @@ a:hover {
   border: none !important;
 }
 
+/* Opt-in Toolbar dropdown surface rendered through ContextMenu's body portal.
+   The narrow child rule neutralizes daisyUI's dropdown-content anchoring: the
+   fixed wrapper owns measured, viewport-clamped placement instead. */
+.mitto-toolbar-portal-dropdown {
+  position: fixed;
+  width: max-content;
+  overflow-y: auto;
+  /* Match daisyUI's dropdown layer; the portal, not a larger z-index, escapes
+     the header/sidebar stacking contexts. */
+  z-index: 999;
+}
+
+.mitto-toolbar-portal-dropdown > .dropdown-content {
+  position: static;
+  inset: auto;
+  margin: 0;
+  max-width: 100%;
+  overflow-y: auto;
+  translate: none;
+}
+
 /* Thin vertical separator between toolbar groups. Stretches to the row height
    and reuses the same divider tones as the global button borders. */
 .mitto-toolbar-sep {

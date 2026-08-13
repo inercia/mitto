@@ -3153,9 +3153,11 @@ function App() {
             </span>`,
             tip: `Children (${activeChildren.length})`,
             ariaLabel: `Children of this conversation (${activeChildren.length})`,
-            // mitto-nmiv: see the identical note on the Copy dropdown above —
-            // default (non-"end") alignment keeps this w-64 menu from
-            // extending left past the sidebar into the clipped region.
+            // Portal placement escapes the clipped header/sidebar ancestors;
+            // end is only a preference because Toolbar clamps every viewport
+            // edge after measuring the rendered menu.
+            align: "end",
+            portal: true,
             className: "hidden md:block",
             open: childrenMenuOpen,
             onToggle: setChildrenMenuOpen,
