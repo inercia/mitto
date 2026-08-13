@@ -3,6 +3,10 @@ package chatui
 import (
 	"strings"
 	"testing"
+
+	lipgloss "charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
+	"github.com/inercia/mitto/internal/termmd"
 )
 
 func TestCompletionMenu_Filter_MatchesNamesAndAliases(t *testing.T) {
@@ -110,6 +114,56 @@ func TestCompletionMenu_Render_ListsMatchesWithSelectionHighlighted(t *testing.T
 	out2 := m.Render()
 	if out == out2 {
 		t.Error("Render() should change when the selection moves (highlight follows selected)")
+	}
+}
+
+func TestCompletionMenu_Render_PlainSelectionMarkerFollowsSelection(t *testing.T) {
+	styles := newStyles()
+	styles.apply(termmd.ModePlain, termmd.ThemeDark)
+	m := newCompletionMenu(styles)
+	m.SetWidth(80)
+	m.Filter("/c")
+
+	lines := strings.Split(m.Render(), "\n")
+	if !strings.HasPrefix(lines[0], "> /cancel") || !strings.HasPrefix(lines[1], "  /clear") {
+		t.Fatalf("plain selection marker should identify the first row, got %q", lines)
+	}
+	m.Next()
+	lines = strings.Split(m.Render(), "\n")
+	if !strings.HasPrefix(lines[0], "  /cancel") || !strings.HasPrefix(lines[1], "> /clear") {
+		t.Fatalf("plain selection marker should follow Next, got %q", lines)
+	}
+	for _, line := range lines {
+		assertNoANSI(t, "plain completion row", line)
+	}
+}
+
+func TestCompletionMenu_Render_UsesCommandDescriptionHierarchy(t *testing.T) {
+	styles := newStyles()
+	m := newCompletionMenu(styles)
+	m.Filter("/c")
+	m.Next() // Leave /cancel unselected so its command and description use hierarchy styles.
+
+	out := m.Render()
+	if !strings.Contains(out, styles.completionCommandStyle.Render("/cancel")) {
+		t.Errorf("completion output missing semantic command treatment:\n%s", out)
+	}
+	wantDescription := styles.completionDescriptionStyle.Render("  Cancel the current operation")
+	if !strings.Contains(out, wantDescription) {
+		t.Errorf("completion output missing semantic description treatment:\n%s", out)
+	}
+}
+
+func TestCompletionMenu_Render_ClampsEveryRowToTerminalWidth(t *testing.T) {
+	for _, width := range []int{1, 2, 8, 12} {
+		m := newCompletionMenu(newStyles())
+		m.SetWidth(width)
+		m.Filter("/c")
+		for _, line := range strings.Split(m.Render(), "\n") {
+			if got := lipgloss.Width(line); got > width {
+				t.Errorf("width %d completion row measured %d cells: %q", width, got, ansi.Strip(line))
+			}
+		}
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	lipgloss "charm.land/lipgloss/v2"
 	"github.com/inercia/mitto/internal/termmd"
 	"github.com/inercia/mitto/pkg/api"
 )
@@ -468,20 +469,50 @@ func TestModel_PermAnsweredMsg_ErrorAppendsErrorItem(t *testing.T) {
 	}
 }
 
-// --- WindowSizeMsg geometry: transcript height = height - input height - 1 --
+// --- WindowSizeMsg geometry accounts for the rendered bottom surface --------
 
 func TestModel_WindowSizeMsg_SetsTranscriptHeightAccountingForInputAndStatusBar(t *testing.T) {
 	m := NewModel(nil, Options{Title: "t"})
-	inputHeight := m.input.Height()
 
 	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 
 	if m.width != 80 || m.height != 24 {
 		t.Fatalf("m.width, m.height = %d, %d, want 80, 24", m.width, m.height)
 	}
-	wantTranscriptHeight := 24 - inputHeight - 1
+	wantTranscriptHeight := 24 - lipgloss.Height(m.bottomView()) - lipgloss.Height(m.status.Render()) - 2
 	if got := m.transcript.vp.Height(); got != wantTranscriptHeight {
-		t.Errorf("transcript viewport height = %d, want %d (height - input height - 1)", got, wantTranscriptHeight)
+		t.Errorf("transcript viewport height = %d, want %d (height - bottom - status - separators)", got, wantTranscriptHeight)
+	}
+}
+
+func TestModel_CompletionAndPermissionRecalculateTranscriptGeometry(t *testing.T) {
+	m := newTestModel(t, true)
+	baseHeight := m.transcript.vp.Height()
+
+	m.input.SetValue("/c")
+	m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
+	if !m.completion.Open() {
+		t.Fatal("precondition: /c should open completion")
+	}
+	wantCompletionHeight := max(1, m.height-lipgloss.Height(m.bottomView())-lipgloss.Height(m.status.Render())-2)
+	if got, want := m.transcript.vp.Height(), wantCompletionHeight; got != want {
+		t.Errorf("completion viewport height = %d, want %d", got, want)
+	}
+	if m.transcript.vp.Height() >= baseHeight {
+		t.Errorf("completion rows should reduce viewport height: got %d, base %d", m.transcript.vp.Height(), baseHeight)
+	}
+
+	m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	if got := m.transcript.vp.Height(); got != baseHeight {
+		t.Errorf("closing completion should restore viewport height: got %d, want %d", got, baseHeight)
+	}
+
+	m.Update(eventMsg{event: api.Event{
+		Kind: api.EventPermission, Title: "Run tool", Description: "Read configuration",
+	}})
+	wantPermissionHeight := max(1, m.height-lipgloss.Height(m.perm.Render())-lipgloss.Height(m.status.Render())-2)
+	if got := m.transcript.vp.Height(); got != wantPermissionHeight {
+		t.Errorf("permission viewport height = %d, want %d", got, wantPermissionHeight)
 	}
 }
 
@@ -494,6 +525,21 @@ func TestModel_WindowSizeMsg_ClampsTranscriptHeightToOneOnTinyTerminal(t *testin
 
 	if got := m.transcript.vp.Height(); got != 1 {
 		t.Errorf("transcript viewport height = %d, want the clamp value 1", got)
+	}
+}
+
+func TestModel_ComposerViewFitsNarrowAndTinyWidths(t *testing.T) {
+	for _, width := range []int{1, 2, 3, 8, 16} {
+		m := NewModel(nil, Options{Title: "t", NoColor: true})
+		m.Update(tea.WindowSizeMsg{Width: width, Height: 4})
+		for _, line := range strings.Split(m.composerView(), "\n") {
+			if got := lipgloss.Width(line); got > width {
+				t.Errorf("width %d composer row measured %d cells: %q", width, got, line)
+			}
+		}
+		if got := m.transcript.vp.Height(); got < 1 {
+			t.Errorf("width %d produced non-positive viewport height %d", width, got)
+		}
 	}
 }
 

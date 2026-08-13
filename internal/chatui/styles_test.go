@@ -21,12 +21,17 @@ func assertNoANSI(t *testing.T, name, output string) {
 func semanticRenders(s *styles) []string {
 	return []string{
 		s.accentStyle.Render("accent"), s.selectedStyle.Render("selected"),
+		s.selectedDescriptionStyle.Render("selected description"),
 		s.mutedStyle.Render("muted"), s.successStyle.Render("success"),
 		s.warningStyle.Render("warning"), s.errorStyle.Render("error"),
 		s.borderStyle.Render("border"), s.userStyle.Render("user"),
 		s.agentStyle.Render("agent"), s.thoughtStyle.Render("thought"),
 		s.toolStyle.Render("tool"), s.systemStyle.Render("system"),
+		s.completionCommandStyle.Render("command"), s.completionDescriptionStyle.Render("description"),
+		s.permissionTitleStyle.Render("permission"), s.permissionApproveStyle.Render("approve"),
+		s.permissionDenyStyle.Render("deny"),
 		s.statusBar.Width(24).Render("status"),
+		s.composerBorder.Width(24).Render("composer"),
 		s.modalBorder.Width(24).Render("modal"),
 	}
 }
@@ -74,6 +79,7 @@ func presentationSnapshot(m *Model) []string {
 	return []string{
 		m.transcript.View(),
 		m.input.Styles().Focused.Prompt.Render("> "),
+		m.composerView(),
 		m.status.Render(),
 		m.completion.Render(),
 		m.perm.Render(),
@@ -107,5 +113,34 @@ func TestModel_NoColorRemovesANSIFromEveryPresentationSurface(t *testing.T) {
 		if i == 0 && !strings.Contains(output, "[tool] Read file: done") {
 			t.Errorf("plain transcript lost tool text: %q", output)
 		}
+	}
+}
+
+func TestModel_ComposerViewShowsBoundaryHintAndThemeAwareFocus(t *testing.T) {
+	renders := make(map[string]string)
+	for _, style := range []string{"dark", "light"} {
+		m := NewModel(nil, Options{Title: "t", Style: style})
+		m.Update(tea.WindowSizeMsg{Width: 64, Height: 24})
+		out := m.composerView()
+		plain := ansi.Strip(out)
+		if !strings.Contains(plain, "╭") || !strings.Contains(plain, "Send a message…") ||
+			!strings.Contains(plain, "enter send") {
+			t.Errorf("%s composer missing boundary, placeholder, or key hint:\n%s", style, plain)
+		}
+		if plain == out {
+			t.Errorf("%s composer should use semantic focus styling", style)
+		}
+		renders[style] = out
+	}
+	if renders["dark"] == renders["light"] {
+		t.Error("dark and light composer focus styles should render differently")
+	}
+
+	plainModel := NewModel(nil, Options{Title: "t", NoColor: true})
+	plainModel.Update(tea.WindowSizeMsg{Width: 64, Height: 24})
+	plainOut := plainModel.composerView()
+	assertNoANSI(t, "plain composer", plainOut)
+	if !strings.Contains(plainOut, "╭") || !strings.Contains(plainOut, "enter send") {
+		t.Errorf("plain composer must retain structural focus and text hint:\n%s", plainOut)
 	}
 }

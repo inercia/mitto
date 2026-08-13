@@ -82,6 +82,9 @@ func NewModel(sess *api.Session, opts Options) *Model {
 	st := newStyles()
 	st.apply(mode, theme)
 	ta := textarea.New()
+	// The composer border is the focus affordance; Bubbles' default "┃ " prompt
+	// would consume two cells and overflow one- and two-column terminals.
+	ta.Prompt = ""
 	ta.Placeholder = "Send a message…"
 	ta.Focus()
 	ta.ShowLineNumbers = false
