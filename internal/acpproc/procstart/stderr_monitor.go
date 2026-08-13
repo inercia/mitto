@@ -24,9 +24,9 @@ var mcpInitProgressPattern = regexp.MustCompile(`(?i)waiting for .* mcp server`)
 // needed — mitto-29q). If onMCPInitTimeout is non-nil, it is called (at most once)
 // when the agent reports its MCP-init wait has timed out — callers use this to abort
 // the pending session/new promptly with an actionable error (mitto-8ul.1). The
-// []string argument carries the per-server names extracted from the same chunk via
-// mittoAcp.ExtractMCPTimedOutServers (mitto-m8nx AC2); it is nil when the chunk only
-// carries the generic tail line with no per-server status. Neither MCP signal
+// []string argument carries per-server names accumulated across stderr chunks in
+// the current MCP-init episode via mittoAcp.ExtractMCPTimedOutServers (mitto-m8nx
+// AC2); it is nil when no per-server status was observed. Neither MCP signal
 // contributes to crash detection.
 //
 // If onDegraded is non-nil, it is called every time a stderr chunk matches a
@@ -57,6 +57,8 @@ func StartStderrMonitor(
 		crashSignaled := false
 		activitySignaled := false
 		mcpTimeoutSignaled := false
+		var pendingMCPTimedOutServers []string
+		pendingMCPTimedOutServerSet := make(map[string]struct{})
 		buf := make([]byte, 4096)
 		for {
 			n, readErr := stderr.Read(buf)
@@ -117,12 +119,28 @@ func StartStderrMonitor(
 					if chunkStr == "" {
 						chunkStr = string(buf[:n])
 					}
-					if onMCPInitProgress != nil && mcpInitProgressPattern.MatchString(chunkStr) {
-						onMCPInitProgress()
+					if mcpInitProgressPattern.MatchString(chunkStr) {
+						pendingMCPTimedOutServers = nil
+						pendingMCPTimedOutServerSet = make(map[string]struct{})
+						if onMCPInitProgress != nil {
+							onMCPInitProgress()
+						}
 					}
-					if !mcpTimeoutSignaled && onMCPInitTimeout != nil && mittoAcp.MCPInitTimeoutPattern.MatchString(chunkStr) {
-						mcpTimeoutSignaled = true
-						onMCPInitTimeout(mittoAcp.ExtractMCPTimedOutServers(chunkStr))
+					if !mcpTimeoutSignaled && onMCPInitTimeout != nil {
+						for _, server := range mittoAcp.ExtractMCPTimedOutServers(chunkStr) {
+							if _, exists := pendingMCPTimedOutServerSet[server]; exists {
+								continue
+							}
+							pendingMCPTimedOutServerSet[server] = struct{}{}
+							pendingMCPTimedOutServers = append(pendingMCPTimedOutServers, server)
+						}
+						if mittoAcp.MCPInitTimeoutPattern.MatchString(chunkStr) {
+							mcpTimeoutSignaled = true
+							servers := pendingMCPTimedOutServers
+							pendingMCPTimedOutServers = nil
+							pendingMCPTimedOutServerSet = nil
+							onMCPInitTimeout(servers)
+						}
 					}
 				}
 			}

@@ -122,6 +122,64 @@ func TestStartStderrMonitor_MCPInitTimeout_PassesServerNames(t *testing.T) {
 	}
 }
 
+// TestStartStderrMonitor_MCPInitTimeout_PassesServerNamesAcrossWrites reproduces
+// mitto-m8nx: Auggie may emit the per-server status and generic timeout marker
+// in separate stderr writes, but the callback must still receive the server name.
+func TestStartStderrMonitor_MCPInitTimeout_PassesServerNamesAcrossWrites(t *testing.T) {
+	pr, pw := io.Pipe()
+	collector := NewStderrCollector(8192, nil)
+
+	serversCh := make(chan []string, 1)
+	onTimeout := func(servers []string) { serversCh <- servers }
+
+	StartStderrMonitor(pr, collector, nil, nil, nil, onTimeout, nil, nil)
+
+	go func() {
+		// io.Pipe writes are synchronous: the first write is fully consumed before
+		// the second begins, guaranteeing distinct monitor Read calls.
+		_, _ = pw.Write([]byte("   ⏳ mitto (timed out)\n"))
+		_, _ = pw.Write([]byte("⚠️ MCP initialization timed out after 202s\n"))
+		_ = pw.Close()
+	}()
+
+	select {
+	case servers := <-serversCh:
+		if len(servers) != 1 || servers[0] != "mitto" {
+			t.Fatalf("onMCPInitTimeout servers = %v, want [mitto]", servers)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected onMCPInitTimeout to be invoked")
+	}
+}
+
+// TestStartStderrMonitor_MCPInitTimeout_DropsNamesFromPriorEpisode guards the
+// mitto-m8nx accumulator against attributing an old status to a new handshake.
+func TestStartStderrMonitor_MCPInitTimeout_DropsNamesFromPriorEpisode(t *testing.T) {
+	pr, pw := io.Pipe()
+	collector := NewStderrCollector(8192, nil)
+
+	serversCh := make(chan []string, 1)
+	onTimeout := func(servers []string) { serversCh <- servers }
+
+	StartStderrMonitor(pr, collector, nil, nil, nil, onTimeout, nil, nil)
+
+	go func() {
+		_, _ = pw.Write([]byte("   ⏳ stale-server (timed out)\n"))
+		_, _ = pw.Write([]byte("Waiting for 2 MCP servers to initialize\n"))
+		_, _ = pw.Write([]byte("⚠️ MCP initialization timed out after 202s\n"))
+		_ = pw.Close()
+	}()
+
+	select {
+	case servers := <-serversCh:
+		if len(servers) != 0 {
+			t.Fatalf("onMCPInitTimeout servers = %v, want no stale names", servers)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected onMCPInitTimeout to be invoked")
+	}
+}
+
 // TestStartStderrMonitor_MCPPatternsDoNotTriggerCrash guards against future regex
 // churn accidentally overlapping MCP-init phrasing with crash detection patterns.
 func TestStartStderrMonitor_MCPPatternsDoNotTriggerCrash(t *testing.T) {
