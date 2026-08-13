@@ -102,6 +102,7 @@ type fakePromptDeps struct {
 	overrideActive         bool
 	setActiveModelCalls    []string
 	setActiveModelErr      error
+	setActiveModelErrors   []error
 	setActiveModelGate     chan struct{} // if non-nil, block in pdSetActiveModelOnly until closed (simulates a slow/cold set_model)
 	recordedSessionChanges []session.SessionChangeData
 	// recordedSessionChangeSeqs (mitto-c36) mirrors recordedSessionChanges 1:1
@@ -330,8 +331,12 @@ func (f *fakePromptDeps) pdWriteOverrideActive(active bool) {
 func (f *fakePromptDeps) pdSetActiveModelOnly(ctx context.Context, modelID string) error {
 	f.mu.Lock()
 	f.setActiveModelCalls = append(f.setActiveModelCalls, modelID)
+	call := len(f.setActiveModelCalls)
 	gate := f.setActiveModelGate
 	err := f.setActiveModelErr
+	if call <= len(f.setActiveModelErrors) {
+		err = f.setActiveModelErrors[call-1]
+	}
 	f.mu.Unlock()
 	if gate != nil {
 		select {
@@ -2550,6 +2555,60 @@ func TestPromptDispatcher_ApplyModelPreference_SwitchFails_NoPill(t *testing.T) 
 	if len(d.recordedSessionChanges) != 0 {
 		t.Fatalf("expected no model_override pill when switch RPC failed, got %v", d.recordedSessionChanges)
 	}
+	if d.overrideActive {
+		t.Fatal("expected overrideActive=false when switch RPC failed")
+	}
+}
+
+func TestPromptDispatcher_ApplyModelPreference_ColdFailureRetriesWhenWarm(t *testing.T) {
+	origGrace := modelSwitchSyncGrace
+	origBudget := modelSwitchAsyncBudget
+	origRetryDelay := modelSwitchWarmRetryDelay
+	modelSwitchSyncGrace = 5 * time.Millisecond
+	modelSwitchAsyncBudget = 250 * time.Millisecond
+	modelSwitchWarmRetryDelay = 10 * time.Millisecond
+	defer func() {
+		modelSwitchSyncGrace = origGrace
+		modelSwitchAsyncBudget = origBudget
+		modelSwitchWarmRetryDelay = origRetryDelay
+	}()
+
+	p := promptDispatcher{}
+	d := newFakePromptDeps()
+	d.agentModels = &SessionModelState{
+		CurrentModelId: "m-1",
+		AvailableModels: []ModelInfo{
+			{ModelId: "m-1", Name: "Model 1"},
+			{ModelId: "m-2", Name: "Model 2"},
+		},
+	}
+	d.baselineModel = "m-1"
+	d.modelProfiles = []config.ModelProfile{
+		{Name: "Pref2", Criteria: &config.ACPServerConstraint{MatchMode: "contains", Pattern: "Model 2"}},
+	}
+	d.setActiveModelErrors = []error{
+		&acp.RequestError{Code: -32603, Message: "Internal error", Data: map[string]string{"error": "context deadline exceeded"}},
+		nil,
+	}
+
+	p.applyModelPreference(d, PromptMeta{PreferredModels: []config.PromptPreferredModel{{ModelName: "Pref2"}}})
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		d.mu.Lock()
+		calls := len(d.setActiveModelCalls)
+		pills := len(d.recordedSessionChanges)
+		override := d.overrideActive
+		d.mu.Unlock()
+		if calls == 2 && pills == 1 && override {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	t.Fatalf("cold model switch was not retried successfully: calls=%v pills=%v override=%v",
+		d.setActiveModelCalls, d.recordedSessionChanges, d.overrideActive)
 }
 
 func TestPromptDispatcher_ApplyModelPreference_ColdSlowSwitch_DoesNotBlockPrompt(t *testing.T) {

@@ -17,6 +17,7 @@ import (
 	acp "github.com/coder/acp-go-sdk"
 
 	mittoAcp "github.com/inercia/mitto/internal/acp"
+	"github.com/inercia/mitto/internal/acpproc/acperrors"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/processors"
 	"github.com/inercia/mitto/internal/session"
@@ -1112,6 +1113,45 @@ var modelSwitchSyncGrace = 3 * time.Second
 // A var so tests can shrink it.
 var modelSwitchAsyncBudget = 90 * time.Second
 
+// modelSwitchWarmRetryDelay waits out the shared process's first saturation
+// cooldown before spending the still-available outer budget on one warm retry.
+// Mirror of acpproc sessionSaturationCooldownBase; keep the two in sync.
+// A var so tests can shrink it.
+var modelSwitchWarmRetryDelay = 30 * time.Second
+
+func isRetryableModelPreferenceError(err error) bool {
+	return errors.Is(err, context.DeadlineExceeded) ||
+		errors.Is(err, acperrors.ErrProcessSaturated) ||
+		acperrors.IsAgentInternalDeadlineErr(err) ||
+		acperrors.IsAgentQueryClosedErr(err) ||
+		mittoAcp.IsACPConnectionError(err)
+}
+
+func (p promptDispatcher) setPreferredModelWithWarmRetry(d promptDeps, ctx context.Context, desired string) error {
+	firstErr := d.pdSetActiveModelOnly(ctx, desired)
+	if firstErr == nil || !isRetryableModelPreferenceError(firstErr) {
+		return firstErr
+	}
+
+	timer := time.NewTimer(modelSwitchWarmRetryDelay)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+	case <-ctx.Done():
+		return firstErr
+	}
+
+	if l := d.pdLogger(); l != nil {
+		l.Info("Retrying model preference after cold-agent cooldown",
+			"session_id", d.pdSessionID(),
+			"model", desired)
+	}
+	if retryErr := d.pdSetActiveModelOnly(ctx, desired); retryErr != nil {
+		return fmt.Errorf("warm model-switch retry after initial failure %v: %w", firstErr, retryErr)
+	}
+	return nil
+}
+
 // intendedModelID resolves the model this turn is meant to run on, given the
 // dispatch's preferredModels (explicit on meta, or declared by the named prompt).
 // It mirrors applyModelPreference's resolution but performs no RPC and records no
@@ -1258,7 +1298,7 @@ func (p promptDispatcher) applyModelPreference(d promptDeps, meta PromptMeta) {
 				ModelDisplayName(models, baseline),
 			)
 		}
-		d.pdWriteOverrideActive(isOverride)
+		d.pdWriteOverrideActive(isOverride && !switchFailed)
 	}
 
 	if reverifySynthetic {
@@ -1283,7 +1323,7 @@ func (p promptDispatcher) applyModelPreference(d promptDeps, meta PromptMeta) {
 	go func() {
 		setCtx, setCancel := context.WithTimeout(d.pdSessionCtx(), modelSwitchAsyncBudget)
 		defer setCancel()
-		setErr := d.pdSetActiveModelOnly(setCtx, desired)
+		setErr := p.setPreferredModelWithWarmRetry(d, setCtx, desired)
 		if setErr != nil {
 			if l := d.pdLogger(); l != nil {
 				l.Warn("Failed to apply model preference", "model", desired, "error", setErr)
