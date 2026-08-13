@@ -206,6 +206,12 @@ cli` counterpart). An unrecognized `/word` is refused locally (error
   updates both Glamour and every Lipgloss/Bubbles style. `--no-color` and
   `$NO_COLOR` select a plain palette that preserves text, selection markers,
   rounded borders, padding, and spacing while emitting no ANSI styling.
+- **Status semantics (`mitto-1bml.5`)**: the footer keeps conversation/ACP
+  identity separate from explicit symbol-plus-label connection cues
+  (`connecting`, `connected`, or `disconnected`) and an independent `working`
+  cue. The same symbols and labels remain in no-color mode. ANSI-aware
+  truncation preserves a single row; very narrow terminals retain compact,
+  distinct state symbols when the full labels cannot fit.
 - **Interactive surface hierarchy (`mitto-1bml.4`)**: the focused composer has
   an accent boundary and a separate muted key hint; completion rows distinguish
   command names from descriptions and retain a `>` selection marker in plain
