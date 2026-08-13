@@ -488,8 +488,14 @@ func (r *LoopRunner) triggerTasksFireWithRetry(sessionID string, delta *config.T
 // referenced by existing tests) since only the cooldown check itself needed
 // to be trigger-neutral.
 func (r *LoopRunner) eventCooldownActive(loop *session.LoopPrompt) bool {
+	return r.eventCooldownRemaining(loop) > 0
+}
+
+// eventCooldownRemaining returns how long remains before another event-driven
+// delivery may fire. A zero duration means the cooldown is not active.
+func (r *LoopRunner) eventCooldownRemaining(loop *session.LoopPrompt) time.Duration {
 	if loop.LastSentAt == nil {
-		return false
+		return 0
 	}
 	r.mu.Lock()
 	floor := r.minTasksCooldownSeconds
@@ -500,9 +506,13 @@ func (r *LoopRunner) eventCooldownActive(loop *session.LoopPrompt) bool {
 		cooldown = floor
 	}
 	if cooldown <= 0 {
-		return false
+		return 0
 	}
-	return time.Since(*loop.LastSentAt) < time.Duration(cooldown)*time.Second
+	remaining := time.Until(loop.LastSentAt.Add(time.Duration(cooldown) * time.Second))
+	if remaining < 0 {
+		return 0
+	}
+	return remaining
 }
 
 // isTasksSubtreeBusy returns true if the conversation, or any conversation in
@@ -587,13 +597,18 @@ func (r *LoopRunner) armTasksRebase(sessionID string, loopStore *session.LoopSto
 	r.mu.Lock()
 	window := r.tasksQuiescenceWindow
 	r.mu.Unlock()
+	r.armTasksRebaseAfter(sessionID, loopStore, window)
+}
 
+// armTasksRebaseAfter schedules a rebase/re-fire check after delay, replacing
+// any existing timer so each session retains at most one pending check.
+func (r *LoopRunner) armTasksRebaseAfter(sessionID string, loopStore *session.LoopStore, delay time.Duration) {
 	r.tasksRebaseTimersMu.Lock()
 	defer r.tasksRebaseTimersMu.Unlock()
 	if existing, ok := r.tasksRebaseTimers[sessionID]; ok {
 		existing.Stop()
 	}
-	r.tasksRebaseTimers[sessionID] = time.AfterFunc(window, func() {
+	r.tasksRebaseTimers[sessionID] = time.AfterFunc(delay, func() {
 		r.fireTasksRebase(sessionID, loopStore)
 	})
 }
@@ -748,9 +763,9 @@ func (r *LoopRunner) fireTasksRebase(sessionID string, loopStore *session.LoopSt
 	// Read+clear the sticky re-fire flag atomically with timer cleanup so a
 	// concurrent processTasksChange that re-sets the flag after this point
 	// arms a fresh timer and its own follow-up (mitto-cwg.1). The flag is
-	// consumed here whether or not the re-fire actually goes through — if a
-	// Layer 0 guard blocks the fire, the delta is absorbed by the plain rebase
-	// same as any other "condition-filtered" change.
+	// consumed here whether or not the re-fire actually goes through. A
+	// cooldown-blocked material delta is explicitly restored below; durable
+	// no-fire outcomes such as condition-false still fall through to rebase.
 	refirePending := r.tasksRefirePending[sessionID]
 	delete(r.tasksRefirePending, sessionID)
 	r.tasksRebaseTimersMu.Unlock()
@@ -822,6 +837,13 @@ func (r *LoopRunner) fireTasksRebase(sessionID string, loopStore *session.LoopSt
 					"retries_exhausted", true)
 			}
 			r.clearTasksRefireDeliveryFailures(sessionID)
+			return
+		case tasksRefireCooldownDeferred:
+			// Cooldown is temporary: preserve the pre-run baseline and sticky
+			// pending marker, then retry once at the cooldown boundary instead of
+			// waiting another full quiescence window (mitto-wsnv).
+			r.markTasksRefirePending(sessionID)
+			r.armTasksRebaseAfter(sessionID, loopStore, r.eventCooldownRemaining(loop))
 			return
 		case tasksRefireNotWarranted:
 			// No pending problem to preserve — clear any stale counter and
@@ -921,9 +943,8 @@ type tasksRefireOutcome int
 
 const (
 	// tasksRefireNotWarranted means no material change existed, a Layer 0
-	// guard blocked firing (cooldown, maxDuration, condition-false), or a
-	// parse error occurred. Safe for the caller to fall back to a plain
-	// baseline rebase.
+	// durable guard blocked firing (maxDuration, condition-false), or a parse
+	// error occurred. Safe for the caller to fall back to a plain rebase.
 	tasksRefireNotWarranted tasksRefireOutcome = iota
 	// tasksRefireDispatched means the fire was dispatched successfully; the
 	// new baseline was already persisted by maybeFireAccumulatedDelta itself.
@@ -932,6 +953,9 @@ const (
 	// guards passed) but triggerNowWithTasksDelta failed even after the
 	// bounded transient-race retry. The caller MUST NOT rebase the baseline.
 	tasksRefireDeliveryFailed
+	// tasksRefireCooldownDeferred means a material delta was blocked only by
+	// the temporary cooldown. The caller MUST preserve it and retry at expiry.
+	tasksRefireCooldownDeferred
 )
 
 // maybeFireAccumulatedDelta wires evaluateAccumulatedDelta to the firing side
@@ -943,6 +967,15 @@ const (
 func (r *LoopRunner) maybeFireAccumulatedDelta(sessionID string, meta session.Metadata, loop *session.LoopPrompt, loopStore *session.LoopStore, baselineStore *TasksBaselineStore, raw []byte) tasksRefireOutcome {
 	delta, shouldFire := r.evaluateAccumulatedDelta(sessionID, loop, loopStore, baselineStore, raw)
 	if !shouldFire {
+		// MaxDuration is checked before cooldown and may have disabled the loop.
+		// Re-read persisted state before classifying this as a temporary defer so
+		// a terminal stop can never arm another retry.
+		if delta != nil && r.eventCooldownActive(loop) {
+			current, err := loopStore.Get()
+			if err == nil && current != nil && current.Enabled {
+				return tasksRefireCooldownDeferred
+			}
+		}
 		return tasksRefireNotWarranted
 	}
 

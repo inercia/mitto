@@ -4027,6 +4027,105 @@ func TestLoopRunner_EvaluateAccumulatedDelta_CooldownActive_NoFire(t *testing.T)
 	}
 }
 
+// TestLoopRunner_FireTasksRebase_CooldownBlocked_PreservesDeltaAndRetries
+// reproduces mitto-wsnv: a material busy-window delta blocked only by the
+// onTasks cooldown must remain pending instead of being permanently rebased.
+func TestLoopRunner_FireTasksRebase_CooldownBlocked_PreservesDeltaAndRetries(t *testing.T) {
+	const sessionID = "s1"
+	rawBefore := mustMarshalRows(t, beadsRow("mitto-1", "open", "2026-01-01T00:00:00Z"))
+	rawNow := mustMarshalRows(t,
+		beadsRow("mitto-1", "open", "2026-01-01T00:00:00Z"),
+		beadsRow("mitto-2", "open", "2026-01-02T00:00:00Z"),
+	)
+
+	runner, ps := newTasksRefireTestRunner(t, sessionID, rawNow)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	bs := &BackgroundSession{
+		ctx:           ctx,
+		cancel:        cancel,
+		observers:     make(map[SessionObserver]struct{}),
+		store:         runner.store,
+		persistedID:   sessionID,
+		workingDir:    "/proj",
+		sharedProcess: newFakeSharedProcess(),
+		acpID:         "acp-sess-1",
+		pendingConfig: make(map[string]string),
+		promptResolver: func(name, dir string) (string, error) {
+			return "iterate", nil
+		},
+	}
+	bs.promptCond = sync.NewCond(&bs.promptMu)
+	runner.sessionManager.AddSessionForTest(bs)
+
+	baselineStore := NewTasksBaselineStore(runner.store.SessionDir(sessionID))
+	if err := baselineStore.Set(rawBefore); err != nil {
+		t.Fatalf("Set() baseline error = %v", err)
+	}
+	runner.SetMinLoopTasksCooldownSeconds(0)
+	runner.SetTasksQuiescenceWindow(time.Hour)
+	t.Cleanup(func() { runner.cancelTasksRebaseTimerForTest(sessionID) })
+
+	cooldown := 1
+	if err := ps.Update(session.LoopUpdate{CooldownSeconds: &cooldown}); err != nil {
+		t.Fatalf("Update() cooldown error = %v", err)
+	}
+	if err := ps.RecordSent(); err != nil {
+		t.Fatalf("RecordSent() error = %v", err)
+	}
+
+	var resolverCalls int32
+	runner.SetPromptResolver(func(name, dir string) (string, error) {
+		atomic.AddInt32(&resolverCalls, 1)
+		return "iterate", nil
+	})
+
+	runner.fireTasksRebase(sessionID, ps)
+
+	baseline, err := baselineStore.Get()
+	if err != nil {
+		t.Fatalf("Get() baseline error = %v", err)
+	}
+	if !jsonBytesEqual(t, baseline.RawSnapshot, rawBefore) {
+		t.Fatalf("bug reproduced (mitto-wsnv): cooldown-blocked baseline = %s, want original %s so the delta survives",
+			baseline.RawSnapshot, rawBefore)
+	}
+	if got := countTasksRebaseTimers(runner); got != 1 {
+		t.Fatalf("tasksRebaseTimers = %d, want 1 retry armed for cooldown expiry", got)
+	}
+	if !runner.tasksRefirePendingForTest(sessionID) {
+		t.Fatal("tasksRefirePending = false, want true while cooldown-blocked delta awaits retry")
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		baseline, err = baselineStore.Get()
+		if err != nil {
+			t.Fatalf("Get() baseline after retry error = %v", err)
+		}
+		if jsonBytesEqual(t, baseline.RawSnapshot, rawNow) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !jsonBytesEqual(t, baseline.RawSnapshot, rawNow) {
+		t.Errorf("baseline after cooldown retry = %s, want %s", baseline.RawSnapshot, rawNow)
+	}
+	if got := atomic.LoadInt32(&resolverCalls); got != 1 {
+		t.Fatalf("promptResolver call count after cooldown expiry = %d, want exactly 1", got)
+	}
+	for time.Now().Before(deadline) {
+		runner.dispatchInFlightMu.Lock()
+		_, held := runner.dispatchInFlight[sessionID]
+		runner.dispatchInFlightMu.Unlock()
+		if !held {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("timed out waiting for cooldown retry dispatch to complete")
+}
+
 // TestLoopRunner_FireTasksRebase_CoalesceTrue_AbsorbsSilently verifies the
 // default (CoalesceDuringBusy unset → true) behaviour: an external change
 // landing during the busy window is silently absorbed by the plain rebase,
