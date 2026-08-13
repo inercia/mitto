@@ -233,11 +233,11 @@ chat frames, completion and permission surfaces, and every footer state directly
 It deliberately avoids a PTY and `teatest`, and leaves Markdown byte goldens in
 `internal/termmd`. The matrix checks the following presentation contract:
 
-| Presentation | Color behavior | Required non-color cues |
-| ------------ | -------------- | ----------------------- |
-| `--style dark` | Dark semantic palette for every chat and picker surface | `>` selection marker, bracketed transcript roles, state symbols and labels, explicit permission actions |
-| `--style light` | Light semantic palette with the same text and geometry as dark | Same cues as dark; palette changes must not change content or layout |
-| `--no-color` / `$NO_COLOR` | No ANSI styling from any surface | All selection, role, status, border, and action cues remain visible |
+| Presentation               | Color behavior                                                 | Required non-color cues                                                                                 |
+| -------------------------- | -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `--style dark`             | Dark semantic palette for every chat and picker surface        | `>` selection marker, bracketed transcript roles, state symbols and labels, explicit permission actions |
+| `--style light`            | Light semantic palette with the same text and geometry as dark | Same cues as dark; palette changes must not change content or layout                                    |
+| `--no-color` / `$NO_COLOR` | No ANSI styling from any surface                               | All selection, role, status, border, and action cues remain visible                                     |
 
 Before changing the palette or terminal layout, manually run
 `mitto conversation chat` in a real terminal and check:
