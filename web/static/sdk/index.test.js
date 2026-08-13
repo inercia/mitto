@@ -9,7 +9,12 @@
  * (`client.sessions`, streams, etc.) predates this bead and is out of scope
  * here.
  */
-import { createClient, createTtlCache, keyForParams, withIssueCaches } from "./index.js";
+import {
+  createClient,
+  createTtlCache,
+  keyForParams,
+  withIssueCaches,
+} from "./index.js";
 
 function noopFetch() {
   return Promise.resolve({
@@ -43,6 +48,12 @@ describe("createClient() wiring (mitto-7gta.10)", () => {
     expect(typeof client.shortcuts.setGlobal).toBe("function");
     expect(typeof client.shortcuts.getFolder).toBe("function");
     expect(typeof client.shortcuts.setFolder).toBe("function");
+  });
+
+  test("exposes client.taskLabelColors with the global resource surface", () => {
+    const client = createClient({ fetch: noopFetch });
+    expect(typeof client.taskLabelColors.getGlobal).toBe("function");
+    expect(typeof client.taskLabelColors.setGlobal).toBe("function");
   });
 
   test("exposes client.serverConfig with the full resource surface", () => {
@@ -163,7 +174,9 @@ describe("createClient() wiring (mitto-7gta.10)", () => {
     expect(typeof client.misc.improvePrompt).toBe("function");
     expect(client.misc.advancedFlags).toBe(client.serverConfig.advancedFlags);
     expect(client.misc.externalStatus).toBe(client.serverConfig.externalStatus);
-    expect(client.misc.supportedRunners).toBe(client.serverConfig.supportedRunners);
+    expect(client.misc.supportedRunners).toBe(
+      client.serverConfig.supportedRunners,
+    );
     expect(client.misc.runnerDefaults).toBe(client.serverConfig.runnerDefaults);
     // mitto-7gta.19.1: pre-auth endpoints used by auth.js.
     expect(typeof client.misc.authInfo).toBe("function");
@@ -175,7 +188,10 @@ describe("createClient() wiring (mitto-7gta.10)", () => {
   // set) still gets a ws-capable client.endpoints without a caller-side deep
   // import of core/endpoints.js.
   test("an explicit wsBaseUrl option makes client.endpoints ws-capable with a relative baseUrl", () => {
-    const client = createClient({ fetch: noopFetch, wsBaseUrl: "ws://host:1234" });
+    const client = createClient({
+      fetch: noopFetch,
+      wsBaseUrl: "ws://host:1234",
+    });
     expect(client.config.baseUrl).toBe("");
     expect(client.endpoints.events.ws()).toBe("ws://host:1234/api/events");
   });

@@ -15,6 +15,7 @@ import {
   readBeadsResponse,
   matchesSearch,
   computeEffectiveStreamingSet,
+  taskTitleBackground,
   CLEANUP_PROGRESS_TOAST_INTERVAL_MS,
 } from "../utils/beads.js";
 // Namespaced import so a missing named export (e.g. isBeadsSchemaSkew before the
@@ -1361,6 +1362,34 @@ describe("computePopstateAction — direction & clamping", () => {
 const __filename_bv = fileURLToPath(import.meta.url);
 const __dirname_bv = dirname(__filename_bv);
 const BEADS_VIEW_PATH = resolve(__dirname_bv, "BeadsView.js");
+
+describe("task label title backgrounds (mitto-ggs6)", () => {
+  const mappings = [
+    { label: "needs-human", color: "#ef4444" },
+    { label: "blocked", color: "#f59e0b" },
+  ];
+
+  test("first configured matching label wins regardless of issue label order", () => {
+    expect(
+      taskTitleBackground({ labels: ["blocked", "needs-human"] }, mappings),
+    ).toBe("#ef4444");
+  });
+
+  test("matching is exact and missing labels remain uncolored", () => {
+    expect(
+      taskTitleBackground({ labels: ["needs-human-review"] }, mappings),
+    ).toBe("");
+    expect(taskTitleBackground({}, mappings)).toBe("");
+  });
+
+  test("BeadsView applies the derived color to the title span only", () => {
+    const source = readFileSync(BEADS_VIEW_PATH, "utf8");
+    expect(source).toMatch(
+      /<span\s+data-testid="beads-issue-title"\s+style=\$\{titleBackground \? \{ backgroundColor: titleBackground \} : undefined\}/,
+    );
+    expect(source).not.toMatch(/BeadsIssueRow[\s\S]{0,300}backgroundColor/);
+  });
+});
 
 describe("mitto-zbfq: BeadsIssueView single Drawer mount across load", () => {
   const source = readFileSync(BEADS_VIEW_PATH, "utf8");

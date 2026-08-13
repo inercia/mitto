@@ -64,6 +64,12 @@ import { Tooltip } from "./Tooltip.js";
 import { ShortcutsEditor } from "./ShortcutsEditor.js";
 import { TaskLabelColorsEditor } from "./TaskLabelColorsEditor.js";
 import { promptMenuIncludes } from "../utils/prompts.js";
+import {
+  addTaskLabelColor as appendTaskLabelColor,
+  moveTaskLabelColor as reorderTaskLabelColor,
+  removeTaskLabelColor as deleteTaskLabelColor,
+  updateTaskLabelColor as patchTaskLabelColor,
+} from "../utils/taskLabelColors.js";
 
 // Section descriptors for the global Shortcuts tab. Section IDs match those used
 // by the folder-level editor and the render-time toolbars; each maps to the
@@ -2029,14 +2035,16 @@ export function SettingsDialog({
     if (!isOpen || activeTab !== "tasks" || taskLabelColorsLoaded) return;
     setTaskLabelColorsLoading(true);
     setTaskLabelColorsError("");
-    getSdkClient().taskLabelColors
-      .getGlobal()
+    getSdkClient()
+      .taskLabelColors.getGlobal()
       .then((data) => {
         setTaskLabelColors(data.entries || []);
         setTaskLabelColorsLoaded(true);
       })
       .catch((err) => {
-        setTaskLabelColorsError("Failed to load task label colors: " + err.message);
+        setTaskLabelColorsError(
+          "Failed to load task label colors: " + err.message,
+        );
       })
       .finally(() => setTaskLabelColorsLoading(false));
   }, [isOpen, activeTab, taskLabelColorsLoaded]);
@@ -2050,21 +2058,13 @@ export function SettingsDialog({
   }, [isOpen]);
 
   const addTaskLabelColor = () =>
-    setTaskLabelColors((prev) => [...prev, { label: "", color: "#ef4444" }]);
+    setTaskLabelColors((prev) => appendTaskLabelColor(prev));
   const updateTaskLabelColor = (idx, patch) =>
-    setTaskLabelColors((prev) =>
-      prev.map((entry, i) => (i === idx ? { ...entry, ...patch } : entry)),
-    );
+    setTaskLabelColors((prev) => patchTaskLabelColor(prev, idx, patch));
   const removeTaskLabelColor = (idx) =>
-    setTaskLabelColors((prev) => prev.filter((_, i) => i !== idx));
+    setTaskLabelColors((prev) => deleteTaskLabelColor(prev, idx));
   const moveTaskLabelColor = (idx, dir) =>
-    setTaskLabelColors((prev) => {
-      const target = idx + dir;
-      if (target < 0 || target >= prev.length) return prev;
-      const next = [...prev];
-      [next[idx], next[target]] = [next[target], next[idx]];
-      return next;
-    });
+    setTaskLabelColors((prev) => reorderTaskLabelColor(prev, idx, dir));
 
   const persistTaskLabelColors = async () => {
     if (!taskLabelColorsLoaded) return;
