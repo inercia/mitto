@@ -7695,3 +7695,253 @@ func TestFlushPendingDispatches_LateDeliveryFuncNotCalledWhenNothingDelivered(t 
 		t.Errorf("lateDeliveryFunc called %d times, want 0 (nothing was delivered)", nCalls)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// mitto-telc: beads-prime index-only injection + extract/curate memory
+// commands and curation policy rework.
+// ---------------------------------------------------------------------------
+
+// loadBuiltinProcessorForTest reads the named embedded builtin processor YAML,
+// loads it via the real Loader (full validation path, same as
+// TestBuiltinProcessorsValidity), and returns the single resulting
+// *Processor. Fails the test if the file can't be read/loaded or doesn't
+// yield exactly one processor.
+func loadBuiltinProcessorForTest(t *testing.T, name string) *Processor {
+	t.Helper()
+	srcPath := rootconfig.BuiltinProcessorsDir + "/" + name + ".yaml"
+	content, err := rootconfig.BuiltinProcessorsFS.ReadFile(srcPath)
+	if err != nil {
+		t.Fatalf("ReadFile(%s) error = %v", srcPath, err)
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, name+".yaml"), content, 0644); err != nil {
+		t.Fatalf("WriteFile error = %v", err)
+	}
+	procs, err := NewLoader(dir, nil).Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(procs) != 1 {
+		t.Fatalf("expected exactly 1 processor from %s.yaml, got %d", name, len(procs))
+	}
+	return procs[0]
+}
+
+// TestBeadsPrimeProcessor_UsesShellIndexCommand pins the mitto-telc rework of
+// beads-prime: it must reduce `bd prime --memories-only` to headings through an
+// explicit `sh -c` wrapper — command-mode
+// processors exec their Command directly with no shell, so a piped command
+// needs this wrapper (mirrors internal/web/handlers/badge_click.go) — gate on
+// CommandExists("sh") in addition to the pre-existing bd/.beads gates, and
+// rerun only on token budget (time/message-count reruns removed to avoid
+// repeatedly re-injecting the same index during a long conversation).
+func TestBeadsPrimeProcessor_UsesShellIndexCommand(t *testing.T) {
+	proc := loadBuiltinProcessorForTest(t, "beads-prime")
+
+	if proc.Command != "sh" {
+		t.Errorf("Command = %q, want %q", proc.Command, "sh")
+	}
+	if len(proc.Args) != 2 || proc.Args[0] != "-c" {
+		t.Fatalf("Args = %#v, want [-c, <script>]", proc.Args)
+	}
+	script := proc.Args[1]
+	if !strings.Contains(script, "bd prime --memories-only --max-memories 0 --max-memory-chars 0") {
+		t.Errorf("script does not invoke uncapped `bd prime --memories-only`:\n%s", script)
+	}
+	if !strings.Contains(script, "n != expected") {
+		t.Errorf("script does not fail safely on a memory heading/count mismatch:\n%s", script)
+	}
+
+	if !strings.Contains(proc.EnabledWhen, `CommandExists("sh")`) || !strings.Contains(proc.EnabledWhen, `CommandExists("awk")`) {
+		t.Errorf("enabledWhen = %q, want it to gate on CommandExists(\"sh\") and CommandExists(\"awk\")", proc.EnabledWhen)
+	}
+	if !strings.Contains(proc.EnabledWhen, `CommandExists("bd")`) || !strings.Contains(proc.EnabledWhen, `DirExists(".beads")`) {
+		t.Errorf("enabledWhen = %q, want the pre-existing bd/.beads gates preserved", proc.EnabledWhen)
+	}
+
+	rerun := proc.GetRerun()
+	if rerun == nil {
+		t.Fatal("expected a non-nil rerun config")
+	}
+	if rerun.AfterTokens != 80000 {
+		t.Errorf("AfterTokens = %d, want 80000", rerun.AfterTokens)
+	}
+	if rerun.AfterTime != "" {
+		t.Errorf("AfterTime = %q, want empty (time-based rerun removed)", rerun.AfterTime)
+	}
+	if rerun.AfterSentMsgs != 0 {
+		t.Errorf("AfterSentMsgs = %d, want 0 (message-count rerun removed)", rerun.AfterSentMsgs)
+	}
+
+	if proc.GetOutputFormat() != OutputFormatRaw {
+		t.Errorf("OutputFormat = %q, want raw", proc.GetOutputFormat())
+	}
+	if proc.GetOutput() != OutputPrepend {
+		t.Errorf("Output = %q, want prepend", proc.GetOutput())
+	}
+}
+
+// TestBeadsPrimeProcessor_ShellScriptSmoke is the YAML command smoke check:
+// it actually executes the beads-prime shell script through the real
+// Executor (exactly as production does) against a fake `bd` on PATH, and
+// asserts (a) every memory KEY appears in the injected index, (b) no memory
+// BODY text leaks into it — the whole point of the mitto-telc rework — and
+// (c) the on-demand `bd memories <keyword>` / `bd recall <key>` lookup
+// instructions are present.
+func TestBeadsPrimeProcessor_ShellScriptSmoke(t *testing.T) {
+	proc := loadBuiltinProcessorForTest(t, "beads-prime")
+
+	binDir := t.TempDir()
+	fakeBd := "#!/bin/sh\n" +
+		"if [ \"$1\" = \"prime\" ] && [ \"$2\" = \"--memories-only\" ]; then\n" +
+		"  cat <<'JSON'\n" +
+		"## Persistent Memories (2)\n\n" +
+		"### sample-key-one\n" +
+		"Body text with a SECRET_TOKEN_MARKER that must never leak into the index.\n\n" +
+		"### sample-key-two\n" +
+		"Another body.\n" +
+		"JSON\n" +
+		"  exit 0\n" +
+		"fi\n" +
+		"exit 9\n"
+	if err := os.WriteFile(filepath.Join(binDir, "bd"), []byte(fakeBd), 0755); err != nil {
+		t.Fatalf("WriteFile(fake bd) error = %v", err)
+	}
+	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
+
+	tmpDir := t.TempDir()
+	executor := NewExecutor(tmpDir, nil)
+	input := &ProcessorInput{WorkingDir: tmpDir}
+
+	output, err := executor.Execute(context.Background(), proc, input)
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+
+	if !strings.Contains(output.Text, "sample-key-one") {
+		t.Errorf("index missing key sample-key-one:\n%s", output.Text)
+	}
+	if !strings.Contains(output.Text, "sample-key-two") {
+		t.Errorf("index missing key sample-key-two:\n%s", output.Text)
+	}
+	if strings.Contains(output.Text, "SECRET_TOKEN_MARKER") {
+		t.Errorf("memory BODY text leaked into the index (should be keys-only):\n%s", output.Text)
+	}
+	if !strings.Contains(output.Text, "bd memories <keyword>") {
+		t.Errorf("index missing `bd memories <keyword>` lookup instruction:\n%s", output.Text)
+	}
+	if !strings.Contains(output.Text, "bd recall <key>") {
+		t.Errorf("index missing `bd recall <key>` lookup instruction:\n%s", output.Text)
+	}
+}
+
+// TestBeadsPrimeProcessor_ShellScriptAcceptsZeroMemories reproduces mitto-e3ut.2:
+// bd 1.2.1 emits this valid alternate document when no memories exist, without
+// the counted "## Persistent Memories (N)" heading used by non-empty output.
+func TestBeadsPrimeProcessor_ShellScriptAcceptsZeroMemories(t *testing.T) {
+	proc := loadBuiltinProcessorForTest(t, "beads-prime")
+
+	binDir := t.TempDir()
+	fakeBd := "#!/bin/sh\n" +
+		"cat <<'EOF'\n" +
+		"[bd prime] If this output is truncated, read the full persisted output.\n\n" +
+		"# Beads Persistent Memories\n\n" +
+		"No memories stored. Use bd remember to add one.\n" +
+		"EOF\n"
+	if err := os.WriteFile(filepath.Join(binDir, "bd"), []byte(fakeBd), 0755); err != nil {
+		t.Fatalf("WriteFile(fake bd) error = %v", err)
+	}
+	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
+
+	tmpDir := t.TempDir()
+	output, err := NewExecutor(tmpDir, nil).Execute(context.Background(), proc, &ProcessorInput{WorkingDir: tmpDir})
+	if err != nil {
+		t.Fatalf("Execute() rejected valid zero-memory output: %v", err)
+	}
+	if !strings.Contains(output.Text, "## Beads Memory Index") ||
+		!strings.Contains(output.Text, "No persistent memories recorded yet.") {
+		t.Errorf("unexpected zero-memory index:\n%s", output.Text)
+	}
+}
+
+// TestBeadsPrimeProcessor_ShellScriptRetriesTransientMismatch covers the
+// mitto-e3ut.2 retry path: a concurrent memory update can make one snapshot
+// inconsistent, while an immediate fresh read is valid.
+func TestBeadsPrimeProcessor_ShellScriptRetriesTransientMismatch(t *testing.T) {
+	proc := loadBuiltinProcessorForTest(t, "beads-prime")
+
+	binDir := t.TempDir()
+	counterPath := filepath.Join(binDir, "calls")
+	fakeBd := fmt.Sprintf("#!/bin/sh\n"+
+		"count=0\n"+
+		"if [ -f %q ]; then count=$(cat %q); fi\n"+
+		"count=$((count + 1))\n"+
+		"printf '%%s\\n' \"$count\" > %q\n"+
+		"if [ \"$count\" -eq 1 ]; then\n"+
+		"  printf '## Persistent Memories (1)\\n'\n"+
+		"else\n"+
+		"  printf '## Persistent Memories (1)\\n\\n### recovered-key\\nbody\\n'\n"+
+		"fi\n", counterPath, counterPath, counterPath)
+	if err := os.WriteFile(filepath.Join(binDir, "bd"), []byte(fakeBd), 0755); err != nil {
+		t.Fatalf("WriteFile(fake bd) error = %v", err)
+	}
+	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
+
+	tmpDir := t.TempDir()
+	output, err := NewExecutor(tmpDir, nil).Execute(context.Background(), proc, &ProcessorInput{WorkingDir: tmpDir})
+	if err != nil {
+		t.Fatalf("Execute() did not recover after transient mismatch: %v", err)
+	}
+	if !strings.Contains(output.Text, "recovered-key") {
+		t.Errorf("retried index missing recovered-key:\n%s", output.Text)
+	}
+	calls, err := os.ReadFile(counterPath)
+	if err != nil {
+		t.Fatalf("ReadFile(counter) error = %v", err)
+	}
+	if got := strings.TrimSpace(string(calls)); got != "2" {
+		t.Errorf("bd call count = %q, want 2", got)
+	}
+}
+
+// TestBeadsPrimeProcessor_ShellScriptRejectsBadSource pins the mitto-telc
+// requirement that either a bd failure or a heading/count mismatch surfaces as
+// a processor error instead of silently producing an empty or partial index.
+func TestBeadsPrimeProcessor_ShellScriptRejectsBadSource(t *testing.T) {
+	proc := loadBuiltinProcessorForTest(t, "beads-prime")
+
+	tests := []struct {
+		name   string
+		script string
+	}{
+		{name: "bd failure", script: "#!/bin/sh\nexit 7\n"},
+		{name: "heading count mismatch", script: "#!/bin/sh\nprintf '## Persistent Memories (2)\\n\\n### only-one-key\\nbody\\n'\n"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			binDir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(binDir, "bd"), []byte(tt.script), 0755); err != nil {
+				t.Fatalf("WriteFile(fake bd) error = %v", err)
+			}
+			t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
+
+			tmpDir := t.TempDir()
+			physicalDir, err := filepath.EvalSymlinks(tmpDir)
+			if err != nil {
+				t.Fatalf("EvalSymlinks(tmpDir) error = %v", err)
+			}
+			_, err = NewExecutor(tmpDir, nil).Execute(context.Background(), proc, &ProcessorInput{WorkingDir: tmpDir})
+			if err == nil {
+				t.Fatal("Execute() error = nil, want source validation error")
+			}
+			if tt.name == "heading count mismatch" {
+				for _, want := range []string{"workspace=" + physicalDir, "expected=2", "actual=1"} {
+					if !strings.Contains(err.Error(), want) {
+						t.Errorf("Execute() error = %q, want sanitized diagnostic %q", err, want)
+					}
+				}
+			}
+		})
+	}
+}
