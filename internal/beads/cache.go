@@ -23,7 +23,24 @@ import (
 // default (mitto-9ni) while remaining a strict upper bound for the corner
 // cases above. Overridable per-deployment via web.beads.read_cache_ttl in
 // settings.json / .mittorc.
-const DefaultCacheTTL = 10 * time.Minute
+const (
+	DefaultCacheTTL = 10 * time.Minute
+
+	// cacheFillTimeout bounds the complete detached singleflight fetch, including
+	// any read retry. commandCleanupTimeout bounds os/exec cleanup after that
+	// context expires. Keep their sum below the 55s bd-backed handler budget.
+	cacheFillTimeout      = 50 * time.Second
+	commandCleanupTimeout = 2 * time.Second
+
+	// CacheFillMaxElapsed is exported so the HTTP layer can pin the invariant
+	// that a cache leader plus command cleanup finishes before its caller budget.
+	CacheFillMaxElapsed = cacheFillTimeout + commandCleanupTimeout
+)
+
+type cacheGeneration struct {
+	global uint64
+	dir    uint64
+}
 
 // cacheEntry is a single cached read payload. For JSON reads (List, Ready,
 // Status, ListAllLabels) payload holds the raw JSON bytes. For ConfigShow the
@@ -40,11 +57,16 @@ type cacheEntry struct {
 // workspace's cache slot. Entries expire after a TTL floor as a backstop
 // against missed external invalidation events.
 type CachingClient struct {
-	inner Client
-	ttl   time.Duration
+	inner       Client
+	ttl         time.Duration
+	fillTimeout time.Duration
 
 	mu      sync.RWMutex
 	entries map[string]map[string]cacheEntry // dir -> methodTag -> entry
+	// Generations prevent a fetch that started before invalidation from storing
+	// its now-stale result after the invalidation completed.
+	globalGeneration uint64
+	dirGenerations   map[string]uint64
 
 	sf singleflight.Group
 
@@ -80,9 +102,11 @@ type CacheMetrics struct {
 // wiring code.
 func NewCachingClient(inner Client) *CachingClient {
 	return &CachingClient{
-		inner:   inner,
-		ttl:     DefaultCacheTTL,
-		entries: make(map[string]map[string]cacheEntry),
+		inner:          inner,
+		ttl:            DefaultCacheTTL,
+		fillTimeout:    cacheFillTimeout,
+		entries:        make(map[string]map[string]cacheEntry),
+		dirGenerations: make(map[string]uint64),
 	}
 }
 
@@ -94,9 +118,11 @@ func NewCachingClientWithTTL(inner Client, ttl time.Duration) *CachingClient {
 		ttl = DefaultCacheTTL
 	}
 	return &CachingClient{
-		inner:   inner,
-		ttl:     ttl,
-		entries: make(map[string]map[string]cacheEntry),
+		inner:          inner,
+		ttl:            ttl,
+		fillTimeout:    cacheFillTimeout,
+		entries:        make(map[string]map[string]cacheEntry),
+		dirGenerations: make(map[string]uint64),
 	}
 }
 
@@ -106,6 +132,10 @@ func NewCachingClientWithTTL(inner Client, ttl time.Duration) *CachingClient {
 func (c *CachingClient) evictDir(dir string) {
 	c.mu.Lock()
 	delete(c.entries, dir)
+	if c.dirGenerations == nil {
+		c.dirGenerations = make(map[string]uint64)
+	}
+	c.dirGenerations[dir]++
 	c.mu.Unlock()
 }
 
@@ -133,6 +163,7 @@ func (c *CachingClient) InvalidateFromWatcher(dir string) {
 func (c *CachingClient) InvalidateAll() {
 	c.mu.Lock()
 	c.entries = make(map[string]map[string]cacheEntry)
+	c.globalGeneration++
 	c.mu.Unlock()
 	c.invalidWorkspaceRemoved.Add(1)
 }
@@ -195,9 +226,21 @@ func (c *CachingClient) Metrics() CacheMetrics {
 	}
 }
 
-// store records a cache entry for (dir, tag).
-func (c *CachingClient) store(dir, tag string, entry cacheEntry) {
+func (c *CachingClient) generationFor(dir string) cacheGeneration {
+	c.mu.RLock()
+	generation := cacheGeneration{global: c.globalGeneration, dir: c.dirGenerations[dir]}
+	c.mu.RUnlock()
+	return generation
+}
+
+// storeIfCurrent records an entry only if no invalidation occurred after the
+// fetch captured generation. The lock makes comparison and store atomic.
+func (c *CachingClient) storeIfCurrent(dir, tag string, entry cacheEntry, generation cacheGeneration) {
 	c.mu.Lock()
+	if c.globalGeneration != generation.global || c.dirGenerations[dir] != generation.dir {
+		c.mu.Unlock()
+		return
+	}
 	slot, ok := c.entries[dir]
 	if !ok {
 		slot = make(map[string]cacheEntry)
@@ -213,9 +256,9 @@ func (c *CachingClient) store(dir, tag string, entry cacheEntry) {
 //
 // Uses sf.DoChan (not sf.Do) so followers can abandon the wait on ctx
 // cancellation rather than block on the leader's WaitGroup past their own
-// request deadline (mitto-kij). The leader continues fetching in the
-// background regardless; when it finishes the cache is populated for later
-// callers.
+// request deadline (mitto-kij). The leader is detached from any one caller but
+// has its own total budget; a late result is cached only if no invalidation
+// occurred while it was in flight (mitto-b4zs).
 func (c *CachingClient) doJSON(ctx context.Context, dir, tag string, fetch func(context.Context) ([]byte, error)) ([]byte, error) {
 	if !isInitialized(dir) {
 		return fetch(ctx)
@@ -231,17 +274,16 @@ func (c *CachingClient) doJSON(ctx context.Context, dir, tag string, fetch func(
 			return entry.payload, nil
 		}
 		c.misses.Add(1)
-		// Detach from the caller's ctx: this closure runs as the singleflight
-		// leader on behalf of any number of followers; using the leader's ctx
-		// would let its early cancellation abort the shared fetch and starve
-		// unrelated followers. Use context.Background() so the leader always
-		// runs to completion (bounded downstream by cliClient.runJSONRead's
-		// own timeout).
-		out, err := fetch(context.Background())
+		generation := c.generationFor(dir)
+		// Detach from the caller so one caller cannot abort a shared fetch, but
+		// cap the entire fetch (including retries) below the HTTP request budget.
+		fillCtx, cancel := context.WithTimeout(context.Background(), c.fillTimeout)
+		defer cancel()
+		out, err := fetch(fillCtx)
 		if err != nil {
 			return nil, err
 		}
-		c.store(dir, tag, cacheEntry{payload: out, capturedAt: time.Now()})
+		c.storeIfCurrent(dir, tag, cacheEntry{payload: out, capturedAt: time.Now()}, generation)
 		return out, nil
 	})
 	select {
@@ -311,12 +353,14 @@ func (c *CachingClient) ConfigShow(ctx context.Context, dir string) (map[string]
 			return entry.configMap, nil
 		}
 		c.misses.Add(1)
-		// Detach from caller's ctx; see doJSON for rationale.
-		out, err := c.inner.ConfigShow(context.Background(), dir)
+		generation := c.generationFor(dir)
+		fillCtx, cancel := context.WithTimeout(context.Background(), c.fillTimeout)
+		defer cancel()
+		out, err := c.inner.ConfigShow(fillCtx, dir)
 		if err != nil {
 			return nil, err
 		}
-		c.store(dir, tag, cacheEntry{configMap: out, capturedAt: time.Now()})
+		c.storeIfCurrent(dir, tag, cacheEntry{configMap: out, capturedAt: time.Now()}, generation)
 		return out, nil
 	})
 	select {

@@ -60,6 +60,10 @@ func (r execRunner) Run(ctx context.Context, dir string, args ...string) ([]byte
 func (r execRunner) RunWithEnv(ctx context.Context, dir string, extraEnv []string, args ...string) ([]byte, string, error) {
 	cmd := exec.CommandContext(ctx, "bd", args...)
 	cmd.Dir = dir
+	// Bound Wait's post-cancellation process/pipe cleanup so a timed-out cache
+	// fill returns within CacheFillMaxElapsed rather than consuming its caller's
+	// remaining HTTP deadline (mitto-b4zs).
+	cmd.WaitDelay = commandCleanupTimeout
 	if r.actor != "" || len(extraEnv) > 0 {
 		cmd.Env = envWithActor(r.actor)
 		if len(extraEnv) > 0 {

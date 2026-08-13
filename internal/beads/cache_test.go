@@ -3,6 +3,7 @@ package beads
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -42,6 +43,50 @@ type fakeClient struct {
 	// If non-nil, Show blocks on this channel before returning; used to
 	// simulate a slow-leader bd show call (mitto-kij reproduction).
 	blockShow chan struct{}
+}
+
+type slowShowClient struct {
+	*fakeClient
+	started chan string
+	done    chan string
+	release chan struct{}
+}
+
+func (f *slowShowClient) Show(ctx context.Context, _ string, id string) ([]byte, error) {
+	f.started <- id
+	select {
+	case <-ctx.Done():
+		f.done <- id
+		return nil, ctx.Err()
+	case <-f.release:
+		f.done <- id
+		return nil, errors.New("test cleanup released unbounded leader")
+	}
+}
+
+type staleShowClient struct {
+	*fakeClient
+	started chan struct{}
+	release chan struct{}
+	mu      sync.Mutex
+	calls   int
+}
+
+func (f *staleShowClient) Show(ctx context.Context, _ string, id string) ([]byte, error) {
+	f.mu.Lock()
+	f.calls++
+	call := f.calls
+	f.mu.Unlock()
+	if call == 1 {
+		close(f.started)
+		select {
+		case <-f.release:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		return []byte(`{"id":"` + id + `","value":"old"}`), nil
+	}
+	return []byte(`{"id":"` + id + `","value":"new"}`), nil
 }
 
 func (f *fakeClient) List(_ context.Context, _ string) ([]byte, error) {
@@ -729,6 +774,89 @@ func TestCachingClient_ShowKeyedPerID(t *testing.T) {
 	}
 	if string(outB1) != string(outB2) || string(outB1) != `{"id":"mitto-B"}` {
 		t.Errorf("B payloads mismatched: %q vs %q", outB1, outB2)
+	}
+}
+
+// TestCachingClient_Show_DistinctLeadersHaveBoundedContexts reproduces
+// mitto-b4zs: unlike same-key followers, two different Show keys each become a
+// leader. Their shared fetches must be detached from either caller but still
+// carry an explicit total deadline below the HTTP request budget.
+func TestCachingClient_Show_DistinctLeadersHaveBoundedContexts(t *testing.T) {
+	dir := initializedDir(t)
+	inner := &slowShowClient{
+		fakeClient: &fakeClient{},
+		started:    make(chan string, 2),
+		done:       make(chan string, 2),
+		release:    make(chan struct{}),
+	}
+	defer close(inner.release)
+	c := NewCachingClient(inner)
+	c.fillTimeout = 20 * time.Millisecond
+
+	type result struct {
+		id      string
+		err     error
+		elapsed time.Duration
+	}
+	results := make(chan result, 2)
+	for _, id := range []string{"mitto-mhgk", "mitto-s1rt"} {
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+			defer cancel()
+			start := time.Now()
+			_, err := c.Show(ctx, dir, id)
+			results <- result{id: id, err: err, elapsed: time.Since(start)}
+		}()
+	}
+
+	for range 2 {
+		<-inner.started
+	}
+	for range 2 {
+		got := <-results
+		if !errors.Is(got.err, context.DeadlineExceeded) {
+			t.Errorf("Show(%q) error = %v, want context deadline exceeded", got.id, got.err)
+		}
+		if got.elapsed >= 100*time.Millisecond {
+			t.Errorf("Show(%q) elapsed = %v, want bounded leader error before caller deadline", got.id, got.elapsed)
+		}
+	}
+	for range 2 {
+		select {
+		case <-inner.done:
+		case <-time.After(50 * time.Millisecond):
+			t.Error("cache leader remained blocked after its total budget expired")
+		}
+	}
+}
+
+func TestCachingClient_Show_InvalidationRejectsLateLeaderStore(t *testing.T) {
+	dir := initializedDir(t)
+	inner := &staleShowClient{
+		fakeClient: &fakeClient{},
+		started:    make(chan struct{}),
+		release:    make(chan struct{}),
+	}
+	c := NewCachingClient(inner)
+
+	firstResult := make(chan []byte, 1)
+	go func() {
+		out, _ := c.Show(context.Background(), dir, "mitto-b4zs")
+		firstResult <- out
+	}()
+	<-inner.started
+	c.InvalidateFromWatcher(dir)
+	close(inner.release)
+	if out := <-firstResult; !strings.Contains(string(out), `"value":"old"`) {
+		t.Fatalf("first Show = %s, want pre-invalidation payload", out)
+	}
+
+	out, err := c.Show(context.Background(), dir, "mitto-b4zs")
+	if err != nil {
+		t.Fatalf("second Show: %v", err)
+	}
+	if !strings.Contains(string(out), `"value":"new"`) {
+		t.Fatalf("second Show = %s, want fresh payload after invalidation", out)
 	}
 }
 

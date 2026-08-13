@@ -491,6 +491,13 @@ func (c *listTimeoutClient) List(ctx context.Context, _ string) ([]byte, error) 
 	return nil, ctx.Err()
 }
 
+func TestBeadsCacheFillBudgetBelowHandlerTimeout(t *testing.T) {
+	if beads.CacheFillMaxElapsed >= auxBackedRequestTimeout {
+		t.Fatalf("cache fill max elapsed %v must be below handler timeout %v",
+			beads.CacheFillMaxElapsed, auxBackedRequestTimeout)
+	}
+}
+
 func TestHandleBeadsList_Timeout_ReturnsRetryable503(t *testing.T) {
 	old := auxBackedRequestTimeout
 	auxBackedRequestTimeout = 20 * time.Millisecond
