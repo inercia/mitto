@@ -174,6 +174,30 @@ func TestLogRetentionInfo(t *testing.T) {
 	}
 }
 
+func TestGetRuntimeInfoIncludesActiveFileRetention(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "mitto.log")
+	if err := logging.Initialize(logging.Config{Level: "info", FileLog: &logging.FileLogConfig{
+		Path: path, MaxSizeMB: 7, MaxBackups: 9, Compress: true,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = logging.Close()
+		_ = logging.Initialize(logging.Config{Level: "info"})
+	})
+	logging.Get().Info("runtime retention projection")
+
+	retention := buildRuntimeInfo().LogFiles.MainLogRetention
+	if retention == nil {
+		t.Fatal("buildRuntimeInfo omitted active main-log retention")
+	}
+	if retention.MaxSizeMB != 7 || retention.MaxBackups != 9 || !retention.Compress ||
+		retention.RetainedFiles != 1 || retention.RetainedBytes == 0 ||
+		retention.OldestRetainedAt == "" || retention.CounterStartedAt == "" {
+		t.Errorf("unexpected runtime retention: %+v", retention)
+	}
+}
+
 // TestGetRuntimeInfoGoroutineAttribution pins buildRuntimeInfo's mitto-x3x
 // goroutine-attribution fields to the coldstart.Contention() providers: with
 // no providers registered they default to -1, and once registered they

@@ -5,9 +5,26 @@ import (
 	"compress/gzip"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
+
+func TestDefaultFileLogConfigCoversRepresentativeDay(t *testing.T) {
+	cfg := DefaultFileLogConfig()
+	const (
+		observedBytes    = 40 * 1024 * 1024
+		observedDuration = 3*time.Hour + 35*time.Minute
+	)
+	capacityBytes := int64(cfg.MaxBackups+1) * int64(cfg.MaxSizeMB) * 1024 * 1024
+	estimatedCoverage := time.Duration(float64(observedDuration) * float64(capacityBytes) / observedBytes)
+	if estimatedCoverage < 24*time.Hour {
+		t.Errorf("estimated default coverage = %v, want at least 24h", estimatedCoverage)
+	}
+	if capacityBytes != 330*1024*1024 {
+		t.Errorf("uncompressed disk bound = %d, want %d", capacityBytes, 330*1024*1024)
+	}
+}
 
 func TestRetentionWriterTracksRotationsAndDrops(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "mitto.log")
@@ -42,6 +59,58 @@ func TestRetentionWriterTracksRotationsAndDrops(t *testing.T) {
 			t.Fatalf("backup count remained above bound: %d", backups)
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestRetentionWriterUnlimitedBackupsNeverDrops(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "mitto.log")
+	writer := newRetentionWriter(path, 1, 0, false)
+	t.Cleanup(func() { _ = writer.Close() })
+	payload := append(bytes.Repeat([]byte("x"), 600*1024), '\n')
+	for i := 0; i < 3; i++ {
+		if _, err := writer.Write(payload); err != nil {
+			t.Fatalf("Write %d: %v", i, err)
+		}
+	}
+	snapshot := writer.snapshot()
+	if snapshot.Rotations != 2 || snapshot.DroppedRotations != 0 {
+		t.Errorf("unexpected unlimited counters: %+v", snapshot)
+	}
+}
+
+func TestRetentionWriterConcurrentSnapshots(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "mitto.log")
+	writer := newRetentionWriter(path, 1, 2, false)
+	t.Cleanup(func() { _ = writer.Close() })
+
+	var wg sync.WaitGroup
+	errs := make(chan error, 4)
+	for worker := 0; worker < 3; worker++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 200; i++ {
+				if _, err := writer.Write([]byte("time=2026-08-13T20:00:00Z level=INFO msg=concurrent\n")); err != nil {
+					errs <- err
+					return
+				}
+			}
+		}()
+	}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 200; i++ {
+			_ = writer.snapshot()
+		}
+	}()
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatalf("concurrent Write: %v", err)
+	}
+	if snapshot := writer.snapshot(); snapshot.RetainedFiles == 0 || snapshot.RetainedBytes == 0 {
+		t.Errorf("unexpected final snapshot: %+v", snapshot)
 	}
 }
 
@@ -107,5 +176,28 @@ func TestCurrentFileRetentionLifecycle(t *testing.T) {
 	}
 	if _, ok := CurrentFileRetention(); ok {
 		t.Error("snapshot remained active after Close")
+	}
+}
+
+func TestCurrentFileRetentionDisabledForConsoleAndLegacyFiles(t *testing.T) {
+	resetGlobalState()
+	t.Cleanup(resetGlobalState)
+	if err := Initialize(Config{Level: "info"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := CurrentFileRetention(); ok {
+		t.Error("console-only logging reported retention")
+	}
+	if err := Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	legacyPath := filepath.Join(t.TempDir(), "legacy.log")
+	if err := Initialize(Config{Level: "info", LogFile: legacyPath}); err != nil {
+		t.Fatal(err)
+	}
+	Get().Info("legacy logger")
+	if _, ok := CurrentFileRetention(); ok {
+		t.Error("legacy unrotated logging reported retention")
 	}
 }
