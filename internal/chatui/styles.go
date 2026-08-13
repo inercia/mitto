@@ -33,7 +33,7 @@ type semanticPalette struct {
 	accent, selected, selectedText color.Color
 	muted, success, warning, err   color.Color
 	border, user, agent, thought   color.Color
-	tool, system, surface          color.Color
+	tool, system                   color.Color
 }
 
 // styles holds every semantic Lipgloss style used by the chat and picker.
@@ -118,7 +118,7 @@ func (s *styles) apply(mode termmd.Mode, theme termmd.Theme) {
 	s.permissionTitleStyle = base.Foreground(p.warning).Bold(true)
 	s.permissionApproveStyle = base.Foreground(p.success).Bold(true)
 	s.permissionDenyStyle = base.Foreground(p.err).Bold(true)
-	s.statusBar = base.Foreground(p.muted).Background(p.surface).Padding(0, 1)
+	s.statusBar = base.Foreground(p.muted).Padding(0, 1)
 	s.composerBorder = base.Border(lipgloss.RoundedBorder()).BorderForeground(p.accent)
 	s.modalBorder = base.Border(lipgloss.RoundedBorder()).BorderForeground(p.warning)
 }
@@ -150,14 +150,14 @@ func semanticPaletteFor(mode termmd.Mode, theme termmd.Theme) semanticPalette {
 			accent: lipgloss.Color("#0369A1"), selected: lipgloss.Color("#DCEFFC"), selectedText: lipgloss.Color("#0C4A6E"),
 			muted: lipgloss.Color("#64748B"), success: lipgloss.Color("#15803D"), warning: lipgloss.Color("#A16207"), err: lipgloss.Color("#B91C1C"),
 			border: lipgloss.Color("#94A3B8"), user: lipgloss.Color("#6D28D9"), agent: lipgloss.Color("#1E293B"), thought: lipgloss.Color("#64748B"),
-			tool: lipgloss.Color("#0369A1"), system: lipgloss.Color("#A16207"), surface: lipgloss.Color("#E2E8F0"),
+			tool: lipgloss.Color("#0369A1"), system: lipgloss.Color("#A16207"),
 		}
 	}
 	return semanticPalette{
 		accent: lipgloss.Color("#7DD3FC"), selected: lipgloss.Color("#1E3A5F"), selectedText: lipgloss.Color("#E0F2FE"),
 		muted: lipgloss.Color("#94A3B8"), success: lipgloss.Color("#4ADE80"), warning: lipgloss.Color("#FBBF24"), err: lipgloss.Color("#F87171"),
 		border: lipgloss.Color("#475569"), user: lipgloss.Color("#C4B5FD"), agent: lipgloss.Color("#E2E8F0"), thought: lipgloss.Color("#94A3B8"),
-		tool: lipgloss.Color("#7DD3FC"), system: lipgloss.Color("#FBBF24"), surface: lipgloss.Color("#1E293B"),
+		tool: lipgloss.Color("#7DD3FC"), system: lipgloss.Color("#FBBF24"),
 	}
 }
 

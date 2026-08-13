@@ -2,11 +2,12 @@ package chatui
 
 import (
 	lipgloss "charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // statusLine is the imperative struct rendering the single-line footer:
-// conversation title, ACP server, connection state, and an in-flight
-// indicator. Plain data + a Render method, per crush's pattern.
+// conversation title, ACP server, connection state, and agent activity.
+// Plain data + a Render method, per crush's pattern.
 type statusLine struct {
 	title      string
 	acpServer  string
@@ -38,28 +39,78 @@ func (s *statusLine) SetDisconnected(reason string) {
 func (s *statusLine) SetInFlight(v bool) { s.inFlight = v }
 
 func (s *statusLine) Render() string {
+	width := max(1, s.width)
+	bar := s.styles.statusBar
+	frameWidth := bar.GetHorizontalFrameSize()
+	if width <= frameWidth {
+		bar = bar.Padding(0)
+		frameWidth = 0
+	}
+	contentWidth := max(1, width-frameWidth)
+
 	left := s.styles.accentStyle.Render(s.title)
 	if s.acpServer != "" {
 		left += s.styles.mutedStyle.Render(" · " + s.acpServer)
 	}
 
-	var right string
-	switch {
-	case s.disconnect != "":
-		right = s.styles.errorStyle.Render("disconnected: " + s.disconnect)
-	case s.connected:
-		right = s.styles.successStyle.Render("connected")
-	default:
-		right = s.styles.warningStyle.Render("connecting…")
+	// Keep enough identity visible at normal terminal widths. The state summary
+	// receives the whole row at tiny widths, where its compact symbols win.
+	rightBudget := contentWidth
+	if contentWidth >= 24 {
+		identityFloor := min(16, contentWidth/3)
+		rightBudget -= identityFloor + 1
 	}
-	if s.inFlight {
-		right += " " + s.styles.accentStyle.Render("●")
+	right := s.renderState(rightBudget)
+	rightWidth := lipgloss.Width(right)
+
+	leftBudget := contentWidth - rightWidth
+	gap := 0
+	if leftBudget > 1 && rightWidth > 0 {
+		gap = 1
+		leftBudget--
+	}
+	left = ansi.Truncate(left, max(0, leftBudget), "…")
+	line := left + lipgloss.NewStyle().Width(gap).Render("") + right
+	return bar.Width(contentWidth).Render(line)
+}
+
+func (s *statusLine) renderState(width int) string {
+	if width <= 0 {
+		return ""
 	}
 
-	gap := s.width - lipgloss.Width(left) - lipgloss.Width(right) - 2
-	if gap < 1 {
-		gap = 1
+	var symbol, label string
+	var stateStyle lipgloss.Style
+	switch {
+	case s.disconnect != "":
+		symbol, label, stateStyle = "×", "disconnected", s.styles.errorStyle
+	case s.connected:
+		symbol, label, stateStyle = "●", "connected", s.styles.successStyle
+	default:
+		symbol, label, stateStyle = "○", "connecting…", s.styles.warningStyle
 	}
-	line := left + lipgloss.NewStyle().Width(gap).Render("") + right
-	return s.styles.statusBar.Width(s.width).Render(line)
+	connection := stateStyle.Render(symbol + " " + label)
+	activity := ""
+	if s.inFlight {
+		activity = s.styles.mutedStyle.Render(" · ") + s.styles.accentStyle.Render("◆ working")
+	}
+
+	base := connection + activity
+	if lipgloss.Width(base) > width {
+		compact := stateStyle.Render(symbol)
+		if s.inFlight {
+			compact += " " + s.styles.accentStyle.Render("◆")
+		}
+		return ansi.Truncate(compact, width, "")
+	}
+
+	if s.disconnect == "" {
+		return base
+	}
+	reasonWidth := width - lipgloss.Width(base) - 2
+	if reasonWidth <= 0 {
+		return base
+	}
+	reason := ansi.Truncate(s.disconnect, reasonWidth, "…")
+	return connection + s.styles.errorStyle.Render(": "+reason) + activity
 }
