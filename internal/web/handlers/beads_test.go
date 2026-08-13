@@ -496,6 +496,10 @@ func TestBeadsCacheFillBudgetBelowHandlerTimeout(t *testing.T) {
 		t.Fatalf("cache fill max elapsed %v must be below handler timeout %v",
 			beads.CacheFillMaxElapsed, auxBackedRequestTimeout)
 	}
+	if beads.LabelsReadTimeout >= auxBackedRequestTimeout {
+		t.Fatalf("labels read timeout %v must be below handler timeout %v",
+			beads.LabelsReadTimeout, auxBackedRequestTimeout)
+	}
 }
 
 func TestHandleBeadsList_Timeout_ReturnsRetryable503(t *testing.T) {

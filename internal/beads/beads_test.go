@@ -33,6 +33,24 @@ type runnerCall struct {
 	env  []string
 }
 
+type deadlineRunner struct {
+	deadline time.Time
+	wait     bool
+}
+
+func (r *deadlineRunner) Run(ctx context.Context, _ string, _ ...string) ([]byte, string, error) {
+	r.deadline, _ = ctx.Deadline()
+	if r.wait {
+		<-ctx.Done()
+		return nil, "", ctx.Err()
+	}
+	return []byte("[]"), "", nil
+}
+
+func (r *deadlineRunner) RunWithEnv(ctx context.Context, dir string, _ []string, args ...string) ([]byte, string, error) {
+	return r.Run(ctx, dir, args...)
+}
+
 func (r *recordingRunner) Run(_ context.Context, dir string, args ...string) ([]byte, string, error) {
 	r.calls = append(r.calls, runnerCall{dir: dir, args: args})
 	if len(r.responses) == 0 {
@@ -583,6 +601,37 @@ func TestClient_ListAllLabels_DoesNotUseSlowSubcommand(t *testing.T) {
 	if len(args) >= 2 && args[0] == "label" && args[1] == "list-all" {
 		t.Errorf("ListAllLabels invoked the slow, lock-holding %q subcommand (args=%v); "+
 			"it should derive labels from \"bd list --all --json\" instead (mitto-i2ep)", "label list-all", args)
+	}
+}
+
+func TestClient_ListAllLabels_UsesBoundedDeadline(t *testing.T) {
+	r := &deadlineRunner{}
+	c := &cliClient{runner: r}
+
+	if _, err := c.ListAllLabels(context.Background(), initializedDir(t)); err != nil {
+		t.Fatalf("ListAllLabels() error: %v", err)
+	}
+	remaining := time.Until(r.deadline)
+	if remaining <= 0 || remaining > LabelsReadTimeout {
+		t.Fatalf("runner deadline remaining = %v, want within (0, %v]", remaining, LabelsReadTimeout)
+	}
+	if LabelsReadTimeout >= 5*time.Second {
+		t.Fatalf("LabelsReadTimeout = %v, want below 5s endpoint budget", LabelsReadTimeout)
+	}
+}
+
+func TestClient_ListAllLabels_DeadlineFailsOpen(t *testing.T) {
+	r := &deadlineRunner{wait: true}
+	c := &cliClient{runner: r}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
+	defer cancel()
+
+	out, err := c.ListAllLabels(ctx, initializedDir(t))
+	if err != nil {
+		t.Fatalf("ListAllLabels() error: %v, want fail-open response", err)
+	}
+	if string(out) != "[]" {
+		t.Fatalf("ListAllLabels() = %q, want empty label list", out)
 	}
 }
 

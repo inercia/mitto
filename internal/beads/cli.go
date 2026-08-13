@@ -31,6 +31,10 @@ const (
 	// readTimeout is a package-local alias so existing call sites below need
 	// no further changes.
 	readTimeout = ReadTimeout
+	// LabelsReadTimeout bounds label suggestions well below the generic read
+	// budget. The endpoint is cosmetic and must not hold up all beads traffic
+	// when bd is contended (mitto-i2ep).
+	LabelsReadTimeout = 4 * time.Second
 )
 
 // Runner executes a bd subcommand in a directory. The returned error is the
@@ -507,8 +511,13 @@ func (c *cliClient) ListAllLabels(ctx context.Context, dir string) ([]byte, erro
 	if !isInitialized(dir) {
 		return []byte("[]"), nil
 	}
-	out, err := c.runJSONRead(ctx, dir, "list", "--json", "--all", "-n", "0")
+	labelsCtx, cancel := context.WithTimeout(ctx, LabelsReadTimeout)
+	defer cancel()
+	out, err := c.runJSONRead(labelsCtx, dir, "list", "--json", "--all", "-n", "0")
 	if err != nil {
+		if errors.Is(labelsCtx.Err(), context.DeadlineExceeded) {
+			return []byte("[]"), nil
+		}
 		return nil, err
 	}
 	var items []listLabelsItem
