@@ -9,8 +9,11 @@ import (
 	"os"
 	"strings"
 	"sync"
+)
 
-	"gopkg.in/natefinch/lumberjack.v2"
+const (
+	defaultFileLogMaxSizeMB  = 10
+	defaultFileLogMaxBackups = 32
 )
 
 var (
@@ -19,7 +22,7 @@ var (
 	globalMu     sync.RWMutex
 
 	// logWriter holds the log file writer (if any) for cleanup
-	// Can be *os.File or *lumberjack.Logger
+	// Can be *os.File or *retentionWriter.
 	logWriter   io.WriteCloser
 	logWriterMu sync.Mutex
 
@@ -39,20 +42,20 @@ type FileLogConfig struct {
 	MaxSizeMB int
 
 	// MaxBackups is the maximum number of old log files to retain.
-	// Default: 3
+	// Default: 32
 	MaxBackups int
 
 	// Compress determines if rotated log files should be compressed.
-	// Default: false
+	// Default: true
 	Compress bool
 }
 
 // DefaultFileLogConfig returns the default file log configuration.
 func DefaultFileLogConfig() FileLogConfig {
 	return FileLogConfig{
-		MaxSizeMB:  10,
-		MaxBackups: 3,
-		Compress:   false,
+		MaxSizeMB:  defaultFileLogMaxSizeMB,
+		MaxBackups: defaultFileLogMaxBackups,
+		Compress:   true,
 	}
 }
 
@@ -108,23 +111,16 @@ func Initialize(cfg Config) error {
 		// Apply defaults
 		maxSize := cfg.FileLog.MaxSizeMB
 		if maxSize <= 0 {
-			maxSize = 10
+			maxSize = defaultFileLogMaxSizeMB
 		}
 		maxBackups := cfg.FileLog.MaxBackups
 		if maxBackups < 0 {
-			maxBackups = 3
+			maxBackups = defaultFileLogMaxBackups
 		}
 
-		// Create lumberjack logger for rotation
-		lj := &lumberjack.Logger{
-			Filename:   cfg.FileLog.Path,
-			MaxSize:    maxSize,    // megabytes
-			MaxBackups: maxBackups, // number of backups
-			MaxAge:     0,          // don't delete old files based on age
-			Compress:   cfg.FileLog.Compress,
-		}
-		logWriter = lj
-		fileWriter = lj
+		writer := newRetentionWriter(cfg.FileLog.Path, maxSize, maxBackups, cfg.FileLog.Compress)
+		logWriter = writer
+		fileWriter = writer
 	} else if cfg.LogFile != "" {
 		// Legacy: simple file logging without rotation
 		f, err := os.OpenFile(cfg.LogFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)

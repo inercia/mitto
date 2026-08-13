@@ -1030,12 +1030,9 @@ func run() error {
 		FileLevel: fileLevel,
 	}
 	if logsDir, err := appdir.LogsDir(); err == nil {
-		logConfig.FileLog = &logging.FileLogConfig{
-			Path:       filepath.Join(logsDir, "mitto.log"),
-			MaxSizeMB:  10,
-			MaxBackups: 3,
-			Compress:   false,
-		}
+		fileLogConfig := logging.DefaultFileLogConfig()
+		fileLogConfig.Path = filepath.Join(logsDir, "mitto.log")
+		logConfig.FileLog = &fileLogConfig
 	}
 
 	if err := logging.Initialize(logConfig); err != nil {

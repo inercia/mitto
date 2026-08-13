@@ -11,6 +11,7 @@ import (
 	"github.com/inercia/mitto/internal/appdir"
 	"github.com/inercia/mitto/internal/coldstart"
 	"github.com/inercia/mitto/internal/config"
+	"github.com/inercia/mitto/internal/logging"
 )
 
 // ColdStartRecentInput is the input for the mitto_coldstart_recent tool.
@@ -226,9 +227,39 @@ type RuntimeInfo struct {
 
 // LogFilesInfo contains paths to log files.
 type LogFilesInfo struct {
-	MainLog    string `json:"main_log,omitempty"`
-	AccessLog  string `json:"access_log,omitempty"`
-	WebViewLog string `json:"webview_log,omitempty"`
+	MainLog          string            `json:"main_log,omitempty"`
+	MainLogRetention *LogRetentionInfo `json:"main_log_retention,omitempty"`
+	AccessLog        string            `json:"access_log,omitempty"`
+	WebViewLog       string            `json:"webview_log,omitempty"`
+}
+
+// LogRetentionInfo reports the live runtime log's bounded retention coverage.
+// Rotation counters reset when logging is initialized; disk inventory survives restarts.
+type LogRetentionInfo struct {
+	MaxSizeMB           int    `json:"max_size_mb"`
+	MaxBackups          int    `json:"max_backups"`
+	Compress            bool   `json:"compress"`
+	RetainedFiles       int    `json:"retained_files"`
+	RetainedBytes       int64  `json:"retained_bytes"`
+	OldestRetainedAt    string `json:"oldest_retained_at,omitempty"`
+	RetainedSpanSeconds int64  `json:"retained_span_seconds"`
+	Rotations           uint64 `json:"rotations"`
+	DroppedRotations    uint64 `json:"dropped_rotations"`
+	CounterStartedAt    string `json:"counter_started_at"`
+}
+
+func logRetentionInfo(snapshot logging.FileRetentionSnapshot) *LogRetentionInfo {
+	info := &LogRetentionInfo{
+		MaxSizeMB: snapshot.MaxSizeMB, MaxBackups: snapshot.MaxBackups, Compress: snapshot.Compress,
+		RetainedFiles: snapshot.RetainedFiles, RetainedBytes: snapshot.RetainedBytes,
+		RetainedSpanSeconds: snapshot.RetainedSpanSeconds,
+		Rotations:           snapshot.Rotations, DroppedRotations: snapshot.DroppedRotations,
+		CounterStartedAt: snapshot.CounterStartedAt.UTC().Format(time.RFC3339Nano),
+	}
+	if !snapshot.OldestRetainedAt.IsZero() {
+		info.OldestRetainedAt = snapshot.OldestRetainedAt.UTC().Format(time.RFC3339Nano)
+	}
+	return info
 }
 
 // ConfigFilesInfo contains paths to configuration files.
@@ -287,6 +318,9 @@ func buildRuntimeInfo() *RuntimeInfo {
 		info.LogFiles.MainLog = filepath.Join(logsDir, "mitto.log")
 		info.LogFiles.AccessLog = filepath.Join(logsDir, "access.log")
 		info.LogFiles.WebViewLog = filepath.Join(logsDir, "webview.log")
+	}
+	if retention, ok := logging.CurrentFileRetention(); ok {
+		info.LogFiles.MainLogRetention = logRetentionInfo(retention)
 	}
 
 	// Configuration files

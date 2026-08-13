@@ -145,8 +145,14 @@ Returns runtime information about the Mitto instance:
 | `data_dir`      | Mitto data directory                      |
 | `sessions_dir`  | Sessions directory                        |
 | `logs_dir`      | Logs directory                            |
-| `log_files`     | Paths to log files                        |
+| `log_files`     | Log paths plus live main-log retention metrics |
 | `config_files`  | Paths to configuration files              |
+
+`log_files.main_log_retention` is present when rotated file logging is active.
+It reports the configured size/backup bounds, compression, retained file/byte
+inventory, oldest retained record and span, plus process-lifetime `rotations`
+and `dropped_rotations`. The counters reset when logging initializes; inventory
+and span are derived from the files on disk and therefore survive restarts.
 
 #### `mitto_workspace_list`
 

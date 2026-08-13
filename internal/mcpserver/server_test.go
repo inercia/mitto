@@ -20,6 +20,7 @@ import (
 
 	"github.com/inercia/mitto/internal/coldstart"
 	"github.com/inercia/mitto/internal/config"
+	"github.com/inercia/mitto/internal/logging"
 	"github.com/inercia/mitto/internal/session"
 )
 
@@ -152,6 +153,24 @@ func TestGetRuntimeInfo(t *testing.T) {
 	}
 	if info.NumCPU == 0 {
 		t.Error("NumCPU should not be 0")
+	}
+}
+
+func TestLogRetentionInfo(t *testing.T) {
+	oldest := time.Date(2026, 8, 13, 18, 30, 0, 0, time.UTC)
+	started := oldest.Add(time.Hour)
+	got := logRetentionInfo(logging.FileRetentionSnapshot{
+		MaxSizeMB: 10, MaxBackups: 32, Compress: true,
+		RetainedFiles: 12, RetainedBytes: 42, OldestRetainedAt: oldest,
+		RetainedSpanSeconds: 7200, Rotations: 8, DroppedRotations: 2,
+		CounterStartedAt: started,
+	})
+	if got.MaxSizeMB != 10 || got.MaxBackups != 32 || !got.Compress ||
+		got.RetainedFiles != 12 || got.RetainedBytes != 42 ||
+		got.OldestRetainedAt != oldest.Format(time.RFC3339Nano) ||
+		got.RetainedSpanSeconds != 7200 || got.Rotations != 8 || got.DroppedRotations != 2 ||
+		got.CounterStartedAt != started.Format(time.RFC3339Nano) {
+		t.Errorf("unexpected retention projection: %+v", got)
 	}
 }
 

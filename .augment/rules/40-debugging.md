@@ -28,7 +28,7 @@ keywords:
 | -------------------------- | --------------------------------------------------- |
 | `mitto_conversation_list`  | Sessions with metadata, folder paths, runtime state |
 | `mitto_get_config`         | Current effective config (sanitized)                |
-| `mitto_get_runtime_info`   | OS, log paths, data dirs, environment               |
+| `mitto_get_runtime_info`   | OS, log paths, retention span/drop metrics, data dirs |
 
 ## Log Files
 
@@ -36,7 +36,7 @@ All logs in `~/Library/Logs/Mitto/` (macOS):
 
 | Log File      | Purpose                                     | Rotation        |
 | ------------- | ------------------------------------------- | --------------- |
-| `mitto.log`   | Go application logs (server, ACP, sessions) | 10MB, 3 backups |
+| `mitto.log`   | Go application logs (server, ACP, sessions) | 10MB, 32 compressed backups |
 | `access.log`  | Security events (auth, unauthorized access) | 10MB, 1 backup  |
 | `webview.log` | JavaScript console output from WKWebView    | 10MB, 3 backups |
 
