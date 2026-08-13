@@ -43,11 +43,12 @@ type WebSocketSecurityConfig struct {
 // DefaultWebSocketSecurityConfig returns sensible defaults.
 func DefaultWebSocketSecurityConfig() WebSocketSecurityConfig {
 	return WebSocketSecurityConfig{
-		AllowedOrigins: nil,       // Same-origin only by default
-		MaxMessageSize: 64 * 1024, // 64KB
-		PongWait:       60 * time.Second,
-		PingPeriod:     54 * time.Second,
-		WriteWait:      10 * time.Second,
+		AllowedOrigins:      nil,         // Same-origin only by default
+		MaxMessageSize:      64 * 1024,   // 64KB
+		LocalMaxMessageSize: 1024 * 1024, // 1MB
+		PongWait:            60 * time.Second,
+		PingPeriod:          54 * time.Second,
+		WriteWait:           10 * time.Second,
 	}
 }
 

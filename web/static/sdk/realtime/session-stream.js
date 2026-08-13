@@ -527,6 +527,10 @@ export class SessionStream {
     this._stopKeepalive();
     this._clearSyncInFlight();
     this._state = "closed";
+    // A 1009 close rejects the frame itself. Reconnecting and replaying the
+    // same pending prompt can never succeed, so stop before host retry logic
+    // turns one oversized message into a reconnect storm.
+    if (event?.code === 1009) this._terminal = true;
     this._emitter.emit("close", event);
     this._reconnectOrStop();
   }

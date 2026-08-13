@@ -28,6 +28,8 @@
 // Ref-bridges owned by the composer and read by this sub-hook:
 //   * retryPendingPromptsRef — populated by C2 (useWSDeliveryVerification);
 //     read inside connectToSession's onopen handler.
+//   * rejectOversizedPromptsRef — populated by C2; quarantines pending prompts
+//     when the server rejects an unparseable frame with close code 1009.
 //   * handleSessionKeepaliveAckRef — populated by the composer; forwards
 //     keepalive_ack payloads for UI-only bookkeeping (see above).
 //
@@ -78,6 +80,7 @@ export function useWSConnection({
   onNoInitialSessionRef,
   // Ref-bridges owned by composer, populated by C2 (mitto-90f.6.3)
   retryPendingPromptsRef,
+  rejectOversizedPromptsRef,
   // useWSSeqSync outputs (rule 24 — passed as props, NOT re-invoked)
   lastKnownSeqRef,
   // From useWSMobileResilience (mitto-90f.6.1)
@@ -241,7 +244,13 @@ export function useWSConnection({
         handleSessionKeepaliveAckRef.current?.(sessionId, data);
       });
 
-      stream.on("close", () => {
+      stream.on("close", (event) => {
+        if (event?.code === 1009) {
+          if (sessionWsRefs.current[sessionId] === stream) {
+            delete sessionWsRefs.current[sessionId];
+          }
+          rejectOversizedPromptsRef.current?.(sessionId);
+        }
         // Clear any pending sync flag and its auto-clear timeout. If a
         // composer-initiated load_events (acp_stopped delayed sync,
         // load-more-messages, fallback context load) was in flight when the

@@ -5,6 +5,16 @@ import (
 	"testing"
 )
 
+func TestDefaultWebSocketSecurityConfig_MessageSizeLimits(t *testing.T) {
+	config := DefaultWebSocketSecurityConfig()
+	if config.MaxMessageSize != 64*1024 {
+		t.Fatalf("MaxMessageSize = %d, want %d", config.MaxMessageSize, 64*1024)
+	}
+	if config.LocalMaxMessageSize != 1024*1024 {
+		t.Fatalf("LocalMaxMessageSize = %d, want %d", config.LocalMaxMessageSize, 1024*1024)
+	}
+}
+
 func TestOriginChecker_SameOrigin(t *testing.T) {
 	checker := createOriginChecker(nil, nil, nil) // nil = same-origin only
 

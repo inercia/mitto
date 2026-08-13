@@ -398,6 +398,25 @@ describe("SessionStream: open / message / close lifecycle", () => {
     expect(h.stream.state).toBe("connecting");
   });
 
+  test("close 1009 is terminal and never reconnects an oversized frame", () => {
+    const h = makeHarness();
+    const ws = openStream(h);
+    const closes = [];
+    const reconnecting = [];
+    h.stream.on("close", (event) => closes.push(event));
+    h.stream.on("reconnecting", (event) => reconnecting.push(event));
+
+    ws.close(1009, "message too big");
+
+    expect(closes).toEqual([
+      { code: 1009, reason: "message too big", wasClean: true },
+    ]);
+    expect(h.stream.state).toBe("stopped");
+    expect(reconnecting).toEqual([]);
+    h.clock.advance(60000);
+    expect(h.instances).toHaveLength(1);
+  });
+
   test("a successful reconnect resets the attempt counter", () => {
     const h = makeHarness();
     let ws = openStream(h);

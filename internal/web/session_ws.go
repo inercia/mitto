@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	acp "github.com/coder/acp-go-sdk"
+	"github.com/gorilla/websocket"
 
 	mittoAcp "github.com/inercia/mitto/internal/acp"
 	"github.com/inercia/mitto/internal/auxiliary"
@@ -745,6 +747,12 @@ func (c *SessionWSClient) readPump() {
 	for {
 		message, err := c.wsConn.ReadMessage()
 		if err != nil {
+			if errors.Is(err, websocket.ErrReadLimit) && c.logger != nil {
+				c.logger.Warn("WebSocket message exceeded configured read limit",
+					"error", err,
+					"max_message_size_bytes", c.wsConn.config.MaxMessageSize,
+					"client_ip", c.wsConn.clientIP)
+			}
 			return
 		}
 

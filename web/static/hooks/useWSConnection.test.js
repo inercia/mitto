@@ -168,8 +168,17 @@ describe("useWSConnection.js: session sockets backed by SessionStream (mitto-7gt
     expect(useWSConnectionJs).toMatch(
       /stream\.on\("keepalive_ack", \(data\) => \{\s*\n\s*handleSessionKeepaliveAckRef\.current\?\.\(sessionId, data\);/,
     );
-    expect(useWSConnectionJs).toMatch(/stream\.on\("close", \(\) => \{/);
+    expect(useWSConnectionJs).toMatch(/stream\.on\("close", \(event\) => \{/);
     expect(useWSConnectionJs).toMatch(/stream\.on\("error", \(err\) => \{/);
+  });
+
+  test("close 1009 evicts the terminal stream and quarantines pending prompts", () => {
+    expect(useWSConnectionJs).toMatch(
+      /if \(event\?\.code === 1009\) \{[\s\S]*?delete sessionWsRefs\.current\[sessionId\];[\s\S]*?rejectOversizedPromptsRef\.current\?\.\(sessionId\);/,
+    );
+    expect(useWebSocketJs).toMatch(
+      /rejectOversizedPromptsRef\.current = rejectOversizedPromptsForSession;/,
+    );
   });
 
   test("getOrCreateStream caches the stream in sessionWsRefs and reuses it on a second call for the same session", () => {

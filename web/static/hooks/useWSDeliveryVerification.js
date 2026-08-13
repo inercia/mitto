@@ -24,10 +24,12 @@ import {
   ROLE_USER,
   ROLE_AGENT,
   ROLE_THOUGHT,
+  ROLE_ERROR,
   generatePromptId,
   savePendingPrompt,
   removePendingPrompt,
   getPendingPromptsForSession,
+  limitMessages,
 } from "../lib.js";
 
 /**
@@ -51,6 +53,7 @@ import {
  *   cancelPrompt: Function,
  *   forceReset: Function,
  *   retryPendingPrompts: Function,
+ *   rejectOversizedPromptsForSession: Function,
  *   resolvePendingSendsForSession: Function
  * }}
  */
@@ -98,6 +101,36 @@ export function useWSDeliveryVerification({
         removePendingPrompt(promptId);
       }
     }
+  }, []);
+
+  // Close code 1009 means the server rejected the frame before it could parse
+  // prompt_id. Quarantine every pending prompt for this session so reconnect
+  // recovery cannot replay the same poison frame indefinitely.
+  const rejectOversizedPromptsForSession = useCallback((sessionId) => {
+    const message =
+      "Message is too large to send. Shorten it or attach the content as a file.";
+    const pending = getPendingPromptsForSession(sessionId);
+    for (const { promptId } of pending) {
+      removePendingPrompt(promptId);
+      const inFlight = pendingSendsRef.current[promptId];
+      if (inFlight) {
+        clearTimeout(inFlight.timeoutId);
+        inFlight.reject(new Error(message));
+        delete pendingSendsRef.current[promptId];
+      }
+    }
+    setSessions((prev) => {
+      const session = prev[sessionId];
+      if (!session) return prev;
+      const messages = limitMessages([
+        ...session.messages,
+        { role: ROLE_ERROR, text: message, timestamp: Date.now() },
+      ]);
+      return {
+        ...prev,
+        [sessionId]: { ...session, messages, isStreaming: false },
+      };
+    });
   }, []);
 
   /**
@@ -378,6 +411,7 @@ export function useWSDeliveryVerification({
     cancelPrompt,
     forceReset,
     retryPendingPrompts,
+    rejectOversizedPromptsForSession,
     resolvePendingSendsForSession,
   };
 }

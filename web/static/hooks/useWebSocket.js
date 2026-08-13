@@ -181,6 +181,7 @@ export function useWebSocket({
   const activeSessionIdRef = useRef(activeSessionId);
   const sessionsRef = useRef(sessions); // For accessing sessions in callbacks
   const retryPendingPromptsRef = useRef(null); // Ref to retry function (set later to avoid circular deps)
+  const rejectOversizedPromptsRef = useRef(null); // Ref to quarantine callback for close code 1009
   const resolvePendingSendsRef = useRef(null); // Ref to resolve function (set later to avoid circular deps)
   // Always points to the latest createNewSession callback — used by the retry timer
   // to avoid stale-closure issues when connectToSession changes between retries.
@@ -4207,6 +4208,7 @@ export function useWebSocket({
     switchSession,
     onNoInitialSessionRef,
     retryPendingPromptsRef,
+    rejectOversizedPromptsRef,
     lastKnownSeqRef,
     staleRecoveryCooldownRef,
     pendingSyncRef,
@@ -4264,6 +4266,7 @@ export function useWebSocket({
     cancelPrompt,
     forceReset,
     retryPendingPrompts,
+    rejectOversizedPromptsForSession,
     resolvePendingSendsForSession,
   } = useWSDeliveryVerification({
     activeSessionId,
@@ -4284,6 +4287,7 @@ export function useWebSocket({
   // resolvePendingSendsRef.current(sid)) reach C2's implementations.
   // Unconditional per-render assignment is safe for mutable refs.
   retryPendingPromptsRef.current = retryPendingPrompts;
+  rejectOversizedPromptsRef.current = rejectOversizedPromptsForSession;
   resolvePendingSendsRef.current = resolvePendingSendsForSession;
 
   // Send UI prompt answer (yes/no or select response)
