@@ -1825,21 +1825,25 @@ func (m *Manager) dispatchWithRetry(workspaceUUID, name, prompt string, timeout 
 	// removed from disk — see FilePendingDispatchStore) so it survives and
 	// can be retried later, converting the loss into a delay.
 	persisted := false
+	entry := PendingDispatchEntry{
+		ID:             newPendingDispatchID(),
+		WorkspaceUUID:  workspaceUUID,
+		Name:           name,
+		Prompt:         prompt,
+		TimeoutSeconds: timeout.Seconds(),
+		SavedAt:        time.Now(),
+		Attempts:       spoolAttempts,
+	}
+	if lastErr != nil {
+		entry.LastError = lastErr.Error()
+	}
 	if m.pendingDispatchStore != nil && workspaceUUID != "" {
-		entry := PendingDispatchEntry{
-			WorkspaceUUID:  workspaceUUID,
-			Name:           name,
-			Prompt:         prompt,
-			TimeoutSeconds: timeout.Seconds(),
-			SavedAt:        time.Now(),
-			Attempts:       spoolAttempts,
-		}
-		if lastErr != nil {
-			entry.LastError = lastErr.Error()
-		}
-		if saveErr := m.pendingDispatchStore.Append(entry); saveErr != nil {
+		appendResult, saveErr := m.pendingDispatchStore.Append(entry)
+		if saveErr != nil {
 			if m.logger != nil {
 				m.logger.Error(failLog+"; failed to persist undelivered batch, work is lost",
+					"dispatch_id", entry.ID,
+					"workspace_uuid", workspaceUUID,
 					"name", name,
 					"attempts", totalAttempts,
 					"waited", waited,
@@ -1849,12 +1853,25 @@ func (m *Manager) dispatchWithRetry(workspaceUUID, name, prompt string, timeout 
 			}
 		} else {
 			persisted = true
+			entry = appendResult.Entry
+			if m.logger != nil {
+				for _, dropped := range appendResult.Dropped {
+					m.logger.Error("pending-dispatch spool: dropping oldest entry at capacity",
+						"dispatch_id", dropped.ID,
+						"workspace_uuid", workspaceUUID,
+						"name", dropped.Name,
+						"max_entries", pendingDispatchMaxEntries,
+					)
+				}
+			}
 		}
 	}
 
 	if m.logger != nil {
 		if persisted {
 			m.logger.Error(failLog+"; batch persisted for later retry",
+				"dispatch_id", entry.ID,
+				"workspace_uuid", workspaceUUID,
 				"name", name,
 				"attempts", totalAttempts,
 				"waited", waited,
@@ -1985,10 +2002,10 @@ func (m *Manager) runDispatchRetryLoop(workspaceUUID, name, prompt string, timeo
 // pendingDispatchStore, no promptFunc, or an empty workspaceUUID. Entries
 // are retried sequentially (not concurrently) so a flush of several stale
 // batches cannot itself re-saturate the shared process — the same condition
-// that produced the spool in the first place. The spool is claimed
-// up-front (Replace with nil) so a crash mid-flush cannot duplicate work
-// beyond what dispatchWithRetry's own re-append already tolerates; entries
-// that fail again are written back with an incremented Attempts, and any
+// that produced the spool in the first place. Claim atomically drains the
+// current spool; entries appended afterward land in a new spool, and Requeue
+// merges failures back without overwriting those additions (mitto-gfr1).
+// Entries that fail again are written back with an incremented Attempts, and any
 // entry whose Attempts exceeds pendingDispatchMaxAttempts is dropped
 // instead of blocking the rest of the spool. When one or more entries are
 // delivered, lateDeliveryFunc (if set) is invoked once with all delivered
@@ -1998,26 +2015,27 @@ func (m *Manager) FlushPendingDispatches(ctx context.Context, workspaceUUID stri
 		return
 	}
 
-	entries, err := m.pendingDispatchStore.Load(workspaceUUID)
+	claim, err := m.pendingDispatchStore.Claim(workspaceUUID)
 	if err != nil {
 		if m.logger != nil {
-			m.logger.Warn("pending-dispatch flush: failed to load spool",
+			m.logger.Warn("pending-dispatch flush: failed to claim spool",
 				"workspace_uuid", workspaceUUID, "error", err)
 		}
 		return
 	}
+	if m.logger != nil {
+		for _, expired := range claim.Expired {
+			m.logger.Error("pending-dispatch flush: dropping expired entry",
+				"dispatch_id", expired.ID,
+				"workspace_uuid", workspaceUUID,
+				"name", expired.Name,
+				"saved_at", expired.SavedAt,
+				"max_age", pendingDispatchMaxAge,
+			)
+		}
+	}
+	entries := claim.Entries
 	if len(entries) == 0 {
-		return
-	}
-
-	// Claim the spool now: entries that still fail below are re-persisted
-	// below with an incremented Attempts, so this cannot lose work beyond
-	// the existing at-least-once semantics of the spool itself.
-	if err := m.pendingDispatchStore.Replace(workspaceUUID, nil); err != nil {
-		if m.logger != nil {
-			m.logger.Warn("pending-dispatch flush: failed to claim spool; skipping this cycle",
-				"workspace_uuid", workspaceUUID, "error", err)
-		}
 		return
 	}
 
@@ -2035,6 +2053,7 @@ func (m *Manager) FlushPendingDispatches(ctx context.Context, workspaceUUID stri
 		if entry.Attempts >= pendingDispatchMaxAttempts {
 			if m.logger != nil {
 				m.logger.Error("pending-dispatch flush: dropping entry after exceeding max attempts",
+					"dispatch_id", entry.ID,
 					"workspace_uuid", workspaceUUID,
 					"name", entry.Name,
 					"attempts", entry.Attempts,
@@ -2054,6 +2073,7 @@ func (m *Manager) FlushPendingDispatches(ctx context.Context, workspaceUUID stri
 			delivered = append(delivered, entry.Name)
 			if m.logger != nil {
 				m.logger.Info("pending-dispatch flush: delivered spooled batch",
+					"dispatch_id", entry.ID,
 					"workspace_uuid", workspaceUUID,
 					"name", entry.Name,
 					"prior_attempts", entry.Attempts,
@@ -2097,6 +2117,7 @@ func (m *Manager) FlushPendingDispatches(ctx context.Context, workspaceUUID stri
 		if entry.Attempts >= pendingDispatchMaxAttempts {
 			if m.logger != nil {
 				m.logger.Error("pending-dispatch flush: entry failed again and exceeded max attempts; dropping",
+					"dispatch_id", entry.ID,
 					"workspace_uuid", workspaceUUID,
 					"name", entry.Name,
 					"attempts", entry.Attempts,
@@ -2112,9 +2133,33 @@ func (m *Manager) FlushPendingDispatches(ctx context.Context, workspaceUUID stri
 	}
 
 	if len(requeue) > 0 {
-		if err := m.pendingDispatchStore.Replace(workspaceUUID, requeue); err != nil && m.logger != nil {
-			m.logger.Error("pending-dispatch flush: failed to write back unresolved entries, work may be lost",
-				"workspace_uuid", workspaceUUID, "error", err, "count", len(requeue))
+		dropped, requeueErr := m.pendingDispatchStore.Requeue(workspaceUUID, requeue)
+		if requeueErr != nil {
+			if m.logger != nil {
+				IDs := make([]string, 0, len(requeue))
+				for _, entry := range requeue {
+					IDs = append(IDs, entry.ID)
+				}
+				m.logger.Error("pending-dispatch flush: failed to write back unresolved entries, work may be lost",
+					"workspace_uuid", workspaceUUID, "dispatch_ids", IDs, "error", requeueErr, "count", len(requeue))
+			}
+		} else if m.logger != nil {
+			for _, entry := range requeue {
+				m.logger.Info("pending-dispatch flush: requeued unresolved entry",
+					"dispatch_id", entry.ID,
+					"workspace_uuid", workspaceUUID,
+					"name", entry.Name,
+					"attempts", entry.Attempts,
+				)
+			}
+			for _, entry := range dropped {
+				m.logger.Error("pending-dispatch spool: dropping oldest entry at capacity",
+					"dispatch_id", entry.ID,
+					"workspace_uuid", workspaceUUID,
+					"name", entry.Name,
+					"max_entries", pendingDispatchMaxEntries,
+				)
+			}
 		}
 	}
 

@@ -563,7 +563,7 @@ func TestWireProcessorPendingDispatch_DeliversPreviouslySpooledBatch(t *testing.
 	// Seed a batch as if an earlier saturated dispatch (e.g. before this
 	// session existed) had already spooled it.
 	seedStore := &processors.FilePendingDispatchStore{}
-	if err := seedStore.Append(processors.PendingDispatchEntry{
+	if _, err := seedStore.Append(processors.PendingDispatchEntry{
 		WorkspaceUUID:  workspaceUUID,
 		Name:           "identify-user-data",
 		Prompt:         "Persist for session sess-live-flush.",

@@ -7,6 +7,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/inercia/mitto/internal/appdir"
 	"github.com/inercia/mitto/internal/fileutil"
 )
@@ -33,6 +35,9 @@ const pendingDispatchMaxEntries = 32
 // Persisted so the work is retried later instead of permanently lost
 // (mitto-3421).
 type PendingDispatchEntry struct {
+	// ID uniquely identifies this persisted batch across persistence, retry,
+	// delivery, and bounded-drop diagnostics (mitto-gfr1).
+	ID string `json:"id"`
 	// WorkspaceUUID is the workspace the batch was destined for.
 	WorkspaceUUID string `json:"workspace_uuid"`
 	// Name is the processor name, or "+"-joined combined name for a batched
@@ -53,6 +58,20 @@ type PendingDispatchEntry struct {
 	Attempts int `json:"attempts,omitempty"`
 }
 
+// PendingDispatchAppendResult reports the persisted entry (including its ID)
+// and any oldest entries evicted by the bounded spool cap.
+type PendingDispatchAppendResult struct {
+	Entry   PendingDispatchEntry
+	Dropped []PendingDispatchEntry
+}
+
+// PendingDispatchClaim is one atomic snapshot removed from the spool. Expired
+// entries are returned separately so callers can emit auditable drop logs.
+type PendingDispatchClaim struct {
+	Entries []PendingDispatchEntry
+	Expired []PendingDispatchEntry
+}
+
 // PendingDispatchStore persists undelivered prompt-mode batches keyed by
 // workspace so they survive the originating session disappearing (e.g.
 // archive_reason=deleted removes the session directory synchronously — see
@@ -61,18 +80,12 @@ type PendingDispatchEntry struct {
 // becomes dispatchable again.
 type PendingDispatchStore interface {
 	// Append adds one undelivered batch to the workspace's pending spool.
-	Append(entry PendingDispatchEntry) error
-	// Load returns the workspace's currently spooled entries, oldest first.
-	// Entries older than pendingDispatchMaxAge are dropped and never
-	// returned; the pruned set is persisted so an all-stale spool is
-	// reclaimed rather than lingering forever. Returns a nil/empty slice
-	// (not an error) when there is no spool file for the workspace.
-	Load(workspaceUUID string) ([]PendingDispatchEntry, error)
-	// Replace atomically overwrites the workspace's spool with entries. An
-	// empty/nil entries removes the spool file entirely. Used by
-	// FlushPendingDispatches to claim the spool before retrying it, and to
-	// write back only the entries that failed again.
-	Replace(workspaceUUID string, entries []PendingDispatchEntry) error
+	Append(entry PendingDispatchEntry) (PendingDispatchAppendResult, error)
+	// Claim atomically removes and returns the workspace's current spool.
+	Claim(workspaceUUID string) (PendingDispatchClaim, error)
+	// Requeue prepends unresolved claimed entries to anything appended after
+	// the claim, preserving both sets without holding a lock during dispatch.
+	Requeue(workspaceUUID string, entries []PendingDispatchEntry) ([]PendingDispatchEntry, error)
 }
 
 // FilePendingDispatchStore persists entries under
@@ -95,9 +108,28 @@ type FilePendingDispatchStore struct {
 	// BaseDir overrides the resolved directory. Empty uses
 	// appdir.PendingProcessorDispatchDir().
 	BaseDir string
-
-	mu sync.Mutex
 }
+
+var pendingDispatchLocksMu sync.Mutex
+var pendingDispatchLocks = make(map[string]*sync.Mutex)
+
+// pendingDispatchLockFor returns the process-wide mutex shared by every store
+// instance targeting path. FilePendingDispatchStore instances are constructed
+// independently for live and close-phase managers, so an instance-local mutex
+// cannot protect their shared read-modify-write transaction (mitto-gfr1).
+func pendingDispatchLockFor(path string) *sync.Mutex {
+	key := filepath.Clean(path)
+	pendingDispatchLocksMu.Lock()
+	defer pendingDispatchLocksMu.Unlock()
+	if mu := pendingDispatchLocks[key]; mu != nil {
+		return mu
+	}
+	mu := &sync.Mutex{}
+	pendingDispatchLocks[key] = mu
+	return mu
+}
+
+func newPendingDispatchID() string { return uuid.NewString() }
 
 func (s *FilePendingDispatchStore) baseDir() (string, error) {
 	if s.BaseDir != "" {
@@ -106,38 +138,46 @@ func (s *FilePendingDispatchStore) baseDir() (string, error) {
 	return appdir.PendingProcessorDispatchDir()
 }
 
+func (s *FilePendingDispatchStore) spoolPath(workspaceUUID string) (string, error) {
+	dir, err := s.baseDir()
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve pending dispatch directory: %w", err)
+	}
+	return filepath.Join(dir, workspaceUUID+".json"), nil
+}
+
 // Append implements PendingDispatchStore.
-func (s *FilePendingDispatchStore) Append(entry PendingDispatchEntry) error {
+func (s *FilePendingDispatchStore) Append(entry PendingDispatchEntry) (PendingDispatchAppendResult, error) {
 	if entry.WorkspaceUUID == "" {
-		return fmt.Errorf("pending dispatch entry missing workspace UUID")
+		return PendingDispatchAppendResult{}, fmt.Errorf("pending dispatch entry missing workspace UUID")
 	}
 	if entry.Attempts < 1 {
 		entry.Attempts = 1
 	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	dir, err := s.baseDir()
-	if err != nil {
-		return fmt.Errorf("failed to resolve pending dispatch directory: %w", err)
+	if entry.ID == "" {
+		entry.ID = newPendingDispatchID()
 	}
-	path := filepath.Join(dir, entry.WorkspaceUUID+".json")
+	path, err := s.spoolPath(entry.WorkspaceUUID)
+	if err != nil {
+		return PendingDispatchAppendResult{}, err
+	}
+	mu := pendingDispatchLockFor(path)
+	mu.Lock()
+	defer mu.Unlock()
 
-	var entries []PendingDispatchEntry
-	if readErr := fileutil.ReadJSON(path, &entries); readErr != nil && !os.IsNotExist(readErr) {
-		return fmt.Errorf("failed to read existing pending dispatch spool: %w", readErr)
+	entries, _, readErr := s.readLocked(path)
+	if readErr != nil {
+		return PendingDispatchAppendResult{}, readErr
 	}
 	entries = append(entries, entry)
-	// Bound spool growth: drop the oldest entries first once over the cap
-	// (mitto-yfv8), independent of the age cap applied at Load time.
-	if len(entries) > pendingDispatchMaxEntries {
-		entries = entries[len(entries)-pendingDispatchMaxEntries:]
+	entries, dropped := boundPendingDispatchEntries(entries)
+	if err := s.writeLocked(path, entries); err != nil {
+		return PendingDispatchAppendResult{}, err
 	}
-	return fileutil.WriteJSONAtomic(path, &entries, 0644)
+	return PendingDispatchAppendResult{Entry: entry, Dropped: dropped}, nil
 }
 
-// Load implements PendingDispatchStore. Entries older than
+// Load returns the currently pending entries for inspection and tests. Entries older than
 // pendingDispatchMaxAge are dropped from the returned slice and the pruned
 // set is written back under the same lock — otherwise a spool whose entries
 // have all aged out is never returned to (and never claimed by)
@@ -148,42 +188,90 @@ func (s *FilePendingDispatchStore) Load(workspaceUUID string) ([]PendingDispatch
 		return nil, fmt.Errorf("pending dispatch load missing workspace UUID")
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	dir, err := s.baseDir()
+	path, err := s.spoolPath(workspaceUUID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to resolve pending dispatch directory: %w", err)
+		return nil, err
 	}
-	path := filepath.Join(dir, workspaceUUID+".json")
+	mu := pendingDispatchLockFor(path)
+	mu.Lock()
+	defer mu.Unlock()
 
-	var entries []PendingDispatchEntry
-	if readErr := fileutil.ReadJSON(path, &entries); readErr != nil {
-		if os.IsNotExist(readErr) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("failed to read pending dispatch spool: %w", readErr)
+	entries, IDsAdded, readErr := s.readLocked(path)
+	if readErr != nil {
+		return nil, readErr
 	}
-
-	cutoff := time.Now().Add(-pendingDispatchMaxAge)
-	total := len(entries)
-	fresh := entries[:0]
-	for _, e := range entries {
-		if e.SavedAt.Before(cutoff) {
-			continue
-		}
-		fresh = append(fresh, e)
-	}
+	fresh, expired := partitionPendingDispatchEntries(entries)
 	// Persist the pruned set best-effort: a write failure only means the
 	// stale entries are re-pruned on the next Load, never that a fresh
 	// entry is lost, so the caller still gets the fresh set.
-	if len(fresh) != total {
+	if IDsAdded || len(expired) > 0 {
 		_ = s.writeLocked(path, fresh)
 	}
 	return fresh, nil
 }
 
-// Replace implements PendingDispatchStore. An empty/nil entries removes the
+// Claim implements PendingDispatchStore. Reading and removing happen under
+// one process-wide path lock, so an Append is either included in this claim or
+// lands in a new spool after it; it can never be deleted between Load and
+// Replace as in the old two-operation protocol (mitto-gfr1).
+func (s *FilePendingDispatchStore) Claim(workspaceUUID string) (PendingDispatchClaim, error) {
+	if workspaceUUID == "" {
+		return PendingDispatchClaim{}, fmt.Errorf("pending dispatch claim missing workspace UUID")
+	}
+	path, err := s.spoolPath(workspaceUUID)
+	if err != nil {
+		return PendingDispatchClaim{}, err
+	}
+	mu := pendingDispatchLockFor(path)
+	mu.Lock()
+	defer mu.Unlock()
+
+	entries, _, readErr := s.readLocked(path)
+	if readErr != nil {
+		return PendingDispatchClaim{}, readErr
+	}
+	if len(entries) == 0 {
+		return PendingDispatchClaim{}, nil
+	}
+	fresh, expired := partitionPendingDispatchEntries(entries)
+	if err := s.writeLocked(path, nil); err != nil {
+		return PendingDispatchClaim{}, fmt.Errorf("failed to remove claimed pending dispatch spool: %w", err)
+	}
+	return PendingDispatchClaim{Entries: fresh, Expired: expired}, nil
+}
+
+// Requeue implements PendingDispatchStore. Unresolved claimed entries are
+// older, so they are prepended to entries appended after Claim. The shared
+// path lock makes this a single merge transaction across store instances.
+func (s *FilePendingDispatchStore) Requeue(workspaceUUID string, entries []PendingDispatchEntry) ([]PendingDispatchEntry, error) {
+	if workspaceUUID == "" {
+		return nil, fmt.Errorf("pending dispatch requeue missing workspace UUID")
+	}
+	if len(entries) == 0 {
+		return nil, nil
+	}
+	ensurePendingDispatchIDs(entries)
+	path, err := s.spoolPath(workspaceUUID)
+	if err != nil {
+		return nil, err
+	}
+	mu := pendingDispatchLockFor(path)
+	mu.Lock()
+	defer mu.Unlock()
+
+	current, _, readErr := s.readLocked(path)
+	if readErr != nil {
+		return nil, readErr
+	}
+	merged := append(append(make([]PendingDispatchEntry, 0, len(entries)+len(current)), entries...), current...)
+	merged, dropped := boundPendingDispatchEntries(merged)
+	if err := s.writeLocked(path, merged); err != nil {
+		return nil, err
+	}
+	return dropped, nil
+}
+
+// Replace overwrites the spool for setup and maintenance callers. An empty/nil entries removes the
 // spool file entirely rather than writing an empty JSON array, keeping an
 // idle workspace's spool directory clean.
 func (s *FilePendingDispatchStore) Replace(workspaceUUID string, entries []PendingDispatchEntry) error {
@@ -191,20 +279,62 @@ func (s *FilePendingDispatchStore) Replace(workspaceUUID string, entries []Pendi
 		return fmt.Errorf("pending dispatch replace missing workspace UUID")
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	dir, err := s.baseDir()
+	path, err := s.spoolPath(workspaceUUID)
 	if err != nil {
-		return fmt.Errorf("failed to resolve pending dispatch directory: %w", err)
+		return err
 	}
-	path := filepath.Join(dir, workspaceUUID+".json")
-
+	mu := pendingDispatchLockFor(path)
+	mu.Lock()
+	defer mu.Unlock()
+	ensurePendingDispatchIDs(entries)
 	return s.writeLocked(path, entries)
 }
 
+func (s *FilePendingDispatchStore) readLocked(path string) ([]PendingDispatchEntry, bool, error) {
+	var entries []PendingDispatchEntry
+	if err := fileutil.ReadJSON(path, &entries); err != nil {
+		if os.IsNotExist(err) {
+			return nil, false, nil
+		}
+		return nil, false, fmt.Errorf("failed to read pending dispatch spool: %w", err)
+	}
+	return entries, ensurePendingDispatchIDs(entries), nil
+}
+
+func ensurePendingDispatchIDs(entries []PendingDispatchEntry) bool {
+	changed := false
+	for i := range entries {
+		if entries[i].ID == "" {
+			entries[i].ID = newPendingDispatchID()
+			changed = true
+		}
+	}
+	return changed
+}
+
+func partitionPendingDispatchEntries(entries []PendingDispatchEntry) (fresh, expired []PendingDispatchEntry) {
+	cutoff := time.Now().Add(-pendingDispatchMaxAge)
+	for _, entry := range entries {
+		if entry.SavedAt.Before(cutoff) {
+			expired = append(expired, entry)
+		} else {
+			fresh = append(fresh, entry)
+		}
+	}
+	return fresh, expired
+}
+
+func boundPendingDispatchEntries(entries []PendingDispatchEntry) (kept, dropped []PendingDispatchEntry) {
+	if len(entries) <= pendingDispatchMaxEntries {
+		return entries, nil
+	}
+	excess := len(entries) - pendingDispatchMaxEntries
+	dropped = append([]PendingDispatchEntry(nil), entries[:excess]...)
+	return entries[excess:], dropped
+}
+
 // writeLocked persists entries to path, removing the file entirely when
-// there is nothing left to keep. Callers must hold s.mu.
+// there is nothing left to keep. Callers must hold pendingDispatchLockFor(path).
 func (s *FilePendingDispatchStore) writeLocked(path string, entries []PendingDispatchEntry) error {
 	if len(entries) == 0 {
 		if rmErr := os.Remove(path); rmErr != nil && !os.IsNotExist(rmErr) {
