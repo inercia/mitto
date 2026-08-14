@@ -7,8 +7,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/inercia/mitto/internal/bdexec"
 )
 
 // ---------------------------------------------------------------------------
@@ -36,6 +39,27 @@ type runnerCall struct {
 type deadlineRunner struct {
 	deadline time.Time
 	wait     bool
+}
+
+type blockingRunner struct {
+	entered chan struct{}
+	release <-chan struct{}
+	calls   atomic.Int32
+}
+
+func (r *blockingRunner) Run(ctx context.Context, _ string, _ ...string) ([]byte, string, error) {
+	r.calls.Add(1)
+	r.entered <- struct{}{}
+	select {
+	case <-r.release:
+		return []byte("[]"), "", nil
+	case <-ctx.Done():
+		return nil, "", ctx.Err()
+	}
+}
+
+func (r *blockingRunner) RunWithEnv(ctx context.Context, dir string, _ []string, args ...string) ([]byte, string, error) {
+	return r.Run(ctx, dir, args...)
 }
 
 func (r *deadlineRunner) Run(ctx context.Context, _ string, _ ...string) ([]byte, string, error) {
@@ -71,7 +95,9 @@ func (r *recordingRunner) RunWithEnv(_ context.Context, dir string, extraEnv []s
 	return resp.stdout, resp.stderr, resp.err
 }
 
-func newClient(r *recordingRunner) *cliClient { return &cliClient{runner: r} }
+func newClient(r *recordingRunner) *cliClient {
+	return NewClientWithRunner(r).(*cliClient)
+}
 
 // initializedDir returns a temp dir that already contains .beads/config.yaml so
 // isInitialized(dir) reports true and EnsureInitialized is a no-op. Use this for
@@ -534,6 +560,65 @@ func TestClient_List_NotInitialized_ReturnsEmpty(t *testing.T) {
 	}
 	if len(r.calls) != 0 {
 		t.Errorf("expected 0 runner calls (not initialized), got %d", len(r.calls))
+	}
+}
+
+// TestClient_SharedConcurrencyLimit reproduces mitto-i2ep's ordinary-read
+// contention: once the process-wide bd capacity is occupied, another read must
+// expire in the limiter queue instead of spawning a third competing process.
+func TestClient_SharedConcurrencyLimit(t *testing.T) {
+	release := make(chan struct{})
+	runner := &blockingRunner{
+		entered: make(chan struct{}, bdexec.MaxConcurrent+1),
+		release: release,
+	}
+	dir := t.TempDir()
+	holderCtx, cancelHolders := context.WithCancel(context.Background())
+	defer cancelHolders()
+	holdersDone := make(chan struct{}, bdexec.MaxConcurrent)
+
+	for range bdexec.MaxConcurrent {
+		client := NewClientWithRunner(runner)
+		go func() {
+			_, _ = client.Show(holderCtx, dir, "mitto-held")
+			holdersDone <- struct{}{}
+		}()
+		select {
+		case <-runner.entered:
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for bd limiter capacity to fill")
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := NewClientWithRunner(runner).Show(ctx, dir, "mitto-queued")
+		errCh <- err
+	}()
+
+	select {
+	case <-runner.entered:
+		t.Fatal("third bd invocation reached the runner while shared capacity was occupied")
+	case err := <-errCh:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("queued Show() error = %v, want context deadline exceeded", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("queued Show() did not respect its context deadline")
+	}
+
+	if got := runner.calls.Load(); got != bdexec.MaxConcurrent {
+		t.Fatalf("runner calls = %d, want %d; queued call must not spawn bd", got, bdexec.MaxConcurrent)
+	}
+	cancelHolders()
+	for range bdexec.MaxConcurrent {
+		select {
+		case <-holdersDone:
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for holder call to exit")
+		}
 	}
 }
 
@@ -1329,9 +1414,13 @@ func TestNewClient_DefaultsWebUIActor(t *testing.T) {
 	if !ok {
 		t.Fatalf("NewClient did not return *cliClient")
 	}
-	r, ok := c.runner.(execRunner)
+	lr, ok := c.runner.(limitedRunner)
 	if !ok {
-		t.Fatalf("NewClient runner is %T, want execRunner", c.runner)
+		t.Fatalf("NewClient runner is %T, want limitedRunner", c.runner)
+	}
+	r, ok := lr.inner.(execRunner)
+	if !ok {
+		t.Fatalf("limitedRunner inner is %T, want execRunner", lr.inner)
 	}
 	if r.actor != webUIActor {
 		t.Errorf("execRunner.actor = %q, want %q", r.actor, webUIActor)

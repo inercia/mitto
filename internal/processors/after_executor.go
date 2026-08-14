@@ -48,7 +48,7 @@ func executeAfterCommand(ctx context.Context, proc *Processor, processorsDir str
 	cmd.Stderr = &stderr
 
 	start := time.Now()
-	err := cmd.Run()
+	err := runProcessorCommand(ctx, proc, cmd)
 	duration := time.Since(start)
 
 	if logger != nil {

@@ -17,6 +17,7 @@ import (
 
 	"golang.org/x/sync/singleflight"
 
+	"github.com/inercia/mitto/internal/bdexec"
 	"github.com/inercia/mitto/internal/pathglob"
 )
 
@@ -695,6 +696,11 @@ func runBd(folder string, args ...string) ([]byte, bool) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), bdCmdTimeout)
 	defer cancel()
+	release, err := bdexec.Acquire(ctx)
+	if err != nil {
+		return nil, false
+	}
+	defer release()
 	cmd := exec.CommandContext(ctx, "bd", args...)
 	if folder != "" {
 		cmd.Dir = folder

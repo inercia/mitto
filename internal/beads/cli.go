@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/inercia/mitto/internal/bdexec"
 )
 
 const (
@@ -47,6 +49,30 @@ type Runner interface {
 	// path to set BD_ALLOW_REMOTE_MIGRATE=1 for a single invocation without
 	// affecting the parent process or other bd calls.
 	RunWithEnv(ctx context.Context, dir string, extraEnv []string, args ...string) (stdout []byte, stderr string, err error)
+}
+
+// limitedRunner applies the process-wide bd concurrency bound around any
+// Runner, including test doubles and web-layer wrappers (mitto-i2ep).
+type limitedRunner struct {
+	inner Runner
+}
+
+func (r limitedRunner) Run(ctx context.Context, dir string, args ...string) ([]byte, string, error) {
+	release, err := bdexec.Acquire(ctx)
+	if err != nil {
+		return nil, "", err
+	}
+	defer release()
+	return r.inner.Run(ctx, dir, args...)
+}
+
+func (r limitedRunner) RunWithEnv(ctx context.Context, dir string, extraEnv []string, args ...string) ([]byte, string, error) {
+	release, err := bdexec.Acquire(ctx)
+	if err != nil {
+		return nil, "", err
+	}
+	defer release()
+	return r.inner.RunWithEnv(ctx, dir, extraEnv, args...)
 }
 
 // execRunner is the default Runner that invokes the real bd binary. When actor

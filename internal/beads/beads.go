@@ -523,7 +523,7 @@ const webUIActor = "mitto:webui"
 
 // NewClient returns a Client backed by the real bd binary. Writes it makes are
 // stamped with the mitto:webui actor for audit attribution.
-func NewClient() Client { return &cliClient{runner: execRunner{actor: webUIActor}} }
+func NewClient() Client { return NewClientWithRunner(execRunner{actor: webUIActor}) }
 
 // NewExecRunner returns the default Runner that invokes the real bd binary,
 // stamping writes with the mitto:webui actor. It is exported so callers can wrap
@@ -531,8 +531,9 @@ func NewClient() Client { return &cliClient{runner: execRunner{actor: webUIActor
 // production behavior of NewClient.
 func NewExecRunner() Runner { return execRunner{actor: webUIActor} }
 
-// NewClientWithRunner returns a Client backed by a custom Runner (for testing).
-func NewClientWithRunner(r Runner) Client { return &cliClient{runner: r} }
+// NewClientWithRunner returns a Client backed by a custom Runner. Every runner
+// shares the process-wide bd concurrency bound, including test doubles.
+func NewClientWithRunner(r Runner) Client { return &cliClient{runner: limitedRunner{inner: r}} }
 
 // IsValidConfigKey reports whether key is a safe bd config key: non-empty, not
 // flag-like (no leading '-'), and composed only of letters, digits, '.', '-',

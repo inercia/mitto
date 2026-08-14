@@ -69,15 +69,18 @@ func (e *Executor) Execute(ctx context.Context, proc *Processor, input *Processo
 
 	// Execute
 	start := time.Now()
-	err := cmd.Run()
+	err := runProcessorCommand(ctx, proc, cmd)
 	duration := time.Since(start)
 
-	e.logger.Info("processor executed",
+	logAttrs := []any{
 		"name", proc.Name,
 		"duration", duration,
-		"exit_code", cmd.ProcessState.ExitCode(),
 		"stderr", stderr.String(),
-	)
+	}
+	if cmd.ProcessState != nil {
+		logAttrs = append(logAttrs, "exit_code", cmd.ProcessState.ExitCode())
+	}
+	e.logger.Info("processor executed", logAttrs...)
 
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
