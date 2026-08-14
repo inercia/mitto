@@ -30,7 +30,7 @@ func processorInvokesBD(proc *Processor) bool {
 	}
 	for _, arg := range proc.Args {
 		for _, token := range strings.FieldsFunc(arg, func(r rune) bool {
-			return !(unicode.IsLetter(r) || unicode.IsDigit(r) || strings.ContainsRune("_./-", r))
+			return !unicode.IsLetter(r) && !unicode.IsDigit(r) && !strings.ContainsRune("_./-", r)
 		}) {
 			if filepath.Base(token) == "bd" {
 				return true
