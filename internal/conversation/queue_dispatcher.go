@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"time"
 
+	mittoAcp "github.com/inercia/mitto/internal/acp"
 	"github.com/inercia/mitto/internal/session"
 )
 
@@ -198,6 +199,16 @@ func (queueDispatcher) send(d queueDeps, queue *session.Queue, msg session.Queue
 		Arguments:   msg.Arguments,
 		PromptName:  msg.PromptName,
 		QueueOrigin: msg.Origin,
+		OnComplete: func(err error) {
+			if err == nil {
+				return
+			}
+			if mittoAcp.IsContextTooLargeError(err) {
+				d.setLastQueueSendError("contextWindowExceeded")
+				return
+			}
+			d.setLastQueueSendError(err.Error())
+		},
 	}
 
 	// mitto-omu: bounded in-process retry for transient template-compile-race

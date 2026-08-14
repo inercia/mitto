@@ -426,6 +426,38 @@ func TestQueueDispatcher_Send(t *testing.T) {
 	})
 }
 
+// TestQueueDispatcher_Send_ReusedChildAsyncContextOverflowRecorded reproduces
+// mitto-purq: PromptWithMeta accepts a reused child's queued prompt synchronously,
+// then the async ACP turn fails after the queue has already reported it sent.
+func TestQueueDispatcher_Send_ReusedChildAsyncContextOverflowRecorded(t *testing.T) {
+	q := newTestQueue(t)
+	var dispatched []PromptMeta
+	d := &fakeQueueDeps{
+		enabled: true,
+		queue:   q,
+		promptWithMetaFn: func(_ string, meta PromptMeta) error {
+			dispatched = append(dispatched, meta)
+			return nil
+		},
+	}
+
+	qd := queueDispatcher{}
+	qd.send(d, q, session.QueuedMessage{ID: "first", Message: "first task", ClientID: "parent", Origin: session.QueueOriginAgent})
+	qd.send(d, q, session.QueuedMessage{ID: "reused", Message: "later task", ClientID: "parent", Origin: session.QueueOriginAgent})
+
+	if len(dispatched) != 2 {
+		t.Fatalf("dispatched %d prompts, want 2", len(dispatched))
+	}
+	if dispatched[1].OnComplete == nil {
+		t.Fatal("reused child dispatch has no completion callback; async ACP failures are lost")
+	}
+
+	dispatched[1].OnComplete(errors.New("HTTP error: 413 Request Entity Too Large"))
+	if d.lastSendErr != "contextWindowExceeded" {
+		t.Fatalf("lastSendErr = %q, want sanitized contextWindowExceeded", d.lastSendErr)
+	}
+}
+
 // --- notifyUpdated / notifyReordered ---
 
 func TestQueueDispatcher_NotifyUpdated(t *testing.T) {
