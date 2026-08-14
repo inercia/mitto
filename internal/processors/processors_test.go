@@ -7945,3 +7945,103 @@ func TestBeadsPrimeProcessor_ShellScriptRejectsBadSource(t *testing.T) {
 		})
 	}
 }
+
+// TestExtractMemoriesOnCloseProcessor_UsesBdMemoriesJSON pins mitto-telc
+// requirement (1): the dedup step must invoke the exact `bd memories --json`
+// command (the stale `bd memory list` no longer appears anywhere), and
+// refining an existing memory must go through `bd remember --key
+// <existing-key>` rather than adding a near-duplicate entry.
+func TestExtractMemoriesOnCloseProcessor_UsesBdMemoriesJSON(t *testing.T) {
+	proc := loadBuiltinProcessorForTest(t, "extract-memories-on-close")
+
+	if !strings.Contains(proc.Prompt, "bd memories --json") {
+		t.Errorf("prompt does not mention `bd memories --json`:\n%s", proc.Prompt)
+	}
+	if strings.Contains(proc.Prompt, "bd memory list") {
+		t.Error("prompt still references the stale `bd memory list` command")
+	}
+	if !strings.Contains(proc.Prompt, "bd remember --key <existing-key>") {
+		t.Error("prompt does not teach refining an existing entry via `bd remember --key <existing-key>`")
+	}
+}
+
+// TestCurateMemoriesOnCloseProcessor_MergeIsPrimaryAction pins mitto-telc
+// requirement (2): the curator's primary action is merging overlapping
+// memories into a canonical survivor via `bd remember --key`, verified with
+// `bd recall`.
+func TestCurateMemoriesOnCloseProcessor_MergeIsPrimaryAction(t *testing.T) {
+	proc := loadBuiltinProcessorForTest(t, "curate-memories-on-close")
+
+	if !strings.Contains(proc.Prompt, "bd remember --key <survivor-key>") {
+		t.Error("prompt does not merge into a survivor via `bd remember --key <survivor-key>`")
+	}
+	if !strings.Contains(proc.Prompt, "bd recall <survivor-key>") {
+		t.Error("prompt does not verify the merged survivor via `bd recall <survivor-key>`")
+	}
+	if !strings.Contains(proc.Prompt, "<full-original-body>") {
+		t.Error("prompt does not preserve each superseded memory body for later survivor verification")
+	}
+	if strings.Contains(proc.Prompt, "bd memory list") {
+		t.Error("prompt references the stale `bd memory list` command")
+	}
+}
+
+// TestCurateMemoriesOnCloseProcessor_ForgetOnlyOnExplicitSelfDeclaration pins
+// mitto-telc requirement (3): `bd forget` fires only for a candidate whose
+// OWN body already declares OBSOLETE/SUPERSEDED AND names a survivor key,
+// guarded by the pre-existing age (7 days) and cap (3/run) rules, with the
+// contradictory "do not forget any memory you consulted" guard removed.
+func TestCurateMemoriesOnCloseProcessor_ForgetOnlyOnExplicitSelfDeclaration(t *testing.T) {
+	proc := loadBuiltinProcessorForTest(t, "curate-memories-on-close")
+
+	if !strings.Contains(proc.Prompt, "AND NAMES the") {
+		t.Errorf("prompt no longer requires the forget candidate to name a survivor key:\n%s", proc.Prompt)
+	}
+	if !strings.Contains(proc.Prompt, "Do not forget memories younger than 7 days") {
+		t.Error("prompt dropped the 7-day age guardrail")
+	}
+	if !strings.Contains(proc.Prompt, "on <YYYY-MM-DD UTC>") || !strings.Contains(proc.Prompt, "per-memory timestamps") {
+		t.Error("prompt does not enforce the age guardrail through an explicit marker date")
+	}
+	if !strings.Contains(proc.Prompt, "Cap forgets at 3 this run") {
+		t.Error("prompt dropped the max-3-forgets-per-run cap")
+	}
+	if strings.Contains(proc.Prompt, "Do not forget any memory you consulted this run") {
+		t.Error("prompt still contains the removed contradictory consulted-memory guard")
+	}
+	if !strings.Contains(proc.Prompt, "bd forget <key>") {
+		t.Error("prompt no longer performs `bd forget <key>`")
+	}
+}
+
+// TestCurateMemoriesOnCloseProcessor_SingleDedupedReviewBead pins mitto-telc
+// requirement (4): uncertain candidates are batched into AT MOST ONE review
+// bead, deduplicated first via an exact stable-title search across
+// open/in_progress/blocked/deferred issues, with a description carrying only
+// keys and one-line reasons — never memory bodies or secrets.
+func TestCurateMemoriesOnCloseProcessor_SingleDedupedReviewBead(t *testing.T) {
+	proc := loadBuiltinProcessorForTest(t, "curate-memories-on-close")
+
+	const stableTitle = "Review possibly-stale beads memories"
+	if got := strings.Count(proc.Prompt, stableTitle); got < 2 {
+		t.Errorf("stable title %q should appear at least twice (search query + bd create --title), got %d", stableTitle, got)
+	}
+	if !strings.Contains(proc.Prompt, "bd query") {
+		t.Error("prompt does not search existing issues via `bd query` before creating a review bead")
+	}
+	if !strings.Contains(proc.Prompt, "status=open OR status=in_progress OR status=blocked OR status=deferred") {
+		t.Error("prompt does not scope the dedup search to open/in_progress/blocked/deferred statuses")
+	}
+	if !strings.Contains(proc.Prompt, "bd show <id> --json") {
+		t.Error("prompt does not load the existing review bead before deduplicating candidate keys")
+	}
+	if !strings.Contains(proc.Prompt, "AT MOST ONE") {
+		t.Error("prompt does not enforce filing at most one review bead")
+	}
+	if strings.Contains(proc.Prompt, "Review possibly-stale memory: <key>") {
+		t.Error("prompt still creates one review issue PER candidate (old per-key title template)")
+	}
+	if !strings.Contains(proc.Prompt, "never memory bodies, and never secrets") {
+		t.Error("prompt does not guard the review bead description against bodies/secrets")
+	}
+}
