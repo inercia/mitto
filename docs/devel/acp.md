@@ -468,12 +468,12 @@ the original "stuck conversation" incident, where a shared agent had bloated to 
 RSS and was thrashing). It is **opt-in and disabled by default** — it does nothing
 unless `MemoryRecycleThreshold > 0`.
 
-For each shared process, the tier samples the **RSS summed over the entire process
-tree** (root + all descendants, e.g. `node` → `claude`) via
-`SharedACPProcess.RSSBytes()`, which uses the cross-platform, cgo-free
-[`github.com/shirou/gopsutil/v4`](https://github.com/shirou/gopsutil) library
-(implemented in `internal/web/acp_process_memory.go`). A process is recycled **only when
-it is fully idle** — all of the following must hold:
+For each shared process, the tier captures one system PID/PPID topology snapshot,
+then derives parent RSS, descendant RSS/count, and aggregate physical footprint
+for that tree. The recycle metric is the greater of aggregate RSS and physical
+footprint, so compressed macOS memory remains visible without repeating expensive
+recursive process enumeration (`internal/acpproc/acp_process_memory.go`). A process
+is recycled **only when it is fully idle** — all of the following must hold:
 
 - `p.ActiveRPCs() == 0` (no in-flight RPCs)
 - No session is `IsPrompting`
@@ -485,7 +485,8 @@ When a bloated process passes every safety gate, each of its sessions is marked
 `sessionClose`, and the now-sessionless process is stopped with `StopProcess`. Affected
 conversations **resume transparently** on next focus via `LoadSession` history replay,
 making the recycle invisible to the user. The recycle is logged at `Info` with
-`rss_bytes` and `threshold_bytes`; every skip reason is logged at `Debug`.
+effective memory, parent/descendant RSS, descendant count, sample duration, and
+the threshold; every skip reason is logged at `Debug`.
 
 After a recycle, the GC invokes the `onMemoryRecycled` callback (wired in `server.go`),
 which resolves a friendly workspace name and calls `Server.BroadcastMemoryRecycled`. That

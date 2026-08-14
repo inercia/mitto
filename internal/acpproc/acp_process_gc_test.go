@@ -1314,6 +1314,12 @@ func TestGCTier1_LoopSuspend_DisabledWhenThresholdZero(t *testing.T) {
 // gcTier4Threshold is a convenient RSS threshold (1 GB) for Tier 4 tests.
 const gcTier4Threshold uint64 = 1 << 30
 
+func installFixedMemorySample(m *ACPProcessManager, effectiveMemory uint64) {
+	m.memorySampler = func(*SharedACPProcess) (processMemorySample, error) {
+		return processMemorySample{effectiveMemory: effectiveMemory}, nil
+	}
+}
+
 // TestGCTier4_RecyclesBloatedIdleProcess verifies that an idle but memory-bloated
 // shared process is recycled: its sessions are GC-suspended and closed, and the
 // process is stopped. Sessions have observers so Tier 1 skips them, isolating the
@@ -1345,7 +1351,7 @@ func TestGCTier4_RecyclesBloatedIdleProcess(t *testing.T) {
 	m.mu.Unlock()
 
 	m.gcConfig.MemoryRecycleThreshold = gcTier4Threshold
-	m.rssSampler = func(p *SharedACPProcess) (uint64, error) { return gcTier4Threshold + 1, nil }
+	installFixedMemorySample(m, gcTier4Threshold+1)
 
 	var recycledCalls int
 	var gotUUID string
@@ -1422,7 +1428,7 @@ func TestGCTier4_SkipsPromptingSession(t *testing.T) {
 	m.mu.Unlock()
 
 	m.gcConfig.MemoryRecycleThreshold = gcTier4Threshold
-	m.rssSampler = func(p *SharedACPProcess) (uint64, error) { return gcTier4Threshold + 1, nil }
+	installFixedMemorySample(m, gcTier4Threshold+1)
 
 	m.RunGCOnce()
 
@@ -1456,7 +1462,7 @@ func TestGCTier4_SkipsActiveRPCs(t *testing.T) {
 	m.mu.Unlock()
 
 	m.gcConfig.MemoryRecycleThreshold = gcTier4Threshold
-	m.rssSampler = func(p *SharedACPProcess) (uint64, error) { return gcTier4Threshold + 1, nil }
+	installFixedMemorySample(m, gcTier4Threshold+1)
 
 	m.RunGCOnce()
 
@@ -1489,7 +1495,7 @@ func TestGCTier4_SkipsNonEmptyQueue(t *testing.T) {
 	m.mu.Unlock()
 
 	m.gcConfig.MemoryRecycleThreshold = gcTier4Threshold
-	m.rssSampler = func(p *SharedACPProcess) (uint64, error) { return gcTier4Threshold + 1, nil }
+	installFixedMemorySample(m, gcTier4Threshold+1)
 
 	m.RunGCOnce()
 
@@ -1524,9 +1530,9 @@ func TestGCTier4_DisabledWhenThresholdZero(t *testing.T) {
 
 	// Threshold left at 0 (disabled).
 	sampled := false
-	m.rssSampler = func(p *SharedACPProcess) (uint64, error) {
+	m.memorySampler = func(*SharedACPProcess) (processMemorySample, error) {
 		sampled = true
-		return gcTier4Threshold + 1, nil
+		return processMemorySample{effectiveMemory: gcTier4Threshold + 1}, nil
 	}
 
 	m.RunGCOnce()
@@ -1603,7 +1609,7 @@ func TestGCHealthTier_RecyclesSaturatedIdleProcess(t *testing.T) {
 	// Keep RSS BELOW the memory threshold so Tier 4 does NOT fire — only the
 	// health/saturation signal should drive the recycle.
 	m.gcConfig.MemoryRecycleThreshold = gcTier4Threshold
-	m.rssSampler = func(p *SharedACPProcess) (uint64, error) { return gcTier4Threshold / 2, nil }
+	installFixedMemorySample(m, gcTier4Threshold/2)
 
 	m.RunGCOnce()
 
@@ -1660,7 +1666,7 @@ func TestGCHealthTier_OnHealthRecycledCallback(t *testing.T) {
 	m.processes[workspaceUUID] = proc
 	m.mu.Unlock()
 	m.gcConfig.MemoryRecycleThreshold = gcTier4Threshold
-	m.rssSampler = func(p *SharedACPProcess) (uint64, error) { return gcTier4Threshold / 2, nil }
+	installFixedMemorySample(m, gcTier4Threshold/2)
 
 	var calls int
 	var gotUUID, gotReason string
@@ -1754,7 +1760,7 @@ func TestGCHealthTier_RecyclesMCPInitGatedProcess(t *testing.T) {
 	// pass fairly isolates the Tier 5 health-recycle path under test.
 	m.lastSessionSeen[workspaceUUID] = time.Now()
 	m.gcConfig.MemoryRecycleThreshold = gcTier4Threshold
-	m.rssSampler = func(p *SharedACPProcess) (uint64, error) { return gcTier4Threshold / 2, nil }
+	installFixedMemorySample(m, gcTier4Threshold/2)
 
 	var calls int
 	var gotReason string
@@ -1859,7 +1865,7 @@ func TestGCHealthTier_RecyclesMCPInitInProgressWedgedProcess(t *testing.T) {
 	// isolates the Tier 5 health-recycle path under test.
 	m.lastSessionSeen[workspaceUUID] = time.Now()
 	m.gcConfig.MemoryRecycleThreshold = gcTier4Threshold
-	m.rssSampler = func(p *SharedACPProcess) (uint64, error) { return gcTier4Threshold / 2, nil }
+	installFixedMemorySample(m, gcTier4Threshold/2)
 
 	var calls int
 	var gotReason string
@@ -2217,9 +2223,9 @@ func TestGCTier4_SkipsPinnedWorkspace(t *testing.T) {
 	// Configure the memory-recycle tier so the process would otherwise be reaped.
 	m.gcConfig.MemoryRecycleThreshold = gcTier4Threshold
 	sampled := false
-	m.rssSampler = func(p *SharedACPProcess) (uint64, error) {
+	m.memorySampler = func(*SharedACPProcess) (processMemorySample, error) {
 		sampled = true
-		return gcTier4Threshold + 1, nil
+		return processMemorySample{effectiveMemory: gcTier4Threshold + 1}, nil
 	}
 
 	m.RunGCOnce()
@@ -2300,6 +2306,40 @@ func attrValue(r *slog.Record, key string) any {
 	return out
 }
 
+// TestGCTier4_UsesSingleMemorySample_MITTO6Y69 reproduces mitto-6y69.
+// One eligible process must produce one unified sample containing both the
+// effective memory total and the diagnostic RSS breakdown. Before the fix, split
+// samplers triggered separate process-tree snapshots (three walks in production).
+func TestGCTier4_UsesSingleMemorySample_MITTO6Y69(t *testing.T) {
+	const workspaceUUID = "ws-single-memory-sample"
+	sessions := map[string][]conversation.SessionInfo{
+		workspaceUUID: {{SessionID: "s1", WorkspaceUUID: workspaceUUID, HasObservers: true}},
+	}
+	m := newTestGCManager(
+		func() map[string][]conversation.SessionInfo { return sessions },
+		func(string) {},
+	)
+	m.processes[workspaceUUID] = newTestSharedProcess()
+	m.gcConfig.MemoryRecycleThreshold = 100
+
+	sampleCalls := 0
+	m.memorySampler = func(*SharedACPProcess) (processMemorySample, error) {
+		sampleCalls++
+		return processMemorySample{
+			effectiveMemory: 50,
+			parentRSS:       20,
+			descendantRSS:   30,
+			descendantCount: 1,
+		}, nil
+	}
+
+	m.RunGCOnce()
+
+	if sampleCalls != 1 {
+		t.Fatalf("Tier 4 sampled one idle process %d times; want exactly 1 unified memory sample", sampleCalls)
+	}
+}
+
 // TestGCTier4_LogsRSSBreakdown_MITTO3GU is the failing reproduction for mitto-3gu.
 //
 // The bead's acceptance criterion — "Root of the 7.5 GB growth identified (agent
@@ -2353,13 +2393,7 @@ func TestGCTier4_LogsRSSBreakdown_MITTO3GU(t *testing.T) {
 		if total <= gcTier4Threshold {
 			t.Fatalf("test setup: synthetic total %d must exceed threshold %d", total, gcTier4Threshold)
 		}
-		// Sampler returns the tree total, exactly as today. The breakdown must
-		// flow through some other seam that the fix introduces (e.g. a
-		// detailed-sampler field on ACPProcessManager, or an extended return
-		// from rssSampler). We do NOT prescribe which seam here — we only
-		// assert on the observable log payload.
-		m.rssSampler = func(p *SharedACPProcess) (uint64, error) { return total, nil }
-		installBreakdownSampler(m, parentRSS, descendantRSS, descendantCount)
+		installMemorySample(m, total, parentRSS, descendantRSS, descendantCount)
 
 		m.RunGCOnce()
 
@@ -2376,6 +2410,9 @@ func TestGCTier4_LogsRSSBreakdown_MITTO3GU(t *testing.T) {
 		}
 		if got := attrValue(rec, "threshold_bytes"); got != gcTier4Threshold {
 			t.Errorf("threshold_bytes: want %d, got %v", gcTier4Threshold, got)
+		}
+		if got := attrValue(rec, "memory_sample_duration"); got == nil {
+			t.Error("memory_sample_duration: missing")
 		}
 		// New breakdown fields the fix must add.
 		if got := attrValue(rec, "parent_rss_bytes"); got != parentRSS {
@@ -2421,8 +2458,7 @@ func TestGCTier4_LogsRSSBreakdown_MITTO3GU(t *testing.T) {
 		if total >= gcTier4Threshold {
 			t.Fatalf("test setup: synthetic total %d must be below threshold %d", total, gcTier4Threshold)
 		}
-		m.rssSampler = func(p *SharedACPProcess) (uint64, error) { return total, nil }
-		installBreakdownSampler(m, parentRSS, descendantRSS, descendantCount)
+		installMemorySample(m, total, parentRSS, descendantRSS, descendantCount)
 
 		m.RunGCOnce()
 
@@ -2436,6 +2472,9 @@ func TestGCTier4_LogsRSSBreakdown_MITTO3GU(t *testing.T) {
 		if got := attrValue(rec, "effective_memory_bytes"); got != total {
 			t.Errorf("effective_memory_bytes: want %d, got %v", total, got)
 		}
+		if got := attrValue(rec, "memory_sample_duration"); got == nil {
+			t.Error("memory_sample_duration: missing")
+		}
 		if got := attrValue(rec, "parent_rss_bytes"); got != parentRSS {
 			t.Errorf("parent_rss_bytes: want %d, got %v (fix must add this field)", parentRSS, got)
 		}
@@ -2448,11 +2487,14 @@ func TestGCTier4_LogsRSSBreakdown_MITTO3GU(t *testing.T) {
 	})
 }
 
-// installBreakdownSampler wires the detailed-RSS seam so tests can inject a
-// synthetic parent/descendant split for Tier 4's log lines (mitto-3gu).
-func installBreakdownSampler(m *ACPProcessManager, parentRSS, descendantRSS uint64, descendantCount int) {
-	m.rssBreakdownSampler = func(p *SharedACPProcess) (uint64, uint64, int, error) {
-		return parentRSS, descendantRSS, descendantCount, nil
+func installMemorySample(m *ACPProcessManager, effectiveMemory, parentRSS, descendantRSS uint64, descendantCount int) {
+	m.memorySampler = func(*SharedACPProcess) (processMemorySample, error) {
+		return processMemorySample{
+			effectiveMemory: effectiveMemory,
+			parentRSS:       parentRSS,
+			descendantRSS:   descendantRSS,
+			descendantCount: descendantCount,
+		}, nil
 	}
 }
 
@@ -2509,20 +2551,23 @@ func TestGCTier4_DescendantCountRatchet_MITTO52MT(t *testing.T) {
 		t.Fatalf("test setup: synthetic total %d must stay below threshold %d (matching the incident)", total, threshold)
 	}
 	m.gcConfig.MemoryRecycleThreshold = threshold
-	m.rssSampler = func(p *SharedACPProcess) (uint64, error) { return total, nil }
-
 	// Descendant count ratchets monotonically across successive GC cycles,
 	// exactly mirroring the incident timeline (14:23 -> 82, 15:08 -> 88,
 	// 16:11 -> 92, 17:08 -> 98), never shrinking, while RSS stays fixed and
 	// far below threshold throughout.
 	counts := []int{82, 88, 92, 98}
 	idx := 0
-	m.rssBreakdownSampler = func(p *SharedACPProcess) (uint64, uint64, int, error) {
+	m.memorySampler = func(*SharedACPProcess) (processMemorySample, error) {
 		c := counts[idx]
 		if idx < len(counts)-1 {
 			idx++
 		}
-		return parentRSS, descendantRSS, c, nil
+		return processMemorySample{
+			effectiveMemory: total,
+			parentRSS:       parentRSS,
+			descendantRSS:   descendantRSS,
+			descendantCount: c,
+		}, nil
 	}
 
 	for range counts {

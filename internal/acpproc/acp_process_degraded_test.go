@@ -261,7 +261,7 @@ func TestGCTier5_OnDegradedFiresEvenWhenBusy(t *testing.T) {
 	m.processes[workspaceUUID] = proc
 	m.mu.Unlock()
 	m.gcConfig.MemoryRecycleThreshold = gcTier4Threshold
-	m.rssSampler = func(*SharedACPProcess) (uint64, error) { return gcTier4Threshold / 2, nil }
+	installFixedMemorySample(m, gcTier4Threshold/2)
 
 	var mu sync.Mutex
 	var degradedCalls int
@@ -318,7 +318,7 @@ func TestGCTier5_RecycleDropsDegradedStateWithoutDoubleNotification(t *testing.T
 	m.processes[workspaceUUID] = proc
 	m.mu.Unlock()
 	m.gcConfig.MemoryRecycleThreshold = gcTier4Threshold
-	m.rssSampler = func(*SharedACPProcess) (uint64, error) { return gcTier4Threshold / 2, nil }
+	installFixedMemorySample(m, gcTier4Threshold/2)
 
 	var mu sync.Mutex
 	var degradedCalls, recycledCalls int

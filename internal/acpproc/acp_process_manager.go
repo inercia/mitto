@@ -122,19 +122,9 @@ type ACPProcessManager struct {
 	// sprawl while comfortably under MemoryRecycleThreshold.
 	descendantCountHistory map[string]*descendantCountEntry
 
-	// rssSampler samples effective memory pressure (in bytes) for the GC's memory-
-	// recycle tier. It defaults to (*SharedACPProcess).RSSBytes, which uses the
-	// greater of tree RSS and macOS physical footprint; the historical field name
-	// is retained because tests override this seam extensively.
-	rssSampler func(p *SharedACPProcess) (uint64, error)
-
-	// rssBreakdownSampler samples the RSS breakdown of a shared process tree for
-	// the GC's memory-recycle log lines: the parent (agent) RSS, the descendants
-	// (MCP children) RSS, and the descendant count. It defaults to
-	// (*SharedACPProcess).RSSBytesDetailed; tests override it to inject a
-	// synthetic split. When nil, Tier 4 falls back to a best-effort breakdown of
-	// (parent=rss, descendants=0, count=0) so log parsing stays uniform (mitto-3gu).
-	rssBreakdownSampler func(p *SharedACPProcess) (parent uint64, descendants uint64, count int, err error)
+	// memorySampler returns effective memory plus the diagnostic RSS breakdown
+	// from one process-tree topology snapshot. Tests override this seam.
+	memorySampler func(p *SharedACPProcess) (processMemorySample, error)
 
 	// onMemoryRecycled, if set, is called by the GC's Tier 4 memory-recycle path
 	// when a memory-bloated idle shared ACP process is recycled. Used to broadcast

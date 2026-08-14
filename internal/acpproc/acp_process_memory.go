@@ -6,26 +6,61 @@ import (
 	"github.com/shirou/gopsutil/v4/process"
 )
 
-// processTreeRSS returns the effective memory pressure in bytes for the process
-// tree rooted at pid — the greater of aggregate RSS and aggregate physical
-// footprint. On macOS, physical footprint includes compressed memory that RSS
-// can omit; this prevents a V8 heap from reaching its limit while Tier 4 still
-// sees the process tree below its recycle threshold (mitto-52mt).
-//
-// Per-process errors during the walk are tolerated by skipping that process (a
-// child may exit mid-walk). Only a failure to look up the ROOT process is
-// returned as an error.
-func processTreeRSS(pid int) (uint64, error) {
-	parent, descendants, _, err := processTreeRSSDetailed(pid)
+type processMemorySample struct {
+	effectiveMemory uint64
+	parentRSS       uint64
+	descendantRSS   uint64
+	descendantCount int
+}
+
+type processTopologyEntry struct {
+	pid       int32
+	parentPID int32
+}
+
+type processMetricReader func(pid int32) (uint64, error)
+
+// sampleProcessTreeMemory captures the system PID/PPID topology once, then
+// derives effective memory and the diagnostic RSS breakdown from that snapshot.
+// This avoids gopsutil.Process.Children on every tree node; on macOS each such
+// call enumerates every system process and resolves every PPID (mitto-6y69).
+func sampleProcessTreeMemory(pid int) (processMemorySample, error) {
+	root, err := process.NewProcess(int32(pid))
 	if err != nil {
-		return 0, err
+		return processMemorySample{}, fmt.Errorf("lookup root process %d: %w", pid, err)
 	}
-	rss := parent + descendants
-	footprint, err := processTreePhysicalFootprint(pid)
+	processes, err := process.Processes()
 	if err != nil {
-		return rss, nil // Unsupported or transiently unavailable: retain RSS fallback.
+		return processMemorySample{}, fmt.Errorf("snapshot process topology: %w", err)
 	}
-	return effectiveProcessTreeMemory(rss, footprint), nil
+
+	byPID := make(map[int32]*process.Process, len(processes)+1)
+	topology := make([]processTopologyEntry, 0, len(processes))
+	byPID[root.Pid] = root
+	for _, p := range processes {
+		byPID[p.Pid] = p
+		parentPID, err := p.Ppid()
+		if err != nil {
+			continue
+		}
+		topology = append(topology, processTopologyEntry{pid: p.Pid, parentPID: parentPID})
+	}
+
+	rssReader := func(pid int32) (uint64, error) {
+		p := byPID[pid]
+		if p == nil {
+			return 0, fmt.Errorf("process %d missing from topology snapshot", pid)
+		}
+		info, err := p.MemoryInfo()
+		if err != nil || info == nil {
+			return 0, err
+		}
+		return info.RSS, nil
+	}
+	footprintReader := func(pid int32) (uint64, error) {
+		return processPhysicalFootprint(int(pid))
+	}
+	return memorySampleFromTopology(root.Pid, topology, rssReader, footprintReader), nil
 }
 
 func effectiveProcessTreeMemory(rss, physicalFootprint uint64) uint64 {
@@ -35,77 +70,54 @@ func effectiveProcessTreeMemory(rss, physicalFootprint uint64) uint64 {
 	return rss
 }
 
-// processTreePhysicalFootprint sums the platform physical-footprint metric for
-// the root process and every descendant. Per-child errors are tolerated because
-// children can exit during the walk; a root lookup/sample error causes callers
-// to fall back to RSS.
-func processTreePhysicalFootprint(pid int) (uint64, error) {
-	root, err := process.NewProcess(int32(pid))
-	if err != nil {
-		return 0, fmt.Errorf("lookup root process %d: %w", pid, err)
+func memorySampleFromTopology(
+	rootPID int32,
+	topology []processTopologyEntry,
+	rssReader processMetricReader,
+	footprintReader processMetricReader,
+) processMemorySample {
+	descendants := descendantPIDs(rootPID, topology)
+	sample := processMemorySample{descendantCount: len(descendants)}
+	if rss, err := rssReader(rootPID); err == nil {
+		sample.parentRSS = rss
 	}
-	rootFootprint, err := processPhysicalFootprint(pid)
-	if err != nil {
-		return 0, fmt.Errorf("sample root process %d physical footprint: %w", pid, err)
-	}
-	return rootFootprint + descendantsPhysicalFootprint(root), nil
-}
-
-func descendantsPhysicalFootprint(p *process.Process) uint64 {
-	children, err := p.Children()
-	if err != nil {
-		return 0
-	}
-	var total uint64
-	for _, child := range children {
-		if footprint, err := processPhysicalFootprint(int(child.Pid)); err == nil {
-			total += footprint
+	for _, pid := range descendants {
+		if rss, err := rssReader(pid); err == nil {
+			sample.descendantRSS += rss
 		}
-		total += descendantsPhysicalFootprint(child)
-	}
-	return total
-}
-
-// processTreeRSSDetailed returns the RSS breakdown of the process tree rooted
-// at pid: the root process's own RSS, the RSS summed over all descendants, and
-// the number of descendant processes counted. This is the diagnostic form used
-// by the GC's memory-recycle log lines so operators can distinguish agent-side
-// (parent) growth from MCP-child (descendant) growth without a live ps probe.
-//
-// Per-process errors during the walk are tolerated by skipping that process (a
-// child may exit mid-walk). Only a failure to look up the ROOT process is
-// returned as an error.
-func processTreeRSSDetailed(pid int) (parent uint64, descendants uint64, descendantCount int, err error) {
-	root, err := process.NewProcess(int32(pid))
-	if err != nil {
-		return 0, 0, 0, fmt.Errorf("lookup root process %d: %w", pid, err)
 	}
 
-	if mi, err := root.MemoryInfo(); err == nil && mi != nil {
-		parent = mi.RSS
-	}
-	descendants, descendantCount = descendantsRSSDetailed(root)
-	return parent, descendants, descendantCount, nil
-}
-
-// descendantsRSSDetailed recursively sums the RSS of all descendants of p and
-// counts them. Per-process errors are skipped so a child exiting mid-walk does
-// not fail the whole sum.
-func descendantsRSSDetailed(p *process.Process) (uint64, int) {
-	children, err := p.Children()
-	if err != nil {
-		return 0, 0
-	}
-	var total uint64
-	var count int
-	for _, child := range children {
-		count++
-		if mi, err := child.MemoryInfo(); err == nil && mi != nil {
-			total += mi.RSS
+	var footprint uint64
+	if rootFootprint, err := footprintReader(rootPID); err == nil {
+		footprint = rootFootprint
+		for _, pid := range descendants {
+			if childFootprint, err := footprintReader(pid); err == nil {
+				footprint += childFootprint
+			}
 		}
-		subTotal, subCount := descendantsRSSDetailed(child)
-		total += subTotal
-		count += subCount
 	}
-	return total, count
+	sample.effectiveMemory = effectiveProcessTreeMemory(sample.parentRSS+sample.descendantRSS, footprint)
+	return sample
+}
+
+func descendantPIDs(rootPID int32, topology []processTopologyEntry) []int32 {
+	children := make(map[int32][]int32)
+	for _, entry := range topology {
+		children[entry.parentPID] = append(children[entry.parentPID], entry.pid)
+	}
+
+	seen := map[int32]bool{rootPID: true}
+	stack := append([]int32(nil), children[rootPID]...)
+	descendants := make([]int32, 0, len(stack))
+	for len(stack) > 0 {
+		pid := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if seen[pid] {
+			continue
+		}
+		seen[pid] = true
+		descendants = append(descendants, pid)
+		stack = append(stack, children[pid]...)
+	}
+	return descendants
 }

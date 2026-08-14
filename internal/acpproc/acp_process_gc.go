@@ -569,15 +569,9 @@ gcTier1:
 	// Re-query sessions so newly closed sessions (Tier 1) are excluded.
 	// ----------------------------------------------------------------
 	if m.gcConfig.MemoryRecycleThreshold > 0 {
-		sampler := m.rssSampler
+		sampler := m.memorySampler
 		if sampler == nil {
-			sampler = func(p *SharedACPProcess) (uint64, error) { return p.RSSBytes() }
-		}
-		breakdownSampler := m.rssBreakdownSampler
-		if breakdownSampler == nil {
-			breakdownSampler = func(p *SharedACPProcess) (uint64, uint64, int, error) {
-				return p.RSSBytesDetailed()
-			}
+			sampler = func(p *SharedACPProcess) (processMemorySample, error) { return p.memorySample() }
 		}
 
 		sessionsByWorkspace = m.sessionQuery()
@@ -658,41 +652,35 @@ gcTier1:
 				continue
 			}
 
-			// Sample memory: only recycle when over the configured threshold.
-			rss, err := sampler(p)
+			// One sample provides both the recycle metric and diagnostic breakdown.
+			sampleStart := time.Now()
+			sample, err := sampler(p)
+			sampleDuration := time.Since(sampleStart)
 			if err != nil {
 				if m.logger != nil {
 					m.logger.Debug("GC: skipping memory recycle (RSS sample failed)",
 						"workspace_uuid", workspaceUUID,
+						"memory_sample_duration", sampleDuration,
 						"error", err)
 				}
 				continue
 			}
-			// Sample the breakdown so both log lines can distinguish agent-side
-			// (parent) growth from MCP-child (descendant) growth (mitto-3gu). A
-			// breakdown-sampler error is non-fatal: log with zero fields so the
-			// recycle decision still uses the tree total from `sampler`.
-			parentRSS, descendantRSS, descendantCount, breakdownErr := breakdownSampler(p)
-			if breakdownErr != nil {
-				parentRSS, descendantRSS, descendantCount = 0, 0, 0
-			} else {
-				// Independent of the RSS predicate below (mitto-52mt): warn
-				// once the descendant count has climbed for
-				// descendantRatchetStreak consecutive cycles, regardless of
-				// whether tree RSS is over or under threshold.
-				m.checkDescendantCountRatchet(workspaceUUID, descendantCount)
-			}
+			// Independent of the memory predicate below (mitto-52mt): warn once
+			// the descendant count climbs for consecutive cycles.
+			m.checkDescendantCountRatchet(workspaceUUID, sample.descendantCount)
+			rss := sample.effectiveMemory
 			if rss <= m.gcConfig.MemoryRecycleThreshold {
 				if m.logger != nil {
 					m.logger.Debug("GC: memory recycle below threshold",
 						"workspace_uuid", workspaceUUID,
+						"memory_sample_duration", sampleDuration,
 						"rss_bytes", rss,
 						"effective_memory_bytes", rss,
 						"memory_metric", "max_tree_rss_physical_footprint",
 						"threshold_bytes", m.gcConfig.MemoryRecycleThreshold,
-						"parent_rss_bytes", parentRSS,
-						"descendant_rss_bytes", descendantRSS,
-						"descendant_count", descendantCount)
+						"parent_rss_bytes", sample.parentRSS,
+						"descendant_rss_bytes", sample.descendantRSS,
+						"descendant_count", sample.descendantCount)
 				}
 				continue
 			}
@@ -701,14 +689,15 @@ gcTier1:
 			if m.logger != nil {
 				m.logger.Info("GC: recycling memory-bloated idle shared ACP process",
 					"workspace_uuid", workspaceUUID,
+					"memory_sample_duration", sampleDuration,
 					"rss_bytes", rss,
 					"effective_memory_bytes", rss,
 					"memory_metric", "max_tree_rss_physical_footprint",
 					"threshold_bytes", m.gcConfig.MemoryRecycleThreshold,
 					"session_count", len(sessions),
-					"parent_rss_bytes", parentRSS,
-					"descendant_rss_bytes", descendantRSS,
-					"descendant_count", descendantCount)
+					"parent_rss_bytes", sample.parentRSS,
+					"descendant_rss_bytes", sample.descendantRSS,
+					"descendant_count", sample.descendantCount)
 			}
 			// Mark each session GC-suspended BEFORE closing so the WebSocket
 			// auto-resume handler skips resume and avoids a thrash loop — same

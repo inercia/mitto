@@ -2285,36 +2285,18 @@ func (p *SharedACPProcess) ActiveRPCs() int32 {
 	return p.activeRPCs.Load()
 }
 
-// RSSBytes returns the effective memory pressure in bytes for this process tree.
-// On macOS this is max(aggregate RSS, aggregate physical footprint), so compressed
-// memory remains visible to the GC; other platforms retain aggregate RSS.
-func (p *SharedACPProcess) RSSBytes() (uint64, error) {
+// memorySample returns effective memory and the RSS breakdown from one process
+// topology snapshot. Tier 4 uses this unified sample to avoid repeated walks.
+func (p *SharedACPProcess) memorySample() (processMemorySample, error) {
 	p.mu.RLock()
 	if p.cmd == nil || p.cmd.Process == nil {
 		p.mu.RUnlock()
-		return 0, fmt.Errorf("shared ACP process is not running")
+		return processMemorySample{}, fmt.Errorf("shared ACP process is not running")
 	}
 	pid := p.cmd.Process.Pid
 	p.mu.RUnlock()
 
-	return processTreeRSS(pid)
-}
-
-// RSSBytesDetailed returns the RSS breakdown of this process's tree: the RSS of
-// the ACP agent process itself, the RSS summed over all descendants (typically
-// MCP children), and the number of descendant processes counted. Used by the
-// GC's memory-recycle log lines so operators can distinguish agent-side growth
-// from MCP-child growth without a live ps probe (mitto-3gu).
-func (p *SharedACPProcess) RSSBytesDetailed() (parent uint64, descendants uint64, descendantCount int, err error) {
-	p.mu.RLock()
-	if p.cmd == nil || p.cmd.Process == nil {
-		p.mu.RUnlock()
-		return 0, 0, 0, fmt.Errorf("shared ACP process is not running")
-	}
-	pid := p.cmd.Process.Pid
-	p.mu.RUnlock()
-
-	return processTreeRSSDetailed(pid)
+	return sampleProcessTreeMemory(pid)
 }
 
 // Cancel cancels the current operation for a specific session.
