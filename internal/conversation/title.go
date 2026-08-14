@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -110,6 +111,38 @@ type TitleGenerationConfig struct {
 	OnTitleGenerated func(sessionID, title string)
 }
 
+type titleJobKey struct {
+	store     *session.Store
+	sessionID string
+}
+
+var titleJobs = struct {
+	sync.Mutex
+	active map[titleJobKey]struct{}
+}{active: make(map[titleJobKey]struct{})}
+
+// claimTitleJob coalesces title generation per persisted session while retaining
+// no state after the bounded async job finishes. Sessions without a stable store
+// key keep the legacy behavior because they cannot persist a generated title.
+func claimTitleJob(store *session.Store, sessionID string) (release func(), ok bool) {
+	if store == nil || sessionID == "" {
+		return func() {}, true
+	}
+	key := titleJobKey{store: store, sessionID: sessionID}
+	titleJobs.Lock()
+	if _, exists := titleJobs.active[key]; exists {
+		titleJobs.Unlock()
+		return nil, false
+	}
+	titleJobs.active[key] = struct{}{}
+	titleJobs.Unlock()
+	return func() {
+		titleJobs.Lock()
+		delete(titleJobs.active, key)
+		titleJobs.Unlock()
+	}, true
+}
+
 // SessionNeedsTitle returns true if the session needs an initial or upgraded auto-title.
 // Returns false if the session already has a final (LLM-generated or user-set) title.
 // A quick fallback title populated by GenerateAndSetTitle (marked via meta.NameIsFallback)
@@ -174,7 +207,16 @@ func GenerateAndSetTitle(cfg TitleGenerationConfig) {
 		}
 	}
 
+	releaseJob, claimed := claimTitleJob(cfg.Store, cfg.SessionID)
+	if !claimed {
+		if cfg.Logger != nil {
+			cfg.Logger.Debug("Coalescing duplicate title generation job", "session_id", cfg.SessionID)
+		}
+		return
+	}
+
 	go func() {
+		defer releaseJob()
 		if cfg.WorkspaceUUID == "" {
 			if cfg.Logger != nil {
 				cfg.Logger.Warn("Cannot generate title: session has no workspace",
@@ -221,6 +263,13 @@ func GenerateAndSetTitle(cfg TitleGenerationConfig) {
 					"session_id", cfg.SessionID,
 					"attempt", attempt+1,
 					"max_attempts", titleMaxRetries+1)
+			}
+
+			// mitto-juzb: proactive load shedding is transient. Retain this one
+			// coalesced job and use the bounded backoff so it can observe quiescence
+			// without requiring another prompt-completion edge.
+			if errors.Is(lastErr, acperrors.ErrProcessBusy) {
+				continue
 			}
 
 			// mitto-ammz.1: classify-and-abandon on wedge/saturation signals.
