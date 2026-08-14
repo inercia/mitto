@@ -24,7 +24,7 @@ keywords:
 
 | Component            | Responsibility                              | Thread-Safe             |
 | -------------------- | ------------------------------------------- | ----------------------- |
-| `Store`              | Low-level file I/O, CRUD operations         | Yes (mutex)             |
+| `Store`              | Low-level file I/O, CRUD operations         | Yes (global gate + keyed session locks) |
 | `Recorder`           | High-level recording API, session lifecycle | Yes (mutex)             |
 | `Player`             | Read-only playback, navigation              | No (single-user)        |
 | `Lock`               | Session locking, heartbeat, cleanup         | Yes (mutex + goroutine) |
@@ -113,6 +113,24 @@ type Metadata struct {
 - Pre-checks `meta.EventCount` to **skip the full parse** on the no-op append-path call.
 - `Store.PruneKeepLast` (REST "keep exactly N") passes `Slack: -1` to preserve exact-trim semantics.
 - Seq / `MaxSeq` semantics untouched. Regression: `TestStore_PruneIfNeeded_WriteAmplificationAtCap`.
+
+### Store two-level locking (`mitto-pkeh`)
+
+`Store.mu` is a lifecycle and all-store-operation gate, not the mutex for every
+session write. Ordinary session-scoped methods hold `Store.mu.RLock()` plus a
+ref-counted keyed session `RWMutex`, so unrelated sessions can perform disk I/O
+concurrently while same-session metadata/events/prune operations remain ordered.
+
+Global snapshot or destructive operations retain `Store.mu.Lock()`: `List`,
+child scans/counts, `Delete`/cascade, cleanup passes, observer mutation, and
+`Close`. This keeps their prior correctness semantics and makes `Close` wait for
+all in-flight session operations.
+
+**Lock order**: Store lifecycle gate → keyed-lock registry → session mutex;
+release in reverse order. A keyed entry's reference count includes waiters, and
+the entry is deleted only after its mutex is unlocked. Never call a public
+session-locking method from code already holding the exclusive Store gate; use
+the corresponding internal no-lock helper.
 
 ## Lock Management
 

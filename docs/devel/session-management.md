@@ -35,6 +35,28 @@ flowchart TB
 3. **Completion**: `Recorder.End()` marks session as completed
 4. **Playback**: `Player` loads events for review/replay
 
+### Store locking model
+
+`session.Store` uses two lock levels so disk I/O for one conversation does not
+block unrelated conversations:
+
+- `Store.mu` is the lifecycle/global-operation gate. Session-scoped operations
+  hold its shared side for their full duration, which makes `Close` wait for
+  in-flight work and prevents new work after closure.
+- A ref-counted keyed `RWMutex` serializes metadata, events, files, images,
+  user data, lock-file operations, and pruning for each session ID. Different
+  session IDs therefore proceed concurrently while same-session ordering is
+  preserved. Entries include waiters in their reference count and are removed
+  only after the keyed mutex is unlocked.
+- Operations requiring an all-store snapshot or destructive barrier use the
+  exclusive lifecycle gate: `List`, child traversal/counting, `Delete` and its
+  cascade, retention cleanup, file/image cleanup, observer mutation, and
+  `Close`.
+
+The lock order is lifecycle gate, keyed-lock registry, then session mutex; locks
+are released in reverse order. Internal helpers called by global operations must
+not reacquire either public lock layer.
+
 ### Archive / Auto-Unarchive Recovery Lifecycle
 
 Sessions can be archived manually (`ArchiveReasonManual`), for inactivity (`ArchiveReasonInactivity`), or automatically after repeated ACP process start failures (`ArchiveReasonACPFailures`). The last case is the only one considered transient: a loop conversation archived this way is automatically retried by `LoopRunner.checkAutoUnarchiveRecovery()` (see `internal/web/loop_runner.go`), polled once per minute alongside the other loop housekeeping checks.

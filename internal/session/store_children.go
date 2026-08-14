@@ -13,8 +13,8 @@ import (
 //
 // Deprecated: Use FindAllChildrenRecursive instead, which finds children of all origins.
 func (s *Store) FindAutoChildrenRecursive(sessionID string) ([]string, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	if s.closed {
 		return nil, ErrStoreClosed
@@ -58,8 +58,8 @@ func (s *Store) findAutoChildrenRecursive(sessionID string, visited map[string]b
 // This includes auto-children, MCP-children, and human-created children.
 // Used by the web layer to close ACP processes before cascade deletion.
 func (s *Store) FindAllChildrenRecursive(sessionID string) ([]string, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	if s.closed {
 		return nil, ErrStoreClosed
@@ -103,8 +103,8 @@ func (s *Store) findAllChildrenRecursive(sessionID string, visited map[string]bo
 // Returns direct children only (not grandchildren).
 // Returns empty slice if no children exist.
 func (s *Store) ListChildSessions(parentID string) ([]Metadata, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	if s.closed {
 		return nil, ErrStoreClosed
@@ -135,8 +135,8 @@ func (s *Store) ListChildSessions(parentID string) ([]Metadata, error) {
 // CountChildSessions returns the count of direct child sessions.
 // More efficient than ListChildSessions when only the count is needed.
 func (s *Store) CountChildSessions(parentID string) (int, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	if s.closed {
 		return 0, ErrStoreClosed
@@ -169,8 +169,8 @@ func (s *Store) CountChildSessions(parentID string) (int, error) {
 // Auto-children (ChildOriginAuto) and archived children are excluded from the count.
 // This is used for enforcing the max_child_conversations limit.
 func (s *Store) CountMCPChildSessions(parentID string) (int, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	if s.closed {
 		return 0, ErrStoreClosed
@@ -205,8 +205,8 @@ func (s *Store) CountMCPChildSessions(parentID string) (int, error) {
 // HasChildSessions returns true if the session has at least one child.
 // More efficient than CountChildSessions when only existence check is needed.
 func (s *Store) HasChildSessions(parentID string) (bool, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	if s.closed {
 		return false, ErrStoreClosed

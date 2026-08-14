@@ -67,12 +67,11 @@ func (s *Store) imagesDir(sessionID string) string {
 // Returns the image ID that can be used to retrieve it later.
 func (s *Store) SaveImage(sessionID string, data []byte, mimeType string, originalName string) (ImageInfo, error) {
 	log := logging.Session()
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.closed {
-		return ImageInfo{}, ErrStoreClosed
+	unlock, err := s.lockSessionWrite(sessionID)
+	if err != nil {
+		return ImageInfo{}, err
 	}
+	defer unlock()
 
 	// Validate MIME type
 	ext, ok := supportedImageTypes[mimeType]
@@ -138,12 +137,11 @@ func (s *Store) SaveImage(sessionID string, data []byte, mimeType string, origin
 
 // GetImagePath returns the file path for an image.
 func (s *Store) GetImagePath(sessionID, imageID string) (string, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	if s.closed {
-		return "", ErrStoreClosed
+	unlock, err := s.lockSessionRead(sessionID)
+	if err != nil {
+		return "", err
 	}
+	defer unlock()
 
 	imagePath := filepath.Join(s.imagesDir(sessionID), imageID)
 	if _, err := os.Stat(imagePath); os.IsNotExist(err) {
@@ -155,12 +153,11 @@ func (s *Store) GetImagePath(sessionID, imageID string) (string, error) {
 
 // ListImages returns all images for a session.
 func (s *Store) ListImages(sessionID string) ([]ImageInfo, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	if s.closed {
-		return nil, ErrStoreClosed
+	unlock, err := s.lockSessionRead(sessionID)
+	if err != nil {
+		return nil, err
 	}
+	defer unlock()
 
 	images, _, err := s.listImagesInternal(sessionID)
 	return images, err
@@ -217,12 +214,11 @@ func (s *Store) listImagesInternal(sessionID string) ([]ImageInfo, int64, error)
 // DeleteImage removes an image from the session.
 func (s *Store) DeleteImage(sessionID, imageID string) error {
 	log := logging.Session()
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.closed {
-		return ErrStoreClosed
+	unlock, err := s.lockSessionWrite(sessionID)
+	if err != nil {
+		return err
 	}
+	defer unlock()
 
 	imagePath := filepath.Join(s.imagesDir(sessionID), imageID)
 	if _, err := os.Stat(imagePath); os.IsNotExist(err) {

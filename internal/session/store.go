@@ -37,8 +37,15 @@ var _ SessionStore = (*Store)(nil)
 // Store provides session persistence operations.
 type Store struct {
 	baseDir string
-	mu      sync.RWMutex
-	closed  bool
+
+	// mu is the lifecycle/global-operation gate. Session-scoped operations hold
+	// its shared side plus a keyed session lock; all-store scans, deletion, and
+	// Close hold its exclusive side.
+	mu     sync.RWMutex
+	closed bool
+
+	sessionLocksMu sync.Mutex
+	sessionLocks   map[string]*storeSessionLock
 
 	// deleteObserver, when set, is invoked once per session removed by Delete
 	// (the target session itself plus any cascade-deleted descendants), after
@@ -137,12 +144,11 @@ func (s *Store) lockPath(sessionID string) string {
 // Create creates a new session with the given metadata.
 func (s *Store) Create(meta Metadata) error {
 	log := logging.Session()
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.closed {
-		return ErrStoreClosed
+	unlock, err := s.lockSessionWrite(meta.SessionID)
+	if err != nil {
+		return err
 	}
+	defer unlock()
 
 	sessionDir := s.sessionDir(meta.SessionID)
 	if err := os.MkdirAll(sessionDir, 0755); err != nil {
@@ -177,12 +183,11 @@ func (s *Store) Create(meta Metadata) error {
 // AppendEvent appends an event to the session's event log.
 // The event's Seq field is automatically assigned based on the current event count.
 func (s *Store) AppendEvent(sessionID string, event Event) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.closed {
-		return ErrStoreClosed
+	unlock, err := s.lockSessionWrite(sessionID)
+	if err != nil {
+		return err
 	}
+	defer unlock()
 
 	// Read metadata first to get current event count for sequence number
 	meta, err := s.readMetadata(sessionID)
@@ -249,12 +254,11 @@ func (s *Store) AppendEvent(sessionID string, event Event) error {
 // This is used for immediate persistence where seq is assigned at streaming time.
 func (s *Store) RecordEvent(sessionID string, event Event) error {
 	log := logging.Session()
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.closed {
-		return ErrStoreClosed
+	unlock, err := s.lockSessionWrite(sessionID)
+	if err != nil {
+		return err
 	}
+	defer unlock()
 
 	// Validate seq is pre-assigned
 	if event.Seq <= 0 {
@@ -330,12 +334,11 @@ func (s *Store) RecordEvent(sessionID string, event Event) error {
 
 // GetMetadata retrieves the metadata for a session.
 func (s *Store) GetMetadata(sessionID string) (Metadata, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	if s.closed {
-		return Metadata{}, ErrStoreClosed
+	unlock, err := s.lockSessionRead(sessionID)
+	if err != nil {
+		return Metadata{}, err
 	}
+	defer unlock()
 
 	return s.readMetadata(sessionID)
 }
@@ -365,12 +368,11 @@ func (s *Store) writeMetadata(meta Metadata) error {
 
 // UpdateMetadata updates the metadata for a session.
 func (s *Store) UpdateMetadata(sessionID string, updateFn func(*Metadata)) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.closed {
-		return ErrStoreClosed
+	unlock, err := s.lockSessionWrite(sessionID)
+	if err != nil {
+		return err
 	}
+	defer unlock()
 
 	meta, err := s.readMetadata(sessionID)
 	if err != nil {
@@ -391,12 +393,11 @@ func (s *Store) ReadEvents(sessionID string) ([]Event, error) {
 // If afterSeq is 0, all events are returned.
 // If afterSeq is 5, only events with seq > 5 are returned.
 func (s *Store) ReadEventsFrom(sessionID string, afterSeq int64, limit int) ([]Event, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	if s.closed {
-		return nil, ErrStoreClosed
+	unlock, err := s.lockSessionRead(sessionID)
+	if err != nil {
+		return nil, err
 	}
+	defer unlock()
 
 	f, err := os.Open(s.eventsPath(sessionID))
 	if err != nil {
@@ -461,12 +462,11 @@ func (s *Store) ReadEventsFrom(sessionID string, afterSeq int64, limit int) ([]E
 // If beforeSeq > 0, only events with seq < beforeSeq are considered.
 // Returns events in chronological order (oldest first).
 func (s *Store) ReadEventsLast(sessionID string, limit int, beforeSeq int64) ([]Event, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	if s.closed {
-		return nil, ErrStoreClosed
+	unlock, err := s.lockSessionRead(sessionID)
+	if err != nil {
+		return nil, err
 	}
+	defer unlock()
 
 	f, err := os.Open(s.eventsPath(sessionID))
 	if err != nil {
@@ -533,8 +533,8 @@ func (s *Store) ReadEventsLastReverse(sessionID string, limit int, beforeSeq int
 
 // List returns metadata for all sessions.
 func (s *Store) List() ([]Metadata, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	if s.closed {
 		return nil, ErrStoreClosed
@@ -642,22 +642,21 @@ func (s *Store) deleteLocked(sessionID string) ([]deletedSession, func(string, s
 
 // Exists checks if a session exists.
 func (s *Store) Exists(sessionID string) bool {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	if s.closed {
+	unlock, err := s.lockSessionRead(sessionID)
+	if err != nil {
 		return false
 	}
+	defer unlock()
 
-	_, err := os.Stat(s.metadataPath(sessionID))
+	_, err = os.Stat(s.metadataPath(sessionID))
 	return err == nil
 }
 
 // CountSessions returns the number of stored sessions.
 // M3: This is used by the health check endpoint.
 func (s *Store) CountSessions() (int, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	if s.closed {
 		return 0, ErrStoreClosed

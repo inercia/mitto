@@ -90,17 +90,16 @@ func (s *Store) PruneIfNeeded(sessionID string, config *PruneConfig) (*PruneResu
 		return nil, nil
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.closed {
-		return nil, ErrStoreClosed
+	unlock, err := s.lockSessionWrite(sessionID)
+	if err != nil {
+		return nil, err
 	}
+	defer unlock()
 
 	return s.pruneInternal(sessionID, config)
 }
 
-// pruneInternal performs the actual pruning (must be called with lock held).
+// pruneInternal performs the actual pruning (caller holds the session write lock).
 func (s *Store) pruneInternal(sessionID string, config *PruneConfig) (*PruneResult, error) {
 	log := logging.Session()
 

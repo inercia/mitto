@@ -56,12 +56,11 @@ func (s *Store) userDataPath(sessionID string) string {
 // GetUserData reads user data for a session.
 // Returns empty UserData if the file doesn't exist.
 func (s *Store) GetUserData(sessionID string) (*UserData, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	if s.closed {
-		return nil, ErrStoreClosed
+	unlock, err := s.lockSessionRead(sessionID)
+	if err != nil {
+		return nil, err
 	}
+	defer unlock()
 
 	path := s.userDataPath(sessionID)
 	var data UserData
@@ -78,12 +77,11 @@ func (s *Store) GetUserData(sessionID string) (*UserData, error) {
 // SetUserData writes user data for a session.
 // Creates the user data file if it doesn't exist.
 func (s *Store) SetUserData(sessionID string, data *UserData) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.closed {
-		return ErrStoreClosed
+	unlock, err := s.lockSessionWrite(sessionID)
+	if err != nil {
+		return err
 	}
+	defer unlock()
 
 	// Check if session exists
 	if !s.sessionExists(sessionID) {
