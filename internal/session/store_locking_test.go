@@ -69,12 +69,19 @@ func TestStoreSessionLocksShardBySession(t *testing.T) {
 
 	bDone := make(chan error, 1)
 	go func() {
-		bDone <- store.UpdateMetadata("session-b", func(meta *Metadata) { meta.Name = "updated-b" })
+		if err := store.UpdateMetadata("session-b", func(meta *Metadata) { meta.Name = "updated-b" }); err != nil {
+			bDone <- err
+			return
+		}
+		bDone <- store.AppendEvent("session-b", Event{
+			Type: EventTypeUserPrompt,
+			Data: UserPromptData{Message: "unrelated event"},
+		})
 	}()
 	select {
 	case err := <-bDone:
 		if err != nil {
-			t.Fatalf("unrelated session update: %v", err)
+			t.Fatalf("unrelated session metadata/event I/O: %v", err)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("session B blocked behind session A")
