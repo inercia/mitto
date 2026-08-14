@@ -3372,11 +3372,7 @@ func (sm *SessionManager) CloseIdleSession(sessionID string) {
 		sm.mu.Unlock()
 		return
 	}
-	delete(sm.sessions, sessionID)
 	sm.mu.Unlock()
-
-	// Clear cached plan state when session is closed
-	sm.ClearCachedPlanState(sessionID)
 
 	if bs != nil {
 		// Use a distinct reason for loop suspensions so the frontend can show
@@ -3393,6 +3389,17 @@ func (sm *SessionManager) CloseIdleSession(sessionID string) {
 		}
 		bs.Close(reason)
 	}
+
+	// Keep the session reachable until Close has persisted its terminal outcome.
+	// Parent waits can then classify an interrupted prompt after GC removes it.
+	sm.mu.Lock()
+	if sm.sessions[sessionID] == bs {
+		delete(sm.sessions, sessionID)
+	}
+	sm.mu.Unlock()
+
+	// Clear cached plan state when session is closed
+	sm.ClearCachedPlanState(sessionID)
 }
 
 // IsMCPChecked returns whether MCP availability has been checked for a workspace.

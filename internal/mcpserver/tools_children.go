@@ -82,6 +82,22 @@ func (s *Server) stillProcessingChildren(childIDs []string) []string {
 	return processing
 }
 
+func stoppedChildFailureReason(store *session.Store, childID string) string {
+	events, err := store.ReadEventsLast(childID, 1, 0)
+	if err != nil || len(events) == 0 || events[0].Type != session.EventTypeSessionEnd {
+		return ""
+	}
+	data, err := session.DecodeEventData(events[0])
+	if err != nil {
+		return ""
+	}
+	endData, ok := data.(session.SessionEndData)
+	if ok && endData.Reason == "gc_suspended" && endData.WasPrompting {
+		return "processRecycled"
+	}
+	return ""
+}
+
 func (s *Server) handleChildrenTasksWait(ctx context.Context, req *mcp.CallToolRequest, input ChildrenTasksWaitInput) (*mcp.CallToolResult, ChildrenTasksWaitOutput, error) {
 	// Validate self_id
 	if input.SelfID == "" {
@@ -376,6 +392,15 @@ func (s *Server) handleChildrenTasksWait(ctx context.Context, req *mcp.CallToolR
 				for _, childID := range pending {
 					bs := s.sessionManager.GetSession(childID)
 					if bs == nil {
+						if reason := stoppedChildFailureReason(store, childID); reason != "" {
+							s.logger.Info("Child prompt interrupted by session recycle — marking failed",
+								"parent_session", realSessionID,
+								"child_session", childID,
+								"reason", reason)
+							collector.markChildFailed(childID, reason)
+							delete(childIdleSince, childID)
+							continue
+						}
 						// Session is no longer running — auto-complete
 						s.logger.Info("Child session stopped while waiting — auto-completing",
 							"parent_session", realSessionID,

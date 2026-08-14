@@ -6231,6 +6231,125 @@ func TestChildrenTasksWait_AutoCompletesStoppedChild(t *testing.T) {
 	}
 }
 
+// TestChildrenTasksWait_GCStoppedPromptingChildrenFailAfterRemoval reproduces
+// mitto-v87h: one Tier 6 recycle removes multiple actively prompting children
+// before the parent wait can inspect their in-memory queued-send errors.
+func TestChildrenTasksWait_GCStoppedPromptingChildrenFailAfterRemoval(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	parentID := session.GenerateSessionID()
+	if err := store.Create(session.Metadata{
+		SessionID:  parentID,
+		Name:       "Parent Session",
+		ACPServer:  "test-server",
+		WorkingDir: "/test/dir",
+		AdvancedSettings: map[string]bool{
+			session.FlagCanSendPrompt: true,
+		},
+	}); err != nil {
+		t.Fatalf("Failed to create parent session: %v", err)
+	}
+
+	childIDs := []string{session.GenerateSessionID(), session.GenerateSessionID()}
+	sessions := make(map[string]BackgroundSession, len(childIDs))
+	for i, childID := range childIDs {
+		if err := store.Create(session.Metadata{
+			SessionID:       childID,
+			Name:            fmt.Sprintf("Prompting Child %d", i+1),
+			ACPServer:       "test-server",
+			WorkingDir:      "/test/dir",
+			ParentSessionID: parentID,
+		}); err != nil {
+			t.Fatalf("Failed to create child session: %v", err)
+		}
+		sessions[childID] = newMockBackgroundSessionForWait(true)
+	}
+
+	sm := &mockSessionManagerForChildrenMutable{sessions: sessions}
+	srv, err := NewServer(Config{Port: 0}, Dependencies{Store: store, SessionManager: sm})
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	if err := srv.RegisterSession(parentID, nil, logger); err != nil {
+		t.Fatalf("Failed to register parent: %v", err)
+	}
+	for _, childID := range childIDs {
+		if err := srv.RegisterSession(childID, nil, logger); err != nil {
+			t.Fatalf("Failed to register child: %v", err)
+		}
+	}
+
+	type waitResult struct {
+		output ChildrenTasksWaitOutput
+		err    error
+	}
+	resultCh := make(chan waitResult, 1)
+	go func() {
+		_, output, err := srv.handleChildrenTasksWait(context.Background(), nil, ChildrenTasksWaitInput{
+			SelfID:         parentID,
+			ChildrenList:   childIDs,
+			TimeoutSeconds: 60,
+		})
+		resultCh <- waitResult{output: output, err: err}
+	}()
+
+	// Simulate one Tier 6 recycle. The live BackgroundSessions disappear, while
+	// their durable terminal records show that both were interrupted mid-prompt.
+	time.Sleep(200 * time.Millisecond)
+	for _, childID := range childIDs {
+		sm.RemoveSession(childID)
+		if err := store.RecordEvent(childID, session.Event{
+			Seq:       1,
+			Type:      session.EventTypeSessionEnd,
+			Timestamp: time.Now(),
+			Data: session.SessionEndData{
+				Reason:       "gc_suspended",
+				WasPrompting: true,
+			},
+		}); err != nil {
+			t.Fatalf("Record terminal outcome for %s: %v", childID, err)
+		}
+	}
+
+	select {
+	case result := <-resultCh:
+		if result.err != nil {
+			t.Fatalf("handleChildrenTasksWait returned error: %v", result.err)
+		}
+		if !result.output.Success {
+			t.Fatalf("Expected success envelope, got error: %s", result.output.Error)
+		}
+		if result.output.TimedOut {
+			t.Fatal("Expected terminal failures to unblock the wait without timeout")
+		}
+		for _, childID := range childIDs {
+			report, ok := result.output.Reports[childID]
+			if !ok {
+				t.Errorf("Missing report for child %s", childID)
+				continue
+			}
+			if report.Status != "failed" {
+				t.Errorf("Child %s status = %q, want failed", childID, report.Status)
+			}
+			if report.Reason != "processRecycled" {
+				t.Errorf("Child %s reason = %q, want processRecycled", childID, report.Reason)
+			}
+			if report.Completed {
+				t.Errorf("Child %s Completed = true, want false", childID)
+			}
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("Timeout waiting for handleChildrenTasksWait to return")
+	}
+}
+
 // =============================================================================
 // Auto-Resume Stored Sessions Tests
 // =============================================================================

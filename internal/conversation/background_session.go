@@ -1736,6 +1736,7 @@ func (bs *BackgroundSession) Close(reason string) {
 	if !bs.closed.CompareAndSwap(0, 1) {
 		return // Already closed
 	}
+	wasPrompting := bs.IsPrompting()
 
 	// Notify all observers that the ACP connection is being stopped.
 	// This must happen BEFORE we cancel the context or close resources,
@@ -1772,7 +1773,7 @@ func (bs *BackgroundSession) Close(reason string) {
 			// Build session end data with context about the session state
 			endData := session.SessionEndData{
 				Reason:       reason,
-				WasPrompting: bs.IsPrompting(),
+				WasPrompting: wasPrompting,
 				ACPConnected: bs.acpClient != nil,
 			}
 
