@@ -299,6 +299,7 @@ import (
 
 	embeddedconfig "github.com/inercia/mitto/config"
 	"github.com/inercia/mitto/internal/appdir"
+	"github.com/inercia/mitto/internal/buildinfo"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/hooks"
 	"github.com/inercia/mitto/internal/instancefile"
@@ -1046,7 +1047,14 @@ func run() error {
 
 	// Log startup info including log file location
 	if logConfig.FileLog != nil {
-		slog.Info("Mitto starting", "log_file", logConfig.FileLog.Path)
+		identity := buildinfo.Read()
+		slog.Info("Mitto starting",
+			"log_file", logConfig.FileLog.Path,
+			"executable", identity.Executable,
+			"revision", identity.Revision,
+			"build_time", identity.BuildTime,
+			"modified", identity.Modified,
+		)
 	}
 
 	// Initialize WebView console logger for debugging
