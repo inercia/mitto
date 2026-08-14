@@ -3,6 +3,7 @@ package conversation
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/inercia/mitto/internal/appdir"
+	"github.com/inercia/mitto/internal/auxiliary"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/processors"
 	"github.com/inercia/mitto/internal/runner"
@@ -2425,13 +2427,49 @@ func TestApplyOnCloseProcessors_NoPinWithoutWorkspaceUUID(t *testing.T) {
 	}
 }
 
-// TestApplyOnCloseProcessors_SkipsWhenSharedProcessReaped verifies that when
-// the workspace's shared ACP process has already been reaped by GC (e.g.
-// Tier 2 idle-reap hours after the last session closed), the close pipeline
-// is a clean no-op: no PinWorkspace call, no goroutine spawn, no downstream
-// "no shared process for workspace ..." ERROR from getOrCreateAuxiliarySession
-// (mitto-6bn.1).
-func TestApplyOnCloseProcessors_SkipsWhenSharedProcessReaped(t *testing.T) {
+type reapedCloseProvider struct {
+	mu         sync.Mutex
+	healthy    bool
+	deliveries []string
+}
+
+func (p *reapedCloseProvider) PromptAuxiliary(context.Context, string, string, string) (string, error) {
+	return "", errors.New("not used")
+}
+
+func (p *reapedCloseProvider) PromptAuxiliaryAsync(_ context.Context, workspaceUUID, _, prompt string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if !p.healthy {
+		return fmt.Errorf("no shared process for workspace %s", workspaceUUID)
+	}
+	p.deliveries = append(p.deliveries, prompt)
+	return nil
+}
+
+func (p *reapedCloseProvider) CloseWorkspaceAuxiliary(string) error { return nil }
+
+func (p *reapedCloseProvider) setHealthy() {
+	p.mu.Lock()
+	p.healthy = true
+	p.mu.Unlock()
+}
+
+func (p *reapedCloseProvider) deliverySnapshot() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]string(nil), p.deliveries...)
+}
+
+// TestApplyOnCloseProcessors_ReapedProcessExecutesCommandsAndSpoolsPrompts
+// reproduces mitto-0934: a missing shared ACP process must not bypass either
+// command-mode close work or durable prompt-mode delivery for deleted sessions.
+func TestApplyOnCloseProcessors_ReapedProcessExecutesCommandsAndSpoolsPrompts(t *testing.T) {
+	mittoDir := t.TempDir()
+	t.Setenv(appdir.MittoDirEnv, mittoDir)
+	appdir.ResetCache()
+	t.Cleanup(appdir.ResetCache)
+
 	store, err := session.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewStore failed: %v", err)
@@ -2439,23 +2477,44 @@ func TestApplyOnCloseProcessors_SkipsWhenSharedProcessReaped(t *testing.T) {
 	t.Cleanup(func() { store.Close() })
 
 	const (
-		sid       = "sess-reaped"
 		wsUUID    = "ws-reaped-close"
 		acpServer = "test-server"
 	)
 	workingDir := t.TempDir()
 
-	if err := store.Create(session.Metadata{
-		SessionID:  sid,
-		ACPServer:  acpServer,
-		WorkingDir: workingDir,
-	}); err != nil {
-		t.Fatalf("Create failed: %v", err)
+	sessionIDs := []string{"sess-reaped-1", "sess-reaped-2"}
+	for _, sid := range sessionIDs {
+		if err := store.Create(session.Metadata{
+			SessionID: sid, ACPServer: acpServer, WorkingDir: workingDir,
+		}); err != nil {
+			t.Fatalf("Create(%s) failed: %v", sid, err)
+		}
 	}
 
+	processorDir := appdir.WorkspaceProcessorsDir(workingDir)
+	if err := os.MkdirAll(processorDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll processor dir: %v", err)
+	}
+	markerPath := filepath.Join(t.TempDir(), "command-runs")
+	scriptPath := filepath.Join(t.TempDir(), "record-close.sh")
+	script := fmt.Sprintf("#!/bin/sh\nprintf 'run\\n' >> %q\n", markerPath)
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("WriteFile command script: %v", err)
+	}
+	commandYAML := fmt.Sprintf("name: close-command\nwhen:\n  on: conversationClosed\n  match: all\ncommand: %q\noutput: discard\n", scriptPath)
+	if err := os.WriteFile(filepath.Join(processorDir, "command.yaml"), []byte(commandYAML), 0o644); err != nil {
+		t.Fatalf("WriteFile command processor: %v", err)
+	}
+	promptYAML := "name: close-prompt\nwhen:\n  on: conversationClosed\n  match: all\nprompt: 'preserve @mitto:session_id'\noutput: discard\n"
+	if err := os.WriteFile(filepath.Join(processorDir, "prompt.yaml"), []byte(promptYAML), 0o644); err != nil {
+		t.Fatalf("WriteFile prompt processor: %v", err)
+	}
+
+	provider := &reapedCloseProvider{}
 	sm := NewSessionManager("echo test", acpServer, true, nil)
 	sm.SetStore(store)
 	sm.SetProcessorManager(processors.NewManager("", nil))
+	sm.SetAuxiliaryManager(auxiliary.NewWorkspaceAuxiliaryManager(provider, nil))
 	sm.AddWorkspace(config.WorkspaceSettings{
 		UUID:       wsUUID,
 		WorkingDir: workingDir,
@@ -2466,11 +2525,52 @@ func TestApplyOnCloseProcessors_SkipsWhenSharedProcessReaped(t *testing.T) {
 	pm.setLiveProcess(wsUUID, false)
 	sm.SetACPProcessManager(pm)
 
-	sm.ApplyOnCloseProcessors(sid, "inactivity")
+	for _, sid := range sessionIDs {
+		sm.ApplyOnCloseProcessors(sid, "deleted")
+	}
 
-	// The pre-check must short-circuit BEFORE PinWorkspace is called.
-	if calls := pm.pinCallsSnapshot(); len(calls) != 0 {
-		t.Fatalf("PinWorkspace should not fire when shared process is reaped, got %+v", calls)
+	spool := &processors.FilePendingDispatchStore{}
+	commandRuns := 0
+	var entries []processors.PendingDispatchEntry
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if data, readErr := os.ReadFile(markerPath); readErr == nil {
+			commandRuns = strings.Count(string(data), "run\n")
+		} else if !errors.Is(readErr, os.ErrNotExist) {
+			t.Fatalf("ReadFile command marker: %v", readErr)
+		}
+		entries, err = spool.Load(wsUUID)
+		if err != nil {
+			t.Fatalf("Load pending spool: %v", err)
+		}
+		if commandRuns == len(sessionIDs) && len(entries) == len(sessionIDs) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if commandRuns != len(sessionIDs) || len(entries) != len(sessionIDs) {
+		t.Fatalf("reaped-process closes: command executions=%d, spooled prompt batches=%d; want %d each; close pipeline was bypassed",
+			commandRuns, len(entries), len(sessionIDs))
+	}
+
+	provider.setHealthy()
+	replay := processors.NewManager("", nil)
+	replay.SetPendingDispatchStore(spool)
+	replay.SetPromptFunc(provider.PromptAuxiliaryAsync)
+	replay.FlushPendingDispatches(context.Background(), wsUUID)
+
+	delivered := strings.Join(provider.deliverySnapshot(), "\n")
+	for _, sid := range sessionIDs {
+		if !strings.Contains(delivered, sid) {
+			t.Errorf("replayed prompts missing session %q: %q", sid, delivered)
+		}
+	}
+	entries, err = spool.Load(wsUUID)
+	if err != nil {
+		t.Fatalf("Load pending spool after replay: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("pending spool after healthy replay has %d entries, want 0", len(entries))
 	}
 }
 
