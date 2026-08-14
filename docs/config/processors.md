@@ -198,6 +198,7 @@ Mitto ships with builtin processors that are automatically deployed to `MITTO_DI
 | `use-ui-tools`                | Reminds the agent to use Mitto UI tools (options, textbox, form, notify) instead of text prompts          | userPrompt / first       | text   | Yes                                                                             |
 | `beads-track-tasks`           | Reminds the agent to track tasks and knowledge in beads (`bd`) instead of markdown TODO lists             | userPrompt / first       | text   | Yes (requires `bd` command on PATH)                                             |
 | `beads-ready-tasks`           | Reminds the agent to review available tasks (`bd ready`) when a beads database exists                     | userPrompt / first       | text   | Yes (requires `bd` command + `.beads` directory)                                |
+| `beads-prime`                 | Injects memory keys only, with instructions to search or recall relevant memory bodies on demand          | userPrompt / first       | command | Yes (requires `bd`, `sh`, `awk`, and a `.beads` directory)                     |
 | `memorize-preferences`        | Extracts user preferences from conversations and saves them to a configurable file (AGENTS.md by default) | agentResponded / all     | prompt | **Yes** (disable in Workspaces dialog or `.mittorc`)                            |
 | `auggie-manage-rules`         | Generates initial `.augment/rules/` when none exist                                                       | userPrompt / first       | prompt | **Yes** (Auggie only)                                                           |
 | `auggie-update-rules`         | Updates `.augment/rules/` from conversation insights (every 6 turns or 15k tokens)                        | agentResponded / all     | prompt | **Yes** (Auggie only)                                                           |
@@ -206,6 +207,7 @@ Mitto ships with builtin processors that are automatically deployed to `MITTO_DI
 | `identify-user-data`          | Detects user data values from conversations and sets them via MCP (every 2 turns or 6k tokens)            | agentResponded / all     | prompt | **Yes** (only activates when `user_data` schema is defined in `.mittorc`)       |
 | `identify-workspace-metadata` | Analyzes the project and fills in `metadata.description` and `metadata.url` in `.mittorc` when missing    | userPrompt / first       | prompt | **Yes** (only fires when `.mittorc` exists but lacks a description)             |
 | `extract-memories-on-close`   | On archive, extracts durable project knowledge from the conversation and saves it via `bd remember`       | conversationClosed / all | prompt | **Yes** (requires `bd` command + `.beads` directory; skipped for loop sessions) |
+| `curate-memories-on-close`    | Merges overlapping memories, safely forgets explicitly superseded entries, and files one review task      | conversationClosed / all | prompt | **Yes** (requires `bd` command + `.beads` directory; skipped for loop sessions) |
 
 ### Managing Builtin Processors
 
@@ -922,15 +924,14 @@ Output is ignored (processor runs for side effects only).
 ### `outputFormat: raw`
 
 When `outputFormat: raw` is set, stdout is used verbatim (trimmed whitespace removed) as the message,
-prepend, or append text — no JSON wrapper is needed. This is useful for piping plain-text or markdown
-output from commands that don't produce JSON, such as `bd prime --memories-only`.
+prepend, or append text — no JSON wrapper is needed. This is useful for plain-text or markdown output.
 
-**Example** — inject `bd prime` memories at the start of a conversation:
+**Example** — inject concise repository status at the start of a conversation:
 
 ```yaml
-name: beads-prime
-command: bd
-args: [prime, --memories-only]
+name: git-status
+command: git
+args: [status, --short]
 input: none
 output: prepend
 outputFormat: raw

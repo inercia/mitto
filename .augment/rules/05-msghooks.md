@@ -117,7 +117,7 @@ processors:
 | `check-mcp-tools`     | text    | Suggest MCP install if missing     |
 | `delegate-to-coder`   | text    | Delegate work to coder session     |
 | `beads-track-tasks`   | text    | Remind agent to track tasks in `bd` |
-| `beads-prime`         | command | Inject `bd prime --memories-only`  |
+| `beads-prime`         | command | Inject memory-key index for on-demand recall |
 | `auggie-manage-rules` | prompt  | Generate/update `.augment/rules/`  |
 | `claude-manage-memory`| prompt  | Generate/update Claude memory      |
 | `memorize-preferences`| prompt  | Save user prefs to `AGENTS.md`     |

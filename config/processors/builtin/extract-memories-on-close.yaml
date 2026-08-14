@@ -78,9 +78,20 @@ prompt: |
 
   ## 3. Deduplicate against existing memories
 
-  Before adding anything, run `bd memory list` (or equivalent) to see what has already
-  been recorded. Skip any memory that is already captured, and prefer refining an
-  existing entry over adding a near-duplicate.
+  Before adding anything, run `bd memories --json` to see what has already been
+  recorded (a JSON object mapping key → full body). Skip any memory that is already
+  fully captured.
+
+  If a finding REFINES or CORRECTS an existing memory (same topic, new or corrected
+  facts) rather than being wholly new, do NOT add a near-duplicate entry. Instead,
+  update the existing entry in place using its existing key:
+
+  ```
+  bd remember --key <existing-key> "<merged-content>"
+  ```
+
+  `<merged-content>` must be the FULL merged body — the existing facts plus the new
+  refinement — not just the delta, since `bd remember --key` overwrites the entry.
 
   ## 4. Persist via `bd remember`
 
