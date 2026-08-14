@@ -371,7 +371,18 @@ func (bs *BackgroundSession) cbInitBaselineModelIfEmpty(defaultModel string) {
 // cbApplyConfigConstraintsAsync kicks off the async constraint-application
 // goroutine for a category.
 func (bs *BackgroundSession) cbApplyConfigConstraintsAsync(category string) {
-	go bs.applyConfigConstraints(category)
+	bs.startupConstraintPending.Add(1)
+	bs.startupConstraintWG.Add(1)
+	go func() {
+		defer bs.startupConstraintWG.Done()
+		err := bs.applyConfigConstraints(category)
+		// A terminal startup failure is sticky for this BackgroundSession: a later
+		// successful category must not release queued turns past an unmet constraint.
+		if err != nil {
+			bs.startupConstraintFailed.Store(true)
+		}
+		bs.startupConstraintPending.Add(-1)
+	}()
 }
 
 // initialModelApplyBudget bounds the SetSessionModel RPC issued to apply the

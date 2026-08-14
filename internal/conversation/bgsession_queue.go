@@ -18,6 +18,9 @@ import (
 // response, then processes the next queued message. This is used for startup initialization
 // and periodic queue checking. Returns true if a message was sent.
 func (bs *BackgroundSession) TryProcessQueuedMessage() bool {
+	if !bs.startupConfigConstraintsReady() {
+		return false
+	}
 	return bs.queueDisp.tryProcess(bs)
 }
 
@@ -44,6 +47,9 @@ func (bs *BackgroundSession) hasImmediateQueuedMessages() bool {
 // processNextQueuedMessage checks the queue and sends the next message if queue processing is enabled.
 // Returns true if a queued message was popped and dispatched.
 func (bs *BackgroundSession) processNextQueuedMessage() bool {
+	if !bs.startupConfigConstraintsReady() {
+		return false
+	}
 	return bs.queueDisp.processNext(bs)
 }
 

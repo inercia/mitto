@@ -19,8 +19,19 @@ import (
 // Thin delegators
 // =============================================================================
 
-func (bs *BackgroundSession) applyConfigConstraints(category string) {
-	bs.configMgr.applyConfigConstraints(bs, category)
+func (bs *BackgroundSession) applyConfigConstraints(category string) error {
+	return bs.configMgr.applyConfigConstraints(bs, category)
+}
+
+// waitForStartupConfigConstraints blocks until the constraint work launched by
+// the synchronous ACP handshake callback has completed. Later model callbacks
+// are not part of the resume-time queue barrier.
+func (bs *BackgroundSession) waitForStartupConfigConstraints() {
+	bs.startupConstraintWG.Wait()
+}
+
+func (bs *BackgroundSession) startupConfigConstraintsReady() bool {
+	return bs.startupConstraintPending.Load() == 0 && !bs.startupConstraintFailed.Load()
 }
 
 // ConfigOptions returns a copy of all session config options.

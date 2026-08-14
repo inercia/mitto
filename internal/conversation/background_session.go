@@ -101,6 +101,13 @@ type BackgroundSession struct {
 	lastResponseComplete     time.Time // When the agent last completed a response (for queue delay)
 	queuedDeliveryInProgress bool      // true while a popped message is sleeping through delay
 
+	// Startup constraints are applied asynchronously from the ACP model callback.
+	// Queue delivery waits for that initial work so a resumed queued turn cannot
+	// overtake the configured model switch (mitto-qori).
+	startupConstraintWG      sync.WaitGroup
+	startupConstraintPending atomic.Int32
+	startupConstraintFailed  atomic.Bool
+
 	// activePromptName / activePromptArgs record the workspace-prompt name and
 	// argument map of the dispatch that is currently in flight (isPrompting ==
 	// true). Both fields are guarded by promptMu and set alongside isPrompting

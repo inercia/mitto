@@ -39,6 +39,7 @@ type fakeConfigDeps struct {
 	// injected errors
 	setModeErr          error
 	setModelErr         error
+	setModelErrors      []error
 	recordSessionChgErr error
 
 	// recorders
@@ -103,6 +104,11 @@ func (f *fakeConfigDeps) cmSetSessionModel(_ context.Context, modelID string) er
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.modelRPCCalls = append(f.modelRPCCalls, modelID)
+	if len(f.setModelErrors) > 0 {
+		err := f.setModelErrors[0]
+		f.setModelErrors = f.setModelErrors[1:]
+		return err
+	}
 	return f.setModelErr
 }
 
@@ -583,6 +589,27 @@ func TestConfigManager_ApplyConfigConstraints_MatchesOption(t *testing.T) {
 
 	if len(d.modelRPCCalls) != 1 || d.modelRPCCalls[0] != "m-2" {
 		t.Fatalf("expected model RPC for 'm-2', got %v", d.modelRPCCalls)
+	}
+}
+
+func TestConfigManager_ApplyConfigConstraints_RetriesRetryableModelFailure(t *testing.T) {
+	origDelay := modelSwitchWarmRetryDelay
+	modelSwitchWarmRetryDelay = 0
+	defer func() { modelSwitchWarmRetryDelay = origDelay }()
+
+	c := configManager{}
+	d := newFakeConfigDeps()
+	d.constraint = map[string]*config.ACPServerConstraint{
+		ConfigOptionCategoryModel: {Pattern: "Model 2", MatchMode: "exact"},
+	}
+	d.currentModelID = "m-1"
+	d.setModelErrors = []error{context.DeadlineExceeded, nil}
+
+	if err := c.applyConfigConstraints(d, ConfigOptionCategoryModel); err != nil {
+		t.Fatalf("expected warm retry to recover, got %v", err)
+	}
+	if len(d.modelRPCCalls) != 2 {
+		t.Fatalf("expected two model RPC attempts, got %v", d.modelRPCCalls)
 	}
 }
 

@@ -316,15 +316,15 @@ func (c configManager) applyConfigOptionWithOpts(d configDeps, ctx context.Conte
 	return nil
 }
 
-func (c configManager) applyConfigConstraints(d configDeps, category string) {
+func (c configManager) applyConfigConstraints(d configDeps, category string) error {
 	constraint := d.cmGetACPServerConstraint(category)
 	if constraint == nil || constraint.Pattern == "" {
-		return
+		return nil
 	}
 
 	opt, ok := d.cmFindByCategory(category)
 	if !ok || len(opt.Options) == 0 {
-		return
+		return nil
 	}
 
 	matchedValue := MatchConstraintOption(constraint, opt.Options)
@@ -334,7 +334,7 @@ func (c configManager) applyConfigConstraints(d configDeps, category string) {
 				"category", category, "match_mode", constraint.MatchMode,
 				"pattern", constraint.Pattern, "available_count", len(opt.Options))
 		}
-		return
+		return nil
 	}
 
 	alreadySet := opt.CurrentValue == matchedValue
@@ -345,7 +345,7 @@ func (c configManager) applyConfigConstraints(d configDeps, category string) {
 		if l := d.cmLogger(); l != nil {
 			l.Debug("ACP server constraint: already set to matching value", "category", category, "value", matchedValue)
 		}
-		return
+		return nil
 	}
 
 	if l := d.cmLogger(); l != nil {
@@ -363,7 +363,7 @@ func (c configManager) applyConfigConstraints(d configDeps, category string) {
 			select {
 			case <-time.After(jitter):
 			case <-d.cmSessionCtx().Done():
-				return
+				return d.cmSessionCtx().Err()
 			}
 		}
 	}
@@ -371,12 +371,29 @@ func (c configManager) applyConfigConstraints(d configDeps, category string) {
 	ctx, cancel := context.WithTimeout(context.Background(), constraintModelSwitchCallerBudget)
 	defer cancel()
 
-	if err := c.setConfigOptionWithOpts(d, ctx, category, matchedValue, false); err != nil {
+	err := c.setConfigOptionWithOpts(d, ctx, category, matchedValue, false)
+	if category == ConfigOptionCategoryModel && err != nil && isRetryableModelPreferenceError(err) {
+		timer := time.NewTimer(modelSwitchWarmRetryDelay)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			return err
+		}
 		if l := d.cmLogger(); l != nil {
-			l.Warn("ACP server constraint: failed to auto-select option (best-effort, falling back to current model)",
+			l.Info("Retrying startup model constraint after cold-agent cooldown",
+				"session_id", d.cmSessionID(), "model", matchedValue)
+		}
+		err = c.setConfigOptionWithOpts(d, ctx, category, matchedValue, false)
+	}
+	if err != nil {
+		if l := d.cmLogger(); l != nil {
+			l.Warn("ACP server constraint: failed to auto-select option; queued prompts remain pending",
 				"category", category, "value", matchedValue, "error", err)
 		}
+		return err
 	}
+	return nil
 }
 
 func (c configManager) flushPendingConfig(d configDeps) {
