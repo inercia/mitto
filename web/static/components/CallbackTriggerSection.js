@@ -12,6 +12,7 @@ import { getSdkClient } from "../utils/sdkClient.js";
 export function CallbackTriggerSection({ sessionId, loopEnabled }) {
   const [callbackConfig, setCallbackConfig] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [loadedSessionId, setLoadedSessionId] = useState(null);
   const [busyAction, setBusyAction] = useState("");
   const [copied, setCopied] = useState(false);
   const [confirmAction, setConfirmAction] = useState(null);
@@ -46,6 +47,7 @@ export function CallbackTriggerSection({ sessionId, loopEnabled }) {
 
     if (!sessionId) {
       setLoading(false);
+      setLoadedSessionId(null);
       return () => {
         cancelled = true;
       };
@@ -61,7 +63,10 @@ export function CallbackTriggerSection({ sessionId, loopEnabled }) {
         if (!cancelled) setCallbackConfig(null);
       })
       .finally(() => {
-        if (!cancelled) setLoading(false);
+        if (!cancelled) {
+          setLoadedSessionId(sessionId);
+          setLoading(false);
+        }
       });
 
     return () => {
@@ -86,7 +91,14 @@ export function CallbackTriggerSection({ sessionId, loopEnabled }) {
 
   const createCallback = async (action) => {
     const targetSessionId = sessionId;
-    if (!targetSessionId || !loopEnabled || busyAction) return;
+    if (
+      !targetSessionId ||
+      !loopEnabled ||
+      loading ||
+      loadedSessionId !== targetSessionId ||
+      busyAction
+    )
+      return;
     setBusyAction(action);
     try {
       const config =
@@ -103,7 +115,13 @@ export function CallbackTriggerSection({ sessionId, loopEnabled }) {
 
   const revokeCallback = async () => {
     const targetSessionId = sessionId;
-    if (!targetSessionId || busyAction) return;
+    if (
+      !targetSessionId ||
+      loading ||
+      loadedSessionId !== targetSessionId ||
+      busyAction
+    )
+      return;
     setBusyAction("revoke");
     try {
       await getSdkClient().sessions.revokeCallback(targetSessionId);
@@ -125,18 +143,22 @@ export function CallbackTriggerSection({ sessionId, loopEnabled }) {
     if (action === "revoke") revokeCallback();
   };
 
+  const loadingCurrentSession =
+    !!sessionId && (loading || loadedSessionId !== sessionId);
   const configured = !!callbackConfig?.callback_url;
-  const status = !configured
-    ? { label: "Not configured", className: "badge badge-sm badge-ghost" }
-    : loopEnabled
-      ? {
-          label: "Active",
-          className: "badge badge-sm badge-success badge-soft",
-        }
-      : {
-          label: "Inactive",
-          className: "badge badge-sm badge-warning badge-soft",
-        };
+  const status = loadingCurrentSession
+    ? { label: "Loading", className: "badge badge-sm badge-ghost" }
+    : !configured
+      ? { label: "Not configured", className: "badge badge-sm badge-ghost" }
+      : loopEnabled
+        ? {
+            label: "Active",
+            className: "badge badge-sm badge-success badge-soft",
+          }
+        : {
+            label: "Inactive",
+            className: "badge badge-sm badge-warning badge-soft",
+          };
   const busy = !!busyAction;
 
   return html`
@@ -156,7 +178,7 @@ export function CallbackTriggerSection({ sessionId, loopEnabled }) {
         >
       </div>
 
-      ${loading
+      ${loadingCurrentSession
         ? html`<div
             class="flex items-center gap-2 pt-4 text-sm text-mitto-text-muted"
           >
