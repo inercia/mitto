@@ -2888,7 +2888,7 @@ func TestChildrenTasksWait_BothReportDuringWait(t *testing.T) {
 
 func TestChildrenTasksWait_ReportsPreservedSameTask(t *testing.T) {
 	// Same task_id across waits → reports are preserved.
-	srv, _, parentID, childIDs := setupParentChildSessions(t, 1)
+	srv, store, parentID, childIDs := setupParentChildSessions(t, 1)
 	ctx := context.Background()
 
 	// First wait with task_id: times out (child hasn't reported yet)
@@ -2920,6 +2920,7 @@ func TestChildrenTasksWait_ReportsPreservedSameTask(t *testing.T) {
 	_, waitOutput2, err := srv.handleChildrenTasksWait(ctx, nil, ChildrenTasksWaitInput{
 		SelfID:         parentID,
 		ChildrenList:   childIDs,
+		Prompt:         "Report again only if still pending.",
 		TaskID:         "investigate",
 		TimeoutSeconds: 1,
 	})
@@ -2933,6 +2934,116 @@ func TestChildrenTasksWait_ReportsPreservedSameTask(t *testing.T) {
 	report := waitOutput2.Reports[childIDs[0]]
 	if !report.Completed {
 		t.Error("Expected child report to be completed (preserved across same-task waits)")
+	}
+	messages, err := store.Queue(childIDs[0]).List()
+	if err != nil {
+		t.Fatalf("list child queue: %v", err)
+	}
+	if len(messages) != 0 {
+		t.Fatalf("already-reported child received another prompt: %d queued messages", len(messages))
+	}
+}
+
+func TestChildrenTasksWait_SameTaskPromptRecoversAutoCompletedChild(t *testing.T) {
+	// mitto-nw8l: a new prompt must reopen a same-task wait whose prior result was synthetic.
+	srv, store, parentID, childIDs := setupParentChildSessions(t, 1)
+	var logOutput bytes.Buffer
+	srv.logger = slog.New(slog.NewTextHandler(&logOutput, nil))
+	ctx := context.Background()
+	taskID := "retry-after-idle"
+
+	collector := srv.getOrCreateCollector(parentID)
+	waitCh, alreadyDone := collector.startWait(taskID, childIDs)
+	if alreadyDone {
+		t.Fatal("first wait unexpectedly started completed")
+	}
+	collector.markChildAutoCompleted(childIDs[0], "agent_idle")
+	select {
+	case <-waitCh:
+	case <-time.After(time.Second):
+		t.Fatal("synthetic report did not complete first wait")
+	}
+	collector.clearWait()
+
+	_, waitOnlyOutput, err := srv.handleChildrenTasksWait(ctx, nil, ChildrenTasksWaitInput{
+		SelfID:         parentID,
+		ChildrenList:   childIDs,
+		TaskID:         taskID,
+		TimeoutSeconds: 1,
+	})
+	if err != nil {
+		t.Fatalf("same-task wait-only retry failed: %v", err)
+	}
+	waitOnlyReport := waitOnlyOutput.Reports[childIDs[0]]
+	if waitOnlyOutput.TimedOut || waitOnlyReport.Reason != "agent_idle" {
+		t.Fatalf("wait-only retry did not preserve synthetic result: %+v", waitOnlyReport)
+	}
+
+	type waitResult struct {
+		output ChildrenTasksWaitOutput
+		err    error
+	}
+	resultCh := make(chan waitResult, 1)
+	go func() {
+		_, output, err := srv.handleChildrenTasksWait(ctx, nil, ChildrenTasksWaitInput{
+			SelfID:         parentID,
+			ChildrenList:   childIDs,
+			Prompt:         "Please report the completed result.",
+			TaskID:         taskID,
+			TimeoutSeconds: 5,
+		})
+		resultCh <- waitResult{output: output, err: err}
+	}()
+
+	queue := store.Queue(childIDs[0])
+	deadline := time.Now().Add(time.Second)
+	for {
+		messages, err := queue.List()
+		if err != nil {
+			t.Fatalf("list child queue: %v", err)
+		}
+		if len(messages) == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("recovery prompt was not enqueued")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	select {
+	case result := <-resultCh:
+		t.Fatalf("same-task recovery wait returned before the real report: %+v", result.output.Reports[childIDs[0]])
+	case <-time.After(100 * time.Millisecond):
+	}
+	if !collector.isWaiting() {
+		t.Fatal("collector cleared the recovery wait before the real report")
+	}
+
+	_, _, err = srv.handleChildrenTasksReport(ctx, nil, ChildrenTasksReportInput{
+		SelfID:  childIDs[0],
+		Status:  "completed",
+		Summary: "Recovered result",
+		TaskID:  taskID,
+	})
+	if err != nil {
+		t.Fatalf("real report failed: %v", err)
+	}
+
+	select {
+	case result := <-resultCh:
+		if result.err != nil {
+			t.Fatalf("recovery wait failed: %v", result.err)
+		}
+		report := result.output.Reports[childIDs[0]]
+		if !report.Completed || report.Report == nil || report.Report.Summary != "Recovered result" {
+			t.Fatalf("recovery wait did not return the real report: %+v", report)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("recovery wait did not unblock after the real report")
+	}
+	if strings.Contains(logOutput.String(), "no active wait") {
+		t.Fatalf("recovery report was logged as late: %s", logOutput.String())
 	}
 }
 

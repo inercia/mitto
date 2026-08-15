@@ -668,9 +668,11 @@ type childReportCollector struct {
 // addReport stores a child's report. Any child can report at any time.
 // If the child provides a taskID, it is stored with the report for matching.
 // If the parent is currently waiting and this report completes the wait set, signals the parent.
-func (c *childReportCollector) addReport(childID string, taskID string, report json.RawMessage) {
+// Returns whether the parent was actively waiting for this child when the report arrived.
+func (c *childReportCollector) addReport(childID string, taskID string, report json.RawMessage) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	wasWaiting := c.waitCh != nil && c.waitingFor[childID]
 
 	r := c.reports[childID]
 	if r == nil {
@@ -683,6 +685,20 @@ func (c *childReportCollector) addReport(childID string, taskID string, report j
 	r.TaskID = taskID
 
 	c.checkAndSignalWait()
+	return wasWaiting
+}
+
+// resetAutoCompletedForRetry returns synthetic results to pending before an
+// explicit retry prompt is sent. Genuine reports and terminal failures remain.
+func (c *childReportCollector) resetAutoCompletedForRetry(childIDs []string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	for _, childID := range childIDs {
+		if r := c.reports[childID]; r != nil && r.AutoCompleted {
+			c.reports[childID] = nil
+		}
+	}
 }
 
 // markChildAutoCompleted marks a child as auto-completed when its agent

@@ -248,16 +248,22 @@ func (s *Server) handleChildrenTasksWait(ctx context.Context, req *mcp.CallToolR
 		}, nil
 	}
 
-	// Set up wait signaling. startWait only clears reports when the task_id
-	// changes, preserving reports from the same task across retries.
-	waitCh, _ := collector.startWait(input.TaskID, runningChildren)
-	defer collector.clearWait()
-
-	// Build the prompt to send to all running children.
+	// Build the prompt to send to pending children.
 	// If no prompt is provided, skip sending entirely (wait-only mode).
 	// This allows callers to retry waits without re-enqueuing duplicate messages.
 	promptText := input.Prompt
 	sendPrompt := promptText != ""
+	if sendPrompt {
+		// A new prompt explicitly retries children whose prior result was only
+		// synthetic. Leave genuine reports and terminal failures satisfied.
+		collector.resetAutoCompletedForRetry(runningChildren)
+	}
+
+	// Set up wait signaling. startWait only clears reports when the task_id
+	// changes, preserving reports from the same task across retries.
+	waitCh, _ := collector.startWait(input.TaskID, runningChildren)
+	defer collector.clearWait()
+	childrenToPrompt, _ := collector.getPendingAndReported()
 
 	if sendPrompt {
 		taskIDInstruction := ""
@@ -267,9 +273,9 @@ func (s *Server) handleChildrenTasksWait(ctx context.Context, req *mcp.CallToolR
 		promptText += fmt.Sprintf(childrenReportSuffix, taskIDInstruction)
 	}
 
-	// Send prompt to running children (unless wait-only mode)
+	// Send only to children that still need a report (unless wait-only mode).
 	if sendPrompt {
-		for _, childID := range runningChildren {
+		for _, childID := range childrenToPrompt {
 			queue := store.Queue(childID)
 
 			// Dedup: skip if there's already a pending message from this parent in the child's queue.
@@ -669,8 +675,9 @@ func (s *Server) handleChildrenTasksReport(ctx context.Context, req *mcp.CallToo
 	// This ensures reports are stored even if the parent hasn't called _wait yet.
 	collector := s.getOrCreateCollector(parentSessionID)
 
-	// Store the report (may also signal a waiting parent)
-	collector.addReport(realSessionID, input.TaskID, json.RawMessage(reportJSON))
+	// Store the report (may also signal a waiting parent). Capture the wait state
+	// atomically because signaling can let the parent clear it before we log.
+	parentWasWaiting := collector.addReport(realSessionID, input.TaskID, json.RawMessage(reportJSON))
 
 	// Detect orphaned reports: parent unregistered or not actively waiting
 	parentReg := s.getSession(parentSessionID)
@@ -678,7 +685,7 @@ func (s *Server) handleChildrenTasksReport(ctx context.Context, req *mcp.CallToo
 		s.logger.Warn("Child reported to unregistered parent session — report is orphaned",
 			"child_session", realSessionID,
 			"parent_session", parentSessionID)
-	} else if !collector.isWaiting() {
+	} else if !parentWasWaiting {
 		s.logger.Info("Child reported to parent (no active wait — report stored for next wait cycle)",
 			"child_session", realSessionID,
 			"parent_session", parentSessionID)
