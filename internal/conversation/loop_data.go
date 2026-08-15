@@ -12,9 +12,14 @@ import (
 func BuildLoopUpdatedData(sessionID string, loop *session.LoopPrompt) map[string]interface{} {
 	data := map[string]interface{}{
 		"session_id": sessionID,
+		// loop_config is the authoritative, complete editor state. Keep the
+		// top-level fields below as lightweight/backward-compatible glance data.
+		// An explicit null tells clients to clear local editor state on deletion.
+		"loop_config": nil,
 	}
 
 	if loop != nil {
+		data["loop_config"] = loop
 		// loop_configured: true means the session is in loop mode (shows loop UI)
 		data["loop_configured"] = true
 		// loop_enabled: true means loop runs are active (locked state)

@@ -468,6 +468,67 @@ export function ChatInput({
   // "iterationSafeguard"); empty when running. Drives the restore-dialog wording.
   const [loopStoppedReason, setLoopStoppedReason] = useState("");
   const [loopArguments, setLoopArguments] = useState({});
+  const loopConfigVersionRef = useRef(0);
+
+  const resetLoopConfigState = useCallback(() => {
+    setIsLoopLocked(false);
+    setLoopPrompt("");
+    setLoopPromptName("");
+    setLoopFrequency({ value: 1, unit: "hours" });
+    setLoopNextScheduledAt(null);
+    setLoopFreshContext(false);
+    setLoopMaxIterations(0);
+    setLoopIterationCount(0);
+    setLoopTrigger("schedule");
+    setLoopTriggers(["schedule"]);
+    setLoopDelaySeconds(5);
+    setLoopMaxDurationSeconds(0);
+    setLoopCondition("");
+    setLoopConditionPreset("");
+    setLoopStoppedReason("");
+    setLoopArguments({});
+    setLoopExpanded(false);
+  }, []);
+
+  const applyLoopConfigState = useCallback(
+    (config) => {
+      setLoopFrequency(config.frequency || { value: 1, unit: "hours" });
+      setLoopNextScheduledAt(
+        config.enabled && config.next_scheduled_at
+          ? config.next_scheduled_at
+          : null,
+      );
+      if (config.prompt_name) {
+        setLoopPromptName(config.prompt_name);
+      } else {
+        const lastSent = lastSentPromptNameRef.current;
+        const eligible =
+          lastSent && (loopPrompts || []).some((p) => p.name === lastSent);
+        setLoopPromptName(eligible ? lastSent : "");
+      }
+      setLoopFreshContext(config.fresh_context === true);
+      setLoopMaxIterations(config.max_iterations ?? 0);
+      setLoopIterationCount(config.iteration_count ?? 0);
+      setLoopTrigger(config.trigger || "schedule");
+      setLoopTriggers(
+        Array.isArray(config.triggers) && config.triggers.length > 0
+          ? config.triggers
+          : [config.trigger || "schedule"],
+      );
+      setLoopDelaySeconds(config.delay_seconds ?? 5);
+      setLoopMaxDurationSeconds(config.max_duration_seconds ?? 0);
+      setLoopCondition(config.condition || "");
+      setLoopConditionPreset(config.condition_preset || "");
+      setLoopStoppedReason(config.stopped_reason || "");
+      setLoopArguments(config.arguments || {});
+      setIsLoopLocked(config.enabled === true);
+      const isPendingPlaceholder = config.prompt === "(pending)";
+      setLoopPrompt(
+        config.prompt && !isPendingPlaceholder ? config.prompt : "",
+      );
+    },
+    [loopPrompts],
+  );
 
   // Track window width for responsive placeholder
   const [isSmallWindow, setIsSmallWindow] = useState(window.innerWidth < 640);
@@ -493,27 +554,10 @@ export function ChatInput({
     setSlashSelectedIndex(0);
     setComboSelectedId(""); // Reset combo box selection
     // Reset loop lock state when session changes
-    setIsLoopLocked(false);
+    loopConfigVersionRef.current += 1;
+    resetLoopConfigState();
     setIsLoopSaving(false);
-    setLoopPrompt("");
-    setLoopPromptName("");
-    setLoopFrequency({ value: 1, unit: "hours" });
-    setLoopNextScheduledAt(null);
-    setLoopMaxIterations(0);
-    setLoopIterationCount(0);
-    setLoopTrigger("schedule");
-    setLoopTriggers(["schedule"]);
-    setLoopDelaySeconds(5);
-    setLoopMaxDurationSeconds(0);
-    setLoopCondition("");
-    setLoopConditionPreset("");
-    setLoopStoppedReason("");
-    setLoopArguments({});
-    // Collapse the loop properties body by default when switching
-    // conversations (the prompt composition area is collapsed separately by
-    // the loopConfigured effect below).
-    setLoopExpanded(false);
-  }, [sessionId]);
+  }, [sessionId, resetLoopConfigState]);
 
   // Reset combo box selection and free text input when UI prompt changes
   useEffect(() => {
@@ -546,94 +590,45 @@ export function ChatInput({
   // Fetch loop config when loop is configured for this session
   useEffect(() => {
     if (!loopConfigured || !sessionId) {
-      setIsLoopLocked(false);
-      setLoopPrompt("");
-      setLoopPromptName("");
-      setLoopFrequency({ value: 1, unit: "hours" });
-      setLoopNextScheduledAt(null);
-      setLoopTrigger("schedule");
-      setLoopTriggers(["schedule"]);
-      setLoopDelaySeconds(5);
-      setLoopMaxDurationSeconds(0);
-      setLoopCondition("");
-      setLoopConditionPreset("");
-      setLoopStoppedReason("");
-      setLoopArguments({});
+      loopConfigVersionRef.current += 1;
+      resetLoopConfigState();
       // Don't clear the draft when disabling loop - preserve user's text
-      return;
+      return undefined;
     }
 
     // Default to collapsed prompt area for loop conversations
     setIsPromptCollapsed(true);
 
+    let cancelled = false;
+    const loopConfigVersion = loopConfigVersionRef.current;
     const fetchLoopConfig = async () => {
       try {
         const config = await getSdkClient().sessions.loop.get(sessionId);
+        if (cancelled || loopConfigVersion !== loopConfigVersionRef.current) {
+          return;
+        }
         if (!config || typeof config !== "object") {
           console.warn("Loop config fetch returned non-JSON response:", config);
           return;
         }
-        // Always update frequency
-        if (config.frequency) {
-          setLoopFrequency(config.frequency);
-        }
-        // Update next_scheduled_at (only set if enabled)
-        if (config.enabled && config.next_scheduled_at) {
-          setLoopNextScheduledAt(config.next_scheduled_at);
-        } else {
-          setLoopNextScheduledAt(null);
-        }
-        // Update prompt name from config. When no loop prompt is configured
-        // yet, pre-select the last named prompt sent in this conversation
-        // (visual only) if it is still loop-eligible (mitto-ujt).
-        if (config.prompt_name) {
-          setLoopPromptName(config.prompt_name);
-        } else {
-          const lastSent = lastSentPromptNameRef.current;
-          const eligible =
-            lastSent && (loopPrompts || []).some((p) => p.name === lastSent);
-          setLoopPromptName(eligible ? lastSent : "");
-        }
-        setLoopFreshContext(config.fresh_context === true);
-        setLoopMaxIterations(config.max_iterations ?? 0);
-        setLoopIterationCount(config.iteration_count ?? 0);
-        // mitto-r6j: prefer canonical triggers[] list; fall back to legacy
-        // scalar for backward-compat with server responses.
-        setLoopTrigger(config.trigger || "schedule");
-        setLoopTriggers(
-          Array.isArray(config.triggers) && config.triggers.length > 0
-            ? config.triggers
-            : [config.trigger || "schedule"],
-        );
-        setLoopDelaySeconds(config.delay_seconds ?? 5);
-        setLoopMaxDurationSeconds(config.max_duration_seconds ?? 0);
-        setLoopCondition(config.condition || "");
-        setLoopConditionPreset(config.condition_preset || "");
-        setLoopStoppedReason(config.stopped_reason || "");
-        setLoopArguments(config.arguments || {});
-        // Set lock state based on the enabled field
-        const isLocked = config.enabled === true;
-        setIsLoopLocked(isLocked);
-        // Set prompt state based on config
-        const isPendingPlaceholder = config.prompt === "(pending)";
-        if (config.prompt && !isPendingPlaceholder) {
-          setLoopPrompt(config.prompt);
-        } else {
-          setLoopPrompt("");
-        }
+        applyLoopConfigState(config);
       } catch (err) {
-        console.error("Failed to fetch loop config:", err);
+        if (!cancelled) console.error("Failed to fetch loop config:", err);
       }
     };
 
     fetchLoopConfig();
-  }, [loopConfigured, sessionId]);
+    return () => {
+      cancelled = true;
+    };
+  }, [loopConfigured, sessionId, applyLoopConfigState, resetLoopConfigState]);
 
   // Listen for loop config updates from other clients via WebSocket
   useEffect(() => {
     const handleLoopConfigUpdated = (event) => {
       const {
         sessionId: updatedSessionId,
+        loopConfig,
         loopConfigured,
         loopEnabled: newLoopEnabled,
         frequency,
@@ -645,6 +640,13 @@ export function ChatInput({
       // Only update if this is for our session
       if (updatedSessionId !== sessionId) return;
 
+      // Complete broadcasts are authoritative and invalidate an older GET.
+      if (loopConfig && typeof loopConfig === "object") {
+        loopConfigVersionRef.current += 1;
+        applyLoopConfigState(loopConfig);
+        return;
+      }
+
       // Update frequency if provided
       if (frequency) {
         setLoopFrequency(frequency);
@@ -654,9 +656,8 @@ export function ChatInput({
 
       // If loop config was deleted (not configured), reset state
       if (loopConfigured === false) {
-        setIsLoopLocked(false);
-        setLoopNextScheduledAt(null);
-        setLoopPrompt("");
+        loopConfigVersionRef.current += 1;
+        resetLoopConfigState();
         return;
       }
 
@@ -671,46 +672,10 @@ export function ChatInput({
         return;
       }
 
-      // If loop run is enabled (locked), fetch the full config for the prompt
+      // Backward compatibility for partial broadcasts from an older server.
       if (newLoopEnabled === true) {
-        // Update next scheduled time
-        if (nextScheduledAt) {
-          setLoopNextScheduledAt(nextScheduledAt);
-        }
-        // Fetch the full config to get the prompt name and fresh_context
-        getSdkClient()
-          .sessions.loop.get(sessionId)
-          .then((config) =>
-            config && typeof config === "object" ? config : null,
-          )
-          .catch(() => null)
-          .then((config) => {
-            if (!config) return;
-            setLoopPromptName(config.prompt_name || "");
-            setLoopFreshContext(config.fresh_context === true);
-            setLoopMaxIterations(config.max_iterations ?? 0);
-            setLoopIterationCount(config.iteration_count ?? 0);
-            // mitto-r6j: prefer canonical triggers[] list; fall back to
-            // legacy scalar for backward-compat with server responses.
-            setLoopTrigger(config.trigger || "schedule");
-            setLoopTriggers(
-              Array.isArray(config.triggers) && config.triggers.length > 0
-                ? config.triggers
-                : [config.trigger || "schedule"],
-            );
-            setLoopDelaySeconds(config.delay_seconds ?? 5);
-            setLoopMaxDurationSeconds(config.max_duration_seconds ?? 0);
-            setLoopCondition(config.condition || "");
-            setLoopConditionPreset(config.condition_preset || "");
-            setLoopStoppedReason(config.stopped_reason || "");
-            setLoopArguments(config.arguments || {});
-            const isPendingPlaceholder = config.prompt === "(pending)";
-            if (config.prompt && !isPendingPlaceholder) {
-              setLoopPrompt(config.prompt);
-              setIsLoopLocked(true);
-            }
-          })
-          .catch((err) => console.error("Failed to fetch loop config:", err));
+        setIsLoopLocked(true);
+        setLoopNextScheduledAt(nextScheduledAt || null);
       }
     };
 
@@ -724,7 +689,7 @@ export function ChatInput({
         handleLoopConfigUpdated,
       );
     };
-  }, [sessionId]);
+  }, [sessionId, applyLoopConfigState, resetLoopConfigState]);
 
   // Compute slash command filter from current text (text after '/' when text starts with '/')
   const slashFilter =

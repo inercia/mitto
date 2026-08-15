@@ -3316,12 +3316,16 @@ export function useWebSocket({
             },
           };
         });
-        // Dispatch custom event for ChatInput to handle frequency and lock state updates
-        // This allows the frequency panel to update in real-time when another client changes it
+        // Dispatch the authoritative config for open editors/controls. The
+        // compatibility fields remain while consumers migrate to loopConfig.
         window.dispatchEvent(
           new CustomEvent("mitto:loop_config_updated", {
             detail: {
               sessionId: msg.data.session_id,
+              loopConfig:
+                msg.data.loop_config && typeof msg.data.loop_config === "object"
+                  ? msg.data.loop_config
+                  : null,
               // loopConfigured controls UI mode
               loopConfigured: msg.data.loop_configured,
               // loopEnabled controls lock state (whether runs are active)

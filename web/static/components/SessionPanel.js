@@ -250,6 +250,7 @@ export function SessionPanel({
   const [isSavingTitle, setIsSavingTitle] = useState(false);
   const titleInputRef = useRef(null);
   const [loopConfig, setLoopConfig] = useState(null);
+  const loopConfigVersionRef = useRef(0);
   const [callbackConfig, setCallbackConfig] = useState(null);
   const [callbackCopied, setCallbackCopied] = useState(false);
   const [confirmDialog, setConfirmDialog] = useState(null);
@@ -285,6 +286,7 @@ export function SessionPanel({
 
   // --- Effects: reset on session change ---
   useEffect(() => {
+    loopConfigVersionRef.current += 1;
     setIsEditingTitle(false);
     setLoopConfig(null);
     setCallbackConfig(null);
@@ -295,9 +297,43 @@ export function SessionPanel({
     setUserDataError(null);
   }, [sessionId, isOpen]);
 
+  // Keep an open panel synchronized with loop changes made by another client,
+  // MCP, or another local surface. Bump the version so an older in-flight GET
+  // cannot overwrite this newer server broadcast when it eventually resolves.
+  useEffect(() => {
+    if (!isOpen || !sessionId) return undefined;
+
+    const handleLoopConfigUpdated = (event) => {
+      const detail = event.detail || {};
+      if (detail.sessionId !== sessionId) return;
+
+      loopConfigVersionRef.current += 1;
+      if (detail.loopConfigured === false) {
+        setLoopConfig(null);
+        return;
+      }
+      if (detail.loopConfig && typeof detail.loopConfig === "object") {
+        setLoopConfig(detail.loopConfig);
+      }
+    };
+
+    window.addEventListener(
+      "mitto:loop_config_updated",
+      handleLoopConfigUpdated,
+    );
+    return () =>
+      window.removeEventListener(
+        "mitto:loop_config_updated",
+        handleLoopConfigUpdated,
+      );
+  }, [isOpen, sessionId]);
+
   // --- Effects: fetch properties data when open ---
   useEffect(() => {
-    if (!isOpen || !sessionId) return;
+    if (!isOpen || !sessionId) return undefined;
+
+    let cancelled = false;
+    const loopConfigVersion = loopConfigVersionRef.current;
 
     const fetchData = async () => {
       setIsLoadingFlags(true);
@@ -332,21 +368,28 @@ export function SessionPanel({
               .catch(() => null),
           ]);
 
-        setLoopConfig(loopData || null);
+        if (!cancelled && loopConfigVersion === loopConfigVersionRef.current) {
+          setLoopConfig(loopData || null);
+        }
+        if (cancelled) return;
         setCallbackConfig(callbackData || null);
 
         if (flagsData) setAvailableFlags(flagsData.flags || flagsData || []);
 
         if (settingsData) setSessionSettings(settingsData.settings || {});
       } catch (err) {
+        if (cancelled) return;
         console.error("[SessionPanel] Failed to fetch properties data:", err);
         setFlagsError("Failed to load settings");
       } finally {
-        setIsLoadingFlags(false);
+        if (!cancelled) setIsLoadingFlags(false);
       }
     };
 
     fetchData();
+    return () => {
+      cancelled = true;
+    };
   }, [isOpen, sessionId, sessionInfo?.loop_configured]);
 
   // --- Effects: fetch linked beads issue status when open ---
