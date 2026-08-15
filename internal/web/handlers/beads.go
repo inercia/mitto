@@ -67,21 +67,30 @@ func isValidBeadsIssueRef(s string) bool {
 // envelope, carrying any captured stderr under error.details.stderr. It also
 // logs the failure (nil-guarded) so failures are never silent in mitto.log.
 //
-// A schema-version skew (bd refusing to auto-migrate a remote-backed database)
-// is distinguished from a genuine internal error: it surfaces as an
-// actionable HTTP 409 "needs migration" response with the DB path and a
-// remediation hint, rather than a bare 500. Every other failure keeps the
-// existing HTTP 500 behavior.
+// A schema-version skew is distinguished from a genuine internal error: it
+// surfaces as an actionable HTTP 409 with direction-appropriate remediation,
+// rather than a bare 500. Every other failure keeps the existing HTTP 500
+// behavior.
 func (h *Handlers) writeBeadsError(w http.ResponseWriter, r *http.Request, err error) {
 	if beads.IsSchemaSkew(err) {
 		info := beads.SchemaSkewInfo(err)
+		databaseAhead := info.DBVersion > 0 && info.BinaryVersion > 0 && info.DBVersion > info.BinaryVersion
+		logMessage := "beads schema needs migration"
+		if databaseAhead {
+			logMessage = "beads database newer than bd binary"
+		}
 		if h.deps.Logger != nil {
-			h.deps.Logger.Warn("beads schema needs migration", "db_path", info.DBPath, "db_version", info.DBVersion, "binary_version", info.BinaryVersion, "stderr", beads.StderrOf(err), "path", r.URL.Path)
+			h.deps.Logger.Warn(logMessage, "db_path", info.DBPath, "db_version", info.DBVersion, "binary_version", info.BinaryVersion, "stderr", beads.StderrOf(err), "path", r.URL.Path)
 		}
 		hint := "This beads database is behind the bd binary's schema and is remote-backed, so bd will not auto-migrate it. Reconcile it once (e.g. `BD_ALLOW_REMOTE_MIGRATE=1 bd migrate && bd dolt push` on the designated migrator clone, or `bd bootstrap` if another clone already migrated), then reload."
+		allowMigrate := h.beadsMigrationAllowed()
+		if databaseAhead {
+			hint = "This beads database is newer than the installed bd binary. Follow the bd recovery guide at https://github.com/gastownhall/beads/blob/v1.2.2/docs/RECOVERY-1.2.1.md: upgrade every clone to bd 1.2.2, stop database users, take a backup, then perform the documented schema-cursor recovery. The ignore-schema-skew flag is only a temporary stopgap."
+			allowMigrate = false
+		}
 		details := map[string]any{
 			"hint":                  hint,
-			"allow_migrate_from_ui": h.beadsMigrationAllowed(),
+			"allow_migrate_from_ui": allowMigrate,
 		}
 		if info.DBPath != "" {
 			details["db_path"] = info.DBPath
@@ -99,7 +108,9 @@ func (h *Handlers) writeBeadsError(w http.ResponseWriter, r *http.Request, err e
 			details["stderr"] = s
 		}
 		msg := "The beads database schema needs migration"
-		if info.DBPath != "" {
+		if databaseAhead {
+			msg = "The beads database is newer than the installed bd binary"
+		} else if info.DBPath != "" {
 			msg = "The beads database at " + info.DBPath + " needs migration"
 		}
 		writeJSON(w, http.StatusConflict, errorEnvelope{Error: errorBody{Code: errCodeBeadsSchemaSkew, Message: msg, Details: details}})

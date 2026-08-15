@@ -83,6 +83,22 @@ func (c *schemaSkewJSONClient) List(_ context.Context, _ string) ([]byte, error)
 	}
 }
 
+// schemaAheadBD122Client reproduces bd 1.2.2 refusing a database whose schema
+// cursor was advanced to v65 by the accidental v1.2.0/v1.2.1 releases.
+type schemaAheadBD122Client struct{ stubBeadsClient }
+
+func (c *schemaAheadBD122Client) List(_ context.Context, _ string) ([]byte, error) {
+	return nil, &beads.CmdError{
+		Err: errors.New("bd exited with non-zero status"),
+		Stderr: `{
+  "error": "schema version mismatch: database is at v65, binary knows up to v53 (12 migrations ahead)",
+  "hint": "BD_IGNORE_SCHEMA_SKEW=1 bd <command>  or  bd --ignore-schema-skew <command>",
+  "schema_skew": {"current_version": 65, "delta": 12, "required_version": 53},
+  "schema_version": 1
+}`,
+	}
+}
+
 // stubBeadsClient implements beads.Client for unit tests.
 // All methods except Create are no-ops that return nil / zero values.
 type stubBeadsClient struct {
@@ -433,6 +449,49 @@ func TestHandleBeadsList_SchemaSkew_JSONBlob(t *testing.T) {
 	first, _ := opts[0].(map[string]any)
 	if first["mode"] != "migrate" {
 		t.Errorf("options[0].mode = %v, want migrate", first["mode"])
+	}
+}
+
+// TestHandleBeadsList_SchemaSkew_BD122DatabaseAhead reproduces mitto-cq2n.2.
+// A database newer than the installed binary needs the upstream recovery path,
+// never Mitto's migrate/bootstrap controls for a database behind the binary.
+func TestHandleBeadsList_SchemaSkew_BD122DatabaseAhead(t *testing.T) {
+	s := newBeadsTestServerWithClient(&schemaAheadBD122Client{})
+	req := localhostRequest("/api/issues?working_dir=/test/workspace")
+	w := httptest.NewRecorder()
+	s.handleBeadsList(w, req)
+
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusConflict)
+	}
+	var env struct {
+		Error struct {
+			Message string         `json:"message"`
+			Details map[string]any `json:"details"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&env); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	if got := env.Error.Details["db_version"]; got != float64(65) {
+		t.Errorf("details.db_version = %v, want 65", got)
+	}
+	if got := env.Error.Details["binary_version"]; got != float64(53) {
+		t.Errorf("details.binary_version = %v, want 53", got)
+	}
+	if got := env.Error.Details["allow_migrate_from_ui"]; got != false {
+		t.Errorf("details.allow_migrate_from_ui = %v, want false for database-ahead recovery", got)
+	}
+	hint, _ := env.Error.Details["hint"].(string)
+	lowerHint := strings.ToLower(hint)
+	if !strings.Contains(lowerHint, "recovery") {
+		t.Errorf("details.hint = %q, want recovery guidance", hint)
+	}
+	if strings.Contains(lowerHint, "bd migrate") || strings.Contains(lowerHint, "bd bootstrap") {
+		t.Errorf("details.hint = %q, must not advise migrate/bootstrap for database ahead of binary", hint)
+	}
+	if strings.Contains(strings.ToLower(env.Error.Message), "needs migration") {
+		t.Errorf("error.message = %q, must identify database-ahead incompatibility", env.Error.Message)
 	}
 }
 

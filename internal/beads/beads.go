@@ -161,10 +161,10 @@ type SchemaSkewDetails struct {
 }
 
 // SchemaSkewInfo extracts the structured details of a schema-skew failure.
-// It first tries to locate and decode bd's remote_migrate_gate JSON blob in
-// stderr, then falls back to legacy regex parsing for the "failed to open
-// routed store at ..." message. Returns a zero-value struct when nothing can
-// be parsed; callers should still guard on IsSchemaSkew before calling.
+// It first tries to locate and decode bd's remote_migrate_gate or schema_skew
+// JSON blob, then falls back to legacy text parsing. Returns a zero-value
+// struct when nothing can be parsed; callers should still guard on
+// IsSchemaSkew before calling.
 func SchemaSkewInfo(err error) SchemaSkewDetails {
 	var out SchemaSkewDetails
 	stderr := StderrOf(err)
@@ -172,6 +172,8 @@ func SchemaSkewInfo(err error) SchemaSkewDetails {
 		return out
 	}
 	if blob, ok := findJSONBlob(stderr, "remote_migrate_gate"); ok {
+		parseGateJSON(blob, &out)
+	} else if blob, ok := findJSONBlob(stderr, "schema_skew"); ok {
 		parseGateJSON(blob, &out)
 	}
 	if out.DBPath == "" {
@@ -251,8 +253,8 @@ func findJSONBlob(text, key string) ([]byte, bool) {
 	return nil, false
 }
 
-// parseGateJSON decodes bd's remote_migrate_gate blob into the details
-// struct. The blob's exact shape is not tightly specified by bd, so parsing
+// parseGateJSON decodes bd's schema-skew blob into the details struct. The
+// blob's exact shape is not tightly specified by bd, so parsing
 // is defensive: unknown/missing fields silently leave the corresponding
 // details entries empty. Recognised shapes (all optional):
 //
@@ -260,14 +262,18 @@ func findJSONBlob(text, key string) ([]byte, bool) {
 //	 "remote_migrate_gate":{"options":[{"mode":"migrate","description":"...","command":"..."}]}}
 //
 // Some emitters put the fields at the top level; others nest them under
-// remote_migrate_gate. Both are accepted.
+// remote_migrate_gate or schema_skew. All are accepted.
 func parseGateJSON(blob []byte, out *SchemaSkewDetails) {
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(blob, &raw); err != nil {
 		return
 	}
 	applyGateFields(raw, out)
-	if gate, ok := raw["remote_migrate_gate"]; ok {
+	for _, key := range []string{"remote_migrate_gate", "schema_skew"} {
+		gate, ok := raw[key]
+		if !ok {
+			continue
+		}
 		var nested map[string]json.RawMessage
 		if json.Unmarshal(gate, &nested) == nil {
 			applyGateFields(nested, out)
@@ -276,8 +282,8 @@ func parseGateJSON(blob []byte, out *SchemaSkewDetails) {
 }
 
 // applyGateFields folds a decoded JSON object's known keys into out. It is
-// called for both the outer envelope and the inner remote_migrate_gate slot
-// so either layout populates the same details struct.
+// called for both the outer envelope and the inner gate slot so every layout
+// populates the same details struct.
 func applyGateFields(obj map[string]json.RawMessage, out *SchemaSkewDetails) {
 	for k, raw := range obj {
 		switch strings.ToLower(k) {
@@ -295,7 +301,7 @@ func applyGateFields(obj map[string]json.RawMessage, out *SchemaSkewDetails) {
 					out.DBVersion = n
 				}
 			}
-		case "binary_version", "to_version", "expected_version", "latest_version":
+		case "binary_version", "to_version", "expected_version", "latest_version", "required_version":
 			if out.BinaryVersion == 0 {
 				var n int
 				if json.Unmarshal(raw, &n) == nil {
@@ -369,13 +375,17 @@ func decodeSchemaSkewOptions(raw json.RawMessage) []SchemaSkewOption {
 	return opts
 }
 
-// parseVersionsFromText extracts "database is at vN, binary expects vM" from
-// legacy stderr text, returning (db, binary, true) on match.
+// parseVersionsFromText extracts the database and binary versions from plain
+// stderr, including bd 1.2.2's "binary knows up to vM" wording.
 func parseVersionsFromText(stderr string) (int, int, bool) {
 	const dbMarker = "database is at v"
-	const binMarker = "binary expects v"
 	dbIdx := strings.Index(stderr, dbMarker)
+	binMarker := "binary expects v"
 	binIdx := strings.Index(stderr, binMarker)
+	if binIdx < 0 {
+		binMarker = "binary knows up to v"
+		binIdx = strings.Index(stderr, binMarker)
+	}
 	if dbIdx < 0 || binIdx < 0 {
 		return 0, 0, false
 	}
