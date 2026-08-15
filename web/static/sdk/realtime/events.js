@@ -377,12 +377,26 @@ export function isCommandType(type) {
  * Payload of {@link EVENTS.LOOP_UPDATED} (`loop_updated`).
  * @typedef {Object} LoopUpdatedPayload
  * @property {string} session_id - Loop conversation.
- * @property {string} session_name - Loop conversation title.
+ * @property {boolean} loop_configured - Whether a loop configuration exists.
  * @property {boolean} loop_enabled - Whether the loop is armed.
- * @property {string} loop_frequency - Schedule description (e.g. `"daily"`).
- * @property {string} next_scheduled_at - Next run, ISO 8601.
+ * @property {Object|null} loop_config - Authoritative complete loop resource;
+ *   `null` when the loop was deleted. Uses the same wire shape as the session
+ *   loop REST endpoint, including prompt, arguments, all trigger-specific
+ *   settings, limits, counters, timestamps, and stopped-state metadata.
+ * @property {{value: number, unit: string, at?: string}} [frequency] - Schedule.
+ * @property {string} [next_scheduled_at] - Next run, ISO 8601.
+ * @property {boolean} [fresh_context] - Whether each run gets a fresh context.
+ * @property {number} [iteration_count] - Runs delivered so far.
+ * @property {number} [max_iterations] - Maximum runs; zero means unlimited.
+ * @property {string} [loop_stopped_reason] - Automatic stop reason.
+ * @property {string} [loop_acknowledged_stopped_reason] - Dismissed stop reason.
  * @property {string[]} [triggers] - Full armed trigger set.
- * @property {string} [trigger] - Back-compat singular trigger that last fired.
+ * @property {string} [trigger] - Back-compat primary trigger.
+ * @property {string[]} [child_events] - Child lifecycle events that fire onChild.
+ * @property {number} [delay_seconds] - onCompletion delay.
+ * @property {number} [max_duration_seconds] - Wall-clock cap; zero is unlimited.
+ * @property {boolean} [loop_has_prompt] - Whether the loop has deliverable content.
+ * @property {string} [loop_prompt_preview] - Free-text prompt preview.
  */
 
 // --- Agent output ------------------------------------------------------------

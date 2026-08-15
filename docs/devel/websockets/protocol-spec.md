@@ -1039,13 +1039,36 @@ beads issue. An empty `beads_issue` value indicates the link was cleared.
   "type": "loop_updated",
   "data": {
     "session_id": "...",
-    "session_name": "Daily Report",
+    "loop_configured": true,
     "loop_enabled": true,
-    "loop_frequency": "daily",
+    "loop_config": {
+      "prompt_name": "daily-report",
+      "arguments": { "Team": "Platform" },
+      "enabled": true,
+      "frequency": { "value": 1, "unit": "days", "at": "09:00" },
+      "triggers": ["schedule", "onCompletion"],
+      "delay_seconds": 30,
+      "fresh_context": true,
+      "iteration_count": 3,
+      "max_iterations": 10,
+      "next_scheduled_at": "2026-02-01T09:00:00Z"
+    },
+    "frequency": { "value": 1, "unit": "days", "at": "09:00" },
+    "triggers": ["schedule", "onCompletion"],
+    "trigger": "schedule",
+    "iteration_count": 3,
+    "max_iterations": 10,
     "next_scheduled_at": "2026-02-01T09:00:00Z"
   }
 }
 ```
+
+`loop_config` is the authoritative complete loop resource (the same wire shape
+returned by the session loop REST endpoint), including prompt, arguments,
+trigger-specific settings, child events, limits, counters, and stopped-state
+metadata. The remaining fields are lightweight compatibility/glance fields used
+by session lists and headers. When a loop is deleted, `loop_config` is `null` and
+both `loop_configured` and `loop_enabled` are `false`.
 
 #### `loop_started`
 

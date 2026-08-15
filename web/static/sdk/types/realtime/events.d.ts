@@ -543,29 +543,80 @@ export type LoopUpdatedPayload = {
      */
     session_id: string;
     /**
-     * - Loop conversation title.
+     * - Whether a loop configuration exists.
      */
-    session_name: string;
+    loop_configured: boolean;
     /**
      * - Whether the loop is armed.
      */
     loop_enabled: boolean;
     /**
-     * - Schedule description (e.g. `"daily"`).
+     * - Authoritative complete loop resource;
+     * `null` when the loop was deleted. Uses the same wire shape as the session
+     * loop REST endpoint, including prompt, arguments, all trigger-specific
+     * settings, limits, counters, timestamps, and stopped-state metadata.
      */
-    loop_frequency: string;
+    loop_config: any | null;
+    /**
+     * - Schedule.
+     */
+    frequency?: {
+        value: number;
+        unit: string;
+        at?: string;
+    };
     /**
      * - Next run, ISO 8601.
      */
-    next_scheduled_at: string;
+    next_scheduled_at?: string;
+    /**
+     * - Whether each run gets a fresh context.
+     */
+    fresh_context?: boolean;
+    /**
+     * - Runs delivered so far.
+     */
+    iteration_count?: number;
+    /**
+     * - Maximum runs; zero means unlimited.
+     */
+    max_iterations?: number;
+    /**
+     * - Automatic stop reason.
+     */
+    loop_stopped_reason?: string;
+    /**
+     * - Dismissed stop reason.
+     */
+    loop_acknowledged_stopped_reason?: string;
     /**
      * - Full armed trigger set.
      */
     triggers?: string[];
     /**
-     * - Back-compat singular trigger that last fired.
+     * - Back-compat primary trigger.
      */
     trigger?: string;
+    /**
+     * - Child lifecycle events that fire onChild.
+     */
+    child_events?: string[];
+    /**
+     * - onCompletion delay.
+     */
+    delay_seconds?: number;
+    /**
+     * - Wall-clock cap; zero is unlimited.
+     */
+    max_duration_seconds?: number;
+    /**
+     * - Whether the loop has deliverable content.
+     */
+    loop_has_prompt?: boolean;
+    /**
+     * - Free-text prompt preview.
+     */
+    loop_prompt_preview?: string;
 };
 /**
  * Payload of {@link EVENTS.AGENT_MESSAGE} (`agent_message`).
