@@ -8,11 +8,13 @@
 package mcpserver
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -314,6 +316,66 @@ func TestConversationWait_BeadsTimeout_CappedBelowRequestedTimeout(t *testing.T)
 	if len(output.PendingIssues) != 1 {
 		t.Errorf("expected 1 pending on capped timeout, got %v", output.PendingIssues)
 	}
+}
+
+// TestConversationWait_BeadsTimeout_LogSeverity reproduces mitto-50m8: an
+// expected physical-slice expiry must be logged below WARN, while expiration
+// of the caller's full nominal timeout remains a warning.
+func TestConversationWait_BeadsTimeout_LogSeverity(t *testing.T) {
+	t.Run("internal physical slice is not warning", func(t *testing.T) {
+		srv, callerID, _ := setupBeadsWait(t, map[string]string{"mitto-1": "open"})
+		var logBuf bytes.Buffer
+		srv.logger = slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+		srv.maxSingleWaitBlock = 20 * time.Millisecond
+
+		_, output, err := srv.handleConversationWait(context.Background(), nil, ConversationWaitInput{
+			SelfID:           callerID,
+			ConversationID:   "self",
+			What:             "beads_issues_reached_state",
+			BeadsIssues:      []string{"mitto-1"},
+			BeadsTargetState: "closed",
+			TimeoutSeconds:   14400,
+		})
+		if err != nil {
+			t.Fatalf("handleConversationWait: %v", err)
+		}
+		if !output.TimedOut || !strings.Contains(output.Message, "call again") {
+			t.Fatalf("expected resumable timed-out response with retry guidance, got %+v", output)
+		}
+
+		logs := logBuf.String()
+		if strings.Contains(logs, `level=WARN msg="Beads wait timed out"`) {
+			t.Errorf("mitto-50m8: expected clean internal slice expiry below WARN, got logs:\n%s", logs)
+		}
+		if !strings.Contains(logs, `level=INFO msg="Beads wait timed out"`) &&
+			!strings.Contains(logs, `level=DEBUG msg="Beads wait timed out"`) {
+			t.Errorf("expected internal slice expiry at INFO or DEBUG, got logs:\n%s", logs)
+		}
+	})
+
+	t.Run("nominal timeout remains warning", func(t *testing.T) {
+		srv, callerID, _ := setupBeadsWait(t, map[string]string{"mitto-1": "open"})
+		var logBuf bytes.Buffer
+		srv.logger = slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+		_, output, err := srv.handleConversationWait(context.Background(), nil, ConversationWaitInput{
+			SelfID:           callerID,
+			ConversationID:   "self",
+			What:             "beads_issues_reached_state",
+			BeadsIssues:      []string{"mitto-1"},
+			BeadsTargetState: "closed",
+			TimeoutSeconds:   1,
+		})
+		if err != nil {
+			t.Fatalf("handleConversationWait: %v", err)
+		}
+		if !output.TimedOut {
+			t.Fatalf("expected timed_out=true, got %+v", output)
+		}
+		if logs := logBuf.String(); !strings.Contains(logs, `level=WARN msg="Beads wait timed out"`) {
+			t.Errorf("expected nominal timeout at WARN, got logs:\n%s", logs)
+		}
+	})
 }
 
 // TestConversationWait_BeadsFailureStreak_HidesDegradationOnTimeout reproduces

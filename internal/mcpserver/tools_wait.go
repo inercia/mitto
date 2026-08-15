@@ -644,7 +644,11 @@ func (s *Server) handleBeadsIssuesReachedState(
 					"error", err, "consecutive_failures", consecutiveFailures,
 					"elapsed_since_first_failure", time.Since(firstFailureAt))
 			}
-			s.logger.Warn("Beads wait timed out",
+			logTimeout := s.logger.Warn
+			if waitBudget < timeout && err == nil && consecutiveFailures == 0 {
+				logTimeout = s.logger.Debug
+			}
+			logTimeout("Beads wait timed out",
 				"source_session", realSessionID,
 				"working_dir", workingDir,
 				"target_state", input.BeadsTargetState,
