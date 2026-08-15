@@ -325,6 +325,23 @@ type SharedACPProcessConfig struct {
 	AgentDefaultEnv map[string]string
 }
 
+type processTerminationIntent struct {
+	mu     sync.RWMutex
+	reason string
+}
+
+func (i *processTerminationIntent) mark(reason string) {
+	i.mu.Lock()
+	i.reason = reason
+	i.mu.Unlock()
+}
+
+func (i *processTerminationIntent) shutdownReason() string {
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	return i.reason
+}
+
 // Compile-time assertion: *SharedACPProcess must satisfy the conversation.SharedProcess interface.
 var _ conversation.SharedProcess = (*SharedACPProcess)(nil)
 
@@ -339,6 +356,9 @@ type SharedACPProcess struct {
 	client *MultiplexClient
 	wait   func() error
 	cancel context.CancelFunc // for restricted runner processes
+	// terminationIntent belongs to the current OS process generation. The wait
+	// closure captures the same pointer so a replacement never inherits intent.
+	terminationIntent *processTerminationIntent
 
 	// generation is bumped (under mu) each time Restart() actually kills and
 	// replaces the process. Restart() snapshots this value on entry and
@@ -623,6 +643,8 @@ func (p *SharedACPProcess) doStartProcess() (string, error) {
 	var cmd *exec.Cmd
 
 	stderrCollector := procstart.NewStderrCollector(procstart.DefaultStderrCollectorBytes, p.logger)
+	terminationIntent := &processTerminationIntent{}
+	p.terminationIntent = terminationIntent
 	// Install per-agent ignore patterns (mitto-k6h) so matching writes are
 	// suppressed from the debug-level stderr log. Nil is a safe no-op.
 	if p.config.StderrPatterns != nil {
@@ -834,7 +856,11 @@ func (p *SharedACPProcess) doStartProcess() (string, error) {
 					"exit_code", exitErr.ExitCode(),
 					"acp_server", p.config.ACPServer,
 				}
-				intentional := p.ctx.Err() != nil
+				shutdownReason := terminationIntent.shutdownReason()
+				if shutdownReason == "" && p.ctx.Err() != nil {
+					shutdownReason = "context_cancelled"
+				}
+				intentional := shutdownReason != ""
 				var (
 					sig      os.Signal
 					signaled bool
@@ -861,16 +887,22 @@ func (p *SharedACPProcess) doStartProcess() (string, error) {
 
 				// Log at DEBUG if we intentionally killed it, WARN if it crashed on its own
 				if intentional {
+					logAttrs = append(logAttrs, "shutdown_reason", shutdownReason)
 					p.logger.Debug("ACP process exited (intentional shutdown)", logAttrs...)
 				} else {
 					p.logger.Warn("ACP process exited abnormally", logAttrs...)
 				}
 			} else {
 				// Non-ExitError wait failures (shouldn't happen in practice)
-				if p.ctx.Err() != nil {
+				shutdownReason := terminationIntent.shutdownReason()
+				if shutdownReason == "" && p.ctx.Err() != nil {
+					shutdownReason = "context_cancelled"
+				}
+				if shutdownReason != "" {
 					p.logger.Debug("ACP process wait error (intentional shutdown)",
 						"error", err,
-						"acp_server", p.config.ACPServer)
+						"acp_server", p.config.ACPServer,
+						"shutdown_reason", shutdownReason)
 				} else {
 					p.logger.Warn("ACP process wait error",
 						"error", err,
@@ -998,7 +1030,7 @@ func (p *SharedACPProcess) doStartProcess() (string, error) {
 			p.logger.Warn("ACP process initialization failed", logAttrs...)
 		}
 
-		p.killProcess()
+		p.killProcess("")
 		return stderrOutput, fmt.Errorf("failed to initialize: %w", err)
 	}
 
@@ -2659,11 +2691,14 @@ func (p *SharedACPProcess) WorkingDir() string {
 // Close terminates the ACP process and cleans up resources.
 func (p *SharedACPProcess) Close() {
 	p.ctxCancel()
-	p.killProcess()
+	p.killProcess("close")
 }
 
 // killProcess terminates the ACP process.
-func (p *SharedACPProcess) killProcess() {
+func (p *SharedACPProcess) killProcess(reason string) {
+	if reason != "" && p.terminationIntent != nil {
+		p.terminationIntent.mark(reason)
+	}
 	if p.cancel != nil {
 		p.cancel()
 	}
@@ -2809,7 +2844,7 @@ func (p *SharedACPProcess) Restart(observedGen int) error {
 			"cwd", p.config.ACPCwd)
 	}
 
-	p.killProcess()
+	p.killProcess("restart")
 	p.conn = nil
 	p.capabilities = nil
 	p.generation++
