@@ -465,6 +465,13 @@ type SharedACPProcess struct {
 	// on the cold path (extendedBudget=true); warm calls bypass it entirely.
 	coldStartGate chan struct{}
 
+	// loadReplaySuppressions identifies sessions whose session/load history replay
+	// must be discarded before it enters the SDK's shared bounded notification queue.
+	// Guarded by loadReplayMu; each state uses an atomic counter because filtering
+	// runs on the SDK reader goroutine while LoadSession runs on its caller goroutine.
+	loadReplayMu           sync.RWMutex
+	loadReplaySuppressions map[acp.SessionId]*loadReplaySuppression
+
 	// Logger
 	logger *slog.Logger
 }
@@ -915,13 +922,13 @@ func (p *SharedACPProcess) doStartProcess() (string, error) {
 		}()
 	}
 
-	filteredStdout := mittoAcp.NewJSONLineFilterReader(stdout, p.logger)
+	filteredStdout := mittoAcp.NewJSONLineFilterReaderWithFilter(stdout, p.logger, p.filterLoadReplayNotification)
 
 	// Use a larger notification queue for shared processes since all sessions
 	// multiplex over the same connection. The default 1024 can overflow when
 	// many sessions stream concurrently, killing the connection.
 	p.conn = acp.NewClientSideConnection(p.client, stdin, filteredStdout,
-		acp.WithMaxQueuedNotifications(8192))
+		acp.WithMaxQueuedNotifications(sharedACPNotificationQueueCapacity))
 	if p.logger != nil {
 		p.conn.SetLogger(logging.DowngradeACPSDKErrors(p.logger))
 	}
@@ -2090,8 +2097,11 @@ func (p *SharedACPProcess) LoadSession(ctx context.Context, acpSessionID, cwd st
 	}
 
 	rpcStart := time.Now()
+	loadSessionID := acp.SessionId(acpSessionID)
+	p.beginLoadReplaySuppression(loadSessionID)
+	defer p.endLoadReplaySuppression(loadSessionID)
 	loadResp, err := conn.LoadSession(rpcCtx, acp.LoadSessionRequest{
-		SessionId:  acp.SessionId(acpSessionID),
+		SessionId:  loadSessionID,
 		Cwd:        cwd,
 		McpServers: mcpServers,
 	})

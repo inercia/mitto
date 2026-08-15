@@ -25,8 +25,9 @@ type WebClient struct {
 	// isLoadingSession is set to true during LoadSession to suppress event processing.
 	// During Load, the agent replays the entire conversation history as ACP notifications.
 	// With large sessions (hundreds of exchanges), this produces thousands of events that
-	// overwhelm the SDK's bounded notification queue (1024 entries) because the consumer
-	// (markdown conversion, persistence, pruning) is slower than the producer.
+	// overwhelm the SDK's bounded notification queue because the consumer (markdown
+	// conversion, persistence, pruning) is slower than the producer. Shared processes
+	// additionally discard load replay at the transport reader before it enters that queue.
 	// When true, SessionUpdate returns immediately — the events are historical and already
 	// persisted by Mitto, so discarding them is safe.
 	isLoadingSession atomic.Bool
@@ -130,8 +131,8 @@ func NewWebClient(config WebClientConfig) *WebClient {
 // SetLoadingSession controls whether the WebClient suppresses event processing.
 // Set to true before calling LoadSession, and false after it returns.
 // During Load, the agent replays the entire conversation history as notifications.
-// Discarding them prevents the SDK's notification queue (1024 entries) from overflowing
-// when the consumer (markdown conversion + persistence) can't keep up.
+// Discarding them keeps direct-session callback processing cheap. Shared processes
+// additionally filter replay before the notifications enter the SDK queue.
 func (c *WebClient) SetLoadingSession(loading bool) {
 	c.isLoadingSession.Store(loading)
 }
