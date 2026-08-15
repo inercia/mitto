@@ -2753,6 +2753,11 @@ export function useWebSocket({
   // so the conversation opens already positioned at the latest message.
   const switchSession = useCallback(
     async (sessionId) => {
+      // Selection is immediate UI intent, not a consequence of metadata loading.
+      // Activating before the first await keeps unloaded sessions responsive and
+      // prevents a slower earlier click from stealing focus after a later click.
+      setActiveSessionId(sessionId);
+
       // Reconnect attempt tracking is now internal to SessionStream
       // (mitto-7gta.30) — no per-session counter to reset here.
 
@@ -2781,9 +2786,6 @@ export function useWebSocket({
       expandGroupForSession(sessionId, workingDir, acpServer);
 
       if (hasLoadedMessages && hasWorkingDir) {
-        // Session already has messages and working_dir, just set it active
-        setActiveSessionId(sessionId);
-
         // Ensure the session stream is connected and synced.
         // On mobile, the connection may have died while the phone slept.
         // If not connected, connect now — the stream's "open" handler syncs events.
@@ -2844,7 +2846,6 @@ export function useWebSocket({
               },
             };
           });
-          setActiveSessionId(sessionId);
           return;
         }
 
@@ -2898,7 +2899,6 @@ export function useWebSocket({
         // Connect to the session WebSocket - this will trigger load_events on open
         // The events_loaded handler will populate the messages
         connectToSessionRef.current?.(sessionId);
-        setActiveSessionId(sessionId);
       } catch (err) {
         console.error("Failed to switch session:", err);
       }

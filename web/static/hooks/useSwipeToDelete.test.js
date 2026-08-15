@@ -235,4 +235,76 @@ describe("useSwipeToAction — mouse-driven trailing click (mitto-mzvc)", () => 
     expect(getState().isRevealed).toBe(false);
     expect(onSelect).toHaveBeenCalledTimes(1);
   });
+
+  // Regression coverage for mitto-4hpi: swipe suppression must never make a
+  // subsequent conversation-row click appear unfocused or ignored.
+  test("a pending trailing-click suppressor never consumes a click on another row", async () => {
+    const onSelect = jest.fn();
+    const { el } = await mountSwipeHarness(
+      { threshold: 0.5, revealWidth: 80, disabled: false },
+      { onSelect },
+    );
+    const otherRow = document.createElement("button");
+    const onOtherSelect = jest.fn();
+    otherRow.onclick = onOtherSelect;
+    document.body.appendChild(otherRow);
+
+    el.dispatchEvent(
+      new MouseEvent("mousedown", {
+        bubbles: true,
+        clientX: 300,
+        clientY: 50,
+        button: 0,
+      }),
+    );
+    document.dispatchEvent(
+      new MouseEvent("mousemove", {
+        bubbles: true,
+        clientX: 240,
+        clientY: 50,
+      }),
+    );
+    document.dispatchEvent(
+      new MouseEvent("mouseup", { bubbles: true, clientX: 240, clientY: 50 }),
+    );
+
+    // If no synthetic click follows on the swiped row, the next genuine click
+    // elsewhere must pass through instead of being swallowed for up to 300 ms.
+    otherRow.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+
+    expect(onOtherSelect).toHaveBeenCalledTimes(1);
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  test("a short confirmed drag that snaps back still selects the same row", async () => {
+    const onSelect = jest.fn();
+    const { el, getState } = await mountSwipeHarness(
+      { threshold: 0.5, revealWidth: 80, disabled: false },
+      { onSelect },
+    );
+
+    el.dispatchEvent(
+      new MouseEvent("mousedown", {
+        bubbles: true,
+        clientX: 300,
+        clientY: 50,
+        button: 0,
+      }),
+    );
+    document.dispatchEvent(
+      new MouseEvent("mousemove", {
+        bubbles: true,
+        clientX: 280,
+        clientY: 50,
+      }),
+    );
+    document.dispatchEvent(
+      new MouseEvent("mouseup", { bubbles: true, clientX: 280, clientY: 50 }),
+    );
+
+    expect(getState().isRevealed).toBe(false);
+    expect(getState().swipeOffset).toBe(0);
+    el.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    expect(onSelect).toHaveBeenCalledTimes(1);
+  });
 });

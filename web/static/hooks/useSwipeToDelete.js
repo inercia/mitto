@@ -155,13 +155,13 @@ export function useSwipeToAction(options = {}) {
   const handleDragEnd = useCallback(() => {
     if (!isSwiping || !dragStartRef.current) {
       reset();
-      return;
+      return false;
     }
 
     // Only process if swipe was confirmed (passed dead zone)
     if (!swipeConfirmedRef.current) {
       reset();
-      return;
+      return false;
     }
 
     const containerWidth = dragStartRef.current.containerWidth;
@@ -170,6 +170,7 @@ export function useSwipeToAction(options = {}) {
     // If swiped past threshold, trigger action
     if (absOffset > containerWidth * threshold) {
       triggerAction();
+      return false;
     }
     // If swiped past reveal width but not threshold, leave revealed
     else if (absOffset > revealWidth * 0.5) {
@@ -179,16 +180,18 @@ export function useSwipeToAction(options = {}) {
       isSwipingRef.current = false;
       dragStartRef.current = null;
       swipeConfirmedRef.current = false;
+      return true;
     }
     // Otherwise, snap back
     else {
       reset();
+      return false;
     }
   }, [isSwiping, swipeOffset, threshold, revealWidth, triggerAction, reset]);
 
   // Install a one-shot capture-phase click suppressor on document. A
-  // confirmed mouse swipe that ends over the same element is always followed
-  // by a synthetic trailing `click` there; this consumes exactly that click
+  // mouse swipe that leaves the action revealed is followed by a synthetic
+  // trailing `click` on the same element; this consumes exactly that click
   // so it never reaches Preact's onClick handler (mitto-mzvc). Capture phase
   // is required because Preact delegates onClick at the app root, so a
   // bubble-phase suppressor here would run too late. A short fallback
@@ -200,7 +203,15 @@ export function useSwipeToAction(options = {}) {
       suppressClickCleanupRef.current();
     }
 
+    // Capture the swiped row now. The document listener must not consume a click
+    // on a different row if this gesture produces no synthetic trailing click.
+    const swipeElement = containerRef.current;
+
     const suppressClick = (e) => {
+      if (!swipeElement?.contains(e.target)) {
+        cleanup();
+        return;
+      }
       e.stopPropagation();
       e.preventDefault();
       cleanup();
@@ -243,15 +254,11 @@ export function useSwipeToAction(options = {}) {
   );
 
   const handleMouseUp = useCallback(() => {
-    // Capture BEFORE handleDragEnd, which synchronously clears
-    // swipeConfirmedRef as part of its reveal/snap-back branches. A confirmed
-    // swipe is always followed by a trailing native `click` on the same
-    // element once the mouse button is released over it; without suppressing
-    // that click, its handler sees stale guard state (isSwipingRef already
-    // false) and runs as if it were a genuine tap (mitto-mzvc).
-    const wasConfirmedSwipe = swipeConfirmedRef.current;
-    handleDragEnd();
-    if (wasConfirmedSwipe) {
+    // Only a gesture that leaves the action revealed needs suppression: its
+    // trailing click would immediately reset the reveal. A short confirmed
+    // drag that snaps back should remain a normal row click, not disappear.
+    const shouldSuppressTrailingClick = handleDragEnd();
+    if (shouldSuppressTrailingClick) {
       installClickSuppressor();
     }
   }, [handleDragEnd, installClickSuppressor]);

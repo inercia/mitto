@@ -113,3 +113,21 @@ describe("loop configuration synchronization (mitto-w7hh.3)", () => {
     );
   });
 });
+
+describe("useWebSocket.js: sidebar session activation (mitto-4hpi)", () => {
+  test("activates the selected session before inspecting or loading its state", () => {
+    const switchSession = useWebSocketJs.slice(
+      useWebSocketJs.indexOf("const switchSession = useCallback("),
+      useWebSocketJs.indexOf("// Handle global events (session lifecycle)"),
+    );
+    const activation = "setActiveSessionId(sessionId)";
+
+    expect(switchSession.indexOf(activation)).toBeGreaterThan(-1);
+    expect(switchSession.indexOf(activation)).toBeLessThan(
+      switchSession.indexOf("const currentSessions = sessionsRef.current"),
+    );
+    expect(
+      switchSession.match(/setActiveSessionId\(sessionId\)/g),
+    ).toHaveLength(1);
+  });
+});
