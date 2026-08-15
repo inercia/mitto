@@ -712,6 +712,61 @@ func TestHandshaker_ResumeSharedACPSession_LoadNotFound_FallsBackToNewSessionOnc
 	}
 }
 
+// TestHandshaker_ResumeSharedACPSession_DeletionCancellationSkipsNewSession
+// reproduces mitto-f9mt: deleting a conversation while its LoadSession probe is
+// blocked must cancel the resume without falling through to session/new.
+func TestHandshaker_ResumeSharedACPSession_DeletionCancellationSkipsNewSession(t *testing.T) {
+	c := sharedSessionHandshaker{}
+	d := newFakeHandshakeDeps()
+	resumeCtx, cancelResume := context.WithCancel(context.Background())
+	d.creationCtx = resumeCtx
+	fp := newFakeSharedProcess()
+	fp.caps = &acp.AgentCapabilities{LoadSession: true}
+	fp.loadBlocksUntilCtxDone = true
+
+	done := make(chan error, 1)
+	go func() {
+		done <- c.resumeSharedACPSession(d, fp, "cwd", "persisted-acp-id")
+	}()
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		fp.mu.Lock()
+		loadStarted := len(fp.loadSessionCalls) == 1
+		fp.mu.Unlock()
+		if loadStarted {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for LoadSession to block")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	// Simulate deletion invalidating the in-flight pending resume.
+	cancelResume()
+	err := <-done
+
+	fp.mu.Lock()
+	newCalls := len(fp.newSessionCalls)
+	fp.mu.Unlock()
+	if newCalls != 0 {
+		t.Fatalf("NewSession calls after deletion cancellation = %d, want 0", newCalls)
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("resume error = %v, want context.Canceled", err)
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.clearedACPID != 0 {
+		t.Fatalf("persisted ACP session ID clear calls = %d, want 0", d.clearedACPID)
+	}
+	if d.stopMcpCalls != 1 || d.acpClient != nil || d.sharedProcess != nil {
+		t.Fatalf("canceled handshake cleanup = (stopMCP=%d, client=%p, shared=%p), want (1, nil, nil)",
+			d.stopMcpCalls, d.acpClient, d.sharedProcess)
+	}
+}
+
 // TestHandshaker_ResumeSharedACPSession_ColdBudget_DoesNotStack is the mitto-1ut
 // regression: on a cold shared process (RecommendedLoadTimeout > 0), a stale-load
 // probe followed by the session/new fallback must share ONE wall-clock budget

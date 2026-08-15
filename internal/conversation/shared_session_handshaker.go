@@ -190,6 +190,20 @@ func (c sharedSessionHandshaker) creationRPCCtx(d handshakeDeps) (context.Contex
 	return context.WithCancel(d.hsColdTraceCtx(base))
 }
 
+func (c sharedSessionHandshaker) abortCanceledHandshake(d handshakeDeps, ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		d.hsStopMcpServer()
+		if client := d.hsGetACPClient(); client != nil {
+			client.Close()
+		}
+		d.hsSetACPClient(nil)
+		d.hsSetSharedProcess(nil)
+		d.hsNilCreationCtx()
+		return err
+	}
+	return nil
+}
+
 // buildWebClientConfig delegates to the deps seam (builds from BackgroundSession fields).
 func (c sharedSessionHandshaker) buildWebClientConfig(d handshakeDeps) WebClientConfig {
 	return d.hsBuildWebClientConfig()
@@ -373,6 +387,13 @@ func (c sharedSessionHandshaker) resumeSharedACPSession(d handshakeDeps, sharedP
 	}
 	mcpServers := d.hsStartMcpServer(caps)
 	d.hsSetACPClient(NewWebClient(c.buildWebClientConfig(d)))
+	handshakeCtx := d.hsCreationCtx()
+	if handshakeCtx == nil {
+		handshakeCtx = d.hsSessionCtx()
+	}
+	if err := c.abortCanceledHandshake(d, handshakeCtx); err != nil {
+		return err
+	}
 
 	// Cold-start diagnostics (mitto-3mv): if the shared process's MCP-init
 	// window is still open, this handshake will be gated on it. Mark the
@@ -412,10 +433,13 @@ func (c sharedSessionHandshaker) resumeSharedACPSession(d handshakeDeps, sharedP
 		supportsLoad := caps.LoadSession
 
 		if supportsResume {
-			resumeCtx, resumeCancel := context.WithTimeout(d.hsColdTraceCtx(d.hsSessionCtx()), 10*time.Second)
+			resumeCtx, resumeCancel := context.WithTimeout(d.hsColdTraceCtx(handshakeCtx), 10*time.Second)
 			resumeStart := time.Now()
 			handle, err = sharedProcess.ResumeSession(resumeCtx, acpSessionID, workingDir, mcpServers)
 			resumeCancel()
+			if cancelErr := c.abortCanceledHandshake(d, handshakeCtx); cancelErr != nil {
+				return cancelErr
+			}
 			if err != nil {
 				logFields := []any{"acp_session_id", acpSessionID, "error", err, "method", "resume"}
 				if resumeCtx.Err() == context.DeadlineExceeded {
@@ -459,11 +483,14 @@ func (c sharedSessionHandshaker) resumeSharedACPSession(d handshakeDeps, sharedP
 			if loadTimeout <= 0 {
 				loadTimeout = time.Millisecond // degenerate: budget already spent
 			}
-			loadCtx, loadCancel := context.WithTimeout(d.hsColdTraceCtx(d.hsSessionCtx()), loadTimeout)
+			loadCtx, loadCancel := context.WithTimeout(d.hsColdTraceCtx(handshakeCtx), loadTimeout)
 			loadStart := time.Now()
 			handle, err = sharedProcess.LoadSession(loadCtx, acpSessionID, workingDir, mcpServers)
 			loadCancel()
 			client.SetLoadingSession(false)
+			if cancelErr := c.abortCanceledHandshake(d, handshakeCtx); cancelErr != nil {
+				return cancelErr
+			}
 			if err != nil {
 				// Classify the failure so the fallback path emits an accurate cold
 				// phase and log: JSON-RPC -32602 from the agent means the persisted
@@ -521,6 +548,9 @@ func (c sharedSessionHandshaker) resumeSharedACPSession(d handshakeDeps, sharedP
 	}
 
 	if handle == nil {
+		if cancelErr := c.abortCanceledHandshake(d, handshakeCtx); cancelErr != nil {
+			return cancelErr
+		}
 		d.hsSetResumeMethod("new")
 		rpcCtx, rpcCancel := c.creationRPCCtx(d)
 		// Cap the session/new FALLBACK by the shared resume deadline (mitto-1ut) so

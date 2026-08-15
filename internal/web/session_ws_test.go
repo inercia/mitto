@@ -1,7 +1,10 @@
 package web
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -31,6 +34,15 @@ func TestGenerateClientID(t *testing.T) {
 	// IDs should be 16 characters (8 bytes hex encoded)
 	if len(id1) != 16 {
 		t.Errorf("generateClientID returned ID of length %d, want 16", len(id1))
+	}
+}
+
+func TestIsLifecycleResumeCancellation(t *testing.T) {
+	if !isLifecycleResumeCancellation(fmt.Errorf("resume aborted: %w", context.Canceled)) {
+		t.Fatal("wrapped context.Canceled must be treated as a quiet lifecycle cancellation")
+	}
+	if isLifecycleResumeCancellation(errors.New("ACP start failed")) {
+		t.Fatal("ordinary ACP failures must still be broadcast")
 	}
 }
 

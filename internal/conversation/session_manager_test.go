@@ -1643,6 +1643,98 @@ func TestSessionManager_ResumeSession_WaitsForPending(t *testing.T) {
 	}
 }
 
+func TestSessionManager_CloseSession_CancelsPendingResume(t *testing.T) {
+	sm := NewSessionManager("", "test-server", true, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	pr := &pendingResumeResult{done: make(chan struct{}), cancel: cancel}
+
+	sm.mu.Lock()
+	sm.pendingResumes["pending-resume-session"] = pr
+	sm.mu.Unlock()
+
+	sm.CloseSession("pending-resume-session", "deleted")
+
+	select {
+	case <-ctx.Done():
+		if !errors.Is(ctx.Err(), context.Canceled) {
+			t.Fatalf("pending resume context error = %v, want context.Canceled", ctx.Err())
+		}
+	case <-time.After(time.Second):
+		t.Fatal("CloseSession did not cancel pending resume")
+	}
+}
+
+func TestSessionManager_CloseSession_CancelsResumeWaitingForSemaphore(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	const sessionID = "queued-resume-session"
+	if err := store.Create(session.Metadata{
+		SessionID:  sessionID,
+		ACPServer:  "test-server",
+		WorkingDir: "/tmp",
+	}); err != nil {
+		t.Fatalf("store.Create failed: %v", err)
+	}
+
+	sm := NewSessionManager("echo test", "test-server", true, nil)
+	sm.SetStore(store)
+	for i := 0; i < cap(sm.resumeSemaphore); i++ {
+		sm.resumeSemaphore <- struct{}{}
+	}
+	t.Cleanup(func() {
+		for i := 0; i < cap(sm.resumeSemaphore); i++ {
+			<-sm.resumeSemaphore
+		}
+	})
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := sm.ResumeSession(sessionID, "Queued Resume", "/tmp")
+		done <- err
+	}()
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		sm.mu.RLock()
+		_, pending := sm.pendingResumes[sessionID]
+		sm.mu.RUnlock()
+		if pending {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for pending resume registration")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	sm.CloseSession(sessionID, "deleted")
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("ResumeSession error = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("resume remained blocked on semaphore after CloseSession")
+	}
+
+	sm.mu.RLock()
+	_, pending := sm.pendingResumes[sessionID]
+	sm.mu.RUnlock()
+	if pending {
+		t.Fatal("pending resume entry leaked after cancellation")
+	}
+	if got := sm.resumeQueued.Load(); got != 0 {
+		t.Fatalf("resumeQueued = %d, want 0", got)
+	}
+	if got := sm.resumeInFlight.Load(); got != 0 {
+		t.Fatalf("resumeInFlight = %d, want 0", got)
+	}
+}
+
 // TestSessionManager_ResumeSession_ConcurrentNoDeadlock verifies that concurrent
 // ResumeSession calls for the same session ID complete without deadlocking.
 // Because "echo test" is not a valid ACP server, all calls are expected to fail,

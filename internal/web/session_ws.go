@@ -2091,6 +2091,10 @@ func (c *SessionWSClient) sendPromptError(message string, promptID string) {
 	})
 }
 
+func isLifecycleResumeCancellation(err error) bool {
+	return errors.Is(err, context.Canceled)
+}
+
 // handleEnsureResumed ensures the session's ACP connection is running.
 // This is called when the user focuses on a conversation, providing an explicit
 // hint that this session should be resumed immediately (bypassing any startup stagger).
@@ -2150,6 +2154,12 @@ func (c *SessionWSClient) handleEnsureResumed() {
 		// fan-out has already saturated the interactive-resume bound.
 		resumedBS, err := c.server.sessionManager.ResumeSession(c.sessionID, sessionName, cwd)
 		if err != nil {
+			if isLifecycleResumeCancellation(err) {
+				if c.logger != nil {
+					c.logger.Debug("Session resume canceled by lifecycle change (ensure_resumed)")
+				}
+				return
+			}
 			if c.logger != nil {
 				c.logger.Error("Failed to resume session (ensure_resumed)", "error", err)
 			}

@@ -57,9 +57,10 @@ var ErrTooManySessions = errors.New("maximum number of sessions reached")
 // Goroutines that race to resume the same session ID wait on done, then read
 // the result set by the first (primary) goroutine — preventing duplicate ACP launches.
 type pendingResumeResult struct {
-	done chan struct{}      // closed when the resume is complete
-	bs   *BackgroundSession // result (valid after done is closed)
-	err  error              // error  (valid after done is closed)
+	done   chan struct{}      // closed when the resume is complete
+	cancel context.CancelFunc // invalidates in-flight ACP handshake RPCs
+	bs     *BackgroundSession // result (valid after done is closed)
+	err    error              // error  (valid after done is closed)
 }
 
 // ACPServerRenameResult summarizes persisted and restarted sessions after an ACP server rename/remap.
@@ -2374,7 +2375,11 @@ func (sm *SessionManager) resumeSessionWithConstraint(sessionID, sessionName, wo
 	// Register our pending resume so any concurrent callers for this session ID
 	// will wait for our result instead of launching their own ACP subprocess.
 	// The channel is closed (with pr.bs/pr.err set) by signalDone below.
-	pr := &pendingResumeResult{done: make(chan struct{})}
+	resumeCtx, cancelResume := context.WithCancel(context.Background())
+	pr := &pendingResumeResult{
+		done:   make(chan struct{}),
+		cancel: cancelResume,
+	}
 	sm.pendingResumes[sessionID] = pr
 
 	store := sm.store
@@ -2415,6 +2420,7 @@ func (sm *SessionManager) resumeSessionWithConstraint(sessionID, sessionName, wo
 		sm.mu.Lock()
 		delete(sm.pendingResumes, sessionID)
 		sm.mu.Unlock()
+		cancelResume()
 		close(pr.done)
 	}
 
@@ -2546,7 +2552,13 @@ func (sm *SessionManager) resumeSessionWithConstraint(sessionID, sessionName, wo
 	// before reaching here and MUST NOT touch these counters.
 	sm.resumeQueued.Add(1)
 	semWaitStart := time.Now()
-	sm.resumeSemaphore <- struct{}{}
+	select {
+	case sm.resumeSemaphore <- struct{}{}:
+	case <-resumeCtx.Done():
+		sm.resumeQueued.Add(-1)
+		signalDone(nil, context.Canceled)
+		return nil, context.Canceled
+	}
 	semWait := time.Since(semWaitStart)
 	sm.resumeQueued.Add(-1)
 	sm.resumeInFlight.Add(1)
@@ -2602,11 +2614,9 @@ func (sm *SessionManager) resumeSessionWithConstraint(sessionID, sessionName, wo
 	// Create a background session with the existing persisted session ID
 	// Pass the ACP session ID for potential server-side resumption
 	bs, err := ResumeBackgroundSession(BackgroundSessionConfig{
-		// CreationCtx: use a background context with the default timeout. ResumeSession is
-		// called from a goroutine (session_ws.go), not directly from an HTTP handler, so
-		// there is no request context to propagate. The 25s timeout in creationRPCCtx()
-		// provides the safety net so the goroutine doesn't block indefinitely if the ACP
-		// agent is busy.
+		// CreationCtx is canceled by CloseSession when deletion invalidates this pending
+		// resume, allowing the handshake to abort before any load/new fallback.
+		CreationCtx:                    resumeCtx,
 		PersistedID:                    sessionID,
 		ColdStartSemWait:               semWait, // mitto-3mv: attribute queueing wait to trace
 		ACPCommand:                     acpCommand,
@@ -2725,6 +2735,13 @@ func (sm *SessionManager) resumeSessionWithConstraint(sessionID, sessionName, wo
 			"session_id", sessionID,
 			"success", err == nil)
 	}
+	if resumeCtx.Err() != nil {
+		if bs != nil {
+			bs.Close("resume_canceled")
+		}
+		signalDone(nil, context.Canceled)
+		return nil, context.Canceled
+	}
 
 	if err != nil {
 		// mitto-54k.6 / mitto-wub: a cold-start MCP-init timeout, or a shared-ACP-process
@@ -2838,6 +2855,12 @@ func (sm *SessionManager) resumeSessionWithConstraint(sessionID, sessionName, wo
 	}
 
 	sm.mu.Lock()
+	if resumeCtx.Err() != nil {
+		sm.mu.Unlock()
+		bs.Close("resume_canceled")
+		signalDone(nil, context.Canceled)
+		return nil, context.Canceled
+	}
 	// Check session limit (another session may have been created concurrently).
 	if len(sm.sessions) >= MaxSessions {
 		sm.mu.Unlock()
@@ -2905,7 +2928,11 @@ func (sm *SessionManager) RemoveSession(sessionID string) {
 func (sm *SessionManager) CloseSession(sessionID, reason string) {
 	sm.mu.Lock()
 	bs := sm.sessions[sessionID]
+	pr := sm.pendingResumes[sessionID]
 	delete(sm.sessions, sessionID)
+	if pr != nil && pr.cancel != nil {
+		pr.cancel()
+	}
 	sm.mu.Unlock()
 
 	// Clear cached plan state when session is closed/deleted
