@@ -7745,8 +7745,13 @@ func TestBeadsPrimeProcessor_UsesShellIndexCommand(t *testing.T) {
 		t.Fatalf("Args = %#v, want [-c, <script>]", proc.Args)
 	}
 	script := proc.Args[1]
-	if !strings.Contains(script, "bd prime --memories-only --max-memories 0 --max-memory-chars 0") {
-		t.Errorf("script does not invoke uncapped `bd prime --memories-only`:\n%s", script)
+	if !strings.Contains(script, "out=$(bd prime --memories-only)") {
+		t.Errorf("script does not invoke bd 1.2.2-compatible `bd prime --memories-only`:\n%s", script)
+	}
+	for _, retiredFlag := range []string{"--max-memories", "--max-memory-chars"} {
+		if strings.Contains(script, retiredFlag) {
+			t.Errorf("script still contains retired bd flag %q:\n%s", retiredFlag, script)
+		}
 	}
 	if !strings.Contains(script, "n != expected") {
 		t.Errorf("script does not fail safely on a memory heading/count mismatch:\n%s", script)
@@ -7832,6 +7837,34 @@ func TestBeadsPrimeProcessor_ShellScriptSmoke(t *testing.T) {
 	}
 	if !strings.Contains(output.Text, "bd recall <key>") {
 		t.Errorf("index missing `bd recall <key>` lookup instruction:\n%s", output.Text)
+	}
+}
+
+// TestBeadsPrimeProcessor_Bd122CompatibleInvocation reproduces mitto-e3ut.3:
+// bd 1.2.2 accepts `prime --memories-only` but rejects the retired memory-cap
+// flags. The processor must not pass any additional arguments.
+func TestBeadsPrimeProcessor_Bd122CompatibleInvocation(t *testing.T) {
+	proc := loadBuiltinProcessorForTest(t, "beads-prime")
+
+	binDir := t.TempDir()
+	fakeBd := "#!/bin/sh\n" +
+		"if [ \"$#\" -ne 2 ] || [ \"$1\" != \"prime\" ] || [ \"$2\" != \"--memories-only\" ]; then\n" +
+		"  printf 'Error: unknown flag: %s\\n' \"$3\" >&2\n" +
+		"  exit 1\n" +
+		"fi\n" +
+		"printf '## Persistent Memories (1)\\n\\n### bd-122-key\\nbody omitted\\n'\n"
+	if err := os.WriteFile(filepath.Join(binDir, "bd"), []byte(fakeBd), 0755); err != nil {
+		t.Fatalf("WriteFile(fake bd) error = %v", err)
+	}
+	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
+
+	tmpDir := t.TempDir()
+	output, err := NewExecutor(tmpDir, nil).Execute(context.Background(), proc, &ProcessorInput{WorkingDir: tmpDir})
+	if err != nil {
+		t.Fatalf("Execute() should use bd 1.2.2-compatible syntax: %v", err)
+	}
+	if !strings.Contains(output.Text, "bd-122-key") {
+		t.Errorf("index missing bd-122-key:\n%s", output.Text)
 	}
 }
 
