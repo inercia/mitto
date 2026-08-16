@@ -868,6 +868,11 @@ func (s *Server) reaperPOSTStarted(sessionID string) *mcpSessionLease {
 			continue
 		}
 		lease.inFlightPOSTs++
+		// A new application request proves the protocol session is still in use.
+		// If it arrived after the final known owner left, cancel that pending
+		// retirement; a later owner association or ordinary idle policy will
+		// determine its next lifecycle transition.
+		lease.retireRequested = false
 		lease.lastActivity = s.reaperClockNowLocked()
 		s.reaperMu.Unlock()
 		return lease

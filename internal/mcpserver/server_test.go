@@ -306,9 +306,9 @@ func TestMcpRequestLoggingMiddlewareTracksOpenSSEStreams(t *testing.T) {
 	// Downstream handler blocks until released, simulating a long-lived SSE
 	// GET stream that pins a goroutine for its lifetime.
 	release := make(chan struct{})
-	var observedDuringGET int64
+	var observedDuringGET atomic.Int64
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		observedDuringGET = srv.openSSEStreams.Load()
+		observedDuringGET.Store(srv.openSSEStreams.Load())
 		<-release
 	})
 	wrapped := srv.mcpRequestLoggingMiddleware(next)
@@ -326,11 +326,11 @@ func TestMcpRequestLoggingMiddlewareTracksOpenSSEStreams(t *testing.T) {
 
 	// Wait for the handler to observe the incremented counter.
 	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) && atomic.LoadInt64(&observedDuringGET) == 0 {
+	for time.Now().Before(deadline) && observedDuringGET.Load() == 0 {
 		time.Sleep(5 * time.Millisecond)
 	}
-	if observedDuringGET != 1 {
-		t.Errorf("expected openSSEStreams=1 while GET is in flight, got %d", observedDuringGET)
+	if got := observedDuringGET.Load(); got != 1 {
+		t.Errorf("expected openSSEStreams=1 while GET is in flight, got %d", got)
 	}
 
 	close(release)
@@ -447,7 +447,7 @@ func TestReapIdleMCPSessions_GETKeepaliveOnlyActivityNotReaped(t *testing.T) {
 	srv.reapIdleMCPSessions()
 
 	srv.reaperMu.Lock()
-	_, tracked := srv.lastActivity[sid]
+	_, tracked := srv.mcpSessionLeases[sid]
 	srv.reaperMu.Unlock()
 	if !tracked {
 		t.Error("session with only periodic GET keepalive activity was reaped (tracking entry removed) — " +
@@ -476,8 +476,11 @@ func TestReapIdleMCPSessions_OpenStreamExemptPastTimeout(t *testing.T) {
 	srv.reapIdleMCPSessions()
 
 	srv.reaperMu.Lock()
-	_, tracked := srv.lastActivity[sid]
-	openCount := srv.openStreamsBySession[sid]
+	lease, tracked := srv.mcpSessionLeases[sid]
+	openCount := 0
+	if tracked {
+		openCount = lease.openStreams
+	}
 	srv.reaperMu.Unlock()
 	if !tracked || openCount != 1 {
 		t.Errorf("session with an open GET stream was reaped past the idle timeout "+
@@ -529,7 +532,7 @@ func TestReapIdleMCPSessions_NoActivityNoStreamIsReapedAndLogged(t *testing.T) {
 	srv.reapIdleMCPSessions()
 
 	srv.reaperMu.Lock()
-	_, tracked := srv.lastActivity[sid]
+	_, tracked := srv.mcpSessionLeases[sid]
 	srv.reaperMu.Unlock()
 	if tracked {
 		t.Error("idle session with no open stream was not reaped (tracking entry still present)")
