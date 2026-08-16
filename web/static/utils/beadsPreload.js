@@ -14,9 +14,45 @@ import { withIssueCaches } from "../sdk/index.js";
 import { isGone } from "./beadsGoneCache.js";
 
 const TTL_MS = 30_000;
+const MAX_CONCURRENT_PRELOADS = 2;
 
 // preloaded: workingDir -> Map<idLower, timestampMs>
 const preloaded = new Map();
+const pendingPreloads = [];
+let activePreloads = 0;
+let preloadGeneration = 0;
+
+function drainPreloads() {
+  while (
+    activePreloads < MAX_CONCURRENT_PRELOADS &&
+    pendingPreloads.length > 0
+  ) {
+    const job = pendingPreloads.shift();
+    if (job.generation !== preloadGeneration) continue;
+    activePreloads++;
+    job.issues
+      .show(job.id, { working_dir: job.workingDir })
+      .catch(() => {})
+      .finally(() => {
+        if (job.generation !== preloadGeneration) return;
+        activePreloads--;
+        drainPreloads();
+      });
+  }
+}
+
+function shouldPreload(workingDir, id) {
+  const now = Date.now();
+  let bucket = preloaded.get(workingDir);
+  if (!bucket) {
+    bucket = new Map();
+    preloaded.set(workingDir, bucket);
+  }
+  const last = bucket.get(id);
+  if (last !== undefined && now - last < TTL_MS) return false;
+  bucket.set(id, now);
+  return true;
+}
 
 /**
  * Fire-and-forget preload of `GET /api/issues/{id}?working_dir=…` for each
@@ -29,25 +65,18 @@ export function preloadBeadsIssues(ids, workingDir) {
   if (!workingDir) return;
   if (!Array.isArray(ids) || ids.length === 0) return;
 
-  // withIssueCaches' preload() already fires-and-forgets each show() call and
-  // swallows errors (best-effort cache warmer); isGone/shouldPreload here
-  // reproduce this module's original TTL-dedup + negative-cache skip exactly.
-  const issues = withIssueCaches(getSdkClient().issues, {
-    isGone,
-    shouldPreload: (wd, id) => {
-      const now = Date.now();
-      let bucket = preloaded.get(wd);
-      if (!bucket) {
-        bucket = new Map();
-        preloaded.set(wd, bucket);
-      }
-      const last = bucket.get(id);
-      if (last !== undefined && now - last < TTL_MS) return false;
-      bucket.set(id, now);
-      return true;
-    },
-  });
-  issues.preload(ids, { working_dir: workingDir });
+  const issues = withIssueCaches(getSdkClient().issues, { isGone });
+  for (const id of ids) {
+    if (!id || isGone(workingDir, id) || !shouldPreload(workingDir, id))
+      continue;
+    pendingPreloads.push({
+      issues,
+      id,
+      workingDir,
+      generation: preloadGeneration,
+    });
+  }
+  drainPreloads();
 }
 
 /**
@@ -55,4 +84,7 @@ export function preloadBeadsIssues(ids, workingDir) {
  */
 export function _resetBeadsPreloadCache() {
   preloaded.clear();
+  pendingPreloads.length = 0;
+  activePreloads = 0;
+  preloadGeneration++;
 }

@@ -99,9 +99,42 @@ describe("preloadBeadsIssues — fetch surface", () => {
     expect(urls.some((u) => u.includes("/api/issues/mitto-aaa"))).toBe(true);
     expect(urls.some((u) => u.includes("/api/issues/mitto-bbb"))).toBe(true);
     // working_dir is URL-encoded on the query string
-    expect(
-      urls.every((u) => u.includes(encodeURIComponent("/tmp/wsA"))),
-    ).toBe(true);
+    expect(urls.every((u) => u.includes(encodeURIComponent("/tmp/wsA")))).toBe(
+      true,
+    );
+  });
+
+  test("bounds concurrent cold detail preloads for a large linked-ID batch", async () => {
+    // Regression for mitto-ddrb: keep every request pending so the call count
+    // measures simultaneous browser fan-out rather than eventual throughput.
+    currentFetch.mockImplementation(() => new Promise(() => {}));
+    const ids = Array.from({ length: 40 }, (_, i) => `mitto-cold-${i}`);
+
+    mod.preloadBeadsIssues(ids, "/tmp/wsA");
+    await flush();
+
+    expect(currentFetch.mock.calls.length).toBeLessThanOrEqual(2);
+  });
+
+  test("continues draining queued preloads when an active request finishes", async () => {
+    const resolvers = [];
+    currentFetch.mockImplementation(
+      () => new Promise((resolve) => resolvers.push(resolve)),
+    );
+    mod.preloadBeadsIssues(
+      ["mitto-first", "mitto-second", "mitto-third"],
+      "/tmp/wsA",
+    );
+    await flush();
+    expect(currentFetch).toHaveBeenCalledTimes(2);
+
+    resolvers[0]({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({}),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(currentFetch).toHaveBeenCalledTimes(3);
   });
 
   test("swallows fetch rejection without throwing", async () => {
@@ -161,12 +194,12 @@ describe("preloadBeadsIssues — dedup", () => {
     expect(currentFetch).toHaveBeenCalledTimes(2);
 
     const urls = currentFetch.mock.calls.map((c) => String(c[0]));
-    expect(
-      urls.some((u) => u.includes(encodeURIComponent("/tmp/wsA"))),
-    ).toBe(true);
-    expect(
-      urls.some((u) => u.includes(encodeURIComponent("/tmp/wsB"))),
-    ).toBe(true);
+    expect(urls.some((u) => u.includes(encodeURIComponent("/tmp/wsA")))).toBe(
+      true,
+    );
+    expect(urls.some((u) => u.includes(encodeURIComponent("/tmp/wsB")))).toBe(
+      true,
+    );
   });
 
   test("_resetBeadsPreloadCache clears dedup state", async () => {
