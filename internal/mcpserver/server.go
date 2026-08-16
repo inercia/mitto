@@ -143,22 +143,17 @@ type Server struct {
 	// the HTTP handler's reuseTitleLocks. See lockReuseTitle.
 	reuseTitleLocks map[string]*sync.Mutex
 
-	// --- Idle MCP session reaper (mitto-txse) ---
+	// --- MCP session lease reaper (mitto-txse, mitto-wat) ---
 	// reaperMu guards every field in this block. Purpose-scoped, per this
 	// file's convention of dedicated mutexes for independent state (compare
 	// sessionsMu, mcpSessionMapMu) — never reuse s.mu, which guards lifecycle
 	// fields (running/shutdown/listener/httpSrv).
 	reaperMu sync.Mutex
-	// lastActivity maps an MCP protocol session id (Mcp-Session-Id) to the
-	// time of its most recent request of ANY kind — GET, POST, or DELETE.
-	// This is Mitto's own idle clock, replacing the go-sdk's POST-only one
-	// (see mcpIdleSessionTimeout doc for why). Populated by
-	// mcpRequestLoggingMiddleware, consumed by reapIdleMCPSessions.
-	lastActivity map[string]time.Time
-	// openStreamsBySession counts currently-open long-lived GET (keepalive)
-	// streams per MCP session id. A session with a nonzero count here is by
-	// definition live and is never reaped, regardless of idle time.
-	openStreamsBySession map[string]int
+	// mcpSessionLeases tracks transport activity and the registered Mitto
+	// conversations that have actually used each MCP protocol session. Unknown
+	// sessions with a live GET retain the mitto-txse exemption; previously-owned
+	// sessions become safely retireable when their final owner unregisters.
+	mcpSessionLeases map[string]*mcpSessionLease
 	// streamableHandler is the raw *mcp.StreamableHTTPHandler (NOT the
 	// logging-wrapped handler mounted on the mux) used by reapIdleMCPSessions
 	// to issue synthetic DELETE requests. Serving reap requests against the
@@ -211,6 +206,19 @@ type registeredSession struct {
 type pendingRequest struct {
 	sessionID    string
 	registeredAt time.Time
+}
+
+// mcpSessionLease is Mitto's lifecycle record for one Streamable HTTP protocol
+// session. deleteMu serializes application POSTs against synthetic DELETE: the
+// reaper holds it exclusively while deleting, while each POST holds it for the
+// full downstream request. reaperMu guards every other field.
+type mcpSessionLease struct {
+	deleteMu        sync.RWMutex
+	lastActivity    time.Time
+	openStreams     int
+	inFlightPOSTs   int
+	owners          map[string]struct{}
+	retireRequested bool
 }
 
 // pendingRequestTimeout is how long we wait for a pending request to be registered.
@@ -428,6 +436,7 @@ func NewServer(cfg Config, deps Dependencies) (*Server, error) {
 		sessions:              make(map[string]*registeredSession),
 		pendingRequests:       make(map[string][]*pendingRequest),
 		mcpSessionMap:         make(map[string]string),
+		mcpSessionLeases:      make(map[string]*mcpSessionLease),
 		childReportCollectors: make(map[string]*childReportCollector),
 	}
 
@@ -510,10 +519,11 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 }
 
-// mcpIdleSessionTimeout bounds how long a Streamable HTTP MCP session is kept
-// alive after Mitto has observed NO request of any kind — GET (including
-// keepalive), POST, or DELETE — bearing that session's id, before Mitto's own
-// reaper (reapIdleMCPSessions) closes it. Every ACP session — including
+// mcpIdleSessionTimeout bounds how long an unowned Streamable HTTP MCP session
+// with no open stream is kept after Mitto has observed no request of any kind.
+// Separately, a session whose final known Mitto owner unregisters is retired as
+// soon as application POSTs drain, even if its abandoned GET remains open.
+// Every ACP session — including
 // one-shot processor-scoped auxiliary sessions
 // (internal/acpproc/aux_mcp_transport.go) — opens its own MCP session against
 // this endpoint and never explicitly DELETEs it, so without an idle timeout
@@ -557,8 +567,9 @@ func mcpStreamableHTTPOptions() *mcp.StreamableHTTPOptions {
 		// real tool call lost). The go-sdk exposes no hook to make its clock
 		// GET-aware (sessionInfo is unexported), so Mitto owns the reap
 		// policy instead: see reapIdleMCPSessions, which treats any request
-		// bearing the session id as activity and additionally exempts a
-		// session with a currently-open GET stream outright. The mitto-6cz6
+		// bearing the session id as activity, exempts unknown/live sessions with
+		// an open GET, and explicitly retires sessions whose final correlated
+		// Mitto owner has stopped (mitto-wat). The mitto-6cz6
 		// accumulation problem this SDK option originally addressed is still
 		// covered by that Mitto-owned reaper.
 		SessionTimeout: 0,
@@ -739,13 +750,15 @@ func (s *Server) mcpRequestLoggingMiddleware(next http.Handler) http.Handler {
 			defer s.openSSEStreams.Add(-1)
 		}
 
-		// Idle-session reaper bookkeeping (mitto-txse): record activity for
-		// any request bearing a known session id — GET (including keepalive),
-		// POST, and DELETE alike — and separately track open GET streams so a
-		// session with a live keepalive is exempt from reaping regardless of
-		// idle time. See reapIdleMCPSessions.
+		// MCP-session lease bookkeeping: every request refreshes activity;
+		// POSTs additionally take the per-session read gate for their complete
+		// downstream lifetime so owner retirement cannot delete beneath a tool.
+		var postLease *mcpSessionLease
 		if mcpSessionID != "" {
 			s.reaperTouch(mcpSessionID)
+			if r.Method == http.MethodPost {
+				postLease = s.reaperPOSTStarted(mcpSessionID)
+			}
 		}
 		if r.Method == http.MethodGet && mcpSessionID != "" {
 			s.reaperStreamOpened(mcpSessionID)
@@ -768,6 +781,9 @@ func (s *Server) mcpRequestLoggingMiddleware(next http.Handler) http.Handler {
 		effSessionID := mcpSessionID
 		if effSessionID == "" {
 			effSessionID = rec.Header().Get(mcpSessionIDHeader)
+		}
+		if postLease != nil {
+			s.reaperPOSTFinished(postLease)
 		}
 		switch {
 		case effSessionID == "":
@@ -812,6 +828,17 @@ func (s *Server) reaperClockNow() time.Time {
 	return time.Now()
 }
 
+// reaperLeaseLocked returns the lease for sessionID, creating it if necessary.
+// The caller must hold reaperMu.
+func (s *Server) reaperLeaseLocked(sessionID string) *mcpSessionLease {
+	lease := s.mcpSessionLeases[sessionID]
+	if lease == nil {
+		lease = &mcpSessionLease{owners: make(map[string]struct{})}
+		s.mcpSessionLeases[sessionID] = lease
+	}
+	return lease
+}
+
 // reaperTouch records sessionID as having had activity right now. Called for
 // any request bearing a known session id, on both receipt and completion —
 // see mcpRequestLoggingMiddleware.
@@ -821,11 +848,49 @@ func (s *Server) reaperTouch(sessionID string) {
 	}
 	now := s.reaperClockNow()
 	s.reaperMu.Lock()
-	if s.lastActivity == nil {
-		s.lastActivity = make(map[string]time.Time)
-	}
-	s.lastActivity[sessionID] = now
+	s.reaperLeaseLocked(sessionID).lastActivity = now
 	s.reaperMu.Unlock()
+}
+
+// reaperPOSTStarted enters the per-session application-request gate and marks
+// a POST in flight. The returned lease must be passed to reaperPOSTFinished.
+func (s *Server) reaperPOSTStarted(sessionID string) *mcpSessionLease {
+	for {
+		s.reaperMu.Lock()
+		lease := s.reaperLeaseLocked(sessionID)
+		s.reaperMu.Unlock()
+
+		lease.deleteMu.RLock()
+		s.reaperMu.Lock()
+		if s.mcpSessionLeases[sessionID] != lease {
+			s.reaperMu.Unlock()
+			lease.deleteMu.RUnlock()
+			continue
+		}
+		lease.inFlightPOSTs++
+		lease.lastActivity = s.reaperClockNowLocked()
+		s.reaperMu.Unlock()
+		return lease
+	}
+}
+
+// reaperPOSTFinished marks a POST complete and releases its delete gate.
+func (s *Server) reaperPOSTFinished(lease *mcpSessionLease) {
+	s.reaperMu.Lock()
+	if lease.inFlightPOSTs > 0 {
+		lease.inFlightPOSTs--
+	}
+	lease.lastActivity = s.reaperClockNowLocked()
+	s.reaperMu.Unlock()
+	lease.deleteMu.RUnlock()
+}
+
+// reaperClockNowLocked returns the configured clock while reaperMu is held.
+func (s *Server) reaperClockNowLocked() time.Time {
+	if s.reaperNow != nil {
+		return s.reaperNow()
+	}
+	return time.Now()
 }
 
 // reaperStreamOpened increments the open-GET-stream count for sessionID.
@@ -835,10 +900,7 @@ func (s *Server) reaperStreamOpened(sessionID string) {
 		return
 	}
 	s.reaperMu.Lock()
-	if s.openStreamsBySession == nil {
-		s.openStreamsBySession = make(map[string]int)
-	}
-	s.openStreamsBySession[sessionID]++
+	s.reaperLeaseLocked(sessionID).openStreams++
 	s.reaperMu.Unlock()
 }
 
@@ -849,10 +911,8 @@ func (s *Server) reaperStreamClosed(sessionID string) {
 		return
 	}
 	s.reaperMu.Lock()
-	if n := s.openStreamsBySession[sessionID]; n > 1 {
-		s.openStreamsBySession[sessionID] = n - 1
-	} else {
-		delete(s.openStreamsBySession, sessionID)
+	if lease := s.mcpSessionLeases[sessionID]; lease != nil && lease.openStreams > 0 {
+		lease.openStreams--
 	}
 	s.reaperMu.Unlock()
 }
@@ -865,8 +925,10 @@ func (s *Server) reaperForget(sessionID string) {
 		return
 	}
 	s.reaperMu.Lock()
-	delete(s.lastActivity, sessionID)
-	delete(s.openStreamsBySession, sessionID)
+	delete(s.mcpSessionLeases, sessionID)
+	s.mcpSessionMapMu.Lock()
+	delete(s.mcpSessionMap, sessionID)
+	s.mcpSessionMapMu.Unlock()
 	s.reaperMu.Unlock()
 }
 
@@ -917,13 +979,11 @@ func (s *Server) stopMCPSessionReaper() {
 	s.reaperWG.Wait()
 }
 
-// reapIdleMCPSessions scans tracked MCP sessions and reaps — via a synthetic
-// DELETE served directly against the raw streamable handler — any session
-// that has zero currently-open GET (keepalive) streams AND has seen no
-// request of any kind for longer than reaperTimeout. A session with an open
-// stream is exempt outright, regardless of idle time: this is the fix for
-// mitto-txse, where the go-sdk's own POST-only idle clock reaped sessions
-// that were demonstrably still alive.
+// reapIdleMCPSessions retires two safe classes via synthetic DELETE: truly idle
+// sessions with no stream, and previously-owned sessions whose final registered
+// Mitto owner has stopped. Unknown sessions with an open GET stay exempt (the
+// mitto-txse safety invariant). Per-lease deleteMu prevents deletion beneath an
+// application POST without holding reaperMu across the SDK handler.
 func (s *Server) reapIdleMCPSessions() {
 	s.reaperMu.Lock()
 	handler := s.streamableHandler
@@ -941,17 +1001,20 @@ func (s *Server) reapIdleMCPSessions() {
 
 	type candidate struct {
 		sessionID string
+		lease     *mcpSessionLease
 		idle      time.Duration
+		reason    string
 	}
 	var toReap []candidate
 
 	s.reaperMu.Lock()
-	for sid, last := range s.lastActivity {
-		if s.openStreamsBySession[sid] > 0 {
-			continue
-		}
-		if idle := nowT.Sub(last); idle > timeout {
-			toReap = append(toReap, candidate{sessionID: sid, idle: idle})
+	for sid, lease := range s.mcpSessionLeases {
+		idle := nowT.Sub(lease.lastActivity)
+		switch {
+		case lease.retireRequested && len(lease.owners) == 0 && lease.inFlightPOSTs == 0:
+			toReap = append(toReap, candidate{sessionID: sid, lease: lease, idle: idle, reason: "owner_gone"})
+		case lease.openStreams == 0 && lease.inFlightPOSTs == 0 && idle > timeout:
+			toReap = append(toReap, candidate{sessionID: sid, lease: lease, idle: idle, reason: "idle"})
 		}
 	}
 	s.reaperMu.Unlock()
@@ -966,10 +1029,29 @@ func (s *Server) reapIdleMCPSessions() {
 	}
 
 	for _, c := range toReap {
+		c.lease.deleteMu.Lock()
+
+		// Revalidate after acquiring the exclusive POST gate. A request that
+		// began before us may have associated a new owner while we waited.
+		s.reaperMu.Lock()
+		lease := s.mcpSessionLeases[c.sessionID]
+		if lease != c.lease || lease.inFlightPOSTs != 0 ||
+			(c.reason == "owner_gone" && (!lease.retireRequested || len(lease.owners) != 0)) ||
+			(c.reason == "idle" && (lease.openStreams != 0 || nowT.Sub(lease.lastActivity) <= timeout)) {
+			s.reaperMu.Unlock()
+			c.lease.deleteMu.Unlock()
+			continue
+		}
+		openStreams := lease.openStreams
+		ownerCount := len(lease.owners)
+		idle := nowT.Sub(lease.lastActivity)
+		s.reaperMu.Unlock()
+
 		req, err := http.NewRequest(http.MethodDelete, "/mcp", nil)
 		if err != nil {
 			s.logger.Error("mcp reaper: failed to build synthetic DELETE",
 				"mcp_session_id", c.sessionID, "error", err)
+			c.lease.deleteMu.Unlock()
 			continue
 		}
 		req.Header.Set(mcpSessionIDHeader, c.sessionID)
@@ -983,11 +1065,15 @@ func (s *Server) reapIdleMCPSessions() {
 
 		s.logger.Info("mcp reaper: reaped idle MCP session",
 			"mcp_session_id", c.sessionID,
-			"idle_seconds", int(c.idle.Seconds()),
+			"reason", c.reason,
+			"owner_count", ownerCount,
+			"open_streams", openStreams,
+			"idle_seconds", int(idle.Seconds()),
 			"status", status,
 		)
 
 		s.reaperForget(c.sessionID)
+		c.lease.deleteMu.Unlock()
 	}
 }
 
@@ -1261,21 +1347,43 @@ func (s *Server) UnregisterSession(sessionID string) {
 		return // Already unregistered
 	}
 	delete(s.sessions, sessionID)
-	s.sessionsMu.Unlock()
 
-	// Clean up child report collector for this parent session
-	s.childReportCollectorsMu.Lock()
-	delete(s.childReportCollectors, sessionID)
-	s.childReportCollectorsMu.Unlock()
-
-	// Clean up MCP session cache entries pointing to this session
+	// Retire protocol sessions previously used only by this conversation. Keep
+	// shared pooled transports alive while any other registered owner remains.
+	s.reaperMu.Lock()
 	s.mcpSessionMapMu.Lock()
+	for mcpID, lease := range s.mcpSessionLeases {
+		if _, owned := lease.owners[sessionID]; !owned {
+			continue
+		}
+		delete(lease.owners, sessionID)
+		if len(lease.owners) == 0 {
+			lease.retireRequested = true
+			delete(s.mcpSessionMap, mcpID)
+			continue
+		}
+		if s.mcpSessionMap[mcpID] == sessionID {
+			for replacement := range lease.owners {
+				s.mcpSessionMap[mcpID] = replacement
+				break
+			}
+		}
+	}
+	// Preserve the legacy cache cleanup invariant for entries created before
+	// ownership association existed (and for focused cache tests).
 	for mcpID, mittoID := range s.mcpSessionMap {
 		if mittoID == sessionID {
 			delete(s.mcpSessionMap, mcpID)
 		}
 	}
 	s.mcpSessionMapMu.Unlock()
+	s.reaperMu.Unlock()
+	s.sessionsMu.Unlock()
+
+	// Clean up child report collector for this parent session
+	s.childReportCollectorsMu.Lock()
+	delete(s.childReportCollectors, sessionID)
+	s.childReportCollectorsMu.Unlock()
 
 	s.logger.Info("Session unregistered from MCP server", "session_id", sessionID)
 }
@@ -1323,6 +1431,7 @@ func (s *Server) resolveSelfIDWithMCP(inputSessionID string, req *mcp.CallToolRe
 
 	// Phase 1: Direct lookup - check if inputSessionID is already a registered session.
 	if reg := s.getSession(inputSessionID); reg != nil {
+		s.associateMCPSession(req, inputSessionID)
 		s.logger.Debug("Session resolved via direct lookup",
 			"input_session_id", inputSessionID,
 			"resolved_session_id", inputSessionID)
@@ -1336,6 +1445,7 @@ func (s *Server) resolveSelfIDWithMCP(inputSessionID string, req *mcp.CallToolRe
 	if req != nil && req.Session != nil {
 		mcpSessionID := req.Session.ID()
 		if cached := s.lookupMCPSession(mcpSessionID); cached != "" {
+			s.associateMCPSession(req, cached)
 			s.logger.Debug("Session resolved via MCP session cache",
 				"input_session_id", inputSessionID,
 				"mcp_session_id", mcpSessionID,
@@ -1350,6 +1460,7 @@ func (s *Server) resolveSelfIDWithMCP(inputSessionID string, req *mcp.CallToolRe
 	// ACP layer intercepts the tool call and registers the session ID mapping.
 	realSessionID := s.WaitForPendingRequest(inputSessionID)
 	if realSessionID != "" {
+		s.associateMCPSession(req, realSessionID)
 		s.logger.Debug("Session resolved via correlation lookup",
 			"input_session_id", inputSessionID,
 			"resolved_session_id", realSessionID)
@@ -1584,6 +1695,39 @@ func (s *Server) cacheMCPSession(mcpSessionID, mittoSessionID string) {
 	)
 }
 
+// associateMCPSession records that a registered Mitto conversation has used
+// the protocol session carrying req. Holding sessionsMu through both updates
+// serializes this association against UnregisterSession, preventing a stopped
+// owner from being re-added after retirement was requested.
+func (s *Server) associateMCPSession(req *mcp.CallToolRequest, mittoSessionID string) {
+	if req == nil || req.Session == nil || mittoSessionID == "" {
+		return
+	}
+	mcpSessionID := req.Session.ID()
+	if mcpSessionID == "" {
+		return
+	}
+
+	s.sessionsMu.RLock()
+	if _, registered := s.sessions[mittoSessionID]; !registered {
+		s.sessionsMu.RUnlock()
+		return
+	}
+	s.reaperMu.Lock()
+	lease := s.reaperLeaseLocked(mcpSessionID)
+	lease.owners[mittoSessionID] = struct{}{}
+	lease.retireRequested = false
+	s.mcpSessionMapMu.Lock()
+	s.mcpSessionMap[mcpSessionID] = mittoSessionID
+	s.mcpSessionMapMu.Unlock()
+	s.reaperMu.Unlock()
+	s.sessionsMu.RUnlock()
+
+	s.logger.Debug("MCP session associated with conversation",
+		"mcp_session_id", mcpSessionID,
+		"mitto_session_id", mittoSessionID)
+}
+
 // lookupMCPSession looks up a Mitto session ID by MCP protocol session ID.
 func (s *Server) lookupMCPSession(mcpSessionID string) string {
 	if mcpSessionID == "" {
@@ -1779,15 +1923,6 @@ func (s *Server) handleGetCurrentSession(ctx context.Context, req *mcp.CallToolR
 	meta, err := store.GetMetadata(realSessionID)
 	if err != nil {
 		return nil, CurrentSessionOutput{}, fmt.Errorf("failed to get session: %w", err)
-	}
-
-	// Cache the MCP session → Mitto session mapping for Phase 3 lookups.
-	// After this point, all subsequent calls from the same MCP client can be
-	// resolved via the MCP session ID cache, even if self_id is wrong.
-	if req != nil && req.Session != nil {
-		if mcpSessionID := req.Session.ID(); mcpSessionID != "" {
-			s.cacheMCPSession(mcpSessionID, realSessionID)
-		}
 	}
 
 	// Build unified conversation details

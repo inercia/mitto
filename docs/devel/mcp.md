@@ -61,6 +61,32 @@ Streamable HTTP transport (MCP spec 2025-03-26). The server listens on a TCP por
 - **Use case**: When Mitto is running as a web server
 - **Protocol**: MCP Streamable HTTP (supports both JSON and SSE responses)
 
+#### Protocol-session lifecycle
+
+Each MCP protocol session normally owns one long-lived SSE `GET`; Auggie
+reconnects that stream about every five minutes. Therefore the meaningful
+transport ratio is approximately **one open SSE stream per MCP protocol
+session**, not one stream per ACP process. Auggie may create many protocol
+sessions inside one ACP process and, as of augmentcode/auggie#162, does not
+send `DELETE /mcp` when it retires them.
+
+Mitto keeps the SDK `SessionTimeout` disabled because its POST-only clock once
+deleted live keepalive sessions and caused a real `tools/call` 404
+(mitto-txse). Mitto's own reaper instead:
+
+- treats every GET/POST/DELETE as activity;
+- preserves the open-GET exemption for unknown or still-owned sessions;
+- associates protocol sessions with every registered Mitto conversation that
+  successfully resolves a session-scoped tool call; and
+- after the final known owner unregisters, waits for application POSTs to
+  drain, then deletes that protocol session even if its abandoned GET remains
+  open (mitto-wat).
+
+The ownership set is intentionally many-to-many because Auggie can fail over a
+pooled transport across conversations. Never-correlated transports cannot be
+forcibly capped safely: the localhost endpoint has no stable client-process
+identity, and Auggie #149 does not reliably re-initialize after a 404.
+
 ### STDIO Mode
 
 Standard input/output for communication. The MCP server reads JSON-RPC messages from stdin and writes responses to stdout.

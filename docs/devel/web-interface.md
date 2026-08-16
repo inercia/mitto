@@ -576,6 +576,14 @@ durable per-ACP-process goroutines (the prewarm transients retire). A
 workspace with several concurrently prompting sessions plus long-lived MCP SSE
 keepalive streams (each pins a goroutine while the GET stream is open) easily
 accounts for a population in the hundreds without anything being wrong.
+For MCP specifically, compare `open_mcp_sse_streams` with protocol-session
+IDs, not ACP-process count: the expected transport ratio is approximately one
+open SSE stream per MCP protocol session, while one Auggie ACP process may hold
+many pooled protocol sessions. Its roughly five-minute GET reopen cycle is
+keepalive recycling, not stream stacking. Mitto retires a correlated protocol
+session when its final registered conversation owner stops; unknown sessions
+with an open GET remain exempt to avoid the live-call 404 regression tracked by
+mitto-txse (see `docs/devel/mcp.md`).
 **Conclusion: track the ratio (total − ~18 fixed baseline) ÷ live ACP
 processes across restarts, not the raw total** — the raw total is a poor leak
 signal on its own because it conflates fixed cost, per-session cost, and
