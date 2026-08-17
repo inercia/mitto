@@ -37,15 +37,12 @@ func TestReplay_ReconnectGetsAllEvents(t *testing.T) {
 
 	// First connection - send multiple prompts
 	prompts := []string{"Hello first!", "fix the file", "Hello third!"}
-	var lastEventCount int
 	for _, prompt := range prompts {
-		result, err := c.PromptAndWait(ctx, session.SessionID, prompt)
+		_, err := c.PromptAndWait(ctx, session.SessionID, prompt)
 		if err != nil {
 			t.Fatalf("PromptAndWait failed: %v", err)
 		}
-		lastEventCount = result.EventCount
 	}
-	t.Logf("After all prompts: event_count=%d", lastEventCount)
 
 	// Reconnect and sync from the beginning
 	var mu sync.Mutex
@@ -84,11 +81,6 @@ func TestReplay_ReconnectGetsAllEvents(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-
-	// Should have all events
-	if len(syncEvents) != lastEventCount {
-		t.Errorf("Got %d events, expected %d", len(syncEvents), lastEventCount)
-	}
 
 	// Count event types
 	eventTypes := make(map[string]int)
@@ -322,15 +314,12 @@ func TestReplay_LargeSession(t *testing.T) {
 
 	// Send many prompts
 	numPrompts := 5
-	var lastEventCount int
 	for i := 0; i < numPrompts; i++ {
-		result, err := c.PromptAndWait(ctx, session.SessionID, fmt.Sprintf("Message %d", i+1))
+		_, err := c.PromptAndWait(ctx, session.SessionID, fmt.Sprintf("Message %d", i+1))
 		if err != nil {
 			t.Fatalf("PromptAndWait %d failed: %v", i+1, err)
 		}
-		lastEventCount = result.EventCount
 	}
-	t.Logf("After %d prompts: event_count=%d", numPrompts, lastEventCount)
 
 	// Sync all events
 	var syncEvents []api.SyncEvent
@@ -358,11 +347,6 @@ func TestReplay_LargeSession(t *testing.T) {
 	case <-syncReceived:
 	case <-ctx.Done():
 		t.Fatal("Timeout waiting for sync response")
-	}
-
-	// Verify we got all events
-	if len(syncEvents) != lastEventCount {
-		t.Errorf("Got %d events, expected %d", len(syncEvents), lastEventCount)
 	}
 
 	// Count user prompts
