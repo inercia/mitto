@@ -1,0 +1,30 @@
+{{/*
+  beads-issues/shared/decomposition-work-item-quality — canonical quality bar
+  for work items produced by decomposition workflows. It deliberately excludes
+  workflow-specific source loading, approval, epic creation, and mutation steps.
+
+  Consumers:
+    - beads-issues/decompose.prompt.yaml (children of an existing bead)
+    - docs/implement-spec.prompt.yaml (standalone items and epic children)
+    - docs/propose-a-plan.prompt.yaml (standalone items and epic children)
+*/}}
+### Work-item quality standard
+
+Every proposed work item must be understandable and actionable on its own:
+
+- **Title**: concise, action-oriented, and specific to one deliverable.
+- **Description**: context, intended outcome, affected area, and explicit scope
+  boundaries, including a reference to the source requirement when available.
+- **Acceptance criteria**: concrete, testable conditions for completion.
+- **Verification**: the tests, checks, or observable behavior that prove it is done.
+- **Type and priority**: use a valid project type and `P0`–`P4` priority. Derive
+  priority from impact, urgency, and critical-path position; do not assign every
+  item the same priority by default.
+- **Labels**: follow labels already used by the project; do not invent near-duplicates.
+- **Dependencies**: name only genuine prerequisites. Keep the graph minimal and
+  acyclic, and remember that `bd dep add <blocked-id> <blocker-id>` means the
+  blocker must finish before the blocked item can proceed.
+
+Prefer independently deliverable, reviewable, and testable slices. Do not create
+duplicate tickets, vague umbrella tasks, or separate tickets for implementation,
+tests, and documentation when those are inseparable parts of one deliverable.

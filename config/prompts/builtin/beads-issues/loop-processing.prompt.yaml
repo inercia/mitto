@@ -52,10 +52,14 @@ loop:
   # runOnStart fires once at boot so it picks up work without waiting for a task
   # change; freshContext keeps token spend bounded and prevents stale reasoning;
   # coalesceDuringBusy: false ensures §A/§B/§C children's own .beads/ mutations
-  # re-fire the supervisor (mitto-cwg) instead of being silently rebased.
-  trigger: [onTasks]
+  # re-fire the supervisor (mitto-cwg) instead of being silently rebased;
+  # onChild immediately re-evaluates the queue when a spawned worker finishes or
+  # is deleted, without waiting for a task fs-event or another trigger opportunity.
+  trigger: [onTasks, onChild]
   onTasks:
     coalesceDuringBusy: false
+  onChild:
+    when: [anyEndResponse, anyDeleted]
   maxIterations: 0
   maxDuration: 0
   runOnStart: true
@@ -133,8 +137,9 @@ prompt: |
   into §C via the `Loop implementing feature` driver. The epic itself stays open until all
   its children reach a terminal state — Step 2P's "Close terminal-label beads" sweep closes
   the individual children as their drivers finish, and Step 2P's "Reap epics" sub-step
-  automatically closes the epic in the same pass once its last child is closed (pass-local
-  scope: only epics whose children were closed by this pass are considered).
+  automatically closes the epic once its last child is closed. Reconciliation stays bounded
+  to this pass's closures, linked beads from children reaped this pass, and the current
+  `onTasks` delta — it never sweeps unrelated open epics.
 
   {{ if eq $submit "Pull Request" -}}
   ### Changes policy
@@ -147,7 +152,7 @@ prompt: |
   and its own PR.{{ end }}
   {{- end }}
 
-  ### Concurrency, deferral, preflight (summary — enforced in Steps 2P/2Z/§B/§C/7)
+  ### Concurrency, recovery, deferral, preflight (summary — enforced in Steps 2P/2Q/2R/2Z/§B/§C/7)
 
   - **Cap: {{ $maxWorkers }} active worker{{ if ne $maxWorkers "1" }}s{{ end }} per workspace** total across §B + §C{{ if .Args.PostIterationPrompt }} + the Step 5H
     post-task hook{{ end }} (non-archived conversations whose title starts with `Fix ` /
@@ -165,6 +170,10 @@ prompt: |
   - **Deferral:** any un-progressable bead gets `--add-label needs-human --defer +1d`
     plus a comment starting `[deferred: <RFC3339>]` (full template in Step 7).
     Step 2Z undefers when the human replies, posting `[undeferred: <deferred-ts>]`.
+  - **Legacy status recovery:** Step 2Q returns an ownerless non-epic bead from
+    legacy `in_progress` to `open` only after 24h without issue/comment activity.
+    Fresh human work, passive `in-flight` claims, and formal conversation owners
+    are preserved. Recovery never means completion; §B/§C still verify and close.
   - **Preflight:** requires **Can start conversation** and **Can Send Prompt** flags
     plus a non-child session. Any tool error from a disabled flag, or
     `Session.IsChild` true → single `mitto_ui_notify` naming the blocker, then STOP
@@ -230,9 +239,15 @@ prompt: |
   4. **Duplicate** — two children share the same `beads_issue`; keep the older,
      reap the younger.
 
-  For each reap, one bead comment then delete:
+  Initialise `reaped_child_beads=()` before walking the children. For each reap,
+  append the child's non-empty `beads_issue` to that array, write one bead comment,
+  then delete. This preserves the owning bead after deletion so the epic-reaper can
+  reconcile a parent whose leaf was already closed by its driver:
 
   ```bash
+  reaped_child_beads=()
+  # For each reaped child with a linked bead:
+  reaped_child_beads+=("<bead-id>")
   bd comment <bead-id> "Orchestrator: reaping child <child-id> (reason: <terminal|orphaned|idle-2h|duplicate>). Bead will be re-picked if still eligible."
   ```
   ```
@@ -242,7 +257,7 @@ prompt: |
   {{ if or (ne .Args.FixBugs "false") (ne .Args.WorkOnFeatures "false") -}}
   ### Close terminal-label beads
 
-  Right after the reap loop, close any open bead carrying the class-terminal label
+  Right after the reap loop, close any open OR legacy-`in_progress` bead carrying the class-terminal label
   (independent of whether its driver still exists). Track the closed IDs in
   `closed_this_pass` so 2B/2C's "recently-closed parent" exclusion can skip their
   parent-child dependents this pass, AND so the epic-reaper below can walk their
@@ -258,7 +273,7 @@ prompt: |
   ```bash
   closed_this_pass=()
   {{ if ne .Args.FixBugs "false" -}}
-  for id in $(bd list --type bug --status open --label fixed --json | jq -r '.[].id'); do
+  for id in $(bd list --type bug --status open,in_progress --label fixed --json | jq -r '.[].id'); do
     bd comment "$id" "Orchestrator: terminal label=fixed; closing."
     started=$(bd show "$id" --json | jq -r '.[0].metadata.claimed_at // empty')
     prior=$(bd show "$id" --json | jq -r '.[0].metadata.work_started_at // empty')
@@ -277,7 +292,8 @@ prompt: |
   done
   {{ end }}
   {{- if ne .Args.WorkOnFeatures "false" }}
-  for id in $(bd list --type feature --status open --label verified --json | jq -r '.[].id'); do
+  for id in $(bd list --status open,in_progress --label verified --json \
+    | jq -r '.[] | select(.issue_type != "bug" and .issue_type != "epic") | .id'); do
     bd comment "$id" "Orchestrator: terminal label=verified; closing."
     started=$(bd show "$id" --json | jq -r '.[0].metadata.claimed_at // empty')
     prior=$(bd show "$id" --json | jq -r '.[0].metadata.work_started_at // empty')
@@ -301,20 +317,37 @@ prompt: |
 
   ### Reap epics whose children are all closed
 
-  Right after the terminal-label close loop, walk the parents of `closed_this_pass`
-  to reap any epic whose last open child was just closed. **Pass-local scope**: only
-  epics touched by this pass are considered — never sweep all open epics (that would
-  surprise humans working on unrelated epics whose last child was closed manually).
+  Right after the terminal-label close loop, derive candidate epics from THREE
+  activity-local sources: `closed_this_pass`, `reaped_child_beads`, and the current
+  `onTasks` delta's touched bead IDs. The latter two close the gap where a driver or
+  human already closed the last leaf before this Step 2P pass, leaving
+  `closed_this_pass` empty. This is still a bounded reconciliation — never sweep all
+  open epics. A changed leaf or reaped linked worker is the ownership signal.
   Reaping lives ONLY in this orchestrator (never in per-driver prompts) to avoid
   parent-close races between concurrent §B/§C drivers touching different children
   of the same epic.
 
   ```bash
   reaped_epics=()
-  # Derive touched epics: union of parent fields on beads closed this pass.
+  touched_child_beads=()
+  {{- with .Trigger }}{{ with .OnTasks }}
+  {{- range .Changes.Touched }}
+  touched_child_beads+=({{ .id | printf "%q" }})
+  {{- end }}
+  {{- end }}{{ end }}
+
+  # Derive touched epics from this pass's closures, reaped workers' linked beads,
+  # and the current onTasks delta. A touched epic is considered directly and its
+  # own parent is also considered so nested epics reconcile on successive events.
   declare -A touched_epics_set=()
-  for cid in "${closed_this_pass[@]}"; do
-    pid=$(bd show "$cid" --json 2>/dev/null | jq -r '.[0].parent // empty')
+  candidate_beads=("${closed_this_pass[@]}" "${reaped_child_beads[@]}" "${touched_child_beads[@]}")
+  for cid in "${candidate_beads[@]}"; do
+    candidate=$(bd show "$cid" --json 2>/dev/null)
+    kind=$(jq -r '.[0].issue_type // empty' <<<"$candidate")
+    pid=$(jq -r '.[0].parent // empty' <<<"$candidate")
+    if [ "$kind" = "epic" ]; then
+      touched_epics_set["$cid"]=1
+    fi
     if [ -n "$pid" ]; then
       touched_epics_set["$pid"]=1
     fi
@@ -339,7 +372,7 @@ prompt: |
     # so nested epics reap in dependency order across successive passes.
     open_children=$(bd children "$epic_id" --json 2>/dev/null | jq '[.[] | select(.status != "closed")] | length')
     if [ "${open_children:-1}" -eq 0 ]; then
-      bd comment "$epic_id" "Orchestrator: reaping epic $epic_id — all children closed by this pass."
+      bd comment "$epic_id" "Orchestrator: reaping epic $epic_id — all children closed after activity-local reconciliation."
       bd close "$epic_id" --reason "All children closed by L1 orchestrator pass"
       reaped_epics+=("$epic_id")
       reap_count=$((reap_count + 1))
@@ -355,9 +388,67 @@ prompt: |
 
   Log one-line count for Step 6: `Reaped: <n>`.
 
+  ## Step 2Q — Recover orphaned legacy `in_progress` beads
+
+  The current L1/L2 ownership protocol NEVER uses `status=in_progress`: a live
+  driver leaves the bead `open` and carries a passive `in-flight` label plus
+  `claimed_by`/heartbeat metadata. Legacy prompts and manual sessions did set
+  `in_progress`, however, and 2B/2C intentionally exclude that status to avoid
+  racing another worker. Without reconciliation, an abandoned legacy status is
+  therefore invisible forever.
+
+  Enumerate every non-epic `in_progress` bead. Preserve it (no writes) when ANY
+  ownership/freshness signal is present:
+
+  1. it carries `in-flight`; or
+  2. its ID formally matches the `beads_issue` of a non-archived conversation in
+     `{{ .Children.MCPText }}` or the pre-rendered `Workspace peers:` block
+     (literal equality only; never infer ownership from titles); or
+  3. its latest activity is less than 24h old. Latest activity is the later of
+     the issue's `updated_at` and newest `bd comments <id> --json` `created_at`.
+     Comments count because active audits may append evidence without changing
+     the issue row itself.
+
+  ```bash
+  recovered_in_progress=()
+  legacy_cutoff=$(date -u -v-24H +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ)
+  formal_owners=$(cat <<'OWNERS'
+  {{ .Children.MCPText }}
+  {{ .Workspace.Peers.AllText }}
+  OWNERS
+  )
+
+  while IFS= read -r id; do
+    # MCPText/AllText render a formal beads_issue as a literal trailing {<id>}.
+    # Fixed-string matching with braces is exact; titles never participate.
+    if grep -Fq "{$id}" <<<"$formal_owners"; then
+      continue
+    fi
+    issue_updated=$(bd show "$id" --json | jq -r '.[0].updated_at // empty')
+    comment_updated=$(bd comments "$id" --json | jq -r '[.[].created_at // empty] | max // empty')
+    last_activity=$(printf '%s\n%s\n' "$issue_updated" "$comment_updated" | grep -v '^$' | sort | tail -1)
+    if [ -n "$last_activity" ] && jq -n -e --arg activity "$last_activity" --arg cutoff "$legacy_cutoff" \
+         '$activity < $cutoff' >/dev/null; then
+      bd comment "$id" "Orchestrator recovery: legacy status=in_progress has no in-flight claim, no non-archived conversation owner, and no issue/comment activity for 24h; returning to open for normal verification. This does not mark the work complete."
+      bd update "$id" --status open
+      recovered_in_progress+=("$id")
+    fi
+  done < <(bd list --status in_progress --json \
+    | jq -r '.[] | select(.issue_type != "epic") | select(((.labels // []) | index("in-flight")) == null) | .id')
+  ```
+
+  Do NOT close a bead merely because stale notes say "implemented", tests passed,
+  or a patch exists. Returning it to `open` deliberately routes it through 2B/2C's
+  already-landed detection and the normal driver state machine, which must verify
+  terminal evidence before closure. The status update is visible to Step 2 in this
+  same pass; no restart or separate cleanup prompt is required.
+
+  Log one-line count for Step 6: `Recovered-in-progress: <n>`.
+
   ## Step 2R — Reap stale in-flight claims (cross-signal reaper)
 
   Run AFTER Step 2P (children/beads already reaped) and BEFORE Step 2Z (undefer),
+  with Step 2Q immediately before this step so legacy statuses are recovered first,
   so a released claim is eligible for §B/§C in the *same* pass. Enumerate every
   open bead carrying the `in-flight` label whose `claim_heartbeat_at` is stale
   (older than 60 min) — the L2 loop-drivers refresh the heartbeat every
@@ -1185,7 +1276,7 @@ prompt: |
   mitto_ui_notify(
     self_id: "{{ .Session.ID }}",
     title: "Loop processing tasks — pass complete",
-    message: "<Class ran (A/B/C) and target processed | 'nothing eligible' if Step 3 fell through | 'at cap' if concurrency gate skipped>. Sets: A=<count> B=<count> C=<count>. Active drivers: <count of running Fix/Implement children after this pass>/{{ $maxWorkers }}.{{ if ne $maxWorkers "1" }} Parallel: <n dispatched this pass, and for n>1 the disjointness basis in ≤10 words | 'serial' when only one>.{{ end }} Reaped: <count from Step 2P, 0 if none>. Closed: <count of terminal-label beads closed this pass, 0 if none>. Reaped-epics: <count from Step 2P epic-reaper, 0 if none>. Reaper: released=<n> skipped=<n> (from Step 2R, 0/0 if none). Undeferred: <count from Step 2Z, 0 if none>.{{ if .Args.PostIterationPrompt }} Post-task hook: <ran-ok|timed-out|spawn-failed|skipped-worker-active|not-run>.{{ end }} Will re-fire on beads changes.",
+    message: "<Class ran (A/B/C) and target processed | 'nothing eligible' if Step 3 fell through | 'at cap' if concurrency gate skipped>. Sets: A=<count> B=<count> C=<count>. Active drivers: <count of running Fix/Implement children after this pass>/{{ $maxWorkers }}.{{ if ne $maxWorkers "1" }} Parallel: <n dispatched this pass, and for n>1 the disjointness basis in ≤10 words | 'serial' when only one>.{{ end }} Reaped: <count from Step 2P, 0 if none>. Closed: <count of terminal-label beads closed this pass, 0 if none>. Reaped-epics: <count from Step 2P epic-reaper, 0 if none>. Recovered-in-progress: <count from Step 2Q, 0 if none>. Reaper: released=<n> skipped=<n> (from Step 2R, 0/0 if none). Undeferred: <count from Step 2Z, 0 if none>.{{ if .Args.PostIterationPrompt }} Post-task hook: <ran-ok|timed-out|spawn-failed|skipped-worker-active|not-run>.{{ end }} Will re-fire on beads changes.",
     style: "success"
   )
   ```
@@ -1296,6 +1387,11 @@ prompt: |
     gone / silent) so the bead re-enters the queue on the next pass. Every
     close site (Step 2P sweep, driver Done branches, mention Finalize) strips
     the claim before `bd close` so closed beads never carry ghost claims.
+  - **Recover abandoned legacy `in_progress` status (Step 2Q).** Current drivers
+    never set it; they use passive `in-flight` claims on open beads. Preserve a
+    legacy `in_progress` bead while it has a formal non-archived conversation
+    owner, an `in-flight` claim, or issue/comment activity within 24h. Otherwise
+    return it to `open` for normal verification — never close from stale prose.
   - **Honor scope flags.** `FixBugs` and `WorkOnFeatures` (both default `"true"`)
     gate §B and §C. When `"false"`, the section is skipped and treated as empty
     in Step 3. §A is ALWAYS on regardless.
@@ -1319,8 +1415,8 @@ prompt: |
     machine applies to all types). The epic stays open while children run;
     Step 2P closes each child as its driver terminates, and Step 2P's
     epic-reaper closes the epic itself in the same pass once its last child is
-    closed (pass-local: only epics whose children were closed by this pass are
-    considered — never sweep all open epics).
+    closed. Candidate parents come only from this pass's closures, reaped linked
+    workers, and the current `onTasks` delta — never from a global epic sweep.
   {{ if or (ne .Args.FixBugs "false") (ne .Args.WorkOnFeatures "false") -}}
   - **Close terminal-label beads.** Step 2P closes any open bead carrying the
     class-terminal label ({{ if ne .Args.FixBugs "false" }}`fixed` for bugs{{ if ne .Args.WorkOnFeatures "false" }}, {{ end }}{{ end }}{{ if ne .Args.WorkOnFeatures "false" }}`verified` for features{{ end }}) — the driver

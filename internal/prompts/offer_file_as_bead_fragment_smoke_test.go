@@ -11,7 +11,7 @@ import (
 )
 
 // TestOfferFileAsBeadFragmentRenders is a smoke test for the
-// _shared/offer-file-as-bead fragment: renders each of its six consuming
+// _shared/offer-file-as-bead fragment: renders each of its four consuming
 // prompts in both branches (beads present → fragment prose emitted, beads
 // absent → fragment fully empty) and asserts the surrounding caller text is
 // preserved so an accidental delete of one of the caller's own approval
@@ -39,7 +39,7 @@ func TestOfferFileAsBeadFragmentRenders(t *testing.T) {
 	SetCurrentFragments(reg)
 
 	// The fragment must be registered under this exact key — used by all
-	// six callers via {{ template "_shared/offer-file-as-bead" . }}.
+	// four callers via {{ template "_shared/offer-file-as-bead" . }}.
 	if _, ok := reg.Get("_shared/offer-file-as-bead"); !ok {
 		t.Fatalf("fragment %q not registered", "_shared/offer-file-as-bead")
 	}
@@ -53,18 +53,16 @@ func TestOfferFileAsBeadFragmentRenders(t *testing.T) {
 		byName[p.Name] = p.Content
 	}
 
-	// The six consumers wired to the fragment. `nearbyMarker` is a stable
+	// The four consumers wired to the fragment. `nearbyMarker` is a stable
 	// substring from the caller's own text near the fragment call — used
 	// to prove the caller still renders when the fragment expands to
 	// nothing.
 	type consumer struct{ name, nearbyMarker string }
 	consumers := []consumer{
-		{"Propose a plan", "Plan reviewed. What next?"},
 		{"Refactor", "### 4. Execute"},
 		{"Optimize", "### 4. Execute"},
 		{"Cleanup Code", "### 4. Execute"},
 		{"Simplify", "### 4. Execute"},
-		{"Implement spec", "Once approved, per step: implement"},
 	}
 
 	// Hallmark substring from the fragment's rendered prose. Present iff

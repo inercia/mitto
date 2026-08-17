@@ -3511,16 +3511,16 @@ func TestIssueLoopProcessing_CoalesceDuringBusyIsFalse(t *testing.T) {
 
 // TestIssueLoopProcessing_EpicReaperPresent pins mitto-qxb: the L1 orchestrator
 // (config/prompts/builtin/beads-issues/loop-processing.prompt.yaml) must contain
-// a pass-local epic-reaper in Step 2P that auto-closes epics whose children are
-// all closed by the same pass.
+// an activity-local epic-reaper in Step 2P that auto-closes epics whose children
+// are all closed, including when the final leaf was already closed by its driver.
 //
 // The reaper is a prompt-template edit (bash inside the rendered body executed
 // by the LLM at runtime), so behavioural coverage lives in the live orchestrator.
 // This test locks the *structural* contract so an accidental prompt-edit that
 // drops any of the reaper's load-bearing pieces fails CI:
 //
-//   - Step 2P captures closed_this_pass as it closes terminal-label beads
-//     (used by both the recently-closed-parent exclusion and the reaper below).
+//   - Step 2P captures closed_this_pass and reaped_child_beads, then merges them
+//     with the current onTasks touched-bead delta for bounded reconciliation.
 //   - A "Reap epics whose children are all closed" sub-block is rendered when
 //     bugs and/or features are enabled — this is the reaper itself. It must
 //     derive touched_epics, guard on epic|open, count non-closed children via
@@ -3552,6 +3552,11 @@ func TestIssueLoopProcessing_EpicReaperPresent(t *testing.T) {
 	ctx := &cel.PromptEnabledContext{
 		Session: cel.SessionContext{ID: "orch-1"},
 		Args:    map[string]string{"FixBugs": "true", "WorkOnFeatures": "true"},
+		Trigger: &cel.TriggerContext{OnTasks: &cel.TriggerOnTasksContext{Changes: cel.TasksChangesView{
+			Touched: []map[string]any{{
+				"id": "mitto-driver-closed", "status": "closed", "priority": 2, "title": "Already closed by driver",
+			}},
+		}}},
 	}
 	funcs := cel.BuildTemplateFuncMap(ctx)
 	out, rerr := RenderPromptTemplate("beads-issue-loop-processing", prompt.Content, ctx, funcs)
@@ -3565,6 +3570,9 @@ func TestIssueLoopProcessing_EpicReaperPresent(t *testing.T) {
 	}
 	if !strings.Contains(out, `closed_this_pass+=("$id")`) {
 		t.Errorf("expected the terminal-label close loop to append closed bead IDs into closed_this_pass (`closed_this_pass+=(\"$id\")`); not found in rendered body")
+	}
+	if !strings.Contains(out, "reaped_child_beads=()") || !strings.Contains(out, `reaped_child_beads+=("<bead-id>")`) {
+		t.Errorf("expected Step 2P to retain linked bead IDs from reaped children for parent reconciliation")
 	}
 
 	// --- Reaper sub-block anchors ---
@@ -3583,15 +3591,19 @@ func TestIssueLoopProcessing_EpicReaperPresent(t *testing.T) {
 	}
 	block := tail[:nextH]
 
-	// Load-bearing pieces of the reaper bash: derive touched_epics from
-	// parents of closed_this_pass, guard on epic|open, count open children,
-	// close with the canonical reason, and enforce the 20/pass cap.
+	// Load-bearing pieces of the reaper bash: merge this pass's closures,
+	// reaped workers' linked beads, and the current onTasks delta; derive parent
+	// epics; guard on epic|open; count open children; close with the canonical
+	// reason; and enforce the 20/pass cap.
 	mustContain := []struct {
 		frag string
 		why  string
 	}{
-		{`for cid in "${closed_this_pass[@]}"`, "reaper must iterate closed_this_pass to derive touched epics (pass-local scope — never sweep all epics)"},
+		{`touched_child_beads+=("mitto-driver-closed")`, "reaper must materialize the current onTasks touched-bead delta so driver-closed leaves remain visible"},
+		{`candidate_beads=("${closed_this_pass[@]}" "${reaped_child_beads[@]}" "${touched_child_beads[@]}")`, "reaper must union all three bounded reconciliation sources"},
+		{`for cid in "${candidate_beads[@]}"`, "reaper must inspect the union rather than only leaves closed by Step 2P itself"},
 		{`.[0].parent`, "reaper must read the .parent field from `bd show <id> --json` to find each closed child's owning epic"},
+		{`if [ "$kind" = "epic" ]`, "reaper must also consider a touched child-epic directly so nested epic closure propagates"},
 		{`"epic|open"`, "reaper must guard on issue_type==epic && status==open before closing (idempotency + type safety)"},
 		{`bd children`, "reaper must count non-closed children via `bd children <epic> --json` — the all-children-closed check"},
 		{`bd close "$epic_id"`, "reaper must actually close the epic via bd close"},
@@ -3622,6 +3634,84 @@ func TestIssueLoopProcessing_EpicReaperPresent(t *testing.T) {
 	stale := "human owns closing the epic"
 	if strings.Contains(out, stale) {
 		t.Errorf("rendered orchestrator still contains stale language %q — the reaper now closes the epic in the same pass; intro paragraph (Step 2) and Guidelines `Expand epics; don't spawn them` bullet must both be updated (mitto-qxb)", stale)
+	}
+}
+
+// TestIssueLoopProcessing_RecoversOrphanedInProgress pins mitto-1a0z: legacy
+// status=in_progress cannot remain a permanent blind spot in the L1 supervisor.
+// Recovery is deliberately conservative: terminal labels close through Step 2P;
+// otherwise only ownerless, non-epic records with no activity for 24h return to
+// open for normal verification. Staleness alone must never close a bead.
+func TestIssueLoopProcessing_RecoversOrphanedInProgress(t *testing.T) {
+	installBuiltinFragmentsForTest(t)
+	name := "beads-issues/loop-processing.prompt.yaml"
+	data, err := os.ReadFile(filepath.Join("../../config/prompts/builtin", name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	prompt, err := ParsePromptFile(name, data, time.Now())
+	if err != nil {
+		t.Fatalf("ParsePromptFile: %v", err)
+	}
+	ctx := &cel.PromptEnabledContext{
+		Session: cel.SessionContext{ID: "orch-1"},
+		Args:    map[string]string{"FixBugs": "true", "WorkOnFeatures": "true"},
+	}
+	out, err := RenderPromptTemplate("loop-processing-in-progress-recovery", prompt.Content, ctx, cel.BuildTemplateFuncMap(ctx))
+	if err != nil {
+		t.Fatalf("RenderPromptTemplate: %v", err)
+	}
+
+	for _, frag := range []string{
+		"## Step 2Q — Recover orphaned legacy `in_progress` beads",
+		"bd list --type bug --status open,in_progress --label fixed",
+		"bd list --status open,in_progress --label verified",
+		`select(.issue_type != "bug" and .issue_type != "epic")`,
+		"bd list --status in_progress --json",
+		`select(.issue_type != "epic")`,
+		`index("in-flight")) == null`,
+		`formal_owners=$(cat <<'OWNERS'`,
+		`grep -Fq "{$id}" <<<"$formal_owners"`,
+		"no non-archived conversation owner",
+		"bd comments \"$id\" --json",
+		"date -u -v-24H",
+		`[ -n "$last_activity" ]`,
+		`bd update "$id" --status open`,
+		`recovered_in_progress+=("$id")`,
+		"Recovered-in-progress: <count from Step 2Q",
+	} {
+		if !strings.Contains(out, frag) {
+			t.Errorf("rendered prompt missing in_progress recovery contract %q", frag)
+		}
+	}
+
+	start := strings.Index(out, "## Step 2Q — Recover orphaned legacy `in_progress` beads")
+	if start < 0 {
+		t.Fatalf("could not find Step 2Q recovery block")
+	}
+	end := strings.Index(out[start:], "\n## Step 2R")
+	if end < 0 {
+		t.Fatalf("could not isolate Step 2Q recovery block")
+	}
+	block := out[start : start+end]
+	if strings.Contains(block, `bd close "$id"`) {
+		t.Errorf("Step 2Q must return stale orphaned beads to open, never close them from staleness alone")
+	}
+
+	raw := string(data)
+	rawStart := strings.Index(raw, "## Step 2Q — Recover orphaned legacy `in_progress` beads")
+	if rawStart < 0 {
+		t.Fatalf("could not find raw Step 2Q recovery block")
+	}
+	rawEnd := strings.Index(raw[rawStart:], "\n  ## Step 2R")
+	if rawEnd < 0 {
+		t.Fatalf("could not isolate raw Step 2Q recovery block")
+	}
+	rawBlock := raw[rawStart : rawStart+rawEnd]
+	for _, ownerSource := range []string{"{{ .Children.MCPText }}", "{{ .Workspace.Peers.AllText }}"} {
+		if !strings.Contains(rawBlock, ownerSource) {
+			t.Errorf("Step 2Q formal-owner snapshot missing %q", ownerSource)
+		}
 	}
 }
 
