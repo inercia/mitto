@@ -1,5 +1,5 @@
 // Settings > Slack integration catalog manager.
-const { useEffect, useMemo, useState, html } = window.preact;
+const { useEffect, useMemo, useRef, useState, html } = window.preact;
 
 import { getSdkClient } from "../utils/sdkClient.js";
 import { openExternalURL } from "../utils/native.js";
@@ -92,6 +92,10 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
   const [botToken, setBotToken] = useState("");
   const [installationValidation, setInstallationValidation] = useState("");
   const [deletePlan, setDeletePlan] = useState(null);
+  const selectedAppIdRef = useRef(selectedAppId);
+  const selectedInstallationIdRef = useRef(selectedInstallationId);
+  selectedAppIdRef.current = selectedAppId;
+  selectedInstallationIdRef.current = selectedInstallationId;
 
   const selectedApp = useMemo(
     () => apps.find((app) => app.id === selectedAppId) || null,
@@ -132,7 +136,7 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
       cancelled = true;
       controller.abort();
     };
-  }, [refreshApps]);
+  }, [refreshApps, client]);
 
   useEffect(() => {
     setAppName(selectedApp?.name || "");
@@ -169,7 +173,7 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
       cancelled = true;
       controller.abort();
     };
-  }, [selectedAppId]);
+  }, [selectedAppId, client]);
 
   useEffect(() => {
     setInstallationName(selectedInstallation?.name || "");
@@ -182,11 +186,13 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
     setAppToken("");
     setNewBotToken("");
     setBotToken("");
+    selectedAppIdRef.current = id;
     setSelectedAppId(id);
   };
 
   const chooseInstallation = (id) => {
     setBotToken("");
+    selectedInstallationIdRef.current = id;
     setSelectedInstallationId(id);
   };
 
@@ -229,10 +235,11 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
     try {
       const updated = await client.slack.renameApp(id, appName.trim());
       setApps((current) => replaceById(current, updated));
-      setAppName(updated.name);
+      if (selectedAppIdRef.current === id) setAppName(updated.name);
       notify("Slack app profile renamed.");
     } catch {
-      setActionError("Slack app profile could not be renamed.");
+      if (selectedAppIdRef.current === id)
+        setActionError("Slack app profile could not be renamed.");
     } finally {
       setBusy("");
     }
@@ -246,14 +253,18 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
     try {
       const updated = await client.slack.replaceAppToken(id, appToken);
       setApps((current) => replaceById(current, updated));
-      if (selectedAppId === id) setAppToken("");
-      setAppValidation("success");
+      if (selectedAppIdRef.current === id) {
+        setAppToken("");
+        setAppValidation("success");
+      }
       notify("Slack app token replaced and validated.");
     } catch {
-      setAppValidation("failed");
-      setActionError(
-        "The replacement app token was rejected; the configured credential was not changed.",
-      );
+      if (selectedAppIdRef.current === id) {
+        setAppValidation("failed");
+        setActionError(
+          "The replacement app token was rejected; the configured credential was not changed.",
+        );
+      }
     } finally {
       setBusy("");
     }
@@ -267,11 +278,13 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
     try {
       const updated = await client.slack.validateApp(id);
       setApps((current) => replaceById(current, updated));
-      setAppValidation("success");
+      if (selectedAppIdRef.current === id) setAppValidation("success");
       notify("Slack app connection is healthy.");
     } catch {
-      setAppValidation("failed");
-      setActionError("Slack app connection validation failed.");
+      if (selectedAppIdRef.current === id) {
+        setAppValidation("failed");
+        setActionError("Slack app connection validation failed.");
+      }
     } finally {
       setBusy("");
     }
@@ -279,13 +292,16 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
 
   const prepareDeleteApp = async () => {
     if (!selectedApp) return;
+    const target = selectedApp;
     setBusy("prepare-delete-app");
     setActionError("");
     try {
-      const preview = await client.slack.prepareDeleteApp(selectedApp.id);
-      setDeletePlan({ kind: "app", target: selectedApp, preview });
+      const preview = await client.slack.prepareDeleteApp(target.id);
+      if (selectedAppIdRef.current === target.id)
+        setDeletePlan({ kind: "app", target, preview });
     } catch {
-      setActionError("Slack app deletion could not be prepared.");
+      if (selectedAppIdRef.current === target.id)
+        setActionError("Slack app deletion could not be prepared.");
     } finally {
       setBusy("");
     }
@@ -294,23 +310,28 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
   const createInstallation = async (event) => {
     event.preventDefault();
     if (!selectedApp || !newInstallationName.trim() || !newBotToken) return;
+    const appId = selectedApp.id;
     setBusy("create-installation");
     setActionError("");
     try {
-      const created = await client.slack.createInstallation(selectedApp.id, {
+      const created = await client.slack.createInstallation(appId, {
         name: newInstallationName.trim(),
         team_id: newTeamId.trim(),
         bot_token: newBotToken,
       });
-      setNewBotToken("");
-      setNewInstallationName("");
-      setNewTeamId("");
-      setShowNewInstallation(false);
-      setInstallations((current) => [...current, created]);
-      setSelectedInstallationId(created.id);
+      if (selectedAppIdRef.current === appId) {
+        setNewBotToken("");
+        setNewInstallationName("");
+        setNewTeamId("");
+        setShowNewInstallation(false);
+        setInstallations((current) => [...current, created]);
+        selectedInstallationIdRef.current = created.id;
+        setSelectedInstallationId(created.id);
+      }
       notify("Slack workspace installation created.");
     } catch {
-      setActionError("Slack workspace installation could not be created.");
+      if (selectedAppIdRef.current === appId)
+        setActionError("Slack workspace installation could not be created.");
     } finally {
       setBusy("");
     }
@@ -327,10 +348,12 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
         installationName.trim(),
       );
       setInstallations((current) => replaceById(current, updated));
-      setInstallationName(updated.name);
+      if (selectedInstallationIdRef.current === id)
+        setInstallationName(updated.name);
       notify("Slack workspace installation renamed.");
     } catch {
-      setActionError("Slack workspace installation could not be renamed.");
+      if (selectedInstallationIdRef.current === id)
+        setActionError("Slack workspace installation could not be renamed.");
     } finally {
       setBusy("");
     }
@@ -344,14 +367,18 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
     try {
       const updated = await client.slack.replaceInstallationToken(id, botToken);
       setInstallations((current) => replaceById(current, updated));
-      if (selectedInstallationId === id) setBotToken("");
-      setInstallationValidation("success");
+      if (selectedInstallationIdRef.current === id) {
+        setBotToken("");
+        setInstallationValidation("success");
+      }
       notify("Slack bot token replaced and validated.");
     } catch {
-      setInstallationValidation("failed");
-      setActionError(
-        "The replacement bot token was rejected; the configured credential was not changed.",
-      );
+      if (selectedInstallationIdRef.current === id) {
+        setInstallationValidation("failed");
+        setActionError(
+          "The replacement bot token was rejected; the configured credential was not changed.",
+        );
+      }
     } finally {
       setBusy("");
     }
@@ -365,11 +392,14 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
     try {
       const updated = await client.slack.validateInstallation(id);
       setInstallations((current) => replaceById(current, updated));
-      setInstallationValidation("success");
+      if (selectedInstallationIdRef.current === id)
+        setInstallationValidation("success");
       notify("Slack workspace connection is healthy.");
     } catch {
-      setInstallationValidation("failed");
-      setActionError("Slack workspace connection validation failed.");
+      if (selectedInstallationIdRef.current === id) {
+        setInstallationValidation("failed");
+        setActionError("Slack workspace connection validation failed.");
+      }
     } finally {
       setBusy("");
     }
@@ -377,19 +407,16 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
 
   const prepareDeleteInstallation = async () => {
     if (!selectedInstallation) return;
+    const target = selectedInstallation;
     setBusy("prepare-delete-installation");
     setActionError("");
     try {
-      const preview = await client.slack.prepareDeleteInstallation(
-        selectedInstallation.id,
-      );
-      setDeletePlan({
-        kind: "installation",
-        target: selectedInstallation,
-        preview,
-      });
+      const preview = await client.slack.prepareDeleteInstallation(target.id);
+      if (selectedInstallationIdRef.current === target.id)
+        setDeletePlan({ kind: "installation", target, preview });
     } catch {
-      setActionError("Slack workspace deletion could not be prepared.");
+      if (selectedInstallationIdRef.current === target.id)
+        setActionError("Slack workspace deletion could not be prepared.");
     } finally {
       setBusy("");
     }

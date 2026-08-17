@@ -206,6 +206,40 @@ if (isIsolatedComponentRun) {
       }
     });
 
+    test("profile switching ignores a stale validation failure", async () => {
+      const validation = deferred();
+      const configuredApp = { ...appB, validated_at: null };
+      const { container } = await mount((url, init) => {
+        if (url === "/api/slack/apps")
+          return json({ apps: [appA, configuredApp] });
+        if (url.endsWith("/installations")) return json({ installations: [] });
+        if (url === "/api/slack/apps/app-a/validate" && init.method === "POST")
+          return validation.promise;
+        throw new Error(`Unexpected request: ${init.method} ${url}`);
+      });
+      try {
+        buttonByText(container, "Test connection").click();
+        await flushUI();
+        container.querySelector('[data-testid="slack-app-app-b"]').click();
+        await flushUI();
+        validation.reject(new Error("stale validation failure"));
+        await flushUI();
+
+        const detail = container
+          .querySelector('[data-testid="slack-open-app-settings"]')
+          .closest(".rounded-lg");
+        expect(detail.textContent).toContain("App Beta");
+        expect(detail.textContent).toContain("Configured");
+        expect(detail.textContent).not.toContain("Validation failed");
+        expect(container.textContent).not.toContain(
+          "Slack app connection validation failed.",
+        );
+      } finally {
+        validation.resolve(json(appA));
+        unmount(container);
+      }
+    });
+
     test("switching app profiles clears the write-only token draft", async () => {
       const { container } = await mount((url) => {
         if (url === "/api/slack/apps") return json({ apps: [appA, appB] });
