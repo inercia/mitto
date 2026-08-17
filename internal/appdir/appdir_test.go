@@ -145,6 +145,21 @@ func TestSettingsPath(t *testing.T) {
 	}
 }
 
+func TestSlackCatalogPath(t *testing.T) {
+	customDir := t.TempDir()
+	t.Setenv(MittoDirEnv, customDir)
+	ResetCache()
+	t.Cleanup(ResetCache)
+
+	path, err := SlackCatalogPath()
+	if err != nil {
+		t.Fatalf("SlackCatalogPath() failed: %v", err)
+	}
+	if want := filepath.Join(customDir, SlackCatalogFileName); path != want {
+		t.Errorf("SlackCatalogPath() = %q, want %q", path, want)
+	}
+}
+
 func TestSessionsDir(t *testing.T) {
 	customDir := t.TempDir()
 	t.Setenv(MittoDirEnv, customDir)
