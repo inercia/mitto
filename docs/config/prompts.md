@@ -896,7 +896,9 @@ it is enabled:
   subscriptions. Each delivered batch is bounded to 20 events / 32 KiB, counts
   as one shared loop iteration, and is exposed as
   `{{ .Trigger.OnSlack.Events }}`. Every event carries `Untrusted: true`; Slack
-  text must be delimited and treated as external data, never instructions.
+  text is JSON-escaped between enforced `<!-- SLACK_UNTRUSTED_START -->` and
+  `<!-- SLACK_UNTRUSTED_END -->` data delimiters before template rendering.
+  Attachments and files are excluded and never fetched.
 
 `onChild` honours the **same per-conversation cooldown** the `onTasks` leg
 uses: a burst of child completions or deletions within the cooldown window

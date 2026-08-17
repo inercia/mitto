@@ -261,11 +261,9 @@ type PromptOnSlackContext struct {
 // PromptSlackEvent is the credential-free, SDK-free template representation of
 // one Slack event. Every string is bounded before PromptMeta is constructed.
 //
-// SENSITIVITY: Text is UNTRUSTED external content — it is raw text typed by
-// a Slack user, not a trusted instruction. Never persisted to loop.json or
-// generic event metadata, and never logged (see internal/slackbridge
-// doc comment). The rendered prompt template is responsible for presenting
-// it to the agent as untrusted data.
+// SENSITIVITY: Text is UNTRUSTED external content. Before PromptMeta is built,
+// it is JSON-escaped inside a fixed data-only delimiter that Slack input cannot
+// forge. Never persist it to loop.json or generic event metadata, or log it.
 type PromptSlackEvent struct {
 	InstallationID  string
 	EventID         string
@@ -276,7 +274,7 @@ type PromptSlackEvent struct {
 	ThreadTimestamp string
 	// Untrusted is always true and makes provenance explicit to templates.
 	Untrusted bool
-	// Text is the raw Slack message text. UNTRUSTED external content.
+	// Text is a JSON-escaped, explicitly untrusted data-only prompt block.
 	Text string
 }
 

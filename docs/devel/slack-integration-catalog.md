@@ -25,6 +25,13 @@ through `internal/secrets` with `NamespaceSlackApp` or
 tokens only on create or explicit token-replacement operations. Response DTOs
 contain `token_configured` booleans, never token values.
 
+Token-bearing create and replacement requests are accepted only through Mitto's
+localhost interface. The external listener and reverse-proxied hostnames are
+rejected before their request bodies are decoded, even when authenticated, because
+Mitto does not currently have request-level TLS/proxy attestation suitable for
+transporting bearer credentials. Non-secret catalog operations remain available
+through the authenticated external API.
+
 Catalog and vault writes are coordinated with compensating rollback: candidate
 credentials are validated before replacement, and a failed metadata save restores
 the prior credential. Identity mismatches therefore leave the last working token
@@ -60,7 +67,9 @@ team ID or an existing app/installation identity must match those derived values
 
 All paths are private Mitto API routes. Authentication applies to every route;
 CSRF validation additionally applies to `POST`, `PUT`, `PATCH`, and `DELETE`.
-Request bodies are limited to 64 KiB.
+Request bodies are limited to 64 KiB. Oversized Slack bodies return canonical
+`413 too_large`; malformed bodies and service failures use fixed, value-free
+messages rather than decoder, provider, or credential text.
 
 | Method                   | Path                                                       | Purpose                                       |
 | ------------------------ | ---------------------------------------------------------- | --------------------------------------------- |
@@ -97,9 +106,12 @@ installation/cursor/limit. Token replacement and deletion invalidate every page
 for that installation. A generation guard prevents an in-flight request using an
 old credential from repopulating the cache after invalidation.
 
-The Slack app needs `channels:read` for public-channel discovery. Private-channel
-discovery remains deferred until the product supports and communicates the
-additional scopes.
+The bot token needs `channels:read` for public-channel discovery and
+`channels:history` for the default `message.channels` event flow. Add
+`app_mentions:read` and the `app_mention` bot event only when mention mode is used.
+The app-level Socket Mode token separately needs `connections:write`.
+`chat:write`, private-channel scopes, attachments, and automatic file fetching are
+not part of v1.
 
 ## Reference-aware deletion
 

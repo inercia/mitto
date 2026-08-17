@@ -257,8 +257,12 @@ One delivery exposes a bounded slice at `.Trigger.OnSlack.Events` (maximum 20
 events and 32 KiB total). Event DTOs contain only installation/channel/event
 IDs, kind, author, timestamps, text, and `Untrusted: true`; no credentials or
 raw SDK structures. `.Trigger.Slack` remains a temporary first-event alias for
-the environment PoC. The entire batch claims one dispatch slot and increments
-the shared loop iteration once.
+the environment PoC. Before template evaluation, each text value is JSON-escaped
+between enforced `<!-- SLACK_UNTRUSTED_START -->` and
+`<!-- SLACK_UNTRUSTED_END -->` data delimiters, so Slack input cannot forge the
+closing marker. Attachments and files are excluded and are never fetched.
+The entire batch claims one dispatch slot and increments the shared loop iteration
+once.
 
 The catalog-backed manager snapshots matching recipients into a profile-scoped
 file journal before acknowledging Slack. `event_id` is the durable dedupe key;

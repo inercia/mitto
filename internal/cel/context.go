@@ -124,9 +124,8 @@ type TriggerContext struct {
 // bridged to LoopRunner.TriggerNowWithSlackEvent). Template-only; not
 // exposed to CEL.
 //
-// SENSITIVITY: Text is the raw Slack message body — UNTRUSTED external
-// content typed by a Slack user. Prompt bodies rendering it MUST present it
-// as untrusted data, not as an instruction.
+// SENSITIVITY: Text is Slack-controlled UNTRUSTED external content, wrapped
+// by Mitto in a JSON-escaped data-only delimiter before this context is built.
 type TriggerSlackContext struct {
 	InstallationID  string
 	EventID         string
@@ -136,7 +135,7 @@ type TriggerSlackContext struct {
 	Timestamp       string
 	ThreadTimestamp string
 	Untrusted       bool
-	// Text is the raw Slack message text. UNTRUSTED external content.
+	// Text is a JSON-escaped, explicitly untrusted data-only prompt block.
 	Text string
 }
 

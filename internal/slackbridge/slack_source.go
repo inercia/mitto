@@ -3,7 +3,7 @@ package slackbridge
 import (
 	"context"
 	"encoding/json"
-	"fmt"
+	"errors"
 	"log/slog"
 
 	"github.com/slack-go/slack"
@@ -53,7 +53,7 @@ func (s *SlackSource) run(ctx context.Context, accept func(Event) error) error {
 	if s.cfg.BotToken != "" {
 		auth, err := api.AuthTestContext(ctx)
 		if err != nil {
-			return fmt.Errorf("slackbridge: auth.test failed: %w", err)
+			return errors.New("slackbridge: auth.test failed")
 		}
 		selfUserID = auth.UserID
 		if s.onSelfIdentified != nil {
@@ -71,7 +71,13 @@ func (s *SlackSource) run(ctx context.Context, accept func(Event) error) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case err := <-runErrCh:
-			return err
+			if err == nil {
+				return nil
+			}
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return errors.New("slackbridge: socket mode connection failed")
 		case evt, ok := <-client.Events:
 			if !ok {
 				return nil

@@ -228,7 +228,8 @@ type PeerSession struct {
 // TriggerSlackEvent is the processors-package view of a single normalized
 // Slack event (mitto-qewp PoC). Mirrors conversation.PromptSlackContext;
 // kept as a separate type here so this package does not need to import
-// internal/conversation. Text is UNTRUSTED external content.
+// internal/conversation. Text is a JSON-escaped, explicitly untrusted
+// data-only prompt block.
 type TriggerSlackEvent struct {
 	InstallationID  string
 	EventID         string

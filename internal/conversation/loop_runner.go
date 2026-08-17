@@ -2,6 +2,7 @@ package conversation
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -24,6 +25,8 @@ const (
 	// Slack batches are bounded before entering PromptMeta/template processing.
 	MaxSlackEventsPerDispatch = 20
 	MaxSlackEventBatchBytes   = 32 * 1024
+	slackUntrustedTextOpen    = "<!-- SLACK_UNTRUSTED_START -->\n"
+	slackUntrustedTextClose   = "\n<!-- SLACK_UNTRUSTED_END -->"
 
 	// MaxLoopResumeFailures is the number of consecutive ACP resume failures
 	// after which a loop session is automatically archived.
@@ -902,11 +905,33 @@ func boundSlackEvents(events []PromptSlackEvent) []PromptSlackEvent {
 		if used+metadataBytes >= MaxSlackEventBatchBytes {
 			break
 		}
-		event.Text = truncateUTF8Bytes(event.Text, MaxSlackEventBatchBytes-used-metadataBytes)
+		var ok bool
+		event.Text, ok = wrapSlackUntrustedText(event.Text, MaxSlackEventBatchBytes-used-metadataBytes)
+		if !ok {
+			break
+		}
 		used += metadataBytes + len(event.Text)
 		bounded = append(bounded, event)
 	}
 	return bounded
+}
+
+func wrapSlackUntrustedText(text string, maxBytes int) (string, bool) {
+	minimum := len(slackUntrustedTextOpen) + len(`{"text":""}`) + len(slackUntrustedTextClose)
+	if maxBytes < minimum {
+		return "", false
+	}
+	for {
+		payload, _ := json.Marshal(struct {
+			Text string `json:"text"`
+		}{Text: text})
+		framed := slackUntrustedTextOpen + string(payload) + slackUntrustedTextClose
+		if len(framed) <= maxBytes {
+			return framed, true
+		}
+		overflow := len(framed) - maxBytes
+		text = truncateUTF8Bytes(text, len(text)-overflow)
+	}
 }
 
 func truncateUTF8Bytes(value string, maxBytes int) string {

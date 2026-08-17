@@ -1,11 +1,14 @@
 package handlers
 
 import (
+	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"strconv"
 
 	"github.com/inercia/mitto/internal/slackcatalog"
+	"github.com/inercia/mitto/internal/web/middleware"
 )
 
 const slackRequestBodyLimit = 64 << 10
@@ -39,17 +42,47 @@ func (h *Handlers) slackService(w http.ResponseWriter) (*slackcatalog.Service, b
 
 func decodeSlackBody(w http.ResponseWriter, r *http.Request, value any) bool {
 	r.Body = http.MaxBytesReader(w, r.Body, slackRequestBodyLimit)
-	return parseJSONBody(w, r, value)
+	decoder := json.NewDecoder(r.Body)
+	if err := decoder.Decode(value); err != nil {
+		return writeSlackDecodeError(w, err)
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return writeSlackDecodeError(w, err)
+	}
+	return true
+}
+
+func writeSlackDecodeError(w http.ResponseWriter, err error) bool {
+	var tooLarge *http.MaxBytesError
+	if errors.As(err, &tooLarge) {
+		writeErrorJSON(w, http.StatusRequestEntityTooLarge, "", "Slack request body is too large")
+		return false
+	}
+	writeErrorJSON(w, http.StatusBadRequest, "", "Invalid Slack request body")
+	return false
+}
+
+// allowSlackCredentialWrite restricts token-bearing requests to Mitto's local
+// listener. External listeners and reverse-proxied hosts do not provide a
+// request-level TLS attestation that is safe to trust for bearer-token writes.
+func allowSlackCredentialWrite(w http.ResponseWriter, r *http.Request) bool {
+	if middleware.IsExternalConnection(r) || !middleware.IsLocalhostRequest(r) {
+		writeErrorJSON(w, http.StatusForbidden, "", "Slack credentials can only be changed from the local Mitto interface")
+		return false
+	}
+	return true
 }
 
 func writeSlackError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, slackcatalog.ErrInvalid):
-		writeErrorJSON(w, http.StatusBadRequest, "", err.Error())
+		writeErrorJSON(w, http.StatusBadRequest, "", "Invalid Slack integration request")
 	case errors.Is(err, slackcatalog.ErrNotFound):
 		writeErrorJSON(w, http.StatusNotFound, "", "Slack integration not found")
-	case errors.Is(err, slackcatalog.ErrConflict), errors.Is(err, slackcatalog.ErrReferenced):
-		writeErrorJSON(w, http.StatusConflict, "", err.Error())
+	case errors.Is(err, slackcatalog.ErrReferenced):
+		writeErrorJSON(w, http.StatusConflict, "", "Slack integration is referenced by an active loop")
+	case errors.Is(err, slackcatalog.ErrConflict):
+		writeErrorJSON(w, http.StatusConflict, "", "Slack integration conflicts with existing configuration")
 	case errors.Is(err, slackcatalog.ErrUnavailable):
 		writeRetryableUnavailable(w, "Slack integration is temporarily unavailable", 5)
 	default:
@@ -71,6 +104,9 @@ func (h *Handlers) HandleSlackAppsList(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (h *Handlers) HandleSlackAppCreate(w http.ResponseWriter, r *http.Request) {
+	if !allowSlackCredentialWrite(w, r) {
+		return
+	}
 	service, ok := h.slackService(w)
 	if !ok {
 		return
@@ -143,6 +179,9 @@ func (h *Handlers) HandleSlackAppValidate(w http.ResponseWriter, r *http.Request
 }
 
 func (h *Handlers) HandleSlackAppToken(w http.ResponseWriter, r *http.Request) {
+	if !allowSlackCredentialWrite(w, r) {
+		return
+	}
 	service, ok := h.slackService(w)
 	if !ok {
 		return
@@ -186,6 +225,9 @@ func (h *Handlers) HandleSlackInstallationsList(w http.ResponseWriter, r *http.R
 }
 
 func (h *Handlers) HandleSlackInstallationCreate(w http.ResponseWriter, r *http.Request) {
+	if !allowSlackCredentialWrite(w, r) {
+		return
+	}
 	service, ok := h.slackService(w)
 	if !ok {
 		return
@@ -258,6 +300,9 @@ func (h *Handlers) HandleSlackInstallationValidate(w http.ResponseWriter, r *htt
 }
 
 func (h *Handlers) HandleSlackInstallationToken(w http.ResponseWriter, r *http.Request) {
+	if !allowSlackCredentialWrite(w, r) {
+		return
+	}
 	service, ok := h.slackService(w)
 	if !ok {
 		return
