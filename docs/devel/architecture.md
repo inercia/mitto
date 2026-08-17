@@ -86,6 +86,30 @@ Legacy `external-access` and `shared-token` helpers remain compatible. They
 resolve the vault first, fall back to old Keychain accounts, and remove legacy
 data only after a persisted write has been read back and verified.
 
+### `internal/slackcatalog` and `internal/slackbridge` - Slack Loop Triggers
+
+`internal/slackcatalog` owns process-global, non-secret Slack app and workspace
+installation metadata. Credentials are referenced through `internal/secrets`;
+catalog reads and status responses expose only configured state and validated
+Slack identities. This keeps tokens out of loop files, project workspaces,
+browser persistence, and API responses.
+
+`internal/slackbridge.Manager` turns that catalog into runtime `onSlack`
+routing. It rebuilds an index from enabled, unarchived loops, pools one Socket
+Mode worker per referenced app profile, and owns one bounded durable journal per
+profile. Events are normalized, filtered, matched by team/channel, snapshotted
+to every recipient, and persisted before Slack is acknowledged. Each recipient
+then competes for the same `LoopRunner` dispatch slot used by the other loop
+triggers; busy or coalesced recipients remain pending and retry on the next idle
+transition.
+
+The web server composes loop and Slack idle callbacks, reconciles the index on
+loop/catalog/archive/delete changes, restarts a worker after app-credential
+replacement, recovers interrupted journal deliveries before accepting traffic,
+and closes Slack workers before conversation shutdown. See
+[Slack Socket Mode Bridge](slack-bridge.md) and
+[Slack Integration Catalog](slack-integration-catalog.md).
+
 ### `internal/config` - Configuration Management
 
 Handles loading, parsing, and persisting Mitto configuration.

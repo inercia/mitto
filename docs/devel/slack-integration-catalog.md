@@ -165,6 +165,10 @@ event so names and credential health update while staged loop edits remain intac
 Focused regression coverage is in `internal/slackcatalog`,
 `internal/web/handlers`, and `internal/web/middleware`. It uses fake Slack and
 credential providers; tests never require real tokens or touch the real Keychain.
+Managed multi-team fan-out, reconnect, rotation, and restart behavior must also
+be checked with the value-free development-workspace procedure in
+[Slack Socket Mode Bridge](slack-bridge.md#production-validation); real Slack
+credentials and network access are never part of CI.
 
 Run the relevant suite with:
 

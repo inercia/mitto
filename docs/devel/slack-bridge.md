@@ -138,35 +138,74 @@ text so it cannot forge the closing delimiter. The complete event batch is cappe
 at 20 events and 32 KiB; every metadata field is also capped. Prompt contexts
 never contain attachments, files, credentials, or raw Slack SDK structures.
 
-## Running the smoke test
+## Production validation
 
-```bash
-export MITTO_SLACK_APP_TOKEN=xapp-...
-export MITTO_SLACK_BOT_TOKEN=xoxb-...
-export MITTO_SLACK_TEAM_ID=T...
-export MITTO_SLACK_CHANNEL_ID=C...
-export MITTO_SLACK_TARGET_SESSION_ID=<conversation-id-with-an-enabled-loop>
-./mitto web
-```
+Automated coverage must stay credential-free: use `FakeSource`, fake catalog
+and credential providers, temporary journals/session stores, and the mock ACP
+server. CI must not read a developer Keychain, require `MITTO_SLACK_*`, or call
+Slack. A real development workspace smoke is separate because only Slack can
+validate Socket Mode latency, disconnect behavior, and credential replacement.
 
-Look for `"Deprecated Slack environment adapter enabled"` in the log at startup. Then, in the
-configured Slack channel:
+### Managed development-workspace smoke
 
-1. Post a plain message, or `@mention` the bot — the target conversation
-   should receive a new turn within ~10s (Socket Mode delivery is normally
-   sub-second; the bound accounts for Mitto's own dispatch/resume latency).
-2. Post the same test twice from a **different** channel, or have the
-   bridge's own bot post a message — neither should trigger anything.
-3. Force a Socket Mode disconnect (e.g. toggle the app's Socket Mode off and
-   back on, or kill/restore local network briefly) and post again — the
-   bridge should reconnect (see `"slackbridge: event source disconnected,
-reconnecting"` in the log) and still deliver the next event.
+Use synthetic messages in isolated development channels. Configure one Slack
+app profile in **Settings > Slack**, install it into two development Slack
+workspaces, and create one installation record per team. Invite the bot to two
+channels in each team. Create at least two enabled loops: one subscribed across
+both teams and another sharing one of those subscriptions. Arm a second trigger
+on one loop to exercise dispatch contention.
 
-Record observed event→loop latency and reconnect time when validating
-against a real Slack workspace; this repository's automated tests
-(`internal/slackbridge/*_test.go`) exercise the same filter/dedupe/reconnect
-logic against a **fake** source and require no credentials, but cannot
-themselves prove real Slack Socket Mode latency.
+Never paste tokens into an issue, chat, terminal argument, URL, screenshot, or
+results file. Enter them only into Mitto's write-only localhost Settings fields.
+Use aliases such as `team-a/channel-1` in evidence instead of copying credential
+material or message bodies.
+
+| Scenario                          | Action                                                                                                   | Expected result                                                                                                                                        |
+| --------------------------------- | -------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Multi-team routing                | Post one synthetic human message in each subscribed channel.                                             | Every matching loop receives exactly one turn; loops for other teams/channels receive none. Record event-to-turn latency.                              |
+| Filter boundary                   | Post from an unsubscribed channel and from the app's bot identity; exercise a non-empty message subtype. | No loop turn is created.                                                                                                                               |
+| Pause/resume                      | Pause one shared-channel loop, post once, resume it, then post a new event.                              | Only enabled recipients receive the first event; both receive the new event after resume.                                                              |
+| Busy and mixed-trigger contention | Keep one loop prompting (or fire its other trigger), then post a subscribed event.                       | The Slack recipient remains pending and is delivered exactly once after idle; another trigger never causes the Slack event to disappear.               |
+| Socket reconnect                  | Briefly interrupt Socket Mode or local network access, restore it, then post again.                      | Connection state recovers and the next event is delivered. Record disconnect-to-connected duration.                                                    |
+| App credential rotation           | Generate a replacement app-level token and use **Replace app token**.                                    | The app worker restarts without changing subscriptions; a subsequent event is delivered. Record success/failure only.                                  |
+| Bot credential rotation           | Replace one installation's bot token with a token for the same app/team.                                 | Validation succeeds, routing reconciles, and that team's next event is delivered without affecting the other team.                                     |
+| Process restart recovery          | Make a subscribed recipient busy, accept an event, restart Mitto, and let the conversation become idle.  | The persisted pending recipient drains after startup. Normal-path recipients are not duplicated; the documented crash ambiguity remains at least once. |
+
+### Value-free results record
+
+Store only the following evidence. Leave a cell blank rather than attaching raw
+logs when sanitization is uncertain.
+
+| Field                                                  | Result |
+| ------------------------------------------------------ | ------ |
+| Mitto revision and platform                            |        |
+| UTC test window                                        |        |
+| Synthetic topology aliases (apps/teams/channels/loops) |        |
+| Fan-out expected / observed counts                     |        |
+| Event-to-turn latency: min / median / max              |        |
+| Reconnect duration                                     |        |
+| App-token rotation outcome and recovery duration       |        |
+| Bot-token rotation outcome and recovery duration       |        |
+| Busy/mixed-trigger pending then delivered              |        |
+| Restart pending then delivered                         |        |
+| Value-free connection states/error classes             |        |
+| Overall pass/fail and follow-up issue IDs              |        |
+
+Do **not** record tokens, authorization headers, cookies, vault files, Keychain
+output, full request/response bodies, Slack message text, or raw provider errors.
+Connection-state snapshots and aggregate pending/failed/dead-letter counts are
+the authoritative operational evidence.
+
+### Deprecated environment-adapter smoke
+
+The legacy single-target adapter may still be checked during its compatibility
+period. Supply all five `MITTO_SLACK_*` values through a protected local process
+environment rather than shell history, start Mitto, and verify the value-free
+`Deprecated Slack environment adapter enabled` startup message. A subscribed
+human event should create one turn, while another channel and the bot identity
+must not. Reconnect should emit the sanitized `slackbridge: event source
+disconnected, reconnecting` message and deliver the next event. This adapter
+does not validate managed fan-out, durable busy recovery, or rotation.
 
 ## Remaining gaps
 
