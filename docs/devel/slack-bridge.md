@@ -56,9 +56,20 @@ that recipient, so this narrow ambiguity window can produce a duplicate turn.
 ## Legacy environment compatibility
 
 The original single-target environment bridge remains available as a deprecated
-adapter. It may run alongside catalog-backed subscriptions during migration,
-but new deployments should configure Slack profiles and canonical `onSlack`
-subscriptions instead.
+adapter for one compatibility release. Settings > Slack exposes a value-free
+import action when any legacy variable is present. The import validates both
+credentials, creates or selects managed app/installation records, adds the
+canonical `onSlack` channel subscription to the target loop, and writes tokens
+directly to the vault without returning them to the browser.
+
+Persisted configuration wins. If the target loop already references the same
+Slack team/channel, including while paused, Mitto suppresses the environment
+listener at startup. During import Mitto stops and joins the legacy listener
+before committing the handoff, starts managed routing only after catalog and
+loop persistence succeed, and restores every prior value plus the legacy
+listener if any step fails. Remove the environment variables after a successful
+import. The adapter is planned for removal in the next breaking release after
+this compatibility period.
 
 ## Slack app setup
 
@@ -83,13 +94,13 @@ These values are not used by the production catalog-backed manager, written to
 disk, or exposed via Settings/UI/REST/MCP. Token values are never logged;
 startup logging includes only the non-secret channel and target session IDs:
 
-| Variable                         | Description                                   |
-| --------------------------------- | ---------------------------------------------- |
-| `MITTO_SLACK_APP_TOKEN`          | Socket Mode app-level token (`xapp-...`)      |
-| `MITTO_SLACK_BOT_TOKEN`          | Bot token (`xoxb-...`)                        |
-| `MITTO_SLACK_TEAM_ID`            | Slack workspace/team ID to accept events from |
-| `MITTO_SLACK_CHANNEL_ID`         | Slack channel ID to listen on                 |
-| `MITTO_SLACK_TARGET_SESSION_ID`  | Mitto conversation ID to trigger              |
+| Variable                        | Description                                   |
+| ------------------------------- | --------------------------------------------- |
+| `MITTO_SLACK_APP_TOKEN`         | Socket Mode app-level token (`xapp-...`)      |
+| `MITTO_SLACK_BOT_TOKEN`         | Bot token (`xoxb-...`)                        |
+| `MITTO_SLACK_TEAM_ID`           | Slack workspace/team ID to accept events from |
+| `MITTO_SLACK_CHANNEL_ID`        | Slack channel ID to listen on                 |
+| `MITTO_SLACK_TARGET_SESSION_ID` | Mitto conversation ID to trigger              |
 
 All five must be set together or the feature stays disabled. A partial set
 (some but not all present) fails safely: the server logs a warning naming
@@ -147,7 +158,7 @@ configured Slack channel:
 3. Force a Socket Mode disconnect (e.g. toggle the app's Socket Mode off and
    back on, or kill/restore local network briefly) and post again — the
    bridge should reconnect (see `"slackbridge: event source disconnected,
-   reconnecting"` in the log) and still deliver the next event.
+reconnecting"` in the log) and still deliver the next event.
 
 Record observed event→loop latency and reconnect time when validating
 against a real Slack workspace; this repository's automated tests

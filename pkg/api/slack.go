@@ -55,6 +55,35 @@ type SlackDeletePreview struct {
 	References      []SlackReference `json:"references"`
 }
 
+// SlackEnvironmentStatus is the credential-free legacy import status.
+type SlackEnvironmentStatus struct {
+	Present          bool     `json:"present"`
+	Complete         bool     `json:"complete"`
+	MissingVariables []string `json:"missing_variables"`
+	TeamID           string   `json:"team_id,omitempty"`
+	ChannelID        string   `json:"channel_id,omitempty"`
+	TargetSessionID  string   `json:"target_session_id,omitempty"`
+	Active           bool     `json:"active"`
+	Shadowed         bool     `json:"shadowed"`
+}
+
+type ImportSlackPoCRequest struct {
+	AppID            string `json:"app_id,omitempty"`
+	AppName          string `json:"app_name,omitempty"`
+	InstallationID   string `json:"installation_id,omitempty"`
+	InstallationName string `json:"installation_name,omitempty"`
+}
+
+type ImportSlackPoCResult struct {
+	AppID               string `json:"app_id"`
+	InstallationID      string `json:"installation_id"`
+	AppCreated          bool   `json:"app_created"`
+	InstallationCreated bool   `json:"installation_created"`
+	SubscriptionCreated bool   `json:"subscription_created"`
+	EnvironmentStopped  bool   `json:"environment_stopped"`
+	ManagedActive       bool   `json:"managed_active"`
+}
+
 type CreateSlackAppRequest struct {
 	Name     string `json:"name"`
 	AppToken string `json:"app_token"`
@@ -115,6 +144,22 @@ func (c *Client) ListSlackApps() ([]SlackApp, error) {
 	}
 	err := c.slackJSON(http.MethodGet, "/api/slack/apps", nil, &response, http.StatusOK)
 	return response.Apps, err
+}
+
+func (c *Client) GetSlackEnvironmentStatus() (*SlackEnvironmentStatus, error) {
+	var status SlackEnvironmentStatus
+	if err := c.slackJSON(http.MethodGet, "/api/slack/environment-import", nil, &status, http.StatusOK); err != nil {
+		return nil, err
+	}
+	return &status, nil
+}
+
+func (c *Client) ImportSlackPoC(request ImportSlackPoCRequest) (*ImportSlackPoCResult, error) {
+	var result ImportSlackPoCResult
+	if err := c.slackJSON(http.MethodPost, "/api/slack/environment-import", request, &result, http.StatusOK); err != nil {
+		return nil, err
+	}
+	return &result, nil
 }
 
 func (c *Client) CreateSlackApp(request CreateSlackAppRequest) (*SlackApp, error) {

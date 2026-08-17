@@ -77,6 +77,15 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
   const [actionError, setActionError] = useState("");
   const [busy, setBusy] = useState("");
   const [refreshApps, setRefreshApps] = useState(0);
+  const [environmentStatus, setEnvironmentStatus] = useState(null);
+  const [environmentImportOpen, setEnvironmentImportOpen] = useState(false);
+  const [importAppMode, setImportAppMode] = useState("create");
+  const [importInstallationMode, setImportInstallationMode] =
+    useState("create");
+  const [importAppName, setImportAppName] = useState("Imported Slack app");
+  const [importInstallationName, setImportInstallationName] = useState(
+    "Imported Slack workspace",
+  );
 
   const [showNewApp, setShowNewApp] = useState(false);
   const [newAppName, setNewAppName] = useState("");
@@ -140,6 +149,21 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
       controller.abort();
     };
   }, [refreshApps, client]);
+
+  const loadEnvironmentStatus = async (signal) => {
+    try {
+      const status = await client.slack.environmentStatus({ signal });
+      setEnvironmentStatus(status);
+    } catch (error) {
+      if (!isAbortError(error)) setEnvironmentStatus(null);
+    }
+  };
+
+  useEffect(() => {
+    const controller = new AbortController();
+    loadEnvironmentStatus(controller.signal);
+    return () => controller.abort();
+  }, [client]);
 
   useEffect(() => {
     setAppName(selectedApp?.name || "");
@@ -425,6 +449,44 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
     }
   };
 
+  const openEnvironmentImport = () => {
+    setImportAppMode(selectedApp ? "selected" : "create");
+    setImportInstallationMode(selectedInstallation ? "selected" : "create");
+    setEnvironmentImportOpen(true);
+  };
+
+  const importEnvironment = async () => {
+    if (!environmentStatus?.complete || environmentStatus.shadowed) return;
+    setBusy("environment-import");
+    setActionError("");
+    try {
+      await client.slack.importEnvironment({
+        app_id: importAppMode === "selected" ? selectedApp?.id || "" : "",
+        app_name: importAppMode === "create" ? importAppName.trim() : "",
+        installation_id:
+          importAppMode === "selected" && importInstallationMode === "selected"
+            ? selectedInstallation?.id || ""
+            : "",
+        installation_name:
+          importAppMode === "create" || importInstallationMode === "create"
+            ? importInstallationName.trim()
+            : "",
+      });
+      setEnvironmentImportOpen(false);
+      setRefreshApps((value) => value + 1);
+      await loadEnvironmentStatus();
+      notify(
+        "Slack environment configuration imported. Remove the deprecated environment variables after restart.",
+      );
+    } catch {
+      setActionError(
+        "Slack environment import failed; managed credentials and loop settings were left unchanged.",
+      );
+    } finally {
+      setBusy("");
+    }
+  };
+
   const confirmDelete = async () => {
     if (!deletePlan || referencesOf(deletePlan.preview).length > 0) return;
     const { kind, target } = deletePlan;
@@ -505,6 +567,66 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
         On Linux the vault is an atomic file restricted to mode 0600 inside a
         mode 0700 directory.
       </div>
+			${
+        environmentStatus?.present &&
+        html`
+          <section
+            class="card card-border border-warning bg-warning/10"
+            data-testid="slack-environment-import"
+          >
+            <div class="card-body gap-3 p-4">
+              <div class="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <h5 class="card-title text-base">
+                    Deprecated environment configuration
+                  </h5>
+                  <p class="text-sm text-mitto-text-muted">
+                    Import into the credential vault and a managed onSlack
+                    subscription. No token values are sent to this page.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  class="btn btn-sm btn-warning"
+                  disabled=${!environmentStatus.complete ||
+                  environmentStatus.shadowed}
+                  onClick=${openEnvironmentImport}
+                  data-testid="slack-import-environment"
+                >
+                  ${environmentStatus.shadowed
+                    ? "Already managed"
+                    : "Import from environment"}
+                </button>
+              </div>
+              <div class="flex flex-wrap gap-2 text-xs">
+                ${environmentStatus.team_id &&
+                html`<span class="badge badge-outline"
+                  >Team ${environmentStatus.team_id}</span
+                >`}
+                ${environmentStatus.channel_id &&
+                html`<span class="badge badge-outline"
+                  >Channel ${environmentStatus.channel_id}</span
+                >`}
+                ${environmentStatus.target_session_id &&
+                html`<span class="badge badge-outline"
+                  >Conversation ${environmentStatus.target_session_id}</span
+                >`}
+                ${environmentStatus.active &&
+                html`<span class="badge badge-warning"
+                  >Legacy listener active</span
+                >`}
+              </div>
+              ${!environmentStatus.complete &&
+              html`
+                <p class="text-sm text-warning-content">
+                  Missing:
+                  ${(environmentStatus.missing_variables || []).join(", ")}
+                </p>
+              `}
+            </div>
+          </section>
+        `
+      }
       ${
         loadError &&
         html`<div role="alert" class="alert alert-error alert-soft text-sm">
@@ -944,6 +1066,63 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
       </div>
 
       <${ConfirmDialog}
+			isOpen=${environmentImportOpen}
+			title="Import Slack environment configuration"
+			message="This validates the environment credentials, stores them in the vault, updates the target loop, and hands off the listener atomically."
+			confirmLabel="Import and hand off"
+			isLoading=${busy === "environment-import"}
+			confirmDisabled=${
+        (importAppMode === "create" && !importAppName.trim()) ||
+        ((importAppMode === "create" || importInstallationMode === "create") &&
+          !importInstallationName.trim())
+      }
+			onCancel=${() => setEnvironmentImportOpen(false)}
+			onConfirm=${importEnvironment}
+		>
+			<div class="mt-4 space-y-3" data-testid="slack-environment-import-dialog">
+				<fieldset class="fieldset">
+					<legend class="fieldset-legend">App profile</legend>
+					<select class="select select-sm w-full" value=${importAppMode}
+						onChange=${(event) => setImportAppMode(event.target.value)}>
+						${selectedApp && html`<option value="selected">Use selected: ${selectedApp.name}</option>`}
+						<option value="create">Create or match by Slack identity</option>
+					</select>
+					${
+            importAppMode === "create" &&
+            html`<input
+              class="input input-sm w-full"
+              value=${importAppName}
+              onInput=${(event) => setImportAppName(event.target.value)}
+              aria-label="Imported app name"
+            />`
+          }
+				</fieldset>
+				<fieldset class="fieldset">
+					<legend class="fieldset-legend">Workspace installation</legend>
+					<select class="select select-sm w-full" value=${importAppMode === "create" ? "create" : importInstallationMode}
+						disabled=${importAppMode === "create"}
+						onChange=${(event) => setImportInstallationMode(event.target.value)}>
+						${selectedInstallation && html`<option value="selected">Use selected: ${selectedInstallation.name}</option>`}
+						<option value="create">Create or match by Slack team</option>
+					</select>
+					${
+            (importAppMode === "create" ||
+              importInstallationMode === "create") &&
+            html`
+              <input
+                class="input input-sm w-full"
+                value=${importInstallationName}
+                onInput=${(event) =>
+                  setImportInstallationName(event.target.value)}
+                aria-label="Imported workspace name"
+              />
+            `
+          }
+				</fieldset>
+			</div>
+		</${ConfirmDialog}>
+
+		<${ConfirmDialog}
         isOpen=${!!deletePlan}
         title=${deleteBlocked ? "Integration is in use" : "Delete Slack integration"}
         message=${

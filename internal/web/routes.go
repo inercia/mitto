@@ -114,6 +114,8 @@ func (s *Server) apiRoutes(authMgr *middleware.AuthManager, csrfMgr *middleware.
 	// absent from publicAPIPaths; mutation methods are protected by the global
 	// authentication and CSRF middleware.
 	routes = append(routes,
+		apiRoute{method: "GET", pattern: "/api/slack/environment-import", handler: http.HandlerFunc(s.apiHandlers.HandleSlackEnvironmentStatus)},
+		apiRoute{method: "POST", pattern: "/api/slack/environment-import", handler: http.HandlerFunc(s.apiHandlers.HandleSlackEnvironmentImport)},
 		apiRoute{method: "GET", pattern: "/api/slack/apps", handler: http.HandlerFunc(s.apiHandlers.HandleSlackAppsList)},
 		apiRoute{method: "POST", pattern: "/api/slack/apps", handler: http.HandlerFunc(s.apiHandlers.HandleSlackAppCreate)},
 		apiRoute{method: "GET", pattern: "/api/slack/apps/{appId}", handler: http.HandlerFunc(s.apiHandlers.HandleSlackAppGet)},

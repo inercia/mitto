@@ -90,6 +90,26 @@ type Change struct {
 	Credential     bool
 }
 
+// PoCImportRequest carries the legacy environment values into the catalog.
+// Token fields are backend-only and must never be serialized or logged.
+type PoCImportRequest struct {
+	AppID            string
+	AppName          string
+	InstallationID   string
+	InstallationName string
+	ExpectedTeamID   string
+	AppToken         string
+	BotToken         string
+}
+
+// PoCImportResult contains only stable, non-secret migration metadata.
+type PoCImportResult struct {
+	AppID               string `json:"app_id"`
+	InstallationID      string `json:"installation_id"`
+	AppCreated          bool   `json:"app_created"`
+	InstallationCreated bool   `json:"installation_created"`
+}
+
 type document struct {
 	Version       int            `json:"version"`
 	Apps          []AppProfile   `json:"apps"`

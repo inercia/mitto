@@ -317,6 +317,211 @@ func (s *Service) GetInstallation(id string) (InstallationView, error) {
 	return s.installationView(doc.Installations[idx])
 }
 
+// PoCImportTransaction keeps the pre-import catalog and credential state so a
+// caller can compensate if a later loop-store or listener handoff step fails.
+type PoCImportTransaction struct {
+	service   *Service
+	priorDoc  document
+	nextDoc   document
+	priors    []priorCredential
+	appToken  string
+	botToken  string
+	result    PoCImportResult
+	committed bool
+	closed    bool
+}
+
+// PreparePoCImport validates both environment credentials and resolves the
+// selected-or-create records without mutating catalog or vault state.
+func (s *Service) PreparePoCImport(ctx context.Context, request PoCImportRequest) (*PoCImportTransaction, error) {
+	if s.slack == nil || s.credentials == nil {
+		return nil, ErrUnavailable
+	}
+	slackAppID, err := s.slack.ValidateApp(ctx, request.AppToken)
+	if err != nil {
+		return nil, err
+	}
+	if !slackAppIDPattern.MatchString(slackAppID) {
+		return nil, fmt.Errorf("%w: malformed Slack app ID", ErrInvalid)
+	}
+	identity, err := s.slack.ValidateInstallation(ctx, request.BotToken)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateInstallationIdentity(identity); err != nil {
+		return nil, err
+	}
+	if identity.SlackAppID != slackAppID || identity.TeamID != strings.TrimSpace(request.ExpectedTeamID) {
+		return nil, fmt.Errorf("%w: environment credentials do not describe the configured Slack app/team", ErrConflict)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	doc, err := s.store.Load()
+	if err != nil {
+		return nil, err
+	}
+	priorDoc := cloneCatalogDocument(doc)
+	now := s.now().UTC()
+	result := PoCImportResult{}
+
+	appIdx := -1
+	if request.AppID != "" {
+		if err := validateResourceID(request.AppID); err != nil {
+			return nil, err
+		}
+		appIdx = appIndex(doc, request.AppID)
+		if appIdx < 0 {
+			return nil, ErrNotFound
+		}
+		if doc.Apps[appIdx].SlackAppID != slackAppID {
+			return nil, fmt.Errorf("%w: selected app has a different Slack identity", ErrConflict)
+		}
+	} else {
+		for i := range doc.Apps {
+			if doc.Apps[i].SlackAppID == slackAppID {
+				appIdx = i
+				break
+			}
+		}
+		if appIdx < 0 {
+			name, err := validateName(request.AppName)
+			if err != nil {
+				return nil, err
+			}
+			doc.Apps = append(doc.Apps, AppProfile{ID: uuid.NewString(), Name: name, SlackAppID: slackAppID,
+				ValidatedAt: now, CreatedAt: now, UpdatedAt: now})
+			appIdx = len(doc.Apps) - 1
+			result.AppCreated = true
+		}
+	}
+	doc.Apps[appIdx].ValidatedAt = now
+	doc.Apps[appIdx].UpdatedAt = now
+	result.AppID = doc.Apps[appIdx].ID
+
+	installationIdx := -1
+	if request.InstallationID != "" {
+		if err := validateResourceID(request.InstallationID); err != nil {
+			return nil, err
+		}
+		installationIdx = installationIndex(doc, request.InstallationID)
+		if installationIdx < 0 {
+			return nil, ErrNotFound
+		}
+		selected := doc.Installations[installationIdx]
+		if selected.AppID != result.AppID || selected.TeamID != identity.TeamID {
+			return nil, fmt.Errorf("%w: selected installation has a different app/team identity", ErrConflict)
+		}
+	} else {
+		for i := range doc.Installations {
+			if doc.Installations[i].AppID == result.AppID && doc.Installations[i].TeamID == identity.TeamID {
+				installationIdx = i
+				break
+			}
+		}
+		if installationIdx < 0 {
+			name, err := validateName(request.InstallationName)
+			if err != nil {
+				return nil, err
+			}
+			doc.Installations = append(doc.Installations, Installation{ID: uuid.NewString(), AppID: result.AppID,
+				Name: name, TeamID: identity.TeamID, TeamName: identity.TeamName, BotID: identity.BotID,
+				BotUserID: identity.BotUserID, ValidatedAt: now, CreatedAt: now, UpdatedAt: now})
+			installationIdx = len(doc.Installations) - 1
+			result.InstallationCreated = true
+		}
+	}
+	installation := &doc.Installations[installationIdx]
+	installation.TeamName, installation.BotID, installation.BotUserID = identity.TeamName, identity.BotID, identity.BotUserID
+	installation.ValidatedAt, installation.UpdatedAt = now, now
+	result.InstallationID = installation.ID
+
+	refs := []secrets.CredentialRef{
+		secrets.SlackAppCredential(result.AppID, AppTokenCredential),
+		secrets.SlackInstallationCredential(result.InstallationID, BotTokenCredential),
+	}
+	priors := make([]priorCredential, 0, len(refs))
+	for _, ref := range refs {
+		prior, err := s.snapshotCredential(ref)
+		if err != nil {
+			return nil, fmt.Errorf("snapshot credential: %w", err)
+		}
+		priors = append(priors, prior)
+	}
+	return &PoCImportTransaction{service: s, priorDoc: priorDoc, nextDoc: cloneCatalogDocument(doc), priors: priors,
+		appToken: request.AppToken, botToken: request.BotToken, result: result}, nil
+}
+
+func (tx *PoCImportTransaction) Result() PoCImportResult { return tx.result }
+
+// Commit applies both credentials and catalog metadata as one compensating unit.
+func (tx *PoCImportTransaction) Commit() error {
+	if tx == nil || tx.closed || tx.committed {
+		return fmt.Errorf("%w: import transaction is not open", ErrConflict)
+	}
+	s := tx.service
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	values := []string{tx.appToken, tx.botToken}
+	for i, prior := range tx.priors {
+		if err := s.credentials.Put(prior.ref, values[i]); err != nil {
+			for j := 0; j <= i; j++ {
+				s.restoreCredential(tx.priors[j])
+			}
+			tx.closed = true
+			return fmt.Errorf("store import credential: %w", err)
+		}
+	}
+	if err := s.store.Save(tx.nextDoc); err != nil {
+		for _, prior := range tx.priors {
+			s.restoreCredential(prior)
+		}
+		tx.closed = true
+		return err
+	}
+	tx.committed = true
+	return nil
+}
+
+// Rollback restores the exact pre-import metadata and credential values.
+func (tx *PoCImportTransaction) Rollback() error {
+	if tx == nil || tx.closed || !tx.committed {
+		return nil
+	}
+	s := tx.service
+	s.mu.Lock()
+	err := s.store.Save(tx.priorDoc)
+	for _, prior := range tx.priors {
+		if prior.exists {
+			err = errors.Join(err, s.credentials.Put(prior.ref, prior.value))
+		} else if deleteErr := s.credentials.Delete(prior.ref); deleteErr != nil && !errors.Is(deleteErr, secrets.ErrNotFound) {
+			err = errors.Join(err, deleteErr)
+		}
+	}
+	tx.closed = true
+	s.mu.Unlock()
+	tx.notify()
+	return err
+}
+
+// Finalize publishes the value-free catalog change after the whole handoff succeeds.
+func (tx *PoCImportTransaction) Finalize() {
+	if tx == nil || tx.closed || !tx.committed {
+		return
+	}
+	tx.closed = true
+	tx.notify()
+}
+
+func (tx *PoCImportTransaction) notify() {
+	tx.service.mu.Lock()
+	observer := tx.service.observer
+	tx.service.mu.Unlock()
+	if observer != nil {
+		observer(Change{AppID: tx.result.AppID, InstallationID: tx.result.InstallationID, Credential: true})
+	}
+}
+
 func (s *Service) CreateInstallation(ctx context.Context, appID, name, expectedTeamID, token string) (InstallationView, error) {
 	if err := validateResourceID(appID); err != nil {
 		return InstallationView{}, err
@@ -753,6 +958,13 @@ func (s *Service) invalidateChannelsLocked(installationID string) {
 func cloneChannelPage(page ChannelPage) ChannelPage {
 	clone := ChannelPage{NextCursor: page.NextCursor, Channels: make([]Channel, len(page.Channels))}
 	copy(clone.Channels, page.Channels)
+	return clone
+}
+
+func cloneCatalogDocument(doc document) document {
+	clone := document{Version: doc.Version, Apps: make([]AppProfile, len(doc.Apps)), Installations: make([]Installation, len(doc.Installations))}
+	copy(clone.Apps, doc.Apps)
+	copy(clone.Installations, doc.Installations)
 	return clone
 }
 

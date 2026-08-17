@@ -213,7 +213,8 @@ type Server struct {
 	loopRunner *conversation.LoopRunner
 
 	// slackManager pools production Socket Mode connections by app profile.
-	slackManager *slackbridge.Manager
+	slackManager  *slackbridge.Manager
+	slackBridgeMu sync.Mutex
 
 	// slackBridgeCancel stops the experimental Slack event source
 	// (internal/slackbridge, mitto-qewp PoC), when configured via env vars.
@@ -351,6 +352,15 @@ type Server struct {
 	// MITTO_TEST_MODE paths, matching the ACP process GC gating above).
 	goroutineGaugeStop func()
 }
+
+type serverLegacySlackController struct {
+	server *Server
+	cfg    slackbridge.Config
+}
+
+func (c *serverLegacySlackController) Active() bool { return c.server.legacySlackBridgeActive() }
+func (c *serverLegacySlackController) Start() error { return c.server.startLegacySlackBridge(c.cfg) }
+func (c *serverLegacySlackController) Stop() bool   { return c.server.stopLegacySlackBridge() }
 
 // APIPrefix returns the URL prefix for all API and WebSocket endpoints.
 // This is used by the frontend to construct API URLs.
@@ -1337,28 +1347,6 @@ func NewServer(config Config) (*Server, error) {
 	}
 	s.loopRunner.SetLoopWorkspaceConcurrency(loopWsConcurrency)
 
-	// Start the experimental Slack event source (internal/slackbridge,
-	// mitto-qewp PoC) when fully configured via env vars. This is
-	// deliberately NOT surfaced in Settings/UI or persisted anywhere; a
-	// partial/malformed configuration fails safely (logged without values,
-	// feature left disabled, no goroutine started) rather than running with
-	// an incomplete filter.
-	if slackCfg, enabled, err := slackbridge.LoadConfigFromEnv(); err != nil {
-		logger.Warn("Slack event source disabled: invalid configuration", "error", err)
-	} else if enabled {
-		slackBridge := slackbridge.NewBridge(slackCfg, s.loopRunner, logger)
-		slackSource := slackbridge.NewSlackSource(slackCfg, logger, slackBridge.SetSelfUserID)
-		slackCtx, slackCancel := context.WithCancel(context.Background())
-		s.slackBridgeCancel = slackCancel
-		slackDone := make(chan struct{})
-		s.slackBridgeDone = slackDone
-		go func() {
-			defer close(slackDone)
-			slackBridge.Run(slackCtx, slackSource)
-		}()
-		logger.Info("Slack event source enabled", "channel_id", slackCfg.ChannelID, "target_session_id", slackCfg.TargetSessionID)
-	}
-
 	// Initialize callback index and rate limiter
 	s.callbackIndex = conversation.NewCallbackIndex()
 	s.callbackRateLimiter = conversation.NewCallbackRateLimiter()
@@ -1403,10 +1391,29 @@ func NewServer(config Config) (*Server, error) {
 			sessionMgr.SetSlackReconciler(s.slackManager)
 		}
 	}
+	slackEnvConfig, slackEnvStatus := slackbridge.InspectEnvironment()
+	legacySlack := &serverLegacySlackController{server: s, cfg: slackEnvConfig}
+	slackEnvironment := slackbridge.NewEnvironmentMigration(
+		slackEnvConfig, slackEnvStatus, store, slackCatalog, legacySlack, s.slackManager,
+	)
+	if slackEnvStatus.Present {
+		if !slackEnvStatus.Complete {
+			logger.Warn("Deprecated Slack environment adapter disabled: incomplete configuration",
+				"missing_variables", slackEnvStatus.MissingVariables)
+		} else if current, err := slackEnvironment.Status(); err != nil {
+			logger.Warn("Deprecated Slack environment adapter disabled: managed precedence check failed", "error_class", "reconcile")
+		} else if current.Shadowed {
+			logger.Warn("Managed Slack configuration supersedes deprecated environment adapter",
+				"channel_id", current.ChannelID, "target_session_id", current.TargetSessionID)
+		} else {
+			_ = legacySlack.Start()
+		}
+	}
 
 	s.apiHandlers = handlers.New(handlers.Deps{
 		Logger:                   logger,
 		SlackCatalog:             slackCatalog,
+		SlackEnvironment:         slackEnvironment,
 		ConfigReadOnly:           config.ConfigReadOnly,
 		MittoConfig:              config.MittoConfig,
 		RCFilePath:               config.RCFilePath,
@@ -1928,16 +1935,7 @@ func (s *Server) Shutdown() error {
 
 	// Stop and join the experimental Slack source before closing sessions or
 	// the loop runner, so no inbound event can race the shutdown sequence.
-	if s.slackBridgeCancel != nil {
-		s.slackBridgeCancel()
-		if s.slackBridgeDone != nil {
-			select {
-			case <-s.slackBridgeDone:
-			case <-time.After(5 * time.Second):
-				s.logger.Warn("Timed out waiting for Slack event source shutdown")
-			}
-		}
-	}
+	s.stopLegacySlackBridge()
 	if s.slackManager != nil {
 		s.slackManager.Close()
 	}
@@ -2058,6 +2056,64 @@ func (s *Server) Shutdown() error {
 		return err
 	}
 	return nil
+}
+
+func (s *Server) startLegacySlackBridge(cfg slackbridge.Config) error {
+	s.slackBridgeMu.Lock()
+	defer s.slackBridgeMu.Unlock()
+	if s.slackBridgeCancel != nil {
+		select {
+		case <-s.slackBridgeDone:
+			s.slackBridgeCancel, s.slackBridgeDone = nil, nil
+		default:
+			return nil
+		}
+	}
+	slackBridge := slackbridge.NewBridge(cfg, s.loopRunner, s.logger)
+	slackSource := slackbridge.NewSlackSource(cfg, s.logger, slackBridge.SetSelfUserID)
+	slackCtx, slackCancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	s.slackBridgeCancel, s.slackBridgeDone = slackCancel, done
+	go func() {
+		defer close(done)
+		slackBridge.Run(slackCtx, slackSource)
+	}()
+	s.logger.Warn("Deprecated Slack environment adapter enabled; import it from Settings > Slack",
+		"channel_id", cfg.ChannelID, "target_session_id", cfg.TargetSessionID)
+	return nil
+}
+
+func (s *Server) legacySlackBridgeActive() bool {
+	s.slackBridgeMu.Lock()
+	defer s.slackBridgeMu.Unlock()
+	if s.slackBridgeCancel == nil || s.slackBridgeDone == nil {
+		return false
+	}
+	select {
+	case <-s.slackBridgeDone:
+		return false
+	default:
+		return true
+	}
+}
+
+func (s *Server) stopLegacySlackBridge() bool {
+	s.slackBridgeMu.Lock()
+	defer s.slackBridgeMu.Unlock()
+	if s.slackBridgeCancel == nil {
+		return false
+	}
+	cancel, done := s.slackBridgeCancel, s.slackBridgeDone
+	s.slackBridgeCancel, s.slackBridgeDone = nil, nil
+	cancel()
+	if done != nil {
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			s.logger.Warn("Timed out waiting for Slack event source shutdown")
+		}
+	}
+	return true
 }
 
 // IsShutdown returns whether the server has been shut down.

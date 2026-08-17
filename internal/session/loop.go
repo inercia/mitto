@@ -879,6 +879,24 @@ func (ps *LoopStore) Set(p *LoopPrompt) error {
 	return nil
 }
 
+// RestoreSnapshot replaces loop.json without changing timestamps or counters.
+// It is reserved for compensating rollback after a cross-store transaction.
+func (ps *LoopStore) RestoreSnapshot(p *LoopPrompt) error {
+	if p == nil {
+		return ErrLoopNotFound
+	}
+	p.Normalize()
+	if err := p.Validate(); err != nil {
+		return err
+	}
+	ps.mu.Lock()
+	defer ps.mu.Unlock()
+	if err := fileutil.WriteJSONAtomic(ps.loopPath(), p, 0644); err != nil {
+		return fmt.Errorf("failed to restore loop snapshot: %w", err)
+	}
+	return nil
+}
+
 // LoopUpdate holds a partial update to a loop prompt configuration. Only
 // non-nil fields are applied by LoopStore.Update; all others are left
 // untouched. Replaces the historical 15-positional-pointer-parameter Update

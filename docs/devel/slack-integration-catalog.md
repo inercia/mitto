@@ -71,19 +71,20 @@ Request bodies are limited to 64 KiB. Oversized Slack bodies return canonical
 `413 too_large`; malformed bodies and service failures use fixed, value-free
 messages rather than decoder, provider, or credential text.
 
-| Method                   | Path                                                       | Purpose                                       |
-| ------------------------ | ---------------------------------------------------------- | --------------------------------------------- |
-| `GET`, `POST`            | `/api/slack/apps`                                          | List or create app profiles                   |
-| `GET`, `PATCH`, `DELETE` | `/api/slack/apps/{appId}`                                  | Read, rename, or delete an app                |
-| `POST`                   | `/api/slack/apps/{appId}/validate`                         | Revalidate the configured app token           |
-| `PUT`                    | `/api/slack/apps/{appId}/token`                            | Validate and replace an app token             |
-| `GET`                    | `/api/slack/apps/{appId}/prepare-delete`                   | Report cascading installations and references |
-| `GET`, `POST`            | `/api/slack/apps/{appId}/installations`                    | List or create workspace installations        |
-| `GET`, `PATCH`, `DELETE` | `/api/slack/installations/{installationId}`                | Read, rename, or delete an installation       |
-| `POST`                   | `/api/slack/installations/{installationId}/validate`       | Revalidate the configured bot token           |
-| `PUT`                    | `/api/slack/installations/{installationId}/token`          | Validate and replace a bot token              |
-| `GET`                    | `/api/slack/installations/{installationId}/prepare-delete` | Report loop references                        |
-| `GET`                    | `/api/slack/installations/{installationId}/channels`       | Discover public channels                      |
+| Method                   | Path                                                       | Purpose                                              |
+| ------------------------ | ---------------------------------------------------------- | ---------------------------------------------------- |
+| `GET`, `POST`            | `/api/slack/apps`                                          | List or create app profiles                          |
+| `GET`, `PATCH`, `DELETE` | `/api/slack/apps/{appId}`                                  | Read, rename, or delete an app                       |
+| `POST`                   | `/api/slack/apps/{appId}/validate`                         | Revalidate the configured app token                  |
+| `PUT`                    | `/api/slack/apps/{appId}/token`                            | Validate and replace an app token                    |
+| `GET`                    | `/api/slack/apps/{appId}/prepare-delete`                   | Report cascading installations and references        |
+| `GET`, `POST`            | `/api/slack/apps/{appId}/installations`                    | List or create workspace installations               |
+| `GET`, `PATCH`, `DELETE` | `/api/slack/installations/{installationId}`                | Read, rename, or delete an installation              |
+| `POST`                   | `/api/slack/installations/{installationId}/validate`       | Revalidate the configured bot token                  |
+| `PUT`                    | `/api/slack/installations/{installationId}/token`          | Validate and replace a bot token                     |
+| `GET`                    | `/api/slack/installations/{installationId}/prepare-delete` | Report loop references                               |
+| `GET`                    | `/api/slack/installations/{installationId}/channels`       | Discover public channels                             |
+| `GET`, `POST`            | `/api/slack/environment-import`                            | Inspect or import the deprecated environment adapter |
 
 Errors use the canonical Mitto JSON envelope: malformed input is `400`, missing
 records are `404`, duplicate identities, identity mismatches, and active references
@@ -135,6 +136,13 @@ operations clear the input immediately, while every GET response and rendered
 status uses only `token_configured`, validated identities, and validation time.
 The UI calls `prepare-delete` before offering deletion and shows active loop
 references as blockers rather than issuing a destructive request.
+
+When legacy `MITTO_SLACK_*` configuration is present, the tab shows only its
+non-secret team/channel/target metadata and missing variable names. An explicit
+confirmation imports into the selected app/installation or creates named records.
+The operation is transactional across catalog metadata, both vault credentials,
+the target loop subscription, and listener handoff; failure restores the prior
+catalog, credentials, loop file, and development adapter.
 
 External Slack links use the native-aware `openExternalURL` helper. The empty
 state opens Slack's app creation flow; known Slack App IDs deep-link to their app

@@ -15,6 +15,10 @@ export function createSlackResource(config) {
   const installationPath = (id) => `/api/slack/installations/${enc(id)}`;
 
   return {
+    environmentStatus: (opts) =>
+      call("GET", "/api/slack/environment-import", opts),
+    importEnvironment: (body, opts) =>
+      call("POST", "/api/slack/environment-import", { body, ...opts }),
     listApps: (opts) => call("GET", "/api/slack/apps", opts),
     createApp: (body, opts) =>
       call("POST", "/api/slack/apps", { body, ...opts }),

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/inercia/mitto/internal/slackbridge"
 	"github.com/inercia/mitto/internal/slackcatalog"
 	"github.com/inercia/mitto/internal/web/middleware"
 )
@@ -88,6 +89,45 @@ func writeSlackError(w http.ResponseWriter, err error) {
 	default:
 		writeErrorJSON(w, http.StatusInternalServerError, "", "Failed to update Slack integration")
 	}
+}
+
+func (h *Handlers) HandleSlackEnvironmentStatus(w http.ResponseWriter, _ *http.Request) {
+	if h.deps.SlackEnvironment == nil {
+		writeRetryableUnavailable(w, "Slack environment migration is unavailable", 5)
+		return
+	}
+	status, err := h.deps.SlackEnvironment.Status()
+	if err != nil {
+		writeRetryableUnavailable(w, "Slack environment migration is temporarily unavailable", 5)
+		return
+	}
+	writeJSONOK(w, status)
+}
+
+func (h *Handlers) HandleSlackEnvironmentImport(w http.ResponseWriter, r *http.Request) {
+	if !allowSlackCredentialWrite(w, r) {
+		return
+	}
+	if h.deps.SlackEnvironment == nil {
+		writeRetryableUnavailable(w, "Slack environment migration is unavailable", 5)
+		return
+	}
+	var request slackbridge.EnvironmentImportRequest
+	if !decodeSlackBody(w, r, &request) {
+		return
+	}
+	result, err := h.deps.SlackEnvironment.Import(r.Context(), request)
+	if err != nil {
+		writeSlackError(w, err)
+		return
+	}
+	if h.deps.Store != nil && h.deps.BroadcastLoopUpdated != nil {
+		sessionID := h.deps.SlackEnvironment.TargetSessionID()
+		if loop, getErr := h.deps.Store.Loop(sessionID).Get(); getErr == nil {
+			h.deps.BroadcastLoopUpdated(sessionID, loop)
+		}
+	}
+	writeJSONOK(w, result)
 }
 
 func (h *Handlers) HandleSlackAppsList(w http.ResponseWriter, _ *http.Request) {

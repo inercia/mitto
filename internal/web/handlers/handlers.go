@@ -22,6 +22,7 @@ import (
 	configPkg "github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/conversation"
 	"github.com/inercia/mitto/internal/session"
+	"github.com/inercia/mitto/internal/slackbridge"
 	"github.com/inercia/mitto/internal/slackcatalog"
 	"github.com/inercia/mitto/internal/stats"
 )
@@ -58,6 +59,10 @@ type Deps struct {
 	// SlackCatalog owns process-global Slack app and installation metadata.
 	// Nil means Slack integration management is unavailable.
 	SlackCatalog *slackcatalog.Service
+
+	// SlackEnvironment coordinates the explicit legacy environment import.
+	// Nil means the compatibility migration surface is unavailable.
+	SlackEnvironment *slackbridge.EnvironmentMigration
 
 	// ConfigReadOnly mirrors Server.config.ConfigReadOnly: when true, the
 	// configuration was loaded from a custom --config file and must not be
