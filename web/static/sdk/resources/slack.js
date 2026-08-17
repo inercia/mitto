@@ -1,0 +1,59 @@
+/**
+ * Process-global Slack integration catalog resource.
+ * Credentials are write-only request fields; every response is non-secret
+ * metadata plus token_configured booleans.
+ */
+import { request } from "../core/transport.js";
+
+const enc = encodeURIComponent;
+
+/** @param {import("../core/config.js").ResolvedConfig} config */
+export function createSlackResource(config) {
+  const call = (method, path, opts = {}) =>
+    request(config, { method, path, ...opts });
+  const appPath = (id) => `/api/slack/apps/${enc(id)}`;
+  const installationPath = (id) => `/api/slack/installations/${enc(id)}`;
+
+  return {
+    listApps: (opts) => call("GET", "/api/slack/apps", opts),
+    createApp: (body, opts) =>
+      call("POST", "/api/slack/apps", { body, ...opts }),
+    getApp: (id, opts) => call("GET", appPath(id), opts),
+    renameApp: (id, name, opts) =>
+      call("PATCH", appPath(id), { body: { name }, ...opts }),
+    replaceAppToken: (id, token, opts) =>
+      call("PUT", `${appPath(id)}/token`, { body: { token }, ...opts }),
+    validateApp: (id, opts) =>
+      call("POST", `${appPath(id)}/validate`, { body: {}, ...opts }),
+    prepareDeleteApp: (id, opts) =>
+      call("GET", `${appPath(id)}/prepare-delete`, opts),
+    deleteApp: (id, opts) => call("DELETE", appPath(id), opts),
+
+    listInstallations: (appId, opts) =>
+      call("GET", `${appPath(appId)}/installations`, opts),
+    createInstallation: (appId, body, opts) =>
+      call("POST", `${appPath(appId)}/installations`, { body, ...opts }),
+    getInstallation: (id, opts) => call("GET", installationPath(id), opts),
+    renameInstallation: (id, name, opts) =>
+      call("PATCH", installationPath(id), { body: { name }, ...opts }),
+    replaceInstallationToken: (id, token, opts) =>
+      call("PUT", `${installationPath(id)}/token`, {
+        body: { token },
+        ...opts,
+      }),
+    validateInstallation: (id, opts) =>
+      call("POST", `${installationPath(id)}/validate`, {
+        body: {},
+        ...opts,
+      }),
+    prepareDeleteInstallation: (id, opts) =>
+      call("GET", `${installationPath(id)}/prepare-delete`, opts),
+    deleteInstallation: (id, opts) =>
+      call("DELETE", installationPath(id), opts),
+    listChannels: (id, params, opts) =>
+      call("GET", `${installationPath(id)}/channels`, {
+        query: params,
+        ...opts,
+      }),
+  };
+}

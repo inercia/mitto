@@ -92,13 +92,17 @@ export function createEndpoints(config, options = {}) {
       callback: (id) => url(`/api/sessions/${enc(id)}/callback`),
       userData: (id) => url(`/api/sessions/${enc(id)}/user-data`),
       promptArgCache: (id, promptName) =>
-        url(`/api/sessions/${enc(id)}/prompt-arg-cache`, { prompt: promptName }),
+        url(`/api/sessions/${enc(id)}/prompt-arg-cache`, {
+          prompt: promptName,
+        }),
       queue: (id) => url(`/api/sessions/${enc(id)}/queue`),
-      queueMsg: (id, msgId) => url(`/api/sessions/${enc(id)}/queue/${enc(msgId)}`),
+      queueMsg: (id, msgId) =>
+        url(`/api/sessions/${enc(id)}/queue/${enc(msgId)}`),
       queueMove: (id, msgId) =>
         url(`/api/sessions/${enc(id)}/queue/${enc(msgId)}/move`),
       images: (id) => url(`/api/sessions/${enc(id)}/images`),
-      image: (id, imageId) => url(`/api/sessions/${enc(id)}/images/${enc(imageId)}`),
+      image: (id, imageId) =>
+        url(`/api/sessions/${enc(id)}/images/${enc(imageId)}`),
       imagesFromPath: (id) => url(`/api/sessions/${enc(id)}/images/from-path`),
       files: (id) => url(`/api/sessions/${enc(id)}/files`),
       filesFromPath: (id) => url(`/api/sessions/${enc(id)}/files/from-path`),
@@ -111,10 +115,14 @@ export function createEndpoints(config, options = {}) {
       effectiveRunnerConfig: (uuid) =>
         url(`/api/workspaces/${enc(uuid)}/effective-runner-config`),
       metadata: (uuid) => url(`/api/workspaces/${enc(uuid)}/metadata`),
-      userDataSchema: (uuid) => url(`/api/workspaces/${enc(uuid)}/user-data-schema`),
-      mcpTools: (uuid, params) => url(`/api/workspaces/${enc(uuid)}/mcp-tools`, params),
-      mcpToolsInstall: (uuid) => url(`/api/workspaces/${enc(uuid)}/mcp-tools/install`),
-      mcpToolsRemove: (uuid) => url(`/api/workspaces/${enc(uuid)}/mcp-tools/remove`),
+      userDataSchema: (uuid) =>
+        url(`/api/workspaces/${enc(uuid)}/user-data-schema`),
+      mcpTools: (uuid, params) =>
+        url(`/api/workspaces/${enc(uuid)}/mcp-tools`, params),
+      mcpToolsInstall: (uuid) =>
+        url(`/api/workspaces/${enc(uuid)}/mcp-tools/install`),
+      mcpToolsRemove: (uuid) =>
+        url(`/api/workspaces/${enc(uuid)}/mcp-tools/remove`),
       restartAcp: (uuid) => url(`/api/workspaces/${enc(uuid)}/restart-acp`),
       acpStatus: (uuid) => url(`/api/workspaces/${enc(uuid)}/acp-status`),
       processors: (uuid) => url(`/api/workspaces/${enc(uuid)}/processors`),
@@ -129,8 +137,10 @@ export function createEndpoints(config, options = {}) {
       list: (params) => url("/api/workspace-prompts", params),
       create: () => url("/api/workspace-prompts"),
       get: (name, params) => url(`/api/workspace-prompts/${enc(name)}`, params),
-      update: (name, params) => url(`/api/workspace-prompts/${enc(name)}`, params),
-      remove: (name, params) => url(`/api/workspace-prompts/${enc(name)}`, params),
+      update: (name, params) =>
+        url(`/api/workspace-prompts/${enc(name)}`, params),
+      remove: (name, params) =>
+        url(`/api/workspace-prompts/${enc(name)}`, params),
       // mitto-x8v, mitto-47y.6.2: per-argument "remember last value" for prompt
       // dialogs. sessionId is optional; when provided the server merges
       // conversation-scoped values on top of folder-scoped values.
@@ -182,9 +192,31 @@ export function createEndpoints(config, options = {}) {
 
     /** ACP server lifecycle operations (delete flow requires guided reassign). */
     acpServers: {
-      prepareDelete: (name) => url(`/api/acp-servers/${enc(name)}/prepare-delete`),
+      prepareDelete: (name) =>
+        url(`/api/acp-servers/${enc(name)}/prepare-delete`),
       reassignAndDelete: (name) =>
         url(`/api/acp-servers/${enc(name)}/reassign-and-delete`),
+    },
+
+    /** Process-global Slack app and workspace installation catalog. */
+    slack: {
+      apps: () => url("/api/slack/apps"),
+      app: (id) => url(`/api/slack/apps/${enc(id)}`),
+      appToken: (id) => url(`/api/slack/apps/${enc(id)}/token`),
+      appValidate: (id) => url(`/api/slack/apps/${enc(id)}/validate`),
+      appPrepareDelete: (id) =>
+        url(`/api/slack/apps/${enc(id)}/prepare-delete`),
+      installations: (appId) =>
+        url(`/api/slack/apps/${enc(appId)}/installations`),
+      installation: (id) => url(`/api/slack/installations/${enc(id)}`),
+      installationToken: (id) =>
+        url(`/api/slack/installations/${enc(id)}/token`),
+      installationValidate: (id) =>
+        url(`/api/slack/installations/${enc(id)}/validate`),
+      installationPrepareDelete: (id) =>
+        url(`/api/slack/installations/${enc(id)}/prepare-delete`),
+      installationChannels: (id, params) =>
+        url(`/api/slack/installations/${enc(id)}/channels`, params),
     },
 
     /** Auxiliary AI operations (improve-prompt, etc.). */

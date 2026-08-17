@@ -53,6 +53,7 @@ import {
   KeyboardIcon,
   DashboardIcon,
   TagIcon,
+  ChatBubbleIcon,
 } from "./Icons.js";
 import { AgentDiscoveryDialog } from "./AgentDiscoveryDialog.js";
 import { Modal } from "./Modal.js";
@@ -63,6 +64,7 @@ import { RichSelect } from "./RichSelect.js";
 import { Tooltip } from "./Tooltip.js";
 import { ShortcutsEditor } from "./ShortcutsEditor.js";
 import { TaskLabelColorsEditor } from "./TaskLabelColorsEditor.js";
+import { SlackSettingsTab } from "./SlackSettingsTab.js";
 import { promptMenuIncludes } from "../utils/prompts.js";
 import {
   addTaskLabelColor as appendTaskLabelColor,
@@ -3512,6 +3514,7 @@ export function SettingsDialog({
     { id: "permissions", label: "Conversations", icon: ShieldIcon },
     { id: "web", label: "Web", icon: GlobeIcon },
     { id: "mcp", label: "MCP", icon: LightningIcon },
+    { id: "slack", label: "Slack", icon: ChatBubbleIcon },
     { id: "ui", label: "UI", icon: SlidersIcon },
     { id: "dashboard", label: "Dashboard", icon: DashboardIcon },
     { id: "tasks", label: "Tasks", icon: TagIcon },
@@ -5331,6 +5334,10 @@ export function SettingsDialog({
                     </div>
                   </div>
                 `}
+
+                <!-- Slack Tab -->
+                ${activeTab === "slack" &&
+                html`<${SlackSettingsTab} showToast=${showToast} />`}
 
                 <!-- UI Tab -->
                 ${activeTab === "ui" &&

@@ -112,6 +112,25 @@ references, so server wiring uses the empty checker. The later `onSlack` schema
 slice must inject its session scanner when those persisted fields land; no
 conversation/session dependency is imported into `internal/slackcatalog`.
 
+## Settings UI
+
+Settings > Slack manages the process-global catalog. The left pane selects an
+app profile; the detail pane manages its app credential and any number of Slack
+workspace installations. A Slack workspace here means a Slack team, not a Mitto
+project workspace.
+
+Token fields are always blank write-only inputs. Successful create or replace
+operations clear the input immediately, while every GET response and rendered
+status uses only `token_configured`, validated identities, and validation time.
+The UI calls `prepare-delete` before offering deletion and shows active loop
+references as blockers rather than issuing a destructive request.
+
+External Slack links use the native-aware `openExternalURL` helper. The empty
+state opens Slack's app creation flow; known Slack App IDs deep-link to their app
+settings, with the Slack apps index as the fallback. The tab also links to the
+Socket Mode and scope setup in `slack-bridge.md` and explains the hardened Linux
+file-vault permissions.
+
 ## Verification
 
 Focused regression coverage is in `internal/slackcatalog`,

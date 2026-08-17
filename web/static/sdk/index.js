@@ -52,6 +52,7 @@ import { createMiscResource } from "./resources/misc.js";
 import { createWorkspacesResource } from "./resources/workspaces.js";
 import { createAcpServersResource } from "./resources/acp-servers.js";
 import { createAgentsResource } from "./resources/agents.js";
+import { createSlackResource } from "./resources/slack.js";
 
 /** @typedef {import("./resources/task-label-colors.js").TaskLabelColorsBody} TaskLabelColorsBody */
 import { createTtlCache, keyForParams } from "./cache/ttl-cache.js";
@@ -101,6 +102,7 @@ export function createClient(options = {}) {
     workspaces: createWorkspacesResource(config),
     acpServers: createAcpServersResource(config),
     agents: createAgentsResource(config),
+    slack: createSlackResource(config),
     sessionStream: (sessionId, streamOptions) =>
       createSessionStream(config, sessionId, streamOptions),
     eventsStream: (streamOptions) => createEventsStream(config, streamOptions),
