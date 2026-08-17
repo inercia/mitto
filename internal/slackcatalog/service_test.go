@@ -249,6 +249,46 @@ func TestCatalogSaveFailureRollsBackCredential(t *testing.T) {
 	}
 }
 
+func TestCatalogChangeObserverRunsOnlyAfterSuccessfulCommitAndOutsideLock(t *testing.T) {
+	service, store, _, provider, _ := newTestService()
+	app, err := service.CreateApp(context.Background(), "App", "app-one")
+	if err != nil {
+		t.Fatal(err)
+	}
+	changes := make(chan Change, 1)
+	service.SetChangeObserver(func(change Change) {
+		// Calling back into the service proves the observer is outside s.mu.
+		if _, err := service.GetApp(change.AppID); err != nil {
+			t.Errorf("GetApp from observer: %v", err)
+		}
+		changes <- change
+	})
+	provider.apps["wrong-app"] = "A222"
+	if _, err := service.ReplaceAppToken(context.Background(), app.ID, "wrong-app"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("mismatched replacement error = %v", err)
+	}
+	select {
+	case change := <-changes:
+		t.Fatalf("failed transaction notified observer: %#v", change)
+	default:
+	}
+	provider.apps["replacement"] = app.SlackAppID
+	if _, err := service.ReplaceAppToken(context.Background(), app.ID, "replacement"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case change := <-changes:
+		if change.AppID != app.ID || !change.Credential || change.InstallationID != "" {
+			t.Fatalf("change = %#v", change)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for post-commit observer")
+	}
+	if store.doc.Apps[0].ID != app.ID {
+		t.Fatal("observer ran before document commit")
+	}
+}
+
 func TestReferenceBlockedDeletionAndChannelCache(t *testing.T) {
 	service, _, credentials, provider, references := newTestService()
 	now := time.Date(2026, 8, 17, 12, 0, 0, 0, time.UTC)

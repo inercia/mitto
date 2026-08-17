@@ -270,6 +270,16 @@ func (m *Manager) reconcileWorkersLocked() {
 		id := appID
 		worker.timer = time.AfterFunc(m.grace, func() { m.stopUnused(id) })
 	}
+	// A worker is shared by every subscription for its app, so its retained
+	// health snapshot must track reference changes even when connection state
+	// itself does not transition.
+	for appID, status := range m.statuses {
+		count := m.appReferencesLocked(appID)
+		if status.SubscriptionCount != count {
+			status.SubscriptionCount = count
+			m.emitStatusLocked(status)
+		}
+	}
 }
 
 func (m *Manager) stopUnused(appID string) {

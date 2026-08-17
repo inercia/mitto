@@ -198,10 +198,7 @@ func TestBridge_Run_ReconnectsAndDeliversAnotherEvent(t *testing.T) {
 	}()
 
 	deadline := time.After(4 * time.Second)
-	for {
-		if trig.callCount() >= 2 {
-			break
-		}
+	for trig.callCount() < 2 {
 		select {
 		case <-deadline:
 			t.Fatalf("timed out waiting for 2 triggers after reconnect, got %d", trig.callCount())

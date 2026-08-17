@@ -68,4 +68,19 @@ func TestFallbackTitleMakesAutoChildNoLongerUntitled(t *testing.T) {
 	if callbackCount != 1 {
 		t.Fatalf("mitto-zzzr: fallback callback fired %d times, want once for the single metadata change", callbackCount)
 	}
+
+	// GenerateAndSetTitle is asynchronous. Do not let this test return while its
+	// job can still read retry globals that a following test overrides.
+	key := titleJobKey{store: store, sessionID: sessionID}
+	deadline = time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		titleJobs.Lock()
+		_, active := titleJobs.active[key]
+		titleJobs.Unlock()
+		if !active {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("title generation job did not finish")
 }
