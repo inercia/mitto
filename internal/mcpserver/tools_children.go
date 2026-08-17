@@ -5,12 +5,14 @@ package mcpserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/inercia/mitto/internal/acpproc/acperrors"
 	"github.com/inercia/mitto/internal/session"
 )
 
@@ -20,6 +22,11 @@ import (
 
 // defaultChildrenTasksTimeout is the default timeout for waiting for children to report.
 const defaultChildrenTasksTimeout = 10 * time.Minute
+
+// childResumeRetryDelays bounds eager recovery for persisted children whose
+// startup failed transiently. The last failure remains pending in the wait loop,
+// which retries at its normal poll cadence until the caller's deadline.
+var childResumeRetryDelays = []time.Duration{2 * time.Second, 5 * time.Second, 10 * time.Second}
 
 // Report size limits. These prevent MCP protocol validation failures when the
 // parent aggregates multiple children's reports into a single tool result.
@@ -98,6 +105,45 @@ func stoppedChildFailureReason(store *session.Store, childID string) string {
 	return ""
 }
 
+func (s *Server) isTransientChildResumeError(err error) bool {
+	return err != nil && s.sessionManager != nil &&
+		(s.sessionManager.IsMCPInitTimeout(err) || errors.Is(err, acperrors.ErrSharedProcessSaturated))
+}
+
+// resumeChildWithTransientRetry performs the initial resume plus a short bounded
+// backoff sequence. The bool result reports whether the final error is transient,
+// allowing the caller to keep the child pending instead of returning not_running.
+func (s *Server) resumeChildWithTransientRetry(ctx context.Context, parentID string, child session.Metadata) (BackgroundSession, error, bool) {
+	for attempt := 0; ; attempt++ {
+		resumed, err := s.sessionManager.ResumeSession(child.SessionID, child.Name, child.WorkingDir)
+		if err == nil {
+			return resumed, nil, false
+		}
+		if !s.isTransientChildResumeError(err) {
+			return nil, err, false
+		}
+		if attempt >= len(childResumeRetryDelays) {
+			return nil, err, true
+		}
+
+		delay := childResumeRetryDelays[attempt]
+		s.logger.Info("Child resume hit transient startup failure; retrying",
+			"parent_session", parentID,
+			"child_session", child.SessionID,
+			"attempt", attempt+1,
+			"next_delay", delay)
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return nil, err, true
+		case <-timer.C:
+		}
+	}
+}
+
 func (s *Server) handleChildrenTasksWait(ctx context.Context, req *mcp.CallToolRequest, input ChildrenTasksWaitInput) (*mcp.CallToolResult, ChildrenTasksWaitOutput, error) {
 	// Validate self_id
 	if input.SelfID == "" {
@@ -143,11 +189,20 @@ func (s *Server) handleChildrenTasksWait(ctx context.Context, req *mcp.CallToolR
 		return nil, ChildrenTasksWaitOutput{Success: false, Error: "session store not available"}, nil
 	}
 
+	timeout := time.Duration(input.TimeoutSeconds) * time.Second
+	if timeout <= 0 {
+		timeout = defaultChildrenTasksTimeout
+	}
+	waitDeadline := time.Now().Add(timeout)
+	resumeCtx, cancelResume := context.WithDeadline(ctx, waitDeadline)
+	defer cancelResume()
+
 	// Validate each child exists and is actually a child of this parent.
 	// Also check if each child is currently running.
 	validChildren := make([]string, 0, len(input.ChildrenList))
 	runningChildren := make([]string, 0, len(input.ChildrenList))
 	notRunningChildren := make([]string, 0)
+	startingChildren := make(map[string]session.Metadata)
 	var warnings []string
 
 	for _, childID := range input.ChildrenList {
@@ -177,18 +232,31 @@ func (s *Server) handleChildrenTasksWait(ctx context.Context, req *mcp.CallToolR
 				"parent_session", realSessionID,
 				"child_session", childID,
 				"child_status", string(childMeta.Status))
-			resumed, resumeErr := s.sessionManager.ResumeSession(childID, childMeta.Name, childMeta.WorkingDir)
+			resumed, resumeErr, transient := s.resumeChildWithTransientRetry(resumeCtx, realSessionID, childMeta)
 			if resumeErr != nil {
-				s.logger.Warn("Failed to auto-resume child session",
-					"parent_session", realSessionID,
-					"child_session", childID,
-					"error", resumeErr)
+				if transient {
+					startingChildren[childID] = childMeta
+					s.logger.Info("Child remains in transient startup recovery",
+						"parent_session", realSessionID,
+						"child_session", childID,
+						"error", resumeErr)
+				} else {
+					s.logger.Warn("Failed to auto-resume child session",
+						"parent_session", realSessionID,
+						"child_session", childID,
+						"error", resumeErr)
+				}
 			} else if resumed != nil {
 				// Re-check registration after resume
 				childReg = s.getSession(childID)
+				go resumed.TryProcessQueuedMessage()
 			}
 		}
 		if childReg == nil {
+			if _, starting := startingChildren[childID]; starting {
+				runningChildren = append(runningChildren, childID)
+				continue
+			}
 			notRunningChildren = append(notRunningChildren, childID)
 			reason := "not running"
 			if childMeta.Archived {
@@ -319,10 +387,10 @@ func (s *Server) handleChildrenTasksWait(ctx context.Context, req *mcp.CallToolR
 		}
 	}
 
-	// Determine timeout
-	timeout := time.Duration(input.TimeoutSeconds) * time.Second
+	// The eager recovery above consumes the same caller-provided wait budget.
+	timeout = time.Until(waitDeadline)
 	if timeout <= 0 {
-		timeout = defaultChildrenTasksTimeout
+		timeout = time.Nanosecond
 	}
 
 	// Broadcast that this parent is now waiting for children
@@ -398,6 +466,20 @@ func (s *Server) handleChildrenTasksWait(ctx context.Context, req *mcp.CallToolR
 				for _, childID := range pending {
 					bs := s.sessionManager.GetSession(childID)
 					if bs == nil {
+						if childMeta, starting := startingChildren[childID]; starting {
+							resumed, resumeErr := s.sessionManager.ResumeSession(childID, childMeta.Name, childMeta.WorkingDir)
+							if resumeErr == nil && resumed != nil {
+								delete(startingChildren, childID)
+								go resumed.TryProcessQueuedMessage()
+								continue
+							}
+							if s.isTransientChildResumeError(resumeErr) {
+								continue
+							}
+							delete(startingChildren, childID)
+							collector.markChildFailed(childID, fmt.Sprintf("startup recovery failed: %v", resumeErr))
+							continue
+						}
 						if reason := stoppedChildFailureReason(store, childID); reason != "" {
 							s.logger.Info("Child prompt interrupted by session recycle — marking failed",
 								"parent_session", realSessionID,

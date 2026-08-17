@@ -6500,11 +6500,13 @@ func (m *mockBackgroundSessionForAutoResume) ActivePromptDispatch() (string, map
 // mockSessionManagerForAutoResume implements SessionManager where GetSession returns nil
 // for stored sessions, and ResumeSession makes the session available.
 type mockSessionManagerForAutoResume struct {
-	mu           sync.Mutex
-	sessions     map[string]BackgroundSession // initially empty for stored sessions
-	resumeCalls  []resumeCall
-	resumeErr    error             // if set, ResumeSession returns this error
-	resumeResult BackgroundSession // returned by ResumeSession on success
+	mu                        sync.Mutex
+	sessions                  map[string]BackgroundSession // initially empty for stored sessions
+	resumeCalls               []resumeCall
+	resumeErr                 error   // if set, ResumeSession returns this error
+	resumeErrs                []error // scripted per-call errors; nil entry means success
+	resumeErrIsMCPInitTimeout bool
+	resumeResult              BackgroundSession // returned by ResumeSession on success
 	// onResume is called after a successful resume to allow registering the session
 	// with the MCP server's internal registry (simulating the real flow).
 	onResume func(sessionID string)
@@ -6535,6 +6537,14 @@ func (m *mockSessionManagerForAutoResume) CloseSession(string, string) {}
 func (m *mockSessionManagerForAutoResume) ResumeSession(sessionID, sessionName, workingDir string) (BackgroundSession, error) {
 	m.mu.Lock()
 	m.resumeCalls = append(m.resumeCalls, resumeCall{sessionID, sessionName, workingDir})
+	if len(m.resumeErrs) > 0 {
+		err := m.resumeErrs[0]
+		m.resumeErrs = m.resumeErrs[1:]
+		if err != nil {
+			m.mu.Unlock()
+			return nil, err
+		}
+	}
 	if m.resumeErr != nil {
 		m.mu.Unlock()
 		return nil, m.resumeErr
@@ -6590,7 +6600,9 @@ func (m *mockSessionManagerForAutoResume) GetWorkspace(string) *config.Workspace
 	return nil
 }
 func (m *mockSessionManagerForAutoResume) InvalidateWorkspaceRC(string) {}
-func (m *mockSessionManagerForAutoResume) IsMCPInitTimeout(error) bool  { return false }
+func (m *mockSessionManagerForAutoResume) IsMCPInitTimeout(err error) bool {
+	return err != nil && m.resumeErrIsMCPInitTimeout
+}
 
 func TestSendPrompt_AutoResumesStoredSession(t *testing.T) {
 	tmpDir := t.TempDir()
@@ -6992,6 +7004,77 @@ func TestChildrenTasksWait_AutoResumesStoredChild(t *testing.T) {
 	// Since it times out without a report, verify it was waited on (not skipped)
 	if !output.TimedOut {
 		t.Error("Expected timeout (child didn't report), but got success — this is fine if child reported")
+	}
+}
+
+// TestChildrenTasksWait_TransientStartupFailureRemainsRecoverable reproduces
+// mitto-n3x3. The persisted child represents an initial conversation-new start
+// failure; the first eager resume also times out, while the next attempt would
+// succeed. The wait must keep that child in a bounded starting state instead of
+// returning an immediately terminal-looking not_running report.
+func TestChildrenTasksWait_TransientStartupFailureRemainsRecoverable(t *testing.T) {
+	oldRetryDelays := childResumeRetryDelays
+	childResumeRetryDelays = []time.Duration{0}
+	t.Cleanup(func() { childResumeRetryDelays = oldRetryDelays })
+
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("session.NewStore: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	parentID := session.GenerateSessionID()
+	if err := store.Create(session.Metadata{
+		SessionID: parentID, Name: "Parent", ACPServer: "test-server", WorkingDir: "/test/dir",
+		AdvancedSettings: map[string]bool{session.FlagCanSendPrompt: true},
+	}); err != nil {
+		t.Fatalf("store.Create(parent): %v", err)
+	}
+	childID := session.GenerateSessionID()
+	if err := store.Create(session.Metadata{
+		SessionID: childID, Name: "Recoverable Child", ACPServer: "test-server",
+		WorkingDir: "/test/dir", ParentSessionID: parentID,
+	}); err != nil {
+		t.Fatalf("store.Create(child): %v", err)
+	}
+
+	transientErr := fmt.Errorf("MCP initialization timed out after 240s")
+	mockBS := &mockBackgroundSessionForAutoResume{}
+	sm := &mockSessionManagerForAutoResume{
+		sessions:                  map[string]BackgroundSession{},
+		resumeErrs:                []error{transientErr, nil},
+		resumeErrIsMCPInitTimeout: true,
+		resumeResult:              mockBS,
+	}
+	srv, err := NewServer(Config{Port: 0}, Dependencies{Store: store, SessionManager: sm})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	sm.onResume = func(sessionID string) { _ = srv.RegisterSession(sessionID, nil, logger) }
+	if err := srv.RegisterSession(parentID, nil, logger); err != nil {
+		t.Fatalf("RegisterSession(parent): %v", err)
+	}
+
+	_, output, err := srv.handleChildrenTasksWait(context.Background(), nil, ChildrenTasksWaitInput{
+		SelfID: parentID, ChildrenList: []string{childID}, TimeoutSeconds: 1,
+	})
+	if err != nil {
+		t.Fatalf("handleChildrenTasksWait: %v", err)
+	}
+
+	sm.mu.Lock()
+	resumeCalls := append([]resumeCall(nil), sm.resumeCalls...)
+	sm.mu.Unlock()
+	if len(resumeCalls) < 2 {
+		t.Fatalf("transient startup recovery made %d resume attempt(s), want at least 2; output=%+v", len(resumeCalls), output)
+	}
+	if report, ok := output.Reports[childID]; ok && report.Status == "not_running" {
+		t.Fatalf("recoverable child was reported not_running after transient startup failure: %+v", report)
+	}
+	if !mockBS.tryProcessCalled.Load() {
+		t.Fatal("successful startup recovery did not kick queued prompt processing")
 	}
 }
 
