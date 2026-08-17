@@ -90,9 +90,11 @@ this compatibility period.
 
 The deprecated single-target adapter is configured via environment variables,
 read once at Mitto web server startup (`internal/slackbridge.LoadConfigFromEnv`).
-These values are not used by the production catalog-backed manager, written to
-disk, or exposed via Settings/UI/REST/MCP. Token values are never logged;
-startup logging includes only the non-secret channel and target session IDs:
+These values are not used by the production catalog-backed manager or written
+to project files. Token values are never exposed via Settings/UI/REST/MCP or
+logged. The value-free migration status exposes only the non-secret team,
+channel, and target session IDs; startup logging includes only channel and
+target session IDs:
 
 | Variable                        | Description                                   |
 | ------------------------------- | --------------------------------------------- |
@@ -147,7 +149,7 @@ export MITTO_SLACK_TARGET_SESSION_ID=<conversation-id-with-an-enabled-loop>
 ./mitto web
 ```
 
-Look for `"Slack event source enabled"` in the log at startup. Then, in the
+Look for `"Deprecated Slack environment adapter enabled"` in the log at startup. Then, in the
 configured Slack channel:
 
 1. Post a plain message, or `@mention` the bot — the target conversation

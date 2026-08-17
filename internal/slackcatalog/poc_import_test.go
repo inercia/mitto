@@ -113,3 +113,33 @@ func TestPoCImportValidationAndCommitFailuresLeaveStateUnchanged(t *testing.T) {
 		t.Fatalf("commit failure mutated state: %#v %#v", store.doc, credentials.values)
 	}
 }
+
+func TestPoCImportCommitRejectsConcurrentCatalogChange(t *testing.T) {
+	service, _, credentials, provider, _ := newTestService()
+	ctx := context.Background()
+	app, _ := service.CreateApp(ctx, "Existing App", "app-one")
+	installation, _ := service.CreateInstallation(ctx, app.ID, "Existing Team", "T111", "bot-one")
+	provider.apps["replacement-app"] = "A111"
+	provider.installations["replacement-bot"] = provider.installations["bot-one"]
+	tx, err := service.PreparePoCImport(ctx, PoCImportRequest{AppID: app.ID, InstallationID: installation.ID,
+		ExpectedTeamID: "T111", AppToken: "replacement-app", BotToken: "replacement-bot"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.RenameApp(app.ID, "Concurrent rename"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); !errors.Is(err, ErrConflict) {
+		t.Fatalf("Commit error = %v, want conflict", err)
+	}
+	got, _ := service.GetApp(app.ID)
+	if got.Name != "Concurrent rename" {
+		t.Fatalf("concurrent catalog update was overwritten: %#v", got)
+	}
+	if value, _ := credentials.Resolve(secrets.SlackAppCredential(app.ID, AppTokenCredential)); value != "app-one" {
+		t.Fatalf("app credential changed on conflict: %q", value)
+	}
+	if value, _ := credentials.Resolve(secrets.SlackInstallationCredential(installation.ID, BotTokenCredential)); value != "bot-one" {
+		t.Fatalf("bot credential changed on conflict: %q", value)
+	}
+}

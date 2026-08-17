@@ -1387,15 +1387,15 @@ func NewServer(config Config) (*Server, error) {
 		s.slackManager.SetStatusCallback(func(status slackbridge.ConnectionStatus) {
 			s.eventsManager.Broadcast("slack_connection_status", status)
 		})
-		if sessionMgr != nil {
-			sessionMgr.SetSlackReconciler(s.slackManager)
-		}
 	}
 	slackEnvConfig, slackEnvStatus := slackbridge.InspectEnvironment()
 	legacySlack := &serverLegacySlackController{server: s, cfg: slackEnvConfig}
 	slackEnvironment := slackbridge.NewEnvironmentMigration(
 		slackEnvConfig, slackEnvStatus, store, slackCatalog, legacySlack, s.slackManager,
 	)
+	if sessionMgr != nil && s.slackManager != nil {
+		sessionMgr.SetSlackReconciler(slackEnvironment)
+	}
 	if slackEnvStatus.Present {
 		if !slackEnvStatus.Complete {
 			logger.Warn("Deprecated Slack environment adapter disabled: incomplete configuration",

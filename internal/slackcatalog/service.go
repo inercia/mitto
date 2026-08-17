@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"regexp"
 	"sort"
 	"strings"
@@ -462,22 +463,33 @@ func (tx *PoCImportTransaction) Commit() error {
 	s := tx.service
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	current, err := s.store.Load()
+	if err != nil {
+		tx.closed = true
+		return err
+	}
+	if !reflect.DeepEqual(cloneCatalogDocument(current), tx.priorDoc) {
+		tx.closed = true
+		return fmt.Errorf("%w: Slack catalog changed during import validation", ErrConflict)
+	}
 	values := []string{tx.appToken, tx.botToken}
 	for i, prior := range tx.priors {
 		if err := s.credentials.Put(prior.ref, values[i]); err != nil {
+			var restoreErr error
 			for j := 0; j <= i; j++ {
-				s.restoreCredential(tx.priors[j])
+				restoreErr = errors.Join(restoreErr, s.restoreCredential(tx.priors[j]))
 			}
 			tx.closed = true
-			return fmt.Errorf("store import credential: %w", err)
+			return errors.Join(fmt.Errorf("store import credential: %w", err), restoreErr)
 		}
 	}
 	if err := s.store.Save(tx.nextDoc); err != nil {
+		var restoreErr error
 		for _, prior := range tx.priors {
-			s.restoreCredential(prior)
+			restoreErr = errors.Join(restoreErr, s.restoreCredential(prior))
 		}
 		tx.closed = true
-		return err
+		return errors.Join(err, restoreErr)
 	}
 	tx.committed = true
 	return nil
@@ -891,14 +903,14 @@ func (s *Service) snapshotCredential(ref secrets.CredentialRef) (priorCredential
 	return priorCredential{ref: ref, value: value, exists: true}, nil
 }
 
-func (s *Service) restoreCredential(prior priorCredential) {
+func (s *Service) restoreCredential(prior priorCredential) error {
 	if prior.exists {
-		_ = s.credentials.Put(prior.ref, prior.value)
-		return
+		return s.credentials.Put(prior.ref, prior.value)
 	}
 	if err := s.credentials.Delete(prior.ref); err != nil && !errors.Is(err, secrets.ErrNotFound) {
-		return
+		return err
 	}
+	return nil
 }
 
 func (s *Service) commitCredentialAndDocument(ref secrets.CredentialRef, value string, doc document) error {

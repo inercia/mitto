@@ -92,7 +92,8 @@ are `409`, and unavailable Slack or credential services are retryable `503` erro
 
 Equivalent typed methods are exposed on `pkg/api.Client` (`ListSlackApps`,
 `CreateSlackInstallation`, `ReplaceSlackInstallationToken`,
-`ListSlackChannels`, and related CRUD/validation methods).
+`ListSlackChannels`, `GetSlackEnvironmentStatus`, `ImportSlackPoC`, and related
+CRUD/validation methods).
 
 ## Channel discovery
 

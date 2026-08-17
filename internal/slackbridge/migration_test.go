@@ -222,3 +222,44 @@ func TestEnvironmentStatusTreatsPausedManagedSubscriptionAsShadowing(t *testing.
 		t.Fatalf("status=%#v err=%v", status, err)
 	}
 }
+
+func TestEnvironmentMigrationLifecycleReconcileHandsOffWithoutOverlap(t *testing.T) {
+	f := newMigrationFixture(t, true)
+	app, _ := f.catalog.CreateApp(context.Background(), "App", "env-app")
+	installation, _ := f.catalog.CreateInstallation(context.Background(), app.ID, "Team", "T123", "env-bot")
+	loop, _ := f.store.Loop(f.cfg.TargetSessionID).Get()
+	loop.Triggers = append(loop.EffectiveTriggers(), session.TriggerOnSlack)
+	loop.SlackSubscriptions = []session.SlackSubscription{{InstallationID: installation.ID, ChannelID: "C123",
+		EventMode: session.SlackEventModeAnyHumanMessage, ThreadPolicy: session.SlackThreadPolicyAny}}
+	if err := f.store.Loop(f.cfg.TargetSessionID).Set(loop); err != nil {
+		t.Fatal(err)
+	}
+
+	events := []string{}
+	legacy := &migrationLegacy{active: true, events: &events}
+	migration := NewEnvironmentMigration(f.cfg, EnvironmentStatus{Present: true, Complete: true}, f.store, f.catalog, legacy,
+		reconcileFunc(func(string) error {
+			events = append(events, "reconcile")
+			if legacy.active {
+				t.Fatal("managed lifecycle reconcile ran before legacy listener stopped")
+			}
+			return nil
+		}))
+	if err := migration.ReconcileSession(f.cfg.TargetSessionID); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(events, []string{"stop", "reconcile"}) {
+		t.Fatalf("handoff events = %v", events)
+	}
+
+	loop.Triggers = []session.LoopTrigger{session.TriggerOnCompletion}
+	if err := f.store.Loop(f.cfg.TargetSessionID).Set(loop); err != nil {
+		t.Fatal(err)
+	}
+	if err := migration.ReconcileSession(f.cfg.TargetSessionID); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(events, []string{"stop", "reconcile", "reconcile", "start"}) {
+		t.Fatalf("fallback events = %v", events)
+	}
+}

@@ -64,6 +64,10 @@ func (m *EnvironmentMigration) TargetSessionID() string { return m.cfg.TargetSes
 func (m *EnvironmentMigration) Status() (EnvironmentStatus, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.statusLocked()
+}
+
+func (m *EnvironmentMigration) statusLocked() (EnvironmentStatus, error) {
 	status := m.baseStatus
 	status.Active = m.legacy != nil && m.legacy.Active()
 	if !status.Complete || m.store == nil || m.catalog == nil {
@@ -76,6 +80,9 @@ func (m *EnvironmentMigration) Status() (EnvironmentStatus, error) {
 	if err != nil {
 		return EnvironmentStatus{}, err
 	}
+	if !loop.IsOnSlack() {
+		return status, nil
+	}
 	for _, sub := range loop.SlackSubscriptions {
 		if sub.ChannelID != m.cfg.ChannelID {
 			continue
@@ -87,6 +94,47 @@ func (m *EnvironmentMigration) Status() (EnvironmentStatus, error) {
 		}
 	}
 	return status, nil
+}
+
+// ReconcileSession keeps ordinary loop edits under the same managed-wins
+// precedence as startup and import. A newly persisted matching subscription
+// stops the legacy listener before managed routing is activated.
+func (m *EnvironmentMigration) ReconcileSession(sessionID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.managed == nil {
+		return slackcatalog.ErrUnavailable
+	}
+	if sessionID != m.cfg.TargetSessionID || !m.baseStatus.Complete {
+		return m.managed.ReconcileSession(sessionID)
+	}
+	status, err := m.statusLocked()
+	if err != nil {
+		return errors.Join(err, m.managed.ReconcileSession(sessionID))
+	}
+	if status.Shadowed {
+		if m.legacy != nil {
+			m.legacy.Stop()
+		}
+		return m.managed.ReconcileSession(sessionID)
+	}
+	if err := m.managed.ReconcileSession(sessionID); err != nil {
+		return err
+	}
+	if m.legacy != nil && !m.legacy.Active() {
+		return m.legacy.Start()
+	}
+	return nil
+}
+
+// RemoveSession delegates lifecycle cleanup without reviving a legacy listener
+// whose target conversation no longer exists.
+func (m *EnvironmentMigration) RemoveSession(sessionID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if remover, ok := m.managed.(interface{ RemoveSession(string) }); ok {
+		remover.RemoveSession(sessionID)
+	}
 }
 
 // Import validates every value before mutation, stops the legacy listener,
@@ -152,10 +200,11 @@ func (m *EnvironmentMigration) Import(ctx context.Context, request EnvironmentIm
 		return EnvironmentImportResult{}, errors.Join(cause, restoreErr, catalogErr)
 	}
 	if err := tx.Commit(); err != nil {
+		var restartErr error
 		if legacyStopped {
-			_ = m.legacy.Start()
+			restartErr = m.legacy.Start()
 		}
-		return EnvironmentImportResult{}, err
+		return EnvironmentImportResult{}, errors.Join(err, restartErr)
 	}
 	if err := loopStore.Set(nextLoop); err != nil {
 		return rollback(err)
