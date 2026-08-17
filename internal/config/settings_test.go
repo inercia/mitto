@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -423,12 +424,17 @@ acp:
 	if cfg.Web.Auth.Simple.Username != "admin" {
 		t.Errorf("Web.Auth.Simple.Username = %q, want %q", cfg.Web.Auth.Simple.Username, "admin")
 	}
-	// Password might be loaded from keychain on macOS, or from settings on other platforms
-	// On non-macOS, it should be "test-password"
-	// On macOS, loadKeychainPassword might have been called, but since we're using
-	// test data (not real keychain), the password should remain as-is
+	// Secure migration must redact the settings file without clearing the
+	// password returned to the running process.
 	if cfg.Web.Auth.Simple.Password != "test-password" {
 		t.Errorf("Web.Auth.Simple.Password = %q, want %q", cfg.Web.Auth.Simple.Password, "test-password")
+	}
+	rawSettings, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(rawSettings), "test-password") {
+		t.Fatalf("settings.json retained migrated plaintext password: %s", rawSettings)
 	}
 
 	// Verify Host was merged from settings.json (external access enabled)
@@ -1464,8 +1470,12 @@ func TestLoadSettings_PasswordMigration_UsesInjectedVault(t *testing.T) {
 		t.Fatalf("failed to create settings.json: %v", err)
 	}
 
-	if _, err := LoadSettings(); err != nil {
+	cfg, err := LoadSettings()
+	if err != nil {
 		t.Fatalf("LoadSettings() failed: %v", err)
+	}
+	if cfg.Web.Auth == nil || cfg.Web.Auth.Simple == nil || cfg.Web.Auth.Simple.Password != "pw" {
+		t.Fatalf("LoadSettings() did not retain the verified password in memory: %+v", cfg.Web.Auth)
 	}
 
 	if got, err := secrets.Resolve(secrets.GlobalCredential(secrets.AccountExternalAccess)); err != nil || got != "pw" {
@@ -1477,6 +1487,43 @@ func TestLoadSettings_PasswordMigration_UsesInjectedVault(t *testing.T) {
 	}
 	if strings.Contains(string(raw), `"password":"pw"`) {
 		t.Fatalf("settings.json retained plaintext password: %s", raw)
+	}
+}
+
+type failingSecretStore struct{}
+
+func (failingSecretStore) Get(string, string) (string, error) { return "", secrets.ErrNotFound }
+func (failingSecretStore) Set(string, string, string) error   { return errors.New("write failed") }
+func (failingSecretStore) Delete(string, string) error        { return secrets.ErrNotFound }
+func (failingSecretStore) IsSupported() bool                  { return true }
+
+func TestLoadSettingsWithFallback_PasswordMigrationFailureRetainsPlaintext(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv(appdir.MittoDirEnv, tmpDir)
+	t.Setenv("HOME", tmpDir)
+	appdir.ResetCache()
+	t.Cleanup(appdir.ResetCache)
+	t.Cleanup(secrets.SetStoreForTest(failingSecretStore{}))
+
+	settingsPath := filepath.Join(tmpDir, appdir.SettingsFileName)
+	settingsJSON := `{"web":{"auth":{"simple":{"username":"admin","password":"pw"}}}}`
+	if err := os.WriteFile(settingsPath, []byte(settingsJSON), 0600); err != nil {
+		t.Fatal(err)
+	}
+	result, err := LoadSettingsWithFallback()
+	if err != nil {
+		t.Fatalf("LoadSettingsWithFallback() error = %v", err)
+	}
+	if result.Config.Web.Auth == nil || result.Config.Web.Auth.Simple == nil ||
+		result.Config.Web.Auth.Simple.Password != "pw" {
+		t.Fatalf("failed migration did not preserve in-memory password: %+v", result.Config.Web.Auth)
+	}
+	raw, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"password":"pw"`) {
+		t.Fatalf("failed migration did not preserve settings password: %s", raw)
 	}
 }
 

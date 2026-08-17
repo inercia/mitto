@@ -175,8 +175,9 @@ and the WebSocket handshake. Notes:
 - Failed attempts share the same rate limiter as password login.
 - The token can also be set via the `MITTO_SHARED_TOKEN` environment variable
   (takes precedence over the config value and is never persisted to disk), or
-  loaded from the system Keychain on macOS, mirroring the external-access
-  password.
+  loaded from Mitto's secure credential vault, mirroring the external-access
+  password. The vault uses the system Keychain on macOS and an owner-only
+  `MITTO_DIR/credentials/vault.json` file on Linux.
 - Rotating the token invalidates every client immediately; there is no
   per-client revocation or grace window.
 

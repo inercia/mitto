@@ -1181,6 +1181,18 @@ func migratePasswordToKeychain(settings *Settings, cfg *Config) error {
 		return fmt.Errorf("failed to save password to secure storage: %w", err)
 	}
 
+	// ToConfig copies WebConfig by value, but Auth and Simple are pointers.
+	// Detach both levels before redacting the settings-backed object so the
+	// Config returned to the running process keeps the verified password.
+	if cfg.Web.Auth == settings.Web.Auth {
+		authCopy := *cfg.Web.Auth
+		cfg.Web.Auth = &authCopy
+	}
+	if settings.Web.Auth != nil && cfg.Web.Auth.Simple == settings.Web.Auth.Simple {
+		simpleCopy := *cfg.Web.Auth.Simple
+		cfg.Web.Auth.Simple = &simpleCopy
+	}
+
 	// Clear password from settings and save
 	settings.Web.Auth.Simple.Password = ""
 	if err := SaveSettings(settings); err != nil {
@@ -1343,8 +1355,14 @@ func loadSettingsWithFallback(withKeychain bool) (*LoadResult, error) {
 
 	// Handle keychain password loading
 	if withKeychain {
-		if err := loadKeychainPassword(settingsCfg); err != nil {
-			// Non-fatal, just log and continue
+		if settingsCfg.Web.Auth != nil && settingsCfg.Web.Auth.Simple != nil &&
+			secrets.IsSupported() && settingsCfg.Web.Auth.Simple.Password != "" {
+			// Match LoadSettings: migrate plaintext only after verified secure
+			// persistence. Failure is non-fatal and leaves the in-memory and on-disk
+			// password available for a later retry.
+			_ = migratePasswordToKeychain(&settings, settingsCfg)
+		} else if err := loadKeychainPassword(settingsCfg); err != nil {
+			// Non-fatal, just log and continue.
 			_ = err
 		}
 		// Resolve the shared bearer token (mitto-7gta.26) the same way as

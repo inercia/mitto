@@ -3,6 +3,7 @@
 package secrets
 
 import (
+	"crypto/subtle"
 	"errors"
 	"sync"
 )
@@ -163,8 +164,18 @@ func DeleteSharedToken() error {
 }
 
 func getCompatibleCredential(ref CredentialRef, legacyAccount string) (string, error) {
-	value, vaultErr := Resolve(ref)
+	m := DefaultManager()
+	value, vaultErr := m.Resolve(ref)
 	if vaultErr == nil {
+		// A prior verified migration may have failed only while deleting the
+		// legacy account. Retry that cleanup once per process after restart, but
+		// delete only when both stores contain the exact same credential.
+		if m.claimLegacyCleanupCheck(ref) {
+			legacy, err := Get(ServiceName, legacyAccount)
+			if err == nil && subtle.ConstantTimeCompare([]byte(legacy), []byte(value)) == 1 {
+				_ = Delete(ServiceName, legacyAccount)
+			}
+		}
 		return value, nil
 	}
 	legacy, legacyErr := Get(ServiceName, legacyAccount)
@@ -187,8 +198,9 @@ func setCompatibleCredential(ref CredentialRef, legacyAccount, value string) err
 	if err := DefaultManager().put(ref, value, true); err != nil {
 		return err
 	}
-	// A failed legacy cleanup leaves a duplicate, but vault-first resolution
-	// preserves the verified credential and permits cleanup on a later start.
+	// A failed legacy cleanup leaves a duplicate. Vault-first resolution keeps
+	// the verified credential authoritative; the compatibility read path retries
+	// cleanup once when a new process manager loads this vault.
 	_ = Delete(ServiceName, legacyAccount)
 	return nil
 }

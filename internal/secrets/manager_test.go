@@ -263,3 +263,32 @@ func TestLegacyCredentialMigrationRequiresVerifiedPersistence(t *testing.T) {
 		})
 	}
 }
+
+func TestLegacyCleanupRetriesAfterManagerRestart(t *testing.T) {
+	store := &migrationStore{
+		FakeStore:       NewFakeStore(),
+		legacyDeleteErr: errors.New("delete failed"),
+	}
+	if err := store.FakeStore.Set(ServiceName, AccountExternalAccess, "legacy-secret"); err != nil {
+		t.Fatal(err)
+	}
+
+	restore := SetStoreForTest(store)
+	if got, err := GetExternalAccessPassword(); err != nil || got != "legacy-secret" {
+		t.Fatalf("initial migration = (%q, %v)", got, err)
+	}
+	restore()
+	if _, err := store.FakeStore.Get(ServiceName, AccountExternalAccess); err != nil {
+		t.Fatal("legacy credential should remain after cleanup failure")
+	}
+
+	store.legacyDeleteErr = nil
+	restore = SetStoreForTest(store) // A new manager simulates process restart.
+	defer restore()
+	if got, err := GetExternalAccessPassword(); err != nil || got != "legacy-secret" {
+		t.Fatalf("post-restart resolution = (%q, %v)", got, err)
+	}
+	if _, err := store.FakeStore.Get(ServiceName, AccountExternalAccess); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("legacy credential error = %v, want cleanup after restart", err)
+	}
+}

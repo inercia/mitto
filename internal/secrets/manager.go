@@ -43,11 +43,12 @@ type BlobBackend interface {
 
 // Manager serializes updates and caches one lazy backend load for its lifetime.
 type Manager struct {
-	mu      sync.Mutex
-	backend BlobBackend
-	loaded  bool
-	loadErr error
-	vault   vaultDocument
+	mu                   sync.Mutex
+	backend              BlobBackend
+	loaded               bool
+	loadErr              error
+	vault                vaultDocument
+	legacyCleanupChecked map[string]struct{}
 }
 
 type vaultDocument struct {
@@ -175,6 +176,23 @@ func (m *Manager) Delete(ref CredentialRef) error {
 	}
 	m.vault = next
 	return nil
+}
+
+// claimLegacyCleanupCheck returns true once per credential and manager lifetime.
+// Compatibility reads use it to retry stale legacy cleanup once after restart
+// without querying the old Keychain account on every vault-backed resolution.
+func (m *Manager) claimLegacyCleanupCheck(ref CredentialRef) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.legacyCleanupChecked == nil {
+		m.legacyCleanupChecked = make(map[string]struct{})
+	}
+	key := namespaceKey(ref) + "\x00" + ref.Name
+	if _, checked := m.legacyCleanupChecked[key]; checked {
+		return false
+	}
+	m.legacyCleanupChecked[key] = struct{}{}
+	return true
 }
 
 func (m *Manager) loadLocked() error {
