@@ -118,9 +118,10 @@ func ordinaryRetryRecords(records []capturedLogRecord) (warns, debugs []captured
 		if rec.Message != ordinaryRetryLogMessage {
 			continue
 		}
-		if rec.Level == slog.LevelWarn {
+		switch rec.Level {
+		case slog.LevelWarn:
 			warns = append(warns, rec)
-		} else if rec.Level == slog.LevelDebug {
+		case slog.LevelDebug:
 			debugs = append(debugs, rec)
 		}
 	}
