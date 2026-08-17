@@ -5,6 +5,7 @@ export const KNOWN_LOOP_TRIGGERS = [
   "onCompletion",
   "onTasks",
   "onChild",
+  "onSlack",
 ];
 
 export const KNOWN_CHILD_EVENTS = [
@@ -14,6 +15,11 @@ export const KNOWN_CHILD_EVENTS = [
 ];
 
 export const DEFAULT_CHILD_EVENTS = ["anyEndResponse", "anyDeleted"];
+
+export const SLACK_EVENT_MODES = ["anyHumanMessage", "appMention"];
+export const SLACK_THREAD_POLICIES = ["any", "rootOnly", "repliesOnly"];
+export const DEFAULT_SLACK_EVENT_MODE = "anyHumanMessage";
+export const DEFAULT_SLACK_THREAD_POLICY = "any";
 
 const SCHEDULE_UNITS = ["minutes", "hours", "days"];
 const HH_MM = /^([01][0-9]|2[0-3]):[0-5][0-9]$/;
@@ -39,6 +45,42 @@ function orderedUnique(values, knownOrder) {
     ...knownOrder.filter((value) => seen.has(value)),
     ...cleaned.filter((value) => !knownOrder.includes(value)),
   ];
+}
+
+function normalizeSlackSubscription(value = {}) {
+  return {
+    ...value,
+    installationId: value.installationId ?? value.installation_id ?? "",
+    channelId: value.channelId ?? value.channel_id ?? "",
+    eventMode: value.eventMode ?? value.event_mode ?? DEFAULT_SLACK_EVENT_MODE,
+    threadPolicy:
+      value.threadPolicy ?? value.thread_policy ?? DEFAULT_SLACK_THREAD_POLICY,
+  };
+}
+
+function buildSlackSubscription(value = {}) {
+  const {
+    installationId,
+    installation_id: _installationID,
+    channelId,
+    channel_id: _channelID,
+    eventMode,
+    event_mode: _eventMode,
+    threadPolicy,
+    thread_policy: _threadPolicy,
+    ...futureFields
+  } = value;
+  return {
+    ...futureFields,
+    installation_id: String(installationId || "").trim(),
+    channel_id: String(channelId || "").trim(),
+    event_mode: SLACK_EVENT_MODES.includes(eventMode)
+      ? eventMode
+      : DEFAULT_SLACK_EVENT_MODE,
+    thread_policy: SLACK_THREAD_POLICIES.includes(threadPolicy)
+      ? threadPolicy
+      : DEFAULT_SLACK_THREAD_POLICY,
+  };
 }
 
 /** Known triggers first in canonical order, then unknown triggers in source order. */
@@ -138,6 +180,11 @@ export function normalizeLoopConfig(config = {}) {
         events:
           childEvents.length > 0 ? childEvents : [...DEFAULT_CHILD_EVENTS],
       },
+      onSlack: {
+        subscriptions: (config.onSlack?.subscriptions || []).map(
+          normalizeSlackSubscription,
+        ),
+      },
     };
   }
   const named = typeof config.prompt_name === "string" && config.prompt_name;
@@ -185,6 +232,11 @@ export function normalizeLoopConfig(config = {}) {
     },
     onChild: {
       events: childEvents.length > 0 ? childEvents : [...DEFAULT_CHILD_EVENTS],
+    },
+    onSlack: {
+      subscriptions: Array.isArray(config.slack_subscriptions)
+        ? config.slack_subscriptions.map(normalizeSlackSubscription)
+        : [],
     },
     iterationCount: finiteNumber(config.iteration_count),
     stoppedReason: config.stopped_reason || "",
@@ -283,6 +335,67 @@ export function validateLoopDraft(draft) {
     }
   }
 
+  if (triggers.includes("onSlack")) {
+    const subscriptions = draft?.onSlack?.subscriptions || [];
+    if (subscriptions.length === 0) {
+      addError(
+        errors,
+        fieldErrors,
+        "slackSubscriptions",
+        "Add at least one Slack channel subscription.",
+      );
+    }
+    const seen = new Set();
+    subscriptions.forEach((subscription, index) => {
+      const installationId = String(subscription?.installationId || "").trim();
+      const channelId = String(subscription?.channelId || "").trim();
+      if (!installationId) {
+        addError(
+          errors,
+          fieldErrors,
+          `slackSubscription.${index}.installationId`,
+          "Select a Slack workspace installation.",
+        );
+      }
+      if (!channelId) {
+        addError(
+          errors,
+          fieldErrors,
+          `slackSubscription.${index}.channelId`,
+          "Select a Slack channel.",
+        );
+      }
+      if (!SLACK_EVENT_MODES.includes(subscription?.eventMode)) {
+        addError(
+          errors,
+          fieldErrors,
+          `slackSubscription.${index}.eventMode`,
+          "Select a valid Slack event mode.",
+        );
+      }
+      if (!SLACK_THREAD_POLICIES.includes(subscription?.threadPolicy)) {
+        addError(
+          errors,
+          fieldErrors,
+          `slackSubscription.${index}.threadPolicy`,
+          "Select a valid Slack thread policy.",
+        );
+      }
+      if (installationId && channelId) {
+        const key = `${installationId}\u0000${channelId}`;
+        if (seen.has(key)) {
+          addError(
+            errors,
+            fieldErrors,
+            `slackSubscription.${index}.channelId`,
+            "This Slack channel is already subscribed.",
+          );
+        }
+        seen.add(key);
+      }
+    });
+  }
+
   return {
     valid: errors.length === 0,
     errors,
@@ -341,6 +454,11 @@ export function buildLoopPatch(draft, options = {}) {
     const events = canonicalizeChildEvents(draft?.onChild?.events);
     patch.child_events = events.length > 0 ? events : [...DEFAULT_CHILD_EVENTS];
   }
+  if (triggers.includes("onSlack")) {
+    patch.slack_subscriptions = (draft?.onSlack?.subscriptions || []).map(
+      buildSlackSubscription,
+    );
+  }
   if (opts.resetCounters === true) patch.reset_counters = true;
   return patch;
 }
@@ -358,7 +476,7 @@ export function isDangerousUnboundedLoop(draft) {
   const triggers = canonicalizeLoopTriggers(staged.triggers);
   if (
     triggers.some((trigger) =>
-      ["onCompletion", "onTasks", "onChild"].includes(trigger),
+      ["onCompletion", "onTasks", "onChild", "onSlack"].includes(trigger),
     )
   ) {
     return true;

@@ -3,6 +3,7 @@ const { useEffect, useMemo, useRef, useState, html } = window.preact;
 
 import { getSdkClient } from "../utils/sdkClient.js";
 import { openExternalURL } from "../utils/native.js";
+import { notifySlackIntegrationsUpdated } from "../utils/slackEvents.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
 import { PlusIcon, SpinnerIcon, TrashIcon } from "./Icons.js";
 
@@ -107,8 +108,10 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
     [installations, selectedInstallationId],
   );
 
-  const notify = (message, style = "success") =>
+  const notify = (message, style = "success") => {
+    notifySlackIntegrationsUpdated();
     showToast?.({ message, style });
+  };
 
   useEffect(() => {
     const controller = new AbortController();

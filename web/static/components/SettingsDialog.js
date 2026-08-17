@@ -1862,6 +1862,7 @@ export function SettingsDialog({
   onClose,
   onSave,
   forceOpen = false,
+  initialTab = null,
   showToast,
 }) {
   const [activeTab, setActiveTab] = useState("servers");
@@ -1871,6 +1872,10 @@ export function SettingsDialog({
   const [warning, setWarning] = useState("");
   // Agent discovery dialog (triggered from Servers tab)
   const [showDiscoverAgents, setShowDiscoverAgents] = useState(false);
+
+  useEffect(() => {
+    if (isOpen && initialTab) setActiveTab(initialTab);
+  }, [isOpen, initialTab]);
 
   // ACP server delete wizard (mitto-pgt). deleteWizardPlan holds the response
   // from GET /api/acp-servers/{name}/prepare-delete; the wizard opens when it

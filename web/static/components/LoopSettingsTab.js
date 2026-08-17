@@ -5,6 +5,7 @@ const { html, useCallback, useEffect, useMemo, useState, Fragment } =
 
 import { ConfirmDialog } from "./ConfirmDialog.js";
 import { LoopPromptSelector } from "./LoopPromptSelector.js";
+import { SlackSubscriptionEditor } from "./SlackSubscriptionEditor.js";
 import {
   CONDITION_PRESETS,
   extractPresetParam,
@@ -243,7 +244,7 @@ export function LoopSettingsTab({
         }
         if (
           checked &&
-          ["onCompletion", "onTasks", "onChild"].includes(trigger) &&
+          ["onCompletion", "onTasks", "onChild", "onSlack"].includes(trigger) &&
           current.iterationCount === 0
         ) {
           if (current.maxIterations <= 0) updated.maxIterations = 5;
@@ -904,6 +905,24 @@ export function LoopSettingsTab({
                 ${labels[eventName]}
               </label>`;
             })}
+          </${TriggerSection}>
+
+          <${TriggerSection}
+            trigger="onSlack"
+            title="On Slack"
+            description="Run for new messages in selected Slack channels"
+            armed=${armed("onSlack")}
+            onToggle=${(checked) => toggleTrigger("onSlack", checked)}
+          >
+            <${SlackSubscriptionEditor}
+              subscriptions=${draft.onSlack.subscriptions}
+              fieldErrors=${validation?.fieldErrors || {}}
+              onChange=${(subscriptions) =>
+                stage((current) => ({
+                  ...current,
+                  onSlack: { ...current.onSlack, subscriptions },
+                }))}
+            />
           </${TriggerSection}>
         </fieldset>
 

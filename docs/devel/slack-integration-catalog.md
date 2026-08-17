@@ -107,10 +107,9 @@ The catalog accepts a `ReferenceChecker` and refuses app or installation deletio
 when it reports active loop subscriptions. `prepare-delete` uses the same checker
 to return the affected installation IDs and session references before mutation.
 
-The current production loop schema does not yet contain `onSlack` installation
-references, so server wiring uses the empty checker. The later `onSlack` schema
-slice must inject its session scanner when those persisted fields land; no
-conversation/session dependency is imported into `internal/slackcatalog`.
+The production `onSlack` loop schema stores installation references, and server
+wiring injects a session scanner into the catalog. No conversation/session
+dependency is imported into `internal/slackcatalog`.
 
 ## Settings UI
 
@@ -130,6 +129,15 @@ state opens Slack's app creation flow; known Slack App IDs deep-link to their ap
 settings, with the Slack apps index as the fallback. The tab also links to the
 Socket Mode and scope setup in `slack-bridge.md` and explains the hardened Linux
 file-vault permissions.
+
+Loop settings expose `onSlack` as a canonical trigger that can be armed alone or
+with the other trigger types. Each staged subscription selects a stable workspace
+installation and public channel ID, plus message and thread filters. The editor
+loads channel pages lazily through the catalog API, searches the accumulated pages,
+and retains unresolved saved IDs as degraded options instead of erasing the draft.
+Its **Manage Slack integrations** action opens this Settings tab without unmounting
+the loop panel. Successful catalog mutations publish a value-free local refresh
+event so names and credential health update while staged loop edits remain intact.
 
 ## Verification
 

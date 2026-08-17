@@ -210,6 +210,7 @@ import {
   isOverHorizontallyScrollable,
   isModalDialogOpen,
 } from "./utils/globalHandlers.js";
+import { OPEN_SETTINGS_EVENT } from "./utils/slackEvents.js";
 
 // Import extracted components
 import { WorkspaceBadge, WorkspacePill } from "./components/WorkspaceBadge.js";
@@ -463,6 +464,7 @@ function App() {
   const [settingsDialog, setSettingsDialog] = useState({
     isOpen: false,
     forceOpen: false,
+    initialTab: null,
   }); // Settings dialog
   const [workspacesDialog, setWorkspacesDialog] = useState({ isOpen: false }); // Workspaces management dialog
   const [addFolderDialogOpen, setAddFolderDialogOpen] = useState(false); // "Add folder to sidebar" dialog
@@ -508,6 +510,20 @@ function App() {
   const [configReadonly, setConfigReadonly] = useState(
     () => window.mittoIsExternal === true, // Start as true for external connections, or when --config flag was used or using RC file
   );
+
+  useEffect(() => {
+    const handleOpenSettings = (event) => {
+      if (configReadonly) return;
+      setSettingsDialog({
+        isOpen: true,
+        forceOpen: false,
+        initialTab: event?.detail?.tab || null,
+      });
+    };
+    window.addEventListener(OPEN_SETTINGS_EVENT, handleOpenSettings);
+    return () =>
+      window.removeEventListener(OPEN_SETTINGS_EVENT, handleOpenSettings);
+  }, [configReadonly]);
   const [rcFilePath, setRcFilePath] = useState(null); // Path to RC file when config is read-only due to RC file
   const [swipeDirection, setSwipeDirection] = useState(null); // 'left' or 'right' for animation
   const [swipeArrow, setSwipeArrow] = useState(null); // 'left' or 'right' for arrow indicator
@@ -3324,8 +3340,13 @@ function App() {
         <${SettingsDialog}
           isOpen=${settingsDialog.isOpen}
           forceOpen=${settingsDialog.forceOpen}
+          initialTab=${settingsDialog.initialTab}
           onClose=${() =>
-            setSettingsDialog({ isOpen: false, forceOpen: false })}
+            setSettingsDialog({
+              isOpen: false,
+              forceOpen: false,
+              initialTab: null,
+            })}
           showToast=${showToast}
           onSave=${async () => {
             // Refresh workspaces after saving
