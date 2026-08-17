@@ -1790,6 +1790,14 @@ func isSaturationDispatchErr(err error) bool {
 	return strings.Contains(err.Error(), "shared ACP process is saturated")
 }
 
+// dispatchRetryLogState bounds ordinary transient retry warnings to one per
+// logical dispatch window. A pending-spool flush shares one state across its
+// nested retry-loop calls so repeated backpressure remains visible at DEBUG
+// without producing a new WARN for every attempt.
+type dispatchRetryLogState struct {
+	ordinaryRetryWarned bool
+}
+
 // dispatchWithRetry invokes m.promptFunc for the given name/prompt. Ordinary
 // transient failures are retried up to dispatchPromptMaxRetries additional
 // times with exponential backoff. Shared-process-saturation failures
@@ -1919,6 +1927,10 @@ func (m *Manager) dispatchWithRetry(workspaceUUID, name, prompt string, timeout 
 // dispatchSaturationMaxWait/dispatchSaturationRetryInterval (~24) WARNs per
 // occurrence. The message text is unchanged across both levels.
 func (m *Manager) runDispatchRetryLoop(workspaceUUID, name, prompt string, timeout time.Duration, skipLog string) (int, time.Duration, error) {
+	return m.runDispatchRetryLoopWithLogState(workspaceUUID, name, prompt, timeout, skipLog, &dispatchRetryLogState{})
+}
+
+func (m *Manager) runDispatchRetryLoopWithLogState(workspaceUUID, name, prompt string, timeout time.Duration, skipLog string, logState *dispatchRetryLogState) (int, time.Duration, error) {
 	start := time.Now()
 	var lastErr error
 	var saturationDeadline time.Time // zero until the first saturation error is observed
@@ -1986,12 +1998,18 @@ func (m *Manager) runDispatchRetryLoop(workspaceUUID, name, prompt string, timeo
 			break
 		}
 		if m.logger != nil {
-			m.logger.Warn("prompt-mode processor dispatch attempt failed; will retry",
+			logArgs := []any{
 				"name", name,
 				"attempt", totalAttempts,
-				"max_attempts", dispatchPromptMaxRetries+1,
+				"max_attempts", dispatchPromptMaxRetries + 1,
 				"error", lastErr,
-			)
+			}
+			if !logState.ordinaryRetryWarned {
+				logState.ordinaryRetryWarned = true
+				m.logger.Warn("prompt-mode processor dispatch attempt failed; will retry", logArgs...)
+			} else {
+				m.logger.Debug("prompt-mode processor dispatch attempt failed; will retry", logArgs...)
+			}
 		}
 	}
 
@@ -2049,6 +2067,7 @@ func (m *Manager) FlushPendingDispatches(ctx context.Context, workspaceUUID stri
 
 	var delivered []string
 	var requeue []PendingDispatchEntry
+	retryLogState := &dispatchRetryLogState{}
 
 flushEntries:
 	for i, entry := range entries {
@@ -2084,8 +2103,8 @@ flushEntries:
 				break flushEntries
 			}
 
-			_, _, lastErr = m.runDispatchRetryLoop(workspaceUUID, entry.Name, entry.Prompt, timeout,
-				"pending-dispatch flush skipped: shared ACP process not available")
+			_, _, lastErr = m.runDispatchRetryLoopWithLogState(workspaceUUID, entry.Name, entry.Prompt, timeout,
+				"pending-dispatch flush skipped: shared ACP process not available", retryLogState)
 			if !errors.Is(lastErr, acperrors.ErrProcessBusy) {
 				break
 			}
