@@ -3,13 +3,7 @@
  * Tests the real pure exports — no duplicated logic.
  */
 
-import {
-  describe,
-  test,
-  expect,
-  beforeEach,
-  afterEach,
-} from "./testing/testGlobals.js";
+import { describe, test, expect } from "./testing/testGlobals.js";
 import {
   KNOWN_LOOP_TRIGGERS,
   KNOWN_CHILD_EVENTS,
@@ -31,12 +25,13 @@ import {
 // =============================================================================
 
 describe("canonicalizeLoopTriggers", () => {
-  test("known trigger order is schedule/onCompletion/onTasks/onChild", () => {
+  test("known trigger order includes onSlack after lifecycle triggers", () => {
     expect(KNOWN_LOOP_TRIGGERS).toEqual([
       "schedule",
       "onCompletion",
       "onTasks",
       "onChild",
+      "onSlack",
     ]);
   });
 
@@ -347,6 +342,31 @@ describe("normalizeLoopConfig", () => {
     expect(normalized2.promptMode).toBe(normalized1.promptMode);
     expect(normalized2.triggers).toEqual(["schedule", "onCompletion"]);
   });
+
+  test("normalizes Slack subscriptions with safe defaults and future fields", () => {
+    const normalized = normalizeLoopConfig({
+      triggers: ["onSlack"],
+      slack_subscriptions: [
+        {
+          installation_id: "inst-a",
+          channel_id: "C123",
+          future_filter: "preserve-me",
+        },
+      ],
+    });
+
+    expect(normalized.triggers).toEqual(["onSlack"]);
+    expect(normalized.onSlack.subscriptions).toEqual([
+      expect.objectContaining({
+        installationId: "inst-a",
+        channelId: "C123",
+        eventMode: "anyHumanMessage",
+        threadPolicy: "any",
+        future_filter: "preserve-me",
+      }),
+    ]);
+    expect(normalizeLoopConfig(normalized).onSlack).toEqual(normalized.onSlack);
+  });
 });
 
 // =============================================================================
@@ -464,6 +484,82 @@ describe("validateLoopDraft", () => {
     };
     const result = validateLoopDraft(draft);
     expect(result.valid).toBe(true);
+  });
+
+  test("accepts onSlack alone and with every existing trigger", () => {
+    const subscription = {
+      installationId: "inst-a",
+      channelId: "C123",
+      eventMode: "anyHumanMessage",
+      threadPolicy: "any",
+    };
+    for (const triggers of [
+      ["onSlack"],
+      ["schedule", "onCompletion", "onTasks", "onChild", "onSlack"],
+    ]) {
+      const result = validateLoopDraft({
+        ...validDraft,
+        triggers,
+        onSlack: { subscriptions: [subscription] },
+        onChild: { events: ["anyEndResponse"] },
+      });
+      expect(result.valid).toBe(true);
+    }
+  });
+
+  test("reports incomplete, duplicate, and invalid Slack rows by index", () => {
+    const result = validateLoopDraft({
+      ...validDraft,
+      triggers: ["onSlack"],
+      onSlack: {
+        subscriptions: [
+          {
+            installationId: "inst-a",
+            channelId: "C123",
+            eventMode: "invalid",
+            threadPolicy: "invalid",
+          },
+          {
+            installationId: "inst-a",
+            channelId: "C123",
+            eventMode: "anyHumanMessage",
+            threadPolicy: "any",
+          },
+          {
+            installationId: "",
+            channelId: "",
+            eventMode: "anyHumanMessage",
+            threadPolicy: "any",
+          },
+        ],
+      },
+    });
+
+    expect(result.valid).toBe(false);
+    expect(result.fieldErrors["slackSubscription.0.eventMode"]).toMatch(
+      /valid/,
+    );
+    expect(result.fieldErrors["slackSubscription.0.threadPolicy"]).toMatch(
+      /valid/,
+    );
+    expect(result.fieldErrors["slackSubscription.1.channelId"]).toMatch(
+      /already subscribed/,
+    );
+    expect(result.fieldErrors["slackSubscription.2.installationId"]).toMatch(
+      /workspace/,
+    );
+    expect(result.fieldErrors["slackSubscription.2.channelId"]).toMatch(
+      /channel/,
+    );
+  });
+
+  test("requires at least one subscription when onSlack is armed", () => {
+    const result = validateLoopDraft({
+      ...validDraft,
+      triggers: ["onSlack"],
+      onSlack: { subscriptions: [] },
+    });
+    expect(result.fieldErrors.slackSubscriptions).toMatch(/at least one/);
   });
 });
 
@@ -634,6 +730,51 @@ describe("buildLoopPatch", () => {
     const patch = buildLoopPatch(draft);
     expect(patch.child_events).toEqual(["anyEndResponse", "anyDeleted"]);
   });
+
+  test("serializes stable Slack IDs and filters while retaining future fields", () => {
+    const patch = buildLoopPatch({
+      promptMode: "freeText",
+      promptBody: "Summarize Slack activity",
+      triggers: ["onSlack", "schedule"],
+      schedule: { value: 1, unit: "hours" },
+      onSlack: {
+        subscriptions: [
+          {
+            installationId: " inst-a ",
+            channelId: " C123 ",
+            eventMode: "appMention",
+            threadPolicy: "repliesOnly",
+            future_filter: { include: true },
+          },
+        ],
+      },
+    });
+
+    expect(patch.triggers).toEqual(["schedule", "onSlack"]);
+    expect(patch.slack_subscriptions).toEqual([
+      {
+        installation_id: "inst-a",
+        channel_id: "C123",
+        event_mode: "appMention",
+        thread_policy: "repliesOnly",
+        future_filter: { include: true },
+      },
+    ]);
+    expect(JSON.stringify(patch)).not.toMatch(/token|credential/i);
+  });
+
+  test("omits dormant Slack subscriptions when onSlack is not armed", () => {
+    const patch = buildLoopPatch({
+      promptMode: "named",
+      promptName: "test",
+      triggers: ["schedule"],
+      schedule: { value: 1, unit: "hours" },
+      onSlack: {
+        subscriptions: [{ installationId: "inst-a", channelId: "C123" }],
+      },
+    });
+    expect(patch.slack_subscriptions).toBeUndefined();
+  });
 });
 
 // =============================================================================
@@ -684,6 +825,9 @@ describe("isDangerousUnboundedLoop", () => {
         makeDraft({ triggers: ["onChild", "schedule"] }),
       ),
     ).toBe(true);
+    expect(isDangerousUnboundedLoop(makeDraft({ triggers: ["onSlack"] }))).toBe(
+      true,
+    );
   });
 
   test("detects dangerous new unlimited fast schedule loop (<5min)", () => {
