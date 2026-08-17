@@ -1,6 +1,7 @@
 package slackbridge
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -11,6 +12,31 @@ func clearSlackEnv(t *testing.T) {
 	t.Helper()
 	for _, name := range requiredEnvVars {
 		t.Setenv(name, "")
+	}
+}
+
+func TestInspectEnvironmentReturnsValueFreePartialStatus(t *testing.T) {
+	clearSlackEnv(t)
+	const canary = "xapp-canary-never-serialize"
+	t.Setenv(EnvAppToken, canary)
+	t.Setenv(EnvTeamID, "T123")
+	t.Setenv(EnvChannelID, "C123")
+
+	cfg, status := InspectEnvironment()
+	if cfg.AppToken != canary || !status.Present || status.Complete || status.TeamID != "T123" || status.ChannelID != "C123" {
+		t.Fatalf("cfg=%#v status=%#v", cfg, status)
+	}
+	encoded, err := json.Marshal(status)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), canary) || strings.Contains(string(encoded), "app_token") {
+		t.Fatalf("status leaked credential data: %s", encoded)
+	}
+	for _, missing := range []string{EnvBotToken, EnvTargetSessionID} {
+		if !strings.Contains(string(encoded), missing) {
+			t.Fatalf("status did not name missing variable %q: %s", missing, encoded)
+		}
 	}
 }
 

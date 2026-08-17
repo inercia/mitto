@@ -13,6 +13,7 @@ import (
 
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/secrets"
+	"github.com/inercia/mitto/internal/slackbridge"
 	"github.com/inercia/mitto/internal/slackcatalog"
 	"github.com/inercia/mitto/internal/web/middleware"
 )
@@ -173,6 +174,7 @@ func TestSlackCredentialWritesRejectExternalRequestsBeforeReadingBody(t *testing
 		{"replace app token", http.MethodPut, "/api/slack/apps/app/token", h.HandleSlackAppToken},
 		{"create installation", http.MethodPost, "/api/slack/apps/app/installations", h.HandleSlackInstallationCreate},
 		{"replace installation token", http.MethodPut, "/api/slack/installations/install/token", h.HandleSlackInstallationToken},
+		{"import environment", http.MethodPost, "/api/slack/environment-import", h.HandleSlackEnvironmentImport},
 	}
 
 	for _, test := range tests {
@@ -193,6 +195,24 @@ func TestSlackCredentialWritesRejectExternalRequestsBeforeReadingBody(t *testing
 				t.Fatalf("unsafe external response: %s", response.Body.String())
 			}
 		})
+	}
+}
+
+func TestSlackEnvironmentStatusIsValueFree(t *testing.T) {
+	const canary = "xapp-secret-never-return"
+	migration := slackbridge.NewEnvironmentMigration(
+		slackbridge.Config{AppToken: canary, BotToken: "xoxb-secret-never-return"},
+		slackbridge.EnvironmentStatus{Present: true, Complete: false, MissingVariables: []string{slackbridge.EnvTeamID}},
+		nil, nil, nil, nil,
+	)
+	h := New(Deps{SlackEnvironment: migration})
+	response := httptest.NewRecorder()
+	h.HandleSlackEnvironmentStatus(response, httptest.NewRequest(http.MethodGet, "/api/slack/environment-import", nil))
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), slackbridge.EnvTeamID) {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	if strings.Contains(response.Body.String(), canary) || strings.Contains(response.Body.String(), "xoxb-secret") {
+		t.Fatalf("status leaked environment credential: %s", response.Body.String())
 	}
 }
 

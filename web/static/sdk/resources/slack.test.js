@@ -11,6 +11,30 @@ function parsedBody(call) {
 }
 
 describe("Slack catalog resource", () => {
+	test("inspects and imports environment configuration without token fields", async () => {
+		const { slack, calls, respondWith } = mk();
+		respondWith(() =>
+			fakeResponse({
+				body: { present: true, complete: true, team_id: "T123" },
+			}),
+		);
+		expect(await slack.environmentStatus()).toEqual({
+			present: true,
+			complete: true,
+			team_id: "T123",
+		});
+		await slack.importEnvironment({ app_id: "app-1", installation_id: "inst-1" });
+		expect(calls.map((call) => [call.init.method, call.url])).toEqual([
+			["GET", "/api/slack/environment-import"],
+			["POST", "/api/slack/environment-import"],
+		]);
+		expect(parsedBody(calls[1])).toEqual({
+			app_id: "app-1",
+			installation_id: "inst-1",
+		});
+		expect(JSON.stringify(parsedBody(calls[1]))).not.toContain("token");
+	});
+
   test("lists apps and forwards AbortSignal through the SDK transport", async () => {
     const { slack, calls, respondWith } = mk();
     const controller = new AbortController();

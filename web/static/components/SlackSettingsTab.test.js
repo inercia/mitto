@@ -135,6 +135,66 @@ describe("SlackSettingsTab helpers", () => {
 
 if (isIsolatedComponentRun) {
   describe("SlackSettingsTab component", () => {
+		test("imports value-free environment metadata into the selected managed records", async () => {
+			let imported = false;
+			const installation = {
+				id: "inst-a",
+				app_id: "app-a",
+				name: "Alpha Team",
+				team_id: "T111",
+				token_configured: true,
+			};
+			const { container, fetchMock, showToast } = await mount((url, init) => {
+				if (url === "/api/slack/apps") return json({ apps: [appA] });
+				if (url === "/api/slack/apps/app-a/installations")
+					return json({ installations: [installation] });
+				if (url === "/api/slack/environment-import" && init.method === "GET")
+					return json({
+						present: true,
+						complete: true,
+						team_id: "T111",
+						channel_id: "C111",
+						target_session_id: "session-1",
+						active: !imported,
+						shadowed: imported,
+					});
+				if (url === "/api/slack/environment-import" && init.method === "POST") {
+					imported = true;
+					return json({ app_id: "app-a", installation_id: "inst-a", subscription_created: true });
+				}
+				throw new Error(`Unexpected request: ${init.method} ${url}`);
+			});
+			try {
+				await waitFor(
+					() => container.querySelector('[data-testid="slack-import-environment"]'),
+					container,
+					"environment import card",
+				);
+				expect(container.textContent).toContain("Team T111");
+				expect(container.textContent).toContain("Channel C111");
+				expect(container.textContent).not.toContain("xapp-");
+				container.querySelector('[data-testid="slack-import-environment"]').click();
+				await flushUI();
+				container.querySelector('[data-testid="confirm-dialog-confirm"]').click();
+				await waitFor(() => imported, container, "environment import request");
+				await flushUI();
+				const post = fetchMock.mock.calls.find(
+					([url, init]) => url === "/api/slack/environment-import" && init.method === "POST",
+				);
+				expect(JSON.parse(post[1].body)).toEqual({
+					app_id: "app-a",
+					app_name: "",
+					installation_id: "inst-a",
+					installation_name: "",
+				});
+				expect(post[1].body).not.toContain("token");
+				expect(JSON.stringify(showToast.mock.calls)).not.toContain("xapp-");
+				expect(container.textContent).toContain("Already managed");
+			} finally {
+				unmount(container);
+			}
+		});
+
     test("empty state explains security and opens the official app creator", async () => {
       const { container } = await mount((url) => {
         if (url === "/api/slack/apps") return json({ apps: [] });
