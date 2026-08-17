@@ -41,6 +41,11 @@ type deadlineRunner struct {
 	wait     bool
 }
 
+type opaqueTimeoutRunner struct {
+	calls  atomic.Int32
+	stderr string
+}
+
 type blockingRunner struct {
 	entered chan struct{}
 	release <-chan struct{}
@@ -72,6 +77,16 @@ func (r *deadlineRunner) Run(ctx context.Context, _ string, _ ...string) ([]byte
 }
 
 func (r *deadlineRunner) RunWithEnv(ctx context.Context, dir string, _ []string, args ...string) ([]byte, string, error) {
+	return r.Run(ctx, dir, args...)
+}
+
+func (r *opaqueTimeoutRunner) Run(ctx context.Context, _ string, _ ...string) ([]byte, string, error) {
+	r.calls.Add(1)
+	<-ctx.Done()
+	return nil, r.stderr, errors.New("signal: killed")
+}
+
+func (r *opaqueTimeoutRunner) RunWithEnv(ctx context.Context, dir string, _ []string, args ...string) ([]byte, string, error) {
 	return r.Run(ctx, dir, args...)
 }
 
@@ -1150,6 +1165,38 @@ func TestRunJSONRead_RetriesOnceOnTransientLock(t *testing.T) {
 	}
 	if len(r.calls) != 2 {
 		t.Errorf("runner call count = %d, want 2 (initial + one retry)", len(r.calls))
+	}
+}
+
+func TestRunJSONOnceWithTimeout_PreservesDeadlineForOpaqueRunnerError(t *testing.T) {
+	r := &opaqueTimeoutRunner{}
+	c := &cliClient{runner: r}
+
+	_, err := c.runJSONOnceWithTimeout(context.Background(), "/dir", 10*time.Millisecond, "status", "--json")
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("runJSONOnceWithTimeout() error = %v, want context deadline exceeded", err)
+	}
+	if got := r.calls.Load(); got != 1 {
+		t.Fatalf("runner calls = %d, want 1", got)
+	}
+}
+
+func TestRunJSONRead_DoesNotRetryTimedOutTransientLock(t *testing.T) {
+	r := &recordingRunner{responses: []runnerResp{
+		{
+			stderr: "another dolt process is using the database",
+			err:    errors.Join(context.DeadlineExceeded, errors.New("signal: killed")),
+		},
+		{stdout: []byte("[]")},
+	}}
+	c := &cliClient{runner: r}
+
+	_, err := c.runJSONRead(context.Background(), "/dir", "status", "--json")
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("runJSONRead() error = %v, want context deadline exceeded", err)
+	}
+	if len(r.calls) != 1 {
+		t.Fatalf("runner calls = %d, want 1; timed-out reads must not retry", len(r.calls))
 	}
 }
 

@@ -132,6 +132,16 @@ func exitCodeFromErr(err error) int {
 	return 0
 }
 
+// preserveContextError keeps timeout/cancellation classification when a runner
+// reports only the process-level symptom (for example "signal: killed"). The
+// original error remains in the chain for exit-code and diagnostic inspection.
+func preserveContextError(ctx context.Context, err error) error {
+	if ctxErr := ctx.Err(); ctxErr != nil && !errors.Is(err, ctxErr) {
+		return errors.Join(ctxErr, err)
+	}
+	return err
+}
+
 // maxDiagnosticLen bounds captured bd output logged on failure so a large
 // stdout cannot flood the logs.
 const maxDiagnosticLen = 2000
@@ -230,6 +240,7 @@ func (c *cliClient) runRaw(ctx context.Context, timeout time.Duration, dir strin
 
 	out, stderr, err := c.runner.Run(ctx, dir, args...)
 	if err != nil {
+		err = preserveContextError(ctx, err)
 		return nil, &CmdError{Err: err, Stderr: diagnosticOutput(stderr, string(out)), ExitCode: exitCodeFromErr(err)}
 	}
 	return out, nil
@@ -250,6 +261,7 @@ func (c *cliClient) runJSONOnceWithTimeout(ctx context.Context, dir string, time
 		if j := recoverableJSON(out, []byte(stderr)); j != nil {
 			return j, nil
 		}
+		err = preserveContextError(ctx, err)
 		return nil, &CmdError{Err: err, Stderr: diagnosticOutput(stderr, string(out)), ExitCode: exitCodeFromErr(err)}
 	}
 	if !json.Valid(out) {
@@ -283,7 +295,10 @@ func (c *cliClient) runJSONRead(ctx context.Context, dir string, args ...string)
 	readArgs = append(readArgs, "--readonly")
 	readArgs = append(readArgs, args...)
 	out, err := c.runJSONOnceWithTimeout(ctx, dir, readTimeout, readArgs...)
-	if err != nil && isTransientLock(err) {
+	if err != nil &&
+		!errors.Is(err, context.Canceled) &&
+		!errors.Is(err, context.DeadlineExceeded) &&
+		isTransientLock(err) {
 		out, err = c.runJSONOnceWithTimeout(ctx, dir, readTimeout, readArgs...)
 	}
 	return out, err
