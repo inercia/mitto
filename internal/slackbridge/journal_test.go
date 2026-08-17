@@ -190,3 +190,53 @@ func TestFileJournalRejectsCapacityUntilTerminalRecordsPrune(t *testing.T) {
 		t.Fatalf("Accept after prune duplicate=%v err=%v", duplicate, err)
 	}
 }
+
+func TestFileJournalFullPersistsExpirationBeforeRejecting(t *testing.T) {
+	j, now := newTestJournal(t)
+	doc := &journalDocument{Version: journalVersion, AppID: "app", NextSequence: journalMaxRecords}
+	for n := 0; n < journalMaxRecords; n++ {
+		doc.Records = append(doc.Records, journalRecord{Sequence: uint64(n + 1), Event: Event{EventID: fmt.Sprintf("e%d", n), Text: "erase"},
+			Recipients: []journalRecipient{{SessionID: "s", State: recipientPending, UpdatedAt: *now}}, AcceptedAt: *now})
+	}
+	path, _ := j.path("app")
+	if err := j.writeLocked(path, doc); err != nil {
+		t.Fatal(err)
+	}
+	*now = now.Add(journalRetention)
+	if _, err := j.Accept("app", Event{EventID: "still-full"}, nil); !errors.Is(err, ErrJournalFull) {
+		t.Fatalf("Accept() error=%v, want ErrJournalFull", err)
+	}
+	persisted := readJournalDocument(t, j, "app")
+	if persisted.Records[0].Recipients[0].State != recipientExpired || persisted.Records[0].Event.Text != "" || persisted.Records[0].ExpiredAt.IsZero() {
+		t.Fatalf("expiration was not persisted before capacity rejection: %#v", persisted.Records[0])
+	}
+	*now = now.Add(journalRetention)
+	if duplicate, err := j.Accept("app", Event{EventID: "after-expired-prune"}, nil); err != nil || duplicate {
+		t.Fatalf("Accept after expired tombstone prune duplicate=%v err=%v", duplicate, err)
+	}
+}
+
+func TestFileJournalDeliveredTombstoneRetainsFromDeliveryTime(t *testing.T) {
+	j, now := newTestJournal(t)
+	if _, err := j.Accept("app", Event{EventID: "slow", Text: "erase"}, []journalRecipient{{SessionID: "s"}}); err != nil {
+		t.Fatal(err)
+	}
+	*now = now.Add(23 * time.Hour)
+	batch, err := j.ClaimBatch("app", "s", 20, 32<<10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := j.Complete(batch, true, false, ""); err != nil {
+		t.Fatal(err)
+	}
+	*now = now.Add(2 * time.Hour)
+	stats, err := j.Stats("app")
+	if err != nil || stats.Delivered != 1 {
+		t.Fatalf("delivered tombstone pruned before 24h from delivery: stats=%+v err=%v", stats, err)
+	}
+	*now = now.Add(22 * time.Hour)
+	stats, err = j.Stats("app")
+	if err != nil || stats != (JournalStats{}) {
+		t.Fatalf("delivered tombstone retained beyond 24h from delivery: stats=%+v err=%v", stats, err)
+	}
+}

@@ -426,7 +426,7 @@ func classifyWorkerError(err error) string {
 
 func (m *Manager) routeEvent(appID string, _ *appWorker, evt Event) error {
 	if evt.EventID == "" {
-		return errors.New("Slack event has no event_id")
+		return errors.New("slack event has no event_id")
 	}
 	m.mu.Lock()
 	var candidates []resolvedSubscription

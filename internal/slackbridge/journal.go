@@ -28,7 +28,7 @@ const (
 	recipientExpired    = "expired"
 )
 
-var ErrJournalFull = errors.New("Slack event journal capacity reached")
+var ErrJournalFull = errors.New("slack event journal capacity reached")
 
 type journalRecipient struct {
 	SessionID      string    `json:"session_id"`
@@ -144,6 +144,12 @@ func (j *FileJournal) prune(doc *journalDocument, now time.Time) (changes int) {
 		anchor := r.AcceptedAt
 		if !r.ExpiredAt.IsZero() {
 			anchor = r.ExpiredAt
+		} else if terminal {
+			for _, recipient := range r.Recipients {
+				if recipient.UpdatedAt.After(anchor) {
+					anchor = recipient.UpdatedAt
+				}
+			}
 		}
 		if terminal && now.Sub(anchor) >= journalRetention {
 			changes++
@@ -166,7 +172,7 @@ func allRecipientsTerminal(recipients []journalRecipient) bool {
 
 func (j *FileJournal) Accept(appID string, event Event, recipients []journalRecipient) (bool, error) {
 	if appID == "" || event.EventID == "" {
-		return false, errors.New("Slack journal acceptance requires app_id and event_id")
+		return false, errors.New("slack journal acceptance requires app_id and event_id")
 	}
 	j.mu.Lock()
 	defer j.mu.Unlock()
@@ -185,6 +191,11 @@ func (j *FileJournal) Accept(appID string, event Event, recipients []journalReci
 		}
 	}
 	if len(doc.Records) >= journalMaxRecords {
+		if changed {
+			if err := j.writeLocked(path, doc); err != nil {
+				return false, err
+			}
+		}
 		return false, ErrJournalFull
 	}
 	sort.Slice(recipients, func(a, b int) bool { return recipients[a].SessionID < recipients[b].SessionID })
@@ -194,6 +205,7 @@ func (j *FileJournal) Accept(appID string, event Event, recipients []journalReci
 	if len(recipients) == 0 {
 		event.Text = ""
 	}
+	previousSequence := doc.NextSequence
 	doc.NextSequence++
 	doc.Records = append(doc.Records, journalRecord{Sequence: doc.NextSequence, Event: event, Recipients: recipients, AcceptedAt: now})
 	encoded, err := json.Marshal(doc)
@@ -201,6 +213,13 @@ func (j *FileJournal) Accept(appID string, event Event, recipients []journalReci
 		return false, err
 	}
 	if len(encoded) > journalMaxBytes {
+		doc.Records = doc.Records[:len(doc.Records)-1]
+		doc.NextSequence = previousSequence
+		if changed {
+			if err := j.writeLocked(path, doc); err != nil {
+				return false, err
+			}
+		}
 		return false, ErrJournalFull
 	}
 	return false, j.writeLocked(path, doc)
