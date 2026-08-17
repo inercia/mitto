@@ -349,11 +349,32 @@ App
 │   ├── Message (tool - centered status badge)
 │   ├── Message (error - red accent)
 │   └── Message (system - centered, subtle)
-├── ChatInput (textarea + send/cancel button)
+├── ChatInput (textarea + compact LoopControlBar + send/cancel actions)
 ├── WorkspaceDialog (workspace selection for new sessions)
 ├── WorkspaceConfigDialog (view/add/remove workspaces)
-└── SessionPropertiesDialog (rename session, view workspace info)
+└── SessionPanel (Properties / Changes / conditional Loop / Advanced tabs)
 ```
+
+### Conversation Loop Surfaces
+
+Loop configuration has two deliberately separate frontend surfaces:
+
+- `LoopControlBar` is the compact operational row in `ChatInput`. It retains
+  run-now, pause/restore, and prompt-area controls; it has no expandable editor.
+  Its settings gear invokes the `onOpenLoopSettings` callback, which opens
+  `SessionPanel` directly on the **Loop** tab.
+- `LoopSettingsTab` is the full staged editor. Its four automatic/lifecycle
+  trigger cards are `schedule`, `onCompletion`, `onTasks`, and `onChild`.
+  Saving replaces the complete `triggers` list in canonical order, preserves
+  unknown future triggers, and sends `child_events` only with `onChild`.
+- `CallbackTriggerSection` renders after those cards as **External callback**.
+  It manages `callback.json` through the callback REST resource; it is not a
+  fifth loop trigger and never participates in the loop PATCH `triggers` list.
+
+`SessionPanel` registers the Loop radio tab only for configured loops and falls
+back to Properties if the loop is detached or the active conversation changes.
+Authoritative `loop_updated` events synchronize both the full tab and compact
+control bar without requiring the panel to be reopened.
 
 ## Sidebar: Unified Conversation Tree
 

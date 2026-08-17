@@ -14,7 +14,7 @@ HTTP callback endpoints allow external systems to trigger an on-demand run of a 
 
 ## Quick Start
 
-Once you've enabled a callback URL for a loop conversation (via the properties panel in the UI), you can trigger it with a simple `curl`:
+Once you have generated a callback URL from **SessionPanel → Loop → External callback**, you can trigger the loop conversation with a simple `curl`:
 
 ```bash
 # Trigger a loop conversation callback
@@ -35,7 +35,7 @@ curl -X POST https://your-mitto-server.com/mitto/api/callback/cb_YOUR_TOKEN_HERE
   -d '{"metadata": {"source": "my-script", "reason": "manual check"}}'
 ```
 
-> **Note:** The URL must include the API prefix (typically `/mitto`). The full URL is shown when you click **"Enable Callback URL"** or **"Copy URL"** in the conversation properties panel.
+> **Note:** The URL must include the API prefix (typically `/mitto`). Open the Loop tab with the compact control bar settings gear, then use **Generate callback URL** or **Copy URL** in the External callback section. The URL is a credential and is copied rather than rendered.
 
 ## URL Scheme
 
@@ -365,16 +365,24 @@ func (cr *CallbackRateLimiter) Allow(token string) bool
 
 ## Frontend
 
-The `ConversationPropertiesPanel` component shows callback controls in the **Loop Prompts** section.
+`SessionPanel` mounts `CallbackTriggerSection` as the **External callback** card
+in its conditional **Loop** tab, after the four automatic/lifecycle trigger
+cards (`schedule`, `onCompletion`, `onTasks`, and `onChild`). The compact
+`LoopControlBar` settings gear opens this tab directly.
+
+The callback is intentionally independent from the loop editor: its token is
+stored in `callback.json`, while automatic triggers and their full-list
+replacement live in `loop.json`. Generating, rotating, or revoking a callback
+never adds an entry to the loop `triggers` array or changes a loop PATCH.
 
 ### UI States
 
-| Loop State | Callback State | UI Display                                                         |
-| ---------- | -------------- | ------------------------------------------------------------------ |
-| Disabled   | None           | "Enable Loop Prompts first" message                                |
-| Enabled    | None           | "Enable Callback" button                                           |
-| Enabled    | Active         | URL display + Copy/Rotate/Revoke buttons                           |
-| Disabled   | Active         | Subdued display: "Callback preserved but inactive (loop disabled)" |
+| Loop State | Callback State | UI Display                                                    |
+| ---------- | -------------- | ------------------------------------------------------------- |
+| Disabled   | None           | Message to resume the loop before generating a URL            |
+| Enabled    | None           | **Generate callback URL** button                              |
+| Enabled    | Active         | Active badge + Copy/Rotate/Revoke buttons; URL remains hidden |
+| Disabled   | Active         | Inactive badge; preserved URL remains copyable and revocable  |
 
 ### Workflow
 

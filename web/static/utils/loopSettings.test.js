@@ -540,6 +540,21 @@ describe("buildLoopPatch", () => {
     ]);
   });
 
+  test("preserves unknown triggers while excluding external callback state", () => {
+    const patch = buildLoopPatch({
+      promptMode: "freeText",
+      promptBody: "Check external changes",
+      triggers: ["futureTrigger", "onChild", "schedule"],
+      schedule: { value: 1, unit: "hours" },
+      onChild: { events: ["anyLoopStopped", "anyDeleted"] },
+      callback_url: "https://example.test/credential",
+    });
+
+    expect(patch.triggers).toEqual(["schedule", "onChild", "futureTrigger"]);
+    expect(patch.child_events).toEqual(["anyDeleted", "anyLoopStopped"]);
+    expect(patch.callback_url).toBeUndefined();
+  });
+
   test("free-text mode clears prompt_name and arguments", () => {
     const draft = {
       promptMode: "freeText",

@@ -1,5 +1,6 @@
 import { test, expect } from "../fixtures/test-fixtures";
 import type { Page, Locator } from "@playwright/test";
+import { apiUrl } from "../utils/selectors";
 
 /**
  * Regression guard for the Conversation properties panel tab glitch.
@@ -86,7 +87,9 @@ test.describe("SessionPanel tabs (no stray pseudo-element on focus)", () => {
       const res = await inspectTab(tab);
 
       // Structural: the tooltip utility must be gone (it owned ::before/::after).
-      expect(res.hasTooltipClass, `tab ${i} must not have .tooltip`).toBe(false);
+      expect(res.hasTooltipClass, `tab ${i} must not have .tooltip`).toBe(
+        false,
+      );
       expect(res.hasDataTip, `tab ${i} must not have data-tip`).toBe(false);
 
       // The daisyUI tooltip arrow lived on ::after with content:"" (never
@@ -104,5 +107,94 @@ test.describe("SessionPanel tabs (no stray pseudo-element on focus)", () => {
         TRANSPARENT,
       );
     }
+  });
+
+  test("adds the Loop tab without exposing callback state as a loop trigger", async ({
+    page,
+    request,
+    timeouts,
+  }) => {
+    const sessionId = await page.evaluate(() =>
+      localStorage.getItem("mitto_last_session_id"),
+    );
+    expect(sessionId).toBeTruthy();
+
+    const loopUrl = apiUrl(`/api/sessions/${sessionId}/loop`);
+    const configure = await request.put(loopUrl, {
+      data: {
+        prompt: "Session panel coverage",
+        frequency: { value: 1, unit: "hours" },
+        delay_seconds: 30,
+        enabled: true,
+        max_iterations: 3,
+        triggers: ["schedule", "onCompletion"],
+      },
+    });
+    expect(configure.ok()).toBeTruthy();
+
+    const bar = page.locator('[data-testid="loop-control-bar"]');
+    await expect(bar).toBeVisible({ timeout: timeouts.appReady });
+    await bar.locator('[data-testid="loop-open-settings"]').click();
+
+    const panel = page.locator('[data-testid="session-panel"]');
+    const tabs = panel.locator('[role="tablist"] label.tab');
+    await expect(tabs).toHaveCount(4);
+    await expect(panel.locator('label[aria-label="Loop"] input')).toBeChecked();
+
+    for (const trigger of ["schedule", "onCompletion", "onTasks", "onChild"]) {
+      await expect(
+        panel.locator(`[data-testid="loop-settings-${trigger}"]`),
+      ).toBeVisible();
+    }
+
+    const callback = panel.locator('[data-testid="callback-trigger-section"]');
+    await expect(callback).toBeVisible();
+    expect(
+      await panel
+        .locator(
+          '[data-testid="loop-settings-onChild"], [data-testid="callback-trigger-section"]',
+        )
+        .evaluateAll((nodes) =>
+          nodes.map((node) => node.getAttribute("data-testid")),
+        ),
+    ).toEqual(["loop-settings-onChild", "callback-trigger-section"]);
+
+    let savedPayload: Record<string, unknown> | null = null;
+    await page.route(`**${loopUrl}`, async (route) => {
+      if (route.request().method() === "PUT") {
+        savedPayload = route.request().postDataJSON();
+      }
+      await route.continue();
+    });
+
+    await panel
+      .locator('[data-testid="loop-settings-trigger-onChild"]')
+      .check();
+    await panel.getByRole("checkbox", { name: "Any child loop stops" }).check();
+    await panel.locator('[data-testid="loop-save-button"]').click();
+    await expect.poll(() => savedPayload).not.toBeNull();
+    expect(savedPayload?.triggers).toEqual([
+      "schedule",
+      "onCompletion",
+      "onChild",
+    ]);
+    expect(savedPayload?.child_events).toEqual([
+      "anyEndResponse",
+      "anyDeleted",
+      "anyLoopStopped",
+    ]);
+    expect(savedPayload).not.toHaveProperty("callback");
+    expect(savedPayload).not.toHaveProperty("callback_url");
+
+    await panel.locator('label[aria-label="Advanced"]').click();
+    await expect(callback).toHaveCount(0);
+
+    await panel.locator('label[aria-label="Loop"]').click();
+    const detach = await request.delete(loopUrl);
+    expect(detach.ok()).toBeTruthy();
+    await expect(panel.locator('label[aria-label="Loop"]')).toHaveCount(0);
+    await expect(
+      panel.locator('label[aria-label="Properties"] input'),
+    ).toBeChecked();
   });
 });

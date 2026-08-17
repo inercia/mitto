@@ -47,7 +47,7 @@ All components use Preact/HTM with window globals: `const { useState, useEffect,
 | `QueueDropdown`     | Queued messages panel                         |
 | `Message`           | User/agent/tool/error messages                |
 | `SettingsDialog`    | Settings modal                                |
-| `SessionPanel`      | Unified overlay (Changes + Properties tabs)   |
+| `SessionPanel`      | Properties/Changes/Loop/Advanced overlay      |
 | `ContextMenu`       | Right-click menu with viewport-aware position |
 | `SessionItem`       | List item with swipe, menu, status            |
 | `Toolbar`           | Config-driven action bar (see below)          |
@@ -111,7 +111,14 @@ function badge(label, className = "") {
 
 ## Side Panel Overlay Pattern
 
-`SessionPanel`: unified tabbed panel (Changes/Properties/User Data). Parent manages open/close. Changes: `GET /api/sessions/{id}/changes` with status badges (A=green, M=amber, D=red). Animation: `isClosing`/`shouldRender` (150ms).
+`SessionPanel`: unified radio-tab panel with Properties, Changes, conditional Loop, and Advanced tabs. Parent manages open/close and the requested tab. Changes uses `GET /api/sessions/{id}/changes` with status badges (A=green, M=amber, D=red). Animation: `isClosing`/`shouldRender` (150ms). If a selected Loop tab becomes unavailable after detach or conversation switch, fall back to Properties.
+
+Loop UI ownership is split intentionally:
+
+- `LoopControlBar` stays compact in `ChatInput`; its settings gear calls the parent `onOpenLoopSettings` callback to open `SessionPanel` on Loop. Never reintroduce an expandable inline editor or `loop-expand-toggle`.
+- `LoopSettingsTab` owns the staged common settings and the canonical automatic/lifecycle trigger list: `schedule`, `onCompletion`, `onTasks`, `onChild`. A save replaces the full list, keeps that canonical order, preserves unknown future triggers, and enforces that `onChild` is not the sole trigger.
+- `CallbackTriggerSection` is the separate **External callback** card after the four trigger cards. It owns `callback.json` CRUD and paused-loop presentation. It is never included in `triggers`, `child_events`, or the loop PATCH, and it does not belong in Advanced.
+- Complete `loop_updated` payloads synchronize the open tab and compact bar. Guard session switches and stale fetches with session IDs/version refs rather than allowing an older GET to overwrite a newer event.
 
 ## useToast Hook
 
