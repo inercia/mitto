@@ -87,6 +87,8 @@ const (
 	CredentialsVaultFileName = "vault.json"
 	// SlackCatalogFileName stores process-global, non-secret Slack integration metadata.
 	SlackCatalogFileName = "slack_integrations.json"
+	// SlackEventJournalDirName stores per-app durable Slack event journals.
+	SlackEventJournalDirName = "slack-event-journal"
 
 	// RememberedArgsDirName is the name of the subdirectory holding per-workspace
 	// remembered prompt-argument snapshots (one JSON file per workspace UUID).
@@ -509,6 +511,16 @@ func SlackCatalogPath() (string, error) {
 		return "", err
 	}
 	return filepath.Join(dir, SlackCatalogFileName), nil
+}
+
+// SlackEventJournalDir returns the directory holding one durable event journal
+// per Slack app profile. The directory is created by the first journal write.
+func SlackEventJournalDir() (string, error) {
+	dir, err := Dir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, SlackEventJournalDirName), nil
 }
 
 // RememberedArgsDir returns the directory holding per-workspace remembered

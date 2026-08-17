@@ -33,6 +33,19 @@ func NewSlackSource(cfg Config, logger *slog.Logger, onSelfIdentified func(userI
 // are handled internally by socketmode.Client.RunContext; Bridge.Run's outer
 // retry loop is a second line of defense if RunContext still returns early.
 func (s *SlackSource) Run(ctx context.Context, emit func(Event)) error {
+	return s.run(ctx, func(event Event) error {
+		emit(event)
+		return nil
+	})
+}
+
+// RunDurable acknowledges each relevant Socket Mode envelope only after accept
+// confirms that the normalized event was persisted.
+func (s *SlackSource) RunDurable(ctx context.Context, accept func(Event) error) error {
+	return s.run(ctx, accept)
+}
+
+func (s *SlackSource) run(ctx context.Context, accept func(Event) error) error {
 	api := slack.New(s.cfg.BotToken, slack.OptionAppLevelToken(s.cfg.AppToken))
 
 	selfUserID := ""
@@ -62,7 +75,9 @@ func (s *SlackSource) Run(ctx context.Context, emit func(Event)) error {
 			if !ok {
 				return nil
 			}
-			s.handleSocketEvent(evt, client, selfUserID, emit)
+			if err := s.handleSocketEventDurable(evt, client, selfUserID, accept); err != nil && s.logger != nil {
+				s.logger.Warn("slackbridge: event not acknowledged because durable acceptance failed", "error_class", "journal")
+			}
 		}
 	}
 }
@@ -71,15 +86,19 @@ func (s *SlackSource) Run(ctx context.Context, emit func(Event)) error {
 // events_api requests (required by the Slack protocol) and, for in-scope
 // inner event types (message / app_mention), emits a normalized Event.
 func (s *SlackSource) handleSocketEvent(evt socketmode.Event, client *socketmode.Client, selfUserID string, emit func(Event)) {
+	_ = s.handleSocketEventDurable(evt, client, selfUserID, func(event Event) error {
+		emit(event)
+		return nil
+	})
+}
+
+func (s *SlackSource) handleSocketEventDurable(evt socketmode.Event, client *socketmode.Client, selfUserID string, accept func(Event) error) error {
 	if evt.Type != socketmode.EventTypeEventsAPI {
-		return
+		return nil
 	}
 	eventsAPIEvent, ok := evt.Data.(slackevents.EventsAPIEvent)
 	if !ok {
-		return
-	}
-	if evt.Request != nil {
-		client.Ack(*evt.Request)
+		return nil
 	}
 
 	eventID := extractEventID(evt.Request)
@@ -92,7 +111,8 @@ func (s *SlackSource) handleSocketEvent(evt socketmode.Event, client *socketmode
 		// including Mitto's own app (self-filter by user ID as well, in
 		// case BotID differs across workspaces).
 		if inner.SubType != "" || inner.BotID != "" || inner.User == selfUserID {
-			return
+			ackSocketRequest(client, evt.Request)
+			return nil
 		}
 		out = Event{
 			EventID: eventID, TeamID: eventsAPIEvent.TeamID, ChannelID: inner.Channel,
@@ -101,7 +121,8 @@ func (s *SlackSource) handleSocketEvent(evt socketmode.Event, client *socketmode
 		}
 	case *slackevents.AppMentionEvent:
 		if inner.BotID != "" || inner.User == selfUserID {
-			return
+			ackSocketRequest(client, evt.Request)
+			return nil
 		}
 		out = Event{
 			EventID: eventID, TeamID: eventsAPIEvent.TeamID, ChannelID: inner.Channel,
@@ -109,9 +130,20 @@ func (s *SlackSource) handleSocketEvent(evt socketmode.Event, client *socketmode
 			ThreadTimestamp: inner.ThreadTimeStamp, Text: inner.Text,
 		}
 	default:
-		return
+		ackSocketRequest(client, evt.Request)
+		return nil
 	}
-	emit(out)
+	if err := accept(out); err != nil {
+		return err
+	}
+	ackSocketRequest(client, evt.Request)
+	return nil
+}
+
+func ackSocketRequest(client *socketmode.Client, request *socketmode.Request) {
+	if request != nil {
+		client.Ack(*request)
+	}
 }
 
 // extractEventID reads the outer envelope's "event_id" from the raw Socket

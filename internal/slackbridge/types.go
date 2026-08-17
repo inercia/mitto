@@ -42,3 +42,10 @@ type Event struct {
 type Source interface {
 	Run(ctx context.Context, emit func(Event)) error
 }
+
+// DurableSource delays Socket Mode acknowledgement until accept confirms the
+// normalized event has reached durable storage. Returning an error leaves the
+// envelope unacknowledged so Slack can redeliver it.
+type DurableSource interface {
+	RunDurable(ctx context.Context, accept func(Event) error) error
+}

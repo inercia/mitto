@@ -165,9 +165,11 @@ in the same narrow window (e.g. the agent finishes a turn — arming
 delivered run is allowed at a time per conversation: `LoopRunner.claimDispatch`
 holds a per-session, first-come-first-served slot (`dispatchInFlight`),
 claimed just before `deliverPrompt` and released in `OnComplete` (or any
-synchronous failure). A trigger that cannot claim the slot is **coalesced —
-dropped, not queued**: `ErrLoopDispatchCoalesced` short-circuits the loser
-with no retry, no schedule advance, and no failure backoff. The winning
+synchronous failure). A trigger that cannot claim the slot is **coalesced**:
+`ErrLoopDispatchCoalesced` short-circuits the loser with no schedule advance
+or failure backoff. Ordinary trigger fires are dropped; durable `onSlack`
+recipients are restored to pending and retried after the conversation becomes
+idle. The winning
 trigger is recorded on the delivered `PromptMeta.LoopTrigger` and surfaced to
 clients as `loop_updated.triggers` (the full armed set) alongside the
 back-compat singular `loop_updated.trigger` (the primary/first entry).
@@ -190,7 +192,7 @@ flowchart TB
 
     CLAIM{{"claimDispatch(sessionID, firedBy)<br/>one slot per session"}}
     CLAIM -->|"slot free → claimed"| DELIVER["deliverPrompt<br/>PromptMeta.LoopTrigger = firedBy"]
-    CLAIM -->|"slot held by another trigger"| DROP["ErrLoopDispatchCoalesced<br/>dropped, not queued"]
+    CLAIM -->|"slot held by another trigger"| DROP["ErrLoopDispatchCoalesced<br/>ordinary fire dropped<br/>Slack recipient remains pending"]
 
     DELIVER --> AGENT[ACP Agent]
     AGENT -->|OnComplete| RELEASE["releaseDispatch(sessionID)"]
@@ -257,6 +259,20 @@ IDs, kind, author, timestamps, text, and `Untrusted: true`; no credentials or
 raw SDK structures. `.Trigger.Slack` remains a temporary first-event alias for
 the environment PoC. The entire batch claims one dispatch slot and increments
 the shared loop iteration once.
+
+The catalog-backed manager snapshots matching recipients into a profile-scoped
+file journal before acknowledging Slack. `event_id` is the durable dedupe key;
+recipient state is independent, so a successful fan-out peer can commit while a
+busy peer returns to `pending`. A two-second settle timer starts ordered drains,
+and the composed `SessionManager` idle callback retries pending work after the
+loop runner's normal idle bookkeeping. Startup changes interrupted `delivering`
+states back to `pending`, yielding at-least-once semantics: a crash after ACP
+dispatch but before the delivered-state write may duplicate one batch.
+
+Delivered tombstones expire after 24 hours. Pending/failed recipients older
+than 24 hours become expired dead letters, and event text is scrubbed as soon
+as all recipients are terminal. Connection status exposes only aggregate
+pending, failed, and dead-letter counts.
 
 Partial `loop.json` updates preserve unknown top-level fields and unknown
 trigger strings already loaded from a newer version, while explicit trigger

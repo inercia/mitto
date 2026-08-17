@@ -11,7 +11,7 @@ credential vault; loops persist only installation and channel IDs.
 
 - `Manager` rebuilds its subscription index from enabled, unarchived `onSlack`
   loops at startup and reconciles loop edit/pause/archive/delete transitions.
-- A Slack app profile owns one worker and one bounded event-ID dedupe set,
+- A Slack app profile owns one worker and one bounded durable event journal,
   regardless of how many installations, channels, or loops reference it.
 - Routing first matches app, team, and channel, then event mode and thread
   policy. A target session is included at most once per event.
@@ -20,9 +20,36 @@ credential vault; loops persist only installation and channel IDs.
 - App tokens are resolved only when a worker starts. Successful replacement
   restarts that app's worker; failed catalog transactions do not disturb it.
 - Connection statuses and logs contain app IDs, state, reference counts, retry
-  timing, and sanitized error classes only—never credentials or message text.
+  timing, pending/failed/dead-letter counts, and sanitized error classes
+  only—never credentials or message text.
 - Unused app workers stop after a grace period; shutdown cancels and joins all
   workers before loop/session shutdown.
+
+## Durable delivery
+
+Catalog-backed workers normalize and filter an Events API envelope, snapshot
+all matching loop recipients, and atomically persist it before acknowledging
+the Socket Mode request. A persistence or capacity failure leaves the envelope
+unacknowledged so Slack can redeliver it. Durable `event_id` tombstones make
+those redeliveries idempotent across process restarts.
+
+Each recipient advances independently through `pending`, `delivering`, and
+`delivered`. Busy, workspace-capped, or coalesced dispatches return to pending
+and drain when that conversation next becomes idle. Other dispatch failures use
+bounded retry backoff. A two-second profile settle window groups events into
+ordered batches of at most 20 events and 32 KiB; each batch consumes one loop
+iteration. Startup recovery changes interrupted `delivering` recipients back to
+pending before workers begin accepting traffic.
+
+The journal retains delivered event-ID tombstones for 24 hours. Undelivered
+records older than 24 hours become content-free expired/dead-letter tombstones,
+and Slack text is erased immediately once every snapshotted recipient is
+terminal. Files are bounded to 2,000 records and 8 MiB per app profile and are
+stored with mode `0600` under Mitto's app-data `slack-event-journal` directory.
+
+Delivery is **at least once**. A process can crash after the loop dispatch is
+accepted but before the journal records `delivered`; startup recovery retries
+that recipient, so this narrow ambiguity window can produce a duplicate turn.
 
 ## Legacy environment compatibility
 
@@ -126,18 +153,12 @@ themselves prove real Slack Socket Mode latency.
 
 ## Remaining gaps
 
-- **No durable per-loop inbox**: the target loop is assumed idle. If it is
-  mid-turn when an event arrives, `TriggerNowWithSlackEvent` returns
-  `ErrSessionBusy` and the event is dropped (already deduped, so a Slack
-  redelivery of the *same* event_id will not retry it either). A production
-  version needs a durable, per-loop queue so a busy conversation processes
-  the next Slack event once idle instead of silently dropping it.
-- **In-memory-only dedupe**: `event_id` de-duplication is a bounded,
-  process-local FIFO set (`internal/slackbridge/dedupe.go`) — it does not
-  survive a restart, and does not coordinate across multiple Mitto
-  instances/replicas.
 - **Legacy adapter limitations**: the environment path remains single-target
-  and does not participate in catalog credential rotation.
+  and does not participate in catalog credential rotation or the durable
+  journal. Its busy-event and in-memory-dedupe limitations remain unchanged.
+- **Single-process journal ownership**: journal files coordinate goroutines in
+  one Mitto process, not multiple Mitto replicas sharing the same app-data
+  directory.
 - **No OAuth installation flow**: credentials are still entered and validated
   through Mitto's integration catalog rather than installed through OAuth.
 - **No public HTTP Events API fallback**: Socket Mode only.

@@ -4,17 +4,23 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"sort"
 	"sync"
 	"time"
 
+	"github.com/inercia/mitto/internal/appdir"
 	"github.com/inercia/mitto/internal/conversation"
 	"github.com/inercia/mitto/internal/secrets"
 	"github.com/inercia/mitto/internal/session"
 	"github.com/inercia/mitto/internal/slackcatalog"
 )
 
-const defaultUnusedGrace = 30 * time.Second
+const (
+	defaultUnusedGrace = 30 * time.Second
+	defaultSlackSettle = 2 * time.Second
+)
 
 // ManagedLoopTriggerer is the canonical batched onSlack dispatch seam.
 type ManagedLoopTriggerer interface {
@@ -40,6 +46,9 @@ type ConnectionStatus struct {
 	AppID             string    `json:"app_id"`
 	State             string    `json:"state"`
 	SubscriptionCount int       `json:"subscription_count"`
+	PendingCount      int       `json:"pending_count,omitempty"`
+	FailedCount       int       `json:"failed_count,omitempty"`
+	DeadLetterCount   int       `json:"dead_letter_count,omitempty"`
 	RetryAt           time.Time `json:"retry_at,omitempty"`
 	ErrorClass        string    `json:"error_class,omitempty"`
 }
@@ -59,6 +68,8 @@ type resolvedSubscription struct {
 type appWorker struct {
 	cancel context.CancelFunc
 	done   chan struct{}
+	// dedupe is retained for legacy package tests/adapters. Canonical manager
+	// routing uses the durable journal's event_id index instead.
 	dedupe *dedupeSet
 	timer  *time.Timer
 }
@@ -79,6 +90,8 @@ type Manager struct {
 	factory      SourceFactory
 	logger       *slog.Logger
 	grace        time.Duration
+	settle       time.Duration
+	journal      *FileJournal
 	ctx          context.Context
 	cancel       context.CancelFunc
 	sessions     map[string][]resolvedSubscription
@@ -89,14 +102,32 @@ type Manager struct {
 	statusQueue  []statusNotification
 	statusDone   chan struct{}
 	statusClosed bool
+	drainTimers  map[string]*time.Timer
+	journalTemp  string
 }
 
 // NewManager constructs a manager. Call Start after all callbacks are wired.
 func NewManager(store *session.Store, catalog Catalog, credentials CredentialResolver, runner ManagedLoopTriggerer, logger *slog.Logger) *Manager {
 	ctx, cancel := context.WithCancel(context.Background())
+	journalDir := ""
+	journalTemp := ""
+	if store == nil {
+		// Nil stores are used by narrow manager unit seams that cannot own durable
+		// subscriptions. Keep those instances out of the real app-data journal.
+		if tempDir, err := os.MkdirTemp("", "mitto-slack-journal-"); err == nil {
+			journalDir, journalTemp = tempDir, tempDir
+		}
+	} else {
+		// Production uses the app-data journal. Stores rooted elsewhere (most
+		// notably isolated tests) keep their journal beside that store instead.
+		if sessionsDir, err := appdir.SessionsDir(); err != nil || filepath.Clean(store.BaseDir()) != filepath.Clean(sessionsDir) {
+			journalDir = filepath.Join(store.BaseDir(), ".slack-event-journal")
+		}
+	}
 	m := &Manager{store: store, catalog: catalog, credentials: credentials, runner: runner, logger: logger,
 		grace: defaultUnusedGrace, ctx: ctx, cancel: cancel, sessions: make(map[string][]resolvedSubscription),
-		workers: make(map[string]*appWorker), statuses: make(map[string]ConnectionStatus), statusDone: make(chan struct{})}
+		workers: make(map[string]*appWorker), statuses: make(map[string]ConnectionStatus), statusDone: make(chan struct{}),
+		journal: NewFileJournal(journalDir), drainTimers: make(map[string]*time.Timer), journalTemp: journalTemp}
 	m.statusCond = sync.NewCond(&m.mu)
 	m.factory = func(_ string, token string) (Source, error) {
 		return NewSlackSource(Config{AppToken: token}, logger, nil), nil
@@ -124,8 +155,24 @@ func (m *Manager) Status() []ConnectionStatus {
 	return result
 }
 
-// Start rebuilds subscriptions from persisted sessions and starts needed workers.
-func (m *Manager) Start() error { return m.ReconcileAll() }
+// Start recovers in-flight journal recipients before accepting new Socket Mode
+// events, then rebuilds subscriptions and drains any restart backlog.
+func (m *Manager) Start() error {
+	profiles, err := m.journal.Recover()
+	if err != nil {
+		return err
+	}
+	if m.settle == 0 {
+		m.settle = defaultSlackSettle
+	}
+	if err := m.ReconcileAll(); err != nil {
+		return err
+	}
+	for _, appID := range profiles {
+		m.scheduleDrain(appID, 0)
+	}
+	return nil
+}
 
 // ReconcileAll rebuilds every session entry from the authoritative stores.
 func (m *Manager) ReconcileAll() error {
@@ -322,7 +369,7 @@ func (m *Manager) finishStoppedWorker(appID string, worker *appWorker) {
 
 func (m *Manager) startWorkerLocked(appID string) {
 	ctx, cancel := context.WithCancel(m.ctx)
-	worker := &appWorker{cancel: cancel, done: make(chan struct{}), dedupe: newDedupeSet(0)}
+	worker := &appWorker{cancel: cancel, done: make(chan struct{})}
 	m.workers[appID] = worker
 	go m.runWorker(ctx, appID, worker)
 }
@@ -338,7 +385,15 @@ func (m *Manager) runWorker(ctx context.Context, appID string, worker *appWorker
 			source, err = m.factory(appID, token)
 			if err == nil {
 				m.emitStatus(ConnectionStatus{AppID: appID, State: "connected", SubscriptionCount: m.subscriptionCount(appID)})
-				err = source.Run(ctx, func(evt Event) { m.routeEvent(appID, worker, evt) })
+				if durable, ok := source.(DurableSource); ok {
+					err = durable.RunDurable(ctx, func(evt Event) error { return m.routeEvent(appID, worker, evt) })
+				} else {
+					err = source.Run(ctx, func(evt Event) {
+						if acceptErr := m.routeEvent(appID, worker, evt); acceptErr != nil && m.logger != nil {
+							m.logger.Warn("slackbridge: legacy source durable acceptance failed", "app_id", appID, "error_class", "journal")
+						}
+					})
+				}
 			}
 		}
 		if ctx.Err() != nil {
@@ -369,9 +424,9 @@ func classifyWorkerError(err error) string {
 	return "connection_failed"
 }
 
-func (m *Manager) routeEvent(appID string, worker *appWorker, evt Event) {
-	if evt.EventID == "" || worker.dedupe.SeenBefore(evt.EventID) {
-		return
+func (m *Manager) routeEvent(appID string, _ *appWorker, evt Event) error {
+	if evt.EventID == "" {
+		return errors.New("Slack event has no event_id")
 	}
 	m.mu.Lock()
 	var candidates []resolvedSubscription
@@ -383,7 +438,7 @@ func (m *Manager) routeEvent(appID string, worker *appWorker, evt Event) {
 		}
 	}
 	m.mu.Unlock()
-	targets := make(map[string]conversation.PromptSlackEvent)
+	targets := make(map[string]journalRecipient)
 	for _, sub := range candidates {
 		if evt.AuthorID == sub.botID || evt.AuthorID == sub.botUserID {
 			continue
@@ -398,15 +453,115 @@ func (m *Manager) routeEvent(appID string, worker *appWorker, evt Event) {
 		if sub.threadPolicy == session.SlackThreadPolicyRepliesOnly && !isReply {
 			continue
 		}
-		targets[sub.sessionID] = conversation.PromptSlackEvent{InstallationID: sub.installationID,
-			EventID: evt.EventID, ChannelID: evt.ChannelID, Kind: evt.Kind, AuthorID: evt.AuthorID,
-			Timestamp: evt.Timestamp, ThreadTimestamp: evt.ThreadTimestamp, Text: boundSlackText(evt.Text), Untrusted: true}
+		targets[sub.sessionID] = journalRecipient{SessionID: sub.sessionID, InstallationID: sub.installationID}
 	}
-	for sessionID, event := range targets {
-		if err := m.runner.TriggerNowWithSlackEvents(sessionID, true, session.TriggerOnSlack, []conversation.PromptSlackEvent{event}); err != nil && m.logger != nil {
-			m.logger.Warn("slackbridge: failed to trigger subscribed loop", "session_id", sessionID, "error_class", "dispatch")
+	recipients := make([]journalRecipient, 0, len(targets))
+	for _, recipient := range targets {
+		recipients = append(recipients, recipient)
+	}
+	evt.Text = boundSlackText(evt.Text)
+	duplicate, err := m.journal.Accept(appID, evt, recipients)
+	if err != nil {
+		if m.logger != nil {
+			m.logger.Warn("slackbridge: durable event acceptance failed", "app_id", appID, "error_class", "journal")
+		}
+		return err
+	}
+	m.refreshJournalStatus(appID)
+	if duplicate || len(recipients) == 0 {
+		return nil
+	}
+	if m.settle <= 0 {
+		m.drainProfile(appID)
+	} else {
+		m.scheduleDrain(appID, m.settle)
+	}
+	return nil
+}
+
+func (m *Manager) scheduleDrain(appID string, delay time.Duration) {
+	m.mu.Lock()
+	if existing := m.drainTimers[appID]; existing != nil {
+		existing.Stop()
+	}
+	m.drainTimers[appID] = time.AfterFunc(delay, func() {
+		m.mu.Lock()
+		delete(m.drainTimers, appID)
+		m.mu.Unlock()
+		m.drainProfile(appID)
+	})
+	m.mu.Unlock()
+}
+
+func (m *Manager) drainProfile(appID string) {
+	sessions, err := m.journal.PendingSessions(appID)
+	if err != nil {
+		m.logJournalFailure(appID, "scan")
+		return
+	}
+	needsRetry := false
+	for _, sessionID := range sessions {
+		batch, claimErr := m.journal.ClaimBatch(appID, sessionID, conversation.MaxSlackEventsPerDispatch, conversation.MaxSlackEventBatchBytes)
+		if claimErr != nil {
+			m.logJournalFailure(appID, "claim")
+			continue
+		}
+		if len(batch.Events) == 0 {
+			continue
+		}
+		dispatchErr := m.runner.TriggerNowWithSlackEvents(sessionID, true, session.TriggerOnSlack, batch.Events)
+		contention := errors.Is(dispatchErr, conversation.ErrSessionBusy) || errors.Is(dispatchErr, conversation.ErrWorkspaceBusy) || errors.Is(dispatchErr, conversation.ErrLoopDispatchCoalesced)
+		errorClass := ""
+		if dispatchErr != nil && !contention {
+			errorClass, needsRetry = "dispatch", true
+		}
+		if completeErr := m.journal.Complete(batch, dispatchErr == nil, contention, errorClass); completeErr != nil {
+			// The batch remains delivering on disk. Restart recovery turns it back
+			// into pending, yielding the documented at-least-once crash ambiguity.
+			m.logJournalFailure(appID, "complete")
 		}
 	}
+	stats := m.refreshJournalStatus(appID)
+	if needsRetry || stats.Failed > 0 {
+		m.scheduleDrain(appID, time.Minute)
+	}
+}
+
+// OnConversationIdle drains every app journal with pending work for sessionID.
+// It is invoked after LoopRunner releases the per-session dispatch claim.
+func (m *Manager) OnConversationIdle(sessionID string) {
+	profiles, err := m.journal.ProfilesForSession(sessionID)
+	if err != nil {
+		m.logJournalFailure("", "idle_scan")
+		return
+	}
+	for _, appID := range profiles {
+		m.drainProfile(appID)
+	}
+}
+
+func (m *Manager) logJournalFailure(appID, class string) {
+	if m.logger != nil {
+		m.logger.Warn("slackbridge: journal operation failed", "app_id", appID, "error_class", class)
+	}
+}
+
+func (m *Manager) refreshJournalStatus(appID string) JournalStats {
+	stats, err := m.journal.Stats(appID)
+	if err != nil {
+		m.logJournalFailure(appID, "stats")
+		return JournalStats{}
+	}
+	m.mu.Lock()
+	status := m.statuses[appID]
+	status.AppID = appID
+	if status.State == "" {
+		status.State = "disconnected"
+	}
+	status.PendingCount, status.FailedCount, status.DeadLetterCount = stats.Pending, stats.Failed, stats.Expired
+	m.emitStatusLocked(status)
+	m.mu.Unlock()
+	return stats
 }
 
 func (m *Manager) subscriptionCount(appID string) int {
@@ -416,6 +571,11 @@ func (m *Manager) subscriptionCount(appID string) int {
 }
 func (m *Manager) emitStatus(status ConnectionStatus) {
 	m.mu.Lock()
+	if previous, ok := m.statuses[status.AppID]; ok {
+		status.PendingCount = previous.PendingCount
+		status.FailedCount = previous.FailedCount
+		status.DeadLetterCount = previous.DeadLetterCount
+	}
 	m.emitStatusLocked(status)
 	m.mu.Unlock()
 }
@@ -423,7 +583,8 @@ func (m *Manager) emitStatusLocked(status ConnectionStatus) {
 	m.statuses[status.AppID] = status
 	fn := m.onStatus
 	if m.logger != nil {
-		m.logger.Info("slackbridge: connection state changed", "app_id", status.AppID, "state", status.State, "subscription_count", status.SubscriptionCount, "error_class", status.ErrorClass)
+		m.logger.Info("slackbridge: connection state changed", "app_id", status.AppID, "state", status.State, "subscription_count", status.SubscriptionCount,
+			"pending_count", status.PendingCount, "failed_count", status.FailedCount, "dead_letter_count", status.DeadLetterCount, "error_class", status.ErrorClass)
 	}
 	if fn != nil && !m.statusClosed {
 		m.statusQueue = append(m.statusQueue, statusNotification{status: status, fn: fn})
@@ -462,6 +623,10 @@ func (m *Manager) Close() {
 		w.cancel()
 		workers = append(workers, w)
 	}
+	for _, timer := range m.drainTimers {
+		timer.Stop()
+	}
+	m.drainTimers = make(map[string]*time.Timer)
 	m.workers = make(map[string]*appWorker)
 	m.mu.Unlock()
 	deadline := time.After(5 * time.Second)
@@ -481,4 +646,7 @@ func (m *Manager) Close() {
 	m.statusCond.Broadcast()
 	m.mu.Unlock()
 	<-m.statusDone
+	if m.journalTemp != "" {
+		_ = os.RemoveAll(m.journalTemp)
+	}
 }

@@ -1655,9 +1655,15 @@ func NewServer(config Config) (*Server, error) {
 		// render-time {{ .Prompts.Exists }} / {{ .Prompts.Enabled }} predicates
 		// snapshot the same view mitto_prompt_get reads (mitto-s1w).
 		s.sessionManager.SetPromptsCache(s.config.PromptsCache)
-		// Wire event-driven on-completion loop firing: sessions notify the runner
-		// when they go idle so it can arm the next onCompletion run.
-		s.sessionManager.SetOnConversationIdle(s.loopRunner.OnConversationIdle)
+		// Compose all idle consumers through the SessionManager's single callback:
+		// arm event-driven loop legs, then drain durable Slack work that previously
+		// lost the dispatch slot to a busy/coalesced run.
+		s.sessionManager.SetOnConversationIdle(func(sessionID string) {
+			s.loopRunner.OnConversationIdle(sessionID)
+			if s.slackManager != nil {
+				s.slackManager.OnConversationIdle(sessionID)
+			}
+		})
 	}
 
 	// Wire event-driven onChild(deleted) loop firing: the store notifies the
