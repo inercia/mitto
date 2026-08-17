@@ -10,6 +10,8 @@
  * and tags is always a filtered array — never undefined or null.
  */
 
+import { readFileSync } from "node:fs";
+
 /**
  * Duplicated from SettingsDialog.js (Tags onInput handler, ~lines 4745-4775).
  * Splits the raw draft text on every comma typed so far into already-committed
@@ -964,5 +966,20 @@ describe("SettingsDialog post-delete workspaces refresh", () => {
     const setWorkspaces = jest.fn();
     await refreshWorkspacesAfterDelete(client, setWorkspaces);
     expect(setWorkspaces).not.toHaveBeenCalled();
+  });
+});
+
+describe("SettingsDialog Slack tab wiring (mitto-37nx.6)", () => {
+  test("registers and renders the extracted SlackSettingsTab", () => {
+    const source = readFileSync(
+      new URL("./SettingsDialog.js", import.meta.url),
+      "utf8",
+    );
+    expect(source).toContain(
+      'import { SlackSettingsTab } from "./SlackSettingsTab.js";',
+    );
+    expect(source).toContain('{ id: "slack", label: "Slack"');
+    expect(source).toContain('activeTab === "slack"');
+    expect(source).toContain("<${SlackSettingsTab} showToast=${showToast} />");
   });
 });

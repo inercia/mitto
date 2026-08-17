@@ -64,8 +64,8 @@ function StatusSummary({ record, attempt, identityLabel, identityValue }) {
   `;
 }
 
-export function SlackSettingsTab({ showToast }) {
-  const client = getSdkClient();
+export function SlackSettingsTab({ showToast, client: clientOverride }) {
+  const client = clientOverride || getSdkClient();
   const [apps, setApps] = useState([]);
   const [selectedAppId, setSelectedAppId] = useState("");
   const [installations, setInstallations] = useState([]);

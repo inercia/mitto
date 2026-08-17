@@ -157,6 +157,29 @@ describe("createClient() wiring (mitto-7gta.10)", () => {
     expect(typeof client.acpServers.reassignAndDelete).toBe("function");
   });
 
+  test("exposes client.slack with the process-global catalog surface (mitto-37nx.6)", () => {
+    const client = createClient({ fetch: noopFetch });
+    for (const method of [
+      "listApps",
+      "createApp",
+      "renameApp",
+      "replaceAppToken",
+      "validateApp",
+      "prepareDeleteApp",
+      "deleteApp",
+      "listInstallations",
+      "createInstallation",
+      "renameInstallation",
+      "replaceInstallationToken",
+      "validateInstallation",
+      "prepareDeleteInstallation",
+      "deleteInstallation",
+      "listChannels",
+    ]) {
+      expect(typeof client.slack[method]).toBe("function");
+    }
+  });
+
   test("exposes client.agents with the full resource surface (mitto-7gta.9)", () => {
     const client = createClient({ fetch: noopFetch });
     expect(typeof client.agents.types).toBe("function");

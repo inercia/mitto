@@ -297,9 +297,7 @@ describe("endpoints registry", () => {
     const endpoints = mk("");
 
     test("list", () =>
-      expect(endpoints.workspacePrompts.list()).toBe(
-        "/api/workspace-prompts",
-      ));
+      expect(endpoints.workspacePrompts.list()).toBe("/api/workspace-prompts"));
     test("get", () =>
       expect(endpoints.workspacePrompts.get("p")).toBe(
         "/api/workspace-prompts/p",
@@ -341,6 +339,28 @@ describe("endpoints registry", () => {
       expect(
         endpoints.acpServers.reassignAndDelete("Auggie (Gemini Pro)"),
       ).toBe("/api/acp-servers/Auggie%20(Gemini%20Pro)/reassign-and-delete"));
+    test("slack app and installation builders encode IDs", () => {
+      expect(endpoints.slack.apps()).toBe("/api/slack/apps");
+      expect(endpoints.slack.app("app 1/x")).toBe(
+        "/api/slack/apps/app%201%2Fx",
+      );
+      expect(endpoints.slack.appToken("app 1/x")).toBe(
+        "/api/slack/apps/app%201%2Fx/token",
+      );
+      expect(endpoints.slack.installations("app 1/x")).toBe(
+        "/api/slack/apps/app%201%2Fx/installations",
+      );
+      expect(endpoints.slack.installation("inst 1/x")).toBe(
+        "/api/slack/installations/inst%201%2Fx",
+      );
+      expect(
+        endpoints.slack.installationChannels("inst 1/x", {
+          cursor: "next value",
+        }),
+      ).toBe(
+        "/api/slack/installations/inst%201%2Fx/channels?cursor=next+value",
+      );
+    });
     test("aux.improvePrompt", () =>
       expect(endpoints.aux.improvePrompt()).toBe("/api/aux/improve-prompt"));
     test("runners.supported", () =>
@@ -360,8 +380,7 @@ describe("endpoints registry", () => {
     // mitto-7gta.19.1: pre-auth endpoints used by auth.js.
     test("misc.authInfo", () =>
       expect(endpoints.misc.authInfo()).toBe("/api/auth-info"));
-    test("misc.login", () =>
-      expect(endpoints.misc.login()).toBe("/api/login"));
+    test("misc.login", () => expect(endpoints.misc.login()).toBe("/api/login"));
   });
 
   // ---------------------------------------------------------------------
