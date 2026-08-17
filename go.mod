@@ -101,4 +101,4 @@ require (
 // Use our fork with configurable notification queue size (WithMaxQueuedNotifications).
 // See https://github.com/inercia/acp-go-sdk/tree/configurable-notification-queue-v0.13
 // Once https://github.com/coder/acp-go-sdk/pull/40 is merged, remove this replace and bump the version.
-replace github.com/coder/acp-go-sdk => github.com/inercia/acp-go-sdk v0.13.1-0.20260515074117-56c2c30ca894
+replace github.com/coder/acp-go-sdk => github.com/inercia/acp-go-sdk v0.13.1-0.20260817201031-107b384c8140
