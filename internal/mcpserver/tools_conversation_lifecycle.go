@@ -674,7 +674,7 @@ func (s *Server) handleConversationUpdate(ctx context.Context, req *mcp.CallTool
 	// Update loop configuration if any loop fields provided
 	if input.LoopPrompt != nil || input.LoopPromptName != nil || input.LoopArguments != nil ||
 		input.LoopFrequencyValue != nil || input.LoopFrequencyUnit != nil || input.LoopEnabled != nil || input.LoopFreshContext != nil || input.LoopMaxIterations != nil ||
-		input.LoopTrigger != nil || input.LoopChildEvents != nil || input.LoopCompletionDelaySeconds != nil || input.LoopMaxDurationSeconds != nil ||
+		input.LoopTrigger != nil || input.LoopChildEvents != nil || input.LoopSlackSubscriptions != nil || input.LoopCompletionDelaySeconds != nil || input.LoopMaxDurationSeconds != nil ||
 		input.LoopCondition != nil || input.LoopConditionPreset != nil || input.LoopCoalesceDuringBusy != nil ||
 		input.LoopRunOnStart != nil || input.LoopSettleWindowSeconds != nil {
 		loopStore := store.Loop(input.ConversationID)
@@ -854,6 +854,7 @@ func (s *Server) handleConversationUpdate(ctx context.Context, req *mcp.CallTool
 				Triggers:           triggers,
 				DelaySeconds:       delaySeconds,
 				MaxDurationSeconds: maxDurationSeconds,
+				SlackSubscriptions: input.LoopSlackSubscriptions,
 			}
 			if input.LoopCondition != nil {
 				loop.Condition = *input.LoopCondition
@@ -1008,6 +1009,11 @@ func (s *Server) handleConversationUpdate(ctx context.Context, req *mcp.CallTool
 				}
 				childEventsPtr = &ce
 			}
+			var slackSubscriptionsPtr *[]session.SlackSubscription
+			if input.LoopSlackSubscriptions != nil {
+				subs := input.LoopSlackSubscriptions
+				slackSubscriptionsPtr = &subs
+			}
 			if err := loopStore.Update(session.LoopUpdate{
 				Prompt:              prompt,
 				PromptName:          promptName,
@@ -1017,6 +1023,7 @@ func (s *Server) handleConversationUpdate(ctx context.Context, req *mcp.CallTool
 				MaxIterations:       input.LoopMaxIterations,
 				Triggers:            triggersPtr,
 				ChildEvents:         childEventsPtr,
+				SlackSubscriptions:  slackSubscriptionsPtr,
 				DelaySeconds:        delaySeconds,
 				MaxDurationSeconds:  input.LoopMaxDurationSeconds,
 				Arguments:           argsPtr,
@@ -1157,6 +1164,7 @@ func (s *Server) handleConversationUpdate(ctx context.Context, req *mcp.CallTool
 			loopChildEvents[i] = string(e)
 		}
 		output.LoopChildEvents = loopChildEvents
+		output.LoopSlackSubscriptions = p.SlackSubscriptions
 		output.LoopCompletionDelaySeconds = p.DelaySeconds
 		output.LoopMaxDurationSeconds = p.MaxDurationSeconds
 		output.LoopCondition = p.Condition

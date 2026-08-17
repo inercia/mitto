@@ -35,6 +35,7 @@ func (h *Handlers) handleSetLoop(w http.ResponseWriter, r *http.Request, session
 		MaxIterations:      req.MaxIterations,
 		Triggers:           req.Triggers,
 		ChildEvents:        req.ChildEvents,
+		SlackSubscriptions: req.SlackSubscriptions,
 		DelaySeconds:       req.DelaySeconds,
 		MaxDurationSeconds: req.MaxDurationSeconds,
 	}
@@ -85,6 +86,7 @@ func (h *Handlers) handleSetLoop(w http.ResponseWriter, r *http.Request, session
 		// equality check would miss them and fall through to the generic 500 below.
 		if errors.Is(err, session.ErrInvalidFrequency) || errors.Is(err, session.ErrPromptEmpty) || errors.Is(err, session.ErrInvalidMaxIterations) ||
 			errors.Is(err, session.ErrInvalidTrigger) || errors.Is(err, session.ErrInvalidChildEvent) || errors.Is(err, session.ErrOnChildAlone) ||
+			errors.Is(err, session.ErrInvalidSlackSubscription) || errors.Is(err, session.ErrSlackSubscriptionsRequired) ||
 			errors.Is(err, session.ErrInvalidDelay) || errors.Is(err, session.ErrInvalidMaxDuration) ||
 			isInvalidConditionErr(err) {
 			writeErrorJSON(w, http.StatusBadRequest, "", err.Error())
@@ -162,6 +164,7 @@ func (h *Handlers) handlePatchLoop(w http.ResponseWriter, r *http.Request, sessi
 		MaxIterations:       req.MaxIterations,
 		Triggers:            req.Triggers,
 		ChildEvents:         req.ChildEvents,
+		SlackSubscriptions:  req.SlackSubscriptions,
 		DelaySeconds:        req.DelaySeconds,
 		MaxDurationSeconds:  req.MaxDurationSeconds,
 		Arguments:           req.Arguments,
@@ -179,6 +182,7 @@ func (h *Handlers) handlePatchLoop(w http.ResponseWriter, r *http.Request, sessi
 		// errors.Is, not ==: see the matching comment in handleSetLoop above.
 		if errors.Is(err, session.ErrInvalidFrequency) || errors.Is(err, session.ErrPromptEmpty) || errors.Is(err, session.ErrInvalidMaxIterations) ||
 			errors.Is(err, session.ErrInvalidTrigger) || errors.Is(err, session.ErrInvalidChildEvent) || errors.Is(err, session.ErrOnChildAlone) ||
+			errors.Is(err, session.ErrInvalidSlackSubscription) || errors.Is(err, session.ErrSlackSubscriptionsRequired) ||
 			errors.Is(err, session.ErrInvalidDelay) || errors.Is(err, session.ErrInvalidMaxDuration) ||
 			isInvalidConditionErr(err) {
 			writeErrorJSON(w, http.StatusBadRequest, "", err.Error())

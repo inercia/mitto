@@ -2,11 +2,13 @@
 package session
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -99,7 +101,7 @@ var (
 	// ErrInvalidMaxIterations is returned when max_iterations is negative.
 	ErrInvalidMaxIterations = errors.New("invalid max_iterations: must be >= 0")
 	// ErrInvalidTrigger is returned when the trigger value is not recognised.
-	ErrInvalidTrigger = errors.New("invalid trigger: must be empty, schedule, onCompletion, onTasks, or onChild")
+	ErrInvalidTrigger = errors.New("invalid trigger: must be empty, schedule, onCompletion, onTasks, onChild, or onSlack")
 	// ErrInvalidChildEvent is returned when a child_events entry is not one of
 	// the recognised onChild event names.
 	ErrInvalidChildEvent = errors.New("invalid child event: must be anyEndResponse, anyDeleted, or anyLoopStopped")
@@ -108,6 +110,12 @@ var (
 	// with nothing else would never fire on its own for a conversation that has
 	// no children yet.
 	ErrOnChildAlone = errors.New("invalid trigger: onChild cannot be the only trigger")
+	// ErrInvalidSlackSubscription is returned when an onSlack subscription has
+	// missing identifiers, an unsupported filter, or duplicates another row.
+	ErrInvalidSlackSubscription = errors.New("invalid Slack subscription")
+	// ErrSlackSubscriptionsRequired is returned when an enabled onSlack loop has
+	// no deployment-specific installation/channel subscription.
+	ErrSlackSubscriptionsRequired = errors.New("onSlack requires at least one subscription when enabled")
 	// ErrInvalidDelay is returned when delay_seconds is negative.
 	ErrInvalidDelay = errors.New("invalid delay_seconds: must be >= 0")
 	// ErrInvalidMaxDuration is returned when max_duration_seconds is negative.
@@ -135,7 +143,37 @@ const (
 	// It is an additive trigger only: it cannot be armed on its own (see
 	// ErrOnChildAlone).
 	TriggerOnChild LoopTrigger = "onChild"
+	// TriggerOnSlack fires when a matching event reaches one of the loop's Slack
+	// subscriptions. It may be armed alone or alongside any other trigger.
+	TriggerOnSlack LoopTrigger = "onSlack"
 )
+
+// SlackEventMode selects which normalized Slack events a subscription accepts.
+type SlackEventMode string
+
+const (
+	SlackEventModeAnyHumanMessage SlackEventMode = "anyHumanMessage"
+	SlackEventModeAppMention      SlackEventMode = "appMention"
+)
+
+// SlackThreadPolicy controls whether thread roots/replies are accepted.
+type SlackThreadPolicy string
+
+const (
+	SlackThreadPolicyAny         SlackThreadPolicy = "any"
+	SlackThreadPolicyRootOnly    SlackThreadPolicy = "rootOnly"
+	SlackThreadPolicyRepliesOnly SlackThreadPolicy = "repliesOnly"
+)
+
+// SlackSubscription is one stable, credential-free Slack channel reference.
+// InstallationID resolves through the process-level integration catalog; no
+// token, SDK object, workspace name, or channel name is persisted in loop.json.
+type SlackSubscription struct {
+	InstallationID string            `json:"installation_id"`
+	ChannelID      string            `json:"channel_id"`
+	EventMode      SlackEventMode    `json:"event_mode,omitempty"`
+	ThreadPolicy   SlackThreadPolicy `json:"thread_policy,omitempty"`
+}
 
 // ChildEvent names a child-conversation lifecycle event that arms the onChild
 // trigger.
@@ -347,6 +385,70 @@ type LoopPrompt struct {
 	// loop. Empty falls back to DefaultChildEvents() (both events). Only
 	// meaningful when onChild is among the armed triggers.
 	ChildEvents []ChildEvent `json:"child_events,omitempty"`
+	// SlackSubscriptions lists credential-free installation/channel references
+	// for onSlack. Normalize applies safe filters and canonical ordering.
+	SlackSubscriptions []SlackSubscription `json:"slack_subscriptions,omitempty"`
+	// unknownFields preserves future top-level loop fields across read/partial-
+	// update/write cycles. Full replacements intentionally drop unknown fields.
+	unknownFields map[string]json.RawMessage
+}
+
+var loopPromptKnownJSONFields = map[string]bool{
+	"prompt": true, "prompt_name": true, "arguments": true, "frequency": true,
+	"enabled": true, "fresh_context": true, "max_iterations": true,
+	"iteration_count": true, "created_at": true, "updated_at": true,
+	"last_sent_at": true, "next_scheduled_at": true, "trigger": true,
+	"triggers": true, "delay_seconds": true, "max_duration_seconds": true,
+	"first_run_at": true, "stopped_reason": true, "stopped_at": true,
+	"acknowledged_stopped_reason": true, "condition": true,
+	"condition_preset": true, "cooldown_seconds": true,
+	"coalesce_during_busy": true, "run_on_start": true,
+	"settle_window_seconds": true, "child_events": true,
+	"slack_subscriptions": true,
+}
+
+// UnmarshalJSON preserves unknown top-level fields so a newer loop.json is not
+// destructively downgraded by an unrelated partial update from an older binary.
+func (p *LoopPrompt) UnmarshalJSON(data []byte) error {
+	type plain LoopPrompt
+	var decoded plain
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	for key := range raw {
+		if loopPromptKnownJSONFields[key] {
+			delete(raw, key)
+		}
+	}
+	*p = LoopPrompt(decoded)
+	if len(raw) > 0 {
+		p.unknownFields = raw
+	}
+	return nil
+}
+
+// MarshalJSON restores unknown fields captured by UnmarshalJSON without
+// allowing them to override fields understood by this binary.
+func (p LoopPrompt) MarshalJSON() ([]byte, error) {
+	type plain LoopPrompt
+	data, err := json.Marshal(plain(p))
+	if err != nil || len(p.unknownFields) == 0 {
+		return data, err
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, err
+	}
+	for key, value := range p.unknownFields {
+		if _, known := raw[key]; !known {
+			raw[key] = value
+		}
+	}
+	return json.Marshal(raw)
 }
 
 // EffectiveChildEvents returns the resolved onChild event set: ChildEvents
@@ -448,6 +550,11 @@ func (p *LoopPrompt) IsOnChild() bool {
 	return p.HasTrigger(TriggerOnChild)
 }
 
+// IsOnSlack returns true when this loop prompt's trigger list includes onSlack.
+func (p *LoopPrompt) IsOnSlack() bool {
+	return p.HasTrigger(TriggerOnSlack)
+}
+
 // pendingPlaceholder is a legacy draft placeholder written by older frontends
 // when a conversation was turned into a loop before a prompt was chosen. New
 // drafts store an empty Prompt; the constant is kept so configs already on disk
@@ -535,13 +642,42 @@ func (p *LoopPrompt) Normalize() {
 	if len(p.Triggers) > 0 {
 		p.Trigger = p.Triggers[0]
 	}
+	for i := range p.SlackSubscriptions {
+		sub := &p.SlackSubscriptions[i]
+		sub.InstallationID = strings.TrimSpace(sub.InstallationID)
+		sub.ChannelID = strings.TrimSpace(sub.ChannelID)
+		if sub.EventMode == "" {
+			sub.EventMode = SlackEventModeAnyHumanMessage
+		}
+		if sub.ThreadPolicy == "" {
+			sub.ThreadPolicy = SlackThreadPolicyAny
+		}
+	}
+	sort.SliceStable(p.SlackSubscriptions, func(i, j int) bool {
+		a, b := p.SlackSubscriptions[i], p.SlackSubscriptions[j]
+		if a.InstallationID != b.InstallationID {
+			return a.InstallationID < b.InstallationID
+		}
+		if a.ChannelID != b.ChannelID {
+			return a.ChannelID < b.ChannelID
+		}
+		if a.EventMode != b.EventMode {
+			return a.EventMode < b.EventMode
+		}
+		return a.ThreadPolicy < b.ThreadPolicy
+	})
 }
 
-// Validate checks if the loop prompt configuration is valid.
+// Validate checks if the loop prompt configuration is valid. Full writes reject
+// trigger names unknown to this binary.
 // An enabled config must have something deliverable (free-text body or a named
 // prompt). A disabled config may have neither: that is the draft state created
 // when a conversation is turned into a loop before a prompt is chosen.
 func (p *LoopPrompt) Validate() error {
+	return p.validate(false)
+}
+
+func (p *LoopPrompt) validate(preserveUnknownTriggers bool) error {
 	if p.Enabled && !p.HasPrompt() {
 		return ErrPromptEmpty
 	}
@@ -549,18 +685,22 @@ func (p *LoopPrompt) Validate() error {
 		return ErrInvalidMaxIterations
 	}
 	switch p.Trigger {
-	case "", TriggerSchedule, TriggerOnCompletion, TriggerOnTasks, TriggerOnChild:
+	case "", TriggerSchedule, TriggerOnCompletion, TriggerOnTasks, TriggerOnChild, TriggerOnSlack:
 		// valid
 	default:
-		return ErrInvalidTrigger
+		if !preserveUnknownTriggers {
+			return ErrInvalidTrigger
+		}
 	}
 	seenTriggers := make(map[LoopTrigger]bool, len(p.Triggers))
 	for _, t := range p.Triggers {
 		switch t {
-		case TriggerSchedule, TriggerOnCompletion, TriggerOnTasks, TriggerOnChild:
+		case TriggerSchedule, TriggerOnCompletion, TriggerOnTasks, TriggerOnChild, TriggerOnSlack:
 			// valid
 		default:
-			return ErrInvalidTrigger
+			if !preserveUnknownTriggers {
+				return ErrInvalidTrigger
+			}
 		}
 		if seenTriggers[t] {
 			return fmt.Errorf("%w: duplicate trigger %q", ErrInvalidTrigger, t)
@@ -583,6 +723,30 @@ func (p *LoopPrompt) Validate() error {
 	// also catches the legacy scalar form (Trigger: onChild alone).
 	if eff := p.EffectiveTriggers(); len(eff) == 1 && eff[0] == TriggerOnChild {
 		return ErrOnChildAlone
+	}
+	seenSlack := make(map[string]bool, len(p.SlackSubscriptions))
+	for _, sub := range p.SlackSubscriptions {
+		if sub.InstallationID == "" || sub.ChannelID == "" {
+			return fmt.Errorf("%w: installation_id and channel_id are required", ErrInvalidSlackSubscription)
+		}
+		switch sub.EventMode {
+		case SlackEventModeAnyHumanMessage, SlackEventModeAppMention:
+		default:
+			return fmt.Errorf("%w: unsupported event_mode %q", ErrInvalidSlackSubscription, sub.EventMode)
+		}
+		switch sub.ThreadPolicy {
+		case SlackThreadPolicyAny, SlackThreadPolicyRootOnly, SlackThreadPolicyRepliesOnly:
+		default:
+			return fmt.Errorf("%w: unsupported thread_policy %q", ErrInvalidSlackSubscription, sub.ThreadPolicy)
+		}
+		key := sub.InstallationID + "\x00" + sub.ChannelID
+		if seenSlack[key] {
+			return fmt.Errorf("%w: duplicate installation/channel reference", ErrInvalidSlackSubscription)
+		}
+		seenSlack[key] = true
+	}
+	if p.Enabled && p.IsOnSlack() && len(p.SlackSubscriptions) == 0 {
+		return ErrSlackSubscriptionsRequired
 	}
 	if p.DelaySeconds < 0 {
 		return ErrInvalidDelay
@@ -737,7 +901,10 @@ type LoopUpdate struct {
 	// ChildEvents, when non-nil, REPLACES the stored child-event list
 	// wholesale (same semantics as Triggers). A nil pointer means "leave the
 	// child-event list unchanged".
-	ChildEvents        *[]ChildEvent
+	ChildEvents *[]ChildEvent
+	// SlackSubscriptions follows the same nil=unchanged, non-nil=replace-whole
+	// convention as Triggers and ChildEvents. A present empty slice clears it.
+	SlackSubscriptions *[]SlackSubscription
 	DelaySeconds       *int
 	MaxDurationSeconds *int
 	Arguments          *map[string]string
@@ -798,6 +965,9 @@ func (ps *LoopStore) Update(u LoopUpdate) error {
 		// Replace wholesale, same as Triggers.
 		existing.ChildEvents = *u.ChildEvents
 	}
+	if u.SlackSubscriptions != nil {
+		existing.SlackSubscriptions = *u.SlackSubscriptions
+	}
 	if u.DelaySeconds != nil {
 		existing.DelaySeconds = *u.DelaySeconds
 	}
@@ -830,7 +1000,10 @@ func (ps *LoopStore) Update(u LoopUpdate) error {
 	}
 
 	existing.Normalize()
-	if err := existing.Validate(); err != nil {
+	// A partial update that leaves Triggers untouched must preserve trigger names
+	// written by a newer Mitto version. Explicit trigger replacement remains
+	// strict and rejects values this binary cannot execute.
+	if err := existing.validate(u.Triggers == nil); err != nil {
 		return err
 	}
 

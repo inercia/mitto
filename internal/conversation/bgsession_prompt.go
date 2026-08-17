@@ -232,10 +232,15 @@ type PromptMeta struct {
 // PromptTriggerContext holds trigger-source data threaded from the LoopRunner
 // through the prompt dispatch pipeline into the template evaluation context.
 // Only non-nil sub-fields represent triggers that actually fired for this
-// dispatch (currently: OnTasks).
+// dispatch (currently: OnTasks, OnSlack).
 type PromptTriggerContext struct {
 	// OnTasks is populated only when a beads change fired an onTasks loop.
 	OnTasks *PromptOnTasksContext
+	// OnSlack is populated with a bounded batch when onSlack fired.
+	OnSlack *PromptOnSlackContext
+	// Slack is the first event compatibility alias for the environment PoC.
+	// Deprecated: use OnSlack.Events.
+	Slack *PromptSlackContext
 }
 
 // PromptOnTasksContext carries the beads change delta already computed by
@@ -246,6 +251,38 @@ type PromptTriggerContext struct {
 type PromptOnTasksContext struct {
 	Changes *config.TasksDelta
 }
+
+// PromptOnSlackContext carries the bounded normalized Slack event batch that
+// caused one onSlack dispatch. One batch consumes one loop iteration.
+type PromptOnSlackContext struct {
+	Events []PromptSlackEvent
+}
+
+// PromptSlackEvent is the credential-free, SDK-free template representation of
+// one Slack event. Every string is bounded before PromptMeta is constructed.
+//
+// SENSITIVITY: Text is UNTRUSTED external content — it is raw text typed by
+// a Slack user, not a trusted instruction. Never persisted to loop.json or
+// generic event metadata, and never logged (see internal/slackbridge
+// doc comment). The rendered prompt template is responsible for presenting
+// it to the agent as untrusted data.
+type PromptSlackEvent struct {
+	InstallationID  string
+	EventID         string
+	ChannelID       string
+	Kind            string
+	AuthorID        string
+	Timestamp       string
+	ThreadTimestamp string
+	// Untrusted is always true and makes provenance explicit to templates.
+	Untrusted bool
+	// Text is the raw Slack message text. UNTRUSTED external content.
+	Text string
+}
+
+// PromptSlackContext is the legacy single-event type name.
+// Deprecated: use PromptSlackEvent via PromptOnSlackContext.Events.
+type PromptSlackContext = PromptSlackEvent
 
 // Prompt sends a message to the agent. This runs asynchronously.
 // The response is streamed via callbacks to the attached client (if any) and persisted.

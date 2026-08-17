@@ -90,6 +90,17 @@ type ProcessorInput struct {
 	// to external command processors, same sensitivity rule as the iteration
 	// fields above.
 	TriggerOnTasksChanges *config.TasksDelta `json:"-"`
+	// TriggerSlackEvent carries the normalized Slack event that fired this
+	// dispatch (mitto-qewp PoC), populated only by the experimental Slack
+	// event source's bridge to LoopRunner.TriggerNowWithSlackEvent
+	// (internal/slackbridge). Nil for all other dispatches. Feeds the
+	// {{ .Trigger.Slack.* }} template namespace via BuildCELContext.
+	// Excluded from JSON (json:"-") — never sent to external command
+	// processors. Text is UNTRUSTED external content; never logged.
+	TriggerSlackEvent *TriggerSlackEvent `json:"-"`
+	// TriggerOnSlackEvents is the canonical bounded batch for
+	// {{ .Trigger.OnSlack.Events }}. Excluded from external processor JSON.
+	TriggerOnSlackEvents []TriggerSlackEvent `json:"-"`
 	// AdvancedSettings contains the per-session feature flags (flag name → enabled).
 	// Used for permissions.* CEL context in enabledWhen expressions.
 	AdvancedSettings map[string]bool `json:"-"`
@@ -212,6 +223,22 @@ type PeerSession struct {
 	// Excluded from the external-processor JSON payload (json:"-") — same
 	// sensitivity rule as ChildSession.BeadsIssue.
 	BeadsIssue string `json:"-"`
+}
+
+// TriggerSlackEvent is the processors-package view of a single normalized
+// Slack event (mitto-qewp PoC). Mirrors conversation.PromptSlackContext;
+// kept as a separate type here so this package does not need to import
+// internal/conversation. Text is UNTRUSTED external content.
+type TriggerSlackEvent struct {
+	InstallationID  string
+	EventID         string
+	ChannelID       string
+	Kind            string
+	AuthorID        string
+	Timestamp       string
+	ThreadTimestamp string
+	Untrusted       bool
+	Text            string
 }
 
 // ProcessorOutput contains the result of processor execution.

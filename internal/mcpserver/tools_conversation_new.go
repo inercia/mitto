@@ -69,6 +69,9 @@ type ConversationStartInput struct {
 	// onChild is among the armed triggers. Only meaningful when loop_trigger
 	// includes "onChild".
 	LoopChildEvents []string `json:"loop_child_events,omitempty"`
+	// LoopSlackSubscriptions contains opaque installation/channel references and
+	// per-subscription filters. Credentials are resolved outside loop storage.
+	LoopSlackSubscriptions []session.SlackSubscription `json:"loop_slack_subscriptions,omitempty"`
 	// LoopSettleWindowSeconds is an optional pre-fire debounce window (seconds)
 	// for the onTasks trigger; nil/0 = fire immediately on the first delta.
 	LoopSettleWindowSeconds *int `json:"loop_settle_window_seconds,omitempty"`
@@ -757,6 +760,7 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 			MaxDurationSeconds: maxDurationSeconds,
 			Condition:          input.LoopCondition,
 			ConditionPreset:    input.LoopConditionPreset,
+			SlackSubscriptions: input.LoopSlackSubscriptions,
 		}
 		if len(input.LoopChildEvents) > 0 {
 			ce := make([]session.ChildEvent, len(input.LoopChildEvents))

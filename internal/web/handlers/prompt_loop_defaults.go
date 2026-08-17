@@ -54,6 +54,14 @@ func applyPromptLoopDefaultsToLoopPrompt(lp *session.LoopPrompt, pl *configPkg.P
 		}
 		lp.ChildEvents = events
 	}
+	for i := range lp.SlackSubscriptions {
+		if lp.SlackSubscriptions[i].EventMode == "" && pl.SlackEventMode() != "" {
+			lp.SlackSubscriptions[i].EventMode = session.SlackEventMode(pl.SlackEventMode())
+		}
+		if lp.SlackSubscriptions[i].ThreadPolicy == "" && pl.SlackThreadPolicy() != "" {
+			lp.SlackSubscriptions[i].ThreadPolicy = session.SlackThreadPolicy(pl.SlackThreadPolicy())
+		}
+	}
 	if lp.DelaySeconds == 0 && pl.CompletionDelay() > 0 {
 		lp.DelaySeconds = pl.CompletionDelay()
 	}

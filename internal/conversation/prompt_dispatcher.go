@@ -754,6 +754,35 @@ func (p promptDispatcher) buildProcessorInput(d promptDeps, message string, isFi
 	if meta.Trigger != nil && meta.Trigger.OnTasks != nil {
 		triggerOnTasksChanges = meta.Trigger.OnTasks.Changes
 	}
+	// Thread the Slack trigger event (if any) through so the
+	// {{ .Trigger.Slack.* }} template namespace can render — nil for all
+	// non-Slack dispatches (mitto-qewp PoC).
+	var triggerSlackEvent *processors.TriggerSlackEvent
+	var triggerOnSlackEvents []processors.TriggerSlackEvent
+	if meta.Trigger != nil && meta.Trigger.OnSlack != nil {
+		triggerOnSlackEvents = make([]processors.TriggerSlackEvent, len(meta.Trigger.OnSlack.Events))
+		for i, event := range meta.Trigger.OnSlack.Events {
+			triggerOnSlackEvents[i] = processors.TriggerSlackEvent{
+				InstallationID: event.InstallationID,
+				EventID:        event.EventID, ChannelID: event.ChannelID, Kind: event.Kind,
+				AuthorID: event.AuthorID, Timestamp: event.Timestamp,
+				ThreadTimestamp: event.ThreadTimestamp, Untrusted: event.Untrusted, Text: event.Text,
+			}
+		}
+	}
+	if meta.Trigger != nil && meta.Trigger.Slack != nil {
+		triggerSlackEvent = &processors.TriggerSlackEvent{
+			InstallationID:  meta.Trigger.Slack.InstallationID,
+			EventID:         meta.Trigger.Slack.EventID,
+			ChannelID:       meta.Trigger.Slack.ChannelID,
+			Kind:            meta.Trigger.Slack.Kind,
+			AuthorID:        meta.Trigger.Slack.AuthorID,
+			Timestamp:       meta.Trigger.Slack.Timestamp,
+			ThreadTimestamp: meta.Trigger.Slack.ThreadTimestamp,
+			Untrusted:       meta.Trigger.Slack.Untrusted,
+			Text:            meta.Trigger.Slack.Text,
+		}
+	}
 
 	return &processors.ProcessorInput{
 		Message:                message,
@@ -778,6 +807,8 @@ func (p promptDispatcher) buildProcessorInput(d promptDeps, message string, isFi
 		MaxIterations:          meta.MaxIterations,
 		IterationUninterrupted: meta.IterationUninterrupted,
 		TriggerOnTasksChanges:  triggerOnTasksChanges,
+		TriggerSlackEvent:      triggerSlackEvent,
+		TriggerOnSlackEvents:   triggerOnSlackEvents,
 		Arguments:              meta.Arguments,
 		AdvancedSettings:       advancedSettings,
 		HasUserDataSchema:      hasUserDataSchema,

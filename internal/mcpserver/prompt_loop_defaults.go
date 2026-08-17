@@ -37,10 +37,10 @@ func parseLoopTriggerList(raw string) ([]session.LoopTrigger, error) {
 	for _, part := range parts {
 		t := session.LoopTrigger(strings.TrimSpace(part))
 		switch t {
-		case session.TriggerSchedule, session.TriggerOnCompletion, session.TriggerOnTasks, session.TriggerOnChild:
+		case session.TriggerSchedule, session.TriggerOnCompletion, session.TriggerOnTasks, session.TriggerOnChild, session.TriggerOnSlack:
 			// valid
 		default:
-			return nil, fmt.Errorf("loop_trigger must be 'schedule', 'onCompletion', 'onTasks', 'onChild', or a comma-separated list of these (got %q)", part)
+			return nil, fmt.Errorf("loop_trigger must be 'schedule', 'onCompletion', 'onTasks', 'onChild', 'onSlack', or a comma-separated list of these (got %q)", part)
 		}
 		if seen[t] {
 			continue
@@ -67,6 +67,17 @@ func promptLoopDefaultEnabled(pl *config.PromptLoop) bool {
 		return true
 	}
 	return pl.Default == nil || *pl.Default
+}
+
+func applyPromptSlackDefaults(subscriptions []session.SlackSubscription, pl *config.PromptLoop) {
+	for i := range subscriptions {
+		if subscriptions[i].EventMode == "" && pl.SlackEventMode() != "" {
+			subscriptions[i].EventMode = session.SlackEventMode(pl.SlackEventMode())
+		}
+		if subscriptions[i].ThreadPolicy == "" && pl.SlackThreadPolicy() != "" {
+			subscriptions[i].ThreadPolicy = session.SlackThreadPolicy(pl.SlackThreadPolicy())
+		}
+	}
 }
 
 // applyPromptLoopDefaultsToStartInput merges a seeded prompt's loop: frontmatter
@@ -102,6 +113,7 @@ func applyPromptLoopDefaultsToStartInput(input *ConversationStartInput, pl *conf
 	if input.LoopChildEvents == nil && len(pl.ChildEvents()) > 0 {
 		input.LoopChildEvents = pl.ChildEvents()
 	}
+	applyPromptSlackDefaults(input.LoopSlackSubscriptions, pl)
 	if input.LoopCompletionDelaySeconds == nil && pl.CompletionDelay() > 0 {
 		d := pl.CompletionDelay()
 		input.LoopCompletionDelaySeconds = &d
@@ -191,6 +203,7 @@ func applyPromptLoopDefaultsToUpdateInput(input *ConversationUpdateInput, pl *co
 	if input.LoopChildEvents == nil && len(pl.ChildEvents()) > 0 {
 		input.LoopChildEvents = pl.ChildEvents()
 	}
+	applyPromptSlackDefaults(input.LoopSlackSubscriptions, pl)
 	if input.LoopCompletionDelaySeconds == nil && pl.CompletionDelay() > 0 {
 		d := pl.CompletionDelay()
 		input.LoopCompletionDelaySeconds = &d

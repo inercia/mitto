@@ -17,6 +17,14 @@ type LoopFrequency struct {
 	At    string `json:"at,omitempty"` // HH:MM in UTC, only for unit=days
 }
 
+// SlackSubscription is a credential-free reference to one Slack channel.
+type SlackSubscription struct {
+	InstallationID string `json:"installation_id"`
+	ChannelID      string `json:"channel_id"`
+	EventMode      string `json:"event_mode,omitempty"`
+	ThreadPolicy   string `json:"thread_policy,omitempty"`
+}
+
 // SetLoopRequest is the request body for PUT /api/sessions/{id}/loop.
 type SetLoopRequest struct {
 	PromptName    string        `json:"prompt_name,omitempty"`
@@ -33,7 +41,8 @@ type SetLoopRequest struct {
 	// ChildEvents lists the child-conversation lifecycle events that arm the
 	// onChild trigger: "anyEndResponse" and/or "anyDeleted". Empty defaults to
 	// both. Only meaningful when "onChild" is among Triggers.
-	ChildEvents []string `json:"child_events,omitempty"`
+	ChildEvents        []string            `json:"child_events,omitempty"`
+	SlackSubscriptions []SlackSubscription `json:"slack_subscriptions,omitempty"`
 	// DelaySeconds is the wait after the agent stops before the next run
 	// (onCompletion only). Clamped to the server floor.
 	DelaySeconds int `json:"delay_seconds,omitempty"`
@@ -71,23 +80,24 @@ type SetLoopRequest struct {
 // (partial update; nil/absent fields leave the corresponding setting
 // unchanged). Mirrors internal/web/handlers.LoopPromptPatchRequest.
 type LoopPatchRequest struct {
-	Prompt              *string           `json:"prompt,omitempty"`
-	PromptName          *string           `json:"prompt_name,omitempty"`
-	Frequency           *LoopFrequency    `json:"frequency,omitempty"`
-	Enabled             *bool             `json:"enabled,omitempty"`
-	FreshContext        *bool             `json:"fresh_context,omitempty"`
-	MaxIterations       *int              `json:"max_iterations,omitempty"`
-	Triggers            *[]string         `json:"triggers,omitempty"`
-	ChildEvents         *[]string         `json:"child_events,omitempty"`
-	DelaySeconds        *int              `json:"delay_seconds,omitempty"`
-	MaxDurationSeconds  *int              `json:"max_duration_seconds,omitempty"`
-	Arguments           map[string]string `json:"arguments,omitempty"`
-	Condition           *string           `json:"condition,omitempty"`
-	ConditionPreset     *string           `json:"condition_preset,omitempty"`
-	CooldownSeconds     *int              `json:"cooldown_seconds,omitempty"`
-	CoalesceDuringBusy  *bool             `json:"coalesce_during_busy,omitempty"`
-	RunOnStart          *bool             `json:"run_on_start,omitempty"`
-	SettleWindowSeconds *int              `json:"settle_window_seconds,omitempty"`
+	Prompt              *string              `json:"prompt,omitempty"`
+	PromptName          *string              `json:"prompt_name,omitempty"`
+	Frequency           *LoopFrequency       `json:"frequency,omitempty"`
+	Enabled             *bool                `json:"enabled,omitempty"`
+	FreshContext        *bool                `json:"fresh_context,omitempty"`
+	MaxIterations       *int                 `json:"max_iterations,omitempty"`
+	Triggers            *[]string            `json:"triggers,omitempty"`
+	ChildEvents         *[]string            `json:"child_events,omitempty"`
+	SlackSubscriptions  *[]SlackSubscription `json:"slack_subscriptions,omitempty"`
+	DelaySeconds        *int                 `json:"delay_seconds,omitempty"`
+	MaxDurationSeconds  *int                 `json:"max_duration_seconds,omitempty"`
+	Arguments           map[string]string    `json:"arguments,omitempty"`
+	Condition           *string              `json:"condition,omitempty"`
+	ConditionPreset     *string              `json:"condition_preset,omitempty"`
+	CooldownSeconds     *int                 `json:"cooldown_seconds,omitempty"`
+	CoalesceDuringBusy  *bool                `json:"coalesce_during_busy,omitempty"`
+	RunOnStart          *bool                `json:"run_on_start,omitempty"`
+	SettleWindowSeconds *int                 `json:"settle_window_seconds,omitempty"`
 	// ResetCounters, when true, resets IterationCount=0, FirstRunAt=nil, and
 	// LastSentAt=nil so the loop looks never-sent.
 	ResetCounters *bool `json:"reset_counters,omitempty"`
@@ -106,17 +116,18 @@ type LoopConfig struct {
 	MaxIterations   int               `json:"max_iterations,omitempty"`
 	NextScheduledAt string            `json:"next_scheduled_at,omitempty"`
 	// Trigger is the legacy scalar primary trigger (back-compat; equals Triggers[0]).
-	Trigger            string   `json:"trigger,omitempty"`
-	Triggers           []string `json:"triggers,omitempty"`
-	ChildEvents        []string `json:"child_events,omitempty"`
-	DelaySeconds       int      `json:"delay_seconds,omitempty"`
-	MaxDurationSeconds int      `json:"max_duration_seconds,omitempty"`
-	IterationCount     int      `json:"iteration_count,omitempty"`
-	FreshContext       bool     `json:"fresh_context,omitempty"`
-	Condition          string   `json:"condition,omitempty"`
-	ConditionPreset    string   `json:"condition_preset,omitempty"`
-	CooldownSeconds    int      `json:"cooldown_seconds,omitempty"`
-	StoppedReason      string   `json:"stopped_reason,omitempty"`
+	Trigger            string              `json:"trigger,omitempty"`
+	Triggers           []string            `json:"triggers,omitempty"`
+	ChildEvents        []string            `json:"child_events,omitempty"`
+	SlackSubscriptions []SlackSubscription `json:"slack_subscriptions,omitempty"`
+	DelaySeconds       int                 `json:"delay_seconds,omitempty"`
+	MaxDurationSeconds int                 `json:"max_duration_seconds,omitempty"`
+	IterationCount     int                 `json:"iteration_count,omitempty"`
+	FreshContext       bool                `json:"fresh_context,omitempty"`
+	Condition          string              `json:"condition,omitempty"`
+	ConditionPreset    string              `json:"condition_preset,omitempty"`
+	CooldownSeconds    int                 `json:"cooldown_seconds,omitempty"`
+	StoppedReason      string              `json:"stopped_reason,omitempty"`
 	// StoppedAt is when the loop stopped itself (empty while running).
 	StoppedAt string `json:"stopped_at,omitempty"`
 	// AcknowledgedStoppedReason is the StoppedReason the user last dismissed;

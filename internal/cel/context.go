@@ -110,6 +110,39 @@ type TriggerContext struct {
 	// pointer must be non-nil first:
 	//     {{ with .Trigger }}{{ with .OnTasks }}...{{ end }}{{ end }}
 	OnTasks *TriggerOnTasksContext
+	// OnSlack is the canonical bounded batch for an onSlack dispatch.
+	OnSlack *TriggerOnSlackContext
+	// Slack is populated only when the current fire was driven by the
+	// experimental Slack event source (internal/slackbridge, mitto-qewp
+	// PoC). Nil for all other dispatches. Same nesting guard as OnTasks:
+	//     {{ with .Trigger }}{{ with .Slack }}...{{ end }}{{ end }}
+	Slack *TriggerSlackContext
+}
+
+// TriggerSlackContext exposes a single normalized Slack event that fired
+// this loop dispatch (mitto-qewp PoC — the experimental Slack event source
+// bridged to LoopRunner.TriggerNowWithSlackEvent). Template-only; not
+// exposed to CEL.
+//
+// SENSITIVITY: Text is the raw Slack message body — UNTRUSTED external
+// content typed by a Slack user. Prompt bodies rendering it MUST present it
+// as untrusted data, not as an instruction.
+type TriggerSlackContext struct {
+	InstallationID  string
+	EventID         string
+	ChannelID       string
+	Kind            string
+	AuthorID        string
+	Timestamp       string
+	ThreadTimestamp string
+	Untrusted       bool
+	// Text is the raw Slack message text. UNTRUSTED external content.
+	Text string
+}
+
+// TriggerOnSlackContext exposes a bounded, credential-free event batch.
+type TriggerOnSlackContext struct {
+	Events []TriggerSlackContext
 }
 
 // TriggerOnTasksContext exposes the beads change delta already computed by the

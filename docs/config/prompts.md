@@ -678,7 +678,7 @@ sibling of `trigger:`.
 
 ```yaml
 loop:
-  trigger: [schedule] # list; one or more of: schedule | onCompletion | onTasks | onChild
+  trigger: [schedule] # list; one or more of: schedule | onCompletion | onTasks | onChild | onSlack
   schedule: # meaningful only when "schedule" is armed
     value: 1 # number of time units between runs (integer ≥ 1); required for schedule
     unit: hours # minutes | hours | days; required for schedule
@@ -693,6 +693,9 @@ loop:
     cooldown: 0 # optional — per-conversation cooldown floor (seconds); 0 = use the global floor
   onChild: # meaningful only when "onChild" is armed
     when: [anyEndResponse, anyDeleted] # optional — child-conversation lifecycle events; absent = both
+  onSlack: # behavior defaults only; installation/channel subscriptions are runtime configuration
+    eventMode: anyHumanMessage # optional — anyHumanMessage (default) | appMention
+    threadPolicy: any # optional — any (default) | rootOnly | repliesOnly
   # loop-wide — apply regardless of which armed trigger(s) fire
   maxIterations: 10 # optional; 0/absent = unlimited scheduled runs, shared across every trigger
   maxDuration: "4h" # optional — wall-clock cap (e.g. 30m, 4h, 1d); 0/absent = unlimited
@@ -715,12 +718,13 @@ loop block between prompts and pruning unused blocks later.
 | `onCompletion`       | `delay`                                                                          | `onCompletion` is in `trigger:` |
 | `onTasks`            | `condition`, `conditionPreset`, `coalesceDuringBusy`, `settleWindow`, `cooldown` | `onTasks` is in `trigger:`      |
 | `onChild`            | `when`                                                                           | `onChild` is in `trigger:`      |
+| `onSlack`            | `eventMode`, `threadPolicy`                                                      | `onSlack` is in `trigger:`      |
 
 #### `trigger:` (list)
 
 | Field     | Required | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | --------- | -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `trigger` | No       | List of one or more of `schedule`, `onCompletion`, `onTasks`, `onChild`. Each listed trigger arms **independently** — see [Triggers: independent multi-trigger arming](#triggers-independent-multi-trigger-arming). Duplicate entries are rejected. Empty/absent defaults to `[schedule]` (preserves pre-r6j implicit-schedule prompts). `onChild` is **additive-only**: it can never be the sole armed trigger (it is purely reactive to a child conversation's lifecycle, so a loop armed with nothing else would never fire for a conversation that has no children yet) — it must accompany `schedule`, `onCompletion`, and/or `onTasks`. |
+| `trigger` | No       | List of one or more of `schedule`, `onCompletion`, `onTasks`, `onChild`, `onSlack`. Each listed trigger arms **independently** — see [Triggers: independent multi-trigger arming](#triggers-independent-multi-trigger-arming). Duplicate entries are rejected. Empty/absent defaults to `[schedule]`. `onSlack` may be the sole trigger; an enabled runtime loop must then provide at least one `slack_subscriptions` entry. `onChild` remains additive-only. |
 
 #### `schedule` block
 
@@ -758,6 +762,17 @@ loop block between prompts and pruning unused blocks later.
 also governs a burst of child events is a loop-wide runtime setting (see
 [Triggers: independent multi-trigger arming](#triggers-independent-multi-trigger-arming)
 below), authored via `onTasks.cooldown`; there is no separate `onChild.cooldown` key.
+
+#### `onSlack` block
+
+Prompt frontmatter may declare only deployment-independent filter defaults:
+`eventMode` (`anyHumanMessage`, the default, or `appMention`) and
+`threadPolicy` (`any`, the default, `rootOnly`, or `repliesOnly`). Concrete
+Slack installation and channel IDs are runtime configuration supplied through
+REST/MCP/`pkg/api` as `slack_subscriptions` / `loop_slack_subscriptions`; they
+are intentionally rejected from prompt files. An onSlack loop may be saved as
+a disabled draft without subscriptions, but cannot be enabled until at least
+one structurally valid subscription exists.
 
 #### Loop-wide fields
 
@@ -877,6 +892,11 @@ it is enabled:
   the parent is missing or archived. `onChild` is **additive-only** — it can
   never be the only armed trigger — since it never fires on its own for a
   conversation that has no children yet.
+- **`onSlack`** — runs fire from matching credential-free installation/channel
+  subscriptions. Each delivered batch is bounded to 20 events / 32 KiB, counts
+  as one shared loop iteration, and is exposed as
+  `{{ .Trigger.OnSlack.Events }}`. Every event carries `Untrusted: true`; Slack
+  text must be delimited and treated as external data, never instructions.
 
 `onChild` honours the **same per-conversation cooldown** the `onTasks` leg
 uses: a burst of child completions or deletions within the cooldown window
@@ -886,7 +906,7 @@ above for why it is authored via `onTasks.cooldown` rather than a separate key.
 
 #### Coalescing and precedence
 
-Because the four trigger mechanisms are independent event sources, more than
+Because the five trigger mechanisms are independent event sources, more than
 one of them can want to deliver a run in the same narrow window (e.g. the
 agent finishes a turn at the same moment a beads file changes, or a child
 conversation goes idle right as the parent's own turn ends). Mitto only ever
@@ -912,6 +932,11 @@ trigger's event lands first. The conversation's `loop_updated` status (and the M
 report both the full armed set (`triggers`) and, for back-compat, the primary
 trigger (`trigger`, always `triggers[0]`).
 
+`onSlack` is asynchronous rather than poll-tick-driven, so it has no fixed
+position in the tick ordering above: it competes for the same dispatch claim
+on arrival. Durable pending/redelivery behavior is owned by the Slack journal;
+the loop-level caps and claim remain shared with every other trigger.
+
 See
 [docs/devel/message-queue.md § Loop Prompts: Multi-Trigger Architecture](../devel/message-queue.md#loop-prompts-multi-trigger-architecture)
 for the dispatch-claim mechanics and a diagram of the full path.
@@ -932,7 +957,7 @@ for the server-side floor and defaults.
 
 By contrast, each trigger's **own** settings (`schedule.value`/`unit`/`at`,
 `onCompletion.delay`, `onTasks.condition`/`coalesceDuringBusy`/`settleWindow`/
-`cooldown`) apply only to that trigger's own firing decision and never affect
+`cooldown`, and `onSlack` subscription filters) apply only to that trigger's own firing decision and never affect
 the others.
 
 **Restrictions:**
@@ -1199,6 +1224,13 @@ is set → `[]LoopTrigger{TriggerSchedule}` otherwise) already reads every
 shape of persisted `loop.json` correctly, so a live loop created before
 mitto-r6j is **not** reset or reconfigured by upgrading Mitto — it keeps
 running exactly as before.
+
+**Forward/downgrade compatibility.** `loop.json` partial updates preserve
+unknown top-level fields and already-loaded unknown trigger strings. Explicit
+trigger replacement remains strict. Older binaries cannot execute `onSlack`;
+before downgrading, disable the loop and remove `onSlack`/its subscriptions with
+a version that understands them. A full replacement by an older client cannot
+preserve fields it does not send, unlike a PATCH-style partial update.
 
 ## `target:` (find-or-route dispatch)
 

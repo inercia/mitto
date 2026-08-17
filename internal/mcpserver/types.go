@@ -12,6 +12,7 @@ import (
 	"github.com/inercia/mitto/internal/coldstart"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/logging"
+	"github.com/inercia/mitto/internal/session"
 )
 
 // ColdStartRecentInput is the input for the mitto_coldstart_recent tool.
@@ -477,6 +478,9 @@ type ConversationUpdateInput struct {
 	// anyEndResponse + anyDeleted (anyLoopStopped is opt-in only). Only
 	// meaningful when onChild is among the armed triggers.
 	LoopChildEvents []string `json:"loop_child_events,omitempty"`
+	// LoopSlackSubscriptions is the credential-free installation/channel list
+	// for onSlack. nil means unchanged; a present empty list clears it.
+	LoopSlackSubscriptions []session.SlackSubscription `json:"loop_slack_subscriptions,omitempty"`
 	// LoopCompletionDelaySeconds is the wait (seconds) after the agent stops before the next
 	// run; only meaningful for the onCompletion trigger. Clamped to the global floor on write.
 	LoopCompletionDelaySeconds *int `json:"loop_completion_delay_seconds,omitempty"`
@@ -544,9 +548,10 @@ type ConversationUpdateOutput struct {
 	// LoopChildEvents is the resolved onChild event set (EffectiveChildEvents),
 	// returned when the loop is configured. Meaningless when onChild is not
 	// among LoopTriggers.
-	LoopChildEvents            []string `json:"loop_child_events,omitempty"`
-	LoopCompletionDelaySeconds int      `json:"loop_completion_delay_seconds,omitempty"`
-	LoopMaxDurationSeconds     int      `json:"loop_max_duration_seconds,omitempty"`
+	LoopChildEvents            []string                    `json:"loop_child_events,omitempty"`
+	LoopSlackSubscriptions     []session.SlackSubscription `json:"loop_slack_subscriptions,omitempty"`
+	LoopCompletionDelaySeconds int                         `json:"loop_completion_delay_seconds,omitempty"`
+	LoopMaxDurationSeconds     int                         `json:"loop_max_duration_seconds,omitempty"`
 	// onTasks trigger fields (returned when configured)
 	LoopCondition       string `json:"loop_condition,omitempty"`
 	LoopConditionPreset string `json:"loop_condition_preset,omitempty"`

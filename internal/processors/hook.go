@@ -206,9 +206,10 @@ func BuildCELContext(input *ProcessorInput) *config.PromptEnabledContext {
 	// may itself be nil:
 	//     {{ with .Trigger }}{{ with .OnTasks }}...{{ end }}{{ end }}
 	// (nil when scheduled, onCompletion, manual "Run Now", or non-loop).
-	if input.TriggerOnTasksChanges != nil {
-		ctx.Trigger = &config.TriggerContext{
-			OnTasks: &config.TriggerOnTasksContext{
+	if input.TriggerOnTasksChanges != nil || input.TriggerSlackEvent != nil || len(input.TriggerOnSlackEvents) > 0 {
+		ctx.Trigger = &config.TriggerContext{}
+		if input.TriggerOnTasksChanges != nil {
+			ctx.Trigger.OnTasks = &config.TriggerOnTasksContext{
 				Changes: config.TasksChangesView{
 					Added:      input.TriggerOnTasksChanges.Added,
 					Updated:    input.TriggerOnTasksChanges.Updated,
@@ -218,7 +219,35 @@ func BuildCELContext(input *ProcessorInput) *config.PromptEnabledContext {
 					LabelAdded: input.TriggerOnTasksChanges.LabelAdded,
 					Touched:    input.TriggerOnTasksChanges.Touched,
 				},
-			},
+			}
+		}
+		if input.TriggerSlackEvent != nil {
+			ctx.Trigger.Slack = &config.TriggerSlackContext{
+				InstallationID:  input.TriggerSlackEvent.InstallationID,
+				EventID:         input.TriggerSlackEvent.EventID,
+				ChannelID:       input.TriggerSlackEvent.ChannelID,
+				Kind:            input.TriggerSlackEvent.Kind,
+				AuthorID:        input.TriggerSlackEvent.AuthorID,
+				Timestamp:       input.TriggerSlackEvent.Timestamp,
+				ThreadTimestamp: input.TriggerSlackEvent.ThreadTimestamp,
+				Untrusted:       input.TriggerSlackEvent.Untrusted,
+				Text:            input.TriggerSlackEvent.Text,
+			}
+		}
+		if len(input.TriggerOnSlackEvents) > 0 {
+			events := make([]config.TriggerSlackContext, len(input.TriggerOnSlackEvents))
+			for i, event := range input.TriggerOnSlackEvents {
+				events[i] = config.TriggerSlackContext{
+					InstallationID: event.InstallationID,
+					EventID:        event.EventID, ChannelID: event.ChannelID, Kind: event.Kind,
+					AuthorID: event.AuthorID, Timestamp: event.Timestamp,
+					ThreadTimestamp: event.ThreadTimestamp, Untrusted: event.Untrusted, Text: event.Text,
+				}
+			}
+			ctx.Trigger.OnSlack = &config.TriggerOnSlackContext{Events: events}
+			if ctx.Trigger.Slack == nil {
+				ctx.Trigger.Slack = &ctx.Trigger.OnSlack.Events[0]
+			}
 		}
 	}
 

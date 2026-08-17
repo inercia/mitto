@@ -147,7 +147,7 @@ changes AND re-arming after every turn, from the moment it is enabled.
 order — event-driven legs first (`onTasks` baseline bootstrap, `onCompletion`
 timer bootstrap/self-heal), then the `schedule` due-check last — which is what
 establishes the **`onTasks` > `onChild` > `onCompletion` > `schedule`**
-precedence described below. But arming is not the same as firing: the four
+precedence described below. But arming is not the same as firing: the five
 trigger mechanisms below are otherwise independent event sources, each
 capable of calling into the same delivery path at any time:
 
@@ -157,10 +157,11 @@ capable of calling into the same delivery path at any time:
 | `onCompletion` | A one-shot timer armed by `OnConversationIdle` when the agent stops                                                                                                                                                                                    |
 | `onTasks`      | `OnBeadsChanged`, when a workspace-wide `BeadsWatcher` event lands                                                                                                                                                                                     |
 | `onChild`      | `OnConversationIdle`'s child leg (→ `OnChildEndResponse`) for `anyEndResponse`, the `session.Store` delete observer (→ `OnChildDeleted`) for `anyDeleted`, and the `session.Store` loop-stopped observer (→ `OnChildLoopStopped`) for `anyLoopStopped` |
+| `onSlack`      | The shared Slack integration fan-out/journal, matched against credential-free installation/channel/filter subscription rows                                                                                                                          |
 
 Because these sources are independent, two of them can want to deliver a run
 in the same narrow window (e.g. the agent finishes a turn — arming
-`onCompletion` — at the same moment a beads file changes). Only **one**
+`onCompletion` — at the same moment a beads file changes or Slack event arrives). Only **one**
 delivered run is allowed at a time per conversation: `LoopRunner.claimDispatch`
 holds a per-session, first-come-first-served slot (`dispatchInFlight`),
 claimed just before `deliverPrompt` and released in `OnComplete` (or any
@@ -178,12 +179,14 @@ flowchart TB
         COMP["OnConversationIdle<br/>(agent stops → timer)"]
         TASKS["OnBeadsChanged<br/>(BeadsWatcher fsnotify)"]
         CHILD["Child idle / child deleted<br/>(OnChildEndResponse / OnChildDeleted)"]
+        SLACK["Slack journal batch<br/>(onSlack)"]
     end
 
     SCHED -->|"triggerNowFull(firedBy=schedule)"| CLAIM
     COMP -->|"triggerNowFull(firedBy=onCompletion)"| CLAIM
     TASKS -->|"triggerNowFull(firedBy=onTasks)"| CLAIM
     CHILD -->|"triggerNowFull(firedBy=onChild)"| CLAIM
+    SLACK -->|"TriggerNowWithSlackEvents(firedBy=onSlack)"| CLAIM
 
     CLAIM{{"claimDispatch(sessionID, firedBy)<br/>one slot per session"}}
     CLAIM -->|"slot free → claimed"| DELIVER["deliverPrompt<br/>PromptMeta.LoopTrigger = firedBy"]
@@ -235,7 +238,31 @@ after 10 runs total, however the mix of schedule-ticks vs. post-turn
 re-arms landed. By contrast, each trigger's own settings — `schedule`'s
 `value`/`unit`/`at`, `onCompletion`'s `delay`, `onTasks`'s `condition`/
 `coalesceDuringBusy`/`settleWindow`/`cooldown` — apply only to that trigger's
-own firing decision (see [Configuration fields](#configuration-fields-sessionloopprompt) below).
+own firing decision; `onSlack` installation/channel/event/thread filters apply
+only to Slack matching (see [Configuration fields](#configuration-fields-sessionloopprompt) below).
+
+### onSlack persistence and prompt context
+
+`LoopPrompt.SlackSubscriptions` stores only opaque installation IDs, channel
+IDs, and normalized filter enums. Credentials and Slack SDK values remain in
+the process-level integration catalog/vault. `Normalize` trims IDs, applies the
+safe `anyHumanMessage`/`any` defaults, and sorts subscriptions canonically by
+installation/channel/filter. Duplicate installation/channel rows are rejected.
+An enabled loop armed for `onSlack` requires at least one subscription; a
+disabled draft may omit them.
+
+One delivery exposes a bounded slice at `.Trigger.OnSlack.Events` (maximum 20
+events and 32 KiB total). Event DTOs contain only installation/channel/event
+IDs, kind, author, timestamps, text, and `Untrusted: true`; no credentials or
+raw SDK structures. `.Trigger.Slack` remains a temporary first-event alias for
+the environment PoC. The entire batch claims one dispatch slot and increments
+the shared loop iteration once.
+
+Partial `loop.json` updates preserve unknown top-level fields and unknown
+trigger strings already loaded from a newer version, while explicit trigger
+replacement rejects unknown values. Full replacement cannot preserve fields an
+older caller omits. An older binary cannot execute `onSlack`; disable/remove it
+before downgrade rather than mutating the active config with the older version.
 
 ### Trigger-scoped guards do not cross-confuse
 

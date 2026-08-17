@@ -123,7 +123,7 @@ var loadWarnSeen sync.Map
 //	    delay: 30
 type PromptLoop struct {
 	// Trigger is the list of triggers that arm this loop; each entry must be
-	// one of "schedule", "onCompletion", "onTasks", or "onChild". Duplicates
+	// one of "schedule", "onCompletion", "onTasks", "onChild", or "onSlack". Duplicates
 	// are rejected. Empty/absent defaults to ["schedule"] (preserves pre-r6j
 	// implicit-schedule prompts). Validated by ValidatePromptLoop /
 	// ValidateLoopTriggers.
@@ -142,6 +142,10 @@ type PromptLoop struct {
 	// a lifecycle event" trigger's attributes. Meaningful only when "onChild"
 	// is present in Trigger.
 	OnChild *PromptLoopOnChild `yaml:"onChild,omitempty" json:"onChild,omitempty"`
+	// OnSlack declares deployment-independent subscription filter defaults.
+	// Installation/channel references are runtime-only and are never valid in
+	// prompt frontmatter.
+	OnSlack *PromptLoopOnSlack `yaml:"onSlack,omitempty" json:"onSlack,omitempty"`
 	// MaxIterations caps the number of scheduled runs when the conversation is made loop (0 / absent = unlimited).
 	MaxIterations int `yaml:"maxIterations,omitempty" json:"maxIterations,omitempty"`
 	// MaxDuration is an optional wall-clock cap (e.g. "2h", "30m"); 0/absent = unlimited.
@@ -229,12 +233,32 @@ type PromptLoopOnChild struct {
 	When []string `yaml:"when,omitempty" json:"when,omitempty"`
 }
 
+// PromptLoopOnSlack groups deployment-independent defaults for onSlack.
+// Concrete installation/channel subscriptions must be supplied at runtime.
+type PromptLoopOnSlack struct {
+	// EventMode defaults to "anyHumanMessage" when absent. "appMention" limits
+	// delivery to normalized Slack app-mention events.
+	EventMode string `yaml:"eventMode,omitempty" json:"eventMode,omitempty"`
+	// ThreadPolicy defaults to "any". Other supported values are "rootOnly"
+	// and "repliesOnly".
+	ThreadPolicy string `yaml:"threadPolicy,omitempty" json:"threadPolicy,omitempty"`
+}
+
 // knownLoopTriggers enumerates valid PromptLoop.Trigger entries.
 var knownLoopTriggers = map[string]bool{
 	"schedule":     true,
 	"onCompletion": true,
 	"onTasks":      true,
 	"onChild":      true,
+	"onSlack":      true,
+}
+
+var knownPromptLoopSlackEventModes = map[string]bool{
+	"": true, "anyHumanMessage": true, "appMention": true,
+}
+
+var knownPromptLoopSlackThreadPolicies = map[string]bool{
+	"": true, "any": true, "rootOnly": true, "repliesOnly": true,
 }
 
 // knownPromptLoopChildEvents enumerates valid PromptLoopOnChild.When entries.
@@ -278,6 +302,22 @@ func (p *PromptLoop) ChildEvents() []string {
 		return nil
 	}
 	return p.OnChild.When
+}
+
+// SlackEventMode returns loop.onSlack.eventMode or "" when undeclared.
+func (p *PromptLoop) SlackEventMode() string {
+	if p == nil || p.OnSlack == nil {
+		return ""
+	}
+	return p.OnSlack.EventMode
+}
+
+// SlackThreadPolicy returns loop.onSlack.threadPolicy or "" when undeclared.
+func (p *PromptLoop) SlackThreadPolicy() string {
+	if p == nil || p.OnSlack == nil {
+		return ""
+	}
+	return p.OnSlack.ThreadPolicy
 }
 
 // FrequencyValue returns loop.schedule.value, or 0 when unset/nil.
@@ -381,6 +421,7 @@ type promptLoopAux struct {
 	OnCompletion  *PromptLoopOnCompletion `yaml:"onCompletion,omitempty"`
 	OnTasks       *PromptLoopOnTasks      `yaml:"onTasks,omitempty"`
 	OnChild       *PromptLoopOnChild      `yaml:"onChild,omitempty"`
+	OnSlack       *PromptLoopOnSlack      `yaml:"onSlack,omitempty"`
 	MaxIterations int                     `yaml:"maxIterations,omitempty"`
 	MaxDuration   string                  `yaml:"maxDuration,omitempty"`
 	FreshContext  *bool                   `yaml:"freshContext,omitempty"`
@@ -392,7 +433,7 @@ type promptLoopAux struct {
 // promptLoopKnownKeys enumerates the keys valid directly under loop:.
 var promptLoopKnownKeys = map[string]bool{
 	"trigger": true, "schedule": true, "onCompletion": true, "onTasks": true,
-	"onChild": true, "maxIterations": true, "maxDuration": true,
+	"onChild": true, "onSlack": true, "maxIterations": true, "maxDuration": true,
 	"freshContext": true, "runOnStart": true, "mode": true, "default": true,
 }
 
@@ -415,6 +456,10 @@ var promptLoopOnTasksKnownKeys = map[string]bool{
 // promptLoopOnChildKnownKeys enumerates the keys valid under loop.onChild.
 var promptLoopOnChildKnownKeys = map[string]bool{
 	"when": true,
+}
+
+var promptLoopOnSlackKnownKeys = map[string]bool{
+	"eventMode": true, "threadPolicy": true,
 }
 
 // rejectUnknownLoopKeys returns an error for the first key in the mapping node
@@ -471,6 +516,7 @@ func (p *PromptLoop) UnmarshalYAML(node *yaml.Node) error {
 	p.OnCompletion = aux.OnCompletion
 	p.OnTasks = aux.OnTasks
 	p.OnChild = aux.OnChild
+	p.OnSlack = aux.OnSlack
 	p.MaxIterations = aux.MaxIterations
 	p.MaxDuration = aux.MaxDuration
 	p.FreshContext = aux.FreshContext
@@ -569,6 +615,26 @@ func (c *PromptLoopOnChild) UnmarshalYAML(node *yaml.Node) error {
 		return err
 	}
 	c.When = aux.When
+	return nil
+}
+
+type promptLoopOnSlackAux struct {
+	EventMode    string `yaml:"eventMode,omitempty"`
+	ThreadPolicy string `yaml:"threadPolicy,omitempty"`
+}
+
+// UnmarshalYAML rejects unknown deployment- or credential-bearing keys under
+// loop.onSlack; prompt files may declare behavior defaults only.
+func (s *PromptLoopOnSlack) UnmarshalYAML(node *yaml.Node) error {
+	if err := rejectUnknownLoopKeys("loop.onSlack", node, promptLoopOnSlackKnownKeys); err != nil {
+		return err
+	}
+	var aux promptLoopOnSlackAux
+	if err := node.Decode(&aux); err != nil {
+		return err
+	}
+	s.EventMode = aux.EventMode
+	s.ThreadPolicy = aux.ThreadPolicy
 	return nil
 }
 
@@ -703,7 +769,7 @@ func ValidatePromptLoop(promptName string, p *PromptLoop) error {
 // ValidateLoopTriggers validates the loop.trigger list and its per-trigger
 // blocks (mitto-r6j.1, mitto-987y.2):
 //   - Every entry in Trigger must be one of "schedule", "onCompletion",
-//     "onTasks", "onChild".
+//     "onTasks", "onChild", "onSlack".
 //   - Duplicate entries are rejected.
 //   - An empty/absent Trigger list is not an error — it defaults to ["schedule"]
 //     (see PromptLoop.Triggers), preserving pre-r6j implicit-schedule prompts.
@@ -721,7 +787,7 @@ func ValidateLoopTriggers(promptName string, p *PromptLoop) error {
 	seen := make(map[string]bool, len(p.Trigger))
 	for _, t := range p.Trigger {
 		if !knownLoopTriggers[t] {
-			return fmt.Errorf("prompt %q: loop.trigger %q is not valid (must be one of: schedule, onCompletion, onTasks, onChild)", promptName, t)
+			return fmt.Errorf("prompt %q: loop.trigger %q is not valid (must be one of: schedule, onCompletion, onTasks, onChild, onSlack)", promptName, t)
 		}
 		if seen[t] {
 			return fmt.Errorf("prompt %q: loop.trigger contains duplicate entry %q", promptName, t)
@@ -755,6 +821,17 @@ func ValidateLoopTriggers(promptName string, p *PromptLoop) error {
 			if !knownPromptLoopChildEvents[e] {
 				return fmt.Errorf("prompt %q: loop.onChild.when %q is not valid (must be one of: anyEndResponse, anyDeleted, anyLoopStopped)", promptName, e)
 			}
+		}
+	}
+	if p.OnSlack != nil {
+		if !p.hasTrigger("onSlack") {
+			slog.Warn("prompt loop.onSlack is set but \"onSlack\" is not in loop.trigger — this block is inert", "prompt", promptName)
+		}
+		if !knownPromptLoopSlackEventModes[p.OnSlack.EventMode] {
+			return fmt.Errorf("prompt %q: loop.onSlack.eventMode %q is not valid", promptName, p.OnSlack.EventMode)
+		}
+		if !knownPromptLoopSlackThreadPolicies[p.OnSlack.ThreadPolicy] {
+			return fmt.Errorf("prompt %q: loop.onSlack.threadPolicy %q is not valid", promptName, p.OnSlack.ThreadPolicy)
 		}
 	}
 	// onChild is purely reactive to a child conversation's lifecycle, so it

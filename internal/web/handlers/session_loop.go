@@ -29,6 +29,9 @@ type LoopPromptRequest struct {
 	// state). Empty defaults to anyEndResponse + anyDeleted (anyLoopStopped
 	// is opt-in only). Only meaningful when "onChild" is among Triggers.
 	ChildEvents []session.ChildEvent `json:"child_events,omitempty"`
+	// SlackSubscriptions contains credential-free installation/channel refs for
+	// onSlack. PUT replaces the complete canonicalized list.
+	SlackSubscriptions []session.SlackSubscription `json:"slack_subscriptions,omitempty"`
 	// DelaySeconds is the wait after the agent stops before the next run (onCompletion only).
 	// Clamped to the global floor on write.
 	DelaySeconds int `json:"delay_seconds,omitempty"`
@@ -82,9 +85,12 @@ type LoopPromptPatchRequest struct {
 	// ChildEvents is a partial update for the onChild event list; nil = leave
 	// unchanged, non-nil REPLACES the stored list wholesale (same semantics as
 	// Triggers).
-	ChildEvents        *[]session.ChildEvent `json:"child_events,omitempty"`
-	DelaySeconds       *int                  `json:"delay_seconds,omitempty"`
-	MaxDurationSeconds *int                  `json:"max_duration_seconds,omitempty"`
+	ChildEvents *[]session.ChildEvent `json:"child_events,omitempty"`
+	// SlackSubscriptions is nil to leave unchanged; a present slice replaces the
+	// whole list, including an empty slice to clear it.
+	SlackSubscriptions *[]session.SlackSubscription `json:"slack_subscriptions,omitempty"`
+	DelaySeconds       *int                         `json:"delay_seconds,omitempty"`
+	MaxDurationSeconds *int                         `json:"max_duration_seconds,omitempty"`
 	// Arguments is a partial update for the substitution arguments map.
 	// nil = leave unchanged; non-nil = replace the entire map (including empty map to clear it).
 	Arguments *map[string]string `json:"arguments,omitempty"`
