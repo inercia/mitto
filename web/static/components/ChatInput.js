@@ -26,7 +26,7 @@ import {
 } from "../utils/storage.js";
 import { useResizeHandle } from "../hooks/useResizeHandle.js";
 import { SlashCommandPicker } from "./SlashCommandPicker.js";
-import { LoopFrequencyPanel } from "./LoopFrequencyPanel.js";
+import { LoopControlBar } from "./LoopControlBar.js";
 import { SavePromptDialog } from "./SavePromptDialog.js";
 import { BroomIcon, GripIcon, SettingsIcon } from "./Icons.js";
 import { ConfigOptionSelect } from "./ConfigOptionSelect.js";
@@ -142,8 +142,6 @@ function PromptStopButton({ onStop }) {
  * @param {boolean} props.isArchived - Whether session is archived (disables input)
  * @param {boolean} props.isArchivePending - Whether archive is pending (waiting for agent to finish)
  * @param {Array} props.predefinedPrompts - Array of predefined prompts (ChatInput dropup)
- * @param {Array} props.loopPrompts - Array of prompts for the loop prompt selector
- * @param {Array} props.allPrompts - Full workspace prompts list (for arg-edit lookup on menu-scoped loop prompts)
  * @param {Object} props.inputRef - Ref for external focus control
  * @param {boolean} props.noSession - Whether there's no active session
  * @param {string} props.sessionId - Current session ID
@@ -158,6 +156,7 @@ function PromptStopButton({ onStop }) {
  * @param {Array} props.actionButtons - Array of action buttons from agent response { label, response }
  * @param {Array} props.availableCommands - Array of available slash commands { name, description, input_hint }
  * @param {boolean} props.loopConfigured - Whether a loop config exists (shows editor, disables queue buttons)
+ * @param {Function} props.onOpenLoopSettings - Opens the conversation panel on the Loop tab
  * @param {Function} [props.onLoopPrompt] - Called with (prompt, opts) when a loop-flagged prompt is selected, where opts is { asLoop } (the resolved per-send override). Routes to app-level branching (decideLoopAction). When absent, loop prompts fall through to the normal send path.
  * @param {Object} props.activeUIPrompt - Active UI prompt from MCP tool { requestId, promptType, question, options, timeoutSeconds, receivedAt }
  * @param {Function} props.onUIPromptAnswer - Callback when user answers a UI prompt (requestId, optionId, label)
@@ -174,8 +173,6 @@ export function ChatInput({
   isArchived = false,
   isArchivePending = false,
   predefinedPrompts = [],
-  loopPrompts = [],
-  allPrompts = [],
   inputRef,
   noSession = false,
   sessionId,
@@ -191,6 +188,7 @@ export function ChatInput({
   actionButtons = [],
   availableCommands = [],
   loopConfigured = false,
+  onOpenLoopSettings,
   onLoopPrompt,
   agentSupportsImages = false,
   acpReady = true,
@@ -208,9 +206,6 @@ export function ChatInput({
   contextUsage = null,
   tokenUsage = null,
   onOpenPromptParamDialog,
-  // Whether the active workspace has beads (`.beads` + `bd`). Gates the "On
-  // tasks" loop trigger tab in LoopFrequencyPanel (mitto-oja.4).
-  hasBeadsWorkspace = false,
   // Per-ACP "Flush context" command (e.g. "/clear"). When non-empty AND
   // onFlushContext is provided, the composer toolbar renders a first-class
   // broom button next to Clear-message; hidden otherwise so ACPs without a
@@ -368,11 +363,6 @@ export function ChatInput({
   const textboxRef = useRef(null);
   const [isPromptCollapsed, setIsPromptCollapsed] = useState(false);
   const prevCollapsedBeforeUIRef = useRef(false);
-  // Expand/collapse state for the loop settings body (chevron). Lifted here so
-  // it stays mutually exclusive with the prompt composition area: only one may be
-  // expanded at a time.
-  const [loopExpanded, setLoopExpanded] = useState(false);
-
   // Resize handle for UI prompt panels (textbox, form, options)
   const {
     height: uiPromptHeight,
@@ -387,14 +377,8 @@ export function ChatInput({
     },
   });
 
-  // Loop prompt lock state
-  // When locked, the prompt is saved to the loop config and textarea is read-only
+  // Whether configured loop triggers are currently enabled.
   const [isLoopLocked, setIsLoopLocked] = useState(false);
-  const [isLoopSaving, setIsLoopSaving] = useState(false);
-  const [loopPromptName, setLoopPromptName] = useState("");
-  // Tracks the last named prompt sent/queued in this conversation, so turning
-  // it into a loop can pre-select that prompt in the dropdown (mitto-ujt).
-  const lastSentPromptNameRef = useRef("");
 
   // Resize handle for textarea min height (controls the visual size of the input area)
   // Hard max for auto-grow (scrollbar appears beyond this)
@@ -442,93 +426,26 @@ export function ChatInput({
       );
     };
   }, []);
-  const [loopPrompt, setLoopPrompt] = useState(""); // The saved loop prompt
-  const [loopFrequency, setLoopFrequency] = useState({
-    value: 1,
-    unit: "hours",
-  });
-  const [loopNextScheduledAt, setLoopNextScheduledAt] = useState(null);
-  const [loopFreshContext, setLoopFreshContext] = useState(false);
   const [loopMaxIterations, setLoopMaxIterations] = useState(0);
-  const [loopIterationCount, setLoopIterationCount] = useState(0);
-  // Loop trigger state (mitto-r6j). loopTriggers is the canonical armed-list;
-  // loopTrigger tracks the primary/legacy scalar and is kept for backward
-  // compat with parts of the UI (headers, badge icons) that only cared about
-  // "the trigger". Both are updated together via handleTriggerChange /
-  // handleTriggersChange from LoopFrequencyPanel.
-  const [loopTrigger, setLoopTrigger] = useState("schedule");
-  const [loopTriggers, setLoopTriggers] = useState(["schedule"]);
-  const [loopDelaySeconds, setLoopDelaySeconds] = useState(5);
   const [loopMaxDurationSeconds, setLoopMaxDurationSeconds] = useState(0);
-  // onTasks trigger fields: CEL condition gating firing + the UI preset id
-  // compiled into it (empty condition = fire on any beads/task change).
-  const [loopCondition, setLoopCondition] = useState("");
-  const [loopConditionPreset, setLoopConditionPreset] = useState("");
-  // Reason the loop loop was auto-stopped (e.g. "maxDuration", "maxIterations",
+  // Reason the loop was auto-stopped (e.g. "maxDuration", "maxIterations",
   // "iterationSafeguard"); empty when running. Drives the restore-dialog wording.
   const [loopStoppedReason, setLoopStoppedReason] = useState("");
-  const [loopArguments, setLoopArguments] = useState({});
   const loopConfigVersionRef = useRef(0);
 
   const resetLoopConfigState = useCallback(() => {
     setIsLoopLocked(false);
-    setLoopPrompt("");
-    setLoopPromptName("");
-    setLoopFrequency({ value: 1, unit: "hours" });
-    setLoopNextScheduledAt(null);
-    setLoopFreshContext(false);
     setLoopMaxIterations(0);
-    setLoopIterationCount(0);
-    setLoopTrigger("schedule");
-    setLoopTriggers(["schedule"]);
-    setLoopDelaySeconds(5);
     setLoopMaxDurationSeconds(0);
-    setLoopCondition("");
-    setLoopConditionPreset("");
     setLoopStoppedReason("");
-    setLoopArguments({});
-    setLoopExpanded(false);
   }, []);
 
-  const applyLoopConfigState = useCallback(
-    (config) => {
-      setLoopFrequency(config.frequency || { value: 1, unit: "hours" });
-      setLoopNextScheduledAt(
-        config.enabled && config.next_scheduled_at
-          ? config.next_scheduled_at
-          : null,
-      );
-      if (config.prompt_name) {
-        setLoopPromptName(config.prompt_name);
-      } else {
-        const lastSent = lastSentPromptNameRef.current;
-        const eligible =
-          lastSent && (loopPrompts || []).some((p) => p.name === lastSent);
-        setLoopPromptName(eligible ? lastSent : "");
-      }
-      setLoopFreshContext(config.fresh_context === true);
-      setLoopMaxIterations(config.max_iterations ?? 0);
-      setLoopIterationCount(config.iteration_count ?? 0);
-      setLoopTrigger(config.trigger || "schedule");
-      setLoopTriggers(
-        Array.isArray(config.triggers) && config.triggers.length > 0
-          ? config.triggers
-          : [config.trigger || "schedule"],
-      );
-      setLoopDelaySeconds(config.delay_seconds ?? 5);
-      setLoopMaxDurationSeconds(config.max_duration_seconds ?? 0);
-      setLoopCondition(config.condition || "");
-      setLoopConditionPreset(config.condition_preset || "");
-      setLoopStoppedReason(config.stopped_reason || "");
-      setLoopArguments(config.arguments || {});
-      setIsLoopLocked(config.enabled === true);
-      const isPendingPlaceholder = config.prompt === "(pending)";
-      setLoopPrompt(
-        config.prompt && !isPendingPlaceholder ? config.prompt : "",
-      );
-    },
-    [loopPrompts],
-  );
+  const applyLoopConfigState = useCallback((config) => {
+    setLoopMaxIterations(config.max_iterations ?? 0);
+    setLoopMaxDurationSeconds(config.max_duration_seconds ?? 0);
+    setLoopStoppedReason(config.stopped_reason || "");
+    setIsLoopLocked(config.enabled === true);
+  }, []);
 
   // Track window width for responsive placeholder
   const [isSmallWindow, setIsSmallWindow] = useState(window.innerWidth < 640);
@@ -556,7 +473,6 @@ export function ChatInput({
     // Reset loop lock state when session changes
     loopConfigVersionRef.current += 1;
     resetLoopConfigState();
-    setIsLoopSaving(false);
   }, [sessionId, resetLoopConfigState]);
 
   // Reset combo box selection and free text input when UI prompt changes
@@ -631,9 +547,6 @@ export function ChatInput({
         loopConfig,
         loopConfigured,
         loopEnabled: newLoopEnabled,
-        frequency,
-        nextScheduledAt,
-        iterationCount,
         maxIterations,
         stoppedReason,
       } = event.detail;
@@ -647,11 +560,6 @@ export function ChatInput({
         return;
       }
 
-      // Update frequency if provided
-      if (frequency) {
-        setLoopFrequency(frequency);
-      }
-      if (iterationCount !== undefined) setLoopIterationCount(iterationCount);
       if (maxIterations !== undefined) setLoopMaxIterations(maxIterations);
 
       // If loop config was deleted (not configured), reset state
@@ -664,7 +572,6 @@ export function ChatInput({
       // If loop run is disabled (unlocked), update lock state
       if (newLoopEnabled === false) {
         setIsLoopLocked(false);
-        setLoopNextScheduledAt(null);
         // Capture why the loop stopped so the restore dialog can offer to reset
         // the elapsed iterations/time when a max-iterations/max-duration cap was hit.
         setLoopStoppedReason(stoppedReason || "");
@@ -675,7 +582,6 @@ export function ChatInput({
       // Backward compatibility for partial broadcasts from an older server.
       if (newLoopEnabled === true) {
         setIsLoopLocked(true);
-        setLoopNextScheduledAt(nextScheduledAt || null);
       }
     };
 
@@ -970,178 +876,9 @@ export function ChatInput({
     }
   };
 
-  // Handle locking the loop prompt (saves to backend and enables loop run)
-  const handleLockLoopPrompt = useCallback(async () => {
-    if (!sessionId || !text.trim() || isLoopSaving) return;
-
-    setIsLoopSaving(true);
-    try {
-      const data = await getSdkClient().sessions.loop.update(sessionId, {
-        prompt: text.trim(),
-        enabled: true,
-      });
-      setLoopPrompt(text.trim());
-      setIsLoopLocked(true);
-      // Update next scheduled time from server response (keep as ISO string for consistency)
-      if (data.next_scheduled_at) {
-        setLoopNextScheduledAt(data.next_scheduled_at);
-      }
-    } catch (err) {
-      console.error("Failed to lock loop prompt:", err);
-    } finally {
-      setIsLoopSaving(false);
-    }
-  }, [sessionId, text, isLoopSaving]);
-
-  // Handle unlocking the loop prompt (allows editing and disables loop run)
-  const handleUnlockLoopPrompt = useCallback(async () => {
-    if (!sessionId || isLoopSaving) return;
-
-    setIsLoopSaving(true);
-    try {
-      await getSdkClient().sessions.loop.update(sessionId, {
-        enabled: false,
-      });
-      setIsLoopLocked(false);
-      setLoopNextScheduledAt(null); // Clear next scheduled time when disabled
-      // Focus the textarea so user can start editing
-      if (textareaRef.current) {
-        textareaRef.current.focus();
-      }
-    } catch (err) {
-      console.error("Failed to unlock loop prompt:", err);
-    } finally {
-      setIsLoopSaving(false);
-    }
-  }, [sessionId, isLoopSaving]);
-
-  // Handle loop prompt selection from LoopPromptSelector
-  const handleLoopPromptSelect = useCallback(
-    async (promptName) => {
-      if (!sessionId || isLoopSaving) return;
-
-      // Helper that performs the actual PATCH, optionally with arguments.
-      const doPatch = async (extraArgs) => {
-        setIsLoopSaving(true);
-        try {
-          const body = { prompt_name: promptName, enabled: true };
-          if (extraArgs && Object.keys(extraArgs).length > 0) {
-            body.arguments = extraArgs;
-          }
-          const data = await getSdkClient().sessions.loop.update(
-            sessionId,
-            body,
-          );
-          setLoopPromptName(promptName);
-          setIsLoopLocked(true);
-          if (data.next_scheduled_at) {
-            setLoopNextScheduledAt(data.next_scheduled_at);
-          }
-        } catch (err) {
-          console.error("Failed to save loop prompt selection:", err);
-        } finally {
-          setIsLoopSaving(false);
-        }
-      };
-
-      // Check if the prompt declares parameters that need user input before saving.
-      const fullPrompt = loopPrompts.find((p) => p.name === promptName);
-
-      // Pre-populate the local condition state from the prompt's onTasks
-      // frontmatter default so the LoopFrequencyPanel reflects it immediately
-      // (mitto-pei). The PATCH below only sends prompt_name, so the backend's
-      // stored trigger/condition are left untouched until the user explicitly
-      // saves via the panel. mitto-r6j: prompt.loop.trigger is now a list of
-      // armed triggers and the condition lives under loop.onTasks.condition.
-      const promptTriggers = Array.isArray(fullPrompt?.loop?.trigger)
-        ? fullPrompt.loop.trigger
-        : [];
-      const promptOnTasksCondition = fullPrompt?.loop?.onTasks?.condition;
-      if (promptTriggers.includes("onTasks") && promptOnTasksCondition) {
-        setLoopCondition(promptOnTasksCondition);
-      }
-
-      const cached =
-        fullPrompt && sessionId
-          ? await fetchCachedParamNames(sessionId, fullPrompt.name)
-          : undefined;
-      const shouldOpen =
-        !!fullPrompt &&
-        shouldOpenPromptDialog(fullPrompt, "conversation", cached);
-      if (shouldOpen && onOpenPromptParamDialog) {
-        onOpenPromptParamDialog(
-          fullPrompt,
-          promptDialogParameters(fullPrompt, "conversation"),
-          async (userArgs) => {
-            await doPatch(userArgs);
-          },
-        );
-        return;
-      }
-
-      await doPatch(undefined);
-    },
-    [sessionId, isLoopSaving, loopPrompts, onOpenPromptParamDialog],
-  );
-
-  // Open the PromptParameterDialog pre-filled with current loop arguments.
-  // Prefer allPrompts (full workspace list) so menu-scoped loop prompts
-  // (e.g. `menus: beadsList`) — which are filtered out of loopPrompts by
-  // useWorkspacePrompts — still resolve for arg editing.
-  const handleEditLoopArguments = useCallback(() => {
-    const prompt =
-      (allPrompts || []).find((p) => p.name === loopPromptName) ||
-      (loopPrompts || []).find((p) => p.name === loopPromptName);
-    if (!prompt) return;
-    const params = promptDialogParameters(prompt);
-    if (params.length === 0) return;
-    if (!onOpenPromptParamDialog) return;
-    onOpenPromptParamDialog(
-      prompt,
-      params,
-      async (userArgs) => {
-        try {
-          await getSdkClient().sessions.loop.update(sessionId, {
-            arguments: userArgs,
-          });
-          setLoopArguments(userArgs);
-        } catch (err) {
-          console.error("Failed to save loop arguments:", err);
-        }
-      },
-      { initialValues: loopArguments, hostSessionId: sessionId },
-    );
-  }, [
-    allPrompts,
-    loopPrompts,
-    loopPromptName,
-    loopArguments,
-    sessionId,
-    onOpenPromptParamDialog,
-  ]);
-
-  // Handle frequency change from the LoopFrequencyPanel
-  const handleLoopFrequencyChange = useCallback(
-    (newFrequency, newNextScheduledAt) => {
-      setLoopFrequency(newFrequency);
-      if (newNextScheduledAt) {
-        setLoopNextScheduledAt(newNextScheduledAt);
-      }
-    },
-    [],
-  );
-
-  // Handle max iterations change from the LoopFrequencyPanel
-  const handleLoopMaxIterationsChange = useCallback((newValue) => {
-    setLoopMaxIterations(newValue);
-  }, []);
-
-  // Handle pause/resume toggle from the LoopFrequencyPanel
+  // Keep compact controls synchronized after a local pause/restore mutation.
   const handleLoopEnabledChange = useCallback((newEnabled) => {
     setIsLoopLocked(newEnabled);
-    if (!newEnabled) {
-      setLoopNextScheduledAt(null);
-    }
   }, []);
 
   // Handle slash command selection
@@ -1317,7 +1054,6 @@ export function ChatInput({
       }
       const enqueue = async (userArgs) => {
         try {
-          lastSentPromptNameRef.current = prompt.name;
           await onAddToQueue("", [], [], {
             promptName: prompt.name,
             ...(userArgs ? { arguments: userArgs } : {}),
@@ -1365,7 +1101,6 @@ export function ChatInput({
           prompt,
           promptDialogParameters(prompt, "prompts"),
           async (userArgs) => {
-            lastSentPromptNameRef.current = prompt.name;
             onSend("", [], [], {
               promptName: prompt.name,
               arguments: userArgs,
@@ -1374,7 +1109,6 @@ export function ChatInput({
         );
         return;
       }
-      lastSentPromptNameRef.current = prompt.name;
       onSend("", [], [], { promptName: prompt.name });
     }
   };
@@ -2499,61 +2233,20 @@ ${activeUIPrompt.text || ""}</textarea
         </div>
       `}
 
-      <!-- Loop settings card (shown when loop is enabled) -->
-      <!-- Part of normal document flow - pushes conversation area up. -->
-      <!-- Single merged card: compact header always visible; body expands on demand. -->
+      <!-- Compact loop controls. Full settings live in SessionPanel's Loop tab. -->
       <div class="max-w-4xl mx-auto">
-        <${LoopFrequencyPanel}
+        <${LoopControlBar}
           isOpen=${loopConfigured && !hasActiveUIPrompt}
-          disabled=${isLoopLocked}
           sessionId=${sessionId}
-          frequency=${loopFrequency}
-          onFrequencyChange=${handleLoopFrequencyChange}
-          nextScheduledAt=${loopNextScheduledAt}
+          enabled=${isLoopLocked}
           isStreaming=${isStreaming}
-          freshContext=${loopFreshContext}
-          onFreshContextChange=${setLoopFreshContext}
-          maxIterations=${loopMaxIterations}
-          iterationCount=${loopIterationCount}
-          onMaxIterationsChange=${handleLoopMaxIterationsChange}
-          onLoopEnabledChange=${handleLoopEnabledChange}
-          prompts=${loopPrompts}
-          allPrompts=${allPrompts}
-          selectedPromptName=${loopPromptName}
-          selectedPromptBody=${loopPrompt}
-          onPromptSelect=${handleLoopPromptSelect}
-          isPromptAreaVisible=${!isPromptCollapsed}
-          onTogglePromptArea=${() =>
-            setIsPromptCollapsed((v) => {
-              const nextCollapsed = !v;
-              // Expanding the prompt area collapses the loop properties.
-              if (!nextCollapsed) setLoopExpanded(false);
-              return nextCollapsed;
-            })}
-          expanded=${loopExpanded}
-          onToggleExpanded=${() =>
-            setLoopExpanded((v) => {
-              const next = !v;
-              // Expanding the loop properties collapses the prompt area.
-              if (next) setIsPromptCollapsed(true);
-              return next;
-            })}
-          trigger=${loopTrigger}
-          triggers=${loopTriggers}
-          delaySeconds=${loopDelaySeconds}
-          maxDurationSeconds=${loopMaxDurationSeconds}
-          condition=${loopCondition}
-          conditionPreset=${loopConditionPreset}
-          hasBeadsWorkspace=${hasBeadsWorkspace}
           stoppedReason=${loopStoppedReason}
-          minDelaySeconds=${5}
-          onTriggerChange=${setLoopTrigger}
-          onTriggersChange=${setLoopTriggers}
-          onDelayChange=${setLoopDelaySeconds}
-          onMaxDurationChange=${setLoopMaxDurationSeconds}
-          onConditionChange=${setLoopCondition}
-          onConditionPresetChange=${setLoopConditionPreset}
-          onEditArguments=${handleEditLoopArguments}
+          maxDurationSeconds=${loopMaxDurationSeconds}
+          maxIterations=${loopMaxIterations}
+          onLoopEnabledChange=${handleLoopEnabledChange}
+          isPromptAreaVisible=${!isPromptCollapsed}
+          onTogglePromptArea=${() => setIsPromptCollapsed((value) => !value)}
+          onOpenSettings=${onOpenLoopSettings}
         />
       </div>
 

@@ -129,7 +129,6 @@ import {
 } from "./components/AgentPlanPanel.js";
 import { SessionPanel } from "./components/SessionPanel.js";
 import { Drawer } from "./components/Drawer.js";
-import { LoopFrequencyPanel } from "./components/LoopFrequencyPanel.js";
 import { CountdownDisplay } from "./components/CountdownDisplay.js";
 import { ToastContainer } from "./components/ToastContainer.js";
 import {
@@ -2158,17 +2157,23 @@ function App() {
   // this brings back the saved prompt/frequency/trigger and its enabled state,
   // making loop ⇄ un-loop a symmetric toggle. When there is nothing saved (404),
   // fall back to creating a blank draft config (enabled:false). Either way the
-  // loop_updated WebSocket event sets loop_configured=true (reveals the inline
-  // loop editor in ChatInput).
+  // loop_updated WebSocket event sets loop_configured=true and exposes the Loop
+  // tab in the conversation panel.
   const handleMakeLoop = useCallback(
     async (session) => {
       const sessionId = session?.session_id;
       if (!sessionId) return;
+      const openLoopEditor = () => {
+        focusSession(sessionId);
+        // Let a context-menu conversion finish switching conversations before
+        // selecting a tab that only exists on the target loop conversation.
+        setTimeout(() => handleOpenSidePanelTab("loop"), 0);
+      };
       try {
         // Attempt to restore previously-saved loop settings.
         try {
           await getSdkClient().sessions.loop.restore(sessionId);
-          focusSession(sessionId);
+          openLoopEditor();
           showToast({
             style: "success",
             title: "Loop settings restored",
@@ -2190,7 +2195,7 @@ function App() {
             ...suggestion,
             enabled: false,
           });
-          focusSession(sessionId);
+          openLoopEditor();
           showToast({
             style: "success",
             title: "Loop pre-filled from your last prompt",
@@ -2211,7 +2216,7 @@ function App() {
           frequency: { value: 1, unit: "hours" },
           enabled: false,
         });
-        focusSession(sessionId);
+        openLoopEditor();
         showToast({
           style: "success",
           title: "Conversation is now loop",
@@ -2226,12 +2231,12 @@ function App() {
         });
       }
     },
-    [focusSession, showToast],
+    [focusSession, handleOpenSidePanelTab, showToast],
   );
 
   // Remove the loop config from a conversation, reverting it to a regular one.
   // DELETE /api/sessions/{id}/loop broadcasts loop_updated (nil), which
-  // sets both loop_configured=false (hides the inline loop editor) and
+  // sets both loop_configured=false (hides the compact controls and Loop tab) and
   // loop_enabled=false (moves conversation back to the Conversations group).
   const handleMakeNonLoop = useCallback(
     async (session) => {
@@ -3832,9 +3837,6 @@ function App() {
                       isReadOnly=${sessionInfo?.isReadOnly}
                       isArchived=${sessionInfo?.archived || false}
                       predefinedPrompts=${predefinedPrompts}
-                      loopPrompts=${loopPrompts}
-                      allPrompts=${workspacePrompts}
-                      hasBeadsWorkspace=${hasBeadsWorkspace}
                       inputRef=${chatInputRef}
                       noSession=${!activeSessionId}
                       sessionId=${activeSessionId}
@@ -3858,6 +3860,7 @@ function App() {
                       actionButtons=${actionButtons}
                       availableCommands=${availableCommands}
                       loopConfigured=${sessionInfo?.loop_configured || false}
+                      onOpenLoopSettings=${() => handleOpenSidePanelTab("loop")}
                       onLoopPrompt=${(prompt, opts) =>
                         handleSendPromptToConversation(
                           activeSession,
@@ -3933,6 +3936,18 @@ function App() {
           configOptions=${configOptions}
           onSetConfigOption=${setConfigOption}
           mcpTools=${mcpTools}
+          loopPrompts=${loopPrompts}
+          allPrompts=${workspacePrompts}
+          hasBeadsWorkspace=${hasBeadsWorkspace}
+          onOpenPromptParamDialog=${(prompt, parameters, onSubmit, opts = {}) =>
+            setPromptParamDialog({
+              prompt,
+              parameters,
+              onSubmit,
+              workingDir: opts.workingDir,
+              initialValues: opts.initialValues,
+              hostSessionId: opts.hostSessionId,
+            })}
           showToast=${showToast}
         />
 

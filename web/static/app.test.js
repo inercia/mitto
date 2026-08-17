@@ -78,7 +78,7 @@ describe("app.js: SDK migration — session loop/flush handlers (mitto-7gta.17 s
   test("handleMakeLoop: restore -> (404 falls through, other errors rethrow) -> suggestFromRecent+set draft -> blank-draft set", () => {
     const idx = appJs.indexOf("const handleMakeLoop = useCallback(");
     expect(idx).toBeGreaterThan(-1);
-    const snippet = appJs.slice(idx, idx + 2200);
+    const snippet = appJs.slice(idx, idx + 3000);
 
     // Step 1: restore; a 404 falls through (does not rethrow), anything else rethrows.
     const restoreIdx = snippet.indexOf(
@@ -109,6 +109,7 @@ describe("app.js: SDK migration — session loop/flush handlers (mitto-7gta.17 s
     );
     expect(draftMatch).not.toBeNull();
     expect(draftMatch.index).toBeGreaterThan(suggestSetIdx);
+    expect(snippet).toMatch(/handleOpenSidePanelTab\("loop"\)/);
   });
 
   test("handleMakeNonLoop: getSdkClient().sessions.loop.detach(sessionId)", () => {

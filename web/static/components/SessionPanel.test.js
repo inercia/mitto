@@ -30,19 +30,14 @@ describe("SessionPanel.js: SDK migration (mitto-7gta.17 slice S4)", () => {
     expect(panelJs).not.toMatch(/authFetch|secureFetch/);
   });
 
-  test("properties-tab parallel fetch: each of loop/callback/flags/settings swallows its own failure with .catch(() => null)", () => {
+  test("properties-tab parallel fetch: loop/flags/settings each swallow their own failure", () => {
     const idx = panelJs.indexOf(
-      "const [loopData, callbackData, flagsData, settingsData] =",
+      "const [loopData, flagsData, settingsData] = await Promise.all([",
     );
     expect(idx).toBeGreaterThan(-1);
     const snippet = panelJs.slice(idx, idx + 700);
-    // loop and callback are gated on loopConfigured and each independently
-    // tolerant; flags/settings are unconditional but still tolerant.
     expect(snippet).toMatch(
       /loopConfigured\s*\n\s*\? getSdkClient\(\)\s*\n\s*\.sessions\.loop\.get\(sessionId\)\s*\n\s*\.catch\(\(\) => null\)/,
-    );
-    expect(snippet).toMatch(
-      /loopConfigured\s*\n\s*\? getSdkClient\(\)\s*\n\s*\.sessions\.getCallback\(sessionId\)\s*\n\s*\.catch\(\(\) => null\)/,
     );
     expect(snippet).toMatch(
       /getSdkClient\(\)\s*\n\s*\.misc\.advancedFlags\(\)\s*\n\s*\.catch\(\(\) => null\)/,
@@ -50,7 +45,7 @@ describe("SessionPanel.js: SDK migration (mitto-7gta.17 slice S4)", () => {
     expect(snippet).toMatch(
       /getSdkClient\(\)\s*\n\s*\.sessions\.getSettings\(sessionId\)\s*\n\s*\.catch\(\(\) => null\)/,
     );
-    // A single Promise.all across all four, not sequential awaits (otherwise
+    // A single Promise.all across all three, not sequential awaits (otherwise
     // one slow/failing endpoint would serialize the others).
     expect(snippet.indexOf("await Promise.all([")).toBeGreaterThan(-1);
   });
@@ -98,20 +93,18 @@ describe("SessionPanel.js: SDK migration (mitto-7gta.17 slice S4)", () => {
     expect(matches.length).toBe(2);
   });
 
-  test("callback CRUD handlers (enable/rotate/revoke) swallow SDK throws as a no-op, matching the old !res.ok no-op", () => {
-    for (const method of [
-      "createCallback",
-      "createCallback",
-      "revokeCallback",
-    ]) {
-      expect(panelJs).toMatch(
-        new RegExp(`getSdkClient\\(\\)\\.sessions\\.${method}\\(sessionId\\)`),
-      );
-    }
-    // Each callback mutation site is followed by a catch that is a documented no-op.
-    const noopComments =
-      panelJs.match(/\/\* mirrors the prior !res\.ok no-op \*\//g) || [];
-    expect(noopComments.length).toBeGreaterThanOrEqual(3);
+  test("Loop tab mounts the full editor and callback section; Advanced owns no callback CRUD", () => {
+    expect(panelJs).toMatch(/aria-label="Loop"/);
+    expect(panelJs).toMatch(/<\$\{LoopSettingsTab\}/);
+    expect(panelJs).toMatch(/<\$\{CallbackTriggerSection\}/);
+    expect(panelJs).not.toMatch(/sessions\.(createCallback|revokeCallback)/);
+    expect(panelJs).not.toMatch(/Callback URL Section/);
+  });
+
+  test("falls back to Properties if Loop is selected after loop removal or conversation switching", () => {
+    expect(panelJs).toMatch(
+      /currentTab === "loop" && !loopAvailable[\s\S]*?handleTabChange\("properties"\)/,
+    );
   });
 
   test("handleFlagChange / handleSaveAttribute surface the real SDK error message via errorMessage()", () => {
@@ -121,5 +114,14 @@ describe("SessionPanel.js: SDK migration (mitto-7gta.17 slice S4)", () => {
     expect(panelJs).toMatch(
       /setUserDataError\(errorMessage\(err, "Failed to save attribute"\)\);/,
     );
+  });
+
+  test("dock widens to ~24rem via Drawer rootStyle (mitto-w7hh.2 narrow Loop-tab fix), keeping the phone-safe w-full panel class", () => {
+    const idx = panelJs.indexOf("<${Drawer}");
+    expect(idx).toBeGreaterThan(-1);
+    const snippet = panelJs.slice(idx, idx + 500);
+    expect(snippet).toMatch(/dock/);
+    expect(snippet).toMatch(/widthClass="w-full"/);
+    expect(snippet).toMatch(/rootStyle="--dock-w:24rem"/);
   });
 });

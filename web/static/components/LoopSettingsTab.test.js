@@ -108,6 +108,14 @@ describe("LoopSettingsTab.js: four trigger section titles", () => {
     expect(tabJs).toMatch(/trigger="onChild"/);
     expect(tabJs).toMatch(/title="On child"/);
   });
+
+  test("renders injected callback content inside the trigger-card stack", () => {
+    const childIdx = tabJs.lastIndexOf("${children}");
+    const onSlackIdx = tabJs.indexOf('trigger="onSlack"');
+    const triggerFieldsetEnd = tabJs.indexOf("</fieldset>", onSlackIdx);
+    expect(childIdx).toBeGreaterThan(onSlackIdx);
+    expect(childIdx).toBeLessThan(triggerFieldsetEnd);
+  });
 });
 
 // =============================================================================
@@ -249,8 +257,10 @@ describe("LoopSettingsTab.js: prompt selector and arguments", () => {
     expect(snippet).toMatch(/selectedPromptParams/);
   });
 
-  test("includes Arguments button for named prompts", () => {
-    expect(tabJs).toMatch(/Arguments/);
+  test("includes a recognizable parameter button beside the named prompt selector", () => {
+    expect(tabJs).toMatch(/<\$\{SlidersIcon\}/);
+    expect(tabJs).toMatch(/aria-label="Configure prompt parameters"/);
+    expect(tabJs).toMatch(/Parameters/);
     expect(tabJs).toMatch(/onClick=\${openArguments}/);
   });
 });
@@ -273,5 +283,106 @@ describe("LoopSettingsTab.js: prompt mode handling", () => {
   test("shows textarea for free text mode", () => {
     expect(tabJs).toMatch(/<textarea/);
     expect(tabJs).toMatch(/promptBody/);
+  });
+});
+
+// =============================================================================
+// Narrow drawer layout tests (mitto-w7hh.2 follow-up: fix Loop-tab overflow)
+// =============================================================================
+
+describe("LoopSettingsTab.js: narrow drawer layout", () => {
+  test("all native Loop selects use one explicit chevron wrapper", () => {
+    const idx = tabJs.indexOf("function NativeSelectWithChevron(");
+    expect(idx).toBeGreaterThan(-1);
+    const snippet = tabJs.slice(idx, idx + 1500);
+    expect(snippet).toMatch(/class="select select-sm w-full pr-8"/);
+    expect(snippet).toMatch(
+      /style="appearance:none;-webkit-appearance:none;background-image:none;"/,
+    );
+    expect(snippet).toMatch(
+      /data-testid="\$\{testId\}-chevron"[\s\S]*?style="position:absolute;right:0\.5rem;top:50%;transform:translateY\(-50%\);pointer-events:none;"[\s\S]*?<\$\{ChevronDownIcon\}/,
+    );
+    expect(tabJs.match(/<\$\{NativeSelectWithChevron\}/g)).toHaveLength(3);
+    expect(tabJs.match(/<select/g)).toHaveLength(1);
+  });
+
+  test("ToggleRow explicitly constrains wrapping copy beside its non-shrinking toggle", () => {
+    const idx = tabJs.indexOf("function ToggleRow(");
+    expect(idx).toBeGreaterThan(-1);
+    const snippet = tabJs.slice(idx, idx + 1100);
+    expect(snippet).toMatch(
+      /class="label cursor-pointer gap-4 w-full min-w-0"/,
+    );
+    expect(snippet).toMatch(/class="flex-1 min-w-0 whitespace-normal"/);
+    expect(snippet).toMatch(
+      /style="min-width:0;flex:1 1 0%;white-space:normal;overflow-wrap:anywhere;"/,
+    );
+    expect(snippet).toMatch(/class="toggle toggle-sm shrink-0"/);
+    expect(snippet).toMatch(/style="flex-shrink:0;"/);
+  });
+
+  test("Trigger headers and On child event rows explicitly wrap beside their checkboxes", () => {
+    const triggerIdx = tabJs.indexOf("function TriggerSection(");
+    expect(triggerIdx).toBeGreaterThan(-1);
+    const triggerSnippet = tabJs.slice(triggerIdx, triggerIdx + 2200);
+    expect(triggerSnippet).toMatch(
+      /data-testid="loop-settings-trigger-copy-\$\{trigger\}"/,
+    );
+    expect(triggerSnippet).toMatch(
+      /style="min-width:0;flex:1 1 0%;white-space:normal;overflow-wrap:anywhere;"/,
+    );
+
+    const childIdx = tabJs.indexOf("KNOWN_CHILD_EVENTS.map");
+    expect(childIdx).toBeGreaterThan(-1);
+    const childSnippet = tabJs.slice(childIdx, childIdx + 2200);
+    expect(childSnippet).toMatch(
+      /data-testid="loop-settings-child-event-copy-\$\{eventName\}"/,
+    );
+    expect(childSnippet).toMatch(
+      /style="min-width:0;flex:1 1 0%;white-space:normal;overflow-wrap:anywhere;"/,
+    );
+  });
+
+  test("General limits (Max runs / Max duration) use a single-column grid, not a viewport-responsive sm:grid-cols-2", () => {
+    const idx = tabJs.indexOf('legend class="fieldset-legend">General<');
+    expect(idx).toBeGreaterThan(-1);
+    const snippet = tabJs.slice(idx, idx + 2000);
+    expect(snippet).toMatch(/class="grid grid-cols-1 gap-3"/);
+    expect(snippet).not.toMatch(/sm:grid-cols-2/);
+  });
+
+  test("onTasks Cooldown/Settle window fields use a single-column grid, not sm:grid-cols-2", () => {
+    const idx = tabJs.indexOf('trigger="onTasks"');
+    expect(idx).toBeGreaterThan(-1);
+    const snippet = tabJs.slice(idx, idx + 3500);
+    expect(snippet).toMatch(/Cooldown \(seconds\)/);
+    expect(snippet).toMatch(/class="grid grid-cols-1 gap-3"/);
+    expect(snippet).not.toMatch(/sm:grid-cols-2/);
+  });
+
+  test("Max duration gives the number a usable width and renders a compact unit dropdown with a chevron", () => {
+    const idx = tabJs.indexOf("Max duration");
+    expect(idx).toBeGreaterThan(-1);
+    const snippet = tabJs.slice(idx, idx + 2400);
+    expect(snippet).toMatch(/class="flex items-center gap-2"/);
+    expect(snippet).toMatch(
+      /class="input input-sm w-24 min-w-0 shrink-0"[\s\S]*?data-testid="loop-settings-max-duration-value"/,
+    );
+    expect(snippet).toMatch(
+      /<\$\{NativeSelectWithChevron\}[\s\S]*?ariaLabel="Max duration unit"[\s\S]*?testId="loop-settings-max-duration-unit"[\s\S]*?wrapperClass="w-28 shrink-0"/,
+    );
+  });
+
+  test("Schedule unit and Fire when use the shared dropdown affordance", () => {
+    expect(tabJs).toMatch(
+      /ariaLabel="Schedule unit"[\s\S]*?testId="loop-settings-schedule-unit"[\s\S]*?wrapperClass="w-28 shrink-0"/,
+    );
+    expect(tabJs).toMatch(
+      /ariaLabel="Fire when"[\s\S]*?testId="loop-settings-fire-when"[\s\S]*?wrapperClass="w-full"/,
+    );
+  });
+
+  test("no sm:grid-cols-2 breakpoints remain anywhere in the file (drawer width, not viewport width, governs layout)", () => {
+    expect(tabJs).not.toMatch(/sm:grid-cols-2/);
   });
 });

@@ -13,19 +13,19 @@ import {
   SettingsIcon,
   SlidersIcon,
 } from "./Icons.js";
-import { apiUrl } from "../utils/api.js";
 import { getSdkClient } from "../utils/sdkClient.js";
 import { errorMessage, isNotFoundError } from "../utils/sdkErrors.js";
 import { withIssueCaches } from "../sdk/index.js";
 import { isGone, markGone } from "../utils/beadsGoneCache.js";
-import { ConfirmDialog } from "./ConfirmDialog.js";
 import { Drawer } from "./Drawer.js";
 import { Tooltip } from "./Tooltip.js";
 import { statusBadge as beadsStatusBadge } from "./BeadsView.js";
-import { formatTimeAgo, looksLikeFilePath } from "../lib.js";
+import { formatTimeAgo } from "../lib.js";
 import { canRevealInFinder, revealInFinder } from "../utils/native.js";
-import { isNativeApp, getAPIPrefix } from "../utils/index.js";
+import { isNativeApp } from "../utils/index.js";
 import { ConfigOptionSelect } from "./ConfigOptionSelect.js";
+import { LoopSettingsTab } from "./LoopSettingsTab.js";
+import { CallbackTriggerSection } from "./CallbackTriggerSection.js";
 
 // ---------------------------------------------------------------------------
 // Helpers (copied from ConversationPropertiesPanel)
@@ -66,53 +66,6 @@ function getContextWindowSize(modelId) {
     if (lower.includes(key)) return MODEL_CONTEXT_WINDOWS[key];
   }
   return null;
-}
-
-function utcToLocalTimeDisplay(utcTime) {
-  if (!utcTime) return "";
-  const [hours, minutes] = utcTime.split(":").map(Number);
-  const now = new Date();
-  const utcDate = new Date(
-    Date.UTC(
-      now.getUTCFullYear(),
-      now.getUTCMonth(),
-      now.getUTCDate(),
-      hours,
-      minutes,
-      0,
-    ),
-  );
-  return utcDate.toLocaleTimeString(undefined, {
-    hour: "numeric",
-    minute: "2-digit",
-  });
-}
-
-function formatFrequency(frequency) {
-  if (!frequency) return "";
-  const { value, unit, at } = frequency;
-  let text = "";
-  if (value === 1) {
-    switch (unit) {
-      case "minutes":
-        text = "Every minute";
-        break;
-      case "hours":
-        text = "Every hour";
-        break;
-      case "days":
-        text = "Every day";
-        break;
-      default:
-        text = `Every ${unit}`;
-    }
-  } else {
-    text = `Every ${value} ${unit}`;
-  }
-  if (unit === "days" && at) {
-    text += ` at ${utcToLocalTimeDisplay(at)}`;
-  }
-  return text;
 }
 
 // ---------------------------------------------------------------------------
@@ -187,6 +140,10 @@ export function SessionPanel({
   configOptions = [],
   onSetConfigOption,
   mcpTools = [],
+  loopPrompts = [],
+  allPrompts = [],
+  hasBeadsWorkspace = false,
+  onOpenPromptParamDialog,
   showToast,
 }) {
   // --- Tab state ---
@@ -251,9 +208,6 @@ export function SessionPanel({
   const titleInputRef = useRef(null);
   const [loopConfig, setLoopConfig] = useState(null);
   const loopConfigVersionRef = useRef(0);
-  const [callbackConfig, setCallbackConfig] = useState(null);
-  const [callbackCopied, setCallbackCopied] = useState(false);
-  const [confirmDialog, setConfirmDialog] = useState(null);
   const [isMcpToolsExpanded, setIsMcpToolsExpanded] = useState(false);
   const [isAdvancedExpanded, setIsAdvancedExpanded] = useState(false);
   const [availableFlags, setAvailableFlags] = useState([]);
@@ -289,13 +243,22 @@ export function SessionPanel({
     loopConfigVersionRef.current += 1;
     setIsEditingTitle(false);
     setLoopConfig(null);
-    setCallbackConfig(null);
-    setCallbackCopied(false);
     setFlagsError(null);
     setSavingFlags({});
     setEditingAttribute(null);
     setUserDataError(null);
   }, [sessionId, isOpen]);
+
+  const loopAvailable =
+    sessionInfo?.loop_configured === true || loopConfig !== null;
+
+  // A loop can be detached or the user can switch conversations while this tab
+  // is selected. Keep both local and app-level tab state on a valid selection.
+  useEffect(() => {
+    if (currentTab === "loop" && !loopAvailable) {
+      handleTabChange("properties");
+    }
+  }, [currentTab, loopAvailable, handleTabChange]);
 
   // Keep an open panel synchronized with loop changes made by another client,
   // MCP, or another local surface. Bump the version so an older in-flight GET
@@ -339,7 +302,7 @@ export function SessionPanel({
       setIsLoadingFlags(true);
       setFlagsError(null);
 
-      // Loop + callback endpoints only exist for loop conversations.
+      // The loop endpoint only exists for loop conversations.
       // Gating on loop_configured avoids 404 noise on regular sessions.
       const loopConfigured = sessionInfo?.loop_configured === true;
 
@@ -347,32 +310,25 @@ export function SessionPanel({
         // Each call swallows its own failure (mirrors the old per-Response
         // `x && x.ok` tolerance — the SDK throws on a non-2xx status where
         // the old raw fetch() would just resolve with `res.ok === false`),
-        // so one endpoint failing does not blank out the other three.
-        const [loopData, callbackData, flagsData, settingsData] =
-          await Promise.all([
-            loopConfigured
-              ? getSdkClient()
-                  .sessions.loop.get(sessionId)
-                  .catch(() => null)
-              : Promise.resolve(null),
-            loopConfigured
-              ? getSdkClient()
-                  .sessions.getCallback(sessionId)
-                  .catch(() => null)
-              : Promise.resolve(null),
-            getSdkClient()
-              .misc.advancedFlags()
-              .catch(() => null),
-            getSdkClient()
-              .sessions.getSettings(sessionId)
-              .catch(() => null),
-          ]);
+        // so one endpoint failing does not blank out the other two.
+        const [loopData, flagsData, settingsData] = await Promise.all([
+          loopConfigured
+            ? getSdkClient()
+                .sessions.loop.get(sessionId)
+                .catch(() => null)
+            : Promise.resolve(null),
+          getSdkClient()
+            .misc.advancedFlags()
+            .catch(() => null),
+          getSdkClient()
+            .sessions.getSettings(sessionId)
+            .catch(() => null),
+        ]);
 
         if (!cancelled && loopConfigVersion === loopConfigVersionRef.current) {
           setLoopConfig(loopData || null);
         }
         if (cancelled) return;
-        setCallbackConfig(callbackData || null);
 
         if (flagsData) setAvailableFlags(flagsData.flags || flagsData || []);
 
@@ -580,79 +536,6 @@ export function SessionPanel({
     [sessionId],
   );
 
-  // --- Handlers: callback URL ---
-  const handleEnableCallback = useCallback(async () => {
-    try {
-      const data = await getSdkClient().sessions.createCallback(sessionId);
-      setCallbackConfig(data);
-      try {
-        await navigator.clipboard.writeText(data.callback_url);
-        setCallbackCopied(true);
-        setTimeout(() => setCallbackCopied(false), 2000);
-      } catch (e) {
-        /* clipboard may not be available */
-      }
-    } catch (_err) {
-      /* mirrors the prior !res.ok no-op */
-    }
-  }, [sessionId]);
-
-  const handleCopyCallbackUrl = useCallback(async () => {
-    if (callbackConfig?.callback_url) {
-      try {
-        await navigator.clipboard.writeText(callbackConfig.callback_url);
-        setCallbackCopied(true);
-        setTimeout(() => setCallbackCopied(false), 2000);
-      } catch (e) {
-        /* clipboard may not be available */
-      }
-    }
-  }, [callbackConfig]);
-
-  const handleRotateCallback = useCallback(() => {
-    setConfirmDialog({
-      title: "Rotate Callback URL",
-      message:
-        "Rotate callback URL? The old URL will stop working immediately.",
-      confirmLabel: "Rotate",
-      confirmVariant: "danger",
-      onConfirm: async () => {
-        setConfirmDialog(null);
-        try {
-          const data = await getSdkClient().sessions.createCallback(sessionId);
-          setCallbackConfig(data);
-          try {
-            await navigator.clipboard.writeText(data.callback_url);
-            setCallbackCopied(true);
-            setTimeout(() => setCallbackCopied(false), 2000);
-          } catch (e) {
-            /* clipboard may not be available */
-          }
-        } catch (_err) {
-          /* mirrors the prior !res.ok no-op */
-        }
-      },
-    });
-  }, [sessionId]);
-
-  const handleRevokeCallback = useCallback(() => {
-    setConfirmDialog({
-      title: "Revoke Callback URL",
-      message: "Revoke callback URL? It will stop working immediately.",
-      confirmLabel: "Revoke",
-      confirmVariant: "danger",
-      onConfirm: async () => {
-        setConfirmDialog(null);
-        try {
-          await getSdkClient().sessions.revokeCallback(sessionId);
-          setCallbackConfig(null);
-        } catch (_err) {
-          /* mirrors the prior !res.ok no-op */
-        }
-      },
-    });
-  }, [sessionId]);
-
   // --- Handlers: user data editing ---
   const handleStartEditAttribute = useCallback((attr) => {
     setEditingAttribute(attr.name);
@@ -739,6 +622,7 @@ export function SessionPanel({
         onClose=${handleClose}
         widthClass="w-full"
         panelClass="bg-mitto-sidebar border-l border-mitto-border-1 h-full flex flex-col overflow-hidden"
+        rootStyle="--dock-w:24rem"
         testid="session-panel"
       >
         <!-- Header -->
@@ -799,6 +683,20 @@ export function SessionPanel({
               />
             </svg>
           </label>
+          ${
+            loopAvailable &&
+            html`
+              <label class="tab flex-1" title="Loop" aria-label="Loop">
+                <input
+                  type="radio"
+                  name="session-panel-tabs"
+                  checked=${currentTab === "loop"}
+                  onChange=${() => handleTabChange("loop")}
+                />
+                <${LoopFilledIcon} className="w-4 h-4 text-mitto-accent" />
+              </label>
+            `
+          }
           <label class="tab flex-1" title="Advanced" aria-label="Advanced">
             <input
               type="radio"
@@ -823,21 +721,12 @@ export function SessionPanel({
               ? renderPropertiesContent()
               : currentTab === "changes"
                 ? renderChangesContent()
-                : renderAdvancedTabContent()
+                : currentTab === "loop"
+                  ? renderLoopTabContent()
+                  : renderAdvancedTabContent()
           }
         </div>
       <//>
-
-      <${ConfirmDialog}
-        isOpen=${!!confirmDialog}
-        title=${confirmDialog?.title || "Confirm"}
-        message=${confirmDialog?.message || ""}
-        confirmLabel=${confirmDialog?.confirmLabel || "Yes"}
-        cancelLabel=${confirmDialog?.cancelLabel || "Cancel"}
-        confirmVariant=${confirmDialog?.confirmVariant || "primary"}
-        onConfirm=${confirmDialog?.onConfirm}
-        onCancel=${() => setConfirmDialog(null)}
-      />
     <//>
   `;
 
@@ -1377,46 +1266,6 @@ export function SessionPanel({
           </div>
         `}
 
-        <!-- Loop Prompts Section -->
-        ${loopConfig?.enabled &&
-        html`
-          <div>
-            <label
-              class="block text-sm font-medium text-mitto-text-secondary mb-2"
-              >Loop Prompts</label
-            >
-            <div class="flex items-center gap-2 text-sm text-mitto-text-300">
-              <${LoopFilledIcon}
-                className="w-4 h-4 shrink-0 text-mitto-accent"
-              />
-              <span>${formatFrequency(loopConfig.frequency)}</span>
-            </div>
-            ${loopConfig.last_sent_at &&
-            html`<p
-              class="mt-1 flex items-baseline gap-2 text-xs text-mitto-text-500"
-            >
-              <strong>Last run:</strong>
-              <span>${new Date(loopConfig.last_sent_at).toLocaleString()}</span>
-            </p>`}
-            ${loopConfig.next_scheduled_at &&
-            html`<p
-              class="mt-1 flex items-baseline gap-2 text-xs text-mitto-text-500"
-            >
-              <strong>Next run:</strong>
-              <span
-                >${new Date(
-                  loopConfig.next_scheduled_at,
-                ).toLocaleString()}</span
-              >
-            </p>`}
-            <p class="mt-1 text-xs text-mitto-text-500">
-              ${(loopConfig.max_iterations ?? 0) > 0
-                ? `Run ${loopConfig.iteration_count ?? 0} of ${loopConfig.max_iterations}`
-                : `${loopConfig.iteration_count ?? 0} run${(loopConfig.iteration_count ?? 0) !== 1 ? "s" : ""} · unlimited`}
-            </p>
-          </div>
-        `}
-
         <!-- User Data Section -->
         ${(() => {
           const hasSchema = userDataSchema && userDataSchema.fields?.length > 0;
@@ -1596,6 +1445,32 @@ export function SessionPanel({
   }
 
   // ---------------------------------------------------------------------------
+  // Loop tab content
+  // ---------------------------------------------------------------------------
+  function renderLoopTabContent() {
+    return html`
+      <div class="p-4">
+        <${LoopSettingsTab}
+          sessionId=${sessionId}
+          loopConfig=${loopConfig}
+          prompts=${loopPrompts}
+          allPrompts=${allPrompts}
+          hasBeadsWorkspace=${hasBeadsWorkspace}
+          isStreaming=${isStreaming}
+          onOpenPromptParamDialog=${onOpenPromptParamDialog}
+          onConfigChange=${setLoopConfig}
+          showToast=${showToast}
+        >
+          <${CallbackTriggerSection}
+            sessionId=${sessionId}
+            loopEnabled=${loopConfig?.enabled === true}
+          />
+        </${LoopSettingsTab}>
+      </div>
+    `;
+  }
+
+  // ---------------------------------------------------------------------------
   // Advanced tab content (MCP Tools + Permissions)
   // ---------------------------------------------------------------------------
   function renderAdvancedTabContent() {
@@ -1664,87 +1539,6 @@ export function SessionPanel({
             </div>
           `,
         )}
-
-        <!-- Callback URL Section (only for loop conversations) -->
-        ${loopConfig &&
-        html`
-          <div>
-            <label
-              class="block text-sm font-medium text-mitto-text-secondary mb-2"
-              >Callback URL</label
-            >
-            ${loopConfig.enabled
-              ? html`
-                  ${callbackConfig?.callback_url
-                    ? html`
-                        <div class="flex items-center gap-1.5">
-                          <${Tooltip} tip="Copy callback URL to clipboard" placement="top">
-                            <button
-                              onClick=${handleCopyCallbackUrl}
-                              class="btn btn-xs btn-soft"
-                            >
-                              ${callbackCopied ? "✓ Copied!" : "📋 Copy URL"}
-                            </button>
-                          </${Tooltip}>
-                          <${Tooltip} tip="Generate new callback URL (invalidates old one)" placement="top">
-                            <button
-                              onClick=${handleRotateCallback}
-                              class="btn btn-xs btn-soft"
-                            >
-                              🔄 Rotate
-                            </button>
-                          </${Tooltip}>
-                          <${Tooltip} tip="Revoke callback URL" placement="top">
-                            <button
-                              onClick=${handleRevokeCallback}
-                              class="btn btn-xs btn-soft btn-error"
-                              aria-label="Revoke callback URL"
-                            >
-                              ✕
-                            </button>
-                          </${Tooltip}>
-                        </div>
-                      `
-                    : html`
-                        <${Tooltip} tip="Generate a callback URL for triggering this loop conversation externally" placement="top">
-                          <button
-                            onClick=${handleEnableCallback}
-                            class="btn btn-xs btn-soft"
-                          >
-                            🔗 Enable Callback URL
-                          </button>
-                        </${Tooltip}>
-                      `}
-                `
-              : html`
-                  ${callbackConfig?.callback_url
-                    ? html`
-                        <p class="text-xs text-mitto-text-muted mb-1.5 italic">
-                          Preserved but inactive while loop is disabled
-                        </p>
-                        <div class="flex items-center gap-1.5">
-                          <button
-                            onClick=${handleCopyCallbackUrl}
-                            class="btn btn-xs btn-soft"
-                          >
-                            ${callbackCopied ? "✓ Copied!" : "📋 Copy URL"}
-                          </button>
-                          <button
-                            onClick=${handleRevokeCallback}
-                            class="btn btn-xs btn-soft btn-error"
-                          >
-                            ✕ Revoke
-                          </button>
-                        </div>
-                      `
-                    : html`
-                        <p class="text-xs text-mitto-text-500">
-                          No callback URL configured.
-                        </p>
-                      `}
-                `}
-          </div>
-        `}
 
         <!-- MCP Tools Section (Collapsible) -->
         ${mcpTools &&

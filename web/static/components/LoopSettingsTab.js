@@ -4,6 +4,7 @@ const { html, useCallback, useEffect, useMemo, useState, Fragment } =
   window.preact;
 
 import { ConfirmDialog } from "./ConfirmDialog.js";
+import { ChevronDownIcon, SlidersIcon } from "./Icons.js";
 import { LoopPromptSelector } from "./LoopPromptSelector.js";
 import { SlackSubscriptionEditor } from "./SlackSubscriptionEditor.js";
 import {
@@ -41,10 +42,19 @@ function ToggleRow({
   checked,
   onChange,
   disabled = false,
+  testId,
 }) {
   return html`
-    <label class="label cursor-pointer gap-4">
-      <span>
+    <label
+      class="label cursor-pointer gap-4 w-full min-w-0"
+      style="display:flex;width:100%;min-width:0;"
+      data-testid=${testId}
+    >
+      <span
+        class="flex-1 min-w-0 whitespace-normal"
+        style="min-width:0;flex:1 1 0%;white-space:normal;overflow-wrap:anywhere;"
+        data-testid=${testId ? `${testId}-copy` : undefined}
+      >
         <span class="text-mitto-text-strong">${label}</span>
         ${description &&
         html`<span class="block text-xs text-mitto-text-muted"
@@ -53,10 +63,12 @@ function ToggleRow({
       </span>
       <input
         type="checkbox"
-        class="toggle toggle-sm"
+        class="toggle toggle-sm shrink-0"
+        style="flex-shrink:0;"
         checked=${checked}
         disabled=${disabled}
         onChange=${(event) => onChange(event.target.checked)}
+        data-testid=${testId ? `${testId}-control` : undefined}
       />
     </label>
   `;
@@ -79,16 +91,25 @@ function TriggerSection({
       data-testid="loop-settings-${trigger}"
     >
       <div class="collapse-title">
-        <label class="label cursor-pointer gap-3 justify-start">
+        <label
+          class="label cursor-pointer gap-3 justify-start w-full min-w-0"
+          style="display:flex;width:100%;min-width:0;"
+          data-testid="loop-settings-trigger-header-${trigger}"
+        >
           <input
             type="checkbox"
-            class="checkbox checkbox-sm"
+            class="checkbox checkbox-sm shrink-0"
+            style="flex-shrink:0;"
             checked=${armed}
             disabled=${disabled}
             onChange=${(event) => onToggle(event.target.checked)}
             data-testid="loop-settings-trigger-${trigger}"
           />
-          <span>
+          <span
+            class="flex-1 min-w-0 whitespace-normal"
+            style="min-width:0;flex:1 1 0%;white-space:normal;overflow-wrap:anywhere;"
+            data-testid="loop-settings-trigger-copy-${trigger}"
+          >
             <span class="font-medium text-mitto-text-strong">${title}</span>
             <span class="block text-xs text-mitto-text-muted"
               >${description}</span
@@ -120,6 +141,41 @@ function NumberField({ label, value, onInput, help, min = 0, testId }) {
   `;
 }
 
+function NativeSelectWithChevron({
+  ariaLabel,
+  value,
+  onChange,
+  testId,
+  wrapperClass = "w-full",
+  children,
+}) {
+  return html`
+    <div
+      class="relative ${wrapperClass}"
+      style="position:relative;"
+      data-testid="${testId}-wrap"
+    >
+      <select
+        class="select select-sm w-full pr-8"
+        style="appearance:none;-webkit-appearance:none;background-image:none;"
+        aria-label=${ariaLabel}
+        data-testid=${testId}
+        value=${value}
+        onChange=${onChange}
+      >
+        ${children}
+      </select>
+      <span
+        aria-hidden="true"
+        data-testid="${testId}-chevron"
+        style="position:absolute;right:0.5rem;top:50%;transform:translateY(-50%);pointer-events:none;"
+      >
+        <${ChevronDownIcon} className="w-4 h-4 opacity-60" />
+      </span>
+    </div>
+  `;
+}
+
 /**
  * Full staged loop editor intended for later SessionPanel wiring.
  */
@@ -134,6 +190,7 @@ export function LoopSettingsTab({
   onOpenPromptParamDialog,
   onConfigChange,
   showToast,
+  children,
 }) {
   const [draft, setDraft] = useState(null);
   const [serverDraft, setServerDraft] = useState(null);
@@ -539,12 +596,16 @@ export function LoopSettingsTab({
                     </div>
                     <button
                       type="button"
-                      class="btn btn-sm"
+                      class="btn btn-sm btn-soft shrink-0 gap-2"
+                      data-testid="loop-edit-args-button"
+                      aria-label="Configure prompt parameters"
+                      title="Configure prompt parameters"
                       disabled=${selectedPromptParams.length === 0 ||
                       !onOpenPromptParamDialog}
                       onClick=${openArguments}
                     >
-                      Arguments
+                      <${SlidersIcon} className="w-4 h-4" />
+                      Parameters
                     </button>
                   </div>
                 `
@@ -593,7 +654,7 @@ export function LoopSettingsTab({
             onChange=${(runOnStart) =>
               stage((current) => ({ ...current, runOnStart }))}
           />
-          <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div class="grid grid-cols-1 gap-3">
             <${NumberField}
               label="Max runs"
               value=${draft.maxIterations}
@@ -605,14 +666,15 @@ export function LoopSettingsTab({
                 }))}
               testId="loop-settings-max-runs"
             />
-            <label class="fieldset">
+            <label class="fieldset w-full min-w-0">
               <span class="fieldset-legend">Max duration</span>
-              <div class="flex gap-2">
+              <div class="flex items-center gap-2">
                 <input
                   type="number"
                   min="0"
                   value=${draft.maxDuration.value}
-                  class="input input-sm flex-1 min-w-0"
+                  class="input input-sm w-24 min-w-0 shrink-0"
+                  data-testid="loop-settings-max-duration-value"
                   onInput=${(event) =>
                     stage((current) => ({
                       ...current,
@@ -622,8 +684,10 @@ export function LoopSettingsTab({
                       },
                     }))}
                 />
-                <select
-                  class="select select-sm"
+                <${NativeSelectWithChevron}
+                  ariaLabel="Max duration unit"
+                  testId="loop-settings-max-duration-unit"
+                  wrapperClass="w-28 shrink-0"
                   value=${draft.maxDuration.unit}
                   onChange=${(event) =>
                     stage((current) => ({
@@ -638,7 +702,7 @@ export function LoopSettingsTab({
                   <option value="minutes">minutes</option>
                   <option value="hours">hours</option>
                   <option value="days">days</option>
-                </select>
+                </${NativeSelectWithChevron}>
               </div>
               <span class="label">0 = unlimited</span>
             </label>
@@ -688,8 +752,10 @@ export function LoopSettingsTab({
               />
               <label class="fieldset">
                 <span class="fieldset-legend">Unit</span>
-                <select
-                  class="select select-sm"
+                <${NativeSelectWithChevron}
+                  ariaLabel="Schedule unit"
+                  testId="loop-settings-schedule-unit"
+                  wrapperClass="w-28 shrink-0"
                   value=${draft.schedule.unit}
                   onChange=${(event) =>
                     stage((current) => ({
@@ -707,7 +773,7 @@ export function LoopSettingsTab({
                   <option value="minutes">minutes</option>
                   <option value="hours">hours</option>
                   <option value="days">days</option>
-                </select>
+                </${NativeSelectWithChevron}>
               </label>
               ${
                 draft.schedule.unit === "days" &&
@@ -775,8 +841,10 @@ export function LoopSettingsTab({
           >
             <label class="fieldset">
               <span class="fieldset-legend">Fire when</span>
-              <select
-                class="select select-sm w-full"
+              <${NativeSelectWithChevron}
+                ariaLabel="Fire when"
+                testId="loop-settings-fire-when"
+                wrapperClass="w-full"
                 value=${presetId}
                 onChange=${(event) => setPreset(event.target.value)}
               >
@@ -785,7 +853,7 @@ export function LoopSettingsTab({
                     html`<option value=${item.id}>${item.label}</option>`,
                 )}
                 <option value="custom">Custom (advanced CEL)</option>
-              </select>
+              </${NativeSelectWithChevron}>
             </label>
             ${
               preset?.needsParam &&
@@ -827,7 +895,7 @@ export function LoopSettingsTab({
                 >`
               }
             </label>
-            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div class="grid grid-cols-1 gap-3">
               <${NumberField}
                 label="Cooldown (seconds)"
                 value=${draft.onTasks.cooldownSeconds}
@@ -858,6 +926,7 @@ export function LoopSettingsTab({
             <${ToggleRow}
               label="Coalesce while busy"
               description="Absorb task changes while the loop subtree is active"
+              testId="loop-settings-coalesce-row"
               checked=${draft.onTasks.coalesceDuringBusy}
               onChange=${(coalesceDuringBusy) =>
                 stage((current) => ({
@@ -881,11 +950,14 @@ export function LoopSettingsTab({
                 anyLoopStopped: "Any child loop stops",
               };
               return html`<label
-                class="label cursor-pointer justify-start gap-3"
+                class="label cursor-pointer justify-start gap-3 w-full min-w-0"
+                style="display:flex;width:100%;min-width:0;"
+                data-testid="loop-settings-child-event-${eventName}"
               >
                 <input
                   type="checkbox"
-                  class="checkbox checkbox-sm"
+                  class="checkbox checkbox-sm shrink-0"
+                  style="flex-shrink:0;"
                   checked=${draft.onChild.events.includes(eventName)}
                   onChange=${(event) =>
                     stage((current) => {
@@ -902,7 +974,12 @@ export function LoopSettingsTab({
                       };
                     })}
                 />
-                ${labels[eventName]}
+                <span
+                  class="flex-1 min-w-0 whitespace-normal"
+                  style="min-width:0;flex:1 1 0%;white-space:normal;overflow-wrap:anywhere;"
+                  data-testid="loop-settings-child-event-copy-${eventName}"
+                  >${labels[eventName]}</span
+                >
               </label>`;
             })}
           </${TriggerSection}>
@@ -924,6 +1001,8 @@ export function LoopSettingsTab({
                 }))}
             />
           </${TriggerSection}>
+
+          ${children}
         </fieldset>
 
         <div class="flex flex-wrap justify-end gap-2">
@@ -942,6 +1021,7 @@ export function LoopSettingsTab({
           <button
             type="button"
             class="btn btn-primary btn-sm"
+            data-testid="loop-save-button"
             disabled=${saving}
             onClick=${requestSave}
           >

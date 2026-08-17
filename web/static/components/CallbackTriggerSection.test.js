@@ -114,7 +114,7 @@ afterEach(() => {
 });
 
 describe("CallbackTriggerSection", () => {
-  test("loads not-configured state, then generates and copies a credential", async () => {
+  test("loads unchecked, then checking generates and reveals a copyable credential", async () => {
     const secret = "https://example.test/mitto/api/callback/cb_secret";
     global.fetch = jest.fn((url, init) => {
       const csrf = csrfResponse(url);
@@ -128,22 +128,41 @@ describe("CallbackTriggerSection", () => {
     });
 
     mount({ sessionId: "session-1", loopEnabled: true });
-    await waitFor(() => byTestId("callback-enable"), "enable button");
-    expect(byTestId("callback-status").textContent).toBe("Not configured");
+    await waitFor(
+      () =>
+        byTestId("callback-toggle") && !byTestId("callback-toggle").disabled,
+      "enabled callback toggle",
+    );
+    expect(byTestId("callback-toggle").checked).toBe(false);
+    expect(byTestId("callback-toggle").getAttribute("aria-label")).toBe(
+      "On callback",
+    );
+    expect(container.textContent).toContain("On callback");
+    expect(container.textContent).not.toContain("External callback");
+    expect(byTestId("callback-status")).toBeNull();
+    expect(container.textContent).not.toContain("Not configured");
+    expect(container.textContent).not.toContain("Generate callback URL");
 
-    byTestId("callback-enable").click();
+    byTestId("callback-toggle").click();
     await waitFor(
       () =>
         global.fetch.mock.calls.some(([, init]) => methodOf(init) === "POST"),
       "callback POST",
     );
     await waitFor(
-      () => byTestId("callback-status")?.textContent === "Active",
-      "active callback",
+      () => byTestId("callback-toggle")?.checked && byTestId("callback-url"),
+      "configured callback",
     );
 
+    expect(clipboard.writeText).toHaveBeenCalledTimes(0);
+    expect(byTestId("callback-url").textContent).toBe(secret);
+    expect(byTestId("callback-url").classList.contains("truncate")).toBe(true);
+    byTestId("callback-copy").click();
+    await waitFor(
+      () => clipboard.writeText.mock.calls.length === 1,
+      "clipboard copy",
+    );
     expect(clipboard.writeText).toHaveBeenCalledWith(secret);
-    expect(container.innerHTML).not.toContain(secret);
     expect(
       global.fetch.mock.calls.some(([, init]) => methodOf(init) === "POST"),
     ).toBe(true);
@@ -157,16 +176,17 @@ describe("CallbackTriggerSection", () => {
 
     mount({ sessionId: "session-2", loopEnabled: false });
     await waitFor(
-      () => byTestId("callback-status")?.textContent === "Inactive",
+      () => byTestId("callback-toggle")?.checked,
       "inactive callback",
     );
 
     expect(container.textContent).toContain(
-      "Configured but inactive while the loop is paused.",
+      "Inactive while the loop is paused",
     );
+    expect(byTestId("callback-toggle").disabled).toBe(false);
     expect(byTestId("callback-rotate")).toBeNull();
-    expect(byTestId("callback-revoke")).not.toBeNull();
-    expect(container.innerHTML).not.toContain(secret);
+    expect(byTestId("callback-revoke")).toBeNull();
+    expect(byTestId("callback-url").textContent).toBe(secret);
 
     byTestId("callback-copy").click();
     await waitFor(
@@ -176,42 +196,7 @@ describe("CallbackTriggerSection", () => {
     expect(clipboard.writeText).toHaveBeenCalledWith(secret);
   });
 
-  test("rotates only after confirmation and copies the replacement URL", async () => {
-    const oldSecret = "https://example.test/callback/old-secret";
-    const newSecret = "https://example.test/callback/new-secret";
-    global.fetch = jest.fn((url, init) => {
-      const csrf = csrfResponse(url);
-      if (csrf) return Promise.resolve(csrf);
-      const method = methodOf(init);
-      if (method === "GET")
-        return Promise.resolve(response({ callback_url: oldSecret }));
-      if (method === "POST")
-        return Promise.resolve(response({ callback_url: newSecret }));
-      throw new Error(`unexpected method ${method}`);
-    });
-
-    mount({ sessionId: "session-3", loopEnabled: true });
-    await waitFor(() => byTestId("callback-rotate"), "rotate button");
-    byTestId("callback-rotate").click();
-    await waitFor(
-      () => byTestId("confirm-dialog-confirm"),
-      "rotate confirmation",
-    );
-    expect(
-      global.fetch.mock.calls.filter(([, init]) => methodOf(init) === "POST"),
-    ).toHaveLength(0);
-
-    byTestId("confirm-dialog-confirm").click();
-    await waitFor(
-      () => clipboard.writeText.mock.calls.length === 1,
-      "rotated URL copy",
-    );
-    expect(clipboard.writeText).toHaveBeenCalledWith(newSecret);
-    expect(container.innerHTML).not.toContain(oldSecret);
-    expect(container.innerHTML).not.toContain(newSecret);
-  });
-
-  test("revokes only after confirmation and returns to not-configured state", async () => {
+  test("unchecking revokes immediately and collapses the URL", async () => {
     global.fetch = jest.fn((url, init) => {
       const csrf = csrfResponse(url);
       if (csrf) return Promise.resolve(csrf);
@@ -226,24 +211,20 @@ describe("CallbackTriggerSection", () => {
     });
 
     mount({ sessionId: "session-4", loopEnabled: true });
-    await waitFor(() => byTestId("callback-revoke"), "revoke button");
-    byTestId("callback-revoke").click();
     await waitFor(
-      () => byTestId("confirm-dialog-confirm"),
-      "revoke confirmation",
+      () => byTestId("callback-toggle")?.checked,
+      "callback toggle",
     );
-    expect(
-      global.fetch.mock.calls.filter(([, init]) => methodOf(init) === "DELETE"),
-    ).toHaveLength(0);
-
-    byTestId("confirm-dialog-confirm").click();
+    byTestId("callback-toggle").click();
     await waitFor(
-      () => byTestId("callback-status")?.textContent === "Not configured",
+      () => !byTestId("callback-toggle")?.checked && !byTestId("callback-url"),
       "revoked state",
     );
     expect(
       global.fetch.mock.calls.filter(([, init]) => methodOf(init) === "DELETE"),
     ).toHaveLength(1);
+    expect(byTestId("confirm-dialog-confirm")).toBeNull();
+    expect(container.textContent).not.toContain("Not configured");
   });
 
   test("session switch resets state and ignores a stale callback response", async () => {
@@ -266,7 +247,7 @@ describe("CallbackTriggerSection", () => {
     await waitFor(() => typeof resolveFirst === "function", "first request");
     mount({ sessionId: "session-second", loopEnabled: true });
     await waitFor(
-      () => byTestId("callback-status")?.textContent === "Active",
+      () => byTestId("callback-toggle")?.checked,
       "second session callback",
     );
 
@@ -279,6 +260,7 @@ describe("CallbackTriggerSection", () => {
     );
     expect(clipboard.writeText).toHaveBeenCalledWith(secondSecret);
     expect(clipboard.writeText).not.toHaveBeenCalledWith(firstSecret);
+    expect(byTestId("callback-url").textContent).toBe(secondSecret);
   });
 
   test("has no loop trigger-list or loop PATCH dependency", () => {
@@ -289,5 +271,9 @@ describe("CallbackTriggerSection", () => {
     expect(source).toMatch(/\.sessions\.getCallback\(sessionId\)/);
     expect(source).toMatch(/\.sessions\.createCallback\(targetSessionId\)/);
     expect(source).toMatch(/\.sessions\.revokeCallback\(targetSessionId\)/);
+    expect(source).not.toMatch(/Not configured|Generate callback URL/);
+    expect(source).toMatch(/class="collapse border/);
+    expect(source).toMatch(/data-testid="callback-toggle"/);
+    expect(source).toMatch(/class="min-w-0 flex-1 truncate/);
   });
 });

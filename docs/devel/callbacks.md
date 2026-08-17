@@ -35,7 +35,7 @@ curl -X POST https://your-mitto-server.com/mitto/api/callback/cb_YOUR_TOKEN_HERE
   -d '{"metadata": {"source": "my-script", "reason": "manual check"}}'
 ```
 
-> **Note:** The URL must include the API prefix (typically `/mitto`). Open the Loop tab with the compact control bar settings gear, then use **Generate callback URL** or **Copy URL** in the External callback section. The URL is a credential and is copied rather than rendered.
+> **Note:** The URL must include the API prefix (typically `/mitto`). Open the Loop tab with the compact control bar settings gear, check **External callback**, then use its copy button. The credential is displayed in a visually truncated field but copied in full.
 
 ## URL Scheme
 
@@ -373,17 +373,17 @@ cards (`schedule`, `onCompletion`, `onTasks`, and `onChild`). The compact
 
 The callback is intentionally independent from the loop editor: its token is
 stored in `callback.json`, while automatic triggers and their full-list
-replacement live in `loop.json`. Generating, rotating, or revoking a callback
+replacement live in `loop.json`. Creating or revoking a callback
 never adds an entry to the loop `triggers` array or changes a loop PATCH.
 
 ### UI States
 
-| Loop State | Callback State | UI Display                                                    |
-| ---------- | -------------- | ------------------------------------------------------------- |
-| Disabled   | None           | Message to resume the loop before generating a URL            |
-| Enabled    | None           | **Generate callback URL** button                              |
-| Enabled    | Active         | Active badge + Copy/Rotate/Revoke buttons; URL remains hidden |
-| Disabled   | Active         | Inactive badge; preserved URL remains copyable and revocable  |
+| Loop State | Callback State | UI Display                                                            |
+| ---------- | -------------- | --------------------------------------------------------------------- |
+| Disabled   | None           | Unchecked, disabled checkbox; description says to resume the loop     |
+| Enabled    | None           | Unchecked checkbox                                                    |
+| Enabled    | Active         | Checked card with visually truncated URL and copy button              |
+| Disabled   | Active         | Checked card marked inactive; URL remains copyable and can be revoked |
 
 ### Workflow
 
@@ -394,7 +394,7 @@ sequenceDiagram
     participant Store as CallbackStore
     participant Index as CallbackIndex
 
-    Note over UI: User clicks "Enable Callback"
+    Note over UI: User checks "External callback"
     UI->>API: POST /api/sessions/{id}/callback
     API->>Store: CreateOrRotate(sessionID)
     Store->>Store: Generate token (crypto/rand)
@@ -402,21 +402,9 @@ sequenceDiagram
     Store-->>API: {token, created_at}
     API->>Index: Register(token, sessionID)
     API-->>UI: {callback_url, callback_token}
-    UI->>UI: Display URL with Copy button
+    UI->>UI: Display truncated URL with Copy button
 
-    Note over UI: User clicks "Rotate"
-    UI->>API: POST /api/sessions/{id}/callback
-    API->>Store: CreateOrRotate(sessionID)
-    Store->>Store: Read old token
-    Store->>Store: Generate new token
-    Store->>Store: Write new callback.json
-    Store-->>API: {new_token, created_at}
-    API->>Index: Remove(old_token)
-    API->>Index: Register(new_token, sessionID)
-    API-->>UI: {new_callback_url, new_token}
-    UI->>UI: Update URL display
-
-    Note over UI: User clicks "Revoke"
+    Note over UI: User unchecks "External callback"
     UI->>API: DELETE /api/sessions/{id}/callback
     API->>Store: Delete(sessionID)
     Store->>Store: Remove callback.json
