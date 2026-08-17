@@ -1,0 +1,32 @@
+icon: edit
+name: Improve docs
+menus: prompts, !promptsLoop
+description: Improve documentation related to the current conversation, or ask which documents to improve
+group: Documentation
+backgroundColor: '#E1BEE7'
+preferredModels:
+  - modelTag: Coding
+prompt: |
+  {{- if .Session.HasMessages }}
+  Review the conversation so far before acting. Treat it as **substantive prior
+  context** only when it identifies concrete files, code, behavior, features,
+  commands, configuration, or technical topics that can be mapped to repository
+  documentation.
+
+  - If substantive context exists, identify the documentation files most closely
+    related to that discussion. Read those docs and the relevant implementation,
+    then improve the docs directly **without asking for confirmation first**.
+  - If the prior messages are only greetings, meta-discussion, or otherwise do not
+    identify a meaningful subject, ask the user which document or documents to
+    improve. Make no file changes until they answer.
+  {{- else }}
+  There is no prior conversation context. Ask the user which document or documents
+  to improve, and make no file changes until they answer.
+  {{- end }}
+
+  When the target documentation is known, improve its clarity, accuracy,
+  completeness, formatting, and examples. Prefer focused edits to the existing
+  files; create a new document only when the subject clearly has no appropriate
+  home.
+
+  {{ template "docs/shared/documentation-quality" . }}

@@ -4,25 +4,87 @@ menus: prompts, !promptsLoop
 description: Interactively build a developer-ready specification through guided questions
 group: Planning
 backgroundColor: '#FFECB3'
+preferredModels:
+  - modelTag: Reasoning
+parameters:
+  - name: Dirname
+    type: dirname
+    required: true
+    remember: folder
+    glob:
+      - "docs"
+      - "spec"
+      - "specs"
+      - "**/docs"
+      - "**/spec"
+      - "**/specs"
+    description: Target directory for the specification. The picker proposes existing docs, spec, and specs folders at any depth in the workspace.
+  - name: Filename
+    type: text
+    required: false
+    group: Advanced
+    default: "spec-<feature>.md"
+    description: Optional output filename override. Leave unchanged or empty to derive spec-<feature>.md from the feature or topic.
 prompt: |
-  Act as a technical product interviewer. Extract every detail needed for a
-  developer-ready specification through guided Q&A.
+  {{ template "_shared/session-context" . }}
 
-  ## Process
+  # Create a Developer-Ready Specification
 
-  Begin: **"What do you want to build?"**
+  Target directory: `{{ .Args.Dirname }}`
+  Filename setting: `{{ Default "spec-<feature>.md" .Args.Filename }}`
 
-  Then follow-up based on answers:
+  {{- if .Session.HasMessages }}
+  ## Context mode — synthesize the discussed feature
 
-  1. One clear question per turn
-  2. Each question builds on what's established
-  3. Ask rather than assume
-  4. After each answer, briefly summarize (1-2 sentences), then next question
-  5. Cover: functional requirements, non-functional (performance, security), data models, edge cases, error handling, constraints, dependencies
+  Review the conversation so far and identify the concrete feature, change, or
+  technical topic under discussion. Synthesize the specification from that context;
+  do **not** restart with the generic "What do you want to build?" question.
 
-  Use the `think` tool for deep reasoning. Use the `todo` tool to track what's established.
+  Extract established requirements, decisions, constraints, affected users, success
+  criteria, and unresolved points. Read relevant repository files and existing docs
+  to verify technical claims. Ask a focused clarifying question only when a missing
+  answer would materially change scope or acceptance criteria.
+  {{- else }}
+  ## Fresh-conversation mode — establish the topic first
 
-  ## Output
+  There is no prior conversation context. Do **not** draft or write a specification
+  yet. Use `mitto_ui_form(self_id: "{{ .Session.ID }}")` to ask:
+
+  **"What do you want to create a spec for?"**
+
+  Collect the feature/topic in a required text field named `topic`. Then conduct a
+  short clarifying discussion before drafting. Ask one focused question at a time,
+  summarize each answer briefly, and stop once you understand:
+
+  1. the problem, intended users, and desired outcome;
+  2. in-scope and out-of-scope behavior;
+  3. success criteria and important edge/error cases;
+  4. material technical, security, performance, compatibility, or dependency constraints.
+
+  Prefer 2–4 high-value questions; do not turn the interaction into an exhaustive
+  questionnaire. Read relevant repository files once the topic identifies the area.
+  {{- end }}
+
+  ## Determine the output path
+
+  Derive `<feature>` as a concise lowercase kebab-case slug from the discussed or
+  collected topic (for example, "Workspace authentication" → `workspace-auth`).
+
+  - If `Filename` is empty or equals the literal default `spec-<feature>.md`, use
+    `spec-<derived-feature>.md`.
+  - Otherwise use `{{ .Args.Filename }}` as the advanced filename override. It must
+    be a filename only (no `/`, `..`, or absolute path); append `.md` if it has no
+    extension.
+  - The final workspace-relative path is
+    `{{ .Args.Dirname }}/<resolved-filename>`—normally
+    `{{ .Args.Dirname }}/spec-<derived-feature>.md`.
+
+  Verify `{{ .Args.Dirname }}` exists and is a directory. Do not silently select a
+  different directory. If the resolved file already exists, use
+  `mitto_ui_options(self_id: "{{ .Session.ID }}")` to ask whether to replace it,
+  choose another filename, or cancel; never overwrite without approval.
+
+  ## Draft the specification
 
   Generate the spec in memory first, then present it for review before saving.
 
@@ -33,6 +95,8 @@ prompt: |
 
   ## Introduction
   [2-3 sentences: what and why]
+
+  ## Goals and Non-Goals
 
   ## Requirements
 
@@ -48,39 +112,24 @@ prompt: |
 
   ## Edge Cases
 
+  ## Dependencies and Compatibility
+
+  ## Verification Strategy
+
   ## Open Questions
   ```
 
-  ### Review and Edit (With Mitto UI)
+  Make every requirement concrete and testable. Distinguish facts established by
+  the conversation/repository from assumptions; unresolved decisions belong under
+  Open Questions rather than being invented.
 
-  Before saving the spec to a file, present it in a textbox for the user to review and edit:
+  ## Review and save
 
-  ```
-  mitto_ui_textbox(self_id: "{{ .Session.ID }}",
-    title: "Review Specification — edit before saving",
-    text: "<generated-spec-markdown>",
-    result: "edited_text")
-  ```
+  Before writing, present the complete Markdown specification in
+  `mitto_ui_textbox(self_id: "{{ .Session.ID }}")` for review and editing. Use the
+  submitted text as the final content. If the user cancels, ask what to revise and
+  present it again; make no file changes until they submit the review.
 
-  - If `changed == true`: use the edited text as the final spec.
-  - If `changed == false`: use the original generated text.
-  - If `aborted == true`: ask the user what they'd like to change, revise, and present again.
-
-  **Without Mitto UI**: Show the spec in conversation and ask if they want changes before saving.
-
-  ### File Location
-
-  1. Check for `specs/` or `spec/` folder
-  2. Multiple candidates: **With Mitto UI**: `mitto_ui_options` to select. **Without**: list and ask.
-  3. No folder exists: **With Mitto UI**: `mitto_ui_options(self_id: "{{ .Session.ID }}", ...)` to create `specs/`. **Without**: ask permission.
-  4. **With Mitto UI**: Use `mitto_ui_form` to confirm the file name and location:
-     ```
-     mitto_ui_form(self_id: "{{ .Session.ID }}", title: "Save Specification", html: "
-       <label for='directory'>Directory:</label>
-       <input type='text' name='directory' id='directory' value='<detected-dir>' placeholder='specs/'>
-       <label for='filename'>File name:</label>
-       <input type='text' name='filename' id='filename' value='<suggested-name>.md' placeholder='feature-name.md'>
-     ")
-     ```
-  5. **Without Mitto UI**: Suggest a short descriptive name (e.g., `user-auth.md`) and ask for confirmation.
-  6. Save the file.
+  Write the approved text to the resolved path with a file-editing tool. Report the
+  exact path and the feature slug used. Do not implement the specification or make
+  unrelated repository changes.

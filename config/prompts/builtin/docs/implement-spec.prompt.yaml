@@ -1,63 +1,109 @@
 icon: list
 name: Implement spec
 menus: prompts, !promptsLoop
-description: Create a detailed implementation plan from a specification
+description: Decompose a specification into complete, prioritized beads work items and epics
 group: Development
 backgroundColor: '#FFECB3'
+enabledWhen: 'CommandExists("bd") && !(Session.HasBeadsIssue && BeadHasLabels(Session.BeadsIssue, "support-question"))'
+preferredModels:
+  - modelTag: Reasoning
+parameters:
+  - name: SpecFile
+    type: filename
+    required: false
+    remember: folder
+    glob:
+      - "**/*.md"
+      - "**/*.markdown"
+      - "**/*.txt"
+      - "**/*.rst"
+      - "**/*.adoc"
+      - "**/*.asciidoc"
+      - "**/*.pdf"
+      - "**/*.doc"
+      - "**/*.docx"
+      - "**/*.odt"
+      - "**/*.rtf"
+      - "**/*.html"
+      - "**/*.htm"
+      - "**/*.tex"
+      - "**/*.yaml"
+      - "**/*.yml"
+      - "**/*.json"
+      - "**/*.feature"
+    description: Optional workspace-relative path to a specification document; accepts common prose, office, web, structured-spec, and BDD formats, but excludes source-code files. If empty, you will be asked which document to use.
 prompt: |
-  Read the spec file thoroughly. Explore the codebase for current architecture,
-  patterns, and reusable utilities. Do not speculate — read relevant files first.
+  {{ template "_shared/session-context" . }}
 
-  Read the spec, design the architecture, and create a detailed implementation plan
-  broken into small iterative steps.
+  # Decompose a Specification into Beads
 
-  Only plan and implement what the spec requires. Keep solutions simple. No extra
-  features, abstractions, or defensive coding beyond what's specified.
+  Turn one specification into a complete, dependency-correct set of beads that
+  can be implemented independently or under coherent epics. Do not implement the
+  specification in this conversation; the created tickets are the deliverable.
 
-  ## Phase 1: Understand the Spec
+  {{ template "beads-issues/shared/bootstrap" . }}
 
-  1. Core requirements
-  2. Success criteria
-  3. Constraints (tech stack, dependencies)
-  4. Scope boundaries
+  ## Step 1 — Resolve and read the specification
 
-  Ask clarifying questions if anything is unclear.
+  {{- if .Args.SpecFile }}
+  The selected specification is `{{ .Args.SpecFile }}`. Verify that this exact
+  workspace-relative path exists, then read the complete document before planning.
+  {{- else }}
+  No specification path was supplied. Before doing any analysis or creating beads,
+  use `mitto_ui_form(self_id: "{{ .Session.ID }}")` to ask for the workspace-relative
+  specification path in a required text field named `spec_file`. Validate the
+  submitted path and re-present the form if it is missing or unreadable.
+  {{- end }}
 
-  ## Phase 2: Design Architecture
+  Accept only a document/specification format represented by the `SpecFile` picker.
+  Reject source-code paths such as `.go`, `.js`, `.py`, or `.java` and ask for the
+  actual specification document instead; source files are implementation context,
+  never the specification input.
 
-  Consider: data models, APIs/interfaces, business logic, error handling, security, testing strategy, observability, versioning.
+  Use the appropriate available reader for the document format: normal file tools
+  for text formats (`.md`, `.txt`, `.rst`, `.adoc`, and similar), and a PDF/Word or
+  local document-parsing tool for binary formats such as `.pdf` or `.docx`. Never
+  infer a binary document's contents from its filename or metadata.
 
-  Identify dependencies between components and optimal build order.
+  Extract and retain a requirement inventory containing functional requirements,
+  non-functional requirements, acceptance criteria, constraints, exclusions,
+  migration/compatibility needs, and unresolved questions. If an ambiguity would
+  materially change the decomposition, ask one focused question with the appropriate
+  Mitto UI tool and wait for the answer rather than guessing.
 
-  Use the `think` tool for deep reasoning about the design.
+  ## Step 2 — Learn the implementation and tracker context
 
-  ## Phase 3: Implementation Plan
+  Read the relevant code and existing documentation to understand the architecture,
+  established patterns, likely affected areas, and realistic verification strategy.
+  Do not speculate about files you have not inspected.
 
-  Break into small iterative steps:
-  1. Identify major components and order
-  2. Break each into smaller steps
-  3. Ensure steps are: small enough for safe testing, large enough for progress, properly ordered
+  ## Step 3 — Design the decomposition
 
-  ```
-  | # | Description | Files/Components | Dependencies | Verification |
-  |---|-------------|------------------|--------------|--------------|
-  | 1 | ... | ... | None | ... |
-  | 2 | ... | ... | Step 1 | ... |
-  ````
+  Partition the requirements into concrete implementation slices. Each slice should
+  deliver observable value and include its own necessary tests and documentation.
+  Keep tightly coupled changes together, but split work that can be implemented,
+  reviewed, or sequenced independently.
 
-  Each step should be independently testable. Include test writing in each step, not as a separate phase. Prefer working software at every step.
+  {{ template "beads-issues/shared/planning-ticket-conventions" . }}
 
-  Use the `todo` tool to track progress.
+  Assign priority using the specification's impact, urgency, and critical-path
+  position. The coverage mapping must account for every extracted requirement.
 
-  ## Phase 4: Begin Implementation
+  ## Step 4 — Review the proposed hierarchy
 
-  Present plan, wait for approval.
+  Print a compact proposal with each epic, its indented children, standalone items,
+  type, priority, labels, requirement coverage, and blockers. Then use
+  `mitto_ui_form(self_id: "{{ .Session.ID }}")` with checked-by-default checkboxes
+  for every proposed epic and work item so the user can omit unwanted entries.
 
-  **With Mitto UI**: `mitto_ui_options(self_id: "{{ .Session.ID }}", ...)` → "Approve and start / Modify plan{{ if and (CommandExists "bd") (DirExists ".beads") }} / File as beads issue{{ end }}"
-  **Without**: Ask in conversation.
+  An epic is approved only when its checkbox is present. If an approved epic has
+  fewer than two approved children, create those children as standalone beads
+  instead. If the user cancels or submits with every work item unchecked, create
+  nothing and stop. Incorporate requested revisions and re-present the hierarchy
+  before writing any beads.
 
-  {{ template "_shared/offer-file-as-bead" . }}
+  Treat the specification's functional requirements, non-functional requirements,
+  constraints, and acceptance criteria as the source units for the shared coverage
+  matrix and retrospective.
 
-  Once approved, per step: implement → write/update tests → verify → report → next.
-
-  If issues arise that affect the plan, stop and discuss before continuing.
+  {{ template "beads-issues/shared/planned-work-ticket-tail" . }}
