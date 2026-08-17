@@ -144,6 +144,15 @@ describe("sessions resource", () => {
       expect(result).toEqual({ callback_url: "https://x/cb/tok" });
     });
 
+    test("getCallback(id) returns an unconfigured status without throwing", async () => {
+      const { sessions, calls, respondWith } = mk();
+      respondWith(() => fakeResponse({ body: { configured: false } }));
+
+      await expect(sessions.getCallback("s1")).resolves.toEqual({ configured: false });
+      expect(calls).toHaveLength(1);
+      expect(calls[0].init.method).toBe("GET");
+    });
+
     test("createCallback(id) calls POST .../callback", async () => {
       const { sessions, calls } = mk();
       await sessions.createCallback("s1");
