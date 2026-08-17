@@ -8,7 +8,7 @@ parameters:
 description: Continue iterating to implement the feature we have been working on
 group: Development
 backgroundColor: '#BBDEFB'
-enabledWhen: 'Session.HasMessages && CommandExists("bd")'
+enabledWhen: 'Session.HasMessages && CommandExists("bd") && !(Session.HasBeadsIssue && BeadHasLabels(Session.BeadsIssue, "support-question"))'
 loop:
   trigger: [onCompletion]
   onCompletion:

@@ -329,3 +329,21 @@ make check-prompts
 ```
 
 A broken fragment reference, typo'd `modelTag`, or invalid prompt YAML fails CI before unit tests even run.
+
+## Support-Question Exclusion Convention
+
+Builtin prompts in the **Development**, **Submission of changes**, and **Work flow** (child-spawning) groups are hidden when the current conversation is linked to a bead carrying the `support-question` label. Enforced by an `enabledWhen` clause AND-ed onto whatever gates the prompt already has:
+
+```yaml
+enabledWhen: >
+  (existing conditions here) &&
+  !(Session.BeadsIssue != null && BeadHasLabels(Session.BeadsIssue.ID, "support-question"))
+```
+
+Rationale: support conversations use a distinct workflow (reply-to-user, gather-info, watch-channel) and should not surface dev/PR/git or minion-spawning actions in their prompt menu.
+
+**When adding a new prompt to any of those three groups**: include the exclusion, preserve any pre-existing capability gates (Git/GitHub/beads/etc.) unchanged, and extend the existing regression coverage in `internal/config/` to list the new prompt. Groups outside those three (support/*, testing/*, blog/*, on-call/*, skills/*, misc/*, etc.) do **not** carry the exclusion — they either belong in support conversations or are neutral.
+
+## Documentation Prompts Use `modelTag: Coding`
+
+Every prompt in the **docs/** family (`document`, `document-code`, `document-arch`, `improve-docs`, `create-spec`, `implement-spec`, `propose-a-plan`, `architectural-analysis`, `generate-agents-md`, `streamline-agents-md`) declares `preferredModels: [{ modelTag: Coding }]`. Documentation output is a technical-writing task that benefits from the same code-aware profiles that back implementation prompts, not a generic-chat profile. New docs prompts should follow the same convention; `make check-model-tags` will reject an unknown tag but does NOT enforce presence, so the convention lives here.

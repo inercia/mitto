@@ -4,6 +4,7 @@ menus: prompts, conversation, !promptsLoop
 description: Commit changes, rebase onto the base branch, and push to a pull request
 group: Submission of changes
 backgroundColor: '#B2DFDB'
+enabledWhen: '!(Session.HasBeadsIssue && BeadHasLabels(Session.BeadsIssue, "support-question"))'
 preferredModels:
   - modelTag: Coding
 target:

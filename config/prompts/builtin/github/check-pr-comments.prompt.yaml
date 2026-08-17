@@ -17,7 +17,7 @@ parameters:
     type: text
     required: false
     description: 'Optional PR to check — a number, URL, or branch name. If omitted, uses the current branch.'
-enabledWhen: FileExists(".git/config") && (Tools.HasPattern("github_*") || CommandExists("gh") || CommandExists("glab"))
+enabledWhen: 'FileExists(".git/config") && (Tools.HasPattern("github_*") || CommandExists("gh") || CommandExists("glab")) && !(Session.HasBeadsIssue && BeadHasLabels(Session.BeadsIssue, "support-question"))'
 prompt: |
   Check whether the current pull request has review comments worth acting on,
   and — only if it does — hand the work off to the **Address PR Comments** prompt.

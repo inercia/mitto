@@ -4,6 +4,7 @@ menus: prompts, !promptsLoop
 description: Analyze and fix the errors shown
 group: Development
 backgroundColor: '#FFE0B2'
+enabledWhen: '!(Session.HasBeadsIssue && BeadHasLabels(Session.BeadsIssue, "support-question"))'
 tags:
 - loop
 prompt: |

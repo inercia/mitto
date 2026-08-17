@@ -4,6 +4,7 @@ menus: prompts, !conversation, !promptsLoop
 description: Submit changes
 group: Submission of changes
 backgroundColor: '#B2DFDB'
+enabledWhen: '!(Session.HasBeadsIssue && BeadHasLabels(Session.BeadsIssue, "support-question"))'
 preferredModels:
   - modelTag: Coding
 target:
