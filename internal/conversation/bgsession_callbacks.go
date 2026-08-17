@@ -372,17 +372,46 @@ func (bs *BackgroundSession) cbInitBaselineModelIfEmpty(defaultModel string) {
 // goroutine for a category.
 func (bs *BackgroundSession) cbApplyConfigConstraintsAsync(category string) {
 	bs.startupConstraintPending.Add(1)
+	generation, generationAware := bs.beginStartupConstraintAttempt()
 	bs.startupConstraintWG.Add(1)
 	go func() {
 		defer bs.startupConstraintWG.Done()
 		err := bs.applyConfigConstraints(category)
-		// A terminal startup failure is sticky for this BackgroundSession: a later
-		// successful category must not release queued turns past an unmet constraint.
-		if err != nil {
-			bs.startupConstraintFailed.Store(true)
-		}
+		bs.finishStartupConstraintAttempt(generation, generationAware, err)
 		bs.startupConstraintPending.Add(-1)
 	}()
+}
+
+// beginStartupConstraintAttempt opens a fresh failure epoch when a restarted
+// shared ACP process advertises a newer generation. Failures remain sticky
+// within one generation so a later successful callback cannot release queued
+// turns past another unmet startup constraint (mitto-qori).
+func (bs *BackgroundSession) beginStartupConstraintAttempt() (int, bool) {
+	if bs.sharedProcess == nil {
+		return 0, false
+	}
+	generation := bs.sharedProcess.Generation()
+	bs.startupConstraintMu.Lock()
+	if !bs.startupConstraintGenSet || generation > bs.startupConstraintGen {
+		bs.startupConstraintGen = generation
+		bs.startupConstraintGenSet = true
+		bs.startupConstraintFailed.Store(false)
+	}
+	bs.startupConstraintMu.Unlock()
+	return generation, true
+}
+
+func (bs *BackgroundSession) finishStartupConstraintAttempt(generation int, generationAware bool, err error) {
+	if err == nil {
+		return
+	}
+	bs.startupConstraintMu.Lock()
+	defer bs.startupConstraintMu.Unlock()
+	// Ignore a late failure from the replaced process after a newer generation
+	// has already begun applying its own startup constraint.
+	if !generationAware || generation == bs.startupConstraintGen {
+		bs.startupConstraintFailed.Store(true)
+	}
 }
 
 // initialModelApplyBudget bounds the SetSessionModel RPC issued to apply the

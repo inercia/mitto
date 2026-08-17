@@ -52,6 +52,8 @@ type fakeSharedProcess struct {
 	// handed to the transport). Used by mitto-ip1 to pin the exact payload
 	// BackgroundSession.FlushContext sends to the agent.
 	promptCalls []fakeSharedProcessPromptCall
+	generation  int
+	setModelErr []error
 
 	// promptBlock, when non-nil, makes Prompt() block until the channel is
 	// closed before returning — used by mitto-p10q's dispatch-precedence test
@@ -125,9 +127,20 @@ func (f *fakeSharedProcess) SetSessionMode(_ context.Context, _ acp.SessionId, _
 	return nil
 }
 func (f *fakeSharedProcess) SetSessionModel(_ context.Context, _ acp.SessionId, _ string) error {
-	return nil
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.setModelErr) == 0 {
+		return nil
+	}
+	err := f.setModelErr[0]
+	f.setModelErr = f.setModelErr[1:]
+	return err
 }
-func (f *fakeSharedProcess) Generation() int     { return 0 }
+func (f *fakeSharedProcess) Generation() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.generation
+}
 func (f *fakeSharedProcess) Restart(_ int) error { return nil }
 func (f *fakeSharedProcess) RecommendedLoadTimeout(_ bool) time.Duration {
 	f.mu.Lock()

@@ -787,6 +787,54 @@ func TestBackgroundSession_IsClosed(t *testing.T) {
 	}
 }
 
+func TestStartupConstraintFailureClearsForNewSharedProcessGeneration(t *testing.T) {
+	origDelay := modelSwitchWarmRetryDelay
+	modelSwitchWarmRetryDelay = 0
+	defer func() { modelSwitchWarmRetryDelay = origDelay }()
+
+	shared := newFakeSharedProcess()
+	shared.setModelErr = []error{context.DeadlineExceeded, context.DeadlineExceeded}
+	bs := &BackgroundSession{
+		ctx:           context.Background(),
+		acpID:         "acp-session",
+		sharedProcess: shared,
+		agentModels: &SessionModelState{
+			CurrentModelId: "m-1",
+			AvailableModels: []ModelInfo{
+				{ModelId: "m-1", Name: "Model 1"},
+				{ModelId: "m-2", Name: "Model 2"},
+			},
+		},
+		configOptions: []SessionConfigOption{{
+			ID:           ConfigOptionCategoryModel,
+			Category:     ConfigOptionCategoryModel,
+			CurrentValue: "m-1",
+			Options: []SessionConfigOptionValue{
+				{Value: "m-1", Name: "Model 1"},
+				{Value: "m-2", Name: "Model 2"},
+			},
+		}},
+		acpServerConstraints: map[string]*config.ACPServerConstraint{
+			ConfigOptionCategoryModel: {Pattern: "Model 2", MatchMode: "exact"},
+		},
+	}
+
+	bs.cbApplyConfigConstraintsAsync(ConfigOptionCategoryModel)
+	bs.waitForStartupConfigConstraints()
+	if bs.startupConfigConstraintsReady() {
+		t.Fatal("failed startup constraint must keep the queue gated")
+	}
+
+	shared.mu.Lock()
+	shared.generation++
+	shared.mu.Unlock()
+	bs.cbApplyConfigConstraintsAsync(ConfigOptionCategoryModel)
+	bs.waitForStartupConfigConstraints()
+	if !bs.startupConfigConstraintsReady() {
+		t.Fatal("successful startup constraint on a new process generation must release the queue")
+	}
+}
+
 // TestBackgroundSession_SelfDestruct verifies that RequestSelfDestruct sets the
 // in-memory flag and IsSelfDestructRequested reflects it. The flag drives the
 // deferred deletion triggered at the end of a turn in PromptWithMeta.

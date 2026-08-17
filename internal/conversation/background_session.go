@@ -107,6 +107,9 @@ type BackgroundSession struct {
 	startupConstraintWG      sync.WaitGroup
 	startupConstraintPending atomic.Int32
 	startupConstraintFailed  atomic.Bool
+	startupConstraintMu      sync.Mutex
+	startupConstraintGen     int
+	startupConstraintGenSet  bool
 
 	// activePromptName / activePromptArgs record the workspace-prompt name and
 	// argument map of the dispatch that is currently in flight (isPrompting ==
