@@ -73,7 +73,7 @@ func (c *Client) slackJSON(method, path string, body, result any, success ...int
 	} else {
 		encoded, err := json.Marshal(body)
 		if err != nil {
-			return fmt.Errorf("Slack API: marshal request: %w", err)
+			return fmt.Errorf("slack API: marshal request: %w", err)
 		}
 		payload = bytes.NewReader(encoded)
 	}
@@ -83,11 +83,11 @@ func (c *Client) slackJSON(method, path string, body, result any, success ...int
 	}
 	request, err := c.newRequest(method, c.apiURL(path), contentType, payload)
 	if err != nil {
-		return fmt.Errorf("Slack API: build request: %w", err)
+		return fmt.Errorf("slack API: build request: %w", err)
 	}
 	response, err := c.do(request)
 	if err != nil {
-		return fmt.Errorf("Slack API: %w", err)
+		return fmt.Errorf("slack API: %w", err)
 	}
 	defer response.Body.Close()
 	ok := false
@@ -104,7 +104,7 @@ func (c *Client) slackJSON(method, path string, body, result any, success ...int
 		return nil
 	}
 	if err := json.NewDecoder(response.Body).Decode(result); err != nil {
-		return fmt.Errorf("Slack API: decode response: %w", err)
+		return fmt.Errorf("slack API: decode response: %w", err)
 	}
 	return nil
 }

@@ -17,10 +17,10 @@ const (
 
 var (
 	ErrInvalid     = errors.New("invalid Slack catalog input")
-	ErrNotFound    = errors.New("Slack catalog resource not found")
-	ErrConflict    = errors.New("Slack catalog conflict")
-	ErrReferenced  = errors.New("Slack catalog resource is referenced")
-	ErrUnavailable = errors.New("Slack integration unavailable")
+	ErrNotFound    = errors.New("slack catalog resource not found")
+	ErrConflict    = errors.New("slack catalog conflict")
+	ErrReferenced  = errors.New("slack catalog resource is referenced")
+	ErrUnavailable = errors.New("slack integration unavailable")
 )
 
 type AppProfile struct {

@@ -80,8 +80,20 @@ func TestSlackClientRejectsMalformedAndFailedValidationWithoutLeakingToken(t *te
 	defer server.Close()
 	client := &SlackClient{APIURL: server.URL, Client: server.Client()}
 	_, err := client.ValidateInstallation(context.Background(), token)
-	if !errors.Is(err, ErrUnavailable) || strings.Contains(err.Error(), token) {
+	if !errors.Is(err, ErrInvalid) || strings.Contains(err.Error(), token) {
 		t.Fatalf("failed validation error = %q", err)
+	}
+}
+
+func TestSlackClientClassifiesTransientAPIFailureAsUnavailable(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, `{"ok":false,"error":"ratelimited"}`)
+	}))
+	defer server.Close()
+	client := &SlackClient{APIURL: server.URL, Client: server.Client()}
+	_, err := client.ValidateInstallation(context.Background(), "xoxb-token")
+	if !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("transient validation error = %v", err)
 	}
 }
 

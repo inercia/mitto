@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -99,6 +100,21 @@ type fakeReferences struct{ refs []Reference }
 
 func (f *fakeReferences) FindSlackReferences(context.Context, string, []string) ([]Reference, error) {
 	return append([]Reference(nil), f.refs...), nil
+}
+
+type blockingSlackProvider struct {
+	*fakeSlackProvider
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (p *blockingSlackProvider) ListPublicChannels(ctx context.Context, token, cursor string, limit int) (ChannelPage, error) {
+	p.once.Do(func() {
+		close(p.started)
+		<-p.release
+	})
+	return p.fakeSlackProvider.ListPublicChannels(ctx, token, cursor, limit)
 }
 
 func newTestService() (*Service, *memoryStore, *memoryCredentials, *fakeSlackProvider, *fakeReferences) {
@@ -285,6 +301,46 @@ func TestReferenceBlockedDeletionAndChannelCache(t *testing.T) {
 	}
 	if _, err := credentials.Resolve(ref); !errors.Is(err, secrets.ErrNotFound) {
 		t.Fatalf("cascaded credential remains: %v", err)
+	}
+}
+
+func TestChannelRequestCannotRepopulateCacheAfterTokenReplacement(t *testing.T) {
+	service, _, _, provider, _ := newTestService()
+	blocking := &blockingSlackProvider{
+		fakeSlackProvider: provider,
+		started:           make(chan struct{}),
+		release:           make(chan struct{}),
+	}
+	service.slack = blocking
+	ctx := context.Background()
+	app, err := service.CreateApp(ctx, "App", "app-one")
+	if err != nil {
+		t.Fatal(err)
+	}
+	installation, err := service.CreateInstallation(ctx, app.ID, "Workspace", "", "bot-one")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := service.Channels(ctx, installation.ID, "", 25)
+		done <- err
+	}()
+	<-blocking.started
+	provider.installations["bot-new"] = provider.installations["bot-one"]
+	if _, err := service.ReplaceInstallationToken(ctx, installation.ID, "bot-new"); err != nil {
+		t.Fatal(err)
+	}
+	close(blocking.release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Channels(ctx, installation.ID, "", 25); err != nil {
+		t.Fatal(err)
+	}
+	if provider.channelCalls != 2 {
+		t.Fatalf("channel calls = %d, want refetch after token replacement", provider.channelCalls)
 	}
 }
 

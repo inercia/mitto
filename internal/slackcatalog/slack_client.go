@@ -9,9 +9,12 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
 
 var appTokenPattern = regexp.MustCompile(`^xapp-[0-9]+-(A[A-Z0-9]+)-`)
+
+const slackRequestTimeout = 30 * time.Second
 
 type SlackProvider interface {
 	ValidateApp(context.Context, string) (string, error)
@@ -24,7 +27,9 @@ type SlackClient struct {
 	Client *http.Client
 }
 
-func NewSlackClient() *SlackClient { return &SlackClient{} }
+func NewSlackClient() *SlackClient {
+	return &SlackClient{Client: &http.Client{Timeout: slackRequestTimeout}}
+}
 
 func (c *SlackClient) endpoint(method string) string {
 	base := c.APIURL
@@ -163,5 +168,11 @@ func slackAPIError(method, code string) error {
 	if code == "" {
 		code = "unknown_error"
 	}
-	return fmt.Errorf("%w: %s failed (%s)", ErrUnavailable, method, code)
+	switch code {
+	case "invalid_auth", "not_authed", "token_revoked", "token_expired", "account_inactive",
+		"invalid_app_token", "missing_scope", "not_allowed_token_type":
+		return fmt.Errorf("%w: %s failed (%s)", ErrInvalid, method, code)
+	default:
+		return fmt.Errorf("%w: %s failed (%s)", ErrUnavailable, method, code)
+	}
 }

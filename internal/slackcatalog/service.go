@@ -49,14 +49,15 @@ type channelCacheEntry struct {
 }
 
 type Service struct {
-	mu          sync.Mutex
-	store       Store
-	credentials CredentialManager
-	slack       SlackProvider
-	references  ReferenceChecker
-	now         func() time.Time
-	cacheTTL    time.Duration
-	channels    map[string]channelCacheEntry
+	mu           sync.Mutex
+	store        Store
+	credentials  CredentialManager
+	slack        SlackProvider
+	references   ReferenceChecker
+	now          func() time.Time
+	cacheTTL     time.Duration
+	channels     map[string]channelCacheEntry
+	channelEpoch map[string]uint64
 }
 
 func NewService(store Store, credentials CredentialManager, provider SlackProvider, references ReferenceChecker) *Service {
@@ -64,7 +65,8 @@ func NewService(store Store, credentials CredentialManager, provider SlackProvid
 		references = noReferences{}
 	}
 	return &Service{store: store, credentials: credentials, slack: provider, references: references,
-		now: time.Now, cacheTTL: defaultChannelCacheTTL, channels: make(map[string]channelCacheEntry)}
+		now: time.Now, cacheTTL: defaultChannelCacheTTL, channels: make(map[string]channelCacheEntry),
+		channelEpoch: make(map[string]uint64)}
 }
 
 func (s *Service) ListApps() ([]AppView, error) {
@@ -568,6 +570,7 @@ func (s *Service) Channels(ctx context.Context, installationID, cursor string, l
 		s.mu.Unlock()
 		return cloneChannelPage(entry.page), nil
 	}
+	epoch := s.channelEpoch[installationID]
 	s.mu.Unlock()
 	token, err := s.credentials.Resolve(secrets.SlackInstallationCredential(installationID, BotTokenCredential))
 	if err != nil {
@@ -578,7 +581,9 @@ func (s *Service) Channels(ctx context.Context, installationID, cursor string, l
 		return ChannelPage{}, err
 	}
 	s.mu.Lock()
-	s.channels[cacheKey] = channelCacheEntry{page: cloneChannelPage(page), expiresAt: s.now().Add(s.cacheTTL)}
+	if s.channelEpoch[installationID] == epoch {
+		s.channels[cacheKey] = channelCacheEntry{page: cloneChannelPage(page), expiresAt: s.now().Add(s.cacheTTL)}
+	}
 	s.mu.Unlock()
 	return page, nil
 }
@@ -689,6 +694,7 @@ func (s *Service) deleteCredentialsAndDocument(refs []secrets.CredentialRef, doc
 }
 
 func (s *Service) invalidateChannelsLocked(installationID string) {
+	s.channelEpoch[installationID]++
 	prefix := installationID + "\x00"
 	for key := range s.channels {
 		if strings.HasPrefix(key, prefix) {
