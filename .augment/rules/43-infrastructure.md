@@ -83,31 +83,50 @@ When requested runner unavailable (Docker not installed, etc.), falls back to `e
 
 ## Secrets (`internal/secrets`)
 
-Platform-abstracted secure credential storage. macOS: system Keychain. Other: `NoopStore` (returns `ErrNotSupported`).
+Process-owned, versioned credential vault. macOS stores one blob in the system
+Keychain; Linux stores the same schema in a hardened file under
+`MITTO_DIR/credentials`. Other platforms use `NoopStore`.
 
 ### Interface
 
 ```go
-type SecretStore interface {
-    Get(service, account string) (string, error)
-    Set(service, account, password string) error
-    Delete(service, account string) error
-    IsSupported() bool
-}
+manager.Put(ref, value)
+manager.Resolve(ref)
+manager.Status(ref) // configured only; never returns a value
+manager.Delete(ref)
 ```
 
 ### Package API
 
-- `Default()` returns platform store. Package-level `Get`, `Set`, `Delete` helpers.
-- Constants: `ServiceName = "Mitto"`, `AccountExternalAccess = "external-access"`.
-- Convenience: `GetExternalAccessPassword()`, `SetExternalAccessPassword()`.
+- `DefaultManager()` returns the cached process manager.
+- `GlobalCredential`, `SlackAppCredential`, and `SlackInstallationCredential`
+  construct validated typed references.
+- Package-level `Put`, `Resolve`, `Status`, and `DeleteCredential` delegate to it.
+- Legacy external-access/shared-token helpers resolve the vault first, then
+  migrate old Keychain accounts only after backend read-back verification.
+- `SetStoreForTest(NewFakeStore())` replaces both the legacy store and vault
+  backend so automated tests never touch the real developer Keychain.
+
+### Platform Storage
+
+- Darwin: one `Mitto` / `credentials-v1` Keychain item,
+  `AccessibleWhenUnlocked`, non-synchronizable. The lazy vault load is cached.
+- Linux: `credentials/` must be an owner-owned mode-0700 directory and
+  `vault.json` an owner-owned mode-0600 regular file. Reject symlinks and
+  insecure modes; write through same-directory temp + fsync + atomic rename.
+- Preserve the cached document on failed writes; mutate a copy and publish it
+  only after persistence succeeds.
 
 ### Sentinel Errors
 
 - `ErrNotFound`: credential doesn't exist.
 - `ErrNotSupported`: platform not supported (NoopStore).
+- `ErrCorruptVault` / `ErrUnsupportedVaultVersion`: unsafe persisted data.
+- `ErrUnsafeVaultPath`: Linux ownership, mode, type, or symlink validation failed.
 
 ### Do Not
 
 - Commit or log secret values.
-- Assume Keychain is available on non-Darwin; always handle `ErrNotSupported`.
+- Add secret fields to status structs or API responses.
+- Use generic atomic JSON helpers for the Linux vault: they create mode-0755
+  parents and do not provide no-follow validation.

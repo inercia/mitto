@@ -81,6 +81,11 @@ const (
 	// internal/stats).
 	StatsDirName = "stats"
 
+	// CredentialsDirName is the permission-hardened credential vault directory.
+	CredentialsDirName = "credentials"
+	// CredentialsVaultFileName is the versioned credential vault document.
+	CredentialsVaultFileName = "vault.json"
+
 	// RememberedArgsDirName is the name of the subdirectory holding per-workspace
 	// remembered prompt-argument snapshots (one JSON file per workspace UUID).
 	// See internal/rememberedargs.
@@ -473,6 +478,25 @@ func StatsDir() (string, error) {
 		return "", err
 	}
 	return filepath.Join(dir, StatsDirName), nil
+}
+
+// CredentialsDir returns the credential vault directory without creating it.
+// The secrets package creates and validates this directory with mode 0700.
+func CredentialsDir() (string, error) {
+	dir, err := Dir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, CredentialsDirName), nil
+}
+
+// CredentialsVaultPath returns the Linux credential vault file path.
+func CredentialsVaultPath() (string, error) {
+	dir, err := CredentialsDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, CredentialsVaultFileName), nil
 }
 
 // RememberedArgsDir returns the directory holding per-workspace remembered

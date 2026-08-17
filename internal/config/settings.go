@@ -942,10 +942,10 @@ func SetGlobalTaskLabelColors(entries []TaskLabelColor) error {
 // If settings.json doesn't exist, it creates it from the embedded default config.
 // This function also ensures the Mitto directory exists.
 //
-// On platforms with secure credential storage (macOS Keychain):
-//   - If a password exists in settings.json, it is migrated to the keychain
+// On platforms with secure credential storage (macOS Keychain or Linux vault):
+//   - If a password exists in settings.json, it is migrated to secure storage
 //     and removed from settings.json for security
-//   - If no password is in settings.json, it is loaded from the keychain
+//   - If no password is in settings.json, it is loaded from secure storage
 func LoadSettings() (*Config, error) {
 	// Ensure Mitto directory exists
 	if err := appdir.EnsureDir(); err != nil {
@@ -992,19 +992,19 @@ func LoadSettings() (*Config, error) {
 	if cfg.Web.Auth != nil && cfg.Web.Auth.Simple != nil {
 		if secrets.IsSupported() {
 			if cfg.Web.Auth.Simple.Password != "" {
-				// Password found in settings.json - migrate it to keychain
+				// Password found in settings.json - migrate it to secure storage
 				if err := migratePasswordToKeychain(&settings, cfg); err != nil {
 					// Log warning but don't fail - password still works from settings
 					// The migration will be attempted again on next load
 					_ = err // Ignore migration error, password is still usable
 				}
 			} else {
-				// No password in settings.json - try to load from keychain
+				// No password in settings.json - try secure storage
 				password, err := secrets.GetExternalAccessPassword()
 				if err == nil && password != "" {
 					cfg.Web.Auth.Simple.Password = password
 				}
-				// If password not found in Keychain, leave it empty
+				// If password is not stored, leave it empty
 				// Validation should catch this case when external access is attempted
 			}
 		}
@@ -1021,9 +1021,9 @@ func LoadSettings() (*Config, error) {
 // alongside Simple/Cloudflare auth. It mutates cfg.Web.Auth.SharedToken.
 //
 // Resolution order: env var MITTO_SHARED_TOKEN (headless/CI, wins outright,
-// never persisted) -> settings.json value (migrated to keychain, then blanked
-// on disk) -> keychain. settings is the on-disk-backed struct used to persist
-// the blank-out after a settings.json->keychain migration; it must be the
+// never persisted) -> settings.json value (migrated to secure storage, then
+// blanked on disk) -> secure storage. settings is the on-disk-backed struct
+// used to persist the blank-out after migration; it must be the
 // same Settings value cfg was derived from (via ToConfig()) so the migration
 // helper can save it.
 func resolveSharedToken(cfg *Config, settings *Settings) {
@@ -1040,7 +1040,7 @@ func resolveSharedToken(cfg *Config, settings *Settings) {
 	}
 
 	if cfg.Web.Auth.SharedToken != "" {
-		// Token found in settings.json - migrate it to keychain
+		// Token found in settings.json - migrate it to secure storage
 		if err := migrateSharedTokenToKeychain(settings, cfg); err != nil {
 			// Log warning but don't fail - token still works from settings
 			// The migration will be attempted again on next load
@@ -1049,7 +1049,7 @@ func resolveSharedToken(cfg *Config, settings *Settings) {
 		return
 	}
 
-	// No token in settings.json - try to load from keychain
+	// No token in settings.json - try secure storage
 	token, err := secrets.GetSharedToken()
 	if err == nil && token != "" {
 		cfg.Web.Auth.SharedToken = token
@@ -1171,20 +1171,20 @@ func deduplicateACPServerPrompts(settings *Settings) bool {
 	return modified
 }
 
-// migratePasswordToKeychain moves the password from settings.json to the system keychain.
+// migratePasswordToKeychain moves the password from settings.json to secure storage.
 // This improves security by not storing passwords in plain text files.
 func migratePasswordToKeychain(settings *Settings, cfg *Config) error {
 	password := cfg.Web.Auth.Simple.Password
 
-	// Save password to keychain
+	// The compatibility helper verifies the persisted vault before returning.
 	if err := secrets.SetExternalAccessPassword(password); err != nil {
-		return fmt.Errorf("failed to save password to keychain: %w", err)
+		return fmt.Errorf("failed to save password to secure storage: %w", err)
 	}
 
 	// Clear password from settings and save
 	settings.Web.Auth.Simple.Password = ""
 	if err := SaveSettings(settings); err != nil {
-		// Password is in keychain but settings.json still has the old password
+		// Secure storage has the value but settings.json still has the old password
 		// This is not ideal but not critical - next load will try again
 		return fmt.Errorf("failed to update settings after keychain migration: %w", err)
 	}
@@ -1193,13 +1193,13 @@ func migratePasswordToKeychain(settings *Settings, cfg *Config) error {
 }
 
 // migrateSharedTokenToKeychain moves the shared bearer token from settings.json
-// to the system keychain, mirroring migratePasswordToKeychain above.
+// to secure storage, mirroring migratePasswordToKeychain above.
 func migrateSharedTokenToKeychain(settings *Settings, cfg *Config) error {
 	token := cfg.Web.Auth.SharedToken
 
-	// Save token to keychain
+	// The compatibility helper verifies the persisted vault before returning.
 	if err := secrets.SetSharedToken(token); err != nil {
-		return fmt.Errorf("failed to save shared token to keychain: %w", err)
+		return fmt.Errorf("failed to save shared token to secure storage: %w", err)
 	}
 
 	// cfg.Web.Auth and settings.Web.Auth alias the SAME *WebAuth when cfg was
@@ -1218,7 +1218,7 @@ func migrateSharedTokenToKeychain(settings *Settings, cfg *Config) error {
 		settings.Web.Auth.SharedToken = ""
 	}
 	if err := SaveSettings(settings); err != nil {
-		// Token is in keychain but settings.json still has the old token
+		// Secure storage has the token but settings.json still has the old token
 		// This is not ideal but not critical - next load will try again
 		return fmt.Errorf("failed to update settings after keychain migration: %w", err)
 	}

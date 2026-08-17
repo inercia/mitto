@@ -21,9 +21,16 @@ import "sync"
 // symbols across package boundaries, and this seam must be callable from
 // other packages' own test files.
 func SetStoreForTest(s SecretStore) (restore func()) {
-	prev := store
+	globalsMu.Lock()
+	prevStore, prevManager := store, manager
 	store = s
-	return func() { store = prev }
+	manager = NewManager(newSecretStoreBlobBackend(s))
+	globalsMu.Unlock()
+	return func() {
+		globalsMu.Lock()
+		store, manager = prevStore, prevManager
+		globalsMu.Unlock()
+	}
 }
 
 // FakeStore is an in-memory SecretStore for use with SetStoreForTest. It

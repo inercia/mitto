@@ -199,13 +199,13 @@ func (s *Server) buildNewSettings(req *ConfigSaveRequest) (*configPkg.Settings, 
 					password = s.config.MittoConfig.Web.Auth.Simple.Password
 				}
 
-				// On platforms with secure storage, store password in Keychain
+				// On supported platforms, store the password in the unified vault
 				// and omit it from settings.json
 				if secrets.IsSupported() {
 					if err := secrets.SetExternalAccessPassword(password); err != nil {
 						return nil, fmt.Errorf("failed to store password in secure storage: %w", err)
 					}
-					// Omit password from settings.json when stored in Keychain
+					// Omit password from settings.json after verified persistence
 					password = ""
 				}
 

@@ -66,6 +66,25 @@ Manages the Mitto data directory, which stores configuration and session data.
 - `EnsureDir()` - Creates the directory structure if needed
 - `SettingsPath()` - Returns path to `settings.json`
 - `SessionsDir()` - Returns path to `sessions/` subdirectory
+- `CredentialsVaultPath()` - Returns the Linux credential vault path
+
+### `internal/secrets` - Process-Owned Credential Vault
+
+Provides one concurrency-safe credential manager shared by configuration and
+integration services. Credentials use typed references in a reserved global,
+Slack app-profile, or Slack workspace-installation namespace. `Status` exposes
+only whether a reference is configured; secret values are available only from
+`Resolve` and must never be logged or serialized into status APIs.
+
+The manager lazily loads one versioned vault document and caches it for the
+process lifetime. Darwin stores that document as one `AccessibleWhenUnlocked`,
+non-synchronizable item in the Mitto Keychain service. Linux stores the same
+schema at `MITTO_DIR/credentials/vault.json`; the directory is mode 0700, the
+file is mode 0600, and writes use no-follow checks, fsync, and atomic rename.
+
+Legacy `external-access` and `shared-token` helpers remain compatible. They
+resolve the vault first, fall back to old Keychain accounts, and remove legacy
+data only after a persisted write has been read back and verified.
 
 ### `internal/config` - Configuration Management
 

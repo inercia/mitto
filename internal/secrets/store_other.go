@@ -1,8 +1,7 @@
-//go:build !darwin
+//go:build !darwin && !linux
 
 package secrets
 
 func init() {
-	// Initialize the package-level store with NoopStore on non-macOS platforms
-	store = &NoopStore{}
+	setPlatformStores(&NoopStore{}, &unsupportedBlobBackend{})
 }
