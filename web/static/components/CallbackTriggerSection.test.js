@@ -227,6 +227,50 @@ describe("CallbackTriggerSection", () => {
     expect(container.textContent).not.toContain("Not configured");
   });
 
+  test("re-enabling after revoke generates a replacement callback URL", async () => {
+    const originalUrl = "https://example.test/callback/original";
+    const replacementUrl = "https://example.test/callback/replacement";
+    global.fetch = jest.fn((url, init) => {
+      const csrf = csrfResponse(url);
+      if (csrf) return Promise.resolve(csrf);
+      const method = methodOf(init);
+      if (method === "GET")
+        return Promise.resolve(response({ callback_url: originalUrl }));
+      if (method === "DELETE") return Promise.resolve(response(null, 204));
+      if (method === "POST")
+        return Promise.resolve(response({ callback_url: replacementUrl }));
+      throw new Error(`unexpected method ${method}`);
+    });
+
+    mount({ sessionId: "session-replace", loopEnabled: true });
+    await waitFor(
+      () => byTestId("callback-toggle")?.checked,
+      "callback toggle",
+    );
+    expect(byTestId("callback-url").textContent).toBe(originalUrl);
+
+    byTestId("callback-toggle").click();
+    await waitFor(
+      () =>
+        !byTestId("callback-toggle")?.checked &&
+        !byTestId("callback-toggle")?.disabled,
+      "actionable revoked callback",
+    );
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 0));
+    byTestId("callback-toggle").click();
+    await waitFor(
+      () => byTestId("callback-url")?.textContent === replacementUrl,
+      "replacement callback",
+    );
+
+    expect(
+      global.fetch.mock.calls.filter(([, init]) => methodOf(init) === "DELETE"),
+    ).toHaveLength(1);
+    expect(
+      global.fetch.mock.calls.filter(([, init]) => methodOf(init) === "POST"),
+    ).toHaveLength(1);
+  });
+
   test("session switch resets state and ignores a stale callback response", async () => {
     let resolveFirst;
     const firstSecret = "https://example.test/callback/first";
