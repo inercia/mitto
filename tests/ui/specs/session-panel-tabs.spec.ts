@@ -125,7 +125,7 @@ test.describe("SessionPanel tabs (no stray pseudo-element on focus)", () => {
         prompt: "Session panel coverage",
         frequency: { value: 1, unit: "hours" },
         delay_seconds: 30,
-        enabled: true,
+        enabled: false,
         max_iterations: 3,
         triggers: ["schedule", "onCompletion"],
       },
@@ -161,7 +161,7 @@ test.describe("SessionPanel tabs (no stray pseudo-element on focus)", () => {
 
     let savedPayload: Record<string, unknown> | null = null;
     await page.route(`**${loopUrl}`, async (route) => {
-      if (route.request().method() === "PUT") {
+      if (route.request().method() === "PATCH") {
         savedPayload = route.request().postDataJSON();
       }
       await route.continue();
