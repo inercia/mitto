@@ -16,9 +16,8 @@ type LoopPromptRequest struct {
 	Enabled       bool              `json:"enabled"`
 	FreshContext  bool              `json:"fresh_context,omitempty"`
 	MaxIterations int               `json:"max_iterations,omitempty"`
-	// Triggers is the list of triggers that arm this loop: any of "schedule"
-	// (frequency-based), "onCompletion" (event-driven, after the agent stops +
-	// DelaySeconds), or "onTasks" (event-driven, on beads/task changes). Empty
+	// Triggers is the list of triggers that arm this loop: any of "schedule",
+	// "onCompletion", "onTasks", "onChild", or "onSlack". Empty
 	// defaults to ["schedule"]. Replaces the legacy scalar "trigger" key, which
 	// is no longer accepted on this request DTO (mitto-r6j.5) — the response
 	// still emits both "trigger" (primary/first, back-compat) and "triggers".
@@ -41,7 +40,7 @@ type LoopPromptRequest struct {
 	// when PromptName is set. Ignored for free-text prompts.
 	Arguments map[string]string `json:"arguments,omitempty"`
 	// Condition is a CEL expression gating onTasks firing. Empty means fire on
-	// ANY beads/task change. Only meaningful when Trigger is "onTasks".
+	// ANY beads/task change. Only meaningful when onTasks is armed.
 	Condition *string `json:"condition,omitempty"`
 	// ConditionPreset is an optional UI preset id that was compiled into Condition.
 	ConditionPreset *string `json:"condition_preset,omitempty"`

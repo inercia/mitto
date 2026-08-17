@@ -157,7 +157,7 @@ capable of calling into the same delivery path at any time:
 | `onCompletion` | A one-shot timer armed by `OnConversationIdle` when the agent stops                                                                                                                                                                                    |
 | `onTasks`      | `OnBeadsChanged`, when a workspace-wide `BeadsWatcher` event lands                                                                                                                                                                                     |
 | `onChild`      | `OnConversationIdle`'s child leg (→ `OnChildEndResponse`) for `anyEndResponse`, the `session.Store` delete observer (→ `OnChildDeleted`) for `anyDeleted`, and the `session.Store` loop-stopped observer (→ `OnChildLoopStopped`) for `anyLoopStopped` |
-| `onSlack`      | The shared Slack integration fan-out/journal, matched against credential-free installation/channel/filter subscription rows                                                                                                                          |
+| `onSlack`      | The shared Slack integration fan-out/journal, matched against credential-free installation/channel/filter subscription rows                                                                                                                            |
 
 Because these sources are independent, two of them can want to deliver a run
 in the same narrow window (e.g. the agent finishes a turn — arming

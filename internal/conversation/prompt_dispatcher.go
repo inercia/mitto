@@ -754,9 +754,9 @@ func (p promptDispatcher) buildProcessorInput(d promptDeps, message string, isFi
 	if meta.Trigger != nil && meta.Trigger.OnTasks != nil {
 		triggerOnTasksChanges = meta.Trigger.OnTasks.Changes
 	}
-	// Thread the Slack trigger event (if any) through so the
-	// {{ .Trigger.Slack.* }} template namespace can render — nil for all
-	// non-Slack dispatches (mitto-qewp PoC).
+	// Thread the canonical Slack event batch through for
+	// {{ .Trigger.OnSlack.Events }}, retaining the first-event
+	// {{ .Trigger.Slack.* }} compatibility alias.
 	var triggerSlackEvent *processors.TriggerSlackEvent
 	var triggerOnSlackEvents []processors.TriggerSlackEvent
 	if meta.Trigger != nil && meta.Trigger.OnSlack != nil {

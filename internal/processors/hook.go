@@ -201,8 +201,8 @@ func BuildCELContext(input *ProcessorInput) *config.PromptEnabledContext {
 	ctx.Session.HasBeadsIssue = input.BeadsIssue != ""
 
 	// Trigger context for the {{ .Trigger.* }} template namespace. Populated only
-	// when this dispatch carries structured trigger data — currently only the
-	// onTasks trigger. Template guards must nest — the outer .Trigger pointer
+	// when this dispatch carries structured onTasks or onSlack data. Template
+	// guards must nest — the outer .Trigger pointer
 	// may itself be nil:
 	//     {{ with .Trigger }}{{ with .OnTasks }}...{{ end }}{{ end }}
 	// (nil when scheduled, onCompletion, manual "Run Now", or non-loop).

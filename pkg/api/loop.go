@@ -33,7 +33,7 @@ type SetLoopRequest struct {
 	Enabled       bool          `json:"enabled"`
 	MaxIterations int           `json:"max_iterations,omitempty"`
 	// Triggers is the list of triggers that arm this loop: any of "schedule",
-	// "onCompletion", "onTasks", or "onChild". Empty defaults to ["schedule"]
+	// "onCompletion", "onTasks", "onChild", or "onSlack". Empty defaults to ["schedule"]
 	// server-side. Replaces the legacy scalar "trigger" key on write (the
 	// server no longer accepts it here); the response DTO (LoopConfig) still
 	// emits both for back-compat (mitto-r6j.5).
