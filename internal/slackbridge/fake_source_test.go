@@ -60,3 +60,35 @@ func TestFakeSource_ExhaustedScriptBlocksUntilCancel(t *testing.T) {
 		t.Error("second Run() returned too quickly; expected it to block until ctx deadline")
 	}
 }
+
+func TestFakeSource_WaitGatesRunAndHonorsCancellation(t *testing.T) {
+	t.Run("release", func(t *testing.T) {
+		gate := make(chan struct{})
+		src := &FakeSource{Runs: []FakeRun{{Wait: gate, Events: []Event{{EventID: "released"}}}}}
+		events := make(chan Event, 1)
+		done := make(chan error, 1)
+		go func() { done <- src.Run(context.Background(), func(event Event) { events <- event }) }()
+
+		select {
+		case event := <-events:
+			t.Fatalf("event emitted before gate release: %+v", event)
+		case <-time.After(20 * time.Millisecond):
+		}
+		close(gate)
+		if event := <-events; event.EventID != "released" {
+			t.Fatalf("event after gate release = %+v", event)
+		}
+		if err := <-done; err != nil {
+			t.Fatalf("Run() after gate release: %v", err)
+		}
+	})
+
+	t.Run("cancel", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		src := &FakeSource{Runs: []FakeRun{{Wait: make(chan struct{})}}}
+		if err := src.Run(ctx, func(Event) {}); !errors.Is(err, context.Canceled) {
+			t.Fatalf("Run() error = %v, want context.Canceled", err)
+		}
+	})
+}

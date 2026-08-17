@@ -31,6 +31,9 @@ type FakeRun struct {
 	// SelfUserID, if non-empty, is reported via OnSelfIdentified before Events
 	// are emitted.
 	SelfUserID string
+	// Wait, when non-nil, gates this run until the channel is closed or receives
+	// a value. This lets integration tests advance reconnect phases explicitly.
+	Wait <-chan struct{}
 	// Events are emitted in order, one at a time.
 	Events []Event
 	// Err is returned once all Events have been emitted, simulating a
@@ -46,6 +49,13 @@ func (f *FakeSource) Run(ctx context.Context, emit func(Event)) error {
 	}
 	run := f.Runs[f.runIndex]
 	f.runIndex++
+	if run.Wait != nil {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-run.Wait:
+		}
+	}
 
 	if run.SelfUserID != "" && f.OnSelfIdentified != nil {
 		f.OnSelfIdentified(run.SelfUserID)

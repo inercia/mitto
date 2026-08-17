@@ -136,6 +136,18 @@ func NewManager(store *session.Store, catalog Catalog, credentials CredentialRes
 	return m
 }
 
+// SetSourceFactory replaces the Socket Mode source constructor. Call it before
+// Start; it exists so offline integration tests can exercise the production
+// manager with FakeSource and no Slack network or credentials.
+func (m *Manager) SetSourceFactory(factory SourceFactory) {
+	if factory == nil {
+		return
+	}
+	m.mu.Lock()
+	m.factory = factory
+	m.mu.Unlock()
+}
+
 // SetStatusCallback installs the value-free connection status observer.
 func (m *Manager) SetStatusCallback(fn func(ConnectionStatus)) {
 	m.mu.Lock()
