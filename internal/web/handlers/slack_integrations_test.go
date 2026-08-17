@@ -3,14 +3,18 @@ package handlers
 import (
 	"context"
 	"errors"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/secrets"
 	"github.com/inercia/mitto/internal/slackcatalog"
+	"github.com/inercia/mitto/internal/web/middleware"
 )
 
 type handlerCredentials struct {
@@ -65,11 +69,34 @@ func newSlackHandlers(t *testing.T) *Handlers {
 	return New(Deps{SlackCatalog: service})
 }
 
+func newLocalSlackRequest(method, target, body string) *http.Request {
+	request := httptest.NewRequest(method, target, strings.NewReader(body))
+	request.Host = "127.0.0.1"
+	return request
+}
+
+type trackingSlackBody struct {
+	reader *strings.Reader
+	read   bool
+}
+
+func newTrackingSlackBody(value string) *trackingSlackBody {
+	return &trackingSlackBody{reader: strings.NewReader(value)}
+}
+
+func (b *trackingSlackBody) Read(p []byte) (int, error) {
+	b.read = true
+	return b.reader.Read(p)
+}
+
+func (*trackingSlackBody) Close() error { return nil }
+
+var _ io.ReadCloser = (*trackingSlackBody)(nil)
+
 func TestSlackHandlersCreateListAndNeverReturnToken(t *testing.T) {
 	h := newSlackHandlers(t)
-	request := httptest.NewRequest(http.MethodPost, "/api/slack/apps", strings.NewReader(
-		`{"name":"Production","app_token":"write-only-token"}`,
-	))
+	request := newLocalSlackRequest(http.MethodPost, "/api/slack/apps",
+		`{"name":"Production","app_token":"write-only-token"}`)
 	response := httptest.NewRecorder()
 	h.HandleSlackAppCreate(response, request)
 	if response.Code != http.StatusCreated {
@@ -105,7 +132,7 @@ func TestSlackHandlersCanonicalErrors(t *testing.T) {
 	t.Run("bad request", func(t *testing.T) {
 		h := newSlackHandlers(t)
 		response := httptest.NewRecorder()
-		h.HandleSlackAppCreate(response, httptest.NewRequest(http.MethodPost, "/api/slack/apps", strings.NewReader(`{"name":`)))
+		h.HandleSlackAppCreate(response, newLocalSlackRequest(http.MethodPost, "/api/slack/apps", `{"name":`))
 		if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), `"code":"bad_request"`) {
 			t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 		}
@@ -115,9 +142,9 @@ func TestSlackHandlersCanonicalErrors(t *testing.T) {
 		h := newSlackHandlers(t)
 		body := `{"name":"One","app_token":"write-only-token"}`
 		first := httptest.NewRecorder()
-		h.HandleSlackAppCreate(first, httptest.NewRequest(http.MethodPost, "/api/slack/apps", strings.NewReader(body)))
+		h.HandleSlackAppCreate(first, newLocalSlackRequest(http.MethodPost, "/api/slack/apps", body))
 		second := httptest.NewRecorder()
-		h.HandleSlackAppCreate(second, httptest.NewRequest(http.MethodPost, "/api/slack/apps", strings.NewReader(body)))
+		h.HandleSlackAppCreate(second, newLocalSlackRequest(http.MethodPost, "/api/slack/apps", body))
 		if second.Code != http.StatusConflict || !strings.Contains(second.Body.String(), `"code":"conflict"`) {
 			t.Fatalf("status=%d body=%s", second.Code, second.Body.String())
 		}
@@ -134,10 +161,160 @@ func TestSlackHandlersCanonicalErrors(t *testing.T) {
 	})
 }
 
+func TestSlackCredentialWritesRejectExternalRequestsBeforeReadingBody(t *testing.T) {
+	h := newSlackHandlers(t)
+	tests := []struct {
+		name   string
+		method string
+		path   string
+		handle func(http.ResponseWriter, *http.Request)
+	}{
+		{"create app", http.MethodPost, "/api/slack/apps", h.HandleSlackAppCreate},
+		{"replace app token", http.MethodPut, "/api/slack/apps/app/token", h.HandleSlackAppToken},
+		{"create installation", http.MethodPost, "/api/slack/apps/app/installations", h.HandleSlackInstallationCreate},
+		{"replace installation token", http.MethodPut, "/api/slack/installations/install/token", h.HandleSlackInstallationToken},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			body := newTrackingSlackBody(`{"token":"canary-slack-token"}`)
+			request := httptest.NewRequest(test.method, test.path, nil)
+			request.Host = "127.0.0.1"
+			request.Body = body
+			request = request.WithContext(context.WithValue(request.Context(), middleware.ContextKeyExternalConnection, true))
+			response := httptest.NewRecorder()
+
+			test.handle(response, request)
+
+			if response.Code != http.StatusForbidden || body.read {
+				t.Fatalf("status=%d body_read=%v response=%s", response.Code, body.read, response.Body.String())
+			}
+			if strings.Contains(response.Body.String(), "canary-slack-token") || !strings.Contains(response.Body.String(), `"code":"forbidden"`) {
+				t.Fatalf("unsafe external response: %s", response.Body.String())
+			}
+		})
+	}
+}
+
+func TestSlackCredentialWriteRejectsAuthenticatedCSRFAuthorizedExternalRequest(t *testing.T) {
+	const canary = "canary-authenticated-external-token"
+	h := newSlackHandlers(t)
+	auth := middleware.NewAuthManager(&config.WebAuth{Simple: &config.SimpleAuth{Username: "admin", Password: "password"}})
+	defer auth.Close()
+	session, err := auth.CreateSession("admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	csrf := middleware.NewCSRFManager()
+	defer csrf.Close()
+	csrfToken, err := csrf.GenerateToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var logs strings.Builder
+	previousLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	defer slog.SetDefault(previousLogger)
+
+	body := newTrackingSlackBody(`{"name":"Production","app_token":"` + canary + `"}`)
+	request := httptest.NewRequest(http.MethodPost, "/api/slack/apps", nil)
+	request.Host = "127.0.0.1"
+	request.RemoteAddr = "203.0.113.12:12345"
+	request.Body = body
+	request.AddCookie(&http.Cookie{Name: "mitto_session", Value: session.Token})
+	request.AddCookie(&http.Cookie{Name: "mitto_csrf", Value: csrfToken})
+	request.Header.Set("X-CSRF-Token", csrfToken)
+	request = request.WithContext(context.WithValue(request.Context(), middleware.ContextKeyExternalConnection, true))
+	response := httptest.NewRecorder()
+
+	csrf.CSRFMiddleware(auth.AuthMiddleware(http.HandlerFunc(h.HandleSlackAppCreate))).ServeHTTP(response, request)
+
+	if response.Code != http.StatusForbidden || body.read {
+		t.Fatalf("status=%d body_read=%v response=%s", response.Code, body.read, response.Body.String())
+	}
+	if strings.Contains(response.Body.String(), canary) {
+		t.Fatalf("external response leaked canary: %s", response.Body.String())
+	}
+	if strings.Contains(logs.String(), canary) {
+		t.Fatalf("external write logged canary: %s", logs.String())
+	}
+}
+
+func TestSlackCredentialWritesRejectNonLocalhostBeforeReadingBody(t *testing.T) {
+	h := newSlackHandlers(t)
+	body := newTrackingSlackBody(`{"app_token":"canary-slack-token"}`)
+	request := httptest.NewRequest(http.MethodPost, "/api/slack/apps", nil)
+	request.Host = "mitto.example"
+	request.Body = body
+	response := httptest.NewRecorder()
+
+	h.HandleSlackAppCreate(response, request)
+
+	if response.Code != http.StatusForbidden || body.read {
+		t.Fatalf("status=%d body_read=%v response=%s", response.Code, body.read, response.Body.String())
+	}
+}
+
+func TestSlackCredentialBodyErrorsAreBoundedAndValueFree(t *testing.T) {
+	const canary = "canary-slack-secret-never-echo"
+	h := newSlackHandlers(t)
+	tests := []struct {
+		name       string
+		body       string
+		wantStatus int
+		wantCode   string
+	}{
+		{"malformed", `{"name":"Production","app_token":"` + canary, http.StatusBadRequest, "bad_request"},
+		{"trailing value", `{"name":"Production","app_token":"write-only-token"} ` + canary, http.StatusBadRequest, "bad_request"},
+		{"oversized", `{"name":"Production","app_token":"` + strings.Repeat("x", slackRequestBodyLimit) + canary + `"}`, http.StatusRequestEntityTooLarge, "too_large"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			response := httptest.NewRecorder()
+			h.HandleSlackAppCreate(response, newLocalSlackRequest(http.MethodPost, "/api/slack/apps", test.body))
+			if response.Code != test.wantStatus || !strings.Contains(response.Body.String(), `"code":"`+test.wantCode+`"`) {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+			if strings.Contains(response.Body.String(), canary) {
+				t.Fatalf("decoder response leaked canary: %s", response.Body.String())
+			}
+		})
+	}
+}
+
 func TestWriteSlackErrorMapsReferencesToConflict(t *testing.T) {
 	response := httptest.NewRecorder()
 	writeSlackError(response, errors.Join(slackcatalog.ErrReferenced, errors.New("in use")))
 	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), `"code":"conflict"`) {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestWriteSlackErrorNeverEchoesWrappedValues(t *testing.T) {
+	const canary = "canary-provider-error-secret"
+	tests := []struct {
+		name       string
+		err        error
+		wantStatus int
+	}{
+		{"invalid", errors.Join(slackcatalog.ErrInvalid, errors.New(canary)), http.StatusBadRequest},
+		{"not found", errors.Join(slackcatalog.ErrNotFound, errors.New(canary)), http.StatusNotFound},
+		{"referenced", errors.Join(slackcatalog.ErrReferenced, errors.New(canary)), http.StatusConflict},
+		{"conflict", errors.Join(slackcatalog.ErrConflict, errors.New(canary)), http.StatusConflict},
+		{"unavailable", errors.Join(slackcatalog.ErrUnavailable, errors.New(canary)), http.StatusServiceUnavailable},
+		{"unexpected", errors.New(canary), http.StatusInternalServerError},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			response := httptest.NewRecorder()
+			writeSlackError(response, test.err)
+			if response.Code != test.wantStatus {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+			if strings.Contains(response.Body.String(), canary) {
+				t.Fatalf("public error leaked wrapped value: %s", response.Body.String())
+			}
+		})
 	}
 }

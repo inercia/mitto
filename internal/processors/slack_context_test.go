@@ -7,8 +7,9 @@ import (
 )
 
 func TestBuildCELContextCanonicalOnSlackBatchAndCompatibilityAlias(t *testing.T) {
+	const framed = "<!-- SLACK_UNTRUSTED_START -->\n{\"text\":\"external one\"}\n<!-- SLACK_UNTRUSTED_END -->"
 	events := []TriggerSlackEvent{
-		{InstallationID: "install-1", EventID: "event-1", ChannelID: "channel-1", Kind: "message", AuthorID: "user-1", Timestamp: "1.0", Untrusted: true, Text: "external one"},
+		{InstallationID: "install-1", EventID: "event-1", ChannelID: "channel-1", Kind: "message", AuthorID: "user-1", Timestamp: "1.0", Untrusted: true, Text: framed},
 		{InstallationID: "install-2", EventID: "event-2", ChannelID: "channel-2", Kind: "appMention", AuthorID: "user-2", Timestamp: "2.0", ThreadTimestamp: "1.0", Untrusted: true, Text: "external two"},
 	}
 	ctx := BuildCELContext(&ProcessorInput{SessionID: "s", TriggerOnSlackEvents: events})
@@ -21,6 +22,9 @@ func TestBuildCELContextCanonicalOnSlackBatchAndCompatibilityAlias(t *testing.T)
 	if ctx.Trigger.Slack == nil || ctx.Trigger.Slack.EventID != "event-1" {
 		t.Errorf("legacy Trigger.Slack alias = %#v, want first event", ctx.Trigger.Slack)
 	}
+	if ctx.Trigger.OnSlack.Events[0].Text != framed || ctx.Trigger.Slack.Text != framed {
+		t.Error("canonical or compatibility context lost enforced Slack framing")
+	}
 	if !ctx.Trigger.OnSlack.Events[0].Untrusted {
 		t.Error("canonical event lost Untrusted provenance")
 	}
@@ -29,7 +33,7 @@ func TestBuildCELContextCanonicalOnSlackBatchAndCompatibilityAlias(t *testing.T)
 func TestProcessorInputDoesNotSerializeSlackEventContent(t *testing.T) {
 	in := ProcessorInput{
 		SessionID:            "s",
-		TriggerOnSlackEvents: []TriggerSlackEvent{{EventID: "private-event-id", Text: "untrusted-private-text"}},
+		TriggerOnSlackEvents: []TriggerSlackEvent{{EventID: "private-event-id", Text: "<!-- SLACK_UNTRUSTED_START -->untrusted-private-text"}},
 		TriggerSlackEvent:    &TriggerSlackEvent{EventID: "legacy-private-event-id", Text: "legacy-private-text"},
 	}
 	data, err := json.Marshal(in)
@@ -37,7 +41,7 @@ func TestProcessorInputDoesNotSerializeSlackEventContent(t *testing.T) {
 		t.Fatalf("Marshal() error = %v", err)
 	}
 	body := string(data)
-	for _, forbidden := range []string{"private-event-id", "untrusted-private-text", "legacy-private"} {
+	for _, forbidden := range []string{"private-event-id", "untrusted-private-text", "legacy-private", "SLACK_UNTRUSTED_START"} {
 		if strings.Contains(body, forbidden) {
 			t.Errorf("external processor JSON leaked Slack trigger content %q: %s", forbidden, body)
 		}
