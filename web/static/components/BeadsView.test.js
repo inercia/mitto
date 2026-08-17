@@ -1392,7 +1392,7 @@ describe("task label title backgrounds (mitto-ggs6)", () => {
   test("BeadsView applies the derived color to the title span only", () => {
     const source = readFileSync(BEADS_VIEW_PATH, "utf8");
     expect(source).toMatch(
-      /<span\s+data-testid="beads-issue-title"\s+style=\$\{titleBackground \? \{ backgroundColor: titleBackground \} : undefined\}/,
+      /<span\s+data-testid="beads-issue-title"\s+style=\$\{titleBackground\s*\?\s*\{ backgroundColor: titleBackground \}\s*:\s*undefined\}/,
     );
     expect(source).not.toMatch(/BeadsIssueRow[\s\S]{0,300}backgroundColor/);
   });
@@ -1543,6 +1543,7 @@ describe("mitto-n5mw: write handlers must not swallow beads_schema_skew (409)", 
           db_path: "/x/.beads",
           hint: "run bd migrate",
           options: ["allow_migrate_from_ui"],
+          allow_migrate_from_ui: false,
         },
       };
       expect(beadsUtils.toSchemaSkewState(data)).toEqual({
@@ -1550,6 +1551,7 @@ describe("mitto-n5mw: write handlers must not swallow beads_schema_skew (409)", 
         dbPath: "/x/.beads",
         hint: "run bd migrate",
         options: ["allow_migrate_from_ui"],
+        allowMigrate: false,
       });
     });
 
@@ -1562,6 +1564,7 @@ describe("mitto-n5mw: write handlers must not swallow beads_schema_skew (409)", 
       expect(state.dbPath).toBe("");
       expect(state.hint).toBe("");
       expect(state.options).toEqual([]);
+      expect(state.allowMigrate).toBe(true);
     });
   });
 
@@ -1736,6 +1739,26 @@ describe("mitto-erry: SchemaSkewDialog copy consolidation + kill-switch UX", () 
     // it in their config.
     expect(source).toMatch(/migrate_from_ui_disabled/);
     expect(source).toMatch(/web\.beads\.allow_migrate_from_ui/);
+  });
+
+  test("forward schema skew cannot offer or enable the migration action", () => {
+    const body = extractSchemaSkewDialogSource();
+    expect(body).toMatch(
+      /allowMigrate\s*&&\s*\(mode === "adopt" \|\| ackChecked\)/,
+    );
+    expect(body).toMatch(/showConfirm=\$\{allowMigrate\}/);
+    expect(body).toMatch(/isRunning \|\| !allowMigrate/);
+    expect(body).toMatch(/"Beads recovery required"/);
+    const confirmDialogSource = readFileSync(
+      resolve(__dirname_bv, "ConfirmDialog.js"),
+      "utf8",
+    );
+    expect(confirmDialogSource).toMatch(
+      /showConfirm\s*&&[\s\S]{0,200}<button[\s\S]{0,300}data-testid="confirm-dialog-confirm"/,
+    );
+    expect(source).toMatch(
+      /schemaSkew\.allowMigrate\s*&&[\s\S]{0,300}data-testid="beads-run-migration-btn"/,
+    );
   });
 });
 

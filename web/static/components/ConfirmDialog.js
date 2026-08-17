@@ -17,6 +17,7 @@ import { Modal } from "./Modal.js";
  * @param {boolean} props.isLoading - Whether the confirm action is in progress
  * @param {boolean} props.confirmDisabled - When true, the confirm button is disabled
  *   even if not loading (e.g. required-ack checkbox not yet checked in the dialog body).
+ * @param {boolean} props.showConfirm - When false, renders a dismiss-only dialog.
  * @param {Function} props.onConfirm - Callback when user confirms
  * @param {Function} props.onCancel - Callback when user cancels or closes
  * @param {any} props.children - Optional additional content rendered below the message
@@ -30,6 +31,7 @@ export function ConfirmDialog({
   confirmVariant = "primary",
   isLoading = false,
   confirmDisabled = false,
+  showConfirm = true,
   onConfirm,
   onCancel,
   children,
@@ -57,7 +59,8 @@ export function ConfirmDialog({
     >
       ${cancelLabel}
     </button>
-    <button
+    ${showConfirm &&
+    html`<button
       onClick=${handleConfirm}
       disabled=${isLoading || confirmDisabled}
       class=${confirmBtnClass}
@@ -82,7 +85,7 @@ export function ConfirmDialog({
         </svg>
       `}
       ${confirmLabel}
-    </button>
+    </button>`}
   `;
 
   return html`

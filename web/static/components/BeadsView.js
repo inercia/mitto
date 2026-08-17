@@ -805,6 +805,7 @@ export function BeadsIssueView({
         dbPath=${schemaSkew ? schemaSkew.dbPath : ""}
         hint=${schemaSkew ? schemaSkew.hint : ""}
         options=${schemaSkew ? schemaSkew.options : []}
+        allowMigrate=${schemaSkew ? schemaSkew.allowMigrate : true}
         workingDir=${workingDir}
         showToast=${showToast}
         onSuccess=${() => {
@@ -946,6 +947,8 @@ function BeadsIssueRow({
  * @param {Array}  props.options         - Parsed options[] from the gate JSON
  *   (each `{ mode, command, description }`). May be empty; when empty the
  *   dialog defaults to `mode=migrate`.
+ * @param {boolean} props.allowMigrate   - False when remediation requires a
+ *   recovery procedure rather than `bd migrate` (for example DB v65 > bd v53).
  * @param {string} props.workingDir      - Sent to the backend as working_dir.
  * @param {Function} props.onSuccess     - Called on HTTP 200 (parent refreshes).
  * @param {Function} props.onCancel      - Called when the user dismisses.
@@ -956,6 +959,7 @@ function SchemaSkewDialog({
   dbPath,
   hint,
   options,
+  allowMigrate = true,
   workingDir,
   onSuccess,
   onCancel,
@@ -990,10 +994,10 @@ function SchemaSkewDialog({
   // Enable the confirm button only when the "designated migrator" ack is
   // checked for `migrate` mode. `adopt` mode is not destructive-ish and does
   // not require the ack.
-  const canConfirm = mode === "adopt" || ackChecked;
+  const canConfirm = allowMigrate && (mode === "adopt" || ackChecked);
 
   const handleConfirm = async () => {
-    if (isRunning) return;
+    if (isRunning || !allowMigrate) return;
     setIsRunning(true);
     setErrorMsg("");
     setErrorStderr("");
@@ -1020,20 +1024,23 @@ function SchemaSkewDialog({
     }
   };
 
-  const message = dbPath
-    ? `Run the beads schema migration on this clone for the database at ${dbPath}?`
-    : "Run the beads schema migration on this clone?";
+  const message = allowMigrate
+    ? dbPath
+      ? `Run the beads schema migration on this clone for the database at ${dbPath}?`
+      : "Run the beads schema migration on this clone?"
+    : "This database cannot be migrated by the installed bd binary. Follow the recovery instructions below, then reload.";
 
   return html`
     <${ConfirmDialog}
       isOpen=${isOpen}
-      title="Run beads migration"
+      title=${allowMigrate ? "Run beads migration" : "Beads recovery required"}
       message=${message}
       confirmLabel="Yes, run migration"
-      cancelLabel="No"
+      cancelLabel=${allowMigrate ? "No" : "Close"}
       confirmVariant="primary"
       isLoading=${isRunning}
       confirmDisabled=${!canConfirm}
+      showConfirm=${allowMigrate}
       onConfirm=${handleConfirm}
       onCancel=${onCancel}
     >
@@ -1051,6 +1058,7 @@ function SchemaSkewDialog({
           html`<div class="text-xs text-mitto-text-secondary">${hint}</div>`
         }
         ${
+          allowMigrate &&
           hasOptions &&
           html`
             <div class="space-y-2">
@@ -1083,6 +1091,7 @@ function SchemaSkewDialog({
           `
         }
         ${
+          allowMigrate &&
           mode === "migrate" &&
           html`
             <label
@@ -1114,17 +1123,18 @@ function SchemaSkewDialog({
               >
                 ${errorMsg}
               </div>
-              ${
-                errorStderr &&
-                html`<pre
-                  class="max-h-64 overflow-y-auto whitespace-pre-wrap break-all font-mono text-xs bg-mitto-surface-2/50 rounded p-2 text-mitto-text-secondary"
-                  data-testid="schema-skew-dialog-error-stderr"
-                >${errorStderr}</pre>`
-              }
+              ${errorStderr &&
+              html`<pre
+                class="max-h-64 overflow-y-auto whitespace-pre-wrap break-all font-mono text-xs bg-mitto-surface-2/50 rounded p-2 text-mitto-text-secondary"
+                data-testid="schema-skew-dialog-error-stderr"
+              >
+${errorStderr}</pre
+              >`}
             </div>
           `
         }
         ${
+          allowMigrate &&
           !canConfirm &&
           !errorMsg &&
           html`
@@ -1509,10 +1519,18 @@ export function BeadsView({
     const requestID = ++taskLabelColorsRequestRef.current;
     try {
       const data = await getSdkClient().taskLabelColors.getGlobal();
-      if (requestID !== taskLabelColorsRequestRef.current || (isStale && isStale())) return;
+      if (
+        requestID !== taskLabelColorsRequestRef.current ||
+        (isStale && isStale())
+      )
+        return;
       setTaskLabelColors(data.entries || []);
     } catch (_err) {
-      if (requestID !== taskLabelColorsRequestRef.current || (isStale && isStale())) return;
+      if (
+        requestID !== taskLabelColorsRequestRef.current ||
+        (isStale && isStale())
+      )
+        return;
       setTaskLabelColors([]);
     }
   }, []);
@@ -1528,7 +1546,8 @@ export function BeadsView({
   useEffect(() => {
     const handler = () => loadTaskLabelColors();
     window.addEventListener("mitto:task_label_colors_updated", handler);
-    return () => window.removeEventListener("mitto:task_label_colors_updated", handler);
+    return () =>
+      window.removeEventListener("mitto:task_label_colors_updated", handler);
   }, [loadTaskLabelColors]);
 
   // Auto-refresh the issue list when the backend fsnotify watcher reports
@@ -2544,8 +2563,11 @@ export function BeadsView({
         <div class="text-sm text-mitto-text wrap-break-word">
           <span
             data-testid="beads-issue-title"
-            style=${titleBackground ? { backgroundColor: titleBackground } : undefined}
-          >${issue.title}</span>
+            style=${titleBackground
+              ? { backgroundColor: titleBackground }
+              : undefined}
+            >${issue.title}</span
+          >
         </div>
       </div>
       <div class="flex items-center gap-1 shrink-0 self-center">
@@ -3145,13 +3167,14 @@ export function BeadsView({
                   <div class="text-mitto-text-secondary text-xs max-w-md">
                     ${schemaSkew.hint}
                   </div>
-                  <button
+                  ${schemaSkew.allowMigrate &&
+                  html`<button
                     onClick=${() => setShowMigrateDialog(true)}
                     class="btn btn-primary btn-sm mt-2"
                     data-testid="beads-run-migration-btn"
                   >
                     Run migration…
-                  </button>
+                  </button>`}
                 </div>
               `
             : html`
@@ -3275,6 +3298,7 @@ export function BeadsView({
       dbPath=${schemaSkew ? schemaSkew.dbPath : ""}
       hint=${schemaSkew ? schemaSkew.hint : ""}
       options=${schemaSkew ? schemaSkew.options : []}
+      allowMigrate=${schemaSkew ? schemaSkew.allowMigrate : true}
       workingDir=${workingDir}
       showToast=${showToast}
       onSuccess=${() => {

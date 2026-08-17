@@ -122,9 +122,9 @@ export function isBeadsSchemaSkew(data) {
 
 // toSchemaSkewState maps a flattened beads response into the shape the
 // SchemaSkewDialog state (`schemaSkew`) expects: { message, dbPath, hint,
-// options }. Tolerates missing details by falling back to empty strings and
-// an empty options array so the dialog can still render (with the message
-// alone) if the backend omitted details.
+// options, allowMigrate }. Tolerates missing details by falling back to empty
+// strings/options and migration allowed, preserving compatibility with older
+// backends that did not send allow_migrate_from_ui.
 export function toSchemaSkewState(data) {
   const details = (data && data.details) || {};
   return {
@@ -132,6 +132,7 @@ export function toSchemaSkewState(data) {
     dbPath: details.db_path || "",
     hint: details.hint || "",
     options: Array.isArray(details.options) ? details.options : [],
+    allowMigrate: details.allow_migrate_from_ui !== false,
   };
 }
 
@@ -167,7 +168,9 @@ export function matchesSearch(issue, search) {
 // Return the first configured color whose label is present on the issue. The
 // mapping is ordered and matching is exact; no color state is stored per issue.
 export function taskTitleBackground(issue, entries) {
-  const labels = Array.isArray(issue?.labels) ? new Set(issue.labels) : new Set();
+  const labels = Array.isArray(issue?.labels)
+    ? new Set(issue.labels)
+    : new Set();
   for (const entry of entries || []) {
     if (entry?.label && labels.has(entry.label)) return entry.color || "";
   }
@@ -206,7 +209,6 @@ export function cmpBySort(a, b, sort) {
   if (primary !== 0) return primary * dir;
   return (a.id || "").localeCompare(b.id || "");
 }
-
 
 // Extend a set of "streaming" (actively-prompting) issue ids to also include
 // every transitive ancestor reached by walking `issue.parent` upward from any
