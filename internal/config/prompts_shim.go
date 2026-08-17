@@ -19,6 +19,7 @@ type PromptLoopSchedule = prompts.PromptLoopSchedule
 type PromptLoopOnCompletion = prompts.PromptLoopOnCompletion
 type PromptLoopOnTasks = prompts.PromptLoopOnTasks
 type PromptLoopOnChild = prompts.PromptLoopOnChild
+type PromptLoopOnSlack = prompts.PromptLoopOnSlack
 type PromptTarget = prompts.PromptTarget
 type PromptParameterCache = prompts.PromptParameterCache
 type PromptParameter = prompts.PromptParameter
