@@ -24,6 +24,7 @@ require (
 	github.com/modelcontextprotocol/go-sdk v1.4.0
 	github.com/reeflective/readline v1.1.4
 	github.com/shirou/gopsutil/v4 v4.26.5
+	github.com/slack-go/slack v0.27.0
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.10
 	github.com/webview/webview_go v0.0.0-20240831120633-6173450d4dd6

@@ -58,6 +58,7 @@ type Service struct {
 	cacheTTL     time.Duration
 	channels     map[string]channelCacheEntry
 	channelEpoch map[string]uint64
+	observer     func(Change)
 }
 
 func NewService(store Store, credentials CredentialManager, provider SlackProvider, references ReferenceChecker) *Service {
@@ -67,6 +68,24 @@ func NewService(store Store, credentials CredentialManager, provider SlackProvid
 	return &Service{store: store, credentials: credentials, slack: provider, references: references,
 		now: time.Now, cacheTTL: defaultChannelCacheTTL, channels: make(map[string]channelCacheEntry),
 		channelEpoch: make(map[string]uint64)}
+}
+
+// SetReferenceChecker replaces the reference checker used by guarded deletes.
+func (s *Service) SetReferenceChecker(checker ReferenceChecker) {
+	if checker == nil {
+		checker = noReferences{}
+	}
+	s.mu.Lock()
+	s.references = checker
+	s.mu.Unlock()
+}
+
+// SetChangeObserver installs a value-free callback invoked after successful
+// credential/catalog commits and outside the service lock.
+func (s *Service) SetChangeObserver(observer func(Change)) {
+	s.mu.Lock()
+	s.observer = observer
+	s.mu.Unlock()
 }
 
 func (s *Service) ListApps() ([]AppView, error) {
@@ -186,24 +205,33 @@ func (s *Service) ReplaceAppToken(ctx context.Context, id, token string) (AppVie
 		return AppView{}, err
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	doc, err := s.store.Load()
 	if err != nil {
+		s.mu.Unlock()
 		return AppView{}, err
 	}
 	idx := appIndex(doc, id)
 	if idx < 0 {
+		s.mu.Unlock()
 		return AppView{}, ErrNotFound
 	}
 	if doc.Apps[idx].SlackAppID != slackAppID {
+		s.mu.Unlock()
 		return AppView{}, fmt.Errorf("%w: replacement token belongs to a different Slack app", ErrConflict)
 	}
 	doc.Apps[idx].ValidatedAt = s.now().UTC()
 	doc.Apps[idx].UpdatedAt = doc.Apps[idx].ValidatedAt
 	if err := s.commitCredentialAndDocument(secrets.SlackAppCredential(id, AppTokenCredential), token, doc); err != nil {
+		s.mu.Unlock()
 		return AppView{}, err
 	}
-	return AppView{AppProfile: doc.Apps[idx], TokenConfigured: true}, nil
+	view := AppView{AppProfile: doc.Apps[idx], TokenConfigured: true}
+	observer := s.observer
+	s.mu.Unlock()
+	if observer != nil {
+		observer(Change{AppID: id, Credential: true})
+	}
+	return view, nil
 }
 
 func (s *Service) ValidateApp(ctx context.Context, id string) (AppView, error) {
@@ -381,20 +409,23 @@ func (s *Service) ReplaceInstallationToken(ctx context.Context, id, token string
 		return InstallationView{}, err
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	doc, err := s.store.Load()
 	if err != nil {
+		s.mu.Unlock()
 		return InstallationView{}, err
 	}
 	idx := installationIndex(doc, id)
 	if idx < 0 {
+		s.mu.Unlock()
 		return InstallationView{}, ErrNotFound
 	}
 	appIdx := appIndex(doc, doc.Installations[idx].AppID)
 	if appIdx < 0 {
+		s.mu.Unlock()
 		return InstallationView{}, fmt.Errorf("%w: parent app missing", ErrConflict)
 	}
 	if identity.TeamID != doc.Installations[idx].TeamID || identity.SlackAppID != doc.Apps[appIdx].SlackAppID {
+		s.mu.Unlock()
 		return InstallationView{}, fmt.Errorf("%w: replacement token identity does not match installation", ErrConflict)
 	}
 	doc.Installations[idx].TeamName = identity.TeamName
@@ -403,10 +434,17 @@ func (s *Service) ReplaceInstallationToken(ctx context.Context, id, token string
 	doc.Installations[idx].ValidatedAt = s.now().UTC()
 	doc.Installations[idx].UpdatedAt = doc.Installations[idx].ValidatedAt
 	if err := s.commitCredentialAndDocument(secrets.SlackInstallationCredential(id, BotTokenCredential), token, doc); err != nil {
+		s.mu.Unlock()
 		return InstallationView{}, err
 	}
 	s.invalidateChannelsLocked(id)
-	return InstallationView{Installation: doc.Installations[idx], TokenConfigured: true}, nil
+	view := InstallationView{Installation: doc.Installations[idx], TokenConfigured: true}
+	observer := s.observer
+	s.mu.Unlock()
+	if observer != nil {
+		observer(Change{AppID: view.AppID, InstallationID: id, Credential: true})
+	}
+	return view, nil
 }
 
 func (s *Service) ValidateInstallation(ctx context.Context, id string) (InstallationView, error) {
@@ -422,17 +460,19 @@ func (s *Service) ValidateInstallation(ctx context.Context, id string) (Installa
 		return InstallationView{}, err
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	doc, err := s.store.Load()
 	if err != nil {
+		s.mu.Unlock()
 		return InstallationView{}, err
 	}
 	idx := installationIndex(doc, id)
 	if idx < 0 {
+		s.mu.Unlock()
 		return InstallationView{}, ErrNotFound
 	}
 	appIdx := appIndex(doc, doc.Installations[idx].AppID)
 	if appIdx < 0 || identity.TeamID != doc.Installations[idx].TeamID || identity.SlackAppID != doc.Apps[appIdx].SlackAppID {
+		s.mu.Unlock()
 		return InstallationView{}, fmt.Errorf("%w: stored token identity does not match installation", ErrConflict)
 	}
 	doc.Installations[idx].TeamName = identity.TeamName
@@ -441,9 +481,16 @@ func (s *Service) ValidateInstallation(ctx context.Context, id string) (Installa
 	doc.Installations[idx].ValidatedAt = s.now().UTC()
 	doc.Installations[idx].UpdatedAt = doc.Installations[idx].ValidatedAt
 	if err := s.store.Save(doc); err != nil {
+		s.mu.Unlock()
 		return InstallationView{}, err
 	}
-	return InstallationView{Installation: doc.Installations[idx], TokenConfigured: true}, nil
+	view := InstallationView{Installation: doc.Installations[idx], TokenConfigured: true}
+	observer := s.observer
+	s.mu.Unlock()
+	if observer != nil {
+		observer(Change{AppID: view.AppID, InstallationID: id})
+	}
+	return view, nil
 }
 
 func (s *Service) PrepareDeleteApp(ctx context.Context, id string) (DeletePreview, error) {

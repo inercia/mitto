@@ -117,6 +117,13 @@ type SessionManager struct {
 	// eventsManager is used to broadcast global events to all connected clients.
 	eventsManager EventsBroadcaster
 
+	// slackReconciler keeps the process-scoped Slack routing index synchronized
+	// across REST, MCP, self-destruct, and automatic lifecycle paths.
+	slackReconciler interface {
+		ReconcileSession(string) error
+		RemoveSession(string)
+	}
+
 	// planStateMu protects planState map.
 	planStateMu sync.RWMutex
 	// planState caches the last known agent plan entries per session.
@@ -973,6 +980,16 @@ func (sm *SessionManager) SetEventsManager(eventsManager EventsBroadcaster) {
 	sm.eventsManager = eventsManager
 }
 
+// SetSlackReconciler installs the optional onSlack lifecycle reconciliation seam.
+func (sm *SessionManager) SetSlackReconciler(reconciler interface {
+	ReconcileSession(string) error
+	RemoveSession(string)
+}) {
+	sm.mu.Lock()
+	sm.slackReconciler = reconciler
+	sm.mu.Unlock()
+}
+
 // SetACPProcessManager sets the shared ACP process manager.
 // When set, new sessions use a shared ACP process per workspace instead of starting their own.
 func (sm *SessionManager) SetACPProcessManager(pm ProcessManager) {
@@ -1209,7 +1226,13 @@ func (sm *SessionManager) BroadcastSessionCreated(sessionID, name, acpServer, wo
 func (sm *SessionManager) BroadcastSessionArchived(sessionID string, archived bool, reason ...session.ArchiveReason) {
 	sm.mu.RLock()
 	em := sm.eventsManager
+	reconciler := sm.slackReconciler
 	sm.mu.RUnlock()
+	if reconciler != nil {
+		if err := reconciler.ReconcileSession(sessionID); err != nil && sm.logger != nil {
+			sm.logger.Debug("Failed to reconcile Slack subscriptions after archive change", "session_id", sessionID)
+		}
+	}
 
 	if em == nil {
 		return
@@ -1237,7 +1260,11 @@ func (sm *SessionManager) BroadcastSessionArchived(sessionID string, archived bo
 func (sm *SessionManager) BroadcastSessionDeleted(sessionID string) {
 	sm.mu.RLock()
 	em := sm.eventsManager
+	reconciler := sm.slackReconciler
 	sm.mu.RUnlock()
+	if reconciler != nil {
+		reconciler.RemoveSession(sessionID)
+	}
 
 	if em == nil {
 		return
@@ -1308,7 +1335,13 @@ func (sm *SessionManager) BroadcastSessionBeadsIssueUpdated(sessionID string, be
 func (sm *SessionManager) BroadcastLoopUpdated(sessionID string, loop *session.LoopPrompt) {
 	sm.mu.RLock()
 	em := sm.eventsManager
+	reconciler := sm.slackReconciler
 	sm.mu.RUnlock()
+	if reconciler != nil {
+		if err := reconciler.ReconcileSession(sessionID); err != nil && sm.logger != nil {
+			sm.logger.Debug("Failed to reconcile Slack subscriptions after loop update", "session_id", sessionID)
+		}
+	}
 
 	if em == nil {
 		return

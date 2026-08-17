@@ -83,6 +83,13 @@ type DeletePreview struct {
 	References      []Reference `json:"references"`
 }
 
+// Change is a value-free post-commit catalog notification.
+type Change struct {
+	AppID          string
+	InstallationID string
+	Credential     bool
+}
+
 type document struct {
 	Version       int            `json:"version"`
 	Apps          []AppProfile   `json:"apps"`

@@ -38,6 +38,7 @@ import (
 	"github.com/inercia/mitto/internal/rememberedargs"
 	"github.com/inercia/mitto/internal/secrets"
 	"github.com/inercia/mitto/internal/session"
+	"github.com/inercia/mitto/internal/slackbridge"
 	"github.com/inercia/mitto/internal/slackcatalog"
 	"github.com/inercia/mitto/internal/stats"
 	"github.com/inercia/mitto/internal/web/handlers"
@@ -210,6 +211,15 @@ type Server struct {
 
 	// Loop runner for scheduled prompt delivery
 	loopRunner *conversation.LoopRunner
+
+	// slackManager pools production Socket Mode connections by app profile.
+	slackManager *slackbridge.Manager
+
+	// slackBridgeCancel stops the experimental Slack event source
+	// (internal/slackbridge, mitto-qewp PoC), when configured via env vars.
+	// Nil when the feature is disabled (the common case).
+	slackBridgeCancel context.CancelFunc
+	slackBridgeDone   <-chan struct{}
 
 	// Callback index for mapping callback tokens to session IDs
 	callbackIndex       *conversation.CallbackIndex
@@ -1327,6 +1337,28 @@ func NewServer(config Config) (*Server, error) {
 	}
 	s.loopRunner.SetLoopWorkspaceConcurrency(loopWsConcurrency)
 
+	// Start the experimental Slack event source (internal/slackbridge,
+	// mitto-qewp PoC) when fully configured via env vars. This is
+	// deliberately NOT surfaced in Settings/UI or persisted anywhere; a
+	// partial/malformed configuration fails safely (logged without values,
+	// feature left disabled, no goroutine started) rather than running with
+	// an incomplete filter.
+	if slackCfg, enabled, err := slackbridge.LoadConfigFromEnv(); err != nil {
+		logger.Warn("Slack event source disabled: invalid configuration", "error", err)
+	} else if enabled {
+		slackBridge := slackbridge.NewBridge(slackCfg, s.loopRunner, logger)
+		slackSource := slackbridge.NewSlackSource(slackCfg, logger, slackBridge.SetSelfUserID)
+		slackCtx, slackCancel := context.WithCancel(context.Background())
+		s.slackBridgeCancel = slackCancel
+		slackDone := make(chan struct{})
+		s.slackBridgeDone = slackDone
+		go func() {
+			defer close(slackDone)
+			slackBridge.Run(slackCtx, slackSource)
+		}()
+		logger.Info("Slack event source enabled", "channel_id", slackCfg.ChannelID, "target_session_id", slackCfg.TargetSessionID)
+	}
+
 	// Initialize callback index and rate limiter
 	s.callbackIndex = conversation.NewCallbackIndex()
 	s.callbackRateLimiter = conversation.NewCallbackRateLimiter()
@@ -1349,6 +1381,27 @@ func NewServer(config Config) (*Server, error) {
 		slackCatalog = slackcatalog.NewService(
 			slackcatalog.NewFileStore(catalogPath), secrets.DefaultManager(), slackcatalog.NewSlackClient(), nil,
 		)
+	}
+	if slackCatalog != nil {
+		s.slackManager = slackbridge.NewManager(store, slackCatalog, secrets.DefaultManager(), s.loopRunner, logger)
+		slackCatalog.SetReferenceChecker(s.slackManager)
+		slackCatalog.SetChangeObserver(func(change slackcatalog.Change) {
+			if change.InstallationID != "" {
+				if err := s.slackManager.ReconcileAll(); err != nil {
+					logger.Warn("Failed to refresh Slack routing after catalog change", "error_class", "reconcile")
+				}
+				return
+			}
+			if change.Credential {
+				s.slackManager.RestartApp(change.AppID)
+			}
+		})
+		s.slackManager.SetStatusCallback(func(status slackbridge.ConnectionStatus) {
+			s.eventsManager.Broadcast("slack_connection_status", status)
+		})
+		if sessionMgr != nil {
+			sessionMgr.SetSlackReconciler(s.slackManager)
+		}
 	}
 
 	s.apiHandlers = handlers.New(handlers.Deps{
@@ -1611,7 +1664,12 @@ func NewServer(config Config) (*Server, error) {
 	// runner once per session removed by Delete (target plus any cascade
 	// descendants) so a parent armed for onChild can fire on child deletion
 	// (mitto-987y.5). Independent of sessionManager being non-nil.
-	store.SetDeleteObserver(s.loopRunner.OnChildDeleted)
+	store.SetDeleteObserver(func(sessionID, parentSessionID string) {
+		s.loopRunner.OnChildDeleted(sessionID, parentSessionID)
+		if s.slackManager != nil {
+			s.slackManager.RemoveSession(sessionID)
+		}
+	})
 
 	// Wire event-driven onChild(anyLoopStopped) loop firing: the store
 	// notifies the runner once a session's own loop transitions into the
@@ -1621,6 +1679,11 @@ func NewServer(config Config) (*Server, error) {
 	store.SetLoopStoppedObserver(s.loopRunner.OnChildLoopStopped)
 
 	s.loopRunner.Start()
+	if s.slackManager != nil {
+		if err := s.slackManager.Start(); err != nil {
+			logger.Warn("Slack connection manager failed to start", "error_class", "reconcile")
+		}
+	}
 
 	// Wire up loop runner to MCP server for the run-now tool.
 	// The loop runner is created after the MCP server, so we use a setter.
@@ -1856,6 +1919,22 @@ func (s *Server) Shutdown() error {
 
 	// Stop external listener if running (uses its own externalMu internally)
 	s.StopExternalListener()
+
+	// Stop and join the experimental Slack source before closing sessions or
+	// the loop runner, so no inbound event can race the shutdown sequence.
+	if s.slackBridgeCancel != nil {
+		s.slackBridgeCancel()
+		if s.slackBridgeDone != nil {
+			select {
+			case <-s.slackBridgeDone:
+			case <-time.After(5 * time.Second):
+				s.logger.Warn("Timed out waiting for Slack event source shutdown")
+			}
+		}
+	}
+	if s.slackManager != nil {
+		s.slackManager.Close()
+	}
 
 	// Close all background sessions
 	if s.sessionManager != nil {
@@ -2105,6 +2184,9 @@ func (s *Server) BroadcastSessionPinned(sessionID string, pinned bool) {
 
 // BroadcastSessionArchived notifies all connected clients that a session's archived state changed.
 func (s *Server) BroadcastSessionArchived(sessionID string, archived bool, reason ...session.ArchiveReason) {
+	if s.slackManager != nil {
+		_ = s.slackManager.ReconcileSession(sessionID)
+	}
 	data := map[string]interface{}{
 		"session_id": sessionID,
 		"archived":   archived,
@@ -2163,6 +2245,9 @@ func (s *Server) BroadcastSessionBeadsIssueUpdated(sessionID, beadsIssue string)
 
 // BroadcastSessionDeleted notifies all connected clients that a session was deleted.
 func (s *Server) BroadcastSessionDeleted(sessionID string) {
+	if s.slackManager != nil {
+		s.slackManager.RemoveSession(sessionID)
+	}
 	s.eventsManager.Broadcast(conversation.WSMsgTypeSessionDeleted, map[string]string{
 		"session_id": sessionID,
 	})
@@ -2176,6 +2261,9 @@ func (s *Server) BroadcastSessionDeleted(sessionID string) {
 // BroadcastLoopUpdated notifies all connected clients that a session's loop state changed.
 // This includes the full loop config so clients can update their frequency panels.
 func (s *Server) BroadcastLoopUpdated(sessionID string, loop *session.LoopPrompt) {
+	if s.slackManager != nil {
+		_ = s.slackManager.ReconcileSession(sessionID)
+	}
 	data := conversation.BuildLoopUpdatedData(sessionID, loop)
 	s.eventsManager.Broadcast(conversation.WSMsgTypeLoopUpdated, data)
 
