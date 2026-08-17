@@ -25,10 +25,6 @@ type FileBackend struct {
 // NewFileBackend creates a backend at an explicit path, primarily for tests.
 func NewFileBackend(path string) *FileBackend { return &FileBackend{path: path} }
 
-func newResolvingFileBackend(resolve func() (string, error)) *FileBackend {
-	return &FileBackend{pathResolver: resolve}
-}
-
 func (b *FileBackend) IsSupported() bool { return b != nil }
 
 // Load reads the vault without following the credential directory or file symlinks.

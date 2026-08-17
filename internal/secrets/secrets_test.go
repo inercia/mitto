@@ -61,9 +61,7 @@ func TestConstants(t *testing.T) {
 // to the same account/service pair on an unsupported-platform (NoopStore)
 // backend, without touching any real credential store.
 func TestNoopStore_SharedTokenWrappers(t *testing.T) {
-	prev := store
-	defer func() { store = prev }()
-	store = &NoopStore{}
+	t.Cleanup(SetStoreForTest(&NoopStore{}))
 
 	if _, err := GetSharedToken(); err != ErrNotSupported {
 		t.Errorf("GetSharedToken() error = %v, want %v", err, ErrNotSupported)
