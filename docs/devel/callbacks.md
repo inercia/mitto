@@ -117,10 +117,11 @@ Returns callback status for the session.
 
 **Responses:**
 
-| Status | Body                                                                    | Condition              |
-| ------ | ----------------------------------------------------------------------- | ---------------------- |
-| 200    | `{"callback_url": "https://...", "created_at": "2026-04-09T12:00:00Z"}` | Callback configured    |
-| 404    | `{"error": "not_found"}`                                                | No callback configured |
+| Status | Body                                                                                        | Condition              |
+| ------ | ------------------------------------------------------------------------------------------- | ---------------------- |
+| 200    | `{"configured": true, "callback_url": "https://...", "created_at": "2026-04-09T12:00:00Z"}` | Callback configured    |
+| 200    | `{"configured": false}`                                                                     | No callback configured |
+| 404    | `{"error":{"code":"not_found","message":"Session not found"}}`                              | Session does not exist |
 
 **Example:**
 

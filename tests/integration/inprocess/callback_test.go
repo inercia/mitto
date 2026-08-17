@@ -660,39 +660,52 @@ func TestCallback_GetUnconfigured(t *testing.T) {
 	}
 	defer ts.Client.DeleteSession(sess.SessionID)
 
-	// An existing session without a callback is a valid status response, not a missing resource.
+	// Repeated reads model UI remount/reconnect probes. An existing session without
+	// a callback is a valid status response every time, not a missing resource.
 	getURL := ts.HTTPServer.URL + "/mitto/api/sessions/" + sess.SessionID + "/callback"
-	resp, err := ts.HTTPServer.Client().Get(getURL)
-	if err != nil {
-		t.Fatalf("GET callback: %v", err)
-	}
-	defer resp.Body.Close()
+	for attempt := 1; attempt <= 3; attempt++ {
+		resp, err := ts.HTTPServer.Client().Get(getURL)
+		if err != nil {
+			t.Fatalf("GET callback attempt %d: %v", attempt, err)
+		}
 
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		t.Fatalf("expected 200 for unconfigured callback, got %d: %s", resp.StatusCode, body)
-	}
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			t.Fatalf("attempt %d: expected 200 for unconfigured callback, got %d: %s", attempt, resp.StatusCode, body)
+		}
 
-	var result map[string]interface{}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		t.Fatalf("decode unconfigured callback result: %v", err)
-	}
-	if configured, ok := result["configured"].(bool); !ok || configured {
-		t.Errorf("configured = %#v, want false", result["configured"])
-	}
-	if _, ok := result["callback_url"]; ok {
-		t.Errorf("unconfigured response unexpectedly contains callback_url: %#v", result)
-	}
-	if _, ok := result["created_at"]; ok {
-		t.Errorf("unconfigured response unexpectedly contains created_at: %#v", result)
+		var result map[string]interface{}
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			resp.Body.Close()
+			t.Fatalf("attempt %d: decode unconfigured callback result: %v", attempt, err)
+		}
+		resp.Body.Close()
+		if configured, ok := result["configured"].(bool); !ok || configured {
+			t.Errorf("attempt %d: configured = %#v, want false", attempt, result["configured"])
+		}
+		if _, ok := result["callback_url"]; ok {
+			t.Errorf("attempt %d: unconfigured response unexpectedly contains callback_url: %#v", attempt, result)
+		}
+		if _, ok := result["created_at"]; ok {
+			t.Errorf("attempt %d: unconfigured response unexpectedly contains created_at: %#v", attempt, result)
+		}
 	}
 }
 
-// TestCallback_GetMissingSession preserves a terminal 404 for a genuinely absent session.
-func TestCallback_GetMissingSession(t *testing.T) {
+// TestCallback_GetDeletedSession preserves a terminal 404 after session deletion.
+func TestCallback_GetDeletedSession(t *testing.T) {
 	ts := SetupTestServer(t)
 
-	getURL := ts.HTTPServer.URL + "/mitto/api/sessions/20260817-000000-deadbeef/callback"
+	sess, err := ts.Client.CreateSession(api.CreateSessionRequest{Name: "get-deleted-test"})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	if err := ts.Client.DeleteSession(sess.SessionID); err != nil {
+		t.Fatalf("DeleteSession: %v", err)
+	}
+
+	getURL := ts.HTTPServer.URL + "/mitto/api/sessions/" + sess.SessionID + "/callback"
 	resp, err := ts.HTTPServer.Client().Get(getURL)
 	if err != nil {
 		t.Fatalf("GET callback: %v", err)
