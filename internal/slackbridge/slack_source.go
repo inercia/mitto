@@ -17,6 +17,7 @@ import (
 type SlackSource struct {
 	cfg    Config
 	logger *slog.Logger
+	ack    func(*socketmode.Client, *socketmode.Request)
 	// onSelfIdentified, if set, is invoked once (per Run) with the bridge's
 	// own bot user ID, resolved via auth.test, before any events are
 	// emitted — wired to Bridge.SetSelfUserID in production.
@@ -25,7 +26,7 @@ type SlackSource struct {
 
 // NewSlackSource constructs a SlackSource. logger and onSelfIdentified may be nil.
 func NewSlackSource(cfg Config, logger *slog.Logger, onSelfIdentified func(userID string)) *SlackSource {
-	return &SlackSource{cfg: cfg, logger: logger, onSelfIdentified: onSelfIdentified}
+	return &SlackSource{cfg: cfg, logger: logger, ack: ackSocketRequest, onSelfIdentified: onSelfIdentified}
 }
 
 // Run implements Source. It blocks until ctx is cancelled or the Socket Mode
@@ -111,7 +112,7 @@ func (s *SlackSource) handleSocketEventDurable(evt socketmode.Event, client *soc
 		// including Mitto's own app (self-filter by user ID as well, in
 		// case BotID differs across workspaces).
 		if inner.SubType != "" || inner.BotID != "" || inner.User == selfUserID {
-			ackSocketRequest(client, evt.Request)
+			s.ackRequest(client, evt.Request)
 			return nil
 		}
 		out = Event{
@@ -121,7 +122,7 @@ func (s *SlackSource) handleSocketEventDurable(evt socketmode.Event, client *soc
 		}
 	case *slackevents.AppMentionEvent:
 		if inner.BotID != "" || inner.User == selfUserID {
-			ackSocketRequest(client, evt.Request)
+			s.ackRequest(client, evt.Request)
 			return nil
 		}
 		out = Event{
@@ -130,14 +131,20 @@ func (s *SlackSource) handleSocketEventDurable(evt socketmode.Event, client *soc
 			ThreadTimestamp: inner.ThreadTimeStamp, Text: inner.Text,
 		}
 	default:
-		ackSocketRequest(client, evt.Request)
+		s.ackRequest(client, evt.Request)
 		return nil
 	}
 	if err := accept(out); err != nil {
 		return err
 	}
-	ackSocketRequest(client, evt.Request)
+	s.ackRequest(client, evt.Request)
 	return nil
+}
+
+func (s *SlackSource) ackRequest(client *socketmode.Client, request *socketmode.Request) {
+	if s.ack != nil {
+		s.ack(client, request)
+	}
 }
 
 func ackSocketRequest(client *socketmode.Client, request *socketmode.Request) {

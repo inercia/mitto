@@ -2,6 +2,7 @@ package slackbridge
 
 import (
 	"encoding/json"
+	"errors"
 	"testing"
 
 	"github.com/slack-go/slack"
@@ -100,6 +101,60 @@ func TestSlackSource_HandleSocketEvent_AppMention_Emitted(t *testing.T) {
 	src.handleSocketEvent(evt, client, "U-SELF", func(e Event) { got = append(got, e) })
 	if len(got) != 1 || got[0].Kind != "app_mention" {
 		t.Errorf("got = %#v, want a single app_mention event", got)
+	}
+}
+
+func TestSlackSource_DurableAckOccursOnlyAfterAcceptance(t *testing.T) {
+	src := NewSlackSource(Config{}, nil, nil)
+	client := newTestSocketmodeClient()
+	evt := eventsAPIEvent("T1", "message", &slackevents.MessageEvent{Channel: "C1", User: "U1", Text: "hello"})
+	accepted, acknowledgements := false, 0
+	src.ack = func(_ *socketmode.Client, request *socketmode.Request) {
+		if !accepted {
+			t.Error("Socket Mode request acknowledged before durable acceptance")
+		}
+		if request != evt.Request {
+			t.Error("acknowledged a different Socket Mode request")
+		}
+		acknowledgements++
+	}
+	err := src.handleSocketEventDurable(evt, client, "U-SELF", func(event Event) error {
+		if event.EventID != "Ev1" || event.Text != "hello" {
+			t.Fatalf("normalized event=%#v", event)
+		}
+		accepted = true
+		return nil
+	})
+	if err != nil || acknowledgements != 1 {
+		t.Fatalf("handleSocketEventDurable() err=%v acknowledgements=%d", err, acknowledgements)
+	}
+}
+
+func TestSlackSource_DurableAcceptanceFailureLeavesRequestUnacknowledged(t *testing.T) {
+	src := NewSlackSource(Config{}, nil, nil)
+	client := newTestSocketmodeClient()
+	evt := eventsAPIEvent("T1", "message", &slackevents.MessageEvent{Channel: "C1", User: "U1", Text: "hello"})
+	acknowledgements := 0
+	src.ack = func(*socketmode.Client, *socketmode.Request) { acknowledgements++ }
+	wantErr := errors.New("journal unavailable")
+	err := src.handleSocketEventDurable(evt, client, "U-SELF", func(Event) error { return wantErr })
+	if !errors.Is(err, wantErr) || acknowledgements != 0 {
+		t.Fatalf("handleSocketEventDurable() err=%v acknowledgements=%d", err, acknowledgements)
+	}
+}
+
+func TestSlackSource_IgnoredEnvelopeIsAcknowledgedWithoutAcceptance(t *testing.T) {
+	src := NewSlackSource(Config{}, nil, nil)
+	client := newTestSocketmodeClient()
+	evt := eventsAPIEvent("T1", "message", &slackevents.MessageEvent{Channel: "C1", User: "U-SELF", Text: "self"})
+	acknowledgements, acceptCalls := 0, 0
+	src.ack = func(*socketmode.Client, *socketmode.Request) { acknowledgements++ }
+	err := src.handleSocketEventDurable(evt, client, "U-SELF", func(Event) error {
+		acceptCalls++
+		return nil
+	})
+	if err != nil || acknowledgements != 1 || acceptCalls != 0 {
+		t.Fatalf("ignored envelope err=%v acknowledgements=%d acceptCalls=%d", err, acknowledgements, acceptCalls)
 	}
 }
 

@@ -121,20 +121,24 @@ func (j *FileJournal) writeLocked(path string, doc *journalDocument) error {
 	return os.Chmod(path, 0600)
 }
 
-func (j *FileJournal) prune(doc *journalDocument, now time.Time) (newlyExpired int) {
+func (j *FileJournal) prune(doc *journalDocument, now time.Time) (changes int) {
 	kept := doc.Records[:0]
 	for i := range doc.Records {
 		r := &doc.Records[i]
 		if r.ExpiredAt.IsZero() && now.Sub(r.AcceptedAt) >= journalRetention {
+			expiredRecipient := false
 			for n := range r.Recipients {
 				if r.Recipients[n].State != recipientDelivered {
 					r.Recipients[n].State = recipientExpired
 					r.Recipients[n].UpdatedAt = now
-					newlyExpired++
+					expiredRecipient = true
+					changes++
 				}
 			}
-			r.Event.Text = ""
-			r.ExpiredAt = now
+			if expiredRecipient {
+				r.Event.Text = ""
+				r.ExpiredAt = now
+			}
 		}
 		terminal := allRecipientsTerminal(r.Recipients)
 		anchor := r.AcceptedAt
@@ -142,12 +146,13 @@ func (j *FileJournal) prune(doc *journalDocument, now time.Time) (newlyExpired i
 			anchor = r.ExpiredAt
 		}
 		if terminal && now.Sub(anchor) >= journalRetention {
+			changes++
 			continue
 		}
 		kept = append(kept, *r)
 	}
 	doc.Records = kept
-	return newlyExpired
+	return changes
 }
 
 func allRecipientsTerminal(recipients []journalRecipient) bool {
