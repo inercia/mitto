@@ -14,7 +14,7 @@ HTTP callback endpoints allow external systems to trigger an on-demand run of a 
 
 ## Quick Start
 
-Once you have generated a callback URL from **SessionPanel → Loop → External callback**, you can trigger the loop conversation with a simple `curl`:
+Once you have generated a callback URL from **SessionPanel → Loop → On callback**, you can trigger the loop conversation with a simple `curl`:
 
 ```bash
 # Trigger a loop conversation callback
@@ -35,7 +35,7 @@ curl -X POST https://your-mitto-server.com/mitto/api/callback/cb_YOUR_TOKEN_HERE
   -d '{"metadata": {"source": "my-script", "reason": "manual check"}}'
 ```
 
-> **Note:** The URL must include the API prefix (typically `/mitto`). Open the Loop tab with the compact control bar settings gear, check **External callback**, then use its copy button. The credential is displayed in a visually truncated field but copied in full.
+> **Note:** The URL must include the API prefix (typically `/mitto`). Open the Loop tab with the compact control bar settings gear, check **On callback**, then use its copy button. The credential is displayed in a visually truncated field but copied in full.
 
 ## URL Scheme
 
@@ -366,7 +366,7 @@ func (cr *CallbackRateLimiter) Allow(token string) bool
 
 ## Frontend
 
-`SessionPanel` mounts `CallbackTriggerSection` as the **External callback** card
+`SessionPanel` mounts `CallbackTriggerSection` as the **On callback** card
 in its conditional **Loop** tab, after the four automatic/lifecycle trigger
 cards (`schedule`, `onCompletion`, `onTasks`, and `onChild`). The compact
 `LoopControlBar` settings gear opens this tab directly.
@@ -394,7 +394,7 @@ sequenceDiagram
     participant Store as CallbackStore
     participant Index as CallbackIndex
 
-    Note over UI: User checks "External callback"
+    Note over UI: User checks "On callback"
     UI->>API: POST /api/sessions/{id}/callback
     API->>Store: CreateOrRotate(sessionID)
     Store->>Store: Generate token (crypto/rand)
@@ -404,7 +404,7 @@ sequenceDiagram
     API-->>UI: {callback_url, callback_token}
     UI->>UI: Display truncated URL with Copy button
 
-    Note over UI: User unchecks "External callback"
+    Note over UI: User unchecks "On callback"
     UI->>API: DELETE /api/sessions/{id}/callback
     API->>Store: Delete(sessionID)
     Store->>Store: Remove callback.json
