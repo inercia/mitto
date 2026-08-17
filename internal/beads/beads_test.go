@@ -643,8 +643,8 @@ func TestClient_List_DoltBackend_RunsBd(t *testing.T) {
 	if len(r.calls) != 1 {
 		t.Fatalf("expected 1 runner call (initialized via metadata.json), got %d", len(r.calls))
 	}
-	if got := r.calls[0].args[0]; got != "list" {
-		t.Errorf("expected bd \"list\" call, got %q", got)
+	if got := strings.Join(r.calls[0].args[:2], " "); got != "--readonly list" {
+		t.Errorf("expected read-only bd list call, got %q", got)
 	}
 }
 

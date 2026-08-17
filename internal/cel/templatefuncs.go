@@ -686,10 +686,10 @@ func gitFileDeleted(folder, path string) bool {
 	return false
 }
 
-// runBd runs `bd <args...>` with the working directory set to folder (when
-// non-empty), bounded by bdCmdTimeout. Returns the raw stdout bytes and true
-// when bd exits 0. Returns (nil, false) when bd is unavailable, exits non-zero,
-// or the command times out. Mirrors runGit.
+// runBd runs `bd --readonly <args...>` with the working directory set to folder
+// (when non-empty), bounded by bdCmdTimeout. Template/CEL helpers only inspect
+// beads state, so the explicit read-only open prevents prompt evaluation from
+// auto-applying a newly installed bd binary's schema migrations.
 func runBd(folder string, args ...string) ([]byte, bool) {
 	if !commandExists("bd") {
 		return nil, false
@@ -701,7 +701,10 @@ func runBd(folder string, args ...string) ([]byte, bool) {
 		return nil, false
 	}
 	defer release()
-	cmd := exec.CommandContext(ctx, "bd", args...)
+	readArgs := make([]string, 0, len(args)+1)
+	readArgs = append(readArgs, "--readonly")
+	readArgs = append(readArgs, args...)
+	cmd := exec.CommandContext(ctx, "bd", readArgs...)
 	if folder != "" {
 		cmd.Dir = folder
 	}

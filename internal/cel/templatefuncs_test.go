@@ -1752,7 +1752,7 @@ func TestBuildTemplateFuncMap_CondWhenKeysPresent(t *testing.T) {
 func installFakeBd(t *testing.T, stdout string, exitCode int) string {
 	t.Helper()
 	dir := t.TempDir()
-	script := fmt.Sprintf("#!/bin/sh\ncat <<'MITTO_BD_EOF'\n%s\nMITTO_BD_EOF\nexit %d\n", stdout, exitCode)
+	script := fmt.Sprintf("#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf 'bd version 1.2.2 (test)\\n'; exit 0; fi\ncat <<'MITTO_BD_EOF'\n%s\nMITTO_BD_EOF\nexit %d\n", stdout, exitCode)
 	bdPath := filepath.Join(dir, "bd")
 	if err := os.WriteFile(bdPath, []byte(script), 0755); err != nil {
 		t.Fatal(err)
@@ -1762,6 +1762,27 @@ func installFakeBd(t *testing.T, stdout string, exitCode int) string {
 	// Clear the caches so a previous test's result doesn't shadow this one.
 	InvalidateAllBeadsCaches()
 	return dir
+}
+
+func TestRunBdUsesReadonlyOpen(t *testing.T) {
+	dir := t.TempDir()
+	argsPath := filepath.Join(dir, "args")
+	script := fmt.Sprintf("#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf 'bd version 1.2.2 (test)\\n'; exit 0; fi\nprintf '%%s\\n' \"$@\" > %q\nprintf '[]\\n'\n", argsPath)
+	if err := os.WriteFile(filepath.Join(dir, "bd"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	if _, ok := runBd(t.TempDir(), "list", "--json"); !ok {
+		t.Fatal("runBd() failed")
+	}
+	got, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "--readonly\nlist\n--json\n"; string(got) != want {
+		t.Fatalf("bd args = %q, want %q", got, want)
+	}
 }
 
 // installCountingFakeBd is like installFakeBd but the fake `bd` script also
@@ -1780,7 +1801,7 @@ func installCountingFakeBd(t *testing.T, stdout string, exitCode int, sleepSecon
 	if sleepSeconds != "" {
 		sleepLine = "sleep " + sleepSeconds + "\n"
 	}
-	script := fmt.Sprintf("#!/bin/sh\nprintf 'x' >> \"%s\"\n%scat <<'MITTO_BD_EOF'\n%s\nMITTO_BD_EOF\nexit %d\n",
+	script := fmt.Sprintf("#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf 'bd version 1.2.2 (test)\\n'; exit 0; fi\nprintf 'x' >> \"%s\"\n%scat <<'MITTO_BD_EOF'\n%s\nMITTO_BD_EOF\nexit %d\n",
 		counterFile, sleepLine, stdout, exitCode)
 	bdPath := filepath.Join(dir, "bd")
 	if err := os.WriteFile(bdPath, []byte(script), 0755); err != nil {

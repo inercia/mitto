@@ -7728,7 +7728,7 @@ func loadBuiltinProcessorForTest(t *testing.T, name string) *Processor {
 }
 
 // TestBeadsPrimeProcessor_UsesShellIndexCommand pins the mitto-telc rework of
-// beads-prime: it must reduce `bd prime --memories-only` to headings through an
+// beads-prime: it must reduce `bd --readonly prime --memories-only` to headings through an
 // explicit `sh -c` wrapper — command-mode
 // processors exec their Command directly with no shell, so a piped command
 // needs this wrapper (mirrors internal/web/handlers/badge_click.go) — gate on
@@ -7745,8 +7745,8 @@ func TestBeadsPrimeProcessor_UsesShellIndexCommand(t *testing.T) {
 		t.Fatalf("Args = %#v, want [-c, <script>]", proc.Args)
 	}
 	script := proc.Args[1]
-	if !strings.Contains(script, "out=$(bd prime --memories-only)") {
-		t.Errorf("script does not invoke bd 1.2.2-compatible `bd prime --memories-only`:\n%s", script)
+	if !strings.Contains(script, "out=$(bd --readonly prime --memories-only)") {
+		t.Errorf("script does not invoke read-only bd 1.2.2-compatible `bd --readonly prime --memories-only`:\n%s", script)
 	}
 	for _, retiredFlag := range []string{"--max-memories", "--max-memory-chars"} {
 		if strings.Contains(script, retiredFlag) {
@@ -7798,7 +7798,8 @@ func TestBeadsPrimeProcessor_ShellScriptSmoke(t *testing.T) {
 
 	binDir := t.TempDir()
 	fakeBd := "#!/bin/sh\n" +
-		"if [ \"$1\" = \"prime\" ] && [ \"$2\" = \"--memories-only\" ]; then\n" +
+		"if [ \"$1\" = \"--version\" ]; then printf 'bd version 1.2.2 (test)\\n'; exit 0; fi\n" +
+		"if [ \"$1\" = \"--readonly\" ] && [ \"$2\" = \"prime\" ] && [ \"$3\" = \"--memories-only\" ]; then\n" +
 		"  cat <<'JSON'\n" +
 		"## Persistent Memories (2)\n\n" +
 		"### sample-key-one\n" +
@@ -7841,15 +7842,16 @@ func TestBeadsPrimeProcessor_ShellScriptSmoke(t *testing.T) {
 }
 
 // TestBeadsPrimeProcessor_Bd122CompatibleInvocation reproduces mitto-e3ut.3:
-// bd 1.2.2 accepts `prime --memories-only` but rejects the retired memory-cap
-// flags. The processor must not pass any additional arguments.
+// bd 1.2.2 accepts the global `--readonly` flag plus `prime --memories-only`
+// but rejects the retired memory-cap flags. No other arguments may be passed.
 func TestBeadsPrimeProcessor_Bd122CompatibleInvocation(t *testing.T) {
 	proc := loadBuiltinProcessorForTest(t, "beads-prime")
 
 	binDir := t.TempDir()
 	fakeBd := "#!/bin/sh\n" +
-		"if [ \"$#\" -ne 2 ] || [ \"$1\" != \"prime\" ] || [ \"$2\" != \"--memories-only\" ]; then\n" +
-		"  printf 'Error: unknown flag: %s\\n' \"$3\" >&2\n" +
+		"if [ \"$1\" = \"--version\" ]; then printf 'bd version 1.2.2 (test)\\n'; exit 0; fi\n" +
+		"if [ \"$#\" -ne 3 ] || [ \"$1\" != \"--readonly\" ] || [ \"$2\" != \"prime\" ] || [ \"$3\" != \"--memories-only\" ]; then\n" +
+		"  printf 'Error: unexpected bd invocation\\n' >&2\n" +
 		"  exit 1\n" +
 		"fi\n" +
 		"printf '## Persistent Memories (1)\\n\\n### bd-122-key\\nbody omitted\\n'\n"
@@ -7876,6 +7878,7 @@ func TestBeadsPrimeProcessor_ShellScriptAcceptsZeroMemories(t *testing.T) {
 
 	binDir := t.TempDir()
 	fakeBd := "#!/bin/sh\n" +
+		"if [ \"$1\" = \"--version\" ]; then printf 'bd version 1.2.2 (test)\\n'; exit 0; fi\n" +
 		"cat <<'EOF'\n" +
 		"[bd prime] If this output is truncated, read the full persisted output.\n\n" +
 		"# Beads Persistent Memories\n\n" +
@@ -7906,6 +7909,7 @@ func TestBeadsPrimeProcessor_ShellScriptRetriesTransientMismatch(t *testing.T) {
 	binDir := t.TempDir()
 	counterPath := filepath.Join(binDir, "calls")
 	fakeBd := fmt.Sprintf("#!/bin/sh\n"+
+		"if [ \"$1\" = \"--version\" ]; then printf 'bd version 1.2.2 (test)\\n'; exit 0; fi\n"+
 		"count=0\n"+
 		"if [ -f %q ]; then count=$(cat %q); fi\n"+
 		"count=$((count + 1))\n"+
@@ -7947,14 +7951,15 @@ func TestBeadsPrimeProcessor_ShellScriptRejectsBadSource(t *testing.T) {
 		name   string
 		script string
 	}{
-		{name: "bd failure", script: "#!/bin/sh\nexit 7\n"},
-		{name: "heading count mismatch", script: "#!/bin/sh\nprintf '## Persistent Memories (2)\\n\\n### only-one-key\\nbody\\n'\n"},
+		{name: "bd failure", script: "exit 7\n"},
+		{name: "heading count mismatch", script: "printf '## Persistent Memories (2)\\n\\n### only-one-key\\nbody\\n'\n"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			binDir := t.TempDir()
-			if err := os.WriteFile(filepath.Join(binDir, "bd"), []byte(tt.script), 0755); err != nil {
+			fakeBd := "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf 'bd version 1.2.2 (test)\\n'; exit 0; fi\n" + tt.script
+			if err := os.WriteFile(filepath.Join(binDir, "bd"), []byte(fakeBd), 0755); err != nil {
 				t.Fatalf("WriteFile(fake bd) error = %v", err)
 			}
 			t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))

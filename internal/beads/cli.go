@@ -274,11 +274,17 @@ func (c *cliClient) runJSON(ctx context.Context, dir string, args ...string) ([]
 // runJSONRead is like runJSON but retries ONCE on a transient dolt-lock
 // failure. It is safe only for read-only commands (no risk of a duplicate
 // write). Reads use readTimeout (larger than defaultTimeout) to absorb
-// warm-cold dolt DB latency without SIGKILLing bd.
+// warm-cold dolt DB latency without SIGKILLing bd. Pass bd's global
+// --readonly flag before the subcommand so opening a workspace for polling can
+// never auto-apply schema migrations (notably the accidental bd v1.2.1 v65
+// migration, which ran even for ordinary list/status commands).
 func (c *cliClient) runJSONRead(ctx context.Context, dir string, args ...string) ([]byte, error) {
-	out, err := c.runJSONOnceWithTimeout(ctx, dir, readTimeout, args...)
+	readArgs := make([]string, 0, len(args)+1)
+	readArgs = append(readArgs, "--readonly")
+	readArgs = append(readArgs, args...)
+	out, err := c.runJSONOnceWithTimeout(ctx, dir, readTimeout, readArgs...)
 	if err != nil && isTransientLock(err) {
-		out, err = c.runJSONOnceWithTimeout(ctx, dir, readTimeout, args...)
+		out, err = c.runJSONOnceWithTimeout(ctx, dir, readTimeout, readArgs...)
 	}
 	return out, err
 }

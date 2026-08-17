@@ -5,7 +5,7 @@
 #
 # When the `bd` command is available AND the workspace contains a `.beads` directory
 # (i.e. beads has been initialized for this project), this processor runs
-# `bd prime --memories-only` using the bd 1.2.2-compatible syntax, extracts just
+# `bd --readonly prime --memories-only` using the bd 1.2.2-compatible syntax, extracts just
 # the memory headings (titles/keys), and PREPENDS a
 # short markdown index plus on-demand lookup instructions to the user's first message.
 # The user's original message is always preserved. Agents then pull full bodies only
@@ -25,7 +25,7 @@
 #     index during a long-lived conversation.
 #
 # Implementation note: command-mode processors exec their `command` directly (no
-# shell), so the `bd prime | awk ...` pipeline requires an explicit `sh -c`
+# shell), so the `bd --readonly prime | awk ...` pipeline requires an explicit `sh -c`
 # wrapper (mirrors the pattern in internal/web/handlers/badge_click.go). The script
 # captures `bd`'s exit status explicitly and exits with it BEFORE piping to awk, so a
 # `bd` failure (e.g. no beads database) still surfaces as processor failure instead of
@@ -49,7 +49,7 @@ args:
   - |
     attempt=1
     while [ "$attempt" -le 2 ]; do
-      out=$(bd prime --memories-only)
+      out=$(bd --readonly prime --memories-only)
       rc=$?
       if [ "$rc" -ne 0 ]; then
         exit "$rc"

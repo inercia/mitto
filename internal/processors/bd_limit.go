@@ -13,10 +13,11 @@ import (
 // runProcessorCommand routes command processors that invoke bd through the
 // same process-wide gate as the typed beads client and CEL helpers.
 func runProcessorCommand(ctx context.Context, proc *Processor, cmd *exec.Cmd) error {
-	if !processorInvokesBD(proc) {
+	bdCommand := processorBDExecutable(proc)
+	if bdCommand == "" {
 		return cmd.Run()
 	}
-	release, err := bdexec.Acquire(ctx)
+	release, err := bdexec.Acquire(ctx, bdCommand)
 	if err != nil {
 		return err
 	}
@@ -25,17 +26,21 @@ func runProcessorCommand(ctx context.Context, proc *Processor, cmd *exec.Cmd) er
 }
 
 func processorInvokesBD(proc *Processor) bool {
+	return processorBDExecutable(proc) != ""
+}
+
+func processorBDExecutable(proc *Processor) string {
 	if filepath.Base(proc.ResolveCommand()) == "bd" {
-		return true
+		return proc.ResolveCommand()
 	}
 	for _, arg := range proc.Args {
 		for _, token := range strings.FieldsFunc(arg, func(r rune) bool {
 			return !unicode.IsLetter(r) && !unicode.IsDigit(r) && !strings.ContainsRune("_./-", r)
 		}) {
 			if filepath.Base(token) == "bd" {
-				return true
+				return "bd"
 			}
 		}
 	}
-	return false
+	return ""
 }

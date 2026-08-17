@@ -14,13 +14,23 @@ const MaxConcurrent = 2
 
 var slots = make(chan struct{}, MaxConcurrent)
 
-// Acquire waits for a process-wide bd execution slot. Waiting is bounded by ctx;
-// callers whose budget expires never spawn another process into the contention.
-func Acquire(ctx context.Context) (release func(), err error) {
+// Acquire waits for a process-wide bd execution slot and verifies that the bd
+// executable is safe before any workspace command can run. The optional binary
+// argument supports processors that invoke bd by absolute path.
+func Acquire(ctx context.Context, binaries ...string) (release func(), err error) {
 	waitStarted := time.Now()
 	select {
 	case slots <- struct{}{}:
 		waitDuration := time.Since(waitStarted)
+		binary := "bd"
+		if len(binaries) > 0 && binaries[0] != "" {
+			binary = binaries[0]
+		}
+		if err := ensureCompatible(ctx, binary); err != nil {
+			<-slots
+			slog.Warn("bd compatibility check blocked execution", "binary", binary, "error", err)
+			return nil, err
+		}
 		executionStarted := time.Now()
 		return func() {
 			executionDuration := time.Since(executionStarted)
