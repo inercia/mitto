@@ -79,7 +79,10 @@ func TestCallback_EnableAndGet(t *testing.T) {
 		t.Fatalf("decode get result: %v", err)
 	}
 
-	// Verify get response has callback_url and created_at
+	// Verify get response reports a configured callback with its URL and timestamp.
+	if configured, ok := getResult["configured"].(bool); !ok || !configured {
+		t.Errorf("get response configured = %#v, want true", getResult["configured"])
+	}
 	if _, ok := getResult["callback_url"]; !ok {
 		t.Error("get response missing callback_url")
 	}
@@ -646,8 +649,8 @@ func TestCallback_RateLimit(t *testing.T) {
 	}
 }
 
-// TestCallback_GetNotFound tests GET when no callback is configured.
-func TestCallback_GetNotFound(t *testing.T) {
+// TestCallback_GetUnconfigured tests GET when no callback is configured.
+func TestCallback_GetUnconfigured(t *testing.T) {
 	ts := SetupTestServer(t)
 
 	// Create session without enabling callback
@@ -657,8 +660,39 @@ func TestCallback_GetNotFound(t *testing.T) {
 	}
 	defer ts.Client.DeleteSession(sess.SessionID)
 
-	// Try to GET callback
+	// An existing session without a callback is a valid status response, not a missing resource.
 	getURL := ts.HTTPServer.URL + "/mitto/api/sessions/" + sess.SessionID + "/callback"
+	resp, err := ts.HTTPServer.Client().Get(getURL)
+	if err != nil {
+		t.Fatalf("GET callback: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200 for unconfigured callback, got %d: %s", resp.StatusCode, body)
+	}
+
+	var result map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("decode unconfigured callback result: %v", err)
+	}
+	if configured, ok := result["configured"].(bool); !ok || configured {
+		t.Errorf("configured = %#v, want false", result["configured"])
+	}
+	if _, ok := result["callback_url"]; ok {
+		t.Errorf("unconfigured response unexpectedly contains callback_url: %#v", result)
+	}
+	if _, ok := result["created_at"]; ok {
+		t.Errorf("unconfigured response unexpectedly contains created_at: %#v", result)
+	}
+}
+
+// TestCallback_GetMissingSession preserves a terminal 404 for a genuinely absent session.
+func TestCallback_GetMissingSession(t *testing.T) {
+	ts := SetupTestServer(t)
+
+	getURL := ts.HTTPServer.URL + "/mitto/api/sessions/20260817-000000-deadbeef/callback"
 	resp, err := ts.HTTPServer.Client().Get(getURL)
 	if err != nil {
 		t.Fatalf("GET callback: %v", err)
@@ -667,7 +701,20 @@ func TestCallback_GetNotFound(t *testing.T) {
 
 	if resp.StatusCode != http.StatusNotFound {
 		body, _ := io.ReadAll(resp.Body)
-		t.Fatalf("expected 404 for unconfigured callback, got %d: %s", resp.StatusCode, body)
+		t.Fatalf("expected 404 for missing session, got %d: %s", resp.StatusCode, body)
+	}
+
+	var envelope struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+		t.Fatalf("decode missing-session error: %v", err)
+	}
+	if envelope.Error.Code != "not_found" || envelope.Error.Message != "Session not found" {
+		t.Errorf("error = %#v, want not_found/Session not found", envelope.Error)
 	}
 }
 
