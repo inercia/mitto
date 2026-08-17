@@ -211,6 +211,7 @@ func TestManagerPoolsOneWorkerAndFansOutExactlyOnce(t *testing.T) {
 func TestManagerAppliesEventModeThreadAndBotFilters(t *testing.T) {
 	runner := &managerRunner{}
 	manager := NewManager(nil, nil, nil, runner, nil)
+	t.Cleanup(manager.Close)
 	manager.sessions = map[string][]resolvedSubscription{
 		"roots":    {{sessionID: "roots", appID: "app", installationID: "install", teamID: "team", channelID: "channel", eventMode: session.SlackEventModeAnyHumanMessage, threadPolicy: session.SlackThreadPolicyRootOnly, botID: "bot", botUserID: "bot-user"}},
 		"mentions": {{sessionID: "mentions", appID: "app", installationID: "install", teamID: "team", channelID: "channel", eventMode: session.SlackEventModeAppMention, threadPolicy: session.SlackThreadPolicyAny}},
@@ -325,6 +326,9 @@ func TestManagerCredentialRestartStatusAndShutdown(t *testing.T) {
 	}
 	manager.Close()
 	waitForManager(t, "clean shutdown", func() bool { _, active, _, _, _ := sources.snapshot(); return active == 0 })
+	if status := manager.Status(); len(status) != 1 || status[0].State != "disconnected" || status[0].SubscriptionCount != 1 {
+		t.Fatalf("shutdown status = %#v", status)
+	}
 
 	failingSources := &sourceHarness{err: errors.New("raw transport detail")}
 	manager = NewManager(store, testInstallations(), credentials, runner, nil)
@@ -341,4 +345,43 @@ func TestManagerCredentialRestartStatusAndShutdown(t *testing.T) {
 		t.Fatalf("backoff status = %#v", status)
 	}
 	manager.Close()
+}
+
+func TestManagerStatusCallbacksPreserveTransitionOrder(t *testing.T) {
+	manager := NewManager(nil, nil, nil, nil, nil)
+	defer manager.Close()
+	connectingStarted := make(chan struct{})
+	releaseConnecting := make(chan struct{})
+	var mu sync.Mutex
+	var states []string
+	manager.SetStatusCallback(func(status ConnectionStatus) {
+		if status.State == "connecting" {
+			close(connectingStarted)
+			<-releaseConnecting
+		}
+		mu.Lock()
+		states = append(states, status.State)
+		mu.Unlock()
+	})
+
+	manager.emitStatus(ConnectionStatus{AppID: "app", State: "connecting"})
+	<-connectingStarted
+	manager.emitStatus(ConnectionStatus{AppID: "app", State: "connected"})
+	time.Sleep(20 * time.Millisecond)
+	mu.Lock()
+	if len(states) != 0 {
+		t.Fatalf("later status overtook blocked callback: %v", states)
+	}
+	mu.Unlock()
+	close(releaseConnecting)
+	waitForManager(t, "ordered status callbacks", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(states) == 2
+	})
+	mu.Lock()
+	defer mu.Unlock()
+	if states[0] != "connecting" || states[1] != "connected" {
+		t.Fatalf("status callback order = %v", states)
+	}
 }

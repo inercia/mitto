@@ -46,11 +46,12 @@ subscriptions instead.
 5. Invite the bot to the target channel (`/invite @your-bot`).
 6. Note the workspace's **Team ID** and the target **Channel ID**.
 
-## Runtime configuration
+## Legacy adapter runtime configuration
 
-All configuration is via environment variables, read once at Mitto web
-server startup (`internal/slackbridge.LoadConfigFromEnv`). None is written to
-disk or exposed via Settings/UI/REST/MCP. Token values are never logged;
+The deprecated single-target adapter is configured via environment variables,
+read once at Mitto web server startup (`internal/slackbridge.LoadConfigFromEnv`).
+These values are not used by the production catalog-backed manager, written to
+disk, or exposed via Settings/UI/REST/MCP. Token values are never logged;
 startup logging includes only the non-secret channel and target session IDs:
 
 | Variable                         | Description                                   |

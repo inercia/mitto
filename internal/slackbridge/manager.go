@@ -63,23 +63,32 @@ type appWorker struct {
 	timer  *time.Timer
 }
 
+type statusNotification struct {
+	status ConnectionStatus
+	fn     func(ConnectionStatus)
+}
+
 // Manager owns one Socket Mode worker per referenced Slack app profile and an
 // idempotent, process-local loop-subscription index.
 type Manager struct {
-	mu          sync.Mutex
-	store       *session.Store
-	catalog     Catalog
-	credentials CredentialResolver
-	runner      ManagedLoopTriggerer
-	factory     SourceFactory
-	logger      *slog.Logger
-	grace       time.Duration
-	ctx         context.Context
-	cancel      context.CancelFunc
-	sessions    map[string][]resolvedSubscription
-	workers     map[string]*appWorker
-	statuses    map[string]ConnectionStatus
-	onStatus    func(ConnectionStatus)
+	mu           sync.Mutex
+	store        *session.Store
+	catalog      Catalog
+	credentials  CredentialResolver
+	runner       ManagedLoopTriggerer
+	factory      SourceFactory
+	logger       *slog.Logger
+	grace        time.Duration
+	ctx          context.Context
+	cancel       context.CancelFunc
+	sessions     map[string][]resolvedSubscription
+	workers      map[string]*appWorker
+	statuses     map[string]ConnectionStatus
+	onStatus     func(ConnectionStatus)
+	statusCond   *sync.Cond
+	statusQueue  []statusNotification
+	statusDone   chan struct{}
+	statusClosed bool
 }
 
 // NewManager constructs a manager. Call Start after all callbacks are wired.
@@ -87,10 +96,12 @@ func NewManager(store *session.Store, catalog Catalog, credentials CredentialRes
 	ctx, cancel := context.WithCancel(context.Background())
 	m := &Manager{store: store, catalog: catalog, credentials: credentials, runner: runner, logger: logger,
 		grace: defaultUnusedGrace, ctx: ctx, cancel: cancel, sessions: make(map[string][]resolvedSubscription),
-		workers: make(map[string]*appWorker), statuses: make(map[string]ConnectionStatus)}
+		workers: make(map[string]*appWorker), statuses: make(map[string]ConnectionStatus), statusDone: make(chan struct{})}
+	m.statusCond = sync.NewCond(&m.mu)
 	m.factory = func(_ string, token string) (Source, error) {
 		return NewSlackSource(Config{AppToken: token}, logger, nil), nil
 	}
+	go m.dispatchStatuses()
 	return m
 }
 
@@ -345,7 +356,7 @@ func (m *Manager) runWorker(ctx context.Context, appID string, worker *appWorker
 			backoff = maxReconnectBackoff
 		}
 	}
-	m.emitStatus(ConnectionStatus{AppID: appID, State: "disconnected"})
+	m.emitStatus(ConnectionStatus{AppID: appID, State: "disconnected", SubscriptionCount: m.subscriptionCount(appID)})
 }
 
 func classifyWorkerError(err error) string {
@@ -414,8 +425,28 @@ func (m *Manager) emitStatusLocked(status ConnectionStatus) {
 	if m.logger != nil {
 		m.logger.Info("slackbridge: connection state changed", "app_id", status.AppID, "state", status.State, "subscription_count", status.SubscriptionCount, "error_class", status.ErrorClass)
 	}
-	if fn != nil {
-		go fn(status)
+	if fn != nil && !m.statusClosed {
+		m.statusQueue = append(m.statusQueue, statusNotification{status: status, fn: fn})
+		m.statusCond.Signal()
+	}
+}
+
+func (m *Manager) dispatchStatuses() {
+	defer close(m.statusDone)
+	for {
+		m.mu.Lock()
+		for len(m.statusQueue) == 0 && !m.statusClosed {
+			m.statusCond.Wait()
+		}
+		if len(m.statusQueue) == 0 {
+			m.mu.Unlock()
+			return
+		}
+		notification := m.statusQueue[0]
+		m.statusQueue[0] = statusNotification{}
+		m.statusQueue = m.statusQueue[1:]
+		m.mu.Unlock()
+		notification.fn(notification.status)
 	}
 }
 
@@ -434,11 +465,20 @@ func (m *Manager) Close() {
 	m.workers = make(map[string]*appWorker)
 	m.mu.Unlock()
 	deadline := time.After(5 * time.Second)
+	timedOut := false
 	for _, worker := range workers {
 		select {
 		case <-worker.done:
 		case <-deadline:
-			return
+			timedOut = true
+		}
+		if timedOut {
+			break
 		}
 	}
+	m.mu.Lock()
+	m.statusClosed = true
+	m.statusCond.Broadcast()
+	m.mu.Unlock()
+	<-m.statusDone
 }
