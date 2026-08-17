@@ -307,4 +307,18 @@ describe("useWebSocket.js: close() vs forceReconnect() semantics (mitto-7gta.30)
       /if \(existingWs\) \{\s*\n\s*delete sessionWsRefs\.current\[sessionId\];\s*\n\s*existingWs\.close\(\);\s*\n\s*\}\s*\n\s*connectToSessionRef\.current\?\.\(sessionId\);/,
     );
   });
+
+  test("switchSession activates the latest click before async loading and never re-activates from a stale response", () => {
+    const start = useWebSocketJs.indexOf("const switchSession = useCallback(");
+    const end = useWebSocketJs.indexOf("// Handle global events", start);
+    const snippet = useWebSocketJs.slice(start, end);
+    const activation = snippet.indexOf("setActiveSessionId(sessionId);");
+    const firstAwait = snippet.indexOf("const meta = await ");
+
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    expect(activation).toBeGreaterThan(-1);
+    expect(activation).toBeLessThan(firstAwait);
+    expect(snippet.match(/setActiveSessionId\(sessionId\);/g)).toHaveLength(1);
+  });
 });

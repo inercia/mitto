@@ -61,6 +61,11 @@ import { useWSActionButtons } from "./useWSActionButtons.js";
 import { useWSMobileResilience } from "./useWSMobileResilience.js";
 import { useWSConnection } from "./useWSConnection.js";
 import { useWSDeliveryVerification } from "./useWSDeliveryVerification.js";
+import {
+  createSessionUpdateScheduler,
+  sessionHasLoadedMessages,
+  sessionWasStreaming,
+} from "./sessionUpdateScheduler.js";
 
 // =============================================================================
 // Session creation retry state (module-level, persists across re-renders)
@@ -74,6 +79,13 @@ const SESSION_CREATION_MAX_RETRIES = 4;
 // Fixed delay between retries (ms). The agent needs time to finish its turn;
 // a fixed 30s gap is more predictable than exponential backoff here.
 const SESSION_CREATION_RETRY_DELAY_MS = 30000;
+
+const COALESCED_BACKGROUND_MESSAGE_TYPES = new Set([
+  "agent_message",
+  "agent_thought",
+  "tool_call",
+  "tool_update",
+]);
 
 // Number of retries attempted for the current creation series (0 = first attempt)
 let _sessionCreationRetryCount = 0;
@@ -180,6 +192,13 @@ export function useWebSocket({
 
   const activeSessionIdRef = useRef(activeSessionId);
   const sessionsRef = useRef(sessions); // For accessing sessions in callbacks
+  const sessionUpdateSchedulerRef = useRef(null);
+  if (sessionUpdateSchedulerRef.current === null) {
+    sessionUpdateSchedulerRef.current = createSessionUpdateScheduler({
+      setSessions,
+      getActiveSessionId: () => activeSessionIdRef.current,
+    });
+  }
   const retryPendingPromptsRef = useRef(null); // Ref to retry function (set later to avoid circular deps)
   const rejectOversizedPromptsRef = useRef(null); // Ref to quarantine callback for close code 1009
   const resolvePendingSendsRef = useRef(null); // Ref to resolve function (set later to avoid circular deps)
@@ -526,6 +545,14 @@ export function useWebSocket({
 
   // Handle messages from per-session WebSocket
   const handleSessionMessage = useCallback((sessionId, msg) => {
+    // Preserve wire ordering when a status/config/user event follows queued
+    // background content. Active-session queues are normally empty, so this is
+    // effectively free on the foreground path.
+    let hadPendingContent = false;
+    if (!COALESCED_BACKGROUND_MESSAGE_TYPES.has(msg.type)) {
+      hadPendingContent =
+        sessionUpdateSchedulerRef.current.flushSession(sessionId);
+    }
     switch (msg.type) {
       case "connected":
         // Session WebSocket connected, update session info
@@ -764,7 +791,7 @@ export function useWebSocket({
 
         // WebSocket-only architecture: Server guarantees no duplicate events via seq tracking.
         // Frontend only needs to coalesce chunks with the same seq (streaming continuation).
-        setSessions((prev) => {
+        sessionUpdateSchedulerRef.current.schedule(sessionId, (prev) => {
           const session = prev[sessionId];
           if (!session) {
             console.warn(
@@ -855,7 +882,7 @@ export function useWebSocket({
         }
 
         // WebSocket-only architecture: Server guarantees no duplicate events via seq tracking.
-        setSessions((prev) => {
+        sessionUpdateSchedulerRef.current.schedule(sessionId, (prev) => {
           const session = prev[sessionId];
           if (!session) return prev;
           let messages = [...session.messages];
@@ -932,7 +959,7 @@ export function useWebSocket({
         markSeqSeen(sessionId, msgSeq);
 
         // WebSocket-only architecture: Server guarantees no duplicate events via seq tracking.
-        setSessions((prev) => {
+        sessionUpdateSchedulerRef.current.schedule(sessionId, (prev) => {
           const session = prev[sessionId];
           if (!session) return prev;
 
@@ -964,7 +991,7 @@ export function useWebSocket({
         // owned internally by SessionStream (mitto-7gta.30).
         updateLastKnownSeq(sessionId, Math.max(msgSeq || 0, maxSeq || 0));
 
-        setSessions((prev) => {
+        sessionUpdateSchedulerRef.current.schedule(sessionId, (prev) => {
           const session = prev[sessionId];
           if (!session) return prev;
           const messages = [...session.messages];
@@ -1188,7 +1215,10 @@ export function useWebSocket({
         // Check if this is a background session completing (not the active one)
         const currentSession = sessionsRef.current[sessionId];
         const isBackgroundSession = sessionId !== activeSessionIdRef.current;
-        const wasStreaming = currentSession?.isStreaming;
+        const wasStreaming = sessionWasStreaming(
+          currentSession,
+          hadPendingContent,
+        );
         const lastMessage =
           currentSession?.messages?.[currentSession.messages.length - 1];
         const maxSeq = msg.data.max_seq;
@@ -1197,7 +1227,7 @@ export function useWebSocket({
         // Gap detection/fill is now owned internally by SessionStream (mitto-7gta.30).
         updateLastKnownSeq(sessionId, maxSeq || 0);
 
-        setSessions((prev) => {
+        sessionUpdateSchedulerRef.current.applyImmediate(sessionId, (prev) => {
           const session = prev[sessionId];
           if (!session) {
             console.warn(
@@ -1315,7 +1345,7 @@ export function useWebSocket({
           }
         }
 
-        setSessions((prev) => {
+        sessionUpdateSchedulerRef.current.applyImmediate(sessionId, (prev) => {
           const session = prev[sessionId];
           if (!session) return prev;
           const messages = limitMessages([
@@ -2756,6 +2786,8 @@ export function useWebSocket({
       // Selection is immediate UI intent, not a consequence of metadata loading.
       // Activating before the first await keeps unloaded sessions responsive and
       // prevents a slower earlier click from stealing focus after a later click.
+      const hadPendingContent =
+        sessionUpdateSchedulerRef.current.flushSession(sessionId);
       setActiveSessionId(sessionId);
 
       // Reconnect attempt tracking is now internal to SessionStream
@@ -2765,10 +2797,10 @@ export function useWebSocket({
       const currentSessions = sessionsRef.current;
       // Check if session already has messages loaded (not just an empty placeholder from WebSocket)
       const existingSession = currentSessions[sessionId];
-      const hasLoadedMessages =
-        existingSession &&
-        existingSession.messages &&
-        existingSession.messages.length > 0;
+      const hasLoadedMessages = sessionHasLoadedMessages(
+        existingSession,
+        hadPendingContent,
+      );
       const hasWorkingDir = existingSession?.info?.working_dir;
 
       // Get session info from stored sessions (for accordion mode group expansion)
@@ -4106,6 +4138,7 @@ export function useWebSocket({
         clearTimeout(timerId);
       }
       staggeredBackgroundTimersRef.current = {};
+      sessionUpdateSchedulerRef.current.dispose();
     };
   }, []);
 

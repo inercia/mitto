@@ -106,7 +106,7 @@ describe("loop configuration synchronization (mitto-w7hh.3)", () => {
       /if \(loopConfigured === false\) \{\s*loopConfigVersionRef\.current \+= 1;\s*resetLoopConfigState\(\);\s*return;/,
     );
     expect(chatInputJs).toMatch(
-      /loopConfigVersionRef\.current \+= 1;\s*resetLoopConfigState\(\);\s*setIsLoopSaving\(false\);\s*\}, \[sessionId, resetLoopConfigState\]\);/,
+      /loopConfigVersionRef\.current \+= 1;\s*resetLoopConfigState\(\);\s*\}, \[sessionId, resetLoopConfigState\]\);/,
     );
     expect(chatInputJs).toMatch(
       /cancelled \|\| loopConfigVersion !== loopConfigVersionRef\.current/,
@@ -129,5 +129,44 @@ describe("useWebSocket.js: sidebar session activation (mitto-4hpi)", () => {
     expect(
       switchSession.match(/setActiveSessionId\(sessionId\)/g),
     ).toHaveLength(1);
+  });
+});
+
+describe("useWebSocket.js: background stream update coalescing (mitto-mnie)", () => {
+  test("routes only the four high-frequency content events through the scheduler", () => {
+    const scheduledUpdates = useWebSocketJs.match(
+      /sessionUpdateSchedulerRef\.current\.schedule\(sessionId/g,
+    );
+    expect(scheduledUpdates).toHaveLength(4);
+    expect(useWebSocketJs).toMatch(
+      /COALESCED_BACKGROUND_MESSAGE_TYPES = new Set\(\[\s*"agent_message",\s*"agent_thought",\s*"tool_call",\s*"tool_update",\s*\]\)/,
+    );
+  });
+
+  test("completion and error consume queued chunks before applying terminal state", () => {
+    expect(useWebSocketJs).toMatch(
+      /case "prompt_complete":[\s\S]*?sessionUpdateSchedulerRef\.current\.applyImmediate\(sessionId/,
+    );
+    expect(useWebSocketJs).toMatch(
+      /case "error":[\s\S]*?sessionUpdateSchedulerRef\.current\.applyImmediate\(sessionId/,
+    );
+    expect(useWebSocketJs).toMatch(
+      /case "prompt_complete":[\s\S]*?sessionWasStreaming\(\s*currentSession,\s*hadPendingContent/,
+    );
+  });
+
+  test("switch and unmount flush or dispose pending background updates", () => {
+    expect(useWebSocketJs).toMatch(
+      /if \(!COALESCED_BACKGROUND_MESSAGE_TYPES\.has\(msg\.type\)\) \{\s*hadPendingContent\s*=\s*sessionUpdateSchedulerRef\.current\.flushSession\(sessionId\)/,
+    );
+    expect(useWebSocketJs).toMatch(
+      /const switchSession = useCallback\([\s\S]*?hadPendingContent\s*=\s*sessionUpdateSchedulerRef\.current\.flushSession\(sessionId\);\s*setActiveSessionId\(sessionId\)/,
+    );
+    expect(useWebSocketJs).toMatch(
+      /const hasLoadedMessages = sessionHasLoadedMessages\(\s*existingSession,\s*hadPendingContent/,
+    );
+    expect(useWebSocketJs).toMatch(
+      /staggeredBackgroundTimersRef\.current = \{\};\s*sessionUpdateSchedulerRef\.current\.dispose\(\)/,
+    );
   });
 });
