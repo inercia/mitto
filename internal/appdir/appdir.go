@@ -85,6 +85,8 @@ const (
 	CredentialsDirName = "credentials"
 	// CredentialsVaultFileName is the versioned credential vault document.
 	CredentialsVaultFileName = "vault.json"
+	// SlackCatalogFileName stores process-global, non-secret Slack integration metadata.
+	SlackCatalogFileName = "slack_integrations.json"
 
 	// RememberedArgsDirName is the name of the subdirectory holding per-workspace
 	// remembered prompt-argument snapshots (one JSON file per workspace UUID).
@@ -497,6 +499,16 @@ func CredentialsVaultPath() (string, error) {
 		return "", err
 	}
 	return filepath.Join(dir, CredentialsVaultFileName), nil
+}
+
+// SlackCatalogPath returns the process-global Slack integration catalog path.
+// Token values are never written here; they live in the credential vault.
+func SlackCatalogPath() (string, error) {
+	dir, err := Dir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, SlackCatalogFileName), nil
 }
 
 // RememberedArgsDir returns the directory holding per-workspace remembered

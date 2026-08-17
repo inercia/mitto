@@ -36,7 +36,9 @@ import (
 	"github.com/inercia/mitto/internal/processors"
 	"github.com/inercia/mitto/internal/prompts"
 	"github.com/inercia/mitto/internal/rememberedargs"
+	"github.com/inercia/mitto/internal/secrets"
 	"github.com/inercia/mitto/internal/session"
+	"github.com/inercia/mitto/internal/slackcatalog"
 	"github.com/inercia/mitto/internal/stats"
 	"github.com/inercia/mitto/internal/web/handlers"
 	"github.com/inercia/mitto/internal/web/middleware"
@@ -1340,8 +1342,18 @@ func NewServer(config Config) (*Server, error) {
 	// Construct the REST handlers sub-package facade. Built here (not earlier)
 	// so the late-initialized callbackIndex, callbackRateLimiter and
 	// loopRunner are non-nil when wired into Deps.
+	var slackCatalog *slackcatalog.Service
+	if catalogPath, err := appdir.SlackCatalogPath(); err != nil {
+		logger.Warn("Slack integration catalog disabled: resolve path", "error", err)
+	} else {
+		slackCatalog = slackcatalog.NewService(
+			slackcatalog.NewFileStore(catalogPath), secrets.DefaultManager(), slackcatalog.NewSlackClient(), nil,
+		)
+	}
+
 	s.apiHandlers = handlers.New(handlers.Deps{
 		Logger:                   logger,
+		SlackCatalog:             slackCatalog,
 		ConfigReadOnly:           config.ConfigReadOnly,
 		MittoConfig:              config.MittoConfig,
 		RCFilePath:               config.RCFilePath,

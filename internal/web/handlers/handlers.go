@@ -22,6 +22,7 @@ import (
 	configPkg "github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/conversation"
 	"github.com/inercia/mitto/internal/session"
+	"github.com/inercia/mitto/internal/slackcatalog"
 	"github.com/inercia/mitto/internal/stats"
 )
 
@@ -53,6 +54,10 @@ type ResolvedPromptTarget struct {
 type Deps struct {
 	// Logger is the structured logger. May be nil; all uses are nil-guarded.
 	Logger *slog.Logger
+
+	// SlackCatalog owns process-global Slack app and installation metadata.
+	// Nil means Slack integration management is unavailable.
+	SlackCatalog *slackcatalog.Service
 
 	// ConfigReadOnly mirrors Server.config.ConfigReadOnly: when true, the
 	// configuration was loaded from a custom --config file and must not be
