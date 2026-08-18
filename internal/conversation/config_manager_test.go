@@ -613,6 +613,26 @@ func TestConfigManager_ApplyConfigConstraints_RetriesRetryableModelFailure(t *te
 	}
 }
 
+func TestConfigManager_ApplyConfigConstraints_PromptReservationDoesNotDefer(t *testing.T) {
+	c := configManager{}
+	d := newFakeConfigDeps()
+	d.constraint = map[string]*config.ACPServerConstraint{
+		ConfigOptionCategoryModel: {Pattern: "Model 2", MatchMode: "exact"},
+	}
+	d.currentModelID = "m-1"
+	d.isPrompting = true
+
+	if err := c.applyConfigConstraints(d, ConfigOptionCategoryModel); err != nil {
+		t.Fatalf("apply startup model constraint: %v", err)
+	}
+	if len(d.modelRPCCalls) != 1 || d.modelRPCCalls[0] != "m-2" {
+		t.Fatalf("startup constraint must land before the reserved prompt, got RPCs %v", d.modelRPCCalls)
+	}
+	if pending := d.cmDrainPendingConfig(); len(pending) != 0 {
+		t.Fatalf("startup constraint must not be deferred behind the reserved prompt, got %v", pending)
+	}
+}
+
 func TestConfigManager_ApplyConfigConstraints_AlreadySet(t *testing.T) {
 	c := configManager{}
 	d := newFakeConfigDeps()

@@ -186,14 +186,17 @@ func (c configManager) getConfigValue(d configDeps, configID string) string {
 }
 
 func (c configManager) setConfigOption(d configDeps, ctx context.Context, configID, value string) error {
-	return c.setConfigOptionWithOpts(d, ctx, configID, value, true)
+	return c.setConfigOptionWithOpts(d, ctx, configID, value, true, true)
 }
 
 // setConfigOptionWithOpts is the core of setConfigOption. recordTimeline controls
 // whether a model change emits a user-facing session_change timeline pill. The
 // startup/constraint auto-select path passes false so re-selecting the configured
 // model on every session resume does not repeat an identical "Model changed" pill.
-func (c configManager) setConfigOptionWithOpts(d configDeps, ctx context.Context, configID, value string, recordTimeline bool) error {
+// deferWhilePrompting is false for startup constraints: a deferred handshake reserves
+// isPrompting before it reports models, but the constraint must land before that turn
+// reaches the agent rather than being deferred behind it (mitto-qori).
+func (c configManager) setConfigOptionWithOpts(d configDeps, ctx context.Context, configID, value string, recordTimeline, deferWhilePrompting bool) error {
 	if d.cmIsClosed() {
 		return fmt.Errorf("session is closed")
 	}
@@ -219,7 +222,7 @@ func (c configManager) setConfigOptionWithOpts(d configDeps, ctx context.Context
 	// Under promptMu: if prompting, defer to pending store; otherwise proceed immediately.
 	// Lock ordering: promptMu → pendingConfigMu (never the reverse).
 	d.cmLockPromptMu()
-	if d.cmIsPrompting() {
+	if d.cmIsPrompting() && deferWhilePrompting {
 		d.cmLockPendingConfig()
 		d.cmSetPendingEntry(configID, value)
 		d.cmUnlockPendingConfig()
@@ -371,7 +374,7 @@ func (c configManager) applyConfigConstraints(d configDeps, category string) err
 	ctx, cancel := context.WithTimeout(context.Background(), constraintModelSwitchCallerBudget)
 	defer cancel()
 
-	err := c.setConfigOptionWithOpts(d, ctx, category, matchedValue, false)
+	err := c.setConfigOptionWithOpts(d, ctx, category, matchedValue, false, false)
 	if category == ConfigOptionCategoryModel && err != nil && isRetryableModelPreferenceError(err) {
 		timer := time.NewTimer(modelSwitchWarmRetryDelay)
 		defer timer.Stop()
@@ -384,7 +387,7 @@ func (c configManager) applyConfigConstraints(d configDeps, category string) err
 			l.Info("Retrying startup model constraint after cold-agent cooldown",
 				"session_id", d.cmSessionID(), "model", matchedValue)
 		}
-		err = c.setConfigOptionWithOpts(d, ctx, category, matchedValue, false)
+		err = c.setConfigOptionWithOpts(d, ctx, category, matchedValue, false, false)
 	}
 	if err != nil {
 		if l := d.cmLogger(); l != nil {
