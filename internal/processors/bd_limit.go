@@ -11,13 +11,13 @@ import (
 )
 
 // runProcessorCommand routes command processors that invoke bd through the
-// same process-wide gate as the typed beads client and CEL helpers.
+// same per-database and process-wide gates as typed clients and CEL helpers.
 func runProcessorCommand(ctx context.Context, proc *Processor, cmd *exec.Cmd) error {
 	bdCommand := processorBDExecutable(proc)
 	if bdCommand == "" {
 		return cmd.Run()
 	}
-	release, err := bdexec.Acquire(ctx, bdCommand)
+	release, err := bdexec.Acquire(ctx, cmd.Dir, bdCommand)
 	if err != nil {
 		return err
 	}

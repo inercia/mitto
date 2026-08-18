@@ -32,7 +32,7 @@ func TestAcquireRejectsUnsafeBDVersions(t *testing.T) {
 	for _, version := range []string{"1.2.0", "1.2.1"} {
 		t.Run(version, func(t *testing.T) {
 			binary := fakeBDVersion(t, version)
-			release, err := Acquire(context.Background(), binary)
+			release, err := Acquire(context.Background(), t.TempDir(), binary)
 			if release != nil {
 				release()
 				t.Fatal("Acquire() returned a release function for an unsafe bd binary")
@@ -47,7 +47,7 @@ func TestAcquireRejectsUnsafeBDVersions(t *testing.T) {
 func TestAcquireAllowsSafeBDVersions(t *testing.T) {
 	for _, version := range []string{"1.1.2", "1.2.2", "2.0.0"} {
 		t.Run(version, func(t *testing.T) {
-			release, err := Acquire(context.Background(), fakeBDVersion(t, version))
+			release, err := Acquire(context.Background(), t.TempDir(), fakeBDVersion(t, version))
 			if err != nil {
 				t.Fatalf("Acquire() error = %v, want allowed version %s", err, version)
 			}

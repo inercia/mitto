@@ -51,14 +51,14 @@ type Runner interface {
 	RunWithEnv(ctx context.Context, dir string, extraEnv []string, args ...string) (stdout []byte, stderr string, err error)
 }
 
-// limitedRunner applies the process-wide bd concurrency bound around any
-// Runner, including test doubles and web-layer wrappers (mitto-i2ep).
+// limitedRunner applies the per-database and process-wide bd concurrency bounds
+// around any Runner, including test doubles and web-layer wrappers (mitto-i2ep).
 type limitedRunner struct {
 	inner Runner
 }
 
 func (r limitedRunner) Run(ctx context.Context, dir string, args ...string) ([]byte, string, error) {
-	release, err := bdexec.Acquire(ctx)
+	release, err := bdexec.Acquire(ctx, dir)
 	if err != nil {
 		return nil, "", err
 	}
@@ -67,7 +67,7 @@ func (r limitedRunner) Run(ctx context.Context, dir string, args ...string) ([]b
 }
 
 func (r limitedRunner) RunWithEnv(ctx context.Context, dir string, extraEnv []string, args ...string) ([]byte, string, error) {
-	release, err := bdexec.Acquire(ctx)
+	release, err := bdexec.Acquire(ctx, dir)
 	if err != nil {
 		return nil, "", err
 	}

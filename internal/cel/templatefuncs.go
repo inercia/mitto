@@ -696,7 +696,7 @@ func runBd(folder string, args ...string) ([]byte, bool) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), bdCmdTimeout)
 	defer cancel()
-	release, err := bdexec.Acquire(ctx)
+	release, err := bdexec.Acquire(ctx, folder)
 	if err != nil {
 		return nil, false
 	}

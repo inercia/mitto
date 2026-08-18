@@ -578,22 +578,76 @@ func TestClient_List_NotInitialized_ReturnsEmpty(t *testing.T) {
 	}
 }
 
-// TestClient_SharedConcurrencyLimit reproduces mitto-i2ep's ordinary-read
-// contention: once the process-wide bd capacity is occupied, another read must
-// expire in the limiter queue instead of spawning a third competing process.
+// TestClient_SameDatabaseSerializes reproduces mitto-i2ep's post-limiter
+// recurrence: two globally-allowed bd processes still contend when they resolve
+// to the same embedded Dolt database.
+func TestClient_SameDatabaseSerializes(t *testing.T) {
+	runner := &blockingRunner{
+		entered: make(chan struct{}, 2),
+		release: nil,
+	}
+	root := initializedDir(t)
+	nested := filepath.Join(root, "nested")
+	if err := os.Mkdir(nested, 0o755); err != nil {
+		t.Fatalf("mkdir nested workspace: %v", err)
+	}
+
+	holderCtx, cancelHolder := context.WithCancel(context.Background())
+	defer cancelHolder()
+	holderDone := make(chan struct{})
+	go func() {
+		_, _ = NewClientWithRunner(runner).Show(holderCtx, root, "mitto-held")
+		close(holderDone)
+	}()
+	select {
+	case <-runner.entered:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for first bd invocation")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := NewClientWithRunner(runner).Show(ctx, nested, "mitto-queued")
+		errCh <- err
+	}()
+
+	select {
+	case <-runner.entered:
+		t.Fatal("second bd invocation reached the same database while the first was active")
+	case err := <-errCh:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("queued Show() error = %v, want context deadline exceeded", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("same-database Show() did not respect its context deadline")
+	}
+
+	cancelHolder()
+	select {
+	case <-holderDone:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for holder call to exit")
+	}
+}
+
+// TestClient_SharedConcurrencyLimit verifies the independent process-wide cap:
+// once distinct databases occupy all global slots, another read expires in the
+// limiter queue instead of spawning an additional process.
 func TestClient_SharedConcurrencyLimit(t *testing.T) {
 	release := make(chan struct{})
 	runner := &blockingRunner{
 		entered: make(chan struct{}, bdexec.MaxConcurrent+1),
 		release: release,
 	}
-	dir := t.TempDir()
 	holderCtx, cancelHolders := context.WithCancel(context.Background())
 	defer cancelHolders()
 	holdersDone := make(chan struct{}, bdexec.MaxConcurrent)
 
 	for range bdexec.MaxConcurrent {
 		client := NewClientWithRunner(runner)
+		dir := t.TempDir()
 		go func() {
 			_, _ = client.Show(holderCtx, dir, "mitto-held")
 			holdersDone <- struct{}{}
@@ -607,9 +661,10 @@ func TestClient_SharedConcurrencyLimit(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
+	queuedDir := t.TempDir()
 	errCh := make(chan error, 1)
 	go func() {
-		_, err := NewClientWithRunner(runner).Show(ctx, dir, "mitto-queued")
+		_, err := NewClientWithRunner(runner).Show(ctx, queuedDir, "mitto-queued")
 		errCh <- err
 	}()
 
