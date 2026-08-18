@@ -2667,27 +2667,10 @@ func TestApplyOnCloseProcessors_ReapedProcessExecutesCommandsAndSpoolsPrompts(t 
 }
 
 // TestApplyOnCloseProcessors_RunRecorder_LostAfterSessionDeleted reproduces
-// mitto-hk6k: when a session is deleted (mirroring
-// internal/web/handlers/session_delete.go, which fires ApplyOnCloseProcessors
-// BEFORE store.Delete but does not wait for the fire-and-forget close pipeline
-// to finish), every processor_run event the close-phase RunRecorder tries to
-// persist after the deletion completes is silently lost — store.AppendEvent
-// returns session.ErrSessionNotFound because the session directory is already
-// gone. This is deterministic, not a timing race: the metadata read in
-// ApplyOnCloseProcessors happens synchronously before the goroutine spawns,
-// so it always wins against the caller's immediately-following store.Delete;
-// every AppendEvent from inside that goroutine always loses.
-//
-// mitto-hk6k's acceptance criteria require the after-phase persist-failure
-// path (internal/conversation/acp_callback_sink.go recordEventWithSeqHelper,
-// which logs WARN "Failed to persist processor run" on a "session not
-// started" error) and this close-phase path to "share a message and level".
-// Today they do not: the close-phase wiring in
-// SessionManager.ApplyOnCloseProcessors logs a DIFFERENT message
-// ("close-phase: failed to persist processor_run event") at DEBUG instead of
-// WARN. This test asserts the unified, expected behavior and therefore FAILS
-// against the current code — it will pass once the fix routes both paths
-// through a shared helper with one message and level.
+// mitto-hk6k: deletion makes every close-phase processor_run append impossible,
+// because store.Delete races ahead of the fire-and-forget pipeline. The lifecycle
+// omission must be summarized once at DEBUG instead of attempted once per
+// processor and emitted as a generic persistence WARN.
 func TestApplyOnCloseProcessors_RunRecorder_LostAfterSessionDeleted(t *testing.T) {
 	store, err := session.NewStore(t.TempDir())
 	if err != nil {
@@ -2751,24 +2734,18 @@ func TestApplyOnCloseProcessors_RunRecorder_LostAfterSessionDeleted(t *testing.T
 		t.Fatalf("Delete failed: %v", err)
 	}
 
-	// Give the close-phase pipeline goroutine time to run its (slow) processor
-	// and attempt to persist the processor_run event against the now-deleted
-	// session. Poll for ANY log record mentioning the persist failure, at
-	// either message/level, so this works both pre-fix and post-fix.
-	const afterPhaseSharedMessage = "Failed to persist processor run"
-	sawPersistFailure := func() bool {
-		return handler.hasRecord(slog.LevelWarn, afterPhaseSharedMessage) ||
-			handler.hasRecord(slog.LevelDebug, "close-phase: failed to persist processor_run event")
-	}
+	// Give the close-phase pipeline goroutine time to run its slow processor and
+	// emit the single lifecycle summary after ApplyOnClose returns.
+	const skippedMessage = "close-phase: processor_run persistence skipped"
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if sawPersistFailure() {
+		if handler.hasRecord(slog.LevelDebug, skippedMessage) {
 			break
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	if !sawPersistFailure() {
-		t.Fatal("expected the close-phase RunRecorder to fail persisting processor_run after the session was deleted")
+	if !handler.hasRecord(slog.LevelDebug, skippedMessage) {
+		t.Fatal("expected one DEBUG summary for processor_run events omitted after session deletion")
 	}
 
 	// Confirm the event was truly never persisted anywhere recoverable —
@@ -2779,17 +2756,56 @@ func TestApplyOnCloseProcessors_RunRecorder_LostAfterSessionDeleted(t *testing.T
 		t.Fatalf("expected ErrSessionNotFound reading events for deleted session, got: %v", err)
 	}
 
-	// mitto-hk6k acceptance criterion: "The after-phase and close-phase
-	// persist failures share a message and level." Today the close-phase path
-	// logs a DIFFERENT message ("close-phase: failed to persist processor_run
-	// event") at DEBUG instead of the after-phase's WARN
-	// ("Failed to persist processor run") — this assertion currently FAILS,
-	// reproducing the bug. It will pass once both paths are unified.
-	if !handler.hasRecord(slog.LevelWarn, afterPhaseSharedMessage) {
-		t.Fatalf("expected close-phase persist failure to share the after-phase's WARN %q message, but it did not (mitto-hk6k: divergent message/level between the two persist-failure paths)", afterPhaseSharedMessage)
+	if handler.hasRecord(slog.LevelWarn, "Failed to persist processor run") {
+		t.Fatal("deleted-session lifecycle omission still emitted a generic per-processor WARN")
 	}
 	if handler.hasRecord(slog.LevelDebug, "close-phase: failed to persist processor_run event") {
-		t.Fatal("close-phase persist failure still logs its own distinct DEBUG message instead of sharing the after-phase's WARN message (mitto-hk6k)")
+		t.Fatal("deleted-session lifecycle omission still emitted the obsolete per-processor DEBUG message")
+	}
+
+	handler.mu.Lock()
+	defer handler.mu.Unlock()
+	summaries := 0
+	var attrs map[string]any
+	for _, record := range handler.records {
+		if record.Level != slog.LevelDebug || record.Message != skippedMessage {
+			continue
+		}
+		summaries++
+		attrs = make(map[string]any)
+		record.Attrs(func(attr slog.Attr) bool {
+			attrs[attr.Key] = attr.Value.Any()
+			return true
+		})
+	}
+	if summaries != 1 {
+		t.Fatalf("processor_run omission summaries = %d, want exactly 1", summaries)
+	}
+	if attrs["reason"] != "session_deleted" || attrs["archive_reason"] != "deleted" {
+		t.Fatalf("omission summary lifecycle attrs = %#v, want reason=session_deleted archive_reason=deleted", attrs)
+	}
+	if attrs["omitted_processor_runs"] != int64(1) {
+		t.Fatalf("omitted_processor_runs = %#v, want 1", attrs["omitted_processor_runs"])
+	}
+}
+
+func TestCloseProcessorRunPersistenceImpossible(t *testing.T) {
+	tests := []struct {
+		reason string
+		want   bool
+	}{
+		{reason: "deleted", want: true},
+		{reason: "parent_deleted", want: true},
+		{reason: "self_destructed", want: true},
+		{reason: "manual", want: false},
+		{reason: "inactivity", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.reason, func(t *testing.T) {
+			if got := closeProcessorRunPersistenceImpossible(tt.reason); got != tt.want {
+				t.Fatalf("closeProcessorRunPersistenceImpossible(%q) = %v, want %v", tt.reason, got, tt.want)
+			}
+		})
 	}
 }
 

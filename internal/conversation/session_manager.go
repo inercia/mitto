@@ -689,6 +689,15 @@ func (sm *SessionManager) GetWorkspaceAllProcessorDirs(workingDir string) []stri
 	return sm.wsRegistry.GetWorkspaceAllProcessorDirs(workingDir)
 }
 
+func closeProcessorRunPersistenceImpossible(reason string) bool {
+	switch reason {
+	case "deleted", "parent_deleted", "self_destructed":
+		return true
+	default:
+		return false
+	}
+}
+
 // ApplyOnCloseProcessors runs the conversationClosed processor pipeline for a session
 // being archived. It resolves the session's working directory and workspace from the
 // store (the live BackgroundSession is typically already gone by the time archive
@@ -794,33 +803,34 @@ func (sm *SessionManager) ApplyOnCloseProcessors(sessionID string, reason string
 		})
 	})
 
-	// Wire processor-run instrumentation (mitto-fm89 Stats tab). The live
-	// BackgroundSession is typically already gone by close time, so this
-	// appends directly via the store (which auto-assigns Seq) rather than
-	// through a *session.Recorder. Best-effort: a write failure here must
-	// never block the close pipeline. Persist failures share the same
-	// message/level as the after-phase Recorder-based writer
-	// (recordEventWithSeqHelper / logPersistFailure in acp_callback_sink.go)
-	// so a log scan for "Failed to persist processor run" is exhaustive
-	// (mitto-hk6k) — most commonly this fires with session.ErrSessionNotFound
-	// when the session was deleted, since store.Delete races ahead of this
-	// fire-and-forget pipeline (see session_delete.go).
-	procMgr.SetRunRecorder(func(run processors.ProcessorRun) {
-		if err := store.AppendEvent(sessionID, session.Event{
-			Type:      session.EventTypeProcessorRun,
-			Timestamp: time.Now(),
-			Data: session.ProcessorRunData{
-				Name:       run.Name,
-				Phase:      run.Phase,
-				Outcome:    run.Outcome,
-				DurationMs: run.Duration.Milliseconds(),
-				Error:      run.Error,
-			},
-		}); err != nil {
-			logPersistFailure(logger, "processor run", err,
-				"session_id", sessionID, "processor", run.Name)
-		}
-	})
+	// Wire processor-run instrumentation (mitto-fm89 Stats tab). Deletion
+	// removes the session store before this fire-and-forget pipeline can append,
+	// so avoid one guaranteed failure (and WARN) per processor. The omission is
+	// summarized once after the pipeline. Other close reasons retain best-effort
+	// persistence and the shared failure classification from logPersistFailure.
+	omittedProcessorRuns := 0
+	if closeProcessorRunPersistenceImpossible(reason) {
+		procMgr.SetRunRecorder(func(processors.ProcessorRun) {
+			omittedProcessorRuns++
+		})
+	} else {
+		procMgr.SetRunRecorder(func(run processors.ProcessorRun) {
+			if err := store.AppendEvent(sessionID, session.Event{
+				Type:      session.EventTypeProcessorRun,
+				Timestamp: time.Now(),
+				Data: session.ProcessorRunData{
+					Name:       run.Name,
+					Phase:      run.Phase,
+					Outcome:    run.Outcome,
+					DurationMs: run.Duration.Milliseconds(),
+					Error:      run.Error,
+				},
+			}); err != nil {
+				logPersistFailure(logger, "processor run", err,
+					"session_id", sessionID, "processor", run.Name)
+			}
+		})
+	}
 
 	input := processors.CloseProcessorInput{
 		SessionID:             sessionID,
@@ -859,6 +869,13 @@ func (sm *SessionManager) ApplyOnCloseProcessors(sessionID string, reason string
 		}
 
 		procMgr.ApplyOnClose(ctx, input)
+		if omittedProcessorRuns > 0 && logger != nil {
+			logger.Debug("close-phase: processor_run persistence skipped",
+				"session_id", sessionID,
+				"reason", "session_deleted",
+				"archive_reason", reason,
+				"omitted_processor_runs", omittedProcessorRuns)
+		}
 	}()
 }
 
