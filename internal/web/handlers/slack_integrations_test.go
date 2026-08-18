@@ -56,7 +56,7 @@ func (handlerSlack) ValidateApp(_ context.Context, token string) (string, error)
 func (handlerSlack) ValidateInstallation(context.Context, string) (slackcatalog.InstallationIdentity, error) {
 	return slackcatalog.InstallationIdentity{}, slackcatalog.ErrUnavailable
 }
-func (handlerSlack) ListPublicChannels(context.Context, string, string, int) (slackcatalog.ChannelPage, error) {
+func (handlerSlack) ListChannels(context.Context, string, string, int) (slackcatalog.ChannelPage, error) {
 	return slackcatalog.ChannelPage{}, nil
 }
 

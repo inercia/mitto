@@ -116,8 +116,12 @@ func (s *SlackSource) handleSocketEventDurable(evt socketmode.Event, client *soc
 		// Only plain new messages are in scope: skip subtypes (edits,
 		// joins, message_changed, ...) and any bot-authored message,
 		// including Mitto's own app (self-filter by user ID as well, in
-		// case BotID differs across workspaces).
-		if inner.SubType != "" || inner.BotID != "" || inner.User == selfUserID {
+		// case BotID differs across workspaces). Slack represents public
+		// message.channels and private message.groups events with the same
+		// MessageEvent type; direct messages remain out of scope. Empty is
+		// accepted for older/synthetic envelopes that omit channel_type.
+		if (inner.ChannelType != "" && inner.ChannelType != slackevents.ChannelTypeChannel && inner.ChannelType != slackevents.ChannelTypeGroup) ||
+			inner.SubType != "" || inner.BotID != "" || inner.User == selfUserID {
 			s.ackRequest(client, evt.Request)
 			return nil
 		}

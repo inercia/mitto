@@ -840,7 +840,7 @@ func (s *Service) Channels(ctx context.Context, installationID, cursor string, l
 	if err != nil {
 		return ChannelPage{}, fmt.Errorf("%w: installation credential unavailable", ErrUnavailable)
 	}
-	page, err := s.slack.ListPublicChannels(ctx, token, cursor, limit)
+	page, err := s.slack.ListChannels(ctx, token, cursor, limit)
 	if err != nil {
 		return ChannelPage{}, err
 	}

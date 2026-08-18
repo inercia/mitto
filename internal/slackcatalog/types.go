@@ -64,8 +64,10 @@ type InstallationIdentity struct {
 }
 
 type Channel struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	IsPrivate bool   `json:"is_private"`
+	IsMember  bool   `json:"is_member"`
 }
 
 type ChannelPage struct {

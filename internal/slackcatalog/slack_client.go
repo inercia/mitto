@@ -19,7 +19,7 @@ const slackRequestTimeout = 30 * time.Second
 type SlackProvider interface {
 	ValidateApp(context.Context, string) (string, error)
 	ValidateInstallation(context.Context, string) (InstallationIdentity, error)
-	ListPublicChannels(context.Context, string, string, int) (ChannelPage, error)
+	ListChannels(context.Context, string, string, int) (ChannelPage, error)
 }
 
 type SlackClient struct {
@@ -100,11 +100,11 @@ func (c *SlackClient) ValidateInstallation(ctx context.Context, token string) (I
 		BotID: auth.BotID, BotUserID: auth.UserID}, nil
 }
 
-func (c *SlackClient) ListPublicChannels(ctx context.Context, token, cursor string, limit int) (ChannelPage, error) {
+func (c *SlackClient) ListChannels(ctx context.Context, token, cursor string, limit int) (ChannelPage, error) {
 	values := url.Values{
 		"exclude_archived": {"true"},
 		"limit":            {strconv.Itoa(limit)},
-		"types":            {"public_channel"},
+		"types":            {"public_channel,private_channel"},
 	}
 	if cursor != "" {
 		values.Set("cursor", cursor)
@@ -116,6 +116,8 @@ func (c *SlackClient) ListPublicChannels(ctx context.Context, token, cursor stri
 			ID         string `json:"id"`
 			Name       string `json:"name"`
 			IsArchived bool   `json:"is_archived"`
+			IsPrivate  bool   `json:"is_private"`
+			IsMember   bool   `json:"is_member"`
 		} `json:"channels"`
 		Metadata struct {
 			NextCursor string `json:"next_cursor"`
@@ -130,7 +132,9 @@ func (c *SlackClient) ListPublicChannels(ctx context.Context, token, cursor stri
 	page := ChannelPage{Channels: make([]Channel, 0, len(response.Channels)), NextCursor: response.Metadata.NextCursor}
 	for _, ch := range response.Channels {
 		if ch.ID != "" && ch.Name != "" && !ch.IsArchived {
-			page.Channels = append(page.Channels, Channel{ID: ch.ID, Name: ch.Name})
+			page.Channels = append(page.Channels, Channel{
+				ID: ch.ID, Name: ch.Name, IsPrivate: ch.IsPrivate, IsMember: ch.IsMember,
+			})
 		}
 	}
 	return page, nil

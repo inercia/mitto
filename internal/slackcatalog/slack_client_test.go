@@ -38,7 +38,7 @@ func TestSlackClientValidationAndPaginatedChannels(t *testing.T) {
 			}
 			fmt.Fprint(w, `{"ok":true,"bot":{"app_id":"A123"}}`)
 		case "/conversations.list":
-			if r.Form.Get("types") != "public_channel" || r.Form.Get("limit") != "25" || r.Form.Get("cursor") != "cursor-1" {
+			if r.Form.Get("types") != "public_channel,private_channel" || r.Form.Get("limit") != "25" || r.Form.Get("cursor") != "cursor-1" {
 				t.Errorf("conversations.list form = %v", r.Form)
 			}
 			fmt.Fprint(w, `{"ok":true,"channels":[{"id":"C1","name":"general"},{"id":"C2","name":"old","is_archived":true},{"id":"","name":"bad"}],"response_metadata":{"next_cursor":"cursor-2"}}`)
@@ -56,9 +56,9 @@ func TestSlackClientValidationAndPaginatedChannels(t *testing.T) {
 	if err != nil || identity.SlackAppID != "A123" || identity.TeamID != "T123" || identity.BotUserID != "U123" {
 		t.Fatalf("ValidateInstallation() = %#v, %v", identity, err)
 	}
-	page, err := client.ListPublicChannels(context.Background(), botToken, "cursor-1", 25)
+	page, err := client.ListChannels(context.Background(), botToken, "cursor-1", 25)
 	if err != nil || len(page.Channels) != 1 || page.Channels[0].ID != "C1" || page.NextCursor != "cursor-2" {
-		t.Fatalf("ListPublicChannels() = %#v, %v", page, err)
+		t.Fatalf("ListChannels() = %#v, %v", page, err)
 	}
 	wantMethods := []string{"apps.connections.open", "auth.test", "bots.info", "conversations.list"}
 	if fmt.Sprint(methods) != fmt.Sprint(wantMethods) {
@@ -106,7 +106,7 @@ func TestSlackClientSendsFormEncodedValues(t *testing.T) {
 	}))
 	defer server.Close()
 	client := &SlackClient{APIURL: server.URL, Client: server.Client()}
-	if _, err := client.ListPublicChannels(context.Background(), "xoxb-token", "a+b", 100); err != nil {
+	if _, err := client.ListChannels(context.Background(), "xoxb-token", "a+b", 100); err != nil {
 		t.Fatal(err)
 	}
 	if got := (<-values).Get("cursor"); got != "a+b" {

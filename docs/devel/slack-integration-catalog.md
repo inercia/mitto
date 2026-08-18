@@ -83,7 +83,7 @@ messages rather than decoder, provider, or credential text.
 | `POST`                   | `/api/slack/installations/{installationId}/validate`       | Revalidate the configured bot token                  |
 | `PUT`                    | `/api/slack/installations/{installationId}/token`          | Validate and replace a bot token                     |
 | `GET`                    | `/api/slack/installations/{installationId}/prepare-delete` | Report loop references                               |
-| `GET`                    | `/api/slack/installations/{installationId}/channels`       | Discover public channels                             |
+| `GET`                    | `/api/slack/installations/{installationId}/channels`       | Discover public and visible private channels         |
 | `GET`, `POST`            | `/api/slack/environment-import`                            | Inspect or import the deprecated environment adapter |
 
 Errors use the canonical Mitto JSON envelope: malformed input is `400`, missing
@@ -97,10 +97,12 @@ CRUD/validation methods).
 
 ## Channel discovery
 
-`GET .../channels` calls Slack `conversations.list` with `public_channel` and
-`exclude_archived=true`. Version 1 deliberately excludes private channels and
-returns only channel IDs, names, and `next_cursor`; it never retrieves message
-content.
+`GET .../channels` calls Slack `conversations.list` with
+`public_channel,private_channel` and `exclude_archived=true`. It returns channel
+IDs, names, `is_private`, `is_member`, and `next_cursor`; it never retrieves
+message content. Slack exposes a private channel to a bot token only after the
+bot has been invited, so absence from a complete page set does not prove the
+channel was deleted.
 
 The endpoint accepts an opaque `cursor` (at most 1024 bytes) and a `limit` from 1
 through 200 (default 100). Pages are cached in memory for one minute by

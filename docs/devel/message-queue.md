@@ -253,6 +253,12 @@ installation/channel/filter. Duplicate installation/channel rows are rejected.
 An enabled loop armed for `onSlack` requires at least one subscription; a
 disabled draft may omit them.
 
+Subscriptions may target public or private channels. The catalog picker labels
+privacy and bot membership, but the persisted loop contract remains only the
+opaque channel ID. Slack exposes private channels and delivers `message.groups`
+events only after the bot has been invited; a temporarily invisible saved ID is
+therefore preserved rather than cleared.
+
 One delivery exposes a bounded slice at `.Trigger.OnSlack.Events` (maximum 20
 events and 32 KiB total). Event DTOs contain only installation/channel/event
 IDs, kind, author, timestamps, text, and `Untrusted: true`; no credentials or

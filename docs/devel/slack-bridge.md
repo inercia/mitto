@@ -15,8 +15,9 @@ credential vault; loops persist only installation and channel IDs.
   regardless of how many installations, channels, or loops reference it.
 - Routing first matches app, team, and channel, then event mode and thread
   policy. A target session is included at most once per event.
-- Human messages are accepted by default. Message subtypes, bot events, and
-  events authored by the installation's bot identity are ignored.
+- Human messages from subscribed public and private channels are accepted by
+  default. Message subtypes, direct messages, bot events, and events authored
+  by the installation's bot identity are ignored.
 - Attachments and files are not copied into normalized events and are never
   fetched automatically in v1.
 - App tokens are resolved only when a worker starts. Successful replacement
@@ -148,7 +149,7 @@ validate Socket Mode latency, disconnect behavior, and credential replacement.
 
 ### Managed development-workspace smoke
 
-Use synthetic messages in isolated development channels. Configure one Slack
+Use synthetic messages in isolated public and private development channels. Configure one Slack
 app profile in **Settings > Slack**, install it into two development Slack
 workspaces, and create one installation record per team. Invite the bot to two
 channels in each team. Create at least two enabled loops: one subscribed across
@@ -163,6 +164,7 @@ material or message bodies.
 | Scenario                          | Action                                                                                                   | Expected result                                                                                                                                        |
 | --------------------------------- | -------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Multi-team routing                | Post one synthetic human message in each subscribed channel.                                             | Every matching loop receives exactly one turn; loops for other teams/channels receive none. Record event-to-turn latency.                              |
+| Public/private routing            | Post one synthetic human message in a subscribed public channel and one in a subscribed private channel. | Both `message.channels` and `message.groups` reach only their matching loops.                                                                           |
 | Filter boundary                   | Post from an unsubscribed channel and from the app's bot identity; exercise a non-empty message subtype. | No loop turn is created.                                                                                                                               |
 | Pause/resume                      | Pause one shared-channel loop, post once, resume it, then post a new event.                              | Only enabled recipients receive the first event; both receive the new event after resume.                                                              |
 | Busy and mixed-trigger contention | Keep one loop prompting (or fire its other trigger), then post a subscribed event.                       | The Slack recipient remains pending and is delivered exactly once after idle; another trigger never causes the Slack event to disappear.               |

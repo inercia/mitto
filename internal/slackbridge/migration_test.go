@@ -59,7 +59,7 @@ func (s migrationSlack) ValidateInstallation(_ context.Context, token string) (s
 	}
 	return id, nil
 }
-func (migrationSlack) ListPublicChannels(context.Context, string, string, int) (slackcatalog.ChannelPage, error) {
+func (migrationSlack) ListChannels(context.Context, string, string, int) (slackcatalog.ChannelPage, error) {
 	return slackcatalog.ChannelPage{}, nil
 }
 

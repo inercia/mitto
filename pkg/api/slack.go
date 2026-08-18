@@ -36,8 +36,10 @@ type SlackInstallation struct {
 }
 
 type SlackChannel struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	IsPrivate bool   `json:"is_private"`
+	IsMember  bool   `json:"is_member"`
 }
 
 type SlackChannelPage struct {

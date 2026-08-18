@@ -91,7 +91,7 @@ func (f *fakeSlackProvider) ValidateInstallation(_ context.Context, token string
 	}
 	return identity, nil
 }
-func (f *fakeSlackProvider) ListPublicChannels(_ context.Context, _ string, cursor string, _ int) (ChannelPage, error) {
+func (f *fakeSlackProvider) ListChannels(_ context.Context, _ string, cursor string, _ int) (ChannelPage, error) {
 	f.channelCalls++
 	return cloneChannelPage(f.pages[cursor]), nil
 }
@@ -109,12 +109,12 @@ type blockingSlackProvider struct {
 	once    sync.Once
 }
 
-func (p *blockingSlackProvider) ListPublicChannels(ctx context.Context, token, cursor string, limit int) (ChannelPage, error) {
+func (p *blockingSlackProvider) ListChannels(ctx context.Context, token, cursor string, limit int) (ChannelPage, error) {
 	p.once.Do(func() {
 		close(p.started)
 		<-p.release
 	})
-	return p.fakeSlackProvider.ListPublicChannels(ctx, token, cursor, limit)
+	return p.fakeSlackProvider.ListChannels(ctx, token, cursor, limit)
 }
 
 func newTestService() (*Service, *memoryStore, *memoryCredentials, *fakeSlackProvider, *fakeReferences) {
