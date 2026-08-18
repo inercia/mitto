@@ -128,8 +128,8 @@ func newTestService() (*Service, *memoryStore, *memoryCredentials, *fakeSlackPro
 			"bot-other": {SlackAppID: "A222", TeamID: "T999", TeamName: "Other", BotID: "B999", BotUserID: "U999"},
 		},
 		pages: map[string]ChannelPage{
-			"":     {Channels: []Channel{{ID: "C111", Name: "general"}}, NextCursor: "next"},
-			"next": {Channels: []Channel{{ID: "C222", Name: "random"}}},
+			"":     {Channels: []Channel{{ID: "C111", Name: "general", IsMember: true}}, NextCursor: "next"},
+			"next": {Channels: []Channel{{ID: "G222", Name: "private-ops", IsPrivate: true, IsMember: true}}},
 		},
 	}
 	references := &fakeReferences{}
@@ -301,11 +301,14 @@ func TestReferenceBlockedDeletionAndChannelCache(t *testing.T) {
 	if err != nil || first.NextCursor != "next" {
 		t.Fatalf("Channels first page = %#v, %v", first, err)
 	}
-	if _, err := service.Channels(ctx, installation.ID, "", 25); err != nil || provider.channelCalls != 1 {
+	first.Channels[0].Name = "mutated by caller"
+	cached, err := service.Channels(ctx, installation.ID, "", 25)
+	if err != nil || provider.channelCalls != 1 || cached.Channels[0].Name != "general" || !cached.Channels[0].IsMember {
 		t.Fatalf("cache calls = %d, err=%v", provider.channelCalls, err)
 	}
 	second, err := service.Channels(ctx, installation.ID, "next", 25)
-	if err != nil || len(second.Channels) != 1 || second.Channels[0].ID != "C222" {
+	if err != nil || len(second.Channels) != 1 || second.Channels[0].ID != "G222" ||
+		!second.Channels[0].IsPrivate || !second.Channels[0].IsMember {
 		t.Fatalf("Channels second page = %#v, %v", second, err)
 	}
 	now = now.Add(2 * time.Minute)

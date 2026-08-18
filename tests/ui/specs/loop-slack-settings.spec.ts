@@ -65,14 +65,21 @@ async function mockSlackCatalog(page: Page, failFirstChannel = false) {
       await route.fulfill({
         json: cursor
           ? {
-              channels: [{ id: "C2", name: "random" }],
+              channels: [
+                {
+                  id: "C2",
+                  name: "private-ops",
+                  is_private: true,
+                  is_member: true,
+                },
+              ],
               next_cursor: "",
             }
           : {
               channels: [
-                { id: "C1", name: "general" },
+                { id: "C1", name: "general", is_member: true },
                 ...(failFirstChannel
-                  ? [{ id: "C404", name: "saved-channel" }]
+                  ? [{ id: "C404", name: "saved-channel", is_member: true }]
                   : []),
               ],
               next_cursor: failFirstChannel ? "" : "page-2",
@@ -83,7 +90,7 @@ async function mockSlackCatalog(page: Page, failFirstChannel = false) {
   await page.route("**/api/slack/installations/inst-b/channels*", (route) =>
     route.fulfill({
       json: {
-        channels: [{ id: "C3", name: "announcements" }],
+        channels: [{ id: "C3", name: "announcements", is_member: true }],
         next_cursor: "",
       },
     }),
@@ -107,7 +114,7 @@ async function mountLoopEditor(page: Page, sessionId: string) {
     const host = document.createElement("div");
     host.id = "slack-loop-test-root";
     host.style.cssText =
-      "position:fixed;inset:0;z-index:9999;overflow:auto;padding:16px;background:white";
+      "position:fixed;inset:0;z-index:1;overflow:auto;padding:16px;background:white";
     app.appendChild(host);
     const { LoopSettingsTab } =
       await import("/components/LoopSettingsTab.js?e2e=mitto-37nx-7");
@@ -180,15 +187,17 @@ test.describe("onSlack loop settings", () => {
     await page.getByTestId("slack-subscription-add").click();
 
     await page.getByTestId("slack-installation-0").selectOption("inst-a");
-    await expect(page.getByTestId("slack-channel-load-more-0")).toBeVisible();
-    await page.getByTestId("slack-channel-load-more-0").click();
-    await page.getByTestId("slack-channel-search-0").fill("random");
-    await page.getByTestId("slack-channel-0").selectOption("C2");
+    await page.getByTestId("slack-channel-picker-open-0").click();
+    const privateRow = page.getByTestId("slack-channel-picker-row-C2");
+    await expect(privateRow).toContainText("Private");
+    await expect(privateRow).toContainText("Joined");
+    await privateRow.click();
     await page.getByTestId("slack-event-mode-0").selectOption("appMention");
     await page.getByTestId("slack-thread-policy-0").selectOption("rootOnly");
 
     await page.getByTestId("slack-installation-1").selectOption("inst-b");
-    await page.getByTestId("slack-channel-1").selectOption("C3");
+    await page.getByTestId("slack-channel-picker-open-1").click();
+    await page.getByTestId("slack-channel-picker-row-C3").click();
 
     const patchRequest = page.waitForRequest(
       (request) =>
@@ -230,7 +239,7 @@ test.describe("onSlack loop settings", () => {
     await expect(page.getByTestId("slack-installation-0")).toHaveValue(
       "inst-a",
     );
-    await expect(page.getByTestId("slack-channel-0")).toHaveValue("C2");
+    await expect(page.getByTestId("slack-channel-id-0")).toHaveValue("C2");
     await expect(page.getByTestId("slack-event-mode-0")).toHaveValue(
       "appMention",
     );
@@ -240,7 +249,7 @@ test.describe("onSlack loop settings", () => {
     await expect(page.getByTestId("slack-installation-1")).toHaveValue(
       "inst-b",
     );
-    await expect(page.getByTestId("slack-channel-1")).toHaveValue("C3");
+    await expect(page.getByTestId("slack-channel-id-1")).toHaveValue("C3");
   });
 
   test("retains a saved ID through a channel error and retry", async ({
@@ -262,15 +271,14 @@ test.describe("onSlack loop settings", () => {
     });
     await mountLoopEditor(page, sessionId);
 
-    await expect(
-      page.getByText("Check channels:read and retry."),
-    ).toBeVisible();
-    await expect(page.getByTestId("slack-channel-0")).toHaveValue("C404");
+    await expect(page.getByTestId("slack-channel-id-0")).toHaveValue("C404");
+    await page.getByTestId("slack-channel-picker-open-0").click();
+    await expect(page.getByText(/channels:read and groups:read/)).toBeVisible();
     await page.getByRole("button", { name: "Retry" }).click();
-    await expect(page.getByText("Check channels:read and retry.")).toBeHidden();
-    await expect(page.getByTestId("slack-channel-0")).toHaveValue("C404");
+    await expect(page.getByText(/channels:read and groups:read/)).toBeHidden();
+    await expect(page.getByTestId("slack-channel-id-0")).toHaveValue("C404");
     await expect(
-      page.getByTestId("slack-channel-0").locator('option[value="C404"]'),
-    ).toHaveText("#saved-channel · C404");
+      page.getByTestId("slack-channel-picker-row-C404"),
+    ).toContainText("#saved-channel");
   });
 });

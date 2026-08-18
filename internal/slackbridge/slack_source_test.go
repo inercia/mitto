@@ -51,6 +51,35 @@ func TestSlackSource_HandleSocketEvent_PlainMessage_Emitted(t *testing.T) {
 	}
 }
 
+func TestSlackSource_HandleSocketEvent_PrivateChannelMessage_Emitted(t *testing.T) {
+	src := NewSlackSource(Config{}, nil, nil)
+	client := newTestSocketmodeClient()
+	evt := eventsAPIEvent("T1", "message", &slackevents.MessageEvent{
+		Channel: "G1", ChannelType: slackevents.ChannelTypeGroup, User: "U1", Text: "private",
+	})
+
+	var got []Event
+	src.handleSocketEvent(evt, client, "U-SELF", func(e Event) { got = append(got, e) })
+	if len(got) != 1 || got[0].ChannelID != "G1" || got[0].Text != "private" {
+		t.Fatalf("private channel event = %#v", got)
+	}
+}
+
+func TestSlackSource_HandleSocketEvent_DirectMessagesIgnored(t *testing.T) {
+	for _, channelType := range []string{slackevents.ChannelTypeIM, slackevents.ChannelTypeMPIM} {
+		t.Run(channelType, func(t *testing.T) {
+			src := NewSlackSource(Config{}, nil, nil)
+			var got []Event
+			src.handleSocketEvent(eventsAPIEvent("T1", "message", &slackevents.MessageEvent{
+				Channel: "D1", ChannelType: channelType, User: "U1", Text: "direct",
+			}), newTestSocketmodeClient(), "U-SELF", func(e Event) { got = append(got, e) })
+			if len(got) != 0 {
+				t.Fatalf("direct-message event emitted = %#v", got)
+			}
+		})
+	}
+}
+
 func TestSlackSource_HandleSocketEvent_SelfMessage_Ignored(t *testing.T) {
 	src := NewSlackSource(Config{}, nil, nil)
 	client := newTestSocketmodeClient()

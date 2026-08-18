@@ -41,7 +41,7 @@ func TestSlackClientValidationAndPaginatedChannels(t *testing.T) {
 			if r.Form.Get("types") != "public_channel,private_channel" || r.Form.Get("limit") != "25" || r.Form.Get("cursor") != "cursor-1" {
 				t.Errorf("conversations.list form = %v", r.Form)
 			}
-			fmt.Fprint(w, `{"ok":true,"channels":[{"id":"C1","name":"general"},{"id":"C2","name":"old","is_archived":true},{"id":"","name":"bad"}],"response_metadata":{"next_cursor":"cursor-2"}}`)
+			fmt.Fprint(w, `{"ok":true,"channels":[{"id":"C1","name":"general","is_member":true},{"id":"G1","name":"private-ops","is_private":true,"is_member":true},{"id":"C2","name":"old","is_archived":true},{"id":"","name":"bad"}],"response_metadata":{"next_cursor":"cursor-2"}}`)
 		default:
 			http.NotFound(w, r)
 		}
@@ -57,7 +57,9 @@ func TestSlackClientValidationAndPaginatedChannels(t *testing.T) {
 		t.Fatalf("ValidateInstallation() = %#v, %v", identity, err)
 	}
 	page, err := client.ListChannels(context.Background(), botToken, "cursor-1", 25)
-	if err != nil || len(page.Channels) != 1 || page.Channels[0].ID != "C1" || page.NextCursor != "cursor-2" {
+	if err != nil || len(page.Channels) != 2 || page.Channels[0].ID != "C1" || !page.Channels[0].IsMember ||
+		page.Channels[0].IsPrivate || page.Channels[1].ID != "G1" || !page.Channels[1].IsPrivate ||
+		!page.Channels[1].IsMember || page.NextCursor != "cursor-2" {
 		t.Fatalf("ListChannels() = %#v, %v", page, err)
 	}
 	wantMethods := []string{"apps.connections.open", "auth.test", "bots.info", "conversations.list"}

@@ -72,10 +72,12 @@ func TestSlackLoopProductionPathE2E(t *testing.T) {
 	}
 	credentials := &slackE2ECredentials{token: "fake-token-v1"}
 	longText := strings.Repeat("external", 700)
+	privateText := strings.Repeat("private", 700)
 	gates := []chan struct{}{make(chan struct{}), make(chan struct{}), make(chan struct{}), make(chan struct{}), make(chan struct{}), make(chan struct{})}
 	sources := &slackE2ESources{source: &slackbridge.FakeSource{Runs: []slackbridge.FakeRun{
 		{Wait: gates[0], Events: []slackbridge.Event{
 			{EventID: "event-a", TeamID: "team-a", ChannelID: "channel-a", AuthorID: "human-a", Kind: "message", Text: longText},
+			{EventID: "event-private", TeamID: "team-a", ChannelID: "private-a", AuthorID: "human-private", Kind: "message", Text: privateText},
 			{EventID: "event-b", TeamID: "team-b", ChannelID: "channel-b", AuthorID: "human-b", Kind: "message", Text: "workspace B"},
 			{EventID: "event-miss", TeamID: "team-a", ChannelID: "channel-b", AuthorID: "human", Kind: "message", Text: "must not dispatch"},
 			{EventID: "event-a", TeamID: "team-a", ChannelID: "channel-a", AuthorID: "human-a", Kind: "message", Text: longText},
@@ -90,6 +92,7 @@ func TestSlackLoopProductionPathE2E(t *testing.T) {
 	a1 := createSlackLoopSession(t, ts, "A mixed", true, []string{"onSlack", "schedule"}, "install-a", "channel-a")
 	a2 := createSlackLoopSession(t, ts, "A fanout", true, []string{"onSlack"}, "install-a", "channel-a")
 	b := createSlackLoopSession(t, ts, "B target", true, []string{"onSlack"}, "install-b", "channel-b")
+	private := createSlackLoopSession(t, ts, "private target", true, []string{"onSlack"}, "install-a", "private-a")
 	paused := createSlackLoopSession(t, ts, "paused", false, []string{"onSlack"}, "install-a", "channel-a")
 
 	manager := slackbridge.NewManager(ts.Store, catalog, credentials, ts.Server.LoopRunner(), nil)
@@ -100,11 +103,13 @@ func TestSlackLoopProductionPathE2E(t *testing.T) {
 	t.Cleanup(manager.Close)
 
 	close(gates[0])
-	waitSlackCounts(t, ts, map[string]int{a1: 1, a2: 1, b: 1, paused: 0})
+	waitSlackCounts(t, ts, map[string]int{a1: 1, a2: 1, b: 1, private: 1, paused: 0})
 	assertSlackPromptBounded(t, ts, a1, "event-a", "install-a", "channel-a", longText)
+	assertSlackPromptBounded(t, ts, private, "event-private", "install-a", "private-a", privateText)
 	waitLoopSessionIdle(t, ts, a1)
 	waitLoopSessionIdle(t, ts, a2)
 	waitLoopSessionIdle(t, ts, b)
+	waitLoopSessionIdle(t, ts, private)
 
 	setSlackLoopEnabled(t, ts, a2, false)
 	if err := manager.ReconcileSession(a2); err != nil {
