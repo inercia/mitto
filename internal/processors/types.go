@@ -2,7 +2,7 @@
 // It supports three modes:
 //   - Text-mode: simple prepend/append of static text (no external command).
 //   - Command-mode: execute an external command to transform the message.
-//   - Prompt-mode: send a prompt to an auxiliary ACP session as fire-and-forget.
+//   - Prompt-mode: send a prompt to a tracked auxiliary ACP session.
 //
 // Text-mode processors are typically created from config.MessageProcessor entries
 // via Manager.AddTextProcessors. Command-mode and prompt-mode processors are loaded
@@ -125,6 +125,18 @@ const (
 // The function dispatches the prompt to an auxiliary session and returns immediately
 // (fire-and-forget). Returns error only if the prompt couldn't be dispatched.
 type PromptFunc func(ctx context.Context, workspaceUUID, processorName, prompt string) error
+
+// PromptCompletion reports the content-free terminal outcome of a tracked
+// prompt-mode processor execution.
+type PromptCompletion struct {
+	SaveCount      int
+	SaveCountKnown bool
+}
+
+// PromptCompletionFunc executes a prompt-mode processor through auxiliary
+// completion rather than returning at handoff. dispatchID is stable across
+// persistence and retries so terminal logs can be reconciled.
+type PromptCompletionFunc func(ctx context.Context, workspaceUUID, processorName, dispatchID, prompt string) (PromptCompletion, error)
 
 // NotifyFunc is a callback invoked when a prompt-mode processor dispatch
 // exhausts all retries (see Manager.dispatchWithRetry, mitto-exr). name is
@@ -266,9 +278,8 @@ type Processor struct {
 	Text string `yaml:"text,omitempty" json:"text,omitempty"`
 
 	// Prompt is the prompt template to send to an auxiliary ACP session (prompt-mode only).
-	// When set, Command and Text must be empty. The processor runs in fire-and-forget mode:
-	// the prompt is dispatched to a workspace-scoped auxiliary session and the pipeline
-	// continues immediately without waiting for the agent's response.
+	// When set, Command and Text must be empty. The pipeline dispatches the prompt
+	// asynchronously, while its worker tracks auxiliary completion durably.
 	// Supports @mitto:variable substitution and Go-template .Args rendering.
 	Prompt string `yaml:"prompt,omitempty" json:"prompt,omitempty"`
 
@@ -376,7 +387,7 @@ func (h *Processor) IsTextMode() bool {
 }
 
 // IsPromptMode returns true if this processor operates in prompt-mode.
-// Prompt-mode processors send a prompt to an auxiliary ACP session as fire-and-forget.
+// Prompt-mode processors send a prompt to an auxiliary ACP session.
 // They have a non-empty Prompt field and empty Command and Text fields.
 func (h *Processor) IsPromptMode() bool {
 	return h.Command == "" && h.Text == "" && h.Prompt != ""

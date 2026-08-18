@@ -56,6 +56,12 @@ type PendingDispatchEntry struct {
 	// first persisted. FlushPendingDispatches drops an entry once this
 	// exceeds pendingDispatchMaxAttempts (mitto-yfv8).
 	Attempts int `json:"attempts,omitempty"`
+	// ClaimedBy identifies the Mitto process currently executing this entry.
+	// A different process owner treats the claim as abandoned after restart.
+	ClaimedBy string `json:"claimed_by,omitempty"`
+	// ClaimedAt records when execution started for diagnostics and stale-claim
+	// recovery within a long-running process.
+	ClaimedAt time.Time `json:"claimed_at,omitempty"`
 }
 
 // PendingDispatchAppendResult reports the persisted entry (including its ID)
@@ -65,8 +71,8 @@ type PendingDispatchAppendResult struct {
 	Dropped []PendingDispatchEntry
 }
 
-// PendingDispatchClaim is one atomic snapshot removed from the spool. Expired
-// entries are returned separately so callers can emit auditable drop logs.
+// PendingDispatchClaim is one atomic snapshot marked in-progress in the spool.
+// Expired entries are returned separately so callers can emit auditable logs.
 type PendingDispatchClaim struct {
 	Entries []PendingDispatchEntry
 	Expired []PendingDispatchEntry
@@ -81,11 +87,16 @@ type PendingDispatchClaim struct {
 type PendingDispatchStore interface {
 	// Append adds one undelivered batch to the workspace's pending spool.
 	Append(entry PendingDispatchEntry) (PendingDispatchAppendResult, error)
-	// Claim atomically removes and returns the workspace's current spool.
+	// AppendClaimed persists a batch already owned by this process before its
+	// first execution attempt.
+	AppendClaimed(entry PendingDispatchEntry) (PendingDispatchAppendResult, error)
+	// Claim atomically marks and returns currently unowned/recoverable entries.
 	Claim(workspaceUUID string) (PendingDispatchClaim, error)
-	// Requeue prepends unresolved claimed entries to anything appended after
-	// the claim, preserving both sets without holding a lock during dispatch.
+	// Requeue updates unresolved claimed entries and releases their ownership,
+	// preserving entries appended while dispatch ran.
 	Requeue(workspaceUUID string, entries []PendingDispatchEntry) ([]PendingDispatchEntry, error)
+	// Acknowledge removes terminal entries only after execution completes.
+	Acknowledge(workspaceUUID string, dispatchIDs []string) error
 }
 
 // FilePendingDispatchStore persists entries under
@@ -112,6 +123,7 @@ type FilePendingDispatchStore struct {
 
 var pendingDispatchLocksMu sync.Mutex
 var pendingDispatchLocks = make(map[string]*sync.Mutex)
+var pendingDispatchOwnerID = uuid.NewString()
 
 // pendingDispatchLockFor returns the process-wide mutex shared by every store
 // instance targeting path. FilePendingDispatchStore instances are constructed
@@ -148,6 +160,15 @@ func (s *FilePendingDispatchStore) spoolPath(workspaceUUID string) (string, erro
 
 // Append implements PendingDispatchStore.
 func (s *FilePendingDispatchStore) Append(entry PendingDispatchEntry) (PendingDispatchAppendResult, error) {
+	return s.append(entry, false)
+}
+
+// AppendClaimed implements PendingDispatchStore.
+func (s *FilePendingDispatchStore) AppendClaimed(entry PendingDispatchEntry) (PendingDispatchAppendResult, error) {
+	return s.append(entry, true)
+}
+
+func (s *FilePendingDispatchStore) append(entry PendingDispatchEntry, claimed bool) (PendingDispatchAppendResult, error) {
 	if entry.WorkspaceUUID == "" {
 		return PendingDispatchAppendResult{}, fmt.Errorf("pending dispatch entry missing workspace UUID")
 	}
@@ -156,6 +177,13 @@ func (s *FilePendingDispatchStore) Append(entry PendingDispatchEntry) (PendingDi
 	}
 	if entry.ID == "" {
 		entry.ID = newPendingDispatchID()
+	}
+	if claimed {
+		entry.ClaimedBy = pendingDispatchOwnerID
+		entry.ClaimedAt = time.Now()
+	} else {
+		entry.ClaimedBy = ""
+		entry.ClaimedAt = time.Time{}
 	}
 	path, err := s.spoolPath(entry.WorkspaceUUID)
 	if err != nil {
@@ -210,10 +238,9 @@ func (s *FilePendingDispatchStore) Load(workspaceUUID string) ([]PendingDispatch
 	return fresh, nil
 }
 
-// Claim implements PendingDispatchStore. Reading and removing happen under
-// one process-wide path lock, so an Append is either included in this claim or
-// lands in a new spool after it; it can never be deleted between Load and
-// Replace as in the old two-operation protocol (mitto-gfr1).
+// Claim implements PendingDispatchStore. Claimed entries remain on disk until
+// Acknowledge, closing the crash window between claim and auxiliary completion.
+// A new Mitto process has a new owner ID and can reclaim entries immediately.
 func (s *FilePendingDispatchStore) Claim(workspaceUUID string) (PendingDispatchClaim, error) {
 	if workspaceUUID == "" {
 		return PendingDispatchClaim{}, fmt.Errorf("pending dispatch claim missing workspace UUID")
@@ -234,15 +261,26 @@ func (s *FilePendingDispatchStore) Claim(workspaceUUID string) (PendingDispatchC
 		return PendingDispatchClaim{}, nil
 	}
 	fresh, expired := partitionPendingDispatchEntries(entries)
-	if err := s.writeLocked(path, nil); err != nil {
-		return PendingDispatchClaim{}, fmt.Errorf("failed to remove claimed pending dispatch spool: %w", err)
+	now := time.Now()
+	claimable := make([]PendingDispatchEntry, 0, len(fresh))
+	for i := range fresh {
+		entry := &fresh[i]
+		ownedHere := entry.ClaimedBy == pendingDispatchOwnerID
+		if ownedHere {
+			continue
+		}
+		entry.ClaimedBy = pendingDispatchOwnerID
+		entry.ClaimedAt = now
+		claimable = append(claimable, *entry)
 	}
-	return PendingDispatchClaim{Entries: fresh, Expired: expired}, nil
+	if err := s.writeLocked(path, fresh); err != nil {
+		return PendingDispatchClaim{}, fmt.Errorf("failed to persist pending dispatch claim: %w", err)
+	}
+	return PendingDispatchClaim{Entries: claimable, Expired: expired}, nil
 }
 
-// Requeue implements PendingDispatchStore. Unresolved claimed entries are
-// older, so they are prepended to entries appended after Claim. The shared
-// path lock makes this a single merge transaction across store instances.
+// Requeue implements PendingDispatchStore. The shared path lock makes claim
+// updates a single merge transaction across independently-created stores.
 func (s *FilePendingDispatchStore) Requeue(workspaceUUID string, entries []PendingDispatchEntry) ([]PendingDispatchEntry, error) {
 	if workspaceUUID == "" {
 		return nil, fmt.Errorf("pending dispatch requeue missing workspace UUID")
@@ -251,6 +289,10 @@ func (s *FilePendingDispatchStore) Requeue(workspaceUUID string, entries []Pendi
 		return nil, nil
 	}
 	ensurePendingDispatchIDs(entries)
+	for i := range entries {
+		entries[i].ClaimedBy = ""
+		entries[i].ClaimedAt = time.Time{}
+	}
 	path, err := s.spoolPath(workspaceUUID)
 	if err != nil {
 		return nil, err
@@ -263,12 +305,45 @@ func (s *FilePendingDispatchStore) Requeue(workspaceUUID string, entries []Pendi
 	if readErr != nil {
 		return nil, readErr
 	}
-	merged := append(append(make([]PendingDispatchEntry, 0, len(entries)+len(current)), entries...), current...)
+	merged := upsertPendingDispatchEntries(current, entries)
 	merged, dropped := boundPendingDispatchEntries(merged)
 	if err := s.writeLocked(path, merged); err != nil {
 		return nil, err
 	}
 	return dropped, nil
+}
+
+// Acknowledge implements PendingDispatchStore.
+func (s *FilePendingDispatchStore) Acknowledge(workspaceUUID string, dispatchIDs []string) error {
+	if workspaceUUID == "" {
+		return fmt.Errorf("pending dispatch acknowledge missing workspace UUID")
+	}
+	if len(dispatchIDs) == 0 {
+		return nil
+	}
+	path, err := s.spoolPath(workspaceUUID)
+	if err != nil {
+		return err
+	}
+	mu := pendingDispatchLockFor(path)
+	mu.Lock()
+	defer mu.Unlock()
+
+	current, _, readErr := s.readLocked(path)
+	if readErr != nil {
+		return readErr
+	}
+	remove := make(map[string]struct{}, len(dispatchIDs))
+	for _, id := range dispatchIDs {
+		remove[id] = struct{}{}
+	}
+	kept := current[:0]
+	for _, entry := range current {
+		if _, ok := remove[entry.ID]; !ok {
+			kept = append(kept, entry)
+		}
+	}
+	return s.writeLocked(path, kept)
 }
 
 // Replace overwrites the spool for setup and maintenance callers. An empty/nil entries removes the
@@ -312,6 +387,23 @@ func ensurePendingDispatchIDs(entries []PendingDispatchEntry) bool {
 	return changed
 }
 
+func upsertPendingDispatchEntries(current, updates []PendingDispatchEntry) []PendingDispatchEntry {
+	merged := make([]PendingDispatchEntry, 0, len(current)+len(updates))
+	seen := make(map[string]struct{}, len(current)+len(updates))
+	for _, entry := range updates {
+		merged = append(merged, entry)
+		seen[entry.ID] = struct{}{}
+	}
+	for _, entry := range current {
+		if _, ok := seen[entry.ID]; ok {
+			continue
+		}
+		merged = append(merged, entry)
+		seen[entry.ID] = struct{}{}
+	}
+	return merged
+}
+
 func partitionPendingDispatchEntries(entries []PendingDispatchEntry) (fresh, expired []PendingDispatchEntry) {
 	cutoff := time.Now().Add(-pendingDispatchMaxAge)
 	for _, entry := range entries {
@@ -329,8 +421,19 @@ func boundPendingDispatchEntries(entries []PendingDispatchEntry) (kept, dropped 
 		return entries, nil
 	}
 	excess := len(entries) - pendingDispatchMaxEntries
-	dropped = append([]PendingDispatchEntry(nil), entries[:excess]...)
-	return entries[excess:], dropped
+	kept = make([]PendingDispatchEntry, 0, len(entries))
+	for _, entry := range entries {
+		// Never evict an in-flight entry: doing so would reopen the exact crash
+		// window the claim protocol closes. Temporary overflow is preferable when
+		// every entry is active; it contracts as completions are acknowledged.
+		if excess > 0 && entry.ClaimedBy == "" {
+			dropped = append(dropped, entry)
+			excess--
+			continue
+		}
+		kept = append(kept, entry)
+	}
+	return kept, dropped
 }
 
 // writeLocked persists entries to path, removing the file entirely when

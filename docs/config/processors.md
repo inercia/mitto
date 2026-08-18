@@ -11,7 +11,7 @@ Within each phase, three execution modes are available:
 
 - **Text-mode** — Inject static text (with optional variable substitution) into the message. No external commands needed. Only valid for `on: userPrompt`.
 - **Command-mode** — Execute external commands that receive message context as JSON and produce transformed output. Valid for `userPrompt`, `agentResponded`, `agentIdle`, and `conversationClosed`.
-- **Prompt-mode** — Send a prompt to a workspace-scoped auxiliary AI agent. Fire-and-forget: the pipeline continues immediately. Valid for all phases.
+- **Prompt-mode** — Send a prompt to a workspace-scoped auxiliary AI agent. The pipeline continues immediately while a durable background worker tracks the turn through completion. Valid for all phases.
 
 ## Configuration in the UI
 
@@ -327,11 +327,16 @@ message content. They use the `command` field and communicate via JSON on stdin/
 
 ## Prompt-Mode Processors (Auxiliary AI Agent)
 
-Prompt-mode processors send a prompt to a workspace-scoped auxiliary AI agent. They are
-**fire-and-forget**: the prompt is dispatched asynchronously and the processor pipeline
-continues immediately without waiting for the agent's response. This makes them ideal
+Prompt-mode processors send a prompt to a workspace-scoped auxiliary AI agent. The processor
+pipeline continues immediately, while a background worker durably tracks the auxiliary turn
+through a terminal save-count acknowledgement. This makes them ideal
 for background tasks like extracting insights, updating documentation, or tracking
 preferences.
+
+Before the first auxiliary RPC, Mitto writes a workspace-scoped spool entry with a stable
+dispatch ID. The auxiliary response must acknowledge that ID and report how many durable
+records/files it saved (zero is valid). Mitto removes the entry only after that terminal
+acknowledgement; failures and process crashes leave it available for retry.
 
 Prompt-mode processors use the `prompt` field (mutually exclusive with `text` and
 `command`). The prompt template supports all standard `@mitto:variable` placeholders.
@@ -366,7 +371,7 @@ prompt: |
 ### Key Differences from Text/Command Mode
 
 - **No `mutate` or `output` fields** — prompt-mode processors don't modify the outgoing message
-- **Always asynchronous** — the pipeline never blocks waiting for the auxiliary agent
+- **Asynchronous pipeline, tracked worker** — the caller does not block, but the background worker waits for completion before acknowledging durable work
 - **Requires a workspace** — the auxiliary session is scoped to the workspace
 - **Runs on the workspace's ACP server** — auxiliary sessions use the workspace's main ACP server; an optional _Auxiliary Model Selection_ (match mode + pattern) in workspace settings can switch the aux session to a specific model (otherwise the server default is used)
 - **Conversation history via MCP tool** — use `mitto_conversation_history` in the prompt to retrieve messages dynamically
@@ -569,7 +574,7 @@ text: | # Static text to inject
 command: /path/to/script.sh # Command to execute (see Command Resolution)
 
 # --- Prompt-mode (use ONE of the three modes) ---
-prompt: | # Prompt template for auxiliary AI agent (fire-and-forget)
+prompt: | # Prompt template for a completion-tracked auxiliary AI agent
   Session: @mitto:session_id
   Use mitto_conversation_history to retrieve messages and analyze them.
 
@@ -1229,7 +1234,7 @@ Processors that timeout or exit with non-zero status are treated as errors.
 | Configuration | `text` field in YAML         | `command` field + external script      | `prompt` field only                                                       |
 | Content       | Static text (with variables) | Dynamic via external commands          | Prompt template with `@mitto:variable` subs                               |
 | Input         | None (text is inline)        | JSON via stdin                         | Conversation history via `mitto_conversation_history` MCP tool            |
-| Output        | Modifies outgoing message    | Modifies outgoing message              | None (fire-and-forget to auxiliary agent)                                 |
+| Output        | Modifies outgoing message    | Modifies outgoing message              | None (durably tracked background auxiliary turn)                          |
 | Execution     | Synchronous                  | Synchronous                            | Asynchronous (pipeline continues immediately)                             |
 | Use case      | Context, reminders, rules    | Complex transformations, external data | Background analysis, preference tracking                                  |
 | Dependencies  | None                         | External script or binary              | Workspace (auxiliary session on its ACP server; optional model selection) |

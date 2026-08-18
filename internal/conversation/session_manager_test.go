@@ -2525,8 +2525,20 @@ type reapedCloseProvider struct {
 	deliveries []string
 }
 
-func (p *reapedCloseProvider) PromptAuxiliary(context.Context, string, string, string) (string, error) {
-	return "", errors.New("not used")
+func (p *reapedCloseProvider) PromptAuxiliary(_ context.Context, workspaceUUID, _, prompt string) (string, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if !p.healthy {
+		return "", fmt.Errorf("no shared process for workspace %s", workspaceUUID)
+	}
+	p.deliveries = append(p.deliveries, prompt)
+	const marker = "MITTO_PROCESSOR_COMPLETION "
+	start := strings.LastIndex(prompt, marker)
+	if start < 0 {
+		return "", errors.New("tracked completion marker missing")
+	}
+	line := strings.SplitN(prompt[start:], "\n", 2)[0]
+	return strings.Replace(line, `"save_count":N`, `"save_count":0`, 1), nil
 }
 
 func (p *reapedCloseProvider) PromptAuxiliaryAsync(_ context.Context, workspaceUUID, _, prompt string) error {
@@ -2635,7 +2647,11 @@ func TestApplyOnCloseProcessors_ReapedProcessExecutesCommandsAndSpoolsPrompts(t 
 		if err != nil {
 			t.Fatalf("Load pending spool: %v", err)
 		}
-		if commandRuns == len(sessionIDs) && len(entries) == len(sessionIDs) {
+		allReleased := len(entries) == len(sessionIDs)
+		for _, entry := range entries {
+			allReleased = allReleased && entry.ClaimedBy == ""
+		}
+		if commandRuns == len(sessionIDs) && allReleased {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)

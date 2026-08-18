@@ -344,6 +344,10 @@ type Manager struct {
 	// promptFunc is an optional callback for executing prompt-mode processors.
 	// Set by the web layer via SetPromptFunc to bridge to auxiliary ACP sessions.
 	promptFunc PromptFunc
+	// promptCompletionFunc waits for a tracked auxiliary turn to finish and
+	// report its durable save count. Production uses this completion-aware seam;
+	// promptFunc remains for compatibility with fire-and-forget embedders/tests.
+	promptCompletionFunc PromptCompletionFunc
 
 	// notifyFunc is an optional callback invoked when a prompt-mode dispatch
 	// exhausts all retries (see dispatchWithRetry). Set by the web layer via
@@ -498,6 +502,19 @@ func (m *Manager) AddTextProcessors(procs []config.MessageProcessor, priority in
 // workspace-scoped auxiliary ACP sessions (fire-and-forget).
 func (m *Manager) SetPromptFunc(fn PromptFunc) {
 	m.promptFunc = fn
+	m.promptCompletionFunc = nil
+}
+
+// SetPromptCompletionFunc sets the completion-aware callback used by production
+// prompt-mode processors. The durable spool is acknowledged only after this
+// callback reports terminal success.
+func (m *Manager) SetPromptCompletionFunc(fn PromptCompletionFunc) {
+	m.promptCompletionFunc = fn
+	m.promptFunc = nil
+}
+
+func (m *Manager) hasPromptExecutor() bool {
+	return m != nil && (m.promptCompletionFunc != nil || m.promptFunc != nil)
 }
 
 // SetNotifyFunc sets the callback invoked when a prompt-mode dispatch
@@ -533,6 +550,7 @@ func (m *Manager) CloneWithTextProcessors(procs []config.MessageProcessor, prior
 		processors:           make([]*Processor, len(m.processors)),
 		rerunState:           make(map[string]*processorRunState),
 		promptFunc:           m.promptFunc,
+		promptCompletionFunc: m.promptCompletionFunc,
 		notifyFunc:           m.notifyFunc,
 		totalActivations:     activations,
 		lastActivationAt:     lastAt,
@@ -569,6 +587,7 @@ func (m *Manager) CloneWithDirProcessors(dirs []string, logger *slog.Logger) *Ma
 		processors:           make([]*Processor, len(m.processors)),
 		rerunState:           make(map[string]*processorRunState),
 		promptFunc:           m.promptFunc,
+		promptCompletionFunc: m.promptCompletionFunc,
 		notifyFunc:           m.notifyFunc,
 		totalActivations:     activations,
 		lastActivationAt:     lastAt,
@@ -669,6 +688,7 @@ func (m *Manager) CloneWithEnabledOverrides(overrides []config.ProcessorOverride
 		processors:           make([]*Processor, len(m.processors)),
 		rerunState:           make(map[string]*processorRunState),
 		promptFunc:           m.promptFunc,
+		promptCompletionFunc: m.promptCompletionFunc,
 		notifyFunc:           m.notifyFunc,
 		totalActivations:     activations,
 		lastActivationAt:     lastAt,
@@ -919,7 +939,7 @@ func (m *Manager) applyWithRerun(ctx context.Context, input *ProcessorInput, ori
 			m.recordRun(ProcessorRun{Name: proc.Name, Phase: "before", Outcome: "ok"})
 		} else if proc.IsPromptMode() {
 			// Prompt-mode: collect for batched dispatch after loop.
-			if m.promptFunc == nil {
+			if !m.hasPromptExecutor() {
 				m.logger.Warn("prompt-mode processor skipped: no PromptFunc configured",
 					"name", proc.Name,
 				)
@@ -1327,7 +1347,7 @@ func (m *Manager) ApplyAfter(ctx context.Context, input AfterProcessorInput) App
 			// Prompt-mode: collect for batched fire-and-forget dispatch.
 			// The output: field is ignored for prompt-mode — these are dispatched to
 			// an auxiliary session and are not parsed as stdout.
-			if m.promptFunc == nil {
+			if !m.hasPromptExecutor() {
 				m.logger.Warn("after-phase prompt-mode processor skipped: no PromptFunc configured",
 					"name", proc.Name,
 				)
@@ -1595,7 +1615,7 @@ func (m *Manager) ApplyOnClose(ctx context.Context, input CloseProcessorInput) {
 				continue
 			}
 
-			if m.promptFunc == nil {
+			if !m.hasPromptExecutor() {
 				m.logger.Warn("close-phase prompt-mode processor skipped: no PromptFunc configured",
 					"name", proc.Name)
 				applied--
@@ -1726,6 +1746,10 @@ var dispatchPromptRetryBaseDelay = 2 * time.Second
 // var (not const) so tests can keep the async-slot lifecycle deterministic.
 var pendingDispatchBusyRetryInterval = 100 * time.Millisecond
 
+const pendingDispatchAckMaxAttempts = 3
+
+var pendingDispatchAckRetryDelay = 25 * time.Millisecond
+
 // dispatchSaturationMaxWait bounds how long dispatchWithRetry will keep
 // retrying while the shared ACP process reports itself saturated, before
 // giving up. This is deliberately much longer than the ~6s window covered
@@ -1815,8 +1839,51 @@ type dispatchRetryLogState struct {
 // (mitto-exr). failLog lets single vs batched dispatch keep their distinct
 // terminal wording.
 func (m *Manager) dispatchWithRetry(workspaceUUID, name, prompt string, timeout time.Duration, skipLog, failLog string) {
-	totalAttempts, waited, lastErr := m.runDispatchRetryLoop(workspaceUUID, name, prompt, timeout, skipLog)
+	entry := PendingDispatchEntry{
+		ID:             newPendingDispatchID(),
+		WorkspaceUUID:  workspaceUUID,
+		Name:           name,
+		Prompt:         prompt,
+		TimeoutSeconds: timeout.Seconds(),
+		SavedAt:        time.Now(),
+		Attempts:       1,
+	}
+
+	// Completion-aware dispatches are durable before the first RPC. A crash at
+	// any point after this write leaves a claimed entry that a restarted process
+	// can recover; only terminal success removes it.
+	trackedPersisted := false
+	if m.promptCompletionFunc != nil && m.pendingDispatchStore != nil && workspaceUUID != "" {
+		appendResult, saveErr := m.pendingDispatchStore.AppendClaimed(entry)
+		if saveErr != nil {
+			if m.logger != nil {
+				m.logger.Error(failLog+"; failed to persist batch before execution, dispatch aborted",
+					"dispatch_id", entry.ID, "workspace_uuid", workspaceUUID, "name", name, "persist_error", saveErr)
+			}
+			if m.notifyFunc != nil {
+				m.notifyFunc(workspaceUUID, name, fmt.Errorf("failed to persist batch before execution: %w", saveErr))
+			}
+			return
+		}
+		entry = appendResult.Entry
+		trackedPersisted = true
+		m.logPendingDispatchDrops(workspaceUUID, appendResult.Dropped)
+	}
+
+	completion, totalAttempts, waited, lastErr := m.runDispatchRetryLoopTracked(
+		workspaceUUID, name, entry.ID, prompt, timeout, skipLog, &dispatchRetryLogState{})
 	if lastErr == nil {
+		if trackedPersisted {
+			if !m.acknowledgeCompletedDispatch(entry) {
+				return
+			}
+		}
+		if m.logger != nil && m.promptCompletionFunc != nil {
+			m.logger.Info("prompt-mode processor completed",
+				"dispatch_id", entry.ID, "workspace_uuid", workspaceUUID, "name", name,
+				"attempts", totalAttempts, "waited", waited,
+				"save_count", completion.SaveCount, "save_count_known", completion.SaveCountKnown)
+		}
 		return
 	}
 
@@ -1834,19 +1901,23 @@ func (m *Manager) dispatchWithRetry(workspaceUUID, name, prompt string, timeout 
 	// removed from disk — see FilePendingDispatchStore) so it survives and
 	// can be retried later, converting the loss into a delay.
 	persisted := false
-	entry := PendingDispatchEntry{
-		ID:             newPendingDispatchID(),
-		WorkspaceUUID:  workspaceUUID,
-		Name:           name,
-		Prompt:         prompt,
-		TimeoutSeconds: timeout.Seconds(),
-		SavedAt:        time.Now(),
-		Attempts:       spoolAttempts,
-	}
+	entry.Attempts = spoolAttempts
+	entry.SavedAt = time.Now()
 	if lastErr != nil {
 		entry.LastError = lastErr.Error()
 	}
-	if m.pendingDispatchStore != nil && workspaceUUID != "" {
+	if trackedPersisted {
+		dropped, saveErr := m.pendingDispatchStore.Requeue(workspaceUUID, []PendingDispatchEntry{entry})
+		if saveErr != nil {
+			if m.logger != nil {
+				m.logger.Error(failLog+"; failed to release durable claim for retry",
+					"dispatch_id", entry.ID, "workspace_uuid", workspaceUUID, "name", name, "persist_error", saveErr)
+			}
+		} else {
+			persisted = true
+			m.logPendingDispatchDrops(workspaceUUID, dropped)
+		}
+	} else if m.pendingDispatchStore != nil && workspaceUUID != "" {
 		appendResult, saveErr := m.pendingDispatchStore.Append(entry)
 		if saveErr != nil {
 			if m.logger != nil {
@@ -1863,16 +1934,7 @@ func (m *Manager) dispatchWithRetry(workspaceUUID, name, prompt string, timeout 
 		} else {
 			persisted = true
 			entry = appendResult.Entry
-			if m.logger != nil {
-				for _, dropped := range appendResult.Dropped {
-					m.logger.Error("pending-dispatch spool: dropping oldest entry at capacity",
-						"dispatch_id", dropped.ID,
-						"workspace_uuid", workspaceUUID,
-						"name", dropped.Name,
-						"max_entries", pendingDispatchMaxEntries,
-					)
-				}
-			}
+			m.logPendingDispatchDrops(workspaceUUID, appendResult.Dropped)
 		}
 	}
 
@@ -1904,6 +1966,40 @@ func (m *Manager) dispatchWithRetry(workspaceUUID, name, prompt string, timeout 
 	}
 }
 
+func (m *Manager) logPendingDispatchDrops(workspaceUUID string, dropped []PendingDispatchEntry) {
+	if m.logger == nil {
+		return
+	}
+	for _, entry := range dropped {
+		m.logger.Error("pending-dispatch spool: dropping oldest entry at capacity",
+			"dispatch_id", entry.ID, "workspace_uuid", workspaceUUID,
+			"name", entry.Name, "max_entries", pendingDispatchMaxEntries)
+	}
+}
+
+func (m *Manager) acknowledgeCompletedDispatch(entry PendingDispatchEntry) bool {
+	var ackErr error
+	for attempt := 1; attempt <= pendingDispatchAckMaxAttempts; attempt++ {
+		ackErr = m.pendingDispatchStore.Acknowledge(entry.WorkspaceUUID, []string{entry.ID})
+		if ackErr == nil {
+			return true
+		}
+		if attempt < pendingDispatchAckMaxAttempts {
+			time.Sleep(pendingDispatchAckRetryDelay * time.Duration(attempt))
+		}
+	}
+	if m.logger != nil {
+		m.logger.Error("prompt-mode processor completed but durable acknowledgement failed; claim retained for restart recovery",
+			"dispatch_id", entry.ID, "workspace_uuid", entry.WorkspaceUUID,
+			"name", entry.Name, "attempts", pendingDispatchAckMaxAttempts, "error", ackErr)
+	}
+	if m.notifyFunc != nil {
+		m.notifyFunc(entry.WorkspaceUUID, entry.Name,
+			fmt.Errorf("processor completed but durable acknowledgement failed; retry retained for restart recovery: %w", ackErr))
+	}
+	return false
+}
+
 // runDispatchRetryLoop performs the actual retry/backoff loop against
 // m.promptFunc: ordinary transient failures are retried up to
 // dispatchPromptMaxRetries additional times with exponential backoff, and
@@ -1927,11 +2023,14 @@ func (m *Manager) dispatchWithRetry(workspaceUUID, name, prompt string, timeout 
 // dispatchSaturationMaxWait/dispatchSaturationRetryInterval (~24) WARNs per
 // occurrence. The message text is unchanged across both levels.
 func (m *Manager) runDispatchRetryLoop(workspaceUUID, name, prompt string, timeout time.Duration, skipLog string) (int, time.Duration, error) {
-	return m.runDispatchRetryLoopWithLogState(workspaceUUID, name, prompt, timeout, skipLog, &dispatchRetryLogState{})
+	_, attempts, waited, err := m.runDispatchRetryLoopTracked(
+		workspaceUUID, name, newPendingDispatchID(), prompt, timeout, skipLog, &dispatchRetryLogState{})
+	return attempts, waited, err
 }
 
-func (m *Manager) runDispatchRetryLoopWithLogState(workspaceUUID, name, prompt string, timeout time.Duration, skipLog string, logState *dispatchRetryLogState) (int, time.Duration, error) {
+func (m *Manager) runDispatchRetryLoopTracked(workspaceUUID, name, dispatchID, prompt string, timeout time.Duration, skipLog string, logState *dispatchRetryLogState) (PromptCompletion, int, time.Duration, error) {
 	start := time.Now()
+	var completion PromptCompletion
 	var lastErr error
 	var saturationDeadline time.Time // zero until the first saturation error is observed
 	normalRetries := 0               // count of non-saturation failures, bounded by dispatchPromptMaxRetries
@@ -1948,12 +2047,16 @@ func (m *Manager) runDispatchRetryLoopWithLogState(workspaceUUID, name, prompt s
 		}
 
 		bgCtx, cancel := context.WithTimeout(context.Background(), timeout)
-		lastErr = m.promptFunc(bgCtx, workspaceUUID, name, prompt)
+		if m.promptCompletionFunc != nil {
+			completion, lastErr = m.promptCompletionFunc(bgCtx, workspaceUUID, name, dispatchID, prompt)
+		} else {
+			lastErr = m.promptFunc(bgCtx, workspaceUUID, name, prompt)
+		}
 		cancel()
 		totalAttempts++
 
 		if lastErr == nil {
-			return totalAttempts, time.Since(start), nil
+			return completion, totalAttempts, time.Since(start), nil
 		}
 
 		if isNonRetryableDispatchErr(lastErr) {
@@ -1961,7 +2064,7 @@ func (m *Manager) runDispatchRetryLoopWithLogState(workspaceUUID, name, prompt s
 				m.logger.Info("prompt-mode processor dispatch unavailable; deferring durable delivery",
 					"name", name, "error", lastErr)
 			}
-			return totalAttempts, time.Since(start), lastErr
+			return completion, totalAttempts, time.Since(start), lastErr
 		}
 
 		if isSaturationDispatchErr(lastErr) {
@@ -2013,7 +2116,7 @@ func (m *Manager) runDispatchRetryLoopWithLogState(workspaceUUID, name, prompt s
 		}
 	}
 
-	return totalAttempts, time.Since(start), lastErr
+	return completion, totalAttempts, time.Since(start), lastErr
 }
 
 // FlushPendingDispatches loads any prompt-mode batches previously spooled
@@ -2037,7 +2140,7 @@ func (m *Manager) runDispatchRetryLoopWithLogState(workspaceUUID, name, prompt s
 // of blocking the rest of the spool. When one or more entries are delivered,
 // lateDeliveryFunc (if set) is invoked once with all delivered names.
 func (m *Manager) FlushPendingDispatches(ctx context.Context, workspaceUUID string) {
-	if m == nil || m.pendingDispatchStore == nil || m.promptFunc == nil || workspaceUUID == "" {
+	if m == nil || m.pendingDispatchStore == nil || !m.hasPromptExecutor() || workspaceUUID == "" {
 		return
 	}
 
@@ -2087,6 +2190,10 @@ flushEntries:
 					"attempts", entry.Attempts,
 				)
 			}
+			if ackErr := m.pendingDispatchStore.Acknowledge(workspaceUUID, []string{entry.ID}); ackErr != nil && m.logger != nil {
+				m.logger.Error("pending-dispatch flush: failed to acknowledge dropped entry",
+					"dispatch_id", entry.ID, "workspace_uuid", workspaceUUID, "error", ackErr)
+			}
 			continue
 		}
 
@@ -2095,6 +2202,7 @@ flushEntries:
 			timeout = DefaultTimeout
 		}
 
+		var completion PromptCompletion
 		var lastErr error
 		var busyDeadline time.Time
 		for {
@@ -2103,7 +2211,8 @@ flushEntries:
 				break flushEntries
 			}
 
-			_, _, lastErr = m.runDispatchRetryLoopWithLogState(workspaceUUID, entry.Name, entry.Prompt, timeout,
+			completion, _, _, lastErr = m.runDispatchRetryLoopTracked(
+				workspaceUUID, entry.Name, entry.ID, entry.Prompt, timeout,
 				"pending-dispatch flush skipped: shared ACP process not available", retryLogState)
 			if !errors.Is(lastErr, acperrors.ErrProcessBusy) {
 				break
@@ -2140,6 +2249,9 @@ flushEntries:
 			}
 		}
 		if lastErr == nil {
+			if !m.acknowledgeCompletedDispatch(entry) {
+				continue
+			}
 			delivered = append(delivered, entry.Name)
 			if m.logger != nil {
 				m.logger.Info("pending-dispatch flush: delivered spooled batch",
@@ -2147,6 +2259,8 @@ flushEntries:
 					"workspace_uuid", workspaceUUID,
 					"name", entry.Name,
 					"prior_attempts", entry.Attempts,
+					"save_count", completion.SaveCount,
+					"save_count_known", completion.SaveCountKnown,
 				)
 			}
 			continue
@@ -2176,6 +2290,10 @@ flushEntries:
 			}
 			if m.notifyFunc != nil {
 				m.notifyFunc(workspaceUUID, entry.Name, lastErr)
+			}
+			if ackErr := m.pendingDispatchStore.Acknowledge(workspaceUUID, []string{entry.ID}); ackErr != nil && m.logger != nil {
+				m.logger.Error("pending-dispatch flush: failed to acknowledge terminally failed entry",
+					"dispatch_id", entry.ID, "workspace_uuid", workspaceUUID, "error", ackErr)
 			}
 			continue
 		}

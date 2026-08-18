@@ -759,10 +759,12 @@ func (sm *SessionManager) ApplyOnCloseProcessors(sessionID string, reason string
 		procArgOverrides = buildProcessorArgOverrides(overrides)
 	}
 
-	// Wire the fire-and-forget prompt dispatcher for prompt-mode processors.
+	// Wire completion-aware prompt execution so durable close-phase work is only
+	// acknowledged after the auxiliary turn reports its save count.
 	if auxMgr != nil {
-		procMgr.SetPromptFunc(func(ctx context.Context, wsUUID, processorName, prompt string) error {
-			return auxMgr.PromptProcessorAsync(ctx, wsUUID, processorName, prompt)
+		procMgr.SetPromptCompletionFunc(func(ctx context.Context, wsUUID, processorName, dispatchID, prompt string) (processors.PromptCompletion, error) {
+			saveCount, err := auxMgr.PromptProcessorTracked(ctx, wsUUID, processorName, dispatchID, prompt)
+			return processors.PromptCompletion{SaveCount: saveCount, SaveCountKnown: err == nil}, err
 		})
 	}
 

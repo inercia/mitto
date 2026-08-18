@@ -6,7 +6,6 @@ globs:
 ---
 
 # Processors Package
-
 The `internal/processors` package provides three processor modes for message pre/post-processing. Processors are loaded from YAML in `MITTO_DIR/processors/` and the embedded `config/processors/builtin/` directory.
 
 **Multi-document files:** A single `.yaml`/`.yml` file may contain multiple `---`-separated processor documents. Each document is validated and loaded independently; invalid or empty documents are skipped with a warning. For workspace processors in multi-document files, the per-workspace enable/disable toggle is recorded in `.mittorc` (processors override list) rather than edited in place — `UpdateProcessorFileEnabled` refuses multi-document files; use `SaveWorkspaceRCProcessorEnabled` instead. `IsMultiDocFile(path)` detects this case.
@@ -14,23 +13,23 @@ The `internal/processors` package provides three processor modes for message pre
 > Full schema and CEL reference: `docs/config/processors.md`
 
 ## Three Processor Modes
-
 Use **exactly one** of:
 
 | Field     | Mode        | How it works                                                           |
 | --------- | ----------- | ---------------------------------------------------------------------- |
 | `text`    | Text        | Static string injected into message (no process)                       |
 | `command` | Command     | External script executed; stdout transforms/prepends/appends message   |
-| `prompt`  | Prompt-mode | Prompt sent to auxiliary AI agent — **fire-and-forget**, non-blocking  |
+| `prompt`  | Prompt-mode | Prompt sent to a tracked auxiliary AI agent in a background worker    |
 
 Prompt-mode processors are collected in a `pendingPrompts` slice during the pipeline run, then dispatched via `dispatchPromptBatch`:
-- **Single processor**: dispatched directly with its own name (fire-and-forget goroutine)
+- **Single processor**: dispatched directly with its own name (background goroutine)
 - **Multiple processors**: combined into one prompt with a "We would like to fulfill the following requirements:" header, dispatched as a single batched request — only ONE auxiliary session is created
+
+The pipeline remains non-blocking, but the worker is completion-aware: it persists a stable dispatch ID before the first auxiliary RPC, waits for a matching `MITTO_PROCESSOR_COMPLETION` response with a durable save count, and removes the spool entry only after terminal success. Failure releases the claim for retry; a process restart can reclaim an unacknowledged entry.
 
 Prompt-mode processor auxiliary sessions have access to Mitto's MCP tools (e.g., `mitto_ui_notify`) when `ACPProcessManager.MCPServerURL` is set. Transport is capability-gated (mitto-8ip): if the agent advertised `mcp_capabilities.http` at init, a native `McpServerHttpInline` pointing at the same `MCPServerURL` user sessions use is emitted (no subprocess); otherwise the stdio `mitto mcp --proxy-to <url>` bridge is emitted as the ACP-spec mandatory-transport fallback. See `42-mcpserver-development.md` for the wiring pattern.
 
 ## Key YAML Fields
-
 ```yaml
 name: my-processor
 when:                  # required block — BOTH on: and match: are required
@@ -75,7 +74,6 @@ parameters:
 **Prompt-mode `${VAR}` substitution**: `${NAME}` → value or `""`; `${NAME:-fallback}` → value if set AND non-empty, else fallback; `\${NAME}` → literal. Resolution: declared `default` first, then per-workspace `.mittorc` `arguments:` overlay. Override values are saved in Workspaces → Processors (Save button) → `.mittorc` `processors: [{name, arguments: {k: v}}]`.
 
 ## Phase/Field Rules
-
 `agentResponded` and `agentIdle` share **identical** field/output rules (column below). They differ only in *when* they fire: `agentResponded` fires after every turn; `agentIdle` fires only on the turn where the agent drains its queue and goes idle.
 
 | Field / output              | `on: userPrompt`      | `on: agentResponded` / `on: agentIdle` |
@@ -142,7 +140,6 @@ Key CEL variables/functions (full reference in `docs/config/processors.md`):
 **`tools.*` fail-open behavior:** return `true` when tool list is unknown (warm-up); evaluate against real list once fetched. **Processors always see known tools** (fail-open disabled internally).
 
 ## Common Mistakes
-
 - Missing `on:` or `match:` — both required; use camelCase `allExceptFirst` (not `all-except-first`)
 - Text-mode: `mutate:` required; `rerun:` only valid with `match: first`
 - `cadence:` only valid with `agentResponded`/`agentIdle` + `match: all/allExceptFirst`; at least one threshold required; mutually exclusive with `rerun:`

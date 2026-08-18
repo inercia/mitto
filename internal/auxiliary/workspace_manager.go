@@ -2,6 +2,7 @@ package auxiliary
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -1396,6 +1397,59 @@ func (m *WorkspaceAuxiliaryManager) CheckRequiredToolPatterns(ctx context.Contex
 func (m *WorkspaceAuxiliaryManager) PromptProcessorAsync(ctx context.Context, workspaceUUID, processorName, prompt string) error {
 	purpose := PurposeProcessorPrefix + processorName
 	return m.provider.PromptAuxiliaryAsync(ctx, workspaceUUID, purpose, prompt)
+}
+
+const processorCompletionMarker = "MITTO_PROCESSOR_COMPLETION "
+
+type processorCompletionEnvelope struct {
+	DispatchID string `json:"dispatch_id"`
+	SaveCount  *int   `json:"save_count"`
+}
+
+// PromptProcessorTracked waits for the processor auxiliary turn to finish and
+// requires an explicit terminal acknowledgement. The marker is deliberately
+// content-free: Mitto records only the stable dispatch ID and durable save
+// count, never the processor's potentially sensitive response text.
+func (m *WorkspaceAuxiliaryManager) PromptProcessorTracked(ctx context.Context, workspaceUUID, processorName, dispatchID, prompt string) (int, error) {
+	purpose := PurposeProcessorPrefix + processorName
+	trackedPrompt := fmt.Sprintf(`%s
+
+This background dispatch may be retried after a crash. Before creating a durable record, check whether the requested fact/change already exists; update it by its stable logical key where possible instead of creating a duplicate. The dispatch ID is %q.
+
+After completing all requested work, your final non-empty response line MUST be exactly:
+MITTO_PROCESSOR_COMPLETION {"dispatch_id":%q,"save_count":N}
+Replace N with the number of durable memories/files/records you successfully saved (0 is valid). Do not claim a save that failed.`, prompt, dispatchID, dispatchID)
+
+	response, err := m.provider.PromptAuxiliary(ctx, workspaceUUID, purpose, trackedPrompt)
+	if err != nil {
+		return 0, err
+	}
+	return parseProcessorCompletion(response, dispatchID)
+}
+
+func parseProcessorCompletion(response, expectedDispatchID string) (int, error) {
+	lines := strings.Split(strings.TrimSpace(response), "\n")
+	if len(lines) == 0 {
+		return 0, fmt.Errorf("processor completion acknowledgement missing")
+	}
+	lastLine := strings.TrimSpace(lines[len(lines)-1])
+	if !strings.HasPrefix(lastLine, processorCompletionMarker) {
+		return 0, fmt.Errorf("processor completion acknowledgement missing")
+	}
+	var completion processorCompletionEnvelope
+	if err := json.Unmarshal([]byte(strings.TrimPrefix(lastLine, processorCompletionMarker)), &completion); err != nil {
+		return 0, fmt.Errorf("invalid processor completion acknowledgement: %w", err)
+	}
+	if completion.DispatchID != expectedDispatchID {
+		return 0, fmt.Errorf("processor completion dispatch ID mismatch: got %q", completion.DispatchID)
+	}
+	if completion.SaveCount == nil {
+		return 0, fmt.Errorf("processor completion save count missing")
+	}
+	if *completion.SaveCount < 0 {
+		return 0, fmt.Errorf("processor completion save count must be non-negative")
+	}
+	return *completion.SaveCount, nil
 }
 
 // Close closes all auxiliary sessions managed by this manager.

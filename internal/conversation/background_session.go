@@ -737,8 +737,9 @@ func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, erro
 
 	// Wire prompt-mode processor execution to auxiliary sessions
 	if bs.processorManager != nil && bs.auxiliaryManager != nil {
-		bs.processorManager.SetPromptFunc(func(ctx context.Context, workspaceUUID, processorName, prompt string) error {
-			return bs.auxiliaryManager.PromptProcessorAsync(ctx, workspaceUUID, processorName, prompt)
+		bs.processorManager.SetPromptCompletionFunc(func(ctx context.Context, workspaceUUID, processorName, dispatchID, prompt string) (processors.PromptCompletion, error) {
+			saveCount, err := bs.auxiliaryManager.PromptProcessorTracked(ctx, workspaceUUID, processorName, dispatchID, prompt)
+			return processors.PromptCompletion{SaveCount: saveCount, SaveCountKnown: err == nil}, err
 		})
 	}
 
@@ -997,8 +998,9 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 
 	// Wire prompt-mode processor execution to auxiliary sessions
 	if bs.processorManager != nil && bs.auxiliaryManager != nil {
-		bs.processorManager.SetPromptFunc(func(ctx context.Context, workspaceUUID, processorName, prompt string) error {
-			return bs.auxiliaryManager.PromptProcessorAsync(ctx, workspaceUUID, processorName, prompt)
+		bs.processorManager.SetPromptCompletionFunc(func(ctx context.Context, workspaceUUID, processorName, dispatchID, prompt string) (processors.PromptCompletion, error) {
+			saveCount, err := bs.auxiliaryManager.PromptProcessorTracked(ctx, workspaceUUID, processorName, dispatchID, prompt)
+			return processors.PromptCompletion{SaveCount: saveCount, SaveCountKnown: err == nil}, err
 		})
 	}
 
