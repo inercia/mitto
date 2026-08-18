@@ -230,43 +230,54 @@ prompt: |
 
   Build `current_terminal_labels` from every candidate `id` + `terminal_label`
   pair (`fixed` for a bug, `verified` for any other non-epic). History entries are
-  newest-first snapshots (`CommitDate` + `Issue`). The Python probe finds the most recent transition into the current non-closed episode
-  and the most recent transition that added the class-terminal label. `datetime.fromisoformat` compares
-  normalized RFC3339 instants — never raw timestamp strings. A never-reopened bead
-  is current; for a reopened bead the label-add transition must be strictly newer than the current episode's open transition.
-  Missing or malformed evidence is
-  stale (fail safe):
+  newest-first status snapshots (`CommitDate` + `Issue`); `bd history` does **not**
+  include labels. The Python probe finds the most recent transition into the current non-closed episode
+  from history, then finds the most recent terminal phase comment in the live
+  `bd show --include-comments` snapshot (`Fix [tier:` for
+  bugs, `Review [tier:` for other work). `datetime.fromisoformat` compares normalized
+  RFC3339 instants — never raw timestamp strings. A never-reopened bead is current;
+  for a reopened bead the terminal phase comment must be strictly newer than the current episode's
+  open transition. Missing or malformed evidence is stale (fail
+  safe):
 
   ```bash
   declare -A current_terminal_labels=()
   while IFS=$'\t' read -r id terminal_label; do
     [ -n "$id" ] || continue
     history=$(bd history "$id" --json 2>/dev/null || printf '[]')
-    verdict=$(printf '%s' "$history" | python3 -c '
+    current=$(bd show "$id" --json --include-comments 2>/dev/null || printf '[]')
+    payload=$(printf '%s\n%s\n' "$history" "$current" \
+      | jq -s '{history:.[0],current:.[1]}' 2>/dev/null \
+      || printf '{"history":[],"current":[]}')
+    verdict=$(printf '%s' "$payload" | python3 -c '
   import json, sys
   from datetime import datetime
 
   label = sys.argv[1]
+  prefixes = {"fixed": "Fix [tier:", "verified": "Review [tier:"}
   try:
-      entries = json.load(sys.stdin)
-      if not isinstance(entries, list) or not entries:
-          raise ValueError("empty history")
+      payload = json.load(sys.stdin)
+      entries = payload.get("history")
+      current = payload.get("current")
+      if not isinstance(entries, list) or not entries or not isinstance(current, list) or not current:
+          raise ValueError("missing evidence")
       issue = lambda e: e.get("Issue") or {}
       status = lambda e: issue(e).get("status")
-      labels = lambda e: issue(e).get("labels") or []
       when = lambda e: e.get("CommitDate")
-      if status(entries[0]) not in ("open", "in_progress") or label not in labels(entries[0]):
+      live = current[0]
+      if live.get("status") not in ("open", "in_progress") or label not in (live.get("labels") or []):
           raise ValueError("candidate no longer terminal")
       reopened_at = next((when(entries[i]) for i in range(len(entries) - 1)
           if status(entries[i]) in ("open", "in_progress") and status(entries[i + 1]) == "closed"), None)
       if reopened_at is None:
           print("current")
           raise SystemExit
-      added_at = next((when(entries[i]) for i in range(len(entries) - 1)
-          if label in labels(entries[i]) and label not in labels(entries[i + 1])), None)
+      prefix = prefixes[label]
+      terminal_at = max((comment.get("created_at") for comment in (live.get("comments") or [])
+          if (comment.get("text") or "").startswith(prefix) and comment.get("created_at")), default=None)
       parse = lambda value: datetime.fromisoformat(value.replace("Z", "+00:00"))
-      print("current" if added_at and parse(added_at) > parse(reopened_at) else "stale")
-  except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+      print("current" if terminal_at and parse(terminal_at) > parse(reopened_at) else "stale")
+  except (AttributeError, KeyError, TypeError, ValueError, json.JSONDecodeError):
       print("stale")
   ' "$terminal_label" 2>/dev/null || printf 'stale')
     if [ "$verdict" = "current" ]; then
@@ -726,13 +737,16 @@ prompt: |
   git show -s --format='%cI' <hash>
   ```
 
-  From the history, identify the **most recent transition into the current open episode**
-  (the newest `closed` → `open` boundary; if the bead has never been closed, use
-  `bead.created_at`). A candidate is eligible only when its commit timestamp is
-  **strictly newer than that transition**.
-  If either timestamp or ordering cannot be established, leave the bead actionable —
-  do not exclude it or add terminal labels. This fail-safe prevents a historical fix
-  from re-closing a later regression.
+  Only beads that have never been closed are eligible for this shortcut.
+  If history contains any prior closed episode, leave the bead actionable — do not infer that
+  any attached commit resolves the current recurrence, even when its timestamp is
+  newer than the reopen. A newer commit on a reopened bead still completes through the normal driver,
+  which verifies the current issue and adds the terminal label.
+
+  For a never-closed bead, require the candidate commit timestamp to be strictly
+  newer than `bead.created_at`. If either timestamp or ordering cannot be established,
+  leave the bead actionable — do not exclude it or add terminal labels. This fail-safe
+  prevents a historical fix from re-closing a later regression.
 
   Only if a candidate passes that temporal gate AND its diff/subject plausibly
   resolves the bead (matches the bead's file surface or has distinctive unambiguous keywords),
