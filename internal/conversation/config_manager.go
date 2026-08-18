@@ -186,7 +186,23 @@ func (c configManager) getConfigValue(d configDeps, configID string) string {
 }
 
 func (c configManager) setConfigOption(d configDeps, ctx context.Context, configID, value string) error {
-	return c.setConfigOptionWithOpts(d, ctx, configID, value, true, true)
+	err := c.setConfigOptionWithOpts(d, ctx, configID, value, true, true)
+	if err == nil {
+		return nil
+	}
+	opt, ok := d.cmFindByID(configID)
+	if ok && opt.Category == ConfigOptionCategoryModel && isRetryableModelPreferenceError(err) {
+		// Preserve a failed user selection as the intended baseline without
+		// optimistically changing the effective config value. The next prompt's
+		// model-preference preflight will retry this baseline after the agent warms.
+		d.cmSetBaselineAndClearOverride(value)
+		c.persistBaselineModel(d, value)
+		if l := d.cmLogger(); l != nil {
+			l.Info("Preserving retryable model change as pending baseline",
+				"session_id", d.cmSessionID(), "model", value)
+		}
+	}
+	return err
 }
 
 // setConfigOptionWithOpts is the core of setConfigOption. recordTimeline controls

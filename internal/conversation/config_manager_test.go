@@ -7,6 +7,8 @@ import (
 	"sync"
 	"testing"
 
+	acp "github.com/coder/acp-go-sdk"
+
 	"github.com/inercia/mitto/internal/config"
 )
 
@@ -322,6 +324,55 @@ func TestConfigManager_SetConfigOption_IdlePath_ModelRPC(t *testing.T) {
 	// Config notify should fire.
 	if len(d.notifiedConfig) == 0 {
 		t.Fatal("expected config changed notification")
+	}
+}
+
+func TestConfigManager_SetConfigOption_RetryableModelFailurePreservesBaselineIntent(t *testing.T) {
+	c := configManager{}
+	d := newFakeConfigDeps()
+	d.currentModelID = "m-1"
+	d.setModelErr = &acp.RequestError{
+		Code:    -32603,
+		Message: "Internal error",
+		Data:    map[string]string{"error": "context deadline exceeded"},
+	}
+
+	err := c.setConfigOption(d, context.Background(), ConfigOptionCategoryModel, "m-2")
+	if err == nil {
+		t.Fatal("expected retryable model RPC failure")
+	}
+	if d.baselineModel != "m-2" {
+		t.Fatalf("baselineModel = %q, want pending user intent m-2", d.baselineModel)
+	}
+	if len(d.persistedBaseline) != 1 || d.persistedBaseline[0] != "m-2" {
+		t.Fatalf("persistedBaseline = %v, want [m-2]", d.persistedBaseline)
+	}
+	if d.currentModelID != "m-1" {
+		t.Fatalf("currentModelID = %q, want effective model m-1", d.currentModelID)
+	}
+	if got := c.getConfigValue(d, ConfigOptionCategoryModel); got != "m-1" {
+		t.Fatalf("displayed config model = %q, want effective model m-1", got)
+	}
+	if len(d.notifiedConfig) != 0 {
+		t.Fatalf("unexpected optimistic config notification: %v", d.notifiedConfig)
+	}
+}
+
+func TestConfigManager_SetConfigOption_NonRetryableModelFailureKeepsBaseline(t *testing.T) {
+	c := configManager{}
+	d := newFakeConfigDeps()
+	d.baselineModel = "m-1"
+	d.setModelErr = errors.New("model unavailable")
+
+	err := c.setConfigOption(d, context.Background(), ConfigOptionCategoryModel, "m-2")
+	if err == nil {
+		t.Fatal("expected non-retryable model RPC failure")
+	}
+	if d.baselineModel != "m-1" {
+		t.Fatalf("baselineModel = %q, want unchanged baseline m-1", d.baselineModel)
+	}
+	if len(d.persistedBaseline) != 0 {
+		t.Fatalf("unexpected persisted baseline after non-retryable failure: %v", d.persistedBaseline)
 	}
 }
 
