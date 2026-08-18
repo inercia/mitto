@@ -121,9 +121,10 @@ var titleJobs = struct {
 	active map[titleJobKey]struct{}
 }{active: make(map[titleJobKey]struct{})}
 
-// claimTitleJob coalesces title generation per persisted session while retaining
-// no state after the bounded async job finishes. Sessions without a stable store
-// key keep the legacy behavior because they cannot persist a generated title.
+// claimTitleJob coalesces title generation per persisted session. A job encountering
+// proactive process-busy load shedding remains claimed until quiescence or until the
+// session no longer needs a title. Sessions without a stable store key keep the
+// bounded legacy behavior because they cannot persist a generated title.
 func claimTitleJob(store *session.Store, sessionID string) (release func(), ok bool) {
 	if store == nil || sessionID == "" {
 		return func() {}, true
@@ -168,6 +169,20 @@ var titleMaxRetries = 3 // 4 total attempts: delays 30s, 60s, 120s
 // var (not const) so tests can override the cadence. See titleMaxRetries.
 var titleRetryBaseDelay = 30 * time.Second // delays: 30s, 60s, 120s
 
+func titleRetryDelay(attempt int) time.Duration {
+	if attempt <= 0 {
+		return 0
+	}
+	maxAttempt := titleMaxRetries
+	if maxAttempt < 1 {
+		maxAttempt = 1
+	}
+	if attempt > maxAttempt {
+		attempt = maxAttempt
+	}
+	return titleRetryBaseDelay * time.Duration(1<<(attempt-1))
+}
+
 const (
 	// titleSessionCreateTimeout is the timeout for a single title generation attempt.
 	// This covers the full round-trip: auxiliary session creation + the title prompt itself.
@@ -179,6 +194,8 @@ const (
 // GenerateAndSetTitle generates a title for a session using the workspace-scoped auxiliary session.
 // This runs asynchronously and doesn't block the caller.
 // It retries up to titleMaxRetries times with exponential backoff on transient failures.
+// Proactive ErrProcessBusy load shedding keeps one coalesced persisted job pending at
+// the maximum backoff until the shared process becomes quiescent.
 // The OnTitleGenerated callback is called when the title is successfully generated and saved.
 //
 // Before launching the async goroutine, it synchronously sets a quick fallback title extracted
@@ -235,18 +252,32 @@ func GenerateAndSetTitle(cfg TitleGenerationConfig) {
 
 		var title string
 		var lastErr error
-		for attempt := 0; attempt <= titleMaxRetries; attempt++ {
+		for attempt := 0; ; attempt++ {
+			pendingRecovery := attempt > titleMaxRetries
+			if pendingRecovery && !SessionNeedsTitle(cfg.Store, cfg.SessionID) {
+				return
+			}
 			if attempt > 0 {
 				// A quick title may already be set, but we still try auxiliary to get a
-				// better (more descriptive) title. Only the retry delay applies here.
-				delay := titleRetryBaseDelay * time.Duration(1<<(attempt-1)) // exponential: 30s, 60s, 120s
+				// better (more descriptive) title. After the bounded retry schedule,
+				// process-busy recovery stays capped at its maximum delay.
+				delay := titleRetryDelay(attempt)
 				if cfg.Logger != nil {
-					cfg.Logger.Info("Retrying title generation",
-						"session_id", cfg.SessionID,
-						"attempt", attempt+1,
-						"delay", delay)
+					if pendingRecovery {
+						cfg.Logger.Debug("Polling pending title generation after process busy",
+							"session_id", cfg.SessionID,
+							"delay", delay)
+					} else {
+						cfg.Logger.Info("Retrying title generation",
+							"session_id", cfg.SessionID,
+							"attempt", attempt+1,
+							"delay", delay)
+					}
 				}
 				time.Sleep(delay)
+				if pendingRecovery && !SessionNeedsTitle(cfg.Store, cfg.SessionID) {
+					return
+				}
 			}
 
 			// The 20-minute budget covers auxiliary session setup and the prompt itself.
@@ -258,17 +289,33 @@ func GenerateAndSetTitle(cfg TitleGenerationConfig) {
 				break
 			}
 			if lastErr != nil && cfg.Logger != nil {
-				cfg.Logger.Warn("Title generation attempt failed",
-					"error", lastErr,
-					"session_id", cfg.SessionID,
-					"attempt", attempt+1,
-					"max_attempts", titleMaxRetries+1)
+				if pendingRecovery && errors.Is(lastErr, acperrors.ErrProcessBusy) {
+					cfg.Logger.Debug("Pending title generation still waiting for process quiescence",
+						"session_id", cfg.SessionID)
+				} else {
+					cfg.Logger.Warn("Title generation attempt failed",
+						"error", lastErr,
+						"session_id", cfg.SessionID,
+						"attempt", attempt+1,
+						"max_attempts", titleMaxRetries+1)
+				}
 			}
 
 			// mitto-juzb: proactive load shedding is transient. Retain this one
 			// coalesced job and use the bounded backoff so it can observe quiescence
 			// without requiring another prompt-completion edge.
 			if errors.Is(lastErr, acperrors.ErrProcessBusy) {
+				if cfg.Store != nil && cfg.SessionID != "" {
+					if attempt == titleMaxRetries && cfg.Logger != nil {
+						cfg.Logger.Info("Retaining pending title generation until process quiescence",
+							"session_id", cfg.SessionID,
+							"delay", titleRetryDelay(attempt+1))
+					}
+					continue
+				}
+				if attempt >= titleMaxRetries {
+					break
+				}
 				continue
 			}
 
@@ -297,6 +344,10 @@ func GenerateAndSetTitle(cfg TitleGenerationConfig) {
 						"error", lastErr)
 				}
 				return
+			}
+
+			if attempt >= titleMaxRetries {
+				break
 			}
 		}
 
