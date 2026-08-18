@@ -84,12 +84,24 @@ func (s *Server) loadMergedPrompts(workingDir string) []config.WebPrompt {
 	if sm != nil {
 		workspacePromptsDirs = append(workspacePromptsDirs, sm.GetWorkspacePromptsDirs(workingDir)...)
 	}
+	absDirs := make([]string, 0, len(workspacePromptsDirs))
 	for _, dir := range workspacePromptsDirs {
-		absDir := dir
 		if !filepath.IsAbs(dir) {
-			absDir = filepath.Join(workingDir, dir)
+			dir = filepath.Join(workingDir, dir)
 		}
-		prompts, err := config.LoadPromptsFromDir(absDir)
+		absDirs = append(absDirs, dir)
+	}
+	fragments, fragmentErrors, fragmentErr := config.LoadScopedFragmentsFromDirs(absDirs)
+	if s.logger != nil {
+		if fragmentErr != nil {
+			s.logger.Warn("Failed to load workspace prompt fragments", "workspace", workingDir, "error", fragmentErr)
+		}
+		for _, loadErr := range fragmentErrors {
+			s.logger.Warn("Failed to load workspace prompt fragment", "workspace", workingDir, "error", loadErr)
+		}
+	}
+	for _, absDir := range absDirs {
+		prompts, err := config.LoadPromptsFromDirWithFragments(absDir, fragments)
 		if err != nil {
 			continue
 		}
