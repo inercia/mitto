@@ -2569,11 +2569,6 @@ func (p *reapedCloseProvider) deliverySnapshot() []string {
 // reproduces mitto-0934: a missing shared ACP process must not bypass either
 // command-mode close work or durable prompt-mode delivery for deleted sessions.
 func TestApplyOnCloseProcessors_ReapedProcessExecutesCommandsAndSpoolsPrompts(t *testing.T) {
-	mittoDir := t.TempDir()
-	t.Setenv(appdir.MittoDirEnv, mittoDir)
-	appdir.ResetCache()
-	t.Cleanup(appdir.ResetCache)
-
 	store, err := session.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewStore failed: %v", err)
@@ -2615,10 +2610,13 @@ func TestApplyOnCloseProcessors_ReapedProcessExecutesCommandsAndSpoolsPrompts(t 
 	}
 
 	provider := &reapedCloseProvider{}
+	spool := &processors.FilePendingDispatchStore{BaseDir: t.TempDir()}
 	sm := NewSessionManager("echo test", acpServer, true, nil)
 	sm.SetStore(store)
 	sm.SetProcessorManager(processors.NewManager("", nil))
+	sm.SetPendingDispatchStore(spool)
 	sm.SetAuxiliaryManager(auxiliary.NewWorkspaceAuxiliaryManager(provider, nil))
+	t.Cleanup(sm.WaitForCloseProcessors)
 	sm.AddWorkspace(config.WorkspaceSettings{
 		UUID:       wsUUID,
 		WorkingDir: workingDir,
@@ -2632,8 +2630,8 @@ func TestApplyOnCloseProcessors_ReapedProcessExecutesCommandsAndSpoolsPrompts(t 
 	for _, sid := range sessionIDs {
 		sm.ApplyOnCloseProcessors(sid, "deleted")
 	}
+	sm.WaitForCloseProcessors()
 
-	spool := &processors.FilePendingDispatchStore{}
 	commandRuns := 0
 	var entries []processors.PendingDispatchEntry
 	deadline := time.Now().Add(2 * time.Second)
@@ -2679,6 +2677,110 @@ func TestApplyOnCloseProcessors_ReapedProcessExecutesCommandsAndSpoolsPrompts(t 
 	}
 	if len(entries) != 0 {
 		t.Fatalf("pending spool after healthy replay has %d entries, want 0", len(entries))
+	}
+}
+
+// TestApplyOnCloseProcessors_PendingStorePathSurvivesMittoDirChange reproduces
+// mitto-k7ym: an in-flight close worker must keep the spool directory selected
+// when it was launched, even if test cleanup later changes MITTO_DIR.
+func TestApplyOnCloseProcessors_PendingStorePathSurvivesMittoDirChange(t *testing.T) {
+	originalMittoDir := t.TempDir()
+	redirectedMittoDir := t.TempDir()
+	t.Cleanup(appdir.ResetCache) // Run after all t.Setenv restorations.
+	t.Setenv(appdir.MittoDirEnv, originalMittoDir)
+	appdir.ResetCache()
+
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	const (
+		sid       = "sess-mitto-dir-change"
+		wsUUID    = "ws-mitto-dir-change"
+		acpServer = "test-server"
+	)
+	workingDir := t.TempDir()
+	if err := store.Create(session.Metadata{SessionID: sid, ACPServer: acpServer, WorkingDir: workingDir}); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+	provider := &reapedCloseProvider{}
+	sm := NewSessionManager("echo test", acpServer, true, nil)
+	sm.SetStore(store)
+	sm.SetProcessorManager(processors.NewManager("", nil))
+	sm.SetAuxiliaryManager(auxiliary.NewWorkspaceAuxiliaryManager(provider, nil))
+	sm.AddWorkspace(config.WorkspaceSettings{UUID: wsUUID, WorkingDir: workingDir, ACPServer: acpServer})
+	t.Cleanup(sm.WaitForCloseProcessors)
+
+	processorDir := appdir.WorkspaceProcessorsDir(workingDir)
+	if err := os.MkdirAll(processorDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll processor dir: %v", err)
+	}
+	barrierDir := t.TempDir()
+	startedPath := filepath.Join(barrierDir, "started")
+	releasePath := filepath.Join(barrierDir, "release")
+	t.Cleanup(func() { _ = os.WriteFile(releasePath, nil, 0o644) })
+	scriptPath := filepath.Join(barrierDir, "block-close.sh")
+	script := fmt.Sprintf("#!/bin/sh\n: > %q\nwhile [ ! -f %q ]; do sleep 0.01; done\n", startedPath, releasePath)
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("WriteFile command script: %v", err)
+	}
+	commandYAML := fmt.Sprintf("name: block-close\nwhen:\n  on: conversationClosed\n  match: all\npriority: 1\ncommand: %q\noutput: discard\n", scriptPath)
+	if err := os.WriteFile(filepath.Join(processorDir, "command.yaml"), []byte(commandYAML), 0o644); err != nil {
+		t.Fatalf("WriteFile command processor: %v", err)
+	}
+	promptYAML := "name: close-prompt\nwhen:\n  on: conversationClosed\n  match: all\npriority: 2\nprompt: 'preserve @mitto:session_id'\noutput: discard\n"
+	if err := os.WriteFile(filepath.Join(processorDir, "prompt.yaml"), []byte(promptYAML), 0o644); err != nil {
+		t.Fatalf("WriteFile prompt processor: %v", err)
+	}
+
+	sm.ApplyOnCloseProcessors(sid, "deleted")
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, err := os.Stat(startedPath); err == nil {
+			break
+		} else if !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("Stat command barrier: %v", err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("close command did not reach barrier")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Simulate another test restoring the process-global appdir state while the
+	// close worker is still running, then let prompt-mode persistence continue.
+	t.Setenv(appdir.MittoDirEnv, redirectedMittoDir)
+	appdir.ResetCache()
+	if err := os.WriteFile(releasePath, nil, 0o644); err != nil {
+		t.Fatalf("release close command: %v", err)
+	}
+	sm.WaitForCloseProcessors()
+
+	originalSpool := &processors.FilePendingDispatchStore{BaseDir: filepath.Join(originalMittoDir, appdir.PendingProcessorDispatchDirName)}
+	redirectedSpool := &processors.FilePendingDispatchStore{BaseDir: filepath.Join(redirectedMittoDir, appdir.PendingProcessorDispatchDirName)}
+	var originalEntries, redirectedEntries []processors.PendingDispatchEntry
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		originalEntries, err = originalSpool.Load(wsUUID)
+		if err != nil {
+			t.Fatalf("Load original spool: %v", err)
+		}
+		redirectedEntries, err = redirectedSpool.Load(wsUUID)
+		if err != nil {
+			t.Fatalf("Load redirected spool: %v", err)
+		}
+		if len(originalEntries)+len(redirectedEntries) > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if len(originalEntries) != 1 || len(redirectedEntries) != 0 {
+		t.Fatalf("in-flight close dispatch followed changed MITTO_DIR: original spool entries=%d, redirected spool entries=%d; want 1 and 0",
+			len(originalEntries), len(redirectedEntries))
 	}
 }
 

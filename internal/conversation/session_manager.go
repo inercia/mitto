@@ -109,6 +109,12 @@ type SessionManager struct {
 
 	// processorManager manages external command processors for message transformation.
 	processorManager *processors.Manager
+	// pendingDispatchStore persists deferred processor prompts. When nil, the
+	// close path resolves an explicit appdir-backed store before launching work.
+	pendingDispatchStore processors.PendingDispatchStore
+	// closeProcessorsWG tracks fire-and-forget close pipelines so tests and
+	// lifecycle owners can wait before tearing down process-global dependencies.
+	closeProcessorsWG sync.WaitGroup
 
 	// apiPrefix is the URL prefix for API endpoints (e.g., "/mitto").
 	// Used to generate HTTP file links for web browser access.
@@ -369,6 +375,21 @@ func (sm *SessionManager) SetProcessorManager(pm *processors.Manager) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 	sm.processorManager = pm
+}
+
+// SetPendingDispatchStore overrides close-phase deferred-prompt persistence.
+// Tests use an explicit TempDir-backed store to avoid process-global appdir state.
+func (sm *SessionManager) SetPendingDispatchStore(store processors.PendingDispatchStore) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.pendingDispatchStore = store
+}
+
+// WaitForCloseProcessors waits for all close pipelines launched so far.
+func (sm *SessionManager) WaitForCloseProcessors() {
+	if sm != nil {
+		sm.closeProcessorsWG.Wait()
+	}
 }
 
 // SetStatsAggregator sets the stats aggregator used by the live path
@@ -716,6 +737,7 @@ func (sm *SessionManager) ApplyOnCloseProcessors(sessionID string, reason string
 	sm.mu.RLock()
 	store := sm.store
 	globalMgr := sm.processorManager
+	pendingDispatchStore := sm.pendingDispatchStore
 	auxMgr := sm.auxiliaryManager
 	pm := sm.acpProcessManager
 	logger := sm.logger
@@ -791,7 +813,21 @@ func (sm *SessionManager) ApplyOnCloseProcessors(sessionID string, reason string
 	// session directory is removed synchronously by the delete handler
 	// (internal/web/handlers/session_delete.go) well before this fire-and-
 	// forget dispatch's give-up can fire minutes later.
-	procMgr.SetPendingDispatchStore(&processors.FilePendingDispatchStore{})
+	// Resolve the default path synchronously, before the worker starts. An
+	// asynchronous test must not follow a later MITTO_DIR/cache change into the
+	// user's real Application Support directory (mitto-k7ym).
+	if pendingDispatchStore == nil {
+		pendingDir, resolveErr := appdir.PendingProcessorDispatchDir()
+		if resolveErr != nil {
+			if logger != nil {
+				logger.Error("close-phase: failed to resolve pending-dispatch directory",
+					"session_id", sessionID, "error", resolveErr)
+			}
+		} else {
+			pendingDispatchStore = &processors.FilePendingDispatchStore{BaseDir: pendingDir}
+		}
+	}
+	procMgr.SetPendingDispatchStore(pendingDispatchStore)
 
 	// Wire the late-delivery notify seam (mitto-yfv8): when
 	// FlushPendingDispatches (below) successfully delivers one or more
@@ -855,7 +891,9 @@ func (sm *SessionManager) ApplyOnCloseProcessors(sessionID string, reason string
 
 	// Run the close pipeline off the archive request goroutine so command-mode
 	// processors do not stall the HTTP response.
+	sm.closeProcessorsWG.Add(1)
 	go func() {
+		defer sm.closeProcessorsWG.Done()
 		// Bound the whole close pipeline to a conservative window so a stuck
 		// command-mode processor cannot leak a goroutine indefinitely. Each
 		// individual processor still enforces its own configured timeout.
