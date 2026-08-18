@@ -253,6 +253,7 @@ export class SessionStream {
 
   /** Opens the connection if not already open/connecting. No-op otherwise. */
   connect() {
+    if (this._terminal) return;
     if (this._state === "connecting" || this._state === "open") return;
     this._explicitlyClosed = false;
     this._doConnect();
@@ -594,6 +595,7 @@ export class SessionStream {
    * forceReconnectActiveSession's shouldDebounceReconnect.
    */
   forceReconnect() {
+    if (this._terminal) return;
     const now = this._now();
     const elapsed = now - this._lastReconnectAt;
     if (this._lastReconnectAt > 0 && elapsed < this._reconnectDebounceMs) return;

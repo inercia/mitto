@@ -160,7 +160,7 @@ describe("useWSConnection.js: session sockets backed by SessionStream (mitto-7gt
     );
   });
 
-  test("the stream wires open/message/keepalive_ack/close/error listeners exactly once, on creation", () => {
+  test("the stream wires open/message/keepalive_ack/gone/close/error listeners exactly once, on creation", () => {
     expect(useWSConnectionJs).toMatch(/stream\.on\("open", \(\) => \{/);
     expect(useWSConnectionJs).toMatch(
       /stream\.on\("message", \(msg\) => \{[\s\S]*?handleSessionMessageRef\.current\(sessionId, msg\);/,
@@ -168,8 +168,27 @@ describe("useWSConnection.js: session sockets backed by SessionStream (mitto-7gt
     expect(useWSConnectionJs).toMatch(
       /stream\.on\("keepalive_ack", \(data\) => \{\s*\n\s*handleSessionKeepaliveAckRef\.current\?\.\(sessionId, data\);/,
     );
+    expect(useWSConnectionJs).toMatch(/stream\.on\("gone", \(event\) => \{/);
     expect(useWSConnectionJs).toMatch(/stream\.on\("close", \(event\) => \{/);
     expect(useWSConnectionJs).toMatch(/stream\.on\("error", \(err\) => \{/);
+  });
+
+  test("gone evicts the stream, cancels composer sync, and reuses session_deleted cleanup", () => {
+    expect(useWSConnectionJs).toMatch(
+      /stream\.on\("gone", \(event\) => \{[\s\S]*?sessionWsRefs\.current\[sessionId\] === stream[\s\S]*?delete sessionWsRefs\.current\[sessionId\];[\s\S]*?clearPendingSync\(sessionId\);[\s\S]*?handleGlobalEvent\(\{\s*type: "session_deleted",\s*data: \{ session_id: sessionId, reason: event\?\.reason \},\s*\}\);/,
+    );
+  });
+
+  test("session_deleted synchronously clears active and persisted selection", () => {
+    const start = useWebSocketJs.indexOf('case "session_deleted"');
+    const end = useWebSocketJs.indexOf('case "acp_started"', start);
+    const snippet = useWebSocketJs.slice(start, end);
+
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    expect(snippet).toMatch(
+      /if \(deletedId === currentId\) \{[\s\S]*?activeSessionIdRef\.current = null;\s*setLastActiveSessionId\(null\);/,
+    );
   });
 
   test("close 1009 evicts the terminal stream and quarantines pending prompts", () => {

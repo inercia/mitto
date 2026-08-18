@@ -1035,6 +1035,18 @@ describe("SessionStream: session_gone / terminal-error circuit breaker", () => {
     ws.onmessage({ data: JSON.stringify({ type: "session_gone" }) });
     expect(goneEvents).toHaveLength(1);
   });
+
+  test("forceReconnect() and connect() cannot revive a terminal stream", () => {
+    const h = makeHarness();
+    const ws = openStream(h);
+    ws.onmessage({ data: JSON.stringify({ type: "session_gone" }) });
+
+    h.stream.forceReconnect();
+    h.stream.connect();
+
+    expect(h.stream.state).toBe("stopped");
+    expect(h.instances).toHaveLength(1);
+  });
 });
 
 describe("SessionStream: sendPrompt() delivery verification", () => {

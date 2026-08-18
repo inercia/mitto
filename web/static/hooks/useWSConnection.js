@@ -244,6 +244,18 @@ export function useWSConnection({
         handleSessionKeepaliveAckRef.current?.(sessionId, data);
       });
 
+      stream.on("gone", (event) => {
+        if (sessionWsRefs.current[sessionId] === stream) {
+          delete sessionWsRefs.current[sessionId];
+        }
+        clearPendingSync(sessionId);
+        delete staleRecoveryCooldownRef.current[sessionId];
+        handleGlobalEvent({
+          type: "session_deleted",
+          data: { session_id: sessionId, reason: event?.reason },
+        });
+      });
+
       stream.on("close", (event) => {
         if (event?.code === 1009) {
           if (sessionWsRefs.current[sessionId] === stream) {

@@ -3403,6 +3403,14 @@ export function useWebSocket({
           prev.filter((s) => s.session_id !== deletedId),
         );
         const currentId = activeSessionIdRef.current;
+        if (deletedId === currentId) {
+          // Clear both the callback-visible ref and persisted selection before
+          // any queued sync/reconnect callback can revive the deleted session.
+          activeSessionIdRef.current = null;
+          setLastActiveSessionId(null);
+        } else if (getLastActiveSessionId() === deletedId) {
+          setLastActiveSessionId(null);
+        }
         setSessions((prev) => {
           const { [deletedId]: removed, ...rest } = prev;
           if (deletedId === currentId) {
