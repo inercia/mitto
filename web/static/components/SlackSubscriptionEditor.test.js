@@ -1281,6 +1281,80 @@ if (childRun) {
       }
     });
 
+    test("rate-limit exhaustion keeps partial channels and resumes the failed cursor without scope guidance", async () => {
+      let pageTwoAttempts = 0;
+      const client = makeClient({
+        listChannels: jest.fn(async (_installationId, params) => {
+          if (!params.cursor) {
+            return {
+              channels: [{ id: "C1", name: "general" }],
+              next_cursor: "page-2",
+            };
+          }
+          pageTwoAttempts += 1;
+          if (pageTwoAttempts === 1) {
+            throw Object.assign(new Error("rate limited"), {
+              code: "rate_limited",
+            });
+          }
+          return {
+            channels: [
+              { id: "C1", name: "general" },
+              { id: "C2", name: "operations" },
+            ],
+            next_cursor: "",
+          };
+        }),
+      });
+      const { container, getSubscriptions } = await mount(client, [
+        subscription("inst-a", "C1"),
+      ]);
+      try {
+        await waitFor(
+          () => client.slack.listChannels.mock.calls.length === 2,
+          container,
+          "rate-limited second page",
+        );
+        container
+          .querySelector('[data-testid="slack-channel-picker-open-0"]')
+          .click();
+        await waitFor(
+          () => document.body.textContent.includes("still rate limiting"),
+          document.body,
+          "rate-limit guidance",
+        );
+        expect(document.body.textContent).not.toContain(
+          "channels:read and groups:read",
+        );
+        expect(
+          document.querySelector('[data-testid="slack-channel-picker-row-C1"]'),
+        ).not.toBeNull();
+
+        document
+          .querySelector('[data-testid="slack-channel-picker-retry"]')
+          .click();
+        await waitFor(
+          () =>
+            document.querySelector(
+              '[data-testid="slack-channel-picker-row-C2"]',
+            ),
+          document.body,
+          "resumed second page",
+        );
+        expect(
+          client.slack.listChannels.mock.calls.map((call) => call[1].cursor),
+        ).toEqual(["", "page-2", "page-2"]);
+        expect(
+          document.querySelectorAll(
+            '[data-testid="slack-channel-picker-row-C1"]',
+          ).length,
+        ).toBe(1);
+        expect(getSubscriptions()[0]).toEqual(subscription("inst-a", "C1"));
+      } finally {
+        unmount(container);
+      }
+    });
+
     test("credential replacement refresh preserves IDs and safely normalizes a stale mention draft", async () => {
       // mitto-xh79: the "Manage Slack integrations" action moved out of this
       // component into the Loop Properties TriggerSection card header, so

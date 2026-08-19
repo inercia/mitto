@@ -22,6 +22,16 @@ function isAbortError(error) {
   return error?.name === "AbortError" || error?.cause?.name === "AbortError";
 }
 
+function channelLoadErrorMessage(error) {
+  if (error?.code === "rate_limited") {
+    return "Slack is still rate limiting channel discovery after automatic retries. Loaded channels were preserved; Retry resumes where loading paused.";
+  }
+  if (error?.code === "unavailable" || error?.code === "network_error") {
+    return "Slack channel discovery is temporarily unavailable after automatic retries. Loaded channels were preserved; Retry resumes where loading paused.";
+  }
+  return "Channels could not be loaded. Check channels:read and groups:read, apply the current app manifest, reauthorize the app, and retry.";
+}
+
 function installationLabel(installation) {
   const parts = [
     installation?.name,
@@ -247,8 +257,7 @@ async function fetchAllChannelsInBackground(
       setChannelCacheEntry(client, installationId, {
         loading: false,
         nextCursor: cursor,
-        error:
-          "Channels could not be loaded. Check channels:read and groups:read, apply the current app manifest, reauthorize the app, and retry.",
+        error: channelLoadErrorMessage(error),
       });
     }
   } finally {
@@ -862,7 +871,8 @@ export function SlackSubscriptionEditor({
             data-testid="slack-channel-picker-loading-more"
           >
             <span class="loading loading-spinner loading-xs"></span>
-            Loading more channels in the background…
+            Loading more channels in the background; Slack throttling is retried
+            automatically…
           </div>`
         }
         ${

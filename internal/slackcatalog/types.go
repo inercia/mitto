@@ -32,6 +32,7 @@ var (
 	ErrConflict    = errors.New("slack catalog conflict")
 	ErrReferenced  = errors.New("slack catalog resource is referenced")
 	ErrUnavailable = errors.New("slack integration unavailable")
+	ErrRateLimited = errors.New("slack rate limited")
 
 	// ErrOAuthRequired is a distinct, value-free classification for a
 	// delegated-user (xoxp) auth.test response that cannot prove its parent

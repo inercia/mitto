@@ -3,7 +3,9 @@ package slackcatalog
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"math/rand"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -17,7 +19,13 @@ var (
 	installationTokenPattern = regexp.MustCompile(`^xox[a-z]-`)
 )
 
-const slackRequestTimeout = 30 * time.Second
+const (
+	slackRequestTimeout = 30 * time.Second
+	slackRetryAttempts  = 4
+	slackRetryBudget    = 2 * time.Minute
+	slackRetryBaseDelay = 500 * time.Millisecond
+	slackRetryMaxDelay  = 8 * time.Second
+)
 
 type SlackProvider interface {
 	ValidateApp(context.Context, string) (string, error)
@@ -33,6 +41,27 @@ type SlackOAuthProvider interface {
 type SlackClient struct {
 	APIURL string
 	Client *http.Client
+
+	sleepFn     func(context.Context, time.Duration) error
+	randFn      func() float64
+	nowFn       func() time.Time
+	maxAttempts int
+	retryBudget time.Duration
+}
+
+type slackChannelListResponse struct {
+	OK       bool   `json:"ok"`
+	Error    string `json:"error"`
+	Channels []struct {
+		ID         string `json:"id"`
+		Name       string `json:"name"`
+		IsArchived bool   `json:"is_archived"`
+		IsPrivate  bool   `json:"is_private"`
+		IsMember   bool   `json:"is_member"`
+	} `json:"channels"`
+	Metadata struct {
+		NextCursor string `json:"next_cursor"`
+	} `json:"response_metadata"`
 }
 
 func NewSlackClient() *SlackClient {
@@ -185,25 +214,18 @@ func (c *SlackClient) ListChannels(ctx context.Context, token, cursor string, li
 	if cursor != "" {
 		values.Set("cursor", cursor)
 	}
-	var response struct {
-		OK       bool   `json:"ok"`
-		Error    string `json:"error"`
-		Channels []struct {
-			ID         string `json:"id"`
-			Name       string `json:"name"`
-			IsArchived bool   `json:"is_archived"`
-			IsPrivate  bool   `json:"is_private"`
-			IsMember   bool   `json:"is_member"`
-		} `json:"channels"`
-		Metadata struct {
-			NextCursor string `json:"next_cursor"`
-		} `json:"response_metadata"`
-	}
-	if err := c.call(ctx, token, "conversations.list", values, &response); err != nil {
+	var response slackChannelListResponse
+	if err := c.withRetry(ctx, func(attemptCtx context.Context) error {
+		response = slackChannelListResponse{}
+		if err := c.callOnce(attemptCtx, token, "conversations.list", values, &response); err != nil {
+			return err
+		}
+		if !response.OK {
+			return slackAPIError("conversations.list", response.Error)
+		}
+		return nil
+	}); err != nil {
 		return ChannelPage{}, err
-	}
-	if !response.OK {
-		return ChannelPage{}, slackAPIError("conversations.list", response.Error)
 	}
 	page := ChannelPage{Channels: make([]Channel, 0, len(response.Channels)), NextCursor: response.Metadata.NextCursor}
 	for _, ch := range response.Channels {
@@ -217,6 +239,10 @@ func (c *SlackClient) ListChannels(ctx context.Context, token, cursor string, li
 }
 
 func (c *SlackClient) call(ctx context.Context, token, method string, values url.Values, result any) error {
+	return c.callOnce(ctx, token, method, values, result)
+}
+
+func (c *SlackClient) callOnce(ctx context.Context, token, method string, values url.Values, result any) error {
 	if values == nil {
 		values = url.Values{}
 	}
@@ -232,16 +258,162 @@ func (c *SlackClient) call(ctx context.Context, token, method string, values url
 	}
 	response, err := client.Do(request)
 	if err != nil {
-		return fmt.Errorf("%w: %s request failed", ErrUnavailable, method)
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return &slackRetryError{cause: ErrUnavailable, method: method}
 	}
-	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		delay, hasDelay := parseRetryAfter(response.Header.Get("Retry-After"), c.now())
+		response.Body.Close()
+		if response.StatusCode == http.StatusTooManyRequests {
+			return &slackRetryError{cause: ErrRateLimited, method: method, status: response.StatusCode,
+				retryAfter: delay, hasRetryAfter: hasDelay}
+		}
+		if isRetryableSlackStatus(response.StatusCode) {
+			return &slackRetryError{cause: ErrUnavailable, method: method, status: response.StatusCode,
+				retryAfter: delay, hasRetryAfter: hasDelay}
+		}
+		if response.StatusCode >= 400 && response.StatusCode < 500 {
+			return fmt.Errorf("%w: %s returned HTTP %d", ErrInvalid, method, response.StatusCode)
+		}
 		return fmt.Errorf("%w: %s returned HTTP %d", ErrUnavailable, method, response.StatusCode)
 	}
+	defer response.Body.Close()
 	if err := json.NewDecoder(response.Body).Decode(result); err != nil {
 		return fmt.Errorf("%w: decode %s response", ErrUnavailable, method)
 	}
 	return nil
+}
+
+type slackRetryError struct {
+	cause         error
+	method        string
+	status        int
+	retryAfter    time.Duration
+	hasRetryAfter bool
+}
+
+func (e *slackRetryError) Error() string {
+	if e.status != 0 {
+		return fmt.Sprintf("%s returned HTTP %d", e.method, e.status)
+	}
+	if errors.Is(e.cause, ErrRateLimited) {
+		return e.method + " was rate limited"
+	}
+	return e.method + " request failed"
+}
+
+func (e *slackRetryError) Unwrap() error { return e.cause }
+
+func (c *SlackClient) withRetry(ctx context.Context, attemptFn func(context.Context) error) error {
+	attempts := c.maxAttempts
+	if attempts <= 0 {
+		attempts = slackRetryAttempts
+	}
+	budget := c.retryBudget
+	if budget <= 0 {
+		budget = slackRetryBudget
+	}
+	budgetCtx := ctx
+	if deadline, ok := ctx.Deadline(); !ok || time.Until(deadline) > budget {
+		var cancel context.CancelFunc
+		budgetCtx, cancel = context.WithTimeout(ctx, budget)
+		defer cancel()
+	}
+
+	for attempt := 1; attempt <= attempts; attempt++ {
+		err := attemptFn(budgetCtx)
+		if err == nil {
+			return nil
+		}
+		var retryErr *slackRetryError
+		if !errors.As(err, &retryErr) || attempt == attempts {
+			return err
+		}
+		delay := c.retryDelay(retryErr, attempt)
+		if deadline, ok := budgetCtx.Deadline(); ok && delay > time.Until(deadline) {
+			return err
+		}
+		if err := c.sleep(budgetCtx, delay); err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return retryErr
+		}
+	}
+	return fmt.Errorf("%w: Slack retry attempts exhausted", ErrUnavailable)
+}
+
+func (c *SlackClient) retryDelay(retryErr *slackRetryError, attempt int) time.Duration {
+	if retryErr.hasRetryAfter {
+		return retryErr.retryAfter
+	}
+	delay := slackRetryBaseDelay << (attempt - 1)
+	if delay > slackRetryMaxDelay {
+		delay = slackRetryMaxDelay
+	}
+	return time.Duration(float64(delay) * (0.5 + c.random()))
+}
+
+func (c *SlackClient) sleep(ctx context.Context, delay time.Duration) error {
+	if c.sleepFn != nil {
+		return c.sleepFn(ctx, delay)
+	}
+	if delay <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (c *SlackClient) random() float64 {
+	if c.randFn != nil {
+		return c.randFn()
+	}
+	return rand.Float64()
+}
+
+func (c *SlackClient) now() time.Time {
+	if c.nowFn != nil {
+		return c.nowFn()
+	}
+	return time.Now()
+}
+
+func parseRetryAfter(value string, now time.Time) (time.Duration, bool) {
+	if seconds, err := strconv.Atoi(strings.TrimSpace(value)); err == nil && seconds >= 0 {
+		return time.Duration(seconds) * time.Second, true
+	}
+	when, err := http.ParseTime(value)
+	if err != nil {
+		return 0, false
+	}
+	return max(when.Sub(now), 0), true
+}
+
+func isRetryableSlackStatus(status int) bool {
+	switch status {
+	case http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return true
+	default:
+		return false
+	}
+}
+
+// RetryAfterSeconds returns a safe retry hint for a classified Slack error.
+func RetryAfterSeconds(err error) int {
+	var retryErr *slackRetryError
+	if !errors.As(err, &retryErr) || !retryErr.hasRetryAfter || retryErr.retryAfter <= 0 {
+		return 1
+	}
+	return int((retryErr.retryAfter + time.Second - 1) / time.Second)
 }
 
 func (c *SlackClient) callForm(ctx context.Context, method string, values url.Values, result any) error {
@@ -276,6 +448,10 @@ func slackAPIError(method, code string) error {
 	case "invalid_auth", "not_authed", "token_revoked", "token_expired", "account_inactive",
 		"invalid_app_token", "missing_scope", "not_allowed_token_type":
 		return fmt.Errorf("%w: %s failed (%s)", ErrInvalid, method, code)
+	case "ratelimited":
+		return &slackRetryError{cause: ErrRateLimited, method: method}
+	case "internal_error", "fatal_error", "service_unavailable", "request_timeout":
+		return &slackRetryError{cause: ErrUnavailable, method: method}
 	default:
 		return fmt.Errorf("%w: %s failed (%s)", ErrUnavailable, method, code)
 	}

@@ -4,12 +4,20 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 )
+
+type slackRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f slackRoundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request)
+}
 
 func TestSlackClientValidationAndPaginatedChannels(t *testing.T) {
 	const appToken = "xapp-1-A123-opaque"
@@ -215,15 +223,191 @@ func TestSlackClientRejectsMalformedAndFailedValidationWithoutLeakingToken(t *te
 	}
 }
 
-func TestSlackClientClassifiesTransientAPIFailureAsUnavailable(t *testing.T) {
+func TestSlackClientClassifiesTransientAPIFailureAsRateLimited(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprint(w, `{"ok":false,"error":"ratelimited"}`)
 	}))
 	defer server.Close()
 	client := &SlackClient{APIURL: server.URL, Client: server.Client()}
 	_, err := client.ValidateInstallation(context.Background(), "xoxb-token")
-	if !errors.Is(err, ErrUnavailable) {
-		t.Fatalf("transient validation error = %v", err)
+	if !errors.Is(err, ErrRateLimited) || errors.Is(err, ErrUnavailable) {
+		t.Fatalf("transient validation error = %v, want distinct ErrRateLimited", err)
+	}
+}
+
+func TestSlackClientListChannelsRetriesRateLimitAtSameCursor(t *testing.T) {
+	// mitto-2lhp: a throttled later page must recover without making the user
+	// restart discovery or losing the cursor that selected that page.
+	var cursors []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Error(err)
+			return
+		}
+		cursors = append(cursors, r.Form.Get("cursor"))
+		if len(cursors) == 1 {
+			w.Header().Set("Retry-After", "0")
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		fmt.Fprint(w, `{"ok":true,"channels":[{"id":"C2","name":"operations"}],"response_metadata":{"next_cursor":"page-3"}}`)
+	}))
+	defer server.Close()
+
+	client := &SlackClient{APIURL: server.URL, Client: server.Client()}
+	page, err := client.ListChannels(context.Background(), "xoxb-token", "page-2", 200)
+	if err != nil {
+		t.Fatalf("ListChannels() error = %v, want automatic Retry-After recovery", err)
+	}
+	if len(page.Channels) != 1 || page.Channels[0].ID != "C2" || page.NextCursor != "page-3" {
+		t.Fatalf("ListChannels() = %#v, want recovered page", page)
+	}
+	if fmt.Sprint(cursors) != "[page-2 page-2]" {
+		t.Fatalf("cursors = %v, want same cursor retried", cursors)
+	}
+}
+
+func TestSlackClientListChannelsHonorsRetryAfter(t *testing.T) {
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		if calls == 1 {
+			w.Header().Set("Retry-After", "2")
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		fmt.Fprint(w, `{"ok":true,"channels":[]}`)
+	}))
+	defer server.Close()
+	var delays []time.Duration
+	client := &SlackClient{APIURL: server.URL, Client: server.Client(), sleepFn: func(_ context.Context, delay time.Duration) error {
+		delays = append(delays, delay)
+		return nil
+	}}
+	if _, err := client.ListChannels(context.Background(), "xoxb-token", "next", 200); err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprint(delays) != "[2s]" {
+		t.Fatalf("retry delays = %v, want [2s]", delays)
+	}
+}
+
+func TestSlackClientListChannelsUsesFallbackBackoff(t *testing.T) {
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		switch calls {
+		case 1:
+			w.Header().Set("Retry-After", "invalid")
+			w.WriteHeader(http.StatusTooManyRequests)
+		case 2:
+			w.WriteHeader(http.StatusServiceUnavailable)
+		default:
+			fmt.Fprint(w, `{"ok":true,"channels":[]}`)
+		}
+	}))
+	defer server.Close()
+	var delays []time.Duration
+	client := &SlackClient{APIURL: server.URL, Client: server.Client(), randFn: func() float64 { return 0.5 },
+		sleepFn: func(_ context.Context, delay time.Duration) error {
+			delays = append(delays, delay)
+			return nil
+		}}
+	if _, err := client.ListChannels(context.Background(), "xoxb-token", "next", 200); err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprint(delays) != "[500ms 1s]" {
+		t.Fatalf("retry delays = %v, want [500ms 1s]", delays)
+	}
+}
+
+func TestSlackClientListChannelsDoesNotRetryTerminalError(t *testing.T) {
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		fmt.Fprint(w, `{"ok":false,"error":"missing_scope"}`)
+	}))
+	defer server.Close()
+	client := &SlackClient{APIURL: server.URL, Client: server.Client()}
+	_, err := client.ListChannels(context.Background(), "xoxb-token", "next", 200)
+	if !errors.Is(err, ErrInvalid) || calls != 1 {
+		t.Fatalf("error = %v, calls = %d; want terminal ErrInvalid with one call", err, calls)
+	}
+}
+
+func TestSlackClientListChannelsCancellationStopsRetryWait(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Retry-After", "30")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer server.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	client := &SlackClient{APIURL: server.URL, Client: server.Client(), sleepFn: func(ctx context.Context, _ time.Duration) error {
+		cancel()
+		<-ctx.Done()
+		return ctx.Err()
+	}}
+	_, err := client.ListChannels(ctx, "xoxb-token", "next", 200)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context.Canceled", err)
+	}
+}
+
+func TestSlackClientListChannelsRetriesTransportTimeout(t *testing.T) {
+	var calls int
+	httpClient := &http.Client{Transport: slackRoundTripFunc(func(*http.Request) (*http.Response, error) {
+		calls++
+		if calls == 1 {
+			return nil, context.DeadlineExceeded
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header),
+			Body: io.NopCloser(strings.NewReader(`{"ok":true,"channels":[]}`))}, nil
+	})}
+	client := &SlackClient{APIURL: "https://slack.invalid", Client: httpClient,
+		sleepFn: func(context.Context, time.Duration) error { return nil }}
+	if _, err := client.ListChannels(context.Background(), "xoxb-token", "next", 200); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 {
+		t.Fatalf("calls = %d, want timeout retry", calls)
+	}
+}
+
+func TestSlackClientListChannelsStopsAfterAttemptBudgetWithoutLeakingBody(t *testing.T) {
+	const canary = "provider-body-must-not-escape"
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		w.WriteHeader(http.StatusServiceUnavailable)
+		fmt.Fprint(w, canary)
+	}))
+	defer server.Close()
+	client := &SlackClient{APIURL: server.URL, Client: server.Client(), maxAttempts: 2,
+		sleepFn: func(context.Context, time.Duration) error { return nil }}
+	_, err := client.ListChannels(context.Background(), "xoxb-token", "next", 200)
+	if !errors.Is(err, ErrUnavailable) || calls != 2 {
+		t.Fatalf("error = %v, calls = %d; want exhausted ErrUnavailable after two calls", err, calls)
+	}
+	if strings.Contains(err.Error(), canary) {
+		t.Fatalf("error leaked Slack response body: %v", err)
+	}
+}
+
+func TestSlackClientListChannelsDoesNotOutwaitRetryBudget(t *testing.T) {
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		w.Header().Set("Retry-After", "30")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer server.Close()
+	client := &SlackClient{APIURL: server.URL, Client: server.Client(), retryBudget: 10 * time.Millisecond}
+	_, err := client.ListChannels(context.Background(), "xoxb-token", "next", 200)
+	if !errors.Is(err, ErrRateLimited) || calls != 1 {
+		t.Fatalf("error = %v, calls = %d; want immediate budget exhaustion", err, calls)
+	}
+	if got := RetryAfterSeconds(err); got != 30 {
+		t.Fatalf("RetryAfterSeconds() = %d, want 30", got)
 	}
 }
 

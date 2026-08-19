@@ -103,6 +103,10 @@ func allowSlackCredentialWrite(w http.ResponseWriter, r *http.Request) bool {
 
 func writeSlackError(w http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, slackcatalog.ErrRateLimited):
+		w.Header().Set("Retry-After", strconv.Itoa(slackcatalog.RetryAfterSeconds(err)))
+		writeErrorJSON(w, http.StatusTooManyRequests, "",
+			"Slack is still rate limiting channel discovery after automatic retries")
 	case errors.Is(err, slackcatalog.ErrInvalid):
 		writeErrorJSON(w, http.StatusBadRequest, "", "Invalid Slack integration request")
 	case errors.Is(err, slackcatalog.ErrNotFound):
