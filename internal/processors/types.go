@@ -485,6 +485,13 @@ type CloseProcessorInput struct {
 	ArchiveReason string `json:"archiveReason,omitempty"`
 	// ArchivedAt is when the session was archived.
 	ArchivedAt time.Time `json:"archivedAt"`
+	// HistorySnapshot is a bounded immutable copy of user/agent history captured
+	// synchronously before a delete can remove the source session. It is appended
+	// to every prompt-mode close processor and excluded from command stdin.
+	HistorySnapshot string `json:"-"`
+	// HistorySnapshotError distinguishes unavailable source history from a valid
+	// empty snapshot. Prompt-mode work is not dispatched when this is non-empty.
+	HistorySnapshotError string `json:"-"`
 	// ProcessorArgOverrides holds per-processor argument value overrides from the
 	// workspace .mittorc file. Keyed by processor name; values are arg name→value maps.
 	// Excluded from JSON — never sent to external command processors.

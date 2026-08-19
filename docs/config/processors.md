@@ -5,7 +5,7 @@ Mitto supports processors that can run at four points in the conversation lifecy
 - **`on: userPrompt`** — Processors fire _before_ the user's message is sent to the ACP agent. This is the standard phase for injecting context, prepending reminders, running scripts, or dispatching background prompts.
 - **`on: agentResponded`** — Processors fire _after_ the agent finishes **each** turn — even while more queued messages are still pending. Only command-mode and prompt-mode are allowed here (text injection is not meaningful post-response).
 - **`on: agentIdle`** — Like `agentResponded`, but fires only once the agent has **drained its message queue and gone idle**. Within a burst of queued messages it fires a single time, at the idle breakpoint, so the processor sees the _complete_ exchange rather than a partial mid-burst turn. Same execution rules as `agentResponded`. This is the right phase for memory/insight processors (e.g., `memorize-preferences`, `identify-user-data`, `auggie-update-rules`, `claude-update-memory`) that need full context. Cadence still applies and accumulates across the burst (see [Cadence Throttling](#cadence-throttling-cadence)).
-- **`on: conversationClosed`** — Processors fire **once** when a session is archived, either manually from the UI or automatically due to inactivity. Fire-and-forget: the archive path does not wait for these processors to complete. Only command-mode and prompt-mode are allowed, and `match` must be `all` (there is a single close event — `first`/`allExceptFirst` are meaningless). `mutate`, `rerun`, `cadence`, `stopReasons`, and `excludeOrigins` are rejected. Because the session is no longer active, only `output: discard` is supported — notifications, action buttons, and user-data patches cannot be delivered back to the closed conversation. Prompt-mode processors can still reach the user with a workspace-scoped toast by calling the `mitto_workspace_ui_notify` MCP tool with `{{ .Workspace.UUID }}`. This phase is ideal for post-mortem knowledge extraction (see the builtin `extract-memories-on-close`).
+- **`on: conversationClosed`** — Processors fire **once** when a session is archived or deleted. Fire-and-forget: the close path does not wait for auxiliary completion, but it synchronously captures a bounded immutable snapshot of the last 50 user/agent events before deletion. That snapshot is appended automatically to every prompt-mode close processor and retained in the mode-`0600` durable dispatch spool until acknowledgement or terminal eviction. Only command-mode and prompt-mode are allowed, and `match` must be `all` (there is a single close event — `first`/`allExceptFirst` are meaningless). `mutate`, `rerun`, `cadence`, `stopReasons`, and `excludeOrigins` are rejected. Because the session is no longer active, only `output: discard` is supported — notifications, action buttons, and user-data patches cannot be delivered back to the closed conversation. Prompt-mode processors can still reach the user with a workspace-scoped toast by calling the `mitto_workspace_ui_notify` MCP tool with `{{ .Workspace.UUID }}`. This phase is ideal for post-mortem knowledge extraction (see the builtin `extract-memories-on-close`).
 
 Within each phase, three execution modes are available:
 
@@ -340,8 +340,10 @@ acknowledgement; failures and process crashes leave it available for retry.
 
 Prompt-mode processors use the `prompt` field (mutually exclusive with `text` and
 `command`). The prompt template supports all standard `@mitto:variable` placeholders.
-To access conversation history, the auxiliary agent calls the `mitto_conversation_history`
-MCP tool at runtime.
+To access live conversation history, the auxiliary agent calls the
+`mitto_conversation_history` MCP tool at runtime. Prompt-mode
+`conversationClosed` processors instead receive an automatically appended immutable
+history snapshot because a deleted source session may no longer exist at execution time.
 
 ### Basic Structure
 
@@ -374,7 +376,7 @@ prompt: |
 - **Asynchronous pipeline, tracked worker** — the caller does not block, but the background worker waits for completion before acknowledging durable work
 - **Requires a workspace** — the auxiliary session is scoped to the workspace
 - **Runs on the workspace's ACP server** — auxiliary sessions use the workspace's main ACP server; an optional _Auxiliary Model Selection_ (match mode + pattern) in workspace settings can switch the aux session to a specific model (otherwise the server default is used)
-- **Conversation history via MCP tool** — use `mitto_conversation_history` in the prompt to retrieve messages dynamically
+- **Conversation history** — use `mitto_conversation_history` for live phases; `conversationClosed` prompts receive an automatic bounded snapshot
 
 ### Parameters (Prompt-Mode Only)
 
@@ -490,10 +492,14 @@ prompt: |
 The built-in `extract-memories-on-close` processor (enabled by default when `bd` and
 `.beads` are present) demonstrates this pattern — see [Builtin Processors](#builtin-processors).
 
-`conversationClosed` processors fire exactly once when a session is archived (manual
-archive from the UI or automatic archive due to inactivity). The archive path is
-fire-and-forget: the pipeline runs in the background and never blocks the archive
-response. Because the session is closed, the processor cannot post notifications,
+`conversationClosed` processors fire exactly once when a session is archived or
+deleted. Snapshot construction completes before deletion, but auxiliary execution is
+fire-and-forget and never blocks the close response. The automatically appended JSON
+snapshot contains at most the last 50 `user_prompt` / `agent_message` events, with each
+text field capped at 2 KiB. Treat it as the authoritative history rather than fetching
+the source session through MCP. If snapshot capture fails, Mitto logs an explicit error
+and does not dispatch or acknowledge the prompt as a valid zero-save analysis. Because
+the session is closed, the processor cannot post notifications,
 action buttons or user-data patches back to the conversation — its work must be
 side-effects on the workspace side (files, external stores, task trackers).
 
@@ -532,8 +538,7 @@ prompt: |
   memories via `bd remember`. Session ID: @mitto:session_id (archive reason:
   @mitto:archive_reason).
 
-  Use the mitto_conversation_history MCP tool with conversation_id "@mitto:session_id"
-  to retrieve the last 50 user_prompt and agent_message events.
+  Analyze the immutable source-history snapshot that Mitto appends to this prompt.
 ```
 
 Command-mode is also supported. Command processors receive the close event as JSON

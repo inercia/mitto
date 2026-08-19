@@ -762,6 +762,25 @@ func (sm *SessionManager) ApplyOnCloseProcessors(sessionID string, reason string
 	workingDir := meta.WorkingDir
 	archivedAt := meta.ArchivedAt
 
+	// Capture source history before returning to the delete path. The close
+	// processor worker below is asynchronous, so Store.Delete may remove the
+	// session directory before that goroutine starts (mitto-e3ut.4).
+	var historySnapshot, historySnapshotError string
+	events, historyErr := store.ReadEvents(sessionID)
+	if historyErr != nil {
+		historySnapshotError = historyErr.Error()
+		if logger != nil {
+			logger.Error("close-phase source history snapshot unavailable",
+				"session_id", sessionID, "archive_reason", reason, "error", historyErr)
+		}
+	} else if historySnapshot, historyErr = processors.BuildCloseHistorySnapshot(sessionID, events); historyErr != nil {
+		historySnapshotError = historyErr.Error()
+		if logger != nil {
+			logger.Error("close-phase source history snapshot encoding failed",
+				"session_id", sessionID, "archive_reason", reason, "error", historyErr)
+		}
+	}
+
 	// Metadata does not store the workspace UUID; look it up from the workspace
 	// registry via working dir + ACP server, falling back to a working-dir-only match.
 	var workspaceUUID string
@@ -880,6 +899,8 @@ func (sm *SessionManager) ApplyOnCloseProcessors(sessionID string, reason string
 		WorkingDir:            workingDir,
 		ArchiveReason:         reason,
 		ArchivedAt:            archivedAt,
+		HistorySnapshot:       historySnapshot,
+		HistorySnapshotError:  historySnapshotError,
 		ProcessorArgOverrides: procArgOverrides,
 	}
 

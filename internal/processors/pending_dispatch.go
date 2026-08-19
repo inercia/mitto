@@ -445,5 +445,13 @@ func (s *FilePendingDispatchStore) writeLocked(path string, entries []PendingDis
 		}
 		return nil
 	}
-	return fileutil.WriteJSONAtomic(path, &entries, 0644)
+	if err := fileutil.WriteJSONAtomic(path, &entries, 0600); err != nil {
+		return err
+	}
+	// Belt-and-braces for pre-existing spools and permissive umasks: these
+	// entries may contain an inline conversation history snapshot.
+	if err := os.Chmod(path, 0600); err != nil {
+		return fmt.Errorf("failed to restrict pending dispatch spool permissions: %w", err)
+	}
+	return nil
 }
