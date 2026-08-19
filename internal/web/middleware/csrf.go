@@ -149,10 +149,7 @@ func VerifyIPFromToken(tokenValue, ip, userAgent string) bool {
 // SetCSRFCookie sets the CSRF token cookie on the response.
 // The request is used to determine if we're on localhost (to set Secure flag appropriately).
 func (c *CSRFManager) SetCSRFCookie(w http.ResponseWriter, r *http.Request, token string) {
-	// Determine if we should set Secure flag.
-	// WKWebView (macOS app) doesn't send Secure cookies over http://localhost,
-	// so we need to set Secure=false for localhost connections.
-	secure := !isLocalhostRequest(r)
+	secure := shouldUseSecureCookie(r)
 
 	http.SetCookie(w, &http.Cookie{
 		Name:     csrfCookieName,

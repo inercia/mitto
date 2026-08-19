@@ -756,11 +756,7 @@ func (a *AuthManager) InvalidateSession(token string) {
 func (a *AuthManager) SetSessionCookie(w http.ResponseWriter, r *http.Request, session *AuthSession) {
 	logger := logging.Auth()
 
-	// Determine if we should set Secure flag.
-	// WKWebView (macOS app) doesn't send Secure cookies over http://localhost,
-	// so we need to set Secure=false for localhost connections.
-	// For external/HTTPS connections, we always want Secure=true.
-	secure := !isLocalhostRequest(r)
+	secure := shouldUseSecureCookie(r)
 
 	cookie := &http.Cookie{
 		Name:     sessionCookieName,
@@ -788,7 +784,7 @@ func (a *AuthManager) SetSessionCookie(w http.ResponseWriter, r *http.Request, s
 // The request is used to determine if we're on localhost (to set Secure flag appropriately).
 func (a *AuthManager) ClearSessionCookie(w http.ResponseWriter, r *http.Request) {
 	// Match the Secure flag from SetSessionCookie for consistency
-	secure := !isLocalhostRequest(r)
+	secure := shouldUseSecureCookie(r)
 
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookieName,
@@ -919,6 +915,12 @@ func isLocalhostRequest(r *http.Request) bool {
 
 	// Check if host is localhost or 127.0.0.1
 	return host == "localhost" || host == "127.0.0.1" || host == "::1"
+}
+
+// shouldUseSecureCookie keeps the localhost exception exclusive to the internal
+// listener. Host is caller-controlled, so external-listener provenance wins.
+func shouldUseSecureCookie(r *http.Request) bool {
+	return IsExternalConnection(r) || !isLocalhostRequest(r)
 }
 
 // contextKey is a type for context keys used by the auth package.

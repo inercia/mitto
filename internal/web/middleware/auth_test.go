@@ -152,6 +152,58 @@ func TestAuthManager_SessionExpiry(t *testing.T) {
 	}
 }
 
+// TestCookieSecure_ExternalListenerIgnoresLocalhostHost reproduces mitto-8c3u:
+// trusted external-listener provenance must override the caller-controlled Host.
+func TestCookieSecure_ExternalListenerIgnoresLocalhostHost(t *testing.T) {
+	auth := &AuthManager{}
+	session := &AuthSession{Token: "0123456789abcdef", ExpiresAt: time.Now().Add(time.Hour)}
+
+	writers := map[string]func(http.ResponseWriter, *http.Request){
+		"session set": func(w http.ResponseWriter, r *http.Request) {
+			auth.SetSessionCookie(w, r, session)
+		},
+		"session clear": auth.ClearSessionCookie,
+		"csrf": func(w http.ResponseWriter, r *http.Request) {
+			(&CSRFManager{}).SetCSRFCookie(w, r, "csrf-token")
+		},
+	}
+
+	requests := []struct {
+		name       string
+		host       string
+		external   bool
+		wantSecure bool
+	}{
+		{"external localhost", "localhost:8080", true, true},
+		{"external IPv4 loopback", "127.0.0.1:8080", true, true},
+		{"external IPv6 loopback", "[::1]:8080", true, true},
+		{"internal localhost", "localhost:8080", false, false},
+	}
+
+	for _, request := range requests {
+		for name, writeCookie := range writers {
+			t.Run(request.name+"/"+name, func(t *testing.T) {
+				req := httptest.NewRequest(http.MethodGet, "/", nil)
+				if request.external {
+					req = makeExternalRequest(req)
+				}
+				req.Host = request.host
+				recorder := httptest.NewRecorder()
+
+				writeCookie(recorder, req)
+
+				cookies := recorder.Result().Cookies()
+				if len(cookies) != 1 {
+					t.Fatalf("cookie count = %d, want 1", len(cookies))
+				}
+				if cookies[0].Secure != request.wantSecure {
+					t.Errorf("Secure = %v, want %v for Host %q", cookies[0].Secure, request.wantSecure, request.host)
+				}
+			})
+		}
+	}
+}
+
 func TestAuthManager_HandleLogin(t *testing.T) {
 	am := NewAuthManager(&config.WebAuth{
 		Simple: &config.SimpleAuth{
