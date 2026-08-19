@@ -99,18 +99,18 @@ func newServerForWorkspaceNotify(t *testing.T, workspaces map[string]*config.Wor
 }
 
 // TestHandleWorkspaceUINotify_Success verifies the happy path: valid workspace
-// UUID + registered caller session → broadcast fires with the expected fields.
+// UUID + auxiliary caller → broadcast fires with the expected fields.
 func TestHandleWorkspaceUINotify_Success(t *testing.T) {
 	ws := &config.WorkspaceSettings{
 		UUID:       "ws-uuid-1",
 		Name:       "My Workspace",
 		WorkingDir: "/tmp/foo",
 	}
-	srv, sm, sessionID := newServerForWorkspaceNotify(t,
-		map[string]*config.WorkspaceSettings{"ws-uuid-1": ws}, true)
+	srv, sm, _ := newServerForWorkspaceNotify(t,
+		map[string]*config.WorkspaceSettings{"ws-uuid-1": ws}, false)
 
 	_, out, err := srv.handleWorkspaceUINotify(context.Background(), nil, WorkspaceUINotifyInput{
-		SelfID:        sessionID,
+		SelfID:        "aux-worker",
 		WorkspaceUUID: "ws-uuid-1",
 		Title:         "Hello",
 		Message:       "world",
@@ -181,7 +181,7 @@ func TestHandleWorkspaceUINotify_MissingSelfID(t *testing.T) {
 }
 
 func TestHandleWorkspaceUINotify_MissingWorkspaceUUID(t *testing.T) {
-	srv, sm, sid := newServerForWorkspaceNotify(t, nil, true)
+	srv, sm, sid := newServerForWorkspaceNotify(t, nil, false)
 	_, _, err := srv.handleWorkspaceUINotify(context.Background(), nil, WorkspaceUINotifyInput{
 		SelfID: sid, Title: "t",
 	})
@@ -195,7 +195,7 @@ func TestHandleWorkspaceUINotify_MissingWorkspaceUUID(t *testing.T) {
 
 func TestHandleWorkspaceUINotify_UnknownWorkspace(t *testing.T) {
 	srv, sm, sid := newServerForWorkspaceNotify(t,
-		map[string]*config.WorkspaceSettings{"known": {UUID: "known"}}, true)
+		map[string]*config.WorkspaceSettings{"known": {UUID: "known"}}, false)
 	_, _, err := srv.handleWorkspaceUINotify(context.Background(), nil, WorkspaceUINotifyInput{
 		SelfID: sid, WorkspaceUUID: "does-not-exist", Title: "t",
 	})
@@ -210,7 +210,7 @@ func TestHandleWorkspaceUINotify_UnknownWorkspace(t *testing.T) {
 func TestHandleWorkspaceUINotify_MissingTitle(t *testing.T) {
 	ws := &config.WorkspaceSettings{UUID: "w", Name: "w", WorkingDir: "/x"}
 	srv, sm, sid := newServerForWorkspaceNotify(t,
-		map[string]*config.WorkspaceSettings{"w": ws}, true)
+		map[string]*config.WorkspaceSettings{"w": ws}, false)
 	_, _, err := srv.handleWorkspaceUINotify(context.Background(), nil, WorkspaceUINotifyInput{
 		SelfID: sid, WorkspaceUUID: "w",
 	})
@@ -225,7 +225,7 @@ func TestHandleWorkspaceUINotify_MissingTitle(t *testing.T) {
 func TestHandleWorkspaceUINotify_InvalidStyle(t *testing.T) {
 	ws := &config.WorkspaceSettings{UUID: "w", Name: "w", WorkingDir: "/x"}
 	srv, sm, sid := newServerForWorkspaceNotify(t,
-		map[string]*config.WorkspaceSettings{"w": ws}, true)
+		map[string]*config.WorkspaceSettings{"w": ws}, false)
 	_, _, err := srv.handleWorkspaceUINotify(context.Background(), nil, WorkspaceUINotifyInput{
 		SelfID: sid, WorkspaceUUID: "w", Title: "t", Style: "bogus",
 	})
@@ -240,7 +240,7 @@ func TestHandleWorkspaceUINotify_InvalidStyle(t *testing.T) {
 func TestHandleWorkspaceUINotify_DefaultStyle(t *testing.T) {
 	ws := &config.WorkspaceSettings{UUID: "w", Name: "w", WorkingDir: "/x"}
 	srv, sm, sid := newServerForWorkspaceNotify(t,
-		map[string]*config.WorkspaceSettings{"w": ws}, true)
+		map[string]*config.WorkspaceSettings{"w": ws}, false)
 	_, out, err := srv.handleWorkspaceUINotify(context.Background(), nil, WorkspaceUINotifyInput{
 		SelfID: sid, WorkspaceUUID: "w", Title: "t",
 	})
@@ -259,7 +259,7 @@ func TestHandleWorkspaceUINotify_DefaultStyle(t *testing.T) {
 func TestHandleWorkspaceUINotify_TruncatesTitleAndMessage(t *testing.T) {
 	ws := &config.WorkspaceSettings{UUID: "w", Name: "w", WorkingDir: "/x"}
 	srv, sm, sid := newServerForWorkspaceNotify(t,
-		map[string]*config.WorkspaceSettings{"w": ws}, true)
+		map[string]*config.WorkspaceSettings{"w": ws}, false)
 
 	longTitle := strings.Repeat("A", 250)
 	longMessage := strings.Repeat("B", 1500)
@@ -299,7 +299,7 @@ func TestHandleWorkspaceUINotify_TruncatesTitleAndMessage(t *testing.T) {
 func TestHandleWorkspaceUINotify_BeadsIssueRoundTrip(t *testing.T) {
 	ws := &config.WorkspaceSettings{UUID: "w", Name: "w", WorkingDir: "/x"}
 	srv, sm, sid := newServerForWorkspaceNotify(t,
-		map[string]*config.WorkspaceSettings{"w": ws}, true)
+		map[string]*config.WorkspaceSettings{"w": ws}, false)
 
 	_, out, err := srv.handleWorkspaceUINotify(context.Background(), nil, WorkspaceUINotifyInput{
 		SelfID:        sid,
@@ -327,7 +327,7 @@ func TestHandleWorkspaceUINotify_BeadsIssueRoundTrip(t *testing.T) {
 func TestHandleWorkspaceUINotify_BeadsIssueOmittedByDefault(t *testing.T) {
 	ws := &config.WorkspaceSettings{UUID: "w", Name: "w", WorkingDir: "/x"}
 	srv, sm, sid := newServerForWorkspaceNotify(t,
-		map[string]*config.WorkspaceSettings{"w": ws}, true)
+		map[string]*config.WorkspaceSettings{"w": ws}, false)
 
 	_, _, err := srv.handleWorkspaceUINotify(context.Background(), nil, WorkspaceUINotifyInput{
 		SelfID: sid, WorkspaceUUID: "w", Title: "plain",
@@ -344,9 +344,9 @@ func TestHandleWorkspaceUINotify_BeadsIssueOmittedByDefault(t *testing.T) {
 	}
 }
 
-// TestHandleWorkspaceUINotify_PermissionDenied verifies the permission gate
-// fires when the caller *is* a registered session but lacks CanPromptUser.
-func TestHandleWorkspaceUINotify_PermissionDenied(t *testing.T) {
+// TestHandleWorkspaceUINotify_RejectsUncorrelatedRegisteredSelfID verifies a
+// caller cannot claim a registered conversation identity without MCP correlation.
+func TestHandleWorkspaceUINotify_RejectsUncorrelatedRegisteredSelfID(t *testing.T) {
 	tmpDir := t.TempDir()
 	store, err := session.NewStore(tmpDir)
 	if err != nil {
@@ -377,8 +377,8 @@ func TestHandleWorkspaceUINotify_PermissionDenied(t *testing.T) {
 	_, _, err = srv.handleWorkspaceUINotify(context.Background(), nil, WorkspaceUINotifyInput{
 		SelfID: sessionID, WorkspaceUUID: "w", Title: "t",
 	})
-	if err == nil || !strings.Contains(err.Error(), "Can prompt user") {
-		t.Fatalf("expected permission error, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "could not be verified") {
+		t.Fatalf("expected caller identity error, got %v", err)
 	}
 	if len(sm.recorded()) != 0 {
 		t.Errorf("expected no broadcast on permission denial, got %d", len(sm.recorded()))

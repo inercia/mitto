@@ -38,7 +38,7 @@ Earlier diagnosis ("agent-side, unfixable in Mitto" — auggie hard-gating on MC
 
 `mcpStreamableHTTPOptions()` deliberately sets `SessionTimeout: 0`. The SDK timeout is POST-only and previously deleted live sessions whose standalone SSE GET was healthy, producing 44 rejected keepalives and one real `tools/call` 404 (mitto-txse). Mitto's own reaper treats every request as activity and exempts unknown/live sessions with an open GET.
 
-Mitto-wat adds ownership-aware teardown: every successful `resolveSelfIDWithMCP` associates the request's protocol session with the resolved registered conversation. Ownership is a **set** because Auggie can reuse pooled transports across conversations. `UnregisterSession` removes that owner and marks a previously-owned transport retireable only when its final owner leaves. The reaper serializes synthetic DELETE against application POSTs with a per-lease RWMutex, revalidates after acquiring the exclusive gate, and never holds `reaperMu` while serving the SDK handler. Do not synchronously DELETE from `UnregisterSession` — self-archive may still be returning its current tool response.
+Mitto-wat adds ownership-aware teardown: every successful `resolveSelfIDWithMCP` associates the request's protocol session with the resolved registered conversation. The lease retains an owner set for lifecycle compatibility, but identity resolution maps each MCP protocol session to one conversation; a supplied registered conversation ID never overrides that mapping. `UnregisterSession` removes that owner and marks a previously-owned transport retireable only when its final owner leaves. The reaper serializes synthetic DELETE against application POSTs with a per-lease RWMutex, revalidates after acquiring the exclusive gate, and never holds `reaperMu` while serving the SDK handler. Do not synchronously DELETE from `UnregisterSession` — self-archive may still be returning its current tool response.
 
 Expected ratio: approximately **one open SSE stream per MCP protocol session**, not per ACP process. The ~5-minute reopen is client keepalive recycling. Auggie never calls `terminateSession()` (augmentcode/auggie#162), so one ACP process may retain many protocol sessions. Never-correlated live-client transports remain exempt: localhost HTTP supplies no stable process identity, and forcibly capping them can revive Auggie #149 (no reliable 404 re-initialize). Same-language control: `internal/mcpdiscovery` does send `DELETE` on `Close()`.
 
@@ -52,7 +52,7 @@ Handler signature (3-arg form — SDK unmarshals input automatically):
 
 ```go
 func (s *Server) handleFoo(ctx context.Context, req *mcp.CallToolRequest, input FooInput) (*mcp.CallToolResult, FooOutput, error) {
-    // 1. Resolve self_id (always use resolveSelfIDWithMCP in handlers — 3-phase lookup)
+    // 1. Resolve self_id (always use resolveSelfIDWithMCP in MCP handlers)
     realSessionID := s.resolveSelfIDWithMCP(input.SelfID, req)
     if realSessionID == "" {
         return nil, FooOutput{Error: fmt.Sprintf("session not found: self_id '%s' could not be resolved", input.SelfID)}, nil
@@ -62,7 +62,7 @@ func (s *Server) handleFoo(ctx context.Context, req *mcp.CallToolRequest, input 
 }
 ```
 
-**Session ID resolution:** Use `resolveSelfIDWithMCP(selfID, req)` in all handlers (3-phase: direct lookup → ACP correlation → MCP session cache). Use `resolveSelfID(selfID)` only when no `*mcp.CallToolRequest` is available (rare).
+**Session ID resolution:** Use `resolveSelfIDWithMCP(selfID, req)` in all MCP handlers. It accepts only an established MCP protocol-session mapping or ACP-observed correlation; a caller-supplied registered conversation ID is not authentication. A nil request is reserved for trusted in-process invocations and tests. Use `resolveSelfID(selfID)` only when no `*mcp.CallToolRequest` is available (rare).
 
 Register with `mcp.AddTool(mcpSrv, &mcp.Tool{Name: "mitto_foo", Description: "..." + selfIDNote}, s.handleFoo)`.
 

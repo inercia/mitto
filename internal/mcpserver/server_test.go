@@ -399,6 +399,47 @@ func TestMcpStreamableHTTPOptions_SessionTimeoutConfigured(t *testing.T) {
 	if !opts.JSONResponse {
 		t.Error("StreamableHTTPOptions.JSONResponse = false, want true (mitto-6hr fix must remain in place)")
 	}
+	if opts.DisableLocalhostProtection {
+		t.Error("StreamableHTTPOptions.DisableLocalhostProtection = true, want false")
+	}
+}
+
+// TestMCPStreamableHandler_RejectsCrossOriginRequest pins the go-sdk
+// GO-2026-4773 fix. A malicious website must not be able to POST MCP requests
+// to Mitto's local HTTP transport.
+func TestMCPStreamableHandler_RejectsCrossOriginRequest(t *testing.T) {
+	sdkServer := mcp.NewServer(&mcp.Implementation{Name: "test", Version: "1.0.0"}, nil)
+	handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
+		return sdkServer
+	}, mcpStreamableHTTPOptions())
+
+	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", "https://malicious.example")
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("cross-origin MCP request status = %d, want %d", recorder.Code, http.StatusForbidden)
+	}
+}
+
+// TestMCPStreamableHandler_RejectsNonJSONContentType pins the go-sdk
+// GO-2026-4773 fix against cross-site text/plain POST requests.
+func TestMCPStreamableHandler_RejectsNonJSONContentType(t *testing.T) {
+	sdkServer := mcp.NewServer(&mcp.Implementation{Name: "test", Version: "1.0.0"}, nil)
+	handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
+		return sdkServer
+	}, mcpStreamableHTTPOptions())
+
+	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize"}`))
+	req.Header.Set("Content-Type", "text/plain")
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusUnsupportedMediaType {
+		t.Fatalf("text/plain MCP request status = %d, want %d", recorder.Code, http.StatusUnsupportedMediaType)
+	}
 }
 
 // newReaperTestServer builds a minimal *Server suitable for exercising the
@@ -5053,45 +5094,6 @@ func TestMCPSessionCacheCleanupOnUnregister(t *testing.T) {
 	}
 }
 
-func TestResolveSelfIDWithMCP_DirectLookup(t *testing.T) {
-	// Phase 1: Direct session ID lookup should work without MCP session
-	tmpDir := t.TempDir()
-	store, err := session.NewStore(tmpDir)
-	if err != nil {
-		t.Fatalf("Failed to create store: %v", err)
-	}
-	defer store.Close()
-
-	srv, err := NewServer(
-		Config{Port: 0},
-		Dependencies{Store: store},
-	)
-	if err != nil {
-		t.Fatalf("NewServer failed: %v", err)
-	}
-
-	// Register a session
-	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
-	sessionMeta := session.Metadata{
-		SessionID:  "known-session",
-		Name:       "Test",
-		ACPServer:  "test",
-		WorkingDir: "/tmp",
-	}
-	if err := store.Create(sessionMeta); err != nil {
-		t.Fatalf("Failed to create session: %v", err)
-	}
-	if err := srv.RegisterSession("known-session", nil, logger); err != nil {
-		t.Fatalf("Failed to register session: %v", err)
-	}
-
-	// Direct lookup (Phase 1) should resolve even with nil req
-	result := srv.resolveSelfIDWithMCP("known-session", nil)
-	if result != "known-session" {
-		t.Errorf("Expected known-session via Phase 1, got: %s", result)
-	}
-}
-
 func TestResolveSelfIDWithMCP_Phase3CacheFallback(t *testing.T) {
 	// Phase 3: When Phase 1+2 fail, MCP session cache should resolve
 	tmpDir := t.TempDir()
@@ -5167,12 +5169,11 @@ func TestResolveSelfIDWithMCP_CacheResolvesBeforeWait(t *testing.T) {
 		t.Errorf("Cache lookup took too long (%v); expected < 100ms", elapsed)
 	}
 
-	// (b) Phase 3 (nil req → Phase 2 skipped): pre-register a pending request so
-	// WaitForPendingRequest returns immediately without the 5s timeout delay.
+	// (b) The pending-correlation mechanism remains intact independently.
 	srv.RegisterPendingRequest("init", "mitto-session-xyz")
-	result := srv.resolveSelfIDWithMCP("init", nil)
+	result := srv.WaitForPendingRequest("init")
 	if result != "mitto-session-xyz" {
-		t.Errorf("Expected Phase 3 correlation to resolve mitto-session-xyz, got: %s", result)
+		t.Errorf("Expected pending correlation to resolve mitto-session-xyz, got: %s", result)
 	}
 }
 

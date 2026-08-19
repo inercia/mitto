@@ -189,7 +189,8 @@ This allows orchestrating work across multiple AI conversations.
 
 ## Security Notes
 
-- The MCP server binds to `127.0.0.1` only (localhost)
+- The MCP server is unauthenticated and is therefore restricted to `127.0.0.1`; startup and settings saves reject any other bind host
+- Session-scoped tools resolve callers through ACP/MCP correlation, not by trusting a supplied conversation ID
 - UI prompt tools require explicit permission flags per-conversation
 - Sensitive configuration data is sanitized in responses
 - Cross-conversation prompts require explicit opt-in

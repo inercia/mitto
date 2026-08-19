@@ -96,6 +96,10 @@ func TestConversationWait_ClientSideTimeoutOnBlockingToolCall(t *testing.T) {
 	}
 	defer sess.Close()
 
+	// Mirror the ACP layer observing this caller's tool invocation, allowing
+	// the first protocol request to establish its MCP-session correlation.
+	srv.RegisterPendingRequest(callerID, callerID)
+
 	start := time.Now()
 	res, err := sess.CallTool(ctx, &mcp.CallToolParams{
 		Name: "mitto_conversation_wait",

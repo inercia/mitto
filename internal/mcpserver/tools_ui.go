@@ -539,18 +539,20 @@ func (s *Server) handleWorkspaceUINotify(_ context.Context, req *mcp.CallToolReq
 	// requirement is the safety boundary (a caller cannot broadcast into a
 	// workspace it was not spawned into).
 	//
-	// Deliberately avoid resolveSelfIDWithMCP's Phase-3 correlation wait
+	// Deliberately avoid resolveSelfIDWithMCP's correlation wait
 	// (up to pendingRequestTimeout, currently 5s): aux sessions are the
 	// expected caller and never register a pending request, so paying that
 	// stall on every close-phase notify would be a functional regression.
-	// Use direct lookup + MCP-session cache only.
+	// Only a previously correlated MCP protocol session proves registered caller
+	// identity; a caller-supplied conversation ID is not authentication.
 	realSessionID := ""
-	if reg := s.getSession(input.SelfID); reg != nil {
-		realSessionID = input.SelfID
-	} else if req != nil && req.Session != nil {
+	if req != nil && req.Session != nil {
 		if cached := s.lookupMCPSession(req.Session.ID()); cached != "" {
 			realSessionID = cached
 		}
+	}
+	if realSessionID == "" && s.getSession(input.SelfID) != nil {
+		return nil, WorkspaceUINotifyOutput{}, fmt.Errorf("caller identity for registered self_id %q could not be verified", input.SelfID)
 	}
 	if realSessionID != "" {
 		if !s.checkSessionFlag(realSessionID, session.FlagCanPromptUser) {

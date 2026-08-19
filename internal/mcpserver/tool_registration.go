@@ -89,7 +89,8 @@ func (s *Server) registerGlobalTools(mcpSrv *mcp.Server, deps Dependencies) {
 
 // selfIDNote is the standard note about self_id for tools that require session identification.
 // For ACP-routed agents (like Auggie), the self_id is automatically correlated via the ACP layer,
-// so any stable value works. For external MCP clients, the real session_id must be discovered first.
+// so any stable value works. Uncorrelated external MCP clients cannot impersonate a conversation
+// by supplying its registered session ID.
 const selfIDNote = "The self_id parameter identifies YOUR current session (not the target conversation). " +
 	"If your session_id was already provided in the conversation context (e.g., in a '[Session Context]' block), use that value directly — " +
 	"do NOT call 'mitto_conversation_get_current' first. " +

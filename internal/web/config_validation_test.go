@@ -436,6 +436,20 @@ func TestValidateConfigRequest_MCPPortNilAccepted(t *testing.T) {
 	}
 }
 
+// Regression test for mitto-o779: config saves must not expose the unauthenticated MCP listener.
+func TestValidateConfigRequest_MCPRemoteHostRejected(t *testing.T) {
+	server := &Server{}
+	req := mcpConfigBody(nil)
+	req.MCP.Host = "0.0.0.0"
+	err := server.validateConfigRequest(req)
+	if err == nil {
+		t.Fatal("expected non-loopback MCP host to be rejected")
+	}
+	if err.StatusCode != http.StatusBadRequest {
+		t.Errorf("StatusCode = %d, want %d", err.StatusCode, http.StatusBadRequest)
+	}
+}
+
 func TestWriteConfigError(t *testing.T) {
 	server := &Server{}
 

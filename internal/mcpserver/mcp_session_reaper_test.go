@@ -51,8 +51,11 @@ func connectReaperProtocolSession(t *testing.T, srv *Server) *mcp.ClientSession 
 	return clientSession
 }
 
-func associateReaperOwner(t *testing.T, clientSession *mcp.ClientSession, owner string) {
+func associateReaperOwner(t *testing.T, srv *Server, clientSession *mcp.ClientSession, owner string) {
 	t.Helper()
+	// Mirror the ACP layer's observed tool-call correlation before the MCP
+	// handler resolves and binds this protocol session to its owner.
+	srv.RegisterPendingRequest(owner, owner)
 	result, err := clientSession.CallTool(context.Background(), &mcp.CallToolParams{
 		Name:      "mitto_conversation_get_current",
 		Arguments: map[string]any{"self_id": owner},
@@ -63,6 +66,17 @@ func associateReaperOwner(t *testing.T, clientSession *mcp.ClientSession, owner 
 	if result.IsError {
 		t.Fatalf("CallTool for owner %q returned tool error: %+v", owner, result.Content)
 	}
+}
+
+// seedReaperOwner adds an owner directly for tests of the reaper's multi-owner
+// bookkeeping. Identity resolution intentionally maps one MCP protocol session
+// to one conversation, so shared leases are a lifecycle-only compatibility case.
+func seedReaperOwner(srv *Server, mcpSessionID, owner string) {
+	srv.reaperMu.Lock()
+	lease := srv.reaperLeaseLocked(mcpSessionID)
+	lease.owners[owner] = struct{}{}
+	lease.retireRequested = false
+	srv.reaperMu.Unlock()
 }
 
 func reaperLeaseState(srv *Server, sid string) (tracked bool, owners, inFlight int, retire bool) {
@@ -81,7 +95,7 @@ func TestReapOwnerlessMCPSessionWithOpenStream(t *testing.T) {
 	srv.logger = slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	registerReaperOwner(t, srv, "owner-one")
 	clientSession := connectReaperProtocolSession(t, srv)
-	associateReaperOwner(t, clientSession, "owner-one")
+	associateReaperOwner(t, srv, clientSession, "owner-one")
 	sid := clientSession.ID()
 	srv.reaperStreamOpened(sid)
 
@@ -104,9 +118,9 @@ func TestReapSharedMCPSessionAfterFinalOwner(t *testing.T) {
 	registerReaperOwner(t, srv, "owner-one")
 	registerReaperOwner(t, srv, "owner-two")
 	clientSession := connectReaperProtocolSession(t, srv)
-	associateReaperOwner(t, clientSession, "owner-one")
-	associateReaperOwner(t, clientSession, "owner-two")
+	associateReaperOwner(t, srv, clientSession, "owner-one")
 	sid := clientSession.ID()
+	seedReaperOwner(srv, sid, "owner-two")
 	srv.reaperStreamOpened(sid)
 
 	srv.UnregisterSession("owner-one")
@@ -129,7 +143,7 @@ func TestReapOwnerlessMCPSessionWaitsForInflightPOST(t *testing.T) {
 	srv := newReaperTestServer(t)
 	registerReaperOwner(t, srv, "owner-one")
 	clientSession := connectReaperProtocolSession(t, srv)
-	associateReaperOwner(t, clientSession, "owner-one")
+	associateReaperOwner(t, srv, clientSession, "owner-one")
 	sid := clientSession.ID()
 	postLease := srv.reaperPOSTStarted(sid)
 	srv.UnregisterSession("owner-one")
@@ -149,7 +163,7 @@ func TestPOSTCancelsPendingOwnerRetirement(t *testing.T) {
 	srv := newReaperTestServer(t)
 	registerReaperOwner(t, srv, "owner-one")
 	clientSession := connectReaperProtocolSession(t, srv)
-	associateReaperOwner(t, clientSession, "owner-one")
+	associateReaperOwner(t, srv, clientSession, "owner-one")
 	sid := clientSession.ID()
 	srv.reaperStreamOpened(sid)
 	srv.UnregisterSession("owner-one")
@@ -166,11 +180,11 @@ func TestNewOwnerCancelsPendingOwnerRetirement(t *testing.T) {
 	srv := newReaperTestServer(t)
 	registerReaperOwner(t, srv, "owner-one")
 	clientSession := connectReaperProtocolSession(t, srv)
-	associateReaperOwner(t, clientSession, "owner-one")
+	associateReaperOwner(t, srv, clientSession, "owner-one")
 	sid := clientSession.ID()
 	srv.UnregisterSession("owner-one")
 	registerReaperOwner(t, srv, "owner-two")
-	associateReaperOwner(t, clientSession, "owner-two")
+	seedReaperOwner(srv, sid, "owner-two")
 
 	srv.reapIdleMCPSessions()
 	if tracked, owners, _, retire := reaperLeaseState(srv, sid); !tracked || owners != 1 || retire {
@@ -182,7 +196,7 @@ func TestOwnerLifecycleCleanupIsIdempotent(t *testing.T) {
 	srv := newReaperTestServer(t)
 	registerReaperOwner(t, srv, "owner-one")
 	clientSession := connectReaperProtocolSession(t, srv)
-	associateReaperOwner(t, clientSession, "owner-one")
+	associateReaperOwner(t, srv, clientSession, "owner-one")
 	sid := clientSession.ID()
 	srv.UnregisterSession("owner-one")
 	srv.UnregisterSession("owner-one")

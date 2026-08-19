@@ -1281,12 +1281,22 @@ type MCPConfig struct {
 	Port *int `json:"port,omitempty" yaml:"port,omitempty"`
 }
 
+// ValidateMCPHost rejects network-exposed MCP listeners. Mitto's MCP transport
+// has no network authentication and is intentionally localhost-only.
+func ValidateMCPHost(host string) error {
+	host = strings.TrimSpace(host)
+	if host == "" || host == "127.0.0.1" {
+		return nil
+	}
+	return fmt.Errorf("MCP server host must be 127.0.0.1 (localhost only)")
+}
+
 // GetHost returns the host to bind the MCP server to.
 func (c *MCPConfig) GetHost() string {
-	if c == nil || c.Host == "" {
+	if c == nil || strings.TrimSpace(c.Host) == "" {
 		return "127.0.0.1" // Default: localhost only
 	}
-	return c.Host
+	return strings.TrimSpace(c.Host)
 }
 
 // GetPort returns the port for the MCP server.

@@ -1043,11 +1043,12 @@ Use `mitto_workspace_list` to discover available workspace UUIDs. The `workspace
 
 ## Security
 
-The MCP server binds only to `127.0.0.1` (localhost) and cannot be accessed from other machines. This is intentional for security:
+The MCP server binds only to `127.0.0.1` (localhost) and cannot be accessed from other machines. Both server construction and settings-save validation reject every other bind host. This is intentional for security:
 
 - No authentication required (localhost only)
 - Exposes internal state for debugging
 - Should not be exposed to the network
+- Session-scoped tools trust only ACP-observed correlation or an established MCP protocol-session mapping; a supplied registered conversation ID is not proof of caller identity
 
 ## Implementation
 
