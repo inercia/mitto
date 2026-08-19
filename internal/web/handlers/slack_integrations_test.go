@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -60,6 +61,20 @@ func (handlerSlack) ListChannels(context.Context, string, string, int) (slackcat
 	return slackcatalog.ChannelPage{}, nil
 }
 
+type handlerUserSlack struct{}
+
+func (handlerUserSlack) ValidateApp(context.Context, string) (string, error) { return "A123", nil }
+func (handlerUserSlack) ValidateInstallation(_ context.Context, token string) (slackcatalog.InstallationIdentity, error) {
+	if token != "write-only-user-token" {
+		return slackcatalog.InstallationIdentity{}, slackcatalog.ErrInvalid
+	}
+	return slackcatalog.InstallationIdentity{CredentialKind: slackcatalog.CredentialKindUser,
+		SlackAppID: "A123", TeamID: "T123", TeamName: "Example", UserID: "U123"}, nil
+}
+func (handlerUserSlack) ListChannels(context.Context, string, string, int) (slackcatalog.ChannelPage, error) {
+	return slackcatalog.ChannelPage{}, nil
+}
+
 func newSlackHandlers(t *testing.T) *Handlers {
 	t.Helper()
 	service := slackcatalog.NewService(
@@ -94,6 +109,40 @@ func TestSlackInstallationCreateRequestCredentialCompatibility(t *testing.T) {
 				t.Fatalf("credential() = %q, %v", got, err)
 			}
 		})
+	}
+}
+
+func TestSlackInstallationRESTReturnsOnlyDelegatedUserMetadata(t *testing.T) {
+	credentials := &handlerCredentials{values: make(map[secrets.CredentialRef]string)}
+	service := slackcatalog.NewService(slackcatalog.NewFileStore(filepath.Join(t.TempDir(), "catalog.json")),
+		credentials, handlerUserSlack{}, nil)
+	app, err := service.CreateApp(context.Background(), "App", "write-only-app-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := New(Deps{SlackCatalog: service})
+	request := newLocalSlackRequest(http.MethodPost, "/api/slack/apps/"+app.ID+"/installations",
+		`{"name":"Team","team_id":"T123","token":"write-only-user-token"}`)
+	request.SetPathValue("appId", app.ID)
+	response := httptest.NewRecorder()
+	h.HandleSlackInstallationCreate(response, request)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body["credential_kind"] != "user" || body["user_id"] != "U123" || body["team_id"] != "T123" {
+		t.Fatalf("response metadata = %#v", body)
+	}
+	for _, forbidden := range []string{"token", "bot_token", "bot_id", "bot_user_id"} {
+		if _, exists := body[forbidden]; exists {
+			t.Fatalf("response exposed %q: %#v", forbidden, body)
+		}
+	}
+	if strings.Contains(response.Body.String(), "write-only-user-token") {
+		t.Fatalf("response leaked credential: %s", response.Body.String())
 	}
 }
 

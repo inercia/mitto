@@ -174,6 +174,45 @@ func TestInstallationCredentialKindCanSwitchOnlyOnExplicitReplacement(t *testing
 	}
 }
 
+func TestDelegatedUserIdentityMismatchAndSaveFailurePreserveBotInstallation(t *testing.T) {
+	service, store, credentials, provider, _ := newTestService()
+	ctx := context.Background()
+	app, err := service.CreateApp(ctx, "App", "app-one")
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider.installations["user-wrong-app"] = InstallationIdentity{
+		CredentialKind: CredentialKindUser, SlackAppID: "A222", TeamID: "T111", UserID: "U555",
+	}
+	provider.installations["user-wrong-team"] = InstallationIdentity{
+		CredentialKind: CredentialKindUser, SlackAppID: "A111", TeamID: "T999", UserID: "U555",
+	}
+	for _, token := range []string{"user-wrong-app", "user-wrong-team"} {
+		if _, err := service.CreateInstallation(ctx, app.ID, "Mismatch", "T111", token); !errors.Is(err, ErrConflict) {
+			t.Fatalf("CreateInstallation(%q) error = %v", token, err)
+		}
+	}
+	if len(store.doc.Installations) != 0 || len(credentials.values) != 1 {
+		t.Fatalf("identity mismatch mutated state: document=%#v credentials=%d", store.doc, len(credentials.values))
+	}
+
+	installation, err := service.CreateInstallation(ctx, app.ID, "Workspace", "T111", "bot-one")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.saveErr = errors.New("disk full")
+	if _, err := service.ReplaceInstallationToken(ctx, installation.ID, "user-one"); err == nil {
+		t.Fatal("ReplaceInstallationToken succeeded with failing catalog store")
+	}
+	ref := secrets.SlackInstallationCredential(installation.ID, InstallationTokenCredential)
+	if got, _ := credentials.Resolve(ref); got != "bot-one" {
+		t.Fatalf("rollback restored credential %q, want bot-one", got)
+	}
+	if got := store.doc.Installations[0]; got.CredentialKind != CredentialKindBot || got.BotID != "B111" || got.UserID != "" {
+		t.Fatalf("rollback changed installation metadata: %#v", got)
+	}
+}
+
 func TestFileStoreDefaultsLegacyInstallationKindToBotAndRejectsUnknownKind(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "slack_integrations.json")
 	legacy := `{"version":1,"apps":[],"installations":[{"id":"legacy","app_id":"app","name":"Legacy","team_id":"T111"}]}`
