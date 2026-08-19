@@ -65,6 +65,34 @@ func TestFolderBeadsDatabaseMode_Validation(t *testing.T) {
 	}
 }
 
+func TestLoadFoldersFromFile_DatabaseMode(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		ext  string
+		body string
+		want BeadsDatabaseMode
+	}{
+		{"json local", ".json", `{"folders":{"/proj":{"beads":{"databaseMode":"local"}}}}`, BeadsDatabaseModeLocal},
+		{"json shared", ".json", `{"folders":{"/proj":{"beads":{"databaseMode":"shared"}}}}`, BeadsDatabaseModeShared},
+		{"yaml local", ".yaml", "folders:\n  /proj:\n    beads:\n      databaseMode: local\n", BeadsDatabaseModeLocal},
+		{"yaml shared", ".yaml", "folders:\n  /proj:\n    beads:\n      databaseMode: shared\n", BeadsDatabaseModeShared},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "folders"+tc.ext)
+			if err := os.WriteFile(path, []byte(tc.body), 0o644); err != nil {
+				t.Fatalf("WriteFile() error = %v", err)
+			}
+			folders, err := LoadFoldersFromFile(path)
+			if err != nil {
+				t.Fatalf("LoadFoldersFromFile() error = %v", err)
+			}
+			if got := folders["/proj"].Beads.DatabaseMode; got != tc.want {
+				t.Errorf("database mode = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestSetFolderBeadsDatabaseMode_PreservesUpstreamConfiguration(t *testing.T) {
 	setupFoldersTestDir(t)
 	pullArgs := map[string]string{"IssueID": "mitto-1"}
@@ -110,7 +138,14 @@ func TestSaveWorkspaces_PreservesSharedFolderDatabaseMode(t *testing.T) {
 	if err := SaveWorkspaces(workspaces); err != nil {
 		t.Fatalf("SaveWorkspaces(second) error = %v", err)
 	}
-	for _, workspace := range workspaces {
+	loaded, err := LoadWorkspaces()
+	if err != nil {
+		t.Fatalf("LoadWorkspaces() error = %v", err)
+	}
+	if len(loaded) != 2 {
+		t.Fatalf("len(LoadWorkspaces()) = %d, want 2 ACP workspaces", len(loaded))
+	}
+	for _, workspace := range loaded {
 		mode, configured, err := ConfiguredFolderBeadsDatabaseMode(workspace.WorkingDir)
 		if err != nil || !configured || mode != BeadsDatabaseModeShared {
 			t.Errorf("workspace %s mode = (%q, %v, %v), want shared", workspace.UUID, mode, configured, err)
