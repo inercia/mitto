@@ -247,7 +247,7 @@ if (isIsolatedComponentRun) {
       });
       try {
         const copy = container.textContent.replace(/\s+/g, " ");
-        expect(copy).toContain("No Slack app profiles");
+        expect(copy).toContain("No app profiles");
         expect(copy).toContain("mode 0600");
         expect(copy).toContain("not a Mitto project workspace");
         const setupLink = container.querySelector(
@@ -628,6 +628,65 @@ if (isIsolatedComponentRun) {
           .querySelector('[data-testid="slack-open-app-settings"]')
           .closest("section");
         expect(detail.className).toContain("md:col-span-2");
+      } finally {
+        unmount(container);
+      }
+    });
+
+    test("uses concise labels inside the Slack settings context", async () => {
+      const { container } = await mount((url) => {
+        if (url === "/api/slack/apps") return json({ apps: [appA] });
+        if (url.endsWith("/installations")) return json({ installations: [] });
+        throw new Error(`Unexpected request: ${url}`);
+      });
+      try {
+        await waitFor(
+          () => container.textContent.includes("no workspace installations"),
+          container,
+          "workspace section",
+        );
+        const headings = Array.from(
+          container.querySelectorAll("h5"),
+          (element) => element.textContent.trim(),
+        );
+        expect(headings).toEqual(
+          expect.arrayContaining(["App manifest", "Apps", "Workspaces"]),
+        );
+        expect(headings).not.toEqual(
+          expect.arrayContaining([
+            "Slack app manifest",
+            "Slack apps",
+            "Slack workspaces",
+          ]),
+        );
+        expect(container.textContent).toContain("App ID:");
+        expect(container.textContent).not.toContain("Slack App ID:");
+      } finally {
+        unmount(container);
+      }
+    });
+
+    test("uses a concise team identity label for workspace installations", async () => {
+      const installation = {
+        id: "inst-a",
+        app_id: "app-a",
+        name: "Alpha Team",
+        team_id: "T111",
+        token_configured: true,
+      };
+      const { container } = await mount((url) => {
+        if (url === "/api/slack/apps") return json({ apps: [appA] });
+        if (url.endsWith("/installations"))
+          return json({ installations: [installation] });
+        throw new Error(`Unexpected request: ${url}`);
+      });
+      try {
+        await waitFor(
+          () => container.textContent.includes("Team ID: T111"),
+          container,
+          "workspace identity",
+        );
+        expect(container.textContent).not.toContain("Slack Team ID:");
       } finally {
         unmount(container);
       }
