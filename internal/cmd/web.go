@@ -56,7 +56,7 @@ func init() {
 	rootCmd.AddCommand(webCmd)
 
 	webCmd.Flags().IntVar(&webPort, "port", 8080, "HTTP server port for local access (127.0.0.1). Use 0 for random port")
-	webCmd.Flags().StringVar(&webHost, "host", "127.0.0.1", "Host/IP to bind the local listener (default: 127.0.0.1 for security)")
+	webCmd.Flags().StringVar(&webHost, "host", "127.0.0.1", "Loopback host/IP for local access; use --port-external for remote access")
 	webCmd.Flags().IntVar(&webPortExternal, "port-external", 0, "HTTP server port for external access when enabled (0.0.0.0). Use 0 for random port")
 	webCmd.Flags().StringVar(&webStaticDir, "static-dir", "", "Serve static files from this directory instead of embedded assets (for development)")
 	webCmd.Flags().StringVar(&webAccessLog, "access-log", "", "Path to security access log file (logs auth events, unauthorized access, etc.)")
@@ -155,12 +155,6 @@ func runWeb(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Local listener binds to webHost (default: 127.0.0.1 for security).
-	// Use --host 0.0.0.0 when the listener must be reachable from outside the process
-	// (e.g. inside a Docker container where the host port mapping requires 0.0.0.0).
-	// External access uses a separate listener on 0.0.0.0 when enabled.
-	localAddr := fmt.Sprintf("%s:%d", webHost, localPort)
-
 	fmt.Printf("🌐 Starting web interface...\n")
 	switch len(webWorkspaces) {
 	case 0:
@@ -178,11 +172,6 @@ func runWeb(cmd *cobra.Command, args []string) error {
 	if staticDir != "" {
 		fmt.Printf("   Static files: %s (hot-reload enabled)\n", staticDir)
 	}
-	if webHost != "127.0.0.1" && webHost != "localhost" {
-		fmt.Printf("   ⚠️  WARNING: Binding to %s with no authentication.\n", webHost)
-		fmt.Printf("      Anyone who can reach port %d has full access to this instance.\n", localPort)
-	}
-
 	// Initialize auxiliary session manager for utility tasks (auto-title, etc.)
 	// Use the first workspace's command for auxiliary sessions, or first ACP server from config
 	// Note: Auxiliary sessions are now managed by the web server's ACPProcessManager
@@ -261,6 +250,12 @@ func runWeb(cmd *cobra.Command, args []string) error {
 
 	// Set external port configuration (used when external access is enabled)
 	srv.SetExternalPort(externalPort)
+
+	localAddr, err := web.PrimaryListenerAddress(webHost, localPort, srv.IsAuthenticationEnabled())
+	if err != nil {
+		_ = srv.Shutdown()
+		return err
+	}
 
 	// Start local listener
 	listener, err := net.Listen("tcp", localAddr)

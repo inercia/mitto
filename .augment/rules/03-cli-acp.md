@@ -20,7 +20,7 @@ keywords:
 
 Multi-workspace: `mitto web --dir auggie:/path/to/project1 --dir claude-code:/path/to/project2`
 
-`--host 0.0.0.0` (Docker) vs `127.0.0.1` (default). No authentication on local listener; warn if exposed.
+`--host` is loopback-only. Remote and Docker access require effective authentication plus `--port-external`, which routes through `StartExternalListener` for external provenance and scanner defense.
 
 ## ACP Protocol
 
