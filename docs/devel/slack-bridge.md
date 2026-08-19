@@ -2,6 +2,9 @@
 
 The process-scoped Slack manager receives Slack Events API traffic over Socket
 Mode and routes each event to every matching canonical `onSlack` loop.
+OAuth flow-status polling is used only to finish delegated-user setup; message
+delivery never polls Slack and continues through the app profile's `xapp` Socket
+Mode worker, authorization routing, durable journal, and `onSlack` dispatch.
 
 Package: `internal/slackbridge`. The manager pools one Socket Mode connection
 per Slack app profile. App and installation credentials remain in the Mitto
