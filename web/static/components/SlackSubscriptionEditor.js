@@ -566,21 +566,6 @@ export function SlackSubscriptionEditor({
         );
         const selectedChannelNeedsInvite =
           !!selectedChannel && selectedChannel.is_member !== true;
-        // "Started" covers both a page in flight and a paused/errored
-        // mid-fetch state (partial results cached, retry pending) — either
-        // way at least one page has landed or is landing, so it's worth
-        // distinguishing "still checking" (channelUnresolved) from
-        // "checked every page, not found" (channelMissing, requires
-        // `complete`).
-        const started =
-          page.loading || page.complete || !!page.error || channels.length > 0;
-        const channelMissing =
-          !!subscription.channelId && page.complete && !selectedChannel;
-        const channelUnresolved =
-          !!subscription.channelId &&
-          started &&
-          !page.complete &&
-          !selectedChannel;
         const field = (name) =>
           fieldErrors[`slackSubscription.${index}.${name}`];
 
@@ -719,17 +704,6 @@ export function SlackSubscriptionEditor({
               >`}
             </label>
 
-            ${channelMissing &&
-            html`<div
-              role="alert"
-              class="alert alert-warning alert-soft text-sm"
-            >
-              <span
-                >${usesDelegatedUser
-                  ? "The saved channel is not visible to the authorizing user. The saved ID remains in the draft; restore the user's membership or authorization, refresh, or choose another channel."
-                  : "The saved channel is not visible to this app. Private channels appear only after the bot is invited. The saved ID remains in the draft; invite the bot, refresh, or choose another channel."}</span
-              >
-            </div>`}
             ${selectedChannelNeedsInvite &&
             html`<div
               role="alert"
@@ -740,14 +714,6 @@ export function SlackSubscriptionEditor({
                 >${usesDelegatedUser
                   ? `The authorizing user must join #${selectedChannel.name} and keep the authorization active before enabling this trigger.`
                   : `Invite the bot to #${selectedChannel.name} before enabling this trigger so Slack can deliver its messages.`}</span
-              >
-            </div>`}
-            ${channelUnresolved &&
-            html`<div role="status" class="alert alert-info alert-soft text-sm">
-              <span
-                >Still checking loaded channels for a match; the saved ID
-                remains in the draft while more channels load in the
-                background.</span
               >
             </div>`}
 

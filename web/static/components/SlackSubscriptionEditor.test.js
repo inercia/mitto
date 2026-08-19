@@ -786,18 +786,22 @@ if (childRun) {
 
     test("editing the draft channel ID does not abort or restart pagination for the same installation", async () => {
       let resolveSecondPage;
+      let secondPageFinished = false;
       const secondPage = new Promise((resolve) => {
         resolveSecondPage = resolve;
       });
       const client = makeClient({
-        listChannels: jest.fn(async (_installationId, params) =>
-          params.cursor
-            ? secondPage
-            : {
-                channels: [{ id: "C1", name: "general" }],
-                next_cursor: "page-2",
-              },
-        ),
+        listChannels: jest.fn(async (_installationId, params) => {
+          if (!params.cursor) {
+            return {
+              channels: [{ id: "C1", name: "general" }],
+              next_cursor: "page-2",
+            };
+          }
+          const page = await secondPage;
+          secondPageFinished = true;
+          return page;
+        }),
       });
       const { container } = await mount(client, [subscription("inst-a", "")]);
       try {
@@ -822,10 +826,11 @@ if (childRun) {
           next_cursor: "",
         });
         await waitFor(
-          () => container.textContent.includes("saved channel is not visible"),
+          () => secondPageFinished,
           container,
           "pagination completes after draft edit",
         );
+        expect(client.slack.listChannels.mock.calls.length).toBe(2);
       } finally {
         unmount(container);
       }
@@ -1175,8 +1180,9 @@ if (childRun) {
       }
     });
 
-    test("channel-not-found and channel-not-yet-loaded warnings still render inline below the Channel ID field", async () => {
+    test("manual channel IDs remain silent during discovery and after a complete miss", async () => {
       let resolveSecondPage;
+      let secondPageFinished = false;
       const secondPage = new Promise((resolve) => {
         resolveSecondPage = resolve;
       });
@@ -1184,6 +1190,7 @@ if (childRun) {
         listChannels: jest.fn(async (_installationId, params) => {
           if (params.cursor) {
             await secondPage;
+            secondPageFinished = true;
             return {
               channels: [{ id: "C9", name: "operations" }],
               next_cursor: "",
@@ -1199,14 +1206,15 @@ if (childRun) {
         subscription("inst-a", "C404"),
       ]);
       try {
-        // First page has landed (background fetch started automatically) but
-        // the second page — where C404 actually lives — is still pending, so
-        // the "still checking" state renders rather than "not found".
+        // mitto-hcwd: catalog discovery enriches a manual ID; it does not
+        // validate it or render absence-based status beside the field.
         await waitFor(
-          () =>
-            container.textContent.includes("Still checking loaded channels"),
+          () => client.slack.listChannels.mock.calls.length === 2,
           container,
-          "unresolved warning",
+          "second page pending",
+        );
+        expect(container.textContent).not.toContain(
+          "Still checking loaded channels",
         );
         expect(container.textContent).not.toContain(
           "saved channel is not visible",
@@ -1214,9 +1222,15 @@ if (childRun) {
 
         resolveSecondPage();
         await waitFor(
-          () => container.textContent.includes("saved channel is not visible"),
+          () => secondPageFinished,
           container,
-          "missing warning after full background load",
+          "complete channel miss",
+        );
+        expect(container.textContent).not.toContain(
+          "Still checking loaded channels",
+        );
+        expect(container.textContent).not.toContain(
+          "saved channel is not visible",
         );
         expect(getSubscriptions()[0].channelId).toBe("C404");
       } finally {
@@ -1240,7 +1254,7 @@ if (childRun) {
         }),
       });
       const { container, getSubscriptions } = await mount(client, [
-        subscription("inst-a", "C1"),
+        subscription("inst-a", "C404"),
       ]);
       try {
         await waitFor(
@@ -1260,7 +1274,13 @@ if (childRun) {
           document.body,
           "channel error in modal",
         );
-        expect(getSubscriptions()[0]).toEqual(subscription("inst-a", "C1"));
+        expect(container.textContent).not.toContain(
+          "Still checking loaded channels",
+        );
+        expect(container.textContent).not.toContain(
+          "saved channel is not visible",
+        );
+        expect(getSubscriptions()[0]).toEqual(subscription("inst-a", "C404"));
         [...document.querySelectorAll("button")]
           .find((button) => button.textContent.trim() === "Retry")
           .click();
@@ -1275,7 +1295,7 @@ if (childRun) {
         expect(document.body.textContent).not.toContain(
           "channels:read and groups:read",
         );
-        expect(getSubscriptions()[0]).toEqual(subscription("inst-a", "C1"));
+        expect(getSubscriptions()[0]).toEqual(subscription("inst-a", "C404"));
       } finally {
         unmount(container);
       }
