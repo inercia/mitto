@@ -1316,7 +1316,7 @@ func run() error {
 	// initNotifications() is called (which happens later in this function).
 	var externalStartErr error
 	var externalFailedPort int
-	if cfg != nil && cfg.Web.Auth != nil && cfg.Web.ExternalPort >= 0 {
+	if cfg != nil && srv.IsAuthenticationEnabled() && cfg.Web.ExternalPort >= 0 {
 		var err error
 		actualExternalPort, err = srv.StartExternalListener(cfg.Web.ExternalPort)
 		if err != nil {

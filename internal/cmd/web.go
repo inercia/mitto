@@ -274,8 +274,7 @@ func runWeb(cmd *cobra.Command, args []string) error {
 	fmt.Printf("   Local URL: http://%s:%d\n", webHost, actualPort)
 
 	// Warn when no authentication is configured — the web interface is unprotected.
-	if cfg == nil || cfg.Web.Auth == nil ||
-		(cfg.Web.Auth.Simple == nil && cfg.Web.Auth.Cloudflare == nil) {
+	if !srv.IsAuthenticationEnabled() {
 		fmt.Fprintf(os.Stderr, "   ⚠️  Authentication is not configured — the web interface is unprotected. Anyone who can reach this server has full access.\n")
 	}
 
@@ -283,7 +282,7 @@ func runWeb(cmd *cobra.Command, args []string) error {
 	// intentionally disabled (port -1 = disabled, 0 = random, >0 = specific port).
 	// Track the actual external port for the up hook.
 	var actualExternalPort int
-	if cfg != nil && cfg.Web.Auth != nil && externalPort >= 0 {
+	if srv.IsAuthenticationEnabled() && externalPort >= 0 {
 		var err error
 		actualExternalPort, err = srv.StartExternalListener(externalPort)
 		if err != nil {

@@ -19,6 +19,11 @@ func (s *Server) SetExternalPort(port int) {
 	s.externalPort = port
 }
 
+// IsAuthenticationEnabled reports whether the server has effective authentication.
+func (s *Server) IsAuthenticationEnabled() bool {
+	return s != nil && s.authManager != nil && s.authManager.IsEnabled()
+}
+
 // ExternalConnectionMiddleware wraps requests to mark them as coming from the external listener.
 // This ensures authentication is required for ALL external connections, even from localhost.
 // Exported for use in integration tests.
@@ -42,6 +47,12 @@ func ExternalConnectionMiddleware(next http.Handler) http.Handler {
 func (s *Server) StartExternalListener(port int) (int, error) {
 	s.externalMu.Lock()
 	defer s.externalMu.Unlock()
+
+	if !s.IsAuthenticationEnabled() {
+		// If authentication degraded while the listener was running, fail closed.
+		s.stopExternalListenerLocked()
+		return 0, fmt.Errorf("cannot start external listener: authentication is not enabled")
+	}
 
 	// Already running
 	if s.externalListener != nil {
@@ -91,12 +102,24 @@ func (s *Server) StartExternalListener(port int) (int, error) {
 		}
 	}
 
+	// Enforce authentication directly on the external listener as well as in the
+	// primary handler chain. The enabled check fails closed if credentials degrade.
+	authManager := s.authManager
+	authenticatedHandler := authManager.AuthMiddleware(s.httpServer.Handler)
+	externalHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !authManager.IsEnabled() {
+			http.Error(w, "external access unavailable: authentication is not enabled", http.StatusServiceUnavailable)
+			return
+		}
+		authenticatedHandler.ServeHTTP(w, r)
+	})
+
 	// Create a separate HTTP server for external connections that marks all requests
 	// as external. This ensures auth is required even for localhost connections.
 	// Timeouts are set to handle bursts of concurrent requests from tunnel proxies
 	// (e.g., cloudflared) which forward many browser requests simultaneously.
 	externalServer := &http.Server{
-		Handler:        ExternalConnectionMiddleware(s.httpServer.Handler),
+		Handler:        ExternalConnectionMiddleware(externalHandler),
 		ReadTimeout:    30 * time.Second,
 		WriteTimeout:   60 * time.Second,
 		IdleTimeout:    120 * time.Second,
