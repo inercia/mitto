@@ -909,13 +909,10 @@ func (sm *SessionManager) ApplyOnCloseProcessors(sessionID string, reason string
 		}
 
 		procMgr.ApplyOnClose(ctx, input)
-		if omittedProcessorRuns > 0 && logger != nil {
-			logger.Debug("close-phase: processor_run persistence skipped",
-				"session_id", sessionID,
-				"reason", "session_deleted",
-				"archive_reason", reason,
-				"omitted_processor_runs", omittedProcessorRuns)
-		}
+		logProcessorRunPersistenceSkipped(
+			logger, "close", sessionID, "session_deleted", int64(omittedProcessorRuns),
+			"archive_reason", reason,
+		)
 	}()
 }
 

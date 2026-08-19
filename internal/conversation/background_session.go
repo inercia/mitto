@@ -160,6 +160,7 @@ type BackgroundSession struct {
 
 	// Conversation processing
 	processorManager               *processors.Manager             // Unified processor pipeline (text-mode + command-mode)
+	afterProcessorRunOmissions     atomic.Int64                    // Lifecycle-race marker omissions, drained once per ApplyAfter pipeline
 	workspaceProcessorArgOverrides map[string]map[string]string    // Per-processor argument overrides from .mittorc (procName → argName → value)
 	workingDir                     string                          // Working directory for processor execution
 	isFirstPrompt                  bool                            // True until first prompt is sent (for processor conditions)

@@ -2854,7 +2854,7 @@ func TestApplyOnCloseProcessors_RunRecorder_LostAfterSessionDeleted(t *testing.T
 
 	// Give the close-phase pipeline goroutine time to run its slow processor and
 	// emit the single lifecycle summary after ApplyOnClose returns.
-	const skippedMessage = "close-phase: processor_run persistence skipped"
+	const skippedMessage = "processor_run persistence skipped"
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		if handler.hasRecord(slog.LevelDebug, skippedMessage) {
@@ -2899,8 +2899,8 @@ func TestApplyOnCloseProcessors_RunRecorder_LostAfterSessionDeleted(t *testing.T
 	if summaries != 1 {
 		t.Fatalf("processor_run omission summaries = %d, want exactly 1", summaries)
 	}
-	if attrs["reason"] != "session_deleted" || attrs["archive_reason"] != "deleted" {
-		t.Fatalf("omission summary lifecycle attrs = %#v, want reason=session_deleted archive_reason=deleted", attrs)
+	if attrs["phase"] != "close" || attrs["reason"] != "session_deleted" || attrs["archive_reason"] != "deleted" {
+		t.Fatalf("omission summary lifecycle attrs = %#v, want phase=close reason=session_deleted archive_reason=deleted", attrs)
 	}
 	if attrs["omitted_processor_runs"] != int64(1) {
 		t.Fatalf("omitted_processor_runs = %#v, want 1", attrs["omitted_processor_runs"])

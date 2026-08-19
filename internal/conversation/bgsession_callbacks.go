@@ -6,6 +6,7 @@ package conversation
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -138,21 +139,53 @@ func (bs *BackgroundSession) wireProcessorRunRecorder() {
 	if bs.processorManager == nil {
 		return
 	}
-	bs.processorManager.SetRunRecorder(func(run processors.ProcessorRun) {
-		seq := bs.getNextSeq()
-		recordEventWithSeqHelper(bs.recorder, bs.logger, session.Event{
-			Seq:       seq,
-			Type:      session.EventTypeProcessorRun,
-			Timestamp: time.Now(),
-			Data: session.ProcessorRunData{
-				Name:       run.Name,
-				Phase:      run.Phase,
-				Outcome:    run.Outcome,
-				DurationMs: run.Duration.Milliseconds(),
-				Error:      run.Error,
-			},
-		}, "processor run")
+	bs.processorManager.SetRunRecorder(bs.recordProcessorRun)
+}
+
+// recordProcessorRun persists one processor marker. If an after-phase pipeline
+// loses a write because session teardown completed first, it counts the expected
+// omission for one summary after ApplyAfter instead of warning per processor.
+func (bs *BackgroundSession) recordProcessorRun(run processors.ProcessorRun) {
+	if bs == nil {
+		return
+	}
+
+	seq := bs.getNextSeq()
+	if bs.recorder == nil {
+		return
+	}
+	err := bs.recorder.RecordEventWithSeq(session.Event{
+		Seq:       seq,
+		Type:      session.EventTypeProcessorRun,
+		Timestamp: time.Now(),
+		Data: session.ProcessorRunData{
+			Name:       run.Name,
+			Phase:      run.Phase,
+			Outcome:    run.Outcome,
+			DurationMs: run.Duration.Milliseconds(),
+			Error:      run.Error,
+		},
 	})
+	if err == nil {
+		return
+	}
+	if run.Phase == "after" && bs.IsClosed() &&
+		(errors.Is(err, session.ErrSessionNotStarted) || errors.Is(err, session.ErrSessionNotFound)) {
+		bs.afterProcessorRunOmissions.Add(1)
+		return
+	}
+	logPersistFailure(bs.logger, "processor run", err, "seq", seq)
+}
+
+// logAfterProcessorRunOmissions drains the pipeline-scoped lifecycle count.
+func (bs *BackgroundSession) logAfterProcessorRunOmissions() {
+	if bs == nil {
+		return
+	}
+	logProcessorRunPersistenceSkipped(
+		bs.logger, "after", bs.persistedID, "session_closed",
+		bs.afterProcessorRunOmissions.Swap(0),
+	)
 }
 
 // wireProcessorPendingDispatch installs the mitto-3421 durable pending-dispatch

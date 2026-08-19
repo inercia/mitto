@@ -685,3 +685,19 @@ func logPersistFailure(lg *slog.Logger, kind string, err error, attrs ...any) {
 	args := append(append([]any{}, attrs...), "error", err)
 	lg.Log(context.Background(), level, "Failed to persist "+kind, args...)
 }
+
+// logProcessorRunPersistenceSkipped is the shared lifecycle-omission summary
+// for live after-phase and fire-and-forget close-phase processor pipelines.
+func logProcessorRunPersistenceSkipped(lg *slog.Logger, phase, sessionID, reason string, omitted int64, attrs ...any) {
+	if lg == nil || omitted <= 0 {
+		return
+	}
+	args := []any{
+		"session_id", sessionID,
+		"phase", phase,
+		"reason", reason,
+		"omitted_processor_runs", omitted,
+	}
+	args = append(args, attrs...)
+	lg.Debug("processor_run persistence skipped", args...)
+}

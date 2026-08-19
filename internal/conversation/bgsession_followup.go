@@ -113,7 +113,9 @@ func (bs *BackgroundSession) fuAnalyzeFollowUpQuestions(ctx context.Context, wor
 }
 
 func (bs *BackgroundSession) fuApplyAfterProcessors(ctx context.Context, input processors.AfterProcessorInput) processors.ApplyAfterResult {
-	return bs.processorManager.ApplyAfter(ctx, input)
+	result := bs.processorManager.ApplyAfter(ctx, input)
+	bs.logAfterProcessorRunOmissions()
+	return result
 }
 
 func (bs *BackgroundSession) fuWorkspaceProcessorArgOverrides() map[string]map[string]string {
