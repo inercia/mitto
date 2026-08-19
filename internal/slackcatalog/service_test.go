@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -78,6 +79,8 @@ type fakeSlackProvider struct {
 	pagesByToken  map[string]map[string]ChannelPage
 	channelReqs   []channelRequest
 	channelCalls  int
+	oauthIdentity OAuthIdentity
+	oauthCalls    int
 }
 
 type channelRequest struct {
@@ -109,10 +112,112 @@ func (f *fakeSlackProvider) ListChannels(_ context.Context, token, cursor string
 	return cloneChannelPage(f.pages[cursor]), nil
 }
 
-type fakeReferences struct{ refs []Reference }
+func (f *fakeSlackProvider) ExchangeOAuth(_ context.Context, clientID, clientSecret, code, redirectURI string) (OAuthIdentity, error) {
+	f.oauthCalls++
+	if clientID != "123.456" || clientSecret != "oauth-secret" || code != "oauth-code" || redirectURI != "https://mitto.example/mitto/api/slack/oauth/callback" {
+		return OAuthIdentity{}, ErrInvalid
+	}
+	return f.oauthIdentity, nil
+}
+
+func (f *fakeSlackProvider) RevalidateOAuthInstallation(_ context.Context, token, slackAppID string) (InstallationIdentity, error) {
+	identity, ok := f.installations[token]
+	if !ok {
+		return InstallationIdentity{}, ErrInvalid
+	}
+	identity.SlackAppID = slackAppID
+	return identity, nil
+}
+
+type fakeReferences struct {
+	refs []Reference
+
+	// removeErr and partialRemoved simulate a remover that fails partway
+	// through a batch (e.g. a mid-loop disk error): some sessions were
+	// already mutated (partialRemoved) before the failure occurred.
+	// Zero-valued (removeErr == nil), RemoveSlackReferences behaves exactly
+	// as before: it succeeds and removes every ref.
+	removeErr      error
+	partialRemoved []Reference
+}
 
 func (f *fakeReferences) FindSlackReferences(context.Context, string, []string) ([]Reference, error) {
 	return append([]Reference(nil), f.refs...), nil
+}
+
+func (f *fakeReferences) RemoveSlackReferences(context.Context, string, []string) ([]Reference, error) {
+	if f.removeErr != nil {
+		removed := append([]Reference(nil), f.partialRemoved...)
+		f.refs = nil
+		return removed, f.removeErr
+	}
+	removed := append([]Reference(nil), f.refs...)
+	f.refs = nil
+	return removed, nil
+}
+
+// oauthRequiredProvider classifies any unrecognized installation token as
+// ErrOAuthRequired, modeling a delegated-user auth.test response that omits
+// app_id (mitto-3od5.1 production recurrence).
+type oauthRequiredProvider struct {
+	apps          map[string]string
+	installations map[string]InstallationIdentity
+}
+
+func (p *oauthRequiredProvider) ValidateApp(_ context.Context, token string) (string, error) {
+	id, ok := p.apps[token]
+	if !ok {
+		return "", ErrUnavailable
+	}
+	return id, nil
+}
+func (p *oauthRequiredProvider) ValidateInstallation(_ context.Context, token string) (InstallationIdentity, error) {
+	if identity, ok := p.installations[token]; ok {
+		return identity, nil
+	}
+	return InstallationIdentity{}, ErrOAuthRequired
+}
+func (p *oauthRequiredProvider) ListChannels(context.Context, string, string, int) (ChannelPage, error) {
+	return ChannelPage{}, nil
+}
+
+func TestCreateAndReplaceInstallationRejectOAuthRequiredWithoutMutation(t *testing.T) {
+	store := newMemoryStore()
+	credentials := newMemoryCredentials()
+	provider := &oauthRequiredProvider{
+		apps: map[string]string{"app-one": "A111"},
+		installations: map[string]InstallationIdentity{
+			"bot-one": {CredentialKind: CredentialKindBot, SlackAppID: "A111", TeamID: "T111", BotID: "B111", BotUserID: "U111"},
+		},
+	}
+	service := NewService(store, credentials, provider, nil)
+	ctx := context.Background()
+	app, err := service.CreateApp(ctx, "App", "app-one")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := service.CreateInstallation(ctx, app.ID, "Workspace", "T123", "user-no-app-id"); !errors.Is(err, ErrOAuthRequired) {
+		t.Fatalf("CreateInstallation() error = %v, want ErrOAuthRequired", err)
+	}
+	if len(store.doc.Installations) != 0 || len(credentials.values) != 1 {
+		t.Fatalf("failed create mutated state: installations=%d credentials=%d", len(store.doc.Installations), len(credentials.values))
+	}
+
+	installation, err := service.CreateInstallation(ctx, app.ID, "Workspace", "T111", "bot-one")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.ReplaceInstallationToken(ctx, installation.ID, "user-no-app-id"); !errors.Is(err, ErrOAuthRequired) {
+		t.Fatalf("ReplaceInstallationToken() error = %v, want ErrOAuthRequired", err)
+	}
+	ref := secrets.SlackInstallationCredential(installation.ID, InstallationTokenCredential)
+	if got, _ := credentials.Resolve(ref); got != "bot-one" {
+		t.Fatalf("failed replacement changed credential to %q", got)
+	}
+	if got := store.doc.Installations[0]; got.CredentialKind != CredentialKindBot || got.BotID != "B111" || got.UserID != "" {
+		t.Fatalf("failed replacement changed installation metadata: %#v", got)
+	}
 }
 
 type blockingSlackProvider struct {
@@ -150,6 +255,68 @@ func newTestService() (*Service, *memoryStore, *memoryCredentials, *fakeSlackPro
 	references := &fakeReferences{}
 	service := NewService(store, credentials, provider, references)
 	return service, store, credentials, provider, references
+}
+
+func TestOAuthFlowCommitsProvenanceOnceAndRejectsMismatch(t *testing.T) {
+	service, store, credentials, provider, _ := newTestService()
+	provider.oauthIdentity = OAuthIdentity{InstallationIdentity: InstallationIdentity{
+		CredentialKind: CredentialKindUser, SlackAppID: "A111", TeamID: "T111", TeamName: "One", UserID: "U444",
+	}, AccessToken: "oauth-user-token"}
+	app, err := service.CreateApp(context.Background(), "App", "app-one")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.ConfigureOAuthClient(app.ID, "123.456", "oauth-secret"); err != nil {
+		t.Fatal(err)
+	}
+	start, err := service.StartOAuth(OAuthStartRequest{AppID: app.ID, Name: "Workspace", ExpectedTeamID: "T111",
+		RedirectURI: "https://mitto.example/mitto/api/slack/oauth/callback"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	authorizeURL, err := url.Parse(start.AuthorizationURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := authorizeURL.Query().Get("state")
+	if state == "" || authorizeURL.Query().Get("user_scope") != delegatedUserScopes {
+		t.Fatalf("authorization URL = %q", start.AuthorizationURL)
+	}
+	status, err := service.CompleteOAuth(context.Background(), state, "oauth-code", "")
+	if err != nil || status.Status != "succeeded" || status.InstallationID == "" {
+		t.Fatalf("CompleteOAuth() = %#v, %v", status, err)
+	}
+	if provider.oauthCalls != 1 || len(store.doc.Installations) != 1 {
+		t.Fatalf("oauth calls=%d installations=%d", provider.oauthCalls, len(store.doc.Installations))
+	}
+	installation := store.doc.Installations[0]
+	if !installation.OAuthAuthorized || installation.CredentialKind != CredentialKindUser || installation.UserID != "U444" {
+		t.Fatalf("installation = %#v", installation)
+	}
+	ref := secrets.SlackInstallationCredential(installation.ID, InstallationTokenCredential)
+	if token, _ := credentials.Resolve(ref); token != "oauth-user-token" {
+		t.Fatalf("stored OAuth token = %q", token)
+	}
+	if _, err := service.CompleteOAuth(context.Background(), state, "oauth-code", ""); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("replayed CompleteOAuth() error = %v", err)
+	}
+	if provider.oauthCalls != 1 {
+		t.Fatalf("replay reached provider: calls=%d", provider.oauthCalls)
+	}
+
+	provider.oauthIdentity.TeamID = "T999"
+	second, err := service.StartOAuth(OAuthStartRequest{AppID: app.ID, Name: "Mismatch", ExpectedTeamID: "T111",
+		RedirectURI: "https://mitto.example/mitto/api/slack/oauth/callback"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondURL, _ := url.Parse(second.AuthorizationURL)
+	if _, err := service.CompleteOAuth(context.Background(), secondURL.Query().Get("state"), "oauth-code", ""); !errors.Is(err, ErrConflict) {
+		t.Fatalf("mismatched CompleteOAuth() error = %v", err)
+	}
+	if len(store.doc.Installations) != 1 {
+		t.Fatalf("mismatch mutated installations: %#v", store.doc.Installations)
+	}
 }
 
 func TestInstallationCredentialKindCanSwitchOnlyOnExplicitReplacement(t *testing.T) {
@@ -442,11 +609,14 @@ func TestReferenceBlockedDeletionAndChannelCache(t *testing.T) {
 	if err := service.DeleteInstallation(ctx, installation.ID); !errors.Is(err, ErrReferenced) {
 		t.Fatalf("DeleteInstallation reference error = %v", err)
 	}
+	removal, err := service.RemoveAppReferences(ctx, app.ID)
+	if err != nil || len(removal.Removed) != 1 || len(removal.Preview.References) != 0 || removal.Removed[0].Name != "Watcher" {
+		t.Fatalf("RemoveAppReferences() = %#v, %v", removal, err)
+	}
 	ref := secrets.SlackInstallationCredential(installation.ID, BotTokenCredential)
 	if got, _ := credentials.Resolve(ref); got != "bot-new" {
 		t.Fatalf("blocked deletion changed credential to %q", got)
 	}
-	references.refs = nil
 	if err := service.DeleteApp(ctx, app.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -536,6 +706,69 @@ func TestChannelsUseModeCredentialAndCachePerInstallation(t *testing.T) {
 		if strings.Contains(string(encoded), credential) {
 			t.Fatalf("channel pages leaked installation credential %q: %s", credential, encoded)
 		}
+	}
+}
+
+func TestRemoveInstallationReferencesRefreshesInstallationPreview(t *testing.T) {
+	service, _, _, _, references := newTestService()
+	ctx := context.Background()
+	app, err := service.CreateApp(ctx, "App", "app-one")
+	if err != nil {
+		t.Fatal(err)
+	}
+	installation, err := service.CreateInstallation(ctx, app.ID, "Workspace", "", "bot-one")
+	if err != nil {
+		t.Fatal(err)
+	}
+	references.refs = []Reference{{SessionID: "session-1", Name: "Watcher"}}
+
+	result, err := service.RemoveInstallationReferences(ctx, installation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Removed) != 1 || len(result.Preview.References) != 0 ||
+		len(result.Preview.InstallationIDs) != 1 || result.Preview.InstallationIDs[0] != installation.ID {
+		t.Fatalf("RemoveInstallationReferences() = %#v", result)
+	}
+}
+
+// TestRemoveAppReferencesPartialFailurePreservesRemovedAndPreview pins the
+// mitto-5apf follow-up fix: a remover that fails partway through a batch
+// (e.g. a mid-loop disk error on a later session) must not discard the
+// sessions it already mutated, and the preview must still be refreshed from
+// disk so callers (HTTP handler broadcast, Settings UI) see current truth
+// instead of stale pre-removal state. The public error stays the safe,
+// wrapped ErrUnavailable.
+func TestRemoveAppReferencesPartialFailurePreservesRemovedAndPreview(t *testing.T) {
+	service, _, _, _, references := newTestService()
+	ctx := context.Background()
+	app, err := service.CreateApp(ctx, "App", "app-one")
+	if err != nil {
+		t.Fatal(err)
+	}
+	references.refs = []Reference{
+		{SessionID: "session-1", Name: "Watcher"},
+		{SessionID: "session-2", Name: "Auditor"},
+	}
+	references.removeErr = errors.New("disk error on session-2")
+	references.partialRemoved = []Reference{{SessionID: "session-1", Name: "Watcher"}}
+
+	result, err := service.RemoveAppReferences(ctx, app.ID)
+	if !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("RemoveAppReferences() error = %v, want ErrUnavailable", err)
+	}
+	if len(result.Removed) != 1 || result.Removed[0].SessionID != "session-1" {
+		t.Fatalf("partial Removed = %#v, want only session-1", result.Removed)
+	}
+	// references.refs was cleared by the fake remover, so a re-derived
+	// preview (computed after the failed call) reports zero references —
+	// proving the preview passed back is freshly recomputed, not the stale
+	// pre-removal one.
+	if len(result.Preview.References) != 0 {
+		t.Fatalf("Preview = %#v, want refreshed (zero references)", result.Preview)
+	}
+	if strings.Contains(err.Error(), "disk error on session-2") {
+		t.Fatalf("raw remover error leaked to the public error: %v", err)
 	}
 }
 

@@ -2218,14 +2218,14 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 			s.logger.Debug("HTTP request (static)",
 				"method", r.Method,
 				"path", path,
-				"raw_uri", r.RequestURI,
+				"raw_uri", requestURIForLog(r),
 				"client_ip", clientIP,
 			)
 		} else {
 			s.logger.Debug("HTTP request",
 				"method", r.Method,
 				"path", path,
-				"raw_uri", r.RequestURI,
+				"raw_uri", requestURIForLog(r),
 				"client_ip", clientIP,
 				"user_agent", r.UserAgent(),
 			)
@@ -2233,6 +2233,19 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 
 		next.ServeHTTP(w, r)
 	})
+}
+
+func requestURIForLog(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	if strings.HasSuffix(r.URL.Path, "/api/slack/oauth/callback") {
+		if r.URL.RawQuery != "" {
+			return r.URL.Path + "?<redacted>"
+		}
+		return r.URL.Path
+	}
+	return r.RequestURI
 }
 
 // BroadcastSessionRenamed notifies all connected clients that a session was renamed.

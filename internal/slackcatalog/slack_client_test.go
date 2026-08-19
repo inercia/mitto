@@ -131,7 +131,38 @@ func TestSlackClientClassifiesDelegatedUserFromAuthTest(t *testing.T) {
 	}
 }
 
+func TestSlackClientOAuthExchangeUsesFormAndReturnsUserProvenance(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/oauth.v2.access" || r.Method != http.MethodPost {
+			t.Fatalf("request = %s %s", r.Method, r.URL.Path)
+		}
+		if r.Header.Get("Authorization") != "" {
+			t.Fatal("OAuth exchange unexpectedly used an Authorization header")
+		}
+		if err := r.ParseForm(); err != nil {
+			t.Fatal(err)
+		}
+		if r.Form.Get("client_id") != "123.456" || r.Form.Get("client_secret") != "client-secret" ||
+			r.Form.Get("code") != "one-time-code" || r.Form.Get("redirect_uri") != "https://mitto.example/callback" {
+			t.Fatalf("OAuth form = %#v", r.Form)
+		}
+		fmt.Fprint(w, `{"ok":true,"app_id":"A123","team":{"id":"T123","name":"Example"},"authed_user":{"id":"U456","access_token":"xoxp-user-secret"}}`)
+	}))
+	defer server.Close()
+	identity, err := (&SlackClient{APIURL: server.URL, Client: server.Client()}).ExchangeOAuth(
+		context.Background(), "123.456", "client-secret", "one-time-code", "https://mitto.example/callback",
+	)
+	if err != nil || identity.CredentialKind != CredentialKindUser || identity.SlackAppID != "A123" ||
+		identity.TeamID != "T123" || identity.UserID != "U456" || identity.AccessToken != "xoxp-user-secret" {
+		t.Fatalf("ExchangeOAuth() = %#v, %v", identity, err)
+	}
+}
+
 func TestSlackClientRejectsDelegatedUserWithoutProvenAppIdentity(t *testing.T) {
+	// Production-shaped response: a standard Slack user-token auth.test
+	// reply, which never includes app_id (mitto-3od5.1 recurrence). This
+	// must be classified as ErrOAuthRequired, a distinct value-free
+	// sentinel, not the generic ErrConflict used for identity mismatches.
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprint(w, `{"ok":true,"team_id":"T123","user_id":"U456"}`)
 	}))
@@ -139,8 +170,14 @@ func TestSlackClientRejectsDelegatedUserWithoutProvenAppIdentity(t *testing.T) {
 
 	client := &SlackClient{APIURL: server.URL, Client: server.Client()}
 	_, err := client.ValidateInstallation(context.Background(), "xoxp-user-secret")
-	if !errors.Is(err, ErrConflict) || strings.Contains(err.Error(), "xoxp-user-secret") {
-		t.Fatalf("missing app identity error = %v", err)
+	if !errors.Is(err, ErrOAuthRequired) {
+		t.Fatalf("missing app identity error = %v, want ErrOAuthRequired", err)
+	}
+	if errors.Is(err, ErrConflict) {
+		t.Fatalf("missing app identity error must not also classify as ErrConflict: %v", err)
+	}
+	if strings.Contains(err.Error(), "xoxp-user-secret") {
+		t.Fatalf("missing app identity error leaked token: %v", err)
 	}
 }
 

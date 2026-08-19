@@ -11,13 +11,15 @@ import (
 
 // SlackApp is the non-secret Slack app profile returned by Mitto.
 type SlackApp struct {
-	ID              string `json:"id"`
-	Name            string `json:"name"`
-	SlackAppID      string `json:"slack_app_id"`
-	TokenConfigured bool   `json:"token_configured"`
-	ValidatedAt     string `json:"validated_at"`
-	CreatedAt       string `json:"created_at"`
-	UpdatedAt       string `json:"updated_at"`
+	ID                          string `json:"id"`
+	Name                        string `json:"name"`
+	SlackAppID                  string `json:"slack_app_id"`
+	TokenConfigured             bool   `json:"token_configured"`
+	OAuthClientID               string `json:"oauth_client_id,omitempty"`
+	OAuthClientSecretConfigured bool   `json:"oauth_client_secret_configured"`
+	ValidatedAt                 string `json:"validated_at"`
+	CreatedAt                   string `json:"created_at"`
+	UpdatedAt                   string `json:"updated_at"`
 }
 
 // SlackInstallation is the non-secret workspace installation returned by Mitto.
@@ -32,6 +34,7 @@ type SlackInstallation struct {
 	BotUserID       string `json:"bot_user_id,omitempty"`
 	UserID          string `json:"user_id,omitempty"`
 	TokenConfigured bool   `json:"token_configured"`
+	OAuthAuthorized bool   `json:"oauth_authorized,omitempty"`
 	ValidatedAt     string `json:"validated_at"`
 	CreatedAt       string `json:"created_at"`
 	UpdatedAt       string `json:"updated_at"`
@@ -57,6 +60,11 @@ type SlackReference struct {
 type SlackDeletePreview struct {
 	InstallationIDs []string         `json:"installation_ids"`
 	References      []SlackReference `json:"references"`
+}
+
+type SlackReferenceRemoval struct {
+	Removed []SlackReference   `json:"removed"`
+	Preview SlackDeletePreview `json:"preview"`
 }
 
 // SlackEnvironmentStatus is the credential-free legacy import status.
@@ -99,6 +107,37 @@ type CreateSlackInstallationRequest struct {
 	Token  string `json:"token,omitempty"`
 	// BotToken is retained for compatibility with older Mitto servers.
 	BotToken string `json:"bot_token,omitempty"`
+}
+
+type SlackOAuthConfig struct {
+	Available   bool   `json:"available"`
+	RedirectURI string `json:"redirect_uri,omitempty"`
+	Message     string `json:"message,omitempty"`
+}
+
+type ConfigureSlackOAuthClientRequest struct {
+	ClientID     string `json:"client_id"`
+	ClientSecret string `json:"client_secret,omitempty"`
+}
+
+type StartSlackOAuthRequest struct {
+	Name   string `json:"name,omitempty"`
+	TeamID string `json:"team_id,omitempty"`
+}
+
+type SlackOAuthStart struct {
+	FlowID           string `json:"flow_id"`
+	AuthorizationURL string `json:"authorization_url"`
+	ExpiresAt        string `json:"expires_at"`
+}
+
+type SlackOAuthFlowStatus struct {
+	FlowID         string `json:"flow_id"`
+	Status         string `json:"status"`
+	InstallationID string `json:"installation_id,omitempty"`
+	Error          string `json:"error,omitempty"`
+	Message        string `json:"message,omitempty"`
+	ExpiresAt      string `json:"expires_at"`
 }
 
 func (c *Client) slackJSON(method, path string, body, result any, success ...int) error {
@@ -201,6 +240,50 @@ func (c *Client) ReplaceSlackAppToken(id, token string) (*SlackApp, error) {
 	return &app, nil
 }
 
+func (c *Client) GetSlackOAuthConfig() (*SlackOAuthConfig, error) {
+	var config SlackOAuthConfig
+	if err := c.slackJSON(http.MethodGet, "/api/slack/oauth/config", nil, &config, http.StatusOK); err != nil {
+		return nil, err
+	}
+	return &config, nil
+}
+
+func (c *Client) ConfigureSlackOAuthClient(id string, request ConfigureSlackOAuthClientRequest) (*SlackApp, error) {
+	var app SlackApp
+	path := "/api/slack/apps/" + url.PathEscape(id) + "/oauth-client"
+	if err := c.slackJSON(http.MethodPut, path, request, &app, http.StatusOK); err != nil {
+		return nil, err
+	}
+	return &app, nil
+}
+
+func (c *Client) StartSlackOAuthInstallation(appID string, request StartSlackOAuthRequest) (*SlackOAuthStart, error) {
+	var start SlackOAuthStart
+	path := "/api/slack/apps/" + url.PathEscape(appID) + "/oauth/start"
+	if err := c.slackJSON(http.MethodPost, path, request, &start, http.StatusOK); err != nil {
+		return nil, err
+	}
+	return &start, nil
+}
+
+func (c *Client) StartSlackOAuthReplacement(installationID string) (*SlackOAuthStart, error) {
+	var start SlackOAuthStart
+	path := "/api/slack/installations/" + url.PathEscape(installationID) + "/oauth/start"
+	if err := c.slackJSON(http.MethodPost, path, StartSlackOAuthRequest{}, &start, http.StatusOK); err != nil {
+		return nil, err
+	}
+	return &start, nil
+}
+
+func (c *Client) GetSlackOAuthFlowStatus(flowID string) (*SlackOAuthFlowStatus, error) {
+	var status SlackOAuthFlowStatus
+	path := "/api/slack/oauth/flows/" + url.PathEscape(flowID)
+	if err := c.slackJSON(http.MethodGet, path, nil, &status, http.StatusOK); err != nil {
+		return nil, err
+	}
+	return &status, nil
+}
+
 func (c *Client) ValidateSlackApp(id string) (*SlackApp, error) {
 	var app SlackApp
 	path := "/api/slack/apps/" + url.PathEscape(id) + "/validate"
@@ -217,6 +300,15 @@ func (c *Client) PrepareDeleteSlackApp(id string) (*SlackDeletePreview, error) {
 		return nil, err
 	}
 	return &preview, nil
+}
+
+func (c *Client) RemoveSlackAppReferences(id string) (*SlackReferenceRemoval, error) {
+	var result SlackReferenceRemoval
+	path := "/api/slack/apps/" + url.PathEscape(id) + "/references"
+	if err := c.slackJSON(http.MethodDelete, path, nil, &result, http.StatusOK); err != nil {
+		return nil, err
+	}
+	return &result, nil
 }
 
 func (c *Client) DeleteSlackApp(id string) error {
@@ -284,6 +376,15 @@ func (c *Client) PrepareDeleteSlackInstallation(id string) (*SlackDeletePreview,
 		return nil, err
 	}
 	return &preview, nil
+}
+
+func (c *Client) RemoveSlackInstallationReferences(id string) (*SlackReferenceRemoval, error) {
+	var result SlackReferenceRemoval
+	path := "/api/slack/installations/" + url.PathEscape(id) + "/references"
+	if err := c.slackJSON(http.MethodDelete, path, nil, &result, http.StatusOK); err != nil {
+		return nil, err
+	}
+	return &result, nil
 }
 
 func (c *Client) DeleteSlackInstallation(id string) error {

@@ -63,6 +63,14 @@ settings:
   socket_mode_enabled: true
 `;
 
+export function slackAppManifestYAML(redirectURI = "") {
+  if (!redirectURI) return SLACK_APP_MANIFEST_YAML;
+  return SLACK_APP_MANIFEST_YAML.replace(
+    "oauth_config:\n",
+    `oauth_config:\n  redirect_urls:\n    - ${JSON.stringify(redirectURI)}\n`,
+  );
+}
+
 export function slackAppSettingsURL(slackAppId) {
   const id = String(slackAppId || "").trim();
   return id ? `${SLACK_APPS_URL}/${encodeURIComponent(id)}` : SLACK_APPS_URL;
@@ -74,6 +82,31 @@ export function formatSlackValidation(value) {
   if (!Number.isFinite(date.getTime()) || date.getUTCFullYear() <= 1)
     return "Never";
   return date.toLocaleString();
+}
+
+// Compact relative-time label for "Last checked" metadata (2s ago / 2m ago /
+// 2h ago / 2d ago). Pure and deterministic given `now`, so tests don't race
+// the wall clock. Mirrors formatSlackValidation's "Never" handling for
+// unset/zero-value timestamps; a timestamp at or after `now` (clock skew,
+// or `now` not advanced yet) reads as "just now" rather than a negative
+// duration.
+export function formatSlackRelativeTime(value, now = new Date()) {
+  if (!value) return "Never";
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime()) || date.getUTCFullYear() <= 1)
+    return "Never";
+  const reference = now instanceof Date ? now : new Date(now);
+  if (!Number.isFinite(reference.getTime())) return "Never";
+  const diffMs = reference.getTime() - date.getTime();
+  if (diffMs <= 0) return "just now";
+  const diffSec = Math.floor(diffMs / 1000);
+  if (diffSec < 60) return `${diffSec}s ago`;
+  const diffMin = Math.floor(diffSec / 60);
+  if (diffMin < 60) return `${diffMin}m ago`;
+  const diffHour = Math.floor(diffMin / 60);
+  if (diffHour < 24) return `${diffHour}h ago`;
+  const diffDay = Math.floor(diffHour / 24);
+  return `${diffDay}d ago`;
 }
 
 export function slackHealth(record, attempt = "") {
@@ -148,7 +181,12 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
   const [newAppName, setNewAppName] = useState("");
   const [newAppToken, setNewAppToken] = useState("");
   const [appName, setAppName] = useState("");
+  const [isEditingAppName, setIsEditingAppName] = useState(false);
   const [appToken, setAppToken] = useState("");
+  const [oauthConfig, setOAuthConfig] = useState(null);
+  const [oauthClientId, setOAuthClientId] = useState("");
+  const [oauthClientSecret, setOAuthClientSecret] = useState("");
+  const [oauthFlowId, setOAuthFlowId] = useState("");
   const [appValidation, setAppValidation] = useState("");
 
   const [showNewInstallation, setShowNewInstallation] = useState(false);
@@ -164,6 +202,7 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
   const [manifestCopied, setManifestCopied] = useState(false);
   const selectedAppIdRef = useRef(selectedAppId);
   const selectedInstallationIdRef = useRef(selectedInstallationId);
+  const appNameInputRef = useRef(null);
   const installationNameInputRef = useRef(null);
   selectedAppIdRef.current = selectedAppId;
   selectedInstallationIdRef.current = selectedInstallationId;
@@ -229,8 +268,31 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
   }, [client]);
 
   useEffect(() => {
+    if (typeof client.slack.oauthConfig !== "function") return;
+    let cancelled = false;
+    client.slack
+      .oauthConfig()
+      .then((config) => {
+        if (!cancelled) setOAuthConfig(config);
+      })
+      .catch(() => {
+        if (!cancelled)
+          setOAuthConfig({
+            available: false,
+            message: "Slack OAuth configuration could not be loaded.",
+          });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [client]);
+
+  useEffect(() => {
     setAppName(selectedApp?.name || "");
+    setIsEditingAppName(false);
     setAppToken("");
+    setOAuthClientId(selectedApp?.oauth_client_id || "");
+    setOAuthClientSecret("");
     setAppValidation("");
     setActionError("");
     setShowNewInstallation(false);
@@ -266,6 +328,45 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
   }, [selectedAppId, client]);
 
   useEffect(() => {
+    if (!oauthFlowId || typeof client.slack.oauthFlowStatus !== "function")
+      return;
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const status = await client.slack.oauthFlowStatus(oauthFlowId);
+        if (cancelled || status?.status === "pending") return;
+        setOAuthFlowId("");
+        if (status?.status === "succeeded") {
+          const data = await client.slack.listInstallations(selectedAppId);
+          if (cancelled) return;
+          const next = Array.isArray(data?.installations)
+            ? data.installations
+            : [];
+          setInstallations(next);
+          setSelectedInstallationId(
+            status.installation_id || next[0]?.id || "",
+          );
+          notify("Slack delegated-user authorization completed.");
+        } else {
+          setActionError(
+            status?.message ||
+              "Slack authorization was not completed. Start again.",
+          );
+        }
+      } catch {
+        if (!cancelled)
+          setActionError("Slack authorization status could not be checked.");
+      }
+    };
+    poll();
+    const timer = setInterval(poll, 1000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [oauthFlowId, selectedAppId, client]);
+
+  useEffect(() => {
     setInstallationName(selectedInstallation?.name || "");
     setIsEditingInstallationName(false);
     setBotToken("");
@@ -278,6 +379,12 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
     installationNameInputRef.current.focus();
     installationNameInputRef.current.select();
   }, [isEditingInstallationName]);
+
+  useEffect(() => {
+    if (!isEditingAppName || !appNameInputRef.current) return;
+    appNameInputRef.current.focus();
+    appNameInputRef.current.select();
+  }, [isEditingAppName]);
 
   const chooseApp = (id) => {
     setAppToken("");
@@ -302,7 +409,9 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
   };
 
   const copyManifest = async () => {
-    const ok = await copyToClipboard(SLACK_APP_MANIFEST_YAML);
+    const ok = await copyToClipboard(
+      slackAppManifestYAML(oauthConfig?.redirect_uri),
+    );
     if (ok) {
       setManifestCopied(true);
       setTimeout(() => setManifestCopied(false), 1500);
@@ -314,6 +423,48 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
         : "Slack app manifest could not be copied.",
       duration: ok ? 3000 : 4000,
     });
+  };
+
+  const configureOAuthClient = async () => {
+    if (!selectedApp?.id || !oauthClientId.trim()) return;
+    setBusy("configure-oauth");
+    setActionError("");
+    try {
+      const updated = await client.slack.configureOAuthClient(selectedApp.id, {
+        client_id: oauthClientId.trim(),
+        client_secret: oauthClientSecret,
+      });
+      setApps((current) => replaceById(current, updated));
+      setOAuthClientSecret("");
+      notify("Slack OAuth client configured.");
+    } catch {
+      setActionError("Slack OAuth client could not be configured.");
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const startOAuth = async (installationId = "") => {
+    if (!selectedApp?.id || !oauthConfig?.available || oauthFlowId) return;
+    if (!installationId && !newInstallationName.trim()) return;
+    setBusy("start-oauth");
+    setActionError("");
+    try {
+      const start = installationId
+        ? await client.slack.startOAuthReplacement(installationId)
+        : await client.slack.startOAuthInstallation(selectedApp.id, {
+            name: newInstallationName.trim(),
+            team_id: newTeamId.trim(),
+          });
+      setOAuthFlowId(start.flow_id);
+      openURL(start.authorization_url);
+    } catch {
+      setActionError(
+        "Slack authorization could not be started. Check the OAuth client and redirect URL.",
+      );
+    } finally {
+      setBusy("");
+    }
   };
 
   const createApp = async (event) => {
@@ -341,19 +492,42 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
 
   const renameApp = async () => {
     const id = selectedApp?.id;
-    if (!id || !appName.trim()) return;
+    const name = appName.trim();
+    if (!id || !name || busy === "rename-app") return;
+    if (name === selectedApp.name) {
+      setIsEditingAppName(false);
+      return;
+    }
     setBusy("rename-app");
     setActionError("");
     try {
-      const updated = await client.slack.renameApp(id, appName.trim());
+      const updated = await client.slack.renameApp(id, name);
       setApps((current) => replaceById(current, updated));
-      if (selectedAppIdRef.current === id) setAppName(updated.name);
+      if (selectedAppIdRef.current === id) {
+        setAppName(updated.name);
+        setIsEditingAppName(false);
+      }
       notify("Slack app profile renamed.");
     } catch {
       if (selectedAppIdRef.current === id)
         setActionError("Slack app profile could not be renamed.");
     } finally {
       setBusy("");
+    }
+  };
+
+  const cancelAppRename = () => {
+    setAppName(selectedApp?.name || "");
+    setIsEditingAppName(false);
+  };
+
+  const handleAppNameKeyDown = (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      renameApp();
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      cancelAppRename();
     }
   };
 
@@ -441,9 +615,12 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
         setSelectedInstallationId(created.id);
       }
       notify("Slack workspace installation created.");
-    } catch {
+    } catch (error) {
       if (selectedAppIdRef.current === appId)
-        setActionError("Slack workspace installation could not be created.");
+        setActionError(
+          error?.message ||
+            "Slack workspace installation could not be created.",
+        );
     } finally {
       setBusy("");
     }
@@ -503,11 +680,12 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
         setInstallationValidation("success");
       }
       notify("Slack installation credential replaced and validated.");
-    } catch {
+    } catch (error) {
       if (selectedInstallationIdRef.current === id) {
         setInstallationValidation("failed");
         setActionError(
-          "The replacement credential was rejected; the configured credential was not changed.",
+          error?.message ||
+            "The replacement credential was rejected; the configured credential was not changed.",
         );
       }
     } finally {
@@ -622,6 +800,47 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
     }
   };
 
+  const removeDeleteReferences = async () => {
+    if (!deletePlan || referencesOf(deletePlan.preview).length === 0) return;
+    const { kind, target } = deletePlan;
+    setBusy("remove-delete-references");
+    setActionError("");
+    try {
+      const result =
+        kind === "app"
+          ? await client.slack.removeAppReferences(target.id)
+          : await client.slack.removeInstallationReferences(target.id);
+      setDeletePlan((current) =>
+        current?.kind === kind && current?.target?.id === target.id
+          ? { ...current, preview: result.preview }
+          : current,
+      );
+      notify("Removed on Slack from the affected conversations.");
+    } catch {
+      setActionError(
+        "On Slack could not be removed from every affected conversation; refreshed the list below.",
+      );
+      // A partial failure may still have mutated some sessions on disk, so
+      // re-fetch the preview instead of leaving stale references displayed.
+      try {
+        const preview =
+          kind === "app"
+            ? await client.slack.prepareDeleteApp(target.id)
+            : await client.slack.prepareDeleteInstallation(target.id);
+        setDeletePlan((current) =>
+          current?.kind === kind && current?.target?.id === target.id
+            ? { ...current, preview }
+            : current,
+        );
+      } catch {
+        // Preview refresh failed too; keep the previous (possibly stale)
+        // preview rather than clearing state the user is looking at.
+      }
+    } finally {
+      setBusy("");
+    }
+  };
+
   const deleteReferences = referencesOf(deletePlan?.preview);
   const deleteBlocked = deleteReferences.length > 0;
   const cascadingInstallations = Array.isArray(
@@ -664,10 +883,9 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
         data-testid="slack-create-app-guide"
       >
         <div class="flex flex-col p-4 gap-3">
-          <div>
+          <div class="flex flex-col gap-2">
             <h5 class="font-semibold text-base">App manifest</h5>
             <p class="text-sm text-mitto-text-muted">
-              You need to
               <a
                 href=${SLACK_CREATE_APP_URL}
                 target="_blank"
@@ -678,16 +896,31 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
                   event.preventDefault();
                   openURL(SLACK_CREATE_APP_URL);
                 }}
-              >create a Slack app</a>, choose "From an app manifest", and then
-              use the following YAML manifest to configure bot and delegated-user
-              OAuth scopes and event subscriptions. Socket Mode still needs a
-              separate app-level token with <code>connections:write</code>. Bot mode
-              uses the bot token; invite the bot to each private channel before
-              selecting it in a trigger. The delegated-user backend support is enabled:
-              a user token is validated and bound to this app and team before it is
-              stored. Existing apps must apply the current manifest and be
-              reauthorized for all newly added bot and user scopes, including
-              <code>groups:read</code> and <code>groups:history</code>.
+              >Create a Slack app</a>, choose “From an app manifest,” and copy the
+              manifest below. Socket Mode also needs an app-level token:
+              ${" "}<code>connections:write</code>.
+            </p>
+            <p class="text-sm text-mitto-text-muted">
+              <span class="font-medium text-mitto-text">1. Bot:</span>${" "}Use a
+              bot token. Invite the bot to a private channel before selecting that
+              channel in a trigger.
+            </p>
+            <p class="text-sm text-mitto-text-muted">
+              <span class="font-medium text-mitto-text"
+                >2. User delegation:</span
+              >${" "}Configure the OAuth client on the app profile, then authorize a
+              delegated user. Manual user tokens remain disabled because they do not
+              carry verifiable app provenance.
+            </p>
+						${
+              oauthConfig?.redirect_uri &&
+              html`<p class="text-sm text-mitto-text-muted">
+                Slack OAuth redirect URL:
+                <code>${oauthConfig.redirect_uri}</code>
+              </p>`
+            }
+            <p class="text-sm text-mitto-text-muted">
+              Existing app? Apply the current manifest and reauthorize it.
             </p>
           </div>
           <div class="flex flex-wrap gap-2">
@@ -904,17 +1137,67 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
                           class="flex flex-wrap items-center gap-2"
                           data-testid="slack-app-header"
                         >
-                          <h5 class="font-semibold text-base">
-                            ${selectedApp.name}
-                          </h5>
+                          ${isEditingAppName
+                            ? html`<div class="flex items-center gap-1">
+                                <input
+                                  ref=${appNameInputRef}
+                                  class="input input-sm min-w-0"
+                                  data-testid="slack-app-name-input"
+                                  value=${appName}
+                                  disabled=${busy === "rename-app"}
+                                  onInput=${(event) =>
+                                    setAppName(event.target.value)}
+                                  onKeyDown=${handleAppNameKeyDown}
+                                />
+                                <${Tooltip} tip="Save app name">
+                                  <button
+                                    class="btn btn-xs btn-ghost btn-square"
+                                    aria-label="Save app name"
+                                    title="Save app name"
+                                    disabled=${busy === "rename-app" ||
+                                    !appName.trim()}
+                                    onClick=${renameApp}
+                                  >
+                                    ${busy === "rename-app"
+                                      ? html`<${SpinnerIcon}
+                                          className="w-4 h-4"
+                                        />`
+                                      : html`<${CheckIcon}
+                                          className="w-4 h-4"
+                                        />`}
+                                  </button>
+                                <//>
+                                <${Tooltip} tip="Cancel app rename">
+                                  <button
+                                    class="btn btn-xs btn-ghost btn-square"
+                                    aria-label="Cancel app rename"
+                                    title="Cancel app rename"
+                                    disabled=${busy === "rename-app"}
+                                    onClick=${cancelAppRename}
+                                  >
+                                    <${CloseIcon} className="w-4 h-4" />
+                                  </button>
+                                <//>
+                              </div>`
+                            : html`<div class="flex items-center gap-1">
+                                <h5 class="font-semibold text-base">
+                                  ${selectedApp.name}
+                                </h5>
+                                <${Tooltip} tip="Rename Slack app profile">
+                                  <button
+                                    class="btn btn-xs btn-ghost btn-square"
+                                    aria-label="Rename Slack app profile"
+                                    title="Rename Slack app profile"
+                                    onClick=${() => setIsEditingAppName(true)}
+                                  >
+                                    <${EditIcon} className="w-4 h-4" />
+                                  </button>
+                                <//>
+                              </div>`}
                           <span
                             class="badge badge-sm badge-soft ${selectedAppHealth.className}"
                             >${selectedAppHealth.label}</span
                           >
-                          ${selectedApp.slack_app_id &&
-                          html`<span class="text-sm text-mitto-text-muted">
-                            App ID: <code>${selectedApp.slack_app_id}</code>
-                          </span>`}
                           <div class="ml-auto flex items-center gap-1">
                             <${Tooltip} tip="Open app settings in Slack">
                               <button
@@ -962,35 +1245,29 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
                           </div>
                         </div>
                         <p
-                          class="text-sm text-mitto-text-muted"
+                          class="flex flex-wrap items-center gap-x-2 text-xs text-mitto-text-muted"
                           data-testid="slack-app-last-check"
                         >
-                          Last checked:
-                          ${formatSlackValidation(selectedApp.validated_at)}
+                          ${selectedApp.slack_app_id &&
+                          html`<span
+                            >App ID:${" "}
+                            <code>${selectedApp.slack_app_id}</code></span
+                          >`}
+                          ${selectedApp.slack_app_id &&
+                          html`<span aria-hidden="true">·</span>`}
+                          <span
+                            title=${formatSlackValidation(
+                              selectedApp.validated_at,
+                            )}
+                            >Last checked:
+                            ${formatSlackRelativeTime(
+                              selectedApp.validated_at,
+                            )}</span
+                          >
                         </p>
                       </div>
 
-                      <div class="grid grid-cols-1 gap-3 md:grid-cols-2">
-                        <fieldset class="fieldset">
-                          <legend class="fieldset-legend">Friendly name</legend>
-                          <div class="join w-full">
-                            <input
-                              class="input input-sm join-item flex-1"
-                              value=${appName}
-                              onInput=${(event) =>
-                                setAppName(event.target.value)}
-                            />
-                            <button
-                              class="btn btn-sm join-item"
-                              disabled=${busy === "rename-app"}
-                              onClick=${renameApp}
-                              aria-label="Rename Slack app profile"
-                              title="Rename Slack app profile"
-                            >
-                              <${EditIcon} className="w-4 h-4" />
-                            </button>
-                          </div>
-                        </fieldset>
+                      <div>
                         <fieldset class="fieldset">
                           <legend class="fieldset-legend">
                             Replace app token
@@ -1015,6 +1292,62 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
                             </button>
                           </div>
                         </fieldset>
+                      </div>
+                      <div
+                        class="rounded-lg border border-mitto-border bg-base-200 p-3 space-y-2"
+                        data-testid="slack-oauth-client-config"
+                      >
+                        <div>
+                          <h6 class="font-medium">Delegated-user OAuth</h6>
+                          <p class="text-xs text-mitto-text-muted">
+                            The client secret is write-only and stored in the
+                            credential vault.
+                          </p>
+                        </div>
+                        ${oauthConfig &&
+                        !oauthConfig.available &&
+                        html`<div
+                          role="alert"
+                          class="alert alert-warning alert-soft text-sm"
+                        >
+                          ${oauthConfig.message}
+                        </div>`}
+                        <div class="grid grid-cols-1 gap-2 md:grid-cols-2">
+                          <fieldset class="fieldset">
+                            <legend class="fieldset-legend">Client ID</legend>
+                            <input
+                              class="input input-sm w-full"
+                              value=${oauthClientId}
+                              onInput=${(event) =>
+                                setOAuthClientId(event.target.value)}
+                            />
+                          </fieldset>
+                          <fieldset class="fieldset">
+                            <legend class="fieldset-legend">
+                              Client secret
+                            </legend>
+                            <input
+                              type="password"
+                              autocomplete="off"
+                              class="input input-sm w-full"
+                              placeholder=${selectedApp.oauth_client_secret_configured
+                                ? "Configured — leave blank to keep"
+                                : "Required for first setup"}
+                              value=${oauthClientSecret}
+                              onInput=${(event) =>
+                                setOAuthClientSecret(event.target.value)}
+                            />
+                          </fieldset>
+                        </div>
+                        <button
+                          type="button"
+                          class="btn btn-sm"
+                          disabled=${busy === "configure-oauth" ||
+                          !oauthClientId.trim()}
+                          onClick=${configureOAuthClient}
+                        >
+                          Save OAuth client
+                        </button>
                       </div>
                     </div>
                   </div>
@@ -1085,19 +1418,33 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
                               type="password"
                               autocomplete="off"
                               class="input input-sm w-full"
-                              placeholder="Bot or delegated-user OAuth token"
+                              placeholder="Bot token"
                               value=${newBotToken}
                               onInput=${(event) =>
                                 setNewBotToken(event.target.value)}
-                              required
                             />
                           </fieldset>
-                          <button
-                            class="btn btn-sm btn-primary"
-                            disabled=${busy === "create-installation"}
-                          >
-                            Save
-                          </button>
+                          <div class="flex flex-wrap gap-2">
+                            <button
+                              class="btn btn-sm"
+                              disabled=${busy === "create-installation" ||
+                              !newBotToken}
+                            >
+                              Save
+                            </button>
+                            <button
+                              type="button"
+                              class="btn btn-sm btn-primary"
+                              disabled=${busy === "start-oauth" ||
+                              !!oauthFlowId ||
+                              !oauthConfig?.available ||
+                              !selectedApp.oauth_client_secret_configured ||
+                              !newInstallationName.trim()}
+                              onClick=${() => startOAuth()}
+                            >
+                              Authorize delegated user
+                            </button>
+                          </div>
                         </div>
                       </form>`}
                       ${loadingInstallations
@@ -1270,7 +1617,7 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
                                   type="password"
                                   autocomplete="off"
                                   class="input input-sm join-item flex-1"
-                                  placeholder="New bot or delegated-user token"
+                                  placeholder="New bot token"
                                   value=${botToken}
                                   onInput=${(event) =>
                                     setBotToken(event.target.value)}
@@ -1284,6 +1631,20 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
                                   Replace
                                 </button>
                               </div>
+                              <button
+                                type="button"
+                                class="btn btn-sm mt-2"
+                                disabled=${busy === "start-oauth" ||
+                                !!oauthFlowId ||
+                                !oauthConfig?.available ||
+                                !selectedApp.oauth_client_secret_configured}
+                                onClick=${() =>
+                                  startOAuth(selectedInstallation.id)}
+                              >
+                                ${oauthFlowId
+                                  ? "Waiting for Slack…"
+                                  : "Authorize delegated user"}
+                              </button>
                             </fieldset>
                           </div>
                         </div>
@@ -1390,15 +1751,28 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
       >
         ${
           deleteBlocked &&
-          html`<ul class="list mt-3" data-testid="slack-delete-references">
-            ${deleteReferences.map(
-              (reference) =>
-                html`<li class="list-row" key=${reference.session_id}>
-                  <span>${reference.name || "Conversation"}</span>
-                  <code class="text-xs">${reference.session_id}</code>
-                </li>`,
-            )}
-          </ul>`
+          html`<div class="mt-3 space-y-3">
+            <ul class="list" data-testid="slack-delete-references">
+              ${deleteReferences.map(
+                (reference) =>
+                  html`<li class="list-row" key=${reference.session_id}>
+                    <span class="font-medium"
+                      >${reference.name || "Untitled conversation"}</span
+                    >
+                  </li>`,
+              )}
+            </ul>
+            <button
+              class="btn btn-error btn-sm"
+              disabled=${busy === "remove-delete-references"}
+              onClick=${removeDeleteReferences}
+              data-testid="slack-remove-delete-references"
+            >
+              ${busy === "remove-delete-references" &&
+              html`<${SpinnerIcon} className="w-4 h-4" />`}
+              Remove on Slack
+            </button>
+          </div>`
         }
       </${ConfirmDialog}>
     </div>

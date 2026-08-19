@@ -95,11 +95,13 @@ this compatibility period.
    `groups:history` for message flows. `app_mentions:read` supports optional
    mention mode; `chat:write` is not required. The installed app supplies the
    `xoxb-...` bot token currently accepted by Mitto's integration catalog.
-4. **User token**: the manifest also requests least-privilege user scopes
+4. **Delegated user OAuth**: the manifest also requests least-privilege user scopes
    `channels:read`, `groups:read`, `channels:history`, and `groups:history` for
-   channels visible to the authorizing user. Configure the resulting token as a
-   user-mode installation; Mitto associates events with that installation by
-   Slack's authorized user identity.
+   channels visible to the authorizing user. Configure an HTTPS
+   `web.hooks.external_address`, copy the exact redirect URI from Settings > Slack
+   into the Slack app, then store its client ID and write-only client secret. Use
+   **Authorize delegated user** instead of pasting a user token; Mitto binds the
+   returned token to `oauth.v2.access` app/team/user provenance.
 5. **Event Subscriptions**: bot events include `message.channels`,
    `message.groups`, and optional `app_mention`; user events include
    `message.channels` and `message.groups`.
@@ -241,8 +243,9 @@ does not validate managed fan-out, durable busy recovery, or rotation.
 - **Single-process journal ownership**: journal files coordinate goroutines in
   one Mitto process, not multiple Mitto replicas sharing the same app-data
   directory.
-- **No OAuth installation flow**: credentials are still entered and validated
-  through Mitto's integration catalog rather than installed through OAuth.
+- **OAuth requires an external HTTPS redirect**: plaintext localhost callbacks are
+  intentionally not synthesized. Development installations need a configured HTTPS
+  tunnel or reverse proxy whose base URL is `web.hooks.external_address`.
 - **No public HTTP Events API fallback**: Socket Mode only.
 - **Reconnect backoff is fixed/simple**: `Bridge.Run`'s outer retry loop uses
   a bounded exponential backoff (1s→30s) as a second line of defense on top

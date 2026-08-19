@@ -19,6 +19,7 @@ const {
   SLACK_SETUP_URL,
   SLACK_APP_MANIFEST_YAML,
   formatSlackValidation,
+  formatSlackRelativeTime,
   slackAppSettingsURL,
   slackHealth,
 } = slackModule;
@@ -142,6 +143,29 @@ describe("SlackSettingsTab helpers", () => {
       className: "badge-success",
     });
     expect(slackHealth(appA, "failed").label).toBe("Validation failed");
+  });
+
+  test("formats a compact relative time for Last checked, given a fixed now", () => {
+    const now = new Date("2026-08-17T12:10:30Z");
+    expect(formatSlackRelativeTime("2026-08-17T12:10:28Z", now)).toBe("2s ago");
+    expect(formatSlackRelativeTime("2026-08-17T12:08:30Z", now)).toBe("2m ago");
+    expect(formatSlackRelativeTime("2026-08-17T10:10:30Z", now)).toBe("2h ago");
+    expect(formatSlackRelativeTime("2026-08-15T12:10:30Z", now)).toBe("2d ago");
+  });
+
+  test("relative time handles unset/zero timestamps and future skew safely", () => {
+    const now = new Date("2026-08-17T12:10:30Z");
+    expect(formatSlackRelativeTime(null, now)).toBe("Never");
+    expect(formatSlackRelativeTime("", now)).toBe("Never");
+    expect(formatSlackRelativeTime("0001-01-01T00:00:00Z", now)).toBe("Never");
+    // Clock skew / not-yet-advanced `now`: treat as "just now" instead of
+    // a nonsensical negative duration.
+    expect(formatSlackRelativeTime("2026-08-17T12:10:30Z", now)).toBe(
+      "just now",
+    );
+    expect(formatSlackRelativeTime("2026-08-17T12:20:00Z", now)).toBe(
+      "just now",
+    );
   });
 
   test("manifest pins bot and delegated-user scopes and events", () => {
@@ -404,15 +428,17 @@ if (isIsolatedComponentRun) {
         const tokenInput = container.querySelector(
           'input[placeholder="New xapp-… token"]',
         );
-        const nameInput = [
-          ...container.querySelectorAll('input:not([type="password"])'),
-        ].find((input) => input.value === "App Alpha");
         inputValue(tokenInput, candidate);
-        inputValue(nameInput, "Renamed App");
-        await flushUI();
         container
           .querySelector('[aria-label="Rename Slack app profile"]')
           .click();
+        await flushUI();
+        const nameInput = container.querySelector(
+          '[data-testid="slack-app-name-input"]',
+        );
+        inputValue(nameInput, "Renamed App");
+        await flushUI();
+        container.querySelector('[aria-label="Save app name"]').click();
         await flushUI();
         const patchCall = fetchMock.mock.calls.find(
           ([url, init]) =>
@@ -428,6 +454,63 @@ if (isIsolatedComponentRun) {
         const toastText = JSON.stringify(showToast.mock.calls);
         expect(toastText).not.toContain(candidate);
         expect(container.textContent).toContain("Connected");
+      } finally {
+        unmount(container);
+      }
+    });
+
+    test("the selected app name has an inline pencil rename control, not a separate Friendly name editor", async () => {
+      const { container, fetchMock } = await mount((url, init) => {
+        if (url === "/api/slack/apps") return json({ apps: [appA] });
+        if (url === "/api/slack/apps/app-a/installations")
+          return json({ installations: [] });
+        if (url === "/api/slack/apps/app-a" && init.method === "PATCH")
+          return json({ ...appA, name: "Renamed App" });
+        throw new Error(`Unexpected request: ${init.method} ${url}`);
+      });
+      try {
+        const header = container.querySelector(
+          '[data-testid="slack-app-header"]',
+        );
+        expect(header.textContent).toContain("App Alpha");
+        expect(container.textContent).not.toContain("Friendly name");
+        expect(
+          header.querySelector('[data-testid="slack-app-name-input"]'),
+        ).toBeNull();
+
+        header.querySelector('[aria-label="Rename Slack app profile"]').click();
+        await flushUI();
+        let input = header.querySelector(
+          '[data-testid="slack-app-name-input"]',
+        );
+        expect(input).not.toBeNull();
+        input.dispatchEvent(
+          new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+        );
+        await flushUI();
+        expect(
+          header.querySelector('[data-testid="slack-app-name-input"]'),
+        ).toBeNull();
+        expect(header.textContent).toContain("App Alpha");
+
+        header.querySelector('[aria-label="Rename Slack app profile"]').click();
+        await flushUI();
+        input = header.querySelector('[data-testid="slack-app-name-input"]');
+        inputValue(input, "Renamed App");
+        await flushUI();
+        input.dispatchEvent(
+          new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
+        );
+        await flushUI();
+        const patchCall = fetchMock.mock.calls.find(
+          ([url, init]) =>
+            url === "/api/slack/apps/app-a" && init.method === "PATCH",
+        );
+        expect(JSON.parse(patchCall[1].body)).toEqual({ name: "Renamed App" });
+        expect(header.textContent).toContain("Renamed App");
+        expect(
+          header.querySelector('[data-testid="slack-app-name-input"]'),
+        ).toBeNull();
       } finally {
         unmount(container);
       }
@@ -537,7 +620,7 @@ if (isIsolatedComponentRun) {
       }
     });
 
-    test("dependency preview disables confirmation and never issues DELETE", async () => {
+    test("dependency preview shows names and can remove onSlack blockers", async () => {
       const { container, fetchMock } = await mount((url, init) => {
         if (url === "/api/slack/apps") return json({ apps: [appA] });
         if (url.endsWith("/installations")) return json({ installations: [] });
@@ -546,8 +629,14 @@ if (isIsolatedComponentRun) {
             references: [{ session_id: "session-1", name: "Slack watcher" }],
             installation_ids: [],
           });
-        if (init.method === "DELETE")
-          throw new Error("DELETE must stay blocked");
+        if (
+          url === "/api/slack/apps/app-a/references" &&
+          init.method === "DELETE"
+        )
+          return json({
+            removed: [{ session_id: "session-1", name: "Slack watcher" }],
+            preview: { references: [], installation_ids: [] },
+          });
         throw new Error(`Unexpected request: ${init.method} ${url}`);
       });
       try {
@@ -556,7 +645,7 @@ if (isIsolatedComponentRun) {
           .click();
         await flushUI();
         expect(container.textContent).toContain("Slack watcher");
-        expect(container.textContent).toContain("session-1");
+        expect(container.textContent).not.toContain("session-1");
         expect(
           container.querySelector('[data-testid="confirm-dialog-confirm"]')
             .disabled,
@@ -564,6 +653,86 @@ if (isIsolatedComponentRun) {
         expect(
           fetchMock.mock.calls.some(([, init]) => init.method === "DELETE"),
         ).toBe(false);
+        container
+          .querySelector('[data-testid="slack-remove-delete-references"]')
+          .click();
+        await flushUI();
+        expect(container.textContent).not.toContain("Slack watcher");
+        expect(
+          container.querySelector('[data-testid="confirm-dialog-confirm"]')
+            .disabled,
+        ).toBe(false);
+        expect(fetchMock).toHaveBeenCalledWith(
+          "/api/slack/apps/app-a/references",
+          expect.objectContaining({ method: "DELETE" }),
+        );
+      } finally {
+        unmount(container);
+      }
+    });
+
+    test("remove-on-slack failure refreshes the preview to reflect partial removal", async () => {
+      let prepareCalls = 0;
+      const { container } = await mount((url, init) => {
+        if (url === "/api/slack/apps") return json({ apps: [appA] });
+        if (url.endsWith("/installations")) return json({ installations: [] });
+        if (url === "/api/slack/apps/app-a/prepare-delete") {
+          prepareCalls += 1;
+          // Second call (post-failure refresh) reflects that session-2 was
+          // actually removed on disk even though the overall request failed.
+          return prepareCalls === 1
+            ? json({
+                references: [
+                  { session_id: "session-1", name: "Slack watcher" },
+                  { session_id: "session-2", name: "Slack auditor" },
+                ],
+                installation_ids: [],
+              })
+            : json({
+                references: [
+                  { session_id: "session-1", name: "Slack watcher" },
+                ],
+                installation_ids: [],
+              });
+        }
+        if (
+          url === "/api/slack/apps/app-a/references" &&
+          init.method === "DELETE"
+        )
+          return json(
+            {
+              error: {
+                code: "unavailable",
+                message: "Slack integration is temporarily unavailable",
+              },
+            },
+            503,
+          );
+        throw new Error(`Unexpected request: ${init.method} ${url}`);
+      });
+      try {
+        container
+          .querySelector('[aria-label="Delete Slack app profile"]')
+          .click();
+        await flushUI();
+        expect(container.textContent).toContain("Slack watcher");
+        expect(container.textContent).toContain("Slack auditor");
+
+        container
+          .querySelector('[data-testid="slack-remove-delete-references"]')
+          .click();
+        await flushUI();
+
+        expect(container.textContent).toContain(
+          "could not be removed from every affected conversation",
+        );
+        expect(prepareCalls).toBe(2);
+        expect(container.textContent).toContain("Slack watcher");
+        expect(container.textContent).not.toContain("Slack auditor");
+        expect(
+          container.querySelector('[data-testid="confirm-dialog-confirm"]')
+            .disabled,
+        ).toBe(true);
       } finally {
         unmount(container);
       }
@@ -579,15 +748,22 @@ if (isIsolatedComponentRun) {
           container.querySelector('[data-testid="slack-app-manifest"]'),
         ).toBeNull();
         expect(container.textContent).not.toContain("display_information:");
-        expect(container.textContent).toContain("groups:read");
-        expect(container.textContent).toContain("groups:history");
-        expect(container.textContent).toContain("reauthorized");
-        expect(container.textContent).toContain("private channel");
-        expect(container.textContent).toContain("app-level token");
-        expect(container.textContent).toContain("connections:write");
-        expect(container.textContent).toContain("bot token");
-        expect(container.textContent).toContain("user token");
-        expect(container.textContent.replace(/\s+/g, " ")).toContain(
+        const guide = container.querySelector(
+          '[data-testid="slack-create-app-guide"]',
+        );
+        const guideCopy = guide.textContent.replace(/\s+/g, " ").trim();
+        expect(guideCopy).toContain("1. Bot: Use a bot token");
+        expect(guideCopy).toContain(
+          "2. User delegation: Configure the OAuth client on the app profile",
+        );
+        expect(guideCopy).toContain("app-level token: connections:write");
+        expect(guideCopy).toContain("private channel");
+        expect(guideCopy).toContain(
+          "Existing app? Apply the current manifest and reauthorize it.",
+        );
+        // mitto-3od5.1: manual delegated-user entry must not be advertised
+        // as supported — Slack cannot prove a pasted token's app identity.
+        expect(guideCopy).not.toContain(
           "delegated-user backend support is enabled",
         );
 
@@ -706,7 +882,7 @@ if (isIsolatedComponentRun) {
       }
     });
 
-    test("keeps app status and actions together above the last check", async () => {
+    test("keeps app name + badge with right-aligned actions on the header line, App ID + Last checked below", async () => {
       const { container } = await mount((url) => {
         if (url === "/api/slack/apps") return json({ apps: [appA] });
         if (url.endsWith("/installations")) return json({ installations: [] });
@@ -718,7 +894,8 @@ if (isIsolatedComponentRun) {
         );
         expect(header.textContent).toContain("App Alpha");
         expect(header.textContent).toContain("Connected");
-        expect(header.textContent).toContain("App ID: A111");
+        // App ID moved off the first line onto the smaller metadata line.
+        expect(header.textContent).not.toContain("App ID:");
         for (const testId of [
           "slack-open-app-settings",
           "slack-validate-app",
@@ -730,11 +907,66 @@ if (isIsolatedComponentRun) {
         expect(
           header.querySelector('[aria-label="Delete Slack app profile"]'),
         ).not.toBeNull();
+        // Actions live in a trailing ml-auto group, right-aligned from the
+        // name/badge on the same flex line.
+        const actions = header
+          .querySelector('[data-testid="slack-open-app-settings"]')
+          .closest(".ml-auto");
+        expect(actions).not.toBeNull();
+
         const lastCheck = container.querySelector(
           '[data-testid="slack-app-last-check"]',
         );
         expect(lastCheck.previousElementSibling).toBe(header);
+        expect(lastCheck.textContent).toContain("App ID: A111");
         expect(lastCheck.textContent).toContain("Last checked:");
+      } finally {
+        unmount(container);
+      }
+    });
+
+    test("renders Last checked as compact relative time with an exact-timestamp tooltip", async () => {
+      const recent = { ...appA, validated_at: new Date().toISOString() };
+      const { container } = await mount((url) => {
+        if (url === "/api/slack/apps") return json({ apps: [recent] });
+        if (url.endsWith("/installations")) return json({ installations: [] });
+        throw new Error(`Unexpected request: ${url}`);
+      });
+      try {
+        const lastCheck = container.querySelector(
+          '[data-testid="slack-app-last-check"]',
+        );
+        expect(lastCheck.textContent).toMatch(
+          /Last checked:\s*(just now|\ds ago)/,
+        );
+        expect(lastCheck.textContent).not.toContain(
+          new Date(recent.validated_at).toLocaleString(),
+        );
+        const timestampSpan = [...lastCheck.querySelectorAll("span")].find(
+          (span) => span.textContent.includes("Last checked:"),
+        );
+        expect(timestampSpan.getAttribute("title")).toBe(
+          new Date(recent.validated_at).toLocaleString(),
+        );
+      } finally {
+        unmount(container);
+      }
+    });
+
+    test("Never-validated app shows 'Never' without a stray App ID separator", async () => {
+      const neverValidated = { ...appA, validated_at: null };
+      const { container } = await mount((url) => {
+        if (url === "/api/slack/apps") return json({ apps: [neverValidated] });
+        if (url.endsWith("/installations")) return json({ installations: [] });
+        throw new Error(`Unexpected request: ${url}`);
+      });
+      try {
+        const lastCheck = container.querySelector(
+          '[data-testid="slack-app-last-check"]',
+        );
+        expect(lastCheck.textContent).toContain("App ID: A111");
+        expect(lastCheck.textContent).toContain("Last checked:");
+        expect(lastCheck.textContent).toContain("Never");
       } finally {
         unmount(container);
       }
@@ -890,6 +1122,68 @@ if (isIsolatedComponentRun) {
             '[data-testid="slack-validate-installation"]',
           ),
         ).not.toBeNull();
+      } finally {
+        unmount(container);
+      }
+    });
+
+    test("mitto-3od5.1: surfaces the safe OAuth-required message on a rejected delegated-user create instead of a generic error", async () => {
+      const canary = "write-only-user-token-missing-app-id";
+      const { container, fetchMock } = await mount((url, init) => {
+        if (url === "/api/slack/apps") return json({ apps: [appA] });
+        if (url.endsWith("/installations") && init.method === "GET")
+          return json({ installations: [] });
+        if (
+          url === "/api/slack/apps/app-a/installations" &&
+          init.method === "POST"
+        ) {
+          return json(
+            {
+              error: {
+                code: "conflict",
+                message:
+                  "Slack did not return the app identity needed to safely bind this delegated-user credential. Manual delegated-user setup is unavailable until Slack OAuth provenance is supported; use a bot token instead.",
+              },
+            },
+            409,
+          );
+        }
+        throw new Error(`Unexpected request: ${init.method} ${url}`);
+      });
+      try {
+        container
+          .querySelector('[data-testid="slack-add-installation"]')
+          .click();
+        await flushUI();
+        const form = container.querySelector(
+          '[data-testid="slack-new-installation-form"]',
+        );
+        inputValue(form.querySelector("input[required]"), "Team");
+        inputValue(
+          form.querySelector('input[placeholder="Bot token"]'),
+          canary,
+        );
+        await flushUI();
+        form.querySelector("button").click();
+        await waitFor(
+          () => container.querySelector('[data-testid="slack-action-error"]'),
+          container,
+          "action error",
+        );
+        const message = container.querySelector(
+          '[data-testid="slack-action-error"]',
+        ).textContent;
+        expect(message).toContain("OAuth");
+        expect(message).toContain("delegated-user");
+        expect(message).not.toBe(
+          "Slack workspace installation could not be created.",
+        );
+        expect(container.textContent).not.toContain(canary);
+        expect(
+          fetchMock.mock.calls.some(([url]) =>
+            String(url).endsWith("/installations"),
+          ),
+        ).toBe(true);
       } finally {
         unmount(container);
       }

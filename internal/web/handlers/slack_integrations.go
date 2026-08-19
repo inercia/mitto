@@ -4,11 +4,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
+	"github.com/inercia/mitto/internal/session"
 	"github.com/inercia/mitto/internal/slackbridge"
 	"github.com/inercia/mitto/internal/slackcatalog"
 	"github.com/inercia/mitto/internal/web/middleware"
@@ -45,6 +48,16 @@ func (r slackInstallationCreateRequest) credential() (string, error) {
 
 type slackTokenRequest struct {
 	Token string `json:"token"`
+}
+
+type slackOAuthClientRequest struct {
+	ClientID     string `json:"client_id"`
+	ClientSecret string `json:"client_secret"`
+}
+
+type slackOAuthStartRequest struct {
+	Name   string `json:"name,omitempty"`
+	TeamID string `json:"team_id,omitempty"`
 }
 
 func (h *Handlers) slackService(w http.ResponseWriter) (*slackcatalog.Service, bool) {
@@ -96,6 +109,10 @@ func writeSlackError(w http.ResponseWriter, err error) {
 		writeErrorJSON(w, http.StatusNotFound, "", "Slack integration not found")
 	case errors.Is(err, slackcatalog.ErrReferenced):
 		writeErrorJSON(w, http.StatusConflict, "", "Slack integration is referenced by an active loop")
+	case errors.Is(err, slackcatalog.ErrOAuthRequired):
+		writeErrorJSON(w, http.StatusConflict, "",
+			"Slack did not return the app identity needed to safely bind this delegated-user credential. "+
+				"Manual delegated-user setup is unavailable until Slack OAuth provenance is supported; use a bot token instead.")
 	case errors.Is(err, slackcatalog.ErrConflict):
 		writeErrorJSON(w, http.StatusConflict, "", "Slack integration conflicts with existing configuration")
 	case errors.Is(err, slackcatalog.ErrUnavailable):
@@ -252,6 +269,124 @@ func (h *Handlers) HandleSlackAppToken(w http.ResponseWriter, r *http.Request) {
 	writeJSONOK(w, app)
 }
 
+func (h *Handlers) HandleSlackOAuthConfig(w http.ResponseWriter, _ *http.Request) {
+	writeJSONOK(w, h.slackOAuthConfig())
+}
+
+func (h *Handlers) HandleSlackOAuthClient(w http.ResponseWriter, r *http.Request) {
+	if !allowSlackCredentialWrite(w, r) {
+		return
+	}
+	service, ok := h.slackService(w)
+	if !ok {
+		return
+	}
+	var request slackOAuthClientRequest
+	if !decodeSlackBody(w, r, &request) {
+		return
+	}
+	app, err := service.ConfigureOAuthClient(r.PathValue("appId"), request.ClientID, request.ClientSecret)
+	if err != nil {
+		writeSlackError(w, err)
+		return
+	}
+	writeJSONOK(w, app)
+}
+
+func (h *Handlers) HandleSlackOAuthCreateStart(w http.ResponseWriter, r *http.Request) {
+	h.handleSlackOAuthStart(w, r, r.PathValue("appId"), "")
+}
+
+func (h *Handlers) HandleSlackOAuthReplaceStart(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.slackService(w)
+	if !ok {
+		return
+	}
+	installation, err := service.GetInstallation(r.PathValue("installationId"))
+	if err != nil {
+		writeSlackError(w, err)
+		return
+	}
+	h.handleSlackOAuthStart(w, r, installation.AppID, installation.ID)
+}
+
+func (h *Handlers) handleSlackOAuthStart(w http.ResponseWriter, r *http.Request, appID, installationID string) {
+	if !allowSlackCredentialWrite(w, r) {
+		return
+	}
+	service, ok := h.slackService(w)
+	if !ok {
+		return
+	}
+	config := h.slackOAuthConfig()
+	if !config.Available {
+		writeErrorJSON(w, http.StatusConflict, "", config.Message)
+		return
+	}
+	var request slackOAuthStartRequest
+	if !decodeSlackBody(w, r, &request) {
+		return
+	}
+	start, err := service.StartOAuth(slackcatalog.OAuthStartRequest{AppID: appID, InstallationID: installationID,
+		Name: request.Name, ExpectedTeamID: request.TeamID, RedirectURI: config.RedirectURI})
+	if err != nil {
+		writeSlackError(w, err)
+		return
+	}
+	writeJSONOK(w, start)
+}
+
+func (h *Handlers) HandleSlackOAuthStatus(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.slackService(w)
+	if !ok {
+		return
+	}
+	status, err := service.OAuthStatus(r.PathValue("flowId"))
+	if err != nil {
+		writeSlackError(w, err)
+		return
+	}
+	writeJSONOK(w, status)
+}
+
+func (h *Handlers) HandleSlackOAuthCallback(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.slackService(w)
+	if !ok {
+		return
+	}
+	status, err := service.CompleteOAuth(r.Context(), r.URL.Query().Get("state"), r.URL.Query().Get("code"), r.URL.Query().Get("error"))
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	if err != nil {
+		code := http.StatusBadRequest
+		if errors.Is(err, slackcatalog.ErrUnavailable) {
+			code = http.StatusServiceUnavailable
+		}
+		w.WriteHeader(code)
+		message := status.Message
+		if message == "" {
+			message = "Slack authorization is invalid, expired, or already used. Return to Mitto and start again."
+		}
+		fmt.Fprintf(w, "<!doctype html><title>Slack authorization</title><main><h1>Authorization not completed</h1><p>%s</p></main>", html.EscapeString(message))
+		return
+	}
+	fmt.Fprint(w, "<!doctype html><title>Slack authorization</title><main><h1>Slack authorization complete</h1><p>You can close this window and return to Mitto.</p></main>")
+}
+
+func (h *Handlers) slackOAuthConfig() slackcatalog.OAuthConfigView {
+	const setupMessage = "Configure an HTTPS web.hooks.external_address before starting Slack OAuth."
+	if h.deps.MittoConfig == nil {
+		return slackcatalog.OAuthConfigView{Message: setupMessage}
+	}
+	base := strings.TrimSpace(h.deps.MittoConfig.Web.Hooks.ExternalAddress)
+	parsed, err := url.Parse(base)
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return slackcatalog.OAuthConfigView{Message: setupMessage}
+	}
+	redirectURI := strings.TrimRight(base, "/") + h.deps.APIPrefix + "/api/slack/oauth/callback"
+	return slackcatalog.OAuthConfigView{Available: true, RedirectURI: redirectURI}
+}
+
 func (h *Handlers) HandleSlackAppPrepareDelete(w http.ResponseWriter, r *http.Request) {
 	service, ok := h.slackService(w)
 	if !ok {
@@ -263,6 +398,24 @@ func (h *Handlers) HandleSlackAppPrepareDelete(w http.ResponseWriter, r *http.Re
 		return
 	}
 	writeJSONOK(w, preview)
+}
+
+func (h *Handlers) HandleSlackAppReferencesDelete(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.slackService(w)
+	if !ok {
+		return
+	}
+	result, err := service.RemoveAppReferences(r.Context(), r.PathValue("appId"))
+	// Broadcast every reference that was actually mutated before checking err:
+	// a partial failure still leaves earlier sessions changed on disk, and
+	// connected clients (and this request's own Settings preview) must not
+	// go stale just because a later session in the same batch failed.
+	h.broadcastSlackReferenceRemovals(result.Removed)
+	if err != nil {
+		writeSlackError(w, err)
+		return
+	}
+	writeJSONOK(w, result)
 }
 
 func (h *Handlers) HandleSlackInstallationsList(w http.ResponseWriter, r *http.Request) {
@@ -389,6 +542,43 @@ func (h *Handlers) HandleSlackInstallationPrepareDelete(w http.ResponseWriter, r
 		return
 	}
 	writeJSONOK(w, preview)
+}
+
+func (h *Handlers) HandleSlackInstallationReferencesDelete(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.slackService(w)
+	if !ok {
+		return
+	}
+	result, err := service.RemoveInstallationReferences(r.Context(), r.PathValue("installationId"))
+	// See the matching comment in HandleSlackAppReferencesDelete: broadcast
+	// before checking err so a partial failure still propagates every
+	// mutation that actually landed on disk.
+	h.broadcastSlackReferenceRemovals(result.Removed)
+	if err != nil {
+		writeSlackError(w, err)
+		return
+	}
+	writeJSONOK(w, result)
+}
+
+func (h *Handlers) broadcastSlackReferenceRemovals(references []slackcatalog.Reference) {
+	if h.deps.Store == nil || h.deps.BroadcastLoopUpdated == nil {
+		return
+	}
+	for _, reference := range references {
+		loop, err := h.deps.Store.Loop(reference.SessionID).Get()
+		switch {
+		case err == nil:
+			h.deps.BroadcastLoopUpdated(reference.SessionID, loop)
+		case errors.Is(err, session.ErrLoopNotFound):
+			h.deps.BroadcastLoopUpdated(reference.SessionID, nil)
+		default:
+			if h.deps.Logger != nil {
+				h.deps.Logger.Warn("slack: failed to read loop for reference-removal broadcast",
+					"session_id", reference.SessionID, "error_class", "loop_read")
+			}
+		}
+	}
 }
 
 func (h *Handlers) HandleSlackInstallationChannels(w http.ResponseWriter, r *http.Request) {

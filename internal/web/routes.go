@@ -123,7 +123,10 @@ func (s *Server) apiRoutes(authMgr *middleware.AuthManager, csrfMgr *middleware.
 		apiRoute{method: "DELETE", pattern: "/api/slack/apps/{appId}", handler: http.HandlerFunc(s.apiHandlers.HandleSlackAppDelete)},
 		apiRoute{method: "POST", pattern: "/api/slack/apps/{appId}/validate", handler: http.HandlerFunc(s.apiHandlers.HandleSlackAppValidate)},
 		apiRoute{method: "PUT", pattern: "/api/slack/apps/{appId}/token", handler: http.HandlerFunc(s.apiHandlers.HandleSlackAppToken)},
+		apiRoute{method: "PUT", pattern: "/api/slack/apps/{appId}/oauth-client", handler: http.HandlerFunc(s.apiHandlers.HandleSlackOAuthClient)},
+		apiRoute{method: "POST", pattern: "/api/slack/apps/{appId}/oauth/start", handler: http.HandlerFunc(s.apiHandlers.HandleSlackOAuthCreateStart)},
 		apiRoute{method: "GET", pattern: "/api/slack/apps/{appId}/prepare-delete", handler: http.HandlerFunc(s.apiHandlers.HandleSlackAppPrepareDelete)},
+		apiRoute{method: "DELETE", pattern: "/api/slack/apps/{appId}/references", handler: http.HandlerFunc(s.apiHandlers.HandleSlackAppReferencesDelete)},
 		apiRoute{method: "GET", pattern: "/api/slack/apps/{appId}/installations", handler: http.HandlerFunc(s.apiHandlers.HandleSlackInstallationsList)},
 		apiRoute{method: "POST", pattern: "/api/slack/apps/{appId}/installations", handler: http.HandlerFunc(s.apiHandlers.HandleSlackInstallationCreate)},
 		apiRoute{method: "GET", pattern: "/api/slack/installations/{installationId}", handler: http.HandlerFunc(s.apiHandlers.HandleSlackInstallationGet)},
@@ -131,8 +134,13 @@ func (s *Server) apiRoutes(authMgr *middleware.AuthManager, csrfMgr *middleware.
 		apiRoute{method: "DELETE", pattern: "/api/slack/installations/{installationId}", handler: http.HandlerFunc(s.apiHandlers.HandleSlackInstallationDelete)},
 		apiRoute{method: "POST", pattern: "/api/slack/installations/{installationId}/validate", handler: http.HandlerFunc(s.apiHandlers.HandleSlackInstallationValidate)},
 		apiRoute{method: "PUT", pattern: "/api/slack/installations/{installationId}/token", handler: http.HandlerFunc(s.apiHandlers.HandleSlackInstallationToken)},
+		apiRoute{method: "POST", pattern: "/api/slack/installations/{installationId}/oauth/start", handler: http.HandlerFunc(s.apiHandlers.HandleSlackOAuthReplaceStart)},
 		apiRoute{method: "GET", pattern: "/api/slack/installations/{installationId}/prepare-delete", handler: http.HandlerFunc(s.apiHandlers.HandleSlackInstallationPrepareDelete)},
+		apiRoute{method: "DELETE", pattern: "/api/slack/installations/{installationId}/references", handler: http.HandlerFunc(s.apiHandlers.HandleSlackInstallationReferencesDelete)},
 		apiRoute{method: "GET", pattern: "/api/slack/installations/{installationId}/channels", handler: http.HandlerFunc(s.apiHandlers.HandleSlackInstallationChannels)},
+		apiRoute{method: "GET", pattern: "/api/slack/oauth/config", handler: http.HandlerFunc(s.apiHandlers.HandleSlackOAuthConfig)},
+		apiRoute{method: "GET", pattern: "/api/slack/oauth/flows/{flowId}", handler: http.HandlerFunc(s.apiHandlers.HandleSlackOAuthStatus)},
+		apiRoute{method: "GET", pattern: "/api/slack/oauth/callback", handler: http.HandlerFunc(s.apiHandlers.HandleSlackOAuthCallback)},
 	)
 
 	// Auxiliary and notification endpoints.

@@ -20,11 +20,16 @@ It contains:
   bot/bot-user or delegated-user ID derived during validation;
 - validation, creation, and update timestamps.
 
-App (`xapp-`), bot, and delegated-user tokens never enter that document. They are stored
+App (`xapp-`), bot, delegated-user tokens, and OAuth client secrets never enter that document. They are stored
 through `internal/secrets` with `NamespaceSlackApp` or
 `NamespaceSlackInstallation` credential references. API request bodies accept
 tokens only on create or explicit token-replacement operations. Response DTOs
 contain `token_configured` booleans, never token values.
+
+App profiles may persist a non-secret OAuth client ID. The client secret uses a
+separate app-scoped vault credential; responses expose only
+`oauth_client_secret_configured`. OAuth-authorized installations persist a boolean
+provenance marker plus non-secret app/team/user identity.
 
 Token-bearing create and replacement requests are accepted only through Mitto's
 localhost interface. The external listener and reverse-proxied hostnames are
@@ -62,16 +67,23 @@ sequenceDiagram
 App tokens are checked through `apps.connections.open`; the app ID is derived from
 the validated `xapp` token shape. Installation credentials are classified from the
 validated `auth.test` response, never from their prefix alone. A `bot_id` selects bot
-mode and `bots.info` supplies the parent app ID. Otherwise delegated-user mode
+mode and `bots.info` supplies the parent app ID. Manual delegated-user mode
 requires `auth.test` to supply the authorizing user and parent app IDs; a response
-that cannot prove the app binding is rejected fail-closed. A supplied team ID or an
+that cannot prove the app binding is rejected fail-closed. The supported user flow
+uses `oauth.v2.access`, which supplies the app ID, team, authorizing user, and access
+token in one response. A supplied team ID or an
 existing app/installation identity must match the derived app and team. Revalidation
-also requires the stored kind to remain unchanged, while explicit replacement may
-switch kinds when the app/team identity still matches.
+accepts `auth.test`'s omission of `app_id` only for a stored OAuth-authorized user
+installation; revoked or deactivated tokens still fail validation.
+
+OAuth authorization state is cryptographically random, in-memory, single-use, and
+expires after ten minutes. Every callback outcome consumes state before exchange.
+Mitto passes the exact stored redirect URI to Slack and commits only after app/team/
+user provenance matches. Flow status contains only safe status/error metadata.
 
 ## REST API
 
-All paths are private Mitto API routes. Authentication applies to every route;
+All paths except the one-time-state OAuth callback are private Mitto API routes. Authentication applies to private routes;
 CSRF validation additionally applies to `POST`, `PUT`, `PATCH`, and `DELETE`.
 Request bodies are limited to 64 KiB. Oversized Slack bodies return canonical
 `413 too_large`; malformed bodies and service failures use fixed, value-free
@@ -84,17 +96,30 @@ messages rather than decoder, provider, or credential text.
 | `POST`                   | `/api/slack/apps/{appId}/validate`                         | Revalidate the configured app token                  |
 | `PUT`                    | `/api/slack/apps/{appId}/token`                            | Validate and replace an app token                    |
 | `GET`                    | `/api/slack/apps/{appId}/prepare-delete`                   | Report cascading installations and references        |
+| `DELETE`                 | `/api/slack/apps/{appId}/references`                       | Remove matching `onSlack` conversation references    |
 | `GET`, `POST`            | `/api/slack/apps/{appId}/installations`                    | List or create workspace installations               |
 | `GET`, `PATCH`, `DELETE` | `/api/slack/installations/{installationId}`                | Read, rename, or delete an installation              |
 | `POST`                   | `/api/slack/installations/{installationId}/validate`       | Revalidate the configured credential                 |
 | `PUT`                    | `/api/slack/installations/{installationId}/token`          | Validate and replace an installation credential      |
 | `GET`                    | `/api/slack/installations/{installationId}/prepare-delete` | Report loop references                               |
+| `DELETE`                 | `/api/slack/installations/{installationId}/references`     | Remove matching `onSlack` conversation references    |
 | `GET`                    | `/api/slack/installations/{installationId}/channels`       | Discover public and visible private channels         |
 | `GET`, `POST`            | `/api/slack/environment-import`                            | Inspect or import the deprecated environment adapter |
+| `GET`                    | `/api/slack/oauth/config`                                  | Read callback availability and redirect URI           |
+| `PUT`                    | `/api/slack/apps/{appId}/oauth-client`                     | Store client ID and write-only client secret          |
+| `POST`                   | `/api/slack/apps/{appId}/oauth/start`                      | Start delegated-user installation authorization       |
+| `POST`                   | `/api/slack/installations/{installationId}/oauth/start`    | Start delegated-user replacement authorization        |
+| `GET`                    | `/api/slack/oauth/flows/{flowId}`                          | Poll value-free authorization status                  |
+| `GET`                    | `/api/slack/oauth/callback`                                | Public Slack redirect protected by one-time state     |
 
 Errors use the canonical Mitto JSON envelope: malformed input is `400`, missing
 records are `404`, duplicate identities, identity mismatches, and active references
 are `409`, and unavailable Slack or credential services are retryable `503` errors.
+A delegated-user credential whose `auth.test` response cannot prove its parent
+Slack app (no `app_id`) is a `409 conflict` with a safe, actionable message
+explaining that manual delegated-user setup is unavailable until Slack OAuth
+provenance is supported. The catalog retains a distinct internal classification
+without extending Mitto's canonical HTTP error-code set.
 
 Equivalent typed methods are exposed on `pkg/api.Client` (`ListSlackApps`,
 `CreateSlackInstallation`, `ReplaceSlackInstallationToken`,
@@ -124,8 +149,9 @@ default `message.channels` and `message.groups` bot events. Add
 
 The default manifest supports delegated-user authorization with user scopes
 `channels:read`, `groups:read`, `channels:history`, and `groups:history`, plus
-`message.channels` and `message.groups` user events. The catalog validates and stores
-that credential in user mode only when Slack proves its app/team binding. Existing
+`message.channels` and `message.groups` user events. The catalog stores that
+credential in user mode only when `oauth.v2.access` proves its app/team/user binding.
+Manually pasted delegated-user tokens remain disabled fail-closed. Existing
 apps must apply the current manifest and reinstall or reauthorize
 the app before either bot or user tokens carry newly-added scopes.
 `chat:write`, attachments, and automatic file fetching are not part of v1.
@@ -134,7 +160,11 @@ the app before either bot or user tokens carry newly-added scopes.
 
 The catalog accepts a `ReferenceChecker` and refuses app or installation deletion
 when it reports active loop subscriptions. `prepare-delete` uses the same checker
-to return the affected installation IDs and session references before mutation.
+to return the affected installation IDs and named conversation references before
+mutation. The reference-removal endpoints detach those subscriptions while
+preserving unrelated loop triggers; a sole-`onSlack` loop becomes a regular
+conversation. The Settings dialog exposes this as **Remove on Slack**, refreshes
+the preview, and enables deletion only after every reference has been removed.
 
 The production `onSlack` loop schema stores installation references, and server
 wiring injects a session scanner into the catalog. No conversation/session
@@ -153,6 +183,14 @@ operations clear the input immediately, while every GET response and rendered
 status uses only `token_configured`, validated identities, and validation time.
 The UI calls `prepare-delete` before offering deletion and shows active loop
 references as blockers rather than issuing a destructive request.
+
+For delegated-user mode, configure the app's client ID and write-only client secret,
+copy the exact redirect URI shown by Settings into Slack, then choose **Authorize
+delegated user** for a new or existing installation. The UI polls a value-free flow
+status until success, cancellation, mismatch, expiry, or provider failure. OAuth
+starts remain localhost-only and require a valid HTTPS
+`web.hooks.external_address`; the public callback relies exclusively on single-use
+state, and its query parameters are fully redacted from request logs.
 
 When legacy `MITTO_SLACK_*` configuration is present, the tab shows only its
 non-secret team/channel/target metadata and missing variable names. An explicit

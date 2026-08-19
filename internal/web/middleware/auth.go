@@ -893,11 +893,12 @@ var publicStaticPaths = map[string]bool{
 
 // publicAPIPaths are API paths (without prefix) that don't require authentication.
 var publicAPIPaths = map[string]bool{
-	"/api/login":             true,
-	"/api/csrf-token":        true, // CSRF token endpoint must be accessible before login
-	"/api/supported-runners": true, // Platform information endpoint (no sensitive data)
-	"/api/auth-info":         true, // Auth info endpoint must be accessible before login (used by login page)
-	"/api/health":            true, // Health check must be accessible without auth for tunnel monitoring
+	"/api/login":                true,
+	"/api/csrf-token":           true, // CSRF token endpoint must be accessible before login
+	"/api/supported-runners":    true, // Platform information endpoint (no sensitive data)
+	"/api/auth-info":            true, // Auth info endpoint must be accessible before login (used by login page)
+	"/api/health":               true, // Health check must be accessible without auth for tunnel monitoring
+	"/api/slack/oauth/callback": true, // Slack validates one-time OAuth state instead of a Mitto session
 }
 
 // isPublicPath checks if a path is public (no auth required).

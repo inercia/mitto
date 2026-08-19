@@ -38,6 +38,10 @@ type ReferenceChecker interface {
 	FindSlackReferences(context.Context, string, []string) ([]Reference, error)
 }
 
+type ReferenceRemover interface {
+	RemoveSlackReferences(context.Context, string, []string) ([]Reference, error)
+}
+
 type noReferences struct{}
 
 func (noReferences) FindSlackReferences(context.Context, string, []string) ([]Reference, error) {
@@ -51,6 +55,7 @@ type channelCacheEntry struct {
 
 type Service struct {
 	mu           sync.Mutex
+	oauthMu      sync.Mutex
 	store        Store
 	credentials  CredentialManager
 	slack        SlackProvider
@@ -60,6 +65,9 @@ type Service struct {
 	channels     map[string]channelCacheEntry
 	channelEpoch map[string]uint64
 	observer     func(Change)
+	oauthStates  map[string]oauthFlow
+	oauthResults map[string]OAuthFlowStatus
+	oauthTTL     time.Duration
 }
 
 func NewService(store Store, credentials CredentialManager, provider SlackProvider, references ReferenceChecker) *Service {
@@ -68,7 +76,8 @@ func NewService(store Store, credentials CredentialManager, provider SlackProvid
 	}
 	return &Service{store: store, credentials: credentials, slack: provider, references: references,
 		now: time.Now, cacheTTL: defaultChannelCacheTTL, channels: make(map[string]channelCacheEntry),
-		channelEpoch: make(map[string]uint64)}
+		channelEpoch: make(map[string]uint64), oauthStates: make(map[string]oauthFlow),
+		oauthResults: make(map[string]OAuthFlowStatus), oauthTTL: defaultOAuthFlowTTL}
 }
 
 // SetReferenceChecker replaces the reference checker used by guarded deletes.
@@ -678,6 +687,28 @@ func (s *Service) ValidateInstallation(ctx context.Context, id string) (Installa
 		return InstallationView{}, fmt.Errorf("%w: installation credential unavailable", ErrUnavailable)
 	}
 	identity, err := s.slack.ValidateInstallation(ctx, token)
+	if errors.Is(err, ErrOAuthRequired) {
+		s.mu.Lock()
+		doc, loadErr := s.store.Load()
+		idx := installationIndex(doc, id)
+		appIdx := -1
+		if idx >= 0 {
+			appIdx = appIndex(doc, doc.Installations[idx].AppID)
+		}
+		oauthAuthorized := loadErr == nil && idx >= 0 && appIdx >= 0 && doc.Installations[idx].OAuthAuthorized
+		slackAppID := ""
+		if oauthAuthorized {
+			slackAppID = doc.Apps[appIdx].SlackAppID
+		}
+		s.mu.Unlock()
+		provider, ok := s.slack.(SlackOAuthProvider)
+		if loadErr != nil {
+			return InstallationView{}, loadErr
+		}
+		if ok && oauthAuthorized {
+			identity, err = provider.RevalidateOAuthInstallation(ctx, token, slackAppID)
+		}
+	}
 	if err != nil {
 		return InstallationView{}, err
 	}
@@ -752,6 +783,70 @@ func (s *Service) PrepareDeleteInstallation(ctx context.Context, id string) (Del
 	return s.deletePreviewLocked(ctx, doc, doc.Installations[idx].AppID, id)
 }
 
+func (s *Service) RemoveAppReferences(ctx context.Context, id string) (ReferenceRemoval, error) {
+	preview, err := s.PrepareDeleteApp(ctx, id)
+	if err != nil {
+		return ReferenceRemoval{}, err
+	}
+	return s.removeReferences(ctx, id, "", preview)
+}
+
+func (s *Service) RemoveInstallationReferences(ctx context.Context, id string) (ReferenceRemoval, error) {
+	installation, err := s.GetInstallation(id)
+	if err != nil {
+		return ReferenceRemoval{}, err
+	}
+	preview, err := s.PrepareDeleteInstallation(ctx, id)
+	if err != nil {
+		return ReferenceRemoval{}, err
+	}
+	return s.removeReferences(ctx, installation.AppID, id, preview)
+}
+
+// removeReferences drives one guarded reference-removal pass. The remover may
+// fail after mutating some (but not all) matching sessions — e.g. a mid-loop
+// disk error in the loop store. In that case the caller still needs the
+// partial Removed list (to broadcast loop updates for what actually changed)
+// and, when obtainable, a Preview refreshed from disk/runtime truth (so the
+// Settings UI can reconcile its modal state instead of trusting the stale
+// pre-removal preview). The returned error is always the safe, wrapped
+// ErrUnavailable — never the raw remover error — regardless of how much
+// partial data is attached to the result.
+func (s *Service) removeReferences(ctx context.Context, appID, installationID string, preview DeletePreview) (ReferenceRemoval, error) {
+	if len(preview.References) == 0 {
+		return ReferenceRemoval{Removed: []Reference{}, Preview: preview}, nil
+	}
+	s.mu.Lock()
+	remover, ok := s.references.(ReferenceRemover)
+	s.mu.Unlock()
+	if !ok {
+		return ReferenceRemoval{}, fmt.Errorf("%w: reference removal is unavailable", ErrUnavailable)
+	}
+	removed, removeErr := remover.RemoveSlackReferences(ctx, appID, preview.InstallationIDs)
+	if removed == nil {
+		removed = []Reference{}
+	}
+	remaining, previewErr := s.deletePreviewForTarget(ctx, appID, installationID)
+	if previewErr != nil {
+		if removeErr != nil {
+			return ReferenceRemoval{Removed: removed}, fmt.Errorf("%w: reference removal failed", ErrUnavailable)
+		}
+		return ReferenceRemoval{Removed: removed}, previewErr
+	}
+	result := ReferenceRemoval{Removed: removed, Preview: remaining}
+	if removeErr != nil {
+		return result, fmt.Errorf("%w: reference removal failed", ErrUnavailable)
+	}
+	return result, nil
+}
+
+func (s *Service) deletePreviewForTarget(ctx context.Context, appID, installationID string) (DeletePreview, error) {
+	if installationID != "" {
+		return s.PrepareDeleteInstallation(ctx, installationID)
+	}
+	return s.PrepareDeleteApp(ctx, appID)
+}
+
 func (s *Service) DeleteApp(ctx context.Context, id string) error {
 	if err := validateResourceID(id); err != nil {
 		return err
@@ -773,7 +868,10 @@ func (s *Service) DeleteApp(ctx context.Context, id string) error {
 	if len(preview.References) > 0 {
 		return fmt.Errorf("%w: %d active loop reference(s)", ErrReferenced, len(preview.References))
 	}
-	refs := []secrets.CredentialRef{secrets.SlackAppCredential(id, AppTokenCredential)}
+	refs := []secrets.CredentialRef{
+		secrets.SlackAppCredential(id, AppTokenCredential),
+		secrets.SlackAppCredential(id, OAuthClientSecretCredential),
+	}
 	for _, installationID := range preview.InstallationIDs {
 		refs = append(refs, secrets.SlackInstallationCredential(installationID, InstallationTokenCredential))
 	}
@@ -866,7 +964,12 @@ func (s *Service) appView(app AppProfile) (AppView, error) {
 	if err != nil {
 		return AppView{}, fmt.Errorf("credential status: %w", err)
 	}
-	return AppView{AppProfile: app, TokenConfigured: status.Configured}, nil
+	oauthStatus, err := s.credentials.Status(secrets.SlackAppCredential(app.ID, OAuthClientSecretCredential))
+	if err != nil {
+		return AppView{}, fmt.Errorf("OAuth credential status: %w", err)
+	}
+	return AppView{AppProfile: app, TokenConfigured: status.Configured,
+		OAuthClientSecretConfigured: oauthStatus.Configured}, nil
 }
 
 func (s *Service) installationView(installation Installation) (InstallationView, error) {

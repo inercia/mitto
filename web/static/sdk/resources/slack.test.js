@@ -11,29 +11,32 @@ function parsedBody(call) {
 }
 
 describe("Slack catalog resource", () => {
-	test("inspects and imports environment configuration without token fields", async () => {
-		const { slack, calls, respondWith } = mk();
-		respondWith(() =>
-			fakeResponse({
-				body: { present: true, complete: true, team_id: "T123" },
-			}),
-		);
-		expect(await slack.environmentStatus()).toEqual({
-			present: true,
-			complete: true,
-			team_id: "T123",
-		});
-		await slack.importEnvironment({ app_id: "app-1", installation_id: "inst-1" });
-		expect(calls.map((call) => [call.init.method, call.url])).toEqual([
-			["GET", "/api/slack/environment-import"],
-			["POST", "/api/slack/environment-import"],
-		]);
-		expect(parsedBody(calls[1])).toEqual({
-			app_id: "app-1",
-			installation_id: "inst-1",
-		});
-		expect(JSON.stringify(parsedBody(calls[1]))).not.toContain("token");
-	});
+  test("inspects and imports environment configuration without token fields", async () => {
+    const { slack, calls, respondWith } = mk();
+    respondWith(() =>
+      fakeResponse({
+        body: { present: true, complete: true, team_id: "T123" },
+      }),
+    );
+    expect(await slack.environmentStatus()).toEqual({
+      present: true,
+      complete: true,
+      team_id: "T123",
+    });
+    await slack.importEnvironment({
+      app_id: "app-1",
+      installation_id: "inst-1",
+    });
+    expect(calls.map((call) => [call.init.method, call.url])).toEqual([
+      ["GET", "/api/slack/environment-import"],
+      ["POST", "/api/slack/environment-import"],
+    ]);
+    expect(parsedBody(calls[1])).toEqual({
+      app_id: "app-1",
+      installation_id: "inst-1",
+    });
+    expect(JSON.stringify(parsedBody(calls[1]))).not.toContain("token");
+  });
 
   test("lists apps and forwards AbortSignal through the SDK transport", async () => {
     const { slack, calls, respondWith } = mk();
@@ -85,12 +88,39 @@ describe("Slack catalog resource", () => {
     expect(parsedBody(calls[3])).toEqual({});
   });
 
+  test("uses value-free OAuth start and status contracts", async () => {
+    const { slack, calls } = mk();
+    await slack.oauthConfig();
+    await slack.configureOAuthClient("app 1/x", {
+      client_id: "123.456",
+      client_secret: "write-only-secret",
+    });
+    await slack.startOAuthInstallation("app 1/x", { name: "Workspace" });
+    await slack.startOAuthReplacement("inst 1/x");
+    await slack.oauthFlowStatus("flow 1/x");
+    expect(calls.map((call) => [call.init.method, call.url])).toEqual([
+      ["GET", "/api/slack/oauth/config"],
+      ["PUT", "/api/slack/apps/app%201%2Fx/oauth-client"],
+      ["POST", "/api/slack/apps/app%201%2Fx/oauth/start"],
+      ["POST", "/api/slack/installations/inst%201%2Fx/oauth/start"],
+      ["GET", "/api/slack/oauth/flows/flow%201%2Fx"],
+    ]);
+    expect(parsedBody(calls[1])).toEqual({
+      client_id: "123.456",
+      client_secret: "write-only-secret",
+    });
+    expect(parsedBody(calls[2])).toEqual({ name: "Workspace" });
+    expect(parsedBody(calls[3])).toEqual({});
+  });
+
   test("prepares and deletes app profiles through distinct routes", async () => {
     const { slack, calls } = mk();
     await slack.prepareDeleteApp("app-1");
+    await slack.removeAppReferences("app-1");
     await slack.deleteApp("app-1");
     expect(calls.map((call) => [call.init.method, call.url])).toEqual([
       ["GET", "/api/slack/apps/app-1/prepare-delete"],
+      ["DELETE", "/api/slack/apps/app-1/references"],
       ["DELETE", "/api/slack/apps/app-1"],
     ]);
   });
@@ -121,6 +151,7 @@ describe("Slack catalog resource", () => {
     await slack.replaceInstallationToken("inst 1/x", "test-bot-replacement");
     await slack.validateInstallation("inst 1/x");
     await slack.prepareDeleteInstallation("inst 1/x");
+    await slack.removeInstallationReferences("inst 1/x");
     await slack.deleteInstallation("inst 1/x");
     expect(calls.map((call) => [call.init.method, call.url])).toEqual([
       ["GET", "/api/slack/installations/inst%201%2Fx"],
@@ -128,6 +159,7 @@ describe("Slack catalog resource", () => {
       ["PUT", "/api/slack/installations/inst%201%2Fx/token"],
       ["POST", "/api/slack/installations/inst%201%2Fx/validate"],
       ["GET", "/api/slack/installations/inst%201%2Fx/prepare-delete"],
+      ["DELETE", "/api/slack/installations/inst%201%2Fx/references"],
       ["DELETE", "/api/slack/installations/inst%201%2Fx"],
     ]);
     expect(parsedBody(calls[1])).toEqual({ name: "Renamed team" });
@@ -169,5 +201,38 @@ describe("Slack catalog resource", () => {
     await expect(slack.deleteApp("app-1")).rejects.toBeInstanceOf(
       MittoApiError,
     );
+  });
+
+  test("delegated-user create rejection surfaces a canonical conflict code and safe message", async () => {
+    const { slack, respondWith } = mk();
+    const canary = "write-only-user-token-missing-app-id";
+    respondWith(() =>
+      fakeResponse({
+        status: 409,
+        body: {
+          error: {
+            code: "conflict",
+            message:
+              "Slack did not return the app identity needed to safely bind this delegated-user credential. Manual delegated-user setup is unavailable until Slack OAuth provenance is supported; use a bot token instead.",
+          },
+        },
+      }),
+    );
+    let caught;
+    try {
+      await slack.createInstallation("app-1", {
+        name: "Team",
+        team_id: "T123",
+        token: canary,
+      });
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(MittoApiError);
+    expect(caught.status).toBe(409);
+    expect(caught.code).toBe("conflict");
+    expect(caught.message).toContain("OAuth");
+    expect(caught.message).toContain("delegated-user");
+    expect(caught.message).not.toContain(canary);
   });
 });

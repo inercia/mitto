@@ -14,6 +14,7 @@ export function createSlackResource(config) {
     request(config, { method, path, ...opts });
   const appPath = (id) => `/api/slack/apps/${enc(id)}`;
   const installationPath = (id) => `/api/slack/installations/${enc(id)}`;
+  const oauthFlowPath = (id) => `/api/slack/oauth/flows/${enc(id)}`;
 
   return {
     environmentStatus: (opts) =>
@@ -28,10 +29,17 @@ export function createSlackResource(config) {
       call("PATCH", appPath(id), { body: { name }, ...opts }),
     replaceAppToken: (id, token, opts) =>
       call("PUT", `${appPath(id)}/token`, { body: { token }, ...opts }),
+    oauthConfig: (opts) => call("GET", "/api/slack/oauth/config", opts),
+    configureOAuthClient: (id, body, opts) =>
+      call("PUT", `${appPath(id)}/oauth-client`, { body, ...opts }),
+    startOAuthInstallation: (id, body, opts) =>
+      call("POST", `${appPath(id)}/oauth/start`, { body, ...opts }),
     validateApp: (id, opts) =>
       call("POST", `${appPath(id)}/validate`, { body: {}, ...opts }),
     prepareDeleteApp: (id, opts) =>
       call("GET", `${appPath(id)}/prepare-delete`, opts),
+    removeAppReferences: (id, opts) =>
+      call("DELETE", `${appPath(id)}/references`, opts),
     deleteApp: (id, opts) => call("DELETE", appPath(id), opts),
 
     listInstallations: (appId, opts) =>
@@ -46,6 +54,12 @@ export function createSlackResource(config) {
         body: { token },
         ...opts,
       }),
+    startOAuthReplacement: (id, opts) =>
+      call("POST", `${installationPath(id)}/oauth/start`, {
+        body: {},
+        ...opts,
+      }),
+    oauthFlowStatus: (id, opts) => call("GET", oauthFlowPath(id), opts),
     validateInstallation: (id, opts) =>
       call("POST", `${installationPath(id)}/validate`, {
         body: {},
@@ -53,6 +67,8 @@ export function createSlackResource(config) {
       }),
     prepareDeleteInstallation: (id, opts) =>
       call("GET", `${installationPath(id)}/prepare-delete`, opts),
+    removeInstallationReferences: (id, opts) =>
+      call("DELETE", `${installationPath(id)}/references`, opts),
     deleteInstallation: (id, opts) =>
       call("DELETE", installationPath(id), opts),
     listChannels: (id, params, opts) =>
