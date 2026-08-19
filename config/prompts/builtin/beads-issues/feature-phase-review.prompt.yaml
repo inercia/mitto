@@ -132,18 +132,11 @@ prompt: |
   review; the bead comment already records what changed.
   {{- end }}
 
-  {{ if $pr -}}
-  Submit strategy is **Pull Request** — do **not** close the bead here even if
-  otherwise satisfied; leave that to the driver's Done branch, which pushes the
-  branch and opens the PR before closing (`push-and-open-pr` is invoked exactly
-  once there, never per phase).
-  {{- else -}}
-  Optionally close the bead now that it is verified:
-
-  ```bash
-  bd close {{ $target }} --reason "<short summary of what was delivered>"
-  ```
-  {{- end }}
+  Do **not** close the bead in this phase, for any submit strategy. Closure is
+  centralized in the driver's Done branch, which submits a PR when requested and
+  verifies that every direct child is closed before closing the bead. This phase
+  cannot safely decide whether the verified target is a leaf or a parent whose
+  decomposed child work remains outstanding.
 
   Then stop — the driver's next scheduled run will observe `verified` and take its
   inline Done branch (self-terminate).
@@ -162,8 +155,8 @@ prompt: |
 
   ## Guidelines
 
-  - **One stage only.** This phase advances at most one label (`verified`). Closing
-    the bead here is optional; the driver's Done branch always self-terminates.
+  - **One stage only.** This phase advances at most one label (`verified`). It never
+    closes the bead; the driver's child-aware Done branch always self-terminates.
   - **Never rubber-stamp.** Any unmet check means the label must NOT advance — loop
     back or defer, never guess that it is "probably fine".
   {{ template "beads-issues/shared/phase-guidelines-footer" (dict

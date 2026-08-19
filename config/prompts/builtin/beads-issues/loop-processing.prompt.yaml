@@ -341,7 +341,11 @@ prompt: |
 
   Right after the reap loop, close any open OR legacy-`in_progress` bead still
   carrying the class-terminal label after the reopen guard above (independent of
-  whether its driver still exists). Track the closed IDs in
+  whether its driver still exists), **but only when it has no non-closed direct
+  children**. A terminal non-epic with open children is a completed parent scope,
+  not a closable leaf: leave its terminal label in place, keep it open, and let
+  §B/§C process its children. A later child-close event will revisit this sweep.
+  Fail closed when child enumeration fails or returns malformed JSON. Track the closed IDs in
   `closed_this_pass` so 2B/2C's "recently-closed parent" exclusion can skip their
   parent-child dependents this pass, AND so the epic-reaper below can walk their
   parent epics.
@@ -358,6 +362,12 @@ prompt: |
   {{ if ne .Args.FixBugs "false" -}}
   for id in $(bd list --type bug --status open,in_progress --label fixed --json | jq -r '.[].id'); do
     [ "${current_terminal_labels[$id]:-}" = "fixed" ] || continue
+    open_children=$(bd children "$id" --json 2>/dev/null \
+      | jq '[.[] | select(.status != "closed")] | length' 2>/dev/null || printf '1')
+    if [ "${open_children:-1}" -ne 0 ]; then
+      echo "Orchestrator: keeping terminal parent $id open; non-closed children=$open_children"
+      continue
+    fi
     bd comment "$id" "Orchestrator: terminal label=fixed; closing."
     started=$(bd show "$id" --json | jq -r '.[0].metadata.claimed_at // empty')
     prior=$(bd show "$id" --json | jq -r '.[0].metadata.work_started_at // empty')
@@ -379,6 +389,12 @@ prompt: |
   for id in $(bd list --status open,in_progress --label verified --json \
     | jq -r '.[] | select(.issue_type != "bug" and .issue_type != "epic") | .id'); do
     [ "${current_terminal_labels[$id]:-}" = "verified" ] || continue
+    open_children=$(bd children "$id" --json 2>/dev/null \
+      | jq '[.[] | select(.status != "closed")] | length' 2>/dev/null || printf '1')
+    if [ "${open_children:-1}" -ne 0 ]; then
+      echo "Orchestrator: keeping terminal parent $id open; non-closed children=$open_children"
+      continue
+    fi
     bd comment "$id" "Orchestrator: terminal label=verified; closing."
     started=$(bd show "$id" --json | jq -r '.[0].metadata.claimed_at // empty')
     prior=$(bd show "$id" --json | jq -r '.[0].metadata.work_started_at // empty')
@@ -534,7 +550,37 @@ prompt: |
 
   Run AFTER Step 2P (children/beads already reaped) and BEFORE Step 2Z (undefer),
   with Step 2Q immediately before this step so legacy statuses are recovered first,
-  so a released claim is eligible for §B/§C in the *same* pass. Enumerate every
+  so a released claim is eligible for §B/§C in the *same* pass. First reconcile
+  **malformed claims**: an `in-flight` label missing either `claimed_by` or
+  `claim_heartbeat_at` cannot participate in the stale-heartbeat cross-signal
+  check and otherwise remains excluded forever. Preserve such a label only when
+  the bead ID formally equals the `beads_issue` of a non-archived child or
+  workspace-peer conversation; that live owner can repair metadata on its next
+  driver iteration. Otherwise comment once, remove `in-flight`, clear any partial
+  `claimed_*` metadata, and classify the release as `malformed_claim`. Never use
+  titles to infer ownership.
+
+  ```bash
+  malformed_claim_owners=$(cat <<'OWNERS'
+  {{ .Children.MCPText }}
+  {{ .Workspace.Peers.AllText }}
+  OWNERS
+  )
+  while IFS=$'\t' read -r id claimer heartbeat; do
+    [ -n "$id" ] || continue
+    if grep -Fq "{$id}" <<<"$malformed_claim_owners"; then
+      echo "Orchestrator reaper: preserving malformed claim for formally owned bead $id"
+      continue
+    fi
+    bd comment "$id" "Orchestrator reaper: releasing malformed in-flight claim (claimer=${claimer:-missing}, heartbeat=${heartbeat:-missing}, reason=malformed_claim). Bead is back in the normal work queue."
+    bd update "$id" --remove-label in-flight \
+      --unset-metadata claimed_by --unset-metadata claimed_at \
+      --unset-metadata claim_heartbeat_at
+  done < <(bd list --status open --label in-flight --json \
+    | jq -r '.[] | select((.metadata.claimed_by // "") == "" or (.metadata.claim_heartbeat_at // "") == "") | [.id, (.metadata.claimed_by // ""), (.metadata.claim_heartbeat_at // "")] | @tsv')
+  ```
+
+  Then enumerate every well-formed
   open bead carrying the `in-flight` label whose `claim_heartbeat_at` is stale
   (older than 60 min) — the L2 loop-drivers refresh the heartbeat every
   iteration (`delay: 30 s + turn duration`), so 60 min without a heartbeat means
@@ -1470,9 +1516,10 @@ prompt: |
     `claimed_by`/`claimed_at`/`claim_heartbeat_at` metadata, while leaving
     `status=open` so a crash never strands the bead. 2B/2C exclude such beads
     (belt-and-suspenders with the workspace-peer rule above — a peer may have
-    been archived without clearing its claim). Step 2R's cross-signal reaper
-    releases stale claims (heartbeat > 60 min old AND claimer conversation is
-    gone / silent) so the bead re-enters the queue on the next pass. Every
+    been archived without clearing its claim). Step 2R releases malformed claims
+    that lack required owner/heartbeat metadata and have no formal conversation
+    owner; its cross-signal reaper also releases stale well-formed claims (heartbeat
+    > 60 min old AND claimer conversation is gone / silent). Every
     close site (Step 2P sweep, driver Done branches, mention Finalize) strips
     the claim before `bd close` so closed beads never carry ghost claims.
   - **Recover abandoned legacy `in_progress` status (Step 2Q).** Current drivers
@@ -1506,10 +1553,10 @@ prompt: |
     closed. Candidate parents come only from this pass's closures, reaped linked
     workers, and the current `onTasks` delta — never from a global epic sweep.
   {{ if or (ne .Args.FixBugs "false") (ne .Args.WorkOnFeatures "false") -}}
-  - **Close terminal-label beads.** Step 2P first removes a class-terminal label
-    carried through a later reopen, then closes any open bead still carrying the
-    current-episode terminal label ({{ if ne .Args.FixBugs "false" }}`fixed` for bugs{{ if ne .Args.WorkOnFeatures "false" }}, {{ end }}{{ end }}{{ if ne .Args.WorkOnFeatures "false" }}`verified` for features{{ end }}) — the driver
-    already satisfied its terminal contract in this episode. `needs-human` beads are excluded by
+  - **Close terminal-label leaves and completed parents.** Step 2P first removes a
+    class-terminal label carried through a later reopen, then closes an open bead
+    carrying the current-episode terminal label ({{ if ne .Args.FixBugs "false" }}`fixed` for bugs{{ if ne .Args.WorkOnFeatures "false" }}, {{ end }}{{ end }}{{ if ne .Args.WorkOnFeatures "false" }}`verified` for features{{ end }}) only when it has no non-closed direct children. A terminal parent stays
+    open until child completion triggers a later pass. `needs-human` beads are excluded by
     the label filter (deferred beads carry `needs-human`, not the terminal label);
     those stay with the human.
   {{- end }}

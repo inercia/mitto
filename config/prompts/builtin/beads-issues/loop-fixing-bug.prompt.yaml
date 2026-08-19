@@ -240,11 +240,12 @@ prompt: |
   ### Step 3d — Done (`fixed` present) — handled inline, EVALUATE FIRST
 
   **This branch is checked before every other Step 3 branch**, against the fresh
-  `bd show --json` from Step 1. All three phases are complete: **unconditionally close
-  the bead** and **unconditionally disable this conversation's loop flag** — no
-  phase dispatch on this branch, since there is no further phase work to do
-  (mitto-i5k: never treat close or `loop_enabled: false` as optional here — a
-  soft-gated Done branch lets the loop re-fire past the terminal label).
+  `bd show --json` from Step 1. All three phases are complete. **Unconditionally
+  disable this conversation's loop flag**, but close the bead only after the
+  child-aware guard below proves it is a leaf (or all direct children are closed).
+  There is no further phase work to dispatch (mitto-i5k: never treat
+  `loop_enabled: false` as optional here — a soft-gated Done branch lets the loop
+  re-fire past the terminal label).
 
   {{ if $pr }}
   Submit strategy is **Pull Request** — push the branch and open (or update) the PR
@@ -255,6 +256,22 @@ prompt: |
       "Target" $target
   ) }}
   {{ end }}
+
+  Before closing, fail-closed on the bead hierarchy:
+
+  ```bash
+  open_children=$(bd children {{ $target }} --json 2>/dev/null \
+    | jq '[.[] | select(.status != "closed")] | length' 2>/dev/null || printf '1')
+  ```
+
+  If `open_children` is not exactly `0`, this bead is a terminal **parent**, not
+  a closable leaf. Keep `fixed`, leave the bead open, post one comment naming the
+  non-closed child count, clear this driver's passive claim with the fragment
+  below, then jump directly to the self-termination calls below **without running
+  `bd close`**. Notify that child work remains; then do nothing further. The L1
+  `Loop processing tasks` supervisor owns the
+  eventual parent close after every child is closed.
+
   {{ template "beads-issues/shared/claim-clear" (dict
       "Target" $target
   ) }}

@@ -3715,6 +3715,65 @@ func TestIssueLoopProcessing_RecoversOrphanedInProgress(t *testing.T) {
 	}
 }
 
+// TestTerminalParentClosureGuards pins mitto-0cxa: terminal phase labels describe
+// the current bead's work, but must not close a parent while child work remains.
+// The L1 sweep and both L2 Done branches fail closed on bd children; the review
+// phase never bypasses that centralized guard. Step 2R must also release malformed
+// metadata-less in-flight claims, which otherwise strand those children forever.
+func TestTerminalParentClosureGuards(t *testing.T) {
+	read := func(name string) string {
+		t.Helper()
+		data, err := os.ReadFile(filepath.Join("../../config/prompts/builtin/beads-issues", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(data)
+	}
+
+	supervisor := read("loop-processing.prompt.yaml")
+	if got := strings.Count(supervisor, `open_children=$(bd children "$id" --json`); got != 2 {
+		t.Errorf("terminal sweep child guards = %d, want 2 (bug + non-bug)", got)
+	}
+	if got := strings.Count(supervisor, `if [ "${open_children:-1}" -ne 0 ]`); got < 2 {
+		t.Errorf("terminal sweep fail-closed branches = %d, want at least 2", got)
+	}
+	for _, frag := range []string{
+		"**malformed claims**",
+		`grep -Fq "{$id}" <<<"$malformed_claim_owners"`,
+		`select((.metadata.claimed_by // "") == "" or (.metadata.claim_heartbeat_at // "") == "")`,
+		"reason=malformed_claim",
+	} {
+		if !strings.Contains(supervisor, frag) {
+			t.Errorf("supervisor missing malformed-claim recovery contract %q", frag)
+		}
+	}
+
+	for _, name := range []string{"loop-implementing-feature.prompt.yaml", "loop-fixing-bug.prompt.yaml"} {
+		body := read(name)
+		guard := strings.Index(body, `open_children=$(bd children {{ $target }} --json`)
+		close := strings.Index(body, `bd close {{ $target }}`)
+		if guard < 0 || close < 0 || guard > close {
+			t.Errorf("%s must fail-closed on non-closed children before bd close", name)
+		}
+		for _, frag := range []string{"terminal **parent**, not", "leave the bead open", "eventual parent close after every child is closed"} {
+			if !strings.Contains(body, frag) {
+				t.Errorf("%s missing parent handoff contract %q", name, frag)
+			}
+		}
+		if strings.Contains(body, "**unconditionally close\n  the bead**") {
+			t.Errorf("%s retains stale unconditional-close instruction", name)
+		}
+	}
+
+	review := read("feature-phase-review.prompt.yaml")
+	if strings.Contains(review, `bd close {{ $target }}`) {
+		t.Errorf("feature review phase must not bypass the driver's child-aware Done branch")
+	}
+	if !strings.Contains(review, "verifies that every direct child is closed") {
+		t.Errorf("feature review phase must explain child-aware centralized closure")
+	}
+}
+
 // TestRenderPromptTemplate_Fragments verifies the fragment-attach behavior wired
 // into RenderPromptTemplate in mitto-g61.3: when a FragmentRegistry is installed
 // via SetCurrentFragments, every entry is attached to the template set as an
