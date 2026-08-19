@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -73,6 +74,31 @@ func (handlerUserSlack) ValidateInstallation(_ context.Context, token string) (s
 }
 func (handlerUserSlack) ListChannels(context.Context, string, string, int) (slackcatalog.ChannelPage, error) {
 	return slackcatalog.ChannelPage{}, nil
+}
+
+type handlerChannelRequest struct {
+	token  string
+	cursor string
+	limit  int
+}
+
+type handlerChannelSlack struct {
+	identities map[string]slackcatalog.InstallationIdentity
+	pages      map[string]slackcatalog.ChannelPage
+	requests   []handlerChannelRequest
+}
+
+func (*handlerChannelSlack) ValidateApp(context.Context, string) (string, error) { return "A123", nil }
+func (s *handlerChannelSlack) ValidateInstallation(_ context.Context, token string) (slackcatalog.InstallationIdentity, error) {
+	identity, ok := s.identities[token]
+	if !ok {
+		return slackcatalog.InstallationIdentity{}, slackcatalog.ErrInvalid
+	}
+	return identity, nil
+}
+func (s *handlerChannelSlack) ListChannels(_ context.Context, token, cursor string, limit int) (slackcatalog.ChannelPage, error) {
+	s.requests = append(s.requests, handlerChannelRequest{token: token, cursor: cursor, limit: limit})
+	return s.pages[token], nil
 }
 
 func newSlackHandlers(t *testing.T) *Handlers {
@@ -230,6 +256,83 @@ func TestSlackHandlersCanonicalErrors(t *testing.T) {
 			t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 		}
 	})
+}
+
+func TestSlackInstallationChannelsReturnsModeScopedPagesWithoutCredentials(t *testing.T) {
+	const botToken = "xoxb-handler-secret"
+	const userToken = "xoxp-handler-secret"
+	provider := &handlerChannelSlack{
+		identities: map[string]slackcatalog.InstallationIdentity{
+			botToken:  {CredentialKind: slackcatalog.CredentialKindBot, SlackAppID: "A123", TeamID: "T111", BotID: "B111", BotUserID: "U111"},
+			userToken: {CredentialKind: slackcatalog.CredentialKindUser, SlackAppID: "A123", TeamID: "T222", UserID: "U222"},
+		},
+		pages: map[string]slackcatalog.ChannelPage{
+			botToken:  {Channels: []slackcatalog.Channel{{ID: "C-BOT", Name: "bot-public", IsMember: true}}, NextCursor: "bot-next"},
+			userToken: {Channels: []slackcatalog.Channel{{ID: "G-USER", Name: "user-private", IsPrivate: true, IsMember: true}}, NextCursor: "user-next"},
+		},
+	}
+	service := slackcatalog.NewService(
+		slackcatalog.NewFileStore(filepath.Join(t.TempDir(), "catalog.json")),
+		&handlerCredentials{values: make(map[secrets.CredentialRef]string)}, provider, nil,
+	)
+	app, err := service.CreateApp(context.Background(), "App", "write-only-app-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bot, err := service.CreateInstallation(context.Background(), app.ID, "Bot", "T111", botToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	user, err := service.CreateInstallation(context.Background(), app.ID, "User", "T222", userToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := New(Deps{SlackCatalog: service})
+
+	for _, test := range []struct {
+		name        string
+		installID   string
+		wantID      string
+		wantName    string
+		wantPrivate bool
+		wantMember  bool
+		wantCursor  string
+	}{
+		{name: "bot", installID: bot.ID, wantID: "C-BOT", wantName: "bot-public", wantMember: true, wantCursor: "bot-next"},
+		{name: "delegated user", installID: user.ID, wantID: "G-USER", wantName: "user-private", wantPrivate: true, wantMember: true, wantCursor: "user-next"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			path := "/api/slack/installations/" + test.installID + "/channels?cursor=cursor-in&limit=25"
+			request := httptest.NewRequest(http.MethodGet, path, nil)
+			request.SetPathValue("installationId", test.installID)
+			response := httptest.NewRecorder()
+			h.HandleSlackInstallationChannels(response, request)
+			if response.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+			var page slackcatalog.ChannelPage
+			if err := json.Unmarshal(response.Body.Bytes(), &page); err != nil {
+				t.Fatal(err)
+			}
+			if len(page.Channels) != 1 || page.Channels[0].ID != test.wantID ||
+				page.Channels[0].Name != test.wantName || page.Channels[0].IsPrivate != test.wantPrivate ||
+				page.Channels[0].IsMember != test.wantMember || page.NextCursor != test.wantCursor {
+				t.Fatalf("channel page = %#v", page)
+			}
+			for _, credential := range []string{botToken, userToken} {
+				if strings.Contains(response.Body.String(), credential) {
+					t.Fatalf("response leaked installation credential: %s", response.Body.String())
+				}
+			}
+		})
+	}
+	wantRequests := []handlerChannelRequest{
+		{token: botToken, cursor: "cursor-in", limit: 25},
+		{token: userToken, cursor: "cursor-in", limit: 25},
+	}
+	if fmt.Sprint(provider.requests) != fmt.Sprint(wantRequests) {
+		t.Fatalf("provider requests = %#v, want %#v", provider.requests, wantRequests)
+	}
 }
 
 func TestSlackCredentialWritesRejectExternalRequestsBeforeReadingBody(t *testing.T) {

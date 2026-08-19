@@ -69,6 +69,51 @@ func TestSlackClientValidationAndPaginatedChannels(t *testing.T) {
 	}
 }
 
+func TestSlackClientListChannelsUsesInstallationCredentialByMode(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		token string
+		id    string
+		label string
+	}{
+		{name: "bot", token: "xoxb-bot-secret", id: "G-BOT", label: "bot-private"},
+		{name: "delegated user", token: "xoxp-user-secret", id: "G-USER", label: "user-private"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/conversations.list" {
+					t.Fatalf("unexpected Slack method %s", r.URL.Path)
+				}
+				if got := r.Header.Get("Authorization"); got != "Bearer "+test.token {
+					t.Fatalf("Authorization = %q", got)
+				}
+				if err := r.ParseForm(); err != nil {
+					t.Fatal(err)
+				}
+				if r.Form.Get("types") != "public_channel,private_channel" ||
+					r.Form.Get("exclude_archived") != "true" || r.Form.Get("limit") != "50" ||
+					r.Form.Get("cursor") != "cursor-in" {
+					t.Fatalf("conversations.list form = %v", r.Form)
+				}
+				fmt.Fprintf(w, `{"ok":true,"channels":[{"id":%q,"name":%q,"is_private":true,"is_member":true}],"response_metadata":{"next_cursor":"cursor-out"}}`, test.id, test.label)
+			}))
+			defer server.Close()
+
+			page, err := (&SlackClient{APIURL: server.URL, Client: server.Client()}).ListChannels(
+				context.Background(), test.token, "cursor-in", 50,
+			)
+			if err != nil || len(page.Channels) != 1 || page.Channels[0].ID != test.id ||
+				page.Channels[0].Name != test.label || !page.Channels[0].IsPrivate ||
+				!page.Channels[0].IsMember || page.NextCursor != "cursor-out" {
+				t.Fatalf("ListChannels() = %#v, %v", page, err)
+			}
+			if strings.Contains(fmt.Sprint(page), test.token) {
+				t.Fatalf("ListChannels() returned installation credential: %#v", page)
+			}
+		})
+	}
+}
+
 func TestSlackClientClassifiesDelegatedUserFromAuthTest(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/auth.test" {

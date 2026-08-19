@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -74,7 +75,15 @@ type fakeSlackProvider struct {
 	apps          map[string]string
 	installations map[string]InstallationIdentity
 	pages         map[string]ChannelPage
+	pagesByToken  map[string]map[string]ChannelPage
+	channelReqs   []channelRequest
 	channelCalls  int
+}
+
+type channelRequest struct {
+	token  string
+	cursor string
+	limit  int
 }
 
 func (f *fakeSlackProvider) ValidateApp(_ context.Context, token string) (string, error) {
@@ -91,8 +100,12 @@ func (f *fakeSlackProvider) ValidateInstallation(_ context.Context, token string
 	}
 	return identity, nil
 }
-func (f *fakeSlackProvider) ListChannels(_ context.Context, _ string, cursor string, _ int) (ChannelPage, error) {
+func (f *fakeSlackProvider) ListChannels(_ context.Context, token, cursor string, limit int) (ChannelPage, error) {
 	f.channelCalls++
+	f.channelReqs = append(f.channelReqs, channelRequest{token: token, cursor: cursor, limit: limit})
+	if pages, ok := f.pagesByToken[token]; ok {
+		return cloneChannelPage(pages[cursor]), nil
+	}
 	return cloneChannelPage(f.pages[cursor]), nil
 }
 
@@ -439,6 +452,90 @@ func TestReferenceBlockedDeletionAndChannelCache(t *testing.T) {
 	}
 	if _, err := credentials.Resolve(ref); !errors.Is(err, secrets.ErrNotFound) {
 		t.Fatalf("cascaded credential remains: %v", err)
+	}
+}
+
+func TestChannelsUseModeCredentialAndCachePerInstallation(t *testing.T) {
+	service, _, _, provider, _ := newTestService()
+	provider.installations["user-three"] = InstallationIdentity{
+		CredentialKind: CredentialKindUser, SlackAppID: "A111", TeamID: "T333", TeamName: "Three", UserID: "U444",
+	}
+	provider.pagesByToken = map[string]map[string]ChannelPage{
+		"bot-one": {
+			"":         {Channels: []Channel{{ID: "C-BOT", Name: "bot-public", IsMember: true}}, NextCursor: "bot-next"},
+			"bot-next": {Channels: []Channel{{ID: "G-BOT", Name: "bot-private", IsPrivate: true, IsMember: true}}},
+		},
+		"user-three": {
+			"":          {Channels: []Channel{{ID: "G-USER", Name: "user-private", IsPrivate: true, IsMember: true}}, NextCursor: "user-next"},
+			"user-next": {Channels: []Channel{{ID: "C-USER", Name: "user-public", IsMember: true}}},
+		},
+	}
+	ctx := context.Background()
+	app, err := service.CreateApp(ctx, "App", "app-one")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bot, err := service.CreateInstallation(ctx, app.ID, "Bot workspace", "T111", "bot-one")
+	if err != nil {
+		t.Fatal(err)
+	}
+	user, err := service.CreateInstallation(ctx, app.ID, "User workspace", "T333", "user-three")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	botFirst, err := service.Channels(ctx, bot.ID, "", 25)
+	if err != nil || len(botFirst.Channels) != 1 || botFirst.Channels[0].ID != "C-BOT" ||
+		botFirst.Channels[0].Name != "bot-public" || botFirst.Channels[0].IsPrivate ||
+		!botFirst.Channels[0].IsMember || botFirst.NextCursor != "bot-next" {
+		t.Fatalf("bot first page = %#v, %v", botFirst, err)
+	}
+	userFirst, err := service.Channels(ctx, user.ID, "", 25)
+	if err != nil || len(userFirst.Channels) != 1 || userFirst.Channels[0].ID != "G-USER" ||
+		userFirst.Channels[0].Name != "user-private" || !userFirst.Channels[0].IsPrivate ||
+		!userFirst.Channels[0].IsMember || userFirst.NextCursor != "user-next" {
+		t.Fatalf("user first page = %#v, %v", userFirst, err)
+	}
+	if _, err := service.Channels(ctx, bot.ID, "", 25); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Channels(ctx, user.ID, "", 25); err != nil {
+		t.Fatal(err)
+	}
+	if provider.channelCalls != 2 {
+		t.Fatalf("cached first pages made %d provider calls, want 2", provider.channelCalls)
+	}
+	botSecond, err := service.Channels(ctx, bot.ID, "bot-next", 25)
+	if err != nil || len(botSecond.Channels) != 1 || botSecond.Channels[0].ID != "G-BOT" ||
+		!botSecond.Channels[0].IsPrivate || !botSecond.Channels[0].IsMember {
+		t.Fatalf("bot second page = %#v, %v", botSecond, err)
+	}
+	userSecond, err := service.Channels(ctx, user.ID, "user-next", 25)
+	if err != nil || len(userSecond.Channels) != 1 || userSecond.Channels[0].ID != "C-USER" ||
+		userSecond.Channels[0].IsPrivate || !userSecond.Channels[0].IsMember {
+		t.Fatalf("user second page = %#v, %v", userSecond, err)
+	}
+	if _, err := service.Channels(ctx, bot.ID, "", 50); err != nil {
+		t.Fatal(err)
+	}
+	wantRequests := []channelRequest{
+		{token: "bot-one", limit: 25},
+		{token: "user-three", limit: 25},
+		{token: "bot-one", cursor: "bot-next", limit: 25},
+		{token: "user-three", cursor: "user-next", limit: 25},
+		{token: "bot-one", limit: 50},
+	}
+	if fmt.Sprint(provider.channelReqs) != fmt.Sprint(wantRequests) {
+		t.Fatalf("channel requests = %#v, want %#v", provider.channelReqs, wantRequests)
+	}
+	encoded, err := json.Marshal([]ChannelPage{botFirst, userFirst, botSecond, userSecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, credential := range []string{"bot-one", "user-three"} {
+		if strings.Contains(string(encoded), credential) {
+			t.Fatalf("channel pages leaked installation credential %q: %s", credential, encoded)
+		}
 	}
 }
 
