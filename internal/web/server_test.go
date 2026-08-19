@@ -3,6 +3,8 @@ package web
 import (
 	"bytes"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -10,7 +12,46 @@ import (
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/conversation"
 	"github.com/inercia/mitto/internal/session"
+	"github.com/inercia/mitto/internal/web/handlers"
+	"github.com/inercia/mitto/internal/web/middleware"
 )
+
+func TestSlackOAuthCallbackRequestLogRedactsQuery(t *testing.T) {
+	const canary = "oauth-code-and-state-canary"
+	request := httptest.NewRequest(http.MethodGet, "/mitto/api/slack/oauth/callback?code="+canary+"&state="+canary, nil)
+	got := requestURIForLog(request)
+	if got != "/mitto/api/slack/oauth/callback?<redacted>" || strings.Contains(got, canary) {
+		t.Fatalf("requestURIForLog() = %q", got)
+	}
+	ordinary := httptest.NewRequest(http.MethodGet, "/mitto/api/health?probe=ready", nil)
+	if got := requestURIForLog(ordinary); got != ordinary.RequestURI {
+		t.Fatalf("ordinary requestURIForLog() = %q", got)
+	}
+}
+
+func TestSlackOAuthRoutesKeepMutationsCSRFProtected(t *testing.T) {
+	csrf := middleware.NewCSRFManager()
+	defer csrf.Close()
+	server := &Server{apiHandlers: handlers.New(handlers.Deps{})}
+	routes := server.apiRoutes(nil, csrf, http.NotFoundHandler())
+	want := map[string]string{
+		"/api/slack/apps/{appId}/oauth-client":                  http.MethodPut,
+		"/api/slack/apps/{appId}/oauth/start":                   http.MethodPost,
+		"/api/slack/installations/{installationId}/oauth/start": http.MethodPost,
+		"/api/slack/oauth/callback":                             http.MethodGet,
+	}
+	for _, route := range routes {
+		if method, ok := want[route.pattern]; ok {
+			if route.method != method {
+				t.Errorf("route %s method = %q, want %q", route.pattern, route.method, method)
+			}
+			delete(want, route.pattern)
+		}
+	}
+	if len(want) != 0 {
+		t.Fatalf("missing Slack OAuth routes: %#v", want)
+	}
+}
 
 func TestConfig_GetWorkspaces_WithWorkspaces(t *testing.T) {
 	cfg := &Config{

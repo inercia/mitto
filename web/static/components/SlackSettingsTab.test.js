@@ -18,6 +18,7 @@ const {
   SLACK_CREATE_APP_URL,
   SLACK_SETUP_URL,
   SLACK_APP_MANIFEST_YAML,
+  slackAppManifestYAML,
   formatSlackValidation,
   formatSlackRelativeTime,
   slackAppSettingsURL,
@@ -1184,6 +1185,350 @@ if (isIsolatedComponentRun) {
             String(url).endsWith("/installations"),
           ),
         ).toBe(true);
+      } finally {
+        unmount(container);
+      }
+    });
+
+    test("configures a write-only OAuth secret and copies the exact redirect-aware manifest", async () => {
+      const secret = "write-only-oauth-client-secret";
+      const redirect = "https://mitto.example/mitto/api/slack/oauth/callback";
+      const { container, fetchMock, clipboard } = await mount((url, init) => {
+        if (url === "/api/slack/apps") return json({ apps: [appA] });
+        if (url === "/api/slack/apps/app-a/installations")
+          return json({ installations: [] });
+        if (url === "/api/slack/oauth/config")
+          return json({ available: true, redirect_uri: redirect });
+        if (
+          url === "/api/slack/apps/app-a/oauth-client" &&
+          init.method === "PUT"
+        )
+          return json({
+            ...appA,
+            oauth_client_id: "123.456",
+            oauth_client_secret_configured: true,
+          });
+        throw new Error(`Unexpected request: ${init.method} ${url}`);
+      });
+      try {
+        await waitFor(
+          () => container.textContent.includes(redirect),
+          container,
+          "OAuth redirect guidance",
+        );
+        const panel = container.querySelector(
+          '[data-testid="slack-oauth-client-config"]',
+        );
+        const [clientId, clientSecret] = panel.querySelectorAll("input");
+        inputValue(clientId, "123.456");
+        inputValue(clientSecret, secret);
+        await flushUI();
+        buttonByText(panel, "Save OAuth client").click();
+        await waitFor(
+          () =>
+            panel.querySelector('input[type="password"]').value === "" &&
+            panel
+              .querySelector('input[type="password"]')
+              .placeholder.includes("Configured"),
+          container,
+          "OAuth secret clearing",
+        );
+        const request = fetchMock.mock.calls.find(
+          ([url, init]) =>
+            url === "/api/slack/apps/app-a/oauth-client" &&
+            init.method === "PUT",
+        );
+        expect(JSON.parse(request[1].body)).toEqual({
+          client_id: "123.456",
+          client_secret: secret,
+        });
+        expect(container.textContent).not.toContain(secret);
+
+        container.querySelector('[data-testid="slack-copy-manifest"]').click();
+        await waitFor(
+          () => clipboard.writeText.mock.calls.length === 1,
+          container,
+          "redirect-aware manifest copy",
+        );
+        expect(clipboard.writeText).toHaveBeenCalledWith(
+          slackAppManifestYAML(redirect),
+        );
+      } finally {
+        unmount(container);
+      }
+    });
+
+    test("completes delegated-user OAuth creation and refreshes value-free identity metadata", async () => {
+      const oauthApp = {
+        ...appA,
+        oauth_client_id: "123.456",
+        oauth_client_secret_configured: true,
+      };
+      const installation = {
+        id: "inst-oauth",
+        app_id: "app-a",
+        name: "OAuth Team",
+        credential_kind: "user",
+        team_id: "T123",
+        team_name: "Example",
+        user_id: "U123",
+        oauth_authorized: true,
+        token_configured: true,
+      };
+      let installationLists = 0;
+      const { container, fetchMock, showToast } = await mount((url, init) => {
+        if (url === "/api/slack/apps") return json({ apps: [oauthApp] });
+        if (url === "/api/slack/oauth/config")
+          return json({
+            available: true,
+            redirect_uri:
+              "https://mitto.example/mitto/api/slack/oauth/callback",
+          });
+        if (
+          url === "/api/slack/apps/app-a/installations" &&
+          init.method === "GET"
+        ) {
+          installationLists += 1;
+          return json({
+            installations: installationLists > 1 ? [installation] : [],
+          });
+        }
+        if (
+          url === "/api/slack/apps/app-a/oauth/start" &&
+          init.method === "POST"
+        )
+          return json({
+            flow_id: "flow-create",
+            authorization_url: "https://slack.example/authorize",
+            expires_at: "2026-08-19T20:10:00Z",
+          });
+        if (url === "/api/slack/oauth/flows/flow-create")
+          return json({
+            flow_id: "flow-create",
+            status: "succeeded",
+            installation_id: "inst-oauth",
+            expires_at: "2026-08-19T20:10:00Z",
+          });
+        throw new Error(`Unexpected request: ${init.method} ${url}`);
+      });
+      try {
+        container
+          .querySelector('[data-testid="slack-add-installation"]')
+          .click();
+        await flushUI();
+        const form = container.querySelector(
+          '[data-testid="slack-new-installation-form"]',
+        );
+        inputValue(form.querySelector("input[required]"), "OAuth Team");
+        inputValue(form.querySelector('input[placeholder="T…"]'), "T123");
+        const authorize = buttonByText(form, "Authorize delegated user");
+        await waitFor(
+          () => !authorize.disabled,
+          container,
+          "OAuth create ready",
+        );
+        authorize.click();
+        await waitFor(
+          () => container.textContent.includes("User: U123"),
+          container,
+          "OAuth identity refresh",
+        );
+        const start = fetchMock.mock.calls.find(
+          ([url, init]) =>
+            url === "/api/slack/apps/app-a/oauth/start" &&
+            init.method === "POST",
+        );
+        expect(JSON.parse(start[1].body)).toEqual({
+          name: "OAuth Team",
+          team_id: "T123",
+        });
+        expect(window.open).toHaveBeenCalledWith(
+          "https://slack.example/authorize",
+          "_blank",
+          "noopener,noreferrer",
+        );
+        expect(container.textContent).toContain("Slack team: Example");
+        expect(container.textContent).not.toContain("access_token");
+        expect(showToast).toHaveBeenCalledWith(
+          expect.objectContaining({
+            message: "Slack delegated-user authorization completed.",
+          }),
+        );
+      } finally {
+        unmount(container);
+      }
+    });
+
+    test("replacement cancellation is actionable and uses the replacement OAuth endpoint", async () => {
+      const oauthApp = {
+        ...appA,
+        oauth_client_id: "123.456",
+        oauth_client_secret_configured: true,
+      };
+      const installation = {
+        id: "inst-a",
+        app_id: "app-a",
+        name: "Alpha Team",
+        credential_kind: "bot",
+        team_id: "T111",
+        token_configured: true,
+      };
+      const { container, fetchMock } = await mount((url, init) => {
+        if (url === "/api/slack/apps") return json({ apps: [oauthApp] });
+        if (url === "/api/slack/oauth/config")
+          return json({
+            available: true,
+            redirect_uri: "https://mitto.example/cb",
+          });
+        if (url === "/api/slack/apps/app-a/installations")
+          return json({ installations: [installation] });
+        if (
+          url === "/api/slack/installations/inst-a/oauth/start" &&
+          init.method === "POST"
+        )
+          return json({
+            flow_id: "flow-replace",
+            authorization_url: "https://slack.example/replace",
+            expires_at: "2026-08-19T20:10:00Z",
+          });
+        if (url === "/api/slack/oauth/flows/flow-replace")
+          return json({
+            flow_id: "flow-replace",
+            status: "failed",
+            error: "authorization_cancelled",
+            message: "Slack authorization was cancelled or denied.",
+            expires_at: "2026-08-19T20:10:00Z",
+          });
+        throw new Error(`Unexpected request: ${init.method} ${url}`);
+      });
+      try {
+        await waitFor(
+          () =>
+            container.querySelector(
+              '[data-testid="slack-installation-detail"]',
+            ),
+          container,
+          "installation detail",
+        );
+        const authorize = buttonByText(container, "Authorize delegated user");
+        await waitFor(
+          () => !authorize.disabled,
+          container,
+          "OAuth replacement ready",
+        );
+        authorize.click();
+        await waitFor(
+          () => container.textContent.includes("cancelled or denied"),
+          container,
+          "OAuth cancellation",
+        );
+        const start = fetchMock.mock.calls.find(
+          ([url]) => url === "/api/slack/installations/inst-a/oauth/start",
+        );
+        expect(start[1].body).toBe("{}");
+        expect(container.textContent).toContain("Bot");
+      } finally {
+        unmount(container);
+      }
+    });
+
+    test("surfaces mismatch, expiry, and replay OAuth failures without rendering secrets", async () => {
+      const cases = [
+        ["identity_mismatch", "did not match the selected app or workspace"],
+        ["expired", "authorization expired; start again"],
+        ["authorization_rejected", "invalid or already used"],
+      ];
+      for (const [error, message] of cases) {
+        const oauthApp = {
+          ...appA,
+          oauth_client_secret_configured: true,
+        };
+        const { container } = await mount((url, init) => {
+          if (url === "/api/slack/apps") return json({ apps: [oauthApp] });
+          if (url === "/api/slack/oauth/config")
+            return json({
+              available: true,
+              redirect_uri: "https://mitto.example/cb",
+            });
+          if (
+            url === "/api/slack/apps/app-a/installations" &&
+            init.method === "GET"
+          )
+            return json({ installations: [] });
+          if (url === "/api/slack/apps/app-a/oauth/start")
+            return json({
+              flow_id: `flow-${error}`,
+              authorization_url: "https://slack.example/authorize",
+              expires_at: "2026-08-19T20:10:00Z",
+            });
+          if (url === `/api/slack/oauth/flows/flow-${error}`)
+            return json({
+              flow_id: `flow-${error}`,
+              status: "failed",
+              error,
+              message,
+              expires_at: "2026-08-19T20:10:00Z",
+            });
+          throw new Error(`Unexpected request: ${init.method} ${url}`);
+        });
+        try {
+          container
+            .querySelector('[data-testid="slack-add-installation"]')
+            .click();
+          await flushUI();
+          const form = container.querySelector(
+            '[data-testid="slack-new-installation-form"]',
+          );
+          inputValue(form.querySelector("input[required]"), "Workspace");
+          const authorize = buttonByText(form, "Authorize delegated user");
+          await waitFor(
+            () => !authorize.disabled,
+            container,
+            `OAuth ${error} ready`,
+          );
+          authorize.click();
+          await waitFor(
+            () => container.textContent.includes(message),
+            container,
+            `OAuth ${error} error`,
+          );
+          expect(container.textContent).not.toContain("access_token");
+          expect(container.textContent).not.toContain("client_secret");
+        } finally {
+          unmount(container);
+        }
+      }
+    });
+
+    test("disables OAuth start and shows external-address setup guidance when unavailable", async () => {
+      const oauthApp = { ...appA, oauth_client_secret_configured: true };
+      const guidance =
+        "Configure an HTTPS web.hooks.external_address before starting Slack OAuth.";
+      const { container } = await mount((url) => {
+        if (url === "/api/slack/apps") return json({ apps: [oauthApp] });
+        if (url === "/api/slack/oauth/config")
+          return json({ available: false, message: guidance });
+        if (url === "/api/slack/apps/app-a/installations")
+          return json({ installations: [] });
+        throw new Error(`Unexpected request: ${url}`);
+      });
+      try {
+        await waitFor(
+          () => container.textContent.includes(guidance),
+          container,
+          "external OAuth guidance",
+        );
+        container
+          .querySelector('[data-testid="slack-add-installation"]')
+          .click();
+        await flushUI();
+        const form = container.querySelector(
+          '[data-testid="slack-new-installation-form"]',
+        );
+        inputValue(form.querySelector("input[required]"), "Workspace");
+        expect(buttonByText(form, "Authorize delegated user").disabled).toBe(
+          true,
+        );
       } finally {
         unmount(container);
       }

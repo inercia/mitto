@@ -665,6 +665,7 @@ func TestAuthManager_isPublicPath(t *testing.T) {
 		{"login endpoint", "/mitto/api/login", true},
 		{"csrf-token endpoint", "/mitto/api/csrf-token", true},
 		{"supported-runners endpoint", "/mitto/api/supported-runners", true},
+		{"Slack OAuth callback", "/mitto/api/slack/oauth/callback", true},
 
 		// SDK asset tree (mitto-laa3): auth.js imports from ./sdk/index.js,
 		// so the whole /sdk/ tree must be public or the login page's module
@@ -683,6 +684,7 @@ func TestAuthManager_isPublicPath(t *testing.T) {
 
 		// API paths without prefix (should not match)
 		{"login without prefix", "/api/login", false},
+		{"Slack OAuth callback without prefix", "/api/slack/oauth/callback", false},
 	}
 
 	for _, tt := range tests {

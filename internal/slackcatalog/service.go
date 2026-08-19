@@ -1162,6 +1162,7 @@ func normalizeInstallationIdentity(identity InstallationIdentity) InstallationId
 
 func applyInstallationIdentity(installation *Installation, identity InstallationIdentity) {
 	installation.CredentialKind = identity.CredentialKind
+	installation.TeamID = identity.TeamID
 	installation.TeamName = identity.TeamName
 	installation.BotID = identity.BotID
 	installation.BotUserID = identity.BotUserID
