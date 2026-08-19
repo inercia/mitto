@@ -23,6 +23,7 @@ const FREE_TEXT_PREVIEW_MAX = 40;
  * @param {boolean} props.disabled - Whether the selector is read-only
  * @param {Function} props.onSelect - Callback when a prompt is selected: (promptName) => void
  * @param {boolean} props.isOpen - Kept for API compat; parent card controls visibility now (ignored here)
+ * @param {"above"|"below"} props.dropdownPlacement - Where the menu opens relative to the trigger
  */
 export function LoopPromptSelector({
   prompts = [],
@@ -34,6 +35,7 @@ export function LoopPromptSelector({
   // When true the trigger expands to fill its container (used in the mobile
   // expanded-properties row); otherwise it stays compact (header placement).
   fullWidth = false,
+  dropdownPlacement = "above",
   // Testid roots. Distinct prefixes let multiple instances (header + mobile
   // body) coexist in the DOM without breaking strict-mode Playwright locators.
   idPrefix = "loop-prompt-selector",
@@ -184,12 +186,16 @@ export function LoopPromptSelector({
         text=${bodyTip.text}
       />`}
 
-      <!-- Dropdown panel (appears ABOVE the trigger button) -->
+      <!-- Dropdown panel -->
       ${showDropdown &&
       html`
         <div
-          class="absolute bottom-full left-0 mb-1 bg-mitto-surface-2 border border-mitto-border-2 rounded-lg z-50 overflow-hidden flex flex-col"
-          style="width: 20rem; min-width: 20rem; max-width: 20rem; max-height: 400px; box-shadow: 0 20px 40px rgba(0, 0, 0, 0.5), 0 8px 16px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.1);"
+          class="absolute ${dropdownPlacement === "below"
+            ? "top-full right-0 mt-1"
+            : "bottom-full left-0 mb-1"} bg-mitto-surface-2 border border-mitto-border-2 rounded-lg z-50 overflow-hidden flex flex-col"
+          style="width:${dropdownPlacement === "below"
+            ? "100%"
+            : "min(20rem,calc(100vw - 2rem))"};max-height:400px;box-shadow:0 20px 40px rgba(0,0,0,0.5),0 8px 16px rgba(0,0,0,0.4),0 0 0 1px rgba(255,255,255,0.1);"
           data-testid="${idPrefix}-dropdown"
         >
           <${PromptsMenu}

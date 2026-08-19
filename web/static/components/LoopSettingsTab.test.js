@@ -1,18 +1,32 @@
 /**
- * Contract tests for LoopSettingsTab.js — raw source assertions.
- *
- * LoopSettingsTab.js cannot be imported directly under jsdom (it reads
- * `window.preact` at module load time). These tests read the raw source
- * and assert on the exact wiring, following the SessionPanel.test.js pattern.
+ * Contract tests for LoopSettingsTab.js — raw source assertions, plus a
+ * focused mounted-behavior section (mitto-xh79) for the On Slack card
+ * header action. Most of this file predates the mounted-DOM harness other
+ * components use (window.preact set before a dynamic import — see
+ * SlackSettingsTab.test.js/SlackSubscriptionEditor.test.js) and instead
+ * reads the raw source and asserts on the exact wiring, following the
+ * SessionPanel.test.js pattern; the mitto-xh79 section below adopts the
+ * mounted-DOM approach for the one behavior that needs a real click/DOM
+ * assertion (label-vs-sibling placement, checkbox untouched).
  */
 
+import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
-import { describe, test, expect } from "../utils/testing/testGlobals.js";
+import {
+  describe,
+  test,
+  expect,
+  jest,
+} from "../utils/testing/testGlobals.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const tabJs = readFileSync(resolve(__dirname, "LoopSettingsTab.js"), "utf8");
+const nativeSelectJs = readFileSync(
+  resolve(__dirname, "NativeSelectWithChevron.js"),
+  "utf8",
+);
 
 // =============================================================================
 // Import wiring tests
@@ -22,6 +36,12 @@ describe("LoopSettingsTab.js: imports and dependencies", () => {
   test("imports LoopPromptSelector from ./LoopPromptSelector.js", () => {
     expect(tabJs).toMatch(
       /import \{ LoopPromptSelector \} from "\.\/LoopPromptSelector\.js";/,
+    );
+  });
+
+  test("imports the shared native-select dropdown affordance", () => {
+    expect(tabJs).toMatch(
+      /import \{ NativeSelectWithChevron \} from "\.\/NativeSelectWithChevron\.js";/,
     );
   });
 
@@ -115,6 +135,61 @@ describe("LoopSettingsTab.js: four trigger section titles", () => {
     const triggerFieldsetEnd = tabJs.indexOf("</fieldset>", onSlackIdx);
     expect(childIdx).toBeGreaterThan(onSlackIdx);
     expect(childIdx).toBeLessThan(triggerFieldsetEnd);
+  });
+});
+
+// =============================================================================
+// mitto-xh79: On Slack card header action (gear button) wiring
+// =============================================================================
+
+describe("LoopSettingsTab.js: On Slack card header action (mitto-xh79)", () => {
+  test("TriggerSection accepts an optional headerAction rendered beside (not inside) the label", () => {
+    const triggerIdx = tabJs.indexOf("function TriggerSection(");
+    expect(triggerIdx).toBeGreaterThan(-1);
+    const snippet = tabJs.slice(triggerIdx, triggerIdx + 2400);
+    expect(snippet).toMatch(/headerAction/);
+    // The label carries flex-1 (shares the row with the action) instead of
+    // the old full-width label, and the action is a sibling rendered after
+    // </label> closes, not a child of it.
+    const labelIdx = snippet.indexOf("<label");
+    const labelCloseIdx = snippet.indexOf("</label>", labelIdx);
+    const actionIdx = snippet.indexOf("headerAction &&", labelCloseIdx);
+    expect(labelIdx).toBeGreaterThan(-1);
+    expect(labelCloseIdx).toBeGreaterThan(labelIdx);
+    expect(actionIdx).toBeGreaterThan(labelCloseIdx);
+    expect(snippet.slice(labelIdx, labelCloseIdx)).toMatch(
+      /class="label cursor-pointer gap-3 justify-start flex-1 min-w-0"/,
+    );
+  });
+
+  test("imports SettingsIcon, Tooltip, and openSettingsTab for the gear button", () => {
+    expect(tabJs).toMatch(/SettingsIcon/);
+    expect(tabJs).toMatch(
+      /import \{ Tooltip \} from "\.\/Tooltip\.js";/,
+    );
+    expect(tabJs).toMatch(
+      /import \{ openSettingsTab \} from "\.\.\/utils\/slackEvents\.js";/,
+    );
+  });
+
+  test("onSlack passes a compact gear headerAction wired to openSettingsTab('slack')", () => {
+    const onSlackIdx = tabJs.indexOf('trigger="onSlack"');
+    expect(onSlackIdx).toBeGreaterThan(-1);
+    const snippet = tabJs.slice(onSlackIdx, onSlackIdx + 900);
+    expect(snippet).toMatch(/headerAction=\$\{html`<\$\{Tooltip\}/);
+    expect(snippet).toMatch(
+      /tip="Manage Slack integrations"/,
+    );
+    expect(snippet).toMatch(/class="btn btn-ghost btn-square btn-sm"/);
+    expect(snippet).toMatch(
+      /data-testid="slack-manage-integrations"/,
+    );
+    expect(snippet).toMatch(
+      /aria-label="Manage Slack integrations"/,
+    );
+    expect(snippet).toMatch(/title="Manage Slack integrations"/);
+    expect(snippet).toMatch(/onClick=\$\{\(\) => openSettingsTab\("slack"\)\}/);
+    expect(snippet).toMatch(/<\$\{SettingsIcon\}/);
   });
 });
 
@@ -239,6 +314,7 @@ describe("LoopSettingsTab.js: confirmation flows", () => {
 describe("LoopSettingsTab.js: prompt selector and arguments", () => {
   test("uses LoopPromptSelector component", () => {
     expect(tabJs).toMatch(/<\${LoopPromptSelector}/);
+    expect(tabJs).toMatch(/dropdownPlacement="below"/);
   });
 
   test("uses promptDialogParameters for selected prompt", () => {
@@ -257,10 +333,11 @@ describe("LoopSettingsTab.js: prompt selector and arguments", () => {
     expect(snippet).toMatch(/selectedPromptParams/);
   });
 
-  test("includes a recognizable parameter button beside the named prompt selector", () => {
+  test("includes a compact sliders-only parameter button beside the named prompt selector", () => {
     expect(tabJs).toMatch(/<\$\{SlidersIcon\}/);
     expect(tabJs).toMatch(/aria-label="Configure prompt parameters"/);
-    expect(tabJs).toMatch(/Parameters/);
+    expect(tabJs).toMatch(/btn-square/);
+    expect(tabJs).toMatch(/<\$\{SlidersIcon\}[^>]*\/>\s*<\/button>/);
     expect(tabJs).toMatch(/onClick=\${openArguments}/);
   });
 });
@@ -292,18 +369,15 @@ describe("LoopSettingsTab.js: prompt mode handling", () => {
 
 describe("LoopSettingsTab.js: narrow drawer layout", () => {
   test("all native Loop selects use one explicit chevron wrapper", () => {
-    const idx = tabJs.indexOf("function NativeSelectWithChevron(");
-    expect(idx).toBeGreaterThan(-1);
-    const snippet = tabJs.slice(idx, idx + 1500);
-    expect(snippet).toMatch(/class="select select-sm w-full pr-8"/);
-    expect(snippet).toMatch(
+    expect(nativeSelectJs).toMatch(/class="select select-sm w-full pr-8"/);
+    expect(nativeSelectJs).toMatch(
       /style="appearance:none;-webkit-appearance:none;background-image:none;"/,
     );
-    expect(snippet).toMatch(
+    expect(nativeSelectJs).toMatch(
       /data-testid="\$\{testId\}-chevron"[\s\S]*?style="position:absolute;right:0\.5rem;top:50%;transform:translateY\(-50%\);pointer-events:none;"[\s\S]*?<\$\{ChevronDownIcon\}/,
     );
     expect(tabJs.match(/<\$\{NativeSelectWithChevron\}/g)).toHaveLength(3);
-    expect(tabJs.match(/<select/g)).toHaveLength(1);
+    expect(tabJs).not.toMatch(/<select/g);
   });
 
   test("ToggleRow explicitly constrains wrapping copy beside its non-shrinking toggle", () => {
@@ -386,3 +460,166 @@ describe("LoopSettingsTab.js: narrow drawer layout", () => {
     expect(tabJs).not.toMatch(/sm:grid-cols-2/);
   });
 });
+
+// =============================================================================
+// mitto-xh79: On Slack card header action — mounted DOM behavior
+//
+// Runs in an isolated child process (own happy-dom via bunfig preload) so
+// setting window.preact before the dynamic import never leaks into the raw
+// source-string tests above, mirroring SlackSettingsTab.test.js /
+// SlackSubscriptionEditor.test.js.
+// =============================================================================
+
+const isMountedChildRun =
+  process.env.MITTO_LOOP_SETTINGS_COMPONENT_TEST_CHILD === "1";
+
+if (isMountedChildRun) {
+  const preact = await import("../vendor/preact.js");
+  const hooks = await import("../vendor/preact-hooks.js");
+  const htm = (await import("../vendor/htm.js")).default;
+  const previousPreact = window.preact;
+  window.preact = { ...preact, ...hooks, html: htm.bind(preact.h) };
+  const { LoopSettingsTab } = await import(
+    "./LoopSettingsTab.js?mitto-xh79-mounted-tests"
+  );
+  const { _resetSdkClientForTests } = await import("../utils/sdkClient.js");
+  window.preact = previousPreact;
+
+  const html = htm.bind(preact.h);
+
+  function jsonResponse(body) {
+    return new Response(JSON.stringify(body), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
+  async function waitForMounted(predicate, container, message = "condition") {
+    for (let i = 0; i < 150; i++) {
+      if (predicate()) return;
+      await new Promise((r) => setTimeout(r, 2));
+    }
+    throw new Error(`Timed out waiting for ${message}: ${container.innerHTML}`);
+  }
+
+  async function mountLoopSettingsTab() {
+    window.mittoApiPrefix = "";
+    global.fetch = jest.fn((url) => {
+      const u = String(url);
+      if (u.includes("/api/slack/apps")) return jsonResponse({ apps: [] });
+      throw new Error(`Unexpected fetch: ${u}`);
+    });
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    preact.render(
+      html`<${LoopSettingsTab}
+        sessionId="session-1"
+        loopConfig=${{ triggers: ["onSlack"] }}
+      />`,
+      container,
+    );
+    await waitForMounted(
+      () => container.querySelector('[data-testid="loop-settings-onSlack"]'),
+      container,
+      "loop settings onSlack card",
+    );
+    return container;
+  }
+
+  function unmount(container) {
+    preact.render(null, container);
+    container.remove();
+  }
+
+  describe("LoopSettingsTab mounted: On Slack card header gear (mitto-xh79)", () => {
+    test("renders the gear button in the header action area, not inside SlackSubscriptionEditor, and it is absent from other trigger cards", async () => {
+      _resetSdkClientForTests();
+      const container = await mountLoopSettingsTab();
+      try {
+        const actionArea = container.querySelector(
+          '[data-testid="loop-settings-trigger-header-action-onSlack"]',
+        );
+        expect(actionArea).not.toBeNull();
+        const gear = actionArea.querySelector(
+          '[data-testid="slack-manage-integrations"]',
+        );
+        expect(gear).not.toBeNull();
+        expect(gear.getAttribute("aria-label")).toBe(
+          "Manage Slack integrations",
+        );
+        expect(gear.getAttribute("title")).toBe("Manage Slack integrations");
+
+        // Not owned by SlackSubscriptionEditor anymore.
+        const editor = container.querySelector(
+          '[data-testid="slack-subscription-editor"]',
+        );
+        expect(editor).not.toBeNull();
+        expect(
+          editor.querySelector('[data-testid="slack-manage-integrations"]'),
+        ).toBeNull();
+
+        // Other trigger cards never get a header action area.
+        for (const trigger of ["schedule", "onCompletion", "onTasks", "onChild"]) {
+          expect(
+            container.querySelector(
+              `[data-testid="loop-settings-trigger-header-action-${trigger}"]`,
+            ),
+          ).toBeNull();
+        }
+      } finally {
+        unmount(container);
+      }
+    });
+
+    test("clicking the gear dispatches mitto:open_settings with {tab:'slack'} and never toggles the On Slack checkbox", async () => {
+      _resetSdkClientForTests();
+      const container = await mountLoopSettingsTab();
+      let detail;
+      const onOpen = (event) => {
+        detail = event.detail;
+      };
+      window.addEventListener("mitto:open_settings", onOpen);
+      try {
+        const checkbox = container.querySelector(
+          '[data-testid="loop-settings-trigger-onSlack"]',
+        );
+        expect(checkbox.checked).toBe(true);
+
+        container
+          .querySelector('[data-testid="slack-manage-integrations"]')
+          .click();
+
+        expect(detail).toEqual({ tab: "slack" });
+        // Checkbox state is unchanged by the click (still armed from the
+        // loopConfig fixture; a wrongly-nested action would have toggled it
+        // off via the <label>'s native click-to-activate behavior).
+        expect(checkbox.checked).toBe(true);
+      } finally {
+        window.removeEventListener("mitto:open_settings", onOpen);
+        unmount(container);
+      }
+    });
+  });
+} else {
+  describe("LoopSettingsTab mounted: On Slack card header gear (mitto-xh79)", () => {
+    test("passes mounted behavior tests in an isolated happy-dom process", () => {
+      const result = spawnSync(
+        process.execPath,
+        ["test", fileURLToPath(import.meta.url)],
+        {
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            MITTO_LOOP_SETTINGS_COMPONENT_TEST_CHILD: "1",
+          },
+          timeout: 30_000,
+        },
+      );
+      if (result.status !== 0) {
+        throw new Error(
+          `Isolated LoopSettingsTab mounted tests failed:\n${result.stdout}\n${result.stderr}`,
+        );
+      }
+    });
+  });
+}

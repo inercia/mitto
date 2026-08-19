@@ -119,7 +119,7 @@ test.describe("Loop control bar and settings tab", () => {
       apiUrl(`/api/sessions/${sessionId}/loop`),
       {
         data: {
-          prompt: "Geometry regression test",
+          prompt_name: "Hello Greeting",
           frequency: { value: 1, unit: "hours" },
           enabled: true,
           max_iterations: 3,
@@ -183,6 +183,15 @@ test.describe("Loop control bar and settings tab", () => {
     const callbackCard = panel.locator(
       '[data-testid="callback-trigger-section"]',
     );
+    const promptTrigger = panel.locator(
+      '[data-testid="loop-settings-prompt-button"]',
+    );
+    const promptDropdown = panel.locator(
+      '[data-testid="loop-settings-prompt-dropdown"]',
+    );
+    const parametersButton = panel.locator(
+      '[data-testid="loop-edit-args-button"]',
+    );
 
     // Not pixel-perfect: enforce practical editor sizing and keep the unit
     // selector compact enough to read as a dropdown rather than a text field.
@@ -206,6 +215,38 @@ test.describe("Loop control bar and settings tab", () => {
       expect(panelBox!.y + panelBox!.height).toBeLessThanOrEqual(
         viewport!.height + SLACK,
       );
+
+      await promptTrigger.scrollIntoViewIfNeeded();
+      await expect(parametersButton).toHaveAccessibleName(
+        "Configure prompt parameters",
+      );
+      await expect(parametersButton).toHaveText("");
+      const parametersBox = await parametersButton.boundingBox();
+      expect(parametersBox).not.toBeNull();
+      expect(
+        Math.abs(parametersBox!.width - parametersBox!.height),
+      ).toBeLessThanOrEqual(SLACK);
+
+      await promptTrigger.click();
+      await expect(promptDropdown).toBeVisible();
+      await expect(
+        promptDropdown.locator('[data-testid="loop-settings-prompt-list"]'),
+      ).toBeVisible();
+      const [promptTriggerBox, promptDropdownBox] = await Promise.all([
+        promptTrigger.boundingBox(),
+        promptDropdown.boundingBox(),
+      ]);
+      expect(promptTriggerBox).not.toBeNull();
+      expect(promptDropdownBox).not.toBeNull();
+      expect(promptDropdownBox!.y).toBeGreaterThanOrEqual(
+        promptTriggerBox!.y + promptTriggerBox!.height - SLACK,
+      );
+      expect(promptDropdownBox!.x).toBeGreaterThanOrEqual(-SLACK);
+      expect(
+        promptDropdownBox!.x + promptDropdownBox!.width,
+      ).toBeLessThanOrEqual(viewport!.width + SLACK);
+      await promptTrigger.click();
+      await expect(promptDropdown).not.toBeVisible();
 
       const fieldsetBox = await generalFieldset.boundingBox();
       expect(fieldsetBox).not.toBeNull();

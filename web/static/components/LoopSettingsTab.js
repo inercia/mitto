@@ -4,9 +4,11 @@ const { html, useCallback, useEffect, useMemo, useState, Fragment } =
   window.preact;
 
 import { ConfirmDialog } from "./ConfirmDialog.js";
-import { ChevronDownIcon, SlidersIcon } from "./Icons.js";
+import { SettingsIcon, SlidersIcon } from "./Icons.js";
 import { LoopPromptSelector } from "./LoopPromptSelector.js";
+import { NativeSelectWithChevron } from "./NativeSelectWithChevron.js";
 import { SlackSubscriptionEditor } from "./SlackSubscriptionEditor.js";
+import { Tooltip } from "./Tooltip.js";
 import {
   CONDITION_PRESETS,
   extractPresetParam,
@@ -19,6 +21,7 @@ import {
   errorMessage as sdkErrorMessage,
   errorStatus,
 } from "../utils/sdkErrors.js";
+import { openSettingsTab } from "../utils/slackEvents.js";
 import {
   KNOWN_CHILD_EVENTS,
   KNOWN_LOOP_TRIGGERS,
@@ -81,6 +84,12 @@ function TriggerSection({
   armed,
   disabled = false,
   onToggle,
+  // Optional element rendered beside (not inside) the checkbox label, at the
+  // far right of the card header — e.g. a compact settings shortcut for
+  // onSlack (mitto-xh79). Kept as a sibling of the <label> so clicking it
+  // never toggles the trigger checkbox (a <label> only auto-activates a
+  // control it wraps).
+  headerAction,
   children,
 }) {
   return html`
@@ -91,31 +100,39 @@ function TriggerSection({
       data-testid="loop-settings-${trigger}"
     >
       <div class="collapse-title">
-        <label
-          class="label cursor-pointer gap-3 justify-start w-full min-w-0"
-          style="display:flex;width:100%;min-width:0;"
-          data-testid="loop-settings-trigger-header-${trigger}"
-        >
-          <input
-            type="checkbox"
-            class="checkbox checkbox-sm shrink-0"
-            style="flex-shrink:0;"
-            checked=${armed}
-            disabled=${disabled}
-            onChange=${(event) => onToggle(event.target.checked)}
-            data-testid="loop-settings-trigger-${trigger}"
-          />
-          <span
-            class="flex-1 min-w-0 whitespace-normal"
-            style="min-width:0;flex:1 1 0%;white-space:normal;overflow-wrap:anywhere;"
-            data-testid="loop-settings-trigger-copy-${trigger}"
+        <div class="flex items-center gap-2 w-full min-w-0">
+          <label
+            class="label cursor-pointer gap-3 justify-start flex-1 min-w-0"
+            style="display:flex;min-width:0;"
+            data-testid="loop-settings-trigger-header-${trigger}"
           >
-            <span class="font-medium text-mitto-text-strong">${title}</span>
-            <span class="block text-xs text-mitto-text-muted"
-              >${description}</span
+            <input
+              type="checkbox"
+              class="checkbox checkbox-sm shrink-0"
+              style="flex-shrink:0;"
+              checked=${armed}
+              disabled=${disabled}
+              onChange=${(event) => onToggle(event.target.checked)}
+              data-testid="loop-settings-trigger-${trigger}"
+            />
+            <span
+              class="flex-1 min-w-0 whitespace-normal"
+              style="min-width:0;flex:1 1 0%;white-space:normal;overflow-wrap:anywhere;"
+              data-testid="loop-settings-trigger-copy-${trigger}"
             >
-          </span>
-        </label>
+              <span class="font-medium text-mitto-text-strong">${title}</span>
+              <span class="block text-xs text-mitto-text-muted"
+                >${description}</span
+              >
+            </span>
+          </label>
+          ${headerAction &&
+          html`<span
+            class="shrink-0"
+            data-testid="loop-settings-trigger-header-action-${trigger}"
+            >${headerAction}</span
+          >`}
+        </div>
       </div>
       <div class="collapse-content">
         <fieldset disabled=${!armed} class="fieldset">${children}</fieldset>
@@ -138,41 +155,6 @@ function NumberField({ label, value, onInput, help, min = 0, testId }) {
       />
       ${help && html`<span class="label">${help}</span>`}
     </label>
-  `;
-}
-
-function NativeSelectWithChevron({
-  ariaLabel,
-  value,
-  onChange,
-  testId,
-  wrapperClass = "w-full",
-  children,
-}) {
-  return html`
-    <div
-      class="relative ${wrapperClass}"
-      style="position:relative;"
-      data-testid="${testId}-wrap"
-    >
-      <select
-        class="select select-sm w-full pr-8"
-        style="appearance:none;-webkit-appearance:none;background-image:none;"
-        aria-label=${ariaLabel}
-        data-testid=${testId}
-        value=${value}
-        onChange=${onChange}
-      >
-        ${children}
-      </select>
-      <span
-        aria-hidden="true"
-        data-testid="${testId}-chevron"
-        style="position:absolute;right:0.5rem;top:50%;transform:translateY(-50%);pointer-events:none;"
-      >
-        <${ChevronDownIcon} className="w-4 h-4 opacity-60" />
-      </span>
-    </div>
   `;
 }
 
@@ -582,6 +564,7 @@ export function LoopSettingsTab({
                         selectedPromptName=${draft.promptName}
                         selectedPromptBody=""
                         fullWidth=${true}
+                        dropdownPlacement="below"
                         idPrefix="loop-settings-prompt"
                         onSelect=${(promptName) =>
                           stage((current) => ({
@@ -596,7 +579,7 @@ export function LoopSettingsTab({
                     </div>
                     <button
                       type="button"
-                      class="btn btn-sm btn-soft shrink-0 gap-2"
+                      class="btn btn-sm btn-soft btn-square shrink-0"
                       data-testid="loop-edit-args-button"
                       aria-label="Configure prompt parameters"
                       title="Configure prompt parameters"
@@ -605,7 +588,6 @@ export function LoopSettingsTab({
                       onClick=${openArguments}
                     >
                       <${SlidersIcon} className="w-4 h-4" />
-                      Parameters
                     </button>
                   </div>
                 `
@@ -990,6 +972,18 @@ export function LoopSettingsTab({
             description="Run for new messages in selected Slack channels"
             armed=${armed("onSlack")}
             onToggle=${(checked) => toggleTrigger("onSlack", checked)}
+            headerAction=${html`<${Tooltip} tip="Manage Slack integrations">
+              <button
+                type="button"
+                class="btn btn-ghost btn-square btn-sm"
+                data-testid="slack-manage-integrations"
+                aria-label="Manage Slack integrations"
+                title="Manage Slack integrations"
+                onClick=${() => openSettingsTab("slack")}
+              >
+                <${SettingsIcon} className="w-4 h-4" />
+              </button>
+            <//>`}
           >
             <${SlackSubscriptionEditor}
               subscriptions=${draft.onSlack.subscriptions}
