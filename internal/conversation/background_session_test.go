@@ -5578,19 +5578,23 @@ func TestStartPromptInactivityWatchdog_FiresWhenIdle(t *testing.T) {
 	defer cancel()
 	var fired atomic.Bool
 
-	bs.startPromptInactivityWatchdog(ctx, cancel, &fired)
+	// Regression for mitto-pfgk: widen the scheduler window between the watchdog
+	// publishing fired and cancellation becoming observable. Wait on the context,
+	// since fired is not a completion barrier for the subsequent cancel call.
+	delayedCancel := func() {
+		time.Sleep(250 * time.Millisecond)
+		cancel()
+	}
+	bs.startPromptInactivityWatchdog(ctx, delayedCancel, &fired)
 
-	deadline := time.After(2 * time.Second)
-	for !fired.Load() {
-		select {
-		case <-deadline:
-			t.Fatal("watchdog did not fire within deadline")
-		case <-time.After(10 * time.Millisecond):
-		}
+	select {
+	case <-ctx.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("watchdog did not cancel prompt context within deadline")
 	}
 
-	if ctx.Err() == nil {
-		t.Error("expected prompt context to be cancelled after watchdog fired")
+	if !fired.Load() {
+		t.Error("expected watchdog fired flag after prompt context cancellation")
 	}
 	if len(rec.entriesAt(slog.LevelWarn)) == 0 {
 		t.Error("expected a WARN log before the timeout")
