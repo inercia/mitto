@@ -29,6 +29,7 @@ type fakePromptDeps struct {
 	resolver          PromptResolver
 	fragmentsResolver PromptFragmentsResolver
 	workingDir        string
+	beadsDatabaseMode config.BeadsDatabaseMode
 	agentImages       bool
 	hasStore          bool
 
@@ -186,6 +187,9 @@ func (f *fakePromptDeps) pdPromptFragmentsResolver() PromptFragmentsResolver {
 }
 func (f *fakePromptDeps) pdWorkingDir() string { return f.workingDir }
 func (f *fakePromptDeps) pdBeadsDatabaseMode() config.BeadsDatabaseMode {
+	if f.beadsDatabaseMode != "" {
+		return f.beadsDatabaseMode
+	}
 	return config.BeadsDatabaseModeLocal
 }
 func (f *fakePromptDeps) pdAgentSupportsImages() bool { return f.agentImages }
@@ -1125,6 +1129,20 @@ func TestPromptDispatcher_BuildAttachmentBlocks_BinaryFile(t *testing.T) {
 }
 
 // --- buildProcessorInput tests ---
+
+func TestPromptDispatcher_BuildProcessorInput_BeadsDatabaseMode(t *testing.T) {
+	p := promptDispatcher{}
+	d := newFakePromptDeps()
+	d.beadsDatabaseMode = config.BeadsDatabaseModeShared
+
+	input := p.buildProcessorInput(d, "hello", false, PromptMeta{})
+	if input.DatabaseMode != config.BeadsDatabaseModeShared {
+		t.Fatalf("DatabaseMode = %q, want shared", input.DatabaseMode)
+	}
+	if got := processors.BuildCELContext(input).Workspace.BeadsDatabaseMode; got != "shared" {
+		t.Fatalf("Workspace.BeadsDatabaseMode = %q, want shared", got)
+	}
+}
 
 func TestPromptDispatcher_BuildProcessorInput_NoStore_MinimalInput(t *testing.T) {
 	p := promptDispatcher{}
