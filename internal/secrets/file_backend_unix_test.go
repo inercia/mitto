@@ -4,9 +4,11 @@ package secrets
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -34,6 +36,27 @@ func TestFileBackendSaveLoadAndAtomicReplace(t *testing.T) {
 	}
 }
 
+func TestFileBackendInterruptedReplacePreservesVaultAndCleansTemp(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "credentials", "vault.json")
+	backend := NewFileBackend(path)
+	if err := backend.Save([]byte("old")); err != nil {
+		t.Fatal(err)
+	}
+	interrupted := errors.New("interrupted before rename")
+	backend.beforeRename = func() error { return interrupted }
+	if err := backend.Save([]byte("new")); !errors.Is(err, interrupted) {
+		t.Fatalf("Save() error = %v, want interrupted error", err)
+	}
+	assertFileContents(t, path, "old")
+	entries, err := os.ReadDir(filepath.Dir(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "vault.json" {
+		t.Fatalf("credential directory entries = %v, want only vault.json", entries)
+	}
+}
+
 func TestFileBackendMissingAndCorruptVault(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "credentials", "vault.json")
 	backend := NewFileBackend(path)
@@ -46,6 +69,7 @@ func TestFileBackendMissingAndCorruptVault(t *testing.T) {
 	if _, err := NewManager(backend).Resolve(GlobalCredential("token")); !errors.Is(err, ErrCorruptVault) {
 		t.Fatalf("Resolve(corrupt) error = %v, want ErrCorruptVault", err)
 	}
+	assertFileContents(t, path, "not-json")
 }
 
 func TestFileBackendRejectsUnsafeDirectory(t *testing.T) {
@@ -55,12 +79,17 @@ func TestFileBackendRejectsUnsafeDirectory(t *testing.T) {
 		if err := os.Mkdir(dir, 0700); err != nil {
 			t.Fatal(err)
 		}
+		path := filepath.Join(dir, "vault.json")
+		if err := os.WriteFile(path, []byte("old"), 0600); err != nil {
+			t.Fatal(err)
+		}
 		if err := os.Chmod(dir, 0755); err != nil {
 			t.Fatal(err)
 		}
-		if err := NewFileBackend(filepath.Join(dir, "vault.json")).Save([]byte("x")); !errors.Is(err, ErrUnsafeVaultPath) {
+		if err := NewFileBackend(path).Save([]byte("new")); !errors.Is(err, ErrUnsafeVaultPath) {
 			t.Fatalf("Save() error = %v, want ErrUnsafeVaultPath", err)
 		}
+		assertFileContents(t, path, "old")
 	})
 	t.Run("symlink", func(t *testing.T) {
 		root := t.TempDir()
@@ -68,13 +97,18 @@ func TestFileBackendRejectsUnsafeDirectory(t *testing.T) {
 		if err := os.Mkdir(realDir, 0700); err != nil {
 			t.Fatal(err)
 		}
+		realPath := filepath.Join(realDir, "vault.json")
+		if err := os.WriteFile(realPath, []byte("old"), 0600); err != nil {
+			t.Fatal(err)
+		}
 		dir := filepath.Join(root, "credentials")
 		if err := os.Symlink(realDir, dir); err != nil {
 			t.Fatal(err)
 		}
-		if err := NewFileBackend(filepath.Join(dir, "vault.json")).Save([]byte("x")); !errors.Is(err, ErrUnsafeVaultPath) {
+		if err := NewFileBackend(filepath.Join(dir, "vault.json")).Save([]byte("new")); !errors.Is(err, ErrUnsafeVaultPath) {
 			t.Fatalf("Save() error = %v, want ErrUnsafeVaultPath", err)
 		}
+		assertFileContents(t, realPath, "old")
 	})
 }
 
@@ -122,7 +156,41 @@ func TestFileBackendRejectsUnsafeFile(t *testing.T) {
 			if err := backend.Save([]byte("new")); !errors.Is(err, ErrUnsafeVaultPath) {
 				t.Errorf("Save() error = %v, want ErrUnsafeVaultPath", err)
 			}
+			if test.name == "non-regular" {
+				if info, err := os.Stat(path); err != nil || !info.IsDir() {
+					t.Errorf("unsafe target changed: info=%v error=%v", info, err)
+				}
+			} else {
+				assertFileContents(t, path, "old")
+			}
 		})
+	}
+}
+
+func TestManagerConcurrentFileBackendUpdates(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "credentials", "vault.json")
+	manager := NewManager(NewFileBackend(path))
+	const count = 16
+	var wg sync.WaitGroup
+	for i := 0; i < count; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			ref := SlackInstallationCredential("team", fmt.Sprintf("token-%d", i))
+			if err := manager.Put(ref, fmt.Sprintf("value-%d", i)); err != nil {
+				t.Errorf("Put(%d) error = %v", i, err)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	reloaded := NewManager(NewFileBackend(path))
+	for i := 0; i < count; i++ {
+		ref := SlackInstallationCredential("team", fmt.Sprintf("token-%d", i))
+		want := fmt.Sprintf("value-%d", i)
+		if got, err := reloaded.Resolve(ref); err != nil || got != want {
+			t.Errorf("Resolve(%d) = (%q, %v), want %q", i, got, err, want)
+		}
 	}
 }
 
@@ -134,5 +202,16 @@ func assertMode(t *testing.T, path string, want os.FileMode) {
 	}
 	if got := info.Mode().Perm(); got != want {
 		t.Fatalf("%s mode = %o, want %o", path, got, want)
+	}
+}
+
+func assertFileContents(t *testing.T, path, want string) {
+	t.Helper()
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != want {
+		t.Fatalf("%s contents = %q, want %q", path, got, want)
 	}
 }

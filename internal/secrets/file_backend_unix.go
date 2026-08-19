@@ -20,6 +20,7 @@ var vaultTempCounter uint64
 type FileBackend struct {
 	path         string
 	pathResolver func() (string, error)
+	beforeRename func() error
 }
 
 // NewFileBackend creates a backend at an explicit path, primarily for tests.
@@ -112,6 +113,11 @@ func (b *FileBackend) Save(data []byte) error {
 	}
 	if err := tmpFile.Close(); err != nil {
 		return fmt.Errorf("close credential vault: %w", err)
+	}
+	if b.beforeRename != nil {
+		if err := b.beforeRename(); err != nil {
+			return fmt.Errorf("replace credential vault: %w", err)
+		}
 	}
 	if err := unix.Renameat(dirFD, tmpName, dirFD, name); err != nil {
 		return fmt.Errorf("replace credential vault: %w", err)
