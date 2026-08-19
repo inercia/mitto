@@ -83,11 +83,17 @@ export function WorkspaceFolderBeadsTab({
     beadsPullPromptArgs,
     beadsPushPromptArgs,
     beadsSyncPromptArgs,
+    beadsDatabaseMode,
+    beadsDatabaseModeHasRemote,
+    beadsDatabaseModeLoading,
+    beadsDatabaseModeSaving,
+    beadsDatabaseModeError,
   } = beads;
   const { setNewBeadsKey, setNewBeadsValue } = beadsSetters;
   const {
     setBeadsConfigKey,
     unsetBeadsConfigKey,
+    saveBeadsDatabaseMode,
     saveBeadsUpstream,
     saveBeadsPromptName,
     saveBeadsPromptArgs,
@@ -106,6 +112,85 @@ export function WorkspaceFolderBeadsTab({
           >beads</a
         >${" "}(the <code>bd</code> tool) for managing tasks.
       </p>
+      <fieldset class="fieldset pt-2">
+        <legend class="fieldset-legend">Database sharing</legend>
+        <p class="text-xs text-mitto-text-muted">
+          Controls replication of this folder's Beads database. Upstream Tasks
+          below independently controls Jira, GitHub, GitLab, Linear, or prompt
+          synchronization.
+        </p>
+        <div class="flex flex-wrap items-center gap-2">
+          <select
+            value=${beadsDatabaseMode || "local"}
+            onInput=${(e) => saveBeadsDatabaseMode(e.target.value)}
+            disabled=${beadsDatabaseModeLoading || beadsDatabaseModeSaving}
+            class="select select-sm w-full max-w-md disabled:opacity-50"
+            data-testid="beads-database-mode-select"
+            aria-label="Database sharing"
+          >
+            <option value="local">Local only</option>
+            <option
+              value="shared"
+              disabled=${!beadsDatabaseModeHasRemote &&
+              beadsDatabaseMode !== "shared"}
+            >
+              Shared through a Dolt remote
+            </option>
+          </select>
+          ${beadsDatabaseModeLoading
+            ? html`<span
+                class="flex items-center gap-1 text-xs text-mitto-text-muted"
+                data-testid="beads-database-mode-loading"
+              >
+                <span class="loading loading-spinner loading-xs"></span>
+                Loading effective mode…
+              </span>`
+            : beadsDatabaseModeSaving
+              ? html`<span
+                  class="flex items-center gap-1 text-xs text-mitto-text-muted"
+                  data-testid="beads-database-mode-saving"
+                >
+                  <span class="loading loading-spinner loading-xs"></span>
+                  Saving…
+                </span>`
+              : html`<span
+                  class="text-xs text-mitto-text-muted"
+                  data-testid="beads-database-mode-effective"
+                >
+                  Effective:
+                  ${beadsDatabaseMode === "shared"
+                    ? "Shared through a Dolt remote"
+                    : "Local only"}
+                </span>`}
+        </div>
+        ${beadsDatabaseModeError &&
+        html`<div
+          role="alert"
+          class="alert alert-error alert-soft text-xs"
+          data-testid="beads-database-mode-error"
+        >
+          ${beadsDatabaseModeError}
+        </div>`}
+        ${!beadsDatabaseModeLoading &&
+        beadsDatabaseMode === "local" &&
+        beadsDatabaseModeHasRemote &&
+        html`<div
+          role="status"
+          class="alert alert-info alert-soft text-xs"
+          data-testid="beads-database-mode-dormant-remote"
+        >
+          A Dolt remote is configured but dormant. Mitto preserves it without
+          pushing, pulling, bootstrapping, or publishing while Local only is
+          active.
+        </div>`}
+        ${!beadsDatabaseModeLoading &&
+        beadsDatabaseMode === "local" &&
+        !beadsDatabaseModeHasRemote &&
+        html`<p class="text-xs text-mitto-text-muted">
+          Configure a Dolt remote with the bd CLI before enabling shared mode.
+        </p>`}
+      </fieldset>
+
       <!-- Upstream task system selector (persisted in folders.json) -->
       <fieldset class="fieldset pt-2">
         <legend class="fieldset-legend">Upstream Tasks</legend>

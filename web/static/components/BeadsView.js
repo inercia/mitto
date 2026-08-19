@@ -968,9 +968,16 @@ function SchemaSkewDialog({
   onCancel,
   showToast,
 }) {
-  const hasOptions = Array.isArray(options) && options.length > 0;
   const isLocalMode = databaseMode === "local";
-  const defaultMode = hasOptions ? options[0].mode || "migrate" : "migrate";
+  // Fail closed when stale data carries remote-backed remediation into a local
+  // folder: local mode may migrate in place, but must never bootstrap/adopt.
+  const availableOptions = Array.isArray(options)
+    ? options.filter((opt) => !isLocalMode || opt.mode === "migrate")
+    : [];
+  const hasOptions = availableOptions.length > 0;
+  const defaultMode = hasOptions
+    ? availableOptions[0].mode || "migrate"
+    : "migrate";
   const [mode, setMode] = useState(defaultMode);
   const [ackChecked, setAckChecked] = useState(false);
   const [isRunning, setIsRunning] = useState(false);
@@ -1006,7 +1013,10 @@ function SchemaSkewDialog({
     setErrorMsg("");
     setErrorStderr("");
     try {
-      await getSdkClient().issues.migrate({ working_dir: workingDir, mode });
+      await getSdkClient().issues.migrate({
+        working_dir: workingDir,
+        mode: isLocalMode ? "migrate" : mode,
+      });
       // Success: parent handles toast + refresh + close.
       onSuccess?.();
     } catch (err) {
@@ -1068,7 +1078,7 @@ function SchemaSkewDialog({
           hasOptions &&
           html`
             <div class="space-y-2">
-              ${options.map(
+              ${availableOptions.map(
                 (opt) => html`
                   <label
                     class="flex items-start gap-3 cursor-pointer select-none"

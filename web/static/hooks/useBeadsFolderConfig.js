@@ -1,7 +1,7 @@
 // Mitto Web Interface — Beads Folder Config Hook
 //
 // Owns all beads-related state, handlers, and effects for the folder-level
-// Beads Config + upstream (Jira/GitHub/GitLab/Linear/prompts) tab. Extracted
+// Beads config, database sharing, and upstream task-system tab. Extracted
 // verbatim from WorkspacesDialog.js (mitto-90f.4 Increment D-1) so the shell
 // can drop ~250 LOC and pass three grouped objects (beads/beadsSetters/
 // beadsHandlers) instead of 24 individual props through WorkspaceFolderEditor
@@ -20,10 +20,9 @@ import { errorMessage } from "../utils/sdkErrors.js";
 /**
  * useBeadsFolderConfig — cohesive state/handler bundle for the folder Beads tab.
  *
- * All beads handlers currently surface failures through the tab-local
- * `beadsConfigError` state (rendered by WorkspaceFolderBeadsTab), so the shell's
- * top-level `setError` banner is intentionally not wired in here; add it to the
- * signature if a future handler needs to surface an error to the shell.
+ * Failures stay tab-local: integration/config failures use `beadsConfigError`,
+ * while database-policy reconciliation uses `beadsDatabaseModeError`. The
+ * shell's top-level `setError` banner is intentionally not wired in here.
  *
  * @param {Object} params
  * @param {string|null} params.selectedFolder — the currently selected folder display name
@@ -65,6 +64,15 @@ export function useBeadsFolderConfig({
   const [beadsUpstreamPrompts, setBeadsUpstreamPrompts] = useState([]);
   const [beadsUpstreamPromptsLoading, setBeadsUpstreamPromptsLoading] =
     useState(false);
+  // Folder-native Beads database replication policy. This is deliberately
+  // independent from beadsUpstream, which selects an external task system.
+  const [beadsDatabaseMode, setBeadsDatabaseMode] = useState("local");
+  const [beadsDatabaseModeHasRemote, setBeadsDatabaseModeHasRemote] =
+    useState(false);
+  const [beadsDatabaseModeLoading, setBeadsDatabaseModeLoading] =
+    useState(false);
+  const [beadsDatabaseModeSaving, setBeadsDatabaseModeSaving] = useState(false);
+  const [beadsDatabaseModeError, setBeadsDatabaseModeError] = useState("");
 
   // Nonce/token tracking for in-flight fetches. Each async loader captures the
   // current token; when it resolves, it only touches state if the token still
@@ -90,6 +98,9 @@ export function useBeadsFolderConfig({
   const beadsPullPromptArgsRef = useRef({});
   const beadsPushPromptArgsRef = useRef({});
   const beadsSyncPromptArgsRef = useRef({});
+  // Keep this after the upstream value refs so their positional test harness
+  // remains stable while database-mode requests gain the same stale guard.
+  const databaseModeRequestTokenRef = useRef(0);
 
   // Load (reload) beads config for the selected folder via GET /api/issues/config.
   const reloadBeadsConfig = async (workingDir) => {
@@ -181,6 +192,65 @@ export function useBeadsFolderConfig({
     } catch (_err) {
       if (token !== upstreamLoadTokenRef.current) return;
       setBeadsUpstream("none");
+    }
+  };
+
+  // Load the effective database policy. The response exposes only whether a
+  // remote exists, never its URL or credentials.
+  const reloadBeadsDatabaseMode = async (workingDir) => {
+    const token = ++databaseModeRequestTokenRef.current;
+    setBeadsDatabaseModeLoading(true);
+    setBeadsDatabaseModeError("");
+    try {
+      const data = await getSdkClient().issues.databaseMode({
+        working_dir: workingDir,
+      });
+      if (token !== databaseModeRequestTokenRef.current) return;
+      setBeadsDatabaseMode((data && data.database_mode) || "local");
+      setBeadsDatabaseModeHasRemote(!!(data && data.has_remote));
+    } catch (err) {
+      if (token !== databaseModeRequestTokenRef.current) return;
+      setBeadsDatabaseModeError(
+        errorMessage(err, "Failed to load database sharing mode"),
+      );
+    } finally {
+      if (token === databaseModeRequestTokenRef.current) {
+        setBeadsDatabaseModeLoading(false);
+      }
+    }
+  };
+
+  // Persist database sharing without touching the external-task upstream.
+  // The backend reconciles bd runtime safeguards before it persists the mode.
+  const saveBeadsDatabaseMode = async (mode) => {
+    const workingDir = getSelectedFolderDir();
+    if (!workingDir || !["local", "shared"].includes(mode)) return;
+    const token = ++databaseModeRequestTokenRef.current;
+    const previousMode = beadsDatabaseMode;
+    const previousHasRemote = beadsDatabaseModeHasRemote;
+    setBeadsDatabaseMode(mode); // optimistic; reverted on reconciliation failure
+    setBeadsDatabaseModeSaving(true);
+    setBeadsDatabaseModeLoading(false);
+    setBeadsDatabaseModeError("");
+    try {
+      const data = await getSdkClient().issues.setDatabaseMode(
+        { working_dir: workingDir },
+        { database_mode: mode },
+      );
+      if (token !== databaseModeRequestTokenRef.current) return;
+      setBeadsDatabaseMode((data && data.database_mode) || mode);
+      setBeadsDatabaseModeHasRemote(!!(data && data.has_remote));
+    } catch (err) {
+      if (token !== databaseModeRequestTokenRef.current) return;
+      setBeadsDatabaseMode(previousMode);
+      setBeadsDatabaseModeHasRemote(previousHasRemote);
+      setBeadsDatabaseModeError(
+        errorMessage(err, "Failed to set database sharing mode"),
+      );
+    } finally {
+      if (token === databaseModeRequestTokenRef.current) {
+        setBeadsDatabaseModeSaving(false);
+      }
     }
   };
 
@@ -351,7 +421,7 @@ export function useBeadsFolderConfig({
     }
   };
 
-  // Lazily load beads config + upstream when the Beads folder tab is opened.
+  // Lazily load beads config, database mode, and upstream when the Beads folder tab is opened.
   // isOpen is in the deps so reopening the dialog on the same folder with
   // activeTab already === "beads" re-issues the fetch — WorkspacesDialog only
   // renders null while closed (no unmount), so without this the load effect
@@ -362,6 +432,7 @@ export function useBeadsFolderConfig({
     const workingDir = getSelectedFolderDir();
     if (workingDir) {
       reloadBeadsConfig(workingDir);
+      reloadBeadsDatabaseMode(workingDir);
       reloadBeadsUpstream(workingDir);
     }
   }, [isOpen, activeTab, selectedFolder]);
@@ -374,8 +445,8 @@ export function useBeadsFolderConfig({
     if (workingDir) loadBeadsUpstreamPrompts(workingDir);
   }, [activeTab, selectedFolder, beadsUpstream]);
 
-  // Reset beads config state when switching folders. Also clears the four
-  // loading/saving flags so an in-flight fetch from the previous folder whose
+  // Reset beads config state when switching folders. Also clears every
+  // loading/saving flag so an in-flight fetch from the previous folder whose
   // finally() has not yet run cannot leave the Tasks tab latched on
   // "Loading…" (mitto-xdqx). Bumping the load tokens invalidates any orphaned
   // in-flight response so its late finally() cannot re-latch loading=true.
@@ -383,6 +454,7 @@ export function useBeadsFolderConfig({
     configLoadTokenRef.current++;
     upstreamLoadTokenRef.current++;
     upstreamPromptsLoadTokenRef.current++;
+    databaseModeRequestTokenRef.current++;
     setBeadsConfig(null);
     setBeadsConfigError("");
     setNewBeadsKey("");
@@ -401,10 +473,15 @@ export function useBeadsFolderConfig({
     beadsPushPromptArgsRef.current = {};
     beadsSyncPromptArgsRef.current = {};
     setBeadsUpstreamPrompts([]);
+    setBeadsDatabaseMode("local");
+    setBeadsDatabaseModeHasRemote(false);
+    setBeadsDatabaseModeError("");
     setBeadsConfigLoading(false);
     setBeadsConfigSaving(false);
     setBeadsUpstreamPromptsLoading(false);
     setBeadsUpstreamSaving(false);
+    setBeadsDatabaseModeLoading(false);
+    setBeadsDatabaseModeSaving(false);
   }, [selectedFolder]);
 
   // Extra safety net: when the dialog closes, force-clear the loading flags
@@ -416,10 +493,13 @@ export function useBeadsFolderConfig({
     configLoadTokenRef.current++;
     upstreamLoadTokenRef.current++;
     upstreamPromptsLoadTokenRef.current++;
+    databaseModeRequestTokenRef.current++;
     setBeadsConfigLoading(false);
     setBeadsConfigSaving(false);
     setBeadsUpstreamPromptsLoading(false);
     setBeadsUpstreamSaving(false);
+    setBeadsDatabaseModeLoading(false);
+    setBeadsDatabaseModeSaving(false);
   }, [isOpen]);
 
   const beads = {
@@ -439,11 +519,17 @@ export function useBeadsFolderConfig({
     beadsSyncPromptArgs,
     beadsUpstreamPrompts,
     beadsUpstreamPromptsLoading,
+    beadsDatabaseMode,
+    beadsDatabaseModeHasRemote,
+    beadsDatabaseModeLoading,
+    beadsDatabaseModeSaving,
+    beadsDatabaseModeError,
   };
   const beadsSetters = { setNewBeadsKey, setNewBeadsValue };
   const beadsHandlers = {
     setBeadsConfigKey,
     unsetBeadsConfigKey,
+    saveBeadsDatabaseMode,
     saveBeadsUpstream,
     saveBeadsPromptName,
     saveBeadsPromptArgs,
