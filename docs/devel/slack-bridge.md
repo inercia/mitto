@@ -77,14 +77,16 @@ this compatibility period.
 1. Create a Slack app (https://api.slack.com/apps) in a development workspace.
 2. **Socket Mode**: enable it and generate an app-level token with the
    `connections:write` scope (`xapp-...`).
-3. **OAuth & Permissions**: add bot token scopes `channels:read` for the public
-   channel picker and `channels:history` for the default message flow. Add
-   `app_mentions:read` only when using mention mode. `chat:write` and private
-   channel scopes are not required or supported in v1. Install the app to obtain
-   the bot token (`xoxb-...`).
-4. **Event Subscriptions**: enable events and subscribe to `message.channels`.
-   Subscribe to `app_mention` only when mention mode is used.
-5. Invite the bot to the target channel (`/invite @your-bot`).
+3. **OAuth & Permissions**: add bot token scopes `users:read` for app identity
+   validation, `channels:read` and `groups:read` for public/private channel
+   discovery, and `channels:history` plus `groups:history` for their message
+   flows. Add `app_mentions:read` only when using mention mode. `chat:write` is
+   not required. Existing apps must apply the current manifest and be
+   reauthorized before their bot token carries newly-added scopes.
+4. **Event Subscriptions**: enable events and subscribe to `message.channels` and
+   `message.groups`. Subscribe to `app_mention` only when mention mode is used.
+5. Invite the bot to every target channel (`/invite @your-bot`). Private
+   channels are visible to discovery only after the bot becomes a member.
 6. Note the workspace's **Team ID** and the target **Channel ID**.
 
 ## Legacy adapter runtime configuration
@@ -164,7 +166,7 @@ material or message bodies.
 | Scenario                          | Action                                                                                                   | Expected result                                                                                                                                        |
 | --------------------------------- | -------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Multi-team routing                | Post one synthetic human message in each subscribed channel.                                             | Every matching loop receives exactly one turn; loops for other teams/channels receive none. Record event-to-turn latency.                              |
-| Public/private routing            | Post one synthetic human message in a subscribed public channel and one in a subscribed private channel. | Both `message.channels` and `message.groups` reach only their matching loops.                                                                           |
+| Public/private routing            | Post one synthetic human message in a subscribed public channel and one in a subscribed private channel. | Both `message.channels` and `message.groups` reach only their matching loops.                                                                          |
 | Filter boundary                   | Post from an unsubscribed channel and from the app's bot identity; exercise a non-empty message subtype. | No loop turn is created.                                                                                                                               |
 | Pause/resume                      | Pause one shared-channel loop, post once, resume it, then post a new event.                              | Only enabled recipients receive the first event; both receive the new event after resume.                                                              |
 | Busy and mixed-trigger contention | Keep one loop prompting (or fire its other trigger), then post a subscribed event.                       | The Slack recipient remains pending and is delivered exactly once after idle; another trigger never causes the Slack event to disappear.               |

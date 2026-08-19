@@ -4,13 +4,55 @@ const { useEffect, useMemo, useRef, useState, html } = window.preact;
 import { getSdkClient } from "../utils/sdkClient.js";
 import { openExternalURL } from "../utils/native.js";
 import { notifySlackIntegrationsUpdated } from "../utils/slackEvents.js";
+import { copyToClipboard } from "../lib.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
-import { PlusIcon, SpinnerIcon, TrashIcon } from "./Icons.js";
+import { Tooltip } from "./Tooltip.js";
+import {
+  CheckIcon,
+  CopyIcon,
+  EditIcon,
+  LinkIcon,
+  PlusIcon,
+  RefreshIcon,
+  SpinnerIcon,
+  TrashIcon,
+} from "./Icons.js";
 
 export const SLACK_APPS_URL = "https://api.slack.com/apps";
 export const SLACK_CREATE_APP_URL = "https://api.slack.com/apps?new_app=1";
 export const SLACK_SETUP_URL =
   "https://github.com/inercia/mitto/blob/main/docs/devel/slack-bridge.md#slack-app-setup";
+
+// Slack app manifest for "Create from an app manifest" (mitto-kqpl). Fields
+// mirror docs/devel/slack-bridge.md#slack-app-setup exactly: Socket Mode,
+// the bot scopes/events used by the durable Slack bridge (mention mode is
+// optional but included so one manifest covers both message and mention
+// routing), including private-channel discovery and delivery.
+// The app-level token (connections:write) is not part of the manifest schema
+// and must still be generated manually from the app's Basic Information page.
+export const SLACK_APP_MANIFEST_YAML = `display_information:
+  name: Mitto
+features:
+  bot_user:
+    display_name: Mitto
+    always_online: false
+oauth_config:
+  scopes:
+    bot:
+      - channels:read
+      - channels:history
+      - groups:read
+      - groups:history
+      - app_mentions:read
+      - users:read
+settings:
+  event_subscriptions:
+    bot_events:
+      - message.channels
+      - message.groups
+      - app_mention
+  socket_mode_enabled: true
+`;
 
 export function slackAppSettingsURL(slackAppId) {
   const id = String(slackAppId || "").trim();
@@ -102,6 +144,7 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
   const [botToken, setBotToken] = useState("");
   const [installationValidation, setInstallationValidation] = useState("");
   const [deletePlan, setDeletePlan] = useState(null);
+  const [manifestCopied, setManifestCopied] = useState(false);
   const selectedAppIdRef = useRef(selectedAppId);
   const selectedInstallationIdRef = useRef(selectedInstallationId);
   selectedAppIdRef.current = selectedAppId;
@@ -229,6 +272,21 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
     } catch {
       if (url !== fallback) openExternalURL(fallback);
     }
+  };
+
+  const copyManifest = async () => {
+    const ok = await copyToClipboard(SLACK_APP_MANIFEST_YAML);
+    if (ok) {
+      setManifestCopied(true);
+      setTimeout(() => setManifestCopied(false), 1500);
+    }
+    showToast?.({
+      style: ok ? "success" : "error",
+      title: ok
+        ? "Slack app manifest copied to clipboard."
+        : "Slack app manifest could not be copied.",
+      duration: ok ? 3000 : 4000,
+    });
   };
 
   const createApp = async (event) => {
@@ -533,40 +591,72 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
 
   return html`
     <div class="space-y-4" data-testid="slack-settings-tab">
-      <div class="flex flex-wrap items-start justify-between gap-3">
+      <div>
         <div class="space-y-1">
           <h4 class="font-semibold">Slack integrations</h4>
           <p class="text-sm text-mitto-text-muted">
             A Slack workspace is a Slack team. It is not a Mitto project
             workspace. One Slack app can have several Slack workspace
-            installations.
+            installations. Review the
+            <a
+              href=${SLACK_SETUP_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+              class="link link-primary"
+              data-testid="slack-setup-guide"
+              onClick=${(event) => {
+                event.preventDefault();
+                openURL(SLACK_SETUP_URL);
+              }}
+            >setup and scopes</a> before configuring the integration.
           </p>
-        </div>
-        <div class="flex flex-wrap gap-2">
-          <button
-            type="button"
-            class="btn btn-sm btn-ghost"
-            data-testid="slack-setup-guide"
-            onClick=${() => openURL(SLACK_SETUP_URL)}
-          >
-            Setup and scopes
-          </button>
-          <button
-            type="button"
-            class="btn btn-sm btn-primary"
-            data-testid="slack-create-app-external"
-            onClick=${() => openURL(SLACK_CREATE_APP_URL)}
-          >
-            Create Slack app
-          </button>
         </div>
       </div>
 
-      <div role="alert" class="alert alert-info alert-soft text-sm">
-        App and bot tokens are write-only and stored in Mitto's credential vault.
-        On Linux the vault is an atomic file restricted to mode 0600 inside a
-        mode 0700 directory.
-      </div>
+      <section
+        class="rounded-lg border border-mitto-border bg-mitto-surface-2"
+        data-testid="slack-create-app-guide"
+      >
+        <div class="flex flex-col p-4 gap-3">
+          <div>
+            <h5 class="font-semibold text-base">Slack app manifest</h5>
+            <p class="text-sm text-mitto-text-muted">
+              You need to
+              <a
+                href=${SLACK_CREATE_APP_URL}
+                target="_blank"
+                rel="noopener noreferrer"
+                class="link link-primary"
+                data-testid="slack-create-app-external"
+                onClick=${(event) => {
+                  event.preventDefault();
+                  openURL(SLACK_CREATE_APP_URL);
+                }}
+              >create a Slack app</a>, choose "From an app manifest", and then
+              use the following YAML manifest to configure Socket Mode, bot
+              scopes, and event subscriptions in one step. Existing apps must
+              apply the current manifest and be reauthorized for
+              <code>groups:read</code> and <code>groups:history</code>. Invite the
+              bot to each private channel before selecting it in a trigger.
+            </p>
+          </div>
+          <div class="flex flex-wrap gap-2">
+            <button
+              type="button"
+              class="btn btn-sm"
+              data-testid="slack-copy-manifest"
+              onClick=${copyManifest}
+            >
+              ${
+                manifestCopied
+                  ? html`<${CheckIcon} className="w-4 h-4" /> Copied!`
+                  : html`<${CopyIcon} className="w-4 h-4" /> Copy manifest`
+              }
+            </button>
+          </div>
+        </div>
+      </section>
+
 			${
         environmentStatus?.present &&
         html`
@@ -650,7 +740,10 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
         </div>`
       }
 
-      <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
+      <div
+        class="grid grid-cols-1 gap-4 md:grid-cols-3"
+        data-testid="slack-catalog-layout"
+      >
         <section class="rounded-lg border border-mitto-border bg-mitto-surface-2">
           <div class="flex flex-col p-3 gap-3">
             <div class="flex items-center justify-between gap-2">
@@ -659,9 +752,11 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
                 type="button"
                 class="btn btn-sm btn-ghost"
                 data-testid="slack-add-app-profile"
+                aria-label="Add Slack app profile"
+                title="Add Slack app profile"
                 onClick=${() => setShowNewApp((value) => !value)}
               >
-                <${PlusIcon} className="w-4 h-4" /> Add profile
+                <${PlusIcon} className="w-4 h-4" /> Add
               </button>
             </div>
             ${
@@ -698,7 +793,7 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
                     class="btn btn-sm btn-primary"
                     disabled=${busy === "create-app"}
                   >
-                    Save profile
+                    Save
                   </button>
                 </div>
               </form>`
@@ -707,14 +802,9 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
               apps.length === 0
                 ? html`<div class="text-center py-6 space-y-3">
                     <p class="text-sm text-mitto-text-muted">
-                      No Slack app profiles are configured.
+                      No Slack app profiles are configured. Use the guide above
+                      to create a Slack app, then add its token here.
                     </p>
-                    <button
-                      class="btn btn-sm btn-primary"
-                      onClick=${() => openURL(SLACK_CREATE_APP_URL)}
-                    >
-                      Create Slack app
-                    </button>
                   </div>`
                 : html`<ul
                     class="menu menu-sm p-0"
@@ -752,7 +842,7 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
           </div>
         </section>
 
-        <section class="flex-1 min-w-0 space-y-4">
+        <section class="flex-1 min-w-0 space-y-4 md:col-span-2">
           ${
             selectedApp
               ? html`<div
@@ -774,31 +864,45 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
                           />
                         </div>
                         <div class="flex flex-wrap gap-2">
-                          <button
-                            class="btn btn-sm btn-ghost"
-                            data-testid="slack-open-app-settings"
-                            onClick=${() =>
-                              openURL(
-                                slackAppSettingsURL(selectedApp.slack_app_id),
-                              )}
-                          >
-                            Open app settings
-                          </button>
-                          <button
-                            class="btn btn-sm"
-                            disabled=${busy === "validate-app"}
-                            onClick=${validateApp}
-                          >
-                            Test connection
-                          </button>
-                          <button
-                            class="btn btn-sm btn-ghost text-error"
-                            disabled=${busy === "prepare-delete-app"}
-                            onClick=${prepareDeleteApp}
-                            aria-label="Delete Slack app profile"
-                          >
-                            <${TrashIcon} className="w-4 h-4" />
-                          </button>
+                          <${Tooltip} tip="Open app settings in Slack">
+                            <button
+                              class="btn btn-sm btn-ghost btn-square"
+                              data-testid="slack-open-app-settings"
+                              aria-label="Open app settings"
+                              title="Open app settings"
+                              onClick=${() =>
+                                openURL(
+                                  slackAppSettingsURL(selectedApp.slack_app_id),
+                                )}
+                            >
+                              <${LinkIcon} className="w-4 h-4" />
+                            </button>
+                          <//>
+                          <${Tooltip} tip="Test app connection">
+                            <button
+                              class="btn btn-sm btn-square"
+                              data-testid="slack-validate-app"
+                              aria-label="Test app connection"
+                              title="Test app connection"
+                              disabled=${busy === "validate-app"}
+                              onClick=${validateApp}
+                            >
+                              ${busy === "validate-app"
+                                ? html`<${SpinnerIcon} className="w-4 h-4" />`
+                                : html`<${RefreshIcon} className="w-4 h-4" />`}
+                            </button>
+                          <//>
+                          <${Tooltip} tip="Delete Slack app profile">
+                            <button
+                              class="btn btn-sm btn-square btn-ghost text-error"
+                              disabled=${busy === "prepare-delete-app"}
+                              onClick=${prepareDeleteApp}
+                              aria-label="Delete Slack app profile"
+                              title="Delete Slack app profile"
+                            >
+                              <${TrashIcon} className="w-4 h-4" />
+                            </button>
+                          <//>
                         </div>
                       </div>
 
@@ -816,8 +920,10 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
                               class="btn btn-sm join-item"
                               disabled=${busy === "rename-app"}
                               onClick=${renameApp}
+                              aria-label="Rename Slack app profile"
+                              title="Rename Slack app profile"
                             >
-                              Rename
+                              <${EditIcon} className="w-4 h-4" />
                             </button>
                           </div>
                         </fieldset>
@@ -867,10 +973,12 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
                         <button
                           class="btn btn-sm btn-ghost"
                           data-testid="slack-add-installation"
+                          aria-label="Add Slack workspace"
+                          title="Add Slack workspace"
                           onClick=${() =>
                             setShowNewInstallation((value) => !value)}
                         >
-                          <${PlusIcon} className="w-4 h-4" /> Add workspace
+                          <${PlusIcon} className="w-4 h-4" /> Add
                         </button>
                       </div>
 
@@ -924,7 +1032,7 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
                             class="btn btn-sm btn-primary"
                             disabled=${busy === "create-installation"}
                           >
-                            Save Slack workspace
+                            Save
                           </button>
                         </div>
                       </form>`}
@@ -984,22 +1092,38 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
                               </p>`}
                             </div>
                             <div class="flex gap-2">
-                              <button
-                                class="btn btn-sm"
-                                disabled=${busy === "validate-installation"}
-                                onClick=${validateInstallation}
+                              <${Tooltip} tip="Test workspace connection">
+                                <button
+                                  class="btn btn-sm btn-square"
+                                  data-testid="slack-validate-installation"
+                                  aria-label="Test workspace connection"
+                                  title="Test workspace connection"
+                                  disabled=${busy === "validate-installation"}
+                                  onClick=${validateInstallation}
+                                >
+                                  ${busy === "validate-installation"
+                                    ? html`<${SpinnerIcon}
+                                        className="w-4 h-4"
+                                      />`
+                                    : html`<${RefreshIcon}
+                                        className="w-4 h-4"
+                                      />`}
+                                </button>
+                              <//>
+                              <${Tooltip}
+                                tip="Delete Slack workspace installation"
                               >
-                                Test connection
-                              </button>
-                              <button
-                                class="btn btn-sm btn-ghost text-error"
-                                disabled=${busy ===
-                                "prepare-delete-installation"}
-                                onClick=${prepareDeleteInstallation}
-                                aria-label="Delete Slack workspace installation"
-                              >
-                                <${TrashIcon} className="w-4 h-4" />
-                              </button>
+                                <button
+                                  class="btn btn-sm btn-square btn-ghost text-error"
+                                  disabled=${busy ===
+                                  "prepare-delete-installation"}
+                                  onClick=${prepareDeleteInstallation}
+                                  aria-label="Delete Slack workspace installation"
+                                  title="Delete Slack workspace installation"
+                                >
+                                  <${TrashIcon} className="w-4 h-4" />
+                                </button>
+                              <//>
                             </div>
                           </div>
                           <div class="grid grid-cols-1 gap-3 md:grid-cols-2">
@@ -1018,8 +1142,10 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
                                   class="btn btn-sm join-item"
                                   disabled=${busy === "rename-installation"}
                                   onClick=${renameInstallation}
+                                  aria-label="Rename Slack workspace"
+                                  title="Rename Slack workspace"
                                 >
-                                  Rename
+                                  <${EditIcon} className="w-4 h-4" />
                                 </button>
                               </div>
                             </fieldset>
@@ -1063,6 +1189,16 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
                 </div>`
           }
         </section>
+      </div>
+
+      <div
+        role="alert"
+        class="alert alert-info alert-soft text-sm"
+        data-testid="slack-credential-storage-note"
+      >
+        App and bot tokens are write-only and stored in Mitto's credential vault.
+        On Linux the vault is an atomic file restricted to mode 0600 inside a
+        mode 0700 directory.
       </div>
 
       <${ConfirmDialog}

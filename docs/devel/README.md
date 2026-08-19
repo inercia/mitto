@@ -28,6 +28,8 @@ This directory contains technical documentation for developers working on Mitto.
 
 - **[Callbacks](callbacks.md)** — HTTP callback endpoints for triggering loop conversations on-demand, token management, security model
 
+- **[Slack Event Bridge](slack-bridge.md)** — Durable managed Socket Mode routing from public/private Slack channel messages to matching loop conversations, plus legacy adapter guidance and smoke tests
+
 - **[Slack Integration Catalog](slack-integration-catalog.md)** — Process-global Slack app/workspace metadata, write-only credential boundary, validation flow, REST/Go SDK contract, channel discovery, and reference-aware deletion seam
 
 - **[JavaScript Client Library](js-client-library.md)** — SDK design decision record: package layout, distribution via `go:embed`, environment-agnostic contract, public/internal boundary, semver policy, and stability promise

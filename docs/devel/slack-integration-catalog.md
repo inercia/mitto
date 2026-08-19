@@ -110,12 +110,14 @@ installation/cursor/limit. Token replacement and deletion invalidate every page
 for that installation. A generation guard prevents an in-flight request using an
 old credential from repopulating the cache after invalidation.
 
-The bot token needs `channels:read` for public-channel discovery and
-`channels:history` for the default `message.channels` event flow. Add
-`app_mentions:read` and the `app_mention` bot event only when mention mode is used.
-The app-level Socket Mode token separately needs `connections:write`.
-`chat:write`, private-channel scopes, attachments, and automatic file fetching are
-not part of v1.
+The bot token needs `users:read` for the `bots.info` app-identity check,
+`channels:read` and `groups:read` for public/private channel discovery, and
+`channels:history` plus `groups:history` for the default `message.channels` and
+`message.groups` event flows. Add `app_mentions:read` and the `app_mention` bot
+event only when mention mode is used. The app-level Socket Mode token separately
+needs `connections:write`. Existing apps must apply the current manifest and be
+reauthorized for newly-added scopes.
+`chat:write`, attachments, and automatic file fetching are not part of v1.
 
 ## Reference-aware deletion
 
@@ -155,12 +157,19 @@ file-vault permissions.
 
 Loop settings expose `onSlack` as a canonical trigger that can be armed alone or
 with the other trigger types. Each staged subscription selects a stable workspace
-installation and public channel ID, plus message and thread filters. The editor
-loads channel pages lazily through the catalog API, searches the accumulated pages,
-and retains unresolved saved IDs as degraded options instead of erasing the draft.
-Its **Manage Slack integrations** action opens this Settings tab without unmounting
-the loop panel. Successful catalog mutations publish a value-free local refresh
-event so names and credential health update while staged loop edits remain intact.
+installation and public or visible private channel ID, plus message and thread filters. The editor
+proactively loads every channel page through the catalog API, caches the assembled
+list per client and installation for 24 hours, and searches it locally by name or
+ID. Since Slack exposes no list revision or ETag, a no-match search against a cache
+older than five minutes triggers a background revalidation; the picker also offers
+an explicit refresh. Partial pages remain searchable while loading, and unresolved
+saved IDs remain in the draft until discovery completes. Rows label privacy and
+bot membership; non-member selections and missing saved IDs explain that the bot
+must be invited before private-channel discovery and event delivery can work.
+The loop trigger card's **Manage Slack integrations** action opens this Settings tab
+without unmounting the loop panel. Successful catalog mutations publish a
+value-free local refresh event so names and credential health update while staged
+loop edits remain intact.
 
 ## Verification
 
