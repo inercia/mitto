@@ -3,8 +3,11 @@ package beads
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/inercia/mitto/internal/workspaces"
 )
 
 // isInitialized reports whether dir already has a beads database. It is detected
@@ -32,10 +35,30 @@ func (c *cliClient) EnsureInitialized(ctx context.Context, dir string) error {
 	if isInitialized(dir) {
 		return nil // already initialized
 	}
+	mode, configured, err := workspaces.ConfiguredFolderBeadsDatabaseMode(dir)
+	if err != nil {
+		return fmt.Errorf("load beads database mode before initialization: %w", err)
+	}
+	if configured && mode == workspaces.BeadsDatabaseModeShared {
+		return ErrSharedModeRequiresRemote
+	}
+	if !configured {
+		mode = workspaces.BeadsDatabaseModeLocal
+	}
 
-	_, err := c.runRaw(ctx, initTimeout, dir,
-		"init", "--non-interactive", "--quiet", "--skip-agents", "--skip-hooks")
-	return err
+	if _, err = c.runRaw(ctx, initTimeout, dir,
+		"init", "--non-interactive", "--quiet", "--skip-agents", "--skip-hooks"); err != nil {
+		return err
+	}
+	if !configured {
+		if err := workspaces.SetFolderBeadsDatabaseMode(dir, mode); err != nil {
+			return fmt.Errorf("persist local mode for Mitto-created beads database: %w", err)
+		}
+	}
+	if err := c.reconcileInitializedDatabaseMode(ctx, dir, mode); err != nil {
+		return fmt.Errorf("secure Mitto-created beads database as local-only: %w", err)
+	}
+	return nil
 }
 
 // Sync maps (integration, action) to the appropriate bd arguments and runs

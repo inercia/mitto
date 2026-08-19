@@ -3,8 +3,34 @@ package beads
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 )
+
+// ---------------------------------------------------------------------------
+// MigrateLocal — local mode must run exactly one migration command, bypassing
+// the gate for a preserved dormant remote without any publish/bootstrap step.
+// ---------------------------------------------------------------------------
+
+func TestMigrateLocal_MigrationOnly(t *testing.T) {
+	r := &recordingRunner{responses: []runnerResp{{stdout: []byte(`{"applied":2}`)}}}
+	out, err := newClient(r).MigrateLocal(context.Background(), t.TempDir())
+	if err != nil {
+		t.Fatalf("MigrateLocal() error = %v", err)
+	}
+	if string(out) != `{"applied":2}` {
+		t.Errorf("out = %s, want migration JSON", out)
+	}
+	if len(r.calls) != 1 {
+		t.Fatalf("runner calls = %d, want exactly 1", len(r.calls))
+	}
+	if got, want := strings.Join(r.calls[0].args, " "), "migrate schema --json"; got != want {
+		t.Errorf("args = %q, want %q", got, want)
+	}
+	if got, want := strings.Join(r.calls[0].env, " "), "BD_ALLOW_REMOTE_MIGRATE=1"; got != want {
+		t.Errorf("env = %q, want %q", got, want)
+	}
+}
 
 // ---------------------------------------------------------------------------
 // MigrateRemote — mitto-cq2n.1: publish-stage (bd dolt push) failures must be

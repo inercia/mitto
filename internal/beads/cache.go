@@ -487,6 +487,12 @@ func (c *CachingClient) EnsureInitialized(ctx context.Context, dir string) error
 	return c.inner.EnsureInitialized(ctx, dir)
 }
 
+// MigrateLocal invalidates dir then delegates to inner.
+func (c *CachingClient) MigrateLocal(ctx context.Context, dir string) ([]byte, error) {
+	defer c.Invalidate(dir)
+	return MigrateLocal(ctx, c.inner, dir)
+}
+
 // MigrateRemote invalidates dir then delegates to inner. A schema migration
 // rewrites the underlying store, so every cached read for dir is stale.
 func (c *CachingClient) MigrateRemote(ctx context.Context, dir string) ([]byte, error) {

@@ -2,6 +2,7 @@ package beads
 
 import (
 	"context"
+	"errors"
 	"time"
 )
 
@@ -13,6 +14,37 @@ const migrateTimeout = 5 * time.Minute
 // bootstrapTimeout bounds a "bd bootstrap --non-interactive" invocation.
 // Bootstrap may clone from a remote, so it is also generous.
 const bootstrapTimeout = 5 * time.Minute
+
+// LocalMigrator is the focused capability for schema-only local migrations.
+type LocalMigrator interface {
+	MigrateLocal(context.Context, string) ([]byte, error)
+}
+
+// MigrateLocal invokes the local-only migration capability on client.
+func MigrateLocal(ctx context.Context, client any, dir string) ([]byte, error) {
+	migrator, ok := client.(LocalMigrator)
+	if !ok {
+		return nil, errors.New("beads client does not support local schema migration")
+	}
+	return migrator.MigrateLocal(ctx, dir)
+}
+
+// MigrateLocal runs only the local schema migration. Local mode can retain a
+// dormant remote, so it bypasses bd's remote-migration gate for this invocation
+// while deliberately never invoking dolt push or bootstrap.
+func (c *cliClient) MigrateLocal(ctx context.Context, dir string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, migrateTimeout)
+	defer cancel()
+
+	out, stderr, err := c.runner.RunWithEnv(ctx, dir,
+		[]string{"BD_ALLOW_REMOTE_MIGRATE=1"},
+		"migrate", "schema", "--json",
+	)
+	if err != nil {
+		return nil, &CmdError{Err: err, Stderr: diagnosticOutput(stderr, string(out)), ExitCode: exitCodeFromErr(err)}
+	}
+	return out, nil
+}
 
 // MigrateRemote runs the two-step remote-backed schema migration:
 //

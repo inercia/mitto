@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/inercia/mitto/internal/beads"
+	"github.com/inercia/mitto/internal/workspaces"
 )
 
 // beadsReadRetries is the number of extra attempts for read-only bd queries
@@ -75,6 +76,14 @@ func (h *Handlers) writeBeadsError(w http.ResponseWriter, r *http.Request, err e
 	if beads.IsSchemaSkew(err) {
 		info := beads.SchemaSkewInfo(err)
 		databaseAhead := info.DBVersion > 0 && info.BinaryVersion > 0 && info.DBVersion > info.BinaryVersion
+		databaseMode := workspaces.BeadsDatabaseModeShared
+		if workingDir := r.URL.Query().Get("working_dir"); workingDir != "" {
+			if resolved, resolveErr := beads.ResolveDatabaseMode(r.Context(), h.beadsClient(), workingDir); resolveErr == nil {
+				databaseMode = resolved
+			} else if h.deps.Logger != nil {
+				h.deps.Logger.Warn("could not resolve beads database mode for schema-skew guidance", "working_dir", workingDir, "error", resolveErr)
+			}
+		}
 		logMessage := "beads schema needs migration"
 		if databaseAhead {
 			logMessage = "beads database newer than bd binary"
@@ -84,6 +93,10 @@ func (h *Handlers) writeBeadsError(w http.ResponseWriter, r *http.Request, err e
 		}
 		hint := "This beads database is behind the bd binary's schema and is remote-backed, so bd will not auto-migrate it. Reconcile it once (e.g. `BD_ALLOW_REMOTE_MIGRATE=1 bd migrate && bd dolt push` on the designated migrator clone, or `bd bootstrap` if another clone already migrated), then reload."
 		allowMigrate := h.beadsMigrationAllowed()
+		if databaseMode == workspaces.BeadsDatabaseModeLocal {
+			hint = "This local-only beads database is behind the bd binary's schema. Run the local migration once; Mitto will not push, pull, bootstrap, or publish it to a Dolt remote."
+			info.Options = []beads.SchemaSkewOption{{Mode: "migrate", Description: "Apply pending migrations to this local-only database", Command: "BD_ALLOW_REMOTE_MIGRATE=1 bd migrate schema --json"}}
+		}
 		if databaseAhead {
 			hint = "This beads database is newer than the installed bd binary. Follow the bd recovery guide at https://github.com/gastownhall/beads/blob/v1.2.2/docs/RECOVERY-1.2.1.md: upgrade every clone to bd 1.2.2, stop database users, take a backup, then perform the documented schema-cursor recovery. The ignore-schema-skew flag is only a temporary stopgap."
 			allowMigrate = false
@@ -91,6 +104,7 @@ func (h *Handlers) writeBeadsError(w http.ResponseWriter, r *http.Request, err e
 		details := map[string]any{
 			"hint":                  hint,
 			"allow_migrate_from_ui": allowMigrate,
+			"database_mode":         databaseMode,
 		}
 		if info.DBPath != "" {
 			details["db_path"] = info.DBPath

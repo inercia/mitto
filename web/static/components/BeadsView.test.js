@@ -1552,6 +1552,7 @@ describe("mitto-n5mw: write handlers must not swallow beads_schema_skew (409)", 
         hint: "run bd migrate",
         options: ["allow_migrate_from_ui"],
         allowMigrate: false,
+        databaseMode: "shared",
       });
     });
 
@@ -1565,6 +1566,7 @@ describe("mitto-n5mw: write handlers must not swallow beads_schema_skew (409)", 
       expect(state.hint).toBe("");
       expect(state.options).toEqual([]);
       expect(state.allowMigrate).toBe(true);
+      expect(state.databaseMode).toBe("shared");
     });
   });
 
@@ -1744,7 +1746,7 @@ describe("mitto-erry: SchemaSkewDialog copy consolidation + kill-switch UX", () 
   test("forward schema skew cannot offer or enable the migration action", () => {
     const body = extractSchemaSkewDialogSource();
     expect(body).toMatch(
-      /allowMigrate\s*&&\s*\(mode === "adopt" \|\| ackChecked\)/,
+      /allowMigrate\s*&&\s*\(isLocalMode \|\| mode === "adopt" \|\| ackChecked\)/,
     );
     expect(body).toMatch(/showConfirm=\$\{allowMigrate\}/);
     expect(body).toMatch(/isRunning \|\| !allowMigrate/);

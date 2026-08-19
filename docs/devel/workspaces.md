@@ -185,6 +185,12 @@ server-level and belong to the **folder**, not to any individual workspace:
   `shared`) controls Dolt replication independently from the upstream task system.
   A missing legacy value is inferred once from the presence of a Dolt remote and
   persisted, so later native configuration drift cannot silently change policy.
+  `local` reconciles `no-push=true`, `dolt.local-only=true`, and
+  `dolt.auto-push=false`; Mitto-created databases default to local, and local
+  migration never invokes Dolt push/pull, bootstrap, or remote publication.
+  `shared` requires an existing Dolt remote, removes only those three policy
+  guards, and never changes remote definitions. External task synchronization
+  (`beads.upstream`) remains independent from this replication policy.
 
 `folders.json` (in `$MITTO_DIR`, keyed by working directory) is the
 **authoritative store** for these values — not merely a deduplication of

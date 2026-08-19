@@ -53,7 +53,7 @@ func (c *cliClient) ConfigShow(ctx context.Context, dir string) (map[string]stri
 		if !configEditableSources[e.Source] {
 			continue
 		}
-		if isHiddenConfigKey(e.Key) {
+		if isHiddenConfigKey(e.Key) || IsPolicyConfigKey(e.Key) {
 			continue
 		}
 		result[e.Key] = e.Value

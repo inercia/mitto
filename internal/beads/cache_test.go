@@ -7,6 +7,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/inercia/mitto/internal/workspaces"
 )
 
 // fakeClient is a test double implementing beads.Client. It counts calls per
@@ -35,6 +37,8 @@ type fakeClient struct {
 	configUnsetCalls       int
 	syncCalls              int
 	ensureInitializedCalls int
+	migrateLocalCalls      int
+	reconcileModeCalls     int
 
 	// If non-nil, List blocks on this channel before returning; used to
 	// exercise singleflight coalescing.
@@ -220,6 +224,18 @@ func (f *fakeClient) EnsureInitialized(_ context.Context, _ string) error {
 	f.mu.Unlock()
 	return nil
 }
+func (f *fakeClient) ReconcileDatabaseMode(_ context.Context, _ string, _ workspaces.BeadsDatabaseMode) error {
+	f.mu.Lock()
+	f.reconcileModeCalls++
+	f.mu.Unlock()
+	return nil
+}
+func (f *fakeClient) MigrateLocal(_ context.Context, _ string) ([]byte, error) {
+	f.mu.Lock()
+	f.migrateLocalCalls++
+	f.mu.Unlock()
+	return []byte(`{}`), nil
+}
 func (f *fakeClient) MigrateRemote(_ context.Context, _ string) ([]byte, error) {
 	return []byte(`{}`), nil
 }
@@ -232,6 +248,20 @@ var _ Client = (*fakeClient)(nil)
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+func TestCachingClient_LocalPolicyCapabilitiesDelegate(t *testing.T) {
+	fake := &fakeClient{}
+	c := NewCachingClient(fake)
+	if _, err := c.MigrateLocal(context.Background(), "/dir"); err != nil {
+		t.Fatalf("MigrateLocal() error = %v", err)
+	}
+	if err := c.ReconcileDatabaseMode(context.Background(), "/dir", workspaces.BeadsDatabaseModeLocal); err != nil {
+		t.Fatalf("ReconcileDatabaseMode() error = %v", err)
+	}
+	if fake.migrateLocalCalls != 1 || fake.reconcileModeCalls != 1 {
+		t.Errorf("inner calls migrate/reconcile = %d/%d, want 1/1", fake.migrateLocalCalls, fake.reconcileModeCalls)
+	}
+}
 
 func TestCachingClient_ListHit(t *testing.T) {
 	dir := initializedDir(t)

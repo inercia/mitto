@@ -108,14 +108,21 @@ type stubBeadsClient struct {
 
 type remoteModeClient struct {
 	stubBeadsClient
-	hasRemote bool
-	err       error
-	calls     int
+	hasRemote     bool
+	err           error
+	calls         int
+	reconcileMode config.BeadsDatabaseMode
+	reconcileErr  error
 }
 
 func (c *remoteModeClient) HasDoltRemote(context.Context, string) (bool, error) {
 	c.calls++
 	return c.hasRemote, c.err
+}
+
+func (c *remoteModeClient) ReconcileDatabaseMode(_ context.Context, _ string, mode config.BeadsDatabaseMode) error {
+	c.reconcileMode = mode
+	return c.reconcileErr
 }
 
 func (c *stubBeadsClient) List(_ context.Context, _ string) ([]byte, error) {
@@ -167,8 +174,14 @@ func (c *stubBeadsClient) ConfigShow(_ context.Context, _ string) (map[string]st
 func (c *stubBeadsClient) ConfigSet(_ context.Context, _, _, _ string) error   { return nil }
 func (c *stubBeadsClient) ConfigUnset(_ context.Context, _, _ string) error    { return nil }
 func (c *stubBeadsClient) EnsureInitialized(_ context.Context, _ string) error { return nil }
+func (c *stubBeadsClient) ReconcileDatabaseMode(_ context.Context, _ string, _ config.BeadsDatabaseMode) error {
+	return nil
+}
 func (c *stubBeadsClient) Sync(_ context.Context, _, _, _ string) (string, error) {
 	return "", nil
+}
+func (c *stubBeadsClient) MigrateLocal(_ context.Context, _ string) ([]byte, error) {
+	return []byte(`{}`), nil
 }
 func (c *stubBeadsClient) MigrateRemote(_ context.Context, _ string) ([]byte, error) {
 	return []byte(`{}`), nil
@@ -464,6 +477,37 @@ func TestHandleBeadsList_SchemaSkew_JSONBlob(t *testing.T) {
 	first, _ := opts[0].(map[string]any)
 	if first["mode"] != "migrate" {
 		t.Errorf("options[0].mode = %v, want migrate", first["mode"])
+	}
+}
+
+func TestHandleBeadsList_SchemaSkew_LocalModeOffersLocalMigrationOnly(t *testing.T) {
+	setupMittoDir(t)
+	if err := config.SetFolderBeadsDatabaseMode("/test/workspace", config.BeadsDatabaseModeLocal); err != nil {
+		t.Fatalf("SetFolderBeadsDatabaseMode() error = %v", err)
+	}
+	s := newBeadsTestServerWithClient(&schemaSkewJSONClient{})
+	w := httptest.NewRecorder()
+	s.handleBeadsList(w, localhostRequest("/api/issues?working_dir=/test/workspace"))
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d; body=%s", w.Code, http.StatusConflict, w.Body.String())
+	}
+	var env struct {
+		Error struct {
+			Details struct {
+				DatabaseMode string                   `json:"database_mode"`
+				Hint         string                   `json:"hint"`
+				Options      []beads.SchemaSkewOption `json:"options"`
+			} `json:"details"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&env); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if env.Error.Details.DatabaseMode != "local" || len(env.Error.Details.Options) != 1 || env.Error.Details.Options[0].Mode != "migrate" {
+		t.Errorf("details = %+v, want local mode with migrate-only option", env.Error.Details)
+	}
+	if strings.Contains(env.Error.Details.Hint, "dolt push") || !strings.Contains(env.Error.Details.Hint, "will not push") {
+		t.Errorf("hint = %q, want explicit local-only guidance", env.Error.Details.Hint)
 	}
 }
 
@@ -1998,6 +2042,28 @@ func TestHandleBeadsConfig_SetUnknownWorkspace(t *testing.T) {
 	}
 }
 
+func TestHandleBeadsConfig_PolicyKeysCannotBeMutated(t *testing.T) {
+	for _, key := range []string{"no-push", "dolt.local-only", "dolt.auto-push"} {
+		for _, method := range []string{http.MethodPut, http.MethodDelete} {
+			t.Run(method+"/"+key, func(t *testing.T) {
+				var req *http.Request
+				if method == http.MethodPut {
+					req = httptest.NewRequest(method, "/api/issues/config?working_dir=/test/workspace",
+						strings.NewReader(`{"key":"`+key+`","value":"unsafe"}`))
+				} else {
+					req = httptest.NewRequest(method, "/api/issues/config?working_dir=/test/workspace&key="+key, nil)
+				}
+				req.RemoteAddr = "127.0.0.1:1"
+				w := httptest.NewRecorder()
+				newBeadsTestServerWithClient(&stubBeadsClient{}).handleBeadsConfig(w, req)
+				if w.Code != http.StatusConflict {
+					t.Errorf("status = %d, want %d; body=%s", w.Code, http.StatusConflict, w.Body.String())
+				}
+			})
+		}
+	}
+}
+
 func TestHandleBeadsConfig_UnsetMissingKey(t *testing.T) {
 	s := newBeadsTestServer()
 	req := httptest.NewRequest(http.MethodDelete, "/api/issues/config?working_dir=/test/workspace", nil)
@@ -2371,6 +2437,9 @@ func TestHandleBeadsDatabaseMode_GetInfersAndPersists(t *testing.T) {
 			if client.calls != 2 {
 				t.Errorf("remote probe calls = %d, want 2 (inference + response readiness)", client.calls)
 			}
+			if client.reconcileMode != tc.want {
+				t.Errorf("reconciled mode = %q, want %q", client.reconcileMode, tc.want)
+			}
 		})
 	}
 }
@@ -2421,6 +2490,26 @@ func TestHandleBeadsDatabaseMode_PutValidatesAndPreservesUpstream(t *testing.T) 
 	}
 	if got := config.FolderBeadsUpstream("/test/workspace"); got != "jira" {
 		t.Errorf("FolderBeadsUpstream() = %q, want jira after mode switch", got)
+	}
+	if client.reconcileMode != config.BeadsDatabaseModeLocal {
+		t.Errorf("reconciled mode = %q, want local", client.reconcileMode)
+	}
+}
+
+func TestHandleBeadsDatabaseMode_SharedWithoutRemoteDoesNotPersist(t *testing.T) {
+	setupMittoDir(t)
+	client := &remoteModeClient{reconcileErr: beads.ErrSharedModeRequiresRemote}
+	s := newBeadsTestServerWithClient(client)
+	req := httptest.NewRequest(http.MethodPut, "/api/issues/database-mode?working_dir=/test/workspace",
+		strings.NewReader(`{"database_mode":"shared"}`))
+	req.RemoteAddr = "127.0.0.1:1"
+	w := httptest.NewRecorder()
+	s.handleBeadsDatabaseMode(w, req)
+	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "existing Dolt remote") {
+		t.Fatalf("status/body = %d %s, want actionable conflict", w.Code, w.Body.String())
+	}
+	if mode, configured, err := config.ConfiguredFolderBeadsDatabaseMode("/test/workspace"); err != nil || configured || mode != "" {
+		t.Errorf("persisted mode = (%q, %v, %v), want unchanged", mode, configured, err)
 	}
 }
 

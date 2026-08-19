@@ -563,6 +563,17 @@ func IsValidConfigKey(key string) bool {
 	return true
 }
 
+// IsPolicyConfigKey reports whether key is owned by Mitto's database-mode
+// policy and therefore must not be changed through the generic config API.
+func IsPolicyConfigKey(key string) bool {
+	for _, guard := range databaseModeGuards {
+		if strings.EqualFold(key, guard.key) {
+			return true
+		}
+	}
+	return false
+}
+
 // IsValidUpstream reports whether u is a recognised upstream task system.
 func IsValidUpstream(u string) bool {
 	switch u {

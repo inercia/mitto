@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/inercia/mitto/internal/bdexec"
+	"github.com/inercia/mitto/internal/workspaces"
 )
 
 // ---------------------------------------------------------------------------
@@ -790,11 +791,13 @@ func TestClient_ListAllLabels_DeadlineFailsOpen(t *testing.T) {
 	}
 }
 
-// TestClient_Create_NotInitialized_RunsInitThenCreate verifies that creating a
-// task in an uninitialized folder first runs "bd init" and then "bd create".
+// TestClient_Create_NotInitialized_RunsInitThenGuardsThenCreate verifies that a
+// Mitto-created database is secured as local-only before its first write.
 func TestClient_Create_NotInitialized_RunsInitThenCreate(t *testing.T) {
+	setupModeTestDir(t)
 	r := &recordingRunner{responses: []runnerResp{
-		{stdout: []byte("")},   // init
+		{stdout: []byte("")}, // init
+		{}, {}, {},           // local-only policy guards
 		{stdout: []byte(`{}`)}, // create
 	}}
 	c := newClient(r)
@@ -802,14 +805,14 @@ func TestClient_Create_NotInitialized_RunsInitThenCreate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create() error: %v", err)
 	}
-	if len(r.calls) != 2 {
-		t.Fatalf("expected 2 runner calls (init + create), got %d: %v", len(r.calls), r.calls)
+	if len(r.calls) != 5 {
+		t.Fatalf("expected 5 runner calls (init + guards + create), got %d: %v", len(r.calls), r.calls)
 	}
 	if r.calls[0].args[0] != "init" {
 		t.Errorf("first call = %v, want init", r.calls[0].args)
 	}
-	if r.calls[1].args[0] != "create" {
-		t.Errorf("second call = %v, want create", r.calls[1].args)
+	if r.calls[4].args[0] != "create" {
+		t.Errorf("last call = %v, want create", r.calls[4].args)
 	}
 }
 
@@ -1061,6 +1064,23 @@ func TestClient_ConfigShow_HidesKVNamespace(t *testing.T) {
 	}
 }
 
+func TestClient_ConfigShow_HidesDatabaseModePolicyKeys(t *testing.T) {
+	jsonResp := `[
+		{"key":"jira.url","value":"https://j","source":"config.yaml"},
+		{"key":"no-push","value":"true","source":"database"},
+		{"key":"dolt.local-only","value":"true","source":"database"},
+		{"key":"dolt.auto-push","value":"false","source":"database"}
+	]`
+	r := &recordingRunner{responses: []runnerResp{{stdout: []byte(jsonResp)}}}
+	result, err := newClient(r).ConfigShow(context.Background(), "/dir")
+	if err != nil {
+		t.Fatalf("ConfigShow() error: %v", err)
+	}
+	if len(result) != 1 || result["jira.url"] != "https://j" {
+		t.Errorf("ConfigShow() = %v, want only editable integration key", result)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // syncArgs (via Sync)
 // ---------------------------------------------------------------------------
@@ -1293,6 +1313,46 @@ func TestEnsureInitialized_AlreadyInitialized(t *testing.T) {
 	}
 	if len(r.calls) != 0 {
 		t.Errorf("expected 0 runner calls (already initialized), got %d", len(r.calls))
+	}
+}
+
+func TestEnsureInitialized_NewDatabaseDefaultsAndReconcilesLocal(t *testing.T) {
+	setupModeTestDir(t)
+	dir := t.TempDir()
+	r := &recordingRunner{}
+	if err := newClient(r).EnsureInitialized(context.Background(), dir); err != nil {
+		t.Fatalf("EnsureInitialized() error: %v", err)
+	}
+	mode, configured, err := workspaces.ConfiguredFolderBeadsDatabaseMode(dir)
+	if err != nil || !configured || mode != workspaces.BeadsDatabaseModeLocal {
+		t.Fatalf("persisted mode = (%q, %v, %v), want local", mode, configured, err)
+	}
+	want := [][]string{
+		{"init", "--non-interactive", "--quiet", "--skip-agents", "--skip-hooks"},
+		{"config", "set", "no-push", "true"},
+		{"config", "set", "dolt.local-only", "true"},
+		{"config", "set", "dolt.auto-push", "false"},
+	}
+	assertRunnerArgs(t, r.calls, want)
+}
+
+func TestEnsureInitialized_ExplicitSharedModeRequiresRemoteBeforeInit(t *testing.T) {
+	setupModeTestDir(t)
+	dir := t.TempDir()
+	if err := workspaces.SetFolderBeadsDatabaseMode(dir, workspaces.BeadsDatabaseModeShared); err != nil {
+		t.Fatalf("SetFolderBeadsDatabaseMode() error = %v", err)
+	}
+	r := &recordingRunner{}
+	err := newClient(r).EnsureInitialized(context.Background(), dir)
+	if !errors.Is(err, ErrSharedModeRequiresRemote) {
+		t.Fatalf("EnsureInitialized() error = %v, want ErrSharedModeRequiresRemote", err)
+	}
+	if len(r.calls) != 0 {
+		t.Errorf("runner calls = %d, want 0 before shared-mode readiness", len(r.calls))
+	}
+	mode, configured, loadErr := workspaces.ConfiguredFolderBeadsDatabaseMode(dir)
+	if loadErr != nil || !configured || mode != workspaces.BeadsDatabaseModeShared {
+		t.Fatalf("persisted mode = (%q, %v, %v), want unchanged shared", mode, configured, loadErr)
 	}
 }
 

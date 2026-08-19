@@ -122,7 +122,7 @@ export function isBeadsSchemaSkew(data) {
 
 // toSchemaSkewState maps a flattened beads response into the shape the
 // SchemaSkewDialog state (`schemaSkew`) expects: { message, dbPath, hint,
-// options, allowMigrate }. Tolerates missing details by falling back to empty
+// options, allowMigrate, databaseMode }. Tolerates missing details by falling back to empty
 // strings/options and migration allowed, preserving compatibility with older
 // backends that did not send allow_migrate_from_ui.
 export function toSchemaSkewState(data) {
@@ -133,6 +133,7 @@ export function toSchemaSkewState(data) {
     hint: details.hint || "",
     options: Array.isArray(details.options) ? details.options : [],
     allowMigrate: details.allow_migrate_from_ui !== false,
+		databaseMode: details.database_mode || "shared",
   };
 }
 

@@ -20,6 +20,7 @@ import (
 type migrateStubClient struct {
 	stubBeadsClient
 	migrateCalls  atomic.Int32
+	localCalls    atomic.Int32
 	bootstrapCall atomic.Int32
 	lastDir       atomic.Value // string
 	migrateErr    error
@@ -30,6 +31,19 @@ type migrateStubClient struct {
 
 func (c *migrateStubClient) MigrateRemote(_ context.Context, dir string) ([]byte, error) {
 	c.migrateCalls.Add(1)
+	c.lastDir.Store(dir)
+	if c.migrateErr != nil {
+		return c.migrateOut, c.migrateErr
+	}
+	out := c.migrateOut
+	if out == nil {
+		out = []byte(`{"applied":4}`)
+	}
+	return out, nil
+}
+
+func (c *migrateStubClient) MigrateLocal(_ context.Context, dir string) ([]byte, error) {
+	c.localCalls.Add(1)
 	c.lastDir.Store(dir)
 	if c.migrateErr != nil {
 		return c.migrateOut, c.migrateErr
@@ -61,6 +75,10 @@ func (c *migrateStubClient) Bootstrap(_ context.Context, dir string) ([]byte, er
 // (Web.Beads.AllowMigrateFromUI == &false).
 func newBeadsMigrateHandlers(t *testing.T, c beads.Client, allow bool) *Handlers {
 	t.Helper()
+	setupMittoDir(t)
+	if err := config.SetFolderBeadsDatabaseMode("/test/workspace", config.BeadsDatabaseModeShared); err != nil {
+		t.Fatalf("SetFolderBeadsDatabaseMode() error = %v", err)
+	}
 	cfg := &config.Config{}
 	if !allow {
 		f := false
@@ -167,6 +185,10 @@ func TestHandleBeadsMigrate_DefaultOn_Allowed(t *testing.T) {
 // spells out the flag as true gets the same behaviour as leaving it unset.
 func TestHandleBeadsMigrate_ExplicitTrue_Allowed(t *testing.T) {
 	stub := &migrateStubClient{}
+	setupMittoDir(t)
+	if err := config.SetFolderBeadsDatabaseMode("/test/workspace", config.BeadsDatabaseModeShared); err != nil {
+		t.Fatalf("SetFolderBeadsDatabaseMode() error = %v", err)
+	}
 	cfg := &config.Config{}
 	tr := true
 	cfg.Web.Beads = &config.WebBeadsConfig{AllowMigrateFromUI: &tr}
@@ -295,6 +317,47 @@ func TestHandleBeadsMigrate_AdoptSuccess(t *testing.T) {
 	}
 	if stub.migrateCalls.Load() != 0 {
 		t.Errorf("MigrateRemote called %d times, want 0 for mode=adopt", stub.migrateCalls.Load())
+	}
+}
+
+func TestHandleBeadsMigrate_LocalModeNeverPublishesOrBootstraps(t *testing.T) {
+	setupMittoDir(t)
+	if err := config.SetFolderBeadsDatabaseMode("/test/workspace", config.BeadsDatabaseModeLocal); err != nil {
+		t.Fatalf("SetFolderBeadsDatabaseMode() error = %v", err)
+	}
+	stub := &migrateStubClient{}
+	h := New(Deps{SessionManager: newBeadsTestSM(), BeadsClient: stub, MittoConfig: &config.Config{}})
+	w := httptest.NewRecorder()
+	h.HandleBeadsMigrate(w, postJSON(t, "/api/beads/migrate", map[string]string{
+		"working_dir": "/test/workspace",
+		"mode":        "migrate",
+	}))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+	if stub.localCalls.Load() != 1 || stub.migrateCalls.Load() != 0 || stub.bootstrapCall.Load() != 0 {
+		t.Errorf("calls local/remote/bootstrap = %d/%d/%d, want 1/0/0",
+			stub.localCalls.Load(), stub.migrateCalls.Load(), stub.bootstrapCall.Load())
+	}
+}
+
+func TestHandleBeadsMigrate_LocalModeRejectsAdoptWithoutDispatch(t *testing.T) {
+	setupMittoDir(t)
+	if err := config.SetFolderBeadsDatabaseMode("/test/workspace", config.BeadsDatabaseModeLocal); err != nil {
+		t.Fatalf("SetFolderBeadsDatabaseMode() error = %v", err)
+	}
+	stub := &migrateStubClient{}
+	h := New(Deps{SessionManager: newBeadsTestSM(), BeadsClient: stub, MittoConfig: &config.Config{}})
+	w := httptest.NewRecorder()
+	h.HandleBeadsMigrate(w, postJSON(t, "/api/beads/migrate", map[string]string{
+		"working_dir": "/test/workspace",
+		"mode":        "adopt",
+	}))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body=%s", w.Code, http.StatusBadRequest, w.Body.String())
+	}
+	if stub.localCalls.Load()+stub.migrateCalls.Load()+stub.bootstrapCall.Load() != 0 {
+		t.Errorf("migration dispatched in local adopt path")
 	}
 }
 

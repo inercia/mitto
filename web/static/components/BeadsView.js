@@ -806,6 +806,7 @@ export function BeadsIssueView({
         hint=${schemaSkew ? schemaSkew.hint : ""}
         options=${schemaSkew ? schemaSkew.options : []}
         allowMigrate=${schemaSkew ? schemaSkew.allowMigrate : true}
+        databaseMode=${schemaSkew ? schemaSkew.databaseMode : "shared"}
         workingDir=${workingDir}
         showToast=${showToast}
         onSuccess=${() => {
@@ -949,6 +950,7 @@ function BeadsIssueRow({
  *   dialog defaults to `mode=migrate`.
  * @param {boolean} props.allowMigrate   - False when remediation requires a
  *   recovery procedure rather than `bd migrate` (for example DB v65 > bd v53).
+ * @param {string} props.databaseMode    - Effective folder mode: local/shared.
  * @param {string} props.workingDir      - Sent to the backend as working_dir.
  * @param {Function} props.onSuccess     - Called on HTTP 200 (parent refreshes).
  * @param {Function} props.onCancel      - Called when the user dismisses.
@@ -960,12 +962,14 @@ function SchemaSkewDialog({
   hint,
   options,
   allowMigrate = true,
+  databaseMode = "shared",
   workingDir,
   onSuccess,
   onCancel,
   showToast,
 }) {
   const hasOptions = Array.isArray(options) && options.length > 0;
+  const isLocalMode = databaseMode === "local";
   const defaultMode = hasOptions ? options[0].mode || "migrate" : "migrate";
   const [mode, setMode] = useState(defaultMode);
   const [ackChecked, setAckChecked] = useState(false);
@@ -991,10 +995,10 @@ function SchemaSkewDialog({
     // options is stable for the lifetime of a single skew event.
   }, [isOpen]);
 
-  // Enable the confirm button only when the "designated migrator" ack is
-  // checked for `migrate` mode. `adopt` mode is not destructive-ish and does
-  // not require the ack.
-  const canConfirm = allowMigrate && (mode === "adopt" || ackChecked);
+  // Remote-backed `migrate` requires the designated-migrator acknowledgment.
+  // Local migration and shared `adopt` do not require that remote-only consent.
+  const canConfirm =
+    allowMigrate && (isLocalMode || mode === "adopt" || ackChecked);
 
   const handleConfirm = async () => {
     if (isRunning || !allowMigrate) return;
@@ -1008,7 +1012,9 @@ function SchemaSkewDialog({
     } catch (err) {
       if (err?.code === "migrate_from_ui_disabled") {
         setErrorMsg(
-          "UI-initiated beads migrations have been disabled by the administrator on this Mitto instance (web.beads.allow_migrate_from_ui: false). Run the migration from a terminal on the designated clone.",
+          isLocalMode
+            ? "UI-initiated beads migrations have been disabled by the administrator on this Mitto instance (web.beads.allow_migrate_from_ui: false). Run the local migration from a terminal."
+            : "UI-initiated beads migrations have been disabled by the administrator on this Mitto instance (web.beads.allow_migrate_from_ui: false). Run the migration from a terminal on the designated clone.",
         );
       } else {
         // beadsErrorFrom() flattens both the primary message (error.message,
@@ -1026,8 +1032,8 @@ function SchemaSkewDialog({
 
   const message = allowMigrate
     ? dbPath
-      ? `Run the beads schema migration on this clone for the database at ${dbPath}?`
-      : "Run the beads schema migration on this clone?"
+      ? `Run the ${isLocalMode ? "local-only " : ""}beads schema migration on this clone for the database at ${dbPath}?`
+      : `Run the ${isLocalMode ? "local-only " : ""}beads schema migration on this clone?`
     : "This database cannot be migrated by the installed bd binary. Follow the recovery instructions below, then reload.";
 
   return html`
@@ -1092,6 +1098,7 @@ function SchemaSkewDialog({
         }
         ${
           allowMigrate &&
+          !isLocalMode &&
           mode === "migrate" &&
           html`
             <label
@@ -3299,6 +3306,7 @@ export function BeadsView({
       hint=${schemaSkew ? schemaSkew.hint : ""}
       options=${schemaSkew ? schemaSkew.options : []}
       allowMigrate=${schemaSkew ? schemaSkew.allowMigrate : true}
+      databaseMode=${schemaSkew ? schemaSkew.databaseMode : "shared"}
       workingDir=${workingDir}
       showToast=${showToast}
       onSuccess=${() => {

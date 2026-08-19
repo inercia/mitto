@@ -3,6 +3,7 @@ package beads
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 
 	"github.com/inercia/mitto/internal/appdir"
@@ -149,5 +150,58 @@ func TestCLIClientHasDoltRemote_RejectsUnexpectedJSONShape(t *testing.T) {
 	runner := &recordingRunner{responses: []runnerResp{{stdout: []byte(`{"origin":{}}`)}}}
 	if _, err := newClient(runner).HasDoltRemote(context.Background(), dir); err == nil {
 		t.Fatal("HasDoltRemote(object JSON) error = nil, want unexpected-format error")
+	}
+}
+
+func TestReconcileDatabaseMode_LocalSetsOnlyPolicyGuards(t *testing.T) {
+	dir := initializedDir(t)
+	runner := &recordingRunner{}
+	if err := newClient(runner).ReconcileDatabaseMode(context.Background(), dir, workspaces.BeadsDatabaseModeLocal); err != nil {
+		t.Fatalf("ReconcileDatabaseMode(local) error = %v", err)
+	}
+	want := [][]string{
+		{"config", "set", "no-push", "true"},
+		{"config", "set", "dolt.local-only", "true"},
+		{"config", "set", "dolt.auto-push", "false"},
+	}
+	assertRunnerArgs(t, runner.calls, want)
+}
+
+func TestReconcileDatabaseMode_SharedRequiresRemoteThenRemovesOnlyPolicyGuards(t *testing.T) {
+	dir := initializedDir(t)
+	runner := &recordingRunner{responses: []runnerResp{{stdout: []byte(`[{"name":"origin"}]`)}}}
+	if err := newClient(runner).ReconcileDatabaseMode(context.Background(), dir, workspaces.BeadsDatabaseModeShared); err != nil {
+		t.Fatalf("ReconcileDatabaseMode(shared) error = %v", err)
+	}
+	want := [][]string{
+		{"--readonly", "dolt", "remote", "list", "--json"},
+		{"config", "unset", "dolt.auto-push"},
+		{"config", "unset", "dolt.local-only"},
+		{"config", "unset", "no-push"},
+	}
+	assertRunnerArgs(t, runner.calls, want)
+}
+
+func TestReconcileDatabaseMode_SharedWithoutRemoteIsActionableAndDoesNotMutate(t *testing.T) {
+	dir := initializedDir(t)
+	runner := &recordingRunner{responses: []runnerResp{{stdout: []byte(`[]`)}}}
+	err := newClient(runner).ReconcileDatabaseMode(context.Background(), dir, workspaces.BeadsDatabaseModeShared)
+	if !errors.Is(err, ErrSharedModeRequiresRemote) {
+		t.Fatalf("error = %v, want ErrSharedModeRequiresRemote", err)
+	}
+	if len(runner.calls) != 1 {
+		t.Fatalf("runner calls = %d, want only remote inspection", len(runner.calls))
+	}
+}
+
+func assertRunnerArgs(t *testing.T, calls []runnerCall, want [][]string) {
+	t.Helper()
+	if len(calls) != len(want) {
+		t.Fatalf("runner calls = %d, want %d: %+v", len(calls), len(want), calls)
+	}
+	for i := range want {
+		if !slices.Equal(calls[i].args, want[i]) {
+			t.Errorf("call %d args = %v, want %v", i, calls[i].args, want[i])
+		}
 	}
 }

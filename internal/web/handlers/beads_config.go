@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"path/filepath"
@@ -97,6 +98,10 @@ func (h *Handlers) handleBeadsConfigSet(w http.ResponseWriter, r *http.Request) 
 		writeErrorJSON(w, http.StatusBadRequest, "", "invalid config key")
 		return
 	}
+	if beads.IsPolicyConfigKey(req.Key) {
+		writeErrorJSON(w, http.StatusConflict, "", "this config key is managed by the folder's Beads database mode")
+		return
+	}
 
 	if err := h.beadsClient().ConfigSet(r.Context(), workingDir, req.Key, req.Value); err != nil {
 		h.writeBeadsError(w, r, err)
@@ -121,6 +126,10 @@ func (h *Handlers) handleBeadsConfigUnset(w http.ResponseWriter, r *http.Request
 	}
 	if !beads.IsValidConfigKey(key) {
 		writeErrorJSON(w, http.StatusBadRequest, "", "invalid config key")
+		return
+	}
+	if beads.IsPolicyConfigKey(key) {
+		writeErrorJSON(w, http.StatusConflict, "", "this config key is managed by the folder's Beads database mode")
 		return
 	}
 	if !h.isKnownWorkspaceDir(workingDir) {
@@ -198,6 +207,10 @@ func (h *Handlers) HandleBeadsDatabaseMode(w http.ResponseWriter, r *http.Reques
 			h.writeBeadsError(w, r, err)
 			return
 		}
+		if err := beads.ReconcileDatabaseMode(r.Context(), client, workingDir, mode); err != nil {
+			h.writeBeadsDatabaseModeError(w, r, err)
+			return
+		}
 		hasRemote, err := beads.DoltRemoteConfigured(r.Context(), client, workingDir)
 		if err != nil {
 			h.writeBeadsError(w, r, err)
@@ -214,12 +227,16 @@ func (h *Handlers) HandleBeadsDatabaseMode(w http.ResponseWriter, r *http.Reques
 			writeErrorJSON(w, http.StatusBadRequest, "", "database_mode must be one of: local, shared")
 			return
 		}
-		hasRemote, err := beads.DoltRemoteConfigured(r.Context(), client, workingDir)
-		if err != nil {
-			h.writeBeadsError(w, r, err)
+		if err := beads.ReconcileDatabaseMode(r.Context(), client, workingDir, req.DatabaseMode); err != nil {
+			h.writeBeadsDatabaseModeError(w, r, err)
 			return
 		}
 		if err := config.SetFolderBeadsDatabaseMode(workingDir, req.DatabaseMode); err != nil {
+			h.writeBeadsError(w, r, err)
+			return
+		}
+		hasRemote, err := beads.DoltRemoteConfigured(r.Context(), client, workingDir)
+		if err != nil {
 			h.writeBeadsError(w, r, err)
 			return
 		}
@@ -227,6 +244,14 @@ func (h *Handlers) HandleBeadsDatabaseMode(w http.ResponseWriter, r *http.Reques
 	default:
 		methodNotAllowed(w)
 	}
+}
+
+func (h *Handlers) writeBeadsDatabaseModeError(w http.ResponseWriter, r *http.Request, err error) {
+	if errors.Is(err, beads.ErrSharedModeRequiresRemote) {
+		writeErrorJSON(w, http.StatusConflict, "", err.Error())
+		return
+	}
+	h.writeBeadsError(w, r, err)
 }
 
 // HandleBeadsUpstream manages the per-folder beads upstream task system stored

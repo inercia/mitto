@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/inercia/mitto/internal/beads"
+	"github.com/inercia/mitto/internal/workspaces"
 )
 
 // migrateRequestTimeout bounds the whole POST /api/beads/migrate request.
@@ -95,10 +96,25 @@ func (h *Handlers) HandleBeadsMigrate(w http.ResponseWriter, r *http.Request) {
 		err error
 	)
 	client := h.beadsClient()
-	switch mode {
-	case "migrate":
+	databaseMode, err := beads.ResolveDatabaseMode(ctx, client, req.WorkingDir)
+	if err != nil {
+		h.writeBeadsError(w, r, fmt.Errorf("resolve beads database mode before migration: %w", err))
+		return
+	}
+	if err := beads.ReconcileDatabaseMode(ctx, client, req.WorkingDir, databaseMode); err != nil {
+		h.writeBeadsDatabaseModeError(w, r, err)
+		return
+	}
+	if databaseMode == workspaces.BeadsDatabaseModeLocal && mode == "adopt" {
+		writeErrorJSON(w, http.StatusBadRequest, "", "adopt is unavailable for a local-only Beads database; run a local migration instead")
+		return
+	}
+	switch {
+	case databaseMode == workspaces.BeadsDatabaseModeLocal:
+		out, err = beads.MigrateLocal(ctx, client, req.WorkingDir)
+	case mode == "migrate":
 		out, err = client.MigrateRemote(ctx, req.WorkingDir)
-	case "adopt":
+	case mode == "adopt":
 		out, err = client.Bootstrap(ctx, req.WorkingDir)
 	}
 	if err != nil {
@@ -112,11 +128,11 @@ func (h *Handlers) HandleBeadsMigrate(w http.ResponseWriter, r *http.Request) {
 		// from every other failure so the API can tell the caller the local
 		// migration DID apply — it just is not published yet — without ever
 		// claiming overall success. See beads.IsPublishFailure.
-		publishFailure := mode == "migrate" && beads.IsPublishFailure(err)
+		publishFailure := databaseMode == workspaces.BeadsDatabaseModeShared && mode == "migrate" && beads.IsPublishFailure(err)
 
 		if h.deps.Logger != nil {
 			h.deps.Logger.Error("beads migration failed",
-				"mode", mode, "working_dir", req.WorkingDir,
+				"mode", mode, "database_mode", databaseMode, "working_dir", req.WorkingDir,
 				"error", err, "stderr", beads.StderrOf(err),
 				"exit_code", beads.ExitCodeOf(err),
 				"publish_failure", publishFailure)
@@ -124,7 +140,7 @@ func (h *Handlers) HandleBeadsMigrate(w http.ResponseWriter, r *http.Request) {
 
 		code := errCodeServerError
 		message := err.Error()
-		details := map[string]any{"mode": mode, "working_dir": req.WorkingDir}
+		details := map[string]any{"mode": mode, "database_mode": databaseMode, "working_dir": req.WorkingDir}
 		if s := beads.StderrOf(err); s != "" {
 			details["stderr"] = s
 		}
@@ -154,7 +170,7 @@ func (h *Handlers) HandleBeadsMigrate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.deps.Logger != nil {
-		h.deps.Logger.Info("beads migration succeeded", "mode", mode, "working_dir", req.WorkingDir)
+		h.deps.Logger.Info("beads migration succeeded", "mode", mode, "database_mode", databaseMode, "working_dir", req.WorkingDir)
 	}
 
 	resp := migrateResponse{Ok: true, Mode: mode}
