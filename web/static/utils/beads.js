@@ -133,7 +133,7 @@ export function toSchemaSkewState(data) {
     hint: details.hint || "",
     options: Array.isArray(details.options) ? details.options : [],
     allowMigrate: details.allow_migrate_from_ui !== false,
-		databaseMode: details.database_mode || "shared",
+    databaseMode: details.database_mode || "shared",
   };
 }
 
