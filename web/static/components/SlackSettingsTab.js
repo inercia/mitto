@@ -627,7 +627,7 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
       >
         <div class="flex flex-col p-4 gap-3">
           <div>
-            <h5 class="font-semibold text-base">Slack app manifest</h5>
+            <h5 class="font-semibold text-base">App manifest</h5>
             <p class="text-sm text-mitto-text-muted">
               You need to
               <a
@@ -759,7 +759,7 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
         <section class="rounded-lg border border-mitto-border bg-mitto-surface-2">
           <div class="flex flex-col p-3 gap-3">
             <div class="flex items-center justify-between gap-2">
-              <h5 class="font-semibold text-sm">Slack apps</h5>
+              <h5 class="font-semibold text-sm">Apps</h5>
               <button
                 type="button"
                 class="btn btn-sm btn-ghost"
@@ -814,7 +814,7 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
               apps.length === 0
                 ? html`<div class="text-center py-6 space-y-3">
                     <p class="text-sm text-mitto-text-muted">
-                      No Slack app profiles are configured. Use the guide above
+                      No app profiles are configured. Use the guide above
                       to create a Slack app, then add its token here.
                     </p>
                   </div>`
@@ -871,7 +871,7 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
                           <${StatusSummary}
                             record=${selectedApp}
                             attempt=${appValidation}
-                            identityLabel="Slack App ID"
+                            identityLabel="App ID"
                             identityValue=${selectedApp.slack_app_id}
                           />
                         </div>
@@ -975,11 +975,9 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
                         class="flex flex-wrap items-center justify-between gap-2"
                       >
                         <div>
-                          <h5 class="font-semibold text-base">
-                            Slack workspaces
-                          </h5>
+                          <h5 class="font-semibold text-base">Workspaces</h5>
                           <p class="text-xs text-mitto-text-muted">
-                            Installations of this app in Slack teams.
+                            Installations of this app in workspaces.
                           </p>
                         </div>
                         <button
@@ -1056,7 +1054,7 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
                           </div>`
                         : installations.length === 0
                           ? html`<p class="text-sm text-mitto-text-muted py-3">
-                              This app has no Slack workspace installations.
+                              This app has no workspace installations.
                             </p>`
                           : html`<ul
                               class="menu flex-wrap p-0"
@@ -1094,7 +1092,7 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
                               <${StatusSummary}
                                 record=${selectedInstallation}
                                 attempt=${installationValidation}
-                                identityLabel="Slack Team ID"
+                                identityLabel="Team ID"
                                 identityValue=${selectedInstallation.team_id}
                               />
                               ${selectedInstallation.team_name &&
@@ -1195,7 +1193,7 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
                 >
                   <div class="flex flex-col items-center text-center py-12">
                     <p class="text-mitto-text-muted">
-                      Select or add a Slack app profile to manage it.
+                      Select or add an app profile to manage it.
                     </p>
                   </div>
                 </div>`
