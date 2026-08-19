@@ -46,6 +46,11 @@ import (
 	mittoWeb "github.com/inercia/mitto/web"
 )
 
+const (
+	webReadHeaderTimeout = 10 * time.Second
+	webMaxHeaderBytes    = 1 << 20 // 1 MiB
+)
+
 // Config holds the web server configuration.
 type Config struct {
 	// Workspaces is the list of configured workspaces (ACP server + directory pairs).
@@ -196,9 +201,10 @@ type Server struct {
 	csrfManager *middleware.CSRFManager
 
 	// Security components
-	rateLimiter      *middleware.GeneralRateLimiter
-	wsSecurityConfig middleware.WebSocketSecurityConfig
-	proxyChecker     *middleware.TrustedProxyChecker
+	rateLimiter         *middleware.GeneralRateLimiter
+	wsSecurityConfig    middleware.WebSocketSecurityConfig
+	wsConnectionLimiter *wsConnectionLimiter
+	proxyChecker        *middleware.TrustedProxyChecker
 
 	// External access listener management
 	externalListener   net.Listener
@@ -940,6 +946,7 @@ func NewServer(config Config) (*Server, error) {
 		csrfManager:                 csrfMgr,
 		rateLimiter:                 rateLimiter,
 		wsSecurityConfig:            wsSecurityConfig,
+		wsConnectionLimiter:         newWSConnectionLimiter(defaultMaxWSConnectionsPerIP, defaultMaxWSConnections),
 		proxyChecker:                proxyChecker,
 		accessLogger:                accessLogger,
 		defense:                     scannerDefense,
@@ -1897,7 +1904,11 @@ func NewServer(config Config) (*Server, error) {
 		handler = s.defenseRecordingMiddleware(handler)
 	}
 
-	s.httpServer = &http.Server{Handler: handler}
+	s.httpServer = &http.Server{
+		Handler:           handler,
+		ReadHeaderTimeout: webReadHeaderTimeout,
+		MaxHeaderBytes:    webMaxHeaderBytes,
+	}
 
 	s.sessionManager.WorkspaceRegistry().LogDuplicateWorkingDirs(logger)
 

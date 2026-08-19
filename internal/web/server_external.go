@@ -119,11 +119,12 @@ func (s *Server) StartExternalListener(port int) (int, error) {
 	// Timeouts are set to handle bursts of concurrent requests from tunnel proxies
 	// (e.g., cloudflared) which forward many browser requests simultaneously.
 	externalServer := &http.Server{
-		Handler:        ExternalConnectionMiddleware(externalHandler),
-		ReadTimeout:    30 * time.Second,
-		WriteTimeout:   60 * time.Second,
-		IdleTimeout:    120 * time.Second,
-		MaxHeaderBytes: 1 << 20, // 1 MB
+		Handler:           ExternalConnectionMiddleware(externalHandler),
+		ReadHeaderTimeout: webReadHeaderTimeout,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    webMaxHeaderBytes,
 	}
 	s.externalHTTPServer = externalServer
 

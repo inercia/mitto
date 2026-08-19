@@ -37,6 +37,13 @@ const (
 	ServerName = "mitto"
 	// ServerVersion is the version of the MCP server.
 	ServerVersion = "1.0.0"
+
+	// Bound request ingestion and idle keep-alives without imposing a response
+	// deadline on long-lived Streamable HTTP SSE and blocking tool calls.
+	mcpHTTPReadHeaderTimeout = 10 * time.Second
+	mcpHTTPReadTimeout       = 30 * time.Second
+	mcpHTTPIdleTimeout       = 120 * time.Second
+	mcpHTTPMaxHeaderBytes    = 1 << 20 // 1 MiB
 )
 
 // TransportMode specifies the transport mode for the MCP server.
@@ -631,7 +638,14 @@ func (s *Server) startSSE(ctx context.Context) error {
 	// Also mount on root for convenience
 	mux.Handle("/", loggedHandler)
 
-	s.httpSrv = &http.Server{Handler: mux}
+	s.httpSrv = &http.Server{
+		Handler:           mux,
+		ReadHeaderTimeout: mcpHTTPReadHeaderTimeout,
+		ReadTimeout:       mcpHTTPReadTimeout,
+		WriteTimeout:      0, // Active SSE and long-running tools must remain unbounded.
+		IdleTimeout:       mcpHTTPIdleTimeout,
+		MaxHeaderBytes:    mcpHTTPMaxHeaderBytes,
+	}
 
 	// Start Mitto's own idle-session reaper (mitto-txse). HTTP mode only —
 	// startSTDIO never calls this, so the reaper does not exist in STDIO mode.

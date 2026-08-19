@@ -172,8 +172,9 @@ type SessionWSClient struct {
 	bgSession *conversation.BackgroundSession
 
 	// WebSocket lifecycle
-	ctx    context.Context
-	cancel context.CancelFunc
+	ctx       context.Context
+	cancel    context.CancelFunc
+	releaseWS func()
 
 	// Session store for persistence operations
 	store *session.Store
@@ -241,11 +242,18 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	clientIP := middleware.GetClientIPWithProxyCheck(r)
+	releaseWS, ok := s.acquireExternalWebSocket(w, r)
+	if !ok {
+		return
+	}
 
 	// Use secure upgrader with compression for external connections
 	secureUpgrader := s.getSecureUpgraderForRequest(r)
 	conn, err := secureUpgrader.Upgrade(w, r, nil)
 	if err != nil {
+		if releaseWS != nil {
+			releaseWS()
+		}
 		if s.logger != nil {
 			s.logger.Error("Session WebSocket upgrade failed", "error", err, "session_id", sessionID)
 		}
@@ -290,6 +298,7 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 		logger:    clientLogger,
 		ctx:       ctx,
 		cancel:    cancel,
+		releaseWS: releaseWS,
 		store:     store,
 	}
 
@@ -739,6 +748,9 @@ func (c *SessionWSClient) readPump() {
 		}
 		// Note: Don't close c.store - it's owned by the server and shared across handlers
 		c.wsConn.Close()
+		if c.releaseWS != nil {
+			c.releaseWS()
+		}
 		if c.logger != nil {
 			c.logger.Debug("SessionWSClient readPump cleanup complete")
 		}
