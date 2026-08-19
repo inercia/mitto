@@ -58,6 +58,7 @@ export function createEndpoints(config, options = {}) {
       cleanup: (params) => url("/api/issues/cleanup", params),
       config: (params) => url("/api/issues/config", params),
       upstream: (params) => url("/api/issues/upstream", params),
+      databaseMode: (params) => url("/api/issues/database-mode", params),
       sync: (params) => url("/api/issues/sync", params),
     },
 

@@ -92,6 +92,8 @@ export function createClient(options?: {}): {
         deleteConfig: (params: any, opts: any) => Promise<any>;
         upstream: (params: any, opts: any) => Promise<any>;
         setUpstream: (params: any, body: object, opts: any) => Promise<any>;
+        databaseMode: (params: any, opts: any) => Promise<any>;
+        setDatabaseMode: (params: any, body: object, opts: any) => Promise<any>;
         show: (id: any, params: any, opts: any) => Promise<any>;
         create: (params: any, body: object, opts: any) => Promise<any>;
         update: (id: any, params: any, patch: object, opts: any) => Promise<any>;

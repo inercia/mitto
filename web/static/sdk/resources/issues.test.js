@@ -70,6 +70,22 @@ describe("issues resource", () => {
     });
   });
 
+  describe("database mode", () => {
+    test("databaseMode(params) calls GET /api/issues/database-mode", async () => {
+      const { issues, calls } = mk();
+      await issues.databaseMode({ working_dir: WD });
+      expect(calls[0].url).toBe(`/api/issues/database-mode?working_dir=${encodeURIComponent(WD)}`);
+      expect(calls[0].init.method).toBe("GET");
+    });
+    test("setDatabaseMode(params, body) PUTs the policy", async () => {
+      const { issues, calls } = mk();
+      const body = { database_mode: "local" };
+      await issues.setDatabaseMode({ working_dir: WD }, body);
+      expect(calls[0].init.method).toBe("PUT");
+      expect(calls[0].init.body).toBe(JSON.stringify(body));
+    });
+  });
+
   test("show(id, params) encodes the id and calls GET /api/issues/{id}", async () => {
     const { issues, calls, respondWith } = mk();
     respondWith(() => fakeResponse({ body: { id: "a/b.1" } }));

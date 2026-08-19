@@ -181,7 +181,10 @@ server-level and belong to the **folder**, not to any individual workspace:
   active or stored conversations. Folder-native; defaults to `false`; preserved
   across `LoadWorkspaces()`/`SaveWorkspaces()` via `ApplyFolderDefaults` /
   `extractFolderSettings`.
-- `beads` — folder-native beads integration settings (e.g. upstream task system)
+- `beads` — folder-native beads integration settings: `databaseMode` (`local` or
+  `shared`) controls Dolt replication independently from the upstream task system.
+  A missing legacy value is inferred once from the presence of a Dolt remote and
+  persisted, so later native configuration drift cannot silently change policy.
 
 `folders.json` (in `$MITTO_DIR`, keyed by working directory) is the
 **authoritative store** for these values — not merely a deduplication of
@@ -228,7 +231,7 @@ via `ApplyFolderDefaults` after the three-way workspace loading step.
       "color": "#ff5500",
       "group": "development",
       "pinned": true,
-      "beads": { "upstream": "github" }
+      "beads": { "databaseMode": "shared", "upstream": "github" }
     }
   }
 }

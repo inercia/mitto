@@ -163,6 +163,72 @@ type beadsUpstreamResponse struct {
 	SyncPromptArgs map[string]string `json:"sync_prompt_args,omitempty"`
 }
 
+// beadsDatabaseModeResponse is intentionally independent from beadsUpstreamResponse:
+// database replication policy and external-task synchronization are orthogonal.
+type beadsDatabaseModeResponse struct {
+	DatabaseMode config.BeadsDatabaseMode `json:"database_mode"`
+	HasRemote    bool                     `json:"has_remote"`
+}
+
+type beadsDatabaseModeRequest struct {
+	DatabaseMode config.BeadsDatabaseMode `json:"database_mode"`
+}
+
+// HandleBeadsDatabaseMode manages the effective per-folder Beads Dolt policy.
+func (h *Handlers) HandleBeadsDatabaseMode(w http.ResponseWriter, r *http.Request) {
+	workingDir := r.URL.Query().Get("working_dir")
+	if workingDir == "" {
+		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir is required")
+		return
+	}
+	if !filepath.IsAbs(workingDir) {
+		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir must be an absolute path")
+		return
+	}
+	if !h.isKnownWorkspaceDir(workingDir) {
+		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir does not match any known workspace")
+		return
+	}
+
+	client := h.beadsClient()
+	switch r.Method {
+	case http.MethodGet:
+		mode, err := beads.ResolveDatabaseMode(r.Context(), client, workingDir)
+		if err != nil {
+			h.writeBeadsError(w, r, err)
+			return
+		}
+		hasRemote, err := beads.DoltRemoteConfigured(r.Context(), client, workingDir)
+		if err != nil {
+			h.writeBeadsError(w, r, err)
+			return
+		}
+		writeJSONOK(w, beadsDatabaseModeResponse{DatabaseMode: mode, HasRemote: hasRemote})
+	case http.MethodPut:
+		var req beadsDatabaseModeRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeErrorJSON(w, http.StatusBadRequest, "", "Invalid request body")
+			return
+		}
+		if !config.IsValidBeadsDatabaseMode(req.DatabaseMode) {
+			writeErrorJSON(w, http.StatusBadRequest, "", "database_mode must be one of: local, shared")
+			return
+		}
+		hasRemote, err := beads.DoltRemoteConfigured(r.Context(), client, workingDir)
+		if err != nil {
+			h.writeBeadsError(w, r, err)
+			return
+		}
+		if err := config.SetFolderBeadsDatabaseMode(workingDir, req.DatabaseMode); err != nil {
+			h.writeBeadsError(w, r, err)
+			return
+		}
+		writeJSONOK(w, beadsDatabaseModeResponse{DatabaseMode: req.DatabaseMode, HasRemote: hasRemote})
+	default:
+		methodNotAllowed(w)
+	}
+}
+
 // HandleBeadsUpstream manages the per-folder beads upstream task system stored
 // in folders.json (folder-native, not a bd config value):
 //   - GET /api/issues/upstream?working_dir=...        -> {"upstream":"none|jira|github|gitlab|linear|prompts","pull_prompt","push_prompt","sync_prompt","pull_prompt_args","push_prompt_args","sync_prompt_args"}

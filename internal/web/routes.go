@@ -161,6 +161,8 @@ func (s *Server) apiRoutes(authMgr *middleware.AuthManager, csrfMgr *middleware.
 		apiRoute{method: "DELETE", pattern: "/api/issues/config", handler: http.HandlerFunc(s.apiHandlers.HandleBeadsConfig)},
 		apiRoute{method: "GET", pattern: "/api/issues/upstream", handler: http.HandlerFunc(s.apiHandlers.HandleBeadsUpstream)},
 		apiRoute{method: "PUT", pattern: "/api/issues/upstream", handler: http.HandlerFunc(s.apiHandlers.HandleBeadsUpstream)},
+		apiRoute{method: "GET", pattern: "/api/issues/database-mode", handler: http.HandlerFunc(s.apiHandlers.HandleBeadsDatabaseMode)},
+		apiRoute{method: "PUT", pattern: "/api/issues/database-mode", handler: http.HandlerFunc(s.apiHandlers.HandleBeadsDatabaseMode)},
 		// Folder shortcut buttons (folder-native, stored in folders.json).
 		apiRoute{method: "GET", pattern: "/api/folders/shortcuts", handler: http.HandlerFunc(s.apiHandlers.HandleFolderShortcuts)},
 		apiRoute{method: "PUT", pattern: "/api/folders/shortcuts", handler: http.HandlerFunc(s.apiHandlers.HandleFolderShortcuts)},

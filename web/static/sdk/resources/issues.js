@@ -57,6 +57,14 @@ export function createIssuesResource(config) {
     setUpstream: (params, body, opts) =>
       call("PUT", "/api/issues/upstream", { query: params, body, ...opts }),
 
+    /** GET /api/issues/database-mode?working_dir=... — Dolt replication policy. */
+    databaseMode: (params, opts) =>
+      call("GET", "/api/issues/database-mode", { query: params, ...opts }),
+    /** PUT /api/issues/database-mode?working_dir=...
+     * @param {object} body - {database_mode: "local"|"shared"} */
+    setDatabaseMode: (params, body, opts) =>
+      call("PUT", "/api/issues/database-mode", { query: params, body, ...opts }),
+
     /** GET /api/issues/{id}?working_dir=... — full issue incl. comments/dependencies. */
     show: (id, params, opts) => call("GET", `/api/issues/${enc(id)}`, { query: params, ...opts }),
 

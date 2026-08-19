@@ -20,6 +20,11 @@ export function createIssuesResource(config: import("../core/config.js").Resolve
      * @param {object} body - {upstream, pull_prompt?, push_prompt?, sync_prompt?,
      *   pull_prompt_args?, push_prompt_args?, sync_prompt_args?} */
     setUpstream: (params: any, body: object, opts: any) => Promise<any>;
+    /** GET /api/issues/database-mode?working_dir=... — Dolt replication policy. */
+    databaseMode: (params: any, opts: any) => Promise<any>;
+    /** PUT /api/issues/database-mode?working_dir=...
+     * @param {object} body - {database_mode: "local"|"shared"} */
+    setDatabaseMode: (params: any, body: object, opts: any) => Promise<any>;
     /** GET /api/issues/{id}?working_dir=... — full issue incl. comments/dependencies. */
     show: (id: any, params: any, opts: any) => Promise<any>;
     /** POST /api/issues?working_dir=...

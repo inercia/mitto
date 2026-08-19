@@ -203,6 +203,10 @@ describe("endpoints registry", () => {
       expect(endpoints.issues.upstream({ working_dir: "/w" })).toBe(
         "/api/issues/upstream?working_dir=%2Fw",
       ));
+    test("database mode — with working_dir", () =>
+      expect(endpoints.issues.databaseMode({ working_dir: "/w" })).toBe(
+        "/api/issues/database-mode?working_dir=%2Fw",
+      ));
     test("sync", () =>
       expect(endpoints.issues.sync()).toBe("/api/issues/sync"));
     test("sync — with working_dir", () =>
