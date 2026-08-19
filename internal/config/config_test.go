@@ -59,6 +59,26 @@ web:
 	}
 }
 
+func TestParse_TrustedProxyHeaders(t *testing.T) {
+	yaml := `
+web:
+  security:
+    trusted_proxies: [127.0.0.1]
+    trusted_proxy_headers: [x-forwarded-for, cf-connecting-ip]
+`
+	cfg, err := Parse([]byte(yaml))
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+	if cfg.Web.Security == nil {
+		t.Fatal("Web.Security is nil")
+	}
+	want := []string{"x-forwarded-for", "cf-connecting-ip"}
+	if got := cfg.Web.Security.TrustedProxyHeaders; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("TrustedProxyHeaders = %v, want %v", got, want)
+	}
+}
+
 func TestParse_ACPServerCwd(t *testing.T) {
 	yaml := `
 acp:

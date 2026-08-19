@@ -341,10 +341,13 @@ func (w *WebAuth) HasCloudflareAuth() bool {
 // WebSecurity represents security configuration for the web interface.
 type WebSecurity struct {
 	// TrustedProxies is a list of IP addresses or CIDR ranges of trusted reverse proxies.
-	// Only requests from these IPs will have X-Forwarded-For and X-Real-IP headers trusted.
+	// Only requests from these IPs will have configured forwarding headers trusted.
 	// If empty, these headers are never trusted (direct connections only).
 	// Examples: "127.0.0.1", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"
 	TrustedProxies []string `json:"trusted_proxies,omitempty"`
+	// TrustedProxyHeaders selects forwarding header modes. When omitted,
+	// X-Forwarded-For is used. X-Real-IP and Cf-Connecting-IP require explicit entries.
+	TrustedProxyHeaders []string `json:"trusted_proxy_headers,omitempty"`
 
 	// AllowedOrigins is a list of allowed origins for cross-origin browser
 	// access — both WebSocket connections and REST CORS headers (mitto-7gta.27)
@@ -1466,11 +1469,12 @@ type rawConfig struct {
 			SharedToken string `yaml:"shared_token"`
 		} `yaml:"auth"`
 		Security *struct {
-			TrustedProxies   []string `yaml:"trusted_proxies"`
-			AllowedOrigins   []string `yaml:"allowed_origins"`
-			RateLimitRPS     float64  `yaml:"rate_limit_rps"`
-			RateLimitBurst   int      `yaml:"rate_limit_burst"`
-			MaxWSMessageSize int64    `yaml:"max_ws_message_size"`
+			TrustedProxies      []string `yaml:"trusted_proxies"`
+			TrustedProxyHeaders []string `yaml:"trusted_proxy_headers"`
+			AllowedOrigins      []string `yaml:"allowed_origins"`
+			RateLimitRPS        float64  `yaml:"rate_limit_rps"`
+			RateLimitBurst      int      `yaml:"rate_limit_burst"`
+			MaxWSMessageSize    int64    `yaml:"max_ws_message_size"`
 		} `yaml:"security"`
 		Beads *struct {
 			AllowMigrateFromUI *bool  `yaml:"allow_migrate_from_ui"`
@@ -1784,11 +1788,12 @@ func Parse(data []byte) (*Config, error) {
 	// Populate security config
 	if raw.Web.Security != nil {
 		cfg.Web.Security = &WebSecurity{
-			TrustedProxies:   raw.Web.Security.TrustedProxies,
-			AllowedOrigins:   raw.Web.Security.AllowedOrigins,
-			RateLimitRPS:     raw.Web.Security.RateLimitRPS,
-			RateLimitBurst:   raw.Web.Security.RateLimitBurst,
-			MaxWSMessageSize: raw.Web.Security.MaxWSMessageSize,
+			TrustedProxies:      raw.Web.Security.TrustedProxies,
+			TrustedProxyHeaders: raw.Web.Security.TrustedProxyHeaders,
+			AllowedOrigins:      raw.Web.Security.AllowedOrigins,
+			RateLimitRPS:        raw.Web.Security.RateLimitRPS,
+			RateLimitBurst:      raw.Web.Security.RateLimitBurst,
+			MaxWSMessageSize:    raw.Web.Security.MaxWSMessageSize,
 		}
 	}
 	if raw.Web.Beads != nil {

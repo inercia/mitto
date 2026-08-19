@@ -188,6 +188,10 @@ web:
   #     - 10.0.0.0/8
   #     - 172.16.0.0/12
   #     - 192.168.0.0/16
+  #   # Header modes: x-forwarded-for (default), x-real-ip, cf-connecting-ip
+  #   # Enable single-IP modes only when the proxy overwrites client values.
+  #   trusted_proxy_headers:
+  #     - x-forwarded-for
   #
   #   # Allowed origins for WebSocket connections (CSRF protection)
   #   # If empty, only same-origin requests are allowed

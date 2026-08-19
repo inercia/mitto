@@ -620,7 +620,10 @@ func NewServer(config Config) (*Server, error) {
 	// Initialize trusted proxy checker
 	var proxyChecker *middleware.TrustedProxyChecker
 	if securityCfg != nil && len(securityCfg.TrustedProxies) > 0 {
-		proxyChecker = middleware.NewTrustedProxyChecker(securityCfg.TrustedProxies)
+		proxyChecker = middleware.NewTrustedProxyChecker(
+			securityCfg.TrustedProxies,
+			securityCfg.TrustedProxyHeaders...,
+		)
 		middleware.SetDefaultProxyChecker(proxyChecker)
 		logger.Info("Trusted proxies configured", "count", len(securityCfg.TrustedProxies))
 	}

@@ -242,7 +242,14 @@ web:
       - 127.0.0.1
       - 10.0.0.0/8
       - 172.16.0.0/12
+    trusted_proxy_headers:
+      - x-forwarded-for
 ```
+
+`x-forwarded-for` is the default when `trusted_proxy_headers` is omitted. To
+use a proxy that overwrites a single-IP header, explicitly select
+`x-real-ip` or `cf-connecting-ip`. Never enable a header that the proxy passes
+through from clients; it must remove or overwrite incoming values.
 
 ### WebSocket Origin Validation
 
@@ -402,6 +409,8 @@ web:
   security:
     trusted_proxies:
       - 127.0.0.1
+    trusted_proxy_headers:
+      - x-forwarded-for
 ```
 
 ### Caddy

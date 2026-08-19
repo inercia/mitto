@@ -919,6 +919,66 @@ func TestAuthMiddleware_LocalhostBypass(t *testing.T) {
 	}
 }
 
+func TestAuthMiddleware_SpoofedForwardingHeadersDoNotGrantPrivileges(t *testing.T) {
+	SetDefaultProxyChecker(NewTrustedProxyChecker([]string{"10.0.0.0/8"}))
+	t.Cleanup(func() { SetDefaultProxyChecker(nil) })
+
+	am := NewAuthManager(&config.WebAuth{
+		Simple: &config.SimpleAuth{Username: "admin", Password: "password"},
+		Allow:  &config.AuthAllow{IPs: []string{"127.0.0.1"}},
+	})
+	defer am.Close()
+	am.SetAPIPrefix("/mitto")
+
+	tests := []struct {
+		name       string
+		headers    map[string]string
+		isExternal bool
+	}{
+		{
+			name:       "Cf-Connecting-IP cannot spoof external allowlist",
+			headers:    map[string]string{"Cf-Connecting-IP": "127.0.0.1"},
+			isExternal: true,
+		},
+		{
+			name:       "X-Real-IP cannot spoof external allowlist",
+			headers:    map[string]string{"X-Real-IP": "127.0.0.1"},
+			isExternal: true,
+		},
+		{
+			name:    "leftmost X-Forwarded-For cannot spoof internal loopback",
+			headers: map[string]string{"X-Forwarded-For": "127.0.0.1, 198.51.100.25, 10.0.0.2"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			handlerCalled := false
+			handler := am.AuthMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				handlerCalled = true
+				w.WriteHeader(http.StatusOK)
+			}))
+			req := httptest.NewRequest("GET", "/mitto/api/sessions", nil)
+			req.RemoteAddr = "10.0.0.3:8080"
+			for name, value := range tt.headers {
+				req.Header.Set(name, value)
+			}
+			if tt.isExternal {
+				req = req.WithContext(context.WithValue(req.Context(), ContextKeyExternalConnection, true))
+			}
+
+			w := httptest.NewRecorder()
+			handler.ServeHTTP(w, req)
+			if handlerCalled {
+				t.Fatal("spoofed forwarding header granted access")
+			}
+			if w.Code != http.StatusUnauthorized {
+				t.Fatalf("status = %d, want %d", w.Code, http.StatusUnauthorized)
+			}
+		})
+	}
+}
+
 func TestAuthMiddleware_PublicPathBypass(t *testing.T) {
 	am := NewAuthManager(&config.WebAuth{
 		Simple: &config.SimpleAuth{
