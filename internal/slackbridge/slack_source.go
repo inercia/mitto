@@ -22,7 +22,12 @@ type SlackSource struct {
 	// own bot user ID, resolved via auth.test, before any events are
 	// emitted — wired to Bridge.SetSelfUserID in production.
 	onSelfIdentified func(userID string)
+	// listEventAuthorizations resolves every installation authorized for one
+	// event_context. Tests replace this seam to remain credential-free.
+	listEventAuthorizations func(context.Context, string) ([]slack.EventAuthorization, error)
 }
+
+var errEventAuthorizationLookup = errors.New("slackbridge: event authorization lookup failed")
 
 // NewSlackSource constructs a SlackSource. logger and onSelfIdentified may be nil.
 func NewSlackSource(cfg Config, logger *slog.Logger, onSelfIdentified func(userID string)) *SlackSource {
@@ -48,6 +53,10 @@ func (s *SlackSource) RunDurable(ctx context.Context, accept func(Event) error) 
 
 func (s *SlackSource) run(ctx context.Context, accept func(Event) error) error {
 	api := slack.New(s.cfg.BotToken, slack.OptionAppLevelToken(s.cfg.AppToken))
+	listEventAuthorizations := s.listEventAuthorizations
+	if listEventAuthorizations == nil {
+		listEventAuthorizations = api.ListEventAuthorizationsContext
+	}
 
 	selfUserID := ""
 	if s.cfg.BotToken != "" {
@@ -82,8 +91,12 @@ func (s *SlackSource) run(ctx context.Context, accept func(Event) error) error {
 			if !ok {
 				return nil
 			}
-			if err := s.handleSocketEventDurable(evt, client, selfUserID, accept); err != nil && s.logger != nil {
-				s.logger.Warn("slackbridge: event not acknowledged because durable acceptance failed", "error_class", "journal")
+			if err := s.handleSocketEventDurableWithContext(ctx, evt, client, selfUserID, listEventAuthorizations, accept); err != nil && s.logger != nil {
+				errorClass := "journal"
+				if errors.Is(err, errEventAuthorizationLookup) {
+					errorClass = "authorization"
+				}
+				s.logger.Warn("slackbridge: event not acknowledged because durable acceptance failed", "error_class", errorClass)
 			}
 		}
 	}
@@ -100,6 +113,12 @@ func (s *SlackSource) handleSocketEvent(evt socketmode.Event, client *socketmode
 }
 
 func (s *SlackSource) handleSocketEventDurable(evt socketmode.Event, client *socketmode.Client, selfUserID string, accept func(Event) error) error {
+	return s.handleSocketEventDurableWithContext(context.Background(), evt, client, selfUserID, s.listEventAuthorizations, accept)
+}
+
+func (s *SlackSource) handleSocketEventDurableWithContext(ctx context.Context, evt socketmode.Event, client *socketmode.Client, selfUserID string,
+	listEventAuthorizations func(context.Context, string) ([]slack.EventAuthorization, error), accept func(Event) error,
+) error {
 	if evt.Type != socketmode.EventTypeEventsAPI {
 		return nil
 	}
@@ -108,7 +127,7 @@ func (s *SlackSource) handleSocketEventDurable(evt socketmode.Event, client *soc
 		return nil
 	}
 
-	eventID := extractEventID(evt.Request)
+	metadata := extractEventMetadata(evt.Request)
 
 	var out Event
 	switch inner := eventsAPIEvent.InnerEvent.Data.(type) {
@@ -126,7 +145,7 @@ func (s *SlackSource) handleSocketEventDurable(evt socketmode.Event, client *soc
 			return nil
 		}
 		out = Event{
-			EventID: eventID, TeamID: eventsAPIEvent.TeamID, ChannelID: inner.Channel,
+			EventID: metadata.EventID, TeamID: eventsAPIEvent.TeamID, ChannelID: inner.Channel,
 			AuthorID: inner.User, Kind: "message", Timestamp: inner.TimeStamp,
 			ThreadTimestamp: inner.ThreadTimeStamp, Text: inner.Text,
 		}
@@ -136,7 +155,7 @@ func (s *SlackSource) handleSocketEventDurable(evt socketmode.Event, client *soc
 			return nil
 		}
 		out = Event{
-			EventID: eventID, TeamID: eventsAPIEvent.TeamID, ChannelID: inner.Channel,
+			EventID: metadata.EventID, TeamID: eventsAPIEvent.TeamID, ChannelID: inner.Channel,
 			AuthorID: inner.User, Kind: "app_mention", Timestamp: inner.TimeStamp,
 			ThreadTimestamp: inner.ThreadTimeStamp, Text: inner.Text,
 		}
@@ -144,11 +163,65 @@ func (s *SlackSource) handleSocketEventDurable(evt socketmode.Event, client *soc
 		s.ackRequest(client, evt.Request)
 		return nil
 	}
+	authorizations, known, err := resolveEventAuthorizations(ctx, metadata, listEventAuthorizations)
+	if err != nil {
+		return err
+	}
+	out.Authorizations = authorizations
+	out.AuthorizationScopeKnown = known
 	if err := accept(out); err != nil {
 		return err
 	}
 	s.ackRequest(client, evt.Request)
 	return nil
+}
+
+type socketEventMetadata struct {
+	EventID               string
+	EventContext          string
+	Authorizations        []EventAuthorization
+	AuthorizationsPresent bool
+}
+
+func extractEventMetadata(req *socketmode.Request) socketEventMetadata {
+	if req == nil {
+		return socketEventMetadata{}
+	}
+	var envelope struct {
+		EventID        string          `json:"event_id"`
+		EventContext   string          `json:"event_context"`
+		Authorizations json.RawMessage `json:"authorizations"`
+	}
+	if err := json.Unmarshal(req.Payload, &envelope); err != nil {
+		return socketEventMetadata{}
+	}
+	metadata := socketEventMetadata{EventID: envelope.EventID, EventContext: envelope.EventContext,
+		AuthorizationsPresent: envelope.Authorizations != nil}
+	if !metadata.AuthorizationsPresent {
+		return metadata
+	}
+	var authorizations []EventAuthorization
+	if err := json.Unmarshal(envelope.Authorizations, &authorizations); err == nil {
+		metadata.Authorizations = authorizations
+	}
+	return metadata
+}
+
+func resolveEventAuthorizations(ctx context.Context, metadata socketEventMetadata,
+	listEventAuthorizations func(context.Context, string) ([]slack.EventAuthorization, error),
+) ([]EventAuthorization, bool, error) {
+	if metadata.EventContext == "" || listEventAuthorizations == nil {
+		return metadata.Authorizations, metadata.AuthorizationsPresent, nil
+	}
+	authorizations, err := listEventAuthorizations(ctx, metadata.EventContext)
+	if err != nil {
+		return nil, true, errEventAuthorizationLookup
+	}
+	result := make([]EventAuthorization, 0, len(authorizations))
+	for _, authorization := range authorizations {
+		result = append(result, EventAuthorization{UserID: authorization.UserID, IsBot: authorization.IsBot})
+	}
+	return result, true, nil
 }
 
 func (s *SlackSource) ackRequest(client *socketmode.Client, request *socketmode.Request) {
@@ -167,14 +240,5 @@ func ackSocketRequest(client *socketmode.Client, request *socketmode.Request) {
 // Mode payload. slackevents.ParseEvent's return type (EventsAPIEvent) drops
 // this field, so it must be read from the raw JSON directly.
 func extractEventID(req *socketmode.Request) string {
-	if req == nil {
-		return ""
-	}
-	var envelope struct {
-		EventID string `json:"event_id"`
-	}
-	if err := json.Unmarshal(req.Payload, &envelope); err != nil {
-		return ""
-	}
-	return envelope.EventID
+	return extractEventMetadata(req).EventID
 }

@@ -67,8 +67,8 @@ func (s *slackE2ESources) snapshotTokens() []string {
 func TestSlackLoopProductionPathE2E(t *testing.T) {
 	ts := SetupTestServer(t)
 	catalog := slackE2ECatalog{
-		"install-a": {Installation: slackcatalog.Installation{ID: "install-a", AppID: "app-shared", TeamID: "team-a"}},
-		"install-b": {Installation: slackcatalog.Installation{ID: "install-b", AppID: "app-shared", TeamID: "team-b"}},
+		"install-a": {Installation: slackcatalog.Installation{ID: "install-a", AppID: "app-shared", TeamID: "team-a"}, TokenConfigured: true},
+		"install-b": {Installation: slackcatalog.Installation{ID: "install-b", AppID: "app-shared", TeamID: "team-b"}, TokenConfigured: true},
 	}
 	credentials := &slackE2ECredentials{token: "fake-token-v1"}
 	longText := strings.Repeat("external", 700)
@@ -188,7 +188,53 @@ func TestSlackLoopProductionPathE2E(t *testing.T) {
 	waitSlackCounts(t, ts, map[string]int{b: 2})
 }
 
+func TestSlackLoopDelegatedAuthorizationE2E(t *testing.T) {
+	ts := SetupTestServer(t)
+	emit := make(chan struct{})
+	catalog := slackE2ECatalog{
+		"bot-install": {Installation: slackcatalog.Installation{ID: "bot-install", AppID: "app", CredentialKind: slackcatalog.CredentialKindBot,
+			TeamID: "team", BotUserID: "UBOT"}, TokenConfigured: true},
+		"user-install": {Installation: slackcatalog.Installation{ID: "user-install", AppID: "app", CredentialKind: slackcatalog.CredentialKindUser,
+			TeamID: "team", UserID: "UDELEGATED"}, TokenConfigured: true},
+	}
+	source := &slackbridge.FakeSource{Runs: []slackbridge.FakeRun{{Wait: emit, Events: []slackbridge.Event{
+		{EventID: "event-both", TeamID: "team", ChannelID: "private", AuthorID: "human", Kind: "message", Text: "both",
+			AuthorizationScopeKnown: true, Authorizations: []slackbridge.EventAuthorization{{UserID: "UBOT", IsBot: true}, {UserID: "UDELEGATED"}}},
+		{EventID: "event-user", TeamID: "team", ChannelID: "private", AuthorID: "human", Kind: "message", Text: "user",
+			AuthorizationScopeKnown: true, Authorizations: []slackbridge.EventAuthorization{{UserID: "UDELEGATED"}}},
+		{EventID: "event-revoked", TeamID: "team", ChannelID: "private", AuthorID: "human", Kind: "message", Text: "must-not-persist",
+			AuthorizationScopeKnown: true, Authorizations: []slackbridge.EventAuthorization{}},
+	}}}}
+	sources := &slackE2ESources{source: source}
+	bot := createSlackLoopSession(t, ts, "bot authorization", true, []string{"onSlack"}, "bot-install", "private")
+	user := createSlackLoopSession(t, ts, "user authorization", true, []string{"onSlack"}, "user-install", "private")
+	dual := createSlackLoopSessionWithSubscriptions(t, ts, "deduplicated authorization", true, []string{"onSlack"}, []api.SlackSubscription{
+		{InstallationID: "bot-install", ChannelID: "private", EventMode: "anyHumanMessage", ThreadPolicy: "any"},
+		{InstallationID: "user-install", ChannelID: "private", EventMode: "anyHumanMessage", ThreadPolicy: "any"},
+	})
+	manager := slackbridge.NewManager(ts.Store, catalog, &slackE2ECredentials{token: "fake-app-token"}, ts.Server.LoopRunner(), nil)
+	manager.SetSourceFactory(sources.factory)
+	if err := manager.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(manager.Close)
+	close(emit)
+	waitSlackCounts(t, ts, map[string]int{bot: 1, user: 1, dual: 1})
+	for _, sessionID := range []string{bot, user, dual} {
+		waitLoopSessionIdle(t, ts, sessionID)
+	}
+	assertSlackPromptEventCounts(t, ts, bot, map[string]int{"event-both": 1, "event-user": 0, "event-revoked": 0})
+	assertSlackPromptEventCounts(t, ts, user, map[string]int{"event-both": 1, "event-user": 1, "event-revoked": 0})
+	assertSlackPromptEventCounts(t, ts, dual, map[string]int{"event-both": 1, "event-user": 1, "event-revoked": 0})
+}
+
 func createSlackLoopSession(t *testing.T, ts *TestServer, name string, enabled bool, triggers []string, installationID, channelID string) string {
+	return createSlackLoopSessionWithSubscriptions(t, ts, name, enabled, triggers, []api.SlackSubscription{{
+		InstallationID: installationID, ChannelID: channelID, EventMode: "anyHumanMessage", ThreadPolicy: "any",
+	}})
+}
+
+func createSlackLoopSessionWithSubscriptions(t *testing.T, ts *TestServer, name string, enabled bool, triggers []string, subscriptions []api.SlackSubscription) string {
 	t.Helper()
 	created, err := ts.Client.CreateSession(api.CreateSessionRequest{Name: name})
 	if err != nil {
@@ -198,12 +244,32 @@ func createSlackLoopSession(t *testing.T, ts *TestServer, name string, enabled b
 	_, err = ts.Client.SetLoop(created.SessionID, api.SetLoopRequest{
 		Prompt:   "{{ range .Trigger.OnSlack.Events }}event={{ .EventID }} install={{ .InstallationID }} channel={{ .ChannelID }} text={{ .Text }}{{ end }}",
 		Triggers: triggers, Frequency: api.LoopFrequency{Value: 1, Unit: "days"}, Enabled: enabled,
-		SlackSubscriptions: []api.SlackSubscription{{InstallationID: installationID, ChannelID: channelID, EventMode: "anyHumanMessage", ThreadPolicy: "any"}},
+		SlackSubscriptions: subscriptions,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return created.SessionID
+}
+
+func assertSlackPromptEventCounts(t *testing.T, ts *TestServer, sessionID string, expected map[string]int) {
+	t.Helper()
+	events, err := ts.Store.ReadEvents(sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var prompts strings.Builder
+	for _, event := range events {
+		if event.Type == session.EventTypeUserPrompt {
+			data, _ := json.Marshal(event.Data)
+			prompts.Write(data)
+		}
+	}
+	for eventID, want := range expected {
+		if got := strings.Count(prompts.String(), eventID); got != want {
+			t.Fatalf("session %s event %s count=%d want=%d prompts=%s", sessionID, eventID, got, want, prompts.String())
+		}
+	}
 }
 
 func setSlackLoopEnabled(t *testing.T, ts *TestServer, sessionID string, enabled bool) {

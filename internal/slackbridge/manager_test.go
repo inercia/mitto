@@ -162,8 +162,8 @@ func addSlackLoop(t *testing.T, store *session.Store, id string, enabled, archiv
 
 func testInstallations() managerCatalog {
 	return managerCatalog{
-		"install-1": {Installation: slackcatalog.Installation{ID: "install-1", AppID: "app-1", TeamID: "team-1", BotID: "bot-1", BotUserID: "user-bot-1"}},
-		"install-2": {Installation: slackcatalog.Installation{ID: "install-2", AppID: "app-1", TeamID: "team-2", BotID: "bot-2", BotUserID: "user-bot-2"}},
+		"install-1": {Installation: slackcatalog.Installation{ID: "install-1", AppID: "app-1", CredentialKind: slackcatalog.CredentialKindBot, TeamID: "team-1", BotID: "bot-1", BotUserID: "user-bot-1"}, TokenConfigured: true},
+		"install-2": {Installation: slackcatalog.Installation{ID: "install-2", AppID: "app-1", CredentialKind: slackcatalog.CredentialKindBot, TeamID: "team-2", BotID: "bot-2", BotUserID: "user-bot-2"}, TokenConfigured: true},
 	}
 }
 
@@ -216,6 +216,9 @@ func TestManagerAppliesEventModeThreadAndBotFilters(t *testing.T) {
 		"roots":    {{sessionID: "roots", appID: "app", installationID: "install", teamID: "team", channelID: "channel", eventMode: session.SlackEventModeAnyHumanMessage, threadPolicy: session.SlackThreadPolicyRootOnly, botID: "bot", botUserID: "bot-user"}},
 		"mentions": {{sessionID: "mentions", appID: "app", installationID: "install", teamID: "team", channelID: "channel", eventMode: session.SlackEventModeAppMention, threadPolicy: session.SlackThreadPolicyAny}},
 		"replies":  {{sessionID: "replies", appID: "app", installationID: "install", teamID: "team", channelID: "channel", eventMode: session.SlackEventModeAnyHumanMessage, threadPolicy: session.SlackThreadPolicyRepliesOnly}},
+		"user-mentions": {{sessionID: "user-mentions", appID: "app", installationID: "user-install", teamID: "team", channelID: "channel",
+			eventMode: session.SlackEventModeAppMention, threadPolicy: session.SlackThreadPolicyAny,
+			credentialKind: slackcatalog.CredentialKindUser, authorizedUser: "delegated"}},
 	}
 	worker := &appWorker{dedupe: newDedupeSet(0)}
 	manager.routeEvent("app", worker, Event{EventID: "root", TeamID: "team", ChannelID: "channel", AuthorID: "human", Kind: "message", Timestamp: "1"})
@@ -227,9 +230,93 @@ func TestManagerAppliesEventModeThreadAndBotFilters(t *testing.T) {
 	for _, call := range calls {
 		counts[call.sessionID]++
 	}
-	if counts["roots"] != 2 || counts["mentions"] != 1 || counts["replies"] != 1 || len(calls) != 4 {
+	if counts["roots"] != 2 || counts["mentions"] != 1 || counts["replies"] != 1 || counts["user-mentions"] != 0 || len(calls) != 4 {
 		t.Fatalf("filtered dispatch counts = %v, calls=%#v", counts, calls)
 	}
+}
+
+func TestManagerRoutesBotAndDelegatedUserAuthorizationsWithoutDuplicates(t *testing.T) {
+	runner := &managerRunner{}
+	manager := NewManager(nil, nil, nil, runner, nil)
+	t.Cleanup(manager.Close)
+	bot := resolvedSubscription{appID: "app", installationID: "bot-install", teamID: "team", channelID: "private",
+		eventMode: session.SlackEventModeAnyHumanMessage, threadPolicy: session.SlackThreadPolicyAny,
+		credentialKind: slackcatalog.CredentialKindBot, authorizedUser: "UBOT"}
+	user := resolvedSubscription{appID: "app", installationID: "user-install", teamID: "team", channelID: "private",
+		eventMode: session.SlackEventModeAnyHumanMessage, threadPolicy: session.SlackThreadPolicyAny,
+		credentialKind: slackcatalog.CredentialKindUser, authorizedUser: "UDELEGATED"}
+	manager.sessions = map[string][]resolvedSubscription{
+		"bot":  {withSession(bot, "bot")},
+		"user": {withSession(user, "user")},
+		"dual": {withSession(bot, "dual"), withSession(user, "dual")},
+	}
+	event := Event{EventID: "both", TeamID: "team", ChannelID: "private", AuthorID: "human", Kind: "message",
+		AuthorizationScopeKnown: true, Authorizations: []EventAuthorization{{UserID: "UBOT", IsBot: true}, {UserID: "UDELEGATED"}}}
+	if err := manager.routeEvent("app", nil, event); err != nil {
+		t.Fatal(err)
+	}
+	counts := map[string]int{}
+	for _, call := range runner.snapshot() {
+		counts[call.sessionID]++
+	}
+	if counts["bot"] != 1 || counts["user"] != 1 || counts["dual"] != 1 || len(runner.snapshot()) != 3 {
+		t.Fatalf("authorization dispatch counts=%v calls=%#v", counts, runner.snapshot())
+	}
+}
+
+func TestManagerReconcileAssociatesCredentialModesAndSkipsMissingCredential(t *testing.T) {
+	store := newManagerStore(t)
+	for _, installationID := range []string{"bot-install", "user-install", "revoked-install"} {
+		addSlackLoop(t, store, installationID, true, false, session.SlackSubscription{InstallationID: installationID, ChannelID: "private"})
+	}
+	catalog := managerCatalog{
+		"bot-install": {Installation: slackcatalog.Installation{ID: "bot-install", AppID: "app", CredentialKind: slackcatalog.CredentialKindBot,
+			TeamID: "team", BotUserID: "UBOT"}, TokenConfigured: true},
+		"user-install": {Installation: slackcatalog.Installation{ID: "user-install", AppID: "app", CredentialKind: slackcatalog.CredentialKindUser,
+			TeamID: "team", UserID: "UDELEGATED"}, TokenConfigured: true},
+		"revoked-install": {Installation: slackcatalog.Installation{ID: "revoked-install", AppID: "app", CredentialKind: slackcatalog.CredentialKindUser,
+			TeamID: "team", UserID: "UREVOKED"}, TokenConfigured: false},
+	}
+	sources := &sourceHarness{}
+	manager := NewManager(store, catalog, &managerCredentials{token: "app-token"}, &managerRunner{}, nil)
+	manager.factory = sources.factory
+	t.Cleanup(manager.Close)
+	if err := manager.Start(); err != nil {
+		t.Fatal(err)
+	}
+	waitForManager(t, "mode-aware worker", func() bool { created, active, _, _, _ := sources.snapshot(); return created == 1 && active == 1 })
+	manager.mu.Lock()
+	bot := append([]resolvedSubscription(nil), manager.sessions["bot-install"]...)
+	user := append([]resolvedSubscription(nil), manager.sessions["user-install"]...)
+	_, revokedPresent := manager.sessions["revoked-install"]
+	manager.mu.Unlock()
+	if len(bot) != 1 || bot[0].credentialKind != slackcatalog.CredentialKindBot || bot[0].authorizedUser != "UBOT" ||
+		len(user) != 1 || user[0].credentialKind != slackcatalog.CredentialKindUser || user[0].authorizedUser != "UDELEGATED" || revokedPresent {
+		t.Fatalf("resolved bot=%#v user=%#v revoked_present=%v", bot, user, revokedPresent)
+	}
+}
+
+func TestManagerAuthorizationLossFailsClosedAndErasesContent(t *testing.T) {
+	runner := &managerRunner{}
+	manager := NewManager(nil, nil, nil, runner, nil)
+	t.Cleanup(manager.Close)
+	manager.sessions = map[string][]resolvedSubscription{"user": {{sessionID: "user", appID: "app", installationID: "user-install",
+		teamID: "team", channelID: "private", eventMode: session.SlackEventModeAnyHumanMessage,
+		credentialKind: slackcatalog.CredentialKindUser, authorizedUser: "UDELEGATED"}}}
+	event := Event{EventID: "revoked", TeamID: "team", ChannelID: "private", AuthorID: "human", Kind: "message", Text: "sensitive",
+		AuthorizationScopeKnown: true, Authorizations: []EventAuthorization{}}
+	if err := manager.routeEvent("app", nil, event); err != nil {
+		t.Fatal(err)
+	}
+	doc := readJournalDocument(t, manager.journal, "app")
+	if len(runner.snapshot()) != 0 || len(doc.Records) != 1 || len(doc.Records[0].Recipients) != 0 || doc.Records[0].Event.Text != "" {
+		t.Fatalf("authorization-loss calls=%#v records=%#v", runner.snapshot(), doc.Records)
+	}
+}
+
+func withSession(subscription resolvedSubscription, sessionID string) resolvedSubscription {
+	subscription.sessionID = sessionID
+	return subscription
 }
 
 func TestManagerReconcilesLifecycleAndCancelsGraceStop(t *testing.T) {

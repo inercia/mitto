@@ -63,6 +63,8 @@ type resolvedSubscription struct {
 	threadPolicy   session.SlackThreadPolicy
 	botID          string
 	botUserID      string
+	credentialKind slackcatalog.CredentialKind
+	authorizedUser string
 }
 
 type appWorker struct {
@@ -222,13 +224,18 @@ func (m *Manager) ReconcileSession(sessionID string) error {
 	if loopErr == nil && !meta.Archived && loop.Enabled && loop.IsOnSlack() {
 		for _, sub := range loop.SlackSubscriptions {
 			installation, err := m.catalog.GetInstallation(sub.InstallationID)
-			if err != nil {
+			if err != nil || !installation.TokenConfigured {
 				continue
+			}
+			authorizedUser := installation.BotUserID
+			if installation.CredentialKind == slackcatalog.CredentialKindUser {
+				authorizedUser = installation.UserID
 			}
 			resolved = append(resolved, resolvedSubscription{sessionID: sessionID, appID: installation.AppID,
 				installationID: installation.ID, teamID: installation.TeamID, channelID: sub.ChannelID,
 				eventMode: sub.EventMode, threadPolicy: sub.ThreadPolicy,
-				botID: installation.BotID, botUserID: installation.BotUserID})
+				botID: installation.BotID, botUserID: installation.BotUserID,
+				credentialKind: installation.CredentialKind, authorizedUser: authorizedUser})
 		}
 	}
 	m.mu.Lock()
@@ -452,7 +459,13 @@ func (m *Manager) routeEvent(appID string, _ *appWorker, evt Event) error {
 	m.mu.Unlock()
 	targets := make(map[string]journalRecipient)
 	for _, sub := range candidates {
+		if !subscriptionAuthorized(sub, evt) {
+			continue
+		}
 		if evt.AuthorID == sub.botID || evt.AuthorID == sub.botUserID {
+			continue
+		}
+		if normalizedCredentialKind(sub.credentialKind) == slackcatalog.CredentialKindUser && evt.Kind == "app_mention" {
 			continue
 		}
 		if sub.eventMode == session.SlackEventModeAppMention && evt.Kind != "app_mention" {
@@ -465,7 +478,9 @@ func (m *Manager) routeEvent(appID string, _ *appWorker, evt Event) error {
 		if sub.threadPolicy == session.SlackThreadPolicyRepliesOnly && !isReply {
 			continue
 		}
-		targets[sub.sessionID] = journalRecipient{SessionID: sub.sessionID, InstallationID: sub.installationID}
+		if _, exists := targets[sub.sessionID]; !exists {
+			targets[sub.sessionID] = journalRecipient{SessionID: sub.sessionID, InstallationID: sub.installationID}
+		}
 	}
 	recipients := make([]journalRecipient, 0, len(targets))
 	for _, recipient := range targets {
@@ -489,6 +504,32 @@ func (m *Manager) routeEvent(appID string, _ *appWorker, evt Event) error {
 		m.scheduleDrain(appID, m.settle)
 	}
 	return nil
+}
+
+func normalizedCredentialKind(kind slackcatalog.CredentialKind) slackcatalog.CredentialKind {
+	if kind == "" {
+		return slackcatalog.CredentialKindBot
+	}
+	return kind
+}
+
+func subscriptionAuthorized(sub resolvedSubscription, evt Event) bool {
+	if !evt.AuthorizationScopeKnown {
+		return true
+	}
+	kind := normalizedCredentialKind(sub.credentialKind)
+	for _, authorization := range evt.Authorizations {
+		if authorization.UserID != sub.authorizedUser {
+			continue
+		}
+		if kind == slackcatalog.CredentialKindBot && authorization.IsBot {
+			return true
+		}
+		if kind == slackcatalog.CredentialKindUser && !authorization.IsBot {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *Manager) scheduleDrain(appID string, delay time.Duration) {

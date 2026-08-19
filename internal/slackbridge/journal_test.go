@@ -33,7 +33,8 @@ func readJournalDocument(t *testing.T, j *FileJournal, appID string) *journalDoc
 func TestFileJournalAcceptDeduplicatesAndPersistsOrderedRecipients(t *testing.T) {
 	j, _ := newTestJournal(t)
 	recipients := []journalRecipient{{SessionID: "z", InstallationID: "iz"}, {SessionID: "a", InstallationID: "ia"}}
-	duplicate, err := j.Accept("app", Event{EventID: "e1", Text: "secret"}, recipients)
+	duplicate, err := j.Accept("app", Event{EventID: "e1", Text: "secret", AuthorizationScopeKnown: true,
+		Authorizations: []EventAuthorization{{UserID: "U-AUTHORIZATION-CANARY"}}}, recipients)
 	if err != nil || duplicate {
 		t.Fatalf("first Accept() duplicate=%v err=%v", duplicate, err)
 	}
@@ -56,6 +57,13 @@ func TestFileJournalAcceptDeduplicatesAndPersistsOrderedRecipients(t *testing.T)
 	info, err := os.Stat(path)
 	if err != nil || info.Mode().Perm() != 0600 {
 		t.Fatalf("journal mode=%v err=%v, want 0600", info.Mode().Perm(), err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "U-AUTHORIZATION-CANARY") || strings.Contains(string(raw), "Authorizations") {
+		t.Fatalf("journal persisted transient authorization metadata: %s", raw)
 	}
 }
 

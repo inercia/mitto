@@ -1,6 +1,7 @@
 package slackbridge
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -28,6 +29,17 @@ func eventsAPIEvent(teamID string, innerType string, data any) socketmode.Event 
 		},
 		Request: &socketmode.Request{Payload: payload},
 	}
+}
+
+func authorizedEventsAPIEvent(teamID, innerType string, data any, eventContext string, authorizations []EventAuthorization) socketmode.Event {
+	payload, _ := json.Marshal(struct {
+		EventID        string               `json:"event_id"`
+		EventContext   string               `json:"event_context,omitempty"`
+		Authorizations []EventAuthorization `json:"authorizations"`
+	}{EventID: "Ev1", EventContext: eventContext, Authorizations: authorizations})
+	event := eventsAPIEvent(teamID, innerType, data)
+	event.Request.Payload = payload
+	return event
 }
 
 func TestSlackSource_HandleSocketEvent_PlainMessage_Emitted(t *testing.T) {
@@ -62,6 +74,44 @@ func TestSlackSource_HandleSocketEvent_PrivateChannelMessage_Emitted(t *testing.
 	src.handleSocketEvent(evt, client, "U-SELF", func(e Event) { got = append(got, e) })
 	if len(got) != 1 || got[0].ChannelID != "G1" || got[0].Text != "private" {
 		t.Fatalf("private channel event = %#v", got)
+	}
+}
+
+func TestSlackSource_ResolvesCompleteAuthorizationScope(t *testing.T) {
+	src := NewSlackSource(Config{}, nil, nil)
+	src.listEventAuthorizations = func(_ context.Context, eventContext string) ([]slack.EventAuthorization, error) {
+		if eventContext != "1-message-T1-C1" {
+			t.Fatalf("event context = %q", eventContext)
+		}
+		return []slack.EventAuthorization{{UserID: "UBOT", IsBot: true}, {UserID: "UDELEGATED", IsBot: false}}, nil
+	}
+	evt := authorizedEventsAPIEvent("T1", "message", &slackevents.MessageEvent{
+		Channel: "G1", ChannelType: slackevents.ChannelTypeGroup, User: "UHUMAN", Text: "private",
+	}, "1-message-T1-C1", []EventAuthorization{{UserID: "UBOT", IsBot: true}})
+
+	var got []Event
+	src.handleSocketEvent(evt, newTestSocketmodeClient(), "U-SELF", func(event Event) { got = append(got, event) })
+	if len(got) != 1 || !got[0].AuthorizationScopeKnown || len(got[0].Authorizations) != 2 ||
+		got[0].Authorizations[0].UserID != "UBOT" || got[0].Authorizations[1].UserID != "UDELEGATED" {
+		t.Fatalf("resolved event = %#v", got)
+	}
+}
+
+func TestSlackSource_AuthorizationLookupFailureLeavesEnvelopeUnacknowledged(t *testing.T) {
+	src := NewSlackSource(Config{}, nil, nil)
+	src.listEventAuthorizations = func(context.Context, string) ([]slack.EventAuthorization, error) {
+		return nil, errors.New("revoked")
+	}
+	acknowledgements, acceptCalls := 0, 0
+	src.ack = func(*socketmode.Client, *socketmode.Request) { acknowledgements++ }
+	evt := authorizedEventsAPIEvent("T1", "message", &slackevents.MessageEvent{Channel: "C1", User: "U1"},
+		"1-message-T1-C1", []EventAuthorization{{UserID: "UBOT", IsBot: true}})
+	err := src.handleSocketEventDurable(evt, newTestSocketmodeClient(), "U-SELF", func(Event) error {
+		acceptCalls++
+		return nil
+	})
+	if !errors.Is(err, errEventAuthorizationLookup) || acknowledgements != 0 || acceptCalls != 0 {
+		t.Fatalf("lookup failure err=%v acknowledgements=%d acceptCalls=%d", err, acknowledgements, acceptCalls)
 	}
 }
 

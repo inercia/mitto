@@ -6,12 +6,18 @@ package slackbridge
 
 import "context"
 
+// EventAuthorization identifies one Slack installation authorized to receive
+// an Events API envelope. It contains identity metadata only, never a token.
+type EventAuthorization struct {
+	UserID string `json:"user_id"`
+	IsBot  bool   `json:"is_bot"`
+}
+
 // Event is a normalized, bounded representation of a single Slack message or
-// app_mention event. All fields are plain strings so the event can be safely
-// copied into template/log contexts without risking accidental exposure of
-// SDK-internal structures. Text is UNTRUSTED external content — callers must
-// never treat it as instructions from a trusted party (see
-// conversation.PromptSlackContext).
+// app_mention event. It contains only explicit scalar identity/content fields
+// plus transient authorization identities, never SDK-internal structures or
+// credentials. Text is UNTRUSTED external content — callers must never treat
+// it as instructions from a trusted party (see conversation.PromptSlackContext).
 type Event struct {
 	// EventID is Slack's event_id, used for de-duplication of redelivered events.
 	EventID string
@@ -30,6 +36,13 @@ type Event struct {
 	ThreadTimestamp string
 	// Text is the raw message text. UNTRUSTED external content.
 	Text string
+	// Authorizations is transient routing metadata. It is intentionally excluded
+	// from the durable journal after recipients have been snapshotted.
+	Authorizations []EventAuthorization `json:"-"`
+	// AuthorizationScopeKnown distinguishes legacy synthetic events (which may
+	// omit authorization metadata) from production envelopes whose authoritative
+	// authorization set is explicitly empty after revocation/deactivation.
+	AuthorizationScopeKnown bool `json:"-"`
 }
 
 // Source is the minimal injectable event-source lifecycle seam. Run blocks,
