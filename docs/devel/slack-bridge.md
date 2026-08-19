@@ -74,20 +74,28 @@ this compatibility period.
 
 ## Slack app setup
 
-1. Create a Slack app (https://api.slack.com/apps) in a development workspace.
-2. **Socket Mode**: enable it and generate an app-level token with the
-   `connections:write` scope (`xapp-...`).
-3. **OAuth & Permissions**: add bot token scopes `users:read` for app identity
-   validation, `channels:read` and `groups:read` for public/private channel
-   discovery, and `channels:history` plus `groups:history` for their message
-   flows. Add `app_mentions:read` only when using mention mode. `chat:write` is
-   not required. Existing apps must apply the current manifest and be
-   reauthorized before their bot token carries newly-added scopes.
-4. **Event Subscriptions**: enable events and subscribe to `message.channels` and
-   `message.groups`. Subscribe to `app_mention` only when mention mode is used.
-5. Invite the bot to every target channel (`/invite @your-bot`). Private
-   channels are visible to discovery only after the bot becomes a member.
-6. Note the workspace's **Team ID** and the target **Channel ID**.
+1. Create a Slack app (https://api.slack.com/apps) from the manifest copied from
+   Mitto's Slack settings. For an existing app, apply the current manifest, then
+   reinstall or reauthorize it so newly-added bot and user scopes are granted.
+2. **App-level token**: enable Socket Mode and separately generate an `xapp-...`
+   token with `connections:write`. This transport token is not an OAuth bot or
+   user token and cannot be declared in the Slack manifest.
+3. **Bot token**: the manifest requests `users:read` for app identity validation,
+   `channels:read` and `groups:read` for discovery, and `channels:history` plus
+   `groups:history` for message flows. `app_mentions:read` supports optional
+   mention mode; `chat:write` is not required. The installed app supplies the
+   `xoxb-...` bot token currently accepted by Mitto's integration catalog.
+4. **User token**: the manifest also requests least-privilege user scopes
+   `channels:read`, `groups:read`, `channels:history`, and `groups:history` for
+   channels visible to the authorizing user. Do not configure the resulting user
+   token in Mitto until delegated-user backend support is enabled.
+5. **Event Subscriptions**: bot events include `message.channels`,
+   `message.groups`, and optional `app_mention`; user events include
+   `message.channels` and `message.groups`.
+6. In bot mode, invite the bot to every target channel (`/invite @your-bot`). A
+   private channel is visible to bot discovery only after the bot becomes a
+   member. Delegated-user mode will instead use channels visible to its user.
+7. Note the workspace's **Team ID** and the target **Channel ID**.
 
 ## Legacy adapter runtime configuration
 

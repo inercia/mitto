@@ -24,10 +24,10 @@ export const SLACK_SETUP_URL =
   "https://github.com/inercia/mitto/blob/main/docs/devel/slack-bridge.md#slack-app-setup";
 
 // Slack app manifest for "Create from an app manifest" (mitto-kqpl). Fields
-// mirror docs/devel/slack-bridge.md#slack-app-setup exactly: Socket Mode,
-// the bot scopes/events used by the durable Slack bridge (mention mode is
-// optional but included so one manifest covers both message and mention
-// routing), including private-channel discovery and delivery.
+// mirror docs/devel/slack-bridge.md#slack-app-setup exactly: Socket Mode plus
+// bot and delegated-user scopes/events. Bot mention mode is optional but
+// included so one manifest covers message and mention routing. User scopes
+// pre-authorize delegated operation without implying backend support is active.
 // The app-level token (connections:write) is not part of the manifest schema
 // and must still be generated manually from the app's Basic Information page.
 export const SLACK_APP_MANIFEST_YAML = `display_information:
@@ -45,12 +45,20 @@ oauth_config:
       - groups:history
       - app_mentions:read
       - users:read
+    user:
+      - channels:read
+      - channels:history
+      - groups:read
+      - groups:history
 settings:
   event_subscriptions:
     bot_events:
       - message.channels
       - message.groups
       - app_mention
+    user_events:
+      - message.channels
+      - message.groups
   socket_mode_enabled: true
 `;
 
@@ -633,11 +641,15 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
                   openURL(SLACK_CREATE_APP_URL);
                 }}
               >create a Slack app</a>, choose "From an app manifest", and then
-              use the following YAML manifest to configure Socket Mode, bot
-              scopes, and event subscriptions in one step. Existing apps must
-              apply the current manifest and be reauthorized for
-              <code>groups:read</code> and <code>groups:history</code>. Invite the
-              bot to each private channel before selecting it in a trigger.
+              use the following YAML manifest to configure bot and delegated-user
+              OAuth scopes and event subscriptions. Socket Mode still needs a
+              separate app-level token with <code>connections:write</code>. Bot mode
+              uses the bot token; invite the bot to each private channel before
+              selecting it in a trigger. The manifest also authorizes a user token,
+              but do not configure it in Mitto until delegated-user backend support
+              is enabled. Existing apps must apply the current manifest and be
+              reauthorized for all newly added bot and user scopes, including
+              <code>groups:read</code> and <code>groups:history</code>.
             </p>
           </div>
           <div class="flex flex-wrap gap-2">

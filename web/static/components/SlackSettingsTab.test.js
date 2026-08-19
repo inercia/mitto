@@ -144,20 +144,27 @@ describe("SlackSettingsTab helpers", () => {
     expect(slackHealth(appA, "failed").label).toBe("Validation failed");
   });
 
-  test("manifest includes public and private channel scopes and events", () => {
-    for (const scope of [
-      "channels:read",
-      "channels:history",
-      "groups:read",
-      "groups:history",
-      "app_mentions:read",
-      "users:read",
-    ]) {
-      expect(SLACK_APP_MANIFEST_YAML).toContain(`- ${scope}`);
-    }
-    for (const event of ["message.channels", "message.groups", "app_mention"]) {
-      expect(SLACK_APP_MANIFEST_YAML).toContain(`- ${event}`);
-    }
+  test("manifest pins bot and delegated-user scopes and events", () => {
+    expect(SLACK_APP_MANIFEST_YAML).toContain(`    bot:
+      - channels:read
+      - channels:history
+      - groups:read
+      - groups:history
+      - app_mentions:read
+      - users:read`);
+    expect(SLACK_APP_MANIFEST_YAML).toContain(`    user:
+      - channels:read
+      - channels:history
+      - groups:read
+      - groups:history`);
+    expect(SLACK_APP_MANIFEST_YAML).toContain(`    bot_events:
+      - message.channels
+      - message.groups
+      - app_mention`);
+    expect(SLACK_APP_MANIFEST_YAML).toContain(`    user_events:
+      - message.channels
+      - message.groups`);
+    expect(SLACK_APP_MANIFEST_YAML).toContain("socket_mode_enabled: true");
   });
 });
 
@@ -503,6 +510,13 @@ if (isIsolatedComponentRun) {
         expect(container.textContent).toContain("groups:history");
         expect(container.textContent).toContain("reauthorized");
         expect(container.textContent).toContain("private channel");
+        expect(container.textContent).toContain("app-level token");
+        expect(container.textContent).toContain("connections:write");
+        expect(container.textContent).toContain("bot token");
+        expect(container.textContent).toContain("user token");
+        expect(container.textContent.replace(/\s+/g, " ")).toContain(
+          "delegated-user backend support is enabled",
+        );
 
         container
           .querySelector('[data-testid="slack-create-app-external"]')

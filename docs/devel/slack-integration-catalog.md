@@ -110,13 +110,19 @@ installation/cursor/limit. Token replacement and deletion invalidate every page
 for that installation. A generation guard prevents an in-flight request using an
 old credential from repopulating the cache after invalidation.
 
-The bot token needs `users:read` for the `bots.info` app-identity check,
-`channels:read` and `groups:read` for public/private channel discovery, and
-`channels:history` plus `groups:history` for the default `message.channels` and
-`message.groups` event flows. Add `app_mentions:read` and the `app_mention` bot
-event only when mention mode is used. The app-level Socket Mode token separately
-needs `connections:write`. Existing apps must apply the current manifest and be
-reauthorized for newly-added scopes.
+The app-level `xapp-...` Socket Mode token needs `connections:write` and is used
+only for transport. The current catalog accepts an `xoxb-...` bot token, which
+needs `users:read` for the `bots.info` identity check, `channels:read` and
+`groups:read` for discovery, and `channels:history` plus `groups:history` for the
+default `message.channels` and `message.groups` bot events. Add
+`app_mentions:read` and the `app_mention` bot event only for mention mode.
+
+The default manifest also prepares delegated-user authorization with user scopes
+`channels:read`, `groups:read`, `channels:history`, and `groups:history`, plus
+`message.channels` and `message.groups` user events. This does not make user-token
+mode active in the catalog; do not configure a user token until backend support
+lands. Existing apps must apply the current manifest and reinstall or reauthorize
+the app before either bot or user tokens carry newly-added scopes.
 `chat:write`, attachments, and automatic file fetching are not part of v1.
 
 ## Reference-aware deletion
