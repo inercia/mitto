@@ -157,22 +157,22 @@ Returns the current effective Mitto configuration (sanitized to exclude sensitiv
 
 Returns runtime information about the Mitto instance:
 
-| Field           | Description                               |
-| --------------- | ----------------------------------------- |
-| `os`            | Operating system (darwin, linux, windows) |
-| `arch`          | CPU architecture                          |
-| `num_cpu`       | Number of CPUs                            |
-| `hostname`      | Machine hostname                          |
-| `pid`           | Process ID                                |
-| `executable`    | Path to Mitto executable                  |
-| `working_dir`   | Current working directory                 |
-| `go_version`    | Go runtime version                        |
-| `num_goroutine` | Number of goroutines                      |
-| `data_dir`      | Mitto data directory                      |
-| `sessions_dir`  | Sessions directory                        |
-| `logs_dir`      | Logs directory                            |
+| Field           | Description                                    |
+| --------------- | ---------------------------------------------- |
+| `os`            | Operating system (darwin, linux, windows)      |
+| `arch`          | CPU architecture                               |
+| `num_cpu`       | Number of CPUs                                 |
+| `hostname`      | Machine hostname                               |
+| `pid`           | Process ID                                     |
+| `executable`    | Path to Mitto executable                       |
+| `working_dir`   | Current working directory                      |
+| `go_version`    | Go runtime version                             |
+| `num_goroutine` | Number of goroutines                           |
+| `data_dir`      | Mitto data directory                           |
+| `sessions_dir`  | Sessions directory                             |
+| `logs_dir`      | Logs directory                                 |
 | `log_files`     | Log paths plus live main-log retention metrics |
-| `config_files`  | Paths to configuration files              |
+| `config_files`  | Paths to configuration files                   |
 
 `log_files.main_log_retention` is present when rotated file logging is active.
 It reports the configured size/backup bounds, compression, retained file/byte
