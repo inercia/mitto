@@ -169,15 +169,22 @@ file-vault permissions.
 
 Loop settings expose `onSlack` as a canonical trigger that can be armed alone or
 with the other trigger types. Each staged subscription selects a stable workspace
-installation and public or visible private channel ID, plus message and thread filters. The editor
-proactively loads every channel page through the catalog API, caches the assembled
-list per client and installation for 24 hours, and searches it locally by name or
-ID. Since Slack exposes no list revision or ETag, a no-match search against a cache
-older than five minutes triggers a background revalidation; the picker also offers
-an explicit refresh. Partial pages remain searchable while loading, and unresolved
-saved IDs remain in the draft until discovery completes. Rows label privacy and
-bot membership; non-member selections and missing saved IDs explain that the bot
-must be invited before private-channel discovery and event delivery can work.
+installation and public or visible private channel ID, plus message and thread
+filters. The editor uses the same channel picker for bot and delegated-user
+installations, labels the active credential mode, and explains whether visibility
+follows bot membership or the authorizing user's membership and authorization
+lifetime. `appMention` remains bot-only; changing or replacing a credential with a
+delegated-user credential normalizes a stale mention-only draft to human messages
+without discarding its stable installation/channel IDs or thread policy.
+
+The editor proactively loads every channel page through the catalog API, caches the
+assembled list per client and installation for 24 hours, and searches it locally by
+name or ID. Since Slack exposes no list revision or ETag, a no-match search against
+a cache older than five minutes triggers a background revalidation; the picker also
+offers an explicit refresh. Partial pages remain searchable while loading, and
+unresolved saved IDs remain in the draft until discovery completes. Rows label
+privacy and mode-appropriate membership; non-member selections and missing saved
+IDs explain the membership or authorization action required before event delivery.
 The loop trigger card's **Manage Slack integrations** action opens this Settings tab
 without unmounting the loop panel. Successful catalog mutations publish a
 value-free local refresh event so names and credential health update while staged

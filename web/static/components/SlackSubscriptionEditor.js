@@ -388,8 +388,8 @@ export function SlackSubscriptionEditor({
   }, [installationIDsKey, client]);
 
   // Kicks off (or resumes) the sequential background page fetch for every
-  // referenced installation with a configured bot token. A no-op for
-  // installations already complete or already being fetched.
+  // referenced installation with a configured bot or delegated-user credential.
+  // A no-op for installations already complete or already being fetched.
   useEffect(() => {
     for (const installationId of installationIDs) {
       const installation = catalog.installations.find(

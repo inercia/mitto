@@ -378,6 +378,7 @@ if (childRun) {
         const mode = container.querySelector(
           '[data-testid="slack-credential-mode-0"]',
         );
+        expect(mode.getAttribute("role")).toBe("status");
         expect(mode.textContent).toContain("Delegated user");
         expect(mode.textContent).toContain("authorizing user's membership");
         expect(mode.textContent).toContain("stale mention-only drafts reset");
