@@ -1764,6 +1764,25 @@ describe("mitto-erry: SchemaSkewDialog copy consolidation + kill-switch UX", () 
   });
 });
 
+describe("mitto-wx5t.3: local schema remediation stays local-only", () => {
+  const source = readFileSync(BEADS_VIEW_PATH, "utf8");
+  const start = source.indexOf("function SchemaSkewDialog(");
+  const end = source.indexOf("\nfunction ", start + 1);
+  const body = source.slice(start, end === -1 ? source.length : end);
+
+  test("filters remote-backed options and renders only available options", () => {
+    expect(body).toMatch(
+      /options\.filter\(\(opt\) => !isLocalMode \|\| opt\.mode === "migrate"\)/,
+    );
+    expect(body).toMatch(/availableOptions\.map\(/);
+    expect(body).not.toMatch(/\$\{options\.map\(/);
+  });
+
+  test("forces an in-place migrate request even if selected mode is stale", () => {
+    expect(body).toMatch(/mode: isLocalMode \? "migrate" : mode/);
+  });
+});
+
 // =============================================================================
 // mitto-vc2m: SchemaSkewDialog.handleConfirm must use secureFetch (CSRF header)
 // =============================================================================

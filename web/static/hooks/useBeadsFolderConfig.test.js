@@ -58,6 +58,11 @@ const IDX = {
   setBeadsSyncPromptArgs: 13,
   setBeadsUpstreamPrompts: 14,
   setBeadsUpstreamPromptsLoading: 15,
+  setBeadsDatabaseMode: 16,
+  setBeadsDatabaseModeHasRemote: 17,
+  setBeadsDatabaseModeLoading: 18,
+  setBeadsDatabaseModeSaving: 19,
+  setBeadsDatabaseModeError: 20,
 };
 
 // The hook destructures `useState`/`useEffect` from `window.preact` at
@@ -138,6 +143,10 @@ describe("mitto-xdqx — Workspaces dialog Tasks tab stuck on 'Loading…'", () 
       false,
     );
     expect(setters[IDX.setBeadsUpstreamSaving]).toHaveBeenCalledWith(false);
+    expect(setters[IDX.setBeadsDatabaseModeLoading]).toHaveBeenCalledWith(
+      false,
+    );
+    expect(setters[IDX.setBeadsDatabaseModeSaving]).toHaveBeenCalledWith(false);
   });
 
   test("Bug 2: load effect deps include isOpen so it re-fires on dialog reopen", async () => {
@@ -199,6 +208,10 @@ describe("mitto-xdqx — Workspaces dialog Tasks tab stuck on 'Loading…'", () 
       false,
     );
     expect(setters[IDX.setBeadsUpstreamSaving]).toHaveBeenCalledWith(false);
+    expect(setters[IDX.setBeadsDatabaseModeLoading]).toHaveBeenCalledWith(
+      false,
+    );
+    expect(setters[IDX.setBeadsDatabaseModeSaving]).toHaveBeenCalledWith(false);
   });
 
   test("Bug 3: dialog-close effect is a no-op while dialog is open", async () => {
@@ -223,6 +236,8 @@ describe("mitto-xdqx — Workspaces dialog Tasks tab stuck on 'Loading…'", () 
     expect(setters[IDX.setBeadsConfigSaving]).not.toHaveBeenCalled();
     expect(setters[IDX.setBeadsUpstreamPromptsLoading]).not.toHaveBeenCalled();
     expect(setters[IDX.setBeadsUpstreamSaving]).not.toHaveBeenCalled();
+    expect(setters[IDX.setBeadsDatabaseModeLoading]).not.toHaveBeenCalled();
+    expect(setters[IDX.setBeadsDatabaseModeSaving]).not.toHaveBeenCalled();
   });
 
   test("Bug 3: folder-reset effect bumps load tokens to invalidate orphaned fetches", async () => {
@@ -248,6 +263,120 @@ describe("mitto-xdqx — Workspaces dialog Tasks tab stuck on 'Loading…'", () 
     // will not re-latch the loading spinner.
     const after = refs.slice(0, 3).map((r) => r.current);
     expect(after).toEqual(before.map((v) => v + 1));
+    expect(refs[9].current).toBe(1);
+  });
+});
+
+describe("database sharing policy", () => {
+  async function settle() {
+    for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 1));
+  }
+
+  test("loads effective mode and remote presence through the SDK endpoint", async () => {
+    global.document.cookie = "mitto_csrf=test-token";
+    global.fetch = jest.fn((url) => {
+      const path = String(url);
+      if (path.includes("/api/issues/database-mode")) {
+        return Promise.resolve(
+          jsonResponse({ database_mode: "shared", has_remote: true }),
+        );
+      }
+      if (path.includes("/api/issues/upstream")) {
+        return Promise.resolve(jsonResponse({ upstream: "github" }));
+      }
+      return Promise.resolve(jsonResponse({}));
+    });
+    const { useBeadsFolderConfig, setters, effects } = await loadHook();
+    useBeadsFolderConfig({
+      selectedFolder: "folder-a",
+      activeTab: "beads",
+      isOpen: true,
+      getSelectedFolderDir: () => "/tmp/folder-a",
+    });
+    const loadEffect = effects.find(
+      (e) => e.deps?.length === 3 && e.deps.includes("beads"),
+    );
+    loadEffect.cb();
+    await settle();
+    expect(
+      global.fetch.mock.calls.some(([url]) =>
+        String(url).includes(
+          "/api/issues/database-mode?working_dir=%2Ftmp%2Ffolder-a",
+        ),
+      ),
+    ).toBe(true);
+    expect(setters[IDX.setBeadsDatabaseMode]).toHaveBeenCalledWith("shared");
+    expect(setters[IDX.setBeadsDatabaseModeHasRemote]).toHaveBeenCalledWith(
+      true,
+    );
+    expect(setters[IDX.setBeadsDatabaseModeLoading].mock.calls).toEqual([
+      [true],
+      [false],
+    ]);
+  });
+
+  test("saves only database_mode and adopts the server-confirmed state", async () => {
+    global.document.cookie = "mitto_csrf=test-token";
+    const putCalls = [];
+    global.fetch = jest.fn((url, opts = {}) => {
+      if (opts.method === "PUT") {
+        putCalls.push({ url: String(url), body: JSON.parse(opts.body) });
+        return Promise.resolve(
+          jsonResponse({ database_mode: "shared", has_remote: true }),
+        );
+      }
+      return new Promise(() => {});
+    });
+    const { useBeadsFolderConfig, setters } = await loadHook();
+    const result = useBeadsFolderConfig({
+      selectedFolder: "folder-a",
+      activeTab: "beads",
+      isOpen: true,
+      getSelectedFolderDir: () => "/tmp/folder-a",
+    });
+    await result.beadsHandlers.saveBeadsDatabaseMode("shared");
+    expect(putCalls).toHaveLength(1);
+    expect(putCalls[0].url).toContain("/api/issues/database-mode");
+    expect(putCalls[0].body).toEqual({ database_mode: "shared" });
+    expect(putCalls[0].body).not.toHaveProperty("upstream");
+    expect(setters[IDX.setBeadsDatabaseMode]).toHaveBeenLastCalledWith(
+      "shared",
+    );
+    expect(setters[IDX.setBeadsDatabaseModeHasRemote]).toHaveBeenCalledWith(
+      true,
+    );
+    expect(setters[IDX.setBeadsDatabaseModeSaving]).toHaveBeenLastCalledWith(
+      false,
+    );
+  });
+
+  test("rolls back local state and exposes reconciliation failure", async () => {
+    global.document.cookie = "mitto_csrf=test-token";
+    global.fetch = jest.fn((_url, opts = {}) =>
+      opts.method === "PUT"
+        ? Promise.resolve(
+            jsonResponse({ error: "bd reconciliation failed" }, 500),
+          )
+        : new Promise(() => {}),
+    );
+    const { useBeadsFolderConfig, setters } = await loadHook();
+    const result = useBeadsFolderConfig({
+      selectedFolder: "folder-a",
+      activeTab: "beads",
+      isOpen: true,
+      getSelectedFolderDir: () => "/tmp/folder-a",
+    });
+    await result.beadsHandlers.saveBeadsDatabaseMode("shared");
+    expect(setters[IDX.setBeadsDatabaseMode].mock.calls).toEqual([
+      ["shared"],
+      ["local"],
+    ]);
+    expect(setters[IDX.setBeadsDatabaseModeHasRemote]).toHaveBeenCalledWith(
+      false,
+    );
+    expect(
+      setters[IDX.setBeadsDatabaseModeError].mock.calls.at(-1)[0],
+    ).toContain("bd reconciliation failed");
   });
 });
 
