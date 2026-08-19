@@ -9,6 +9,7 @@ import { ConfirmDialog } from "./ConfirmDialog.js";
 import { Tooltip } from "./Tooltip.js";
 import {
   CheckIcon,
+  CloseIcon,
   CopyIcon,
   EditIcon,
   LinkIcon,
@@ -155,12 +156,15 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
   const [newTeamId, setNewTeamId] = useState("");
   const [newBotToken, setNewBotToken] = useState("");
   const [installationName, setInstallationName] = useState("");
+  const [isEditingInstallationName, setIsEditingInstallationName] =
+    useState(false);
   const [botToken, setBotToken] = useState("");
   const [installationValidation, setInstallationValidation] = useState("");
   const [deletePlan, setDeletePlan] = useState(null);
   const [manifestCopied, setManifestCopied] = useState(false);
   const selectedAppIdRef = useRef(selectedAppId);
   const selectedInstallationIdRef = useRef(selectedInstallationId);
+  const installationNameInputRef = useRef(null);
   selectedAppIdRef.current = selectedAppId;
   selectedInstallationIdRef.current = selectedInstallationId;
 
@@ -173,6 +177,7 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
       installations.find((item) => item.id === selectedInstallationId) || null,
     [installations, selectedInstallationId],
   );
+  const selectedAppHealth = slackHealth(selectedApp, appValidation);
   const selectedCredentialKind = slackCredentialKind(selectedInstallation);
 
   const notify = (message, style = "success") => {
@@ -262,10 +267,17 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
 
   useEffect(() => {
     setInstallationName(selectedInstallation?.name || "");
+    setIsEditingInstallationName(false);
     setBotToken("");
     setInstallationValidation("");
     setActionError("");
   }, [selectedInstallationId]);
+
+  useEffect(() => {
+    if (!isEditingInstallationName || !installationNameInputRef.current) return;
+    installationNameInputRef.current.focus();
+    installationNameInputRef.current.select();
+  }, [isEditingInstallationName]);
 
   const chooseApp = (id) => {
     setAppToken("");
@@ -439,23 +451,42 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
 
   const renameInstallation = async () => {
     const id = selectedInstallation?.id;
-    if (!id || !installationName.trim()) return;
+    const name = installationName.trim();
+    if (!id || !name || busy === "rename-installation") return;
+    if (name === selectedInstallation.name) {
+      setIsEditingInstallationName(false);
+      return;
+    }
     setBusy("rename-installation");
     setActionError("");
     try {
-      const updated = await client.slack.renameInstallation(
-        id,
-        installationName.trim(),
-      );
+      const updated = await client.slack.renameInstallation(id, name);
       setInstallations((current) => replaceById(current, updated));
-      if (selectedInstallationIdRef.current === id)
+      if (selectedInstallationIdRef.current === id) {
         setInstallationName(updated.name);
+        setIsEditingInstallationName(false);
+      }
       notify("Slack workspace installation renamed.");
     } catch {
       if (selectedInstallationIdRef.current === id)
         setActionError("Slack workspace installation could not be renamed.");
     } finally {
       setBusy("");
+    }
+  };
+
+  const cancelInstallationRename = () => {
+    setInstallationName(selectedInstallation?.name || "");
+    setIsEditingInstallationName(false);
+  };
+
+  const handleInstallationNameKeyDown = (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      renameInstallation();
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      cancelInstallationRename();
     }
   };
 
@@ -821,8 +852,8 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
               apps.length === 0
                 ? html`<div class="text-center py-6 space-y-3">
                     <p class="text-sm text-mitto-text-muted">
-                      No app profiles are configured. Use the guide above
-                      to create a Slack app, then add its token here.
+                      No app profiles are configured. Use the guide above to
+                      create a Slack app, then add its token here.
                     </p>
                   </div>`
                 : html`<ul
@@ -868,61 +899,75 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
                     class="rounded-lg border border-mitto-border bg-mitto-surface-2"
                   >
                     <div class="flex flex-col p-4 gap-4">
-                      <div
-                        class="flex flex-wrap items-start justify-between gap-2"
-                      >
-                        <div>
+                      <div class="space-y-1">
+                        <div
+                          class="flex flex-wrap items-center gap-2"
+                          data-testid="slack-app-header"
+                        >
                           <h5 class="font-semibold text-base">
                             ${selectedApp.name}
                           </h5>
-                          <${StatusSummary}
-                            record=${selectedApp}
-                            attempt=${appValidation}
-                            identityLabel="App ID"
-                            identityValue=${selectedApp.slack_app_id}
-                          />
+                          <span
+                            class="badge badge-sm badge-soft ${selectedAppHealth.className}"
+                            >${selectedAppHealth.label}</span
+                          >
+                          ${selectedApp.slack_app_id &&
+                          html`<span class="text-sm text-mitto-text-muted">
+                            App ID: <code>${selectedApp.slack_app_id}</code>
+                          </span>`}
+                          <div class="ml-auto flex items-center gap-1">
+                            <${Tooltip} tip="Open app settings in Slack">
+                              <button
+                                class="btn btn-sm btn-ghost btn-square"
+                                data-testid="slack-open-app-settings"
+                                aria-label="Open app settings"
+                                title="Open app settings"
+                                onClick=${() =>
+                                  openURL(
+                                    slackAppSettingsURL(
+                                      selectedApp.slack_app_id,
+                                    ),
+                                  )}
+                              >
+                                <${LinkIcon} className="w-4 h-4" />
+                              </button>
+                            <//>
+                            <${Tooltip} tip="Test app connection">
+                              <button
+                                class="btn btn-sm btn-square"
+                                data-testid="slack-validate-app"
+                                aria-label="Test app connection"
+                                title="Test app connection"
+                                disabled=${busy === "validate-app"}
+                                onClick=${validateApp}
+                              >
+                                ${busy === "validate-app"
+                                  ? html`<${SpinnerIcon} className="w-4 h-4" />`
+                                  : html`<${RefreshIcon}
+                                      className="w-4 h-4"
+                                    />`}
+                              </button>
+                            <//>
+                            <${Tooltip} tip="Delete Slack app profile">
+                              <button
+                                class="btn btn-sm btn-square btn-ghost text-error"
+                                disabled=${busy === "prepare-delete-app"}
+                                onClick=${prepareDeleteApp}
+                                aria-label="Delete Slack app profile"
+                                title="Delete Slack app profile"
+                              >
+                                <${TrashIcon} className="w-4 h-4" />
+                              </button>
+                            <//>
+                          </div>
                         </div>
-                        <div class="flex flex-wrap gap-2">
-                          <${Tooltip} tip="Open app settings in Slack">
-                            <button
-                              class="btn btn-sm btn-ghost btn-square"
-                              data-testid="slack-open-app-settings"
-                              aria-label="Open app settings"
-                              title="Open app settings"
-                              onClick=${() =>
-                                openURL(
-                                  slackAppSettingsURL(selectedApp.slack_app_id),
-                                )}
-                            >
-                              <${LinkIcon} className="w-4 h-4" />
-                            </button>
-                          <//>
-                          <${Tooltip} tip="Test app connection">
-                            <button
-                              class="btn btn-sm btn-square"
-                              data-testid="slack-validate-app"
-                              aria-label="Test app connection"
-                              title="Test app connection"
-                              disabled=${busy === "validate-app"}
-                              onClick=${validateApp}
-                            >
-                              ${busy === "validate-app"
-                                ? html`<${SpinnerIcon} className="w-4 h-4" />`
-                                : html`<${RefreshIcon} className="w-4 h-4" />`}
-                            </button>
-                          <//>
-                          <${Tooltip} tip="Delete Slack app profile">
-                            <button
-                              class="btn btn-sm btn-square btn-ghost text-error"
-                              disabled=${busy === "prepare-delete-app"}
-                              onClick=${prepareDeleteApp}
-                              aria-label="Delete Slack app profile"
-                              title="Delete Slack app profile"
-                            >
-                              <${TrashIcon} className="w-4 h-4" />
-                            </button>
-                          <//>
-                        </div>
+                        <p
+                          class="text-sm text-mitto-text-muted"
+                          data-testid="slack-app-last-check"
+                        >
+                          Last checked:
+                          ${formatSlackValidation(selectedApp.validated_at)}
+                        </p>
                       </div>
 
                       <div class="grid grid-cols-1 gap-3 md:grid-cols-2">
@@ -1065,26 +1110,29 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
                           ? html`<p class="text-sm text-mitto-text-muted py-3">
                               This app has no workspace installations.
                             </p>`
-                          : html`<ul
-                              class="menu flex-wrap p-0"
-                              data-testid="slack-installation-list"
-                            >
-                              ${installations.map(
-                                (item) =>
-                                  html`<li key=${item.id}>
-                                    <button
-                                      class=${item.id === selectedInstallationId
-                                        ? "menu-active"
-                                        : ""}
-                                      data-testid=${`slack-installation-${item.id}`}
-                                      onClick=${() =>
-                                        chooseInstallation(item.id)}
-                                    >
-                                      ${item.name}
-                                    </button>
-                                  </li>`,
-                              )}
-                            </ul>`}
+                          : installations.length > 1
+                            ? html`<ul
+                                class="menu flex-wrap p-0"
+                                data-testid="slack-installation-list"
+                              >
+                                ${installations.map(
+                                  (item) =>
+                                    html`<li key=${item.id}>
+                                      <button
+                                        class=${item.id ===
+                                        selectedInstallationId
+                                          ? "menu-active"
+                                          : ""}
+                                        data-testid=${`slack-installation-${item.id}`}
+                                        onClick=${() =>
+                                          chooseInstallation(item.id)}
+                                      >
+                                        ${item.name}
+                                      </button>
+                                    </li>`,
+                                )}
+                              </ul>`
+                            : null}
                       ${selectedInstallation &&
                       html`<div
                         class="rounded-lg border border-mitto-border bg-base-200"
@@ -1094,10 +1142,69 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
                           <div
                             class="flex flex-wrap items-start justify-between gap-2"
                           >
-                            <div>
-                              <h6 class="font-medium">
-                                ${selectedInstallation.name}
-                              </h6>
+                            <div class="min-w-0 flex-1">
+                              ${isEditingInstallationName
+                                ? html`<div class="flex items-center gap-1">
+                                    <input
+                                      ref=${installationNameInputRef}
+                                      class="input input-sm min-w-0 flex-1"
+                                      data-testid="slack-installation-name-input"
+                                      value=${installationName}
+                                      disabled=${busy === "rename-installation"}
+                                      onInput=${(event) =>
+                                        setInstallationName(event.target.value)}
+                                      onKeyDown=${handleInstallationNameKeyDown}
+                                    />
+                                    <${Tooltip} tip="Save workspace name">
+                                      <button
+                                        class="btn btn-xs btn-ghost btn-square"
+                                        aria-label="Save workspace name"
+                                        title="Save workspace name"
+                                        disabled=${busy ===
+                                          "rename-installation" ||
+                                        !installationName.trim()}
+                                        onClick=${renameInstallation}
+                                      >
+                                        ${busy === "rename-installation"
+                                          ? html`<${SpinnerIcon}
+                                              className="w-4 h-4"
+                                            />`
+                                          : html`<${CheckIcon}
+                                              className="w-4 h-4"
+                                            />`}
+                                      </button>
+                                    <//>
+                                    <${Tooltip} tip="Cancel workspace rename">
+                                      <button
+                                        class="btn btn-xs btn-ghost btn-square"
+                                        aria-label="Cancel workspace rename"
+                                        title="Cancel workspace rename"
+                                        disabled=${busy ===
+                                        "rename-installation"}
+                                        onClick=${cancelInstallationRename}
+                                      >
+                                        <${CloseIcon} className="w-4 h-4" />
+                                      </button>
+                                    <//>
+                                  </div>`
+                                : html`<div
+                                    class="flex items-center gap-1 group"
+                                  >
+                                    <h6 class="font-medium truncate">
+                                      ${selectedInstallation.name}
+                                    </h6>
+                                    <${Tooltip} tip="Rename Slack workspace">
+                                      <button
+                                        class="btn btn-xs btn-ghost btn-square"
+                                        aria-label="Rename Slack workspace"
+                                        title="Rename Slack workspace"
+                                        onClick=${() =>
+                                          setIsEditingInstallationName(true)}
+                                      >
+                                        <${EditIcon} className="w-4 h-4" />
+                                      </button>
+                                    <//>
+                                  </div>`}
                               <${StatusSummary}
                                 record=${selectedInstallation}
                                 attempt=${installationValidation}
@@ -1153,29 +1260,7 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
                               <//>
                             </div>
                           </div>
-                          <div class="grid grid-cols-1 gap-3 md:grid-cols-2">
-                            <fieldset class="fieldset">
-                              <legend class="fieldset-legend">
-                                Friendly name
-                              </legend>
-                              <div class="join w-full">
-                                <input
-                                  class="input input-sm join-item flex-1"
-                                  value=${installationName}
-                                  onInput=${(event) =>
-                                    setInstallationName(event.target.value)}
-                                />
-                                <button
-                                  class="btn btn-sm join-item"
-                                  disabled=${busy === "rename-installation"}
-                                  onClick=${renameInstallation}
-                                  aria-label="Rename Slack workspace"
-                                  title="Rename Slack workspace"
-                                >
-                                  <${EditIcon} className="w-4 h-4" />
-                                </button>
-                              </div>
-                            </fieldset>
+                          <div>
                             <fieldset class="fieldset">
                               <legend class="fieldset-legend">
                                 Replace installation credential

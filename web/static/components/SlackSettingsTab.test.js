@@ -433,6 +433,79 @@ if (isIsolatedComponentRun) {
       }
     });
 
+    test("a single workspace is named once and renamed inline", async () => {
+      const installation = {
+        id: "inst-a",
+        app_id: "app-a",
+        name: "Alpha Team",
+        team_id: "T111",
+        token_configured: true,
+      };
+      const { container, fetchMock } = await mount((url, init) => {
+        if (url === "/api/slack/apps") return json({ apps: [appA] });
+        if (url === "/api/slack/apps/app-a/installations")
+          return json({ installations: [installation] });
+        if (
+          url === "/api/slack/installations/inst-a" &&
+          init.method === "PATCH"
+        )
+          return json({ ...installation, name: "Renamed Team" });
+        throw new Error(`Unexpected request: ${init.method} ${url}`);
+      });
+      try {
+        await waitFor(
+          () =>
+            container.querySelector(
+              '[data-testid="slack-installation-detail"]',
+            ),
+          container,
+          "installation detail",
+        );
+        const detail = container.querySelector(
+          '[data-testid="slack-installation-detail"]',
+        );
+        expect(
+          container.querySelector('[data-testid="slack-installation-list"]'),
+        ).toBeNull();
+        expect(detail.textContent.match(/Alpha Team/g)).toHaveLength(1);
+        expect(detail.textContent).not.toContain("Friendly name");
+
+        detail.querySelector('[aria-label="Rename Slack workspace"]').click();
+        await flushUI();
+        let input = detail.querySelector(
+          '[data-testid="slack-installation-name-input"]',
+        );
+        input.dispatchEvent(
+          new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+        );
+        await flushUI();
+        expect(
+          detail.querySelector('[data-testid="slack-installation-name-input"]'),
+        ).toBeNull();
+
+        detail.querySelector('[aria-label="Rename Slack workspace"]').click();
+        await flushUI();
+        input = detail.querySelector(
+          '[data-testid="slack-installation-name-input"]',
+        );
+        inputValue(input, "Renamed Team");
+        await flushUI();
+        input.dispatchEvent(
+          new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
+        );
+        await flushUI();
+        const patchCall = fetchMock.mock.calls.find(
+          ([url, init]) =>
+            url === "/api/slack/installations/inst-a" &&
+            init.method === "PATCH",
+        );
+        expect(JSON.parse(patchCall[1].body)).toEqual({ name: "Renamed Team" });
+        expect(detail.textContent).toContain("Renamed Team");
+      } finally {
+        unmount(container);
+      }
+    });
+
     test("failed token replacement keeps prior health and emits a value-free error", async () => {
       const candidate = "sensitive-rejected-token";
       const { container } = await mount((url, init) => {
@@ -628,6 +701,40 @@ if (isIsolatedComponentRun) {
           .querySelector('[data-testid="slack-open-app-settings"]')
           .closest("section");
         expect(detail.className).toContain("md:col-span-2");
+      } finally {
+        unmount(container);
+      }
+    });
+
+    test("keeps app status and actions together above the last check", async () => {
+      const { container } = await mount((url) => {
+        if (url === "/api/slack/apps") return json({ apps: [appA] });
+        if (url.endsWith("/installations")) return json({ installations: [] });
+        throw new Error(`Unexpected request: ${url}`);
+      });
+      try {
+        const header = container.querySelector(
+          '[data-testid="slack-app-header"]',
+        );
+        expect(header.textContent).toContain("App Alpha");
+        expect(header.textContent).toContain("Connected");
+        expect(header.textContent).toContain("App ID: A111");
+        for (const testId of [
+          "slack-open-app-settings",
+          "slack-validate-app",
+        ]) {
+          expect(
+            header.querySelector(`[data-testid="${testId}"]`),
+          ).not.toBeNull();
+        }
+        expect(
+          header.querySelector('[aria-label="Delete Slack app profile"]'),
+        ).not.toBeNull();
+        const lastCheck = container.querySelector(
+          '[data-testid="slack-app-last-check"]',
+        );
+        expect(lastCheck.previousElementSibling).toBe(header);
+        expect(lastCheck.textContent).toContain("Last checked:");
       } finally {
         unmount(container);
       }
