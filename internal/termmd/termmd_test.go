@@ -1,13 +1,18 @@
 package termmd
 
 import (
+	"context"
 	"flag"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
 	"testing"
+	"time"
+
+	"golang.org/x/text/unicode/norm"
 )
 
 // wantGlamourVersion pins the charm.land/glamour/v2 version the goldens in
@@ -167,6 +172,33 @@ func TestRender_ZeroWidthUsesGlamourDefault(t *testing.T) {
 		if out == "" {
 			t.Errorf("Render with zero Width and mode %v returned empty output", mode)
 		}
+	}
+}
+
+// TestNormalization_InvalidUTF8DoesNotHang reproduces mitto-3jph through the
+// x/text normalization dependency reached by glamour's terminal renderer. The
+// vulnerable iterator runs in a subprocess so the parent can fail boundedly.
+func TestNormalization_InvalidUTF8DoesNotHang(t *testing.T) {
+	const helperEnv = "MITTO_TEST_INVALID_UTF8_NORM_ITER"
+	if os.Getenv(helperEnv) == "1" {
+		var iter norm.Iter
+		iter.InitString(norm.NFC, "\xf3\xcc\x80")
+		for !iter.Done() {
+			_ = iter.Next()
+		}
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestNormalization_InvalidUTF8DoesNotHang$")
+	cmd.Env = append(os.Environ(), helperEnv+"=1")
+	out, err := cmd.CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		t.Fatalf("normalization hung on invalid UTF-8 (GO-2026-5970): %s", out)
+	}
+	if err != nil {
+		t.Fatalf("normalization helper failed: %v: %s", err, out)
 	}
 }
 
