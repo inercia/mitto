@@ -1024,6 +1024,23 @@ func (r *LoopRunner) triggerNowFull(sessionID string, resetTimer bool, tasksDelt
 		return ErrSessionBusy
 	}
 
+	// Classify manual vs. automatic BEFORE firedBy is defaulted to the loop's
+	// primary EffectiveTrigger (mitto-brdo). Every triggerNowFull caller passes
+	// forced=true to deliverPrompt below for cap-bypass/LoopKind purposes (an
+	// "act now" dispatch, not a throttled scheduled one) — that behavior is
+	// unchanged. But only a genuine manual "Run Now" (the public TriggerNow,
+	// invoked from the REST handleRunLoopNow and MCP
+	// mitto_conversation_run_loop_now handlers) reaches here with neither
+	// isRunOnStart set nor an explicit firedBy: every automatic path
+	// (onCompletion/onTasks/onChild/onSlack fires via TriggerNowFrom/
+	// triggerNowWithTasksDelta/TriggerNowWithSlackEvents, and the boot pulse)
+	// always supplies a non-empty firedBy or isRunOnStart=true. isManual is
+	// used ONLY to set PromptMeta.IsLoopForced (surfaced to the UI/provenance
+	// as "Manual run") so an onTasks/onCompletion/onSlack/startup dispatch is
+	// no longer mislabeled as a manual run.
+	const forced = true
+	isManual := forced && !isRunOnStart && firedBy == ""
+
 	if firedBy == "" {
 		firedBy = loop.EffectiveTrigger()
 	}
@@ -1037,7 +1054,7 @@ func (r *LoopRunner) triggerNowFull(sessionID string, resetTimer bool, tasksDelt
 	}
 
 	// Deliver the prompt
-	return r.deliverPrompt(bs, meta, loop, loopStore, resetTimer, true, tasksDelta, isRunOnStart, firedBy, slackEvents)
+	return r.deliverPrompt(bs, meta, loop, loopStore, resetTimer, forced, tasksDelta, isRunOnStart, firedBy, isManual, slackEvents)
 }
 
 // OnConversationIdle is invoked when a session's agent has stopped and the session
@@ -1218,8 +1235,9 @@ func (r *LoopRunner) cancelCompletionTimer(sessionID string) {
 //   - The IterationCount==0 && LastSentAt==nil guard prevents re-delivery after restart.
 //   - The completionTimers pending-check provides a cheap extra guard against double-fire
 //     within the same process lifetime.
-//   - TriggerNow's internal IsPrompting() check rejects a racing call with ErrSessionBusy
-//     once PromptWithMeta sets isPrompting synchronously before returning.
+//   - triggerNowFull's internal IsPrompting() check (shared by TriggerNow and
+//     TriggerNowFrom) rejects a racing call with ErrSessionBusy once
+//     PromptWithMeta sets isPrompting synchronously before returning.
 //
 // Called from checkSession (crash-safe on poll-loop restart), handleSetLoop,
 // handlePatchLoop (HTTP), and handleConversationStart/handleConversationUpdate (MCP).
@@ -1248,8 +1266,13 @@ func (r *LoopRunner) BootstrapOnCompletion(sessionID string) {
 		return
 	}
 
-	// Deliver the first run immediately — no delay on first run.
-	if err := r.TriggerNow(sessionID, true); err != nil {
+	// Deliver the first run immediately — no delay on first run. This is an
+	// automatic bootstrap, not a user-initiated "Run Now", so it is fired via
+	// TriggerNowFrom with the onCompletion trigger (not the bare TriggerNow)
+	// so the delivered PromptMeta/Provenance correctly records
+	// LoopTrigger=onCompletion and IsLoopForced=false instead of being
+	// mislabeled "Manual run" in the UI (mitto-brdo).
+	if err := r.TriggerNowFrom(sessionID, true, session.TriggerOnCompletion); err != nil {
 		if r.logger == nil {
 			return
 		}
@@ -2038,7 +2061,7 @@ func (r *LoopRunner) checkSession(meta session.Metadata, now time.Time) (deliver
 	// Deliver the prompt — normal scheduled runs always reset the timer. No
 	// onTasks delta on the scheduled path (that path only fires on time; onTasks
 	// fires go through triggerNowWithTasksDelta — mitto-xkn).
-	if err := r.deliverPrompt(bs, meta, loop, loopStore, true, false, nil, false, session.TriggerSchedule, nil); err != nil {
+	if err := r.deliverPrompt(bs, meta, loop, loopStore, true, false, nil, false, session.TriggerSchedule, false, nil); err != nil {
 		if errors.Is(err, ErrWorkspaceBusy) {
 			// A sibling loop in the same workspace is in flight. Skip this
 			// session for this poll cycle — do not advance NextScheduledAt
@@ -2524,7 +2547,11 @@ func (r *LoopRunner) rearmRunOnStartAfterFailure(sessionID, sessionName string, 
 //
 // sessionMeta carries the session's workspace/ACP-server pair used to enforce
 // the per-workspace loop-dispatch concurrency cap (mitto-61z). When forced is
-// true (manual "Run Now") the cap is bypassed and no slot is reserved.
+// true (any triggerNowFull-backed "act now" dispatch — manual "Run Now" as
+// well as onCompletion/onTasks/onChild/onSlack fires and the boot pulse) the
+// cap is bypassed and no slot is reserved; this also selects LoopKindForced
+// below. Note that forced no longer implies "genuine manual run" — see
+// isManual.
 //
 // tasksDelta is non-nil only for onTasks fires (via triggerNowWithTasksDelta);
 // it is threaded into PromptMeta.Trigger so the loop prompt body can render
@@ -2542,10 +2569,19 @@ func (r *LoopRunner) rearmRunOnStartAfterFailure(sessionID, sessionName string, 
 // with ErrLoopDispatchCoalesced rather than queued. An empty firedBy defers to
 // the loop's primary EffectiveTrigger.
 //
+// isManual is true only for a genuine manual "Run Now" (mitto-brdo): the
+// caller (triggerNowFull) computes it as forced && !isRunOnStart && the
+// caller-supplied firedBy was empty, evaluated before firedBy is defaulted to
+// the loop's EffectiveTrigger. It is used exclusively to set
+// PromptMeta.IsLoopForced, which is surfaced to the UI/provenance as "Manual
+// run" — unlike forced, it must NOT be true for onCompletion/onTasks/onChild/
+// onSlack fires or the boot pulse, all of which reach deliverPrompt with
+// forced=true for cap-bypass purposes but are not manual.
+//
 // slackEvents is non-empty only for onSlack. It is threaded into
 // PromptMeta.Trigger so the prompt can render {{ .Trigger.OnSlack.Events }};
 // the first event is also exposed at the deprecated {{ .Trigger.Slack }} alias.
-func (r *LoopRunner) deliverPrompt(bs *BackgroundSession, sessionMeta session.Metadata, loop *session.LoopPrompt, loopStore *session.LoopStore, resetTimer bool, forced bool, tasksDelta *config.TasksDelta, isRunOnStart bool, firedBy session.LoopTrigger, slackEventBatches ...[]PromptSlackEvent) error {
+func (r *LoopRunner) deliverPrompt(bs *BackgroundSession, sessionMeta session.Metadata, loop *session.LoopPrompt, loopStore *session.LoopStore, resetTimer bool, forced bool, tasksDelta *config.TasksDelta, isRunOnStart bool, firedBy session.LoopTrigger, isManual bool, slackEventBatches ...[]PromptSlackEvent) error {
 	sessionID := bs.GetSessionID()
 	sessionName := sessionMeta.Name
 	var slackEvents []PromptSlackEvent
@@ -2686,7 +2722,7 @@ func (r *LoopRunner) deliverPrompt(bs *BackgroundSession, sessionMeta session.Me
 		PromptID:         "",              // No client to confirm delivery to
 		PromptName:       loop.PromptName, // Pass prompt name so UI can render a badge instead of full text
 		Arguments:        loop.Arguments,  // User-supplied values for Go-template .Args placeholders in the resolved text
-		IsLoopForced:     forced,
+		IsLoopForced:     isManual,
 		IsLoopRunOnStart: isRunOnStart,
 		LoopKind:         loopKind,
 		IterationNumber:  loop.IterationCount,

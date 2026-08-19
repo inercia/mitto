@@ -2806,7 +2806,7 @@ func TestLoopRunner_DeliverPrompt_ArgumentsForwardedAndSubstituted(t *testing.T)
 	defer cancel()
 	bs := NewTestBackgroundSessionWithCtx("arg-dispatch", ctx, cancel)
 
-	deliverErr := runner.deliverPrompt(bs, meta, loop, loopStore, false, false, nil, false, session.TriggerSchedule, nil)
+	deliverErr := runner.deliverPrompt(bs, meta, loop, loopStore, false, false, nil, false, session.TriggerSchedule, false, nil)
 	// The resolver must have been called even though PromptWithMeta failed.
 	if !resolverCalled {
 		t.Error("promptResolver was not called; loop.PromptName not forwarded to deliverPrompt")
@@ -2890,7 +2890,7 @@ func TestLoopRunner_DeliverPrompt_EmptyPromptNotDispatched(t *testing.T) {
 			defer cancel()
 			bs := NewTestBackgroundSessionWithCtx(sid, ctx, cancel)
 
-			err = runner.deliverPrompt(bs, meta, tt.loop, store.Loop(sid), false, true, nil, false, session.TriggerSchedule, nil)
+			err = runner.deliverPrompt(bs, meta, tt.loop, store.Loop(sid), false, true, nil, false, session.TriggerSchedule, false, nil)
 			if !errors.Is(err, ErrPromptResolveFailed) {
 				t.Errorf("deliverPrompt() error = %v, want ErrPromptResolveFailed", err)
 			}
@@ -3236,6 +3236,206 @@ func TestDeliverPrompt_LoopKind(t *testing.T) {
 	// Enum zero value must be LoopKindNone (not a loop run).
 	if LoopKindNone != 0 {
 		t.Errorf("LoopKindNone must be 0 (zero value), got %d", LoopKindNone)
+	}
+}
+
+// TestTriggerNowFull_IsManualClassification is the regression test for
+// mitto-brdo ("a loop iteration triggered by creation of a beads issue is
+// labeled 'Manual run'"). Before the fix, triggerNowFull unconditionally set
+// PromptMeta.IsLoopForced=true for every dispatch it drives (manual "Run Now"
+// AND onCompletion/onTasks/onSlack fires AND the boot pulse), which the
+// frontend (web/static/utils/promptProvenance.js describeProvenance) treats
+// as a higher-priority signal than loop_trigger, always rendering "Manual
+// run" regardless of the real trigger.
+//
+// This test dispatches through each real public/internal entry point exactly
+// as production callers do (TriggerNow for the REST/MCP "Run Now" handlers,
+// TriggerNowFrom for fireOnCompletion, the unexported triggerNowWithTasksDelta
+// for the onTasks beads-change path, TriggerNowWithSlackEvents for onSlack,
+// and triggerNowFull directly with isRunOnStart=true for the fireOnStartPulses
+// boot pulse) and asserts the resulting session.PromptProvenance persisted on
+// the delivered user_prompt event: only the genuine manual case may carry
+// IsLoopForced=true.
+func TestTriggerNowFull_IsManualClassification(t *testing.T) {
+	tests := []struct {
+		name             string
+		trigger          session.LoopTrigger
+		dispatch         func(r *LoopRunner, sessionID string) error
+		wantLoopTrigger  session.LoopTrigger
+		wantIsManual     bool
+		wantIsRunOnStart bool
+	}{
+		{
+			name:    "manual Run Now (REST/MCP run-now handlers)",
+			trigger: session.TriggerSchedule,
+			dispatch: func(r *LoopRunner, sessionID string) error {
+				return r.TriggerNow(sessionID, true)
+			},
+			wantLoopTrigger: session.TriggerSchedule, // empty firedBy defers to EffectiveTrigger()
+			wantIsManual:    true,
+		},
+		{
+			name:    "onCompletion fire (fireOnCompletion path)",
+			trigger: session.TriggerOnCompletion,
+			dispatch: func(r *LoopRunner, sessionID string) error {
+				return r.TriggerNowFrom(sessionID, true, session.TriggerOnCompletion)
+			},
+			wantLoopTrigger: session.TriggerOnCompletion,
+			wantIsManual:    false,
+		},
+		{
+			name:    "onTasks fire (triggerNowWithTasksDelta — beads issue creation)",
+			trigger: session.TriggerOnTasks,
+			dispatch: func(r *LoopRunner, sessionID string) error {
+				return r.triggerNowWithTasksDelta(sessionID, true, nil)
+			},
+			wantLoopTrigger: session.TriggerOnTasks,
+			wantIsManual:    false,
+		},
+		{
+			name:    "onSlack fire (TriggerNowWithSlackEvents)",
+			trigger: session.TriggerOnSlack,
+			dispatch: func(r *LoopRunner, sessionID string) error {
+				return r.TriggerNowWithSlackEvents(sessionID, true, session.TriggerOnSlack,
+					[]PromptSlackEvent{{InstallationID: "I1", ChannelID: "C1"}})
+			},
+			wantLoopTrigger: session.TriggerOnSlack,
+			wantIsManual:    false,
+		},
+		{
+			name:    "boot pulse (fireOnStartPulses path, isRunOnStart=true)",
+			trigger: session.TriggerSchedule,
+			dispatch: func(r *LoopRunner, sessionID string) error {
+				return r.triggerNowFull(sessionID, true, nil, true, "", nil)
+			},
+			wantLoopTrigger:  session.TriggerSchedule,
+			wantIsManual:     false,
+			wantIsRunOnStart: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store, err := session.NewStore(t.TempDir())
+			if err != nil {
+				t.Fatalf("NewStore() error = %v", err)
+			}
+			defer store.Close()
+
+			recorder := session.NewRecorder(store)
+			if err := recorder.Start("test", "/tmp", ""); err != nil {
+				t.Fatalf("recorder.Start() error = %v", err)
+			}
+			sessionID := recorder.SessionID()
+
+			loopPrompt := &session.LoopPrompt{
+				Prompt:  "iterate",
+				Enabled: true,
+				Trigger: tt.trigger,
+			}
+			if tt.trigger == session.TriggerSchedule {
+				loopPrompt.Frequency = session.Frequency{Value: 4, Unit: session.FrequencyHours}
+			}
+			if tt.trigger == session.TriggerOnSlack {
+				loopPrompt.SlackSubscriptions = []session.SlackSubscription{{InstallationID: "I1", ChannelID: "C1"}}
+			}
+			if err := store.Loop(sessionID).Set(loopPrompt); err != nil {
+				t.Fatalf("loopStore.Set() error = %v", err)
+			}
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			bs := &BackgroundSession{
+				ctx:           ctx,
+				cancel:        cancel,
+				observers:     make(map[SessionObserver]struct{}),
+				recorder:      recorder,
+				store:         store,
+				persistedID:   sessionID,
+				workingDir:    "/tmp",
+				sharedProcess: newFakeSharedProcess(),
+				acpID:         "acp-sess-1",
+				pendingConfig: make(map[string]string),
+				nextSeq:       2, // seq 1 already consumed by session_start
+			}
+			bs.promptCond = sync.NewCond(&bs.promptMu)
+
+			sm := NewSessionManagerWithOptions(SessionManagerOptions{})
+			sm.AddSessionForTest(bs)
+
+			runner := NewLoopRunner(store, sm, nil)
+
+			if err := tt.dispatch(runner, sessionID); err != nil {
+				t.Fatalf("dispatch() error = %v", err)
+			}
+
+			// The provenance-recording section of PromptWithMeta runs
+			// synchronously before the async ACP dispatch, but poll briefly
+			// for robustness against scheduling jitter.
+			var provMap map[string]interface{}
+			deadline := time.Now().Add(2 * time.Second)
+			for {
+				events, err := store.ReadEvents(sessionID)
+				if err != nil {
+					t.Fatalf("ReadEvents() error = %v", err)
+				}
+				for _, e := range events {
+					if e.Type != session.EventTypeUserPrompt {
+						continue
+					}
+					dataMap, ok := e.Data.(map[string]interface{})
+					if !ok {
+						t.Fatalf("user_prompt event Data is %T, want map[string]interface{}", e.Data)
+					}
+					if pm, ok := dataMap["provenance"].(map[string]interface{}); ok {
+						provMap = pm
+					}
+				}
+				if provMap != nil || time.Now().After(deadline) {
+					break
+				}
+				time.Sleep(5 * time.Millisecond)
+			}
+
+			if provMap == nil {
+				t.Fatal("expected a persisted user_prompt event with non-nil provenance")
+			}
+			gotIsManual, _ := provMap["is_loop_forced"].(bool)
+			if gotIsManual != tt.wantIsManual {
+				t.Errorf("provenance.is_loop_forced = %v, want %v", gotIsManual, tt.wantIsManual)
+			}
+			gotLoopTrigger, _ := provMap["loop_trigger"].(string)
+			if session.LoopTrigger(gotLoopTrigger) != tt.wantLoopTrigger {
+				t.Errorf("provenance.loop_trigger = %q, want %q", gotLoopTrigger, tt.wantLoopTrigger)
+			}
+			gotIsRunOnStart, _ := provMap["is_loop_run_on_start"].(bool)
+			if gotIsRunOnStart != tt.wantIsRunOnStart {
+				t.Errorf("provenance.is_loop_run_on_start = %v, want %v", gotIsRunOnStart, tt.wantIsRunOnStart)
+			}
+
+			// Drain the async dispatch goroutine (fakeSharedProcess.Prompt returns
+			// immediately, but OnComplete — including the loop.json RecordSent
+			// write — still runs on its own goroutine) before the deferred
+			// store.Close()/TempDir cleanup runs, to avoid a concurrent-write
+			// race against the temp dir removal. Poll both the prompting flag
+			// and IterationCount (bumped by RecordSent on successful delivery
+			// with resetTimer=true) so the wait covers OnComplete's own disk
+			// write, not just PromptWithMeta's synchronous prefix.
+			waitDeadline := time.Now().Add(2 * time.Second)
+			for time.Now().Before(waitDeadline) {
+				if bs.IsPrompting() {
+					time.Sleep(5 * time.Millisecond)
+					continue
+				}
+				if updated, gErr := store.Loop(sessionID).Get(); gErr == nil && updated.IterationCount > 0 {
+					break
+				}
+				time.Sleep(5 * time.Millisecond)
+			}
+			// Small settle buffer for any trailing atomic-rename write still in
+			// flight when the poll above observed the updated state.
+			time.Sleep(20 * time.Millisecond)
+		})
 	}
 }
 
@@ -6926,7 +7126,7 @@ func TestLoopRunner_DeliverPrompt_CoalescedFireIsDropped(t *testing.T) {
 	bs := NewTestBackgroundSessionWithCtx(sessionID, ctx, cancel)
 	meta := session.Metadata{SessionID: sessionID, ACPServer: "test", WorkingDir: "/tmp"}
 
-	err = runner.deliverPrompt(bs, meta, loop, ps, true, false, nil, false, session.TriggerSchedule, nil)
+	err = runner.deliverPrompt(bs, meta, loop, ps, true, false, nil, false, session.TriggerSchedule, false, nil)
 	if !errors.Is(err, ErrLoopDispatchCoalesced) {
 		t.Errorf("deliverPrompt() error = %v, want ErrLoopDispatchCoalesced", err)
 	}
@@ -7104,7 +7304,7 @@ func TestLoopRunner_CloseInFlightTurn_ReleasesDispatchResources(t *testing.T) {
 
 	runner := NewLoopRunner(store, nil, nil)
 	runner.SetLoopWorkspaceConcurrency(1)
-	if err := runner.deliverPrompt(bs, meta, loop, ps, true, false, nil, false, session.TriggerOnTasks, nil); err != nil {
+	if err := runner.deliverPrompt(bs, meta, loop, ps, true, false, nil, false, session.TriggerOnTasks, false, nil); err != nil {
 		t.Fatalf("initial deliverPrompt() error = %v", err)
 	}
 
@@ -7150,7 +7350,7 @@ func TestLoopRunner_CloseInFlightTurn_ReleasesDispatchResources(t *testing.T) {
 
 	deadline = time.Now().Add(2 * time.Second)
 	for {
-		err = runner.deliverPrompt(replacement, meta, loop, ps, true, false, nil, false, session.TriggerOnTasks, nil)
+		err = runner.deliverPrompt(replacement, meta, loop, ps, true, false, nil, false, session.TriggerOnTasks, false, nil)
 		if err == nil {
 			break
 		}
