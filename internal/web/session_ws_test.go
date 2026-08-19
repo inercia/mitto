@@ -46,6 +46,37 @@ func TestIsLifecycleResumeCancellation(t *testing.T) {
 	}
 }
 
+// TestSessionWSClient_TitleJobSurvivesACPStop reproduces mitto-g8u0: a title
+// job scheduled before teardown must not dereference c.bgSession after
+// OnACPStopped releases the client's reference.
+func TestSessionWSClient_TitleJobSurvivesACPStop(t *testing.T) {
+	mockWS := newMockWSConn()
+	client := &SessionWSClient{
+		server:    &Server{eventsManager: NewGlobalEventsManager()},
+		wsConn:    &WSConn{send: mockWS.send},
+		sessionID: "test-title-after-acp-stop",
+		bgSession: conversation.NewTestBackgroundSession(conversation.BackgroundSessionTestOpts{
+			WorkspaceUUID: "test-workspace",
+		}),
+	}
+
+	// Capture the work while the session is live, then run it after the same
+	// lifecycle callback used by BackgroundSession.Close has detached the client.
+	workspaceUUID := client.bgSession.GetWorkspaceUUID()
+	auxiliaryManager := client.bgSession.GetAuxiliaryManager()
+	runTitleJob := func() {
+		client.generateAndSetTitle("Explain the released session race", workspaceUUID, auxiliaryManager)
+	}
+	client.OnACPStopped("test teardown")
+
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			t.Fatalf("scheduled title generation panicked after ACP stop: %v", recovered)
+		}
+	}()
+	runTitleJob()
+}
+
 // mockWSConn captures messages sent via SendMessage for testing.
 type mockWSConn struct {
 	mu       sync.Mutex

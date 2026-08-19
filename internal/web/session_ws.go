@@ -885,12 +885,13 @@ func (c *SessionWSClient) handlePromptWithMeta(message string, promptName string
 	if c.bgSession == nil {
 		c.tryAttachToSession()
 	}
+	bgSession := c.bgSession
 
 	// Agent not connected yet (e.g. still doing cold-start / ACP init): enqueue
 	// the message into the session's persistent queue instead of erroring. When
 	// the BackgroundSession finishes booting, session_manager triggers
 	// TryProcessQueuedMessage() which drains the queue.
-	if c.bgSession == nil {
+	if bgSession == nil {
 		c.enqueuePromptOffline(message, promptName, promptID, imageIDs, fileIDs)
 		return
 	}
@@ -907,7 +908,7 @@ func (c *SessionWSClient) handlePromptWithMeta(message string, promptName string
 		ImageIDs:   imageIDs,
 		FileIDs:    fileIDs,
 	}
-	if err := c.bgSession.PromptWithMeta(message, meta); err != nil {
+	if err := bgSession.PromptWithMeta(message, meta); err != nil {
 		c.sendPromptError("Failed to send prompt: "+err.Error(), promptID)
 		return
 	}
@@ -922,7 +923,9 @@ func (c *SessionWSClient) handlePromptWithMeta(message string, promptName string
 		if titleMessage == "" && promptName != "" {
 			titleMessage = promptName
 		}
-		go c.generateAndSetTitle(titleMessage)
+		workspaceUUID := bgSession.GetWorkspaceUUID()
+		auxiliaryManager := bgSession.GetAuxiliaryManager()
+		go c.generateAndSetTitle(titleMessage, workspaceUUID, auxiliaryManager)
 	}
 }
 
@@ -1801,14 +1804,14 @@ func (c *SessionWSClient) sessionNeedsTitle() bool {
 	return conversation.SessionNeedsTitle(c.store, c.sessionID)
 }
 
-func (c *SessionWSClient) generateAndSetTitle(initialMessage string) {
+func (c *SessionWSClient) generateAndSetTitle(initialMessage, workspaceUUID string, auxiliaryManager *auxiliary.WorkspaceAuxiliaryManager) {
 	conversation.GenerateAndSetTitle(conversation.TitleGenerationConfig{
 		Store:            c.store,
 		SessionID:        c.sessionID,
 		Message:          initialMessage,
 		Logger:           c.server.logger,
-		WorkspaceUUID:    c.bgSession.GetWorkspaceUUID(),
-		AuxiliaryManager: c.bgSession.GetAuxiliaryManager(),
+		WorkspaceUUID:    workspaceUUID,
+		AuxiliaryManager: auxiliaryManager,
 		OnTitleGenerated: func(sessionID, title string) {
 			// Notify this client
 			c.sendMessage(conversation.WSMsgTypeSessionRenamed, map[string]string{
