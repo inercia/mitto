@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/inercia/mitto/internal/appdir"
 	"github.com/inercia/mitto/internal/config"
 )
 
@@ -1312,6 +1313,114 @@ func TestAuthManager_UpdateConfig(t *testing.T) {
 	// Verify the config was updated
 	if !am.IsEnabled() {
 		t.Error("Auth should still be enabled after update")
+	}
+}
+
+func TestAuthManager_UpdateConfig_RevokesSessions(t *testing.T) {
+	t.Setenv(appdir.MittoDirEnv, t.TempDir())
+	appdir.ResetCache()
+	t.Cleanup(appdir.ResetCache)
+
+	oldConfig := &config.WebAuth{
+		Simple: &config.SimpleAuth{Username: "olduser", Password: "oldpass"},
+	}
+	am := NewAuthManager(oldConfig)
+	session, err := am.CreateSession("olduser")
+	if err != nil {
+		am.Close()
+		t.Fatalf("CreateSession() error = %v", err)
+	}
+
+	// Regression test for mitto-fz2w: credential rotation must revoke the
+	// session immediately and atomically clear its persisted representation.
+	newConfig := &config.WebAuth{
+		Simple: &config.SimpleAuth{Username: "newuser", Password: "newpass"},
+	}
+	am.UpdateConfig(newConfig)
+	if _, valid := am.ValidateSession(session.Token); valid {
+		t.Error("session remained valid after credential rotation")
+	}
+	am.Close()
+
+	restarted := NewAuthManager(newConfig)
+	defer restarted.Close()
+	if _, valid := restarted.ValidateSession(session.Token); valid {
+		t.Error("revoked session was restored after restart")
+	}
+}
+
+func TestAuthManager_UpdateConfig_SessionRevocationSemantics(t *testing.T) {
+	baseConfig := func() *config.WebAuth {
+		return &config.WebAuth{
+			Simple: &config.SimpleAuth{Username: "user", Password: "pass"},
+			Cloudflare: &config.CloudflareAuth{
+				TeamDomain: "old.cloudflareaccess.com",
+				Audience:   "old-audience",
+			},
+			Allow:       &config.AuthAllow{IPs: []string{"192.0.2.1"}},
+			SharedToken: "old-token",
+		}
+	}
+
+	tests := []struct {
+		name        string
+		update      func(*config.WebAuth) *config.WebAuth
+		wantRevoked bool
+	}{
+		{"username changed", func(c *config.WebAuth) *config.WebAuth { c.Simple.Username = "newuser"; return c }, true},
+		{"password changed", func(c *config.WebAuth) *config.WebAuth { c.Simple.Password = "newpass"; return c }, true},
+		{"identity provider changed", func(c *config.WebAuth) *config.WebAuth {
+			c.Cloudflare.TeamDomain = "new.cloudflareaccess.com"
+			return c
+		}, true},
+		{"identity provider audience changed", func(c *config.WebAuth) *config.WebAuth { c.Cloudflare.Audience = "new-audience"; return c }, true},
+		{"identity provider CA changed", func(c *config.WebAuth) *config.WebAuth { c.Cloudflare.CACertFile = "new-ca.pem"; return c }, true},
+		{"shared token changed", func(c *config.WebAuth) *config.WebAuth { c.SharedToken = "new-token"; return c }, true},
+		{"authentication disabled", func(*config.WebAuth) *config.WebAuth { return nil }, true},
+		{"allowlist changed", func(c *config.WebAuth) *config.WebAuth { c.Allow.IPs = []string{"198.51.100.0/24"}; return c }, true},
+		{"unchanged auth", func(c *config.WebAuth) *config.WebAuth { return c }, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv(appdir.MittoDirEnv, t.TempDir())
+			appdir.ResetCache()
+			t.Cleanup(appdir.ResetCache)
+
+			am := NewAuthManager(baseConfig())
+			defer am.Close()
+			session, err := am.CreateSession("user")
+			if err != nil {
+				t.Fatalf("CreateSession() error = %v", err)
+			}
+
+			am.UpdateConfig(tt.update(baseConfig()))
+			_, valid := am.ValidateSession(session.Token)
+			if valid == tt.wantRevoked {
+				t.Fatalf("ValidateSession() valid = %v, want %v", valid, !tt.wantRevoked)
+			}
+		})
+	}
+}
+
+func TestAuthManager_SetSharedToken_RevokesSessions(t *testing.T) {
+	t.Setenv(appdir.MittoDirEnv, t.TempDir())
+	appdir.ResetCache()
+	t.Cleanup(appdir.ResetCache)
+
+	am := NewAuthManager(&config.WebAuth{
+		Simple:      &config.SimpleAuth{Username: "user", Password: "pass"},
+		SharedToken: "old-token",
+	})
+	defer am.Close()
+	session, err := am.CreateSession("user")
+	if err != nil {
+		t.Fatalf("CreateSession() error = %v", err)
+	}
+
+	am.SetSharedToken("new-token")
+	if _, valid := am.ValidateSession(session.Token); valid {
+		t.Error("session remained valid after shared token rotation")
 	}
 }
 

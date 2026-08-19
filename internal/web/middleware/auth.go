@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -83,9 +84,49 @@ type persistedSessionsFile struct {
 	Sessions []persistedSession `json:"sessions"`
 }
 
+// authSessionAuthority contains security-relevant authentication configuration.
+type authSessionAuthority struct {
+	SimpleConfigured     bool
+	Simple               config.SimpleAuth
+	CloudflareConfigured bool
+	Cloudflare           config.CloudflareAuth
+	SharedToken          string
+	AllowIPs             []string
+}
+
+func sessionAuthorityFor(authConfig *config.WebAuth) authSessionAuthority {
+	var authority authSessionAuthority
+	if authConfig == nil {
+		return authority
+	}
+	if authConfig.Simple != nil {
+		authority.SimpleConfigured = true
+		authority.Simple = *authConfig.Simple
+	}
+	if authConfig.Cloudflare != nil {
+		authority.CloudflareConfigured = true
+		authority.Cloudflare = *authConfig.Cloudflare
+	}
+	authority.SharedToken = authConfig.SharedToken
+	if authConfig.Allow != nil {
+		authority.AllowIPs = slices.Clone(authConfig.Allow.IPs)
+	}
+	return authority
+}
+
+func (a authSessionAuthority) equal(other authSessionAuthority) bool {
+	return a.SimpleConfigured == other.SimpleConfigured &&
+		a.Simple == other.Simple &&
+		a.CloudflareConfigured == other.CloudflareConfigured &&
+		a.Cloudflare == other.Cloudflare &&
+		a.SharedToken == other.SharedToken &&
+		slices.Equal(a.AllowIPs, other.AllowIPs)
+}
+
 // AuthManager manages user authentication.
 type AuthManager struct {
 	config      *config.WebAuth
+	authority   authSessionAuthority
 	sessions    map[string]*AuthSession
 	mu          sync.RWMutex
 	allowedNets []*net.IPNet     // Parsed CIDR networks from Allow list
@@ -108,6 +149,7 @@ type AuthManager struct {
 func NewAuthManager(authConfig *config.WebAuth) *AuthManager {
 	am := &AuthManager{
 		config:          authConfig,
+		authority:       sessionAuthorityFor(authConfig),
 		sessions:        make(map[string]*AuthSession),
 		rateLimiter:     NewAuthRateLimiter(),
 		splitIPWarnSeen: make(map[string]time.Time),
@@ -301,6 +343,17 @@ func (a *AuthManager) saveSessionsLocked() {
 	logger.Debug("AUTH: Saved sessions to disk", "count", len(file.Sessions), "path", path)
 }
 
+// revokeSessionsLocked invalidates every cookie session and atomically replaces
+// the persisted session file. The caller must hold a.mu for writing.
+func (a *AuthManager) revokeSessionsLocked(reason string) {
+	count := len(a.sessions)
+	clear(a.sessions)
+	a.saveSessionsLocked()
+	if count > 0 {
+		logging.Auth().Info("AUTH: Revoked sessions", "count", count, "reason", reason)
+	}
+}
+
 // SetAPIPrefix sets the API prefix for public path matching.
 // This must be called before the middleware is used.
 func (a *AuthManager) SetAPIPrefix(prefix string) {
@@ -313,6 +366,11 @@ func (a *AuthManager) UpdateConfig(authConfig *config.WebAuth) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
+	newAuthority := sessionAuthorityFor(authConfig)
+	if !newAuthority.equal(a.authority) {
+		a.revokeSessionsLocked("authentication authority changed")
+		a.authority = newAuthority
+	}
 	a.config = authConfig
 	a.configureCloudflareAccess(authConfig)
 
@@ -629,6 +687,10 @@ func (a *AuthManager) ValidateSharedToken(tok string) bool {
 func (a *AuthManager) SetSharedToken(tok string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if a.authority.SharedToken != tok {
+		a.revokeSessionsLocked("shared token changed")
+		a.authority.SharedToken = tok
+	}
 	if a.config == nil {
 		a.config = &config.WebAuth{}
 	}
