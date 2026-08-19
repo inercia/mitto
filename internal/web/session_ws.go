@@ -2729,7 +2729,11 @@ func (c *SessionWSClient) OnActionButtons(buttons []conversation.ActionButton) {
 // argumentCount is the number of Go-template .Args arguments supplied (0 for ad-hoc or no-arg named prompts).
 // arguments carries the raw (exactly replayable) .Args values, with sensitive-named keys already
 // omitted; nil for ad-hoc prompts or when any argument was sensitive.
-func (c *SessionWSClient) OnUserPrompt(seq int64, senderID, promptID, message string, imageIDs, fileIDs []string, promptName string, argumentCount int, arguments map[string]string) {
+// provenance carries credential-free trigger-source data (mitto-rg79); nil for
+// ordinary human-typed/ad-hoc prompts. Included in the outgoing payload as
+// "provenance" (omitted when nil) so the frontend can render a compact
+// trigger indicator beneath the named-prompt pill.
+func (c *SessionWSClient) OnUserPrompt(seq int64, senderID, promptID, message string, imageIDs, fileIDs []string, promptName string, argumentCount int, arguments map[string]string, provenance *session.PromptProvenance) {
 	// Always deliver user_prompt to the client — do NOT skip based on lastSentSeq.
 	// Unlike streamed agent_message chunks, user_prompt is a one-shot event.
 	// The frontend's alreadyExists check (by seq) handles dedup if events_loaded
@@ -2774,6 +2778,9 @@ func (c *SessionWSClient) OnUserPrompt(seq int64, senderID, promptID, message st
 	}
 	if len(arguments) > 0 {
 		data["arguments"] = arguments
+	}
+	if provenance != nil {
+		data["provenance"] = provenance
 	}
 
 	// Attach and clear any pending generic metadata stored by OnEventMeta.

@@ -149,7 +149,11 @@ type SessionObserver interface {
 	// argumentCount is the number of Go-template .Args arguments supplied (0 for ad-hoc or no-arg named prompts).
 	// arguments carries the raw (exactly replayable) .Args values, with sensitive-named keys
 	// already omitted by the caller; nil for ad-hoc prompts or when any argument was sensitive.
-	OnUserPrompt(seq int64, senderID, promptID, message string, imageIDs, fileIDs []string, promptName string, argumentCount int, arguments map[string]string)
+	// provenance carries credential-free trigger-source data (mitto-rg79): which
+	// loop trigger fired this dispatch (if any), forced/startup flags, and
+	// optional Slack installation/channel/event-count detail. Nil for ordinary
+	// human-typed/ad-hoc prompts.
+	OnUserPrompt(seq int64, senderID, promptID, message string, imageIDs, fileIDs []string, promptName string, argumentCount int, arguments map[string]string, provenance *session.PromptProvenance)
 
 	// OnError is called when an error occurs.
 	OnError(message string)

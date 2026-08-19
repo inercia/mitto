@@ -6394,6 +6394,58 @@ func TestBuildCELContext_TriggerOnTasks(t *testing.T) {
 	}
 }
 
+// TestBuildCELContext_TriggerSlack verifies that BuildCELContext populates
+// ctx.Trigger.Slack.* from input.TriggerSlackEvent when the dispatch was
+// fired by the experimental Slack event source (mitto-qewp PoC), leaves
+// ctx.Trigger nil when it was not, and that both OnTasks and Slack can be
+// set independently on the same ctx.Trigger without clobbering each other.
+func TestBuildCELContext_TriggerSlack(t *testing.T) {
+	// (1) nil input.TriggerSlackEvent → ctx.Trigger stays nil.
+	nilCtx := BuildCELContext(&ProcessorInput{SessionID: "sess-nil"})
+	if nilCtx.Trigger != nil {
+		t.Errorf("expected ctx.Trigger=nil when input.TriggerSlackEvent is nil, got %#v", nilCtx.Trigger)
+	}
+
+	// (2) populated Slack event → ctx.Trigger.Slack.* mirrors the input.
+	evt := &TriggerSlackEvent{
+		EventID:         "Ev123",
+		ChannelID:       "C123",
+		AuthorID:        "U123",
+		Timestamp:       "1700000000.000100",
+		ThreadTimestamp: "1699999999.000100",
+		Text:            "hello <@BOT> please look at this",
+	}
+	input := &ProcessorInput{
+		SessionID:         "sess-slack",
+		IsLoop:            true,
+		TriggerSlackEvent: evt,
+	}
+	ctx := BuildCELContext(input)
+	if ctx.Trigger == nil {
+		t.Fatal("expected ctx.Trigger non-nil when input.TriggerSlackEvent is set")
+	}
+	if ctx.Trigger.Slack == nil {
+		t.Fatal("expected ctx.Trigger.Slack non-nil for Slack fires")
+	}
+	got := ctx.Trigger.Slack
+	if got.EventID != evt.EventID || got.ChannelID != evt.ChannelID || got.AuthorID != evt.AuthorID ||
+		got.Timestamp != evt.Timestamp || got.ThreadTimestamp != evt.ThreadTimestamp || got.Text != evt.Text {
+		t.Errorf("ctx.Trigger.Slack = %#v, want fields copied from %#v", got, evt)
+	}
+
+	// (3) Both OnTasks and Slack can coexist on ctx.Trigger without one
+	// clobbering the other's presence.
+	combined := &ProcessorInput{
+		SessionID:             "sess-both",
+		TriggerOnTasksChanges: &config.TasksDelta{Added: []map[string]any{{"id": "mitto-a"}}},
+		TriggerSlackEvent:     evt,
+	}
+	combinedCtx := BuildCELContext(combined)
+	if combinedCtx.Trigger == nil || combinedCtx.Trigger.OnTasks == nil || combinedCtx.Trigger.Slack == nil {
+		t.Fatalf("expected both Trigger.OnTasks and Trigger.Slack to be set, got %#v", combinedCtx.Trigger)
+	}
+}
+
 // TestApplyAfter_TemplateExposesWorkspaceUUID verifies mitto-nhr: the after-phase
 // (agentResponded) prompt-render context populates .Workspace.UUID from
 // AfterProcessorInput.WorkspaceUUID, mirroring what hook.go already does for

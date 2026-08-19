@@ -261,6 +261,21 @@ func (r *Recorder) RecordUserPromptCompleteWithSeq(seq int64, message string, im
 	}, opts))
 }
 
+// RecordUserPromptDataWithSeq records a user prompt event from a complete,
+// pre-built UserPromptData (mitto-rg79). Unlike RecordUserPromptCompleteWithSeq,
+// this accepts the full typed struct directly (including optional Provenance)
+// instead of exploding it into positional parameters, so new UserPromptData
+// fields don't require new recorder method signatures. The seq must have been
+// obtained from getNextSeq(), same as RecordUserPromptCompleteWithSeq.
+func (r *Recorder) RecordUserPromptDataWithSeq(seq int64, data UserPromptData, opts ...RecordOption) error {
+	return r.RecordEventWithSeq(applyOptions(Event{
+		Seq:       seq,
+		Type:      EventTypeUserPrompt,
+		Timestamp: time.Now(),
+		Data:      data,
+	}, opts))
+}
+
 // RecordAgentMessage records an agent message event.
 // markdown is the raw pre-conversion markdown for this message, when available
 // (mitto-pscc.3); pass "" if unknown.

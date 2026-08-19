@@ -18,11 +18,12 @@ import {
 } from "../lib.js";
 
 import { openFileURL, isNativeApp, getAPIPrefix } from "../utils/index.js";
-import { CopyIcon, CheckIcon } from "./Icons.js";
+import { CopyIcon, CheckIcon, getPromptIcon } from "./Icons.js";
 import { Tooltip } from "./Tooltip.js";
 import { linkifyBeadsRefs } from "../utils/beadsLinkify.js";
 import { getBeadsKnownIds } from "../utils/beadsKnownIds.js";
 import { preloadBeadsIssues } from "../utils/beadsPreload.js";
+import { describeProvenance } from "../utils/promptProvenance.js";
 
 /**
  * Compute human-readable text for a session_change system message.
@@ -135,6 +136,33 @@ function MessageEnter(props) {
 }
 
 /**
+ * ProvenanceFooter — small icon+label indicator rendered beneath a message
+ * bubble/pill when the backend attached loop-trigger provenance (mitto-rg79).
+ * Shared by both NamedPromptPill and the free-text user message bubble so the
+ * markup/behavior lives in exactly one place. Renders nothing when
+ * `provenanceInfo` is null/undefined (ordinary human-typed/ad-hoc prompts).
+ * The indicator is wrapped in a Tooltip exposing describeProvenance(...).detail
+ * so hovering either surface (pill or bubble footer) reveals the same detail
+ * text.
+ */
+function ProvenanceFooter({ provenanceInfo, testId }) {
+  if (!provenanceInfo) return null;
+  const ProvenanceIcon = getPromptIcon(provenanceInfo.iconKey);
+  return html`
+    <${Tooltip} tip=${provenanceInfo.detail}>
+      <div
+        class="flex items-center gap-1 text-xs text-mitto-text-muted"
+        data-testid=${testId}
+        aria-label=${`Trigger: ${provenanceInfo.label}`}
+      >
+        ${ProvenanceIcon && html`<${ProvenanceIcon} className="w-3 h-3" />`}
+        <span>${provenanceInfo.label}</span>
+      </div>
+    <//>
+  `;
+}
+
+/**
  * NamedPromptPill component - renders a named prompt as a distinctive pill/badge.
  * Displayed right-aligned (like user messages) with an icon and the prompt name.
  * When the prompt was sent with arguments (argumentCount > 0), a small numeric
@@ -160,36 +188,52 @@ function NamedPromptPill({ message }) {
   } else {
     argTip = `${message.argumentCount} argument(s)`;
   }
+  // Loop-trigger provenance (mitto-rg79): compact icon + label beneath the
+  // pill, shown only when the backend attached provenance to this prompt
+  // (loop-delivered, manual "Run now", or the startup pulse). Absent for
+  // ordinary human-typed/ad-hoc named-prompt sends.
+  const provenanceInfo = describeProvenance(message.provenance);
+  // Combined tooltip: trigger description first (when present), then the
+  // existing argument info — hovering anywhere on the pill surfaces both.
+  const pillTip = [provenanceInfo?.detail, message.argumentCount > 0 && argTip]
+    .filter(Boolean)
+    .join(" · ");
   return html`
-    <${MessageEnter} class="flex justify-end items-center gap-2 mb-3">
-      ${timeStr && html`<span class="message-timestamp">${timeStr}</span>`}
-      <div
-        class="badge badge-primary badge-lg gap-2"
-        data-testid="named-prompt-pill"
-      >
-        <svg
-          class="w-4 h-4 shrink-0"
-          fill="none"
-          stroke="currentColor"
-          viewBox="0 0 24 24"
-        >
-          <path
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            stroke-width="2"
-            d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
-          />
-        </svg>
-        <span class="text-sm font-medium">${message.promptName}</span>
-        ${message.argumentCount > 0 &&
-        html`<${Tooltip} tip=${argTip}>
-          <span
-            class="badge badge-sm badge-ghost tabular-nums"
-            data-testid="prompt-arg-count"
-            >${message.argumentCount}</span
+    <${MessageEnter} class="flex flex-col items-end gap-1 mb-3">
+      <div class="flex items-center gap-2">
+        ${timeStr && html`<span class="message-timestamp">${timeStr}</span>`}
+        <${Tooltip} tip=${pillTip}>
+          <div
+            class="badge badge-primary badge-lg gap-2"
+            data-testid="named-prompt-pill"
           >
-        <//>`}
+            <svg
+              class="w-4 h-4 shrink-0"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2"
+                d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
+              />
+            </svg>
+            <span class="text-sm font-medium">${message.promptName}</span>
+            ${message.argumentCount > 0 &&
+            html`<span
+              class="badge badge-sm badge-ghost tabular-nums"
+              data-testid="prompt-arg-count"
+              >${message.argumentCount}</span
+            >`}
+          </div>
+        <//>
       </div>
+      <${ProvenanceFooter}
+        provenanceInfo=${provenanceInfo}
+        testId="named-prompt-provenance"
+      />
     <//>
   `;
 }
@@ -562,10 +606,15 @@ function MessageImpl({
     };
 
     const userTimeStr = formatMessageTime(message.timestamp);
+    // Loop-trigger provenance (mitto-rg79): same footer indicator as
+    // NamedPromptPill, shown beneath ordinary/free-text prompts too when the
+    // backend attached provenance (loop-delivered, manual "Run now", or the
+    // startup pulse). Absent for ordinary human-typed messages.
+    const provenanceInfo = describeProvenance(message.provenance);
     return html`
-      <${MessageEnter} class="flex justify-end mb-3 group">
+      <${MessageEnter} class="flex flex-col items-end gap-1 mb-3">
         <div
-          class="max-w-[95%] md:max-w-[75%] px-4 py-2 rounded-2xl bg-mitto-user text-mitto-user-text border border-mitto-user-border rounded-br-sm"
+          class="group max-w-[95%] md:max-w-[75%] px-4 py-2 rounded-2xl bg-mitto-user text-mitto-user-text border border-mitto-user-border rounded-br-sm"
         >
           ${hasImages &&
           html`
@@ -618,6 +667,10 @@ function MessageImpl({
             html`<div class="message-timestamp">${userTimeStr}</div>`}
           </div>
         </div>
+        <${ProvenanceFooter}
+          provenanceInfo=${provenanceInfo}
+          testId="user-message-provenance"
+        />
       <//>
     `;
   }
@@ -758,6 +811,7 @@ function MessageImpl({
  *   message.title   — tool call title
  *   message.images  — user-attached images (reference equality is fine here)
  *   message.complete — whether the message is finalised
+ *   message.provenance — loop trigger source rendered below named prompts
  *   isLast          — affects showCursor / timestamp visibility
  *   isStreaming      — drives the streaming cursor
  *   onRetry         — error-message retry callback reference
@@ -774,6 +828,7 @@ export function messagePropsAreEqual(prev, next) {
     prev.message.title === next.message.title &&
     prev.message.images === next.message.images &&
     prev.message.complete === next.message.complete &&
+    prev.message.provenance === next.message.provenance &&
     prev.isLast === next.isLast &&
     prev.isStreaming === next.isStreaming &&
     prev.onRetry === next.onRetry &&

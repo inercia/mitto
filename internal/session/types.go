@@ -149,6 +149,46 @@ type UserPromptData struct {
 	PromptName    string            `json:"prompt_name,omitempty"`    // Name of the workspace prompt used (for UI rendering)
 	ArgumentCount int               `json:"argument_count,omitempty"` // Number of Go-template .Args supplied (>0 only for named prompts with args)
 	Arguments     map[string]string `json:"arguments,omitempty"`      // Raw .Args values, exactly replayable; sensitive-named keys are omitted entirely (never redacted/truncated)
+	// Provenance records which trigger actually delivered this prompt (mitto-rg79).
+	// Nil for ordinary human-typed/ad-hoc prompts; non-nil for loop-delivered
+	// prompts (schedule, onCompletion, onTasks, onChild, onSlack) and manual
+	// "Run now" / startup-pulse deliveries. Backward compatible: omitempty means
+	// old events (no provenance) need no migration and old readers ignore it.
+	Provenance *PromptProvenance `json:"provenance,omitempty"`
+}
+
+// PromptProvenance is a typed, credential-free record of which trigger
+// delivered a loop prompt (mitto-rg79). It is derived from
+// conversation.PromptMeta at dispatch time and is safe to persist and
+// broadcast: no prompt text, no Slack message bodies, no secrets.
+type PromptProvenance struct {
+	// LoopTrigger names the trigger that fired this dispatch: "schedule",
+	// "onCompletion", "onTasks", "onChild", or "onSlack". Empty for non-loop
+	// prompts (ad-hoc/human-typed).
+	LoopTrigger LoopTrigger `json:"loop_trigger,omitempty"`
+	// IsLoopForced is true when the loop prompt was triggered manually via
+	// "Run now" rather than by its configured trigger.
+	IsLoopForced bool `json:"is_loop_forced,omitempty"`
+	// IsLoopRunOnStart is true when this loop prompt was fired by the
+	// boot-pulse shortly after Mitto started (mitto-ystk).
+	IsLoopRunOnStart bool `json:"is_loop_run_on_start,omitempty"`
+	// Slack carries optional, credential-free detail about the onSlack event
+	// batch that caused this dispatch. Nil unless LoopTrigger == TriggerOnSlack.
+	// Never carries event text/bodies or secrets — see PromptSlackProvenance.
+	Slack *PromptSlackProvenance `json:"slack,omitempty"`
+}
+
+// PromptSlackProvenance is the credential-free, text-free Slack detail
+// attached to PromptProvenance for onSlack dispatches. Derived from the first
+// event of the bounded batch that fired the loop, plus the batch size.
+type PromptSlackProvenance struct {
+	// InstallationID identifies the Slack workspace installation (not a secret).
+	InstallationID string `json:"installation_id,omitempty"`
+	// ChannelID identifies the Slack channel (not a secret).
+	ChannelID string `json:"channel_id,omitempty"`
+	// EventCount is the number of Slack events in the batch that fired this
+	// dispatch (one batch consumes one loop iteration).
+	EventCount int `json:"event_count,omitempty"`
 }
 
 // AgentMessageData contains data for an agent message event.

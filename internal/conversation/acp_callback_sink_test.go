@@ -231,7 +231,7 @@ func (r *callbackRecorderObserver) OnQueueReordered([]session.QueuedMessage) {}
 func (r *callbackRecorderObserver) OnError(string)                           {}
 func (r *callbackRecorderObserver) OnPromptComplete(int)                     {}
 func (r *callbackRecorderObserver) OnActionButtons([]ActionButton)           {}
-func (r *callbackRecorderObserver) OnUserPrompt(int64, string, string, string, []string, []string, string, int, map[string]string) {
+func (r *callbackRecorderObserver) OnUserPrompt(int64, string, string, string, []string, []string, string, int, map[string]string, *session.PromptProvenance) {
 }
 func (r *callbackRecorderObserver) OnACPStopped(string)              {}
 func (r *callbackRecorderObserver) OnACPStarted()                    {}

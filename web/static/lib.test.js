@@ -553,6 +553,40 @@ describe("convertEventsToMessages", () => {
     expect(result[0].promptName).toBe("my-prompt");
   });
 
+  test("converts user_prompt with provenance (mitto-rg79)", () => {
+    const events = [
+      {
+        type: "user_prompt",
+        data: {
+          message: "loop turn",
+          prompt_name: "my-loop-prompt",
+          provenance: {
+            loop_trigger: "onSlack",
+            slack: { installation_id: "I1", channel_id: "C1", event_count: 2 },
+          },
+        },
+        timestamp: "2024-01-01T10:00:00Z",
+      },
+    ];
+    const result = convertEventsToMessages(events);
+    expect(result[0].provenance).toEqual({
+      loop_trigger: "onSlack",
+      slack: { installation_id: "I1", channel_id: "C1", event_count: 2 },
+    });
+  });
+
+  test("user_prompt without provenance has undefined provenance", () => {
+    const events = [
+      {
+        type: "user_prompt",
+        data: { message: "plain" },
+        timestamp: "2024-01-01T10:00:00Z",
+      },
+    ];
+    const result = convertEventsToMessages(events);
+    expect(result[0].provenance).toBeUndefined();
+  });
+
   test("user_prompt without argument_count has undefined argumentCount", () => {
     const events = [
       {

@@ -178,7 +178,7 @@ type PromptMeta struct {
 	// LoopRunner. Drives the Iteration.IsUninterrupted continuation signal.
 	LoopKind LoopKind
 	// LoopTrigger names the trigger that won this dispatch for a multi-trigger
-	// loop (mitto-r6j.2): schedule, onCompletion, or onTasks. Set by the
+	// loop (mitto-r6j.2): schedule, onCompletion, onTasks, onChild, or onSlack. Set by the
 	// LoopRunner; empty for non-loop prompts.
 	LoopTrigger session.LoopTrigger
 	// IterationNumber is the 0-based index of the current loop run (loop.IterationCount
@@ -281,6 +281,39 @@ type PromptSlackEvent struct {
 // PromptSlackContext is the legacy single-event type name.
 // Deprecated: use PromptSlackEvent via PromptOnSlackContext.Events.
 type PromptSlackContext = PromptSlackEvent
+
+// deriveUserPromptProvenance builds a credential-free session.PromptProvenance
+// from the dispatch PromptMeta (mitto-rg79). Returns nil for ordinary
+// human-typed/ad-hoc prompts (LoopTrigger empty, not forced, not the startup
+// pulse) so old-shape events/payloads are unaffected. Both IsLoopForced and
+// IsLoopRunOnStart are recorded verbatim (raw fidelity); presentation layers
+// that need a single label prefer startup over forced when both are true —
+// see web/static/utils/promptProvenance.js.
+//
+// Never copies Slack event Text/bodies — only InstallationID/ChannelID (both
+// non-secret identifiers) and the batch length.
+func deriveUserPromptProvenance(meta PromptMeta) *session.PromptProvenance {
+	if meta.LoopTrigger == "" && !meta.IsLoopForced && !meta.IsLoopRunOnStart {
+		return nil
+	}
+	p := &session.PromptProvenance{
+		LoopTrigger:      meta.LoopTrigger,
+		IsLoopForced:     meta.IsLoopForced,
+		IsLoopRunOnStart: meta.IsLoopRunOnStart,
+	}
+	if meta.LoopTrigger == session.TriggerOnSlack && meta.Trigger != nil && meta.Trigger.OnSlack != nil {
+		events := meta.Trigger.OnSlack.Events
+		if len(events) > 0 {
+			first := events[0]
+			p.Slack = &session.PromptSlackProvenance{
+				InstallationID: first.InstallationID,
+				ChannelID:      first.ChannelID,
+				EventCount:     len(events),
+			}
+		}
+	}
+	return p
+}
 
 // Prompt sends a message to the agent. This runs asynchronously.
 // The response is streamed via callbacks to the attached client (if any) and persisted.
@@ -596,6 +629,11 @@ retryAfterRestart:
 	// notification further down use the same filtered map.
 	persistArgs := persistableArguments(meta.Arguments)
 
+	// Derive credential-free trigger provenance (mitto-rg79) BEFORE persisting so
+	// both the recorded event and the live observer notification carry the same
+	// value. Nil for ordinary human-typed/ad-hoc prompts.
+	provenance := deriveUserPromptProvenance(meta)
+
 	var userPromptSeq int64
 	if bs.recorder != nil {
 		userPromptSeq = bs.getNextSeq()
@@ -603,7 +641,17 @@ retryAfterRestart:
 		if len(meta.Meta) > 0 {
 			recordOpts = append(recordOpts, session.WithMetaMap(meta.Meta))
 		}
-		if err := bs.recorder.RecordUserPromptCompleteWithSeq(userPromptSeq, message, imageRefs, fileRefs, meta.PromptID, meta.PromptName, argCount, persistArgs, recordOpts...); err != nil && bs.logger != nil {
+		data := session.UserPromptData{
+			Message:       message,
+			Images:        imageRefs,
+			Files:         fileRefs,
+			PromptID:      meta.PromptID,
+			PromptName:    meta.PromptName,
+			ArgumentCount: argCount,
+			Arguments:     persistArgs,
+			Provenance:    provenance,
+		}
+		if err := bs.recorder.RecordUserPromptDataWithSeq(userPromptSeq, data, recordOpts...); err != nil && bs.logger != nil {
 			bs.logger.Error("Failed to persist user prompt", "error", err)
 		}
 	}
@@ -628,7 +676,7 @@ retryAfterRestart:
 	}
 
 	bs.notifyObservers(func(o SessionObserver) {
-		o.OnUserPrompt(userPromptSeq, meta.SenderID, meta.PromptID, message, imageIDs, fileIDStrings, meta.PromptName, argCount, persistArgs)
+		o.OnUserPrompt(userPromptSeq, meta.SenderID, meta.PromptID, message, imageIDs, fileIDStrings, meta.PromptName, argCount, persistArgs, provenance)
 	})
 
 	// Build processor input and assemble final content blocks.

@@ -1760,6 +1760,7 @@ export function useWebSocket({
           argument_count,
           arguments: promptArguments,
           meta,
+          provenance,
         } = msg.data;
         console.log("user_prompt received:", {
           seq,
@@ -1940,6 +1941,7 @@ export function useWebSocket({
               argumentCount: argument_count || undefined,
               arguments: promptArguments || undefined,
               meta: meta || undefined, // Generic event metadata conduit (experimental annotations only)
+              provenance: provenance || undefined, // Loop-trigger provenance (mitto-rg79)
             };
             // Add image references if present, constructing full image objects
             // with URLs so the Message component can render them immediately

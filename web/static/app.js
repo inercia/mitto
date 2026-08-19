@@ -3939,6 +3939,7 @@ function App() {
           loopPrompts=${loopPrompts}
           allPrompts=${workspacePrompts}
           hasBeadsWorkspace=${hasBeadsWorkspace}
+          messages=${messages}
           onOpenPromptParamDialog=${(prompt, parameters, onSubmit, opts = {}) =>
             setPromptParamDialog({
               prompt,

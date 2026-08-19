@@ -739,6 +739,7 @@ export function convertEventsToMessages(events, options = {}) {
           argumentCount: event.data?.argument_count || undefined,
           arguments: event.data?.arguments || undefined,
           meta: event.data?.meta || undefined,
+          provenance: event.data?.provenance || undefined,
         };
         // Convert stored image references to full image objects with URLs
         // Image refs are stored as: [{id, name?, mime_type}]

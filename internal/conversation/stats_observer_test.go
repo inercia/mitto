@@ -81,7 +81,7 @@ func TestStatsObserver_AcceptanceCriteria_10ToolCalls_5UserPrompts(t *testing.T)
 
 	// 5 user prompts (varied to exercise message text, files, images branches).
 	for i := int64(1); i <= 5; i++ {
-		obs.OnUserPrompt(i, "sender", "prompt-id", "hello world", nil, nil, "", 0, nil)
+		obs.OnUserPrompt(i, "sender", "prompt-id", "hello world", nil, nil, "", 0, nil, nil)
 	}
 	// 10 tool calls (mix of MCP and non-MCP titles; MCP subset is not part of
 	// the acceptance criterion but we sanity-check it below).
@@ -151,7 +151,7 @@ func TestStatsObserver_NilReceiver_MethodsSafe(t *testing.T) {
 	var obs *statsObserver
 	// If any of these panic, the test fails; there is no assertion beyond
 	// "did not panic".
-	obs.OnUserPrompt(1, "s", "p", "hi", nil, nil, "", 0, nil)
+	obs.OnUserPrompt(1, "s", "p", "hi", nil, nil, "", 0, nil, nil)
 	obs.OnAgentMessage(2, "text", "")
 	obs.OnAgentThought(3, "thought")
 	obs.OnToolCall(4, "id", "title", "status")
@@ -192,7 +192,7 @@ func TestSessionManager_SetStatsAggregator_AttachObserver(t *testing.T) {
 	// Drive one prompt through the attached observer via notifyObservers so
 	// the whole wiring — not just direct observer calls — is exercised.
 	bs.notifyObservers(func(o SessionObserver) {
-		o.OnUserPrompt(1, "sender", "pid", "hello", nil, nil, "", 0, nil)
+		o.OnUserPrompt(1, "sender", "pid", "hello", nil, nil, "", 0, nil, nil)
 	})
 	bs.notifyObservers(func(o SessionObserver) {
 		o.OnToolCall(2, "tc", "read_file", "completed")
@@ -243,12 +243,12 @@ func TestStatsObserver_OnSessionChange_ForwardsModel(t *testing.T) {
 	}
 
 	// Under baseline modelA.
-	obs.OnUserPrompt(1, "sender", "pid", "abcd", nil, nil, "", 0, nil)
+	obs.OnUserPrompt(1, "sender", "pid", "abcd", nil, nil, "", 0, nil, nil)
 	obs.OnAgentMessage(2, "hello agent", "")
 	// Switch to modelB.
 	obs.OnSessionChange(3, session.SessionChangeData{Kind: "model", Value: "modelB", PreviousValue: "modelA"})
 	// Under modelB.
-	obs.OnUserPrompt(4, "sender", "pid", "efgh", nil, nil, "", 0, nil)
+	obs.OnUserPrompt(4, "sender", "pid", "efgh", nil, nil, "", 0, nil, nil)
 	obs.OnAgentMessage(5, "reply under B", "")
 
 	if err := agg.Flush(context.Background()); err != nil {

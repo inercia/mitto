@@ -7,9 +7,11 @@
  * - Tool-title viewer URL workspace resolution
  */
 
+import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { describeProvenance } from "../utils/promptProvenance.js";
 
 // =============================================================================
 // Model Error Thought Detection Tests
@@ -330,6 +332,295 @@ describe("NamedPromptPill tooltip", () => {
 });
 
 // =============================================================================
+// NamedPromptPill provenance indicator (mitto-rg79)
+// =============================================================================
+
+describe("NamedPromptPill provenance indicator", () => {
+  test("describeProvenance returns null for absent/falsy provenance", () => {
+    expect(describeProvenance(undefined)).toBeNull();
+    expect(describeProvenance(null)).toBeNull();
+  });
+
+  test("prefers startup over forced when both flags are true", () => {
+    const info = describeProvenance({
+      is_loop_run_on_start: true,
+      is_loop_forced: true,
+      loop_trigger: "schedule",
+    });
+    expect(info.label).toBe("Startup");
+  });
+
+  test("manual Run now maps to a distinct label from scheduled delivery", () => {
+    const info = describeProvenance({ is_loop_forced: true });
+    expect(info.label).toBe("Manual run");
+  });
+
+  test.each([
+    ["schedule", "Schedule"],
+    ["onCompletion", "On completion"],
+    ["onTasks", "On tasks"],
+    ["onChild", "On child"],
+  ])("maps loop_trigger=%s to label %s", (trigger, label) => {
+    expect(describeProvenance({ loop_trigger: trigger }).label).toBe(label);
+  });
+
+  test("onSlack includes channel/event-count detail when present", () => {
+    const info = describeProvenance({
+      loop_trigger: "onSlack",
+      slack: { installation_id: "I1", channel_id: "C123", event_count: 3 },
+    });
+    expect(info.label).toBe("Slack");
+    expect(info.detail).toContain("channel C123");
+    expect(info.detail).toContain("3 events");
+  });
+
+  test("onSlack without slack detail still renders a generic label", () => {
+    const info = describeProvenance({ loop_trigger: "onSlack" });
+    expect(info.label).toBe("Slack");
+    expect(info.detail).not.toContain("#");
+  });
+
+  test("unknown future trigger names still render an informative label instead of being dropped", () => {
+    const info = describeProvenance({ loop_trigger: "onSomethingNew" });
+    expect(info.label).toBe("onSomethingNew");
+    expect(info.detail).toContain("onSomethingNew");
+  });
+
+  test("Message.js defines a shared ProvenanceFooter that renders nothing when provenance is absent", () => {
+    const messageJs = readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), "Message.js"),
+      "utf8",
+    );
+    expect(messageJs).toMatch(
+      /import \{ describeProvenance \} from "\.\.\/utils\/promptProvenance\.js";/,
+    );
+    const idx = messageJs.indexOf("function ProvenanceFooter(");
+    expect(idx).toBeGreaterThan(-1);
+    const snippet = messageJs.slice(idx, idx + 700);
+    // Gated: bails out before rendering anything for ad-hoc prompts.
+    expect(snippet).toMatch(/if \(!provenanceInfo\) return null;/);
+    expect(snippet).toMatch(/data-testid=\$\{testId\}/);
+    expect(snippet).toMatch(/aria-label=\$\{`Trigger: \$\{provenanceInfo\.label\}`\}/);
+    // Wrapped in a Tooltip exposing describeProvenance(...).detail.
+    expect(snippet).toMatch(/<\$\{Tooltip\} tip=\$\{provenanceInfo\.detail\}>/);
+  });
+
+  test("NamedPromptPill and the free-text user bubble both mount ProvenanceFooter with distinct testids", () => {
+    const messageJs = readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), "Message.js"),
+      "utf8",
+    );
+    expect(messageJs).toMatch(
+      /<\$\{ProvenanceFooter\}\s*\n\s*provenanceInfo=\$\{provenanceInfo\}\s*\n\s*testId="named-prompt-provenance"\s*\n\s*\/>/,
+    );
+    expect(messageJs).toMatch(
+      /<\$\{ProvenanceFooter\}\s*\n\s*provenanceInfo=\$\{provenanceInfo\}\s*\n\s*testId="user-message-provenance"\s*\n\s*\/>/,
+    );
+  });
+
+  test("free-text user message branch computes provenanceInfo from message.provenance", () => {
+    const messageJs = readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), "Message.js"),
+      "utf8",
+    );
+    const idx = messageJs.indexOf("const userTimeStr = formatMessageTime");
+    expect(idx).toBeGreaterThan(-1);
+    const snippet = messageJs.slice(idx, idx + 500);
+    expect(snippet).toMatch(
+      /const provenanceInfo = describeProvenance\(message\.provenance\);/,
+    );
+  });
+
+  test("Message.js pill tooltip combines the trigger description with existing argument info", () => {
+    const messageJs = readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), "Message.js"),
+      "utf8",
+    );
+    const idx = messageJs.indexOf("const pillTip = ");
+    expect(idx).toBeGreaterThan(-1);
+    const snippet = messageJs.slice(idx, idx + 200);
+    expect(snippet).toMatch(/provenanceInfo\?\.detail/);
+    expect(snippet).toMatch(/argumentCount > 0 && argTip/);
+  });
+});
+
+// =============================================================================
+// mitto-rg79: ProvenanceFooter — mounted DOM behavior
+//
+// Message.js reads window.preact at module load time (like every other
+// component in this codebase — see the note atop SessionPanel.test.js), so it
+// cannot be imported directly under the default test setup. This section
+// mounts it for real by setting window.preact before a dynamic import, then
+// runs in an isolated child process (own happy-dom via bunfig preload) so
+// that setup never leaks into the source-scan tests above — mirroring the
+// pattern in LoopSettingsTab.test.js / SlackSubscriptionEditor.test.js.
+// =============================================================================
+
+const isMountedChildRun = process.env.MITTO_MESSAGE_COMPONENT_TEST_CHILD === "1";
+
+// Minimal memo() shim mirroring preact-loader.js's vendored-Preact-compatible
+// implementation (no preact/compat available here) — Message.js calls
+// window.preact.memo(MessageImpl, messagePropsAreEqual) at module load time.
+function makeMemo(preact) {
+  return function memo(component, propsAreEqual) {
+    class MemoComponent extends preact.Component {
+      shouldComponentUpdate(nextProps) {
+        if (propsAreEqual) return !propsAreEqual(this.props, nextProps);
+        const a = this.props,
+          b = nextProps;
+        for (const k in a) if (a[k] !== b[k]) return true;
+        for (const k in b) if (!(k in a)) return true;
+        return false;
+      }
+      render() {
+        return preact.h(component, this.props);
+      }
+    }
+    return MemoComponent;
+  };
+}
+
+if (isMountedChildRun) {
+  const preact = await import("../vendor/preact.js");
+  const hooks = await import("../vendor/preact-hooks.js");
+  const htm = (await import("../vendor/htm.js")).default;
+  const previousPreact = window.preact;
+  window.preact = {
+    ...preact,
+    ...hooks,
+    html: htm.bind(preact.h),
+    memo: makeMemo(preact),
+  };
+  const { Message } = await import("./Message.js?mitto-rg79-mounted-tests");
+  window.preact = previousPreact;
+
+  const html = htm.bind(preact.h);
+
+  function mount(message) {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    preact.render(html`<${Message} message=${message} isLast=${false} isStreaming=${false} />`, container);
+    return container;
+  }
+
+  function unmount(container) {
+    preact.render(null, container);
+    container.remove();
+  }
+
+  describe("ProvenanceFooter mounted: free-text user message bubble", () => {
+    test("renders no provenance footer when message.provenance is absent", () => {
+      const container = mount({
+        role: "user",
+        text: "Hello there",
+        timestamp: 0,
+      });
+      try {
+        expect(
+          container.querySelector('[data-testid="user-message-provenance"]'),
+        ).toBeNull();
+        // Ordinary bubble content is unaffected.
+        expect(container.textContent).toContain("Hello there");
+      } finally {
+        unmount(container);
+      }
+    });
+
+    test("renders the icon+label footer with a tooltip carrying describeProvenance(...).detail when provenance exists", () => {
+      const container = mount({
+        role: "user",
+        text: "Run the deploy",
+        timestamp: 0,
+        provenance: { loop_trigger: "onTasks" },
+      });
+      try {
+        const footer = container.querySelector(
+          '[data-testid="user-message-provenance"]',
+        );
+        expect(footer).not.toBeNull();
+        expect(footer.textContent).toContain("On tasks");
+        expect(footer.querySelector("svg")).not.toBeNull();
+        expect(footer.getAttribute("aria-label")).toBe("Trigger: On tasks");
+        // Tooltip wrapper exposes describeProvenance(...).detail as data-tip.
+        const tooltipWrapper = footer.closest("[data-tip]");
+        expect(tooltipWrapper).not.toBeNull();
+        expect(tooltipWrapper.getAttribute("data-tip")).toBe(
+          describeProvenance({ loop_trigger: "onTasks" }).detail,
+        );
+      } finally {
+        unmount(container);
+      }
+    });
+  });
+
+  describe("ProvenanceFooter mounted: named-prompt pill", () => {
+    test("renders no provenance footer when message.provenance is absent", () => {
+      const container = mount({
+        role: "user",
+        promptName: "deploy",
+        argumentCount: 0,
+        timestamp: 0,
+      });
+      try {
+        expect(
+          container.querySelector('[data-testid="named-prompt-provenance"]'),
+        ).toBeNull();
+        expect(
+          container.querySelector('[data-testid="named-prompt-pill"]'),
+        ).not.toBeNull();
+      } finally {
+        unmount(container);
+      }
+    });
+
+    test("renders the icon+label footer beneath the pill when provenance exists", () => {
+      const container = mount({
+        role: "user",
+        promptName: "deploy",
+        argumentCount: 0,
+        timestamp: 0,
+        provenance: { loop_trigger: "schedule" },
+      });
+      try {
+        expect(
+          container.querySelector('[data-testid="named-prompt-pill"]'),
+        ).not.toBeNull();
+        const footer = container.querySelector(
+          '[data-testid="named-prompt-provenance"]',
+        );
+        expect(footer).not.toBeNull();
+        expect(footer.textContent).toContain("Schedule");
+        expect(footer.getAttribute("aria-label")).toBe("Trigger: Schedule");
+      } finally {
+        unmount(container);
+      }
+    });
+  });
+} else {
+  describe("ProvenanceFooter mounted behavior (mitto-rg79)", () => {
+    test("passes mounted behavior tests in an isolated happy-dom process", () => {
+      const result = spawnSync(
+        process.execPath,
+        ["test", fileURLToPath(import.meta.url)],
+        {
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            MITTO_MESSAGE_COMPONENT_TEST_CHILD: "1",
+          },
+          timeout: 30_000,
+        },
+      );
+      if (result.status !== 0) {
+        throw new Error(
+          `Isolated Message mounted tests failed:\n${result.stdout}\n${result.stderr}`,
+        );
+      }
+    });
+  });
+}
+
+// =============================================================================
 // messagePropsAreEqual (memo comparator) Tests
 // =============================================================================
 
@@ -345,6 +636,7 @@ function messagePropsAreEqual(prev, next) {
     prev.message.title === next.message.title &&
     prev.message.images === next.message.images &&
     prev.message.complete === next.message.complete &&
+    prev.message.provenance === next.message.provenance &&
     prev.isLast === next.isLast &&
     prev.isStreaming === next.isStreaming &&
     prev.onRetry === next.onRetry
@@ -360,6 +652,7 @@ function makeProps(overrides = {}) {
       title: "Tool call",
       images: null,
       complete: true,
+      provenance: null,
       ...(overrides.message || {}),
     },
     isLast: false,
@@ -402,6 +695,14 @@ describe("messagePropsAreEqual (memo comparator)", () => {
   test("returns false when message.complete changes", () => {
     const prev = makeProps({ message: { complete: false } });
     const next = makeProps({ message: { complete: true } });
+    expect(messagePropsAreEqual(prev, next)).toBe(false);
+  });
+
+  test("returns false when message.provenance changes", () => {
+    const prev = makeProps();
+    const next = makeProps({
+      message: { provenance: { loop_trigger: "schedule" } },
+    });
     expect(messagePropsAreEqual(prev, next)).toBe(false);
   });
 

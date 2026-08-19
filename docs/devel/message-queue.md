@@ -174,6 +174,28 @@ trigger is recorded on the delivered `PromptMeta.LoopTrigger` and surfaced to
 clients as `loop_updated.triggers` (the full armed set) alongside the
 back-compat singular `loop_updated.trigger` (the primary/first entry).
 
+### Per-message trigger provenance (mitto-rg79)
+
+Separately from `loop_updated` (which reports the loop's _configured_ trigger
+set), each individual delivered prompt carries its own **provenance** —
+which trigger actually fired _this_ dispatch, distinct from siblings that
+never fired. `deriveUserPromptProvenance`
+(`internal/conversation/bgsession_prompt.go`) maps the dispatch-time
+`PromptMeta` (`LoopTrigger`, `Forced`, `RunOnStart`, and the bounded Slack
+event batch) onto `session.PromptProvenance`, persisted on
+`UserPromptData.Provenance` (`internal/session/types.go`, `omitempty` — nil
+for ordinary human-typed/ad-hoc prompts) and broadcast on the `user_prompt`
+WebSocket message. `Provenance.Slack` (`session.PromptSlackProvenance`)
+carries only credential-free `installation_id`/`channel_id`/`event_count`
+derived from the first event of the batch — never event text/bodies/secrets.
+`IsLoopRunOnStart` takes precedence over `IsLoopForced` when both are set
+(the boot pulse is reported as "startup", not "forced"). The frontend maps
+provenance to an icon/label/tooltip via `promptProvenance.js`
+(`describeProvenance`/`getPromptIcon`), rendered on `NamedPromptPill`
+(`Message.js`) per-message and summarized as "Last loop delivery" in the
+session Properties panel (`SessionPanel.js`, sourced from the most recent
+message carrying provenance).
+
 ```mermaid
 flowchart TB
     subgraph Sources["Independent event sources"]

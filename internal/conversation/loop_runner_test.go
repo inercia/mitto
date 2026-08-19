@@ -2806,7 +2806,7 @@ func TestLoopRunner_DeliverPrompt_ArgumentsForwardedAndSubstituted(t *testing.T)
 	defer cancel()
 	bs := NewTestBackgroundSessionWithCtx("arg-dispatch", ctx, cancel)
 
-	deliverErr := runner.deliverPrompt(bs, meta, loop, loopStore, false, false, nil, false, session.TriggerSchedule)
+	deliverErr := runner.deliverPrompt(bs, meta, loop, loopStore, false, false, nil, false, session.TriggerSchedule, nil)
 	// The resolver must have been called even though PromptWithMeta failed.
 	if !resolverCalled {
 		t.Error("promptResolver was not called; loop.PromptName not forwarded to deliverPrompt")
@@ -2890,7 +2890,7 @@ func TestLoopRunner_DeliverPrompt_EmptyPromptNotDispatched(t *testing.T) {
 			defer cancel()
 			bs := NewTestBackgroundSessionWithCtx(sid, ctx, cancel)
 
-			err = runner.deliverPrompt(bs, meta, tt.loop, store.Loop(sid), false, true, nil, false, session.TriggerSchedule)
+			err = runner.deliverPrompt(bs, meta, tt.loop, store.Loop(sid), false, true, nil, false, session.TriggerSchedule, nil)
 			if !errors.Is(err, ErrPromptResolveFailed) {
 				t.Errorf("deliverPrompt() error = %v, want ErrPromptResolveFailed", err)
 			}
@@ -6926,7 +6926,7 @@ func TestLoopRunner_DeliverPrompt_CoalescedFireIsDropped(t *testing.T) {
 	bs := NewTestBackgroundSessionWithCtx(sessionID, ctx, cancel)
 	meta := session.Metadata{SessionID: sessionID, ACPServer: "test", WorkingDir: "/tmp"}
 
-	err = runner.deliverPrompt(bs, meta, loop, ps, true, false, nil, false, session.TriggerSchedule)
+	err = runner.deliverPrompt(bs, meta, loop, ps, true, false, nil, false, session.TriggerSchedule, nil)
 	if !errors.Is(err, ErrLoopDispatchCoalesced) {
 		t.Errorf("deliverPrompt() error = %v, want ErrLoopDispatchCoalesced", err)
 	}
@@ -7104,7 +7104,7 @@ func TestLoopRunner_CloseInFlightTurn_ReleasesDispatchResources(t *testing.T) {
 
 	runner := NewLoopRunner(store, nil, nil)
 	runner.SetLoopWorkspaceConcurrency(1)
-	if err := runner.deliverPrompt(bs, meta, loop, ps, true, false, nil, false, session.TriggerOnTasks); err != nil {
+	if err := runner.deliverPrompt(bs, meta, loop, ps, true, false, nil, false, session.TriggerOnTasks, nil); err != nil {
 		t.Fatalf("initial deliverPrompt() error = %v", err)
 	}
 
@@ -7150,7 +7150,7 @@ func TestLoopRunner_CloseInFlightTurn_ReleasesDispatchResources(t *testing.T) {
 
 	deadline = time.Now().Add(2 * time.Second)
 	for {
-		err = runner.deliverPrompt(replacement, meta, loop, ps, true, false, nil, false, session.TriggerOnTasks)
+		err = runner.deliverPrompt(replacement, meta, loop, ps, true, false, nil, false, session.TriggerOnTasks, nil)
 		if err == nil {
 			break
 		}
@@ -7924,5 +7924,92 @@ func TestLoopRunner_OnChildLoopStopped_ArchivedParent(t *testing.T) {
 
 	if !strings.Contains(buf.String(), "onChild: parent missing or archived, dropping") {
 		t.Errorf("expected an archived-parent drop log, got:\n%s", buf.String())
+	}
+}
+
+// slackTestTrigger mirrors internal/slackbridge.TriggerSlack's literal value.
+// It cannot be imported directly: internal/slackbridge imports this package,
+// so importing it back from this test file would create an import cycle.
+const slackTestTrigger session.LoopTrigger = "slack"
+
+// TestLoopRunner_TriggerNowWithSlackEvent_HappyPath verifies that
+// TriggerNowWithSlackEvent (mitto-qewp PoC, used by internal/slackbridge)
+// reaches deliverPrompt with firedBy=slack for an enabled, idle target loop
+// — i.e. it reuses LoopRunner's existing dispatch path exactly like any
+// other TriggerNowFrom caller.
+func TestLoopRunner_TriggerNowWithSlackEvent_HappyPath(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	newOnCompletionSession(t, store, "s1", 60)
+
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{})
+	sm.AddSessionForTest(NewMinimalBackgroundSessionPrompting("s1", false)) // idle
+
+	logger, buf := captureDebugLogger()
+	runner := NewLoopRunner(store, sm, logger)
+
+	evt := &PromptSlackContext{
+		EventID:   "Ev1",
+		ChannelID: "C1",
+		AuthorID:  "U1",
+		Timestamp: "1700000000.000100",
+		Text:      "hello from slack",
+	}
+	_ = runner.TriggerNowWithSlackEvent("s1", true, slackTestTrigger, evt)
+
+	out := buf.String()
+	if !strings.Contains(out, "Triggering immediate loop delivery") || !strings.Contains(out, "fired_by=slack") {
+		t.Errorf("expected the Slack-fired dispatch to reach triggerNowFull with fired_by=slack, got:\n%s", out)
+	}
+}
+
+// TestLoopRunner_TriggerNowWithSlackEvent_DisabledLoop verifies the
+// enabled-loop guard (acceptance criterion: "target loop must be enabled")
+// is enforced identically for the Slack bridge's entry point.
+func TestLoopRunner_TriggerNowWithSlackEvent_DisabledLoop(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	newOnCompletionSession(t, store, "s1", 60)
+	if err := store.Loop("s1").Update(session.LoopUpdate{Enabled: boolPtr(false)}); err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{})
+	sm.AddSessionForTest(NewMinimalBackgroundSessionPrompting("s1", false))
+
+	runner := NewLoopRunner(store, sm, nil)
+	err = runner.TriggerNowWithSlackEvent("s1", true, slackTestTrigger, &PromptSlackContext{EventID: "Ev1"})
+	if !errors.Is(err, ErrLoopNotEnabled) {
+		t.Errorf("TriggerNowWithSlackEvent() error = %v, want ErrLoopNotEnabled", err)
+	}
+}
+
+// TestLoopRunner_TriggerNowWithSlackEvent_BusySession verifies the
+// idle-session guard (acceptance criterion: "target loop must be idle") is
+// enforced identically for the Slack bridge's entry point.
+func TestLoopRunner_TriggerNowWithSlackEvent_BusySession(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	newOnCompletionSession(t, store, "s1", 60)
+
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{})
+	sm.AddSessionForTest(NewMinimalBackgroundSessionPrompting("s1", true)) // busy
+
+	runner := NewLoopRunner(store, sm, nil)
+	err = runner.TriggerNowWithSlackEvent("s1", true, slackTestTrigger, &PromptSlackContext{EventID: "Ev1"})
+	if !errors.Is(err, ErrSessionBusy) {
+		t.Errorf("TriggerNowWithSlackEvent() error = %v, want ErrSessionBusy", err)
 	}
 }

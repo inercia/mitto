@@ -124,4 +124,43 @@ describe("SessionPanel.js: SDK migration (mitto-7gta.17 slice S4)", () => {
     expect(snippet).toMatch(/widthClass="w-full"/);
     expect(snippet).toMatch(/rootStyle="--dock-w:24rem"/);
   });
+
+  describe("Last loop delivery (mitto-rg79)", () => {
+    test("accepts a messages prop and imports describeProvenance/getPromptIcon", () => {
+      expect(panelJs).toMatch(/messages\s*=\s*\[\]/);
+      expect(panelJs).toMatch(
+        /import \{ describeProvenance \} from "\.\.\/utils\/promptProvenance\.js";/,
+      );
+      expect(panelJs).toMatch(
+        /import \{ getPromptIcon \} from "\.\/Icons\.js";/,
+      );
+    });
+
+    test("scans messages newest-first for the last entry carrying provenance", () => {
+      const idx = panelJs.indexOf("const lastLoopDeliveryMessage = useMemo(");
+      expect(idx).toBeGreaterThan(-1);
+      const snippet = panelJs.slice(idx, idx + 400);
+      expect(snippet).toMatch(/for \(let i = messages\.length - 1; i >= 0; i--\)/);
+      expect(snippet).toMatch(/messages\[i\]\?\.provenance/);
+    });
+
+    test("renders a Last loop delivery block gated on provenance, separate from the Loop tab's configured triggers", () => {
+      const idx = panelJs.indexOf('data-testid="session-panel-last-loop-delivery"');
+      expect(idx).toBeGreaterThan(-1);
+      const snippet = panelJs.slice(idx - 400, idx + 1600);
+      expect(snippet).toMatch(/Last loop delivery/);
+      expect(snippet).toMatch(/formatTimeAgo\(\s*lastLoopDeliveryMessage\.timestamp,?\s*\)/);
+      expect(snippet).toMatch(/slack\.channel_id/);
+      expect(snippet).toMatch(/slack\.event_count/);
+    });
+
+    test("Last loop delivery block appears before the Workspace section", () => {
+      const deliveryIdx = panelJs.indexOf(
+        'data-testid="session-panel-last-loop-delivery"',
+      );
+      const workspaceIdx = panelJs.indexOf(">Workspace</label");
+      expect(deliveryIdx).toBeGreaterThan(-1);
+      expect(workspaceIdx).toBeGreaterThan(deliveryIdx);
+    });
+  });
 });

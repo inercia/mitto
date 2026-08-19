@@ -26,6 +26,8 @@ import { isNativeApp } from "../utils/index.js";
 import { ConfigOptionSelect } from "./ConfigOptionSelect.js";
 import { LoopSettingsTab } from "./LoopSettingsTab.js";
 import { CallbackTriggerSection } from "./CallbackTriggerSection.js";
+import { getPromptIcon } from "./Icons.js";
+import { describeProvenance } from "../utils/promptProvenance.js";
 
 // ---------------------------------------------------------------------------
 // Helpers (copied from ConversationPropertiesPanel)
@@ -145,6 +147,7 @@ export function SessionPanel({
   hasBeadsWorkspace = false,
   onOpenPromptParamDialog,
   showToast,
+  messages = [],
 }) {
   // --- Tab state ---
   const [currentTab, setCurrentTab] = useState(activeTab);
@@ -222,6 +225,23 @@ export function SessionPanel({
     const modelOpt = configOptions.find((opt) => opt.id === "model");
     return modelOpt?.current_value || null;
   }, [configOptions]);
+
+  // Newest message carrying loop-trigger provenance (mitto-rg79), scanned
+  // newest-first so a "Last loop delivery" detail can be shown in Properties
+  // without waiting for a full-transcript pass. Independent of the
+  // *configured* trigger settings shown in the Loop tab — this reflects what
+  // actually fired most recently.
+  const lastLoopDeliveryMessage = useMemo(() => {
+    if (!messages?.length) return null;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i]?.provenance) return messages[i];
+    }
+    return null;
+  }, [messages]);
+  const lastLoopDeliveryInfo = useMemo(
+    () => describeProvenance(lastLoopDeliveryMessage?.provenance),
+    [lastLoopDeliveryMessage],
+  );
 
   // --- Changes tab state ---
   const [changesData, setChangesData] = useState(null);
@@ -1208,6 +1228,60 @@ export function SessionPanel({
             </div>
           `}
         </div>
+
+        <!-- Last loop delivery (mitto-rg79): reflects the actual last-firing
+             trigger, independent of the configured trigger settings in the
+             Loop tab. Only rendered when at least one message in this
+             conversation carries trigger provenance. -->
+        ${lastLoopDeliveryInfo &&
+        (() => {
+          const ProvenanceIcon = getPromptIcon(lastLoopDeliveryInfo.iconKey);
+          const slack = lastLoopDeliveryMessage?.provenance?.slack;
+          return html`
+            <div data-testid="session-panel-last-loop-delivery">
+              <label
+                class="block text-sm font-medium text-mitto-text-secondary mb-1"
+                >Last loop delivery</label
+              >
+              <div class="text-xs text-mitto-text-secondary space-y-0.5">
+                <div class="flex justify-between items-center">
+                  <span class="flex items-center gap-1.5">
+                    ${ProvenanceIcon &&
+                    html`<${ProvenanceIcon} className="w-3.5 h-3.5" />`}
+                    <span class="text-mitto-text-300"
+                      >${lastLoopDeliveryInfo.label}</span
+                    >
+                  </span>
+                  ${lastLoopDeliveryMessage?.timestamp &&
+                  html`<span
+                    class="text-mitto-text-300"
+                    title=${new Date(
+                      lastLoopDeliveryMessage.timestamp,
+                    ).toLocaleString()}
+                  >
+                    ${formatTimeAgo(lastLoopDeliveryMessage.timestamp)}
+                  </span>`}
+                </div>
+                ${slack &&
+                (slack.channel_id || slack.event_count > 0) &&
+                html`<div class="flex justify-between">
+                  <span>Slack</span>
+                  <span class="text-mitto-text-300"
+                    >${[
+                      slack.installation_id &&
+                        `installation ${slack.installation_id}`,
+                      slack.channel_id && `channel ${slack.channel_id}`,
+                      slack.event_count > 0 &&
+                        `${slack.event_count} event${slack.event_count === 1 ? "" : "s"}`,
+                    ]
+                      .filter(Boolean)
+                      .join(" · ")}</span
+                  >
+                </div>`}
+              </div>
+            </div>
+          `;
+        })()}
 
         <!-- Workspace Section -->
         <div>

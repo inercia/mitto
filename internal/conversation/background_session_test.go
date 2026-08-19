@@ -990,7 +990,7 @@ func (m *mockSessionObserver) OnPromptComplete(eventCount int) {
 	m.completed = true
 }
 
-func (m *mockSessionObserver) OnUserPrompt(seq int64, senderID, promptID, message string, imageIDs, fileIDs []string, promptName string, argumentCount int, arguments map[string]string) {
+func (m *mockSessionObserver) OnUserPrompt(seq int64, senderID, promptID, message string, imageIDs, fileIDs []string, promptName string, argumentCount int, arguments map[string]string, provenance *session.PromptProvenance) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.userPromptMessages = append(m.userPromptMessages, message)
@@ -2603,7 +2603,7 @@ func (o *trackingObserver) OnPlan(seq int64, entries []PlanEntry)             {}
 func (o *trackingObserver) OnFileWrite(seq int64, path string, size int)      {}
 func (o *trackingObserver) OnFileRead(seq int64, path string, size int)       {}
 func (o *trackingObserver) OnPromptComplete(eventCount int)                   {}
-func (o *trackingObserver) OnUserPrompt(seq int64, senderID, promptID, message string, imageIDs, fileIDs []string, promptName string, argumentCount int, arguments map[string]string) {
+func (o *trackingObserver) OnUserPrompt(seq int64, senderID, promptID, message string, imageIDs, fileIDs []string, promptName string, argumentCount int, arguments map[string]string, provenance *session.PromptProvenance) {
 }
 func (o *trackingObserver) OnError(message string)                                   {}
 func (o *trackingObserver) OnQueueUpdated(queueLength int, action, messageID string) {}

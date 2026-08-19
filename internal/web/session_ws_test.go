@@ -1271,7 +1271,7 @@ func TestSessionWSClient_OnUserPrompt_ArgumentCount(t *testing.T) {
 				wsConn:    &WSConn{send: mockWS.send},
 			}
 
-			client.OnUserPrompt(1, "client-1", "pid-1", "hello", nil, nil, tc.promptName, tc.argumentCount, nil)
+			client.OnUserPrompt(1, "client-1", "pid-1", "hello", nil, nil, tc.promptName, tc.argumentCount, nil, nil)
 
 			// Read from the send channel (same pattern as TestSessionWSClient_OnAvailableCommandsUpdated)
 			select {
@@ -1344,7 +1344,7 @@ func TestSessionWSClient_OnUserPrompt_Arguments(t *testing.T) {
 				wsConn:    &WSConn{send: mockWS.send},
 			}
 
-			client.OnUserPrompt(1, "client-1", "pid-1", "hello", nil, nil, "my-prompt", 1, tc.arguments)
+			client.OnUserPrompt(1, "client-1", "pid-1", "hello", nil, nil, "my-prompt", 1, tc.arguments, nil)
 
 			select {
 			case msgBytes := <-mockWS.send:
@@ -1394,7 +1394,7 @@ func TestSessionWSClient_OnEventMeta_AttachedToUserPrompt(t *testing.T) {
 
 		// Simulate the ordering guarantee: OnEventMeta fires before OnUserPrompt.
 		client.OnEventMeta(seq, metaIn)
-		client.OnUserPrompt(seq, "client-1", "pid-1", "hello", nil, nil, "", 0, nil)
+		client.OnUserPrompt(seq, "client-1", "pid-1", "hello", nil, nil, "", 0, nil, nil)
 
 		select {
 		case msgBytes := <-mockWS.send:
@@ -1432,7 +1432,7 @@ func TestSessionWSClient_OnEventMeta_AttachedToUserPrompt(t *testing.T) {
 			wsConn:    &WSConn{send: mockWS.send},
 		}
 
-		client.OnUserPrompt(1, "client-1", "pid-1", "hello", nil, nil, "", 0, nil)
+		client.OnUserPrompt(1, "client-1", "pid-1", "hello", nil, nil, "", 0, nil, nil)
 
 		select {
 		case msgBytes := <-mockWS.send:
@@ -1462,11 +1462,11 @@ func TestSessionWSClient_OnEventMeta_AttachedToUserPrompt(t *testing.T) {
 		const seq = int64(10)
 		client.OnEventMeta(seq, map[string]any{"once": true})
 		// First call consumes the meta.
-		client.OnUserPrompt(seq, "client-1", "pid-1", "msg1", nil, nil, "", 0, nil)
+		client.OnUserPrompt(seq, "client-1", "pid-1", "msg1", nil, nil, "", 0, nil, nil)
 		<-mockWS.send // drain first message
 
 		// Second call for same seq must NOT have meta.
-		client.OnUserPrompt(seq, "client-1", "pid-1", "msg2", nil, nil, "", 0, nil)
+		client.OnUserPrompt(seq, "client-1", "pid-1", "msg2", nil, nil, "", 0, nil, nil)
 
 		select {
 		case msgBytes := <-mockWS.send:
@@ -1495,7 +1495,7 @@ func TestSessionWSClient_OnEventMeta_AttachedToUserPrompt(t *testing.T) {
 
 		const seq = int64(99)
 		client.OnEventMeta(seq, map[string]any{"argument_names": []string{"ISSUE_ID", "PROJECT"}})
-		client.OnUserPrompt(seq, "client-1", "pid-1", "review", nil, nil, "Review", 2, nil)
+		client.OnUserPrompt(seq, "client-1", "pid-1", "review", nil, nil, "Review", 2, nil, nil)
 
 		select {
 		case msgBytes := <-mockWS.send:
@@ -1516,6 +1516,86 @@ func TestSessionWSClient_OnEventMeta_AttachedToUserPrompt(t *testing.T) {
 			}
 			if len(names) != 2 || names[0] != "ISSUE_ID" || names[1] != "PROJECT" {
 				t.Errorf("argument_names = %v, want [ISSUE_ID PROJECT]", names)
+			}
+		case <-time.After(100 * time.Millisecond):
+			t.Fatal("expected user_prompt on send channel, got none")
+		}
+	})
+}
+
+// TestSessionWSClient_OnUserPrompt_Provenance verifies mitto-rg79's WS payload
+// contract: the "provenance" key is entirely absent for ordinary prompts
+// (nil provenance) and present with the exact field values (including nested
+// Slack detail) when non-nil.
+func TestSessionWSClient_OnUserPrompt_Provenance(t *testing.T) {
+	t.Run("nil provenance omits the key entirely", func(t *testing.T) {
+		mockWS := newMockWSConn()
+		client := &SessionWSClient{
+			sessionID: "test-session",
+			clientID:  "client-1",
+			wsConn:    &WSConn{send: mockWS.send},
+		}
+
+		client.OnUserPrompt(1, "client-1", "pid-1", "hello", nil, nil, "", 0, nil, nil)
+
+		select {
+		case msgBytes := <-mockWS.send:
+			var msg struct {
+				Data map[string]interface{} `json:"data"`
+			}
+			if err := json.Unmarshal(msgBytes, &msg); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if _, has := msg.Data["provenance"]; has {
+				t.Errorf("expected \"provenance\" absent, got %v", msg.Data["provenance"])
+			}
+		case <-time.After(100 * time.Millisecond):
+			t.Fatal("expected user_prompt on send channel, got none")
+		}
+	})
+
+	t.Run("non-nil provenance with Slack detail round-trips through JSON", func(t *testing.T) {
+		mockWS := newMockWSConn()
+		client := &SessionWSClient{
+			sessionID: "test-session",
+			clientID:  "client-1",
+			wsConn:    &WSConn{send: mockWS.send},
+		}
+
+		prov := &session.PromptProvenance{
+			LoopTrigger: session.TriggerOnSlack,
+			Slack: &session.PromptSlackProvenance{
+				InstallationID: "I1",
+				ChannelID:      "C1",
+				EventCount:     3,
+			},
+		}
+		client.OnUserPrompt(1, "loop-runner", "", "slack turn", nil, nil, "", 0, nil, prov)
+
+		select {
+		case msgBytes := <-mockWS.send:
+			var msg struct {
+				Data map[string]interface{} `json:"data"`
+			}
+			if err := json.Unmarshal(msgBytes, &msg); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			provOut, ok := msg.Data["provenance"].(map[string]interface{})
+			if !ok {
+				t.Fatalf("provenance missing or wrong type: %T", msg.Data["provenance"])
+			}
+			if provOut["loop_trigger"] != "onSlack" {
+				t.Errorf("loop_trigger = %v, want onSlack", provOut["loop_trigger"])
+			}
+			slackOut, ok := provOut["slack"].(map[string]interface{})
+			if !ok {
+				t.Fatalf("slack detail missing or wrong type: %T", provOut["slack"])
+			}
+			if slackOut["channel_id"] != "C1" || slackOut["installation_id"] != "I1" {
+				t.Errorf("unexpected slack identifiers: %v", slackOut)
+			}
+			if slackOut["event_count"] != float64(3) {
+				t.Errorf("event_count = %v, want 3", slackOut["event_count"])
 			}
 		case <-time.After(100 * time.Millisecond):
 			t.Fatal("expected user_prompt on send channel, got none")

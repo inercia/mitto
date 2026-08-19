@@ -1791,6 +1791,7 @@ export const PROMPT_ICONS = {
   loop: LoopIcon,
   queue: QueueIcon,
   play: PlayFilledIcon,
+  clock: ClockIcon,
 };
 
 // getPromptIcon returns the icon component for a given prompt icon name, or

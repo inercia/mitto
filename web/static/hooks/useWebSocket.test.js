@@ -170,3 +170,19 @@ describe("useWebSocket.js: background stream update coalescing (mitto-mnie)", ()
     );
   });
 });
+
+describe("useWebSocket.js: live user_prompt provenance wiring (mitto-rg79)", () => {
+  test("destructures provenance from the user_prompt WS payload", () => {
+    const idx = useWebSocketJs.indexOf('case "user_prompt": {');
+    expect(idx).toBeGreaterThan(-1);
+    const snippet = useWebSocketJs.slice(idx, idx + 500);
+    expect(snippet).toMatch(/\bprovenance,\n\s*\} = msg\.data;/);
+  });
+
+  test("attaches provenance onto the constructed userMessage object", () => {
+    const idx = useWebSocketJs.indexOf("const userMessage = {");
+    expect(idx).toBeGreaterThan(-1);
+    const snippet = useWebSocketJs.slice(idx, idx + 700);
+    expect(snippet).toMatch(/provenance: provenance \|\| undefined,/);
+  });
+});

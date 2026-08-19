@@ -1317,6 +1317,87 @@ func TestRecorder_RecordUserPromptComplete_Arguments(t *testing.T) {
 	}
 }
 
+// TestRecorder_RecordUserPromptDataWithSeq_Provenance verifies mitto-rg79:
+// RecordUserPromptDataWithSeq persists a complete UserPromptData (including
+// Provenance) exactly, and that a nil Provenance round-trips as an absent
+// "provenance" key (backward-compat: old readers/events see nothing new).
+func TestRecorder_RecordUserPromptDataWithSeq_Provenance(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	recorder := NewRecorder(store)
+	if err := recorder.Start("test-server", "/test/dir", ""); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+
+	// (1) Loop-delivered prompt with full provenance including Slack detail.
+	prov := &PromptProvenance{
+		LoopTrigger: TriggerOnSlack,
+		Slack: &PromptSlackProvenance{
+			InstallationID: "I1",
+			ChannelID:      "C1",
+			EventCount:     2,
+		},
+	}
+	// Seq 1 is already consumed by the session_start event recorded by Start().
+	if err := recorder.RecordUserPromptDataWithSeq(2, UserPromptData{
+		Message:    "slack turn",
+		Provenance: prov,
+	}); err != nil {
+		t.Fatalf("RecordUserPromptDataWithSeq (with provenance) failed: %v", err)
+	}
+
+	// (2) Ordinary ad-hoc prompt with nil Provenance.
+	if err := recorder.RecordUserPromptDataWithSeq(3, UserPromptData{
+		Message: "plain message",
+	}); err != nil {
+		t.Fatalf("RecordUserPromptDataWithSeq (nil provenance) failed: %v", err)
+	}
+
+	events, err := store.ReadEvents(recorder.SessionID())
+	if err != nil {
+		t.Fatalf("ReadEvents failed: %v", err)
+	}
+	// events[0] = session_start, events[1] = slack prompt, events[2] = plain prompt.
+	if len(events) != 3 {
+		t.Fatalf("expected 3 events, got %d", len(events))
+	}
+
+	slackDataMap, ok := events[1].Data.(map[string]interface{})
+	if !ok {
+		t.Fatalf("events[1].Data is %T, want map[string]interface{}", events[1].Data)
+	}
+	provOut, ok := slackDataMap["provenance"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("events[1].Data[\"provenance\"] is %T, want map[string]interface{}", slackDataMap["provenance"])
+	}
+	if provOut["loop_trigger"] != "onSlack" {
+		t.Errorf("loop_trigger = %v, want onSlack", provOut["loop_trigger"])
+	}
+	slackOut, ok := provOut["slack"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("provenance[\"slack\"] is %T, want map[string]interface{}", provOut["slack"])
+	}
+	if slackOut["channel_id"] != "C1" || slackOut["installation_id"] != "I1" {
+		t.Errorf("unexpected slack identifiers: %v", slackOut)
+	}
+	if f, _ := slackOut["event_count"].(float64); int(f) != 2 {
+		t.Errorf("event_count = %v, want 2", slackOut["event_count"])
+	}
+
+	plainDataMap, ok := events[2].Data.(map[string]interface{})
+	if !ok {
+		t.Fatalf("events[2].Data is %T, want map[string]interface{}", events[2].Data)
+	}
+	if v, exists := plainDataMap["provenance"]; exists && v != nil {
+		t.Errorf("plain prompt provenance = %v, want absent (omitempty)", v)
+	}
+}
+
 // TestRecorder_EndIsIdempotent tests that calling End() multiple times is safe
 // and only records a single session_end event.
 func TestRecorder_EndIsIdempotent(t *testing.T) {

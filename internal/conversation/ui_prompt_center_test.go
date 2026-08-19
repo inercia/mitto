@@ -126,7 +126,7 @@ func (r *promptRecorderObserver) OnQueueReordered([]session.QueuedMessage)      
 func (r *promptRecorderObserver) OnError(string)                                {}
 func (r *promptRecorderObserver) OnPromptComplete(int)                          {}
 func (r *promptRecorderObserver) OnActionButtons([]ActionButton)                {}
-func (r *promptRecorderObserver) OnUserPrompt(int64, string, string, string, []string, []string, string, int, map[string]string) {
+func (r *promptRecorderObserver) OnUserPrompt(int64, string, string, string, []string, []string, string, int, map[string]string, *session.PromptProvenance) {
 }
 func (r *promptRecorderObserver) OnACPStopped(string) {}
 func (r *promptRecorderObserver) OnACPStarted()       {}

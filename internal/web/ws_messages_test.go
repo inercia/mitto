@@ -363,7 +363,7 @@ func (m *replayTestObserver) OnPermission(_ context.Context, _ acp.RequestPermis
 func (m *replayTestObserver) OnPromptComplete(_ int)                                       {}
 func (m *replayTestObserver) OnActionButtons(_ []conversation.ActionButton)                {}
 func (m *replayTestObserver) OnAvailableCommandsUpdated(_ []conversation.AvailableCommand) {}
-func (m *replayTestObserver) OnUserPrompt(_ int64, _, _, _ string, _, _ []string, _ string, _ int, _ map[string]string) {
+func (m *replayTestObserver) OnUserPrompt(_ int64, _, _, _ string, _, _ []string, _ string, _ int, _ map[string]string, _ *session.PromptProvenance) {
 }
 func (m *replayTestObserver) OnError(_ string)                              {}
 func (m *replayTestObserver) OnQueueUpdated(_ int, _, _ string)             {}
@@ -896,7 +896,7 @@ func (o *testReplayObserver) OnPlan(seq int64, entries []conversation.PlanEntry)
 func (o *testReplayObserver) OnFileWrite(seq int64, path string, size int)       {}
 func (o *testReplayObserver) OnFileRead(seq int64, path string, size int)        {}
 func (o *testReplayObserver) OnPromptComplete(eventCount int)                    {}
-func (o *testReplayObserver) OnUserPrompt(seq int64, senderID, promptID, message string, imageIDs, fileIDs []string, promptName string, argumentCount int, arguments map[string]string) {
+func (o *testReplayObserver) OnUserPrompt(seq int64, senderID, promptID, message string, imageIDs, fileIDs []string, promptName string, argumentCount int, arguments map[string]string, provenance *session.PromptProvenance) {
 }
 func (o *testReplayObserver) OnError(message string) {}
 func (o *testReplayObserver) OnQueueUpdated(queueLength int, action string, messageID string) {
