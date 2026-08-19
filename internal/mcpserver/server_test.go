@@ -4515,12 +4515,13 @@ func TestConversationDelete_ChildOfDifferentParent(t *testing.T) {
 
 // mockBackgroundSessionForWait implements BackgroundSession for testing the wait tool.
 type mockBackgroundSessionForWait struct {
-	prompting             atomic.Bool
-	queuedDeliveryInProg  atomic.Bool
-	waitCompleted         chan struct{} // close to simulate prompt completion
-	selfDestructCalled    atomic.Bool   // records whether RequestSelfDestruct was called
-	tryProcessCalledCount atomic.Int32  // records how many times TryProcessQueuedMessage was called
-	queueConfig           *config.QueueConfig
+	prompting              atomic.Bool
+	startupRecoveryPending atomic.Bool
+	queuedDeliveryInProg   atomic.Bool
+	waitCompleted          chan struct{} // close to simulate prompt completion
+	selfDestructCalled     atomic.Bool   // records whether RequestSelfDestruct was called
+	tryProcessCalledCount  atomic.Int32  // records how many times TryProcessQueuedMessage was called
+	queueConfig            *config.QueueConfig
 }
 
 func newMockBackgroundSessionForWait(prompting bool) *mockBackgroundSessionForWait {
@@ -4532,6 +4533,9 @@ func newMockBackgroundSessionForWait(prompting bool) *mockBackgroundSessionForWa
 }
 
 func (m *mockBackgroundSessionForWait) IsPrompting() bool { return m.prompting.Load() }
+func (m *mockBackgroundSessionForWait) StartupRecoveryPending() bool {
+	return m.startupRecoveryPending.Load()
+}
 func (m *mockBackgroundSessionForWait) HasQueuedDeliveryInProgress() bool {
 	return m.queuedDeliveryInProg.Load()
 }
@@ -4550,7 +4554,7 @@ func (m *mockBackgroundSessionForWait) LastQueuedSendError() (string, time.Time)
 }
 func (m *mockBackgroundSessionForWait) RecordChildWait(time.Duration) {}
 func (m *mockBackgroundSessionForWait) WaitForResponseComplete(timeout time.Duration) bool {
-	if !m.prompting.Load() {
+	if !m.prompting.Load() && !m.startupRecoveryPending.Load() {
 		return true
 	}
 	select {
@@ -4703,6 +4707,27 @@ func TestConversationWait_AgentResponded_NotPrompting(t *testing.T) {
 	}
 	if output.What != "agent_responded" {
 		t.Errorf("Expected what='agent_responded', got %q", output.What)
+	}
+}
+
+func TestConversationWait_AgentResponded_StartupRecoveryPending(t *testing.T) {
+	targetID := session.GenerateSessionID()
+	mockBS := newMockBackgroundSessionForWait(false)
+	mockBS.startupRecoveryPending.Store(true)
+	srv, callerID := setupServerForWait(t, targetID, mockBS)
+	srv.maxSingleWaitBlock = 50 * time.Millisecond
+
+	_, output, err := srv.handleConversationWait(context.Background(), nil, ConversationWaitInput{
+		SelfID:         callerID,
+		ConversationID: targetID,
+		What:           "agent_responded",
+		TimeoutSeconds: 1,
+	})
+	if err != nil {
+		t.Fatalf("handleConversationWait returned error: %v", err)
+	}
+	if !output.TimedOut {
+		t.Fatalf("startup-model recovery must remain pending, got %+v", output)
 	}
 }
 
@@ -6475,6 +6500,7 @@ type mockBackgroundSessionForAutoResume struct {
 }
 
 func (m *mockBackgroundSessionForAutoResume) IsPrompting() bool                             { return false }
+func (m *mockBackgroundSessionForAutoResume) StartupRecoveryPending() bool                  { return false }
 func (m *mockBackgroundSessionForAutoResume) HasQueuedDeliveryInProgress() bool             { return false }
 func (m *mockBackgroundSessionForAutoResume) GetQueueConfig() *config.QueueConfig           { return nil }
 func (m *mockBackgroundSessionForAutoResume) GetEventCount() int                            { return 0 }

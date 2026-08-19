@@ -124,6 +124,13 @@ func (bs *BackgroundSession) restartACPProcess(reason mittoAcp.RestartReason) er
 	if bs.sharedProcess != nil {
 		observedGen = bs.sharedProcess.Generation()
 	}
+	return bs.restartACPProcessFromGeneration(reason, observedGen)
+}
+
+// restartACPProcessFromGeneration restarts or rebinds after a caller-observed
+// shared-process generation. If another caller already replaced that generation,
+// SharedProcess.Restart no-ops and this session attaches to the replacement.
+func (bs *BackgroundSession) restartACPProcessFromGeneration(reason mittoAcp.RestartReason, observedGen int) error {
 
 	// Apply backoff based on how many recent restarts have occurred.
 	recentCount := bs.procCtl.recentRestartCount()

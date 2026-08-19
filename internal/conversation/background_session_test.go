@@ -835,6 +835,70 @@ func TestStartupConstraintFailureClearsForNewSharedProcessGeneration(t *testing.
 	}
 }
 
+func TestStartupConstraintFailureRecoversAfterSharedProcessReplacement(t *testing.T) {
+	origDelay := modelSwitchWarmRetryDelay
+	modelSwitchWarmRetryDelay = 0
+	defer func() { modelSwitchWarmRetryDelay = origDelay }()
+
+	shared := newFakeSharedProcess()
+	shared.caps.LoadSession = true
+	shared.setModelErr = []error{context.DeadlineExceeded, context.DeadlineExceeded}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	bs := &BackgroundSession{
+		ctx:           ctx,
+		cancel:        cancel,
+		acpID:         "acp-session-old",
+		sharedProcess: shared,
+		workingDir:    "/tmp/test",
+		agentModels: &SessionModelState{
+			CurrentModelId:  "m-1",
+			AvailableModels: []ModelInfo{{ModelId: "m-1", Name: "Model 1"}, {ModelId: "m-2", Name: "Model 2"}},
+		},
+		configOptions: []SessionConfigOption{{
+			ID: ConfigOptionCategoryModel, Category: ConfigOptionCategoryModel, CurrentValue: "m-1",
+			Options: []SessionConfigOptionValue{{Value: "m-1", Name: "Model 1"}, {Value: "m-2", Name: "Model 2"}},
+		}},
+		acpServerConstraints: map[string]*config.ACPServerConstraint{
+			ConfigOptionCategoryModel: {Pattern: "Model 2", MatchMode: "exact"},
+		},
+		observers: make(map[SessionObserver]struct{}),
+	}
+	bs.promptCond = sync.NewCond(&bs.promptMu)
+
+	bs.cbApplyConfigConstraintsAsync(ConfigOptionCategoryModel)
+	bs.waitForStartupConfigConstraints()
+	if bs.startupConfigConstraintsReady() {
+		t.Fatal("failed startup constraint must keep the queue gated")
+	}
+
+	shared.mu.Lock()
+	oldDone := shared.processDone
+	shared.generation++
+	shared.processDone = make(chan struct{})
+	shared.loadSessionHandle = &SessionHandle{
+		SessionID: "acp-session-new",
+		Models: &SessionModelState{
+			CurrentModelId:  "m-1",
+			AvailableModels: []ModelInfo{{ModelId: "m-1", Name: "Model 1"}, {ModelId: "m-2", Name: "Model 2"}},
+		},
+	}
+	shared.mu.Unlock()
+	close(oldDone)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		shared.mu.Lock()
+		loadCalls := len(shared.loadSessionCalls)
+		shared.mu.Unlock()
+		if loadCalls > 0 && bs.startupConfigConstraintsReady() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("model-gated session did not rebind and retry after shared-process replacement")
+}
+
 // TestBackgroundSession_SelfDestruct verifies that RequestSelfDestruct sets the
 // in-memory flag and IsSelfDestructRequested reflects it. The flag drives the
 // deferred deletion triggered at the end of a turn in PromptWithMeta.

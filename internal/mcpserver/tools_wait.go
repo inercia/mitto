@@ -234,8 +234,9 @@ func (s *Server) handleConversationWait(ctx context.Context, req *mcp.CallToolRe
 		}, nil
 	}
 
-	// If the agent is not currently responding, return immediately
-	if !targetBS.IsPrompting() {
+	// A startup-model recovery can be transport-idle while retaining a queued
+	// turn. Do not report that recoverable gap as a completed response.
+	if !targetBS.IsPrompting() && !targetBS.StartupRecoveryPending() {
 		s.logger.Debug("Conversation wait: agent not prompting, returning immediately",
 			"source_session", realSessionID,
 			"target_conversation", input.ConversationID,

@@ -104,12 +104,13 @@ type BackgroundSession struct {
 	// Startup constraints are applied asynchronously from the ACP model callback.
 	// Queue delivery waits for that initial work so a resumed queued turn cannot
 	// overtake the configured model switch (mitto-qori).
-	startupConstraintWG      sync.WaitGroup
-	startupConstraintPending atomic.Int32
-	startupConstraintFailed  atomic.Bool
-	startupConstraintMu      sync.Mutex
-	startupConstraintGen     int
-	startupConstraintGenSet  bool
+	startupConstraintWG       sync.WaitGroup
+	startupConstraintPending  atomic.Int32
+	startupConstraintFailed   atomic.Bool
+	startupConstraintRecovery atomic.Bool
+	startupConstraintMu       sync.Mutex
+	startupConstraintGen      int
+	startupConstraintGenSet   bool
 
 	// activePromptName / activePromptArgs record the workspace-prompt name and
 	// argument map of the dispatch that is currently in flight (isPrompting ==
@@ -1347,6 +1348,20 @@ func (bs *BackgroundSession) IsPrompting() bool {
 	return bs.isPrompting
 }
 
+// StartupRecoveryPending reports whether startup model work is active or
+// waiting for a failed shared-process generation to be replaced.
+func (bs *BackgroundSession) StartupRecoveryPending() bool {
+	return bs.startupConstraintPending.Load() > 0 || bs.startupConstraintRecovery.Load()
+}
+
+func (bs *BackgroundSession) signalResponseStateChanged() {
+	bs.promptMu.Lock()
+	if bs.promptCond != nil {
+		bs.promptCond.Broadcast()
+	}
+	bs.promptMu.Unlock()
+}
+
 // ActivePromptDispatch returns the PromptName and Arguments of the dispatch
 // currently in flight together with a prompting flag. When ok is false, no
 // prompt is in flight and (name, args) are zero. When ok is true and name is
@@ -1427,8 +1442,9 @@ func (bs *BackgroundSession) WaitForResponseComplete(timeout time.Duration) bool
 	bs.promptMu.Lock()
 	defer bs.promptMu.Unlock()
 
-	// If not prompting, return immediately
-	if !bs.isPrompting {
+	// Startup model recovery is an idle transport gap, not response completion:
+	// queued work will dispatch once the required model becomes active.
+	if !bs.isPrompting && !bs.StartupRecoveryPending() {
 		return true
 	}
 
@@ -1440,10 +1456,10 @@ func (bs *BackgroundSession) WaitForResponseComplete(timeout time.Duration) bool
 	done := make(chan bool, 1)
 	go func() {
 		bs.promptMu.Lock()
-		for bs.isPrompting && bs.closed.Load() == 0 {
+		for (bs.isPrompting || bs.StartupRecoveryPending()) && bs.closed.Load() == 0 {
 			bs.promptCond.Wait()
 		}
-		completed := !bs.isPrompting || bs.closed.Load() != 0
+		completed := (!bs.isPrompting && !bs.StartupRecoveryPending()) || bs.closed.Load() != 0
 		bs.promptMu.Unlock()
 		done <- completed
 	}()

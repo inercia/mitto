@@ -14,6 +14,7 @@ import (
 
 	"github.com/coder/acp-go-sdk"
 
+	mittoAcp "github.com/inercia/mitto/internal/acp"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/processors"
 	"github.com/inercia/mitto/internal/session"
@@ -405,14 +406,71 @@ func (bs *BackgroundSession) cbInitBaselineModelIfEmpty(defaultModel string) {
 // goroutine for a category.
 func (bs *BackgroundSession) cbApplyConfigConstraintsAsync(category string) {
 	bs.startupConstraintPending.Add(1)
+	bs.signalResponseStateChanged()
 	generation, generationAware := bs.beginStartupConstraintAttempt()
 	bs.startupConstraintWG.Add(1)
 	go func() {
 		defer bs.startupConstraintWG.Done()
 		err := bs.applyConfigConstraints(category)
 		bs.finishStartupConstraintAttempt(generation, generationAware, err)
+		if err != nil {
+			bs.beginStartupConstraintRecovery(category, generation, generationAware)
+		}
 		bs.startupConstraintPending.Add(-1)
+		bs.signalResponseStateChanged()
 	}()
+}
+
+func (bs *BackgroundSession) beginStartupConstraintRecovery(category string, generation int, generationAware bool) {
+	if category != ConfigOptionCategoryModel || !generationAware || bs.sharedProcess == nil ||
+		!bs.startupConstraintRecovery.CompareAndSwap(false, true) {
+		return
+	}
+	failedProcessDone := bs.sharedProcess.ProcessDone()
+	if failedProcessDone == nil {
+		bs.startupConstraintRecovery.Store(false)
+		return
+	}
+	bs.signalResponseStateChanged()
+	go bs.recoverStartupConstraintAfterRestart(generation, failedProcessDone)
+}
+
+// recoverStartupConstraintAfterRestart keeps a model-gated queued turn alive
+// across a shared-process replacement, then rebinds this session. Resuming the
+// session advertises models again, which reapplies the startup constraint.
+func (bs *BackgroundSession) recoverStartupConstraintAfterRestart(failedGeneration int, failedProcessDone <-chan struct{}) {
+	defer func() {
+		bs.startupConstraintRecovery.Store(false)
+		bs.signalResponseStateChanged()
+	}()
+
+	for {
+		select {
+		case <-failedProcessDone:
+		case <-bs.ctx.Done():
+			return
+		}
+
+		if err := bs.restartACPProcessFromGeneration(mittoAcp.RestartReasonResumeFailure, failedGeneration); err != nil {
+			if bs.logger != nil {
+				bs.logger.Warn("Startup model recovery failed to rebind after ACP replacement",
+					"session_id", bs.persistedID, "generation", failedGeneration, "error", err)
+			}
+			return
+		}
+
+		bs.waitForStartupConfigConstraints()
+		if bs.startupConfigConstraintsReady() {
+			bs.TryProcessQueuedMessage()
+			return
+		}
+
+		failedGeneration = bs.sharedProcess.Generation()
+		failedProcessDone = bs.sharedProcess.ProcessDone()
+		if failedProcessDone == nil {
+			return
+		}
+	}
 }
 
 // beginStartupConstraintAttempt opens a fresh failure epoch when a restarted

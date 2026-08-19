@@ -54,6 +54,7 @@ func (m *mockBackgroundSessionForModelTag) callsSnapshot() []string {
 
 // Remaining BackgroundSession methods — no-op stubs.
 func (m *mockBackgroundSessionForModelTag) IsPrompting() bool                   { return false }
+func (m *mockBackgroundSessionForModelTag) StartupRecoveryPending() bool        { return false }
 func (m *mockBackgroundSessionForModelTag) HasQueuedDeliveryInProgress() bool   { return false }
 func (m *mockBackgroundSessionForModelTag) GetQueueConfig() *config.QueueConfig { return m.queueConfig }
 func (m *mockBackgroundSessionForModelTag) GetEventCount() int                  { return 0 }

@@ -343,6 +343,9 @@ type LoopRunner interface {
 // BackgroundSession interface for session info.
 type BackgroundSession interface {
 	IsPrompting() bool
+	// StartupRecoveryPending reports an idle startup-model transition that will
+	// dispatch queued work after the shared ACP process is replaced.
+	StartupRecoveryPending() bool
 	GetEventCount() int
 	GetMaxAssignedSeq() int64
 	// TryProcessQueuedMessage attempts to process the next queued message if the session is idle.
