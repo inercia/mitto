@@ -30,6 +30,7 @@ async function mockSlackCatalog(page: Page, failFirstChannel = false) {
             id: "inst-a",
             name: "Workspace Alpha",
             team_id: "TA",
+            credential_kind: "bot",
             token_configured: true,
           },
         ],
@@ -44,6 +45,8 @@ async function mockSlackCatalog(page: Page, failFirstChannel = false) {
             id: "inst-b",
             name: "Workspace Beta",
             team_id: "TB",
+            credential_kind: "user",
+            user_id: "U123",
             token_configured: true,
           },
         ],
@@ -280,5 +283,64 @@ test.describe("onSlack loop settings", () => {
     await expect(
       page.getByTestId("slack-channel-picker-row-C404"),
     ).toContainText("#saved-channel");
+  });
+
+  test("delegated-user mode preserves IDs but cannot save appMention", async ({
+    page,
+    request,
+  }) => {
+    await createLoop(request, sessionId, {
+      triggers: ["onSlack"],
+      slack_subscriptions: [
+        {
+          installation_id: "inst-b",
+          channel_id: "C3",
+          event_mode: "appMention",
+          thread_policy: "rootOnly",
+        },
+      ],
+    });
+    await mountLoopEditor(page, sessionId);
+
+    await expect(page.getByTestId("slack-installation-0")).toHaveValue(
+      "inst-b",
+    );
+    await expect(page.getByTestId("slack-channel-id-0")).toHaveValue("C3");
+    await expect(page.getByTestId("slack-event-mode-0")).toHaveValue(
+      "anyHumanMessage",
+    );
+    await expect(page.getByTestId("slack-credential-mode-0")).toContainText(
+      "Delegated user",
+    );
+    await expect(page.getByTestId("slack-credential-mode-0")).toContainText(
+      "authorization remains active",
+    );
+    await expect(
+      page
+        .getByTestId("slack-event-mode-0")
+        .locator('option[value="appMention"]'),
+    ).toHaveCount(0);
+
+    await page.getByTestId("slack-channel-picker-open-0").click();
+    await expect(page.getByTestId("slack-channel-picker-row-C3")).toContainText(
+      "Member",
+    );
+    await page.getByTestId("slack-channel-picker-close").click();
+
+    const patchRequest = page.waitForRequest(
+      (request) =>
+        request.method() === "PATCH" &&
+        new URL(request.url()).pathname.endsWith(`/sessions/${sessionId}/loop`),
+    );
+    await page.getByTestId("loop-save-button").click();
+    const patch = (await patchRequest).postDataJSON();
+    expect(patch.slack_subscriptions).toEqual([
+      {
+        installation_id: "inst-b",
+        channel_id: "C3",
+        event_mode: "anyHumanMessage",
+        thread_policy: "rootOnly",
+      },
+    ]);
   });
 });

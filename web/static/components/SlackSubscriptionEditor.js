@@ -27,8 +27,13 @@ function installationLabel(installation) {
     installation?.name,
     installation?.team_name || installation?.team_id,
     installation?.app_name,
+    installation?.credential_kind === "user" ? "Delegated user" : "Bot",
   ].filter(Boolean);
   return [...new Set(parts)].join(" · ") || installation?.id || "Unknown";
+}
+
+function isDelegatedUserInstallation(installation) {
+  return installation?.credential_kind === "user";
 }
 
 function mergeChannels(current, incoming) {
@@ -396,6 +401,29 @@ export function SlackSubscriptionEditor({
     }
   }, [installationIDsKey, catalog.installations, client]);
 
+  // appMention is delivered only through the bot event stream. A credential
+  // replacement can change an installation's mode without changing its stable
+  // ID, so normalize stale drafts after every catalog refresh while preserving
+  // their installation, channel, thread policy, and unknown future fields.
+  useEffect(() => {
+    if (catalog.loading) return;
+    let changed = false;
+    const next = subscriptions.map((subscription) => {
+      const installation = catalog.installations.find(
+        (item) => item.id === subscription.installationId,
+      );
+      if (
+        isDelegatedUserInstallation(installation) &&
+        subscription.eventMode === "appMention"
+      ) {
+        changed = true;
+        return { ...subscription, eventMode: DEFAULT_SLACK_EVENT_MODE };
+      }
+      return subscription;
+    });
+    if (changed) onChange?.(next);
+  }, [catalog.loading, catalog.installations, subscriptions, onChange]);
+
   const updateSubscription = (index, patch) => {
     onChange?.(
       subscriptions.map((subscription, itemIndex) =>
@@ -433,6 +461,11 @@ export function SlackSubscriptionEditor({
   const pickerSubscription =
     picker.index >= 0 ? subscriptions[picker.index] : null;
   const pickerInstallationId = pickerSubscription?.installationId || "";
+  const pickerInstallation = catalog.installations.find(
+    (item) => item.id === pickerInstallationId,
+  );
+  const pickerUsesDelegatedUser =
+    isDelegatedUserInstallation(pickerInstallation);
   const pickerPage = getChannelCacheEntry(client, pickerInstallationId);
   const pickerChannels = pickerPage.channels || [];
   const pickerSearchTerm = picker.search.trim().toLowerCase();
@@ -516,6 +549,7 @@ export function SlackSubscriptionEditor({
             installation.app_token_configured !== true);
         const channelCredentialMissing =
           !!installation && installation.token_configured !== true;
+        const usesDelegatedUser = isDelegatedUserInstallation(installation);
         const page = getChannelCacheEntry(client, subscription.installationId);
         const channels = page.channels || [];
         const selectedChannel = channels.find(
@@ -573,6 +607,13 @@ export function SlackSubscriptionEditor({
                       event.target.value === subscription.installationId
                         ? subscription.channelId
                         : "",
+                    eventMode: isDelegatedUserInstallation(
+                      catalog.installations.find(
+                        (item) => item.id === event.target.value,
+                      ),
+                    )
+                      ? DEFAULT_SLACK_EVENT_MODE
+                      : subscription.eventMode,
                   })}
               >
                 <option value="">Select a configured workspace</option>
@@ -612,10 +653,29 @@ export function SlackSubscriptionEditor({
               class="alert alert-warning alert-soft text-sm"
             >
               <span
-                >This integration needs configured app and bot credentials
-                before the trigger can run. Configure the bot credential to load
-                channels.</span
+                >This integration needs configured app and installation
+                credentials before the trigger can run. Configure the
+                ${usesDelegatedUser ? "delegated-user" : "bot"} credential to
+                load channels.</span
               >
+            </div>`}
+            ${installation &&
+            html`<div
+              class="flex flex-wrap items-center gap-2 text-xs text-mitto-text-muted"
+              data-testid="slack-credential-mode-${index}"
+              role="status"
+            >
+              <span
+                class="badge badge-sm badge-soft ${usesDelegatedUser
+                  ? "badge-secondary"
+                  : "badge-primary"}"
+                >${usesDelegatedUser ? "Delegated user" : "Bot"}</span
+              >
+              <span>
+                ${usesDelegatedUser
+                  ? "Channel visibility follows the authorizing user's membership and lasts only while that authorization remains active. Mention-only mode is unavailable; stale mention-only drafts reset to human messages."
+                  : "Channel visibility follows the bot's membership. Invite the bot to private channels before using them."}
+              </span>
             </div>`}
 
             <label class="fieldset">
@@ -656,10 +716,9 @@ export function SlackSubscriptionEditor({
               class="alert alert-warning alert-soft text-sm"
             >
               <span
-                >The saved channel is not visible to this app. Private channels
-                appear only after the bot is invited. The saved ID remains in
-                the draft; invite the bot, refresh, or choose another
-                channel.</span
+                >${usesDelegatedUser
+                  ? "The saved channel is not visible to the authorizing user. The saved ID remains in the draft; restore the user's membership or authorization, refresh, or choose another channel."
+                  : "The saved channel is not visible to this app. Private channels appear only after the bot is invited. The saved ID remains in the draft; invite the bot, refresh, or choose another channel."}</span
               >
             </div>`}
             ${selectedChannelNeedsInvite &&
@@ -669,8 +728,9 @@ export function SlackSubscriptionEditor({
               data-testid="slack-channel-invite-guidance-${index}"
             >
               <span
-                >Invite the bot to #${selectedChannel.name} before enabling this
-                trigger so Slack can deliver its messages.</span
+                >${usesDelegatedUser
+                  ? `The authorizing user must join #${selectedChannel.name} and keep the authorization active before enabling this trigger.`
+                  : `Invite the bot to #${selectedChannel.name} before enabling this trigger so Slack can deliver its messages.`}</span
               >
             </div>`}
             ${channelUnresolved &&
@@ -695,9 +755,10 @@ export function SlackSubscriptionEditor({
                     })}
                 >
                   <option value="anyHumanMessage">Any new human message</option>
-                  <option value="appMention">
+                  ${!usesDelegatedUser &&
+                  html`<option value="appMention">
                     Only messages mentioning the app
-                  </option>
+                  </option>`}
                 <//>
                 ${field("eventMode") &&
                 html`<span class="label text-mitto-danger"
@@ -828,7 +889,9 @@ export function SlackSubscriptionEditor({
             data-testid="slack-channel-picker-empty"
           >
             ${pickerChannels.length === 0
-              ? "No channels are visible yet. Invite the bot to a private channel, then refresh."
+              ? pickerUsesDelegatedUser
+                ? "No channels are visible to the authorizing user yet. Check membership and authorization, then refresh."
+                : "No channels are visible yet. Invite the bot to a private channel, then refresh."
               : "No loaded channels match your search."}
           </p>`
         }
@@ -858,7 +921,13 @@ export function SlackSubscriptionEditor({
                         class="badge badge-sm badge-soft ${channel.is_member
                           ? "badge-success"
                           : "badge-warning"}"
-                        >${channel.is_member ? "Joined" : "Not joined"}</span
+                        >${pickerUsesDelegatedUser
+                          ? channel.is_member
+                            ? "Member"
+                            : "Not a member"
+                          : channel.is_member
+                            ? "Joined"
+                            : "Not joined"}</span
                       >
                     </span>
                   </button>

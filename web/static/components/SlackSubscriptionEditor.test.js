@@ -330,6 +330,137 @@ if (childRun) {
       }
     });
 
+    test("delegated-user mode keeps the shared picker and normalizes a stale mention draft without losing IDs", async () => {
+      const delegated = {
+        id: "inst-user",
+        name: "Workspace User",
+        team_id: "TU",
+        credential_kind: "user",
+        user_id: "U123",
+        token_configured: true,
+      };
+      const client = makeClient({
+        listInstallations: jest.fn(async (appId) => ({
+          installations: appId === "app-a" ? [delegated] : [],
+        })),
+        listChannels: jest.fn(async () => ({
+          channels: [
+            {
+              id: "G1",
+              name: "private-user",
+              is_private: true,
+              is_member: true,
+            },
+          ],
+          next_cursor: "",
+        })),
+      });
+      const { container, getSubscriptions } = await mount(client, [
+        subscription("inst-user", "G1", {
+          eventMode: "appMention",
+          futureFilter: "keep",
+        }),
+      ]);
+      try {
+        await waitFor(
+          () => getSubscriptions()[0].eventMode === "anyHumanMessage",
+          container,
+          "stale mention mode normalized",
+        );
+        expect(getSubscriptions()[0]).toEqual(
+          expect.objectContaining({
+            installationId: "inst-user",
+            channelId: "G1",
+            eventMode: "anyHumanMessage",
+            futureFilter: "keep",
+          }),
+        );
+        const mode = container.querySelector(
+          '[data-testid="slack-credential-mode-0"]',
+        );
+        expect(mode.textContent).toContain("Delegated user");
+        expect(mode.textContent).toContain("authorizing user's membership");
+        expect(mode.textContent).toContain("stale mention-only drafts reset");
+        expect(
+          container.querySelector(
+            '[data-testid="slack-event-mode-0"] option[value="appMention"]',
+          ),
+        ).toBeNull();
+
+        container
+          .querySelector('[data-testid="slack-channel-picker-open-0"]')
+          .click();
+        await waitFor(
+          () =>
+            document.querySelector(
+              '[data-testid="slack-channel-picker-row-G1"]',
+            ),
+          document.body,
+          "delegated-user channel picker",
+        );
+        expect(
+          document.querySelector('[data-testid="slack-channel-picker-row-G1"]')
+            .textContent,
+        ).toContain("PrivateMember");
+      } finally {
+        unmount(container);
+      }
+    });
+
+    test("switching from bot to delegated user clears the channel and mention mode but preserves other draft fields", async () => {
+      const client = makeClient({
+        listInstallations: jest.fn(async (appId) => ({
+          installations:
+            appId === "app-a"
+              ? [
+                  { ...installations["app-a"][0], credential_kind: "bot" },
+                  {
+                    id: "inst-user",
+                    name: "Workspace User",
+                    team_id: "TU",
+                    credential_kind: "user",
+                    token_configured: true,
+                  },
+                ]
+              : [],
+        })),
+      });
+      const { container, getSubscriptions } = await mount(client, [
+        subscription("inst-a", "C1", {
+          eventMode: "appMention",
+          threadPolicy: "rootOnly",
+          futureFilter: "keep",
+        }),
+      ]);
+      try {
+        await waitFor(
+          () => container.textContent.includes("Workspace User"),
+          container,
+          "delegated-user workspace",
+        );
+        choose(
+          container.querySelector('[data-testid="slack-installation-0"]'),
+          "inst-user",
+        );
+        await waitFor(
+          () => getSubscriptions()[0].installationId === "inst-user",
+          container,
+          "workspace mode switch",
+        );
+        expect(getSubscriptions()[0]).toEqual(
+          expect.objectContaining({
+            installationId: "inst-user",
+            channelId: "",
+            eventMode: "anyHumanMessage",
+            threadPolicy: "rootOnly",
+            futureFilter: "keep",
+          }),
+        );
+      } finally {
+        unmount(container);
+      }
+    });
+
     test("clicking search opens the picker modal without mutating the draft", async () => {
       const client = makeClient();
       const { container, getSubscriptions } = await mount(client, [
@@ -1149,21 +1280,28 @@ if (childRun) {
       }
     });
 
-    test("refreshes catalog names on mitto:slack_integrations_updated without draft loss", async () => {
+    test("credential replacement refresh preserves IDs and safely normalizes a stale mention draft", async () => {
       // mitto-xh79: the "Manage Slack integrations" action moved out of this
       // component into the Loop Properties TriggerSection card header, so
       // this editor no longer owns/dispatches mitto:open_settings itself —
       // see LoopSettingsTab.test.js for that behavior.
       let teamName = "Workspace Alpha";
+      let credentialKind = "bot";
       const client = makeClient({
         listInstallations: jest.fn(async (appId) => ({
           installations: (installations[appId] || []).map((item) => ({
             ...item,
             name: appId === "app-a" ? teamName : item.name,
+            credential_kind: appId === "app-a" ? credentialKind : "bot",
           })),
         })),
       });
-      const initial = [subscription("inst-a", "C1", { future: "keep" })];
+      const initial = [
+        subscription("inst-a", "C1", {
+          eventMode: "appMention",
+          future: "keep",
+        }),
+      ];
       const { container, getSubscriptions } = await mount(client, initial);
       try {
         await waitFor(
@@ -1176,6 +1314,7 @@ if (childRun) {
         ).toBeNull();
 
         teamName = "Workspace Renamed";
+        credentialKind = "user";
         window.dispatchEvent(
           new CustomEvent("mitto:slack_integrations_updated"),
         );
@@ -1185,7 +1324,17 @@ if (childRun) {
           "catalog refresh",
         );
         expect(client.slack.listApps.mock.calls.length).toBeGreaterThan(1);
-        expect(getSubscriptions()).toEqual(initial);
+        await waitFor(
+          () => getSubscriptions()[0].eventMode === "anyHumanMessage",
+          container,
+          "credential mode normalization",
+        );
+        expect(getSubscriptions()).toEqual([
+          subscription("inst-a", "C1", {
+            eventMode: "anyHumanMessage",
+            future: "keep",
+          }),
+        ]);
       } finally {
         unmount(container);
       }
