@@ -13,8 +13,16 @@ credential vault; loops persist only installation and channel IDs.
   loops at startup and reconciles loop edit/pause/archive/delete transitions.
 - A Slack app profile owns one worker and one bounded durable event journal,
   regardless of how many installations, channels, or loops reference it.
-- Routing first matches app, team, and channel, then event mode and thread
-  policy. A target session is included at most once per event.
+- For envelopes with an `event_context`, the worker resolves the complete
+  installation set through `apps.event.authorizations.list`. Routing matches
+  each bot or delegated-user authorization to the catalog installation's
+  credential kind and authorized Slack identity before applying app, team,
+  channel, event-mode, and thread-policy filters. A target session is included
+  at most once even when multiple authorizations match it.
+- An explicitly empty authorization set fails closed, including after credential
+  revocation or user deactivation. Authorization lookup failures leave the
+  Socket Mode envelope unacknowledged for Slack redelivery. Authorization
+  identities are transient routing data and are not written to the journal.
 - Human messages from subscribed public and private channels are accepted by
   default. Message subtypes, direct messages, bot events, and events authored
   by the installation's bot identity are ignored.
@@ -78,8 +86,10 @@ this compatibility period.
    Mitto's Slack settings. For an existing app, apply the current manifest, then
    reinstall or reauthorize it so newly-added bot and user scopes are granted.
 2. **App-level token**: enable Socket Mode and separately generate an `xapp-...`
-   token with `connections:write`. This transport token is not an OAuth bot or
-   user token and cannot be declared in the Slack manifest.
+   token with `connections:write` and `authorizations:read`. The latter permits
+   `apps.event.authorizations.list` to resolve every installation that may see
+   one shared Events API envelope. This token is not an OAuth bot or user token
+   and cannot be declared in the Slack manifest.
 3. **Bot token**: the manifest requests `users:read` for app identity validation,
    `channels:read` and `groups:read` for discovery, and `channels:history` plus
    `groups:history` for message flows. `app_mentions:read` supports optional
@@ -87,8 +97,9 @@ this compatibility period.
    `xoxb-...` bot token currently accepted by Mitto's integration catalog.
 4. **User token**: the manifest also requests least-privilege user scopes
    `channels:read`, `groups:read`, `channels:history`, and `groups:history` for
-   channels visible to the authorizing user. Do not configure the resulting user
-   token in Mitto until delegated-user backend support is enabled.
+   channels visible to the authorizing user. Configure the resulting token as a
+   user-mode installation; Mitto associates events with that installation by
+   Slack's authorized user identity.
 5. **Event Subscriptions**: bot events include `message.channels`,
    `message.groups`, and optional `app_mention`; user events include
    `message.channels` and `message.groups`.
@@ -175,6 +186,9 @@ material or message bodies.
 | --------------------------------- | -------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Multi-team routing                | Post one synthetic human message in each subscribed channel.                                             | Every matching loop receives exactly one turn; loops for other teams/channels receive none. Record event-to-turn latency.                              |
 | Public/private routing            | Post one synthetic human message in a subscribed public channel and one in a subscribed private channel. | Both `message.channels` and `message.groups` reach only their matching loops.                                                                          |
+| Bot/user authorization routing    | Subscribe separate bot- and user-mode installations, then post events visible to each identity.          | Each event reaches only installations present in Slack's resolved authorization set; equivalent human messages produce equivalent loop deliveries.     |
+| Overlapping authorizations        | Subscribe one loop through bot and user installations that can both see the same event.                  | The loop receives one turn, not one per matching authorization.                                                                                        |
+| Authorization loss                | Revoke one credential or deactivate its delegated user, then post in the formerly visible channel.       | The affected installation receives no turn; no authorization identities or unmatched message text remain in the durable journal.                       |
 | Filter boundary                   | Post from an unsubscribed channel and from the app's bot identity; exercise a non-empty message subtype. | No loop turn is created.                                                                                                                               |
 | Pause/resume                      | Pause one shared-channel loop, post once, resume it, then post a new event.                              | Only enabled recipients receive the first event; both receive the new event after resume.                                                              |
 | Busy and mixed-trigger contention | Keep one loop prompting (or fire its other trigger), then post a subscribed event.                       | The Slack recipient remains pending and is delivered exactly once after idle; another trigger never causes the Slack event to disappear.               |
