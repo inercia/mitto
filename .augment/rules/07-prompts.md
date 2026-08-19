@@ -237,6 +237,12 @@ Round-trip equivalence is pinned by `TestNormalizeMCPArguments_RoundTrip_*` in `
 
 **Per-conversation user data (`UserData`)**: exposed as a `map[string]string` in both the template context (`{{ UserData "NAME" }}` / `{{ index .UserData "NAME" }}`) and CEL (`UserData["NAME"]` / `"NAME" in UserData`), built from the same conversation attributes that back `Session.UserDataJSON`. Wired exactly like `Args` (struct field + `cel.Variable` + `buildActivation` normalization + template func), but populated at **both** menu time (`buildPromptEnabledContext`) and send time (`buildProcessorInput`) — the parity invariant — so menu gating and body rendering agree. Use it for set-if-unset, else-do-Y flows; the opaque `UserDataJSON` blob cannot drive a per-field conditional.
 
+**Beads policy contexts are independent:** `Workspace.BeadsDatabaseMode` is the
+effective `"local"`/`"shared"` Dolt replication policy, while
+`Workspace.TasksUpstream` selects an external task system. Populate both at menu
+and send time. Never infer one from the other; local databases may synchronize
+external tasks, and shared databases may have no task upstream.
+
 **Model capability tags (`Session.ModelTags`)**: the **current** model's tags, resolved from the `models:` profiles ([docs/config/models.md](../../docs/config/models.md)) via `config.ResolveModelTags(modelName)` — same `contains/exact/startsWith/regex/lookAlike` engine (`config.ConstraintMatchesName`) as ACP-server model constraints. Branch on capability, not brittle model-name strings: template `{{ if Model "smart" }}`, CEL `Session.HasModelTag("smart")` / `"smart" in Session.ModelTags`. Wired like `UserData` (parity at menu time via `BackgroundSession.CurrentModelName()` and send time via `pdGetAgentModels()`). Reflects the **baseline/active** model at render time, NOT a prompt's `preferredModels` (applied after render). Case-insensitive; degrades to empty (`Model("x") == false`, never errors) when the model is unknown or no profile matches.
 
 ### preferredModels Field

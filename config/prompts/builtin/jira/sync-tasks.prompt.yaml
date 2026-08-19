@@ -29,7 +29,7 @@ parameters:
     required: false
     multiLine: true
     description: 'Optional additional instructions for this run, applied on top of the steps below when pulling and pushing (e.g. "skip tickets labelled `spike`", "map priority Highest to p0", "do not close beads this run — only report", "add the sprint name to each bead title"). Used for this run only; nothing is persisted.'
-enabledWhen: '(Tools.Names.exists(n, n.matches("(?i)jira")) || CommandExists("jira")) && CommandExists("bd")'
+enabledWhen: 'Workspace.TasksUpstream == "jira" && (Tools.Names.exists(n, n.matches("(?i)jira")) || CommandExists("jira")) && CommandExists("bd")'
 preferredModels:
   - modelTag: Coding
 loop:

@@ -63,6 +63,7 @@ func NewCELEvaluator() (*CELEvaluator, error) {
 		cel.Variable("Workspace.HasMittoRC", cel.BoolType),
 		cel.Variable("Workspace.HasMetadataDescription", cel.BoolType),
 		cel.Variable("Workspace.TasksUpstream", cel.StringType),
+		cel.Variable("Workspace.BeadsDatabaseMode", cel.StringType),
 
 		// Workspace.Peers variables (mitto-4d6): scalar aggregates of the
 		// non-archived sibling conversations in the same workspace (excluding
@@ -468,6 +469,7 @@ func buildActivation(ctx *PromptEnabledContext) map[string]any {
 		"Workspace.HasMittoRC":             ctx.Workspace.HasMittoRC,
 		"Workspace.HasMetadataDescription": ctx.Workspace.HasMetadataDescription,
 		"Workspace.TasksUpstream":          ctx.Workspace.TasksUpstream,
+		"Workspace.BeadsDatabaseMode":      ctx.Workspace.BeadsDatabaseMode,
 
 		"Workspace.Peers.Count":          int64(ctx.Workspace.Peers.Count),
 		"Workspace.Peers.Exists":         ctx.Workspace.Peers.Exists,

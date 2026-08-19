@@ -11,7 +11,7 @@ parameters:
     type: beadsId
     required: false
     description: The beads issue ID to fix
-enabledWhen: '(Tools.Names.exists(n, n.matches("(?i)jira")) || CommandExists("jira")) && CommandExists("bd") && DirExists(".beads") && (("jira-sync" in Item.Labels) || (Session.HasBeadsIssue && BeadHasLabels(Session.BeadsIssue, "jira-sync")))'
+enabledWhen: 'Workspace.TasksUpstream == "jira" && (Tools.Names.exists(n, n.matches("(?i)jira")) || CommandExists("jira")) && CommandExists("bd") && DirExists(".beads") && (("jira-sync" in Item.Labels) || (Session.HasBeadsIssue && BeadHasLabels(Session.BeadsIssue, "jira-sync")))'
 preferredModels:
   - modelTag: Coding
 target:

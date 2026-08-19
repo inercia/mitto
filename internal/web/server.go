@@ -1011,6 +1011,9 @@ func NewServer(config Config) (*Server, error) {
 		s.beadsCache = beads.NewCachingClientWithTTL(s.beads, ttl)
 		s.beads = s.beadsCache
 	}
+	sessionMgr.SetBeadsDatabaseModeResolver(func(ctx context.Context, workingDir string) (configPkg.BeadsDatabaseMode, error) {
+		return beads.ResolveDatabaseMode(ctx, s.beads, workingDir)
+	})
 
 	// The REST handlers sub-package facade is constructed later in NewServer,
 	// after callbackIndex, callbackRateLimiter and loopRunner are

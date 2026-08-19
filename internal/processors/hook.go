@@ -282,6 +282,7 @@ func BuildCELContext(input *ProcessorInput) *config.PromptEnabledContext {
 	ctx.Workspace.HasMittoRC = input.HasMittoRC
 	ctx.Workspace.HasMetadataDescription = input.HasMetadataDescription
 	ctx.Workspace.TasksUpstream = input.TasksUpstream
+	ctx.Workspace.BeadsDatabaseMode = string(input.DatabaseMode)
 	ctx.Workspace.UserDataSchemaJSON = input.UserDataSchemaJSON
 
 	// Parent context

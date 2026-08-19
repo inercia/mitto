@@ -4,7 +4,7 @@
   `bd update --metadata` fallback when the helper is not on PATH. See
   .augment/rules/44-beads-attachments.md for the attachment convention:
   attachments are stored as structured JSON under the `attachments` metadata
-  key on the issue, so they travel with `bd dolt push`/`pull`.
+  key on the issue. They replicate only in shared Beads database mode.
 
   Callers pass named fields via a `dict`:
 
@@ -20,8 +20,8 @@
 */ -}}
 {{- $id := .IssueID -}}
 {{- $path := .Path -}}
-Record the file as a structured attachment on the bead so it travels with
-`bd dolt push`/`pull` alongside other metadata:
+Record the file as a structured attachment on the bead. In shared Beads database
+mode it replicates with other metadata; in local-only mode it stays local:
 
 ```bash
 if command -v scripts/bd-attach.sh >/dev/null 2>&1 \

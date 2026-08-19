@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 
 	"github.com/inercia/mitto/internal/appdir"
+	"github.com/inercia/mitto/internal/beads"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/session"
 	"github.com/inercia/mitto/internal/web/handlers"
@@ -198,6 +199,7 @@ func (s *Server) buildPromptEnabledContext(sessionID string) *config.PromptEnabl
 		}
 	}
 	ctx.Workspace.TasksUpstream = config.NormalizeTasksUpstream(config.FolderBeadsUpstream(meta.WorkingDir))
+	ctx.Workspace.BeadsDatabaseMode = string(s.promptBeadsDatabaseMode(meta.WorkingDir))
 
 	// Workspace peers (mitto-4d6): non-archived sessions sharing the same
 	// (WorkingDir, ACPServer) composite key — the identity of a workspace in
@@ -403,6 +405,7 @@ func (s *Server) applyWorkspaceNamespace(ctx *config.PromptEnabledContext, worki
 	ctx.Workspace.Name = ""
 	ctx.Workspace.HasUserDataSchema = false
 	ctx.Workspace.TasksUpstream = config.NormalizeTasksUpstream(config.FolderBeadsUpstream(workingDir))
+	ctx.Workspace.BeadsDatabaseMode = string(s.promptBeadsDatabaseMode(workingDir))
 	var acpServerName string
 	if ws := s.sessionManager.GetWorkspace(workingDir); ws != nil {
 		ctx.Workspace.UUID = ws.UUID
@@ -455,6 +458,24 @@ func (s *Server) applyWorkspaceNamespace(ctx *config.PromptEnabledContext, worki
 			EnabledNames: snap.EnabledNames,
 		}
 	}
+}
+
+func (s *Server) promptBeadsDatabaseMode(workingDir string) config.BeadsDatabaseMode {
+	if s.beads == nil {
+		mode, configured, err := config.ConfiguredFolderBeadsDatabaseMode(workingDir)
+		if err == nil && configured {
+			return mode
+		}
+		return config.BeadsDatabaseModeLocal
+	}
+	mode, err := beads.ResolveDatabaseMode(context.Background(), s.beads, workingDir)
+	if err != nil {
+		s.logger.Warn("failed to resolve Beads database mode for prompt context; using local",
+			"error", err,
+			"working_dir", workingDir)
+		return config.BeadsDatabaseModeLocal
+	}
+	return mode
 }
 
 // buildWorkspacePromptEnabledContext creates a session-less PromptEnabledContext

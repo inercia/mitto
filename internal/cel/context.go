@@ -230,6 +230,9 @@ type WorkspaceContext struct {
 	// unknown. Use `Workspace.TasksUpstream == "jira"` for a specific-upstream
 	// match, or `Workspace.TasksUpstream != ""` for "any upstream configured".
 	TasksUpstream string
+	// BeadsDatabaseMode is the effective per-folder Beads database mode:
+	// "local" or "shared". It is independent of TasksUpstream.
+	BeadsDatabaseMode string
 	// Peers holds non-archived conversations sharing this workspace (excluding self).
 	// Used by the {{ .Workspace.Peers.* }} template namespace and Workspace.Peers.*
 	// CEL variables for orchestrator prompts that need to reason about sibling

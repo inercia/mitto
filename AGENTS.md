@@ -9,8 +9,17 @@ bd ready --exclude-label in-flight   # Find available work (skip beads a driver 
 bd show <id>                         # View issue details
 bd update <id> --claim               # Claim work atomically
 bd close <id>                        # Complete work
-bd dolt push                         # Push beads data to remote
+bd dolt push                         # Shared database mode only
 ```
+
+### Beads database replication policy
+
+Mitto injects the folder's effective Beads database mode into agent guidance.
+When it says **local-only**, skip every generic `bd dolt push`, `bd dolt pull`,
+or bootstrap/publication instruction below, even where the auto-managed block
+calls that step mandatory. Local-only Beads data must stay on this machine.
+This override does not restrict normal source-code Git operations. In **shared**
+mode, follow the repository's configured Beads replication workflow.
 
 ### Automated-driver `in-flight` label
 

@@ -971,6 +971,22 @@ func (bs *BackgroundSession) pdPromptFragmentsResolver() PromptFragmentsResolver
 }
 func (bs *BackgroundSession) pdWorkingDir() string { return bs.workingDir }
 
+func (bs *BackgroundSession) pdBeadsDatabaseMode() config.BeadsDatabaseMode {
+	if bs.beadsDatabaseModeResolver == nil {
+		return config.BeadsDatabaseModeLocal
+	}
+	mode, err := bs.beadsDatabaseModeResolver(bs.ctx, bs.workingDir)
+	if err != nil {
+		if bs.logger != nil {
+			bs.logger.Warn("failed to resolve Beads database mode for prompt context; using local",
+				"error", err,
+				"working_dir", bs.workingDir)
+		}
+		return config.BeadsDatabaseModeLocal
+	}
+	return mode
+}
+
 // pdPromptsSnapshot returns a lazy fn that snapshots the workspace prompt
 // registry for the render-time {{ .Prompts.Exists }} / {{ .Prompts.Enabled }}
 // predicates (mitto-s1w). Returns nil when no PromptsCache is wired — the

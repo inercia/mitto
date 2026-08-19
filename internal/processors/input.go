@@ -120,6 +120,9 @@ type ProcessorInput struct {
 	// processors (json:"tasks_upstream") since it is non-sensitive and
 	// processors currently have no other way to learn the folder's upstream.
 	TasksUpstream string `json:"tasks_upstream,omitempty"`
+	// DatabaseMode is the effective Beads database mode ("local" or "shared").
+	// It is emitted to external command processors as database_mode.
+	DatabaseMode config.BeadsDatabaseMode `json:"database_mode,omitempty"`
 	// UserDataSchemaJSON is the JSON representation of the workspace user data schema.
 	// Used for @mitto:user_data_schema variable substitution.
 	UserDataSchemaJSON string `json:"-"`

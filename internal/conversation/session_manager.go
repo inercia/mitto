@@ -194,6 +194,9 @@ type SessionManager struct {
 
 	// promptFragmentsResolver resolves workspace-scoped fragments for rendering.
 	promptFragmentsResolver PromptFragmentsResolver
+	// beadsDatabaseModeResolver resolves the current effective per-folder Beads
+	// database mode for send-time prompt and processor contexts.
+	beadsDatabaseModeResolver func(context.Context, string) (config.BeadsDatabaseMode, error)
 
 	// preferredModelsResolver resolves a named workspace prompt to its preferredModels list.
 	// Passed to BackgroundSession via BackgroundSessionConfig on creation/resume.
@@ -1091,6 +1094,14 @@ func (sm *SessionManager) SetPromptFragmentsResolver(resolver PromptFragmentsRes
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 	sm.promptFragmentsResolver = resolver
+}
+
+// SetBeadsDatabaseModeResolver sets the effective-mode resolver passed to every
+// new and resumed BackgroundSession.
+func (sm *SessionManager) SetBeadsDatabaseModeResolver(resolver func(context.Context, string) (config.BeadsDatabaseMode, error)) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.beadsDatabaseModeResolver = resolver
 }
 
 // SetPromptsCache sets the workspace prompt registry used by every new /
@@ -2104,10 +2115,11 @@ func (sm *SessionManager) CreateSessionWithWorkspaceAndOptions(ctx context.Conte
 		AvailableACPServers:            availableServers, // Pre-computed workspace server list
 		GlobalMCPServer:                sm.mcpServer,
 		AuxiliaryManager:               sm.auxiliaryManager,
-		SharedProcess:                  sharedProcess,               // Shared ACP process (nil = legacy mode)
-		PruneConfig:                    pruneConfig,                 // Auto-pruning configuration (nil = no auto-pruning)
-		PromptResolver:                 sm.promptResolver,           // Named prompt resolver (resolves prompt name → text)
-		PromptFragmentsResolver:        sm.promptFragmentsResolver,  // Workspace-scoped prompt fragments
+		SharedProcess:                  sharedProcess,              // Shared ACP process (nil = legacy mode)
+		PruneConfig:                    pruneConfig,                // Auto-pruning configuration (nil = no auto-pruning)
+		PromptResolver:                 sm.promptResolver,          // Named prompt resolver (resolves prompt name → text)
+		PromptFragmentsResolver:        sm.promptFragmentsResolver, // Workspace-scoped prompt fragments
+		BeadsDatabaseModeResolver:      sm.beadsDatabaseModeResolver,
 		PreferredModelsResolver:        sm.preferredModelsResolver,  // Named prompt resolver (resolves prompt name → preferredModels)
 		PromptParametersResolver:       sm.promptParametersResolver, // Named prompt resolver (resolves prompt name → parameters)
 		PromptsCache:                   sm.promptsCache,             // Workspace prompt registry for {{ .Prompts.* }} snapshot (mitto-s1w)
@@ -2729,10 +2741,11 @@ func (sm *SessionManager) resumeSessionWithConstraint(sessionID, sessionName, wo
 		AvailableACPServers:            resumeAvailableServers, // Pre-computed workspace server list
 		GlobalMCPServer:                sm.mcpServer,
 		AuxiliaryManager:               sm.auxiliaryManager,
-		SharedProcess:                  sharedProcess,               // Shared ACP process (nil = legacy mode)
-		PruneConfig:                    pruneConfig,                 // Auto-pruning configuration (nil = no auto-pruning)
-		PromptResolver:                 sm.promptResolver,           // Named prompt resolver (resolves prompt name → text)
-		PromptFragmentsResolver:        sm.promptFragmentsResolver,  // Workspace-scoped prompt fragments
+		SharedProcess:                  sharedProcess,              // Shared ACP process (nil = legacy mode)
+		PruneConfig:                    pruneConfig,                // Auto-pruning configuration (nil = no auto-pruning)
+		PromptResolver:                 sm.promptResolver,          // Named prompt resolver (resolves prompt name → text)
+		PromptFragmentsResolver:        sm.promptFragmentsResolver, // Workspace-scoped prompt fragments
+		BeadsDatabaseModeResolver:      sm.beadsDatabaseModeResolver,
 		PreferredModelsResolver:        sm.preferredModelsResolver,  // Named prompt resolver (resolves prompt name → preferredModels)
 		PromptParametersResolver:       sm.promptParametersResolver, // Named prompt resolver (resolves prompt name → parameters)
 		PromptsCache:                   sm.promptsCache,             // Workspace prompt registry for {{ .Prompts.* }} snapshot (mitto-s1w)

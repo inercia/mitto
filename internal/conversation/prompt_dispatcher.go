@@ -30,6 +30,7 @@ type promptDeps interface {
 	pdPromptResolver() PromptResolver                   // may return nil
 	pdPromptFragmentsResolver() PromptFragmentsResolver // may return nil
 	pdWorkingDir() string
+	pdBeadsDatabaseMode() config.BeadsDatabaseMode
 
 	// Agent capabilities
 	pdAgentSupportsImages() bool
@@ -815,6 +816,7 @@ func (p promptDispatcher) buildProcessorInput(d promptDeps, message string, isFi
 		HasMittoRC:             hasMittoRC,
 		HasMetadataDescription: hasMetadataDescription,
 		TasksUpstream:          tasksUpstream,
+		DatabaseMode:           d.pdBeadsDatabaseMode(),
 		UserDataSchemaJSON:     userDataSchemaJSON,
 		UserDataJSON:           userDataJSON,
 		UserData:               userDataMap,

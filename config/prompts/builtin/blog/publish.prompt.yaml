@@ -158,8 +158,8 @@ prompt: |
   bd update {{ $target }} --description "$new_desc"
   ```
 
-  Then record the renamed file as a structured attachment on the bead so
-  the metadata travels with `bd dolt push`/`pull`:
+  Then record the renamed file as a structured attachment on the bead. It
+  replicates in shared Beads database mode and stays local in local-only mode:
 
   {{ template "blog/shared/attach-file-to-bead"
        (dict "IssueID" $target

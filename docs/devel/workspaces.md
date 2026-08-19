@@ -190,7 +190,10 @@ server-level and belong to the **folder**, not to any individual workspace:
   migration never invokes Dolt push/pull, bootstrap, or remote publication.
   `shared` requires an existing Dolt remote, removes only those three policy
   guards, and never changes remote definitions. External task synchronization
-  (`beads.upstream`) remains independent from this replication policy.
+  (`beads.upstream`) remains independent from this replication policy. The
+  effective mode is resolved at prompt menu and send time, exposed as
+  `Workspace.BeadsDatabaseMode`, and forwarded to command processors as
+  `database_mode`.
 
 `folders.json` (in `$MITTO_DIR`, keyed by working directory) is the
 **authoritative store** for these values — not merely a deduplication of

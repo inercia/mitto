@@ -184,7 +184,10 @@ func (f *fakePromptDeps) pdPromptResolver() PromptResolver { return f.resolver }
 func (f *fakePromptDeps) pdPromptFragmentsResolver() PromptFragmentsResolver {
 	return f.fragmentsResolver
 }
-func (f *fakePromptDeps) pdWorkingDir() string        { return f.workingDir }
+func (f *fakePromptDeps) pdWorkingDir() string { return f.workingDir }
+func (f *fakePromptDeps) pdBeadsDatabaseMode() config.BeadsDatabaseMode {
+	return config.BeadsDatabaseModeLocal
+}
 func (f *fakePromptDeps) pdAgentSupportsImages() bool { return f.agentImages }
 func (f *fakePromptDeps) pdHasStore() bool            { return f.hasStore }
 func (f *fakePromptDeps) pdLogger() *slog.Logger      { return f.logger }

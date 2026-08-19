@@ -153,8 +153,8 @@ prompt: |
   echo "created $new_id"
   ```
 
-  Attach the draft file to the new bead so it travels with `bd dolt push`/`pull`
-  alongside other metadata (see .augment/rules/44-beads-attachments.md):
+  Attach the draft file to the new bead. It replicates in shared Beads database
+  mode and stays local in local-only mode (see .augment/rules/44-beads-attachments.md):
 
   {{ template "blog/shared/attach-file-to-bead"
        (dict "IssueID" "$new_id"

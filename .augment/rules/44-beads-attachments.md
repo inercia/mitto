@@ -17,8 +17,8 @@ keywords:
 
 `bd` (beads 1.0.x) has no native attachment command. This project attaches file
 paths to issues using the `attachments` key inside each issue's structured JSON
-metadata column. Metadata syncs with `bd dolt push` / `pull` like any other
-issue field, so attachments travel with the ticket to every collaborator.
+metadata column. In shared database mode, metadata syncs with `bd dolt push` /
+`pull` like any other issue field. In local-only mode, attachments stay local.
 
 ## Schema
 

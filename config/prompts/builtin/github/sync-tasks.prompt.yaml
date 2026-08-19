@@ -7,7 +7,7 @@ group: GitHub
 tags:
 - loop
 - github
-enabledWhen: FileExists(".git/config") && (Tools.HasPattern("github_*") || CommandExists("gh")) && CommandExists("bd")
+enabledWhen: Workspace.TasksUpstream == "github" && FileExists(".git/config") && (Tools.HasPattern("github_*") || CommandExists("gh")) && CommandExists("bd")
 preferredModels:
   - modelTag: Cheap
   - modelTag: Coding

@@ -239,6 +239,7 @@ func ApplyProcessors(ctx context.Context, procs []*Processor, input *ProcessorIn
 			WorkspaceUUID:       input.WorkspaceUUID,
 			AvailableACPServers: input.AvailableACPServers,
 			TasksUpstream:       input.TasksUpstream,
+			DatabaseMode:        input.DatabaseMode,
 		}
 
 		// Execute processor
@@ -1007,6 +1008,7 @@ func (m *Manager) applyWithRerun(ctx context.Context, input *ProcessorInput, ori
 				AvailableACPServers: input.AvailableACPServers,
 				ChildSessions:       input.ChildSessions,
 				TasksUpstream:       input.TasksUpstream,
+				DatabaseMode:        input.DatabaseMode,
 			}
 			execStart := time.Now()
 			output, err := executor.Execute(ctx, proc, procInput)

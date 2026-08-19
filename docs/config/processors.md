@@ -701,7 +701,7 @@ expression must evaluate to `true`.
 - `Session.ID`, `Session.Name`, `Session.IsChild`, `Session.IsAutoChild`, `Session.ParentID`, `Session.IsLoop`
 - `Parent.Exists`, `Parent.Name`, `Parent.ACPServer`
 - `Children.Count`, `Children.Exists`, `Children.MCPCount`, `Children.Names`, `Children.ACPServers`
-- `Workspace.UUID`, `Workspace.Folder`, `Workspace.Name`
+- `Workspace.UUID`, `Workspace.Folder`, `Workspace.Name`, `Workspace.TasksUpstream`, `Workspace.BeadsDatabaseMode`
 - `Tools.Available`, `Tools.Names`
 - `Tools.HasPattern("glob_*")`, `Tools.HasAllPatterns(["g1", "g2"])`, `Tools.HasAnyPattern(["g1", "g2"])`
 - `Permissions.CanDoIntrospection`, `Permissions.CanSendPrompt`, `Permissions.CanPromptUser`, `Permissions.CanStartConversation`, `Permissions.CanInteractOtherWorkspaces`, `Permissions.AutoApprovePermissions`
@@ -839,6 +839,8 @@ All input is JSON. The format depends on the `input` setting:
   "session_name": "Fix login bug",
   "acp_server": "claude-code",
   "workspace_uuid": "d4e5f6a7-...",
+  "tasks_upstream": "jira",
+  "database_mode": "local",
   "available_acp_servers": [
     {
       "name": "auggie",
@@ -875,6 +877,8 @@ All input is JSON. The format depends on the `input` setting:
   "session_name": "Fix login bug",
   "acp_server": "claude-code",
   "workspace_uuid": "d4e5f6a7-...",
+  "tasks_upstream": "jira",
+  "database_mode": "local",
   "available_acp_servers": [
     {
       "name": "auggie",
