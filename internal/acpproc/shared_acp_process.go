@@ -389,7 +389,9 @@ type SharedACPProcess struct {
 	// session/load, and session/new). The GC checks this counter before stopping an
 	// idle process to avoid killing the pipe while an RPC is in-flight (LoadSession
 	// can take 70+ seconds).
-	activeRPCs atomic.Int32
+	activeRPCs      atomic.Int32
+	activeRPCMu     sync.Mutex
+	activeRPCIdleCh chan struct{}
 
 	// setModelSem serialises set_model RPCs per process so concurrent callers queue
 	// instead of racing the serially-served agent subprocess (mitto-3q9).
@@ -1658,8 +1660,8 @@ func isAgentQueryClosedErr(err error) bool {
 
 // NewSession creates a new ACP session on this shared process.
 func (p *SharedACPProcess) NewSession(ctx context.Context, cwd string, mcpServers []acp.McpServer) (*conversation.SessionHandle, error) {
-	p.activeRPCs.Add(1)
-	defer p.activeRPCs.Add(-1)
+	p.beginRPC()
+	defer p.endRPC()
 
 	totalStart := time.Now()
 
@@ -2012,8 +2014,8 @@ func (p *SharedACPProcess) NewSession(ctx context.Context, cwd string, mcpServer
 
 // LoadSession attempts to load/resume an existing ACP session.
 func (p *SharedACPProcess) LoadSession(ctx context.Context, acpSessionID, cwd string, mcpServers []acp.McpServer) (*conversation.SessionHandle, error) {
-	p.activeRPCs.Add(1)
-	defer p.activeRPCs.Add(-1)
+	p.beginRPC()
+	defer p.endRPC()
 
 	totalStart := time.Now()
 
@@ -2206,8 +2208,8 @@ func (p *SharedACPProcess) LoadSession(ctx context.Context, acpSessionID, cwd st
 // This is faster than LoadSession but requires the agent to support session/resume
 // and still have the session in memory.
 func (p *SharedACPProcess) ResumeSession(ctx context.Context, acpSessionID, cwd string, mcpServers []acp.McpServer) (*conversation.SessionHandle, error) {
-	p.activeRPCs.Add(1)
-	defer p.activeRPCs.Add(-1)
+	p.beginRPC()
+	defer p.endRPC()
 
 	totalStart := time.Now()
 
@@ -2303,8 +2305,8 @@ func (p *SharedACPProcess) ProcessDone() <-chan struct{} {
 
 // Prompt sends a prompt to a specific session on this shared process.
 func (p *SharedACPProcess) Prompt(ctx context.Context, sessionID acp.SessionId, content []acp.ContentBlock) (acp.PromptResponse, error) {
-	p.activeRPCs.Add(1)
-	defer p.activeRPCs.Add(-1)
+	p.beginRPC()
+	defer p.endRPC()
 
 	p.mu.RLock()
 	conn := p.conn
@@ -2325,6 +2327,52 @@ func (p *SharedACPProcess) Prompt(ctx context.Context, sessionID acp.SessionId, 
 // while it is actively serving requests.
 func (p *SharedACPProcess) ActiveRPCs() int32 {
 	return p.activeRPCs.Load()
+}
+
+func (p *SharedACPProcess) beginRPC() {
+	p.activeRPCMu.Lock()
+	if p.activeRPCs.Add(1) == 1 {
+		p.activeRPCIdleCh = make(chan struct{})
+	}
+	p.activeRPCMu.Unlock()
+}
+
+func (p *SharedACPProcess) endRPC() {
+	p.activeRPCMu.Lock()
+	if p.activeRPCs.Add(-1) == 0 && p.activeRPCIdleCh != nil {
+		close(p.activeRPCIdleCh)
+		p.activeRPCIdleCh = nil
+	}
+	p.activeRPCMu.Unlock()
+}
+
+// WaitForQuiescence blocks until all in-flight RPCs finish, the process exits,
+// or ctx is cancelled. The transition notification prevents deferred auxiliary
+// work from missing short idle windows between fixed polling instants.
+func (p *SharedACPProcess) WaitForQuiescence(ctx context.Context) bool {
+	p.activeRPCMu.Lock()
+	if p.activeRPCs.Load() == 0 {
+		p.activeRPCMu.Unlock()
+		return true
+	}
+	idleCh := p.activeRPCIdleCh
+	if idleCh == nil {
+		idleCh = make(chan struct{})
+		p.activeRPCIdleCh = idleCh
+	}
+	p.activeRPCMu.Unlock()
+
+	p.mu.RLock()
+	processDone := p.processDone
+	p.mu.RUnlock()
+	select {
+	case <-idleCh:
+		return true
+	case <-processDone:
+		return false
+	case <-ctx.Done():
+		return false
+	}
 }
 
 // memorySample returns effective memory and the RSS breakdown from one process
@@ -2416,8 +2464,8 @@ func (p *SharedACPProcess) SetSessionModel(ctx context.Context, sessionID acp.Se
 	}
 
 	// Track as an active RPC for GC visibility (mirrors other methods).
-	p.activeRPCs.Add(1)
-	defer p.activeRPCs.Add(-1)
+	p.beginRPC()
+	defer p.endRPC()
 
 	var lastErr error
 	for attempt := 1; attempt <= setSessionModelMaxAttempts; attempt++ {

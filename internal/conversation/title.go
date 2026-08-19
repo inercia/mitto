@@ -252,6 +252,7 @@ func GenerateAndSetTitle(cfg TitleGenerationConfig) {
 
 		var title string
 		var lastErr error
+		waitForQuiescence := false
 		for attempt := 0; ; attempt++ {
 			pendingRecovery := attempt > titleMaxRetries
 			if pendingRecovery && !SessionNeedsTitle(cfg.Store, cfg.SessionID) {
@@ -274,11 +275,26 @@ func GenerateAndSetTitle(cfg TitleGenerationConfig) {
 							"delay", delay)
 					}
 				}
-				time.Sleep(delay)
+				if waitForQuiescence {
+					waitStart := time.Now()
+					waitCtx, waitCancel := context.WithTimeout(context.Background(), delay)
+					observed := cfg.AuxiliaryManager.WaitForProcessQuiescence(waitCtx, cfg.WorkspaceUUID)
+					waitCancel()
+					if observed && cfg.Logger != nil {
+						cfg.Logger.Debug("Observed process quiescence for pending title generation",
+							"session_id", cfg.SessionID)
+					}
+					if remaining := delay - time.Since(waitStart); !observed && remaining > 0 {
+						time.Sleep(remaining)
+					}
+				} else {
+					time.Sleep(delay)
+				}
 				if pendingRecovery && !SessionNeedsTitle(cfg.Store, cfg.SessionID) {
 					return
 				}
 			}
+			waitForQuiescence = false
 
 			// The 20-minute budget covers auxiliary session setup and the prompt itself.
 			ctx, cancel := context.WithTimeout(context.Background(), titleSessionCreateTimeout)
@@ -306,6 +322,7 @@ func GenerateAndSetTitle(cfg TitleGenerationConfig) {
 			// without requiring another prompt-completion edge.
 			if errors.Is(lastErr, acperrors.ErrProcessBusy) {
 				if cfg.Store != nil && cfg.SessionID != "" {
+					waitForQuiescence = true
 					if attempt == titleMaxRetries && cfg.Logger != nil {
 						cfg.Logger.Info("Retaining pending title generation until process quiescence",
 							"session_id", cfg.SessionID,
@@ -313,6 +330,7 @@ func GenerateAndSetTitle(cfg TitleGenerationConfig) {
 					}
 					continue
 				}
+				waitForQuiescence = false
 				if attempt >= titleMaxRetries {
 					break
 				}

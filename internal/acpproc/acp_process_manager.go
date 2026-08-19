@@ -88,6 +88,9 @@ type ACPProcessManager struct {
 	// same-key callers serialize, eliminating the need to hold auxMu across
 	// slow NewSession and SetSessionModel RPCs. (mitto-w19)
 	auxCreateMu map[auxSessionKey]*sync.Mutex
+	// auxQuiescenceWaits coalesces deferred title-session admission per workspace.
+	auxQuiescenceMu    sync.Mutex
+	auxQuiescenceWaits map[string]*processQuiescenceWait
 
 	// Global context for all managed processes.
 	ctx context.Context
@@ -262,6 +265,11 @@ type auxiliarySessionState struct {
 	lastUsed  time.Time
 }
 
+type processQuiescenceWait struct {
+	done     chan struct{}
+	observed bool
+}
+
 // sharedProcessConfigMatchesWorkspace returns true if the running process config
 // matches the resolved ACP parameters for the workspace.
 // acpCommand, acpCwd, and acpEnv are the runtime-resolved values (not stored on workspace).
@@ -337,12 +345,13 @@ func diffEnvKeys(a, b map[string]string) (added, removed, changed []string) {
 // at server startup if orphan cleanup is desired.
 func NewACPProcessManager(ctx context.Context, logger *slog.Logger) *ACPProcessManager {
 	m := &ACPProcessManager{
-		processes:   make(map[string]*SharedACPProcess),
-		auxSessions: make(map[auxSessionKey]*auxiliarySessionState),
-		auxCreateMu: make(map[auxSessionKey]*sync.Mutex),
-		pinState:    make(map[string]*pinInfo),
-		ctx:         ctx,
-		logger:      logger,
+		processes:          make(map[string]*SharedACPProcess),
+		auxSessions:        make(map[auxSessionKey]*auxiliarySessionState),
+		auxCreateMu:        make(map[auxSessionKey]*sync.Mutex),
+		auxQuiescenceWaits: make(map[string]*processQuiescenceWait),
+		pinState:           make(map[string]*pinInfo),
+		ctx:                ctx,
+		logger:             logger,
 	}
 	// Diagnostic: expose the live shared-ACP-process count to the coldstart
 	// sampler (mitto-3mv). Latest manager wins; benign in tests.
@@ -616,8 +625,11 @@ func (m *ACPProcessManager) FirePrewarmPinAlert(workspaceUUID string) {
 	}
 }
 
-// Ensure ACPProcessManager implements auxiliary.ProcessProvider
-var _ auxiliary.ProcessProvider = (*ACPProcessManager)(nil)
+// Ensure ACPProcessManager implements the auxiliary provider capabilities.
+var (
+	_ auxiliary.ProcessProvider           = (*ACPProcessManager)(nil)
+	_ auxiliary.ProcessQuiescenceProvider = (*ACPProcessManager)(nil)
+)
 
 // GetOrCreateProcess returns the shared ACP process for the given workspace,
 // creating one if it doesn't exist yet. If prewarm is true and a new process is
@@ -1157,6 +1169,69 @@ func (m *ACPProcessManager) PromptAuxiliaryAsync(ctx context.Context, workspaceU
 // saturation has not yet tripped and NewSession would otherwise burn the full
 // auxSessionCreateBudget (60s) hitting the agent's internal deadline.
 const auxSessionCreateBusyRPCThreshold = int32(1)
+
+// deferredAuxQuiescenceWindow gives queued foreground work a brief opportunity
+// to claim the process before deferred title-session creation is admitted.
+const deferredAuxQuiescenceWindow = 100 * time.Millisecond
+
+// WaitForProcessQuiescence waits for a stable zero-RPC edge. Concurrent title jobs
+// in one workspace share a single underlying wait; same-purpose createMu then
+// coalesces their eventual auxiliary session creation.
+func (m *ACPProcessManager) WaitForProcessQuiescence(ctx context.Context, workspaceUUID string) bool {
+	m.auxQuiescenceMu.Lock()
+	wait, ok := m.auxQuiescenceWaits[workspaceUUID]
+	if !ok {
+		wait = &processQuiescenceWait{done: make(chan struct{})}
+		m.auxQuiescenceWaits[workspaceUUID] = wait
+		go m.runProcessQuiescenceWait(workspaceUUID, wait)
+	}
+	m.auxQuiescenceMu.Unlock()
+
+	select {
+	case <-wait.done:
+		return wait.observed
+	case <-ctx.Done():
+		return false
+	}
+}
+
+func (m *ACPProcessManager) runProcessQuiescenceWait(workspaceUUID string, wait *processQuiescenceWait) {
+	observed := false
+	process := m.GetProcess(workspaceUUID)
+	if process != nil {
+		waitCtx := m.ctx
+		if waitCtx == nil {
+			waitCtx = context.Background()
+		}
+		for process.WaitForQuiescence(waitCtx) {
+			timer := time.NewTimer(deferredAuxQuiescenceWindow)
+			select {
+			case <-timer.C:
+				if m.GetProcess(workspaceUUID) == process && process.ActiveRPCs() == 0 {
+					observed = true
+				}
+			case <-waitCtx.Done():
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+			}
+			if observed || waitCtx.Err() != nil {
+				break
+			}
+		}
+	}
+
+	m.auxQuiescenceMu.Lock()
+	if m.auxQuiescenceWaits[workspaceUUID] == wait {
+		delete(m.auxQuiescenceWaits, workspaceUUID)
+	}
+	wait.observed = observed
+	close(wait.done)
+	m.auxQuiescenceMu.Unlock()
+}
 
 // isProactiveBailPurpose reports whether an auxiliary purpose is subject to the
 // proactive ActiveRPCs()-based load-shed (mitto-9gt). Background pre-warming and

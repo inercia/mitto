@@ -179,6 +179,13 @@ func NewWorkspaceAuxiliaryManager(provider ProcessProvider, logger *slog.Logger)
 	}
 }
 
+// WaitForProcessQuiescence waits for a stable idle edge when the underlying
+// process provider supports it. False means unavailable, cancelled, or stopped.
+func (m *WorkspaceAuxiliaryManager) WaitForProcessQuiescence(ctx context.Context, workspaceUUID string) bool {
+	provider, ok := m.provider.(ProcessQuiescenceProvider)
+	return ok && provider.WaitForProcessQuiescence(ctx, workspaceUUID)
+}
+
 // GenerateTitle generates a short title for a conversation based on the initial message.
 func (m *WorkspaceAuxiliaryManager) GenerateTitle(ctx context.Context, workspaceUUID, initialMessage string) (string, error) {
 	prompt := fmt.Sprintf(GenerateTitlePromptTemplate, initialMessage)

@@ -26,3 +26,9 @@ type ProcessProvider interface {
 	// This should be called when a workspace is removed or its ACP process is stopped.
 	CloseWorkspaceAuxiliary(workspaceUUID string) error
 }
+
+// ProcessQuiescenceProvider is an optional ProcessProvider capability used by
+// deferred auxiliary work that can wait for a safe zero-RPC admission edge.
+type ProcessQuiescenceProvider interface {
+	WaitForProcessQuiescence(ctx context.Context, workspaceUUID string) bool
+}

@@ -606,6 +606,17 @@ sequenceDiagram
 | `GenerateQueuedMessageTitle` | `internal/auxiliary/global.go` | Prompt for title generation  |
 | `Queue.UpdateTitle`          | `internal/session/queue.go`    | Persist title to queue.json  |
 
+### Conversation auto-title recovery
+
+Conversation titles use one retained job per session. When title-session creation
+is load-shed because the shared ACP process has active foreground RPCs, the job
+subscribes to `SharedACPProcess`'s zero-RPC edge instead of relying only on the
+30/60/120-second polling cadence. `ACPProcessManager` coalesces these waits per
+workspace and requires a 100ms stable idle window before admitting deferred work,
+so queued foreground RPCs keep priority. Same-purpose auxiliary creation remains
+serialized by `auxCreateMu`; the capped polling delay is retained as a fallback if
+the provider cannot expose quiescence or the process stops.
+
 ### QueueTitleWorker
 
 The worker processes title requests sequentially to avoid overwhelming the auxiliary conversation:

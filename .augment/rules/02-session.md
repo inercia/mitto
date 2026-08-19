@@ -157,6 +157,13 @@ Stored in `loop.json`. Only top-level sessions may have loop prompts (child → 
 
 `internal/auxiliary` — hidden ACP session for utility tasks (title gen, follow-ups). Lazy init, auto-approve permissions, file writes denied, thread-safe. Entry points: `Initialize` / `GenerateTitle` / `Shutdown`.
 
+**Deferred title admission**: `SharedACPProcess` signals the zero-active-RPC edge;
+`ACPProcessManager.WaitForProcessQuiescence` coalesces waiters per workspace and
+requires a short stable-idle window before title-session creation. Retained
+conversation title jobs should use this optional provider capability after
+`ErrProcessBusy`, with bounded polling only as the fallback. Do not raise the
+global busy threshold or add independent per-title creation polling.
+
 ## Action Buttons Store
 
 `ActionButtonsStore` persists follow-up suggestions to `action_buttons.json` (not `events.jsonl`). Two-tier cache in BackgroundSession (memory + disk); `Clear()` deletes the file rather than writing empty. See [docs/devel/follow-up-suggestions.md](../docs/devel/follow-up-suggestions.md).
