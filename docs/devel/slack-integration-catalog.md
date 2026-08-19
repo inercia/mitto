@@ -16,10 +16,11 @@ Non-secret metadata is stored in the versioned
 It contains:
 
 - app and installation UUIDs and display names;
-- Slack app, team, bot, and bot-user IDs derived during validation;
+- Slack app/team identity, credential kind (`bot` or `user`), and the relevant
+  bot/bot-user or delegated-user ID derived during validation;
 - validation, creation, and update timestamps.
 
-App (`xapp-`) and bot (`xoxb-`) tokens never enter that document. They are stored
+App (`xapp-`), bot, and delegated-user tokens never enter that document. They are stored
 through `internal/secrets` with `NamespaceSlackApp` or
 `NamespaceSlackInstallation` credential references. API request bodies accept
 tokens only on create or explicit token-replacement operations. Response DTOs
@@ -59,9 +60,14 @@ sequenceDiagram
 ```
 
 App tokens are checked through `apps.connections.open`; the app ID is derived from
-the validated `xapp` token shape. Workspace bot tokens are checked with `auth.test`
-and `bots.info`, which derive the team, bot user, bot, and parent app IDs. A supplied
-team ID or an existing app/installation identity must match those derived values.
+the validated `xapp` token shape. Installation credentials are classified from the
+validated `auth.test` response, never from their prefix alone. A `bot_id` selects bot
+mode and `bots.info` supplies the parent app ID. Otherwise delegated-user mode
+requires `auth.test` to supply the authorizing user and parent app IDs; a response
+that cannot prove the app binding is rejected fail-closed. A supplied team ID or an
+existing app/installation identity must match the derived app and team. Revalidation
+also requires the stored kind to remain unchanged, while explicit replacement may
+switch kinds when the app/team identity still matches.
 
 ## REST API
 
@@ -80,8 +86,8 @@ messages rather than decoder, provider, or credential text.
 | `GET`                    | `/api/slack/apps/{appId}/prepare-delete`                   | Report cascading installations and references        |
 | `GET`, `POST`            | `/api/slack/apps/{appId}/installations`                    | List or create workspace installations               |
 | `GET`, `PATCH`, `DELETE` | `/api/slack/installations/{installationId}`                | Read, rename, or delete an installation              |
-| `POST`                   | `/api/slack/installations/{installationId}/validate`       | Revalidate the configured bot token                  |
-| `PUT`                    | `/api/slack/installations/{installationId}/token`          | Validate and replace a bot token                     |
+| `POST`                   | `/api/slack/installations/{installationId}/validate`       | Revalidate the configured credential                 |
+| `PUT`                    | `/api/slack/installations/{installationId}/token`          | Validate and replace an installation credential      |
 | `GET`                    | `/api/slack/installations/{installationId}/prepare-delete` | Report loop references                               |
 | `GET`                    | `/api/slack/installations/{installationId}/channels`       | Discover public and visible private channels         |
 | `GET`, `POST`            | `/api/slack/environment-import`                            | Inspect or import the deprecated environment adapter |
@@ -111,17 +117,16 @@ for that installation. A generation guard prevents an in-flight request using an
 old credential from repopulating the cache after invalidation.
 
 The app-level `xapp-...` Socket Mode token needs `connections:write` and is used
-only for transport. The current catalog accepts an `xoxb-...` bot token, which
-needs `users:read` for the `bots.info` identity check, `channels:read` and
+only for transport. A bot credential needs `users:read` for the `bots.info` identity check, `channels:read` and
 `groups:read` for discovery, and `channels:history` plus `groups:history` for the
 default `message.channels` and `message.groups` bot events. Add
 `app_mentions:read` and the `app_mention` bot event only for mention mode.
 
-The default manifest also prepares delegated-user authorization with user scopes
+The default manifest supports delegated-user authorization with user scopes
 `channels:read`, `groups:read`, `channels:history`, and `groups:history`, plus
-`message.channels` and `message.groups` user events. This does not make user-token
-mode active in the catalog; do not configure a user token until backend support
-lands. Existing apps must apply the current manifest and reinstall or reauthorize
+`message.channels` and `message.groups` user events. The catalog validates and stores
+that credential in user mode only when Slack proves its app/team binding. Existing
+apps must apply the current manifest and reinstall or reauthorize
 the app before either bot or user tokens carry newly-added scopes.
 `chat:write`, attachments, and automatic file fetching are not part of v1.
 
@@ -142,7 +147,8 @@ app profile; the detail pane manages its app credential and any number of Slack
 workspace installations. A Slack workspace here means a Slack team, not a Mitto
 project workspace.
 
-Token fields are always blank write-only inputs. Successful create or replace
+Credential fields are always blank write-only inputs. Installation responses expose
+only `credential_kind` and the relevant non-secret bot or user identity. Successful create or replace
 operations clear the input immediately, while every GET response and rendered
 status uses only `token_configured`, validated identities, and validation time.
 The UI calls `prepare-delete` before offering deletion and shows active loop

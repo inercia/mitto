@@ -8,11 +8,21 @@ import (
 )
 
 const (
-	DocumentVersion        = 1
-	AppTokenCredential     = "app-token"
-	BotTokenCredential     = "bot-token"
-	DefaultChannelPageSize = 100
-	MaxChannelPageSize     = 200
+	DocumentVersion    = 1
+	AppTokenCredential = "app-token"
+	// InstallationTokenCredential retains the original vault key so existing
+	// bot credentials remain available without reading or rewriting secrets.
+	InstallationTokenCredential = "bot-token"
+	BotTokenCredential          = InstallationTokenCredential
+	DefaultChannelPageSize      = 100
+	MaxChannelPageSize          = 200
+)
+
+type CredentialKind string
+
+const (
+	CredentialKindBot  CredentialKind = "bot"
+	CredentialKindUser CredentialKind = "user"
 )
 
 var (
@@ -33,16 +43,18 @@ type AppProfile struct {
 }
 
 type Installation struct {
-	ID          string    `json:"id"`
-	AppID       string    `json:"app_id"`
-	Name        string    `json:"name"`
-	TeamID      string    `json:"team_id"`
-	TeamName    string    `json:"team_name,omitempty"`
-	BotID       string    `json:"bot_id"`
-	BotUserID   string    `json:"bot_user_id"`
-	ValidatedAt time.Time `json:"validated_at"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	ID             string         `json:"id"`
+	AppID          string         `json:"app_id"`
+	Name           string         `json:"name"`
+	CredentialKind CredentialKind `json:"credential_kind"`
+	TeamID         string         `json:"team_id"`
+	TeamName       string         `json:"team_name,omitempty"`
+	BotID          string         `json:"bot_id,omitempty"`
+	BotUserID      string         `json:"bot_user_id,omitempty"`
+	UserID         string         `json:"user_id,omitempty"`
+	ValidatedAt    time.Time      `json:"validated_at"`
+	CreatedAt      time.Time      `json:"created_at"`
+	UpdatedAt      time.Time      `json:"updated_at"`
 }
 
 type AppView struct {
@@ -56,11 +68,13 @@ type InstallationView struct {
 }
 
 type InstallationIdentity struct {
-	SlackAppID string
-	TeamID     string
-	TeamName   string
-	BotID      string
-	BotUserID  string
+	CredentialKind CredentialKind
+	SlackAppID     string
+	TeamID         string
+	TeamName       string
+	BotID          string
+	BotUserID      string
+	UserID         string
 }
 
 type Channel struct {

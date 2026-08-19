@@ -85,6 +85,12 @@ export function slackHealth(record, attempt = "") {
   return { label: "Configured", className: "badge-info" };
 }
 
+export function slackCredentialKind(record) {
+  return record?.credential_kind === "user"
+    ? { label: "Delegated user", className: "badge-secondary" }
+    : { label: "Bot", className: "badge-primary" };
+}
+
 function isAbortError(error) {
   return error?.name === "AbortError" || error?.cause?.name === "AbortError";
 }
@@ -167,6 +173,7 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
       installations.find((item) => item.id === selectedInstallationId) || null,
     [installations, selectedInstallationId],
   );
+  const selectedCredentialKind = slackCredentialKind(selectedInstallation);
 
   const notify = (message, style = "success") => {
     notifySlackIntegrationsUpdated();
@@ -410,7 +417,7 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
       const created = await client.slack.createInstallation(appId, {
         name: newInstallationName.trim(),
         team_id: newTeamId.trim(),
-        bot_token: newBotToken,
+        token: newBotToken,
       });
       if (selectedAppIdRef.current === appId) {
         setNewBotToken("");
@@ -464,12 +471,12 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
         setBotToken("");
         setInstallationValidation("success");
       }
-      notify("Slack bot token replaced and validated.");
+      notify("Slack installation credential replaced and validated.");
     } catch {
       if (selectedInstallationIdRef.current === id) {
         setInstallationValidation("failed");
         setActionError(
-          "The replacement bot token was rejected; the configured credential was not changed.",
+          "The replacement credential was rejected; the configured credential was not changed.",
         );
       }
     } finally {
@@ -645,9 +652,9 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
               OAuth scopes and event subscriptions. Socket Mode still needs a
               separate app-level token with <code>connections:write</code>. Bot mode
               uses the bot token; invite the bot to each private channel before
-              selecting it in a trigger. The manifest also authorizes a user token,
-              but do not configure it in Mitto until delegated-user backend support
-              is enabled. Existing apps must apply the current manifest and be
+              selecting it in a trigger. The delegated-user backend support is enabled:
+              a user token is validated and bound to this app and team before it is
+              stored. Existing apps must apply the current manifest and be
               reauthorized for all newly added bot and user scopes, including
               <code>groups:read</code> and <code>groups:history</code>.
             </p>
@@ -1026,12 +1033,14 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
                             </fieldset>
                           </div>
                           <fieldset class="fieldset">
-                            <legend class="fieldset-legend">Bot token</legend>
+                            <legend class="fieldset-legend">
+                              Installation credential
+                            </legend>
                             <input
                               type="password"
                               autocomplete="off"
                               class="input input-sm w-full"
-                              placeholder="xoxb-…"
+                              placeholder="Bot or delegated-user OAuth token"
                               value=${newBotToken}
                               onInput=${(event) =>
                                 setNewBotToken(event.target.value)}
@@ -1095,10 +1104,18 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
                                 identityLabel="Team ID"
                                 identityValue=${selectedInstallation.team_id}
                               />
+                              <span
+                                class="badge badge-sm badge-soft ${selectedCredentialKind.className}"
+                                data-testid="slack-credential-kind"
+                                >${selectedCredentialKind.label}</span
+                              >
                               ${selectedInstallation.team_name &&
                               html`<p class="text-xs text-mitto-text-muted">
                                 Slack team: ${selectedInstallation.team_name} ·
-                                Bot: ${selectedInstallation.bot_id || "Unknown"}
+                                ${selectedInstallation.credential_kind ===
+                                "user"
+                                  ? `User: ${selectedInstallation.user_id || "Unknown"}`
+                                  : `Bot: ${selectedInstallation.bot_id || "Unknown"}`}
                               </p>`}
                             </div>
                             <div class="flex gap-2">
@@ -1161,14 +1178,14 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
                             </fieldset>
                             <fieldset class="fieldset">
                               <legend class="fieldset-legend">
-                                Replace bot token
+                                Replace installation credential
                               </legend>
                               <div class="join w-full">
                                 <input
                                   type="password"
                                   autocomplete="off"
                                   class="input input-sm join-item flex-1"
-                                  placeholder="New xoxb-… token"
+                                  placeholder="New bot or delegated-user token"
                                   value=${botToken}
                                   onInput=${(event) =>
                                     setBotToken(event.target.value)}
@@ -1206,7 +1223,7 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
         class="alert alert-info alert-soft text-sm"
         data-testid="slack-credential-storage-note"
       >
-        App and bot tokens are write-only and stored in Mitto's credential vault.
+        App and installation credentials are write-only and stored in Mitto's credential vault.
         On Linux the vault is an atomic file restricted to mode 0600 inside a
         mode 0700 directory.
       </div>

@@ -53,7 +53,8 @@ func TestSlackClientValidationAndPaginatedChannels(t *testing.T) {
 		t.Fatalf("ValidateApp() = %q, %v", appID, err)
 	}
 	identity, err := client.ValidateInstallation(context.Background(), botToken)
-	if err != nil || identity.SlackAppID != "A123" || identity.TeamID != "T123" || identity.BotUserID != "U123" {
+	if err != nil || identity.CredentialKind != CredentialKindBot || identity.SlackAppID != "A123" ||
+		identity.TeamID != "T123" || identity.BotUserID != "U123" {
 		t.Fatalf("ValidateInstallation() = %#v, %v", identity, err)
 	}
 	page, err := client.ListChannels(context.Background(), botToken, "cursor-1", 25)
@@ -65,6 +66,51 @@ func TestSlackClientValidationAndPaginatedChannels(t *testing.T) {
 	wantMethods := []string{"apps.connections.open", "auth.test", "bots.info", "conversations.list"}
 	if fmt.Sprint(methods) != fmt.Sprint(wantMethods) {
 		t.Fatalf("methods = %v, want %v", methods, wantMethods)
+	}
+}
+
+func TestSlackClientClassifiesDelegatedUserFromAuthTest(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/auth.test" {
+			t.Fatalf("unexpected Slack method %s", r.URL.Path)
+		}
+		fmt.Fprint(w, `{"ok":true,"app_id":"A123","team_id":"T123","team":"Example","user_id":"U456"}`)
+	}))
+	defer server.Close()
+
+	client := &SlackClient{APIURL: server.URL, Client: server.Client()}
+	identity, err := client.ValidateInstallation(context.Background(), "xoxp-user-secret")
+	if err != nil || identity.CredentialKind != CredentialKindUser || identity.SlackAppID != "A123" ||
+		identity.TeamID != "T123" || identity.UserID != "U456" || identity.BotID != "" {
+		t.Fatalf("ValidateInstallation() = %#v, %v", identity, err)
+	}
+}
+
+func TestSlackClientRejectsDelegatedUserWithoutProvenAppIdentity(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, `{"ok":true,"team_id":"T123","user_id":"U456"}`)
+	}))
+	defer server.Close()
+
+	client := &SlackClient{APIURL: server.URL, Client: server.Client()}
+	_, err := client.ValidateInstallation(context.Background(), "xoxp-user-secret")
+	if !errors.Is(err, ErrConflict) || strings.Contains(err.Error(), "xoxp-user-secret") {
+		t.Fatalf("missing app identity error = %v", err)
+	}
+}
+
+func TestSlackClientClassifiesRevokedAndDeactivatedAuthorizationAsInvalid(t *testing.T) {
+	for _, code := range []string{"token_revoked", "token_expired", "account_inactive"} {
+		t.Run(code, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				fmt.Fprintf(w, `{"ok":false,"error":%q}`, code)
+			}))
+			defer server.Close()
+			client := &SlackClient{APIURL: server.URL, Client: server.Client()}
+			if _, err := client.ValidateInstallation(context.Background(), "xoxp-user-secret"); !errors.Is(err, ErrInvalid) {
+				t.Fatalf("ValidateInstallation() error = %v", err)
+			}
+		})
 	}
 }
 

@@ -101,7 +101,7 @@ describe("Slack catalog resource", () => {
     await slack.createInstallation("app 1/x", {
       name: "Workspace One",
       team_id: "T1",
-      bot_token: "test-bot-token",
+      token: "test-installation-token",
     });
     expect(calls.map((call) => [call.init.method, call.url])).toEqual([
       ["GET", "/api/slack/apps/app%201%2Fx/installations"],
@@ -110,7 +110,7 @@ describe("Slack catalog resource", () => {
     expect(parsedBody(calls[1])).toEqual({
       name: "Workspace One",
       team_id: "T1",
-      bot_token: "test-bot-token",
+      token: "test-installation-token",
     });
   });
 

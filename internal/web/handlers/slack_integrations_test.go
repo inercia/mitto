@@ -76,6 +76,27 @@ func newLocalSlackRequest(method, target, body string) *http.Request {
 	return request
 }
 
+func TestSlackInstallationCreateRequestCredentialCompatibility(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		request slackInstallationCreateRequest
+		want    string
+		wantErr bool
+	}{
+		{"generic", slackInstallationCreateRequest{Token: "user-token"}, "user-token", false},
+		{"legacy", slackInstallationCreateRequest{BotToken: "bot-token"}, "bot-token", false},
+		{"matching", slackInstallationCreateRequest{Token: "same", BotToken: "same"}, "same", false},
+		{"conflicting", slackInstallationCreateRequest{Token: "one", BotToken: "two"}, "", true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := test.request.credential()
+			if got != test.want || (err != nil) != test.wantErr {
+				t.Fatalf("credential() = %q, %v", got, err)
+			}
+		})
+	}
+}
+
 type trackingSlackBody struct {
 	reader *strings.Reader
 	read   bool

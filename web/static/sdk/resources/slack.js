@@ -1,7 +1,8 @@
 /**
  * Process-global Slack integration catalog resource.
- * Credentials are write-only request fields; every response is non-secret
- * metadata plus token_configured booleans.
+ * Bot and delegated-user credentials use the generic write-only `token`
+ * request field; every response is non-secret identity metadata plus
+ * token_configured booleans.
  */
 import { request } from "../core/transport.js";
 

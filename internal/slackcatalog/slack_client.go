@@ -12,7 +12,10 @@ import (
 	"time"
 )
 
-var appTokenPattern = regexp.MustCompile(`^xapp-[0-9]+-(A[A-Z0-9]+)-`)
+var (
+	appTokenPattern          = regexp.MustCompile(`^xapp-[0-9]+-(A[A-Z0-9]+)-`)
+	installationTokenPattern = regexp.MustCompile(`^xox[a-z]-`)
+)
 
 const slackRequestTimeout = 30 * time.Second
 
@@ -60,12 +63,14 @@ func (c *SlackClient) ValidateApp(ctx context.Context, token string) (string, er
 }
 
 func (c *SlackClient) ValidateInstallation(ctx context.Context, token string) (InstallationIdentity, error) {
-	if !strings.HasPrefix(strings.TrimSpace(token), "xoxb-") {
-		return InstallationIdentity{}, fmt.Errorf("%w: malformed bot token", ErrInvalid)
+	token = strings.TrimSpace(token)
+	if !installationTokenPattern.MatchString(token) {
+		return InstallationIdentity{}, fmt.Errorf("%w: malformed installation credential", ErrInvalid)
 	}
 	var auth struct {
 		OK     bool   `json:"ok"`
 		Error  string `json:"error"`
+		AppID  string `json:"app_id"`
 		TeamID string `json:"team_id"`
 		Team   string `json:"team"`
 		BotID  string `json:"bot_id"`
@@ -77,8 +82,15 @@ func (c *SlackClient) ValidateInstallation(ctx context.Context, token string) (I
 	if !auth.OK {
 		return InstallationIdentity{}, slackAPIError("auth.test", auth.Error)
 	}
-	if auth.TeamID == "" || auth.BotID == "" || auth.UserID == "" {
+	if auth.TeamID == "" || auth.UserID == "" {
 		return InstallationIdentity{}, fmt.Errorf("%w: auth.test omitted required identity fields", ErrConflict)
+	}
+	if auth.BotID == "" {
+		if auth.AppID == "" {
+			return InstallationIdentity{}, fmt.Errorf("%w: auth.test omitted delegated-user app identity", ErrConflict)
+		}
+		return InstallationIdentity{CredentialKind: CredentialKindUser, SlackAppID: auth.AppID,
+			TeamID: auth.TeamID, TeamName: auth.Team, UserID: auth.UserID}, nil
 	}
 	var bot struct {
 		OK    bool   `json:"ok"`
@@ -96,8 +108,8 @@ func (c *SlackClient) ValidateInstallation(ctx context.Context, token string) (I
 	if bot.Bot.AppID == "" {
 		return InstallationIdentity{}, fmt.Errorf("%w: bots.info omitted app identity", ErrConflict)
 	}
-	return InstallationIdentity{SlackAppID: bot.Bot.AppID, TeamID: auth.TeamID, TeamName: auth.Team,
-		BotID: auth.BotID, BotUserID: auth.UserID}, nil
+	return InstallationIdentity{CredentialKind: CredentialKindBot, SlackAppID: bot.Bot.AppID,
+		TeamID: auth.TeamID, TeamName: auth.Team, BotID: auth.BotID, BotUserID: auth.UserID}, nil
 }
 
 func (c *SlackClient) ListChannels(ctx context.Context, token, cursor string, limit int) (ChannelPage, error) {

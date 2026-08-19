@@ -34,6 +34,14 @@ func (s *FileStore) Load() (document, error) {
 	if doc.Installations == nil {
 		doc.Installations = []Installation{}
 	}
+	for i := range doc.Installations {
+		if doc.Installations[i].CredentialKind == "" {
+			doc.Installations[i].CredentialKind = CredentialKindBot
+		}
+		if !validCredentialKind(doc.Installations[i].CredentialKind) {
+			return document{}, fmt.Errorf("%w: unsupported installation credential kind", ErrInvalid)
+		}
+	}
 	return doc, nil
 }
 

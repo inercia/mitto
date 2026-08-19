@@ -349,8 +349,12 @@ func (s *Service) PreparePoCImport(ctx context.Context, request PoCImportRequest
 	if err != nil {
 		return nil, err
 	}
+	identity = normalizeInstallationIdentity(identity)
 	if err := validateInstallationIdentity(identity); err != nil {
 		return nil, err
+	}
+	if identity.CredentialKind != CredentialKindBot {
+		return nil, fmt.Errorf("%w: legacy environment import requires a bot credential", ErrConflict)
 	}
 	if identity.SlackAppID != slackAppID || identity.TeamID != strings.TrimSpace(request.ExpectedTeamID) {
 		return nil, fmt.Errorf("%w: environment credentials do not describe the configured Slack app/team", ErrConflict)
@@ -426,20 +430,20 @@ func (s *Service) PreparePoCImport(ctx context.Context, request PoCImportRequest
 				return nil, err
 			}
 			doc.Installations = append(doc.Installations, Installation{ID: uuid.NewString(), AppID: result.AppID,
-				Name: name, TeamID: identity.TeamID, TeamName: identity.TeamName, BotID: identity.BotID,
-				BotUserID: identity.BotUserID, ValidatedAt: now, CreatedAt: now, UpdatedAt: now})
+				Name: name, CredentialKind: identity.CredentialKind, TeamID: identity.TeamID,
+				ValidatedAt: now, CreatedAt: now, UpdatedAt: now})
 			installationIdx = len(doc.Installations) - 1
 			result.InstallationCreated = true
 		}
 	}
 	installation := &doc.Installations[installationIdx]
-	installation.TeamName, installation.BotID, installation.BotUserID = identity.TeamName, identity.BotID, identity.BotUserID
+	applyInstallationIdentity(installation, identity)
 	installation.ValidatedAt, installation.UpdatedAt = now, now
 	result.InstallationID = installation.ID
 
 	refs := []secrets.CredentialRef{
 		secrets.SlackAppCredential(result.AppID, AppTokenCredential),
-		secrets.SlackInstallationCredential(result.InstallationID, BotTokenCredential),
+		secrets.SlackInstallationCredential(result.InstallationID, InstallationTokenCredential),
 	}
 	priors := make([]priorCredential, 0, len(refs))
 	for _, ref := range refs {
@@ -552,6 +556,7 @@ func (s *Service) CreateInstallation(ctx context.Context, appID, name, expectedT
 	if err != nil {
 		return InstallationView{}, err
 	}
+	identity = normalizeInstallationIdentity(identity)
 	if err := validateInstallationIdentity(identity); err != nil {
 		return InstallationView{}, err
 	}
@@ -569,7 +574,7 @@ func (s *Service) CreateInstallation(ctx context.Context, appID, name, expectedT
 		return InstallationView{}, ErrNotFound
 	}
 	if doc.Apps[appIdx].SlackAppID != identity.SlackAppID {
-		return InstallationView{}, fmt.Errorf("%w: bot token belongs to a different Slack app", ErrConflict)
+		return InstallationView{}, fmt.Errorf("%w: credential belongs to a different Slack app", ErrConflict)
 	}
 	for _, existing := range doc.Installations {
 		if existing.AppID == appID && existing.TeamID == identity.TeamID {
@@ -577,11 +582,12 @@ func (s *Service) CreateInstallation(ctx context.Context, appID, name, expectedT
 		}
 	}
 	now := s.now().UTC()
-	installation := Installation{ID: uuid.NewString(), AppID: appID, Name: name, TeamID: identity.TeamID,
-		TeamName: identity.TeamName, BotID: identity.BotID, BotUserID: identity.BotUserID,
+	installation := Installation{ID: uuid.NewString(), AppID: appID, Name: name,
+		CredentialKind: identity.CredentialKind, TeamID: identity.TeamID,
 		ValidatedAt: now, CreatedAt: now, UpdatedAt: now}
+	applyInstallationIdentity(&installation, identity)
 	doc.Installations = append(doc.Installations, installation)
-	ref := secrets.SlackInstallationCredential(installation.ID, BotTokenCredential)
+	ref := secrets.SlackInstallationCredential(installation.ID, InstallationTokenCredential)
 	if err := s.commitCredentialAndDocument(ref, token, doc); err != nil {
 		return InstallationView{}, err
 	}
@@ -622,6 +628,7 @@ func (s *Service) ReplaceInstallationToken(ctx context.Context, id, token string
 	if err != nil {
 		return InstallationView{}, err
 	}
+	identity = normalizeInstallationIdentity(identity)
 	if err := validateInstallationIdentity(identity); err != nil {
 		return InstallationView{}, err
 	}
@@ -645,12 +652,10 @@ func (s *Service) ReplaceInstallationToken(ctx context.Context, id, token string
 		s.mu.Unlock()
 		return InstallationView{}, fmt.Errorf("%w: replacement token identity does not match installation", ErrConflict)
 	}
-	doc.Installations[idx].TeamName = identity.TeamName
-	doc.Installations[idx].BotID = identity.BotID
-	doc.Installations[idx].BotUserID = identity.BotUserID
+	applyInstallationIdentity(&doc.Installations[idx], identity)
 	doc.Installations[idx].ValidatedAt = s.now().UTC()
 	doc.Installations[idx].UpdatedAt = doc.Installations[idx].ValidatedAt
-	if err := s.commitCredentialAndDocument(secrets.SlackInstallationCredential(id, BotTokenCredential), token, doc); err != nil {
+	if err := s.commitCredentialAndDocument(secrets.SlackInstallationCredential(id, InstallationTokenCredential), token, doc); err != nil {
 		s.mu.Unlock()
 		return InstallationView{}, err
 	}
@@ -668,12 +673,16 @@ func (s *Service) ValidateInstallation(ctx context.Context, id string) (Installa
 	if err := validateResourceID(id); err != nil {
 		return InstallationView{}, err
 	}
-	token, err := s.credentials.Resolve(secrets.SlackInstallationCredential(id, BotTokenCredential))
+	token, err := s.credentials.Resolve(secrets.SlackInstallationCredential(id, InstallationTokenCredential))
 	if err != nil {
 		return InstallationView{}, fmt.Errorf("%w: installation credential unavailable", ErrUnavailable)
 	}
 	identity, err := s.slack.ValidateInstallation(ctx, token)
 	if err != nil {
+		return InstallationView{}, err
+	}
+	identity = normalizeInstallationIdentity(identity)
+	if err := validateInstallationIdentity(identity); err != nil {
 		return InstallationView{}, err
 	}
 	s.mu.Lock()
@@ -688,13 +697,13 @@ func (s *Service) ValidateInstallation(ctx context.Context, id string) (Installa
 		return InstallationView{}, ErrNotFound
 	}
 	appIdx := appIndex(doc, doc.Installations[idx].AppID)
-	if appIdx < 0 || identity.TeamID != doc.Installations[idx].TeamID || identity.SlackAppID != doc.Apps[appIdx].SlackAppID {
+	storedKind := normalizedCredentialKind(doc.Installations[idx].CredentialKind)
+	if appIdx < 0 || identity.TeamID != doc.Installations[idx].TeamID || identity.SlackAppID != doc.Apps[appIdx].SlackAppID ||
+		identity.CredentialKind != storedKind {
 		s.mu.Unlock()
 		return InstallationView{}, fmt.Errorf("%w: stored token identity does not match installation", ErrConflict)
 	}
-	doc.Installations[idx].TeamName = identity.TeamName
-	doc.Installations[idx].BotID = identity.BotID
-	doc.Installations[idx].BotUserID = identity.BotUserID
+	applyInstallationIdentity(&doc.Installations[idx], identity)
 	doc.Installations[idx].ValidatedAt = s.now().UTC()
 	doc.Installations[idx].UpdatedAt = doc.Installations[idx].ValidatedAt
 	if err := s.store.Save(doc); err != nil {
@@ -766,7 +775,7 @@ func (s *Service) DeleteApp(ctx context.Context, id string) error {
 	}
 	refs := []secrets.CredentialRef{secrets.SlackAppCredential(id, AppTokenCredential)}
 	for _, installationID := range preview.InstallationIDs {
-		refs = append(refs, secrets.SlackInstallationCredential(installationID, BotTokenCredential))
+		refs = append(refs, secrets.SlackInstallationCredential(installationID, InstallationTokenCredential))
 	}
 	doc.Apps = append(doc.Apps[:idx], doc.Apps[idx+1:]...)
 	installations := doc.Installations[:0]
@@ -805,7 +814,7 @@ func (s *Service) DeleteInstallation(ctx context.Context, id string) error {
 	doc.Installations = append(doc.Installations[:idx], doc.Installations[idx+1:]...)
 	s.invalidateChannelsLocked(id)
 	return s.deleteCredentialsAndDocument([]secrets.CredentialRef{
-		secrets.SlackInstallationCredential(id, BotTokenCredential),
+		secrets.SlackInstallationCredential(id, InstallationTokenCredential),
 	}, doc)
 }
 
@@ -836,7 +845,7 @@ func (s *Service) Channels(ctx context.Context, installationID, cursor string, l
 	}
 	epoch := s.channelEpoch[installationID]
 	s.mu.Unlock()
-	token, err := s.credentials.Resolve(secrets.SlackInstallationCredential(installationID, BotTokenCredential))
+	token, err := s.credentials.Resolve(secrets.SlackInstallationCredential(installationID, InstallationTokenCredential))
 	if err != nil {
 		return ChannelPage{}, fmt.Errorf("%w: installation credential unavailable", ErrUnavailable)
 	}
@@ -861,7 +870,8 @@ func (s *Service) appView(app AppProfile) (AppView, error) {
 }
 
 func (s *Service) installationView(installation Installation) (InstallationView, error) {
-	status, err := s.credentials.Status(secrets.SlackInstallationCredential(installation.ID, BotTokenCredential))
+	installation.CredentialKind = normalizedCredentialKind(installation.CredentialKind)
+	status, err := s.credentials.Status(secrets.SlackInstallationCredential(installation.ID, InstallationTokenCredential))
 	if err != nil {
 		return InstallationView{}, fmt.Errorf("credential status: %w", err)
 	}
@@ -1014,9 +1024,43 @@ func validateName(name string) (string, error) {
 }
 
 func validateInstallationIdentity(identity InstallationIdentity) error {
-	if !slackAppIDPattern.MatchString(identity.SlackAppID) || !teamIDPattern.MatchString(identity.TeamID) ||
-		!botIDPattern.MatchString(identity.BotID) || !userIDPattern.MatchString(identity.BotUserID) {
+	if !validCredentialKind(identity.CredentialKind) || !slackAppIDPattern.MatchString(identity.SlackAppID) ||
+		!teamIDPattern.MatchString(identity.TeamID) {
 		return fmt.Errorf("%w: Slack returned malformed installation identity", ErrInvalid)
 	}
+	switch identity.CredentialKind {
+	case CredentialKindBot:
+		if !botIDPattern.MatchString(identity.BotID) || !userIDPattern.MatchString(identity.BotUserID) || identity.UserID != "" {
+			return fmt.Errorf("%w: Slack returned malformed bot identity", ErrInvalid)
+		}
+	case CredentialKindUser:
+		if !userIDPattern.MatchString(identity.UserID) || identity.BotID != "" || identity.BotUserID != "" {
+			return fmt.Errorf("%w: Slack returned malformed delegated-user identity", ErrInvalid)
+		}
+	}
 	return nil
+}
+
+func validCredentialKind(kind CredentialKind) bool {
+	return kind == CredentialKindBot || kind == CredentialKindUser
+}
+
+func normalizedCredentialKind(kind CredentialKind) CredentialKind {
+	if kind == "" {
+		return CredentialKindBot
+	}
+	return kind
+}
+
+func normalizeInstallationIdentity(identity InstallationIdentity) InstallationIdentity {
+	identity.CredentialKind = normalizedCredentialKind(identity.CredentialKind)
+	return identity
+}
+
+func applyInstallationIdentity(installation *Installation, identity InstallationIdentity) {
+	installation.CredentialKind = identity.CredentialKind
+	installation.TeamName = identity.TeamName
+	installation.BotID = identity.BotID
+	installation.BotUserID = identity.BotUserID
+	installation.UserID = identity.UserID
 }

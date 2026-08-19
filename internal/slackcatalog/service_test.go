@@ -124,8 +124,10 @@ func newTestService() (*Service, *memoryStore, *memoryCredentials, *fakeSlackPro
 		apps: map[string]string{"app-one": "A111", "app-two": "A222"},
 		installations: map[string]InstallationIdentity{
 			"bot-one":   {SlackAppID: "A111", TeamID: "T111", TeamName: "One", BotID: "B111", BotUserID: "U111"},
+			"bot-new":   {CredentialKind: CredentialKindBot, SlackAppID: "A111", TeamID: "T111", TeamName: "One", BotID: "B333", BotUserID: "U333"},
 			"bot-two":   {SlackAppID: "A111", TeamID: "T222", TeamName: "Two", BotID: "B222", BotUserID: "U222"},
 			"bot-other": {SlackAppID: "A222", TeamID: "T999", TeamName: "Other", BotID: "B999", BotUserID: "U999"},
+			"user-one":  {CredentialKind: CredentialKindUser, SlackAppID: "A111", TeamID: "T111", TeamName: "One", UserID: "U444"},
 		},
 		pages: map[string]ChannelPage{
 			"":     {Channels: []Channel{{ID: "C111", Name: "general", IsMember: true}}, NextCursor: "next"},
@@ -135,6 +137,60 @@ func newTestService() (*Service, *memoryStore, *memoryCredentials, *fakeSlackPro
 	references := &fakeReferences{}
 	service := NewService(store, credentials, provider, references)
 	return service, store, credentials, provider, references
+}
+
+func TestInstallationCredentialKindCanSwitchOnlyOnExplicitReplacement(t *testing.T) {
+	service, store, credentials, provider, _ := newTestService()
+	ctx := context.Background()
+	app, err := service.CreateApp(ctx, "App", "app-one")
+	if err != nil {
+		t.Fatal(err)
+	}
+	installation, err := service.CreateInstallation(ctx, app.ID, "Workspace", "T111", "bot-one")
+	if err != nil || installation.CredentialKind != CredentialKindBot {
+		t.Fatalf("CreateInstallation() = %#v, %v", installation, err)
+	}
+
+	userView, err := service.ReplaceInstallationToken(ctx, installation.ID, "user-one")
+	if err != nil || userView.CredentialKind != CredentialKindUser || userView.UserID != "U444" ||
+		userView.BotID != "" || userView.BotUserID != "" {
+		t.Fatalf("user replacement = %#v, %v", userView, err)
+	}
+	if got, _ := credentials.Resolve(secrets.SlackInstallationCredential(installation.ID, InstallationTokenCredential)); got != "user-one" {
+		t.Fatalf("stored user credential = %q", got)
+	}
+
+	provider.installations["user-one"] = provider.installations["bot-new"]
+	if _, err := service.ValidateInstallation(ctx, installation.ID); !errors.Is(err, ErrConflict) {
+		t.Fatalf("revalidation kind change error = %v", err)
+	}
+	if got := store.doc.Installations[0]; got.CredentialKind != CredentialKindUser || got.UserID != "U444" || got.BotID != "" {
+		t.Fatalf("failed revalidation changed metadata: %#v", got)
+	}
+
+	botView, err := service.ReplaceInstallationToken(ctx, installation.ID, "bot-new")
+	if err != nil || botView.CredentialKind != CredentialKindBot || botView.BotID != "B333" || botView.UserID != "" {
+		t.Fatalf("bot replacement = %#v, %v", botView, err)
+	}
+}
+
+func TestFileStoreDefaultsLegacyInstallationKindToBotAndRejectsUnknownKind(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "slack_integrations.json")
+	legacy := `{"version":1,"apps":[],"installations":[{"id":"legacy","app_id":"app","name":"Legacy","team_id":"T111"}]}`
+	if err := os.WriteFile(path, []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	doc, err := NewFileStore(path).Load()
+	if err != nil || len(doc.Installations) != 1 || doc.Installations[0].CredentialKind != CredentialKindBot {
+		t.Fatalf("legacy Load() = %#v, %v", doc, err)
+	}
+	unknown := strings.Replace(legacy, `"team_id":"T111"`, `"credential_kind":"admin","team_id":"T111"`, 1)
+	if err := os.WriteFile(path, []byte(unknown), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewFileStore(path).Load(); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("unknown kind Load() error = %v", err)
+	}
 }
 
 func TestServiceLifecycleAndSecretNonDisclosure(t *testing.T) {

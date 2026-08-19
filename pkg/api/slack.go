@@ -25,10 +25,12 @@ type SlackInstallation struct {
 	ID              string `json:"id"`
 	AppID           string `json:"app_id"`
 	Name            string `json:"name"`
+	CredentialKind  string `json:"credential_kind"`
 	TeamID          string `json:"team_id"`
 	TeamName        string `json:"team_name,omitempty"`
-	BotID           string `json:"bot_id"`
-	BotUserID       string `json:"bot_user_id"`
+	BotID           string `json:"bot_id,omitempty"`
+	BotUserID       string `json:"bot_user_id,omitempty"`
+	UserID          string `json:"user_id,omitempty"`
 	TokenConfigured bool   `json:"token_configured"`
 	ValidatedAt     string `json:"validated_at"`
 	CreatedAt       string `json:"created_at"`
@@ -92,9 +94,11 @@ type CreateSlackAppRequest struct {
 }
 
 type CreateSlackInstallationRequest struct {
-	Name     string `json:"name"`
-	TeamID   string `json:"team_id,omitempty"`
-	BotToken string `json:"bot_token"`
+	Name   string `json:"name"`
+	TeamID string `json:"team_id,omitempty"`
+	Token  string `json:"token,omitempty"`
+	// BotToken is retained for compatibility with older Mitto servers.
+	BotToken string `json:"bot_token,omitempty"`
 }
 
 func (c *Client) slackJSON(method, path string, body, result any, success ...int) error {

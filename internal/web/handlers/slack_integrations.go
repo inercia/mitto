@@ -3,9 +3,11 @@ package handlers
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/inercia/mitto/internal/slackbridge"
 	"github.com/inercia/mitto/internal/slackcatalog"
@@ -26,7 +28,19 @@ type slackAppCreateRequest struct {
 type slackInstallationCreateRequest struct {
 	Name     string `json:"name"`
 	TeamID   string `json:"team_id,omitempty"`
-	BotToken string `json:"bot_token"`
+	Token    string `json:"token"`
+	BotToken string `json:"bot_token,omitempty"`
+}
+
+func (r slackInstallationCreateRequest) credential() (string, error) {
+	token, legacy := strings.TrimSpace(r.Token), strings.TrimSpace(r.BotToken)
+	if token != "" && legacy != "" && token != legacy {
+		return "", fmt.Errorf("%w: conflicting installation credentials", slackcatalog.ErrInvalid)
+	}
+	if token != "" {
+		return r.Token, nil
+	}
+	return r.BotToken, nil
 }
 
 type slackTokenRequest struct {
@@ -276,7 +290,12 @@ func (h *Handlers) HandleSlackInstallationCreate(w http.ResponseWriter, r *http.
 	if !decodeSlackBody(w, r, &request) {
 		return
 	}
-	installation, err := service.CreateInstallation(r.Context(), r.PathValue("appId"), request.Name, request.TeamID, request.BotToken)
+	token, err := request.credential()
+	if err != nil {
+		writeSlackError(w, err)
+		return
+	}
+	installation, err := service.CreateInstallation(r.Context(), r.PathValue("appId"), request.Name, request.TeamID, token)
 	if err != nil {
 		writeSlackError(w, err)
 		return
