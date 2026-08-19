@@ -106,6 +106,18 @@ type stubBeadsClient struct {
 	updateFn func(p beads.UpdateParams) error
 }
 
+type remoteModeClient struct {
+	stubBeadsClient
+	hasRemote bool
+	err       error
+	calls     int
+}
+
+func (c *remoteModeClient) HasDoltRemote(context.Context, string) (bool, error) {
+	c.calls++
+	return c.hasRemote, c.err
+}
+
 func (c *stubBeadsClient) List(_ context.Context, _ string) ([]byte, error) {
 	return []byte(`[]`), nil
 }
@@ -224,6 +236,9 @@ func (h *Handlers) handleBeadsConfig(w http.ResponseWriter, r *http.Request) {
 }
 func (h *Handlers) handleBeadsUpstream(w http.ResponseWriter, r *http.Request) {
 	h.HandleBeadsUpstream(w, r)
+}
+func (h *Handlers) handleBeadsDatabaseMode(w http.ResponseWriter, r *http.Request) {
+	h.HandleBeadsDatabaseMode(w, r)
 }
 func (h *Handlers) handleBeadsSync(w http.ResponseWriter, r *http.Request) { h.HandleBeadsSync(w, r) }
 
@@ -2302,6 +2317,110 @@ func TestHandleBeadsUpstream_SwitchAwayFromPrompts_ClearsPromptNames(t *testing.
 	}
 	if strings.Contains(body, "pull_prompt") {
 		t.Errorf("GET body = %q, pull_prompt should not be present after switching to jira", body)
+	}
+}
+
+// --- handleBeadsDatabaseMode -------------------------------------------------
+
+func TestHandleBeadsDatabaseMode_ValidatesWorkingDir(t *testing.T) {
+	for _, path := range []string{
+		"/api/issues/database-mode",
+		"/api/issues/database-mode?working_dir=relative/path",
+		"/api/issues/database-mode?working_dir=/unknown/dir",
+	} {
+		t.Run(path, func(t *testing.T) {
+			s := newBeadsTestServerWithClient(&remoteModeClient{})
+			w := httptest.NewRecorder()
+			s.handleBeadsDatabaseMode(w, localhostRequest(path))
+			if w.Code != http.StatusBadRequest {
+				t.Errorf("status = %d, want %d; body=%s", w.Code, http.StatusBadRequest, w.Body.String())
+			}
+		})
+	}
+}
+
+func TestHandleBeadsDatabaseMode_GetInfersAndPersists(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		hasRemote bool
+		want      config.BeadsDatabaseMode
+	}{
+		{"local", false, config.BeadsDatabaseModeLocal},
+		{"shared", true, config.BeadsDatabaseModeShared},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			setupMittoDir(t)
+			client := &remoteModeClient{hasRemote: tc.hasRemote}
+			s := newBeadsTestServerWithClient(client)
+			w := httptest.NewRecorder()
+			s.handleBeadsDatabaseMode(w, localhostRequest("/api/issues/database-mode?working_dir=/test/workspace"))
+			if w.Code != http.StatusOK {
+				t.Fatalf("status = %d, want %d; body=%s", w.Code, http.StatusOK, w.Body.String())
+			}
+			var got beadsDatabaseModeResponse
+			if err := json.NewDecoder(w.Body).Decode(&got); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if got.DatabaseMode != tc.want || got.HasRemote != tc.hasRemote {
+				t.Errorf("response = %+v, want mode=%q has_remote=%v", got, tc.want, tc.hasRemote)
+			}
+			persisted, configured, err := config.ConfiguredFolderBeadsDatabaseMode("/test/workspace")
+			if err != nil || !configured || persisted != tc.want {
+				t.Errorf("persisted mode = (%q, %v, %v), want (%q, true, nil)", persisted, configured, err, tc.want)
+			}
+			if client.calls != 2 {
+				t.Errorf("remote probe calls = %d, want 2 (inference + response readiness)", client.calls)
+			}
+		})
+	}
+}
+
+func TestHandleBeadsDatabaseMode_ExplicitLocalReportsDormantRemote(t *testing.T) {
+	setupMittoDir(t)
+	if err := config.SetFolderBeadsDatabaseMode("/test/workspace", config.BeadsDatabaseModeLocal); err != nil {
+		t.Fatalf("SetFolderBeadsDatabaseMode() error = %v", err)
+	}
+	client := &remoteModeClient{hasRemote: true}
+	s := newBeadsTestServerWithClient(client)
+	w := httptest.NewRecorder()
+	s.handleBeadsDatabaseMode(w, localhostRequest("/api/issues/database-mode?working_dir=/test/workspace"))
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"database_mode":"local"`) ||
+		!strings.Contains(w.Body.String(), `"has_remote":true`) {
+		t.Fatalf("status/body = %d %s, want explicit local with dormant remote", w.Code, w.Body.String())
+	}
+}
+
+func TestHandleBeadsDatabaseMode_PutValidatesAndPreservesUpstream(t *testing.T) {
+	setupMittoDir(t)
+	if err := config.SetFolderBeadsUpstream("/test/workspace", "jira"); err != nil {
+		t.Fatalf("SetFolderBeadsUpstream() error = %v", err)
+	}
+	client := &remoteModeClient{hasRemote: true}
+	s := newBeadsTestServerWithClient(client)
+
+	bad := httptest.NewRequest(http.MethodPut, "/api/issues/database-mode?working_dir=/test/workspace",
+		strings.NewReader(`{"database_mode":"networked"}`))
+	bad.RemoteAddr = "127.0.0.1:1"
+	bw := httptest.NewRecorder()
+	s.handleBeadsDatabaseMode(bw, bad)
+	if bw.Code != http.StatusBadRequest {
+		t.Fatalf("invalid PUT status = %d, want %d", bw.Code, http.StatusBadRequest)
+	}
+
+	put := httptest.NewRequest(http.MethodPut, "/api/issues/database-mode?working_dir=/test/workspace",
+		strings.NewReader(`{"database_mode":"local"}`))
+	put.RemoteAddr = "127.0.0.1:1"
+	pw := httptest.NewRecorder()
+	s.handleBeadsDatabaseMode(pw, put)
+	if pw.Code != http.StatusOK || !strings.Contains(pw.Body.String(), `"has_remote":true`) {
+		t.Fatalf("PUT status/body = %d %s, want 200 with preserved remote indicator", pw.Code, pw.Body.String())
+	}
+	mode, configured, err := config.ConfiguredFolderBeadsDatabaseMode("/test/workspace")
+	if err != nil || !configured || mode != config.BeadsDatabaseModeLocal {
+		t.Errorf("persisted mode = (%q, %v, %v), want local", mode, configured, err)
+	}
+	if got := config.FolderBeadsUpstream("/test/workspace"); got != "jira" {
+		t.Errorf("FolderBeadsUpstream() = %q, want jira after mode switch", got)
 	}
 }
 
