@@ -3619,6 +3619,15 @@ func TestIssueLoopProcessing_CoalesceDuringBusyIsFalse(t *testing.T) {
 		t.Fatalf("loop.trigger = %v, want to include %q (mitto-cwg guard)",
 			prompt.Loop.Trigger, "onTasks")
 	}
+	if !prompt.Loop.hasTrigger("schedule") {
+		t.Fatalf("loop.trigger = %v, want hourly schedule fallback alongside onTasks", prompt.Loop.Trigger)
+	}
+	if got := prompt.Loop.FrequencyValue(); got != 60 {
+		t.Errorf("loop.schedule.value = %d, want 60", got)
+	}
+	if got := prompt.Loop.FrequencyUnit(); got != "minutes" {
+		t.Errorf("loop.schedule.unit = %q, want %q", got, "minutes")
+	}
 	if prompt.Loop.TasksCoalesceDuringBusy() == nil {
 		t.Fatalf("loop.onTasks.coalesceDuringBusy is unset; the deployed supervisor takes the silent-swallow branch at fireTasksRebase (mitto-cwg). Declare `coalesceDuringBusy: false` in the loop.onTasks: frontmatter of %s, mirroring beads/investigate-all-more.prompt.yaml", name)
 	}

@@ -43,7 +43,7 @@ parameters:
     required: false
     multiLine: true
     description: 'Optional additional instructions applied on top of the steps below, and propagated verbatim to every §A/§B/§C driver (and from there to their phase prompts) so the whole chain follows them (e.g. "only work on beads labelled `frontend`", "always run `make lint` before committing", "never touch files under vendor/"). Used for this run only; nothing is persisted.'
-description: "Unified standing supervisor — on every beads change, process at most one increment from whichever class has work — (A) unaddressed @mitto comments, (B) eligible open bugs, (C) eligible open features. Comments first, then bugs, then features. One worker in flight at a time, unless MaxParallelWorkers is raised and the candidates are provably code-disjoint."
+description: "Unified standing supervisor — on every beads change and every 60 minutes as a recovery fallback, process at most one increment from whichever class has work — (A) unaddressed @mitto comments, (B) eligible open bugs, (C) eligible open features. Comments first, then bugs, then features. One worker in flight at a time, unless MaxParallelWorkers is raised and the candidates are provably code-disjoint."
 backgroundColor: '#E1BEE7'
 group: Tasks
 enabledWhen: '!Session.IsChild && CommandExists("bd") && DirExists(".beads") && Permissions.CanStartConversation'
@@ -54,8 +54,12 @@ loop:
   # coalesceDuringBusy: false ensures §A/§B/§C children's own .beads/ mutations
   # re-fire the supervisor (mitto-cwg) instead of being silently rebased;
   # onChild immediately re-evaluates the queue when a spawned worker finishes or
-  # is deleted, without waiting for a task fs-event or another trigger opportunity.
-  trigger: [onTasks, onChild]
+  # is deleted; schedule supplies an hourly recovery pass if an event trigger is
+  # missed or coalesced before the supervisor can process it.
+  trigger: [onTasks, onChild, schedule]
+  schedule:
+    value: 60
+    unit: minutes
   onTasks:
     coalesceDuringBusy: false
   onChild:
