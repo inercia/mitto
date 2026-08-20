@@ -105,6 +105,7 @@ import {
   useConversationSeeding,
   decideLoopAction,
   makeLoopNow,
+  useMCPInitState,
 } from "./hooks/index.js";
 
 // Import components
@@ -909,6 +910,19 @@ function App() {
     activeSessionId,
     activeWorkspaceUUID: sessionInfo?.workspace_uuid ?? null,
   });
+
+  // Per-workspace MCP-init lifecycle state (mitto-8fm): drives a persistent
+  // inline "Waiting for MCP servers…" indicator in MessageList, distinct from
+  // the transient toast fired by useBackgroundNotifications above. Derived
+  // for the active session's workspace only; re-evaluated whenever the
+  // underlying state map changes (getMCPInitState's identity bumps) or the
+  // active workspace changes.
+  const { getMCPInitState, clearMCPInit } = useMCPInitState();
+  const mcpInitState = useMemo(
+    () =>
+      getMCPInitState(sessionInfo?.workspace_uuid, sessionInfo?.working_dir),
+    [getMCPInitState, sessionInfo?.workspace_uuid, sessionInfo?.working_dir],
+  );
 
   // Get the current draft for the active session (null key = no session)
   const currentDraft = sessionDrafts[activeSessionId ?? "__no_session__"] || "";
@@ -3750,6 +3764,8 @@ function App() {
                       sessionInfo=${sessionInfo}
                       workspaces=${workspaces}
                       messagesContainerRef=${messagesContainerRef}
+                      mcpInitState=${mcpInitState}
+                      clearMCPInit=${clearMCPInit}
                     />
                   </div>
                   <!-- End of messages wrapper -->

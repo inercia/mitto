@@ -2,7 +2,7 @@
 // Renders the scrollable messages area: empty state, reversed message list with
 // date separators and retry buttons, load-more controls, infinite-scroll sentinel,
 // and the scroll-to-bottom floating button.
-const { html, Fragment, useMemo, useState } = window.preact;
+const { html, Fragment, useMemo, useState, useEffect } = window.preact;
 
 import { Message } from "./Message.js";
 import { SpinnerIcon, ArrowDownIcon, SettingsIcon } from "./Icons.js";
@@ -33,6 +33,12 @@ import { useVisibleInterval } from "../hooks/useVisibleInterval.js";
  * @param {object}   sessionInfo
  * @param {Array}    workspaces
  * @param {object}   messagesContainerRef - ref attached to the scrollable container
+ * @param {object}   mcpInitState      - Active session workspace's MCP-init state from
+ *                                        useMCPInitState ({ initializing, timedOutAt, servers })
+ *                                        or null when no MCP-init event has fired (mitto-8fm).
+ * @param {Function} clearMCPInit      - (workspaceUUID, workingDir) => void; clears mcpInitState
+ *                                        early (e.g. on first stream chunk) instead of waiting
+ *                                        for the safety-cap sweep.
  */
 export function MessageList({
   displayMessages,
@@ -55,6 +61,8 @@ export function MessageList({
   sessionInfo,
   workspaces,
   messagesContainerRef,
+  mcpInitState,
+  clearMCPInit,
 }) {
   // Tick every 2s while the "agent is still working" heartbeat is visible, to
   // update the mm:ss timer and to re-evaluate staleness (auto-hide after 25s with
@@ -67,6 +75,23 @@ export function MessageList({
   useVisibleInterval(() => setWorkingNow(Date.now()), 2000, {
     enabled: isStreaming && !!agentWorking,
   });
+
+  // mitto-8fm: clear the persistent "Waiting for MCP servers…" indicator as
+  // soon as the agent starts streaming a response — belt-and-braces on top of
+  // the natural `sessionInfo.acp_ready` transition, since a stream can start
+  // before acp_ready flips in some races (e.g. it was already true when the
+  // mcp_initializing event fired for a *different* prior turn).
+  useEffect(() => {
+    if (isStreaming && mcpInitState?.initializing) {
+      clearMCPInit?.(sessionInfo?.workspace_uuid, sessionInfo?.working_dir);
+    }
+  }, [
+    isStreaming,
+    mcpInitState?.initializing,
+    clearMCPInit,
+    sessionInfo?.workspace_uuid,
+    sessionInfo?.working_dir,
+  ]);
 
   const showAgentWorking =
     isStreaming && agentWorking && workingNow - agentWorking.receivedAt < 25000;
@@ -86,7 +111,8 @@ export function MessageList({
               <span
                 >Working${agentWorking.toolTitle
                   ? ` — ${agentWorking.toolTitle}`
-                  : ""}… (${mm}:${ss})</span
+                  : ""}…
+                (${mm}:${ss})</span
               >
             </div>
           </div>
@@ -289,6 +315,35 @@ export function MessageList({
                         class="text-sm mt-6 text-mitto-warning flex items-center gap-2"
                       >
                         Establishing ACP session...
+                      </p>
+                    `}
+                    ${connected &&
+                    activeSessionId &&
+                    sessionInfo &&
+                    !sessionInfo.archived &&
+                    mcpInitState?.initializing &&
+                    html`
+                      <p
+                        class="text-sm mt-6 text-mitto-warning flex items-center gap-2"
+                      >
+                        <${SpinnerIcon} className="w-4 h-4" />
+                        Waiting for MCP servers…
+                      </p>
+                    `}
+                    ${connected &&
+                    activeSessionId &&
+                    sessionInfo &&
+                    !sessionInfo.archived &&
+                    mcpInitState?.timedOutAt &&
+                    html`
+                      <p
+                        class="text-sm mt-6 text-mitto-danger flex items-center gap-2"
+                      >
+                        MCP server(s) failed to
+                        start${mcpInitState.servers?.length
+                          ? `: ${mcpInitState.servers.join(", ")}`
+                          : ""}.
+                        Check your MCP configuration.
                       </p>
                     `}
                   </div>

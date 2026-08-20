@@ -29,3 +29,4 @@ export {
 export { useBeadsKnownIds } from "./useBeadsKnownIds.js";
 export { useLinkedBeadPhase } from "./useLinkedBeadPhase.js";
 export { useVisibleInterval } from "./useVisibleInterval.js";
+export { useMCPInitState } from "./useMCPInitState.js";
