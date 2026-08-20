@@ -1386,6 +1386,92 @@ func TestSetSessionModel_ColdAgentTimeout_TripsSaturation(t *testing.T) {
 	}
 }
 
+// TestSetSessionModel_PostSemaphoreSaturationGuard_QueuedSiblingFailsFast is a
+// regression test for mitto-qy0j (requirement 3): SetSessionModel's saturation
+// check ran only BEFORE queueing on the capacity-1 setModelSem. A sibling call
+// that queued while the process was still healthy could win the semaphore
+// AFTER an earlier caller's three attempts had already tripped saturation, and
+// would still burn a full fresh attempt-1 budget against a now-confirmed-dead
+// process before the mid-flight (attempt>1) fail-fast ever got a chance to
+// apply. N sibling children requesting the same model against a wedged shared
+// process therefore each independently paid a full deadline cycle instead of
+// one failure epoch plus fast fails for the rest.
+//
+// This test drives two SetSessionModel calls against the same unresponsive
+// peer: the first exhausts all 3 attempts (tripping saturation, mirroring
+// TestSetSessionModel_ColdAgentTimeout_TripsSaturation), the second is
+// launched only once it has observably queued behind the semaphore (checked
+// via len(p.setModelSem)) and must fail almost immediately once it acquires
+// the slot — not after its own attempt-1 timeout.
+func TestSetSessionModel_PostSemaphoreSaturationGuard_QueuedSiblingFailsFast(t *testing.T) {
+	origSchedule := setSessionModelAttemptTimeouts
+	setSessionModelAttemptTimeouts = [setSessionModelMaxAttempts]time.Duration{
+		60 * time.Millisecond,
+		50 * time.Millisecond,
+		40 * time.Millisecond,
+	}
+	defer func() { setSessionModelAttemptTimeouts = origSchedule }()
+
+	p := &SharedACPProcess{
+		conn:        newUnresponsiveACPPeerConn(),
+		setModelSem: make(chan struct{}, 1),
+		// processDone left nil = process considered alive.
+	}
+
+	firstDone := make(chan struct{})
+	go func() {
+		defer close(firstDone)
+		_ = p.SetSessionModel(context.Background(), "session-1", "model-a")
+	}()
+
+	// Wait until the first caller has visibly acquired the semaphore before
+	// launching the sibling, so the sibling deterministically queues behind
+	// it for the whole duration of the first caller's 3 failed attempts.
+	deadline := time.Now().Add(2 * time.Second)
+	for len(p.setModelSem) == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("first caller never acquired setModelSem")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	// Launch the sibling in its own goroutine too: it must block on the
+	// semaphore (held by the first caller) for the whole ~1s duration of the
+	// first caller's 3 failed attempts + backoffs. What this test actually
+	// measures is the gap between "first caller releases the semaphore" and
+	// "sibling returns" — NOT the sibling's total elapsed time from launch,
+	// which necessarily includes that unavoidable queueing wait.
+	var siblingErr error
+	siblingDone := make(chan struct{})
+	go func() {
+		defer close(siblingDone)
+		siblingErr = p.SetSessionModel(context.Background(), "session-2", "model-a")
+	}()
+
+	<-firstDone // first caller's saturation-tripping attempts have landed and released the slot
+	releasedAt := time.Now()
+
+	select {
+	case <-siblingDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("sibling SetSessionModel did not return after the semaphore was released")
+	}
+	elapsedAfterRelease := time.Since(releasedAt)
+
+	if siblingErr == nil {
+		t.Fatal("expected the queued sibling SetSessionModel call to fail once saturation trips")
+	}
+	if !errors.Is(siblingErr, acperrors.ErrProcessSaturated) {
+		t.Errorf("expected sibling call to fail with ErrProcessSaturated (post-semaphore recheck), got: %v", siblingErr)
+	}
+	// The sibling must fail almost immediately once it acquires the semaphore
+	// — not after burning its own attempt-1 budget (60ms) plus retry backoff
+	// against an already-confirmed-saturated process.
+	if elapsedAfterRelease > 30*time.Millisecond {
+		t.Errorf("expected sibling call to fail fast (<30ms after semaphore release) via post-semaphore saturation recheck, took %v", elapsedAfterRelease)
+	}
+}
+
 // TestShouldFailFastCreateAttempt verifies the pure decision helper (mitto-13ck.2).
 func TestShouldFailFastCreateAttempt(t *testing.T) {
 	bigBudget := sessionCreateAttemptTimeout * 2

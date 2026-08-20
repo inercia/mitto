@@ -2424,10 +2424,12 @@ func (p *SharedACPProcess) SetSessionMode(ctx context.Context, sessionID acp.Ses
 // process) and retries on transient timeouts so burst startups don't race the
 // serially-served agent subprocess (mitto-3q9).
 func (p *SharedACPProcess) SetSessionModel(ctx context.Context, sessionID acp.SessionId, modelID string) error {
-	// Read conn and processDone under RLock; keep existing nil-check semantics.
+	// Read conn under RLock; keep existing nil-check semantics. processDone is
+	// re-read fresh AFTER the semaphore acquisition below (mitto-qy0j) since a
+	// long queueing wait can span a process restart — capturing it here would
+	// be immediately superseded and stale.
 	p.mu.RLock()
 	conn := p.conn
-	processDone := p.processDone
 	p.mu.RUnlock()
 
 	if conn == nil {
@@ -2461,6 +2463,40 @@ func (p *SharedACPProcess) SetSessionModel(ctx context.Context, sessionID acp.Se
 		defer func() { <-p.setModelSem }()
 	case <-ctx.Done():
 		return fmt.Errorf("set_model: cancelled while waiting for serialization slot: %w", ctx.Err())
+	}
+
+	// mitto-qy0j: re-check saturation/liveness AFTER winning the serialization
+	// slot, using freshly-read process state. The pre-semaphore checks above
+	// only see the process as it was BEFORE this caller queued — a sibling
+	// call ahead of us (e.g. another child conversation requesting the same
+	// model) may have exhausted its own attempts and tripped saturation, or
+	// the process may have died/been replaced entirely, while we waited.
+	// Without this recheck every queued sibling still burns a full attempt-1
+	// budget (up to 20s) against an already-confirmed-degraded process before
+	// the mid-flight (attempt>1) fail-fast below ever gets a chance to apply —
+	// turning N sibling requests into N independent deadline/recycle cycles
+	// instead of one failure epoch plus fast fails for the rest.
+	p.mu.RLock()
+	freshConn := p.conn
+	processDone := p.processDone
+	p.mu.RUnlock()
+	if freshConn == nil {
+		return fmt.Errorf("set_model: shared ACP process is not running")
+	}
+	if freshConn != conn {
+		// The process was restarted while we queued: our sessionID belongs to
+		// a generation that no longer exists on the new connection. Fail so
+		// the caller re-derives a fresh generation/session instead of issuing
+		// an RPC that can only ever return "session not found".
+		return fmt.Errorf("set_model: shared ACP process was replaced while waiting for the serialization slot")
+	}
+	select {
+	case <-processDone:
+		return fmt.Errorf("set_model: ACP process has exited while waiting for the serialization slot")
+	default:
+	}
+	if p.isSaturated() {
+		return fmt.Errorf("set_model: shared ACP process became saturated while waiting for the serialization slot; failing fast: %w: %w", acperrors.ErrProcessSaturated, context.DeadlineExceeded)
 	}
 
 	// Track as an active RPC for GC visibility (mirrors other methods).
