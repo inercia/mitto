@@ -1034,6 +1034,71 @@ func (ps *LoopStore) Update(u LoopUpdate) error {
 	return nil
 }
 
+// RemoveSlackSubscriptions removes subscriptions for the given installations.
+// When the last Slack subscription is removed, it also removes the onSlack
+// trigger. A sole-onSlack loop becomes a regular conversation; otherwise all
+// unrelated triggers and fields are preserved, including trigger names written
+// by a newer Mitto version.
+func (ps *LoopStore) RemoveSlackSubscriptions(installationIDs []string) (*LoopPrompt, bool, error) {
+	ps.mu.Lock()
+	defer ps.mu.Unlock()
+
+	existing, err := ps.getUnlocked()
+	if err != nil {
+		return nil, false, err
+	}
+	wanted := make(map[string]bool, len(installationIDs))
+	for _, id := range installationIDs {
+		if id = strings.TrimSpace(id); id != "" {
+			wanted[id] = true
+		}
+	}
+	if len(wanted) == 0 {
+		return existing, false, nil
+	}
+
+	remaining := make([]SlackSubscription, 0, len(existing.SlackSubscriptions))
+	for _, subscription := range existing.SlackSubscriptions {
+		if !wanted[subscription.InstallationID] {
+			remaining = append(remaining, subscription)
+		}
+	}
+	if len(remaining) == len(existing.SlackSubscriptions) {
+		return existing, false, nil
+	}
+	existing.SlackSubscriptions = remaining
+	if len(remaining) == 0 {
+		triggers := make([]LoopTrigger, 0, len(existing.EffectiveTriggers()))
+		for _, trigger := range existing.EffectiveTriggers() {
+			if trigger != TriggerOnSlack {
+				triggers = append(triggers, trigger)
+			}
+		}
+		if len(triggers) == 0 {
+			if err := os.Remove(ps.savedLoopPath()); err != nil && !os.IsNotExist(err) {
+				return nil, false, fmt.Errorf("failed to clear saved loop while removing Slack subscriptions: %w", err)
+			}
+			if err := os.Remove(ps.loopPath()); err != nil {
+				return nil, false, fmt.Errorf("failed to remove sole-onSlack loop: %w", err)
+			}
+			return nil, true, nil
+		}
+		existing.Triggers = triggers
+		existing.Trigger = triggers[0]
+	}
+
+	existing.Normalize()
+	if err := existing.validate(true); err != nil {
+		return nil, false, err
+	}
+	existing.UpdatedAt = time.Now().UTC()
+	existing.NextScheduledAt = ps.computeNextScheduledTime(existing)
+	if err := fileutil.WriteJSONAtomic(ps.loopPath(), existing, 0644); err != nil {
+		return nil, false, fmt.Errorf("failed to write loop file: %w", err)
+	}
+	return existing, true, nil
+}
+
 // Delete removes the loop prompt configuration.
 func (ps *LoopStore) Delete() error {
 	ps.mu.Lock()

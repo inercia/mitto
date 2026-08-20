@@ -106,6 +106,84 @@ func TestLoopStoreOnSlackCanonicalPersistenceAndPatchSemantics(t *testing.T) {
 	}
 }
 
+func TestLoopStoreRemoveSlackSubscriptions(t *testing.T) {
+	t.Run("preserves unrelated subscriptions and triggers", func(t *testing.T) {
+		store := NewLoopStore(t.TempDir())
+		if err := store.Set(&LoopPrompt{
+			Prompt:   "inspect",
+			Enabled:  true,
+			Triggers: []LoopTrigger{TriggerOnCompletion, TriggerOnSlack},
+			SlackSubscriptions: []SlackSubscription{
+				{InstallationID: "remove", ChannelID: "one"},
+				{InstallationID: "keep", ChannelID: "two"},
+			},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		updated, changed, err := store.RemoveSlackSubscriptions([]string{"remove"})
+		if err != nil || !changed {
+			t.Fatalf("RemoveSlackSubscriptions() changed=%v err=%v", changed, err)
+		}
+		if len(updated.SlackSubscriptions) != 1 || updated.SlackSubscriptions[0].InstallationID != "keep" || !updated.IsOnSlack() || !updated.IsOnCompletion() {
+			t.Fatalf("updated loop = %#v", updated)
+		}
+	})
+
+	t.Run("removes onSlack but preserves another trigger", func(t *testing.T) {
+		store := NewLoopStore(t.TempDir())
+		if err := store.Set(&LoopPrompt{Prompt: "inspect", Enabled: true,
+			Triggers:           []LoopTrigger{TriggerOnSlack, TriggerOnCompletion},
+			SlackSubscriptions: []SlackSubscription{{InstallationID: "remove", ChannelID: "one"}},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		updated, changed, err := store.RemoveSlackSubscriptions([]string{"remove"})
+		if err != nil || !changed || updated == nil {
+			t.Fatalf("RemoveSlackSubscriptions() updated=%#v changed=%v err=%v", updated, changed, err)
+		}
+		if updated.IsOnSlack() || !updated.IsOnCompletion() || len(updated.SlackSubscriptions) != 0 {
+			t.Fatalf("updated loop = %#v", updated)
+		}
+	})
+
+	t.Run("sole onSlack trigger becomes a regular conversation", func(t *testing.T) {
+		store := NewLoopStore(t.TempDir())
+		if err := store.Set(&LoopPrompt{Prompt: "inspect", Enabled: true,
+			Triggers:           []LoopTrigger{TriggerOnSlack},
+			SlackSubscriptions: []SlackSubscription{{InstallationID: "remove", ChannelID: "one"}},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		updated, changed, err := store.RemoveSlackSubscriptions([]string{"remove"})
+		if err != nil || !changed || updated != nil {
+			t.Fatalf("RemoveSlackSubscriptions() updated=%#v changed=%v err=%v", updated, changed, err)
+		}
+		if _, err := store.Get(); !errors.Is(err, ErrLoopNotFound) {
+			t.Fatalf("Get() error = %v, want ErrLoopNotFound", err)
+		}
+	})
+
+	t.Run("preserves unknown triggers and fields", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, loopFileName)
+		raw := `{"prompt":"future","enabled":true,"triggers":["onSlack","onWebhook"],"slack_subscriptions":[{"installation_id":"remove","channel_id":"c"}],"future_delivery":{"mode":"durable"}}`
+		if err := os.WriteFile(path, []byte(raw), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		updated, changed, err := NewLoopStore(dir).RemoveSlackSubscriptions([]string{"remove"})
+		if err != nil || !changed || updated == nil || len(updated.Triggers) != 1 || updated.Triggers[0] != "onWebhook" {
+			t.Fatalf("RemoveSlackSubscriptions() updated=%#v changed=%v err=%v", updated, changed, err)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(data), `"future_delivery"`) {
+			t.Fatalf("future field was lost: %s", data)
+		}
+	})
+}
+
 func TestLoopStorePartialUpdatePreservesUnknownTriggerAndFields(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, loopFileName)

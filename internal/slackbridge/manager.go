@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -260,26 +261,99 @@ func (m *Manager) RemoveSession(sessionID string) {
 // FindSlackReferences lets catalog deletion fail closed while active loops
 // reference an app profile or one of its installations.
 func (m *Manager) FindSlackReferences(_ context.Context, appID string, installationIDs []string) ([]slackcatalog.Reference, error) {
+	sessionIDs := m.matchingReferenceSessionIDs(appID, installationIDs)
+	refs := make([]slackcatalog.Reference, 0, len(sessionIDs))
+	for _, sessionID := range sessionIDs {
+		name := "Untitled conversation"
+		if m.store != nil {
+			if metadata, err := m.store.GetMetadata(sessionID); err == nil && strings.TrimSpace(metadata.Name) != "" {
+				name = metadata.Name
+			}
+		}
+		refs = append(refs, slackcatalog.Reference{SessionID: sessionID, Name: name})
+	}
+	sort.Slice(refs, func(i, j int) bool {
+		if refs[i].Name != refs[j].Name {
+			return refs[i].Name < refs[j].Name
+		}
+		return refs[i].SessionID < refs[j].SessionID
+	})
+	return refs, nil
+}
+
+func (m *Manager) matchingReferenceSessionIDs(appID string, installationIDs []string) []string {
+	matches := m.matchingReferenceSessions(appID, installationIDs)
+	sessionIDs := make([]string, 0, len(matches))
+	for sessionID := range matches {
+		sessionIDs = append(sessionIDs, sessionID)
+	}
+	sort.Strings(sessionIDs)
+	return sessionIDs
+}
+
+func (m *Manager) matchingReferenceSessions(appID string, installationIDs []string) map[string][]string {
 	wanted := make(map[string]bool, len(installationIDs))
 	for _, id := range installationIDs {
 		wanted[id] = true
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	seen := make(map[string]bool)
-	var refs []slackcatalog.Reference
+	matched := make(map[string]map[string]bool)
 	for sessionID, subs := range m.sessions {
 		for _, sub := range subs {
 			if sub.appID == appID && (len(wanted) == 0 || wanted[sub.installationID]) {
-				if !seen[sessionID] {
-					refs = append(refs, slackcatalog.Reference{SessionID: sessionID})
-					seen[sessionID] = true
+				if matched[sessionID] == nil {
+					matched[sessionID] = make(map[string]bool)
 				}
-				break
+				matched[sessionID][sub.installationID] = true
 			}
 		}
 	}
-	return refs, nil
+	result := make(map[string][]string, len(matched))
+	for sessionID, ids := range matched {
+		for id := range ids {
+			result[sessionID] = append(result[sessionID], id)
+		}
+		sort.Strings(result[sessionID])
+	}
+	return result
+}
+
+// RemoveSlackReferences removes subscriptions for the selected installations
+// from every matching active loop and reconciles Socket Mode routing.
+func (m *Manager) RemoveSlackReferences(_ context.Context, appID string, installationIDs []string) ([]slackcatalog.Reference, error) {
+	if m.store == nil {
+		return nil, errors.New("Slack session store is unavailable")
+	}
+	matches := m.matchingReferenceSessions(appID, installationIDs)
+	sessionIDs := make([]string, 0, len(matches))
+	for sessionID := range matches {
+		sessionIDs = append(sessionIDs, sessionID)
+	}
+	sort.Strings(sessionIDs)
+	removed := make([]slackcatalog.Reference, 0, len(sessionIDs))
+	for _, sessionID := range sessionIDs {
+		metadata, err := m.store.GetMetadata(sessionID)
+		if err != nil {
+			return removed, err
+		}
+		_, changed, err := m.store.Loop(sessionID).RemoveSlackSubscriptions(matches[sessionID])
+		if err != nil {
+			return removed, err
+		}
+		if !changed {
+			continue
+		}
+		name := strings.TrimSpace(metadata.Name)
+		if name == "" {
+			name = "Untitled conversation"
+		}
+		removed = append(removed, slackcatalog.Reference{SessionID: sessionID, Name: name})
+		if err := m.ReconcileSession(sessionID); err != nil && !errors.Is(err, session.ErrLoopNotFound) {
+			return removed, err
+		}
+	}
+	return removed, nil
 }
 
 // RestartApp gracefully replaces a worker after an app credential change.

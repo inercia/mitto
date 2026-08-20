@@ -314,6 +314,96 @@ func TestManagerAuthorizationLossFailsClosedAndErasesContent(t *testing.T) {
 	}
 }
 
+func TestManagerNamesAndRemovesSlackReferences(t *testing.T) {
+	store := newManagerStore(t)
+	addSlackLoop(t, store, "named", true, false, session.SlackSubscription{InstallationID: "install-1", ChannelID: "channel"})
+	if err := store.UpdateMetadata("named", func(metadata *session.Metadata) { metadata.Name = "Release watcher" }); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewManager(store, testInstallations(), &managerCredentials{token: "token"}, &managerRunner{}, nil)
+	t.Cleanup(manager.Close)
+	if err := manager.ReconcileSession("named"); err != nil {
+		t.Fatal(err)
+	}
+
+	references, err := manager.FindSlackReferences(context.Background(), "app-1", []string{"install-1"})
+	if err != nil || len(references) != 1 || references[0].Name != "Release watcher" {
+		t.Fatalf("FindSlackReferences() = %#v, %v", references, err)
+	}
+	removed, err := manager.RemoveSlackReferences(context.Background(), "app-1", nil)
+	if err != nil || len(removed) != 1 || removed[0].Name != "Release watcher" {
+		t.Fatalf("RemoveSlackReferences() = %#v, %v", removed, err)
+	}
+	if _, err := store.Loop("named").Get(); !errors.Is(err, session.ErrLoopNotFound) {
+		t.Fatalf("loop Get() error = %v, want ErrLoopNotFound", err)
+	}
+	references, err = manager.FindSlackReferences(context.Background(), "app-1", []string{"install-1"})
+	if err != nil || len(references) != 0 {
+		t.Fatalf("references after removal = %#v, %v", references, err)
+	}
+}
+
+// TestManagerRemoveSlackReferencesSelectiveInstallationPreservesOthers uses a
+// real *session.Store (not a fake that clears everything) to prove selective
+// installation removal: only the subscription(s) matching the targeted
+// installation are dropped, from only the session(s) that reference it.
+// Unrelated subscriptions on the same loop, and other sessions entirely, are
+// left untouched.
+func TestManagerRemoveSlackReferencesSelectiveInstallationPreservesOthers(t *testing.T) {
+	store := newManagerStore(t)
+	// "multi" subscribes to both install-1 and install-2 under app-1.
+	addSlackLoop(t, store, "multi", true, false,
+		session.SlackSubscription{InstallationID: "install-1", ChannelID: "channel-a"},
+		session.SlackSubscription{InstallationID: "install-2", ChannelID: "channel-b"})
+	// "unrelated" only subscribes to install-2 and must be untouched by an
+	// install-1-scoped removal.
+	addSlackLoop(t, store, "unrelated", true, false,
+		session.SlackSubscription{InstallationID: "install-2", ChannelID: "channel-c"})
+
+	manager := NewManager(store, testInstallations(), &managerCredentials{token: "token"}, &managerRunner{}, nil)
+	t.Cleanup(manager.Close)
+	if err := manager.ReconcileSession("multi"); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.ReconcileSession("unrelated"); err != nil {
+		t.Fatal(err)
+	}
+
+	removed, err := manager.RemoveSlackReferences(context.Background(), "app-1", []string{"install-1"})
+	if err != nil || len(removed) != 1 || removed[0].SessionID != "multi" {
+		t.Fatalf("RemoveSlackReferences(install-1) = %#v, %v", removed, err)
+	}
+
+	// "multi" survives (install-2 subscription remains) instead of being
+	// deleted as a sole-onSlack loop.
+	multiLoop, err := store.Loop("multi").Get()
+	if err != nil {
+		t.Fatalf("multi loop Get() error = %v, want it to still exist", err)
+	}
+	if len(multiLoop.SlackSubscriptions) != 1 || multiLoop.SlackSubscriptions[0].InstallationID != "install-2" || !multiLoop.IsOnSlack() {
+		t.Fatalf("multi loop after selective removal = %#v", multiLoop)
+	}
+
+	// "unrelated" is completely untouched.
+	unrelatedLoop, err := store.Loop("unrelated").Get()
+	if err != nil {
+		t.Fatalf("unrelated loop Get() error = %v, want it to still exist", err)
+	}
+	if len(unrelatedLoop.SlackSubscriptions) != 1 || unrelatedLoop.SlackSubscriptions[0].InstallationID != "install-2" {
+		t.Fatalf("unrelated loop was mutated: %#v", unrelatedLoop)
+	}
+
+	// install-1 no longer has any references; install-2 still has both.
+	afterInstall1, err := manager.FindSlackReferences(context.Background(), "app-1", []string{"install-1"})
+	if err != nil || len(afterInstall1) != 0 {
+		t.Fatalf("references for install-1 after removal = %#v, %v", afterInstall1, err)
+	}
+	afterInstall2, err := manager.FindSlackReferences(context.Background(), "app-1", []string{"install-2"})
+	if err != nil || len(afterInstall2) != 2 {
+		t.Fatalf("references for install-2 after removal = %#v, %v", afterInstall2, err)
+	}
+}
+
 func withSession(subscription resolvedSubscription, sessionID string) resolvedSubscription {
 	subscription.sessionID = sessionID
 	return subscription
