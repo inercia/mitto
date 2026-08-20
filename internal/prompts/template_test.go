@@ -2887,6 +2887,7 @@ func TestBuiltinPromptLoopModes(t *testing.T) {
 		"ci/analyze-logs.prompt.yaml":             {mode: "optional", def: boolPtr(false)},
 		"docs/architectural-analysis.prompt.yaml": {mode: "optional", def: boolPtr(false)},
 		"github/review-slack-prs.prompt.yaml":     {mode: "optional", def: boolPtr(false)},
+		"cso/investigation.prompt.yaml":           {mode: "optional", def: boolPtr(false)},
 		"jira/status-all-inprogress.prompt.yaml":  {mode: "optional", def: boolPtr(false)},
 		"jira/status-one-inprogress.prompt.yaml":  {mode: "optional", def: boolPtr(false)},
 		"jira/work.prompt.yaml":                   {mode: "optional", def: boolPtr(false)},
@@ -2965,6 +2966,123 @@ func TestBuiltinPromptLoopModes(t *testing.T) {
 				t.Errorf("%s: Loop = %+v, want nil (never-loop set)", file, prompt.Loop)
 			}
 		})
+	}
+}
+
+// TestCSOInvestigationBuiltinContract pins the builtin incident-response prompt's
+// discovery metadata, instruction-file parameters, Slack loop defaults, playbook
+// selection, generic no-playbook path, and required report shape.
+func TestCSOInvestigationBuiltinContract(t *testing.T) {
+	const name = "cso/investigation.prompt.yaml"
+	data, err := os.ReadFile(filepath.Join("../../config/prompts/builtin", name))
+	if err != nil {
+		t.Fatalf("ReadFile(%s): %v", name, err)
+	}
+	prompt, err := ParsePromptFile(name, data, time.Now())
+	if err != nil {
+		t.Fatalf("ParsePromptFile(%s): %v", name, err)
+	}
+	if prompt.Name != "CSO: investigation" || prompt.Group != "CSO" {
+		t.Errorf("prompt identity = (%q, %q), want (%q, %q)", prompt.Name, prompt.Group, "CSO: investigation", "CSO")
+	}
+	if prompt.Loop == nil || !prompt.Loop.hasTrigger("onSlack") {
+		t.Fatalf("Loop = %#v, want onSlack trigger", prompt.Loop)
+	}
+	if got := prompt.Loop.SlackEventMode(); got != "anyHumanMessage" {
+		t.Errorf("SlackEventMode() = %q, want %q", got, "anyHumanMessage")
+	}
+	if got := prompt.Loop.SlackThreadPolicy(); got != "any" {
+		t.Errorf("SlackThreadPolicy() = %q, want %q", got, "any")
+	}
+	parameters := make(map[string]PromptParameter, len(prompt.Parameters))
+	for _, parameter := range prompt.Parameters {
+		parameters[parameter.Name] = parameter
+	}
+	for name, wantDefault := range map[string]string{
+		"InvestigationInstructions": ".mitto/cso/investigation.md",
+		"EscalationInstructions":    ".mitto/cso/escalation.md",
+	} {
+		parameter, ok := parameters[name]
+		if !ok {
+			t.Errorf("parameter %q not found", name)
+			continue
+		}
+		if parameter.Type != "filename" || parameter.Required == nil || *parameter.Required {
+			t.Errorf("parameter %q = %#v, want optional filename", name, parameter)
+		}
+		if parameter.Default != wantDefault {
+			t.Errorf("parameter %q default = %q, want %q", name, parameter.Default, wantDefault)
+		}
+	}
+
+	emptyWorkspace := t.TempDir()
+	ctx := &cel.PromptEnabledContext{Workspace: cel.WorkspaceContext{Folder: emptyWorkspace}}
+	out, err := RenderPromptTemplate(prompt.Name, prompt.Content, ctx, cel.BuildTemplateFuncMap(ctx))
+	if err != nil {
+		t.Fatalf("RenderPromptTemplate: %v", err)
+	}
+	for _, marker := range []string{
+		"No workspace-specific investigation playbook exists",
+		"If escalation is required and no workspace playbook exists",
+		"## Required investigation report",
+		"1. **Summary**", "2. **Timeline**", "3. **Findings**",
+		"4. **Hypotheses**", "5. **Next Steps**", "6. **Escalation Handoff**",
+	} {
+		if !strings.Contains(out, marker) {
+			t.Errorf("rendered prompt missing contract marker %q", marker)
+		}
+	}
+	if strings.Contains(out, "## Slack-triggered incident context") {
+		t.Error("non-Slack render unexpectedly included Slack-triggered context")
+	}
+
+	defaultDir := t.TempDir()
+	defaultPlaybookDir := filepath.Join(defaultDir, ".mitto", "cso")
+	if err := os.MkdirAll(defaultPlaybookDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(defaultPlaybookDir, "investigation.md"), []byte("DEFAULT INVESTIGATION"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(defaultPlaybookDir, "escalation.md"), []byte("DEFAULT ESCALATION"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	defaultCtx := &cel.PromptEnabledContext{Workspace: cel.WorkspaceContext{Folder: defaultDir}}
+	defaultOut, err := RenderPromptTemplate(prompt.Name, prompt.Content, defaultCtx, cel.BuildTemplateFuncMap(defaultCtx))
+	if err != nil {
+		t.Fatalf("RenderPromptTemplate(default files): %v", err)
+	}
+	for _, marker := range []string{"DEFAULT INVESTIGATION", "DEFAULT ESCALATION"} {
+		if !strings.Contains(defaultOut, marker) {
+			t.Errorf("default-file render missing %q", marker)
+		}
+	}
+
+	customDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(customDir, "runbooks"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(customDir, "runbooks", "investigate.md"), []byte("CUSTOM INVESTIGATION"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(customDir, "runbooks", "escalate.md"), []byte("CUSTOM ESCALATION"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	customCtx := &cel.PromptEnabledContext{
+		Workspace: cel.WorkspaceContext{Folder: customDir},
+		Args: map[string]string{
+			"InvestigationInstructions": "runbooks/investigate.md",
+			"EscalationInstructions":    "runbooks/escalate.md",
+		},
+	}
+	customOut, err := RenderPromptTemplate(prompt.Name, prompt.Content, customCtx, cel.BuildTemplateFuncMap(customCtx))
+	if err != nil {
+		t.Fatalf("RenderPromptTemplate(custom files): %v", err)
+	}
+	for _, marker := range []string{"`runbooks/investigate.md`", "CUSTOM INVESTIGATION", "`runbooks/escalate.md`", "CUSTOM ESCALATION"} {
+		if !strings.Contains(customOut, marker) {
+			t.Errorf("custom-file render missing %q", marker)
+		}
 	}
 }
 
