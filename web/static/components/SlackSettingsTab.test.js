@@ -1219,6 +1219,9 @@ if (isIsolatedComponentRun) {
         const panel = container.querySelector(
           '[data-testid="slack-oauth-client-config"]',
         );
+        expect(panel.textContent.replace(/\s+/g, " ")).toContain(
+          "Only required for delegated-user authorization—not bot-token installations.",
+        );
         const [clientId, clientSecret] = panel.querySelectorAll("input");
         inputValue(clientId, "123.456");
         inputValue(clientSecret, secret);

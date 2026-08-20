@@ -661,7 +661,7 @@ export function SlackSubscriptionEditor({
             >
               <span
                 class="badge badge-sm badge-soft ${usesDelegatedUser
-                  ? "badge-secondary"
+                  ? "badge-info"
                   : "badge-primary"}"
                 >${usesDelegatedUser ? "Delegated user" : "Bot"}</span
               >
@@ -783,7 +783,8 @@ export function SlackSubscriptionEditor({
           testid="slack-channel-picker-modal"
           closeTestid="slack-channel-picker-close"
           backdropTestid="slack-channel-picker-backdrop"
-          bodyClass="flex flex-col gap-3 p-4 overflow-y-auto"
+          boxClass="max-h-[80vh]"
+          bodyClass="flex flex-col flex-1 min-h-0 gap-3 p-4 overflow-y-auto"
         >
         <input
           type="search"

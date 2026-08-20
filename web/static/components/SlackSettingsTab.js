@@ -121,7 +121,7 @@ export function slackHealth(record, attempt = "") {
 
 export function slackCredentialKind(record) {
   return record?.credential_kind === "user"
-    ? { label: "Delegated user", className: "badge-secondary" }
+    ? { label: "Delegated user", className: "badge-info" }
     : { label: "Bot", className: "badge-primary" };
 }
 
@@ -1300,8 +1300,9 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
                         <div>
                           <h6 class="font-medium">Delegated-user OAuth</h6>
                           <p class="text-xs text-mitto-text-muted">
-                            The client secret is write-only and stored in the
-                            credential vault.
+                            Only required for delegated-user authorization—not
+                            bot-token installations. The client secret is
+                            write-only and stored in the credential vault.
                           </p>
                         </div>
                         ${oauthConfig &&

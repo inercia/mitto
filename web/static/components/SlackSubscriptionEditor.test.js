@@ -380,6 +380,9 @@ if (childRun) {
         );
         expect(mode.getAttribute("role")).toBe("status");
         expect(mode.textContent).toContain("Delegated user");
+        expect(
+          mode.querySelector(".badge").classList.contains("badge-info"),
+        ).toBe(true);
         expect(mode.textContent).toContain("authorizing user's membership");
         expect(mode.textContent).toContain("stale mention-only drafts reset");
         expect(
@@ -496,6 +499,10 @@ if (childRun) {
             .contains(modal),
         ).toBe(false);
         expect(modal.textContent).toContain("Select a Slack channel");
+        expect(modal.classList.contains("max-h-[80vh]")).toBe(true);
+        expect(
+          modal.querySelector(".flex-1.min-h-0.overflow-y-auto"),
+        ).not.toBeNull();
         expect(getSubscriptions()).toEqual(before);
       } finally {
         unmount(container);

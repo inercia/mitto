@@ -45,7 +45,7 @@ if (isIsolatedRun) {
     test("maps delegated-user and legacy installation metadata to safe labels", () => {
       expect(slackCredentialKind({ credential_kind: "user" })).toEqual({
         label: "Delegated user",
-        className: "badge-secondary",
+        className: "badge-info",
       });
       expect(slackCredentialKind({ credential_kind: "bot" })).toEqual({
         label: "Bot",
@@ -122,6 +122,11 @@ if (isIsolatedRun) {
           container.querySelector('[data-testid="slack-credential-kind"]')
             .textContent,
         ).toBe("Delegated user");
+        expect(
+          container
+            .querySelector('[data-testid="slack-credential-kind"]')
+            .classList.contains("badge-info"),
+        ).toBe(true);
         expect(container.textContent).toContain("User: U222");
 
         container
