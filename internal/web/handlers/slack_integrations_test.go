@@ -15,6 +15,7 @@ import (
 
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/secrets"
+	"github.com/inercia/mitto/internal/session"
 	"github.com/inercia/mitto/internal/slackbridge"
 	"github.com/inercia/mitto/internal/slackcatalog"
 	"github.com/inercia/mitto/internal/web/middleware"
@@ -62,6 +63,32 @@ func (handlerSlack) ListChannels(context.Context, string, string, int) (slackcat
 	return slackcatalog.ChannelPage{}, nil
 }
 
+type handlerReferences struct {
+	refs []slackcatalog.Reference
+
+	// removeErr and partialRemoved simulate a remover that fails partway
+	// through a batch: some sessions were already mutated (partialRemoved)
+	// before the failure. Zero-valued, RemoveSlackReferences succeeds and
+	// removes every ref (unchanged prior behavior).
+	removeErr      error
+	partialRemoved []slackcatalog.Reference
+}
+
+func (r *handlerReferences) FindSlackReferences(context.Context, string, []string) ([]slackcatalog.Reference, error) {
+	return append([]slackcatalog.Reference(nil), r.refs...), nil
+}
+
+func (r *handlerReferences) RemoveSlackReferences(context.Context, string, []string) ([]slackcatalog.Reference, error) {
+	if r.removeErr != nil {
+		removed := append([]slackcatalog.Reference(nil), r.partialRemoved...)
+		r.refs = nil
+		return removed, r.removeErr
+	}
+	removed := append([]slackcatalog.Reference(nil), r.refs...)
+	r.refs = nil
+	return removed, nil
+}
+
 type handlerUserSlack struct{}
 
 func (handlerUserSlack) ValidateApp(context.Context, string) (string, error) { return "A123", nil }
@@ -73,6 +100,26 @@ func (handlerUserSlack) ValidateInstallation(_ context.Context, token string) (s
 		SlackAppID: "A123", TeamID: "T123", TeamName: "Example", UserID: "U123"}, nil
 }
 func (handlerUserSlack) ListChannels(context.Context, string, string, int) (slackcatalog.ChannelPage, error) {
+	return slackcatalog.ChannelPage{}, nil
+}
+
+// handlerOAuthRequiredSlack models the production recurrence: a bot token
+// validates normally, but any other token reproduces a standard Slack
+// user-token auth.test response that omits app_id, which SlackClient
+// classifies as slackcatalog.ErrOAuthRequired rather than a generic conflict.
+type handlerOAuthRequiredSlack struct{}
+
+func (handlerOAuthRequiredSlack) ValidateApp(context.Context, string) (string, error) {
+	return "A123", nil
+}
+func (handlerOAuthRequiredSlack) ValidateInstallation(_ context.Context, token string) (slackcatalog.InstallationIdentity, error) {
+	if token == "write-only-bot-token" {
+		return slackcatalog.InstallationIdentity{CredentialKind: slackcatalog.CredentialKindBot,
+			SlackAppID: "A123", TeamID: "T123", TeamName: "Example", BotID: "B123", BotUserID: "U123"}, nil
+	}
+	return slackcatalog.InstallationIdentity{}, slackcatalog.ErrOAuthRequired
+}
+func (handlerOAuthRequiredSlack) ListChannels(context.Context, string, string, int) (slackcatalog.ChannelPage, error) {
 	return slackcatalog.ChannelPage{}, nil
 }
 
@@ -172,6 +219,87 @@ func TestSlackInstallationRESTReturnsOnlyDelegatedUserMetadata(t *testing.T) {
 	}
 }
 
+func TestSlackInstallationCreateAndReplaceRejectOAuthRequiredWithoutMutation(t *testing.T) {
+	const canary = "write-only-user-token-missing-app-id"
+	credentials := &handlerCredentials{values: make(map[secrets.CredentialRef]string)}
+	service := slackcatalog.NewService(slackcatalog.NewFileStore(filepath.Join(t.TempDir(), "catalog.json")),
+		credentials, handlerOAuthRequiredSlack{}, nil)
+	app, err := service.CreateApp(context.Background(), "App", "write-only-app-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := New(Deps{SlackCatalog: service})
+
+	createRequest := newLocalSlackRequest(http.MethodPost, "/api/slack/apps/"+app.ID+"/installations",
+		`{"name":"Team","team_id":"T123","token":"`+canary+`"}`)
+	createRequest.SetPathValue("appId", app.ID)
+	response := httptest.NewRecorder()
+	h.HandleSlackInstallationCreate(response, createRequest)
+
+	if response.Code != http.StatusConflict {
+		t.Fatalf("create status=%d body=%s", response.Code, response.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	errObj, _ := body["error"].(map[string]any)
+	if errObj["code"] != "conflict" {
+		t.Fatalf("error envelope = %#v, body=%s", errObj, response.Body.String())
+	}
+	message, _ := errObj["message"].(string)
+	if !strings.Contains(message, "OAuth") || !strings.Contains(message, "delegated-user") {
+		t.Fatalf("message = %q, want an actionable OAuth/delegated-user explanation", message)
+	}
+	if strings.Contains(response.Body.String(), canary) {
+		t.Fatalf("response leaked candidate credential: %s", response.Body.String())
+	}
+
+	// Create makes no catalog/vault mutation on rejection.
+	installations, err := service.ListInstallations(app.ID)
+	if err != nil || len(installations) != 0 {
+		t.Fatalf("rejected create mutated catalog: installations=%#v err=%v", installations, err)
+	}
+	if len(credentials.values) != 1 { // only the app token from CreateApp above
+		t.Fatalf("rejected create mutated vault: %d credentials stored", len(credentials.values))
+	}
+
+	// Compatibility: bot create still succeeds after the rejected attempt.
+	botRequest := newLocalSlackRequest(http.MethodPost, "/api/slack/apps/"+app.ID+"/installations",
+		`{"name":"Bot Team","team_id":"T123","token":"write-only-bot-token"}`)
+	botRequest.SetPathValue("appId", app.ID)
+	response = httptest.NewRecorder()
+	h.HandleSlackInstallationCreate(response, botRequest)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("bot create status=%d body=%s", response.Code, response.Body.String())
+	}
+	var created map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	installationID, _ := created["id"].(string)
+	if installationID == "" {
+		t.Fatalf("bot create response missing id: %s", response.Body.String())
+	}
+
+	// Replacement preserves the prior bot installation on rejection.
+	replaceRequest := newLocalSlackRequest(http.MethodPut, "/api/slack/installations/"+installationID+"/token",
+		`{"token":"`+canary+`"}`)
+	replaceRequest.SetPathValue("installationId", installationID)
+	response = httptest.NewRecorder()
+	h.HandleSlackInstallationToken(response, replaceRequest)
+	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), `"code":"conflict"`) {
+		t.Fatalf("replace status=%d body=%s", response.Code, response.Body.String())
+	}
+	if strings.Contains(response.Body.String(), canary) {
+		t.Fatalf("replace response leaked candidate credential: %s", response.Body.String())
+	}
+	preserved, err := service.GetInstallation(installationID)
+	if err != nil || preserved.CredentialKind != slackcatalog.CredentialKindBot || preserved.BotID != "B123" {
+		t.Fatalf("rejected replacement changed installation: %#v, err=%v", preserved, err)
+	}
+}
+
 type trackingSlackBody struct {
 	reader *strings.Reader
 	read   bool
@@ -210,6 +338,93 @@ func TestSlackHandlersCreateListAndNeverReturnToken(t *testing.T) {
 	}
 	if !strings.Contains(response.Body.String(), `"slack_app_id":"A123"`) {
 		t.Fatalf("list response missing derived identity: %s", response.Body.String())
+	}
+}
+
+func TestSlackAppReferencesDeleteReturnsRefreshedPreview(t *testing.T) {
+	references := &handlerReferences{refs: []slackcatalog.Reference{{SessionID: "session-1", Name: "Watcher"}}}
+	service := slackcatalog.NewService(
+		slackcatalog.NewFileStore(filepath.Join(t.TempDir(), "catalog.json")),
+		&handlerCredentials{values: make(map[secrets.CredentialRef]string)},
+		handlerSlack{}, references,
+	)
+	app, err := service.CreateApp(context.Background(), "App", "write-only-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := New(Deps{SlackCatalog: service})
+	request := httptest.NewRequest(http.MethodDelete, "/api/slack/apps/"+app.ID+"/references", nil)
+	request.SetPathValue("appId", app.ID)
+	response := httptest.NewRecorder()
+
+	h.HandleSlackAppReferencesDelete(response, request)
+
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"name":"Watcher"`) ||
+		!strings.Contains(response.Body.String(), `"references":[]`) {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+// TestSlackAppReferencesDeleteBroadcastsPartialSuccessOnError pins the
+// mitto-5apf follow-up fix: when the remover fails partway through a batch,
+// the handler still broadcasts loop_updated for every session that was
+// actually mutated before returning the (safe, wrapped) error to the client.
+func TestSlackAppReferencesDeleteBroadcastsPartialSuccessOnError(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if err := store.Create(session.Metadata{SessionID: "session-1", ACPServer: "test", WorkingDir: t.TempDir()}); err != nil {
+		t.Fatal(err)
+	}
+	retained := &session.LoopPrompt{Prompt: "inspect", Enabled: true, Triggers: []session.LoopTrigger{session.TriggerOnCompletion}}
+	if err := store.Loop("session-1").Set(retained); err != nil {
+		t.Fatal(err)
+	}
+
+	references := &handlerReferences{
+		refs:           []slackcatalog.Reference{{SessionID: "session-1", Name: "Watcher"}, {SessionID: "session-2", Name: "Auditor"}},
+		removeErr:      errors.New("disk error on session-2"),
+		partialRemoved: []slackcatalog.Reference{{SessionID: "session-1", Name: "Watcher"}},
+	}
+	service := slackcatalog.NewService(
+		slackcatalog.NewFileStore(filepath.Join(t.TempDir(), "catalog.json")),
+		&handlerCredentials{values: make(map[secrets.CredentialRef]string)},
+		handlerSlack{}, references,
+	)
+	app, err := service.CreateApp(context.Background(), "App", "write-only-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var broadcastSessions []string
+	var broadcastLoops []*session.LoopPrompt
+	h := New(Deps{
+		SlackCatalog: service,
+		Store:        store,
+		BroadcastLoopUpdated: func(sessionID string, loop *session.LoopPrompt) {
+			broadcastSessions = append(broadcastSessions, sessionID)
+			broadcastLoops = append(broadcastLoops, loop)
+		},
+	})
+	request := httptest.NewRequest(http.MethodDelete, "/api/slack/apps/"+app.ID+"/references", nil)
+	request.SetPathValue("appId", app.ID)
+	response := httptest.NewRecorder()
+
+	h.HandleSlackAppReferencesDelete(response, request)
+
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	if strings.Contains(response.Body.String(), "disk error on session-2") {
+		t.Fatalf("response leaked raw remover error: %s", response.Body.String())
+	}
+	if len(broadcastSessions) != 1 || broadcastSessions[0] != "session-1" {
+		t.Fatalf("broadcast sessions = %#v, want exactly [session-1]", broadcastSessions)
+	}
+	if broadcastLoops[0] == nil || broadcastLoops[0].Prompt != "inspect" {
+		t.Fatalf("broadcast loop = %#v, want the retained on-disk loop", broadcastLoops[0])
 	}
 }
 
@@ -484,6 +699,20 @@ func TestWriteSlackErrorMapsReferencesToConflict(t *testing.T) {
 	}
 }
 
+func TestWriteSlackErrorMapsOAuthRequiredToActionableConflict(t *testing.T) {
+	response := httptest.NewRecorder()
+	writeSlackError(response, errors.Join(slackcatalog.ErrOAuthRequired, errors.New("auth.test omitted delegated-user app identity")))
+	if response.Code != http.StatusConflict {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), `"code":"conflict"`) {
+		t.Fatalf("body=%s", response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), "OAuth") {
+		t.Fatalf("missing actionable OAuth guidance: %s", response.Body.String())
+	}
+}
+
 func TestWriteSlackErrorNeverEchoesWrappedValues(t *testing.T) {
 	const canary = "canary-provider-error-secret"
 	tests := []struct {
@@ -494,6 +723,7 @@ func TestWriteSlackErrorNeverEchoesWrappedValues(t *testing.T) {
 		{"invalid", errors.Join(slackcatalog.ErrInvalid, errors.New(canary)), http.StatusBadRequest},
 		{"not found", errors.Join(slackcatalog.ErrNotFound, errors.New(canary)), http.StatusNotFound},
 		{"referenced", errors.Join(slackcatalog.ErrReferenced, errors.New(canary)), http.StatusConflict},
+		{"oauth required", errors.Join(slackcatalog.ErrOAuthRequired, errors.New(canary)), http.StatusConflict},
 		{"conflict", errors.Join(slackcatalog.ErrConflict, errors.New(canary)), http.StatusConflict},
 		{"unavailable", errors.Join(slackcatalog.ErrUnavailable, errors.New(canary)), http.StatusServiceUnavailable},
 		{"unexpected", errors.New(canary), http.StatusInternalServerError},
