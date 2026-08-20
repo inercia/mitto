@@ -208,11 +208,35 @@ S7_DIR="$TMP/needs-creating/nested"
 S7_PATTERN="^$(printf '%s' "$S7_DIR" | sed 's#[.[\/*^$]#\\&#g')$"
 run_scratch_case "set" "$S7_DIR" "$S7_PATTERN" "scratch_override_mkdir_p"
 
+profile_pass_count=0
+profile_fail_count=0
+
+# Firejail 0.9.72 rejects the top-level path itself (`whitelist /tmp`). Keep
+# this static guard beside the cross-platform shell tests; the Linux CI smoke
+# provides the end-to-end validation against a real Firejail installation.
+if grep -qE '"allow_(read|write)_folders":[[:space:]]*\["/tmp"' "$SMOKE"; then
+    profile_fail_count=$((profile_fail_count + 1))
+    echo "❌ firejail_profile_avoids_top_level_tmp: settings still whitelist /tmp"
+else
+    profile_pass_count=$((profile_pass_count + 1))
+    echo "✅ firejail_profile_avoids_top_level_tmp"
+fi
+
+if grep -qF 'MOCK_ACP="$SCRATCH_DIR/mock-acp-server"' "$SMOKE" && \
+        grep -qF 'cp -f "$MOCK_ACP_SOURCE" "$MOCK_ACP"' "$SMOKE"; then
+    profile_pass_count=$((profile_pass_count + 1))
+    echo "✅ firejail_fixture_lives_in_whitelisted_workspace"
+else
+    profile_fail_count=$((profile_fail_count + 1))
+    echo "❌ firejail_fixture_lives_in_whitelisted_workspace: mock ACP is not copied into scratch"
+fi
+
 echo
 echo "assert_runner_log_line: $pass_count passed, $fail_count failed"
 echo "SMOKE_SCRATCH_DIR guard:  $scratch_pass_count passed, $scratch_fail_count failed"
+echo "Firejail profile guard:    $profile_pass_count passed, $profile_fail_count failed"
 
-total_fail=$((fail_count + scratch_fail_count))
+total_fail=$((fail_count + scratch_fail_count + profile_fail_count))
 if [ "$total_fail" -gt 0 ]; then
     exit 1
 fi

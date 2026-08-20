@@ -27,7 +27,7 @@ REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$REPO_ROOT"
 
 MITTO_BIN="$REPO_ROOT/mitto"
-MOCK_ACP="$REPO_ROOT/tests/mocks/acp-server/mock-acp-server"
+MOCK_ACP_SOURCE="$REPO_ROOT/tests/mocks/acp-server/mock-acp-server"
 
 # Scratch dir: caller may pre-set SMOKE_SCRATCH_DIR (e.g. CI, so the stderr log
 # survives the job for artifact upload); otherwise we mktemp our own and clean up
@@ -84,10 +84,18 @@ if [ ! -x "$MITTO_BIN" ]; then
     echo -e "${BLUE}→ Building mitto${NC}"
     (cd "$REPO_ROOT" && make build) || fail "make build failed"
 fi
-if [ ! -x "$MOCK_ACP" ]; then
+if [ ! -x "$MOCK_ACP_SOURCE" ]; then
     echo -e "${BLUE}→ Building mock-acp-server${NC}"
     (cd "$REPO_ROOT" && make build-mock-acp) || fail "make build-mock-acp failed"
 fi
+
+# Firejail 0.9.72 rejects a whitelist entry for the top-level /tmp directory,
+# and whitelisting only the workspace hides executables elsewhere under $HOME.
+# Keep the smoke fixture inside the whitelisted workspace so the profile needs
+# one narrow writable path and the child process remains executable.
+MOCK_ACP="$SCRATCH_DIR/mock-acp-server"
+cp -f "$MOCK_ACP_SOURCE" "$MOCK_ACP" || fail "copying mock-acp-server into scratch dir failed"
+chmod 0700 "$MOCK_ACP" || fail "making scratch mock-acp-server executable failed"
 
 # Generate settings.json ----------------------------------------------------
 SETTINGS="$SCRATCH_DIR/settings.json"
@@ -102,8 +110,7 @@ cat > "$SETTINGS" <<EOF
           "type": "$RUNNER_TYPE",
           "restrictions": {
             "allow_networking": true,
-            "allow_read_folders": ["/tmp", "$SCRATCH_DIR"],
-            "allow_write_folders": ["/tmp", "$SCRATCH_DIR"]
+            "allow_write_folders": ["$SCRATCH_DIR"]
           }
         }
       }
