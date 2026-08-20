@@ -1039,7 +1039,7 @@ func newOnCompletionSession(t *testing.T, store *session.Store, sessionID string
 	if err := store.Loop(sessionID).Set(&session.LoopPrompt{
 		Prompt:       "iterate",
 		Enabled:      true,
-		Trigger:      session.TriggerOnCompletion,
+		Triggers:     []session.LoopTrigger{session.TriggerOnCompletion},
 		DelaySeconds: delaySeconds,
 	}); err != nil {
 		t.Fatalf("loopStore.Set() error = %v", err)
@@ -1079,7 +1079,7 @@ func TestLoopRunner_OnConversationIdle_IgnoresScheduleTrigger(t *testing.T) {
 	if err := store.Loop("s1").Set(&session.LoopPrompt{
 		Prompt:    "x",
 		Enabled:   true,
-		Trigger:   session.TriggerSchedule,
+		Triggers:  []session.LoopTrigger{session.TriggerSchedule},
 		Frequency: session.Frequency{Value: 1, Unit: session.FrequencyHours},
 	}); err != nil {
 		t.Fatalf("loopStore.Set() error = %v", err)
@@ -1331,7 +1331,7 @@ func TestLoopRunner_OnConversationIdle_DualLeg(t *testing.T) {
 		t.Fatalf("Create(child) error = %v", err)
 	}
 	if err := store.Loop("child1").Set(&session.LoopPrompt{
-		Prompt: "iterate", Enabled: true, Trigger: session.TriggerOnCompletion, DelaySeconds: 3600,
+		Prompt: "iterate", Enabled: true, Triggers: []session.LoopTrigger{session.TriggerOnCompletion}, DelaySeconds: 3600,
 	}); err != nil {
 		t.Fatalf("loopStore.Set() error = %v", err)
 	}
@@ -1367,7 +1367,7 @@ func newDurationCappedSession(t *testing.T, store *session.Store, sessionID stri
 	if err := ps.Set(&session.LoopPrompt{
 		Prompt:             "iterate",
 		Enabled:            true,
-		Trigger:            session.TriggerOnCompletion,
+		Triggers:           []session.LoopTrigger{session.TriggerOnCompletion},
 		MaxDurationSeconds: maxDurationSeconds,
 		MaxIterations:      maxIterations,
 		FirstRunAt:         firstRunAt,
@@ -1671,7 +1671,7 @@ func TestLoopRunner_RunOnce_MaxDurationAutoStops(t *testing.T) {
 		Prompt:             "Test prompt",
 		Frequency:          session.Frequency{Value: 5, Unit: session.FrequencyMinutes},
 		Enabled:            true,
-		Trigger:            session.TriggerSchedule,
+		Triggers:           []session.LoopTrigger{session.TriggerSchedule},
 		MaxDurationSeconds: 60,
 	}); err != nil {
 		t.Fatalf("loopStore.Set() error = %v", err)
@@ -1804,9 +1804,9 @@ func TestLoopRunner_BootstrapOnCompletion_Disabled_Noop(t *testing.T) {
 		t.Fatalf("store.Create() error = %v", err)
 	}
 	if err := store.Loop("s1").Set(&session.LoopPrompt{
-		Prompt:  "Test",
-		Enabled: false, // disabled
-		Trigger: session.TriggerOnCompletion,
+		Prompt:   "Test",
+		Enabled:  false, // disabled
+		Triggers: []session.LoopTrigger{session.TriggerOnCompletion},
 	}); err != nil {
 		t.Fatalf("loopStore.Set() error = %v", err)
 	}
@@ -1836,7 +1836,7 @@ func TestLoopRunner_BootstrapOnCompletion_ScheduleTrigger_Noop(t *testing.T) {
 	if err := store.Loop("s1").Set(&session.LoopPrompt{
 		Prompt:    "Test",
 		Enabled:   true,
-		Trigger:   session.TriggerSchedule, // schedule, not onCompletion
+		Triggers:  []session.LoopTrigger{session.TriggerSchedule}, // schedule, not onCompletion
 		Frequency: session.Frequency{Value: 1, Unit: session.FrequencyHours},
 	}); err != nil {
 		t.Fatalf("loopStore.Set() error = %v", err)
@@ -2965,7 +2965,7 @@ func TestStopLoopForArchive_ScheduleBased(t *testing.T) {
 	if err := ps.Set(&session.LoopPrompt{
 		Prompt:          "check",
 		Enabled:         true,
-		Trigger:         session.TriggerSchedule,
+		Triggers:        []session.LoopTrigger{session.TriggerSchedule},
 		Frequency:       session.Frequency{Value: 1, Unit: session.FrequencyHours},
 		NextScheduledAt: &nextAt,
 	}); err != nil {
@@ -3118,7 +3118,7 @@ func TestStopLoopForArchive_NoFurtherDelivery(t *testing.T) {
 	if err := ps.Set(&session.LoopPrompt{
 		Prompt:          "check",
 		Enabled:         true,
-		Trigger:         session.TriggerSchedule,
+		Triggers:        []session.LoopTrigger{session.TriggerSchedule},
 		Frequency:       session.Frequency{Value: 1, Unit: session.FrequencyHours},
 		NextScheduledAt: &pastDue,
 	}); err != nil {
@@ -3329,9 +3329,9 @@ func TestTriggerNowFull_IsManualClassification(t *testing.T) {
 			sessionID := recorder.SessionID()
 
 			loopPrompt := &session.LoopPrompt{
-				Prompt:  "iterate",
-				Enabled: true,
-				Trigger: tt.trigger,
+				Prompt:   "iterate",
+				Enabled:  true,
+				Triggers: []session.LoopTrigger{tt.trigger},
 			}
 			if tt.trigger == session.TriggerSchedule {
 				loopPrompt.Frequency = session.Frequency{Value: 4, Unit: session.FrequencyHours}
@@ -3589,7 +3589,7 @@ func newOnTasksSession(t *testing.T, store *session.Store, sessionID, workingDir
 	if err := store.Loop(sessionID).Set(&session.LoopPrompt{
 		Prompt:    "iterate",
 		Enabled:   true,
-		Trigger:   session.TriggerOnTasks,
+		Triggers:  []session.LoopTrigger{session.TriggerOnTasks},
 		Condition: condition,
 	}); err != nil {
 		t.Fatalf("loopStore.Set() error = %v", err)
@@ -3626,7 +3626,7 @@ func TestLoopRunner_TasksCooldownActive(t *testing.T) {
 	runner.SetMinLoopTasksCooldownSeconds(60)
 
 	// Never sent — never on cooldown.
-	p := &session.LoopPrompt{Trigger: session.TriggerOnTasks}
+	p := &session.LoopPrompt{Triggers: []session.LoopTrigger{session.TriggerOnTasks}}
 	if runner.eventCooldownActive(p) {
 		t.Error("never-sent prompt should not be on cooldown")
 	}
@@ -3891,7 +3891,7 @@ func TestLoopRunner_EvaluateTasksChange_InvalidCondition_FailClosed(t *testing.T
 	if err := writeTestLoopFile(filepath.Join(store.SessionDir("s1"), "loop.json"), &session.LoopPrompt{
 		Prompt:    "iterate",
 		Enabled:   true,
-		Trigger:   session.TriggerOnTasks,
+		Triggers:  []session.LoopTrigger{session.TriggerOnTasks},
 		Condition: "Changes.Touched.size()", // not a bool
 	}); err != nil {
 		t.Fatalf("writeTestLoopFile() error = %v", err)
@@ -3969,7 +3969,7 @@ func TestLoopRunner_EvaluateTasksChange_MaxDurationReached_Skip(t *testing.T) {
 	if err := writeTestLoopFile(filepath.Join(store.SessionDir("s1"), "loop.json"), &session.LoopPrompt{
 		Prompt:             "iterate",
 		Enabled:            true,
-		Trigger:            session.TriggerOnTasks,
+		Triggers:           []session.LoopTrigger{session.TriggerOnTasks},
 		MaxDurationSeconds: 3600,
 		FirstRunAt:         &firstRun,
 	}); err != nil {
@@ -5787,7 +5787,7 @@ func TestLoopRunner_ContextWindowFailure_OnCompletionLoop_AutoPauses(t *testing.
 	loopStore := store.Loop(sessionID)
 	loop := &session.LoopPrompt{
 		Prompt:       "Test",
-		Trigger:      session.TriggerOnCompletion,
+		Triggers:     []session.LoopTrigger{session.TriggerOnCompletion},
 		DelaySeconds: 30,
 		Enabled:      true,
 	}
@@ -5863,7 +5863,7 @@ func TestLoopRunner_DeliveryFailure_GenericError_AutoPausesAtCeiling(t *testing.
 	loopStore := store.Loop(sessionID)
 	loop := &session.LoopPrompt{
 		Prompt:    "Test",
-		Trigger:   session.TriggerSchedule,
+		Triggers:  []session.LoopTrigger{session.TriggerSchedule},
 		Frequency: session.Frequency{Value: 4, Unit: session.FrequencyHours},
 		Enabled:   true,
 	}
@@ -5967,7 +5967,7 @@ func TestLoopRunner_DeliveryFailure_ForcedDispatch_MustEventuallyAutoPause(t *te
 	tr := true
 	loop := &session.LoopPrompt{
 		Prompt:     "Test",
-		Trigger:    session.TriggerOnTasks,
+		Triggers:   []session.LoopTrigger{session.TriggerOnTasks},
 		RunOnStart: &tr,
 		Enabled:    true,
 	}
@@ -6041,7 +6041,7 @@ func TestLoopRunner_RunOnStartAsyncFailure_RearmsUntilDeliveryFailureCeiling(t *
 	tr := true
 	loop := &session.LoopPrompt{
 		Prompt:     "Test",
-		Trigger:    session.TriggerOnTasks,
+		Triggers:   []session.LoopTrigger{session.TriggerOnTasks},
 		RunOnStart: &tr,
 		Enabled:    true,
 	}
@@ -6177,7 +6177,7 @@ func TestLoopRunner_ReleaseBeadClaim_OnNonBenignAutoStop(t *testing.T) {
 		loopStore := store.Loop(sessionID)
 		loop := &session.LoopPrompt{
 			Prompt:    "Test",
-			Trigger:   session.TriggerSchedule,
+			Triggers:  []session.LoopTrigger{session.TriggerSchedule},
 			Frequency: session.Frequency{Value: 4, Unit: session.FrequencyHours},
 			Enabled:   true,
 		}
@@ -6295,7 +6295,7 @@ func TestLoopRunner_OnTasks_PromptResolveFailure_AutoPauses(t *testing.T) {
 	if err := loopStore.Set(&session.LoopPrompt{
 		PromptName: "renamed-prompt",
 		Enabled:    true,
-		Trigger:    session.TriggerOnTasks,
+		Triggers:   []session.LoopTrigger{session.TriggerOnTasks},
 	}); err != nil {
 		t.Fatalf("loopStore.Set() error = %v", err)
 	}
@@ -6582,7 +6582,7 @@ func newRunOnStartSession(t *testing.T, store *session.Store, sessionID string, 
 	p := &session.LoopPrompt{
 		Prompt:     "iterate",
 		Enabled:    true,
-		Trigger:    trigger,
+		Triggers:   []session.LoopTrigger{trigger},
 		RunOnStart: &tr,
 	}
 	if trigger == session.TriggerSchedule || trigger == "" {
@@ -6723,7 +6723,7 @@ func TestLoopRunner_FireOnStartPulses_RunOnStartNotSet(t *testing.T) {
 	if err := store.Loop("s1").Set(&session.LoopPrompt{
 		Prompt:    "iterate",
 		Enabled:   true,
-		Trigger:   session.TriggerOnTasks,
+		Triggers:  []session.LoopTrigger{session.TriggerOnTasks},
 		Frequency: session.Frequency{Value: 1, Unit: session.FrequencyHours},
 	}); err != nil {
 		t.Fatalf("loopStore.Set() error = %v", err)
@@ -6757,7 +6757,7 @@ func TestLoopRunner_FireOnStartPulses_DisabledLoopSkipped(t *testing.T) {
 	if err := store.Loop("s1").Set(&session.LoopPrompt{
 		Prompt:     "iterate",
 		Enabled:    false, // disabled
-		Trigger:    session.TriggerOnTasks,
+		Triggers:   []session.LoopTrigger{session.TriggerOnTasks},
 		RunOnStart: &tr,
 	}); err != nil {
 		t.Fatalf("loopStore.Set() error = %v", err)
@@ -7587,7 +7587,7 @@ func TestLoopRunner_FireOnChild_NotArmed_TriggerMissing(t *testing.T) {
 		t.Fatalf("Create() error = %v", err)
 	}
 	if err := store.Loop("parent").Set(&session.LoopPrompt{
-		Prompt: "iterate", Enabled: true, Trigger: session.TriggerOnCompletion,
+		Prompt: "iterate", Enabled: true, Triggers: []session.LoopTrigger{session.TriggerOnCompletion},
 	}); err != nil {
 		t.Fatalf("Set() error = %v", err)
 	}
@@ -7693,7 +7693,7 @@ func TestLoopRunner_FireOnChild_MaxDurationReached_AutoStops(t *testing.T) {
 	newOnChildSession(t, store, "parent", nil)
 	firstRun := time.Now().Add(-2 * time.Hour)
 	if err := writeTestLoopFile(filepath.Join(store.SessionDir("parent"), "loop.json"), &session.LoopPrompt{
-		Prompt: "iterate", Enabled: true, Trigger: session.TriggerOnChild,
+		Prompt: "iterate", Enabled: true, Triggers: []session.LoopTrigger{session.TriggerOnChild},
 		MaxDurationSeconds: 3600, FirstRunAt: &firstRun,
 	}); err != nil {
 		t.Fatalf("writeTestLoopFile() error = %v", err)

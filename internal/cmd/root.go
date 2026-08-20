@@ -78,9 +78,11 @@ like auggie, claude-code, and others that implement ACP.`,
 				}
 			}
 		}
+		fileLog := logging.DefaultFileLogConfig()
+		fileLog.Path = logFile
 		if err := logging.Initialize(logging.Config{
 			Level:      effectiveLogLevel,
-			LogFile:    logFile,
+			FileLog:    &fileLog,
 			Components: components,
 		}); err != nil {
 			return fmt.Errorf("failed to initialize logging: %w", err)

@@ -24,7 +24,6 @@ func TestFallbackTitleMakesAutoChildNoLongerUntitled(t *testing.T) {
 		ACPServer:       "test-server",
 		WorkingDir:      t.TempDir(),
 		ParentSessionID: "parent-session",
-		IsAutoChild:     true,
 		ChildOrigin:     session.ChildOriginAuto,
 	}); err != nil {
 		t.Fatalf("Create: %v", err)

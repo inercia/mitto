@@ -116,7 +116,7 @@ describe("browser-snippet/index.html (mitto-7gta.22)", () => {
 
   test("inline script is syntactically valid JS", () => {
     const proc = Bun.spawnSync({
-      cmd: ["node", "--check", "/dev/stdin"],
+      cmd: ["node", "--check", "-"],
       stdin: Buffer.from(inlineScript, "utf8"),
       stdout: "pipe",
       stderr: "pipe",

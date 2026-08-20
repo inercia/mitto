@@ -323,7 +323,7 @@ func (m *Manager) matchingReferenceSessions(appID string, installationIDs []stri
 // from every matching active loop and reconciles Socket Mode routing.
 func (m *Manager) RemoveSlackReferences(_ context.Context, appID string, installationIDs []string) ([]slackcatalog.Reference, error) {
 	if m.store == nil {
-		return nil, errors.New("Slack session store is unavailable")
+		return nil, errors.New("slack session store is unavailable")
 	}
 	matches := m.matchingReferenceSessions(appID, installationIDs)
 	sessionIDs := make([]string, 0, len(matches))

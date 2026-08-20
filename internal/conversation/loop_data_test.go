@@ -32,7 +32,6 @@ func TestBuildLoopUpdatedData_FullConfigAndDeletion(t *testing.T) {
 		UpdatedAt:       updatedAt,
 		LastSentAt:      &lastSentAt,
 		NextScheduledAt: &nextScheduledAt,
-		Trigger:         session.TriggerSchedule,
 		Triggers: []session.LoopTrigger{
 			session.TriggerSchedule,
 			session.TriggerOnCompletion,
@@ -56,6 +55,7 @@ func TestBuildLoopUpdatedData_FullConfigAndDeletion(t *testing.T) {
 			session.ChildEventAnyLoopStopped,
 		},
 	}
+	loop.Normalize()
 
 	data := BuildLoopUpdatedData("sess-full", loop)
 	if data["loop_config"] != loop {
