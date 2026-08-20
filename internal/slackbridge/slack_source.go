@@ -42,16 +42,22 @@ func (s *SlackSource) Run(ctx context.Context, emit func(Event)) error {
 	return s.run(ctx, func(event Event) error {
 		emit(event)
 		return nil
-	})
+	}, nil)
 }
 
 // RunDurable acknowledges each relevant Socket Mode envelope only after accept
 // confirms that the normalized event was persisted.
 func (s *SlackSource) RunDurable(ctx context.Context, accept func(Event) error) error {
-	return s.run(ctx, accept)
+	return s.run(ctx, accept, nil)
 }
 
-func (s *SlackSource) run(ctx context.Context, accept func(Event) error) error {
+// RunDurableObserved additionally reports value-free transport and envelope
+// diagnostics. Socket Mode's hello frame is the readiness boundary.
+func (s *SlackSource) RunDurableObserved(ctx context.Context, accept func(Event) error, observe func(SourceObservation)) error {
+	return s.run(ctx, accept, observe)
+}
+
+func (s *SlackSource) run(ctx context.Context, accept func(Event) error, observe func(SourceObservation)) error {
 	api := slack.New(s.cfg.BotToken, slack.OptionAppLevelToken(s.cfg.AppToken))
 	listEventAuthorizations := s.listEventAuthorizations
 	if listEventAuthorizations == nil {
@@ -91,7 +97,8 @@ func (s *SlackSource) run(ctx context.Context, accept func(Event) error) error {
 			if !ok {
 				return nil
 			}
-			if err := s.handleSocketEventDurableWithContext(ctx, evt, client, selfUserID, listEventAuthorizations, accept); err != nil && s.logger != nil {
+			err := s.handleObservedSocketEventDurableWithContext(ctx, evt, client, selfUserID, listEventAuthorizations, accept, observe)
+			if err != nil && s.logger != nil {
 				errorClass := "journal"
 				if errors.Is(err, errEventAuthorizationLookup) {
 					errorClass = "authorization"
@@ -99,6 +106,38 @@ func (s *SlackSource) run(ctx context.Context, accept func(Event) error) error {
 				s.logger.Warn("slackbridge: event not acknowledged because durable acceptance failed", "error_class", errorClass)
 			}
 		}
+	}
+}
+
+func (s *SlackSource) handleObservedSocketEventDurableWithContext(ctx context.Context, evt socketmode.Event, client *socketmode.Client, selfUserID string,
+	listEventAuthorizations func(context.Context, string) ([]slack.EventAuthorization, error), accept func(Event) error, observe func(SourceObservation),
+) error {
+	if evt.Type == socketmode.EventTypeHello {
+		notifySourceObserver(observe, SourceTransportReady)
+	}
+	isEnvelope := evt.Type == socketmode.EventTypeEventsAPI
+	if isEnvelope {
+		notifySourceObserver(observe, SourceEventsAPIEnvelope)
+	}
+	accepted := false
+	err := s.handleSocketEventDurableWithContext(ctx, evt, client, selfUserID, listEventAuthorizations, func(event Event) error {
+		if err := accept(event); err != nil {
+			return err
+		}
+		accepted = true
+		return nil
+	})
+	if errors.Is(err, errEventAuthorizationLookup) {
+		notifySourceObserver(observe, SourceAuthorizationError)
+	} else if err == nil && isEnvelope && !accepted {
+		notifySourceObserver(observe, SourceEnvelopeIgnored)
+	}
+	return err
+}
+
+func notifySourceObserver(observe func(SourceObservation), observation SourceObservation) {
+	if observe != nil {
+		observe(observation)
 	}
 }
 

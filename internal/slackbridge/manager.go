@@ -44,14 +44,22 @@ type SourceFactory func(appID, appToken string) (Source, error)
 // ConnectionStatus is safe to log and send to clients: it contains no tokens,
 // message content, or raw SDK errors.
 type ConnectionStatus struct {
-	AppID             string    `json:"app_id"`
-	State             string    `json:"state"`
-	SubscriptionCount int       `json:"subscription_count"`
-	PendingCount      int       `json:"pending_count,omitempty"`
-	FailedCount       int       `json:"failed_count,omitempty"`
-	DeadLetterCount   int       `json:"dead_letter_count,omitempty"`
-	RetryAt           time.Time `json:"retry_at,omitempty"`
-	ErrorClass        string    `json:"error_class,omitempty"`
+	AppID                    string    `json:"app_id"`
+	State                    string    `json:"state"`
+	SubscriptionCount        int       `json:"subscription_count"`
+	PendingCount             int       `json:"pending_count,omitempty"`
+	FailedCount              int       `json:"failed_count,omitempty"`
+	DeadLetterCount          int       `json:"dead_letter_count,omitempty"`
+	DeliveredCount           int       `json:"delivered_count,omitempty"`
+	EventsAPIReceived        uint64    `json:"events_api_received"`
+	AcceptedCount            uint64    `json:"accepted_count"`
+	IgnoredCount             uint64    `json:"ignored_count"`
+	ConnectedAt              time.Time `json:"connected_at,omitempty"`
+	LastEnvelopeAt           time.Time `json:"last_envelope_at,omitempty"`
+	LastAuthorizationErrorAt time.Time `json:"last_authorization_error_at,omitempty"`
+	LastJournalErrorAt       time.Time `json:"last_journal_error_at,omitempty"`
+	RetryAt                  time.Time `json:"retry_at,omitempty"`
+	ErrorClass               string    `json:"error_class,omitempty"`
 }
 
 type resolvedSubscription struct {
@@ -477,12 +485,30 @@ func (m *Manager) runWorker(ctx context.Context, appID string, worker *appWorker
 			var source Source
 			source, err = m.factory(appID, token)
 			if err == nil {
-				m.emitStatus(ConnectionStatus{AppID: appID, State: "connected", SubscriptionCount: m.subscriptionCount(appID)})
-				if durable, ok := source.(DurableSource); ok {
-					err = durable.RunDurable(ctx, func(evt Event) error { return m.routeEvent(appID, worker, evt) })
+				accept := func(evt Event) error {
+					acceptErr := m.routeEvent(appID, worker, evt)
+					if acceptErr == nil {
+						m.recordAccepted(appID)
+					}
+					return acceptErr
+				}
+				if observed, ok := source.(ObservedDurableSource); ok {
+					err = observed.RunDurableObserved(ctx, accept, func(observation SourceObservation) {
+						m.observeSource(appID, observation)
+					})
+				} else if durable, ok := source.(DurableSource); ok {
+					var ready sync.Once
+					err = durable.RunDurable(ctx, func(evt Event) error {
+						ready.Do(func() { m.observeSource(appID, SourceTransportReady) })
+						m.observeSource(appID, SourceEventsAPIEnvelope)
+						return accept(evt)
+					})
 				} else {
+					var ready sync.Once
 					err = source.Run(ctx, func(evt Event) {
-						if acceptErr := m.routeEvent(appID, worker, evt); acceptErr != nil && m.logger != nil {
+						ready.Do(func() { m.observeSource(appID, SourceTransportReady) })
+						m.observeSource(appID, SourceEventsAPIEnvelope)
+						if acceptErr := accept(evt); acceptErr != nil && m.logger != nil {
 							m.logger.Warn("slackbridge: legacy source durable acceptance failed", "app_id", appID, "error_class", "journal")
 						}
 					})
@@ -563,9 +589,7 @@ func (m *Manager) routeEvent(appID string, _ *appWorker, evt Event) error {
 	evt.Text = boundSlackText(evt.Text)
 	duplicate, err := m.journal.Accept(appID, evt, recipients)
 	if err != nil {
-		if m.logger != nil {
-			m.logger.Warn("slackbridge: durable event acceptance failed", "app_id", appID, "error_class", "journal")
-		}
+		m.logJournalFailure(appID, "accept")
 		return err
 	}
 	m.refreshJournalStatus(appID)
@@ -668,9 +692,53 @@ func (m *Manager) OnConversationIdle(sessionID string) {
 }
 
 func (m *Manager) logJournalFailure(appID, class string) {
+	if appID != "" {
+		m.mu.Lock()
+		status := m.statuses[appID]
+		status.AppID = appID
+		if status.State == "" {
+			status.State = "disconnected"
+		}
+		status.LastJournalErrorAt = time.Now().UTC()
+		m.emitStatusLocked(status)
+		m.mu.Unlock()
+	}
 	if m.logger != nil {
 		m.logger.Warn("slackbridge: journal operation failed", "app_id", appID, "error_class", class)
 	}
+}
+
+func (m *Manager) observeSource(appID string, observation SourceObservation) {
+	m.mu.Lock()
+	status := m.statuses[appID]
+	status.AppID = appID
+	status.SubscriptionCount = m.appReferencesLocked(appID)
+	now := time.Now().UTC()
+	switch observation {
+	case SourceTransportReady:
+		status.State = "connected"
+		status.ConnectedAt = now
+		status.RetryAt = time.Time{}
+		status.ErrorClass = ""
+	case SourceEventsAPIEnvelope:
+		status.EventsAPIReceived++
+		status.LastEnvelopeAt = now
+	case SourceEnvelopeIgnored:
+		status.IgnoredCount++
+	case SourceAuthorizationError:
+		status.LastAuthorizationErrorAt = now
+	}
+	m.emitStatusLocked(status)
+	m.mu.Unlock()
+}
+
+func (m *Manager) recordAccepted(appID string) {
+	m.mu.Lock()
+	status := m.statuses[appID]
+	status.AppID = appID
+	status.AcceptedCount++
+	m.emitStatusLocked(status)
+	m.mu.Unlock()
 }
 
 func (m *Manager) refreshJournalStatus(appID string) JournalStats {
@@ -685,7 +753,7 @@ func (m *Manager) refreshJournalStatus(appID string) JournalStats {
 	if status.State == "" {
 		status.State = "disconnected"
 	}
-	status.PendingCount, status.FailedCount, status.DeadLetterCount = stats.Pending, stats.Failed, stats.Expired
+	status.PendingCount, status.FailedCount, status.DeadLetterCount, status.DeliveredCount = stats.Pending, stats.Failed, stats.Expired, stats.Delivered
 	m.emitStatusLocked(status)
 	m.mu.Unlock()
 	return stats
@@ -702,6 +770,14 @@ func (m *Manager) emitStatus(status ConnectionStatus) {
 		status.PendingCount = previous.PendingCount
 		status.FailedCount = previous.FailedCount
 		status.DeadLetterCount = previous.DeadLetterCount
+		status.DeliveredCount = previous.DeliveredCount
+		status.EventsAPIReceived = previous.EventsAPIReceived
+		status.AcceptedCount = previous.AcceptedCount
+		status.IgnoredCount = previous.IgnoredCount
+		status.ConnectedAt = previous.ConnectedAt
+		status.LastEnvelopeAt = previous.LastEnvelopeAt
+		status.LastAuthorizationErrorAt = previous.LastAuthorizationErrorAt
+		status.LastJournalErrorAt = previous.LastJournalErrorAt
 	}
 	m.emitStatusLocked(status)
 	m.mu.Unlock()
@@ -711,7 +787,10 @@ func (m *Manager) emitStatusLocked(status ConnectionStatus) {
 	fn := m.onStatus
 	if m.logger != nil {
 		m.logger.Info("slackbridge: connection state changed", "app_id", status.AppID, "state", status.State, "subscription_count", status.SubscriptionCount,
-			"pending_count", status.PendingCount, "failed_count", status.FailedCount, "dead_letter_count", status.DeadLetterCount, "error_class", status.ErrorClass)
+			"events_api_received", status.EventsAPIReceived, "accepted_count", status.AcceptedCount, "ignored_count", status.IgnoredCount,
+			"pending_count", status.PendingCount, "failed_count", status.FailedCount, "dead_letter_count", status.DeadLetterCount,
+			"delivered_count", status.DeliveredCount, "connected_at", status.ConnectedAt, "last_envelope_at", status.LastEnvelopeAt,
+			"last_authorization_error_at", status.LastAuthorizationErrorAt, "last_journal_error_at", status.LastJournalErrorAt, "error_class", status.ErrorClass)
 	}
 	if fn != nil && !m.statusClosed {
 		m.statusQueue = append(m.statusQueue, statusNotification{status: status, fn: fn})

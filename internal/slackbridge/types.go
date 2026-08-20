@@ -62,3 +62,20 @@ type Source interface {
 type DurableSource interface {
 	RunDurable(ctx context.Context, accept func(Event) error) error
 }
+
+// SourceObservation is a value-free lifecycle or delivery signal emitted by a
+// source. It deliberately excludes SDK payloads, message content, and errors.
+type SourceObservation uint8
+
+const (
+	SourceTransportReady SourceObservation = iota + 1
+	SourceEventsAPIEnvelope
+	SourceEnvelopeIgnored
+	SourceAuthorizationError
+)
+
+// ObservedDurableSource reports transport readiness and sanitized envelope
+// outcomes while retaining DurableSource's acknowledge-after-persistence rule.
+type ObservedDurableSource interface {
+	RunDurableObserved(ctx context.Context, accept func(Event) error, observe func(SourceObservation)) error
+}

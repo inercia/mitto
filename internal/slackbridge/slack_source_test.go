@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -113,6 +114,49 @@ func TestSlackSource_AuthorizationLookupFailureLeavesEnvelopeUnacknowledged(t *t
 	if !errors.Is(err, errEventAuthorizationLookup) || acknowledgements != 0 || acceptCalls != 0 {
 		t.Fatalf("lookup failure err=%v acknowledgements=%d acceptCalls=%d", err, acknowledgements, acceptCalls)
 	}
+}
+
+func TestSlackSource_ObservedDiagnostics(t *testing.T) {
+	src := NewSlackSource(Config{}, nil, nil)
+	client := newTestSocketmodeClient()
+	var observations []SourceObservation
+	observe := func(observation SourceObservation) { observations = append(observations, observation) }
+	accept := func(Event) error { return nil }
+	check := func(want []SourceObservation) {
+		t.Helper()
+		if !reflect.DeepEqual(observations, want) {
+			t.Fatalf("observations = %v, want %v", observations, want)
+		}
+		observations = nil
+	}
+
+	if err := src.handleObservedSocketEventDurableWithContext(context.Background(), socketmode.Event{Type: socketmode.EventTypeHello}, client, "U-SELF", nil, accept, observe); err != nil {
+		t.Fatal(err)
+	}
+	check([]SourceObservation{SourceTransportReady})
+
+	ignored := eventsAPIEvent("T1", "message", &slackevents.MessageEvent{Channel: "D1", ChannelType: slackevents.ChannelTypeIM, User: "U1"})
+	if err := src.handleObservedSocketEventDurableWithContext(context.Background(), ignored, client, "U-SELF", nil, accept, observe); err != nil {
+		t.Fatal(err)
+	}
+	check([]SourceObservation{SourceEventsAPIEnvelope, SourceEnvelopeIgnored})
+
+	accepted := eventsAPIEvent("T1", "message", &slackevents.MessageEvent{Channel: "C1", User: "U1"})
+	if err := src.handleObservedSocketEventDurableWithContext(context.Background(), accepted, client, "U-SELF", nil, accept, observe); err != nil {
+		t.Fatal(err)
+	}
+	check([]SourceObservation{SourceEventsAPIEnvelope})
+
+	src.listEventAuthorizations = func(context.Context, string) ([]slack.EventAuthorization, error) {
+		return nil, errors.New("revoked")
+	}
+	authorizationFailure := authorizedEventsAPIEvent("T1", "message", &slackevents.MessageEvent{Channel: "C1", User: "U1"},
+		"1-message-T1-C1", []EventAuthorization{{UserID: "UBOT", IsBot: true}})
+	err := src.handleObservedSocketEventDurableWithContext(context.Background(), authorizationFailure, client, "U-SELF", src.listEventAuthorizations, accept, observe)
+	if !errors.Is(err, errEventAuthorizationLookup) {
+		t.Fatalf("authorization error = %v", err)
+	}
+	check([]SourceObservation{SourceEventsAPIEnvelope, SourceAuthorizationError})
 }
 
 func TestSlackSource_HandleSocketEvent_DirectMessagesIgnored(t *testing.T) {

@@ -75,6 +75,30 @@ type managerSource struct {
 	once    sync.Once
 }
 
+type neverReadySource struct {
+	started chan struct{}
+	ready   chan struct{}
+	once    sync.Once
+}
+
+func (s *neverReadySource) Run(ctx context.Context, _ func(Event)) error {
+	s.once.Do(func() { close(s.started) })
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func (s *neverReadySource) RunDurableObserved(ctx context.Context, _ func(Event) error, observe func(SourceObservation)) error {
+	s.once.Do(func() { close(s.started) })
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-s.ready:
+		observe(SourceTransportReady)
+	}
+	<-ctx.Done()
+	return ctx.Err()
+}
+
 func (s *managerSource) Run(ctx context.Context, emit func(Event)) error {
 	s.h.mu.Lock()
 	s.h.active++
@@ -206,6 +230,36 @@ func TestManagerPoolsOneWorkerAndFansOutExactlyOnce(t *testing.T) {
 	if len(status) != 1 || status[0].AppID != "app-1" || status[0].State != "connected" || status[0].SubscriptionCount != 4 {
 		t.Fatalf("status = %#v", status)
 	}
+	if status[0].EventsAPIReceived != 4 || status[0].AcceptedCount != 4 || status[0].DeliveredCount != 2 ||
+		status[0].ConnectedAt.IsZero() || status[0].LastEnvelopeAt.IsZero() {
+		t.Fatalf("delivery diagnostics = %#v", status[0])
+	}
+}
+
+func TestManagerWorkerRemainsConnectingUntilSourceReady(t *testing.T) {
+	store := newManagerStore(t)
+	addSlackLoop(t, store, "not-ready", true, false, session.SlackSubscription{InstallationID: "install-1", ChannelID: "channel"})
+	source := &neverReadySource{started: make(chan struct{}), ready: make(chan struct{})}
+	manager := NewManager(store, testInstallations(), &managerCredentials{token: "token"}, &managerRunner{}, nil)
+	manager.factory = func(string, string) (Source, error) { return source, nil }
+	t.Cleanup(manager.Close)
+	if err := manager.Start(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-source.started:
+	case <-time.After(time.Second):
+		t.Fatal("source did not start")
+	}
+	status := manager.Status()
+	if len(status) != 1 || status[0].State != "connecting" {
+		t.Fatalf("status before transport readiness = %#v, want connecting", status)
+	}
+	close(source.ready)
+	waitForManager(t, "transport readiness", func() bool {
+		status = manager.Status()
+		return len(status) == 1 && status[0].State == "connected" && !status[0].ConnectedAt.IsZero()
+	})
 }
 
 func TestManagerAppliesEventModeThreadAndBotFilters(t *testing.T) {

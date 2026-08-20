@@ -33,9 +33,12 @@ credential vault; loops persist only installation and channel IDs.
   fetched automatically in v1.
 - App tokens are resolved only when a worker starts. Successful replacement
   restarts that app's worker; failed catalog transactions do not disturb it.
-- Connection statuses and logs contain app IDs, state, reference counts, retry
-  timing, pending/failed/dead-letter counts, and sanitized error classes
-  only—never credentials or message text.
+- `connected` is emitted only after Slack's Socket Mode `hello` frame. Statuses
+  and logs also expose value-free connection/envelope timestamps, Events API,
+  accepted/ignored/delivered counts, authorization/journal failure timestamps,
+  retry timing, and pending/failed/dead-letter counts—never credentials or
+  message text. A worker that starts without completing the handshake remains
+  `connecting`.
 - Unused app workers stop after a grace period; shutdown cancels and joins all
   workers before loop/session shutdown.
 
@@ -107,7 +110,9 @@ this compatibility period.
    returned token to `oauth.v2.access` app/team/user provenance.
 5. **Event Subscriptions**: bot events include `message.channels`,
    `message.groups`, and optional `app_mention`; user events include
-   `message.channels` and `message.groups`.
+   `message.channels` and `message.groups`. Apply the current manifest and
+   reauthorize existing delegated-user installations whenever these events or
+   scopes change; a Socket Mode connection alone does not prove event delivery.
 6. In bot mode, invite the bot to every target channel (`/invite @your-bot`). A
    private channel is visible to bot discovery only after the bot becomes a
    member. Delegated-user mode will instead use channels visible to its user.
@@ -186,6 +191,16 @@ Never paste tokens into an issue, chat, terminal argument, URL, screenshot, or
 results file. Enter them only into Mitto's write-only localhost Settings fields.
 Use aliases such as `team-a/channel-1` in evidence instead of copying credential
 material or message bodies.
+
+For a focused receipt smoke, first wait for `state=connected` with a non-zero
+`connected_at`, then record the aggregate counters and post one unique synthetic
+human message in a subscribed development channel. Verify `events_api_received`,
+`last_envelope_at`, and `accepted_count` advance; the journal record reaches a
+content-free delivered tombstone; and the resulting `events.jsonl` prompt records
+`onSlack` provenance. If the transport is connected but no envelope counter moves,
+reapply the current manifest and reauthorize the installation before debugging
+Mitto routing. An advancing `ignored_count`, authorization timestamp, or journal
+timestamp instead identifies the corresponding in-process failure boundary.
 
 | Scenario                          | Action                                                                                                   | Expected result                                                                                                                                        |
 | --------------------------------- | -------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
