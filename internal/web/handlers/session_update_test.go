@@ -33,7 +33,7 @@ func seedArchivedLoopSession(t *testing.T, sid string, stoppedReason session.Sto
 	loop := &session.LoopPrompt{
 		Prompt:    "do the thing",
 		Arguments: map[string]string{"foo": "bar"},
-		Trigger:   session.TriggerOnCompletion,
+		Triggers:  []session.LoopTrigger{session.TriggerOnCompletion},
 		Enabled:   true,
 	}
 	if err := store.Loop(sid).Set(loop); err != nil {

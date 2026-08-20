@@ -26,9 +26,9 @@ func TestBridge_EndToEnd_RealLoopRunner(t *testing.T) {
 		t.Fatalf("store.Create() error = %v", err)
 	}
 	if err := store.Loop(targetSession).Set(&session.LoopPrompt{
-		Prompt:  "respond to the Slack message",
-		Enabled: true,
-		Trigger: session.TriggerOnCompletion, // arbitrary; the bridge fires via TriggerNowWithSlackEvent regardless of armed trigger
+		Prompt:   "respond to the Slack message",
+		Enabled:  true,
+		Triggers: []session.LoopTrigger{session.TriggerOnCompletion}, // arbitrary; the bridge fires via TriggerNowWithSlackEvent regardless of armed trigger
 	}); err != nil {
 		t.Fatalf("loopStore.Set() error = %v", err)
 	}

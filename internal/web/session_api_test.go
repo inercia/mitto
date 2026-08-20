@@ -1370,7 +1370,7 @@ func TestHandleListSessions_LoopGlanceFields_Schedule(t *testing.T) {
 		Prompt:             "hello",
 		Frequency:          session.Frequency{Value: 30, Unit: session.FrequencyMinutes},
 		Enabled:            true,
-		Trigger:            session.TriggerSchedule,
+		Triggers:           []session.LoopTrigger{session.TriggerSchedule},
 		MaxIterations:      10,
 		IterationCount:     3,
 		DelaySeconds:       0,
@@ -1430,7 +1430,7 @@ func TestHandleListSessions_LoopGlanceFields_OnCompletion(t *testing.T) {
 	if err := store.Loop(sid).Set(&session.LoopPrompt{
 		Prompt:             "run on idle",
 		Enabled:            true,
-		Trigger:            session.TriggerOnCompletion,
+		Triggers:           []session.LoopTrigger{session.TriggerOnCompletion},
 		DelaySeconds:       60,
 		MaxDurationSeconds: 7200,
 	}); err != nil {
@@ -1477,12 +1477,11 @@ func TestHandleListSessions_LoopGlanceFields_EmptyTriggerReportsSchedule(t *test
 	if err := store.Create(session.Metadata{SessionID: sid, ACPServer: "test", WorkingDir: "/tmp"}); err != nil {
 		t.Fatalf("Create failed: %v", err)
 	}
-	// Trigger="" is the zero-value default; EffectiveTrigger() must resolve it to "schedule".
+	// Triggers unset is the zero-value default; EffectiveTrigger() must resolve it to "schedule".
 	if err := store.Loop(sid).Set(&session.LoopPrompt{
 		Prompt:    "hello",
 		Frequency: session.Frequency{Value: 1, Unit: session.FrequencyHours},
 		Enabled:   true,
-		Trigger:   "",
 	}); err != nil {
 		t.Fatalf("Set failed: %v", err)
 	}

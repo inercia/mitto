@@ -415,7 +415,12 @@ func TestManagerReconcilesLifecycleAndCancelsGraceStop(t *testing.T) {
 	addSlackLoop(t, store, sessionID, false, false, session.SlackSubscription{InstallationID: "install-1", ChannelID: "old"})
 	runner, sources := &managerRunner{}, &sourceHarness{}
 	manager := NewManager(store, testInstallations(), &managerCredentials{token: "token"}, runner, nil)
-	manager.factory, manager.grace = sources.factory, 40*time.Millisecond
+	// grace is generous (well beyond the 5ms waitForManager poll interval) so
+	// the re-enable-before-grace-expiry window below has a wide safety margin
+	// under CI scheduling jitter — a tight margin here previously caused an
+	// intermittent flake where the grace timer fired for real before the
+	// cancelling reconcile ran (mitto CI run 32370964532).
+	manager.factory, manager.grace = sources.factory, 300*time.Millisecond
 	t.Cleanup(manager.Close)
 	if err := manager.Start(); err != nil {
 		t.Fatal(err)
@@ -439,16 +444,23 @@ func TestManagerReconcilesLifecycleAndCancelsGraceStop(t *testing.T) {
 	if err := manager.ReconcileSession(sessionID); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(10 * time.Millisecond)
+	time.Sleep(20 * time.Millisecond)
 	if err := store.Loop(sessionID).Update(session.LoopUpdate{Enabled: &enabled}); err != nil {
 		t.Fatal(err)
 	}
 	if err := manager.ReconcileSession(sessionID); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(60 * time.Millisecond)
-	if created, active, _, _, _ := sources.snapshot(); created != 1 || active != 1 {
-		t.Fatalf("cancelled grace stop created=%d active=%d, want 1/1", created, active)
+	// Wait well past the original grace deadline to confirm the cancelled
+	// timer never fired, then keep polling for the grace window's full
+	// duration to catch a late/racy stop that a single point-in-time check
+	// right at the deadline could miss.
+	deadline := time.Now().Add(2 * manager.grace)
+	for time.Now().Before(deadline) {
+		if created, active, _, _, _ := sources.snapshot(); created != 1 || active != 1 {
+			t.Fatalf("cancelled grace stop created=%d active=%d, want 1/1", created, active)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 
 	updated := []session.SlackSubscription{{InstallationID: "install-1", ChannelID: "new"}}

@@ -73,15 +73,22 @@ func RecentGaugeSamples(k int) []GaugeSample {
 // the gauge ring, and logs "goroutine_gauge_sample" — at DEBUG normally,
 // promoted to INFO when NumGoroutine has moved by at least gaugeLogDelta
 // since the last INFO-logged sample. The returned stop func cancels the
-// ticker; ctx cancellation also stops it. Both are safe to call/cancel more
-// than once. Nil-safe logger: a nil logger simply skips logging.
+// ticker and BLOCKS until the background goroutine has fully exited, so no
+// sample can ever be appended after stop() returns (closing the race where a
+// tick already in flight when cancel() fires would otherwise land a straggler
+// sample). ctx cancellation also stops it, though callers relying on that
+// path alone must poll/wait themselves for the same guarantee. Both stop()
+// and ctx cancellation are safe to trigger more than once. Nil-safe logger: a
+// nil logger simply skips logging.
 func StartGauge(ctx context.Context, logger *slog.Logger, interval time.Duration) (stop func()) {
 	if interval <= 0 {
 		interval = DefaultGaugeInterval
 	}
 	runCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
 
 	go func() {
+		defer close(done)
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 
@@ -113,5 +120,8 @@ func StartGauge(ctx context.Context, logger *slog.Logger, interval time.Duration
 	}()
 
 	var once sync.Once
-	return func() { once.Do(cancel) }
+	return func() {
+		once.Do(cancel)
+		<-done
+	}
 }

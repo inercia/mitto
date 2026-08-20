@@ -347,7 +347,7 @@ func TestBuildLoopUpdatedData_ScheduleLoop(t *testing.T) {
 		Prompt:             "Test",
 		Frequency:          session.Frequency{Value: 30, Unit: session.FrequencyMinutes},
 		Enabled:            true,
-		Trigger:            session.TriggerSchedule,
+		Triggers:           []session.LoopTrigger{session.TriggerSchedule},
 		MaxIterations:      5,
 		IterationCount:     2,
 		DelaySeconds:       0,
@@ -376,12 +376,11 @@ func TestBuildLoopUpdatedData_ScheduleLoop(t *testing.T) {
 }
 
 func TestBuildLoopUpdatedData_EmptyTriggerReportsSchedule(t *testing.T) {
-	// Trigger="" defaults to "schedule" via EffectiveTrigger().
+	// Triggers unset defaults to "schedule" via EffectiveTrigger().
 	p := &session.LoopPrompt{
 		Prompt:    "Test",
 		Frequency: session.Frequency{Value: 1, Unit: session.FrequencyHours},
 		Enabled:   true,
-		Trigger:   "", // empty — must be resolved to "schedule"
 	}
 	data := conversation.BuildLoopUpdatedData("s1", p)
 	if data["trigger"] != "schedule" {
@@ -393,7 +392,7 @@ func TestBuildLoopUpdatedData_OnCompletionLoop(t *testing.T) {
 	p := &session.LoopPrompt{
 		Prompt:             "Test",
 		Enabled:            true,
-		Trigger:            session.TriggerOnCompletion,
+		Triggers:           []session.LoopTrigger{session.TriggerOnCompletion},
 		DelaySeconds:       30,
 		MaxDurationSeconds: 7200,
 	}
