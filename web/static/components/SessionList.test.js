@@ -66,3 +66,13 @@ describe("SessionList.js: SDK migration (mitto-7gta.17 slice S4)", () => {
     );
   });
 });
+
+describe("SessionList.js: sidebar toolbar bottom gap", () => {
+  test("sidebar-toolbar wrapper uses pb-4 (halved from pb-8), not the old pb-8", () => {
+    const idx = listJs.indexOf('data-testid="sidebar-toolbar"');
+    expect(idx).toBeGreaterThan(-1);
+    const snippet = listJs.slice(Math.max(0, idx - 200), idx + 50);
+    expect(snippet).toMatch(/class="px-3 pb-4"/);
+    expect(snippet).not.toMatch(/pb-8/);
+  });
+});

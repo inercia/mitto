@@ -1964,7 +1964,7 @@ export function SessionList({
            than hidden when the configuration is read-only. -->
       <div
         ref=${toolbarRef}
-        class="px-3 pb-8"
+        class="px-3 pb-4"
         data-testid="sidebar-toolbar"
       >
         <!-- Actions rendered via the portable Toolbar component
