@@ -8167,6 +8167,124 @@ func TestLoopRunner_TriggerNowWithSlackEvent_HappyPath(t *testing.T) {
 	}
 }
 
+// TestLoopRunner_TriggerNow_ManualOnSlackLoop_LogsIsManualAndEventCount
+// reproduces mitto-ereu: a manual "Run Now" (the public TriggerNow entry
+// point used by the REST handleRunLoopNow and MCP
+// mitto_conversation_run_loop_now handlers, which always passes an empty
+// firedBy) on a loop whose only configured trigger is onSlack logs
+// "Triggering immediate loop delivery" with fired_by=onSlack — because
+// triggerNowFull defaults the empty firedBy to loop.EffectiveTrigger()
+// before logging. This is indistinguishable from a genuine onSlack event
+// delivery in the logs, even though triggerNowFull already computes
+// isManual (true here) and deliverPrompt already has the bounded
+// slackEvents batch (empty here) in scope — neither is included in the
+// "Triggering immediate loop delivery" or "Delivering loop prompt" log
+// lines. A real onSlack fire must log is_manual=false with the genuine
+// batch length so log-only health audits can tell manual and event-driven
+// dispatches apart (bead acceptance criteria).
+func TestLoopRunner_TriggerNow_ManualOnSlackLoop_LogsIsManualAndEventCount(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	meta := session.Metadata{SessionID: "s1", ACPServer: "test", WorkingDir: "/tmp"}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("store.Create() error = %v", err)
+	}
+	if err := store.Loop("s1").Set(&session.LoopPrompt{
+		Prompt:             "iterate",
+		Enabled:            true,
+		Triggers:           []session.LoopTrigger{session.TriggerOnSlack},
+		SlackSubscriptions: []session.SlackSubscription{{InstallationID: "I1", ChannelID: "C1"}},
+	}); err != nil {
+		t.Fatalf("loopStore.Set() error = %v", err)
+	}
+
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{})
+	sm.AddSessionForTest(NewMinimalBackgroundSessionPrompting("s1", false)) // idle
+
+	logger, buf := captureDebugLogger()
+	runner := NewLoopRunner(store, sm, logger)
+
+	// The minimal test BackgroundSession has no real ACP wiring, so the
+	// eventual PromptWithMeta dispatch inside deliverPrompt may itself return
+	// a "still starting up" error — irrelevant here; both log lines under
+	// test are emitted before that dispatch is attempted.
+	_ = runner.TriggerNow("s1", true)
+
+	out := buf.String()
+	if !strings.Contains(out, "Triggering immediate loop delivery") || !strings.Contains(out, "fired_by=onSlack") {
+		t.Fatalf("expected the manual dispatch to reach triggerNowFull with fired_by=onSlack, got:\n%s", out)
+	}
+
+	// mitto-ereu: today neither log line records is_manual or
+	// slack_event_count, so this manual Run Now is indistinguishable from a
+	// real onSlack delivery in the logs.
+	if !strings.Contains(out, "is_manual=true") {
+		t.Errorf("mitto-ereu: expected is_manual=true in the loop delivery logs for a manual Run Now on an onSlack loop, got:\n%s", out)
+	}
+	if !strings.Contains(out, "slack_event_count=0") {
+		t.Errorf("mitto-ereu: expected slack_event_count=0 in the loop delivery logs for a manual Run Now (no Slack events), got:\n%s", out)
+	}
+}
+
+// TestLoopRunner_TriggerNowWithSlackEvents_LogsIsManualFalseAndEventCount is
+// the mitto-ereu counterpart to the manual case above: a genuine onSlack
+// event delivery (TriggerNowWithSlackEvents, the entry point used by
+// internal/slackbridge) must log is_manual=false and the real bounded batch
+// length, so log-only health audits can distinguish it from a manual Run Now
+// (bead acceptance criteria: "Real onSlack delivery logs is_manual=false and
+// the bounded batch event count").
+func TestLoopRunner_TriggerNowWithSlackEvents_LogsIsManualFalseAndEventCount(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	meta := session.Metadata{SessionID: "s1", ACPServer: "test", WorkingDir: "/tmp"}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("store.Create() error = %v", err)
+	}
+	if err := store.Loop("s1").Set(&session.LoopPrompt{
+		Prompt:             "iterate",
+		Enabled:            true,
+		Triggers:           []session.LoopTrigger{session.TriggerOnSlack},
+		SlackSubscriptions: []session.SlackSubscription{{InstallationID: "I1", ChannelID: "C1"}},
+	}); err != nil {
+		t.Fatalf("loopStore.Set() error = %v", err)
+	}
+
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{})
+	sm.AddSessionForTest(NewMinimalBackgroundSessionPrompting("s1", false)) // idle
+
+	logger, buf := captureDebugLogger()
+	runner := NewLoopRunner(store, sm, logger)
+
+	events := []PromptSlackEvent{
+		{InstallationID: "I1", ChannelID: "C1", EventID: "Ev1"},
+		{InstallationID: "I1", ChannelID: "C1", EventID: "Ev2"},
+	}
+	// See TestLoopRunner_TriggerNow_ManualOnSlackLoop_LogsIsManualAndEventCount
+	// for why the return error is ignored: the minimal test BackgroundSession
+	// has no real ACP wiring, but both log lines under test are emitted
+	// before that dispatch is attempted.
+	_ = runner.TriggerNowWithSlackEvents("s1", true, session.TriggerOnSlack, events)
+
+	out := buf.String()
+	if !strings.Contains(out, "Triggering immediate loop delivery") || !strings.Contains(out, "fired_by=onSlack") {
+		t.Fatalf("expected the onSlack-fired dispatch to reach triggerNowFull with fired_by=onSlack, got:\n%s", out)
+	}
+	if !strings.Contains(out, "is_manual=false") {
+		t.Errorf("mitto-ereu: expected is_manual=false in the loop delivery logs for a genuine onSlack event delivery, got:\n%s", out)
+	}
+	if !strings.Contains(out, "slack_event_count=2") {
+		t.Errorf("mitto-ereu: expected slack_event_count=2 in the loop delivery logs for a 2-event onSlack batch, got:\n%s", out)
+	}
+}
+
 // TestLoopRunner_TriggerNowWithSlackEvent_DisabledLoop verifies the
 // enabled-loop guard (acceptance criterion: "target loop must be enabled")
 // is enforced identically for the Slack bridge's entry point.

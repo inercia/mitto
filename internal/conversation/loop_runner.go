@@ -1050,6 +1050,8 @@ func (r *LoopRunner) triggerNowFull(sessionID string, resetTimer bool, tasksDelt
 			"session_id", sessionID,
 			"session_name", meta.Name,
 			"fired_by", string(firedBy),
+			"is_manual", isManual,
+			"slack_event_count", len(slackEvents),
 			"prompt_preview", truncatePrompt(loop.Prompt, 100))
 	}
 
@@ -2647,6 +2649,8 @@ func (r *LoopRunner) deliverPrompt(bs *BackgroundSession, sessionMeta session.Me
 			"session_name", sessionName,
 			"reset_timer", resetTimer,
 			"fired_by", string(firedBy),
+			"is_manual", isManual,
+			"slack_event_count", len(slackEvents),
 			"prompt_preview", truncatePrompt(promptText, 100))
 	}
 
