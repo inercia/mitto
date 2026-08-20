@@ -5769,10 +5769,15 @@ func TestChildrenTasksWait_TimeoutWithSessionUnregistered(t *testing.T) {
 // =============================================================================
 
 // mockSessionManagerForChildrenMutable is like mockSessionManagerForChildren
-// but supports safe concurrent mutation of the sessions map.
+// but supports safe concurrent mutation of the sessions map, plus scriptable
+// ResumeSession behavior for tests that simulate a GC recycle followed by a
+// successful (or transiently-failing) auto-resume.
 type mockSessionManagerForChildrenMutable struct {
-	mu       sync.RWMutex
-	sessions map[string]BackgroundSession
+	mu           sync.RWMutex
+	sessions     map[string]BackgroundSession
+	resumeResult BackgroundSession // if set, ResumeSession registers and returns this
+	resumeErr    error             // if set, ResumeSession returns this error instead
+	resumeCalls  []string          // sessionIDs passed to ResumeSession, in order
 }
 
 func (m *mockSessionManagerForChildrenMutable) GetSession(sessionID string) BackgroundSession {
@@ -5791,13 +5796,26 @@ func (m *mockSessionManagerForChildrenMutable) RemoveSession(sessionID string) {
 	delete(m.sessions, sessionID)
 }
 
+func (m *mockSessionManagerForChildrenMutable) ResumeCallCount() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return len(m.resumeCalls)
+}
+
 func (m *mockSessionManagerForChildrenMutable) ListRunningSessions() []string { return nil }
 func (m *mockSessionManagerForChildrenMutable) CloseSessionGracefully(string, string, time.Duration) bool {
 	return true
 }
 func (m *mockSessionManagerForChildrenMutable) CloseSession(string, string) {}
-func (m *mockSessionManagerForChildrenMutable) ResumeSession(string, string, string) (BackgroundSession, error) {
-	return nil, nil
+func (m *mockSessionManagerForChildrenMutable) ResumeSession(sessionID, _, _ string) (BackgroundSession, error) {
+	m.mu.Lock()
+	m.resumeCalls = append(m.resumeCalls, sessionID)
+	result, err := m.resumeResult, m.resumeErr
+	if err == nil && result != nil {
+		m.sessions[sessionID] = result
+	}
+	m.mu.Unlock()
+	return result, err
 }
 func (m *mockSessionManagerForChildrenMutable) GetWorkspacesForFolder(string) []config.WorkspaceSettings {
 	return nil
@@ -6002,6 +6020,87 @@ func TestChildrenTasksWait_Signal2_DeliveryInProgress(t *testing.T) {
 	report, ok := output.Reports[childID]
 	if ok && report.Reason == "agent_idle" {
 		t.Errorf("Child was wrongly auto-completed with agent_idle while delivery was in progress")
+	}
+}
+
+// TestChildrenTasksWait_Signal3_StartupRecoveryPending is a regression test
+// for mitto-qy0j: a child whose BackgroundSession survives (bs != nil) but is
+// mid-startup-model-recovery (StartupRecoveryPending()==true, IsPrompting()
+// ==false — the queued initial prompt is gated behind an unresolved
+// session/set_model constraint) must NOT be auto-completed via the idle-grace
+// path. Before this fix, the poll loop only checked IsPrompting(), so this
+// state was indistinguishable from a genuinely idle/stuck agent.
+func TestChildrenTasksWait_Signal3_StartupRecoveryPending(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	parentID := session.GenerateSessionID()
+	if err := store.Create(session.Metadata{
+		SessionID:  parentID,
+		Name:       "Parent Session",
+		ACPServer:  "test-server",
+		WorkingDir: "/test/dir",
+		AdvancedSettings: map[string]bool{
+			session.FlagCanSendPrompt: true,
+		},
+	}); err != nil {
+		t.Fatalf("Failed to create parent session: %v", err)
+	}
+
+	childID := session.GenerateSessionID()
+	if err := store.Create(session.Metadata{
+		SessionID:       childID,
+		Name:            "Child Mid Startup Model Recovery",
+		ACPServer:       "test-server",
+		WorkingDir:      "/test/dir",
+		ParentSessionID: parentID,
+	}); err != nil {
+		t.Fatalf("Failed to create child session: %v", err)
+	}
+
+	// Child: not prompting (the queued prompt is gated), but startup model
+	// recovery is still in flight.
+	mockBS := newMockBackgroundSessionForWait(false)
+	mockBS.startupRecoveryPending.Store(true)
+	sm := &mockSessionManagerForChildren{
+		sessions: map[string]BackgroundSession{childID: mockBS},
+	}
+
+	srv, err := NewServer(Config{Port: 0}, Dependencies{Store: store, SessionManager: sm})
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	if err := srv.RegisterSession(parentID, nil, logger); err != nil {
+		t.Fatalf("Failed to register parent: %v", err)
+	}
+	if err := srv.RegisterSession(childID, nil, logger); err != nil {
+		t.Fatalf("Failed to register child: %v", err)
+	}
+
+	ctx := context.Background()
+	// Use a timeout shorter than the idle grace period + poll — should time
+	// out, not auto-complete via agent_idle.
+	_, output, err := srv.handleChildrenTasksWait(ctx, nil, ChildrenTasksWaitInput{
+		SelfID:         parentID,
+		ChildrenList:   []string{childID},
+		TimeoutSeconds: 8,
+	})
+
+	if err != nil {
+		t.Fatalf("handleChildrenTasksWait returned error: %v", err)
+	}
+	if !output.TimedOut {
+		t.Error("Expected TimedOut=true (startup recovery pending should prevent agent_idle)")
+	}
+	report, ok := output.Reports[childID]
+	if ok && report.Reason == "agent_idle" {
+		t.Errorf("Child was wrongly auto-completed with agent_idle while startup model recovery was pending")
 	}
 }
 
@@ -6487,6 +6586,158 @@ func TestChildrenTasksWait_GCStoppedPromptingChildrenFailAfterRemoval(t *testing
 		}
 	case <-time.After(30 * time.Second):
 		t.Fatal("Timeout waiting for handleChildrenTasksWait to return")
+	}
+}
+
+// TestChildrenTasksWait_ResumesModelGatedChildAfterGCRecycle is a regression
+// test for mitto-qy0j: a child that was GC-recycled (Tier 5/6 close every
+// session sharing a degraded process, via BackgroundSession.Close, BEFORE
+// stopping the process itself) before it ever dispatched its queued prompt
+// (WasPrompting=false — e.g. still gated on an unresolved startup model
+// constraint) must be resume-retried within the wait's bounded deadline
+// instead of being treated as a finished/auto-completed child. Once the
+// resumed session reports, the wait must resolve as a genuine completion.
+func TestChildrenTasksWait_ResumesModelGatedChildAfterGCRecycle(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	parentID := session.GenerateSessionID()
+	if err := store.Create(session.Metadata{
+		SessionID:  parentID,
+		Name:       "Parent Session",
+		ACPServer:  "test-server",
+		WorkingDir: "/test/dir",
+		AdvancedSettings: map[string]bool{
+			session.FlagCanSendPrompt: true,
+		},
+	}); err != nil {
+		t.Fatalf("Failed to create parent session: %v", err)
+	}
+
+	childID := session.GenerateSessionID()
+	if err := store.Create(session.Metadata{
+		SessionID:       childID,
+		Name:            "Model Gated Child",
+		ACPServer:       "test-server",
+		WorkingDir:      "/test/dir",
+		ParentSessionID: parentID,
+	}); err != nil {
+		t.Fatalf("Failed to create child session: %v", err)
+	}
+
+	// Child starts running but not prompting — still gated on startup model
+	// application when the simulated GC recycle below removes it.
+	initialBS := newMockBackgroundSessionForWait(false)
+	initialBS.startupRecoveryPending.Store(true)
+
+	// The session the mock ResumeSession hands back once the parent's wait
+	// loop retries the resume after the recycle.
+	resumedBS := newMockBackgroundSessionForWait(false)
+
+	sm := &mockSessionManagerForChildrenMutable{
+		sessions:     map[string]BackgroundSession{childID: initialBS},
+		resumeResult: resumedBS,
+	}
+
+	srv, err := NewServer(Config{Port: 0}, Dependencies{Store: store, SessionManager: sm})
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	if err := srv.RegisterSession(parentID, nil, logger); err != nil {
+		t.Fatalf("Failed to register parent: %v", err)
+	}
+	if err := srv.RegisterSession(childID, nil, logger); err != nil {
+		t.Fatalf("Failed to register child: %v", err)
+	}
+
+	ctx := context.Background()
+	type waitResult struct {
+		output ChildrenTasksWaitOutput
+		err    error
+	}
+	resultCh := make(chan waitResult, 1)
+	go func() {
+		_, output, err := srv.handleChildrenTasksWait(ctx, nil, ChildrenTasksWaitInput{
+			SelfID:         parentID,
+			ChildrenList:   []string{childID},
+			TimeoutSeconds: 30,
+		})
+		resultCh <- waitResult{output: output, err: err}
+	}()
+
+	// Simulate a GC Tier 5/6 recycle: the live BackgroundSession disappears
+	// and the durable terminal record shows it was NOT prompting — i.e. it
+	// never dispatched its queued (model-gated) prompt, so nothing was lost.
+	time.Sleep(200 * time.Millisecond)
+	sm.RemoveSession(childID)
+	if err := store.RecordEvent(childID, session.Event{
+		Seq:       1,
+		Type:      session.EventTypeSessionEnd,
+		Timestamp: time.Now(),
+		Data: session.SessionEndData{
+			Reason:       "gc_suspended",
+			WasPrompting: false,
+		},
+	}); err != nil {
+		t.Fatalf("Record terminal outcome for %s: %v", childID, err)
+	}
+
+	// The poll loop should resume-retry (not auto-complete/fail) this child.
+	deadline := time.Now().Add(10 * time.Second)
+	for sm.ResumeCallCount() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("ResumeSession was never called for the GC-recycled model-gated child")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	for resumedBS.tryProcessCalledCount.Load() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("resumed model-gated child did not restart queued prompt processing")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// The child (now on its resumed session) reports normally.
+	_, _, err = srv.handleChildrenTasksReport(ctx, nil, ChildrenTasksReportInput{
+		SelfID:  childID,
+		Status:  "completed",
+		Summary: "Recovered and finished the task",
+	})
+	if err != nil {
+		t.Fatalf("handleChildrenTasksReport failed: %v", err)
+	}
+
+	select {
+	case result := <-resultCh:
+		if result.err != nil {
+			t.Fatalf("handleChildrenTasksWait returned error: %v", result.err)
+		}
+		if !result.output.Success {
+			t.Fatalf("Expected success, got error: %s", result.output.Error)
+		}
+		if result.output.TimedOut {
+			t.Error("Expected the wait to resolve via the child's real report, not time out")
+		}
+		report, ok := result.output.Reports[childID]
+		if !ok {
+			t.Fatalf("Missing report for child %s", childID)
+		}
+		if !report.Completed || report.Status != "completed" {
+			t.Errorf("Expected a genuine completed report, got Completed=%v Status=%q Reason=%q",
+				report.Completed, report.Status, report.Reason)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("Timeout waiting for handleChildrenTasksWait to return")
+	}
+
+	if got := sm.ResumeCallCount(); got == 0 {
+		t.Error("Expected ResumeSession to have been called at least once")
 	}
 }
 

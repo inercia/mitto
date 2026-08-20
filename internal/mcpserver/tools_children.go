@@ -89,20 +89,34 @@ func (s *Server) stillProcessingChildren(childIDs []string) []string {
 	return processing
 }
 
-func stoppedChildFailureReason(store *session.Store, childID string) string {
+// classifyStoppedChild inspects a stopped child's last recorded event to
+// determine why it disappeared from the session manager. reason is
+// "processRecycled" when the last event shows the shared ACP process was
+// GC-recycled out from under the child (mitto-qy0j: GC Tier 5/6 close every
+// session sharing a degraded process — via BackgroundSession.Close, which
+// cancels the session's own context — BEFORE stopping the process itself).
+// wasPrompting reports whether the child was actively mid-turn when that
+// happened: a mid-turn interruption is a genuine loss of in-flight work and
+// stays a terminal failure, while a non-prompting interruption (e.g. gated on
+// an unresolved startup model constraint that never got to dispatch its
+// queued prompt) has nothing to lose and is safe to resume-retry instead of
+// being treated as an ordinary completed/stopped child. reason=="" means no
+// recognizable interruption signal was found (e.g. a genuine graceful stop),
+// preserving the original auto-complete fallback.
+func classifyStoppedChild(store *session.Store, childID string) (reason string, wasPrompting bool) {
 	events, err := store.ReadEventsLast(childID, 1, 0)
 	if err != nil || len(events) == 0 || events[0].Type != session.EventTypeSessionEnd {
-		return ""
+		return "", false
 	}
 	data, err := session.DecodeEventData(events[0])
 	if err != nil {
-		return ""
+		return "", false
 	}
 	endData, ok := data.(session.SessionEndData)
-	if ok && endData.Reason == "gc_suspended" && endData.WasPrompting {
-		return "processRecycled"
+	if !ok || endData.Reason != "gc_suspended" {
+		return "", false
 	}
-	return ""
+	return "processRecycled", endData.WasPrompting
 }
 
 func (s *Server) isTransientChildResumeError(err error) bool {
@@ -480,13 +494,59 @@ func (s *Server) handleChildrenTasksWait(ctx context.Context, req *mcp.CallToolR
 							collector.markChildFailed(childID, fmt.Sprintf("startup recovery failed: %v", resumeErr))
 							continue
 						}
-						if reason := stoppedChildFailureReason(store, childID); reason != "" {
-							s.logger.Info("Child prompt interrupted by session recycle — marking failed",
-								"parent_session", realSessionID,
-								"child_session", childID,
-								"reason", reason)
-							collector.markChildFailed(childID, reason)
-							delete(childIdleSince, childID)
+						if reason, wasPrompting := classifyStoppedChild(store, childID); reason != "" {
+							if wasPrompting {
+								// Mid-turn interruption: real work was lost. Keep the
+								// existing behavior of failing immediately.
+								s.logger.Info("Child prompt interrupted by session recycle — marking failed",
+									"parent_session", realSessionID,
+									"child_session", childID,
+									"reason", reason)
+								collector.markChildFailed(childID, reason)
+								delete(childIdleSince, childID)
+								continue
+							}
+
+							// mitto-qy0j: the shared process was GC-recycled before this
+							// child ever dispatched its queued prompt (e.g. still gated
+							// on an unresolved startup model constraint). Nothing was
+							// lost — retry the same bounded auto-resume path used for
+							// children that were already not-running when the wait
+							// started, instead of giving up and letting the parent treat
+							// this recoverable interruption as a completed/stopped child.
+							childMeta, metaErr := store.GetMetadata(childID)
+							if metaErr != nil || childMeta.Archived {
+								s.logger.Warn("Cannot resume child after GC recycle",
+									"parent_session", realSessionID,
+									"child_session", childID,
+									"error", metaErr,
+									"archived", childMeta.Archived)
+								collector.markChildFailed(childID, reason)
+								delete(childIdleSince, childID)
+								continue
+							}
+							resumed, resumeErr, transient := s.resumeChildWithTransientRetry(resumeCtx, realSessionID, childMeta)
+							switch {
+							case resumeErr == nil && resumed != nil:
+								s.logger.Info("Child resumed after GC recycle interrupted startup model recovery",
+									"parent_session", realSessionID,
+									"child_session", childID)
+								go resumed.TryProcessQueuedMessage()
+								delete(childIdleSince, childID)
+							case transient:
+								startingChildren[childID] = childMeta
+								s.logger.Info("Child re-entered transient startup recovery after GC recycle",
+									"parent_session", realSessionID,
+									"child_session", childID,
+									"error", resumeErr)
+							default:
+								s.logger.Warn("Failed to resume child after GC recycle",
+									"parent_session", realSessionID,
+									"child_session", childID,
+									"error", resumeErr)
+								collector.markChildFailed(childID, fmt.Sprintf("%s: resume failed: %v", reason, resumeErr))
+								delete(childIdleSince, childID)
+							}
 							continue
 						}
 						// Session is no longer running — auto-complete
@@ -500,6 +560,17 @@ func (s *Server) handleChildrenTasksWait(ctx context.Context, req *mcp.CallToolR
 
 					if bs.IsPrompting() {
 						// Child is actively processing — reset idle timer
+						delete(childIdleSince, childID)
+						continue
+					}
+
+					// mitto-qy0j: a child mid-startup-model-recovery is not "idle" in
+					// the sense the grace period below cares about — its queued prompt
+					// will dispatch once the required model is applied. Treat this the
+					// same as active prompting so the idle-timeout auto-complete never
+					// fires while bounded startup recovery is in flight (mirrors
+					// WaitForResponseComplete's own StartupRecoveryPending gating).
+					if bs.StartupRecoveryPending() {
 						delete(childIdleSince, childID)
 						continue
 					}

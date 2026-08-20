@@ -438,6 +438,20 @@ func (bs *BackgroundSession) beginStartupConstraintRecovery(category string, gen
 // recoverStartupConstraintAfterRestart keeps a model-gated queued turn alive
 // across a shared-process replacement, then rebinds this session. Resuming the
 // session advertises models again, which reapplies the startup constraint.
+//
+// Scope limitation (mitto-qy0j): this only helps when THIS BackgroundSession
+// object survives the process replacement — e.g. a spontaneous crash/restart
+// that does not touch the session layer. It does NOT help when the shared
+// process is recycled by GC Tier 5/6 (acp_process_gc.go): those tiers call
+// sessionClose (BackgroundSession.Close, which cancels bs.ctx) for every
+// session sharing the degraded process BEFORE stopping the process itself, so
+// this goroutine observes bs.ctx.Done() and returns before ever seeing
+// failedProcessDone fire. That GC-close case is instead handled durably at
+// the mitto_children_tasks_wait layer (internal/mcpserver/tools_children.go,
+// classifyStoppedChild + the post-resume retry in the poll loop), which
+// re-resumes the child via the SessionManager — a fresh BackgroundSession
+// re-applies startup constraints from scratch against the replacement
+// process — rather than depending on this disposable goroutine surviving.
 func (bs *BackgroundSession) recoverStartupConstraintAfterRestart(failedGeneration int, failedProcessDone <-chan struct{}) {
 	defer func() {
 		bs.startupConstraintRecovery.Store(false)
