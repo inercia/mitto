@@ -1424,21 +1424,25 @@ func (s *Server) getSession(sessionID string) *registeredSession {
 	return s.sessions[sessionID]
 }
 
-// getOrCreateCollector returns the existing child report collector for the given parent session ID,
-// or creates a new one if it doesn't exist. The collector persists for the lifetime of the parent session.
-func (s *Server) getOrCreateCollector(parentSessionID string) *childReportCollector {
+// getOrCreateCollector returns the durable child report collector for a parent.
+func (s *Server) getOrCreateCollector(parentSessionID string) (*childReportCollector, error) {
+	s.mu.RLock()
+	store := s.store
+	s.mu.RUnlock()
+
 	s.childReportCollectorsMu.Lock()
 	defer s.childReportCollectorsMu.Unlock()
 
 	collector := s.childReportCollectors[parentSessionID]
 	if collector == nil {
-		collector = &childReportCollector{
-			parentSessionID: parentSessionID,
-			reports:         make(map[string]*childReport),
+		var err error
+		collector, err = loadChildReportCollector(store, parentSessionID)
+		if err != nil {
+			return nil, fmt.Errorf("load child reports for parent %s: %w", parentSessionID, err)
 		}
 		s.childReportCollectors[parentSessionID] = collector
 	}
-	return collector
+	return collector, nil
 }
 
 // resolveSelfIDWithMCP resolves self_id using two authenticated signals, in this order:

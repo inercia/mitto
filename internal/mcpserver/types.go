@@ -647,7 +647,8 @@ type WorkspaceUINotifyOutput struct {
 // =============================================================================
 
 // childReportCollector collects reports from child conversations.
-// It persists in-memory on the Server for the lifetime of the parent session.
+// Reports are persisted beside the parent session so suspension and process
+// restart cannot discard an accepted result.
 //
 // Reports are scoped by task_id. When the parent starts waiting for a new task,
 // only reports from the previous (different) task are cleared. Reports for the
@@ -657,6 +658,7 @@ type childReportCollector struct {
 	parentSessionID string
 	currentTaskID   string                  // task_id of the current/last wait cycle
 	reports         map[string]*childReport // child_id -> report (nil = pending)
+	store           *session.Store
 	mu              sync.Mutex
 
 	// Wait signaling: non-nil only while a parent is actively waiting via mitto_children_tasks_wait.

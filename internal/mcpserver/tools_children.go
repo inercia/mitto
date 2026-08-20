@@ -294,7 +294,10 @@ func (s *Server) handleChildrenTasksWait(ctx context.Context, req *mcp.CallToolR
 	}
 
 	// Get-or-create the persistent child report collector for this parent.
-	collector := s.getOrCreateCollector(realSessionID)
+	collector, err := s.getOrCreateCollector(realSessionID)
+	if err != nil {
+		return nil, ChildrenTasksWaitOutput{Success: false, Error: err.Error()}, nil
+	}
 
 	// Server-side safeguard: auto-report children that have been waited on for too long.
 	// This prevents the AI agent from retrying indefinitely when a child is stuck.
@@ -345,6 +348,12 @@ func (s *Server) handleChildrenTasksWait(ctx context.Context, req *mcp.CallToolR
 	// changes, preserving reports from the same task across retries.
 	waitCh, _ := collector.startWait(input.TaskID, runningChildren)
 	defer collector.clearWait()
+	if err := collector.persist(); err != nil {
+		return nil, ChildrenTasksWaitOutput{
+			Success: false,
+			Error:   fmt.Sprintf("failed to persist child wait state: %v", err),
+		}, nil
+	}
 	childrenToPrompt, _ := collector.getPendingAndReported()
 
 	if sendPrompt {
@@ -823,21 +832,41 @@ func (s *Server) handleChildrenTasksReport(ctx context.Context, req *mcp.CallToo
 			Error:   "this session has no parent session - only child conversations can report back",
 		}, nil
 	}
+	if !store.Exists(parentSessionID) {
+		return nil, ChildrenTasksReportOutput{
+			Success: false,
+			Error:   fmt.Sprintf("parent session no longer exists: %s", parentSessionID),
+		}, nil
+	}
 
 	// Get-or-create the persistent collector for the parent.
 	// This ensures reports are stored even if the parent hasn't called _wait yet.
-	collector := s.getOrCreateCollector(parentSessionID)
+	collector, err := s.getOrCreateCollector(parentSessionID)
+	if err != nil {
+		return nil, ChildrenTasksReportOutput{Success: false, Error: err.Error()}, nil
+	}
 
 	// Store the report (may also signal a waiting parent). Capture the wait state
 	// atomically because signaling can let the parent clear it before we log.
 	parentWasWaiting := collector.addReport(realSessionID, input.TaskID, json.RawMessage(reportJSON))
+	if err := collector.persist(); err != nil {
+		s.logger.Error("Failed to persist child report",
+			"child_session", realSessionID,
+			"parent_session", parentSessionID,
+			"error", err)
+		return nil, ChildrenTasksReportOutput{
+			Success: false,
+			Error:   fmt.Sprintf("report was not durably accepted; retry later: %v", err),
+		}, nil
+	}
 
-	// Detect orphaned reports: parent unregistered or not actively waiting
+	// Distinguish a temporarily suspended parent from one that is actively waiting.
 	parentReg := s.getSession(parentSessionID)
 	if parentReg == nil {
-		s.logger.Warn("Child reported to unregistered parent session — report is orphaned",
+		s.logger.Info("Child reported to temporarily unregistered parent — report persisted",
 			"child_session", realSessionID,
 			"parent_session", parentSessionID)
+		s.deleteChildReportCollector(parentSessionID)
 	} else if !parentWasWaiting {
 		s.logger.Info("Child reported to parent (no active wait — report stored for next wait cycle)",
 			"child_session", realSessionID,

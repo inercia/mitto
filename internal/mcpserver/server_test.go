@@ -2996,7 +2996,10 @@ func TestChildrenTasksWait_SameTaskPromptRecoversAutoCompletedChild(t *testing.T
 	ctx := context.Background()
 	taskID := "retry-after-idle"
 
-	collector := srv.getOrCreateCollector(parentID)
+	collector, err := srv.getOrCreateCollector(parentID)
+	if err != nil {
+		t.Fatalf("get collector: %v", err)
+	}
 	waitCh, alreadyDone := collector.startWait(taskID, childIDs)
 	if alreadyDone {
 		t.Fatal("first wait unexpectedly started completed")
@@ -3141,37 +3144,66 @@ func TestChildrenTasksWait_ReportsClearedOnNewTask(t *testing.T) {
 	}
 }
 
-func TestUnregisterSession_CleansUpCollector(t *testing.T) {
-	srv, _, parentID, childIDs := setupParentChildSessions(t, 1)
+func TestChildrenTasksReport_SurvivesParentSuspensionAndRestart(t *testing.T) {
+	srv, store, parentID, childIDs := setupParentChildSessions(t, 1)
 	ctx := context.Background()
 
-	// Child reports (creates collector for parent)
-	_, _, err := srv.handleChildrenTasksReport(ctx, nil, ChildrenTasksReportInput{
+	srv.UnregisterSession(parentID)
+	_, output, err := srv.handleChildrenTasksReport(ctx, nil, ChildrenTasksReportInput{
 		SelfID:  childIDs[0],
 		Status:  "completed",
 		Summary: "Done",
+		TaskID:  "suspended-parent",
 	})
 	if err != nil {
 		t.Fatalf("Report failed: %v", err)
 	}
-
-	// Verify collector exists
-	srv.childReportCollectorsMu.Lock()
-	_, exists := srv.childReportCollectors[parentID]
-	srv.childReportCollectorsMu.Unlock()
-	if !exists {
-		t.Fatal("Expected collector to exist after child report")
+	if !output.Success {
+		t.Fatalf("Report was not accepted: %s", output.Error)
 	}
 
-	// Unregister parent session
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	if err := srv.RegisterSession(parentID, nil, logger); err != nil {
+		t.Fatalf("Re-register parent: %v", err)
+	}
+	_, resumedWait, err := srv.handleChildrenTasksWait(ctx, nil, ChildrenTasksWaitInput{
+		SelfID:         parentID,
+		ChildrenList:   childIDs,
+		TaskID:         "suspended-parent",
+		TimeoutSeconds: 1,
+	})
+	if err != nil {
+		t.Fatalf("Wait after parent resume failed: %v", err)
+	}
+	resumedReport := resumedWait.Reports[childIDs[0]]
+	if resumedWait.TimedOut || !resumedReport.Completed || resumedReport.Report == nil || resumedReport.Report.Summary != "Done" {
+		t.Fatalf("Persisted report was not restored after parent resume: %+v", resumedReport)
+	}
 	srv.UnregisterSession(parentID)
 
-	// Verify collector was cleaned up
-	srv.childReportCollectorsMu.Lock()
-	_, exists = srv.childReportCollectors[parentID]
-	srv.childReportCollectorsMu.Unlock()
-	if exists {
-		t.Error("Expected collector to be cleaned up after unregistering parent session")
+	restarted, err := NewServer(Config{Port: 0}, Dependencies{Store: store})
+	if err != nil {
+		t.Fatalf("Restart server: %v", err)
+	}
+	if err := restarted.RegisterSession(parentID, nil, logger); err != nil {
+		t.Fatalf("Register parent after restart: %v", err)
+	}
+	if err := restarted.RegisterSession(childIDs[0], nil, logger); err != nil {
+		t.Fatalf("Register child after restart: %v", err)
+	}
+
+	_, waitOutput, err := restarted.handleChildrenTasksWait(ctx, nil, ChildrenTasksWaitInput{
+		SelfID:         parentID,
+		ChildrenList:   childIDs,
+		TaskID:         "suspended-parent",
+		TimeoutSeconds: 1,
+	})
+	if err != nil {
+		t.Fatalf("Wait after restart failed: %v", err)
+	}
+	report := waitOutput.Reports[childIDs[0]]
+	if waitOutput.TimedOut || !report.Completed || report.Report == nil || report.Report.Summary != "Done" {
+		t.Fatalf("Persisted report was lost across suspension/restart: %+v", report)
 	}
 }
 
