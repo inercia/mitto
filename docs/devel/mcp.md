@@ -75,17 +75,21 @@ deleted live keepalive sessions and caused a real `tools/call` 404
 (mitto-txse). Mitto's own reaper instead:
 
 - treats every GET/POST/DELETE as activity;
-- preserves the open-GET exemption for unknown or still-owned sessions;
-- associates protocol sessions with every registered Mitto conversation that
-  successfully resolves a session-scoped tool call; and
+- never idle-reaps a protocol session while its registered conversation owner
+  remains active, even when no GET stream is currently open;
+- injects an opaque per-conversation HTTP binding through ACP `session/new` /
+  `session/load` and immutably associates that transport with one conversation;
+  and
 - after the final known owner unregisters, waits for application POSTs to
   drain, then deletes that protocol session even if its abandoned GET remains
   open (mitto-wat).
 
-The ownership set is intentionally many-to-many because Auggie can fail over a
-pooled transport across conversations. Never-correlated transports cannot be
-forcibly capped safely: the localhost endpoint has no stable client-process
-identity, and Auggie #149 does not reliably re-initialize after a 404.
+The authenticated binding removes the shared `self_id=init` FIFO race: request
+arrival order is no longer caller identity, and a protocol session cannot be
+silently rebound to another conversation. Legacy transports without an ACP-
+injected binding may correlate only with their exact conversation ID; ambiguous
+placeholder keys are rejected. Never-correlated transports still use the
+bounded idle policy.
 
 ### STDIO Mode
 
@@ -1045,10 +1049,11 @@ Use `mitto_workspace_list` to discover available workspace UUIDs. The `workspace
 
 The MCP server binds only to `127.0.0.1` (localhost) and cannot be accessed from other machines. Both server construction and settings-save validation reject every other bind host. This is intentional for security:
 
-- No authentication required (localhost only)
+- Global tools remain unauthenticated (localhost only)
 - Exposes internal state for debugging
 - Should not be exposed to the network
-- Session-scoped tools trust only ACP-observed correlation or an established MCP protocol-session mapping; a supplied registered conversation ID is not proof of caller identity
+- HTTP-capable ACP sessions receive an opaque, memory-only binding header; session-scoped tools trust that immutable protocol-session mapping or exact ACP-observed legacy correlation
+- A supplied registered conversation ID or shared placeholder such as `init` is not proof of caller identity
 
 ## Implementation
 
@@ -1197,12 +1202,13 @@ sequenceDiagram
 
     Note over BS: Session starts
     BS->>MCP: RegisterSession(sessionID, uiPrompter)
-    MCP->>MCP: Store in sessions map
-    BS->>ACP: NewSession(McpServers: [])
-    Note over ACP: Agent uses pre-configured MCP URL
+    MCP-->>BS: Per-session HTTP binding
+    BS->>ACP: NewSession(McpServers: [mitto + binding header])
+    ACP->>MCP: initialize + binding header
+    MCP->>MCP: Bind protocol session to conversation
 
     ACP->>MCP: Call mitto_ui_options(self_id=X)
-    MCP->>MCP: Look up session X
+    MCP->>MCP: Resolve immutable protocol-session owner
     MCP->>Store: Read flags for session X
     Store-->>MCP: {can_prompt_user: true}
     MCP->>BS: UIPrompt(question)

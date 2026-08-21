@@ -15,6 +15,7 @@ import (
 	mittoAcp "github.com/inercia/mitto/internal/acp"
 	"github.com/inercia/mitto/internal/appdir"
 	"github.com/inercia/mitto/internal/config"
+	"github.com/inercia/mitto/internal/mcpserver"
 	"github.com/inercia/mitto/internal/processors"
 	"github.com/inercia/mitto/internal/session"
 )
@@ -4595,6 +4596,42 @@ func TestStartSessionMcpServer_ReturnsEmptySlice(t *testing.T) {
 	// With global MCP server architecture, no McpServers are passed to ACP
 	if len(mcpServers) != 0 {
 		t.Errorf("Expected empty MCP servers slice (using global server), got %d", len(mcpServers))
+	}
+}
+
+func TestStartSessionMcpServer_InjectsAuthenticatedHTTPBinding(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	const sessionID = "test-mcp-binding"
+	if err := store.Create(session.Metadata{SessionID: sessionID, ACPServer: "test", WorkingDir: "/tmp"}); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+	srv, err := mcpserver.NewServer(mcpserver.Config{Port: 0}, mcpserver.Dependencies{Store: store})
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+	if err := srv.Start(t.Context()); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer srv.Stop()
+
+	bs := &BackgroundSession{persistedID: sessionID, store: store, globalMcpServer: srv}
+	servers := bs.startSessionMcpServer(store, acp.AgentCapabilities{
+		McpCapabilities: acp.McpCapabilities{Http: true},
+	})
+	if len(servers) != 1 || servers[0].Http == nil {
+		t.Fatalf("HTTP-capable agent got %d MCP servers, want one HTTP entry", len(servers))
+	}
+	httpServer := servers[0].Http
+	if httpServer.Name != "mitto" || httpServer.Url == "" {
+		t.Fatalf("unexpected HTTP MCP config: name=%q url=%q", httpServer.Name, httpServer.Url)
+	}
+	if len(httpServer.Headers) != 1 || httpServer.Headers[0].Name != mcpserver.SessionBindingHeader || httpServer.Headers[0].Value == "" {
+		t.Fatal("HTTP MCP config is missing its per-session binding header")
 	}
 }
 

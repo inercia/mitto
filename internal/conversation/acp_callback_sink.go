@@ -258,6 +258,12 @@ func (acpCallbackSink) onMittoToolCall(d acpCallbackDeps, requestID string) {
 	if d.cbIsClosed() {
 		return
 	}
+	if requestID == "" {
+		// Some agents omit RawInput from ACP tool_call events. The conversation's
+		// stable ID is the only safe legacy correlation key; shared placeholders
+		// such as "init" can cross-wire concurrent callers.
+		requestID = d.cbSessionID()
+	}
 
 	if !d.cbRegisterPendingMCPRequest(requestID) {
 		if lg := d.cbLogger(); lg != nil {

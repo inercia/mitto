@@ -218,3 +218,25 @@ func TestOwnerLifecycleRecentActivityIsNotIdleReaped(t *testing.T) {
 		t.Fatal("recent unknown session was incorrectly idle-reaped")
 	}
 }
+
+func TestOwnedMCPSessionIsNotIdleReapedPastTimeout(t *testing.T) {
+	srv := newReaperTestServer(t)
+	registerReaperOwner(t, srv, "owner-one")
+	clientSession := connectReaperProtocolSession(t, srv)
+	associateReaperOwner(t, srv, clientSession, "owner-one")
+	sid := clientSession.ID()
+
+	clock := time.Now()
+	srv.reaperNow = func() time.Time { return clock }
+	srv.reaperTimeout = 30 * time.Minute
+	srv.reaperTouch(sid)
+	clock = clock.Add(31 * time.Minute)
+	srv.reapIdleMCPSessions()
+
+	if tracked, owners, _, _ := reaperLeaseState(srv, sid); !tracked || owners != 1 {
+		t.Fatalf("owned idle session was reaped: tracked=%v owners=%d", tracked, owners)
+	}
+	if _, err := clientSession.ListTools(context.Background(), &mcp.ListToolsParams{}); err != nil {
+		t.Fatalf("owned protocol session stopped working after idle timeout: %v", err)
+	}
+}

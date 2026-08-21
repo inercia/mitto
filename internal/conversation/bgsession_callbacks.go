@@ -280,8 +280,7 @@ func (bs *BackgroundSession) cbRegisterPendingMCPRequest(requestID string) bool 
 	if bs.globalMcpServer == nil {
 		return false
 	}
-	bs.globalMcpServer.RegisterPendingRequest(requestID, bs.persistedID)
-	return true
+	return bs.globalMcpServer.RegisterPendingRequest(requestID, bs.persistedID)
 }
 
 // cbNotifyPlanStateChanged invokes the SessionManager plan-state cache callback

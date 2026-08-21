@@ -227,15 +227,15 @@ func (c *WebClient) SessionUpdate(ctx context.Context, params acp.SessionNotific
 			selfID := extractMittoSelfID(u.ToolCall.RawInput)
 			if selfID != "" {
 				c.onMittoToolCall(selfID)
-			} else if strings.Contains(u.ToolCall.Title, "get_current") {
-				// Fallback for agents that don't include RawInput in ACP tool_call events
-				// (e.g., Claude Code). Register with "init" — the documented default self_id
-				// value — so the MCP server can correlate the request with this session.
+			} else {
+				// Agents may omit RawInput from ACP tool_call events. Let the callback
+				// substitute its own stable conversation ID instead of the ambiguous
+				// legacy "init" key.
 				if c.logger != nil {
-					c.logger.Debug("mitto get_current tool call detected without RawInput, using fallback",
+					c.logger.Debug("mitto tool call detected without RawInput, using session correlation fallback",
 						"tool_title", u.ToolCall.Title)
 				}
-				c.onMittoToolCall("init")
+				c.onMittoToolCall("")
 			}
 		}
 

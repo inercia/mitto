@@ -4940,11 +4940,10 @@ func TestConversationWait_MissingWhat(t *testing.T) {
 }
 
 // =============================================================================
-// Pending Request FIFO Queue Tests
+// Pending Request Correlation Tests
 // =============================================================================
 
-func TestPendingRequestFIFO(t *testing.T) {
-	// Create a minimal server with FIFO queue
+func TestPendingRequestRejectsAmbiguousSharedKey(t *testing.T) {
 	tmpDir := t.TempDir()
 	store, err := session.NewStore(tmpDir)
 	if err != nil {
@@ -4960,31 +4959,14 @@ func TestPendingRequestFIFO(t *testing.T) {
 		t.Fatalf("NewServer failed: %v", err)
 	}
 
-	// Register three pending requests with the same key ("init")
-	srv.RegisterPendingRequest("init", "session-A")
-	srv.RegisterPendingRequest("init", "session-B")
-	srv.RegisterPendingRequest("init", "session-C")
-
-	// WaitForPendingRequest should return them in FIFO order
-	resultA := srv.WaitForPendingRequest("init")
-	if resultA != "session-A" {
-		t.Errorf("Expected session-A first (FIFO), got: %s", resultA)
+	if srv.RegisterPendingRequest("init", "session-A") {
+		t.Fatal("ambiguous shared correlation key was accepted")
 	}
-
-	resultB := srv.WaitForPendingRequest("init")
-	if resultB != "session-B" {
-		t.Errorf("Expected session-B second (FIFO), got: %s", resultB)
-	}
-
-	resultC := srv.WaitForPendingRequest("init")
-	if resultC != "session-C" {
-		t.Errorf("Expected session-C third (FIFO), got: %s", resultC)
-	}
-
-	// Queue should now be empty — next call should return "" (timeout)
-	resultEmpty := srv.WaitForPendingRequest("init")
-	if resultEmpty != "" {
-		t.Errorf("Expected empty string after queue drained, got: %s", resultEmpty)
+	srv.pendingRequestsMu.RLock()
+	_, exists := srv.pendingRequests["init"]
+	srv.pendingRequestsMu.RUnlock()
+	if exists {
+		t.Fatal("rejected shared key left a pending entry consumable by another conversation")
 	}
 }
 
@@ -5005,19 +4987,19 @@ func TestPendingRequestSingleEntry(t *testing.T) {
 		t.Fatalf("NewServer failed: %v", err)
 	}
 
-	srv.RegisterPendingRequest("init", "my-session")
+	srv.RegisterPendingRequest("my-session", "my-session")
 
-	result := srv.WaitForPendingRequest("init")
+	result := srv.WaitForPendingRequest("my-session")
 	if result != "my-session" {
 		t.Errorf("Expected my-session, got: %s", result)
 	}
 
 	// Key should be fully cleaned up (deleted, not empty slice)
 	srv.pendingRequestsMu.Lock()
-	queue, exists := srv.pendingRequests["init"]
+	queue, exists := srv.pendingRequests["my-session"]
 	srv.pendingRequestsMu.Unlock()
 	if exists {
-		t.Errorf("Expected key 'init' to be deleted after last entry consumed, but found queue of len %d", len(queue))
+		t.Errorf("Expected key to be deleted after last entry consumed, but found queue of len %d", len(queue))
 	}
 }
 
@@ -5227,8 +5209,8 @@ func TestResolveSelfIDWithMCP_CacheResolvesBeforeWait(t *testing.T) {
 	}
 
 	// (b) The pending-correlation mechanism remains intact independently.
-	srv.RegisterPendingRequest("init", "mitto-session-xyz")
-	result := srv.WaitForPendingRequest("init")
+	srv.RegisterPendingRequest("mitto-session-xyz", "mitto-session-xyz")
+	result := srv.WaitForPendingRequest("mitto-session-xyz")
 	if result != "mitto-session-xyz" {
 		t.Errorf("Expected pending correlation to resolve mitto-session-xyz, got: %s", result)
 	}

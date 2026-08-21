@@ -328,6 +328,15 @@ func TestCallbackSink_MittoToolCall_WithMCPServer(t *testing.T) {
 	}
 }
 
+func TestCallbackSink_MittoToolCall_EmptyKeyUsesSessionID(t *testing.T) {
+	s := acpCallbackSink{}
+	d := &fakeCallbackDeps{mcpAvailable: true, sessionID: "conversation-one"}
+	s.onMittoToolCall(d, "")
+	if !reflect.DeepEqual(d.mcpRequests, []string{"conversation-one"}) {
+		t.Fatalf("empty correlation key was not replaced with session ID: %v", d.mcpRequests)
+	}
+}
+
 func TestCallbackSink_AvailableCommands_SortsAndStores(t *testing.T) {
 	s := acpCallbackSink{}
 	d := &fakeCallbackDeps{}

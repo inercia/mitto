@@ -140,6 +140,28 @@ func TestWebClient_SessionUpdate_ToolCall(t *testing.T) {
 	}
 }
 
+func TestWebClient_MittoToolCallWithoutRawInputUsesSafeFallback(t *testing.T) {
+	var correlationID string
+	client := NewWebClient(WebClientConfig{
+		OnMittoToolCall: func(id string) { correlationID = id },
+	})
+	defer client.Close()
+
+	err := client.SessionUpdate(context.Background(), acp.SessionNotification{
+		Update: acp.SessionUpdate{ToolCall: &acp.SessionUpdateToolCall{
+			ToolCallId: "tool-mitto",
+			Title:      "mitto_conversation_get_current",
+			Status:     acp.ToolCallStatusInProgress,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("SessionUpdate failed: %v", err)
+	}
+	if correlationID != "" {
+		t.Fatalf("RawInput-less tool call used ambiguous correlation %q, want callback-owned fallback", correlationID)
+	}
+}
+
 func TestWebClient_SessionUpdate_ToolUpdate(t *testing.T) {
 	var updateID string
 	var updateStatus *string
