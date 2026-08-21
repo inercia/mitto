@@ -12,6 +12,10 @@ keywords:
   - Children
   - MCPText
   - gate-testing
+  - Trigger.Kind
+  - Trigger.OnChild
+  - LoopDispatchOptions
+  - trigger-aware-branching
 ---
 
 # Loop Prompt Design Patterns
@@ -56,6 +60,51 @@ multi-trigger prompt assuming a coalesced fire will be redelivered later — if
 a run's information matters, put it in the delivered `PromptMeta`/CEL
 `condition` state (e.g. `.Trigger.OnTasks.Changes.*`), not in "the next tick
 will catch it."
+
+**Trigger-aware branching (`.Trigger.Kind`, mitto-qzqm)**: any prompt that
+arms two or more triggers MUST branch on `{{ .Trigger.Kind }}` so schedule /
+onCompletion / onTasks / onChild / onSlack runs render distinct framings.
+`.Trigger` is **non-nil for every loop dispatch** (invariant flipped by
+mitto-qzqm — including schedule / onCompletion runs that carry no structured
+payload) and nil only for non-loop / ad-hoc human prompts. Guard the outer
+pointer with `{{ with .Trigger }}` and branch on Kind inside:
+
+```
+{{ with .Trigger }}
+{{ if eq .Kind "onChild" }}A child conversation changed state.
+{{ else if eq .Kind "onTasks" }}{{ with .OnTasks }}Beads changed: {{ range .Changes.Touched }}{{ .id }} {{ end }}{{ end }}
+{{ else if .IsRunOnStart }}Boot pulse recovery.
+{{ else }}Routine {{ .Kind }} run.
+{{ end }}
+{{ end }}
+```
+
+Companion flags: `.Trigger.IsManual` mirrors `.Session.IsLoopForced` (manual
+"Run Now" click); `.Trigger.IsRunOnStart` mirrors `.Session.IsLoopRunOnStart`
+(once-per-boot pulse — `31-loop-prompts.md § runOnStart` covers the
+process-wide guard). Both populated on every loop dispatch. A single-branch
+body that ignores `.Trigger.Kind` is an anti-pattern once a second trigger is
+armed — the losing trigger's run is dropped (see Coalescing above), so if a
+run's framing matters, encode it via `.Trigger.Kind`, not "the next tick will
+catch it."
+
+**onChild provenance (`.Trigger.OnChild.*`, mitto-qvlh)**: populated only when
+`.Trigger.Kind == "onChild"`. Fields: `ChildID` (bounded session identifier —
+intentionally NOT the child's title/name, since deleted-child metadata may
+already be gone by the time `anyDeleted` fires), `Event` (`"anyEndResponse"`
+| `"anyDeleted"` | `"anyLoopStopped"`), `StoppedReason` (non-empty ONLY for
+`anyLoopStopped`; carries the child's own loop-stop reason, e.g.
+`"maxDuration"`). Guard both pointer levels — the outer `.Trigger` remains
+nil for non-loop prompts, and `.OnChild` is nil for non-onChild fires:
+
+```
+{{ with .Trigger }}{{ with .OnChild }}
+Child {{ .ChildID }} fired via {{ .Event }}{{ if .StoppedReason }} (stopped: {{ .StoppedReason }}){{ end }}.
+{{ end }}{{ end }}
+```
+
+The same detail is persisted credential-free on
+`session.PromptProvenance.OnChild` for future replay.
 
 **Anti-pattern — inert blocks**: a `schedule`/`onCompletion`/`onTasks` block
 present for a trigger NOT listed in `trigger:` parses fine but is **inert**
@@ -175,6 +224,80 @@ When an `onTasks` loop is busy (child driver still running), fs-watcher fires do
 `mitto_conversation_send_prompt` inside a loop iteration does **not** run inline — it queues on the child, and the current iteration's `onCompletion` fires on THIS turn's end. Any `send_prompt` (e.g. dispatching a shared "Commit changes" prompt from inside a driver's phase prompt) lands as a NEW turn AFTER the current iteration finishes — arriving after the driver has already updated bd labels, spawned the next phase, or been reaped.
 
 **Consequence**: you cannot chain follow-up work into the currently-active loop turn via `send_prompt`. For in-turn work, either inline the logic in the current prompt body or factor it into a template partial (`{{ template "…" . }}`). This is why the L1 beads-loop drivers commit inline via `git` rather than by dispatching a shared commit prompt.
+
+## Trigger Metadata in Prompt Templates
+
+Loop prompts can inspect **which trigger fired** the current run via the
+`.Trigger` context (beads `mitto-qzqm` + `mitto-qvlh`):
+
+- `.Trigger.Kind` — one of `"onTasks"`, `"onCompletion"`, `"onSlack"`,
+  `"onChild"`, `"schedule"`, `"manual"`.
+- `.Trigger.IsManual` — `true` when the user force-triggered the run via
+  `mitto_conversation_run_loop_now_mitto` (equivalent to
+  `.Session.IsLoopForced`, just grouped under the trigger root).
+- `.Trigger.IsRunOnStart` — `true` for the once-per-process boot pulse
+  (equivalent to `.Session.IsLoopRunOnStart`).
+- `.Trigger.OnChild.{ChildID, Event, StoppedReason}` — for `onChild` fires
+  only: the specific child conversation id, the lifecycle event
+  (`"anyEndResponse"` / `"anyLoopStopped"` / `"anyDeleted"`), and — for
+  `anyLoopStopped` only — the `StoppedReason`. `ChildID` intentionally omits
+  child name/title because that metadata is already gone by delete time.
+
+Persistence mirror: `session.PromptProvenance.OnChild` (JSON `omitempty` for
+backward compat) captures the same fields on the winning dispatch for replay
+and audit.
+
+**Nil-safety rule (MANDATORY)**: prompts that are ALSO invoked outside loop
+mode (e.g. `beads-issues/loop-processing.prompt.yaml` from the beads list
+menu) MUST guard every `.Trigger` access — `.Trigger` is `nil` for non-loop
+dispatches. Access it as `{{ if .Trigger }} … {{ end }}`, never bare.
+
+**Coalescing invariant**: `.Trigger` and `PromptProvenance.OnChild` are only
+built for the WINNING (successfully claimed) dispatch. `claimDispatch`
+returns `ErrLoopDispatchCoalesced` **before** the trigger context is ever
+allocated, so a coalesced-loser fire produces no misleading trigger log,
+provenance record, or template context. `buildPromptTriggerContext`
+(package-private, pure function) is extracted precisely so the fire-path can
+be unit-tested without the full ACP stack.
+
+**Log-ordering quirk**: `triggerNowFull` emits its `"Triggering immediate
+loop delivery"` info log BEFORE `deliverPrompt` calls `claimDispatch` —
+coalesced-loser tests must assert absence of a DOWNSTREAM debug log
+(post-claim), not the upstream info log.
+
+**Anti-pattern**: mechanical `if eq .Trigger.Kind "…"` branches in a
+single-trigger prompt are semantic-neutral boilerplate. Only branch on
+`.Trigger.Kind` where the trigger genuinely narrows the work (e.g. reconcile
+just the fired child on `onChild` instead of the whole subtree) or preserves
+information otherwise lost (e.g. the specific `.Trigger.OnChild.ChildID` /
+`StoppedReason`). Across the 27 audited builtin loop prompts, only 3
+carry trigger-aware branching; the other 24 correctly do not.
+
+## LoopDispatchOptions Envelope
+
+`internal/conversation/loop_runner.go` uses a typed
+`LoopDispatchOptions` struct to carry fire-path metadata (trigger kind,
+manual/runOnStart flags, `OnChild` payload) through
+`triggerNowFull → deliverPrompt`. The public `TriggerNow*` API is unchanged
+— the envelope is internal. When adding a new fire-path field, extend
+`LoopDispatchOptions`; do NOT grow the positional signature (the previous
+6+-parameter chain was the anti-pattern this refactor removed, bead
+`mitto-qvlh`).
+
+## `config → cel` Shim Aliases
+
+`internal/processors/hook.go` references CEL context types
+(`PromptTriggerContext`, `TriggerOnChildContext`, etc.) through the config
+layer, but the canonical definitions live in `internal/cel`.
+`internal/config/cel_shim.go` re-exports them via Go type aliases so
+processors can consume them without importing `internal/cel` directly
+(preserves the config→cel dependency direction).
+
+**Rule**: any new type added to `internal/cel` that must be reachable from
+`internal/processors` requires a mirrored `type X = cel.X` alias in
+`internal/config/cel_shim.go`, or the build breaks with an `undefined` error
+from `internal/processors`. Do NOT redefine the struct in the shim — that
+creates two incompatible types.
 
 ## Schema-Extension Pattern for New Loop Fields
 

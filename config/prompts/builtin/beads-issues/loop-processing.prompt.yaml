@@ -89,6 +89,14 @@ prompt: |
   Workspace peers: `{{ Default "(none)" .Workspace.Peers.AllText }}`
   Active peer drivers: {{ .Workspace.Peers.PromptingCount }} / {{ .Workspace.Peers.Count }}
 
+  {{- with .Trigger }}{{ if .IsRunOnStart }}
+
+  ## Bootstrap pass
+
+  Mitto just started — this is the first loop pass since boot. Orphaned children that ran (or were reaped) while Mitto was down may still hold `[<ts>]` deduplication markers on their linked beads without a matching alive conversation. Give Step 2Q (deduplication cross-check) and Step 2P (terminal-label reap) extra attention on this pass; do not skip them even if `.beads/` looks quiet.
+
+  {{ end }}{{ end }}
+
   {{- with .Trigger }}{{ with .OnTasks }}
 
   ## Triggered by these beads changes
@@ -105,6 +113,30 @@ prompt: |
   {{- else }}
   _(no touched beads reported — likely a rebase-driven re-fire; proceed with the normal scan)_
   {{- end }}
+  {{ end }}{{ end }}
+
+  {{- with .Trigger }}{{ with .OnChild }}
+
+  ## Triggered by child conversation
+
+  This pass was fired by child conversation `{{ .ChildID }}` (event: `{{ .Event }}`){{ if .StoppedReason }}, with stopped reason `{{ .StoppedReason }}`{{ end }}.
+
+  Before running the broader Step 2 sweep, do a small focused reconciliation of THIS child in Step 2P:
+
+  - Look up its `beads_issue` (via `mitto_conversation_get` on the child ID above), and check whether that bead has reached a terminal-label state now that the child has finished.
+  - If yes, close it via the normal Step 2P terminal-label handling.
+  - Only after this focused reconciliation, run the full Step 2 sweep as usual.
+
+  {{ if eq .Event "anyLoopStopped" }}The child driver's own loop has stopped — its linked bead is a **high-priority reap candidate** for Step 2P even if the terminal-label heuristics are ambiguous.
+  {{ end }}
+  {{ end }}{{ end }}
+
+  {{- with .Trigger }}{{ if and (and (eq .Kind "schedule") (not .OnTasks)) (and (not .OnChild) (not .IsRunOnStart)) }}
+
+  ## Scheduled recovery pass
+
+  Neither an `onTasks` beads change nor an `onChild` lifecycle event fired this pass — this is the hourly `schedule` recovery run. External triggers may have been coalesced during a busy window; run the full Step 2 sweep even if nothing looks urgent. This pass exists precisely to catch what the event-driven triggers missed.
+
   {{ end }}{{ end }}
 
   {{- $submit := Default "Commit" .Args.SubmitStrategy }}
