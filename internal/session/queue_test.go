@@ -1,11 +1,14 @@
 package session
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/inercia/mitto/internal/fileutil"
 )
 
 func TestQueue_AddAndList(t *testing.T) {
@@ -811,5 +814,32 @@ func TestParseScheduleTime(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestQueue_Add_DeletedSessionDir pins the mitto-32ef fix: writeQueue must
+// not recreate a session directory that was concurrently removed (e.g. by
+// Store.Delete's os.RemoveAll racing an in-flight Add call). Previously,
+// fileutil.WriteJSONAtomic's internal MkdirAll would silently resurrect the
+// directory containing only queue.json, leaking an orphan with no
+// metadata.json/events.jsonl. Add must now fail instead of succeeding into
+// a resurrected directory.
+func TestQueue_Add_DeletedSessionDir(t *testing.T) {
+	tmpDir := t.TempDir()
+	deletedSessionDir := filepath.Join(tmpDir, "deleted-session")
+	// Deliberately never created, simulating a session dir already removed
+	// by Store.Delete before this Queue's Add call reaches writeQueue.
+	q := NewQueue(deletedSessionDir)
+
+	_, err := q.Add("hello", nil, nil, "client1", nil, 0, nil, "")
+	if err == nil {
+		t.Fatal("Add() on a deleted session dir should fail, got nil error")
+	}
+	if !errors.Is(err, fileutil.ErrParentDirMissing) {
+		t.Errorf("Add() error = %v, want wrapped fileutil.ErrParentDirMissing", err)
+	}
+
+	if _, statErr := os.Stat(deletedSessionDir); !os.IsNotExist(statErr) {
+		t.Errorf("expected %q to remain absent (no orphan created), but it exists", deletedSessionDir)
 	}
 }
