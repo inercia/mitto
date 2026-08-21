@@ -23,6 +23,8 @@ const {
   formatSlackRelativeTime,
   slackAppSettingsURL,
   slackHealth,
+  deriveSlackDeliveryWarning,
+  SLACK_DELIVERY_WARNING_GRACE_MS,
 } = slackModule;
 window.preact = previousPreact;
 
@@ -190,6 +192,102 @@ describe("SlackSettingsTab helpers", () => {
       - message.channels
       - message.groups`);
     expect(SLACK_APP_MANIFEST_YAML).toContain("socket_mode_enabled: true");
+  });
+
+  // mitto-yn5: pins the three deriveSlackDeliveryWarning() acceptance-criteria
+  // paths (warning / healthy-idle / fresh-connection debounce), plus the
+  // supporting not-connected and already-delivering short-circuits.
+  test("surfaces a delivery-health warning only for a connected, subscribed, silent app past the grace window", () => {
+    const now = new Date("2026-08-21T12:00:00Z");
+    const longConnected = new Date(
+      now.getTime() - SLACK_DELIVERY_WARNING_GRACE_MS - 1000,
+    ).toISOString();
+
+    // Warning path: connected, has subscribers, zero envelopes ever, past grace.
+    expect(
+      deriveSlackDeliveryWarning(
+        {
+          state: "connected",
+          subscription_count: 1,
+          events_api_received: 0,
+          last_envelope_at: "0001-01-01T00:00:00Z",
+          connected_at: longConnected,
+        },
+        { now },
+      ),
+    ).toEqual({ message: "Connected, but 0 events received." });
+
+    // Healthy-idle: no onSlack subscriptions reference this app, so zero
+    // events is expected, not broken — no warning.
+    expect(
+      deriveSlackDeliveryWarning(
+        {
+          state: "connected",
+          subscription_count: 0,
+          events_api_received: 0,
+          connected_at: longConnected,
+        },
+        { now },
+      ),
+    ).toBeNull();
+
+    // Fresh-connection debounce: still inside the grace window.
+    const justConnected = new Date(now.getTime() - 1000).toISOString();
+    expect(
+      deriveSlackDeliveryWarning(
+        {
+          state: "connected",
+          subscription_count: 1,
+          events_api_received: 0,
+          connected_at: justConnected,
+        },
+        { now },
+      ),
+    ).toBeNull();
+
+    // Not connected (e.g. still backing off): no warning regardless of counts.
+    expect(
+      deriveSlackDeliveryWarning(
+        {
+          state: "backoff",
+          subscription_count: 1,
+          events_api_received: 0,
+          connected_at: longConnected,
+        },
+        { now },
+      ),
+    ).toBeNull();
+
+    // Already delivering: events_api_received > 0 short-circuits.
+    expect(
+      deriveSlackDeliveryWarning(
+        {
+          state: "connected",
+          subscription_count: 1,
+          events_api_received: 3,
+          connected_at: longConnected,
+        },
+        { now },
+      ),
+    ).toBeNull();
+
+    // last_envelope_at set to a real (non-sentinel) time also short-circuits,
+    // even if events_api_received were somehow unset.
+    expect(
+      deriveSlackDeliveryWarning(
+        {
+          state: "connected",
+          subscription_count: 1,
+          events_api_received: 0,
+          last_envelope_at: "2026-08-21T11:00:00Z",
+          connected_at: longConnected,
+        },
+        { now },
+      ),
+    ).toBeNull();
+
+    // No status at all (e.g. app not yet reported): no warning.
+    expect(deriveSlackDeliveryWarning(null, { now })).toBeNull();
   });
 });
 
@@ -1556,6 +1654,108 @@ if (isIsolatedComponentRun) {
         expect(button.disabled).toBe(true);
       } finally {
         validation.resolve(json(appA));
+        unmount(container);
+      }
+    });
+
+    test("mitto-a13: renders the re-authorization badge and emphasizes the CTA when needs_reauthorization is set", async () => {
+      const oauthApp = {
+        ...appA,
+        oauth_client_id: "123.456",
+        oauth_client_secret_configured: true,
+      };
+      const installation = {
+        id: "inst-a",
+        app_id: "app-a",
+        name: "Alpha Team",
+        credential_kind: "user",
+        team_id: "T111",
+        team_name: "Example",
+        user_id: "U123",
+        oauth_authorized: true,
+        token_configured: true,
+        needs_reauthorization: true,
+      };
+      const { container } = await mount((url) => {
+        if (url === "/api/slack/apps") return json({ apps: [oauthApp] });
+        if (url === "/api/slack/oauth/config")
+          return json({
+            available: true,
+            redirect_uri: "https://mitto.example/cb",
+          });
+        if (url === "/api/slack/apps/app-a/installations")
+          return json({ installations: [installation] });
+        throw new Error(`Unexpected request: ${url}`);
+      });
+      try {
+        await waitFor(
+          () =>
+            container.querySelector(
+              '[data-testid="slack-installation-detail"]',
+            ),
+          container,
+          "installation detail",
+        );
+        const badge = container.querySelector(
+          '[data-testid="slack-needs-reauthorization"]',
+        );
+        expect(badge).not.toBeNull();
+        expect(badge.textContent).toContain("Re-authorization required");
+        const authorize = buttonByText(container, "Authorize delegated user");
+        expect(authorize).not.toBeNull();
+        expect(authorize.className).toContain("btn-warning");
+      } finally {
+        unmount(container);
+      }
+    });
+
+    test("mitto-a13: hides the re-authorization badge and CTA emphasis when needs_reauthorization is false", async () => {
+      const oauthApp = {
+        ...appA,
+        oauth_client_id: "123.456",
+        oauth_client_secret_configured: true,
+      };
+      const installation = {
+        id: "inst-a",
+        app_id: "app-a",
+        name: "Alpha Team",
+        credential_kind: "user",
+        team_id: "T111",
+        team_name: "Example",
+        user_id: "U123",
+        oauth_authorized: true,
+        token_configured: true,
+        needs_reauthorization: false,
+      };
+      const { container } = await mount((url) => {
+        if (url === "/api/slack/apps") return json({ apps: [oauthApp] });
+        if (url === "/api/slack/oauth/config")
+          return json({
+            available: true,
+            redirect_uri: "https://mitto.example/cb",
+          });
+        if (url === "/api/slack/apps/app-a/installations")
+          return json({ installations: [installation] });
+        throw new Error(`Unexpected request: ${url}`);
+      });
+      try {
+        await waitFor(
+          () =>
+            container.querySelector(
+              '[data-testid="slack-installation-detail"]',
+            ),
+          container,
+          "installation detail",
+        );
+        expect(
+          container.querySelector(
+            '[data-testid="slack-needs-reauthorization"]',
+          ),
+        ).toBeNull();
+        const authorize = buttonByText(container, "Authorize delegated user");
+        expect(authorize).not.toBeNull();
+        expect(authorize.className).not.toContain("btn-warning");
+      } finally {
         unmount(container);
       }
     });
